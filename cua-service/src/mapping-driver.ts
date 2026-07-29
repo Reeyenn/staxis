@@ -59,7 +59,7 @@ import { CORE_TARGET_CONTRACTS } from './target-contract.js';
 // feature/cua-self-heal-reach — one-fix-generalizes (sample-verify) + golden-fixture gates.
 import { recipeToTableTemplates } from './recipe-adapter.js';
 import { runSingleSourceTemplate } from './extractors/template-runner.js';
-import { captureLiveFeedProvenance, uploadLiveFeedSample, upsertFeedValues } from './feed-capture.js';
+import { captureLiveFeedProvenance, uploadLiveFeedSample } from './feed-capture.js';
 import { loadActive, sanitizeDisabledFeeds } from './knowledge-file.js';
 import type { SupabaseClient } from '@supabase/supabase-js';
 // rehostFeedUrl lives in session-driver; session-driver imports promoteRecipeChange
@@ -1527,14 +1527,16 @@ export async function captureFeedOnDemand(args: {
     // sampleRows survives the contract gate (blank required cols), so the founder
     // still sees the values — including a blank column they then drag to fix.
     // Feed-level PAGE values (e.g. "Guest Count: 23") ride along in the sample's
-    // pageValues block AND are stored durably once per feed (pms_feed_values).
+    // pageValues block. This on-demand path is a mapping PREVIEW, not a production
+    // ingest: it has no pms_ingest_runs receipt, so it deliberately does not
+    // mutate pms_feed_values or manufacture lineage. The next recurring poll
+    // persists those values with its real poll receipt and observation time.
     // run.ok is stamped into the artifact as `ok` (feature/coverage-gated-feeds):
     // this branch runs even for a FAILED extraction ("capturing current page
     // anyway" above), and the web Make-live gate keys "proven readable" on the
     // artifact — without the flag a failed Re-read would count as proof. The
     // artifact flag and the auto-enable below now apply the SAME run.ok rule.
     await uploadLiveFeedSample(propertyId, feedKey, run.sampleRows ?? run.rows, run.ok, run.feedValues);
-    await upsertFeedValues(propertyId, feedKey, run.feedValues, (template.pageColumns?.length ?? 0) > 0);
     // feature/coverage-gated-feeds — a SUCCESSFUL Re-read PROVES this feed is
     // readable, which is exactly the signal that turns collection back on. If the
     // family's active knowledge-file row currently lists this feed in

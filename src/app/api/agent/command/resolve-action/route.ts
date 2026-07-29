@@ -35,7 +35,8 @@ import { scaleAiReservationUsd, type AiExecutionPlan } from '@/lib/ai/runtime';
 import { anthropicTierTokenRates } from '@/lib/ai/feature-registry';
 import { executeTool, getTool, getToolsForRole, type ToolContext } from '@/lib/agent/tools';
 import { chatIsMountedForRole } from '@/lib/agent/lenses';
-import { requireSectionEnabled } from '@/lib/sections/server';
+import { getEnabledSectionsFresh, requireSectionEnabled } from '@/lib/sections/server';
+import { isSectionEnabled } from '@/lib/sections/registry';
 import { buildHotelSnapshot } from '@/lib/agent/context';
 import { buildSystemPrompt } from '@/lib/agent/prompts';
 import { retrieveMemoryForTurn } from '@/lib/agent/memory-context';
@@ -85,6 +86,60 @@ interface RequestBody {
   addons?: string[];
 }
 
+/**
+ * Rebuild the complete hotel-chat authority at a delayed lifecycle boundary.
+ * This deliberately does not accept a prior ToolContext: current membership,
+ * current per-hotel role/capacity, and current section state all come from new
+ * reads. A null result means stop before the next read or write.
+ */
+async function reauthorizeAgentScope(input: {
+  authUserId: string;
+  propertyId: string;
+  expectedAccountId: string;
+  /** Present for an add-on that would perform another hotel mutation. */
+  mutationToolName?: string;
+}) {
+  const fresh = await loadAgentUserCtx(input.authUserId, input.propertyId);
+  if (!fresh.ok
+    || fresh.userCtx.accountId !== input.expectedAccountId
+    || !chatIsMountedForRole(fresh.userCtx.role)) {
+    return null;
+  }
+
+  let freshSections: Awaited<ReturnType<typeof getEnabledSectionsFresh>>;
+  try {
+    freshSections = await getEnabledSectionsFresh(input.propertyId);
+  } catch {
+    return null;
+  }
+  if (!isSectionEnabled(freshSections, 'staxis')) return null;
+
+  if (input.mutationToolName) {
+    const mutationTool = getTool(input.mutationToolName);
+    const offeredNow = mutationTool
+      ? getToolsForRole(
+        fresh.userCtx.role,
+        'chat',
+        undefined,
+        freshSections,
+        fresh.userCtx,
+      )
+        .some((tool) => tool.name === mutationTool.name)
+      : false;
+    if (!mutationTool?.mutates
+      || fresh.userCtx.hotelMutationAllowed !== true
+      || !offeredNow) {
+      return null;
+    }
+  }
+
+  return {
+    userCtx: fresh.userCtx,
+    staffId: fresh.staffId,
+    enabledSections: freshSections,
+  };
+}
+
 export async function POST(req: NextRequest): Promise<Response> {
   const requestId = getOrMintRequestId(req);
   const executionDeadlineAt = Date.now() + ASK_STAXIS_EXECUTION_BUDGET_MS;
@@ -114,7 +169,7 @@ export async function POST(req: NextRequest): Promise<Response> {
   if (!ctxLoad.ok) {
     return Response.json({ ok: false, error: 'account not found', requestId }, { status: 404 });
   }
-  const { userCtx, staffId } = ctxLoad;
+  let { userCtx, staffId } = ctxLoad;
 
   // WHO LENSES: same door as /api/agent/command. A hat with no chat cannot
   // resolve an approval card either — including one minted before the lens
@@ -226,6 +281,24 @@ export async function POST(req: NextRequest): Promise<Response> {
   }
   const reservationId = reservation.reservationId;
 
+  // Delayed approvals are a new authorization event. Re-resolve immediately
+  // before the single-use claim; the role/property array captured when the
+  // card was proposed (or at the top of this request) is not commit authority.
+  if (body.decision === 'approve') {
+    const preClaimCtx = await loadAgentUserCtx(auth.userId, body.pid);
+    if (!preClaimCtx.ok
+      || preClaimCtx.userCtx.accountId !== userCtx.accountId
+      || !chatIsMountedForRole(preClaimCtx.userCtx.role)) {
+      await cancelCostReservation(reservationId);
+      return Response.json({
+        ok: false,
+        error: 'Your access changed. Ask again from a hotel you can currently manage.',
+        code: 'authorization_changed',
+        requestId,
+      }, { status: 403 });
+    }
+  }
+
   // ── Claim the row (single-use) ────────────────────────────────────────
   const claimed = await claimPendingAction(pending.id, body.decision === 'approve' ? 'approved' : 'denied');
   if (!claimed) {
@@ -233,12 +306,70 @@ export async function POST(req: NextRequest): Promise<Response> {
     return Response.json({ ok: false, error: 'that action was already handled', code: 'race', requestId }, { status: 409 });
   }
 
-  // Per-hotel section gate: re-check the CURRENT section state at execution
-  // time. Guards the toggle-while-pending race (a card proposed while the
-  // section was on, then turned off before approval) and the resume re-plan
-  // below. Reuse the exact map read by the fail-closed gate. Fed into both
-  // executeTool (via toolCtx) and getToolsForRole for the resume turn.
-  const enabledSections = sectionGate.enabledSections;
+  // Re-resolve a second time AFTER the claim and immediately before the hotel
+  // mutation. If revocation/transfer won the race between the pre-claim check
+  // and claim, terminalize the card as failed and persist a matching tool
+  // result; never leave an approved-but-unexecuted row that corrupts replay.
+  let enabledSections = sectionGate.enabledSections;
+  if (body.decision === 'approve') {
+    const commitCtx = await loadAgentUserCtx(auth.userId, body.pid);
+    let authorizationFailure: string | null = null;
+    if (!commitCtx.ok
+      || commitCtx.userCtx.accountId !== userCtx.accountId
+      || !chatIsMountedForRole(commitCtx.userCtx.role)) {
+      authorizationFailure = 'Authorization changed before the approved action could run.';
+    } else {
+      userCtx = commitCtx.userCtx;
+      staffId = commitCtx.staffId;
+      try {
+        enabledSections = await getEnabledSectionsFresh(body.pid);
+        if (!isSectionEnabled(enabledSections, 'staxis')) {
+          authorizationFailure = 'Ask Staxis was disabled before the approved action could run.';
+        }
+      } catch {
+        authorizationFailure = 'Current section authorization could not be verified.';
+      }
+    }
+    if (authorizationFailure) {
+      const decisionMs = Math.max(0, Date.now() - new Date(pending.createdAt).getTime());
+      await finalizePendingAction({
+        id: pending.id,
+        status: 'failed',
+        error: authorizationFailure,
+        executedArgs: effectiveArgs,
+        decisionMs,
+      }).catch((error) => {
+        log.error('[agent/resolve-action] failed to terminalize revoked approval', {
+          requestId,
+          pendingActionId: pending.id,
+          error,
+        });
+      });
+      await recordToolResult(
+        pending.conversationId,
+        pending.toolCallId,
+        authorizationFailure,
+        true,
+      ).catch((error) => {
+        log.error('[agent/resolve-action] failed to persist revoked approval result', {
+          requestId,
+          pendingActionId: pending.id,
+          error,
+        });
+      });
+      await cancelCostReservation(reservationId);
+      return Response.json({
+        ok: false,
+        error: 'Your access changed before this action ran. Nothing was changed.',
+        code: 'authorization_changed',
+        requestId,
+      }, { status: 409 });
+    }
+  }
+
+  // The fresh map is fed into both executeTool and the resume catalog. Tool
+  // role, lens, exact property reach and per-hotel capability are all checked
+  // again by executeTool against the fresh user context below.
   const toolCtx: ToolContext = {
     user: userCtx,
     propertyId: body.pid,
@@ -320,6 +451,31 @@ export async function POST(req: NextRequest): Promise<Response> {
       for (const addonId of body.addons) {
         const addon = findAddon(pending.toolName, addonId);
         if (!addon) continue;
+        // Each add-on is a distinct write after the primary action. A transfer,
+        // revocation, role downgrade, or section toggle that landed while the
+        // primary handler ran must stop the add-on rather than inheriting the
+        // primary handler's now-stale ToolContext.
+        const addonAuthority = await reauthorizeAgentScope({
+          authUserId: auth.userId,
+          propertyId: body.pid,
+          expectedAccountId: userCtx.accountId,
+          mutationToolName: pending.toolName,
+        });
+        if (!addonAuthority) {
+          log.warn('[agent/resolve-action] add-on refused after authority changed', {
+            requestId,
+            pendingActionId: pending.id,
+            addonId,
+          });
+          addonErrors.push(addonId);
+          continue;
+        }
+        userCtx = addonAuthority.userCtx;
+        staffId = addonAuthority.staffId;
+        enabledSections = addonAuthority.enabledSections;
+        toolCtx.user = userCtx;
+        toolCtx.staffId = staffId;
+        toolCtx.enabledSections = enabledSections;
         // Add-ons create attributed work (a to-do "from" the caller). With no
         // caller staff identity we'd write an anonymous row — skip with a note
         // instead, mirroring the tools' own null-staffId refusal (item 8).
@@ -448,6 +604,40 @@ export async function POST(req: NextRequest): Promise<Response> {
         }
         resumeClaimed = true;
 
+        // The primary action is already terminal, but the resumed model would
+        // read conversation history, hotel state and memory. Treat that as a
+        // new authorization event after winning the resume claim. On failure,
+        // release the claim for an authorized future resolver and emit no hotel
+        // data or provider request from this stale approval request.
+        const resumeAuthority = await reauthorizeAgentScope({
+          authUserId: auth.userId,
+          propertyId: body.pid,
+          expectedAccountId: userCtx.accountId,
+        });
+        if (!resumeAuthority) {
+          send({
+            type: 'error',
+            code: 'authorization_changed',
+            message: 'The action result was saved, but your current hotel access could not be verified for the follow-up.',
+          });
+          await releaseTurnResume(pending.conversationId, pending.turnKey).catch((relErr) => {
+            log.error('[agent/resolve-action] failed to release revoked resume claim', {
+              requestId,
+              relErr,
+            });
+          });
+          resumeClaimed = false;
+          await cancelCostReservation(reservationId);
+          try { controller.close(); } catch { /* noop */ }
+          return;
+        }
+        userCtx = resumeAuthority.userCtx;
+        staffId = resumeAuthority.staffId;
+        enabledSections = resumeAuthority.enabledSections;
+        toolCtx.user = userCtx;
+        toolCtx.staffId = staffId;
+        toolCtx.enabledSections = enabledSections;
+
         // ── Synthesize tool_results for EXPIRED siblings (code-review finding) ──
         // An 'expired' sibling is terminal (allActionsResolved) but the route
         // never wrote it a tool_result (unlike executed/failed/denied). Without
@@ -472,14 +662,31 @@ export async function POST(req: NextRequest): Promise<Response> {
         // messages would be missing the just-persisted tool_result and the
         // resumed request would have a dangling tool_use.
         const freshConvo = await loadConversation(pending.conversationId, userCtx.accountId);
-        const history: AgentMessage[] = freshConvo?.messages ?? convo.messages;
+        if (!freshConvo || freshConvo.propertyId !== body.pid) {
+          throw new Error('The conversation scope could not be re-verified for the follow-up.');
+        }
+        const history: AgentMessage[] = freshConvo.messages;
         const [snapshot, memoryBlock] = await Promise.all([
           buildHotelSnapshot(body.pid, userCtx.role, staffId),
           retrieveMemoryForTurn(body.pid, userCtx.accountId),
         ]);
-        const systemPrompt = await buildSystemPrompt(userCtx.role, snapshot, pending.conversationId, undefined, memoryBlock);
+        const systemPrompt = await buildSystemPrompt(
+          userCtx.role,
+          snapshot,
+          pending.conversationId,
+          undefined,
+          memoryBlock,
+          undefined,
+          userCtx,
+        );
         runnerCtx.promptVersion = systemPrompt.versionLabel;
-        const tools = getToolsForRole(userCtx.role, 'chat', undefined, enabledSections);
+        const tools = getToolsForRole(
+          userCtx.role,
+          'chat',
+          undefined,
+          enabledSections,
+          userCtx,
+        );
 
         const iter = streamAgent({
           systemPrompt,

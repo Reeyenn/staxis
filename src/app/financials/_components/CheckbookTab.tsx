@@ -60,11 +60,13 @@ export function CheckbookTab({
   lang,
   month,
   onChanged,
+  readOnly = false,
 }: {
   pid: string;
   lang: Lang;
   month: string;
   onChanged: () => void;
+  readOnly?: boolean;
 }) {
   const S = ft(lang);
   const [deptFilter, setDeptFilter] = useState<Department | 'all'>('all');
@@ -218,8 +220,12 @@ export function CheckbookTab({
               </option>
             ))}
           </select>
-          <ScanButton mode="invoice" pid={pid} lang={lang} label={S.scanInvoice} scanningLabel={S.scanning} failLabel={S.scanFailed} onInvoice={onScanDraft} />
-          <Btn onClick={openAdd}>+ {S.addExpense}</Btn>
+          {!readOnly && (
+            <>
+              <ScanButton mode="invoice" pid={pid} lang={lang} label={S.scanInvoice} scanningLabel={S.scanning} failLabel={S.scanFailed} onInvoice={onScanDraft} />
+              <Btn onClick={openAdd}>+ {S.addExpense}</Btn>
+            </>
+          )}
         </div>
       </div>
 
@@ -254,8 +260,8 @@ export function CheckbookTab({
                       deptColorHex={c}
                       editLabel={S.edit}
                       deleteLabel={S.delete}
-                      onEdit={() => openEdit(e)}
-                      onDelete={() => void del(e.id)}
+                      onEdit={readOnly ? undefined : () => openEdit(e)}
+                      onDelete={readOnly ? undefined : () => void del(e.id)}
                     />
                   );
                 })}
@@ -266,7 +272,7 @@ export function CheckbookTab({
       )}
 
       {/* Add / edit modal */}
-      {form && (
+      {!readOnly && form && (
         <Modal
           open
           onClose={() => setForm(null)}

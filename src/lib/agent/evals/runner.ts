@@ -152,7 +152,7 @@ const EVAL_ORGANIZATION_ID = '00000000-0000-4000-8000-0000000ee1a1';
 /** Run a single eval. Returns the structured result. */
 export async function runOneEval(
   evalCase: EvalCase,
-  opts: { propertyId: string; userId: string },
+  opts: { propertyId: string; userId: string; authUserId: string },
 ): Promise<EvalResult> {
   const start = Date.now();
   const snapshot = await buildHotelSnapshot(opts.propertyId, evalCase.role);
@@ -271,17 +271,25 @@ export async function runOneEval(
     dryRun: true,
     toolContext: {
       user: {
-        uid: opts.userId,
+        uid: opts.authUserId,
         accountId: opts.userId,
         username: 'eval-runner',
         displayName: 'Eval Runner',
         role: evalCase.role,
         propertyAccess: [opts.propertyId],
+        hotelMutationAllowed: true,
+        seesFinancials: true,
+        capabilitySnapshot: {
+          view_financials: true,
+          view_wages: true,
+          manage_inventory_orders: true,
+        },
       },
       propertyId: opts.propertyId,
       staffId: null, // evals run as admin context; housekeeper-only checks fall through cleanly
       requestId: `eval-${evalCase.name}-${Date.now()}`,
       surface: 'chat',
+      enabledSections: null,
     },
   };
 
@@ -508,6 +516,7 @@ export async function runOneEval(
 export async function runAllEvals(opts: {
   propertyId: string;
   userId: string;
+  authUserId: string;
   filter?: string;
 }): Promise<EvalRunSummary> {
   const live = EVAL_CASES.filter(c => c.mode === 'live');

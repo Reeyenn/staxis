@@ -15,6 +15,7 @@ import { requireSession } from '@/lib/api-auth';
 import { validateUuid } from '@/lib/api-validate';
 import { fromScheduledShiftRow } from '@/lib/db-mappers';
 import { requireSectionEnabled } from '@/lib/sections/server';
+import { callerCanMutateHotel, callerReachesHotel, loadSessionAccount } from '@/lib/team-auth';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -31,19 +32,12 @@ export async function POST(req: NextRequest) {
   const shiftIdCheck = validateUuid(body.shiftId, 'shiftId');
   if (shiftIdCheck.error) return err(shiftIdCheck.error, { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
 
-  const { data: acct, error: acctErr } = await supabaseAdmin
-    .from('accounts').select('id, staff_id, property_access')
-    .eq('data_user_id', session.userId).maybeSingle();
-  if (acctErr) {
-    log.error('[pickup:POST] account lookup failed', { requestId, msg: errToString(acctErr) });
-    return err('Failed to verify your account', { requestId, status: 500, code: ApiErrorCode.InternalError });
-  }
-  if (!acct?.staff_id) {
-    return err('Your account is not linked to a staff record', { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
-  }
-  const access = (acct.property_access ?? []) as string[];
-  if (!access.includes(hotelId)) {
+  const account = await loadSessionAccount(session.userId);
+  if (!account || !callerReachesHotel(account, hotelId) || !callerCanMutateHotel(account, hotelId)) {
     return err('Forbidden', { requestId, status: 403, code: ApiErrorCode.Unauthorized });
+  }
+  if (!account.staffId) {
+    return err('Your account is not linked to a staff record', { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
   }
 
   const sectionGate = await requireSectionEnabled(req, hotelId, 'staff');
@@ -53,7 +47,7 @@ export async function POST(req: NextRequest) {
   // their own dept; the design's open-shifts card already filters this
   // client-side, but enforce server-side too).
   const { data: staffRow, error: staffErr } = await supabaseAdmin
-    .from('staff').select('id, department, property_id, is_active').eq('id', acct.staff_id).maybeSingle();
+    .from('staff').select('id, department, property_id, is_active').eq('id', account.staffId).maybeSingle();
   if (staffErr) {
     log.error('[pickup:POST] staff lookup failed', { requestId, msg: errToString(staffErr) });
     return err('Failed to verify your staff record', { requestId, status: 500, code: ApiErrorCode.InternalError });
@@ -85,7 +79,7 @@ export async function POST(req: NextRequest) {
     .from('time_off_requests')
     .select('id')
     .eq('property_id', hotelId)
-    .eq('staff_id', acct.staff_id)
+    .eq('staff_id', account.staffId)
     .eq('request_date', openShift.shift_date)
     .eq('status', 'approved')
     .limit(1)
@@ -104,7 +98,7 @@ export async function POST(req: NextRequest) {
   // optimistic-lock — losers get 0 rows and a polite "already covered".
   const { data: updated, error: upErr } = await supabaseAdmin
     .from('scheduled_shifts').update({
-      staff_id: acct.staff_id,
+      staff_id: account.staffId,
       kind:     'shift',
       // Status remains whatever it was (most likely 'published' since
       // open shifts are visible to staff; if it was 'draft' that's a

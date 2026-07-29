@@ -59,10 +59,11 @@ export function scopeAllowsRole(scope: MembershipScope, role: HatRole): boolean 
  * every capability check that already exists (`can()`, `canManageTeam`,
  * `canViewFinancials`, the per-hotel override resolver…).
  *
- * The two company-only words map DOWN, never up:
- *   vp      -> general_manager  a VP runs the hotels they oversee, so they need
- *                               exactly a GM's hotel authority — no more. They
- *                               are NOT an owner: they cannot mint a peer VP.
+ * The two company-only words map DOWN, never up. This conversion is legacy
+ * account vocabulary only; it must never be used as hotel authorization:
+ *   vp      -> front_desk       company oversight is read-only at a hotel
+ *                               unless a separate property-scope operational
+ *                               entitlement exists.
  *   finance -> front_desk       the operational floor. A finance person is not
  *                               running the hotel; their reason to exist is the
  *                               money, which `hatSeesFinancials` grants
@@ -72,13 +73,25 @@ export function scopeAllowsRole(scope: MembershipScope, role: HatRole): boolean 
 export function legacyRoleForHat(role: HatRole): AppRole {
   switch (role) {
     case 'owner': return 'owner';
-    case 'vp': return 'general_manager';
+    case 'vp': return 'front_desk';
     case 'finance': return 'front_desk';
     case 'general_manager': return 'general_manager';
     case 'front_desk': return 'front_desk';
     case 'housekeeping': return 'housekeeping';
     case 'maintenance': return 'maintenance';
   }
+}
+
+/**
+ * Legacy-compatible presentation role at one hotel. A company-scope job is
+ * deliberately read-only and therefore never projects owner/GM authority.
+ * Hotel mutation is a separate authoritative standing bit.
+ */
+export function operationalRoleForHatAtHotel(
+  scope: MembershipScope,
+  role: HatRole,
+): AppRole {
+  return scope === 'company' ? 'front_desk' : legacyRoleForHat(role);
 }
 
 /**

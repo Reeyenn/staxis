@@ -26,8 +26,10 @@ import assert from 'node:assert/strict';
 import { executeTool, type ToolContext } from '@/lib/agent/tools';
 import '@/lib/agent/tools/index';
 import { supabaseAdmin } from '@/lib/supabase-admin';
+import { installAgentToolAuthorityTestStore } from './helpers/agent-tool-authority';
 
 const PID = '00000000-0000-0000-0000-0000000000b1';
+const UID = '00000000-0000-0000-0000-0000000000b0';
 const CALLER_STAFF = '00000000-0000-0000-0000-0000000000b2';
 const ACCT = '00000000-0000-0000-0000-0000000000b3';
 const MARIA = '00000000-0000-0000-0000-0000000000b4';
@@ -37,8 +39,10 @@ let staffRows: Array<{ id: string; property_id: string; name: string; department
 const postedMessages: Array<Record<string, unknown>> = [];
 const createdTasks: Array<Record<string, unknown>> = [];
 const createdLogs: Array<Record<string, unknown>> = [];
+let authorityMutationAllowed = true;
 
 const originalFrom = supabaseAdmin.from.bind(supabaseAdmin);
+let restoreAuthority: (() => void) | null = null;
 
 beforeEach(() => {
   staffRows = [
@@ -48,10 +52,20 @@ beforeEach(() => {
   postedMessages.length = 0;
   createdTasks.length = 0;
   createdLogs.length = 0;
+  authorityMutationAllowed = true;
   // @ts-expect-error monkey-patch the singleton for the test
   supabaseAdmin.from = (table: string) => buildStub(table);
+  restoreAuthority = installAgentToolAuthorityTestStore(() => [{
+    accountId: ACCT,
+    authUserId: UID,
+    role: 'general_manager',
+    propertyIds: [PID],
+    hotelMutationAllowed: authorityMutationAllowed,
+  }]);
 });
 afterEach(() => {
+  restoreAuthority?.();
+  restoreAuthority = null;
   supabaseAdmin.from = originalFrom;
 });
 
@@ -116,16 +130,36 @@ function buildStub(table: string) {
 function ctx(overrides: Partial<ToolContext> = {}): ToolContext {
   return {
     user: {
-      uid: 'uid-1', accountId: ACCT, username: 'reeyen', displayName: 'Reeyen Boss',
+      uid: UID, accountId: ACCT, username: 'reeyen', displayName: 'Reeyen Boss',
       role: 'general_manager', propertyAccess: [PID], dept: 'front_desk',
+      hotelMutationAllowed: true,
+      seesFinancials: true,
+      capabilitySnapshot: {
+        view_financials: true,
+        view_wages: true,
+        manage_inventory_orders: true,
+      },
     },
     propertyId: PID, staffId: CALLER_STAFF, requestId: 'req-1', surface: 'chat',
     conversationId: 'conv-1',
+    enabledSections: null,
     ...overrides,
   };
 }
 
 describe('send_message', () => {
+  test('a normalized read-only company grant cannot reach a mutation handler', async () => {
+    authorityMutationAllowed = false;
+    const res = await executeTool(
+      'send_message',
+      { recipient: 'Maria', message: 'this must not send' },
+      ctx(),
+    );
+    assert.equal(res.ok, false);
+    assert.match(res.error ?? '', /access changed/i);
+    assert.equal(postedMessages.length, 0);
+  });
+
   test('posts as the caller and resolves recipient by name', async () => {
     const res = await executeTool('send_message', { recipient: 'Maria', message: 'lobby needs a mop' }, ctx());
     assert.equal(res.ok, true);

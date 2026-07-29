@@ -138,6 +138,7 @@ export function DetailModal({
   onClose,
   onDecision,
   onChanged,
+  readOnly = false,
 }: {
   pid: string;
   lang: Lang;
@@ -150,6 +151,7 @@ export function DetailModal({
   onClose: () => void;
   onDecision: (project: CapexProject, action: DecisionAction) => void;
   onChanged: () => void;
+  readOnly?: boolean;
 }) {
   const S = ft(lang);
   const [addLabel, setAddLabel] = useState('');
@@ -279,7 +281,7 @@ export function DetailModal({
         subtitle={`${capexStatusLabel(lang, project.status)}${project.vendor ? ` · ${project.vendor}` : ''}`}
         footer={
           <>
-            <Btn variant="danger" onClick={() => void delProject()}>{S.deleteProject}</Btn>
+            {!readOnly && <Btn variant="danger" onClick={() => void delProject()}>{S.deleteProject}</Btn>}
             <Btn variant="ghost" onClick={onClose}>{S.close}</Btn>
           </>
         }
@@ -287,14 +289,14 @@ export function DetailModal({
         <CapexDetailViewport busy={refreshing}>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
         {/* Workflow actions */}
-        {isPending && (
+        {!readOnly && isPending && (
           <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', paddingBottom: 4 }}>
             <Btn onClick={() => onDecision(project, 'approve')}>{S.approve}</Btn>
             <Btn variant="ghost" onClick={() => onDecision(project, 'revisions')}>{S.requestRevisions}</Btn>
             <Btn variant="danger" onClick={() => onDecision(project, 'reject')}>{S.reject}</Btn>
           </div>
         )}
-        {isActive && (
+        {!readOnly && isActive && (
           <div style={{ paddingBottom: 4 }}>
             <ProgressControls pid={pid} project={project} lang={lang} onChanged={onChanged} />
           </div>
@@ -339,20 +341,24 @@ export function DetailModal({
             ) : (
               <span style={{ fontFamily: FONT_SANS, fontSize: 13, color: T.ink3 }}>{S.noAttachment}</span>
             )}
-            <Btn variant="ghost" disabled={uploading} onClick={() => fileRef.current?.click()}>
-              {uploading ? S.saving : S.addAttachment}
-            </Btn>
-            <input
-              ref={fileRef}
-              type="file"
-              accept="image/jpeg,image/png,image/webp"
-              style={{ display: 'none' }}
-              onChange={(e) => {
-                const f = e.target.files?.[0];
-                if (f) void uploadAttachment(f);
-                if (e.target) e.target.value = '';
-              }}
-            />
+            {!readOnly && (
+              <>
+                <Btn variant="ghost" disabled={uploading} onClick={() => fileRef.current?.click()}>
+                  {uploading ? S.saving : S.addAttachment}
+                </Btn>
+                <input
+                  ref={fileRef}
+                  type="file"
+                  accept="image/jpeg,image/png,image/webp"
+                  style={{ display: 'none' }}
+                  onChange={(e) => {
+                    const f = e.target.files?.[0];
+                    if (f) void uploadAttachment(f);
+                    if (e.target) e.target.value = '';
+                  }}
+                />
+              </>
+            )}
           </div>
         </Section>
 
@@ -363,16 +369,16 @@ export function DetailModal({
               <div key={l.id} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '8px 0', borderBottom: `1px solid ${T.ruleSoft}` }}>
                 <span style={{ flex: 1, fontFamily: FONT_SANS, fontSize: 13, color: T.ink }}>{l.label}</span>
                 <Money cents={l.amountCents} size={13} />
-                <button onClick={() => void delLine(l.id)} style={{ background: 'transparent', border: 'none', color: T.warm, cursor: 'pointer', fontSize: 13 }} aria-label={S.delete}>✕</button>
+                {!readOnly && <button onClick={() => void delLine(l.id)} style={{ background: 'transparent', border: 'none', color: T.warm, cursor: 'pointer', fontSize: 13 }} aria-label={S.delete}>✕</button>}
               </div>
             ))}
             {(project.lineItems ?? []).length === 0 && <span style={{ fontFamily: FONT_SANS, fontSize: 13, color: T.ink3 }}>—</span>}
           </div>
-          <div style={{ display: 'flex', gap: 8, marginTop: 12, alignItems: 'center' }}>
+          {!readOnly && <div style={{ display: 'flex', gap: 8, marginTop: 12, alignItems: 'center' }}>
             <div style={{ flex: 1 }}><TextInput value={addLabel} onChange={setAddLabel} placeholder={S.label} /></div>
             <div style={{ width: 120 }}><DollarInput value={addAmount} onChange={setAddAmount} /></div>
             <Btn onClick={() => void addLine()} disabled={addLineAction.saving || !addLabel.trim()}>+</Btn>
-          </div>
+          </div>}
           {lineError && <span style={{ display: 'block', marginTop: 8, fontFamily: FONT_SANS, fontSize: 12, color: T.warm }}>{lineError}</span>}
         </Section>
 

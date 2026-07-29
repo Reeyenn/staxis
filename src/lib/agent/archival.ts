@@ -1,6 +1,8 @@
 // ─── Conversation archival ─────────────────────────────────────────────────
-// Moves stale conversations (>90 days dormant) out of the hot tables into
-// `_archived` tables. Keeps them queryable for restore. The cron at
+// Moves stale PROPERTY conversations (>90 days dormant) out of the hot tables
+// into `_archived` tables. Portfolio conversation archival fails closed until
+// its immutable receipt/turn-commit graph can be preserved (migration 0399).
+// The cron at
 // /api/cron/agent-archive-stale-conversations calls archiveStaleBatch
 // daily; the admin restore endpoint calls restoreConversation.
 //
@@ -61,9 +63,11 @@ export async function restoreConversation(conversationId: string): Promise<numbe
 }
 
 /**
- * Scan for stale conversations and archive a batch. Idempotent — re-running
- * after a partial completion picks up where the prior run left off, ordered
- * by oldest-first so the longest-stale rows clear first.
+ * Scan for stale property conversations and archive a batch. Portfolio rows
+ * are excluded before LIMIT; otherwise 500 old, intentionally unarchivable
+ * portfolio rows could starve property archival forever. Idempotent —
+ * re-running after a partial completion picks up where the prior run left off,
+ * ordered by oldest-first so the longest-stale rows clear first.
  */
 export async function archiveStaleBatch(): Promise<ArchiveBatchResult> {
   const cutoff = new Date();
@@ -74,6 +78,7 @@ export async function archiveStaleBatch(): Promise<ArchiveBatchResult> {
   const { data: candidates, error: scanErr } = await supabaseAdmin
     .from('agent_conversations')
     .select('id, updated_at')
+    .eq('conversation_kind', 'property')
     .lt('updated_at', cutoffIso)
     .order('updated_at', { ascending: true })
     .limit(ARCHIVE_BATCH_SIZE);
@@ -105,6 +110,7 @@ export async function archiveStaleBatch(): Promise<ArchiveBatchResult> {
     const { data: next } = await supabaseAdmin
       .from('agent_conversations')
       .select('updated_at')
+      .eq('conversation_kind', 'property')
       .lt('updated_at', cutoffIso)
       .order('updated_at', { ascending: true })
       .limit(1);

@@ -75,8 +75,9 @@ const AGENT_UNCONVERTED = new Set([
  * the price of adding one — that is the whole point (INV-30).
  *
  *   1 × 'shared-lib-client-param'  tools/inventory-monthly-accounting.ts
+ *   1 × 'portfolio-exact-set-rpc' portfolio-intelligence/knowledge.ts
  */
-const EXPECTED_UNSCOPED_CALLS = 1;
+const EXPECTED_UNSCOPED_CALLS = 2;
 const UNSCOPED_CALL_RX = /\bunscopedBecause\s*\(/g;
 
 const SKIP_DIRS = new Set(['node_modules', '.next', '__tests__']);

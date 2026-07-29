@@ -49,11 +49,13 @@ export function BudgetTab({
   lang,
   month,
   onChanged,
+  readOnly = false,
 }: {
   pid: string;
   lang: Lang;
   month: string;
   onChanged: () => void;
+  readOnly?: boolean;
 }) {
   const S = ft(lang);
   // Mutation/retry counter — rides the URLs as a fragment (never sent over
@@ -181,9 +183,11 @@ export function BudgetTab({
           </div>
         </div>
         <div style={{ flex: 1, minWidth: 20 }} />
-        <Btn variant="ghost" onClick={startEdit}>
-          ⚙ {S.setBudgets}
-        </Btn>
+        {!readOnly && (
+          <Btn variant="ghost" onClick={startEdit}>
+            ⚙ {S.setBudgets}
+          </Btn>
+        )}
       </div>
 
       {/* Budget cards grid */}
@@ -221,7 +225,7 @@ export function BudgetTab({
       </div>
 
       {/* Set budgets modal */}
-      {editing && (
+      {!readOnly && editing && (
         <Modal
           open
           onClose={() => setEditing(false)}

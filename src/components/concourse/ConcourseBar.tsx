@@ -21,7 +21,11 @@ import { t, LOCALE_META, SUPPORTED_LOCALES } from '@/lib/translations';
 import { useCan } from '@/lib/capabilities/useCan';
 import { useEnabledSections } from '@/lib/sections/useSectionEnabled';
 import { SECTION_LIST } from '@/lib/sections/registry';
-import { ConcourseBarView, type BarItem } from './ConcourseBarView';
+import {
+  ConcourseBarView,
+  type AdminDestinationAction,
+  type BarItem,
+} from './ConcourseBarView';
 import { QUEUE_COUNT_EVENT, shouldReadDecisionBadge, staxisPillBadge } from './queue-count';
 import { fetchWithAuth } from '@/lib/api-fetch';
 import { PhoneHandoffDialog } from '@/components/phone-handoff/PhoneHandoffDialog';
@@ -60,7 +64,13 @@ let SESSION_BADGE: { pid: string; count: number } | null = null;
 let LAST_SHELL_PATH: string | null = null;
 
 export function ConcourseBar() {
-  const { user, signOut } = useAuth();
+  const {
+    user,
+    signOut,
+    authorizationChecked,
+    platformAdmin,
+    propertyStandings,
+  } = useAuth();
   const { properties, activeProperty, loading: propertyLoading, setActivePropertyId } = useProperty();
   const can = useCan();
   const { lang, locale, setLocale } = useLang();
@@ -74,6 +84,10 @@ export function ConcourseBar() {
     ? (lang === 'es' ? 'Centro de empresa' : 'Company Hub')
     : (lang === 'es' ? 'Inicio' : 'Home');
   const showCompanyInMobileNavigation = Boolean(user && !companyOnly);
+  const adminWorkspaceActive = pathname === '/admin' || pathname.startsWith('/admin/');
+  const verifiedPlatformAdmin = Boolean(
+    authorizationChecked && platformAdmin && user?.role === 'admin',
+  );
   const [menuOpen, setMenuOpen] = React.useState(false);
   const [phoneHandoffOpen, setPhoneHandoffOpen] = React.useState(false);
   const [installStaxisOpen, setInstallStaxisOpen] = React.useState(false);
@@ -105,19 +119,43 @@ export function ConcourseBar() {
         ? ['/company', '/settings']
         : [...SECTION_LIST.map((m) => m.navHref), '/home', '/settings'];
       if (!hrefs.includes('/company')) hrefs.push('/company');
+      if (verifiedPlatformAdmin) hrefs.push('/admin/properties');
       hrefs.forEach((h) => router.prefetch(h));
     }, 2500);
     return () => window.clearTimeout(idle);
-  }, [companyOnly, router]);
+  }, [companyOnly, router, verifiedPlatformAdmin]);
   const go = (href: string) => { setPendingHref(href); router.push(href); };
+  const adminLabel = 'Admin';
+  const adminDestination: AdminDestinationAction | undefined = verifiedPlatformAdmin
+    ? {
+        label: adminLabel,
+        ariaLabel: lang === 'es'
+          ? 'Abrir administración de Staxis'
+          : 'Open Staxis Admin',
+        active: adminWorkspaceActive,
+        onClick: () => go('/admin/properties#live'),
+      }
+    : undefined;
   const companyNavigationLabel = user?.role === 'admin'
     ? (lang === 'es' ? 'Gestión' : 'Management')
     : (lang === 'es' ? 'Centro de empresa' : 'Company Hub');
+
+  // The server-rendered admin surface and every admin API already re-check the
+  // database role. This client redirect only retires an already-open shell as
+  // soon as the fresh session-authorization read confirms demotion. An initial
+  // check or transient failure never redirects a still-verified administrator.
+  React.useEffect(() => {
+    if (!authorizationChecked || verifiedPlatformAdmin || !adminWorkspaceActive) return;
+    router.replace('/home');
+  }, [adminWorkspaceActive, authorizationChecked, router, verifiedPlatformAdmin]);
 
   // ── Decisions badge on the Staxis pill ────────────────────────────────────
   // Counts "do this now" cards only — never FYIs, questions or recommendations.
   // Starts with no badge at all and stays that way at zero.
   const propertyId = activeProperty?.id ?? null;
+  const activePropertyStanding = propertyId
+    ? (propertyStandings ?? []).find((standing) => standing.propertyId === propertyId) ?? null
+    : null;
   const signedIn = !!user;
   const canSeeBadge = shouldReadDecisionBadge(user, propertyId);
   const [badge, setBadge] = React.useState<{ pid: string; count: number } | null>(SESSION_BADGE);
@@ -198,7 +236,11 @@ export function ConcourseBar() {
   const items: BarItem[] = (propertyLoading || !activeProperty ? [] : SECTION_LIST)
     .filter((m) => {
       if (!enabled[m.key]) return false;
-      if (m.key === 'financials') return !!user && can('view_financials');
+      if (m.key === 'financials') {
+        return !!user && (activePropertyStanding
+          ? activePropertyStanding.seesFinancials
+          : can('view_financials'));
+      }
       return true;
     })
     .map((m) => ({
@@ -352,9 +394,11 @@ export function ConcourseBar() {
         homeLabel={homeLabel}
         mobileTitle={pathname === '/inventory' || pathname.startsWith('/inventory/')
           ? (lang === 'es' ? 'Inventario' : 'Inventory')
-          : pathname === '/company' || pathname.startsWith('/company/')
-            ? companyNavigationLabel
-            : undefined}
+          : adminWorkspaceActive
+            ? adminLabel
+            : pathname === '/company' || pathname.startsWith('/company/')
+              ? companyNavigationLabel
+              : undefined}
         menuLabel={lang === 'es' ? 'Abrir navegación' : 'Open navigation'}
         closeLabel={lang === 'es' ? 'Cerrar navegación' : 'Close navigation'}
         navigationLabel={lang === 'es' ? 'Navegación principal' : 'Main navigation'}
@@ -366,6 +410,7 @@ export function ConcourseBar() {
           ? `Abrir menú de usuario de ${userName}`
           : `Open user menu for ${userName}`}
         companyLabel={companyNavigationLabel}
+        adminDestination={adminDestination}
         settingsLabel={lang === 'es' ? 'Configuración' : 'Settings'}
         signOutLabel={t('signOut', lang)}
         installLabel={lang === 'es' ? 'Añadir Staxis a la pantalla de inicio' : 'Add Staxis to Home Screen'}
@@ -392,6 +437,7 @@ export function ConcourseBar() {
       />
       <ConcourseBarView
         items={items}
+        adminDestination={adminDestination}
         gearActive={pathname.startsWith('/settings')}
         onGear={() => go('/settings')}
         onLogo={() => go(homeHref)}

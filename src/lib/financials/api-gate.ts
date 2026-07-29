@@ -27,6 +27,14 @@ import { capabilityDecisionForProperty } from '@/lib/capabilities/server';
 import { capabilityUnavailableResponse } from '@/lib/capabilities/api-gate';
 import { requirePropertySectionEnabled } from '@/lib/sections/server';
 import { isUuid } from '@/lib/api-validate';
+import {
+  authoritativeStandingForProperty,
+  listAuthoritativePropertyAccess,
+} from '@/lib/authorization/server';
+import {
+  readCompleteCompanyPages,
+  type CompanyProjectionPage,
+} from '@/lib/company-access/projection-query';
 
 export { isUuid };
 
@@ -41,6 +49,22 @@ export type FinanceAccess =
       requestId: string;
     }
   | { ok: false; response: NextResponse };
+
+function isReadOnlyRequest(req: NextRequest): boolean {
+  return req.method === 'GET' || req.method === 'HEAD';
+}
+
+function authorityUnavailable(requestId: string): FinanceAccess & { ok: false } {
+  return {
+    ok: false,
+    response: err('authorization is temporarily unavailable', {
+      requestId,
+      status: 503,
+      code: 'authorization_unavailable',
+      headers: { 'Retry-After': '5' },
+    }),
+  };
+}
 
 export async function requireFinanceAccess(
   req: NextRequest,
@@ -64,13 +88,14 @@ export async function requireFinanceAccess(
     };
   }
 
-  // 3) Load the caller's account ONCE: role + property scope + accounts PK + name.
+  // 3) Load identity, then resolve reach + capacity atomically from the one
+  //    authority selected for this account.
   const { data: account, error } = await supabaseAdmin
     .from('accounts')
-    .select('id, role, property_access, display_name')
+    .select('id, display_name, active')
     .eq('data_user_id', session.userId)
     .maybeSingle();
-  if (error || !account) {
+  if (error || !account || account.active !== true) {
     return {
       ok: false,
       response: err('account not found for session', {
@@ -80,15 +105,26 @@ export async function requireFinanceAccess(
       }),
     };
   }
-  const role = ((account.role as string) ?? 'staff') as AppRole;
+  const authority = await listAuthoritativePropertyAccess(account.id as string);
+  if (!authority) return authorityUnavailable(requestId);
+  const standing = authoritativeStandingForProperty(authority, pid);
+  if (!standing) {
+    return {
+      ok: false,
+      response: err('forbidden: no access to this property', {
+        requestId,
+        status: 403,
+        code: 'forbidden_property',
+      }),
+    };
+  }
+  const role = standing.operationalRole;
+  const readOnly = isReadOnlyRequest(req);
 
-  // 4a) Manager floor (defense in depth): finance is owner / GM / admin only.
-  //     view_financials is a MANAGER_FLOOR capability, so the per-hotel resolver
-  //     in (4b) already enforces this — but we assert it explicitly at the most
-  //     sensitive choke point so it never rides on a single mechanism. Line-staff
-  //     roles (front_desk / housekeeping / maintenance / legacy staff) are denied
-  //     here before any override is even consulted.
-  if (!canViewFinancials(role)) {
+  // A finance hat is deliberately front_desk for operational permissions and
+  // carries money visibility as a separate bit. It may read, never mutate.
+  if (!standing.seesFinancials
+      || (!readOnly && (!standing.hotelMutationAllowed || !canViewFinancials(role)))) {
     return {
       ok: false,
       response: err('forbidden: financials are restricted for your role', {
@@ -102,34 +138,24 @@ export async function requireFinanceAccess(
   // 4b) Per-hotel capability gate — view_financials, honoring this hotel's
   //     Access-tab restrictions (an admin can switch a manager OFF per hotel).
   //     Admin always passes; admin-only caps are unaffected here.
-  const capabilityDecision = await capabilityDecisionForProperty({ role }, 'view_financials', pid);
-  if (capabilityDecision === 'unavailable') {
-    return { ok: false, response: capabilityUnavailableResponse(requestId) };
-  }
-  if (capabilityDecision === 'denied') {
-    return {
-      ok: false,
-      response: err('forbidden: financials are restricted for your role at this property', {
-        requestId,
-        status: 403,
-        code: 'forbidden_role',
-      }),
-    };
-  }
-
-  // 5) Property scope — admins reach every property; everyone else must have
-  //    the pid in property_access (or the '*' wildcard).
-  const access = (account.property_access ?? []) as string[];
-  const hasProperty = role === 'admin' || access.includes(pid) || access.includes('*');
-  if (!hasProperty) {
-    return {
-      ok: false,
-      response: err('forbidden: no access to this property', {
-        requestId,
-        status: 403,
-        code: 'forbidden_property',
-      }),
-    };
+  // Owner/GM/admin continue to honor per-hotel role overrides. A finance hat
+  // cannot use that legacy-role resolver because its least-privilege role is
+  // front_desk and the manager floor would erase the explicit finance bit.
+  if (canViewFinancials(role)) {
+    const capabilityDecision = await capabilityDecisionForProperty({ role }, 'view_financials', pid);
+    if (capabilityDecision === 'unavailable') {
+      return { ok: false, response: capabilityUnavailableResponse(requestId) };
+    }
+    if (capabilityDecision === 'denied') {
+      return {
+        ok: false,
+        response: err('forbidden: financials are restricted for your role at this property', {
+          requestId,
+          status: 403,
+          code: 'forbidden_role',
+        }),
+      };
+    }
   }
 
   // 6) Section gate — checked LAST (after the caller's property access is proven,
@@ -180,38 +206,33 @@ export async function requireFinanceRollup(req: NextRequest): Promise<FinanceMul
 
   const { data: account, error } = await supabaseAdmin
     .from('accounts')
-    .select('id, role, property_access, display_name')
+    .select('id, role, display_name, active')
     .eq('data_user_id', session.userId)
     .maybeSingle();
-  if (error || !account) {
+  if (error || !account || account.active !== true) {
     return { ok: false, response: err('account not found for session', { requestId, status: 403, code: 'no_account' }) };
   }
+  const authority = await listAuthoritativePropertyAccess(account.id as string);
+  if (!authority) return authorityUnavailable(requestId);
   const role = ((account.role as string) ?? 'staff') as AppRole;
-
-  // Manager floor (defense in depth): finance is owner / GM / admin only. A
-  // line-staff caller gets an empty rollup — no money leaks via aggregation —
-  // without even resolving their property list. The per-property loop below would
-  // also yield [] via the resolver floor; this is the explicit fast path that
-  // mirrors requireFinanceAccess.
-  if (role !== 'admin' && !canViewFinancials(role)) {
-    return {
-      ok: true,
-      userId: session.userId,
-      accountId: account.id as string,
-      role,
-      name: (account.display_name as string | null) ?? null,
-      propertyIds: [],
-      requestId,
-    };
-  }
-
-  const access = (account.property_access ?? []) as string[];
   let propertyIds: string[];
-  if (role === 'admin' || access.includes('*')) {
-    const { data: all } = await supabaseAdmin.from('properties').select('id').limit(1000);
-    propertyIds = (all ?? []).map((r) => (r as { id: string }).id);
+  if (authority.all) {
+    try {
+      const all = await readCompleteCompanyPages<{ id: string }>((from, to) => (
+        supabaseAdmin
+          .from('properties')
+          .select('id', { count: 'exact' })
+          .order('id')
+          .range(from, to) as unknown as PromiseLike<CompanyProjectionPage<{ id: string }>>
+      ));
+      propertyIds = all.map((row) => row.id);
+    } catch {
+      return authorityUnavailable(requestId);
+    }
   } else {
-    propertyIds = access.filter((p) => isUuid(p));
+    propertyIds = authority.propertyStandings
+      .filter((standing) => standing.seesFinancials)
+      .map((standing) => standing.propertyId);
   }
 
   // Per-hotel capability + section filter: the rollup only includes hotels where
@@ -221,14 +242,22 @@ export async function requireFinanceRollup(req: NextRequest): Promise<FinanceMul
   // OFF) for Financials at a hotel can't see that hotel's money in the rollup
   // either (no leak via aggregation). A lookup outage fails the whole rollup
   // closed with the standard retryable 503 instead of silently widening it.
-  if (role !== 'admin') {
+  {
     const allowed: string[] = [];
     for (const p of propertyIds) {
-      const capabilityDecision = await capabilityDecisionForProperty({ role }, 'view_financials', p);
+      const standing = authoritativeStandingForProperty(authority, p);
+      if (!standing || !standing.seesFinancials) continue;
+      if (canViewFinancials(standing.operationalRole)) {
+        const capabilityDecision = await capabilityDecisionForProperty(
+          { role: standing.operationalRole },
+          'view_financials',
+          p,
+        );
       if (capabilityDecision === 'unavailable') {
         return { ok: false, response: capabilityUnavailableResponse(requestId) };
       }
       if (capabilityDecision === 'denied') continue;
+      }
       const sectionGate = await requirePropertySectionEnabled(p, 'financials', { requestId });
       if (!sectionGate.ok) {
         if (sectionGate.response.status === 403) continue;

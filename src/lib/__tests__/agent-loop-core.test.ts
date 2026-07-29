@@ -30,6 +30,7 @@ import {
 } from '@/lib/agent/loop-core';
 import {
   runAgent,
+  streamAgent,
   estimateCost,
   MODELS,
   type RunAgentOpts,
@@ -39,6 +40,7 @@ import { createFakeModel, type ScriptedTurn } from '@/lib/agent/evals/fake-model
 import { registerTool, type ToolContext, type ToolResult } from '@/lib/agent/tools';
 import type { AiModelRef } from '@/lib/ai/types';
 import type { NormalizedAnthropicUsage } from '@/lib/ai/usage';
+import { installAgentToolAuthorityTestStore } from './helpers/agent-tool-authority';
 
 // ─── Fixtures ───────────────────────────────────────────────────────────────
 
@@ -244,11 +246,14 @@ test('the fan-out refusal names the real count and the real cap', () => {
 // ─── runAgent, end to end against a scripted model ──────────────────────────
 
 const PROBE_TOOL = 'loop_core_probe_room_status';
+const UNOFFFERED_MUTATION = 'loop_core_unoffered_mutation';
 const PROPERTY_ID = '11111111-1111-4111-8111-111111111111';
 const ACCOUNT_ID = '22222222-2222-4222-8222-222222222222';
 
 let probeResult: ToolResult = { ok: true, data: { status: 'clean' } };
 const probeCalls: Array<Record<string, unknown>> = [];
+let mutationCalls = 0;
+let restoreAuthority: (() => void) | null = null;
 
 before(() => {
   registerTool({
@@ -262,10 +267,31 @@ before(() => {
       return probeResult;
     },
   });
+  registerTool({
+    name: UNOFFFERED_MUTATION,
+    description: 'Test-only mutation that must never be staged when unoffered.',
+    inputSchema: { type: 'object', properties: {} },
+    allowedRoles: ['general_manager'],
+    mutates: true,
+    approval: 'card',
+    handler: async () => {
+      mutationCalls += 1;
+      return { ok: true };
+    },
+  });
+  restoreAuthority = installAgentToolAuthorityTestStore(() => [{
+    accountId: ACCOUNT_ID,
+    authUserId: ACCOUNT_ID,
+    role: 'general_manager',
+    propertyIds: [PROPERTY_ID],
+  }]);
 });
 
 after(() => {
+  restoreAuthority?.();
+  restoreAuthority = null;
   probeCalls.length = 0;
+  mutationCalls = 0;
 });
 
 function baseOpts(script: ScriptedTurn[], patch: Partial<RunAgentOpts> = {}): {
@@ -409,5 +435,48 @@ describe('runAgent drives the shared core', () => {
     assert.match(fake.requests[1].toolResultTexts[0], /^<tool-result trust="untrusted"/);
     assert.match(fake.requests[1].toolResultTexts[0], /room not found/);
     probeResult = { ok: true, data: { status: 'clean' } };
+  });
+
+  test('a registered but unoffered tool is refused before registry execution', async () => {
+    const before = probeCalls.length;
+    const { opts, fake } = baseOpts(
+      [
+        { blocks: [{ type: 'tool_use', name: PROBE_TOOL, input: { room: '204' } }] },
+        { blocks: [{ type: 'text', text: 'I cannot use that tool here.' }] },
+      ],
+      { tools: [] },
+    );
+
+    const result = await runAgent(opts);
+
+    assert.equal(fake.requests[0].toolNames.length, 0, 'the stale floor fixture offered a tool');
+    assert.equal(result.toolCallsExecuted.length, 1);
+    assert.equal(result.toolCallsExecuted[0].isError, true);
+    assert.match(String(result.toolCallsExecuted[0].result), /not offered for this turn/i);
+    assert.equal(probeCalls.length, before, 'an unoffered registered handler ran');
+  });
+
+  test('approval mode does not mint a card for an unoffered registered mutation', async () => {
+    const { opts } = baseOpts(
+      [
+        { blocks: [{ type: 'tool_use', name: UNOFFFERED_MUTATION, input: {} }] },
+        { blocks: [{ type: 'text', text: 'I cannot use that action here.' }] },
+      ],
+      { tools: [], approvalMode: true },
+    );
+    const events = [];
+
+    for await (const event of streamAgent(opts)) events.push(event);
+
+    assert.equal(
+      events.some((event) => event.type === 'tool_call_pending_approval'),
+      false,
+      'registry metadata outside the offered catalog minted an approval card',
+    );
+    const finished = events.find((event) => event.type === 'tool_call_finished');
+    assert.ok(finished && finished.type === 'tool_call_finished');
+    assert.equal(finished.isError, true);
+    assert.match(String(finished.result), /not offered for this turn/i);
+    assert.equal(mutationCalls, 0, 'an unoffered mutation handler ran');
   });
 });

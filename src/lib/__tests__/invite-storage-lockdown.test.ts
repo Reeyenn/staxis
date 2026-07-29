@@ -99,55 +99,45 @@ describe('migration 0328 — invite capability storage lockdown', () => {
 });
 
 describe('invite acceptance stays behind server routes', () => {
-  const routeCases = [
-    {
-      path: join(REPO, 'src', 'app', 'api', 'auth', 'accept-invite', 'route.ts'),
-      table: 'account_invites',
-    },
-    {
-      path: join(REPO, 'src', 'app', 'api', 'auth', 'use-join-code', 'route.ts'),
-      table: 'hotel_join_codes',
-    },
-  ] as const;
+  test('account_invites public acceptance uses the server-only client', () => {
+    const path = join(REPO, 'src', 'app', 'api', 'auth', 'accept-invite', 'route.ts');
+    const source = readFileSync(path, 'utf8');
+    assert.match(source, /import\s*\{\s*supabaseAdmin\s*\}\s*from\s*['"]@\/lib\/supabase-admin['"]/);
+    assert.doesNotMatch(source, /from\s*['"]@\/lib\/supabase['"]/);
+    assert.match(source, /supabaseAdmin\s*\.from\(\s*['"]account_invites['"]\s*\)/);
+  });
 
-  for (const routeCase of routeCases) {
-    test(`${routeCase.table} public acceptance uses the server-only client`, () => {
-      const source = readFileSync(routeCase.path, 'utf8');
-      assert.match(source, /import\s*\{\s*supabaseAdmin\s*\}\s*from\s*['"]@\/lib\/supabase-admin['"]/);
-      assert.doesNotMatch(source, /from\s*['"]@\/lib\/supabase['"]/);
+  test('hotel_join_codes public acceptance uses only the closed service RPC', () => {
+    const route = readFileSync(
+      join(REPO, 'src', 'app', 'api', 'auth', 'use-join-code', 'route.ts'),
+      'utf8',
+    );
+    const boundary = readFileSync(join(REPO, 'src', 'lib', 'join-code-capability.ts'), 'utf8');
+    assert.match(route, /resolveJoinCodeCapability\(code\)/);
+    assert.match(route, /finalizeJoinCodeSignup\(input\)/);
+    assert.doesNotMatch(route, /\.from\(\s*['"]hotel_join_codes['"]\s*\)/);
+    assert.match(boundary, /supabaseAdmin\.rpc\(\s*['"]staxis_resolve_join_code_capability['"]/);
+    assert.match(boundary, /supabaseAdmin\.rpc\(\s*['"]staxis_finalize_join_code_signup['"]/);
+    assert.doesNotMatch(boundary, /\.from\(\s*['"]hotel_join_codes['"]\s*\)/);
+  });
 
-      const access = new RegExp(`\\.from\\(\\s*['"]${routeCase.table}['"]\\s*\\)`, 'g');
-      const matches = [...source.matchAll(access)];
-      assert.ok(matches.length > 0, `${routeCase.path} must access ${routeCase.table}`);
-      for (const match of matches) {
-        const before = source.slice(Math.max(0, (match.index ?? 0) - 100), match.index);
-        assert.match(
-          before,
-          /supabaseAdmin\s*$/,
-          `every ${routeCase.table} access in ${routeCase.path} must use supabaseAdmin`,
-        );
-      }
-    });
-  }
-
-  test('no browser-side source directly queries either capability table', () => {
+  test('no production source directly queries RPC-only join-code storage', () => {
     const srcRoot = join(REPO, 'src');
     const offenders: string[] = [];
     for (const path of sourceFilesUnder(srcRoot)) {
       const normalized = path.replaceAll('\\', '/');
-      if (normalized.includes('/src/app/api/')) continue;
       if (normalized.includes('/src/lib/__tests__/')) continue;
       if (normalized.endsWith('/src/types/database.types.ts')) continue;
 
       const source = readFileSync(path, 'utf8');
-      if (/\.from\(\s*['"](?:account_invites|hotel_join_codes)['"]\s*\)/.test(source)) {
+      if (/\.from\(\s*['"]hotel_join_codes['"]\s*\)/.test(source)) {
         offenders.push(normalized.slice(REPO.length + 1));
       }
     }
     assert.deepEqual(
       offenders,
       [],
-      `capability tables must be accessed through server routes only: ${offenders.join(', ')}`,
+      `capability tables must be accessed through the RPC-only server boundary: ${offenders.join(', ')}`,
     );
   });
 });

@@ -5,26 +5,50 @@
  * are covered by agent-memory.integration.test.ts.
  */
 
-import { test, describe } from 'node:test';
+import { test, describe, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 
 // Side-effect import populates the registry, exactly like the agent routes.
 import '@/lib/agent/tools/index';
 import { listAllTools, getToolsForRole, executeTool, type ToolContext } from '@/lib/agent/tools';
 import type { AppRole } from '@/lib/roles';
+import {
+  agentToolAuthorityIdentity,
+  installAgentToolAuthorityTestStore,
+} from './helpers/agent-tool-authority';
 
 const PID = '00000000-0000-0000-0000-0000000000aa';
+const AUTHORIZED_ROLES = ['owner', 'maintenance'] as const;
+let restoreAuthority: (() => void) | null = null;
+
+before(() => {
+  restoreAuthority = installAgentToolAuthorityTestStore(() => AUTHORIZED_ROLES.map((role) => ({
+    ...agentToolAuthorityIdentity(role),
+    role,
+    propertyIds: [PID],
+  })));
+});
+
+after(() => restoreAuthority?.());
 
 function ctx(role: AppRole, surface: 'chat' | 'voice' = 'chat'): ToolContext {
+  const identity = agentToolAuthorityIdentity(role);
   return {
     user: {
-      uid: 'u', accountId: '00000000-0000-0000-0000-000000000001',
+      uid: identity.authUserId, accountId: identity.accountId,
       username: 'u', displayName: 'U', role, propertyAccess: [PID],
+      hotelMutationAllowed: true,
+      capabilitySnapshot: {
+        view_financials: true,
+        view_wages: true,
+        manage_inventory_orders: true,
+      },
     },
     propertyId: PID,
     staffId: null,
     requestId: 'r',
     surface,
+    enabledSections: null,
   };
 }
 

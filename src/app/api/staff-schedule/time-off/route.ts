@@ -20,7 +20,14 @@ import { ok, err, ApiErrorCode } from '@/lib/api-response';
 import { getOrMintRequestId, log } from '@/lib/log';
 import { errToString } from '@/lib/utils';
 import { requireSession } from '@/lib/api-auth';
-import { verifyTeamManager, callerCapabilityDecision } from '@/lib/team-auth';
+import {
+  callerCanMutateHotel,
+  callerCapabilityDecision,
+  callerReachesHotel,
+  loadSessionAccount,
+  teamCallerCanMutateHotel,
+  verifyTeamManager,
+} from '@/lib/team-auth';
 import { capabilityUnavailableResponse } from '@/lib/capabilities/api-gate';
 import { requireSectionEnabled } from '@/lib/sections/server';
 import { validateDateStr, validateUuid } from '@/lib/api-validate';
@@ -56,21 +63,14 @@ export async function POST(req: NextRequest) {
     });
   }
 
-  // Look up which staff record this account is linked to.
-  const { data: acct, error: acctErr } = await supabaseAdmin
-    .from('accounts').select('id, staff_id, property_access')
-    .eq('data_user_id', session.userId).maybeSingle();
-  if (acctErr || !acct) {
-    return err('Account not found', { requestId, status: 404, code: ApiErrorCode.NotFound });
+  const account = await loadSessionAccount(session.userId);
+  if (!account || !callerReachesHotel(account, hotelId) || !callerCanMutateHotel(account, hotelId)) {
+    return err('Forbidden', { requestId, status: 403, code: ApiErrorCode.Unauthorized });
   }
-  if (!acct.staff_id) {
+  if (!account.staffId) {
     return err('Your account is not linked to a staff record. Ask your manager to link it.', {
       requestId, status: 400, code: ApiErrorCode.ValidationFailed,
     });
-  }
-  const access = (acct.property_access ?? []) as string[];
-  if (!access.includes(hotelId)) {
-    return err('Forbidden', { requestId, status: 403, code: ApiErrorCode.Unauthorized });
   }
 
   const sectionGate = await requireSectionEnabled(req, hotelId, 'staff');
@@ -78,7 +78,7 @@ export async function POST(req: NextRequest) {
 
   // Sanity: staff record belongs to this property.
   const { data: staffRow, error: staffErr } = await supabaseAdmin
-    .from('staff').select('id, property_id, is_active').eq('id', acct.staff_id).maybeSingle();
+    .from('staff').select('id, property_id, is_active').eq('id', account.staffId).maybeSingle();
   if (staffErr) {
     log.error('[time-off:POST] staff lookup failed', { requestId, msg: errToString(staffErr) });
     return err('Failed to verify staff link', { requestId, status: 500, code: ApiErrorCode.InternalError });
@@ -91,7 +91,7 @@ export async function POST(req: NextRequest) {
     .from('time_off_requests')
     .select('id')
     .eq('property_id', hotelId)
-    .eq('staff_id', acct.staff_id)
+    .eq('staff_id', account.staffId)
     .eq('request_date', dateCheck.value!)
     .in('status', ['pending', 'approved'])
     .limit(1)
@@ -109,7 +109,7 @@ export async function POST(req: NextRequest) {
   const { data, error } = await supabaseAdmin
     .from('time_off_requests').insert({
       property_id:  hotelId,
-      staff_id:     acct.staff_id,
+      staff_id:     account.staffId,
       request_date: dateCheck.value!,
       reason:       reason || null,
       status:       'pending',
@@ -136,6 +136,9 @@ export async function PUT(req: NextRequest) {
   const capabilityDecision = await callerCapabilityDecision(caller, 'manage_shifts', hotelId);
   if (capabilityDecision === 'unavailable') return capabilityUnavailableResponse(requestId);
   if (capabilityDecision === 'denied') {
+    return err('Forbidden', { requestId, status: 403, code: ApiErrorCode.Unauthorized });
+  }
+  if (!teamCallerCanMutateHotel(caller, hotelId)) {
     return err('Forbidden', { requestId, status: 403, code: ApiErrorCode.Unauthorized });
   }
 

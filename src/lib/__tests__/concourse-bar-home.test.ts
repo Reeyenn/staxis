@@ -1,7 +1,10 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import React from 'react';
-import { ConcourseBarView } from '@/components/concourse/ConcourseBarView';
+import {
+  ConcourseBarView,
+  type AdminDestinationAction,
+} from '@/components/concourse/ConcourseBarView';
 import { CxIcon, CxLogo } from '@/components/concourse/icons';
 
 type ElementProps = Record<string, unknown> & { children?: React.ReactNode };
@@ -16,9 +19,11 @@ function renderBar(
   showHome: boolean,
   onLogo = () => {},
   homeLabel = 'Home',
+  adminDestination?: AdminDestinationAction,
 ) {
   return ConcourseBarView({
     items: [],
+    adminDestination,
     gearActive: false,
     onGear: () => {},
     onLogo,
@@ -98,4 +103,27 @@ test('contextual Home action keeps the localized label', () => {
   assert.equal(buttons.length, 1);
   assert.equal(containsComponent(buttons[0], CxIcon, { name: 'back' }), true);
   assert.equal(containsText(buttons[0], 'Inicio'), true);
+});
+
+test('verified platform Admin is a separate exact destination, not the Home control', () => {
+  let clicks = 0;
+  const tree = renderBar(false, () => {}, 'Home', {
+    label: 'Admin',
+    ariaLabel: 'Open Staxis Admin',
+    active: true,
+    onClick: () => { clicks += 1; },
+  });
+  const adminButtons = labelledButtons(tree, 'Open Staxis Admin');
+
+  assert.equal(adminButtons.length, 1);
+  assert.match(String(adminButtons[0].props.className), /cx-admin-destination/);
+  assert.equal(adminButtons[0].props['aria-current'], 'page');
+  assert.equal(containsComponent(adminButtons[0], CxIcon, { name: 'admin' }), true);
+  assert.equal(containsText(adminButtons[0].props.children, 'Admin'), true);
+  assert.equal(adminButtons[0].props.onClick instanceof Function, true);
+  (adminButtons[0].props.onClick as () => void)();
+  assert.equal(clicks, 1);
+
+  assert.equal(labelledButtons(tree, 'Home').length, 1);
+  assert.equal(labelledButtons(renderBar(false), 'Open Staxis Admin').length, 0);
 });

@@ -26,6 +26,9 @@ export interface PropertyRelationshipFact {
   id: string;
   organizationId: string;
   propertyId: string;
+  /** Only a live primary owner/operator relationship governs customer data. */
+  relationshipType?: string;
+  isPrimaryGrouping?: boolean;
   startsAt: string | Date;
   endsAt?: string | Date | null;
 }
@@ -33,6 +36,8 @@ export interface PropertyRelationshipFact {
 export interface PortfolioFact {
   id: string;
   organizationId: string;
+  parentId?: string | null;
+  portfolioType?: string;
   status: 'active' | 'archived' | string;
 }
 
@@ -143,7 +148,9 @@ function isActiveGrant(fact: AccessGrantFact, at: number): boolean {
 }
 
 function isActiveRelationship(fact: PropertyRelationshipFact, at: number): boolean {
-  return activeWindow(fact.startsAt, fact.endsAt, at);
+  return fact.isPrimaryGrouping === true
+    && (fact.relationshipType === 'operator' || fact.relationshipType === 'owner')
+    && activeWindow(fact.startsAt, fact.endsAt, at);
 }
 
 function isActivePortfolioProperty(fact: PortfolioPropertyFact, at: number): boolean {
@@ -180,22 +187,119 @@ function grantReachesProperty(
   }
 
   if (!grant.portfolioId) return false;
-  const portfolio = facts.portfolios.find(
-    (candidate) => candidate.id === grant.portfolioId
-      && candidate.organizationId === grant.organizationId
-      && candidate.status === 'active',
+  const portfolioIds = activePortfolioDescendants(
+    facts,
+    grant.organizationId,
+    grant.portfolioId,
   );
-  if (!portfolio) return false;
+  if (portfolioIds.size === 0) return false;
 
   return facts.portfolioProperties.some(
     (assignment) => assignment.organizationId === grant.organizationId
-      && assignment.portfolioId === grant.portfolioId
+      && portfolioIds.has(assignment.portfolioId)
       && assignment.propertyId === propertyId
       && isActivePortfolioProperty(assignment, at)
       && relationships.some(
         (relationship) => relationship.id === assignment.propertyRelationshipId,
       ),
   );
+}
+
+/**
+ * Resolve the exact current hotel set covered by one normalized grant.
+ *
+ * This is intentionally exported for read projections that need to display a
+ * grant's scope. Keeping that projection on the same relationship and nested
+ * portfolio rules as the authorization decision prevents former operators or
+ * child portfolios from being interpreted differently by the UI and APIs.
+ */
+export function propertyIdsForAccessGrant(
+  grant: AccessGrantFact,
+  facts: AccessFacts,
+  atValue: string | Date = new Date(),
+): string[] {
+  const at = asMillis(atValue);
+  if (!Number.isFinite(at) || !isActiveOrganization(
+    facts.organizations.find((organization) => organization.id === grant.organizationId),
+  )) return [];
+  const membership = facts.memberships.find((candidate) => (
+    candidate.id === grant.membershipId
+    && candidate.organizationId === grant.organizationId
+    && isActiveMembership(candidate, at)
+  ));
+  if (!membership || !isActiveGrant(grant, at)) return [];
+
+  const propertyIds = new Set(facts.propertyRelationships
+    .filter((relationship) => (
+      relationship.organizationId === grant.organizationId
+      && isActiveRelationship(relationship, at)
+    ))
+    .map((relationship) => relationship.propertyId));
+  return [...propertyIds]
+    .filter((propertyId) => grantReachesProperty(grant, propertyId, facts, at))
+    .sort();
+}
+
+/** Exact active portfolio nodes represented by an active normalized grant. */
+export function portfolioIdsForAccessGrant(
+  grant: AccessGrantFact,
+  facts: AccessFacts,
+  atValue: string | Date = new Date(),
+): string[] {
+  const at = asMillis(atValue);
+  if (!Number.isFinite(at) || !isActiveOrganization(
+    facts.organizations.find((organization) => organization.id === grant.organizationId),
+  )) return [];
+  const membership = facts.memberships.find((candidate) => (
+    candidate.id === grant.membershipId
+    && candidate.organizationId === grant.organizationId
+    && isActiveMembership(candidate, at)
+  ));
+  if (!membership || !isActiveGrant(grant, at)) return [];
+  if (grant.scopeType === 'organization') {
+    return facts.portfolios
+      .filter((portfolio) => (
+        portfolio.organizationId === grant.organizationId && portfolio.status === 'active'
+      ))
+      .map((portfolio) => portfolio.id)
+      .sort();
+  }
+  if (grant.scopeType !== 'portfolio' || !grant.portfolioId) return [];
+  return [...activePortfolioDescendants(facts, grant.organizationId, grant.portfolioId)].sort();
+}
+
+/**
+ * Return an active portfolio and every active descendant. The visited set is
+ * both the cycle guard and the de-duplicator: corrupted hierarchy data cannot
+ * hang an authorization decision or widen it outside the grant's organization.
+ */
+function activePortfolioDescendants(
+  facts: AccessFacts,
+  organizationId: string,
+  rootPortfolioId: string,
+): Set<string> {
+  const active = facts.portfolios.filter((portfolio) => (
+    portfolio.organizationId === organizationId && portfolio.status === 'active'
+  ));
+  if (!active.some((portfolio) => portfolio.id === rootPortfolioId)) return new Set();
+
+  const children = new Map<string, string[]>();
+  for (const portfolio of active) {
+    if (!portfolio.parentId) continue;
+    const bucket = children.get(portfolio.parentId) ?? [];
+    bucket.push(portfolio.id);
+    children.set(portfolio.parentId, bucket);
+  }
+
+  const visited = new Set<string>();
+  const pending = [rootPortfolioId];
+  while (pending.length > 0) {
+    const portfolioId = pending.pop();
+    if (!portfolioId || visited.has(portfolioId)) continue;
+    visited.add(portfolioId);
+    for (const childId of children.get(portfolioId) ?? []) pending.push(childId);
+  }
+  return visited;
 }
 
 function receiptReason(grant: AccessGrantFact): string {
@@ -305,11 +409,11 @@ function validRequestedScope(request: DelegationRequest, facts: AccessFacts, at:
   if (request.requestedScopeType === 'portfolio') {
     return !!request.requestedPortfolioId
       && !request.requestedPropertyId
-      && facts.portfolios.some(
-        (portfolio) => portfolio.id === request.requestedPortfolioId
-          && portfolio.organizationId === request.organizationId
-          && portfolio.status === 'active',
-      );
+      && activePortfolioDescendants(
+        facts,
+        request.organizationId,
+        request.requestedPortfolioId,
+      ).size > 0;
   }
   return !!request.requestedPropertyId
     && !request.requestedPortfolioId
@@ -338,12 +442,23 @@ function scopeContains(
   }
 
   if (request.requestedScopeType === 'portfolio') {
-    return grant.portfolioId === request.requestedPortfolioId;
+    return !!grant.portfolioId
+      && !!request.requestedPortfolioId
+      && activePortfolioDescendants(
+        facts,
+        grant.organizationId,
+        grant.portfolioId,
+      ).has(request.requestedPortfolioId);
   }
   if (!request.requestedPropertyId || !grant.portfolioId) return false;
+  const portfolioIds = activePortfolioDescendants(
+    facts,
+    grant.organizationId,
+    grant.portfolioId,
+  );
   return facts.portfolioProperties.some(
     (assignment) => assignment.organizationId === grant.organizationId
-      && assignment.portfolioId === grant.portfolioId
+      && portfolioIds.has(assignment.portfolioId)
       && assignment.propertyId === request.requestedPropertyId
       && isActivePortfolioProperty(assignment, at),
   ) && grantReachesProperty(grant, request.requestedPropertyId, facts, at);

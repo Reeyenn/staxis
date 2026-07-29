@@ -450,6 +450,37 @@ export interface RunAgentResult {
   assistantMessages: Array<{ content: string; toolCalls?: AgentToolCall[] }>;
   /** Token + cost report. */
   usage: UsageReport;
+  /** Exact provider request bodies for this synchronous turn, including a
+   * failed/rejected primary before a successful fallback. Service-only audit
+   * callers persist these verbatim; ordinary callers may ignore them. */
+  providerRequestAttempts?: ProviderRequestAttempt[];
+}
+
+export interface ProviderRequestAttempt {
+  ordinal: number;
+  provider: AiModelRef['provider'];
+  requestedModelId: string;
+  request: Anthropic.Messages.MessageCreateParamsNonStreaming;
+  outcome: 'pending' | 'failed' | 'rejected' | 'succeeded';
+  /** JSON-safe snapshot of the provider's completed 200 response. A response
+   * that later fails schema validation is still retained because it was both
+   * behaviorally relevant and billable. Network/pre-response failures use
+   * null. */
+  response: Anthropic.Messages.Message | null;
+  responseModelId: string | null;
+  /** Canonical billable counters derived from response.usage before output
+   * validation. Together with the persisted execution-plan pricing this makes
+   * every charged primary/fallback attempt independently reproducible. */
+  billableUsage: NormalizedAnthropicUsage | null;
+  failureName: string | null;
+}
+
+/** Capture the JSON value that crossed the provider boundary, not a live SDK
+ * object that a client, callback, or later tool iteration can mutate. The
+ * Messages API is JSON-only; this deliberately matches its serialized wire
+ * representation (including omission of undefined properties). */
+function providerJsonSnapshot<T>(value: T): T {
+  return JSON.parse(JSON.stringify(value)) as T;
 }
 
 // ─── Internal helpers ──────────────────────────────────────────────────────
@@ -663,10 +694,20 @@ async function executeAgentToolCall(
   opts: RunAgentOpts,
   trace: TurnToolTrace,
 ): Promise<{ result: Awaited<ReturnType<typeof executeTool>>; isError: boolean }> {
-  const result = await executeTool(call.name, call.args, {
-    ...opts.toolContext,
-    dryRun: opts.dryRun,
-  });
+  // `opts.tools` is the immutable catalog shown to this model turn. Registry
+  // presence is not authority: a hallucinated name, retired alias, replayed
+  // history, or capability newly granted after catalog construction must not
+  // widen that exact old floor. Fresh execution checks only narrow it further.
+  const offered = opts.tools.some((tool) => tool.name === call.name);
+  const result: Awaited<ReturnType<typeof executeTool>> = offered
+    ? await executeTool(call.name, call.args, {
+      ...opts.toolContext,
+      dryRun: opts.dryRun,
+    })
+    : {
+      ok: false,
+      error: `Tool ${call.name} was not offered for this turn and did not run. Continue only with the tools in the current catalog.`,
+    };
   noteToolRan(trace, call.name, result.ok, result.data);
   trace.payloads.push(result.ok ? result.data : result.error);
   return { result, isError: !result.ok };
@@ -718,6 +759,7 @@ export async function runAgent(opts: RunAgentOpts): Promise<RunAgentResult> {
   let messages = toClaudeMessages(opts.history, opts.newUserMessage);
   const toolCallsExecuted: RunAgentResult['toolCallsExecuted'] = [];
   const assistantMessages: RunAgentResult['assistantMessages'] = [];
+  const providerRequestAttempts: ProviderRequestAttempt[] = [];
   // Same evidence the streaming path collects — see detectFakeSuccess.
   const toolTrace: TurnToolTrace = { anyToolRan: false, mutatingToolRan: false, payloads: [] };
 
@@ -728,29 +770,54 @@ export async function runAgent(opts: RunAgentOpts): Promise<RunAgentResult> {
     for (let iter = 0; iter < MAX_TOOL_ITERATIONS; iter++) {
     assertAgentCanContinue(deadlineAt, opts.abortSignal);
     const request = async (selected: AiModelRef, signal: AbortSignal | undefined) => {
-      const response = await clientFor(selected).messages.create({
+      const requestBody: Anthropic.Messages.MessageCreateParamsNonStreaming = {
         model: selected.modelId,
         max_tokens: MAX_OUTPUT_TOKENS,
         system: buildSystemBlocks(opts.systemPrompt),
-        tools: tools.length > 0 ? tools : undefined,
         messages,
-      }, { signal });
-      // Account before output validation. A malformed 200 is still billable and
-      // may then fall back to another billable model attempt.
-      ledger.commit(selected, normalizeAnthropicUsage(response.usage), response.model);
+        ...(tools.length > 0 ? { tools } : {}),
+      };
+      const attempt: ProviderRequestAttempt = {
+        ordinal: providerRequestAttempts.length,
+        provider: selected.provider,
+        requestedModelId: selected.modelId,
+        request: providerJsonSnapshot(requestBody),
+        outcome: 'pending',
+        response: null,
+        responseModelId: null,
+        billableUsage: null,
+        failureName: null,
+      };
+      providerRequestAttempts.push(attempt);
+      let receivedResponse = false;
+      try {
+        const response = await clientFor(selected).messages.create(requestBody, { signal });
+        receivedResponse = true;
+        attempt.response = providerJsonSnapshot(response);
+        attempt.responseModelId = response.model;
+        // Account before output validation. A malformed 200 is still billable
+        // and may then fall back to another billable model attempt.
+        attempt.billableUsage = normalizeAnthropicUsage(response.usage);
+        ledger.commit(selected, attempt.billableUsage, response.model);
 
-      if (opts.validateAssistantResponse) {
-        const text = response.content
-          .filter((block): block is Anthropic.TextBlock => block.type === 'text')
-          .map((block) => block.text)
-          .join('\n');
-        opts.validateAssistantResponse({
-          text,
-          stopReason: response.stop_reason,
-          toolCallCount: response.content.filter((block) => block.type === 'tool_use').length,
-        });
+        if (opts.validateAssistantResponse) {
+          const text = response.content
+            .filter((block): block is Anthropic.TextBlock => block.type === 'text')
+            .map((block) => block.text)
+            .join('\n');
+          opts.validateAssistantResponse({
+            text,
+            stopReason: response.stop_reason,
+            toolCallCount: response.content.filter((block) => block.type === 'tool_use').length,
+          });
+        }
+        attempt.outcome = 'succeeded';
+        return response;
+      } catch (error) {
+        attempt.outcome = receivedResponse ? 'rejected' : 'failed';
+        attempt.failureName = error instanceof Error ? error.name : 'UnknownError';
+        throw error;
       }
-      return response;
     };
     let response: Awaited<ReturnType<typeof request>>;
     if (configured) {
@@ -811,6 +878,7 @@ export async function runAgent(opts: RunAgentOpts): Promise<RunAgentResult> {
         toolCallsExecuted,
         assistantMessages,
         usage: buildSyncUsage(),
+        providerRequestAttempts,
       };
     }
 
@@ -831,6 +899,7 @@ export async function runAgent(opts: RunAgentOpts): Promise<RunAgentResult> {
         toolCallsExecuted,
         assistantMessages,
         usage: buildSyncUsage(),
+        providerRequestAttempts,
       };
     }
 
@@ -869,6 +938,7 @@ export async function runAgent(opts: RunAgentOpts): Promise<RunAgentResult> {
       toolCallsExecuted,
       assistantMessages,
       usage: buildSyncUsage(),
+      providerRequestAttempts,
     };
   } finally {
     // A schema-invalid 200 is still billable. Emit from finally so a failed
@@ -1479,7 +1549,15 @@ export async function* streamAgent(opts: RunAgentOpts): AsyncGenerator<AgentEven
       // results once every pending action is resolved.
       const gateMode = approvalGateMode(opts);
       if (gateMode !== 'off') {
-        const { held, inline } = partitionGatedCalls(calls, gateMode);
+        const partitioned = partitionGatedCalls(calls, gateMode);
+        const offeredNames = new Set(opts.tools.map((tool) => tool.name));
+        // An unoffered registered mutation is not an approval proposal. Keep it
+        // inline so executeAgentToolCall emits the matching fail-closed result;
+        // otherwise registry metadata alone could mint a card outside the old
+        // catalog floor.
+        const held = partitioned.held.filter((call) => offeredNames.has(call.name));
+        const heldIds = new Set(held.map((call) => call.id));
+        const inline = calls.filter((call) => !heldIds.has(call.id));
         if (held.length > 0) {
           // Group key for this assistant turn = its first tool_call_id. Stable
           // and unique; the resolve route uses it to know when all siblings

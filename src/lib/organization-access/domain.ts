@@ -53,6 +53,7 @@ export type AccessScopeType = (typeof ACCESS_SCOPE_TYPES)[number];
 export const ORGANIZATION_CAPABILITIES = [
   'view_company',
   'view_properties',
+  'portfolio_intelligence_read',
   'view_people',
   'view_access',
   'view_activity',
@@ -80,6 +81,7 @@ export const ACCESS_PROFILE_CAPABILITIES: Readonly<
   portfolio_manager: [
     'view_company',
     'view_properties',
+    'portfolio_intelligence_read',
     'view_people',
     'view_access',
     'view_activity',
@@ -90,6 +92,7 @@ export const ACCESS_PROFILE_CAPABILITIES: Readonly<
   property_manager: [
     'view_company',
     'view_properties',
+    'portfolio_intelligence_read',
     'view_people',
     'view_access',
     'view_activity',

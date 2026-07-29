@@ -4799,6 +4799,7 @@ export type Database = {
       hotel_join_codes: {
         Row: {
           code: string
+          code_kind: string
           created_at: string
           created_by: string
           expires_at: string
@@ -4811,6 +4812,7 @@ export type Database = {
         }
         Insert: {
           code: string
+          code_kind?: string
           created_at?: string
           created_by: string
           expires_at: string
@@ -4823,6 +4825,7 @@ export type Database = {
         }
         Update: {
           code?: string
+          code_kind?: string
           created_at?: string
           created_by?: string
           expires_at?: string
@@ -15625,6 +15628,15 @@ export type Database = {
         Args: { p_id: string; p_pms_family?: string; p_role: string }
         Returns: undefined
       }
+      staxis_apply_onboarding_join_code_transition: {
+        Args: {
+          p_code_id: string
+          p_hotel_id: string
+          p_request_id?: string
+          p_transition: string
+        }
+        Returns: Json
+      }
       staxis_active_property_ids_for_nudges: {
         Args: { p_window_days?: number }
         Returns: {
@@ -15746,12 +15758,27 @@ export type Database = {
         }
         Returns: boolean
       }
+      staxis_check_ownership_transfer_replay: {
+        Args: {
+          p_actor_account_id: string
+          p_actor_auth_user_id: string
+          p_new_owner_account_id: string
+          p_old_owner_account_id: string
+          p_operation_id: string
+          p_property_id: string
+        }
+        Returns: Json
+      }
       staxis_claim_account_lifecycle_intent: {
         Args: {
           p_lease_seconds?: number
           p_operation_id: string
           p_processor_token: string
         }
+        Returns: Json
+      }
+      staxis_claim_join_code_slot: {
+        Args: { p_expected_used_count: number; p_id: string }
         Returns: Json
       }
       staxis_claim_next_job: {
@@ -16019,6 +16046,22 @@ export type Database = {
         }
         Returns: undefined
       }
+      staxis_finalize_join_code_signup: {
+        Args: {
+          p_auth_user_id: string
+          p_code: string
+          p_code_id: string
+          p_display_name: string
+          p_expected_used_count: number
+          p_hotel_id: string
+          p_language: string
+          p_phone: string | null
+          p_request_id: string
+          p_requested_role: string
+          p_username: string
+        }
+        Returns: Json
+      }
       staxis_finalize_phone_pairing_send: {
         Args: {
           p_challenge_token_hash: string
@@ -16039,6 +16082,16 @@ export type Database = {
       }
       staxis_get_account_lifecycle_intent: {
         Args: { p_operation_id: string }
+        Returns: Json
+      }
+      staxis_get_or_create_staff_join_code_guarded: {
+        Args: {
+          p_actor_account_id: string
+          p_actor_auth_user_id: string
+          p_code: string
+          p_hotel_id: string
+          p_request_id?: string
+        }
         Returns: Json
       }
       staxis_get_or_set_shift_start: {
@@ -16236,6 +16289,17 @@ export type Database = {
       }
       staxis_merge_services: {
         Args: { p_patch: Json; p_property_id: string }
+        Returns: Json
+      }
+      staxis_mint_privileged_onboarding_join_code: {
+        Args: {
+          p_actor_account_id: string
+          p_actor_auth_user_id: string
+          p_code: string
+          p_hotel_id: string
+          p_request_id: string
+          p_role: string
+        }
         Returns: Json
       }
       staxis_note_account_lifecycle_attempt: {
@@ -16469,6 +16533,14 @@ export type Database = {
         }
         Returns: Json
       }
+      staxis_read_staff_join_code_guarded: {
+        Args: {
+          p_actor_account_id: string
+          p_actor_auth_user_id: string
+          p_hotel_id: string
+        }
+        Returns: Json
+      }
       staxis_release_account_lifecycle_processor: {
         Args: { p_operation_id: string; p_processor_token: string }
         Returns: Json
@@ -16528,6 +16600,24 @@ export type Database = {
         Args: { p_max_seconds?: number }
         Returns: number
       }
+      staxis_resolve_join_code_capability: {
+        Args: { p_code: string }
+        Returns: Json
+      }
+      staxis_resolve_or_mint_resume_join_code_guarded: {
+        Args: {
+          p_actor_account_id: string
+          p_actor_auth_user_id: string
+          p_code: string
+          p_hotel_id: string
+          p_request_id?: string
+        }
+        Returns: Json
+      }
+      staxis_resolve_organization_property_topology: {
+        Args: { p_effective_at: string; p_organization_id: string }
+        Returns: Json
+      }
       staxis_restore_conversation: {
         Args: { p_conversation_id: string }
         Returns: number
@@ -16549,6 +16639,15 @@ export type Database = {
           p_reason: string
         }
         Returns: boolean
+      }
+      staxis_revoke_staff_join_code_guarded: {
+        Args: {
+          p_actor_account_id: string
+          p_actor_auth_user_id: string
+          p_code_id: string
+          p_request_id?: string
+        }
+        Returns: Json
       }
       staxis_save_inventory_count: {
         Args: {

@@ -363,6 +363,25 @@ describe('the lens prompt', () => {
     invalidatePromptsCache();
   });
 
+  it('replaces the front-desk no-money prompt for an explicit read-only finance standing', async () => {
+    seedPrompts();
+    const built = await buildSystemPrompt(
+      'front_desk',
+      snapshot(),
+      'conv-finance',
+      undefined,
+      undefined,
+      new Date('2026-07-27T12:00:00.000Z'),
+      { seesFinancials: true, hotelMutationAllowed: false },
+    );
+    assert.match(built.stable, /READ-ONLY Financials access/);
+    assert.match(built.stable, /Payroll and individual wages are NOT granted/);
+    assert.match(built.stable, /cannot change hotel data or propose an approval card/);
+    assert.equal(built.stable.includes(CHAT_LENSES.front_desk!.prompt), false);
+    assert.match(built.stableStamp, /role:lens-financial-read-v1-readonly/);
+    invalidatePromptsCache();
+  });
+
   it('an unlensed hat still reads its operator-editable DB row', async () => {
     seedPrompts();
     const built = await buildSystemPrompt('general_manager', snapshot(), 'conv-3');

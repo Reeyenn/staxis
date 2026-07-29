@@ -213,10 +213,20 @@ async function flipChatSwitch(
 
 interface HubWire {
   organizations: Array<{ id: string; name: string; type: string }>;
+  portfolios: Array<{ id: string; propertyIds: string[] }>;
   properties: Array<{ id: string; name: string; organizationId?: string | null; operatingCompanyName?: string | null }>;
   memberships: Array<{ accountId: string; status: string; accessProfile: string | null }>;
-  effectiveAccess: Array<{ id: string; accessProfile: string; propertyIds: string[] }>;
-  permissions: { viewHotels: boolean; viewPeople: boolean };
+  effectiveAccess: Array<{ id: string; accessProfile: string; scopeType: string; propertyIds: string[] }>;
+  permissions: {
+    viewHotels: boolean;
+    viewPeople: boolean;
+    manageInvitations?: boolean;
+    accountInvitePropertyIds?: string[];
+    delegationPolicies?: Array<{
+      organizationId: string;
+      profiles: Array<{ accessProfile: string; portfolioIds: string[]; propertyIds: string[] }>;
+    }>;
+  };
 }
 
 async function hubFor(authUserId: string): Promise<{ status: number; data: HubWire | null }> {
@@ -646,6 +656,12 @@ describe('the Company Hub reads the spine', () => {
     assert.ok(ids.includes(PID_A1) && ids.includes(PID_A2), `the hub found ${ids.length} hotels`);
     assert.equal(hub.data?.permissions.viewHotels, true);
     assert.equal(hub.data?.permissions.viewPeople, true, 'the VP could not see her own people');
+    assert.equal(hub.data?.permissions.manageInvitations, true);
+    assert.deepEqual(
+      hub.data?.permissions.accountInvitePropertyIds,
+      await hotelsGovernedBy(ORG_A),
+      'the company VP was not offered the guarded invitation flow at her exact hotels',
+    );
 
     const active = (hub.data?.memberships ?? []).filter((m) => m.status === 'active');
     assert.ok(active.length > 1, `the people panel found ${active.length} people at a five-person company`);
@@ -673,11 +689,106 @@ describe('the Company Hub reads the spine', () => {
       'a front-desk person was shown the portfolio',
     );
     assert.equal(hub.data?.permissions.viewPeople, false, 'line staff got the company roster');
+    assert.equal(hub.data?.permissions.manageInvitations, false);
+    assert.deepEqual(hub.data?.permissions.accountInvitePropertyIds, []);
     const others = (hub.data?.memberships ?? []).filter((m) => m.accountId !== ACCOUNT_MARIA);
     assert.ok(
       !others.some((m) => m.accountId === ACCOUNT_FIONA),
       "a front-desk person was shown the company's finance lead",
     );
+  });
+
+  test('a stood-down or non-governing company relationship never enters the service projection', async () => {
+    await pg.query(
+      `insert into public.organization_property_relationships
+         (organization_id, property_id, relationship_type, is_primary_grouping)
+       values ($1, $2, 'operator', false), ($1, $3, 'brand', false)`,
+      [ORG_B, PID_A1, PID_A2],
+    );
+    try {
+      const hub = await hubFor(UID_VERA);
+      assert.equal(hub.status, 200);
+      assert.deepEqual(
+        (hub.data?.properties ?? []).map((property) => property.id).sort(),
+        [PID_B1],
+        'the service-role Company Hub exposed a former operator or brand-linked hotel',
+      );
+    } finally {
+      await pg.query(
+        `delete from public.organization_property_relationships
+          where organization_id = $1 and property_id = any($2::uuid[])
+            and not is_primary_grouping`,
+        [ORG_B, [PID_A1, PID_A2]],
+      );
+    }
+  });
+
+  test('a root-region grant projects descendant hotels, receipts, and delegation targets', async () => {
+    const rootPortfolioId = 'a0a0a0a0-0000-4000-8000-000000000001';
+    const childPortfolioId = 'a0a0a0a0-0000-4000-8000-000000000002';
+    const assignmentId = 'a0a0a0a0-0000-4000-8000-000000000003';
+    const grantId = 'a0a0a0a0-0000-4000-8000-000000000004';
+    const membershipId = seed.hats.get(`${ACCOUNT_FRANK}:property:front_desk`);
+    assert.ok(membershipId, 'fixture did not record Frank\'s membership');
+    const relationship = await pg.query<{ id: string }>(
+      `select id from public.organization_property_relationships
+        where organization_id = $1 and property_id = $2
+          and is_primary_grouping and relationship_type in ('owner', 'operator')`,
+      [ORG_A, PID_A2],
+    );
+    assert.ok(relationship.rows[0]?.id, 'fixture did not govern the descendant hotel');
+
+    await pg.query(
+      `insert into public.portfolios
+         (id, organization_id, parent_id, name, portfolio_type, status)
+       values ($1, $3, null, 'East Region', 'region', 'active'),
+              ($2, $3, $1, 'Pine Portfolio', 'portfolio', 'active')`,
+      [rootPortfolioId, childPortfolioId, ORG_A],
+    );
+    await pg.query(
+      `insert into public.portfolio_properties
+         (id, organization_id, portfolio_id, property_relationship_id, property_id)
+       values ($1, $2, $3, $4, $5)`,
+      [assignmentId, ORG_A, childPortfolioId, relationship.rows[0].id, PID_A2],
+    );
+    await pg.query(
+      `insert into public.organization_access_grants
+         (id, organization_id, membership_id, access_profile, scope_type,
+          portfolio_id, source, starts_at)
+       values ($1, $2, $3, 'portfolio_manager', 'portfolio', $4, 'manual', now())`,
+      [grantId, ORG_A, membershipId, rootPortfolioId],
+    );
+    try {
+      const hub = await hubFor(UID_FRANK);
+      assert.equal(hub.status, 200);
+      assert.deepEqual(
+        (hub.data?.properties ?? []).map((property) => property.id).sort(),
+        [PID_A1, PID_A2].sort(),
+        'the nested region grant did not reach its child hotel',
+      );
+      assert.deepEqual(
+        (hub.data?.portfolios ?? []).map((portfolio) => portfolio.id).sort(),
+        [rootPortfolioId, childPortfolioId].sort(),
+        'the route omitted the granted region or its active child',
+      );
+      assert.deepEqual(
+        hub.data?.effectiveAccess.find((receipt) => receipt.id === grantId)?.propertyIds,
+        [PID_A2],
+        'the effective receipt disagreed with the authoritative nested scope',
+      );
+      const propertyManagerPolicy = hub.data?.permissions.delegationPolicies
+        ?.find((policy) => policy.organizationId === ORG_A)
+        ?.profiles.find((profile) => profile.accessProfile === 'property_manager');
+      assert.deepEqual(
+        propertyManagerPolicy?.propertyIds,
+        [PID_A2],
+        'the Access UI could not delegate within the exact descendant scope',
+      );
+    } finally {
+      await pg.query('delete from public.organization_access_grants where id = $1', [grantId]);
+      await pg.query('delete from public.portfolio_properties where id = $1', [assignmentId]);
+      await pg.query('delete from public.portfolios where id = any($1::uuid[])', [[rootPortfolioId, childPortfolioId]]);
+    }
   });
 
   // The MEDIUM finding's second half. Mutation: drop operatingCompanyNames and
@@ -702,11 +813,29 @@ describe('the Company Hub reads the spine', () => {
   // Zero regression: an independent hotel has no operator to name, and saying
   // one would be the same lie in the other direction.
   test('an independent hotel is still independent', async () => {
-    const hub = await hubFor(UID_WANDA);
-    assert.equal(hub.status, 200);
-    const waco = (hub.data?.properties ?? []).find((p) => p.id === PID_L1);
-    assert.ok(waco, 'the legacy owner lost her own hotel');
-    assert.equal(waco?.operatingCompanyName ?? null, null, 'a company was invented for an independent hotel');
+    await pg.query(
+      `insert into public.organization_property_relationships
+         (organization_id, property_id, relationship_type, is_primary_grouping)
+       values ($1, $2, 'brand', false), ($1, $2, 'operator', false)`,
+      [ORG_B, PID_L1],
+    );
+    try {
+      const hub = await hubFor(UID_WANDA);
+      assert.equal(hub.status, 200);
+      const waco = (hub.data?.properties ?? []).find((p) => p.id === PID_L1);
+      assert.ok(waco, 'the legacy owner lost her own hotel');
+      assert.equal(
+        waco?.operatingCompanyName ?? null,
+        null,
+        'a brand or stood-down operator was presented as the hotel manager',
+      );
+    } finally {
+      await pg.query(
+        `delete from public.organization_property_relationships
+          where organization_id = $1 and property_id = $2 and not is_primary_grouping`,
+        [ORG_B, PID_L1],
+      );
+    }
   });
 });
 

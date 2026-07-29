@@ -12,11 +12,21 @@
 // ownership before reading or writing. The endpoints layer doesn't need to
 // repeat the check.
 
+import { createHash } from 'node:crypto';
+
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import type { AppRole } from '@/lib/roles';
 import type { AgentMessage, AgentToolCall, ModelTier } from './llm';
 import { escapeTrustMarkerContent } from './llm';
-import { orgScopeFromStamp, stampOrgScope } from './portfolio/conversation';
+import {
+  conversationSecurityScopeFromRow,
+  type ConversationKind,
+  type ConversationSecurityScope,
+} from './portfolio/conversation';
+import {
+  decodePortfolioHistoryWindow,
+  type PortfolioHistoryWindowV1,
+} from './portfolio-intelligence/history-window';
 
 // ─── Public types ──────────────────────────────────────────────────────────
 
@@ -24,6 +34,7 @@ export interface ConversationSummary {
   id: string;
   title: string | null;
   role: AppRole;
+  conversationKind: ConversationKind;
   propertyId: string;
   createdAt: string;
   updatedAt: string;
@@ -39,6 +50,48 @@ export interface ConversationSummary {
 export interface ConversationDetail extends ConversationSummary {
   promptVersion: string | null;
   messages: AgentMessage[];
+}
+
+/** Browser-safe reconstruction of the exact scope used for a persisted
+ * portfolio answer. Internal receipt ids, authorization hashes, property ids,
+ * source rows, and query plans deliberately stay server-side. */
+export interface PortfolioConversationScopeDisclosure {
+  turn: number;
+  scope: {
+    organizationId: string;
+    organizationName: string;
+    selectorLabel: string;
+    selectedHotelCount: number;
+    authorizedHotelCount: number;
+    hotelNames: string[];
+    hotelNamesOmitted: number;
+    coverage: {
+      reported: number;
+      total: number;
+      omitted: number;
+    };
+  };
+}
+
+/** Portfolio browser metadata deliberately omits the relational anchor hotel.
+ * The anchor is storage plumbing, never the active portfolio scope. */
+export type PortfolioConversationSummary = Omit<ConversationSummary, 'propertyId'>;
+
+export interface PortfolioConversationDetail extends PortfolioConversationSummary {
+  promptVersion: string | null;
+  messages: AgentMessage[];
+  scopeDisclosures: PortfolioConversationScopeDisclosure[];
+}
+
+export type LoadPortfolioConversationResult =
+  | { ok: true; conversation: PortfolioConversationDetail }
+  | { ok: false; reason: 'not_found' | 'scope_changed' };
+
+/** Internal authority metadata. Do not serialize authorizationHash or receipt
+ * ids into browser conversation-list/detail responses. */
+export interface ConversationScope extends ConversationSecurityScope {
+  propertyId: string;
+  role: AppRole;
 }
 
 export interface SaveMessageOpts {
@@ -59,27 +112,111 @@ export interface SaveMessageOpts {
   costUsd?: number;
 }
 
+interface StoredHistoryRow {
+  role: string;
+  content: string | null;
+  tool_call_id: string | null;
+  tool_name: string | null;
+  tool_args: Record<string, unknown> | null;
+  tool_result: unknown;
+  is_summary?: boolean;
+}
+
+function decodeStoredHistory(rawRows: readonly StoredHistoryRow[]): AgentMessage[] {
+  const messages: AgentMessage[] = [];
+  let pendingAssistant: { content: string; toolCalls: AgentToolCall[] } | null = null;
+  const flushPending = () => {
+    if (!pendingAssistant) return;
+    messages.push({
+      role: 'assistant',
+      content: pendingAssistant.content,
+      toolCalls: pendingAssistant.toolCalls.length ? pendingAssistant.toolCalls : undefined,
+    });
+    pendingAssistant = null;
+  };
+
+  for (const row of rawRows) {
+    if (row.role === 'user') {
+      flushPending();
+      messages.push({ role: 'user', content: row.content ?? '' });
+    } else if (row.role === 'assistant') {
+      if (row.is_summary === true) {
+        flushPending();
+        messages.push({
+          role: 'assistant',
+          content: `<staxis-summary trust="system-derived-from-untrusted">${escapeTrustMarkerContent(row.content ?? '')}</staxis-summary>`,
+        });
+      } else {
+        if (!pendingAssistant) pendingAssistant = { content: '', toolCalls: [] };
+        if (row.tool_name) {
+          pendingAssistant.toolCalls.push({
+            id: row.tool_call_id ?? '',
+            name: row.tool_name,
+            args: row.tool_args ?? {},
+          });
+        } else if (row.content) {
+          pendingAssistant.content =
+            (pendingAssistant.content ? pendingAssistant.content + '\n' : '') + row.content;
+        }
+      }
+    } else if (row.role === 'tool') {
+      flushPending();
+      messages.push({
+        role: 'tool',
+        toolCallId: row.tool_call_id ?? '',
+        result: row.tool_result ?? null,
+      });
+    }
+  }
+  flushPending();
+  return messages;
+}
+
 // ─── Conversation CRUD ────────────────────────────────────────────────────
 
-export async function listConversations(userAccountId: string, limit = 30): Promise<ConversationSummary[]> {
-  const { data, error } = await supabaseAdmin
+export async function listConversations(
+  userAccountId: string,
+  limit = 30,
+  conversationKind: ConversationKind = 'property',
+  /** Current authoritative hotels. Applied before LIMIT to avoid stale rows
+   * crowding valid history out of the page. Null is platform-admin/all. */
+  authorizedPropertyIds: readonly string[] | null = null,
+): Promise<ConversationSummary[]> {
+  if (conversationKind === 'property'
+    && authorizedPropertyIds !== null
+    && authorizedPropertyIds.length === 0) return [];
+  let query = supabaseAdmin
     .from('agent_conversations')
-    .select('id, title, role, property_id, prompt_version, created_at, updated_at')
+    .select('id, title, role, property_id, prompt_version, conversation_kind, organization_id, authorization_hash, scope_receipt_id, scope_verified_at, created_at, updated_at')
     .eq('user_id', userAccountId)
+    .eq('conversation_kind', conversationKind);
+  if (conversationKind === 'property' && authorizedPropertyIds !== null) {
+    query = query.in('property_id', [...authorizedPropertyIds]);
+  }
+  const { data, error } = await query
     .order('updated_at', { ascending: false })
     .limit(limit);
   if (error) throw error;
-  return (data ?? []).map(row => ({
-    id: row.id as string,
-    title: (row.title as string) ?? null,
-    role: row.role as AppRole,
-    propertyId: row.property_id as string,
-    createdAt: row.created_at as string,
-    updatedAt: row.updated_at as string,
-    organizationId: orgScopeFromStamp(row.prompt_version as string | null),
-  }));
+  return (data ?? []).flatMap((row): ConversationSummary[] => {
+    const scope = conversationSecurityScopeFromRow(row);
+    if (!scope || scope.conversationKind !== conversationKind) return [];
+    return [{
+      id: row.id as string,
+      title: (row.title as string) ?? null,
+      role: row.role as AppRole,
+      conversationKind: scope.conversationKind,
+      propertyId: row.property_id as string,
+      createdAt: row.created_at as string,
+      updatedAt: row.updated_at as string,
+      organizationId: scope.organizationId,
+    }];
+  });
 }
 
+/**
+ * Load PROPERTY history only. Portfolio history is never available through
+ * this compatibility API: it must go through receipt-asserted portfolio prep.
+ */
 export async function loadConversation(
   conversationId: string,
   userAccountId: string,
@@ -87,12 +224,14 @@ export async function loadConversation(
   // Ownership check + metadata fetch in one query.
   const { data: convo, error: convoErr } = await supabaseAdmin
     .from('agent_conversations')
-    .select('id, title, role, property_id, prompt_version, created_at, updated_at, user_id')
+    .select('id, title, role, property_id, prompt_version, conversation_kind, organization_id, authorization_hash, scope_receipt_id, scope_verified_at, created_at, updated_at, user_id')
     .eq('id', conversationId)
     .maybeSingle();
   if (convoErr) throw convoErr;
   if (!convo) return null;
   if (convo.user_id !== userAccountId) return null;
+  const scope = conversationSecurityScopeFromRow(convo);
+  if (!scope || scope.conversationKind !== 'property') return null;
 
   // Pull messages in chronological order. L4 (2026-05-13): filter out
   // is_summarized=true rows so the model never sees pre-summary
@@ -108,90 +247,475 @@ export async function loadConversation(
     .order('created_at', { ascending: true });
   if (msgErr) throw msgErr;
 
-  const messages: AgentMessage[] = [];
-  // Group assistant text + adjacent assistant tool_use rows into a single
-  // AgentMessage so the LLM wrapper sees the same shape it produced.
-  // L4 (2026-05-13): summary rows (is_summary=true) are emitted as a
-  // SELF-CONTAINED assistant text turn — never pending more tool_use
-  // rows. This stops a tool_result row that historically followed a
-  // (now-summarized) assistant tool_use from being wrongly attached
-  // to the summary as if the summary itself had called the tool.
-  let pendingAssistant: { content: string; toolCalls: AgentToolCall[] } | null = null;
-
-  const flushPending = () => {
-    if (pendingAssistant) {
-      messages.push({
-        role: 'assistant',
-        content: pendingAssistant.content,
-        toolCalls: pendingAssistant.toolCalls.length ? pendingAssistant.toolCalls : undefined,
-      });
-      pendingAssistant = null;
-    }
-  };
-
-  for (const row of rows ?? []) {
-    const role = row.role as string;
-    const isSummary = (row.is_summary as boolean) === true;
-    if (role === 'user') {
-      flushPending();
-      messages.push({ role: 'user', content: (row.content as string) ?? '' });
-    } else if (role === 'assistant') {
-      if (isSummary) {
-        // Summary row is a complete assistant text turn on its own.
-        // Flush any pending assistant being built up, then push the
-        // summary as a standalone assistant message.
-        // Round 10 F4c (2026-05-13): wrap the summary content in a
-        // trust marker. A summary distills BOTH trusted assistant text
-        // AND untrusted tool-result content — the next turn's model
-        // must treat any directive-looking content inside it as data,
-        // not as a true assistant intent. PROMPT_BASE has the matching
-        // rule (F4d). Without this, prompt-injection content the
-        // summarizer paraphrases would re-inject as trusted context.
-        flushPending();
-        messages.push({
-          role: 'assistant',
-          // Round 12 T12.6 (2026-05-13): escape the wrapped content so
-          // a literal `</staxis-summary>` in the Haiku output (unlikely
-          // but possible) can't break the trust boundary. Same defense
-          // we apply to tool-result content elsewhere.
-          content: `<staxis-summary trust="system-derived-from-untrusted">${escapeTrustMarkerContent((row.content as string) ?? '')}</staxis-summary>`,
-        });
-      } else {
-        if (!pendingAssistant) pendingAssistant = { content: '', toolCalls: [] };
-        if (row.tool_name) {
-          pendingAssistant.toolCalls.push({
-            id: (row.tool_call_id as string) ?? '',
-            name: row.tool_name as string,
-            args: (row.tool_args as Record<string, unknown>) ?? {},
-          });
-        } else if (row.content) {
-          pendingAssistant.content =
-            (pendingAssistant.content ? pendingAssistant.content + '\n' : '') +
-            (row.content as string);
-        }
-      }
-    } else if (role === 'tool') {
-      flushPending();
-      messages.push({
-        role: 'tool',
-        toolCallId: (row.tool_call_id as string) ?? '',
-        result: row.tool_result ?? null,
-      });
-    }
-    // 'system' rows aren't replayed — they're metadata (e.g., nudge surface).
-  }
-  flushPending();
+  const messages = decodeStoredHistory((rows ?? []) as StoredHistoryRow[]);
 
   return {
     id: convo.id as string,
     title: (convo.title as string) ?? null,
     role: convo.role as AppRole,
+    conversationKind: 'property',
     propertyId: convo.property_id as string,
     promptVersion: (convo.prompt_version as string) ?? null,
-    organizationId: orgScopeFromStamp(convo.prompt_version as string | null),
+    organizationId: null,
     createdAt: convo.created_at as string,
     updatedAt: convo.updated_at as string,
     messages,
+  };
+}
+
+const UUID_RX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const SHA256_RX = /^[0-9a-f]{64}$/;
+const PORTFOLIO_REPLAY_TURN_LIMIT = 200;
+const PORTFOLIO_DISCLOSURE_NAME_LIMIT = 25;
+
+function sha256(value: string): string {
+  return createHash('sha256').update(value).digest('hex');
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+function finiteNonNegativeInteger(value: unknown): number | null {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0
+    ? value
+    : null;
+}
+
+function sortedUniqueUuidArray(value: unknown): string[] | null {
+  if (!Array.isArray(value)
+    || !value.every((item): item is string => typeof item === 'string' && UUID_RX.test(item))
+    || new Set(value).size !== value.length) return null;
+  return [...value].sort();
+}
+
+function sameStringArray(left: readonly string[], right: readonly string[]): boolean {
+  return left.length === right.length && left.every((value, index) => value === right[index]);
+}
+
+function safeDisclosureText(value: unknown, fallback: string, max = 200): string {
+  if (typeof value !== 'string') return fallback;
+  const cleaned = value
+    .replace(/[<>\r\n]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, max);
+  return cleaned || fallback;
+}
+
+interface PortfolioReplayMessageRow {
+  id?: unknown;
+  role?: unknown;
+  content?: unknown;
+  is_summary?: unknown;
+  created_at?: unknown;
+}
+
+interface PortfolioReplayCommitRow {
+  query_receipt_id?: unknown;
+  conversation_id?: unknown;
+  user_message_id?: unknown;
+  assistant_message_id?: unknown;
+  committed_at?: unknown;
+}
+
+interface PortfolioReplayReceiptRow {
+  id?: unknown;
+  account_id?: unknown;
+  organization_id?: unknown;
+  conversation_id?: unknown;
+  authorization_hash?: unknown;
+  scope_hash?: unknown;
+  question_hash?: unknown;
+  answer_hash?: unknown;
+  authorized_property_ids?: unknown;
+  selected_property_ids?: unknown;
+  plan?: unknown;
+  evidence?: unknown;
+  status?: unknown;
+  generated_at?: unknown;
+}
+
+interface ParsedPortfolioReplayReceipt {
+  id: string;
+  generatedAt: string;
+  questionHash: string;
+  answerHash: string;
+  scope: Omit<PortfolioConversationScopeDisclosure, 'turn'>['scope'];
+}
+
+function selectorLabelFromReceipt(input: {
+  plan: Record<string, unknown>;
+  selectedPropertyIds: string[];
+  hotelNames: Map<string, string>;
+}): string | null {
+  const selector = input.plan.selector;
+  if (!isRecord(selector)) return null;
+  if (selector.kind === 'all_authorized') return 'All authorized hotels';
+  if (selector.kind === 'hotel') {
+    if (input.selectedPropertyIds.length !== 1
+      || typeof selector.propertyId !== 'string'
+      || selector.propertyId !== input.selectedPropertyIds[0]) return null;
+    return input.hotelNames.get(selector.propertyId) ?? 'One authorized hotel';
+  }
+  if (selector.kind === 'explicit_subset') {
+    const selectorIds = sortedUniqueUuidArray(selector.propertyIds);
+    if (!selectorIds || !sameStringArray(selectorIds, input.selectedPropertyIds)) return null;
+    return `${selectorIds.length} selected authorized hotels`;
+  }
+  if (selector.kind === 'portfolio') {
+    if (typeof selector.portfolioId !== 'string' || !UUID_RX.test(selector.portfolioId)) return null;
+    return 'Selected portfolio or region';
+  }
+  return null;
+}
+
+/**
+ * Parse only the disclosure projection needed by the browser. The exact
+ * authorized set and all receipt/evidence correlation fields must agree before
+ * even hotel names are released. Raw evidence is never returned.
+ */
+function parsePortfolioReplayReceipt(input: {
+  row: PortfolioReplayReceiptRow;
+  userAccountId: string;
+  conversationId: string;
+  organizationId: string;
+  authorizationHash: string;
+  currentAuthorizedPropertyIds: readonly string[];
+}): ParsedPortfolioReplayReceipt | null {
+  const row = input.row;
+  if (typeof row.id !== 'string' || !UUID_RX.test(row.id)
+    || row.account_id !== input.userAccountId
+    || row.conversation_id !== input.conversationId
+    || row.organization_id !== input.organizationId
+    || row.authorization_hash !== input.authorizationHash
+    || typeof row.scope_hash !== 'string' || !SHA256_RX.test(row.scope_hash)
+    || typeof row.question_hash !== 'string' || !SHA256_RX.test(row.question_hash)
+    || typeof row.answer_hash !== 'string' || !SHA256_RX.test(row.answer_hash)
+    || (row.status !== 'completed' && row.status !== 'partial')
+    || typeof row.generated_at !== 'string' || !Number.isFinite(Date.parse(row.generated_at))
+    || !isRecord(row.plan)
+    || !isRecord(row.evidence)) return null;
+
+  const currentAuthorized = [...input.currentAuthorizedPropertyIds].sort();
+  const authorizedPropertyIds = sortedUniqueUuidArray(row.authorized_property_ids);
+  const selectedPropertyIds = sortedUniqueUuidArray(row.selected_property_ids);
+  if (!authorizedPropertyIds
+    || !selectedPropertyIds
+    || selectedPropertyIds.length === 0
+    || !sameStringArray(authorizedPropertyIds, currentAuthorized)
+    || selectedPropertyIds.some((propertyId) => !authorizedPropertyIds.includes(propertyId))) {
+    return null;
+  }
+
+  const evidence = row.evidence;
+  const evidenceAuthorized = sortedUniqueUuidArray(evidence.authorizedPropertyIds);
+  const evidenceSelected = sortedUniqueUuidArray(evidence.selectedPropertyIds);
+  if (evidence.organizationId !== input.organizationId
+    || evidence.scopeHash !== row.scope_hash
+    || !evidenceAuthorized
+    || !evidenceSelected
+    || !sameStringArray(evidenceAuthorized, authorizedPropertyIds)
+    || !sameStringArray(evidenceSelected, selectedPropertyIds)
+    || !isRecord(evidence.coverage)) return null;
+
+  const coverageAuthorized = finiteNonNegativeInteger(evidence.coverage.authorized);
+  const coverageSelected = finiteNonNegativeInteger(evidence.coverage.selected);
+  const coverageReported = finiteNonNegativeInteger(evidence.coverage.reported);
+  const coverageExcluded = finiteNonNegativeInteger(evidence.coverage.excluded);
+  if (coverageAuthorized !== authorizedPropertyIds.length
+    || coverageSelected !== selectedPropertyIds.length
+    || coverageReported === null
+    || coverageExcluded === null
+    || coverageReported + coverageExcluded !== coverageSelected) return null;
+
+  const selectedSet = new Set(selectedPropertyIds);
+  const hotelNames = new Map<string, string>();
+  if (!Array.isArray(evidence.facts) || !Array.isArray(evidence.coverage.excludedHotels)) return null;
+  for (const rawFact of evidence.facts) {
+    if (!isRecord(rawFact)
+      || typeof rawFact.propertyId !== 'string'
+      || !selectedSet.has(rawFact.propertyId)) return null;
+    hotelNames.set(
+      rawFact.propertyId,
+      safeDisclosureText(rawFact.propertyName, 'Authorized hotel'),
+    );
+  }
+  for (const rawExcluded of evidence.coverage.excludedHotels) {
+    if (!isRecord(rawExcluded)
+      || typeof rawExcluded.propertyId !== 'string'
+      || !selectedSet.has(rawExcluded.propertyId)) return null;
+    hotelNames.set(
+      rawExcluded.propertyId,
+      safeDisclosureText(rawExcluded.propertyName, 'Authorized hotel'),
+    );
+  }
+  const selectorLabel = selectorLabelFromReceipt({
+    plan: row.plan,
+    selectedPropertyIds,
+    hotelNames,
+  });
+  if (!selectorLabel) return null;
+
+  const shownNames = selectedPropertyIds
+    .slice(0, PORTFOLIO_DISCLOSURE_NAME_LIMIT)
+    .map((propertyId, index) => hotelNames.get(propertyId) ?? `Authorized hotel ${index + 1}`);
+  return {
+    id: row.id,
+    generatedAt: row.generated_at,
+    questionHash: row.question_hash,
+    answerHash: row.answer_hash,
+    scope: {
+      organizationId: input.organizationId,
+      organizationName: safeDisclosureText(
+        evidence.organizationName,
+        'Management company',
+      ),
+      selectorLabel: safeDisclosureText(selectorLabel, 'Authorized portfolio scope', 240),
+      selectedHotelCount: selectedPropertyIds.length,
+      authorizedHotelCount: authorizedPropertyIds.length,
+      hotelNames: shownNames,
+      hotelNamesOmitted: Math.max(0, selectedPropertyIds.length - shownNames.length),
+      coverage: {
+        reported: coverageReported,
+        total: coverageSelected,
+        omitted: coverageExcluded,
+      },
+    },
+  };
+}
+
+/**
+ * Reconstruct only fully receipted portfolio turns. Question AND answer hashes
+ * have to match the immutable receipt, so interrupted, withheld, summarized,
+ * or otherwise unreceipted rows cannot acquire a scope badge by position.
+ */
+export function buildPortfolioConversationReplay(input: {
+  userAccountId: string;
+  conversationId: string;
+  organizationId: string;
+  authorizationHash: string;
+  currentAuthorizedPropertyIds: readonly string[];
+  messageRows: readonly PortfolioReplayMessageRow[];
+  receiptRows: readonly PortfolioReplayReceiptRow[];
+  commitRows: readonly PortfolioReplayCommitRow[];
+}): Pick<PortfolioConversationDetail, 'messages' | 'scopeDisclosures'> {
+  const receipts = input.receiptRows
+    .map((row) => parsePortfolioReplayReceipt({ ...input, row }))
+    .filter((receipt): receipt is ParsedPortfolioReplayReceipt => receipt !== null);
+  const receiptById = new Map(receipts.map((receipt) => [receipt.id, receipt]));
+  const messageById = new Map<string, PortfolioReplayMessageRow>();
+  for (const row of input.messageRows) {
+    if (typeof row.id === 'string' && UUID_RX.test(row.id) && !messageById.has(row.id)) {
+      messageById.set(row.id, row);
+    }
+  }
+  const commits = input.commitRows.flatMap((row): Array<{
+    queryReceiptId: string;
+    userMessageId: string;
+    assistantMessageId: string;
+    committedAt: string;
+  }> => {
+    if (row.conversation_id !== input.conversationId
+      || typeof row.query_receipt_id !== 'string' || !UUID_RX.test(row.query_receipt_id)
+      || typeof row.user_message_id !== 'string' || !UUID_RX.test(row.user_message_id)
+      || typeof row.assistant_message_id !== 'string' || !UUID_RX.test(row.assistant_message_id)
+      || row.user_message_id === row.assistant_message_id
+      || typeof row.committed_at !== 'string'
+      || !Number.isFinite(Date.parse(row.committed_at))) return [];
+    return [{
+      queryReceiptId: row.query_receipt_id,
+      userMessageId: row.user_message_id,
+      assistantMessageId: row.assistant_message_id,
+      committedAt: row.committed_at,
+    }];
+  }).sort((left, right) => left.committedAt.localeCompare(right.committedAt)
+    || left.queryReceiptId.localeCompare(right.queryReceiptId));
+
+  const messages: AgentMessage[] = [];
+  const scopeDisclosures: PortfolioConversationScopeDisclosure[] = [];
+  const usedMessageIds = new Set<string>();
+  const usedReceiptIds = new Set<string>();
+  for (const commit of commits) {
+    if (usedReceiptIds.has(commit.queryReceiptId)
+      || usedMessageIds.has(commit.userMessageId)
+      || usedMessageIds.has(commit.assistantMessageId)) continue;
+    const receipt = receiptById.get(commit.queryReceiptId);
+    const user = messageById.get(commit.userMessageId);
+    const assistant = messageById.get(commit.assistantMessageId);
+    if (!receipt
+      || !user
+      || !assistant
+      || user.role !== 'user'
+      || assistant.role !== 'assistant'
+      || user.is_summary === true
+      || assistant.is_summary === true
+      || typeof user.content !== 'string'
+      || !user.content.trim()
+      || typeof assistant.content !== 'string'
+      || !assistant.content.trim()
+      || sha256(user.content.trim()) !== receipt.questionHash
+      || sha256(assistant.content) !== receipt.answerHash) continue;
+    usedReceiptIds.add(commit.queryReceiptId);
+    usedMessageIds.add(commit.userMessageId);
+    usedMessageIds.add(commit.assistantMessageId);
+    const turn = scopeDisclosures.length;
+    messages.push(
+      { role: 'user', content: user.content },
+      { role: 'assistant', content: assistant.content },
+    );
+    scopeDisclosures.push({ turn, scope: receipt.scope });
+  }
+  return { messages, scopeDisclosures };
+}
+
+/** List only conversations bound to this exact current authorization universe. */
+export async function listPortfolioConversationsForAuthorization(opts: {
+  userAccountId: string;
+  organizationId: string;
+  authorizationHash: string;
+  limit?: number;
+}): Promise<PortfolioConversationSummary[]> {
+  if (!UUID_RX.test(opts.userAccountId)
+    || !UUID_RX.test(opts.organizationId)
+    || !SHA256_RX.test(opts.authorizationHash)) return [];
+  const limit = Math.max(1, Math.min(50, opts.limit ?? 30));
+  const { data, error } = await supabaseAdmin
+    .from('agent_conversations')
+    .select('id, title, role, property_id, prompt_version, conversation_kind, organization_id, authorization_hash, scope_receipt_id, scope_verified_at, created_at, updated_at')
+    .eq('user_id', opts.userAccountId)
+    .eq('conversation_kind', 'portfolio')
+    .eq('organization_id', opts.organizationId)
+    .eq('authorization_hash', opts.authorizationHash)
+    .order('updated_at', { ascending: false })
+    .limit(limit);
+  if (error) throw error;
+  return (data ?? []).flatMap((row): PortfolioConversationSummary[] => {
+    const scope = conversationSecurityScopeFromRow(row);
+    if (!scope
+      || scope.conversationKind !== 'portfolio'
+      || scope.organizationId !== opts.organizationId
+      || scope.authorizationHash !== opts.authorizationHash) return [];
+    return [{
+      id: row.id as string,
+      title: (row.title as string) ?? null,
+      role: row.role as AppRole,
+      conversationKind: 'portfolio',
+      organizationId: opts.organizationId,
+      createdAt: row.created_at as string,
+      updatedAt: row.updated_at as string,
+    }];
+  });
+}
+
+/**
+ * Load an owned portfolio conversation only under the exact authorization hash
+ * it was created with. The route re-resolves once more after this function;
+ * this function's job is to keep every data read bound to the supplied proof.
+ */
+export async function loadPortfolioConversationForAuthorization(opts: {
+  conversationId: string;
+  userAccountId: string;
+  organizationId: string;
+  authorizationHash: string;
+  currentAuthorizedPropertyIds: readonly string[];
+}): Promise<LoadPortfolioConversationResult> {
+  if (!UUID_RX.test(opts.conversationId)
+    || !UUID_RX.test(opts.userAccountId)
+    || !UUID_RX.test(opts.organizationId)
+    || !SHA256_RX.test(opts.authorizationHash)) return { ok: false, reason: 'not_found' };
+  const currentAuthorized = sortedUniqueUuidArray(opts.currentAuthorizedPropertyIds);
+  if (!currentAuthorized || currentAuthorized.length === 0) {
+    return { ok: false, reason: 'scope_changed' };
+  }
+
+  const { data: convo, error: convoError } = await supabaseAdmin
+    .from('agent_conversations')
+    .select('id, title, role, property_id, prompt_version, conversation_kind, organization_id, authorization_hash, scope_receipt_id, scope_verified_at, created_at, updated_at, user_id')
+    .eq('id', opts.conversationId)
+    .maybeSingle();
+  if (convoError) throw convoError;
+  if (!convo || convo.user_id !== opts.userAccountId) return { ok: false, reason: 'not_found' };
+  const scope = conversationSecurityScopeFromRow(convo);
+  if (!scope
+    || scope.conversationKind !== 'portfolio'
+    || scope.organizationId !== opts.organizationId) return { ok: false, reason: 'not_found' };
+  if (scope.authorizationHash !== opts.authorizationHash) {
+    return { ok: false, reason: 'scope_changed' };
+  }
+
+  const commitsResult = await supabaseAdmin
+    .from('portfolio_query_turn_commits')
+    .select('query_receipt_id, conversation_id, user_message_id, assistant_message_id, committed_at')
+    .eq('conversation_id', opts.conversationId)
+    .order('committed_at', { ascending: false })
+    .limit(PORTFOLIO_REPLAY_TURN_LIMIT);
+  if (commitsResult.error) throw commitsResult.error;
+  const commitRows = [...(commitsResult.data ?? [])].reverse();
+  if (commitRows.length === 0) {
+    return {
+      ok: true,
+      conversation: {
+        id: convo.id as string,
+        title: (convo.title as string) ?? null,
+        role: convo.role as AppRole,
+        conversationKind: 'portfolio',
+        promptVersion: (convo.prompt_version as string) ?? null,
+        organizationId: opts.organizationId,
+        createdAt: convo.created_at as string,
+        updatedAt: convo.updated_at as string,
+        messages: [],
+        scopeDisclosures: [],
+      },
+    };
+  }
+  const messageIds = commitRows.flatMap((row) => [row.user_message_id, row.assistant_message_id]);
+  const receiptIds = commitRows.map((row) => row.query_receipt_id);
+  if (!messageIds.every((id) => typeof id === 'string' && UUID_RX.test(id))
+    || !receiptIds.every((id) => typeof id === 'string' && UUID_RX.test(id))) {
+    throw new Error('portfolio turn commit projection is malformed');
+  }
+
+  const [messagesResult, receiptsResult] = await Promise.all([
+    supabaseAdmin
+      .from('agent_messages')
+      .select('id, role, content, is_summary, created_at')
+      .eq('conversation_id', opts.conversationId)
+      .in('id', messageIds as string[]),
+    supabaseAdmin
+      .from('portfolio_query_receipts')
+      .select('id, account_id, organization_id, conversation_id, authorization_hash, scope_hash, question_hash, answer_hash, authorized_property_ids, selected_property_ids, plan, evidence, status, generated_at')
+      .eq('conversation_id', opts.conversationId)
+      .eq('account_id', opts.userAccountId)
+      .eq('organization_id', opts.organizationId)
+      .eq('authorization_hash', opts.authorizationHash)
+      .in('status', ['completed', 'partial'])
+      .in('id', receiptIds as string[]),
+  ]);
+  if (messagesResult.error) throw messagesResult.error;
+  if (receiptsResult.error) throw receiptsResult.error;
+
+  const replay = buildPortfolioConversationReplay({
+    ...opts,
+    currentAuthorizedPropertyIds: currentAuthorized,
+    messageRows: messagesResult.data ?? [],
+    receiptRows: receiptsResult.data ?? [],
+    commitRows,
+  });
+  return {
+    ok: true,
+    conversation: {
+      id: convo.id as string,
+      title: (convo.title as string) ?? null,
+      role: convo.role as AppRole,
+      conversationKind: 'portfolio',
+      promptVersion: (convo.prompt_version as string) ?? null,
+      organizationId: opts.organizationId,
+      createdAt: convo.created_at as string,
+      updatedAt: convo.updated_at as string,
+      messages: replay.messages,
+      scopeDisclosures: replay.scopeDisclosures,
+    },
   };
 }
 
@@ -202,31 +726,113 @@ export async function createConversation(opts: {
   promptVersion?: string;
   title?: string;
   /**
-   * Cross-hotel chat: the management company this conversation answers for.
-   * Stamped into `prompt_version` (see portfolio/conversation.ts for why there
-   * and not in a column of its own), so the row records the scope it was
-   * created at and the read path can refuse to hand it back to somebody who no
-   * longer holds a company job.
+   * Rolling-code compatibility only. Portfolio callers must use
+   * createPortfolioConversation so a fresh receipt is asserted atomically.
+   * Supplying a company here fails closed instead of creating an unbound row.
    */
   organizationId?: string | null;
 }): Promise<string> {
-  const baseVersion = opts.promptVersion ?? null;
-  const promptVersion = opts.organizationId && baseVersion
-    ? stampOrgScope(baseVersion, opts.organizationId)
-    : baseVersion;
+  if (opts.organizationId) {
+    throw new Error(
+      'Portfolio conversations require createPortfolioConversation and a fresh scope receipt',
+    );
+  }
   const { data, error } = await supabaseAdmin
     .from('agent_conversations')
     .insert({
       user_id: opts.userAccountId,
       property_id: opts.propertyId,
       role: opts.role,
-      prompt_version: promptVersion,
+      prompt_version: opts.promptVersion ?? null,
       title: opts.title ?? null,
+      conversation_kind: 'property',
+      organization_id: null,
+      authorization_hash: null,
+      scope_receipt_id: null,
+      scope_verified_at: null,
     })
     .select('id')
     .single();
   if (error) throw error;
   return data.id as string;
+}
+
+export type PortfolioConversationPrepFailureReason =
+  | 'not_found'
+  | 'wrong_owner'
+  | 'wrong_kind'
+  | 'wrong_organization'
+  | 'scope_changed'
+  | 'invalid_scope_receipt'
+  | 'scope_unavailable';
+
+export type PortfolioConversationCreateFailureReason = Extract<
+  PortfolioConversationPrepFailureReason,
+  'scope_changed' | 'invalid_scope_receipt' | 'scope_unavailable'
+>;
+
+export type CreatePortfolioConversationResult =
+  | { ok: true; conversationId: string }
+  | { ok: false; reason: PortfolioConversationCreateFailureReason };
+
+function normalizePortfolioPrepReason(
+  value: unknown,
+  fallback: PortfolioConversationPrepFailureReason,
+): PortfolioConversationPrepFailureReason {
+  switch (value) {
+    case 'not_found':
+    case 'wrong_owner':
+    case 'wrong_kind':
+    case 'wrong_organization':
+    case 'scope_changed':
+    case 'invalid_scope_receipt':
+    case 'scope_unavailable':
+      return value;
+    default:
+      return fallback;
+  }
+}
+
+/**
+ * Create an empty portfolio conversation under a freshly asserted receipt.
+ * The question stays an RPC validation input only; 0397 persists user and
+ * assistant rows together after the immutable query receipt exists.
+ */
+export async function createPortfolioConversation(opts: {
+  userAccountId: string;
+  propertyAnchorId: string;
+  role: AppRole;
+  promptVersion?: string;
+  title?: string;
+  organizationId: string;
+  authorizationHash: string;
+  scopeReceiptId: string;
+  userMessage: string;
+}): Promise<CreatePortfolioConversationResult> {
+  const { data, error } = await supabaseAdmin.rpc('staxis_create_portfolio_conversation', {
+    p_user_account_id: opts.userAccountId,
+    p_property_anchor_id: opts.propertyAnchorId,
+    p_role: opts.role,
+    p_prompt_version: opts.promptVersion ?? null,
+    p_title: opts.title ?? null,
+    p_organization_id: opts.organizationId,
+    p_authorization_hash: opts.authorizationHash,
+    p_scope_receipt_id: opts.scopeReceiptId,
+    p_user_message: opts.userMessage,
+  });
+  if (error) throw new Error(`createPortfolioConversation RPC failed: ${error.message}`);
+  const row = Array.isArray(data) ? data[0] : data;
+  if (!row) throw new Error('createPortfolioConversation returned no row');
+  if (row.ok === true && typeof row.conversation_id === 'string') {
+    return { ok: true, conversationId: row.conversation_id };
+  }
+  const reason = normalizePortfolioPrepReason(row.reason, 'invalid_scope_receipt');
+  return {
+    ok: false,
+    reason: reason === 'scope_changed' || reason === 'scope_unavailable'
+      ? reason
+      : 'invalid_scope_receipt',
+  };
 }
 
 /**
@@ -240,41 +846,39 @@ export async function createConversation(opts: {
 export async function loadConversationScope(
   conversationId: string,
   userAccountId: string,
-): Promise<{ propertyId: string; organizationId: string | null; role: AppRole } | null> {
+): Promise<ConversationScope | null> {
   const { data, error } = await supabaseAdmin
     .from('agent_conversations')
-    .select('id, user_id, property_id, role, prompt_version')
+    .select('id, user_id, property_id, role, prompt_version, conversation_kind, organization_id, authorization_hash, scope_receipt_id, scope_verified_at')
     .eq('id', conversationId)
     .maybeSingle();
-  if (error || !data) return null;
-  const row = data as {
-    user_id: string; property_id: string; role: string; prompt_version: string | null;
-  };
-  if (row.user_id !== userAccountId) return null;
+  if (error) throw error;
+  if (!data || data.user_id !== userAccountId) return null;
+  const scope = conversationSecurityScopeFromRow(data);
+  if (!scope) return null;
   return {
-    propertyId: row.property_id,
-    organizationId: orgScopeFromStamp(row.prompt_version),
-    role: row.role as AppRole,
+    ...scope,
+    propertyId: data.property_id as string,
+    role: data.role as AppRole,
   };
 }
 
 export async function deleteConversation(
   conversationId: string,
   userAccountId: string,
+  propertyId: string,
 ): Promise<boolean> {
-  // Ownership check first to avoid 404 vs 403 ambiguity.
-  const { data: row } = await supabaseAdmin
-    .from('agent_conversations')
-    .select('user_id')
-    .eq('id', conversationId)
-    .maybeSingle();
-  if (!row || row.user_id !== userAccountId) return false;
-  const { error } = await supabaseAdmin
-    .from('agent_conversations')
-    .delete()
-    .eq('id', conversationId);
+  // The database re-checks ownership, active account state, current
+  // authoritative property reach and conversation kind in the same statement.
+  // Portfolio conversations are immutable through this ordinary hotel-chat
+  // lifecycle so their receipt/turn-commit replay graph cannot be cascaded.
+  const { data, error } = await supabaseAdmin.rpc('staxis_delete_property_conversation', {
+    p_conversation_id: conversationId,
+    p_user_account_id: userAccountId,
+    p_property_id: propertyId,
+  });
   if (error) throw error;
-  return true;
+  return data === true;
 }
 
 export async function setConversationTitle(
@@ -447,7 +1051,7 @@ export async function recordSyntheticAbortToolResult(
  */
 export interface LockedPrepResult {
   ok: boolean;
-  reason: 'not_found' | 'wrong_owner' | 'wrong_property' | null;
+  reason: 'not_found' | 'wrong_owner' | 'wrong_property' | 'wrong_kind' | null;
   history: AgentMessage[];
 }
 
@@ -470,80 +1074,177 @@ export async function lockLoadAndRecordUserTurn(opts: {
   if (!row) throw new Error('lockLoadAndRecordUserTurn returned no row');
 
   if (!row.ok) {
+    const reason = row.reason === 'not_found'
+      || row.reason === 'wrong_owner'
+      || row.reason === 'wrong_property'
+      || row.reason === 'wrong_kind'
+      ? row.reason
+      : null;
     return {
       ok: false,
-      reason: (row.reason as LockedPrepResult['reason']) ?? null,
+      reason,
       history: [],
     };
   }
 
-  // Reconstruct AgentMessage[] from jsonb. The RPC already filters
-  // is_summarized=false; we additionally need to know which rows are
-  // summary rows (is_summary=true) so we can emit them as self-
-  // contained assistant turns without attaching subsequent tool_result
-  // rows. L4 part B fix, 2026-05-13.
-  const rawRows = (row.history_rows ?? []) as Array<{
-    role: string;
-    content: string | null;
-    tool_call_id: string | null;
-    tool_name: string | null;
-    tool_args: Record<string, unknown> | null;
-    tool_result: unknown;
-    is_summary?: boolean;
-  }>;
-
-  const messages: AgentMessage[] = [];
-  let pendingAssistant: { content: string; toolCalls: AgentToolCall[] } | null = null;
-  const flushPending = () => {
-    if (pendingAssistant) {
-      messages.push({
-        role: 'assistant',
-        content: pendingAssistant.content,
-        toolCalls: pendingAssistant.toolCalls.length ? pendingAssistant.toolCalls : undefined,
-      });
-      pendingAssistant = null;
-    }
+  return {
+    ok: true,
+    reason: null,
+    history: decodeStoredHistory((row.history_rows ?? []) as StoredHistoryRow[]),
   };
+}
 
-  for (const r of rawRows) {
-    if (r.role === 'user') {
-      flushPending();
-      messages.push({ role: 'user', content: r.content ?? '' });
-    } else if (r.role === 'assistant') {
-      if (r.is_summary === true) {
-        // Round 10 F4c (2026-05-13): wrap summary content in trust
-        // marker (matches loadConversation site above). PROMPT_BASE has
-        // the matching read-side rule (F4d).
-        flushPending();
-        messages.push({
-          role: 'assistant',
-          // Round 12 T12.6 (2026-05-13): see matching site above in
-          // loadConversation. Escape Haiku content before trust-wrap.
-          content: `<staxis-summary trust="system-derived-from-untrusted">${escapeTrustMarkerContent(r.content ?? '')}</staxis-summary>`,
-        });
-      } else {
-        if (!pendingAssistant) pendingAssistant = { content: '', toolCalls: [] };
-        if (r.tool_name) {
-          pendingAssistant.toolCalls.push({
-            id: r.tool_call_id ?? '',
-            name: r.tool_name,
-            args: r.tool_args ?? {},
-          });
-        } else if (r.content) {
-          pendingAssistant.content =
-            (pendingAssistant.content ? pendingAssistant.content + '\n' : '') + r.content;
-        }
-      }
-    } else if (r.role === 'tool') {
-      flushPending();
-      messages.push({
-        role: 'tool',
-        toolCallId: r.tool_call_id ?? '',
-        result: r.tool_result ?? null,
-      });
-    }
+export interface PortfolioLockedPrepResult {
+  ok: boolean;
+  reason: PortfolioConversationPrepFailureReason | null;
+  history: AgentMessage[];
+  historyWindow: PortfolioHistoryWindowV1 | null;
+}
+
+/**
+ * Atomic portfolio continuation. The DB asserts the fresh receipt and compares
+ * its current selector-independent authorizationHash to the immutable hash on
+ * the conversation before committed history is selected. The prep RPC performs
+ * no message write: a failed provider/receipt/authorization step leaves no row
+ * that could enter a later model replay. A different selected subset/portfolio
+ * is allowed because scopeHash is not a conversation identity field.
+ */
+export async function lockLoadAndRecordPortfolioUserTurn(opts: {
+  conversationId: string;
+  userAccountId: string;
+  organizationId: string;
+  authorizationHash: string;
+  scopeReceiptId: string;
+  userMessage: string;
+}): Promise<PortfolioLockedPrepResult> {
+  const { data, error } = await supabaseAdmin.rpc(
+    'staxis_lock_load_and_record_portfolio_user_turn',
+    {
+      p_conversation_id: opts.conversationId,
+      p_user_account_id: opts.userAccountId,
+      p_organization_id: opts.organizationId,
+      p_authorization_hash: opts.authorizationHash,
+      p_scope_receipt_id: opts.scopeReceiptId,
+      p_user_message: opts.userMessage,
+    },
+  );
+  if (error) {
+    throw new Error(`lockLoadAndRecordPortfolioUserTurn RPC failed: ${error.message}`);
   }
-  flushPending();
 
-  return { ok: true, reason: null, history: messages };
+  const row = Array.isArray(data) ? data[0] : data;
+  if (!row) throw new Error('lockLoadAndRecordPortfolioUserTurn returned no row');
+  if (row.ok !== true) {
+    return {
+      ok: false,
+      reason: normalizePortfolioPrepReason(row.reason, 'scope_unavailable'),
+      history: [],
+      historyWindow: null,
+    };
+  }
+  const decoded = decodePortfolioHistoryWindow({
+    historyRows: row.history_rows,
+    historyMeta: row.history_meta,
+  });
+  return {
+    ok: true,
+    reason: null,
+    history: decoded.history,
+    historyWindow: decoded.metadata,
+  };
+}
+
+export type PortfolioConversationCommitFailureReason =
+  | 'not_found'
+  | 'scope_changed'
+  | 'scope_unavailable'
+  | 'invalid_receipt'
+  | 'question_mismatch'
+  | 'answer_mismatch'
+  | 'invalid_turn'
+  | 'idempotency_conflict';
+
+export type CommitPortfolioConversationTurnResult =
+  | {
+      ok: true;
+      reason: 'committed' | 'already_committed';
+      userMessageId: string;
+      assistantMessageId: string;
+    }
+  | { ok: false; reason: PortfolioConversationCommitFailureReason };
+
+function portfolioCommitFailureReason(value: unknown): PortfolioConversationCommitFailureReason {
+  switch (value) {
+    case 'not_found':
+    case 'scope_changed':
+    case 'scope_unavailable':
+    case 'invalid_receipt':
+    case 'question_mismatch':
+    case 'answer_mismatch':
+    case 'invalid_turn':
+    case 'idempotency_conflict':
+      return value;
+    default:
+      return 'invalid_receipt';
+  }
+}
+
+/**
+ * The only portfolio message writer after 0397. PostgreSQL reasserts current
+ * account/company scope, binds the exact completed/partial query receipt, then
+ * inserts user + assistant + commit link atomically. A retry with the same
+ * receipt/text is idempotent; different content fails closed.
+ */
+export async function commitPortfolioConversationTurn(opts: {
+  conversationId: string;
+  userAccountId: string;
+  organizationId: string;
+  authorizationHash: string;
+  scopeReceiptId: string;
+  queryReceiptId: string;
+  userMessage: string;
+  assistantText: string;
+  tokensIn: number;
+  tokensOut: number;
+  modelUsed: ModelTier | 'deterministic';
+  modelId: string | null;
+  costUsd: number;
+  promptVersion: string;
+}): Promise<CommitPortfolioConversationTurnResult> {
+  const { data, error } = await supabaseAdmin.rpc(
+    'staxis_commit_portfolio_conversation_turn',
+    {
+      p_conversation_id: opts.conversationId,
+      p_user_account_id: opts.userAccountId,
+      p_organization_id: opts.organizationId,
+      p_authorization_hash: opts.authorizationHash,
+      p_scope_receipt_id: opts.scopeReceiptId,
+      p_query_receipt_id: opts.queryReceiptId,
+      p_user_message: opts.userMessage,
+      p_assistant_text: opts.assistantText,
+      p_tokens_in: opts.tokensIn,
+      p_tokens_out: opts.tokensOut,
+      p_model: opts.modelUsed,
+      p_model_id: opts.modelId,
+      p_cost_usd: opts.costUsd,
+      p_prompt_version: opts.promptVersion,
+    },
+  );
+  if (error) throw new Error(`commitPortfolioConversationTurn RPC failed: ${error.message}`);
+  const row = Array.isArray(data) ? data[0] : data;
+  if (!isRecord(row)) throw new Error('commitPortfolioConversationTurn returned no result');
+  if (row.ok === true
+    && (row.reason === 'committed' || row.reason === 'already_committed')
+    && typeof row.userMessageId === 'string'
+    && UUID_RX.test(row.userMessageId)
+    && typeof row.assistantMessageId === 'string'
+    && UUID_RX.test(row.assistantMessageId)) {
+    return {
+      ok: true,
+      reason: row.reason,
+      userMessageId: row.userMessageId,
+      assistantMessageId: row.assistantMessageId,
+    };
+  }
+  return { ok: false, reason: portfolioCommitFailureReason(row.reason) };
 }

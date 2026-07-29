@@ -7,7 +7,11 @@ import { toStaffRow } from '@/lib/db-mappers';
 import { checkIdempotency, recordIdempotency } from '@/lib/idempotency';
 import { getOrMintRequestId, log } from '@/lib/log';
 import { supabaseAdmin } from '@/lib/supabase-admin';
-import { type TeamCaller, verifyTeamManager } from '@/lib/team-auth';
+import {
+  accountCapabilityDecisionForProperty,
+  type TeamCaller,
+  verifyTeamManager,
+} from '@/lib/team-auth';
 import type { StaffDepartment } from '@/types';
 import { errToString } from '@/lib/utils';
 import { requireSectionEnabled } from '@/lib/sections/server';
@@ -41,28 +45,15 @@ async function authorizeStaffMutation(
   caller: TeamCaller,
   hotelId: string,
 ): Promise<StaffMutationAuthorization> {
-  const { data: account, error: accountError } = await supabaseAdmin
-    .from('accounts')
-    .select('active, role, property_access')
-    .eq('id', caller.accountId)
-    .maybeSingle();
-  if (accountError) return 'unavailable';
-  if (!account?.active) return 'denied';
-  const currentRole = account.role;
-  if (currentRole === 'admin') return 'allowed';
-  if (currentRole !== 'owner' && currentRole !== 'general_manager') return 'denied';
-  const currentHotelAccess = (account.property_access ?? []) as string[];
-  if (!currentHotelAccess.includes(hotelId)) return 'denied';
-
-  const { data: override, error: overrideError } = await supabaseAdmin
-    .from('capability_overrides')
-    .select('allowed')
-    .eq('property_id', hotelId)
-    .eq('capability', 'manage_team')
-    .eq('role', currentRole)
-    .maybeSingle();
-  if (overrideError) return 'unavailable';
-  return override?.allowed === false ? 'denied' : 'allowed';
+  // Fresh account + exact standing + per-hotel role/capability. In normalized
+  // mode the legacy property_access array is rollback material, not authority;
+  // consulting it here would revive access after a hotel transfer.
+  return accountCapabilityDecisionForProperty(
+    caller.authUserId,
+    'manage_team',
+    hotelId,
+    { requireMutation: true },
+  );
 }
 
 export async function POST(req: NextRequest) {

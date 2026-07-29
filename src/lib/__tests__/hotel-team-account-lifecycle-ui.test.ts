@@ -169,4 +169,16 @@ describe('My Hotel account lifecycle dialog', () => {
     const reducedMotion = css.slice(css.indexOf('@media (prefers-reduced-motion: reduce)'));
     assert.match(reducedMotion, /\.dangerButton[\s\S]*transition: none/);
   });
+
+  test('uses current server invite options with exact role scope and revoke controls', () => {
+    assert.doesNotMatch(dialogs, /useState\('general_manager'\)/);
+    assert.match(dialogs, /nextOptions\.jobs\[0\]\?\.value \?\? ''/);
+    assert.match(dialogs, /selectedJob\.allowedPropertyIds/);
+    assert.match(dialogs, /inviteAllHotels[\s\S]*selectedJob\.allowedPropertyIds/);
+    assert.match(dialogs, /All allowed hotels/);
+    assert.match(dialogs, /pendingInviteScopeLabel\(invite, lang\)/);
+    assert.match(dialogs, /Revoke \$\{pendingInviteScopeLabel\(invite, lang\)\} invitation/);
+    assert.match(dialogs, /invite\.canRevoke \?/);
+    assert.match(dialogs, /if \(!canInviteManager \|\| !invite\.canRevoke\) return/);
+  });
 });

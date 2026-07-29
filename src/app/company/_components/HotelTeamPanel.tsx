@@ -133,6 +133,9 @@ export interface HotelTeamPanelProps {
   currentAccountId?: string;
   lang: HotelTeamLang;
   canManageTeam: boolean;
+  /** Exact receipt-derived permission to use the guarded account invitation
+   * workflow at this hotel. It never grants private roster access. */
+  canInviteAccounts?: boolean;
   /** `view_wages` at this exact hotel. A MANAGER_FLOOR capability: it can never
    *  fall to line staff, no matter what an admin grants. False hides the pay
    *  field, skips the wage fetch, and suppresses the wage write — and
@@ -267,12 +270,7 @@ interface CompanyJobLine {
   label: { en: string; es: string };
   propertyIds: string[];
   propertyNames: string[];
-  /**
-   * Hotels on this job the VIEWER may not be told the names of — a GM looking
-   * at a colleague whose job also covers a hotel the GM has never been given.
-   * The route counts them instead of naming them (Wall A); the line says how
-   * wide the job is without turning into a directory.
-   */
+  /** Additional hotels the API deliberately disclosed but did not name. */
   otherHotelCount?: number;
 }
 
@@ -664,6 +662,7 @@ export function HotelTeamPanel({
   currentAccountId = currentUser.accountId,
   lang,
   canManageTeam,
+  canInviteAccounts = false,
   canViewWages = false,
   readOnly = false,
   adminPreview = false,
@@ -714,6 +713,28 @@ export function HotelTeamPanel({
   changedRef.current = onChanged;
 
   const locked = readOnly || (adminPreview && !allowAdminActions);
+
+  // A definitive fresh authorization refresh can revoke hotel-operational
+  // standing while this tab is open. Drop every private roster projection as
+  // soon as that happens. The parent also changes this component's key across
+  // the hotel-authorized/invite-only boundary, so a later re-grant cannot paint
+  // an old team's data for even one render while the fresh fetch is pending.
+  React.useEffect(() => {
+    if (canManageTeam) return;
+    teamAbortRef.current?.abort();
+    requestAbortRef.current?.abort();
+    setTeam([]);
+    setJobsByAccountId({});
+    setRequests([]);
+    setContactSnapshot(null);
+    setWageSnapshot(null);
+    setOptimisticStaff([]);
+    setPendingLifecycleByAccount({});
+    setEditKey(null);
+    setRemoveMember(null);
+    setAddDepartment(null);
+    setDecision(null);
+  }, [canManageTeam]);
 
   const contacts = React.useMemo(
     () => (contactSnapshot?.hotelId === hotelId ? contactSnapshot.contacts : {}),
@@ -1079,15 +1100,32 @@ export function HotelTeamPanel({
 
   if (!canManageTeam) {
     return (
-      <section className={styles.root} aria-labelledby="hotel-team-title">
-        <div className={styles.permissionState}>
-          <span><KeyRound size={20} aria-hidden="true" /></span>
-          <div>
-            <h3 id="hotel-team-title">{copy(lang, 'Hotel account settings are private', 'La configuración de cuentas del hotel es privada')}</h3>
-            <p>{copy(lang, 'An owner or general manager can manage team logins and invitations.', 'Un propietario o gerente general puede administrar los accesos y las invitaciones del equipo.')}</p>
+      <>
+        <section className={styles.root} aria-labelledby="hotel-team-title">
+          <div className={styles.permissionState}>
+            <span><KeyRound size={20} aria-hidden="true" /></span>
+            <div>
+              <h3 id="hotel-team-title">{copy(lang, 'Hotel account settings are private', 'La configuración de cuentas del hotel es privada')}</h3>
+              <p>{copy(lang, 'Only an explicitly authorized hotel manager can view or change this private roster.', 'Solo un gerente de hotel autorizado explícitamente puede ver o cambiar este registro privado.')}</p>
+            </div>
           </div>
-        </div>
-      </section>
+        </section>
+        <React.Suspense fallback={(
+          <DialogLoading lang={lang} hotelName={hotelName} variant="invite" onClose={() => onInviteDialogOpenChange(false)} />
+        )}>
+          {inviteDialogOpen && canInviteAccounts ? (
+            <LazyInviteDialog
+              hotelId={hotelId}
+              hotelName={hotelName}
+              lang={lang}
+              canInviteManager
+              canManageHotelRoster={false}
+              onClose={() => onInviteDialogOpenChange(false)}
+              onChanged={() => changedRef.current?.()}
+            />
+          ) : null}
+        </React.Suspense>
+      </>
     );
   }
 
@@ -1400,7 +1438,8 @@ export function HotelTeamPanel({
             hotelId={hotelId}
             hotelName={hotelName}
             lang={lang}
-            canInviteManager={currentUser.role === 'admin' || currentUser.role === 'owner'}
+            canInviteManager={canInviteAccounts}
+            canManageHotelRoster
             onClose={() => onInviteDialogOpenChange(false)}
             onChanged={() => changedRef.current?.()}
           />

@@ -46,7 +46,17 @@ function statusColor(s: CapexStatus): string {
 // Column grouping colors (each card still carries its own real-status accent).
 const COL_COLOR = { pending: T.sageBrand, active: T.caramelDeep, closed: T.sageDeep };
 
-export function CapexTab({ pid, lang, onChanged }: { pid: string; lang: Lang; onChanged: () => void }) {
+export function CapexTab({
+  pid,
+  lang,
+  onChanged,
+  readOnly = false,
+}: {
+  pid: string;
+  lang: Lang;
+  onChanged: () => void;
+  readOnly?: boolean;
+}) {
   const S = ft(lang);
   const { properties } = useProperty();
   const [view, setView] = useState<View>('board');
@@ -170,8 +180,12 @@ export function CapexTab({ pid, lang, onChanged }: { pid: string; lang: Lang; on
         </div>
         <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
           <span style={{ fontFamily: FONT_MONO, fontSize: 12, color: T.ink }}>{formatCents(totalEstimated, { showCents: false })} {lang === 'es' ? 'comprometido' : 'committed'}</span>
-          <ScanButton mode="quote" pid={pid} lang={lang} label={S.scanQuote} scanningLabel={S.scanning} failLabel={S.scanFailed} onQuote={onScanQuote} />
-          <Btn onClick={() => setRequestForm(blankRequest())}>+ {S.newRequest}</Btn>
+          {!readOnly && (
+            <>
+              <ScanButton mode="quote" pid={pid} lang={lang} label={S.scanQuote} scanningLabel={S.scanning} failLabel={S.scanFailed} onQuote={onScanQuote} />
+              <Btn onClick={() => setRequestForm(blankRequest())}>+ {S.newRequest}</Btn>
+            </>
+          )}
         </div>
       </div>
 
@@ -205,7 +219,7 @@ export function CapexTab({ pid, lang, onChanged }: { pid: string; lang: Lang; on
                       <span style={{ width: 9, height: 9, borderRadius: '50%', background: COL_COLOR[col.key], flexShrink: 0 }} />
                       <span style={{ fontFamily: FONT_SANS, fontSize: 13, fontWeight: 600, color: T.ink, flex: 1 }}>{col.label}</span>
                       <span style={{ fontFamily: FONT_MONO, fontSize: 10, color: T.ink3 }}>{col.items.length}</span>
-                      {col.addable && (
+                      {col.addable && !readOnly && (
                         <button
                           onClick={() => setRequestForm(blankRequest())}
                           title={S.newRequest}
@@ -216,7 +230,7 @@ export function CapexTab({ pid, lang, onChanged }: { pid: string; lang: Lang; on
                       )}
                     </div>
                     {col.items.length === 0 ? (
-                      col.addable ? (
+                      col.addable && !readOnly ? (
                         <button
                           onClick={() => setRequestForm(blankRequest())}
                           style={{ width: '100%', padding: '14px 0', borderRadius: 12, border: `1px dashed ${T.ruleInput}`, color: T.ink3, fontFamily: FONT_SANS, fontSize: 12.5, fontWeight: 600, background: 'transparent', cursor: 'pointer' }}
@@ -276,16 +290,17 @@ export function CapexTab({ pid, lang, onChanged }: { pid: string; lang: Lang; on
           onClose={() => setOpenId(null)}
           onDecision={openDecision}
           onChanged={() => afterChange(openId)}
+          readOnly={readOnly}
         />
       )}
 
       {/* New request modal */}
-      {requestForm && (
+      {!readOnly && requestForm && (
         <RequestModal pid={pid} lang={lang} form={requestForm} setForm={setRequestForm} onClose={() => setRequestForm(null)} onCreated={() => afterChange()} />
       )}
 
       {/* Decision modal */}
-      {decision && (
+      {!readOnly && decision && (
         <DecisionModal
           pid={pid}
           lang={lang}

@@ -28,6 +28,7 @@ import { join } from 'node:path';
 import {
   ALLOWED_EXTRA_APPLIED_MIGRATIONS,
   EXPECTED_CRONS,
+  EXPECTED_MIGRATIONS_STATIC,
 } from '@/app/api/admin/doctor/route';
 // Doctor exports EXPECTED_MIGRATIONS too, via the same const exports
 // pattern. Importing the array directly keeps this test honest — it
@@ -83,6 +84,19 @@ function listMigrationFiles(): { version: string; filename: string; content: str
 }
 
 describe('migration bookkeeping', () => {
+  it('keeps the serverless static fallback exactly aligned with migration files on disk', () => {
+    const diskVersions = [...new Set(
+      listMigrationFiles()
+        .filter((file) => !STUB_FILENAMES.has(file.filename))
+        .map((file) => file.version),
+    )].sort();
+    assert.deepEqual(
+      EXPECTED_MIGRATIONS_STATIC,
+      diskVersions,
+      'Admin Doctor static fallback drifted from supabase/migrations; update both in the same change',
+    );
+  });
+
   it('only suppresses the operator-verified historical production aliases', () => {
     assert.deepEqual(
       [...ALLOWED_EXTRA_APPLIED_MIGRATIONS].sort(),

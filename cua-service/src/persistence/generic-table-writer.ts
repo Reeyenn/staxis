@@ -220,6 +220,9 @@ export function validateRows(
     // surfaces schema drift.
     for (const k of Object.keys(row)) {
       if (k === 'property_id') continue;  // always allowed
+      // Receipt column is code-owned and deliberately absent from extraction
+      // descriptors. Migration 0341 adds it to every physical pms_* target.
+      if (k === 'ingest_run_id') continue;
       // feature/cua-column-editor — `raw` is a real jsonb column on every pms_*
       // table (migration 0202) used as the bucket for founder-added custom
       // columns. It's intentionally NOT in the validation descriptor (it holds
@@ -314,6 +317,47 @@ export function normalizeNativeValuesForText(
     }
     return out ?? r;
   });
+}
+
+/**
+ * Attach the receipt and deterministic observation time to a write batch.
+ *
+ * `property_id` and `ingest_run_id` are code-owned tenancy/lineage fields: an
+ * extracted row is never allowed to choose either one. Required timestamptz
+ * columns that the extractor did not produce are anchored to the run's
+ * `source_captured_at`, not the worker wall clock. That makes replay of the
+ * same source produce the same append natural key.
+ *
+ * Exported so the payload contract can be tested without a live Supabase
+ * client. Runtime validation of the receipt remains in saveGenericTable.
+ */
+export function stampRowsForWrite(
+  rows: Array<Record<string, unknown>>,
+  propertyId: string,
+  ingestRunId: string,
+  sourceCapturedAt: string,
+  descriptor: TableSchemaDescriptor,
+): Array<Record<string, unknown>> {
+  const syntheticTsCols = descriptor.columns.filter(
+    (column) => column.required && column.type === 'timestamptz',
+  );
+
+  const stamped = rows.map((sourceRow) => {
+    const row: Record<string, unknown> = {
+      ...sourceRow,
+      property_id: propertyId,
+      ingest_run_id: ingestRunId,
+    };
+    for (const column of syntheticTsCols) {
+      // `undefined` means the extractor did not own this timestamp. Preserve
+      // an explicit value, including null: a failed parse must be rejected by
+      // validation rather than silently rewritten as the capture time.
+      if (row[column.name] === undefined) row[column.name] = sourceCapturedAt;
+    }
+    return row;
+  });
+
+  return normalizeNativeValuesForText(stamped, descriptor);
 }
 
 // ─── Save ──────────────────────────────────────────────────────────────
@@ -415,31 +459,14 @@ export async function saveGenericTable(
   }
 
   // ── Validate ──
-  // Stamp property_id on every row before validation so the required-field
-  // check sees it.
-  //
-  // Also auto-stamp synthetic required timestamps the extractor can't
-  // produce. Columns like captured_at / changed_at are marked required in
-  // the descriptor but the DB normally fills them via a `default now()`.
-  // The validator runs BEFORE the insert, so without this every
-  // in_house_snapshot / room_status_log / activity_log row would be
-  // rejected for a "required field missing" it never had to supply. For
-  // any descriptor column that is required + timestamptz + absent on the
-  // row, stamp the current time as an ISO-8601 string — equivalent to
-  // what the DB default now() would store. Never overwrite an extracted
-  // value (only fill when undefined).
-  const nowIso = new Date().toISOString();
-  const syntheticTsCols = descriptor.columns.filter(
-    (c) => c.required && c.type === 'timestamptz',
-  );
-  const stamped = normalizeNativeValuesForText(
-    effectiveRows.map((r) => {
-      const row: Record<string, unknown> = { ...r, property_id: propertyId };
-      for (const col of syntheticTsCols) {
-        if (row[col.name] === undefined) row[col.name] = nowIso;
-      }
-      return row;
-    }),
+  // Stamp the code-owned tenant + receipt fields before validation. Required
+  // synthetic timestamps use the source observation instant, not now(), so a
+  // replay cannot manufacture a new append key for the same source.
+  const stamped = stampRowsForWrite(
+    effectiveRows,
+    propertyId,
+    options.ingestRunId,
+    sourceCapturedIso,
     descriptor,
   );
 

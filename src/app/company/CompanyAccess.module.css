@@ -529,6 +529,126 @@
   gap: 12px;
 }
 
+.legacyOwnershipSection {
+  padding-top: 4px;
+}
+
+.legacyOwnershipCard {
+  display: grid;
+  grid-template-columns: auto minmax(180px, 1fr) minmax(280px, 0.9fr);
+  align-items: center;
+  gap: 14px;
+  padding: 16px;
+  border: 1px solid rgba(184, 92, 61, 0.2);
+  border-radius: 14px;
+  background: var(--company-paper);
+  box-shadow: 0 9px 24px -22px rgba(31, 42, 32, 0.42);
+}
+
+.legacyOwnershipIcon {
+  display: grid;
+  place-items: center;
+  width: 42px;
+  height: 42px;
+  border: 1px solid rgba(184, 92, 61, 0.2);
+  border-radius: 12px;
+  color: var(--company-rust);
+  background: var(--company-rust-dim);
+}
+
+.legacyOwnershipBody {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+}
+
+.legacyOwnershipBody strong {
+  overflow: hidden;
+  color: var(--company-ink);
+  font-size: 13.5px;
+  font-weight: 650;
+  line-height: 19px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.legacyOwnershipBody span,
+.legacyOwnershipEmpty,
+.legacyOwnershipLoading,
+.legacyOwnershipSuccess {
+  color: var(--company-ink-2);
+  font-size: 11px;
+  line-height: 17px;
+}
+
+.legacyOwnershipBody span {
+  margin-top: 3px;
+}
+
+.legacyOwnershipControls {
+  display: flex;
+  align-items: flex-end;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.legacyOwnershipControls .formField {
+  flex: 1;
+  min-width: 180px;
+}
+
+.legacyOwnershipControls .formField select {
+  min-height: 42px;
+}
+
+.legacyOwnershipLoading,
+.legacyOwnershipSuccess {
+  display: inline-flex;
+  align-items: center;
+  justify-self: end;
+  gap: 8px;
+  font-weight: 600;
+}
+
+.legacyOwnershipSuccess {
+  color: var(--company-sage);
+}
+
+.legacyOwnershipEmpty {
+  justify-self: end;
+  max-width: 300px;
+}
+
+.peopleInvitations {
+  display: flex;
+  margin-top: 16px;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.peopleInvitations h3 {
+  margin: 0;
+  color: var(--company-ink);
+  font-size: 12px;
+  font-weight: 660;
+  line-height: 17px;
+}
+
+.membershipGrantSummary {
+  display: flex;
+  align-items: flex-start;
+  gap: 4px;
+  margin-top: 5px;
+  flex-direction: column;
+}
+
+.membershipGrantSummary small {
+  color: var(--company-sage);
+  font-size: 9.5px;
+  font-weight: 610;
+  line-height: 14px;
+}
+
 .sectionHeading {
   max-width: 660px;
 }
@@ -554,6 +674,91 @@
   align-items: flex-end;
   justify-content: space-between;
   gap: 20px;
+}
+
+.adminRelationshipCard {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 15px 16px;
+  border: 1px solid rgba(184, 92, 61, 0.2);
+  border-radius: 14px;
+  background: linear-gradient(135deg, rgba(184, 92, 61, 0.075), rgba(255, 255, 255, 0.9));
+  box-shadow: 0 10px 25px -23px rgba(91, 46, 31, 0.55);
+}
+
+.adminRelationshipIcon {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 42px;
+  height: 42px;
+  border: 1px solid rgba(184, 92, 61, 0.18);
+  border-radius: 12px;
+  color: var(--company-rust);
+  background: rgba(255, 255, 255, 0.7);
+}
+
+.adminRelationshipBody {
+  flex: 1;
+  min-width: 0;
+}
+
+.adminRelationshipBody > span {
+  color: var(--company-rust);
+  font: 600 8.5px/12px var(--font-geist-mono), ui-monospace, monospace;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+}
+
+.adminRelationshipBody h3 {
+  margin: 2px 0 0;
+  color: var(--company-ink);
+  font-size: 14px;
+  font-weight: 660;
+  line-height: 19px;
+}
+
+.adminRelationshipBody p {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 7px;
+  margin: 6px 0 0;
+  color: var(--company-ink-2);
+  font-size: 11px;
+  line-height: 16px;
+}
+
+.adminRelationshipBody p strong {
+  color: var(--company-ink);
+  font-weight: 620;
+}
+
+.adminRelationshipBody small {
+  display: block;
+  margin-top: 5px;
+  color: var(--company-ink-3);
+  font-size: 10px;
+  line-height: 15px;
+}
+
+.adminRelationshipBody p.adminRelationshipError {
+  color: var(--company-rust);
+  font-weight: 560;
+}
+
+.adminRelationshipActions {
+  display: flex;
+  flex: none;
+  align-items: center;
+}
+
+.adminRelationshipCard .primaryButton:disabled {
+  color: var(--company-ink-3);
+  border-color: rgba(31, 35, 28, 0.12);
+  background: rgba(31, 35, 28, 0.06);
+  opacity: 1;
 }
 
 .headingActions,
@@ -1404,6 +1609,11 @@
   border-radius: 13px;
 }
 
+.dialogIcon.iconRust {
+  color: var(--company-rust);
+  background: var(--company-rust-dim);
+}
+
 .dialogHeader > div {
   flex: 1;
   min-width: 0;
@@ -1451,6 +1661,26 @@
   color: var(--company-ink-2);
   font-size: 12.5px;
   line-height: 19px;
+}
+
+.formNotice {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  margin: 0 24px 16px;
+  padding: 11px 12px;
+  border: 1px solid color-mix(in srgb, var(--amber, #b76b32) 34%, transparent);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--amber, #b76b32) 8%, transparent);
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.formNotice svg {
+  flex: 0 0 auto;
+  margin-top: 1px;
+  color: var(--amber, #b76b32);
 }
 
 .dialogFacts {
@@ -1592,6 +1822,269 @@
 .workflowForm > .dialogFooter {
   margin-right: -18px;
   margin-left: -18px;
+}
+
+.adminCompanySearch {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: end;
+  gap: 9px;
+}
+
+.adminCompanySearch .secondaryButton {
+  min-height: 44px;
+}
+
+.adminDirectoryNotice {
+  margin: -7px 0 0;
+  color: var(--company-caramel);
+  font-size: 10px;
+  line-height: 15px;
+}
+
+.srOnly {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+.accessOperationGroup,
+.hotelScopePicker {
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.accessOperationGroup > legend,
+.hotelScopePicker > legend {
+  margin-bottom: 7px;
+  color: var(--company-ink);
+  font-size: 11px;
+  font-weight: 620;
+  line-height: 16px;
+}
+
+.accessOperationGroup {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 9px;
+}
+
+.accessOperationGroup > legend {
+  grid-column: 1 / -1;
+}
+
+.accessOperationGroup > label {
+  position: relative;
+  display: flex;
+  min-height: 70px;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  border: 1px solid rgba(31, 35, 28, 0.13);
+  border-radius: 11px;
+  background: rgba(255, 255, 255, 0.7);
+  cursor: pointer;
+  box-sizing: border-box;
+  transition: border-color 150ms cubic-bezier(0.2, 0, 0, 1), background-color 150ms cubic-bezier(0.2, 0, 0, 1);
+}
+
+.accessOperationGroup > label:hover {
+  border-color: rgba(92, 122, 96, 0.36);
+  background: rgba(158, 183, 166, 0.08);
+}
+
+.accessOperationGroup > label:has(input:checked) {
+  border-color: rgba(92, 122, 96, 0.48);
+  background: var(--company-sage-dim);
+}
+
+.accessOperationGroup input {
+  width: 20px;
+  height: 20px;
+  flex: none;
+  margin: 0;
+  accent-color: var(--company-sage);
+}
+
+.accessOperationGroup input:focus-visible {
+  outline: 3px solid rgba(62, 92, 72, 0.26);
+  outline-offset: 2px;
+}
+
+.accessOperationGroup label > span {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+}
+
+.accessOperationGroup strong {
+  color: var(--company-ink);
+  font-size: 11.5px;
+  line-height: 17px;
+}
+
+.accessOperationGroup small {
+  margin-top: 2px;
+  color: var(--company-ink-3);
+  font-size: 9.5px;
+  line-height: 14px;
+}
+
+.hotelScopePicker {
+  padding: 11px;
+  border: 1px solid rgba(31, 35, 28, 0.12);
+  border-radius: 11px;
+  background: rgba(243, 246, 242, 0.68);
+}
+
+.hotelScopeToolbar {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.hotelScopeToolbar > label {
+  display: flex;
+  min-width: 0;
+  min-height: 40px;
+  flex: 1;
+  align-items: center;
+  gap: 8px;
+  padding: 0 10px;
+  border: 1px solid rgba(31, 35, 28, 0.14);
+  border-radius: 9px;
+  color: var(--company-ink-3);
+  background: #ffffff;
+  box-sizing: border-box;
+}
+
+.hotelScopeToolbar input {
+  min-width: 0;
+  flex: 1;
+  padding: 0;
+  border: 0;
+  outline: 0;
+  color: var(--company-ink);
+  background: transparent;
+  font: 400 12px/18px inherit;
+}
+
+.hotelScopeToolbar > label:focus-within {
+  border-color: var(--company-sage-2);
+  box-shadow: 0 0 0 3px rgba(92, 122, 96, 0.12);
+}
+
+.hotelScopeToolbar > span {
+  flex: none;
+  color: var(--company-ink-3);
+  font: 600 9px/13px var(--font-geist-mono), ui-monospace, monospace;
+}
+
+.hotelScopeList {
+  max-height: 224px;
+  margin-top: 8px;
+  overflow-y: auto;
+  border: 1px solid var(--company-rule);
+  border-radius: 9px;
+  background: var(--company-paper);
+}
+
+.hotelScopeList > label {
+  position: relative;
+  display: flex;
+  min-height: 44px;
+  align-items: center;
+  gap: 9px;
+  padding: 6px 10px;
+  border-bottom: 1px solid rgba(31, 35, 28, 0.055);
+  color: var(--company-ink-3);
+  cursor: pointer;
+  box-sizing: border-box;
+}
+
+.hotelScopeList > label:last-of-type {
+  border-bottom: 0;
+}
+
+.hotelScopeList > label:hover {
+  background: rgba(92, 122, 96, 0.06);
+}
+
+.hotelScopeList > label:has(input:disabled) {
+  opacity: 0.42;
+  cursor: not-allowed;
+}
+
+.hotelScopeList input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+}
+
+.hotelScopeCheck {
+  display: grid;
+  width: 18px;
+  height: 18px;
+  flex: none;
+  place-items: center;
+  border: 2px solid #79747e;
+  border-radius: 4px;
+  color: transparent;
+  background: transparent;
+  box-sizing: border-box;
+  transition: border-color 150ms cubic-bezier(0.2, 0, 0, 1), background-color 150ms cubic-bezier(0.2, 0, 0, 1), color 150ms cubic-bezier(0.2, 0, 0, 1);
+}
+
+.hotelScopeList input:checked + .hotelScopeCheck {
+  border-color: var(--company-sage);
+  color: #ffffff;
+  background: var(--company-sage);
+}
+
+.hotelScopeList input:focus-visible + .hotelScopeCheck {
+  outline: 3px solid rgba(62, 92, 72, 0.28);
+  outline-offset: 2px;
+}
+
+.hotelScopeList strong {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--company-ink);
+  font-size: 11.5px;
+  font-weight: 580;
+  line-height: 17px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.hotelScopeList > p {
+  margin: 0;
+  padding: 18px 12px;
+  color: var(--company-ink-3);
+  font-size: 10.5px;
+  line-height: 16px;
+  text-align: center;
+}
+
+.hotelScopePicker > small {
+  display: block;
+  margin-top: 7px;
+  color: var(--company-rust);
+  font-size: 10px;
+  line-height: 14px;
 }
 
 .lifecyclePreview {
@@ -1793,6 +2286,15 @@
   height: 15px;
   border: 2px solid rgba(255, 255, 255, 0.35);
   border-top-color: #ffffff;
+  border-radius: 999px;
+  animation: button-spin 700ms linear infinite;
+}
+
+.buttonSpinnerDark {
+  width: 15px;
+  height: 15px;
+  border: 2px solid rgba(62, 92, 72, 0.22);
+  border-top-color: var(--company-sage);
   border-radius: 999px;
   animation: button-spin 700ms linear infinite;
 }
@@ -2002,6 +2504,18 @@
   .receiptGrid {
     grid-template-columns: 1fr;
   }
+
+  .legacyOwnershipCard {
+    grid-template-columns: auto minmax(0, 1fr);
+  }
+
+  .legacyOwnershipControls,
+  .legacyOwnershipLoading,
+  .legacyOwnershipSuccess,
+  .legacyOwnershipEmpty {
+    grid-column: 1 / -1;
+    justify-self: stretch;
+  }
 }
 
 @media (max-width: 600px) {
@@ -2054,6 +2568,20 @@
     flex-wrap: wrap;
   }
 
+  .legacyOwnershipCard {
+    padding: 14px;
+  }
+
+  .legacyOwnershipControls {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .legacyOwnershipControls .formField,
+  .legacyOwnershipControls .dangerButton {
+    width: 100%;
+  }
+
   .partialNotice button {
     min-height: 44px;
     margin-left: 28px;
@@ -2103,6 +2631,29 @@
 
   .stack {
     gap: 20px;
+  }
+
+  .adminRelationshipCard {
+    align-items: flex-start;
+    padding: 14px;
+    flex-wrap: wrap;
+  }
+
+  .adminRelationshipBody {
+    flex-basis: calc(100% - 58px);
+  }
+
+  .adminRelationshipActions {
+    width: 100%;
+  }
+
+  .adminRelationshipActions .primaryButton,
+  .adminRelationshipActions .secondaryButton {
+    width: 100%;
+  }
+
+  .adminCompanySearch {
+    grid-template-columns: 1fr;
   }
 
   .summaryCard {

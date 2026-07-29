@@ -38,8 +38,14 @@ async function main(): Promise<void> {
 
   // Pick any admin account to attribute the run to (their cap won't be hit —
   // we mark kind=eval so it doesn't count against request caps).
-  const { data: admin } = await supabase.from('accounts').select('id').eq('role', 'admin').limit(1).maybeSingle();
-  if (!admin) {
+  const { data: admin } = await supabase
+    .from('accounts')
+    .select('id, data_user_id')
+    .eq('role', 'admin')
+    .not('data_user_id', 'is', null)
+    .limit(1)
+    .maybeSingle();
+  if (!admin?.data_user_id) {
     console.error('No admin account found. Cannot run evals.');
     process.exit(1);
   }
@@ -50,6 +56,7 @@ async function main(): Promise<void> {
   const summary = await runAllEvals({
     propertyId,
     userId: admin.id as string,
+    authUserId: admin.data_user_id as string,
     filter,
   });
 

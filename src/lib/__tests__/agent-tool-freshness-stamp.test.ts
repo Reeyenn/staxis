@@ -24,8 +24,10 @@ import assert from 'node:assert/strict';
 
 import { executeTool, registerTool, type ToolContext } from '@/lib/agent/tools';
 import { supabaseAdmin } from '@/lib/supabase-admin';
+import { installAgentToolAuthorityTestStore } from './helpers/agent-tool-authority';
 
 const ACCOUNT = '00000000-0000-0000-0000-0000000000d0';
+let authorityPropertyId = '00000000-0000-0000-0000-000000000001';
 
 /** Each test uses a fresh property id — getPropertyFeedStatus caches per
  *  property for 30s, so reusing one would serve a previous test's answer. */
@@ -36,6 +38,7 @@ function newPropertyId(): string {
 }
 
 function ctxFor(propertyId: string): ToolContext {
+  authorityPropertyId = propertyId;
   return {
     user: {
       uid: ACCOUNT,
@@ -58,6 +61,7 @@ type Rows = Record<string, Record<string, unknown> | null>;
 let tables: Rows = {};
 
 const originalFrom = supabaseAdmin.from.bind(supabaseAdmin);
+let restoreAuthority: (() => void) | null = null;
 
 beforeEach(() => {
   tables = {};
@@ -77,8 +81,16 @@ beforeEach(() => {
     };
     return api;
   };
+  restoreAuthority = installAgentToolAuthorityTestStore(() => [{
+    accountId: ACCOUNT,
+    authUserId: ACCOUNT,
+    role: 'general_manager',
+    propertyIds: [authorityPropertyId],
+  }]);
 });
 afterEach(() => {
+  restoreAuthority?.();
+  restoreAuthority = null;
   supabaseAdmin.from = originalFrom;
 });
 

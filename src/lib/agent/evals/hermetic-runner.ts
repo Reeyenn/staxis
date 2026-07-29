@@ -273,11 +273,27 @@ export async function runHermetic(input: HermeticCaseInput): Promise<HermeticRes
         displayName: 'Hermetic Eval',
         role: input.role,
         propertyAccess: [HERMETIC_PROPERTY_ID],
+        hotelMutationAllowed: true,
+        seesFinancials: input.role === 'admin'
+          || input.role === 'owner'
+          || input.role === 'general_manager',
+        capabilitySnapshot: {
+          view_financials: input.role === 'admin'
+            || input.role === 'owner'
+            || input.role === 'general_manager',
+          view_wages: input.role === 'admin'
+            || input.role === 'owner'
+            || input.role === 'general_manager',
+          manage_inventory_orders: input.role === 'admin'
+            || input.role === 'owner'
+            || input.role === 'general_manager',
+        },
       },
       propertyId: HERMETIC_PROPERTY_ID,
       staffId: null,
       requestId: 'hermetic-eval',
       surface,
+      enabledSections: null,
     },
   };
 

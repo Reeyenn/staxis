@@ -51,6 +51,7 @@ import type { PGlite } from '@electric-sql/pglite';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { saveCompanyAccessSettings } from '@/lib/company/rulebook-access';
 import { clearPortfolioAccessCache } from '@/lib/company/portfolio';
+import { propertySelectorRateLimitKey } from '@/lib/company/property-selector-rate-limit';
 import { GET as bootstrapGet } from '@/app/api/property-selector/bootstrap/route';
 
 import { applyMigrationsToPglite } from '../../../tests/fixtures/pglite-migrate';
@@ -65,6 +66,7 @@ import {
   PID_A3,
   PID_B1,
   PID_L1,
+  UID_ADMIN,
   UID_ANA,
   UID_FIONA,
   UID_FRANK,
@@ -90,6 +92,19 @@ let signedInAs: string | null = null;
  *  something to rank. Named at the ends of the alphabet on purpose. */
 const PID_A_ALPHA = 'a4a4a4a4-0000-4000-8000-000000000001';
 const PID_A_ZULU = 'a5a5a5a5-0000-4000-8000-000000000001';
+const ACCOUNT_MULTI_COMPANY = 'cccc1111-0000-4000-8000-000000000001';
+const UID_MULTI_COMPANY = 'cccc2222-0000-4000-8000-000000000001';
+const ACCOUNT_EGRESS_REVOKE = 'e1000000-0000-4000-8000-000000000001';
+const UID_EGRESS_REVOKE = 'e1000000-0000-4000-8000-000000000002';
+const ACCOUNT_EGRESS_TRANSFER = 'e2000000-0000-4000-8000-000000000001';
+const UID_EGRESS_TRANSFER = 'e2000000-0000-4000-8000-000000000002';
+const PID_EGRESS_TRANSFER = 'e2000000-0000-4000-8000-000000000003';
+const ACCOUNT_EGRESS_HOTEL = 'e3000000-0000-4000-8000-000000000001';
+const UID_EGRESS_HOTEL = 'e3000000-0000-4000-8000-000000000002';
+const ACCOUNT_EGRESS_ADMIN = 'e4000000-0000-4000-8000-000000000001';
+const UID_EGRESS_ADMIN = 'e4000000-0000-4000-8000-000000000002';
+const ACCOUNT_FIFTY_COMPANIES = 'f3000000-0000-4000-8000-000000000001';
+const UID_FIFTY_COMPANIES = 'f3000000-0000-4000-8000-000000000002';
 
 function req(url = 'https://staxis.test/api/property-selector/bootstrap'): NextRequest {
   return new NextRequest(url, {
@@ -111,20 +126,122 @@ interface HotelWire {
 
 interface BootstrapWire {
   hotels: HotelWire[];
+  reachableHotelCount: number;
   company: { organizationId: string; organizationName: string; companyRole: string; hotelCount: number } | null;
+  companies: Array<{
+    organizationId: string;
+    organizationName: string | null;
+    companyRole: string;
+    hotelCount: number;
+    chatAvailable: boolean;
+  }>;
+  requiresCompanySelection: boolean;
   chat: { available: boolean };
   signedInAs: string | null;
 }
 
-async function bootstrapFor(authUserId: string | null): Promise<{ status: number; data: BootstrapWire }> {
+async function bootstrapFor(
+  authUserId: string | null,
+  organizationId?: string,
+): Promise<{
+  status: number;
+  data: BootstrapWire;
+  bodyText: string;
+  retryAfter: string | null;
+  cacheControl: string | null;
+}> {
   signedInAs = authUserId;
   clearPortfolioAccessCache();
-  const res = await bootstrapGet(req());
-  const parsed = await res.json().catch(() => ({})) as { data?: BootstrapWire };
+  const url = organizationId
+    ? `https://staxis.test/api/property-selector/bootstrap?organizationId=${encodeURIComponent(organizationId)}`
+    : 'https://staxis.test/api/property-selector/bootstrap';
+  const res = await bootstrapGet(req(url));
+  const bodyText = await res.text();
+  const parsed = (() => {
+    try { return JSON.parse(bodyText) as { data?: BootstrapWire }; } catch { return {}; }
+  })();
   return {
     status: res.status,
-    data: parsed.data ?? { hotels: [], company: null, chat: { available: false }, signedInAs: null },
+    retryAfter: res.headers.get('Retry-After'),
+    cacheControl: res.headers.get('Cache-Control'),
+    data: parsed.data ?? {
+      hotels: [],
+      reachableHotelCount: 0,
+      company: null,
+      companies: [],
+      requiresCompanySelection: false,
+      chat: { available: false },
+      signedInAs: null,
+    },
+    bodyText,
   };
+}
+
+async function createCompanyVp(input: {
+  accountId: string;
+  authUserId: string;
+  organizationId: string;
+  username: string;
+}): Promise<string> {
+  await pg.query(
+    `insert into auth.users (id, email) values ($1, $2)
+     on conflict (id) do nothing`,
+    [input.authUserId, `${input.username}@example.test`],
+  );
+  await pg.query(
+    `insert into accounts
+       (id, username, password_hash, display_name, role, property_access, data_user_id)
+     values ($1, $2, 'x', $2, 'general_manager', '{}', $3)
+     on conflict (id) do nothing`,
+    [input.accountId, input.username, input.authUserId],
+  );
+  const result = await pg.query<{ membership_id: string | null }>(
+    `select public.staxis_set_membership_hat(
+       $1, $2, $3, 'company', 'vp', null, 'VP of Operations'
+     ) as membership_id`,
+    [ACCOUNT_ADMIN, input.organizationId, input.accountId],
+  );
+  const membershipId = result.rows[0]?.membership_id;
+  assert.ok(membershipId, `failed to seed ${input.username}'s company scope`);
+  return membershipId;
+}
+
+async function setPropertySelectorLimitCount(accountId: string, count: number): Promise<void> {
+  await pg.query(
+    `insert into api_limits (property_id, endpoint, hour_bucket, count)
+     values ($1, 'property-selector', $2, $3)
+     on conflict (property_id, endpoint, hour_bucket)
+     do update set count = excluded.count`,
+    [propertySelectorRateLimitKey(accountId), new Date().toISOString().slice(0, 13), count],
+  );
+}
+
+async function seedFiftyCompanyAccount(): Promise<string[]> {
+  const organizationIds = Array.from({ length: 50 }, (_, index) => (
+    `f1000000-0000-4000-8000-${String(index + 1).padStart(12, '0')}`
+  ));
+  for (const [index, organizationId] of organizationIds.entries()) {
+    const propertyId = `f2000000-0000-4000-8000-${String(index + 1).padStart(12, '0')}`;
+    await pg.query(
+      `insert into organizations (id, name, organization_type, status)
+       values ($1, $2, 'management_company', 'active')
+       on conflict (id) do nothing`,
+      [organizationId, `Rotation Company ${String(index + 1).padStart(2, '0')}`],
+    );
+    await seed.attachPropertyToOrganization(
+      pg,
+      organizationId,
+      propertyId,
+      `Rotation Hotel ${String(index + 1).padStart(2, '0')}`,
+    );
+    await createCompanyVp({
+      accountId: ACCOUNT_FIFTY_COMPANIES,
+      authUserId: UID_FIFTY_COMPANIES,
+      organizationId,
+      username: 'fifty_company_manager',
+    });
+  }
+  return organizationIds;
 }
 
 const namesOf = (wire: BootstrapWire) => wire.hotels.map((h) => h.name);
@@ -211,6 +328,31 @@ before(async () => {
   );
 
   seed = await seedTwoCompanies(pg);
+
+  // A real two-company identity for the chooser boundary. Neither company's
+  // hotels appear in the legacy snapshot; both scopes come only from current
+  // normalized memberships.
+  await pg.query(
+    `insert into auth.users (id, email) values ($1, 'multi-company@example.test')
+     on conflict (id) do nothing`,
+    [UID_MULTI_COMPANY],
+  );
+  await pg.query(
+    `insert into accounts
+       (id, username, password_hash, display_name, role, property_access, data_user_id)
+     values ($1, 'multi_company', 'x', 'Multi Company Manager', 'general_manager', '{}', $2)
+     on conflict (id) do nothing`,
+    [ACCOUNT_MULTI_COMPANY, UID_MULTI_COMPANY],
+  );
+  for (const organizationId of [ORG_A, ORG_B]) {
+    const result = await pg.query<{ membership_id: string | null }>(
+      `select public.staxis_set_membership_hat(
+         $1, $2, $3, 'company', 'vp', null, 'Regional VP'
+       ) as membership_id`,
+      [ACCOUNT_ADMIN, organizationId, ACCOUNT_MULTI_COMPANY],
+    );
+    assert.ok(result.rows[0]?.membership_id, `failed to seed multi-company hat at ${organizationId}`);
+  }
 
   // Two more Gulf Coast hotels so the ranking has bands to sort inside.
   await seed.attachPropertyToOrganization(pg, ORG_A, PID_A_ALPHA, 'Alpha Bay Inn');
@@ -483,6 +625,293 @@ describe('two companies, and a leak has two ends', () => {
   });
 });
 
+describe('an account with jobs at two companies chooses one explicit boundary', () => {
+  test('the unscoped bootstrap returns choices but no mixed hotel list', async () => {
+    const initial = await bootstrapFor(UID_MULTI_COMPANY);
+    assert.equal(initial.status, 200);
+    assert.equal(initial.data.requiresCompanySelection, true);
+    assert.equal(initial.data.company, null);
+    assert.deepEqual(initial.data.hotels, []);
+    assert.deepEqual(
+      initial.data.companies.map((company) => company.organizationId).sort(),
+      [ORG_A, ORG_B].sort(),
+    );
+  });
+
+  test('each explicit choice returns only that company and carries the full catalog', async () => {
+    const gulf = await bootstrapFor(UID_MULTI_COMPANY, ORG_A);
+    assert.equal(gulf.status, 200);
+    assert.equal(gulf.data.company?.organizationId, ORG_A);
+    assert.equal(gulf.data.requiresCompanySelection, false);
+    assert.ok(idsOf(gulf.data).includes(PID_A1));
+    assert.ok(!idsOf(gulf.data).includes(PID_B1));
+    assert.deepEqual(
+      gulf.data.companies.map((company) => company.organizationId).sort(),
+      [ORG_A, ORG_B].sort(),
+    );
+    assert.doesNotMatch(
+      gulf.bodyText,
+      /authorizationReceipt|authorizationHash|scopeHash|effectiveAccessHash|receiptId/,
+      'a private authorization proof crossed the bootstrap DTO',
+    );
+    assert.match(gulf.cacheControl ?? '', /private.*no-store/);
+
+    const piney = await bootstrapFor(UID_MULTI_COMPANY, ORG_B);
+    assert.equal(piney.status, 200);
+    assert.equal(piney.data.company?.organizationId, ORG_B);
+    assert.deepEqual(idsOf(piney.data), [PID_B1]);
+    assert.ok(!namesOf(piney.data).some((name) => name.includes('Beaumont')));
+  });
+
+  test('pasted valid UUIDs are generic 404s and disclose no company metadata', async () => {
+    const tampered = await bootstrapFor(UID_ANA, ORG_B);
+    assert.equal(tampered.status, 404);
+    assert.doesNotMatch(tampered.bodyText, /Piney Woods|Tyler Lodge/i);
+    assert.doesNotMatch(tampered.bodyText, new RegExp(ORG_B, 'i'));
+  });
+});
+
+describe('the final browser-egress authorization boundary', () => {
+  test('a hotel-only account deactivated after its service-role read receives no stale hotel', async () => {
+    await pg.query(
+      `insert into auth.users (id, email) values ($1, 'egress-hotel@example.test')
+       on conflict (id) do nothing`,
+      [UID_EGRESS_HOTEL],
+    );
+    await pg.query(
+      `insert into accounts
+         (id, username, password_hash, display_name, role, property_access, data_user_id)
+       values ($1, 'egress_hotel', 'x', 'Egress Hotel', 'front_desk', $2, $3)
+       on conflict (id) do nothing`,
+      [ACCOUNT_EGRESS_HOTEL, `{${PID_L1}}`, UID_EGRESS_HOTEL],
+    );
+
+    const installedRpc = supabaseAdmin.rpc;
+    const invokeRpc = installedRpc.bind(supabaseAdmin) as unknown as (
+      functionName: string,
+      args?: Record<string, unknown>,
+      options?: Record<string, unknown>,
+    ) => PromiseLike<{ data: unknown; error: { message: string } | null }>;
+    let authorityReads = 0;
+    let deactivatedAtFinalRead = false;
+    supabaseAdmin.rpc = (async (
+      functionName: string,
+      args?: Record<string, unknown>,
+      options?: Record<string, unknown>,
+    ) => {
+      if (functionName === 'staxis_list_account_authorized_properties') {
+        authorityReads += 1;
+        if (authorityReads === 3) {
+          deactivatedAtFinalRead = true;
+          await pg.query('update accounts set active = false where id = $1', [ACCOUNT_EGRESS_HOTEL]);
+        }
+      }
+      return invokeRpc(functionName, args, options);
+    }) as unknown as typeof supabaseAdmin.rpc;
+    try {
+      const response = await bootstrapFor(UID_EGRESS_HOTEL);
+      assert.equal(deactivatedAtFinalRead, true, 'the test missed the final hotel fingerprint read');
+      assert.equal(response.status, 503);
+      assert.equal(response.retryAfter, '5');
+      assert.doesNotMatch(response.bodyText, /Waco Inn/i);
+    } finally {
+      supabaseAdmin.rpc = installedRpc;
+    }
+  });
+
+  test('platform-admin removal closes the all-hotels response before egress', async () => {
+    await pg.query(
+      `insert into auth.users (id, email) values ($1, 'egress-admin@example.test')
+       on conflict (id) do nothing`,
+      [UID_EGRESS_ADMIN],
+    );
+    await pg.query(
+      `insert into accounts
+         (id, username, password_hash, display_name, role, property_access, data_user_id)
+       values ($1, 'egress_admin', 'x', 'Egress Admin', 'admin', '{}', $2)
+       on conflict (id) do nothing`,
+      [ACCOUNT_EGRESS_ADMIN, UID_EGRESS_ADMIN],
+    );
+
+    const installedRpc = supabaseAdmin.rpc;
+    const invokeRpc = installedRpc.bind(supabaseAdmin) as unknown as (
+      functionName: string,
+      args?: Record<string, unknown>,
+      options?: Record<string, unknown>,
+    ) => PromiseLike<{ data: unknown; error: { message: string } | null }>;
+    let authorityReads = 0;
+    let roleRemovedAtFinalRead = false;
+    supabaseAdmin.rpc = (async (
+      functionName: string,
+      args?: Record<string, unknown>,
+      options?: Record<string, unknown>,
+    ) => {
+      if (functionName === 'staxis_list_account_authorized_properties') {
+        authorityReads += 1;
+        if (authorityReads === 3) {
+          roleRemovedAtFinalRead = true;
+          await pg.query(
+            `update accounts set role = 'front_desk', property_access = '{}' where id = $1`,
+            [ACCOUNT_EGRESS_ADMIN],
+          );
+        }
+      }
+      return invokeRpc(functionName, args, options);
+    }) as unknown as typeof supabaseAdmin.rpc;
+    try {
+      const response = await bootstrapFor(UID_EGRESS_ADMIN);
+      assert.equal(roleRemovedAtFinalRead, true, 'the test missed the final admin fingerprint read');
+      assert.equal(response.status, 503);
+      assert.equal(response.retryAfter, '5');
+      assert.doesNotMatch(response.bodyText, /Beaumont|Lufkin|Tyler|Waco/i);
+    } finally {
+      supabaseAdmin.rpc = installedRpc;
+    }
+  });
+
+  test('a company hat revoked after hotel/chip reads yields only a retryable generic refusal', async () => {
+    const membershipId = await createCompanyVp({
+      accountId: ACCOUNT_EGRESS_REVOKE,
+      authUserId: UID_EGRESS_REVOKE,
+      organizationId: ORG_A,
+      username: 'egress_revoke',
+    });
+    const installedRpc = supabaseAdmin.rpc;
+    const invokeRpc = installedRpc.bind(supabaseAdmin) as unknown as (
+      functionName: string,
+      args?: Record<string, unknown>,
+      options?: Record<string, unknown>,
+    ) => PromiseLike<{ data: unknown; error: { message: string } | null }>;
+    let revokedAtAssertion = false;
+    supabaseAdmin.rpc = (async (
+      functionName: string,
+      args?: Record<string, unknown>,
+      options?: Record<string, unknown>,
+    ) => {
+      if (functionName === 'staxis_assert_authorization_scope_receipt' && !revokedAtAssertion) {
+        revokedAtAssertion = true;
+        await pg.query('select public.staxis_end_membership_hat($1, $2)', [
+          ACCOUNT_ADMIN,
+          membershipId,
+        ]);
+      }
+      return invokeRpc(functionName, args, options);
+    }) as unknown as typeof supabaseAdmin.rpc;
+    try {
+      const response = await bootstrapFor(UID_EGRESS_REVOKE, ORG_A);
+      assert.equal(revokedAtAssertion, true, 'the test missed the final receipt assertion');
+      assert.equal(response.status, 503);
+      assert.equal(response.retryAfter, '5');
+      assert.doesNotMatch(response.bodyText, /Gulf Coast|Beaumont|Lufkin/i);
+      assert.doesNotMatch(response.bodyText, new RegExp(ORG_A, 'i'));
+    } finally {
+      supabaseAdmin.rpc = installedRpc;
+    }
+  });
+
+  test('a hotel transferred after metadata reads invalidates the selected-company receipt', async () => {
+    await createCompanyVp({
+      accountId: ACCOUNT_EGRESS_TRANSFER,
+      authUserId: UID_EGRESS_TRANSFER,
+      organizationId: ORG_A,
+      username: 'egress_transfer',
+    });
+    await seed.attachPropertyToOrganization(
+      pg,
+      ORG_A,
+      PID_EGRESS_TRANSFER,
+      'Egress Transfer Hotel',
+    );
+
+    const installedRpc = supabaseAdmin.rpc;
+    const invokeRpc = installedRpc.bind(supabaseAdmin) as unknown as (
+      functionName: string,
+      args?: Record<string, unknown>,
+      options?: Record<string, unknown>,
+    ) => PromiseLike<{ data: unknown; error: { message: string } | null }>;
+    let transferredAtAssertion = false;
+    supabaseAdmin.rpc = (async (
+      functionName: string,
+      args?: Record<string, unknown>,
+      options?: Record<string, unknown>,
+    ) => {
+      if (functionName === 'staxis_assert_authorization_scope_receipt' && !transferredAtAssertion) {
+        transferredAtAssertion = true;
+        await seed.attachPropertyToOrganization(
+          pg,
+          ORG_B,
+          PID_EGRESS_TRANSFER,
+          'Egress Transfer Hotel',
+        );
+      }
+      return invokeRpc(functionName, args, options);
+    }) as unknown as typeof supabaseAdmin.rpc;
+    try {
+      const response = await bootstrapFor(UID_EGRESS_TRANSFER, ORG_A);
+      assert.equal(transferredAtAssertion, true, 'the test missed the final transfer boundary');
+      assert.equal(response.status, 503);
+      assert.equal(response.retryAfter, '5');
+      assert.doesNotMatch(response.bodyText, /Egress Transfer Hotel|Piney Woods|Tyler Lodge/i);
+      assert.doesNotMatch(response.bodyText, new RegExp(ORG_B, 'i'));
+    } finally {
+      supabaseAdmin.rpc = installedRpc;
+    }
+  });
+
+  test('a final assertion-store outage never degrades to a stale or empty 200', async () => {
+    const installedRpc = supabaseAdmin.rpc;
+    const invokeRpc = installedRpc.bind(supabaseAdmin) as unknown as (
+      functionName: string,
+      args?: Record<string, unknown>,
+      options?: Record<string, unknown>,
+    ) => PromiseLike<{ data: unknown; error: { message: string } | null }>;
+    let failedAssertion = false;
+    supabaseAdmin.rpc = (async (
+      functionName: string,
+      args?: Record<string, unknown>,
+      options?: Record<string, unknown>,
+    ) => {
+      if (functionName === 'staxis_assert_authorization_scope_receipt' && !failedAssertion) {
+        failedAssertion = true;
+        return { data: null, error: { message: 'egress assertion unavailable' } };
+      }
+      return invokeRpc(functionName, args, options);
+    }) as unknown as typeof supabaseAdmin.rpc;
+    try {
+      const response = await bootstrapFor(UID_ANA, ORG_A);
+      assert.equal(failedAssertion, true, 'the test missed the final outage boundary');
+      assert.equal(response.status, 503);
+      assert.equal(response.retryAfter, '5');
+      assert.doesNotMatch(response.bodyText, /Gulf Coast|Beaumont|Lufkin/i);
+    } finally {
+      supabaseAdmin.rpc = installedRpc;
+    }
+  });
+});
+
+describe('large company selectors are complete rather than capped at 30 or 60', () => {
+  test('the 31st and 61st newly acquired hotels both cross the exact receipt boundary', async () => {
+    const addedPropertyIds = Array.from({ length: 61 }, (_, index) => (
+      `d1000000-0000-4000-8000-${String(index + 1).padStart(12, '0')}`
+    ));
+    for (const [index, propertyId] of addedPropertyIds.entries()) {
+      await seed.attachPropertyToOrganization(
+        pg,
+        ORG_A,
+        propertyId,
+        `Scale Hotel ${String(index + 1).padStart(2, '0')}`,
+      );
+    }
+
+    const response = await bootstrapFor(UID_ANA, ORG_A);
+    assert.equal(response.status, 200, response.bodyText);
+    assert.ok(idsOf(response.data).includes(addedPropertyIds[30]), 'hotel 31 was truncated');
+    assert.ok(idsOf(response.data).includes(addedPropertyIds[60]), 'hotel 61 was truncated');
+    assert.equal(response.data.reachableHotelCount, response.data.hotels.length);
+    assert.ok(response.data.hotels.length > 61, 'the selector did not return the complete company');
+  });
+});
+
 // ═══ THE CHAT DOOR ══════════════════════════════════════════════════════════
 
 describe('cross-hotel chat is offered only where it was switched on', () => {
@@ -520,6 +949,51 @@ describe('cross-hotel chat is offered only where it was switched on', () => {
 // ═══ THE CAP ════════════════════════════════════════════════════════════════
 
 describe('the read is capped', () => {
+  test('a 50-company account cannot rotate choices and a 429 precedes catalog fan-out', async () => {
+    const organizationIds = await seedFiftyCompanyAccount();
+    await setPropertySelectorLimitCount(ACCOUNT_FIFTY_COMPANIES, 239);
+
+    const lastAllowed = await bootstrapFor(UID_FIFTY_COMPANIES, organizationIds[0]);
+    assert.equal(lastAllowed.status, 200, lastAllowed.bodyText);
+    assert.equal(lastAllowed.data.companies.length, 50, 'fixture did not reach the fan-out ceiling');
+
+    const installedRpc = supabaseAdmin.rpc;
+    const invokeRpc = installedRpc.bind(supabaseAdmin) as unknown as (
+      functionName: string,
+      args?: Record<string, unknown>,
+      options?: Record<string, unknown>,
+    ) => PromiseLike<{ data: unknown; error: { message: string } | null }>;
+    let catalogReceiptMints = 0;
+    supabaseAdmin.rpc = (async (
+      functionName: string,
+      args?: Record<string, unknown>,
+      options?: Record<string, unknown>,
+    ) => {
+      if (functionName === 'staxis_resolve_authorization_scope') catalogReceiptMints += 1;
+      return invokeRpc(functionName, args, options);
+    }) as unknown as typeof supabaseAdmin.rpc;
+    try {
+      const rotated = await bootstrapFor(UID_FIFTY_COMPANIES, organizationIds[49]);
+      assert.equal(rotated.status, 429, rotated.bodyText);
+      assert.ok(Number(rotated.retryAfter) > 0);
+      assert.equal(
+        catalogReceiptMints,
+        0,
+        'the rejected request minted catalog receipts before enforcing the account cap',
+      );
+    } finally {
+      supabaseAdmin.rpc = installedRpc;
+    }
+  });
+
+  test('a platform admin uses the same account-stable limiter instead of bypassing it', async () => {
+    await setPropertySelectorLimitCount(ACCOUNT_ADMIN, 240);
+    const response = await bootstrapFor(UID_ADMIN);
+    assert.equal(response.status, 429, response.bodyText);
+    assert.ok(Number(response.retryAfter) > 0);
+    assert.doesNotMatch(response.bodyText, /Beaumont|Lufkin|Tyler|Waco|Rotation Hotel/i);
+  });
+
   // Mutation: delete the checkAndIncrementRateLimit call. A scripted loop would
   // read a dozen findings ledgers per request, unbounded.
   test('past the hourly cap the route says 429 and when to come back', async () => {

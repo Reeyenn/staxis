@@ -197,8 +197,13 @@ describe('section gates fail closed and cover high-risk routes', () => {
   test('every authenticated comms route inherits the central communications gate', () => {
     const helper = source('src/lib/comms/route-helpers.ts');
     const gate = helper.indexOf("requireSectionEnabled(req, pid, 'communications')");
+    const localStandingGate = helper.lastIndexOf('resolvePrivateHotelCommsStaffId(');
     const identity = helper.indexOf('resolveStaffIdForAccount(');
     assert.ok(gate >= 0 && identity > gate, 'section gate must precede identity creation');
+    assert.ok(
+      localStandingGate > gate && identity > localStandingGate,
+      'private hotel comms must require local operational standing before identity creation',
+    );
     for (const file of routeFilesBelow('src/app/api/comms')) {
       if (file.endsWith('/language/route.ts')) {
         const language = readFileSync(file, 'utf8');
@@ -244,9 +249,10 @@ describe('section gates fail closed and cover high-risk routes', () => {
       'src/app/api/agent/command/resolve-action/route.ts',
     ]) {
       const route = source(path);
-      const gate = route.indexOf("requireSectionEnabled(req, ");
-      const context = route.indexOf('loadAgentUserCtx(');
-      const cost = route.indexOf('reserveCostBudget(');
+      const post = route.indexOf('export async function POST');
+      const gate = route.indexOf("requireSectionEnabled(req, ", post);
+      const context = route.indexOf('loadAgentUserCtx(', post);
+      const cost = route.indexOf('reserveCostBudget(', post);
       assert.ok(gate >= 0 && context > gate && cost > gate, `${path} must gate before paid work`);
     }
   });
@@ -302,17 +308,43 @@ describe('capability override lookups fail closed', () => {
       'src/app/api/staff-schedule/templates/route.ts',
       'src/app/api/staff-schedule/time-off/route.ts',
       'src/app/api/staff-schedule/week-done/route.ts',
-      'src/app/api/auth/accept-invite/route.ts',
-      'src/app/api/auth/invites/route.ts',
       'src/app/api/auth/join-codes/route.ts',
       'src/app/api/auth/team/route.ts',
-      'src/app/api/settings/users/route.ts',
+      'src/app/api/company-access/legacy-ownership-transfer/route.ts',
     ]) {
       const route = source(path);
       assert.match(route, /capabilityDecision/i, path);
       assert.match(route, /=== ['"]unavailable['"][\s\S]*capabilityUnavailableResponse/, path);
       assert.match(route, /=== ['"]denied['"]/, path);
     }
+
+    // Invitations use the stronger tri-state company/local resolver. The
+    // capability lookup lives inside resolveLocalHotelInviteAuthority; route
+    // handlers must preserve unavailable vs denied instead of requiring the
+    // old literal capabilityDecision variable at every call site.
+    const invitations = source('src/app/api/auth/invites/route.ts');
+    assert.match(invitations, /loadFreshCompanyInviteAuthorityContext\(/);
+    assert.match(invitations, /resolveLocalHotelInviteAuthority\(/);
+    assert.match(
+      invitations,
+      /kind === ['"]unavailable['"][\s\S]*capabilityUnavailableResponse/,
+    );
+    assert.match(
+      invitations,
+      /kind (?:===|!==) ['"](?:denied|allowed)['"][\s\S]*authorityDenied/,
+    );
+
+    const acceptance = source('src/app/api/auth/accept-invite/route.ts');
+    assert.match(acceptance, /resolveStoredNormalizedInviteAuthority\(/);
+    assert.match(acceptance, /resolveLocalHotelInviteAuthority\(/);
+    assert.match(
+      acceptance,
+      /kind === ['"]unavailable['"][\s\S]*capabilityUnavailableResponse/,
+    );
+    assert.match(
+      acceptance,
+      /kind === ['"]denied['"][\s\S]*Invite no longer valid/,
+    );
 
     const operational = source('src/app/api/staff/operational/route.ts');
     assert.match(operational, /authorization === ['"]unavailable['"][\s\S]*status: 503/);
@@ -391,16 +423,18 @@ describe('capability override lookups fail closed', () => {
     const teamAuth = source('src/lib/team-auth.ts');
     const helperStart = teamAuth.indexOf('export async function accountCapabilityDecisionForProperty');
     const helper = teamAuth.slice(helperStart);
+    const authority = helper.indexOf('listAuthoritativePropertyAccess(');
+    const scope = helper.indexOf('authoritativeStandingForProperty(');
     const capability = helper.indexOf('capabilityDecisionForProperty(');
-    const scope = helper.indexOf("access.includes(propertyId)");
-    assert.ok(helperStart >= 0 && capability >= 0 && scope > capability);
-    assert.match(helper, /capabilityDecision !== ['"]allowed['"][\s\S]*return capabilityDecision/);
-    assert.match(helper, /\? ['"]allowed['"][\s\S]*: ['"]denied['"]/);
+    assert.ok(helperStart >= 0 && authority >= 0 && scope > authority && capability > scope);
+    assert.match(helper, /if \(!authority\) return ['"]unavailable['"]/);
+    assert.match(helper, /if \(!standing\) return ['"]denied['"]/);
+    assert.match(helper, /opts\?\.requireMutation && !standing\.hotelMutationAllowed/);
+    assert.doesNotMatch(helper, /property_access|access\.includes\(propertyId\)/);
   });
 
   test('all non-PMS user-id capability routes return retryable lookup outages', () => {
     for (const path of [
-      'src/app/api/comms/announce/route.ts',
       'src/app/api/complaints/draft/route.ts',
       'src/app/api/complaints/log/route.ts',
       'src/app/api/complaints/update/route.ts',
@@ -421,6 +455,11 @@ describe('capability override lookups fail closed', () => {
       assert.match(route, /=== ['"]unavailable['"][\s\S]*capabilityUnavailableResponse/, path);
       assert.match(route, /=== ['"]denied['"]/, path);
     }
+
+    const announcement = source('src/app/api/comms/announce/route.ts');
+    assert.match(announcement, /accountCapabilityDecisionForProperty/);
+    assert.match(announcement, /=== ['"]unavailable['"][\s\S]*capabilityUnavailableResponse/);
+    assert.match(announcement, /=== ['"]denied['"]/);
 
     const home = source('src/app/api/home/summary/route.ts');
     assert.match(home, /capabilityDecisionForUserId/);
@@ -452,6 +491,23 @@ describe('capability override lookups fail closed', () => {
 });
 
 describe('admin account and local sync fail-closed contracts', () => {
+  test('account CRUD uses the fresh active-platform-admin gate for stale sessions', () => {
+    const route = source('src/app/api/auth/accounts/route.ts');
+    const verifier = route.slice(
+      route.indexOf('async function verifyAdmin'),
+      route.indexOf('// Translate an accounts row'),
+    );
+    assert.match(route, /import \{ requireAdmin \} from ['"]@\/lib\/admin-auth['"]/);
+    assert.match(verifier, /const admin = await requireAdmin\(req\)/);
+    assert.match(verifier, /accountId !== admin\.accountId/);
+    assert.doesNotMatch(verifier, /\.from\(['"]accounts['"]\)|account\.role|requireSession\(/);
+
+    const sharedGate = source('src/lib/admin-auth.ts');
+    assert.match(sharedGate, /\.select\(['"]id, role, active['"]\)/);
+    assert.match(sharedGate, /account\.role as string\) !== ['"]admin['"]/);
+    assert.match(sharedGate, /account\.active !== true/);
+  });
+
   test('mixed profile/Auth updates are rejected before either write can commit', () => {
     const route = source('src/app/api/auth/accounts/route.ts');
     const putStart = route.indexOf('export async function PUT');

@@ -76,6 +76,11 @@ export interface PortfolioIdentity {
   hotels: PortfolioHotel[];
   /** Hotels the caller covers that this turn will not read (the 50 ceiling). */
   omittedHotelCount: number;
+  /** Complete current authorized reach. May be larger than `hotels` for a
+   * region/subset/single-hotel turn. */
+  authorizedHotelCount?: number;
+  /** Human-readable, code-owned selector label (never customer prose). */
+  scopeLabel?: string;
 }
 
 /**
@@ -114,15 +119,15 @@ export function formatPortfolioIdentityForPrompt(
   }
   if (rows.length === 0) return null;
 
+  const authorizedHotelCount = Math.max(identity.hotels.length, identity.authorizedHotelCount ?? identity.hotels.length);
   const unlisted = identity.omittedHotelCount + dropped;
 
   const lines: string[] = [
     PORTFOLIO_IDENTITY_HEADER,
-    `You are in PORTFOLIO mode, answering for ${company} across the hotels listed below and no others. `
-    + 'Every hotel in the list belongs to this company and this person oversees all of them, so '
-    + 'comparing them with each other is exactly what they are asking for. A hotel that is NOT in '
-    + 'the list is somebody else\'s hotel: you have no data about it, no tool that reaches it, and '
-    + 'nothing to say about it.',
+    `You are in PORTFOLIO mode, answering for ${company} under active scope "${safePortfolioName(identity.scopeLabel) ?? 'selected hotels'}". `
+    + `This turn selected ${identity.hotels.length} of ${authorizedHotelCount} currently authorized hotels. `
+    + 'Only the listed hotels are evidence for this answer. A hotel not listed may be an authorized '
+    + 'sister hotel outside this selected subset or may be unauthorized; do not infer which from absence.',
     'Sizes are here so you read a comparison honestly — a 45-room inn and a 200-room hotel do not '
     + 'spend the same on supplies, so say which is which rather than ranking raw dollars alone.',
     '',
@@ -131,8 +136,8 @@ export function formatPortfolioIdentityForPrompt(
   ];
   if (unlisted > 0) {
     lines.push(
-      `(${unlisted} more of this company's hotels are not listed here and are not covered by this `
-      + 'conversation — say so if the question needs them.)',
+      `(${unlisted} selected hotels could not be safely named in this bounded identity block. `
+      + 'They remain counted in coverage and must not be silently omitted.)',
     );
   }
   lines.push(PORTFOLIO_TRUST_MARKER_CLOSE);

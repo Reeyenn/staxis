@@ -49,7 +49,12 @@ function localMonthKey(d: Date): string {
 }
 
 export default function FinancialsPage() {
-  const { user, loading: authLoading } = useAuth();
+  const {
+    user,
+    loading: authLoading,
+    authorizationChecked,
+    propertyStandings,
+  } = useAuth();
   const {
     activePropertyId,
     activeProperty,
@@ -80,13 +85,27 @@ export default function FinancialsPage() {
     && capabilityOverridesPropertyId === activePropertyId
     && capabilityOverridesViewerKey === capabilityViewerKey
   );
-  const allowed = accessContextReady && financialsEnabled && !!user && can('view_financials');
+  const activePropertyStanding = activePropertyId
+    ? (propertyStandings ?? []).find((standing) => standing.propertyId === activePropertyId) ?? null
+    : null;
+  const authorizationContextReady = user?.role === 'admin' || authorizationChecked;
+  const canViewCurrentFinancials = activePropertyStanding
+    ? activePropertyStanding.seesFinancials
+    : can('view_financials');
+  const allowed = accessContextReady
+    && authorizationContextReady
+    && financialsEnabled
+    && !!user
+    && canViewCurrentFinancials;
+  const readOnly = activePropertyStanding
+    ? !activePropertyStanding.hotelMutationAllowed
+    : false;
 
   // Redirect a restricted role away (client guard; the API gate is the real
   // enforcement). `allowed` honors this hotel's Access-tab restrictions and
   // re-evaluates once the override map finishes loading.
   useEffect(() => {
-    if (authLoading || propLoading) return;
+    if (authLoading || propLoading || !authorizationContextReady) return;
     if (!user) {
       router.replace('/signin');
       return;
@@ -95,7 +114,7 @@ export default function FinancialsPage() {
     if (!allowed) {
       router.replace('/dashboard');
     }
-  }, [user, authLoading, propLoading, activePropertyId, accessContextReady, allowed, router]);
+  }, [user, authLoading, propLoading, activePropertyId, accessContextReady, authorizationContextReady, allowed, router]);
 
   const summaryRes = useApiResource<{ summary: FinanceSummary }>(
     `/api/financials/summary?pid=${activePropertyId}&month=${month}#${summaryNonce}`,
@@ -111,7 +130,7 @@ export default function FinancialsPage() {
   // Tabs call this after any mutation so the header totals stay live.
   const onTabChanged = useCallback(() => setSummaryNonce((n) => n + 1), []);
 
-  if (authLoading || propLoading || !accessContextReady || !allowed) {
+  if (authLoading || propLoading || !authorizationContextReady || !accessContextReady || !allowed) {
     return (
       <AppLayout>
         <div style={{ background: 'transparent', minHeight: 'calc(100dvh - 64px)', padding: 60, textAlign: 'center', fontFamily: FONT_SANS, color: T.ink2 }}>{S.loading}</div>
@@ -255,9 +274,9 @@ export default function FinancialsPage() {
 
         {/* Active tab */}
         <div style={{ marginTop: 22 }}>
-          {tab === 'checkbook' && <CheckbookTab pid={activePropertyId} lang={lang as Lang} month={month} onChanged={onTabChanged} />}
-          {tab === 'budget' && <BudgetTab pid={activePropertyId} lang={lang as Lang} month={month} onChanged={onTabChanged} />}
-          {tab === 'capex' && <CapexTab pid={activePropertyId} lang={lang as Lang} onChanged={onTabChanged} />}
+          {tab === 'checkbook' && <CheckbookTab pid={activePropertyId} lang={lang as Lang} month={month} onChanged={onTabChanged} readOnly={readOnly} />}
+          {tab === 'budget' && <BudgetTab pid={activePropertyId} lang={lang as Lang} month={month} onChanged={onTabChanged} readOnly={readOnly} />}
+          {tab === 'capex' && <CapexTab pid={activePropertyId} lang={lang as Lang} onChanged={onTabChanged} readOnly={readOnly} />}
         </div>
         </div>
       </div>

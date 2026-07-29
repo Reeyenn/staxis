@@ -843,31 +843,14 @@ describe('the spine follow-up — a hotel\'s team list stops hiding company peop
     assert.deepEqual(await accountsCoveringProperty(PID_L1), [], 'a companyless hotel has no hats');
   });
 
-  test('the team route now lists them, where before they were invisible', async () => {
+  test('the private hotel-team route does not turn broad company reach into hotel mutation authority', async () => {
     signedInAs = UID_ANA;
     const response = await teamGet(
       authorizedRequest(`https://staxis.test/api/auth/team?hotelId=${PID_A2}`),
     );
-    assert.equal(response.status, 200);
-    const parsed = await response.json() as {
-      data?: { team?: Array<{ accountId: string; propertyAccess: string[] }> };
-    };
-    const team = parsed.data?.team ?? [];
-    const ids = team.map((row) => row.accountId);
-
-    assert.ok(ids.includes(ACCOUNT_ANA), 'the owner works here');
-    assert.ok(ids.includes(ACCOUNT_MARIA), 'so does the VP who oversees it');
-    // Every one of them has an EMPTY legacy array — which is exactly why the
-    // old `property_access.includes(hotelId)` filter left them off.
-    const ana = team.find((row) => row.accountId === ACCOUNT_ANA);
-    assert.deepEqual(ana?.propertyAccess, []);
-
-    // Wall B, at the team list: nobody from the other company appears.
-    assert.equal(ids.includes(ACCOUNT_BO), false);
-    assert.equal(ids.includes(ACCOUNT_GIL), false);
-    // Wall A, inside the company: Lufkin's list does not name Beaumont's
-    // front-desk person, whose hat covers Beaumont only.
-    assert.equal(ids.includes(ACCOUNT_WANDA), false);
+    assert.equal(response.status, 403);
+    const parsed = await response.json() as { data?: unknown; error?: string };
+    assert.equal(parsed.data, undefined);
   });
 });
 

@@ -66,7 +66,7 @@ export function can(
   // Owner / GM only (admin already returned above). An `allowed:true` override
   // CANNOT lift this — it can only ever RESTRICT a manager further. Closes the
   // override-bypass on every direct can()/canForProperty caller (the finance
-  // gate, the wage routes, /api/settings/users, the activity log, useCan), not
+  // gate, the wage routes, the Company Access ownership handoff, the activity log, useCan), not
   // just verifyTeamManager. (Security audit 2026-06-18; extended 2026-06-26.)
   if (MANAGER_FLOOR_CAPABILITIES.has(capability) && role !== 'owner' && role !== 'general_manager') {
     return false;

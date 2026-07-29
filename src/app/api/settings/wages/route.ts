@@ -19,13 +19,18 @@
  */
 
 import { NextRequest, NextResponse } from 'next/server';
-import { requireSession, userHasPropertyAccess } from '@/lib/api-auth';
+import { requireSession } from '@/lib/api-auth';
 import { ok, err, ApiErrorCode } from '@/lib/api-response';
 import { getOrMintRequestId, log } from '@/lib/log';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { validateUuid, validateInt } from '@/lib/api-validate';
 import { capabilityDecisionForProperty } from '@/lib/capabilities/server';
 import { capabilityUnavailableResponse } from '@/lib/capabilities/api-gate';
+import {
+  callerRoleAtHotel,
+  loadSessionAccount,
+  managerManagesHotel,
+} from '@/lib/team-auth';
 import {
   isLaborRole,
   LABOR_ROLE_DEPARTMENTS,
@@ -79,20 +84,24 @@ async function authorize(
     return { ok: false, response: err(pidCheck.error, { requestId, status: 400, code: ApiErrorCode.ValidationFailed }) };
   }
   const propertyId = pidCheck.value!;
-  if (!(await userHasPropertyAccess(userId, propertyId))) {
+  const caller = await loadSessionAccount(userId);
+  if (!caller || !managerManagesHotel(caller, propertyId)) {
     return { ok: false, response: err('forbidden — no access to this property', { requestId, status: 403, code: ApiErrorCode.Forbidden }) };
   }
-  const { data: accountRow, error: accountErr } = await supabaseAdmin
-    .from('accounts')
-    .select('role')
-    .eq('data_user_id', userId)
-    .maybeSingle();
-  if (accountErr) {
-    log.error('wages: accounts lookup failed', { requestId, msg: accountErr.message });
-    return { ok: false, response: err('account lookup failed', { requestId, status: 500, code: ApiErrorCode.UpstreamFailure }) };
+  const role = callerRoleAtHotel(caller, propertyId);
+  if (!role) {
+    return { ok: false, response: err('forbidden — no role at this property', { requestId, status: 403, code: ApiErrorCode.Forbidden }) };
+  }
+  if (req.method !== 'GET' && req.method !== 'HEAD') {
+    const mutationAllowed = caller.reachesAllProperties
+      || caller.propertyStandings?.find((standing) => standing.propertyId === propertyId)
+        ?.hotelMutationAllowed === true;
+    if (!mutationAllowed) {
+      return { ok: false, response: err('forbidden — current access is read-only', { requestId, status: 403, code: ApiErrorCode.Forbidden }) };
+    }
   }
   const capabilityDecision = await capabilityDecisionForProperty(
-    { role: (accountRow?.role as string | undefined) ?? null },
+    { role },
     'view_wages',
     propertyId,
   );

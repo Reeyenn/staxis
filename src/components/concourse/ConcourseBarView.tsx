@@ -26,8 +26,18 @@ export interface BarItem {
   onClick: () => void;
 }
 
+/** A Staxis-platform destination, separate from both hotel department tabs
+ * and the hotel-level Admin tools switch inside `/company`. */
+export interface AdminDestinationAction {
+  label: string;
+  ariaLabel: string;
+  active: boolean;
+  onClick: () => void;
+}
+
 export interface ConcourseBarViewProps {
   items: BarItem[];
+  adminDestination?: AdminDestinationAction;
   gearActive: boolean;
   onGear: () => void;
   onLogo: () => void;
@@ -45,7 +55,7 @@ export interface ConcourseBarViewProps {
 }
 
 export function ConcourseBarView({
-  items, gearActive, onGear, onLogo, homeLabel, settingsLabel, avatar,
+  items, adminDestination, gearActive, onGear, onLogo, homeLabel, settingsLabel, avatar,
   showHome = false, desktopOnly = false,
 }: ConcourseBarViewProps) {
   return (
@@ -69,7 +79,7 @@ export function ConcourseBarView({
             <span className="cx-lab">{homeLabel}</span>
           </span>
         </button>
-        {items.length > 0 ? <span className="cx-divider" aria-hidden /> : null}
+        {items.length > 0 || adminDestination ? <span className="cx-divider" aria-hidden /> : null}
         {items.map((it) => (
           <button
             key={it.key}
@@ -89,6 +99,20 @@ export function ConcourseBarView({
             )}
           </button>
         ))}
+        {items.length > 0 && adminDestination ? <span className="cx-divider" aria-hidden /> : null}
+        {adminDestination ? (
+          <button
+            type="button"
+            className={`cx-pill cx-utility-pill cx-admin-destination${adminDestination.active ? ' cx-active' : ''}`}
+            onClick={adminDestination.onClick}
+            title={adminDestination.ariaLabel}
+            aria-label={adminDestination.ariaLabel}
+            aria-current={adminDestination.active ? 'page' : undefined}
+          >
+            <CxIcon name="admin" size={16} />
+            <span className="cx-labw"><span className="cx-lab">{adminDestination.label}</span></span>
+          </button>
+        ) : null}
         <span className="cx-divider" aria-hidden />
         <button
           type="button"

@@ -25,6 +25,10 @@ import {
   isManagerRole as deptIsManagerRole,
   normalizeDept,
 } from '@/lib/capabilities/dept-scope';
+import {
+  listAuthoritativePropertyAccess,
+  type AuthoritativePropertyAccess,
+} from '@/lib/authorization/server';
 
 const ATTACHMENT_BUCKET = 'housekeeping-issue-photos'; // reuse existing private bucket
 const SIGNED_URL_TTL = 60 * 60; // 1h read URLs
@@ -145,21 +149,28 @@ async function staffDeptMap(pid: string, ids: string[]): Promise<Map<string, str
 export async function resolveAccount(userId: string): Promise<{
   accountId: string; role: string; staffId: string | null; displayName: string;
   preferredLanguage: CommsLang; propertyAccess: string[]; authUserId: string;
+  authority: AuthoritativePropertyAccess;
 } | null> {
   const { data } = await supabaseAdmin
     .from('accounts')
-    .select('id, role, staff_id, display_name, preferred_language, property_access')
+    .select('id, role, staff_id, display_name, preferred_language')
     .eq('data_user_id', userId)
     .maybeSingle();
   if (!data) return null;
+  const authority = await listAuthoritativePropertyAccess(data.id as string);
+  if (!authority) return null;
   return {
     accountId: data.id as string,
     role: (data.role as string) ?? 'staff',
     staffId: (data.staff_id as string | null) ?? null,
     displayName: (data.display_name as string) ?? 'Manager',
     preferredLanguage: normalizeLang(data.preferred_language),
-    propertyAccess: (data.property_access as string[] | null) ?? [],
+    // Compatibility projection for existing single-hotel comms rendering. It
+    // is derived from the exclusive authoritative mode, never the rollback
+    // `accounts.property_access` snapshot.
+    propertyAccess: authority.all ? ['*'] : authority.propertyIds,
     authUserId: userId,
+    authority,
   };
 }
 

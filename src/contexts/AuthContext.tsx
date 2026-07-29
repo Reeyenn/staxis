@@ -20,9 +20,11 @@
 
 import React, { createContext, useContext, useEffect, useRef, useState } from 'react';
 import { supabase } from '@/lib/supabase';
+import { fetchWithAuth } from '@/lib/api-fetch';
 import { migrateLegacySessionIfPresent } from '@/lib/auth-storage-migration';
+import { subscribeToSessionAuthorizationInvalidations } from '@/lib/auth/session-authorization-invalidation';
 import { RESUME_GUARD_KEY } from '@/lib/onboarding/state';
-import type { AppRole } from '@/lib/roles';
+import { isValidRole, type AppRole } from '@/lib/roles';
 
 export interface AppUser {
   uid: string;               // auth.users.id  AND  accounts.data_user_id (same value)
@@ -38,6 +40,20 @@ export interface AppUser {
 interface AuthContextType {
   user: AppUser | null;
   loading: boolean;
+  /** True after the server has returned a definitive authorization snapshot
+   * for this auth user. A transient read failure leaves the previous verdict
+   * intact; a new user starts unchecked. */
+  authorizationChecked: boolean;
+  /** Fresh server verdict for the Staxis-wide platform-admin role. This is
+   * deliberately separate from `user.role`, whose browser-loaded value may be
+   * stale while a long-lived tab is open. */
+  platformAdmin: boolean;
+  /** Current per-hotel standing from the same fresh server projection used by
+   * hotel APIs. This drives discovery only; every destination reauthorizes. */
+  propertyStandings: SessionPropertyStanding[];
+  /** Opaque server-derived fingerprint for the full current authorization
+   * provenance. Consumers use it only to invalidate stale projections. */
+  authorizationFingerprint: string | null;
   /** Returns an error string on failure, or null on success */
   signIn: (email: string, password: string) => Promise<string | null>;
   signOut: () => Promise<void>;
@@ -46,9 +62,115 @@ interface AuthContextType {
 const AuthContext = createContext<AuthContextType>({
   user: null,
   loading: true,
+  authorizationChecked: false,
+  platformAdmin: false,
+  propertyStandings: [],
+  authorizationFingerprint: null,
   signIn: async () => null,
   signOut: async () => {},
 });
+
+/** Realtime authorization-version changes revalidate continuously open tabs.
+ * Focus/visibility and this interval remain recovery paths for a disconnected
+ * Realtime channel; server routes independently reject stale privilege. */
+export const AUTHORIZATION_REVALIDATE_INTERVAL_MS = 60_000;
+const AUTHORIZATION_REVALIDATE_TIMEOUT_MS = 6_000;
+
+interface SessionAuthorizationSnapshot {
+  active: boolean;
+  role: AppRole | null;
+  propertyAccess: string[];
+  platformAdmin: boolean;
+  propertyStandings: SessionPropertyStanding[];
+  authorizationFingerprint: string | null;
+  verifiedAt: string;
+}
+
+export interface SessionPropertyStanding {
+  propertyId: string;
+  operationalRole: AppRole;
+  seesFinancials: boolean;
+  hotelMutationAllowed: boolean;
+  portfolioIntelligenceRead: boolean;
+}
+
+const UUID_RX = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+function parseSessionPropertyStandings(value: unknown): SessionPropertyStanding[] | null {
+  if (!Array.isArray(value)) return null;
+  const parsed: SessionPropertyStanding[] = [];
+  let previousPropertyId = '';
+  for (const entry of value) {
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return null;
+    const raw = entry as Record<string, unknown>;
+    if (typeof raw.propertyId !== 'string'
+      || !UUID_RX.test(raw.propertyId)
+      || raw.propertyId <= previousPropertyId
+      || !isValidRole(raw.operationalRole)
+      || raw.operationalRole === 'admin'
+      || typeof raw.seesFinancials !== 'boolean'
+      || typeof raw.hotelMutationAllowed !== 'boolean'
+      || typeof raw.portfolioIntelligenceRead !== 'boolean') return null;
+    parsed.push({
+      propertyId: raw.propertyId,
+      operationalRole: raw.operationalRole,
+      seesFinancials: raw.seesFinancials,
+      hotelMutationAllowed: raw.hotelMutationAllowed,
+      portfolioIntelligenceRead: raw.portfolioIntelligenceRead,
+    });
+    previousPropertyId = raw.propertyId;
+  }
+  return parsed;
+}
+
+function parseSessionAuthorizationSnapshot(value: unknown): SessionAuthorizationSnapshot | null {
+  if (!value || typeof value !== 'object') return null;
+  const envelope = value as { ok?: unknown; data?: unknown };
+  if (envelope.ok !== true || !envelope.data || typeof envelope.data !== 'object') return null;
+  const data = envelope.data as Record<string, unknown>;
+  if (data.role !== null && !isValidRole(data.role)) return null;
+  const role = data.role as AppRole | null;
+  const propertyAccess = Array.isArray(data.propertyAccess)
+    && data.propertyAccess.every((entry) => typeof entry === 'string')
+    ? [...data.propertyAccess] as string[]
+    : null;
+  const active = data.active;
+  const platformAdmin = data.platformAdmin;
+  const propertyStandings = parseSessionPropertyStandings(data.propertyStandings);
+  const authorizationFingerprint = data.authorizationFingerprint;
+  const verifiedAt = data.verifiedAt;
+  if (typeof active !== 'boolean'
+    || typeof platformAdmin !== 'boolean'
+    || propertyStandings === null
+    || propertyAccess === null
+    || typeof verifiedAt !== 'string'
+    || !Number.isFinite(Date.parse(verifiedAt))
+    || (authorizationFingerprint !== null
+      && (typeof authorizationFingerprint !== 'string'
+        || authorizationFingerprint.length < 1
+        || authorizationFingerprint.length > 200))
+    || (active && role === null)
+    || (active && authorizationFingerprint === null)
+    || (!active && authorizationFingerprint !== null)
+    || platformAdmin !== (active && role === 'admin')
+    || (platformAdmin && propertyStandings.length > 0)
+    || (!active && (propertyAccess.length > 0 || propertyStandings.length > 0))
+    || (!platformAdmin && active
+      && JSON.stringify(propertyStandings.map((standing) => standing.propertyId))
+        !== JSON.stringify(propertyAccess))
+  ) {
+    return null;
+  }
+  return {
+    active,
+    role,
+    propertyAccess,
+    platformAdmin,
+    propertyStandings,
+    authorizationFingerprint,
+    verifiedAt,
+  };
+}
 
 function clearSignedOutBrowserState(): void {
   try {
@@ -126,6 +248,11 @@ async function loadAppUser(authUid: string): Promise<AppUser | null> {
 export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [user, setUser] = useState<AppUser | null>(null);
   const [loading, setLoading] = useState(true);
+  const [authorizationChecked, setAuthorizationChecked] = useState(false);
+  const [platformAdmin, setPlatformAdmin] = useState(false);
+  const [propertyStandings, setPropertyStandings] = useState<SessionPropertyStanding[]>([]);
+  const [authorizationFingerprint, setAuthorizationFingerprint] = useState<string | null>(null);
+  const authUid = user?.uid ?? null;
 
   // Mirror `user` into a ref so the async token-refresh handler can read the
   // *current* user synchronously without being torn down and rebuilt on every
@@ -215,6 +342,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         // call supabase.auth.signOut() directly.
         clearSignedOutBrowserState();
         setUser(null);
+        setAuthorizationChecked(false);
+        setPlatformAdmin(false);
+        setPropertyStandings([]);
+        setAuthorizationFingerprint(null);
         return;
       }
       if (!session?.user) {
@@ -321,6 +452,135 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     };
   }, []);
 
+  // `loadAppUser` is the browser's account projection and remains useful for
+  // initial rendering, but it is not enough for a privilege-bearing global
+  // destination in a tab that may stay open all day. This server read runs
+  // through requireSession + the service-role account lookup, so a role change
+  // is observed without waiting for Supabase to emit an auth-token event.
+  useEffect(() => {
+    if (!authUid) {
+      setAuthorizationChecked(false);
+      setPlatformAdmin(false);
+      setPropertyStandings([]);
+      setAuthorizationFingerprint(null);
+      return;
+    }
+
+    // A verdict belongs to one auth user only. Never flash the previous
+    // account's admin destination while a different user is being verified.
+    setAuthorizationChecked(false);
+    setPlatformAdmin(false);
+    setPropertyStandings([]);
+    setAuthorizationFingerprint(null);
+
+    let active = true;
+    let inFlight = false;
+    let rerunRequested = false;
+    let requestController: AbortController | null = null;
+
+    const revalidateAuthorization = async () => {
+      if (!active) return;
+      if (inFlight) {
+        // Never lose a database invalidation that races the current read. The
+        // first response could have been taken just before the role update.
+        rerunRequested = true;
+        return;
+      }
+      inFlight = true;
+      const controller = new AbortController();
+      requestController = controller;
+      const timeout = window.setTimeout(
+        () => controller.abort(),
+        AUTHORIZATION_REVALIDATE_TIMEOUT_MS,
+      );
+
+      try {
+        const response = await fetchWithAuth('/api/auth/session-authorization', {
+          method: 'GET',
+          cache: 'no-store',
+          credentials: 'include',
+          signal: controller.signal,
+          headers: { Accept: 'application/json' },
+        });
+        if (!response.ok) return;
+        const snapshot = parseSessionAuthorizationSnapshot(
+          await response.json().catch(() => null),
+        );
+        if (!active || !snapshot) return;
+
+        // This is the only branch that changes a settled verdict. Network,
+        // timeout, malformed-response, 5xx and auth-service failures above are
+        // transient and intentionally preserve the last confirmed state.
+        setAuthorizationChecked(true);
+        setPlatformAdmin(snapshot.platformAdmin);
+        setPropertyStandings(snapshot.propertyStandings);
+        setAuthorizationFingerprint(snapshot.authorizationFingerprint);
+
+        if (!snapshot.active || !snapshot.role) {
+          // A successful service-role lookup confirmed that the account is no
+          // longer usable. Clear client authority and end the auth session;
+          // unlike an empty browser RLS read, this is not a transient race.
+          setUser((previous) => previous?.uid === authUid ? null : previous);
+          void supabase.auth.signOut();
+          return;
+        }
+        const verifiedRole = snapshot.role;
+
+        setUser((previous) => {
+          if (!previous || previous.uid !== authUid) return previous;
+          const sameAccess = JSON.stringify(previous.propertyAccess ?? [])
+            === JSON.stringify(snapshot.propertyAccess);
+          if (previous.role === verifiedRole && sameAccess) return previous;
+          return {
+            ...previous,
+            role: verifiedRole,
+            propertyAccess: snapshot.propertyAccess,
+          };
+        });
+      } catch {
+        // Transient by contract. In particular, do not hide an already
+        // verified Admin destination because Wi-Fi blinked during a focus
+        // event; the next focus/visibility/interval trigger retries.
+      } finally {
+        window.clearTimeout(timeout);
+        if (requestController === controller) requestController = null;
+        inFlight = false;
+        if (active && rerunRequested) {
+          rerunRequested = false;
+          void revalidateAuthorization();
+        }
+      }
+    };
+
+    const revalidateWhenVisible = () => {
+      if (document.visibilityState === 'visible') void revalidateAuthorization();
+    };
+
+    void revalidateAuthorization();
+    const unsubscribeAuthorizationInvalidations = subscribeToSessionAuthorizationInvalidations({
+      client: supabase,
+      authUid,
+      // The payload is deliberately ignored. Realtime is notification, never
+      // authorization; the service-role-backed endpoint supplies the verdict.
+      onInvalidate: () => { void revalidateAuthorization(); },
+    });
+    window.addEventListener('focus', revalidateWhenVisible);
+    document.addEventListener('visibilitychange', revalidateWhenVisible);
+    const interval = window.setInterval(
+      revalidateWhenVisible,
+      AUTHORIZATION_REVALIDATE_INTERVAL_MS,
+    );
+
+    return () => {
+      active = false;
+      requestController?.abort();
+      unsubscribeAuthorizationInvalidations();
+      window.clearInterval(interval);
+      window.removeEventListener('focus', revalidateWhenVisible);
+      document.removeEventListener('visibilitychange', revalidateWhenVisible);
+    };
+  }, [authUid]);
+
   const signIn = async (email: string, password: string): Promise<string | null> => {
     try {
       const normalizedEmail = email.trim().toLowerCase();
@@ -358,6 +618,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   const signOut = async () => {
     clearSignedOutBrowserState();
+    setAuthorizationChecked(false);
+    setPlatformAdmin(false);
+    setPropertyStandings([]);
+    setAuthorizationFingerprint(null);
 
     // F-02 — best-effort revoke of trusted-device cookie + DB row BEFORE
     // we tear the session down. Without this, a stolen cookie outlives a
@@ -400,7 +664,16 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   };
 
   return (
-    <AuthContext.Provider value={{ user, loading, signIn, signOut }}>
+    <AuthContext.Provider value={{
+      user,
+      loading,
+      authorizationChecked,
+      platformAdmin,
+      propertyStandings,
+      authorizationFingerprint,
+      signIn,
+      signOut,
+    }}>
       {children}
     </AuthContext.Provider>
   );

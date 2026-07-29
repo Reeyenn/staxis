@@ -41,14 +41,10 @@ export async function GET(req: NextRequest): Promise<Response> {
   // badge — passive "seen" doesn't clear a mandatory read.
   const unreadTotal = conversations.reduce((s, c) => s + Math.max(c.unread, c.pendingAck ?? 0), 0);
 
-  // Can this manager launch an org-wide (all-properties) mandatory-read campaign?
-  // True for admins / '*' wildcard, or anyone scoped to more than one property.
-  const UUID_RX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-  const canOrgWide = ctx.isManager && (
-    ctx.role === 'admin'
-    || ctx.propertyAccess.includes('*')
-    || ctx.propertyAccess.filter((p) => UUID_RX.test(p)).length > 1
-  );
+  // Cross-hotel writes stay off until the announce surface implements an exact
+  // target preview, explicit confirmation, commit-time reauthorization,
+  // idempotency, audit, and partial-failure contract.
+  const canOrgWide = false;
 
   return ok(
     {

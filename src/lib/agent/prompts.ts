@@ -13,7 +13,7 @@
 
 import { createHash } from 'node:crypto';
 
-import type { AppRole } from '@/lib/roles';
+import { canViewFinancials, type AppRole } from '@/lib/roles';
 import { captureException } from '@/lib/sentry';
 import type { HotelSnapshot } from './context';
 import { formatSnapshotForPrompt } from './context';
@@ -608,6 +608,41 @@ export interface VoiceModeContext {
   currentRoomNumber?: string | null;
 }
 
+export interface AgentPromptAuthorization {
+  /** Current authoritative read-only Financials entitlement at this hotel. */
+  seesFinancials: boolean;
+  /** Current authoritative hotel mutation standing, stated for prompt honesty. */
+  hotelMutationAllowed: boolean;
+}
+
+const FINANCE_READ_ROLE_VERSION = 'lens-financial-read-v1';
+const FINANCE_READ_ROLE_PROMPT = `Your user has current READ-ONLY Financials access for this hotel. This is a narrow money entitlement, not a hotel-manager role.
+
+What you are for:
+- Answer hotel financial questions only from the read-only Financials tools you were given: revenue, expenses, profit, department budgets, collected payments, and inventory accounting.
+- Use the tool whose ledger matches the question. Never substitute checkbook expenses for inventory usage, deliveries for usage, or shelf value for spending.
+- State the period and the tool's as-of/freshness information. If the source has no measure or is stale, say so; never estimate.
+
+Hard boundaries:
+- Financials access never grants approval, staff management, scheduling, or any manager-only action. Do not propose a workaround.
+- Payroll and individual wages are NOT granted by Financials access. If asked, say payroll access is separate.
+- Stay inside this hotel. Do not enumerate or infer sister hotels from a property conversation.
+- You may answer ordinary guest/property questions only through the other read-only tools actually offered in this chat. Never claim a tool or permission that is absent.`;
+
+function financeReadRolePrompt(authorization: AgentPromptAuthorization): {
+  version: string;
+  content: string;
+} {
+  const mutationBoundary = authorization.hotelMutationAllowed
+    ? 'A separate property operational job may offer ordinary front-desk actions. Use only actions actually present in the tool list and keep the Financials entitlement read-only.'
+    : 'This hotel standing is read-only. You cannot change hotel data or propose an approval card.';
+  const mutationVersion = authorization.hotelMutationAllowed ? 'operational' : 'readonly';
+  return {
+    version: `${FINANCE_READ_ROLE_VERSION}-${mutationVersion}`,
+    content: `${FINANCE_READ_ROLE_PROMPT}\n- ${mutationBoundary}`,
+  };
+}
+
 export async function buildSystemPrompt(
   role: AppRole,
   snapshot: HotelSnapshot,
@@ -628,10 +663,12 @@ export async function buildSystemPrompt(
    *  that means nothing is worse than no test, because it trains everyone to
    *  ignore the light. */
   now: Date = new Date(),
+  /** Current exact-hotel authority. Last for backwards compatibility with the
+   *  injectable clock used by prompt-purity tests. */
+  authorization?: AgentPromptAuthorization,
 ): Promise<SystemPromptBlocks> {
   // A3 tiers: the hotel's PMS family selects the shared family addendum. It
-  // rides in on the snapshot the caller already built — no extra query, no
-  // signature change at any of the three call sites.
+  // rides in on the snapshot the caller already built — no extra query.
   const pmsFamily = snapshot.property.pmsFamily ?? null;
   const { base, role: dbRolePrompt, family, versionLabel: dbVersionLabel } =
     await resolvePrompts(role, conversationId, pmsFamily);
@@ -648,15 +685,22 @@ export async function buildSystemPrompt(
   // edit. The lens version replaces the role segment of the stamp, so which
   // text ran is still answerable from `agent_messages.prompt_version` alone.
   const lens = lensFor(role, 'chat');
-  const rolePrompt = lens && lens.mounted
-    ? { version: lens.promptVersion, content: lens.prompt }
-    : dbRolePrompt;
-  const versionLabel = lens && lens.mounted
-    ? `base:${base.version}+role:${lens.promptVersion}`
-    : dbVersionLabel;
-  const hasInventoryAccountingAccess = role === 'admin'
-    || role === 'owner'
-    || role === 'general_manager';
+  const financeRolePrompt = role === 'front_desk'
+    && authorization?.seesFinancials === true
+    ? financeReadRolePrompt(authorization)
+    : null;
+  const explicitFinanceRead = financeRolePrompt !== null;
+  const rolePrompt = financeRolePrompt
+    ? financeRolePrompt
+    : lens && lens.mounted
+      ? { version: lens.promptVersion, content: lens.prompt }
+      : dbRolePrompt;
+  const versionLabel = financeRolePrompt
+    ? `base:${base.version}+role:${financeRolePrompt.version}`
+    : lens && lens.mounted
+      ? `base:${base.version}+role:${lens.promptVersion}`
+      : dbVersionLabel;
+  const hasInventoryAccountingAccess = canViewFinancials(role) || explicitFinanceRead;
 
   // Drop family content that violates the cached-prompt invariants even if the
   // DB handed it to us (INV-TIER-7 backstop). Sentry gets the row identity, not

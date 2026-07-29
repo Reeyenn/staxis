@@ -44,7 +44,7 @@ import { defineRoute, sessionGate } from '@/lib/api-route';
 import { ApiErrorCode } from '@/lib/api-response';
 import { log } from '@/lib/log';
 import { validateUuid } from '@/lib/api-validate';
-import { isValidRole, type AppRole } from '@/lib/roles';
+import { canManageTeam } from '@/lib/roles';
 import { capabilityDecisionForProperty } from '@/lib/capabilities/server';
 import { capabilityUnavailableResponse } from '@/lib/capabilities/api-gate';
 import {
@@ -64,28 +64,18 @@ import {
   fetchCleanTimeStandards,
   upsertCleanTimeStandards,
 } from '@/lib/clean-time-standards-server';
+import {
+  callerReachesHotel,
+  callerRoleAtHotel,
+  loadSessionAccount,
+  type ManagerCaller,
+} from '@/lib/team-auth';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
-interface CallerAccount {
-  id: string;
-  property_access: string[];
-  role: AppRole;
-}
-
-async function resolveCallerAccount(authUserId: string): Promise<CallerAccount | null> {
-  const { data, error } = await supabaseAdmin
-    .from('accounts')
-    .select('id, property_access, role')
-    .eq('data_user_id', authUserId)
-    .maybeSingle();
-  if (error || !data) return null;
-  return {
-    id: data.id,
-    property_access: Array.isArray(data.property_access) ? data.property_access : [],
-    role: (isValidRole(data.role) ? data.role : 'staff') as AppRole,
-  };
+async function resolveCallerAccount(authUserId: string): Promise<ManagerCaller | null> {
+  return loadSessionAccount(authUserId);
 }
 
 /**
@@ -93,16 +83,19 @@ async function resolveCallerAccount(authUserId: string): Promise<CallerAccount |
  * a capability: `manage_clean_times` is granted to every role by default, and
  * this one number sets the whole hotel's labor math. See the header.
  */
-function canEditShiftLength(account: CallerAccount): boolean {
-  return account.role === 'admin'
-    || account.role === 'owner'
-    || account.role === 'general_manager';
+function canEditShiftLength(account: ManagerCaller, propertyId: string): boolean {
+  const role = callerRoleAtHotel(account, propertyId);
+  return role !== null && canManageTeam(role);
 }
 
-function callerHasPropertyAccess(account: CallerAccount, propertyId: string): boolean {
-  if (account.role === 'admin') return true;
-  if (account.property_access.includes('*')) return true;
-  return account.property_access.includes(propertyId);
+function callerHasPropertyAccess(account: ManagerCaller, propertyId: string): boolean {
+  return callerReachesHotel(account, propertyId);
+}
+
+function callerCanMutate(account: ManagerCaller, propertyId: string): boolean {
+  if (account.reachesAllProperties) return true;
+  return account.propertyStandings?.find((standing) => standing.propertyId === propertyId)
+    ?.hotelMutationAllowed === true;
 }
 
 /**
@@ -166,8 +159,10 @@ export const GET = defineRoute({
     const rows = await fetchCleanTimeStandards(pidV.value!);
     const standards = shapeStandards(rows);
     const shiftMinutes = await fetchShiftMinutes(pidV.value!);
+    const role = callerRoleAtHotel(account, pidV.value!);
+    if (!role) return ctx.err('Forbidden', { status: 403, code: ApiErrorCode.Forbidden });
     const capabilityDecision = await capabilityDecisionForProperty(
-      { role: account.role },
+      { role },
       'manage_clean_times',
       pidV.value!,
     );
@@ -182,7 +177,7 @@ export const GET = defineRoute({
       // Separate from canEdit on purpose — see the header. The page shows the
       // shift length to everyone who can see the times, but only a manager
       // gets an editable field.
-      canEditShift: capabilityDecision === 'allowed' && canEditShiftLength(account),
+      canEditShift: capabilityDecision === 'allowed' && canEditShiftLength(account, pidV.value!),
       min: MIN_CLEAN_MINUTES,
       max: MAX_CLEAN_MINUTES,
       shiftMinutes,
@@ -205,13 +200,15 @@ export const PUT = defineRoute({
 
     const account = await resolveCallerAccount(ctx.userId);
     if (!account) return ctx.err('Account not found', { status: 404, code: ApiErrorCode.NotFound });
-    if (!callerHasPropertyAccess(account, pidV.value!)) {
+    if (!callerHasPropertyAccess(account, pidV.value!) || !callerCanMutate(account, pidV.value!)) {
       return ctx.err('Forbidden', { status: 403, code: ApiErrorCode.Forbidden });
     }
+    const role = callerRoleAtHotel(account, pidV.value!);
+    if (!role) return ctx.err('Forbidden', { status: 403, code: ApiErrorCode.Forbidden });
     // Writes honor the per-hotel manage_clean_times capability (default: every
     // role; an admin can switch a role OFF for this hotel from the Access tab).
     const capabilityDecision = await capabilityDecisionForProperty(
-      { role: account.role },
+      { role },
       'manage_clean_times',
       pidV.value!,
     );
@@ -231,7 +228,7 @@ export const PUT = defineRoute({
     // Optional — omitted means "leave the shift length alone".
     let nextShiftMinutes: number | null = null;
     if (body.shiftMinutes !== undefined) {
-      if (!canEditShiftLength(account)) {
+      if (!canEditShiftLength(account, pidV.value!)) {
         return ctx.err('Only an owner or general manager can change the shift length', {
           status: 403, code: ApiErrorCode.Forbidden,
         });
@@ -267,7 +264,7 @@ export const PUT = defineRoute({
       updates.push({ cleaning_type: cleaningType, base_minutes: baseMinutes });
     }
 
-    const result = await upsertCleanTimeStandards(pidV.value!, updates, account.id);
+    const result = await upsertCleanTimeStandards(pidV.value!, updates, account.accountId);
     if (!result.ok) {
       log.error('[settings/clean-times:PUT] upsert failed', { requestId: ctx.requestId, err: result.error });
       return ctx.err('Failed to save cleaning times', { status: 500, code: ApiErrorCode.InternalError });
@@ -296,7 +293,7 @@ export const PUT = defineRoute({
     const shiftMinutes = await fetchShiftMinutes(pidV.value!);
     return ctx.ok({
       standards, shiftMinutes, canEdit: true,
-      canEditShift: canEditShiftLength(account),
+      canEditShift: canEditShiftLength(account, pidV.value!),
     });
   },
 });

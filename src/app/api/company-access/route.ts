@@ -16,6 +16,8 @@ import {
   ACCESS_PROFILES,
   ACCESS_PROFILE_CAPABILITIES,
   canDelegateAccess,
+  portfolioIdsForAccessGrant,
+  propertyIdsForAccessGrant,
   type AccessFacts,
   type AccessGrantFact,
   type AccessProfile,
@@ -39,6 +41,7 @@ import { getOrMintRequestId, log } from '@/lib/log';
 import { errToString } from '@/lib/utils';
 import {
   legacyAccessProfile,
+  EMPTY_COMPANY_ACCESS,
   type CompanyAccessData,
   type CompanyAccessPermissions,
   type CompanyActivityEvent,
@@ -287,6 +290,40 @@ function missingSchemaError(error: unknown): boolean {
     || /relation .* does not exist|function .* does not exist|schema cache/i.test(record.message ?? '');
 }
 
+type CompanyAuthorityMode = 'legacy' | 'shadow' | 'normalized' | 'schema_absent';
+
+/**
+ * Decide which authority is allowed to feed the Company Hub before reading a
+ * projection. A normalized account must never fall through to the legacy
+ * `accounts.property_access` array merely because its last membership was
+ * revoked (or moved) between requests.
+ *
+ * The authoritative resolver is intentionally queried through its
+ * SECURITY DEFINER DTO rather than by reading account_authorization_state:
+ * direct table reads are revoked even from service_role. A malformed or
+ * unavailable resolver fails closed; only a genuinely absent schema permits
+ * the pre-0376 compatibility path.
+ */
+async function companyAuthorityMode(accountId: string): Promise<CompanyAuthorityMode> {
+  const { data, error } = await supabaseAdmin.rpc(
+    'staxis_list_account_authorized_properties',
+    { p_account_id: accountId },
+  );
+  if (error) {
+    if (missingSchemaError(error)) return 'schema_absent';
+    throw error;
+  }
+  if (!data || typeof data !== 'object' || Array.isArray(data)) {
+    throw new Error('Authoritative account access response was malformed');
+  }
+  const record = data as Record<string, unknown>;
+  if (record.ok !== true
+      || !['legacy', 'shadow', 'normalized'].includes(String(record.authorityMode))) {
+    throw new Error(`Authoritative account access was unavailable: ${String(record.reason ?? 'invalid_response')}`);
+  }
+  return record.authorityMode as Exclude<CompanyAuthorityMode, 'schema_absent'>;
+}
+
 class StaleCompanyProjectionError extends Error {
   constructor() {
     super('Organization access changed while the Company Hub projection was loading');
@@ -356,29 +393,7 @@ function profileRank(profile: AccessProfile): number {
 }
 
 function grantPropertyIds(grant: AccessGrantFact, facts: AccessFacts, nowMs: number): string[] {
-  const activeRelationships = facts.propertyRelationships.filter((relationship) => (
-    relationship.organizationId === grant.organizationId
-    && activeWindow(String(relationship.startsAt), relationship.endsAt ? String(relationship.endsAt) : null, nowMs)
-  ));
-  if (grant.scopeType === 'organization') return activeRelationships.map((relationship) => relationship.propertyId);
-  if (grant.scopeType === 'property') {
-    return activeRelationships.some((relationship) => relationship.id === grant.propertyRelationshipId && relationship.propertyId === grant.propertyId)
-      && grant.propertyId ? [grant.propertyId] : [];
-  }
-  if (!grant.portfolioId) return [];
-  const activePortfolio = facts.portfolios.some((portfolio) => (
-    portfolio.id === grant.portfolioId
-    && portfolio.organizationId === grant.organizationId
-    && portfolio.status === 'active'
-  ));
-  if (!activePortfolio) return [];
-  const activeRelationshipIds = new Set(activeRelationships.map((relationship) => relationship.id));
-  return facts.portfolioProperties.filter((assignment) => (
-    assignment.organizationId === grant.organizationId
-    && assignment.portfolioId === grant.portfolioId
-    && activeRelationshipIds.has(assignment.propertyRelationshipId)
-    && activeWindow(String(assignment.assignedAt), assignment.removedAt ? String(assignment.removedAt) : null, nowMs)
-  )).map((assignment) => assignment.propertyId);
+  return propertyIdsForAccessGrant(grant, facts, new Date(nowMs));
 }
 
 /** True only when grants carrying one capability contain the complete target
@@ -461,18 +476,35 @@ async function operatingCompanyNames(
   if (ids.length === 0) return out;
   try {
     const relationshipRows = await readCompleteCompanyIdChunks<{
-      organization_id: string; property_id: string; starts_at: string; ends_at: string | null;
+      organization_id: string;
+      property_id: string;
+      relationship_type: string;
+      is_primary_grouping: boolean;
+      starts_at: string;
+      ends_at: string | null;
     }>(
       ids,
       (chunk, from, to) => supabaseAdmin.from('organization_property_relationships')
-        .select('organization_id, property_id, starts_at, ends_at', { count: 'exact' })
+        .select(
+          'organization_id, property_id, relationship_type, is_primary_grouping, starts_at, ends_at',
+          { count: 'exact' },
+        )
         .in('property_id', [...chunk])
         .order('organization_id')
         .range(from, to) as unknown as PromiseLike<CompanyProjectionPage<{
-          organization_id: string; property_id: string; starts_at: string; ends_at: string | null;
+          organization_id: string;
+          property_id: string;
+          relationship_type: string;
+          is_primary_grouping: boolean;
+          starts_at: string;
+          ends_at: string | null;
         }>>,
     );
-    const openRows = relationshipRows.filter((row) => activeWindow(row.starts_at, row.ends_at, nowMs));
+    const openRows = relationshipRows.filter((row) => (
+      row.is_primary_grouping === true
+      && (row.relationship_type === 'operator' || row.relationship_type === 'owner')
+      && activeWindow(row.starts_at, row.ends_at, nowMs)
+    ));
     const organizationIds = [...new Set(openRows.map((row) => row.organization_id))]
       .filter((id) => !ignoreOrganizationIds.has(id));
     if (organizationIds.length === 0) return out;
@@ -506,7 +538,7 @@ async function legacyProjection(account: AccountRow): Promise<CompanyAccessData>
       return {
         organizations: [], portfolios: [], properties: [], invitations: [], requests: [], activity: [],
         memberships: [], effectiveAccess: [], legacyFallback: true,
-        permissions: legacyPermissions(account.role),
+        permissions: legacyPermissions(account.role, []),
       };
     }
   }
@@ -581,18 +613,19 @@ async function legacyProjection(account: AccountRow): Promise<CompanyAccessData>
     invitations: [],
     requests: [],
     activity: [],
-    permissions: legacyPermissions(account.role),
+    permissions: legacyPermissions(account.role, properties.map((property) => property.id)),
     legacyFallback: true,
   };
 }
 
-function legacyPermissions(role: AppRole): CompanyAccessPermissions {
+function legacyPermissions(role: AppRole, propertyIds: string[]): CompanyAccessPermissions {
   const manager = role === 'owner' || role === 'general_manager' || role === 'admin';
   return {
     viewHotels: true,
     viewPeople: manager,
     managePeople: manager,
     manageInvitations: manager,
+    accountInvitePropertyIds: manager ? [...new Set(propertyIds)].sort() : [],
     viewAccess: true,
     manageAccess: role === 'owner' || role === 'admin',
     viewActivity: manager,
@@ -723,12 +756,15 @@ async function normalizedProjection(actorAccountId: string): Promise<CompanyAcce
         id: relationship.id,
         organizationId: relationship.organization_id,
         propertyId: relationship.property_id,
+        relationshipType: relationship.relationship_type,
+        isPrimaryGrouping: relationship.is_primary_grouping,
         startsAt: relationship.starts_at,
         endsAt: relationship.ends_at,
       })),
       portfolios: portfolios.map((portfolio) => ({
         id: portfolio.id,
         organizationId: portfolio.organization_id,
+        parentId: portfolio.parent_id,
         status: portfolio.status,
       })),
       portfolioProperties: portfolioProperties.map((assignment) => ({
@@ -766,7 +802,11 @@ async function normalizedProjection(actorAccountId: string): Promise<CompanyAcce
     // still sees only its own buildings; the profile decides only what KIND of
     // thing a person may see (`accessProfileForHat`).
     const operatedPropertyIds = new Set(relationships
-      .filter((relationship) => activeWindow(relationship.starts_at, relationship.ends_at, projectionAtMs))
+      .filter((relationship) => (
+        relationship.is_primary_grouping === true
+        && (relationship.relationship_type === 'operator' || relationship.relationship_type === 'owner')
+        && activeWindow(relationship.starts_at, relationship.ends_at, projectionAtMs)
+      ))
       .map((relationship) => relationship.property_id));
     const hatFacts = hatFactsFor(memberships, operatedPropertyIds, projectionAtMs);
     const actorHats = hatFacts.filter((hat) => hat.accountId === actorAccountId);
@@ -804,7 +844,9 @@ async function normalizedProjection(actorAccountId: string): Promise<CompanyAcce
   const nowMs = Date.now();
   const organizationNames = new Map(membershipOrganizationsData.map((item) => [item.organization.id, item.organization.name]));
   const activeRelationshipRows = organizationsData.flatMap((item) => item.relationships.filter((relationship) => (
-    activeWindow(relationship.starts_at, relationship.ends_at, nowMs)
+    relationship.is_primary_grouping === true
+    && (relationship.relationship_type === 'operator' || relationship.relationship_type === 'owner')
+    && activeWindow(relationship.starts_at, relationship.ends_at, nowMs)
     && item.actorPropertyIds.has(relationship.property_id)
   )));
   const chosenRelationshipByOrganizationProperty = new Map<string, RelationshipRow>();
@@ -844,10 +886,14 @@ async function normalizedProjection(actorAccountId: string): Promise<CompanyAcce
     const companyGrants = item.actorGrants.filter((grant) => (
       ACCESS_PROFILE_CAPABILITIES[grant.accessProfile].includes('view_company')
     ));
-    const canViewAllPortfolios = companyGrants.some((grant) => grant.scopeType === 'organization');
-    const visiblePortfolioIds = new Set(companyGrants
-      .filter((grant) => grant.scopeType === 'portfolio' && grant.portfolioId)
-      .map((grant) => grant.portfolioId as string));
+    const canViewAllPortfolios = companyGrants.some((grant) => grant.scopeType === 'organization')
+      || item.actorHats.some((hat) => (
+        hat.scope === 'company'
+        && ACCESS_PROFILE_CAPABILITIES[hat.accessProfile].includes('view_company')
+      ));
+    const visiblePortfolioIds = new Set(companyGrants.flatMap((grant) => (
+      portfolioIdsForAccessGrant(grant, item.facts, projectionAt)
+    )));
     return item.portfolios.filter((portfolio) => (
       portfolio.status === 'active'
       && (canViewAllPortfolios || visiblePortfolioIds.has(portfolio.id))
@@ -1145,7 +1191,9 @@ async function normalizedProjection(actorAccountId: string): Promise<CompanyAcce
         .filter((portfolio) => portfolio.status === 'active')
         .map((portfolio) => portfolio.id);
       const activePropertyIds = [...new Set(item.relationships.filter((relationship) => (
-        activeWindow(relationship.starts_at, relationship.ends_at, nowMs)
+        relationship.is_primary_grouping === true
+        && (relationship.relationship_type === 'operator' || relationship.relationship_type === 'owner')
+        && activeWindow(relationship.starts_at, relationship.ends_at, nowMs)
       )).map((relationship) => relationship.property_id))];
       const profiles = ACCESS_PROFILES.map((accessProfile) => {
         const organizationScope = canDelegateAccess({
@@ -1176,11 +1224,20 @@ async function normalizedProjection(actorAccountId: string): Promise<CompanyAcce
     policy.profiles.map((profile) => profile.accessProfile)
   )))];
   const allCapabilities = new Set(organizationsData.flatMap((item) => [...item.actorCapabilities]));
+  const accountInvitePropertyIds = [...new Set(organizationsData.flatMap((item) => [
+    ...item.actorGrants
+      .filter((grant) => ACCESS_PROFILE_CAPABILITIES[grant.accessProfile].includes('manage_people'))
+      .flatMap((grant) => grantPropertyIds(grant, item.facts, nowMs)),
+    ...item.actorHats
+      .filter((hat) => ACCESS_PROFILE_CAPABILITIES[hat.accessProfile].includes('manage_people'))
+      .flatMap((hat) => hat.propertyIds),
+  ]))].sort();
   const permissions: CompanyAccessPermissions = {
     viewHotels: allCapabilities.has('view_properties'),
     viewPeople: allCapabilities.has('view_people'),
     managePeople: allCapabilities.has('manage_people'),
-    manageInvitations: delegationPolicies.length > 0,
+    manageInvitations: accountInvitePropertyIds.length > 0,
+    accountInvitePropertyIds,
     viewAccess: allCapabilities.has('view_access') || receipts.length > 0,
     manageAccess: allCapabilities.has('manage_access'),
     viewActivity: allCapabilities.has('view_activity'),
@@ -1410,11 +1467,37 @@ export async function GET(req: NextRequest) {
       });
     }
 
+    const authorityMode = await companyAuthorityMode(actor.accountId);
+
+    // Legacy and shadow are deliberately legacy-only authority modes. In
+    // particular, a shadow account may already have normalized rows for drift
+    // comparison, but those rows are not yet allowed to drive this surface.
+    if (authorityMode === 'legacy' || authorityMode === 'shadow') {
+      const projection = await legacyProjection(account);
+      const { data: endingAccount, error: endingAccountError } = await supabaseAdmin
+        .from('accounts')
+        .select('active')
+        .eq('id', account.id)
+        .maybeSingle();
+      if (endingAccountError) throw endingAccountError;
+      if (endingAccount?.active !== true) {
+        return err('Account not found', { requestId, status: 404, code: ApiErrorCode.NotFound });
+      }
+      return ok(projection, { requestId });
+    }
+
     try {
       for (let attempt = 0; attempt < 2; attempt += 1) {
         try {
           const normalized = await normalizedProjection(actor.accountId);
           if (normalized) return ok(normalized, { requestId });
+
+          // Normalized is a one-way cutover. No active company membership is
+          // an empty/denied company projection, never permission to resurrect
+          // stale accounts.property_access from before revocation or transfer.
+          if (authorityMode === 'normalized') {
+            return ok(EMPTY_COMPANY_ACCESS, { requestId });
+          }
           break;
         } catch (normalizedError) {
           if ((normalizedError instanceof StaleCompanyProjectionError
@@ -1423,7 +1506,12 @@ export async function GET(req: NextRequest) {
         }
       }
     } catch (normalizedError) {
-      if (!missingSchemaError(normalizedError)) throw normalizedError;
+      // The compatibility fallback exists only when the organization schema
+      // itself is absent. Once the authoritative mode RPC exists, any
+      // normalized projection failure is an error, not a legacy grant.
+      if (authorityMode !== 'schema_absent' || !missingSchemaError(normalizedError)) {
+        throw normalizedError;
+      }
     }
 
     // The normalized projection deliberately ignores inactive memberships.
@@ -1440,6 +1528,9 @@ export async function GET(req: NextRequest) {
       return err('Account not found', { requestId, status: 404, code: ApiErrorCode.NotFound });
     }
 
+    if (authorityMode !== 'schema_absent') {
+      throw new Error('Authoritative company access could not be projected');
+    }
     return ok(await legacyProjection(account), { requestId });
   } catch (caught) {
     log.error('[company-access:GET] projection failed', { requestId, error: errToString(caught) });

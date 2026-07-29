@@ -18,11 +18,12 @@
  */
 
 import { NextRequest } from 'next/server';
-import { supabaseAdmin } from '@/lib/supabase-admin';
 import { requireSession } from '@/lib/api-auth';
 import { ok, err } from '@/lib/api-response';
 import { getOrMintRequestId } from '@/lib/log';
 import { recordAppEvent } from '@/lib/event-recorder';
+import { isUuid } from '@/lib/api-validate';
+import { callerReachesHotel, callerRoleAtHotel, loadSessionAccount } from '@/lib/team-auth';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -51,22 +52,17 @@ export async function POST(req: NextRequest) {
   // propertyId is allowed to be null — admin pages don't have a property
   // context. We still log so admin behavior is auditable separately.
 
-  // Look up user role + property access once. Cheap; cached locally per instance.
-  const { data: account } = await supabaseAdmin
-    .from('accounts')
-    .select('role, property_access')
-    .eq('data_user_id', session.userId)
-    .maybeSingle();
-
-  const userRole = (account?.role as string | undefined) ?? null;
+  const account = await loadSessionAccount(session.userId);
   // Only honor a client-supplied propertyId the caller actually has access to —
   // otherwise the analytics firehose could be polluted with events mis-tagged to
   // another hotel, skewing admin per-hotel engagement stats. (Audit fix 2026-06-18.)
-  const access = (account?.property_access ?? []) as string[];
   const safePropertyId =
-    propertyId && (userRole === 'admin' || access.includes('*') || access.includes(propertyId))
+    propertyId && isUuid(propertyId) && account && callerReachesHotel(account, propertyId)
       ? propertyId
       : null;
+  const userRole = safePropertyId && account
+    ? callerRoleAtHotel(account, safePropertyId)
+    : account?.role ?? null;
 
   const metadata = (body.metadata && typeof body.metadata === 'object' && !Array.isArray(body.metadata))
     ? body.metadata

@@ -30,8 +30,17 @@ import {
   cancelCostReservation,
 } from '@/lib/agent/cost-controls';
 import { handleToolCallFinished } from './_tool-result-handler';
-import { effectiveRole } from '@/lib/company/access';
-import type { AppRole } from '@/lib/roles';
+import {
+  authoritativeStandingForProperty,
+  listAuthoritativePropertyAccess,
+} from '@/lib/authorization/server';
+import { canViewFinancials, type AppRole } from '@/lib/roles';
+import { can } from '@/lib/capabilities/can';
+import { loadOverridesForPropertyFresh } from '@/lib/capabilities/server';
+import {
+  AGENT_TOOL_CAPABILITY_KEYS,
+  type AgentToolCapabilitySnapshot,
+} from '@/lib/agent/tools';
 
 // ─── Shared user-context loader ────────────────────────────────────────────
 // Both /api/agent/command and .../resolve-action need the SAME account row +
@@ -59,6 +68,11 @@ export interface AgentUserCtx {
    */
   role: AppRole;
   propertyAccess: string[];
+  hotelMutationAllowed: boolean;
+  /** Read-only Financials entitlement at this hotel. Kept separate from role:
+   *  a company finance hat remains operationally front_desk. */
+  seesFinancials: boolean;
+  capabilitySnapshot: AgentToolCapabilitySnapshot;
   dept: string | null;
 }
 
@@ -78,28 +92,46 @@ export async function loadAgentUserCtx(
 ): Promise<LoadUserCtxResult> {
   const { data: account, error: accountErr } = await supabaseAdmin
     .from('accounts')
-    .select('id, username, display_name, role, property_access, data_user_id')
+    .select('id, username, display_name, data_user_id, active')
     .eq('data_user_id', authUserId)
     .maybeSingle();
-  if (accountErr || !account) return { ok: false, reason: 'account_not_found' };
+  if (accountErr || !account || account.active !== true) {
+    return { ok: false, reason: 'account_not_found' };
+  }
 
   const accountId = account.id as string;
-  const legacyRole = (account.role as AppRole) ?? 'staff';
-  const legacyAccess = (account.property_access as string[]) ?? [];
+  const authority = await listAuthoritativePropertyAccess(accountId);
+  if (!authority) return { ok: false, reason: 'account_not_found' };
+  const standing = authoritativeStandingForProperty(authority, propertyId);
+  if (!standing) return { ok: false, reason: 'account_not_found' };
 
-  // The hat at THIS hotel. Falls back to the legacy role when the spine has
-  // nothing to say (an independent hotel, or a person with no membership) —
-  // `resolveEffectiveRole` already returns the legacy role in that case, so a
-  // null here means the spine actively found no standing at this property.
-  // Never widens: the route's `userHasPropertyAccess` gate ran first.
-  let roleHere: AppRole = legacyRole;
-  try {
-    const hat = await effectiveRole(accountId, propertyId);
-    if (hat.role) roleHere = hat.role;
-  } catch {
-    // A spine hiccup must not take the chat down. The legacy role is what this
-    // route used for its whole life, so falling back to it is the pre-lens
-    // behaviour rather than a new failure mode.
+  // Capture the capability floor before the model sees its catalog. A store
+  // outage removes capability-gated tools but does not take down ordinary hotel
+  // chat. executeTool intersects this snapshot with a separate uncached read.
+  let overrides: Awaited<ReturnType<typeof loadOverridesForPropertyFresh>> | undefined;
+  let overridesAvailable = standing.operationalRole === 'admin';
+  if (standing.operationalRole !== 'admin') {
+    try {
+      overrides = await loadOverridesForPropertyFresh(propertyId);
+      overridesAvailable = true;
+    } catch {
+      overridesAvailable = false;
+    }
+  }
+  const capabilitySnapshot: Partial<Record<
+    (typeof AGENT_TOOL_CAPABILITY_KEYS)[number],
+    boolean
+  >> = {};
+  for (const capability of AGENT_TOOL_CAPABILITY_KEYS) {
+    const explicitFinanceRead = capability === 'view_financials'
+      && standing.seesFinancials
+      && !canViewFinancials(standing.operationalRole);
+    capabilitySnapshot[capability] = explicitFinanceRead
+      || (overridesAvailable && can(
+        { role: standing.operationalRole },
+        capability,
+        overrides,
+      ));
   }
 
   const userCtx: AgentUserCtx = {
@@ -107,14 +139,13 @@ export async function loadAgentUserCtx(
     accountId,
     username: account.username as string,
     displayName: (account.display_name as string) ?? (account.username as string),
-    role: roleHere,
-    // `executeTool` re-checks this array as defense-in-depth against a tool
-    // that forgets its own hotel filter. A hat-only company person has an EMPTY
-    // legacy array — they reach the hotel through a membership — so without
-    // this union every tool would refuse them even though the route let them
-    // in. Union, never replace: the array still names only hotels they reach,
-    // so the check keeps refusing every OTHER property.
-    propertyAccess: legacyAccess.includes(propertyId) ? legacyAccess : [...legacyAccess, propertyId],
+    role: standing.operationalRole,
+    // The tool layer receives the exact same authority projection as the
+    // route. It is never an additive union with accounts.property_access.
+    propertyAccess: authority.all ? ['*'] : authority.propertyIds,
+    hotelMutationAllowed: standing.hotelMutationAllowed,
+    seesFinancials: standing.seesFinancials,
+    capabilitySnapshot,
     dept: null,
   };
 

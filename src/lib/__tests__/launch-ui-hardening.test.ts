@@ -98,7 +98,7 @@ test('static legal pages render inside the root document without nested document
   }
 });
 
-test('financial and settings reads wait for a matching authorized property context', () => {
+test('financial and notification reads wait for matching authority while retired user bookmarks redirect', () => {
   const financials = source('src', 'app', 'financials', 'page.tsx');
   const notifications = source(
     'src',
@@ -110,15 +110,20 @@ test('financial and settings reads wait for a matching authorized property conte
   );
   const users = source('src', 'app', 'settings', 'users', 'page.tsx');
 
-  assert.match(financials, /const allowed = accessContextReady && financialsEnabled/);
+  assert.match(financials, /const authorizationContextReady = user\?\.role === 'admin' \|\| authorizationChecked/);
+  assert.match(financials, /const allowed = accessContextReady[\s\S]*&& authorizationContextReady[\s\S]*&& financialsEnabled/);
+  assert.match(financials, /activePropertyStanding\.seesFinancials/);
   assert.match(financials, /enabled: !!activePropertyId && allowed/);
-  for (const page of [notifications, users]) {
-    assert.match(page, /capabilityOverridesViewerKey === capabilityViewerKey/);
-    assert.match(page, /const propertyId = activePropertyId \?\? ''/);
-    assert.match(page, /onChange=\{e => setActivePropertyId\(e\.target\.value\)\}/);
-    assert.match(page, /requestId !== loadRequestRef\.current \|\| activeScopeRef\.current !== requestedPropertyId/);
-    assert.match(page, /if \(!requestedPropertyId \|\| !allowed/);
-  }
+  assert.match(notifications, /capabilityOverridesViewerKey === capabilityViewerKey/);
+  assert.match(notifications, /const propertyId = activePropertyId \?\? ''/);
+  assert.match(notifications, /onChange=\{e => setActivePropertyId\(e\.target\.value\)\}/);
+  assert.match(notifications, /requestId !== loadRequestRef\.current \|\| activeScopeRef\.current !== requestedPropertyId/);
+  assert.match(notifications, /if \(!requestedPropertyId \|\| !allowed/);
+
+  // User management has no second property-scoped client anymore. Old
+  // bookmarks resolve server-side to the single Company Access workspace.
+  assert.match(users, /redirect\('\/company\?tab=access'\)/);
+  assert.doesNotMatch(users, /fetchWithAuth|useEffect|useProperty/);
 });
 
 /**

@@ -10,8 +10,9 @@
 // SNAPSHOT: a hotel the company bought last week is covered by every company
 // hat the moment the relationship row exists, and it was still missing here, so
 // the only way to see it was to re-invite the person. The route resolves
-// coverage through the spine (`accessibleProperties`: the legacy array UNION
-// every live hat) and the new hotel simply appears.
+// coverage through the spine (`accessibleProperties`: one exclusive authority
+// mode, with normalized entitlements expanded over current topology) and the
+// new hotel simply appears without reviving stale legacy ids.
 //
 // PropertyContext is still used for ONE thing — `setActivePropertyId`, which is
 // what the rest of the app reads. It is a localStorage write, not a lookup, so
@@ -41,6 +42,7 @@ import {
   type CommandCenterPayload,
   type PickerHotel,
 } from './CommandCenter';
+import { authorizedCompanySelection, companyBootstrapPath } from './company-selection';
 
 function Spinner() {
   return (
@@ -66,6 +68,7 @@ export default function PropertySelectorPage() {
   const { lang } = useLang();
   const router = useRouter();
   const [companyRouteChecked, setCompanyRouteChecked] = useState(false);
+  const [selectedOrganizationId, setSelectedOrganizationId] = useState<string | null>(null);
 
   // Redirect unauthenticated users to sign-in.
   useEffect(() => {
@@ -73,11 +76,29 @@ export default function PropertySelectorPage() {
   }, [user, authLoading, router]);
 
   const { data, error, reload } = useApiResource<CommandCenterPayload>(
-    '/api/property-selector/bootstrap',
+    companyBootstrapPath(selectedOrganizationId),
     { enabled: !authLoading && !!user },
   );
 
   const hotels = data?.hotels ?? [];
+  const requiresCompanySelection = Boolean(
+    data && !data.company && (data.requiresCompanySelection || data.companies.length > 1),
+  );
+  const companySelectionMismatch = Boolean(
+    data
+      && selectedOrganizationId
+      && data.company?.organizationId !== selectedOrganizationId,
+  );
+
+  const selectCompany = useCallback((organizationId: string) => {
+    const authorized = authorizedCompanySelection(data?.companies ?? [], organizationId);
+    if (!authorized || authorized === selectedOrganizationId) return;
+    // Switching the URL is a resource-identity change. useApiResource discards
+    // the old payload before fetching, so neither hotels nor chat from company
+    // A can render under company B while the new authorization is checked.
+    setCompanyRouteChecked(false);
+    setSelectedOrganizationId(authorized);
+  }, [data?.companies, selectedOrganizationId]);
 
   // Route into the app — UNLESS this property's onboarding isn't finished, in
   // which case keep the owner in the wizard (a half-onboarded hotel has no PMS
@@ -115,9 +136,9 @@ export default function PropertySelectorPage() {
   // entirely. A company person with one hotel keeps the command centre: their
   // queue and their ask line are the reason they opened Staxis, not the door.
   useEffect(() => {
-    if (!data || data.company) return;
+    if (!data || data.company || requiresCompanySelection) return;
     if (data.hotels.length === 1) enter(data.hotels[0]);
-  }, [data, enter]);
+  }, [data, enter, requiresCompanySelection]);
 
   // Organization-only leaders intentionally have no inferred legacy hotel
   // access. On later ordinary sign-ins, distinguish them from pending hotel
@@ -126,6 +147,10 @@ export default function PropertySelectorPage() {
   // hotels yet — but it is still the right destination for that person.
   useEffect(() => {
     if (authLoading || !data || !user) return;
+    if (requiresCompanySelection) {
+      setCompanyRouteChecked(true);
+      return;
+    }
     if (hotels.length > 0 || user.role === 'admin') {
       setCompanyRouteChecked(true);
       return;
@@ -155,7 +180,7 @@ export default function PropertySelectorPage() {
     })();
 
     return () => { cancelled = true; };
-  }, [authLoading, data, hotels.length, router, user]);
+  }, [authLoading, data, hotels.length, requiresCompanySelection, router, user]);
 
   const handleSignOut = useCallback(async () => {
     sessionStorage.removeItem('hotelops-session-selected');
@@ -166,7 +191,35 @@ export default function PropertySelectorPage() {
   // A failed read is NOT "you have no hotels". It says so and offers a retry —
   // never a silent empty picker.
   if (error && !data) {
-    return <CommandCenterFailed lang={lang} onRetry={() => void reload()} onSignOut={handleSignOut} />;
+    return (
+      <CommandCenterFailed
+        lang={lang}
+        onRetry={() => void reload()}
+        onChooseAnotherCompany={selectedOrganizationId
+          ? () => {
+              setCompanyRouteChecked(false);
+              setSelectedOrganizationId(null);
+            }
+          : undefined}
+        onSignOut={handleSignOut}
+      />
+    );
+  }
+
+  // A cached/proxied response for a different organization is never rendered.
+  // The server binds private responses and re-authorizes the id; this client
+  // check closes the visual boundary if either of those invariants regresses.
+  if (companySelectionMismatch) {
+    return (
+      <CommandCenterFailed
+        lang={lang}
+        onRetry={() => {
+          setCompanyRouteChecked(false);
+          setSelectedOrganizationId(null);
+        }}
+        onSignOut={handleSignOut}
+      />
+    );
   }
 
   const settling = authLoading
@@ -174,23 +227,28 @@ export default function PropertySelectorPage() {
     || !data
     // A single-hotel person is mid-redirect; showing them the door they are
     // already walking through would be a flash of a screen they never chose.
-    || (!data.company && data.hotels.length === 1)
-    || (hotels.length === 0 && user.role !== 'admin' && !companyRouteChecked);
+    || (!requiresCompanySelection && !data.company && data.hotels.length === 1)
+    || (!requiresCompanySelection
+      && hotels.length === 0
+      && user.role !== 'admin'
+      && !companyRouteChecked);
 
   if (settling) return <Spinner />;
 
   // Account with ZERO hotel access → hand off to the join-status gate. For a
   // pending staff signup it shows the "waiting for approval" screen; for a
   // genuinely property-less account it falls back to "No properties found".
-  if (hotels.length === 0) {
+  if (hotels.length === 0 && !requiresCompanySelection) {
     return <JoinStatusGate lang={lang} onSignOut={handleSignOut} />;
   }
 
   return (
     <CommandCenterView
+      key={data.company?.organizationId ?? 'company-choice'}
       payload={data}
       lang={lang}
       onOpenHotel={enter}
+      onSelectCompany={selectCompany}
       onSignOut={handleSignOut}
     />
   );

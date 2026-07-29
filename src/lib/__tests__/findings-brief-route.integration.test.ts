@@ -317,11 +317,15 @@ describe('/api/findings/brief — the morning brief', () => {
     test('leads with the biggest dollars and ends with the liveness line', async () => {
       const { body } = await readBrief(PID_A);
       const brief = body.data!.brief!;
-      const en = brief.lines.map((l) => l.text);
-      assert.ok(en[1].startsWith('The ice machine has had 3 service calls.'), en[1]);
-      assert.match(en[1], /\$2,100–\$3,800/);
-      assert.ok(en[2].startsWith('Room 214'), en[2]);
-      assert.match(en[en.length - 1], /^Checked 34 things last night/);
+      const highlights = brief.lines.filter((line) => line.findingId).map((line) => line.text);
+      assert.ok(highlights[0].startsWith('The ice machine has had 3 service calls.'), highlights[0]);
+      assert.match(highlights[0], /\$2,100–\$3,800/);
+      assert.ok(highlights[1].startsWith('Room 214'), highlights[1]);
+      // The framing line is intentionally absent when the run has gone stale;
+      // highlights keep their order and the final line still discloses the
+      // run's honest freshness instead of pinning this test to wall-clock day.
+      assert.equal(brief.lines.at(-1)?.findingId, undefined);
+      assert.match(brief.lines.at(-1)?.text ?? '', /^(?:Checked 34 things last night|Last checked )/);
       assert.ok(brief.lines.length <= 8);
     });
 

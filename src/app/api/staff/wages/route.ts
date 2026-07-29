@@ -16,7 +16,7 @@
  *   - verifies the staff row belongs to that property (no cross-property IDOR)
  *
  * Mirrors the projection discipline in /api/staff-list ("NEVER add
- * hourly_wage") and the management role-gate shape in /api/settings/users.
+ * hourly_wage") and the management role-gate shape in Company Access.
  *
  *   GET  ?propertyId=<uuid>
  *     200 → { ok, requestId, data: { wages: { [staffId]: number | null } } }
@@ -37,29 +37,32 @@ import { validateUuid } from '@/lib/api-validate';
 import { type AppRole } from '@/lib/roles';
 import { capabilityDecisionForProperty } from '@/lib/capabilities/server';
 import { capabilityUnavailableResponse } from '@/lib/capabilities/api-gate';
-import {
-  callerManagesProperty,
-  validateWage,
-  type WageCaller,
-} from '@/lib/staff-wages';
+import { validateWage } from '@/lib/staff-wages';
 import { requireSectionEnabled } from '@/lib/sections/server';
+import {
+  callerRoleAtHotel,
+  loadSessionAccount,
+  managerManagesHotel,
+  type ManagerCaller,
+} from '@/lib/team-auth';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
-async function loadCaller(authUserId: string): Promise<WageCaller | null> {
-  const { data, error } = await supabaseAdmin
-    .from('accounts')
-    .select('role, property_access')
-    .eq('data_user_id', authUserId)
-    .maybeSingle();
-  if (error || !data) return null;
-  return {
-    role: (data as { role: string }).role as AppRole,
-    propertyAccess: Array.isArray((data as { property_access?: unknown }).property_access)
-      ? ((data as { property_access: string[] }).property_access)
-      : [],
-  };
+async function loadCaller(
+  authUserId: string,
+  propertyId: string,
+): Promise<{ caller: ManagerCaller; role: AppRole } | null> {
+  const caller = await loadSessionAccount(authUserId);
+  if (!caller || !managerManagesHotel(caller, propertyId)) return null;
+  const role = callerRoleAtHotel(caller, propertyId);
+  return role ? { caller, role } : null;
+}
+
+function canMutateWages(caller: ManagerCaller, propertyId: string): boolean {
+  if (caller.reachesAllProperties) return true;
+  return caller.propertyStandings?.find((standing) => standing.propertyId === propertyId)
+    ?.hotelMutationAllowed === true;
 }
 
 export async function GET(req: NextRequest) {
@@ -67,16 +70,12 @@ export async function GET(req: NextRequest) {
   const session = await requireSession(req, { requestId });
   if (!session.ok) return session.response;
 
-  const caller = await loadCaller(session.userId);
-  if (!caller) return err('Account not found', { requestId, status: 404, code: ApiErrorCode.NotFound });
-
   const pidV = validateUuid(new URL(req.url).searchParams.get('propertyId'), 'propertyId');
   if (pidV.error) return err(pidV.error, { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
-  if (!callerManagesProperty(caller, pidV.value!)) {
-    return err('Forbidden', { requestId, status: 403, code: ApiErrorCode.Forbidden });
-  }
+  const loaded = await loadCaller(session.userId, pidV.value!);
+  if (!loaded) return err('Forbidden', { requestId, status: 403, code: ApiErrorCode.Forbidden });
   const capabilityDecision = await capabilityDecisionForProperty(
-    { role: caller.role },
+    { role: loaded.role },
     'view_wages',
     pidV.value!,
   );
@@ -117,16 +116,14 @@ export async function PUT(req: NextRequest) {
   const body = (await req.json().catch(() => null)) as PutBody | null;
   if (!body) return err('Invalid JSON body', { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
 
-  const caller = await loadCaller(session.userId);
-  if (!caller) return err('Account not found', { requestId, status: 404, code: ApiErrorCode.NotFound });
-
   const pidV = validateUuid(body.propertyId, 'propertyId');
   if (pidV.error) return err(pidV.error, { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
-  if (!callerManagesProperty(caller, pidV.value!)) {
+  const loaded = await loadCaller(session.userId, pidV.value!);
+  if (!loaded || !canMutateWages(loaded.caller, pidV.value!)) {
     return err('Forbidden', { requestId, status: 403, code: ApiErrorCode.Forbidden });
   }
   const capabilityDecision = await capabilityDecisionForProperty(
-    { role: caller.role },
+    { role: loaded.role },
     'view_wages',
     pidV.value!,
   );

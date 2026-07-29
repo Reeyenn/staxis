@@ -3,7 +3,7 @@
 import React from 'react';
 import { createPortal } from 'react-dom';
 import { ChevronRight, Download, LogOut, Menu, X } from 'lucide-react';
-import type { BarItem } from './ConcourseBarView';
+import type { AdminDestinationAction, BarItem } from './ConcourseBarView';
 import { CxIcon, CxLogo, CX_ICON_PATHS } from './icons';
 import styles from './MobileConcourseNav.module.css';
 
@@ -28,6 +28,7 @@ interface MobileConcourseNavProps {
   languageLabel: string;
   accountMenuLabel: string;
   companyLabel: string;
+  adminDestination?: AdminDestinationAction;
   settingsLabel: string;
   signOutLabel: string;
   installLabel: string;
@@ -76,6 +77,7 @@ export function MobileConcourseNav({
   languageLabel,
   accountMenuLabel,
   companyLabel,
+  adminDestination,
   settingsLabel,
   signOutLabel,
   installLabel,
@@ -192,6 +194,11 @@ export function MobileConcourseNav({
   const selectCompany = () => {
     closeDrawer();
     onCompany();
+  };
+
+  const selectAdmin = () => {
+    closeDrawer();
+    adminDestination?.onClick();
   };
 
   const signOut = () => {
@@ -323,6 +330,22 @@ export function MobileConcourseNav({
           ) : null}
 
           <div className={styles.divider} aria-hidden="true" />
+
+          {adminDestination ? (
+            <button
+              type="button"
+              className={`${styles.navRow} ${styles.adminDestinationRow}${adminDestination.active ? ` ${styles.navRowActive}` : ''}`}
+              onClick={selectAdmin}
+              aria-label={adminDestination.ariaLabel}
+              aria-current={adminDestination.active ? 'page' : undefined}
+            >
+              <span className={styles.iconChip} aria-hidden="true">
+                <CxIcon name="admin" size={17} />
+              </span>
+              <span className={styles.rowLabel}>{adminDestination.label}</span>
+              <ChevronRight className={styles.chevron} size={14} strokeWidth={2} aria-hidden="true" />
+            </button>
+          ) : null}
 
           {showCompany ? (
             <button

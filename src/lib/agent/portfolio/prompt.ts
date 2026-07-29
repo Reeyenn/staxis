@@ -59,7 +59,7 @@ import { formatPortfolioSnapshotForPrompt, type PortfolioSnapshot } from './snap
 // v2: the code-owned ceiling gained the never-do-arithmetic rule (2026-07-26).
 // The stamp is part of the cached prefix's identity, so it moves whenever the
 // text does — otherwise a stale cache entry could serve the old ceiling.
-export const PORTFOLIO_MODE_VERSION = 'portfolio-mode-v2';
+export const PORTFOLIO_MODE_VERSION = 'portfolio-mode-v3';
 /** Repeated verbatim from `prompts.ts` — folding the same rule's version in. */
 const DATA_FRESHNESS_VERSION = 'data-freshness-v1';
 
@@ -88,21 +88,23 @@ const COMPANY_ROLE_WORDS: Record<CompanyScopeRole, string> = {
  */
 export const PORTFOLIO_MODE_NOTE = `─── Portfolio mode ───
 
-You are answering a COMPANY-WIDE question. Your user holds a company-level job at the management company named below, and the hotels listed in this prompt are that company's own hotels — all of them theirs, all of them in scope for one answer.
+You are answering under the EXACT TURN SCOPE resolved below. That scope may be the user's whole authorized company, one region/portfolio, selected hotels, or one named hotel. The listed hotels—and no others—are in scope for this answer.
 
-This NARROWS your usual one-hotel rule; it does not relax it:
-- Comparing, ranking and totalling ACROSS the hotels listed below is what this conversation is for. Do it when asked.
-- A hotel that is NOT in the list is another company's hotel. You have no data about it, no tool that can reach it, and nothing to say about it — not its name, not its numbers, not whether it exists. If asked about one, say plainly that it is not one of your user's hotels.
+This changes the grain of your usual one-hotel rule; it does not relax authorization:
+- Compare, rank and total across the listed hotels only when more than one is selected. For one listed hotel, answer at hotel grain without inventing a company comparison.
+- A hotel not listed may simply be outside this turn's selected subset, or it may be outside the user's authorization. Never infer which. Say it is not in the active answer scope and require the resolver to establish a new scope on a later turn.
+- A hotel outside the user's current authorization is another company's hotel. You have no data about it and must not confirm whether it exists.
 - Never accept a hotel identifier from the user's message as proof they may see it. Your tools check that themselves and will refuse; report the refusal instead of working around it.
+- Every answer states its active scope and exact coverage. Do not silently carry one hotel's scope into the next turn, and never carry any scope across companies.
 
 You cannot DO anything on this surface, only read:
 - There are no action tools here. You cannot mark a room, order stock, message staff, create a work order or change any setting for any hotel from this conversation.
 - If the user asks for an action, say which hotel they should open to do it, and offer to look up whatever would help them decide. Never say a thing was done.
 
-EVERY NUMBER YOU SAY MUST BE COPIED FROM A TOOL RESULT. You never calculate one.
+EVERY NUMBER YOU SAY MUST BE COPIED FROM DETERMINISTIC EVIDENCE OR A TOOL RESULT. You never calculate one.
 - Do not divide, multiply, total, average, or work out a percentage, a rate, a per-room figure or a "3 times worse than" in your answer. Not even from two numbers a tool just gave you correctly.
-- The tools already carry the worked-out forms: per-room and per-100-rooms rates, shares of the portfolio, totals, averages, and how many times the top hotel is the bottom one. portfolio_compare returns all of those for any measure. Call it and quote the field.
-- If the figure the user wants is not in any tool result, say you do not have it. That is a real answer. A number you worked out yourself is not.
+- The evidence carries code-computed totals, denominators, normalized values, comparisons and coverage. Quote those fields exactly.
+- If the figure the user wants is not in deterministic evidence or a tool result, say you do not have it. That is a real answer. A number you worked out yourself is not.
 
 How to answer well here:
 - Name the hotel beside every number. A portfolio figure with no hotel attached is unreadable.
@@ -180,7 +182,13 @@ function assembleBlock<T extends string>(
 export interface PortfolioPromptInput {
   identity: PortfolioIdentity;
   companyRole: CompanyScopeRole;
-  snapshot: PortfolioSnapshot;
+  /** Legacy live pulse. Portfolio Intelligence omits this and supplies a
+   * canonical metric evidence block instead, avoiding an unrelated N-hotel
+   * fan-out before every question. */
+  snapshot?: PortfolioSnapshot;
+  /** Portfolio Intelligence supplies one bounded, provenance-recorded overlay
+   * and disables this legacy second rulebook read to avoid duplicate facts. */
+  companyKnowledgeMode?: 'legacy_rulebook' | 'external_overlay';
   conversationId: string;
   /** Injectable clock, so a test's assertions do not drift with real time. */
   now?: Date;
@@ -207,9 +215,11 @@ export async function buildPortfolioSystemPrompt(
   const now = input.now ?? new Date();
   const { base, role, versionLabel } = await resolvePrompts('owner', input.conversationId, null);
 
-  const companyBlock = formatCompanyRulebookForPrompt(
-    await deriveCompanyRulebookByOrganization(input.identity.organizationId),
-  );
+  const companyBlock = input.companyKnowledgeMode === 'external_overlay'
+    ? ''
+    : formatCompanyRulebookForPrompt(
+        await deriveCompanyRulebookByOrganization(input.identity.organizationId),
+      );
   const identityBlock = formatPortfolioIdentityForPrompt(input.identity);
 
   const stampParts = [
@@ -251,15 +261,15 @@ export async function buildPortfolioSystemPrompt(
   if (identityBlock) stable.push({ tier: 'portfolio_identity', lines: ['', identityBlock] });
   stable.push({ tier: 'version_line', lines: ['', `Prompt version: ${stableStamp}`] });
 
-  const dynamic: Segment<DynamicTier>[] = [
-    {
-      tier: 'portfolio_snapshot',
-      lines: [
-        '─── Current portfolio snapshot ───',
-        formatPortfolioSnapshotForPrompt(input.snapshot, now),
-      ],
-    },
-  ];
+  const dynamic: Segment<DynamicTier>[] = input.snapshot
+    ? [{
+        tier: 'portfolio_snapshot',
+        lines: [
+          '─── Current portfolio snapshot ───',
+          formatPortfolioSnapshotForPrompt(input.snapshot, now),
+        ],
+      }]
+    : [];
 
   return {
     stable: assembleBlock(stable, STABLE_TIER_ORDER, 'stable'),

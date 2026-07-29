@@ -67,18 +67,22 @@ import { applyMigrationsToPglite } from '../../../tests/fixtures/pglite-migrate'
 import { createPglitePostgrest, loadCatalog, type PglitePostgrest } from '../../../tests/fixtures/postgrest-pglite';
 import {
   ACCOUNT_ADMIN,
+  ACCOUNT_FIONA,
   ACCOUNT_FRANK,
   ORG_A,
   PID_A1,
   PID_A2,
   PID_B1,
+  UID_FIONA,
   UID_FRANK,
   UID_HANK,
   seedTwoCompanies,
+  type TwoCompanySeed,
 } from '../../../tests/fixtures/pglite-two-company-seed';
 
 let pg: PGlite;
 let shim: PglitePostgrest;
+let companySeed: TwoCompanySeed;
 let signedInAs: string | null = null;
 
 const originalFrom = supabaseAdmin.from.bind(supabaseAdmin);
@@ -91,6 +95,8 @@ const LEAK = 'ZZTYLERLEAK';
 /** The dual-hat person: a GM at Beaumont, a wrench at Lufkin. */
 const ACCOUNT_DALE = 'aaaa1111-0000-4000-8000-0000000000d1';
 const UID_DALE = 'aaaa2222-0000-4000-8000-0000000000d1';
+const ACCOUNT_WRENCH = 'aaaa1111-0000-4000-8000-0000000000d2';
+const UID_WRENCH = 'aaaa2222-0000-4000-8000-0000000000d2';
 
 /** The equipment and finding the maintenance cases hang off. */
 const EQUIP_PTAC = 'eeee0000-0000-4000-8000-000000000001';
@@ -109,6 +115,8 @@ async function routeCtx(authUserId: string, propertyId: string): Promise<ToolCon
     staffId: load.staffId,
     requestId: 'lens-test',
     surface: 'chat',
+    // A successful DB-null read is the hotel's valid default-on policy.
+    enabledSections: null,
   };
 }
 
@@ -144,7 +152,7 @@ before(async () => {
       : { data: { user: null }, error: { message: 'no session', status: 401, name: 'AuthApiError' } }
   )) as unknown as typeof supabaseAdmin.auth.getUser;
 
-  await seedTwoCompanies(pg);
+  companySeed = await seedTwoCompanies(pg);
 
   // ── Dale: GM at Beaumont, maintenance at Lufkin. One person, two hats, and
   // the reason the chat cannot read a single global role word.
@@ -157,6 +165,16 @@ before(async () => {
   await pg.query(
     "select public.staxis_set_membership_hat($1, $2, $3, 'property', 'general_manager', $4, 'GM')",
     [ACCOUNT_ADMIN, ORG_A, ACCOUNT_DALE, JSON.stringify([PID_A1])],
+  );
+  await pg.query("insert into auth.users (id, email) values ($1, 'wrench@example.test') on conflict (id) do nothing", [UID_WRENCH]);
+  await pg.query(
+    `insert into accounts (id, username, password_hash, display_name, role, property_access, data_user_id)
+     values ($1, 'wrench', 'x', 'Wrench', 'maintenance', '{}', $2) on conflict (id) do nothing`,
+    [ACCOUNT_WRENCH, UID_WRENCH],
+  );
+  await pg.query(
+    "select public.staxis_set_membership_hat($1, $2, $3, 'property', 'maintenance', $4, 'Maintenance')",
+    [ACCOUNT_ADMIN, ORG_A, ACCOUNT_WRENCH, JSON.stringify([PID_A1])],
   );
 
   // ── The hotel's Knows facts. Three on Beaumont, one on Tyler. ────────────
@@ -329,11 +347,11 @@ describe('front desk — guest questions', () => {
 // ═══════════════════════════════════════════════════════════════════════════
 
 describe('maintenance — the wrench\'s four surfaces', () => {
-  /** Dale at Lufkin wears the maintenance hat; Beaumont is where the data is,
-   *  so these run as a maintenance-role context on Beaumont. */
+  /** A current property-scope maintenance job at Beaumont. The dispatcher now
+   *  re-resolves the live standing, so a forged role on a front-desk context is
+   *  intentionally no longer a valid fixture. */
   async function wrenchCtx(): Promise<ToolContext> {
-    const ctx = await routeCtx(UID_FRANK, PID_A1);
-    return { ...ctx, user: { ...ctx.user, role: 'maintenance' } };
+    return routeCtx(UID_WRENCH, PID_A1);
   }
 
   test('work-order history is room-targeted and does not match a room that merely contains the digits', async () => {
@@ -418,6 +436,73 @@ describe('maintenance — the wrench\'s four surfaces', () => {
 // ═══════════════════════════════════════════════════════════════════════════
 
 describe('role resolution', () => {
+  test('a real company finance hat gets Financials reads only, and revocation is immediate', async () => {
+    const finance = await routeCtx(UID_FIONA, PID_A1);
+    assert.equal(finance.user.role, 'front_desk', 'finance must not impersonate a hotel manager');
+    assert.equal(finance.user.seesFinancials, true);
+    assert.equal(finance.user.hotelMutationAllowed, false);
+
+    const catalog = getToolsForRole(
+      finance.user.role,
+      'chat',
+      undefined,
+      undefined,
+      {
+        seesFinancials: true,
+        hotelMutationAllowed: false,
+        capabilitySnapshot: finance.user.capabilitySnapshot,
+      },
+    );
+    const names = catalog.map((tool) => tool.name);
+    for (const financialRead of [
+      'get_finance_summary',
+      'get_inventory_monthly_accounting',
+      'get_payments_summary',
+    ]) {
+      assert.ok(names.includes(financialRead), `${financialRead} was not offered to finance`);
+    }
+    assert.equal(names.includes('get_schedule'), false, 'finance widened into a manager read');
+    assert.ok(catalog.every((tool) => tool.mutates !== true), 'finance was offered a hotel mutation');
+
+    shim.reset();
+    const read = await executeTool('get_payments_summary', {}, finance);
+    assert.equal(read.ok, true, read.error);
+    assert.ok(
+      shim.statements.some((statement) => statement.target === 'pms_payments_daily_current'),
+      'the real financial handler was never reached',
+    );
+
+    shim.reset();
+    const summary = await executeTool('get_finance_summary', { period: 'this_month' }, finance);
+    assert.equal(summary.ok, true, summary.error);
+    assert.ok(
+      shim.statements.some((statement) => statement.target === 'financial_expenses'),
+      'the guarded financial-summary handler was never reached',
+    );
+
+    const financeHat = companySeed.hats.get(`${ACCOUNT_FIONA}:company:finance`);
+    assert.ok(financeHat);
+    await pg.query(
+      'update public.organization_memberships set status = \'suspended\' where id = $1',
+      [financeHat],
+    );
+    try {
+      shim.reset();
+      const revoked = await executeTool('get_payments_summary', {}, finance);
+      assert.equal(revoked.ok, false, 'a stale finance catalog survived revocation');
+      assert.equal(
+        shim.statements.some((statement) => statement.target === 'pms_payments_daily_current'),
+        false,
+        'the financial handler ran after revocation',
+      );
+    } finally {
+      await pg.query(
+        'update public.organization_memberships set status = \'active\' where id = $1',
+        [financeHat],
+      );
+    }
+  });
+
   test('a dual-hat person gets the lens of the hat at THAT hotel', async () => {
     // Dale's global `accounts.role` is general_manager and his legacy
     // property_access is EMPTY — every hotel he reaches, he reaches through a

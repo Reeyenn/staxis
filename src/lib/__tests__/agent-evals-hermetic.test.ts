@@ -20,12 +20,18 @@ import { test, describe, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 
 import { EVAL_CASES } from '@/lib/agent/evals/test-bank';
-import { runHermetic } from '@/lib/agent/evals/hermetic-runner';
+import {
+  HERMETIC_ACCOUNT_ID,
+  HERMETIC_PROPERTY_ID,
+  hermeticMemoryRow,
+  runHermetic,
+} from '@/lib/agent/evals/hermetic-runner';
 import { createFakeModel } from '@/lib/agent/evals/fake-model';
 import { getToolsForRole, listAllTools } from '@/lib/agent/tools';
 import { validateToolArgs } from '@/lib/agent/validate-tool-args';
 import { formatMemoryForPrompt, MAX_MEMORY_ENTRIES } from '@/lib/agent/memory-context';
-import { hermeticMemoryRow } from '@/lib/agent/evals/hermetic-runner';
+import type { AppRole } from '@/lib/roles';
+import { installAgentToolAuthorityTestStore } from './helpers/agent-tool-authority';
 import '@/lib/agent/tools/index';
 
 const HERMETIC = EVAL_CASES.filter(c => c.mode === 'hermetic');
@@ -38,12 +44,23 @@ describe('agent eval bank — hermetic cases', () => {
   // Without this, the bank could quietly start costing money and needing a
   // database, which is exactly how a CI gate becomes a CI liability.
   const realFetch = globalThis.fetch;
+  let activeRole: AppRole = 'general_manager';
+  let restoreAuthority: (() => void) | null = null;
   before(() => {
     globalThis.fetch = (async (input: unknown) => {
       throw new Error(`hermetic eval attempted network I/O: ${String(input)}`);
     }) as typeof globalThis.fetch;
+    restoreAuthority = installAgentToolAuthorityTestStore(() => [{
+      accountId: HERMETIC_ACCOUNT_ID,
+      authUserId: HERMETIC_ACCOUNT_ID,
+      role: activeRole,
+      propertyIds: [HERMETIC_PROPERTY_ID],
+      portfolioIntelligenceRead: true,
+    }]);
   });
   after(() => {
+    restoreAuthority?.();
+    restoreAuthority = null;
     globalThis.fetch = realFetch;
   });
 
@@ -54,6 +71,7 @@ describe('agent eval bank — hermetic cases', () => {
   for (const c of HERMETIC) {
     test(`[${c.category}] ${c.name}`, async () => {
       assert.ok(c.hermetic, `case ${c.name} is mode:'hermetic' but carries no hermetic spec`);
+      activeRole = c.role;
       const result = await runHermetic({
         role: c.role,
         input: c.input,

@@ -56,6 +56,7 @@ import { buildSystemPrompt, PROMPT_VERSION } from '@/lib/agent/prompts';
 import { retrieveMemoryForTurn } from '@/lib/agent/memory-context';
 import {
   createConversation,
+  loadConversationScope,
   lockLoadAndRecordUserTurn,
   recordUserTurn,
 } from '@/lib/agent/memory';
@@ -205,6 +206,33 @@ export async function POST(req: NextRequest): Promise<Response> {
   let supersededPendingIds: string[] = [];
   try {
     if (conversationId) {
+      // Reject another security domain BEFORE the best-effort pending-action
+      // sweep below can mutate it. The RPC repeats owner/kind/property checks
+      // atomically before replay/append; this preflight protects the earlier
+      // cleanup side effect, and conversation kind is DB-immutable.
+      const storedScope = await loadConversationScope(conversationId, userCtx.accountId);
+      if (!storedScope) {
+        await cancelCostReservation(reservationId);
+        return Response.json(
+          { ok: false, error: 'conversation not found or not yours', requestId },
+          { status: 404 },
+        );
+      }
+      if (storedScope.conversationKind !== 'property') {
+        await cancelCostReservation(reservationId);
+        return Response.json(
+          { ok: false, error: 'conversation belongs to portfolio mode', code: 'wrong_conversation_kind', requestId },
+          { status: 400 },
+        );
+      }
+      if (storedScope.propertyId !== body.propertyId) {
+        await cancelCostReservation(reservationId);
+        return Response.json(
+          { ok: false, error: 'conversation is scoped to a different property', requestId },
+          { status: 400 },
+        );
+      }
+
       // Sweep any still-pending approval cards BEFORE recording the new user
       // turn: sending a fresh message abandons the earlier proposals. Flipping
       // them to 'expired' + persisting a synthetic tool_result per tool_call_id
@@ -226,6 +254,9 @@ export async function POST(req: NextRequest): Promise<Response> {
         }
         if (prep.reason === 'wrong_property') {
           return Response.json({ ok: false, error: 'conversation is scoped to a different property', requestId }, { status: 400 });
+        }
+        if (prep.reason === 'wrong_kind') {
+          return Response.json({ ok: false, error: 'conversation belongs to portfolio mode', code: 'wrong_conversation_kind', requestId }, { status: 400 });
         }
         return Response.json({ ok: false, error: 'failed to prepare conversation', requestId }, { status: 500 });
       }
@@ -265,8 +296,22 @@ export async function POST(req: NextRequest): Promise<Response> {
     retrieveMemoryForTurn(body.propertyId, userCtx.accountId),
   ]);
   const enabledSections = sectionGate.enabledSections;
-  const systemPrompt = await buildSystemPrompt(userCtx.role, snapshot, conversationId, undefined, memoryBlock);
-  const tools = getToolsForRole(userCtx.role, 'chat', undefined, enabledSections);
+  const systemPrompt = await buildSystemPrompt(
+    userCtx.role,
+    snapshot,
+    conversationId,
+    undefined,
+    memoryBlock,
+    undefined,
+    userCtx,
+  );
+  const tools = getToolsForRole(
+    userCtx.role,
+    'chat',
+    undefined,
+    enabledSections,
+    userCtx,
+  );
 
   // ── Stream the agent response via SSE ────────────────────────────────
   const encoder = new TextEncoder();

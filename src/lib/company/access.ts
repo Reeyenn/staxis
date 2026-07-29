@@ -12,31 +12,32 @@ import 'server-only';
 //                                            person's card ("GM — Beaumont ·
 //                                            Oversees — Lufkin, Tyler, Waco")
 //
-// ZERO REGRESSION CONTRACT. An account with no hats resolves EXACTLY as it does
-// today: `effectiveRole` returns `accounts.role` with `source: 'legacy'`, and
-// `accessibleProperties` returns `accounts.property_access` verbatim. Every one
-// of the ~5,100 existing tests describes that account, and none of them may
-// move. A hat is only ever additive: it can grant a hotel the legacy array
-// never mentioned, and it can name a different job at a hotel the legacy array
-// did mention — it can never take a hotel away.
+// Authority mode is resolved in PostgreSQL. Legacy/shadow accounts use only
+// `accounts.property_access`; normalized accounts use only hats/grants plus
+// explicit cutover bridges. There is never a runtime union of two authorities.
 //
 // WALL A (inside one company) is the coverage computation below: a
 // property-scope hat sees exactly the hotels on its own row, so a front-desk
 // person at hotel #7 never learns hotel #12 exists.
 //
-// WALL B (across companies) is structural: coverage for a hat is only ever
-// drawn from `organization_property_relationships` rows belonging to THAT hat's
-// own organization. There is no query in this file that can reach a second
-// company's hotels, whatever the caller passes.
+// WALL B (across companies) is structural: the database projects only the
+// selected organization's hotels, but counts every current-primary claim for
+// each candidate hotel before returning anything. A damaged dual-company claim
+// therefore denies both companies instead of making either isolated read look
+// authoritative.
 
 import { supabaseAdmin } from '@/lib/supabase-admin';
+import {
+  authoritativeStandingForProperty,
+  listAuthoritativePropertyAccess,
+} from '@/lib/authorization/server';
 import { log } from '@/lib/log';
 import type { AppRole } from '@/lib/roles';
 import {
   hatSeesFinancials,
   isHatRole,
   isMembershipScope,
-  legacyRoleForHat,
+  operationalRoleForHatAtHotel,
   type HatRole,
   type MembershipScope,
 } from '@/lib/company/roles';
@@ -57,14 +58,14 @@ export interface MembershipHat {
   coveredPropertyIds: string[];
 }
 
-export type RoleSource = 'membership' | 'legacy' | 'none';
+export type RoleSource = 'membership' | 'grant' | 'legacy' | 'none';
 
 export interface EffectiveRole {
   /**
    * Always a legacy `accounts.role` word, so this drops straight into
    * `can()`, `canManageTeam()`, `canForProperty()` and every other existing
    * check with no translation. Company-only jobs degrade least-privilege
-   * (see `legacyRoleForHat`).
+   * through `operationalRoleForHatAtHotel`.
    */
   role: AppRole | null;
   /** The true job when a hat answered. `null` when the legacy role answered. */
@@ -87,13 +88,6 @@ export interface AccessibleProperties {
   membershipPropertyIds: string[];
 }
 
-interface AccountRow {
-  id: string;
-  role: string | null;
-  property_access: unknown;
-  active: boolean | null;
-}
-
 interface HatRow {
   id: string;
   organization_id: string;
@@ -112,16 +106,17 @@ interface HatRow {
 // `organization_property_relationships` holds seven kinds of link — operator,
 // owner, brand, franchisor, vendor, consultant, other — and a hotel routinely
 // has several at once. Only two of them mean "this company runs this building",
-// and the database already says which single row is the live one: partial
-// UNIQUE index `organization_property_one_open_primary_idx` on `(property_id)
-// WHERE is_primary_grouping AND ends_at IS NULL`, plus CHECK
-// `..._primary_kind_check` restricting a primary to operator/owner.
+// and the database says which rows are primary through `is_primary_grouping`
+// plus CHECK `..._primary_kind_check`, restricting a primary to operator/owner.
+// A historical partial UNIQUE index only covers NULL-ended rows, so it cannot
+// by itself exclude overlap with a future-ended row. The strict topology RPC
+// counts every row whose time window is current and rejects on any overlap.
 //
 // Every read in this file used to ignore both columns, which meant a brand or
 // franchisor row counted as coverage and, worse, that a hotel appearing under
 // two live organizations was resolved by `real[0]` — the lowest UUID. Filtering
-// on the governing relationship makes the DB's own uniqueness do the work: at
-// most one row can match, so there is nothing left to tie-break.
+// on governing relationships and rejecting multi-current topology removes the
+// unsafe tie-break entirely.
 
 interface RelationshipRow {
   organization_id: string;
@@ -130,6 +125,10 @@ interface RelationshipRow {
   starts_at: string | null;
   ends_at: string | null;
 }
+
+const UUID_RX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const ORGANIZATION_PROPERTY_TOPOLOGY_SCHEMA_VERSION = 'organization-property-topology-v1' as const;
+const MAX_ORGANIZATION_PROPERTIES = 5000;
 
 const GOVERNING_RELATIONSHIP_TYPES = new Set(['operator', 'owner']);
 
@@ -206,25 +205,6 @@ function toStringArray(value: unknown): string[] {
   return value.filter((entry): entry is string => typeof entry === 'string' && entry.length > 0);
 }
 
-async function loadAccount(accountId: string): Promise<AccountRow | null> {
-  try {
-    return await readAccount(accountId);
-  } catch {
-    return null;
-  }
-}
-
-async function readAccount(accountId: string): Promise<AccountRow | null> {
-  const { data, error } = await supabaseAdmin
-    .from('accounts')
-    .select('id, role, property_access, active')
-    .eq('id', accountId)
-    .maybeSingle();
-  if (error || !data) return null;
-  const row = data as AccountRow;
-  return row.active === false ? null : row;
-}
-
 /**
  * Every hat this person is currently wearing, with coverage resolved.
  *
@@ -278,12 +258,6 @@ async function readHats(accountId: string): Promise<MembershipHat[]> {
   );
   if (liveOrganizationIds.size === 0) return [];
 
-  const { data: relData, error: relError } = await supabaseAdmin
-    .from('organization_property_relationships')
-    .select('organization_id, property_id, relationship_type, is_primary_grouping, starts_at, ends_at')
-    .in('organization_id', [...liveOrganizationIds]);
-  if (relError || !Array.isArray(relData)) return [];
-
   // organization -> the hotels it operates right now. THE ONLY source of
   // coverage in this file, and it is always keyed by the hat's own company.
   //
@@ -292,19 +266,30 @@ async function readHats(accountId: string): Promise<MembershipHat[]> {
   // grouping is a company that USED to — whoever took over stood it down
   // (`staxis_attach_property_to_organization`, 0325). Counting either as
   // coverage hands a whole hotel's data to the wrong company's staff.
+  const effectiveAt = new Date(nowMs);
+  const topologyRows = await Promise.all([...liveOrganizationIds]
+    .sort()
+    .map(async (organizationId) => [
+      organizationId,
+      await resolveOrganizationPropertyTopology(organizationId, effectiveAt),
+    ] as const));
   const operatedByOrganization = new Map<string, Set<string>>();
-  for (const row of relData as Array<RelationshipRow & { property_id: string }>) {
-    if (!relationshipIsGoverning(row)) continue;
-    if (!relationshipIsOpen(row, nowMs)) continue;
-    const bucket = operatedByOrganization.get(row.organization_id) ?? new Set<string>();
-    bucket.add(row.property_id);
-    operatedByOrganization.set(row.organization_id, bucket);
+  for (const [organizationId, resolved] of topologyRows) {
+    // Omit this organization's hats entirely when its topology cannot be
+    // proven. A successfully proven empty company keeps its hats with empty
+    // coverage; an outage or dual-current hotel is not the same answer.
+    if (!resolved.ok) continue;
+    operatedByOrganization.set(
+      organizationId,
+      new Set(resolved.topology.propertyIds),
+    );
   }
 
   const hats: MembershipHat[] = [];
   for (const row of rows) {
     if (!liveOrganizationIds.has(row.organization_id)) continue;
-    const operated = operatedByOrganization.get(row.organization_id) ?? new Set<string>();
+    const operated = operatedByOrganization.get(row.organization_id);
+    if (!operated) continue;
     const scope = row.membership_scope as MembershipScope;
     const role = row.staxis_role as HatRole;
 
@@ -337,21 +322,42 @@ export async function effectiveRole(
   propertyId: string,
 ): Promise<EffectiveRole> {
   if (!accountId || !propertyId) return NO_EFFECTIVE_ROLE;
+  const authority = await listAuthoritativePropertyAccess(accountId);
+  if (!authority) return NO_EFFECTIVE_ROLE;
+  const standing = authoritativeStandingForProperty(authority, propertyId);
+  if (!standing) return NO_EFFECTIVE_ROLE;
 
-  const account = await loadAccount(accountId);
-  if (!account) return NO_EFFECTIVE_ROLE;
+  const source = standing.entitlements[0];
+  if (!source) {
+    // The only standing without provenance is the synthetic platform-admin
+    // standing returned by authoritativeStandingForProperty.
+    return standing.operationalRole === 'admin'
+      ? {
+        role: 'admin',
+        hatRole: null,
+        scope: null,
+        organizationId: null,
+        source: 'legacy',
+        seesFinancials: true,
+      }
+      : NO_EFFECTIVE_ROLE;
+  }
 
-  const legacyRole = (account.role as AppRole | null) ?? null;
-  // Staxis administrators are a separate realm and never wear a hat (migration
-  // 0325's `_staxis_guard_customer_membership_account` refuses it), so the hat
-  // read below is skipped rather than merely ignored.
-  const hats = legacyRole === 'admin' ? [] : await loadHats(accountId);
-
-  return resolveEffectiveRole({
-    legacyRole,
-    legacyPropertyAccess: toStringArray(account.property_access),
-    hats,
-  }, propertyId);
+  return {
+    role: standing.operationalRole,
+    hatRole: source.kind === 'membership_hat' ? source.staxisRole : null,
+    scope: source.kind === 'membership_hat'
+      && (source.scopeType === 'company' || source.scopeType === 'property')
+      ? source.scopeType
+      : null,
+    organizationId: source.organizationId,
+    source: source.kind === 'membership_hat'
+      ? 'membership'
+      : source.kind === 'access_grant'
+        ? 'grant'
+        : 'legacy',
+    seesFinancials: standing.seesFinancials,
+  };
 }
 
 /** The answer for "this person holds no job at this hotel at all". */
@@ -409,7 +415,7 @@ export function resolveEffectiveRole(
       HAT_STRENGTH[hat.role] > HAT_STRENGTH[best.role] ? hat : best
     ));
     return {
-      role: legacyRoleForHat(winner.role),
+      role: operationalRoleForHatAtHotel(winner.scope, winner.role),
       hatRole: winner.role,
       scope: winner.scope,
       organizationId: winner.organizationId,
@@ -437,30 +443,13 @@ export function resolveEffectiveRole(
 }
 
 /**
- * Every hotel this person may reach: the legacy array UNION every hat's
- * coverage. Never a subtraction — an account that could reach a hotel
- * yesterday can still reach it.
+ * Every hotel this person may reach, from the database's single authoritative
+ * mode. This DTO is mirrored by `staxis_account_reaches_property` for RLS.
  */
 export async function accessibleProperties(accountId: string): Promise<AccessibleProperties> {
   if (!accountId) return NO_ACCESS;
-  const account = await loadAccount(accountId);
-  if (!account) return NO_ACCESS;
-
-  const legacy = toStringArray(account.property_access);
-  if (account.role === 'admin' || legacy.includes('*')) {
-    return { all: true, propertyIds: [], legacyPropertyIds: legacy, membershipPropertyIds: [] };
-  }
-
-  const hats = await loadHats(accountId);
-  const membership = [...new Set(hats.flatMap((hat) => hat.coveredPropertyIds))].sort();
-  const union = [...new Set([...legacy, ...membership])].sort();
-
-  return {
-    all: false,
-    propertyIds: union,
-    legacyPropertyIds: [...new Set(legacy)].sort(),
-    membershipPropertyIds: membership,
-  };
+  const authority = await listAuthoritativePropertyAccess(accountId);
+  return authority ?? NO_ACCESS;
 }
 
 /**
@@ -510,29 +499,102 @@ export async function accountReachesProperty(
  * into a hotel list, so Wall B has exactly one place to be right.
  */
 export async function propertiesOfOrganization(organizationId: string): Promise<string[]> {
-  if (!organizationId) return [];
-  try {
-    return await readPropertiesOfOrganization(organizationId);
-  } catch {
-    return [];
-  }
+  const resolved = await resolveOrganizationPropertyTopology(organizationId);
+  return resolved.ok ? [...resolved.topology.propertyIds] : [];
 }
 
-async function readPropertiesOfOrganization(organizationId: string): Promise<string[]> {
-  const { data, error } = await supabaseAdmin
-    .from('organization_property_relationships')
-    .select('property_id, relationship_type, is_primary_grouping, starts_at, ends_at')
-    .eq('organization_id', organizationId);
-  if (error || !Array.isArray(data)) return [];
-  const nowMs = Date.now();
-  // The SAME governing filter `loadHats` applies. These two must agree: this
-  // list is what the hats route offers as "hotels you may put someone at", and
-  // `loadHats` is what decides whether the resulting hat reaches anything. A
-  // wider list here would mint hats that resolve to no coverage at all.
-  const ids = (data as Array<RelationshipRow & { property_id: string }>)
-    .filter((row) => relationshipIsGoverning(row) && relationshipIsOpen(row, nowMs))
-    .map((row) => row.property_id);
-  return [...new Set(ids)].sort();
+/**
+ * An immutable, point-in-time answer for the hotels one organization governs.
+ * An empty `propertyIds` array is a successfully proven empty organization;
+ * it is deliberately different from an unavailable relationship read.
+ */
+export interface OrganizationPropertyTopology {
+  readonly organizationId: string;
+  readonly effectiveAt: string;
+  readonly propertyIds: readonly string[];
+}
+
+export type OrganizationPropertyTopologyResult =
+  | { readonly ok: true; readonly topology: OrganizationPropertyTopology }
+  | { readonly ok: false; readonly reason: 'invalid_input' | 'store_unavailable' };
+
+function exactObjectKeys(
+  value: Record<string, unknown>,
+  expected: readonly string[],
+): boolean {
+  const actual = Object.keys(value).sort();
+  const canonical = [...expected].sort();
+  return actual.length === canonical.length
+    && actual.every((key, index) => key === canonical[index]);
+}
+
+/**
+ * Strict company topology for authorization, clocks, comparisons and other
+ * service callers where "we could not read the company" must never be treated
+ * as "the company has no hotels". PostgreSQL evaluates every current-primary
+ * row for the candidate hotels in one statement, so two companies cannot each
+ * see an isolated apparently-valid claim to the same hotel.
+ */
+export async function resolveOrganizationPropertyTopology(
+  organizationId: string,
+  effectiveAt: Date = new Date(),
+): Promise<OrganizationPropertyTopologyResult> {
+  const effectiveAtMs = effectiveAt.getTime();
+  if (!UUID_RX.test(organizationId ?? '') || !Number.isFinite(effectiveAtMs)) {
+    return { ok: false, reason: 'invalid_input' };
+  }
+  const effectiveAtIso = new Date(effectiveAtMs).toISOString();
+  try {
+    const { data, error } = await supabaseAdmin.rpc(
+      'staxis_resolve_organization_property_topology',
+      {
+        p_organization_id: organizationId,
+        p_effective_at: effectiveAtIso,
+      },
+    );
+    if (error || data === null || typeof data !== 'object' || Array.isArray(data)) {
+      return { ok: false, reason: 'store_unavailable' };
+    }
+    const raw = data as Record<string, unknown>;
+    if (raw.ok === false) {
+      if (!exactObjectKeys(raw, ['ok', 'reason'])
+          || (raw.reason !== 'invalid_input' && raw.reason !== 'store_unavailable')) {
+        return { ok: false, reason: 'store_unavailable' };
+      }
+      return { ok: false, reason: raw.reason };
+    }
+    if (raw.ok !== true
+        || !exactObjectKeys(raw, [
+          'ok', 'schemaVersion', 'organizationId', 'effectiveAt', 'propertyIds',
+        ])
+        || raw.schemaVersion !== ORGANIZATION_PROPERTY_TOPOLOGY_SCHEMA_VERSION
+        || raw.organizationId !== organizationId
+        || typeof raw.effectiveAt !== 'string'
+        || Date.parse(raw.effectiveAt) !== effectiveAtMs
+        || !Array.isArray(raw.propertyIds)
+        || raw.propertyIds.length > MAX_ORGANIZATION_PROPERTIES
+        || !raw.propertyIds.every((propertyId) => (
+          typeof propertyId === 'string' && UUID_RX.test(propertyId)
+        ))) {
+      return { ok: false, reason: 'store_unavailable' };
+    }
+    const propertyIds = raw.propertyIds as string[];
+    const canonical = [...new Set(propertyIds)].sort();
+    if (canonical.length !== propertyIds.length
+        || !propertyIds.every((propertyId, index) => propertyId === canonical[index])) {
+      return { ok: false, reason: 'store_unavailable' };
+    }
+    return {
+      ok: true,
+      topology: Object.freeze({
+        organizationId,
+        effectiveAt: effectiveAtIso,
+        propertyIds: Object.freeze([...propertyIds]),
+      }),
+    };
+  } catch {
+    return { ok: false, reason: 'store_unavailable' };
+  }
 }
 
 /**

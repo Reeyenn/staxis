@@ -51,9 +51,11 @@ import { log } from '@/lib/log';
 import { errToString } from '@/lib/utils';
 import { validateUuid } from '@/lib/api-validate';
 import { supabaseAdmin } from '@/lib/supabase-admin';
-import { canManageTeam, isValidRole, type AppRole } from '@/lib/roles';
-import { capabilityDecisionForProperty } from '@/lib/capabilities/server';
 import { capabilityUnavailableResponse } from '@/lib/capabilities/api-gate';
+import {
+  accountCapabilityDecisionForProperty,
+  loadSessionAccount,
+} from '@/lib/team-auth';
 import { checkAndIncrementRateLimit, rateLimitedResponse } from '@/lib/api-ratelimit';
 import {
   declaredMimeMatchesBytes,
@@ -197,32 +199,6 @@ export function normalizeBoardExtraction(raw: unknown): BoardExtraction {
   return { sections, floors: cleanList(obj.floors, MAX_FLOORS) };
 }
 
-interface CallerAccount {
-  id: string;
-  property_access: string[];
-  role: AppRole;
-}
-
-async function resolveCallerAccount(authUserId: string): Promise<CallerAccount | null> {
-  const { data, error } = await supabaseAdmin
-    .from('accounts')
-    .select('id, property_access, role')
-    .eq('data_user_id', authUserId)
-    .maybeSingle();
-  if (error || !data) return null;
-  return {
-    id: data.id,
-    property_access: Array.isArray(data.property_access) ? data.property_access : [],
-    role: (isValidRole(data.role) ? data.role : 'staff') as AppRole,
-  };
-}
-
-function callerHasPropertyAccess(account: CallerAccount, propertyId: string): boolean {
-  if (account.role === 'admin') return true;
-  if (account.property_access.includes('*')) return true;
-  return account.property_access.includes(propertyId);
-}
-
 export const POST = defineRoute({
   resolve: (req: NextRequest) => sessionGate(req),
   handler: async (ctx) => {
@@ -274,24 +250,14 @@ export const POST = defineRoute({
       });
     }
 
-    const account = await resolveCallerAccount(ctx.userId);
-    if (!account) return ctx.err('Account not found', { status: 404, code: ApiErrorCode.NotFound });
-    if (!callerHasPropertyAccess(account, propertyId)) {
-      return ctx.err('Forbidden', { status: 403, code: ApiErrorCode.Forbidden });
-    }
-    // Same gate as saving the questionnaire itself — this IS part of that
-    // questionnaire, and it spends money. Management role AND the capability:
-    // `manage_clean_times` has no defaultRoles, so on its own it is granted to
-    // every hotel role and would leave a paid vision call open to line staff.
-    if (!canManageTeam(account.role)) {
-      return ctx.err('Only managers can set up housekeeping', {
-        status: 403, code: ApiErrorCode.Forbidden,
-      });
-    }
-    const capabilityDecision = await capabilityDecisionForProperty(
-      { role: account.role },
+    // Same atomic gate as saving the questionnaire: exact current reach,
+    // mutation capacity, manager floor, and the per-hotel capability. This is
+    // before rate-limit state, storage, image decoding, or model spend.
+    const capabilityDecision = await accountCapabilityDecisionForProperty(
+      ctx.userId,
       'manage_clean_times',
       propertyId,
+      { requireMutation: true, requireManager: true },
     );
     if (capabilityDecision === 'unavailable') {
       return capabilityUnavailableResponse(ctx.requestId);
@@ -301,14 +267,9 @@ export const POST = defineRoute({
         status: 403, code: ApiErrorCode.Forbidden,
       });
     }
-
-    // Rate limit AFTER validation (matching the repo-wide ordering: a bad field
-    // should 400, not 429) but BEFORE the upload and the model call, so both the
-    // storage write and the Anthropic spend are bounded. Keyed on the RAW
-    // property id — api_limits.property_id has an FK to properties(id).
-    const rl = await checkAndIncrementRateLimit('housekeeping-setup-board-photo', propertyId);
-    if (!rl.allowed) {
-      return rateLimitedResponse(rl.current, rl.cap, rl.retryAfterSec);
+    const account = await loadSessionAccount(ctx.userId);
+    if (!account) {
+      return ctx.err('Forbidden', { status: 403, code: ApiErrorCode.Forbidden });
     }
 
     const bytes = new Uint8Array(await file.arrayBuffer());
@@ -342,6 +303,32 @@ export const POST = defineRoute({
       });
     }
 
+    // Re-check immediately before the first side effect. Multipart parsing and
+    // byte validation may take time, during which the membership can be
+    // revoked or the hotel transferred.
+    const commitDecision = await accountCapabilityDecisionForProperty(
+      ctx.userId,
+      'manage_clean_times',
+      propertyId,
+      { requireMutation: true, requireManager: true },
+    );
+    if (commitDecision === 'unavailable') {
+      return capabilityUnavailableResponse(ctx.requestId);
+    }
+    if (commitDecision === 'denied') {
+      return ctx.err('Only managers can set up housekeeping', {
+        status: 403, code: ApiErrorCode.Forbidden,
+      });
+    }
+
+    // Rate limit AFTER validation and the commit-boundary authorization check
+    // but BEFORE upload/model spend. A revoked caller cannot consume a hotel's
+    // rate-limit budget.
+    const rl = await checkAndIncrementRateLimit('housekeeping-setup-board-photo', propertyId);
+    if (!rl.allowed) {
+      return rateLimitedResponse(rl.current, rl.cap, rl.retryAfterSec);
+    }
+
     const ext = detectedMime === 'image/png' ? 'png' : detectedMime === 'image/webp' ? 'webp' : 'jpg';
     const path = `${propertyId}/housekeeping-setup/board-${Date.now()}.${ext}`;
 
@@ -365,7 +352,7 @@ export const POST = defineRoute({
     try {
       // Daily $ cap. If the hotel/user has already spent today's budget we skip
       // the read rather than 429 — the questionnaire must still finish.
-      const budget = await assertAudioBudget({ userId: account.id, propertyId });
+      const budget = await assertAudioBudget({ userId: account.accountId, propertyId });
       if (!budget.ok) {
         log.warn('[housekeeping/setup/board-photo] daily AI budget reached — skipping board read', {
           requestId: ctx.requestId, propertyId, reason: budget.reason,
@@ -406,7 +393,7 @@ export const POST = defineRoute({
         try {
           await recordNonRequestCost({
             feature: 'housekeeping.board_photo_read',
-            userId: account.id,
+            userId: account.accountId,
             propertyId,
             conversationId: null,
             model: u.model,
@@ -424,7 +411,7 @@ export const POST = defineRoute({
           log.error('[housekeeping/setup/board-photo] cost-ledger write failed', {
             err: errObj,
             propertyId,
-            accountId: account.id,
+            accountId: account.accountId,
             unrecorded: {
               tokensIn: u.inputTokens,
               tokensOut: u.outputTokens,
@@ -437,7 +424,7 @@ export const POST = defineRoute({
             route: 'housekeeping-setup-board-photo',
             severity: 'high',
             pid: propertyId,
-            accountId: account.id,
+            accountId: account.accountId,
             cost_usd: u.costUsd,
           });
         }

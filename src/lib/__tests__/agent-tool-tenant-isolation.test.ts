@@ -47,6 +47,7 @@ import '@/lib/agent/tools/index';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { supabase as supabaseAnon } from '@/lib/supabase';
 import { scopeColumnFor } from '@/lib/agent/scoped-db';
+import { installAgentToolAuthorityTestStore } from './helpers/agent-tool-authority';
 
 // ─── The two hotels ─────────────────────────────────────────────────────────
 
@@ -58,6 +59,7 @@ const STAFF_A = '00000000-0000-0000-0000-00000000aaa2';
 const STAFF_B = '00000000-0000-0000-0000-0000000bbbb2';
 const ROW_A = '00000000-0000-0000-0000-00000000aaa3';
 const ROW_B = '00000000-0000-0000-0000-0000000bbbb3';
+let currentAuthorityRole: ToolContext['user']['role'] = 'general_manager';
 
 /** Every string field on a hotel-B row carries this. Seeing it in a tool
  *  result, a write payload, or a query filter means B leaked. */
@@ -489,6 +491,7 @@ function contextFor(tool: ToolDefinition): ToolContext {
   const role = tool.allowedRoles.includes('admin')
     ? 'admin'
     : (tool.allowedRoles.find(r => lensAllowsTool(r, surface, tool.name)) ?? tool.allowedRoles[0]);
+  currentAuthorityRole = role;
   return {
     user: {
       uid: ACC_A,
@@ -498,6 +501,13 @@ function contextFor(tool: ToolDefinition): ToolContext {
       role,
       propertyAccess: [PID_A],
       dept: null,
+      hotelMutationAllowed: true,
+      seesFinancials: true,
+      capabilitySnapshot: {
+        view_financials: true,
+        view_wages: true,
+        manage_inventory_orders: true,
+      },
     },
     propertyId: PID_A,
     staffId: STAFF_A,
@@ -505,8 +515,9 @@ function contextFor(tool: ToolDefinition): ToolContext {
     surface,
     voiceMode: surface === 'voice' ? (tool.voiceModes?.[0] ?? 'general') : undefined,
     currentRoomNumber: '101',
-    // enabledSections omitted on purpose: isSectionEnabled treats an absent
-    // map as every section ON, which is what we want here.
+    // A successful DB-null section read means the hotel's default-on policy.
+    // Undefined is deliberately reserved for an unavailable route proof.
+    enabledSections: null,
   };
 }
 
@@ -527,6 +538,7 @@ const originalAdminRpc = supabaseAdmin.rpc.bind(supabaseAdmin);
 const originalAnonFrom = supabaseAnon.from.bind(supabaseAnon);
 const originalAnonRpc = supabaseAnon.rpc.bind(supabaseAnon);
 const originalFetch = globalThis.fetch;
+let restoreAuthority: (() => void) | null = null;
 
 describe('every agent tool is confined to one hotel (INV-29)', () => {
   before(async () => {
@@ -541,6 +553,12 @@ describe('every agent tool is confined to one hotel (INV-29)', () => {
     supabaseAnon.from = fakeFrom;
     // @ts-expect-error installing the recording fake on the singleton
     supabaseAnon.rpc = fakeRpc;
+    restoreAuthority = installAgentToolAuthorityTestStore(() => [{
+      accountId: ACC_A,
+      authUserId: ACC_A,
+      role: currentAuthorityRole,
+      propertyIds: [PID_A],
+    }]);
     // No test may reach the network. Model classifiers and embedders are all
     // behind try/catch, so this just makes them fail fast and deterministically
     // instead of adding a live round-trip (and a flake) per run.
@@ -563,6 +581,7 @@ describe('every agent tool is confined to one hotel (INV-29)', () => {
   });
 
   after(() => {
+    restoreAuthority?.();
     supabaseAdmin.from = originalAdminFrom;
     supabaseAdmin.rpc = originalAdminRpc;
     supabaseAnon.from = originalAnonFrom;

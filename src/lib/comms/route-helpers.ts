@@ -16,8 +16,12 @@ import { requireSectionEnabled } from '@/lib/sections/server';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { resolveAccount, resolveStaffIdForAccount, getStaffRow, isManagerRole } from './core';
 import type { CommsLang } from './types';
-
-const UUID_RX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+import {
+  authoritativeStandingForProperty,
+  listAuthoritativePropertyAccess,
+  type AuthoritativePropertyAccess,
+  type AuthoritativePropertyStanding,
+} from '@/lib/authorization/server';
 
 export interface CommsCtx {
   ok: true;
@@ -32,22 +36,60 @@ export interface CommsCtx {
   lang: CommsLang;
   /** The caller's property scope (UUIDs, or '*' wildcard). Drives org-wide reach. */
   propertyAccess: string[];
+  hotelMutationAllowed: boolean;
   requestId: string;
   headers: Record<string, string>;
 }
 
 /**
  * The full set of property ids a manager may broadcast an org-wide campaign to.
- * Admins / '*' wildcard → every property; otherwise the explicit property_access
- * list (UUIDs only). Deriving the target set FROM property_access is itself the
- * access check — a caller can never target a hotel they aren't scoped to.
+ * The account id is resolved again on every call. `null` means authorization
+ * could not be proven and callers must fail closed; it never means an empty
+ * portfolio. This is retained for read-only historical campaign status only —
+ * new cross-hotel writes require a separate preview/confirmation contract.
  */
-export async function listAccessiblePropertyIds(role: string, propertyAccess: string[]): Promise<string[]> {
-  if (role === 'admin' || propertyAccess.includes('*')) {
-    const { data } = await supabaseAdmin.from('properties').select('id').limit(1000);
-    return ((data ?? []) as { id: string }[]).map((r) => r.id);
+interface AccessiblePropertyDependencies {
+  loadAuthority: (accountId: string) => Promise<AuthoritativePropertyAccess | null>;
+  loadAllPropertyIds: () => Promise<string[] | null>;
+}
+
+const ACCESSIBLE_PROPERTY_DEPENDENCIES: AccessiblePropertyDependencies = {
+  loadAuthority: listAuthoritativePropertyAccess,
+  loadAllPropertyIds: async () => {
+    const { data, error } = await supabaseAdmin
+      .from('properties')
+      .select('id')
+      .order('id', { ascending: true })
+      .limit(5_001);
+    if (error || !Array.isArray(data) || data.length > 5_000) return null;
+    return (data as { id: string }[]).map((row) => row.id);
+  },
+};
+
+export async function listAccessiblePropertyIds(
+  accountId: string,
+  overrides: Partial<AccessiblePropertyDependencies> = {},
+): Promise<string[] | null> {
+  const dependencies = { ...ACCESSIBLE_PROPERTY_DEPENDENCIES, ...overrides };
+  const authority = await dependencies.loadAuthority(accountId);
+  if (!authority) return null;
+  if (authority.all) {
+    return dependencies.loadAllPropertyIds();
   }
-  return propertyAccess.filter((p) => UUID_RX.test(p));
+  return authority.propertyIds;
+}
+
+/**
+ * Keep the private-local communications boundary independently testable. The
+ * callback can create a staff identity, so it is never invoked until current
+ * authoritative local operational standing has been proven.
+ */
+export async function resolvePrivateHotelCommsStaffId(
+  standing: Pick<AuthoritativePropertyStanding, 'hotelMutationAllowed'> | null,
+  resolve: () => Promise<string>,
+): Promise<string | null> {
+  if (!standing || standing.hotelMutationAllowed !== true) return null;
+  return resolve();
 }
 
 /**
@@ -86,7 +128,22 @@ export async function commsContext(
     return { ok: false, response: err('no account', { requestId, status: 403, code: ApiErrorCode.Forbidden, headers }) };
   }
 
-  const staffId = await resolveStaffIdForAccount(pid, account);
+  const standing = authoritativeStandingForProperty(account.authority, pid);
+  // Private hotel communications are an operational-local surface: channel
+  // rosters, DMs, presence and first-use staff identity creation must not be
+  // exposed merely because a company actor can read portfolio/hotel facts.
+  // The authoritative projection marks company-only owner/VP/finance and
+  // read-only grants as non-mutating; require the explicit local operational
+  // standing before resolving (and potentially creating) a staff identity.
+  const hotelAccount = standing ? { ...account, role: standing.operationalRole } : null;
+  const staffId = await resolvePrivateHotelCommsStaffId(
+    standing,
+    async () => resolveStaffIdForAccount(pid, hotelAccount!),
+  );
+  if (!standing || !hotelAccount || !staffId) {
+    return { ok: false, response: err('property access denied', { requestId, status: 403, code: ApiErrorCode.Forbidden, headers }) };
+  }
+
   const staffRow = await getStaffRow(pid, staffId);
 
   return {
@@ -94,13 +151,14 @@ export async function commsContext(
     pid,
     userId: session.userId,
     accountId: account.accountId,
-    role: account.role,
+    role: standing.operationalRole,
     staffId,
     displayName: account.displayName,
-    isManager: isManagerRole(account.role),
+    isManager: isManagerRole(standing.operationalRole),
     dept: staffRow?.department ?? null,
     lang: account.preferredLanguage,
     propertyAccess: account.propertyAccess,
+    hotelMutationAllowed: standing.hotelMutationAllowed,
     requestId,
     headers,
   };

@@ -28,6 +28,7 @@ const operationalStaffRoute = source('src', 'app', 'api', 'staff', 'operational'
 const staffWriteGate = source('supabase', 'migrations', '0330_staff_management_write_gate.sql');
 const settings = source('src', 'app', 'settings', 'page.tsx');
 const legacyAccounts = source('src', 'app', 'settings', 'accounts', 'page.tsx');
+const legacyUsers = source('src', 'app', 'settings', 'users', 'page.tsx');
 const propertyContext = source('src', 'contexts', 'PropertyContext.tsx');
 
 describe('company-only shell routing', () => {
@@ -165,8 +166,10 @@ describe('truthful Company Hub filters', () => {
 describe('My Hotel account and team integration', () => {
   test('moves the hotel-facing entry out of Settings and preserves old bookmarks', () => {
     assert.doesNotMatch(settings, /href:\s*['"]\/settings\/accounts['"]/);
+    assert.doesNotMatch(settings, /href:\s*['"]\/settings\/users['"]/);
     assert.match(legacyAccounts, /router\.replace\(['"]\/company\?tab=people['"]\)/);
     assert.match(legacyAccounts, /\/admin\/properties\/\$\{encodeURIComponent\(activePropertyId\)\}/);
+    assert.match(legacyUsers, /redirect\(['"]\/company\?tab=access['"]\)/);
   });
 
   test('keeps the selected tab in the URL and selects an exact hotel', () => {
@@ -231,10 +234,34 @@ describe('My Hotel account and team integration', () => {
   test('waits for the exact hotel capability snapshot before showing team controls', () => {
     assert.match(company, /capabilityOverridesPropertyId === activePropertyId/);
     assert.match(company, /capabilityOverridesViewerKey === capabilityViewerKey/);
-    assert.match(company, /const canManageTeam = hotelCapabilitiesReady && can\(['"]manage_team['"]\)/);
+    assert.match(company, /propertyStandings\.filter\(\(standing\) => standing\.propertyId === activePropertyId\)/);
+    assert.match(company, /matchingPropertyStandings\.length === 1/);
+    assert.match(company, /activePropertyStanding\?\.hotelMutationAllowed === true/);
+    assert.match(company, /canForStanding\([\s\S]*hotelPresentationRole[\s\S]*['"]manage_team['"][\s\S]*capabilityOverrides/);
+    assert.match(company, /const adminPreview = Boolean\(\s*authorizationChecked && platformAdmin && userRole === 'admin',?\s*\)/);
+    assert.match(company, /if \(!user \|\| authLoading \|\| propertyLoading \|\| !authorizationChecked\) return/);
+    // Every value that changes the authoritative viewer, hotel, or fetched
+    // projection must invalidate this request; language-only renders must not.
+    assert.match(company, /\[accountId, activePropertyId, adminPreview, authLoading, authorizationChecked, authorizationFingerprint, propertyKey, propertyLoading, retryKey, userRole\]/);
+    assert.match(company, /requestedViewerKey = `\$\{user\.accountId\}:\$\{user\.role\}:[^`]*\$\{authorizationFingerprint \?\? ['"]unverified['"]\}`/);
+    assert.match(company, /currentViewerKey[\s\S]*authorizationFingerprint \?\? ['"]unverified['"]/);
+    assert.match(company, /hotel-authorized['"] : ['"]invite-only/);
     assert.match(company, /tab === ['"]people['"] && hotelCapabilitiesLoading/);
     assert.match(company, /canManageTeam=\{canManageTeam\}/);
     assert.match(hotelTeam, /if \(!canManageTeam\) \{[\s\S]*Hotel account settings are private/);
+    assert.match(hotelTeam, /if \(canManageTeam\) return;[\s\S]*setTeam\(\[\]\);[\s\S]*setContactSnapshot\(null\);[\s\S]*setWageSnapshot\(null\)/);
+  });
+
+  test('keeps company invitations in People while private hotel roster access stays explicit', () => {
+    assert.match(company, /resolved\.permissions\.accountInvitePropertyIds\?\.includes\(activeProperty\.id\)/);
+    assert.match(company, /canInviteAccounts=\{Boolean\([\s\S]*adminToolsActive[\s\S]*accountInvitePropertyIds/);
+    assert.match(company, /canInviteAccounts=\{canInviteAccounts\}/);
+    assert.match(company, /!adminPreview && !canManageTeam && canInviteAccounts/);
+    assert.doesNotMatch(company, /<InvitePersonDialog/);
+    assert.match(hotelTeam, /inviteDialogOpen && canInviteAccounts[\s\S]*canManageHotelRoster=\{false\}/);
+    assert.match(hotelTeamDialogs, /if \(!canManageHotelRoster\)[\s\S]*setCodeLoading\(false\)/);
+    assert.match(hotelTeamDialogs, /\{canManageHotelRoster \? \([\s\S]*staff-invite-heading[\s\S]*\) : null\}/);
+    assert.match(hotelTeamDialogs, /fetchWithAuth\(`\/api\/auth\/invites\?hotelId=/);
   });
 
   test('uses a styled accessible hotel menu instead of a browser-native select', () => {
@@ -288,7 +315,7 @@ describe('My Hotel account and team integration', () => {
     assert.match(hotelTeam, /\{inviteDialogOpen \? \(/);
     assert.match(hotelTeam, /onClose=\{\(\) => onInviteDialogOpenChange\(false\)\}/);
     assert.match(hotelTeamDialogs, /Staff signup link/);
-    assert.match(hotelTeamDialogs, /Invite a General Manager/);
+    assert.match(hotelTeamDialogs, /Invite by email/);
     assert.match(hotelTeamDialogs, /deliveryStatus === ['"]sent['"]/);
     assert.match(hotelTeamDialogs, /Copy and send the link directly/);
   });
@@ -321,11 +348,9 @@ describe('My Hotel account and team integration', () => {
     assert.match(addStaffDialog, /document\.addEventListener\(['"]focusin['"]/);
     assert.match(addStaffDialog, /element\.inert = true/);
     assert.match(operationalStaffRoute, /verifyTeamManager\(req\)/);
-    assert.match(operationalStaffRoute, /\.from\(['"]accounts['"]\)[\s\S]*\.select\(['"]active, role, property_access['"]\)/);
-    assert.match(operationalStaffRoute, /currentRole !== ['"]owner['"] && currentRole !== ['"]general_manager['"]/);
-    assert.match(operationalStaffRoute, /currentHotelAccess\.includes\(hotelId\)/);
-    assert.match(operationalStaffRoute, /\.from\(['"]capability_overrides['"]\)[\s\S]*\.eq\(['"]property_id['"], hotelId\)[\s\S]*\.eq\(['"]capability['"], ['"]manage_team['"]\)/);
-    assert.match(operationalStaffRoute, /if \(overrideError\) return ['"]unavailable['"]/);
+    assert.match(operationalStaffRoute, /accountCapabilityDecisionForProperty\(/);
+    assert.match(operationalStaffRoute, /caller\.authUserId,[\s\S]*['"]manage_team['"],[\s\S]*hotelId,[\s\S]*\{ requireMutation: true \}/);
+    assert.doesNotMatch(operationalStaffRoute, /\.select\(['"]active, role, property_access['"]\)/);
     assert.match(operationalStaffRoute, /authorization === ['"]unavailable['"][\s\S]*status: 503[\s\S]*ApiErrorCode\.UpstreamFailure/);
     assert.match(operationalStaffRoute, /validateUuid\(body\.hotelId, ['"]hotelId['"]\)/);
     assert.match(operationalStaffRoute, /checkIdempotency\(req, routeKey\)/);
@@ -354,7 +379,8 @@ describe('My Hotel account and team integration', () => {
     // view_wages is in MANAGER_FLOOR_CAPABILITIES: it can never fall to line
     // staff, and the route re-checks it. The merged panel must not become a
     // way around either half of that.
-    assert.match(company, /const canViewWages = hotelCapabilitiesReady && can\(['"]view_wages['"]\)/);
+    assert.match(company, /activePropertyStanding\?\.seesFinancials === true/);
+    assert.match(company, /canForStanding\([\s\S]*hotelPresentationRole[\s\S]*['"]view_wages['"][\s\S]*capabilityOverrides/);
     assert.match(company, /canViewWages=\{canViewWages\}/);
     assert.match(hotelTeam, /if \(!hotelId \|\| !canManageTeam \|\| !canViewWages\) return;/);
     assert.match(employmentForm, /\{canViewWages \? \(/);

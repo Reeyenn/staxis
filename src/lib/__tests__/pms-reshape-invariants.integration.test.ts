@@ -181,6 +181,11 @@ describe('pms reshape — migrations 0354 / 0355 / 0356', () => {
        values ($1, 'cua', 'live', 'fixture', '1', now(), now()) returning id`,
       [PROP],
     );
+    // 0398 (applied after the reshape migrations this suite targets) binds the
+    // browser-facing PMS bridge to an authenticated standing. These invariant
+    // calls model the existing service-side reader, so declare that JWT role
+    // instead of accidentally exercising the anonymous-denial branch.
+    await pg.query(`select set_config('request.jwt.claim.role', 'service_role', false)`);
   });
 
   after(async () => {

@@ -7,10 +7,10 @@
 // It enforces, in order:
 //   1. a valid authenticated session (cookie or bearer; 2FA enforced upstream),
 //   2. a syntactically valid property UUID,
-//   3. the caller's role is owner / general_manager / admin (canManageInventory)
-//      — front_desk / housekeeping / maintenance / staff are denied here,
-//   4. the caller actually has access to THIS property (admins: all; others:
-//      pid must be in property_access, or the '*' wildcard).
+//   3. current exact property reach + per-hotel operational role from the
+//      authoritative entitlement projection (never accounts.property_access),
+//   4. the inventory capability and, for writes, mutation capacity carried by
+//      the winning normalized entitlement.
 //
 // Mirrors src/lib/financials/api-gate.ts:requireFinanceAccess exactly (one
 // accounts read serves 3 + 4). The cross-property spend rollup reuses
@@ -28,6 +28,10 @@ import { capabilityUnavailableResponse } from '@/lib/capabilities/api-gate';
 import { isUuid } from '@/lib/api-validate';
 import { requireSectionEnabled } from '@/lib/sections/server';
 import type { EnabledSections } from '@/lib/sections/registry';
+import {
+  authoritativeStandingForProperty,
+  listAuthoritativePropertyAccess,
+} from '@/lib/authorization/server';
 
 export { isUuid };
 
@@ -44,6 +48,22 @@ export type OrderingAccess =
       enabledSections: EnabledSections;
     }
   | { ok: false; response: NextResponse };
+
+function authorityUnavailable(requestId: string): OrderingAccess & { ok: false } {
+  return {
+    ok: false,
+    response: err('authorization is temporarily unavailable', {
+      requestId,
+      status: 503,
+      code: 'authorization_unavailable',
+      headers: { 'Retry-After': '5' },
+    }),
+  };
+}
+
+function isReadOnlyRequest(req: NextRequest): boolean {
+  return req.method === 'GET' || req.method === 'HEAD';
+}
 
 export async function requireOrderingAccess(
   req: NextRequest,
@@ -67,13 +87,14 @@ export async function requireOrderingAccess(
     };
   }
 
-  // 3) Load the caller's account ONCE: role + property scope + accounts PK + name.
+  // 3) Load identity, then resolve reach + per-hotel capacity atomically from
+  //    the account's selected authority mode.
   const { data: account, error } = await supabaseAdmin
     .from('accounts')
-    .select('id, role, property_access, display_name')
+    .select('id, display_name, active')
     .eq('data_user_id', session.userId)
     .maybeSingle();
-  if (error || !account) {
+  if (error || !account || account.active !== true) {
     return {
       ok: false,
       response: err('account not found for session', {
@@ -83,7 +104,34 @@ export async function requireOrderingAccess(
       }),
     };
   }
-  const role = ((account.role as string) ?? 'staff') as AppRole;
+  const authority = await listAuthoritativePropertyAccess(account.id as string);
+  if (!authority) return authorityUnavailable(requestId);
+  const standing = authoritativeStandingForProperty(authority, pid);
+  if (!standing) {
+    return {
+      ok: false,
+      response: err('forbidden: no access to this property', {
+        requestId,
+        status: 403,
+        code: 'forbidden_property',
+      }),
+    };
+  }
+  const role = standing.operationalRole;
+
+  // A portfolio/viewer grant may use read-only inventory endpoints at hotels
+  // in its exact scope, but it never inherits delivery/vendor writes from the
+  // front_desk compatibility lens used to present that grant.
+  if (!isReadOnlyRequest(req) && !standing.hotelMutationAllowed) {
+    return {
+      ok: false,
+      response: err('forbidden: your current company access is read-only at this property', {
+        requestId,
+        status: 403,
+        code: 'forbidden_role',
+      }),
+    };
+  }
 
   // 4) Capability gate — manage_inventory_orders, honoring this hotel's Access-tab
   //    restrictions (default: every role; an admin can switch a role OFF per hotel).
@@ -102,21 +150,6 @@ export async function requireOrderingAccess(
         requestId,
         status: 403,
         code: 'forbidden_role',
-      }),
-    };
-  }
-
-  // 5) Property scope — admins reach every property; everyone else must have
-  //    the pid in property_access (or the '*' wildcard).
-  const access = (account.property_access ?? []) as string[];
-  const hasProperty = role === 'admin' || access.includes(pid) || access.includes('*');
-  if (!hasProperty) {
-    return {
-      ok: false,
-      response: err('forbidden: no access to this property', {
-        requestId,
-        status: 403,
-        code: 'forbidden_property',
       }),
     };
   }

@@ -34,11 +34,18 @@ describe('staff pilot reliability contracts', () => {
     assert.ok(insert >= 0 && deletion > insert, 'destructive delete must follow insert/update work');
   });
 
-  test('join approval verifies the conditional account link affected a row', () => {
+  test('join approval delegates the whole decision to the authoritative transaction', () => {
     const route = source('src/app/api/staff/join-requests/route.ts');
-    assert.match(route, /\.is\('staff_id', null\)[\s\S]*\.select\('id'\)[\s\S]*\.maybeSingle\(\)/);
-    assert.match(route, /if \(linkErr \|\| !linkedAccount\)/);
-    assert.match(route, /account link lost concurrency race/);
+    const migration = source('supabase/migrations/0391_transactional_invite_and_join_acceptance.sql');
+    assert.match(route, /callerCapabilityDecisionFresh\(caller, 'manage_team', hotelId\)/);
+    assert.match(route, /staxis_decide_staff_join_request/);
+    assert.doesNotMatch(route, /from\('staff'\)\.insert|property_access: nextAccess/);
+    assert.match(migration, /create or replace function public\.staxis_decide_staff_join_request/);
+    assert.match(migration, /pg_advisory_xact_lock\(hashtextextended\(p_property_id::text, 0\)\)/);
+    assert.match(migration, /_staxis_manage_team_context\(p_actor_account_id, p_property_id\)/);
+    assert.match(migration, /insert into public\.account_property_staff_links/);
+    assert.match(migration, /insert into public\.organization_memberships/);
+    assert.match(migration, /update public\.join_requests[\s\S]*status = 'approved'/);
   });
 
   test('public staff roster stays retired and emits no staff data', () => {

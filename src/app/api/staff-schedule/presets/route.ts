@@ -18,7 +18,13 @@ import { ok, err, ApiErrorCode } from '@/lib/api-response';
 import { getOrMintRequestId, log } from '@/lib/log';
 import { errToString } from '@/lib/utils';
 import { requireSession } from '@/lib/api-auth';
-import { verifyTeamManager, callerCapabilityDecision } from '@/lib/team-auth';
+import {
+  callerCapabilityDecision,
+  callerReachesHotel,
+  loadSessionAccount,
+  teamCallerCanMutateHotel,
+  verifyTeamManager,
+} from '@/lib/team-auth';
 import { capabilityUnavailableResponse } from '@/lib/capabilities/api-gate';
 import { requireSectionEnabled } from '@/lib/sections/server';
 import { validateUuid } from '@/lib/api-validate';
@@ -45,14 +51,10 @@ export async function GET(req: NextRequest) {
   if (hotelIdCheck.error) return err(hotelIdCheck.error, { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
   const hotelId = hotelIdCheck.value!;
 
-  // RLS would block cross-property reads, but we also use supabaseAdmin
-  // here (skipping RLS) so we sanity-check via the account's property_access.
-  const { data: acct } = await supabaseAdmin
-    .from('accounts').select('property_access, role')
-    .eq('data_user_id', session.userId).maybeSingle();
-  const access = (acct?.property_access ?? []) as string[];
-  const isAdmin = acct?.role === 'admin';
-  if (!isAdmin && !access.includes(hotelId)) {
+  // Service-role reads require the same current authoritative hotel reach as
+  // the rest of the app; the legacy property_access array is rollback data.
+  const account = await loadSessionAccount(session.userId);
+  if (!account || !callerReachesHotel(account, hotelId)) {
     return err('Forbidden', { requestId, status: 403, code: ApiErrorCode.Unauthorized });
   }
 
@@ -83,13 +85,19 @@ interface PresetInput {
 
 export async function PUT(req: NextRequest) {
   const requestId = getOrMintRequestId(req);
-  const caller = await verifyTeamManager(req, { capability: 'manage_shifts' });
-  if (!caller) return err('Unauthorized', { requestId, status: 403, code: ApiErrorCode.Unauthorized });
-
   const body = await req.json().catch(() => ({})) as { hotelId?: string; presets?: PresetInput[] };
   const hotelIdCheck = validateUuid(body.hotelId, 'hotelId');
   if (hotelIdCheck.error) return err(hotelIdCheck.error, { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
   const hotelId = hotelIdCheck.value!;
+
+  const caller = await verifyTeamManager(req, {
+    capability: 'manage_shifts',
+    propertyId: hotelId,
+  });
+  if (!caller) return err('Unauthorized', { requestId, status: 403, code: ApiErrorCode.Unauthorized });
+  if (!teamCallerCanMutateHotel(caller, hotelId)) {
+    return err('Forbidden', { requestId, status: 403, code: ApiErrorCode.Unauthorized });
+  }
 
   const capabilityDecision = await callerCapabilityDecision(caller, 'manage_shifts', hotelId);
   if (capabilityDecision === 'unavailable') return capabilityUnavailableResponse(requestId);

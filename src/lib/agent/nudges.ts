@@ -172,68 +172,77 @@ function toMillis(v: Date | string | null | undefined): number | null {
   return Number.isNaN(ms) ? null : ms;
 }
 
-/** Find the accounts that should receive nudges for a property.
+const NUDGE_RECIPIENT_LIMIT = 64;
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+/** Find the accounts that should receive nudges for one property.
  *
- * Codex adversarial review 2026-05-13 (A-H9): the prior version included
- * any account whose property_access contained '*' (wildcard) — i.e. admins
- * received every property's nudges × every category × every 5-min cron tick.
- * With one admin (Reeyen) it's a few extra rows; the first support hire
- * would receive ~144,000 nudges/day at 50 properties.
- *
- * New policy:
- *   1. Check properties.nudge_subscription (migration 0088) for an explicit
- *      override. enabled=false → send to nobody. recipient_account_ids set →
- *      send to those accounts.
- *   2. Otherwise fall back to owners + general_managers whose property_access
- *      INCLUDES this propertyId. Wildcard '*' (admins) is intentionally NOT
- *      a fallback — admins use a dedicated admin view, not the cron fan-out.
+ * Migration 0395 makes this a single property-keyed service RPC. Candidate
+ * discovery and current-standing checks happen behind the database tenant
+ * boundary, so this process never enumerates global account identities and
+ * never fans out through one resolver call per fleet account. Only active
+ * owner/GM standings with hotelMutationAllowed=true can be returned; company-
+ * only oversight hats and platform admins deliberately use management views,
+ * not hotel nudge fan-out.
  *
  * Exported so tool handlers (e.g. request_help in room-actions.ts) can route
  * user-driven nudges to the right inbox without duplicating this logic. */
 export async function getNudgeRecipients(propertyId: string): Promise<string[]> {
-  // 1. Per-property override.
-  const { data: prop } = await supabaseAdmin
-    .from('properties')
-    .select('nudge_subscription')
-    .eq('id', propertyId)
-    .maybeSingle();
-  const sub = (prop?.nudge_subscription as { enabled?: boolean; recipient_account_ids?: string[] } | null) ?? null;
-  if (sub) {
-    if (sub.enabled === false) return [];
-    if (Array.isArray(sub.recipient_account_ids) && sub.recipient_account_ids.length > 0) {
-      // Codex post-merge review 2026-05-13 (N3 + B.5): defense-in-depth
-      // against cross-tenant nudge exfiltration. The DB trigger from
-      // migration 0095 is the durable guard, but stale state (raw SQL,
-      // pre-trigger data) could let invalid UUIDs slip through. Validate
-      // here too: every recipient must have role='admin' OR property_access
-      // (uuid[]) containing this propertyId.
-      const { data: validated } = await supabaseAdmin
-        .from('accounts')
-        .select('id, role, property_access')
-        .in('id', sub.recipient_account_ids);
-      return (validated ?? [])
-        .filter(a => {
-          if (a.role === 'admin') return true;
-          const access = (a.property_access as string[]) ?? [];
-          return access.includes(propertyId);
-        })
-        .map(a => a.id as string);
+  try {
+    const { data, error } = await supabaseAdmin.rpc(
+      'staxis_list_property_nudge_recipients',
+      { p_property_id: propertyId },
+    );
+    if (error) {
+      console.error('[nudges] recipient projection failed', {
+        propertyId,
+        code: typeof error.code === 'string' ? error.code : null,
+      });
+      return [];
     }
-  }
 
-  // 2. Default: owners + GMs whose property_access INCLUDES this propertyId.
-  //    No wildcard match.
-  const { data } = await supabaseAdmin
-    .from('accounts')
-    .select('id, role, property_access')
-    .in('role', ['owner', 'general_manager']);
-  if (!data) return [];
-  return data
-    .filter(a => {
-      const access = (a.property_access as string[]) ?? [];
-      return access.includes(propertyId);
-    })
-    .map(a => a.id as string);
+    // PostgREST returns scalar jsonb as an object. Accept a one-row wrapper as
+    // rolling-upgrade/test-facade compatibility, but validate the exact narrow
+    // contract before an ID can become agent_nudges.user_id.
+    const projection = Array.isArray(data) && data.length === 1 ? data[0] : data;
+    if (!isRecord(projection) || projection.ok !== true) {
+      console.error('[nudges] recipient projection refused', {
+        propertyId,
+        reason: isRecord(projection) && typeof projection.reason === 'string'
+          ? projection.reason
+          : 'invalid_result',
+      });
+      return [];
+    }
+    if (projection.propertyId !== propertyId
+        || !Array.isArray(projection.recipientAccountIds)
+        || projection.recipientAccountIds.length > NUDGE_RECIPIENT_LIMIT) {
+      console.error('[nudges] invalid recipient projection shape', { propertyId });
+      return [];
+    }
+
+    const recipients: string[] = [];
+    const seen = new Set<string>();
+    for (const id of projection.recipientAccountIds) {
+      if (typeof id !== 'string' || !UUID_PATTERN.test(id) || seen.has(id)) {
+        console.error('[nudges] invalid recipient projection identity', { propertyId });
+        return [];
+      }
+      seen.add(id);
+      recipients.push(id);
+    }
+    return recipients;
+  } catch (error) {
+    console.error('[nudges] recipient projection unavailable', {
+      propertyId,
+      message: error instanceof Error ? error.message : 'unknown failure',
+    });
+    return [];
+  }
 }
 
 /** Insert nudge unless a pending one with the same (user, category, dedupe_key) exists. */

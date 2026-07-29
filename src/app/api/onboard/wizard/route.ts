@@ -7,15 +7,17 @@
  *   onboarding state + minimal hotel details so the wizard can render
  *   "Welcome to <Hotel Name>" without the user being signed in.
  *
- *   Auth is graceful: if a session exists AND owns the property, more
- *   detail is returned. Otherwise just the bare welcome info.
+ *   Auth is graceful: if a session has a fresh authoritative manage-settings
+ *   grant for the property, more detail is returned. Otherwise just the bare
+ *   welcome info.
  *
  * PATCH /api/onboard/wizard
  *   Body: { code, partialState }
  *   Merges partialState into properties.onboarding_state.
- *   Auth required for steps 3+ (after account creation). The endpoint
- *   accepts either a session token OR the code+still-valid join_code
- *   for steps 1-2 transitions (welcome → account).
+ *   Auth required for every write except two exact, bounded pre-session
+ *   transitions: welcome → account, and the account-created fallback after a
+ *   single-use owner/GM code has already been consumed. A join code is not a
+ *   standing authorization grant for arbitrary onboarding/property writes.
  *
  *   Idempotent: re-PATCHing the same partialState produces the same
  *   end state.
@@ -47,6 +49,13 @@ import {
 } from '@/lib/onboarding/state';
 import { parseSectionFlags, normalizeSectionFlags } from '@/lib/sections/registry';
 import { validatePropertyUpdateField } from '@/lib/onboarding/property-update-validation';
+import { accountCapabilityDecisionForProperty } from '@/lib/team-auth';
+import { capabilityUnavailableResponse } from '@/lib/capabilities/api-gate';
+import {
+  isOnboardingJoinCodeCapability,
+  resolveJoinCodeCapability,
+  type JoinCodeCapabilityResolution,
+} from '@/lib/join-code-capability';
 
 /**
  * Extract a stable IP for rate-limit keying. Vercel sets `x-forwarded-for`;
@@ -81,29 +90,62 @@ export const dynamic = 'force-dynamic';
  * code, therefore is allowed to read/write the wizard state for the
  * property the code is bound to."
  */
-async function resolvePropertyByCode(code: string): Promise<{
-  propertyId: string;
-  codeRow: { role: string | null; revoked_at: string | null; expires_at: string };
-} | null> {
-  const normalized = code.trim().toUpperCase();
-  if (!normalized) return null;
-
-  const { data: codeRow, error: codeErr } = await supabaseAdmin
-    .from('hotel_join_codes')
-    .select('hotel_id, role, revoked_at, expires_at')
-    .eq('code', normalized)
-    .maybeSingle();
-  if (codeErr || !codeRow) return null;
-  if (codeRow.revoked_at) return null;
-  if (new Date(codeRow.expires_at).getTime() <= Date.now()) return null;
-  return {
-    propertyId: codeRow.hotel_id as string,
+type PropertyCodeResolution =
+  | {
+    outcome: 'resolved';
+    propertyId: string;
     codeRow: {
-      role: codeRow.role as string | null,
-      revoked_at: codeRow.revoked_at as string | null,
-      expires_at: codeRow.expires_at as string,
+      id: string;
+      code_kind: 'privileged_onboarding' | 'onboarding_resume';
+      status: 'active' | 'used_up';
+      role: string | null;
+      revoked_at: null;
+      expires_at: string;
+      used_count: number;
+      max_uses: number;
+    };
+  }
+  | { outcome: 'not_found' }
+  | { outcome: 'unavailable'; databaseCode: string | null };
+
+function propertyResolutionFromCapability(
+  resolution: JoinCodeCapabilityResolution,
+): PropertyCodeResolution {
+  if (resolution.outcome !== 'resolved') return resolution;
+  const { receipt } = resolution;
+  if (!isOnboardingJoinCodeCapability(receipt)) {
+    return { outcome: 'not_found' };
+  }
+  return {
+    outcome: 'resolved',
+    propertyId: receipt.hotelId,
+    codeRow: {
+      id: receipt.codeId,
+      code_kind: receipt.codeKind as 'privileged_onboarding' | 'onboarding_resume',
+      status: receipt.status as 'active' | 'used_up',
+      role: receipt.role,
+      revoked_at: null,
+      expires_at: receipt.expiresAt,
+      used_count: receipt.usedCount,
+      max_uses: receipt.maxUses,
     },
   };
+}
+
+async function resolvePropertyByCode(code: string): Promise<PropertyCodeResolution> {
+  return propertyResolutionFromCapability(await resolveJoinCodeCapability(code));
+}
+
+async function settingsDecision(
+  authUserId: string,
+  propertyId: string,
+) {
+  return accountCapabilityDecisionForProperty(
+    authUserId,
+    'manage_settings',
+    propertyId,
+    { requireMutation: true, requireManager: true },
+  );
 }
 
 export async function GET(req: NextRequest) {
@@ -112,7 +154,14 @@ export async function GET(req: NextRequest) {
   const code = new URL(req.url).searchParams.get('code') ?? '';
 
   const resolved = await resolvePropertyByCode(code);
-  if (!resolved) {
+  if (resolved.outcome === 'unavailable') {
+    log.error('[onboard/wizard:GET] join-code capability unavailable', {
+      requestId,
+      databaseCode: resolved.databaseCode,
+    });
+    return capabilityUnavailableResponse(requestId);
+  }
+  if (resolved.outcome === 'not_found') {
     // Rate-limit ONLY invalid-code probes (per IP). The bucket exists to cap
     // blind code-spray enumeration — checking it only on the MISS path keeps
     // that protection while never throttling a legitimate in-progress
@@ -148,38 +197,27 @@ export async function GET(req: NextRequest) {
   // New shape:
   //   - Unauthenticated caller → { propertyName, currentStep, completed,
   //     inviteRole }. Enough to render the welcome card.
-  //   - Authenticated caller who owns the property → full payload
+  //   - Authenticated caller with current manager/settings authority → full payload
   //     (state + hotelDefaults), same as before.
   let sessionUserId: string | null = null;
-  // Distinct from isOwnerSession (which is also true for ANY admin viewing the
-  // hotel): callerOwnsProperty is true only for the actual property owner. The
-  // durable emailVerified backfill below keys on THIS so an admin merely
-  // looking at a mid-onboarding hotel never mutates the owner's onboarding.
-  let callerOwnsProperty = false;
   const session = await requireSession(req);
   if (session.ok) {
-    const { data: account } = await supabaseAdmin
-      .from('accounts')
-      .select('property_access, role')
-      .eq('data_user_id', session.userId)
-      .maybeSingle();
-    const access = (account?.property_access ?? []) as string[];
-    const isAdmin = account?.role === 'admin';
-    callerOwnsProperty = access.includes(resolved.propertyId);
-    if (isAdmin || callerOwnsProperty) {
+    const decision = await settingsDecision(session.userId, resolved.propertyId);
+    if (decision === 'allowed') {
       sessionUserId = session.userId;
     }
   }
-  const isOwnerSession = sessionUserId !== null;
 
   // Already completed? Tell the caller so the wizard can redirect to /home.
   if (prop.onboarding_completed_at) {
+    const canReadFullState = sessionUserId !== null
+      && await settingsDecision(sessionUserId, resolved.propertyId) === 'allowed';
     return ok({
       propertyId: prop.id,
       propertyName: prop.name,
       currentStep: 8 as const,
       completed: true,
-      state: isOwnerSession
+      state: canReadFullState
         ? ((prop.onboarding_state as OnboardingState) ?? { step: 8 })
         : { step: 8 } as OnboardingState,
       hotelDefaults: null,
@@ -189,33 +227,44 @@ export async function GET(req: NextRequest) {
 
   let state = (prop.onboarding_state as OnboardingState) ?? { step: 1 };
 
-  // Durable email-verified backfill (2026-06-15). An authenticated owner has,
+  // Durable email-verified backfill (2026-06-15). An authenticated manager has,
   // by definition, already passed the email-OTP step — their session was
   // minted by verifyOtp, the second factor. But the client-side PATCH that
   // writes `emailVerifiedAt` at Step 3 can be lost if the browser navigates
   // away the instant the verified session lands (the "verify dumps me on the
   // dashboard" bug). Without this, resuming the wizard would bounce the owner
   // back to Step 3 forever — a redirect loop with the login-funnel gate. So
-  // when an owner session loads the wizard with an account created but
+  // when an authorized session loads the wizard with an account created but
   // email-verified missing, write it now and advance. Idempotent; only ever
   // moves the step FORWARD, never sets onboarding_completed_at.
-  if (callerOwnsProperty && state.accountCreatedAt && !state.emailVerifiedAt) {
+  if (sessionUserId && state.accountCreatedAt && !state.emailVerifiedAt) {
     const backfilled: OnboardingState = { ...state, emailVerifiedAt: new Date().toISOString() };
     backfilled.step = deriveCurrentStep(backfilled);
-    const { error: bfErr } = await supabaseAdmin
-      .from('properties')
-      .update({ onboarding_state: backfilled })
-      .eq('id', resolved.propertyId);
-    if (bfErr) {
-      log.error('[onboard/wizard:GET] emailVerified backfill failed', { requestId, msg: errToString(bfErr) });
+    // Authorization can be revoked or the hotel transferred after the first
+    // decision. Recheck immediately before this service-role write.
+    const backfillDecision = await settingsDecision(sessionUserId, resolved.propertyId);
+    if (backfillDecision === 'allowed') {
+      const { error: bfErr } = await supabaseAdmin
+        .from('properties')
+        .update({ onboarding_state: backfilled })
+        .eq('id', resolved.propertyId);
+      if (bfErr) {
+        log.error('[onboard/wizard:GET] emailVerified backfill failed', { requestId, msg: errToString(bfErr) });
+      } else {
+        state = backfilled;
+      }
     } else {
-      state = backfilled;
+      sessionUserId = null;
     }
   }
 
   const currentStep = deriveCurrentStep(state);
 
-  if (!isOwnerSession) {
+  // A final decision prevents a role revocation or hotel transfer during this
+  // request from turning a formerly-valid session into a full-state leak.
+  const canReadFullState = sessionUserId !== null
+    && await settingsDecision(sessionUserId, resolved.propertyId) === 'allowed';
+  if (!canReadFullState) {
     return ok({
       propertyId: prop.id,
       propertyName: prop.name,
@@ -301,7 +350,14 @@ export async function PATCH(req: NextRequest) {
 
   const code = typeof body.code === 'string' ? body.code : '';
   const resolved = await resolvePropertyByCode(code);
-  if (!resolved) {
+  if (resolved.outcome === 'unavailable') {
+    log.error('[onboard/wizard:PATCH] join-code capability unavailable', {
+      requestId,
+      databaseCode: resolved.databaseCode,
+    });
+    return capabilityUnavailableResponse(requestId);
+  }
+  if (resolved.outcome === 'not_found') {
     // Rate-limit ONLY invalid-code probes (per IP) — caps brute-force code
     // enumeration without throttling a legitimate operator who makes many
     // valid PATCHes (now including back-navigation). Same model as GET above
@@ -367,27 +423,97 @@ export async function PATCH(req: NextRequest) {
     }
   }
 
-  // For steps that mutate property data (4+), the user MUST be signed
-  // in and own the property. Steps 1-3 only touch onboarding_state and
-  // are gated by code validity alone.
-  const isMutatingProperty = Object.keys(propertyUpdates).length > 0 || body.finalize === true;
-  if (isMutatingProperty) {
-    const session = await requireSession(req);
-    if (!session.ok) return session.response;
-    // Verify session owns the property via accounts.property_access.
-    const { data: account } = await supabaseAdmin
-      .from('accounts')
-      .select('property_access, role')
-      .eq('data_user_id', session.userId)
-      .maybeSingle();
-    const access = (account?.property_access ?? []) as string[];
-    const isAdmin = account?.role === 'admin';
-    if (!isAdmin && !access.includes(resolved.propertyId)) {
-      return err('Forbidden — your session does not own this property', {
-        requestId, status: 403, code: ApiErrorCode.Unauthorized,
+  // A valid code permits only the two transitions that must happen before an
+  // authenticated session is reliably available. In particular it does not
+  // authorize clearing progress, setting emailVerifiedAt, changing hotel
+  // fields, completing setup, or writing arbitrary later-step timestamps.
+  const partialKeys = Object.keys(partialState);
+  const bodyKeys = Object.keys(body as Record<string, unknown>);
+  const exactPartialOnlyBody = bodyKeys.every((key) => key === 'code' || key === 'partialState')
+    && partialKeys.length === 1;
+  const codeOnlyWelcomeTransition = exactPartialOnlyBody
+    && partialState.step === 2;
+  const accountCreatedAt = partialState.accountCreatedAt;
+  const codeOnlyAccountCreatedFallback = exactPartialOnlyBody
+    && typeof accountCreatedAt === 'string'
+    && Number.isFinite(Date.parse(accountCreatedAt))
+    && (resolved.codeRow.role === 'owner' || resolved.codeRow.role === 'general_manager')
+    && resolved.codeRow.used_count >= resolved.codeRow.max_uses;
+  const codeOnlyMinimalWrite = codeOnlyWelcomeTransition || codeOnlyAccountCreatedFallback;
+
+  if (codeOnlyMinimalWrite) {
+    const transition = codeOnlyAccountCreatedFallback ? 'account_created' : 'welcome';
+    const { data: transitionData, error: transitionError } = await supabaseAdmin.rpc(
+      'staxis_apply_onboarding_join_code_transition',
+      {
+        p_code_id: resolved.codeRow.id,
+        p_hotel_id: resolved.propertyId,
+        p_transition: transition,
+        p_request_id: requestId,
+      },
+    );
+    if (transitionError) {
+      log.error('[onboard/wizard:PATCH] guarded code transition unavailable', {
+        requestId,
+        databaseCode: transitionError.code ?? null,
+      });
+      return capabilityUnavailableResponse(requestId);
+    }
+    const receipt = transitionData !== null
+      && typeof transitionData === 'object'
+      && !Array.isArray(transitionData)
+      ? transitionData as Record<string, unknown>
+      : null;
+    if (receipt?.ok === false) {
+      const exactFailure = Object.keys(receipt).sort().join(',') === 'ok,reason'
+        && typeof receipt.reason === 'string';
+      if (!exactFailure || receipt.reason === 'invalid' || receipt.reason === 'invalid_state') {
+        log.error('[onboard/wizard:PATCH] guarded code transition malformed', { requestId });
+        return capabilityUnavailableResponse(requestId);
+      }
+      return err('Invalid or expired code', {
+        requestId,
+        status: 404,
+        code: ApiErrorCode.NotFound,
       });
     }
+    const expectedKeys = [
+      'ok', 'schemaVersion', 'status', 'hotelId', 'transition', 'currentStep',
+    ].sort();
+    const actualKeys = receipt ? Object.keys(receipt).sort() : [];
+    const validReceipt = receipt?.ok === true
+      && receipt.schemaVersion === 'onboarding-code-transition-v1'
+      && (receipt.status === 'applied' || receipt.status === 'noop')
+      && receipt.hotelId === resolved.propertyId
+      && receipt.transition === transition
+      && Number.isInteger(receipt.currentStep)
+      && (receipt.currentStep as number) >= 1
+      && (receipt.currentStep as number) <= 9
+      && actualKeys.length === expectedKeys.length
+      && actualKeys.every((key, index) => key === expectedKeys[index]);
+    if (!validReceipt) {
+      log.error('[onboard/wizard:PATCH] guarded code transition malformed', { requestId });
+      return capabilityUnavailableResponse(requestId);
+    }
+    const currentStep = receipt.currentStep as OnboardingState['step'];
+    return ok({
+      propertyId: resolved.propertyId,
+      state: { step: currentStep } as OnboardingState,
+      currentStep,
+      completed: false,
+    }, { requestId });
   }
+
+  const session = await requireSession(req);
+  if (!session.ok) return session.response;
+  const decision = await settingsDecision(session.userId, resolved.propertyId);
+  if (decision === 'unavailable') return capabilityUnavailableResponse(requestId);
+  if (decision === 'denied') {
+    return err('Forbidden — your session cannot manage this property', {
+      requestId, status: 403, code: ApiErrorCode.Forbidden,
+    });
+  }
+  const authorizedUserId = session.userId;
 
   // Read current state so we can MERGE (not overwrite) onboarding_state.
   const { data: current, error: readErr } = await supabaseAdmin
@@ -441,6 +567,18 @@ export async function PATCH(req: NextRequest) {
   };
   if (body.finalize === true) {
     update.onboarding_completed_at = new Date().toISOString();
+  }
+
+  // Service-role writes must be fenced at commit proximity. The account may
+  // have been revoked or the hotel may have moved organizations since the
+  // first decision above. The two deliberately unauthenticated minimal
+  // transitions remain code-bound and never alter hotel data or completion.
+  const commitDecision = await settingsDecision(authorizedUserId, resolved.propertyId);
+  if (commitDecision === 'unavailable') return capabilityUnavailableResponse(requestId);
+  if (commitDecision === 'denied') {
+    return err('Forbidden — property access changed before the update', {
+      requestId, status: 403, code: ApiErrorCode.Forbidden,
+    });
   }
 
   const { error: updErr } = await supabaseAdmin

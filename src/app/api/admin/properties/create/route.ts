@@ -12,11 +12,10 @@
  *   1. Validates inputs (name, total_rooms, IANA timezone, optional
  *      pms_type / brand / property_kind / is_test).
  *   2. Inserts the property with the calling admin as owner_id placeholder.
- *      The actual hotel owner gains property_access via the join code in
- *      step 3 — owner_id stays as the admin until any future ownership
- *      transfer flow is built (out of scope here).
- *   3. Mints an "owner" role join code (single-use, 7-day TTL) so the
- *      admin can hand the new hotel's owner a one-shot signup link.
+ *      The guarded one-shot owner claim later replaces that placeholder; a GM
+ *      claim receives hotel access but does not become owner of record.
+ *   3. Mints an owner/GM onboarding code through the DB-guarded platform-
+ *      admin RPC (single-use, 7-day TTL, exact unclaimed hotel).
  *   4. Writes an audit row.
  *
  * Returns: { propertyId, joinCode, signupUrl, expiresAt }
@@ -26,11 +25,9 @@
  *   - Timezone validated via Intl.DateTimeFormat (same mechanism as
  *     ml-service's require_property_timezone after Phase L). Phase K's
  *     CHECK (total_rooms > 0) catches a bypass at the DB layer too.
- *   - If join-code minting fails, the property still exists; admin can
- *     mint a code separately via /api/auth/join-codes. We don't wrap the
- *     two steps in a single transaction because Supabase JS doesn't
- *     expose transactions across two .insert() calls — the admin sees
- *     "property created, code generation failed" and can retry the code.
+ *   - If join-code minting fails, the property still exists but no broad
+ *     staff-code endpoint is used as a fallback. The response is explicit so
+ *     platform operations can retry/repair the guarded bootstrap only.
  */
 
 import { NextRequest, after } from 'next/server';
@@ -42,8 +39,6 @@ import { writeAudit } from '@/lib/audit';
 import { triggerMlTraining } from '@/lib/ml-invoke';
 import {
   generateJoinCode,
-  OWNER_CODE_TTL_HOURS,
-  OWNER_CODE_MAX_USES,
 } from '@/lib/join-codes';
 import { sendOnboardingInvite } from '@/lib/email/onboarding-invite';
 import { env } from '@/lib/env';
@@ -75,9 +70,10 @@ export async function POST(req: NextRequest) {
   }
   const v = validation.values;
 
-  // Insert property. owner_id = the admin creating it (placeholder until
-  // any future ownership-transfer flow). Phase K's CHECK (total_rooms > 0)
-  // is the DB-layer safety net if validation here regresses.
+  // Insert property. owner_id = the admin creating it, as the exact bootstrap
+  // placeholder 0396 requires until the one-shot owner claim succeeds. Phase
+  // K's CHECK (total_rooms > 0) is the DB-layer safety net if validation here
+  // regresses.
   const { data: created, error: insErr } = await supabaseAdmin
     .from('properties')
     .insert({
@@ -145,31 +141,38 @@ export async function POST(req: NextRequest) {
     }
   });
 
-  // Mint an owner-role join code so the admin has something to send the
-  // hotel's actual owner. Try a few times in case of code collision.
+  // Mint the one-shot owner/GM bootstrap credential through the database
+  // guard. 0396 locks the property, rechecks this exact live platform-admin
+  // identity, proves the hotel is still unclaimed/incomplete, and owns the
+  // one-use/seven-day bounds. A direct service-role INSERT is deliberately
+  // rejected by the trigger.
   let joinCodeRow: { code: string; expires_at: string } | null = null;
   let codeErr: unknown = null;
   for (let i = 0; i < 5; i++) {
     const code = generateJoinCode(created.name);
-    const expiresAt = new Date(Date.now() + OWNER_CODE_TTL_HOURS * 60 * 60 * 1000).toISOString();
-    const { data: ins, error: insertCodeErr } = await supabaseAdmin
-      .from('hotel_join_codes')
-      .insert({
-        hotel_id: created.id,
-        code,
-        role: v.inviteRole,  // Phase M1.5: 'owner' | 'general_manager'
-        expires_at: expiresAt,
-        max_uses: OWNER_CODE_MAX_USES,
-        created_by: auth.accountId,
-      })
-      .select('code, expires_at')
-      .single();
-    if (!insertCodeErr && ins) {
-      joinCodeRow = ins;
+    const { data, error: mintError } = await supabaseAdmin.rpc(
+      'staxis_mint_privileged_onboarding_join_code',
+      {
+        p_actor_account_id: auth.accountId,
+        p_actor_auth_user_id: auth.userId,
+        p_hotel_id: created.id,
+        p_code: code,
+        p_role: v.inviteRole,
+        p_request_id: requestId,
+      },
+    );
+    const mint = data as {
+      ok?: boolean;
+      status?: string;
+      code?: string;
+      expiresAt?: string;
+    } | null;
+    if (!mintError && mint?.ok === true && mint.code && mint.expiresAt) {
+      joinCodeRow = { code: mint.code, expires_at: mint.expiresAt };
       break;
     }
-    codeErr = insertCodeErr;
-    if (insertCodeErr && !String(insertCodeErr.message ?? '').toLowerCase().includes('duplicate')) break;
+    codeErr = mintError ?? new Error(`privileged join-code mint returned ${mint?.status ?? 'invalid response'}`);
+    if (mint?.status !== 'code_collision') break;
   }
 
   await writeAudit({
@@ -201,7 +204,7 @@ export async function POST(req: NextRequest) {
         joinCode: null,
         signupUrl: null,
         expiresAt: null,
-        warning: 'Property created but join code generation failed — mint one via /admin/properties/' + created.id,
+        warning: 'Property created but its guarded onboarding invite could not be minted. Retry from platform administration before assigning the hotel.',
       },
       { requestId },
     );
