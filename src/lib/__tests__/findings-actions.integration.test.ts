@@ -972,15 +972,16 @@ describe('the hands, proven against a real database', () => {
     //
     // MUTATION PROOF: swap `resolveCompanyForProperty` back for
     // `companyForProperty` in the route and both taps below execute.
-    test('a company read that fails refuses the tap rather than calling the hotel independent', async () => {
+    test('an authorization-store outage fails closed before company-rule resolution', async () => {
       const { actionId } = await pricedOffer('Room 803');
       await pg.query(
         'alter table public.organization_property_relationships rename to opr_hidden',
       );
       try {
         const result = await tap(PID_A, actionId);
-        assert.equal(result.status, 503);
+        assert.equal(result.status, 403, 'the unavailable authority store was treated as access');
         assert.equal(await workOrderCount(PID_A, 'Room 803'), 2, 'the two originals, and no third');
+        assert.equal((await actionRow(actionId))!.state, 'proposed', 'the refused offer moved');
       } finally {
         await pg.query('alter table public.opr_hidden rename to organization_property_relationships');
       }
@@ -995,29 +996,60 @@ describe('the hands, proven against a real database', () => {
          on conflict (id) do nothing`,
         [OTHER],
       );
-      // The database's own one-open-primary index makes this state hard to
-      // reach, which is exactly why the code path is defensive — and why the
-      // index comes off for the length of this test rather than the assertion
-      // being skipped.
-      await pg.query('drop index if exists organization_property_one_open_primary_idx');
+      const original = await pg.query<{ id: string }>(
+        `update public.organization_property_relationships
+            set ends_at = clock_timestamp() + interval '1 day'
+          where organization_id = $1
+            and property_id = $2
+            and is_primary_grouping
+            and ends_at is null
+        returning id`,
+        [ORG, PID_A],
+      );
+      assert.equal(original.rows.length, 1);
+      let corruptRelationshipId: string | null = null;
       try {
         await pg.query(
-          `insert into public.organization_property_relationships
-             (organization_id, property_id, relationship_type, is_primary_grouping)
-           values ($1, $2, 'operator', true)`,
-          [OTHER, PID_A],
+          `alter table public.organization_property_relationships
+             disable trigger trg_organization_property_relationships_primary_window_guard`,
         );
+        try {
+          const corrupt = await pg.query<{ id: string }>(
+            `insert into public.organization_property_relationships
+               (organization_id, property_id, relationship_type, is_primary_grouping)
+             values ($1, $2, 'operator', true)
+             returning id`,
+            [OTHER, PID_A],
+          );
+          corruptRelationshipId = corrupt.rows[0]?.id ?? null;
+        } finally {
+          await pg.query(
+            `alter table public.organization_property_relationships
+               enable trigger trg_organization_property_relationships_primary_window_guard`,
+          );
+        }
         const result = await tap(PID_A, actionId);
-        assert.equal(result.status, 503, 'a hotel claimed twice is not a hotel claimed by nobody');
+        assert.equal(result.status, 403, 'ambiguous authoritative access was not denied generically');
         assert.equal(await workOrderCount(PID_A, 'Room 804'), 2, 'nothing was booked');
+        assert.equal((await actionRow(actionId))!.state, 'proposed', 'the refused offer moved');
       } finally {
-        await pg.query('delete from public.organization_property_relationships where organization_id=$1', [OTHER]);
-        await pg.query('delete from public.organizations where id=$1', [OTHER]);
         await pg.query(
-          `create unique index if not exists organization_property_one_open_primary_idx
-             on public.organization_property_relationships (property_id)
-            where is_primary_grouping and ends_at is null`,
+          `alter table public.organization_property_relationships
+             enable trigger trg_organization_property_relationships_primary_window_guard`,
+        ).catch(() => {});
+        if (corruptRelationshipId) {
+          await pg.query(
+            'delete from public.organization_property_relationships where id = $1',
+            [corruptRelationshipId],
+          );
+        }
+        await pg.query(
+          `update public.organization_property_relationships
+              set ends_at = null
+            where id = $1`,
+          [original.rows[0].id],
         );
+        await pg.query('delete from public.organizations where id=$1', [OTHER]);
       }
     });
 

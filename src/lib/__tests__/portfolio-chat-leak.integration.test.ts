@@ -95,6 +95,7 @@ import {
 } from '@/lib/agent/portfolio-intelligence/knowledge-presentation';
 import type { AuthorizationScopeReceipt } from '@/lib/authorization';
 import type { PlannerScopeCatalog, PortfolioKnowledgeQuery } from '@/lib/agent/portfolio-intelligence/schemas';
+import { loadManagementPatternPortfolioFindings } from '@/lib/company/management-patterns/portfolio-findings';
 
 import { applyMigrationsToPglite } from '../../../tests/fixtures/pglite-migrate';
 import {
@@ -218,6 +219,7 @@ function deterministicRouteDependencies(
     loadAuthorizedMetadata?: PortfolioPostDependencies['loadAuthorizedMetadata'];
     loadCompanyKnowledge?: PortfolioPostDependencies['loadCompanyKnowledge'];
     loadPropertyKnowledge?: PortfolioPostDependencies['loadPropertyKnowledge'];
+    loadPortfolioFindings?: PortfolioPostDependencies['loadPortfolioFindings'];
   } = {},
 ): PortfolioPostDependencies {
   const definition = getAiFeatureDefinition('agent.portfolio_chat');
@@ -321,6 +323,8 @@ function deterministicRouteDependencies(
     loadAuthorizedMetadata: overrides.loadAuthorizedMetadata ?? loadAuthorizedPropertyMetadata,
     loadCompanyKnowledge: overrides.loadCompanyKnowledge ?? (async () => []),
     loadPropertyKnowledge: overrides.loadPropertyKnowledge ?? (async () => []),
+    loadPortfolioFindings: overrides.loadPortfolioFindings
+      ?? loadManagementPatternPortfolioFindings,
     acquireAdmission: overrides.acquireAdmission ?? (async () => ({
       ok: true,
       leaseToken: 'f0000000-0000-4000-8000-000000000002',
@@ -1053,12 +1057,25 @@ describe('deterministic company knowledge answers', () => {
     };
     let modelCalls = 0;
     let budgetCalls = 0;
+    const knowledgeFindingLoads: Array<{
+      selectedPropertyIds: readonly string[];
+      maxFindings?: number;
+      carriedSignal: boolean;
+    }> = [];
     const dependencies = deterministicRouteDependencies('2026-07-27', '2026-07-27T18:00:00.000Z', {
       loadCompanyKnowledge: async (organizationId) => [
         ...await loadConfirmedCompanyKnowledge(organizationId),
         excludedFutureFact,
       ],
       loadPropertyKnowledge: loadConfirmedPortfolioPropertyKnowledge,
+      loadPortfolioFindings: async (input) => {
+        knowledgeFindingLoads.push({
+          selectedPropertyIds: [...input.selectedPropertyIds],
+          maxFindings: input.maxFindings,
+          carriedSignal: input.signal instanceof AbortSignal,
+        });
+        return loadManagementPatternPortfolioFindings(input);
+      },
     });
     dependencies.runSynthesis = async () => {
       modelCalls += 1;
@@ -1126,9 +1143,10 @@ describe('deterministic company knowledge answers', () => {
       model_id: string | null;
       model_tier: string | null;
       evidence: Record<string, unknown>;
+      finding_versions: Record<string, unknown>;
     }>(
       `select id, receipt_kind, request_artifact_id, knowledge_artifact_id,
-              model_id, model_tier, evidence
+              model_id, model_tier, evidence, finding_versions
          from portfolio_query_receipts
         where conversation_id = $1
         order by generated_at`,
@@ -1140,6 +1158,40 @@ describe('deterministic company knowledge answers', () => {
     assert.match(receiptRows.rows[0].knowledge_artifact_id ?? '', /^[0-9a-f-]{36}$/);
     assert.equal(receiptRows.rows[0].model_id, null);
     assert.equal(receiptRows.rows[0].model_tier, null);
+    const knowledgeFindingVersions = receiptRows.rows[0].finding_versions as {
+      status: string;
+      coverage: {
+        authorizedPropertyCount: number;
+        selectedPropertyCount: number;
+      };
+      counts: { accepted: number; projected: number; displayed: number };
+      producer: { loadVersion: string };
+    };
+    assert.equal(knowledgeFindingVersions.status === 'not_mounted', false);
+    assert.equal(knowledgeFindingVersions.status, 'no_finalized_run');
+    assert.equal(knowledgeFindingVersions.coverage.authorizedPropertyCount, 2);
+    assert.equal(knowledgeFindingVersions.coverage.selectedPropertyCount, 2);
+    assert.deepEqual(knowledgeFindingVersions.counts, {
+      input: 0,
+      accepted: 0,
+      projected: 0,
+      displayed: 0,
+      modelOmitted: 0,
+      omitted: 0,
+      rejected: 0,
+      smallCohortSuppressed: 0,
+    });
+    assert.equal(
+      knowledgeFindingVersions.producer.loadVersion,
+      'management-pattern-portfolio-load.v1',
+    );
+    assert.equal(knowledgeFindingLoads.length, 1);
+    assert.deepEqual(
+      [...knowledgeFindingLoads[0]!.selectedPropertyIds].sort(),
+      [PID_A1, PID_A2].sort(),
+    );
+    assert.equal(knowledgeFindingLoads[0]?.maxFindings, 40);
+    assert.equal(knowledgeFindingLoads[0]?.carriedSignal, true);
     assert.deepEqual(leaksIn(receiptRows.rows[0]), []);
 
     const artifacts = await pg.query<{
@@ -1163,6 +1215,7 @@ describe('deterministic company knowledge answers', () => {
           reason: string;
         }>;
       };
+      finding_versions: Record<string, unknown>;
       reproduction_input: {
         overlay: CompanyKnowledgeOverlayV1;
         selectedHotels: Array<{ propertyId: string; propertyName: string }>;
@@ -1176,7 +1229,8 @@ describe('deterministic company knowledge answers', () => {
       `select id, scope_receipt_id, organization_id, account_id,
               authorization_hash, scope_hash, authorized_property_ids,
               selected_property_ids, selected_claim_ids, normalized_question,
-              plan, source_versions, knowledge_versions, reproduction_input,
+              plan, source_versions, knowledge_versions, finding_versions,
+              reproduction_input,
               rendered_answer_text, rendered_answer_hash
          from portfolio_knowledge_request_artifacts
         where id = $1`,
@@ -1194,6 +1248,10 @@ describe('deterministic company knowledge answers', () => {
       reason: 'future_revision',
       sourceKind: 'company',
     }]);
+    assert.deepEqual(
+      artifacts.rows[0].finding_versions,
+      receiptRows.rows[0].finding_versions,
+    );
     assert.deepEqual(leaksIn(artifacts.rows[0]), []);
 
     // A real JSONB read is deliberately used here. PostgreSQL may reorder
@@ -1553,13 +1611,13 @@ describe('deterministic company knowledge answers', () => {
       cloneArtifact({
         selected_property_ids: 'array[$2::uuid]',
       }, [PID_A1]),
-      /does not match a live authorization receipt/i,
+      /invalid or cross-scope finding receipt|does not match a live authorization receipt/i,
     );
     await assert.rejects(
       cloneArtifact({
         authorized_property_ids: 'array[$2::uuid, $3::uuid, $4::uuid]',
       }, [PID_A1, PID_A2, PID_B1]),
-      /does not match a live authorization receipt/i,
+      /invalid or cross-scope finding receipt|does not match a live authorization receipt/i,
     );
 
     const foreignScope = await resolveAuthorizationScope({
@@ -1865,7 +1923,21 @@ describe('Portfolio Intelligence acceptance path', () => {
     clearPortfolioAccessCache();
     clearPortfolioHotelCache();
     signedInAs = UID_MARIA;
-    const dependencies = deterministicRouteDependencies(today, observedAt);
+    const findingLoadInputs: Array<{
+      scopeReceiptId: string;
+      selectedPropertyIds: readonly string[];
+      maxFindings?: number;
+    }> = [];
+    const dependencies = deterministicRouteDependencies(today, observedAt, {
+      loadPortfolioFindings: async (input) => {
+        findingLoadInputs.push({
+          scopeReceiptId: input.scopeReceiptId,
+          selectedPropertyIds: [...input.selectedPropertyIds],
+          maxFindings: input.maxFindings,
+        });
+        return loadManagementPatternPortfolioFindings(input);
+      },
+    });
     const aggregateResponse = await handlePortfolioPost(
       authorizedRequest('https://staxis.test/api/agent/portfolio', {
         method: 'POST',
@@ -1895,8 +1967,10 @@ describe('Portfolio Intelligence acceptance path', () => {
       prompt_version: string;
       model_id: string;
       knowledge_versions: Record<string, unknown>;
+      finding_versions: Record<string, unknown>;
     }>(
-      `select evidence, prompt_hash, prompt_version, model_id, knowledge_versions
+      `select evidence, prompt_hash, prompt_version, model_id, knowledge_versions,
+              finding_versions
          from portfolio_query_receipts
         where conversation_id = $1
         order by generated_at desc limit 1`,
@@ -1932,6 +2006,43 @@ describe('Portfolio Intelligence acceptance path', () => {
     assert.match(aggregateReceipt.rows[0].prompt_version, /portfolio-synthesis\.v2/);
     assert.equal(aggregateReceipt.rows[0].model_id, 'claude-sonnet-4-6');
     assert.equal(aggregateReceipt.rows[0].knowledge_versions.status, 'included');
+    const aggregateFindingVersions = aggregateReceipt.rows[0].finding_versions as {
+      status: string;
+      scopeReceiptId: string;
+      coverage: {
+        authorizedPropertyCount: number;
+        selectedPropertyCount: number;
+      };
+      counts: { accepted: number; projected: number };
+      producer: {
+        loadVersion: string;
+        projectionMode: string | null;
+        run: unknown;
+      };
+    };
+    assert.equal(aggregateFindingVersions.status === 'not_mounted', false);
+    assert.equal(aggregateFindingVersions.status, 'no_finalized_run');
+    assert.equal(aggregateFindingVersions.scopeReceiptId, findingLoadInputs[0]?.scopeReceiptId);
+    assert.deepEqual(aggregateFindingVersions.coverage, {
+      authorizedPropertyCount: 20,
+      selectedPropertyCount: 20,
+      acceptedEvaluatedPropertyCount: 0,
+      acceptedAffectedPropertyCount: 0,
+    });
+    assert.deepEqual(aggregateFindingVersions.counts.accepted, 0);
+    assert.deepEqual(aggregateFindingVersions.counts.projected, 0);
+    assert.equal(
+      aggregateFindingVersions.producer.loadVersion,
+      'management-pattern-portfolio-load.v1',
+    );
+    assert.equal(aggregateFindingVersions.producer.projectionMode, null);
+    assert.equal(aggregateFindingVersions.producer.run, null);
+    assert.equal(findingLoadInputs.length, 1);
+    assert.equal(findingLoadInputs[0]?.maxFindings, 40);
+    assert.deepEqual(
+      [...(findingLoadInputs[0]?.selectedPropertyIds ?? [])].sort(),
+      [...propertyIds].sort(),
+    );
     assert.ok(
       shim.statements.some((statement) => statement.target === 'staxis_portfolio_booked_room_points'),
       'cold metric reads use the bounded point RPC instead of a globally limited raw curve',
@@ -1966,8 +2077,11 @@ describe('Portfolio Intelligence acceptance path', () => {
     assert.equal(drilldownScope.authorizedHotelCount, 20);
     assert.deepEqual(drilldownScope.coverage, { reported: 1, total: 1, omitted: 0 });
 
-    const receipts = await pg.query<{ evidence: Record<string, unknown> }>(
-      `select evidence from portfolio_query_receipts
+    const receipts = await pg.query<{
+      evidence: Record<string, unknown>;
+      finding_versions: Record<string, unknown>;
+    }>(
+      `select evidence, finding_versions from portfolio_query_receipts
         where conversation_id = $1 order by generated_at`,
       [conversationId],
     );
@@ -1995,6 +2109,20 @@ describe('Portfolio Intelligence acceptance path', () => {
       shim.statements.some((statement) => statement.target === 'portfolio_metric_snapshots'),
       'the drill-down read the materialized property fact',
     );
+    assert.equal(findingLoadInputs.length, 2);
+    assert.deepEqual(findingLoadInputs[1]?.selectedPropertyIds, [extraPropertyIds[0]]);
+    const drilldownFindingVersions = receipts.rows[1].finding_versions as {
+      status: string;
+      coverage: {
+        authorizedPropertyCount: number;
+        selectedPropertyCount: number;
+      };
+      counts: { accepted: number };
+    };
+    assert.equal(drilldownFindingVersions.status, 'no_finalized_run');
+    assert.equal(drilldownFindingVersions.coverage.authorizedPropertyCount, 20);
+    assert.equal(drilldownFindingVersions.coverage.selectedPropertyCount, 1);
+    assert.equal(drilldownFindingVersions.counts.accepted, 0);
     assert.deepEqual(leaksIn(receipts.rows), []);
 
     const unbackedResponse = await handlePortfolioPost(

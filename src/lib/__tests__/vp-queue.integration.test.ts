@@ -146,6 +146,9 @@ interface PortfolioCardWire {
   daysOpen: number;
   signOff: { approverRole: string; approverNames: string[]; callerMayApprove: boolean } | null;
   action: { id: string; state: string } | null;
+  verdictAllowed?: boolean;
+  allowedVerdicts?: Array<'known_problem' | 'muted' | 'resolved'>;
+  verdictRevision?: number;
 }
 
 interface PortfolioWire {
@@ -162,6 +165,7 @@ interface PortfolioWire {
     processedHotelCount: number;
     omittedHotelCount: number;
     unavailableHotelCount: number;
+    excludedFindingCount: number;
     portfolioChecksStatus: 'completed' | 'held' | 'in_progress' | 'incomplete' | 'unavailable';
     complete: boolean;
   } | null;
@@ -264,6 +268,25 @@ async function withRefusedFinalReceiptAssertion<T>(run: () => Promise<T>): Promi
     return callPrevious(functionName, args);
   };
   supabaseAdmin.rpc = patchedRpc as typeof supabaseAdmin.rpc;
+  try {
+    return await run();
+  } finally {
+    supabaseAdmin.rpc = previousRpc;
+  }
+}
+
+/** Make only the atomic verdict boundary return its ordinary closed denial. */
+async function withRefusedAtomicCompanyVerdict<T>(run: () => Promise<T>): Promise<T> {
+  const previousRpc = supabaseAdmin.rpc;
+  const callPrevious = previousRpc.bind(supabaseAdmin) as (
+    functionName: string,
+    args?: Record<string, unknown>,
+  ) => unknown;
+  supabaseAdmin.rpc = ((functionName: string, args?: Record<string, unknown>) => (
+    functionName === 'staxis_set_company_finding_status_authorized'
+      ? Promise.resolve({ data: { ok: false }, error: null })
+      : callPrevious(functionName, args)
+  )) as typeof supabaseAdmin.rpc;
   try {
     return await run();
   } finally {
@@ -504,7 +527,7 @@ before(async () => {
      values
        ($1, $2, $3, 'regional_manager', 'Normalized administrator', 'active', null, null, null),
        ($4, $2, $5, 'general_manager', 'Property manager', 'active', null, null, null),
-       ($6, $2, $7, 'owner', 'Normalized owner', 'active', null, null, null)`,
+       ($6, $2, $7, 'owner_principal', 'Normalized owner', 'active', null, null, null)`,
     [
       MEMBERSHIP_NORMALIZED, ORG_A, ACCOUNT_NORMALIZED,
       MEMBERSHIP_PROPERTY_GRANT, ACCOUNT_PROPERTY_GRANT,
@@ -655,9 +678,24 @@ describe('Wall A — the portfolio surface does not exist for hotel people', () 
     signedInAs = UID_GWEN;
     const res = await portfolioPost(req('https://staxis.test/api/company/queue', {
       method: 'POST',
-      body: { findingId: '00000000-0000-4000-8000-000000000001', action: 'muted' },
+      body: {
+        organizationId: ORG_A,
+        findingId: '00000000-0000-4000-8000-000000000001',
+        action: 'muted',
+        expectedVerdictRevision: 0,
+      },
     }));
     assert.equal(res.status, 403);
+    const limiter = await pg.query<{ count: number }>(
+      `select count from public.api_limits
+        where property_id = $1 and endpoint = $2
+        order by hour_bucket desc limit 1`,
+      [PID_A1, `company-queue:${ACCOUNT_GWEN}:write`],
+    );
+    assert.ok(
+      Number(limiter.rows[0]?.count ?? 0) >= 1,
+      'a denied company POST bypassed the actor-scoped write limiter',
+    );
   });
 
   // Mutation: key the rate limiter off the CARDS instead of the company's own
@@ -719,26 +757,31 @@ describe('Wall B — one company never appears in another\'s portfolio', () => {
     }
   });
 
-  // Mutation: drop the organization filter in setCompanyFindingStatus. One
-  // company's owner could silence another's card by naming its id.
+  // Mutation: weaken the atomic RPC's organization binding. One company's
+  // owner could otherwise silence another's card by naming its id.
   test('a company cannot silence another company\'s card even holding its id', async () => {
     const planted = await pg.query<{ id: string }>(
       `insert into public.company_findings
          (organization_id, detector_id, dedupe_key, summary, severity, disposition, status,
-          receipt_query_id, evidence, magnitude)
-       values ($1, 'probe', 'probe:b_only', 'Piney Woods only.', 'attention', 'recommend',
-               'open', 'probe', '{}'::jsonb, 3)
+          receipt_query_id, evidence, magnitude, affected_property_ids)
+       values ($1, 'portfolio_activity_stopped', 'probe:b_only', 'Piney Woods only.',
+               'attention', 'recommend', 'open', 'probe', '{}'::jsonb, 3, $2::uuid[])
        returning id`,
-      [ORG_B],
+      [ORG_B, [PID_B1]],
     );
     const bId = planted.rows[0].id;
 
     signedInAs = UID_ANA; // Gulf Coast's owner
     const res = await portfolioPost(req('https://staxis.test/api/company/queue', {
       method: 'POST',
-      body: { findingId: bId, action: 'muted' },
+      body: {
+        organizationId: ORG_A,
+        findingId: bId,
+        action: 'muted',
+        expectedVerdictRevision: 0,
+      },
     }));
-    assert.equal(res.status, 404, 'company A reached across the wall');
+    assert.equal(res.status, 403, 'company A reached across the wall');
 
     const after = await pg.query<{ status: string }>(
       'select status from public.company_findings where id = $1', [bId],
@@ -787,15 +830,15 @@ describe('sign-off routing — locked at the hotel, live for the approver', () =
   // slip under a $500 rule written to catch exactly that.
   test('the boundary is the TOP of the range, checked against real rows', async () => {
     const straddling = await plantFinding({
-      propertyId: PID_A2,
+      propertyId: PID_A1,
       dedupeKey: 'probe:straddling',
-      summary: 'Lufkin boiler.',
+      summary: 'Beaumont boiler.',
       priceLowCents: 40_000,   // $400 — under the line
       priceHighCents: 80_000,  // $800 — over it
     });
-    await plantAction(PID_A2, straddling, 'Boiler room');
+    await plantAction(PID_A1, straddling, 'Boiler room');
 
-    const { findings } = await hotelQueueFor(UID_MARIA, PID_A2);
+    const { findings } = await hotelQueueFor(UID_MARIA, PID_A1);
     const card = findings.find((f) => f.id === straddling);
     assert.ok(card?.signOff, 'a plan whose top clears the line was not routed');
   });
@@ -809,13 +852,10 @@ describe('sign-off routing — locked at the hotel, live for the approver', () =
     assert.equal(same!.signOff!.callerMayApprove, true, 'the VP was locked out of her own signature');
   });
 
-  // Mutation: compare roles for equality instead of strength. The owner of the
-  // company could not approve what her own rulebook routed to the VP.
-  test('the owner can sign for the VP', async () => {
-    const { findings } = await hotelQueueFor(UID_ANA, PID_A1);
-    const same = findings.find((f) => f.id === LOCKED_FINDING);
-    assert.ok(same?.signOff);
-    assert.equal(same!.signOff!.callerMayApprove, true, 'the owner could not sign for her VP');
+  test('company ownership alone does not open a hotel-private queue', async () => {
+    const { status, findings } = await hotelQueueFor(UID_ANA, PID_A1);
+    assert.equal(status, 403);
+    assert.deepEqual(findings, []);
   });
 
   // Mutation: gate only in the browser. This is the test that says the lock is
@@ -874,7 +914,7 @@ describe('badges are honest on both sides', () => {
         where property_id = $1 and status in ('open','updated') and disposition = 'propose'`,
       [PID_B1],
     );
-    assert.equal(await badgeFor(UID_VERA, PID_B1), Number(raw.rows[0].n));
+    assert.equal(await badgeFor(UID_GIL, PID_B1), Number(raw.rows[0].n));
   });
 });
 
@@ -886,9 +926,9 @@ describe('climbing — the boss reads reality, not tap states', () => {
   // Seen at 7am would take a $3,100 problem off the owner's screen.
   test('"Seen" at the hotel does not remove the card from the company queue', async () => {
     const id = await plantFinding({
-      propertyId: PID_A2,
+      propertyId: PID_A1,
       dedupeKey: 'probe:seen_but_big',
-      summary: 'Lufkin roof.',
+      summary: 'Beaumont roof.',
       disposition: 'recommend',
       priceLowCents: 280_000,
       priceHighCents: 340_000,
@@ -902,13 +942,7 @@ describe('climbing — the boss reads reality, not tap states', () => {
     signedInAs = UID_GWEN;
     await queuePost(req('https://staxis.test/api/findings', {
       method: 'POST',
-      body: { propertyId: PID_A2, findingId: id, action: 'known_problem' },
-    }));
-    // Gwen has no hat at Lufkin, so drive it as Maria to be sure the row moved.
-    signedInAs = UID_MARIA;
-    await queuePost(req('https://staxis.test/api/findings', {
-      method: 'POST',
-      body: { propertyId: PID_A2, findingId: id, action: 'known_problem' },
+      body: { propertyId: PID_A1, findingId: id, action: 'known_problem' },
     }));
     assert.equal(await statusOf(id), 'known_problem', 'the Seen tap did not land');
 
@@ -923,9 +957,9 @@ describe('climbing — the boss reads reality, not tap states', () => {
   // on a VP's screen and teach them to ignore it.
   test('"Fixed" DOES remove it — resolution is reality, not a tap state', async () => {
     const id = await plantFinding({
-      propertyId: PID_A2,
+      propertyId: PID_A1,
       dedupeKey: 'probe:then_fixed',
-      summary: 'Lufkin lift.',
+      summary: 'Beaumont lift.',
       disposition: 'recommend',
       priceLowCents: 280_000,
       priceHighCents: 340_000,
@@ -933,10 +967,10 @@ describe('climbing — the boss reads reality, not tap states', () => {
     });
     assert.ok((await portfolioFor(UID_MARIA)).data.cards.some((c) => c.id === id));
 
-    signedInAs = UID_MARIA;
+    signedInAs = UID_GWEN;
     await queuePost(req('https://staxis.test/api/findings', {
       method: 'POST',
-      body: { propertyId: PID_A2, findingId: id, action: 'resolved' },
+      body: { propertyId: PID_A1, findingId: id, action: 'resolved' },
     }));
     assert.equal(await statusOf(id), 'resolved');
 
@@ -1118,21 +1152,27 @@ describe('the portfolio checks write company-scope cards', () => {
 
   // Mutation: drop the organization filter on the verdict. The comparison would
   // be un-silenceable, or silenceable from the wrong company.
-  test('the VP can put a company card down, and it leaves their queue', async () => {
+  test('a VP with no exact manager standing at the affected hotel cannot put the company card down', async () => {
     const maria = await portfolioFor(UID_MARIA);
     const companyCard = maria.data.cards.find((c) => c.hotel === null)!;
+    assert.equal(companyCard.verdictAllowed, false);
 
     signedInAs = UID_MARIA;
     const res = await portfolioPost(req('https://staxis.test/api/company/queue', {
       method: 'POST',
-      body: { findingId: companyCard.id, action: 'known_problem' },
+      body: {
+        organizationId: ORG_A,
+        findingId: companyCard.id,
+        action: 'known_problem',
+        expectedVerdictRevision: companyCard.verdictRevision ?? 0,
+      },
     }));
-    assert.equal(res.status, 200);
+    assert.equal(res.status, 403);
 
     const after = await portfolioFor(UID_MARIA);
     assert.ok(
-      !after.data.cards.some((c) => c.id === companyCard.id),
-      'the VP silenced their own company card and it stayed on their own screen',
+      after.data.cards.some((c) => c.id === companyCard.id),
+      'a denied company verdict still removed the card',
     );
   });
 });
@@ -1216,11 +1256,13 @@ describe('the company ledger refuses a price that is not a range', () => {
     pg.query(
       `insert into public.company_findings
          (organization_id, detector_id, dedupe_key, summary, severity, disposition, status,
-          receipt_query_id, evidence, magnitude, price_low_cents, price_high_cents)
+          receipt_query_id, evidence, magnitude, price_low_cents, price_high_cents,
+          affected_property_ids)
        values ($1, 'probe_price',
                'price:' || coalesce($2::integer::text, 'n') || ':' || coalesce($3::integer::text, 'n'),
-               'x', 'info', 'fyi', 'open', 'q', '{}'::jsonb, 1, $2::integer, $3::integer)`,
-      [ORG_A, low, high],
+               'x', 'info', 'fyi', 'open', 'q', '{}'::jsonb, 1, $2::integer, $3::integer,
+               $4::uuid[])`,
+      [ORG_A, low, high, [PID_A1]],
     );
 
   test('a real range is accepted', async () => {
@@ -1266,7 +1308,7 @@ describe('the company queue consumes one authoritative selected-company receipt'
     assert.equal(companyA.data.scope?.organizationId, ORG_A);
     assert.equal(companyA.data.scope?.hotelCount, 2);
     assert.equal(companyA.data.coverage?.complete, true);
-    assert.equal(companyA.data.canAct, true);
+    assert.equal(companyA.data.canAct, false);
     assert.ok(companyA.data.cards.every((card) => card.hotel?.propertyId !== PID_B1));
     assert.ok(companyA.data.cards.every((card) => !/PINEY WOODS PRIVATE/.test(card.summary)));
 
@@ -1279,7 +1321,7 @@ describe('the company queue consumes one authoritative selected-company receipt'
     assert.equal(companyB.data.scope?.organizationId, ORG_B);
     assert.equal(companyB.data.scope?.hotelCount, 1);
     assert.equal(companyB.data.coverage?.complete, true);
-    assert.equal(companyB.data.canAct, true);
+    assert.equal(companyB.data.canAct, false);
     assert.ok(companyB.data.cards.every((card) => (
       !card.hotel || card.hotel.propertyId === PID_B1
     )));
@@ -1297,14 +1339,14 @@ describe('the company queue consumes one authoritative selected-company receipt'
     const planted = await pg.query<{ id: string; organization_id: string }>(
       `insert into public.company_findings
          (organization_id, detector_id, dedupe_key, summary, severity, disposition, status,
-          receipt_query_id, evidence, magnitude)
+          receipt_query_id, evidence, magnitude, affected_property_ids)
        values
-         ($1, 'selection_probe', 'selection:a', 'Company A selection probe.',
-          'attention', 'recommend', 'open', 'probe', '{}'::jsonb, 2),
-         ($2, 'selection_probe', 'selection:b', 'Company B selection probe.',
-          'attention', 'recommend', 'open', 'probe', '{}'::jsonb, 2)
+         ($1, 'portfolio_activity_stopped', 'selection:a', 'Company A selection probe.',
+          'attention', 'recommend', 'open', 'probe', '{}'::jsonb, 2, $3::uuid[]),
+         ($2, 'portfolio_activity_stopped', 'selection:b', 'Company B selection probe.',
+          'attention', 'recommend', 'open', 'probe', '{}'::jsonb, 2, $4::uuid[])
        returning id, organization_id`,
-      [ORG_A, ORG_B],
+      [ORG_A, ORG_B, [PID_A1], [PID_B1]],
     );
     const aId = planted.rows.find((row) => row.organization_id === ORG_A)!.id;
     const bId = planted.rows.find((row) => row.organization_id === ORG_B)!.id;
@@ -1312,26 +1354,36 @@ describe('the company queue consumes one authoritative selected-company receipt'
     signedInAs = UID_MULTI;
     const omitted = await portfolioPost(req('https://staxis.test/api/company/queue', {
       method: 'POST',
-      body: { findingId: aId, action: 'muted' },
+      body: { findingId: aId, action: 'muted', expectedVerdictRevision: 0 },
     }));
-    assert.equal(omitted.status, 409, 'ambiguous mutation silently chose a company');
+    assert.equal(omitted.status, 400, 'POST accepted an omitted company selection');
     assert.equal(await companyStatusOf(aId), 'open', 'failed-closed mutation still changed company A');
 
     signedInAs = UID_MULTI;
     const wrongSelection = await portfolioPost(req('https://staxis.test/api/company/queue', {
       method: 'POST',
-      body: { organizationId: ORG_A, findingId: bId, action: 'muted' },
+      body: {
+        organizationId: ORG_A,
+        findingId: bId,
+        action: 'muted',
+        expectedVerdictRevision: 0,
+      },
     }));
-    assert.equal(wrongSelection.status, 404);
+    assert.equal(wrongSelection.status, 403);
     assert.equal(await companyStatusOf(bId), 'open', 'company A selection changed company B');
 
     signedInAs = UID_MULTI;
     const selected = await portfolioPost(req('https://staxis.test/api/company/queue', {
       method: 'POST',
-      body: { organizationId: ORG_B.toUpperCase(), findingId: bId, action: 'muted' },
+      body: {
+        organizationId: ORG_B.toUpperCase(),
+        findingId: bId,
+        action: 'muted',
+        expectedVerdictRevision: 0,
+      },
     }));
-    assert.equal(selected.status, 200);
-    assert.equal(await companyStatusOf(bId), 'muted');
+    assert.equal(selected.status, 403, 'company-only VP gained hotel mutation authority');
+    assert.equal(await companyStatusOf(bId), 'open');
   });
 
   test('GET releases no queue when the final receipt assertion refuses', async () => {
@@ -1343,25 +1395,26 @@ describe('the company queue consumes one authoritative selected-company receipt'
     assert.deepEqual(refused.data.cards, []);
   });
 
-  test('POST leaves the company finding unchanged when final reassertion refuses', async () => {
+  test('POST leaves the company finding unchanged when the atomic boundary refuses', async () => {
     const planted = await pg.query<{ id: string }>(
       `insert into public.company_findings
          (organization_id, detector_id, dedupe_key, summary, severity, disposition, status,
-          receipt_query_id, evidence, magnitude)
-       values ($1, 'reauthorization_probe', 'reauthorization:post',
+          receipt_query_id, evidence, magnitude, affected_property_ids)
+       values ($1, 'portfolio_activity_stopped', 'reauthorization:post',
          'Final receipt assertion controls mutation.', 'attention', 'recommend',
-         'open', 'probe', '{}'::jsonb, 1)
+         'open', 'probe', '{}'::jsonb, 1, $2::uuid[])
        returning id`,
-      [ORG_A],
+      [ORG_A, [PID_A1]],
     );
     signedInAs = UID_MARIA;
-    const response = await withRefusedFinalReceiptAssertion(
+    const response = await withRefusedAtomicCompanyVerdict(
       () => portfolioPost(req('https://staxis.test/api/company/queue', {
         method: 'POST',
         body: {
           organizationId: ORG_A,
           findingId: planted.rows[0]!.id,
           action: 'resolved',
+          expectedVerdictRevision: 0,
         },
       })),
     );
@@ -1395,23 +1448,28 @@ describe('the company queue consumes one authoritative selected-company receipt'
     const planted = await pg.query<{ id: string }>(
       `insert into public.company_findings
          (organization_id, detector_id, dedupe_key, summary, severity, disposition, status,
-          receipt_query_id, evidence, magnitude)
+          receipt_query_id, evidence, magnitude, affected_property_ids)
        values ($1, 'normalized_role_probe', 'normalized-role:read-only',
          'Normalized organization role remains read-only.', 'attention', 'recommend',
-         'open', 'probe', '{}'::jsonb, 1)
+         'open', 'probe', '{}'::jsonb, 1, $2::uuid[])
        returning id`,
-      [ORG_A],
+      [ORG_A, [PID_A1]],
     );
     signedInAs = UID_NORMALIZED;
     const verdict = await portfolioPost(req('https://staxis.test/api/company/queue', {
       method: 'POST',
-      body: { organizationId: ORG_A, findingId: planted.rows[0]!.id, action: 'muted' },
+      body: {
+        organizationId: ORG_A,
+        findingId: planted.rows[0]!.id,
+        action: 'muted',
+        expectedVerdictRevision: 0,
+      },
     }));
     assert.equal(verdict.status, 403);
     assert.equal(await companyStatusOf(planted.rows[0]!.id), 'open');
   });
 
-  test('a normalized organization owner can GET and POST without a legacy hat', async () => {
+  test('a normalized company-only owner can read but cannot POST without exact hotel standing', async () => {
     const legacyHatShape = await pg.query<{
       membership_scope: string | null;
       staxis_role: string | null;
@@ -1430,17 +1488,17 @@ describe('the company queue consumes one authoritative selected-company receipt'
     const normalizedOwner = await portfolioFor(UID_NORMALIZED_OWNER, ORG_A);
     assert.equal(normalizedOwner.status, 200);
     assert.equal(normalizedOwner.data.scope?.organizationId, ORG_A);
-    assert.equal(normalizedOwner.data.canAct, true);
+    assert.equal(normalizedOwner.data.canAct, false);
 
     const planted = await pg.query<{ id: string }>(
       `insert into public.company_findings
          (organization_id, detector_id, dedupe_key, summary, severity, disposition, status,
-          receipt_query_id, evidence, magnitude)
-       values ($1, 'normalized_owner_probe', 'normalized-owner:write',
-         'Normalized owner may cast a company verdict.', 'attention', 'recommend',
-         'open', 'probe', '{}'::jsonb, 1)
+          receipt_query_id, evidence, magnitude, affected_property_ids)
+       values ($1, 'portfolio_activity_stopped', 'normalized-owner:write',
+         'Normalized owner remains read-only.', 'attention', 'recommend',
+         'open', 'probe', '{}'::jsonb, 1, $2::uuid[])
        returning id`,
-      [ORG_A],
+      [ORG_A, [PID_A1]],
     );
     signedInAs = UID_NORMALIZED_OWNER;
     const verdict = await portfolioPost(req('https://staxis.test/api/company/queue', {
@@ -1449,10 +1507,11 @@ describe('the company queue consumes one authoritative selected-company receipt'
         organizationId: ORG_A,
         findingId: planted.rows[0]!.id,
         action: 'resolved',
+        expectedVerdictRevision: 0,
       },
     }));
-    assert.equal(verdict.status, 200);
-    assert.equal(await companyStatusOf(planted.rows[0]!.id), 'resolved');
+    assert.equal(verdict.status, 403);
+    assert.equal(await companyStatusOf(planted.rows[0]!.id), 'open');
   });
 
   test('a property-scoped normalized grant cannot open opaque company findings', async () => {
@@ -1475,6 +1534,7 @@ describe('the company queue consumes one authoritative selected-company receipt'
       processedHotelCount: 1,
       omittedHotelCount: 0,
       unavailableHotelCount: 1,
+      excludedFindingCount: 0,
       portfolioChecksStatus: 'held',
       complete: false,
     });
@@ -1510,6 +1570,7 @@ describe('the company queue consumes one authoritative selected-company receipt'
       processedHotelCount: 30,
       omittedHotelCount: 1,
       unavailableHotelCount: 0,
+      excludedFindingCount: 0,
       portfolioChecksStatus: 'completed',
       complete: false,
     });
@@ -1519,12 +1580,12 @@ describe('the company queue consumes one authoritative selected-company receipt'
     const planted = await pg.query<{ id: string }>(
       `insert into public.company_findings
          (organization_id, detector_id, dedupe_key, summary, severity, disposition, status,
-          receipt_query_id, evidence, magnitude)
-       values ($1, 'large_scope_probe', 'large-scope:explicit-post',
-         'Large company explicit selection remains authoritative.', 'attention', 'recommend',
-         'open', 'probe', '{}'::jsonb, 1)
+          receipt_query_id, evidence, magnitude, affected_property_ids)
+       values ($1, 'portfolio_activity_stopped', 'large-scope:explicit-post',
+         'Large company aggregate reach remains read-only.', 'attention', 'recommend',
+         'open', 'probe', '{}'::jsonb, 1, $2::uuid[])
        returning id`,
-      [ORG_BIG],
+      [ORG_BIG, [bigPropertyId(1)]],
     );
     signedInAs = UID_BIG;
     const verdict = await portfolioPost(req('https://staxis.test/api/company/queue', {
@@ -1533,9 +1594,10 @@ describe('the company queue consumes one authoritative selected-company receipt'
         organizationId: ORG_BIG,
         findingId: planted.rows[0]!.id,
         action: 'resolved',
+        expectedVerdictRevision: 0,
       },
     }));
-    assert.equal(verdict.status, 200);
-    assert.equal(await companyStatusOf(planted.rows[0]!.id), 'resolved');
+    assert.equal(verdict.status, 403);
+    assert.equal(await companyStatusOf(planted.rows[0]!.id), 'open');
   });
 });

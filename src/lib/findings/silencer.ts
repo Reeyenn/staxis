@@ -136,16 +136,16 @@ export function decideAction(
  * the same night's data always truncates to the same set — a cap that shuffled
  * would make findings appear and vanish for no reason a manager could see.
  */
-export function capDrafts(drafts: readonly FindingDraft[], maxPerRun: number): FindingDraft[] {
+export function capDrafts<T extends FindingDraft>(drafts: readonly T[], maxPerRun: number): T[] {
   return [...drafts]
     .sort((a, b) => (b.magnitude - a.magnitude) || (a.key < b.key ? -1 : a.key > b.key ? 1 : 0))
     .slice(0, maxPerRun);
 }
 
 /** Drop drafts whose key repeats — a detector bug, not a reason to double-write. */
-export function dedupeDrafts(drafts: readonly FindingDraft[]): FindingDraft[] {
+export function dedupeDrafts<T extends FindingDraft>(drafts: readonly T[]): T[] {
   const seen = new Set<string>();
-  const out: FindingDraft[] = [];
+  const out: T[] = [];
   for (const draft of drafts) {
     if (seen.has(draft.key)) continue;
     seen.add(draft.key);

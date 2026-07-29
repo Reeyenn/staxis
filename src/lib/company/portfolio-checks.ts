@@ -90,6 +90,16 @@ export interface PortfolioContext {
   now: Date;
 }
 
+/**
+ * A company-level draft carries the exact hotels whose operating state the
+ * card asks a person to judge.  This is authorization lineage, not display
+ * evidence: the runner persists it into the typed `affected_property_ids`
+ * column and the verdict RPC refuses to reconstruct it from prose or JSON.
+ */
+export interface PortfolioFindingDraft extends FindingDraft {
+  readonly affectedPropertyIds: readonly string[];
+}
+
 export interface PortfolioDetector {
   readonly id: string;
   readonly description: string;
@@ -99,7 +109,7 @@ export interface PortfolioDetector {
   readonly escalation: EscalationPolicy | null;
   readonly maxPerRun: number;
   readonly staleAfterDays: number;
-  detect(ctx: PortfolioContext): FindingDraft[];
+  detect(ctx: PortfolioContext): PortfolioFindingDraft[];
 }
 
 // ─── Shared bars ────────────────────────────────────────────────────────────
@@ -193,7 +203,7 @@ export function comparableWeeks(hotels: readonly PortfolioHotel[]): HotelWeek[] 
   return out;
 }
 
-function detectSupplySpendGap(ctx: PortfolioContext): FindingDraft[] {
+function detectSupplySpendGap(ctx: PortfolioContext): PortfolioFindingDraft[] {
   const weeks = comparableWeeks(ctx.hotels);
   if (weeks.length < MIN_HOTELS_TO_COMPARE) return [];
 
@@ -252,6 +262,9 @@ function detectSupplySpendGap(ctx: PortfolioContext): FindingDraft[] {
     // re-stated every run, so a change of leader updates this row (evidenceMoved
     // sees the new summary and flips it to `updated`) instead of forking it.
     key: 'supply_spend',
+    // The decision is about the high-spend hotel's operating state.  Sister
+    // hotels prove the comparison but are not targets of the verdict.
+    affectedPropertyIds: [top.hotel.propertyId],
     summary: summary.slice(0, 500),
     severity: 'attention',
     magnitude: top.cents - bottom.cents,
@@ -350,12 +363,12 @@ export function hotelsStopped(
   return out;
 }
 
-function detectPortfolioActivityStopped(ctx: PortfolioContext): FindingDraft[] {
+function detectPortfolioActivityStopped(ctx: PortfolioContext): PortfolioFindingDraft[] {
   const streamIds = [...new Set(
     ctx.hotels.flatMap((hotel) => hotel.rhythm?.streams.map((s) => s.id) ?? []),
   )].sort();
 
-  const drafts: FindingDraft[] = [];
+  const drafts: PortfolioFindingDraft[] = [];
   for (const streamId of streamIds) {
     const stopped = hotelsStopped(ctx.hotels, streamId);
     if (stopped.length < MIN_HOTELS_STOPPED) continue;
@@ -373,6 +386,9 @@ function detectPortfolioActivityStopped(ctx: PortfolioContext): FindingDraft[] {
       // Identity is the STREAM. A third hotel joining next week updates this
       // row; it does not open a second card about the same silence.
       key: `stopped:${streamId}`,
+      affectedPropertyIds: stopped
+        .map((entry) => entry.hotel.propertyId)
+        .sort(),
       summary:
         `${stopped.length} of your hotels stopped ${label}: ${listHotelNames(names)}. ` +
         `The longest silence is ${plural(worst.silentDays, 'day')}, at ${worst.hotel.name}.`,

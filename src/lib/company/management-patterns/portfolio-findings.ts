@@ -696,6 +696,16 @@ function sameAssertedReceipt(left: AssertedReceipt, right: AssertedReceipt): boo
     && sameValues(left.propertyIds, right.propertyIds);
 }
 
+function abortedLoadReason(signal: AbortSignal | undefined): string {
+  const reason = signal?.reason;
+  return reason !== null
+    && typeof reason === 'object'
+    && 'name' in reason
+    && reason.name === 'TimeoutError'
+    ? 'deadline_exceeded'
+    : 'request_aborted';
+}
+
 type LoaderOutageStage = ManagementPatternPortfolioLoadReceipt['outage']['stage'];
 
 function emptyLoadReceipt(input: {
@@ -873,7 +883,7 @@ export async function loadManagementPatternPortfolioFindings(
       status: 'unavailable',
       receipt: before.receipt,
       outageStage: 'source_read',
-      reason: 'request_aborted',
+      reason: abortedLoadReason(input.signal),
     });
   }
 
@@ -902,7 +912,9 @@ export async function loadManagementPatternPortfolioFindings(
       status: 'unavailable',
       receipt: before.receipt,
       outageStage: 'source_read',
-      reason: input.signal?.aborted ? 'request_aborted' : 'source_unavailable',
+      reason: input.signal?.aborted
+        ? abortedLoadReason(input.signal)
+        : 'source_unavailable',
     });
   }
   const sourceResult = sourcePackageSchema.safeParse(rawData);

@@ -113,6 +113,8 @@ export interface PortfolioCoverage {
   processedHotelCount: number;
   omittedHotelCount: number;
   unavailableHotelCount: number;
+  /** Findings withheld because their typed target lineage was unsafe. */
+  excludedFindingCount: number;
   portfolioChecksStatus: PortfolioRunCompletion;
   complete: boolean;
 }
@@ -167,6 +169,7 @@ export async function companyQueueScopeFromAuthorization(
       processedHotelCount,
       omittedHotelCount,
       unavailableHotelCount: 0,
+      excludedFindingCount: 0,
       // Conservative internal placeholder; buildPortfolioQueue replaces it
       // with the tri-state receipt returned by the deterministic check runner.
       portfolioChecksStatus: 'unavailable',
@@ -428,6 +431,11 @@ async function companyCards(scope: CompanyScope, now: Date): Promise<PortfolioCa
         hotel: null,
         climbReason: 'portfolio' as const,
         daysOpen: daysOpen(f.firstSeenAt, now),
+        affectedPropertyIds: f.affectedPropertyIds,
+        semanticFamily: f.semanticFamily,
+        verdictRevision: f.verdictRevision,
+        allowedVerdicts: [],
+        verdictAllowed: false,
       };
     });
 }
@@ -582,6 +590,9 @@ async function climbedAtHotel(
       hotel,
       climbReason: reason,
       daysOpen: daysOpen(finding.firstSeenAt, now),
+      affectedPropertyIds: [propertyId],
+      allowedVerdicts: [],
+      verdictAllowed: false,
     })),
     hasLiveWork,
   };

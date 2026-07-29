@@ -64,7 +64,12 @@ function Spinner() {
 
 export default function PropertySelectorPage() {
   useNavigationReady();
-  const { user, loading: authLoading, signOut } = useAuth();
+  const {
+    user,
+    loading: authLoading,
+    signOut,
+    authorizationFingerprint,
+  } = useAuth();
   const { setActivePropertyId } = useProperty();
   const { lang } = useLang();
   const navigation = useReliableNavigation();
@@ -72,7 +77,7 @@ export default function PropertySelectorPage() {
   const [companyRouteChecked, setCompanyRouteChecked] = useState(false);
   const [selectedOrganizationId, setSelectedOrganizationId] = useState<string | null>(null);
   const authorizationIdentityKey = user
-    ? `${user.uid}:${user.accountId}:${user.role}:${[...user.propertyAccess].sort().join(',')}`
+    ? `${user.uid}:${user.accountId}:${user.role}:${[...user.propertyAccess].sort().join(',')}:${authorizationFingerprint ?? 'unchecked'}`
     : null;
   const authorizationViewerKey = useAuthorizationRefreshKey(
     authorizationIdentityKey,

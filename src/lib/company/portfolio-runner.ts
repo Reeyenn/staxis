@@ -365,6 +365,7 @@ async function runOne(
       organizationId: ctx.organizationId,
       detectorId: detector.id,
       dedupeKey,
+      affectedPropertyIds: draft.affectedPropertyIds,
       draft,
       receiptQueryId: detector.receiptQueryId,
       disposition: detector.defaultDisposition,
@@ -383,8 +384,9 @@ async function runOne(
       continue;
     }
     if (row.status === 'muted') {
-      await touchSilencedCompanyFinding(args, row.id);
-      summary.suppressed += 1;
+      const outcome = await touchSilencedCompanyFinding(args, row.id);
+      if (outcome === 'updated') summary.updated += 1;
+      else summary.suppressed += 1;
       continue;
     }
     if (row.status === 'known_problem') {
@@ -392,8 +394,9 @@ async function runOne(
         await escalateCompanyFinding(args, row.id);
         summary.escalated += 1;
       } else {
-        await touchSilencedCompanyFinding(args, row.id);
-        summary.suppressed += 1;
+        const outcome = await touchSilencedCompanyFinding(args, row.id);
+        if (outcome === 'updated') summary.updated += 1;
+        else summary.suppressed += 1;
       }
       continue;
     }

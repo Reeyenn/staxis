@@ -940,7 +940,7 @@ function CompanyAccessContent() {
                   onQueryChange={setQuery}
                   statusFilter={hotelStatusFilter}
                   onStatusFilterChange={setHotelStatusFilter}
-                  onStructureChanged={() => setRetryKey((value) => value + 1)}
+                  onStructureChanged={completeAccessMutation}
                 />
               ) : tab === 'people' ? (
                 <PeoplePanel

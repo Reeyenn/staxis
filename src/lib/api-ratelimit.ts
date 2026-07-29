@@ -338,13 +338,12 @@ export type RateLimitEndpoint =
   // still all there, and that is a far better trade than uncapped spend.
   | 'findings-brief'
   // ── The portfolio queue (a company-scope person's whole screen) ───────────
-  // One GET that reads every hotel in the company, and on the first load of the
-  // company's day also runs the portfolio checks. Not billing-impacting (no
-  // model call anywhere in it) → fails OPEN: losing a portfolio screen to a
-  // limiter blip would be the worse failure. Keyed on a REAL property id — one
-  // of the company's own hotels, because api_limits.property_id FKs
-  // properties(id) — with the ORGANIZATION folded into the sub-key, so two
-  // companies can never share a bucket.
+  // GET reads every hotel in the company and may run the daily checks; POST
+  // mints authorization receipts and enters the atomic verdict boundary. Both
+  // are model-free and fail OPEN on limiter storage trouble. GET keys its
+  // sub-bucket by organization; POST uses an actor-wide `:write` sub-key so
+  // rotating organization ids cannot amplify receipt storage. The base key is
+  // always a real authorized property because api_limits.property_id has an FK.
   | 'company-queue'
   // The hotel picker / command centre bootstrap. Read-only and model-free, but
   // for a company-scope caller it reads one findings ledger per covered hotel,
@@ -600,11 +599,9 @@ const HOURLY_CAPS: Record<RateLimitEndpoint, number> = {
   // like without ever buying a second model call. A scripted loop still hits
   // the wall in under a minute.
   'findings-brief':             120,
-  // The portfolio queue. Sized like the brief's cache reads: a VP flicking
-  // between tabs all morning never comes close, and the daily claim already
-  // makes the expensive half (the portfolio checks) happen once. A scripted
-  // loop, which would be reading a dozen hotels' ledgers per request, hits the
-  // wall in about a minute.
+  // The portfolio queue. Sized like the brief's cache reads and with ample
+  // room for deliberate verdicts. A scripted GET sweep or POST receipt-minting
+  // loop hits the wall quickly.
   'company-queue':              120,
   // The picker is hit on sign-in, on every "switch hotel", and on a tab
   // refocus. A person doing that all morning never approaches 240; a loop

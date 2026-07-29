@@ -145,6 +145,9 @@ describe('Portfolio Queue viewer identity isolation', { concurrency: false }, ()
     document.body.append(container);
     const root: Root = createRoot(container);
     const scopes: string[] = [];
+    const recordScope = (scope: Parameters<NonNullable<React.ComponentProps<typeof PortfolioQueueView>['onScope']>>[0]) => {
+      scopes.push(scope === undefined ? 'loading' : scope?.organizationId ?? 'hotel');
+    };
 
     context.after(async () => {
       await act(async () => { root.unmount(); });
@@ -157,7 +160,7 @@ describe('Portfolio Queue viewer identity isolation', { concurrency: false }, ()
         <PortfolioQueueView
           lang="en"
           authorizationKey="viewer-a:owner:hotel-a,hotel-b"
-          onScope={(scope) => scopes.push(scope?.organizationId ?? 'hotel')}
+          onScope={recordScope}
         />,
       );
       await flushMicrotasks();
@@ -167,14 +170,14 @@ describe('Portfolio Queue viewer identity isolation', { concurrency: false }, ()
 
     await settle(requests[0], success(payload('org-a', 'Company A')));
     assert.match(container.textContent ?? '', /Company A/);
-    assert.deepEqual(scopes, ['org-a']);
+    assert.deepEqual(scopes, ['loading', 'org-a']);
 
     await act(async () => {
       root.render(
         <PortfolioQueueView
           lang="en"
           authorizationKey="viewer-b:finance:hotel-c,hotel-d"
-          onScope={(scope) => scopes.push(scope?.organizationId ?? 'hotel')}
+          onScope={recordScope}
         />,
       );
       await flushMicrotasks();
@@ -191,6 +194,6 @@ describe('Portfolio Queue viewer identity isolation', { concurrency: false }, ()
     await settle(requests[1], success(payload('org-b', 'Company B')));
     assert.match(container.textContent ?? '', /Company B/);
     assert.doesNotMatch(container.textContent ?? '', /Company A/);
-    assert.deepEqual(scopes, ['org-a', 'org-b']);
+    assert.deepEqual(scopes, ['loading', 'org-a', 'loading', 'org-b']);
   });
 });

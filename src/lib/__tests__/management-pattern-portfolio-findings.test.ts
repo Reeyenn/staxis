@@ -373,6 +373,32 @@ test('portfolio producer preserves the full authorization universe separately fr
   assert.deepEqual(result.findings, []);
 });
 
+test('portfolio producer records a wall-clock abort as a bounded deadline outage', async () => {
+  const controller = new AbortController();
+  controller.abort(new DOMException('finding load deadline', 'TimeoutError'));
+  let queried = false;
+  const result = await loadManagementPatternPortfolioFindings({
+    accountId: ACCOUNT,
+    scopeReceiptId: SCOPE_RECEIPT,
+    selectedPropertyIds: [...PROPERTIES],
+    asOf: new Date('2026-07-27T12:00:00.000Z'),
+    signal: controller.signal,
+  }, {
+    assertAuthorizationScopeReceipt: mockAssertion(),
+    client: mockClient(sourcePackage(), () => { queried = true; }),
+  });
+
+  assert.equal(queried, false);
+  assert.equal(result.status, 'unavailable');
+  assert.deepEqual(result.outage, {
+    occurred: true,
+    stage: 'source_read',
+    reason: 'deadline_exceeded',
+  });
+  assert.deepEqual(result.exclusions, [{ code: 'deadline_exceeded', count: 1 }]);
+  assert.deepEqual(result.findings, []);
+});
+
 test('portfolio producer rejects 251 selected hotels before authorization or querying', async () => {
   const selectedPropertyIds = LARGE_AUTHORIZED_SCOPE.slice(0, 251);
   let asserted = false;

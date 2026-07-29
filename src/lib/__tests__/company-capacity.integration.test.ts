@@ -491,10 +491,15 @@ describe('a hotel two companies both claim has NO company, not the lower UUID', 
       clearPortfolioAccessCache();
       signedInAs = UID_MARIA;
       const queue = await portfolioGet(req('https://staxis.test/api/company/queue'));
-      assert.equal(queue.status, 200);
+      assert.equal(queue.status, 503, 'an ambiguous topology was presented as an empty company');
       const queueBody = await queue.json() as {
+        ok?: boolean;
+        code?: string;
         data?: { scope?: unknown; cards?: unknown[] };
       };
+      assert.equal(queueBody.ok, false);
+      assert.equal(queueBody.code, 'upstream_failure');
+      assert.equal(queue.headers.get('Retry-After'), '5');
       assert.equal(queueBody.data?.scope ?? null, null);
       assert.deepEqual(queueBody.data?.cards ?? [], []);
       assert.equal(

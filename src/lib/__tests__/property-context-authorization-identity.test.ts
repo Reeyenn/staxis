@@ -129,7 +129,7 @@ describe('PropertyContext authorization identity', () => {
   test('the property selector invalidates stale coverage on same-UID authorization changes', () => {
     assert.match(
       propertySelector,
-      /authorizationIdentityKey = user[\s\S]*?user\.uid[\s\S]*?user\.accountId[\s\S]*?user\.role[\s\S]*?\[\.\.\.user\.propertyAccess\]\.sort\(\)\.join\(','\)/,
+      /authorizationIdentityKey = user[\s\S]*?user\.uid[\s\S]*?user\.accountId[\s\S]*?user\.role[\s\S]*?\[\.\.\.user\.propertyAccess\]\.sort\(\)\.join\(','\)[\s\S]*?authorizationFingerprint \?\? 'unchecked'/,
     );
     assert.match(propertySelector, /identityKey: authorizationViewerKey \?\? 'signed-out'/);
     assert.match(apiResourceHook, /identityKey\?: string \| number \| null/);
@@ -162,6 +162,7 @@ describe('PropertyContext authorization identity', () => {
       /const completeAccessMutation = React\.useCallback\(\(\) => \{[\s\S]*?notifyAuthorizationChanged\(\);[\s\S]*?setRetryKey/,
     );
     assert.equal((companyPage.match(/onCompleted=\{completeAccessMutation\}/g) ?? []).length, 3);
+    assert.match(companyPage, /onStructureChanged=\{completeAccessMutation\}/);
     assert.match(companyPage, /onAccessChanged=\{completeAccessMutation\}/);
   });
 });

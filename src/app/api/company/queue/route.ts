@@ -12,7 +12,7 @@
  *   you. Multi-company accounts must carry the picker selection; an omitted
  *   ambiguous company fails closed instead of choosing one.
  *
- * POST { organizationId, findingId, action }
+ * POST { organizationId, findingId, action, expectedVerdictRevision }
  *   A verdict on a COMPANY-SCOPE card (a cross-hotel comparison, a portfolio
  *   aggregate). The same three verdicts a hotel card offers, with the same
  *   meanings — "Seen" silences the feed and says nothing about the outcome;
@@ -51,17 +51,13 @@
  * queue, and its authoritative receipt decides what it opens — never a degraded
  * legacy word or an unverified URL id.
  *
- *   owner / vp   read the queue AND cast verdicts.
- *   finance      READ-ONLY. She sees the same cards, the same brief, the same
- *                money — the whole reason her job exists — and no verdict
- *                buttons. `canAct: false` in the payload is what tells the
- *                screen to draw it that way, so she never taps a control that
- *                403s. Silencing a hotel's problem is an operating decision;
- *                `hatCanManageTeam` and `canGrantHat` already say finance makes
- *                none, and this is the same answer on this surface.
- *
- * POST requires a verdict-capable authoritative company role and rechecks the
- * same receipt immediately before the write.
+ * Aggregate owner / VP / finance standing is READ-ONLY here. A company title
+ * never implies authority over every affected hotel. GET attaches exact
+ * per-card/per-action hints from fresh hotel standing, strict section state,
+ * and capability overrides. POST treats even those hints as untrusted: one
+ * atomic RPC derives the locked finding's target hotels, mints an exact subset
+ * receipt, rechecks every policy under locks, CASes the presented revision,
+ * and writes the immutable audit event.
  *
  * loadSessionAccount is the shared, schema-pinned account lookup. Do not
  * hand-roll another one: the last three times a route did, it selected a column
@@ -74,7 +70,7 @@ import { NextRequest } from 'next/server';
 import { requireSession } from '@/lib/api-auth';
 import { ok, err, ApiErrorCode } from '@/lib/api-response';
 import { getOrMintRequestId, log } from '@/lib/log';
-import { validateUuid, validateEnum } from '@/lib/api-validate';
+import { validateUuid, validateEnum, validateInt } from '@/lib/api-validate';
 import { checkAndIncrementRateLimit } from '@/lib/api-ratelimit';
 import { loadSessionAccount } from '@/lib/team-auth';
 import { assertAuthorizationScopeReceipt } from '@/lib/authorization/server';
@@ -83,16 +79,15 @@ import {
   type ManagementCompanyScopeResult,
 } from '@/lib/company/authoritative-scope';
 import { companyQueueAvailableFromAuthorization } from '@/lib/company/company-queue-access';
+import { attachCompanyQueueVerdictAllowances } from '@/lib/company/company-queue-verdict-authority';
 import {
   buildPortfolioQueue,
   companyQueueScopeFromAuthorization,
   companyLocalToday,
-  type CompanyRole,
 } from '@/lib/company/vp-queue-server';
 import { getPortfolioBrief } from '@/lib/company/vp-brief-server';
 import type { PortfolioBrief } from '@/lib/company/vp-brief';
-import { setCompanyFindingStatus } from '@/lib/company/company-findings';
-import type { FindingStatus } from '@/lib/findings/types';
+import { setCompanyFindingStatusAuthorized } from '@/lib/company/company-findings';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -104,25 +99,6 @@ type ManagementCompanyScopeRefusal = Extract<
   ManagementCompanyScopeResult,
   { ok: false }
 >['reason'];
-
-/**
- * MAY THIS COMPANY JOB CAST A VERDICT? The ONE predicate both halves of this
- * route use, so what the GET draws and what the POST accepts cannot drift.
- *
- * Asked of the HAT and of nothing else. Reading it off the degraded
- * `accounts.role` instead is what made this route 403 a company's finance lead
- * whom the picker had just admitted; it would equally have refused a VP whose
- * legacy word happened not to be a manager one, which is the same bug wearing
- * the other shoe.
- *
- * Finance is excluded because silencing a hotel's problem is an OPERATING
- * decision and finance makes none — the same answer `hatCanManageTeam` and
- * `canGrantHat` already give. She reads everything, including the money, which
- * is the entire reason her job exists.
- */
-function verdictsAllowed(companyRole: CompanyRole): boolean {
-  return companyRole === 'owner' || companyRole === 'vp';
-}
 
 /**
  * The company queue contains organization-wide findings. A portfolio- or
@@ -263,20 +239,40 @@ export async function GET(req: NextRequest) {
 
     const queue = await buildPortfolioQueue(caller, scope);
 
+    // Validate exact lineage before this card set feeds either the response or
+    // any derived brief. Aggregate company reach is READ-only; mutation hints
+    // come from fresh per-hotel standing + strict section reads, and POST still
+    // repeats the decision transactionally.
+    const allowance = await attachCompanyQueueVerdictAllowances({
+      accountId: caller.accountId,
+      selectedPropertyIds: resolved.access.propertyIds,
+      cards: queue.cards,
+    });
+    const cards = allowance.cards;
+    const coverage = {
+      ...queue.coverage,
+      excludedFindingCount: allowance.excludedFindingCount,
+      complete: queue.coverage.complete && allowance.excludedFindingCount === 0,
+    };
+
     let brief: PortfolioBrief | null = null;
     let briefStopped = false;
     // A portfolio brief speaks about the company as a whole. A bounded hotel
     // read has not earned that claim, even though company-level cards may still
     // be independently complete and carry their own receipts.
-    if (queue.coverage.complete) {
+    if (coverage.complete) {
       const { localDate } = await companyLocalToday(queue.organizationId, new Date());
       const briefResult = await getPortfolioBrief({
         accountId: caller.accountId,
+        authorizationEpoch: {
+          authorizationHash: resolved.access.authorizationReceipt.authorizationHash,
+          scopeHash: resolved.access.authorizationReceipt.scopeHash,
+        },
         input: {
           organizationId: queue.organizationId,
           localDate,
           hotelCount: queue.hotelCount,
-          cards: queue.cards,
+          cards,
           run: queue.run,
           now: new Date(),
           // The chip rule's own answer. Without it the brief's "N hotels quiet"
@@ -319,19 +315,19 @@ export async function GET(req: NextRequest) {
           companyRole: queue.companyRole,
           hotelCount: queue.hotelCount,
         },
-        cards: queue.cards,
+        cards,
         brief,
         // No brief because the Morning Briefer is switched off (admin AI Staff
         // page), as opposed to no brief because nothing has been checked yet.
         // The queue below is unaffected either way.
         briefStopped,
         run: queue.run,
-        coverage: queue.coverage,
+        coverage,
         cap: queue.cap,
-        // What the screen draws its controls from. False for finance: the same
-        // cards, the same numbers, no verdict buttons. A button that 403s is a
-        // worse answer than a button that is not there.
-        canAct: verdictsAllowed(queue.companyRole),
+        // Backward-compatible aggregate hint. New clients use each card's
+        // `verdictAllowed`; this is true only when at least one exact card is
+        // actionable, never because an owner/VP presentation label said so.
+        canAct: cards.some((card) => card.verdictAllowed === true),
       },
       { requestId },
     );
@@ -355,6 +351,7 @@ interface PostBody {
   organizationId?: unknown;
   findingId?: unknown;
   action?: unknown;
+  expectedVerdictRevision?: unknown;
 }
 
 export async function POST(req: NextRequest) {
@@ -367,18 +364,15 @@ export async function POST(req: NextRequest) {
     return err('Invalid JSON body', { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
   }
 
-  let organizationId: string | null = null;
-  if (body.organizationId !== undefined) {
-    const organizationV = validateUuid(body.organizationId, 'organizationId');
-    if (organizationV.error) {
-      return err(organizationV.error, {
-        requestId,
-        status: 400,
-        code: ApiErrorCode.ValidationFailed,
-      });
-    }
-    organizationId = organizationV.value!.toLowerCase();
+  const organizationV = validateUuid(body.organizationId, 'organizationId');
+  if (organizationV.error) {
+    return err(organizationV.error, {
+      requestId,
+      status: 400,
+      code: ApiErrorCode.ValidationFailed,
+    });
   }
+  const organizationId = organizationV.value!.toLowerCase();
 
   const idV = validateUuid(body.findingId, 'findingId');
   if (idV.error) {
@@ -388,68 +382,96 @@ export async function POST(req: NextRequest) {
   if (actionV.error) {
     return err(actionV.error, { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
   }
+  const revisionV = validateInt(body.expectedVerdictRevision, {
+    min: 0,
+    max: Number.MAX_SAFE_INTEGER,
+    label: 'expectedVerdictRevision',
+  });
+  if (revisionV.error) {
+    return err(revisionV.error, {
+      requestId,
+      status: 400,
+      code: ApiErrorCode.ValidationFailed,
+    });
+  }
 
-  // The same loader and the same predicate the GET renders from, so a verdict
-  // button that appears is a verdict this route will take, and one that does not
-  // appear is one it refuses. Previously the two sides disagreed: the manager
-  // gate here refused whoever `accounts.role` said was not a manager, which is
-  // not the question — the question is what job this person holds at this
-  // company.
+  // Resolve the selected aggregate scope only to establish this caller may read
+  // this company's queue and to supply the read receipt. GET's controls are
+  // presentation hints; the atomic RPC independently derives the locked card's
+  // exact targets and is the sole mutation authority.
   const caller = await loadSessionAccount(session.userId);
   if (!caller) {
     return err('Forbidden', { requestId, status: 403, code: ApiErrorCode.Forbidden });
   }
-  const resolved = await resolveManagementCompanyScopeUncached(caller.accountId, organizationId);
-  if (!resolved.ok) {
-    return scopeRefusalResponse(resolved.reason, requestId, {
-      explicitSelection: organizationId !== null,
-      allowNoCompanyFallback: false,
+
+  // Bound scripted POST/retry storms before they mint aggregate and exact
+  // authorization receipts. api_limits requires a real property FK, so use
+  // this caller's first already-authorized hotel and keep every company write
+  // in one actor-scoped bucket; rotating organization ids cannot rotate it.
+  const rateLimitAnchor = caller.accessiblePropertyIds?.[0]
+    ?? caller.propertyAccess.find((propertyId) => propertyId !== '*')
+    ?? null;
+  if (!rateLimitAnchor) {
+    return err('Forbidden', { requestId, status: 403, code: ApiErrorCode.Forbidden });
+  }
+  const limit = await checkAndIncrementRateLimit('company-queue', rateLimitAnchor, {
+    subKey: `${caller.accountId}:write`,
+  });
+  if (!limit.allowed) {
+    return err('Too many changes, try again shortly', {
+      requestId,
+      status: 429,
+      code: ApiErrorCode.RateLimited,
+      headers: { 'Retry-After': String(limit.retryAfterSec) },
     });
   }
-  if (!companyQueueAvailableFromAuthorization(resolved.access)
-    || !verdictsAllowed(resolved.access.companyRole)) {
+
+  const resolved = await resolveManagementCompanyScopeUncached(caller.accountId, organizationId);
+  if (!resolved.ok) {
+    if (resolved.reason === 'authorization_unavailable') {
+      return err('Could not verify your current company access', {
+        requestId,
+        status: 503,
+        code: ApiErrorCode.UpstreamFailure,
+        headers: { 'Retry-After': '5' },
+      });
+    }
+    return err('Forbidden', { requestId, status: 403, code: ApiErrorCode.Forbidden });
+  }
+  // Queue availability admits this aggregate READ surface.  It contributes no
+  // mutation authority: only the per-finding/per-hotel transaction below can
+  // grant the verdict.
+  if (!companyQueueAvailableFromAuthorization(resolved.access)) {
     return err('Forbidden', { requestId, status: 403, code: ApiErrorCode.Forbidden });
   }
 
   try {
-    const asserted = await assertAuthorizationScopeReceipt({
-      receiptId: resolved.access.authorizationReceipt.id,
+    const updated = await setCompanyFindingStatusAuthorized({
+      organizationId: resolved.access.organizationId,
+      findingId: idV.value!,
+      status: actionV.value!,
       accountId: caller.accountId,
+      receiptId: resolved.access.authorizationReceipt.id,
+      expectedVerdictRevision: revisionV.value!,
     });
-    if (!asserted.ok) {
-      const unavailable = asserted.reason === 'store_unavailable';
-      return err(unavailable ? 'Could not re-verify your current company access' : 'Forbidden', {
-        requestId,
-        status: unavailable ? 503 : 403,
-        code: unavailable ? ApiErrorCode.UpstreamFailure : ApiErrorCode.Forbidden,
-        ...(unavailable ? { headers: { 'Retry-After': '5' } } : {}),
-      });
+    if (!updated.ok) {
+      return err('Forbidden', { requestId, status: 403, code: ApiErrorCode.Forbidden });
     }
-    // The organization filter is the tenant wall — `company_findings` is
-    // deny-all RLS and the id came from the caller's OWN hats, never from the
-    // body. A company B finding id sent by a company A owner matches no row.
-    const updated = await setCompanyFindingStatus(
-      resolved.access.organizationId,
-      idV.value!,
-      actionV.value! as FindingStatus,
-      caller.accountId,
-    );
-    // Null means the filter matched nothing: either the id is bogus or it
-    // belongs to another company. Same answer either way, so the response
-    // cannot be used to probe another company's ids.
-    if (!updated) {
-      return err('No such finding', { requestId, status: 404, code: ApiErrorCode.NotFound });
-    }
-    return ok({ status: updated.status }, { requestId });
+    return ok({
+      status: updated.status,
+      verdictRevision: updated.verdictRevision,
+      alreadyApplied: updated.alreadyApplied,
+    }, { requestId });
   } catch (e) {
     log.error('[company:queue:POST] status change failed', {
       requestId,
       err: e instanceof Error ? e.message : String(e),
     });
-    return err('Could not save that', {
+    return err('Could not verify or save that change', {
       requestId,
-      status: 500,
-      code: ApiErrorCode.InternalError,
+      status: 503,
+      code: ApiErrorCode.UpstreamFailure,
+      headers: { 'Retry-After': '5' },
     });
   }
 }

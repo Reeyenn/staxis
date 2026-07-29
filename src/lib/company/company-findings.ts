@@ -15,9 +15,10 @@ import 'server-only';
 // to see. A second scoping abstraction used by one file would be a second place
 // for the boundary to live, which is the opposite of the point.
 //
-// The organization id is NEVER taken from a request body. It is resolved from
-// the caller's own hats, or from `companyForProperty(propertyId)` — see
-// src/lib/company/vp-queue-server.ts.
+// Persistence callers pass an explicit organization id, but request routes must
+// first bind that id to the caller's live authorization scope. Human verdicts
+// go only through the atomic RPC below, which rechecks the locked finding's
+// organization and exact affected hotels inside the transaction.
 
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { log } from '@/lib/log';
@@ -47,6 +48,12 @@ const UUID_RX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 export interface CompanyFinding extends Omit<Finding, 'propertyId'> {
   propertyId: null;
   organizationId: string;
+  /** Trusted typed lineage used by the company verdict authorization boundary. */
+  affectedPropertyIds: string[];
+  /** Closed management-pattern family; null on deterministic legacy rows. */
+  semanticFamily: string | null;
+  /** Monotonic CAS token for a human verdict on this company row. */
+  verdictRevision: number;
 }
 
 interface CompanyFindingRow {
@@ -74,6 +81,9 @@ interface CompanyFindingRow {
   resolved_at: string | null;
   silenced_at_magnitude: number | string | null;
   escalated_at: string | null;
+  affected_property_ids: string[];
+  semantic_family: string | null;
+  verdict_revision: number | string;
 }
 
 const SELECT_COLUMNS =
@@ -81,7 +91,7 @@ const SELECT_COLUMNS =
   'receipt_query_id, evidence, as_of, weakest_input_age_days, magnitude, ' +
   'price_low_cents, price_high_cents, price_currency, price_basis, ' +
   'first_seen_at, last_seen_at, occurrence_count, status_changed_at, resolved_at, ' +
-  'silenced_at_magnitude, escalated_at';
+  'silenced_at_magnitude, escalated_at, affected_property_ids, semantic_family, verdict_revision';
 
 function num(value: number | string | null | undefined): number | null {
   if (value === null || value === undefined) return null;
@@ -96,6 +106,11 @@ function rowToCompanyFinding(row: CompanyFindingRow): CompanyFinding {
     id: row.id,
     propertyId: null,
     organizationId: row.organization_id,
+    affectedPropertyIds: Array.isArray(row.affected_property_ids)
+      ? row.affected_property_ids
+      : [],
+    semanticFamily: typeof row.semantic_family === 'string' ? row.semantic_family : null,
+    verdictRevision: num(row.verdict_revision) ?? 0,
     detectorId: row.detector_id,
     dedupeKey: row.dedupe_key,
     summary: row.summary,
@@ -202,6 +217,8 @@ export interface PersistCompanyArgs {
   organizationId: string;
   detectorId: string;
   dedupeKey: string;
+  /** Exact, canonical hotel targets computed by the deterministic detector. */
+  affectedPropertyIds: readonly string[];
   draft: FindingDraft;
   receiptQueryId: string;
   disposition: FindingDisposition;
@@ -209,6 +226,20 @@ export interface PersistCompanyArgs {
 }
 
 export type CompanyPersistOutcome = 'opened' | 'updated' | 'suppressed' | 'escalated';
+
+function canonicalAffectedPropertyIds(propertyIds: readonly string[]): string[] {
+  if (propertyIds.length === 0
+    || propertyIds.length > 250
+    || !propertyIds.every((id) => UUID_RX.test(id))) {
+    throw new Error('company finding affected-property lineage was absent or malformed');
+  }
+  const canonical = [...new Set(propertyIds.map((id) => id.toLowerCase()))].sort();
+  if (canonical.length !== propertyIds.length
+    || canonical.some((id, index) => id !== propertyIds[index])) {
+    throw new Error('company finding affected-property lineage was not canonical');
+  }
+  return canonical;
+}
 
 function draftColumns(args: PersistCompanyArgs): Record<string, unknown> {
   const { draft } = args;
@@ -220,6 +251,7 @@ function draftColumns(args: PersistCompanyArgs): Record<string, unknown> {
     as_of: draft.asOf ? draft.asOf.toISOString() : null,
     weakest_input_age_days: draft.weakestInputAgeDays ?? null,
     magnitude: draft.magnitude,
+    affected_property_ids: canonicalAffectedPropertyIds(args.affectedPropertyIds),
     ...priceColumns(draft.price),
   };
 }
@@ -265,8 +297,7 @@ export async function openCompanyFinding(args: PersistCompanyArgs): Promise<Comp
     return 'suppressed';
   }
   if (row.status === 'muted' || row.status === 'known_problem') {
-    await touchSilencedCompanyFinding(args, row.id);
-    return 'suppressed';
+    return touchSilencedCompanyFinding(args, row.id);
   }
   return refreshCompanyFinding(args, row.id, 'updated');
 }
@@ -278,7 +309,7 @@ export async function refreshCompanyFinding(
   status: Extract<FindingStatus, 'open' | 'updated'>,
 ): Promise<CompanyPersistOutcome> {
   const occurrence = await nextOccurrence(args.organizationId, findingId);
-  const { error } = await supabaseAdmin
+  const { data, error } = await supabaseAdmin
     .from('company_findings')
     .update({
       ...draftColumns(args),
@@ -288,22 +319,34 @@ export async function refreshCompanyFinding(
       occurrence_count: occurrence,
     })
     .eq('organization_id', args.organizationId)
-    .eq('id', findingId);
+    .eq('id', findingId)
+    .in('status', ['open', 'updated'])
+    .select('id');
   if (error) throw new Error(`company findings update failed: ${error.message}`);
+  if (((data ?? []) as unknown[]).length !== 1) {
+    throw new Error('company findings update refused a non-live row');
+  }
   return 'updated';
 }
 
 /**
- * A silenced portfolio problem was found again. The evidence moves; the silence
- * does not. `status` and `disposition` are deliberately absent from the patch —
- * they are the VP's, not ours to refresh.
+ * A silenced portfolio problem was found again. Evidence may move while its
+ * exact affected-hotel lineage is unchanged, without disturbing the human
+ * verdict. 0405 enforces the complementary invariant in the database: when
+ * `affected_property_ids` changes, this same atomic UPDATE is converted into
+ * an `updated` rearm and advances the CAS epoch. That keeps new evidence from
+ * inheriting consent that was given for a different set of hotels.
+ *
+ * `status` and `disposition` are deliberately absent from this patch. The
+ * database owns the lineage transition; otherwise a process could update the
+ * evidence first and crash before making the old silence visible again.
  */
 export async function touchSilencedCompanyFinding(
   args: PersistCompanyArgs,
   findingId: string,
 ): Promise<CompanyPersistOutcome> {
   const occurrence = await nextOccurrence(args.organizationId, findingId);
-  const { error } = await supabaseAdmin
+  const { data, error } = await supabaseAdmin
     .from('company_findings')
     .update({
       ...draftColumns(args),
@@ -311,8 +354,18 @@ export async function touchSilencedCompanyFinding(
       occurrence_count: occurrence,
     })
     .eq('organization_id', args.organizationId)
-    .eq('id', findingId);
+    .eq('id', findingId)
+    .in('status', ['known_problem', 'muted'])
+    .select('id, status');
   if (error) throw new Error(`company findings silenced-refresh failed: ${error.message}`);
+  const rows = (data ?? []) as unknown as Array<{ id: string; status: string }>;
+  if (rows.length !== 1) {
+    throw new Error('company findings silenced-refresh refused a non-silenced row');
+  }
+  if (rows[0]!.status === 'updated') return 'updated';
+  if (rows[0]!.status !== 'known_problem' && rows[0]!.status !== 'muted') {
+    throw new Error('company findings silenced-refresh returned an invalid lifecycle state');
+  }
   return 'suppressed';
 }
 
@@ -323,7 +376,7 @@ export async function escalateCompanyFinding(
 ): Promise<CompanyPersistOutcome> {
   const iso = args.now.toISOString();
   const occurrence = await nextOccurrence(args.organizationId, findingId);
-  const { error } = await supabaseAdmin
+  const { data, error } = await supabaseAdmin
     .from('company_findings')
     .update({
       ...draftColumns(args),
@@ -335,8 +388,13 @@ export async function escalateCompanyFinding(
       occurrence_count: occurrence,
     })
     .eq('organization_id', args.organizationId)
-    .eq('id', findingId);
+    .eq('id', findingId)
+    .eq('status', 'known_problem')
+    .select('id');
   if (error) throw new Error(`company findings escalate failed: ${error.message}`);
+  if (((data ?? []) as unknown[]).length !== 1) {
+    throw new Error('company findings escalation refused a non-known row');
+  }
   return 'escalated';
 }
 
@@ -372,47 +430,66 @@ export async function expireStaleCompanyFindings(
   return ((data ?? []) as unknown[]).length;
 }
 
-/**
- * A VP's verdict on a company card. Moving to `known_problem` always records the
- * magnitude they consented to, so escalation is measured from there — a silence
- * with no recorded consent point can never break out of itself.
- */
-export async function setCompanyFindingStatus(
-  organizationId: string,
-  findingId: string,
-  status: FindingStatus,
-  accountId: string | null,
-  now: Date = new Date(),
-): Promise<CompanyFinding | null> {
-  if (!UUID_RX.test(organizationId ?? '') || !UUID_RX.test(findingId ?? '')) return null;
-  const iso = now.toISOString();
-  const patch: Record<string, unknown> = {
-    status,
-    status_changed_at: iso,
-    status_changed_by: accountId,
-    resolved_at: status === 'resolved' ? iso : null,
-  };
-
-  // Both silences record their consent point, exactly as the hotel ledger does
-  // — see the note on setFindingStatus in src/lib/findings/store.ts.
-  if (status === 'known_problem' || status === 'muted') {
-    const current = await supabaseAdmin
-      .from('company_findings')
-      .select('magnitude')
-      .eq('organization_id', organizationId)
-      .eq('id', findingId)
-      .limit(1);
-    const rows = (current.data ?? []) as unknown as Array<{ magnitude: number | string }>;
-    patch.silenced_at_magnitude = num(rows[0]?.magnitude ?? null) ?? 0;
+export type AuthorizedCompanyFindingVerdictResult =
+  | {
+    ok: true;
+    status: Extract<FindingStatus, 'known_problem' | 'muted' | 'resolved'>;
+    verdictRevision: number;
+    alreadyApplied: boolean;
   }
+  | { ok: false };
 
-  const { data, error } = await supabaseAdmin
-    .from('company_findings')
-    .update(patch)
-    .eq('organization_id', organizationId)
-    .eq('id', findingId)
-    .select(SELECT_COLUMNS);
-  if (error) throw new Error(`company findings status change failed: ${error.message}`);
-  const rows = (data ?? []) as unknown as CompanyFindingRow[];
-  return rows[0] ? rowToCompanyFinding(rows[0]) : null;
+/**
+ * The sole release-safe company verdict door.  The database function owns the
+ * finding lock and every commit-time authorization check; this wrapper only
+ * validates its deliberately closed result shape.  RPC/store errors throw so
+ * an HTTP caller can distinguish an unavailable boundary from an ordinary,
+ * non-enumerating denial.
+ */
+export async function setCompanyFindingStatusAuthorized(input: {
+  organizationId: string;
+  findingId: string;
+  status: Extract<FindingStatus, 'known_problem' | 'muted' | 'resolved'>;
+  accountId: string;
+  receiptId: string;
+  expectedVerdictRevision: number;
+}): Promise<AuthorizedCompanyFindingVerdictResult> {
+  const { data, error } = await supabaseAdmin.rpc(
+    'staxis_set_company_finding_status_authorized',
+    {
+      p_organization_id: input.organizationId,
+      p_finding_id: input.findingId,
+      p_action: input.status,
+      p_account_id: input.accountId,
+      p_aggregate_receipt_id: input.receiptId,
+      p_expected_verdict_revision: input.expectedVerdictRevision,
+    },
+  );
+  if (error) {
+    throw new Error(`authorized company finding status change failed: ${error.message}`);
+  }
+  if (data === null || typeof data !== 'object' || Array.isArray(data)) {
+    throw new Error('authorized company finding status change returned a malformed result');
+  }
+  const result = data as Record<string, unknown>;
+  if (result.ok === false && Object.keys(result).length === 1) return { ok: false };
+  if (result.ok === true
+    && Object.keys(result).length === 4
+    && (result.status === 'known_problem'
+      || result.status === 'muted'
+      || result.status === 'resolved')
+    && typeof result.verdictRevision === 'number'
+    && Number.isSafeInteger(result.verdictRevision)
+    && typeof result.alreadyApplied === 'boolean'
+    && (result.verdictRevision === input.expectedVerdictRevision + 1
+      || (result.alreadyApplied === true
+        && result.verdictRevision === input.expectedVerdictRevision))) {
+    return {
+      ok: true,
+      status: result.status,
+      verdictRevision: result.verdictRevision,
+      alreadyApplied: result.alreadyApplied,
+    };
+  }
+  throw new Error('authorized company finding status change returned an invalid result');
 }

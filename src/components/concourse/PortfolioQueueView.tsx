@@ -45,6 +45,7 @@ import { DAILY_CARD_CAP, type ClosureVerdict, type Lang, type QueueFinding } fro
 import {
   portfolioRequestState,
   readWithPortfolioDeadline,
+  shouldOptimisticallySettlePortfolioVerdict,
 } from './portfolio-queue-request';
 
 export interface PortfolioScope {
@@ -65,6 +66,8 @@ export interface PortfolioCoverage {
   omittedHotelCount: number;
   /** Attempted hotels whose data source did not answer completely. */
   unavailableHotelCount: number;
+  /** Findings withheld because their target lineage could not be proven safe. */
+  excludedFindingCount: number;
   /** Reproducible completion state for the deterministic company-level checks. */
   portfolioChecksStatus: 'completed' | 'held' | 'in_progress' | 'incomplete' | 'unavailable';
   /** True only when processedHotelCount covers the full authorized set. */
@@ -79,14 +82,8 @@ export interface PortfolioPayload {
   coverage: PortfolioCoverage | null;
   cap?: number;
   /**
-   * May this reader cast a verdict? Comes from the ROUTE, which asks the
-   * caller's company hat — owner and VP act, finance reads. Absent on an older
-   * server bundle, and absent means "act", which is what every payload meant
-   * before this field existed.
-   *
-   * It is a RENDERING of the rule, not the rule: /api/company/queue refuses a
-   * finance verdict again on the POST. What this field buys is that she is never
-   * shown three buttons that 403.
+   * Backward-compatible aggregate summary. Exact controls use each card's
+   * `verdictAllowed`; absence fails closed rather than reviving role-based UI.
    */
   canAct?: boolean;
 }
@@ -201,7 +198,7 @@ export function PortfolioQueueBody({
   coverage,
   cap = DAILY_CARD_CAP,
   lang,
-  canAct = true,
+  canAct = false,
   readFailed = false,
   saveFailed = false,
   busyId = null,
@@ -216,7 +213,7 @@ export function PortfolioQueueBody({
   coverage: PortfolioCoverage;
   cap?: number;
   lang: Lang;
-  /** False for a finance hat: every card, every number, no verdict controls. */
+  /** Compatibility floor; per-card verdictAllowed is still required. */
   canAct?: boolean;
   readFailed?: boolean;
   saveFailed?: boolean;
@@ -229,6 +226,7 @@ export function PortfolioQueueBody({
   const partialCoverage = !coverage.complete
     || coverage.omittedHotelCount > 0
     || coverage.unavailableHotelCount > 0
+    || coverage.excludedFindingCount > 0
     || (coverage.portfolioChecksStatus !== 'completed' && coverage.portfolioChecksStatus !== 'held');
   const byId = React.useMemo(
     () => new Map(cards.map((card) => [card.id, card])),
@@ -279,6 +277,9 @@ export function PortfolioQueueBody({
               + (coverage.unavailableHotelCount > 0
                 ? `${coverage.unavailableHotelCount} ${coverage.unavailableHotelCount === 1 ? 'hotel no respondió' : 'hoteles no respondieron'} por completo. `
                 : '')
+              + (coverage.excludedFindingCount > 0
+                ? `${coverage.excludedFindingCount} ${coverage.excludedFindingCount === 1 ? 'hallazgo fue excluido' : 'hallazgos fueron excluidos'} porque no se pudo verificar su alcance. `
+                : '')
               + (coverage.portfolioChecksStatus === 'in_progress'
                 ? 'Las comprobaciones de empresa todavía estaban en curso. '
                 : coverage.portfolioChecksStatus === 'incomplete'
@@ -293,6 +294,9 @@ export function PortfolioQueueBody({
                 : '')
               + (coverage.unavailableHotelCount > 0
                 ? `${coverage.unavailableHotelCount} ${coverage.unavailableHotelCount === 1 ? 'hotel did' : 'hotels did'} not answer completely. `
+                : '')
+              + (coverage.excludedFindingCount > 0
+                ? `${coverage.excludedFindingCount} ${coverage.excludedFindingCount === 1 ? 'finding was' : 'findings were'} excluded because their scope could not be verified. `
                 : '')
               + (coverage.portfolioChecksStatus === 'in_progress'
                 ? 'Company-level checks were still in progress. '
@@ -321,6 +325,14 @@ export function PortfolioQueueBody({
         busyId={busyId}
         focusId={focusId}
         readOnly={!canAct}
+        readOnlyFor={(finding) => byId.get(finding.id)?.verdictAllowed !== true}
+        verdictAllowedFor={(finding, verdict) => {
+          const card = byId.get(finding.id);
+          return card?.verdictAllowed === true && (
+            card.hotel !== null
+            || card.allowedVerdicts?.some((allowed) => allowed === verdict) === true
+          );
+        }}
         hideLiveness
         // The founder's rule at the top of vp-queue.ts: a GM tap must not add
         // to, hide from, or DRESS UP the VP's view. "Seen 6 times since Jul 9"
@@ -461,8 +473,14 @@ export function PortfolioQueueView({
   const onVerdict = React.useCallback(
     (findingId: string, verdict: ClosureVerdict) => {
       const card = (data?.cards ?? []).find((c) => c.id === findingId);
-      if (!card) return;
+      if (!card
+        || card.verdictAllowed !== true
+        || (card.hotel === null
+          && card.allowedVerdicts?.some((allowed) => allowed === verdict) !== true)) return;
       if (!card.hotel && !resolvedOrganizationId) return;
+      if (!card.hotel
+        && (!Number.isSafeInteger(card.verdictRevision)
+          || (card.verdictRevision ?? -1) < 0)) return;
       void (async () => {
         setBusyId(findingId);
         setSaveFailed(false);
@@ -485,6 +503,7 @@ export function PortfolioQueueView({
                 organizationId: resolvedOrganizationId,
                 findingId,
                 action: verdict,
+                expectedVerdictRevision: card.verdictRevision,
               }),
               timeoutMs: INTERACTIVE_ACTION_TIMEOUT_MS,
             });
@@ -495,7 +514,9 @@ export function PortfolioQueueView({
             setSaveFailed(true);
             return;
           }
-          setSettled((prev) => new Set(prev).add(findingId));
+          if (shouldOptimisticallySettlePortfolioVerdict(card.hotel !== null, verdict)) {
+            setSettled((prev) => new Set(prev).add(findingId));
+          }
           await reload();
         } catch (e) {
           if (e instanceof SessionEndedError) throw e;
@@ -518,7 +539,7 @@ export function PortfolioQueueView({
   const onAction = React.useCallback(
     (actionId: string, intent: 'execute' | 'undo') => {
       const card = (data?.cards ?? []).find((c) => c.action?.id === actionId);
-      if (!card?.hotel) return;
+      if (!card?.hotel || card.verdictAllowed !== true) return;
       void (async () => {
         setBusyId(card.id);
         setSaveFailed(false);
@@ -580,12 +601,13 @@ export function PortfolioQueueView({
         processedHotelCount: 0,
         omittedHotelCount: portfolio.scope.hotelCount,
         unavailableHotelCount: 0,
+        excludedFindingCount: 0,
         portfolioChecksStatus: 'unavailable',
         complete: false,
       }}
       cap={portfolio.cap ?? DAILY_CARD_CAP}
       lang={lang}
-      canAct={portfolio.canAct ?? true}
+      canAct={portfolio.canAct ?? false}
       readFailed={!!error}
       saveFailed={saveFailed}
       busyId={busyId}

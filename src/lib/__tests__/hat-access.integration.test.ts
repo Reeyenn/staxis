@@ -170,11 +170,20 @@ async function portfolioFor(authUserId: string): Promise<{ status: number; data:
   return { status: res.status, data: parsed.data ?? { scope: null, cards: [], canAct: undefined } };
 }
 
-async function portfolioVerdict(authUserId: string, findingId: string): Promise<number> {
+async function portfolioVerdict(
+  authUserId: string,
+  findingId: string,
+  organizationId: string = ORG_A,
+): Promise<number> {
   signedInAs = authUserId;
   const res = await portfolioPost(req('https://staxis.test/api/company/queue', {
     method: 'POST',
-    body: { findingId, action: 'known_problem' },
+    body: {
+      organizationId,
+      findingId,
+      action: 'known_problem',
+      expectedVerdictRevision: 0,
+    },
   }));
   return res.status;
 }
@@ -316,12 +325,18 @@ async function hotelsGovernedBy(organizationId: string): Promise<string[]> {
 async function plantCompanyFinding(organizationId: string): Promise<string> {
   const row = await pg.query<{ id: string }>(
     `insert into public.company_findings
-       (organization_id, detector_id, dedupe_key, summary, severity, disposition, status,
-        receipt_query_id, evidence, magnitude, first_seen_at, last_seen_at, status_changed_at)
-     values ($1, 'probe', 'probe:portfolio', 'Two hotels pay different laundry rates.',
-             'attention', 'fyi', 'open', 'probe_receipt', $2::jsonb, 3, now(), now(), now())
+      (organization_id, detector_id, dedupe_key, summary, severity, disposition, status,
+        receipt_query_id, evidence, magnitude, first_seen_at, last_seen_at,
+        status_changed_at, affected_property_ids)
+     values ($1, 'portfolio_supply_spend_gap', 'probe:portfolio',
+             'Two hotels pay different laundry rates.', 'attention', 'fyi', 'open',
+             'probe_receipt', $2::jsonb, 3, now(), now(), now(), $3::uuid[])
      returning id`,
-    [organizationId, JSON.stringify({ queryId: 'probe_receipt', params: {}, values: {}, basis: 'planted' })],
+    [
+      organizationId,
+      JSON.stringify({ queryId: 'probe_receipt', params: {}, values: {}, basis: 'planted' }),
+      organizationId === ORG_A ? [PID_A1] : [PID_B1],
+    ],
   );
   return row.rows[0].id;
 }
@@ -638,7 +653,7 @@ describe('the finance lead — the picker and the queue now agree', () => {
 
   test("company B's finding is not company A's to silence", async () => {
     assert.equal(
-      await portfolioVerdict(UID_VERA, PORTFOLIO_FINDING), 404,
+      await portfolioVerdict(UID_VERA, PORTFOLIO_FINDING, ORG_B), 403,
       "company B's VP reached into company A's ledger",
     );
   });

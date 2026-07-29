@@ -30,6 +30,23 @@ interface MockQueryResult {
 
 type QueryResponder = (state: Readonly<QueryState>) => MockQueryResult;
 
+function topologyReceipt(
+  organizationId: string,
+  effectiveAt: Date,
+  propertyIds: readonly string[],
+): MockQueryResult {
+  return {
+    data: {
+      ok: true,
+      schemaVersion: 'organization-property-topology-v1',
+      organizationId,
+      effectiveAt: effectiveAt.toISOString(),
+      propertyIds: [...propertyIds],
+    },
+    error: null,
+  };
+}
+
 function fakeFrom(respond: QueryResponder): AdminClient['from'] {
   return ((table: string) => {
     const state: QueryState = { table, selected: null, terminal: null };
@@ -86,7 +103,11 @@ describe('company topology fails closed for portfolio checks', { concurrency: fa
     const organizationId = 'aaaaaaaa-0000-4000-8000-000000000001';
     const now = new Date('2026-07-28T15:00:00.000Z');
 
-    admin.from = fakeFrom(() => ({ data: [], error: null }));
+    admin.rpc = (async (fn: string) => (
+      fn === 'staxis_resolve_organization_property_topology'
+        ? topologyReceipt(organizationId, now, [])
+        : { data: null, error: { message: 'unexpected rpc' } }
+    )) as unknown as AdminClient['rpc'];
     const empty = await resolveOrganizationPropertyTopology(organizationId, now);
     assert.equal(empty.ok, true);
     if (empty.ok) {
@@ -96,7 +117,10 @@ describe('company topology fails closed for portfolio checks', { concurrency: fa
       assert.equal(Object.isFrozen(empty.topology.propertyIds), true);
     }
 
-    admin.from = fakeFrom(() => ({ data: null, error: { message: 'relationship store down' } }));
+    admin.rpc = (async () => ({
+      data: null,
+      error: { message: 'relationship store down' },
+    })) as unknown as AdminClient['rpc'];
     const unavailable = await resolveOrganizationPropertyTopology(organizationId, now);
     assert.deepEqual(unavailable, { ok: false, reason: 'store_unavailable' });
     assert.deepEqual(
@@ -118,15 +142,15 @@ describe('company topology fails closed for portfolio checks', { concurrency: fa
     let nonTopologyReads = 0;
     let claimCalls = 0;
 
-    admin.from = fakeFrom((state) => {
-      if (state.table === 'organization_property_relationships') {
-        topologyReads += 1;
-        return { data: null, error: { message: 'relationship store down' } };
-      }
+    admin.from = fakeFrom(() => {
       nonTopologyReads += 1;
       return { data: [], error: null };
     });
-    admin.rpc = (async () => {
+    admin.rpc = (async (fn: string) => {
+      if (fn === 'staxis_resolve_organization_property_topology') {
+        topologyReads += 1;
+        return { data: null, error: { message: 'relationship store down' } };
+      }
       claimCalls += 1;
       return { data: null, error: null };
     }) as unknown as AdminClient['rpc'];
@@ -162,19 +186,6 @@ describe('company topology fails closed for portfolio checks', { concurrency: fa
     let claimCalls = 0;
 
     admin.from = fakeFrom((state) => {
-      if (state.table === 'organization_property_relationships') {
-        topologyReads += 1;
-        return {
-          data: [{
-            property_id: propertyId,
-            relationship_type: 'operator',
-            is_primary_grouping: true,
-            starts_at: '2020-01-01T00:00:00.000Z',
-            ends_at: null,
-          }],
-          error: null,
-        };
-      }
       if (state.table === 'properties' && state.selected === 'id, timezone') {
         timezoneReads += 1;
         return { data: null, error: { message: 'property metadata store down' } };
@@ -182,7 +193,11 @@ describe('company topology fails closed for portfolio checks', { concurrency: fa
       otherReads += 1;
       return { data: [], error: null };
     });
-    admin.rpc = (async () => {
+    admin.rpc = (async (fn: string) => {
+      if (fn === 'staxis_resolve_organization_property_topology') {
+        topologyReads += 1;
+        return topologyReceipt(organizationId, now, [propertyId]);
+      }
       claimCalls += 1;
       return { data: null, error: null };
     }) as unknown as AdminClient['rpc'];
@@ -207,19 +222,6 @@ describe('company topology fails closed for portfolio checks', { concurrency: fa
     let topologyReads = 0;
 
     admin.from = fakeFrom((state) => {
-      if (state.table === 'organization_property_relationships') {
-        topologyReads += 1;
-        return {
-          data: [{
-            property_id: propertyId,
-            relationship_type: 'operator',
-            is_primary_grouping: true,
-            starts_at: '2020-01-01T00:00:00.000Z',
-            ends_at: null,
-          }],
-          error: null,
-        };
-      }
       if (state.table === 'properties' && state.selected === 'id, timezone') {
         return { data: [{ id: propertyId, timezone: 'America/Chicago' }], error: null };
       }
@@ -236,6 +238,13 @@ describe('company topology fails closed for portfolio checks', { concurrency: fa
       // updates. The assertion here is topology query count, not detector data.
       return { data: [], error: null };
     });
+    admin.rpc = (async (fn: string) => {
+      if (fn === 'staxis_resolve_organization_property_topology') {
+        topologyReads += 1;
+        return topologyReceipt(organizationId, now, [propertyId]);
+      }
+      return { data: null, error: { message: `unexpected rpc: ${fn}` } };
+    }) as unknown as AdminClient['rpc'];
 
     const summary = await runPortfolioChecks({ organizationId, now, force: true });
     assert.equal(topologyReads, 1, 'the gather phase re-read company membership');

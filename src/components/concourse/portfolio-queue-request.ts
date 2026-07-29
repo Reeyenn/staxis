@@ -115,6 +115,18 @@ export function shouldRenderPortfolioProbe(
   return companyScope !== null;
 }
 
+/**
+ * A hotel card marked Seen remains visible to company leadership by design.
+ * Other successful closure verdicts leave this view immediately; company
+ * findings also leave because their ledger excludes every silenced status.
+ */
+export function shouldOptimisticallySettlePortfolioVerdict(
+  hasHotel: boolean,
+  verdict: string,
+): boolean {
+  return !hasHotel || verdict !== 'known_problem';
+}
+
 /** What QueueView renders after the portfolio probe has answered. */
 export function hotelFallbackState(
   companyScope: object | null | undefined,

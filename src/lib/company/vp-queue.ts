@@ -277,6 +277,16 @@ export interface PortfolioCard extends QueueFinding {
   climbReason: ClimbReason;
   /** Days since the first sighting. Carried so the reason line can say it. */
   daysOpen: number;
+  /** Trusted server-side targets used to compute this card's UI affordance. */
+  affectedPropertyIds?: readonly string[];
+  /** Closed company-pattern family. Null/absent is the deterministic legacy form. */
+  semanticFamily?: string | null;
+  /** Monotonic company-verdict CAS token. Company cards always carry one. */
+  verdictRevision?: number;
+  /** Exact verdict controls this response may render for this card. */
+  allowedVerdicts?: readonly ('known_problem' | 'muted' | 'resolved')[];
+  /** Presentation hint only; every POST rechecks inside its write transaction. */
+  verdictAllowed?: boolean;
 }
 
 /**

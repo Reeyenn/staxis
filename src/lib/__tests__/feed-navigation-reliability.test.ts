@@ -9,6 +9,7 @@ import {
   portfolioScopeForViewer,
   portfolioRequestState,
   readWithPortfolioDeadline,
+  shouldOptimisticallySettlePortfolioVerdict,
   shouldRenderQueueIdentityLoading,
   shouldRenderPortfolioProbe,
 } from '@/components/concourse/portfolio-queue-request';
@@ -115,7 +116,7 @@ describe('Feed portfolio navigation reaches a visible terminal state', () => {
     );
     assert.match(
       queueView,
-      /if \(shouldRenderQueueIdentityLoading\(!!user, viewerAuthorizationKey\)\)[\s\S]*?data-feed-state="loading"[\s\S]*?role="status"[\s\S]*?aria-busy="true"/,
+      /if \(shouldRenderQueueIdentityLoading\(!!user, portfolioAuthorizationKey\)\)[\s\S]*?data-feed-state="loading"[\s\S]*?role="status"[\s\S]*?aria-busy="true"/,
     );
   });
 
@@ -135,7 +136,7 @@ describe('Feed portfolio navigation reaches a visible terminal state', () => {
     );
     assert.match(
       queueView,
-      /useApiResource<CoveragePayload>\([\s\S]*?identityKey: viewerAuthorizationKey/,
+      /useApiResource<CoveragePayload>\([\s\S]*?identityKey: portfolioAuthorizationKey/,
     );
     assert.match(
       queueView,
@@ -143,7 +144,7 @@ describe('Feed portfolio navigation reaches a visible terminal state', () => {
     );
     assert.match(
       queueView,
-      /<PortfolioQueueView[\s\S]*?key=\{viewerAuthorizationKey\}[\s\S]*?authorizationKey=\{viewerAuthorizationKey\}/,
+      /<PortfolioQueueView[\s\S]*?key=\{portfolioAuthorizationKey\}[\s\S]*?authorizationKey=\{portfolioAuthorizationKey\}/,
     );
     assert.match(
       portfolioView,
@@ -188,6 +189,13 @@ describe('Feed portfolio navigation reaches a visible terminal state', () => {
 
     assert.equal(first.error, PORTFOLIO_QUEUE_TIMEOUT_ERROR);
     assert.deepEqual(second, { data: { scope: null } });
+  });
+
+  test('Seen stays visible for a climbed hotel card after the authoritative reload', () => {
+    assert.equal(shouldOptimisticallySettlePortfolioVerdict(true, 'known_problem'), false);
+    assert.equal(shouldOptimisticallySettlePortfolioVerdict(true, 'muted'), true);
+    assert.equal(shouldOptimisticallySettlePortfolioVerdict(true, 'resolved'), true);
+    assert.equal(shouldOptimisticallySettlePortfolioVerdict(false, 'known_problem'), true);
   });
 });
 

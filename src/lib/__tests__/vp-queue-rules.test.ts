@@ -1448,7 +1448,7 @@ describe('the selected company survives every portfolio-feed UI boundary', () =>
       ),
       'the feed did not rebuild a company-preserving back link',
     );
-    assert.ok(queueView.includes('organizationId={requestedOrganizationId}'));
+    assert.ok(queueView.includes('organizationId={requestedOrganizationId ?? null}'));
     assert.ok(queueView.includes('backHref={portfolioHref}'));
     assert.ok(
       queueView.includes(

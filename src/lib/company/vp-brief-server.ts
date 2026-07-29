@@ -39,16 +39,39 @@ const BRIEF_CACHE_ROUTE = 'company-brief';
 /** Bumped whenever the stored shape changes. A cached brief from an older shape
  *  is ignored rather than rendered half-empty.
  *
- *  3 — English-only lines (`{ text }`, was `{ en, es }`). The bump is what makes
- *  today's already-cached bilingual briefs regenerate rather than render as a
- *  card full of blanks on the first morning after the ruling ships. */
-const BRIEF_CACHE_VERSION = 3;
+ *  5 — bound to the exact authorization + selected-property epoch. This drops
+ *  any cache written before hotel transfers/revocations participated in the
+ *  cache identity and envelope. */
+const BRIEF_CACHE_VERSION = 5;
+
+const RECEIPT_HASH_RX = /^[0-9a-f]{64}$/;
+
+/**
+ * The immutable parts of the freshly validated authorization receipt which
+ * identify both the reader's authorization universe and this exact property
+ * selection. A company brief may be stable for a person/day, but never across
+ * a hotel transfer, grant revocation, or topology epoch.
+ */
+export interface PortfolioBriefAuthorizationEpoch {
+  authorizationHash: string;
+  scopeHash: string;
+}
+
+function isValidAuthorizationEpoch(
+  value: PortfolioBriefAuthorizationEpoch | undefined,
+): value is PortfolioBriefAuthorizationEpoch {
+  return !!value
+    && RECEIPT_HASH_RX.test(value.authorizationHash)
+    && RECEIPT_HASH_RX.test(value.scopeHash);
+}
 
 interface CachedEnvelope {
   v: number;
   organizationId: string;
   accountId: string;
   localDate: string;
+  authorizationHash: string;
+  scopeHash: string;
   brief: PortfolioBrief;
 }
 
@@ -61,8 +84,16 @@ export function portfolioBriefCacheKey(
   organizationId: string,
   accountId: string,
   localDate: string,
+  authorizationEpoch: PortfolioBriefAuthorizationEpoch,
 ): string {
-  return `${BRIEF_CACHE_ROUTE}-${organizationId}-${accountId}-${localDate}`;
+  return [
+    BRIEF_CACHE_ROUTE,
+    organizationId,
+    accountId,
+    localDate,
+    authorizationEpoch.authorizationHash,
+    authorizationEpoch.scopeHash,
+  ].join('-');
 }
 
 export interface PortfolioBriefResult {
@@ -74,12 +105,23 @@ export interface PortfolioBriefResult {
   stopped?: boolean;
 }
 
-export interface GetPortfolioBriefOptions {
+interface PortfolioBriefOptionsBase {
   accountId: string;
   input: PortfolioBriefInput;
-  /** Skip the cache entirely. Tests only. */
-  noCache?: boolean;
 }
+
+export type GetPortfolioBriefOptions = PortfolioBriefOptionsBase & (
+  | {
+    /** Exact hashes from the validated current authorization receipt. */
+    authorizationEpoch: PortfolioBriefAuthorizationEpoch;
+    noCache?: false;
+  }
+  | {
+    /** Skip the cache entirely. Tests only. */
+    noCache: true;
+    authorizationEpoch?: PortfolioBriefAuthorizationEpoch;
+  }
+);
 
 /**
  * The day's portfolio brief for one person.
@@ -99,10 +141,24 @@ export async function getPortfolioBrief(
     return { brief: null, cached: false, stopped: true };
   }
 
-  const key = portfolioBriefCacheKey(input.organizationId, accountId, input.localDate);
+  // This is expected to come from the closed receipt parser. Keep the boundary
+  // defensive anyway: an invalid epoch disables caching instead of creating a
+  // reusable key whose authorization identity was never proved.
+  const authorizationEpoch = isValidAuthorizationEpoch(opts.authorizationEpoch)
+    ? opts.authorizationEpoch
+    : null;
+  const key = authorizationEpoch
+    ? portfolioBriefCacheKey(input.organizationId, accountId, input.localDate, authorizationEpoch)
+    : null;
 
-  if (!opts.noCache) {
-    const cached = await readCache(key, input.organizationId, accountId).catch(() => null);
+  if (!opts.noCache && key && authorizationEpoch) {
+    const cached = await readCache(
+      key,
+      input.organizationId,
+      accountId,
+      input.localDate,
+      authorizationEpoch,
+    ).catch(() => null);
     if (cached) return { brief: cached, cached: true };
   }
 
@@ -111,11 +167,19 @@ export async function getPortfolioBrief(
   // check of a brand-new company produces a brief the same day.
   if (!fresh) return { brief: null, cached: false };
 
-  if (!opts.noCache) {
+  if (!opts.noCache && key && authorizationEpoch) {
     const won = await claim(key).catch(() => false);
     // Losing the claim is not an error. The loser hands back the brief it just
     // built — the same deterministic text the winner is about to store.
-    if (won) await writeCache(key, input.organizationId, accountId, fresh).catch(() => {});
+    if (won) {
+      await writeCache(
+        key,
+        input.organizationId,
+        accountId,
+        authorizationEpoch,
+        fresh,
+      ).catch(() => {});
+    }
   }
   return { brief: fresh, cached: false };
 }
@@ -123,10 +187,10 @@ export async function getPortfolioBrief(
 /**
  * Read the day's brief, or null.
  *
- * FOUR things are checked before a cached brief is trusted, and every one is a
+ * Every identity is checked before a cached brief is trusted, and each is a
  * tenant or identity guard rather than paranoia: the organization inside the
- * payload, the account inside the payload, the local date, and the shape
- * version. The key already contains all three identities, so a mismatch means
+ * payload, the account inside the payload, the local date, both receipt hashes,
+ * and the shape version. The key already contains all these identities, so a mismatch means
  * something is wrong in a way that could put one company's numbers on another
  * company's screen — and the right response to that is to regenerate, not to
  * render.
@@ -135,6 +199,8 @@ async function readCache(
   key: string,
   organizationId: string,
   accountId: string,
+  localDate: string,
+  authorizationEpoch: PortfolioBriefAuthorizationEpoch,
 ): Promise<PortfolioBrief | null> {
   const { data, error } = await supabaseAdmin
     .from('idempotency_log')
@@ -152,9 +218,14 @@ async function readCache(
   if (payload.v !== BRIEF_CACHE_VERSION) return null;
   if (payload.organizationId !== organizationId) return null;
   if (payload.accountId !== accountId) return null;
+  if (payload.localDate !== localDate) return null;
+  if (!RECEIPT_HASH_RX.test(authorizationEpoch.authorizationHash)
+    || !RECEIPT_HASH_RX.test(authorizationEpoch.scopeHash)) return null;
+  if (payload.authorizationHash !== authorizationEpoch.authorizationHash) return null;
+  if (payload.scopeHash !== authorizationEpoch.scopeHash) return null;
   const brief = payload.brief;
   if (!brief || brief.organizationId !== organizationId) return null;
-  if (payload.localDate !== brief.localDate) return null;
+  if (brief.localDate !== localDate) return null;
   if (!Array.isArray(brief.lines) || brief.lines.length === 0) return null;
   return brief;
 }
@@ -191,6 +262,7 @@ async function writeCache(
   key: string,
   organizationId: string,
   accountId: string,
+  authorizationEpoch: PortfolioBriefAuthorizationEpoch,
   brief: PortfolioBrief,
 ): Promise<void> {
   const envelope: CachedEnvelope = {
@@ -198,6 +270,8 @@ async function writeCache(
     organizationId,
     accountId,
     localDate: brief.localDate,
+    authorizationHash: authorizationEpoch.authorizationHash,
+    scopeHash: authorizationEpoch.scopeHash,
     brief,
   };
   const { error } = await supabaseAdmin

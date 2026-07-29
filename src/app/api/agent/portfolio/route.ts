@@ -86,6 +86,8 @@ import {
   persistPortfolioQueryReceipt,
 } from '@/lib/agent/portfolio-intelligence/receipts';
 import {
+  buildPortfolioPresentationClaimCatalog,
+  displayedPortfolioFindingClaimIds,
   renderPortfolioAnswer,
   validatePortfolioPresentationPlan,
 } from '@/lib/agent/portfolio-intelligence/presentation';
@@ -98,7 +100,17 @@ import {
   type PortfolioActiveScopeEvent,
 } from '@/lib/agent/portfolio-intelligence/route-contract';
 import type { PlannerScopeCatalog, PortfolioQueryPlan } from '@/lib/agent/portfolio-intelligence/schemas';
-import { buildPortfolioFindingNotMountedReceipt } from '@/lib/agent/portfolio-intelligence/pattern-contract';
+import {
+  buildPortfolioFindingProjectionReceipt,
+} from '@/lib/agent/portfolio-intelligence/pattern-contract';
+import {
+  PORTFOLIO_FINDING_LOAD_BUDGET_MS,
+  loadManagementPatternFindingProjection,
+  loadManagementPatternKnowledgeFindingReceipt,
+} from '@/lib/agent/portfolio-intelligence/management-pattern-mount';
+import {
+  loadManagementPatternPortfolioFindings,
+} from '@/lib/company/management-patterns/portfolio-findings';
 import { reconcileCostReservation } from '../command/_stream-runner';
 
 export const runtime = 'nodejs';
@@ -131,6 +143,7 @@ export interface PortfolioPostDependencies {
   loadAuthorizedMetadata: typeof loadAuthorizedPropertyMetadata;
   loadCompanyKnowledge: typeof loadConfirmedCompanyKnowledge;
   loadPropertyKnowledge: typeof loadConfirmedPortfolioPropertyKnowledge;
+  loadPortfolioFindings: typeof loadManagementPatternPortfolioFindings;
   acquireAdmission: typeof acquirePortfolioQueryAdmission;
   releaseAdmission: typeof releasePortfolioQueryAdmission;
 }
@@ -144,6 +157,7 @@ const PORTFOLIO_POST_DEPENDENCIES: PortfolioPostDependencies = Object.freeze({
   loadAuthorizedMetadata: loadAuthorizedPropertyMetadata,
   loadCompanyKnowledge: loadConfirmedCompanyKnowledge,
   loadPropertyKnowledge: loadConfirmedPortfolioPropertyKnowledge,
+  loadPortfolioFindings: loadManagementPatternPortfolioFindings,
   acquireAdmission: acquirePortfolioQueryAdmission,
   releaseAdmission: releasePortfolioQueryAdmission,
 });
@@ -657,8 +671,8 @@ export async function handlePortfolioPost(
   if (plan.intent === 'knowledge_lookup') {
     // The all-authorized plan reuses the base receipt minted before admission
     // and metadata loading. Reassert both the exact hotel universe and the
-    // company chat capability immediately before either service-role knowledge
-    // reader starts; the post-read assertion below closes the other side.
+    // company chat capability immediately before any service-role finding or
+    // knowledge reader starts; the post-read assertion below closes the other side.
     if (!await exactReceiptStillCurrent(receipt)) {
       return err('Your hotel access changed before company knowledge could be read. No knowledge was released.', {
         requestId, status: 409, code: 'scope_changed',
@@ -666,6 +680,39 @@ export async function handlePortfolioPost(
     }
     const knowledgeStartedAt = Date.now();
     const now = new Date();
+    let knowledgeFindingVersions;
+    try {
+      knowledgeFindingVersions = await loadManagementPatternKnowledgeFindingReceipt({
+        receipt,
+        now,
+        signal: req.signal,
+        deadlineAt: Math.min(
+          executionDeadlineAt - ASK_STAXIS_FALLBACK_RESERVE_MS,
+          Date.now() + PORTFOLIO_FINDING_LOAD_BUDGET_MS,
+        ),
+        loadArtifact: dependencies.loadPortfolioFindings,
+      });
+    } catch (error) {
+      log.error('[agent/portfolio] deterministic knowledge finding mount failed closed', {
+        requestId,
+        organizationId: receipt.organizationId,
+        scopeReceiptId: receipt.id,
+        error,
+      });
+      return err('Current portfolio findings could not be validated under the exact knowledge scope. No knowledge was released.', {
+        requestId, status: 503, code: ApiErrorCode.UpstreamFailure,
+      });
+    }
+    if (req.signal.aborted || executionDeadlineAt <= Date.now()) {
+      return err('The portfolio knowledge question was cancelled or exceeded its time budget.', {
+        requestId, status: 408, code: ApiErrorCode.UpstreamFailure,
+      });
+    }
+    if (!await exactReceiptStillCurrent(receipt)) {
+      return err('Your hotel access changed while portfolio findings were being verified. No knowledge was released.', {
+        requestId, status: 409, code: 'scope_changed',
+      });
+    }
     const knowledgeContext = await companyKnowledgeBlock({
       organizationId: receipt.organizationId,
       propertyIds: receipt.propertyIds,
@@ -828,11 +875,7 @@ export async function handlePortfolioPost(
         answer,
         generatedAt: now,
         durationMs: Math.max(0, Date.now() - knowledgeStartedAt),
-        findingVersions: buildPortfolioFindingNotMountedReceipt({
-          organizationId: receipt.organizationId,
-          scopeReceiptId: receipt.id,
-          scopeHash: receipt.scopeHash,
-        }),
+        findingVersions: knowledgeFindingVersions,
       });
     } catch (error) {
       log.error('[agent/portfolio] immutable deterministic knowledge receipt failed', {
@@ -987,7 +1030,41 @@ export async function handlePortfolioPost(
   }
 
   if (!await exactReceiptStillCurrent(receipt)) {
-    return err('Your hotel access changed before reference knowledge could be read. No answer was synthesized.', {
+    return err('Your hotel access changed before portfolio findings could be read. No answer was synthesized.', {
+      requestId, status: 409, code: 'scope_changed',
+    });
+  }
+  let findingsProjection;
+  try {
+    findingsProjection = await loadManagementPatternFindingProjection({
+      receipt,
+      evidence,
+      now,
+      signal: req.signal,
+      deadlineAt: Math.min(
+        executionDeadlineAt - ASK_STAXIS_FALLBACK_RESERVE_MS,
+        Date.now() + PORTFOLIO_FINDING_LOAD_BUDGET_MS,
+      ),
+      loadArtifact: dependencies.loadPortfolioFindings,
+    });
+  } catch (error) {
+    log.error('[agent/portfolio] management pattern finding mount failed closed', {
+      requestId,
+      organizationId: receipt.organizationId,
+      scopeReceiptId: receipt.id,
+      error,
+    });
+    return err('Current portfolio findings could not be validated under the exact active scope. No answer was synthesized.', {
+      requestId, status: 503, code: ApiErrorCode.UpstreamFailure,
+    });
+  }
+  if (req.signal.aborted || executionDeadlineAt <= Date.now()) {
+    return err('The portfolio question was cancelled or exceeded its time budget before synthesis.', {
+      requestId, status: 408, code: ApiErrorCode.UpstreamFailure,
+    });
+  }
+  if (!await exactReceiptStillCurrent(receipt)) {
+    return err('Your hotel access changed while portfolio findings were being verified. Nothing was sent to the model.', {
       requestId, status: 409, code: 'scope_changed',
     });
   }
@@ -1030,7 +1107,7 @@ export async function handlePortfolioPost(
     companyRole: access.access.companyRole,
     evidence,
     knowledgeBlock: knowledgeContext.block,
-    findingsProjection: null,
+    findingsProjection,
     // New conversations do not yet have a row id; the fresh receipt id is a
     // valid, request-unique UUID for prompt lookup/cache assembly. No custom
     // conversation prompt can exist before the row does.
@@ -1163,7 +1240,11 @@ export async function handlePortfolioPost(
       validateAssistantResponse: ({ text, toolCallCount }) => {
         if (!text.trim()) throw new Error('portfolio synthesis returned an empty answer');
         if (toolCallCount !== 0) throw new Error('portfolio synthesis attempted an unmounted tool');
-        const verdict = validatePortfolioPresentationPlan({ candidate: text, evidence });
+        const verdict = validatePortfolioPresentationPlan({
+          candidate: text,
+          evidence,
+          findingsProjection,
+        });
         if (!verdict.ok) {
           throw new Error(`portfolio presentation plan rejected: ${verdict.reason}`);
         }
@@ -1208,17 +1289,42 @@ export async function handlePortfolioPost(
   const presentationVerdict = validatePortfolioPresentationPlan({
     candidate: run.text,
     evidence,
+    findingsProjection,
   });
   const renderedAnswer = presentationVerdict.ok
     ? renderPortfolioAnswer({
         evidence,
         plan: presentationVerdict.plan,
         selectorLabel,
+        findingsProjection,
       })
     : null;
   const numberVerdict = renderedAnswer
-    ? validatePortfolioAnswerNumbers({ answer: renderedAnswer, systemPrompt })
+    ? validatePortfolioAnswerNumbers({
+        answer: renderedAnswer,
+        systemPrompt,
+        selectedFindings: presentationVerdict.ok
+          ? {
+              evidence,
+              projection: findingsProjection,
+              plan: presentationVerdict.plan,
+            }
+          : null,
+      })
     : { ok: false as const, violations: [] };
+  const findingClaimCatalog = buildPortfolioPresentationClaimCatalog(
+    evidence,
+    findingsProjection,
+  );
+  const findingVersions = buildPortfolioFindingProjectionReceipt({
+    projection: findingsProjection,
+    displayedClaimIds: presentationVerdict.ok
+      ? displayedPortfolioFindingClaimIds(
+          findingClaimCatalog,
+          presentationVerdict.plan,
+        )
+      : [],
+  });
   const authorizationCurrent = await exactReceiptStillCurrent(receipt);
   let queryReceiptId: string;
   try {
@@ -1233,11 +1339,7 @@ export async function handlePortfolioPost(
       actualModelId: run.usage.modelId,
       actualModelTier: run.usage.model,
       knowledgeVersions: knowledgeContext.versions,
-      findingVersions: buildPortfolioFindingNotMountedReceipt({
-        organizationId: receipt.organizationId,
-        scopeReceiptId: receipt.id,
-        scopeHash: receipt.scopeHash,
-      }),
+      findingVersions,
       modelCandidateText: run.text,
       presentationPlan: presentationVerdict.ok ? presentationVerdict.plan : null,
       answerText: renderedAnswer,

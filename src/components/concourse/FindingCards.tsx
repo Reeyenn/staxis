@@ -435,6 +435,8 @@ interface CardProps {
    * would be drawing three things that 403.
    */
   readOnly?: boolean;
+  /** Optional action-level authority. Missing means this generic card keeps its existing policy. */
+  verdictAllowed?: (verdict: Verdict) => boolean;
   onVerdict: (findingId: string, verdict: Verdict) => void;
   /** Fired the first time this card's numbers are opened. Optional so the view
    *  can be rendered in a test without a network. */
@@ -473,6 +475,7 @@ function FindingCard({
   busy,
   focused = false,
   readOnly = false,
+  verdictAllowed,
   onVerdict,
   onEngage,
   onAction,
@@ -500,7 +503,9 @@ function FindingCard({
   const priceBasis = basisInLang(finding.price?.basis, finding.price?.basisEs, lang);
   const evidenceBasis = basisInLang(finding.evidence.basis, finding.evidence.basisEs, lang);
   const age = dataAgeNote(finding, lang);
-  const closures = closureButtons(finding, lang);
+  const closures = closureButtons(finding, lang).filter((button) => (
+    verdictAllowed?.(button.verdict) ?? true
+  ));
   const pending = closures.find((b) => b.verdict === confirming) ?? null;
 
   // Bring the linked card into view when it becomes the focused one.
@@ -698,6 +703,10 @@ export interface FindingCardsViewProps {
   hideLiveness?: boolean;
   /** Draw every card as readable-but-not-decidable. See FindingCard.readOnly. */
   readOnly?: boolean;
+  /** Optional per-card authority hint layered under the global read-only flag. */
+  readOnlyFor?: (finding: QueueFinding) => boolean;
+  /** Optional per-card/per-verdict authority; disallowed controls are not rendered. */
+  verdictAllowedFor?: (finding: QueueFinding, verdict: Verdict) => boolean;
   onVerdict: (findingId: string, verdict: Verdict) => void;
   /** Told when a manager opens a card's numbers. Counted as engagement, which
    *  is what keeps a check somebody reads from demoting itself (0362). */
@@ -797,6 +806,8 @@ export function FindingCardsView({
   focusId = null,
   hideLiveness = false,
   readOnly = false,
+  readOnlyFor,
+  verdictAllowedFor,
   onVerdict,
   onEngage,
   onAction,
@@ -864,7 +875,10 @@ export function FindingCardsView({
           lang={lang}
           busy={busyId === f.id}
           focused={focusId === f.id}
-          readOnly={readOnly}
+          readOnly={readOnly || readOnlyFor?.(f) === true}
+          verdictAllowed={verdictAllowedFor
+            ? (verdict) => verdictAllowedFor(f, verdict)
+            : undefined}
           onVerdict={onVerdict}
           onEngage={onEngage}
           onAction={onAction}
