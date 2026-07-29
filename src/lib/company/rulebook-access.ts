@@ -5,13 +5,14 @@ import 'server-only';
 // TWO QUESTIONS, DELIBERATELY SEPARATE:
 //
 //   canViewCompanyRulebook   a COMPANY-scope job (owner / VP / finance), or a
-//                            hotel GM while `gms_see_rulebook` is on. Founder's
-//                            ruling: "GMs should know the policies they're
-//                            governed by." Read-only. NOT line staff — see
+//                            scoped portfolio/property manager while the legacy
+//                            `gms_see_rulebook` switch is on. Founder's ruling:
+//                            "GMs should know the policies they're governed by."
+//                            Read-only. NOT line staff — see
 //                            `rulebookStandingFor` for what leaked while it was.
 //   canEditCompanyRulebook   a COMPANY-scope job, filtered by the company's own
-//                            `rulebook_editors` choice. A GM never qualifies —
-//                            a property-scope hat cannot rewrite the company.
+//                            `rulebook_editors` choice. A scoped manager never
+//                            qualifies merely from portfolio/property reach.
 //
 // The access choices themselves live in `company_access_settings` and are read
 // through `companyAccessSetting`, which returns a documented DEFAULT when no row
@@ -20,7 +21,13 @@ import 'server-only';
 // everything" — a rulebook nobody can see is worse than no rulebook.
 
 import { supabaseAdmin } from '@/lib/supabase-admin';
-import { loadHats, type MembershipHat } from '@/lib/company/access';
+import type { AuthorizationScopeReceipt } from '@/lib/authorization';
+import {
+  listAuthoritativePropertyAccess,
+  resolveAuthorizationScope,
+  type AuthoritativePropertyEntitlement,
+  type AuthoritativePropertyStanding,
+} from '@/lib/authorization/server';
 
 const UUID_RX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -183,20 +190,91 @@ export interface RulebookStanding {
   canEdit: boolean;
   /** The strongest company-scope job they hold here. null for a GM. */
   companyRole: 'owner' | 'vp' | 'finance' | null;
-  /** True when a property-scope job (a GM) is the only reason they can see it. */
+  /** True when a scoped portfolio/property manager is the only reason they can see it. */
   viewOnlyBecauseHotelJob: boolean;
 }
 
 const COMPANY_ROLE_STRENGTH = { owner: 3, vp: 2, finance: 1 } as const;
 
-function strongestCompanyRole(hats: readonly MembershipHat[]): 'owner' | 'vp' | 'finance' | null {
+type CompanyRole = 'owner' | 'vp' | 'finance';
+
+function entitlementCompanyRole(
+  entitlement: AuthoritativePropertyEntitlement,
+): CompanyRole | null {
+  if (entitlement.scopeType === 'company'
+    && (entitlement.staxisRole === 'owner'
+      || entitlement.staxisRole === 'vp'
+      || entitlement.staxisRole === 'finance')) {
+    return entitlement.staxisRole;
+  }
+  if (entitlement.scopeType === 'organization') {
+    if (entitlement.accessProfile === 'organization_owner') return 'owner';
+    if (entitlement.accessProfile === 'organization_admin') return 'vp';
+  }
+  return null;
+}
+
+/**
+ * Match 0404's transactional editor gate: one broad entitlement must cover
+ * every hotel in the exact current authority projection. A collection of narrow grants must
+ * never add up to organization-wide rulebook authority.
+ */
+function strongestRoleFromCoverage(
+  propertyIds: readonly string[],
+  entries: readonly { propertyId: string; entitlement: AuthoritativePropertyEntitlement }[],
+): CompanyRole | null {
+  const coverage = new Map<string, { role: CompanyRole; propertyIds: Set<string> }>();
+  for (const { propertyId, entitlement } of entries) {
+    const role = entitlementCompanyRole(entitlement);
+    if (!role) continue;
+    const key = `${entitlement.entitlementId}\0${role}`;
+    const current = coverage.get(key) ?? { role, propertyIds: new Set<string>() };
+    current.propertyIds.add(propertyId);
+    coverage.set(key, current);
+  }
   let best: 'owner' | 'vp' | 'finance' | null = null;
-  for (const hat of hats) {
-    if (hat.scope !== 'company') continue;
-    if (hat.role !== 'owner' && hat.role !== 'vp' && hat.role !== 'finance') continue;
-    if (!best || COMPANY_ROLE_STRENGTH[hat.role] > COMPANY_ROLE_STRENGTH[best]) best = hat.role;
+  for (const candidate of coverage.values()) {
+    if (candidate.propertyIds.size !== propertyIds.length
+      || propertyIds.some((propertyId) => !candidate.propertyIds.has(propertyId))) continue;
+    if (!best || COMPANY_ROLE_STRENGTH[candidate.role] > COMPANY_ROLE_STRENGTH[best]) {
+      best = candidate.role;
+    }
   }
   return best;
+}
+
+function strongestCompanyRole(receipt: AuthorizationScopeReceipt): CompanyRole | null {
+  return strongestRoleFromCoverage(
+    receipt.propertyIds,
+    receipt.provenance.entitlements.map((entitlement) => ({
+      propertyId: entitlement.propertyId,
+      entitlement: {
+        kind: entitlement.entitlementKind,
+        entitlementId: entitlement.entitlementId,
+        organizationId: receipt.organizationId,
+        membershipId: entitlement.membershipId,
+        accessProfile: entitlement.accessProfile,
+        staxisRole: entitlement.staxisRole,
+        scopeType: entitlement.scopeType,
+        portfolioId: entitlement.portfolioId,
+      },
+    })),
+  );
+}
+
+function receiptHasScopedManagerStanding(receipt: AuthorizationScopeReceipt): boolean {
+  return receipt.provenance.entitlements.some((entitlement) => (
+    (entitlement.scopeType === 'property' && entitlement.staxisRole === 'general_manager')
+      || entitlement.accessProfile === 'property_manager'
+      || entitlement.accessProfile === 'portfolio_manager'
+  ));
+}
+
+function hasHotelManagerStanding(standings: readonly AuthoritativePropertyStanding[]): boolean {
+  return standings.some((standing) => standing.entitlements.some((entitlement) => (
+    (entitlement.scopeType === 'property' && entitlement.staxisRole === 'general_manager')
+      || (entitlement.scopeType === 'property' && entitlement.accessProfile === 'property_manager')
+  )));
 }
 
 function editorChoiceAdmits(choice: string | null, role: 'owner' | 'vp' | 'finance'): boolean {
@@ -214,9 +292,13 @@ function editorChoiceAdmits(choice: string | null, role: 'owner' | 'vp' | 'finan
 /**
  * What may this person do with this company's rulebook?
  *
- * Answers from the person's HATS at this exact company — never from
- * `accounts.role`, which is a global word and would silently make a hotel owner
- * the owner of a management company they have never heard of.
+ * Answers from one fresh authoritative receipt at this exact company — never
+ * from `accounts.role`, which is a global word and would
+ * silently make a hotel owner the owner of a management company they have
+ * never heard of. This keeps normalized access grants, legacy hats and the
+ * 0404 transaction gate on one fail-closed authority source. A one-hotel GM is
+ * intentionally excluded from portfolio receipts, so that one narrow case
+ * falls back to the same authoritative per-hotel projection used by hotel APIs.
  */
 export async function rulebookStandingFor(
   accountId: string,
@@ -231,19 +313,39 @@ export async function rulebookStandingFor(
   };
   if (!UUID_RX.test(accountId ?? '') || !UUID_RX.test(organizationId ?? '')) return denied;
 
-  const hats = (await loadHats(accountId)).filter((hat) => hat.organizationId === organizationId);
-  if (hats.length === 0) return denied;
-
-  const companyRole = strongestCompanyRole(hats);
+  const resolved = await resolveAuthorizationScope({
+    accountId,
+    organizationId,
+    selector: { type: 'all_authorized' },
+    ttlSeconds: 60,
+  });
+  let companyRole: CompanyRole | null = null;
+  let hasScopedManagerJob = false;
+  if (resolved.ok) {
+    companyRole = strongestCompanyRole(resolved.receipt);
+    hasScopedManagerJob = receiptHasScopedManagerStanding(resolved.receipt);
+  } else if (resolved.reason === 'no_company_job') {
+    const access = await listAuthoritativePropertyAccess(accountId);
+    if (!access || access.all) return denied;
+    const standings = access.propertyStandings
+      .map((standing) => ({
+        ...standing,
+        entitlements: standing.entitlements.filter(
+          (entitlement) => entitlement.organizationId === organizationId,
+        ),
+      }))
+      .filter((standing) => standing.entitlements.length > 0);
+    if (standings.length === 0) return denied;
+    hasScopedManagerJob = hasHotelManagerStanding(standings);
+  } else {
+    return denied;
+  }
   const gmsSee = (await companyAccessSetting(organizationId, 'gms_see_rulebook')) !== 'false';
-  const isGeneralManager = hats.some((hat) => (
-    hat.scope === 'property' && hat.role === 'general_manager'
-  ));
 
-  // A company-scope job always sees the book. A hotel job sees it when the
-  // company allows it AND that job is a GM's — which is exactly the founder's
-  // ruling ("GMs should know the policies they're governed by"), and exactly
-  // the setting's own name, `gms_see_rulebook`.
+  // A company-scope job always sees the book. A scoped portfolio/property
+  // manager sees only the confirmed book; this includes the founder's ruling
+  // that "GMs should know the policies they're governed by" and keeps the
+  // setting's historic `gms_see_rulebook` name.
   //
   // IT USED TO BE ANY HAT. `canView` was `companyRole !== null || gmsSee`, and
   // `gmsSee` is locked ON, so every hat at the company passed — a front-desk
@@ -253,7 +355,7 @@ export async function rulebookStandingFor(
   // route's own payload) the number of hotels in the portfolio. A GM needs
   // those to do the job. Line staff have no such need, and the ruling never
   // mentioned them.
-  const canView = companyRole !== null || (gmsSee && isGeneralManager);
+  const canView = companyRole !== null || (gmsSee && hasScopedManagerJob);
   if (!canView) return denied;
 
   let canEdit = false;

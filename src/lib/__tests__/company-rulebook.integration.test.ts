@@ -74,6 +74,7 @@ import {
 } from '@/lib/company/rulebook-access';
 import { accountsCoveringProperty } from '@/lib/company/access';
 import { GET as rulebookGet, POST as rulebookPost } from '@/app/api/company/rulebook/route';
+import { POST as rulebookIntakePost } from '@/app/api/company/rulebook/intake/route';
 import { GET as teamGet } from '@/app/api/auth/team/route';
 
 import { applyMigrationsToPglite } from '../../../tests/fixtures/pglite-migrate';
@@ -402,6 +403,112 @@ describe('the cached block stays byte-identical with the new tier in it', () => 
   });
 });
 
+describe('0404 rolling app compatibility', () => {
+  test('app-first intake fails before provider spend when the ledger RPC is absent', async () => {
+    const liveRpc = supabaseAdmin.rpc.bind(supabaseAdmin);
+    const costsBefore = await pg.query<{ n: string }>(
+      'select count(*)::text as n from public.agent_costs',
+    );
+    supabaseAdmin.rpc = (async (fn: string, args?: Record<string, unknown>) => {
+      if (fn === 'staxis_company_knowledge_ledger_capability') {
+        return {
+          data: null,
+          error: { code: 'PGRST202', message: 'function is not in the schema cache' },
+        };
+      }
+      return liveRpc(fn as never, args as never);
+    }) as unknown as typeof supabaseAdmin.rpc;
+    try {
+      signedInAs = UID_ANA;
+      const response = await rulebookIntakePost(authorizedRequest(
+        'https://staxis.test/api/company/rulebook/intake',
+        {
+          method: 'POST',
+          body: { propertyId: PID_A1, note: 'All hotels use a new vendor.' },
+        },
+      ));
+      assert.equal(response.status, 503);
+      const costsAfter = await pg.query<{ n: string }>(
+        'select count(*)::text as n from public.agent_costs',
+      );
+      assert.equal(costsAfter.rows[0].n, costsBefore.rows[0].n);
+    } finally {
+      supabaseAdmin.rpc = liveRpc as typeof supabaseAdmin.rpc;
+    }
+  });
+
+  test('a verified actor can never downgrade into the revisionless compatibility writer', async () => {
+    const draft = await storeCompanyFact({
+      organizationId: ORG_A,
+      topic: 'revision_guard_draft',
+      content: 'This draft must survive revisionless mutation attempts.',
+      category: 'standards',
+      source: 'inferred',
+    });
+    const otherDraft = await storeCompanyFact({
+      organizationId: ORG_A,
+      topic: 'revision_guard_merge_drop',
+      content: 'This second draft must not be merged without a revision.',
+      category: 'standards',
+      source: 'inferred',
+    });
+    const confirmedId = await writeConfirmedFact(
+      ORG_A,
+      'revision_guard_confirmed',
+      'This confirmed line must not be overwritten without a revision.',
+    );
+    assert.ok(draft.ok && draft.factId && otherDraft.ok && otherDraft.factId);
+
+    const verifiedActor = { accountId: ACCOUNT_ANA, name: 'Ana', role: 'owner' };
+    assert.equal(
+      (await confirmCompanyFact(ORG_A, draft.factId, verifiedActor)).reason,
+      'invalid_request',
+    );
+    assert.equal(
+      (await editCompanyFact(
+        ORG_A,
+        confirmedId,
+        { content: 'Revisionless overwrite.', category: 'standards' },
+        verifiedActor,
+      )).reason,
+      'invalid_request',
+    );
+    assert.equal(
+      (await removeCompanyFact(ORG_A, confirmedId, verifiedActor)).reason,
+      'invalid_request',
+    );
+    assert.equal(
+      (await mergeCompanyFact(
+        ORG_A,
+        confirmedId,
+        otherDraft.factId,
+        verifiedActor,
+      )).reason,
+      'invalid_request',
+    );
+
+    const malformedActor = await storeCompanyFact({
+      organizationId: ORG_A,
+      topic: 'malformed_actor_must_not_fallback',
+      content: 'This must never be stored.',
+      category: 'standards',
+      source: 'inferred',
+      createdByAccountId: 'not-a-uuid',
+    });
+    assert.equal(malformedActor.ok, false);
+    assert.equal(malformedActor.reason, 'invalid_request');
+
+    const facts = await listCompanyFacts(ORG_A);
+    assert.equal(facts.find((fact) => fact.id === draft.factId)?.reviewState, 'unreviewed');
+    assert.equal(
+      facts.find((fact) => fact.id === confirmedId)?.content,
+      'This confirmed line must not be overwritten without a revision.',
+    );
+    assert.ok(facts.some((fact) => fact.id === otherDraft.factId));
+    assert.equal(facts.some((fact) => fact.topic === 'malformed_actor_must_not_fallback'), false);
+  });
+});
+
 // ─────────────────────────────────────────────────────────────────────────────
 describe('a GM reads the book and cannot touch it', () => {
   test('Gil (GM of Tyler) can see Piney Woods\' book, read-only', async () => {
@@ -573,15 +680,31 @@ describe('an authority rule exists only after a human confirms', () => {
     const facts = await listCompanyFacts(ORG_A);
     const target = facts.find((f) => f.topic === 'po_big_threshold');
     assert.ok(target);
+    assert.ok(target.currentRevision);
 
     const res = await rulebookWrite(UID_ANA, {
       propertyId: PID_A1,
       action: 'edit',
       id: target.id,
+      expectedRevision: target.currentRevision,
       content: 'Large orders are unusual for us.',
       category: 'money',
     });
     assert.equal(res.status, 200);
+
+    const stale = await rulebookWrite(UID_ANA, {
+      propertyId: PID_A1,
+      action: 'edit',
+      id: target.id,
+      expectedRevision: target.currentRevision,
+      content: 'A stale browser overwrote the current line.',
+      category: 'money',
+    });
+    assert.equal(stale.status, 409, 'the route must surface CAS loss as a conflict');
+    assert.equal(
+      (await listCompanyFacts(ORG_A)).find((fact) => fact.id === target.id)?.content,
+      'Large orders are unusual for us.',
+    );
 
     const big = await authorityRuleFor(ORG_A, 'purchase_order', 600_000);
     assert.ok(big);
@@ -599,6 +722,56 @@ describe('the access choices gate what they claim', () => {
     assert.equal(await companyAccessSetting(ORG_A, 'cross_hotel_ai_chat'), 'false');
     assert.equal(await companyAccessSetting(ORG_A, 'rulebook_editors'), 'owner_and_vp');
     assert.equal(await companyAccessSetting(ORG_A, 'setup_completed_at'), null);
+  });
+
+  test('a normalized organization admin uses the same fresh authority as the write RPC', async () => {
+    const userId = 'aaaa2222-0000-4000-8000-000000000099';
+    const accountId = 'aaaa1111-0000-4000-8000-000000000099';
+    await pg.query(
+      `insert into auth.users (id, email) values ($1, 'normalized-rulebook-admin@example.test')`,
+      [userId],
+    );
+    await pg.query(
+      `insert into accounts (
+         id, username, password_hash, display_name, role, property_access, data_user_id
+       ) values ($1, 'normalized-rulebook-admin', 'x', 'Normalized Admin',
+                 'front_desk', '{}', $2)`,
+      [accountId, userId],
+    );
+    const membership = await pg.query<{ id: string }>(
+      `insert into organization_memberships (
+         organization_id, account_id, job_category, status
+       ) values ($1, $2, 'operations', 'active') returning id`,
+      [ORG_A, accountId],
+    );
+    const grant = await pg.query<{ id: string }>(
+      `insert into organization_access_grants (
+         organization_id, membership_id, access_profile, scope_type, status, source
+       ) values ($1, $2, 'organization_admin', 'organization', 'active', 'manual')
+       returning id`,
+      [ORG_A, membership.rows[0].id],
+    );
+
+    assert.deepEqual(await rulebookStandingFor(accountId, ORG_A), {
+      organizationId: ORG_A,
+      canView: true,
+      canEdit: true,
+      companyRole: 'vp',
+      viewOnlyBecauseHotelJob: false,
+    });
+
+    await pg.query(
+      `update organization_access_grants
+          set status = 'revoked', revoked_at = now(),
+              revocation_reason = 'rulebook lifecycle test', version = version + 1
+        where id = $1`,
+      [grant.rows[0].id],
+    );
+    assert.equal(
+      (await rulebookStandingFor(accountId, ORG_A)).canView,
+      false,
+      'revocation must close the screen immediately instead of reusing a stale hat',
+    );
   });
 
   test('"owner and VPs" lets Maria edit; the finance person does not', async () => {
@@ -725,10 +898,14 @@ describe('remove is permanent', () => {
     const facts = await listCompanyFacts(ORG_A);
     const target = facts.find((f) => f.topic === 'po_threshold');
     assert.ok(target, 'the $500 rule is there to remove');
+    assert.ok(target.currentRevision);
     assert.ok(await authorityRuleFor(ORG_A, 'purchase_order', 60_000), 'and it is in force');
 
     const res = await rulebookWrite(UID_ANA, {
-      propertyId: PID_A1, action: 'remove', id: target.id,
+      propertyId: PID_A1,
+      action: 'remove',
+      id: target.id,
+      expectedRevision: target.currentRevision,
     });
     assert.equal(res.status, 200);
 

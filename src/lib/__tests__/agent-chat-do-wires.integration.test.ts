@@ -580,6 +580,42 @@ describe('writing a company rule by talking', () => {
     }
   });
 
+  test('a confirmation token cannot overwrite a line created after the read-back', async () => {
+    const ctx = await chatCtx({ accountId: ACCOUNT_VERA, uid: UID_VERA, propertyId: PID_B1 });
+    const [proposed] = await turn(ctx, 'all our hotels use Vendor A', [
+      {
+        name: 'staxis_write_company_rule',
+        args: {
+          rule: 'All our hotels use Vendor A.',
+          topic: 'confirmation_race_vendor',
+          category: 'vendors',
+        },
+      },
+    ]);
+    assert.equal(proposed.ok, true, proposed.error ?? '');
+    await pg.query(
+      `insert into company_knowledge (
+         organization_id, topic, content, category, source, review_state
+       ) values ($1, 'confirmation_race_vendor', 'An owner added Vendor B first.',
+                 'vendors', 'explicit_user', 'confirmed')`,
+      [ORG_B],
+    );
+
+    const [confirmed] = await turn(ctx, 'yes', [
+      { name: 'staxis_write_company_rule', args: { confirmToken: tokenOf(proposed)! } },
+    ]);
+    assert.equal(confirmed.ok, false);
+    assert.match(confirmed.error ?? '', /changed after the read-back|did not overwrite/i);
+    assert.equal(
+      (await pg.query<{ content: string }>(
+        `select content from company_knowledge
+         where organization_id = $1 and topic = 'confirmation_race_vendor' and is_active`,
+        [ORG_B],
+      )).rows[0].content,
+      'An owner added Vendor B first.',
+    );
+  });
+
   test('a sentence naming two approvers stores NOTHING and asks', async () => {
     const before = await count('select count(*)::text as n from company_knowledge where organization_id = $1', [ORG_B]);
     const ctx = await chatCtx({ accountId: ACCOUNT_VERA, uid: UID_VERA, propertyId: PID_B1 });
