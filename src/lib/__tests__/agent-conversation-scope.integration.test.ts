@@ -5,7 +5,7 @@
  * the shared property RPC checked only the anchor hotel. That made mode a
  * convention: either route could replay the other route's transcript, and a
  * company authorization change had no durable conversation identity to fail.
- * These tests exercise 0377's scoped conversation functions plus 0397's
+ * These tests exercise 0379's scoped conversation functions plus 0399's
  * receipt-bound atomic turn commit, not a JS imitation.
  */
 
@@ -293,7 +293,7 @@ async function commitPortfolioTurn(
   return { ...result, queryReceiptId: queryReceipt.rows[0].id };
 }
 
-describe('0377/0397 agent conversation mode + atomic authorization isolation', () => {
+describe('0379/0399 agent conversation mode + atomic authorization isolation', () => {
   let fx: PgliteFixture;
   let pg: PGlite;
   let seed: TwoCompanySeed;
@@ -302,12 +302,12 @@ describe('0377/0397 agent conversation mode + atomic authorization isolation', (
     fx = await setupRlsFixture();
     pg = fx.pg;
     const failure = fx.migrationReport.failedAtRuntime.find(
-      (entry) => entry.file === '0377_agent_portfolio_conversation_scope.sql',
+      (entry) => entry.file === '0379_agent_portfolio_conversation_scope.sql',
     );
     assert.equal(failure, undefined, failure?.error);
     assert.ok(
-      fx.migrationReport.applied.includes('0377_agent_portfolio_conversation_scope.sql'),
-      '0377 did not apply in the production-migration fixture',
+      fx.migrationReport.applied.includes('0379_agent_portfolio_conversation_scope.sql'),
+      '0379 did not apply in the production-migration fixture',
     );
     seed = await seedTwoCompanies(pg);
   });

@@ -88,7 +88,7 @@ before(async () => {
   assert.equal(
     migrated.report.failedAtRuntime.some((failure) => failure.file.startsWith('0398_')),
     false,
-    `0398 must apply: ${JSON.stringify(migrated.report.failedAtRuntime)}`,
+    `0400 must apply: ${JSON.stringify(migrated.report.failedAtRuntime)}`,
   );
   pg = migrated.pg;
   await seedTwoCompanies(pg);
@@ -100,7 +100,7 @@ after(async () => {
   await pg?.close();
 });
 
-describe('0398 privileged RPC tenant boundaries', () => {
+describe('0400 privileged RPC tenant boundaries', () => {
   test('authenticated today bridges return own-hotel data and zero rows for direct-ID tampering', async () => {
     const ownRooms = await asRole(
       'authenticated',

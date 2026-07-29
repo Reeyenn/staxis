@@ -1,6 +1,6 @@
 /**
  * The nudge recipient list is itself tenant data. These tests run migration
- * 0395 against the real two-company authorization spine and prove that the
+ * 0397 against the real two-company authorization spine and prove that the
  * service projection starts from one hotel, honors the winning current hotel
  * standing, and rejects/bounds poisoned subscription configuration.
  */
@@ -144,7 +144,7 @@ describe('property-scoped nudge recipient projection', { concurrency: false }, (
        ) values (
          $1,$2,'operational','warning',
          jsonb_build_object('summary','authorization fence probe'),
-         '0395-authorization-fence-probe'
+         '0397-authorization-fence-probe'
        )`,
       [ACCOUNT_MARIA, PID_A1],
     );
@@ -188,7 +188,7 @@ describe('property-scoped nudge recipient projection', { concurrency: false }, (
   });
 
   test('fails closed on poisoned legacy configuration and enforces fixed bounds', async () => {
-    // Model a pre-0395/raw-superuser value which bypassed the trigger. The
+    // Model a pre-0397/raw-superuser value which bypassed the trigger. The
     // read-time projection must still keep company B out of company A.
     await pg.query(`alter table properties disable trigger staxis_validate_nudge_recipients`);
     try {

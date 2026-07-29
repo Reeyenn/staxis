@@ -1,5 +1,5 @@
 -- ═══════════════════════════════════════════════════════════════════════════
--- 0404 — COMPANY KNOWLEDGE REVISION LEDGER
+-- 0406 — COMPANY KNOWLEDGE REVISION LEDGER
 --
 -- `company_knowledge` remains the current, read-compatible projection. This
 -- migration adds the immutable history and the one authorized CAS writer that
@@ -15,11 +15,11 @@
 --       are revoked;
 --     * only the receipt-bound v1 mutation RPC may write.
 --   Cutover runbook:
---     1. apply 0404 and verify staxis_company_knowledge_ledger_capability();
---     2. deploy the 0404-aware app and smoke intake/confirm/edit/remove/merge;
+--     1. apply 0406 and verify staxis_company_knowledge_ledger_capability();
+--     2. deploy the 0406-aware app and smoke intake/confirm/edit/remove/merge;
 --     3. call staxis_finalize_company_knowledge_revision_ledger() with the exact
 --        schema version, then verify legacy DML is denied;
---     4. after finalization, roll back only to another 0404-aware app build.
+--     4. after finalization, roll back only to another 0406-aware app build.
 --
 -- Browser roles never see the ledger. Revision/head/context rows are never
 -- updateable or deletable by ordinary service paths.
@@ -1290,7 +1290,7 @@ create policy company_knowledge_revisions_deny_browser
   for all to anon, authenticated using (false) with check (false);
 
 -- Reassert explicit least privilege without reopening a previously finalized
--- environment when an idempotent migration runner executes 0404 again.
+-- environment when an idempotent migration runner executes 0406 again.
 revoke all on public.company_knowledge from service_role;
 grant select on public.company_knowledge to service_role;
 revoke all on public.company_authority_rules from service_role;
@@ -1314,7 +1314,7 @@ end;
 $$;
 
 insert into public.applied_migrations (version, description)
-values ('0404', 'append-only company knowledge revision ledger and CAS writer')
+values ('0406', 'append-only company knowledge revision ledger and CAS writer')
 on conflict (version) do nothing;
 
 notify pgrst, 'reload schema';

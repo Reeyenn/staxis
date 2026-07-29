@@ -1,4 +1,4 @@
--- 0390_management_company_patterns.sql
+-- 0392_management_company_patterns.sql
 --
 -- Immutable, reproducible evidence for management-company patterns.  The
 -- existing company_findings table remains the mutable queue projection; every
@@ -6077,19 +6077,19 @@ revoke all on function public.staxis_validate_management_pattern_local_finding()
   from public, anon, authenticated;
 
 comment on table public.management_pattern_runs is
-  'Durable management-company pattern run receipt: exact versioned inputs and portfolio snapshot, leased/fenced execution ownership, quality/cost/performance counters, and terminal status. Terminal rows are immutable. Added 0390.';
+  'Durable management-company pattern run receipt: exact versioned inputs and portfolio snapshot, leased/fenced execution ownership, quality/cost/performance counters, and terminal status. Terminal rows are immutable. Added 0392.';
 comment on column public.management_pattern_runs.input_hash is
   'Bare lowercase 64-hex SHA-256 digest. Callers using a prefixed fingerprint representation must strip/validate the prefix before persistence.';
 comment on table public.management_pattern_run_properties is
-  'Exact organization/property topology and profile snapshot used by one run. A trigger proves tenant pairing from the authoritative current row or canonical nearest audit receipt at topology_as_of; rows are fenced and append-only. Added 0390.';
+  'Exact organization/property topology and profile snapshot used by one run. A trigger proves tenant pairing from the authoritative current row or canonical nearest audit receipt at topology_as_of; rows are fenced and append-only. Added 0392.';
 comment on table public.management_pattern_cohorts is
-  'Immutable cohort definition/version/hash and explicit viability, fallback, or abstention decision for one run. Added 0390.';
+  'Immutable cohort definition/version/hash and explicit viability, fallback, or abstention decision for one run. Added 0392.';
 comment on table public.management_pattern_metric_observations is
-  'Immutable raw and normalized management-pattern metric receipt, including units/currency, denominator, aligned local/UTC windows, completeness/freshness, and reproducible source query/watermark/hash. Added 0390.';
+  'Immutable raw and normalized management-pattern metric receipt, including units/currency, denominator, aligned local/UTC windows, completeness/freshness, and reproducible source query/watermark/hash. Added 0392.';
 comment on table public.management_pattern_metric_source_facts is
-  'Append-only, run-fenced, service-readable exact source rows behind inventory-purchase aggregate observations. Canonical payloads and database-computed SHA-256 receipts make aggregate inputs replayable without consulting mutable operational tables. Added 0390.';
+  'Append-only, run-fenced, service-readable exact source rows behind inventory-purchase aggregate observations. Canonical payloads and database-computed SHA-256 receipts make aggregate inputs replayable without consulting mutable operational tables. Added 0392.';
 comment on table public.management_pattern_candidates is
-  'Immutable deterministic candidate. semantic_family + root_key is portfolio issue identity; classified_scope is evidence scope, not query scope or authorization. confidence_kind prevents a threshold score from masquerading as probability. Added 0390.';
+  'Immutable deterministic candidate. semantic_family + root_key is portfolio issue identity; classified_scope is evidence scope, not query scope or authorization. confidence_kind prevents a threshold score from masquerading as probability. Added 0392.';
 comment on column public.management_pattern_candidates.confidence is
   'Bounded evidence/threshold score whose semantics are mandatory in confidence_kind; never implicitly a probability.';
 comment on table public.management_pattern_candidate_local_instances is
@@ -6105,7 +6105,7 @@ comment on function public.project_management_pattern_run(uuid,uuid) is
 
 insert into public.applied_migrations (version, description)
 values (
-  '0390',
+  '0392',
   'Management-company Finding Patterns shadow v2 evidence plane: database-timestamped append-only comparison profiles; bounded scheduled/backfill lineage; leased/fenced durable runs with exact version-2 portfolio snapshots and quality/cost/performance receipts; immutable target/rung cohort coverage, raw+normalized metric, deterministic check/candidate, and candidate-property occurrence evidence. Active projection is database-disabled. Service-role-only with explicit browser deny policies.'
 )
 on conflict (version) do nothing;

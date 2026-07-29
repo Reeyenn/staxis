@@ -1,4 +1,4 @@
--- 0380_portfolio_knowledge_overrides.sql
+-- 0382_portfolio_knowledge_overrides.sql
 -- Explicit provenance for the narrow case where a confirmed hotel fact
 -- intentionally overrides one confirmed company rulebook fact. Similar text
 -- never implies precedence; absent this link, the portfolio overlay reports a
@@ -69,15 +69,15 @@ create index if not exists agent_memory_company_override_idx
   where overrides_company_fact_id is not null and is_active;
 
 comment on column public.agent_memory.overrides_company_fact_id is
-  'Explicit, human-governed provenance link: this confirmed property fact overrides exactly this confirmed company fact. Text similarity never creates the link. Added 0380.';
+  'Explicit, human-governed provenance link: this confirmed property fact overrides exactly this confirmed company fact. Text similarity never creates the link. Added 0382.';
 comment on column public.agent_memory.override_organization_id is
-  'Organization that owned the override decision. The read path requires it to equal the freshly authorized organization, so a hotel transfer cannot carry old-company precedence. Added 0380.';
+  'Organization that owned the override decision. The read path requires it to equal the freshly authorized organization, so a hotel transfer cannot carry old-company precedence. Added 0382.';
 
 revoke all on function public._staxis_validate_property_company_override() from public, anon, authenticated;
 
 insert into public.applied_migrations(version, description)
 values (
-  '0380',
+  '0382',
   'Explicit company-fact override provenance on confirmed property memory, with current primary owner/operator organization validation. No text-derived precedence.'
 )
 on conflict (version) do nothing;

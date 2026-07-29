@@ -1,7 +1,7 @@
 /**
- * 0404 company knowledge history, against the real migration chain.
+ * 0406 company knowledge history, against the real migration chain.
  *
- * The fixture seeds a real company + fact immediately before 0404. That makes
+ * The fixture seeds a real company + fact immediately before 0406. That makes
  * genesis and DB-first compatibility real rollout tests, not a reconstruction
  * of what the migration approximately does.
  */
@@ -129,10 +129,10 @@ async function mutate(input: MutationInput): Promise<Record<string, unknown>> {
   return jsonObject(raw);
 }
 
-describe('0404 company knowledge revision ledger', () => {
+describe('0406 company knowledge revision ledger', () => {
   before(async () => {
     const migrated = await applyMigrationsToPgliteWithHook(async ({ pg: hookPg, file }) => {
-      if (file !== '0404_company_knowledge_revision_ledger.sql') return;
+      if (file !== '0406_company_knowledge_revision_ledger.sql') return;
       await seedTwoCompanies(hookPg);
       await hookPg.query(
         `insert into public.company_knowledge (
@@ -161,8 +161,8 @@ describe('0404 company knowledge revision ledger', () => {
     });
     pg = migrated.pg;
     assert.ok(
-      migrated.report.applied.includes('0404_company_knowledge_revision_ledger.sql'),
-      JSON.stringify(migrated.report.failedAtRuntime.filter((failure) => failure.file.includes('0404'))),
+      migrated.report.applied.includes('0406_company_knowledge_revision_ledger.sql'),
+      JSON.stringify(migrated.report.failedAtRuntime.filter((failure) => failure.file.includes('0406'))),
     );
     receiptA = await mintReceipt(ACCOUNT_ANA, ORG_A);
   });
@@ -913,7 +913,7 @@ describe('0404 company knowledge revision ledger', () => {
     // the irreversible cutover has already happened.
     await pg.exec(readFileSync(join(
       process.cwd(),
-      'supabase/migrations/0404_company_knowledge_revision_ledger.sql',
+      'supabase/migrations/0406_company_knowledge_revision_ledger.sql',
     ), 'utf8'));
     assert.equal(
       await scalar<boolean>(

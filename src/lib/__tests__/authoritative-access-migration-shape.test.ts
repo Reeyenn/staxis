@@ -4,20 +4,20 @@ import { join } from 'node:path';
 import { describe, test } from 'node:test';
 
 const RAW = readFileSync(
-  join(process.cwd(), 'supabase', 'migrations', '0376_authoritative_company_access.sql'),
+  join(process.cwd(), 'supabase', 'migrations', '0378_authoritative_company_access.sql'),
   'utf8',
 );
 const SQL = RAW.replace(/--[^\n]*/g, '').replace(/\/\*[\s\S]*?\*\//g, '');
 const TRANSFER_GUARD_SQL = readFileSync(
-  join(process.cwd(), 'supabase', 'migrations', '0386_active_primary_relationship_transfer_guard.sql'),
+  join(process.cwd(), 'supabase', 'migrations', '0388_active_primary_relationship_transfer_guard.sql'),
   'utf8',
 ).replace(/--[^\n]*/g, '').replace(/\/\*[\s\S]*?\*\//g, '');
 const TOPOLOGY_SQL = readFileSync(
-  join(process.cwd(), 'supabase', 'migrations', '0401_recursive_portfolio_access_scope.sql'),
+  join(process.cwd(), 'supabase', 'migrations', '0403_recursive_portfolio_access_scope.sql'),
   'utf8',
 ).replace(/--[^\n]*/g, '').replace(/\/\*[\s\S]*?\*\//g, '');
 
-describe('migration 0376 — authoritative company access shape', () => {
+describe('migration 0378 — authoritative company access shape', () => {
   test('stores one durable authority mode and explicit one-way legacy bridges', () => {
     assert.match(SQL, /create table if not exists public\.account_authorization_state/i);
     assert.match(SQL, /authority_mode in \('legacy', 'shadow', 'normalized'\)/i);

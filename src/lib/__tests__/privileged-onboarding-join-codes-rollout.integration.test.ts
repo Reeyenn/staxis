@@ -11,11 +11,11 @@ import {
 const LEGACY_ONE_SHOT = 'e1000000-0000-4000-8000-000000000001';
 const LEGACY_SHARED = 'e1000000-0000-4000-8000-000000000002';
 
-test('0396 retires unproven credentials and recursively scrubs historical bearer metadata', async () => {
+test('0398 retires unproven credentials and recursively scrubs historical bearer metadata', async () => {
   let seeded = false;
   const migrated = await applyMigrationsToPgliteWithHook(async ({ pg, file, report }) => {
-    if (file !== '0396_privileged_onboarding_join_codes.sql') return;
-    assert.ok(report.applied.includes('0395_property_scoped_nudge_recipients.sql'));
+    if (file !== '0398_privileged_onboarding_join_codes.sql') return;
+    assert.ok(report.applied.includes('0397_property_scoped_nudge_recipients.sql'));
     await seedTwoCompanies(pg);
     await pg.query(
       `insert into hotel_join_codes(
@@ -51,7 +51,7 @@ test('0396 retires unproven credentials and recursively scrubs historical bearer
   try {
     assert.equal(seeded, true);
     const failure = migrated.report.failedAtRuntime.find(
-      (entry) => entry.file === '0396_privileged_onboarding_join_codes.sql',
+      (entry) => entry.file === '0398_privileged_onboarding_join_codes.sql',
     );
     assert.equal(failure, undefined, failure?.error);
 
@@ -107,7 +107,7 @@ test('0396 retires unproven credentials and recursively scrubs historical bearer
       nested: { safeCount: 7 },
       array: [{ keep: 'still-here' }],
       bearer_redacted: true,
-      bearer_redaction_reason: '0396 join-code storage boundary',
+      bearer_redaction_reason: '0398 join-code storage boundary',
     });
 
     await assert.rejects(

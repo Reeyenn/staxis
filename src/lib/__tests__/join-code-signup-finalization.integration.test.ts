@@ -131,7 +131,7 @@ describe('join-code signup finalization — real transactional boundary', () => 
 
   before(async () => {
     const migrated = await applyMigrationsToPglite();
-    assert.ok(migrated.report.applied.includes('0396_privileged_onboarding_join_codes.sql'));
+    assert.ok(migrated.report.applied.includes('0398_privileged_onboarding_join_codes.sql'));
     pg = migrated.pg;
     await seedTwoCompanies(pg);
 

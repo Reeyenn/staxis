@@ -175,13 +175,13 @@ describe('invite capability storage — real migration integration', () => {
     }
   });
 
-  test('0396 safely reasserts RPC-only storage after a historical 0328 replay', async () => {
+  test('0398 safely reasserts RPC-only storage after a historical 0328 replay', async () => {
     const legacySql = readFileSync(
       join(process.cwd(), 'supabase', 'migrations', '0328_invite_storage_service_role_only.sql'),
       'utf8',
     );
     const boundarySql = readFileSync(
-      join(process.cwd(), 'supabase', 'migrations', '0396_privileged_onboarding_join_codes.sql'),
+      join(process.cwd(), 'supabase', 'migrations', '0398_privileged_onboarding_join_codes.sql'),
       'utf8',
     );
     await pg.exec(legacySql);

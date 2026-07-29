@@ -7,10 +7,10 @@ import 'server-only';
 // life-cycle — open box → extract → confirm / edit / remove.
 //
 // READS are service-role only and retain an exact organization filter.
-// PRODUCTION WRITES go through 0404's receipt-bound CAS RPC, which freshly
+// PRODUCTION WRITES go through 0406's receipt-bound CAS RPC, which freshly
 // reasserts organization-wide editor authority in the same transaction as the
 // mutation. Actorless legacy helpers remain only for DB-first rollout/fixtures;
-// 0404 journals them and its one-way finalizer revokes that path.
+// 0406 journals them and its one-way finalizer revokes that path.
 //
 // WALL B: no function here takes a property id or resolves a company itself.
 // Callers hand in an organizationId they got from `companyForProperty` or from
@@ -54,7 +54,7 @@ export interface CompanyFact {
   policyValue: string | null;
   createdByName: string | null;
   updatedAt: string;
-  /** DB-owned CAS token. Null only while a new app is reading a pre-0404 DB. */
+  /** DB-owned CAS token. Null only while a new app is reading a pre-0406 DB. */
   currentRevision?: number | null;
 }
 
@@ -125,8 +125,8 @@ async function selectCompanyFacts(
 
   const current = await query(SELECT_COLS_WITH_REVISION);
   if (!current.error && current.data) return (current.data as unknown as RawFact[]).map(mapFact);
-  // App-first rolling deploy: reads remain available against a pre-0404 DB,
-  // but the null token makes every new mutation fail closed until 0404 lands.
+  // App-first rolling deploy: reads remain available against a pre-0406 DB,
+  // but the null token makes every new mutation fail closed until 0406 lands.
   if (!isMissingRevisionColumn(current.error)) return [];
   const legacy = await query(SELECT_COLS);
   if (legacy.error || !legacy.data) return [];
@@ -368,7 +368,7 @@ async function applyCompanyKnowledgeMutation(
 }
 
 /**
- * Upsert a fact by topic. Verified callers use 0404's receipt-bound CAS RPC;
+ * Upsert a fact by topic. Verified callers use 0406's receipt-bound CAS RPC;
  * actorless rollout/seed callers use the journaled 0365 compatibility RPC.
  *
  * 'skipped' means a CONFIRMED fact already owns that topic and the incoming
@@ -386,7 +386,7 @@ export async function storeCompanyFact(
 }> {
   // Production writes always carry the verified caller. Keeping the 0365 path
   // only for actorless seed/maintenance callers is what makes DB-first rollout
-  // compatible; 0404 journals it and the finalizer later revokes it.
+  // compatible; 0406 journals it and the finalizer later revokes it.
   if (input.createdByAccountId != null) {
     if (!UUID_RX.test(input.createdByAccountId)) {
       return { ok: false, reason: 'invalid_request', error: 'bad actor' };

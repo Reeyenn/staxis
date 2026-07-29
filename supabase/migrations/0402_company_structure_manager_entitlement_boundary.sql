@@ -1,6 +1,6 @@
--- 0400_company_structure_manager_entitlement_boundary.sql
+-- 0402_company_structure_manager_entitlement_boundary.sql
 --
--- Close a mixed-entitlement confused-deputy path in the 0379 portfolio
+-- Close a mixed-entitlement confused-deputy path in the 0381 portfolio
 -- assignment preview. Read reach and mutation reach are deliberately separate:
 -- a viewer/property grant may let an actor see a hotel, but only a company-wide
 -- manager entitlement or a portfolio-manager entitlement that already covers
@@ -14,7 +14,7 @@ begin
      or to_regprocedure('public._staxis_preview_company_portfolio_assignment(uuid,uuid,uuid,uuid[],bigint)') is null
      or to_regclass('public.account_authorization_state') is null
   then
-    raise exception '0400 requires company structure and authoritative access migrations 0376/0379';
+    raise exception '0402 requires company structure and authoritative access migrations 0378/0381';
   end if;
 end
 $$;
@@ -134,7 +134,7 @@ $$;
 revoke all on function public._staxis_company_structure_manageable_property_ids(uuid, uuid)
   from public, anon, authenticated, service_role;
 
--- Preserve the fully preview-bound 0379 implementation behind a private name,
+-- Preserve the fully preview-bound 0381 implementation behind a private name,
 -- then put the manager-entitlement intersection in front of every preview and
 -- commit (the commit re-invokes this public-name preview while holding locks).
 do $$
@@ -193,7 +193,7 @@ grant execute on function public._staxis_preview_company_portfolio_assignment(
 
 insert into public.applied_migrations(version, description)
 values (
-  '0400',
+  '0402',
   'Separate company-structure read reach from manager-entitlement mutation reach, closing mixed-grant confused-deputy assignment.'
 )
 on conflict (version) do nothing;

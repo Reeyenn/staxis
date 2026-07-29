@@ -486,7 +486,7 @@ export interface CompanyFindingVerdictRequirements {
 }
 
 /**
- * Closed presentation/preflight mirror of 0405's commit policy. The SQL RPC is
+ * Closed presentation/preflight mirror of 0407's commit policy. The SQL RPC is
  * still authoritative. This helper is intentionally conservative: it includes
  * both verdict-action capabilities so the UI never shows a button group where
  * one of its buttons is already known to be dead.
@@ -604,7 +604,7 @@ type UntypedRpc = (
 ) => PromiseLike<{ data: unknown; error: { message?: string } | null }>;
 
 /**
- * Commit through 0405's single-transaction authority assertion + CAS. The RPC
+ * Commit through 0407's single-transaction authority assertion + CAS. The RPC
  * re-derives the affected-hotel capability policy; these arguments are only
  * immutable expectations, never grants.
  */

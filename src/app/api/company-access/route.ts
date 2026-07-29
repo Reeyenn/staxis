@@ -302,7 +302,7 @@ type CompanyAuthorityMode = 'legacy' | 'shadow' | 'normalized' | 'schema_absent'
  * SECURITY DEFINER DTO rather than by reading account_authorization_state:
  * direct table reads are revoked even from service_role. A malformed or
  * unavailable resolver fails closed; only a genuinely absent schema permits
- * the pre-0376 compatibility path.
+ * the pre-0378 compatibility path.
  */
 async function companyAuthorityMode(accountId: string): Promise<CompanyAuthorityMode> {
   const { data, error } = await supabaseAdmin.rpc(

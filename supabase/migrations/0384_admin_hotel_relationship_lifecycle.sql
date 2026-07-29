@@ -1,4 +1,4 @@
--- 0382_admin_hotel_relationship_lifecycle.sql
+-- 0384_admin_hotel_relationship_lifecycle.sql
 --
 -- Safe platform-admin hotel lifecycle management for the existing /company
 -- Hotels tab. This wraps the established serialized primary-relationship move
@@ -15,7 +15,7 @@ begin
      or to_regclass('public.organization_access_events') is null
      or to_regprocedure('public.staxis_set_primary_property_organization(uuid,uuid,uuid,text)') is null
   then
-    raise exception '0382 requires organization access foundation 0325 and authoritative access 0376';
+    raise exception '0384 requires organization access foundation 0325 and authoritative access 0378';
   end if;
 end
 $$;
@@ -703,7 +703,7 @@ grant execute on function public.staxis_commit_admin_hotel_relationship(
 
 insert into public.applied_migrations(version, description)
 values (
-  '0382',
+  '0384',
   'Platform-admin-only preview-bound hotel company relationship lifecycle management in the existing My Hotel Hotels tab.'
 )
 on conflict (version) do nothing;

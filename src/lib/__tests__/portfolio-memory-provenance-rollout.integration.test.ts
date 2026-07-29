@@ -9,11 +9,11 @@ const ACQUIRING_ORG = '83000000-0000-4000-8000-000000000003';
 const LEGACY_MEMORY = '83000000-0000-4000-8000-000000000004';
 const CURRENT_MEMORY = '83000000-0000-4000-8000-000000000005';
 
-test('0383 does not relabel unprovable pre-migration hotel memory as the acquiring company', async () => {
+test('0385 does not relabel unprovable pre-migration hotel memory as the acquiring company', async () => {
   let seeded = false;
   const migrated = await applyMigrationsToPgliteWithHook(async ({ pg, file, report }) => {
-    if (file !== '0383_agent_memory_organization_provenance.sql') return;
-    assert.ok(report.applied.includes('0382_admin_hotel_relationship_lifecycle.sql'));
+    if (file !== '0385_agent_memory_organization_provenance.sql') return;
+    assert.ok(report.applied.includes('0384_admin_hotel_relationship_lifecycle.sql'));
 
     await pg.query(
       `insert into auth.users(id,email) values ($1,'memory-rollout@example.test')`,
@@ -31,7 +31,7 @@ test('0383 does not relabel unprovable pre-migration hotel memory as the acquiri
     );
 
     // A newly inserted property is reconciled to an independent single-hotel
-    // anchor by 0325. Model an acquisition before 0383: close that anchor and
+    // anchor by 0325. Model an acquisition before 0385: close that anchor and
     // make the acquiring company the current primary operator.
     await pg.query(
       `update public.organization_property_relationships
@@ -59,10 +59,10 @@ test('0383 does not relabel unprovable pre-migration hotel memory as the acquiri
   try {
     assert.equal(seeded, true);
     const failure = migrated.report.failedAtRuntime.find(
-      (entry) => entry.file === '0383_agent_memory_organization_provenance.sql',
+      (entry) => entry.file === '0385_agent_memory_organization_provenance.sql',
     );
     assert.equal(failure, undefined, failure?.error);
-    assert.ok(migrated.report.applied.includes('0383_agent_memory_organization_provenance.sql'));
+    assert.ok(migrated.report.applied.includes('0385_agent_memory_organization_provenance.sql'));
 
     const legacy = await migrated.pg.query<{ authoring_organization_id: string | null }>(
       `select authoring_organization_id::text

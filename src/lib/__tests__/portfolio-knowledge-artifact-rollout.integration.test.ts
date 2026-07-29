@@ -19,17 +19,17 @@ const LEGACY_FINDING_VERSIONS = {
   opaque: 'x'.repeat(70_000),
 };
 
-test('0403 labels pre-0397 unbound receipts without forging model provenance', async () => {
+test('0405 labels pre-0399 unbound receipts without forging model provenance', async () => {
   let seeded = false;
   let findingBefore: { bytes: number; hash: string } | undefined;
   const migrated = await applyMigrationsToPgliteWithHook(async ({ pg, file, report }) => {
-    if (file !== '0403_deterministic_portfolio_knowledge_artifacts.sql') return;
-    assert.ok(report.applied.includes('0397_portfolio_model_request_artifacts.sql'));
+    if (file !== '0405_deterministic_portfolio_knowledge_artifacts.sql') return;
+    assert.ok(report.applied.includes('0399_portfolio_model_request_artifacts.sql'));
     await seedTwoCompanies(pg);
 
-    // This is the state a legitimate 0378–0396 receipt has after 0397 was
-    // deployed: the new artifact columns are NULL. Disable only the post-0397
-    // insertion guard to reproduce that historical row; 0403 must migrate it
+    // This is the state a legitimate 0380–0398 receipt has after 0399 was
+    // deployed: the new artifact columns are NULL. Disable only the post-0399
+    // insertion guard to reproduce that historical row; 0405 must migrate it
     // without inventing a provider request that never happened.
     await pg.exec(
       'alter table public.portfolio_query_receipts disable trigger portfolio_query_receipts_bind_request_artifact',
@@ -83,12 +83,12 @@ test('0403 labels pre-0397 unbound receipts without forging model provenance', a
 
   try {
     const failure = migrated.report.failedAtRuntime.find(
-      (entry) => entry.file === '0403_deterministic_portfolio_knowledge_artifacts.sql',
+      (entry) => entry.file === '0405_deterministic_portfolio_knowledge_artifacts.sql',
     );
     assert.equal(failure, undefined, failure?.error);
     assert.equal(seeded, true);
     assert.ok(
-      migrated.report.applied.includes('0403_deterministic_portfolio_knowledge_artifacts.sql'),
+      migrated.report.applied.includes('0405_deterministic_portfolio_knowledge_artifacts.sql'),
     );
 
     const legacy = await migrated.pg.query<{

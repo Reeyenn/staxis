@@ -181,7 +181,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 /** Find the accounts that should receive nudges for one property.
  *
- * Migration 0395 makes this a single property-keyed service RPC. Candidate
+ * Migration 0397 makes this a single property-keyed service RPC. Candidate
  * discovery and current-standing checks happen behind the database tenant
  * boundary, so this process never enumerates global account identities and
  * never fans out through one resolver call per fleet account. Only active

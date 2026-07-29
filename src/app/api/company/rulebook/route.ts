@@ -28,7 +28,7 @@
  *
  * Auth: requireSession + loadSessionAccount + a company standing at the company
  * that operates `propertyId`. Reads retain the exact organization filter.
- * Every fact mutation also mints a fresh all-authorized receipt and 0404
+ * Every fact mutation also mints a fresh all-authorized receipt and 0406
  * reasserts company-wide editor authority, organization and CAS inside the DB
  * transaction. The UI gate is not the mutation authority.
  */

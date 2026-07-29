@@ -1,5 +1,5 @@
 -- ===========================================================================
--- 0402 — Ordered, retry-safe inventory tab-layout writes.
+-- 0404 — Ordered, retry-safe inventory tab-layout writes.
 --
 -- A browser timeout is not proof that a mutation failed.  The old route wrote
 -- properties.inventory_tab_layout directly and then reconciled with an
@@ -300,7 +300,7 @@ grant execute on function public.staxis_update_inventory_property_config(
 
 insert into public.applied_migrations (version, description)
 values (
-  '0402',
+  '0404',
   'Ordered inventory tab-layout writes: operation-id receipts, expected-revision CAS, row/advisory locking, and bounded database execution.'
 )
 on conflict (version) do nothing;

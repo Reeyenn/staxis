@@ -1,7 +1,7 @@
 // ─── Conversation archival ─────────────────────────────────────────────────
 // Moves stale PROPERTY conversations (>90 days dormant) out of the hot tables
 // into `_archived` tables. Portfolio conversation archival fails closed until
-// its immutable receipt/turn-commit graph can be preserved (migration 0399).
+// its immutable receipt/turn-commit graph can be preserved (migration 0401).
 // The cron at
 // /api/cron/agent-archive-stale-conversations calls archiveStaleBatch
 // daily; the admin restore endpoint calls restoreConversation.

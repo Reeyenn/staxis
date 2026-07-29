@@ -1,4 +1,4 @@
--- 0397_portfolio_model_request_artifacts.sql
+-- 0399_portfolio_model_request_artifacts.sql
 --
 -- Retention-governed, service-only reproduction artifacts for portfolio model
 -- calls. A digest proves equality only when somebody already has the original;
@@ -16,7 +16,7 @@ begin
      or to_regclass('public.authorization_scope_receipts') is null
      or to_regclass('public.agent_conversations') is null
   then
-    raise exception '0397 requires portfolio receipts, authorization receipts and agent conversations';
+    raise exception '0399 requires portfolio receipts, authorization receipts and agent conversations';
   end if;
 end
 $$;
@@ -322,7 +322,7 @@ create index portfolio_model_request_artifacts_account_idx
   on public.portfolio_model_request_artifacts(account_id, created_at desc);
 
 comment on table public.portfolio_model_request_artifacts is
-  'Immutable service-only exact model-request/reply artifacts for Portfolio Intelligence. Retained for incident replay under the same >=90-day receipt policy; never exposed in browser APIs. Created 0397.';
+  'Immutable service-only exact model-request/reply artifacts for Portfolio Intelligence. Retained for incident replay under the same >=90-day receipt policy; never exposed in browser APIs. Created 0399.';
 comment on column public.portfolio_model_request_artifacts.provider_request is
   'Exact ordered provider-facing Messages attempts, including requested alias/provider, body, outcome and response snapshot; preserves a rejected/failed primary before successful fallback. Contains raw authorized content.';
 comment on column public.portfolio_model_request_artifacts.model_candidate_text is
@@ -354,7 +354,7 @@ alter table public.portfolio_query_receipts
   );
 
 comment on column public.portfolio_query_receipts.request_artifact_id is
-  'Required on every post-0397 insert by trigger. Binds this receipt to the exact immutable provider request/candidate artifact.';
+  'Required on every post-0399 insert by trigger. Binds this receipt to the exact immutable provider request/candidate artifact.';
 comment on column public.portfolio_query_receipts.model_candidate_hash is
   'SHA-256 of the raw provider presentation-plan candidate; distinct from answer_hash, which fingerprints deterministic rendered text.';
 
@@ -368,7 +368,7 @@ declare
   v_artifact public.portfolio_model_request_artifacts%rowtype;
 begin
   if new.request_artifact_id is null then
-    raise exception 'post-0397 portfolio receipts require an immutable request artifact';
+    raise exception 'post-0399 portfolio receipts require an immutable request artifact';
   end if;
   select * into v_artifact
     from public.portfolio_model_request_artifacts
@@ -454,7 +454,7 @@ create table public.portfolio_conversation_replay_counters (
   updated_at        timestamptz not null default now()
 );
 
--- A fresh 0397 install has no committed rows yet. Keep an exact idempotent
+-- A fresh 0399 install has no committed rows yet. Keep an exact idempotent
 -- backfill in the schema contract so a rehearsed/staged rollout cannot create
 -- a counter gap if receipt-backed rows were populated earlier in the same
 -- transaction by deployment tooling.
@@ -581,7 +581,7 @@ create trigger portfolio_query_turn_commits_immutable
   before update or delete on public.portfolio_query_turn_commits
   for each row execute function public.staxis_refuse_portfolio_receipt_mutation();
 
--- Same rolling-compatible signature as 0377, but the first user message is no
+-- Same rolling-compatible signature as 0379, but the first user message is no
 -- longer inserted here. p_user_message stays in the signature so an app and DB
 -- can roll together; the receipt-bound commit RPC below is the only writer.
 create or replace function public.staxis_create_portfolio_conversation(
@@ -671,7 +671,7 @@ $$;
 -- Continuation prep asserts current scope and returns committed history only.
 -- It deliberately does not append p_user_message; that happens atomically with
 -- the rendered assistant text after receipt persistence. Drop/recreate is
--- necessary because 0377's rolling-compatible precursor returned three table
+-- necessary because 0379's rolling-compatible precursor returned three table
 -- columns; this final contract adds a closed, independently checked window
 -- receipt. The function signature remains stable for PostgREST callers.
 drop function if exists public.staxis_lock_load_and_record_portfolio_user_turn(
@@ -1124,7 +1124,7 @@ grant execute on function public.staxis_purge_expired_portfolio_records(timestam
 
 insert into public.applied_migrations(version, description)
 values (
-  '0397',
+  '0399',
   'Immutable service-only exact Portfolio Intelligence provider request/candidate artifacts, receipt binding, and retention-governed replay evidence.'
 )
 on conflict (version) do nothing;

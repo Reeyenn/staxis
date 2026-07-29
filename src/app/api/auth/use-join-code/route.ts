@@ -205,7 +205,7 @@ export async function POST(req: NextRequest) {
   //     suspenders here), and
   //   • owner codes aimed at a hotel that has ALREADY completed onboarding
   //     (a live, claimed hotel) — the displacement vector.
-  // Migration 0396 also enforces the stronger invariant at the write boundary:
+  // Migration 0398 also enforces the stronger invariant at the write boundary:
   // platform-admin placeholder ownership, no accountCreatedAt/completion, no
   // existing owner/GM operator, one active privileged code, and one use.
   //

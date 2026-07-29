@@ -1,7 +1,7 @@
--- 0399_portfolio_conversation_archive_boundary.sql
+-- 0401_portfolio_conversation_archive_boundary.sql
 --
 -- Portfolio turns are replayable only through the immutable
--- query-receipt -> turn-commit -> message proof added in 0397. The legacy
+-- query-receipt -> turn-commit -> message proof added in 0399. The legacy
 -- physical archive function deletes live messages and conversations; its
 -- cascades consequently delete turn commits and null the immutable receipt /
 -- request-artifact conversation bindings. Restoring only the message rows
@@ -9,7 +9,7 @@
 --
 -- Until archive storage has a first-class immutable portfolio provenance
 -- graph, fail closed before changing any portfolio row. Property conversation
--- archive/restore behavior remains byte-for-byte equivalent to 0377.
+-- archive/restore behavior remains byte-for-byte equivalent to 0379.
 
 begin;
 
@@ -20,7 +20,7 @@ begin
      or to_regprocedure('public.staxis_archive_conversation(uuid,integer)') is null
      or to_regprocedure('public.staxis_restore_conversation(uuid)') is null
   then
-    raise exception '0399 requires 0377 conversation archive and 0397 portfolio turn commits';
+    raise exception '0401 requires 0379 conversation archive and 0399 portfolio turn commits';
   end if;
 end
 $$;
@@ -271,15 +271,15 @@ grant execute on function public.staxis_restore_conversation(uuid)
   to service_role;
 
 comment on function public.staxis_archive_conversation(uuid, integer) is
-  'Archives property conversations only. Portfolio conversations fail closed because physical archive would destroy immutable receipt/turn-commit replay provenance. Hardened 0399.';
+  'Archives property conversations only. Portfolio conversations fail closed because physical archive would destroy immutable receipt/turn-commit replay provenance. Hardened 0401.';
 comment on function public.staxis_restore_conversation(uuid) is
-  'Restores property conversations only. Legacy archived portfolio rows fail closed until receipt-bound archived provenance exists. Hardened 0399.';
+  'Restores property conversations only. Legacy archived portfolio rows fail closed until receipt-bound archived provenance exists. Hardened 0401.';
 comment on function public.staxis_delete_property_conversation(uuid, uuid, uuid) is
-  'Deletes only an owned PROPERTY conversation after an atomic active-account and current authoritative hotel-reach assertion. Portfolio rows always fail closed. Added 0399.';
+  'Deletes only an owned PROPERTY conversation after an atomic active-account and current authoritative hotel-reach assertion. Portfolio rows always fail closed. Added 0401.';
 
 insert into public.applied_migrations(version, description)
 values (
-  '0399',
+  '0401',
   'Fail-closed browser read/delete/archive boundary for receipt-bound portfolio conversations; atomic current-authority deletion remains available for property chat only.'
 )
 on conflict (version) do nothing;

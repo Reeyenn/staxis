@@ -90,7 +90,7 @@ before(async () => {
   assert.equal(
     migrated.report.failedAtRuntime.some((failure) => failure.file.startsWith('0376_')),
     false,
-    `0376 must apply: ${JSON.stringify(migrated.report.failedAtRuntime)}`,
+    `0378 must apply: ${JSON.stringify(migrated.report.failedAtRuntime)}`,
   );
   pg = migrated.pg;
   seed = await seedTwoCompanies(pg);

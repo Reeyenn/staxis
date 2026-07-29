@@ -1,4 +1,4 @@
--- 0398_privileged_rpc_tenant_boundaries.sql
+-- 0400_privileged_rpc_tenant_boundaries.sql
 --
 -- Final-schema RPC privilege correction. Several early SECURITY DEFINER
 -- bridges trusted a caller-supplied property/user/run id or retained PostgreSQL
@@ -17,7 +17,7 @@ begin
      or to_regprocedure('public.today_room_work_v1(uuid,date)') is null
      or to_regprocedure('public.today_property_counts_v1(uuid,date)') is null
   then
-    raise exception '0398 requires authoritative standing migration 0394 and PMS bridge migration 0224';
+    raise exception '0400 requires authoritative standing migration 0396 and PMS bridge migration 0224';
   end if;
 end
 $$;
@@ -163,9 +163,9 @@ as $$
 $$;
 
 comment on function public.today_room_work_v1(uuid,date) is
-  'Browser PMS room-work bridge. 0398 binds auth.uid to a fresh authoritative property standing; service_role remains supported. Unauthorized/anonymous property IDs return no rows.';
+  'Browser PMS room-work bridge. 0400 binds auth.uid to a fresh authoritative property standing; service_role remains supported. Unauthorized/anonymous property IDs return no rows.';
 comment on function public.today_property_counts_v1(uuid,date) is
-  'Browser PMS day-count bridge. 0398 binds auth.uid to a fresh authoritative property standing; service_role remains supported. Unauthorized/anonymous property IDs return no rows.';
+  'Browser PMS day-count bridge. 0400 binds auth.uid to a fresh authoritative property standing; service_role remains supported. Unauthorized/anonymous property IDs return no rows.';
 
 revoke all on function public.today_room_work_v1(uuid,date)
   from public, anon, authenticated, service_role;
@@ -214,7 +214,7 @@ grant execute on function public.cleanup_idempotency_log() to service_role;
 
 insert into public.applied_migrations(version, description)
 values (
-  '0398',
+  '0400',
   'Bind browser PMS bridge RPCs to fresh authoritative property reach and make fleet/model/walkthrough/cleanup SECURITY DEFINER RPCs service-role-only.'
 )
 on conflict (version) do nothing;

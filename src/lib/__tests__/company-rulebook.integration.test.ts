@@ -403,7 +403,7 @@ describe('the cached block stays byte-identical with the new tier in it', () => 
   });
 });
 
-describe('0404 rolling app compatibility', () => {
+describe('0406 rolling app compatibility', () => {
   test('app-first intake fails before provider spend when the ledger RPC is absent', async () => {
     const liveRpc = supabaseAdmin.rpc.bind(supabaseAdmin);
     const costsBefore = await pg.query<{ n: string }>(

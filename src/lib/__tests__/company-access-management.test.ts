@@ -132,8 +132,8 @@ describe('company access editor request contracts', () => {
 describe('existing Access-tab management surface contract', () => {
   const page = source('src', 'app', 'company', 'page.tsx');
   const dialog = source('src', 'app', 'company', '_components', 'AccessEditorDialog.tsx');
-  const migration = source('supabase', 'migrations', '0381_company_access_management.sql');
-  const bridgeMigration = source('supabase', 'migrations', '0388_authoritative_people_access_bridge.sql');
+  const migration = source('supabase', 'migrations', '0383_company_access_management.sql');
+  const bridgeMigration = source('supabase', 'migrations', '0390_authoritative_people_access_bridge.sql');
   const previewRoute = source('src', 'app', 'api', 'company-access', 'access-editor', 'preview', 'route.ts');
   const commitRoute = source('src', 'app', 'api', 'company-access', 'access-editor', 'commit', 'route.ts');
 

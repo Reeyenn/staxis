@@ -10,7 +10,7 @@ const dialogs = source('src/app/company/_components/HotelTeamDialogs.tsx');
 const migration = source('supabase/migrations/0329_guard_hotel_team_detach_snapshot.sql');
 const lifecycleMigration = source('supabase/migrations/0335_account_lifecycle_intents.sql');
 const peopleLifecycleMigration = source(
-  'supabase/migrations/0393_authoritative_people_lifecycle.sql',
+  'supabase/migrations/0395_authoritative_people_lifecycle.sql',
 );
 
 describe('hotel team mutation concurrency guards', () => {

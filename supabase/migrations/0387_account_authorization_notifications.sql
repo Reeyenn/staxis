@@ -1,4 +1,4 @@
--- 0385_account_authorization_notifications.sql
+-- 0387_account_authorization_notifications.sql
 --
 -- Safe Realtime invalidation for long-lived browser sessions. Never publish
 -- `accounts`: it contains password_hash and legacy scope data. This projection
@@ -10,7 +10,7 @@ begin;
 do $$
 begin
   if to_regclass('public.account_authorization_state') is null then
-    raise exception '0385 requires authoritative access migration 0376';
+    raise exception '0387 requires authoritative access migration 0378';
   end if;
 end
 $$;
@@ -26,7 +26,7 @@ create table if not exists public.account_authorization_notifications (
 );
 
 comment on table public.account_authorization_notifications is
-  'Non-sensitive self-visible Realtime invalidation only. It conveys no role, capability, organization or hotel scope; clients must re-read the server authorization endpoint. Added 0385.';
+  'Non-sensitive self-visible Realtime invalidation only. It conveys no role, capability, organization or hotel scope; clients must re-read the server authorization endpoint. Added 0387.';
 
 create or replace function public._staxis_publish_account_authorization_notification()
 returns trigger
@@ -113,7 +113,7 @@ $$;
 
 insert into public.applied_migrations(version, description)
 values (
-  '0385',
+  '0387',
   'Safe self-only Realtime authorization-version invalidation for immediate open-session role and scope revocation.'
 )
 on conflict (version) do nothing;

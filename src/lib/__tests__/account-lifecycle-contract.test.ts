@@ -24,7 +24,7 @@ const migration = readFileSync(
   'utf8',
 );
 const authoritativeLifecycleMigration = readFileSync(
-  join(process.cwd(), 'supabase', 'migrations', '0393_authoritative_people_lifecycle.sql'),
+  join(process.cwd(), 'supabase', 'migrations', '0395_authoritative_people_lifecycle.sql'),
   'utf8',
 );
 

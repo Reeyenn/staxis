@@ -1,4 +1,4 @@
--- 0376_authoritative_company_access.sql
+-- 0378_authoritative_company_access.sql
 --
 -- One authority at a time. `accounts.property_access` is the legacy authority;
 -- organization hats/grants are the normalized authority. An account is always
@@ -25,7 +25,7 @@ begin
      or to_regclass('public.organization_access_epochs') is null
      or to_regprocedure('public.staxis_account_reaches_property(uuid,uuid)') is null
   then
-    raise exception '0376 requires organization access migrations 0325, 0364 and 0371';
+    raise exception '0378 requires organization access migrations 0325, 0364 and 0371';
   end if;
 end
 $$;
@@ -104,7 +104,7 @@ update public.account_property_authorization_bridges
        retired_at = coalesce(retired_at, clock_timestamp()),
        retirement_reason = coalesce(
          retirement_reason,
-         'Retired during 0376 topology-binding upgrade; original company cannot be proven'
+         'Retired during 0378 topology-binding upgrade; original company cannot be proven'
        ),
        topology_bound_at = clock_timestamp()
  where topology_bound_at is null;
@@ -1283,7 +1283,7 @@ begin
     ) candidate
   loop
     perform public._staxis_refresh_account_authorization(
-      v_account_id, '0376 normalized authority cutover'
+      v_account_id, '0378 normalized authority cutover'
     );
   end loop;
 end
@@ -2469,14 +2469,14 @@ begin
     left join public.account_authorization_state state on state.account_id = account.id
     where state.account_id is null
   ) then
-    raise exception '0376 self-check failed: account without authorization state';
+    raise exception '0378 self-check failed: account without authorization state';
   end if;
 end
 $$;
 
 insert into public.applied_migrations (version, description)
 values (
-  '0376',
+  '0378',
   'Authoritative legacy/shadow/normalized access modes, governing scope projection, immutable exact portfolio scope receipts and RLS parity'
 )
 on conflict (version) do nothing;

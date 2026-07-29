@@ -1,4 +1,4 @@
--- 0379_company_structure_management.sql
+-- 0381_company_structure_management.sql
 --
 -- Customer-safe company structure management for the existing My Hotel
 -- Overview / Hotels / People / Access surface.
@@ -24,7 +24,7 @@ begin
      or to_regclass('public.organization_access_events') is null
      or to_regprocedure('public._staxis_nonlegacy_property_authorizations(uuid)') is null
   then
-    raise exception '0379 requires authoritative organization access migration 0376';
+    raise exception '0381 requires authoritative organization access migration 0378';
   end if;
 end
 $$;
@@ -866,7 +866,7 @@ grant execute on function public.staxis_commit_company_portfolio_assignment(
 
 insert into public.applied_migrations(version, description)
 values (
-  '0379',
+  '0381',
   'Customer-safe company structure projection and preview-bound idempotent portfolio assignment management for the existing My Hotel surface.'
 )
 on conflict (version) do nothing;

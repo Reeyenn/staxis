@@ -1,7 +1,7 @@
--- 0403_deterministic_portfolio_knowledge_artifacts.sql
+-- 0405_deterministic_portfolio_knowledge_artifacts.sql
 --
 -- Company/property knowledge answers are rendered deterministically and make
--- no provider request. They therefore must not forge a 0397 model-request
+-- no provider request. They therefore must not forge a 0399 model-request
 -- artifact. This migration gives those turns an exact, service-only artifact
 -- of their own, binds it to the established portfolio_query_receipts and
 -- portfolio_query_turn_commits chain, and preserves the same atomic replay and
@@ -16,12 +16,12 @@ begin
      or to_regclass('public.portfolio_query_turn_commits') is null
      or to_regclass('public.authorization_scope_receipts') is null
   then
-    raise exception '0403 requires the 0397 portfolio receipt/artifact/commit boundary';
+    raise exception '0405 requires the 0399 portfolio receipt/artifact/commit boundary';
   end if;
 end
 $$;
 
--- @rls: service-role-only. This is the deterministic equivalent of the 0397
+-- @rls: service-role-only. This is the deterministic equivalent of the 0399
 -- model artifact and contains raw authorized company/property reference text.
 create table public.portfolio_knowledge_request_artifacts (
   id                        uuid primary key default gen_random_uuid(),
@@ -2006,8 +2006,8 @@ create trigger portfolio_knowledge_request_artifacts_immutable
   before update or delete on public.portfolio_knowledge_request_artifacts
   for each row execute function public.staxis_refuse_portfolio_receipt_mutation();
 
--- 0397 predates the closed Finding Patterns consumer receipt. Existing model
--- artifacts remain explicitly NULL; every artifact inserted after 0403 must
+-- 0399 predates the closed Finding Patterns consumer receipt. Existing model
+-- artifacts remain explicitly NULL; every artifact inserted after 0405 must
 -- carry a signed receipt bound to this artifact's exact tenant/scope tuple.
 alter table public.portfolio_model_request_artifacts
   add column finding_versions jsonb,
@@ -2042,11 +2042,11 @@ alter table public.portfolio_model_request_artifacts
   );
 
 comment on column public.portfolio_model_request_artifacts.finding_versions is
-  'Exact signed, scope-bound compact Finding Patterns projection receipt supplied to the model. NULL only identifies artifacts created before 0403.';
+  'Exact signed, scope-bound compact Finding Patterns projection receipt supplied to the model. NULL only identifies artifacts created before 0405.';
 comment on column public.portfolio_model_request_artifacts.authorized_property_ids is
-  'Exact all-authorized property set from the live scope receipt. NULL only on artifacts created before 0403.';
+  'Exact all-authorized property set from the live scope receipt. NULL only on artifacts created before 0405.';
 comment on column public.portfolio_model_request_artifacts.selected_property_ids is
-  'Exact selected property set supplied to evidence/model synthesis. NULL only on artifacts created before 0403.';
+  'Exact selected property set supplied to evidence/model synthesis. NULL only on artifacts created before 0405.';
 
 create or replace function public.staxis_validate_portfolio_model_finding_receipt()
 returns trigger
@@ -2136,7 +2136,7 @@ revoke all on public.portfolio_model_request_artifacts from service_role;
 grant select, insert on public.portfolio_model_request_artifacts to service_role;
 
 -- A finding projection receipt is compact provenance, never a producer DTO or
--- prompt dump. Historical receipts were admitted under 0384's 256 KiB bound.
+-- prompt dump. Historical receipts were admitted under 0386's 256 KiB bound.
 -- Classify every existing row explicitly before making 64 KiB the default for
 -- new, validated rows; this preserves bytes and keeps deployment deterministic.
 alter table public.portfolio_query_receipts
@@ -2168,15 +2168,15 @@ alter table public.portfolio_query_receipts
   );
 
 comment on column public.portfolio_query_receipts.finding_binding_status is
-  'legacy_unbound marks every receipt predating 0403 without rewriting its finding bytes. New inserts default to and are trigger-enforced as validated.';
+  'legacy_unbound marks every receipt predating 0405 without rewriting its finding bytes. New inserts default to and are trigger-enforced as validated.';
 
 alter table public.portfolio_query_receipts
   add column receipt_kind text,
   add column knowledge_artifact_id uuid
     references public.portfolio_knowledge_request_artifacts(id) on delete restrict;
 
--- Rolling-safe classification: 0378–0396 receipts legitimately predate the
--- required 0397 model artifact. Label them explicitly instead of pretending
+-- Rolling-safe classification: 0380–0398 receipts legitimately predate the
+-- required 0399 model artifact. Label them explicitly instead of pretending
 -- they are provider-backed or failing migration validation. The insert trigger
 -- below never accepts this legacy state for a new row.
 select set_config('staxis.portfolio_purge', 'on', true);
@@ -2211,9 +2211,9 @@ alter table public.portfolio_query_receipts
   );
 
 comment on column public.portfolio_query_receipts.receipt_kind is
-  'Discriminates real provider-backed metric, no-provider deterministic knowledge, and read-only pre-0397 legacy receipts. New inserts cannot use legacy_unbound. Added 0403.';
+  'Discriminates real provider-backed metric, no-provider deterministic knowledge, and read-only pre-0399 legacy receipts. New inserts cannot use legacy_unbound. Added 0405.';
 comment on column public.portfolio_query_receipts.knowledge_artifact_id is
-  'For deterministic_knowledge only: immutable exact knowledge input/selection/render artifact. XOR with 0397 request_artifact_id.';
+  'For deterministic_knowledge only: immutable exact knowledge input/selection/render artifact. XOR with 0399 request_artifact_id.';
 
 drop trigger if exists portfolio_query_receipts_bind_request_artifact
   on public.portfolio_query_receipts;
@@ -2442,7 +2442,7 @@ grant execute on function public.staxis_purge_expired_portfolio_records(timestam
 
 insert into public.applied_migrations(version, description)
 values (
-  '0403',
+  '0405',
   'Immutable deterministic Portfolio Intelligence knowledge artifacts bound to exact scope, receipts, atomic conversation replay and retention without a fake model attempt.'
 )
 on conflict (version) do nothing;

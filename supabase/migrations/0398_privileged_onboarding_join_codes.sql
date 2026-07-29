@@ -1,4 +1,4 @@
--- 0396_privileged_onboarding_join_codes.sql
+-- 0398_privileged_onboarding_join_codes.sql
 --
 -- Migration 0152 correctly retired reusable owner/GM join codes, but its
 -- blanket CHECK also made the platform-admin new-hotel flow impossible on a
@@ -19,7 +19,7 @@ begin
      or to_regprocedure('public._staxis_nonlegacy_property_authorizations(uuid)') is null
      or to_regprocedure('public._staxis_manage_team_context(uuid,uuid)') is null
   then
-    raise exception '0396 requires join codes 0064/0152 and authoritative access 0376/0382/0391';
+    raise exception '0398 requires join codes 0064/0152 and authoritative access 0378/0384/0393';
   end if;
 end
 $requirements$;
@@ -27,7 +27,7 @@ $requirements$;
 alter table public.hotel_join_codes
   add column if not exists code_kind text;
 
--- Direct table writers before 0396 carried no tenant/relationship provenance.
+-- Direct table writers before 0398 carried no tenant/relationship provenance.
 -- Retire every still-live legacy credential during the first rollout; managers
 -- can mint a new one through the guarded RPC. Even the historical role-null
 -- 1/1 shape is revoked: storage cannot prove it was a resume link rather than
@@ -266,7 +266,7 @@ create trigger trg_hotel_join_codes_20_privileged_onboarding_guard
 -- company title may provide aggregate People/invitation access, but it must
 -- never reveal or mutate this bearer link. Every ordinary-code RPC below runs
 -- this lock-and-assert helper immediately before reading or writing the code.
--- The helper deliberately reuses 0391's `_staxis_manage_team_context`, whose
+-- The helper deliberately reuses 0393's `_staxis_manage_team_context`, whose
 -- contract requires an exact authoritative hotel standing with
 -- hotelMutationAllowed=true, an owner/GM floor (or a live platform admin), and
 -- the current manage_team capability override.
@@ -1662,14 +1662,14 @@ $$;
 revoke all on function public._staxis_redact_join_code_bearer_keys(jsonb)
   from public, anon, authenticated, service_role;
 
--- The pre-0396 manager route placed the live staff bearer in audit metadata.
+-- The pre-0398 manager route placed the live staff bearer in audit metadata.
 -- Remove that secret recursively while preserving the event, actor, target and
 -- an explicit redaction marker.
 update public.admin_audit_log audit
    set metadata = public._staxis_redact_join_code_bearer_keys(audit.metadata)
      || jsonb_build_object(
        'bearer_redacted', true,
-       'bearer_redaction_reason', '0396 join-code storage boundary'
+       'bearer_redaction_reason', '0398 join-code storage boundary'
      )
  where audit.action like 'join_code.%'
    and public._staxis_jsonb_has_join_code_bearer_key(audit.metadata);
@@ -1781,7 +1781,7 @@ comment on function public.staxis_claim_join_code_slot(uuid,integer) is
 
 insert into public.applied_migrations(version, description)
 values (
-  '0396',
+  '0398',
   'RPC-only join-code storage: DB-guarded privileged onboarding, atomic signup finalization, transfer revocation, actor-bound staff/resume access, and bearer-free audit.'
 )
 on conflict (version) do nothing;

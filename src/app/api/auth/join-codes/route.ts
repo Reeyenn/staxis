@@ -193,7 +193,7 @@ export async function GET(req: NextRequest) {
   if (capabilityDecision === 'unavailable') return capabilityUnavailableResponse(requestId);
   if (capabilityDecision === 'denied') return forbidden(requestId);
 
-  // This is the only bearer-code read. 0396 locks live authority and the
+  // This is the only bearer-code read. 0398 locks live authority and the
   // selected hotel's code row in one database transaction before returning it.
   const { data, error: readError } = await supabaseAdmin.rpc(
     'staxis_read_staff_join_code_guarded',

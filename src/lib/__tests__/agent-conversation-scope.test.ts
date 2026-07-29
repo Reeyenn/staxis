@@ -14,15 +14,15 @@ const HASH = 'a'.repeat(64);
 const RECEIPT = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
 
 const migration = readFileSync(
-  join(process.cwd(), 'supabase', 'migrations', '0377_agent_portfolio_conversation_scope.sql'),
+  join(process.cwd(), 'supabase', 'migrations', '0379_agent_portfolio_conversation_scope.sql'),
   'utf8',
 );
 const atomicTurnMigration = readFileSync(
-  join(process.cwd(), 'supabase', 'migrations', '0397_portfolio_model_request_artifacts.sql'),
+  join(process.cwd(), 'supabase', 'migrations', '0399_portfolio_model_request_artifacts.sql'),
   'utf8',
 );
 const archiveBoundaryMigration = readFileSync(
-  join(process.cwd(), 'supabase', 'migrations', '0399_portfolio_conversation_archive_boundary.sql'),
+  join(process.cwd(), 'supabase', 'migrations', '0401_portfolio_conversation_archive_boundary.sql'),
   'utf8',
 );
 const archivalService = readFileSync(
@@ -205,7 +205,7 @@ describe('first-class agent conversation security scope', () => {
     assert.match(propertyRpc, /'wrong_kind'/);
   });
 
-  test('legacy archive shape keeps explicit columns and 0399 refuses portfolio rows before writes', () => {
+  test('legacy archive shape keeps explicit columns and 0401 refuses portfolio rows before writes', () => {
     for (const column of [
       'conversation_kind',
       'organization_id',

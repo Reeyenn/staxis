@@ -1,4 +1,4 @@
--- 0388_authoritative_people_access_bridge.sql
+-- 0390_authoritative_people_access_bridge.sql
 --
 -- Forward-only hardening for existing Company Hub people/access workflows.
 --
@@ -23,7 +23,7 @@ begin
      or to_regprocedure('public._staxis_preview_company_access_edit(uuid,uuid,uuid,text,text,text,uuid,uuid[],timestamp with time zone,bigint,text)') is null
      or to_regprocedure('public.staxis_commit_company_access_edit(uuid,uuid,uuid,text,text,text,uuid,uuid[],timestamp with time zone,bigint,text,text,boolean,uuid)') is null
   then
-    raise exception '0388 requires authoritative access 0376 and access editor 0381';
+    raise exception '0390 requires authoritative access 0378 and access editor 0383';
   end if;
 end
 $$;
@@ -316,7 +316,7 @@ begin
   loop
     perform public._staxis_refresh_account_authorization(
       v_account_id,
-      '0388 repaired scheduled entitlement bridge suppression'
+      '0390 repaired scheduled entitlement bridge suppression'
     );
   end loop;
 end
@@ -2293,7 +2293,7 @@ revoke execute on function public.staxis_transfer_ownership(uuid, uuid, uuid)
 
 insert into public.applied_migrations(version, description)
 values (
-  '0388',
+  '0390',
   'Authoritative exact-hotel people roster, fail-closed hat-to-grant access conversion, scheduled entitlement bridge retirement, final owner guard, and legacy ownership-transfer containment.'
 )
 on conflict (version) do nothing;

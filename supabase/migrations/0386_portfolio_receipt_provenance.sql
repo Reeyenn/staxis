@@ -1,4 +1,4 @@
--- 0384_portfolio_receipt_provenance.sql
+-- 0386_portfolio_receipt_provenance.sql
 -- Exact prompt/model/reference provenance for reproducible Portfolio
 -- Intelligence answer receipts. No raw question or answer text is stored.
 
@@ -21,15 +21,15 @@ alter table public.portfolio_query_receipts
   );
 
 comment on column public.portfolio_query_receipts.prompt_hash is
-  'SHA-256 of the exact composed system-prompt block object sent for synthesis; raw prompt text is not retained. Added 0384.';
+  'SHA-256 of the exact composed system-prompt block object sent for synthesis; raw prompt text is not retained. Added 0386.';
 comment on column public.portfolio_query_receipts.knowledge_versions is
-  'Bounded IDs, revisions and overlay versions for company/property knowledge included in the prompt; never raw content. Added 0384.';
+  'Bounded IDs, revisions and overlay versions for company/property knowledge included in the prompt; never raw content. Added 0386.';
 comment on column public.portfolio_query_receipts.finding_versions is
-  'Finding contract/producer/run provenance included in the prompt, or an explicit not-mounted marker. Added 0384.';
+  'Finding contract/producer/run provenance included in the prompt, or an explicit not-mounted marker. Added 0386.';
 
 insert into public.applied_migrations(version, description)
 values (
-  '0384',
+  '0386',
   'Exact prompt hash, actual model metadata, and bounded knowledge/finding provenance for immutable portfolio answer receipts.'
 )
 on conflict (version) do nothing;

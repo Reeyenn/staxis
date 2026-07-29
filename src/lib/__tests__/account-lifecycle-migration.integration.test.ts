@@ -83,7 +83,7 @@ const TOPOLOGY_DENY_ORGANIZATION = 'b6000000-0000-4000-8000-000000000001';
 const TOPOLOGY_TRANSFER_ORGANIZATION = 'b6000000-0000-4000-8000-000000000002';
 
 const PEOPLE_ACCESS_MIGRATION_SQL = readFileSync(
-  join(process.cwd(), 'supabase', 'migrations', '0388_authoritative_people_access_bridge.sql'),
+  join(process.cwd(), 'supabase', 'migrations', '0390_authoritative_people_access_bridge.sql'),
   'utf8',
 );
 const OWNERSHIP_REPLAY_SQL = PEOPLE_ACCESS_MIGRATION_SQL.slice(

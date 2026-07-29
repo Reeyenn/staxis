@@ -1,4 +1,4 @@
--- 0401_recursive_portfolio_access_scope.sql
+-- 0403_recursive_portfolio_access_scope.sql
 --
 -- Keep Access preview/delegation topology identical to the authoritative
 -- resolver: a portfolio grant covers the active descendant tree, not only the
@@ -12,7 +12,7 @@ begin
   if to_regprocedure('public._staxis_company_access_can_delegate(uuid,uuid,text,text,uuid,uuid)') is null
      or to_regprocedure('public._staxis_company_access_scope_properties(uuid,text,uuid,uuid)') is null
   then
-    raise exception '0401 requires company access management migration 0381';
+    raise exception '0403 requires company access management migration 0383';
   end if;
 end
 $$;
@@ -167,7 +167,7 @@ revoke all on function public._staxis_company_access_scope_properties(
   uuid, text, uuid, uuid
 ) from public, anon, authenticated, service_role;
 
--- Retain the complete 0381 policy for company-wide, VP, and direct-root cases;
+-- Retain the complete 0383 policy for company-wide, VP, and direct-root cases;
 -- add only the missing descendant-tree branch for portfolio managers.
 do $$
 begin
@@ -306,7 +306,7 @@ revoke all on function public._staxis_company_access_can_delegate(
 
 insert into public.applied_migrations(version, description)
 values (
-  '0401',
+  '0403',
   'Align company Access preview, impact, and delegation with recursive active portfolio descendant scope.'
 )
 on conflict (version) do nothing;

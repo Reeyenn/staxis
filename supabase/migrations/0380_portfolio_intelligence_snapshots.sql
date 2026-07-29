@@ -1,4 +1,4 @@
--- 0378_portfolio_intelligence_snapshots.sql
+-- 0380_portfolio_intelligence_snapshots.sql
 --
 -- Property-grain, organization-independent metric materializations plus an
 -- immutable answer audit receipt. A hotel transfer therefore cannot make a
@@ -16,7 +16,7 @@ begin
      or to_regclass('public.agent_conversations') is null
      or to_regclass('public.pms_ingest_runs') is null
   then
-    raise exception '0378 requires properties, accounts, organizations, agent conversations and PMS ingest receipts';
+    raise exception '0380 requires properties, accounts, organizations, agent conversations and PMS ingest receipts';
   end if;
 end
 $$;
@@ -61,7 +61,7 @@ create index if not exists portfolio_metric_snapshots_lookup_idx
   );
 
 comment on table public.portfolio_metric_snapshots is
-  'Immutable, short-lived property-level canonical metric facts. Deliberately has no organization_id and stores no cross-hotel aggregate, preventing stale company-cache leakage after hotel transfer. Created 0378.';
+  'Immutable, short-lived property-level canonical metric facts. Deliberately has no organization_id and stores no cross-hotel aggregate, preventing stale company-cache leakage after hotel transfer. Created 0380.';
 
 -- @rls: service-role-only — immutable reproduction/audit receipts contain
 -- exact authorization sets and are never exposed through a browser table API.
@@ -124,7 +124,7 @@ create index if not exists portfolio_query_receipts_conversation_idx
   where conversation_id is not null;
 
 comment on table public.portfolio_query_receipts is
-  'Immutable reproduction receipt for one portfolio answer. Stores hashes, exact authorization/selection, plan/evidence/prompt/model/source versions, but never stores raw user or assistant text. Service-role-only. Created 0378.';
+  'Immutable reproduction receipt for one portfolio answer. Stores hashes, exact authorization/selection, plan/evidence/prompt/model/source versions, but never stores raw user or assistant text. Service-role-only. Created 0380.';
 
 create or replace function public.staxis_refuse_portfolio_receipt_mutation()
 returns trigger
@@ -229,7 +229,7 @@ grant execute on function public.staxis_purge_expired_portfolio_records(timestam
 
 insert into public.applied_migrations(version, description)
 values (
-  '0378',
+  '0380',
   'Portfolio Intelligence immutable property metric snapshots and versioned answer receipts. No company aggregates are persisted; exact authorization is re-resolved before every aggregate, preventing hotel-transfer cache leakage.'
 )
 on conflict (version) do nothing;

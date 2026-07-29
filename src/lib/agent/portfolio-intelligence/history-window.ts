@@ -11,7 +11,7 @@ export const PORTFOLIO_HISTORY_MAX_UTF8_BYTES = 65_536;
 /** Conservative allowance for the two role/content envelopes around a turn. */
 export const PORTFOLIO_HISTORY_TURN_OVERHEAD_UTF8_BYTES = 128;
 
-/** These limits are repeated in migration 0397 at the durable write boundary. */
+/** These limits are repeated in migration 0399 at the durable write boundary. */
 export const PORTFOLIO_USER_MESSAGE_MAX_CHARS = 4_000;
 export const PORTFOLIO_USER_MESSAGE_MAX_UTF8_BYTES = 16_000;
 export const PORTFOLIO_ASSISTANT_MESSAGE_MAX_UTF8_BYTES = 49_000;
@@ -135,7 +135,7 @@ function parseHistoryMeta(raw: unknown): PortfolioHistoryWindowV1 {
 /**
  * Revalidate the database-bounded portfolio replay immediately before provider
  * use. This parser accepts only the complete user/assistant pairs emitted by
- * the receipt-backed 0397 RPC; summaries and tool rows are not portfolio
+ * the receipt-backed 0399 RPC; summaries and tool rows are not portfolio
  * replay authority.
  */
 export function decodePortfolioHistoryWindow(input: {

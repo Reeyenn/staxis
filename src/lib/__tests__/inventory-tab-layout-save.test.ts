@@ -253,7 +253,7 @@ describe('ordered inventory tab-layout client protocol', () => {
 
   test('migration and route keep CAS, row lock, bounded DB work, and private metadata contracts', () => {
     const sql = readFileSync(
-      join(process.cwd(), 'supabase', 'migrations', '0402_inventory_tab_layout_ordered_writes.sql'),
+      join(process.cwd(), 'supabase', 'migrations', '0404_inventory_tab_layout_ordered_writes.sql'),
       'utf8',
     );
     assert.match(sql, /p_operation_id uuid/i);

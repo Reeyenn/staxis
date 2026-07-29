@@ -1,4 +1,4 @@
--- 0391_transactional_invite_and_join_acceptance.sql
+-- 0393_transactional_invite_and_join_acceptance.sql
 --
 -- Account invitations and staff join approvals both create authorization
 -- facts.  They therefore cannot be a sequence of service-role writes in a
@@ -19,7 +19,7 @@ begin
      or to_regprocedure('public.staxis_list_account_authorized_properties(uuid)') is null
      or to_regprocedure('public.staxis_set_membership_hat(uuid,uuid,uuid,text,text,jsonb,text)') is null
   then
-    raise exception '0391 requires organization access 0325/0364/0370, join requests 0315, and authoritative access 0376';
+    raise exception '0393 requires organization access 0325/0364/0370, join requests 0315, and authoritative access 0378';
   end if;
 end
 $$;
@@ -795,7 +795,7 @@ grant execute on function public.staxis_decide_staff_join_request(uuid, uuid, uu
 
 insert into public.applied_migrations (version, description)
 values (
-  '0391',
+  '0393',
   'Transactional exact-claim account invitation acceptance and authoritative staff join decisions with topology locks, normalized entitlements, and atomic audit'
 )
 on conflict (version) do nothing;

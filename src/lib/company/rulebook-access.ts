@@ -215,7 +215,7 @@ function entitlementCompanyRole(
 }
 
 /**
- * Match 0404's transactional editor gate: one broad entitlement must cover
+ * Match 0406's transactional editor gate: one broad entitlement must cover
  * every hotel in the exact current authority projection. A collection of narrow grants must
  * never add up to organization-wide rulebook authority.
  */
@@ -296,7 +296,7 @@ function editorChoiceAdmits(choice: string | null, role: 'owner' | 'vp' | 'finan
  * from `accounts.role`, which is a global word and would
  * silently make a hotel owner the owner of a management company they have
  * never heard of. This keeps normalized access grants, legacy hats and the
- * 0404 transaction gate on one fail-closed authority source. A one-hotel GM is
+ * 0406 transaction gate on one fail-closed authority source. A one-hotel GM is
  * intentionally excluded from portfolio receipts, so that one narrow case
  * falls back to the same authoritative per-hotel projection used by hotel APIs.
  */

@@ -6,7 +6,7 @@ import { describe, test } from 'node:test';
 const read = (...parts: string[]) => readFileSync(join(process.cwd(), ...parts), 'utf8');
 
 const migration = read(
-  'supabase', 'migrations', '0396_privileged_onboarding_join_codes.sql',
+  'supabase', 'migrations', '0398_privileged_onboarding_join_codes.sql',
 );
 const createRoute = read(
   'src', 'app', 'api', 'admin', 'properties', 'create', 'route.ts',

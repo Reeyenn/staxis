@@ -1,5 +1,5 @@
 /**
- * Executable contract for migration 0390's immutable management-pattern plane.
+ * Executable contract for migration 0392's immutable management-pattern plane.
  *
  * The fixture is deliberately 0367-shaped: the real migration must extend the
  * old mutable company_findings ledger without depending on later runtime code.
@@ -175,12 +175,12 @@ function exactSupplySourceFacts(observationId = OBSERVATION) {
 }
 
 const MIGRATION_SQL = readFileSync(
-  join(process.cwd(), 'supabase', 'migrations', '0390_management_company_patterns.sql'),
+  join(process.cwd(), 'supabase', 'migrations', '0392_management_company_patterns.sql'),
   'utf8',
 );
 
 const SOURCE_MIGRATION_SQL = readFileSync(
-  join(process.cwd(), 'supabase', 'migrations', '0387_management_pattern_source_snapshot.sql'),
+  join(process.cwd(), 'supabase', 'migrations', '0389_management_pattern_source_snapshot.sql'),
   'utf8',
 );
 
@@ -355,7 +355,7 @@ async function linkLocal(id: string, localFindingId: string): Promise<void> {
   );
 }
 
-describe('management-company patterns migration 0390', () => {
+describe('management-company patterns migration 0392', () => {
   before(async () => {
     pg = new PGlite({ extensions: { pgcrypto } });
     await pg.exec(`
@@ -449,7 +449,7 @@ describe('management-company patterns migration 0390', () => {
       );
 
       -- The certified Access migration owns this locking assertion in production.
-      -- This narrow fixture preserves its public contract so 0390 can prove that
+      -- This narrow fixture preserves its public contract so 0392 can prove that
       -- it never trusts caller-supplied organization/property IDs.
       create or replace function public.staxis_assert_authorization_scope_receipt(
         p_receipt_id uuid,
@@ -569,7 +569,7 @@ describe('management-company patterns migration 0390', () => {
     assert.equal(
       preCoreProfile.rows[0]?.count,
       0,
-      '0387 must fail closed while the 0390 profile relation is absent',
+      '0389 must fail closed while the 0392 profile relation is absent',
     );
     await pg.exec(MIGRATION_SQL);
   });
@@ -619,7 +619,7 @@ describe('management-company patterns migration 0390', () => {
     assert.ok(rls.rows.every((row) => row.relrowsecurity));
 
     const migration = await one<{ count: number }>(
-      `select count(*)::integer as count from public.applied_migrations where version = '0390'`,
+      `select count(*)::integer as count from public.applied_migrations where version = '0392'`,
     );
     assert.equal(migration.count, 1);
 

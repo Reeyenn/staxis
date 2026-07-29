@@ -1,4 +1,4 @@
--- 0395_property_scoped_nudge_recipients.sql
+-- 0397_property_scoped_nudge_recipients.sql
 --
 -- Nudge delivery is a hotel-scoped operation.  The application previously
 -- enumerated every active owner/GM in accounts, then called the account-scoped
@@ -24,7 +24,7 @@ begin
      or to_regprocedure('public.staxis_list_account_authorized_properties(uuid)') is null
      or to_regprocedure('public.mfa_verified_or_grace()') is null
   then
-    raise exception '0395 requires properties, accounts, and authoritative access migration 0376';
+    raise exception '0397 requires properties, accounts, and authoritative access migration 0378';
   end if;
 end
 $requirements$;
@@ -460,7 +460,7 @@ comment on column public.properties.nudge_subscription is
 
 insert into public.applied_migrations(version, description)
 values (
-  '0395',
+  '0397',
   'Property-keyed bounded nudge recipient projection with current-authority subscription validation and no global account enumeration.'
 )
 on conflict (version) do nothing;

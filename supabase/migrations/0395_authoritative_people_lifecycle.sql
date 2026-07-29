@@ -1,4 +1,4 @@
--- 0393_authoritative_people_lifecycle.sql
+-- 0395_authoritative_people_lifecycle.sql
 --
 -- Close the remaining My Hotel -> People lifecycle seams after authoritative
 -- company access cutover.  The old lifecycle/role/detach RPCs authorized from
@@ -22,7 +22,7 @@ begin
      or to_regclass('public.account_invites') is null
      or to_regclass('public.account_property_staff_links') is null
   then
-    raise exception '0393 requires authoritative access 0376, lifecycle intents 0335, and people bridge 0388';
+    raise exception '0395 requires authoritative access 0378, lifecycle intents 0335, and people bridge 0390';
   end if;
 end
 $requirements$;
@@ -224,7 +224,7 @@ revoke all on function public._staxis_structural_account_property_ids(uuid)
 -- People/Access administration is an organization-plane capability, not a
 -- hotel-operations mutation. Company owners and VPs therefore retain
 -- manage_people/manage_access over the exact hotels their organization
--- currently governs even though 0376 deliberately gives those hats
+-- currently governs even though 0378 deliberately gives those hats
 -- hotelMutationAllowed=false. Normalized manager grants are scoped through the
 -- canonical non-legacy projection, so portfolio descendants, hotel transfers,
 -- expiry, revocation, and authority-mode cutover all fail closed here too.
@@ -2659,7 +2659,7 @@ grant execute on function public.staxis_remove_property_access_guarded_v2(
 
 insert into public.applied_migrations(version, description)
 values (
-  '0393',
+  '0395',
   'Authoritative actor-bound People lifecycle, guarded profile/staff identity commits, acquired-hotel legacy role/detach management, inactive normalized roster scope, and commit-time revocation fences.'
 )
 on conflict (version) do nothing;

@@ -190,7 +190,7 @@ beforeEach(() => {
     };
   };
 
-  // @ts-expect-error narrow RPC facade for the serialized 0396 finalizer
+  // @ts-expect-error narrow RPC facade for the serialized 0398 finalizer
   supabaseAdmin.rpc = async (fn: string, args?: Record<string, unknown>) => {
     if (fn === 'staxis_api_limit_hit') {
       return { data: 1, error: null };

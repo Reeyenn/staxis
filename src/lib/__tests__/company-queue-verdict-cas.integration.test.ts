@@ -171,7 +171,7 @@ async function plantFinding(
     [
       organizationId,
       detectorId,
-      `0405:${findingSequence}`,
+      `0407:${findingSequence}`,
       `{${affectedPropertyIds.join(',')}}`,
       JSON.stringify(evidence),
     ],
@@ -222,7 +222,7 @@ async function subsetReceiptId(
 before(async () => {
   const migrated = await applyMigrationsToPglite();
   assert.ok(
-    migrated.report.applied.includes('0405_company_finding_verdict_cas.sql'),
+    migrated.report.applied.includes('0407_company_finding_verdict_cas.sql'),
     JSON.stringify(migrated.report.failedAtRuntime),
   );
   pg = migrated.pg;
@@ -309,7 +309,7 @@ describe('company queue verdict CAS — exact per-hotel authority', () => {
     await openCompanyFinding({
       organizationId: ORG_A,
       detectorId: 'portfolio_supply_spend_gap',
-      dedupeKey: '0405:legacy-writer-scope',
+      dedupeKey: '0407:legacy-writer-scope',
       receiptQueryId: 'portfolio_supply_spend_gap',
       disposition: 'recommend',
       now: new Date('2026-07-29T12:00:00.000Z'),
@@ -333,20 +333,20 @@ describe('company queue verdict CAS — exact per-hotel authority', () => {
     });
     const row = await pg.query<{ affected_property_ids: string[] }>(
       `select affected_property_ids from public.company_findings
-       where organization_id = $1 and dedupe_key = '0405:legacy-writer-scope'`,
+       where organization_id = $1 and dedupe_key = '0407:legacy-writer-scope'`,
       [ORG_A],
     );
     assert.deepEqual(row.rows[0]!.affected_property_ids, [P2]);
 
     const existing = await pg.query<{ id: string }>(
       `select id from public.company_findings
-       where organization_id = $1 and dedupe_key = '0405:legacy-writer-scope'`,
+       where organization_id = $1 and dedupe_key = '0407:legacy-writer-scope'`,
       [ORG_A],
     );
     await refreshCompanyFinding({
       organizationId: ORG_A,
       detectorId: 'portfolio_supply_spend_gap',
-      dedupeKey: '0405:legacy-writer-scope',
+      dedupeKey: '0407:legacy-writer-scope',
       receiptQueryId: 'portfolio_supply_spend_gap',
       disposition: 'recommend',
       now: new Date('2026-07-29T13:00:00.000Z'),

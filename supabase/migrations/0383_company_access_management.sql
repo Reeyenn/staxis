@@ -1,4 +1,4 @@
--- 0381_company_access_management.sql
+-- 0383_company_access_management.sql
 --
 -- Existing-person access editing for the existing My Hotel > Access tab.
 -- This is deliberately a normalized grant-set workflow, not a second People
@@ -22,7 +22,7 @@ begin
      or to_regclass('public.organization_access_events') is null
      or to_regprocedure('public._staxis_nonlegacy_property_authorizations(uuid)') is null
   then
-    raise exception '0381 requires authoritative organization access migration 0376';
+    raise exception '0383 requires authoritative organization access migration 0378';
   end if;
 end
 $$;
@@ -1436,7 +1436,7 @@ grant execute on function public.staxis_commit_company_access_edit(
 
 insert into public.applied_migrations(version, description)
 values (
-  '0381',
+  '0383',
   'Fail-closed existing-person normalized access editor with exact company, portfolio/region, or selected-hotel scopes; preview, confirmation, idempotency, audit, and immediate authority invalidation.'
 )
 on conflict (version) do nothing;

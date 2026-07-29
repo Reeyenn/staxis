@@ -829,7 +829,7 @@ $comms_browser_lockdown$;
 
 insert into public.applied_migrations(version, description)
 values (
-  '0394',
+  '0396',
   'Authoritative browser/RPC boundary, read-only company finance drill-down, private Communications route-only reads, and immediate active platform-admin RLS'
 )
 on conflict (version) do nothing;

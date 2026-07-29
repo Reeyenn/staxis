@@ -82,7 +82,7 @@ const AGENT_UNCONVERTED = new Set([
  *                                  org id comes from the caller's own company
  *                                  hat, never from the request.
  */
-const EXPECTED_UNSCOPED_CALLS = 2;
+const EXPECTED_UNSCOPED_CALLS = 3;
 const UNSCOPED_CALL_RX = /\bunscopedBecause\s*\(/g;
 
 const SKIP_DIRS = new Set(['node_modules', '.next', '__tests__']);

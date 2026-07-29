@@ -1,4 +1,4 @@
--- 0387_management_pattern_source_snapshot.sql
+-- 0389_management_pattern_source_snapshot.sql
 --
 -- One MVCC-consistent, organization-scoped source read for the deterministic
 -- management-company pattern runner. It deliberately returns evidence instead
@@ -53,7 +53,7 @@ create index if not exists organization_access_events_portfolio_property_after_s
     (after_state->>'portfolio_id'), occurred_at, target_id
   ) where target_type = 'portfolio_properties';
 
--- Migration 0387 intentionally precedes the durable evidence plane that
+-- Migration 0389 intentionally precedes the durable evidence plane that
 -- creates management_pattern_property_profiles.  Keep the source reader
 -- independently installable and fail closed during that short deployment
 -- interval: the dynamic lookup returns no profile while the relation is
@@ -130,7 +130,7 @@ begin
         p_topology_as_of, p_source_as_of;
 exception
   when undefined_table then
-    -- Expected only while 0387 is installed before 0390.  Returning no row is
+    -- Expected only while 0389 is installed before 0392.  Returning no row is
     -- deliberately conservative: the outer reader cannot invent a cohort
     -- profile from mutable or cross-tenant data.
     return;
@@ -2133,7 +2133,7 @@ comment on function public.load_management_pattern_source_snapshot(
 
 insert into public.applied_migrations (version, description)
 values (
-  '0387',
+  '0389',
   'Management-pattern source snapshot v2: service-role-only organization/as-of batch receipt with a frozen analysis-window/topology anchor, later correction cutoffs, versioned profiles/groups, complete inventory closes + sourced room-sold denominators, and bounded activity dates; historical-scope indexes support as-of evaluations without N+1 reads.'
 )
 on conflict (version) do nothing;

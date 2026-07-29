@@ -1,4 +1,4 @@
--- 0392_portfolio_booked_room_points.sql
+-- 0394_portfolio_booked_room_points.sql
 --
 -- A booked-room pickup table contains a full curve (often 30+ as-of rows for
 -- one stay date). A global LIMIT over current + baseline stay dates can be
@@ -121,7 +121,7 @@ end
 $$;
 
 comment on function public.staxis_portfolio_booked_room_points(uuid, date, date[]) is
-  'Bounded property-scoped booked-room evidence: one newest successful current point and one exact lead-zero point per requested baseline date. Prevents pickup-curve row limits from hiding comparison history. Added 0392.';
+  'Bounded property-scoped booked-room evidence: one newest successful current point and one exact lead-zero point per requested baseline date. Prevents pickup-curve row limits from hiding comparison history. Added 0394.';
 
 revoke all on function public.staxis_portfolio_booked_room_points(uuid, date, date[])
   from public, anon, authenticated;
@@ -130,7 +130,7 @@ grant execute on function public.staxis_portfolio_booked_room_points(uuid, date,
 
 insert into public.applied_migrations(version, description)
 values (
-  '0392',
+  '0394',
   'Bounded receipt-backed current and exact lead-zero booked-room points for portfolio comparisons.'
 )
 on conflict (version) do nothing;

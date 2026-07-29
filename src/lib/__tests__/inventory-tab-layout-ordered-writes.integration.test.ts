@@ -50,7 +50,7 @@ async function storedLayout(): Promise<Record<string, unknown>> {
   return result.rows[0].inventory_tab_layout;
 }
 
-describe('0402 ordered inventory tab-layout RPC — real Postgres behavior', () => {
+describe('0404 ordered inventory tab-layout RPC — real Postgres behavior', () => {
   beforeEach(async () => {
     pg = new PGlite();
     await pg.exec(`
@@ -74,7 +74,7 @@ describe('0402 ordered inventory tab-layout RPC — real Postgres behavior', () 
       select set_config('request.jwt.claim.role', 'service_role', false);
     `);
     await pg.exec(readFileSync(
-      join(process.cwd(), 'supabase', 'migrations', '0402_inventory_tab_layout_ordered_writes.sql'),
+      join(process.cwd(), 'supabase', 'migrations', '0404_inventory_tab_layout_ordered_writes.sql'),
       'utf8',
     ));
   });

@@ -71,7 +71,7 @@ export async function POST(req: NextRequest) {
   const v = validation.values;
 
   // Insert property. owner_id = the admin creating it, as the exact bootstrap
-  // placeholder 0396 requires until the one-shot owner claim succeeds. Phase
+  // placeholder 0398 requires until the one-shot owner claim succeeds. Phase
   // K's CHECK (total_rooms > 0) is the DB-layer safety net if validation here
   // regresses.
   const { data: created, error: insErr } = await supabaseAdmin
@@ -142,7 +142,7 @@ export async function POST(req: NextRequest) {
   });
 
   // Mint the one-shot owner/GM bootstrap credential through the database
-  // guard. 0396 locks the property, rechecks this exact live platform-admin
+  // guard. 0398 locks the property, rechecks this exact live platform-admin
   // identity, proves the hotel is still unclaimed/incomplete, and owns the
   // one-use/seven-day bounds. A direct service-role INSERT is deliberately
   // rejected by the trigger.

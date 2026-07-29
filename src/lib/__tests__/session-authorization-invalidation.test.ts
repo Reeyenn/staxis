@@ -72,7 +72,7 @@ test('an open session receives its own authorization invalidation and rechecks i
 test('the self-only invalidation row is still protected by the repository MFA boundary', () => {
   const migration = readFileSync(join(
     process.cwd(),
-    'supabase/migrations/0385_account_authorization_notifications.sql',
+    'supabase/migrations/0387_account_authorization_notifications.sql',
   ), 'utf8');
   assert.match(
     migration,

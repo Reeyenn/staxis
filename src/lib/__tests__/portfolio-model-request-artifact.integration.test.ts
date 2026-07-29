@@ -120,7 +120,7 @@ async function resolveScope(pg: PGlite): Promise<ScopeReceipt> {
   return payload.receipt;
 }
 
-describe('0397 exact portfolio model request artifacts', () => {
+describe('0399 exact portfolio model request artifacts', () => {
   let pg: PGlite;
   let receipt: ScopeReceipt;
   let findingVersions: PortfolioFindingReceiptV1;
@@ -271,16 +271,16 @@ describe('0397 exact portfolio model request artifacts', () => {
     const migrated = await applyMigrationsToPglite();
     pg = migrated.pg;
     const failure = migrated.report.failedAtRuntime.find(
-      (entry) => entry.file === '0397_portfolio_model_request_artifacts.sql',
+      (entry) => entry.file === '0399_portfolio_model_request_artifacts.sql',
     );
     assert.equal(failure, undefined, failure?.error);
-    assert.ok(migrated.report.applied.includes('0397_portfolio_model_request_artifacts.sql'));
+    assert.ok(migrated.report.applied.includes('0399_portfolio_model_request_artifacts.sql'));
     const artifactFailure = migrated.report.failedAtRuntime.find(
-      (entry) => entry.file === '0403_deterministic_portfolio_knowledge_artifacts.sql',
+      (entry) => entry.file === '0405_deterministic_portfolio_knowledge_artifacts.sql',
     );
     assert.equal(artifactFailure, undefined, artifactFailure?.error);
     assert.ok(migrated.report.applied.includes(
-      '0403_deterministic_portfolio_knowledge_artifacts.sql',
+      '0405_deterministic_portfolio_knowledge_artifacts.sql',
     ));
     await seedTwoCompanies(pg);
     receipt = await resolveScope(pg);

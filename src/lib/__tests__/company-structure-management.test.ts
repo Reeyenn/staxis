@@ -103,7 +103,7 @@ describe('company structure request contracts', () => {
 describe('My Hotel structure surface contract', () => {
   const page = source('src', 'app', 'company', 'page.tsx');
   const manager = source('src', 'app', 'company', '_components', 'CompanyStructureManager.tsx');
-  const migration = source('supabase', 'migrations', '0379_company_structure_management.sql');
+  const migration = source('supabase', 'migrations', '0381_company_structure_management.sql');
   const previewRoute = source('src', 'app', 'api', 'company-access', 'structure', 'preview', 'route.ts');
   const commitRoute = source('src', 'app', 'api', 'company-access', 'structure', 'commit', 'route.ts');
 

@@ -1,4 +1,4 @@
--- 0377_agent_portfolio_conversation_scope.sql
+-- 0379_agent_portfolio_conversation_scope.sql
 --
 -- A conversation's security domain is durable data, not prompt text.
 -- `prompt_version + '+org:<uuid>'` was a temporary compatibility stamp; it
@@ -7,7 +7,7 @@
 --
 -- This migration adds an explicit, immutable conversation kind and company,
 -- binds new portfolio conversations to the selector-independent
--- authorization hash from 0376, and adds atomic DB preparation functions.
+-- authorization hash from 0378, and adds atomic DB preparation functions.
 -- The hotel FK remains NOT NULL: for a portfolio row it is a DERIVATION
 -- ANCHOR for agent_messages.property_id, never the portfolio's scope.
 
@@ -24,7 +24,7 @@ begin
      ) is null
   then
     raise exception
-      '0377 requires agent conversation migrations 0079/0105/0113 and authorization migration 0376';
+      '0379 requires agent conversation migrations 0079/0105/0113 and authorization migration 0378';
   end if;
 end
 $$;
@@ -163,7 +163,7 @@ comment on column public.agent_conversations.organization_id is
 comment on column public.agent_conversations.authorization_hash is
   'Immutable selector-independent hash of the caller complete current authorization universe at portfolio conversation creation. NULL on property and unbound legacy portfolio rows.';
 comment on column public.agent_conversations.scope_receipt_id is
-  'Most recent asserted 0376 receipt. Provenance only; receipt expiry/deletion never changes the immutable authorization_hash.';
+  'Most recent asserted 0378 receipt. Provenance only; receipt expiry/deletion never changes the immutable authorization_hash.';
 comment on column public.agent_conversations.scope_verified_at is
   'When scope_receipt_id was asserted inside an atomic create/prep transaction.';
 
@@ -634,7 +634,7 @@ $$;
 comment on function public.staxis_lock_load_and_record_user_turn(uuid, uuid, uuid, text) is
   'Atomic PROPERTY prep. Verifies owner + conversation_kind=property + exact property before replay/append; a portfolio row returns wrong_kind.';
 comment on function public.staxis_create_portfolio_conversation(uuid, uuid, text, text, text, uuid, text, uuid, text) is
-  'Atomic PORTFOLIO creation. Asserts a fresh 0376 receipt and anchor membership, stores its selector-independent authorizationHash, then writes the first user turn.';
+  'Atomic PORTFOLIO creation. Asserts a fresh 0378 receipt and anchor membership, stores its selector-independent authorizationHash, then writes the first user turn.';
 comment on function public.staxis_lock_load_and_record_portfolio_user_turn(uuid, uuid, uuid, text, uuid, text) is
   'Atomic PORTFOLIO prep. Under one conversation lock: owner/kind/company check, fresh receipt assertion, stored selector-independent authorizationHash comparison, anchor authorization, replay, append.';
 
@@ -664,7 +664,7 @@ grant execute on function public.staxis_lock_load_and_record_portfolio_user_turn
   to service_role;
 
 insert into public.applied_migrations (version, description) values (
-  '0377',
+  '0379',
   'Explicit property/portfolio conversation scope, immutable company+authorization hash, receipt-asserted atomic portfolio create/prep, kind-safe property replay, and archive/restore parity'
 )
 on conflict (version) do nothing;

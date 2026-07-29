@@ -36,7 +36,7 @@ describe('staff pilot reliability contracts', () => {
 
   test('join approval delegates the whole decision to the authoritative transaction', () => {
     const route = source('src/app/api/staff/join-requests/route.ts');
-    const migration = source('supabase/migrations/0391_transactional_invite_and_join_acceptance.sql');
+    const migration = source('supabase/migrations/0393_transactional_invite_and_join_acceptance.sql');
     assert.match(route, /callerCapabilityDecisionFresh\(caller, 'manage_team', hotelId\)/);
     assert.match(route, /staxis_decide_staff_join_request/);
     assert.doesNotMatch(route, /from\('staff'\)\.insert|property_access: nextAccess/);

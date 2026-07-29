@@ -1,4 +1,4 @@
--- 0383_agent_memory_organization_provenance.sql
+-- 0385_agent_memory_organization_provenance.sql
 --
 -- Property memory is authored while a hotel belongs to one management
 -- company. Preserve that tenant provenance so a later hotel transfer cannot
@@ -120,7 +120,7 @@ end
 $$;
 
 comment on column public.agent_memory.authoring_organization_id is
-  'Immutable management-company provenance stamped when memory is authored after 0383. Pre-0383 rows remain NULL because current ownership cannot prove historical authorship. Portfolio/company reads require an exact match to the freshly authorized organization. Added 0383.';
+  'Immutable management-company provenance stamped when memory is authored after 0385. Pre-0385 rows remain NULL because current ownership cannot prove historical authorship. Portfolio/company reads require an exact match to the freshly authorized organization. Added 0385.';
 
 revoke all on function public._staxis_stamp_agent_memory_organization()
   from public, anon, authenticated;
@@ -131,7 +131,7 @@ grant execute on function public.staxis_portfolio_property_knowledge(uuid, uuid[
 
 insert into public.applied_migrations(version, description)
 values (
-  '0383',
+  '0385',
   'Immutable authoring-company provenance for new property memory; unprovable pre-migration rows remain NULL and company overlays exclude former-company notes after transfer.'
 )
 on conflict (version) do nothing;

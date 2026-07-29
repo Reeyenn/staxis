@@ -1,4 +1,4 @@
--- 0405 — Per-hotel authority + atomic CAS for company finding verdicts.
+-- 0407 — Per-hotel authority + atomic CAS for company finding verdicts.
 --
 -- Organization-level queue access is read-only authority.  A company Owner or
 -- VP may inspect aggregate cards but may not mutate the private operating state
@@ -27,7 +27,7 @@ begin
      or to_regprocedure('public.staxis_assert_authorization_scope_receipt(uuid,uuid)') is null
      or to_regprocedure('public.staxis_list_account_authorized_properties(uuid)') is null
      or to_regprocedure('public._staxis_current_primary_property_relationships()') is null then
-    raise exception '0405 requires company findings and authoritative access through 0403'
+    raise exception '0407 requires company findings and authoritative access through 0405'
       using errcode = '55000';
   end if;
   if not exists (
@@ -37,7 +37,7 @@ begin
       and table_name = 'company_findings'
       and column_name = 'affected_property_ids'
   ) then
-    raise exception '0405 requires 0390 company finding affected-property scope'
+    raise exception '0407 requires 0392 company finding affected-property scope'
       using errcode = '55000';
   end if;
 end
@@ -648,7 +648,7 @@ comment on function public.staxis_set_company_finding_verdict_cas(
 
 insert into public.applied_migrations (version, description)
 values (
-  '0405',
+  '0407',
   'Per-hotel authoritative company-finding verdict CAS with final receipt assertion, closed capability policy, rolling old-writer denial and immutable audit events.'
 )
 on conflict (version) do nothing;

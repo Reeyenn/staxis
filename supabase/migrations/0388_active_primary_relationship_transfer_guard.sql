@@ -1,4 +1,4 @@
--- 0386_active_primary_relationship_transfer_guard.sql
+-- 0388_active_primary_relationship_transfer_guard.sql
 --
 -- Forward hardening for the platform-admin hotel transfer primitive created in
 -- 0325. The canonical authorization resolver considers a relationship active
@@ -18,7 +18,7 @@ begin
      or to_regprocedure('public._staxis_preview_admin_hotel_relationship(uuid,uuid,uuid,text,text)') is null
      or to_regclass('public.organization_access_events') is null
   then
-    raise exception '0386 requires organization access foundation 0325 and admin lifecycle 0382';
+    raise exception '0388 requires organization access foundation 0325 and admin lifecycle 0384';
   end if;
 end
 $$;
@@ -414,7 +414,7 @@ grant execute on function public.staxis_set_primary_property_organization(
 
 insert into public.applied_migrations(version, description)
 values (
-  '0386',
+  '0388',
   'Serialize direct primary owner/operator window writes, reject current/future overlap, and align platform-admin transfers with the same invariant without rewriting existing ambiguity.'
 )
 on conflict (version) do nothing;

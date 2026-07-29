@@ -30,7 +30,7 @@ const SOURCE_AS_OF = EVALUATION_AT;
 const TOPOLOGY_AS_OF = EVALUATION_AT;
 
 const MIGRATION_SQL = readFileSync(
-  join(process.cwd(), 'supabase', 'migrations', '0387_management_pattern_source_snapshot.sql'),
+  join(process.cwd(), 'supabase', 'migrations', '0389_management_pattern_source_snapshot.sql'),
   'utf8',
 );
 
@@ -60,7 +60,7 @@ async function snapshot(organizationId = ORG_A) {
   return snapshotAt({ organizationId });
 }
 
-describe('management pattern source snapshot migration 0387', () => {
+describe('management pattern source snapshot migration 0389', () => {
   before(async () => {
     pg = new PGlite();
     await pg.exec(`

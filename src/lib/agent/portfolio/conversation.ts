@@ -2,14 +2,14 @@ import 'server-only';
 
 // ─── First-class conversation security scope ───────────────────────────────
 //
-// Migration 0377 made property/portfolio an explicit database distinction.
+// Migration 0379 made property/portfolio an explicit database distinction.
 // `property_id` intentionally remains NOT NULL for both kinds because the 0336
 // message trigger derives every agent_messages.property_id from it. On a
 // portfolio row that hotel is only a relational/telemetry ANCHOR. It must never
 // be interpreted as either the selected grain or the complete portfolio scope.
 //
 // The old `prompt_version + '+org:<uuid>'` marker remains readable solely so a
-// rolling deployment and pre-0377 rows can be backfilled. Once explicit columns
+// rolling deployment and pre-0379 rows can be backfilled. Once explicit columns
 // are present they always win, including an explicit property row whose prompt
 // stamp happens to contain a conflicting legacy marker.
 
@@ -122,7 +122,7 @@ export function conversationSecurityScopeFromRow(
     };
   }
 
-  // Compatibility for a reader deployed just before/while 0377 backfills.
+  // Compatibility for a reader deployed just before/while 0379 backfills.
   // An explicit but unknown kind is corruption, not a reason to trust text.
   if (explicitKind != null) return null;
   const promptVersion = typeof row.prompt_version === 'string' ? row.prompt_version : null;

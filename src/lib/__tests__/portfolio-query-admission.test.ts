@@ -5,7 +5,7 @@ import test from 'node:test';
 
 const repo = join(__dirname, '..', '..', '..');
 const migration = readFileSync(
-  join(repo, 'supabase', 'migrations', '0389_portfolio_query_admission.sql'),
+  join(repo, 'supabase', 'migrations', '0391_portfolio_query_admission.sql'),
   'utf8',
 );
 const route = readFileSync(

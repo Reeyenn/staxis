@@ -10,13 +10,13 @@ const hatRoute = source('src/app/api/auth/team/hats/route.ts');
 const inviteAuthority = source('src/lib/company/account-invite-authority.ts');
 const joinCodeRoute = source('src/app/api/auth/join-codes/route.ts');
 const transactionalInviteMigration = source(
-  'supabase/migrations/0391_transactional_invite_and_join_acceptance.sql',
+  'supabase/migrations/0393_transactional_invite_and_join_acceptance.sql',
 );
 const peopleLifecycleMigration = source(
-  'supabase/migrations/0393_authoritative_people_lifecycle.sql',
+  'supabase/migrations/0395_authoritative_people_lifecycle.sql',
 );
 const guardedJoinCodeMigration = source(
-  'supabase/migrations/0396_privileged_onboarding_join_codes.sql',
+  'supabase/migrations/0398_privileged_onboarding_join_codes.sql',
 );
 
 describe('hotel account invitation route contract', () => {

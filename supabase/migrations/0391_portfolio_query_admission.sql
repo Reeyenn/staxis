@@ -1,4 +1,4 @@
--- 0389 — Distributed admission control for Portfolio Intelligence queries.
+-- 0391 — Distributed admission control for Portfolio Intelligence queries.
 --
 -- Portfolio chat deliberately fans one exact authorization receipt out into
 -- hotel-scoped reads.  That structural tenant wall is safe, but without an
@@ -281,7 +281,7 @@ grant execute on function public.staxis_release_portfolio_query_lease(uuid,uuid,
 
 insert into public.applied_migrations(version, description)
 values (
-  '0389',
+  '0391',
   'Atomic account-organization rate admission and bounded distributed lease before Portfolio Intelligence fanout.'
 )
 on conflict (version) do nothing;

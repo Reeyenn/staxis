@@ -10,7 +10,7 @@ function source(path: string): string {
 describe('inventory HTTP gates use the authoritative per-hotel standing', () => {
   test('hardened count and invoice storage policies retain the MFA boundary', () => {
     const migration = source(
-      'supabase/migrations/0394_authoritative_browser_mutation_boundary.sql',
+      'supabase/migrations/0396_authoritative_browser_mutation_boundary.sql',
     );
     const policies = [
       ['owner read counts', 1],

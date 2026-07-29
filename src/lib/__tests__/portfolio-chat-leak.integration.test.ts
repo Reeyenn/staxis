@@ -2030,7 +2030,7 @@ describe('Portfolio Intelligence acceptance path', () => {
     // A real pickup curve can have far more rows than the six lead-zero
     // comparison points. Keep 140 freshly observed current-stay curve points
     // on Comfort Suites so a global LIMIT/ordering implementation would be
-    // able to crowd out historical evidence. The bounded 0392 RPC must still
+    // able to crowd out historical evidence. The bounded 0394 RPC must still
     // return exactly one current point plus the requested baseline points.
     await pg.query(
       `with curve as materialized (

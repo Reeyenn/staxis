@@ -121,7 +121,7 @@ test('cross-hotel announcement writes are disabled and single-hotel commit reaut
 });
 
 test('private communications tables have no property-wide browser SELECT bypass', () => {
-  const migration = source('supabase/migrations/0394_authoritative_browser_mutation_boundary.sql');
+  const migration = source('supabase/migrations/0396_authoritative_browser_mutation_boundary.sql');
   for (const table of [
     'comms_acknowledgements',
     'comms_conversations',

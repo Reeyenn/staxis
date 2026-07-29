@@ -294,7 +294,7 @@ export async function GET(req: NextRequest) {
     const queue = await buildPortfolioQueue(caller, scope, new Date(), {
       // Climbed hotel cards stay read-only in the company queue until the
       // hotel-local verdict endpoint has its own in-transaction receipt fence.
-      // Company-card verdicts below already commit through 0405's exact CAS.
+      // Company-card verdicts below already commit through 0407's exact CAS.
       canActOnCompanyFinding,
     });
 

@@ -795,7 +795,7 @@ function normalizePortfolioPrepReason(
 
 /**
  * Create an empty portfolio conversation under a freshly asserted receipt.
- * The question stays an RPC validation input only; 0397 persists user and
+ * The question stays an RPC validation input only; 0399 persists user and
  * assistant rows together after the immutable query receipt exists.
  */
 export async function createPortfolioConversation(opts: {
@@ -1190,7 +1190,7 @@ function portfolioCommitFailureReason(value: unknown): PortfolioConversationComm
 }
 
 /**
- * The only portfolio message writer after 0397. PostgreSQL reasserts current
+ * The only portfolio message writer after 0399. PostgreSQL reasserts current
  * account/company scope, binds the exact completed/partial query receipt, then
  * inserts user + assistant + commit link atomically. A retry with the same
  * receipt/text is idempotent; different content fails closed.

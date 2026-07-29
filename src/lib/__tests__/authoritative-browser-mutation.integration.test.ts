@@ -56,7 +56,7 @@ before(async () => {
   assert.equal(
     migrated.report.failedAtRuntime.some((failure) => failure.file.startsWith('0394_')),
     false,
-    `0394 must apply: ${JSON.stringify(migrated.report.failedAtRuntime)}`,
+    `0396 must apply: ${JSON.stringify(migrated.report.failedAtRuntime)}`,
   );
   pg = migrated.pg;
   await seedTwoCompanies(pg);
@@ -104,7 +104,7 @@ after(async () => {
   await pg?.close();
 });
 
-describe('0394 authoritative browser mutation boundary', () => {
+describe('0396 authoritative browser mutation boundary', () => {
   test('company oversight and finance retain reads but never acquire hotel mutation', async () => {
     for (const [userId, propertyId] of [
       [UID_ANA, PID_A1],
