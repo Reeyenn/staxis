@@ -25,6 +25,7 @@ function section(contents: string, start: string, end: string): string {
 const propertyContext = source('src', 'contexts', 'PropertyContext.tsx');
 const capabilityHook = source('src', 'lib', 'capabilities', 'useCan.ts');
 const inventoryPage = source('src', 'app', 'inventory', 'page.tsx');
+const financialsPage = source('src', 'app', 'financials', 'page.tsx');
 const appLoading = source('src', 'app', 'loading.tsx');
 const appError = source('src', 'app', 'error.tsx');
 const globalError = source('src', 'app', 'global-error.tsx');
@@ -243,28 +244,37 @@ describe('property and capability readiness', () => {
     );
   });
 
-  test('Inventory terminates no-property and capability failures instead of waiting forever', () => {
+  test('Inventory renders ordinary stock workflows without waiting on capability overrides', () => {
     const loading = inventoryPage.indexOf('if (loading) return <InventoryLoading />;');
     const noProperty = inventoryPage.indexOf('if (!activePropertyId) {', loading);
-    const capabilityFailure = inventoryPage.indexOf("if (capabilityOverridesStatus === 'error')", noProperty);
-    const capabilityWait = inventoryPage.indexOf("if (capabilityOverridesStatus !== 'ready')", capabilityFailure);
-    const content = inventoryPage.indexOf('<InventoryShell key={activePropertyId} />', capabilityWait);
+    const content = inventoryPage.indexOf('<InventoryShell key={activePropertyId} />', noProperty);
     assert.ok(
       loading >= 0
       && noProperty > loading
-      && capabilityFailure > noProperty
-      && capabilityWait > capabilityFailure
-      && content > capabilityWait,
+      && content > noProperty,
     );
     assert.match(
-      inventoryPage.slice(noProperty, capabilityFailure),
+      inventoryPage.slice(noProperty, content),
       /<RouteErrorState[\s\S]*?No hotel is selected[\s\S]*?push\('\/property-selector'\)/,
     );
-    assert.match(
-      inventoryPage.slice(capabilityFailure, capabilityWait),
-      /Inventory access could not be confirmed[\s\S]*?refreshCapabilities\(\)/,
-    );
+    assert.doesNotMatch(inventoryPage, /capabilityOverridesStatus|refreshCapabilities/);
     assert.doesNotMatch(inventoryPage, /loading \|\| !activePropertyId/);
+  });
+
+  test('Financials renders its familiar shell before capability-dependent data', () => {
+    const shellHeader = financialsPage.indexOf('<h1 style');
+    const accessGate = financialsPage.indexOf(
+      '{!authorizationContextReady || !accessContextReady ? (',
+      shellHeader,
+    );
+    const summary = financialsPage.indexOf('{/* Summary tiles */}', accessGate);
+    assert.ok(shellHeader >= 0 && accessGate > shellHeader && summary > accessGate);
+    assert.match(
+      financialsPage.slice(accessGate, summary),
+      /Financial access could not be confirmed[\s\S]*Checking financial access for this hotel/,
+    );
+    assert.match(financialsPage, /enabled: !!activePropertyId && allowed/);
+    assert.match(financialsPage, /const allowed = accessContextReady[\s\S]*authorizationContextReady/);
   });
 });
 

@@ -101,23 +101,27 @@ export default function StaffPage() {
     && capabilityOverridesViewerKey === capabilityViewerKey
   );
 
-  // A missing override snapshot defaults capabilities to allowed. Do not mount
-  // the manager surface under that optimistic fallback: on a property switch it
-  // could briefly expose controls from the previous hotel's access decision
-  // before the exact user/property snapshot arrives.
+  // The per-hotel standing chooses the correct manager/staff surface. Keep
+  // that authoritative role decision separate from the capability override
+  // refresh so a hotel switch cannot momentarily mount the wrong workflow.
+  if (!hotelStanding.ready) {
+    return <AppLayout><ManagerScheduleStatus pending /></AppLayout>;
+  }
+
+  // Schedule data and controls are the capability-affected part of this page.
+  // Keep them fail-closed until the exact viewer/hotel snapshot arrives, but
+  // render the normal AppLayout immediately instead of replacing the entire
+  // route with a capability-refresh loader.
   if (isManager && !capabilityContextReady) {
-    if (capabilityOverridesStatus === 'error') {
-      return (
-        <AppLayout>
-          <RouteErrorState
-            title="Staff access could not be confirmed"
-            message={capabilityOverridesError ?? undefined}
-            onRetry={() => void refreshCapabilities()}
-          />
-        </AppLayout>
-      );
-    }
-    return <AppLayout><LoadingState/></AppLayout>;
+    return (
+      <AppLayout>
+        <ManagerScheduleStatus
+          pending={capabilityOverridesStatus !== 'error'}
+          message={capabilityOverridesError ?? undefined}
+          onRetry={() => void refreshCapabilities()}
+        />
+      </AppLayout>
+    );
   }
 
   const canManageSchedule = isManager && can('manage_shifts');
@@ -334,6 +338,56 @@ function ManagerAccessUnavailable({ canManagePeople }: { canManagePeople: boolea
           >
             {es ? 'Abrir Mi hotel → Personas' : 'Open My Hotel → People'}
           </Link>
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
+function ManagerScheduleStatus({
+  pending,
+  message,
+  onRetry,
+}: {
+  pending: boolean;
+  message?: string;
+  onRetry?: () => void;
+}) {
+  const { lang } = useLang();
+  const es = lang === 'es';
+  return (
+    <div style={{
+      minHeight: 360, display: 'grid', placeItems: 'center', padding: 24,
+      color: T.ink, fontFamily: fonts.sans,
+    }}>
+      <div role={pending ? 'status' : 'alert'} aria-live="polite" style={{
+        width: 'min(100%, 440px)', textAlign: 'center', padding: '28px 24px',
+        background: T.paper, border: `1px solid ${T.rule}`, borderRadius: 18,
+        boxShadow: T.cardShadow,
+      }}>
+        <div style={{ fontSize: 17, fontWeight: 600, marginBottom: 7 }}>
+          {pending
+            ? (es ? 'Cargando el horario…' : 'Loading the schedule…')
+            : (es ? 'No se pudo confirmar el acceso al horario' : 'Schedule access could not be confirmed')}
+        </div>
+        <div style={{ fontSize: 13, lineHeight: 1.5, color: T.ink3 }}>
+          {pending
+            ? (es ? 'Los controles estarán disponibles cuando el acceso esté listo.' : 'Controls will be available once access is ready.')
+            : (message ?? (es ? 'Revisa tu conexión e inténtalo de nuevo.' : 'Check your connection and try again.'))}
+        </div>
+        {!pending && onRetry ? (
+          <button
+            type="button"
+            onClick={onRetry}
+            style={{
+              minHeight: 44, marginTop: 16, padding: '0 18px', borderRadius: 12,
+              border: `1px solid ${T.rule}`, background: T.paper,
+              fontFamily: fonts.sans, fontSize: 13, fontWeight: 600, color: T.ink,
+              cursor: 'pointer',
+            }}
+          >
+            {es ? 'Reintentar' : 'Retry'}
+          </button>
         ) : null}
       </div>
     </div>
