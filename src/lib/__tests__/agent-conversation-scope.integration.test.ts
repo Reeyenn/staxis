@@ -168,6 +168,7 @@ async function commitPortfolioTurn(
     question: string;
     answer: string;
     selectedPropertyIds?: string[];
+    status?: 'completed' | 'partial' | 'abstained' | 'authorization_changed';
   },
 ): Promise<{ ok: boolean; reason: string; queryReceiptId: string }> {
   const question = input.question.trim();
@@ -265,7 +266,7 @@ async function commitPortfolioTurn(
        $1, $2, $3, $4, $5, $6, $7, $8,
        'portfolio-query-plan.test.v1', 'portfolio-evidence.test.v1', $9, $10,
        'test-model', 'sonnet', $11::uuid[], $12::uuid[], '{}'::jsonb,
-       '[]'::jsonb, '{}'::jsonb, '{}'::jsonb, $13, 'completed', 1,
+       '[]'::jsonb, '{}'::jsonb, '{}'::jsonb, $13, $18::text, 1,
        '{}'::jsonb, $14::jsonb, $15, $16, $17
      ) returning id`,
     [
@@ -274,7 +275,7 @@ async function commitPortfolioTurn(
       sha256(question), promptVersion, promptHash,
       input.receipt.authorizedPropertyIds, selectedPropertyIds,
       sha256(input.answer), JSON.stringify(findingVersions), artifact.rows[0].id,
-      sha256(modelCandidate), rendererVersion,
+      sha256(modelCandidate), rendererVersion, input.status ?? 'completed',
     ],
   );
   const committed = await pg.query<{ result: unknown }>(
@@ -451,6 +452,59 @@ describe('0379/0399 agent conversation mode + atomic authorization isolation', (
       authorization_hash: allReceipt.authorizationHash,
       scope_receipt_id: subsetReceipt.id,
     });
+  });
+
+  test('honest abstained turns commit and replay while error receipts remain atomic no-ops', async () => {
+    const receipt = await resolveReceipt(pg, {
+      accountId: ACCOUNT_MARIA,
+      organizationId: ORG_A,
+    });
+    const conversationId = await createPortfolioConversation(pg, receipt, 'no-data portfolio');
+    const abstained = await commitPortfolioTurn(pg, {
+      conversationId,
+      receipt,
+      question: 'Which hotels reported today?',
+      answer: 'None of the selected hotels reported current data.',
+      status: 'abstained',
+    });
+    assert.deepEqual(
+      { ok: abstained.ok, reason: abstained.reason },
+      { ok: true, reason: 'committed' },
+    );
+
+    const prep = await portfolioPrep(pg, {
+      conversationId,
+      receipt,
+      message: 'Try again later',
+    });
+    assert.equal(prep.ok, true, prep.reason ?? undefined);
+    assert.deepEqual(
+      jsonValue<Array<{ role: string; content: string }>>(prep.history_rows ?? [])
+        .map(({ role, content }) => ({ role, content })),
+      [
+        { role: 'user', content: 'Which hotels reported today?' },
+        { role: 'assistant', content: 'None of the selected hotels reported current data.' },
+      ],
+    );
+
+    const rejected = await commitPortfolioTurn(pg, {
+      conversationId,
+      receipt,
+      question: 'This scope changed before commit',
+      answer: 'This answer must never become conversation history.',
+      status: 'authorization_changed',
+    });
+    assert.deepEqual(
+      { ok: rejected.ok, reason: rejected.reason },
+      { ok: false, reason: 'invalid_receipt' },
+    );
+    const stored = await pg.query<{ messages: number; commits: number }>(
+      `select
+         (select count(*)::int from public.agent_messages where conversation_id = $1) as messages,
+         (select count(*)::int from public.portfolio_query_turn_commits where conversation_id = $1) as commits`,
+      [conversationId],
+    );
+    assert.deepEqual(stored.rows[0], { messages: 2, commits: 1 });
   });
 
   test('replay selects the newest 24 complete receipted turns before JSON aggregation', async () => {

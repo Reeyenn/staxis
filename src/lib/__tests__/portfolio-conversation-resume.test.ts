@@ -35,11 +35,14 @@ function receipt(input: {
   selector: Record<string, unknown>;
   organizationId?: string;
   authorizationHash?: string;
+  status?: 'completed' | 'partial' | 'abstained' | 'authorization_changed';
+  reported?: number;
 }) {
   const names = new Map([
     [HOTEL_A, 'Comfort Suites'],
     [HOTEL_B, 'Lufkin Inn'],
   ]);
+  const reported = input.reported ?? input.selected.length;
   return {
     id: input.id,
     account_id: ACCOUNT,
@@ -52,7 +55,7 @@ function receipt(input: {
     authorized_property_ids: [HOTEL_A, HOTEL_B].sort(),
     selected_property_ids: [...input.selected].sort(),
     plan: { selector: input.selector },
-    status: 'completed',
+    status: input.status ?? 'completed',
     generated_at: input.generatedAt,
     evidence: {
       organizationId: input.organizationId ?? ORG_A,
@@ -60,16 +63,19 @@ function receipt(input: {
       scopeHash: input.scopeHash,
       authorizedPropertyIds: [HOTEL_A, HOTEL_B].sort(),
       selectedPropertyIds: [...input.selected].sort(),
-      facts: input.selected.map((propertyId) => ({
+      facts: input.selected.slice(0, reported).map((propertyId) => ({
         propertyId,
         propertyName: names.get(propertyId),
       })),
       coverage: {
         authorized: 2,
         selected: input.selected.length,
-        reported: input.selected.length,
-        excluded: 0,
-        excludedHotels: [],
+        reported,
+        excluded: input.selected.length - reported,
+        excludedHotels: input.selected.slice(reported).map((propertyId) => ({
+          propertyId,
+          propertyName: names.get(propertyId),
+        })),
       },
     },
   };
@@ -175,6 +181,45 @@ describe('portfolio conversation replay', () => {
       ],
     );
     assert.doesNotMatch(JSON.stringify(result), /authorizationHash|scopeHash|propertyId/i);
+  });
+
+  test('restores a receipted abstained turn as an honest zero-coverage answer', () => {
+    const question = 'Which hotels reported today?';
+    const answer = 'None of the selected hotels reported current data.';
+    const abstained = receipt({
+      id: RECEIPT_ONE,
+      generatedAt: '2026-07-27T10:00:00.000Z',
+      question,
+      answer,
+      selected: [HOTEL_A, HOTEL_B],
+      scopeHash: SCOPE_HASH_ALL,
+      selector: { kind: 'all_authorized' },
+      status: 'abstained',
+      reported: 0,
+    });
+    const result = replay({
+      messages: [
+        { id: USER_ONE, role: 'user', content: question, is_summary: false },
+        { id: ASSISTANT_ONE, role: 'assistant', content: answer, is_summary: false },
+      ],
+      receipts: [abstained],
+      commits: [{
+        query_receipt_id: RECEIPT_ONE,
+        conversation_id: CONVERSATION,
+        user_message_id: USER_ONE,
+        assistant_message_id: ASSISTANT_ONE,
+        committed_at: '2026-07-27T10:00:01.000Z',
+      }],
+    });
+    assert.deepEqual(result.messages, [
+      { role: 'user', content: question },
+      { role: 'assistant', content: answer },
+    ]);
+    assert.deepEqual(result.scopeDisclosures[0]?.scope.coverage, {
+      reported: 0,
+      total: 2,
+      omitted: 2,
+    });
   });
 
   test('refuses cross-company, stale-authorization, and tampered evidence receipts', () => {

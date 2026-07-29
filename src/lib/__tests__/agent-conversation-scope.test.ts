@@ -25,6 +25,10 @@ const archiveBoundaryMigration = readFileSync(
   join(process.cwd(), 'supabase', 'migrations', '0401_portfolio_conversation_archive_boundary.sql'),
   'utf8',
 );
+const abstainedTurnMigration = readFileSync(
+  join(process.cwd(), 'supabase', 'migrations', '0409_portfolio_abstained_conversation_turns.sql'),
+  'utf8',
+);
 const archivalService = readFileSync(
   join(process.cwd(), 'src', 'lib', 'agent', 'archival.ts'),
   'utf8',
@@ -205,6 +209,34 @@ describe('first-class agent conversation security scope', () => {
         < propertyRpc.indexOf('jsonb_agg('),
     );
     assert.match(propertyRpc, /'wrong_kind'/);
+  });
+
+  test('0409 admits only successful no-data receipts without weakening the atomic turn boundary', () => {
+    assert.match(
+      abstainedTurnMigration,
+      /v_receipt\.status not in \('completed', 'partial', 'abstained'\)/,
+    );
+    assert.doesNotMatch(
+      abstainedTurnMigration,
+      /v_receipt\.status not in \([^)]*authorization_changed/,
+    );
+    for (const invariant of [
+      'staxis_assert_authorization_scope_receipt',
+      'v_receipt.question_hash <> v_question_hash',
+      'v_receipt.answer_hash is null or v_receipt.answer_hash <> v_answer_hash',
+      'insert into public.portfolio_query_turn_commits',
+      "return jsonb_build_object('ok', false, 'reason', 'invalid_receipt')",
+    ]) {
+      assert.ok(abstainedTurnMigration.includes(invariant), `0409 lost ${invariant}`);
+    }
+    assert.match(
+      abstainedTurnMigration,
+      /revoke all on function public\.staxis_commit_portfolio_conversation_turn[\s\S]*from public, anon, authenticated/,
+    );
+    assert.match(
+      abstainedTurnMigration,
+      /grant execute on function public\.staxis_commit_portfolio_conversation_turn[\s\S]*to service_role/,
+    );
   });
 
   test('legacy archive shape keeps explicit columns and 0401 refuses portfolio rows before writes', () => {
