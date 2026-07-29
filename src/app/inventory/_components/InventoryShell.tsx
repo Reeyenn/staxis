@@ -291,9 +291,12 @@ export function InventoryShell() {
   const stableUser = user ?? lastUserRef.current;
   const uid = stableUser?.uid ?? null;
   const capabilityViewerKey = activePropertyViewerKey;
-  const inventoryContextReady = Boolean(
+  const inventoryViewerContextReady = Boolean(
     capabilityViewerKey
     && activeProperty?.id === activePropertyId
+  );
+  const inventoryContextReady = Boolean(
+    inventoryViewerContextReady
     && capabilityOverridesPropertyId === activePropertyId
     && capabilityOverridesViewerKey === capabilityViewerKey
   );
@@ -492,7 +495,7 @@ export function InventoryShell() {
   }, [uid, activePropertyId, canViewFinancials]);
 
   useEffect(() => {
-    if (!uid || !activePropertyId || !inventoryContextReady) return;
+    if (!uid || !activePropertyId || !inventoryViewerContextReady) return;
     setInventoryDataViewerKey(capabilityViewerKey);
     financialEvidenceRef.current = EMPTY_INVENTORY_FINANCIAL_EVIDENCE;
     setItems([]);
@@ -568,7 +571,7 @@ export function InventoryShell() {
       if (retryTimer != null) window.clearTimeout(retryTimer);
       activeUnsubscribe?.();
     };
-  }, [uid, activePropertyId, capabilityViewerKey, inventoryContextReady, inventoryReload, canViewFinancials]);
+  }, [uid, activePropertyId, capabilityViewerKey, inventoryViewerContextReady, inventoryReload]);
 
   // ONE assembly of the board's data fetch — shared by the initial-load effect
   // and refreshData so the two query sets can never drift apart.
@@ -691,7 +694,7 @@ export function InventoryShell() {
   }, []);
 
   useEffect(() => {
-    if (!uid || !activePropertyId || !inventoryContextReady) return;
+    if (!uid || !activePropertyId || !inventoryViewerContextReady) return;
     let cancelled = false;
     const sequence = ++boardLoadSequence.current;
     setBundleLoaded(false);
@@ -721,7 +724,7 @@ export function InventoryShell() {
     return () => {
       cancelled = true;
     };
-  }, [uid, activePropertyId, inventoryContextReady, fetchBoardData, applyBoardData, inventoryReload]);
+  }, [uid, activePropertyId, inventoryViewerContextReady, fetchBoardData, applyBoardData, inventoryReload]);
 
   const loadAuditHistory = useCallback(async (cursor: string | null, append: boolean) => {
     const propertyId = activePropertyId;
@@ -1424,7 +1427,7 @@ export function InventoryShell() {
   }, [activePropertyId, uid, submitQuickCountAttempt]);
 
   const refreshData = useCallback(async () => {
-    if (!uid || !activePropertyId || !inventoryContextReady) return;
+    if (!uid || !activePropertyId || !inventoryViewerContextReady) return;
     const requestedPropertyId = activePropertyId;
     const sequence = ++boardLoadSequence.current;
     try {
@@ -1445,7 +1448,7 @@ export function InventoryShell() {
         setBundleLoadError(true);
       }
     }
-  }, [uid, activePropertyId, inventoryContextReady, fetchBoardData, applyBoardData]);
+  }, [uid, activePropertyId, inventoryViewerContextReady, fetchBoardData, applyBoardData]);
 
   // ── Custom category tabs (0307) — add / delete ──────────────────────
   const addCustomCategory = useCallback(async (name: string) => {
@@ -1610,7 +1613,7 @@ export function InventoryShell() {
   // refreshes transiently null the user; without the latch each blip
   // unmounted the whole board back to the loading branch and replayed the
   // entrance — the "UI pops up over and over" bug.
-  const inventoryDataMatchesViewer = inventoryContextReady
+  const inventoryDataMatchesViewer = inventoryViewerContextReady
     && inventoryDataViewerKey === capabilityViewerKey;
   const dataReady = inventoryDataMatchesViewer && itemsLoaded && bundleLoaded;
   const [revealed, setRevealed] = useState(false);
@@ -1643,7 +1646,7 @@ export function InventoryShell() {
     }
   }
 
-  if (!inventoryDataMatchesViewer || !revealed || !itemsLoaded || !bundleLoaded) {
+  if (!inventoryDataMatchesViewer || !revealed) {
     // Byte-identical to InventoryLoading in ../page.tsx (the SSR Suspense
     // fallback); any drift between the two makes React hydration re-render
     // the whole tree and the loading text visibly flash mid-load.

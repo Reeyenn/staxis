@@ -25,6 +25,7 @@ function section(contents: string, start: string, end: string): string {
 const propertyContext = source('src', 'contexts', 'PropertyContext.tsx');
 const capabilityHook = source('src', 'lib', 'capabilities', 'useCan.ts');
 const inventoryPage = source('src', 'app', 'inventory', 'page.tsx');
+const inventoryShell = source('src', 'app', 'inventory', '_components', 'InventoryShell.tsx');
 const financialsPage = source('src', 'app', 'financials', 'page.tsx');
 const appLoading = source('src', 'app', 'loading.tsx');
 const appError = source('src', 'app', 'error.tsx');
@@ -259,6 +260,28 @@ describe('property and capability readiness', () => {
     );
     assert.doesNotMatch(inventoryPage, /capabilityOverridesStatus|refreshCapabilities/);
     assert.doesNotMatch(inventoryPage, /loading \|\| !activePropertyId/);
+    assert.match(
+      inventoryShell,
+      /const inventoryViewerContextReady = Boolean\([\s\S]*?activeProperty\?\.id === activePropertyId[\s\S]*?\);/,
+    );
+    assert.match(
+      inventoryShell,
+      /const inventoryContextReady = Boolean\([\s\S]*?inventoryViewerContextReady[\s\S]*?capabilityOverridesPropertyId === activePropertyId/,
+    );
+    assert.match(inventoryShell, /const canManage = inventoryContextReady && can\('manage_inventory_orders'\)/);
+    assert.match(
+      inventoryShell,
+      /inventoryFinancialDataEnabled\(\{[\s\S]*?contextReady: inventoryContextReady/,
+    );
+    assert.match(
+      inventoryShell,
+      /if \(!uid \|\| !activePropertyId \|\| !inventoryViewerContextReady\) return;[\s\S]*?subscribeToInventory/,
+    );
+    assert.doesNotMatch(
+      inventoryShell,
+      /if \(!inventoryDataMatchesViewer \|\| !revealed \|\| !itemsLoaded \|\| !bundleLoaded\)/,
+      'a later money-capability refresh must not hide an already revealed stock board',
+    );
   });
 
   test('Financials renders its familiar shell before capability-dependent data', () => {
