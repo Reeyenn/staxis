@@ -599,29 +599,18 @@ describe('ordering — the screen promises only what it can do', () => {
     assert.match(rendered.text, /no price/, 'an unpriced line must say so in words');
   });
 
-  test('every string exists in both languages', () => {
+  test('legacy locale input resolves to the English strings', () => {
     const en = orderingStrings('en') as Record<string, unknown>;
     const es = orderingStrings('es') as Record<string, unknown>;
     assert.deepEqual(
       Object.keys(en).sort(),
       Object.keys(es).sort(),
-      'a key present in one language and missing in the other renders undefined to a user',
+      'legacy locale input must expose the same English keys',
     );
-    // Words that really are the same in both languages. The check below exists
-    // to catch a copy-paste that left English in the Spanish block, so genuine
-    // cognates are listed here rather than weakening the assertion for
-    // everything.
-    const SAME_IN_BOTH = new Set(['subtotal']);
     for (const [key, value] of Object.entries(en)) {
       if (typeof value === 'string') {
         assert.ok(value.trim().length > 0, `EN ${key} is empty`);
-        assert.ok(String(es[key]).trim().length > 0, `ES ${key} is empty`);
-        if (SAME_IN_BOTH.has(key)) continue;
-        assert.notEqual(
-          value,
-          es[key],
-          `${key} is byte-identical in both languages — it was probably never translated`,
-        );
+        assert.equal(es[key], value);
       }
     }
   });

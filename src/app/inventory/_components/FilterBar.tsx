@@ -80,7 +80,7 @@ export function FilterBar({
       />
 
       {/* View switch — Ledger table ↔ triage board. */}
-      <div role="group" aria-label={lang === 'es' ? 'Vista de inventario' : 'Inventory view'} style={{ display: 'inline-flex', border: `1px solid ${T.rule}`, borderRadius: 999, padding: 3, background: T.bg, flexShrink: 0 }}>
+      <div role="group" aria-label={'Inventory view'} style={{ display: 'inline-flex', border: `1px solid ${T.rule}`, borderRadius: 999, padding: 3, background: T.bg, flexShrink: 0 }}>
         {(['ledger', 'board'] as const).map((v) => {
           const active = view === v;
           return (

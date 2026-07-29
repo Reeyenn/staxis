@@ -27,7 +27,7 @@ import { validateUuid } from '@/lib/api-validate';
 import { ok, err, ApiErrorCode } from '@/lib/api-response';
 import { getOrMintRequestId, log } from '@/lib/log';
 import { verifyStaffLinkToken } from '@/lib/staff-link-auth';
-import { SUPPORTED_LOCALES, type HousekeeperLocale } from '@/lib/translations';
+import { STORED_STAFF_LANGUAGE_VALUES, type HousekeeperLocale } from '@/lib/translations';
 import { getEnabledSections } from '@/lib/sections/server';
 import { isSectionEnabled } from '@/lib/sections/registry';
 
@@ -62,7 +62,7 @@ export async function GET(req: NextRequest) {
   // survives reload; narrow any unknown/stale value to null (page keeps 'en').
   const lang: HousekeeperLocale | null =
     typeof data.language === 'string' &&
-    (SUPPORTED_LOCALES as readonly string[]).includes(data.language)
+    (STORED_STAFF_LANGUAGE_VALUES as readonly string[]).includes(data.language)
       ? (data.language as HousekeeperLocale)
       : null;
 

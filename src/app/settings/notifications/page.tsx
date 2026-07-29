@@ -34,11 +34,11 @@ export default function NotificationsPage() {
             }}
           >
             <ChevronLeft size={14} />
-            {lang === 'es' ? 'Configuración' : 'Settings'}
+            {'Settings'}
           </button>
           <h1 style={{ fontFamily: 'var(--font-sans)', fontWeight: 700, fontSize: '17px', display: 'flex', alignItems: 'center', gap: 8 }}>
             <Bell size={15} color="var(--navy)" />
-            {lang === 'es' ? 'Notificaciones' : 'Notifications'}
+            {'Notifications'}
           </h1>
         </div>
 

@@ -36,7 +36,6 @@ import { useProperty } from '@/contexts/PropertyContext';
 import { RouteErrorState } from '@/components/layout/RouteResourceState';
 import { fetchWithAuth } from '@/lib/api-fetch';
 import { can as canForStanding } from '@/lib/capabilities/can';
-import { localizeKnownMessage, type LocalizedMessagePair } from '@/lib/localized-ui-message';
 import {
   EMPTY_COMPANY_ACCESS,
   legacyAccessProfile,
@@ -102,28 +101,11 @@ function isTabId(value: string | null): value is TabId {
     || value === 'access';
 }
 
-function localized(lang: string, en: string, es: string): string {
-  return lang === 'es' ? es : en;
-}
-
-const COMPANY_LOAD_ERROR_MESSAGES = [
-  ['Select a hotel before opening Hotel View.', 'Selecciona un hotel antes de abrir la vista del hotel.'],
-  [
-    'Hotel View is unavailable for the selected hotel. Try again or return to Admin.',
-    'La vista del hotel no está disponible para el hotel seleccionado. Inténtalo de nuevo o vuelve a Admin.',
-  ],
-  ['Company access could not be loaded.', 'No se pudo cargar el acceso de la empresa.'],
-  [
-    'The admin preview response did not match the selected hotel.',
-    'La vista previa de administrador no coincidió con el hotel seleccionado.',
-  ],
-] as const satisfies readonly LocalizedMessagePair[];
-
 function formatDate(value: string | null | undefined, lang: string): string {
-  if (!value) return localized(lang, 'No expiration', 'Sin vencimiento');
+  if (!value) return 'No expiration';
   const parsed = new Date(value);
   if (Number.isNaN(parsed.getTime())) return value;
-  return new Intl.DateTimeFormat(lang === 'es' ? 'es-US' : 'en-US', {
+  return new Intl.DateTimeFormat('en-US', {
     month: 'short',
     day: 'numeric',
     year: 'numeric',
@@ -143,7 +125,7 @@ function statusLabel(status: string, lang: string): string {
     denied: ['Denied', 'Rechazado'],
   };
   const pair = labels[status] ?? [titleCaseAccessValue(status), titleCaseAccessValue(status)];
-  return localized(lang, pair[0], pair[1]);
+  return pair[0];
 }
 
 function statusClass(status: string): string {
@@ -468,7 +450,7 @@ function CompanyAccessContent() {
       setAdminTargetPropertyId(null);
       setData(null);
       setDataViewerKey(null);
-      setLoadError(localized(langRef.current, 'Select a hotel before opening Hotel View.', 'Selecciona un hotel antes de abrir la vista del hotel.'));
+      setLoadError('Select a hotel before opening Hotel View.');
       setLoadErrorViewerKey(requestedViewerKey);
       setLoading(false);
       return;
@@ -501,12 +483,8 @@ function CompanyAccessContent() {
         const body = await response.json().catch(() => ({})) as Envelope<CompanyAccessData>;
         if (!response.ok || !body.ok || !body.data) {
           throw new Error(adminPreview
-            ? localized(
-                langRef.current,
-                'Hotel View is unavailable for the selected hotel. Try again or return to Admin.',
-                'La vista del hotel no está disponible para el hotel seleccionado. Inténtalo de nuevo o vuelve a Admin.',
-              )
-            : body.error || localized(langRef.current, 'Company access could not be loaded.', 'No se pudo cargar el acceso de la empresa.'));
+            ? 'Hotel View is unavailable for the selected hotel. Try again or return to Admin.'
+            : body.error || 'Company access could not be loaded.');
         }
         const normalized = normalizeCompanyData(body.data);
         if (adminPreview && (
@@ -514,7 +492,7 @@ function CompanyAccessContent() {
           || normalized.viewerContext.readOnly !== true
           || normalized.viewerContext.requestedPropertyId !== requestedPropertyId
         )) {
-          throw new Error(localized(langRef.current, 'The admin preview response did not match the selected hotel.', 'La vista previa de administrador no coincidió con el hotel seleccionado.'));
+          throw new Error('The admin preview response did not match the selected hotel.');
         }
         if (!cancelled) {
           setData(normalized);
@@ -537,7 +515,7 @@ function CompanyAccessContent() {
         }
         setLoadError(error instanceof Error
           ? error.message
-          : localized(langRef.current, 'Company access could not be loaded.', 'No se pudo cargar el acceso de la empresa.'));
+          : 'Company access could not be loaded.');
         setLoadErrorViewerKey(requestedViewerKey);
       } finally {
         if (!cancelled) setLoading(false);
@@ -571,11 +549,8 @@ function CompanyAccessContent() {
         )
       : null
     : unscopedCurrentData;
-  const currentLoadError = localizeKnownMessage(
-    adminTargetIsCurrent && loadErrorViewerKey === currentViewerKey ? loadError : null,
-    lang,
-    COMPANY_LOAD_ERROR_MESSAGES,
-  );
+  const currentLoadError =
+    adminTargetIsCurrent && loadErrorViewerKey === currentViewerKey ? loadError : null;
   const resolved = currentData ?? EMPTY_COMPANY_ACCESS;
   const customerStructureViewerKey = accountId && userRole && userRole !== 'admin'
     ? `${accountId}:${userRole}:company-structure:${authorizationFingerprint ?? 'unverified'}`
@@ -608,11 +583,7 @@ function CompanyAccessContent() {
         const response = await fetchWithAuth('/api/company-access/structure');
         const body = await response.json().catch(() => ({})) as Envelope<CompanyStructureProjection>;
         if (!response.ok || !body.ok || !body.data) {
-          throw new Error(body.error || localized(
-            langRef.current,
-            'Live company structure could not be loaded.',
-            'No se pudo cargar la estructura empresarial en vivo.',
-          ));
+          throw new Error(body.error || 'Live company structure could not be loaded.');
         }
         if (!cancelled) {
           setStructure(body.data);
@@ -624,11 +595,7 @@ function CompanyAccessContent() {
           setStructureViewerKey(viewerKey);
           setStructureError(caught instanceof Error
             ? caught.message
-            : localized(
-                langRef.current,
-                'Live company structure could not be loaded.',
-                'No se pudo cargar la estructura empresarial en vivo.',
-              ));
+            : 'Live company structure could not be loaded.');
         }
       } finally {
         if (!cancelled) setStructureLoading(false);
@@ -648,12 +615,12 @@ function CompanyAccessContent() {
   // buildings, "People" is humans.
   const tabs = React.useMemo<TabDefinition[]>(() => {
     return [
-      { id: 'overview', label: localized(lang, 'Overview', 'Resumen'), icon: Building2 },
-      { id: 'hotels', label: localized(lang, 'Hotels', 'Hoteles'), icon: Hotel },
-      { id: 'people', label: localized(lang, 'People', 'Personas'), icon: Users },
-      { id: 'access', label: localized(lang, 'Access', 'Acceso'), icon: KeyRound },
+      { id: 'overview', label: 'Overview', icon: Building2 },
+      { id: 'hotels', label: 'Hotels', icon: Hotel },
+      { id: 'people', label: 'People', icon: Users },
+      { id: 'access', label: 'Access', icon: KeyRound },
     ];
-  }, [lang]);
+  }, []);
 
   React.useEffect(() => {
     const requested = searchParams.get('tab');
@@ -731,18 +698,18 @@ function CompanyAccessContent() {
   );
   const workspaceTitle = adminPreview
     ? (adminViewerContext?.scope === 'organization'
-        ? localized(lang, 'Company Hub', 'Centro de empresa')
+        ? 'Company Hub'
         : adminViewerContext?.scope === 'property'
-          ? localized(lang, 'My Hotel', 'Mi hotel')
-          : localized(lang, 'Hotel View', 'Vista del hotel'))
+          ? 'My Hotel'
+          : 'Hotel View')
     : portfolioMode
-      ? localized(lang, 'My Portfolio', 'Mi portafolio')
-      : localized(lang, 'Company & Access', 'Empresa y acceso');
+      ? 'My Portfolio'
+      : 'Company & Access';
   const customerContextLabel = selectedPortfolioCompany?.organizationName
     ?? (resolved.organizations.length === 1
     ? resolved.organizations[0].name
     : resolved.organizations.length > 1
-      ? localized(lang, `${resolved.organizations.length} company contexts`, `${resolved.organizations.length} contextos de empresa`)
+      ? `${resolved.organizations.length} company contexts`
       : null);
   const contextLabel = adminPreview
     ? adminViewerContext?.targetName ?? activeProperty?.name ?? null
@@ -779,37 +746,21 @@ function CompanyAccessContent() {
               <div className={styles.eyebrow}>
                 {adminPreview
                   ? adminToolsActive
-                    ? localized(lang, 'Staxis admin view', 'Vista de administrador de Staxis')
-                    : localized(lang, 'Staxis hotel view', 'Vista del hotel de Staxis')
+                    ? 'Staxis admin view'
+                    : 'Staxis hotel view'
                   : portfolioMode
-                    ? localized(lang, 'Portfolio workspace', 'Espacio del portafolio')
-                    : localized(lang, 'Company workspace', 'Espacio de empresa')}
+                    ? 'Portfolio workspace'
+                    : 'Company workspace'}
               </div>
               <h1 ref={previewHeadingRef} tabIndex={adminPreview ? -1 : undefined}>{workspaceTitle}</h1>
               <p>
                 {adminPreview
                   ? adminToolsActive
-                    ? localized(
-                        lang,
-                        'Manage this hotel without leaving My Hotel.',
-                        'Administra este hotel sin salir de Mi hotel.',
-                      )
-                    : localized(
-                        lang,
-                        'Review this hotel in read-only mode.',
-                        'Revisa este hotel en modo de solo lectura.',
-                      )
+                    ? 'Manage this hotel without leaving My Hotel.'
+                    : 'Review this hotel in read-only mode.'
                   : portfolioMode
-                    ? localized(
-                        lang,
-                        'Manage company knowledge, hotels, people, and access in one place.',
-                        'Administra el conocimiento, los hoteles, las personas y el acceso de la empresa en un solo lugar.',
-                      )
-                    : localized(
-                        lang,
-                        'See your hotels, team, and exactly why you have access.',
-                        'Consulta tus hoteles, tu equipo y exactamente por qué tienes acceso.',
-                      )}
+                    ? 'Manage company knowledge, hotels, people, and access in one place.'
+                    : 'See your hotels, team, and exactly why you have access.'}
               </p>
             </div>
           </div>
@@ -820,8 +771,8 @@ function CompanyAccessContent() {
                 className={styles.heroHotelSwitcher}
                 hotels={contextProperties}
                 activeHotelId={activeProperty?.id ?? null}
-                label={localized(lang, 'Choose hotel to manage', 'Elige el hotel que deseas administrar')}
-                placeholder={localized(lang, 'Choose hotel', 'Elige un hotel')}
+                label={'Choose hotel to manage'}
+                placeholder={'Choose hotel'}
                 onSelect={(hotelId) => {
                   setTeamInviteHotelId(null);
                   setActivePropertyId(hotelId);
@@ -839,10 +790,10 @@ function CompanyAccessContent() {
             {adminPreview ? (
               <label className={styles.adminViewSwitch}>
                 <span className={styles.adminViewSwitchLabel}>
-                  {localized(lang, 'Admin view', 'Vista de administrador')}
+                  {'Admin view'}
                   <small>{adminToolsActive
-                    ? localized(lang, 'On', 'Activada')
-                    : localized(lang, 'Off', 'Desactivada')}</small>
+                    ? 'On'
+                    : 'Off'}</small>
                 </span>
                 <input
                   type="checkbox"
@@ -864,12 +815,12 @@ function CompanyAccessContent() {
           <div className={styles.partialNotice} role="status">
             <AlertTriangle size={17} aria-hidden="true" />
             <div>
-              <strong>{localized(lang, 'Showing your current hotel access', 'Mostrando tu acceso actual al hotel')}</strong>
-              <span>{localized(lang, 'Company details are temporarily unavailable.', 'Los detalles de la empresa no están disponibles temporalmente.')}</span>
+              <strong>{'Showing your current hotel access'}</strong>
+              <span>{'Company details are temporarily unavailable.'}</span>
             </div>
             <button type="button" onClick={() => setRetryKey((value) => value + 1)} disabled={loading}>
               <RefreshCw size={14} aria-hidden="true" />
-              {localized(lang, 'Retry', 'Reintentar')}
+              {'Retry'}
             </button>
           </div>
         ) : null}
@@ -880,7 +831,7 @@ function CompanyAccessContent() {
               <AlertTriangle size={20} />
             </span>
             <div>
-              <h2 id="admin-preview-error-title" tabIndex={-1}>{localized(lang, 'Hotel View could not be opened', 'No se pudo abrir la vista del hotel')}</h2>
+              <h2 id="admin-preview-error-title" tabIndex={-1}>{'Hotel View could not be opened'}</h2>
               <p>{currentLoadError}</p>
             </div>
             <div className={styles.adminPreviewErrorActions}>
@@ -893,10 +844,10 @@ function CompanyAccessContent() {
                 disabled={loading}
               >
                 <RefreshCw size={14} aria-hidden="true" />
-                {localized(lang, 'Retry', 'Reintentar')}
+                {'Retry'}
               </button>
               <button type="button" onClick={() => pushReliable('/admin/properties#live')}>
-                {localized(lang, 'Back to Admin', 'Volver a Admin')}
+                {'Back to Admin'}
                 <ArrowRight size={14} aria-hidden="true" />
               </button>
             </div>
@@ -904,7 +855,7 @@ function CompanyAccessContent() {
         ) : (
           <>
             <div className={styles.tabs}>
-              <nav className={styles.tabList} role="tablist" aria-label={localized(lang, 'Company sections', 'Secciones de empresa')}>
+              <nav className={styles.tabList} role="tablist" aria-label={'Company sections'}>
                 {tabs.map((item, index) => {
                   const Icon = item.icon;
                   const active = tab === item.id;
@@ -937,16 +888,16 @@ function CompanyAccessContent() {
             >
               {portfolioMode && portfolio.error ? (
                 <RouteErrorState
-                  title={localized(lang, 'Portfolio context could not be confirmed', 'No se pudo confirmar el contexto del portafolio')}
+                  title={'Portfolio context could not be confirmed'}
                   message={portfolio.error}
-                  retryLabel={localized(lang, 'Try again', 'Reintentar')}
+                  retryLabel={'Try again'}
                   onRetry={() => void portfolio.reload()}
                 />
               ) : tab === 'people' && capabilityOverridesStatus === 'error' ? (
                 <RouteErrorState
-                  title={localized(lang, 'People access could not be confirmed', 'No se pudo confirmar el acceso a Personas')}
+                  title={'People access could not be confirmed'}
                   message={capabilityOverridesError ?? undefined}
-                  retryLabel={localized(lang, 'Try again', 'Reintentar')}
+                  retryLabel={'Try again'}
                   onRetry={() => void refreshCapabilities()}
                 />
               ) : showLoading ? (
@@ -954,8 +905,8 @@ function CompanyAccessContent() {
               ) : !user ? (
                 <EmptyState
                   icon={ShieldCheck}
-                  title={localized(lang, 'Sign in to view access', 'Inicia sesión para ver el acceso')}
-                  description={localized(lang, 'Your company access is tied to your Staxis account.', 'Tu acceso de empresa está vinculado a tu cuenta de Staxis.')}
+                  title={'Sign in to view access'}
+                  description={'Your company access is tied to your Staxis account.'}
                 />
               ) : tab === 'overview' ? (
                 <>
@@ -1108,42 +1059,38 @@ function OverviewPanel({ data, structure, structureLoading, structureUnavailable
       <div className={styles.summaryGrid}>
         <SummaryCard
           icon={Hotel}
-          label={localized(lang, 'Hotels in scope', 'Hoteles dentro del alcance')}
+          label={'Hotels in scope'}
           value={String(data.properties.length)}
-          detail={activePropertyName ?? localized(lang, 'No active hotel', 'Ningún hotel activo')}
+          detail={activePropertyName ?? 'No active hotel'}
         />
         <SummaryCard
           icon={Users}
           label={propertyPreview
-            ? localized(lang, 'Active hotel staff', 'Personal activo del hotel')
-            : localized(lang, 'Active people', 'Personas activas')}
+            ? 'Active hotel staff'
+            : 'Active people'}
           value={propertyPreview && hotelRosterUnavailable ? '—' : String(peopleCount)}
           detail={propertyPreview
             ? hotelRosterUnavailable
-              ? localized(lang, 'Roster temporarily unavailable', 'Registro no disponible temporalmente')
-              : localized(lang, 'From the hotel roster', 'Del registro del hotel')
+              ? 'Roster temporarily unavailable'
+              : 'From the hotel roster'
             : data.permissions.viewPeople
-              ? localized(lang, 'Based on your scope', 'Según tu alcance')
-              : localized(lang, 'Only your access is shown', 'Solo se muestra tu acceso')}
+              ? 'Based on your scope'
+              : 'Only your access is shown'}
         />
         <SummaryCard
           icon={Clock3}
-          label={localized(lang, 'Open access work', 'Trabajo de acceso pendiente')}
+          label={'Open access work'}
           value={String(pendingCount)}
-          detail={localized(lang, 'Invites and requests', 'Invitaciones y solicitudes')}
+          detail={'Invites and requests'}
         />
       </div>
 
       {!data.viewerContext ? (
         <section className={styles.sectionBlock}>
           <SectionHeading
-            eyebrow={localized(lang, 'Your access receipt', 'Tu recibo de acceso')}
-            title={localized(lang, 'Why you can see this workspace', 'Por qué puedes ver este espacio')}
-            description={localized(
-              lang,
-              'Your title describes your work. Your access profile and scope control what you can actually open.',
-              'Tu cargo describe tu trabajo. Tu perfil y alcance de acceso controlan lo que puedes abrir.',
-            )}
+            eyebrow={'Your access receipt'}
+            title={'Why you can see this workspace'}
+            description={'Your title describes your work. Your access profile and scope control what you can actually open.'}
           />
           {primaryReceipt ? (
             <AccessReceiptCard receipt={primaryReceipt} properties={data.properties} lang={lang} onView={() => onViewReceipt(primaryReceipt)} featured />
@@ -1151,8 +1098,8 @@ function OverviewPanel({ data, structure, structureLoading, structureUnavailable
             <EmptyState
               icon={KeyRound}
               compact
-              title={localized(lang, 'No active access grant', 'No hay una concesión de acceso activa')}
-              description={localized(lang, 'Ask your manager or Staxis support to review your account.', 'Pide a tu gerente o al soporte de Staxis que revise tu cuenta.')}
+              title={'No active access grant'}
+              description={'Ask your manager or Staxis support to review your account.'}
             />
           )}
         </section>
@@ -1160,9 +1107,9 @@ function OverviewPanel({ data, structure, structureLoading, structureUnavailable
 
       <section className={styles.sectionBlock}>
         <SectionHeading
-          eyebrow={localized(lang, 'Your structure', 'Tu estructura')}
-          title={localized(lang, 'Companies, regions, and hotels', 'Empresas, regiones y hoteles')}
-            description={localized(lang, 'Each company relationship shows the hotels in that exact scope.', 'Cada relación empresarial muestra los hoteles dentro de ese alcance exacto.')}
+          eyebrow={'Your structure'}
+          title={'Companies, regions, and hotels'}
+            description={'Each company relationship shows the hotels in that exact scope.'}
         />
         <OrganizationHierarchy data={data} lang={lang} limit={5} />
       </section>
@@ -1195,9 +1142,9 @@ function HotelsPanel({ data, structure, lang, activeProperty, adminToolsEnabled,
   return (
     <div className={styles.stack}>
       <SectionHeading
-        eyebrow={localized(lang, 'Property scope', 'Alcance de propiedades')}
-        title={localized(lang, 'Hotels you can access', 'Hoteles a los que tienes acceso')}
-        description={localized(lang, 'Grouped by organization, portfolio, or region.', 'Agrupados por organización, cartera o región.')}
+        eyebrow={'Property scope'}
+        title={'Hotels you can access'}
+        description={'Grouped by organization, portfolio, or region.'}
       />
       {data.viewerContext?.kind === 'staxis_admin_preview' && activeProperty ? (
         <AdminHotelRelationshipManager
@@ -1216,20 +1163,20 @@ function HotelsPanel({ data, structure, lang, activeProperty, adminToolsEnabled,
         statusFilter={statusFilter}
         onStatusFilterChange={onStatusFilterChange}
         statusOptions={[
-          { value: 'all', label: localized(lang, 'All', 'Todos') },
-          { value: 'active', label: localized(lang, 'Active', 'Activos') },
-          { value: 'not_active', label: localized(lang, 'Not active', 'No activos') },
+          { value: 'all', label: 'All' },
+          { value: 'active', label: 'Active' },
+          { value: 'not_active', label: 'Not active' },
         ]}
-        searchLabel={localized(lang, 'Search hotels or companies', 'Buscar hoteles o empresas')}
+        searchLabel={'Search hotels or companies'}
       />
       {propertyMatches.length > 0 ? (
         <OrganizationHierarchy data={{ ...data, properties: propertyMatches }} lang={lang} visiblePropertyIds={visibleIds} />
       ) : (
         <EmptyState
           icon={Search}
-          title={localized(lang, 'No hotels match', 'Ningún hotel coincide')}
-          description={localized(lang, 'Try another search or clear the status filter.', 'Prueba otra búsqueda o borra el filtro de estado.')}
-          actionLabel={localized(lang, 'Clear filters', 'Borrar filtros')}
+          title={'No hotels match'}
+          description={'Try another search or clear the status filter.'}
+          actionLabel={'Clear filters'}
           onAction={() => { onQueryChange(''); onStatusFilterChange('all'); }}
         />
       )}
@@ -1280,18 +1227,14 @@ function PeoplePanel({ data, staff, hotelRosterUnavailable, lang, currentUser, c
         <section className={styles.sectionBlock}>
           <div className={styles.headingWithAction}>
             <SectionHeading
-              eyebrow={localized(lang, 'Company people', 'Personas de la empresa')}
-              title={localized(lang, 'Memberships and invitations', 'Membresías e invitaciones')}
-              description={localized(
-                lang,
-                'Company membership says who belongs to this company. The hotel roster below is the operational team for the selected hotel.',
-                'La membresía empresarial indica quién pertenece a esta empresa. El registro del hotel a continuación es el equipo operativo del hotel seleccionado.',
-              )}
+              eyebrow={'Company people'}
+              title={'Memberships and invitations'}
+              description={'Company membership says who belongs to this company. The hotel roster below is the operational team for the selected hotel.'}
             />
             {!adminPreview && !canManageTeam && canInviteAccounts ? (
               <button type="button" className={styles.primaryButton} onClick={() => onInviteDialogOpenChange(true)}>
                 <UserPlus size={16} aria-hidden="true" />
-                {localized(lang, 'Invite company member', 'Invitar miembro de la empresa')}
+                {'Invite company member'}
               </button>
             ) : null}
           </div>
@@ -1313,7 +1256,7 @@ function PeoplePanel({ data, staff, hotelRosterUnavailable, lang, currentUser, c
           ) : null}
           {data.invitations.length > 0 ? (
             <div className={styles.peopleInvitations}>
-              <h3>{localized(lang, 'Pending invitations', 'Invitaciones pendientes')}</h3>
+              <h3>{'Pending invitations'}</h3>
               <div className={styles.listCard} role="list">
                 {data.invitations.map((invitation) => (
                   <InvitationRow
@@ -1335,7 +1278,7 @@ function PeoplePanel({ data, staff, hotelRosterUnavailable, lang, currentUser, c
           hotelName={activeProperty.name}
           currentUser={currentUser}
           currentAccountId={currentAccountId}
-          lang={lang === 'es' ? 'es' : 'en'}
+          lang={'en'}
           canManageTeam={canManageTeam}
           canInviteAccounts={canInviteAccounts}
           canViewWages={canViewWages}
@@ -1352,8 +1295,8 @@ function PeoplePanel({ data, staff, hotelRosterUnavailable, lang, currentUser, c
       ) : (
         <EmptyState
           icon={Hotel}
-          title={localized(lang, 'Choose a hotel first', 'Primero elige un hotel')}
-          description={localized(lang, 'Team accounts are always managed for one exact hotel.', 'Las cuentas del equipo siempre se administran para un hotel específico.')}
+          title={'Choose a hotel first'}
+          description={'Team accounts are always managed for one exact hotel.'}
         />
       )}
     </div>
@@ -1398,17 +1341,13 @@ function AccessPanel({ data, lang, currentUser, currentAccountId, activeProperty
         const response = await fetchWithAuth('/api/company-access/access-editor');
         const body = await response.json().catch(() => ({})) as Envelope<CompanyAccessEditorProjection>;
         if (!response.ok || !body.ok || !body.data) {
-          throw new Error(body.error || localized(
-            lang,
-            'Access editing could not be loaded.',
-            'No se pudo cargar la edición de acceso.',
-          ));
+          throw new Error(body.error || 'Access editing could not be loaded.');
         }
         if (!cancelled) setEditorProjection(body.data);
       } catch (caught) {
         if (!cancelled) setEditorError(caught instanceof Error
           ? caught.message
-          : localized(lang, 'Access editing could not be loaded.', 'No se pudo cargar la edición de acceso.'));
+          : 'Access editing could not be loaded.');
       }
     })();
     return () => { cancelled = true; };
@@ -1445,30 +1384,26 @@ function AccessPanel({ data, lang, currentUser, currentAccountId, activeProperty
       <div className={styles.headingWithAction}>
         <SectionHeading
           eyebrow={adminPreview
-            ? localized(lang, 'Access records', 'Registros de acceso')
-            : localized(lang, 'Effective access', 'Acceso efectivo')}
+            ? 'Access records'
+            : 'Effective access'}
           title={adminPreview
-            ? localized(lang, 'Customer access records', 'Registros de acceso del cliente')
-            : localized(lang, 'What you can reach and why', 'A qué puedes acceder y por qué')}
+            ? 'Customer access records'
+            : 'What you can reach and why'}
           description={adminPreview
-            ? localized(lang, 'Review this scope without changing customer access.', 'Revisa este alcance sin cambiar el acceso del cliente.')
-            : localized(
-                lang,
-                'Manage each person’s role and exact scope: whole company, portfolio or region, or selected hotels. Revocation is immediate and audited.',
-                'Administra el rol y el alcance exacto de cada persona: empresa completa, cartera o región, u hoteles seleccionados. La revocación es inmediata y auditada.',
-              )}
+            ? 'Review this scope without changing customer access.'
+            : 'Manage each person’s role and exact scope: whole company, portfolio or region, or selected hotels. Revocation is immediate and audited.'}
         />
         {!adminPreview ? <div className={styles.headingActions}>
           {data.permissions.requestAccess ? (
             <button type="button" className={styles.secondaryButton} onClick={onRequestAccess}>
               <KeyRound size={16} aria-hidden="true" />
-              {localized(lang, 'Request access', 'Solicitar acceso')}
+              {'Request access'}
             </button>
           ) : null}
           {!data.permissions.manageAccess ? (
-            <button type="button" className={styles.secondaryButton} disabled title={localized(lang, 'A company administrator manages access.', 'Un administrador de empresa gestiona el acceso.')}>
+            <button type="button" className={styles.secondaryButton} disabled title={'A company administrator manages access.'}>
               <ShieldCheck size={16} aria-hidden="true" />
-              {localized(lang, 'Access is managed', 'El acceso es administrado')}
+              {'Access is managed'}
             </button>
           ) : null}
         </div> : null}
@@ -1493,13 +1428,9 @@ function AccessPanel({ data, lang, currentUser, currentAccountId, activeProperty
       {visibleMemberships.length > 0 ? (
         <section className={styles.sectionBlock}>
           <SectionHeading
-            eyebrow={localized(lang, 'Organization access', 'Acceso de la organización')}
-            title={localized(lang, 'Roles and scopes by person', 'Roles y alcances por persona')}
-            description={localized(
-              lang,
-              'Company-wide, portfolio/region, and selected-hotel grants are shown separately from membership and the operational hotel roster.',
-              'Las concesiones para toda la empresa, cartera/región y hoteles seleccionados se muestran por separado de la membresía y del registro operativo del hotel.',
-            )}
+            eyebrow={'Organization access'}
+            title={'Roles and scopes by person'}
+            description={'Company-wide, portfolio/region, and selected-hotel grants are shown separately from membership and the operational hotel roster.'}
           />
           <div className={styles.listCard} role="list">
             {visibleMemberships.map((membership) => {
@@ -1520,8 +1451,8 @@ function AccessPanel({ data, lang, currentUser, currentAccountId, activeProperty
                   onLifecycleAction={onLifecycleAction}
                   onEditAccess={canEditAccess ? () => setEditingMembershipId(membership.id) : undefined}
                   accessEditLabel={(editorMembership?.currentGrants.length ?? 0) > 0
-                    ? localized(lang, 'Edit role and scope', 'Editar rol y alcance')
-                    : localized(lang, 'Add role and scope', 'Agregar rol y alcance')}
+                    ? 'Edit role and scope'
+                    : 'Add role and scope'}
                   showGrantActions={!adminPreview}
                   showMembershipActions={false}
                 />
@@ -1541,7 +1472,7 @@ function AccessPanel({ data, lang, currentUser, currentAccountId, activeProperty
                 <span>
                   {titleCaseAccessValue(grant.accessProfile)} · {grant.scopeLabel}
                   {grant.expiresAt
-                    ? ` · ${localized(lang, 'Expires', 'Vence')} ${formatDate(grant.expiresAt, lang)}`
+                    ? ` · ${'Expires'} ${formatDate(grant.expiresAt, lang)}`
                     : ''}
                 </span>
               </div>
@@ -1567,20 +1498,20 @@ function AccessPanel({ data, lang, currentUser, currentAccountId, activeProperty
           <EmptyState
             icon={KeyRound}
             title={adminPreview
-              ? localized(lang, 'No customer access records found', 'No se encontraron registros de acceso del cliente')
-              : localized(lang, 'No access grants found', 'No se encontraron concesiones de acceso')}
+              ? 'No customer access records found'
+              : 'No access grants found'}
             description={adminPreview
-              ? localized(lang, 'There are no customer grant records in this preview scope.', 'No hay registros de concesiones del cliente dentro de este alcance de vista previa.')
-              : localized(lang, 'Your administrator can review the account and hotel assignment.', 'Tu administrador puede revisar la cuenta y la asignación del hotel.')}
+              ? 'There are no customer grant records in this preview scope.'
+              : 'Your administrator can review the account and hotel assignment.'}
           />
       )}
 
       {data.permissions.viewAccess && data.requests.length > 0 ? (
         <section className={styles.sectionBlock}>
           <SectionHeading
-            eyebrow={localized(lang, 'Open work', 'Trabajo pendiente')}
-            title={localized(lang, 'Requests and invitations', 'Solicitudes e invitaciones')}
-            description={localized(lang, 'Pending access never counts as active access.', 'El acceso pendiente nunca cuenta como acceso activo.')}
+            eyebrow={'Open work'}
+            title={'Requests and invitations'}
+            description={'Pending access never counts as active access.'}
           />
           <div className={styles.listCard} role="list">
             {data.requests.map((request) => (
@@ -1594,7 +1525,7 @@ function AccessPanel({ data, lang, currentUser, currentAccountId, activeProperty
                   <span className={`${styles.status} ${statusClass(request.status)}`}>{statusLabel(request.status, lang)}</span>
                   {request.canReview && request.status === 'pending' ? (
                     <button type="button" className={styles.reviewButton} onClick={() => onReviewRequest(request)}>
-                      {localized(lang, 'Review', 'Revisar')}
+                      {'Review'}
                     </button>
                   ) : null}
                 </div>
@@ -1654,8 +1585,8 @@ function OrganizationHierarchy({ data, lang, limit, visiblePropertyIds }: {
       <EmptyState
         icon={Hotel}
         compact
-        title={localized(lang, 'No hotels assigned', 'No hay hoteles asignados')}
-        description={localized(lang, 'Hotels will appear after an access grant becomes active.', 'Los hoteles aparecerán cuando una concesión de acceso se active.')}
+        title={'No hotels assigned'}
+        description={'Hotels will appear after an access grant becomes active.'}
       />
     );
   }
@@ -1685,11 +1616,7 @@ function OrganizationHierarchy({ data, lang, limit, visiblePropertyIds }: {
             <div>
               <strong>{group.name}</strong>
               <span>
-                {localized(
-                  lang,
-                  'Runs your hotel. You see your own hotel here.',
-                  'Administra tu hotel. Aquí ves tu propio hotel.',
-                )}
+                {'Runs your hotel. You see your own hotel here.'}
               </span>
             </div>
             <span className={styles.countBadge}>{group.properties.length}</span>
@@ -1707,8 +1634,8 @@ function OrganizationHierarchy({ data, lang, limit, visiblePropertyIds }: {
           <div className={styles.groupHeader}>
             <span className={styles.groupIcon}><Hotel size={18} aria-hidden="true" /></span>
             <div>
-              <strong>{localized(lang, 'Independent hotel access', 'Acceso a hoteles independientes')}</strong>
-              <span>{localized(lang, 'Hotels not grouped under a management company', 'Hoteles no agrupados bajo una empresa de gestión')}</span>
+              <strong>{'Independent hotel access'}</strong>
+              <span>{'Hotels not grouped under a management company'}</span>
             </div>
             <span className={styles.countBadge}>{independent.length}</span>
           </div>
@@ -1737,7 +1664,7 @@ function OrganizationGroup({ organization, portfolios, properties, lang, default
         <span className={styles.groupIcon}><Building2 size={18} aria-hidden="true" /></span>
         <span className={styles.summaryCopy}>
           <strong>{organization.name}</strong>
-          <span>{titleCaseAccessValue(organization.type)} · {properties.length} {properties.length === 1 ? localized(lang, 'hotel', 'hotel') : localized(lang, 'hotels', 'hoteles')}</span>
+          <span>{titleCaseAccessValue(organization.type)} · {properties.length} {properties.length === 1 ? 'hotel' : 'hotels'}</span>
         </span>
         <span className={`${styles.status} ${statusClass(organization.status)}`}>{statusLabel(organization.status, lang)}</span>
         <ChevronDown className={styles.disclosureIcon} size={17} aria-hidden="true" />
@@ -1764,7 +1691,7 @@ function OrganizationGroup({ organization, portfolios, properties, lang, default
             {portfolios.length > 0 ? (
               <div className={styles.portfolioHeading}>
                 <MapPinned size={16} aria-hidden="true" />
-                <span>{localized(lang, 'Other hotels', 'Otros hoteles')}</span>
+                <span>{'Other hotels'}</span>
                 <small>{ungrouped.length}</small>
               </div>
             ) : null}
@@ -1806,7 +1733,7 @@ function AccessReceiptCard({ receipt, properties, lang, onView, featured = false
       <div className={styles.receiptHeader}>
         <span className={styles.receiptSeal}><ShieldCheck size={20} aria-hidden="true" /></span>
         <div>
-          <span className={styles.receiptEyebrow}>{localized(lang, 'Access profile', 'Perfil de acceso')}</span>
+          <span className={styles.receiptEyebrow}>{'Access profile'}</span>
           <h3>{titleCaseAccessValue(receipt.accessProfile)}</h3>
         </div>
         <span className={`${styles.status} ${statusClass(receipt.status)}`}>{statusLabel(receipt.status, lang)}</span>
@@ -1815,32 +1742,32 @@ function AccessReceiptCard({ receipt, properties, lang, onView, featured = false
         <div className={styles.jobLine}>
           <BriefcaseBusiness size={15} aria-hidden="true" />
           <span>{receipt.jobTitle}</span>
-          <small>{localized(lang, 'Job title', 'Cargo')}</small>
+          <small>{'Job title'}</small>
         </div>
       ) : null}
       <dl className={styles.receiptFacts}>
         <div>
-          <dt>{localized(lang, 'Scope', 'Alcance')}</dt>
+          <dt>{'Scope'}</dt>
           <dd>{receipt.scopeLabel}</dd>
         </div>
         <div>
-          <dt>{localized(lang, 'Hotels', 'Hoteles')}</dt>
+          <dt>{'Hotels'}</dt>
           <dd>{hotelNames.length || receipt.propertyIds.length}</dd>
         </div>
         <div>
-          <dt>{localized(lang, 'Expires', 'Vence')}</dt>
+          <dt>{'Expires'}</dt>
           <dd>{formatDate(receipt.expiresAt, lang)}</dd>
         </div>
       </dl>
       {hotelNames.length > 0 ? (
-        <div className={styles.hotelChips} aria-label={localized(lang, 'Hotels in this scope', 'Hoteles dentro de este alcance')}>
+        <div className={styles.hotelChips} aria-label={'Hotels in this scope'}>
           {hotelNames.slice(0, 3).map((name) => <span key={name}>{name}</span>)}
           {hotelNames.length > 3 ? <span>+{hotelNames.length - 3}</span> : null}
         </div>
       ) : null}
       <button type="button" className={styles.receiptAction} onClick={onView}>
         <CircleHelp size={15} aria-hidden="true" />
-        {localized(lang, 'Why I have access', 'Por qué tengo acceso')}
+        {'Why I have access'}
         <ArrowRight size={14} aria-hidden="true" />
       </button>
     </article>
@@ -1895,7 +1822,7 @@ function AccessPreviewDialog({ receipt, organizations, properties, lang, onClose
 
   return (
     <div className={styles.dialogLayer}>
-      <button type="button" className={styles.dialogScrim} aria-label={localized(lang, 'Close access preview', 'Cerrar vista previa de acceso')} onClick={onClose} />
+      <button type="button" className={styles.dialogScrim} aria-label={'Close access preview'} onClick={onClose} />
       <div
         ref={dialogRef}
         className={styles.dialog}
@@ -1907,37 +1834,33 @@ function AccessPreviewDialog({ receipt, organizations, properties, lang, onClose
         <div className={styles.dialogHeader}>
           <span className={styles.dialogIcon}><ShieldCheck size={21} aria-hidden="true" /></span>
           <div>
-            <span>{localized(lang, 'Access preview', 'Vista previa de acceso')}</span>
+            <span>{'Access preview'}</span>
             <h2 id="access-preview-title">{titleCaseAccessValue(receipt.accessProfile)}</h2>
           </div>
-          <button ref={closeRef} type="button" className={styles.iconButton} onClick={onClose} aria-label={localized(lang, 'Close', 'Cerrar')}>
+          <button ref={closeRef} type="button" className={styles.iconButton} onClick={onClose} aria-label={'Close'}>
             <X size={17} aria-hidden="true" />
           </button>
         </div>
         <p id="access-preview-description" className={styles.dialogIntro}>
-          {localized(
-            lang,
-            'This receipt explains the effective access Staxis calculated for your account. Viewing it does not change anything.',
-            'Este recibo explica el acceso efectivo que Staxis calculó para tu cuenta. Verlo no cambia nada.',
-          )}
+          {'This receipt explains the effective access Staxis calculated for your account. Viewing it does not change anything.'}
         </p>
         <dl className={styles.dialogFacts}>
-          <div><dt>{localized(lang, 'Company', 'Empresa')}</dt><dd>{organization?.name ?? localized(lang, 'Hotel-level access', 'Acceso a nivel de hotel')}</dd></div>
-          <div><dt>{localized(lang, 'Access profile', 'Perfil de acceso')}</dt><dd>{titleCaseAccessValue(receipt.accessProfile)}</dd></div>
-          <div><dt>{localized(lang, 'Scope', 'Alcance')}</dt><dd>{receipt.scopeLabel}</dd></div>
-          <div><dt>{localized(lang, 'Source', 'Origen')}</dt><dd>{titleCaseAccessValue(receipt.source)}</dd></div>
-          <div><dt>{localized(lang, 'Granted by', 'Concedido por')}</dt><dd>{receipt.grantedBy || localized(lang, 'System record', 'Registro del sistema')}</dd></div>
-          <div><dt>{localized(lang, 'Expiration', 'Vencimiento')}</dt><dd>{formatDate(receipt.expiresAt, lang)}</dd></div>
+          <div><dt>{'Company'}</dt><dd>{organization?.name ?? 'Hotel-level access'}</dd></div>
+          <div><dt>{'Access profile'}</dt><dd>{titleCaseAccessValue(receipt.accessProfile)}</dd></div>
+          <div><dt>{'Scope'}</dt><dd>{receipt.scopeLabel}</dd></div>
+          <div><dt>{'Source'}</dt><dd>{titleCaseAccessValue(receipt.source)}</dd></div>
+          <div><dt>{'Granted by'}</dt><dd>{receipt.grantedBy || 'System record'}</dd></div>
+          <div><dt>{'Expiration'}</dt><dd>{formatDate(receipt.expiresAt, lang)}</dd></div>
         </dl>
         {receipt.reason ? (
           <div className={styles.reasonBox}>
-            <strong>{localized(lang, 'Reason', 'Motivo')}</strong>
+            <strong>{'Reason'}</strong>
             <span>{receipt.reason}</span>
           </div>
         ) : null}
         <div className={styles.dialogPropertyBlock}>
           <div className={styles.dialogPropertyHeading}>
-            <span>{localized(lang, 'Hotels included', 'Hoteles incluidos')}</span>
+            <span>{'Hotels included'}</span>
             <small>{scopedProperties.length || receipt.propertyIds.length}</small>
           </div>
           {scopedProperties.length > 0 ? (
@@ -1947,12 +1870,12 @@ function AccessPreviewDialog({ receipt, organizations, properties, lang, onClose
               ))}
             </ul>
           ) : (
-            <p>{localized(lang, 'No current hotels are attached to this scope.', 'No hay hoteles actuales vinculados a este alcance.')}</p>
+            <p>{'No current hotels are attached to this scope.'}</p>
           )}
         </div>
         <div className={styles.dialogFooter}>
-          <span><ShieldCheck size={14} aria-hidden="true" />{localized(lang, 'Read-only preview', 'Vista previa de solo lectura')}</span>
-          <button type="button" className={styles.primaryButton} onClick={onClose}>{localized(lang, 'Done', 'Listo')}</button>
+          <span><ShieldCheck size={14} aria-hidden="true" />{'Read-only preview'}</span>
+          <button type="button" className={styles.primaryButton} onClick={onClose}>{'Done'}</button>
         </div>
       </div>
     </div>
@@ -1998,12 +1921,12 @@ function FilterBar<T extends string>({ lang, query, onQueryChange, statusFilter,
         <Search size={17} aria-hidden="true" />
         <input type="search" value={query} onChange={(event) => onQueryChange(event.target.value)} placeholder={searchLabel} />
         {query ? (
-          <button type="button" onClick={() => onQueryChange('')} aria-label={localized(lang, 'Clear search', 'Borrar búsqueda')}>
+          <button type="button" onClick={() => onQueryChange('')} aria-label={'Clear search'}>
             <X size={14} aria-hidden="true" />
           </button>
         ) : null}
       </label>
-      <div className={styles.filterChips} role="group" aria-label={localized(lang, 'Filter by status', 'Filtrar por estado')}>
+      <div className={styles.filterChips} role="group" aria-label={'Filter by status'}>
         {statusOptions.map((option) => (
           <button
             key={option.value}
@@ -2043,7 +1966,7 @@ function MembershipRow({ membership, organization, isCurrentUser, lang, onLifecy
       <div className={styles.rowBody}>
         <strong>
           {membership.displayName}
-          {isCurrentUser ? <small>{localized(lang, 'You', 'Tú')}</small> : null}
+          {isCurrentUser ? <small>{'You'}</small> : null}
         </strong>
         <span>
           {membership.jobTitle || titleCaseAccessValue(membership.accessProfile ?? 'team member')}
@@ -2059,11 +1982,7 @@ function MembershipRow({ membership, organization, isCurrentUser, lang, onLifecy
                 ))
               : membership.accessProfile ? (
                   <small>
-                    {titleCaseAccessValue(membership.accessProfile)} · {membership.propertyIds.length} {localized(
-                      lang,
-                      membership.propertyIds.length === 1 ? 'hotel' : 'hotels',
-                      membership.propertyIds.length === 1 ? 'hotel' : 'hoteles',
-                    )}
+                    {titleCaseAccessValue(membership.accessProfile)} · {membership.propertyIds.length} {membership.propertyIds.length === 1 ? 'hotel' : 'hotels'}
                   </small>
                 ) : null}
           </div>
@@ -2073,15 +1992,15 @@ function MembershipRow({ membership, organization, isCurrentUser, lang, onLifecy
         <span className={`${styles.status} ${statusClass(membership.status)}`}>{statusLabel(membership.status, lang)}</span>
         {hasActions ? (
           <details className={styles.actionMenu}>
-            <summary>{localized(lang, 'Manage', 'Gestionar')}</summary>
+            <summary>{'Manage'}</summary>
             <div>
               {onEditAccess ? (
                 <button type="button" onClick={onEditAccess}>
-                  {accessEditLabel ?? localized(lang, 'Edit role and scope', 'Editar rol y alcance')}
+                  {accessEditLabel ?? 'Edit role and scope'}
                 </button>
               ) : null}
               {onEditAccess && revocableGrants.length > 0 ? <hr /> : null}
-              {revocableGrants.length > 0 ? <small>{localized(lang, 'Access grants', 'Concesiones de acceso')}</small> : null}
+              {revocableGrants.length > 0 ? <small>{'Access grants'}</small> : null}
               {revocableGrants.map((grant) => (
                 <button
                   key={grant.id}
@@ -2093,7 +2012,7 @@ function MembershipRow({ membership, organization, isCurrentUser, lang, onLifecy
                     detailLabel: `${titleCaseAccessValue(grant.accessProfile)} · ${grant.scopeLabel}`,
                   })}
                 >
-                  {localized(lang, 'Revoke', 'Revocar')} {titleCaseAccessValue(grant.accessProfile)}
+                  {'Revoke'} {titleCaseAccessValue(grant.accessProfile)}
                 </button>
               ))}
               {hasMembershipActions && revocableGrants.length > 0 ? <hr /> : null}
@@ -2102,24 +2021,24 @@ function MembershipRow({ membership, organization, isCurrentUser, lang, onLifecy
                   kind: 'suspend_membership',
                   id: membership.id,
                   targetLabel: membership.displayName,
-                  detailLabel: organization?.name ?? localized(lang, 'Company membership', 'Membresía de empresa'),
-                })}>{localized(lang, 'Suspend member', 'Suspender miembro')}</button>
+                  detailLabel: organization?.name ?? 'Company membership',
+                })}>{'Suspend member'}</button>
               ) : null}
               {showMembershipActions && membership.canResume ? (
                 <button type="button" onClick={() => onLifecycleAction({
                   kind: 'resume_membership',
                   id: membership.id,
                   targetLabel: membership.displayName,
-                  detailLabel: organization?.name ?? localized(lang, 'Company membership', 'Membresía de empresa'),
-                })}>{localized(lang, 'Resume member', 'Reactivar miembro')}</button>
+                  detailLabel: organization?.name ?? 'Company membership',
+                })}>{'Resume member'}</button>
               ) : null}
               {showMembershipActions && membership.canRemove ? (
                 <button type="button" className={styles.menuDanger} onClick={() => onLifecycleAction({
                   kind: 'remove_membership',
                   id: membership.id,
                   targetLabel: membership.displayName,
-                  detailLabel: organization?.name ?? localized(lang, 'Company membership', 'Membresía de empresa'),
-                })}>{localized(lang, 'Remove member', 'Eliminar miembro')}</button>
+                  detailLabel: organization?.name ?? 'Company membership',
+                })}>{'Remove member'}</button>
               ) : null}
             </div>
           </details>
@@ -2149,7 +2068,7 @@ function InvitationRow({ invitation, lang, onLifecycleAction }: {
             id: invitation.id,
             targetLabel: invitation.email,
             detailLabel: `${titleCaseAccessValue(invitation.accessProfile)} · ${invitation.scopeLabel}`,
-          })}>{localized(lang, 'Cancel', 'Cancelar')}</button>
+          })}>{'Cancel'}</button>
         ) : null}
       </div>
     </div>
@@ -2184,7 +2103,7 @@ function CompanyHubSkeleton({ lang }: { lang: string }) {
     <div
       className={styles.skeletonStack}
       role="status"
-      aria-label={localized(lang, 'Loading company access', 'Cargando el acceso de la empresa')}
+      aria-label={'Loading company access'}
     >
       <div className={styles.skeletonGrid} aria-hidden="true">
         {[0, 1, 2].map((key) => <div key={key} className={styles.skeletonCard}><span /><strong /><small /></div>)}

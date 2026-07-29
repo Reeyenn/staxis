@@ -55,21 +55,7 @@ interface LossDraft {
 const REASONS: InventoryStockLossReason[] = ['missing', 'lost', 'damaged', 'stained', 'theft', 'other'];
 
 function copy(lang: Lang) {
-  return lang === 'es' ? {
-    eyebrow: 'Ajuste de existencias', title: 'Registrar artículo faltante o dañado',
-    quantity: 'Cantidad', reason: 'Motivo', notes: 'Notas opcionales',
-    before: 'Antes', after: 'Después', setAside: 'Apartado',
-    save: 'Registrar pérdida', retry: 'Reintentar exactamente', cancel: 'Cancelar',
-    restored: 'Se recuperó el trabajo sin guardar de esta pestaña.',
-    retryLocked: 'El resultado anterior no se pudo confirmar. Los datos exactos están bloqueados; reintenta para evitar registrar la pérdida dos veces.',
-    saveFailed: 'No se pudo registrar la pérdida.',
-    unsafe: 'La pérdida no se envió porque no se pudo guardar un reintento seguro en esta pestaña. Tu información sigue aquí.',
-    stale: 'Las existencias cambiaron desde que abriste esta pantalla. Cierra, actualiza e inténtalo de nuevo.',
-    reserved: 'Esto dejaría menos existencias que la cantidad Apartada. Primero reduce Apartado en Editar artículo, para que la reserva no quede falsa.',
-    discard: '¿Cerrar esta pantalla? Tu trabajo está guardado y podrás recuperarlo al volver.',
-    invalid: 'Escribe una cantidad entera mayor que cero que no exceda las existencias actuales.',
-    reasons: { missing: 'Faltante', lost: 'Perdido', damaged: 'Dañado', stained: 'Manchado', theft: 'Robo', other: 'Otro' },
-  } : {
+  return {
     eyebrow: 'Stock adjustment', title: 'Record missing or damaged stock',
     quantity: 'Quantity', reason: 'Reason', notes: 'Optional notes',
     before: 'Before', after: 'After', setAside: 'Set Aside',

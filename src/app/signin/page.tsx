@@ -216,9 +216,7 @@ function SignInInner() {
         if (!reset) {
           setError(
             freshRecovery.error
-            ?? (lang === 'es'
-              ? 'No pudimos restablecer de forma segura el inicio de sesión anterior. Inténtalo de nuevo.'
-              : 'We could not safely reset the previous sign-in. Try the reset again.'),
+            ?? ('We could not safely reset the previous sign-in. Try the reset again.'),
           );
           finish();
           return;
@@ -298,9 +296,7 @@ function SignInInner() {
       if (trusted) {
         if (!isAuthSessionCurrent(passwordSession)) {
           passwordSession = null;
-          setError(lang === 'es'
-            ? 'El estado de inicio de sesión cambió. Intenta de nuevo.'
-            : 'Sign-in state changed. Please try again.');
+          setError('Sign-in state changed. Please try again.');
           finish();
           return;
         }
@@ -316,9 +312,7 @@ function SignInInner() {
 
       // Untrusted → send OTP, route to verify screen.
       if (!clearPasswordSession()) {
-        setError(lang === 'es'
-          ? 'El estado de inicio de sesión cambió. Intenta de nuevo.'
-          : 'Sign-in state changed. Please try again.');
+        setError('Sign-in state changed. Please try again.');
         finish();
         return;
       }
@@ -376,7 +370,7 @@ function SignInInner() {
       <form onSubmit={handleSubmit} style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
 
         <div className="si-rise si-d-2" style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-          <AuthLabel htmlFor="signin-email">{lang === 'es' ? 'Correo electrónico' : 'Email'}</AuthLabel>
+          <AuthLabel htmlFor="signin-email">{'Email'}</AuthLabel>
           <input
             id="signin-email"
             name="email"
@@ -398,11 +392,11 @@ function SignInInner() {
             <AuthLabel htmlFor="signin-password">{t('password', lang)}</AuthLabel>
             {requiresFreshSignin ? (
               <a href="/signin/forgot" style={authLinkStyle}>
-                {lang === 'es' ? '¿Olvidaste tu contraseña?' : 'Forgot password?'}
+                {'Forgot password?'}
               </a>
             ) : (
               <Link href="/signin/forgot" style={authLinkStyle}>
-                {lang === 'es' ? '¿Olvidaste tu contraseña?' : 'Forgot password?'}
+                {'Forgot password?'}
               </Link>
             )}
           </div>
@@ -423,23 +417,19 @@ function SignInInner() {
 
         {recoveryBusy && (
           <div role="status" aria-live="polite" aria-busy="true" style={{ textAlign: 'center', color: '#5C625C', fontSize: 13 }}>
-            {lang === 'es'
-              ? 'Restableciendo de forma segura el inicio de sesión anterior…'
-              : 'Safely resetting the previous sign-in…'}
+            {'Safely resetting the previous sign-in…'}
           </div>
         )}
 
         {freshRecovery.error && (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-            <AuthError>{lang === 'es'
-              ? 'No pudimos restablecer de forma segura el inicio de sesión anterior.'
-              : freshRecovery.error}</AuthError>
+            <AuthError>{freshRecovery.error}</AuthError>
             <button
               type="button"
               onClick={() => void freshRecovery.retry()}
               style={{ ...authLinkStyle, minHeight: 44, border: 0, background: 'transparent', cursor: 'pointer' }}
             >
-              {lang === 'es' ? 'Intentar restablecer de nuevo' : 'Try reset again'}
+              {'Try reset again'}
             </button>
           </div>
         )}
@@ -449,7 +439,7 @@ function SignInInner() {
             href={freshSigninHref}
             style={{ ...authLinkStyle, minHeight: 44, display: 'inline-flex', alignItems: 'center', justifyContent: 'center' }}
           >
-            {lang === 'es' ? 'Iniciar sesión de nuevo' : 'Start fresh sign-in'}
+            {'Start fresh sign-in'}
           </a>
         )}
 
@@ -468,14 +458,14 @@ function SignInInner() {
         {/* Create-account link — staff sign up at /signup using a code
             the hotel owner generated. Existing users sign in above. */}
         <p className="si-rise si-d-3" style={{ textAlign: 'center', marginTop: 8, fontSize: 13, color: '#5C625C' }}>
-          {lang === 'es' ? '¿No tienes una cuenta? ' : "Don't have an account? "}
+          {"Don't have an account? "}
           {requiresFreshSignin ? (
             <a href="/signup" style={{ color: AUTH_LINK, textDecoration: 'none', fontWeight: 600 }}>
-              {lang === 'es' ? 'Crear cuenta' : 'Create account'}
+              {'Create account'}
             </a>
           ) : (
             <Link href="/signup" style={{ color: AUTH_LINK, textDecoration: 'none', fontWeight: 600 }}>
-              {lang === 'es' ? 'Crear cuenta' : 'Create account'}
+              {'Create account'}
             </Link>
           )}
         </p>

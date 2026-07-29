@@ -115,10 +115,10 @@ export function loadStatus(loadMinutes: number, shiftMinutes: number): LoadStatu
 }
 
 function statusLabel(st: LoadStatus, roomCount: number, lang: Language): string {
-  if (st === 'over') return lang === 'es' ? 'Sobre cap.' : 'Over cap';
-  if (st === 'near') return lang === 'es' ? 'Casi lleno' : 'Near full';
-  if (roomCount === 0) return lang === 'es' ? 'Libre' : 'Open';
-  return lang === 'es' ? 'En curso' : 'On track';
+  if (st === 'over') return 'Over cap';
+  if (st === 'near') return 'Near full';
+  if (roomCount === 0) return 'Open';
+  return 'On track';
 }
 
 function statusColors(st: LoadStatus): { bg: string; fg: string } {
@@ -248,9 +248,9 @@ function CrewRow({
           {(hk.is_senior || isExcluded || calledIn) && (
             <div style={{ fontFamily: FONT_MONO, fontSize: 9, color: T.ink3, marginTop: 1, letterSpacing: '0.04em' }}>
               {[
-                hk.is_senior ? (lang === 'es' ? 'SÉNIOR' : 'SENIOR') : null,
-                isExcluded ? (lang === 'es' ? 'EXCLUIDO' : 'EXCLUDED') : null,
-                calledIn ? (lang === 'es' ? 'SIN TURNO' : 'NOT SCHEDULED') : null,
+                hk.is_senior ? ('SENIOR') : null,
+                isExcluded ? ('EXCLUDED') : null,
+                calledIn ? ('NOT SCHEDULED') : null,
               ].filter(Boolean).join(' · ')}
             </div>
           )}
@@ -267,7 +267,7 @@ function CrewRow({
       {/* Readout */}
       <div style={{ display: 'flex', alignItems: 'center', gap: 7, whiteSpace: 'nowrap' }}>
         <span style={{ fontFamily: FONT_MONO, fontSize: 10.5, color: T.ink2 }}>
-          {tasks.length} {lang === 'es' ? 'cu' : 'rms'} · {fmtMinutes(load)}
+          {tasks.length} {'rms'} · {fmtMinutes(load)}
         </span>
         <span style={{
           fontFamily: FONT_SANS, fontWeight: 600, fontSize: 9,
@@ -284,7 +284,7 @@ function CrewRow({
           ))
           : (
             <span style={{ fontFamily: FONT_MONO, fontSize: 10.5, color: T.ink3, opacity: 0.7 }}>
-              {lang === 'es' ? 'Suelta cuartos aquí' : 'Drop rooms here'}
+              {'Drop rooms here'}
             </span>
           )}
       </div>
@@ -353,12 +353,8 @@ export function ScheduleBoard({
           padding: '2px 2px 4px', lineHeight: 1.35,
         }}>
           {crewSource === 'unscheduled_fallback'
-            ? (lang === 'es'
-              ? 'Nadie está programado para hoy, así que mostramos a todos. Pon el horario en Personal para ver solo quién trabaja.'
-              : "Nobody's scheduled for today, so we're showing everyone. Set the schedule in Staff to see only who's working.")
-            : (lang === 'es'
-              ? 'Mostrando a quienes tienen turno hoy según el horario en Personal.'
-              : "Showing who's on shift today, from the schedule in Staff.")}
+            ? ("Nobody's scheduled for today, so we're showing everyone. Set the schedule in Staff to see only who's working.")
+            : ("Showing who's on shift today, from the schedule in Staff.")}
         </div>
       )}
 
@@ -402,13 +398,13 @@ export function ScheduleBoard({
               fontFamily: FONT_SANS, fontWeight: 700, fontSize: 14, flexShrink: 0,
             }}>?</span>
             <div style={{ fontFamily: FONT_SANS, fontWeight: 600, fontSize: 14, color: T.ink }}>
-              {lang === 'es' ? 'Sin asignar' : 'Unassigned'}
+              {'Unassigned'}
             </div>
           </div>
           <div />
           <div style={{ display: 'flex', alignItems: 'center', whiteSpace: 'nowrap' }}>
             <span style={{ fontFamily: FONT_MONO, fontSize: 10.5, color: T.ink2 }}>
-              {unassigned.length} {lang === 'es' ? 'cuartos' : 'rooms'}
+              {unassigned.length} {'rooms'}
             </span>
           </div>
           <div className="hk-chiprow" style={{ display: 'flex', gap: 6, flexWrap: 'nowrap', overflowX: 'auto', paddingBottom: 1 }}>

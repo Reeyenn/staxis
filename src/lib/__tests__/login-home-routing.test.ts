@@ -166,7 +166,7 @@ describe('auth funnel navigation reliability', () => {
     );
     assert.match(verify, /if \(!refreshData\.session\) throw new Error\('Secure session refresh returned no session'\)/);
     assert.match(verify, /refreshData\.session\.user\.id !== ownedSession\.user\.id[\s\S]*?!isAuthSessionCurrent\(refreshData\.session\)/);
-    assert.match(verify, /catch \(err\)[\s\S]*?enterFreshSigninRecovery\(lang === 'es'/);
+    assert.match(verify, /catch \(err\)[\s\S]*?enterFreshSigninRecovery\(/);
     assert.match(verify, /submitInFlightRef\.current \|\| requiresFreshSignin/);
     assert.match(verify, /resendInFlightRef\.current/);
     assert.match(
@@ -174,7 +174,7 @@ describe('auth funnel navigation reliability', () => {
       /const enterFreshSigninRecovery = \(message: string\) => \{[\s\S]*?window\.location\.replace\(freshSigninHref\)/,
     );
     assert.ok(
-      (verify.match(/enterFreshSigninRecovery\(lang === 'es'/g) ?? []).length >= 4,
+      (verify.match(/enterFreshSigninRecovery\(/g) ?? []).length >= 4,
       'every consumed-code/session-ownership terminal path must replace the document',
     );
     assert.match(verify, /requiresFreshSignin \? \([\s\S]*?href=\{freshSigninHref\}/);

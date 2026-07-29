@@ -5,7 +5,7 @@ export const dynamic = 'force-dynamic';
 import React, { useState, useEffect, Suspense } from 'react';
 import { useLang } from '@/contexts/LanguageContext';
 import { t } from '@/lib/translations';
-import { BedDouble, AlertCircle, Globe } from 'lucide-react';
+import { BedDouble, AlertCircle } from 'lucide-react';
 
 // Security audit 2026-06-26 #1: the FCM-era "pick who you are" roster flow is
 // retired (it required /api/staff-list to hand out every staff UUID). Each
@@ -22,7 +22,7 @@ export default function HousekeeperPage() {
 }
 
 function HousekeeperInner() {
-  const { lang, setLang } = useLang();
+  const { lang } = useLang();
 
   const [step,       setStep]       = useState<Step>('loading');
   const [errorMsg,   setErrorMsg]   = useState('');
@@ -37,10 +37,7 @@ function HousekeeperInner() {
     // without handing out credentials, so it just tells the visitor to use the
     // personal link from their text message.
     setStep('error');
-    setErrorMsg(lang === 'es'
-      ? 'Abre tu enlace personal del mensaje de texto para ver tus habitaciones. Si no lo tienes, pide a tu gerente que te lo reenvíe.'
-      : 'Open your personal link from your text message to see your rooms. If you don\'t have it, ask your manager to resend it.');
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    setErrorMsg('Open your personal link from your text message to see your rooms. If you don\'t have it, ask your manager to resend it.');
   }, []);
 
 
@@ -51,24 +48,6 @@ function HousekeeperInner() {
       alignItems: 'center', justifyContent: 'center',
       padding: '24px', fontFamily: 'var(--font-sans)',
     }}>
-      {/* Language toggle - critical for housekeepers */}
-      <div style={{ position: 'fixed', top: '16px', right: '16px', zIndex: 50 }}>
-        <button
-          onClick={() => setLang(lang === 'en' ? 'es' : 'en')}
-          style={{
-            display: 'flex', alignItems: 'center', gap: '6px',
-            background: 'var(--bg-card)', border: '1px solid var(--border)',
-            borderRadius: 'var(--radius-md)', padding: '8px 14px',
-            color: 'var(--text-secondary)', fontSize: '14px', fontWeight: 600,
-            cursor: 'pointer', fontFamily: 'var(--font-sans)',
-            boxShadow: '0 2px 8px rgba(0,0,0,0.08)',
-          }}
-        >
-          <Globe size={14} />
-          {lang === 'en' ? 'Español' : 'English'}
-        </button>
-      </div>
-
       {/* Logo */}
       <div style={{ marginBottom: '32px', textAlign: 'center' }}>
         <div style={{

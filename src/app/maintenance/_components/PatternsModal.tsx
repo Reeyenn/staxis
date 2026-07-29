@@ -24,7 +24,7 @@ import {
 export function PatternsModal({ open, onClose }: { open: boolean; onClose: () => void }) {
   const { activePropertyId } = useProperty();
   const { lang } = useLang();
-  const readerLang: PanelLang = lang === 'es' ? 'es' : 'en';
+  const readerLang: PanelLang = 'en';
 
   // Fetched only while the popup is open. A manager who never presses the
   // button never asks the server for any of this, and the Maintenance tab

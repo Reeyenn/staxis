@@ -309,7 +309,7 @@ export function Overlay({
             type="button"
             className={styles.close}
             onClick={onClose}
-            aria-label={lang === 'es' ? 'Cerrar' : 'Close'}
+            aria-label={'Close'}
             style={{
               width: 44,
               height: 44,

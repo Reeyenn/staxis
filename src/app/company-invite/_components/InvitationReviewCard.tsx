@@ -14,10 +14,6 @@ export interface CompanyInvitationPreview {
   invitationExpiresAt: string;
 }
 
-function localized(lang: string, en: string, es: string): string {
-  return lang === 'es' ? es : en;
-}
-
 function titleCase(value: string): string {
   return value.replaceAll('_', ' ').replace(/\b\w/g, (letter) => letter.toUpperCase());
 }
@@ -25,7 +21,7 @@ function titleCase(value: string): string {
 function formatDate(value: string, lang: string): string {
   const parsed = new Date(value);
   if (Number.isNaN(parsed.getTime())) return value;
-  return new Intl.DateTimeFormat(lang === 'es' ? 'es-US' : 'en-US', {
+  return new Intl.DateTimeFormat('en-US', {
     month: 'short',
     day: 'numeric',
     year: 'numeric',
@@ -36,23 +32,23 @@ function formatDate(value: string, lang: string): string {
 
 export function InvitationReviewCard({ preview, lang }: { preview: CompanyInvitationPreview; lang: string }) {
   const scopeKind = preview.scopeType === 'organization'
-    ? localized(lang, 'Entire organization', 'Toda la organización')
+    ? 'Entire organization'
     : preview.scopeType === 'portfolio'
-      ? localized(lang, 'Portfolio or region', 'Cartera o región')
-      : localized(lang, 'Hotel', 'Hotel');
+      ? 'Portfolio or region'
+      : 'Hotel';
   const accessExpiration = preview.accessExpiresAt
     ? formatDate(preview.accessExpiresAt, lang)
-    : localized(lang, 'No access expiration', 'Sin vencimiento del acceso');
+    : 'No access expiration';
 
   const rows = [
     {
       icon: Mail,
-      label: localized(lang, 'Invited email', 'Correo invitado'),
+      label: 'Invited email',
       value: preview.invitedEmail,
     },
     {
       icon: ShieldCheck,
-      label: localized(lang, 'Access profile', 'Perfil de acceso'),
+      label: 'Access profile',
       value: titleCase(preview.accessProfile),
     },
     {
@@ -62,7 +58,7 @@ export function InvitationReviewCard({ preview, lang }: { preview: CompanyInvita
     },
     {
       icon: CalendarClock,
-      label: localized(lang, 'Access duration', 'Duración del acceso'),
+      label: 'Access duration',
       value: accessExpiration,
     },
   ];
@@ -78,14 +74,14 @@ export function InvitationReviewCard({ preview, lang }: { preview: CompanyInvita
       }}
     >
       <p style={{ margin: '0 0 4px', color: '#8C6A33', fontSize: 10.5, fontWeight: 700, letterSpacing: '.09em', textTransform: 'uppercase' }}>
-        {localized(lang, 'Review before accepting', 'Revisa antes de aceptar')}
+        {'Review before accepting'}
       </p>
       <h2 id="company-invitation-review-title" style={{ margin: '0 0 4px', color: '#1F231C', fontSize: 18 }}>
         {preview.organizationName}
       </h2>
       {preview.jobTitle ? (
         <p style={{ margin: '0 0 13px', color: '#5C625C', fontSize: 12.5 }}>
-          {localized(lang, 'Invited as', 'Invitado como')} {preview.jobTitle}
+          {'Invited as'} {preview.jobTitle}
         </p>
       ) : null}
       <dl style={{ display: 'grid', gap: 10, margin: preview.jobTitle ? 0 : '13px 0 0' }}>
@@ -100,7 +96,7 @@ export function InvitationReviewCard({ preview, lang }: { preview: CompanyInvita
         ))}
       </dl>
       <p style={{ margin: '13px 0 0', paddingTop: 11, borderTop: '1px solid rgba(31,35,28,.08)', color: '#777D75', fontSize: 11.5, lineHeight: 1.45 }}>
-        {localized(lang, 'Invitation link expires', 'El enlace de invitación vence')} {formatDate(preview.invitationExpiresAt, lang)}.
+        {'Invitation link expires'} {formatDate(preview.invitationExpiresAt, lang)}.
       </p>
     </section>
   );

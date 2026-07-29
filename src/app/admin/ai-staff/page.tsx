@@ -70,48 +70,48 @@ type Lang = 'en' | 'es';
 // ─── Copy ───────────────────────────────────────────────────────────────────
 
 const COPY = {
-  eyebrow: { en: 'Mission Control', es: 'Centro de mando' },
-  title: { en: 'AI Staff', es: 'Personal de IA' },
+  eyebrow: { en: 'Mission Control', },
+  title: { en: 'AI Staff', },
   subtitle: {
     en: 'Every job Staxis does, with a name on it. One of them exists; the rest are the plan.',
-    es: 'Cada trabajo que hace Staxis, con un nombre. Uno existe; el resto es el plan.',
+
   },
   onlyYou: {
     en: 'Only you see this page. Hotels never do.',
-    es: 'Solo tú ves esta página. Los hoteles nunca.',
+
   },
   masterNote: {
     en: 'Nothing on this page starts anything. The machine is still off; these switches only stop an employee once it is running.',
-    es: 'Nada en esta página enciende nada. La máquina sigue apagada; estos interruptores solo detienen a un empleado cuando ya está funcionando.',
+
   },
-  back: { en: 'Back to Mission Control', es: 'Volver al centro de mando' },
-  working: { en: 'Working here', es: 'Trabajando aquí' },
-  planned: { en: 'The plan', es: 'El plan' },
+  back: { en: 'Back to Mission Control', },
+  working: { en: 'Working here', },
+  planned: { en: 'The plan', },
   plannedNote: {
     en: 'Not built. No status, no numbers. These do not exist yet.',
-    es: 'Sin construir. Sin estado ni cifras: aún no existen.',
+
   },
-  whatItRuns: { en: 'What it runs', es: 'Lo que ejecuta' },
-  writesTo: { en: 'Where its work shows up', es: 'Dónde aparece su trabajo' },
-  spend: { en: 'Model spend, last 30 days', es: 'Gasto de modelo, últimos 30 días' },
+  whatItRuns: { en: 'What it runs', },
+  writesTo: { en: 'Where its work shows up', },
+  spend: { en: 'Model spend, last 30 days', },
   spendUnknown: {
     en: 'No separate bill for this one yet. See the Money tab for the whole AI bill.',
-    es: 'Todavía no hay factura aparte para este. Mira la pestaña Money para la factura completa de IA.',
+
   },
-  moneyTab: { en: 'Money tab', es: 'Pestaña Money' },
-  switchOff: { en: 'Switch off', es: 'Apagar' },
-  switchOn: { en: 'Switch back on', es: 'Volver a encender' },
-  saving: { en: 'Saving…', es: 'Guardando…' },
-  since: { en: 'off since', es: 'apagado desde' },
-  notScheduled: { en: 'not scheduled yet', es: 'aún sin programar' },
-  scheduled: { en: 'scheduled', es: 'programado' },
+  moneyTab: { en: 'Money tab', },
+  switchOff: { en: 'Switch off', },
+  switchOn: { en: 'Switch back on', },
+  saving: { en: 'Saving…', },
+  since: { en: 'off since', },
+  notScheduled: { en: 'not scheduled yet', },
+  scheduled: { en: 'scheduled', },
   loadProblem: {
     en: 'Could not reach the server. Try again.',
-    es: 'No se pudo contactar el servidor. Inténtalo otra vez.',
+
   },
   switchesUnreadable: {
     en: 'The switches could not be read right now, so every employee below is shown as you last left it.',
-    es: 'No se pudieron leer los interruptores ahora mismo, así que cada empleado se muestra como lo dejaste.',
+
   },
   // The ledger only learned to record WHICH JOB spent the money on the date
   // below, and nothing older will ever be attributed — a guess would be a made-
@@ -119,21 +119,21 @@ const COPY = {
   // the first weeks says why it is low, rather than reading as "nearly free".
   spendSinceOne: {
     en: 'Money was only split up by job from',
-    es: 'El dinero solo se separa por trabajo desde el',
+
   },
   spendSinceTwo: {
     en: 'Anything spent before that is on the whole AI bill, not on a card here.',
-    es: 'Lo gastado antes está en la factura de IA completa, no en una tarjeta de aquí.',
+
   },
   spendSinceNone: {
     en: 'No spend has been split up by job yet. The figures below start at zero and fill in as work runs.',
-    es: 'Todavía no se ha separado ningún gasto por trabajo. Las cifras de abajo empiezan en cero y se llenan según se trabaje.',
+
   },
   confirmOff: {
     en: 'Switch off the Morning Briefer? No manager gets a morning brief until you switch it back on.',
-    es: '¿Apagar el Informante de la mañana? Ningún gerente recibirá el resumen matutino hasta que lo vuelvas a encender.',
+
   },
-  refresh: { en: 'Refresh', es: 'Actualizar' },
+  refresh: { en: 'Refresh', },
 } as const;
 
 /** Label and colour for a status, both from the registry so this page and
@@ -187,7 +187,7 @@ interface Payload {
 export default function AiStaffPage() {
   const { user, loading: authLoading } = useAuth();
   const { lang } = useLang();
-  const l = (lang === 'es' ? 'es' : 'en') as Lang;
+  const l = ('en') as Lang;
 
   const [payload, setPayload] = useState<Payload | null>(null);
   const [loaded, setLoaded] = useState(false);
@@ -202,20 +202,20 @@ export default function AiStaffPage() {
         setPayload(json.data as Payload);
         setProblem(null);
       } else {
-        setProblem(json?.error || COPY.loadProblem[l]);
+        setProblem(json?.error || COPY.loadProblem.en);
       }
     } catch {
-      setProblem(COPY.loadProblem[l]);
+      setProblem(COPY.loadProblem.en);
     } finally {
       setLoaded(true);
     }
-  }, [l]);
+  }, []);
 
   useEffect(() => { void load(); }, [load]);
 
   const flip = async (e: EmployeeView, next: boolean) => {
     if (busyId) return;
-    if (next && typeof window !== 'undefined' && !window.confirm(COPY.confirmOff[l])) return;
+    if (next && typeof window !== 'undefined' && !window.confirm(COPY.confirmOff.en)) return;
     setBusyId(e.id);
     setProblem(null);
     try {
@@ -225,10 +225,10 @@ export default function AiStaffPage() {
         body: JSON.stringify({ employeeId: e.id, switchedOff: next }),
       });
       const json = await res.json();
-      if (!json?.ok) setProblem(json?.error || COPY.loadProblem[l]);
+      if (!json?.ok) setProblem(json?.error || COPY.loadProblem.en);
       await load();
     } catch {
-      setProblem(COPY.loadProblem[l]);
+      setProblem(COPY.loadProblem.en);
     } finally {
       setBusyId(null);
     }
@@ -268,25 +268,25 @@ export default function AiStaffPage() {
                 href="/admin/properties#system"
                 style={{ display: 'inline-flex', alignItems: 'center', gap: 5, color: dimWhite(.55), fontSize: 11.5, textDecoration: 'none', marginBottom: 8 }}
               >
-                <ChevronLeft size={13} /> {COPY.back[l]}
+                <ChevronLeft size={13} /> {COPY.back.en}
               </Link>
-              <div className="caps" style={{ color: dimWhite(.5) }}>{COPY.eyebrow[l]}</div>
+              <div className="caps" style={{ color: dimWhite(.5) }}>{COPY.eyebrow.en}</div>
               <h1 style={{ fontFamily: FONT_SERIF, fontSize: 32, fontWeight: 400, letterSpacing: '-0.02em', margin: '4px 0 0', color: '#fff' }}>
-                {COPY.title[l]}
+                {COPY.title.en}
               </h1>
               <p style={{ fontSize: 13, color: dimWhite(.55), margin: '7px 0 0', maxWidth: 640, lineHeight: 1.5 }}>
-                {COPY.subtitle[l]}
+                {COPY.subtitle.en}
               </p>
             </div>
             <Btn size="sm" variant="ghost" onClick={() => { void load(); }} style={{ color: '#fff', borderColor: dimWhite(.25) }}>
-              {COPY.refresh[l]}
+              {COPY.refresh.en}
             </Btn>
           </header>
 
           {/* The two standing notes: who sees this, and what it cannot do. */}
           <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginBottom: 22 }}>
-            <Note text={COPY.onlyYou[l]} />
-            <Note text={COPY.masterNote[l]} tone="gold" />
+            <Note text={COPY.onlyYou.en} />
+            <Note text={COPY.masterNote.en} tone="gold" />
           </div>
 
           {problem && (
@@ -296,7 +296,7 @@ export default function AiStaffPage() {
           )}
           {payload && !payload.switchesReadable && (
             <div style={{ marginBottom: 16, padding: '11px 14px', background: 'rgba(201,154,46,.12)', border: '1px solid rgba(201,154,46,.35)', borderRadius: 12, color: 'var(--gold)', fontSize: 12.5 }}>
-              {COPY.switchesUnreadable[l]}
+              {COPY.switchesUnreadable.en}
             </div>
           )}
           {payload && (() => {
@@ -304,15 +304,15 @@ export default function AiStaffPage() {
             if (!note) return null;
             return (
               <div style={{ marginBottom: 16, padding: '11px 14px', background: dimWhite(.05), border: `1px solid ${dimWhite(.14)}`, borderRadius: 12, color: dimWhite(.72), fontSize: 12.5 }}>
-                {note.kind === 'none' ? COPY.spendSinceNone[l] : (
+                {note.kind === 'none' ? COPY.spendSinceNone.en : (
                   <>
-                    {COPY.spendSinceOne[l]}{' '}
+                    {COPY.spendSinceOne.en}{' '}
                     <span className="mono">
                       {new Date(note.since).toLocaleDateString(l === 'es' ? 'es-ES' : 'en-US', {
                         year: 'numeric', month: 'short', day: 'numeric',
                       })}
                     </span>{'. '}
-                    {COPY.spendSinceTwo[l]}
+                    {COPY.spendSinceTwo.en}
                   </>
                 )}
               </div>
@@ -352,7 +352,7 @@ function AiStaffRoster({ hired, notHired, l, busyId, onFlip }: {
     <>
       <section style={{ marginBottom: 34 }}>
         <div style={{ display: 'flex', alignItems: 'baseline', gap: 9 }}>
-          <span className="caps" style={{ color: dimWhite(.62) }}>{COPY.working[l]}</span>
+          <span className="caps" style={{ color: dimWhite(.62) }}>{COPY.working.en}</span>
           <span className="mono" style={{ fontSize: 13, color: '#fff' }}>{hired.length}</span>
         </div>
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(420px, 1fr))', gap: 16, marginTop: 13, alignItems: 'start' }}>
@@ -364,10 +364,10 @@ function AiStaffRoster({ hired, notHired, l, busyId, onFlip }: {
 
       <section style={{ paddingBottom: 60 }}>
         <div style={{ display: 'flex', alignItems: 'baseline', gap: 9 }}>
-          <span className="caps" style={{ color: dimWhite(.4) }}>{COPY.planned[l]}</span>
+          <span className="caps" style={{ color: dimWhite(.4) }}>{COPY.planned.en}</span>
           <span className="mono" style={{ fontSize: 13, color: dimWhite(.6) }}>{notHired.length}</span>
         </div>
-        <div style={{ fontSize: 12, color: dimWhite(.38), marginTop: 4 }}>{COPY.plannedNote[l]}</div>
+        <div style={{ fontSize: 12, color: dimWhite(.38), marginTop: 4 }}>{COPY.plannedNote.en}</div>
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(300px, 1fr))', gap: 12, marginTop: 13, alignItems: 'start' }}>
           {notHired.map((e) => <PlannedCard key={e.id} e={e} l={l} />)}
         </div>
@@ -404,35 +404,35 @@ function HiredCard({ e, l, busy, onFlip }: {
       <div style={{ display: 'flex', alignItems: 'flex-start', gap: 11, flexWrap: 'wrap' }}>
         <Dot tone={s.tone} size={9} style={{ marginTop: 6 }} />
         <div style={{ flex: 1, minWidth: 0 }}>
-          <div style={{ fontFamily: FONT_SERIF, fontSize: 20, color: '#fff', lineHeight: 1.2 }}>{e.name[l]}</div>
-          <div style={{ fontSize: 12.5, color: dimWhite(.62), marginTop: 5, lineHeight: 1.5 }}>{e.job[l]}</div>
+          <div style={{ fontFamily: FONT_SERIF, fontSize: 20, color: '#fff', lineHeight: 1.2 }}>{e.name.en}</div>
+          <div style={{ fontSize: 12.5, color: dimWhite(.62), marginTop: 5, lineHeight: 1.5 }}>{e.job.en}</div>
         </div>
-        <Pill tone={pillOf(s.tone)} style={{ fontSize: 9, padding: '3px 9px', flexShrink: 0 }}>{s.label[l]}</Pill>
+        <Pill tone={pillOf(s.tone)} style={{ fontSize: 9, padding: '3px 9px', flexShrink: 0 }}>{s.label.en}</Pill>
       </div>
 
       {e.switchedOff && e.switchedOffAt && (
         <div className="mono" style={{ fontSize: 10, color: 'var(--terracotta)', marginTop: 9 }}>
-          {COPY.since[l]} {new Date(e.switchedOffAt).toLocaleString()}
+          {COPY.since.en} {new Date(e.switchedOffAt).toLocaleString()}
         </div>
       )}
 
       {/* What it runs — sentences, never internal ids. */}
       <div style={{ marginTop: 15 }}>
-        <span className="caps" style={{ color: dimWhite(.4), fontSize: 9 }}>{COPY.whatItRuns[l]}</span>
+        <span className="caps" style={{ color: dimWhite(.4), fontSize: 9 }}>{COPY.whatItRuns.en}</span>
         <div style={{ display: 'flex', flexDirection: 'column', gap: 7, marginTop: 8 }}>
           {rest.map((r) => (
             <div key={r.key} style={{ display: 'flex', alignItems: 'flex-start', gap: 8 }}>
               <Dot tone="teal" size={5} style={{ marginTop: 6 }} />
-              <span style={{ fontSize: 12, color: dimWhite(.78), lineHeight: 1.45 }}>{r.label[l]}</span>
+              <span style={{ fontSize: 12, color: dimWhite(.78), lineHeight: 1.45 }}>{r.label.en}</span>
             </div>
           ))}
           {crons.map((r) => (
             <div key={r.key} style={{ display: 'flex', alignItems: 'flex-start', gap: 8 }}>
               <Dot tone={r.scheduled ? 'forest' : 'gold'} size={5} style={{ marginTop: 6 }} />
               <span style={{ fontSize: 12, color: dimWhite(.78), lineHeight: 1.45 }}>
-                {r.label[l]}
+                {r.label.en}
                 <span className="mono" style={{ fontSize: 9.5, color: r.scheduled ? 'var(--forest)' : 'var(--gold)', marginLeft: 7 }}>
-                  {r.scheduled ? COPY.scheduled[l] : COPY.notScheduled[l]}
+                  {r.scheduled ? COPY.scheduled.en : COPY.notScheduled.en}
                 </span>
               </span>
             </div>
@@ -443,10 +443,10 @@ function HiredCard({ e, l, busy, onFlip }: {
       {/* Where its work shows up. */}
       {e.surfaces.length > 0 && (
         <div style={{ marginTop: 15 }}>
-          <span className="caps" style={{ color: dimWhite(.4), fontSize: 9 }}>{COPY.writesTo[l]}</span>
+          <span className="caps" style={{ color: dimWhite(.4), fontSize: 9 }}>{COPY.writesTo.en}</span>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginTop: 8 }}>
             {e.surfaces.map((sf, i) => (
-              <div key={i} style={{ fontSize: 12, color: dimWhite(.7), lineHeight: 1.45 }}>· {sf[l]}</div>
+              <div key={i} style={{ fontSize: 12, color: dimWhite(.7), lineHeight: 1.45 }}>· {sf.en}</div>
             ))}
           </div>
         </div>
@@ -454,13 +454,13 @@ function HiredCard({ e, l, busy, onFlip }: {
 
       {/* Spend — a real number or an honest absence, never an estimate. */}
       <div style={{ marginTop: 15, paddingTop: 13, borderTop: `1px solid ${dimWhite(.1)}`, display: 'flex', alignItems: 'baseline', gap: 10, flexWrap: 'wrap' }}>
-        <span className="caps" style={{ color: dimWhite(.4), fontSize: 9 }}>{COPY.spend[l]}</span>
+        <span className="caps" style={{ color: dimWhite(.4), fontSize: 9 }}>{COPY.spend.en}</span>
         {e.spend?.known && e.spend.usd !== null ? (
           <span className="mono" style={{ fontSize: 15, fontWeight: 700, color: '#fff' }}>${e.spend.usd.toFixed(2)}</span>
         ) : (
           <span style={{ fontSize: 11.5, color: dimWhite(.5) }}>
-            {COPY.spendUnknown[l]}{' '}
-            <Link href="/admin/properties#money" style={{ color: 'var(--gold)' }}>{COPY.moneyTab[l]}</Link>
+            {COPY.spendUnknown.en}{' '}
+            <Link href="/admin/properties#money" style={{ color: 'var(--gold)' }}>{COPY.moneyTab.en}</Link>
           </span>
         )}
       </div>
@@ -474,7 +474,7 @@ function HiredCard({ e, l, busy, onFlip }: {
           onClick={() => onFlip(!e.switchedOff)}
           style={e.switchedOff ? undefined : { color: 'var(--terracotta)', borderColor: 'rgba(194,86,46,.45)' }}
         >
-          {busy ? COPY.saving[l] : (e.switchedOff ? COPY.switchOn[l] : COPY.switchOff[l])}
+          {busy ? COPY.saving.en : (e.switchedOff ? COPY.switchOn.en : COPY.switchOff.en)}
         </Btn>
       </div>
     </DarkCard>
@@ -494,12 +494,12 @@ function PlannedCard({ e, l }: { e: EmployeeView; l: Lang }) {
       opacity: .72,
     }}>
       <div style={{ display: 'flex', alignItems: 'baseline', gap: 9, flexWrap: 'wrap' }}>
-        <span style={{ fontFamily: FONT_SERIF, fontSize: 16, color: dimWhite(.82) }}>{e.name[l]}</span>
+        <span style={{ fontFamily: FONT_SERIF, fontSize: 16, color: dimWhite(.82) }}>{e.name.en}</span>
         <span className="mono" style={{ fontFamily: FONT_MONO, fontSize: 9, color: dimWhite(.38), letterSpacing: '.08em', textTransform: 'uppercase' }}>
-          {EMPLOYEE_STATUS_LABEL.not_hired[l]}
+          {EMPLOYEE_STATUS_LABEL.not_hired.en}
         </span>
       </div>
-      <div style={{ fontSize: 12, color: dimWhite(.45), marginTop: 6, lineHeight: 1.5 }}>{e.job[l]}</div>
+      <div style={{ fontSize: 12, color: dimWhite(.45), marginTop: 6, lineHeight: 1.5 }}>{e.job.en}</div>
     </div>
   );
 }

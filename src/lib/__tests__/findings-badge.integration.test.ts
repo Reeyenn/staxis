@@ -78,9 +78,9 @@ describe('staxisPillBadge — zero is not a badge', () => {
     assert.deepEqual(staxisPillBadge(4, 'en'), { count: 4, label: '4 decisions waiting' });
   });
 
-  test('the spoken label is Spanish for a Spanish-speaking manager', () => {
-    assert.deepEqual(staxisPillBadge(1, 'es'), { count: 1, label: '1 decisión pendiente' });
-    assert.deepEqual(staxisPillBadge(4, 'es'), { count: 4, label: '4 decisiones pendientes' });
+  test('legacy locale input cannot switch the spoken label away from English', () => {
+    assert.deepEqual(staxisPillBadge(1, 'es'), { count: 1, label: '1 decision waiting' });
+    assert.deepEqual(staxisPillBadge(4, 'es'), { count: 4, label: '4 decisions waiting' });
   });
 });
 

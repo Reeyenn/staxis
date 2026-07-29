@@ -99,7 +99,6 @@ describe('AI Control Center feature registry', () => {
       'agent.conversation_summary',
       'communications.action_detection',
       'communications.announcement_polish',
-      'communications.ui_translation',
       'communications.message_translation',
       'housekeeping.notice_translation',
       'communications.announcement_translation',

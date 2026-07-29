@@ -47,7 +47,7 @@ export function AddStaffModal({
     else onClose();
   });
 
-  const es = lang === 'es';
+  const es = false;
   const avail = staff.filter(s => s.isActive !== false && !takenIds.has(s.id));
   const lanes: DeptKey[] = ['housekeeping', 'front_desk', 'maintenance', 'other'];
   const groups = lanes
@@ -86,7 +86,7 @@ export function AddStaffModal({
           padding: '22px 24px 14px', borderBottom: `1px solid ${T.rule}`,
         }}>
           <div>
-            <Caps>{es ? 'Personal del hotel' : 'Hotel roster'}</Caps>
+            <Caps>{'Hotel roster'}</Caps>
             <h2 id={titleId} style={{
               margin: '3px 0 0', fontFamily: fonts.sans, fontSize: 22,
               fontWeight: 600, letterSpacing: '-0.02em', whiteSpace: 'nowrap', color: T.ink,
@@ -95,7 +95,7 @@ export function AddStaffModal({
           <button
             type="button"
             onClick={onClose}
-            aria-label={es ? 'Cerrar' : 'Close'}
+            aria-label={'Close'}
             style={{
               background: 'transparent', border: `1px solid ${T.rule}`, borderRadius: '50%',
               width: 30, height: 30, cursor: 'pointer', color: T.ink2, fontSize: 16, flexShrink: 0,
@@ -107,9 +107,7 @@ export function AddStaffModal({
         <div style={{ overflowY: 'auto', padding: '10px 14px 6px' }}>
           {groups.length === 0 && (
             <div style={{ padding: '24px 12px', textAlign: 'center', color: T.ink3, fontSize: 13 }}>
-              {es
-                ? 'Todo el personal ya está en este día.'
-                : 'Everyone on the roster is already on this day.'}
+              {'Everyone on the roster is already on this day.'}
             </div>
           )}
           {groups.map(g => {
@@ -162,12 +160,12 @@ export function AddStaffModal({
                               color: T.caramelDeep, background: 'rgba(201,150,68,0.16)',
                               border: '1px solid rgba(140,106,51,0.32)',
                               padding: '1px 5px', borderRadius: 999, flexShrink: 0,
-                            }}>{es ? 'LIBRE APROBADO' : 'TIME OFF'}</span>
+                            }}>{'TIME OFF'}</span>
                           )}
                         </span>
                         <span style={{ display: 'block', fontFamily: fonts.mono, fontSize: 10, color: T.ink3 }}>
-                          {fmtMinRange(def.s, def.e)} · {es ? 'por defecto' : 'default'}
-                          {curMin > 0 && <> · {fmtHours(curMin)} {es ? 'esta sem.' : 'this wk'}</>}
+                          {fmtMinRange(def.s, def.e)} · {'default'}
+                          {curMin > 0 && <> · {fmtHours(curMin)} {'this wk'}</>}
                           {wouldOT && (
                             <span style={{ color: T.red, fontWeight: 700 }}>
                               {' '}→ {fmtHours(projMin)} OT
@@ -178,7 +176,7 @@ export function AddStaffModal({
                       <span style={{
                         fontFamily: fonts.sans, fontSize: 12, fontWeight: 600,
                         color: m.tone, whiteSpace: 'nowrap', flexShrink: 0,
-                      }}>{es ? 'Agregar →' : 'Add →'}</span>
+                      }}>{'Add →'}</span>
                     </button>
                   );
                 })}
@@ -194,14 +192,12 @@ export function AddStaffModal({
             display: 'flex', flexDirection: 'column', gap: 9,
           }}>
             <span style={{ fontSize: 12.5, color: T.ink, lineHeight: 1.5 }}>
-              {es
-                ? <>Aprobaste tiempo libre para <strong>{confirmFor.name}</strong> el <strong>{dayPhrase}</strong>{approvedTorByStaff.get(confirmFor.id)?.reason ? <>, “{approvedTorByStaff.get(confirmFor.id)!.reason}”</> : null}. ¿Agendarle de todos modos?</>
-                : <>You approved time off for <strong>{confirmFor.name}</strong> on <strong>{dayPhrase}</strong>{approvedTorByStaff.get(confirmFor.id)?.reason ? <>, “{approvedTorByStaff.get(confirmFor.id)!.reason}”</> : null}. Schedule them anyway?</>}
+              {<>You approved time off for <strong>{confirmFor.name}</strong> on <strong>{dayPhrase}</strong>{approvedTorByStaff.get(confirmFor.id)?.reason ? <>, “{approvedTorByStaff.get(confirmFor.id)!.reason}”</> : null}. Schedule them anyway?</>}
             </span>
             <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
-              <Btn variant="ghost" size="sm" onClick={() => setConfirmFor(null)}>{es ? 'Cancelar' : 'Cancel'}</Btn>
+              <Btn variant="ghost" size="sm" onClick={() => setConfirmFor(null)}>{'Cancel'}</Btn>
               <Btn variant="primary" size="sm" onClick={() => { onPick(confirmFor, { overrideTimeOff: true }); setConfirmFor(null); }}>
-                {es ? 'Agendar igual' : 'Schedule anyway'}
+                {'Schedule anyway'}
               </Btn>
             </div>
           </div>
@@ -220,7 +216,7 @@ export function AddStaffModal({
           <span style={{ fontSize: 11.5, color: T.ink2, lineHeight: 1.5 }}>
             {onOpenPeople ? (
               <>
-                {es ? '¿No ves a alguien? Las personas nuevas se agregan en ' : 'Don’t see someone? New hires are added in '}
+                {'Don’t see someone? New hires are added in '}
                 <button
                   type="button"
                   onClick={onOpenPeople}
@@ -229,15 +225,11 @@ export function AddStaffModal({
                     fontFamily: fonts.sans, fontSize: 11.5, fontWeight: 700, color: T.ink,
                     textDecoration: 'underline', textUnderlineOffset: 2,
                   }}
-                >{es ? 'Mi hotel → Personas' : 'My Hotel → People'}</button>
-                {es
-                  ? '. Una vez agregadas ahí, aparecerán aquí automáticamente.'
-                  : '. Once they’re added there, they’ll show up here automatically.'}
+                >{'My Hotel → People'}</button>
+                {'. Once they’re added there, they’ll show up here automatically.'}
               </>
             ) : (
-              es
-                ? '¿No ves a alguien? Un gerente puede agregarlo en Mi hotel → Personas.'
-                : 'Don’t see someone? A manager can add them in My Hotel → People.'
+              'Don’t see someone? A manager can add them in My Hotel → People.'
             )}
           </span>
         </div>

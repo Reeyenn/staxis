@@ -2,7 +2,6 @@ export type HomeInventoryTileTone = 'ok' | 'warn' | 'bad' | 'muted';
 
 export interface HomeInventoryTileLine {
   en: string;
-  es: string;
   tone: HomeInventoryTileTone;
 }
 
@@ -23,12 +22,12 @@ export function summarizeHomeInventory(
   rows: readonly HomeInventorySummaryRow[],
 ): HomeInventoryTileLine {
   if (rows.length === 0) {
-    return { en: 'Open inventory', es: 'Abrir inventario', tone: 'muted' };
+    return { en: 'Open inventory', tone: 'muted' };
   }
 
   const counted = rows.filter((row) => row.last_counted_at != null);
   if (counted.length === 0) {
-    return { en: 'Start first count', es: 'Empieza el primer conteo', tone: 'muted' };
+    return { en: 'Start first count', tone: 'muted' };
   }
 
   let critical = 0;
@@ -46,16 +45,16 @@ export function summarizeHomeInventory(
 
   if (critical > 0) {
     return critical === 1
-      ? { en: '1 item critical', es: '1 artículo crítico', tone: 'bad' }
-      : { en: `${critical} items critical`, es: `${critical} artículos críticos`, tone: 'bad' };
+      ? { en: '1 item critical', tone: 'bad' }
+      : { en: `${critical} items critical`, tone: 'bad' };
   }
   if (low > 0) {
     return low === 1
-      ? { en: '1 item low', es: '1 artículo bajo', tone: 'warn' }
-      : { en: `${low} items low`, es: `${low} artículos bajos`, tone: 'warn' };
+      ? { en: '1 item low', tone: 'warn' }
+      : { en: `${low} items low`, tone: 'warn' };
   }
   if (comparable === 0) {
-    return { en: 'Set par levels', es: 'Configura niveles par', tone: 'muted' };
+    return { en: 'Set par levels', tone: 'muted' };
   }
-  return { en: 'Stock healthy', es: 'Inventario bien', tone: 'ok' };
+  return { en: 'Stock healthy', tone: 'ok' };
 }

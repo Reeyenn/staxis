@@ -158,7 +158,7 @@ export function ExceptionDropdown({
                     {t(opt.labelKey as never, lang)}
                     {isCurrent && (
                       <span style={{ marginLeft: '6px', fontSize: '11px', color: '#6B7280', fontWeight: 600 }}>
-                        {lang === 'es' ? '(actual)' : '(current)'}
+                        {'(current)'}
                       </span>
                     )}
                   </div>

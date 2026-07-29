@@ -89,56 +89,8 @@ function rpStrings(lang: Lang) {
       unavailableBody: 'Purchases, usage, loss, and occupancy metrics are unavailable because a required data source failed. No $0 or empty result is being shown.',
       retry: 'Retry accounting',
     },
-    es: {
-      eyebrow: 'Informes · esta propiedad',
-      italic: 'De un vistazo',
-      mtd: 'del mes',
-      inventoryValue: 'Valor del inventario',
-      skus: 'artículos',
-      valuedToday: 'valorado hoy',
-      pricedNote: (p: number, t: number) => `${p} de ${t} artículos tienen precio`,
-      itemsTracked: 'Artículos registrados',
-      counted: 'contados',
-      notCountedYet: 'sin contar aún',
-      needsAttention: 'Necesitan atención',
-      critical: 'críticos',
-      low: 'bajos',
-      allStocked: 'todo se ve abastecido',
-      valueByCategory: 'Valor por categoría',
-      thisMonth: 'Este mes',
-      actualUsed: 'Uso real',
-      usagePending: 'Uso pendiente',
-      pendingNote: 'Cierre el mes después del conteo final para calcular el uso real.',
-      partialActual: 'Uso real de mes parcial',
-      totalOnlyActual: 'Solo total · sin desglose por categoría',
-      purchasesLogged: 'Compras registradas',
-      purchasesConfirmed: 'Compras confirmadas al cierre',
-      loggedDeliverySubtotal: 'Subtotal de entregas registradas',
-      purchaseCostsMissing: 'faltan costos de algunas entregas',
-      lossCostsMissing: 'faltan costos de algunas pérdidas',
-      noDeliveriesYet: 'Aún no hay compras registradas.',
-      thrownOut: 'desechado',
-      lastCount: 'Último conteo',
-      noCountsYet: 'Aún no hay conteos',
-      monthlyTrend: 'Tendencia mensual',
-      usageByMonth: 'Uso real por mes',
-      lastNMonths: (n: number) => ` · últimos ${n} meses`,
-      comingSoon: 'Próximamente',
-      trendSoon: 'Se completa después de dos cierres mensuales de inventario.',
-      partialTrendNote: '∗ Mes parcial. No se compara con un presupuesto mensual completo.',
-      shrinkageRate: 'Merma',
-      shrinkageSoon: 'Necesita algunos conteos y entregas para comparar. Se completa automáticamente.',
-      mtdLoss: 'pérdida del mes',
-      costPerOccRoom: 'Costo / hab. ocupada',
-      costSoon: 'Necesita datos reales de ocupación de su sistema hotelero.',
-      occNights: 'noches-hab. ocupadas',
-      loading: 'Cargando…',
-      loadFailed: 'No se pudo cargar la contabilidad mensual. Intente de nuevo.',
-      unavailableTitle: 'Contabilidad mensual no disponible',
-      unavailableBody: 'Las compras, el uso, las pérdidas y las métricas de ocupación no están disponibles porque falló una fuente de datos requerida. No se muestra un resultado vacío ni de $0.',
-      retry: 'Reintentar contabilidad',
-    },
-  }[lang];
+
+  }['en'];
 }
 
 type YtdRow = InventoryAccountingYtdContract;
@@ -312,7 +264,7 @@ export function ReportsPanel({ lang, open, onClose, display, customNameById, tim
     summary?.monthStart,
     timezone,
   );
-  const reportMonthLabel = formatInventoryMonthKey(reportMonthKey, lang === 'es' ? 'es' : 'en');
+  const reportMonthLabel = formatInventoryMonthKey(reportMonthKey, 'en');
   // This is deliberately independent of `loading`: effects run after paint,
   // so checking `loading` would briefly render a KPI-only, undersized dialog.
   const showInitialLoading = !summary && !loadFailed;

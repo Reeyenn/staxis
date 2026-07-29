@@ -24,5 +24,5 @@ export interface BootstrapData {
   onlineStaffIds: string[];
 }
 
-/** Bilingual helper: pick English or Spanish copy. */
-export type L = (en: string, es: string) => string;
+/** English UI-copy helper shared by Communications components. */
+export type L = (english: string) => string;

@@ -116,7 +116,7 @@ export function DayBoard({
                 <span style={{
                   fontFamily: fonts.mono, fontSize: 8.5, fontWeight: 700,
                   color: m.tone, letterSpacing: '0.06em',
-                }}>{lang === 'es' ? '← SUELTA AQUÍ' : '← DROP HERE'}</span>
+                }}>{'← DROP HERE'}</span>
               )}
             </div>
 
@@ -142,9 +142,7 @@ export function DayBoard({
               <div style={{ display: 'flex', alignItems: 'center', height: 30 }}>
                 <div style={{ width: GUT, flexShrink: 0 }}/>
                 <span style={{ fontFamily: fonts.mono, fontSize: 10, color: T.ink3, letterSpacing: '0.03em' }}>
-                  {lang === 'es'
-                    ? `Nadie en ${m.short} todavía. Usa ＋ Agregar personal arriba.`
-                    : `No one on ${m.short} yet. Use ＋ Add staff above.`}
+                  {`No one on ${m.short} yet. Use ＋ Add staff above.`}
                 </span>
               </div>
             )}

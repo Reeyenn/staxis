@@ -414,7 +414,6 @@ describe('whether Staxis could actually read the file', () => {
     assert.ok(failed);
     assert.equal(failed.tone, 'warn');
     assert.match(failed.label.en, /read/i);
-    assert.notEqual(failed.label.es, failed.label.en, 'the Spanish badge must be Spanish');
   });
 
   test('each of the six states says something different', () => {
@@ -444,9 +443,8 @@ describe('whether Staxis could actually read the file', () => {
 
   test('a folder holding one file does not say "1 files"', () => {
     assert.equal(fileCountLabel(1).en, '1 file');
-    assert.equal(fileCountLabel(1).es, '1 archivo');
     assert.equal(fileCountLabel(0).en, '0 files');
-    assert.equal(fileCountLabel(4).es, '4 archivos');
+    assert.equal(fileCountLabel(4).en, '4 files');
   });
 
   test('the list keeps refreshing only while something is still being read', () => {

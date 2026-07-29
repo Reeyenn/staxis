@@ -47,7 +47,7 @@ import { CxIcon } from './icons';
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 
-interface Bilingual { en: string; es: string }
+interface Bilingual { en: string; es?: string }
 
 interface RulebookFact {
   id: string;
@@ -112,120 +112,120 @@ interface IntakeResult {
 // ─── Copy ───────────────────────────────────────────────────────────────────
 
 const S = {
-  title: { en: 'Company rulebook', es: 'Libro de la empresa' },
+  title: { en: 'Company rulebook', },
   subEdit: {
     en: 'The rules that apply at every hotel your company runs. Staxis follows them at all of them.',
-    es: 'Las reglas que aplican en cada hotel de tu empresa. Staxis las sigue en todos.',
+
   },
   subView: {
     en: 'The rules your management company has set. You can read them here; only company leadership can change them.',
-    es: 'Las reglas que fijó tu empresa administradora. Puedes leerlas aquí; solo la dirección puede cambiarlas.',
+
   },
-  locked: { en: 'Read only', es: 'Solo lectura' },
-  coversOne: { en: 'covers 1 hotel', es: 'cubre 1 hotel' },
-  coversMany: { en: 'hotels', es: 'hoteles' },
-  known: { en: 'in the book', es: 'en el libro' },
-  pending: { en: 'waiting for you', es: 'esperando tu revisión' },
-  boxEyebrow: { en: 'Add to the rulebook', es: 'Agregar al libro' },
+  locked: { en: 'Read only', },
+  coversOne: { en: 'covers 1 hotel', },
+  coversMany: { en: 'hotels', },
+  known: { en: 'in the book', },
+  pending: { en: 'waiting for you', },
+  boxEyebrow: { en: 'Add to the rulebook', },
   boxPlaceholder: {
     en: 'A policy that holds at every hotel: who you buy from, what needs a signature, how you want things run.',
-    es: 'Una política para todos los hoteles: a quién le compran, qué necesita firma, cómo quieren que se haga.',
+
   },
   boxHint: {
     en: 'Optional. Or drop in a file you already have: an operations manual, a vendor agreement, a policy memo.',
-    es: 'Opcional. O sube un archivo que ya tengas: un manual de operaciones, un acuerdo con proveedor, un memo.',
+
   },
-  addFile: { en: 'Add a file', es: 'Agregar archivo' },
-  removeFile: { en: 'Remove file', es: 'Quitar archivo' },
-  submit: { en: 'Add this', es: 'Agregar esto' },
-  submitting: { en: 'Reading…', es: 'Leyendo…' },
+  addFile: { en: 'Add a file', },
+  removeFile: { en: 'Remove file', },
+  submit: { en: 'Add this', },
+  submitting: { en: 'Reading…', },
   intakeDoneOne: {
     en: '1 rule added below. Check it before Staxis applies it at your hotels.',
-    es: '1 regla agregada abajo: revísala antes de que Staxis la aplique en tus hoteles.',
+
   },
   intakeDoneMany: {
     en: 'rules added below. Check each one before Staxis applies it at your hotels.',
-    es: 'reglas agregadas abajo: revisa cada una antes de que Staxis las aplique en tus hoteles.',
+
   },
   intakeNothing: {
     en: 'Nothing company-wide in that one. Nothing was saved.',
-    es: 'Nada para toda la empresa en eso: no se guardó nada.',
+
   },
-  fileTooBig: { en: 'That file is too big. Keep it under 4MB.', es: 'Ese archivo es muy grande: máximo 4MB.' },
+  fileTooBig: { en: 'That file is too big. Keep it under 4MB.', },
   fileWrongType: {
     en: 'Staxis can read PDF, Word, and plain text files.',
-    es: 'Staxis puede leer archivos PDF, Word y de texto.',
+
   },
-  emptyTitle: { en: 'Your company book is empty', es: 'El libro de tu empresa está vacío' },
+  emptyTitle: { en: 'Your company book is empty', },
   emptyBody: {
     en: 'Write one rule above and every hotel in the company gets it. Nothing here is required. A book with three lines in it is a useful book.',
-    es: 'Escribe una regla arriba y todos los hoteles de la empresa la reciben. Nada es obligatorio: un libro con tres líneas ya sirve.',
+
   },
   emptyView: {
     en: 'Your management company has not written any rules yet.',
-    es: 'Tu empresa administradora todavía no ha escrito reglas.',
+
   },
-  readingEyebrow: { en: 'Staxis reads this as', es: 'Staxis entiende esto como' },
-  readingAsk: { en: 'Right?', es: '¿Correcto?' },
+  readingEyebrow: { en: 'Staxis reads this as', },
+  readingAsk: { en: 'Right?', },
   // Used where the eyebrow and the question are shown as one line. The
   // eyebrow alone is a fragment that leads into the reading below it, so
   // it cannot simply be full-stopped onto the question.
   readingConfirm: {
     en: 'Here is how Staxis reads this. Right?',
-    es: 'Así entiende Staxis esto. ¿Correcto?',
+
   },
-  readingUnsure: { en: 'Staxis cannot read this one', es: 'Staxis no puede leer esta' },
-  dupeEyebrow: { en: 'You may already have this', es: 'Puede que ya tengas esto' },
-  dupeUpdate: { en: 'Update that line', es: 'Actualizar esa línea' },
-  dupeKeepBoth: { en: 'Keep both', es: 'Conservar las dos' },
-  ruleFrozen: { en: 'Approval rule in force', es: 'Regla de aprobación activa' },
-  confirm: { en: 'Confirm', es: 'Confirmar' },
-  edit: { en: 'Edit', es: 'Editar' },
-  remove: { en: 'Remove', es: 'Quitar' },
-  save: { en: 'Save', es: 'Guardar' },
-  cancel: { en: 'Cancel', es: 'Cancelar' },
+  readingUnsure: { en: 'Staxis cannot read this one', },
+  dupeEyebrow: { en: 'You may already have this', },
+  dupeUpdate: { en: 'Update that line', },
+  dupeKeepBoth: { en: 'Keep both', },
+  ruleFrozen: { en: 'Approval rule in force', },
+  confirm: { en: 'Confirm', },
+  edit: { en: 'Edit', },
+  remove: { en: 'Remove', },
+  save: { en: 'Save', },
+  cancel: { en: 'Cancel', },
   removeSure: {
     en: 'Remove for good? Any approval rule frozen from this line stops applying.',
-    es: '¿Quitar definitivamente? Cualquier regla de aprobación de esta línea deja de aplicar.',
+
   },
-  removeYes: { en: 'Yes, remove', es: 'Sí, quitar' },
-  nothingHere: { en: 'Nothing here yet', es: 'Nada aquí todavía' },
-  mismatchTitle: { en: 'Worth knowing', es: 'Vale la pena saberlo' },
+  removeYes: { en: 'Yes, remove', },
+  nothingHere: { en: 'Nothing here yet', },
+  mismatchTitle: { en: 'Worth knowing', },
   mismatchHint: {
     en: 'A hotel is set up differently from the book. Nothing is blocked. This is just so you know.',
-    es: 'Un hotel está configurado distinto al libro. Nada está bloqueado: solo para que lo sepas.',
+
   },
-  setupTitle: { en: 'Who can do what', es: 'Quién puede hacer qué' },
+  setupTitle: { en: 'Who can do what', },
   setupHint: {
     en: 'Asked once. Change it any time.',
-    es: 'Se pregunta una vez. Cámbialo cuando quieras.',
+
   },
   setupGms: {
     en: 'Your GMs can read this rulebook',
-    es: 'Tus gerentes pueden leer este libro',
+
   },
   setupGmsWhy: {
     en: 'Always on. People should know the policies they are governed by.',
-    es: 'Siempre activo: la gente debe conocer las políticas que la rigen.',
+
   },
   setupChat: {
     en: 'Company leadership can ask Staxis about all hotels at once',
-    es: 'La dirección puede preguntarle a Staxis sobre todos los hoteles a la vez',
+
   },
   setupChatWhy: {
     en: 'Off until you turn it on.',
-    es: 'Desactivado hasta que lo actives.',
+
   },
-  setupEditors: { en: 'Who can change the rulebook', es: 'Quién puede cambiar el libro' },
-  editorOwnerOnly: { en: 'The owner only', es: 'Solo el propietario' },
-  editorOwnerVp: { en: 'The owner and VPs', es: 'El propietario y los supervisores' },
-  editorCompany: { en: 'Anyone with a company-wide job', es: 'Cualquiera con un puesto de empresa' },
-  saved: { en: 'Saved.', es: 'Guardado.' },
-  on: { en: 'On', es: 'Activado' },
-  off: { en: 'Off', es: 'Desactivado' },
+  setupEditors: { en: 'Who can change the rulebook', },
+  editorOwnerOnly: { en: 'The owner only', },
+  editorOwnerVp: { en: 'The owner and VPs', },
+  editorCompany: { en: 'Anyone with a company-wide job', },
+  saved: { en: 'Saved.', },
+  on: { en: 'On', },
+  off: { en: 'Off', },
   loadFailed: {
     en: 'Could not load the company rulebook right now. Do not read this as "there are no rules".',
-    es: 'No se pudo cargar el libro de la empresa. No lo tomes como "no hay reglas".',
+
   },
 
   // ── What the banner says when the server refuses ──────────────────────────
@@ -235,123 +235,123 @@ const S = {
   // rulebook routes can return.
   bannerGeneric: {
     en: 'That did not work. Nothing changed. Try again in a moment.',
-    es: 'No funcionó. Nada cambió: inténtalo de nuevo en un momento.',
+
   },
   errAccountNotFound: {
     en: 'Staxis could not find your account. Sign out and sign back in.',
-    es: 'Staxis no encontró tu cuenta. Cierra sesión y vuelve a entrar.',
+
   },
   errForbidden: {
     en: 'You do not have access to this hotel.',
-    es: 'No tienes acceso a este hotel.',
+
   },
   errNoCompany: {
     en: 'This hotel is not part of a management company, so there is no rulebook.',
-    es: 'Este hotel no pertenece a una empresa administradora, así que no hay libro.',
+
   },
   errLeadershipOnly: {
     en: 'Only company leadership can change the rulebook. Nothing changed.',
-    es: 'Solo la dirección de la empresa puede cambiar el libro. Nada cambió.',
+
   },
   errInvalidBody: {
     en: 'Staxis could not read that. Nothing changed. Try again.',
-    es: 'Staxis no pudo leer eso. Nada cambió: inténtalo de nuevo.',
+
   },
   errUnknownAction: {
     en: 'Staxis did not understand that. Nothing changed.',
-    es: 'Staxis no entendió eso. Nada cambió.',
+
   },
   errUnknownCategory: {
     en: 'Pick one of the groups in the list.',
-    es: 'Elige uno de los grupos de la lista.',
+
   },
   errContentRequired: {
     en: 'Write something first. A rule cannot be empty.',
-    es: 'Escribe algo primero: una regla no puede quedar vacía.',
+
   },
   errSettingsRequired: {
     en: 'Nothing to save. Pick a choice first.',
-    es: 'Nada que guardar: elige una opción primero.',
+
   },
   errSettingsSaveFailed: {
     en: 'Could not save that choice. Nothing changed. Try again in a moment.',
-    es: 'No se guardó esa opción. Nada cambió: inténtalo de nuevo en un momento.',
+
   },
   errConfirmFailed: {
     en: 'Could not confirm that. Nothing changed. Try again in a moment.',
-    es: 'No se pudo confirmar. Nada cambió: inténtalo de nuevo en un momento.',
+
   },
   errFactGone: {
     en: 'That line is not in the book anymore. Somebody may have removed it.',
-    es: 'Esa línea ya no está en el libro: puede que alguien la haya quitado.',
+
   },
   errRemoveFailed: {
     en: 'Could not remove that. Nothing changed. Try again in a moment.',
-    es: 'No se pudo quitar. Nada cambió: inténtalo de nuevo en un momento.',
+
   },
   errSaveFailed: {
     en: 'Could not save that. Nothing changed. Try again in a moment.',
-    es: 'No se guardó. Nada cambió: inténtalo de nuevo en un momento.',
+
   },
   errMergeFailed: {
     en: 'Could not combine those two lines. Nothing changed. Try again in a moment.',
-    es: 'No se pudieron combinar esas dos líneas. Nada cambió: inténtalo de nuevo en un momento.',
+
   },
   errRevisionConflict: {
     en: 'That line changed somewhere else. The newer version was kept — review it and try again.',
-    es: 'Esa línea cambió en otro lugar. Se conservó la versión más reciente: revísala e inténtalo de nuevo.',
+
   },
   errLedgerUnavailable: {
     en: 'The company rulebook is temporarily read only. Nothing changed — try again shortly.',
-    es: 'El libro de la empresa está temporalmente en modo de solo lectura. Nada cambió: inténtalo pronto.',
+
   },
   errNothingToRead: {
     en: 'Type something or add a file first.',
-    es: 'Escribe algo o agrega un archivo primero.',
+
   },
   errFileNoText: {
     en: 'There was no text in that file for Staxis to read.',
-    es: 'Ese archivo no tenía texto que Staxis pudiera leer.',
+
   },
   errFileUnreadable: {
     en: 'Staxis could not read that file. Try another copy of it.',
-    es: 'Staxis no pudo leer ese archivo. Prueba con otra copia.',
+
   },
   errFileMalformed: {
     en: 'That file did not come through. Add it again.',
-    es: 'Ese archivo no llegó completo. Agrégalo de nuevo.',
+
   },
   errNothingReadable: {
     en: 'There was nothing readable in that. Nothing was saved.',
-    es: 'No había nada legible en eso: no se guardó nada.',
+
   },
   errAiDisabled: {
     en: 'Reading with AI is turned off right now. Nothing was saved.',
-    es: 'La lectura con IA está desactivada ahora mismo. No se guardó nada.',
+
   },
   errAiUnavailable: {
     en: 'Staxis could not read that just now. Nothing was saved. Try again in a moment.',
-    es: 'Staxis no pudo leerlo ahora mismo. No se guardó nada: inténtalo de nuevo en un momento.',
+
   },
   errBudget: {
     en: 'This hotel has used up its AI for today. It starts fresh at midnight.',
-    es: 'Este hotel ya usó toda su IA de hoy. Se reinicia a medianoche.',
+
   },
   errRateLimited: {
     en: 'That is a lot of changes in one hour. Give it a few minutes.',
-    es: 'Son muchos cambios en una hora. Espera unos minutos.',
+
   },
   errOffline: {
     en: 'Staxis could not reach the server. Check your connection and try again.',
-    es: 'Staxis no pudo conectarse. Revisa tu conexión e inténtalo de nuevo.',
+
   },
   readNoteTruncated: {
     en: 'That file is long. Staxis read the first part of it.',
-    es: 'Ese archivo es largo: Staxis leyó solo la primera parte.',
+
   },
   readNoteVision: {
     en: 'That looked like a scan, so Staxis read it with AI. Double-check the wording.',
-    es: 'Parecía un escaneo, así que Staxis lo leyó con IA: revisa bien el texto.',
+
   },
 } as const;
 
@@ -425,14 +425,14 @@ export function rulebookBannerText(
 ): string {
   const key = code ?? serverError;
   const entry = key !== undefined ? BANNER_COPY.get(key) : undefined;
-  return S[entry ?? 'bannerGeneric'][lang];
+  return S[entry ?? 'bannerGeneric']['en'];
 }
 
 /** How a file got read, in the reader's language. Empty when there is nothing
  *  worth saying (or the server sent a note this build does not know). */
 export function rulebookReadNoteText(code: string | null | undefined, lang: 'en' | 'es'): string {
   const entry = code ? READ_NOTE_COPY.get(code) : undefined;
-  return entry ? S[entry][lang] : '';
+  return entry ? S[entry]['en'] : '';
 }
 
 /**
@@ -572,8 +572,8 @@ export function CompanyRulebookPanel({
   /** Explicit authoritative company context used by My Portfolio. */
   organizationId?: string | null;
 }) {
-  const es = lang === 'es';
-  const L = <K extends keyof typeof S>(k: K) => S[k][es ? 'es' : 'en'];
+  const es = false;
+  const L = <K extends keyof typeof S>(k: K) => S[k]['en'];
 
   const { activePropertyId: contextPropertyId } = useProperty();
   const activePropertyId = organizationId ? null : (propertyId ?? contextPropertyId);
@@ -885,7 +885,7 @@ export function CompanyRulebookPanel({
         <div className="cr-mis">
           <div className="cr-mist">{L('mismatchTitle')}</div>
           {(data.contradictions ?? []).map((c) => (
-            <div className="cr-misl" key={`${c.propertyId}:${c.key}`}>{c.line[es ? 'es' : 'en']}</div>
+            <div className="cr-misl" key={`${c.propertyId}:${c.key}`}>{c.line['en']}</div>
           ))}
           <div className="cr-setw" style={{ marginTop: 6 }}>{L('mismatchHint')}</div>
         </div>
@@ -904,8 +904,8 @@ export function CompanyRulebookPanel({
         const label = COMPANY_CATEGORY_LABELS[g.category];
         return (
           <div className="cr-grp" key={g.category}>
-            <div className="cr-grpt">{label.title[es ? 'es' : 'en']}</div>
-            <div className="cr-grps">{label.hint[es ? 'es' : 'en']}</div>
+            <div className="cr-grpt">{label.title['en']}</div>
+            <div className="cr-grps">{label.hint['en']}</div>
             <div className="cr-rows">
               {g.items.map((f) => {
                 const unreviewed = f.reviewState === 'unreviewed';
@@ -937,7 +937,7 @@ export function CompanyRulebookPanel({
                             >
                               {COMPANY_CATEGORIES.map((c) => (
                                 <option key={c} value={c}>
-                                  {COMPANY_CATEGORY_LABELS[c].title[es ? 'es' : 'en']}
+                                  {COMPANY_CATEGORY_LABELS[c].title['en']}
                                 </option>
                               ))}
                             </select>
@@ -964,7 +964,7 @@ export function CompanyRulebookPanel({
                             ? L('readingConfirm')
                             : (f.reading.authority ? L('ruleFrozen') : L('readingEyebrow'))}
                         </div>
-                        <div className="cr-readl">{reading.line[es ? 'es' : 'en']}</div>
+                        <div className="cr-readl">{reading.line['en']}</div>
                       </div>
                     )}
 
@@ -975,14 +975,14 @@ export function CompanyRulebookPanel({
                     {!isEditing && ambiguous && (
                       <div className="cr-read cr-unsure">
                         <div className="cr-reade">{L('readingUnsure')}</div>
-                        <div className="cr-readl">{ambiguous.line[es ? 'es' : 'en']}</div>
+                        <div className="cr-readl">{ambiguous.line['en']}</div>
                       </div>
                     )}
 
                     {!isEditing && dupe && (
                       <div className="cr-read cr-unsure">
                         <div className="cr-reade">{L('dupeEyebrow')}</div>
-                        <div className="cr-readl">{dupe.line[es ? 'es' : 'en']}</div>
+                        <div className="cr-readl">{dupe.line['en']}</div>
                       </div>
                     )}
 

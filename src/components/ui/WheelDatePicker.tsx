@@ -180,8 +180,8 @@ export function WheelDatePicker({
   useHideScrollbar();
   const ROW = rowHeight;
   const peek = Math.max(1, Math.round(ROW * peekFraction));
-  const es = lang === 'es';
-  const MONTHS = es ? MONTHS_ES : MONTHS_EN;
+  const es = false;
+  const MONTHS = MONTHS_EN;
 
   const today = new Date();
   const thisYear = today.getFullYear();
@@ -229,7 +229,7 @@ export function WheelDatePicker({
   };
 
   const onTouch = () => { touched.current = true; };
-  const headers = es ? ['Mes', 'Día', 'Año'] : ['Month', 'Day', 'Year'];
+  const headers = ['Month', 'Day', 'Year'];
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 6, width: '100%' }}>

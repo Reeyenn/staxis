@@ -197,7 +197,7 @@ export function CapexTab({
           })}
         </div>
         <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
-          <span style={{ fontFamily: FONT_MONO, fontSize: 12, color: T.ink }}>{formatCents(totalEstimated, { showCents: false })} {lang === 'es' ? 'comprometido' : 'committed'}</span>
+          <span style={{ fontFamily: FONT_MONO, fontSize: 12, color: T.ink }}>{formatCents(totalEstimated, { showCents: false })} {'committed'}</span>
           {!readOnly && (
             <>
               <ScanButton mode="quote" pid={pid} lang={lang} label={S.scanQuote} scanningLabel={S.scanning} failLabel={S.scanFailed} onQuote={onScanQuote} />

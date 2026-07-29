@@ -21,10 +21,10 @@ export type ReportCategory =
   | 'activity'
   | 'lost_found';
 
-/** Bilingual label. EN + ES per CLAUDE.md. */
+/** English UI label. The legacy Spanish field remains optional on old payloads. */
 export interface Bilingual {
   en: string;
-  es: string;
+  es?: string;
 }
 
 /** How a cell renders / aligns. */

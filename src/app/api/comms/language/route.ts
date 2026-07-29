@@ -1,9 +1,9 @@
 /**
- * /api/comms/language — the user's app-wide language preference.
+ * /api/comms/language — legacy communication-language preference contract.
  *   GET  → { language }              (loads accounts.preferred_language)
- *   POST { language } → { language } (persists it; follows the user across devices)
- * Property-agnostic (the choice is app-wide), so this uses requireSession only.
- * Mirrors the housekeeper save-language flow for account-based users.
+ *   POST { language } → { language } (persists it for per-message translation)
+ * The English-only UI no longer calls this route. It remains property-agnostic
+ * and available for communication data contracts, so it uses requireSession.
  */
 import { ApiErrorCode } from '@/lib/api-response';
 import { validateEnum } from '@/lib/api-validate';

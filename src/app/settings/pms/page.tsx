@@ -127,14 +127,12 @@ function PMSPropertyEditor({
   const handleTest = async () => {
     if (!pmsType || !pmsUrl || !username || !password) {
       setTestStatus('error');
-      setTestMessage(lang === 'es'
-        ? 'Por favor completa todos los campos antes de probar.'
-        : 'Please fill in all fields before testing.');
+      setTestMessage('Please fill in all fields before testing.');
       return;
     }
     if (!propertyId) {
       setTestStatus('error');
-      setTestMessage(lang === 'es' ? 'Propiedad no seleccionada.' : 'No property selected.');
+      setTestMessage('No property selected.');
       return;
     }
     const requestedPropertyId = propertyId;
@@ -163,22 +161,16 @@ function PMSPropertyEditor({
       if (!ownsAttempt()) return;
       if (!res.ok || !json.ok) {
         setTestStatus('error');
-        setTestMessage(json.error ?? (lang === 'es'
-          ? 'No pudimos guardar tus credenciales.'
-          : 'Could not save your credentials.'));
+        setTestMessage(json.error ?? ('Could not save your credentials.'));
         return;
       }
       const label = PMS_SYSTEMS.find(p => p.value === requestedCredentials.pmsType)?.label ?? requestedCredentials.pmsType;
       setTestStatus('success');
-      setTestMessage(lang === 'es'
-        ? `Credenciales guardadas para ${label}. Haz clic en Guardar para iniciar la sincronización.`
-        : `Credentials saved for ${label}. Click Save & Onboard to start the first sync.`);
+      setTestMessage(`Credentials saved for ${label}. Click Save & Onboard to start the first sync.`);
     } catch {
       if (!ownsAttempt()) return;
       setTestStatus('error');
-      setTestMessage(lang === 'es'
-        ? 'Problema de red. Revisa tu conexión y vuelve a intentar.'
-        : 'Network problem. Check your connection and try again.');
+      setTestMessage('Network problem. Check your connection and try again.');
     }
   };
 
@@ -190,9 +182,7 @@ function PMSPropertyEditor({
     if (!user || !propertyId) return;
     if (testStatus !== 'success') {
       setTestStatus('error');
-      setTestMessage(lang === 'es'
-        ? 'Primero prueba la conexión para guardar tus credenciales.'
-        : 'Please Save Credentials first so we can use them.');
+      setTestMessage('Please Save Credentials first so we can use them.');
       return;
     }
     const requestedPropertyId = propertyId;
@@ -225,15 +215,13 @@ function PMSPropertyEditor({
       if (!res.ok || !json.ok) {
         setSaving(false);
         setTestStatus('error');
-        setTestMessage(json.error ?? (lang === 'es'
-          ? 'No pudimos iniciar la sincronización.'
-          : 'Could not start the sync.'));
+        setTestMessage(json.error ?? ('Could not start the sync.'));
         return;
       }
 
       startOnboardJob(json.data.jobId, {
         status: 'queued',
-        step: lang === 'es' ? 'Esperando un trabajador…' : 'Waiting for a worker…',
+        step: 'Waiting for a worker…',
         progressPct: 0,
         error: null,
         result: null,
@@ -242,9 +230,7 @@ function PMSPropertyEditor({
       if (!ownsAttempt()) return;
       setSaving(false);
       setTestStatus('error');
-      setTestMessage(lang === 'es'
-        ? 'Error inesperado. Por favor intenta de nuevo.'
-        : 'Unexpected error. Please try again.');
+      setTestMessage('Unexpected error. Please try again.');
     }
   };
 
@@ -261,12 +247,10 @@ function PMSPropertyEditor({
         <div style={{ padding: 24, maxWidth: 520, margin: '40px auto', textAlign: 'center' }}>
           <Wifi size={28} color="var(--text-muted)" style={{ marginBottom: 12 }} />
           <h1 style={{ fontFamily: 'var(--font-sans)', fontWeight: 700, fontSize: 20, marginBottom: 12 }}>
-            {lang === 'es' ? 'Acceso restringido' : 'You don’t have access'}
+            {'You don’t have access'}
           </h1>
           <p style={{ fontSize: 14, color: 'var(--text-secondary)', lineHeight: 1.6, marginBottom: 20 }}>
-            {lang === 'es'
-              ? 'La conexión PMS solo está disponible para gerentes, propietarios y administradores.'
-              : 'The PMS connection is restricted to managers, owners, and admins.'}
+            {'The PMS connection is restricted to managers, owners, and admins.'}
           </p>
           <Link href="/settings" style={{ color: 'var(--amber)', textDecoration: 'none', fontSize: 14, fontWeight: 600 }}>
             ← {t('settings', lang)}
@@ -283,7 +267,7 @@ function PMSPropertyEditor({
           <Link href="/settings" style={{ color: 'var(--text-muted)', textDecoration: 'none', fontSize: '14px' }}>← {t('settings', lang)}</Link>
           <span style={{ color: 'var(--text-muted)' }}>/</span>
           <h1 style={{ fontFamily: 'var(--font-sans)', fontWeight: 700, fontSize: '16px', letterSpacing: '-0.01em', display: 'flex', alignItems: 'center', gap: '6px' }}>
-            <Wifi size={15} color="var(--amber)" /> {lang === 'es' ? 'Conexión PMS' : 'PMS Connection'}
+            <Wifi size={15} color="var(--amber)" /> {'PMS Connection'}
           </h1>
         </div>
 
@@ -301,22 +285,15 @@ function PMSPropertyEditor({
             <Zap size={20} color="var(--amber)" style={{ flexShrink: 0, marginTop: '2px' }} />
             <div>
               <p style={{ fontWeight: 700, fontSize: '15px', color: 'var(--text-primary)', marginBottom: '6px' }}>
-                {lang === 'es' ? 'Extracción automática desde tu PMS' : 'Auto-pull data from your PMS'}
+                {'Auto-pull data from your PMS'}
               </p>
               <p style={{ fontSize: '13px', color: 'var(--text-secondary)', lineHeight: 1.6 }}>
-                {lang === 'es'
-                  ? <>Un agente de IA inicia sesión en tu PMS exactamente como lo haría una persona. Navega las pantallas, lee los datos de ocupación y salidas, y los envía directamente a Staxis. <strong style={{ color: 'var(--amber)' }}>Sin entrada manual.</strong></>
-                  : <>A Computer Use Agent logs into your PMS exactly like a human would - navigating the screens, reading your occupancy and checkout data, and feeding it directly into Staxis. <strong style={{ color: 'var(--amber)' }}>Zero manual entry.</strong></>}
+                {<>A Computer Use Agent logs into your PMS exactly like a human would - navigating the screens, reading your occupancy and checkout data, and feeding it directly into Staxis. <strong style={{ color: 'var(--amber)' }}>Zero manual entry.</strong></>}
               </p>
             </div>
           </div>
           <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
-            {(lang === 'es' ? [
-              'Sincroniza cada 15 minutos durante horas operativas (6 AM – 10 PM)',
-              'Sincronización "Bloqueo de Mañana" a las 9 PM: te envía el horario recomendado de mañana',
-              'Sincronización de confirmación matutina a las 5:30 AM para cambios nocturnos',
-              'Notificación push cuando la ocupación cambia en 5+ habitaciones',
-            ] : [
+            {([
               'Syncs every 15 minutes during operating hours (6 AM – 10 PM)',
               '"Tomorrow Lock" sync at 9 PM - sends you tomorrow\'s recommended schedule',
               'Morning confirmation sync at 5:30 AM for any overnight changes',
@@ -346,13 +323,13 @@ function PMSPropertyEditor({
           >
             <CheckCircle size={18} color="var(--green)" />
             <div>
-              <p style={{ fontWeight: 600, fontSize: '14px', color: 'var(--green)' }}>{lang === 'es' ? 'Conectado' : 'Connected'}</p>
+              <p style={{ fontWeight: 600, fontSize: '14px', color: 'var(--green)' }}>{'Connected'}</p>
               <p style={{ fontSize: '12px', color: 'var(--text-muted)' }}>
                 {PMS_SYSTEMS.find(p => p.value === scopedProperty.pmsType)?.label ?? scopedProperty.pmsType}
                 {scopedProperty.lastSyncedAt && (() => {
                   const ts = scopedProperty.lastSyncedAt as any;
                   const d = ts?.toDate ? ts.toDate() : new Date(ts);
-                  return isNaN(d.getTime()) ? '' : ` · ${lang === 'es' ? 'Última sinc.' : 'Last synced'} ${d.toLocaleTimeString()}`;
+                  return isNaN(d.getTime()) ? '' : ` · ${'Last synced'} ${d.toLocaleTimeString()}`;
                 })()}
               </p>
             </div>
@@ -362,9 +339,9 @@ function PMSPropertyEditor({
         {/* Form */}
         <div className="card" style={{ padding: '20px', marginBottom: '16px' }}>
           <div style={{ marginBottom: '16px' }}>
-            <label className="label">{lang === 'es' ? 'Sistema PMS' : 'PMS System'}</label>
+            <label className="label">{'PMS System'}</label>
             <select value={pmsType} onChange={e => handlePmsTypeChange(e.target.value)} className="input">
-              <option value="">{lang === 'es' ? '- Selecciona tu PMS -' : '- Select your PMS -'}</option>
+              <option value="">{'- Select your PMS -'}</option>
               {PMS_SYSTEMS.map(pms => (
                 <option key={pms.value} value={pms.value}>{pms.label}</option>
               ))}
@@ -372,7 +349,7 @@ function PMSPropertyEditor({
           </div>
 
           <div style={{ marginBottom: '16px' }}>
-            <label className="label">{lang === 'es' ? 'URL de Inicio de Sesión PMS' : 'PMS Login URL'}</label>
+            <label className="label">{'PMS Login URL'}</label>
             <input
               type="url"
               value={pmsUrl}
@@ -383,11 +360,11 @@ function PMSPropertyEditor({
               className="input"
               placeholder="https://login.choiceadvantage.com"
             />
-            <p style={{ fontSize: '12px', color: 'var(--text-muted)', marginTop: '4px' }}>{lang === 'es' ? 'La URL que usa tu personal para iniciar sesión en el PMS' : 'The URL your staff uses to log in to the PMS'}</p>
+            <p style={{ fontSize: '12px', color: 'var(--text-muted)', marginTop: '4px' }}>{'The URL your staff uses to log in to the PMS'}</p>
           </div>
 
           <div style={{ marginBottom: '16px' }}>
-            <label className="label">{lang === 'es' ? 'Usuario / Email' : 'Username / Email'}</label>
+            <label className="label">{'Username / Email'}</label>
             <input
               type="text"
               value={username}
@@ -396,13 +373,13 @@ function PMSPropertyEditor({
                 setUsername(e.target.value);
               }}
               className="input"
-              placeholder={lang === 'es' ? 'tu login del PMS' : 'your PMS login'}
+              placeholder={'your PMS login'}
               autoComplete="off"
             />
           </div>
 
           <div style={{ marginBottom: '4px' }}>
-            <label className="label">{lang === 'es' ? 'Contraseña' : 'Password'}</label>
+            <label className="label">{'Password'}</label>
             <input
               type="password"
               value={password}
@@ -420,9 +397,7 @@ function PMSPropertyEditor({
           <div style={{ display: 'flex', gap: '8px', padding: '10px 12px', background: 'rgba(0,0,0,0.03)', borderRadius: '8px', marginTop: '12px' }}>
             <Shield size={14} color="var(--text-muted)" style={{ flexShrink: 0, marginTop: '1px' }} />
             <p style={{ fontSize: '12px', color: 'var(--text-muted)', lineHeight: 1.5 }}>
-              {lang === 'es'
-                ? 'Tus credenciales se encriptan y almacenan de forma segura en Supabase. Solo las usa el agente de sincronización de Staxis para leer datos de ocupación. Nunca se comparten ni se venden.'
-                : 'Your credentials are encrypted and stored securely in Supabase. They are only used by the Staxis sync agent to read occupancy data - never shared or sold.'}
+              {'Your credentials are encrypted and stored securely in Supabase. They are only used by the Staxis sync agent to read occupancy data - never shared or sold.'}
             </p>
           </div>
         </div>
@@ -458,10 +433,10 @@ function PMSPropertyEditor({
             {testStatus === 'testing' ? (
               <>
                 <div style={{ width: '16px', height: '16px', border: '2px solid rgba(255,255,255,0.2)', borderTopColor: 'white', borderRadius: '50%', animation: 'spin 0.8s linear infinite' }} />
-                {lang === 'es' ? 'Guardando…' : 'Saving…'}
+                {'Saving…'}
               </>
             ) : (
-              <><Wifi size={16} /> {lang === 'es' ? 'Guardar Credenciales' : 'Save Credentials'}</>
+              <><Wifi size={16} /> {'Save Credentials'}</>
             )}
           </button>
           <button
@@ -471,8 +446,8 @@ function PMSPropertyEditor({
             style={{ flex: 1, justifyContent: 'center' }}
           >
             {saving
-              ? (lang === 'es' ? 'Sincronizando…' : 'Onboarding…')
-              : (lang === 'es' ? 'Guardar y Sincronizar' : 'Save & Onboard')}
+              ? ('Onboarding…')
+              : ('Save & Onboard')}
           </button>
         </div>
 
@@ -512,10 +487,10 @@ function PMSPropertyEditor({
                      : 'var(--text-primary)',
               }}>
                 {jobStatus.status === 'complete'
-                  ? (lang === 'es' ? '¡Sincronización completa!' : 'Onboarding complete!')
+                  ? ('Onboarding complete!')
                   : jobStatus.status === 'failed'
-                    ? (lang === 'es' ? 'Sincronización falló' : 'Onboarding failed')
-                    : (jobStatus.step ?? (lang === 'es' ? 'Trabajando…' : 'Working…'))}
+                    ? ('Onboarding failed')
+                    : (jobStatus.step ?? ('Working…'))}
               </p>
             </div>
 
@@ -549,9 +524,7 @@ function PMSPropertyEditor({
                 lineHeight: 1.5,
                 marginBottom: '8px',
               }}>
-                {lang === 'es'
-                  ? 'Esto está tardando más de lo normal. El trabajador puede estar ocupado. Espera unos minutos o detén el sondeo para volver a intentarlo más tarde.'
-                  : 'This is taking longer than expected. The sync worker may be busy. Wait a few more minutes or stop polling and try again later.'}
+                {'This is taking longer than expected. The sync worker may be busy. Wait a few more minutes or stop polling and try again later.'}
                 {' '}
                 <button
                   type="button"
@@ -562,7 +535,7 @@ function PMSPropertyEditor({
                     fontSize: '13px',
                   }}
                 >
-                  {lang === 'es' ? 'Detener' : 'Stop'}
+                  {'Stop'}
                 </button>
               </p>
             )}
@@ -577,9 +550,7 @@ function PMSPropertyEditor({
                 lineHeight: 1.5,
                 marginBottom: '8px',
               }}>
-                {lang === 'es'
-                  ? 'Detuvimos el sondeo. Recarga la página para reintentar; la sincronización puede haber completado en segundo plano.'
-                  : 'We stopped polling. Refresh the page to retry; the sync may have completed in the background.'}
+                {'We stopped polling. Refresh the page to retry; the sync may have completed in the background.'}
               </p>
             )}
 
@@ -594,9 +565,7 @@ function PMSPropertyEditor({
                 marginBottom: '8px',
               }}>
                 <WifiOff size={12} style={{ verticalAlign: 'middle', marginRight: '4px' }} />
-                {lang === 'es'
-                  ? `Sin conexión (${pollNetworkFailures} intentos fallidos). El sondeo continúa cuando vuelvas en línea.`
-                  : `Offline (${pollNetworkFailures} failed polls). Polling will resume when you reconnect.`}
+                {`Offline (${pollNetworkFailures} failed polls). Polling will resume when you reconnect.`}
               </p>
             )}
 
@@ -617,14 +586,10 @@ function PMSPropertyEditor({
                   // something we don't recognise."
                   const parsed = parsePmsOnboardResult(jobStatus.result);
                   if (!parsed.value) {
-                    return lang === 'es'
-                      ? 'Conectamos correctamente, pero no pudimos leer el resumen final. Revisa tu panel.'
-                      : 'We connected successfully, but couldn’t read the final summary. Check your dashboard.';
+                    return 'We connected successfully, but couldn’t read the final summary. Check your dashboard.';
                   }
                   const { rooms_count: rooms, staff_count: staff } = parsed.value;
-                  return lang === 'es'
-                    ? `Encontramos ${rooms} habitaciones y ${staff} miembros del personal. Tu panel está listo.`
-                    : `We found ${rooms} rooms and ${staff} staff members. Your dashboard is ready.`;
+                  return `We found ${rooms} rooms and ${staff} staff members. Your dashboard is ready.`;
                 })()}
               </div>
             )}
@@ -634,15 +599,9 @@ function PMSPropertyEditor({
         {/* CUA architecture note */}
         <div style={{ marginTop: '24px', padding: '16px', background: 'rgba(0,0,0,0.02)', border: '1px solid var(--border)', borderRadius: '12px' }}>
           <p style={{ fontSize: '12px', fontWeight: 700, letterSpacing: '0.08em', textTransform: 'uppercase', color: 'var(--text-muted)', marginBottom: '8px' }}>
-            {lang === 'es' ? 'Cómo Funciona' : 'How It Works'}
+            {'How It Works'}
           </p>
-          {(lang === 'es' ? [
-            { step: '1', text: 'Un navegador abre tu PMS en el horario de sincronización programado' },
-            { step: '2', text: 'El agente inicia sesión con tus credenciales guardadas' },
-            { step: '3', text: 'Navega a la pantalla de ocupación/reservaciones y lee los datos' },
-            { step: '4', text: 'Los datos extraídos (habitaciones ocupadas, salidas, llegadas) se guardan en Staxis' },
-            { step: '5', text: 'Si los números cambian significativamente, recibes una notificación push' },
-          ] : [
+          {([
             { step: '1', text: 'A headless browser opens your PMS at the scheduled sync time' },
             { step: '2', text: 'The agent logs in with your saved credentials' },
             { step: '3', text: 'It navigates to the occupancy/reservations screen and reads the data' },
@@ -657,9 +616,7 @@ function PMSPropertyEditor({
             </div>
           ))}
           <p style={{ fontSize: '12px', color: 'var(--text-muted)', marginTop: '8px', borderTop: '1px solid var(--border)', paddingTop: '10px' }}>
-            {lang === 'es'
-              ? 'Actualmente soporta Choice Advantage con automatización completa. Otros sistemas usan captura de pantalla + OCR como respaldo.'
-              : 'Currently supports Choice Advantage with full automation. Other systems use screenshot + OCR fallback.'}
+            {'Currently supports Choice Advantage with full automation. Other systems use screenshot + OCR fallback.'}
           </p>
         </div>
         <style>{`@keyframes spin{to{transform:rotate(360deg)}}`}</style>

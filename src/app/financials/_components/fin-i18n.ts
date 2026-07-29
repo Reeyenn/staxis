@@ -1,14 +1,10 @@
-// Bilingual (EN + ES) strings for the Financials suite. Co-located with the
-// feature (the same pattern complaints-shared / lost-and-found use for their
-// domain labels) rather than added to the 2,483-line global translations.ts —
-// that file is edited by every parallel feature, so co-locating avoids a merge
-// conflict while staying fully lang-driven via useLang().
+// English strings for the Financials suite.
 
 import { formatCents, type Department, type CapexStatus, type CapexCategory, type RequestType } from '@/lib/financials/shared';
 
 type Lang = 'en' | 'es';
 
-export const DEPT_LABELS: Record<Lang, Record<Department, string>> = {
+export const DEPT_LABELS: Record<'en', Record<Department, string>> = {
   en: {
     rooms: 'Rooms',
     housekeeping: 'Housekeeping',
@@ -20,20 +16,10 @@ export const DEPT_LABELS: Record<Lang, Record<Department, string>> = {
     admin_general: 'Admin & General',
     other: 'Other',
   },
-  es: {
-    rooms: 'Habitaciones',
-    housekeeping: 'Limpieza',
-    maintenance: 'Mantenimiento',
-    front_desk: 'Recepción',
-    breakfast: 'Desayuno / Alim.',
-    utilities: 'Servicios',
-    sales_marketing: 'Ventas y Marketing',
-    admin_general: 'Administración',
-    other: 'Otro',
-  },
+
 };
 
-export const CAPEX_STATUS_LABELS: Record<Lang, Record<CapexStatus, string>> = {
+export const CAPEX_STATUS_LABELS: Record<'en', Record<CapexStatus, string>> = {
   en: {
     requested: 'Requested',
     approved: 'Approved',
@@ -43,18 +29,10 @@ export const CAPEX_STATUS_LABELS: Record<Lang, Record<CapexStatus, string>> = {
     completed: 'Completed',
     cancelled: 'Cancelled',
   },
-  es: {
-    requested: 'Solicitado',
-    approved: 'Aprobado',
-    rejected: 'Rechazado',
-    revisions_needed: 'Requiere Cambios',
-    in_progress: 'En Progreso',
-    completed: 'Completado',
-    cancelled: 'Cancelado',
-  },
+
 };
 
-export const CAPEX_CATEGORY_LABELS: Record<Lang, Record<CapexCategory, string>> = {
+export const CAPEX_CATEGORY_LABELS: Record<'en', Record<CapexCategory, string>> = {
   en: {
     renovation: 'Renovation',
     equipment: 'Equipment',
@@ -64,27 +42,19 @@ export const CAPEX_CATEGORY_LABELS: Record<Lang, Record<CapexCategory, string>> 
     furniture: 'Furniture',
     other: 'Other',
   },
-  es: {
-    renovation: 'Renovación',
-    equipment: 'Equipo',
-    technology: 'Tecnología',
-    safety: 'Seguridad',
-    exterior: 'Exterior',
-    furniture: 'Muebles',
-    other: 'Otro',
-  },
+
 };
 
-export const REQUEST_TYPE_LABELS: Record<Lang, Record<RequestType, string>> = {
+export const REQUEST_TYPE_LABELS: Record<'en', Record<RequestType, string>> = {
   en: { budgeted: 'Budgeted', emergency: 'Emergency' },
-  es: { budgeted: 'Presupuestado', emergency: 'Emergencia' },
+
 };
 
 export function capexCategoryLabel(lang: Lang, c: CapexCategory): string {
-  return CAPEX_CATEGORY_LABELS[lang]?.[c] ?? CAPEX_CATEGORY_LABELS.en[c] ?? c;
+  return CAPEX_CATEGORY_LABELS['en']?.[c] ?? CAPEX_CATEGORY_LABELS.en[c] ?? c;
 }
 export function requestTypeLabel(lang: Lang, t: RequestType): string {
-  return REQUEST_TYPE_LABELS[lang]?.[t] ?? REQUEST_TYPE_LABELS.en[t] ?? t;
+  return REQUEST_TYPE_LABELS['en']?.[t] ?? REQUEST_TYPE_LABELS.en[t] ?? t;
 }
 
 const STRINGS = {
@@ -235,161 +205,21 @@ const STRINGS = {
     spentWord: 'spent',
     ofWord: 'of',
   },
-  es: {
-    title: 'Finanzas',
-    tagline: 'Tus cuentas, llenadas por ti.',
-    tabCheckbook: 'Libro de gastos',
-    tabBudget: 'Presupuesto',
-    tabCapex: 'Proyectos',
-    revenue: 'Ingresos',
-    expenses: 'Gastos',
-    profit: 'Ganancia',
-    margin: 'Margen',
-    costPerRoom: 'Costo / hab. ocupada',
-    pctOfRevenue: 'Gastos % de ingresos',
-    noRevenueYet: 'Sin ingresos del PMS aún',
-    fromPms: 'del PMS',
-    revenueComingSoon: 'Los ingresos llegan del PMS cuando reporte finanzas.',
-    addExpense: 'Agregar gasto',
-    scanInvoice: 'Escanear factura',
-    vendor: 'Proveedor',
-    amount: 'Monto',
-    department: 'Departamento',
-    category: 'Categoría',
-    date: 'Fecha',
-    notes: 'Notas',
-    save: 'Guardar',
-    cancel: 'Cancelar',
-    delete: 'Eliminar',
-    edit: 'Editar',
-    monthTotal: 'Total del mes',
-    noExpenses: 'Aún no hay gastos registrados este mes.',
-    allDepartments: 'Todos los departamentos',
-    confirmDelete: '¿Eliminar este gasto?',
-    scanning: 'Leyendo factura…',
-    scanFailed: 'No se pudo leer la imagen. Intenta una foto más clara.',
-    scanHint: 'Toma una foto de la factura. Leemos el proveedor, total y categoría.',
-    fromScan: 'de escaneo',
-    optional: 'opcional',
-    budgetVsActual: 'Presupuesto vs. real',
-    setBudgets: 'Definir presupuestos',
-    budget: 'Presupuesto',
-    actual: 'Real',
-    remaining: 'Restante',
-    over: 'sobre',
-    headroom: 'disponible',
-    leftToSpend: 'por gastar',
-    overBy: 'excedido por',
-    totalMonthly: 'Total mensual',
-    onTrack: 'En camino',
-    overBudget: 'Sobre presupuesto',
-    approaching: 'Acercándose',
-    noBudget: 'Sin presupuesto',
-    saveBudgets: 'Guardar presupuestos',
-    forecast: 'Pronóstico fin de mes',
-    projected: 'Proyectado',
-    trendingOver: 'Tendencia sobre presupuesto',
-    tooEarly: 'Muy temprano en el mes para pronosticar.',
-    anomalies: 'Alertas de gasto',
-    noAnomalies: 'Sin gastos inusuales este mes.',
-    projects: 'Proyectos de capital',
-    newProject: 'Nuevo proyecto',
-    scanQuote: 'Escanear cotización',
-    projectName: 'Nombre del proyecto',
-    quote: 'Cotización',
-    spent: 'Gastado',
-    status: 'Estado',
-    overrun: 'sobrecosto',
-    underQuote: 'bajo cotización',
-    lineItems: 'Partidas',
-    addLine: 'Agregar partida',
-    label: 'Etiqueta',
-    startDate: 'Fecha inicio',
-    targetDate: 'Fecha objetivo',
-    description: 'Descripción',
-    noProjects: 'Aún no hay proyectos de capital.',
-    deleteProject: 'Eliminar proyecto',
-    confirmDeleteProject: '¿Eliminar este proyecto y sus partidas?',
-    scanQuoteHint: 'Toma una foto de la cotización. Leemos el proyecto, total y partidas.',
-    back: 'Atrás',
-    // capex approval workflow
-    capOverview: 'Resumen',
-    capPending: 'Pendientes',
-    capActive: 'Activos',
-    capClosed: 'Cerrados',
-    capForecast: 'Pronóstico',
-    capBinder: 'Carpeta',
-    rollup: 'Todas las propiedades',
-    newRequest: 'Nueva solicitud',
-    requestTitle: 'Título',
-    estimatedCost: 'Costo estimado',
-    typeLabel: 'Tipo',
-    budgeted: 'Presupuestado',
-    emergency: 'Emergencia',
-    submitRequest: 'Enviar solicitud',
-    approve: 'Aprobar',
-    reject: 'Rechazar',
-    requestRevisions: 'Pedir cambios',
-    decisionNotes: 'Notas / motivo',
-    submittedBy: 'Enviado por',
-    decidedBy: 'Decidido por',
-    markInProgress: 'Iniciar trabajo',
-    markComplete: 'Marcar completo',
-    percentComplete: '% completado',
-    estimate: 'Estimado',
-    totalRequests: 'Solicitudes',
-    totalEstimated: 'Estimado',
-    totalSpent: 'Gastado',
-    approvedPct: '% aprobado',
-    startedPct: '% iniciado',
-    completedPct: '% completado',
-    budgetedVsEmergency: 'Presupuestado vs. emergencia',
-    binderQuote: 'Cotización y estimado',
-    binderApprovals: 'Aprobaciones',
-    binderReceipts: 'Recibos',
-    attachment: 'Cotización / foto adjunta',
-    addAttachment: 'Adjuntar cotización / foto',
-    noAttachment: 'Sin adjunto',
-    viewAttachment: 'Ver adjunto',
-    upcomingByMonth: 'Gasto de capital próximo',
-    awaitingApproval: 'Esperando aprobación',
-    noPending: 'Nada esperando aprobación.',
-    noActive: 'Sin proyectos activos.',
-    noClosed: 'Nada cerrado aún.',
-    noForecastCapex: 'Sin gasto de capital programado.',
-    selectProject: 'Elige un proyecto para abrir su carpeta.',
-    acrossProperties: 'En tus propiedades',
-    loading: 'Cargando…',
-    errorLoading: 'No se pudo cargar. Toca para reintentar.',
-    close: 'Cerrar',
-    saving: 'Guardando…',
-    // errors / validation
-    couldNotSave: 'No se pudo guardar. Inténtalo de nuevo.',
-    couldNotDelete: 'No se pudo eliminar. Inténtalo de nuevo.',
-    invalidAmount: 'Ingresa un monto válido.',
-    linesPartial: 'Solicitud guardada, pero algunas partidas escaneadas no se pudieron agregar. Agrégalas en la carpeta del proyecto.',
-    attachmentOpenFailed: 'No se pudo abrir el adjunto. Inténtalo de nuevo.',
-    scanRateLimited: 'Límite de escaneos alcanzado. Espera un poco e inténtalo de nuevo.',
-    scanBudgetCap: 'Presupuesto diario de IA alcanzado. El escaneo se pausa hasta mañana.',
-    scanServiceDown: 'El servicio de escaneo no está disponible por ahora. Inténtalo pronto.',
-    // budget card footer words
-    spentWord: 'gastado',
-    ofWord: 'de',
-  },
+
 };
 
 export type FinStrings = (typeof STRINGS)['en'];
 
 export function ft(lang: Lang): FinStrings {
-  return STRINGS[lang] ?? STRINGS.en;
+  return STRINGS['en'] ?? STRINGS.en;
 }
 
 export function deptLabel(lang: Lang, d: Department): string {
-  return DEPT_LABELS[lang]?.[d] ?? DEPT_LABELS.en[d] ?? d;
+  return DEPT_LABELS['en']?.[d] ?? DEPT_LABELS.en[d] ?? d;
 }
 
 export function capexStatusLabel(lang: Lang, s: CapexStatus): string {
-  return CAPEX_STATUS_LABELS[lang]?.[s] ?? CAPEX_STATUS_LABELS.en[s] ?? s;
+  return CAPEX_STATUS_LABELS['en']?.[s] ?? CAPEX_STATUS_LABELS.en[s] ?? s;
 }
 
 /**
@@ -434,9 +264,7 @@ export function forecastTrendingMsg(
   const pct = Math.round(pctOverBudget);
   const projected = formatCents(projectedCents);
   const budget = formatCents(budgetCents);
-  return lang === 'es'
-    ? `${dept} va camino a exceder el presupuesto en ${pct}% (proyectado ${projected} vs ${budget}).`
-    : `${dept} is trending ${pct}% over budget (projected ${projected} vs ${budget}).`;
+  return `${dept} is trending ${pct}% over budget (projected ${projected} vs ${budget}).`;
 }
 
 /** "Utilities spend is 40% over last month ($700.00 vs $500.00)." */
@@ -451,7 +279,5 @@ export function anomalySpikeMsg(
   const pct = Math.round((ratio - 1) * 100);
   const cur = formatCents(currentCents);
   const base = formatCents(baselineCents);
-  return lang === 'es'
-    ? `El gasto de ${dept} está ${pct}% por encima del mes pasado (${cur} vs ${base}).`
-    : `${dept} spend is ${pct}% over last month (${cur} vs ${base}).`;
+  return `${dept} spend is ${pct}% over last month (${cur} vs ${base}).`;
 }

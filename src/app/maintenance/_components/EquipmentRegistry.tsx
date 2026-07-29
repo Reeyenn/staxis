@@ -14,7 +14,6 @@ import { useProperty } from '@/contexts/PropertyContext';
 import { useLang } from '@/contexts/LanguageContext';
 import { canManageTeam } from '@/lib/roles';
 import { useActiveHotelStanding } from '@/lib/capabilities/useCan';
-import { tr } from '@/lib/i18n-utils';
 import { useToast, ToastHost } from '@/app/_components/ui/toast';
 import { fetchWithAuth } from '@/lib/api-fetch';
 import { PatternChip } from '@/components/concourse/PatternChip';
@@ -33,24 +32,24 @@ import {
   CX_CARD_SHADOW,
 } from './_mt-snow';
 
-const CATEGORY_LABEL: Record<EquipmentCategory, { en: string; es: string }> = {
-  hvac:       { en: 'HVAC',        es: 'HVAC' },
-  plumbing:   { en: 'Plumbing',    es: 'Plomería' },
-  electrical: { en: 'Electrical',  es: 'Eléctrico' },
-  appliance:  { en: 'Appliance',   es: 'Electrodoméstico' },
-  structural: { en: 'Structural',  es: 'Estructural' },
-  elevator:   { en: 'Elevator',    es: 'Ascensor' },
-  pool:       { en: 'Pool',        es: 'Piscina' },
-  laundry:    { en: 'Laundry',     es: 'Lavandería' },
-  kitchen:    { en: 'Kitchen',     es: 'Cocina' },
-  other:      { en: 'Other',       es: 'Otro' },
+const CATEGORY_LABEL: Record<EquipmentCategory, { en: string }> = {
+  hvac:       { en: 'HVAC',        },
+  plumbing:   { en: 'Plumbing',    },
+  electrical: { en: 'Electrical',  },
+  appliance:  { en: 'Appliance',   },
+  structural: { en: 'Structural',  },
+  elevator:   { en: 'Elevator',    },
+  pool:       { en: 'Pool',        },
+  laundry:    { en: 'Laundry',     },
+  kitchen:    { en: 'Kitchen',     },
+  other:      { en: 'Other',       },
 };
-const STATUS_LABEL: Record<EquipmentStatus, { en: string; es: string }> = {
-  operational:    { en: 'Operational',    es: 'Operativo' },
-  degraded:       { en: 'Degraded',       es: 'Degradado' },
-  failed:         { en: 'Failed',         es: 'Averiado' },
-  replaced:       { en: 'Replaced',       es: 'Reemplazado' },
-  decommissioned: { en: 'Decommissioned', es: 'Retirado' },
+const STATUS_LABEL: Record<EquipmentStatus, { en: string }> = {
+  operational:    { en: 'Operational',    },
+  degraded:       { en: 'Degraded',       },
+  failed:         { en: 'Failed',         },
+  replaced:       { en: 'Replaced',       },
+  decommissioned: { en: 'Decommissioned', },
 };
 const STATUS_TONE: Record<EquipmentStatus, string> = {
   operational: T.sageDeep,
@@ -60,7 +59,7 @@ const STATUS_TONE: Record<EquipmentStatus, string> = {
   decommissioned: T.ink3,
 };
 
-const catLabel = (c: EquipmentCategory, lang: string) => tr(lang, CATEGORY_LABEL[c].en, CATEGORY_LABEL[c].es);
+const catLabel = (c: EquipmentCategory, lang: string) => CATEGORY_LABEL[c].en;
 
 // List loader that actually THROWS on failure. The shared fetchEquipmentList
 // helper flattens API errors into an empty list, which made a failed load
@@ -73,10 +72,10 @@ async function loadEquipmentList(pid: string): Promise<Equipment[]> {
   if (!res.ok || !json?.ok || !json.data) throw new Error(json?.error || `http ${res.status}`);
   return json.data.equipment;
 }
-const statusLabel = (s: EquipmentStatus, lang: string) => tr(lang, STATUS_LABEL[s].en, STATUS_LABEL[s].es);
+const statusLabel = (s: EquipmentStatus, lang: string) => STATUS_LABEL[s].en;
 
 function fmtMoney(n: number | null, lang: string): string {
-  if (n == null) return tr(lang, '—', '—');
+  if (n == null) return '—';
   return '$' + n.toLocaleString('en-US', { maximumFractionDigits: 2 });
 }
 function parseDateMaybe(d: string | null): Date | null {
@@ -87,7 +86,7 @@ function parseDateMaybe(d: string | null): Date | null {
 function fmtDateL(d: string | null, lang: string): string {
   const dt = parseDateMaybe(d);
   if (!dt) return '—';
-  return dt.toLocaleDateString(lang === 'es' ? 'es-ES' : 'en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+  return dt.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
 }
 
 // ── Warranty badge — "under warranty until X" / "expires in Nd" / "out of warranty"
@@ -97,25 +96,25 @@ function warrantyInfo(expiresAt: string | null, lang: string): WarrantyInfo {
   if (!exp) {
     return {
       tone: T.ink3, bg: 'rgba(31,35,28,0.04)', bd: T.rule,
-      label: tr(lang, 'No warranty on file', 'Sin garantía registrada'),
+      label: 'No warranty on file',
     };
   }
   const days = daysBetween(new Date(), exp);
   if (days < 0) {
     return {
       tone: T.warm, bg: 'rgba(184,92,61,0.10)', bd: 'rgba(184,92,61,0.30)',
-      label: tr(lang, 'Out of warranty', 'Fuera de garantía'),
+      label: 'Out of warranty',
     };
   }
   if (days <= 60) {
     return {
       tone: T.caramel, bg: 'rgba(201,150,68,0.12)', bd: 'rgba(201,150,68,0.32)',
-      label: tr(lang, `Expires in ${days}d`, `Vence en ${days}d`),
+      label: `Expires in ${days}d`,
     };
   }
   return {
     tone: T.sageDeep, bg: 'rgba(92,122,96,0.10)', bd: 'rgba(92,122,96,0.28)',
-    label: tr(lang, `Under warranty until ${fmtDateL(expiresAt, lang)}`, `En garantía hasta ${fmtDateL(expiresAt, lang)}`),
+    label: `Under warranty until ${fmtDateL(expiresAt, lang)}`,
   };
 }
 
@@ -253,30 +252,30 @@ function EquipmentForm({
     <Modal
       open={open}
       onClose={onClose}
-      title={editTarget ? tr(lang, 'Edit equipment', 'Editar equipo') : tr(lang, 'Add equipment', 'Agregar equipo')}
-      subtitle={tr(lang, 'An asset with its warranty, cost, and service history.', 'Un activo con su garantía, costo e historial de servicio.')}
+      title={editTarget ? 'Edit equipment' : 'Add equipment'}
+      subtitle={'An asset with its warranty, cost, and service history.'}
       width={640}
       footer={
         <>
-          <Btn variant="ghost" size="md" onClick={onClose}>{tr(lang, 'Cancel', 'Cancelar')}</Btn>
+          <Btn variant="ghost" size="md" onClick={onClose}>{'Cancel'}</Btn>
           <Btn variant="primary" size="md" onClick={submit} disabled={!canSubmit} style={{ opacity: canSubmit ? 1 : 0.4 }}>
-            {busy ? tr(lang, 'Saving…', 'Guardando…') : (editTarget ? tr(lang, 'Save changes', 'Guardar cambios') : tr(lang, 'Add equipment', 'Agregar equipo'))}
+            {busy ? 'Saving…' : (editTarget ? 'Save changes' : 'Add equipment')}
           </Btn>
         </>
       }
     >
       <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-        <Field label={tr(lang, 'Name', 'Nombre')} required>
-          <TextInput value={name} onChange={setName} placeholder={tr(lang, 'e.g. "Rooftop AC unit #1"', 'p. ej. "Unidad de aire #1"')} />
+        <Field label={'Name'} required>
+          <TextInput value={name} onChange={setName} placeholder={'e.g. "Rooftop AC unit #1"'} />
         </Field>
 
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 14 }}>
-          <Field label={tr(lang, 'Category', 'Categoría')} required>
+          <Field label={'Category'} required>
             <select value={category} onChange={(e) => setCategory(e.target.value as EquipmentCategory)} style={selectStyle}>
               {EQUIPMENT_CATEGORIES.map((c) => <option key={c} value={c}>{catLabel(c, lang)}</option>)}
             </select>
           </Field>
-          <Field label={tr(lang, 'Status', 'Estado')}>
+          <Field label={'Status'}>
             <select value={status} onChange={(e) => setStatus(e.target.value as EquipmentStatus)} style={selectStyle}>
               {EQUIPMENT_STATUSES.map((s) => <option key={s} value={s}>{statusLabel(s, lang)}</option>)}
             </select>
@@ -284,56 +283,56 @@ function EquipmentForm({
         </div>
 
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 14 }}>
-          <Field label={tr(lang, 'Location', 'Ubicación')}>
-            <TextInput value={location} onChange={setLocation} placeholder={tr(lang, 'e.g. "Roof" or "Boiler room"', 'p. ej. "Techo"')} />
+          <Field label={'Location'}>
+            <TextInput value={location} onChange={setLocation} placeholder={'e.g. "Roof" or "Boiler room"'} />
           </Field>
-          <Field label={tr(lang, 'Manufacturer', 'Fabricante')}>
-            <TextInput value={manufacturer} onChange={setManufacturer} placeholder={tr(lang, 'e.g. "Carrier"', 'p. ej. "Carrier"')} />
+          <Field label={'Manufacturer'}>
+            <TextInput value={manufacturer} onChange={setManufacturer} placeholder={'e.g. "Carrier"'} />
           </Field>
         </div>
 
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 14 }}>
-          <Field label={tr(lang, 'Model number', 'Número de modelo')}>
+          <Field label={'Model number'}>
             <TextInput value={modelNumber} onChange={setModelNumber} placeholder="—" />
           </Field>
-          <Field label={tr(lang, 'Serial number', 'Número de serie')}>
+          <Field label={'Serial number'}>
             <TextInput value={serialNumber} onChange={setSerialNumber} placeholder="—" />
           </Field>
         </div>
 
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 14 }}>
-          <Field label={tr(lang, 'Install date', 'Fecha de instalación')}>
+          <Field label={'Install date'}>
             <input type="date" value={installDate} onChange={(e) => setInstallDate(e.target.value)} style={numInputStyle} />
           </Field>
-          <Field label={tr(lang, 'Expected lifetime (years)', 'Vida útil (años)')}>
+          <Field label={'Expected lifetime (years)'}>
             <input type="number" min={0} step="0.5" value={lifetime} onChange={(e) => setLifetime(e.target.value)} style={numInputStyle} placeholder="—" />
           </Field>
         </div>
 
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 14 }}>
-          <Field label={tr(lang, 'Purchase cost ($)', 'Costo de compra ($)')}>
+          <Field label={'Purchase cost ($)'}>
             <input type="number" min={0} step="0.01" value={purchaseCost} onChange={(e) => setPurchaseCost(e.target.value)} style={numInputStyle} placeholder="—" />
           </Field>
-          <Field label={tr(lang, 'Replacement cost ($)', 'Costo de reemplazo ($)')}>
+          <Field label={'Replacement cost ($)'}>
             <input type="number" min={0} step="0.01" value={replacementCost} onChange={(e) => setReplacementCost(e.target.value)} style={numInputStyle} placeholder="—" />
           </Field>
         </div>
 
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 14 }}>
-          <Field label={tr(lang, 'PM interval (days)', 'Intervalo PM (días)')} hint={tr(lang, 'How often it should be serviced', 'Frecuencia de servicio')}>
+          <Field label={'PM interval (days)'} hint={'How often it should be serviced'}>
             <input type="number" min={0} step="1" value={pmInterval} onChange={(e) => setPmInterval(e.target.value)} style={numInputStyle} placeholder="—" />
           </Field>
-          <Field label={tr(lang, 'Warranty provider', 'Proveedor de garantía')}>
+          <Field label={'Warranty provider'}>
             <TextInput value={warrantyProvider} onChange={setWarrantyProvider} placeholder="—" />
           </Field>
         </div>
 
-        <Field label={tr(lang, 'Warranty expires', 'Vence la garantía')} hint={tr(lang, 'Drives the warranty badge', 'Define la insignia de garantía')}>
+        <Field label={'Warranty expires'} hint={'Drives the warranty badge'}>
           <input type="date" value={warrantyExpires} onChange={(e) => setWarrantyExpires(e.target.value)} style={numInputStyle} />
         </Field>
 
-        <Field label={tr(lang, 'Notes', 'Notas')}>
-          <TextArea value={notes} onChange={setNotes} rows={2} placeholder={tr(lang, 'Anything worth remembering about this asset.', 'Algo que valga la pena recordar.')} />
+        <Field label={'Notes'}>
+          <TextArea value={notes} onChange={setNotes} rows={2} placeholder={'Anything worth remembering about this asset.'} />
         </Field>
       </div>
     </Modal>
@@ -380,7 +379,7 @@ function EquipmentDetailModal({
       <Modal
         open={open}
         onClose={onClose}
-        title={eq ? eq.name : tr(lang, 'Equipment', 'Equipo')}
+        title={eq ? eq.name : 'Equipment'}
         subtitle={eq ? `${catLabel(eq.category, lang)}${eq.location ? ` · ${eq.location}` : ''}` : undefined}
         width={680}
         footer={
@@ -388,12 +387,12 @@ function EquipmentDetailModal({
             {eq && isMgr && (
               <>
                 <Btn variant="ghost" size="md" onClick={() => onDelete(eq)} style={{ color: T.warm, marginRight: 'auto' }}>
-                  {tr(lang, 'Delete', 'Eliminar')}
+                  {'Delete'}
                 </Btn>
-                <Btn variant="ghost" size="md" onClick={() => onEdit(eq)}>{tr(lang, 'Edit', 'Editar')}</Btn>
+                <Btn variant="ghost" size="md" onClick={() => onEdit(eq)}>{'Edit'}</Btn>
               </>
             )}
-            <Btn variant="primary" size="md" onClick={onClose}>{tr(lang, 'Close', 'Cerrar')}</Btn>
+            <Btn variant="primary" size="md" onClick={onClose}>{'Close'}</Btn>
           </>
         }
       >
@@ -405,21 +404,21 @@ function EquipmentDetailModal({
             // fixed viewport keeps this state the same size as loaded content.
             <div className="equipment-detail-error" role="alert">
               <span>
-                {tr(lang, "Couldn't load this asset. Check your connection.", 'No se pudo cargar este activo. Revisa la conexión.')}
+                {"Couldn't load this asset. Check your connection."}
               </span>
-              <Btn variant="primary" size="md" onClick={onRetry}>↻ {tr(lang, 'Retry', 'Reintentar')}</Btn>
+              <Btn variant="primary" size="md" onClick={onRetry}>↻ {'Retry'}</Btn>
             </div>
           ) : (
             <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
               {loading && (
                 <span className="equipment-detail-sr-status" role="status" aria-live="polite">
-                  {tr(lang, 'Refreshing equipment details…', 'Actualizando detalles del equipo…')}
+                  {'Refreshing equipment details…'}
                 </span>
               )}
               {loadError && (
                 <div className="equipment-detail-refresh-error" role="alert">
-                  <span>{tr(lang, "Couldn't refresh this asset. Showing the last saved details.", 'No se pudo actualizar este activo. Se muestran los últimos detalles guardados.')}</span>
-                  <Btn variant="ghost" size="sm" onClick={onRetry}>↻ {tr(lang, 'Retry', 'Reintentar')}</Btn>
+                  <span>{"Couldn't refresh this asset. Showing the last saved details."}</span>
+                  <Btn variant="ghost" size="sm" onClick={onRetry}>↻ {'Retry'}</Btn>
                 </div>
               )}
           {/* status + warranty */}
@@ -436,15 +435,15 @@ function EquipmentDetailModal({
             propertyId={propertyId}
             kind="equipment"
             value={eq.id}
-            lang={lang === 'es' ? 'es' : 'en'}
+            lang={'en'}
           />
 
           {/* spend summary */}
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 12 }}>
             {[
-              { k: tr(lang, 'Total repair spend', 'Gasto total en reparaciones'), v: fmtMoney(detail.totalRepairSpend, lang), tone: T.ink },
-              { k: tr(lang, 'Failures (work orders)', 'Fallas (órdenes)'), v: String(detail.failureCount), tone: detail.failureCount > 0 ? T.warm : T.ink },
-              { k: tr(lang, 'PM tasks', 'Tareas PM'), v: String(detail.preventiveCount), tone: T.ink },
+              { k: 'Total repair spend', v: fmtMoney(detail.totalRepairSpend, lang), tone: T.ink },
+              { k: 'Failures (work orders)', v: String(detail.failureCount), tone: detail.failureCount > 0 ? T.warm : T.ink },
+              { k: 'PM tasks', v: String(detail.preventiveCount), tone: T.ink },
             ].map((s, i) => (
               <div key={i} style={{ background: T.bg, border: `1px solid ${T.rule}`, borderRadius: 12, padding: '12px 14px' }}>
                 <Caps size={9}>{s.k}</Caps>
@@ -455,15 +454,15 @@ function EquipmentDetailModal({
 
           {/* fields */}
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 16, padding: '4px 0 16px', borderBottom: `1px solid ${T.ruleSoft}` }}>
-            <DetailRow label={tr(lang, 'Manufacturer', 'Fabricante')} value={eq.manufacturer ?? '—'} />
-            <DetailRow label={tr(lang, 'Model #', 'Modelo #')} value={eq.modelNumber ?? '—'} />
-            <DetailRow label={tr(lang, 'Serial #', 'Serie #')} value={eq.serialNumber ?? '—'} />
-            <DetailRow label={tr(lang, 'Installed', 'Instalado')} value={fmtDateL(eq.installDate, lang)} />
-            <DetailRow label={tr(lang, 'Expected lifetime', 'Vida útil')} value={eq.expectedLifetimeYears != null ? tr(lang, `${eq.expectedLifetimeYears} yr`, `${eq.expectedLifetimeYears} años`) : '—'} />
-            <DetailRow label={tr(lang, 'PM interval', 'Intervalo PM')} value={eq.pmIntervalDays != null ? tr(lang, `${eq.pmIntervalDays} days`, `${eq.pmIntervalDays} días`) : '—'} />
-            <DetailRow label={tr(lang, 'Purchase cost', 'Costo de compra')} value={fmtMoney(eq.purchaseCost, lang)} />
-            <DetailRow label={tr(lang, 'Replacement cost', 'Costo de reemplazo')} value={fmtMoney(eq.replacementCost, lang)} />
-            <DetailRow label={tr(lang, 'Warranty provider', 'Proveedor garantía')} value={eq.warrantyProvider ?? '—'} />
+            <DetailRow label={'Manufacturer'} value={eq.manufacturer ?? '—'} />
+            <DetailRow label={'Model #'} value={eq.modelNumber ?? '—'} />
+            <DetailRow label={'Serial #'} value={eq.serialNumber ?? '—'} />
+            <DetailRow label={'Installed'} value={fmtDateL(eq.installDate, lang)} />
+            <DetailRow label={'Expected lifetime'} value={eq.expectedLifetimeYears != null ? `${eq.expectedLifetimeYears} yr` : '—'} />
+            <DetailRow label={'PM interval'} value={eq.pmIntervalDays != null ? `${eq.pmIntervalDays} days` : '—'} />
+            <DetailRow label={'Purchase cost'} value={fmtMoney(eq.purchaseCost, lang)} />
+            <DetailRow label={'Replacement cost'} value={fmtMoney(eq.replacementCost, lang)} />
+            <DetailRow label={'Warranty provider'} value={eq.warrantyProvider ?? '—'} />
           </div>
 
           {/* Where this row came from. Only ever shown when there is something
@@ -472,40 +471,36 @@ function EquipmentDetailModal({
           {(eq.createdFrom === 'suggestion' || eq.createdByName) && (
             <p style={{ fontFamily: FONT_SANS, fontSize: 12, color: T.ink3, margin: 0, lineHeight: 1.5 }}>
               {eq.createdFrom === 'suggestion'
-                ? tr(
-                    lang,
-                    `Staxis noticed this in your work orders and asked${eq.createdByName ? `; ${eq.createdByName} said yes` : ''}.`,
-                    `Staxis lo notó en sus órdenes de trabajo y preguntó${eq.createdByName ? `; ${eq.createdByName} dijo que sí` : ''}.`,
-                  )
-                : tr(lang, `Added by ${eq.createdByName}.`, `Agregado por ${eq.createdByName}.`)}
+                ? `Staxis noticed this in your work orders and asked${eq.createdByName ? `; ${eq.createdByName} said yes` : ''}.`
+                : `Added by ${eq.createdByName}.`}
             </p>
           )}
 
           {eq.notes && (
             <div>
-              <Caps size={9}>{tr(lang, 'Notes', 'Notas')}</Caps>
+              <Caps size={9}>{'Notes'}</Caps>
               <p style={{ fontFamily: FONT_SANS, fontSize: 13, color: T.ink2, margin: '6px 0 0', lineHeight: 1.5 }}>{eq.notes}</p>
             </div>
           )}
 
           {/* history */}
           <div>
-            <Caps>{tr(lang, 'Service history', 'Historial de servicio')}</Caps>
+            <Caps>{'Service history'}</Caps>
             <p style={{ fontFamily: FONT_SANS, fontSize: 12, color: T.ink2, margin: '4px 0 12px' }}>
-              {tr(lang, 'Every work order and preventive task linked to this asset.', 'Cada orden de trabajo y tarea preventiva vinculada a este activo.')}
+              {'Every work order and preventive task linked to this asset.'}
             </p>
 
             {detail.history.length === 0 ? (
               <div style={{ background: T.bg, border: `1px solid ${T.rule}`, borderRadius: 12, padding: '24px', textAlign: 'center', fontFamily: FONT_SANS, fontSize: 13.5, color: T.ink2 }}>
-                {tr(lang, 'No linked history yet.', 'Sin historial vinculado todavía.')}
+                {'No linked history yet.'}
               </div>
             ) : (
               <div style={{ background: T.paper, border: `1px solid ${T.rule}`, borderRadius: 12, overflow: 'hidden' }}>
                 <div style={{ display: 'grid', gridTemplateColumns: '110px 1fr 110px 90px', gap: 12, padding: '10px 16px', borderBottom: `1px solid ${T.rule}`, background: T.bg }}>
-                  <Caps size={9}>{tr(lang, 'Date', 'Fecha')}</Caps>
-                  <Caps size={9}>{tr(lang, 'What', 'Qué')}</Caps>
-                  <Caps size={9}>{tr(lang, 'Type', 'Tipo')}</Caps>
-                  <Caps size={9}>{tr(lang, 'Cost', 'Costo')}</Caps>
+                  <Caps size={9}>{'Date'}</Caps>
+                  <Caps size={9}>{'What'}</Caps>
+                  <Caps size={9}>{'Type'}</Caps>
+                  <Caps size={9}>{'Cost'}</Caps>
                 </div>
                 {detail.history.map((h) => (
                   <div key={`${h.kind}-${h.id}`} style={{ display: 'grid', gridTemplateColumns: '110px 1fr 110px 90px', gap: 12, padding: '12px 16px', borderBottom: `1px solid ${T.ruleSoft}`, alignItems: 'center' }}>
@@ -516,8 +511,8 @@ function EquipmentDetailModal({
                     </div>
                     <span style={{ fontFamily: FONT_SANS, fontSize: 11, color: T.ink2 }}>
                       {h.kind === 'work_order'
-                        ? `${tr(lang, 'Work order', 'Orden')}${h.status ? ` · ${h.status === 'done' ? tr(lang, 'done', 'hecho') : tr(lang, 'open', 'abierta')}` : ''}`
-                        : tr(lang, 'Preventive', 'Preventiva')}
+                        ? `${'Work order'}${h.status ? ` · ${h.status === 'done' ? 'done' : 'open'}` : ''}`
+                        : 'Preventive'}
                     </span>
                     <span style={{ fontFamily: FONT_MONO, fontSize: 13, color: h.cost != null ? T.ink : T.ink3 }}>{h.cost != null ? fmtMoney(h.cost, lang) : '—'}</span>
                   </div>
@@ -536,7 +531,7 @@ function EquipmentDetailModal({
 function EquipmentDetailLoading({ lang }: { lang: string }) {
   return (
     <div className="equipment-detail-loading" role="status" aria-live="polite">
-      <span className="equipment-detail-loading-label">{tr(lang, 'Loading equipment details…', 'Cargando detalles del equipo…')}</span>
+      <span className="equipment-detail-loading-label">{'Loading equipment details…'}</span>
       <div className="equipment-detail-skeleton" aria-hidden="true">
         <span className="equipment-detail-skeleton-chip" />
         <div className="equipment-detail-skeleton-metrics">
@@ -771,10 +766,10 @@ export function EquipmentRegistry({ onBack }: { onBack: () => void }) {
     if (!pid) return false;
     const res = id ? await updateEquipmentAsset(pid, id, input) : await createEquipmentAsset(pid, input);
     if (!res.ok) {
-      flash(res.error || tr(lang, 'Could not save', 'No se pudo guardar'));
+      flash(res.error || 'Could not save');
       return false;
     }
-    flash(id ? tr(lang, 'Saved', 'Guardado') : tr(lang, 'Equipment added', 'Equipo agregado'));
+    flash(id ? 'Saved' : 'Equipment added');
     await refresh();
     if (id && detailId === id) await loadDetail(id);  // keep open detail fresh
     return true;
@@ -782,13 +777,11 @@ export function EquipmentRegistry({ onBack }: { onBack: () => void }) {
 
   const handleDelete = async (e: Equipment) => {
     if (!pid) return;
-    const msg = tr(lang,
-      `Delete "${e.name}"? Its work orders and PM tasks stay. They only unlink from this asset.`,
-      `¿Eliminar "${e.name}"? Sus órdenes y tareas PM permanecen. Solo se desvinculan de este activo.`);
+    const msg = `Delete "${e.name}"? Its work orders and PM tasks stay. They only unlink from this asset.`;
     if (!window.confirm(msg)) return;
     const res = await deleteEquipmentAsset(pid, e.id);
-    if (!res.ok) { flash(res.error || tr(lang, 'Could not delete', 'No se pudo eliminar')); return; }
-    flash(tr(lang, 'Equipment deleted', 'Equipo eliminado'));
+    if (!res.ok) { flash(res.error || 'Could not delete'); return; }
+    flash('Equipment deleted');
     closeDetail();
     await refresh();
   };
@@ -810,14 +803,14 @@ export function EquipmentRegistry({ onBack }: { onBack: () => void }) {
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-end', marginBottom: 18, gap: 24, flexWrap: 'wrap' }}>
         <div>
           <button onClick={onBack} style={{ background: 'transparent', border: 'none', cursor: 'pointer', padding: 0, marginBottom: 6, fontFamily: FONT_SANS, fontSize: 13, color: T.ink2, fontWeight: 500 }}>
-            ← {tr(lang, 'Back to preventive', 'Volver a preventivo')}
+            ← {'Back to preventive'}
           </button>
-          <Caps>{tr(lang, 'Equipment registry', 'Registro de equipos')}</Caps>
+          <Caps>{'Equipment registry'}</Caps>
           <h1 style={{ fontFamily: FONT_SANS, fontSize: 26, color: T.ink, margin: '4px 0 0', letterSpacing: '-0.02em', lineHeight: 1.25, fontWeight: 600 }}>
-            <span>{list.length} {tr(lang, list.length === 1 ? 'asset' : 'assets', list.length === 1 ? 'activo' : 'activos')}</span>
+            <span>{list.length} {list.length === 1 ? 'asset' : 'assets'}</span>
           </h1>
         </div>
-        {isMgr && <Btn variant="primary" size="md" onClick={openAdd}>＋ {tr(lang, 'Add equipment', 'Agregar equipo')}</Btn>}
+        {isMgr && <Btn variant="primary" size="md" onClick={openAdd}>＋ {'Add equipment'}</Btn>}
       </div>
 
       {/* search */}
@@ -825,7 +818,7 @@ export function EquipmentRegistry({ onBack }: { onBack: () => void }) {
         <div style={{ marginBottom: 14 }}>
           <input
             type="text" value={q} onChange={(e) => setQ(e.target.value)}
-            placeholder={tr(lang, 'Search by name, location, model…', 'Buscar por nombre, ubicación, modelo…')}
+            placeholder={'Search by name, location, model…'}
             style={{ width: '100%', maxWidth: 420, height: 38, padding: '0 14px', borderRadius: 10, background: T.paper, border: `1px solid ${T.rule}`, fontFamily: FONT_SANS, fontSize: 13, color: T.ink, outline: 'none' }}
           />
         </div>
@@ -834,28 +827,28 @@ export function EquipmentRegistry({ onBack }: { onBack: () => void }) {
       {/* list */}
       <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
         {loading && (
-          <div style={{ padding: '48px 0', textAlign: 'center', fontFamily: FONT_SANS, fontSize: 13, color: T.ink2 }}>{tr(lang, 'Loading…', 'Cargando…')}</div>
+          <div style={{ padding: '48px 0', textAlign: 'center', fontFamily: FONT_SANS, fontSize: 13, color: T.ink2 }}>{'Loading…'}</div>
         )}
         {!loading && loadError && list.length === 0 && (
           <MtEmptyCard
             titleSize={20}
             bodySize={13}
-            title={tr(lang, "Couldn't load the registry.", 'No se pudo cargar el registro.')}
-            body={tr(lang, 'Your equipment is safe. Check your connection and try again.', 'Tus equipos están a salvo. Revisa la conexión e inténtalo de nuevo.')}
-            action={<Btn variant="primary" size="md" onClick={() => { setLoading(true); void refresh(); }}>↻ {tr(lang, 'Retry', 'Reintentar')}</Btn>}
+            title={"Couldn't load the registry."}
+            body={'Your equipment is safe. Check your connection and try again.'}
+            action={<Btn variant="primary" size="md" onClick={() => { setLoading(true); void refresh(); }}>↻ {'Retry'}</Btn>}
           />
         )}
         {!loading && !loadError && list.length === 0 && (
           <MtEmptyCard
             titleSize={20}
             bodySize={13}
-            title={tr(lang, 'No equipment yet.', 'Aún no hay equipos.')}
-            body={tr(lang, 'Add your HVAC units, water heaters, elevators, pool pumps, anything you service.', 'Agregue unidades de aire, calentadores, ascensores, bombas de piscina, todo lo que da servicio.')}
-            action={isMgr && <Btn variant="primary" size="md" onClick={openAdd}>＋ {tr(lang, 'Add your first asset', 'Agregar su primer activo')}</Btn>}
+            title={'No equipment yet.'}
+            body={'Add your HVAC units, water heaters, elevators, pool pumps, anything you service.'}
+            action={isMgr && <Btn variant="primary" size="md" onClick={openAdd}>＋ {'Add your first asset'}</Btn>}
           />
         )}
         {!loading && list.length > 0 && filtered.length === 0 && (
-          <div style={{ padding: '40px 0', textAlign: 'center', fontFamily: FONT_SANS, fontSize: 14, color: T.ink2 }}>{tr(lang, 'Nothing matches that search.', 'Nada coincide con esa búsqueda.')}</div>
+          <div style={{ padding: '40px 0', textAlign: 'center', fontFamily: FONT_SANS, fontSize: 14, color: T.ink2 }}>{'Nothing matches that search.'}</div>
         )}
         {!loading && filtered.map((e) => <EquipmentCard key={e.id} e={e} lang={lang} onOpen={openDetail} />)}
       </div>

@@ -181,26 +181,22 @@ export function AppLayout({
         {/* Home navigation lives in the leftmost Concourse bar pill. */}
         {propertiesError ? (
           <RouteErrorState
-            title={lang === 'es' ? 'No pudimos cargar tus hoteles' : 'We could not load your hotels'}
-            message={lang === 'es'
-              ? 'No se cambió ningún dato. Revisa tu conexión e inténtalo de nuevo.'
-              : 'No data was changed. Check your connection and try again.'}
-            retryLabel={lang === 'es' ? 'Reintentar' : 'Try again'}
+            title={'We could not load your hotels'}
+            message={'No data was changed. Check your connection and try again.'}
+            retryLabel={'Try again'}
             onRetry={retryProperties}
           />
         ) : activeProperty && capabilityOverridesStatus === 'error' ? (
           <RouteErrorState
-            title={lang === 'es' ? 'No pudimos confirmar el acceso' : 'We could not confirm hotel access'}
-            message={capabilityOverridesError ?? (lang === 'es'
-              ? 'Revisa tu conexión e inténtalo de nuevo.'
-              : 'Check your connection and try again.')}
-            retryLabel={lang === 'es' ? 'Reintentar' : 'Try again'}
+            title={'We could not confirm hotel access'}
+            message={capabilityOverridesError ?? ('Check your connection and try again.')}
+            retryLabel={'Try again'}
             onRetry={() => void refreshCapabilities()}
           />
         ) : activeProperty && capabilityOverridesStatus !== 'ready' ? (
           <RouteLoadingState
-            title={lang === 'es' ? 'Comprobando el acceso al hotel…' : 'Checking hotel access…'}
-            message={lang === 'es' ? 'Abriendo el espacio de trabajo actual.' : 'Opening the current hotel workspace.'}
+            title={'Checking hotel access…'}
+            message={'Opening the current hotel workspace.'}
           />
         ) : sectionOff ? (
           <div style={{
@@ -213,17 +209,13 @@ export function AppLayout({
               fontFamily: 'var(--font-geist), -apple-system, BlinkMacSystemFont, sans-serif',
               fontSize: '18px', fontWeight: 600, color: 'var(--snow-ink, var(--fg))',
             }}>
-              {lang === 'es'
-                ? 'Esta sección está desactivada para tu hotel'
-                : 'This section is turned off for your hotel'}
+              {'This section is turned off for your hotel'}
             </div>
             <div style={{
               fontFamily: 'var(--font-geist), -apple-system, BlinkMacSystemFont, sans-serif',
               fontSize: '14px', color: 'var(--snow-ink2, var(--muted))', maxWidth: '420px', lineHeight: 1.5,
             }}>
-              {lang === 'es'
-                ? 'Tu administrador de Staxis puede volver a activarla.'
-                : 'Your Staxis admin can turn it back on.'}
+              {'Your Staxis admin can turn it back on.'}
             </div>
           </div>
         ) : (

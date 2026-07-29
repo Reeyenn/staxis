@@ -283,17 +283,7 @@ export type AsOfLang = 'en' | 'es';
 /** Human age wording. Deliberately coarse — hotel staff read "about an hour",
  *  not "63.4 minutes". */
 export function formatAge(minutes: number, lang: AsOfLang = 'en'): string {
-  if (lang === 'es') {
-    if (minutes < 1) return 'ahora mismo';
-    if (minutes < 60) return `hace ${minutes} min`;
-    if (minutes < 1440) {
-      const hr = Math.floor(minutes / 60);
-      const min = minutes % 60;
-      return min === 0 ? `hace ${hr} h` : `hace ${hr} h ${min} min`;
-    }
-    const d = Math.floor(minutes / 1440);
-    return `hace ${d} ${d === 1 ? 'día' : 'días'}`;
-  }
+
   if (minutes < 1) return 'just now';
   if (minutes < 60) return `${minutes} min ago`;
   if (minutes < 1440) {

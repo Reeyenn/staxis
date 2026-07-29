@@ -23,14 +23,14 @@ export default function SettingsPage() {
   // "show if the viewer has ANY of these" — Reports folds in report delivery
   // (formerly the Notifications tile), so it shows for either capability.
   const allSections: { href: string; icon: typeof BarChart3; label: string; desc: string; cap?: CapabilityKey; capsAny?: CapabilityKey[] }[] = [
-    { href:'/settings/reports', icon:BarChart3, label: lang === 'es' ? 'Reportes' : 'Reports', desc: lang === 'es' ? 'Genera y exporta reportes, y define cuándo se envía el reporte diario y semanal' : 'Run and export reports, and set when the daily & weekly report is sent', capsAny:['run_reports','manage_notifications'] },
-    { href:'/settings/activity-log', icon:ScrollText, label: lang === 'es' ? 'Registro de actividad' : 'Activity Log', desc: lang === 'es' ? 'Cada limpieza, inspección, ausencia y cambio en una sola lista buscable y exportable.' : 'Every cleaning, inspection, callout, and change in one searchable, exportable timeline.', cap:'view_activity_log' },
+    { href:'/settings/reports', icon:BarChart3, label: 'Reports', desc: 'Run and export reports, and set when the daily & weekly report is sent', capsAny:['run_reports','manage_notifications'] },
+    { href:'/settings/activity-log', icon:ScrollText, label: 'Activity Log', desc: 'Every cleaning, inspection, callout, and change in one searchable, exportable timeline.', cap:'view_activity_log' },
     // Added 2026-07-24. The page already existed but nothing linked to it, so
     // it was reachable only by typing the URL. That became a real problem when
     // the shift length moved here from the Housekeeping board — it is now the
     // only editor for how long one housekeeper's day is, and an editor no one
     // can navigate to is the same as no editor at all.
-    { href:'/settings/clean-times', icon:Timer, label: lang === 'es' ? 'Tiempos de limpieza' : 'Clean Times', desc: lang === 'es' ? 'Cuántos minutos toma cada tipo de limpieza y cuánto dura un turno' : 'How many minutes each type of clean takes, and how long a shift is', cap:'manage_clean_times' },
+    { href:'/settings/clean-times', icon:Timer, label: 'Clean Times', desc: 'How many minutes each type of clean takes, and how long a shift is', cap:'manage_clean_times' },
   ];
   const sections = allSections.filter((s) => {
     if (!user) return !s.cap && !s.capsAny;

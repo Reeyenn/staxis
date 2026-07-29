@@ -29,7 +29,7 @@ interface CalEvent {
 
 // Format a date range the same way the Calendar tab does (weekday · month · day).
 function fmtRange(start: string, end: string | null, es: boolean): string {
-  const loc = es ? 'es' : 'en';
+  const loc = 'en';
   const fmt = (d: string) => {
     const dt = new Date(d + 'T00:00:00');
     if (Number.isNaN(dt.getTime())) return '';
@@ -47,7 +47,7 @@ export function CalendarCard() {
   // section is off for the hotel (default-ON while loading).
   const commsEnabled = useSectionEnabled('communications');
 
-  const es = lang === 'es';
+  const es = false;
   // Management OR front desk — same gate as the Log Book card.
   const canSee = !!user && (canManageTeam(user.role) || user.role === 'front_desk');
 
@@ -80,7 +80,7 @@ export function CalendarCard() {
   return (
     <GlassCard>
       <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: 12 }}>
-        <div style={CARD_LABEL}>{es ? 'Próximos eventos' : 'Upcoming events'}</div>
+        <div style={CARD_LABEL}>{'Upcoming events'}</div>
         <Link
           href="/communications?view=calendar"
           style={{
@@ -93,7 +93,7 @@ export function CalendarCard() {
             fontWeight: 600,
           }}
         >
-          {es ? 'Ir al calendario →' : 'Go to Calendar →'}
+          {'Go to Calendar →'}
         </Link>
       </div>
 

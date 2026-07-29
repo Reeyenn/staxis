@@ -46,10 +46,10 @@ import { useReliableNavigation } from '@/lib/hooks/use-reliable-navigation';
 // label freely; do not rename the key.
 type TabKey = 'schedule' | 'quality' | 'deepclean';
 
-const TABS: { key: TabKey; label: string; labelEs: string }[] = [
-  { key: 'schedule',  label: 'Board',      labelEs: 'Tablero'        },
-  { key: 'quality',   label: 'Quality',    labelEs: 'Calidad'        },
-  { key: 'deepclean', label: 'Deep Clean', labelEs: 'Limpieza prof.' },
+const TABS: { key: TabKey; label: string }[] = [
+  { key: 'schedule',  label: 'Board' },
+  { key: 'quality',   label: 'Quality' },
+  { key: 'deepclean', label: 'Deep Clean' },
 ];
 
 const housekeepingTabStore = {
@@ -90,13 +90,11 @@ function SetupNotice({ title, body }: { title: string; body: string }) {
 
 /** For anyone who simply isn't the person who answers this. */
 function SetupPendingNotice({ lang }: { lang: 'en' | 'es' }) {
-  const es = lang === 'es';
+  const es = false;
   return (
     <SetupNotice
-      title={es ? 'Casi listo' : 'Almost ready'}
-      body={es
-        ? 'Tu gerente todavía tiene que terminar de configurar la limpieza. En cuanto lo haga, tu trabajo del día aparecerá aquí.'
-        : 'Your manager still needs to finish setting up housekeeping. As soon as that’s done, your day’s work shows up here.'}
+      title={'Almost ready'}
+      body={'Your manager still needs to finish setting up housekeeping. As soon as that’s done, your day’s work shows up here.'}
     />
   );
 }
@@ -107,13 +105,11 @@ function SetupPendingNotice({ lang }: { lang: 'en' | 'es' }) {
  * so they are told plainly who can unblock them instead.
  */
 function SetupNoPermissionNotice({ lang }: { lang: 'en' | 'es' }) {
-  const es = lang === 'es';
+  const es = false;
   return (
     <SetupNotice
-      title={es ? 'Falta un permiso' : 'One permission is missing'}
-      body={es
-        ? 'No tienes permiso para configurar la limpieza en este hotel. Pídele a tu dueño o a un administrador que te lo active, o que termine la configuración.'
-        : 'You don’t have permission to set up housekeeping at this hotel. Ask your owner or an administrator to turn it on for you, or to finish the setup themselves.'}
+      title={'One permission is missing'}
+      body={'You don’t have permission to set up housekeeping at this hotel. Ask your owner or an administrator to turn it on for you, or to finish the setup themselves.'}
     />
   );
 }
@@ -184,20 +180,20 @@ export default function HousekeepingPage() {
   if (authLoading || propLoading) {
     return (
       <AppLayout>
-        <RouteLoadingState title={lang === 'es' ? 'Cargando Limpieza…' : 'Loading Housekeeping…'} />
+        <RouteLoadingState title={'Loading Housekeeping…'} />
       </AppLayout>
     );
   }
   if (!user) {
-    return <AppLayout><RouteLoadingState title={lang === 'es' ? 'Volviendo al inicio de sesión…' : 'Returning to Sign In…'} /></AppLayout>;
+    return <AppLayout><RouteLoadingState title={'Returning to Sign In…'} /></AppLayout>;
   }
   if (!activePropertyId || !activeProperty) {
     return (
       <AppLayout>
         <RouteErrorState
-          title={lang === 'es' ? 'No hay ningún hotel seleccionado' : 'No hotel is selected'}
-          message={lang === 'es' ? 'Elige un hotel antes de abrir Limpieza.' : 'Choose a hotel before opening Housekeeping.'}
-          retryLabel={lang === 'es' ? 'Elegir un hotel' : 'Choose a hotel'}
+          title={'No hotel is selected'}
+          message={'Choose a hotel before opening Housekeeping.'}
+          retryLabel={'Choose a hotel'}
           onRetry={() => push('/property-selector')}
         />
       </AppLayout>
@@ -252,10 +248,10 @@ export default function HousekeepingPage() {
         borderBottom: `1px solid ${T.rule}`,
         position: 'sticky', top: 64, zIndex: 10,
       }}>
-        <nav className="hk-tab-list" aria-label={lang === 'es' ? 'Secciones de limpieza' : 'Housekeeping sections'}>
+        <nav className="hk-tab-list" aria-label={'Housekeeping sections'}>
           {TABS.map(tab => {
             const isActive = activeTab === tab.key;
-            const label = lang === 'es' ? tab.labelEs : tab.label;
+            const label = tab.label;
             return (
               <button
                 key={tab.key}

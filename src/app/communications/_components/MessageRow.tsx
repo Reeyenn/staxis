@@ -53,9 +53,9 @@ export function MessageRow({ m, grouped, me, pid, L, conversation, onOpenThread,
       <div style={{ flex: 1, minWidth: 0, paddingTop: grouped ? 0 : 1 }}>
         {!grouped && (
           <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, marginBottom: 1 }}>
-            <span style={{ fontFamily: SANS, fontWeight: 700, fontSize: 14, color: isStaxis ? deptColorDark(T.forest) : T.ink, whiteSpace: 'nowrap' }}>{m.mine ? L('You', 'Tú') : (isStaxis ? 'Staxis' : m.senderName)}</span>
+            <span style={{ fontFamily: SANS, fontWeight: 700, fontSize: 14, color: isStaxis ? deptColorDark(T.forest) : T.ink, whiteSpace: 'nowrap' }}>{m.mine ? 'You' : (isStaxis ? 'Staxis' : m.senderName)}</span>
             <span style={{ fontFamily: MONO, fontSize: 10, color: T.dim }}>{fmtClock(m.createdAt)}</span>
-            {m.handoffShift && <MonoLabel color={deptColorDark(T.forest)} style={{ fontSize: 9 }}>{L('hand-off', 'relevo')} · {m.handoffShift}</MonoLabel>}
+            {m.handoffShift && <MonoLabel color={deptColorDark(T.forest)} style={{ fontSize: 9 }}>{'hand-off'} · {m.handoffShift}</MonoLabel>}
           </div>
         )}
 
@@ -67,14 +67,14 @@ export function MessageRow({ m, grouped, me, pid, L, conversation, onOpenThread,
           <div style={{ marginTop: 2, marginBottom: text ? 6 : 0 }}>
             {m.attachmentUrl
               ? <audio controls src={m.attachmentUrl} style={{ height: 36, maxWidth: '100%' }} />
-              : <span style={{ fontFamily: SANS, fontSize: 12.5, color: T.dim }}>🎤 {L('Voice message', 'Mensaje de voz')}</span>}
+              : <span style={{ fontFamily: SANS, fontSize: 12.5, color: T.dim }}>🎤 {'Voice message'}</span>}
           </div>
         )}
 
         {text && (
           <div style={{ fontFamily: SANS, fontSize: 14.5, lineHeight: 1.5, color: T.ink, wordBreak: 'break-word' }}>
             {renderInline(text)}
-            {mentionsMe && <span style={{ background: tint(T.teal, .14), color: deptColorDark(T.teal), borderRadius: 4, padding: '0 4px', marginLeft: 4, fontWeight: 600, fontSize: 13 }}>@{L('you', 'tú')}</span>}
+            {mentionsMe && <span style={{ background: tint(T.teal, .14), color: deptColorDark(T.teal), borderRadius: 4, padding: '0 4px', marginLeft: 4, fontWeight: 600, fontSize: 13 }}>@{'you'}</span>}
           </div>
         )}
 
@@ -82,7 +82,7 @@ export function MessageRow({ m, grouped, me, pid, L, conversation, onOpenThread,
         <div style={{ display: 'flex', gap: 10, marginTop: 3, alignItems: 'center', flexWrap: 'wrap' }}>
           {m.wasTranslated && (
             <button onClick={() => setShowOriginal((v) => !v)} style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: 11, color: T.dim, padding: 0, fontFamily: SANS }}>
-              {showOriginal ? L('see translation', 'ver traducción') : L('see original', 'ver original')}
+              {showOriginal ? 'see translation' : 'see original'}
             </button>
           )}
           {m.mine && m.seenBy && m.seenBy.length > 0 && (
@@ -102,12 +102,12 @@ export function MessageRow({ m, grouped, me, pid, L, conversation, onOpenThread,
           <div style={{ marginTop: 6, display: 'flex', flexDirection: 'column', gap: 5 }}>
             {m.mustAck && !m.acked && (
               <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-                <span style={{ display: 'flex', alignItems: 'center', gap: 4, background: tint(T.terracotta, .12), color: T.terracotta, borderRadius: 999, padding: '3px 9px', fontSize: 11.5, fontWeight: 700, fontFamily: SANS }}><AlertCircle size={12} /> {L('Action required', 'Acción requerida')}</span>
+                <span style={{ display: 'flex', alignItems: 'center', gap: 4, background: tint(T.terracotta, .12), color: T.terracotta, borderRadius: 999, padding: '3px 9px', fontSize: 11.5, fontWeight: 700, fontFamily: SANS }}><AlertCircle size={12} /> {'Action required'}</span>
                 <AckButton pid={pid} m={m} onChanged={async () => { await onReloadThread(); await onReloadBoot(); }} L={L} />
               </div>
             )}
             {!m.mine && m.acked && (
-              <span style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: 12, color: deptColorDark(T.forest), fontWeight: 600, fontFamily: SANS }}><ShieldCheck size={13} /> {L('Acknowledged', 'Confirmado')}</span>
+              <span style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: 12, color: deptColorDark(T.forest), fontWeight: 600, fontFamily: SANS }}><ShieldCheck size={13} /> {'Acknowledged'}</span>
             )}
             {(m.mine || me.isManager) && <AckTracker pid={pid} m={m} L={L} />}
           </div>
@@ -122,8 +122,8 @@ export function MessageRow({ m, grouped, me, pid, L, conversation, onOpenThread,
             <div style={{ display: 'flex' }}>{(m.replyAuthorIds ?? []).slice(0, 3).map((id, i) => (
               <div key={id} style={{ marginLeft: i ? -6 : 0, border: `1.5px solid ${T.bg}`, borderRadius: '50%' }}><Avatar name={id} dept={conversation.dept} size={18} /></div>
             ))}</div>
-            <span style={{ fontFamily: SANS, fontSize: 12.5, fontWeight: 600, color: deptColorDark(T.teal) }}>{m.replyCount === 1 ? L('1 reply', '1 respuesta') : L(`${m.replyCount} replies`, `${m.replyCount} respuestas`)}</span>
-            {m.lastReplyAt && <span style={{ fontFamily: SANS, fontSize: 11.5, color: T.dim }}>{L('Last reply', 'Última')} {fmtClock(m.lastReplyAt)}</span>}
+            <span style={{ fontFamily: SANS, fontSize: 12.5, fontWeight: 600, color: deptColorDark(T.teal) }}>{m.replyCount === 1 ? '1 reply' : `${m.replyCount} replies`}</span>
+            {m.lastReplyAt && <span style={{ fontFamily: SANS, fontSize: 11.5, color: T.dim }}>{'Last reply'} {fmtClock(m.lastReplyAt)}</span>}
           </button>
         )}
       </div>
@@ -131,10 +131,10 @@ export function MessageRow({ m, grouped, me, pid, L, conversation, onOpenThread,
       {/* hover toolbar */}
       {hover && (
         <div style={{ position: 'absolute', top: -12, right: 16, display: 'flex', gap: 1, background: T.bg, border: `1px solid ${T.hair}`, borderRadius: 8, boxShadow: '0 4px 14px rgba(31,35,28,.1)', padding: 2 }}>
-          <button style={hoverTool} title={L('Acknowledge', 'Confirmar')} onClick={() => onReactToggle(m)}><Check size={16} color={m.ackedByMe ? deptColorDark(T.forest) : T.dim} /></button>
-          {conversation.kind !== 'dm' && <button style={hoverTool} title={L('Reply in thread', 'Responder en hilo')} onClick={() => onOpenThread(m)}><Reply size={16} /></button>}
-          <button style={hoverTool} title={m.pinned ? L('Unpin', 'Quitar fijado') : L('Pin', 'Fijar')} onClick={() => onPinToggle(m)}><Pin size={15} color={m.pinned ? deptColorDark(T.forest) : T.dim} /></button>
-          <button style={hoverTool} title={L('Turn into task', 'Convertir en tarea')} onClick={() => onTurnIntoTask(m)}><ListTodo size={16} /></button>
+          <button style={hoverTool} title={'Acknowledge'} onClick={() => onReactToggle(m)}><Check size={16} color={m.ackedByMe ? deptColorDark(T.forest) : T.dim} /></button>
+          {conversation.kind !== 'dm' && <button style={hoverTool} title={'Reply in thread'} onClick={() => onOpenThread(m)}><Reply size={16} /></button>}
+          <button style={hoverTool} title={m.pinned ? 'Unpin' : 'Pin'} onClick={() => onPinToggle(m)}><Pin size={15} color={m.pinned ? deptColorDark(T.forest) : T.dim} /></button>
+          <button style={hoverTool} title={'Turn into task'} onClick={() => onTurnIntoTask(m)}><ListTodo size={16} /></button>
         </div>
       )}
     </div>
@@ -144,7 +144,7 @@ export function MessageRow({ m, grouped, me, pid, L, conversation, onOpenThread,
 function Reactions({ count, mine, onToggle, L }: { count: number; mine: boolean; onToggle: () => void; L: L }) {
   return (
     <div style={{ display: 'flex', gap: 6, marginTop: 6 }}>
-      <button onClick={onToggle} title={L('Acknowledge', 'Confirmar')} style={{
+      <button onClick={onToggle} title={'Acknowledge'} style={{
         display: 'inline-flex', alignItems: 'center', gap: 5, padding: '2px 9px 2px 7px', borderRadius: 13, cursor: 'pointer',
         border: `1px solid ${mine ? tint(T.forest, .45) : T.hair}`, background: mine ? tint(T.forest, .12) : T.paper, color: mine ? deptColorDark(T.forest) : T.ink,
       }}>
@@ -165,7 +165,7 @@ function AckButton({ pid, m, onChanged, L }: { pid: string; m: MessageDTO; onCha
     try {
       const r = await apiPost('/api/comms/acknowledge', { pid, messageId: m.id });
       if (!r.ok) {
-        setError(L('Acknowledgement was not saved. Please try again.', 'No se guardó la confirmación. Inténtalo de nuevo.'));
+        setError('Acknowledgement was not saved. Please try again.');
         return;
       }
       await onChanged();
@@ -175,7 +175,7 @@ function AckButton({ pid, m, onChanged, L }: { pid: string; m: MessageDTO; onCha
   return (
     <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-start', gap: 6 }}>
       <button onClick={ack} disabled={busy} style={{ minHeight: 44, display: 'flex', alignItems: 'center', gap: 6, background: deptColorDark(T.forest), color: '#fff', border: 'none', borderRadius: 8, padding: '7px 12px', fontSize: 12.5, fontWeight: 700, cursor: 'pointer', fontFamily: SANS, opacity: busy ? 0.6 : 1 }}>
-        {busy ? <Loader2 size={13} className="comms-spin" /> : <ShieldCheck size={13} />} {L('I read & understand', 'Leí y entiendo')}
+        {busy ? <Loader2 size={13} className="comms-spin" /> : <ShieldCheck size={13} />} {'I read & understand'}
       </button>
       {error && <span role="alert" style={{ color: T.terracotta, fontFamily: SANS, fontSize: 12, lineHeight: 1.4 }}>{error}</span>}
     </div>
@@ -211,7 +211,7 @@ function AckTracker({ pid, m, L }: { pid: string; m: MessageDTO; L: L }) {
     if (r.ok && r.data) {
       setCampaign(r.data); setShowCampaign(true);
     } else {
-      setCampaignError(L('All-property completion could not load. Please try again.', 'No se pudo cargar el avance de todas las propiedades. Inténtalo de nuevo.'));
+      setCampaignError('All-property completion could not load. Please try again.');
     }
     setCampaignLoading(false);
   };
@@ -224,21 +224,21 @@ function AckTracker({ pid, m, L }: { pid: string; m: MessageDTO; L: L }) {
       <button onClick={() => setOpen((v) => !v)} style={{ minHeight: 44, display: 'flex', alignItems: 'center', gap: 5, background: 'transparent', border: 'none', cursor: 'pointer', fontSize: 12, fontWeight: 600, color: T.dim, padding: 0, fontFamily: SANS }}>
         {open ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
         <ShieldCheck size={13} color={deptColorDark(T.forest)} />
-        {status ? L(`${acked} of ${total} acknowledged`, `${acked} de ${total} confirmaron`) : L('Acknowledgement tracker', 'Seguimiento de confirmación')}
+        {status ? `${acked} of ${total} acknowledged` : 'Acknowledgement tracker'}
       </button>
-      {open && statusLoading && !status && <div role="status" style={{ marginTop: 6, color: T.dim, fontFamily: SANS, fontSize: 12 }}>{L('Loading acknowledgements…', 'Cargando confirmaciones…')}</div>}
-      {open && statusError && <div role="alert" style={{ marginTop: 6, color: T.terracotta, fontFamily: SANS, fontSize: 12, lineHeight: 1.4, display: 'flex', alignItems: 'center', gap: 8 }}><span style={{ flex: 1 }}>{status ? L('Acknowledgements could not refresh. Showing the last results.', 'No se pudieron actualizar las confirmaciones. Se muestran los últimos resultados.') : L('Acknowledgements could not load.', 'No se pudieron cargar las confirmaciones.')}</span><button onClick={() => void reload()} aria-label={L('Retry loading acknowledgements', 'Reintentar cargar confirmaciones')} style={{ minWidth: 44, minHeight: 44, borderRadius: 8, border: `1px solid ${T.hair}`, background: T.bg, color: T.terracotta, cursor: 'pointer' }}>↻</button></div>}
+      {open && statusLoading && !status && <div role="status" style={{ marginTop: 6, color: T.dim, fontFamily: SANS, fontSize: 12 }}>{'Loading acknowledgements…'}</div>}
+      {open && statusError && <div role="alert" style={{ marginTop: 6, color: T.terracotta, fontFamily: SANS, fontSize: 12, lineHeight: 1.4, display: 'flex', alignItems: 'center', gap: 8 }}><span style={{ flex: 1 }}>{status ? 'Acknowledgements could not refresh. Showing the last results.' : 'Acknowledgements could not load.'}</span><button onClick={() => void reload()} aria-label={'Retry loading acknowledgements'} style={{ minWidth: 44, minHeight: 44, borderRadius: 8, border: `1px solid ${T.hair}`, background: T.bg, color: T.terracotta, cursor: 'pointer' }}>↻</button></div>}
       {open && status && (
         <div style={{ marginTop: 6, padding: 10, background: T.forestTint, borderRadius: 10, fontSize: 12, color: T.ink, display: 'flex', flexDirection: 'column', gap: 6 }}>
           <div style={{ height: 6, background: T.hairSoft, borderRadius: 999, overflow: 'hidden' }}>
             <div style={{ width: `${pct}%`, height: '100%', background: deptColorDark(T.forest) }} />
           </div>
           {status.pending.length > 0
-            ? <div><strong>{L('Waiting on', 'Falta')}:</strong> {status.pending.map((p) => p.name).join(', ')}</div>
-            : <div style={{ color: deptColorDark(T.forest), fontWeight: 600 }}>{L('Everyone has acknowledged', 'Todos confirmaron')}</div>}
+            ? <div><strong>{'Waiting on'}:</strong> {status.pending.map((p) => p.name).join(', ')}</div>
+            : <div style={{ color: deptColorDark(T.forest), fontWeight: 600 }}>{'Everyone has acknowledged'}</div>}
           {m.ackCampaignId && !showCampaign && (
             <button onClick={() => void loadCampaign()} disabled={campaignLoading} style={{ minHeight: 44, display: 'flex', alignItems: 'center', gap: 5, background: 'transparent', border: 'none', cursor: campaignLoading ? 'wait' : 'pointer', fontSize: 11.5, fontWeight: 600, color: deptColorDark(T.forest), padding: '2px 0', fontFamily: SANS }}>
-              {campaignLoading ? <Loader2 size={12} className="comms-spin" /> : <Building2 size={12} />} {L('View all-property completion', 'Ver avance de todas las propiedades')}
+              {campaignLoading ? <Loader2 size={12} className="comms-spin" /> : <Building2 size={12} />} {'View all-property completion'}
             </button>
           )}
           {campaignError && <div role="alert" style={{ color: T.terracotta, lineHeight: 1.4 }}>{campaignError}</div>}
@@ -254,7 +254,7 @@ function CampaignPanel({ campaign, L }: { campaign: CampaignStatusDTO; L: L }) {
   return (
     <div style={{ marginTop: 4, padding: 8, background: T.bg, border: `1px solid ${T.hairSoft}`, borderRadius: 8 }}>
       <div style={{ fontWeight: 700, color: deptColorDark(T.forest), marginBottom: 5, fontSize: 12, fontFamily: SANS }}>
-        {L(`${campaign.acked} of ${campaign.total} · ${campaign.properties.length} properties · ${pct}%`, `${campaign.acked} de ${campaign.total} · ${campaign.properties.length} propiedades · ${pct}%`)}
+        {`${campaign.acked} of ${campaign.total} · ${campaign.properties.length} properties · ${pct}%`}
       </div>
       {campaign.properties.map((p) => (
         <div key={p.propertyId} style={{ display: 'flex', justifyContent: 'space-between', gap: 8, fontSize: 11.5, color: T.dim, padding: '2px 0', fontFamily: SANS }}>

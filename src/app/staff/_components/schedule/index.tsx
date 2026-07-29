@@ -41,7 +41,7 @@ export function UnifiedSchedule({ onOpenPeople }: { onOpenPeople?: () => void })
   const { lang } = useLang();
   const data = useScheduleData(activePropertyId, staff);
   if (data.loading || data.loadError) {
-    const es = lang === 'es';
+    const es = false;
     return (
       <div style={{
         minHeight: 360, display: 'grid', placeItems: 'center', padding: 24,
@@ -54,17 +54,17 @@ export function UnifiedSchedule({ onOpenPeople }: { onOpenPeople?: () => void })
         }}>
           <div style={{ fontSize: 17, fontWeight: 600, marginBottom: 7 }}>
             {data.loadError
-              ? (es ? 'No se pudo cargar el horario' : "Couldn't load the schedule")
-              : (es ? 'Cargando el horario…' : 'Loading the schedule…')}
+              ? ("Couldn't load the schedule")
+              : ('Loading the schedule…')}
           </div>
           <div style={{ fontSize: 13, color: T.ink3, lineHeight: 1.45 }}>
             {data.loadError
-              ? (es ? 'Revisa tu conexión e inténtalo de nuevo.' : 'Check your connection and try again.')
-              : (es ? 'Los controles estarán disponibles cuando los turnos estén listos.' : 'Controls will be available once shifts are ready.')}
+              ? ('Check your connection and try again.')
+              : ('Controls will be available once shifts are ready.')}
           </div>
           {data.loadError && (
             <Btn variant="primary" size="md" onClick={data.retry} style={{ marginTop: 16 }}>
-              {es ? 'Reintentar' : 'Retry'}
+              {'Retry'}
             </Btn>
           )}
         </div>
@@ -94,7 +94,7 @@ export function ScheduleView({ staff, lang, data, propertyName, onOpenPeople }: 
   propertyName?: string;
   onOpenPeople?: () => void;
 }) {
-  const es = lang === 'es';
+  const es = false;
   const reducedMotion = useReducedMotion();
 
   const [view, setView] = useState<'day' | 'week'>('day');
@@ -150,13 +150,11 @@ export function ScheduleView({ staff, lang, data, propertyName, onOpenPeople }: 
     for (const [staffId, min] of dayWeekMinutes) {
       const cap = capMinById.get(staffId) ?? DEFAULT_WEEKLY_CAP * 60;
       if (min > cap) {
-        m.set(staffId, es
-          ? `${fmtHours(min)} esta semana, supera el límite de ${fmtHours(cap)}`
-          : `${fmtHours(min)} this week, over the ${fmtHours(cap)} cap`);
+        m.set(staffId, `${fmtHours(min)} this week, over the ${fmtHours(cap)} cap`);
       }
     }
     return m;
-  }, [dayWeekMinutes, capMinById, es]);
+  }, [dayWeekMinutes, capMinById]);
 
   // Approved time off landing on the selected day (per staff).
   const approvedList = data.approvedTor;
@@ -191,23 +189,17 @@ export function ScheduleView({ staff, lang, data, propertyName, onOpenPeople }: 
     p.then(r => {
       const skipped = (r.skippedTimeOff ?? 0) + (r.skippedUnknown ?? 0);
       if (skipped > 0) {
-        flash(es
-          ? `${skipped} ${skipped === 1 ? 'turno omitido' : 'turnos omitidos'} (tiempo libre aprobado / ya no está en el equipo)`
-          : `${skipped} ${skipped === 1 ? 'shift' : 'shifts'} skipped (approved time off / no longer on staff)`);
+        flash(`${skipped} ${skipped === 1 ? 'shift' : 'shifts'} skipped (approved time off / no longer on staff)`);
       }
     }).catch(e => {
       const partial = (e as { partialSaved?: number })?.partialSaved ?? 0;
       if (partial > 0) {
-        flash(es
-          ? 'Se guardaron algunas semanas, pero las demás fallaron. Revisa el tablero e intenta de nuevo.'
-          : 'Some weeks saved, but the rest failed. Check the board and try again.');
+        flash('Some weeks saved, but the rest failed. Check the board and try again.');
         return;
       }
-      flash(es
-        ? `No se pudo guardar. ${e instanceof Error ? e.message : 'Intenta de nuevo'}`
-        : `Couldn’t save. ${e instanceof Error ? e.message : 'Try again'}`);
+      flash(`Couldn’t save. ${e instanceof Error ? e.message : 'Try again'}`);
     });
-  }, [flash, es]);
+  }, [flash]);
 
   // ── day board callbacks ────────────────────────────────────────────────
   const onBoardUpdate = (id: string, patch: Partial<BoardShift>) => {
@@ -270,13 +262,13 @@ export function ScheduleView({ staff, lang, data, propertyName, onOpenPeople }: 
   const onUndo = () => {
     const p = data.undo();
     if (!p) return;
-    flash(es ? 'Se deshizo tu último cambio' : 'Undid your last change');
+    flash('Undid your last change');
     setWeekAnim(Date.now());
     reportSave(p);
   };
 
   // ── fill applies ───────────────────────────────────────────────────────
-  const dayPhrase = (d: DayInfo) => es ? `${d.dowFull} ${d.dayNum} ${d.mon}` : `${d.dowFull}, ${d.mon} ${d.dayNum}`;
+  const dayPhrase = (d: DayInfo) => `${d.dowFull}, ${d.mon} ${d.dayNum}`;
 
   /** Selected week, or — auto-repeat — the selected week plus every later one. */
   const targetWeeksFor = (repeatAll: boolean): WeekInfo[] =>
@@ -287,7 +279,7 @@ export function ScheduleView({ staff, lang, data, propertyName, onOpenPeople }: 
       const shifts = payloadToBoard(t.payload as TemplateShift[]);
       data.pushUndo([selDate]);
       reportSave(data.applyDays([{ date: selDate, shifts }], !reducedMotion));
-      flash(es ? `Se aplicó “${t.name}” a ${day.dowFull}` : `Applied “${t.name}” to ${day.dowFull}`);
+      flash(`Applied “${t.name}” to ${day.dowFull}`);
     } else {
       const daysPayload = t.payload as TemplateShift[][];
       const targets = targetWeeksFor(repeatAll);
@@ -297,10 +289,8 @@ export function ScheduleView({ staff, lang, data, propertyName, onOpenPeople }: 
       reportSave(data.applyDays(entries, !reducedMotion));
       setWeekAnim(Date.now());
       flash(targets.length > 1
-        ? (es
-          ? `Se aplicó “${t.name}” a ${targets.length} semanas (hasta ${targets[targets.length - 1].label})`
-          : `Applied “${t.name}” to ${targets.length} weeks (through ${targets[targets.length - 1].label})`)
-        : (es ? `Se aplicó “${t.name}” a ${selWeek.label}` : `Applied “${t.name}” to ${selWeek.label}`));
+        ? (`Applied “${t.name}” to ${targets.length} weeks (through ${targets[targets.length - 1].label})`)
+        : (`Applied “${t.name}” to ${selWeek.label}`));
     }
     setFillOpen(false);
   };
@@ -309,15 +299,13 @@ export function ScheduleView({ staff, lang, data, propertyName, onOpenPeople }: 
     const src = data.getDay(srcDate);
     const srcInfo = dayInfo(srcDate, data.today, lang);
     if (src.length === 0) {
-      flash(es ? `No hay nada que copiar de ${dayPhrase(srcInfo)}` : `Nothing on ${dayPhrase(srcInfo)} to copy`);
+      flash(`Nothing on ${dayPhrase(srcInfo)} to copy`);
       return;
     }
     const shifts = cloneShifts(src);
     data.pushUndo([selDate]);
     reportSave(data.applyDays([{ date: selDate, shifts }], !reducedMotion));
-    flash(es
-      ? `Se copió ${dayPhrase(srcInfo)}, ${shifts.length} turnos`
-      : `Copied ${dayPhrase(srcInfo)}, ${shifts.length} ${shifts.length === 1 ? 'shift' : 'shifts'}`);
+    flash(`Copied ${dayPhrase(srcInfo)}, ${shifts.length} ${shifts.length === 1 ? 'shift' : 'shifts'}`);
     setFillOpen(false);
   };
 
@@ -337,12 +325,8 @@ export function ScheduleView({ staff, lang, data, propertyName, onOpenPeople }: 
     reportSave(data.applyDays(entries, !reducedMotion));
     setWeekAnim(Date.now());
     flash(targets.length > 1
-      ? (es
-        ? `Se llenaron ${targets.length} semanas desde ${srcWeek.label}, ${total} turnos`
-        : `Filled ${targets.length} weeks from ${srcWeek.label}, ${total} ${total === 1 ? 'shift' : 'shifts'}`)
-      : (es
-        ? `Se llenó ${selWeek.label} desde ${srcWeek.label}, ${total} turnos`
-        : `Filled ${selWeek.label} from ${srcWeek.label}, ${total} ${total === 1 ? 'shift' : 'shifts'}`));
+      ? (`Filled ${targets.length} weeks from ${srcWeek.label}, ${total} ${total === 1 ? 'shift' : 'shifts'}`)
+      : (`Filled ${selWeek.label} from ${srcWeek.label}, ${total} ${total === 1 ? 'shift' : 'shifts'}`));
     setFillOpen(false);
   };
 
@@ -351,7 +335,7 @@ export function ScheduleView({ staff, lang, data, propertyName, onOpenPeople }: 
     const week = view === 'day' ? selDayWeek : selWeek;
     const w = window.open('', '_blank', 'width=920,height=720');
     if (!w) {
-      flash(es ? 'Permite ventanas emergentes para imprimir' : 'Allow pop-ups to print');
+      flash('Allow pop-ups to print');
       return;
     }
     w.document.write(printableWeekHtml({
@@ -369,23 +353,23 @@ export function ScheduleView({ staff, lang, data, propertyName, onOpenPeople }: 
       if ('date' in target) {
         const payload = toPayload(data.getDay(target.date));
         await data.saveTemplate('day', name, payload);
-        flash(es ? `Se guardó “${name}”, ${payload.length} turnos` : `Saved “${name}”, ${payload.length} ${payload.length === 1 ? 'shift' : 'shifts'}`);
+        flash(`Saved “${name}”, ${payload.length} ${payload.length === 1 ? 'shift' : 'shifts'}`);
       } else {
         const week = weekByStart.get(target.weekStart);
         if (!week) return;
         const payload = week.days.map(d => toPayload(data.getDay(d.date)));
         await data.saveTemplate('week', name, payload);
-        flash(es ? `Se guardó “${name}”, semana completa` : `Saved “${name}”, whole week`);
+        flash(`Saved “${name}”, whole week`);
       }
     };
-    run().catch(e => flash(e instanceof Error ? e.message : (es ? 'No se pudo guardar la plantilla' : 'Couldn’t save the template')));
+    run().catch(e => flash(e instanceof Error ? e.message : ('Couldn’t save the template')));
   };
 
   const removeTemplate = (t: ScheduleTemplate) => {
-    if (!window.confirm(es ? `¿Eliminar la plantilla “${t.name}”?` : `Delete the “${t.name}” template?`)) return;
+    if (!window.confirm(`Delete the “${t.name}” template?`)) return;
     data.deleteTemplate(t.id)
-      .then(() => flash(es ? `Se eliminó “${t.name}”` : `Deleted “${t.name}”`))
-      .catch(() => flash(es ? 'No se pudo eliminar' : 'Couldn’t delete'));
+      .then(() => flash(`Deleted “${t.name}”`))
+      .catch(() => flash('Couldn’t delete'));
   };
 
   // ── finish week ────────────────────────────────────────────────────────
@@ -393,8 +377,8 @@ export function ScheduleView({ staff, lang, data, propertyName, onOpenPeople }: 
   const toggleWeekDone = () => {
     data.setWeekDone(selWeekStart, !weekDone)
       .then(() => flash(weekDone
-        ? (es ? `${selWeek.label} está de nuevo en curso` : `${selWeek.label} is back in progress`)
-        : (es ? `${selWeek.label} marcada como lista` : `${selWeek.label} marked done`)))
+        ? (`${selWeek.label} is back in progress`)
+        : (`${selWeek.label} marked done`)))
       .catch(e => flash(e instanceof Error ? e.message : 'Error'));
   };
 
@@ -446,16 +430,16 @@ export function ScheduleView({ staff, lang, data, propertyName, onOpenPeople }: 
   }, [dayShifts, activeStaff]);
   const cover = lanes.map(dep => ({ dept: dep, have: dayShifts.filter(s => s.dept === dep).length }));
 
-  const dayTag = day.today ? (es ? 'HOY' : 'TODAY')
-    : day.tomorrow ? (es ? 'MAÑANA' : 'TOMORROW')
-    : day.yesterday ? (es ? 'AYER' : 'YESTERDAY')
-    : day.past ? (es ? 'HISTORIAL' : 'HISTORY') : null;
-  const weekTag = selWeek.current ? (es ? 'ESTA SEMANA' : 'THIS WEEK')
-    : selWeek.past ? (es ? 'HISTORIAL' : 'HISTORY') : null;
+  const dayTag = day.today ? ('TODAY')
+    : day.tomorrow ? ('TOMORROW')
+    : day.yesterday ? ('YESTERDAY')
+    : day.past ? ('HISTORY') : null;
+  const weekTag = selWeek.current ? ('THIS WEEK')
+    : selWeek.past ? ('HISTORY') : null;
 
   const eyebrow = day.today
-    ? (es ? 'En el piso hoy' : 'On the floor today')
-    : day.past ? (es ? 'Quién trabajó' : 'Who worked') : (es ? 'Cobertura planeada' : 'Planned coverage');
+    ? ('On the floor today')
+    : day.past ? ('Who worked') : ('Planned coverage');
 
   const fillCurrentCount = view === 'day'
     ? dayShifts.length
@@ -489,7 +473,7 @@ export function ScheduleView({ staff, lang, data, propertyName, onOpenPeople }: 
             fontFamily: fonts.mono, fontSize: 10, letterSpacing: '0.08em',
             fontWeight: d.today ? 800 : 600,
             color: isSel ? 'rgba(255,255,255,0.7)' : (d.today ? T.brand : T.ink3),
-          }}>{d.dow.toUpperCase()}{d.today ? (es ? ' · HOY' : ' · NOW') : ''}</span>
+          }}>{d.dow.toUpperCase()}{d.today ? (' · NOW') : ''}</span>
         </div>
         <div style={{
           fontFamily: fonts.sans, fontSize: 23, fontWeight: 600, letterSpacing: '-0.02em', lineHeight: 1,
@@ -516,7 +500,7 @@ export function ScheduleView({ staff, lang, data, propertyName, onOpenPeople }: 
             fontFamily: fonts.mono, fontSize: 9.5, letterSpacing: '0.1em',
             fontWeight: w.current ? 800 : 600,
             color: isSel ? 'rgba(255,255,255,0.7)' : (w.current ? T.brand : T.ink3),
-          }}>{w.current ? (es ? 'ESTA SEMANA' : 'THIS WEEK') : w.past ? (es ? 'HISTORIAL' : 'HISTORY') : (es ? 'SEMANA' : 'WEEK')}</span>
+          }}>{w.current ? ('THIS WEEK') : w.past ? ('HISTORY') : ('WEEK')}</span>
           {done && (
             <span style={{
               fontFamily: fonts.mono, fontSize: 9, fontWeight: 700, letterSpacing: '0.06em',
@@ -533,9 +517,9 @@ export function ScheduleView({ staff, lang, data, propertyName, onOpenPeople }: 
           color: done ? (isSel ? '#9EB7A6' : T.sageDeep) : (isSel ? 'rgba(255,255,255,0.6)' : T.ink3),
         }}>
           {done
-            ? (es ? '✓ LISTA' : '✓ DONE')
-            : planned === 0 ? (es ? 'SIN PLANEAR' : 'NOT PLANNED')
-            : `${planned} ${planned === 1 ? (es ? 'TURNO' : 'SHIFT') : (es ? 'TURNOS' : 'SHIFTS')}`}
+            ? ('✓ DONE')
+            : planned === 0 ? ('NOT PLANNED')
+            : `${planned} ${planned === 1 ? ('SHIFT') : ('SHIFTS')}`}
         </div>
       </button>
     );
@@ -569,7 +553,7 @@ export function ScheduleView({ staff, lang, data, propertyName, onOpenPeople }: 
           {view === 'day' ? (
             <>
               <span>{day.dowFull},</span>{' '}
-              {es ? `${day.dayNum} ${day.mon}` : `${day.mon} ${day.dayNum}`}
+              {`${day.mon} ${day.dayNum}`}
               {dayTag && (
                 <span style={{
                   fontFamily: fonts.mono, fontSize: 11, fontWeight: 600, letterSpacing: '0.14em',
@@ -580,7 +564,7 @@ export function ScheduleView({ staff, lang, data, propertyName, onOpenPeople }: 
             </>
           ) : (
             <>
-              <span>{es ? 'Semana,' : 'Week,'}</span> {selWeek.label}
+              <span>{'Week,'}</span> {selWeek.label}
               {weekTag && (
                 <span style={{
                   fontFamily: fonts.mono, fontSize: 11, fontWeight: 600, letterSpacing: '0.14em',
@@ -594,23 +578,23 @@ export function ScheduleView({ staff, lang, data, propertyName, onOpenPeople }: 
         <div
           className="staff-schedule-toolbar"
           role="toolbar"
-          aria-label={es ? 'Controles del horario' : 'Schedule controls'}
+          aria-label={'Schedule controls'}
           style={{ display: 'flex', gap: 6, alignItems: 'center', flexShrink: 0 }}
         >
           {view === 'week' && (
             weekDone ? (
-              <Btn variant="sage" size="md" onClick={toggleWeekDone}>✓ {es ? 'Lista' : 'Done'}</Btn>
+              <Btn variant="sage" size="md" onClick={toggleWeekDone}>✓ {'Done'}</Btn>
             ) : (
-              <Btn variant="ghost" size="md" onClick={toggleWeekDone}>{es ? 'Terminar semana' : 'Finish week'}</Btn>
+              <Btn variant="ghost" size="md" onClick={toggleWeekDone}>{'Finish week'}</Btn>
             )
           )}
           <Btn variant="ghost" size="md" onClick={printWeek}
-            title={es ? 'Imprimir o guardar la semana como PDF' : 'Print or save the week as a PDF'}>
-            ⎙ {es ? 'Imprimir' : 'Print'}
+            title={'Print or save the week as a PDF'}>
+            ⎙ {'Print'}
           </Btn>
           <Btn variant="ghost" size="md" onClick={onUndo} disabled={!data.undoCount}
-            title={es ? 'Deshacer tu último cambio' : 'Undo your last change'}>↩ {es ? 'Deshacer' : 'Undo'}</Btn>
-          <Btn variant="ghost" size="md" onClick={() => setFillOpen(true)}>{es ? 'Llenar' : 'Fill'}</Btn>
+            title={'Undo your last change'}>↩ {'Undo'}</Btn>
+          <Btn variant="ghost" size="md" onClick={() => setFillOpen(true)}>{'Fill'}</Btn>
           <span className="staff-schedule-toolbar-separator" aria-hidden="true" style={{ width: 1, height: 24, background: T.rule, margin: '0 4px' }}/>
           <Btn variant="ghost" size="md" style={ghostSq}
             disabled={view === 'day' ? dayBackDisabled : weekBackDisabled}
@@ -622,7 +606,7 @@ export function ScheduleView({ staff, lang, data, propertyName, onOpenPeople }: 
             display: 'inline-flex', gap: 3, background: 'rgba(31,35,28,0.05)',
             border: `1px solid ${T.rule}`, borderRadius: 999, padding: 3,
           }}>
-            {([['day', es ? 'Día' : 'Day'], ['week', es ? 'Semana' : 'Week']] as const).map(([k, lab]) => (
+            {([['day', 'Day'], ['week', 'Week']] as const).map(([k, lab]) => (
               <button key={k} onClick={() => switchView(k)} style={{
                 border: 'none', borderRadius: 999, padding: '6px 12px', cursor: 'pointer',
                 fontFamily: fonts.sans, fontSize: 12, fontWeight: 600,
@@ -647,7 +631,7 @@ export function ScheduleView({ staff, lang, data, propertyName, onOpenPeople }: 
                   <Caps size={9} style={{ whiteSpace: 'nowrap' }}>{eyebrow}</Caps>
                   <span style={{ fontFamily: fonts.sans, fontSize: 23, fontWeight: 600, letterSpacing: '-0.02em', lineHeight: 1, whiteSpace: 'nowrap', color: T.ink }}>
                     {dayShifts.length}
-                    <span style={{ fontSize: 13, fontWeight: 500, color: T.ink3, letterSpacing: '0' }}> {es ? 'en turno' : 'on'}</span>
+                    <span style={{ fontSize: 13, fontWeight: 500, color: T.ink3, letterSpacing: '0' }}> {'on'}</span>
                   </span>
                 </div>
                 <span style={{ width: 1, height: 24, background: T.rule, flexShrink: 0 }}/>
@@ -665,7 +649,7 @@ export function ScheduleView({ staff, lang, data, propertyName, onOpenPeople }: 
                 </div>
               </div>
               <Btn variant="ghost" size="sm" onClick={() => setPickerOpen(true)} style={{ flexShrink: 0 }}>
-                ＋ {es ? 'Agregar personal' : 'Add staff'}
+                ＋ {'Add staff'}
               </Btn>
             </div>
             <DayBoard
@@ -692,7 +676,7 @@ export function ScheduleView({ staff, lang, data, propertyName, onOpenPeople }: 
             <div style={{ flex: '1 1 520px', minWidth: 0 }}>
               {/* WEEK-DAYS STRIP */}
               <div style={{ display: 'flex', alignItems: 'center', gap: 14, margin: '2px 2px 10px' }}>
-                <Caps>{expandedWeek.current ? (es ? 'Esta semana' : 'This week') : (es ? 'Semana del' : 'Week of')}</Caps>
+                <Caps>{expandedWeek.current ? ('This week') : ('Week of')}</Caps>
                 <Caps c={T.caramelDeep}>{expandedWeek.label}</Caps>
               </div>
               <div style={{ display: 'flex', gap: 10, overflowX: 'auto', paddingBottom: 6 }}>
@@ -701,7 +685,7 @@ export function ScheduleView({ staff, lang, data, propertyName, onOpenPeople }: 
 
               {/* PLAN BY WEEK */}
               <div style={{ margin: '22px 2px 10px' }}>
-                <Caps>{es ? 'Planear por semana · dom–sáb' : 'Plan by week · Sun–Sat'}</Caps>
+                <Caps>{'Plan by week · Sun–Sat'}</Caps>
               </div>
               <div ref={dayRailRef} style={{ display: 'flex', gap: 10, overflowX: 'auto', paddingBottom: 6 }}>
                 {weeks.map(w => weekBoxCard(w, expandedWeekStart === w.start, () => setExpandedWeekStart(w.start)))}
@@ -740,7 +724,7 @@ export function ScheduleView({ staff, lang, data, propertyName, onOpenPeople }: 
             }}
           />
           <div style={{ margin: '18px 2px 10px' }}>
-            <Caps>{es ? 'Ir a una semana' : 'Jump to a week'}</Caps>
+            <Caps>{'Jump to a week'}</Caps>
           </div>
           <div ref={weekRailRef} style={{ display: 'flex', gap: 10, overflowX: 'auto', paddingBottom: 6 }}>
             {weeks.map(w => weekBoxCard(w, selWeekStart === w.start, () => setSelWeekStart(w.start)))}
@@ -790,8 +774,8 @@ export function ScheduleView({ staff, lang, data, propertyName, onOpenPeople }: 
           takenIds={new Set(dayShifts.map(s => s.staffId))}
           presets={data.presets}
           dayTitle={day.today
-            ? (es ? 'Agregar a alguien hoy' : 'Add someone to today')
-            : (es ? `Agregar a alguien el ${day.dowFull} ${day.dayNum}` : `Add someone to ${day.dowFull} ${day.dayNum}`)}
+            ? ('Add someone to today')
+            : (`Add someone to ${day.dowFull} ${day.dayNum}`)}
           dayPhrase={dayPhrase(day)}
           lang={lang}
           weekMinutes={dayWeekMinutes}
@@ -843,7 +827,7 @@ function printableWeekHtml({
   propertyName?: string;
   lang: 'en' | 'es';
 }) {
-  const es = lang === 'es';
+  const es = false;
   const dayLists = week.days.map(d => getDay(d.date));
   const weekMin = weekMinutesByStaff(dayLists);
   const shiftFor = new Map<string, BoardShift>();
@@ -874,7 +858,7 @@ function printableWeekHtml({
   }
   const counts = week.days.map((d, i) => `<td>${dayLists[i].length}</td>`).join('');
 
-  const title = `${propertyName ? esc(propertyName) + ', ' : ''}${es ? 'Semana' : 'Week'} ${esc(week.label)}`;
+  const title = `${propertyName ? esc(propertyName) + ', ' : ''}${'Week'} ${esc(week.label)}`;
   return `<!doctype html><html><head><meta charset="utf-8"><title>${title}</title>
 <style>
   body { font-family: -apple-system, 'Helvetica Neue', Arial, sans-serif; color: #1F231C; margin: 28px; }
@@ -894,15 +878,15 @@ function printableWeekHtml({
   @media print { body { margin: 10mm; } }
 </style></head><body>
 <h1>${title}</h1>
-<div class="sub">${es ? 'Impreso desde Staxis' : 'Printed from Staxis'} · ${esc(new Date().toLocaleDateString())}</div>
+<div class="sub">${'Printed from Staxis'} · ${esc(new Date().toLocaleDateString())}</div>
 <table>
   <tr>
-    <th class="name">${es ? 'PERSONAL' : 'STAFF'}</th>
+    <th class="name">${'STAFF'}</th>
     ${week.days.map(d => `<th>${esc(d.dow.toUpperCase())}<span class="num">${d.mon} ${d.dayNum}</span></th>`).join('')}
-    <th>${es ? 'HORAS' : 'HOURS'}</th>
+    <th>${'HOURS'}</th>
   </tr>
   ${rows.join('\n')}
-  <tr class="count"><td class="name">${es ? 'EN TURNO' : 'ON SHIFT'}</td>${counts}<td></td></tr>
+  <tr class="count"><td class="name">${'ON SHIFT'}</td>${counts}<td></td></tr>
 </table>
 </body></html>`;
 }

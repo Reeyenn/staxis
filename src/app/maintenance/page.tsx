@@ -109,7 +109,7 @@ export default function MaintenancePage() {
           // predicate the Staxis queue gates its own fetch on.
           canSeePatterns ? (
             <Btn variant="ghost" onClick={() => setPatternsOpen(true)}>
-              {panelText('button', lang === 'es' ? 'es' : 'en')}
+              {panelText('button', 'en')}
             </Btn>
           ) : undefined
         }

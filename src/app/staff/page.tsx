@@ -300,7 +300,7 @@ function ManagerView({ canManagePeople }: { canManagePeople: boolean }) {
 
 function ManagerAccessUnavailable({ canManagePeople }: { canManagePeople: boolean }) {
   const { lang } = useLang();
-  const es = lang === 'es';
+  const es = false;
   return (
     <div style={{
       minHeight: '60vh', display: 'grid', placeItems: 'center', padding: 24,
@@ -312,14 +312,10 @@ function ManagerAccessUnavailable({ canManagePeople }: { canManagePeople: boolea
         boxShadow: T.cardShadow,
       }}>
         <div style={{ fontSize: 17, fontWeight: 600, marginBottom: 7 }}>
-          {es
-            ? 'El horario no está disponible para tu acceso'
-            : 'The schedule isn’t available for your access'}
+          {'The schedule isn’t available for your access'}
         </div>
         <div style={{ fontSize: 13, lineHeight: 1.5, color: T.ink3 }}>
-          {es
-            ? 'Pide a un administrador que habilite el acceso al Horario para tu puesto en este hotel.'
-            : 'Ask an administrator to enable Schedule access for your role at this hotel.'}
+          {'Ask an administrator to enable Schedule access for your role at this hotel.'}
         </div>
         {canManagePeople ? (
           <Link
@@ -332,7 +328,7 @@ function ManagerAccessUnavailable({ canManagePeople }: { canManagePeople: boolea
               textDecoration: 'none',
             }}
           >
-            {es ? 'Abrir Mi hotel → Personas' : 'Open My Hotel → People'}
+            {'Open My Hotel → People'}
           </Link>
         ) : null}
       </div>

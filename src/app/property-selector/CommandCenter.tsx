@@ -78,54 +78,54 @@ export interface CommandCenterPayload {
 
 // ─── Copy ───────────────────────────────────────────────────────────────────
 
-type Bi = { en: string; es: string };
-const pick = (b: Bi, lang: Lang) => (lang === 'es' ? b.es : b.en);
+type Bi = { en: string };
+const pick = (b: Bi, lang: Lang) => (b.en);
 
 const S = {
-  pickTitle: { en: 'Choose a hotel', es: 'Elige un hotel' },
-  companyPickTitle: { en: 'Choose a company', es: 'Elige una empresa' },
-  companyPickLabel: { en: 'Management company', es: 'Empresa administradora' },
-  companyPickPlaceholder: { en: 'Select a company', es: 'Selecciona una empresa' },
+  pickTitle: { en: 'Choose a hotel', },
+  companyPickTitle: { en: 'Choose a company', },
+  companyPickLabel: { en: 'Management company', },
+  companyPickPlaceholder: { en: 'Select a company', },
   companyPickHelp: {
     en: 'Choose whose hotels you want to work with. Hotel data and Staxis conversations stay separate between companies.',
-    es: 'Elige los hoteles con los que quieres trabajar. Los datos y las conversaciones de Staxis permanecen separados entre empresas.',
+
   },
-  companyFallback: { en: 'Management company', es: 'Empresa administradora' },
-  companyTitle: { en: 'Your hotels', es: 'Tus hoteles' },
-  rooms: { en: 'rooms', es: 'habitaciones' },
-  room: { en: 'room', es: 'habitación' },
-  signOut: { en: 'Sign out', es: 'Cerrar sesión' },
-  signedInAs: { en: 'Signed in as', es: 'Conectado como' },
-  queueTitle: { en: 'Your morning', es: 'Tu mañana' },
+  companyFallback: { en: 'Management company', },
+  companyTitle: { en: 'Your hotels', },
+  rooms: { en: 'rooms', },
+  room: { en: 'room', },
+  signOut: { en: 'Sign out', },
+  signedInAs: { en: 'Signed in as', },
+  queueTitle: { en: 'Your morning', },
   queueSub: {
     en: 'Everything from your hotels that reached you, in one queue.',
-    es: 'Todo lo que llegó desde tus hoteles, en una sola cola.',
+
   },
   askPlaceholder: {
     en: 'Ask about all your hotels…',
-    es: 'Pregunta sobre todos tus hoteles…',
+
   },
-  askLabel: { en: 'Ask across your hotels', es: 'Pregunta en todos tus hoteles' },
-  askSend: { en: 'Ask', es: 'Preguntar' },
-  askThinking: { en: 'Reading your hotels…', es: 'Leyendo tus hoteles…' },
-  askNew: { en: 'New chat', es: 'Nuevo chat' },
-  askHistory: { en: 'Saved portfolio chats', es: 'Conversaciones guardadas del portafolio' },
-  askHistoryPlaceholder: { en: 'Open a saved chat', es: 'Abre una conversación guardada' },
-  askHistoryEmpty: { en: 'No saved portfolio chats yet.', es: 'Aún no hay conversaciones guardadas del portafolio.' },
-  askHistoryLoading: { en: 'Loading saved chats…', es: 'Cargando conversaciones guardadas…' },
-  askConversationLoading: { en: 'Restoring this chat and its scopes…', es: 'Restaurando esta conversación y sus alcances…' },
-  askConversation: { en: 'Portfolio conversation', es: 'Conversación del portafolio' },
+  askLabel: { en: 'Ask across your hotels', },
+  askSend: { en: 'Ask', },
+  askThinking: { en: 'Reading your hotels…', },
+  askNew: { en: 'New chat', },
+  askHistory: { en: 'Saved portfolio chats', },
+  askHistoryPlaceholder: { en: 'Open a saved chat', },
+  askHistoryEmpty: { en: 'No saved portfolio chats yet.', },
+  askHistoryLoading: { en: 'Loading saved chats…', },
+  askConversationLoading: { en: 'Restoring this chat and its scopes…', },
+  askConversation: { en: 'Portfolio conversation', },
   askFailed: {
     en: 'Staxis could not answer just now. Nothing about your hotels changed.',
-    es: 'Staxis no pudo responder ahora. Nada cambió en tus hoteles.',
+
   },
   loadFailed: {
     en: 'Staxis could not load your hotels just now. This is not "you have none".',
-    es: 'Staxis no pudo cargar tus hoteles ahora. Esto no significa "no tienes ninguno".',
+
   },
-  retry: { en: 'Try again', es: 'Reintentar' },
-  hotelsWord: { en: 'hotels', es: 'hoteles' },
-  hotelWord: { en: 'hotel', es: 'hotel' },
+  retry: { en: 'Try again', },
+  hotelsWord: { en: 'hotels', },
+  hotelWord: { en: 'hotel', },
 } as const;
 
 /**
@@ -136,16 +136,16 @@ const S = {
  */
 const SUMMARY_WORDS = {
   needs: {
-    one: { en: 'needs you', es: 'te necesita' },
-    many: { en: 'need you', es: 'te necesitan' },
+    one: { en: 'needs you', },
+    many: { en: 'need you', },
   },
   waiting: {
-    one: { en: 'waiting', es: 'esperando' },
-    many: { en: 'waiting', es: 'esperando' },
+    one: { en: 'waiting', },
+    many: { en: 'waiting', },
   },
   quiet: {
-    one: { en: 'quiet', es: 'tranquilo' },
-    many: { en: 'quiet', es: 'tranquilos' },
+    one: { en: 'quiet', },
+    many: { en: 'quiet', },
   },
 } as const;
 
@@ -435,16 +435,7 @@ export function formatPortfolioScopeDisclosure(
   const chosenScope = scope.hotelNames.length === 1
     ? scope.hotelNames[0]
     : scope.selectorLabel;
-  if (lang === 'es') {
-    return [
-      scope.organizationName,
-      `Alcance: ${chosenScope}`,
-      `${scope.selectedHotelCount} de ${scope.authorizedHotelCount} hoteles autorizados`,
-      `${scope.coverage.reported} de ${scope.coverage.total} reportaron`,
-      ...(scope.hotelNamesOmitted > 0 ? [`${scope.hotelNames.length} nombres mostrados; ${scope.hotelNamesOmitted} más en el alcance`] : []),
-      ...(scope.coverage.omitted > 0 ? [`${scope.coverage.omitted} omitidos`] : []),
-    ].join(' · ');
-  }
+
   return [
     scope.organizationName,
     `Scope: ${chosenScope}`,

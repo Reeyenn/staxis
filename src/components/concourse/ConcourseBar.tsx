@@ -6,9 +6,7 @@
 // Wires ConcourseBarView to the real app: section pills from the section
 // registry (filtered by the per-hotel toggles + the financials capability
 // gate, exactly like the old Header), logo → /home hub, gear → /settings,
-// and an avatar dropdown that keeps
-// everything the old header offered: who you are, hotel switching, the full
-// 5-language list and sign out.
+// and an avatar dropdown that keeps who you are, hotel switching, and sign out.
 // ═══════════════════════════════════════════════════════════════════════════
 
 import React from 'react';
@@ -17,7 +15,7 @@ import { usePathname, useSearchParams } from 'next/navigation';
 import { useAuth } from '@/contexts/AuthContext';
 import { useProperty } from '@/contexts/PropertyContext';
 import { useLang } from '@/contexts/LanguageContext';
-import { t, LOCALE_META, SUPPORTED_LOCALES } from '@/lib/translations';
+import { t } from '@/lib/translations';
 import { useCan } from '@/lib/capabilities/useCan';
 import { useEnabledSections } from '@/lib/sections/useSectionEnabled';
 import { SECTION_LIST } from '@/lib/sections/registry';
@@ -80,7 +78,7 @@ export function ConcourseBar() {
   } = useAuth();
   const { properties, activeProperty, loading: propertyLoading, setActivePropertyId } = useProperty();
   const can = useCan();
-  const { lang, locale, setLocale } = useLang();
+  const { lang } = useLang();
   const pathname = usePathname();
   const searchParams = useSearchParams();
   const portfolio = useOptionalPortfolio();
@@ -126,10 +124,10 @@ export function ConcourseBar() {
       ? '/company'
       : '/home';
   const homeLabel = portfolioScoped
-    ? (lang === 'es' ? 'Inicio del portafolio' : 'Portfolio Home')
+    ? ('Portfolio Home')
     : companyOnly
-      ? (lang === 'es' ? 'Centro de empresa' : 'Company Hub')
-      : (lang === 'es' ? 'Inicio' : 'Home');
+      ? ('Company Hub')
+      : ('Home');
   const showCompanyInMobileNavigation = Boolean(user && (!companyOnly || portfolioScoped));
   const adminWorkspaceActive = pathname === '/admin' || pathname.startsWith('/admin/');
   const verifiedPlatformAdmin = Boolean(
@@ -164,19 +162,17 @@ export function ConcourseBar() {
   const adminDestination: AdminDestinationAction | undefined = verifiedPlatformAdmin
     ? {
         label: adminLabel,
-        ariaLabel: lang === 'es'
-          ? 'Abrir administración de Staxis'
-          : 'Open Staxis Admin',
+        ariaLabel: 'Open Staxis Admin',
         active: adminWorkspaceActive,
         onIntent: () => prefetch('/admin/properties#live'),
         onClick: () => go('/admin/properties#live'),
       }
     : undefined;
   const companyNavigationLabel = portfolioScoped
-    ? (lang === 'es' ? 'Mi portafolio' : 'My Portfolio')
+    ? ('My Portfolio')
     : user?.role === 'admin'
-    ? (lang === 'es' ? 'Gestión' : 'Management')
-    : (lang === 'es' ? 'Centro de empresa' : 'Company Hub');
+    ? ('Management')
+    : ('Company Hub');
 
   // The server-rendered admin surface and every admin API already re-check the
   // database role. This client redirect only retires an already-open shell as
@@ -315,7 +311,7 @@ export function ConcourseBar() {
         : null;
       return {
         key: m.key,
-        label: lang === 'es' ? m.label_es : m.label_en,
+        label: m.label_en,
         active: pendingHref
           ? pendingHref === href
           : portfolioPath
@@ -329,19 +325,10 @@ export function ConcourseBar() {
     });
 
   const initial = (user?.displayName?.[0] ?? user?.username?.[0] ?? 'U').toUpperCase();
-  const spanishRoleLabels: Record<string, string> = {
-    admin: 'Admin',
-    owner: 'Propietario',
-    general_manager: 'Gerente general',
-    front_desk: 'Recepción',
-    housekeeping: 'Limpieza',
-    maintenance: 'Mantenimiento',
-    staff: 'Personal',
-  };
   const roleName = user?.role
-    ? (lang === 'es' ? spanishRoleLabels[user.role] : roleLabel(user.role))
+    ? (roleLabel(user.role))
     : '';
-  const userName = user?.displayName ?? user?.username ?? (lang === 'es' ? 'Usuario' : 'User');
+  const userName = user?.displayName ?? user?.username ?? ('User');
   const userMeta = [
     roleName,
     portfolioScoped ? portfolioOrganizationName ?? 'Portfolio' : activeProperty?.name,
@@ -362,7 +349,7 @@ export function ConcourseBar() {
         type="button"
         className="cx-avatarbtn"
         onClick={toggleMenu}
-        aria-label={lang === 'es' ? 'Menú de usuario' : 'User menu'}
+        aria-label={'User menu'}
         aria-expanded={menuOpen}
       >
         {initial}
@@ -381,7 +368,7 @@ export function ConcourseBar() {
 
             {!portfolioScoped && properties.length > 1 && (
               <>
-                <div className="cx-menu-eyebrow">{lang === 'es' ? 'Hoteles' : 'Hotels'}</div>
+                <div className="cx-menu-eyebrow">{'Hotels'}</div>
                 {properties.map((p) => (
                   <button
                     key={p.id}
@@ -399,18 +386,6 @@ export function ConcourseBar() {
               </>
             )}
 
-            <div className="cx-menu-eyebrow">{lang === 'es' ? 'Idioma' : 'Language'}</div>
-            {SUPPORTED_LOCALES.map((l) => (
-              <button
-                key={l}
-                type="button"
-                className={`cx-menu-item${locale === l ? ' cx-on' : ''}`}
-                onClick={() => { setLocale(l); setMenuOpen(false); }}
-              >
-                {LOCALE_META[l].nativeName}
-              </button>
-            ))}
-
             <button
               type="button"
               className="cx-menu-item"
@@ -420,8 +395,8 @@ export function ConcourseBar() {
               }}
             >
               {resolvedTheme === 'dark'
-                ? (lang === 'es' ? 'Usar tema claro' : 'Use light theme')
-                : (lang === 'es' ? 'Usar tema oscuro' : 'Use dark theme')}
+                ? ('Use light theme')
+                : ('Use dark theme')}
             </button>
 
             {platform === 'desktop' ? (
@@ -474,37 +449,29 @@ export function ConcourseBar() {
         propertyOptions={(portfolioScoped ? [] : properties)
           .map((property) => ({ value: property.id, label: property.name }))}
         activePropertyId={activeProperty?.id ?? null}
-        languageOptions={SUPPORTED_LOCALES.map((supportedLocale) => ({
-          value: supportedLocale,
-          label: LOCALE_META[supportedLocale].nativeName,
-        }))}
-        activeLocale={locale}
         userName={userName}
         userMeta={userMeta}
         userInitial={initial}
         homeLabel={homeLabel}
         mobileTitle={pathname === '/inventory' || pathname.startsWith('/inventory/')
-          ? (lang === 'es' ? 'Inventario' : 'Inventory')
+          ? ('Inventory')
           : adminWorkspaceActive
             ? adminLabel
             : pathname === '/company' || pathname.startsWith('/company/')
               ? companyNavigationLabel
               : undefined}
-        menuLabel={lang === 'es' ? 'Abrir navegación' : 'Open navigation'}
-        closeLabel={lang === 'es' ? 'Cerrar navegación' : 'Close navigation'}
-        navigationLabel={lang === 'es' ? 'Navegación principal' : 'Main navigation'}
-        sectionsLabel={lang === 'es' ? 'Secciones' : 'Sections'}
-        accountLabel={lang === 'es' ? 'Cuenta' : 'Account'}
-        propertyLabel={lang === 'es' ? 'Hotel' : 'Hotel'}
-        languageLabel={lang === 'es' ? 'Idioma' : 'Language'}
-        accountMenuLabel={lang === 'es'
-          ? `Abrir menú de usuario de ${userName}`
-          : `Open user menu for ${userName}`}
+        menuLabel={'Open navigation'}
+        closeLabel={'Close navigation'}
+        navigationLabel={'Main navigation'}
+        sectionsLabel={'Sections'}
+        accountLabel={'Account'}
+        propertyLabel={'Hotel'}
+        accountMenuLabel={`Open user menu for ${userName}`}
         companyLabel={companyNavigationLabel}
         adminDestination={adminDestination}
-        settingsLabel={lang === 'es' ? 'Configuración' : 'Settings'}
+        settingsLabel={'Settings'}
         signOutLabel={t('signOut', lang)}
-        installLabel={lang === 'es' ? 'Añadir Staxis a la pantalla de inicio' : 'Add Staxis to Home Screen'}
+        installLabel={'Add Staxis to Home Screen'}
         showInstallAction={showInstallReminder}
         showCompany={showCompanyInMobileNavigation}
         settingsActive={pathname.startsWith('/settings')}
@@ -520,10 +487,6 @@ export function ConcourseBar() {
           setActivePropertyId(propertyId);
           markHotelSelectedThisTab();
         }}
-        onLanguageChange={(nextLocale) => {
-          const supportedLocale = SUPPORTED_LOCALES.find((candidate) => candidate === nextLocale);
-          if (supportedLocale) setLocale(supportedLocale);
-        }}
         onInstall={(returnFocusElement) => {
           installReturnFocusRef.current = returnFocusElement;
           setInstallStaxisOpen(true);
@@ -538,7 +501,7 @@ export function ConcourseBar() {
         onGearIntent={() => prefetch(portfolioScoped ? companyHref : '/settings')}
         onLogoIntent={() => prefetch(homeHref)}
         homeLabel={homeLabel}
-        settingsLabel={lang === 'es' ? 'Configuración' : 'Settings'}
+        settingsLabel={'Settings'}
         avatar={avatar}
         // Away from the hub, the leftmost Staxis pill becomes a back-to-Home
         // control without changing the bar's visual language.

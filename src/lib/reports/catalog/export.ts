@@ -39,7 +39,7 @@ export function renderReportCsv(
   lang: 'en' | 'es' = 'en',
 ): ExportPayload {
   const lines: string[] = [];
-  lines.push(columns.map((c) => csvEscape(c.label[lang])).join(','));
+  lines.push(columns.map((c) => csvEscape(c.label.en)).join(','));
   for (const r of rows) {
     lines.push(toCells(columns, r, lang).map(csvEscape).join(','));
   }
@@ -59,7 +59,7 @@ export function renderReportXlsx(
   lang: 'en' | 'es' = 'en',
 ): ExportPayload {
   const headerCells = columns
-    .map((c) => `<Cell><Data ss:Type="String">${xmlEscape(c.label[lang])}</Data></Cell>`)
+    .map((c) => `<Cell><Data ss:Type="String">${xmlEscape(c.label.en)}</Data></Cell>`)
     .join('');
   const bodyRows = rows
     .map((r) => {

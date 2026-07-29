@@ -236,7 +236,7 @@ function asArray(v: unknown): unknown[] {
 // ════════════════════════════════════════════════════════════════════════
 export function MissionControlSurface() {
   const { lang } = useLang();
-  const l: Lang = lang === 'es' ? 'es' : 'en';
+  const l: Lang = 'en';
 
   const [system, setSystem] = useState<SystemServices | null>(null);
   const [sessions, setSessions] = useState<CuaSession[]>([]);
@@ -708,8 +708,8 @@ function SpendDetail({ copilotSpend, robots }: {
 // to any test that only looks at the rows.
 
 const AI_STAFF_COPY = {
-  spentToday: { en: 'Spent today', es: 'Gastado hoy' },
-  openRoster: { en: 'Open the AI Staff page', es: 'Abrir la página de Personal de IA' },
+  spentToday: { en: 'Spent today', },
+  openRoster: { en: 'Open the AI Staff page', },
 } as const;
 
 export function AiStaffColumn({ metrics, employees, robots, l, busyKey, onAction }: {
@@ -767,7 +767,7 @@ export function AiStaffColumn({ metrics, employees, robots, l, busyKey, onAction
  */
 export function AiEmployeeRow({ e, l }: { e: StaffMember; l: Lang }) {
   const tone: DotTone = EMPLOYEE_STATUS_TONE[e.status] ?? 'muted';
-  const label = (EMPLOYEE_STATUS_LABEL[e.status] ?? EMPLOYEE_STATUS_LABEL.not_hired)[l];
+  const label = (EMPLOYEE_STATUS_LABEL[e.status] ?? EMPLOYEE_STATUS_LABEL.not_hired).en;
   const spentToday = e.spend?.known === true && typeof e.spend.todayUsd === 'number'
     ? e.spend.todayUsd
     : null;
@@ -775,7 +775,7 @@ export function AiEmployeeRow({ e, l }: { e: StaffMember; l: Lang }) {
   return (
     <Link
       href="/admin/ai-staff"
-      aria-label={`${e.name[l]}. ${AI_STAFF_COPY.openRoster[l]}`}
+      aria-label={`${e.name.en}. ${AI_STAFF_COPY.openRoster.en}`}
       style={{ textDecoration: 'none', display: 'block' }}
     >
       <DarkCard style={{ padding: '13px 15px', cursor: 'pointer' }}>
@@ -787,8 +787,8 @@ export function AiEmployeeRow({ e, l }: { e: StaffMember; l: Lang }) {
         <div style={{ display: 'flex', alignItems: 'flex-start', gap: 11 }}>
           <Dot tone={tone} size={9} style={{ marginTop: 4 }} />
           <div style={{ flex: 1, minWidth: 0 }}>
-            <div style={{ fontSize: 13, fontWeight: 700, color: '#fff' }}>{e.name[l]}</div>
-            <div style={{ fontSize: 11, color: dimWhite(.45), marginTop: 2, lineHeight: 1.45 }}>{e.job[l]}</div>
+            <div style={{ fontSize: 13, fontWeight: 700, color: '#fff' }}>{e.name.en}</div>
+            <div style={{ fontSize: 11, color: dimWhite(.45), marginTop: 2, lineHeight: 1.45 }}>{e.job.en}</div>
           </div>
           <span className="mono" style={{ fontSize: 12, color: dimWhite(.4), flexShrink: 0 }}>→</span>
         </div>
@@ -796,7 +796,7 @@ export function AiEmployeeRow({ e, l }: { e: StaffMember; l: Lang }) {
           <Pill tone={pillOf(tone)} style={{ fontSize: 9, padding: '2px 7px' }}>{label}</Pill>
           {spentToday !== null && (
             <div style={{ marginLeft: 'auto' }}>
-              <Metric label={AI_STAFF_COPY.spentToday[l]} value={money(spentToday)} />
+              <Metric label={AI_STAFF_COPY.spentToday.en} value={money(spentToday)} />
             </div>
           )}
         </div>

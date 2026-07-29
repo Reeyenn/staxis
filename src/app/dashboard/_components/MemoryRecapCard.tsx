@@ -47,7 +47,7 @@ export function MemoryRecapCard() {
   // POST, exactly like the previous in-place setData filter.
   const [removed, setRemoved] = useState<ReadonlySet<string>>(() => new Set());
 
-  const es = lang === 'es';
+  const es = false;
   const canSee = !!user && canManageTeam(user.role);
 
   // Nightly-consolidation data: a slow 5-min poll keeps a long-lived (wall-TV)
@@ -111,7 +111,7 @@ export function MemoryRecapCard() {
         letterSpacing: '0.1em',
       }}
     >
-      {removing === id ? '…' : es ? 'Quitar' : 'Remove'}
+      {removing === id ? '…' : 'Remove'}
     </button>
   );
 
@@ -121,7 +121,7 @@ export function MemoryRecapCard() {
       {noticed.length > 0 && (
         <>
           <div style={{ ...CARD_LABEL, color: CARD.attn }}>
-            {es ? '⚠ Lo que Staxis notó' : '⚠ What Staxis noticed'}
+            {'⚠ What Staxis noticed'}
           </div>
           <div style={{ marginTop: 12, display: 'flex', flexDirection: 'column' }}>
             {noticed.map((it) => (
@@ -150,7 +150,7 @@ export function MemoryRecapCard() {
       {items.length > 0 && (
         <>
           <div style={{ ...CARD_LABEL, marginTop: noticed.length > 0 ? 20 : 0 }}>
-            {es ? 'Lo que Staxis aprendió' : 'What Staxis learned'}
+            {'What Staxis learned'}
           </div>
 
           {data.recap && data.recap !== 'Nothing new to remember today.' && (
@@ -191,16 +191,12 @@ export function MemoryRecapCard() {
 
       {removeFailed && (
         <div style={{ marginTop: 10, fontSize: 12, color: CARD.attn }}>
-          {es
-            ? 'No se pudo quitar la nota. Revisa tu conexión e inténtalo de nuevo.'
-            : 'Couldn’t remove that note. Check your connection and try again.'}
+          {'Couldn’t remove that note. Check your connection and try again.'}
         </div>
       )}
 
       <div style={{ marginTop: 12, fontSize: 11, color: CARD.ink3, fontFamily: CARD_MONO, lineHeight: 1.5 }}>
-        {es
-          ? 'Staxis observa tus operaciones y conversaciones y aprende cada noche. Quita cualquier nota incorrecta.'
-          : 'Staxis watches your operations and conversations and learns each night. Remove anything that’s off.'}
+        {'Staxis watches your operations and conversations and learns each night. Remove anything that’s off.'}
       </div>
     </GlassCard>
   );

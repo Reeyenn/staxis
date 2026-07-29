@@ -191,11 +191,11 @@ export function CheckbookTab({
     if (!form) return;
     const cents = parseDollarsToCents(form.amount);
     if (cents == null || cents < 0) {
-      setFormError(lang === 'es' ? 'Ingresa un monto válido.' : 'Enter a valid amount.');
+      setFormError('Enter a valid amount.');
       return;
     }
     if (!/^\d{4}-\d{2}-\d{2}$/.test(form.date)) {
-      setFormError(lang === 'es' ? 'Ingresa una fecha válida.' : 'Enter a valid date.');
+      setFormError('Enter a valid date.');
       return;
     }
     setFormError(null);
@@ -209,7 +209,7 @@ export function CheckbookTab({
     });
     if (!ownsAttempt()) return;
     if (res.error) {
-      setFormError(lang === 'es' ? 'No se pudo guardar.' : 'Could not save.');
+      setFormError('Could not save.');
       return;
     }
     setForm(null);
@@ -297,17 +297,17 @@ export function CheckbookTab({
               <FinColumn key={col.dept} color={c} name={deptLabel(lang, col.dept)} count={col.items.length} spentCents={col.spent} budgetCents={col.budget > 0 ? col.budget : null}>
                 {col.items.map((e) => {
                   const detailRows: { label: string; value: string }[] = [];
-                  if (e.notes) detailRows.push({ label: lang === 'es' ? 'NOTA' : 'NOTE', value: e.notes.length > 40 ? e.notes.slice(0, 38) + '…' : e.notes });
-                  if (e.createdByName) detailRows.push({ label: lang === 'es' ? 'REGISTRÓ' : 'LOGGED', value: e.createdByName });
-                  if (e.invoiceNumber) detailRows.push({ label: lang === 'es' ? 'FACTURA' : 'INVOICE', value: e.invoiceNumber });
+                  if (e.notes) detailRows.push({ label: 'NOTE', value: e.notes.length > 40 ? e.notes.slice(0, 38) + '…' : e.notes });
+                  if (e.createdByName) detailRows.push({ label: 'LOGGED', value: e.createdByName });
+                  if (e.invoiceNumber) detailRows.push({ label: 'INVOICE', value: e.invoiceNumber });
                   return (
                     <FlipExpenseCard
                       key={e.id}
-                      memo={e.vendor || (e.category ?? (lang === 'es' ? 'Gasto' : 'Expense'))}
+                      memo={e.vendor || (e.category ?? ('Expense'))}
                       dateLabel={shortDateFromYmd(e.expenseDate, lang, { fields: 'month-day', uppercase: true })}
                       amountCents={e.amountCents}
                       sourceTag={<ExpenseSourceTag label={e.source === 'invoice_scan' ? 'SCAN' : 'MANUAL'} tone={e.source === 'invoice_scan' ? 'scan' : 'manual'} />}
-                      vendorLabel={e.category || e.vendor || (lang === 'es' ? 'Gasto' : 'Expense')}
+                      vendorLabel={e.category || e.vendor || ('Expense')}
                       detailRows={detailRows}
                       deptName={deptLabel(lang, e.department)}
                       deptColorHex={c}
@@ -356,7 +356,7 @@ export function CheckbookTab({
               </Field>
             </div>
             <Field label={S.vendor}>
-              <TextInput value={form.vendor} onChange={(v) => setForm({ ...form, vendor: v })} placeholder={lang === 'es' ? 'p. ej. Sysco' : 'e.g. Sysco'} />
+              <TextInput value={form.vendor} onChange={(v) => setForm({ ...form, vendor: v })} placeholder={'e.g. Sysco'} />
             </Field>
             <Field label={S.department} required>
               <select value={form.department} onChange={(e) => setForm({ ...form, department: e.target.value as Department })} style={{ ...selectStyle, width: '100%', height: 40, borderRadius: 10, color: T.ink }}>
@@ -368,7 +368,7 @@ export function CheckbookTab({
               </select>
             </Field>
             <Field label={`${S.category} (${S.optional})`}>
-              <TextInput value={form.category} onChange={(v) => setForm({ ...form, category: v })} placeholder={lang === 'es' ? 'p. ej. toallas' : 'e.g. towels'} />
+              <TextInput value={form.category} onChange={(v) => setForm({ ...form, category: v })} placeholder={'e.g. towels'} />
             </Field>
             <Field label={`${S.notes} (${S.optional})`}>
               <TextArea value={form.notes} onChange={(v) => setForm({ ...form, notes: v })} rows={2} />

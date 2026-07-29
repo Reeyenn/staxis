@@ -156,32 +156,3 @@ describe('buildAsOfLabel — what the stamp says', () => {
     assert.match(l?.text ?? '', /Jul 23/);
   });
 });
-
-describe('buildAsOfLabel — Spanish', () => {
-  it('translates every tier, and never leaves English in the chip', () => {
-    const cases: Array<{ capturedAt: string | null; source?: FreshnessSource; expect: RegExp }> = [
-      { capturedAt: agedBy(20), expect: /^a las / },
-      { capturedAt: agedBy(120), expect: /^a las .* · hace 2 h$/ },
-      { capturedAt: agedBy(480), expect: /^a las 6:40 AM · hace 8 h$/ },
-      { capturedAt: agedBy(400), source: 'row_change', expect: /^último cambio a las / },
-      { capturedAt: null, source: 'none', expect: /^hora de actualización desconocida$/ },
-    ];
-    for (const c of cases) {
-      const l = label(liveStatus({ capturedAt: c.capturedAt, source: c.source }), ['dashboardCounts'], 'es');
-      assert.match(l?.text ?? '', c.expect);
-      assert.doesNotMatch(l?.text ?? '', /\bas of\b|\bago\b|unknown/);
-      assert.doesNotMatch(l?.detail ?? '', /\bas of\b|\bago\b|cannot tell/);
-    }
-  });
-
-  it('quotes the same clock time in both languages', () => {
-    // A bilingual team comparing two screens must see one "6:40 AM", not two
-    // different-looking stamps for one report.
-    const en = label(liveStatus({ capturedAt: agedBy(480) }), ['dashboardCounts'], 'en');
-    const es = label(liveStatus({ capturedAt: agedBy(480) }), ['dashboardCounts'], 'es');
-    assert.ok(en?.text.includes('6:40 AM'));
-    assert.ok(es?.text.includes('6:40 AM'));
-    assert.equal(en?.tier, es?.tier);
-    assert.equal(en?.tone, es?.tone);
-  });
-});

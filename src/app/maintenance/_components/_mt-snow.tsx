@@ -529,7 +529,7 @@ export function useBoardGate(
 export function BoardLoading({ es }: { es: boolean }) {
   return (
     <div style={{ padding: '48px 0', textAlign: 'center', fontFamily: FONT_SANS, fontSize: 13, color: T.ink2 }}>
-      {es ? 'Cargando…' : 'Loading…'}
+      {'Loading…'}
     </div>
   );
 }
@@ -538,9 +538,9 @@ export function BoardLoading({ es }: { es: boolean }) {
 export function BoardLoadError({ es, onRetry }: { es: boolean; onRetry: () => void }) {
   return (
     <MtEmptyCard
-      title={es ? 'No se pudo cargar.' : "Couldn't load this."}
-      body={es ? 'Tus datos están a salvo. Revisa la conexión e inténtalo de nuevo.' : 'Your data is safe. Check your connection and try again.'}
-      action={<Btn variant="primary" onClick={onRetry}>↻ {es ? 'Reintentar' : 'Retry'}</Btn>}
+      title={"Couldn't load this."}
+      body={'Your data is safe. Check your connection and try again.'}
+      action={<Btn variant="primary" onClick={onRetry}>↻ {'Retry'}</Btn>}
     />
   );
 }
@@ -592,11 +592,11 @@ export function MTSubTabBar({
   actions?: React.ReactNode;
 }) {
   const { lang } = useLang();
-  const es = lang === 'es';
+  const es = false;
   const tabs: { key: MaintenanceTabKey; label: string }[] = [
-    { key: 'work',       label: es ? 'Órdenes de trabajo' : 'Work orders' },
-    { key: 'preventive', label: es ? 'Preventivo'         : 'Preventive'  },
-    { key: 'equipment',  label: es ? 'Equipo'             : 'Equipment'   },
+    { key: 'work',       label: 'Work orders' },
+    { key: 'preventive', label: 'Preventive'  },
+    { key: 'equipment',  label: 'Equipment'   },
   ];
   return (
     <div style={{
@@ -695,8 +695,8 @@ export function StorageImage({
         letterSpacing: '0.08em', textTransform: 'uppercase',
       }}>
         {currentImageState.status === 'loading'
-          ? (lang === 'es' ? 'Cargando foto…' : 'Loading photo…')
-          : (lang === 'es' ? 'Foto no disponible' : 'Photo unavailable')}
+          ? ('Loading photo…')
+          : ('Photo unavailable')}
       </div>
     );
   }

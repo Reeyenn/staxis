@@ -980,12 +980,10 @@ function Step4HotelDetails({ code, wizard, onNext }: { code: string; wizard: Wiz
 
       <div style={{ marginTop: '20px', paddingTop: '16px', borderTop: '1px solid rgba(0,0,0,0.08)' }}>
         <label className="label">
-          {lang === 'es' ? '¿Qué aplicaciones quieres en la app de tu hotel?' : 'Which apps do you want in your hotel app?'}
+          {'Which apps do you want in your hotel app?'}
         </label>
         <p style={{ color: '#5C625C', fontSize: '12px', margin: '2px 0 12px' }}>
-          {lang === 'es'
-            ? 'Todas están activas por defecto. Desactiva las que no necesites. Puedes cambiarlo después.'
-            : 'All are on by default. Turn off any you don’t need. You can change this anytime later.'}
+          {'All are on by default. Turn off any you don’t need. You can change this anytime later.'}
         </p>
         <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
           {SECTION_LIST.map((m) => {
@@ -1020,10 +1018,10 @@ function Step4HotelDetails({ code, wizard, onNext }: { code: string; wizard: Wiz
                 </span>
                 <span style={{ minWidth: 0 }}>
                   <span style={{ display: 'block', fontSize: '14px', fontWeight: 600, color: '#1B1F1B' }}>
-                    {lang === 'es' ? m.label_es : m.label_en}
+                    {m.label_en}
                   </span>
                   <span style={{ display: 'block', fontSize: '12px', color: '#5C625C' }}>
-                    {lang === 'es' ? m.desc_es : m.desc_en}
+                    {m.desc_en}
                   </span>
                 </span>
               </button>
@@ -1203,12 +1201,10 @@ function Step6ConnectPms({ code, wizard, onNext }: { code: string; wizard: Wizar
       {!pmsAlreadyEntered && (
         <>
           <button className="btn btn-secondary" onClick={skipPms} disabled={submitting} style={{ width: '100%', justifyContent: 'center', marginTop: '8px' }}>
-            {lang === 'es' ? 'Omitir: este hotel no usa un PMS' : "Skip: this hotel doesn't use a PMS"}
+            {"Skip: this hotel doesn't use a PMS"}
           </button>
           <p style={{ fontSize: '12px', color: '#5C625C', marginTop: '8px', textAlign: 'center', lineHeight: 1.5 }}>
-            {lang === 'es'
-              ? 'Se activa sin PMS ni robot. Puedes conectarlo después en Configuración.'
-              : 'Goes live with no PMS or robot. You can connect one later in Settings.'}
+            {'Goes live with no PMS or robot. You can connect one later in Settings.'}
           </p>
         </>
       )}
@@ -1937,9 +1933,7 @@ function Step10AllSet({ code, wizard }: { code: string; wizard: WizardStateRespo
       {err && <ErrorBox msg={err} />}
       <div style={{ background: 'rgba(201,150,68,0.10)', borderRadius: '8px', padding: '14px', marginBottom: '16px' }}>
         <p style={{ fontSize: '13px', margin: 0, lineHeight: 1.5 }}>
-          {lang === 'es'
-            ? '✓ Tu inventario empieza vacío. Agrega tus propios artículos cuando quieras en la pestaña de Inventario.'
-            : '✓ Your inventory starts empty. Add your own items anytime in the Inventory tab.'}
+          {'✓ Your inventory starts empty. Add your own items anytime in the Inventory tab.'}
         </p>
         <p style={{ fontSize: '13px', margin: '8px 0 0 0', lineHeight: 1.5 }}>
           ✓ Once your housekeepers start cleaning rooms, the AI will start predicting your needs. Usually within 7 days.
