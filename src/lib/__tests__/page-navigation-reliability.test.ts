@@ -143,7 +143,7 @@ describe('property and capability readiness', () => {
     assert.match(refresh, /catch \(err\)[\s\S]*?status: 'error'/);
   });
 
-  test('the app shell never blocks confirmed hotel content on the optional capability request', () => {
+  test('ready, delayed, and failed capability reads add zero full-page wait after hotel reach', () => {
     const main = section(
       appLayout,
       '<main className="cx-swap"',
@@ -153,6 +153,11 @@ describe('property and capability readiness', () => {
     assert.match(main, /sectionOff[\s\S]*?children/);
     assert.doesNotMatch(main, /capabilityOverridesStatus/);
     assert.doesNotMatch(appLayout, /Checking hotel access/);
+    assert.equal(
+      (main.match(/RouteLoadingState|setTimeout|setInterval|withPromiseDeadline|\bsleep\b/g) ?? []).length,
+      0,
+      'the authorized-page branch must contain no capability-driven wait mechanism',
+    );
 
     const capabilityNotice = section(
       appLayout,
@@ -162,6 +167,40 @@ describe('property and capability readiness', () => {
     assert.match(capabilityNotice, /role="alert"/);
     assert.match(capabilityNotice, /Some actions are unavailable/);
     assert.match(capabilityNotice, /onClick=\{\(\) => void refreshCapabilities\(\)\}/);
+  });
+
+  test('ordinary pathname navigation starts no additional capability request', () => {
+    const capabilityEffect = section(
+      propertyContext,
+      '// Load the active hotel\'s capability overrides',
+      'const refreshCapabilities = useCallback(',
+    );
+    assert.equal(
+      (capabilityEffect.match(/fetchOverridesFor\(resolvedPropertyId\)/g) ?? []).length,
+      1,
+      'one viewer/hotel effect run starts exactly one background override request',
+    );
+    const capabilityDependencies = capabilityEffect.slice(capabilityEffect.lastIndexOf('}, ['));
+    assert.match(
+      capabilityDependencies,
+      /resolvedPropertyId, expectedCapabilityViewerKey, activeOnboardingInProgress/,
+    );
+    assert.doesNotMatch(
+      capabilityDependencies,
+      /pathname/,
+      'moving between ordinary authenticated pages must not refetch capability overrides',
+    );
+
+    const refresh = section(
+      propertyContext,
+      'const refreshCapabilities = useCallback(',
+      'const refreshProperty = async',
+    );
+    assert.equal(
+      (refresh.match(/fetchOverridesFor\(propertyId\)/g) ?? []).length,
+      1,
+      'an explicit retry starts exactly one new bounded request',
+    );
   });
 
   test('delayed, failed, revoked, and retry states remain fail-closed for restricted actions', () => {
