@@ -92,6 +92,7 @@ import {
 } from '@/lib/agent/portfolio-intelligence/receipts';
 import {
   buildPortfolioFindingPresentationProjection,
+  PORTFOLIO_PRESENTATION_OUTPUT_CONFIG,
   renderPortfolioAnswerArtifact,
   validatePortfolioPresentationPlan,
 } from '@/lib/agent/portfolio-intelligence/presentation';
@@ -1315,6 +1316,7 @@ export async function handlePortfolioPost(
       executionPlan,
       deadlineAt: executionDeadlineAt,
       fallbackReserveMs: ASK_STAXIS_FALLBACK_RESERVE_MS,
+      outputConfig: PORTFOLIO_PRESENTATION_OUTPUT_CONFIG,
       abortSignal: req.signal,
       onUsage: (usage) => { failureUsage = usage; },
       validateAssistantResponse: ({ text, toolCallCount }) => {

@@ -156,7 +156,7 @@ Monitor:
 - per-turn input/cache/output tokens, actual cost, reservation amount, reconciliation/cancellation failures, cap refusals by account/property/global reason, and spend saturation against the $5 free / $50 pro / $200 enterprise account, $25 property, and $500 global daily ceilings;
 - hotel-tool reauthorization refusals by changed/unavailable standing, section, and capability, plus attempts to invoke a tool outside the turn's issued catalog;
 - deterministic-knowledge artifact insert/refusal volume, `receipt_kind` and `finding_binding_status` counts, legacy-unbound receipt byte/digest drift, any new attempted `legacy_unbound` insert, and any artifact/receipt/account/organization/scope/finding-binding validation failure;
-- portfolio turn-commit count versus completed/partial receipt count, replay-ledger turn/byte drift, bounded-replay omissions, and any attempted portfolio archive/restore refusal;
+- portfolio turn-commit count versus completed/partial/abstained receipt count, replay-ledger turn/byte drift, bounded-replay omissions, and any attempted portfolio archive/restore refusal;
 - planner clarification/unsupported rates;
 - company structure preview/commit epoch conflicts and idempotent retries;
 - Finding Patterns mount state, zero/truncation/outage receipts, producer/query/contract versions, and any attempted shadow-row exposure;
@@ -167,7 +167,7 @@ Monitor:
 
 Alert on any cross-organization receipt mismatch, evidence property outside the selected set, assertion failure after synthesis, repeated service-role RPC validation failure, or sudden increase in normalized-to-legacy drift. Treat these as security events.
 
-The healthy replay envelope reads only the indexed newest 24 receipt-backed complete turns, includes at most 65,536 accounted UTF-8 bytes, and never omits the newest valid turn. Any mismatch between the trigger-owned currently retained ledger and the selected rows, any noncanonical pair, or any TypeScript byte/count mismatch must fail before a provider call. Receipt retention must decrement the ledger atomically. Do not bypass the ledger, grant direct service-role INSERT on `portfolio_query_turn_commits`, or substitute unreceipted summarizer rows.
+The healthy replay envelope reads only the indexed newest 24 receipt-backed complete turns, including honest `abstained` no-data answers, includes at most 65,536 accounted UTF-8 bytes, and never omits the newest valid turn. Any mismatch between the trigger-owned currently retained ledger and the selected rows, any noncanonical pair, or any TypeScript byte/count mismatch must fail before a provider call. Receipt retention must decrement the ledger atomically. Do not bypass the ledger, grant direct service-role INSERT on `portfolio_query_turn_commits`, or substitute unreceipted summarizer rows.
 
 The healthy admission envelope is at most one live query for an account-company pair, no lease older than 75 seconds, and no hotel metadata statement after a denied admission. Alert on repeated `unavailable` results or lease-release failures; do not fail open.
 

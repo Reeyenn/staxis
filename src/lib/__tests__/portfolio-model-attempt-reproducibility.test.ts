@@ -8,6 +8,7 @@ import {
   type MessagesClient,
   type ProviderRequestAttempt,
 } from '@/lib/agent/llm';
+import { PORTFOLIO_PRESENTATION_OUTPUT_CONFIG } from '@/lib/agent/portfolio-intelligence/presentation';
 import type { ToolContext } from '@/lib/agent/tools';
 import type { AiExecutionPlan } from '@/lib/ai/runtime';
 
@@ -153,6 +154,7 @@ test('runAgent preserves a rejected alias response and its spend before a distin
     toolContext,
     executionPlan: executionPlan(),
     modelClient: client,
+    outputConfig: PORTFOLIO_PRESENTATION_OUTPUT_CONFIG,
     validateAssistantResponse(candidate) {
       const parsed = JSON.parse(candidate.text) as { version?: unknown };
       if (parsed.version !== 'portfolio-presentation-plan.v1') {
@@ -175,6 +177,7 @@ test('runAgent preserves a rejected alias response and its spend before a distin
   assert.deepEqual(attempts[0].request, receivedBodies[0], 'primary wire request must be verbatim');
   assert.equal(attempts[0].requestedModelId, 'claude-primary-alias');
   assert.equal(attempts[0].request.model, 'claude-primary-alias');
+  assert.deepEqual(attempts[0].request.output_config, PORTFOLIO_PRESENTATION_OUTPUT_CONFIG);
   assert.equal(attempts[0].outcome, 'rejected');
   assert.equal(attempts[0].failureName, 'SyntaxError');
   assert.equal(attempts[0].responseModelId, 'claude-primary-snapshot-20260727');
@@ -192,6 +195,7 @@ test('runAgent preserves a rejected alias response and its spend before a distin
   assert.deepEqual(attempts[1].request, receivedBodies[1], 'fallback wire request must be verbatim');
   assert.equal(attempts[1].requestedModelId, 'claude-fallback-alias');
   assert.equal(attempts[1].request.model, 'claude-fallback-alias');
+  assert.deepEqual(attempts[1].request.output_config, PORTFOLIO_PRESENTATION_OUTPUT_CONFIG);
   assert.equal(attempts[1].outcome, 'succeeded');
   assert.equal(attempts[1].failureName, null);
   assert.equal(attempts[1].responseModelId, 'claude-fallback-snapshot-20260720');

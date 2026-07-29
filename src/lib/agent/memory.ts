@@ -394,7 +394,7 @@ function parsePortfolioReplayReceipt(input: {
     || typeof row.scope_hash !== 'string' || !SHA256_RX.test(row.scope_hash)
     || typeof row.question_hash !== 'string' || !SHA256_RX.test(row.question_hash)
     || typeof row.answer_hash !== 'string' || !SHA256_RX.test(row.answer_hash)
-    || (row.status !== 'completed' && row.status !== 'partial')
+    || (row.status !== 'completed' && row.status !== 'partial' && row.status !== 'abstained')
     || typeof row.generated_at !== 'string' || !Number.isFinite(Date.parse(row.generated_at))
     || !isRecord(row.plan)
     || !isRecord(row.evidence)) return null;
@@ -699,7 +699,7 @@ export async function loadPortfolioConversationForAuthorization(opts: {
       .eq('account_id', opts.userAccountId)
       .eq('organization_id', opts.organizationId)
       .eq('authorization_hash', opts.authorizationHash)
-      .in('status', ['completed', 'partial'])
+      .in('status', ['completed', 'partial', 'abstained'])
       .in('id', receiptIds as string[]),
   ]);
   if (messagesResult.error) throw messagesResult.error;
@@ -1202,7 +1202,7 @@ function portfolioCommitFailureReason(value: unknown): PortfolioConversationComm
 
 /**
  * The only portfolio message writer after 0399. PostgreSQL reasserts current
- * account/company scope, binds the exact completed/partial query receipt, then
+ * account/company scope, binds the exact completed/partial/abstained query receipt, then
  * inserts user + assistant + commit link atomically. A retry with the same
  * receipt/text is idempotent; different content fails closed.
  */
