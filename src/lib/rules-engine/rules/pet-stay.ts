@@ -23,7 +23,7 @@ export const petStayRule: Rule = {
     if (ctx.arriving?.has_pet) extras.push('pet_kit');
     return {
       id: RULE_ID,
-      summary: 'Pet stay — +10 min, pet-clean checklist',
+      summary: 'Pet stay: +10 min, pet-clean checklist',
       partial: {
         estimated_minutes_delta: PET_STAY_DURATION_MIN,
         extras,

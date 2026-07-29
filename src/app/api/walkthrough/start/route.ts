@@ -97,7 +97,7 @@ export async function POST(req: NextRequest): Promise<Response> {
       {
         ok: false,
         code: 'rate_limit',
-        error: "You've started a lot of walkthroughs in the last hour — take a break and try again later.",
+        error: "You've started a lot of walkthroughs in the last hour. Take a break and try again later.",
         requestId,
       },
       { status: 429 },

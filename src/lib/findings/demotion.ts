@@ -217,7 +217,7 @@ export function evaluateDemotion(
 ): DemotionVerdict {
   const positive = positiveEngagement(engagement);
   if (positive > thresholds.maxPositiveActed) {
-    return { demote: false, reason: `taken up ${positive} time(s) — still useful here` };
+    return { demote: false, reason: `taken up ${positive} time(s), still useful here` };
   }
 
   if (engagement.declinedProblems >= thresholds.minDeclinedProblems) {
@@ -245,7 +245,7 @@ export function evaluateDemotion(
       demote: false,
       reason:
         `ignored for ${Math.floor(engagement.spanDays)} days, under the ` +
-        `${thresholds.minSpanDays} needed — a bad fortnight is not a verdict`,
+        `${thresholds.minSpanDays} needed. A bad fortnight is not a verdict`,
     };
   }
   return {
@@ -287,7 +287,7 @@ export function evaluateRearm(
   }
   return {
     rearm: true,
-    reason: `taken up ${positive} time(s) since it was quietened — back up a rung`,
+    reason: `taken up ${positive} time(s) since it was quietened, back up a rung`,
   };
 }
 

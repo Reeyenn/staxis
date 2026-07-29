@@ -130,7 +130,7 @@ export function FeedbackButton() {
           {submitted ? (
             <div style={{ padding: '24px', textAlign: 'center' }}>
               <CheckCircle2 size={32} color="var(--green)" style={{ marginBottom: '8px' }} />
-              <p style={{ fontSize: '13px', color: 'var(--text-primary)' }}>{lang === 'es' ? '¡Enviado, gracias!' : 'Sent — thanks!'}</p>
+              <p style={{ fontSize: '13px', color: 'var(--text-primary)' }}>{lang === 'es' ? '¡Enviado, gracias!' : 'Sent, thanks!'}</p>
             </div>
           ) : (
             <div style={{ padding: '14px' }}>

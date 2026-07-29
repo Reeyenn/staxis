@@ -11,4 +11,8 @@ export const EXEMPT_FROM_PURGE: ReadonlySet<string> = new Set([
   'agent_pending_actions',
   'user_feedback',
   'agent_eval_baselines',
+  // Financial records are pruned only by the rollup job after their monthly
+  // aggregate has been verified. This generic retention cron must never race
+  // that ledger owner.
+  'agent_costs',
 ]);

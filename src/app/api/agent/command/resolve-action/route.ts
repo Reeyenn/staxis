@@ -193,7 +193,7 @@ export async function POST(req: NextRequest): Promise<Response> {
   }
   // Single-use: expire lazily, then refuse anything not pending.
   if (pending.status === 'pending' && (await expireIfStale(pending))) {
-    return Response.json({ ok: false, error: 'that action expired — ask again to redo it', code: 'expired', requestId }, { status: 409 });
+    return Response.json({ ok: false, error: 'that action expired. Ask again to redo it', code: 'expired', requestId }, { status: 409 });
   }
   if (pending.status !== 'pending') {
     return Response.json({ ok: false, error: 'that action was already handled', code: pending.status, requestId }, { status: 409 });

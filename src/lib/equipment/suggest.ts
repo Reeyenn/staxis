@@ -285,13 +285,13 @@ export function phraseEquipmentSuggestion(counted: EquipmentTermCount): Question
   return {
     topic: equipmentSuggestionTopic(counted.term),
     category: 'equipment',
-    en: `You've written "${name}" in ${n} work orders — want to track it as equipment?`.slice(0, 300),
-    es: `Han escrito "${name}" en ${n} órdenes de trabajo — ¿quieren registrarlo como equipo?`.slice(0, 300),
+    en: `You've written "${name}" in ${n} work orders. Want to track it as equipment?`.slice(0, 300),
+    es: `Han escrito "${name}" en ${n} órdenes de trabajo. ¿Quieren registrarlo como equipo?`.slice(0, 300),
     // Stored on the ledger row, and deliberately NOT written into agent_memory
     // the way every other "yes" is — see answerDripQuestion. The equipment row
     // IS the record; a memory sentence saying the same thing would be a second
     // copy of a fact with its own way of going stale.
-    fact: `"${name}" is tracked as equipment at this hotel — confirmed by a manager after it appeared in ${n} work orders.`.slice(0, 500),
+    fact: `"${name}" is tracked as equipment at this hotel. A manager confirmed it after it appeared in ${n} work orders.`.slice(0, 500),
     findingId: null,
     suggestedEquipmentName: name,
   };

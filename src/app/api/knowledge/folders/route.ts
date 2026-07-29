@@ -17,7 +17,7 @@ import { validateUuid, validateString } from '@/lib/api-validate';
 import { checkAndIncrementRateLimit, rateLimitedResponse, hashToRateLimitKey } from '@/lib/api-ratelimit';
 import { capabilityDecisionForUserId } from '@/lib/capabilities/server';
 import { capabilityUnavailableResponse } from '@/lib/capabilities/api-gate';
-import { commsContext } from '@/lib/comms/route-helpers';
+import { commsContext, KNOWLEDGE_CTX } from '@/lib/comms/route-helpers';
 import { listFolders, createFolder, renameFolder, deleteFolder } from '@/lib/knowledge/core';
 import { KNOWLEDGE_LIMITS } from '@/lib/knowledge/types';
 
@@ -25,7 +25,7 @@ export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
 export async function GET(req: NextRequest): Promise<Response> {
-  const ctx = await commsContext(req, req.nextUrl.searchParams.get('pid'));
+  const ctx = await commsContext(req, req.nextUrl.searchParams.get('pid'), KNOWLEDGE_CTX);
   if (!ctx.ok) return ctx.response;
   const folders = await listFolders(ctx.pid);
   return ok({ folders }, { requestId: ctx.requestId, headers: ctx.headers });
@@ -35,7 +35,7 @@ export async function POST(req: NextRequest): Promise<Response> {
   let raw: { pid?: string; name?: unknown; parentId?: unknown };
   try { raw = await req.json(); } catch { raw = {}; }
 
-  const ctx = await commsContext(req, raw.pid ?? null);
+  const ctx = await commsContext(req, raw.pid ?? null, KNOWLEDGE_CTX);
   if (!ctx.ok) return ctx.response;
   const capabilityDecision = await capabilityDecisionForUserId(ctx.userId, 'manage_knowledge', ctx.pid);
   if (capabilityDecision === 'unavailable') return capabilityUnavailableResponse(ctx.requestId);
@@ -66,7 +66,7 @@ export async function PATCH(req: NextRequest): Promise<Response> {
   let raw: { pid?: string; id?: unknown; name?: unknown };
   try { raw = await req.json(); } catch { raw = {}; }
 
-  const ctx = await commsContext(req, raw.pid ?? null);
+  const ctx = await commsContext(req, raw.pid ?? null, KNOWLEDGE_CTX);
   if (!ctx.ok) return ctx.response;
   const capabilityDecision = await capabilityDecisionForUserId(ctx.userId, 'manage_knowledge', ctx.pid);
   if (capabilityDecision === 'unavailable') return capabilityUnavailableResponse(ctx.requestId);
@@ -87,7 +87,7 @@ export async function PATCH(req: NextRequest): Promise<Response> {
 }
 
 export async function DELETE(req: NextRequest): Promise<Response> {
-  const ctx = await commsContext(req, req.nextUrl.searchParams.get('pid'));
+  const ctx = await commsContext(req, req.nextUrl.searchParams.get('pid'), KNOWLEDGE_CTX);
   if (!ctx.ok) return ctx.response;
   const capabilityDecision = await capabilityDecisionForUserId(ctx.userId, 'manage_knowledge', ctx.pid);
   if (capabilityDecision === 'unavailable') return capabilityUnavailableResponse(ctx.requestId);

@@ -56,8 +56,8 @@ function SignupInner() {
     // formatting like "(555) 123-4567" down to digits).
     if (phone.replace(/\D/g, '').length < 7) {
       setError(lang === 'es'
-        ? 'Ingresa un número de teléfono válido — el hotel te enviará tu horario por mensaje.'
-        : 'Enter a valid phone number — the hotel texts you your schedule.');
+        ? 'Ingresa un número de teléfono válido. El hotel te enviará tu horario por mensaje.'
+        : 'Enter a valid phone number. The hotel texts you your schedule.');
       return;
     }
     setSubmitting(true);

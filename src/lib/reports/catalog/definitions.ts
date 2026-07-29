@@ -139,8 +139,8 @@ const hkCleanTimes: ReportDefinition = {
   key: 'hk-clean-times',
   title: { en: 'Clean times by type', es: 'Tiempos por tipo' },
   description: {
-    en: 'Average clean time by cleaning type — checkout vs stayover.',
-    es: 'Tiempo promedio por tipo de limpieza — salida vs. estancia.',
+    en: 'Average clean time by cleaning type: checkout vs stayover.',
+    es: 'Tiempo promedio por tipo de limpieza: salida vs. estancia.',
   },
   category: 'housekeeping',
   defaultRange: 'last30',
@@ -199,8 +199,8 @@ const inspectionsByInspector: ReportDefinition = {
   key: 'inspections-by-inspector',
   title: { en: 'Inspections by inspector', es: 'Inspecciones por inspector' },
   description: {
-    en: 'Pass rate per inspector — completed inspections, passes, and fails.',
-    es: 'Tasa de aprobación por inspector — inspecciones, aprobadas y reprobadas.',
+    en: 'Pass rate per inspector: completed inspections, passes, and fails.',
+    es: 'Tasa de aprobación por inspector: inspecciones, aprobadas y reprobadas.',
   },
   category: 'inspections',
   defaultRange: 'last30',
@@ -585,8 +585,8 @@ const inventoryLowStock: ReportDefinition = {
         { label: { en: 'Low', es: 'Bajo' }, value: String(low) },
       ],
       notes: {
-        en: 'Current snapshot — not affected by the date range.',
-        es: 'Instantánea actual — no depende del rango de fechas.',
+        en: 'Current snapshot. Not affected by the date range.',
+        es: 'Instantánea actual. No depende del rango de fechas.',
       },
     };
   },
@@ -756,8 +756,8 @@ const lostAndFoundSummary: ReportDefinition = {
   key: 'lost-and-found-summary',
   title: { en: 'Lost & found', es: 'Objetos perdidos' },
   description: {
-    en: 'Lost & found items by status — found vs lost.',
-    es: 'Objetos perdidos y encontrados por estado — encontrados vs. perdidos.',
+    en: 'Lost & found items by status: found vs lost.',
+    es: 'Objetos perdidos y encontrados por estado: encontrados vs. perdidos.',
   },
   category: 'lost_found',
   defaultRange: 'last30',

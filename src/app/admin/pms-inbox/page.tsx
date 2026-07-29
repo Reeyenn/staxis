@@ -174,7 +174,7 @@ export default function PmsInboxPage() {
             <ShieldCheck size={26} style={{ color: 'var(--forest)' }} /> The hotel <span style={{ fontStyle: 'italic' }}>login mailbox</span>
           </h1>
           <p style={{ fontSize: 13.5, color: dim(.55), margin: '9px 0 0', maxWidth: 640, lineHeight: 1.55 }}>
-            Each hotel&apos;s robot signs in as <span style={{ fontFamily: FONT_MONO, color: dim(.8) }}>…@getstaxis.com</span>. Finish setup by clicking the Okta link below — after that the robot reads its own 2FA codes. Nothing here ever leaves Staxis.
+            Each hotel&apos;s robot signs in as <span style={{ fontFamily: FONT_MONO, color: dim(.8) }}>…@getstaxis.com</span>. Finish setup by clicking the Okta link below. After that the robot reads its own 2FA codes. Nothing here ever leaves Staxis.
           </p>
         </div>
         <Btn variant="ghost" size="lg" onClick={() => void load()} style={{ color: '#fff', borderColor: dim(.3), background: dim(.06) }}>
@@ -198,7 +198,7 @@ export default function PmsInboxPage() {
       />
 
       {byInbox.size === 0 && !loading && !error ? (
-        <Empty text="No setup emails yet — the Okta email lands here the moment it's sent." />
+        <Empty text="No setup emails yet. The Okta email lands here the moment it's sent." />
       ) : (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 14, marginBottom: 38 }}>
           {[...byInbox.entries()].map(([inbox, msgs]) => (
@@ -251,11 +251,11 @@ export default function PmsInboxPage() {
         eyebrowColor="var(--forest)"
         icon={<ShieldCheck size={19} style={{ color: 'var(--forest)' }} />}
         title="2FA codes the robot caught"
-        sub="Okta login codes the robot received — masked to the last 2 digits. The full code never leaves the server; the robot uses it to log itself in."
+        sub="Okta login codes the robot received, masked to the last 2 digits. The full code never leaves the server; the robot uses it to log itself in."
       />
 
       {rows.length === 0 && !loading && !error ? (
-        <Empty text="No codes yet — they appear the moment the robot triggers an Okta login." />
+        <Empty text="No codes yet. They appear the moment the robot triggers an Okta login." />
       ) : (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
           {rows.map((r) => (

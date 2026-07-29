@@ -183,7 +183,7 @@ function WalkthroughOverlayInner() {
       if (!startRes.ok) {
         const errBody = (await startRes.json().catch(() => null)) as { error?: string; code?: string } | null;
         const msg = errBody?.code === 'already_active'
-          ? "You already have a walkthrough running in another tab — close it first."
+          ? "You already have a walkthrough running in another tab. Close it first."
           : (errBody?.error ?? `Couldn't start walkthrough (${startRes.status})`);
         showError(msg);
         return;
@@ -300,7 +300,7 @@ function WalkthroughOverlayInner() {
       const meta = snapshot.elements.find(e => e.id === action.elementId);
       if (!node || !meta) {
         await endRun('errored');
-        showError("I couldn't find that button on the page anymore — try asking again.");
+        showError("I couldn't find that button on the page anymore. Try asking again.");
         return;
       }
 
@@ -336,7 +336,7 @@ function WalkthroughOverlayInner() {
       // user knows what happened.
       if (click.timedOut) {
         await endRun('timeout');
-        const msg = "Still there? Pause was long enough I bowed out — ask me again when you're ready.";
+        const msg = "Still there? Pause was long enough I bowed out. Ask me again when you're ready.";
         setMode('error');
         setErrorMsg(msg);
         setCaption(msg);
@@ -371,7 +371,7 @@ function WalkthroughOverlayInner() {
     // returns step_cap first (and ends the run); this fallback handles
     // any edge case where we reached MAX_STEPS without the server saying so.
     await endRun('capped');
-    const msg = "I got a bit lost — try rephrasing your question and I'll start over.";
+    const msg = "I got a bit lost. Try rephrasing your question and I'll start over.";
     setCaption(msg);
     setMode('error');
     setErrorMsg(msg);
@@ -416,7 +416,7 @@ function WalkthroughOverlayInner() {
     void endRun('errored');
     runIdRef.current += 1;
     abortRef.current?.abort();
-    showError("You switched properties mid-walkthrough — ask me again on the new one.");
+    showError("You switched properties mid-walkthrough. Ask me again on the new one.");
   }, [activePropertyId, endRun, showError]);
 
   // ── Render ──────────────────────────────────────────────────────────

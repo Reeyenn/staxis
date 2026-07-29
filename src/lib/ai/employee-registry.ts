@@ -99,14 +99,52 @@ function planned(id: string, name: Bilingual, job: Bilingual): AiEmployee {
 }
 
 export const AI_EMPLOYEES: readonly AiEmployee[] = [
-  planned(
-    'ordering_manager',
-    { en: 'Ordering Manager', es: 'Encargado de pedidos' },
-    {
-      en: 'Learns each hotel\'s suppliers, order days and pack sizes, then drafts the week\'s order for a manager to approve in one tap.',
-      es: 'Aprende los proveedores, los días de pedido y los tamaños de caja de cada hotel, y prepara el pedido de la semana para que el gerente lo apruebe con un toque.',
+  // ── HIRED 2026-07-28 ──────────────────────────────────────────────────────
+  //
+  // The bundle is EMPTY of features, and that is the honest entry rather than
+  // an oversight. This employee's only model work is reading a manager's
+  // sentence about their suppliers ("food from Sysco by email, linens from
+  // Guest Supply's site") into a structured list — and that happens inside a
+  // normal chat turn, through `staxis_set_up_vendors`, billed to the chat's
+  // own feature where it actually occurs.
+  //
+  // Bundling a feature key here anyway would have been worse than saying
+  // nothing: `employeeSpend` sums only the keys in the bundle, so a key that
+  // never receives an `agent_costs` row renders a confident $0.00 next to an
+  // employee whose thinking does cost money. An empty `features` list takes
+  // the `billed.length === 0` branch instead and the card reads "no separate
+  // bill", which is true — the spend is real and it is on the copilot's line.
+  // When this employee grows a model call of its own, that is the moment to
+  // add the key, not before.
+  //
+  // Everything else it does — deciding what is worth ordering, ranking by
+  // dollar impact, grouping by supplier, pricing from receipts — is
+  // arithmetic over the hotel's own rows. No model is involved and none is
+  // needed, which is why there are no detectors and no crons either.
+  {
+    id: 'ordering_manager',
+    name: { en: 'Ordering Manager', es: 'Encargado de pedidos' },
+    job: {
+      en: 'Watches what is running low, works out what is worth ordering, and preps each supplier\'s order for a manager to send.',
+      es: 'Vigila lo que se está acabando, calcula qué vale la pena pedir y prepara el pedido de cada proveedor para que el gerente lo envíe.',
     },
-  ),
+    hired: true,
+    bundle: {
+      features: [],
+      detectors: [],
+      crons: [],
+      surfaces: [
+        {
+          en: 'The Ordering screen on the inventory page: what is worth ordering, grouped by supplier',
+          es: 'La pantalla Pedidos en la página de inventario: lo que vale la pena pedir, agrupado por proveedor',
+        },
+        {
+          en: 'The purchase-order email Staxis sends to a supplier on the hotel\'s behalf',
+          es: 'El correo de pedido que Staxis envía a un proveedor de parte del hotel',
+        },
+      ],
+    },
+  },
 
   // ── THE ONLY ONE THAT EXISTS ──────────────────────────────────────────────
   //
@@ -133,7 +171,7 @@ export const AI_EMPLOYEES: readonly AiEmployee[] = [
     id: MORNING_BRIEFER_ID,
     name: { en: 'Morning Briefer', es: 'Informante de la mañana' },
     job: {
-      en: 'Writes each manager\'s morning brief — what happened overnight, in a few lines, before anyone asks.',
+      en: 'Writes each manager\'s morning brief: what happened overnight, in a few lines, before anyone asks.',
       es: 'Escribe el resumen de la mañana de cada gerente: lo que pasó durante la noche, en pocas líneas, antes de que alguien pregunte.',
     },
     hired: true,
@@ -232,7 +270,7 @@ export const AI_EMPLOYEES: readonly AiEmployee[] = [
     'floor_interpreter',
     { en: 'Floor Interpreter', es: 'Intérprete de planta' },
     {
-      en: 'Lets a housekeeper say a room is done out loud, in their own language, with their hands full — and the front desk sees it in English.',
+      en: 'Lets a housekeeper say a room is done out loud, in their own language, with their hands full. The front desk sees it in English.',
       es: 'Deja que una camarera diga en voz alta que una habitación está lista, en su idioma y con las manos ocupadas, y la recepción lo ve en inglés.',
     },
   ),
@@ -259,8 +297,8 @@ export const BUNDLE_LABELS: Readonly<Record<string, Bilingual>> = {
   // the page is chrome and the house rule applies to it. What changed is what the
   // line claims, because it used to promise a Spanish brief that no longer exists.
   'findings.brief': {
-    en: 'Rewrites the morning summary so it reads like a person wrote it — in English',
-    es: 'Reescribe el resumen de la mañana para que suene a persona — en inglés',
+    en: 'Rewrites the morning summary in English so it reads like a person wrote it',
+    es: 'Reescribe el resumen de la mañana en inglés para que suene a persona',
   },
   // Scheduled jobs
   'run-findings': {
@@ -331,7 +369,7 @@ export function deriveEmployeeStatus(input: EmployeeStatusInput): AiEmployeeStat
 export const EMPLOYEE_STATUS_LABEL: Readonly<Record<AiEmployeeStatus, Bilingual>> = {
   not_hired: { en: 'Not hired yet', es: 'Aún no contratado' },
   switched_off: { en: 'Switched off by you', es: 'Apagado por ti' },
-  waiting_for_master: { en: 'Ready — waiting for the master switch', es: 'Listo — esperando el interruptor principal' },
+  waiting_for_master: { en: 'Ready. Waiting for the master switch', es: 'Listo. Esperando el interruptor principal' },
   on: { en: 'On', es: 'Encendido' },
 };
 

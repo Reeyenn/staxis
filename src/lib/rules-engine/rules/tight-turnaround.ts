@@ -63,7 +63,7 @@ export const tightTurnaroundRule: Rule = {
       partial: {
         priority: 'high',
         due_by: dueBy,
-        notes: [`Tight turnaround — arrival ${ctx.arriving.arrival_time}`],
+        notes: [`Tight turnaround: arrival ${ctx.arriving.arrival_time}`],
       },
     };
   },

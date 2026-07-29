@@ -404,7 +404,7 @@ function EquipmentDetailModal({
             // fixed viewport keeps this state the same size as loaded content.
             <div className="equipment-detail-error" role="alert">
               <span>
-                {tr(lang, "Couldn't load this asset — check your connection.", 'No se pudo cargar este activo — revisa la conexión.')}
+                {tr(lang, "Couldn't load this asset. Check your connection.", 'No se pudo cargar este activo. Revisa la conexión.')}
               </span>
               <Btn variant="primary" size="md" onClick={onRetry}>↻ {tr(lang, 'Retry', 'Reintentar')}</Btn>
             </div>
@@ -778,8 +778,8 @@ export function EquipmentRegistry({ onBack }: { onBack: () => void }) {
   const handleDelete = async (e: Equipment) => {
     if (!pid) return;
     const msg = tr(lang,
-      `Delete "${e.name}"? Its work orders and PM tasks stay — they just unlink from this asset.`,
-      `¿Eliminar "${e.name}"? Sus órdenes y tareas PM permanecen — solo se desvinculan de este activo.`);
+      `Delete "${e.name}"? Its work orders and PM tasks stay. They only unlink from this asset.`,
+      `¿Eliminar "${e.name}"? Sus órdenes y tareas PM permanecen. Solo se desvinculan de este activo.`);
     if (!window.confirm(msg)) return;
     const res = await deleteEquipmentAsset(pid, e.id);
     if (!res.ok) { flash(res.error || tr(lang, 'Could not delete', 'No se pudo eliminar')); return; }
@@ -836,7 +836,7 @@ export function EquipmentRegistry({ onBack }: { onBack: () => void }) {
             titleSize={20}
             bodySize={13}
             title={tr(lang, "Couldn't load the registry.", 'No se pudo cargar el registro.')}
-            body={tr(lang, 'Your equipment is safe — check your connection and try again.', 'Tus equipos están a salvo — revisa la conexión e inténtalo de nuevo.')}
+            body={tr(lang, 'Your equipment is safe. Check your connection and try again.', 'Tus equipos están a salvo. Revisa la conexión e inténtalo de nuevo.')}
             action={<Btn variant="primary" size="md" onClick={() => { setLoading(true); void refresh(); }}>↻ {tr(lang, 'Retry', 'Reintentar')}</Btn>}
           />
         )}
@@ -845,7 +845,7 @@ export function EquipmentRegistry({ onBack }: { onBack: () => void }) {
             titleSize={20}
             bodySize={13}
             title={tr(lang, 'No equipment yet.', 'Aún no hay equipos.')}
-            body={tr(lang, 'Add your HVAC units, water heaters, elevators, pool pumps — anything you service.', 'Agregue unidades de aire, calentadores, ascensores, bombas de piscina — todo lo que da servicio.')}
+            body={tr(lang, 'Add your HVAC units, water heaters, elevators, pool pumps, anything you service.', 'Agregue unidades de aire, calentadores, ascensores, bombas de piscina, todo lo que da servicio.')}
             action={isMgr && <Btn variant="primary" size="md" onClick={openAdd}>＋ {tr(lang, 'Add your first asset', 'Agregar su primer activo')}</Btn>}
           />
         )}

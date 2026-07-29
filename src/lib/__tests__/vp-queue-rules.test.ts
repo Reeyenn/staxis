@@ -998,7 +998,7 @@ describe('the portfolio morning brief', () => {
     }))!;
     const highlight = brief.lines.find((l) => l.findingId === 'top');
     assert.ok(highlight);
-    assert.match(highlight!.text, /^Beaumont — /);
+    assert.match(highlight!.text, /^Beaumont: /);
     assert.match(highlight!.text, /\$1,800–\$2,600/);
     assert.doesNotMatch(highlight!.text, /\$2,200/, 'a midpoint was rendered as if it were a price');
   });

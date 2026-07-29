@@ -103,7 +103,7 @@ export const preventiveDueDays: ExamDay[] = [
         price: 'none',
         priceBasisMatches: /no dollar figure: what this hotel has paid to fix things that broke/,
         summaryMatches:
-          /^Water heater flush \(Building\) is 30 days past due — last done 210 days ago, and this hotel does it every 180 days\.$/,
+          /^Water heater flush \(Building\) is 30 days past due\. Last done 210 days ago\. This hotel does it every 180 days\.$/,
       },
     ],
     silent: [],
@@ -194,7 +194,7 @@ export const preventiveDueDays: ExamDay[] = [
         // The sentence itself is the assertion: it names the missing date, and
         // the regex would fail the moment "past due" or "overdue" appeared.
         summaryMatches:
-          /^Generator load test \(Building\) is on this hotel's upkeep schedule — every 90 days — but has never been marked done, so Staxis cannot tell when it is next due\. Record when it was last done and it starts counting\.$/,
+          /^Generator load test \(Building\) is on this hotel's upkeep schedule, every 90 days, but has never been marked done, so Staxis cannot tell when it is next due\. Record when it was last done and it starts counting\.$/,
       },
       {
         detectorId: 'preventive_due',
@@ -295,7 +295,7 @@ export const preventiveDueDays: ExamDay[] = [
         target: { kind: 'preventive_task', value: PM(6, 1) },
         action: { kind: 'create_work_order' },
         price: 'none',
-        summaryMatches: /is due today — last done 180 days ago, and this hotel does it every 180 days\.$/,
+        summaryMatches: /is due today\. Last done 180 days ago\. This hotel does it every 180 days\.$/,
       },
     ],
     silent: [],
@@ -335,7 +335,7 @@ export const preventiveDueDays: ExamDay[] = [
         action: 'none',
         price: 'none',
         summaryMatches:
-          /^Fire extinguisher check \(Building\) still has not been done — 35 days past due\. Somebody was called about it 8 days ago\.$/,
+          /^Fire extinguisher check \(Building\) still has not been done, 35 days past due\. Somebody was called about it 8 days ago\.$/,
       },
     ],
     silent: [],

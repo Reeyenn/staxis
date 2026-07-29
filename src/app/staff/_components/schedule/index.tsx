@@ -151,8 +151,8 @@ export function ScheduleView({ staff, lang, data, propertyName, onOpenPeople }: 
       const cap = capMinById.get(staffId) ?? DEFAULT_WEEKLY_CAP * 60;
       if (min > cap) {
         m.set(staffId, es
-          ? `${fmtHours(min)} esta semana — supera el límite de ${fmtHours(cap)}`
-          : `${fmtHours(min)} this week — over the ${fmtHours(cap)} cap`);
+          ? `${fmtHours(min)} esta semana, supera el límite de ${fmtHours(cap)}`
+          : `${fmtHours(min)} this week, over the ${fmtHours(cap)} cap`);
       }
     }
     return m;
@@ -204,8 +204,8 @@ export function ScheduleView({ staff, lang, data, propertyName, onOpenPeople }: 
         return;
       }
       flash(es
-        ? `No se pudo guardar — ${e instanceof Error ? e.message : 'intenta de nuevo'}`
-        : `Couldn’t save — ${e instanceof Error ? e.message : 'try again'}`);
+        ? `No se pudo guardar. ${e instanceof Error ? e.message : 'Intenta de nuevo'}`
+        : `Couldn’t save. ${e instanceof Error ? e.message : 'Try again'}`);
     });
   }, [flash, es]);
 
@@ -316,8 +316,8 @@ export function ScheduleView({ staff, lang, data, propertyName, onOpenPeople }: 
     data.pushUndo([selDate]);
     reportSave(data.applyDays([{ date: selDate, shifts }], !reducedMotion));
     flash(es
-      ? `Se copió ${dayPhrase(srcInfo)} — ${shifts.length} turnos`
-      : `Copied ${dayPhrase(srcInfo)} — ${shifts.length} ${shifts.length === 1 ? 'shift' : 'shifts'}`);
+      ? `Se copió ${dayPhrase(srcInfo)}, ${shifts.length} turnos`
+      : `Copied ${dayPhrase(srcInfo)}, ${shifts.length} ${shifts.length === 1 ? 'shift' : 'shifts'}`);
     setFillOpen(false);
   };
 
@@ -338,11 +338,11 @@ export function ScheduleView({ staff, lang, data, propertyName, onOpenPeople }: 
     setWeekAnim(Date.now());
     flash(targets.length > 1
       ? (es
-        ? `Se llenaron ${targets.length} semanas desde ${srcWeek.label} — ${total} turnos`
-        : `Filled ${targets.length} weeks from ${srcWeek.label} — ${total} ${total === 1 ? 'shift' : 'shifts'}`)
+        ? `Se llenaron ${targets.length} semanas desde ${srcWeek.label}, ${total} turnos`
+        : `Filled ${targets.length} weeks from ${srcWeek.label}, ${total} ${total === 1 ? 'shift' : 'shifts'}`)
       : (es
-        ? `Se llenó ${selWeek.label} desde ${srcWeek.label} — ${total} turnos`
-        : `Filled ${selWeek.label} from ${srcWeek.label} — ${total} ${total === 1 ? 'shift' : 'shifts'}`));
+        ? `Se llenó ${selWeek.label} desde ${srcWeek.label}, ${total} turnos`
+        : `Filled ${selWeek.label} from ${srcWeek.label}, ${total} ${total === 1 ? 'shift' : 'shifts'}`));
     setFillOpen(false);
   };
 
@@ -369,13 +369,13 @@ export function ScheduleView({ staff, lang, data, propertyName, onOpenPeople }: 
       if ('date' in target) {
         const payload = toPayload(data.getDay(target.date));
         await data.saveTemplate('day', name, payload);
-        flash(es ? `Se guardó “${name}” — ${payload.length} turnos` : `Saved “${name}” — ${payload.length} ${payload.length === 1 ? 'shift' : 'shifts'}`);
+        flash(es ? `Se guardó “${name}”, ${payload.length} turnos` : `Saved “${name}”, ${payload.length} ${payload.length === 1 ? 'shift' : 'shifts'}`);
       } else {
         const week = weekByStart.get(target.weekStart);
         if (!week) return;
         const payload = week.days.map(d => toPayload(data.getDay(d.date)));
         await data.saveTemplate('week', name, payload);
-        flash(es ? `Se guardó “${name}” — semana completa` : `Saved “${name}” — whole week`);
+        flash(es ? `Se guardó “${name}”, semana completa` : `Saved “${name}”, whole week`);
       }
     };
     run().catch(e => flash(e instanceof Error ? e.message : (es ? 'No se pudo guardar la plantilla' : 'Couldn’t save the template')));
@@ -874,7 +874,7 @@ function printableWeekHtml({
   }
   const counts = week.days.map((d, i) => `<td>${dayLists[i].length}</td>`).join('');
 
-  const title = `${propertyName ? esc(propertyName) + ' — ' : ''}${es ? 'Semana' : 'Week'} ${esc(week.label)}`;
+  const title = `${propertyName ? esc(propertyName) + ', ' : ''}${es ? 'Semana' : 'Week'} ${esc(week.label)}`;
   return `<!doctype html><html><head><meta charset="utf-8"><title>${title}</title>
 <style>
   body { font-family: -apple-system, 'Helvetica Neue', Arial, sans-serif; color: #1F231C; margin: 28px; }

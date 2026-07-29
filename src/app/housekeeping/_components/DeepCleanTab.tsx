@@ -330,8 +330,8 @@ export function DeepCleanTab() {
     // targetPerWeek with defaults the manager never saw.
     if (configError) {
       flashToast(
-        es ? 'No se pudo cargar la configuración actual — recarga antes de guardar'
-           : 'Couldn’t load current settings — reload before saving',
+        es ? 'No se pudo cargar la configuración actual. Recarga antes de guardar'
+           : 'Couldn’t load current settings. Reload before saving',
         'error',
       );
       return;
@@ -452,7 +452,7 @@ export function DeepCleanTab() {
               fontFamily: FONT_SANS, fontSize: 13, color: T.ink2,
               padding: '22px 6px', margin: 0,
             }}>
-              {es ? 'Nada vencido — buen trabajo.' : 'Nothing overdue — nice work.'}
+              {es ? 'Nada vencido. Buen trabajo.' : 'Nothing overdue. Nice work.'}
             </p>
           )}
 

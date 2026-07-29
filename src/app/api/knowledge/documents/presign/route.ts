@@ -12,7 +12,7 @@ import { validateString } from '@/lib/api-validate';
 import { checkAndIncrementRateLimit, rateLimitedResponse, hashToRateLimitKey } from '@/lib/api-ratelimit';
 import { capabilityDecisionForUserId } from '@/lib/capabilities/server';
 import { capabilityUnavailableResponse } from '@/lib/capabilities/api-gate';
-import { commsContext } from '@/lib/comms/route-helpers';
+import { commsContext, KNOWLEDGE_CTX } from '@/lib/comms/route-helpers';
 import { presignDocument } from '@/lib/knowledge/core';
 import { KNOWLEDGE_LIMITS } from '@/lib/knowledge/types';
 
@@ -23,7 +23,7 @@ export async function POST(req: NextRequest): Promise<Response> {
   let raw: { pid?: string; filename?: unknown };
   try { raw = await req.json(); } catch { raw = {}; }
 
-  const ctx = await commsContext(req, raw.pid ?? null);
+  const ctx = await commsContext(req, raw.pid ?? null, KNOWLEDGE_CTX);
   if (!ctx.ok) return ctx.response;
   const capabilityDecision = await capabilityDecisionForUserId(ctx.userId, 'manage_knowledge', ctx.pid);
   if (capabilityDecision === 'unavailable') return capabilityUnavailableResponse(ctx.requestId);

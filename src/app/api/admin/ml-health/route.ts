@@ -167,7 +167,7 @@ export async function GET(req: NextRequest) {
       predictionCountToday: inventoryStats.predictionCountToday,
       note: inventoryStats.lastPredictionAt
         ? null
-        : 'No inventory predictions yet — runs after the first inventory count.',
+        : 'No inventory predictions yet. Runs after the first inventory count.',
     },
     {
       layer: 'demand',
@@ -175,7 +175,7 @@ export async function GET(req: NextRequest) {
       lastPredictionAt: demandStats.lastPredictionAt,
       predictionCountToday: demandStats.predictionCountToday,
       note: !demandModel
-        ? 'No active model — training cron has not run yet for this property.'
+        ? 'No active model. Training cron has not run yet for this property.'
         : null,
     },
     {
@@ -184,7 +184,7 @@ export async function GET(req: NextRequest) {
       lastPredictionAt: supplyStats.lastPredictionAt,
       predictionCountToday: supplyStats.predictionCountToday,
       note: !supplyModel
-        ? 'No active model — training cron has not run yet for this property.'
+        ? 'No active model. Training cron has not run yet for this property.'
         : null,
     },
     {

@@ -156,7 +156,7 @@ const S = {
   },
   unavailableTitle: { en: 'Staxis could not open that hotel', es: 'Staxis no pudo abrir ese hotel' },
   unavailableBody: {
-    en: 'The check on which hotels you cover did not answer. This is not "you do not have access" — try again in a moment.',
+    en: 'The check on which hotels you cover did not answer. This is not "you do not have access". Try again in a moment.',
     es: 'La comprobación de tus hoteles no respondió. Esto no significa "no tienes acceso": inténtalo de nuevo en un momento.',
   },
   // Said to somebody whose job is to READ the portfolio — a company's finance

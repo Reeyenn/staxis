@@ -128,7 +128,7 @@ export async function POST(req: NextRequest) {
     .from('schedule_templates').select('id', { count: 'exact', head: true })
     .eq('property_id', auth.hotelId);
   if ((count ?? 0) >= MAX_TEMPLATES) {
-    return err('Template limit reached — delete one first', { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
+    return err('Template limit reached. Delete one first', { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
   }
 
   const { data, error } = await supabaseAdmin

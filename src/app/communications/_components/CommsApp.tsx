@@ -1,9 +1,9 @@
 'use client';
 // ═══════════════════════════════════════════════════════════════════════════
 // Communications · Slack-Classic redesign — root.
-// Sidebar (channels / DMs / announcements + To-do / Knowledge / Log book /
-// Contacts nav) · message pane · on-demand Thread/Pinned/Members panels ·
-// Search palette. All data via /api/comms/*. NO SMS.
+// Sidebar (channels / DMs / announcements + To-do / Log book nav) · message
+// pane · on-demand Thread/Pinned/Members panels · Search palette. All data via
+// /api/comms/*. NO SMS.
 //
 // Retired 2026-07-27: the "Catch up" popover, and the "Threads" nav view (the
 // aggregated list of every live thread). Threaded replies themselves are
@@ -11,9 +11,17 @@
 // and POST /api/comms/send with parentMessageId all still run the in-
 // conversation reply drawer. Calendar also lost its nav item the same day: it
 // is now a view inside To-do (see TodoMode).
+//
+// Retired 2026-07-28: the "Knowledge" and "Contacts" nav views. Both moved to
+// the Knows tab's told half (/feed → Knows → "What you've told it"), which is
+// where human-asserted knowledge now lives alongside what the copilot worked
+// out on its own. The /api/knowledge/* routes are unchanged and still serve
+// both — see KNOWLEDGE_CTX in lib/comms/route-helpers.ts for why they no
+// longer gate on this section. ?view=knowledge and ?view=contacts redirect
+// rather than falling through, so old links land on the real thing.
 // ═══════════════════════════════════════════════════════════════════════════
 import React from 'react';
-import { Search, ListTodo, BookOpen, Notebook, Phone, Megaphone, Plus, ChevronLeft, AlertCircle, Loader2, RefreshCw, X } from 'lucide-react';
+import { Search, ListTodo, Notebook, Megaphone, Plus, ChevronLeft, AlertCircle, Loader2, RefreshCw, X } from 'lucide-react';
 import { useProperty } from '@/contexts/PropertyContext';
 import { useLang } from '@/contexts/LanguageContext';
 import { apiGet, apiPost } from '@/lib/comms/client';
@@ -24,9 +32,7 @@ import type { BootstrapData, ViewMode, TodoView, RightPanel, L as LType } from '
 import { T, SANS, MONO, deptColorDark, Avatar, Presence } from './comms-ui';
 import { MessagePane, ThreadPanel, PinnedPanel, MembersPanel } from './MessagePane';
 import { SearchPalette, NewMessageModal, TodoMode } from './CommsOverlays';
-import { KnowledgePane } from './KnowledgePane';
 import { LogbookMode } from './LogbookPane';
-import { ContactsMode } from './ContactsPane';
 
 /**
  * Coalesce concurrent attempts to run the same read into one request. The
@@ -148,7 +154,13 @@ function CommsPropertyApp({ pid }: { pid: string | null }) {
         setMode('todo');
         setTodoView('calendar');
         setMobileDetail(true);
-      } else if (v === 'logbook' || v === 'todo' || v === 'knowledge' || v === 'contacts') {
+      } else if (v === 'knowledge' || v === 'contacts') {
+        // Both moved to the Knows tab's told half. Redirect rather than fall
+        // through: falling through lands on Messages with no explanation, which
+        // reads as a broken link. An old bookmark or a link in someone's notes
+        // should still arrive at the thing it was pointing at.
+        window.location.replace('/feed?tab=knows');
+      } else if (v === 'logbook' || v === 'todo') {
         setMode(v);
         setMobileDetail(true);
       }
@@ -367,9 +379,7 @@ function CommsPropertyApp({ pid }: { pid: string | null }) {
 
         <div style={{ flex: 1, overflowY: 'auto', paddingTop: 4, paddingBottom: 14 }}>
           <NavItem icon={<ListTodo size={17} />} label={L('To-do', 'Tareas')} active={mode === 'todo'} onClick={() => switchMode('todo')} badge={openItems || undefined} />
-          <NavItem icon={<BookOpen size={17} />} label={L('Knowledge', 'Conocimiento')} active={mode === 'knowledge'} onClick={() => switchMode('knowledge')} />
           <NavItem icon={<Notebook size={17} />} label={L('Log book', 'Bitácora')} active={mode === 'logbook'} onClick={() => switchMode('logbook')} />
-          <NavItem icon={<Phone size={17} />} label={L('Contacts', 'Contactos')} active={mode === 'contacts'} onClick={() => switchMode('contacts')} />
 
           <SidebarSection label={L('Announcements', 'Anuncios')} onAdd={() => setSearchOpen(true)} tip={L('Post an announcement', 'Publicar un anuncio')} />
           {announce.map((c) => <ConvoRow key={c.id} c={c} active={mode === 'chats' && c.id === selId} online={online} onClick={() => selectConversation(c.id)} L={L} />)}
@@ -404,9 +414,7 @@ function CommsPropertyApp({ pid }: { pid: string | null }) {
             </>
           )}
           {mode === 'todo' && <TodoMode pid={pid} items={worklist} staff={boot.staff ?? []} isManager={!!boot.me.isManager} view={todoView} onViewChange={setTodoView} L={L} reload={loadWorklist} loading={worklistLoading} error={worklistError} />}
-          {mode === 'knowledge' && <div style={{ flex: 1, overflowY: 'auto' }}><KnowledgePane pid={pid} isManager={!!boot.me.isManager} L={L} /></div>}
           {mode === 'logbook' && <LogbookMode key={pid} pid={pid} meName={boot.me.displayName ?? L('You', 'Tú')} L={L} />}
-          {mode === 'contacts' && <ContactsMode key={pid} pid={pid} isManager={!!boot.me.isManager} L={L} />}
         </div>
       </div>
 

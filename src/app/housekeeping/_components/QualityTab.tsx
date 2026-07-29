@@ -458,8 +458,8 @@ export function QualityTab() {
         return;
       }
       setToast(result === 'pass'
-        ? tr(lang, 'Inspection passed — room ready', 'Inspección aprobada — habitación lista')
-        : tr(lang, 'Inspection failed — re-clean requested', 'Inspección reprobada — solicitada re-limpieza'));
+        ? tr(lang, 'Inspection passed. Room ready.', 'Inspección aprobada. Habitación lista.')
+        : tr(lang, 'Inspection failed. Re-clean requested.', 'Inspección reprobada. Se pidió re-limpieza.'));
       setActive(null);
       void refreshQueue();
       void refreshStats();
@@ -532,7 +532,7 @@ export function QualityTab() {
       // recorded|approved) reflect the decision without a full re-fetch.
       setEvents((prev) => prev.map((e) => (e.id === eventId ? { ...e, status: decision } : e)));
       setToast(decision === 'approved'
-        ? tr(lang, 'Kept — counts toward averages', 'Mantenida — cuenta en los promedios')
+        ? tr(lang, 'Kept. Counts toward averages.', 'Mantenida. Cuenta en los promedios.')
         : tr(lang, 'Discarded from averages', 'Descartada de los promedios'));
     } catch (err) {
       console.error('[QualityTab] decide failed:', err);
@@ -653,8 +653,8 @@ export function QualityTab() {
                   variant="strip"
                   title={tr(lang, 'Still learning your PMS.', 'Aún aprendiendo tu PMS.')}
                   text={tr(lang,
-                    'Rooms cleaned in the PMS may not appear here yet — the queue reflects in-app activity only.',
-                    'Las habitaciones limpiadas en el PMS pueden no aparecer aquí todavía — la cola refleja solo actividad en la app.')}
+                    'Rooms cleaned in the PMS may not appear here yet. The queue reflects in-app activity only.',
+                    'Las habitaciones limpiadas en el PMS pueden no aparecer aquí todavía. La cola refleja solo actividad en la app.')}
                 />
               </div>
             )}
@@ -682,7 +682,7 @@ export function QualityTab() {
                 border: `1px solid ${T.ruleSoft}`, borderRadius: 12,
               }}>
                 {queue.length === 0
-                  ? tr(lang, 'Queue clear — every room inspected.', 'Cola despejada — todas inspeccionadas.')
+                  ? tr(lang, 'Queue clear. Every room inspected.', 'Cola despejada. Todas inspeccionadas.')
                   : tr(lang, 'No rooms in this filter.', 'No hay habitaciones en este filtro.')}
               </div>
             ) : (
@@ -1195,7 +1195,7 @@ function InspectDrawer({
           )}
           {allDecided && !anyFail && (
             <Btn variant="sage" size="lg" onClick={() => onSubmit('pass')} disabled={submitting}>
-              {submitting ? tr(lang, 'Saving…', 'Guardando…') : tr(lang, '✓ Pass — room ready', '✓ Aprobar — lista')}
+              {submitting ? tr(lang, 'Saving…', 'Guardando…') : tr(lang, '✓ Pass, room ready', '✓ Aprobar, lista')}
             </Btn>
           )}
           {allDecided && anyFail && (

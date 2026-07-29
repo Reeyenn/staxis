@@ -134,7 +134,11 @@ export class VisionImageInvalidError extends Error {
 // 5MB raw is Anthropic's documented per-image hard limit; we enforce a
 // slightly tighter 5MB to leave headroom for SDK encoding overhead. Modern
 // phone cameras produce 2-4MB JPEGs, so 5MB covers legitimate hotel use.
-const VISION_MAX_DECODED_BYTES = 5 * 1024 * 1024;
+// Exported: a caller that already holds the bytes (knowledge-hub OCR reads them
+// from storage, not from a request body) can check the ceiling BEFORE base64ing
+// a file it knows will be rejected, and can tell the user the actual limit.
+// Duplicating the number in the caller is how two limits drift apart.
+export const VISION_MAX_DECODED_BYTES = 5 * 1024 * 1024;
 const VISION_MIN_DECODED_BYTES = 256;
 
 const MAGIC_BYTES: Record<VisionMediaType, (bytes: Uint8Array) => boolean> = {
@@ -214,7 +218,8 @@ function validateImage(image: VisionImage): void {
 // ~5.3MB on the wire — right at the edge. Keeping the decoded ceiling at 4MB
 // leaves a little headroom before Vercel rejects the request outright. A real
 // multi-page supplier invoice PDF is well under this.
-const VISION_PDF_MAX_DECODED_BYTES = 4 * 1024 * 1024;
+// Exported for the same reason as VISION_MAX_DECODED_BYTES above.
+export const VISION_PDF_MAX_DECODED_BYTES = 4 * 1024 * 1024;
 const VISION_PDF_MIN_DECODED_BYTES = 256;
 
 // %PDF- — 0x25 0x50 0x44 0x46 0x2D. Every conforming PDF begins with this

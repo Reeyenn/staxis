@@ -58,7 +58,7 @@ export function DragToCaptureView({
   const label =
     picked?.kind === 'column' ? `column: ${picked.column.header || `#${picked.column.index}`}`
     : picked?.kind === 'value' ? `value: ${picked.value.text}`
-    : picked?.kind === 'unknown' ? "couldn't tell what's there — drag over a column of the table, or a labeled value (e.g. a count or a date), then try again"
+    : picked?.kind === 'unknown' ? "couldn't tell what's there. Drag over a column of the table, or a labeled value (e.g. a count or a date), then try again"
     : null;
 
   return (

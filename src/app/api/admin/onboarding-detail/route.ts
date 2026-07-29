@@ -56,7 +56,7 @@ function translatePausedReason(raw: string, mapperInFlight: boolean): string | n
     // Expected state, not an error: the robot can't read this PMS until the
     // learning run finishes. The panel already shows the learning card.
     if (mapperInFlight) return null;
-    return 'The robot doesn’t know this PMS yet — a learning run is queued and starts shortly.';
+    return 'The robot doesn’t know this PMS yet. A learning run is queued and starts shortly.';
   }
   if (/exceeded .* restarts/i.test(raw)) {
     return 'The robot kept crashing and paused itself to be safe. Restart it once the cause is fixed.';
@@ -157,9 +157,9 @@ export async function GET(req: NextRequest) {
   if (session?.paused_reason) {
     lastHiccup = translatePausedReason(session.paused_reason, mapperInFlight);
   } else if (snapshot?.has_error) {
-    lastHiccup = 'Live counts hit a bad read — kept the last good numbers instead of overwriting.';
+    lastHiccup = 'Live counts hit a bad read. Kept the last good numbers instead of overwriting.';
   } else if ((session?.read_failure_streak ?? 0) > 0) {
-    lastHiccup = `${session?.read_failure_streak} read${(session?.read_failure_streak ?? 0) === 1 ? '' : 's'} in a row failed checks — robot is retrying.`;
+    lastHiccup = `${session?.read_failure_streak} read${(session?.read_failure_streak ?? 0) === 1 ? '' : 's'} in a row failed checks. Robot is retrying.`;
   }
 
   const mapperRow = mapperQ.data?.[0] ?? null;

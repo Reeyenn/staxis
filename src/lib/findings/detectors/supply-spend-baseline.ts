@@ -82,8 +82,8 @@ export function detectSupplySpendBaseline(ctx: DetectorContext): FindingDraft[] 
       // same card rather than stacking a second one beside it.
       key: 'weekly_supply_spend',
       summary:
-        `Supply spending ran ${formatCents(current)} in the week ending ${split.current.endDate} — ` +
-        `your last ${BASELINE_WEEKS} weeks ran ${formatCentsBand(normalBand)}.`,
+        `Supply spending ran ${formatCents(current)} in the week ending ${split.current.endDate}. ` +
+        `Your last ${BASELINE_WEEKS} weeks ran ${formatCentsBand(normalBand)}.`,
       severity: 'attention',
       magnitude: Math.round(excess),
       evidence: {
@@ -108,7 +108,7 @@ export function detectSupplySpendBaseline(ctx: DetectorContext): FindingDraft[] 
         },
         basis:
           `the 7 days ending ${split.current.endDate} against the ${BASELINE_WEEKS} weeks ` +
-          'before it — every window an identical mix of weekdays',
+          'before it. Every window an identical mix of weekdays',
       },
       price: pricing.price,
     },

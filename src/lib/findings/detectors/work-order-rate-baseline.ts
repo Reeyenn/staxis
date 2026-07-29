@@ -95,7 +95,7 @@ export function detectWorkOrderRateBaseline(ctx: DetectorContext): FindingDraft[
       key: 'weekly_work_order_rate',
       summary:
         `${plural(Math.round(current), 'work order')} opened in the week ending ` +
-        `${split.current.endDate} — your last ${BASELINE_WEEKS} weeks averaged about ` +
+        `${split.current.endDate}. Your last ${BASELINE_WEEKS} weeks averaged about ` +
         `${Math.round(baseline.median)} a week.`,
       severity: 'attention',
       magnitude: Math.round(extra),
@@ -121,7 +121,7 @@ export function detectWorkOrderRateBaseline(ctx: DetectorContext): FindingDraft[
         },
         basis:
           `work orders created in the 7 days ending ${split.current.endDate}, against the ` +
-          `${BASELINE_WEEKS} weeks before it — every window an identical mix of weekdays`,
+          `${BASELINE_WEEKS} weeks before it. Every window an identical mix of weekdays`,
       },
       price: pricing.price,
     },

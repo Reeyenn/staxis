@@ -152,7 +152,7 @@ function draftFor(
   const pricing = priceFromBand(
     quoted ? { low: quoted.band.low * asset.total, high: quoted.band.high * asset.total } : null,
     quoted
-      ? `${plural(asset.total, 'work order')} at ${formatCentsBand(quoted.band)} each — the range ` +
+      ? `${plural(asset.total, 'work order')} at ${formatCentsBand(quoted.band)} each, the range ` +
         `of the ${plural(quoted.samples, 'repair cost')} this hotel has recorded ${quoted.whose}`
       : '',
     history.hotelRepairCostCentsSamples.length < MIN_COST_SAMPLES
@@ -174,8 +174,8 @@ function draftFor(
     key: `equipment:${asset.id}`,
     summary:
       `${describe(asset)} has had ${plural(asset.total, 'work order')} in the last ` +
-      `${windowDays} days — ${
-        asset.stillOpen === 0 ? 'all of them closed' : `${asset.stillOpen} still open`
+      `${windowDays} days. ${
+        asset.stillOpen === 0 ? 'All of them closed' : `${asset.stillOpen} still open`
       }.`,
     severity: asset.total >= MIN_WORK_ORDERS * 2 ? 'critical' : 'attention',
     magnitude: asset.total,

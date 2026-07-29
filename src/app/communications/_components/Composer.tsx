@@ -84,7 +84,7 @@ export function Composer({ pid, me, conversation: c, L, onReloadThread, onReload
         );
         if (!r.ok) {
           setError(r.status === 429
-            ? L('Too many posts right now — wait a minute and try again.', 'Demasiadas publicaciones — espera un minuto e inténtalo de nuevo.')
+            ? L('Too many posts right now. Wait a minute and try again.', 'Demasiadas publicaciones. Espera un minuto e inténtalo de nuevo.')
             : L('Could not post the announcement. Please try again.', 'No se pudo publicar el anuncio. Inténtalo de nuevo.'));
           return;
         }
@@ -187,8 +187,8 @@ export function Composer({ pid, me, conversation: c, L, onReloadThread, onReload
       {canPostAnnouncement && (
         <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 14, marginBottom: 10 }}>
           <Tip width={252} text={L(
-            'Everyone has to tap “I read & understand.” It stays marked unread for them until they do — and you’ll see exactly who has and hasn’t.',
-            'Todos deben tocar “Leí y entiendo”. Sigue como no leído hasta que lo hagan — y verás exactamente quién lo leyó y quién no.')}>
+            'Everyone has to tap “I read & understand.” It stays marked unread for them until they do, and you’ll see exactly who has and hasn’t.',
+            'Todos deben tocar “Leí y entiendo”. Sigue como no leído hasta que lo hagan, y verás exactamente quién lo leyó y quién no.')}>
             <label style={{ display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer', fontSize: 12.5, fontWeight: (requireAck || orgWide) ? 700 : 500, color: (requireAck || orgWide) ? deptColorDark(T.forest) : T.dim, fontFamily: SANS }}>
               <input type="checkbox" checked={requireAck || orgWide} disabled={orgWide} onChange={(e) => setRequireAck(e.target.checked)} style={{ accentColor: T.forestDeep }} />
               <ShieldCheck size={14} /> {L('Require acknowledgement', 'Requerir confirmación')}

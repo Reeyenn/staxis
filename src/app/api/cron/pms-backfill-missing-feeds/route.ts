@@ -43,6 +43,7 @@ import { getOrMintRequestId, log } from '@/lib/log';
 import { errToString } from '@/lib/utils';
 import { writeCronHeartbeat } from '@/lib/cron-heartbeat';
 import { presenceFeedGaps, type FeedGaps } from '@/lib/pms/feed-status';
+import { CUA_DECOMMISSIONED, CUA_DECOMMISSION_REASON } from '@/lib/pms/decommission';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -93,6 +94,31 @@ async function run(req: NextRequest) {
   const requestId = getOrMintRequestId(req);
   const authFail = requireCronSecret(req);
   if (authFail) return authFail;
+
+  // Robot off ⇒ enqueue nothing. This route is already unscheduled (2026-07-19
+  // trim), but it stays reachable by a stray curl carrying CRON_SECRET, and its
+  // idempotency key is DATE-stamped (`mapper.backfill:<family>:<today>`) rather
+  // than time-salted — so one stray call burns that family's only backfill slot
+  // for the rest of the UTC day on a job nobody would ever run.
+  //
+  // Shaped like /api/cron/enqueue-property-pulls (ok:true, not an error) on
+  // purpose: this is a cron, and a manual workflow_dispatch greps the body for
+  // "ok":true. A red run would send someone investigating a thing we chose to
+  // switch off. The admin BUTTONS take the opposite shape — see
+  // robotDecommissionedResponse.
+  if (CUA_DECOMMISSIONED) {
+    log.info('[cron/pms-backfill-missing-feeds] skipped — robot decommissioned', { requestId });
+    await writeCronHeartbeat('pms-backfill-missing-feeds', {
+      requestId,
+      notes: { decommissioned: true, enqueued: 0 },
+    });
+    return ok({
+      decommissioned: true,
+      reason: CUA_DECOMMISSION_REASON,
+      enqueued: 0,
+      results: [],
+    }, { requestId });
+  }
 
   const results: Array<{ family: string; action: string; detail?: string }> = [];
   let enqueued = 0;

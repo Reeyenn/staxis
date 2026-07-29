@@ -82,15 +82,15 @@ const COPY = {
     lastChanged: (t: string) => `last changed ${t}`,
     unknown: 'update time unknown',
     detailFresh: (t: string, z: string, age: string) =>
-      `From your PMS as of ${t} (${z}) — ${age}.`,
+      `From your PMS as of ${t} (${z}), ${age}.`,
     detailStale: (t: string, z: string, age: string) =>
-      `From your PMS as of ${t} (${z}) — ${age}. That is older than one report cycle, so this number describes ${t}, not right now.`,
+      `From your PMS as of ${t} (${z}), ${age}. That is older than one report cycle, so this number describes ${t}, not right now.`,
     detailVeryStale: (t: string, z: string, age: string, hours: number) =>
-      `From your PMS as of ${t} (${z}) — ${age}. No report has arrived in over ${hours} hours, so the connection looks stuck. This number is the last one that landed.`,
+      `From your PMS as of ${t} (${z}), ${age}. No report has arrived in over ${hours} hours, so the connection looks stuck. This number is the last one that landed.`,
     detailChangeOnly: (t: string, z: string, age: string) =>
-      `This number last changed at ${t} (${z}) — ${age}. Your PMS connection does not report when it last checked, so it may be newer than that.`,
+      `This number last changed at ${t} (${z}), ${age}. Your PMS connection does not report when it last checked, so it may be newer than that.`,
     detailUnknown:
-      'Staxis cannot tell how old this number is — this hotel’s PMS feed carries no capture time.',
+      'Staxis cannot tell how old this number is. This hotel’s PMS feed carries no capture time.',
   },
   es: {
     asOf: (t: string) => `a las ${t}`,
@@ -98,15 +98,15 @@ const COPY = {
     lastChanged: (t: string) => `último cambio a las ${t}`,
     unknown: 'hora de actualización desconocida',
     detailFresh: (t: string, z: string, age: string) =>
-      `De tu PMS, a las ${t} (${z}) — ${age}.`,
+      `De tu PMS, a las ${t} (${z}), ${age}.`,
     detailStale: (t: string, z: string, age: string) =>
-      `De tu PMS, a las ${t} (${z}) — ${age}. Es más de un ciclo de reportes, así que este número describe las ${t}, no este momento.`,
+      `De tu PMS, a las ${t} (${z}), ${age}. Es más de un ciclo de reportes, así que este número describe las ${t}, no este momento.`,
     detailVeryStale: (t: string, z: string, age: string, hours: number) =>
-      `De tu PMS, a las ${t} (${z}) — ${age}. No llega ningún reporte desde hace más de ${hours} horas, así que la conexión parece atascada. Este es el último número que llegó.`,
+      `De tu PMS, a las ${t} (${z}), ${age}. No llega ningún reporte desde hace más de ${hours} horas, así que la conexión parece atascada. Este es el último número que llegó.`,
     detailChangeOnly: (t: string, z: string, age: string) =>
-      `Este número cambió por última vez a las ${t} (${z}) — ${age}. Tu conexión al PMS no informa cuándo revisó por última vez, así que podría ser más reciente.`,
+      `Este número cambió por última vez a las ${t} (${z}), ${age}. Tu conexión al PMS no informa cuándo revisó por última vez, así que podría ser más reciente.`,
     detailUnknown:
-      'Staxis no puede saber qué tan antiguo es este número — el PMS de este hotel no envía la hora de captura.',
+      'Staxis no puede saber qué tan antiguo es este número. El PMS de este hotel no envía la hora de captura.',
   },
 } as const;
 

@@ -44,6 +44,16 @@ export interface SendEmailParams {
   tags?: Array<{ name: string; value: string }>;
   // Optional from override — defaults to noreply@getstaxis.com.
   from?: string;
+  // Optional Reply-To. Added 2026-07-28 for the inventory purchase order,
+  // which is the first mail Staxis sends to a THIRD PARTY (a vendor) on a
+  // hotel's behalf rather than to the hotel's own people. Without it the
+  // vendor's reply lands on noreply@getstaxis.com and is lost — the hotel
+  // would never see the "we're out of stock until Tuesday" answer.
+  //
+  // Validated like `to`: an address that fails isValidEmail is DROPPED rather
+  // than sent, because a malformed Reply-To makes some providers reject the
+  // whole message, and losing the send is worse than losing the reply path.
+  replyTo?: string;
   // Optional Resend `Idempotency-Key` header. Resend dedupes within a
   // 24h window when the same key reappears (audit/concurrency #6).
   // Callers that can construct a stable key (e.g. `invite:${inviteId}`)
@@ -169,6 +179,13 @@ export async function sendTransactionalEmail(
     return result;
   }
 
+  // A Reply-To we cannot vouch for is omitted, not passed through: Resend
+  // rejects the whole send on a malformed address, and a delivered order with
+  // no reply path beats an order that never left.
+  const replyTo = params.replyTo && isValidEmail(params.replyTo.trim())
+    ? params.replyTo.trim()
+    : undefined;
+
   const body = {
     from: params.from ?? DEFAULT_FROM,
     to: [params.to],
@@ -176,6 +193,7 @@ export async function sendTransactionalEmail(
     html: params.html,
     text: params.text,
     tags: params.tags,
+    ...(replyTo ? { reply_to: [replyTo] } : {}),
   };
 
   const idempotencyKey = params.idempotencyKey ?? deriveIdempotencyKey(params);

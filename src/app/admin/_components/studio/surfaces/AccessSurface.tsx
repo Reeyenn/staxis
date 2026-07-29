@@ -141,7 +141,7 @@ export function AccessSurface() {
       setSavedKey(key);
       setTimeout(() => setSavedKey((k) => (k === key ? null : k)), 1200);
     } catch (e) {
-      setError(`Couldn't save — ${(e as Error).message}`);
+      setError(`Couldn't save. ${(e as Error).message}`);
       await loadMatrix(pid); // revert to server truth
     } finally {
       setSavingKey((k) => (k === key ? null : k));
@@ -164,7 +164,7 @@ export function AccessSurface() {
       setApplyNote(es ? `Aplicado a ${json.data.hotelsUpdated} hotel(es).` : `Applied to ${json.data.hotelsUpdated} hotel(s).`);
       setTimeout(() => setApplyNote(null), 4000);
     } catch (e) {
-      setError(`Couldn't apply — ${(e as Error).message}`);
+      setError(`Couldn't apply. ${(e as Error).message}`);
     } finally {
       setApplying(false);
     }
@@ -293,7 +293,7 @@ function CapRow({
         <CapLabel label={label} desc={desc} />
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '0 16px', color: 'rgba(255,255,255,.45)', fontSize: 12 }}>
           <Lock size={13} />
-          {es ? 'Solo administrador — siempre tú' : 'Admin only — always you'}
+          {es ? 'Solo administrador. Siempre tú' : 'Admin only. Always you'}
         </div>
       </div>
     );
@@ -321,12 +321,12 @@ function CapRow({
               onClick={() => onToggle(cap.key, role, restricted /* next = allow if currently restricted */)}
               title={
                 floorLocked
-                  ? (es ? 'Solo gerentes — no se puede otorgar al personal' : 'Managers only — can’t be granted to line staff')
+                  ? (es ? 'Solo gerentes. No se puede otorgar al personal' : 'Managers only. Can’t be granted to line staff')
                   : !cap.live
                     ? (es ? 'Predeterminado para gerentes' : 'Manager default')
                     : allowed
-                      ? (es ? 'Permitido — clic para restringir' : 'Allowed — click to restrict')
-                      : (es ? 'Restringido — clic para permitir' : 'Restricted — click to allow')
+                      ? (es ? 'Permitido. Clic para restringir' : 'Allowed. Click to restrict')
+                      : (es ? 'Restringido. Clic para permitir' : 'Restricted. Click to allow')
               }
             />
           </div>

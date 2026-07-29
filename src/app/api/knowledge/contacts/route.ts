@@ -20,7 +20,7 @@ import { ok, err, ApiErrorCode } from '@/lib/api-response';
 import { validateUuid, validateString, validateEnum, validatePhone, isValidEmail } from '@/lib/api-validate';
 import { capabilityDecisionForUserId } from '@/lib/capabilities/server';
 import { capabilityUnavailableResponse } from '@/lib/capabilities/api-gate';
-import { commsContext } from '@/lib/comms/route-helpers';
+import { commsContext, KNOWLEDGE_CTX } from '@/lib/comms/route-helpers';
 import { listContacts, createContact, updateContact, deleteContact, type ContactInput } from '@/lib/knowledge/core';
 import { KNOWLEDGE_LIMITS, CONTACT_CATEGORIES, LOCAL_CATEGORIES } from '@/lib/knowledge/types';
 
@@ -91,7 +91,7 @@ function validateContactFields(raw: Record<string, unknown>): { error?: string; 
 }
 
 export async function GET(req: NextRequest): Promise<Response> {
-  const ctx = await commsContext(req, req.nextUrl.searchParams.get('pid'));
+  const ctx = await commsContext(req, req.nextUrl.searchParams.get('pid'), KNOWLEDGE_CTX);
   if (!ctx.ok) return ctx.response;
   const contacts = await listContacts(ctx.pid);
   return ok({ contacts }, { requestId: ctx.requestId, headers: ctx.headers });
@@ -101,7 +101,7 @@ export async function POST(req: NextRequest): Promise<Response> {
   let raw: Record<string, unknown> & { pid?: string };
   try { raw = await req.json(); } catch { raw = {}; }
 
-  const ctx = await commsContext(req, raw.pid ?? null);
+  const ctx = await commsContext(req, raw.pid ?? null, KNOWLEDGE_CTX);
   if (!ctx.ok) return ctx.response;
   const capabilityDecision = await capabilityDecisionForUserId(ctx.userId, 'manage_knowledge', ctx.pid);
   if (capabilityDecision === 'unavailable') return capabilityUnavailableResponse(ctx.requestId);
@@ -119,7 +119,7 @@ export async function PATCH(req: NextRequest): Promise<Response> {
   let raw: Record<string, unknown> & { pid?: string };
   try { raw = await req.json(); } catch { raw = {}; }
 
-  const ctx = await commsContext(req, raw.pid ?? null);
+  const ctx = await commsContext(req, raw.pid ?? null, KNOWLEDGE_CTX);
   if (!ctx.ok) return ctx.response;
   const capabilityDecision = await capabilityDecisionForUserId(ctx.userId, 'manage_knowledge', ctx.pid);
   if (capabilityDecision === 'unavailable') return capabilityUnavailableResponse(ctx.requestId);
@@ -137,7 +137,7 @@ export async function PATCH(req: NextRequest): Promise<Response> {
 }
 
 export async function DELETE(req: NextRequest): Promise<Response> {
-  const ctx = await commsContext(req, req.nextUrl.searchParams.get('pid'));
+  const ctx = await commsContext(req, req.nextUrl.searchParams.get('pid'), KNOWLEDGE_CTX);
   if (!ctx.ok) return ctx.response;
   const capabilityDecision = await capabilityDecisionForUserId(ctx.userId, 'manage_knowledge', ctx.pid);
   if (capabilityDecision === 'unavailable') return capabilityUnavailableResponse(ctx.requestId);

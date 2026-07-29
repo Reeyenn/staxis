@@ -917,7 +917,7 @@ export function validateSetupSubmission(raw: unknown): SetupSubmissionResult {
   if (!isLevelOfferable(level, statusEntry)) {
     return {
       error:
-        'level 3 is not available when housekeepers already enter room status themselves — it would mean entering the same room twice',
+        'level 3 is not available when housekeepers already enter room status themselves. It would mean entering the same room twice',
     };
   }
 
@@ -1005,11 +1005,11 @@ function validateCustomRoomTypes(raw: unknown): CustomListResult<CustomRoomType>
     const key = customEntryKey(label);
     if (RESERVED_ROOM_TYPE_KEYS.includes(key)) {
       return {
-        error: `customRoomTypes cannot use "${label}" — checkout and stayover rooms already have their own times above`,
+        error: `customRoomTypes cannot use "${label}". Checkout and stayover rooms already have their own times above`,
       };
     }
     if (seen.has(key)) {
-      return { error: `customRoomTypes lists "${label}" twice — each room type needs its own name` };
+      return { error: `customRoomTypes lists "${label}" twice. Each room type needs its own name` };
     }
     seen.add(key);
     out.push({ key, value: { label, minutes: o.minutes as number } });
@@ -1044,7 +1044,7 @@ function validateCustomDuties(raw: unknown): CustomListResult<string> {
     const label = normalizeCustomLabel(entry);
     const key = customEntryKey(label);
     if (RESERVED_DUTY_KEYS.includes(key)) {
-      return { error: `customDuties cannot use "${label}" — it is already one of the choices above` };
+      return { error: `customDuties cannot use "${label}". It is already one of the choices above` };
     }
     if (seen.has(key)) {
       return { error: `customDuties lists "${label}" twice` };

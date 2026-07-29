@@ -109,7 +109,7 @@ async function authorize(
     return { ok: false, response: capabilityUnavailableResponse(requestId) };
   }
   if (capabilityDecision === 'denied') {
-    return { ok: false, response: err('forbidden — role does not have wage access', { requestId, status: 403, code: ApiErrorCode.Forbidden }) };
+    return { ok: false, response: err('forbidden: role does not have wage access', { requestId, status: 403, code: ApiErrorCode.Forbidden }) };
   }
   return { ok: true, propertyId };
 }

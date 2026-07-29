@@ -370,18 +370,30 @@ describe('AI Staff — the kill switch actually stops the Morning Briefer', () =
 
   // ── What the founder actually sees ───────────────────────────────────────
 
-  test('the roster is the whole org chart: one hired, twelve with nothing to show', async () => {
+  test('the roster is the whole org chart: the hired ones, and the rest with nothing to show', async () => {
     const { status, body } = await readRoster();
     assert.equal(status, 200, body.error ?? '');
     const employees = body.data!.employees;
     assert.ok(employees.length >= 13);
 
+    // Pinned by name, not counted: a card on this page claims real work is
+    // happening, so a new one has to be a deliberate edit here too.
     const hired = employees.filter((e) => e.hired);
-    assert.equal(hired.length, 1);
-    assert.equal(hired[0].id, MORNING_BRIEFER_ID);
+    assert.deepEqual(hired.map((e) => e.id).sort(), ['morning_briefer', 'ordering_manager']);
+    assert.ok(hired.some((e) => e.id === MORNING_BRIEFER_ID));
+
+    // The Ordering Manager bundles no billed feature — its model work happens
+    // inside a chat turn and is billed there — so its card must say "no
+    // separate bill" rather than render a confident $0.00.
+    const ordering = hired.find((e) => e.id === 'ordering_manager')!;
+    assert.ok(ordering.surfaces.length > 0, 'a hired employee must name where its work shows up');
+    assert.ok(
+      ordering.spend === null || ordering.spend.known === false,
+      'an employee with no billed feature must not report a spend figure',
+    );
 
     const planned = employees.filter((e) => !e.hired);
-    assert.ok(planned.length >= 12);
+    assert.ok(planned.length >= 11);
     for (const e of planned) {
       // A dimmed card has nothing it could render as a control or a number.
       assert.equal(e.status, 'not_hired', `${e.id} claimed a status`);

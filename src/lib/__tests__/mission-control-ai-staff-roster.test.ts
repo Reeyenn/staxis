@@ -47,7 +47,8 @@ import {
 // The fold moved to the module the route reads it from: since 0374 the AI
 // Staff page needs the same arithmetic, and a lib module cannot import from a
 // route that already imports it. Same function, same contract.
-import { foldSpendRows, type SpendRow } from '@/lib/ai/employee-spend';
+import { billedBundleKeys, foldSpendRows, type SpendRow } from '@/lib/ai/employee-spend';
+import { AI_FEATURE_KEYS } from '@/lib/ai/feature-registry';
 
 // ── Why the React shim ──────────────────────────────────────────────────────
 // React 19's react-server build exports no createContext, and this surface
@@ -352,6 +353,61 @@ describe('splitting the spend ledger into today and the month', () => {
     );
     assert.equal(t.today.get('findings.brief'), 1);
     assert.equal(t.today.get('findings.judge'), 2);
+  });
+
+  // ── a retired feature's money is still the hotel's money ──────────────────
+  //
+  // 2026-07-27: `communications.unread_summary` left the AI feature registry
+  // with the "Catch up" screen that was its only caller. What it already spent
+  // is real money that was really spent, and it stays on the books —
+  // `agent_costs.feature` is a length-bounded text column (0374) and
+  // deliberately NOT an enum, precisely so that retiring a feature never
+  // rewrites history and never needs a migration to do it.
+  //
+  // For that to hold, the fold has to stay registry-BLIND. The danger is the
+  // obvious-looking "improvement": resolving each row's key through
+  // `getAiFeatureDefinition()` to pretty-print it. That helper returns
+  // `undefined` for an unknown key while its type promises otherwise, so the
+  // next property access throws — and it would take down the whole spend
+  // figure, every employee's bill, not just the dead feature's.
+  test("a de-registered feature's history still totals, and is kept apart from a live one", () => {
+    const retired = 'communications.unread_summary';
+    assert.ok(
+      !(AI_FEATURE_KEYS as readonly string[]).includes(retired),
+      'this check only means something while the key is genuinely out of the registry',
+    );
+
+    const totals = foldSpendRows(
+      [
+        row({ feature: retired, cost_usd: 0.4 }),
+        row({ feature: retired, cost_usd: 0.1, created_at: '2026-07-19T09:00:00.000Z' }),
+        row({ feature: 'findings.brief', cost_usd: 2 }),
+      ],
+      DAY_START,
+    );
+
+    // Nothing vanished, nothing went NaN, and the month/today split still holds
+    // for a key no registry can explain.
+    assert.equal(totals.window.get(retired), 0.5);
+    assert.equal(totals.today.get(retired), 0.4);
+    // And the retired key's money did not leak into a living feature's figure.
+    assert.equal(totals.window.get('findings.brief'), 2);
+  });
+
+  test('no hired employee still claims the retired feature', () => {
+    // The one place a removed key CAN crash: `billedBundleKeys()` runs every
+    // hired employee's bundle through `billsPerCall`, which does reach into the
+    // registry. A bundle left pointing at a deleted key throws here, and this
+    // list is what the AI Staff route asks the ledger for — so the failure
+    // would be a blank money column, not a loud error.
+    const keys = billedBundleKeys();
+    assert.ok(!keys.includes('communications.unread_summary'));
+    for (const key of keys) {
+      assert.ok(
+        (AI_FEATURE_KEYS as readonly string[]).includes(key),
+        `${key} is billed for but no longer in the registry`,
+      );
+    }
   });
 });
 

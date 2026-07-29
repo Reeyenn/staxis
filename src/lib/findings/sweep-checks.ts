@@ -454,14 +454,14 @@ function reproduceWeekdayConcentration(subject: string, feeds: SweepFeeds): Repr
   }
   if (events < MIN_WEEKDAY_EVENTS || total <= 0) {
     return dead(
-      `only ${events} active days on record — too few for a weekday pattern to mean anything`,
+      `only ${events} active days on record. Too few for a weekday pattern to mean anything`,
       derivation,
     );
   }
   const activeWeekdays = byWeekday.filter((v) => v > 0).length;
   if (activeWeekdays < 3) {
     return dead(
-      `activity falls on only ${activeWeekdays} weekday(s) — that is the hotel's schedule, not a pattern`,
+      `activity falls on only ${activeWeekdays} weekday(s). That is the hotel's schedule, not a pattern`,
       derivation,
     );
   }
@@ -571,7 +571,7 @@ function reproduceItemUsageShift(subject: string, feeds: SweepFeeds): Reproducti
   const rates = item.intervals.map((i) => (i.days > 0 ? i.unitsUsed / i.days : 0));
   if (rates.length < MIN_ITEM_INTERVALS + 1) {
     return dead(
-      `only ${rates.length} counted intervals for it — too few for the item to have a normal`,
+      `only ${rates.length} counted intervals for it. Too few for the item to have a normal`,
       derivation,
     );
   }

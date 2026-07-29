@@ -93,7 +93,7 @@ export const PMS_REGISTRY: Record<PMSType, PMSDefinition> = {
   other: {
     id: 'other',
     label: 'Other / Not Listed',
-    hint: 'Tell us your PMS — we will map it via CUA',
+    hint: 'Tell us your PMS. We will map it via CUA',
     runtime: 'fly',
     tier: 3,
   },

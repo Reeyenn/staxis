@@ -50,9 +50,9 @@ import Link from 'next/link';
 // cleaning type. The keys are the real cleaning_type values from the
 // cleaning_tasks CHECK constraint (migration 0210).
 const TYPE_META: Record<EditableCleaningType, { en: string; es: string; enHint: string; esHint: string }> = {
-  departure:       { en: 'Checkout clean',        es: 'Limpieza de salida',           enHint: 'Guest checked out — full turnover for the next arrival', esHint: 'El huésped salió — preparación completa para el siguiente' },
+  departure:       { en: 'Checkout clean',        es: 'Limpieza de salida',           enHint: 'Guest checked out. Full turnover for the next arrival', esHint: 'El huésped salió. Preparación completa para el siguiente' },
   departure_deep:  { en: 'Checkout deep clean',   es: 'Limpieza profunda de salida',  enHint: 'Departure turnover plus a deep clean',                  esHint: 'Salida más limpieza profunda' },
-  stayover:        { en: 'Stayover clean',        es: 'Limpieza de estancia',         enHint: 'Guest still staying — tidy, fresh towels, trash',        esHint: 'Huésped aún hospedado — orden, toallas, basura' },
+  stayover:        { en: 'Stayover clean',        es: 'Limpieza de estancia',         enHint: 'Guest still staying: tidy, fresh towels, trash',        esHint: 'Huésped aún hospedado: orden, toallas, basura' },
   refresh:         { en: 'Refresh / touch-up',    es: 'Retoque',                      enHint: 'Light touch-up between or during stays',                 esHint: 'Retoque ligero entre o durante estancias' },
   deep:            { en: 'Deep clean',            es: 'Limpieza profunda',            enHint: 'Periodic full deep clean',                               esHint: 'Limpieza profunda periódica' },
   room_check:      { en: 'Room check',            es: 'Revisión de habitación',       enHint: 'Quick verify the room is ready',                         esHint: 'Verificación rápida de que la habitación está lista' },
@@ -357,7 +357,7 @@ function CleanTimesBody({ pid, lang }: { pid: string; lang: 'en' | 'es' }) {
                         inputMode="numeric"
                         value={drafts[t] ?? ''}
                         onChange={e => setVal(t, e.target.value)}
-                        aria-label={`${lang === 'es' ? meta.es : meta.en} — ${lang === 'es' ? 'minutos' : 'minutes'}`}
+                        aria-label={`${lang === 'es' ? meta.es : meta.en}, ${lang === 'es' ? 'minutos' : 'minutes'}`}
                         style={{
                           width: 72, boxSizing: 'border-box',
                           padding: '8px 10px', borderRadius: 10, border: `1px solid ${T.rule}`,
@@ -411,7 +411,7 @@ function CleanTimesBody({ pid, lang }: { pid: string; lang: 'en' | 'es' }) {
                     onChange={e => setShiftVal(e.target.value)}
                     readOnly={!canEditShift}
                     disabled={!canEditShift}
-                    aria-label={lang === 'es' ? 'Duración del turno — horas' : 'Shift length — hours'}
+                    aria-label={lang === 'es' ? 'Duración del turno, horas' : 'Shift length, hours'}
                     style={{
                       width: 72, boxSizing: 'border-box',
                       padding: '8px 10px', borderRadius: 10, border: `1px solid ${T.rule}`,

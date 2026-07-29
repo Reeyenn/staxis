@@ -43,7 +43,7 @@ export async function GET(req: NextRequest) {
   }
 
   return err(
-    'The staff picker has been retired — open your personal shift link from your text message.',
+    'The staff picker has been retired. Open your personal shift link from your text message.',
     { requestId, status: 410, code: ApiErrorCode.IdempotencyConflict },
   );
 }

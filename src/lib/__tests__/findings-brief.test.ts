@@ -407,7 +407,7 @@ describe('the brief ends with proof the watcher ran', () => {
       cards: [finding({ id: 'a', detectorId: 'det_a' }), finding({ id: 'b', detectorId: 'det_b' })],
     }))!;
     const last = text(brief)[brief.lines.length - 1];
-    assert.equal(last, 'Checked 34 things last night — 32 look normal.');
+    assert.equal(last, 'Checked 34 things last night. 32 look normal.');
   });
 
   test('a stale run says how old it is instead of reciting counts as today', () => {
@@ -416,7 +416,7 @@ describe('the brief ends with proof the watcher ran', () => {
       cards: [finding({ id: 'a' })],
     }))!;
     const last = text(brief)[brief.lines.length - 1];
-    assert.equal(last, 'Last checked 4 days ago — this may not be up to date.');
+    assert.equal(last, 'Last checked 4 days ago. This may not be up to date.');
     assert.ok(!last.includes('34'));
   });
 });

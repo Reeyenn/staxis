@@ -1638,3 +1638,68 @@ invariants below are about the SET being right rather than about a single
 - **History:** 0374, 2026-07-26. Before it, the AI Staff page had to read the
   GATE because it was the only ledger with a feature column — which both quoted
   reservation-shaped money and could only ever describe three features.
+
+### INV-42: the situational-awareness block never enters the cached system block
+
+- **Enforced by:** three layers, none of them DB (prompt assembly is code, so no
+  constraint can reach it): (1) compile time — `'right_now'` is a member of
+  `DynamicTier` in [prompts.ts](src/lib/agent/prompts.ts), and the two unions
+  are disjoint, so moving it into `STABLE_TIER_ORDER` is a type error;
+  (2) runtime — `AWARENESS_HEADER` and `</staxis-awareness>` are members of
+  `DYNAMIC_ONLY_MARKERS` in [llm.ts](src/lib/agent/llm.ts), so
+  `assertStableBlockIsCacheable` throws outside production and reports-and-serves
+  in production, covering the summarizer and eval runner which hand-roll their
+  own blocks; (3) behaviour —
+  `src/lib/__tests__/agent-awareness.test.ts` builds twice with different
+  awareness and asserts a byte-identical `stable` plus a differing `dynamic`.
+- **Why it matters:** this block contains a WALL CLOCK. It is the most
+  per-turn content in the entire prompt. A misplacement has no visible symptom —
+  the copilot keeps answering correctly — while every turn of every conversation
+  misses the Anthropic prompt cache, indefinitely and silently. Verified live:
+  a second turn on the same conversation reports `cache_read` of the full stable
+  prefix (`scripts/prove-awareness-live.ts`).
+- **NOT DB-enforceable.** Same class as INV-33 and INV-TIER-5.
+- **History:** situational awareness, 2026-07-27.
+
+### INV-43: the browser's pathname is never interpolated into a prompt
+
+- **Statement:** the `pathname` field on `POST /api/agent/command` selects a row
+  from an allowlist; the string PRINTED is that row's own constant. No byte of
+  client input reaches the model.
+- **Enforced by:** `resolveSurface()` in [awareness.ts](src/lib/agent/awareness.ts)
+  returns `SurfaceRoute.surface` — a literal from that file — or `null`. There is
+  no code path that returns its argument. Bounded at 512 chars and refused unless
+  it matches `^\/[A-Za-z0-9\-._~/%]*$` (no `<`, no whitespace, no quotes) before
+  any matcher runs. Backed by the injection cases in
+  `agent-awareness.test.ts`, including one that asserts the rendered block
+  contains exactly ONE `</staxis-awareness>` — the formatter's own.
+- **Why the allowlist rather than escaping:** escaping is right when the value
+  must be DISPLAYED (a hotel name). Here nothing needs displaying — a path either
+  IS a known screen or is uninteresting — so the safest use of the input is to
+  let it select and never to print it. An unlisted new page is invisible to the
+  copilot until someone adds it, which is a visible, self-correcting gap; echoing
+  the path would be an open prompt-injection channel through a query string.
+- **NOT DB-enforceable** — the value never reaches the database.
+- **History:** situational awareness, 2026-07-27.
+
+### INV-44: a failing awareness feed drops its own line and nothing else
+
+- **Enforced by:** two nested layers, because one is the wrong granularity for a
+  composite feed. (1) `loadFeedsUncached` runs each of the five feeds in its own
+  `Promise.allSettled` slot; a rejection is `captureException`'d and that field is
+  omitted. (2) `feedOnYourPlate` assembles FOUR sources into one line, so it wraps
+  each source in its own `item()` helper — without that, a bad row in the
+  preventive schedule suppressed the approvals count on the same line. Backed by
+  `agent-awareness.test.ts` ("survives every single feed throwing at once" and
+  "one broken feed does not suppress the others"); the second case was written
+  after the first version of the code failed it.
+- **Assumed by:** the chat turn itself. Nothing in this block may be the reason a
+  manager's message fails to send — it is context, not content.
+- **Related honesty rule:** an empty feed renders NOTHING, never "0 items". For
+  most of these feeds a zero is unsupportable — data intake is off for nearly
+  every hotel, so "0 rooms changed" means "no feed", not "nothing happened". The
+  PMS-derived feeds (`justChanged`, `tonight`) are gated on
+  `snapshot.pmsDataSource`, which is set if and only if the hotel is on a live
+  PMS, exactly as INV-32/A2 established.
+- **NOT DB-enforceable.**
+- **History:** situational awareness, 2026-07-27.

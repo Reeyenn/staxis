@@ -31,6 +31,7 @@ import { supabaseAdmin } from '@/lib/supabase-admin';
 import { requireAdmin } from '@/lib/admin-auth';
 import { ok, err } from '@/lib/api-response';
 import { getOrMintRequestId } from '@/lib/log';
+import { robotDecommissionedResponse } from '@/lib/pms/decommission';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -46,6 +47,13 @@ export async function POST(req: NextRequest): Promise<Response> {
   const requestId = getOrMintRequestId(req);
   const admin = await requireAdmin(req);
   if (!admin.ok) return err('Unauthorized', { requestId, status: 401, code: 'unauthorized' });
+
+  // Robot off ⇒ refuse BEFORE spending anything. This route enqueues a
+  // workflow_jobs row whose only consumer (cua-service's queue poller) refuses
+  // to start while the robot is decommissioned, so the row would sit queued
+  // forever AND hold its idempotency slot. See robotDecommissionedResponse.
+  const robotOff = robotDecommissionedResponse(requestId);
+  if (robotOff) return robotOff;
 
   let body: { propertyId?: unknown; feedKey?: unknown; pmsFamily?: unknown };
   try { body = await req.json(); } catch {
@@ -73,7 +81,7 @@ export async function POST(req: NextRequest): Promise<Response> {
     if (typeof fam === 'string' && PMS_FAMILY.test(fam)) pmsFamily = fam;
   }
   if (!pmsFamily) {
-    return err('This hotel has no PMS family configured yet — finish onboarding its PMS first.', {
+    return err('This hotel has no PMS family configured yet. Finish onboarding its PMS first.', {
       requestId, status: 409, code: 'no_pms_family',
     });
   }
@@ -100,7 +108,7 @@ export async function POST(req: NextRequest): Promise<Response> {
     }
     const ageMs = Date.now() - new Date(latest.created_at as string).getTime();
     if (Number.isFinite(ageMs) && ageMs >= 0 && ageMs < CAPTURE_COOLDOWN_MS) {
-      return err('The robot just tried reading this page — give it a few seconds, or use Re-map.', {
+      return err('The robot just tried reading this page. Give it a few seconds, or use Re-map.', {
         requestId, status: 429, code: 'cooldown',
       });
     }

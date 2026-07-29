@@ -92,7 +92,7 @@ export function DecisionModal({
     <Modal
       open
       onClose={onClose}
-      title={`${title} — ${project.name}`}
+      title={`${title}: ${project.name}`}
       footer={
         <>
           <Btn variant="ghost" onClick={onClose}>{S.cancel}</Btn>

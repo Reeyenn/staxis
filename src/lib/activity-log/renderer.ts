@@ -99,7 +99,7 @@ function renderSpanish(row: ActivityLogRow): string | null {
     case 'cleaning_flagged':
       return `${actor} marcó una limpieza larga en la habitación ${room} (${roundMin(md.duration_minutes)} min)`;
     case 'cleaning_discarded':
-      return `Toque accidental en la habitación ${room} — descartado por ser demasiado corto`;
+      return `Toque accidental en la habitación ${room}. Descartado por ser demasiado corto`;
     case 'cleaning_review_approved':
       return `Una limpieza marcada en la habitación ${room} fue aprobada en revisión`;
     case 'cleaning_review_rejected':
@@ -124,7 +124,7 @@ function renderSpanish(row: ActivityLogRow): string | null {
       return `La habitación ${room} pasó la inspección`;
     case 'inspection_fail': {
       const failed = Array.isArray(md.failed_items) ? md.failed_items.length : 0;
-      return `La habitación ${room} no pasó la inspección — ${failed} problema${failed === 1 ? '' : 's'}`;
+      return `La habitación ${room} no pasó la inspección: ${failed} problema${failed === 1 ? '' : 's'}`;
     }
     case 'inspection_cancelled':
       return `Inspección en la habitación ${room} cancelada`;
@@ -159,7 +159,7 @@ function renderSpanish(row: ActivityLogRow): string | null {
       return `${actor} fue agregado con rol ${md.role ?? ''}`;
     case 'role_changed':
     case 'role_role_change':
-      return `${actor} — rol cambiado de ${md.old_role ?? '?'} a ${md.new_role ?? '?'}`;
+      return `${actor}: rol cambiado de ${md.old_role ?? '?'} a ${md.new_role ?? '?'}`;
     case 'role_deactivate':
       return `${actor} fue desactivado`;
     case 'role_reactivate':
@@ -173,7 +173,7 @@ function renderSpanish(row: ActivityLogRow): string | null {
       return `${actor} terminó un descanso (${md.duration_minutes ?? '?'} min)`;
 
     case 'cleaning_paused_room':
-      return `${actor} pausó la limpieza en la habitación ${room}${md.reason ? ` — ${md.reason}` : ''}`;
+      return `${actor} pausó la limpieza en la habitación ${room}${md.reason ? `: ${md.reason}` : ''}`;
     case 'cleaning_resumed_room':
       return `${actor} reanudó la limpieza en la habitación ${room}`;
 

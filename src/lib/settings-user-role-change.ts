@@ -28,7 +28,7 @@ export function denyRoleChange(args: {
     }
   }
   if (isSelf && newRole !== caller.role) {
-    return 'Cannot change your own role here — use Transfer Ownership instead';
+    return 'Cannot change your own role here. Use Transfer Ownership instead';
   }
   return null;
 }

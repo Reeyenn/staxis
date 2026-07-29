@@ -204,7 +204,7 @@ export async function POST(req: NextRequest) {
         joinCode: null,
         signupUrl: null,
         expiresAt: null,
-        warning: 'Property created but its guarded onboarding invite could not be minted. Retry from platform administration before assigning the hotel.',
+        warning: 'Property created, but its guarded onboarding invite could not be minted. Retry from platform administration before assigning the hotel.',
       },
       { requestId },
     );

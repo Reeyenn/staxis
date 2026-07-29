@@ -87,7 +87,7 @@ export async function GET(req: NextRequest) {
   // the chip on the thing and off the tab.
   const value = normalizeTargetValue(params.get('value'));
   if (!value) {
-    return err('value is required — this lookup answers for one thing, never for a whole hotel', {
+    return err('value is required. This lookup answers for one thing, never for a whole hotel', {
       requestId,
       status: 400,
       code: ApiErrorCode.ValidationFailed,

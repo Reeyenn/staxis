@@ -1,7 +1,7 @@
 import type { Metadata } from 'next';
 
 export const dynamic = 'force-static';
-export const metadata: Metadata = { title: 'Privacy Policy — Staxis' };
+export const metadata: Metadata = { title: 'Privacy Policy · Staxis' };
 
 export default function PrivacyPage() {
   return (
@@ -92,9 +92,9 @@ export default function PrivacyPage() {
             We share information only with service providers necessary to run the Service:
           </p>
           <ul>
-            <li><strong>Twilio</strong> — SMS delivery (phone numbers and message content)</li>
-            <li><strong>Supabase</strong> — data storage and authentication</li>
-            <li><strong>Vercel</strong> — application hosting</li>
+            <li><strong>Twilio</strong>: SMS delivery (phone numbers and message content)</li>
+            <li><strong>Supabase</strong>: data storage and authentication</li>
+            <li><strong>Vercel</strong>: application hosting</li>
           </ul>
           <p>
             We do not sell personal information. We do not share information with advertisers or
@@ -138,7 +138,7 @@ export default function PrivacyPage() {
 
           <footer>
             <div style={{ marginBottom: '6px' }}>
-              Staxis — operated by Reeyen Patel (sole proprietor) · 2215 Rio Grande St, Austin, TX 78705
+              Staxis, operated by Reeyen Patel (sole proprietor) · 2215 Rio Grande St, Austin, TX 78705
             </div>
             <div>
               {/* eslint-disable-next-line @next/next/no-html-link-for-pages */}

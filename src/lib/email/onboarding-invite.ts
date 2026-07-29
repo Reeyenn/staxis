@@ -62,7 +62,7 @@ export async function sendOnboardingInvite(
     `This link expires on ${expiryStr}. If you didn't expect this invitation,`,
     `you can safely ignore it.`,
     '',
-    '— The Staxis team',
+    'The Staxis team',
   ].join('\n');
 
   // HTML version. Inline styles only (most email clients strip <style>
@@ -82,7 +82,7 @@ export async function sendOnboardingInvite(
                 You're invited to set up <span style="color:#d49040;">${escapeHtml(hotelName)}</span>
               </h1>
               <p style="font-size:15px;line-height:1.5;color:#444;margin:0 0 16px 0;">
-                You've been added as the <strong>${escapeHtml(role)}</strong> for ${escapeHtml(hotelName)} on Staxis — the AI-powered operations platform that runs housekeeping, inventory, and labor planning in the background.
+                You've been added as the <strong>${escapeHtml(role)}</strong> for ${escapeHtml(hotelName)} on Staxis, the AI-powered operations platform that runs housekeeping, inventory, and labor planning in the background.
               </p>
               <p style="font-size:15px;line-height:1.5;color:#444;margin:0 0 24px 0;">
                 Click below to get started. We'll walk you through account setup, hotel details, services, and connecting your PMS in about 10 minutes.

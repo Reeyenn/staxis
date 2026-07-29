@@ -198,10 +198,7 @@ describe('section gates fail closed and cover high-risk routes', () => {
     const helper = source('src/lib/comms/route-helpers.ts');
     const session = helper.indexOf('const session = await requireSession(');
     const tenant = helper.indexOf('userHasPropertyAccess(', session);
-    const gate = helper.indexOf("requireSectionEnabled(req, pid, 'communications')");
-    const sectionGate = gate >= 0
-      ? gate
-      : helper.indexOf("requirePropertySectionEnabled(pid, 'communications'", tenant);
+    const sectionGate = helper.indexOf('requirePropertySectionEnabled(', tenant);
     const localStandingGate = helper.lastIndexOf('resolvePrivateHotelCommsStaffId(');
     const identity = helper.indexOf('resolveStaffIdForAccount(');
     assert.ok(
@@ -213,6 +210,9 @@ describe('section gates fail closed and cover high-risk routes', () => {
       'private hotel comms must require local operational standing before identity creation',
     );
     assert.equal((helper.match(/requireSession\(/g) ?? []).length, 1, 'comms context must validate the session once');
+    // Knowledge routes deliberately opt out because the same content is shown
+    // in Knows; every silent/default caller stays Communications-gated.
+    assert.match(helper, /opts\?\.sectionGate !== undefined \? opts\.sectionGate : 'communications'/);
     for (const file of routeFilesBelow('src/app/api/comms')) {
       if (file.endsWith('/language/route.ts')) {
         const language = readFileSync(file, 'utf8');

@@ -1930,7 +1930,7 @@ export function HotelInviteDialog({
               <div>
                 <strong>{lastInvite.emailSent
                   ? copy(lang, 'Invitation email sent', 'Correo de invitación enviado')
-                  : copy(lang, 'Invitation created—delivery not confirmed', 'Invitación creada—entrega no confirmada')}</strong>
+                  : copy(lang, 'Invitation created, delivery not confirmed', 'Invitación creada, entrega no confirmada')}</strong>
                 <span>{lastInvite.emailSent
                   ? copy(lang, `An invitation was sent to ${lastInvite.email}.`, `Se envió una invitación a ${lastInvite.email}.`)
                   : copy(lang, `Staxis cannot confirm an email reached ${lastInvite.email}. Copy and send the link directly.`, `Staxis no puede confirmar que el correo llegó a ${lastInvite.email}. Copia y envía el enlace directamente.`)}</span>

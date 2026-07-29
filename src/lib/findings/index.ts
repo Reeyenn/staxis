@@ -126,7 +126,6 @@ export {
 /** "No number without a receipt", enforced rather than requested. */
 export {
   buildProseReceipt,
-  checkBilingualProse,
   checkProse,
   foldForProseMatch,
   type ProseGuardResult,

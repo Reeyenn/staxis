@@ -9,6 +9,29 @@
  *   this hotel has never been checked — the screen says nothing about checking
  *   rather than implying a clean night that never happened).
  *
+ * GET  ?propertyId=<uuid>&lens=maintenance
+ *   → { ok, data: { findings, history, run, cap } }
+ *   The same queue narrowed to the checks about the BUILDING, plus the paper
+ *   trail for each one, for the patterns popup on the Maintenance tab. Which
+ *   checks count as maintenance — and why it is a hand-kept list rather than a
+ *   field on the detector — is src/lib/findings/maintenance-lens.ts.
+ *
+ *   THREE THINGS THIS LENS DELIBERATELY DOES NOT DO, all for the same reason:
+ *   it is a second window onto the queue, not a second queue.
+ *     1. It does not record cards as SHOWN. `shown_count` feeds self-demotion
+ *        (src/lib/findings/demotion.ts), whose question is "does the manager
+ *        read their queue". A card glimpsed in a maintenance popup has not
+ *        been shown on the queue, and counting it there would quieten checks
+ *        on the strength of a screen the manager never treated as their feed.
+ *        /api/company/queue omits the same write for the same reason.
+ *     2. It does not load attached fixes or sign-off locks. The cards render
+ *        read-only, so an offer with no button would be an offer that looks
+ *        broken. Approving a fix stays in one place — the Staxis tab — and the
+ *        popup says so.
+ *     3. It writes nothing at all. Every verdict button is absent rather than
+ *        disabled, so there is no second path to the same status change to keep
+ *        in step with this one.
+ *
  * POST { propertyId, findingId, action }
  *   → { ok, data: { status } }
  *   known_problem   "Seen" / "Known problem". The manager armed the silencer:
@@ -83,10 +106,17 @@ import { loadActionsForFindings } from '@/lib/findings/actions/store';
 import type { FindingAction } from '@/lib/findings/actions/types';
 import { toQueueFinding } from '@/lib/findings/queue-projection';
 import { hotelBasisSpanish } from '@/lib/findings/basis-spanish';
+import {
+  MAINTENANCE_LENS_DETECTOR_IDS,
+  buildPatternHistory,
+  isMaintenanceFinding,
+  spanishHistoryTitle,
+} from '@/lib/findings/maintenance-lens';
 import { companyForProperty } from '@/lib/company/access';
 import { loadApproverDirectory, resolveSignOff } from '@/lib/company/signoff';
 import {
   DAILY_CARD_CAP,
+  cardPhrasing,
   effectiveDisposition,
   isCardRenderable,
   rankFindings,
@@ -195,16 +225,84 @@ async function signOffsFor(
   return out;
 }
 
+/** The lenses this route knows. Absent = the whole hotel queue, as before. */
+const LENSES = ['maintenance'] as const;
+type Lens = typeof LENSES[number];
+
+/**
+ * Every status a finding can hold, so the popup's history covers the archive
+ * as well as what is standing. `resolved` and `expired` are exactly the rows
+ * the ledger keeps BECAUSE nothing is ever deleted; without them "came back"
+ * could not be said at all.
+ */
+const ALL_STATUSES: readonly FindingStatus[] = [
+  'open', 'updated', 'resolved', 'known_problem', 'muted', 'expired',
+];
+
+/**
+ * The Maintenance tab's patterns popup: what is standing about the building
+ * right now, and what became of each pattern over time.
+ */
+async function maintenanceLensPayload(propertyId: string) {
+  const rows = (await listFindings(propertyId, {
+    statuses: ALL_STATUSES,
+    detectorId: MAINTENANCE_LENS_DETECTOR_IDS,
+    limit: 500,
+  })).filter(isMaintenanceFinding);
+
+  const phrasing = await judgedPhrasing(propertyId, rows.map((f) => f.id));
+  // One projection per row, reused for both halves — the cards ARE the rows the
+  // history describes, and phrasing them twice by two routes is how the card
+  // and its own history line end up disagreeing about what the problem is.
+  const cards = new Map(rows.map((f) => [f.id, toQueueFinding(f, {
+    phrased: phrasing.get(f.id) ?? null,
+    // No action and no sign-off on purpose — see the header.
+    action: null,
+    signOff: null,
+    basisEs: hotelBasisSpanish(f.detectorId, f.evidence),
+  })]));
+
+  const standing = rows
+    .filter((f) => f.status === 'open' || f.status === 'updated')
+    .map((f) => cards.get(f.id)!)
+    .filter((c) => isCardRenderable({ disposition: c.disposition, detectorId: c.detectorId }));
+
+  const history = buildPatternHistory(propertyId, rows, (f) => {
+    const card = cards.get(f.id)!;
+    return {
+      en: cardPhrasing(card, 'en'),
+      // Not cardPhrasing's Spanish: on a list with no "See the numbers" button
+      // its template fallback names nothing and repeats. See the helper.
+      es: spanishHistoryTitle(
+        card.phrasedEs,
+        card.evidence.basisEs,
+        cardPhrasing(card, 'es'),
+      ),
+    };
+  });
+
+  return { findings: standing, history };
+}
+
 export async function GET(req: NextRequest) {
   const requestId = getOrMintRequestId(req);
   const session = await requireSession(req, { requestId });
   if (!session.ok) return session.response;
 
-  const pidV = validateUuid(new URL(req.url).searchParams.get('propertyId'), 'propertyId');
+  const url = new URL(req.url);
+  const pidV = validateUuid(url.searchParams.get('propertyId'), 'propertyId');
   if (pidV.error) {
     return err(pidV.error, { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
   }
   const propertyId = pidV.value!;
+
+  const rawLens = url.searchParams.get('lens');
+  const lensV = rawLens === null
+    ? { value: null as Lens | null, error: undefined }
+    : validateEnum<Lens>(rawLens, LENSES, 'lens');
+  if (lensV.error) {
+    return err(lensV.error, { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
+  }
 
   const caller = await loadManagerCaller(session.userId);
   if (!caller || !managerManagesHotel(caller, propertyId)) {
@@ -212,6 +310,18 @@ export async function GET(req: NextRequest) {
   }
 
   try {
+    if (lensV.value === 'maintenance') {
+      const lens = await maintenanceLensPayload(propertyId);
+      const run = await latestRunFacts(propertyId);
+      // No cap: a manager who opened "show me the patterns" asked for all of
+      // them, and folding half of them behind "show all" on a surface that
+      // exists to be complete would be the wrong lesson from the queue.
+      return ok(
+        { ...lens, run, cap: Math.max(lens.findings.length, 1) },
+        { requestId },
+      );
+    }
+
     // Open + updated only. known_problem and muted still occupy the ledger's
     // one-row-per-problem slot — that is what stops a silenced problem coming
     // back as a fresh card — but they are silences the manager armed and this

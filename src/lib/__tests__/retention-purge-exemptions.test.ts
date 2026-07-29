@@ -56,17 +56,41 @@ describe('retention purge — corpus exemption', () => {
     // Drive the real handler with a stubbed admin client and record every
     // table it tried to delete from. This catches the case the disjointness
     // check alone would miss: someone adding an exempt table to RETENTION.
+    //
+    // 2026-07-27: the stub gained a select/order/limit surface because the
+    // purge now deletes in bounded batches (select a page of ids, delete by
+    // id) rather than issuing one unbounded `delete().lt()`. The batching
+    // exists to defuse the re-enable cliff — see the route header. The
+    // assertion below is unchanged in intent: whatever shape the delete takes,
+    // it must never name an exempt table.
     const attempted: string[] = [];
     const supabaseAdminModule = await import('@/lib/supabase-admin');
     const original = supabaseAdminModule.supabaseAdmin.from;
-    (supabaseAdminModule.supabaseAdmin as unknown as { from: unknown }).from = (table: string) => ({
-      delete: () => ({
-        lt: async () => {
+    (supabaseAdminModule.supabaseAdmin as unknown as { from: unknown }).from = (table: string) => {
+      // One page of rows, then empty — so the batch loop terminates.
+      let served = false;
+      const chain = {
+        // read path (batch page + dry-run count)
+        select: () => chain,
+        lt: () => chain,
+        order: () => chain,
+        limit: () => chain,
+        // write path
+        delete: () => chain,
+        in: async () => {
           attempted.push(table);
-          return { count: 0, error: null };
+          return { count: 1, error: null };
         },
-      }),
-    });
+        // the heartbeat writer
+        upsert: async () => ({ error: null }),
+        then: (resolve: (v: unknown) => void) => {
+          const data = served ? [] : [{ id: `${table}-row-1` }];
+          served = true;
+          return resolve({ data, count: data.length, error: null });
+        },
+      };
+      return chain;
+    };
 
     // The heartbeat writer also goes through supabaseAdmin; it lands in
     // `attempted` harmlessly and is filtered out below.

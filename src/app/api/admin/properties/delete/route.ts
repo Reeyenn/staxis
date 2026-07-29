@@ -67,7 +67,7 @@ export async function POST(req: NextRequest) {
     confirmName.toLowerCase() === (prop.name ?? '').trim().toLowerCase();
   if (confirmName.length > 0 && !confirmedByName) {
     return err(
-      'The name you typed does not match this hotel — type its exact name to confirm.',
+      'The name you typed does not match this hotel. Type its exact name to confirm.',
       { requestId, status: 400 },
     );
   }
@@ -76,7 +76,7 @@ export async function POST(req: NextRequest) {
   // typing its exact name.
   if (prop.onboarding_completed_at && !confirmedByName) {
     return err(
-      'This hotel has finished onboarding — type its exact name to confirm deletion.',
+      'This hotel has finished onboarding. Type its exact name to confirm deletion.',
       { requestId, status: 409 },
     );
   }

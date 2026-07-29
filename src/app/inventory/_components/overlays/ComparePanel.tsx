@@ -78,7 +78,7 @@ function cmStrings(lang: Lang) {
       noDataHint: 'Staxis wasn’t tracking inventory here yet.',
       noRecord: 'No record',
       noRecordHint: 'No closed monthly inventory snapshot exists for that month.',
-      loadFailed: 'Couldn’t load one of the periods — try again.',
+      loadFailed: 'Couldn’t load one of the periods. Try again.',
     },
     es: {
       eyebrow: 'Comparar',
@@ -116,7 +116,7 @@ function cmStrings(lang: Lang) {
       noDataHint: 'Staxis aún no llevaba el inventario aquí.',
       noRecord: 'Sin registro',
       noRecordHint: 'No existe un cierre mensual de inventario para ese mes.',
-      loadFailed: 'No se pudo cargar uno de los períodos — intente de nuevo.',
+      loadFailed: 'No se pudo cargar uno de los períodos. Intente de nuevo.',
     },
   }[lang];
 }

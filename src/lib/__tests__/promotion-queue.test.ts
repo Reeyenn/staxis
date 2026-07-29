@@ -20,6 +20,9 @@ import { join } from 'node:path';
 
 import {
   AGGREGATE_MIN_GROUP_SIZE,
+  CLAIM_HEADLINE_MAX,
+  PLAIN_TIER,
+  PLAIN_TIER_UNUSED,
   PROMOTION_TTL_DAYS,
   TIER_BAR,
   countNeedingAttention,
@@ -29,6 +32,10 @@ import {
   isExpired,
   isMissingRelationError,
   meetsEvidenceBar,
+  plainLockReason,
+  promotionJourney,
+  promotionOriginLabel,
+  shortClaim,
   tierLabel,
   unmetPreconditions,
   type EvidenceClaim,
@@ -238,6 +245,164 @@ describe('the card explains itself', () => {
     const text = describeEvidence(row({ origin: 'authored', supporting_hotel_count: 0 }));
     assert.match(text, /Written by hand/);
     assert.equal(/0 hotels/.test(text), false);
+  });
+});
+
+// ─── The card, at a glance ──────────────────────────────────────────────────
+//
+// The queue's only reader is the founder, and he is not an engineer. A card he
+// needs three minutes to decode is a card he does not work, and an unworked
+// queue is the same outcome as no privacy review at all. These hold the shape
+// of a ten-second card.
+
+/** The live pending item, verbatim: a 211-character compound sentence. The
+ *  worst-case stored text this has to survive is not hypothetical. */
+const LONG_CLAIM =
+  "When shared PMS notes disagree with this hotel's own Knowledge hub or a remembered fact " +
+  'about this hotel, the hotel\'s own information wins — and the copilot says the two ' +
+  'disagree instead of silently picking one.';
+
+describe('a card says where knowledge lives and where it is going', () => {
+  test('the journey is drawn in words, never in the stored codes', () => {
+    assert.deepEqual(promotionJourney(row({ source_tier: 'hotel', target_tier: 'global' })), {
+      from: 'This hotel only',
+      to: 'Every hotel',
+    });
+    assert.deepEqual(promotionJourney(row({ source_tier: 'hotel', target_tier: 'family' })), {
+      from: 'This hotel only',
+      to: 'Hotels on the same system',
+    });
+    assert.deepEqual(promotionJourney(row({ source_tier: 'family', target_tier: 'global' })), {
+      from: 'Hotels on the same system',
+      to: 'Every hotel',
+    });
+  });
+
+  test('an authored item came from nowhere, and says so rather than inventing a home', () => {
+    // source_tier is null for everything hand-written — the live pending item
+    // included. Rendering that as a blank chip reads as a missing value.
+    const j = promotionJourney(row({ source_tier: null, target_tier: 'global' }));
+    assert.equal(j.from, PLAIN_TIER_UNUSED);
+    assert.equal(j.to, 'Every hotel');
+  });
+
+  test('every label is a phrase, not a code', () => {
+    const labels = [...Object.values(PLAIN_TIER), PLAIN_TIER_UNUSED];
+    for (const label of labels) {
+      assert.ok(label.includes(' '), `"${label}" is a bare code, not something to read`);
+      assert.equal(label, label[0].toUpperCase() + label.slice(1));
+    }
+  });
+
+  test('who wrote it is stated without making the reader open anything', () => {
+    assert.equal(promotionOriginLabel(row({ origin: 'authored' })), 'Written by hand');
+    assert.equal(promotionOriginLabel(row({ origin: 'learned' })), 'Learned from hotels');
+  });
+});
+
+describe('the headline fits on the card whatever was stored', () => {
+  test('a short claim is left exactly as written', () => {
+    const short = 'Exp Dep means departures.';
+    assert.deepEqual(shortClaim(short), { text: short, truncated: false });
+  });
+
+  test("the real 211-character claim is cut down and marked as cut", () => {
+    const { text, truncated } = shortClaim(LONG_CLAIM);
+    assert.equal(truncated, true);
+    assert.ok(text.length <= CLAIM_HEADLINE_MAX, `headline ran to ${text.length} characters`);
+    assert.match(text, /…$/);
+    // The opening survives intact — a cut that mangles the first words costs
+    // more than it saves.
+    assert.ok(LONG_CLAIM.startsWith(text.slice(0, 60)));
+  });
+
+  test('the cut lands on a boundary, never mid-word', () => {
+    const body = shortClaim(LONG_CLAIM).text.replace(/…$/, '');
+    assert.ok(LONG_CLAIM.startsWith(body), 'the headline is not a clean prefix of the claim');
+    // Whatever the claim continues with has to be punctuation or a space —
+    // anything else means a word was sliced in half.
+    const next = LONG_CLAIM.charAt(body.length);
+    assert.match(next, /[\s.,;:—–]/, `cut mid-word, just before "${next}"`);
+  });
+
+  test('a claim with no spaces at all still fits', () => {
+    // Nothing stops a machine-authored claim arriving as one unbroken run.
+    // Falling back to the hard cap is what keeps the card from overflowing.
+    const { text, truncated } = shortClaim('x'.repeat(400));
+    assert.equal(truncated, true);
+    assert.ok(text.length <= CLAIM_HEADLINE_MAX + 1, `headline ran to ${text.length} characters`);
+  });
+
+  test('whitespace and line breaks never become blank lines in the headline', () => {
+    const { text } = shortClaim('  Two   words\n\nspread   out.  ');
+    assert.equal(text, 'Two words spread out.');
+  });
+});
+
+describe('the locked sentence and the full reasons are one verdict', () => {
+  const FACTS_NO_FAMILY = { activeFamilyRowCount: 0 };
+  const FACTS_FAMILY = { activeFamilyRowCount: 2 };
+
+  /** Every shape that can reach a card, blocked and clear. */
+  const cases: Array<{ what: string; row: PromotionRow; facts: { activeFamilyRowCount: number } }> = [
+    { what: 'the live pending item', row: row({ origin: 'authored', source_tier: null, target_tier: 'global', supporting_hotel_count: 0, preconditions: ['family_row_exists'] }), facts: FACTS_NO_FAMILY },
+    { what: 'the same item once family guidance exists', row: row({ origin: 'authored', target_tier: 'global', preconditions: ['family_row_exists'] }), facts: FACTS_FAMILY },
+    { what: 'too few hotels', row: row({ supporting_hotel_count: 1 }), facts: FACTS_FAMILY },
+    { what: 'enough hotels', row: row({ supporting_hotel_count: 2 }), facts: FACTS_FAMILY },
+    { what: 'global without a holdout', row: row({ target_tier: 'global', supporting_hotel_count: 9, holdout_validated: false }), facts: FACTS_FAMILY },
+    { what: 'an aggregate below the group size', row: row({ is_aggregate: true, supporting_hotel_count: 2 }), facts: FACTS_FAMILY },
+    { what: 'an unknown requirement', row: row({ preconditions: ['some_future_gate'] }), facts: FACTS_FAMILY },
+  ];
+
+  test('the short sentence is empty exactly when nothing blocks approval', () => {
+    // The gate is `blockedReasons.length > 0`. If the one-liner could be empty
+    // while something blocks, the card would read "your call" over a dead
+    // Approve button — and the founder would think Staxis was broken.
+    for (const c of cases) {
+      const reallyBlocked = !meetsEvidenceBar(c.row).ok || unmetPreconditions(c.row, c.facts).length > 0;
+      const saysBlocked = plainLockReason(c.row, c.facts) !== '';
+      assert.equal(saysBlocked, reallyBlocked, `${c.what}: the card and the gate disagree`);
+    }
+  });
+
+  test('a blocked card gets one short sentence a non-engineer can act on', () => {
+    for (const c of cases) {
+      const line = plainLockReason(c.row, c.facts);
+      if (!line) continue;
+      assert.ok(line.length <= 110, `${c.what}: "${line}" is too long for one line`);
+      assert.match(line, /\.$/, `${c.what}: "${line}" is not a sentence`);
+      assert.equal(line.split('. ').length, 1, `${c.what}: "${line}" is more than one sentence`);
+      // The card renders "Locked — <line>"; a second em dash inside makes the
+      // result unparseable at a glance.
+      assert.equal(line.includes('—'), false, `${c.what}: a second dash — "${line}"`);
+      assert.equal(
+        /\b(tier|migration|precondition|prompt|row|null|schema|RLS|eval)\b/i.test(line),
+        false,
+        `${c.what}: jargon leaked — "${line}"`,
+      );
+    }
+  });
+
+  test('the reason names the requirement that is actually missing', () => {
+    const noFamily = row({ origin: 'authored', target_tier: 'global', preconditions: ['family_row_exists'] });
+    assert.match(plainLockReason(noFamily, FACTS_NO_FAMILY), /shared notes/i);
+
+    const thin = row({ supporting_hotel_count: 1 });
+    assert.match(plainLockReason(thin, FACTS_FAMILY), /only 1 hotel backs this/i);
+    assert.match(plainLockReason(row({ supporting_hotel_count: 0 }), FACTS_FAMILY), /only 0 hotels back this/i);
+
+    const aggregate = row({ is_aggregate: true, supporting_hotel_count: 2 });
+    assert.match(plainLockReason(aggregate, FACTS_FAMILY), /comparing hotels needs 5 behind it/i);
+
+    const noHoldout = row({ target_tier: 'global', supporting_hotel_count: 9 });
+    assert.match(plainLockReason(noHoldout, FACTS_FAMILY), /gave none of the evidence/i);
+  });
+
+  test('the evidence bar is reported before a requirement, matching the queue', () => {
+    // Both wrong at once: the founder should hear the harder one first, the
+    // same order the full list is built in.
+    const both = row({ supporting_hotel_count: 0, preconditions: ['family_row_exists'] });
+    assert.match(plainLockReason(both, FACTS_NO_FAMILY), /backs? this/i);
   });
 });
 

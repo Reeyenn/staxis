@@ -139,7 +139,7 @@ function readFile(raw: unknown): { error: string; code: string } | { file: Uploa
   if (bytes.length === 0) return malformed;
   if (bytes.length > FILE_MAX_BYTES) {
     return {
-      error: `That file is too big — keep it under ${FILE_MAX_BYTES / 1024 / 1024}MB.`,
+      error: `That file is too big. Keep it under ${FILE_MAX_BYTES / 1024 / 1024}MB.`,
       code: ApiErrorCode.FileTooBig,
     };
   }
@@ -234,7 +234,7 @@ export async function POST(req: NextRequest) {
       if (extracted.status === 'ready' || extracted.status === 'partial') {
         chunks.push({ kind: 'file', label: upload.name, text: extracted.text ?? '' });
         if (extracted.truncated) {
-          fileNote = 'That file is long — Staxis read the first part of it.';
+          fileNote = 'That file is long. Staxis read the first part of it.';
           fileNoteCode = READ_NOTE_TRUNCATED;
         }
       } else if (extracted.status === 'needs_ocr' && upload.mimeType === 'application/pdf') {
@@ -260,7 +260,7 @@ export async function POST(req: NextRequest) {
           });
         }
         chunks.push({ kind: 'file', label: upload.name, text });
-        fileNote = 'That looked like a scan, so Staxis read it with AI — double-check the wording.';
+        fileNote = 'That looked like a scan, so Staxis read it with AI. Double-check the wording.';
         fileNoteCode = READ_NOTE_VISION;
       } else {
         // `extracted.error` is the extractor's own diagnostic — developer

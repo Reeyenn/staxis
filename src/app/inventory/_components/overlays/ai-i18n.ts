@@ -12,7 +12,7 @@ export function aiStrings(lang: Lang) {
       eyebrow: 'Inventory AI',
       title: 'What the AI has learned',
       subtitle:
-        'The inventory page stays fully manual — you count and reorder yourself. Behind the scenes the AI keeps learning how fast each item moves. This is its report card.',
+        'The inventory page stays fully manual. You count and reorder yourself. Behind the scenes the AI keeps learning how fast each item moves. This is its report card.',
       // ── Summary stats ──
       itemsTracked: 'Items tracked',
       graduated: 'Models graduated',
@@ -31,7 +31,7 @@ export function aiStrings(lang: Lang) {
       // ── Empty state ──
       emptyTitle: 'The AI hasn’t made any predictions yet',
       emptyBody:
-        'It starts learning as counts come in. Keep counting inventory the normal way — after a few counts per item, the AI will begin predicting daily usage and show its work here.',
+        'It starts learning as counts come in. Keep counting inventory the normal way. After a few counts per item, the AI will begin predicting daily usage and show its work here.',
       // ── Per-item list ──
       listHeading: 'Item by item',
       predictedUsage: 'Predicted usage',
@@ -52,8 +52,8 @@ export function aiStrings(lang: Lang) {
           insufficient_training_windows: 'needs more count history',
           insufficient_prospective_pairs: 'needs more tests',
           prospective_span_too_short: 'tests too close together',
-          prospective_wape_too_high: 'still off — keeps learning',
-          prospective_actuals_all_zero: 'barely moves — stays manual',
+          prospective_wape_too_high: 'still off, keeps learning',
+          prospective_actuals_all_zero: 'barely moves, stays manual',
           does_not_beat_baseline: 'not beating the average yet',
         })[code] ?? '',
       // ── Status chips ──
@@ -109,7 +109,7 @@ export function aiStrings(lang: Lang) {
       eyebrow: 'IA de inventario',
       title: 'Lo que la IA ha aprendido',
       subtitle:
-        'La página de inventario sigue siendo totalmente manual — tú cuentas y pides. Por detrás, la IA sigue aprendiendo qué tan rápido se mueve cada artículo. Esta es su libreta de calificaciones.',
+        'La página de inventario sigue siendo totalmente manual. Tú cuentas y pides. Por detrás, la IA sigue aprendiendo qué tan rápido se mueve cada artículo. Esta es su libreta de calificaciones.',
       itemsTracked: 'Artículos seguidos',
       graduated: 'Modelos graduados',
       accuracy: 'Precisión general',
@@ -125,7 +125,7 @@ export function aiStrings(lang: Lang) {
       never: 'nunca',
       emptyTitle: 'La IA aún no ha hecho ninguna predicción',
       emptyBody:
-        'Empieza a aprender a medida que llegan los conteos. Sigue contando el inventario de la forma normal — tras algunos conteos por artículo, la IA empezará a predecir el uso diario y mostrará su trabajo aquí.',
+        'Empieza a aprender a medida que llegan los conteos. Sigue contando el inventario de la forma normal. Tras algunos conteos por artículo, la IA empezará a predecir el uso diario y mostrará su trabajo aquí.',
       listHeading: 'Artículo por artículo',
       predictedUsage: 'Uso previsto',
       predictedStock: 'Existencias previstas',
@@ -144,8 +144,8 @@ export function aiStrings(lang: Lang) {
           insufficient_training_windows: 'necesita más historial',
           insufficient_prospective_pairs: 'necesita más exámenes',
           prospective_span_too_short: 'exámenes muy seguidos',
-          prospective_wape_too_high: 'aún falla — sigue aprendiendo',
-          prospective_actuals_all_zero: 'apenas se mueve — manual',
+          prospective_wape_too_high: 'aún falla, sigue aprendiendo',
+          prospective_actuals_all_zero: 'apenas se mueve, manual',
           does_not_beat_baseline: 'no supera el promedio aún',
         })[code] ?? '',
       chipGraduated: 'De confianza',

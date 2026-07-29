@@ -151,7 +151,7 @@ export default function MfaResumePage() {
                   )}
                 </li>
                 <li>
-                  Check "remember this device" / "trust this browser" if the PMS offers it — that prevents MFA
+                  Check "remember this device" / "trust this browser" if the PMS offers it. That prevents MFA
                   re-prompts for ~30-90 days.
                 </li>
                 <li>

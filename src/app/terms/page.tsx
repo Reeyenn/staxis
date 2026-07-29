@@ -1,7 +1,7 @@
 import type { Metadata } from 'next';
 
 export const dynamic = 'force-static';
-export const metadata: Metadata = { title: 'Terms of Service — Staxis' };
+export const metadata: Metadata = { title: 'Terms of Service · Staxis' };
 
 export default function TermsPage() {
   return (
@@ -115,7 +115,7 @@ export default function TermsPage() {
 
           <footer>
             <div style={{ marginBottom: '6px' }}>
-              Staxis — operated by Reeyen Patel (sole proprietor) · 2215 Rio Grande St, Austin, TX 78705
+              Staxis, operated by Reeyen Patel (sole proprietor) · 2215 Rio Grande St, Austin, TX 78705
             </div>
             <div>
               {/* eslint-disable-next-line @next/next/no-html-link-for-pages */}

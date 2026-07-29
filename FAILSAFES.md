@@ -158,6 +158,28 @@ These are guards added in the May 2026 multi-tenant scaling work. Don't weaken t
 
 ---
 
+## 9. The AI books have ONE owner, and are never pruned unverified
+
+**What it does:** `agent_costs` is the financial record (INV-43 — "agent_costs is the BOOKS"; every spend figure the founder sees is summed from it). Two guards protect it:
+
+1. **Single owner.** `/api/cron/agent-costs-rollup` is the only job allowed to delete from it. `agent_costs` is on `EXEMPT_FROM_PURGE` in `ml-retention-purge`, which used to delete from it too on a 5-year window.
+2. **Verify, then prune.** A month's raw rows may only be deleted after `staxis_rollup_agent_costs_month` (migration 0375) has folded that month into `agent_costs_monthly` AND confirmed the fold reproduces the raw sum and row count *exactly* — decimal equality, no tolerance. Success stamps `verified_at`. No stamp, no delete.
+
+**Why it exists (2026-07-27 chore audit):** two crons could delete from one ledger, so neither window was the real policy and the surviving total was whichever ran last. Nothing was actually being lost only because `ml-retention-purge` has been unscheduled since 2026-05-30 — the danger was entirely in the re-enable moment.
+
+### Rules for editing
+
+- **Do not remove `agent_costs` from `EXEMPT_FROM_PURGE`.** Two owners of a ledger is the bug this closes.
+- **Do not prune on the function's returned `verified` boolean.** It means "the sums match", which is true of an OPEN month too. Only the durable `verified_at` stamp authorises a delete, and the cron re-reads it from the table immediately before deleting.
+- **Do not let a verified month be re-folded** (0375 Guard 1). Re-folding a month whose raw rows are already pruned finds zero rows, deletes the real summary, inserts nothing, and reports success because 0 = 0. The month's money would vanish with the function agreeing it was fine.
+- **Do not stamp a month that is not over** (0375 Guard 2), or Guard 1 freezes it mid-month and every later row is summarised nowhere.
+- **Keep retention longer than the longest window any screen reads.** `checkRetentionCoversReadWindows` in `src/lib/ai/cost-rollup.ts` throws if that stops being true. This is why no spend screen needed changing: readers look back 30 days, retention is 6 months, so nothing reads across the boundary.
+- **Never compute the month bucket by casting a timestamptz to date.** That resolves in the session timezone and silently shifts the label to the previous month at any negative offset. Use a pure `date` (`v_month`).
+
+**Tested by:** `agent-costs-rollup.test.ts` (the arithmetic, including "a spend total is identical before and after rollup + prune") and `agent-costs-rollup-sql.integration.test.ts` (the real function against Postgres, including both guards).
+
+---
+
 ## How to verify all failsafes still work
 
 Run after any significant infra change:

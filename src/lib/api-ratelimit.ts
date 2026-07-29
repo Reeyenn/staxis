@@ -252,6 +252,20 @@ export type RateLimitEndpoint =
   // (The order-create/send/receive + catalog + spend-rollup keys were removed
   // with the ordering flow, 2026-07-18.)
   | 'inventory-vendors'
+  // ── Ordering Manager (2026-07-28) ───────────────────────────────────────
+  // `inventory-ordering` covers the screen's reads and its cheap writes
+  // (confirm a suggested vendor, map a category, mark ordered). Keyed on the
+  // RAW property id like inventory-vendors above, for the same FK reason.
+  | 'inventory-ordering'
+  // `inventory-po-send` is the purchase-order email to a VENDOR — the only
+  // path here that leaves the building. It gets its own bucket rather than
+  // reusing 'email-transactional' (5/hr, keyed on the recipient) because that
+  // cap is per-address: a hotel legitimately sending Sysco a second order
+  // after a delivery correction would be blocked by a limit meant to stop
+  // invite spam. Keyed on the PROPERTY, so one hotel's ordering day cannot
+  // exhaust another's. Billing-impacting → fails CLOSED: if we cannot prove
+  // the hotel is under its cap, we do not mail a third party on their behalf.
+  | 'inventory-po-send'
   // ── Knowledge hub (0252) — manager-gated. knowledge-presign mints a signed
   // upload URL; knowledge-write covers the document register (synchronous
   // storage download + text extraction). Both keyed on the (pid,userId)
@@ -555,6 +569,14 @@ const HOURLY_CAPS: Record<RateLimitEndpoint, number> = {
   // are deliberate manager actions; order-send fires email (billing); reads are
   // panel polls. Tuned to "a manager working through orders" with headroom.
   'inventory-vendors':          200,
+  // Ordering Manager — per-property (raw pid). The screen's reads plus its
+  // cheap writes; a manager working a full reorder round trips this a few
+  // dozen times, so 300 is generous headroom on an ordinary morning.
+  'inventory-ordering':         300,
+  // Purchase-order sends. 20/hour is well above a real ordering round (a
+  // hotel has 3-6 vendors) and low enough that a loop cannot mail a vendor
+  // hundreds of times before anyone notices.
+  'inventory-po-send':           20,
   // Packages — per-property (raw pid). read = the polled list; write covers
   // create / pickup / delete; scan-label is Claude Vision; presign mints a
   // signed upload URL. Tuned to "a busy front desk".
@@ -734,6 +756,10 @@ const BILLING_IMPACTING_ENDPOINTS: ReadonlySet<RateLimitEndpoint> = new Set<Rate
   // Twilio SMS fan-out (per-recipient charge).
   // Resend transactional email (per-recipient charge).
   'email-transactional',
+  // Purchase-order email to a vendor. Fails CLOSED: this is the one path that
+  // sends mail to a third party in the hotel's name, so if the limiter itself
+  // is unavailable we decline rather than risk mailing a supplier in a loop.
+  'inventory-po-send',
   // Claim/resend each attempt a transactional OTP email. The inner Resend
   // wrapper also enforces its recipient cap; these outer guards keep an
   // api-limit outage from reaching link generation/email at all.

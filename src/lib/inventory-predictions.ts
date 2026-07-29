@@ -73,9 +73,17 @@ const DEFAULT_LEAD_DAYS = 3;
 //
 // Tier 3 — empty result. Caller treats every item as urgency='unknown'.
 
+// The `client` parameter (2026-07-28) exists because this function reads
+// through the ANON client by default, which is correct in the browser and a
+// trap on the server: an API route calling it with no client gets the anon
+// role, RLS denies the read, PostgREST returns 200 with [], and every item
+// silently reports source:'none'. That is the silent-empty-state bug class,
+// and it would surface as an ordering screen that shows a dash for every burn
+// rate on a hotel with plenty of data. Server callers pass supabaseAdmin.
 export async function fetchDailyAverages(
   pid: string,
   days = 14,
+  client: MlRatesSupabaseLike = supabase,
 ): Promise<DailyAverages> {
   const since = new Date();
   since.setDate(since.getDate() - days);
@@ -83,7 +91,7 @@ export async function fetchDailyAverages(
 
   // ── Tier 1: daily_logs ────────────────────────────────────────────────
   try {
-    const { data, error } = await supabase
+    const { data, error } = await client
       .from('daily_logs')
       .select('date, checkouts, stayovers')
       .eq('property_id', pid)
@@ -117,7 +125,7 @@ export async function fetchDailyAverages(
 
   // ── Tier 2: cleaning_events ───────────────────────────────────────────
   try {
-    const { data, error } = await supabase
+    const { data, error } = await client
       .from('cleaning_events')
       .select('date, room_type, status')
       .eq('property_id', pid)

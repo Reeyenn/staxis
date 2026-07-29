@@ -27,7 +27,7 @@ import {
   type FindingStatus,
 } from '@/lib/findings/types';
 import { formatMoneyRange } from '@/lib/findings/pricing';
-import { spanishTemplateSentence } from '@/lib/findings/template-phrasing';
+import { spanishTemplateSentence, withoutEmDash } from '@/lib/findings/template-phrasing';
 
 export type Lang = 'en' | 'es';
 
@@ -167,10 +167,10 @@ export function signOffNotice(signOff: CardSignOff, lang: Lang): string {
   const names = signOff.approverNames.filter((n) => n && n.trim().length > 0);
   if (lang === 'es') {
     const head = `Necesita la aprobación ${role}`;
-    return names.length > 0 ? `${head} — enviado a ${listNames(names, 'es')}` : head;
+    return names.length > 0 ? `${head}. Enviado a ${listNames(names, 'es')}` : head;
   }
   const head = `Needs ${role} sign-off`;
-  return names.length > 0 ? `${head} — sent to ${listNames(names, 'en')}` : head;
+  return names.length > 0 ? `${head}. Sent to ${listNames(names, 'en')}` : head;
 }
 
 /** "Maria", "Maria and Ana", "Maria, Ana and Bo". */
@@ -731,11 +731,19 @@ export function formatPriceRange(price: CardPrice | null | undefined): string | 
  * `company_findings` has no judged_* columns at all. So Spanish falls back to
  * `spanishTemplateSentence`, which names the subject from the row's own
  * evidence and points at the receipt. See src/lib/findings/template-phrasing.ts.
+ *
+ * ─── WHY THE EM DASH IS STRIPPED HERE AND NOT AT THE SOURCE ───────────────
+ * Both inputs are PERSISTED text: `phrasedEn`/`phrasedEs` come from
+ * `judged_summary_*` and `summary` is written by the detector at detection
+ * time. Cleaning the templates only helps rows written after the deploy, and a
+ * card found last week would carry its dash for as long as it stayed open. This
+ * is the single seam every card headline passes through, so the strip runs here
+ * and old rows read correctly without rewriting the stored record.
  */
 export function cardPhrasing(f: QueueFinding, lang: Lang): string {
   const judged = lang === 'es' ? f.phrasedEs : f.phrasedEn;
   const text = (judged ?? '').trim();
-  if (text.length > 0) return text;
+  if (text.length > 0) return withoutEmDash(text);
   if (lang === 'es') {
     return spanishTemplateSentence({
       severity: f.severity,
@@ -743,7 +751,7 @@ export function cardPhrasing(f: QueueFinding, lang: Lang): string {
       price: f.price,
     });
   }
-  return f.summary;
+  return withoutEmDash(f.summary);
 }
 
 /**
@@ -763,10 +771,12 @@ export function basisInLang(
 ): string | null {
   if (lang === 'es') {
     const es = (spanish ?? '').trim();
-    if (es.length > 0) return es;
+    if (es.length > 0) return withoutEmDash(es);
   }
   const en = (primary ?? '').trim();
-  return en.length > 0 ? en : null;
+  // Stored text, same as `cardPhrasing`: a basis written before the no-em-dash
+  // ruling still has to read correctly today.
+  return en.length > 0 ? withoutEmDash(en) : null;
 }
 
 // ─── Copy ───────────────────────────────────────────────────────────────────
@@ -884,7 +894,7 @@ interface ClosureSpec {
  * proposal and under "Seen" on a recommendation, because it is the same verdict.
  */
 const KNOWN_HINT: Bi = {
-  en: 'Staxis stops bringing this up — unless it gets meaningfully worse.',
+  en: 'Staxis stops bringing this up, unless it gets meaningfully worse.',
   es: 'Staxis deja de mencionarlo, salvo que empeore de forma clara.',
 };
 
@@ -923,7 +933,7 @@ const PM_CALLED_HINT: Bi = {
 
 /** Unconditional, so it asks first. The one verdict with no escape hatch. */
 const STOP_WATCHING: Bi = {
-  en: 'Staxis will stop watching this — sure?',
+  en: 'Staxis will stop watching this. Sure?',
   es: 'Staxis dejará de vigilar esto. ¿Seguro?',
 };
 
@@ -1165,8 +1175,8 @@ export function livenessLine(
             ? 'Última revisión hace 1 día. Puede que esto no esté al día.'
             : `Última revisión hace ${days} días. Puede que esto no esté al día.`
           : days === 1
-            ? 'Last checked 1 day ago — this may not be up to date.'
-            : `Last checked ${days} days ago — this may not be up to date.`,
+            ? 'Last checked 1 day ago. This may not be up to date.'
+            : `Last checked ${days} days ago. This may not be up to date.`,
     };
   }
 
@@ -1180,8 +1190,8 @@ export function livenessLine(
     kind: 'fresh',
     text:
       lang === 'es'
-        ? `Se ${one ? 'revisó' : 'revisaron'} ${checked} ${one ? 'cosa' : 'cosas'} anoche — ${normal} se ${normal === 1 ? 've normal' : 'ven normales'}.`
-        : `Checked ${checked} ${one ? 'thing' : 'things'} last night — ${normal} look normal.`,
+        ? `Se ${one ? 'revisó' : 'revisaron'} ${checked} ${one ? 'cosa' : 'cosas'} anoche. ${normal} se ${normal === 1 ? 've normal' : 'ven normales'}.`
+        : `Checked ${checked} ${one ? 'thing' : 'things'} last night. ${normal} look normal.`,
   };
 }
 
@@ -1210,5 +1220,5 @@ export function skippedNote(
   const n = run.detectorsSkipped;
   return lang === 'es'
     ? `${n} ${n === 1 ? 'revisión no pudo hacerse' : 'revisiones no pudieron hacerse'} por falta de datos.`
-    : `${n} ${n === 1 ? 'check' : 'checks'} couldn't run yet — not enough history.`;
+    : `${n} ${n === 1 ? 'check' : 'checks'} couldn't run yet. Not enough history.`;
 }

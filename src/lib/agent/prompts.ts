@@ -441,7 +441,7 @@ type StableTier =
   | 'version_line';
 
 /** Segments of the UNCACHED per-turn block, in their fixed assembly order. */
-type DynamicTier = 'hotel_snapshot' | 'hotel_memory' | 'room_hint';
+type DynamicTier = 'hotel_snapshot' | 'hotel_memory' | 'right_now' | 'room_hint';
 
 /**
  * FIXED ASSEMBLY ORDER. This IS the conflict rule for facts: later text wins,
@@ -471,6 +471,13 @@ const STABLE_TIER_ORDER: readonly StableTier[] = [
 const DYNAMIC_TIER_ORDER: readonly DynamicTier[] = [
   'hotel_snapshot',
   'hotel_memory',
+  // The situational-awareness block sits LAST of the three content tiers, and
+  // the position is the conflict rule doing its job: later text wins, and what
+  // is true of this minute must beat what the hotel taught us last month. A
+  // memory saying "we run 12 housekeepers" should not survive contact with a
+  // clock reading 3am. It is also the tier closest to the user's own message,
+  // which is where the model attends hardest.
+  'right_now',
   'room_hint',
 ];
 
@@ -663,10 +670,32 @@ export async function buildSystemPrompt(
    *  that means nothing is worse than no test, because it trains everyone to
    *  ignore the light. */
   now: Date = new Date(),
-  /** Current exact-hotel authority. Last for backwards compatibility with the
-   *  injectable clock used by prompt-purity tests. */
-  authorization?: AgentPromptAuthorization,
+  /**
+   * Pre-rendered <staxis-awareness> block from formatAwarenessForPrompt().
+   *
+   * DYNAMIC only — it carries a wall clock, so putting it in the cached half
+   * would miss the prompt cache on every turn, forever. '' / undefined = none,
+   * which is what every caller that has not adopted it yet passes.
+   *
+   * LAST, after `now`, on purpose. Slotting it in beside `memoryBlock` where it
+   * reads better silently shifted `now` one position right for every existing
+   * caller — the cache-purity and hotel-identity suites both started passing a
+   * Date where a string belonged. A trailing optional cannot do that.
+   */
+  awarenessOrAuthorization?: string | AgentPromptAuthorization,
+  /** Current exact-hotel authority. Kept as a separate trailing argument so
+   * awareness and finance-read context can be supplied on the same turn. */
+  authorizationInput?: AgentPromptAuthorization,
 ): Promise<SystemPromptBlocks> {
+  // Before awareness existed, the seventh argument was authorization. Accept
+  // both closed shapes so older callers keep their meaning while new callers
+  // can pass awareness followed by authorization explicitly.
+  const awarenessBlock = typeof awarenessOrAuthorization === 'string'
+    ? awarenessOrAuthorization
+    : undefined;
+  const authorization = typeof awarenessOrAuthorization === 'string'
+    ? authorizationInput
+    : awarenessOrAuthorization ?? authorizationInput;
   // A3 tiers: the hotel's PMS family selects the shared family addendum. It
   // rides in on the snapshot the caller already built — no extra query.
   const pmsFamily = snapshot.property.pmsFamily ?? null;
@@ -856,6 +885,11 @@ export async function buildSystemPrompt(
   // hotel teaches the copilot, and must never poison the cached stable prefix.
   if (memoryBlock && memoryBlock.trim().length > 0) {
     dynamic.push({ tier: 'hotel_memory', lines: ['', memoryBlock] });
+  }
+  // "Right now" — the screen, the clock, today's actions, what is waiting.
+  // Assembled by code in awareness.ts; never a model call, never cached.
+  if (awarenessBlock && awarenessBlock.trim().length > 0) {
+    dynamic.push({ tier: 'right_now', lines: ['', awarenessBlock] });
   }
   if (roomHint) {
     dynamic.push({

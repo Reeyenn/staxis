@@ -20,12 +20,12 @@ import { supabaseAdmin } from '@/lib/supabase-admin';
 import { log } from '@/lib/log';
 import { chunkText, DEFAULT_MAX_CHUNKS, type TextChunk } from './chunking';
 import { extractDocumentText, EXTRACTED_TEXT_MAX } from './extraction';
-import { enqueueOcrJob, decideOcrStatus } from './ocr';
+import { runDocumentOcr, decideOcrStatus, ocrIssueMessage, ocrStatusForReason } from './ocr';
 import {
   getDefaultEmbedder, estimateEmbeddingCostUsd, EMBEDDING_MODEL, toVectorLiteral, type Embedder,
 } from './embeddings';
 import { recordNonRequestCost } from '@/lib/agent/cost-controls';
-import type { KnowledgeVisibility, ExtractionStatus } from './types';
+import { DOC_ISSUE_MESSAGE, type KnowledgeVisibility, type ExtractionStatus } from './types';
 
 const BUCKET = 'knowledge-docs';
 
@@ -119,7 +119,7 @@ async function embedAndStoreChunks(opts: {
   const spent = await embeddingSpendTodayUsd(opts.propertyId);
   if (spent >= EMBEDDING_PROPERTY_DAILY_USD) {
     partial = true;
-    error = 'Daily embedding budget reached for this property — searchable by keyword for now.';
+    error = 'Daily embedding budget reached for this property. Searchable by keyword for now.';
   } else {
     try {
       // Construct the embedder INSIDE the try so a missing OPENAI_API_KEY (or any
@@ -132,7 +132,7 @@ async function embedAndStoreChunks(opts: {
         vectors = res.vectors;
       } else {
         partial = true;
-        error = 'Embedding returned an unexpected count — keyword-only for now.';
+        error = 'Embedding returned an unexpected count. Keyword-only for now.';
       }
       await meterEmbeddingCost({
         accountId: opts.accountId, propertyId: opts.propertyId,
@@ -140,7 +140,7 @@ async function embedAndStoreChunks(opts: {
       });
     } catch (e) {
       partial = true;
-      error = 'Embedding service was unavailable — searchable by keyword for now.';
+      error = 'Embedding service was unavailable. Searchable by keyword for now.';
       log.warn('knowledge.embed failed', { err: e instanceof Error ? e.message : String(e) });
     }
   }
@@ -253,6 +253,13 @@ export interface IndexDocumentInput {
   visibility: KnowledgeVisibility;
   /** Department for visibility='dept' docs; null otherwise. Stamped on chunks. */
   visibleDept: string | null;
+  /** Absolute wall-clock deadline for the vision OCR call, when this document
+   *  turns out to be a scan. The ROUTE owns this number because the route owns
+   *  the invocation budget (maxDuration): the read must be cut off with enough
+   *  time left to chunk, embed, and write a terminal status, or the platform
+   *  kills the function mid-pass and the document is stranded on `processing` —
+   *  which is the exact bug this pipeline was just fixed for. */
+  ocrDeadlineAt?: number;
   embedder?: Embedder;
 }
 
@@ -282,25 +289,33 @@ export async function indexDocument(input: IndexDocumentInput): Promise<Extracti
 
     const outcome = await extractDocumentText(bytes, mime);
 
-    // Scanned PDF / uploaded photo → hand off to the Fly vision-OCR worker
-    // instead of dead-ending. Set the doc to `processing` (KnowledgePane shows
-    // "Reading scan…") and enqueue a doc_ocr job. The worker POSTs the
-    // transcribed text back to /api/internal/knowledge/ocr-complete, which runs
-    // this same chunk→embed pipeline. If the enqueue fails outright, fall back
-    // to `unsupported` so the doc lands on a definite state (no stuck spinner).
+    // Scanned PDF / uploaded photo → read it HERE, with Claude vision, in this
+    // same background pass. Until 2026-07-27 this branch enqueued a `doc_ocr`
+    // job for the Fly robot, which has been switched off since 2026-07-25 and
+    // whose queue has no other consumer — so every scan parked on `processing`
+    // and spun forever. See ocr.ts for the full post-mortem.
+    //
+    // The read is bounded (size, pages, daily spend) and every bound returns a
+    // reason code rather than a stall: this branch cannot exit on `processing`.
     if (outcome.status === 'needs_ocr') {
-      const enqueued = await enqueueOcrJob({
-        propertyId, documentId: docId, filePath, mime, pageCount: outcome.pageCount,
+      const ocr = await runDocumentOcr({
+        propertyId, documentId: docId, bytes, mime, accountId,
+        pageCount: outcome.pageCount,
+        deadlineAt: input.ocrDeadlineAt,
       });
-      if (enqueued) {
-        await setDocStatus(propertyId, docId, 'processing', { extractedText: null, error: outcome.error });
-        return 'processing';
+      if (!ocr.ok) {
+        const status = ocrStatusForReason(ocr.reason);
+        await setDocStatus(propertyId, docId, status, {
+          extractedText: null,
+          error: ocrIssueMessage(ocr.reason),
+        });
+        return status;
       }
-      await setDocStatus(propertyId, docId, 'unsupported', {
-        extractedText: null,
-        error: 'Couldn\'t start reading this scan — please try uploading it again.',
+      // Same tail as every other document — cap, chunk, embed, set status.
+      return indexOcrText({
+        propertyId, docId, text: ocr.text, accountId,
+        pageCapped: false, embedder: input.embedder,
       });
-      return 'unsupported';
     }
 
     if (outcome.text === null) {
@@ -327,7 +342,7 @@ export async function indexDocument(input: IndexDocumentInput): Promise<Extracti
     // (don't show a green "ready" badge the doc didn't earn).
     const hitChunkCap = chunks.length >= DEFAULT_MAX_CHUNKS;
     const finalStatus: ExtractionStatus = outcome.status === 'partial' || emb.partial || hitChunkCap ? 'partial' : 'ready';
-    const finalError = outcome.error ?? emb.error ?? (hitChunkCap ? 'Document is very large — only the first part is indexed for search.' : null);
+    const finalError = outcome.error ?? emb.error ?? (hitChunkCap ? 'Document is very large. Only the first part is indexed for search.' : null);
     await setDocStatus(propertyId, docId, finalStatus, { extractedText: outcome.text, error: finalError });
     return finalStatus;
   } catch (e) {
@@ -337,26 +352,29 @@ export async function indexDocument(input: IndexDocumentInput): Promise<Extracti
   }
 }
 
-// ── Public: index OCR-transcribed text (from the Fly vision worker) ──────────
+// ── Public: index an OCR transcript (scanned PDF / photo) ────────────────────
 
 export interface IndexOcrTextInput {
   propertyId: string;
   docId: string;
-  /** Verbatim transcription the worker produced (concatenated per-page). */
+  /** Verbatim transcription of the scan. */
   text: string;
   accountId: string;
-  /** True when the worker capped the doc at its page limit — forces `partial`
-   *  even if everything else fits, so the badge is honest about the tail. */
+  /** True when only part of the document was read — forces `partial` even if
+   *  everything else fits, so the badge is honest about the tail. Always false
+   *  on the server-side path, which refuses a too-long scan outright rather
+   *  than half-reading it; kept for the /api/internal/knowledge/ocr-complete
+   *  caller, whose worker did cap by pages. */
   pageCapped: boolean;
   embedder?: Embedder;
 }
 
 /**
- * Index text that was OCR'd off-box by the Fly worker (scanned PDF / photo).
- * Same tail as indexDocument — cap → chunk → embed → store → set status — but
- * skips download+extraction (the worker already did the reading). Idempotent:
- * clears the doc's existing chunks first, so a retry can't duplicate passages.
- * Never throws; a failure lands the doc on `failed` with a plain-English reason.
+ * Index an OCR transcript. Same tail as indexDocument — cap → chunk → embed →
+ * store → set status — but skips download+extraction (the reading already
+ * happened). Idempotent: clears the doc's existing chunks first, so a retry
+ * can't duplicate passages. Never throws; a failure lands the doc on `failed`
+ * with a plain-English reason.
  */
 export async function indexOcrText(input: IndexOcrTextInput): Promise<ExtractionStatus> {
   const { propertyId, docId, accountId, pageCapped } = input;
@@ -376,7 +394,7 @@ export async function indexOcrText(input: IndexOcrTextInput): Promise<Extraction
     if (text.trim().length === 0) {
       await setDocStatus(propertyId, docId, 'failed', {
         extractedText: null,
-        error: 'The scan didn\'t contain any readable text.',
+        error: DOC_ISSUE_MESSAGE.scan_empty,
       });
       return 'failed';
     }
@@ -395,9 +413,9 @@ export async function indexOcrText(input: IndexOcrTextInput): Promise<Extraction
       truncated, pageCapped, embedPartial: emb.partial, hitChunkCap,
     });
     const finalError = pageCapped
-      ? 'This scan is long — only the first pages are searchable.'
+      ? 'This scan is long. Only the first pages are searchable.'
       : truncated || hitChunkCap
-        ? 'This scan is large — only the first part is searchable.'
+        ? 'This scan is large. Only the first part is searchable.'
         : emb.error;
     await setDocStatus(propertyId, docId, finalStatus, { extractedText: text, error: finalError });
     return finalStatus;

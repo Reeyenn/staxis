@@ -39,7 +39,7 @@ export async function GET(
 
     const hasAccess = await userHasPropertyAccess(auth.userId, inspection.propertyId);
     if (!hasAccess) {
-      return err('forbidden — no access to this property', {
+      return err('forbidden: no access to this property', {
         requestId, status: 403, code: ApiErrorCode.Forbidden,
       });
     }

@@ -19,12 +19,12 @@ const STRINGS = {
   en: {
     // Step 1 — welcome (step-count copy; wizard is 9 steps, "services" removed)
     welcomeSteps:
-      "We'll walk you through 9 quick steps — creating your account, your hotel details, connecting your booking system, and adding your team. Takes about 10 minutes.",
+      "We'll walk you through 9 quick steps: creating your account, your hotel details, connecting your booking system, and adding your team. Takes about 10 minutes.",
 
     // Step 8 — tell Staxis about your hotel (optional, skippable)
     contextTitle: 'Anything we should know? (optional)',
     contextBody:
-      'Tell Staxis about your hotel in your own words — how things run, who to call, what keeps breaking. One or two sentences is plenty. You can skip this and do it any time from the Staxis tab.',
+      'Tell Staxis about your hotel in your own words: how things run, who to call, what keeps breaking. One or two sentences is plenty. You can skip this and do it any time from the Staxis tab.',
     contextPlaceholder:
       'e.g. Breakfast runs 6–9. Ace Plumbing handles anything with water. The third-floor ice machine fails every summer.',
     contextSkip: 'Skip for now',
@@ -33,15 +33,15 @@ const STRINGS = {
     contextFailed:
       "Staxis couldn't read that just now. You can skip and add it later from the Staxis tab.",
     contextNote:
-      'Whatever you write becomes a short list of facts you review and confirm later — nothing is treated as certain until you say so.',
+      'Whatever you write becomes a short list of facts you review and confirm later: nothing is treated as certain until you say so.',
 
     // Step 5 — Connect PMS picker
     pmsLabel: 'Your booking system (PMS) *',
-    pmsSelectPlaceholder: '— Select your booking system —',
+    pmsSelectPlaceholder: 'Select your booking system…',
     pmsRequired: 'Please pick your booking system.',
     pmsOtherLabel: "What's your booking system called? *",
     pmsOtherPlaceholder: 'e.g. Maestro, RMS, innRoad…',
-    pmsOtherHint: "We'll set it up for you — just tell us the name.",
+    pmsOtherHint: "We'll set it up for you. Tell us the name.",
     pmsOtherRequired: 'Please type the name of your booking system.',
 
     // Step 3 — verify-email recovery (tab was closed, session lost)
@@ -68,7 +68,7 @@ const STRINGS = {
   },
   es: {
     welcomeSteps:
-      'Te guiaremos en 9 pasos rápidos — crear tu cuenta, los datos de tu hotel, conectar tu sistema de reservas y agregar a tu equipo. Toma unos 10 minutos.',
+      'Te guiaremos en 9 pasos rápidos: crear tu cuenta, los datos de tu hotel, conectar tu sistema de reservas y agregar a tu equipo. Toma unos 10 minutos.',
 
     contextTitle: '¿Algo que debamos saber? (opcional)',
     contextBody:
@@ -84,11 +84,11 @@ const STRINGS = {
       'Lo que escribas se convierte en una lista corta de datos que tú revisas y confirmas después: nada se da por cierto hasta que tú lo digas.',
 
     pmsLabel: 'Tu sistema de reservas (PMS) *',
-    pmsSelectPlaceholder: '— Selecciona tu sistema de reservas —',
+    pmsSelectPlaceholder: 'Selecciona tu sistema de reservas…',
     pmsRequired: 'Por favor elige tu sistema de reservas.',
     pmsOtherLabel: '¿Cómo se llama tu sistema de reservas? *',
     pmsOtherPlaceholder: 'p. ej. Maestro, RMS, innRoad…',
-    pmsOtherHint: 'Nosotros lo configuramos por ti — solo dinos el nombre.',
+    pmsOtherHint: 'Nosotros lo configuramos por ti. Dinos el nombre.',
     pmsOtherRequired: 'Por favor escribe el nombre de tu sistema de reservas.',
 
     resumeTitle: 'Ya empezaste la configuración',

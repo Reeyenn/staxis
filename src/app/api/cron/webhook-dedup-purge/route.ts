@@ -1,6 +1,28 @@
 /**
  * GET /api/cron/webhook-dedup-purge
  *
+ * ┌─ DORMANT since 2026-07-27 (chore audit) — UNSCHEDULED, NOT DELETED ─────┐
+ * │ Neither table this sweeps has a live producer, so every daily run was a │
+ * │ guaranteed no-op:                                                       │
+ * │                                                                         │
+ * │   processed_sentry_webhooks — producer deleted 2026-07-17 (90512ffe).   │
+ * │     12 rows remain, none written since. Genuinely finished.             │
+ * │                                                                         │
+ * │   stripe_processed_events — 0 rows, ever. The CHECKOUT routes were      │
+ * │     deleted (936be013) but /api/stripe/webhook SURVIVES; it is simply   │
+ * │     inert because stripeIsConfigured() is false in production.          │
+ * │                                                                         │
+ * │ ⚠ RE-ENABLE THIS THE DAY BILLING GOES LIVE. The moment STRIPE_* env     │
+ * │   vars are set, /api/stripe/webhook starts writing one                  │
+ * │   stripe_processed_events row per delivery and NOTHING ELSE prunes that │
+ * │   table. This is the only pruner it has ever had.                       │
+ * │                                                                         │
+ * │ To re-enable, restore all five registry rows: this route's vercel.json  │
+ * │ crons[] entry ("15 4 * * *"), its SCHEDULE_REGISTRY row, its            │
+ * │ EXPECTED_CRONS row in the doctor, and its WORKER_META line in           │
+ * │ /api/admin/mission/workers. The handler below still works as written.   │
+ * └─────────────────────────────────────────────────────────────────────────┘
+ *
  * Runs daily. Purges old rows from the webhook-dedup tables:
  *   - processed_sentry_webhooks
  *   - stripe_processed_events

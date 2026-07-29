@@ -6,24 +6,23 @@ Source of truth: this document. If you add a new cron-shaped route, list it here
 
 ## Triggered by Vercel Cron (declared in `vercel.json`)
 
-These 15 schedules run automatically as part of Vercel deploys. Auth via `CRON_SECRET` header set by Vercel.
+These 14 schedules run automatically as part of Vercel deploys. Auth via `CRON_SECRET` header set by Vercel.
 
 | Path | Schedule | Purpose |
 |---|---|---|
-| `/api/cron/expire-help-requests` | `*/5 * * * *` | Expire stale robot help requests and clean up their screenshots. |
 | `/api/cron/agent-sweep-reservations` | `*/5 * * * *` | Every 5 min. Cancel agent_costs reservations stuck in 'reserved' state for >5 min. |
 | `/api/cron/sweep-account-lifecycle` | `*/5 * * * *` | Finish durable account disable/reactivate intents after an interrupted request. |
 | `/api/cron/process-agent-schedules` | `*/5 * * * *` | Deliver due agent reminders and recurring Communications tasks. |
 | `/api/cron/agent-archive-stale-conversations` | `0 3 * * *` | Daily 03:00 UTC. Move long-idle agent conversations to the archive tier. |
-| `/api/cron/claude-sessions-purge` | `30 3 * * *` | Purge expired AI browser sessions. |
 | `/api/cron/agent-summarize-long-conversations` | `*/30 * * * *` | Every 30 min. Fold conversations with >50 unsummarized messages into a summary turn (Haiku-driven). |
 | `/api/cron/agent-consolidate-memory` | `0 5 * * *` | Consolidate durable hotel memory overnight. |
 | `/api/cron/agent-heal-counters` | `0 4 * * *` | Daily 04:00 UTC. Reconcile agent_conversations counter drift via `staxis_heal_conversation_counters`. |
 | `/api/cron/walkthrough-heal-stale` | `*/30 * * * *` | Every 30 min. Recover stranded walkthrough_runs via `staxis_walkthrough_heal_stale`. |
 | `/api/cron/sweep-orphan-auth-users` | `0 7 * * *` | Remove incomplete sign-up auth users without an account row. |
 | `/api/cron/sweep-mfa-verified-sessions` | `0 */6 * * *` | Remove expired trusted-device verification sessions. |
-| `/api/cron/webhook-dedup-purge` | `15 4 * * *` | Purge expired webhook deduplication keys. |
-| `/api/cron/pms-auth-codes-purge` | `45 4 * * *` | Purge expired PMS authentication codes. |
+| `/api/cron/pms-auth-codes-purge` | `45 4 * * *` | Retention for the whole PMS report intake: old login codes, old inbox emails, and raw report files — including deleting immediately any report quarantined for containing a card number. |
+| `/api/cron/agent-costs-rollup` | `20 5 * * *` | The ONLY owner of `agent_costs` retention. Folds each month into `agent_costs_monthly`, verifies the fold reproduces the raw sum exactly, and prunes raw rows only for verified months older than 6 months. |
+| `/api/cron/pms-observations-purge` | `40 5 * * *` | Retention sweep for the five append-only PMS observation tables via 0343's sanctioned purge function. 5-year window — a no-op until report ingestion restarts. |
 | `/api/cron/vercel-watchdog` | `*/5 * * * *` | Poll the production doctor and alert when the app is unhealthy. |
 
 ## Triggered externally (NOT in `vercel.json`)
@@ -33,9 +32,13 @@ These routes also live under `/api/cron/*` (or `/api/agent/*`) and accept `CRON_
 | Path | Trigger | Cadence | Purpose |
 |---|---|---|---|
 | `/api/cron/enqueue-property-pulls` | **DORMANT** — `.github/workflows/pull-jobs-cron.yml` has no `schedule:` block | Never | Was: enqueue a PMS pull per connected property for the CUA robot. Robot decommissioned 2026-07-25 — the route also self-refuses while `CUA_DECOMMISSIONED` is true in `src/lib/pms/decommission.ts`. Route code kept dormant; see `cua-service/README.md` to re-enable. |
+| `/api/cron/webhook-dedup-purge` | **DORMANT** (2026-07-27 chore audit) | Never | Both dedup tables have no live writer: the Sentry producer was deleted 2026-07-17, and `stripe_processed_events` has never held a row because `/api/stripe/webhook` is inert while billing is unconfigured. **Re-schedule the day billing goes live** — that route writes a row per delivery and this is its only pruner. |
+| `/api/cron/expire-help-requests` | **DORMANT** (2026-07-27 chore audit) | Never | Its producer is the decommissioned robot's human-assist flow. All 4 prod rows expired 2026-07-01; it was a proven no-op 288×/day. Re-schedule when cua-service runs mapper jobs again. |
+| `/api/cron/claude-sessions-purge` | **DORMANT** (2026-07-27 chore audit) | Never | `claude_sessions` has never held a row — the writer is a developer-laptop hook whose POSTs die on the vercel.app→getstaxis.com 308. Developer tooling, not a hotel chore. Re-enable the hook and this cron together or not at all. |
+| `/api/cron/findings-janitor` | **DORMANT** by design | Never | Retention for the findings engine, shipped unscheduled like `run-findings` and `findings-sweep` — the founder's master switch turns the pattern engine on. Deletes only settled `findings_ai_spend` rows and surplus `finding_runs`; refuses to touch `findings`, `finding_actions`, `finding_detector_state` or `finding_sweep_runs`. |
 | `/api/cron/ml-aggregate-priors` | GitHub Actions | Daily, post-training | Aggregate Bayesian priors after the training run. |
 | `/api/cron/ml-predict-inventory` | GitHub Actions | Multiple times/day | Run inventory rate predictions across all properties. |
-| `/api/cron/ml-retention-purge` | GitHub Actions | Weekly | Apply retention policies to ML feature tables. |
+| `/api/cron/ml-retention-purge` | **DORMANT** — schedule commented out in `.github/workflows/ml-retention-purge.yml` since 2026-05-30 | Never | Retention for `prediction_log`, `app_events`, `phone_pairings`. **`agent_costs` was removed 2026-07-27** — the books have one owner, `agent-costs-rollup`. Deletes in bounded batches with a per-run cap, and supports `?dryRun=true`; run the dry run FIRST when re-enabling. |
 | `/api/cron/ml-run-inference` | GitHub Actions | Daily ~05:30 CT | Demand/supply/optimizer inference across all properties. Sharded. |
 | `/api/cron/ml-shadow-evaluate` | GitHub Actions | Per shadow-model deploy | Validate shadow model accuracy before promotion. |
 | `/api/cron/ml-train-demand` | GitHub Actions | Daily | Retrain demand model (XGBoost quantile). |

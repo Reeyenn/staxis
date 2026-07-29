@@ -106,7 +106,7 @@ export function TimeOffSection({
                 <span style={{ display: 'block', fontSize: 13, fontWeight: 600, color: T.ink }}>{name}</span>
                 <span style={{ display: 'block', fontFamily: fonts.sans, fontSize: 13, fontWeight: 600, letterSpacing: '-0.02em', color: T.ink2 }}>
                   {fmtDate(r.requestDate)}
-                  {r.reason && <span style={{ fontFamily: fonts.sans, fontWeight: 400, letterSpacing: 0, fontSize: 11.5, color: T.ink3 }}> — “{r.reason}”</span>}
+                  {r.reason && <span style={{ fontFamily: fonts.sans, fontWeight: 400, letterSpacing: 0, fontSize: 11.5, color: T.ink3 }}>, “{r.reason}”</span>}
                 </span>
               </span>
               <span style={{ flex: 1 }}/>
@@ -246,7 +246,7 @@ export function TimeOffHistoryModal({
                   <span style={{ display: 'block', fontWeight: 600, color: T.ink, fontSize: 12.5 }}>{name}</span>
                   <span style={{ display: 'block', fontSize: 11.5, color: T.ink3 }}>
                     {fmtDate(r.requestDate)}
-                    {r.reason && <> — “{r.reason}”</>}
+                    {r.reason && <>, “{r.reason}”</>}
                     {r.status === 'denied' && r.denyReason && <> · {es ? 'motivo' : 'reason'}: “{r.denyReason}”</>}
                   </span>
                 </span>

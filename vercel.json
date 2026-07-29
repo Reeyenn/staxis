@@ -2,10 +2,6 @@
   "$schema": "https://openapi.vercel.sh/vercel.json",
   "crons": [
     {
-      "path": "/api/cron/expire-help-requests",
-      "schedule": "*/5 * * * *"
-    },
-    {
       "path": "/api/cron/agent-sweep-reservations",
       "schedule": "*/5 * * * *"
     },
@@ -20,10 +16,6 @@
     {
       "path": "/api/cron/agent-archive-stale-conversations",
       "schedule": "0 3 * * *"
-    },
-    {
-      "path": "/api/cron/claude-sessions-purge",
-      "schedule": "30 3 * * *"
     },
     {
       "path": "/api/cron/agent-summarize-long-conversations",
@@ -50,12 +42,16 @@
       "schedule": "0 */6 * * *"
     },
     {
-      "path": "/api/cron/webhook-dedup-purge",
-      "schedule": "15 4 * * *"
+      "path": "/api/cron/agent-costs-rollup",
+      "schedule": "20 5 * * *"
     },
     {
       "path": "/api/cron/pms-auth-codes-purge",
       "schedule": "45 4 * * *"
+    },
+    {
+      "path": "/api/cron/pms-observations-purge",
+      "schedule": "40 5 * * *"
     },
     {
       "path": "/api/cron/vercel-watchdog",

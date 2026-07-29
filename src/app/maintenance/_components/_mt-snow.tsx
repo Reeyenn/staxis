@@ -539,7 +539,7 @@ export function BoardLoadError({ es, onRetry }: { es: boolean; onRetry: () => vo
   return (
     <MtEmptyCard
       title={es ? 'No se pudo cargar.' : "Couldn't load this."}
-      body={es ? 'Tus datos están a salvo — revisa la conexión e inténtalo de nuevo.' : 'Your data is safe — check your connection and try again.'}
+      body={es ? 'Tus datos están a salvo. Revisa la conexión e inténtalo de nuevo.' : 'Your data is safe. Check your connection and try again.'}
       action={<Btn variant="primary" onClick={onRetry}>↻ {es ? 'Reintentar' : 'Retry'}</Btn>}
     />
   );
@@ -563,7 +563,7 @@ export class MaintenanceErrorBoundary extends React.Component<
           <div style={{ maxWidth: 420, textAlign: 'center', background: '#FFFFFF', border: `1px solid ${T.rule}`, borderRadius: 18, padding: '32px 28px', boxShadow: CX_CARD_SHADOW }}>
             <div style={{ fontFamily: FONT_SANS, fontSize: 21, fontWeight: 600, color: T.ink, letterSpacing: '-0.02em' }}>Something hiccuped.</div>
             <p style={{ fontFamily: FONT_SANS, fontSize: 14, color: T.ink2, lineHeight: 1.5, margin: '10px 0 18px' }}>
-              The page hit a snag — your data is safe. Try this section again.
+              The page hit a snag. Your data is safe. Reload to pick back up.
             </p>
             <Btn variant="primary" onClick={() => this.setState({ err: null })}>↻ Try again</Btn>
           </div>
@@ -578,10 +578,18 @@ export class MaintenanceErrorBoundary extends React.Component<
 export type MaintenanceTabKey = 'work' | 'preventive' | 'equipment';
 
 export function MTSubTabBar({
-  tab, onTab,
+  tab, onTab, actions,
 }: {
   tab: MaintenanceTabKey;
   onTab: (t: MaintenanceTabKey) => void;
+  /**
+   * Controls that belong to the whole section rather than one board — today
+   * just the patterns popup. It lives here rather than in each board's
+   * PageHead because what Staxis has spotted spans work orders, preventive and
+   * equipment alike, and three copies of one button is three things to keep in
+   * step.
+   */
+  actions?: React.ReactNode;
 }) {
   const { lang } = useLang();
   const es = lang === 'es';
@@ -599,6 +607,10 @@ export function MTSubTabBar({
       borderBottom: `1px solid ${T.rule}`,
       position: 'sticky', top: 64, zIndex: 10,
     }}>
+      <div style={{
+        display: 'flex', alignItems: 'flex-end', justifyContent: 'space-between',
+        gap: 20, flexWrap: 'wrap',
+      }}>
       <nav style={{ display: 'flex', gap: 28 }}>
         {tabs.map(t => {
           const active = tab === t.key;
@@ -621,6 +633,12 @@ export function MTSubTabBar({
           );
         })}
       </nav>
+        {actions && (
+          <div style={{ display: 'flex', gap: 8, paddingBottom: 8, flexWrap: 'wrap' }}>
+            {actions}
+          </div>
+        )}
+      </div>
     </div>
   );
 }

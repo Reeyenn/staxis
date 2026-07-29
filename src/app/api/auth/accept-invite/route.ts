@@ -320,7 +320,7 @@ export async function POST(req: NextRequest) {
   if (authResult.alreadyHasAccount) {
     await releaseInvite();
     return err(
-      'An account with this email already exists — please sign in instead.',
+      'An account with this email already exists. Please sign in instead.',
       { requestId, status: 409, code: ApiErrorCode.IdempotencyConflict },
     );
   }

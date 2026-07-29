@@ -113,11 +113,19 @@ export type EvidenceClaim = Pick<
 
 // ── The bar ────────────────────────────────────────────────────────────────
 
+/** WHICH bar a claim failed. Lets a second vocabulary (the card's one-line
+ *  summary) be written for the same failure without re-deriving the thresholds
+ *  and drifting from the rule. Never widen this into a decision — `ok` is the
+ *  only field anything is allowed to gate on. */
+export type BarFailure = 'aggregate_group' | 'not_enough_hotels' | 'no_holdout' | 'unknown_tier';
+
 export interface BarResult {
   /** Does this claim clear the bar for the tier it wants to enter? */
   ok: boolean;
   /** Plain English, addressed to the founder. Empty when ok. */
   reason: string;
+  /** Empty when ok. Wording only — see BarFailure. */
+  code: BarFailure | '';
 }
 
 /**
@@ -137,32 +145,35 @@ export function meetsEvidenceBar(claim: EvidenceClaim): BarResult {
   if (claim.is_aggregate && hotels < AGGREGATE_MIN_GROUP_SIZE) {
     return {
       ok: false,
+      code: 'aggregate_group',
       reason:
-        `Comparing hotels needs at least ${AGGREGATE_MIN_GROUP_SIZE} other hotels backing it — ` +
-        `this has ${hotels}. Staxis says "not enough hotels to say" rather than guessing.`,
+        `Comparing hotels needs at least ${AGGREGATE_MIN_GROUP_SIZE} other hotels backing it. ` +
+        `This has ${hotels}. Staxis says "not enough hotels to say" rather than guessing.`,
     };
   }
 
-  if (claim.origin === 'authored') return { ok: true, reason: '' };
+  if (claim.origin === 'authored') return { ok: true, reason: '', code: '' };
 
   const bar = TIER_BAR[claim.target_tier];
-  if (!bar) return { ok: false, reason: `Unknown tier "${claim.target_tier}".` };
+  if (!bar) return { ok: false, reason: `Unknown tier "${claim.target_tier}".`, code: 'unknown_tier' };
 
   if (hotels < bar.minSupportingHotels) {
     return {
       ok: false,
+      code: 'not_enough_hotels',
       reason:
         `${tierLabel(claim.target_tier, null)} needs at least ${bar.minSupportingHotels} hotels ` +
-        `backing it — this has ${hotels}.`,
+        `backing it. This has ${hotels}.`,
     };
   }
   if (bar.requiresHoldout && !claim.holdout_validated) {
     return {
       ok: false,
+      code: 'no_holdout',
       reason: 'Not yet confirmed at a hotel that contributed none of the evidence.',
     };
   }
-  return { ok: true, reason: '' };
+  return { ok: true, reason: '', code: '' };
 }
 
 /** Plain-English name for the audience a promotion would reach. */
@@ -258,19 +269,150 @@ export function unmetPreconditions(
   row: Pick<PromotionRow, 'preconditions'>,
   facts: PreconditionFacts,
 ): string[] {
+  return unmetPreconditionKeys(row, facts).map((key) =>
+    key === 'family_row_exists'
+      ? 'No PMS-family instructions are switched on yet, so this would describe a section that never appears.'
+      : `Unrecognised requirement "${key}". Nothing checks it, so this stays blocked.`,
+  );
+}
+
+/**
+ * The unmet requirements as KEYS, in stored order — the single evaluation that
+ * both `unmetPreconditions` (the full reasons) and `plainLockReason` (the one
+ * line on the card) read. Two vocabularies for one verdict; they cannot drift
+ * into disagreeing about whether something is blocked.
+ *
+ * An unrecognised key comes back as unmet, for the reason above: a gate nobody
+ * evaluates must never read as satisfied.
+ */
+export function unmetPreconditionKeys(
+  row: Pick<PromotionRow, 'preconditions'>,
+  facts: PreconditionFacts,
+): string[] {
   const out: string[] = [];
   for (const key of row.preconditions ?? []) {
     if (key === 'family_row_exists') {
-      if (facts.activeFamilyRowCount <= 0) {
-        out.push(
-          'No PMS-family instructions are switched on yet, so this would describe a section that never appears.',
-        );
-      }
+      if (facts.activeFamilyRowCount <= 0) out.push(key);
       continue;
     }
-    out.push(`Unrecognised requirement "${key}" — nothing checks it, so this stays blocked.`);
+    out.push(key);
   }
   return out;
+}
+
+// ── How a card reads at a glance ───────────────────────────────────────────
+//
+// The founder is the only reader of this queue, he is not an engineer, and a
+// card he needs three minutes to decode is a card he does not work. Everything
+// below is WORDING — it decides nothing. `meetsEvidenceBar` and
+// `unmetPreconditions` remain the only things that gate Approve, and the short
+// sentences here are derived from those same two calls rather than
+// re-implementing them.
+
+/** Where knowledge lives, in the founder's words. The stored values are
+ *  `hotel` / `family` / `global`; nobody outside this file should have to
+ *  learn them. */
+export const PLAIN_TIER: Record<PromotionSourceTier | PromotionTier, string> = {
+  hotel: 'This hotel only',
+  family: 'Hotels on the same system',
+  global: 'Every hotel',
+};
+
+/** An authored item was lifted from nowhere — it has no home tier yet. */
+export const PLAIN_TIER_UNUSED = 'Not in use yet';
+
+export function plainTier(tier: PromotionSourceTier | PromotionTier | null): string {
+  return tier ? PLAIN_TIER[tier] : PLAIN_TIER_UNUSED;
+}
+
+/** Where a piece of knowledge lives now, and where it is asking to go. The
+ *  card draws this as two chips and an arrow — the one thing that has to be
+ *  readable without reading. */
+export interface PromotionJourney {
+  from: string;
+  to: string;
+}
+
+export function promotionJourney(row: Pick<PromotionRow, 'source_tier' | 'target_tier'>): PromotionJourney {
+  return { from: plainTier(row.source_tier), to: plainTier(row.target_tier) };
+}
+
+/** Eyebrow above the headline: did a person write this, or did Staxis learn it
+ *  from hotels? Echoes the vocabulary `describeEvidence` already uses. */
+export function promotionOriginLabel(row: Pick<PromotionRow, 'origin'>): string {
+  return row.origin === 'authored' ? 'Written by hand' : 'Learned from hotels';
+}
+
+/** Longest headline that still fits two lines in the Mission Control column.
+ *  The card also clamps to two lines in CSS, so a stored claim with no spaces
+ *  at all cannot overflow either. */
+export const CLAIM_HEADLINE_MAX = 120;
+
+/**
+ * The claim cut down to something readable in a glance.
+ *
+ * Prefers the LAST clause boundary that fits, so the most meaning survives,
+ * and falls back to a word boundary. Nothing is lost: the card keeps the full
+ * claim under Details, which is the whole reason truncating here is safe.
+ */
+export function shortClaim(claim: string, max = CLAIM_HEADLINE_MAX): { text: string; truncated: boolean } {
+  const whole = (claim ?? '').replace(/\s+/g, ' ').trim();
+  if (whole.length <= max) return { text: whole, truncated: false };
+
+  const window = whole.slice(0, max);
+  // A boundary in the first half would throw away most of the sentence, so
+  // only cuts past the midpoint count as an improvement on a plain word break.
+  const floor = Math.floor(max / 2);
+  let cut = -1;
+  for (const m of window.matchAll(/[.;:,](?=\s)|\s[—–](?=\s)/g)) {
+    const at = m.index ?? 0;
+    if (at >= floor) cut = at;
+  }
+  if (cut < floor) cut = window.lastIndexOf(' ');
+  if (cut < floor) cut = max;
+  return { text: `${whole.slice(0, cut).replace(/[\s.;:,—–]+$/, '')}…`, truncated: true };
+}
+
+/**
+ * The single plain sentence the card shows when Approve is switched off —
+ * empty exactly when the item is approvable.
+ *
+ * Reads the same `meetsEvidenceBar` + `unmetPreconditionKeys` the route blocks
+ * on, and reports the first problem in the same order the route lists them
+ * (the evidence bar first). The full engineer-grade reasons are still carried
+ * on the card under Details; this is the version that fits on one line.
+ */
+export function plainLockReason(
+  row: Pick<
+    PromotionRow,
+    'preconditions' | 'target_tier' | 'origin' | 'supporting_hotel_count' | 'holdout_validated' | 'is_aggregate'
+  >,
+  facts: PreconditionFacts,
+): string {
+  const hotels = Number.isFinite(row.supporting_hotel_count) ? Math.max(0, row.supporting_hotel_count) : 0;
+  const bar = meetsEvidenceBar(row);
+
+  if (!bar.ok) {
+    switch (bar.code) {
+      // No em dashes in here: the card already prefixes "Locked — ", and a
+      // second dash in the same line turns one sentence into a muddle.
+      case 'aggregate_group':
+        return `Comparing hotels needs ${AGGREGATE_MIN_GROUP_SIZE} behind it, and only ${hotels} back this.`;
+      case 'not_enough_hotels':
+        return `Only ${hotels} hotel${hotels === 1 ? ' backs' : 's back'} this so far, and it needs ${TIER_BAR[row.target_tier].minSupportingHotels}.`;
+      case 'no_holdout':
+        return 'Not proven yet at a hotel that gave none of the evidence.';
+      default:
+        return 'Something about this item no longer adds up, so it stays locked.';
+    }
+  }
+
+  const [key] = unmetPreconditionKeys(row, facts);
+  if (key === undefined) return '';
+  if (key === 'family_row_exists') {
+    return 'No shared notes are switched on yet, so this rule would describe nothing.';
+  }
+  return 'It is waiting on a check that no longer exists.';
 }
 
 // ── DB helpers ─────────────────────────────────────────────────────────────

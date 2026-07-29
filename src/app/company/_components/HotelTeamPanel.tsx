@@ -1534,7 +1534,7 @@ function PersonRow({
 
   const identityLine = [
     account ? `@${account.username}` : null,
-    account ? roleLabel(account.role, lang) : copy(lang, 'Schedule only — no login', 'Solo horario — sin acceso'),
+    account ? roleLabel(account.role, lang) : copy(lang, 'Schedule only, no login', 'Solo horario, sin acceso'),
   ].filter(Boolean).join(' · ');
 
   const contactLine = staff
@@ -1576,7 +1576,7 @@ function PersonRow({
           <span className={styles.companyJobLines}>
             {jobLines.map((job) => (
               <em key={job.membershipId}>
-                {`${lang === 'es' ? job.label.es : job.label.en} — ${
+                {`${lang === 'es' ? job.label.es : job.label.en}, ${
                   job.scope === 'company'
                     ? copy(lang, 'every hotel', 'todos los hoteles')
                     : jobHotelsLabel(job, lang)

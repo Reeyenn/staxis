@@ -5,10 +5,24 @@
 // I'm wrong." The second view in the Staxis section, beside the approvals
 // queue.
 //
-// Everything Staxis believes about this hotel, grouped into five buckets, each
-// fact carrying its provenance in plain English and three actions: Confirm,
-// Edit, Remove. Plus an open box at the top — type a sentence or drop in a
-// file, and it becomes facts you then approve.
+// TWO HALVES, DELIBERATELY NOT MIXED
+//   Figured out on its own  what Staxis INFERRED — facts grouped into five
+//                           buckets, each carrying its provenance in plain
+//                           English and three actions: Confirm, Edit, Remove.
+//                           Plus an open box: type a sentence or drop in a
+//                           file, and it becomes facts you then approve.
+//   What you've told it     what a human ASSERTED — the contact directory,
+//                           the written procedures, and the document cabinet
+//                           the copilot reads. Ported here from the
+//                           Communications section (see ToldView.tsx).
+//
+// The halves are two exclusive panes behind one control and never interleave,
+// because a manager must always be able to tell an inference from an
+// assertion. Their access rules differ too, and that is the point:
+// the inferred half is a manager view; the told half is NOT, because in
+// Communications every signed-in person could reach the emergency numbers and
+// moving the directory here must not quietly take that away. See canReadTold /
+// canReadLearned in told-knowledge.ts.
 //
 // HONESTY RULES THIS SCREEN LIVES BY
 //   • A brand-new hotel has zero facts. The empty state invites input; it
@@ -22,7 +36,6 @@
 import React, { useCallback, useMemo, useRef, useState } from 'react';
 import { useAuth, type AppUser } from '@/contexts/AuthContext';
 import { useProperty } from '@/contexts/PropertyContext';
-import { canManageTeam } from '@/lib/roles';
 import { useApiResource } from '@/lib/hooks/use-api-resource';
 import {
   fetchWithAuth,
@@ -42,6 +55,8 @@ import {
 import { CxStyle } from './concourse-css';
 import { CxIcon } from './icons';
 import { CompanyRulebookPanel } from './CompanyRulebookPanel';
+import { ToldView, ToldStyle } from './ToldView';
+import { canReadLearned, defaultHalf, type KnowsHalf } from './told-knowledge';
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 
@@ -77,16 +92,31 @@ interface IntakeResult {
 const S = {
   title: { en: 'What Staxis knows', es: 'Lo que Staxis sabe' },
   sub: {
+    en: 'Two kinds of knowledge, kept apart on purpose: what Staxis worked out by itself, and what your team has told it.',
+    es: 'Dos tipos de conocimiento, separados a propósito: lo que Staxis dedujo por su cuenta y lo que tu equipo le contó.',
+  },
+
+  // ── The two halves ────────────────────────────────────────────────────────
+  // Named so nobody has to be told which is which. "Figured out on its own"
+  // is a guess Staxis made and may be wrong; "What you've told it" is a person
+  // vouching. Mixing them in one list would erase that difference.
+  halfLearned: { en: 'Figured out on its own', es: 'Lo que dedujo solo' },
+  halfTold: { en: 'What you’ve told it', es: 'Lo que le contaste' },
+  learnedSub: {
     en: 'Everything Staxis believes about your hotel, and where it learned it. Tell it if it is wrong.',
     es: 'Todo lo que Staxis cree sobre tu hotel, y dónde lo aprendió. Dile si está equivocado.',
   },
+  toldSub: {
+    en: 'Contacts, procedures, and documents your team wrote or uploaded. Staxis answers from these.',
+    es: 'Contactos, procedimientos y documentos que tu equipo escribió o subió. Staxis responde con esto.',
+  },
   boxEyebrow: { en: 'Tell Staxis about your hotel', es: 'Cuéntale a Staxis sobre tu hotel' },
   boxPlaceholder: {
-    en: 'Anything at all — how things run, who to call, what keeps breaking.',
+    en: 'Anything at all: how things run, who to call, what keeps breaking.',
     es: 'Lo que sea: cómo funciona todo, a quién llamar, qué se rompe siempre.',
   },
   boxHint: {
-    en: 'Optional. Or drop in a file you already have — a vendor list, a house rules sheet, an SOP.',
+    en: 'Optional. Or drop in a file you already have: a vendor list, a house rules sheet, an SOP.',
     es: 'Opcional. O sube un archivo que ya tengas: lista de proveedores, reglas de la casa, un procedimiento.',
   },
   addFile: { en: 'Add a file', es: 'Agregar archivo' },
@@ -94,25 +124,25 @@ const S = {
   submit: { en: 'Add this', es: 'Agregar esto' },
   submitting: { en: 'Reading…', es: 'Leyendo…' },
   intakeDoneOne: {
-    en: '1 fact added below — check it before Staxis uses it.',
+    en: '1 fact added below. Check it before Staxis uses it.',
     es: '1 dato agregado abajo: revísalo antes de que Staxis lo use.',
   },
   intakeDoneMany: {
-    en: 'facts added below — check each one before Staxis uses it.',
+    en: 'facts added below. Check each one before Staxis uses it.',
     es: 'datos agregados abajo: revisa cada uno antes de que Staxis lo use.',
   },
   intakeNothing: {
-    en: 'Nothing lasting in that one — nothing was saved.',
+    en: 'Nothing lasting in that one. Nothing was saved.',
     es: 'Nada duradero en eso: no se guardó nada.',
   },
-  fileTooBig: { en: 'That file is too big — keep it under 4MB.', es: 'Ese archivo es muy grande: máximo 4MB.' },
+  fileTooBig: { en: 'That file is too big. Keep it under 4MB.', es: 'Ese archivo es muy grande: máximo 4MB.' },
   fileWrongType: {
     en: 'Staxis can read PDF, Word, and plain text files.',
     es: 'Staxis puede leer archivos PDF, Word y de texto.',
   },
   emptyTitle: { en: 'Staxis does not know anything about your hotel yet', es: 'Staxis aún no sabe nada de tu hotel' },
   emptyBody: {
-    en: 'That is expected on day one. Tell it something above — one sentence is enough to start. It also learns on its own from what your team logs.',
+    en: 'That is expected on day one. Tell it something above. One sentence is enough to start. It also learns on its own from what your team logs.',
     es: 'Es normal el primer día. Cuéntale algo arriba: una frase basta para empezar. También aprende solo de lo que registra tu equipo.',
   },
   confirm: { en: 'Confirm', es: 'Confirmar' },
@@ -126,9 +156,11 @@ const S = {
   },
   removeYes: { en: 'Yes, remove', es: 'Sí, quitar' },
   nothingHere: { en: 'Nothing here yet', es: 'Nada aquí todavía' },
+  // Scoped to the LEARNED half only. The told half beside it is open to
+  // everyone, so this points there rather than dead-ending the reader.
   managerOnly: {
-    en: 'What Staxis knows about the hotel is a manager view. Ask your manager to open it.',
-    es: 'Lo que Staxis sabe del hotel es una vista de gerencia. Pídele a tu gerente que la abra.',
+    en: 'What Staxis has figured out on its own is a manager view. Ask your manager to open it. The contacts, procedures, and documents next door are open to you.',
+    es: 'Lo que Staxis dedujo por su cuenta es una vista de gerencia. Pídele a tu gerente que la abra. Los contactos, procedimientos y documentos de al lado sí puedes verlos.',
   },
   loadFailed: {
     en: 'Could not load what Staxis knows right now. Do not read this as "it knows nothing".',
@@ -142,7 +174,7 @@ const S = {
   // the log line. The SENTENCE is this screen's job, because the person reading
   // it may only read Spanish. One entry per code the Knows routes can return.
   bannerGeneric: {
-    en: 'That did not work. Nothing changed — try again in a moment.',
+    en: 'That did not work. Nothing changed. Try again in a moment.',
     es: 'No funcionó. Nada cambió: inténtalo de nuevo en un momento.',
   },
   errAccountNotFound: {
@@ -154,7 +186,7 @@ const S = {
     es: 'No tienes acceso a este hotel.',
   },
   errInvalidBody: {
-    en: 'Staxis could not read that. Nothing changed — try again.',
+    en: 'Staxis could not read that. Nothing changed. Try again.',
     es: 'Staxis no pudo leer eso. Nada cambió: inténtalo de nuevo.',
   },
   errUnknownAction: {
@@ -166,23 +198,23 @@ const S = {
     es: 'Elige uno de los grupos de la lista.',
   },
   errContentRequired: {
-    en: 'Write something first — a fact cannot be empty.',
+    en: 'Write something first. A fact cannot be empty.',
     es: 'Escribe algo primero: un dato no puede quedar vacío.',
   },
   errConfirmFailed: {
-    en: 'Could not confirm that. Nothing changed — try again in a moment.',
+    en: 'Could not confirm that. Nothing changed. Try again in a moment.',
     es: 'No se pudo confirmar. Nada cambió: inténtalo de nuevo en un momento.',
   },
   errFactGone: {
-    en: 'That one is not here anymore — somebody may have removed it.',
+    en: 'That one is not here anymore. Somebody may have removed it.',
     es: 'Ese ya no está: puede que alguien lo haya quitado.',
   },
   errRemoveFailed: {
-    en: 'Could not remove that. Nothing changed — try again in a moment.',
+    en: 'Could not remove that. Nothing changed. Try again in a moment.',
     es: 'No se pudo quitar. Nada cambió: inténtalo de nuevo en un momento.',
   },
   errSaveFailed: {
-    en: 'Could not save that. Nothing changed — try again in a moment.',
+    en: 'Could not save that. Nothing changed. Try again in a moment.',
     es: 'No se guardó. Nada cambió: inténtalo de nuevo en un momento.',
   },
   errNothingToRead: {
@@ -202,7 +234,7 @@ const S = {
     es: 'Ese archivo no llegó completo. Agrégalo de nuevo.',
   },
   errNothingReadable: {
-    en: 'There was nothing readable in that — nothing was saved.',
+    en: 'There was nothing readable in that. Nothing was saved.',
     es: 'No había nada legible en eso: no se guardó nada.',
   },
   errAiDisabled: {
@@ -210,7 +242,7 @@ const S = {
     es: 'La lectura con IA está desactivada ahora mismo. No se guardó nada.',
   },
   errAiUnavailable: {
-    en: 'Staxis could not read that just now. Nothing was saved — try again in a moment.',
+    en: 'Staxis could not read that just now. Nothing was saved. Try again in a moment.',
     es: 'Staxis no pudo leerlo ahora mismo. No se guardó nada: inténtalo de nuevo en un momento.',
   },
   errBudget: {
@@ -226,11 +258,11 @@ const S = {
     es: 'Staxis no pudo conectarse. Revisa tu conexión e inténtalo de nuevo.',
   },
   readNoteTruncated: {
-    en: 'That file is long — Staxis read the first part of it.',
+    en: 'That file is long. Staxis read the first part of it.',
     es: 'Ese archivo es largo: Staxis leyó solo la primera parte.',
   },
   readNoteVision: {
-    en: 'That looked like a scan, so Staxis read it with AI — double-check the wording.',
+    en: 'That looked like a scan, so Staxis read it with AI. Double-check the wording.',
     es: 'Parecía un escaneo, así que Staxis lo leyó con IA: revisa bien el texto.',
   },
 } as const;
@@ -410,6 +442,12 @@ const KN_CSS = `
   font-size:12px;padding:0 9px;font-family:var(--font-geist),-apple-system,BlinkMacSystemFont,sans-serif;}
 .kn-meta{display:flex;gap:14px;margin-top:14px;flex-wrap:wrap;}
 .kn-metai{font-family:var(--font-geist-mono),ui-monospace,monospace;font-size:10.5px;color:#8A9187;}
+/* The inferred/asserted switch, and the line under it that says which one you
+   are looking at. The label alone does the work — no colour coding, because
+   the distinction has to survive being printed or read by somebody colour
+   blind. */
+.kn-halves{width:fit-content;max-width:100%;overflow-x:auto;margin-top:20px;}
+.kn-halfsub{font-size:12.5px;color:#8A9187;margin-top:14px;line-height:1.5;max-width:580px;}
 `;
 
 // ─── Component ──────────────────────────────────────────────────────────────
@@ -447,7 +485,15 @@ function KnowsPropertyView({
   const es = lang === 'es';
   const L = <K extends keyof typeof S>(k: K) => S[k][es ? 'es' : 'en'];
 
-  const canSee = !!user && canManageTeam(user.role);
+  const canSee = canReadLearned(user?.role);
+
+  // Which half is open. `null` means "nobody has chosen yet", so the default
+  // is derived from the role LIVE rather than frozen at first render — `user`
+  // arrives asynchronously, and freezing it would land every manager on the
+  // told half just because auth had not resolved yet. An explicit tap wins
+  // from then on.
+  const [chosenHalf, setChosenHalf] = useState<KnowsHalf | null>(null);
+  const half: KnowsHalf = chosenHalf ?? defaultHalf(user?.role);
 
   const { data, loading, error, reload } = useApiResource<KnowsData>(
     `/api/memory/knows?propertyId=${propertyId}`,
@@ -619,27 +665,63 @@ function KnowsPropertyView({
   // manager-only is the HOTEL's own knowledge base below.
   const companyBook = <CompanyRulebookPanel lang={lang} />;
 
-  if (!canSee) {
-    return (
-      <div className="cx-page cx-swap">
-        <CxStyle />
-        <style dangerouslySetInnerHTML={{ __html: KN_CSS }} />
-        {companyBook}
-        <div className="cx-ptitle" style={{ marginTop: 0 }}>{L('title')}</div>
-        <div className="cx-psub">{L('managerOnly')}</div>
-      </div>
-    );
-  }
-
-  return (
+  // The page chrome both halves share. A plain render helper, not a component:
+  // it holds no state, so inlining it would only duplicate the header three
+  // times. The half switch lives here so it is in the same place whichever
+  // half you are on, and whoever you are.
+  const shell = (body: React.ReactNode) => (
     <div className="cx-page cx-swap">
       <CxStyle />
       <style dangerouslySetInnerHTML={{ __html: KN_CSS }} />
+      <ToldStyle />
 
       {companyBook}
 
       <div className="cx-ptitle" style={{ marginTop: 0 }}>{L('title')}</div>
       <div className="cx-psub">{L('sub')}</div>
+
+      <div className="cx-seg kn-halves" role="tablist">
+        <button
+          type="button"
+          role="tab"
+          aria-selected={half === 'learned'}
+          className={half === 'learned' ? 'cx-on' : ''}
+          onClick={() => setChosenHalf('learned')}
+        >
+          {L('halfLearned')}
+        </button>
+        <button
+          type="button"
+          role="tab"
+          aria-selected={half === 'told'}
+          className={half === 'told' ? 'cx-on' : ''}
+          onClick={() => setChosenHalf('told')}
+        >
+          {L('halfTold')}
+        </button>
+      </div>
+
+      {body}
+    </div>
+  );
+
+  // What a person told it. Open to everyone signed in — see canReadTold.
+  if (half === 'told') {
+    return shell(
+      <>
+        <div className="kn-halfsub">{L('toldSub')}</div>
+        <ToldView lang={lang} />
+      </>,
+    );
+  }
+
+  // What it worked out by itself. Still a manager view, and the note now
+  // points at the half that is open to the reader instead of dead-ending.
+  if (!canSee) return shell(<div className="kn-halfsub">{L('managerOnly')}</div>);
+
+  return shell(
+    <>
+      <div className="kn-halfsub">{L('learnedSub')}</div>
 
       {/* ── The open box ── */}
       <div className="kn-box">
@@ -849,6 +931,6 @@ function KnowsPropertyView({
             </div>
           );
         })}
-    </div>
+    </>,
   );
 }

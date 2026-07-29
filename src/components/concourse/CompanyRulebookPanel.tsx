@@ -127,11 +127,11 @@ const S = {
   pending: { en: 'waiting for you', es: 'esperando tu revisión' },
   boxEyebrow: { en: 'Add to the rulebook', es: 'Agregar al libro' },
   boxPlaceholder: {
-    en: 'A policy that holds at every hotel — who you buy from, what needs a signature, how you want things run.',
+    en: 'A policy that holds at every hotel: who you buy from, what needs a signature, how you want things run.',
     es: 'Una política para todos los hoteles: a quién le compran, qué necesita firma, cómo quieren que se haga.',
   },
   boxHint: {
-    en: 'Optional. Or drop in a file you already have — an operations manual, a vendor agreement, a policy memo.',
+    en: 'Optional. Or drop in a file you already have: an operations manual, a vendor agreement, a policy memo.',
     es: 'Opcional. O sube un archivo que ya tengas: un manual de operaciones, un acuerdo con proveedor, un memo.',
   },
   addFile: { en: 'Add a file', es: 'Agregar archivo' },
@@ -139,25 +139,25 @@ const S = {
   submit: { en: 'Add this', es: 'Agregar esto' },
   submitting: { en: 'Reading…', es: 'Leyendo…' },
   intakeDoneOne: {
-    en: '1 rule added below — check it before Staxis applies it at your hotels.',
+    en: '1 rule added below. Check it before Staxis applies it at your hotels.',
     es: '1 regla agregada abajo: revísala antes de que Staxis la aplique en tus hoteles.',
   },
   intakeDoneMany: {
-    en: 'rules added below — check each one before Staxis applies it at your hotels.',
+    en: 'rules added below. Check each one before Staxis applies it at your hotels.',
     es: 'reglas agregadas abajo: revisa cada una antes de que Staxis las aplique en tus hoteles.',
   },
   intakeNothing: {
-    en: 'Nothing company-wide in that one — nothing was saved.',
+    en: 'Nothing company-wide in that one. Nothing was saved.',
     es: 'Nada para toda la empresa en eso: no se guardó nada.',
   },
-  fileTooBig: { en: 'That file is too big — keep it under 4MB.', es: 'Ese archivo es muy grande: máximo 4MB.' },
+  fileTooBig: { en: 'That file is too big. Keep it under 4MB.', es: 'Ese archivo es muy grande: máximo 4MB.' },
   fileWrongType: {
     en: 'Staxis can read PDF, Word, and plain text files.',
     es: 'Staxis puede leer archivos PDF, Word y de texto.',
   },
   emptyTitle: { en: 'Your company book is empty', es: 'El libro de tu empresa está vacío' },
   emptyBody: {
-    en: 'Write one rule above and every hotel in the company gets it. Nothing here is required — a book with three lines in it is a useful book.',
+    en: 'Write one rule above and every hotel in the company gets it. Nothing here is required. A book with three lines in it is a useful book.',
     es: 'Escribe una regla arriba y todos los hoteles de la empresa la reciben. Nada es obligatorio: un libro con tres líneas ya sirve.',
   },
   emptyView: {
@@ -166,6 +166,13 @@ const S = {
   },
   readingEyebrow: { en: 'Staxis reads this as', es: 'Staxis entiende esto como' },
   readingAsk: { en: 'Right?', es: '¿Correcto?' },
+  // Used where the eyebrow and the question are shown as one line. The
+  // eyebrow alone is a fragment that leads into the reading below it, so
+  // it cannot simply be full-stopped onto the question.
+  readingConfirm: {
+    en: 'Here is how Staxis reads this. Right?',
+    es: 'Así entiende Staxis esto. ¿Correcto?',
+  },
   readingUnsure: { en: 'Staxis cannot read this one', es: 'Staxis no puede leer esta' },
   dupeEyebrow: { en: 'You may already have this', es: 'Puede que ya tengas esto' },
   dupeUpdate: { en: 'Update that line', es: 'Actualizar esa línea' },
@@ -184,7 +191,7 @@ const S = {
   nothingHere: { en: 'Nothing here yet', es: 'Nada aquí todavía' },
   mismatchTitle: { en: 'Worth knowing', es: 'Vale la pena saberlo' },
   mismatchHint: {
-    en: 'A hotel is set up differently from the book. Nothing is blocked — this is just so you know.',
+    en: 'A hotel is set up differently from the book. Nothing is blocked. This is just so you know.',
     es: 'Un hotel está configurado distinto al libro. Nada está bloqueado: solo para que lo sepas.',
   },
   setupTitle: { en: 'Who can do what', es: 'Quién puede hacer qué' },
@@ -197,7 +204,7 @@ const S = {
     es: 'Tus gerentes pueden leer este libro',
   },
   setupGmsWhy: {
-    en: 'Always on — people should know the policies they are governed by.',
+    en: 'Always on. People should know the policies they are governed by.',
     es: 'Siempre activo: la gente debe conocer las políticas que la rigen.',
   },
   setupChat: {
@@ -226,7 +233,7 @@ const S = {
   // gets the same refusal a VP who reads English does. One entry per code the
   // rulebook routes can return.
   bannerGeneric: {
-    en: 'That did not work. Nothing changed — try again in a moment.',
+    en: 'That did not work. Nothing changed. Try again in a moment.',
     es: 'No funcionó. Nada cambió: inténtalo de nuevo en un momento.',
   },
   errAccountNotFound: {
@@ -246,7 +253,7 @@ const S = {
     es: 'Solo la dirección de la empresa puede cambiar el libro. Nada cambió.',
   },
   errInvalidBody: {
-    en: 'Staxis could not read that. Nothing changed — try again.',
+    en: 'Staxis could not read that. Nothing changed. Try again.',
     es: 'Staxis no pudo leer eso. Nada cambió: inténtalo de nuevo.',
   },
   errUnknownAction: {
@@ -258,35 +265,35 @@ const S = {
     es: 'Elige uno de los grupos de la lista.',
   },
   errContentRequired: {
-    en: 'Write something first — a rule cannot be empty.',
+    en: 'Write something first. A rule cannot be empty.',
     es: 'Escribe algo primero: una regla no puede quedar vacía.',
   },
   errSettingsRequired: {
-    en: 'Nothing to save — pick a choice first.',
+    en: 'Nothing to save. Pick a choice first.',
     es: 'Nada que guardar: elige una opción primero.',
   },
   errSettingsSaveFailed: {
-    en: 'Could not save that choice. Nothing changed — try again in a moment.',
+    en: 'Could not save that choice. Nothing changed. Try again in a moment.',
     es: 'No se guardó esa opción. Nada cambió: inténtalo de nuevo en un momento.',
   },
   errConfirmFailed: {
-    en: 'Could not confirm that. Nothing changed — try again in a moment.',
+    en: 'Could not confirm that. Nothing changed. Try again in a moment.',
     es: 'No se pudo confirmar. Nada cambió: inténtalo de nuevo en un momento.',
   },
   errFactGone: {
-    en: 'That line is not in the book anymore — somebody may have removed it.',
+    en: 'That line is not in the book anymore. Somebody may have removed it.',
     es: 'Esa línea ya no está en el libro: puede que alguien la haya quitado.',
   },
   errRemoveFailed: {
-    en: 'Could not remove that. Nothing changed — try again in a moment.',
+    en: 'Could not remove that. Nothing changed. Try again in a moment.',
     es: 'No se pudo quitar. Nada cambió: inténtalo de nuevo en un momento.',
   },
   errSaveFailed: {
-    en: 'Could not save that. Nothing changed — try again in a moment.',
+    en: 'Could not save that. Nothing changed. Try again in a moment.',
     es: 'No se guardó. Nada cambió: inténtalo de nuevo en un momento.',
   },
   errMergeFailed: {
-    en: 'Could not combine those two lines. Nothing changed — try again in a moment.',
+    en: 'Could not combine those two lines. Nothing changed. Try again in a moment.',
     es: 'No se pudieron combinar esas dos líneas. Nada cambió: inténtalo de nuevo en un momento.',
   },
   errRevisionConflict: {
@@ -314,7 +321,7 @@ const S = {
     es: 'Ese archivo no llegó completo. Agrégalo de nuevo.',
   },
   errNothingReadable: {
-    en: 'There was nothing readable in that — nothing was saved.',
+    en: 'There was nothing readable in that. Nothing was saved.',
     es: 'No había nada legible en eso: no se guardó nada.',
   },
   errAiDisabled: {
@@ -322,7 +329,7 @@ const S = {
     es: 'La lectura con IA está desactivada ahora mismo. No se guardó nada.',
   },
   errAiUnavailable: {
-    en: 'Staxis could not read that just now. Nothing was saved — try again in a moment.',
+    en: 'Staxis could not read that just now. Nothing was saved. Try again in a moment.',
     es: 'Staxis no pudo leerlo ahora mismo. No se guardó nada: inténtalo de nuevo en un momento.',
   },
   errBudget: {
@@ -338,11 +345,11 @@ const S = {
     es: 'Staxis no pudo conectarse. Revisa tu conexión e inténtalo de nuevo.',
   },
   readNoteTruncated: {
-    en: 'That file is long — Staxis read the first part of it.',
+    en: 'That file is long. Staxis read the first part of it.',
     es: 'Ese archivo es largo: Staxis leyó solo la primera parte.',
   },
   readNoteVision: {
-    en: 'That looked like a scan, so Staxis read it with AI — double-check the wording.',
+    en: 'That looked like a scan, so Staxis read it with AI. Double-check the wording.',
     es: 'Parecía un escaneo, así que Staxis lo leyó con IA: revisa bien el texto.',
   },
 } as const;
@@ -933,7 +940,7 @@ export function CompanyRulebookPanel({
                       <div className="cr-read">
                         <div className="cr-reade">
                           {unreviewed
-                            ? `${L('readingEyebrow')} — ${L('readingAsk')}`
+                            ? L('readingConfirm')
                             : (f.reading.authority ? L('ruleFrozen') : L('readingEyebrow'))}
                         </div>
                         <div className="cr-readl">{reading.line[es ? 'es' : 'en']}</div>

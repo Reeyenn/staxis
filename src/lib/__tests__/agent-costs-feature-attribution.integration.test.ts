@@ -243,6 +243,13 @@ describe('agent_costs.feature — the ledger learns which job spent the money', 
   beforeEach(async () => {
     currentUser = ADMIN_UID;
     await pg.query('delete from public.agent_costs');
+    // The monthly summary (0375) is part of the attribution answer now:
+    // `staxis_agent_costs_attribution_start()` takes the earliest label across
+    // BOTH the surviving raw rows and the summary, so that pruning old raw rows
+    // cannot make the page claim attribution started later than it did. The
+    // shared fixture seeds tenant-leak canary rows into every table, so a test
+    // asserting "nothing is labelled yet" has to clear this one too.
+    await pg.query('delete from public.agent_costs_monthly');
     await pg.query('delete from public.findings_ai_spend');
     await pg.query('delete from public.ai_employee_switches');
     invalidateEmployeeSwitchCache();

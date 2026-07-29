@@ -561,6 +561,9 @@ const RLS_SERVICE_ROLE_ONLY_ALLOWLIST = new Set([
   'claude_usage_log',
   'trusted_devices',
   'agent_cost_finalize_failures',
+  // 0375 — the AI books' monthly summary. Fleet-wide financial data, read by
+  // service-role code only, same posture as agent_costs' own admin reads.
+  'agent_costs_monthly',
   'staff_magic_codes',
   'scraper_credentials',
   'idempotency_log',
@@ -967,6 +970,11 @@ export const EXPECTED_CRONS: Array<{ name: string; cadenceHours: number; descrip
   // bottom) replaces it.
   // 2026-07-19: compliance-reminders + compliance-anomaly-sweep removed —
   // the engineering-compliance section was deleted entirely (owner call).
+  // 2026-07-27 (chore audit): webhook-dedup-purge, expire-help-requests and
+  // claude-sessions-purge unscheduled — each swept a table with no live
+  // producer, so the doctor would otherwise report a missing heartbeat
+  // forever. Routes kept dormant; see cron-schedule-registry.ts for the
+  // per-cron re-enable condition (the Stripe one matters when billing ships).
   { name: 'agent-sweep-reservations',      cadenceHours: 5/60,  description: 'every-5-min reserved-row sweeper (Vercel native cron, Codex round-5 R2)' },
   { name: 'sweep-account-lifecycle',       cadenceHours: 5/60,  description: 'every-5-min recovery of durable account activation/deactivation intents' },
   { name: 'process-agent-schedules',       cadenceHours: 5/60,  description: 'every-5-min delivery of due agent reminders and recurring Communications tasks' },
@@ -985,10 +993,10 @@ export const EXPECTED_CRONS: Array<{ name: string; cadenceHours: number; descrip
   // makes the cron meaningful. (See route.ts for the matching log demote.)
   { name: 'purge-old-error-logs',          cadenceHours: 24,    description: 'daily error_logs retention sweep' },
   { name: 'agent-archive-stale-conversations', cadenceHours: 24, description: 'daily 3am archival of stale agent conversations (L4 part A)' },
-  { name: 'claude-sessions-purge',         cadenceHours: 24,    description: 'daily 3:30am claude_sessions retention sweep — deletes rows older than 24h so random-sessionId floods can\'t grow the table (security audit M2)' },
   { name: 'agent-heal-counters',           cadenceHours: 24,    description: 'daily 4am counter-drift heal (Round 12 T12.12, invariant doctrine safety net)' },
-  { name: 'webhook-dedup-purge',           cadenceHours: 24,    description: 'daily 4:15am purge of expired webhook-dedup keys (auth-storage-cookies-and-middleware)' },
+  { name: 'agent-costs-rollup',            cadenceHours: 24,    description: 'daily 5:20am AI-books rollup — folds agent_costs into agent_costs_monthly, verifies the fold, and prunes only verified months past the 6-month window (sole owner of agent_costs retention)' },
   { name: 'pms-auth-codes-purge',          cadenceHours: 24,    description: 'daily 4:45am purge of pms_auth_codes older than 7 days (Okta 2FA inbox, migration 0274)' },
+  { name: 'pms-observations-purge',        cadenceHours: 24,    description: 'daily 5:40am retention sweep for the five append-only PMS observation tables via 0343\'s sanctioned purge function (5-year window — a no-op until report ingestion restarts)' },
   // Weekly
   { name: 'ml-train-inventory',            cadenceHours: 168,   description: 'weekly inventory training (Sunday)' },
   // Plan v4 (2026-05-24): removed `scraper-weekly-digest` — Railway
@@ -1002,11 +1010,6 @@ export const EXPECTED_CRONS: Array<{ name: string; cadenceHours: number; descrip
   // whose redistribute_at has passed (or whose 'after_current_room'
   // gate is now satisfied) and fires the redistribute. Safety net for
   // inline failures on the report routes.
-  // Plan v8 Phase B (migration 0217): 5-min Vercel cron that flips
-  // mapping_help_requests past expires_at to 'expired' and deletes their
-  // screenshots from the mapping-screenshots storage bucket. Without this
-  // the 15-min TTL pending rows accumulate forever.
-  { name: 'expire-help-requests',          cadenceHours: 5/60,  description: '5-min Vercel cron that expires stale mapping_help_requests + purges their screenshot storage objects (Plan v8 Phase B)' },
 ];
 
 

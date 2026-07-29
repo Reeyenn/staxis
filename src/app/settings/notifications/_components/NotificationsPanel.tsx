@@ -34,13 +34,13 @@ const DELIVERY_OPTIONS = ['16:00', '18:00', '20:00', '22:00'];
 const NOTIFICATION_ERROR_MESSAGES = [
   ['Failed to load preferences', 'No se pudieron cargar las preferencias'],
   [
-    'Failed to load preferences — check your connection',
-    'No se pudieron cargar las preferencias — revisa tu conexión',
+    'Failed to load preferences. Check your connection',
+    'No se pudieron cargar las preferencias. Revisa tu conexión',
   ],
   ['Failed to save', 'No se pudo guardar'],
   [
-    'Failed to save — check your connection and try again',
-    'No se pudo guardar — revisa tu conexión e intenta de nuevo',
+    'Failed to save. Check your connection and try again',
+    'No se pudo guardar. Revisa tu conexión e intenta de nuevo',
   ],
   [
     'Save confirmation timed out. Current settings were refreshed; review them before retrying.',
@@ -134,7 +134,7 @@ export function NotificationsPanel() {
       // A network throw used to escape as an unhandled rejection — the page
       // rendered blank (prefs null) with no error at all.
       console.error('[notifications:settings] load failed', err);
-      setError(langRef.current === 'es' ? 'No se pudieron cargar las preferencias — revisa tu conexión' : 'Failed to load preferences — check your connection');
+      setError(langRef.current === 'es' ? 'No se pudieron cargar las preferencias. Revisa tu conexión' : 'Failed to load preferences. Check your connection');
     } finally {
       if (requestId === loadRequestRef.current && activeScopeRef.current === requestedPropertyId) setLoading(false);
     }
@@ -187,7 +187,7 @@ export function NotificationsPanel() {
           ? 'La confirmación tardó demasiado. Se actualizaron los ajustes actuales; revísalos antes de reintentar.'
           : 'Save confirmation timed out. Current settings were refreshed; review them before retrying.');
       } else {
-        setError(lang === 'es' ? 'No se pudo guardar — revisa tu conexión e intenta de nuevo' : 'Failed to save — check your connection and try again');
+        setError(lang === 'es' ? 'No se pudo guardar. Revisa tu conexión e intenta de nuevo' : 'Failed to save. Check your connection and try again');
       }
       return false;
     } finally {
@@ -358,7 +358,7 @@ export function NotificationsPanel() {
           </Card>
 
           {/* Pause */}
-          <Card title={lang === 'es' ? 'Pausar entregas' : 'Pause delivery'} subtitle={lang === 'es' ? 'Útil para vacaciones — no llegará nada durante este tiempo.' : 'Useful for vacations — you won\'t get anything during this window.'}>
+          <Card title={lang === 'es' ? 'Pausar entregas' : 'Pause delivery'} subtitle={lang === 'es' ? 'Útil para vacaciones. No llegará nada durante este tiempo.' : 'Useful for vacations. You won\'t get anything during this window.'}>
             {prefs.pausedUntil ? (
               <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
                 <p style={{ fontSize: 13, color: 'var(--text-primary)' }}>

@@ -42,7 +42,7 @@ export function ShiftEditorModal({
 
   const save = () => {
     if (!TIME_RE.test(start.trim()) || !TIME_RE.test(end.trim())) {
-      setErrorMsg(es ? 'Usa HH:MM — ej. 08:00' : 'Use HH:MM — e.g. 08:00');
+      setErrorMsg(es ? 'Usa HH:MM, ej. 08:00' : 'Use HH:MM, e.g. 08:00');
       return;
     }
     const s = toMin(start.trim()), endClock = toMin(end.trim());

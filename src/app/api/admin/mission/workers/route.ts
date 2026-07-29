@@ -96,11 +96,14 @@ const WORKER_META: Record<string, { description: string; group: WorkerGroup }> =
   'ml-predict-inventory':                { description: 'Predicts which supplies each hotel will need.',              group: 'Inventory' },
   'ml-train-inventory':                  { description: 'Retrains the supply-prediction model each week.',            group: 'Inventory' },
   'purge-old-error-logs':                { description: 'Deletes old error logs to keep things tidy.',               group: 'Cleanup' },
-  'claude-sessions-purge':               { description: 'Clears out old AI browser sessions.',                       group: 'Cleanup' },
-  'webhook-dedup-purge':                 { description: 'Removes old duplicate-message guards.',                     group: 'Cleanup' },
-  'pms-auth-codes-purge':                { description: 'Deletes used PMS login codes.',                             group: 'Cleanup' },
+  // 2026-07-27 (chore audit): claude-sessions-purge, webhook-dedup-purge and
+  // expire-help-requests were unscheduled — each one swept a table nothing
+  // writes to any more. Their rows are gone from here so the list only shows
+  // chores that actually run. Restore a line here when re-scheduling one.
+  'pms-auth-codes-purge':                { description: 'Deletes old PMS emails, login codes, and report files, and shreds any report that arrived with a card number on it.', group: 'Cleanup' },
+  'agent-costs-rollup':                  { description: 'Keeps a permanent monthly summary of what the AI cost, so old detail can be tidied away without changing any total.', group: 'Cleanup' },
+  'pms-observations-purge':              { description: 'Tidies away PMS readings older than five years.',           group: 'Cleanup' },
   'vercel-watchdog':                     { description: 'Health-checks the app every few minutes.',                  group: 'Other' },
-  'expire-help-requests':                { description: 'Clears out expired robot help requests.',                   group: 'Cleanup' },
 };
 
 /**

@@ -41,7 +41,7 @@ export async function POST(req: NextRequest): Promise<Response> {
   // is live; a deprecated one is a rollback target — both are managed from
   // Manage maps, not thrown away here.
   if (draft.row.status !== 'draft' && draft.row.status !== 'quarantined') {
-    return err(`This map is ${draft.row.status === 'active' ? 'live' : draft.row.status} — manage it from Manage maps instead.`, {
+    return err(`This map is ${draft.row.status === 'active' ? 'live' : draft.row.status}. Manage it from Manage maps instead.`, {
       requestId, status: 409, code: 'conflict',
     });
   }

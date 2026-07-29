@@ -76,6 +76,11 @@ const AGENT_UNCONVERTED = new Set([
  *
  *   1 × 'shared-lib-client-param'  tools/inventory-monthly-accounting.ts
  *   1 × 'portfolio-exact-set-rpc' portfolio-intelligence/knowledge.ts
+ *   1 × 'company-scope-table'      awareness.ts — company_findings is keyed by
+ *                                  organization_id and has no property_id, so
+ *                                  the one-hotel accessor cannot scope it. The
+ *                                  org id comes from the caller's own company
+ *                                  hat, never from the request.
  */
 const EXPECTED_UNSCOPED_CALLS = 2;
 const UNSCOPED_CALL_RX = /\bunscopedBecause\s*\(/g;

@@ -78,6 +78,7 @@ const STRINGS = {
     look: 'Look',
     startCount: 'Start count',
     addDelivery: 'Add a delivery',
+    ordering: 'Ordering',
     monthClose: 'Month close',
     reports: 'Reports',
     compareMonths: 'Compare months',
@@ -119,7 +120,7 @@ const STRINGS = {
     // ── Not-counted-yet (new-hotel day 1) ──
     notCountedTitle: 'Not counted yet',
     notCountedSub: 'Count these to see what to reorder',
-    notCountedHint: 'No counts yet — start your first inventory count to see what needs ordering.',
+    notCountedHint: 'No counts yet. Start your first inventory count to see what needs ordering.',
     countInventory: 'Count inventory',
     // ── BoardCard ──
     daysLeft: 'd left', // suffix → "5d left"
@@ -150,7 +151,7 @@ const STRINGS = {
     colValue: 'Value',
     notCountedPill: 'Not counted',
     nothingMatches: 'Nothing matches your search.',
-    emptyTab: 'No items in this tab yet — add one, or move items here from Edit item.',
+    emptyTab: 'No items in this tab yet. Add one, or move items here from Edit item.',
     ledgerHint: 'Quick counts save after a short pause · full walk lives in Start count',
     // ── View toggle (Ledger table ↔ triage board) ──
     viewLedger: 'Ledger',
@@ -163,7 +164,7 @@ const STRINGS = {
     doneEditing: 'Done',
     dragHint: 'Drag to reorder · tap ✕ to remove · tap Done when you’re finished',
     removeTabTitle: 'Remove this tab?',
-    removeCustomMsg: 'This removes the tab for good. Its items aren’t deleted — they return to their normal category and show under All.',
+    removeCustomMsg: 'This removes the tab for good. Its items aren’t deleted. They return to their normal category and show under All.',
     removeBuiltinMsg: 'Its items keep their category and still show under All. To bring the tab back later, add a tab with the same name.',
     removeConfirmBtn: 'Remove',
     cancelBtn: 'Cancel',
@@ -190,6 +191,7 @@ const STRINGS = {
     look: 'Ver',
     startCount: 'Iniciar conteo',
     addDelivery: 'Agregar entrega',
+    ordering: 'Pedidos',
     monthClose: 'Cierre mensual',
     reports: 'Informes',
     compareMonths: 'Comparar meses',
@@ -231,7 +233,7 @@ const STRINGS = {
     // ── Not-counted-yet (new-hotel day 1) ──
     notCountedTitle: 'Sin contar aún',
     notCountedSub: 'Cuéntalos para ver qué reordenar',
-    notCountedHint: 'Aún sin conteos — inicia tu primer conteo de inventario para ver qué hay que pedir.',
+    notCountedHint: 'Aún sin conteos. Inicia tu primer conteo de inventario para ver qué hay que pedir.',
     countInventory: 'Contar inventario',
     // ── BoardCard ──
     daysLeft: 'd restantes',
@@ -262,7 +264,7 @@ const STRINGS = {
     colValue: 'Valor',
     notCountedPill: 'Sin contar',
     nothingMatches: 'Nada coincide con tu búsqueda.',
-    emptyTab: 'Aún no hay artículos en esta pestaña — agrega uno, o mueve artículos aquí desde Editar artículo.',
+    emptyTab: 'Aún no hay artículos en esta pestaña. Agrega uno, o mueve artículos aquí desde Editar artículo.',
     ledgerHint: 'Los conteos rápidos se guardan tras una pausa breve · el recorrido completo está en Iniciar conteo',
     // ── View toggle (tabla Libro ↔ tablero) ──
     viewLedger: 'Tabla',
@@ -275,7 +277,7 @@ const STRINGS = {
     doneEditing: 'Listo',
     dragHint: 'Arrastra para reordenar · toca ✕ para quitar · toca Listo al terminar',
     removeTabTitle: '¿Quitar esta pestaña?',
-    removeCustomMsg: 'Esto elimina la pestaña de forma permanente. Sus artículos no se eliminan — vuelven a su categoría normal y aparecen en Todos.',
+    removeCustomMsg: 'Esto elimina la pestaña de forma permanente. Sus artículos no se eliminan. Vuelven a su categoría normal y aparecen en Todos.',
     removeBuiltinMsg: 'Sus artículos conservan su categoría y siguen apareciendo en Todos. Para recuperar la pestaña más tarde, agrega una pestaña con el mismo nombre.',
     removeConfirmBtn: 'Quitar',
     cancelBtn: 'Cancelar',

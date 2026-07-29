@@ -333,7 +333,7 @@ export async function POST(req: NextRequest) {
         {
           ok: false,
           error: 'invoice_too_complex',
-          detail: 'One page had more line items than we can read in a single pass. Scan fewer pages at a time — one page per photo — and try again.',
+          detail: 'One page had more line items than we can read in a single pass. Scan fewer pages at a time, one page per photo, and try again.',
         },
         { status: 422 },
       );

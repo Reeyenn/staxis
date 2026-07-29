@@ -530,8 +530,8 @@ export function ScheduleTab() {
             variant="strip"
             title={lang === 'es' ? 'Aún aprendiendo tu PMS.' : 'Still learning your PMS.'}
             text={lang === 'es'
-              ? 'Las llegadas/salidas del PMS todavía se están aprendiendo — la clasificación de salidas y estancias puede estar incompleta, y un conteo vacío no significa que no haya salidas hoy.'
-              : 'PMS arrivals/departures are still being learned — checkout vs. stayover labels may be incomplete, and an empty count does not mean nobody checks out today.'}
+              ? 'Las llegadas/salidas del PMS todavía se están aprendiendo. La clasificación de salidas y estancias puede estar incompleta, y un conteo vacío no significa que no haya salidas hoy.'
+              : 'PMS arrivals/departures are still being learned. Checkout vs. stayover labels may be incomplete, and an empty count does not mean nobody checks out today.'}
           />
         </div>
       )}
@@ -705,7 +705,7 @@ export function ScheduleTab() {
         }}>
           {lang === 'es'
             ? 'No hay personal de limpieza activo todavía.'
-            : 'No active housekeeping staff yet — add crew in Staff to start assigning.'}
+            : 'No active housekeeping staff yet. Add crew in Staff to start assigning.'}
         </div>
       )}
       {pid && currentBoardLoaded && !boardErr && crew.length > 0 && (

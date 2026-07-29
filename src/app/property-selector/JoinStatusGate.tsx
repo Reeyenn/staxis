@@ -259,8 +259,8 @@ export default function JoinStatusGate({
         </p>
         <p style={{ fontSize: '13px', color: 'var(--text-muted)', lineHeight: 1.5, marginBottom: '20px' }}>
           {lang === 'es'
-            ? 'Tu gerente solo necesita aprobarte — vuelve a revisar pronto.'
-            : 'Your manager just needs to approve you — check back soon.'}
+            ? 'Tu gerente solo necesita aprobarte. Vuelve a revisar pronto.'
+            : 'Your manager just needs to approve you. Check back soon.'}
         </p>
         <button
           onClick={() => { void handleCheckAgain(); }}

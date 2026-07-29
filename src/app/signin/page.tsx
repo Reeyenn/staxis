@@ -58,7 +58,7 @@ function SessionEndedBanner({ freshRetryReady }: { freshRetryReady: boolean }) {
       }}
     >
       {isConfig
-        ? 'Sign-in is temporarily unavailable. Our team has been notified — please try again in a few minutes.'
+        ? 'Sign-in is temporarily unavailable. Our team has been notified. Please try again in a few minutes.'
         : isFreshRetry
           ? freshRetryReady
             ? 'The previous sign-in was safely reset. Enter your credentials to try again.'

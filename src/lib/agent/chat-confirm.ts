@@ -76,7 +76,13 @@ export type ChatConfirmKind =
   | 'equipment'
   | 'company_rule'
   | 'finding_decision'
-  | 'hotel_question';
+  | 'hotel_question'
+  // The one-sentence vendor setup ("food from Sysco by email, linens from
+  // Guest Supply's site, rest is Sam's"). Its own kind rather than reusing
+  // another: a token minted for a vendor list must not be spendable on a
+  // maintenance schedule, and this one carries a whole structured list where
+  // the others carry a single record.
+  | 'vendor_setup';
 
 /** How long a read-back stays answerable. A "yes" the next morning is still a
  *  yes to the same sentence; a "yes" next week is answering something the

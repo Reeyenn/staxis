@@ -107,7 +107,7 @@ export function MessagePane(props: MessagePaneProps) {
         )}
         {!props.messagesLoading && !props.messagesError && messages.length === 0 && (
           <div style={{ color: T.dim, fontFamily: SANS, fontSize: 13.5, textAlign: 'center', marginTop: 48 }}>
-            {L('No messages yet — say hello.', 'Sin mensajes aún — saluda.')}
+            {L('No messages yet. Say hello.', 'Sin mensajes aún. Saluda.')}
           </div>
         )}
         {messages.map((m, i) => {

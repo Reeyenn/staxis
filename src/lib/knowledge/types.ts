@@ -96,6 +96,59 @@ export function isImageMime(mime: string | null | undefined): boolean {
   return !!mime && KNOWLEDGE_IMAGE_MIME_TYPES.includes(mime);
 }
 
+// ─── Why a document isn't searchable, in the reader's language ───────────────
+//
+// `knowledge_documents.extract_error` holds ONE English sentence, written by
+// whichever step gave up. It is the right thing to store (it reads correctly in
+// the database, in a log line, and in an admin screen) but it is the wrong
+// thing to SHOW: half this product's users read Spanish, and a sentence frozen
+// into a table at upload time can't be translated at render time.
+//
+// So the sentences a user might actually need to act on are declared HERE, each
+// paired with a stable code. The writer stores the sentence; `docIssueReason`
+// maps it back to the code; KnowledgePane renders bilingual copy for the code.
+//
+// Why exact-match a constant instead of adding an `extract_reason_code` column:
+// this repo has shipped three separate "column that doesn't exist" outages, and
+// a migration must be applied by hand here — so any code that SELECTs a new
+// column is broken in production from deploy until someone runs the SQL. Exact
+// string equality against these constants needs no schema change and degrades
+// correctly: an unrecognized or legacy sentence maps to null and the UI simply
+// shows no note, exactly as it did before.
+export type DocIssueReason =
+  | 'scan_too_large'
+  | 'scan_too_long'
+  | 'scan_empty'
+  | 'scan_busy'
+  | 'scan_budget'
+  | 'legacy_doc';
+
+/**
+ * The exact sentence stored in `extract_error` for each reason. Writers MUST
+ * use these constants rather than an inline string — that identity is the whole
+ * mechanism, and `docIssueReason` round-trips it in the test suite.
+ */
+export const DOC_ISSUE_MESSAGE: Record<DocIssueReason, string> = {
+  scan_too_large: 'This scan is too large to read. Split it up or upload a smaller file.',
+  scan_too_long: 'This scan has more pages than can be read at once. Split it into smaller files.',
+  scan_empty: 'The scan didn\'t contain any readable text.',
+  scan_busy: 'Reading this scan timed out. Upload it again to retry.',
+  scan_budget: 'This hotel has reached its daily limit for reading scans. Try again tomorrow.',
+  legacy_doc: 'Legacy .doc files can\'t be read. Re-save as .docx or PDF and re-upload.',
+};
+
+const ISSUE_BY_MESSAGE: ReadonlyMap<string, DocIssueReason> = new Map(
+  (Object.keys(DOC_ISSUE_MESSAGE) as DocIssueReason[]).map((k) => [DOC_ISSUE_MESSAGE[k], k]),
+);
+
+/** Map a stored `extract_error` back to its code. Null for anything this
+ *  vocabulary doesn't cover (older rows, embedding notes, unexpected errors) —
+ *  the UI then shows the status badge alone, which is the pre-existing behavior. */
+export function docIssueReason(extractError: string | null | undefined): DocIssueReason | null {
+  if (!extractError) return null;
+  return ISSUE_BY_MESSAGE.get(extractError) ?? null;
+}
+
 /** A SOP article as returned to the client. */
 export interface KnowledgeArticleDTO {
   id: string;
@@ -120,6 +173,10 @@ export interface KnowledgeDocumentDTO {
   hasText: boolean;
   /** Extraction lifecycle — drives the EN/ES badge in KnowledgePane. */
   extractionStatus: ExtractionStatus;
+  /** Why a non-searchable document ended up that way, as a stable code the UI
+   *  renders in the reader's language. Null when the document is fine, or when
+   *  the stored reason predates this vocabulary. See docIssueReason(). */
+  issueReason: DocIssueReason | null;
   /** Who may read this document. Defaults 'all_staff'. */
   visibility: KnowledgeVisibility;
   /** The department a `visibility==='dept'` document is scoped to; null otherwise. */

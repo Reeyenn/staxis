@@ -133,7 +133,7 @@ async function checkCua(): Promise<ServiceStatus> {
     return {
       status: 'green',
       latency_ms: latency,
-      message: 'No queued jobs — CUA caught up.',
+      message: 'No queued jobs. CUA caught up.',
     };
   }
   const rawCreatedAt = data[0].created_at as unknown;
@@ -151,7 +151,7 @@ async function checkCua(): Promise<ServiceStatus> {
     return {
       status: 'red',
       latency_ms: latency,
-      message: `Oldest queued job is ${ageMin} min old — CUA worker likely stuck.`,
+      message: `Oldest queued job is ${ageMin} min old. CUA worker likely stuck.`,
     };
   }
   if (ageMin > 5) {

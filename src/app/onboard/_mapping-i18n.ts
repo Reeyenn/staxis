@@ -23,26 +23,26 @@ const STRINGS = {
     // learning
     learningTitle: 'Learning your {pms}…',
     learningBody:
-      'Our assistant is reading through your system — arrivals, departures, room status and more. This usually takes a few minutes; you can keep this page open.',
+      'Our assistant is reading through your system: arrivals, departures, room status and more. This usually takes a few minutes; you can keep this page open.',
     // mfa
     mfaTitle: 'Completing a security check…',
     mfaBody:
-      'Your PMS asked us to confirm a security step. This can take a few minutes — nothing needed from you.',
+      'Your PMS asked us to confirm a security step. This can take a few minutes. Nothing needed from you.',
     // done (outcome-specific)
     doneTitleAuto: 'Your PMS is connected and live.',
     // feat/cua-partial-promotion (founder-gated) — the robot learned SOME
     // feeds; the map is PARKED for a human Promote click, NOT live yet.
     // Honest: never imply data is flowing, never hide what it got.
-    doneTitlePartial: "The robot's first map of your PMS is ready — a quick review before it goes live.",
-    doneTitlePark: "We've learned your PMS — putting on the finishing touches.",
+    doneTitlePartial: "The robot's first map of your PMS is ready. A quick review before it goes live.",
+    doneTitlePark: "We've learned your PMS. Putting on the finishing touches.",
     doneTitleQuarantine: "We've learned your PMS.",
-    doneBodyAuto: "Everything's set — your live data is already flowing.",
+    doneBodyAuto: "Everything's set. Your live data is already flowing.",
     doneBodyPartial:
-      "The robot learned some of your feeds but not all of them — the breakdown below shows exactly what it found. Nothing is live yet: our team reviews the result and switches it on, usually within a day. Once it's on, the learned feeds flow immediately, and anything still missing shows an honest “still learning” note in the app while we keep retrying it automatically every day.",
+      "The robot learned some of your feeds but not all of them. The breakdown below shows exactly what it found. Nothing is live yet: our team reviews the result and switches it on, usually within a day. Once it's on, the learned feeds flow immediately, and anything still missing shows an honest “still learning” note in the app while we keep retrying it automatically every day.",
     doneBodyPark:
       "You're all set to keep going. We'll finish wiring up the last details in the background.",
     doneBodyQuarantine:
-      "Our team is double-checking a couple of feeds before everything goes live — we'll email you. You can keep going now.",
+      "Our team is double-checking a couple of feeds before everything goes live. We'll email you. You can keep going now.",
     // found-it summary
     foundFeeds: 'We learned {n} feeds from your {pms}:',
     foundFeedsNoCount: "Here's what we found in your {pms}:",
@@ -57,26 +57,26 @@ const STRINGS = {
     roomsOfTotal: '{occ} of {total} rooms',
     andMore: '+ {n} more',
     // buttons
-    continueBtn: 'Looks good — continue →',
+    continueBtn: 'Looks good, continue →',
     continuePlain: 'Continue →',
     checkAgainBtn: 'Check again',
     reenterLoginBtn: 'Re-enter login →',
-    reenterError: "Couldn't go back just now — tap to try again.",
-    continueError: "Couldn't save just now — tap to try again.",
+    reenterError: "Couldn't go back just now. Tap to try again.",
+    continueError: "Couldn't save just now. Tap to try again.",
     // taking-longer-than-expected (client timeout — robot quiet for a while)
     slowTitle: 'This is taking longer than usual',
     slowBody:
-      "Your system can take a few minutes to read, and we're still working on it in the background — this page will update on its own when it's ready. If you think the login details were wrong, you can re-enter them.",
+      "Your system can take a few minutes to read, and we're still working on it in the background. This page will update on its own when it's ready. If you think the login details were wrong, you can re-enter them.",
     // cost-cap pause (honest — auto-resumes overnight)
-    pausedTitle: 'Paused for now — picking back up tonight',
+    pausedTitle: 'Paused for now, picking back up tonight',
     pausedBody:
-      "We've hit today's safe usage limit while reading your system, so we've paused. It resumes automatically overnight and finishes on its own — nothing needed from you. You can close this page and come back later, or check again now.",
+      "We've hit today's safe usage limit while reading your system, so we've paused. It resumes automatically overnight and finishes on its own. Nothing needed from you. You can close this page and come back later, or check again now.",
     // failed
     failTitle: "We couldn't finish connecting",
     failLogin:
-      "We couldn't log into your PMS — please double-check the username and password you entered.",
+      "We couldn't log into your PMS. Please double-check the username and password you entered.",
     failLoginUrl:
-      "We couldn't reach your PMS login page — the web address may be off. Double-check the PMS login URL.",
+      "We couldn't reach your PMS login page. The web address may be off. Double-check the PMS login URL.",
     failStopped: "Setup was paused. Reach out and we'll pick it back up.",
     failGeneric:
       'Something went wrong while connecting to your PMS. Our team has been notified and will reach out.',
@@ -86,21 +86,21 @@ const STRINGS = {
     preparingBody: 'Estamos preparando la conexión. Solo toma un momento.',
     learningTitle: 'Aprendiendo tu {pms}…',
     learningBody:
-      'Nuestro asistente está leyendo tu sistema — llegadas, salidas, estado de habitaciones y más. Esto suele tomar unos minutos; puedes dejar esta página abierta.',
+      'Nuestro asistente está leyendo tu sistema: llegadas, salidas, estado de habitaciones y más. Esto suele tomar unos minutos; puedes dejar esta página abierta.',
     mfaTitle: 'Completando una verificación de seguridad…',
     mfaBody:
-      'Tu sistema pidió confirmar un paso de seguridad. Puede tomar unos minutos — no necesitas hacer nada.',
+      'Tu sistema pidió confirmar un paso de seguridad. Puede tomar unos minutos. No necesitas hacer nada.',
     doneTitleAuto: 'Tu sistema está conectado y activo.',
-    doneTitlePartial: 'El primer mapa de tu sistema está listo — una revisión rápida antes de activarlo.',
-    doneTitlePark: 'Aprendimos tu sistema — dando los toques finales.',
+    doneTitlePartial: 'El primer mapa de tu sistema está listo. Una revisión rápida antes de activarlo.',
+    doneTitlePark: 'Aprendimos tu sistema. Dando los toques finales.',
     doneTitleQuarantine: 'Aprendimos tu sistema.',
-    doneBodyAuto: 'Todo listo — tus datos en vivo ya están fluyendo.',
+    doneBodyAuto: 'Todo listo. Tus datos en vivo ya están fluyendo.',
     doneBodyPartial:
-      'El robot aprendió algunas de tus fuentes pero no todas — el desglose abajo muestra exactamente qué encontró. Nada está en vivo todavía: nuestro equipo revisa el resultado y lo activa, normalmente en menos de un día. Una vez activo, las fuentes aprendidas fluyen de inmediato, y lo que falte mostrará una nota honesta de “aún aprendiendo” en la app mientras lo reintentamos automáticamente cada día.',
+      'El robot aprendió algunas de tus fuentes pero no todas. El desglose abajo muestra exactamente qué encontró. Nada está en vivo todavía: nuestro equipo revisa el resultado y lo activa, normalmente en menos de un día. Una vez activo, las fuentes aprendidas fluyen de inmediato, y lo que falte mostrará una nota honesta de “aún aprendiendo” en la app mientras lo reintentamos automáticamente cada día.',
     doneBodyPark:
       'Puedes continuar. Terminaremos de conectar los últimos detalles en segundo plano.',
     doneBodyQuarantine:
-      'Nuestro equipo está revisando un par de fuentes antes de activar todo — te enviaremos un correo. Puedes continuar.',
+      'Nuestro equipo está revisando un par de fuentes antes de activar todo. Te enviaremos un correo. Puedes continuar.',
     foundFeeds: 'Aprendimos {n} fuentes de tu {pms}:',
     foundFeedsNoCount: 'Esto es lo que encontramos en tu {pms}:',
     numbersHeading: 'Números en vivo que acaba de leer',
@@ -112,23 +112,23 @@ const STRINGS = {
     statGuests: 'Huéspedes en casa',
     roomsOfTotal: '{occ} de {total} habitaciones',
     andMore: '+ {n} más',
-    continueBtn: 'Se ve bien — continuar →',
+    continueBtn: 'Se ve bien, continuar →',
     continuePlain: 'Continuar →',
     checkAgainBtn: 'Revisar de nuevo',
     reenterLoginBtn: 'Volver a ingresar →',
-    reenterError: 'No se pudo regresar — toca para reintentar.',
-    continueError: 'No se pudo guardar — toca para reintentar.',
+    reenterError: 'No se pudo regresar. Toca para reintentar.',
+    continueError: 'No se pudo guardar. Toca para reintentar.',
     slowTitle: 'Esto está tardando más de lo normal',
     slowBody:
-      'Leer tu sistema puede tomar unos minutos y seguimos trabajando en segundo plano — esta página se actualizará sola cuando esté lista. Si crees que los datos de inicio de sesión estaban mal, puedes volver a ingresarlos.',
-    pausedTitle: 'En pausa por ahora — continuará esta noche',
+      'Leer tu sistema puede tomar unos minutos y seguimos trabajando en segundo plano. Esta página se actualizará sola cuando esté lista. Si crees que los datos de inicio de sesión estaban mal, puedes volver a ingresarlos.',
+    pausedTitle: 'En pausa por ahora, continuará esta noche',
     pausedBody:
-      'Alcanzamos el límite de uso seguro de hoy mientras leíamos tu sistema, así que pausamos. Se reanuda automáticamente durante la noche y termina solo — no necesitas hacer nada. Puedes cerrar esta página y volver más tarde, o revisar de nuevo ahora.',
+      'Alcanzamos el límite de uso seguro de hoy mientras leíamos tu sistema, así que pausamos. Se reanuda automáticamente durante la noche y termina solo. No necesitas hacer nada. Puedes cerrar esta página y volver más tarde, o revisar de nuevo ahora.',
     failTitle: 'No pudimos terminar la conexión',
     failLogin:
-      'No pudimos iniciar sesión en tu sistema — verifica el usuario y la contraseña que ingresaste.',
+      'No pudimos iniciar sesión en tu sistema. Verifica el usuario y la contraseña que ingresaste.',
     failLoginUrl:
-      'No pudimos abrir la página de inicio de sesión — la dirección web puede estar mal. Verifica la URL de inicio de sesión.',
+      'No pudimos abrir la página de inicio de sesión. La dirección web puede estar mal. Verifica la URL de inicio de sesión.',
     failStopped: 'La configuración se pausó. Contáctanos y la retomamos.',
     failGeneric:
       'Algo salió mal al conectar con tu sistema. Nuestro equipo fue notificado y se comunicará contigo.',

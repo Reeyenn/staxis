@@ -94,7 +94,7 @@ export function ConcourseBarView({
             onClick={it.onClick}
             onPointerEnter={it.onIntent}
             onFocus={it.onIntent}
-            title={it.badgeLabel ? `${it.label} — ${it.badgeLabel}` : it.label}
+            title={it.badgeLabel ? `${it.label}, ${it.badgeLabel}` : it.label}
             aria-label={it.badgeLabel ? `${it.label}, ${it.badgeLabel}` : it.label}
             aria-current={it.active ? 'page' : undefined}
           >

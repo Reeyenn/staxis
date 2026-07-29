@@ -128,12 +128,12 @@ function isLive(p: PropertyRow): boolean {
 function journeyOf(p: PropertyRow): Journey {
   const propHref = `/admin/properties/${p.id}`;
   switch (p.sessionStatus) {
-    case 'paused_mfa':  return { step: 6, label: 'Needs your code', sub: 'Robot hit 2-factor — click to enter the code.', href: `/admin/mfa-resume/${p.id}`, needsYou: true, kind: 'mfa' };
+    case 'paused_mfa':  return { step: 6, label: 'Needs your code', sub: 'Robot hit 2-factor. Click to enter the code.', href: `/admin/mfa-resume/${p.id}`, needsYou: true, kind: 'mfa' };
     case 'paused_no_knowledge_file': return { step: 6, label: 'Learning the PMS', sub: 'Robot is learning this PMS for the first time.', href: '/admin/properties#system', needsYou: false, kind: 'mapper' };
-    case 'paused_cost_cap': return { step: 6, label: 'Paused · cost cap', sub: 'Daily AI budget hit — auto-resumes at midnight.', href: '/admin/properties#system', needsYou: false, kind: 'cost' };
+    case 'paused_cost_cap': return { step: 6, label: 'Paused · cost cap', sub: 'Daily AI budget hit. Auto-resumes at midnight.', href: '/admin/properties#system', needsYou: false, kind: 'cost' };
     case 'paused_circuit_breaker':
-    case 'failed_restart': return { step: 6, label: 'Login failing', sub: 'Sign-in keeps failing — check the PMS credentials.', href: '/admin/properties#system', needsYou: true, kind: 'login' };
-    case 'stopped': return { step: 6, label: 'Stopped', sub: 'Robot stopped — click to restart.', href: '/admin/properties#system', needsYou: true, kind: 'stopped' };
+    case 'failed_restart': return { step: 6, label: 'Login failing', sub: 'Sign-in keeps failing. Check the PMS credentials.', href: '/admin/properties#system', needsYou: true, kind: 'login' };
+    case 'stopped': return { step: 6, label: 'Stopped', sub: 'Robot stopped. Click to restart.', href: '/admin/properties#system', needsYou: true, kind: 'stopped' };
     case 'starting': return { step: 6, label: 'Robot connecting…', sub: 'Robot is logging into the PMS.', href: propHref, needsYou: false };
   }
   const s = p.onboardingState;
@@ -141,24 +141,24 @@ function journeyOf(p: PropertyRow): Journey {
     // Hotels created straight from "+ New hotel" never walk the customer
     // wizard, so they have no per-step timestamps — infer their real spot
     // from the data that exists instead of showing "Just landed" forever.
-    if (p.staffCount > 0) return { step: 7, label: 'Team added', sub: 'Set up by you — connect their PMS to go live.', href: propHref, needsYou: false };
-    if (p.pmsType)        return { step: 6, label: 'Needs PMS login', sub: 'Set up by you — PMS picked, login not saved yet.', href: propHref, needsYou: false };
-    if (p.totalRooms != null) return { step: 5, label: 'Pick their PMS', sub: 'Set up by you — details saved, no PMS picked yet.', href: propHref, needsYou: false };
-    if (s?.step === 2) return { step: 2, label: 'Creating account', sub: 'Clicked Begin — making their login now.', href: propHref, needsYou: false };
-    return { step: 1, label: 'Just landed', sub: 'Opened the invite — not started yet.', href: propHref, needsYou: false };
+    if (p.staffCount > 0) return { step: 7, label: 'Team added', sub: 'Set up by you. Connect their PMS to go live.', href: propHref, needsYou: false };
+    if (p.pmsType)        return { step: 6, label: 'Needs PMS login', sub: 'Set up by you. PMS picked, login not saved yet.', href: propHref, needsYou: false };
+    if (p.totalRooms != null) return { step: 5, label: 'Pick their PMS', sub: 'Set up by you. Details saved, no PMS picked yet.', href: propHref, needsYou: false };
+    if (s?.step === 2) return { step: 2, label: 'Creating account', sub: 'Clicked Begin. Making their login now.', href: propHref, needsYou: false };
+    return { step: 1, label: 'Just landed', sub: 'Opened the invite. Not started yet.', href: propHref, needsYou: false };
   }
-  if (!s.emailVerifiedAt)   return { step: 3, label: 'Verifying email', sub: 'Account made — confirming their email.', href: propHref, needsYou: false };
+  if (!s.emailVerifiedAt)   return { step: 3, label: 'Verifying email', sub: 'Account made. Confirming their email.', href: propHref, needsYou: false };
   if (!s.hotelDetailsAt)    return { step: 4, label: 'Hotel details', sub: 'Entering rooms, brand, timezone.', href: propHref, needsYou: false };
   if (!s.pmsCredentialsAt)  return { step: 5, label: 'Connecting PMS', sub: 'About to enter their PMS login.', href: propHref, needsYou: false };
   if (!s.mappingCompletedAt) return { step: 6, label: 'Robot connecting…', sub: 'Robot is logging into the PMS.', href: propHref, needsYou: false };
-  if (!s.staffAt)           return { step: 7, label: 'Adding team', sub: 'Connected — owner is adding staff.', href: propHref, needsYou: false };
-  return { step: 8, label: 'Wrapping up', sub: 'Final step — almost live.', href: propHref, needsYou: false };
+  if (!s.staffAt)           return { step: 7, label: 'Adding team', sub: 'Connected. Owner is adding staff.', href: propHref, needsYou: false };
+  return { step: 8, label: 'Wrapping up', sub: 'Final step. Almost live.', href: propHref, needsYou: false };
 }
 
 
 function pmsState(p: PMSCoverage): { tone: DotTone; label: string; note: string } {
   if (p.recipe && p.recipe.coveragePct === 100) return { tone: 'forest', label: 'Ready', note: 'Ready. Future hotels onboard free.' };
-  if (p.recipe && p.recipe.coveragePct < 100) return { tone: 'gold', label: `${p.recipe.coveragePct}%`, note: `Partial — ${p.recipe.coveragePct}% of actions captured.` };
+  if (p.recipe && p.recipe.coveragePct < 100) return { tone: 'gold', label: `${p.recipe.coveragePct}%`, note: `Partial. ${p.recipe.coveragePct}% of actions captured.` };
   if (!p.recipe && p.latestJob?.status === 'failed') return { tone: 'terracotta', label: 'Failed', note: 'Last mapping failed. First hotel retries.' };
   return { tone: 'muted', label: 'New', note: 'Not learned. First hotel triggers ~$0.50, ~7 min mapping.' };
 }
@@ -314,7 +314,7 @@ export function OnboardingSurface() {
 
       <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
         {journeyRows.length === 0 && parkedRows.length === 0
-          ? <DarkEmpty text="No hotels onboarding right now — “+ New hotel” to start one." />
+          ? <DarkEmpty text="No hotels onboarding right now. “+ New hotel” to start one." />
           : journeyRows.map((r) => (
             <HotelRow
               key={r.p.id} row={r} job={jobByProperty.get(r.p.id)}
@@ -334,7 +334,7 @@ export function OnboardingSurface() {
             className="mono"
             style={{ display: 'inline-flex', alignItems: 'center', gap: 7, fontSize: 9.5, letterSpacing: '.1em', color: dim(.5), background: 'none', border: 'none', cursor: 'pointer', padding: '4px 2px' }}
           >
-            PARKED · {parkedRows.length} — no activity in {PARK_AFTER_DAYS}+ days {parkedOpen ? '▴' : '▾'}
+            PARKED · {parkedRows.length} · no activity in {PARK_AFTER_DAYS}+ days {parkedOpen ? '▴' : '▾'}
           </button>
           <Reveal open={parkedOpen}>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 8, paddingTop: 6 }}>
@@ -519,9 +519,9 @@ const SESSION_DOT: Record<string, DotTone> = {
   paused_cost_cap: 'gold', paused_circuit_breaker: 'terracotta', failed_restart: 'terracotta', stopped: 'muted',
 };
 const SESSION_LABEL: Record<string, string> = {
-  alive: 'Alive — polling', starting: 'Connecting…', paused_mfa: 'Waiting on 2FA code',
-  paused_no_knowledge_file: 'Learning this PMS', paused_cost_cap: 'Paused — daily AI cap',
-  paused_circuit_breaker: 'Paused — repeated failures', failed_restart: 'Login failing', stopped: 'Stopped',
+  alive: 'Alive · polling', starting: 'Connecting…', paused_mfa: 'Waiting on 2FA code',
+  paused_no_knowledge_file: 'Learning this PMS', paused_cost_cap: 'Paused · daily AI cap',
+  paused_circuit_breaker: 'Paused · repeated failures', failed_restart: 'Login failing', stopped: 'Stopped',
 };
 const usdFromMicros = (m: number) => `$${(m / 1_000_000).toFixed(2)}`;
 
@@ -582,7 +582,7 @@ function MfaCodeBox({ propertyId, onDelivered }: { propertyId: string; onDeliver
       const json = await res.json();
       if (json.ok) {
         setCode('');
-        setNote({ tone: 'ok', text: 'Handed to the robot — it types it in within a few seconds.' });
+        setNote({ tone: 'ok', text: 'Handed to the robot. It types it in within a few seconds.' });
         onDelivered();
       } else {
         setNote({ tone: 'err', text: json.error ?? 'Could not send the code.' });
@@ -703,7 +703,7 @@ function JourneyPanel({ propertyId, j }: { propertyId: string; j: Journey }) {
           )}
           {learning && !robotWorking && (
             <div style={{ fontSize: 11.5, color: dim(.6), lineHeight: 1.5 }}>
-              Standing by while the map is learned — it starts reading the moment learning finishes.
+              Standing by while the map is learned. It starts reading the moment learning finishes.
             </div>
           )}
           <div style={{ display: 'flex', gap: 6, marginTop: 10, flexWrap: 'wrap' }}>
@@ -716,7 +716,7 @@ function JourneyPanel({ propertyId, j }: { propertyId: string; j: Journey }) {
         </>
       ) : (
         <div style={{ fontSize: 11.5, color: dim(.5), fontFamily: FONT_SERIF, fontStyle: 'italic' }}>
-          No robot yet — it starts the moment they save their PMS login.
+          No robot yet. It starts the moment they save their PMS login.
         </div>
       )}
     </div>
@@ -738,7 +738,7 @@ function JourneyPanel({ propertyId, j }: { propertyId: string; j: Journey }) {
           </div>
         );
       })}
-      {d.feeds.some((f) => f.hasError) && <div style={{ fontSize: 10, color: 'var(--gold)', marginTop: 6 }}>⚠ bad read — kept the last good numbers</div>}
+      {d.feeds.some((f) => f.hasError) && <div style={{ fontSize: 10, color: 'var(--gold)', marginTop: 6 }}>⚠ bad read. Kept the last good numbers</div>}
     </div>
   ) : null;
 
@@ -750,13 +750,13 @@ function JourneyPanel({ propertyId, j }: { propertyId: string; j: Journey }) {
         <NoteBox tone="gold">
           <span style={{ fontWeight: 700, color: 'var(--gold)' }}>Waiting on a 2FA code.</span>{' '}
           The PMS just sent a verification code{d.mapperJob.awaiting2faSince ? ` (${age(d.mapperJob.awaiting2faSince)} ago)` : ''}.
-          If it was texted to your phone, type it below — emailed codes are read automatically.
+          If it was texted to your phone, type it below. Emailed codes are read automatically.
           <MfaCodeBox propertyId={propertyId} onDelivered={() => void fetchDetail()} />
         </NoteBox>
       )}
       {learning && (
         <NoteBox tone="teal">
-          The robot is learning how to read this PMS — it happens once per PMS, then every hotel on it connects instantly.
+          The robot is learning how to read this PMS. It happens once per PMS, then every hotel on it connects instantly.
           {d.mapperJob && <span className="mono" style={{ display: 'block', marginTop: 5, fontSize: 9.5, color: 'var(--teal)' }}>attempt {d.mapperJob.attempts || 1}/{d.mapperJob.maxAttempts} · {usdFromMicros(d.mapperJob.costMicros)} so far</span>}
           {!d.mapperJob?.awaiting2fa && <span style={{ display: 'block', marginTop: 4, color: dim(.6) }}>Nothing needed from you.</span>}
           {d.mapperJob && <div style={{ marginTop: 7 }}><Btn size="sm" variant="ghost" href={`/admin/properties/mapper/${d.mapperJob.id}`} style={{ color: 'var(--teal)', borderColor: 'rgba(51,137,160,.4)' }}>Watch it learn →</Btn></div>}
@@ -770,7 +770,7 @@ function JourneyPanel({ propertyId, j }: { propertyId: string; j: Journey }) {
       )}
       {d.lastHiccup
         ? <NoteBox tone="gold"><span className="mono" style={{ fontSize: 9, letterSpacing: '.1em', color: 'var(--gold)' }}>LAST HICCUP · </span>{d.lastHiccup}</NoteBox>
-        : (!j.needsYou && !learning && <NoteBox tone="forest">Running clean — no hiccups.</NoteBox>)}
+        : (!j.needsYou && !learning && <NoteBox tone="forest">Running clean. No hiccups.</NoteBox>)}
     </div>
   );
 
@@ -785,7 +785,7 @@ function JourneyPanel({ propertyId, j }: { propertyId: string; j: Journey }) {
           <KV k="Phone" v={d.owner.phone ?? '—'} />
         </>
       ) : (
-        <div style={{ fontSize: 11.5, color: dim(.5), fontFamily: FONT_SERIF, fontStyle: 'italic' }}>No account yet — they haven’t finished step 2.</div>
+        <div style={{ fontSize: 11.5, color: dim(.5), fontFamily: FONT_SERIF, fontStyle: 'italic' }}>No account yet. They haven’t finished step 2.</div>
       )}
       <KV k="Invited" v={`${age(d.property.createdAt)} ago`} />
     </div>
@@ -852,7 +852,7 @@ function BayPms({ pms, onClick }: { pms: PMSCoverage; onClick: () => void }) {
       {pr && (
         <span
           className="mono"
-          title={`A new map (v${pr.version}) is waiting for you to review${pr.reason ? ` — ${pr.reason}` : ''}.`}
+          title={`A new map (v${pr.version}) is waiting for you to review${pr.reason ? `: ${pr.reason}` : ''}.`}
           style={{
             flexShrink: 0, fontSize: 9, letterSpacing: '.04em', whiteSpace: 'nowrap',
             color: 'var(--gold)', background: 'rgba(201,154,46,.12)',
@@ -937,7 +937,7 @@ function PmsDetail({ pms, onClose, onRepaired }: { pms: PMSCoverage; onClose: ()
     try {
       const res = await fetchWithAuth('/api/admin/mapper/repair-feed', { method: 'POST', body: JSON.stringify({ pmsFamily: pms.pmsType, propertyId, targetKey: key }) });
       const json = await res.json();
-      if (json.ok) { setMsg(json.data.enqueued ? `Enqueued — watch at /admin/properties/mapper/${json.data.jobId}` : 'Already running.'); setKey(''); void onRepaired(); }
+      if (json.ok) { setMsg(json.data.enqueued ? `Enqueued. Watch at /admin/properties/mapper/${json.data.jobId}` : 'Already running.'); setKey(''); void onRepaired(); }
       else setMsg(`Failed: ${json.error ?? 'unknown'}`);
     } catch (err) { setMsg(`Network error: ${(err as Error).message}`); }
     finally { setBusy(false); }
@@ -959,7 +959,7 @@ function PmsDetail({ pms, onClose, onRepaired }: { pms: PMSCoverage; onClose: ()
 
   // Use for all hotels on this PMS → POST /api/admin/coverage/bulk-assign.
   const bulkAssign = async () => {
-    if (!confirm(`Use this map for every hotel on ${title}? Their robots start reading with it right away — one learned map works for every hotel on the same PMS.`)) return;
+    if (!confirm(`Use this map for every hotel on ${title}? Their robots start reading with it right away. One learned map works for every hotel on the same PMS.`)) return;
     setActionBusy('bulk'); setMsg(null);
     try {
       const res = await fetchWithAuth('/api/admin/coverage/bulk-assign', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ pmsFamily: pms.pmsType }) });
@@ -985,7 +985,7 @@ function PmsDetail({ pms, onClose, onRepaired }: { pms: PMSCoverage; onClose: ()
     try {
       const res = await fetchWithAuth('/api/admin/coverage/detach', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ pmsFamily: pms.pmsType }) });
       const json = await res.json();
-      if (json.ok) { const n = json.data?.detachedCount ?? 0; setMsg(`Detached ${n} ${n === 1 ? 'hotel' : 'hotels'} — map kept.`); await loadHotels(); void onRepaired(); }
+      if (json.ok) { const n = json.data?.detachedCount ?? 0; setMsg(`Detached ${n} ${n === 1 ? 'hotel' : 'hotels'}. Map kept.`); await loadHotels(); void onRepaired(); }
       else setMsg(`Failed: ${json.error ?? 'unknown'}`);
     } catch (err) { setMsg(`Network error: ${(err as Error).message}`); }
     finally { setActionBusy(null); }
@@ -1012,7 +1012,7 @@ function PmsDetail({ pms, onClose, onRepaired }: { pms: PMSCoverage; onClose: ()
       const res = await fetchWithAuth('/api/admin/coverage/assign', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ propertyId: h.id, pmsFamily: pms.pmsType }) });
       const json = await res.json();
       if (json.ok) { await loadHotels(); void onRepaired(); }
-      else if (json.code === 'no_active_map') setMsg('This coverage has no active map yet — learn or finish mapping first.');
+      else if (json.code === 'no_active_map') setMsg('This coverage has no active map yet. Learn or finish mapping first.');
       else setMsg(`Failed: ${json.error ?? 'unknown'}`);
     } catch (err) { setMsg(`Network error: ${(err as Error).message}`); }
     finally { setRowBusy(null); }
@@ -1021,7 +1021,7 @@ function PmsDetail({ pms, onClose, onRepaired }: { pms: PMSCoverage; onClose: ()
   // Delete the whole coverage → POST /api/admin/coverage/delete. Soft-deletes
   // the map and detaches every hotel. A backup is kept and can be restored.
   const deleteCoverage = async () => {
-    if (!confirm(`Delete this PMS coverage?\n\nThe robot will forget how to read "${title}", and every hotel on it drops to "No system detected".\n\nA backup is kept — this can be restored.`)) return;
+    if (!confirm(`Delete this PMS coverage?\n\nThe robot will forget how to read "${title}", and every hotel on it drops to "No system detected".\n\nA backup is kept. This can be restored.`)) return;
     setActionBusy('delete'); setMsg(null);
     try {
       const res = await fetchWithAuth('/api/admin/coverage/delete', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ pmsFamily: pms.pmsType }) });
@@ -1072,7 +1072,7 @@ function PmsDetail({ pms, onClose, onRepaired }: { pms: PMSCoverage; onClose: ()
         <div style={{ margin: '8px 0 14px' }}>
           {!pms.recipe && pms.pendingReview ? (
             <p style={{ fontSize: 13, color: 'var(--gold)', lineHeight: 1.5, margin: 0 }}>
-              A freshly-learned map (v{pms.pendingReview.version}) is ready — review it below, then turn it on for your hotels.
+              A freshly-learned map (v{pms.pendingReview.version}) is ready. Review it below, then turn it on for your hotels.
             </p>
           ) : pms.recipe ? (
             <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
@@ -1159,7 +1159,7 @@ function PmsDetail({ pms, onClose, onRepaired }: { pms: PMSCoverage; onClose: ()
             <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
               <select value={key} onChange={(e) => setKey(e.target.value)} disabled={busy} className="mono"
                 style={{ flex: 1, fontSize: 11.5, padding: '7px 9px', border: '1px solid var(--rule)', borderRadius: 9, background: '#fff', color: 'var(--ink)' }}>
-                <option value="">— pick a feed —</option>
+                <option value="">Pick a feed</option>
                 {keys.map((k) => <option key={k} value={k}>{k}</option>)}
               </select>
               <Btn size="sm" variant="terracotta" onClick={fire} disabled={busy || !key}>{busy ? '…' : 'Fix'}</Btn>
@@ -1172,7 +1172,7 @@ function PmsDetail({ pms, onClose, onRepaired }: { pms: PMSCoverage; onClose: ()
         {/* ── Footer — stop-for-all · close. (The apply-to-all button lives up
             by the hotel list where it reads naturally.) ── */}
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, marginTop: 18, borderTop: '1px solid var(--rule)', paddingTop: 14, flexWrap: 'wrap' }}>
-          <button onClick={() => void detach()} disabled={anyBusy} title="Every hotel stops using this map — the map itself is kept and can be re-applied"
+          <button onClick={() => void detach()} disabled={anyBusy} title="Every hotel stops using this map. The map itself is kept and can be re-applied"
             style={{ background: 'var(--terracotta-dim)', color: 'var(--terracotta-deep)', border: '1px solid rgba(194,86,46,.32)', borderRadius: 999, height: 28, padding: '0 12px', fontFamily: 'var(--sans)', fontSize: 12, fontWeight: 600, cursor: anyBusy ? 'not-allowed' : 'pointer', opacity: anyBusy ? 0.5 : 1 }}>
             {actionBusy === 'detach' ? '…' : 'Stop for all hotels'}
           </button>
@@ -1182,7 +1182,7 @@ function PmsDetail({ pms, onClose, onRepaired }: { pms: PMSCoverage; onClose: ()
         {/* ── Danger zone — soft-delete the whole coverage (backup kept). ── */}
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, marginTop: 12, borderTop: '1px solid var(--rule)', paddingTop: 12, flexWrap: 'wrap' }}>
           <Caps size={9} c="var(--terracotta-deep)">Danger zone</Caps>
-          <Btn size="sm" variant="terracotta" onClick={() => void deleteCoverage()} disabled={anyBusy} title="Forget this map and free every hotel — a backup is kept and can be restored">
+          <Btn size="sm" variant="terracotta" onClick={() => void deleteCoverage()} disabled={anyBusy} title="Forget this map and free every hotel. A backup is kept and can be restored">
             {actionBusy === 'delete' ? '…' : 'Delete coverage'}
           </Btn>
         </div>

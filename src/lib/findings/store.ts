@@ -232,7 +232,16 @@ const LIVE_STATUSES: readonly FindingStatus[] = Object.freeze(['open', 'updated'
 
 export interface ListFindingsOptions {
   statuses?: readonly FindingStatus[];
-  detectorId?: string;
+  /**
+   * One detector, or a set of them.
+   *
+   * The single-id form is what the runner's re-arm pass uses. The array form
+   * was added for the Maintenance tab's patterns popup, which wants six named
+   * checks and would otherwise have to read every finding this hotel has ever
+   * had and throw most of them away in Node. Both land on
+   * `findings_property_detector_idx`.
+   */
+  detectorId?: string | readonly string[];
   limit?: number;
   /**
    * Only rows whose status moved at or after this instant.
@@ -260,7 +269,11 @@ export async function listFindings(
     .from('findings')
     .select(SELECT_COLUMNS)
     .in('status', [...(opts.statuses ?? ['open', 'updated'])]);
-  const byDetector = opts.detectorId ? filtered.eq('detector_id', opts.detectorId) : filtered;
+  const byDetector = !opts.detectorId
+    ? filtered
+    : Array.isArray(opts.detectorId)
+      ? filtered.in('detector_id', [...opts.detectorId])
+      : filtered.eq('detector_id', opts.detectorId as string);
   const scoped = opts.statusChangedSince
     ? byDetector.gte('status_changed_at', opts.statusChangedSince.toISOString())
     : byDetector;

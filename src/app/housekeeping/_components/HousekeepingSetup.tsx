@@ -358,7 +358,7 @@ function extractSentence(x: BoardExtractView, S: HkSetupStrings): string {
   if (x.floors) parts.push(`${x.floorCount === 1 ? S.q3Floor : S.q3Floors} ${x.floors}`);
   if (x.people !== null) parts.push(`${x.people} ${x.people === 1 ? S.q3Person : S.q3People}`);
   if (parts.length === 0) return S.q3Generic;
-  return `${S.q3ReadLead} ${parts.join(', ')} ${S.q3ReadTail}`;
+  return `${S.q3ReadLead} ${parts.join(', ')}. ${S.q3ReadTail}`;
 }
 
 /* ─────────────────── Q2's "+": custom room types, while typing ───────────────
@@ -1482,7 +1482,7 @@ function CustomRoomRow({
     : problem === 'tooLong' ? `${S.customTooLongLead} ${MAX_CUSTOM_LABEL_LENGTH} ${S.customTooLongTail}`
     : problem === 'reserved' ? S.q2RoomReserved
     : problem === 'duplicate' ? `${named} ${S.q2RoomDuplicate}`
-    : problem === 'minutes' ? `${named} — ${S.q2InvalidLead} ${MIN_CLEAN_MINUTES} ${S.q2InvalidJoin} ${MAX_CLEAN_MINUTES}.`
+    : problem === 'minutes' ? `${named ? `${named}: ` : ''}${S.q2InvalidLead} ${MIN_CLEAN_MINUTES} ${S.q2InvalidJoin} ${MAX_CLEAN_MINUTES}.`
     : null;
   const isFault = problem !== null && problem !== 'incomplete';
 
@@ -1496,7 +1496,7 @@ function CustomRoomRow({
             type="text"
             autoComplete="off"
             value={row.label}
-            aria-label={`${S.q2CustomNameLabel} — ${rowTag}`}
+            aria-label={`${S.q2CustomNameLabel}, ${rowTag}`}
             aria-invalid={(isFault && problem !== 'minutes') || undefined}
             placeholder={S.q2CustomNamePlaceholder}
             onChange={(e) => onLabel(e.target.value)}
@@ -1518,7 +1518,7 @@ function CustomRoomRow({
               inputMode="numeric"
               autoComplete="off"
               value={row.minutes}
-              aria-label={`${S.q2CustomTimeLabel} ${S.q2Minutes} — ${rowTag}`}
+              aria-label={`${S.q2CustomTimeLabel} ${S.q2Minutes}, ${rowTag}`}
               aria-invalid={(problem === 'minutes') || undefined}
               onChange={(e) => onMinutes(e.target.value)}
               style={{
@@ -1532,7 +1532,7 @@ function CustomRoomRow({
             <span style={{ fontFamily: FONT_SANS, fontSize: 13.5, color: T.ink2 }}>{S.q2Minutes}</span>
           </div>
         </div>
-        <RemoveButton label={`${S.q2RemoveRoom} — ${rowTag}`} onClick={onRemove} />
+        <RemoveButton label={`${S.q2RemoveRoom}, ${rowTag}`} onClick={onRemove} />
       </div>
       {message && (
         <p
@@ -1761,7 +1761,7 @@ function LevelCard({
             className="hks-more hks-plain"
             aria-expanded={open}
             aria-controls={detailId}
-            aria-label={`${detailsLabel} — ${name}`}
+            aria-label={`${detailsLabel}, ${name}`}
             onClick={() => setOpen((o) => !o)}
             style={{
               display: 'flex', alignItems: 'center', gap: 7, width: '100%',

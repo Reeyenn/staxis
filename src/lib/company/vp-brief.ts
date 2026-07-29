@@ -210,17 +210,22 @@ export function buildPortfolioBrief(input: PortfolioBriefInput): PortfolioBrief 
 }
 
 /**
- * "Lufkin — supplies, same week, side by side: … — $1,800–2,600"
+ * "Lufkin: supplies, same week, side by side. Estimated $1,800–2,600."
  *
  * The hotel's NAME, never an index. A VP who has to translate "#7" into a
  * building before the sentence means anything is reading a database dump. A
- * company card carries no hotel and simply starts with the sentence.
+ * company card carries no hotel and starts with the sentence.
+ *
+ * The hotel name is a label on the front of a sentence, so it takes a colon;
+ * the price is its own short sentence at the back. Both used to be em dashes.
  */
 function highlightLine(card: PortfolioCard): BriefLine {
   const price = formatPriceRange(card.price);
-  const suffix = price ? ` — ${price}` : '';
-  const prefix = card.hotel ? `${card.hotel.name} — ` : '';
-  return line(`${prefix}${cardPhrasing(card, 'en')}${suffix}`, card.id);
+  const prefix = card.hotel ? `${card.hotel.name}: ` : '';
+  const sentence = cardPhrasing(card, 'en').trim();
+  const closed = /[.!?]$/.test(sentence) ? sentence : `${sentence}.`;
+  const suffix = price ? ` Estimated ${price}.` : '';
+  return line(`${prefix}${closed}${suffix}`, card.id);
 }
 
 /**

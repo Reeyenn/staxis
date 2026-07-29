@@ -204,14 +204,14 @@ describe('the question a manager reads', () => {
   test('the English says what was counted and what one tap does', () => {
     assert.equal(
       candidate.en,
-      'You\'ve written "PTAC" in 9 work orders — want to track it as equipment?',
+      'You\'ve written "PTAC" in 9 work orders. Want to track it as equipment?',
     );
   });
 
   test('the Spanish is Spanish, and the hotel\'s own word is left alone', () => {
     assert.equal(
       candidate.es,
-      'Han escrito "PTAC" en 9 órdenes de trabajo — ¿quieren registrarlo como equipo?',
+      'Han escrito "PTAC" en 9 órdenes de trabajo. ¿Quieren registrarlo como equipo?',
     );
     // Translating the TERM would create an entry nobody at the hotel recognises:
     // every ticket says PTAC, so the asset has to say PTAC.

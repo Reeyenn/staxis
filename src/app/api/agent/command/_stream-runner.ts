@@ -77,7 +77,26 @@ export interface AgentUserCtx {
 }
 
 export type LoadUserCtxResult =
-  | { ok: true; userCtx: AgentUserCtx; staffId: string | null }
+  | {
+    ok: true;
+    userCtx: AgentUserCtx;
+    staffId: string | null;
+    /**
+     * The organization this person holds a COMPANY-SCOPE hat in, else null.
+     *
+     * The spine's `effectiveRole` is already resolved below to pick the hat;
+     * this surfaces the company half of that answer instead of throwing it
+     * away, so the awareness block can count a VP's own queue without a second
+     * round trip through `resolveCompanyForProperty`.
+     *
+     * NARROW ON PURPOSE — `scope === 'company'` only. A property-scope hat
+     * covering four hotels is NOT a company job, and Wall A in
+     * `companyScopeFor` draws the line in exactly the same place. Reading it
+     * any wider here would hand a multi-hotel GM a company queue the rest of
+     * the product would refuse them.
+     */
+    companyOrganizationId: string | null;
+  }
   | { ok: false; reason: 'account_not_found' };
 
 /**
@@ -104,6 +123,22 @@ export async function loadAgentUserCtx(
   if (!authority) return { ok: false, reason: 'account_not_found' };
   const standing = authoritativeStandingForProperty(authority, propertyId);
   if (!standing) return { ok: false, reason: 'account_not_found' };
+
+  // Awareness may read the organization queue only for a genuine company-scope
+  // membership hat. Property/portfolio grants and ambiguous multi-company
+  // provenance deliberately produce no organization context.
+  const companyOrganizationIds = [...new Set(
+    standing.entitlements
+      .filter((entitlement) => (
+        entitlement.kind === 'membership_hat'
+        && entitlement.scopeType === 'company'
+        && entitlement.organizationId !== null
+      ))
+      .map((entitlement) => entitlement.organizationId as string),
+  )];
+  const companyOrganizationId = companyOrganizationIds.length === 1
+    ? companyOrganizationIds[0]
+    : null;
 
   // Capture the capability floor before the model sees its catalog. A store
   // outage removes capability-gated tools but does not take down ordinary hotel
@@ -158,7 +193,7 @@ export async function loadAgentUserCtx(
   const staffId = (staffRow?.id as string) ?? null;
   userCtx.dept = (staffRow?.department as string | null) ?? null;
 
-  return { ok: true, userCtx, staffId };
+  return { ok: true, userCtx, staffId, companyOrganizationId };
 }
 
 export interface StreamRunnerContext {

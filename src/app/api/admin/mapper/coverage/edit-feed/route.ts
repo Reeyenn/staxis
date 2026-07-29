@@ -33,6 +33,7 @@ import { supabaseAdmin } from '@/lib/supabase-admin';
 import { requireAdmin } from '@/lib/admin-auth';
 import { ok, err } from '@/lib/api-response';
 import { getOrMintRequestId } from '@/lib/log';
+import { robotDecommissionedResponse } from '@/lib/pms/decommission';
 import {
   parseKnowledgeCoverage,
   LEARNABLE_ACTION_KEYS,
@@ -89,6 +90,13 @@ export async function POST(req: NextRequest): Promise<Response> {
   const admin = await requireAdmin(req);
   if (!admin.ok) return err('Unauthorized', { requestId, status: 401, code: 'unauthorized' });
 
+  // Robot off ⇒ refuse BEFORE spending anything. This route enqueues a
+  // workflow_jobs row whose only consumer (cua-service's queue poller) refuses
+  // to start while the robot is decommissioned, so the row would sit queued
+  // forever AND hold its idempotency slot. See robotDecommissionedResponse.
+  const robotOff = robotDecommissionedResponse(requestId);
+  if (robotOff) return robotOff;
+
   let body: { pmsFamily?: unknown; propertyId?: unknown; targetKey?: unknown; mode?: unknown; draftId?: unknown };
   try { body = await req.json(); } catch {
     return err('Invalid JSON', { requestId, status: 400, code: 'bad_request' });
@@ -127,7 +135,7 @@ export async function POST(req: NextRequest): Promise<Response> {
   if (!sessionRow) return err('This property has no CUA session.', { requestId, status: 404, code: 'not_found' });
   const pmsFamily = sessionRow.pms_family as string;
   if (typeof body.pmsFamily === 'string' && body.pmsFamily && body.pmsFamily !== pmsFamily) {
-    return err('This map changed since you opened it — refresh and try again.', { requestId, status: 409, code: 'conflict' });
+    return err('This map changed since you opened it. Refresh and try again.', { requestId, status: 409, code: 'conflict' });
   }
 
   // Resolve the SEED source. Two paths:
@@ -147,11 +155,11 @@ export async function POST(req: NextRequest): Promise<Response> {
     // Anti-spoof: the draft must belong to THIS property's session family —
     // never seed one family's run from another family's draft.
     if (draft.row.pms_family !== pmsFamily) {
-      return err('This map changed since you opened it — refresh and try again.', { requestId, status: 409, code: 'conflict' });
+      return err('This map changed since you opened it. Refresh and try again.', { requestId, status: 409, code: 'conflict' });
     }
     // An active row is edited through the active (signed-envelope) path, not seeded as a draft.
     if (draft.row.status === 'active') {
-      return err('This map is already live — edit it from the live map instead.', { requestId, status: 409, code: 'conflict' });
+      return err('This map is already live. Edit it from the live map instead.', { requestId, status: 409, code: 'conflict' });
     }
 
     seedRow = { id: draft.row.id, version: draft.row.version, knowledge: draft.row.knowledge };
@@ -169,7 +177,7 @@ export async function POST(req: NextRequest): Promise<Response> {
       return err(`could not load active map: ${loadErr.message}`, { requestId, status: 500, code: 'db_error' });
     }
     if (!activeRow) {
-      return err(`no active map for ${pmsFamily} — there's nothing to edit yet.`, { requestId, status: 404, code: 'not_found' });
+      return err(`no active map for ${pmsFamily}. There's nothing to edit yet.`, { requestId, status: 404, code: 'not_found' });
     }
     seedRow = activeRow;
   }
@@ -184,10 +192,10 @@ export async function POST(req: NextRequest): Promise<Response> {
   const allActions = (seedRow.knowledge?.actions ?? {}) as Record<string, unknown>;
   const isPresent = targetKey in allActions;
   if (mode === 'edit' && !isPresent) {
-    return err(`"${targetKey}" isn't in this map — use Add instead.`, { requestId, status: 409, code: 'conflict' });
+    return err(`"${targetKey}" isn't in this map. Use Add instead.`, { requestId, status: 409, code: 'conflict' });
   }
   if (mode === 'add' && isPresent) {
-    return err(`"${targetKey}" is already in this map — use Edit to re-point it.`, { requestId, status: 409, code: 'conflict' });
+    return err(`"${targetKey}" is already in this map. Use Edit to re-point it.`, { requestId, status: 409, code: 'conflict' });
   }
 
   // seed_actions = every OTHER feed (so they survive untouched); only_targets

@@ -148,7 +148,17 @@ export type UnscopedReason =
    *  governing organization are validated atomically inside the database.
    *  It cannot use a one-hotel accessor because its contract is deliberately
    *  multi-hotel. */
-  | 'portfolio-exact-set-rpc';
+  | 'portfolio-exact-set-rpc'
+  /**
+   * A table keyed by `organization_id` rather than `property_id`
+   * (`company_findings`). The accessor CANNOT scope it — it would filter on a
+   * column the table does not have — but the tenant boundary is not weaker
+   * here, it is drawn one level up: the organization id must come from the
+   * caller's own hat on the company spine, never from a request parameter.
+   * A call site that takes an organization id from user input is a bug this
+   * reason does not excuse.
+   */
+  | 'company-scope-table';
 
 /**
  * Deliberately step outside the hotel boundary. The `reason` argument exists

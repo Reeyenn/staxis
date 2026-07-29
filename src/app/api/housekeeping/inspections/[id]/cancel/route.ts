@@ -40,13 +40,13 @@ export async function POST(
 
     const hasAccess = await userHasPropertyAccess(auth.userId, before.propertyId);
     if (!hasAccess) {
-      return err('forbidden — no access to this property', {
+      return err('forbidden: no access to this property', {
         requestId, status: 403, code: ApiErrorCode.Forbidden,
       });
     }
 
     if (before.result !== 'in_progress') {
-      return err(`Inspection is already ${before.result} — cannot cancel`, {
+      return err(`Inspection is already ${before.result}. Cannot cancel`, {
         requestId, status: 409, code: 'already_completed',
       });
     }

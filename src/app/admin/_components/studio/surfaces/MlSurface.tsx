@@ -652,7 +652,7 @@ function LearningTimeline({
         <div style={{ marginTop: 10 }}>
           {fleetDots.length === 0 ? (
             <div style={{ paddingTop: 6 }}>
-              <DarkEmpty text="No hotels recording yet — the fleet is still learning." />
+              <DarkEmpty text="No hotels recording yet. The fleet is still learning." />
             </div>
           ) : (
             <div style={{ position: 'relative', height: rowH * 3 + 6 }}>
@@ -794,7 +794,7 @@ function OverridesTable({ rows }: { rows: HKCockpitData['recentOverrides'] }) {
   return (
     <Card title="Optimizer overrides" caps="Overrides" riseDelay={180}>
       {rows.length === 0 ? (
-        <DarkEmpty text="No manager overrides yet — the optimizer is running unchallenged." />
+        <DarkEmpty text="No manager overrides yet. The optimizer is running unchallenged." />
       ) : (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
           {rows.map((o) => (
@@ -819,7 +819,7 @@ function AnomaliesTable({ rows }: { rows: InventoryCockpitData['recentAnomalies'
   return (
     <Card title="Recent anomalies" caps="Anomalies" riseDelay={180}>
       {rows.length === 0 ? (
-        <DarkEmpty text="No anomalies flagged — consumption is within the learned bands." />
+        <DarkEmpty text="No anomalies flagged. Consumption is within the learned bands." />
       ) : (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
           {rows.map((a) => (

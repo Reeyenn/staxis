@@ -13,7 +13,7 @@ import { ok, err, ApiErrorCode } from '@/lib/api-response';
 import { validateUuid, validateString, validateDateStr } from '@/lib/api-validate';
 import { capabilityDecisionForUserId } from '@/lib/capabilities/server';
 import { capabilityUnavailableResponse } from '@/lib/capabilities/api-gate';
-import { commsContext } from '@/lib/comms/route-helpers';
+import { commsContext, KNOWLEDGE_CTX } from '@/lib/comms/route-helpers';
 import { listEvents, createEvent, deleteEvent } from '@/lib/knowledge/core';
 import { KNOWLEDGE_LIMITS } from '@/lib/knowledge/types';
 
@@ -21,7 +21,7 @@ export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
 export async function GET(req: NextRequest): Promise<Response> {
-  const ctx = await commsContext(req, req.nextUrl.searchParams.get('pid'));
+  const ctx = await commsContext(req, req.nextUrl.searchParams.get('pid'), KNOWLEDGE_CTX);
   if (!ctx.ok) return ctx.response;
   const events = await listEvents(ctx.pid);
   return ok({ events }, { requestId: ctx.requestId, headers: ctx.headers });
@@ -31,7 +31,7 @@ export async function POST(req: NextRequest): Promise<Response> {
   let raw: { pid?: string; title?: unknown; eventDate?: unknown; endDate?: unknown; notes?: unknown };
   try { raw = await req.json(); } catch { raw = {}; }
 
-  const ctx = await commsContext(req, raw.pid ?? null);
+  const ctx = await commsContext(req, raw.pid ?? null, KNOWLEDGE_CTX);
   if (!ctx.ok) return ctx.response;
   const capabilityDecision = await capabilityDecisionForUserId(ctx.userId, 'manage_knowledge', ctx.pid);
   if (capabilityDecision === 'unavailable') return capabilityUnavailableResponse(ctx.requestId);
@@ -71,7 +71,7 @@ export async function POST(req: NextRequest): Promise<Response> {
 }
 
 export async function DELETE(req: NextRequest): Promise<Response> {
-  const ctx = await commsContext(req, req.nextUrl.searchParams.get('pid'));
+  const ctx = await commsContext(req, req.nextUrl.searchParams.get('pid'), KNOWLEDGE_CTX);
   if (!ctx.ok) return ctx.response;
   const capabilityDecision = await capabilityDecisionForUserId(ctx.userId, 'manage_knowledge', ctx.pid);
   if (capabilityDecision === 'unavailable') return capabilityUnavailableResponse(ctx.requestId);

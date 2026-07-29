@@ -120,7 +120,7 @@ function WorkspaceCard({ w, models }: {
         <div style={{ minWidth: 0 }}>
           <div style={{ fontSize: 13, fontWeight: 700 }}>{w.name}</div>
           <div style={{ fontSize: 10.5, color: dimWhite(.45), marginTop: 1 }}>
-            {isHotel ? 'Robots, Copilot, scanning, reports, map learning' : 'Future AI employees — their own bucket from day one'}
+            {isHotel ? 'Robots, Copilot, scanning, reports, map learning' : 'Future AI employees. Their own bucket from day one'}
           </div>
         </div>
         <div style={{ marginLeft: 'auto', textAlign: 'right', flexShrink: 0 }}>
@@ -133,7 +133,7 @@ function WorkspaceCard({ w, models }: {
           <div className="mono" style={{ fontSize: 9, letterSpacing: '.1em', color: dimWhite(.45), margin: '10px 0 6px' }}>WHERE THIS MONTH&rsquo;S NUMBER COMES FROM</div>
           {models.length === 0 ? (
             <div style={{ fontSize: 11.5, color: dimWhite(.45), fontFamily: FONT_SERIF, fontStyle: 'italic' }}>
-              {isHotel ? 'No spend yet this month.' : 'Nothing yet — lines appear here the day an AI employee does its first work.'}
+              {isHotel ? 'No spend yet this month.' : 'Nothing yet. Lines appear here the day an AI employee does its first work.'}
             </div>
           ) : (
             models.map((m) => (
@@ -145,7 +145,7 @@ function WorkspaceCard({ w, models }: {
           )}
           {isHotel && models.length > 0 && (
             <div style={{ fontSize: 10, color: dimWhite(.4), marginTop: 8, lineHeight: 1.45 }}>
-              These are the AI brains everything shares — the robots, Copilot, scanning and map learning all draw from them. Straight from Anthropic&rsquo;s bill, to the penny.
+              These are the AI brains everything shares: the robots, Copilot, scanning and map learning all draw from them. Straight from Anthropic&rsquo;s bill, to the penny.
             </div>
           )}
         </div>
@@ -304,7 +304,7 @@ export function MoneySurface() {
         <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
           {auditRequestedAt ? (
             <span className="mono" style={{ fontSize: 10, color: 'var(--forest)' }}>
-              CHECK REQUESTED — Claude reads your receipts &amp; updates this board, usually same day
+              CHECK REQUESTED. Claude reads your receipts &amp; updates this board, usually same day
             </span>
           ) : (
             <Btn size="sm" variant="forest" onClick={() => void requestAudit()} disabled={auditBusy}>
@@ -341,7 +341,7 @@ export function MoneySurface() {
           <span className="caps" style={{ color: dimWhite(.5), fontSize: 9 }}>Money in</span>
           <div style={{ display: 'flex', alignItems: 'baseline', gap: 10, marginTop: 8 }}>
             <span className="serif-num" style={{ fontSize: 30, color: '#fff' }}>$0.00</span>
-            <span className="mono" style={{ fontSize: 9.5, color: 'var(--gold)' }}>PILOT — HOTELS DON&rsquo;T PAY YET</span>
+            <span className="mono" style={{ fontSize: 9.5, color: 'var(--gold)' }}>PILOT. HOTELS DON&rsquo;T PAY YET</span>
           </div>
         </DarkCard>
       </div>
@@ -365,7 +365,7 @@ export function MoneySurface() {
             </div>
           ) : (
             <div style={{ fontSize: 12, color: 'var(--gold)', lineHeight: 1.5 }}>
-              The live billing feed isn&rsquo;t answering right now — no numbers is better than fake numbers. Refresh in a minute.
+              The live billing feed isn&rsquo;t answering right now. No numbers is better than fake numbers. Refresh in a minute.
             </div>
           )}
         </Section>
@@ -406,7 +406,7 @@ export function MoneySurface() {
                 <Dot tone="gold" size={7} />
                 <div style={{ minWidth: 0, flex: 1 }}>
                   <div style={{ fontSize: 12.5, fontWeight: 700, color: '#fff' }}>{l.name}</div>
-                  <div style={{ fontSize: 10.5, color: 'var(--gold)', marginTop: 1 }}>Not detected in the stack anymore — cancelled? Remove the line if so.</div>
+                  <div style={{ fontSize: 10.5, color: 'var(--gold)', marginTop: 1 }}>Not detected in the stack anymore. Cancelled? Remove the line if so.</div>
                 </div>
                 <span className="mono" style={{ fontSize: 12, color: '#fff' }}>{money(parseFloat(l.monthlyUsd) || 0)}</span>
                 <button onClick={() => removeLine(l.id)} aria-label={`Remove ${l.name}`}
@@ -435,7 +435,7 @@ export function MoneySurface() {
               <span className="mono" style={{ marginLeft: 'auto', fontSize: 12, color: '#fff' }}>{money(flatTotal)}/mo</span>
             </div>
             <div style={{ fontSize: 10.5, color: dimWhite(.4) }}>
-              AUTO-FOUND rows are discovered from what the app is wired to — new services appear by themselves. The bottom rows are yours to type. The weekly receipt check keeps every number honest.
+              AUTO-FOUND rows are discovered from what the app is wired to. New services appear by themselves. The bottom rows are yours to type. The weekly receipt check keeps every number honest.
             </div>
           </div>
         </Section>
@@ -452,7 +452,7 @@ export function MoneySurface() {
                 <MonthRow key={ym} month={ym} usd={Math.round(m.usd * 100) / 100} items={m.items} />
               ))}
               <div style={{ fontSize: 10.5, color: dimWhite(.4), lineHeight: 1.5 }}>
-                Built from your actual receipts and kept current by the weekly check. The Anthropic &ldquo;API credits&rdquo; charges here are what FUND the AI-usage section above — usage burns those credits{d.billing ? ` (${money(d.billing.totalUsd)} burned so far)` : ''}, so the two views are the same money at different moments.
+                Built from your actual receipts and kept current by the weekly check. The Anthropic &ldquo;API credits&rdquo; charges here are what FUND the AI-usage section above. Usage burns those credits{d.billing ? ` (${money(d.billing.totalUsd)} burned so far)` : ''}, so the two views are the same money at different moments.
               </div>
             </div>
           )}

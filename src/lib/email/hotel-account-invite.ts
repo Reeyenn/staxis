@@ -60,7 +60,7 @@ export async function sendHotelAccountInvite(
     '',
     `This link expires on ${expiry}. If you did not expect it, you can ignore this email.`,
     '',
-    '— The Staxis team',
+    'The Staxis team',
   ].join('\n');
   const html = `<!doctype html>
 <html><head><meta charset="utf-8"><title>${escapeHtml(subject)}</title></head>

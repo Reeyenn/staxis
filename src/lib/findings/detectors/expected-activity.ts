@@ -82,7 +82,7 @@ function draftForStream(stream: ActivityStream, businessDate: string): FindingDr
     // card that opened on day 9 instead of stacking a second one beside it.
     key: `stopped:${stream.id}`,
     summary:
-      `Nobody has been ${stream.label} for ${plural(silentDays, 'day')} — this hotel ` +
+      `Nobody has been ${stream.label} for ${plural(silentDays, 'day')}. This hotel ` +
       `normally does it about every ${plural(round1(cadence.medianGapDays), 'day')}.`,
     severity: 'attention',
     magnitude: silentDays,

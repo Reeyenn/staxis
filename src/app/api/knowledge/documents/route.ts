@@ -20,7 +20,7 @@ import { checkAndIncrementRateLimit, rateLimitedResponse, hashToRateLimitKey } f
 import { type AppRole } from '@/lib/roles';
 import { capabilityDecisionForUserId } from '@/lib/capabilities/server';
 import { capabilityUnavailableResponse } from '@/lib/capabilities/api-gate';
-import { commsContext } from '@/lib/comms/route-helpers';
+import { commsContext, KNOWLEDGE_CTX } from '@/lib/comms/route-helpers';
 import { listDocuments, registerDocument, deleteDocument, updateDocumentAccess, moveDocument } from '@/lib/knowledge/core';
 import { indexDocument } from '@/lib/knowledge/indexing';
 import { KNOWLEDGE_LIMITS, KNOWLEDGE_VISIBILITIES, KNOWLEDGE_DEPTS, type KnowledgeVisibility } from '@/lib/knowledge/types';
@@ -28,11 +28,17 @@ import { KNOWLEDGE_LIMITS, KNOWLEDGE_VISIBILITIES, KNOWLEDGE_DEPTS, type Knowled
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 // The POST hands extraction + embedding to after() (runs after the response,
-// within this invocation). Give it room so a large PDF's read/embed finishes.
-export const maxDuration = 60;
+// within this invocation). Give it room so a large PDF's read/embed finishes —
+// and, since 2026-07-27, so a scanned PDF or photo can be read with Claude
+// vision in the same pass instead of being queued to the decommissioned robot.
+export const maxDuration = 120;
+
+/** How long the vision read of a scan may run, leaving ~40s of the 120s
+ *  ceiling for the chunk/embed/status tail that has to follow it. */
+const OCR_DEADLINE_MS = 80_000;
 
 export async function GET(req: NextRequest): Promise<Response> {
-  const ctx = await commsContext(req, req.nextUrl.searchParams.get('pid'));
+  const ctx = await commsContext(req, req.nextUrl.searchParams.get('pid'), KNOWLEDGE_CTX);
   if (!ctx.ok) return ctx.response;
   // Optional folder filter. Absent → all visible docs (the UI groups by folder).
   let folderId: string | undefined;
@@ -50,7 +56,7 @@ export async function POST(req: NextRequest): Promise<Response> {
   let raw: { pid?: string; title?: unknown; path?: unknown; mimeType?: unknown; sizeBytes?: unknown; visibility?: unknown; visibleDept?: unknown; folderId?: unknown };
   try { raw = await req.json(); } catch { raw = {}; }
 
-  const ctx = await commsContext(req, raw.pid ?? null);
+  const ctx = await commsContext(req, raw.pid ?? null, KNOWLEDGE_CTX);
   if (!ctx.ok) return ctx.response;
   const capabilityDecision = await capabilityDecisionForUserId(ctx.userId, 'manage_knowledge', ctx.pid);
   if (capabilityDecision === 'unavailable') return capabilityUnavailableResponse(ctx.requestId);
@@ -106,8 +112,18 @@ export async function POST(req: NextRequest): Promise<Response> {
   // Read + chunk + embed AFTER the response so a slow PDF/embedding doesn't
   // block the upload. The row is already `pending`; this drives it to its
   // terminal status (ready/partial/failed/unsupported).
+  //
+  // If the file turns out to be a scan, that pass also makes a Claude vision
+  // call. This route owns the invocation budget, so it — not the indexer —
+  // decides when the read must be abandoned: OCR_DEADLINE_MS leaves ~40s of the
+  // 120s ceiling to chunk, embed and write a terminal status. Overrunning
+  // maxDuration kills the function mid-pass and strands the document on
+  // `processing`, which is the failure this pipeline was just repaired for.
+  const ocrDeadlineAt = Date.now() + OCR_DEADLINE_MS;
   const pid = ctx.pid, docId = result.id, filePath = pathV.value!, mime = mimeV.value!, accountId = ctx.accountId;
-  after(() => indexDocument({ propertyId: pid, docId, filePath, mime, accountId, visibility, visibleDept }));
+  after(() => indexDocument({
+    propertyId: pid, docId, filePath, mime, accountId, visibility, visibleDept, ocrDeadlineAt,
+  }));
   return ok({ id: result.id }, { requestId: ctx.requestId, status: 201, headers: ctx.headers });
 }
 
@@ -121,7 +137,7 @@ export async function PATCH(req: NextRequest): Promise<Response> {
   let raw: { pid?: string; id?: unknown; action?: unknown; visibility?: unknown; visibleDept?: unknown; folderId?: unknown };
   try { raw = await req.json(); } catch { raw = {}; }
 
-  const ctx = await commsContext(req, raw.pid ?? null);
+  const ctx = await commsContext(req, raw.pid ?? null, KNOWLEDGE_CTX);
   if (!ctx.ok) return ctx.response;
   const capabilityDecision = await capabilityDecisionForUserId(ctx.userId, 'manage_knowledge', ctx.pid);
   if (capabilityDecision === 'unavailable') return capabilityUnavailableResponse(ctx.requestId);
@@ -166,7 +182,7 @@ export async function PATCH(req: NextRequest): Promise<Response> {
 }
 
 export async function DELETE(req: NextRequest): Promise<Response> {
-  const ctx = await commsContext(req, req.nextUrl.searchParams.get('pid'));
+  const ctx = await commsContext(req, req.nextUrl.searchParams.get('pid'), KNOWLEDGE_CTX);
   if (!ctx.ok) return ctx.response;
   const capabilityDecision = await capabilityDecisionForUserId(ctx.userId, 'manage_knowledge', ctx.pid);
   if (capabilityDecision === 'unavailable') return capabilityUnavailableResponse(ctx.requestId);

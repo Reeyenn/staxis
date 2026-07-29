@@ -55,6 +55,15 @@ export interface UseAgentChatOpts {
   organizationId?: string | null;
   /** Whether the chat is currently focused / visible (for refetching nudges, etc.). */
   active?: boolean;
+  /**
+   * The route the user is currently looking at, from `usePathname()`.
+   *
+   * Posted with each message so the copilot can say "the Inventory screen
+   * you're on" instead of asking which screen. The server matches it against an
+   * allowlist and prints its own constant — nothing typed here reaches a prompt
+   * verbatim.
+   */
+  pathname?: string | null;
 }
 
 export interface UseAgentChatReturn {
@@ -306,9 +315,22 @@ export function useAgentChat({
   propertyId = null,
   organizationId = null,
   active = true,
+  pathname,
 }: UseAgentChatOpts): UseAgentChatReturn {
   const { lang } = useLang();
   const scopeKey = agentChatScopeKey({ mode, propertyId, organizationId });
+  // ── The current route, as a REF rather than a useCallback dependency ──
+  //
+  // `sendMessage` is memoized, and the Ask bar is mounted ONCE at the app shell
+  // and survives every client-side navigation. So closing over `pathname`
+  // directly would post whichever route the bar first rendered on — which on
+  // this app is very often '/home', because that is where people land. Adding
+  // it to the dependency array fixes the staleness but re-creates `sendMessage`
+  // on every navigation, and that identity is subscribed to by the ask-command
+  // bridge. A ref updated on render gives the fresh value with a stable
+  // callback identity, which is what both callers need.
+  const pathnameRef = useRef<string | null | undefined>(pathname);
+  pathnameRef.current = pathname;
   const [conversations, setConversations] = useState<ConversationListItem[]>([]);
   const [conversationId, setConversationId] = useState<string | null>(null);
   const [messages, setMessages] = useState<DisplayMessage[]>([]);
@@ -950,6 +972,9 @@ export function useAgentChat({
                   ),
                   propertyId,
                   message,
+                  // Read off the ref, never a closed-over value. This keeps the
+                  // stable callback while giving hotel awareness the live page.
+                  ...(pathnameRef.current ? { pathname: pathnameRef.current } : {}),
                 },
           ),
         },

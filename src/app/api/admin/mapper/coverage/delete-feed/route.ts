@@ -27,6 +27,7 @@ import { supabaseAdmin } from '@/lib/supabase-admin';
 import { requireAdmin } from '@/lib/admin-auth';
 import { ok, err } from '@/lib/api-response';
 import { getOrMintRequestId } from '@/lib/log';
+import { robotDecommissionedResponse } from '@/lib/pms/decommission';
 import { parseKnowledgeCoverage, REQUIRED_ACTION_KEYS } from '@/lib/pms/recipe-coverage';
 
 export const runtime = 'nodejs';
@@ -43,6 +44,13 @@ export async function POST(req: NextRequest): Promise<Response> {
   const admin = await requireAdmin(req);
   if (!admin.ok) return err('Unauthorized', { requestId, status: 401, code: 'unauthorized' });
 
+  // Robot off ⇒ refuse BEFORE spending anything. This route enqueues a
+  // workflow_jobs row whose only consumer (cua-service's queue poller) refuses
+  // to start while the robot is decommissioned, so the row would sit queued
+  // forever AND hold its idempotency slot. See robotDecommissionedResponse.
+  const robotOff = robotDecommissionedResponse(requestId);
+  if (robotOff) return robotOff;
+
   let body: { pmsFamily?: unknown; propertyId?: unknown; targetKey?: unknown };
   try { body = await req.json(); } catch {
     return err('Invalid JSON', { requestId, status: 400, code: 'bad_request' });
@@ -56,7 +64,7 @@ export async function POST(req: NextRequest): Promise<Response> {
   const targetKey = body.targetKey;
 
   if (REQUIRED_ACTION_KEYS.has(targetKey)) {
-    return err('Room status, arrivals, departures and work orders are core feeds the app depends on — they can’t be removed. Re-point one with Edit instead.', {
+    return err('Room status, arrivals, departures and work orders are core feeds the app depends on. They can’t be removed. Re-point one with Edit instead.', {
       requestId, status: 409, code: 'conflict',
     });
   }
@@ -73,7 +81,7 @@ export async function POST(req: NextRequest): Promise<Response> {
   if (!sessionRow) return err('This property has no CUA session.', { requestId, status: 404, code: 'not_found' });
   const pmsFamily = sessionRow.pms_family as string;
   if (typeof body.pmsFamily === 'string' && body.pmsFamily && body.pmsFamily !== pmsFamily) {
-    return err('This map changed since you opened it — refresh and try again.', { requestId, status: 409, code: 'conflict' });
+    return err('This map changed since you opened it. Refresh and try again.', { requestId, status: 409, code: 'conflict' });
   }
 
   const { data: activeRow, error: loadErr } = await supabaseAdmin
@@ -87,7 +95,7 @@ export async function POST(req: NextRequest): Promise<Response> {
     return err(`could not load active map: ${loadErr.message}`, { requestId, status: 500, code: 'db_error' });
   }
   if (!activeRow) {
-    return err(`no active map for ${pmsFamily} — there's nothing to delete.`, { requestId, status: 404, code: 'not_found' });
+    return err(`no active map for ${pmsFamily}. There's nothing to delete.`, { requestId, status: 404, code: 'not_found' });
   }
 
   const parsed = parseKnowledgeCoverage(activeRow.knowledge);
@@ -102,7 +110,7 @@ export async function POST(req: NextRequest): Promise<Response> {
     return err(`"${targetKey}" isn't in this map.`, { requestId, status: 409, code: 'conflict' });
   }
   if (Object.keys(actions).length <= 1) {
-    return err('This is the only feed left — removing it would leave the map empty. Take the whole map offline in Manage maps instead.', {
+    return err('This is the only feed left. Removing it would leave the map empty. Take the whole map offline in Manage maps instead.', {
       requestId, status: 409, code: 'conflict',
     });
   }

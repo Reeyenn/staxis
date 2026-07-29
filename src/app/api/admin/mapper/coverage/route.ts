@@ -74,7 +74,7 @@ export async function GET(req: NextRequest): Promise<Response> {
     return err(`could not load session: ${sessErr.message}`, { requestId, status: 500, code: 'db_error' });
   }
   if (!session) {
-    return err('This property has no CUA session — coverage is only available for hotels the robot polls.', {
+    return err('This property has no CUA session. Coverage is only available for hotels the robot polls.', {
       requestId, status: 404, code: 'not_found',
     });
   }

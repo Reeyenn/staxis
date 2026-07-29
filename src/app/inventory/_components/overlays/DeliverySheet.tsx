@@ -93,7 +93,7 @@ function dsStrings(lang: Lang) {
       saveFailed: 'Saving the delivery failed. Please try again.',
       retryPending: 'The result could not be confirmed. This exact delivery is locked until you retry it successfully.',
       retryBtn: 'Retry exact delivery',
-      note: 'Delivery — added manually',
+      note: 'Delivery, added manually',
       otherGroup: 'Other',
     },
     es: {
@@ -120,7 +120,7 @@ function dsStrings(lang: Lang) {
       saveFailed: 'No se pudo guardar la entrega. Inténtalo de nuevo.',
       retryPending: 'No se pudo confirmar el resultado. Esta entrega exacta está bloqueada hasta que la reintentes correctamente.',
       retryBtn: 'Reintentar la misma entrega',
-      note: 'Entrega — agregada a mano',
+      note: 'Entrega, agregada a mano',
       otherGroup: 'Otros',
     },
   }[lang];

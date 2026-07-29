@@ -9,8 +9,8 @@
 //   failed      — extraction produced junk / threw (alpha-ratio heuristic)
 //   unsupported — legacy .doc (a truly unreadable file type)
 //   needs_ocr   — scanned/image PDF (no text layer) or an uploaded photo →
-//                 route to the Fly vision-OCR worker (NON-terminal; the worker
-//                 sets the doc to processing → ready/partial/failed).
+//                 read with Claude vision (NON-terminal; indexDocument runs the
+//                 read and sets ready/partial/failed/unsupported).
 //
 // The state machine kills the failure modes the reviewers called out:
 //   • no NULL-overload — every doc lands on a definite state, never a green
@@ -18,7 +18,7 @@
 //   • no infinite retry — terminal statuses are final; a "change" is a new
 //     upload (new row), so we embed-once with no re-extraction debt.
 //   • `needs_ocr` is NOT a DB status — it's an internal routing signal that
-//     indexDocument turns into `processing` + a doc_ocr worker job.
+//     indexDocument resolves by reading the scan (see ocr.ts).
 //
 // Pure-ish: takes bytes in, returns a result. The only I/O is the extraction
 // libraries (unpdf / mammoth), which are deterministic for a given file. The
@@ -29,7 +29,7 @@ import 'server-only';
 import { extractText, getDocumentProxy } from 'unpdf';
 import mammoth from 'mammoth';
 import type { ExtractionStatus } from './types';
-import { isImageMime } from './types';
+import { isImageMime, DOC_ISSUE_MESSAGE } from './types';
 
 export type { ExtractionStatus };
 
@@ -44,8 +44,8 @@ export const EXTRACTED_TEXT_MAX = 100_000;
 /**
  * The status an extraction attempt resolves to. Adds `needs_ocr` on top of the
  * DB `ExtractionStatus` terminal set — a NON-DB routing marker meaning "this is
- * a scan/photo; hand it to the Fly vision-OCR worker." indexDocument maps it to
- * `processing` + a doc_ocr job (it never lands on the row as-is).
+ * a scan/photo; read it with vision." indexDocument resolves it to a terminal
+ * status (it never lands on the row as-is).
  */
 export type ExtractionOutcomeStatus =
   | Exclude<ExtractionStatus, 'pending' | 'processing'>
@@ -126,7 +126,7 @@ function ok(text: string, pageCount: number | null): ExtractionOutcome {
   return {
     status: truncated ? 'partial' : 'ready',
     text: capped,
-    error: truncated ? 'Document is large — only the first part is searchable.' : null,
+    error: truncated ? 'Document is large. Only the first part is searchable.' : null,
     pageCount,
     truncated,
   };
@@ -138,10 +138,10 @@ function fail(error: string): ExtractionOutcome {
 function unsupported(error: string): ExtractionOutcome {
   return { status: 'unsupported', text: null, error, pageCount: null, truncated: false };
 }
-/** Route to the Fly vision-OCR worker (scanned PDF / photo). NON-terminal —
- *  indexDocument turns this into `processing` + a doc_ocr job. `pageCount`
- *  (from unpdf, for scanned PDFs) rides along in the job payload so the worker
- *  can apply its 60-page cap instruction + partial flag; null when unknown. */
+/** Needs a vision read (scanned PDF / photo). NON-terminal — indexDocument
+ *  runs the read. `pageCount` (from unpdf, for scanned PDFs) rides along so the
+ *  reader can refuse a scan longer than one response can hold, BEFORE spending
+ *  anything; null when unknown (images are always one page). */
 function needsOcr(error: string, pageCount: number | null = null): ExtractionOutcome {
   return { status: 'needs_ocr', text: null, error, pageCount, truncated: false };
 }
@@ -157,13 +157,13 @@ export async function extractDocumentText(
 ): Promise<ExtractionOutcome> {
   // Legacy .doc — the binary OLE format unpdf/mammoth don't read.
   if (mime === MIME_DOC) {
-    return unsupported('Legacy .doc files can\'t be read — re-save as .docx or PDF and re-upload.');
+    return unsupported(DOC_ISSUE_MESSAGE.legacy_doc);
   }
 
   // Uploaded photo / scan image (jpg/png/webp) — no text layer to parse here.
-  // Route straight to the Fly vision-OCR worker, which transcribes it.
+  // Hand it to the vision reader, which transcribes it.
   if (isImageMime(mime)) {
-    return needsOcr('Reading this photo with AI — text search will be ready shortly.');
+    return needsOcr('Reading this photo with AI. Text search will be ready shortly.');
   }
 
   // Plain text / markdown / csv — decode UTF-8.
@@ -196,7 +196,7 @@ export async function extractDocumentText(
   }
 
   // PDF — unpdf (pdf.js under the hood). Text PDFs are read here; scanned
-  // image PDFs have no text layer → routed to the Fly vision-OCR worker.
+  // image PDFs have no text layer → routed to the vision reader.
   if (mime === MIME_PDF) {
     let text: string;
     let totalPages: number | null = null;
@@ -208,11 +208,11 @@ export async function extractDocumentText(
     } catch {
       return fail('Couldn\'t read this PDF. It may be corrupt or password-protected.');
     }
-    // A scanned/photo PDF has (near) zero embedded text. Route it to the Fly
-    // vision-OCR worker rather than dead-ending as `unsupported`. (A PDF whose
+    // A scanned/photo PDF has (near) zero embedded text. Read it with vision
+    // rather than dead-ending as `unsupported`. (A PDF whose
     // text layer reads as junk — not empty — is still `failed`, below.)
     if (meaningfulCharCount(text) < 16) {
-      return needsOcr('This looks like a scanned PDF — reading it with AI, text search will be ready shortly.', totalPages);
+      return needsOcr('This looks like a scanned PDF. Reading it with AI, text search will be ready shortly.', totalPages);
     }
     if (!isMostlyReadable(text)) return fail('The PDF\'s text couldn\'t be read cleanly.');
     return ok(text, totalPages);

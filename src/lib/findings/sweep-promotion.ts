@@ -168,7 +168,7 @@ export function buildPromotionDraft(
     topic: `findings_detector:${signature}`,
     claim: `Watch ${subjectWords}: ${WATCHES[check]}.`,
     proposedContent: [
-      `WHAT TO WATCH: ${subjectWords} — ${WATCHES[check]}.`,
+      `WHAT TO WATCH: ${subjectWords}, ${WATCHES[check]}.`,
       '',
       `WHEN TO SPEAK: ${THRESHOLD_DERIVATIONS[derivation]}.`,
       '',

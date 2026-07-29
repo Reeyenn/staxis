@@ -97,7 +97,7 @@ export async function GET(req: NextRequest) {
     log.warn('[housekeeping/rooms] forbidden — user lacks property access', {
       requestId, userId: auth.userId, pid,
     });
-    return err('forbidden — no access to this property', {
+    return err('forbidden: no access to this property', {
       requestId, status: 403, code: ApiErrorCode.Forbidden,
     });
   }

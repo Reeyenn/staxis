@@ -52,6 +52,7 @@ import { getToolsForRole } from '@/lib/agent/tools';
 import { chatIsMountedForRole } from '@/lib/agent/lenses';
 import { requireSectionEnabled } from '@/lib/sections/server';
 import { buildHotelSnapshot } from '@/lib/agent/context';
+import { buildAwareness, formatAwarenessForPrompt } from '@/lib/agent/awareness';
 import { buildSystemPrompt, PROMPT_VERSION } from '@/lib/agent/prompts';
 import { retrieveMemoryForTurn } from '@/lib/agent/memory-context';
 import {
@@ -86,6 +87,20 @@ interface RequestBody {
   conversationId?: string;
   propertyId: string;
   message: string;
+  /**
+   * The route the browser is on, e.g. '/inventory'.
+   *
+   * OPTIONAL, and it stays optional forever. Making it required would break the
+   * approval-resume path and the lens integration suite, which build a request
+   * by hand — and more importantly a chat turn must never fail because a client
+   * did not tell us what screen it was on. Absent simply means the awareness
+   * block says nothing about the screen.
+   *
+   * UNTRUSTED. Never interpolated into the prompt: `resolveSurface` matches it
+   * against an allowlist and prints that table's own constant. See
+   * src/lib/agent/awareness.ts.
+   */
+  pathname?: string;
 }
 
 export async function POST(req: NextRequest): Promise<Response> {
@@ -138,7 +153,7 @@ export async function POST(req: NextRequest): Promise<Response> {
   if (!ctxLoad.ok) {
     return Response.json({ ok: false, error: 'account not found', requestId }, { status: 404 });
   }
-  const { userCtx, staffId } = ctxLoad;
+  const { userCtx, staffId, companyOrganizationId } = ctxLoad;
 
   // ── WHO LENSES: the hat at THIS hotel decides whether there is a chat ──
   // Housekeeping has no Ask Staxis, by product rule: their whole surface is the
@@ -296,13 +311,30 @@ export async function POST(req: NextRequest): Promise<Response> {
     retrieveMemoryForTurn(body.propertyId, userCtx.accountId),
   ]);
   const enabledSections = sectionGate.enabledSections;
+
+  // "Right now" — the screen, the hotel's clock, what this person has already
+  // done today, what is waiting on them. Built AFTER the snapshot because it
+  // reuses the snapshot's timezone and PMS-freshness gate rather than
+  // re-deriving either. Never throws: every feed inside is settled
+  // independently, so the worst case is a block with only the clock in it, and
+  // the chat turn is unaffected.
+  const awareness = await buildAwareness({
+    propertyId: body.propertyId,
+    role: userCtx.role,
+    accountId: userCtx.accountId,
+    authUserId: userCtx.uid,
+    organizationId: companyOrganizationId,
+    pathname: body.pathname,
+    snapshot,
+  });
   const systemPrompt = await buildSystemPrompt(
     userCtx.role,
     snapshot,
     conversationId,
     undefined,
     memoryBlock,
-    undefined,
+    new Date(),
+    formatAwarenessForPrompt(awareness),
     userCtx,
   );
   const tools = getToolsForRole(

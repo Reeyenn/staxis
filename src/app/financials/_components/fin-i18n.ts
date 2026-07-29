@@ -124,7 +124,7 @@ const STRINGS = {
     confirmDelete: 'Delete this expense?',
     scanning: 'Reading invoice…',
     scanFailed: 'Could not read that image. Try a clearer photo.',
-    scanHint: 'Snap a vendor invoice — we read the vendor, total, and category for you.',
+    scanHint: 'Snap a vendor invoice. We read the vendor, total, and category for you.',
     fromScan: 'from scan',
     optional: 'optional',
     // budget
@@ -168,7 +168,7 @@ const STRINGS = {
     noProjects: 'No capital projects yet.',
     deleteProject: 'Delete project',
     confirmDeleteProject: 'Delete this project and its line items?',
-    scanQuoteHint: 'Snap a contractor quote — we read the project, total, and line items.',
+    scanQuoteHint: 'Snap a contractor quote. We read the project, total, and line items.',
     back: 'Back',
     // capex approval workflow
     capOverview: 'Overview',
@@ -228,8 +228,8 @@ const STRINGS = {
     invalidAmount: 'Enter a valid amount.',
     linesPartial: 'Request saved, but some scanned line items could not be added. Add them in the project binder.',
     attachmentOpenFailed: 'Could not open the attachment. Try again.',
-    scanRateLimited: 'Scan limit reached — wait a bit and try again.',
-    scanBudgetCap: 'Daily AI budget reached — scanning is paused until tomorrow.',
+    scanRateLimited: 'Scan limit reached. Wait a bit and try again.',
+    scanBudgetCap: 'Daily AI budget reached. Scanning is paused until tomorrow.',
     scanServiceDown: 'The scan service is temporarily unavailable. Try again soon.',
     // budget card footer words ("$1,200 spent / of $2,000")
     spentWord: 'spent',
@@ -268,7 +268,7 @@ const STRINGS = {
     confirmDelete: '¿Eliminar este gasto?',
     scanning: 'Leyendo factura…',
     scanFailed: 'No se pudo leer la imagen. Intenta una foto más clara.',
-    scanHint: 'Toma una foto de la factura — leemos el proveedor, total y categoría.',
+    scanHint: 'Toma una foto de la factura. Leemos el proveedor, total y categoría.',
     fromScan: 'de escaneo',
     optional: 'opcional',
     budgetVsActual: 'Presupuesto vs. real',
@@ -310,7 +310,7 @@ const STRINGS = {
     noProjects: 'Aún no hay proyectos de capital.',
     deleteProject: 'Eliminar proyecto',
     confirmDeleteProject: '¿Eliminar este proyecto y sus partidas?',
-    scanQuoteHint: 'Toma una foto de la cotización — leemos el proyecto, total y partidas.',
+    scanQuoteHint: 'Toma una foto de la cotización. Leemos el proyecto, total y partidas.',
     back: 'Atrás',
     // capex approval workflow
     capOverview: 'Resumen',
@@ -369,8 +369,8 @@ const STRINGS = {
     invalidAmount: 'Ingresa un monto válido.',
     linesPartial: 'Solicitud guardada, pero algunas partidas escaneadas no se pudieron agregar. Agrégalas en la carpeta del proyecto.',
     attachmentOpenFailed: 'No se pudo abrir el adjunto. Inténtalo de nuevo.',
-    scanRateLimited: 'Límite de escaneos alcanzado — espera un poco e inténtalo de nuevo.',
-    scanBudgetCap: 'Presupuesto diario de IA alcanzado — el escaneo se pausa hasta mañana.',
+    scanRateLimited: 'Límite de escaneos alcanzado. Espera un poco e inténtalo de nuevo.',
+    scanBudgetCap: 'Presupuesto diario de IA alcanzado. El escaneo se pausa hasta mañana.',
     scanServiceDown: 'El servicio de escaneo no está disponible por ahora. Inténtalo pronto.',
     // budget card footer words
     spentWord: 'gastado',

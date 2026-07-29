@@ -119,8 +119,8 @@ export function WeekRoster({
                     <span
                       title={over
                         ? (lang === 'es'
-                          ? `${fmtHours(min)} esta semana — supera el límite de ${fmtHours(capMinOf(s))}`
-                          : `${fmtHours(min)} this week — over the ${fmtHours(capMinOf(s))} cap`)
+                          ? `${fmtHours(min)} esta semana, supera el límite de ${fmtHours(capMinOf(s))}`
+                          : `${fmtHours(min)} this week, over the ${fmtHours(capMinOf(s))} cap`)
                         : undefined}
                       style={{
                         fontFamily: fonts.mono, fontSize: 8.5, flexShrink: 0,

@@ -108,7 +108,7 @@ export async function POST(req: NextRequest) {
       /^\[?fd[0-9a-f]{2}:/i.test(host);            // IPv6 ULA
     if (blocked) {
       return err(
-        'loginUrl points at an internal address (localhost / private / link-local) — refuse to save.',
+        'loginUrl points at an internal address (localhost / private / link-local). Refuse to save.',
         { requestId, status: 400, code: ApiErrorCode.ValidationFailed },
       );
     }

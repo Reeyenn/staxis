@@ -1,6 +1,31 @@
 /**
  * GET /api/cron/claude-sessions-purge
  *
+ * ┌─ DORMANT since 2026-07-27 (chore audit) — UNSCHEDULED, NOT DELETED ─────┐
+ * │ `claude_sessions` has never held a single row, so this daily sweep has  │
+ * │ never deleted anything.                                                 │
+ * │                                                                         │
+ * │ Root cause (verified 2026-07-27): the only writer is                    │
+ * │ .claude/hooks/heartbeat.sh, a developer-laptop Claude Code hook. It     │
+ * │ POSTs to https://hotelops-ai.vercel.app/api/claude-heartbeat, which     │
+ * │ 308-redirects to getstaxis.com — and its `curl` has no `-L`, so the     │
+ * │ request dies at the redirect and the body is dropped. The route and the │
+ * │ table are both fine; nothing ever reaches them.                         │
+ * │                                                                         │
+ * │ DELIBERATELY LEFT BROKEN. The hook was not "fixed" here on purpose:     │
+ * │ pointing it at getstaxis.com would immediately start filling a table    │
+ * │ whose only pruner is this now-dormant cron. The two must be re-enabled  │
+ * │ TOGETHER or not at all.                                                 │
+ * │                                                                         │
+ * │ This is developer tooling ("which Claude session is live on which       │
+ * │ branch"), not a hotel chore — which is why it lost its slot rather than │
+ * │ getting repaired. To re-enable BOTH halves: add `-L` to the curl in     │
+ * │ .claude/hooks/heartbeat.sh (or point it at getstaxis.com directly),     │
+ * │ then restore this route's five registry rows — vercel.json crons[]      │
+ * │ ("30 3 * * *"), SCHEDULE_REGISTRY, the doctor's EXPECTED_CRONS, and     │
+ * │ WORKER_META in /api/admin/mission/workers.                              │
+ * └─────────────────────────────────────────────────────────────────────────┘
+ *
  * Daily at 03:30 UTC. DELETEs rows in `claude_sessions` whose
  * last_heartbeat is older than 24 hours.
  *

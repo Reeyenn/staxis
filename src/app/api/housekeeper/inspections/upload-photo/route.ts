@@ -96,7 +96,7 @@ export async function POST(req: NextRequest) {
 
   const canInspect = await staffCanInspect(pidSafe, staffIdSafe);
   if (!canInspect) {
-    return err('forbidden — not an inspector', {
+    return err('forbidden: not an inspector', {
       requestId, status: 403, code: ApiErrorCode.Forbidden,
     });
   }

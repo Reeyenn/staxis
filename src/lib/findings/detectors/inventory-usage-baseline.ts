@@ -118,8 +118,8 @@ function draftForItem(item: InventoryItemUsage): FindingDraft | null {
     key: `item_usage:${item.itemId}`,
     disposition: fix ? 'propose' : 'fyi',
     summary:
-      `${item.itemName} is going out at about ${round1(currentRate)} ${item.unit} a day — ` +
-      `this item's own usual rate here is about ${round1(baseline.median)}.`,
+      `${item.itemName} is going out at about ${round1(currentRate)} ${item.unit} a day. ` +
+      `This item's own usual rate here is about ${round1(baseline.median)}.`,
     severity: 'attention',
     magnitude: Math.round(extraUnits),
     evidence: {
@@ -150,7 +150,7 @@ function draftForItem(item: InventoryItemUsage): FindingDraft | null {
       },
       basis:
         `stock counted on ${latest.endDate} against the count before it, plus deliveries and ` +
-        `discards in between — measured against this item's previous ${baseline.n} counts`,
+        `discards in between. Measured against this item's previous ${baseline.n} counts`,
       // The item's row id, not its name: two items can share a name and a name
       // can be renamed, and a chip that followed the name would follow it onto
       // the wrong shelf.

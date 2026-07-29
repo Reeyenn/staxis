@@ -305,7 +305,7 @@ function PMSPropertyEditor({
               </p>
               <p style={{ fontSize: '13px', color: 'var(--text-secondary)', lineHeight: 1.6 }}>
                 {lang === 'es'
-                  ? <>Un agente de IA inicia sesión en tu PMS exactamente como lo haría una persona — navega las pantallas, lee los datos de ocupación y salidas, y los envía directamente a Staxis. <strong style={{ color: 'var(--amber)' }}>Sin entrada manual.</strong></>
+                  ? <>Un agente de IA inicia sesión en tu PMS exactamente como lo haría una persona. Navega las pantallas, lee los datos de ocupación y salidas, y los envía directamente a Staxis. <strong style={{ color: 'var(--amber)' }}>Sin entrada manual.</strong></>
                   : <>A Computer Use Agent logs into your PMS exactly like a human would - navigating the screens, reading your occupancy and checkout data, and feeding it directly into Staxis. <strong style={{ color: 'var(--amber)' }}>Zero manual entry.</strong></>}
               </p>
             </div>
@@ -313,7 +313,7 @@ function PMSPropertyEditor({
           <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
             {(lang === 'es' ? [
               'Sincroniza cada 15 minutos durante horas operativas (6 AM – 10 PM)',
-              'Sincronización "Bloqueo de Mañana" a las 9 PM — te envía el horario recomendado de mañana',
+              'Sincronización "Bloqueo de Mañana" a las 9 PM: te envía el horario recomendado de mañana',
               'Sincronización de confirmación matutina a las 5:30 AM para cambios nocturnos',
               'Notificación push cuando la ocupación cambia en 5+ habitaciones',
             ] : [
@@ -421,7 +421,7 @@ function PMSPropertyEditor({
             <Shield size={14} color="var(--text-muted)" style={{ flexShrink: 0, marginTop: '1px' }} />
             <p style={{ fontSize: '12px', color: 'var(--text-muted)', lineHeight: 1.5 }}>
               {lang === 'es'
-                ? 'Tus credenciales se encriptan y almacenan de forma segura en Supabase. Solo las usa el agente de sincronización de Staxis para leer datos de ocupación — nunca se comparten ni se venden.'
+                ? 'Tus credenciales se encriptan y almacenan de forma segura en Supabase. Solo las usa el agente de sincronización de Staxis para leer datos de ocupación. Nunca se comparten ni se venden.'
                 : 'Your credentials are encrypted and stored securely in Supabase. They are only used by the Staxis sync agent to read occupancy data - never shared or sold.'}
             </p>
           </div>
@@ -550,8 +550,8 @@ function PMSPropertyEditor({
                 marginBottom: '8px',
               }}>
                 {lang === 'es'
-                  ? 'Esto está tardando más de lo normal. El trabajador puede estar ocupado — espera unos minutos o detén el sondeo para volver a intentarlo más tarde.'
-                  : 'This is taking longer than expected. The sync worker may be busy — wait a few more minutes or stop polling and try again later.'}
+                  ? 'Esto está tardando más de lo normal. El trabajador puede estar ocupado. Espera unos minutos o detén el sondeo para volver a intentarlo más tarde.'
+                  : 'This is taking longer than expected. The sync worker may be busy. Wait a few more minutes or stop polling and try again later.'}
                 {' '}
                 <button
                   type="button"
@@ -579,7 +579,7 @@ function PMSPropertyEditor({
               }}>
                 {lang === 'es'
                   ? 'Detuvimos el sondeo. Recarga la página para reintentar; la sincronización puede haber completado en segundo plano.'
-                  : 'We stopped polling. Refresh the page to retry — the sync may have completed in the background.'}
+                  : 'We stopped polling. Refresh the page to retry; the sync may have completed in the background.'}
               </p>
             )}
 

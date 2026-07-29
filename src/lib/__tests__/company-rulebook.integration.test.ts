@@ -864,7 +864,7 @@ describe('the settings-contradiction line', () => {
     assert.equal(found.length, 1, 'exactly the one hotel that differs');
     assert.equal(found[0].propertyName, 'Beaumont Suites');
     assert.match(found[0].line.en, /07:00/);
-    assert.match(found[0].line.en, /the company book says 08:00/);
+    assert.match(found[0].line.en, /[Tt]he company book says 08:00/);
   });
 
   test('is silent for the hotel that agrees, and for one with nothing configured', async () => {
