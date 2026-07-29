@@ -29,10 +29,6 @@ interface Envelope<T> {
   error?: unknown;
 }
 
-function copy(lang: string, en: string, es: string): string {
-  return lang === 'es' ? es : en;
-}
-
 function responseError(body: Envelope<unknown>, fallback: string): string {
   if (typeof body.error === 'string') return body.error;
   if (body.error && typeof body.error === 'object') {
@@ -115,11 +111,7 @@ export function LegacyOwnershipTransferPanel({
       if (requestId !== loadRequestRef.current
           || activeViewerRef.current !== requestedViewer) return;
       if (!response.ok || !body.ok || !Array.isArray(body.data?.users)) {
-        setError(responseError(body, copy(
-          lang,
-          'Legacy ownership details could not be loaded.',
-          'No se pudieron cargar los detalles de propiedad heredada.',
-        )));
+        setError(responseError(body, 'Legacy ownership details could not be loaded.'));
         return;
       }
       setUsers(body.data.users);
@@ -127,16 +119,12 @@ export function LegacyOwnershipTransferPanel({
       if (requestId !== loadRequestRef.current
           || activeViewerRef.current !== requestedViewer) return;
       console.error('[company-access:legacy-ownership-transfer] load failed', caught);
-      setError(copy(
-        lang,
-        'Legacy ownership details could not be loaded. Check your connection.',
-        'No se pudieron cargar los detalles de propiedad heredada. Revisa tu conexión.',
-      ));
+      setError('Legacy ownership details could not be loaded. Check your connection.');
     } finally {
       if (requestId === loadRequestRef.current
           && activeViewerRef.current === requestedViewer) setLoading(false);
     }
-  }, [currentAccountId, enabled, lang, propertyId]);
+  }, [currentAccountId, enabled, propertyId]);
 
   React.useEffect(() => { void load(); }, [load]);
 
@@ -193,28 +181,20 @@ export function LegacyOwnershipTransferPanel({
       }
       if (activeViewerRef.current !== requestedViewer) return;
       if (!response.ok || !body.ok) {
-        setError(responseError(body, copy(
-          lang,
-          'Ownership transfer failed.',
-          'La transferencia de propiedad falló.',
-        )));
+        setError(responseError(body, 'Ownership transfer failed.'));
         return;
       }
       const target = users.find((candidate) => candidate.accountId === accountId);
-      setCompletedTargetName(target?.displayName ?? copy(lang, 'the new owner', 'el nuevo propietario'));
+      setCompletedTargetName(target?.displayName ?? 'the new owner');
       setDialogOpen(false);
     } catch (caught) {
       if (activeViewerRef.current !== requestedViewer) return;
       console.error('[company-access:legacy-ownership-transfer] transfer failed', caught);
-      setError(copy(
-        lang,
-        'Ownership transfer failed. It is safe to retry with the same selection.',
-        'La transferencia de propiedad falló. Es seguro volver a intentarlo con la misma selección.',
-      ));
+      setError('Ownership transfer failed. It is safe to retry with the same selection.');
     } finally {
       if (activeViewerRef.current === requestedViewer) setBusy(false);
     }
-  }, [currentAccountId, enabled, lang, propertyId, users]);
+  }, [currentAccountId, enabled, propertyId, users]);
 
   React.useEffect(() => {
     if (!enabled || loading || !propertyId || users.length === 0) return;
@@ -258,46 +238,38 @@ export function LegacyOwnershipTransferPanel({
   return (
     <section className={`${styles.sectionBlock} ${styles.legacyOwnershipSection}`} aria-labelledby="legacy-ownership-title">
       <div className={styles.sectionHeading}>
-        <span className={styles.eyebrow}>{copy(lang, 'Legacy hotel authority', 'Autoridad heredada del hotel')}</span>
-        <h2 id="legacy-ownership-title">{copy(lang, 'Transfer hotel ownership', 'Transferir la propiedad del hotel')}</h2>
-        <p>{copy(
-          lang,
-          `This independent hotel still uses legacy owner authority. The handoff is atomic, audited, and applies to the exact hotel set shared by both accounts.`,
-          'Este hotel independiente todavía usa autoridad de propietario heredada. La transferencia es atómica, auditada y se aplica al conjunto exacto de hoteles compartido por ambas cuentas.',
-        )}</p>
+        <span className={styles.eyebrow}>{'Legacy hotel authority'}</span>
+        <h2 id="legacy-ownership-title">{'Transfer hotel ownership'}</h2>
+        <p>{`This independent hotel still uses legacy owner authority. The handoff is atomic, audited, and applies to the exact hotel set shared by both accounts.`}</p>
       </div>
 
       <div className={styles.legacyOwnershipCard}>
         <span className={styles.legacyOwnershipIcon} aria-hidden="true"><Crown size={19} /></span>
         <div className={styles.legacyOwnershipBody}>
-          <strong>{propertyName ?? copy(lang, 'Selected hotel', 'Hotel seleccionado')}</strong>
-          <span>{copy(
-            lang,
-            'Choose an active legacy account with the same complete hotel access. Your role will become General Manager after confirmation.',
-            'Elige una cuenta heredada activa con el mismo acceso completo a hoteles. Tu rol cambiará a Gerente General después de confirmar.',
-          )}</span>
+          <strong>{propertyName ?? 'Selected hotel'}</strong>
+          <span>{'Choose an active legacy account with the same complete hotel access. Your role will become General Manager after confirmation.'}</span>
         </div>
 
         {loading ? (
           <span className={styles.legacyOwnershipLoading} role="status">
             <span className={styles.buttonSpinnerDark} aria-hidden="true" />
-            {copy(lang, 'Checking eligible accounts…', 'Comprobando cuentas elegibles…')}
+            {'Checking eligible accounts…'}
           </span>
         ) : completedTargetName ? (
           <span className={styles.legacyOwnershipSuccess} role="status">
             <ShieldCheck size={16} aria-hidden="true" />
-            {copy(lang, `${completedTargetName} is now the owner.`, `${completedTargetName} ahora es el propietario.`)}
+            {`${completedTargetName} is now the owner.`}
           </span>
         ) : eligibleTargets.length > 0 ? (
           <div className={styles.legacyOwnershipControls}>
             <label className={styles.formField}>
-              <span>{copy(lang, 'New owner', 'Nuevo propietario')}</span>
+              <span>{'New owner'}</span>
               <select
                 value={targetId}
                 onChange={(event) => { setTargetId(event.target.value); setError(''); }}
                 disabled={busy}
               >
-                <option value="">{copy(lang, 'Choose an eligible account', 'Elige una cuenta elegible')}</option>
+                <option value="">{'Choose an eligible account'}</option>
                 {eligibleTargets.map((target) => (
                   <option key={target.accountId} value={target.accountId}>
                     {target.displayName} (@{target.username})
@@ -312,15 +284,11 @@ export function LegacyOwnershipTransferPanel({
               onClick={() => setDialogOpen(true)}
             >
               <Crown size={15} aria-hidden="true" />
-              {copy(lang, 'Review handoff', 'Revisar transferencia')}
+              {'Review handoff'}
             </button>
           </div>
         ) : (
-          <span className={styles.legacyOwnershipEmpty}>{copy(
-            lang,
-            'No eligible replacement has the same complete hotel access yet.',
-            'Todavía no hay un reemplazo elegible con el mismo acceso completo a hoteles.',
-          )}</span>
+          <span className={styles.legacyOwnershipEmpty}>{'No eligible replacement has the same complete hotel access yet.'}</span>
         )}
       </div>
 
@@ -364,7 +332,7 @@ function LegacyOwnershipTransferDialog({
   busyRef.current = busy;
   const titleId = React.useId();
   const descriptionId = React.useId();
-  const expected = lang === 'es' ? 'transferir' : 'transfer';
+  const expected = 'transfer';
   const confirmed = confirmation.trim().toLowerCase() === expected;
 
   React.useEffect(() => {
@@ -408,7 +376,7 @@ function LegacyOwnershipTransferDialog({
       <button
         type="button"
         className={styles.dialogScrim}
-        aria-label={copy(lang, 'Close ownership transfer', 'Cerrar transferencia de propiedad')}
+        aria-label={'Close ownership transfer'}
         onClick={onClose}
         disabled={busy}
       />
@@ -425,8 +393,8 @@ function LegacyOwnershipTransferDialog({
         <div className={styles.dialogHeader}>
           <span className={`${styles.dialogIcon} ${styles.iconRust}`}><Crown size={20} aria-hidden="true" /></span>
           <div>
-            <span>{copy(lang, 'Permanent authority handoff', 'Transferencia permanente de autoridad')}</span>
-            <h2 id={titleId}>{copy(lang, 'Transfer hotel ownership', 'Transferir la propiedad del hotel')}</h2>
+            <span>{'Permanent authority handoff'}</span>
+            <h2 id={titleId}>{'Transfer hotel ownership'}</h2>
           </div>
           <button
             ref={closeRef}
@@ -434,38 +402,30 @@ function LegacyOwnershipTransferDialog({
             className={styles.iconButton}
             onClick={onClose}
             disabled={busy}
-            aria-label={copy(lang, 'Close', 'Cerrar')}
+            aria-label={'Close'}
           >
             <X size={17} aria-hidden="true" />
           </button>
         </div>
-        <p id={descriptionId} className={styles.dialogIntro}>{copy(
-          lang,
-          `${target.displayName} will become owner${propertyName ? ` for ${propertyName}` : ''}. Your role will become General Manager. Only the new owner can transfer ownership again.`,
-          `${target.displayName} se convertirá en propietario${propertyName ? ` de ${propertyName}` : ''}. Tu rol cambiará a Gerente General. Solo el nuevo propietario podrá transferir la propiedad nuevamente.`,
-        )}</p>
+        <p id={descriptionId} className={styles.dialogIntro}>{`${target.displayName} will become owner${propertyName ? ` for ${propertyName}` : ''}. Your role will become General Manager. Only the new owner can transfer ownership again.`}</p>
         <div className={styles.formNotice} role="note">
           <AlertTriangle size={16} aria-hidden="true" />
-          <span>{copy(
-            lang,
-            'The server rechecks both accounts, exact hotel access, pending account changes, and your current owner authority before committing one atomic audit record.',
-            'El servidor vuelve a comprobar ambas cuentas, el acceso exacto a hoteles, los cambios de cuenta pendientes y tu autoridad actual de propietario antes de confirmar un registro de auditoría atómico.',
-          )}</span>
+          <span>{'The server rechecks both accounts, exact hotel access, pending account changes, and your current owner authority before committing one atomic audit record.'}</span>
         </div>
         <div className={styles.workflowForm}>
           <label className={styles.formField}>
-            <span>{copy(lang, 'Reason (optional)', 'Razón (opcional)')}</span>
+            <span>{'Reason (optional)'}</span>
             <input
               type="text"
               value={reason}
               maxLength={500}
               disabled={busy}
               onChange={(event) => setReason(event.target.value)}
-              placeholder={copy(lang, 'For example: handoff after sale', 'Por ejemplo: transferencia después de la venta')}
+              placeholder={'For example: handoff after sale'}
             />
           </label>
           <label className={styles.formField}>
-            <span>{copy(lang, `Type “${expected}” to confirm`, `Escribe “${expected}” para confirmar`)}</span>
+            <span>{`Type “${expected}” to confirm`}</span>
             <input
               type="text"
               value={confirmation}
@@ -476,10 +436,10 @@ function LegacyOwnershipTransferDialog({
           </label>
         </div>
         <div className={styles.dialogFooter}>
-          <span><ShieldCheck size={14} aria-hidden="true" />{copy(lang, 'Atomic · audited · retry-safe', 'Atómica · auditada · reintento seguro')}</span>
+          <span><ShieldCheck size={14} aria-hidden="true" />{'Atomic · audited · retry-safe'}</span>
           <div className={styles.dialogActions}>
             <button type="button" className={styles.secondaryButton} onClick={onClose} disabled={busy}>
-              {copy(lang, 'Cancel', 'Cancelar')}
+              {'Cancel'}
             </button>
             <button
               type="button"
@@ -488,7 +448,7 @@ function LegacyOwnershipTransferDialog({
               onClick={() => onConfirm(reason)}
             >
               {busy ? <span className={styles.buttonSpinner} aria-hidden="true" /> : <Crown size={15} aria-hidden="true" />}
-              {busy ? copy(lang, 'Transferring…', 'Transfiriendo…') : copy(lang, 'Transfer ownership', 'Transferir propiedad')}
+              {busy ? 'Transferring…' : 'Transfer ownership'}
             </button>
           </div>
         </div>

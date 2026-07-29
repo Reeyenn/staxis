@@ -33,11 +33,11 @@ type ChatState = 'empty' | 'active' | 'collapsed';
 
 const PLACEHOLDER = {
   en: 'Ask Staxis anything about the property…',
-  es: 'Pregúntale a Staxis lo que sea del hotel…',
+
 };
 const LISTENING_PLACEHOLDER = {
   en: 'Listening… speak and it appears here',
-  es: 'Escuchando… habla y aparece aquí',
+
 };
 // ─── Suggestion chips, per hat (WHO LENSES, 2026-07-27) ────────────────────
 //
@@ -46,86 +46,71 @@ const LISTENING_PLACEHOLDER = {
 // agent. A chip that opens a door the person cannot walk through is worse than
 // no chip — it teaches them the tool is for somebody else.
 //
-// The Spanish is written FOR the counter, not translated from the English. A
-// front-desk agent asking about breakfast in Spanish is the single most common
-// Spanish-first moment in this product, and "¿A qué hora es el desayuno?" is
-// what a person actually types — not a rendering of the English sentence.
-const SUGGESTIONS_BY_ROLE: Record<string, { en: string[]; es: string[] }> = {
+const SUGGESTIONS_BY_ROLE: Record<string, { en: string[] }> = {
   front_desk: {
     en: ['What’s the wifi password?', 'When is breakfast?', 'Do we take pets?'],
-    es: ['¿Cuál es la clave del wifi?', '¿A qué hora es el desayuno?', '¿Se aceptan mascotas?'],
+
   },
   maintenance: {
     en: ['What’s due this week?', 'History on 214', 'Which units keep breaking?'],
-    es: ['¿Qué mantenimiento toca esta semana?', 'Historial de la 214', '¿Qué equipos fallan más?'],
+
   },
 };
 
 const SUGGESTIONS_DEFAULT = {
   en: ['What needs my attention?', "Who's behind on rooms?", 'Should I raise rates?'],
-  es: ['¿Qué necesita mi atención?', '¿Quién va atrasado con las habitaciones?', '¿Debería subir tarifas?'],
+
 };
 
-function suggestionsForRole(role: string | null | undefined): { en: string[]; es: string[] } {
+function suggestionsForRole(role: string | null | undefined): { en: string[] } {
   return (role && SUGGESTIONS_BY_ROLE[role]) || SUGGESTIONS_DEFAULT;
 }
 const MOBILE_WELCOME = {
   en: 'I’m here and thinking with you. What should we handle first?',
-  es: 'Estoy aquí para ayudarte. ¿Qué resolvemos primero?',
+
 };
 const MOBILE_PROMPTS = {
   en: [
     { label: 'What needs attention?', prompt: 'What needs my attention this morning?' },
     { label: 'Show open shifts', prompt: 'Show me the open shifts.' },
   ],
-  es: [
-    { label: '¿Qué necesita atención?', prompt: '¿Qué necesita mi atención esta mañana?' },
-    { label: 'Ver turnos abiertos', prompt: 'Muéstrame los turnos abiertos.' },
-  ],
+
 };
 
-// The phone sheet, per hat. Same reasoning as the chips — and the front desk is
-// the hat most likely to be on a phone behind the counter, in Spanish.
 const MOBILE_BY_ROLE: Record<string, {
-  welcome: { en: string; es: string };
-  prompts: { en: Array<{ label: string; prompt: string }>; es: Array<{ label: string; prompt: string }> };
+  welcome: { en: string };
+  prompts: { en: Array<{ label: string; prompt: string }> };
 }> = {
   front_desk: {
     welcome: {
       en: 'Got a guest asking something? I’ll tell you what this hotel has actually confirmed.',
-      es: '¿Te preguntó algo un huésped? Te digo lo que el hotel tiene confirmado.',
+
     },
     prompts: {
       en: [
         { label: 'Wifi password', prompt: 'What’s the guest wifi password?' },
         { label: 'Breakfast hours', prompt: 'What time is breakfast served?' },
       ],
-      es: [
-        { label: 'Clave del wifi', prompt: '¿Cuál es la clave del wifi para huéspedes?' },
-        { label: 'Horario del desayuno', prompt: '¿A qué hora es el desayuno?' },
-      ],
+
     },
   },
   maintenance: {
     welcome: {
       en: 'Standing in front of something? I’ll pull its history and what’s due.',
-      es: '¿Estás frente a algo? Te saco su historial y lo que toca hacer.',
+
     },
     prompts: {
       en: [
         { label: 'What’s due', prompt: 'What preventive maintenance is due this week?' },
         { label: 'Room history', prompt: 'What’s the work order history on room 214?' },
       ],
-      es: [
-        { label: 'Qué toca', prompt: '¿Qué mantenimiento preventivo toca esta semana?' },
-        { label: 'Historial de un cuarto', prompt: '¿Cuál es el historial de órdenes de trabajo del cuarto 214?' },
-      ],
+
     },
   },
 };
 const INVENTORY_MOBILE_WELCOME = {
   en: 'I can review what’s under par and help draft the next reorder. Want me to start?',
-  es: 'Puedo revisar lo que está bajo el nivel ideal y preparar el próximo pedido. ¿Empiezo?',
+
 };
 const INVENTORY_MOBILE_PROMPTS = {
   en: [
@@ -138,16 +123,7 @@ const INVENTORY_MOBILE_PROMPTS = {
       prompt: 'Show me all inventory items that are currently under par, grouped by urgency.',
     },
   ],
-  es: [
-    {
-      label: 'Preparar pedido',
-      prompt: 'Revisa los artículos bajo el nivel ideal y prepara un pedido para los que necesitan atención ahora.',
-    },
-    {
-      label: 'Ver existencias bajas',
-      prompt: 'Muéstrame los artículos que están bajo el nivel ideal, agrupados por urgencia.',
-    },
-  ],
+
 };
 
 // Minimal shape of the Web Speech API we touch — it isn't in the standard DOM
@@ -472,13 +448,13 @@ export function AskStaxisBar() {
               <span>
                 <strong id="staxis-mobile-title">Staxis</strong>
                 <small><i aria-hidden />{streaming
-                  ? (lang === 'es' ? 'pensando…' : 'thinking…')
+                  ? ('thinking…')
                   : onInventory
-                    ? (lang === 'es' ? 'en inventario' : 'on inventory')
-                    : (lang === 'es' ? 'pensando contigo' : 'thinking with you')}</small>
+                    ? ('on inventory')
+                    : ('thinking with you')}</small>
               </span>
             </div>
-            <button type="button" className="asx-mobile-close" onClick={closeMobile} aria-label={lang === 'es' ? 'Cerrar Staxis' : 'Close Staxis'}>
+            <button type="button" className="asx-mobile-close" onClick={closeMobile} aria-label={'Close Staxis'}>
               <CloseX />
             </button>
           </header>
@@ -487,10 +463,10 @@ export function AskStaxisBar() {
             {messages.length === 0 ? (
               <>
                 <div className="asx-mobile-welcome">
-                  {(onInventory ? INVENTORY_MOBILE_WELCOME : roleMobile?.welcome ?? MOBILE_WELCOME)[lang]}
+                  {(onInventory ? INVENTORY_MOBILE_WELCOME : roleMobile?.welcome ?? MOBILE_WELCOME)['en']}
                 </div>
-                <div className="asx-mobile-quick" aria-label={lang === 'es' ? 'Sugerencias' : 'Suggestions'}>
-                  {(onInventory ? INVENTORY_MOBILE_PROMPTS : roleMobile?.prompts ?? MOBILE_PROMPTS)[lang].map((item, index) => (
+                <div className="asx-mobile-quick" aria-label={'Suggestions'}>
+                  {(onInventory ? INVENTORY_MOBILE_PROMPTS : roleMobile?.prompts ?? MOBILE_PROMPTS)['en'].map((item, index) => (
                     <button
                       key={item.label}
                       type="button"
@@ -500,14 +476,14 @@ export function AskStaxisBar() {
                       {item.label}
                     </button>
                   ))}
-                  <button type="button" onClick={closeMobile}>{lang === 'es' ? 'Ahora no' : 'Not now'}</button>
+                  <button type="button" onClick={closeMobile}>{'Not now'}</button>
                 </div>
               </>
             ) : (
               messages.map((message, index) => <Bubble key={index} message={message} />)
             )}
             {showTyping && (
-              <div className="asx-typing" aria-label={lang === 'es' ? 'Staxis está pensando' : 'Staxis is thinking'}>
+              <div className="asx-typing" aria-label={'Staxis is thinking'}>
                 <i /><i /><i />
               </div>
             )}
@@ -519,8 +495,8 @@ export function AskStaxisBar() {
             <input
               ref={mobileInputRef}
               value={input}
-              placeholder={lang === 'es' ? 'Pregunta o da una orden…' : 'Ask or command…'}
-              aria-label={lang === 'es' ? 'Preguntar a Staxis' : 'Ask Staxis'}
+              placeholder={'Ask or command…'}
+              aria-label={'Ask Staxis'}
               onChange={(e) => setInput(e.target.value)}
               onFocus={() => setFocused(true)}
               onBlur={() => setFocused(false)}
@@ -531,7 +507,7 @@ export function AskStaxisBar() {
             <button
               type="button"
               onClick={() => submit(input)}
-              aria-label={lang === 'es' ? 'Enviar' : 'Send'}
+              aria-label={'Send'}
               disabled={!hasText || streaming}
             >
               <ArrowUp />
@@ -545,8 +521,8 @@ export function AskStaxisBar() {
         className={`asx-mobile-fab${mobileOpen ? ' asx-mobile-fab-open' : ''}${onInventory ? ' asx-mobile-fab-inventory' : ''}`}
         onClick={mobileOpen ? closeMobile : openMobile}
         aria-label={mobileOpen
-          ? (lang === 'es' ? 'Cerrar Staxis' : 'Close Staxis')
-          : (lang === 'es' ? 'Preguntar a Staxis' : 'Ask Staxis')}
+          ? ('Close Staxis')
+          : ('Ask Staxis')}
         aria-expanded={mobileOpen}
         aria-controls="staxis-mobile-sheet"
       >
@@ -595,7 +571,7 @@ export function AskStaxisBar() {
         {/* Suggestion chips (before the first message) */}
         {chatState === 'empty' && (
           <div className="asx-chips">
-            {suggestionsForRole(user.role)[lang].map((s) => (
+            {suggestionsForRole(user.role)['en'].map((s) => (
               <button key={s} type="button" className="asx-chip" onClick={() => submit(s)}>
                 {s}
               </button>
@@ -646,7 +622,7 @@ export function AskStaxisBar() {
               ref={inputRef}
               className="asx-input"
               value={input}
-              placeholder={dictating ? LISTENING_PLACEHOLDER[lang] : PLACEHOLDER[lang]}
+              placeholder={dictating ? LISTENING_PLACEHOLDER['en'] : PLACEHOLDER['en']}
               aria-label="Ask Staxis"
               onChange={(e) => { setInput(e.target.value); setHistoryOpen(false); }}
               onFocus={() => { setFocused(true); setHistoryOpen(false); if (chatState === 'collapsed') reopen(); }}

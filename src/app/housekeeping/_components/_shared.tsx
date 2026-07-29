@@ -40,18 +40,18 @@ export function formatPulledAt(iso: string | null, lang: 'en' | 'es'): string {
   const d = new Date(iso);
   const todayLocal = new Intl.DateTimeFormat('en-CA').format(new Date());
   const thenLocal = new Intl.DateTimeFormat('en-CA').format(d);
-  const time = d.toLocaleTimeString(lang === 'es' ? 'es' : 'en', { hour: 'numeric', minute: '2-digit' });
+  const time = d.toLocaleTimeString('en', { hour: 'numeric', minute: '2-digit' });
   if (thenLocal === todayLocal) {
-    return `${lang === 'es' ? 'Hoy' : 'Today'} ${time}`;
+    return `${'Today'} ${time}`;
   }
-  const weekday = d.toLocaleDateString(lang === 'es' ? 'es' : 'en', { weekday: 'short' });
+  const weekday = d.toLocaleDateString('en', { weekday: 'short' });
   return `${weekday} ${time}`;
 }
 
 export function formatDisplayDate(dateStr: string, lang: 'en' | 'es'): string {
   const [y, m, d] = dateStr.split('-').map(Number);
   const dt = new Date(y, m - 1, d);
-  return dt.toLocaleDateString(lang === 'es' ? 'es-US' : 'en-US', {
+  return dt.toLocaleDateString('en-US', {
     weekday: 'long', month: 'short', day: 'numeric',
   });
 }

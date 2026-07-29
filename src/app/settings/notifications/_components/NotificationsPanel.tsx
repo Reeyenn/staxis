@@ -18,7 +18,6 @@ import { fetchWithAuth, INTERACTIVE_ACTION_TIMEOUT_MS } from '@/lib/api-fetch';
 import { RequestTimeoutError } from '@/lib/fetch-deadline';
 import { useCan } from '@/lib/capabilities/useCan';
 import { RouteErrorState, RouteLoadingState } from '@/components/layout/RouteResourceState';
-import { localizeKnownMessage, type LocalizedMessagePair } from '@/lib/localized-ui-message';
 
 interface Preferences {
   propertyId: string;
@@ -30,24 +29,6 @@ interface Preferences {
 }
 
 const DELIVERY_OPTIONS = ['16:00', '18:00', '20:00', '22:00'];
-
-const NOTIFICATION_ERROR_MESSAGES = [
-  ['Failed to load preferences', 'No se pudieron cargar las preferencias'],
-  [
-    'Failed to load preferences. Check your connection',
-    'No se pudieron cargar las preferencias. Revisa tu conexión',
-  ],
-  ['Failed to save', 'No se pudo guardar'],
-  [
-    'Failed to save. Check your connection and try again',
-    'No se pudo guardar. Revisa tu conexión e intenta de nuevo',
-  ],
-  [
-    'Save confirmation timed out. Current settings were refreshed; review them before retrying.',
-    'La confirmación tardó demasiado. Se actualizaron los ajustes actuales; revísalos antes de reintentar.',
-  ],
-  ['That email is already in the list', 'Ese correo ya está en la lista'],
-] as const satisfies readonly LocalizedMessagePair[];
 
 export function NotificationsPanel() {
   const { user, loading: authLoading } = useAuth();
@@ -96,7 +77,7 @@ export function NotificationsPanel() {
   const saveRequestRef = useRef(0);
   const activeScopeRef = useRef<string | null>(null);
   activeScopeRef.current = allowed ? propertyId : null;
-  const visibleError = localizeKnownMessage(error, lang, NOTIFICATION_ERROR_MESSAGES);
+  const visibleError = error;
 
   useEffect(() => {
     // Invalidate any response and draft for the previous viewer+hotel before
@@ -125,7 +106,7 @@ export function NotificationsPanel() {
       const body = await res.json() as { ok?: boolean; data?: { preferences: Preferences }; error?: string };
       if (requestId !== loadRequestRef.current || activeScopeRef.current !== requestedPropertyId) return;
       if (!res.ok || !body.ok || !body.data) {
-        setError(body.error || (langRef.current === 'es' ? 'No se pudieron cargar las preferencias' : 'Failed to load preferences'));
+        setError(body.error || ('Failed to load preferences'));
         return;
       }
       setPrefs(body.data.preferences);
@@ -134,7 +115,7 @@ export function NotificationsPanel() {
       // A network throw used to escape as an unhandled rejection — the page
       // rendered blank (prefs null) with no error at all.
       console.error('[notifications:settings] load failed', err);
-      setError(langRef.current === 'es' ? 'No se pudieron cargar las preferencias. Revisa tu conexión' : 'Failed to load preferences. Check your connection');
+      setError('Failed to load preferences. Check your connection');
     } finally {
       if (requestId === loadRequestRef.current && activeScopeRef.current === requestedPropertyId) setLoading(false);
     }
@@ -163,7 +144,7 @@ export function NotificationsPanel() {
       const body = await res.json() as { ok?: boolean; data?: { preferences: Preferences }; error?: string };
       if (!ownsSave()) return false;
       if (!res.ok || !body.ok || !body.data) {
-        setError(body.error || (lang === 'es' ? 'No se pudo guardar' : 'Failed to save'));
+        setError(body.error || ('Failed to save'));
         return false;
       }
       setPrefs(body.data.preferences);
@@ -183,11 +164,9 @@ export function NotificationsPanel() {
         // local toggle state.
         await load();
         if (!ownsSave()) return false;
-        setError(lang === 'es'
-          ? 'La confirmación tardó demasiado. Se actualizaron los ajustes actuales; revísalos antes de reintentar.'
-          : 'Save confirmation timed out. Current settings were refreshed; review them before retrying.');
+        setError('Save confirmation timed out. Current settings were refreshed; review them before retrying.');
       } else {
-        setError(lang === 'es' ? 'No se pudo guardar. Revisa tu conexión e intenta de nuevo' : 'Failed to save. Check your connection and try again');
+        setError('Failed to save. Check your connection and try again');
       }
       return false;
     } finally {
@@ -200,7 +179,7 @@ export function NotificationsPanel() {
     const trim = newCc.trim().toLowerCase();
     if (!trim) return;
     if (prefs.ccEmails.includes(trim)) {
-      setError(lang === 'es' ? 'Ese correo ya está en la lista' : 'That email is already in the list');
+      setError('That email is already in the list');
       return;
     }
     const nextList = [...prefs.ccEmails, trim];
@@ -228,16 +207,16 @@ export function NotificationsPanel() {
   if (capabilityOverridesStatus === 'error') {
     return (
       <RouteErrorState
-        title={lang === 'es' ? 'No se pudo confirmar el acceso a notificaciones' : 'Notification access could not be confirmed'}
+        title={'Notification access could not be confirmed'}
         message={capabilityOverridesError ?? undefined}
-        retryLabel={lang === 'es' ? 'Reintentar' : 'Try again'}
+        retryLabel={'Try again'}
         onRetry={() => void refreshCapabilities()}
       />
     );
   }
   if (authLoading || propertyLoading || (!!user && !accessContextReady)) {
     return (
-      <RouteLoadingState title={lang === 'es' ? 'Comprobando acceso…' : 'Checking access…'} />
+      <RouteLoadingState title={'Checking access…'} />
     );
   }
   if (!user || !allowed) {
@@ -245,9 +224,7 @@ export function NotificationsPanel() {
     // redirect, since the panel can be embedded inside another page.
     return (
       <div role="status" style={{ padding: '20px 4px', color: 'var(--text-muted)', fontSize: 14 }}>
-        {lang === 'es'
-          ? 'No tienes acceso a la configuración de envíos.'
-          : 'You don’t have access to delivery settings.'}
+        {'You don’t have access to delivery settings.'}
       </div>
     );
   }
@@ -255,14 +232,12 @@ export function NotificationsPanel() {
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
       <p style={{ fontFamily: 'var(--font-sans)', color: 'var(--text-muted)', fontSize: 13, margin: 0 }}>
-        {lang === 'es'
-          ? 'Cuándo y cómo quieres recibir el reporte diario y semanal de limpieza.'
-          : 'When and how you want to receive the daily and weekly housekeeping report.'}
+        {'When and how you want to receive the daily and weekly housekeeping report.'}
       </p>
 
       {properties.length > 1 && (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-          <label style={labelStyle}>{lang === 'es' ? 'Hotel' : 'Hotel'}</label>
+          <label style={labelStyle}>{'Hotel'}</label>
           <select value={propertyId} onChange={e => setActivePropertyId(e.target.value)} style={{ ...inputStyle, height: 44 }}>
             {properties.map(h => <option key={h.id} value={h.id}>{h.name}</option>)}
           </select>
@@ -284,7 +259,7 @@ export function NotificationsPanel() {
       {prefs && !loading && (
         <>
           {/* Delivery time */}
-          <Card title={lang === 'es' ? 'Hora de envío' : 'Delivery time'} subtitle={lang === 'es' ? 'El reporte llega a esta hora cada día, en la hora local del hotel.' : 'The report arrives at this time every day, in your hotel\'s local time.'}>
+          <Card title={'Delivery time'} subtitle={'The report arrives at this time every day, in your hotel\'s local time.'}>
             <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
               {DELIVERY_OPTIONS.map(opt => {
                 const isActive = prefs.deliveryTimeLocal === opt;
@@ -304,29 +279,29 @@ export function NotificationsPanel() {
           </Card>
 
           {/* Channels */}
-          <Card title={lang === 'es' ? 'Canales' : 'Channels'} subtitle={lang === 'es' ? 'Cómo quieres recibirlo.' : 'How you want to receive it.'}>
+          <Card title={'Channels'} subtitle={'How you want to receive it.'}>
             <ChannelToggle
               icon={<Mail size={16} />}
-              label={lang === 'es' ? 'Correo' : 'Email'}
+              label={'Email'}
               active={prefs.channels.email}
               onChange={(next) => save({ channels: { ...prefs.channels, email: next } })}
             />
             <ChannelToggle
               icon={<MessageSquare size={16} />}
-              label={lang === 'es' ? 'SMS con enlace' : 'SMS link'}
-              hint={lang === 'es' ? 'Recibirás un mensaje con un enlace al reporte.' : 'You\'ll get a text with a link to the report.'}
+              label={'SMS link'}
+              hint={'You\'ll get a text with a link to the report.'}
               active={prefs.channels.sms}
               onChange={(next) => save({ channels: { ...prefs.channels, sms: next } })}
             />
           </Card>
 
           {/* CC list */}
-          <Card title={lang === 'es' ? 'Compartir con otros' : 'CC recipients'} subtitle={lang === 'es' ? 'Agrega correos extra para enviar el mismo reporte.' : 'Add extra email addresses to also receive the report.'}>
+          <Card title={'CC recipients'} subtitle={'Add extra email addresses to also receive the report.'}>
             <div style={{ display: 'flex', gap: 8, marginBottom: 12 }}>
               <input
                 type="email"
                 value={newCc}
-                placeholder={lang === 'es' ? 'correo@ejemplo.com' : 'name@example.com'}
+                placeholder={'name@example.com'}
                 onChange={e => setNewCc(e.target.value)}
                 onKeyDown={e => { if (e.key === 'Enter') void handleAddCc(); }}
                 style={inputStyle}
@@ -352,44 +327,42 @@ export function NotificationsPanel() {
               </div>
             ) : (
               <p style={{ fontSize: 12, color: 'var(--text-muted)' }}>
-                {lang === 'es' ? 'Sin correos extra todavía.' : 'No extra recipients yet.'}
+                {'No extra recipients yet.'}
               </p>
             )}
           </Card>
 
           {/* Pause */}
-          <Card title={lang === 'es' ? 'Pausar entregas' : 'Pause delivery'} subtitle={lang === 'es' ? 'Útil para vacaciones. No llegará nada durante este tiempo.' : 'Useful for vacations. You won\'t get anything during this window.'}>
+          <Card title={'Pause delivery'} subtitle={'Useful for vacations. You won\'t get anything during this window.'}>
             {prefs.pausedUntil ? (
               <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
                 <p style={{ fontSize: 13, color: 'var(--text-primary)' }}>
-                  {lang === 'es'
-                    ? `Pausado hasta ${new Date(prefs.pausedUntil).toLocaleDateString()}`
-                    : `Paused until ${new Date(prefs.pausedUntil).toLocaleDateString()}`}
+                  {`Paused until ${new Date(prefs.pausedUntil).toLocaleDateString()}`}
                 </p>
                 <button onClick={() => togglePauseFor(null)} disabled={saving} style={ghostBtnStyle}>
-                  {lang === 'es' ? 'Reanudar ahora' : 'Resume now'}
+                  {'Resume now'}
                 </button>
               </div>
             ) : (
               <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
                 <button onClick={() => togglePauseFor(3)} disabled={saving} style={ghostBtnStyle}>
-                  {lang === 'es' ? '3 días' : '3 days'}
+                  {'3 days'}
                 </button>
                 <button onClick={() => togglePauseFor(7)} disabled={saving} style={ghostBtnStyle}>
-                  {lang === 'es' ? '1 semana' : '1 week'}
+                  {'1 week'}
                 </button>
                 <button onClick={() => togglePauseFor(14)} disabled={saving} style={ghostBtnStyle}>
-                  {lang === 'es' ? '2 semanas' : '2 weeks'}
+                  {'2 weeks'}
                 </button>
               </div>
             )}
           </Card>
 
           {/* Weekly toggle */}
-          <Card title={lang === 'es' ? 'Reporte semanal' : 'Weekly report'} subtitle={lang === 'es' ? 'Cada domingo recibirás un resumen de la semana con análisis automático.' : 'Every Sunday you\'ll get a week-at-a-glance summary with auto-generated insight.'}>
+          <Card title={'Weekly report'} subtitle={'Every Sunday you\'ll get a week-at-a-glance summary with auto-generated insight.'}>
             <ChannelToggle
               icon={<Bell size={16} />}
-              label={lang === 'es' ? 'Recibir el domingo' : 'Receive on Sundays'}
+              label={'Receive on Sundays'}
               active={prefs.weeklyEnabled}
               onChange={(next) => save({ weeklyEnabled: next })}
             />
@@ -403,7 +376,7 @@ export function NotificationsPanel() {
               boxShadow: '0 12px 32px -6px rgba(34,197,94,0.45)', zIndex: 9999,
             }}>
               <Save size={16} />
-              {lang === 'es' ? 'Guardado' : 'Saved'}
+              {'Saved'}
             </div>
           )}
         </>
@@ -462,7 +435,7 @@ function formatTimeLabel(hhmm: string, lang: string): string {
   const ampm = h >= 12 ? 'PM' : 'AM';
   const h12 = h % 12 === 0 ? 12 : h % 12;
   const minStr = m === 0 ? '' : `:${m.toString().padStart(2, '0')}`;
-  return lang === 'es' ? `${h12}${minStr}${ampm === 'AM' ? 'am' : 'pm'}` : `${h12}${minStr} ${ampm}`;
+  return `${h12}${minStr} ${ampm}`;
 }
 
 const labelStyle: React.CSSProperties = {

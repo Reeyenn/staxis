@@ -110,50 +110,50 @@ type Verdict = ClosureVerdict;
  * what makes it a test of the copy rather than of the text of the file.
  */
 export const S = {
-  heading: { en: 'What Staxis noticed', es: 'Lo que Staxis notó' },
-  cancel: { en: 'Cancel', es: 'Cancelar' },
-  seeNumbers: { en: 'See the numbers', es: 'Ver los números' },
-  hideNumbers: { en: 'Hide the numbers', es: 'Ocultar los números' },
-  tapToSee: { en: 'Tap to see them.', es: 'Toca para verlos.' },
-  basedOn: { en: 'based on', es: 'según' },
-  updated: { en: 'UPDATED', es: 'ACTUALIZADO' },
-  showAll: { en: 'Show all', es: 'Ver todo' },
-  showFewer: { en: 'Show fewer', es: 'Ver menos' },
-  asOf: { en: 'Numbers as of', es: 'Números al' },
-  receiptQuery: { en: 'Check', es: 'Comprobación' },
+  heading: { en: 'What Staxis noticed', },
+  cancel: { en: 'Cancel', },
+  seeNumbers: { en: 'See the numbers', },
+  hideNumbers: { en: 'Hide the numbers', },
+  tapToSee: { en: 'Tap to see them.', },
+  basedOn: { en: 'based on', },
+  updated: { en: 'UPDATED', },
+  showAll: { en: 'Show all', },
+  showFewer: { en: 'Show fewer', },
+  asOf: { en: 'Numbers as of', },
+  receiptQuery: { en: 'Check', },
   // What an empty cell in the receipt says. It used to be a bare em dash, which
   // in a column of numbers reads as a zero rather than as an absence, and which
   // the founder's 2026-07-28 copy ruling took out of user-facing text anyway.
-  noValue: { en: 'not recorded', es: 'sin dato' },
+  noValue: { en: 'not recorded', },
   saveFailed: {
     en: 'That did not save. Nothing changed. Try again in a moment.',
-    es: 'No se guardó. Nada cambió: inténtalo de nuevo en un momento.',
+
   },
   loadFailed: {
     en: 'Staxis could not check just now. Do not read this as "nothing is wrong".',
-    es: 'Staxis no pudo revisar ahora. No lo tomes como "no pasa nada".',
+
   },
   // Said ONLY when there has never been a check here. Deliberately not an
   // all-clear and deliberately not an apology: it reports that the watching
   // has not begun, which is the one true thing available to say.
   neverChecked: {
     en: 'Staxis has not started checking this hotel yet. Nothing here means "all clear". It means nothing has been looked at.',
-    es: 'Staxis todavía no ha empezado a revisar este hotel. Esto no significa "todo bien": significa que aún no se ha revisado nada.',
+
   },
 
   // ── the hands ──
-  doIt: { en: 'Yes, do it', es: 'Sí, hazlo' },
-  notNow: { en: 'Not now', es: 'Ahora no' },
-  working: { en: 'Doing it…', es: 'Haciéndolo…' },
-  undo: { en: 'Undo', es: 'Deshacer' },
-  undoing: { en: 'Undoing…', es: 'Deshaciendo…' },
+  doIt: { en: 'Yes, do it', },
+  notNow: { en: 'Not now', },
+  working: { en: 'Doing it…', },
+  undo: { en: 'Undo', },
+  undoing: { en: 'Undoing…', },
   undone: {
     en: 'Undone. Nothing was left behind.',
-    es: 'Deshecho. No quedó nada.',
+
   },
   actionFailed: {
     en: 'That did not go through, and nothing was changed. Try again in a moment.',
-    es: 'No se completó y no se cambió nada. Inténtalo de nuevo en un momento.',
+
   },
 
   // ── reading, not deciding ──
@@ -161,7 +161,7 @@ export const S = {
   // READ. The sentence says whose call it is, so nothing looks broken.
   readOnly: {
     en: 'Yours to read. Closing this out is the operator\u2019s call.',
-    es: 'Para que lo leas. Cerrarlo es decisión del operador.',
+
   },
 } as const;
 
@@ -248,7 +248,7 @@ const FD_CSS = `
 
 /** Render one evidence value without pretending to understand its shape. */
 function renderValue(value: unknown, lang: Lang): string {
-  if (value === null || value === undefined) return lang === 'es' ? S.noValue.es : S.noValue.en;
+  if (value === null || value === undefined) return S.noValue.en;
   if (typeof value === 'string') return value;
   if (typeof value === 'number' || typeof value === 'boolean') return String(value);
   try {
@@ -269,7 +269,7 @@ function humanKey(key: string): string {
  * way to prove the fallback line below actually reaches a Spanish reader.
  */
 export function Receipt({ finding, lang }: { finding: QueueFinding; lang: Lang }) {
-  const es = lang === 'es';
+  const es = false;
   const entries = [
     ...Object.entries(finding.evidence.values ?? {}),
     ...Object.entries(finding.evidence.params ?? {}),
@@ -294,8 +294,8 @@ export function Receipt({ finding, lang }: { finding: QueueFinding; lang: Lang }
         ))
       )}
       <div className="fd-rfoot">
-        {(es ? S.receiptQuery.es : S.receiptQuery.en)}: {finding.evidence.queryId || (es ? S.noValue.es : S.noValue.en)}
-        {asOf ? ` · ${es ? S.asOf.es : S.asOf.en} ${asOf}` : ''}
+        {(S.receiptQuery.en)}: {finding.evidence.queryId || (S.noValue.en)}
+        {asOf ? ` · ${S.asOf.en} ${asOf}` : ''}
       </div>
     </div>
   );
@@ -332,8 +332,8 @@ function ActionRow({
   readOnly?: boolean;
   onAction?: (actionId: string, intent: 'execute' | 'undo') => void;
 }) {
-  const es = lang === 'es';
-  const L = <K extends keyof typeof S>(k: K) => (es ? S[k].es : S[k].en);
+  const es = false;
+  const L = <K extends keyof typeof S>(k: K) => (S[k].en);
   const action = finding.action;
   if (!action) return null;
 
@@ -347,7 +347,7 @@ function ActionRow({
   if (isSignOffLocked(finding) && action.state === 'proposed') {
     return (
       <>
-        <div className="fd-offer">{es ? action.offerEs : action.offerEn}</div>
+        <div className="fd-offer">{action.offerEn}</div>
         <div className="fd-locked">
           <CxIcon name="staxis" size={14} />
           <span>{signOffNotice(finding.signOff!, lang)}</span>
@@ -359,7 +359,7 @@ function ActionRow({
   if (offersApproval(finding)) {
     return (
       <>
-        <div className="fd-offer">{es ? action.offerEs : action.offerEn}</div>
+        <div className="fd-offer">{action.offerEn}</div>
         {/* Same shape as the sign-off lock above, and for the same reason: the
             offer sentence still renders in full so the reader sees exactly what
             Staxis would do, and the button is REPLACED rather than removed. */}
@@ -376,7 +376,7 @@ function ActionRow({
               disabled={busy}
               onClick={() => onAction?.(action.id, 'execute')}
             >
-              {busy ? L('working') : es ? action.labelEs : action.labelEn}
+              {busy ? L('working') : action.labelEn}
             </button>
           </div>
         )}
@@ -387,7 +387,7 @@ function ActionRow({
   if (offersUndo(finding)) {
     return (
       <div className="fd-settled fd-done">
-        <div>{(es ? action.receiptEs : action.receiptEn) ?? ''}</div>
+        <div>{(action.receiptEn) ?? ''}</div>
         {!readOnly && (
           <button
             type="button"
@@ -494,8 +494,8 @@ function FindingCard({
   hrefLabel,
   hideOccurrence = false,
 }: CardProps) {
-  const es = lang === 'es';
-  const L = <K extends keyof typeof S>(k: K) => (es ? S[k].es : S[k].en);
+  const es = false;
+  const L = <K extends keyof typeof S>(k: K) => (S[k].en);
 
   const [showReceipt, setShowReceipt] = React.useState(false);
   // Which verdict is waiting on its second tap, if any. Keyed on the verdict
@@ -668,7 +668,7 @@ function FindingCard({
                   land on one card (?focus=). */}
               {href && (
                 <a className="fd-drill" href={href}>
-                  {hrefLabel ?? (es ? 'Ver en este hotel' : 'Open in this hotel')}
+                  {hrefLabel ?? ('Open in this hotel')}
                 </a>
               )}
             </>
@@ -824,8 +824,8 @@ export function FindingCardsView({
   hideOccurrence = false,
   bottomHeadroom = false,
 }: FindingCardsViewProps) {
-  const es = lang === 'es';
-  const L = <K extends keyof typeof S>(k: K) => (es ? S[k].es : S[k].en);
+  const es = false;
+  const L = <K extends keyof typeof S>(k: K) => (S[k].en);
   const [showAll, setShowAll] = React.useState(false);
 
   const all = findings.filter(isCardRenderable);
@@ -1092,7 +1092,7 @@ export function FindingCards({
       // Only once the read has actually landed. Passed while `data` is still
       // undefined, "nothing has been checked here" would flash on every load
       // of a hotel that IS checked — a worse lie than the silence it replaces.
-      emptyNote={readState === 'ready' ? (lang === 'es' ? S.neverChecked.es : S.neverChecked.en) : undefined}
+      emptyNote={readState === 'ready' ? (S.neverChecked.en) : undefined}
       onVerdict={onVerdict}
       onEngage={onEngage}
       onAction={onAction}

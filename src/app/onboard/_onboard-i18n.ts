@@ -66,55 +66,11 @@ const STRINGS = {
     startingEllipsis: 'Starting…',
     continuingEllipsis: 'Continuing…',
   },
-  es: {
-    welcomeSteps:
-      'Te guiaremos en 9 pasos rápidos: crear tu cuenta, los datos de tu hotel, conectar tu sistema de reservas y agregar a tu equipo. Toma unos 10 minutos.',
 
-    contextTitle: '¿Algo que debamos saber? (opcional)',
-    contextBody:
-      'Cuéntale a Staxis sobre tu hotel con tus palabras: cómo funciona todo, a quién llamar, qué se rompe siempre. Con una o dos frases basta. Puedes saltar esto y hacerlo cuando quieras desde la pestaña Staxis.',
-    contextPlaceholder:
-      'p. ej. El desayuno es de 6 a 9. Ace Plomería ve todo lo de agua. La máquina de hielo del tercer piso falla cada verano.',
-    contextSkip: 'Saltar por ahora',
-    contextSubmit: 'Agregar esto →',
-    contextSubmitting: 'Leyendo…',
-    contextFailed:
-      'Staxis no pudo leer eso ahora mismo. Puedes saltar y agregarlo después desde la pestaña Staxis.',
-    contextNote:
-      'Lo que escribas se convierte en una lista corta de datos que tú revisas y confirmas después: nada se da por cierto hasta que tú lo digas.',
-
-    pmsLabel: 'Tu sistema de reservas (PMS) *',
-    pmsSelectPlaceholder: 'Selecciona tu sistema de reservas…',
-    pmsRequired: 'Por favor elige tu sistema de reservas.',
-    pmsOtherLabel: '¿Cómo se llama tu sistema de reservas? *',
-    pmsOtherPlaceholder: 'p. ej. Maestro, RMS, innRoad…',
-    pmsOtherHint: 'Nosotros lo configuramos por ti. Dinos el nombre.',
-    pmsOtherRequired: 'Por favor escribe el nombre de tu sistema de reservas.',
-
-    resumeTitle: 'Ya empezaste la configuración',
-    resumeBody:
-      'Parece que tu cuenta ya está creada. Inicia sesión con el correo y la contraseña que elegiste para continuar donde lo dejaste.',
-    resumeSignInBtn: 'Iniciar sesión para continuar →',
-    sessionExpiredError:
-      'Tu enlace de registro expiró. Inicia sesión con el correo y la contraseña que elegiste para continuar.',
-
-    backToAccount: 'Volver a la cuenta',
-    backToWelcome: 'Volver a la bienvenida',
-    accountReadyTitle: 'Tu cuenta está lista',
-    accountReadyBody:
-      'Tu cuenta de Staxis ya fue creada. Puedes revisar este paso sin reiniciar tu registro.',
-    accountEmailLabel: 'Correo de la cuenta',
-    continueToVerify: 'Continuar para verificar el correo →',
-    continueSetup: 'Continuar configuración →',
-    beginArrow: 'Comenzar →',
-    continueArrow: 'Continuar →',
-    startingEllipsis: 'Comenzando…',
-    continuingEllipsis: 'Continuando…',
-  },
 };
 
 export type OnboardStrings = (typeof STRINGS)['en'];
 
 export function ot(lang: Lang): OnboardStrings {
-  return STRINGS[lang] ?? STRINGS.en;
+  return STRINGS['en'] ?? STRINGS.en;
 }

@@ -40,22 +40,20 @@ export default function ActivityLogPage() {
   const can = useCan();
 
   if (!uid) {
-    return <AppLayout><div style={{ padding: 24 }}>{lang === 'es' ? 'Inicia sesión para continuar.' : 'Sign in to continue.'}</div></AppLayout>;
+    return <AppLayout><div style={{ padding: 24 }}>{'Sign in to continue.'}</div></AppLayout>;
   }
   if (!can('view_activity_log')) {
     return (
       <AppLayout>
         <div style={{ padding: 24, maxWidth: 520, margin: '40px auto', textAlign: 'center' }}>
           <h1 style={{ fontFamily: fonts.serif, fontSize: 24, color: T.ink, marginBottom: 12 }}>
-            {lang === 'es' ? 'Acceso restringido' : 'You don’t have access'}
+            {'You don’t have access'}
           </h1>
           <p style={{ fontFamily: fonts.sans, fontSize: 14, color: T.ink2, marginBottom: 20 }}>
-            {lang === 'es'
-              ? 'El registro de actividad solo está disponible para gerentes, propietarios y administradores.'
-              : 'The activity log is restricted to managers, owners, and admins.'}
+            {'The activity log is restricted to managers, owners, and admins.'}
           </p>
           <Link href="/settings">
-            <Btn variant="ghost"><ChevronLeft size={14}/> {lang === 'es' ? 'Volver' : 'Back to Settings'}</Btn>
+            <Btn variant="ghost"><ChevronLeft size={14}/> {'Back to Settings'}</Btn>
           </Link>
         </div>
       </AppLayout>
@@ -175,13 +173,13 @@ function ActivityLogBody({ pid, lang }: { pid: string; lang: 'en' | 'es' }) {
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 8 }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
           <Link href="/settings" style={{ textDecoration: 'none', color: T.ink2 }}>
-            <Btn variant="ghost" size="sm"><ChevronLeft size={14}/> {lang === 'es' ? 'Ajustes' : 'Settings'}</Btn>
+            <Btn variant="ghost" size="sm"><ChevronLeft size={14}/> {'Settings'}</Btn>
           </Link>
           <h1 style={{
             fontFamily: fonts.serif, fontSize: 26, lineHeight: 1.1,
             color: T.ink, margin: 0, letterSpacing: '-0.01em',
           }}>
-            {lang === 'es' ? 'Registro de actividad' : 'Activity Log'}
+            {'Activity Log'}
           </h1>
         </div>
 
@@ -235,7 +233,7 @@ function ActivityLogBody({ pid, lang }: { pid: string; lang: 'en' | 'es' }) {
       }}>
         <Search size={14} color={T.ink3}/>
         <input
-          placeholder={lang === 'es' ? 'Buscar por persona, habitación, evento…' : 'Search by person, room, event…'}
+          placeholder={'Search by person, room, event…'}
           value={search}
           onChange={(e) => { setSearch(e.target.value); setPage(1); }}
           style={{
@@ -252,29 +250,29 @@ function ActivityLogBody({ pid, lang }: { pid: string; lang: 'en' | 'es' }) {
 
       {/* Category pills */}
       <FilterPills
-        legend={lang === 'es' ? 'Categoría' : 'Category'}
+        legend={'Category'}
         options={ACTIVITY_CATEGORIES as unknown as ActivityCategory[]}
         active={categories}
         onToggle={toggleCategory}
-        labeler={(v) => categoryLabel(v, lang)}
+        labeler={categoryLabel}
       />
 
       {/* Source pills */}
       <FilterPills
-        legend={lang === 'es' ? 'Origen' : 'Source'}
+        legend={'Source'}
         options={ACTIVITY_SOURCES as unknown as ActivitySource[]}
         active={sources}
         onToggle={toggleSource}
-        labeler={(v) => sourceLabel(v, lang)}
+        labeler={sourceLabel}
       />
 
       {/* Result count */}
       <div style={{ fontFamily: fonts.mono, fontSize: 11, color: T.ink3, letterSpacing: '0.04em', textTransform: 'uppercase' }}>
         {loading
-          ? (lang === 'es' ? 'Cargando…' : 'Loading…')
+          ? ('Loading…')
           : total > 0
-            ? `${(page - 1) * PAGE_SIZE + 1}–${Math.min(page * PAGE_SIZE, total)} ${lang === 'es' ? 'de' : 'of'} ${total}`
-            : (lang === 'es' ? 'Sin eventos' : 'No events')}
+            ? `${(page - 1) * PAGE_SIZE + 1}–${Math.min(page * PAGE_SIZE, total)} ${'of'} ${total}`
+            : ('No events')}
       </div>
 
       {error && (
@@ -291,13 +289,13 @@ function ActivityLogBody({ pid, lang }: { pid: string; lang: 'en' | 'es' }) {
       {total > PAGE_SIZE && (
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: 8 }}>
           <Btn variant="ghost" size="sm" disabled={page <= 1} onClick={() => setPage((p) => Math.max(1, p - 1))}>
-            {lang === 'es' ? 'Anterior' : 'Previous'}
+            {'Previous'}
           </Btn>
           <span style={{ fontFamily: fonts.mono, fontSize: 11, color: T.ink2 }}>
             {page} / {totalPages}
           </span>
           <Btn variant="ghost" size="sm" disabled={page >= totalPages} onClick={() => setPage((p) => Math.min(totalPages, p + 1))}>
-            {lang === 'es' ? 'Siguiente' : 'Next'}
+            {'Next'}
           </Btn>
         </div>
       )}
@@ -362,16 +360,16 @@ function ActivityTable({
         gap: 10, padding: '10px 14px',
         borderBottom: `1px solid ${T.rule}`,
       }}>
-        <Caps>{lang === 'es' ? 'Cuándo' : 'When'}</Caps>
-        <Caps>{lang === 'es' ? 'Categoría' : 'Category'}</Caps>
-        <Caps>{lang === 'es' ? 'Persona' : 'Actor'}</Caps>
-        <Caps>{lang === 'es' ? 'Descripción' : 'Description'}</Caps>
-        <Caps>{lang === 'es' ? 'Origen' : 'Source'}</Caps>
+        <Caps>{'When'}</Caps>
+        <Caps>{'Category'}</Caps>
+        <Caps>{'Actor'}</Caps>
+        <Caps>{'Description'}</Caps>
+        <Caps>{'Source'}</Caps>
       </div>
       <div style={{ display: 'flex', flexDirection: 'column' }}>
         {rows.length === 0 && (
           <div style={{ padding: '20px 14px', color: T.ink3, fontFamily: fonts.sans, fontSize: 13 }}>
-            {lang === 'es' ? 'No hay eventos en este intervalo.' : 'No events in this range.'}
+            {'No events in this range.'}
           </div>
         )}
         {rows.map((r) => (
@@ -388,10 +386,10 @@ function ActivityTable({
             }}
           >
             <span style={{ fontFamily: fonts.mono, fontSize: 11, color: T.ink2 }}>{formatWhen(r.occurred_at, lang)}</span>
-            <Pill tone={pillFor(r.event_category)}>{categoryLabel(r.event_category, lang)}</Pill>
+            <Pill tone={pillFor(r.event_category)}>{categoryLabel(r.event_category)}</Pill>
             <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{r.actor_name ?? '—'}</span>
-            <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{renderDescription(r, lang)}</span>
-            <span style={{ fontFamily: fonts.mono, fontSize: 11, color: T.ink3 }}>{sourceLabel(r.source, lang)}</span>
+            <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{renderDescription(r)}</span>
+            <span style={{ fontFamily: fonts.mono, fontSize: 11, color: T.ink3 }}>{sourceLabel(r.source)}</span>
           </button>
         ))}
       </div>
@@ -419,27 +417,27 @@ function EventDetailDrawer({
         }}
       >
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-          <Caps>{lang === 'es' ? 'Detalle del evento' : 'Event detail'}</Caps>
+          <Caps>{'Event detail'}</Caps>
           <button onClick={onClose} style={{ background: 'transparent', border: 'none', cursor: 'pointer' }}>
             <X size={16} color={T.ink2}/>
           </button>
         </div>
 
         <div style={{ fontFamily: fonts.serif, fontSize: 20, color: T.ink, lineHeight: 1.25 }}>
-          {renderDescription(row, lang)}
+          {renderDescription(row)}
         </div>
 
-        <DetailRow label={lang === 'es' ? 'Cuándo' : 'When'} value={new Date(row.occurred_at).toLocaleString(lang === 'es' ? 'es-MX' : undefined)} />
-        <DetailRow label={lang === 'es' ? 'Categoría' : 'Category'} value={categoryLabel(row.event_category, lang)} />
-        <DetailRow label={lang === 'es' ? 'Tipo' : 'Type'} value={row.event_type} />
-        <DetailRow label={lang === 'es' ? 'Persona' : 'Actor'} value={row.actor_name ?? '—'} />
-        {row.actor_role && <DetailRow label={lang === 'es' ? 'Rol' : 'Role'} value={row.actor_role} />}
-        {row.target_label && <DetailRow label={lang === 'es' ? 'Objetivo' : 'Target'} value={row.target_label} />}
-        <DetailRow label={lang === 'es' ? 'Origen' : 'Source'} value={sourceLabel(row.source, lang)} />
+        <DetailRow label={'When'} value={new Date(row.occurred_at).toLocaleString(undefined)} />
+        <DetailRow label={'Category'} value={categoryLabel(row.event_category)} />
+        <DetailRow label={'Type'} value={row.event_type} />
+        <DetailRow label={'Actor'} value={row.actor_name ?? '—'} />
+        {row.actor_role && <DetailRow label={'Role'} value={row.actor_role} />}
+        {row.target_label && <DetailRow label={'Target'} value={row.target_label} />}
+        <DetailRow label={'Source'} value={sourceLabel(row.source)} />
 
         <details style={{ marginTop: 8 }}>
           <summary style={{ cursor: 'pointer', fontFamily: fonts.mono, fontSize: 11, color: T.ink2, letterSpacing: '0.04em', textTransform: 'uppercase' }}>
-            {lang === 'es' ? 'Datos sin procesar' : 'Raw event'}
+            {'Raw event'}
           </summary>
           <pre style={{
             marginTop: 8, padding: 10, fontFamily: fonts.mono, fontSize: 11,
@@ -466,21 +464,13 @@ function DetailRow({ label, value }: { label: string; value: string | null | und
 function formatWhen(iso: string, lang: 'en' | 'es'): string {
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return iso;
-  const date = d.toLocaleDateString(lang === 'es' ? 'es-MX' : undefined, { month: 'short', day: 'numeric' });
-  const time = d.toLocaleTimeString(lang === 'es' ? 'es-MX' : undefined, { hour: 'numeric', minute: '2-digit' });
+  const date = d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+  const time = d.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' });
   return `${date} · ${time}`;
 }
 
 function rangeLabel(k: DateRangeKey, lang: 'en' | 'es'): string {
-  if (lang === 'es') {
-    switch (k) {
-      case 'today':     return 'Hoy';
-      case 'yesterday': return 'Ayer';
-      case 'last7':     return 'Últimos 7 días';
-      case 'last30':    return 'Últimos 30 días';
-      case 'custom':    return 'Personalizado';
-    }
-  }
+
   switch (k) {
     case 'today':     return 'Today';
     case 'yesterday': return 'Yesterday';

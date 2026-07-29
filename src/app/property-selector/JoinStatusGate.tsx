@@ -190,7 +190,7 @@ export default function JoinStatusGate({
   // ── Denied ───────────────────────────────────────────────────────────────
   if (state === 'denied') {
     const hotel = hotelName
-      ?? (lang === 'es' ? 'el hotel' : 'the hotel');
+      ?? ('the hotel');
     return shell(
       <>
         <div style={{
@@ -212,12 +212,10 @@ export default function JoinStatusGate({
             color: 'var(--text-primary)', marginBottom: '8px',
             fontFamily: 'var(--font-sans)',
           }}>
-            {lang === 'es' ? 'Solicitud rechazada' : 'Request declined'}
+            {'Request declined'}
           </p>
           <p style={{ fontSize: '13px', color: 'var(--text-muted)', lineHeight: 1.5 }}>
-            {lang === 'es'
-              ? `Tu solicitud para unirte a ${hotel} fue rechazada. Habla con tu gerente.`
-              : `Your request to join ${hotel} was declined. Talk to your manager.`}
+            {`Your request to join ${hotel} was declined. Talk to your manager.`}
           </p>
         </div>
         <div style={{ marginTop: '32px' }}>{signOutButton}</div>
@@ -226,7 +224,7 @@ export default function JoinStatusGate({
   }
 
   // ── Pending ──────────────────────────────────────────────────────────────
-  const hotel = hotelName ?? (lang === 'es' ? 'tu hotel' : 'your hotel');
+  const hotel = hotelName ?? ('your hotel');
   return shell(
     <>
       <div style={{
@@ -248,7 +246,7 @@ export default function JoinStatusGate({
           color: 'var(--text-primary)', marginBottom: '6px',
           fontFamily: 'var(--font-sans)', letterSpacing: '-0.01em',
         }}>
-          {lang === 'es' ? 'Ya casi estás dentro' : "You're almost in"}
+          {"You're almost in"}
         </p>
         <p style={{
           fontSize: '14px', fontWeight: 600,
@@ -258,9 +256,7 @@ export default function JoinStatusGate({
           {hotel}
         </p>
         <p style={{ fontSize: '13px', color: 'var(--text-muted)', lineHeight: 1.5, marginBottom: '20px' }}>
-          {lang === 'es'
-            ? 'Tu gerente solo necesita aprobarte. Vuelve a revisar pronto.'
-            : 'Your manager just needs to approve you. Check back soon.'}
+          {'Your manager just needs to approve you. Check back soon.'}
         </p>
         <button
           onClick={() => { void handleCheckAgain(); }}
@@ -280,8 +276,8 @@ export default function JoinStatusGate({
         >
           <RefreshCw size={15} style={checking ? { animation: 'spin 0.8s linear infinite' } : undefined} />
           {checking
-            ? (lang === 'es' ? 'Revisando…' : 'Checking…')
-            : (lang === 'es' ? 'Revisar de nuevo' : 'Check again')}
+            ? ('Checking…')
+            : ('Check again')}
           <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
         </button>
       </div>

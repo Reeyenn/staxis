@@ -33,9 +33,9 @@ import type { AppRole } from '@/lib/roles';
 import { canManageTeam } from '@/lib/roles';
 
 export type Lang = 'en' | 'es';
-export interface Bilingual { en: string; es: string }
+export interface Bilingual { en: string }
 export function say(b: Bilingual, lang: Lang): string {
-  return lang === 'es' ? b.es : b.en;
+  return b.en;
 }
 
 // ── Who sees what ───────────────────────────────────────────────────────────
@@ -99,9 +99,9 @@ export const TOLD_SECTIONS: readonly ToldSection[] = ['contacts', 'sops', 'docum
 export const defaultToldSection: ToldSection = 'contacts';
 
 export const TOLD_SECTION_LABEL: Record<ToldSection, Bilingual> = {
-  contacts: { en: 'Contacts', es: 'Contactos' },
-  sops: { en: 'How we do things', es: 'Cómo hacemos las cosas' },
-  documents: { en: 'Documents', es: 'Documentos' },
+  contacts: { en: 'Contacts', },
+  sops: { en: 'How we do things', },
+  documents: { en: 'Documents', },
 };
 
 // ── Document access (the permission control) ────────────────────────────────
@@ -113,20 +113,20 @@ export const TOLD_SECTION_LABEL: Record<ToldSection, Bilingual> = {
 export type AccessVal = 'all_staff' | 'managers' | Dept;
 
 export const ACCESS_OPTIONS: readonly { value: AccessVal; label: Bilingual }[] = [
-  { value: 'all_staff', label: { en: 'Everyone', es: 'Todos' } },
-  { value: 'front_desk', label: { en: 'Front desk', es: 'Recepción' } },
-  { value: 'housekeeping', label: { en: 'Housekeeping', es: 'Limpieza' } },
-  { value: 'maintenance', label: { en: 'Maintenance', es: 'Mantenimiento' } },
-  { value: 'managers', label: { en: 'Managers only', es: 'Solo gerentes' } },
+  { value: 'all_staff', label: { en: 'Everyone', } },
+  { value: 'front_desk', label: { en: 'Front desk', } },
+  { value: 'housekeeping', label: { en: 'Housekeeping', } },
+  { value: 'maintenance', label: { en: 'Maintenance', } },
+  { value: 'managers', label: { en: 'Managers only', } },
 ];
 
 export const DEPT_LABEL: Record<Dept, Bilingual> = {
-  front_desk: { en: 'Front desk', es: 'Recepción' },
-  housekeeping: { en: 'Housekeeping', es: 'Limpieza' },
-  maintenance: { en: 'Maintenance', es: 'Mantenimiento' },
+  front_desk: { en: 'Front desk', },
+  housekeeping: { en: 'Housekeeping', },
+  maintenance: { en: 'Maintenance', },
 };
 
-export const MANAGERS_ONLY_LABEL: Bilingual = { en: 'Managers only', es: 'Solo gerentes' };
+export const MANAGERS_ONLY_LABEL: Bilingual = { en: 'Managers only', };
 
 /** The row's two columns collapsed back into the one value the picker shows. */
 export function docAccessVal(d: Pick<KnowledgeDocumentDTO, 'visibility' | 'visibleDept'>): AccessVal {
@@ -150,12 +150,12 @@ export type BadgeTone = 'good' | 'warn' | 'muted';
 export interface ExtractionBadge { label: Bilingual; tone: BadgeTone; spinning: boolean }
 
 const EXTRACTION_BADGES: Record<ExtractionStatus, ExtractionBadge> = {
-  ready: { label: { en: 'Searchable by AI', es: 'Buscable por IA' }, tone: 'good', spinning: false },
-  partial: { label: { en: 'Partially indexed', es: 'Indexado parcial' }, tone: 'good', spinning: false },
-  pending: { label: { en: 'Processing…', es: 'Procesando…' }, tone: 'muted', spinning: true },
-  processing: { label: { en: 'Reading scan…', es: 'Leyendo el escaneo…' }, tone: 'muted', spinning: true },
-  unsupported: { label: { en: 'Not text-searchable', es: 'No buscable por texto' }, tone: 'muted', spinning: false },
-  failed: { label: { en: 'Couldn’t read', es: 'No se pudo leer' }, tone: 'warn', spinning: false },
+  ready: { label: { en: 'Searchable by AI', }, tone: 'good', spinning: false },
+  partial: { label: { en: 'Partially indexed', }, tone: 'good', spinning: false },
+  pending: { label: { en: 'Processing…', }, tone: 'muted', spinning: true },
+  processing: { label: { en: 'Reading scan…', }, tone: 'muted', spinning: true },
+  unsupported: { label: { en: 'Not text-searchable', }, tone: 'muted', spinning: false },
+  failed: { label: { en: 'Couldn’t read', }, tone: 'warn', spinning: false },
 };
 
 export function extractionBadge(status: ExtractionStatus): ExtractionBadge | null {
@@ -187,8 +187,8 @@ export function prettyType(mime: string | null): string {
 /** "1 file" / "4 files", in either language. */
 export function fileCountLabel(n: number): Bilingual {
   return n === 1
-    ? { en: '1 file', es: '1 archivo' }
-    : { en: `${n} files`, es: `${n} archivos` };
+    ? { en: '1 file', }
+    : { en: `${n} files`, };
 }
 
 export function prettySize(bytes: number): string {
@@ -292,22 +292,22 @@ export async function uploadDocument(
 }
 
 export const UPLOAD_FAILURE_COPY: Record<UploadFailure, Bilingual> = {
-  too_big: { en: 'That file is too big. Keep it under 10 MB.', es: 'Ese archivo es muy grande: máximo 10 MB.' },
+  too_big: { en: 'That file is too big. Keep it under 10 MB.', },
   presign_failed: {
     en: 'Staxis cannot take that kind of file. Nothing was saved.',
-    es: 'Staxis no acepta ese tipo de archivo. No se guardó nada.',
+
   },
   put_failed: {
     en: 'The file did not finish uploading. Nothing was saved. Try again.',
-    es: 'El archivo no terminó de subirse. No se guardó nada: inténtalo de nuevo.',
+
   },
   register_failed: {
     en: 'The file uploaded but Staxis could not save it. Try again.',
-    es: 'El archivo se subió pero Staxis no pudo guardarlo. Inténtalo de nuevo.',
+
   },
   threw: {
     en: 'The upload failed. Check your connection and try again.',
-    es: 'La carga falló. Revisa tu conexión e inténtalo de nuevo.',
+
   },
 };
 
@@ -330,35 +330,35 @@ export const CONTACT_GROUP_ORDER: readonly (ContactCategory | 'other')[] = [
 ];
 
 export const CONTACT_CAT_LABEL: Record<ContactCategory | 'other', Bilingual> = {
-  emergency: { en: 'Emergency', es: 'Emergencia' },
-  vendor: { en: 'Vendors', es: 'Proveedores' },
-  brand: { en: 'Brand', es: 'Marca' },
-  local: { en: 'Local', es: 'Local' },
-  other: { en: 'Other', es: 'Otros' },
+  emergency: { en: 'Emergency', },
+  vendor: { en: 'Vendors', },
+  brand: { en: 'Brand', },
+  local: { en: 'Local', },
+  other: { en: 'Other', },
 };
 
 export const LOCAL_CAT_LABEL: Record<LocalCategory, Bilingual> = {
-  'Accommodations': { en: 'Accommodations', es: 'Alojamiento' },
-  'Attractions': { en: 'Attractions', es: 'Atracciones' },
-  'Bar/Nightlife': { en: 'Bar / Nightlife', es: 'Bar / Vida nocturna' },
-  'Government Service': { en: 'Government Service', es: 'Servicio gubernamental' },
-  'Grocery Store': { en: 'Grocery Store', es: 'Supermercado' },
-  'Hospitals/Clinics': { en: 'Hospitals / Clinics', es: 'Hospitales / Clínicas' },
-  'Mail/Shipping': { en: 'Mail / Shipping', es: 'Correo / Envíos' },
-  'Movie Theaters': { en: 'Movie Theaters', es: 'Cines' },
-  'Pharmacy': { en: 'Pharmacy', es: 'Farmacia' },
-  'Place of Worship': { en: 'Place of Worship', es: 'Lugar de culto' },
-  'Recreation': { en: 'Recreation', es: 'Recreación' },
-  'Restaurants': { en: 'Restaurants', es: 'Restaurantes' },
-  'Shopping': { en: 'Shopping', es: 'Compras' },
-  'Travel': { en: 'Travel', es: 'Viajes' },
+  'Accommodations': { en: 'Accommodations', },
+  'Attractions': { en: 'Attractions', },
+  'Bar/Nightlife': { en: 'Bar / Nightlife', },
+  'Government Service': { en: 'Government Service', },
+  'Grocery Store': { en: 'Grocery Store', },
+  'Hospitals/Clinics': { en: 'Hospitals / Clinics', },
+  'Mail/Shipping': { en: 'Mail / Shipping', },
+  'Movie Theaters': { en: 'Movie Theaters', },
+  'Pharmacy': { en: 'Pharmacy', },
+  'Place of Worship': { en: 'Place of Worship', },
+  'Recreation': { en: 'Recreation', },
+  'Restaurants': { en: 'Restaurants', },
+  'Shopping': { en: 'Shopping', },
+  'Travel': { en: 'Travel', },
 };
 
-export const OTHER_LOCAL_LABEL: Bilingual = { en: 'Other local', es: 'Otros locales' };
+export const OTHER_LOCAL_LABEL: Bilingual = { en: 'Other local', };
 
 export function localLabel(v: string | null): Bilingual {
   if (!v) return OTHER_LOCAL_LABEL;
-  return LOCAL_CAT_LABEL[v as LocalCategory] ?? { en: v, es: v };
+  return LOCAL_CAT_LABEL[v as LocalCategory] ?? { en: v, };
 }
 
 export interface ContactSubGroup {

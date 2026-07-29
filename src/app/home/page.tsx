@@ -30,15 +30,15 @@ import { usePortfolio } from '@/contexts/PortfolioContext';
 import { useOptionalHotelActingContext } from '@/contexts/HotelActingContext';
 import { shouldWaitForPortfolioEntry } from '@/lib/portfolio-ui/entry-routing';
 
-interface TileLine { en: string; es: string; tone: TileTone }
+interface TileLine { en: string; tone: TileTone }
 type Summary = Partial<Record<string, TileLine>>;
 type ManagementHubContext = 'company' | 'hotel';
 
 function greetingFor(lang: 'en' | 'es', name: string | undefined, hour: number): string {
   const who = name ? `, ${name}` : '';
-  if (hour < 12) return lang === 'es' ? `Buenos días${who}` : `Good morning${who}`;
-  if (hour < 18) return lang === 'es' ? `Buenas tardes${who}` : `Good afternoon${who}`;
-  return lang === 'es' ? `Buenas noches${who}` : `Good evening${who}`;
+  if (hour < 12) return `Good morning${who}`;
+  if (hour < 18) return `Good afternoon${who}`;
+  return `Good evening${who}`;
 }
 
 function HomeHub() {
@@ -104,7 +104,7 @@ function HomeHub() {
 
   const firstName = user?.displayName?.trim().split(/\s+/)[0];
   const now = new Date();
-  const dateStr = now.toLocaleDateString(lang === 'es' ? 'es' : 'en-US', {
+  const dateStr = now.toLocaleDateString('en-US', {
     weekday: 'long', month: 'long', day: 'numeric',
   });
   const dateline = activeProperty ? `${dateStr} · ${activeProperty.name}` : dateStr;
@@ -119,8 +119,8 @@ function HomeHub() {
       const line = summary[m.key];
       return {
         key: m.key,
-        label: lang === 'es' ? m.label_es : m.label_en,
-        status: line ? (lang === 'es' ? line.es : line.en) : '· · ·',
+        label: m.label_en,
+        status: line ? (line.en) : '· · ·',
         tone: line?.tone ?? 'muted',
         hot: m.key === 'staxis',
         onIntent: () => navigation.prefetch(m.navHref),
@@ -137,8 +137,8 @@ function HomeHub() {
         ask={<AskHero />}
         management={user && managementContext ? {
           label: managementContext === 'company'
-            ? (lang === 'es' ? 'Centro de empresa' : 'Company Hub')
-            : (lang === 'es' ? 'Mi hotel' : 'My Hotel'),
+            ? ('Company Hub')
+            : ('My Hotel'),
           href: '/company',
           onIntent: () => navigation.prefetch('/company'),
           onClick: () => navigation.push('/company'),

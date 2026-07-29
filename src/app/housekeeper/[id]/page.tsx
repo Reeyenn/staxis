@@ -7,25 +7,17 @@ import { useSearchParams } from 'next/navigation';
 import * as Sentry from '@sentry/nextjs';
 import { withStaffLinkToken, withStaffLinkTokenBody } from '@/lib/staff-link-client';
 import { format } from 'date-fns';
-import { es as esLocale } from 'date-fns/locale';
 import { AlertTriangle, Bell } from 'lucide-react';
 
-import {
-  subscribeToRoomsForStaff,
-  getStaffSelfPublic,
-  saveStaffLanguagePublic,
-} from '@/lib/db';
+import { subscribeToRoomsForStaff } from '@/lib/db';
 import { supabase } from '@/lib/supabase';
 import { useTodayStr } from '@/lib/use-today-str';
 import type { Room, RoomReservationContext } from '@/types';
 import { t } from '@/lib/translations';
-import type { HousekeeperLocale } from '@/lib/translations';
-import { SUPPORTED_LOCALES, LOCALE_META } from '@/lib/translations';
 import { floorFromRoomNumber, inferCleaningType } from '@/lib/housekeeper-workflow/state-machine';
 import type { ExceptionType } from '@/lib/housekeeper-workflow/state-machine';
 
 import InspectorView from './_components/InspectorView';
-import { LanguageSwitcher } from '@/components/i18n/LanguageSwitcher';
 import { NoticeBoardBanner } from './_components/NoticeBoardBanner';
 import { StructuredIssueReporter } from './_components/StructuredIssueReporter';
 import { AddNoteButton, MarkForInspectionButton } from './_components/RoomCardActionButtons';
@@ -148,7 +140,7 @@ export default function HousekeeperRoomPage({
   const pid = searchParams.get('pid');
   const today = useTodayStr();
 
-  const [lang, setLang] = useState<HousekeeperLocale>('en');
+  const lang = 'en' as const;
   const [componentLinks, setComponentLinks] = useState<ComponentRoomLink[]>([]);
   const offline = useOfflineSync();
   const [rooms, setRooms] = useState<RoomRow[]>([]);
@@ -362,31 +354,6 @@ export default function HousekeeperRoomPage({
     // searchParams is consumed once; intentional.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
-
-  // Seed lang from staff row.
-  useEffect(() => {
-    if (!housekeeperId || !pid || !authReady) return;
-    let cancelled = false;
-    void (async () => {
-      try {
-        const s = await getStaffSelfPublic(pid, housekeeperId);
-        if (!cancelled && s && typeof s.language === 'string') {
-          // staff.language now allows the five housekeeper-facing locales
-          // (migration 0225). Defensively narrow before assigning so a
-          // stale row with an unknown value falls back to EN.
-          const lc = s.language as HousekeeperLocale;
-          if ((SUPPORTED_LOCALES as readonly string[]).includes(lc)) {
-            setLang(lc);
-          }
-        }
-      } catch {
-        // best-effort
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [housekeeperId, pid, authReady]);
 
   // Rooms subscription.
   useEffect(() => {
@@ -959,7 +926,7 @@ export default function HousekeeperRoomPage({
                   const [y, m, d] = activeDate.split('-').map(Number);
                   const dateObj = new Date(y, (m ?? 1) - 1, d ?? 1);
                   const formatted = format(dateObj, 'EEEE, MMMM d', {
-                    locale: lang === 'es' ? esLocale : undefined,
+                    locale: undefined,
                   });
                   const base =
                     activeDate === today
@@ -974,22 +941,6 @@ export default function HousekeeperRoomPage({
               </p>
             </div>
             <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexShrink: 0 }}>
-              <LanguageSwitcher
-                variant="light"
-                current={lang}
-                onChange={async (next) => {
-                  setLang(next);
-                  if (housekeeperId && pid) {
-                    try {
-                      // Helper + server both accept the full housekeeper locale
-                      // set (migration 0225) — no cast needed.
-                      await saveStaffLanguagePublic(pid, housekeeperId, next);
-                    } catch {
-                      // silent
-                    }
-                  }
-                }}
-              />
               <button
                 onClick={() => roomsScrollRef.current?.scrollTo({ top: 0, behavior: 'smooth' })}
                 aria-label={t('hkAlerts', lang)}
@@ -1209,7 +1160,7 @@ export default function HousekeeperRoomPage({
                     checklistChecked={checklistChecked}
                     checklistTotal={checklistTotal}
                     checklistLabels={(checklist?.items ?? []).map((it) =>
-                      lang === 'es' ? it.itemEs : it.itemEn,
+                      it.itemEn,
                     )}
                     onStart={() => handleStart(room)}
                     onPause={() => handlePause(room)}

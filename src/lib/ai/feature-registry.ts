@@ -650,11 +650,6 @@ export const AI_FEATURE_REGISTRY: Readonly<Record<AiFeatureKey, AiFeatureDefinit
     'Cleans up a rough manager note into a clear announcement before posting.',
     ['text'], HAIKU,
   ),
-  'communications.ui_translation': defineFeature(
-    'communications.ui_translation', 'Communications', 'Interface translation',
-    'Translates the app buttons and labels for staff who use it in another language.',
-    ['text'], HAIKU,
-  ),
   'communications.message_translation': defineFeature(
     'communications.message_translation', 'Communications', 'Message translation',
     'Translates team-chat messages so each person reads them in their own language.',

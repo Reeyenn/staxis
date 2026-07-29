@@ -35,7 +35,7 @@ export interface ActivityItem {
   who: string;                // account display name (or a neutral fallback)
   toolName: string;
   outcome: ActivityOutcome;
-  summary: { en: string; es: string };
+  summary: { en: string; es?: string };
   error: string | null;       // present for failed rows only
 }
 
@@ -78,7 +78,7 @@ export function mapActivityRows(
       outcome: outcomeForStatus(r.status),
       summary: {
         en: buildActionSummary(r.tool_name, args, 'en'),
-        es: buildActionSummary(r.tool_name, args, 'es'),
+
       },
       // Only surface the error string for genuinely-failed rows — a denied or
       // expired row carries a housekeeping "declined by user" note that isn't
@@ -104,7 +104,7 @@ export interface ActivityDayGroup {
 export function groupByDay(items: ActivityItem[], lang: string, now: Date = new Date()): ActivityDayGroup[] {
   // `now` is injectable so tests can pin the clock — fixtures built from the
   // live clock made the Today/Yesterday assertions flake right after midnight.
-  const es = lang === 'es';
+  const es = false;
   const groups: ActivityDayGroup[] = [];
   const byKey = new Map<string, ActivityDayGroup>();
   const today = dayKey(now);
@@ -116,9 +116,9 @@ export function groupByDay(items: ActivityItem[], lang: string, now: Date = new 
     let g = byKey.get(key);
     if (!g) {
       let label: string;
-      if (key === today) label = es ? 'Hoy' : 'Today';
-      else if (key === yesterday) label = es ? 'Ayer' : 'Yesterday';
-      else label = d.toLocaleDateString(es ? 'es' : 'en', { weekday: 'long', month: 'short', day: 'numeric' });
+      if (key === today) label = 'Today';
+      else if (key === yesterday) label = 'Yesterday';
+      else label = d.toLocaleDateString('en', { weekday: 'long', month: 'short', day: 'numeric' });
       g = { key, label, items: [] };
       byKey.set(key, g);
       groups.push(g);

@@ -23,7 +23,6 @@
 import React from 'react';
 import { Search, ListTodo, Notebook, Megaphone, Plus, ChevronLeft, AlertCircle, Loader2, RefreshCw, X } from 'lucide-react';
 import { useProperty } from '@/contexts/PropertyContext';
-import { useLang } from '@/contexts/LanguageContext';
 import { apiGet, apiPost } from '@/lib/comms/client';
 import type { ConversationDTO, MessageDTO } from '@/lib/comms/types';
 import type { WorklistItem } from '@/lib/worklist/types';
@@ -105,8 +104,7 @@ export function CommsApp() {
 }
 
 function CommsPropertyApp({ pid }: { pid: string | null }) {
-  const { locale } = useLang();
-  const L = React.useCallback<LType>((en, es) => (locale === 'es' ? es : en), [locale]);
+  const L = React.useCallback<LType>((english) => english, []);
 
   const [selId, setSelId] = React.useState<string | null>(null);
   const [messages, setMessages] = React.useState<MessageDTO[]>([]);
@@ -226,7 +224,7 @@ function CommsPropertyApp({ pid }: { pid: string | null }) {
               }
             }, 30);
           } else {
-            setMessagesError(r.error || L('Could not load messages.', 'No se pudieron cargar los mensajes.'));
+            setMessagesError(r.error || 'Could not load messages.');
           }
         }),
       };
@@ -247,7 +245,7 @@ function CommsPropertyApp({ pid }: { pid: string | null }) {
       void pending.then(finishLoading, finishLoading);
     }
     return pending;
-  }, [pid, selId, L]);
+  }, [pid, selId]);
 
   React.useEffect(() => {
     threadRequestRef.current += 1;
@@ -284,27 +282,27 @@ function CommsPropertyApp({ pid }: { pid: string | null }) {
   const openThread = (m: MessageDTO) => { setPanel(null); setThreadParent((cur) => (cur?.id === m.id ? null : m)); };
   const togglePanel = (p: Exclude<RightPanel, null>) => { setThreadParent(null); setPanel((cur) => (cur === p ? null : p)); };
   const showMobileList = () => { setMobileDetail(false); setThreadParent(null); setPanel(null); };
-  const actionFailed = (en: string, es: string) => setMutationError(L(en, es));
+  const actionFailed = (message: string) => setMutationError(message);
 
   const reactToggle = async (m: MessageDTO) => {
     if (!pid) return;
     setMutationError(null);
     const r = await apiPost('/api/comms/react', { pid, messageId: m.id });
-    if (!r.ok) { actionFailed('Could not update the acknowledgement. Please try again.', 'No se pudo actualizar la confirmación. Inténtalo de nuevo.'); return; }
+    if (!r.ok) { actionFailed('Could not update the acknowledgement. Please try again.'); return; }
     await loadThread(false, true);
   };
   const pinToggle = async (m: MessageDTO) => {
     if (!pid) return;
     setMutationError(null);
     const r = await apiPost('/api/comms/pin', { pid, messageId: m.id, pinned: !m.pinned });
-    if (!r.ok) { actionFailed('Could not update the pinned message. Please try again.', 'No se pudo actualizar el mensaje fijado. Inténtalo de nuevo.'); return; }
+    if (!r.ok) { actionFailed('Could not update the pinned message. Please try again.'); return; }
     await loadThread(false, true);
   };
   const turnIntoTask = async (m: MessageDTO) => {
     if (!pid) return;
     setMutationError(null);
-    const r = await apiPost('/api/comms/tasks', { pid, title: (m.originalBody || m.body).slice(0, 200) || L('Message task', 'Tarea de mensaje'), sourceMessageId: m.id });
-    if (!r.ok) { actionFailed('Could not turn this message into a task. Please try again.', 'No se pudo convertir este mensaje en una tarea. Inténtalo de nuevo.'); return; }
+    const r = await apiPost('/api/comms/tasks', { pid, title: (m.originalBody || m.body).slice(0, 200) || 'Message task', sourceMessageId: m.id });
+    if (!r.ok) { actionFailed('Could not turn this message into a task. Please try again.'); return; }
     // Enabling the list resource starts exactly one initial load. Calling its
     // reload callback while it is still disabled is a no-op and used to pair
     // with an eager request; select the list and let the resource own loading.
@@ -314,7 +312,7 @@ function CommsPropertyApp({ pid }: { pid: string | null }) {
     if (!pid) return;
     setMutationError(null);
     const r = await apiPost<{ conversationId: string }>('/api/comms/dm', { pid, otherStaffId: staffId });
-    if (!r.ok || !r.data?.conversationId) { actionFailed('Could not start the direct message. Please try again.', 'No se pudo iniciar el mensaje directo. Inténtalo de nuevo.'); return; }
+    if (!r.ok || !r.data?.conversationId) { actionFailed('Could not start the direct message. Please try again.'); return; }
     await loadBoot(); selectConversation(r.data.conversationId); setShowNew(false); setSearchOpen(false);
   };
 
@@ -324,16 +322,16 @@ function CommsPropertyApp({ pid }: { pid: string | null }) {
     return <div style={{ flex: 1, minHeight: 0, background: T.bg, borderRadius: 18, border: '1px solid rgba(31,35,28,.08)' }} />;
   }
   if (!pid) {
-    return <div style={{ padding: 40, fontFamily: SANS, color: T.dim }}>{L('Select a property to use Communications.', 'Selecciona una propiedad para usar Comunicaciones.')}</div>;
+    return <div style={{ padding: 40, fontFamily: SANS, color: T.dim }}>{'Select a property to use Communications.'}</div>;
   }
   if (!boot) {
     return (
       <div className="comms-shell" style={{ display: 'flex', flex: 1, minHeight: 0, fontFamily: SANS, color: T.ink, background: T.bg, position: 'relative', borderRadius: 18, border: '1px solid rgba(31,35,28,.08)', boxShadow: '0 6px 16px -14px rgba(31,42,32,.35)', overflow: 'hidden' }}>
         <ResourceState
           loading={bootLoading || !bootError}
-          title={bootLoading || !bootError ? L('Loading Communications…', 'Cargando Comunicaciones…') : L('Communications could not load', 'No se pudo cargar Comunicaciones')}
-          detail={bootLoading || !bootError ? L('Getting conversations and staff for this property.', 'Obteniendo conversaciones y personal de esta propiedad.') : L('Check your connection, then try again. Your data has not been changed.', 'Revisa tu conexión e inténtalo de nuevo. Tus datos no se modificaron.')}
-          retryLabel={L('Try again', 'Reintentar')}
+          title={bootLoading || !bootError ? 'Loading Communications…' : 'Communications could not load'}
+          detail={bootLoading || !bootError ? 'Getting conversations and staff for this property.' : 'Check your connection, then try again. Your data has not been changed.'}
+          retryLabel={'Try again'}
           onRetry={() => void loadBoot()}
         />
       </div>
@@ -365,28 +363,28 @@ function CommsPropertyApp({ pid }: { pid: string | null }) {
       {/* ── Sidebar ── */}
       <aside className="comms-sidebar" style={{ width: 272, background: T.bg, borderRight: `1px solid ${T.hair}`, display: 'flex', flexDirection: 'column', flexShrink: 0, overflow: 'hidden' }}>
         <div style={{ padding: '14px 14px 10px', borderBottom: `1px solid ${T.hairSoft}` }}>
-          <div style={{ fontFamily: SANS, fontWeight: 700, fontSize: 16, color: T.ink }}>{L('Communications', 'Comunicaciones')}</div>
+          <div style={{ fontFamily: SANS, fontWeight: 700, fontSize: 16, color: T.ink }}>{'Communications'}</div>
           <div style={{ fontFamily: SANS, fontSize: 11.5, color: T.dim, display: 'flex', alignItems: 'center', gap: 5, marginTop: 2 }}>
-            <Presence on={onShiftCount > 0} size={7} /> {L(`${onShiftCount} on shift`, `${onShiftCount} en turno`)}
+            <Presence on={onShiftCount > 0} size={7} /> {`${onShiftCount} on shift`}
           </div>
         </div>
 
         <div style={{ padding: '10px 12px 6px' }}>
           <button onClick={() => setSearchOpen(true)} style={{ display: 'flex', alignItems: 'center', gap: 8, width: '100%', padding: '7px 11px', borderRadius: 8, border: `1px solid ${T.hair}`, background: T.paper, color: T.dim, cursor: 'pointer', fontFamily: SANS, fontSize: 13 }}>
-            <Search size={14} /> {L('Jump to or search…', 'Saltar a o buscar…')}
+            <Search size={14} /> {'Jump to or search…'}
           </button>
         </div>
 
         <div style={{ flex: 1, overflowY: 'auto', paddingTop: 4, paddingBottom: 14 }}>
-          <NavItem icon={<ListTodo size={17} />} label={L('To-do', 'Tareas')} active={mode === 'todo'} onClick={() => switchMode('todo')} badge={openItems || undefined} />
-          <NavItem icon={<Notebook size={17} />} label={L('Log book', 'Bitácora')} active={mode === 'logbook'} onClick={() => switchMode('logbook')} />
+          <NavItem icon={<ListTodo size={17} />} label={'To-do'} active={mode === 'todo'} onClick={() => switchMode('todo')} badge={openItems || undefined} />
+          <NavItem icon={<Notebook size={17} />} label={'Log book'} active={mode === 'logbook'} onClick={() => switchMode('logbook')} />
 
-          <SidebarSection label={L('Announcements', 'Anuncios')} onAdd={() => setSearchOpen(true)} tip={L('Post an announcement', 'Publicar un anuncio')} />
+          <SidebarSection label={'Announcements'} onAdd={() => setSearchOpen(true)} tip={'Post an announcement'} />
           {announce.map((c) => <ConvoRow key={c.id} c={c} active={mode === 'chats' && c.id === selId} online={online} onClick={() => selectConversation(c.id)} L={L} />)}
-          <SidebarSection label={L('Channels', 'Canales')} onAdd={() => setSearchOpen(true)} tip={L('Browse channels', 'Ver canales')} />
+          <SidebarSection label={'Channels'} onAdd={() => setSearchOpen(true)} tip={'Browse channels'} />
           {channels.map((c) => <ConvoRow key={c.id} c={c} active={mode === 'chats' && c.id === selId} online={online} onClick={() => selectConversation(c.id)} L={L} />)}
-          <SidebarSection label={L('Direct messages', 'Mensajes directos')} onAdd={() => setShowNew(true)} tip={L('Start a direct message', 'Iniciar un mensaje directo')} />
-          {dms.length === 0 && <div style={{ padding: '4px 20px', fontSize: 12, color: T.dim, fontFamily: SANS }}>{L('No conversations yet', 'Sin conversaciones')}</div>}
+          <SidebarSection label={'Direct messages'} onAdd={() => setShowNew(true)} tip={'Start a direct message'} />
+          {dms.length === 0 && <div style={{ padding: '4px 20px', fontSize: 12, color: T.dim, fontFamily: SANS }}>{'No conversations yet'}</div>}
           {dms.map((c) => <ConvoRow key={c.id} c={c} active={mode === 'chats' && c.id === selId} online={online} onClick={() => selectConversation(c.id)} L={L} />)}
         </div>
       </aside>
@@ -394,9 +392,9 @@ function CommsPropertyApp({ pid }: { pid: string | null }) {
       {/* ── Main area ── */}
       <div className="comms-main" style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column' }}>
         <div className="comms-mobile-backbar">
-          <button className="comms-mobile-back" onClick={showMobileList} aria-label={L('Back to conversations', 'Volver a conversaciones')}>
+          <button className="comms-mobile-back" onClick={showMobileList} aria-label={'Back to conversations'}>
             <ChevronLeft size={20} aria-hidden="true" />
-            <span>{L('Conversations', 'Conversaciones')}</span>
+            <span>{'Conversations'}</span>
           </button>
         </div>
         <div className="comms-main-content" style={{ flex: 1, minHeight: 0, minWidth: 0, display: 'flex', position: 'relative' }}>
@@ -409,12 +407,12 @@ function CommsPropertyApp({ pid }: { pid: string | null }) {
                     activeThreadId={threadParent?.id ?? null} activePanel={panel} scrollRef={scrollRef}
                     onReloadThread={() => loadThread(false, true)} onReloadBoot={loadBoot} onOpenThread={openThread} onTogglePanel={togglePanel}
                     onReactToggle={reactToggle} onPinToggle={pinToggle} onTurnIntoTask={turnIntoTask} onOpenSearch={() => setSearchOpen(true)} />
-                : <EmptyHint text={L('Pick a conversation, or start a new message.', 'Elige una conversación o inicia un mensaje nuevo.')} />}
+                : <EmptyHint text={'Pick a conversation, or start a new message.'} />}
               {right}
             </>
           )}
           {mode === 'todo' && <TodoMode pid={pid} items={worklist} staff={boot.staff ?? []} isManager={!!boot.me.isManager} view={todoView} onViewChange={setTodoView} L={L} reload={loadWorklist} loading={worklistLoading} error={worklistError} />}
-          {mode === 'logbook' && <LogbookMode key={pid} pid={pid} meName={boot.me.displayName ?? L('You', 'Tú')} L={L} />}
+          {mode === 'logbook' && <LogbookMode key={pid} pid={pid} meName={boot.me.displayName ?? 'You'} L={L} />}
         </div>
       </div>
 
@@ -427,15 +425,15 @@ function CommsPropertyApp({ pid }: { pid: string | null }) {
           {bootError && (
             <div className="comms-action-alert" role="alert">
               <AlertCircle size={18} aria-hidden="true" />
-              <span>{L('Conversations could not refresh. Showing the last results.', 'No se pudieron actualizar las conversaciones. Se muestran los últimos resultados.')}</span>
-              <button onClick={() => void loadBoot()} aria-label={L('Retry loading conversations', 'Reintentar cargar conversaciones')}><RefreshCw size={17} aria-hidden="true" /></button>
+              <span>{'Conversations could not refresh. Showing the last results.'}</span>
+              <button onClick={() => void loadBoot()} aria-label={'Retry loading conversations'}><RefreshCw size={17} aria-hidden="true" /></button>
             </div>
           )}
           {mutationError && (
             <div className="comms-action-alert" role="alert">
               <AlertCircle size={18} aria-hidden="true" />
               <span>{mutationError}</span>
-              <button onClick={() => setMutationError(null)} aria-label={L('Dismiss error', 'Cerrar error')}><X size={18} aria-hidden="true" /></button>
+              <button onClick={() => setMutationError(null)} aria-label={'Dismiss error'}><X size={18} aria-hidden="true" /></button>
             </div>
           )}
         </div>

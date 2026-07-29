@@ -331,11 +331,9 @@ export function ScanInvoiceSheet({
     setDupChecking(false);
     setDupCheckFailed(false);
     setBanner(restored
-      ? (langRef.current === 'es'
-          ? 'El resultado anterior no se pudo confirmar. Reintenta exactamente la misma entrega para resolverlo.'
-          : 'The previous result could not be confirmed. Retry the exact same delivery to resolve it.')
+      ? ('The previous result could not be confirmed. Retry the exact same delivery to resolve it.')
       : reviewDraft
-        ? (langRef.current === 'es' ? 'Se recuperó la revisión sin guardar de esta factura.' : 'Your unsaved invoice review was restored.')
+        ? ('Your unsaved invoice review was restored.')
         : '');
     setRetryLocked(!!restored);
     setRecoveredLineCount(restored?.lines.length ?? 0);
@@ -748,11 +746,11 @@ export function ScanInvoiceSheet({
               disabled={saveBusy || (!retryLocked && (actionable === 0 || !invoiceReferenceReady || duplicateBlocked || !rowsReady || !invoiceDateReady))}
             >
               {phase === 'verifying'
-                ? (lang === 'es' ? 'Verificando factura…' : 'Verifying invoice…')
+                ? ('Verifying invoice…')
                 : phase === 'committing'
                 ? ss.adding
                 : retryLocked
-                  ? (lang === 'es' ? 'Reintentar la misma entrega' : 'Retry exact delivery')
+                  ? ('Retry exact delivery')
                   : ss.addItems(actionable)}
             </Btn>
           </>
@@ -855,19 +853,17 @@ export function ScanInvoiceSheet({
         <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
           {dupWarn && (
             <div style={warmStrip}>
-              {ss.dupWarn} {lang === 'es' ? 'No se puede guardar esta factura otra vez.' : 'This invoice cannot be saved again.'}
+              {ss.dupWarn} {'This invoice cannot be saved again.'}
             </div>
           )}
           {dupChecking && (
             <div style={warmStrip}>
-              {lang === 'es' ? 'Comprobando el historial de facturas…' : 'Checking invoice history…'}
+              {'Checking invoice history…'}
             </div>
           )}
           {dupCheckFailed && (
             <div style={warmStrip}>
-              {lang === 'es'
-                ? 'No se pudo verificar el historial. Guardar está bloqueado para evitar una entrega duplicada.'
-                : 'History could not be verified. Saving is blocked to prevent a duplicate delivery.'}
+              {'History could not be verified. Saving is blocked to prevent a duplicate delivery.'}
             </div>
           )}
           {!retryLocked && !costsComplete && (

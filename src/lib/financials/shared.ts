@@ -28,9 +28,7 @@ export function isDepartment(s: unknown): s is Department {
   return typeof s === 'string' && (DEPARTMENTS as readonly string[]).includes(s);
 }
 
-// English labels. Spanish labels live in translations.ts and are applied in the
-// UI via useLang(); these EN labels are the fallback for server-side surfaces
-// (agent tool replies, SMS alerts) that don't carry a language.
+// English labels shared by UI and server-side surfaces.
 export const DEPARTMENT_LABELS_EN: Record<Department, string> = {
   rooms: 'Rooms',
   housekeeping: 'Housekeeping',

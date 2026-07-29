@@ -19,19 +19,19 @@ import type { WorklistItem, WorklistSourceType } from '@/lib/worklist/types';
 import { GlassCard } from './GlassCard';
 import { CARD, CARD_MONO, CARD_LABEL, SANS } from './palette';
 
-const SRC: Record<WorklistSourceType, { en: string; es: string; color: string }> = {
-  task:       { en: 'To-do', es: 'Tarea', color: '#5C625C' },
-  complaint:  { en: 'Complaint', es: 'Queja', color: '#B85C3D' },
-  workorder:  { en: 'Work order', es: 'Orden', color: '#C99644' },
-  inspection: { en: 'Inspection', es: 'Inspección', color: '#5C7A60' },
-  pm:         { en: 'Preventive', es: 'Preventivo', color: '#3E5C48' },
+const SRC: Record<WorklistSourceType, { en: string; color: string }> = {
+  task:       { en: 'To-do',  color: '#5C625C' },
+  complaint:  { en: 'Complaint',  color: '#B85C3D' },
+  workorder:  { en: 'Work order',  color: '#C99644' },
+  inspection: { en: 'Inspection',  color: '#5C7A60' },
+  pm:         { en: 'Preventive',  color: '#3E5C48' },
 };
 
 export function WorklistCard() {
   const { user } = useAuth();
   const { activePropertyId } = useProperty();
   const { lang } = useLang();
-  const es = lang === 'es';
+  const es = false;
   // The unified worklist lives under Communications — hide this embed when
   // that section is off for the hotel (default-ON while loading).
   const commsEnabled = useSectionEnabled('communications');
@@ -60,15 +60,15 @@ export function WorklistCard() {
   return (
     <GlassCard>
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
-        <div style={CARD_LABEL}>{es ? 'Pendientes' : 'Open items'}</div>
+        <div style={CARD_LABEL}>{'Open items'}</div>
         <Link href="/communications" style={{ fontFamily: CARD_MONO, fontSize: 11, letterSpacing: '0.1em', textTransform: 'uppercase', color: CARD.ink3, textDecoration: 'none' }}>
-          {es ? 'Ver todo →' : 'View all →'}
+          {'View all →'}
         </Link>
       </div>
 
       <div style={{ marginTop: 8, fontFamily: SANS, fontWeight: 600, fontSize: 22, letterSpacing: '-0.02em', color: CARD.ink, lineHeight: 1.2 }}>
-        {list.length} {es ? (list.length === 1 ? 'pendiente' : 'pendientes') : (list.length === 1 ? 'open item' : 'open items')}
-        {overdue > 0 && <span style={{ fontSize: 14, fontWeight: 600, color: CARD.terracotta, fontFamily: CARD_MONO, marginLeft: 10, letterSpacing: 0 }}>{overdue} {es ? (overdue === 1 ? 'vencida' : 'vencidas') : 'overdue'}</span>}
+        {list.length} {(list.length === 1 ? 'open item' : 'open items')}
+        {overdue > 0 && <span style={{ fontSize: 14, fontWeight: 600, color: CARD.terracotta, fontFamily: CARD_MONO, marginLeft: 10, letterSpacing: 0 }}>{overdue} {'overdue'}</span>}
       </div>
 
       <div style={{ marginTop: 12, display: 'flex', flexDirection: 'column' }}>
@@ -82,7 +82,7 @@ export function WorklistCard() {
                 {it.location && <span style={{ color: CARD.ink3 }}> · {it.location}</span>}
               </span>
               <span style={{ flexShrink: 0, fontFamily: CARD_MONO, fontSize: 9.5, letterSpacing: '0.08em', textTransform: 'uppercase', color: it.overdue ? CARD.terracotta : CARD.ink3 }}>
-                {it.overdue ? (es ? 'Vencida' : 'Overdue') : (es ? meta.es : meta.en)}
+                {it.overdue ? ('Overdue') : (meta.en)}
               </span>
             </div>
           );

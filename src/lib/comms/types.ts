@@ -4,7 +4,7 @@
 
 import type { HousekeeperLocale } from '@/lib/translations';
 
-/** The app-wide language a user can choose. Mirrors HousekeeperLocale. */
+/** Stored communication-language contract used for per-message translation. */
 export type CommsLang = HousekeeperLocale; // 'en' | 'es' | 'ht' | 'tl' | 'vi'
 
 export type ConversationKind = 'dm' | 'channel' | 'announcement';
@@ -13,7 +13,7 @@ export type MessageType =
   | 'text' | 'announcement' | 'handoff' | 'photo' | 'voice' | 'task' | 'system';
 export type SenderKind = 'staff' | 'staxis' | 'system';
 
-/** English display labels for channels (translated client-side via t()/auto). */
+/** English display labels for channels. */
 export const CHANNEL_LABELS: Record<ChannelKey, string> = {
   all_staff: 'All Staff',
   front_desk: 'Front Desk',

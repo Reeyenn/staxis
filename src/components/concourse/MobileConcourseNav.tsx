@@ -11,8 +11,6 @@ interface MobileConcourseNavProps {
   items: BarItem[];
   propertyOptions: ReadonlyArray<{ value: string; label: string }>;
   activePropertyId: string | null;
-  languageOptions: ReadonlyArray<{ value: string; label: string }>;
-  activeLocale: string;
   userName: string;
   userMeta: string;
   userInitial: string;
@@ -25,7 +23,6 @@ interface MobileConcourseNavProps {
   sectionsLabel: string;
   accountLabel: string;
   propertyLabel: string;
-  languageLabel: string;
   accountMenuLabel: string;
   companyLabel: string;
   adminDestination?: AdminDestinationAction;
@@ -44,7 +41,6 @@ interface MobileConcourseNavProps {
   onSettingsIntent?: () => void;
   onSignOut: () => void;
   onPropertyChange: (propertyId: string) => void;
-  onLanguageChange: (locale: string) => void;
   onInstall: (returnFocusElement: HTMLButtonElement | null) => void;
 }
 
@@ -57,15 +53,11 @@ const FOCUSABLE_SELECTOR = [
   '[tabindex]:not([tabindex="-1"])',
 ].join(',');
 
-/** Phone-only Concourse chrome. It intentionally owns its dialog state so
- * the desktop account menu and its install/property/language behavior remain
- * completely unchanged. */
+/** Phone-only Concourse chrome. It intentionally owns its dialog state. */
 export function MobileConcourseNav({
   items,
   propertyOptions,
   activePropertyId,
-  languageOptions,
-  activeLocale,
   userName,
   userMeta,
   userInitial,
@@ -77,7 +69,6 @@ export function MobileConcourseNav({
   sectionsLabel,
   accountLabel,
   propertyLabel,
-  languageLabel,
   accountMenuLabel,
   companyLabel,
   adminDestination,
@@ -96,7 +87,6 @@ export function MobileConcourseNav({
   onSettingsIntent,
   onSignOut,
   onPropertyChange,
-  onLanguageChange,
   onInstall,
 }: MobileConcourseNavProps) {
   const [open, setOpen] = React.useState(false);
@@ -218,12 +208,6 @@ export function MobileConcourseNav({
     onPropertyChange(propertyId);
   };
 
-  const changeLanguage = (event: React.ChangeEvent<HTMLSelectElement>) => {
-    const nextLocale = event.target.value;
-    closeDrawer();
-    onLanguageChange(nextLocale);
-  };
-
   const install = () => {
     const returnFocusElement = activeTriggerRef.current ?? triggerRef.current;
     closeDrawer();
@@ -320,14 +304,6 @@ export function MobileConcourseNav({
                 </select>
               </label>
             ) : null}
-            <label className={styles.accountControl}>
-              <span>{languageLabel}</span>
-              <select value={activeLocale} onChange={changeLanguage} aria-label={languageLabel}>
-                {languageOptions.map((language) => (
-                  <option key={language.value} value={language.value}>{language.label}</option>
-                ))}
-              </select>
-            </label>
           </div>
 
           {showInstallAction ? (

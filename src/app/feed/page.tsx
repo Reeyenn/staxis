@@ -34,7 +34,7 @@ type FeedTab = 'queue' | 'knows';
 
 function FeedInner() {
   const { lang } = useLang();
-  const es = lang === 'es';
+  const es = false;
   const [tab, setTab] = useState<FeedTab>('queue');
 
   // ?tab=knows opens straight on Knows. Added because the old Communications
@@ -51,8 +51,8 @@ function FeedInner() {
   }, []);
 
   const tabs: Array<{ key: FeedTab; label: string }> = [
-    { key: 'queue', label: es ? 'Cola' : 'Queue' },
-    { key: 'knows', label: es ? 'Sabe' : 'Knows' },
+    { key: 'queue', label: 'Queue' },
+    { key: 'knows', label: 'Knows' },
   ];
 
   return (

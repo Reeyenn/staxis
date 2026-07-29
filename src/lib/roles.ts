@@ -69,7 +69,7 @@ export function canViewFinancials(role: AppRole): boolean {
   return role === 'admin' || role === 'owner' || role === 'general_manager';
 }
 
-// Display label for the role (English). Spanish translations live in the UI.
+// Display label for the role.
 export function roleLabel(role: AppRole): string {
   switch (role) {
     case 'admin':           return 'Admin';

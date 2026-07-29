@@ -36,7 +36,7 @@ export function WhatStaxisKnowsCard() {
   const { activePropertyId } = useProperty();
   const { lang } = useLang();
 
-  const es = lang === 'es';
+  const es = false;
   const canSee = !!user && canManageTeam(user.role);
 
   // Nightly-consolidation stats: a slow 5-min poll keeps a long-lived
@@ -53,14 +53,14 @@ export function WhatStaxisKnowsCard() {
   const empty = stats.totalKnown === 0;
 
   const tiles: Array<[string, number]> = [
-    [es ? 'Sabe' : 'Known', stats.totalKnown],
-    [es ? 'Patrones 30d' : 'Patterns 30d', stats.patternsThisMonth],
-    [es ? 'Detectados' : 'Flagged early', stats.issuesCaughtEarly],
+    ['Known', stats.totalKnown],
+    ['Patterns 30d', stats.patternsThisMonth],
+    ['Flagged early', stats.issuesCaughtEarly],
   ];
 
   return (
     <GlassCard radius={14} padding="12px 14px" maxWidth={440}>
-      <div style={LABEL}>{es ? 'Lo que Staxis sabe' : 'What Staxis knows'}</div>
+      <div style={LABEL}>{'What Staxis knows'}</div>
 
       {/* compact inline impact stats — real counts only */}
       <div style={{ marginTop: 9, display: 'flex', gap: 20 }}>
@@ -76,18 +76,14 @@ export function WhatStaxisKnowsCard() {
 
       {!empty && (
         <div style={{ marginTop: 10, fontSize: 11.5, color: CARD.ink2 }}>
-          {data.taught.length} {es ? 'enseñados' : 'taught'} · {data.noticed.length} {es ? 'notados' : 'noticed'} · {data.learned.length} {es ? 'aprendidos' : 'learned'}
+          {data.taught.length} {'taught'} · {data.noticed.length} {'noticed'} · {data.learned.length} {'learned'}
         </div>
       )}
 
       <div style={{ marginTop: 8, fontSize: 10.5, color: CARD.ink3, lineHeight: 1.45 }}>
         {empty
-          ? es
-            ? 'Listo. Se llena a medida que tu equipo registra actividad.'
-            : 'Ready. Fills in as your team logs activity.'
-          : es
-            ? 'El impacto en dólares aparece cuando se conecten los datos de ingresos y nómina.'
-            : 'Dollar impact appears once your live revenue & labor data is connected.'}
+          ? 'Ready. Fills in as your team logs activity.'
+          : 'Dollar impact appears once your live revenue & labor data is connected.'}
       </div>
     </GlassCard>
   );

@@ -70,7 +70,7 @@ describe('Sunday-week calendar', () => {
     assert.equal(dayInfo('2026-06-09', today, 'en').tomorrow, true);
     assert.equal(dayInfo('2026-06-07', today, 'en').yesterday, true);
     assert.equal(dayInfo('2026-06-01', today, 'en').past, true);
-    assert.equal(dayInfo('2026-06-08', today, 'es').dowFull, 'lunes');
+    assert.equal(dayInfo('2026-06-08', today, 'es').dowFull, 'Monday');
   });
 
   test('weekLabel within and across months', () => {

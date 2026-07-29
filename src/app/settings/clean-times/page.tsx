@@ -21,9 +21,6 @@ export const dynamic = 'force-dynamic';
 // here, and it is the number every capacity bar and headcount recommendation
 // divides by. The API reports that as `canEditShift`.
 //
-// Bilingual via useLang() inline ternaries — matches the sibling settings
-// pages (e.g. settings/shifts) rather than the giant translations.ts map.
-
 import React, { useEffect, useRef, useState } from 'react';
 import { useScope } from '@/lib/hooks/use-scope';
 import { useLang } from '@/contexts/LanguageContext';
@@ -31,7 +28,6 @@ import { useProperty } from '@/contexts/PropertyContext';
 import { AppLayout } from '@/components/layout/AppLayout';
 import { useCan } from '@/lib/capabilities/useCan';
 import { fetchWithAuth } from '@/lib/api-fetch';
-import { localizeKnownMessage, type LocalizedMessagePair } from '@/lib/localized-ui-message';
 import {
   EDITABLE_CLEANING_TYPES,
   CLEAN_TIME_DEFAULT_MINUTES,
@@ -46,29 +42,18 @@ import { T, fonts, Btn, Caps } from '@/app/staff/_components/_tokens';
 import { ChevronLeft, RotateCcw } from 'lucide-react';
 import Link from 'next/link';
 
-// Friendly bilingual labels + one-line "what it is" for each editable
-// cleaning type. The keys are the real cleaning_type values from the
+// Friendly labels + one-line "what it is" for each editable cleaning type.
+// The keys are the real cleaning_type values from the
 // cleaning_tasks CHECK constraint (migration 0210).
-const TYPE_META: Record<EditableCleaningType, { en: string; es: string; enHint: string; esHint: string }> = {
-  departure:       { en: 'Checkout clean',        es: 'Limpieza de salida',           enHint: 'Guest checked out. Full turnover for the next arrival', esHint: 'El huésped salió. Preparación completa para el siguiente' },
-  departure_deep:  { en: 'Checkout deep clean',   es: 'Limpieza profunda de salida',  enHint: 'Departure turnover plus a deep clean',                  esHint: 'Salida más limpieza profunda' },
-  stayover:        { en: 'Stayover clean',        es: 'Limpieza de estancia',         enHint: 'Guest still staying: tidy, fresh towels, trash',        esHint: 'Huésped aún hospedado: orden, toallas, basura' },
-  refresh:         { en: 'Refresh / touch-up',    es: 'Retoque',                      enHint: 'Light touch-up between or during stays',                 esHint: 'Retoque ligero entre o durante estancias' },
-  deep:            { en: 'Deep clean',            es: 'Limpieza profunda',            enHint: 'Periodic full deep clean',                               esHint: 'Limpieza profunda periódica' },
-  room_check:      { en: 'Room check',            es: 'Revisión de habitación',       enHint: 'Quick verify the room is ready',                         esHint: 'Verificación rápida de que la habitación está lista' },
-  inspection_only: { en: 'Inspection only',       es: 'Solo inspección',              enHint: 'Senior inspection, no cleaning',                         esHint: 'Inspección por personal sénior, sin limpieza' },
+const TYPE_META: Record<EditableCleaningType, { en: string; enHint: string }> = {
+  departure:       { en: 'Checkout clean',       enHint: 'Guest checked out. Full turnover for the next arrival' },
+  departure_deep:  { en: 'Checkout deep clean',  enHint: 'Departure turnover plus a deep clean' },
+  stayover:        { en: 'Stayover clean',        enHint: 'Guest still staying: tidy, fresh towels, trash' },
+  refresh:         { en: 'Refresh / touch-up',    enHint: 'Light touch-up between or during stays' },
+  deep:            { en: 'Deep clean',            enHint: 'Periodic full deep clean' },
+  room_check:      { en: 'Room check',            enHint: 'Quick verify the room is ready' },
+  inspection_only: { en: 'Inspection only',       enHint: 'Senior inspection, no cleaning' },
 };
-
-const CLEAN_TIMES_ERROR_MESSAGES = [
-  [
-    'Couldn’t load your clean times. Refresh the page to try again.',
-    'No se pudieron cargar los tiempos de limpieza. Recarga la página para intentar de nuevo.',
-  ],
-  ...EDITABLE_CLEANING_TYPES.map((type) => [
-    `"${TYPE_META[type].en}" must be a whole number between ${MIN_CLEAN_MINUTES} and ${MAX_CLEAN_MINUTES}.`,
-    `"${TYPE_META[type].es}" debe ser un número entero entre ${MIN_CLEAN_MINUTES} y ${MAX_CLEAN_MINUTES}.`,
-  ] as const),
-] as const satisfies readonly LocalizedMessagePair[];
 
 // Shift length is stored in minutes but a manager thinks in hours, so the
 // field is hours. Quarter-hours round-trip exactly (0.25h = 15min).
@@ -88,7 +73,7 @@ export default function CleanTimesPage() {
     return (
       <AppLayout>
         <div style={{ padding: 24, fontFamily: fonts.sans, color: T.ink2 }}>
-          {lang === 'es' ? 'Solo para gerentes.' : 'Manager access only.'}
+          {'Manager access only.'}
         </div>
       </AppLayout>
     );
@@ -175,9 +160,7 @@ function CleanTimesBody({ pid, lang }: { pid: string; lang: 'en' | 'es' }) {
         console.error('[clean-times:settings] load failed', err);
         if (active) {
           setLoadFailed(true);
-          setError(langRef.current === 'es'
-            ? 'No se pudieron cargar los tiempos de limpieza. Recarga la página para intentar de nuevo.'
-            : 'Couldn’t load your clean times. Refresh the page to try again.');
+          setError('Couldn’t load your clean times. Refresh the page to try again.');
           setLoading(false);
         }
       });
@@ -190,7 +173,7 @@ function CleanTimesBody({ pid, lang }: { pid: string; lang: 'en' | 'es' }) {
     setDrafts(prev => ({ ...prev, [type]: cleaned }));
   };
 
-  const visibleError = localizeKnownMessage(error, lang, CLEAN_TIMES_ERROR_MESSAGES);
+  const visibleError = error;
 
   // Digits plus at most one decimal point — 7.5 hours has to be typeable.
   const setShiftVal = (v: string) => {
@@ -222,11 +205,9 @@ function CleanTimesBody({ pid, lang }: { pid: string; lang: 'en' | 'es' }) {
     for (const t of EDITABLE_CLEANING_TYPES) {
       const n = Number(drafts[t]);
       if (!Number.isInteger(n) || n < MIN_CLEAN_MINUTES || n > MAX_CLEAN_MINUTES) {
-        const label = lang === 'es' ? TYPE_META[t].es : TYPE_META[t].en;
+        const label = TYPE_META[t].en;
         setError(
-          lang === 'es'
-            ? `"${label}" debe ser un número entero entre ${MIN_CLEAN_MINUTES} y ${MAX_CLEAN_MINUTES}.`
-            : `"${label}" must be a whole number between ${MIN_CLEAN_MINUTES} and ${MAX_CLEAN_MINUTES}.`,
+          `"${label}" must be a whole number between ${MIN_CLEAN_MINUTES} and ${MAX_CLEAN_MINUTES}.`,
         );
         return;
       }
@@ -244,9 +225,7 @@ function CleanTimesBody({ pid, lang }: { pid: string; lang: 'en' | 'es' }) {
         mins < MIN_SHIFT_MINUTES || mins > MAX_SHIFT_MINUTES
       ) {
         setError(
-          lang === 'es'
-            ? `La duración del turno debe estar entre ${MIN_SHIFT_MINUTES / 60} y ${MAX_SHIFT_MINUTES / 60} horas.`
-            : `Shift length must be between ${MIN_SHIFT_MINUTES / 60} and ${MAX_SHIFT_MINUTES / 60} hours.`,
+          `Shift length must be between ${MIN_SHIFT_MINUTES / 60} and ${MAX_SHIFT_MINUTES / 60} hours.`,
         );
         return;
       }
@@ -300,28 +279,26 @@ function CleanTimesBody({ pid, lang }: { pid: string; lang: 'en' | 'es' }) {
           fontFamily: fonts.sans, fontSize: 12, color: T.ink2,
           textDecoration: 'none', marginBottom: 14,
         }}>
-          <ChevronLeft size={14} /> {lang === 'es' ? 'Configuración' : 'Settings'}
+          <ChevronLeft size={14} /> {'Settings'}
         </Link>
 
         <div style={{ marginBottom: 22 }}>
-          <Caps>{lang === 'es' ? 'Configuración · Tiempos de limpieza' : 'Settings · Clean Times'}</Caps>
+          <Caps>{'Settings · Clean Times'}</Caps>
           <h1 style={{
             fontFamily: fonts.serif, fontSize: 36, color: T.ink,
             margin: '4px 0 0', letterSpacing: '-0.03em', lineHeight: 1.1, fontWeight: 400,
           }}>
             <span style={{ fontStyle: 'italic' }}>
-              {lang === 'es' ? 'Tiempos de limpieza' : 'Clean times'}
+              {'Clean times'}
             </span>
           </h1>
           <p style={{ fontFamily: fonts.sans, fontSize: 13, color: T.ink2, marginTop: 6, maxWidth: 600, lineHeight: 1.5 }}>
-            {lang === 'es'
-              ? 'Minutos estándar por tipo de limpieza, y cuánto dura un turno. Estos tiempos impulsan el balanceo de carga en el Tablero de Asignación Automática.'
-              : 'Standard minutes per cleaning type, and how long one shift is. These times drive the workload balancing on the Auto-Assign Board.'}
+            {'Standard minutes per cleaning type, and how long one shift is. These times drive the workload balancing on the Auto-Assign Board.'}
           </p>
         </div>
 
         {loading ? (
-          <Caps>{lang === 'es' ? 'CARGANDO…' : 'LOADING…'}</Caps>
+          <Caps>{'LOADING…'}</Caps>
         ) : loadFailed ? (
           // Load-error state — deliberately hides the form so Save can't
           // overwrite the hotel's tuned times with the industry defaults.
@@ -346,10 +323,10 @@ function CleanTimesBody({ pid, lang }: { pid: string; lang: 'en' | 'es' }) {
                   }}>
                     <div style={{ minWidth: 0 }}>
                       <div style={{ fontWeight: 600, fontSize: 14.5, color: T.ink }}>
-                        {lang === 'es' ? meta.es : meta.en}
+                        {meta.en}
                       </div>
                       <div style={{ fontSize: 12.5, color: T.ink3, marginTop: 2, lineHeight: 1.4 }}>
-                        {lang === 'es' ? meta.esHint : meta.enHint}
+                        {meta.enHint}
                       </div>
                     </div>
                     <div style={{ display: 'flex', alignItems: 'center', gap: 8, justifyContent: 'flex-end' }}>
@@ -357,7 +334,7 @@ function CleanTimesBody({ pid, lang }: { pid: string; lang: 'en' | 'es' }) {
                         inputMode="numeric"
                         value={drafts[t] ?? ''}
                         onChange={e => setVal(t, e.target.value)}
-                        aria-label={`${lang === 'es' ? meta.es : meta.en}, ${lang === 'es' ? 'minutos' : 'minutes'}`}
+                        aria-label={`${meta.en}, ${'minutes'}`}
                         style={{
                           width: 72, boxSizing: 'border-box',
                           padding: '8px 10px', borderRadius: 10, border: `1px solid ${T.rule}`,
@@ -366,7 +343,7 @@ function CleanTimesBody({ pid, lang }: { pid: string; lang: 'en' | 'es' }) {
                         }}
                       />
                       <span style={{ fontSize: 12.5, color: T.ink3, width: 40 }}>
-                        {lang === 'es' ? 'min' : 'min'}
+                        {'min'}
                       </span>
                     </div>
                   </div>
@@ -386,19 +363,15 @@ function CleanTimesBody({ pid, lang }: { pid: string; lang: 'en' | 'es' }) {
               }}>
                 <div style={{ minWidth: 0 }}>
                   <div style={{ fontWeight: 600, fontSize: 14.5, color: T.ink }}>
-                    {lang === 'es' ? '¿Cuánto dura un turno de limpieza?' : 'How long is a housekeeping shift?'}
+                    {'How long is a housekeeping shift?'}
                   </div>
                   <div style={{ fontSize: 12.5, color: T.ink3, marginTop: 2, lineHeight: 1.4 }}>
-                    {lang === 'es'
-                      ? 'Cuánta limpieza cabe en el día de una persona. Define las barras de carga del tablero y cuántas personas recomendamos.'
-                      : 'How much cleaning fits in one person’s day. Sets the workload bars on the board and how many housekeepers we recommend.'}
+                    {'How much cleaning fits in one person’s day. Sets the workload bars on the board and how many housekeepers we recommend.'}
                     {!canEditShift && (
                       <>
                         {' '}
                         <span style={{ color: T.ink2 }}>
-                          {lang === 'es'
-                            ? 'Solo el propietario o el gerente general puede cambiarlo.'
-                            : 'Only the owner or general manager can change this.'}
+                          {'Only the owner or general manager can change this.'}
                         </span>
                       </>
                     )}
@@ -411,7 +384,7 @@ function CleanTimesBody({ pid, lang }: { pid: string; lang: 'en' | 'es' }) {
                     onChange={e => setShiftVal(e.target.value)}
                     readOnly={!canEditShift}
                     disabled={!canEditShift}
-                    aria-label={lang === 'es' ? 'Duración del turno, horas' : 'Shift length, hours'}
+                    aria-label={'Shift length, hours'}
                     style={{
                       width: 72, boxSizing: 'border-box',
                       padding: '8px 10px', borderRadius: 10, border: `1px solid ${T.rule}`,
@@ -442,27 +415,25 @@ function CleanTimesBody({ pid, lang }: { pid: string; lang: 'en' | 'es' }) {
               <Btn variant="ghost" size="md" onClick={resetToDefaults} disabled={saving}>
                 <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
                   <RotateCcw size={14} />
-                  {lang === 'es' ? 'Restablecer predeterminados' : 'Reset to industry defaults'}
+                  {'Reset to industry defaults'}
                 </span>
               </Btn>
               <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
                 {savedAt && (
                   <span style={{ fontFamily: fonts.mono, fontSize: 11, color: T.ink3, letterSpacing: '0.06em' }}>
-                    {lang === 'es' ? 'GUARDADO' : 'SAVED'} · {new Date(savedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                    {'SAVED'} · {new Date(savedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
                   </span>
                 )}
                 <Btn variant="primary" size="md" onClick={save} disabled={saving}>
                   {saving
-                    ? (lang === 'es' ? 'Guardando…' : 'Saving…')
-                    : (lang === 'es' ? 'Guardar' : 'Save')}
+                    ? ('Saving…')
+                    : ('Save')}
                 </Btn>
               </div>
             </div>
 
             <p style={{ fontFamily: fonts.sans, fontSize: 12, color: T.ink3, marginTop: 14, lineHeight: 1.5 }}>
-              {lang === 'es'
-                ? 'Los tiempos de limpieza se aplican a las tareas creadas después de guardar. La duración del turno se aplica de inmediato.'
-                : 'Clean times apply to cleaning tasks created after you save. The shift length takes effect right away.'}
+              {'Clean times apply to cleaning tasks created after you save. The shift length takes effect right away.'}
             </p>
           </>
         )}

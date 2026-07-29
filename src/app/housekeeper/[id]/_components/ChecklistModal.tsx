@@ -199,7 +199,7 @@ export function ChecklistModal(props: Props) {
                 </div>
                 {list.map((item) => {
                   const isChecked = checkedIds.has(item.id);
-                  const label = lang === 'es' ? item.itemEs : item.itemEn;
+                  const label = item.itemEn;
                   return (
                     <button
                       key={item.id}

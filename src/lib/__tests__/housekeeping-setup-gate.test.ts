@@ -1390,26 +1390,14 @@ const _boardBuiltBy: readonly BoardBuiltBy[] = BOARD_BUILT_BY_OPTIONS;
 void _statusEntries;
 void _boardBuiltBy;
 
-/* ─────────────────── Questionnaire copy: EN/ES parity ────────────────────
- * `_hk-setup-i18n.ts` derives its string type from the `en` map only, so the
- * `es` map is NOT type-checked: a key added to English and forgotten in
- * Spanish compiles cleanly and then renders as `undefined` on a Spanish
- * manager's screen. This is the only thing that catches that.
- */
+/* ─────────────────── Questionnaire copy ───────────────────────────────── */
 describe('housekeeping setup copy', () => {
   const en = hkst('en') as Record<string, string>;
-  const es = hkst('es') as Record<string, string>;
 
-  test('Spanish mirrors every English key, and vice versa', () => {
-    assert.deepEqual(Object.keys(es).sort(), Object.keys(en).sort());
-  });
-
-  test('no string in either language is empty', () => {
-    for (const [lang, map] of [['en', en], ['es', es]] as const) {
-      for (const [key, value] of Object.entries(map)) {
-        assert.equal(typeof value, 'string', `${lang}.${key} is not a string`);
-        assert.notEqual(value.trim(), '', `${lang}.${key} is empty`);
-      }
+  test('no English string is empty', () => {
+    for (const [key, value] of Object.entries(en)) {
+      assert.equal(typeof value, 'string', `en.${key} is not a string`);
+      assert.notEqual(value.trim(), '', `en.${key} is empty`);
     }
   });
 

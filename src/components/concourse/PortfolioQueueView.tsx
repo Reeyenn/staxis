@@ -92,30 +92,30 @@ export interface PortfolioPayload {
 }
 
 const S = {
-  heading: { en: 'Across your hotels', es: 'En tus hoteles' },
+  heading: { en: 'Across your hotels', },
   subEmpty: {
     en: 'Nothing across your hotels has reached you this morning.',
-    es: 'Nada de tus hoteles ha llegado hasta ti esta mañana.',
+
   },
   neverChecked: {
     en: 'None of your hotels has been checked yet. Do not read this as an all-clear.',
-    es: 'Ninguno de tus hoteles ha sido revisado todavía. No lo tomes como que todo está bien.',
+
   },
-  openHotel: { en: 'Open in this hotel', es: 'Ver en este hotel' },
+  openHotel: { en: 'Open in this hotel', },
   loadFailed: {
     en: 'Staxis could not read your hotels just now. Do not read this as "nothing is wrong".',
-    es: 'Staxis no pudo leer tus hoteles ahora. No lo tomes como "no pasa nada".',
+
   },
   loading: {
     en: 'Loading your Staxis queue…',
-    es: 'Cargando tu cola de Staxis…',
+
   },
   errorTitle: {
     en: 'Your queue did not open',
-    es: 'Tu cola no se abrió',
+
   },
-  retry: { en: 'Try again', es: 'Intentar de nuevo' },
-  retrying: { en: 'Trying again…', es: 'Intentando de nuevo…' },
+  retry: { en: 'Try again', },
+  retrying: { en: 'Trying again…', },
 } as const;
 
 const PQ_CSS = `
@@ -153,7 +153,7 @@ function PortfolioRequestNotice({
   retrying?: boolean;
   onRetry?: () => void;
 }) {
-  const es = lang === 'es';
+  const es = false;
   if (kind === 'loading') {
     return (
       <div className="cx-page cx-swap" data-feed-state="loading">
@@ -161,7 +161,7 @@ function PortfolioRequestNotice({
         <style dangerouslySetInnerHTML={{ __html: PQ_CSS }} />
         <div className="pq-request pq-request-load" role="status" aria-live="polite" aria-busy="true">
           <span className="pq-spinner" aria-hidden="true" />
-          <span>{es ? S.loading.es : S.loading.en}</span>
+          <span>{S.loading.en}</span>
         </div>
       </div>
     );
@@ -172,8 +172,8 @@ function PortfolioRequestNotice({
       <CxStyle />
       <style dangerouslySetInnerHTML={{ __html: PQ_CSS }} />
       <div className="pq-request" role="alert">
-        <div className="pq-request-title">{es ? S.errorTitle.es : S.errorTitle.en}</div>
-        <div className="pq-request-body">{es ? S.loadFailed.es : S.loadFailed.en}</div>
+        <div className="pq-request-title">{S.errorTitle.en}</div>
+        <div className="pq-request-body">{S.loadFailed.en}</div>
         <button
           type="button"
           className="pq-retry"
@@ -181,7 +181,7 @@ function PortfolioRequestNotice({
           aria-busy={retrying}
           onClick={onRetry}
         >
-          {retrying ? (es ? S.retrying.es : S.retrying.en) : (es ? S.retry.es : S.retry.en)}
+          {retrying ? (S.retrying.en) : (S.retry.en)}
         </button>
       </div>
     </div>
@@ -225,7 +225,7 @@ export function PortfolioQueueBody({
   onVerdict: (findingId: string, verdict: ClosureVerdict) => void;
   onAction?: (actionId: string, intent: 'execute' | 'undo') => void;
 }) {
-  const es = lang === 'es';
+  const es = false;
   const partialCoverage = !coverage.complete
     || coverage.omittedHotelCount > 0
     || coverage.unavailableHotelCount > 0
@@ -264,30 +264,12 @@ export function PortfolioQueueBody({
 
       <div className="cx-ptitle" style={{ marginTop: 0 }}>{scope.organizationName}</div>
       <div className="pq-sub">
-        {es
-          ? `${scope.hotelCount} ${scope.hotelCount === 1 ? 'hotel' : 'hoteles'}`
-          : `${scope.hotelCount} ${scope.hotelCount === 1 ? 'hotel' : 'hotels'}`}
+        {`${scope.hotelCount} ${scope.hotelCount === 1 ? 'hotel' : 'hotels'}`}
       </div>
 
       {partialCoverage && (
         <div className="pq-coverage" role="status">
-          {es
-            ? `Se leyeron datos completos de ${coverage.processedHotelCount} de ${coverage.authorizedHotelCount} hoteles. `
-              + (coverage.omittedHotelCount > 0
-                ? `${coverage.omittedHotelCount} ${coverage.omittedHotelCount === 1 ? 'hotel quedó fuera' : 'hoteles quedaron fuera'} del límite de esta carga. `
-                : '')
-              + (coverage.unavailableHotelCount > 0
-                ? `${coverage.unavailableHotelCount} ${coverage.unavailableHotelCount === 1 ? 'hotel no respondió' : 'hoteles no respondieron'} por completo. `
-                : '')
-              + (coverage.portfolioChecksStatus === 'in_progress'
-                ? 'Las comprobaciones de empresa todavía estaban en curso. '
-                : coverage.portfolioChecksStatus === 'incomplete'
-                  ? 'Las comprobaciones de empresa no terminaron por completo. '
-                  : coverage.portfolioChecksStatus === 'unavailable'
-                    ? 'No se pudo verificar el estado de las comprobaciones de empresa. '
-                    : '')
-              + 'No lo interpretes como cobertura completa de la empresa.'
-            : `Complete data was read from ${coverage.processedHotelCount} of ${coverage.authorizedHotelCount} hotels. `
+          {`Complete data was read from ${coverage.processedHotelCount} of ${coverage.authorizedHotelCount} hotels. `
               + (coverage.omittedHotelCount > 0
                 ? `${coverage.omittedHotelCount} ${coverage.omittedHotelCount === 1 ? 'hotel was' : 'hotels were'} outside this load's limit. `
                 : '')
@@ -330,10 +312,10 @@ export function PortfolioQueueBody({
         // looked at this and shrugged".
         hideOccurrence
         bottomHeadroom
-        heading={es ? S.heading.es : S.heading.en}
+        heading={S.heading.en}
         noteFor={noteFor}
         hrefFor={hrefFor}
-        hrefLabel={es ? S.openHotel.es : S.openHotel.en}
+        hrefLabel={S.openHotel.en}
         onVerdict={onVerdict}
         onAction={onAction}
       />
@@ -347,19 +329,15 @@ export function PortfolioQueueBody({
         <div className="pq-empty">
           {run
             ? partialCoverage
-              ? (es
-                ? `Nada de los ${coverage.processedHotelCount} hoteles procesados llegó hasta ti esta mañana.`
-                : `Nothing from the ${coverage.processedHotelCount} processed hotels reached you this morning.`)
-              : (es ? S.subEmpty.es : S.subEmpty.en)
+              ? (`Nothing from the ${coverage.processedHotelCount} processed hotels reached you this morning.`)
+              : (S.subEmpty.en)
             : partialCoverage
-              ? (es
-                ? `Ninguno de los ${coverage.processedHotelCount} hoteles procesados ha sido revisado todavía. No lo tomes como que todo está bien.`
-                : `None of the ${coverage.processedHotelCount} processed hotels has been checked yet. Do not read this as an all-clear.`)
-              : (es ? S.neverChecked.es : S.neverChecked.en)}
+              ? (`None of the ${coverage.processedHotelCount} processed hotels has been checked yet. Do not read this as an all-clear.`)
+              : (S.neverChecked.en)}
         </div>
       )}
       {readFailed && (
-        <div className="pq-empty">{es ? S.loadFailed.es : S.loadFailed.en}</div>
+        <div className="pq-empty">{S.loadFailed.en}</div>
       )}
     </div>
   );

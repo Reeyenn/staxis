@@ -387,7 +387,7 @@ function actionClassName(variant: MobileAction['variant']) {
 
 function compactTabLabel(tab: InvTab, lang: Lang) {
   if (tab.key === 'general') return 'General';
-  if (tab.key === 'breakfast') return lang === 'es' ? 'Desayuno' : 'Breakfast';
+  if (tab.key === 'breakfast') return 'Breakfast';
   return tab.label;
 }
 
@@ -432,9 +432,7 @@ function MobileHealthRing({
         ? styles.ringLow
         : styles.ringCritical;
   const shown = value == null ? '—' : `${Math.round(value)}%`;
-  const ariaLabel = lang === 'es'
-    ? `${label}: ${value == null ? 'sin datos' : shown}`
-    : `${label}: ${value == null ? 'no data' : shown}`;
+  const ariaLabel = `${label}: ${value == null ? 'no data' : shown}`;
 
   return (
     <div className={`${styles.healthRing} ${ringClass}`} role="img" aria-label={ariaLabel}>
@@ -528,13 +526,9 @@ function InventoryCard({
   const categoryClass = CATEGORY_CLASS[item.cat] ?? styles.categoryHousekeeping;
   const days = daysLabel(item);
   const stockLabel = `${onHand}/${par} · ${days}`;
-  const decrease = lang === 'es'
-    ? `Reducir existencias de ${item.name}`
-    : `Decrease ${item.name} on hand`;
-  const increase = lang === 'es'
-    ? `Aumentar existencias de ${item.name}`
-    : `Increase ${item.name} on hand`;
-  const editLabel = lang === 'es' ? `Editar ${item.name}` : `Edit ${item.name}`;
+  const decrease = `Decrease ${item.name} on hand`;
+  const increase = `Increase ${item.name} on hand`;
+  const editLabel = `Edit ${item.name}`;
   const savingLabel = `${t(lang).savingQuickCount}: ${item.name}`;
 
   return (
@@ -558,7 +552,7 @@ function InventoryCard({
           <span
             className={styles.stockBar}
             role="progressbar"
-            aria-label={lang === 'es' ? `Existencias contra nivel ideal de ${item.name}` : `${item.name} stock versus par`}
+            aria-label={`${item.name} stock versus par`}
             aria-valuemin={0}
             aria-valuemax={Math.max(1, par, onHand)}
             aria-valuenow={onHand}
@@ -586,7 +580,7 @@ function InventoryCard({
         <div
           className={styles.stepper}
           role="group"
-          aria-label={lang === 'es' ? `Conteo rápido de ${item.name}` : `Quick count ${item.name}`}
+          aria-label={`Quick count ${item.name}`}
           aria-busy={quickCountLocked}
         >
           <button

@@ -6,7 +6,7 @@ import { summarizeHomeInventory } from '@/lib/home-inventory-summary';
 describe('summarizeHomeInventory', () => {
   test('an empty catalog stays neutral', () => {
     assert.deepEqual(summarizeHomeInventory([]), {
-      en: 'Open inventory', es: 'Abrir inventario', tone: 'muted',
+      en: 'Open inventory', tone: 'muted',
     });
   });
 
@@ -15,7 +15,7 @@ describe('summarizeHomeInventory', () => {
       { current_stock: 0, par_level: 20, last_counted_at: null },
       { current_stock: 0, par_level: 10, last_counted_at: null },
     ]), {
-      en: 'Start first count', es: 'Empieza el primer conteo', tone: 'muted',
+      en: 'Start first count', tone: 'muted',
     });
   });
 
@@ -24,7 +24,7 @@ describe('summarizeHomeInventory', () => {
       { current_stock: 0, par_level: 20, last_counted_at: null },
       { current_stock: 2, par_level: 10, last_counted_at: '2026-07-15T12:00:00Z' },
     ]), {
-      en: '1 item critical', es: '1 artículo crítico', tone: 'bad',
+      en: '1 item critical', tone: 'bad',
     });
   });
 
@@ -53,7 +53,7 @@ describe('summarizeHomeInventory', () => {
     assert.deepEqual(summarizeHomeInventory([
       { current_stock: 4, par_level: 0, last_counted_at: '2026-07-15T12:00:00Z' },
     ]), {
-      en: 'Set par levels', es: 'Configura niveles par', tone: 'muted',
+      en: 'Set par levels', tone: 'muted',
     });
   });
 });

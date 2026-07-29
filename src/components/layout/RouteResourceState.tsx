@@ -73,26 +73,26 @@ export function NavigationFailureNotice({
   onRetry: () => void;
   onOpenDirectly: () => void;
 }) {
-  const es = lang === 'es';
+  const es = false;
   return (
     <div className={styles.navigationToast} role="alert" aria-live="assertive">
       <span className={styles.iconWrap} aria-hidden="true">
         <AlertTriangle size={20} strokeWidth={1.8} />
       </span>
       <div className={styles.toastCopy}>
-        <div className={styles.toastTitle}>{es ? 'La página está tardando demasiado' : 'This page is taking too long'}</div>
+        <div className={styles.toastTitle}>{'This page is taking too long'}</div>
         <p className={styles.toastMessage}>
-          {es ? 'Puedes reintentar sin perder tu página actual.' : 'You can retry without losing your current page.'}
+          {'You can retry without losing your current page.'}
         </p>
       </div>
       <div className={styles.toastActions}>
         <button type="button" className={styles.toastButton} onClick={onRetry}>
           <RefreshCw size={14} aria-hidden="true" />
-          {es ? 'Reintentar' : 'Try again'}
+          {'Try again'}
         </button>
         <button type="button" className={styles.toastSecondary} onClick={onOpenDirectly}>
           <ExternalLink size={14} aria-hidden="true" />
-          {es ? 'Abrir directamente' : 'Open directly'}
+          {'Open directly'}
         </button>
       </div>
     </div>

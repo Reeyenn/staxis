@@ -158,125 +158,8 @@ function monthCloseStrings(lang: Lang) {
       zeroSource: 'No purchases',
       budgetUnavailable: 'Category and budget-section comparisons are unavailable because purchases were entered as one total.',
     },
-    es: {
-      eyebrow: 'Cierre mensual',
-      fallbackTitle: 'Mes actual',
-      close: 'Cerrar',
-      done: 'Listo',
-      cancel: 'Cancelar',
-      loadingTitle: 'Preparando el cierre mensual',
-      loadingBody: 'Revisando conteos, costos y líneas recibidas.',
-      loadErrorTitle: 'No se pudo cargar el cierre mensual',
-      loadErrorBody: 'Revisa la conexión e inténtalo de nuevo. No se cambió nada.',
-      retry: 'Intentar de nuevo',
-      noPropertyTitle: 'Primero elige una propiedad',
-      noPropertyBody: 'El cierre mensual corresponde a un solo hotel. Selecciona una propiedad y vuelve aquí.',
-      statusSetup: 'Falta el inventario inicial',
-      statusOpen: 'Seguimiento abierto',
-      statusClosed: 'Mes cerrado',
-      setupTitle: 'Establece el inventario inicial',
-      setupBody: 'Un conteo completo actual se convierte en el valor inicial del seguimiento mensual. Las compras se mantienen separadas de lo que queda disponible.',
-      beginningInventory: 'Inventario inicial',
-      fromCurrentCount: 'Del último conteo completo y los costos unitarios guardados',
-      valueUnavailable: 'Se requiere un conteo',
-      startTracking: 'Iniciar seguimiento mensual',
-      starting: 'Iniciando…',
-      started: 'Se inició el seguimiento mensual.',
-      openIntro: 'El uso estimado es distinto de las compras y del valor que aún queda disponible. Esta vista previa será final cuando se cierre el mes.',
-      previewEquationLabel: (beginning: string, purchases: string, ending: string, estimated: string) =>
-        `Inventario inicial ${beginning} más compras ${purchases} menos inventario final ${ending} es igual al uso estimado ${estimated}, vista previa del cierre`,
-      equationLabel: (beginning: string, purchases: string, ending: string, actual: string) =>
-        `Inventario inicial ${beginning} más compras ${purchases} menos inventario final ${ending} es igual al uso real ${actual}`,
-      beginning: 'Inicial',
-      purchases: 'Compras',
-      ending: 'Final',
-      estimatedUsage: 'Uso estimado / vista previa del cierre',
-      actualUsed: 'Uso real',
-      openingBaseline: 'Base inicial',
-      openingAdjustmentTitle: 'Inventario inicial ajustado',
-      openingAdjustmentBody: (amount: string) => `${amount} de inventario que ya estaba en el hotel se agregó al inventario inicial. No es una compra.`,
-      selectedSource: 'Fuente elegida',
-      latestCount: 'Último conteo completo',
-      countNeeded: 'Se necesita un conteo elegible de fin de mes',
-      previewFormulaResult: 'Vista previa; será final al cerrar el mes',
-      formulaResult: 'Inventario consumido en este período',
-      choosePurchases: 'Elige las compras para este cierre',
-      choosePurchasesHelp: 'Usa una sola fuente. Las compras se muestran separadas del inventario inicial y final.',
-      loggedTitle: 'Usar líneas recibidas',
-      loggedBody: (count: number) => `${count} línea${count === 1 ? '' : 's'} recibida${count === 1 ? '' : 's'} en este período`,
-      loggedDetail: 'Conserva el detalle por artículo, categoría y sección presupuestaria.',
-      loggedIncomplete: (known: string) => `Incompleto · hasta ahora hay ${known} con costo. Agrega los costos faltantes de las líneas recibidas o elige otra fuente.`,
-      noLoggedDeliveries: 'No se encontraron líneas recibidas. Elige “No hubo compras” para confirmar explícitamente $0.',
-      manualTitle: 'Ingresar un total mensual',
-      manualBody: 'Usa un total verificado de facturas o contabilidad en lugar de las líneas recibidas.',
-      manualDetail: 'Esto registra un solo total. No estarán disponibles las comparaciones por artículo, categoría o sección presupuestaria.',
-      zeroTitle: 'No hubo compras en este período',
-      zeroBody: 'Confirma explícitamente que no se compró inventario.',
-      monthlyPurchaseTotal: 'Total mensual de compras',
-      amountExample: '0.00',
-      manualRequired: 'Ingresa un total mayor que $0 o elige “No hubo compras”.',
-      manualInvalid: 'Ingresa un monto válido con un máximo de dos decimales.',
-      readinessTitle: 'Preparación para el cierre',
-      readinessBody: 'Realiza el conteo final el último día calendario local del mes del hotel o durante los primeros 3 días calendario locales después del fin de mes. También se requieren costos unitarios completos.',
-      endingCount: 'Conteo final elegible',
-      countedItems: (counted: number, total: number) => `${counted} de ${total} artículos contados`,
-      countedItemsAt: (counted: number, total: number, date: string) => `${counted} de ${total} artículos contados · último ${date}`,
-      noItems: 'No hay artículos de inventario en este período',
-      costs: 'Cobertura de costos',
-      costsReady: 'Están todos los costos requeridos',
-      needsAttention: 'Requiere atención',
-      ready: 'Listo',
-      startCount: 'Iniciar o actualizar conteo',
-      blockersTitle: 'Resuelve esto antes de cerrar',
-      warningsTitle: 'Revisa esto antes de cerrar',
-      missingCost: (name: string) => `Agrega un costo unitario para ${name}.`,
-      missingCosts: (count: number) => `${count} artículo${count === 1 ? '' : 's'} necesita${count === 1 ? '' : 'n'} un costo unitario.`,
-      staleCount: 'Completa un conteo total el último día calendario local del mes del hotel o durante los primeros 3 días calendario locales después del fin de mes.',
-      uncounted: (count: number) => `${count} artículo${count === 1 ? '' : 's'} todavía necesita${count === 1 ? '' : 'n'} un conteo final.`,
-      uncostedDeliveries: (count: number) => `${count} línea${count === 1 ? '' : 's'} recibida${count === 1 ? '' : 's'} no tiene${count === 1 ? '' : 'n'} costo. Elige otra fuente de compras o completa los costos de las líneas.`,
-      genericBlocker: 'La información del cierre mensual está incompleta.',
-      negativeTitle: 'El uso estimado no puede ser negativo',
-      negativeBody: 'El inventario final es mayor que el inventario inicial más las compras. Revisa el conteo final o la fuente de compras antes de cerrar.',
-      closeMonth: 'Cerrar mes',
-      closing: 'Cerrando…',
-      finalReview: 'Revisión final',
-      confirmTitle: (month: string) => `¿Cerrar ${month}?`,
-      confirmBody: 'Revisa la fuente de compras y la ecuación a continuación. Al cerrar, este resultado mensual queda bloqueado para conservar un registro confiable del hotel.',
-      confirmMonth: 'Mes',
-      confirmLockedTitle: 'Este resultado quedará bloqueado',
-      confirmLockedBody: 'Después del cierre, el mes, la fuente de compras y el uso calculado no se pueden editar desde Inventario.',
-      confirmAction: (month: string) => `Cerrar ${month}`,
-      closeAvailableTitle: 'El cierre aún no está disponible',
-      closeAvailableBody: (date: string) => `Esta propiedad puede cerrar el período el ${date}. Prepara los costos ahora y realiza el conteo final en el período elegible de fin de mes.`,
-      closed: 'El mes se cerró correctamente.',
-      committedRefreshTitle: 'Se guardó la acción de cierre mensual',
-      committedRefreshBody: 'El resultado guardado ya está confirmado, pero no se pudo cargar la lista actualizada. Vuelve a cargar el estado; no repitas la acción de cierre mensual.',
-      actionFailed: 'No se guardó el cierre mensual. Revisa la información e inténtalo de nuevo.',
-      actionFailedTitle: 'No se pudo guardar el cierre mensual',
-      networkActionFailed: 'Falló la conexión y no se pudo confirmar el resultado. Reintenta esta misma acción segura o vuelve a cargar el estado del mes; el ID guardado evita duplicados.',
-      timezoneChangedAction: 'La zona horaria de la propiedad cambió después de abrir este período. No se cerró nada. Un administrador debe restablecer la base del mes actual antes de registrar el uso de forma segura.',
-      endingCountAction: 'No se encontró un conteo final completo y elegible. Realiza un conteo total dentro del período permitido. Si ya pasó, vuelve a cargar el mes actual; el período omitido seguirá sin cerrar.',
-      baselineCountAction: 'No hay un conteo total actual para iniciar esta base. Realiza un conteo completo y vuelve a iniciar el seguimiento mensual. No se guardó nada.',
-      recountAction: 'El inventario cambió alrededor del conteo elegido. No se cerró nada. Realiza un nuevo conteo completo y vuelve a intentarlo.',
-      tooEarlyAction: 'Este período no puede cerrarse antes del límite mensual local del hotel. No se guardaron valores.',
-      costsAction: 'Falta evidencia de costos requerida. Completa los costos señalados del artículo o de la línea recibida y vuelve a intentarlo. No se guardaron valores.',
-      purchaseAction: 'La fuente de compras no coincide con la evidencia del período. Revísala y vuelve a intentarlo. No se guardaron valores.',
-      requestConflictAction: 'Este reintento guardado corresponde a otros valores de cierre. Vuelve a cargar la lista antes de intentarlo.',
-      missedWindowTitle: 'Se perdió el período de cierre anterior',
-      missedWindowBody: 'Ese período sigue sin cerrar y está excluido; no se inventó un uso de $0. Realiza un nuevo conteo completo e inicia una base para el mes actual.',
-      loadCurrentMonth: 'Volver a cargar el mes actual',
-      partialTitle: 'El primer período es parcial',
-      partialPreviewBody: (date: string) => `El seguimiento comienza el ${date}. Esta vista previa cubre solo desde esa base hasta el cierre, no el mes completo, y no debe tratarse como un resultado presupuestario mensual completo.`,
-      partialBody: (date: string) => `El seguimiento comienza el ${date}. El uso real cubre solo desde esa base hasta el cierre, no el mes completo, y no debe tratarse como un resultado presupuestario mensual completo.`,
-      closedBody: 'Este resultado está bloqueado para conservar el registro mensual.',
-      closedMeta: (date: string, name: string | null) => name ? `Cerrado el ${date} por ${name}` : `Cerrado el ${date}`,
-      purchaseSource: 'Fuente de compras',
-      loggedSource: 'Líneas recibidas',
-      manualSource: 'Un total mensual',
-      zeroSource: 'Sin compras',
-      budgetUnavailable: 'Las comparaciones por categoría y sección presupuestaria no están disponibles porque las compras se ingresaron como un solo total.',
-    },
-  }[lang];
+
+  }['en'];
 }
 
 function localizedActionFailure(
@@ -304,7 +187,7 @@ function localizedActionFailure(
 
 function money(cents: number | null, lang: Lang): string {
   if (cents == null || !Number.isFinite(cents)) return '—';
-  return new Intl.NumberFormat(lang === 'es' ? 'es-US' : 'en-US', {
+  return new Intl.NumberFormat('en-US', {
     style: 'currency',
     currency: 'USD',
     minimumFractionDigits: 2,
@@ -316,7 +199,7 @@ function monthLabel(month: string, lang: Lang): string {
   const match = /^(\d{4})-(\d{2})$/.exec(month);
   if (!match) return month;
   const date = new Date(Date.UTC(Number(match[1]), Number(match[2]) - 1, 1));
-  return new Intl.DateTimeFormat(lang === 'es' ? 'es-US' : 'en-US', {
+  return new Intl.DateTimeFormat('en-US', {
     month: 'long',
     year: 'numeric',
     timeZone: 'UTC',
@@ -330,10 +213,10 @@ function formatDate(value: string | null, lang: Lang, timeZone?: string | null):
   const options: Intl.DateTimeFormatOptions = { month: 'short', day: 'numeric', year: 'numeric' };
   if (timeZone) options.timeZone = timeZone;
   try {
-    return new Intl.DateTimeFormat(lang === 'es' ? 'es-US' : 'en-US', options).format(date);
+    return new Intl.DateTimeFormat('en-US', options).format(date);
   } catch {
     delete options.timeZone;
-    return new Intl.DateTimeFormat(lang === 'es' ? 'es-US' : 'en-US', options).format(date);
+    return new Intl.DateTimeFormat('en-US', options).format(date);
   }
 }
 
@@ -341,7 +224,7 @@ function formatPropertyDate(value: string, lang: Lang): string {
   const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value);
   if (!match) return value;
   const date = new Date(Date.UTC(Number(match[1]), Number(match[2]) - 1, Number(match[3])));
-  return new Intl.DateTimeFormat(lang === 'es' ? 'es-US' : 'en-US', {
+  return new Intl.DateTimeFormat('en-US', {
     month: 'short',
     day: 'numeric',
     year: 'numeric',

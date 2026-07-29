@@ -39,10 +39,6 @@ interface ItemDraft {
   uploading: boolean;
 }
 
-function tr(lang: 'en' | 'es' | 'ht' | 'tl' | 'vi', en: string, es: string): string {
-  return lang === 'es' ? es : en;
-}
-
 export default function InspectorView({
   pid,
   staffId,
@@ -117,7 +113,7 @@ export default function InspectorView({
       });
       const json = await res.json().catch(() => null);
       if (!res.ok || !json?.ok) {
-        setToast(tr(lang, 'Could not start inspection', 'No se pudo iniciar'));
+        setToast('Could not start inspection');
         return;
       }
       const inspection = json.data.inspection as Inspection;
@@ -128,9 +124,9 @@ export default function InspectorView({
       }
       setActive({ inspection, checklist, drafts, notes: '' });
     } catch {
-      setToast(tr(lang, 'Network error', 'Error de red'));
+      setToast('Network error');
     }
-  }, [pid, staffId, lang]);
+  }, [pid, staffId]);
 
   // ── Per-item draft updates ─────────────────────────────────────────────
   const updateDraft = useCallback((itemId: string, patch: Partial<ItemDraft>) => {
@@ -167,14 +163,14 @@ export default function InspectorView({
           uploading: false,
         });
       } else {
-        setToast(tr(lang, 'Photo upload failed', 'Carga de foto falló'));
+        setToast('Photo upload failed');
         updateDraft(itemId, { uploading: false });
       }
     } catch {
-      setToast(tr(lang, 'Photo upload failed', 'Carga de foto falló'));
+      setToast('Photo upload failed');
       updateDraft(itemId, { uploading: false });
     }
-  }, [active, pid, staffId, lang, updateDraft]);
+  }, [active, pid, staffId, updateDraft]);
 
   // ── Submit ─────────────────────────────────────────────────────────────
   const handleSubmit = useCallback(async (result: 'pass' | 'fail') => {
@@ -207,9 +203,7 @@ export default function InspectorView({
         for (const f of failedItems) {
           const item = active.checklist.items.find((i) => i.id === f.itemId);
           if (item?.requiresPhotoOnFail && !f.photoUrl) {
-            setToast(tr(lang,
-              `${item.label} needs a photo`,
-              `${item.label} necesita foto`));
+            setToast(`${item.label} needs a photo`);
             setSubmitting(false);
             return;
           }
@@ -229,18 +223,18 @@ export default function InspectorView({
       });
       const json = await res.json().catch(() => null);
       if (!res.ok || !json?.ok) {
-        setToast(json?.error ?? tr(lang, 'Could not save', 'No se pudo guardar'));
+        setToast(json?.error ?? 'Could not save');
         return;
       }
       setToast(result === 'pass'
-        ? tr(lang, 'Inspection passed', 'Inspección aprobada')
-        : tr(lang, 'Sent back for re-clean', 'Enviada a re-limpieza'));
+        ? 'Inspection passed'
+        : 'Sent back for re-clean');
       setActive(null);
       void refresh();
     } finally {
       setSubmitting(false);
     }
-  }, [active, submitting, pid, staffId, lang, refresh]);
+  }, [active, submitting, pid, staffId, refresh]);
 
   // ── Render gates ───────────────────────────────────────────────────────
   if (loading) return null;
@@ -265,16 +259,16 @@ export default function InspectorView({
               border: 'none', background: 'transparent', cursor: 'pointer',
               padding: 6, color: '#374151', display: 'inline-flex',
             }}
-            aria-label={tr(lang, 'Back', 'Atrás')}
+            aria-label={'Back'}
           >
             <ChevronLeft size={20} />
           </button>
           <div style={{ flex: 1 }}>
             <div style={{ fontSize: 20, fontWeight: 800, color: '#111827', lineHeight: 1.1 }}>
-              {tr(lang, 'Inspect', 'Inspeccionar')} {active.inspection.roomNumber}
+              {'Inspect'} {active.inspection.roomNumber}
             </div>
             <div style={{ fontSize: 12, color: '#6B7280', marginTop: 2 }}>
-              {active.checklist.name} · {active.checklist.items.length} {tr(lang, 'items', 'puntos')}
+              {active.checklist.name} · {active.checklist.items.length} {'items'}
             </div>
           </div>
         </div>
@@ -291,7 +285,7 @@ export default function InspectorView({
         <textarea
           value={active.notes}
           onChange={(e) => setActive((prev) => prev ? { ...prev, notes: e.target.value } : prev)}
-          placeholder={tr(lang, 'Optional note', 'Nota opcional')}
+          placeholder={'Optional note'}
           rows={2}
           style={{
             width: '100%', boxSizing: 'border-box', marginTop: 16,
@@ -324,10 +318,10 @@ export default function InspectorView({
         }}>
           <CheckCircle size={18} color="#6B7280" />
           <span style={{ fontSize: 14, fontWeight: 700, color: '#111827', flex: 1 }}>
-            {tr(lang, 'Inspections', 'Inspecciones')}
+            {'Inspections'}
           </span>
           <span style={{ fontSize: 12, color: '#6B7280' }}>
-            {queue.length} {tr(lang, 'waiting', 'esperando')}
+            {queue.length} {'waiting'}
           </span>
         </div>
         {queue.length === 0 ? (
@@ -335,7 +329,7 @@ export default function InspectorView({
             padding: '14px 4px', textAlign: 'center',
             color: '#6B7280', fontSize: 13,
           }}>
-            {tr(lang, 'Nothing waiting right now.', 'Nada esperando ahora.')}
+            {'Nothing waiting right now.'}
           </div>
         ) : (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
@@ -383,11 +377,11 @@ function MobileQueueRow({
           color: recheck ? '#991B1B' : '#374151',
         }}>
           {recheck
-            ? tr(lang, 'Re-check needed', 'Reinspección')
-            : tr(lang, 'Ready for inspection', 'Lista para inspección')}
+            ? 'Re-check needed'
+            : 'Ready for inspection'}
         </div>
         <div style={{ fontSize: 12, color: '#6B7280' }}>
-          {row.housekeeperName ?? tr(lang, 'Unassigned', 'Sin asignar')}
+          {row.housekeeperName ?? 'Unassigned'}
           {row.completedAt && ` · ${format(new Date(row.completedAt), 'h:mm a')}`}
         </div>
       </div>
@@ -396,7 +390,7 @@ function MobileQueueRow({
         padding: '6px 12px', borderRadius: 999,
         fontSize: 12, fontWeight: 700,
       }}>
-        {tr(lang, 'Inspect', 'Inspeccionar')}
+        {'Inspect'}
       </span>
     </button>
   );
@@ -461,7 +455,7 @@ function MobileChecklistRow({
   onNote: (n: string) => void;
   onFile: (f: File) => void;
 }) {
-  const label = lang === 'es' && item.labelEs ? item.labelEs : item.label;
+  const label = item.label;
   const failed = draft.state === 'minor' || draft.state === 'major' || draft.state === 'critical';
 
   return (
@@ -482,24 +476,24 @@ function MobileChecklistRow({
               marginLeft: 6, color: '#B45309', fontSize: 10,
               fontFamily: 'ui-monospace, monospace',
             }}>
-              {tr(lang, 'PHOTO REQ', 'FOTO REQ')}
+              {'PHOTO REQ'}
             </span>
           )}
         </span>
       </div>
 
       <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-        <MobileSevButton label={tr(lang, 'Pass', 'Aprobar')} active={draft.state === 'pass'} variant="pass" onClick={() => onState('pass')} />
-        <MobileSevButton label={tr(lang, 'Minor', 'Menor')} active={draft.state === 'minor'} variant="minor" onClick={() => onState('minor')} />
-        <MobileSevButton label={tr(lang, 'Major', 'Mayor')} active={draft.state === 'major'} variant="major" onClick={() => onState('major')} />
-        <MobileSevButton label={tr(lang, 'Critical', 'Crítico')} active={draft.state === 'critical'} variant="critical" onClick={() => onState('critical')} />
+        <MobileSevButton label={'Pass'} active={draft.state === 'pass'} variant="pass" onClick={() => onState('pass')} />
+        <MobileSevButton label={'Minor'} active={draft.state === 'minor'} variant="minor" onClick={() => onState('minor')} />
+        <MobileSevButton label={'Major'} active={draft.state === 'major'} variant="major" onClick={() => onState('major')} />
+        <MobileSevButton label={'Critical'} active={draft.state === 'critical'} variant="critical" onClick={() => onState('critical')} />
       </div>
 
       {failed && (
         <div style={{ marginTop: 10, display: 'flex', flexDirection: 'column', gap: 8 }}>
           <input
             type="text"
-            placeholder={tr(lang, 'What to fix', 'Qué corregir')}
+            placeholder={'What to fix'}
             value={draft.note}
             onChange={(e) => onNote(e.target.value)}
             style={{
@@ -519,10 +513,10 @@ function MobileChecklistRow({
             }}>
               <Camera size={14} />
               {draft.uploading
-                ? tr(lang, 'Uploading…', 'Subiendo…')
+                ? 'Uploading…'
                 : draft.photoUrl
-                  ? tr(lang, 'Replace', 'Cambiar')
-                  : tr(lang, 'Add photo', 'Agregar foto')}
+                  ? 'Replace'
+                  : 'Add photo'}
               <input
                 type="file"
                 accept="image/png,image/jpeg,image/webp"
@@ -600,7 +594,7 @@ function MobileSubmitBar({
           padding: '10px 14px', borderRadius: 12, background: '#F3F4F6',
           color: '#374151', fontSize: 13, textAlign: 'center', marginBottom: 8,
         }}>
-          {tr(lang, 'Decide every item to submit', 'Decida cada punto para enviar')}
+          {'Decide every item to submit'}
         </div>
       )}
       {allDecided && !anyFail && (
@@ -615,7 +609,7 @@ function MobileSubmitBar({
             WebkitTapHighlightColor: 'transparent', touchAction: 'manipulation',
           }}
         >
-          {submitting ? tr(lang, 'Saving…', 'Guardando…') : tr(lang, '✓ Pass, room ready', '✓ Aprobar, habitación lista')}
+          {submitting ? 'Saving…' : '✓ Pass, room ready'}
         </button>
       )}
       {anyFail && (
@@ -630,7 +624,7 @@ function MobileSubmitBar({
             WebkitTapHighlightColor: 'transparent', touchAction: 'manipulation',
           }}
         >
-          {submitting ? tr(lang, 'Saving…', 'Guardando…') : tr(lang, 'Send back for re-clean', 'Enviar a re-limpieza')}
+          {submitting ? 'Saving…' : 'Send back for re-clean'}
         </button>
       )}
     </div>
@@ -663,14 +657,13 @@ function Toast({ text, onDismiss }: { text: string; onDismiss: () => void }) {
 }
 
 function categoryLabel(cat: string, lang: 'en' | 'es' | 'ht' | 'tl' | 'vi'): string {
-  const map: Record<string, [string, string]> = {
-    bathroom: ['Bathroom', 'Baño'],
-    bedroom:  ['Bedroom', 'Dormitorio'],
-    living:   ['Living', 'Sala'],
-    kitchen:  ['Kitchen', 'Cocina'],
-    welcome:  ['Welcome', 'Recepción'],
-    other:    ['Other', 'Otro'],
+  const map: Record<string, string> = {
+    bathroom: 'Bathroom',
+    bedroom: 'Bedroom',
+    living: 'Living',
+    kitchen: 'Kitchen',
+    welcome: 'Welcome',
+    other: 'Other',
   };
-  const pair = map[cat] ?? [cat, cat];
-  return lang === 'es' ? pair[1] : pair[0];
+  return map[cat] ?? cat;
 }

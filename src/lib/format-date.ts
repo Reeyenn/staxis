@@ -3,8 +3,7 @@
 // Each function is a FAITHFUL port of private helpers duplicated across
 // src/app pages — outputs are call-for-call identical to the originals.
 // Variants are deliberately NOT normalized: some originals parse YYYY-MM-DD
-// as UTC, some render with 'es-US' vs 'es-ES' vs bare 'es' locales, one even
-// renders a UTC instant in local time (a latent-but-shipped quirk we keep).
+// as UTC and one renders a UTC instant in local time.
 // Where two originals genuinely differ, options reproduce each exactly.
 //
 // Nothing here is imported by feature pages yet — consumers migrate in a
@@ -46,7 +45,7 @@ export interface ShortDateOptions {
 
 /**
  * YYYY-MM-DD → short label, parsed AND rendered in UTC (timeZone: 'UTC'),
- * locale 'es-US' / 'en-US'. Non-matching input echoes back unchanged;
+ * locale 'en-US'. Non-matching input echoes back unchanged;
  * null/undefined → ''.
  *
  * Replaces (each with the exact options shown):
@@ -66,7 +65,7 @@ export function shortDateFromYmd(
   const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(ymd);
   if (!m) return ymd;
   const d = new Date(Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3])));
-  const label = d.toLocaleDateString(lang === 'es' ? 'es-US' : 'en-US', {
+  const label = d.toLocaleDateString('en-US', {
     month: 'short',
     ...(opts.fields === 'month-day' ? { day: 'numeric' as const } : { year: 'numeric' as const }),
     timeZone: 'UTC',
@@ -75,22 +74,20 @@ export function shortDateFromYmd(
 }
 
 /**
- * Date object → "Jan 5" / "5 ene", rendered in LOCAL time with the
- * 'es-ES' / 'en-US' locale pair (inv-i18n's dateLocale()).
+ * Date object → "Jan 5", rendered in local time.
  *
  * Replaces:
  *   - inventory/_components/overlays/HistoryPanel.tsx shortDate()
  */
 export function shortDateFromDate(d: Date, lang: Language): string {
-  return d.toLocaleDateString(lang === 'es' ? 'es-ES' : 'en-US', { month: 'short', day: 'numeric' });
+  return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
 }
 
 // ─── fmtWhen ────────────────────────────────────────────────────────────────
 
 /**
- * ISO timestamp → relative age: "today"/"hoy", "yesterday"/"ayer",
- * "3d ago"/"hace 3d" (< 7 days), else a LOCAL "Mar 5"/"5 mar" date
- * ('es-US' / 'en-US'). Invalid/null input → ''.
+ * ISO timestamp → relative age: "today", "yesterday", "3d ago" (< 7 days),
+ * else a local "Mar 5" date. Invalid/null input → ''.
  *
  * Replaces the two byte-identical private copies:
  *   - front-desk/_components/LostFoundTab.tsx fmtWhen()
@@ -104,25 +101,17 @@ export function fmtWhenAgo(iso: string | null | undefined, lang: Language, now: 
   const ms = Date.parse(iso);
   if (!Number.isFinite(ms)) return '';
   const days = Math.floor((now - ms) / 86_400_000);
-  if (days <= 0) return tr2(lang, 'today', 'hoy');
-  if (days === 1) return tr2(lang, 'yesterday', 'ayer');
-  if (days < 7) return tr2(lang, `${days}d ago`, `hace ${days}d`);
-  return new Date(ms).toLocaleDateString(lang === 'es' ? 'es-US' : 'en-US', {
+  if (days <= 0) return 'today';
+  if (days === 1) return 'yesterday';
+  if (days < 7) return `${days}d ago`;
+  return new Date(ms).toLocaleDateString('en-US', {
     month: 'short',
     day: 'numeric',
   });
 }
 
-// Local copy of the EN/ES ternary so this module doesn't pull in i18n-utils
-// (keeps the two foundation modules independently importable).
-function tr2(lang: Language, en: string, es: string): string {
-  return lang === 'es' ? es : en;
-}
-
 /**
- * ISO timestamp → LOCAL "Mar 5, 3:30 PM" / "5 mar, 15:30" using the bare
- * 'es' / 'en' locales (note: NOT es-US/en-US — the original used the bare
- * tags and they can differ in hour-cycle). Invalid date → ''.
+ * ISO timestamp → local "Mar 5, 3:30 PM". Invalid date → ''.
  *
  * Replaces:
  *   - dashboard/_components/LogBookCard.tsx fmtWhen(iso, es: boolean)
@@ -131,7 +120,7 @@ function tr2(lang: Language, en: string, es: string): string {
 export function fmtWhenDateTime(iso: string, lang: Language): string {
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return '';
-  return d.toLocaleString(lang === 'es' ? 'es' : 'en', {
+  return d.toLocaleString('en', {
     month: 'short',
     day: 'numeric',
     hour: 'numeric',
@@ -199,8 +188,8 @@ export function fmtTimeInZone(iso: string, timezone: string): string {
 // ─── Month labels ───────────────────────────────────────────────────────────
 
 /**
- * "YYYY-MM" → "July 2026" / "julio de 2026", parsed AND rendered in UTC,
- * locale 'es-US' / 'en-US'. (Malformed input yields "Invalid Date", exactly
+ * "YYYY-MM" → "July 2026", parsed AND rendered in UTC with 'en-US'.
+ * (Malformed input yields "Invalid Date", exactly
  * like the originals — they did no validation.)
  *
  * Replaces the two identical private copies:
@@ -209,7 +198,7 @@ export function fmtTimeInZone(iso: string, timezone: string): string {
  */
 export function monthLabelFromYm(ym: string, lang: Language): string {
   const [y, mm] = ym.split('-').map(Number);
-  return new Date(Date.UTC(y, mm - 1, 1)).toLocaleDateString(lang === 'es' ? 'es-US' : 'en-US', {
+  return new Date(Date.UTC(y, mm - 1, 1)).toLocaleDateString('en-US', {
     month: 'long',
     year: 'numeric',
     timeZone: 'UTC',
@@ -217,7 +206,7 @@ export function monthLabelFromYm(ym: string, lang: Language): string {
 }
 
 /**
- * Long LOCAL month name for "now": "July" / "julio" ('es-ES' / 'en-US').
+ * Long local month name for "now": "July".
  *
  * Replaces:
  *   - inventory/_components/overlays/ReportsPanel.tsx currentMonthLabel()
@@ -226,11 +215,11 @@ export function monthLabelFromYm(ym: string, lang: Language): string {
  * for tests.
  */
 export function currentMonthLabel(lang: Language, now: Date = new Date()): string {
-  return now.toLocaleDateString(lang === 'es' ? 'es-ES' : 'en-US', { month: 'long' });
+  return now.toLocaleDateString('en-US', { month: 'long' });
 }
 
 /**
- * "YYYY-MM" / "YYYY-MM-DD" → short month name: "Jul" / "jul".
+ * "YYYY-MM" / "YYYY-MM-DD" → short month name: "Jul".
  *
  * Month keys describe calendar buckets, not instants. Always format them in
  * UTC so viewers west of Greenwich cannot see the preceding month.
@@ -239,7 +228,7 @@ export function shortMonthFromYmd(s: string, lang: Language): string {
   const match = /^\d{4}-(0[1-9]|1[0-2])(?:-\d{2})?$/.exec(s);
   if (!match) return '—';
   const m = Number(match[1]);
-  return new Date(Date.UTC(2000, m - 1, 1)).toLocaleDateString(lang === 'es' ? 'es-ES' : 'en-US', {
+  return new Date(Date.UTC(2000, m - 1, 1)).toLocaleDateString('en-US', {
     month: 'short',
     timeZone: 'UTC',
   });

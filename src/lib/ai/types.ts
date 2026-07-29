@@ -34,7 +34,6 @@ export const AI_FEATURE_KEYS = [
   'communications.staxis_assistant',
   'communications.action_detection',
   'communications.announcement_polish',
-  'communications.ui_translation',
   'communications.message_translation',
   'housekeeping.notice_translation',
   'housekeeping.board_photo_read',

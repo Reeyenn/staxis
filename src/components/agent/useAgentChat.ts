@@ -126,7 +126,7 @@ interface ServerPendingAction {
   args?: Record<string, unknown>;
   tier: 'quick' | 'card';
   summary?: BiText;
-  addons?: { en: PendingAddon[]; es: PendingAddon[] };
+  addons?: { en: PendingAddon[]; es?: PendingAddon[] };
 }
 
 interface ServerConversationListItem {
@@ -153,12 +153,12 @@ interface SsePayload {
   args?: Record<string, unknown>;
   tier?: 'quick' | 'card';
   summary?: BiText;
-  addons?: { en: { id: string; label: string }[]; es: { id: string; label: string }[] };
+  addons?: { en: { id: string; label: string }[]; es?: { id: string; label: string }[] };
   // action_result
   ok?: boolean;
   denied?: boolean;
   resultSummary?: BiText;
-  error?: { en: string | null; es: string | null };
+  error?: { en: string | null; es?: string | null };
   addonNotes?: string[];
   addonErrors?: string[];
   // pending_actions_superseded
@@ -448,7 +448,7 @@ export function useAgentChat({
 
   const pick = useCallback((b: BiText | undefined): string => {
     if (!b) return '';
-    return langRef.current === 'es' ? (b.es || b.en) : (b.en || b.es);
+    return b.en || b.es || '';
   }, []);
 
   const resetVisibleConversation = useCallback((nextScopeKey: string) => {
@@ -658,8 +658,8 @@ export function useAgentChat({
         toolName: p.toolName,
         args: p.args ?? {},
         tier: p.tier === 'quick' ? 'quick' : 'card',
-        summary: p.summary ?? { en: '', es: '' },
-        addons: (p.addons ? (langRef.current === 'es' ? p.addons.es : p.addons.en) : []) ?? [],
+        summary: p.summary ?? { en: '', },
+        addons: (p.addons ? (p.addons.en) : []) ?? [],
       }));
       setPendingActions(rehydrated);
       const nextCursor = recordScopedConversationId(
@@ -866,14 +866,14 @@ export function useAgentChat({
           assistantIndexRef.current = -1;
         } else if (payload.type === 'tool_call_pending_approval' && payload.pendingActionId) {
           // A proposed mutation — queue an approval card.
-          const addonList = payload.addons ? (langRef.current === 'es' ? payload.addons.es : payload.addons.en) : [];
+          const addonList = payload.addons ? (payload.addons.en) : [];
           const card: PendingAction = {
             pendingActionId: payload.pendingActionId,
             toolCallId: payload.toolCallId ?? '',
             toolName: payload.toolName ?? '',
             args: payload.args ?? {},
             tier: payload.tier === 'quick' ? 'quick' : 'card',
-            summary: payload.summary ?? { en: '', es: '' },
+            summary: payload.summary ?? { en: '', },
             addons: addonList ?? [],
           };
           setPendingActions(prev => (prev.some(p => p.pendingActionId === card.pendingActionId) ? prev : [...prev, card]));
@@ -896,7 +896,7 @@ export function useAgentChat({
             ok: okResult,
             denied,
             summary: pick(payload.resultSummary),
-            error: payload.error ? pick({ en: payload.error.en ?? '', es: payload.error.es ?? '' }) : null,
+            error: payload.error ? pick({ en: payload.error.en ?? '', }) : null,
             addonNotes: payload.addonNotes ?? [],
           };
           clearResultTimer();

@@ -52,14 +52,9 @@ const ROLE_COL_EN: Record<string, string> = {
   owner: 'Owner', general_manager: 'GM', front_desk: 'Front desk',
   housekeeping: 'Housekeeping', maintenance: 'Maintenance',
 };
-const ROLE_COL_ES: Record<string, string> = {
-  owner: 'Dueño', general_manager: 'Gerente', front_desk: 'Recepción',
-  housekeeping: 'Limpieza', maintenance: 'Mantenimiento',
-};
-
 export function AccessSurface() {
   const { lang } = useLang();
-  const es = lang === 'es';
+  const es = false;
   const [hotels, setHotels] = useState<HotelLite[] | null>(null);
   const [pid, setPid] = useState<string | null>(null);
   const [matrix, setMatrix] = useState<Matrix | null>(null);
@@ -161,7 +156,7 @@ export function AccessSurface() {
       });
       const json = await res.json();
       if (!res.ok || !json.ok) throw new Error(json.error || 'Apply failed');
-      setApplyNote(es ? `Aplicado a ${json.data.hotelsUpdated} hotel(es).` : `Applied to ${json.data.hotelsUpdated} hotel(s).`);
+      setApplyNote(`Applied to ${json.data.hotelsUpdated} hotel(s).`);
       setTimeout(() => setApplyNote(null), 4000);
     } catch (e) {
       setError(`Couldn't apply. ${(e as Error).message}`);
@@ -176,16 +171,14 @@ export function AccessSurface() {
       <div style={{ display: 'flex', alignItems: 'flex-end', justifyContent: 'space-between', flexWrap: 'wrap', gap: 16, marginBottom: 6 }}>
         <div>
           <div style={{ fontFamily: FONT_SERIF, fontStyle: 'italic', fontSize: 30, lineHeight: 1.1 }}>
-            {es ? 'Acceso por hotel' : 'Per-hotel access'}
+            {'Per-hotel access'}
           </div>
           <div style={{ fontSize: 13, color: 'rgba(255,255,255,.55)', marginTop: 6, maxWidth: 640 }}>
-            {es
-              ? 'Cada rol ve todo por defecto. Apaga lo que un rol NO debe ver en este hotel.'
-              : 'Every role sees everything by default. Switch OFF what a role should NOT reach at this hotel.'}
+            {'Every role sees everything by default. Switch OFF what a role should NOT reach at this hotel.'}
           </div>
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-          <Caps size={9} c="rgba(255,255,255,.5)">{es ? 'Hotel' : 'Hotel'}</Caps>
+          <Caps size={9} c="rgba(255,255,255,.5)">{'Hotel'}</Caps>
           <select
             value={pid ?? ''}
             onChange={(e) => setPid(e.target.value)}
@@ -210,7 +203,7 @@ export function AccessSurface() {
 
       {loadingMatrix || !matrix ? (
         <div style={{ padding: '70px 0', textAlign: 'center', color: 'rgba(255,255,255,.5)', fontFamily: FONT_MONO, fontSize: 13 }}>
-          {es ? 'Cargando…' : 'Loading…'}
+          {'Loading…'}
         </div>
       ) : (
         <>
@@ -218,10 +211,10 @@ export function AccessSurface() {
           <div style={{ marginTop: 20, border: '1px solid rgba(255,255,255,.10)', borderRadius: 16, overflow: 'hidden' }}>
             {/* Header row */}
             <div style={{ display: 'grid', gridTemplateColumns: `minmax(220px, 1.6fr) repeat(${matrix.hotelRoles.length}, 1fr)`, background: 'rgba(255,255,255,.04)', borderBottom: '1px solid rgba(255,255,255,.10)' }}>
-              <div style={{ padding: '12px 16px' }}><Caps size={9} c="rgba(255,255,255,.5)">{es ? 'Capacidad' : 'Capability'}</Caps></div>
+              <div style={{ padding: '12px 16px' }}><Caps size={9} c="rgba(255,255,255,.5)">{'Capability'}</Caps></div>
               {matrix.hotelRoles.map((r) => (
                 <div key={r} style={{ padding: '12px 8px', textAlign: 'center' }}>
-                  <Caps size={9} c="rgba(255,255,255,.6)">{(es ? ROLE_COL_ES : ROLE_COL_EN)[r] ?? r}</Caps>
+                  <Caps size={9} c="rgba(255,255,255,.6)">{(ROLE_COL_EN)[r] ?? r}</Caps>
                 </div>
               ))}
             </div>
@@ -232,7 +225,7 @@ export function AccessSurface() {
               return (
                 <div key={g.key}>
                   <div style={{ padding: '9px 16px', background: 'rgba(255,255,255,.02)', borderBottom: '1px solid rgba(255,255,255,.07)' }}>
-                    <Caps size={9} c="var(--gold)">{es ? g.label_es : g.label_en}</Caps>
+                    <Caps size={9} c="var(--gold)">{g.label_en}</Caps>
                   </div>
                   {caps.map((c) => (
                     <CapRow
@@ -262,7 +255,7 @@ export function AccessSurface() {
                 cursor: applying ? 'default' : 'pointer', opacity: applying ? 0.6 : 1,
               }}
             >
-              {applying ? (es ? 'Aplicando…' : 'Applying…') : (es ? 'Aplicar esta configuración a todos los hoteles' : "Apply this hotel's setup to all hotels")}
+              {applying ? ('Applying…') : ("Apply this hotel's setup to all hotels")}
             </button>
             {applyNote && <span style={{ fontSize: 13, color: 'var(--forest)' }}>{applyNote}</span>}
           </div>
@@ -283,8 +276,8 @@ function CapRow({
   savedKey: string | null;
   onToggle: (cap: string, role: string, nextAllowed: boolean) => void;
 }) {
-  const label = es ? cap.label_es : cap.label_en;
-  const desc = es ? cap.desc_es : cap.desc_en;
+  const label = cap.label_en;
+  const desc = cap.desc_en;
 
   // Admin-only: a single locked row spanning all role columns.
   if (cap.adminOnly) {
@@ -293,7 +286,7 @@ function CapRow({
         <CapLabel label={label} desc={desc} />
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '0 16px', color: 'rgba(255,255,255,.45)', fontSize: 12 }}>
           <Lock size={13} />
-          {es ? 'Solo administrador. Siempre tú' : 'Admin only. Always you'}
+          {'Admin only. Always you'}
         </div>
       </div>
     );
@@ -321,12 +314,12 @@ function CapRow({
               onClick={() => onToggle(cap.key, role, restricted /* next = allow if currently restricted */)}
               title={
                 floorLocked
-                  ? (es ? 'Solo gerentes. No se puede otorgar al personal' : 'Managers only. Can’t be granted to line staff')
+                  ? ('Managers only. Can’t be granted to line staff')
                   : !cap.live
-                    ? (es ? 'Predeterminado para gerentes' : 'Manager default')
+                    ? ('Manager default')
                     : allowed
-                      ? (es ? 'Permitido. Clic para restringir' : 'Allowed. Click to restrict')
-                      : (es ? 'Restringido. Clic para permitir' : 'Restricted. Click to allow')
+                      ? ('Allowed. Click to restrict')
+                      : ('Restricted. Click to allow')
               }
             />
           </div>
@@ -343,7 +336,7 @@ function CapLabel({ label, desc, pending, es }: { label: string; desc: string; p
         {label}
         {pending && (
           <span style={{ fontSize: 9, letterSpacing: '.04em', textTransform: 'uppercase', color: 'rgba(255,255,255,.4)', border: '1px solid rgba(255,255,255,.18)', borderRadius: 5, padding: '1px 5px' }}>
-            {es ? 'Predet. gerente' : 'Manager default'}
+            {'Manager default'}
           </span>
         )}
       </div>

@@ -95,7 +95,6 @@ test('authenticated scoped routes attribute every provider attempt to agent_cost
   const routes = [
     'src/app/api/comms/detect-action/route.ts',
     'src/app/api/comms/polish/route.ts',
-    'src/app/api/comms/translate/route.ts',
     'src/app/api/comms/transcribe/route.ts',
     'src/app/api/comms/assistant/route.ts',
     'src/app/api/comms/announce/route.ts',

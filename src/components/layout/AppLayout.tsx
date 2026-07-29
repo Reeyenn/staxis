@@ -131,9 +131,7 @@ export function AppLayout({
           }}
         >
           <span style={{ fontSize: '12px', fontWeight: 600, color: 'var(--snow-ink, var(--fg))' }}>
-            {lang === 'es'
-              ? 'Algunas acciones no están disponibles mientras se actualizan los ajustes de acceso.'
-              : 'Some actions are unavailable while hotel access settings are refreshed.'}
+            Some actions are unavailable while hotel access settings are refreshed.
           </span>
           <button
             type="button"
@@ -144,7 +142,7 @@ export function AppLayout({
               color: 'var(--snow-ink, var(--fg))', cursor: 'pointer',
             }}
           >
-            {lang === 'es' ? 'Reintentar' : 'Try again'}
+            Try again
           </button>
         </div>
       )}
@@ -164,11 +162,9 @@ export function AppLayout({
         {/* Home navigation lives in the leftmost Concourse bar pill. */}
         {propertiesError ? (
           <RouteErrorState
-            title={lang === 'es' ? 'No pudimos cargar tus hoteles' : 'We could not load your hotels'}
-            message={lang === 'es'
-              ? 'No se cambió ningún dato. Revisa tu conexión e inténtalo de nuevo.'
-              : 'No data was changed. Check your connection and try again.'}
-            retryLabel={lang === 'es' ? 'Reintentar' : 'Try again'}
+            title={'We could not load your hotels'}
+            message={'No data was changed. Check your connection and try again.'}
+            retryLabel={'Try again'}
             onRetry={retryProperties}
           />
         ) : sectionOff ? (
@@ -182,17 +178,13 @@ export function AppLayout({
               fontFamily: 'var(--font-geist), -apple-system, BlinkMacSystemFont, sans-serif',
               fontSize: '18px', fontWeight: 600, color: 'var(--snow-ink, var(--fg))',
             }}>
-              {lang === 'es'
-                ? 'Esta sección está desactivada para tu hotel'
-                : 'This section is turned off for your hotel'}
+              {'This section is turned off for your hotel'}
             </div>
             <div style={{
               fontFamily: 'var(--font-geist), -apple-system, BlinkMacSystemFont, sans-serif',
               fontSize: '14px', color: 'var(--snow-ink2, var(--muted))', maxWidth: '420px', lineHeight: 1.5,
             }}>
-              {lang === 'es'
-                ? 'Tu administrador de Staxis puede volver a activarla.'
-                : 'Your Staxis admin can turn it back on.'}
+              {'Your Staxis admin can turn it back on.'}
             </div>
           </div>
         ) : (

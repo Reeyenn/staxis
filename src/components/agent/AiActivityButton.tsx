@@ -50,17 +50,17 @@ interface ActivityCache {
 // ── Outcome → bilingual label + color role (matches existing status badges) ──
 interface OutcomeStyle {
   en: string;
-  es: string;
+  es?: string;
   fg: string;
   bg: string;
   Icon: typeof Check;
 }
 const OUTCOME: Record<ActivityOutcome, OutcomeStyle> = {
-  done:    { en: 'Approved & done', es: 'Aprobado y hecho', fg: C.sageDeep, bg: 'rgba(92, 122, 96, 0.12)', Icon: Check },
-  denied:  { en: 'Denied',          es: 'Rechazado',        fg: C.ink3,     bg: C.ruleSoft,                Icon: Ban },
-  expired: { en: 'Expired',         es: 'Expiró',           fg: C.ink3,     bg: C.ruleSoft,                Icon: Clock },
-  failed:  { en: 'Failed',          es: 'Falló',            fg: C.warm,     bg: 'rgba(184, 92, 61, 0.10)', Icon: AlertTriangle },
-  pending: { en: 'Pending',         es: 'Pendiente',        fg: C.ink2,     bg: C.ruleSoft,                Icon: Clock },
+  done:    { en: 'Approved & done',  fg: C.sageDeep, bg: 'rgba(92, 122, 96, 0.12)', Icon: Check },
+  denied:  { en: 'Denied',                  fg: C.ink3,     bg: C.ruleSoft,                Icon: Ban },
+  expired: { en: 'Expired',                    fg: C.ink3,     bg: C.ruleSoft,                Icon: Clock },
+  failed:  { en: 'Failed',                      fg: C.warm,     bg: 'rgba(184, 92, 61, 0.10)', Icon: AlertTriangle },
+  pending: { en: 'Pending',                 fg: C.ink2,     bg: C.ruleSoft,                Icon: Clock },
 };
 
 export function AiActivityButton() {
@@ -68,7 +68,7 @@ export function AiActivityButton() {
   const { activePropertyId } = useProperty();
   const { lang } = useLang();
   const hotelStanding = useActiveHotelStanding();
-  const es = lang === 'es';
+  const es = false;
   const [open, setOpen] = useState(false);
   const [mounted, setMounted] = useState(false);
   const [activityCache, setActivityCache] = useState<ActivityCache | null>(null);
@@ -90,8 +90,8 @@ export function AiActivityButton() {
       {canSee && !open && (
         <button
           onClick={() => setOpen(true)}
-          aria-label={es ? 'Actividad de la IA' : 'AI activity'}
-          title={es ? 'Actividad de la IA' : 'AI activity'}
+          aria-label={'AI activity'}
+          title={'AI activity'}
           style={{
             position: 'fixed',
             // Sits ABOVE the bottom-center Ask bar (~46px tall, bottom:22px +
@@ -116,7 +116,7 @@ export function AiActivityButton() {
           }}
         >
           <Sparkles size={14} strokeWidth={2.2} color={C.sageDeep} />
-          <span>{es ? 'Actividad de la IA' : 'AI activity'}</span>
+          <span>{'AI activity'}</span>
         </button>
       )}
 
@@ -147,7 +147,7 @@ function ActivityOverlay({
   onClose: () => void;
 }) {
   const { lang } = useLang();
-  const es = lang === 'es';
+  const es = false;
   const [items, setItems] = useState<ActivityItem[]>(() => initialData?.items ?? []);
   const itemsRef = useRef(items);
   const [loading, setLoading] = useState(initialData === null);
@@ -169,7 +169,7 @@ function ActivityOverlay({
       const json = await res.json().catch(() => null);
       if (seq !== reqSeq.current) return; // superseded
       if (!res.ok || !json?.ok) {
-        setError(es ? 'No se pudo cargar la actividad.' : 'Could not load activity.');
+        setError('Could not load activity.');
         return;
       }
       const page = json.data as { items: ActivityItem[]; hasMore: boolean };
@@ -181,7 +181,7 @@ function ActivityOverlay({
       onSnapshot(propertyId, nextItems, page.hasMore);
     } catch {
       if (seq === reqSeq.current) {
-        setError(es ? 'No se pudo cargar la actividad.' : 'Could not load activity.');
+        setError('Could not load activity.');
       }
     } finally {
       if (seq === reqSeq.current) {
@@ -190,7 +190,7 @@ function ActivityOverlay({
         setLoadingMore(false);
       }
     }
-  }, [propertyId, es, onSnapshot]);
+  }, [propertyId, onSnapshot]);
 
   useEffect(() => {
     void load(0);
@@ -220,7 +220,7 @@ function ActivityOverlay({
       }}
       role="dialog"
       aria-modal="true"
-      aria-label={es ? 'Actividad de la IA' : 'AI activity'}
+      aria-label={'AI activity'}
     >
       <div
         onClick={(e) => e.stopPropagation()}
@@ -246,15 +246,15 @@ function ActivityOverlay({
           <Sparkles size={17} strokeWidth={2.2} color={C.sageDeep} />
           <div style={{ flex: 1 }}>
             <div style={{ fontSize: 15, fontWeight: 600, color: C.ink }}>
-              {es ? 'Actividad de la IA' : 'AI activity'}
+              {'AI activity'}
             </div>
             <div style={{ fontSize: 12, color: C.ink3, marginTop: 1 }}>
-              {es ? 'Lo que el asistente hizo en esta propiedad' : 'What the assistant did on this property'}
+              {'What the assistant did on this property'}
             </div>
           </div>
           <button
             onClick={onClose}
-            aria-label={es ? 'Cerrar' : 'Close'}
+            aria-label={'Close'}
             style={{
               background: 'transparent', border: 'none', color: C.ink3,
               cursor: 'pointer', display: 'flex', padding: 4, borderRadius: 8,
@@ -274,7 +274,7 @@ function ActivityOverlay({
                 {error}
                 <div style={{ marginTop: 10 }}>
                   <button style={retryBtn} onClick={() => void load(0)}>
-                    {es ? 'Reintentar' : 'Try again'}
+                    {'Try again'}
                   </button>
                 </div>
               </div>
@@ -282,9 +282,7 @@ function ActivityOverlay({
           ) : items.length === 0 ? (
             <Centered>
               <div style={{ textAlign: 'center', color: C.ink3, fontSize: 13.5, lineHeight: 1.5 }}>
-                {es
-                  ? 'Todavía no hay actividad de la IA en esta propiedad.'
-                  : 'No AI activity on this property yet.'}
+                {'No AI activity on this property yet.'}
               </div>
             </Centered>
           ) : (
@@ -293,7 +291,7 @@ function ActivityOverlay({
                 <div className={styles.refreshError} role="status">
                   <span>{error}</span>
                   <button style={retryBtn} onClick={() => void load(0)}>
-                    {es ? 'Reintentar' : 'Try again'}
+                    {'Try again'}
                   </button>
                 </div>
               )}
@@ -320,8 +318,8 @@ function ActivityOverlay({
                     onClick={() => void load(items.length)}
                   >
                     {loadingMore
-                      ? (es ? 'Cargando…' : 'Loading…')
-                      : (es ? 'Cargar más' : 'Load more')}
+                      ? ('Loading…')
+                      : ('Load more')}
                   </button>
                 </div>
               )}
@@ -336,7 +334,7 @@ function ActivityOverlay({
 function ActivityLoadingState({ es }: { es: boolean }) {
   return (
     <div className={styles.loadingState} role="status" aria-live="polite">
-      <span className={styles.srOnly}>{es ? 'Cargando actividad…' : 'Loading activity…'}</span>
+      <span className={styles.srOnly}>{'Loading activity…'}</span>
       <div className={styles.loadingVisual} aria-hidden="true">
         {Array.from({ length: 6 }, (_, index) => (
           <span key={index} className={styles.skeletonRow}>
@@ -355,7 +353,7 @@ function ActivityLoadingState({ es }: { es: boolean }) {
 // ─── One activity row ───────────────────────────────────────────────────────
 function Row({ item, es }: { item: ActivityItem; es: boolean }) {
   const style = OUTCOME[item.outcome];
-  const summary = es ? (item.summary.es || item.summary.en) : (item.summary.en || item.summary.es);
+  const summary = (item.summary.en || item.summary.es);
   const Icon = style.Icon;
   return (
     <div style={{
@@ -369,7 +367,7 @@ function Row({ item, es }: { item: ActivityItem; es: boolean }) {
           </div>
           <div style={{ fontSize: 11.5, color: C.ink3, marginTop: 4 }}>
             {formatTime(item.createdAt, es)}
-            {item.who ? <> · {es ? 'pedido por' : 'asked by'} {item.who}</> : null}
+            {item.who ? <> · {'asked by'} {item.who}</> : null}
           </div>
         </div>
         <span style={{
@@ -380,7 +378,7 @@ function Row({ item, es }: { item: ActivityItem; es: boolean }) {
           fontSize: 11, fontWeight: 600, whiteSpace: 'nowrap',
         }}>
           <Icon size={11} strokeWidth={2.6} />
-          {es ? style.es : style.en}
+          {style.en}
         </span>
       </div>
       {item.outcome === 'failed' && item.error && (
@@ -408,7 +406,7 @@ function Centered({ children }: { children: React.ReactNode }) {
 function formatTime(iso: string, es: boolean): string {
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return '';
-  return d.toLocaleTimeString(es ? 'es' : 'en', { hour: 'numeric', minute: '2-digit' });
+  return d.toLocaleTimeString('en', { hour: 'numeric', minute: '2-digit' });
 }
 
 // ─── Styles ─────────────────────────────────────────────────────────────────

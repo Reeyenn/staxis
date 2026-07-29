@@ -97,7 +97,7 @@ function ApprovalCard({
   inlineError?: string;
 }) {
   const { lang } = useLang();
-  const es = lang === 'es';
+  const es = false;
   // An inline validation error is always about an edit → open the Adjust panel
   // so the user lands on the field they need to fix.
   const [adjusting, setAdjusting] = useState(!!inlineError);
@@ -108,16 +108,16 @@ function ApprovalCard({
   useEffect(() => { if (inlineError) setAdjusting(true); }, [inlineError]);
 
   const fields = EDITABLE_FIELDS[action.toolName] ?? [];
-  const summary = es ? (action.summary.es || action.summary.en) : (action.summary.en || action.summary.es);
+  const summary = (action.summary.en || action.summary.es);
 
   const t = useMemo(() => ({
-    approve: es ? 'Aprobar' : 'Approve',
-    deny: es ? 'Cancelar' : 'Cancel',
-    adjust: es ? 'Ajustar' : 'Adjust',
-    doIt: es ? 'Hazlo' : 'Do it',
-    cancel: es ? 'Cancelar' : 'Cancel',
-    reviewHint: es ? 'Staxis quiere hacer esto:' : 'Staxis wants to do this:',
-  }), [es]);
+    approve: 'Approve',
+    deny: 'Cancel',
+    adjust: 'Adjust',
+    doIt: 'Do it',
+    cancel: 'Cancel',
+    reviewHint: 'Staxis wants to do this:',
+  }), []);
 
   const submit = (decision: 'approve' | 'deny') => {
     const adjustedArgs = Object.keys(edits).length > 0 ? edits : undefined;
@@ -153,7 +153,7 @@ function ApprovalCard({
         <div style={{ display: 'flex', flexDirection: 'column', gap: 10, marginBottom: 14 }}>
           {fields.map((f) => {
             const cur = (f.key in edits ? edits[f.key] : action.args[f.key]) ?? '';
-            const label = es ? f.label.es : f.label.en;
+            const label = f.label.en;
             return (
               <label key={f.key} style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
                 <span style={{ fontFamily: FONT_MONO, fontSize: 10, textTransform: 'uppercase', letterSpacing: '0.06em', color: C.ink3 }}>{label}</span>
@@ -229,7 +229,7 @@ function ApprovalCard({
 // ─── Result confirmation card ──────────────────────────────────────────────
 function ResultConfirmation({ card, onDismiss }: { card: ResultCard; onDismiss: () => void }) {
   const { lang } = useLang();
-  const es = lang === 'es';
+  const es = false;
   const success = card.ok && !card.denied;
 
   return (
@@ -254,7 +254,7 @@ function ResultConfirmation({ card, onDismiss }: { card: ResultCard; onDismiss: 
       {/* Success + denial auto-dismiss; failure stays with a close button. */}
       {!success && !card.denied && (
         <button style={{ ...secondaryBtn, marginTop: 14, width: '100%', justifyContent: 'center' }} onClick={onDismiss}>
-          {es ? 'Cerrar' : 'Dismiss'}
+          {'Dismiss'}
         </button>
       )}
     </div>

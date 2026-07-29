@@ -821,7 +821,6 @@ describe('connected portfolio source-code ratchets', () => {
       'src/app/api/comms/send/route.ts',
       'src/app/api/comms/tasks/route.ts',
       'src/app/api/comms/transcribe/route.ts',
-      'src/app/api/comms/translate/route.ts',
     ]) {
       assert.match(source(route), /commsContext\(/, `${route} bypasses the local hotel context`);
     }

@@ -1,18 +1,14 @@
 // ═══════════════════════════════════════════════════════════════════════════
 // Communications — translation engine (server-only).
 //
-// Powers BOTH:
-//   • the app-wide 5-language switcher (UI strings → comms_translation_cache,
-//     a global phrase→translation cache shared across properties), and
-//   • per-message auto-translation (each reader sees every message in their
-//     own language → comms_message_translations, message-scoped, cascades).
+// Powers per-message auto-translation (each reader sees every message in their
+// own language → comms_message_translations, message-scoped, cascades).
 //
 // Cache-first: only cache MISSES call the model, so the same text is never
 // translated twice. Best-effort: any failure returns the original text so the
 // UI degrades to the source language rather than erroring. NO SMS.
 // ═══════════════════════════════════════════════════════════════════════════
 
-import { createHash } from 'crypto';
 import { log } from '@/lib/log';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import type { CommsLang } from './types';
@@ -36,10 +32,6 @@ export const LANG_NAMES: Record<CommsLang, string> = {
   tl: 'Tagalog',
   vi: 'Vietnamese',
 };
-
-function sha256(s: string): string {
-  return createHash('sha256').update(s).digest('hex');
-}
 
 /** The client for whichever provider serves this attempt, or null when that
  * provider has no key — in which case this file returns the source text
@@ -107,138 +99,6 @@ async function callOne(
     });
     return null;
   }
-}
-
-async function callBatch(
-  texts: string[],
-  target: CommsLang,
-  opts: AiCallOptions,
-): Promise<(string | null)[]> {
-  // Numbered-list protocol: robust to commas/quotes in the strings.
-  const numbered = texts.map((t, i) => `${i + 1}. ${t.replace(/\n/g, ' ')}`).join('\n');
-  const sys =
-    SYSTEM(LANG_NAMES[target]) +
-    ` The input is a numbered list. Return a JSON array of exactly ${texts.length} ` +
-    `strings — the translation of each item, in order. Return ONLY the JSON array.`;
-  try {
-    const { value } = await executeAiFeature(
-      'communications.ui_translation',
-      MESSAGES_RUNTIME_PROVIDERS,
-      async (model, context) => {
-        const c = client(model);
-        if (!c) throw new Error(`${model.provider} is not configured`);
-        const resp = await c.messages.create({
-          model: model.modelId,
-          max_tokens: 4000,
-          system: sys,
-          messages: [{ role: 'user', content: numbered }],
-        }, { signal: context.signal });
-        captureTokenUsage(context.attempts, model, resp.model, resp.usage);
-        if (resp.stop_reason === 'max_tokens') throw new Error('translation batch response was truncated');
-        const block = resp.content.find((b) => b.type === 'text');
-        const raw = block && block.type === 'text' ? block.text.trim() : '';
-        const jsonStart = raw.indexOf('[');
-        const jsonEnd = raw.lastIndexOf(']');
-        if (jsonStart === -1 || jsonEnd <= jsonStart) {
-          throw new Error('translation batch returned invalid JSON');
-        }
-        const arr = JSON.parse(raw.slice(jsonStart, jsonEnd + 1)) as unknown;
-        if (!Array.isArray(arr) || arr.length !== texts.length) {
-          throw new Error('translation batch returned an invalid JSON schema');
-        }
-        // Per-item tolerance: one malformed entry falls back to source text for
-        // that string only — never discard the 39 good translations with it.
-        return arr.map((entry) => (typeof entry === 'string' && entry.trim() ? entry.trim() : null));
-      },
-      {
-        requirePricing: true,
-        deadlineAt: opts.deadlineAt,
-        deadlineMs: opts.deadlineAt === undefined ? 16_000 : undefined,
-        fallbackReserveMs: 5_000,
-        abortSignal: opts.abortSignal,
-        onUsage: opts.onUsage,
-        ledger: opts.ledger,
-      },
-    );
-    return value;
-  } catch (e) {
-    log.warn('[comms/translate] callBatch failed', {
-      err: e instanceof Error ? e.message : String(e),
-    });
-    return texts.map(() => null);
-  }
-}
-
-// ── UI-string translation (global cache) ──────────────────────────────────
-
-/**
- * Translate many UI strings into `target`, cache-first. Returns a map from
- * source string → translated string (falls back to the source on any miss
- * the model couldn't fill). Used by the 5-language switcher's auto-translate
- * fallback for HT/TL/VI app chrome.
- */
-export async function translateUiStrings(
-  texts: string[],
-  target: CommsLang,
-  opts: AiCallOptions = {},
-): Promise<Record<string, string>> {
-  const out: Record<string, string> = {};
-  if (target === 'en') { for (const t of texts) out[t] = t; return out; }
-  const unique = Array.from(new Set(texts.filter((t) => t && t.trim())));
-  if (unique.length === 0) return out;
-
-  // 1) cache lookup
-  const hashes = unique.map(sha256);
-  const { data: cached } = await supabaseAdmin
-    .from('comms_translation_cache')
-    .select('source_hash, translated_text')
-    .eq('target_lang', target)
-    .in('source_hash', hashes);
-  const hitByHash = new Map<string, string>(
-    ((cached ?? []) as { source_hash: string; translated_text: string }[])
-      .map((r) => [r.source_hash, r.translated_text]),
-  );
-
-  const misses: string[] = [];
-  for (let i = 0; i < unique.length; i++) {
-    const hit = hitByHash.get(hashes[i]);
-    if (hit !== undefined) out[unique[i]] = hit;
-    else misses.push(unique[i]);
-  }
-  if (misses.length === 0) return out;
-
-  // Each chunk is its own runtime execution (which emits per-execution usage
-  // and records the ledger itself); re-aggregate here so the caller still
-  // receives ONE merged report for the whole call, like before.
-  let merged: AiUsageReport | null = null;
-  const chunkOpts: AiCallOptions = {
-    ...opts,
-    onUsage: (u) => { merged = mergeAiUsage(merged, u); },
-  };
-
-  // 2) translate misses (chunked) + write-through cache
-  const CHUNK = 40;
-  for (let i = 0; i < misses.length; i += CHUNK) {
-    const chunk = misses.slice(i, i + CHUNK);
-    const translated = await callBatch(chunk, target, chunkOpts);
-    const rows: { source_hash: string; target_lang: string; source_text: string; translated_text: string }[] = [];
-    for (let j = 0; j < chunk.length; j++) {
-      const tr = translated[j];
-      if (tr) {
-        out[chunk[j]] = tr;
-        rows.push({ source_hash: sha256(chunk[j]), target_lang: target, source_text: chunk[j], translated_text: tr });
-      } else {
-        out[chunk[j]] = chunk[j]; // graceful fallback to source
-      }
-    }
-    if (rows.length) {
-      await supabaseAdmin
-        .from('comms_translation_cache')
-        .upsert(rows, { onConflict: 'source_hash,target_lang', ignoreDuplicates: true });
-    }
-  }
-  if (merged !== null) opts.onUsage?.(merged);
-  return out;
 }
 
 // ── Message-body translation (per-message cache) ───────────────────────────

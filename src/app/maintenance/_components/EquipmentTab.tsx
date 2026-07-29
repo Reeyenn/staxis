@@ -27,10 +27,10 @@ import { useToast, ToastHost } from '@/app/_components/ui/toast';
 import { useReliableNavigation } from '@/lib/hooks/use-reliable-navigation';
 
 type Status = 'out' | 'low' | 'ok';
-const STAT: Record<Status, { color: string; tone: 'warm' | 'caramel' | 'sage'; en: string; es: string }> = {
-  out: { color: T.warm,     tone: 'warm',    en: 'Out',      es: 'Agotado' },
-  low: { color: T.caramel,  tone: 'caramel', en: 'Low',      es: 'Bajo' },
-  ok:  { color: T.sageDeep, tone: 'sage',    en: 'In stock', es: 'En stock' },
+const STAT: Record<Status, { color: string; tone: 'warm' | 'caramel' | 'sage'; en: string }> = {
+  out: { color: T.warm,     tone: 'warm',    en: 'Out',      },
+  low: { color: T.caramel,  tone: 'caramel', en: 'Low',      },
+  ok:  { color: T.sageDeep, tone: 'sage',    en: 'In stock', },
 };
 const STAT_ORDER: Status[] = ['out', 'low', 'ok'];
 
@@ -57,7 +57,7 @@ function AddItemModal({
   onCreate: (args: { name: string; bin: string; reorderAt: number }) => Promise<void>;
 }) {
   const { lang } = useLang();
-  const es = lang === 'es';
+  const es = false;
   const [name, setName] = useState('');
   const [bin, setBin] = useState('');
   const [reorderAt, setReorderAt] = useState('');
@@ -68,9 +68,7 @@ function AddItemModal({
   // Guard the eaten-form path: Escape / a stray scrim click used to wipe the
   // half-typed item instantly. Confirm before discarding anything typed.
   const close = () => {
-    if (dirty && !window.confirm(es
-      ? '¿Descartar este artículo sin agregar? Se perderá lo que escribiste.'
-      : 'Discard this item? What you typed will be lost.')) return;
+    if (dirty && !window.confirm('Discard this item? What you typed will be lost.')) return;
     reset();
     onClose();
   };
@@ -91,24 +89,22 @@ function AddItemModal({
   return (
     <Modal
       open={open} onClose={close}
-      title={es ? 'Agregar artículo' : 'Add item'}
-      subtitle={es ? 'Lleva la cuenta de una pieza, herramienta o insumo del almacén.' : 'Track a part, tool, or supply in the storeroom.'}
+      title={'Add item'}
+      subtitle={'Track a part, tool, or supply in the storeroom.'}
       width={560}
       footer={<>
-        <Btn variant="ghost" onClick={close}>{es ? 'Cancelar' : 'Cancel'}</Btn>
-        <Btn variant="primary" disabled={!can} onClick={submit}>{busy ? (es ? 'Agregando…' : 'Adding…') : (es ? 'Agregar al almacén' : 'Add to storeroom')}</Btn>
+        <Btn variant="ghost" onClick={close}>{'Cancel'}</Btn>
+        <Btn variant="primary" disabled={!can} onClick={submit}>{busy ? ('Adding…') : ('Add to storeroom')}</Btn>
       </>}
     >
       <div style={{ display: 'flex', flexDirection: 'column', gap: 18 }}>
-        <Field label={es ? 'Artículo' : 'Item'} required><TextInput value={name} onChange={setName} placeholder={es ? 'ej. "Filtro HVAC, 20×25×1 MERV 8"' : 'e.g. "HVAC filter, 20×25×1 MERV 8"'} /></Field>
-        <Field label={es ? 'Dónde se guarda' : "Where it's kept"} required><TextInput value={bin} onChange={setBin} placeholder={es ? 'ej. "Cuarto de máquinas · A2"' : 'e.g. "Mechanical · A2"'} /></Field>
-        <Field label={es ? 'Reordenar en' : 'Reorder at'}>
+        <Field label={'Item'} required><TextInput value={name} onChange={setName} placeholder={'e.g. "HVAC filter, 20×25×1 MERV 8"'} /></Field>
+        <Field label={"Where it's kept"} required><TextInput value={bin} onChange={setBin} placeholder={'e.g. "Mechanical · A2"'} /></Field>
+        <Field label={'Reorder at'}>
           <TextInput value={reorderAt} onChange={setReorderAt} type="number" min={0} placeholder="1" />
         </Field>
         <div style={{ padding: '10px 12px', borderRadius: 10, background: 'rgba(31,35,28,0.03)', border: `1px solid ${T.rule}`, fontFamily: FONT_SANS, fontSize: 12.5, lineHeight: 1.5, color: T.ink2 }}>
-          {es
-            ? 'Los artículos nuevos comienzan en 0. Registra el inventario recibido en Inventario → Agregar entrega para guardar su costo de compra.'
-            : 'New items start at 0. Log received stock through Inventory → Add delivery so its purchase cost is recorded.'}
+          {'New items start at 0. Log received stock through Inventory → Add delivery so its purchase cost is recorded.'}
         </div>
       </div>
     </Modal>
@@ -127,7 +123,7 @@ function ItemModal({
   onRestock: (part: Part) => void;
 }) {
   const { lang } = useLang();
-  const es = lang === 'es';
+  const es = false;
   // Local draft for snappy stepping; seeded from the live row on open.
   const [draft, setDraft] = useState(0);
   // Count of taps whose write hasn't settled yet. While >0 we don't adopt
@@ -174,18 +170,18 @@ function ItemModal({
       open={open} onClose={onClose}
       title={part.name} subtitle={part.bin} width={520}
       footer={<>
-        <Btn variant="ghost" onClick={onClose}>{es ? 'Cerrar' : 'Close'}</Btn>
-        {status !== 'ok' && <Btn variant="primary" onClick={() => { onRestock(part); onClose(); }}>{es ? 'Registrar entrega' : 'Log delivery'}</Btn>}
+        <Btn variant="ghost" onClick={onClose}>{'Close'}</Btn>
+        {status !== 'ok' && <Btn variant="primary" onClick={() => { onRestock(part); onClose(); }}>{'Log delivery'}</Btn>}
       </>}
     >
       <div style={{ display: 'flex', flexDirection: 'column', gap: 18 }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-          <Pill tone={meta.tone}>{es ? meta.es : meta.en}</Pill>
-          <Caps size={11} tracking="0.06em">{es ? 'Reordenar en' : 'Reorder at'} {part.reorderAt} {part.unit}</Caps>
+          <Pill tone={meta.tone}>{meta.en}</Pill>
+          <Caps size={11} tracking="0.06em">{'Reorder at'} {part.reorderAt} {part.unit}</Caps>
         </div>
         <div style={{ background: 'rgba(31,35,28,0.03)', border: `1px solid ${T.rule}`, borderRadius: 12, padding: '18px 20px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 16 }}>
           <div>
-            <Caps size={10}>{es ? 'Disponibles' : 'On hand'}</Caps>
+            <Caps size={10}>{'On hand'}</Caps>
             <div style={{ fontFamily: FONT_SANS, fontSize: 34, fontWeight: 600, color: T.ink, letterSpacing: '-0.02em', lineHeight: 1, marginTop: 4 }}>
               {draft} <span style={{ fontWeight: 400, fontSize: 15, color: T.ink3, letterSpacing: 0 }}>{part.unit}</span>
             </div>
@@ -207,7 +203,7 @@ export function EquipmentTab() {
   const { user } = useAuth();
   const { activePropertyId } = useProperty();
   const { lang } = useLang();
-  const es = lang === 'es';
+  const es = false;
 
   const [items, setItems] = useState<InventoryItem[]>([]);
   const [loaded, setLoaded] = useState(false);
@@ -304,7 +300,7 @@ export function EquipmentTab() {
       }
       state.promise = null;
       if (!ok) {
-        flash(es ? 'No se pudo guardar el conteo. Revisa la conexión e inténtalo de nuevo.' : "Couldn't save the count. Check your connection and try again.");
+        flash("Couldn't save the count. Check your connection and try again.");
       }
       return ok;
     })();
@@ -331,24 +327,24 @@ export function EquipmentTab() {
         notes: args.bin,
       });
     } catch (err) {
-      flash(es ? 'No se pudo agregar el artículo. Revisa la conexión e inténtalo de nuevo.' : "Couldn't add the item. Check your connection and try again.");
+      flash("Couldn't add the item. Check your connection and try again.");
       throw err;
     }
   };
 
   const lead = out > 0
-    ? `${out} ${es ? 'agotado' + (out > 1 ? 's' : '') : 'out of stock'}`
+    ? `${out} ${'out of stock'}`
     : low > 0
-      ? `${low} ${es ? 'bajo' + (low > 1 ? 's' : '') : 'running low'}`
-      : (es ? 'Bien surtido' : 'Fully stocked');
+      ? `${low} ${'running low'}`
+      : ('Fully stocked');
 
   return (
     <div style={{ padding: '28px 48px 130px', background: 'transparent', color: T.ink, fontFamily: FONT_SANS, minHeight: 'calc(100dvh - 130px)' }}>
       <PageHead
-        eyebrow={es ? 'Equipo · almacén' : 'Equipment · storeroom'}
+        eyebrow={'Equipment · storeroom'}
         lead={lead}
-        rest={`${parts.length} ${es ? 'artículos' : 'tracked items'}`}
-        actions={<Btn variant="primary" onClick={() => setAddOpen(true)}>＋ {es ? 'Agregar artículo' : 'Add item'}</Btn>}
+        rest={`${parts.length} ${'tracked items'}`}
+        actions={<Btn variant="primary" onClick={() => setAddOpen(true)}>＋ {'Add item'}</Btn>}
       />
 
       {gate.status === 'error' ? (
@@ -358,9 +354,9 @@ export function EquipmentTab() {
       ) : parts.length === 0 ? (
         <MtEmptyCard
           titleSize={20}
-          title={es ? 'Almacén vacío aún.' : 'Storeroom is empty.'}
-          body={es ? 'Agrega filtros, focos, piezas, lo que guardes para reparaciones.' : 'Add filters, bulbs, parts, anything you keep on hand for repairs.'}
-          action={<Btn variant="primary" onClick={() => setAddOpen(true)}>＋ {es ? 'Agregar tu primer artículo' : 'Add your first item'}</Btn>}
+          title={'Storeroom is empty.'}
+          body={'Add filters, bulbs, parts, anything you keep on hand for repairs.'}
+          action={<Btn variant="primary" onClick={() => setAddOpen(true)}>＋ {'Add your first item'}</Btn>}
         />
       ) : (
         <CenteredBoard>
@@ -368,14 +364,14 @@ export function EquipmentTab() {
             const meta = STAT[s];
             const list = parts.filter((p) => p.status === s);
             return (
-              <BoardColumn key={s} color={meta.color} label={es ? meta.es : meta.en} count={list.length}>
+              <BoardColumn key={s} color={meta.color} label={meta.en} count={list.length}>
                 {list.map((p) => (
                   <BoardCard key={p.id} accent={meta.color} onClick={() => setSelId(p.id)}>
                     <span style={{ fontFamily: FONT_SANS, fontSize: 14.5, color: T.ink, fontWeight: 600, lineHeight: 1.3 }}>{p.name}</span>
-                    <span style={{ fontFamily: FONT_SANS, fontSize: 12.5, color: T.ink2, lineHeight: 1.4 }}>{p.bin ? `${p.bin} · ` : ''}{es ? 'reordenar en' : 'reorder at'} {p.reorderAt}</span>
+                    <span style={{ fontFamily: FONT_SANS, fontSize: 12.5, color: T.ink2, lineHeight: 1.4 }}>{p.bin ? `${p.bin} · ` : ''}{'reorder at'} {p.reorderAt}</span>
                     <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, marginTop: 1 }}>
                       <span style={{ fontFamily: FONT_MONO, fontSize: 15, fontWeight: 600, color: T.ink }}>{p.qty} <span style={{ color: T.ink3, fontWeight: 400, fontSize: 12 }}>{p.unit}</span></span>
-                      <Pill tone={meta.tone}>{es ? meta.es : meta.en}</Pill>
+                      <Pill tone={meta.tone}>{meta.en}</Pill>
                     </div>
                   </BoardCard>
                 ))}

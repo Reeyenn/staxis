@@ -5,7 +5,7 @@
 /** A bilingual string sent by the server (client picks by useLang()). */
 export interface BiText {
   en: string;
-  es: string;
+  es?: string;
 }
 
 export interface PendingAddon {
@@ -38,7 +38,7 @@ export interface ResultCard {
 /** One editable field on the card's "Adjust" panel (schema-driven). */
 export interface FieldSpec {
   key: string;
-  label: { en: string; es: string };
+  label: { en: string; es?: string };
   kind: 'text' | 'multiline' | 'number' | 'enum';
   options?: string[];
 }
@@ -50,58 +50,58 @@ export interface FieldSpec {
 // Every key here MUST be a real property of that tool's inputSchema.
 export const EDITABLE_FIELDS: Record<string, FieldSpec[]> = {
   send_message: [
-    { key: 'recipient', label: { en: 'To', es: 'Para' }, kind: 'text' },
-    { key: 'message', label: { en: 'Message', es: 'Mensaje' }, kind: 'multiline' },
+    { key: 'recipient', label: { en: 'To', }, kind: 'text' },
+    { key: 'message', label: { en: 'Message', }, kind: 'multiline' },
   ],
   create_todo: [
-    { key: 'title', label: { en: 'Task', es: 'Tarea' }, kind: 'text' },
-    { key: 'notes', label: { en: 'Notes', es: 'Notas' }, kind: 'multiline' },
-    { key: 'assignee', label: { en: 'Assign to', es: 'Asignar a' }, kind: 'text' },
-    { key: 'priority', label: { en: 'Priority', es: 'Prioridad' }, kind: 'enum', options: ['normal', 'high', 'urgent'] },
+    { key: 'title', label: { en: 'Task', }, kind: 'text' },
+    { key: 'notes', label: { en: 'Notes', }, kind: 'multiline' },
+    { key: 'assignee', label: { en: 'Assign to', }, kind: 'text' },
+    { key: 'priority', label: { en: 'Priority', }, kind: 'enum', options: ['normal', 'high', 'urgent'] },
   ],
   add_logbook_entry: [
-    { key: 'title', label: { en: 'Title', es: 'Título' }, kind: 'text' },
-    { key: 'body', label: { en: 'Detail', es: 'Detalle' }, kind: 'multiline' },
-    { key: 'category', label: { en: 'Category', es: 'Categoría' }, kind: 'enum', options: ['front_desk', 'housekeeping', 'maintenance', 'general'] },
+    { key: 'title', label: { en: 'Title', }, kind: 'text' },
+    { key: 'body', label: { en: 'Detail', }, kind: 'multiline' },
+    { key: 'category', label: { en: 'Category', }, kind: 'enum', options: ['front_desk', 'housekeeping', 'maintenance', 'general'] },
   ],
   post_announcement: [
-    { key: 'message', label: { en: 'Announcement', es: 'Aviso' }, kind: 'multiline' },
+    { key: 'message', label: { en: 'Announcement', }, kind: 'multiline' },
   ],
   log_complaint: [
-    { key: 'description', label: { en: 'Complaint', es: 'Queja' }, kind: 'multiline' },
-    { key: 'roomNumber', label: { en: 'Room', es: 'Habitación' }, kind: 'text' },
-    { key: 'guestName', label: { en: 'Guest', es: 'Huésped' }, kind: 'text' },
+    { key: 'description', label: { en: 'Complaint', }, kind: 'multiline' },
+    { key: 'roomNumber', label: { en: 'Room', }, kind: 'text' },
+    { key: 'guestName', label: { en: 'Guest', }, kind: 'text' },
   ],
   assign_room: [
-    { key: 'roomNumber', label: { en: 'Room', es: 'Habitación' }, kind: 'text' },
-    { key: 'staffName', label: { en: 'Housekeeper', es: 'Camarista' }, kind: 'text' },
+    { key: 'roomNumber', label: { en: 'Room', }, kind: 'text' },
+    { key: 'staffName', label: { en: 'Housekeeper', }, kind: 'text' },
   ],
   remove_from_shift: [
-    { key: 'staffName', label: { en: 'Staff', es: 'Personal' }, kind: 'text' },
-    { key: 'date', label: { en: 'Date', es: 'Fecha' }, kind: 'text' },
+    { key: 'staffName', label: { en: 'Staff', }, kind: 'text' },
+    { key: 'date', label: { en: 'Date', }, kind: 'text' },
   ],
   assign_shift: [
-    { key: 'staffName', label: { en: 'Staff', es: 'Personal' }, kind: 'text' },
-    { key: 'date', label: { en: 'Date', es: 'Fecha' }, kind: 'text' },
-    { key: 'startTime', label: { en: 'Start', es: 'Inicio' }, kind: 'text' },
-    { key: 'endTime', label: { en: 'End', es: 'Fin' }, kind: 'text' },
-    { key: 'department', label: { en: 'Department', es: 'Departamento' }, kind: 'enum', options: ['housekeeping', 'front_desk', 'maintenance'] },
+    { key: 'staffName', label: { en: 'Staff', }, kind: 'text' },
+    { key: 'date', label: { en: 'Date', }, kind: 'text' },
+    { key: 'startTime', label: { en: 'Start', }, kind: 'text' },
+    { key: 'endTime', label: { en: 'End', }, kind: 'text' },
+    { key: 'department', label: { en: 'Department', }, kind: 'enum', options: ['housekeeping', 'front_desk', 'maintenance'] },
   ],
   adjust_stock: [
-    { key: 'itemName', label: { en: 'Item', es: 'Artículo' }, kind: 'text' },
-    { key: 'newCount', label: { en: 'New count', es: 'Nuevo conteo' }, kind: 'number' },
+    { key: 'itemName', label: { en: 'Item', }, kind: 'text' },
+    { key: 'newCount', label: { en: 'New count', }, kind: 'number' },
   ],
   create_reminder: [
-    { key: 'body', label: { en: 'Reminder', es: 'Recordatorio' }, kind: 'multiline' },
-    { key: 'fireAt', label: { en: 'When', es: 'Cuándo' }, kind: 'text' },
-    { key: 'recipient', label: { en: 'Person', es: 'Persona' }, kind: 'text' },
-    { key: 'department', label: { en: 'Department', es: 'Departamento' }, kind: 'enum', options: ['front_desk', 'housekeeping', 'maintenance', 'general'] },
+    { key: 'body', label: { en: 'Reminder', }, kind: 'multiline' },
+    { key: 'fireAt', label: { en: 'When', }, kind: 'text' },
+    { key: 'recipient', label: { en: 'Person', }, kind: 'text' },
+    { key: 'department', label: { en: 'Department', }, kind: 'enum', options: ['front_desk', 'housekeeping', 'maintenance', 'general'] },
   ],
   create_recurring_todo: [
-    { key: 'title', label: { en: 'Task', es: 'Tarea' }, kind: 'text' },
-    { key: 'assignee', label: { en: 'Assign to', es: 'Asignar a' }, kind: 'text' },
-    { key: 'department', label: { en: 'Department', es: 'Departamento' }, kind: 'enum', options: ['front_desk', 'housekeeping', 'maintenance', 'general'] },
-    { key: 'cadence', label: { en: 'Repeat', es: 'Repetir' }, kind: 'enum', options: ['daily', 'weekly', 'weekdays'] },
-    { key: 'priority', label: { en: 'Priority', es: 'Prioridad' }, kind: 'enum', options: ['normal', 'high', 'urgent'] },
+    { key: 'title', label: { en: 'Task', }, kind: 'text' },
+    { key: 'assignee', label: { en: 'Assign to', }, kind: 'text' },
+    { key: 'department', label: { en: 'Department', }, kind: 'enum', options: ['front_desk', 'housekeeping', 'maintenance', 'general'] },
+    { key: 'cadence', label: { en: 'Repeat', }, kind: 'enum', options: ['daily', 'weekly', 'weekdays'] },
+    { key: 'priority', label: { en: 'Priority', }, kind: 'enum', options: ['normal', 'high', 'urgent'] },
   ],
 };

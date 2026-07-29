@@ -226,36 +226,30 @@ describe('inventory audit-history presentation contract', () => {
       auditFeed,
       /month: 'short', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit', timeZone: timezone/,
     );
-    assert.match(panel, /const locale = lang === 'es' \? 'es-ES' : 'en-US'/);
+    assert.match(panel, /const locale = 'en-US'/);
   });
 
-  test('keeps every audit action labeled in both English and Spanish', () => {
+  test('keeps every audit action labeled in English', () => {
     const actionTitleBlocks = [...panel.matchAll(
       /actionTitles:\s*\{([\s\S]*?)\}\s*satisfies Record<InventoryAuditAction, string>/g,
     )].map((match) => match[1]);
-    assert.equal(actionTitleBlocks.length, 2);
+    assert.equal(actionTitleBlocks.length, 1);
 
     for (const action of INVENTORY_AUDIT_ACTIONS) {
       const label = new RegExp(`['"]${escapeRegExp(action)}['"]\\s*:`);
       assert.match(actionTitleBlocks[0], label, `missing English label for ${action}`);
-      assert.match(actionTitleBlocks[1], label, `missing Spanish label for ${action}`);
     }
 
     assert.match(actionTitleBlocks[0], /'count\.saved': 'Saved inventory count'/);
-    assert.match(actionTitleBlocks[1], /'count\.saved': 'Conteo de inventario guardado'/);
     assert.match(actionTitleBlocks[0], /'delivery\.received': 'Received delivery'/);
-    assert.match(actionTitleBlocks[1], /'delivery\.received': 'Entrega recibida'/);
     assert.match(actionTitleBlocks[0], /'month\.closed': 'Closed inventory month'/);
-    assert.match(actionTitleBlocks[1], /'month\.closed': 'Mes de inventario cerrado'/);
     assert.match(panel, /existingItemBaseline: 'Existing inventory item'/);
-    assert.match(panel, /existingItemBaseline: 'Artículo de inventario existente'/);
     assert.match(
       panel,
       /event\.action === 'item\.created' && event\.details\.baseline === true[\s\S]*?return hp\.existingItemBaseline/,
     );
     assert.match(auditFeed, /auditEventTitle\(event, hp\)/);
     assert.match(panel, /loadOlder: 'Load older history'/);
-    assert.match(panel, /loadOlder: 'Cargar historial anterior'/);
   });
 
   test('keeps keyboard, touch, mobile, and reduced-motion affordances', () => {
@@ -469,7 +463,5 @@ describe('inventory audit-history corrected cost truth', () => {
     );
     assert.match(panel, /previousTotalCost: 'Previous total'/);
     assert.match(panel, /currentTotalCost: 'Current total'/);
-    assert.match(panel, /previousTotalCost: 'Total anterior'/);
-    assert.match(panel, /currentTotalCost: 'Total actual'/);
   });
 });

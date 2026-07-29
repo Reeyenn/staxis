@@ -332,7 +332,7 @@ export function ScheduleTab() {
     : null;
   const pulledAtLabel = pulledAtIso
     ? formatPulledAt(pulledAtIso, lang)
-    : (lang === 'es' ? 'sin datos' : 'no data');
+    : ('no data');
   const pmsSummaryFailed = dashboardLoaded && dashboardNums === null;
 
   // ── Mutations ──────────────────────────────────────────────────────────
@@ -365,10 +365,10 @@ export function ScheduleTab() {
     } catch (e) {
       await refreshBoard(scope);
       if (boardScopeRef.current === scope) {
-        flashToast((lang === 'es' ? 'No se pudo mover: ' : 'Move failed: ') + (e instanceof Error ? e.message : String(e)));
+        flashToast(('Move failed: ') + (e instanceof Error ? e.message : String(e)));
       }
     }
-  }, [currentBoardData, patchAssignee, refreshBoard, flashToast, lang]);
+  }, [currentBoardData, patchAssignee, refreshBoard, flashToast]);
 
   const onUnassign = useCallback(async (taskId: string) => {
     const scope = boardScopeRef.current;
@@ -388,10 +388,10 @@ export function ScheduleTab() {
     } catch (e) {
       await refreshBoard(scope);
       if (boardScopeRef.current === scope) {
-        flashToast((lang === 'es' ? 'No se pudo quitar: ' : 'Unassign failed: ') + (e instanceof Error ? e.message : String(e)));
+        flashToast(('Unassign failed: ') + (e instanceof Error ? e.message : String(e)));
       }
     }
-  }, [currentBoardData, patchAssignee, refreshBoard, flashToast, lang]);
+  }, [currentBoardData, patchAssignee, refreshBoard, flashToast]);
 
   const onAutoAssign = useCallback(async () => {
     const scope = boardScopeRef.current;
@@ -410,19 +410,19 @@ export function ScheduleTab() {
       if (boardScopeRef.current === scope) {
         flashToast(
           n > 0
-            ? (lang === 'es' ? `Asignados ${n} cuartos` : `Auto-assigned ${n} rooms`)
-            : (lang === 'es' ? 'No hay cuartos por asignar' : 'No rooms to assign'),
+            ? (`Auto-assigned ${n} rooms`)
+            : ('No rooms to assign'),
         );
       }
     } catch (e) {
       await refreshBoard(scope);
       if (boardScopeRef.current === scope) {
-        flashToast((lang === 'es' ? 'Error al asignar: ' : 'Auto-assign failed: ') + (e instanceof Error ? e.message : String(e)));
+        flashToast(('Auto-assign failed: ') + (e instanceof Error ? e.message : String(e)));
       }
     } finally {
       if (boardScopeRef.current === scope) setBusy(null);
     }
-  }, [busy, refreshBoard, flashToast, lang]);
+  }, [busy, refreshBoard, flashToast]);
 
   // Re-plan the whole day: clear every assignment that can still be moved,
   // then let the engine spread the rooms across today's crew again.
@@ -441,9 +441,7 @@ export function ScheduleTab() {
     const scope = boardScopeRef.current;
     if (!scope || busy) return;
     const proceed = window.confirm(
-      lang === 'es'
-        ? 'Volver a repartir los cuartos de este día entre el personal de hoy. Los cuartos que ya se están limpiando o que ya terminaron no se tocan. ¿Continuar?'
-        : "Spread this day's rooms across today's crew again. Rooms already being cleaned or already finished are left alone. Continue?",
+      "Spread this day's rooms across today's crew again. Rooms already being cleaned or already finished are left alone. Continue?",
     );
     if (!proceed) return;
     setBusy('replan');
@@ -468,7 +466,7 @@ export function ScheduleTab() {
       await refreshBoard(scope);
       if (boardScopeRef.current === scope) {
         flashToast(
-          lang === 'es' ? `Plan rehecho · ${n} cuartos repartidos` : `Day re-planned · ${n} rooms spread`,
+          `Day re-planned · ${n} rooms spread`,
         );
       }
     } catch (e) {
@@ -478,14 +476,14 @@ export function ScheduleTab() {
       await refreshBoard(scope);
       if (boardScopeRef.current === scope) {
         flashToast(
-          (lang === 'es' ? 'No se pudo rehacer el plan: ' : "Couldn't re-plan the day: ")
+          ("Couldn't re-plan the day: ")
           + (e instanceof Error ? e.message : String(e)),
         );
       }
     } finally {
       if (boardScopeRef.current === scope) setBusy(null);
     }
-  }, [busy, refreshBoard, flashToast, lang]);
+  }, [busy, refreshBoard, flashToast]);
 
   // Removed 2026-07-24: the ★ Staff priority modal. Auto-assign eligibility
   // ("never auto-assign this person") is staffing configuration, so it lives on
@@ -506,10 +504,8 @@ export function ScheduleTab() {
         <div style={{ marginBottom: 16 }}>
           <FeedLearningBanner
             variant="strip"
-            title={lang === 'es' ? 'Conectando con tu PMS.' : 'Connecting to your PMS.'}
-            text={lang === 'es'
-              ? 'Los datos del horario aparecerán cuando termine la primera sincronización.'
-              : 'Schedule data will appear once the first sync lands.'}
+            title={'Connecting to your PMS.'}
+            text={'Schedule data will appear once the first sync lands.'}
           />
         </div>
       )}
@@ -517,10 +513,8 @@ export function ScheduleTab() {
         <div style={{ marginBottom: 16 }}>
           <FeedLearningBanner
             variant="strip"
-            title={lang === 'es' ? 'Conexión con el PMS en pausa.' : 'PMS connection paused.'}
-            text={lang === 'es'
-              ? 'Los datos pueden estar desactualizados hasta que se reanude.'
-              : 'Data may be out of date until it resumes.'}
+            title={'PMS connection paused.'}
+            text={'Data may be out of date until it resumes.'}
           />
         </div>
       )}
@@ -528,10 +522,8 @@ export function ScheduleTab() {
         <div style={{ marginBottom: 16 }}>
           <FeedLearningBanner
             variant="strip"
-            title={lang === 'es' ? 'Aún aprendiendo tu PMS.' : 'Still learning your PMS.'}
-            text={lang === 'es'
-              ? 'Las llegadas/salidas del PMS todavía se están aprendiendo. La clasificación de salidas y estancias puede estar incompleta, y un conteo vacío no significa que no haya salidas hoy.'
-              : 'PMS arrivals/departures are still being learned. Checkout vs. stayover labels may be incomplete, and an empty count does not mean nobody checks out today.'}
+            title={'Still learning your PMS.'}
+            text={'PMS arrivals/departures are still being learned. Checkout vs. stayover labels may be incomplete, and an empty count does not mean nobody checks out today.'}
           />
         </div>
       )}
@@ -543,10 +535,10 @@ export function ScheduleTab() {
       }}>
         <div>
           <Caps>{(() => {
-            if (isToday)     return lang === 'es' ? 'Tablero · hoy'    : 'Board · today';
-            if (isYesterday) return lang === 'es' ? 'Tablero · ayer'   : 'Board · yesterday';
-            if (isTomorrow)  return lang === 'es' ? 'Tablero · mañana' : 'Board · tomorrow';
-            return lang === 'es' ? 'Tablero' : 'Board';
+            if (isToday)     return 'Board · today';
+            if (isYesterday) return 'Board · yesterday';
+            if (isTomorrow)  return 'Board · tomorrow';
+            return 'Board';
           })()}</Caps>
           <h1 style={{
             fontFamily: FONT_SANS, fontSize: 26, color: T.ink, margin: '4px 0 0',
@@ -557,9 +549,9 @@ export function ScheduleTab() {
           </h1>
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-          <Btn variant="ghost" size="sm" onClick={() => setShiftDate(addDays(shiftDate, -1))}>← {lang === 'es' ? 'Ayer' : 'Yesterday'}</Btn>
-          <Btn variant={isToday ? 'paper' : 'ghost'} size="sm" onClick={() => setShiftDate(today)}>{lang === 'es' ? 'Hoy' : 'Today'}</Btn>
-          <Btn variant="ghost" size="sm" onClick={() => setShiftDate(addDays(shiftDate, 1))}>{lang === 'es' ? 'Mañana' : 'Tomorrow'} →</Btn>
+          <Btn variant="ghost" size="sm" onClick={() => setShiftDate(addDays(shiftDate, -1))}>← {'Yesterday'}</Btn>
+          <Btn variant={isToday ? 'paper' : 'ghost'} size="sm" onClick={() => setShiftDate(today)}>{'Today'}</Btn>
+          <Btn variant="ghost" size="sm" onClick={() => setShiftDate(addDays(shiftDate, 1))}>{'Tomorrow'} →</Btn>
         </div>
       </div>
 
@@ -574,13 +566,13 @@ export function ScheduleTab() {
               cleaning-time settings modal. It saved nothing for anyone but an
               admin (see the file header); its fields now live on
               /settings/clean-times, which saves for real. */}
-          <Caps size={9}>{lang === 'es' ? 'Última carga PMS' : 'Latest PMS pull'}</Caps>
+          <Caps size={9}>{'Latest PMS pull'}</Caps>
           <span style={{ fontFamily: FONT_SANS, fontSize: 13, color: T.ink, fontWeight: 600, marginTop: 3 }}>
             {!dashboardLoaded
-              ? (lang === 'es' ? 'Cargando…' : 'Loading…')
+              ? ('Loading…')
               : dashboardNums
                 ? pulledAtLabel
-                : (lang === 'es' ? 'No disponible' : 'Unavailable')}
+                : ('Unavailable')}
           </span>
         </div>
         <span style={{ width: 1, height: 40, background: T.rule }} />
@@ -592,13 +584,13 @@ export function ScheduleTab() {
             // '—'. Checkout/stayover/recommended cells null out while the
             // reservation feeds are untrusted — a confident 0 there reads
             // as "nobody checks out today".
-            { l: lang === 'es' ? 'En Casa'      : 'In House',    v: stripCountsLive ? (feedStatus.derived?.snapshotInHouse ?? null) : (fsLive ? null : dashboardNums?.inHouse ?? null), loaded: dashboardLoaded },
-            { l: lang === 'es' ? 'Llegadas'     : 'Arrivals',    v: stripCountsLive ? (feedStatus.derived?.snapshotArrivalsRemaining ?? null) : (fsLive ? null : dashboardNums?.arrivals ?? null), loaded: dashboardLoaded },
-            { l: lang === 'es' ? 'Salen'        : 'Departures',  v: stripCountsLive ? (feedStatus.derived?.snapshotDeparturesRemaining ?? null) : (fsLive ? null : dashboardNums?.departures ?? null), loaded: dashboardLoaded },
-            { l: lang === 'es' ? 'Salidas'      : 'Checkouts',   v: reservationsLearning ? null : checkouts,                loaded: currentBoardLoaded },
-            { l: lang === 'es' ? 'Continúan'    : 'Stayovers',   v: reservationsLearning ? null : stayovers,                loaded: currentBoardLoaded },
-            { l: lang === 'es' ? 'Tiempo total' : 'Total time',  v: reservationsLearning ? null : fmtMinutes(totalMinutes), loaded: currentBoardLoaded },
-            { l: lang === 'es' ? 'Recomendado'  : 'Recommended', v: reservationsLearning ? null : `${recommendedHKs} HK`,   loaded: currentBoardLoaded, tone: T.sageDeep },
+            { l: 'In House',    v: stripCountsLive ? (feedStatus.derived?.snapshotInHouse ?? null) : (fsLive ? null : dashboardNums?.inHouse ?? null), loaded: dashboardLoaded },
+            { l: 'Arrivals',    v: stripCountsLive ? (feedStatus.derived?.snapshotArrivalsRemaining ?? null) : (fsLive ? null : dashboardNums?.arrivals ?? null), loaded: dashboardLoaded },
+            { l: 'Departures',  v: stripCountsLive ? (feedStatus.derived?.snapshotDeparturesRemaining ?? null) : (fsLive ? null : dashboardNums?.departures ?? null), loaded: dashboardLoaded },
+            { l: 'Checkouts',   v: reservationsLearning ? null : checkouts,                loaded: currentBoardLoaded },
+            { l: 'Stayovers',   v: reservationsLearning ? null : stayovers,                loaded: currentBoardLoaded },
+            { l: 'Total time',  v: reservationsLearning ? null : fmtMinutes(totalMinutes), loaded: currentBoardLoaded },
+            { l: 'Recommended', v: reservationsLearning ? null : `${recommendedHKs} HK`,   loaded: currentBoardLoaded, tone: T.sageDeep },
           ] as Array<{ l: string; v: React.ReactNode; loaded: boolean; tone?: string }>).map(n => (
             <div key={n.l} style={{ display: 'flex', flexDirection: 'column', gap: 2, minWidth: 58 }}>
               <Caps size={9}>{n.l}</Caps>
@@ -619,12 +611,10 @@ export function ScheduleTab() {
             }}
           >
             <span>
-              {lang === 'es'
-                ? 'No se pudo cargar parte del resumen del PMS. El tablero de cuartos sigue disponible.'
-                : 'Part of the PMS summary could not load. The room board is still available.'}
+              {'Part of the PMS summary could not load. The room board is still available.'}
             </span>
             <Btn variant="ghost" size="sm" onClick={retryPmsSummary}>
-              {lang === 'es' ? 'Reintentar' : 'Retry'}
+              {'Retry'}
             </Btn>
           </div>
         )}
@@ -641,7 +631,7 @@ export function ScheduleTab() {
             display: 'inline-flex', gap: 4, background: T.ruleSoft,
             border: `1px solid ${T.rule}`, borderRadius: 999, padding: 4,
           }}>
-            {([['board', lang === 'es' ? 'Tablero' : 'Board', '▤'], ['timeline', lang === 'es' ? 'Línea' : 'Timeline', '▦']] as const).map(([k, label, icon]) => (
+            {([['board', 'Board', '▤'], ['timeline', 'Timeline', '▦']] as const).map(([k, label, icon]) => (
               <button
                 key={k}
                 onClick={() => setView(k)}
@@ -664,11 +654,11 @@ export function ScheduleTab() {
           <div style={{ display: 'flex', gap: 7, flexWrap: 'wrap' }}>
             <Btn variant="ghost" size="sm" onClick={onReplan} disabled={busy != null}>
               {busy === 'replan'
-                ? (lang === 'es' ? 'Rehaciendo…' : 'Re-planning…')
-                : `⟲ ${lang === 'es' ? 'Rehacer el día' : 'Re-plan day'}`}
+                ? ('Re-planning…')
+                : `⟲ ${'Re-plan day'}`}
             </Btn>
             <Btn variant="primary" size="sm" onClick={onAutoAssign} disabled={busy != null}>
-              {busy === 'auto' ? (lang === 'es' ? 'Asignando…' : 'Assigning…') : `↻ ${lang === 'es' ? 'Auto-asignar' : 'Auto-assign'}`}
+              {busy === 'auto' ? ('Assigning…') : `↻ ${'Auto-assign'}`}
             </Btn>
           </div>
         </div>
@@ -677,7 +667,7 @@ export function ScheduleTab() {
       {/* VIEW */}
       {!pid && (
         <div style={{ padding: '40px 0', textAlign: 'center', color: T.ink2, fontFamily: FONT_SANS, fontSize: 14 }}>
-          {lang === 'es' ? 'Selecciona una propiedad.' : 'Select a property to see today’s board.'}
+          {'Select a property to see today’s board.'}
         </div>
       )}
       {pid && !currentBoardLoaded && (
@@ -694,8 +684,8 @@ export function ScheduleTab() {
           background: T.warmDim, color: T.warm, fontFamily: FONT_SANS, fontSize: 13,
           display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap',
         }}>
-          <span>{(lang === 'es' ? 'No se pudo cargar el tablero: ' : 'Couldn\'t load the board: ') + boardErr}</span>
-          <Btn variant="ghost" size="sm" onClick={() => void refreshBoard()}>{lang === 'es' ? 'Reintentar' : 'Retry'}</Btn>
+          <span>{('Couldn\'t load the board: ') + boardErr}</span>
+          <Btn variant="ghost" size="sm" onClick={() => void refreshBoard()}>{'Retry'}</Btn>
         </div>
       )}
       {pid && currentBoardLoaded && !boardErr && crew.length === 0 && (
@@ -703,9 +693,7 @@ export function ScheduleTab() {
           padding: '40px 20px', textAlign: 'center', color: T.ink2,
           fontFamily: FONT_SANS, fontSize: 14, border: `1px dashed ${T.rule}`, borderRadius: 12,
         }}>
-          {lang === 'es'
-            ? 'No hay personal de limpieza activo todavía.'
-            : 'No active housekeeping staff yet. Add crew in Staff to start assigning.'}
+          {'No active housekeeping staff yet. Add crew in Staff to start assigning.'}
         </div>
       )}
       {pid && currentBoardLoaded && !boardErr && crew.length > 0 && (
@@ -716,9 +704,7 @@ export function ScheduleTab() {
               border: `1px dashed ${T.rule}`, borderRadius: 12,
               background: T.paper, color: T.ink2, fontFamily: FONT_SANS, fontSize: 13,
             }}>
-              {lang === 'es'
-                ? 'No hay cuartos para limpiar en esta fecha todavía. Aparecerán aquí cuando llegue la próxima carga del PMS.'
-                : 'No rooms to clean for this date yet. They\'ll appear here on the next PMS pull.'}
+              {'No rooms to clean for this date yet. They\'ll appear here on the next PMS pull.'}
             </div>
           )}
           {view === 'board' ? (
@@ -812,25 +798,25 @@ function RoomDetailDrawer({
       }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
           <div>
-            <Caps>{lang === 'es' ? 'Detalle del cuarto' : 'Room detail'}</Caps>
+            <Caps>{'Room detail'}</Caps>
             <div style={{ fontFamily: FONT_SANS, fontWeight: 600, fontSize: 32, color: T.ink, lineHeight: 1, letterSpacing: '-0.02em' }}>{task.room_number}</div>
           </div>
-          <Btn variant="ghost" size="sm" onClick={onClose}>{lang === 'es' ? 'Cerrar' : 'Close'}</Btn>
+          <Btn variant="ghost" size="sm" onClick={onClose}>{'Close'}</Btn>
         </div>
-        <DRow label={lang === 'es' ? 'Tipo' : 'Type'} value={
+        <DRow label={'Type'} value={
           <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
             <span style={{ width: 8, height: 8, borderRadius: 2, background: kindColor }} />
             <span style={{ textTransform: 'capitalize' }}>{task.cleaning_type.replace(/_/g, ' ')}</span>
           </span>
         } />
-        <DRow label={lang === 'es' ? 'Min. estimados' : 'Est. minutes'} value={fmtMinutes(task.estimated_minutes_resolved)} mono />
-        <DRow label={lang === 'es' ? 'Estado' : 'Status'} value={<span style={{ textTransform: 'capitalize' }}>{task.status.replace(/_/g, ' ')}</span>} />
-        <DRow label={lang === 'es' ? 'Piso' : 'Floor'} value={floor} />
+        <DRow label={'Est. minutes'} value={fmtMinutes(task.estimated_minutes_resolved)} mono />
+        <DRow label={'Status'} value={<span style={{ textTransform: 'capitalize' }}>{task.status.replace(/_/g, ' ')}</span>} />
+        <DRow label={'Floor'} value={floor} />
         {task.requires_inspection && (
-          <DRow label={lang === 'es' ? 'Inspección' : 'Inspection'} value={lang === 'es' ? 'Requerida' : 'Required'} />
+          <DRow label={'Inspection'} value={'Required'} />
         )}
         <div>
-          <div style={{ margin: '6px 0 8px' }}><Caps>{lang === 'es' ? 'Reasignar a' : 'Reassign to'}</Caps></div>
+          <div style={{ margin: '6px 0 8px' }}><Caps>{'Reassign to'}</Caps></div>
           {crew.map(c => (
             <button key={c.id} onClick={() => onReassign(c.id)} style={{
               width: '100%', display: 'flex', alignItems: 'center', gap: 9, justifyContent: 'flex-start',
@@ -849,7 +835,7 @@ function RoomDetailDrawer({
               width: '100%', padding: '8px 10px', marginTop: 2, borderRadius: 999,
               border: `1px dashed ${T.rule}`, background: 'transparent', cursor: 'pointer',
               fontFamily: FONT_SANS, fontSize: 13, color: T.ink2,
-            }}>{lang === 'es' ? 'Quitar asignación' : 'Unassign'}</button>
+            }}>{'Unassign'}</button>
           )}
         </div>
       </div>

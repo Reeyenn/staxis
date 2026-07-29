@@ -29,11 +29,11 @@ export default function AcceptInvitePage() {
     setError('');
     if (!displayName.trim() || !password) return;
     if (password.length < 6) {
-      setError(lang === 'es' ? 'La contraseña debe tener al menos 6 caracteres.' : 'Password must be at least 6 characters.');
+      setError('Password must be at least 6 characters.');
       return;
     }
     if (password !== confirm) {
-      setError(lang === 'es' ? 'Las contraseñas no coinciden.' : 'Passwords do not match.');
+      setError('Passwords do not match.');
       return;
     }
     setSubmitting(true);
@@ -51,7 +51,7 @@ export default function AcceptInvitePage() {
       }
       setDone({ email: body.data?.email ?? '' });
     } catch {
-      setError(lang === 'es' ? 'Algo salió mal.' : 'Something went wrong.');
+      setError('Something went wrong.');
       setSubmitting(false);
     }
   };
@@ -76,17 +76,17 @@ export default function AcceptInvitePage() {
             <span style={{ fontSize: '22px', fontWeight: 700, color: '#FFFFFF', fontFamily: 'var(--font-mono)' }}>S</span>
           </div>
           <h1 style={{ fontFamily: 'var(--font-sans)', fontWeight: 700, fontSize: '22px', color: 'var(--text-primary)', marginBottom: '6px' }}>
-            {lang === 'es' ? 'Acepta tu invitación' : 'Accept your invitation'}
+            {'Accept your invitation'}
           </h1>
           <p style={{ color: 'var(--text-muted)', fontSize: '13px', lineHeight: 1.5 }}>
-            {lang === 'es' ? 'Configura tu nombre y contraseña para activar la cuenta.' : 'Set your name and password to activate the account.'}
+            {'Set your name and password to activate the account.'}
           </p>
         </div>
 
         {done ? (
           <div style={{ background: 'var(--bg-card)', border: '1px solid var(--border)', borderRadius: 'var(--radius-lg)', padding: '24px 20px', textAlign: 'center' }}>
             <p style={{ fontSize: '14px', color: 'var(--text-primary)', marginBottom: '12px' }}>
-              {lang === 'es' ? 'Cuenta creada.' : 'Account created.'}
+              {'Account created.'}
             </p>
             <button onClick={() => router.replace('/signin')} style={{
               height: '44px', borderRadius: 'var(--radius-md)',
@@ -95,21 +95,21 @@ export default function AcceptInvitePage() {
               fontFamily: 'var(--font-sans)', fontWeight: 600, fontSize: '14px',
               cursor: 'pointer',
             }}>
-              {lang === 'es' ? 'Iniciar sesión' : 'Sign in'}
+              {'Sign in'}
             </button>
           </div>
         ) : (
           <form onSubmit={handleSubmit} style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
-            <Input label={lang === 'es' ? 'Nombre completo' : 'Full name'} value={displayName} onChange={setDisplayName} disabled={submitting} autoFocus />
-            <Input label={lang === 'es' ? 'Contraseña' : 'Password'} type="password" value={password} onChange={setPassword} disabled={submitting} autoComplete="new-password" />
-            <Input label={lang === 'es' ? 'Confirmar contraseña' : 'Confirm password'} type="password" value={confirm} onChange={setConfirm} disabled={submitting} autoComplete="new-password" />
+            <Input label={'Full name'} value={displayName} onChange={setDisplayName} disabled={submitting} autoFocus />
+            <Input label={'Password'} type="password" value={password} onChange={setPassword} disabled={submitting} autoComplete="new-password" />
+            <Input label={'Confirm password'} type="password" value={confirm} onChange={setConfirm} disabled={submitting} autoComplete="new-password" />
 
             {error && <ErrorMsg>{error}</ErrorMsg>}
 
             <button type="submit" disabled={submitting || !displayName.trim() || !password || !confirm} style={submitStyle(submitting || !displayName.trim() || !password || !confirm)}>
               {submitting
                 ? <div className="spinner" style={{ width: '18px', height: '18px', borderTopColor: '#FFFFFF', borderColor: 'rgba(255,255,255,0.3)' }} />
-                : (lang === 'es' ? 'Crear cuenta' : 'Create account')}
+                : ('Create account')}
             </button>
           </form>
         )}

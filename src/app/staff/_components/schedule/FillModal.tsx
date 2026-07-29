@@ -60,7 +60,7 @@ export function FillModal({
   const titleId = useId();
   const dialogRef = useStaffDialog(onClose);
 
-  const es = lang === 'es';
+  const es = false;
   const save = () => {
     if (!name.trim()) return;
     onSaveCurrent(name.trim());
@@ -74,10 +74,10 @@ export function FillModal({
   const earlierWeeks = weeks.filter(w => w.start < selWeekStart).slice().reverse();
 
   const title = preview
-    ? `${preview.dowFull}, ${es ? `${preview.dayNum} ${preview.mon}` : `${preview.mon} ${preview.dayNum}`}`
+    ? `${preview.dowFull}, ${`${preview.mon} ${preview.dayNum}`}`
     : wPreview
-      ? `${es ? 'Semana' : 'Week'}, ${wPreview.label}`
-      : scope === 'day' ? (es ? 'Llenar este día' : 'Fill this day') : (es ? 'Llenar esta semana' : 'Fill this week');
+      ? `${'Week'}, ${wPreview.label}`
+      : scope === 'day' ? ('Fill this day') : ('Fill this week');
 
   return (
     <div
@@ -112,8 +112,8 @@ export function FillModal({
               <button
                 type="button"
                 onClick={() => { setPreview(null); setWPreview(null); }}
-                title={es ? 'Atrás' : 'Back'}
-                aria-label={es ? 'Atrás' : 'Back'}
+                title={'Back'}
+                aria-label={'Back'}
                 style={{
                   width: 30, height: 30, borderRadius: '50%', border: `1px solid ${T.rule}`,
                   background: 'transparent', cursor: 'pointer', color: T.ink2, fontSize: 15, flexShrink: 0,
@@ -128,15 +128,15 @@ export function FillModal({
               }}>{title}</h2>
               <div style={{ fontFamily: fonts.mono, fontSize: 10.5, color: T.ink3, marginTop: 3 }}>
                 {(preview || wPreview)
-                  ? (es ? 'Historial · quién estuvo' : 'History · who was on')
-                  : `${subLabel} · ${es ? 'elige uno, listo' : 'pick one, done'}`}
+                  ? ('History · who was on')
+                  : `${subLabel} · ${'pick one, done'}`}
               </div>
             </div>
           </div>
           <button
             type="button"
             onClick={onClose}
-            aria-label={es ? 'Cerrar' : 'Close'}
+            aria-label={'Close'}
             style={{
               background: 'transparent', border: `1px solid ${T.rule}`, borderRadius: '50%',
               width: 30, height: 30, cursor: 'pointer', color: T.ink2, fontSize: 16, flexShrink: 0,
@@ -182,12 +182,10 @@ export function FillModal({
                   />
                   <span style={{ minWidth: 0 }}>
                     <span style={{ display: 'block', fontSize: 13, fontWeight: 600, color: T.ink }}>
-                      {es ? 'Repetir automáticamente' : 'Auto-repeat'}
+                      {'Auto-repeat'}
                     </span>
                     <span style={{ display: 'block', fontSize: 11.5, color: T.ink2, marginTop: 1, lineHeight: 1.45 }}>
-                      {es
-                        ? `Lo que elijas aquí se aplica a esta semana y a todas las que siguen (hasta ${weeks[weeks.length - 1].label}).`
-                        : `Whatever you pick fills this week and every upcoming week (through ${weeks[weeks.length - 1].label}).`}
+                      {`Whatever you pick fills this week and every upcoming week (through ${weeks[weeks.length - 1].label}).`}
                     </span>
                   </span>
                 </label>
@@ -200,17 +198,13 @@ export function FillModal({
                 }}>
                   <div style={{ fontSize: 13, fontWeight: 600, color: T.ink2 }}>
                     {scope === 'day'
-                      ? (es ? 'Aún no hay plantillas de día' : 'No day templates yet')
-                      : (es ? 'Aún no hay plantillas de semana' : 'No week templates yet')}
+                      ? ('No day templates yet')
+                      : ('No week templates yet')}
                   </div>
                   <div style={{ fontSize: 12, color: T.ink3, marginTop: 4, lineHeight: 1.5 }}>
                     {scope === 'day'
-                      ? (es
-                        ? 'Arma un día en el tablero como te guste y guárdalo abajo. Aparecerá aquí listo para reusar.'
-                        : 'Set up a day on the board the way you like it, then save it below. It’ll show up here ready to reuse.')
-                      : (es
-                        ? 'Arma una semana como te guste y guárdala abajo. Aparecerá aquí lista para reusar.'
-                        : 'Set up a week the way you like it, then save it below. It’ll show up here ready to reuse.')}
+                      ? ('Set up a day on the board the way you like it, then save it below. It’ll show up here ready to reuse.')
+                      : ('Set up a week the way you like it, then save it below. It’ll show up here ready to reuse.')}
                   </div>
                 </div>
               ) : (
@@ -222,13 +216,13 @@ export function FillModal({
                     return (
                       <FillRow
                         key={t.id}
-                        tag={es ? 'PLANTILLA' : 'TEMPLATE'}
+                        tag={'TEMPLATE'}
                         title={t.name}
-                        sub={`${n} ${n === 1 ? (es ? 'turno' : 'shift') : (es ? 'turnos' : 'shifts')}`}
-                        cta={es ? 'Usar' : 'Use'}
+                        sub={`${n} ${n === 1 ? ('shift') : ('shifts')}`}
+                        cta={'Use'}
                         onUse={() => onApplyTemplate(t, repeatAll)}
                         onDelete={() => onDeleteTemplate(t)}
-                        deleteTitle={es ? 'Eliminar plantilla' : 'Delete template'}
+                        deleteTitle={'Delete template'}
                       />
                     );
                   })}
@@ -247,7 +241,7 @@ export function FillModal({
                     fontFamily: fonts.sans, fontSize: 13.5, fontWeight: 600,
                     boxShadow: '0 6px 18px rgba(31,35,28,0.18)',
                   }}
-                >{es ? 'Llenar desde el historial…' : 'Fill from history…'}</button>
+                >{'Fill from history…'}</button>
               ) : scope === 'day' ? (
                 <div style={{
                   border: `1px solid ${T.rule}`, borderRadius: 14, padding: '12px 14px',
@@ -255,12 +249,12 @@ export function FillModal({
                 }}>
                   {histWeeks.length === 0 && (
                     <div style={{ padding: '14px 4px', textAlign: 'center', color: T.ink3, fontSize: 12.5 }}>
-                      {es ? 'Todavía no hay historial.' : 'No history yet.'}
+                      {'No history yet.'}
                     </div>
                   )}
                   {histWeeks.map(w => (
                     <div key={w.start} style={{ marginBottom: 12 }}>
-                      <Caps size={9}>{es ? 'Semana del' : 'Week of'} {w.label}</Caps>
+                      <Caps size={9}>{'Week of'} {w.label}</Caps>
                       <div style={{ display: 'flex', gap: 6, marginTop: 6 }}>
                         {w.days.map(d => {
                           const okDay = d.date < today && d.date !== selDate;
@@ -271,11 +265,11 @@ export function FillModal({
                               onClick={() => okDay && setPreview(d)}
                               disabled={!okDay}
                               title={okDay
-                                ? (es ? `Ver quién estuvo el ${d.dowFull} ${d.dayNum}` : `See who was on ${d.dowFull} ${d.mon} ${d.dayNum}`)
-                                : (es ? 'Aún no es historial' : 'Not history yet')}
+                                ? (`See who was on ${d.dowFull} ${d.mon} ${d.dayNum}`)
+                                : ('Not history yet')}
                               aria-label={okDay
-                                ? (es ? `Ver quién estuvo el ${d.dowFull} ${d.dayNum}` : `See who was on ${d.dowFull} ${d.mon} ${d.dayNum}`)
-                                : (es ? 'Aún no es historial' : 'Not history yet')}
+                                ? (`See who was on ${d.dowFull} ${d.mon} ${d.dayNum}`)
+                                : ('Not history yet')}
                               style={{
                                 flex: 1, cursor: okDay ? 'pointer' : 'not-allowed', opacity: okDay ? 1 : 0.35,
                                 padding: '7px 2px', borderRadius: 9, border: `1px solid ${T.rule}`,
@@ -299,16 +293,16 @@ export function FillModal({
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginTop: 10 }}>
                   {earlierWeeks.length === 0 && (
                     <div style={{ padding: '14px 4px', textAlign: 'center', color: T.ink3, fontSize: 12.5 }}>
-                      {es ? 'No hay semanas anteriores.' : 'No earlier weeks.'}
+                      {'No earlier weeks.'}
                     </div>
                   )}
                   {earlierWeeks.map(w => (
                     <FillRow
                       key={w.start}
-                      tag={w.past ? (es ? 'HISTORIAL' : 'HISTORY') : (es ? 'PLANEADA' : 'PLANNED')}
-                      title={`${es ? 'Semana del' : 'Week of'} ${w.label}`}
-                      sub={es ? 'dom–sáb' : 'Sun–Sat'}
-                      cta={es ? 'Ver →' : 'View →'}
+                      tag={w.past ? ('HISTORY') : ('PLANNED')}
+                      title={`${'Week of'} ${w.label}`}
+                      sub={'Sun–Sat'}
+                      cta={'View →'}
                       onUse={() => setWPreview(w)}
                     />
                   ))}
@@ -331,26 +325,26 @@ export function FillModal({
                     }}
                   >
                     {scope === 'day'
-                      ? (es ? 'Guardar este día como plantilla' : 'Save this day as a template')
-                      : (es ? 'Guardar esta semana como plantilla' : 'Save this week as a template')}
+                      ? ('Save this day as a template')
+                      : ('Save this week as a template')}
                   </button>
                 ) : (
                   <div style={{ display: 'flex', gap: 8 }}>
                     <input
                       autoFocus
-                      aria-label={es ? 'Nombre de la plantilla' : 'Template name'}
+                      aria-label={'Template name'}
                       value={name}
                       onChange={e => setName(e.target.value)}
                       onKeyDown={e => { if (e.key === 'Enter') save(); }}
-                      placeholder={es ? 'Ponle nombre, ej. Día estándar' : 'Name it, e.g. Standard weekday'}
+                      placeholder={'Name it, e.g. Standard weekday'}
                       style={{
                         flex: 1, boxSizing: 'border-box', padding: '9px 12px', borderRadius: 10,
                         border: `1px solid ${T.rule}`, background: T.paper,
                         fontFamily: fonts.sans, fontSize: 13, color: T.ink, outline: 'none',
                       }}
                     />
-                    <Btn variant="ghost" size="sm" onClick={() => setNaming(false)}>{es ? 'Cancelar' : 'Cancel'}</Btn>
-                    <Btn variant="primary" size="sm" style={{ borderRadius: 10 }} onClick={save}>{es ? 'Guardar' : 'Save'}</Btn>
+                    <Btn variant="ghost" size="sm" onClick={() => setNaming(false)}>{'Cancel'}</Btn>
+                    <Btn variant="primary" size="sm" style={{ borderRadius: 10 }} onClick={save}>{'Save'}</Btn>
                   </div>
                 )}
               </div>
@@ -430,7 +424,7 @@ function DayPreview({
   onUse: () => void;
   onSave: (name: string) => void;
 }) {
-  const es = lang === 'es';
+  const es = false;
   const { start: pvStart, end: pvEnd } = boardRange(shifts);
   const pvSpan = pvEnd - pvStart;
   const lanesAll: DeptKey[] = ['housekeeping', 'front_desk', 'maintenance', 'other'];
@@ -442,7 +436,7 @@ function DayPreview({
     <div>
       {lanes.length === 0 && (
         <div style={{ padding: '22px 0', textAlign: 'center', color: T.ink3, fontSize: 13 }}>
-          {es ? 'Nadie trabajó ese día.' : 'No one worked this day.'}
+          {'No one worked this day.'}
         </div>
       )}
       {lanes.map(l => {
@@ -483,7 +477,7 @@ function DayPreview({
       })}
       <SaveBar
         total={shifts.length}
-        cta={es ? 'Usar este día →' : 'Use this day →'}
+        cta={'Use this day →'}
         lang={lang}
         onUse={onUse}
         onSave={onSave}
@@ -502,7 +496,7 @@ function SaveBar({
   onUse: () => void;
   onSave: (name: string) => void;
 }) {
-  const es = lang === 'es';
+  const es = false;
   const [open, setOpen] = useState(false);
   const [nm, setNm] = useState('');
   const go = () => { if (nm.trim()) onSave(nm.trim()); };
@@ -513,29 +507,29 @@ function SaveBar({
     }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
         <span style={{ fontFamily: fonts.mono, fontSize: 10.5, color: T.ink3, flexShrink: 0 }}>
-          {total} {total === 1 ? (es ? 'turno' : 'shift') : (es ? 'turnos' : 'shifts')}
+          {total} {total === 1 ? ('shift') : ('shifts')}
         </span>
         <span style={{ flex: 1 }}/>
-        {total > 0 && <Btn variant="ghost" size="md" onClick={() => setOpen(o => !o)}>{es ? 'Guardar como plantilla' : 'Save as template'}</Btn>}
+        {total > 0 && <Btn variant="ghost" size="md" onClick={() => setOpen(o => !o)}>{'Save as template'}</Btn>}
         {total > 0 && <Btn variant="primary" size="md" onClick={onUse}>{cta}</Btn>}
       </div>
       {open && (
         <div style={{ display: 'flex', gap: 8 }}>
           <input
             autoFocus
-            aria-label={es ? 'Nombre de la plantilla' : 'Template name'}
+            aria-label={'Template name'}
             value={nm}
             onChange={e => setNm(e.target.value)}
             onKeyDown={e => { if (e.key === 'Enter') go(); }}
-            placeholder={es ? 'Ponle nombre, ej. Día estándar' : 'Name it, e.g. Standard weekday'}
+            placeholder={'Name it, e.g. Standard weekday'}
             style={{
               flex: 1, boxSizing: 'border-box', padding: '9px 12px', borderRadius: 10,
               border: `1px solid ${T.rule}`, background: T.paper,
               fontFamily: fonts.sans, fontSize: 13, color: T.ink, outline: 'none',
             }}
           />
-          <Btn variant="ghost" size="sm" onClick={() => setOpen(false)}>{es ? 'Cancelar' : 'Cancel'}</Btn>
-          <Btn variant="primary" size="sm" style={{ borderRadius: 10 }} onClick={go}>{es ? 'Guardar' : 'Save'}</Btn>
+          <Btn variant="ghost" size="sm" onClick={() => setOpen(false)}>{'Cancel'}</Btn>
+          <Btn variant="primary" size="sm" style={{ borderRadius: 10 }} onClick={go}>{'Save'}</Btn>
         </div>
       )}
     </div>
@@ -554,14 +548,14 @@ function WeekPreview({
   onUse: () => void;
   onSave: (name: string) => void;
 }) {
-  const es = lang === 'es';
+  const es = false;
   const total = win.days.reduce((n, d) => n + getDay(d.date).length, 0);
   return (
     <div>
       <WeekRoster days={win.days} getDay={getDay} staff={staff} lang={lang} reducedMotion={reducedMotion}/>
       <SaveBar
         total={total}
-        cta={es ? 'Usar esta semana →' : 'Use this week →'}
+        cta={'Use this week →'}
         lang={lang}
         onUse={onUse}
         onSave={onSave}

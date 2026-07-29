@@ -38,7 +38,7 @@ export default function AccountsCompatibilityPage() {
         aria-live="polite"
         style={{ padding: '64px 24px', textAlign: 'center', color: 'var(--text-muted)' }}
       >
-        {lang === 'es' ? 'Abriendo Mi hotel\u2026' : 'Opening My Hotel\u2026'}
+        {'Opening My Hotel\u2026'}
       </div>
     </AppLayout>
   );

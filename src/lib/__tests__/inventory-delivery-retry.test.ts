@@ -256,20 +256,19 @@ describe('scanned invoice reference hard block', () => {
     assert.doesNotMatch(scanSource, /restored\?\.receivedAt\.slice\(0, 10\)/);
   });
 
-  test('required reference guidance and duplicate warning are bilingual', () => {
+  test('required reference guidance and duplicate warning stay English', () => {
     const en = ssStrings('en');
     const es = ssStrings('es');
 
     assert.equal(en.invoiceNumber, 'Invoice or reference number');
-    assert.equal(es.invoiceNumber, 'Número de factura o referencia');
+    assert.equal(es.invoiceNumber, en.invoiceNumber);
     assert.match(en.invoiceReferenceRequired, /before saving/i);
-    assert.match(es.invoiceReferenceRequired, /antes de guardar/i);
+    assert.equal(es.invoiceReferenceRequired, en.invoiceReferenceRequired);
     assert.match(en.invoiceReferenceHint, /received twice/i);
-    assert.match(es.invoiceReferenceHint, /dos veces/i);
+    assert.equal(es.invoiceReferenceHint, en.invoiceReferenceHint);
     assert.match(en.dupWarn, /already recorded/i);
-    assert.match(es.dupWarn, /ya está registrado/i);
+    assert.equal(es.dupWarn, en.dupWarn);
     assert.doesNotMatch(en.invoiceNumber, /optional/i);
-    assert.doesNotMatch(es.invoiceNumber, /opcional/i);
   });
 
   test('nonfinancial delivery entry hides invoice OCR and records unknown cost explicitly', () => {

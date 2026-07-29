@@ -92,10 +92,6 @@ interface StaffStats {
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
-function tr(lang: 'en' | 'es', en: string, es: string): string {
-  return lang === 'es' ? es : en;
-}
-
 // Decimal-minute format ("21.4m") — matches the design typography.
 function fmtDec(mins: number | null | undefined): string {
   if (mins == null || !isFinite(mins)) return '—';
@@ -141,16 +137,15 @@ function relAgo(iso: string | null | undefined): string | null {
 }
 
 function categoryLabel(cat: string, lang: 'en' | 'es'): string {
-  const map: Record<string, [string, string]> = {
-    bathroom: ['Bathroom', 'Baño'],
-    bedroom:  ['Bedroom', 'Dormitorio'],
-    living:   ['Living', 'Sala'],
-    kitchen:  ['Kitchen', 'Cocina'],
-    welcome:  ['Welcome', 'Recepción'],
-    other:    ['Other', 'Otro'],
+  const map: Record<string, string> = {
+    bathroom: 'Bathroom',
+    bedroom: 'Bedroom',
+    living: 'Living',
+    kitchen: 'Kitchen',
+    welcome: 'Welcome',
+    other: 'Other',
   };
-  const pair = map[cat] ?? [cat, cat];
-  return lang === 'es' ? pair[1] : pair[0];
+  return map[cat] ?? cat;
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -382,7 +377,7 @@ export function QualityTab() {
       });
       const json = await res.json().catch(() => null);
       if (!res.ok || !json?.ok) {
-        setToast(tr(lang, 'Could not start inspection', 'No se pudo iniciar la inspección'));
+        setToast('Could not start inspection');
         return;
       }
       const inspection = json.data.inspection as Inspection;
@@ -393,9 +388,9 @@ export function QualityTab() {
       }
       setActive({ inspection, checklist, drafts, notes: '' });
     } catch {
-      setToast(tr(lang, 'Network error', 'Error de red'));
+      setToast('Network error');
     }
-  }, [activePropertyId, lang]);
+  }, [activePropertyId]);
 
   const handleSubmit = useCallback(async (result: 'pass' | 'fail') => {
     if (!active || submitting) return;
@@ -428,9 +423,7 @@ export function QualityTab() {
         for (const f of failedItems) {
           const item = active.checklist.items.find((i) => i.id === f.itemId);
           if (item?.requiresPhotoOnFail && !f.photoUrl) {
-            setToast(tr(lang,
-              `${item.label} requires a photo before submitting`,
-              `${item.label} requiere foto antes de enviar`));
+            setToast(`${item.label} requires a photo before submitting`);
             setSubmitting(false);
             return;
           }
@@ -452,14 +445,12 @@ export function QualityTab() {
       );
       const json = await res.json().catch(() => null);
       if (!res.ok || !json?.ok) {
-        setToast(tr(lang,
-          json?.error ?? 'Could not complete inspection',
-          json?.error ?? 'No se pudo completar la inspección'));
+        setToast(json?.error ?? 'Could not complete inspection');
         return;
       }
       setToast(result === 'pass'
-        ? tr(lang, 'Inspection passed. Room ready.', 'Inspección aprobada. Habitación lista.')
-        : tr(lang, 'Inspection failed. Re-clean requested.', 'Inspección reprobada. Se pidió re-limpieza.'));
+        ? 'Inspection passed. Room ready.'
+        : 'Inspection failed. Re-clean requested.');
       setActive(null);
       void refreshQueue();
       void refreshStats();
@@ -467,7 +458,7 @@ export function QualityTab() {
     } finally {
       setSubmitting(false);
     }
-  }, [active, submitting, lang, refreshQueue, refreshStats, refreshHistory]);
+  }, [active, submitting, refreshQueue, refreshStats, refreshHistory]);
 
   const handleCancel = useCallback(async () => {
     if (!active) return;
@@ -512,14 +503,14 @@ export function QualityTab() {
           uploading: false,
         });
       } else {
-        setToast(tr(lang, 'Photo upload failed', 'Carga de foto falló'));
+        setToast('Photo upload failed');
         updateDraft(itemId, { uploading: false });
       }
     } catch {
-      setToast(tr(lang, 'Photo upload failed', 'Carga de foto falló'));
+      setToast('Photo upload failed');
       updateDraft(itemId, { uploading: false });
     }
-  }, [active, lang, updateDraft]);
+  }, [active, updateDraft]);
 
   // ── Performance handlers ───────────────────────────────────────────────
   const handleDecide = useCallback(async (eventId: string, decision: 'approved' | 'rejected') => {
@@ -532,15 +523,15 @@ export function QualityTab() {
       // recorded|approved) reflect the decision without a full re-fetch.
       setEvents((prev) => prev.map((e) => (e.id === eventId ? { ...e, status: decision } : e)));
       setToast(decision === 'approved'
-        ? tr(lang, 'Kept. Counts toward averages.', 'Mantenida. Cuenta en los promedios.')
-        : tr(lang, 'Discarded from averages', 'Descartada de los promedios'));
+        ? 'Kept. Counts toward averages.'
+        : 'Discarded from averages');
     } catch (err) {
       console.error('[QualityTab] decide failed:', err);
-      setToast(tr(lang, 'Could not save decision', 'No se pudo guardar la decisión'));
+      setToast('Could not save decision');
     } finally {
       setReviewingId(null);
     }
-  }, [user, activePropertyId, lang]);
+  }, [user, activePropertyId]);
 
   const handleExport = useCallback(() => {
     if (events.length === 0) return;
@@ -564,8 +555,8 @@ export function QualityTab() {
     a.href = url; a.download = filename;
     document.body.appendChild(a); a.click();
     document.body.removeChild(a); URL.revokeObjectURL(url);
-    setToast(tr(lang, 'Report exported', 'Reporte exportado'));
-  }, [events, view, today, lang]);
+    setToast('Report exported');
+  }, [events, view, today]);
 
   const staffShape = (s: { staffId: string; name: string }): Pick<StaffMember, 'id' | 'name'> => ({
     id: s.staffId, name: s.name,
@@ -573,11 +564,11 @@ export function QualityTab() {
 
   // ── Ranges ─────────────────────────────────────────────────────────────
   const ranges: { k: ViewMode; l: string }[] = [
-    { k: 'live', l: tr(lang, 'Today',   'Hoy') },
-    { k: '7d',   l: tr(lang, '7 days',  '7 días') },
-    { k: '30d',  l: tr(lang, '30 days', '30 días') },
-    { k: '3mo',  l: tr(lang, '90 days', '90 días') },
-    { k: '1yr',  l: tr(lang, '1 year',  '1 año') },
+    { k: 'live', l: 'Today' },
+    { k: '7d',   l: '7 days' },
+    { k: '30d',  l: '30 days' },
+    { k: '3mo',  l: '90 days' },
+    { k: '1yr',  l: '1 year' },
   ];
 
   // ── Render ─────────────────────────────────────────────────────────────
@@ -598,11 +589,11 @@ export function QualityTab() {
             fontFamily: FONT_SANS, fontSize: 26, color: T.ink, margin: 0,
             letterSpacing: '-0.02em', lineHeight: 1.1, fontWeight: 600,
           }}>
-            <span>{tr(lang, 'Quality', 'Calidad')}</span>
-            {tr(lang, ' & performance', ' y rendimiento')}
+            <span>{'Quality'}</span>
+            {' & performance'}
           </h1>
           <Caps style={{ display: 'block', marginTop: 8 }} c={T.ink3}>
-            {tr(lang, 'Inspections + crew performance · combined', 'Inspecciones + rendimiento del equipo · combinado')}
+            {'Inspections + crew performance · combined'}
           </Caps>
         </div>
         <div style={{
@@ -638,9 +629,9 @@ export function QualityTab() {
               <h2 style={{
                 fontFamily: FONT_SANS, fontWeight: 600,
                 fontSize: 18, margin: 0, color: T.ink, letterSpacing: '-0.02em',
-              }}>{tr(lang, 'Inspection queue', 'Cola de inspección')}</h2>
+              }}>{'Inspection queue'}</h2>
               <Pill tone="caramel">
-                {queue.length} {tr(lang, 'waiting', 'en espera')}
+                {queue.length} {'waiting'}
               </Pill>
             </div>
 
@@ -651,19 +642,17 @@ export function QualityTab() {
               <div style={{ marginBottom: 12 }}>
                 <FeedLearningBanner
                   variant="strip"
-                  title={tr(lang, 'Still learning your PMS.', 'Aún aprendiendo tu PMS.')}
-                  text={tr(lang,
-                    'Rooms cleaned in the PMS may not appear here yet. The queue reflects in-app activity only.',
-                    'Las habitaciones limpiadas en el PMS pueden no aparecer aquí todavía. La cola refleja solo actividad en la app.')}
+                  title={'Still learning your PMS.'}
+                  text={'Rooms cleaned in the PMS may not appear here yet. The queue reflects in-app activity only.'}
                 />
               </div>
             )}
 
             {/* Filters */}
             <div style={{ display: 'flex', gap: 6, marginBottom: 14, flexWrap: 'wrap', alignItems: 'center' }}>
-              <FilterPill label={tr(lang, 'All', 'Todas')} active={filter === 'all'} onClick={() => setFilter('all')} />
-              <FilterPill label={tr(lang, 'Pending', 'Pendientes')} active={filter === 'pending_inspection'} onClick={() => setFilter('pending_inspection')} />
-              <FilterPill label={tr(lang, 'Re-check', 'Reinspección')} active={filter === 'pending_recheck'} onClick={() => setFilter('pending_recheck')} />
+              <FilterPill label={'All'} active={filter === 'all'} onClick={() => setFilter('all')} />
+              <FilterPill label={'Pending'} active={filter === 'pending_inspection'} onClick={() => setFilter('pending_inspection')} />
+              <FilterPill label={'Re-check'} active={filter === 'pending_recheck'} onClick={() => setFilter('pending_recheck')} />
               {filter !== 'all' && (
                 <span style={{ fontFamily: FONT_MONO, fontSize: 11, color: T.ink3, marginLeft: 2 }}>
                   {visibleQueue.length}/{queue.length}
@@ -673,7 +662,7 @@ export function QualityTab() {
 
             {queueLoading ? (
               <div style={{ padding: 16, color: T.ink3, fontFamily: FONT_SANS, fontSize: 13 }}>
-                {tr(lang, 'Loading…', 'Cargando…')}
+                {'Loading…'}
               </div>
             ) : visibleQueue.length === 0 ? (
               <div style={{
@@ -682,8 +671,8 @@ export function QualityTab() {
                 border: `1px solid ${T.ruleSoft}`, borderRadius: 12,
               }}>
                 {queue.length === 0
-                  ? tr(lang, 'Queue clear. Every room inspected.', 'Cola despejada. Todas inspeccionadas.')
-                  : tr(lang, 'No rooms in this filter.', 'No hay habitaciones en este filtro.')}
+                  ? 'Queue clear. Every room inspected.'
+                  : 'No rooms in this filter.'}
               </div>
             ) : (
               <div style={{ display: 'flex', flexDirection: 'column', gap: 7 }}>
@@ -705,9 +694,9 @@ export function QualityTab() {
               display: 'flex', justifyContent: 'space-between', alignItems: 'center',
               padding: '16px 0 12px', borderBottom: `1px solid ${T.rule}`, marginBottom: 4,
             }}>
-              <Caps>{tr(lang, 'Team leaderboard', 'Tabla del equipo')}</Caps>
+              <Caps>{'Team leaderboard'}</Caps>
               <Btn variant="ghost" size="sm" onClick={handleExport} disabled={events.length === 0}>
-                {tr(lang, 'Export', 'Exportar')} ↓
+                {'Export'} ↓
               </Btn>
             </div>
             <Leaderboard
@@ -719,7 +708,7 @@ export function QualityTab() {
             />
             {provisional.length > 0 && (
               <div style={{ paddingTop: 14, marginTop: 4 }}>
-                <Caps>{tr(lang, 'Provisional · < 3 cleans this period', 'Provisional · < 3 limpiezas este período')}</Caps>
+                <Caps>{'Provisional · < 3 cleans this period'}</Caps>
                 <div style={{ display: 'flex', gap: 8, marginTop: 10, flexWrap: 'wrap' }}>
                   {provisional.map((p) => (
                     <div key={p.staffId} style={{
@@ -729,7 +718,7 @@ export function QualityTab() {
                       <HousekeeperDot staff={staffShape(p)} size={22} />
                       <span style={{ fontFamily: FONT_SANS, fontSize: 12, color: T.ink, whiteSpace: 'nowrap' }}>{p.name}</span>
                       <span style={{ fontFamily: FONT_MONO, fontSize: 11, color: T.ink3 }}>
-                        {p.total} {tr(lang, 'cleans', 'limpiezas')}
+                        {p.total} {'cleans'}
                       </span>
                     </div>
                   ))}
@@ -744,7 +733,7 @@ export function QualityTab() {
           {/* Top failures */}
           {stats && stats.topFailureItems.length > 0 && (
             <Card padding="18px 22px">
-              <Caps style={{ marginBottom: 10, display: 'block' }}>{tr(lang, 'Top failures', 'Fallos más comunes')}</Caps>
+              <Caps style={{ marginBottom: 10, display: 'block' }}>{'Top failures'}</Caps>
               {stats.topFailureItems.map((f) => (
                 <div key={f.label} style={{
                   display: 'flex', justifyContent: 'space-between', alignItems: 'center',
@@ -761,11 +750,11 @@ export function QualityTab() {
           {flagged.length > 0 && (
             <Card padding="18px 22px">
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 8 }}>
-                <Caps>{tr(lang, 'Flagged · review', 'A revisar')}</Caps>
-                <Pill tone="warm">{flagged.length} {tr(lang, 'over 60m', 'sobre 60m')}</Pill>
+                <Caps>{'Flagged · review'}</Caps>
+                <Pill tone="warm">{flagged.length} {'over 60m'}</Pill>
               </div>
               <p style={{ fontFamily: FONT_SANS, fontSize: 12, color: T.ink2, margin: '0 0 10px' }}>
-                {tr(lang, 'Do these long cleans count toward averages?', '¿Estas limpiezas largas cuentan en los promedios?')}
+                {'Do these long cleans count toward averages?'}
               </p>
               {flagged.map((f) => (
                 <div key={f.id} style={{
@@ -791,10 +780,10 @@ export function QualityTab() {
                   </span>
                   <div style={{ display: 'flex', gap: 6 }}>
                     <Btn variant="ghost" size="sm" disabled={reviewingId === f.id} onClick={() => handleDecide(f.id, 'approved')}>
-                      {tr(lang, 'Keep', 'Mantener')}
+                      {'Keep'}
                     </Btn>
                     <Btn variant="paper" size="sm" disabled={reviewingId === f.id} onClick={() => handleDecide(f.id, 'rejected')}>
-                      {tr(lang, 'Discard', 'Descartar')}
+                      {'Discard'}
                     </Btn>
                   </div>
                 </div>
@@ -845,7 +834,7 @@ function StatBand({ stats, lang }: { stats: InspectionStats | null; lang: 'en' |
         background: 'linear-gradient(135deg, rgba(92,122,96,0.10), rgba(92,122,96,0.02))',
         borderColor: 'rgba(92,122,96,0.22)',
       }}>
-        <Caps>{tr(lang, 'Pass rate · today', 'Aprobación · hoy')}</Caps>
+        <Caps>{'Pass rate · today'}</Caps>
         <span style={{ ...valStyle, color: T.sageDeep }}>{stats ? pct(stats.todayPassRate) : '—'}</span>
         <div style={{ height: 6, background: T.ruleSoft, borderRadius: 999, overflow: 'hidden' }}>
           <span style={{ display: 'block', height: '100%', width: stats ? pct(stats.todayPassRate) : '0%', background: T.sage, borderRadius: 999 }} />
@@ -853,23 +842,23 @@ function StatBand({ stats, lang }: { stats: InspectionStats | null; lang: 'en' |
       </div>
       {/* Pass rate 7d */}
       <div style={cardBase}>
-        <Caps>{tr(lang, 'Pass rate · 7d', 'Aprobación · 7d')}</Caps>
+        <Caps>{'Pass rate · 7d'}</Caps>
         <span style={valStyle}>{stats ? pct(stats.weekPassRate) : '—'}</span>
-        <Caps c={T.ink3} size={11} tracking="0">{tr(lang, 'trailing week', 'semana previa')}</Caps>
+        <Caps c={T.ink3} size={11} tracking="0">{'trailing week'}</Caps>
       </div>
       {/* Re-clean rate */}
       <div style={cardBase}>
-        <Caps>{tr(lang, 'Re-clean rate', 'Tasa re-limpieza')}</Caps>
+        <Caps>{'Re-clean rate'}</Caps>
         <span style={{ ...valStyle, color: reClean > 12 ? T.warm : T.ink }}>
           {stats ? reClean.toFixed(0) : '—'}<small style={{ fontSize: 18, color: T.ink2 }}>%</small>
         </span>
-        <Caps c={T.ink3} size={11} tracking="0">{tr(lang, 'sent back', 'devueltas')}</Caps>
+        <Caps c={T.ink3} size={11} tracking="0">{'sent back'}</Caps>
       </div>
       {/* Avg inspection */}
       <div style={cardBase}>
-        <Caps>{tr(lang, 'Avg inspection', 'Inspección prom.')}</Caps>
+        <Caps>{'Avg inspection'}</Caps>
         <span style={valStyle}>{stats ? fmtDec(stats.avgInspectionDurationSec / 60) : '—'}</span>
-        <Caps c={T.ink3} size={11} tracking="0">{tr(lang, 'per room', 'por habitación')}</Caps>
+        <Caps c={T.ink3} size={11} tracking="0">{'per room'}</Caps>
       </div>
     </div>
   );
@@ -904,20 +893,20 @@ function QueueRow({ row, lang, onInspect }: { row: InspectionQueueRoom; lang: 'e
       <div style={{ flex: 1, minWidth: 0 }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 3 }}>
           <Pill tone={recheck ? 'warm' : 'sage'}>
-            {recheck ? tr(lang, 'Re-check', 'Reinspección') : tr(lang, 'Pending', 'Pendiente')}
+            {recheck ? 'Re-check' : 'Pending'}
           </Pill>
           {row.priorFailCount > 0 && (
-            <Pill tone="red">{row.priorFailCount} {tr(lang, 'fail', 'fallo')}</Pill>
+            <Pill tone="red">{row.priorFailCount} {'fail'}</Pill>
           )}
         </div>
         <div style={{ fontFamily: FONT_SANS, fontSize: 12.5, color: T.ink2, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-          {row.housekeeperName ?? tr(lang, 'Unassigned', 'Sin asignar')}
+          {row.housekeeperName ?? 'Unassigned'}
           {' · '}
-          {ago ? tr(lang, `cleaned ${ago} ago`, `limpiada hace ${ago}`) : tr(lang, 'just cleaned', 'recién limpiada')}
+          {ago ? `cleaned ${ago} ago` : 'just cleaned'}
         </div>
       </div>
       <Btn variant="primary" size="sm" onClick={onInspect}>
-        {tr(lang, 'Inspect', 'Inspeccionar')} →
+        {'Inspect'} →
       </Btn>
     </div>
   );
@@ -926,10 +915,10 @@ function QueueRow({ row, lang, onInspect }: { row: InspectionQueueRoom; lang: 'e
 function HistoryCard({ rows, lang }: { rows: InspectionHistoryEntry[]; lang: 'en' | 'es' }) {
   return (
     <Card padding="18px 22px 14px">
-      <Caps style={{ marginBottom: 10, display: 'block' }}>{tr(lang, 'Recent inspections', 'Inspecciones recientes')}</Caps>
+      <Caps style={{ marginBottom: 10, display: 'block' }}>{'Recent inspections'}</Caps>
       {rows.length === 0 ? (
         <div style={{ color: T.ink3, fontFamily: FONT_SANS, fontSize: 12 }}>
-          {tr(lang, 'Nothing yet.', 'Nada por ahora.')}
+          {'Nothing yet.'}
         </div>
       ) : (
         <div style={{ display: 'flex', flexDirection: 'column' }}>
@@ -943,10 +932,10 @@ function HistoryCard({ rows, lang }: { rows: InspectionHistoryEntry[]; lang: 'en
                 <div style={{ fontFamily: FONT_SANS, fontSize: 12.5, color: T.ink, minWidth: 0 }}>
                   <span style={{ fontWeight: 600 }}>{r.roomNumber}</span>
                   {r.inspectorName && <span style={{ color: T.ink3 }}> · {r.inspectorName.split(' ')[0]}</span>}
-                  <span style={{ color: T.ink3 }}> · {ago ? tr(lang, `${ago} ago`, `hace ${ago}`) : tr(lang, 'just now', 'recién')}</span>
+                  <span style={{ color: T.ink3 }}> · {ago ? `${ago} ago` : 'just now'}</span>
                 </div>
                 <Pill tone={r.result === 'pass' ? 'sage' : r.escalated ? 'red' : 'caramel'}>
-                  {r.result === 'pass' ? tr(lang, 'Pass', 'Aprob.') : tr(lang, 'Fail', 'Falló')}
+                  {r.result === 'pass' ? 'Pass' : 'Fail'}
                   {r.failedItemCount > 0 && ` · ${r.failedItemCount}`}
                 </Pill>
               </div>
@@ -975,19 +964,19 @@ function Leaderboard({
         padding: '10px 0', borderBottom: `1px solid ${T.ruleSoft}`,
       }}>
         <Caps size={9}>#</Caps>
-        <Caps size={9}>{tr(lang, 'Crew', 'Limpiadora')}</Caps>
-        <Caps size={9}>{tr(lang, 'Rooms', 'Cuartos')}</Caps>
-        <Caps size={9}>{tr(lang, 'Avg', 'Tiempo')}</Caps>
-        <Caps size={9}>{tr(lang, 'Pace', 'Ritmo')}</Caps>
+        <Caps size={9}>{'Crew'}</Caps>
+        <Caps size={9}>{'Rooms'}</Caps>
+        <Caps size={9}>{'Avg'}</Caps>
+        <Caps size={9}>{'Pace'}</Caps>
       </div>
       {loading && (
         <p style={{ fontFamily: FONT_SANS, fontSize: 13, color: T.ink2, padding: '18px 0' }}>
-          {tr(lang, 'Loading…', 'Cargando…')}
+          {'Loading…'}
         </p>
       )}
       {!loading && rows.length === 0 && (
         <p style={{ fontFamily: FONT_SANS, fontSize: 13, color: T.ink2, padding: '18px 0' }}>
-          {tr(lang, 'Not enough data in this period yet.', 'Sin datos suficientes en este período.')}
+          {'Not enough data in this period yet.'}
         </p>
       )}
       {rows.map((r, i) => {
@@ -1008,9 +997,9 @@ function Leaderboard({
             <span style={{ fontFamily: FONT_MONO, fontSize: 13, color: T.ink }}>{r.total}</span>
             <span style={{ fontFamily: FONT_MONO, fontSize: 13, color: T.ink, fontWeight: 600 }}>{fmtDec(r.avgMins)}</span>
             <span>
-              {pace === 'fast' && <Pill tone="sage">↑ {tr(lang, 'Fast', 'Rápido')}</Pill>}
-              {pace === 'slow' && <Pill tone="warm">↓ {tr(lang, 'Slow', 'Lento')}</Pill>}
-              {pace === 'on' && <Pill tone="neutral">· {tr(lang, 'On pace', 'En ritmo')}</Pill>}
+              {pace === 'fast' && <Pill tone="sage">↑ {'Fast'}</Pill>}
+              {pace === 'slow' && <Pill tone="warm">↓ {'Slow'}</Pill>}
+              {pace === 'on' && <Pill tone="neutral">· {'On pace'}</Pill>}
             </span>
           </div>
         );
@@ -1030,9 +1019,9 @@ function EfficiencyCard({
   lang: 'en' | 'es';
 }) {
   const rows = [
-    { l: tr(lang, 'Checkout', 'Salida'),       sub: tr(lang, 'full turnover', 'cambio total'), v: typeAvgs.checkout, tone: T.warm,        share: typeAvgs.shareCheckout },
-    { l: tr(lang, 'Stay · light', 'Estadía · 1'), sub: tr(lang, 'day 1', 'día 1'),             v: typeAvgs.s1,       tone: T.sageDeep,    share: typeAvgs.shareS1 },
-    { l: tr(lang, 'Stay · full', 'Estadía · 2'),  sub: tr(lang, 'day 2+', 'día 2+'),           v: typeAvgs.s2,       tone: T.caramelDeep, share: typeAvgs.shareS2 },
+    { l: 'Checkout',       sub: 'full turnover', v: typeAvgs.checkout, tone: T.warm,        share: typeAvgs.shareCheckout },
+    { l: 'Stay · light', sub: 'day 1',             v: typeAvgs.s1,       tone: T.sageDeep,    share: typeAvgs.shareS1 },
+    { l: 'Stay · full',  sub: 'day 2+',           v: typeAvgs.s2,       tone: T.caramelDeep, share: typeAvgs.shareS2 },
   ];
   return (
     <Card padding="20px 22px">
@@ -1040,14 +1029,14 @@ function EfficiencyCard({
         display: 'flex', justifyContent: 'space-between', alignItems: 'baseline',
         marginBottom: 12, paddingBottom: 12, borderBottom: `1px solid ${T.rule}`,
       }}>
-        <Caps>{tr(lang, 'Cleaning efficiency', 'Eficiencia de limpieza')}</Caps>
+        <Caps>{'Cleaning efficiency'}</Caps>
         <span style={{ fontFamily: FONT_MONO, fontSize: 11, color: T.ink2 }}>
-          {eligibleCount} {tr(lang, 'cleans', 'limpiezas')}
+          {eligibleCount} {'cleans'}
         </span>
       </div>
       {/* Overall hero */}
       <div style={{ paddingBottom: 12, borderBottom: `1px solid ${T.ruleSoft}` }}>
-        <Caps size={9}>{tr(lang, 'Overall avg', 'Promedio general')}</Caps>
+        <Caps size={9}>{'Overall avg'}</Caps>
         <div style={{ marginTop: 6 }}>
           <span style={{ fontFamily: FONT_SANS, fontSize: 32, color: T.ink, letterSpacing: '-0.02em', lineHeight: 1, fontWeight: 600 }}>
             {typeAvgs.overall != null ? (
@@ -1080,7 +1069,7 @@ function EfficiencyCard({
             <span style={{ display: 'block', height: '100%', width: `${Math.round(e.share * 100)}%`, background: e.tone, borderRadius: 999 }} />
           </div>
           <Caps size={9} tracking="0.06em" style={{ marginTop: 4, display: 'inline-block' }}>
-            {Math.round(e.share * 100)}% {tr(lang, 'of cleans', 'de limpiezas')}
+            {Math.round(e.share * 100)}% {'of cleans'}
           </Caps>
         </div>
       ))}
@@ -1138,15 +1127,15 @@ function InspectDrawer({
         {/* Header */}
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
           <div>
-            <Caps>{tr(lang, 'Inspect room', 'Inspeccionar habitación')}</Caps>
+            <Caps>{'Inspect room'}</Caps>
             <div style={{ fontFamily: FONT_SANS, fontWeight: 600, fontSize: 32, color: T.ink, letterSpacing: '-0.02em', lineHeight: 1, margin: '2px 0 4px' }}>
               {active.inspection.roomNumber}
             </div>
             <span style={{ fontFamily: FONT_MONO, fontSize: 11, color: T.ink3 }}>
-              {active.checklist.name} · {active.checklist.items.length} {tr(lang, 'checks', 'puntos')}
+              {active.checklist.name} · {active.checklist.items.length} {'checks'}
             </span>
           </div>
-          <Btn variant="ghost" size="sm" onClick={onClose}>{tr(lang, 'Close', 'Cerrar')}</Btn>
+          <Btn variant="ghost" size="sm" onClick={onClose}>{'Close'}</Btn>
         </div>
 
         {/* Checklist */}
@@ -1173,7 +1162,7 @@ function InspectDrawer({
 
         {/* Overall note */}
         <textarea
-          placeholder={tr(lang, 'Optional note to housekeeper / manager', 'Nota opcional para la limpieza / gerente')}
+          placeholder={'Optional note to housekeeper / manager'}
           value={active.notes}
           onChange={(e) => onNotes(e.target.value)}
           rows={2}
@@ -1190,17 +1179,17 @@ function InspectDrawer({
         }}>
           {!allDecided && (
             <span style={{ fontFamily: FONT_MONO, fontSize: 11, color: T.ink3 }}>
-              {tr(lang, 'Mark every check to submit', 'Marca cada punto para enviar')}
+              {'Mark every check to submit'}
             </span>
           )}
           {allDecided && !anyFail && (
             <Btn variant="sage" size="lg" onClick={() => onSubmit('pass')} disabled={submitting}>
-              {submitting ? tr(lang, 'Saving…', 'Guardando…') : tr(lang, '✓ Pass, room ready', '✓ Aprobar, lista')}
+              {submitting ? 'Saving…' : '✓ Pass, room ready'}
             </Btn>
           )}
           {allDecided && anyFail && (
             <Btn variant="primary" size="lg" onClick={() => onSubmit('fail')} disabled={submitting} style={{ background: T.warm, borderColor: T.warm }}>
-              {submitting ? tr(lang, 'Saving…', 'Guardando…') : tr(lang, 'Send for re-clean →', 'Enviar a re-limpieza →')}
+              {submitting ? 'Saving…' : 'Send for re-clean →'}
             </Btn>
           )}
         </div>
@@ -1219,7 +1208,7 @@ function ChecklistRow({
   onNote: (n: string) => void;
   onFile: (f: File) => void;
 }) {
-  const label = lang === 'es' && item.labelEs ? item.labelEs : item.label;
+  const label = item.label;
   const isFail = draft.state === 'minor' || draft.state === 'major' || draft.state === 'critical';
   const isCritical = draft.state === 'critical';
   return (
@@ -1233,22 +1222,22 @@ function ChecklistRow({
           {label}
           {item.requiresPhotoOnFail && (
             <span style={{ marginLeft: 6, color: T.warm, fontSize: 9, fontFamily: FONT_MONO }}>
-              {tr(lang, 'PHOTO', 'FOTO')}
+              {'PHOTO'}
             </span>
           )}
         </div>
         <div style={{ display: 'flex', gap: 4 }}>
-          <SevButton label={tr(lang, 'Pass', 'Aprob.')} active={draft.state === 'pass'} tone="sage" onClick={() => onState('pass')} />
-          <SevButton label={tr(lang, 'Minor', 'Menor')} active={draft.state === 'minor'} tone="warm" onClick={() => onState('minor')} />
-          <SevButton label={tr(lang, 'Major', 'Mayor')} active={draft.state === 'major'} tone="warm" onClick={() => onState('major')} />
-          <SevButton label={tr(lang, 'Critical', 'Crítico')} active={draft.state === 'critical'} tone="red" onClick={() => onState('critical')} />
+          <SevButton label={'Pass'} active={draft.state === 'pass'} tone="sage" onClick={() => onState('pass')} />
+          <SevButton label={'Minor'} active={draft.state === 'minor'} tone="warm" onClick={() => onState('minor')} />
+          <SevButton label={'Major'} active={draft.state === 'major'} tone="warm" onClick={() => onState('major')} />
+          <SevButton label={'Critical'} active={draft.state === 'critical'} tone="red" onClick={() => onState('critical')} />
         </div>
       </div>
       {isFail && (
         <div style={{ marginTop: 10, display: 'flex', flexDirection: 'column', gap: 8 }}>
           <input
             type="text"
-            placeholder={tr(lang, 'Note (what to fix)', 'Nota (qué corregir)')}
+            placeholder={'Note (what to fix)'}
             value={draft.note}
             onChange={(e) => onNote(e.target.value)}
             style={{
@@ -1262,10 +1251,10 @@ function ChecklistRow({
               border: `1px solid ${T.rule}`, background: T.paper, fontFamily: FONT_SANS, fontSize: 12, color: T.ink, cursor: 'pointer',
             }}>
               {draft.uploading
-                ? tr(lang, 'Uploading…', 'Subiendo…')
+                ? 'Uploading…'
                 : draft.photoUrl
-                  ? tr(lang, 'Replace photo', 'Cambiar foto')
-                  : tr(lang, 'Add photo', 'Agregar foto')}
+                  ? 'Replace photo'
+                  : 'Add photo'}
               <input
                 type="file"
                 accept="image/png,image/jpeg,image/webp"

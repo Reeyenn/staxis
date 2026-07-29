@@ -77,9 +77,8 @@ describe('mapActivityRows', () => {
     );
     assert.equal(item.who, 'Maria Garcia');
     assert.equal(item.outcome, 'done');
-    // Real EN/ES from buildActionSummary — not a generic "Run <tool>".
+    // Real action copy from buildActionSummary — not a generic "Run <tool>".
     assert.match(item.summary.en, /Send Ana this message/);
-    assert.match(item.summary.es, /Enviar a Ana/);
     assert.equal(item.error, null);
   });
 
@@ -123,9 +122,9 @@ describe('groupByDay', () => {
     assert.equal(en[1].label, 'Yesterday');
     assert.equal(en[0].items[0].id, 'i0'); // order preserved
 
-    const es = groupByDay(items, 'es', now);
-    assert.equal(es[0].label, 'Hoy');
-    assert.equal(es[1].label, 'Ayer');
+    const legacyLocale = groupByDay(items, 'es', now);
+    assert.equal(legacyLocale[0].label, 'Today');
+    assert.equal(legacyLocale[1].label, 'Yesterday');
   });
 
   test('same-day items collapse into one group', () => {

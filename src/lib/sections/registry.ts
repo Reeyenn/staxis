@@ -40,23 +40,21 @@ export interface SectionMeta {
   /** Path prefixes that belong to this section (drives sectionForPath). */
   routePrefixes: readonly string[];
   label_en: string;
-  label_es: string;
   desc_en: string;
-  desc_es: string;
 }
 
 // Ordered — drives the top nav, the admin Sections modal, and the onboarding
 // picker so all three always show the same 8 in the same order.
 export const SECTION_LIST: readonly SectionMeta[] = [
-  { key: 'staxis',         navHref: '/feed',           routePrefixes: ['/feed'],           label_en: 'Staxis',         label_es: 'Staxis',        desc_en: 'The decision feed and AI copilot home',           desc_es: 'El panel de decisiones y el copiloto de IA' },
-  { key: 'dashboard',      navHref: '/dashboard',      routePrefixes: ['/dashboard'],      label_en: 'Dashboard',      label_es: 'Panel',         desc_en: 'Live occupancy, KPIs, and what needs attention',  desc_es: 'Ocupación en vivo, KPIs y lo que requiere atención' },
-  { key: 'housekeeping',   navHref: '/housekeeping',   routePrefixes: ['/housekeeping'],   label_en: 'Housekeeping',   label_es: 'Limpieza',      desc_en: 'Who cleans what today, and how well it got done',  desc_es: 'Quién limpia qué hoy, y qué tan bien quedó' },
-  { key: 'communications', navHref: '/communications', routePrefixes: ['/communications'], label_en: 'Communications', label_es: 'Comunicación',  desc_en: 'Messages, log book, calendar, and announcements', desc_es: 'Mensajes, bitácora, calendario y anuncios' },
-  { key: 'maintenance',    navHref: '/maintenance',    routePrefixes: ['/maintenance'],    label_en: 'Maintenance',    label_es: 'Mantenimiento', desc_en: 'Work orders and preventive maintenance',          desc_es: 'Órdenes de trabajo y mantenimiento preventivo' },
-  { key: 'inventory',      navHref: '/inventory',      routePrefixes: ['/inventory'],      label_en: 'Inventory',      label_es: 'Inventario',    desc_en: 'Supplies, counts, reorders, and vendors',         desc_es: 'Suministros, conteos, pedidos y proveedores' },
+  { key: 'staxis',         navHref: '/feed',           routePrefixes: ['/feed'],           label_en: 'Staxis',         desc_en: 'The decision feed and AI copilot home' },
+  { key: 'dashboard',      navHref: '/dashboard',      routePrefixes: ['/dashboard'],      label_en: 'Dashboard',      desc_en: 'Live occupancy, KPIs, and what needs attention' },
+  { key: 'housekeeping',   navHref: '/housekeeping',   routePrefixes: ['/housekeeping'],   label_en: 'Housekeeping',   desc_en: 'Who cleans what today, and how well it got done' },
+  { key: 'communications', navHref: '/communications', routePrefixes: ['/communications'], label_en: 'Communications', desc_en: 'Messages, log book, calendar, and announcements' },
+  { key: 'maintenance',    navHref: '/maintenance',    routePrefixes: ['/maintenance'],    label_en: 'Maintenance',    desc_en: 'Work orders and preventive maintenance' },
+  { key: 'inventory',      navHref: '/inventory',      routePrefixes: ['/inventory'],      label_en: 'Inventory',      desc_en: 'Supplies, counts, reorders, and vendors' },
   // People moved to My Hotel → People on 2026-07-27; Staff is the schedule now.
-  { key: 'staff',          navHref: '/staff',          routePrefixes: ['/staff'],          label_en: 'Staff',          label_es: 'Personal',      desc_en: 'Weekly schedule and shifts',                      desc_es: 'Horario semanal y turnos' },
-  { key: 'financials',     navHref: '/financials',     routePrefixes: ['/financials'],     label_en: 'Financials',     label_es: 'Finanzas',      desc_en: 'Checkbook, budget, revenue, and profit',          desc_es: 'Chequera, presupuesto, ingresos y ganancias' },
+  { key: 'staff',          navHref: '/staff',          routePrefixes: ['/staff'],          label_en: 'Staff',          desc_en: 'Weekly schedule and shifts' },
+  { key: 'financials',     navHref: '/financials',     routePrefixes: ['/financials'],     label_en: 'Financials',     desc_en: 'Checkbook, budget, revenue, and profit' },
 ];
 
 /** O(1) lookup by key. */

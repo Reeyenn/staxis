@@ -64,10 +64,6 @@ function scopeTypesForProfile(profile: string): readonly AccessScopeType[] {
   return ['organization', 'portfolio', 'property'];
 }
 
-function copy(lang: string, en: string, es: string): string {
-  return lang === 'es' ? es : en;
-}
-
 function responseError(body: Envelope<unknown>, fallback: string): string {
   if (typeof body.error === 'string') return body.error;
   if (body.error && typeof body.error === 'object') {
@@ -79,18 +75,17 @@ function responseError(body: Envelope<unknown>, fallback: string): string {
 }
 
 function profileLabel(profile: string, lang: string): string {
-  const labels: Record<string, [string, string]> = {
-    organization_owner: ['Organization Owner', 'Propietario de la organización'],
-    organization_admin: ['Organization Administrator', 'Administrador de la organización'],
-    portfolio_manager: ['Portfolio Manager', 'Gerente de cartera'],
-    property_manager: ['Property Manager', 'Gerente de hotel'],
-    department_lead: ['Department Lead', 'Líder de departamento'],
-    contributor: ['Contributor', 'Colaborador'],
-    viewer: ['Viewer', 'Lector'],
-    external_collaborator: ['External Collaborator', 'Colaborador externo'],
+  const labels: Record<string, string> = {
+    organization_owner: 'Organization Owner',
+    organization_admin: 'Organization Administrator',
+    portfolio_manager: 'Portfolio Manager',
+    property_manager: 'Property Manager',
+    department_lead: 'Department Lead',
+    contributor: 'Contributor',
+    viewer: 'Viewer',
+    external_collaborator: 'External Collaborator',
   };
-  const pair = labels[profile] ?? [titleCaseAccessValue(profile), titleCaseAccessValue(profile)];
-  return copy(lang, pair[0], pair[1]);
+  return labels[profile] ?? titleCaseAccessValue(profile);
 }
 
 function useDialogBehavior(onClose: () => void, busy = false) {
@@ -180,7 +175,7 @@ function WorkflowDialog({ title, eyebrow, description, lang, onClose, children, 
       <button
         type="button"
         className={styles.dialogScrim}
-        aria-label={copy(lang, 'Close dialog', 'Cerrar diálogo')}
+        aria-label={'Close dialog'}
         onClick={() => { if (!busy) onClose(); }}
       />
       <div
@@ -205,7 +200,7 @@ function WorkflowDialog({ title, eyebrow, description, lang, onClose, children, 
             className={styles.iconButton}
             onClick={onClose}
             disabled={busy}
-            aria-label={copy(lang, 'Close', 'Cerrar')}
+            aria-label={'Close'}
           >
             <X size={17} aria-hidden="true" />
           </button>
@@ -310,7 +305,7 @@ function ScopeFields({ data, organizationId, profile, scope, onScopeChange, lang
   return (
     <div className={styles.formGrid}>
       <label className={styles.formField}>
-        <span>{copy(lang, 'Access scope', 'Alcance de acceso')}</span>
+        <span>{'Access scope'}</span>
         <select
           value={scope.type}
           onChange={(event) => {
@@ -325,16 +320,16 @@ function ScopeFields({ data, organizationId, profile, scope, onScopeChange, lang
         >
           {types.map((type) => (
             <option key={type} value={type}>{type === 'organization'
-              ? copy(lang, 'Entire organization', 'Toda la organización')
+              ? 'Entire organization'
               : type === 'portfolio'
-                ? copy(lang, 'Portfolio or region', 'Cartera o región')
-                : copy(lang, 'One hotel', 'Un hotel')}</option>
+                ? 'Portfolio or region'
+                : 'One hotel'}</option>
           ))}
         </select>
       </label>
       {scope.type !== 'organization' ? (
         <label className={styles.formField}>
-          <span>{scope.type === 'portfolio' ? copy(lang, 'Portfolio / region', 'Cartera / región') : copy(lang, 'Hotel', 'Hotel')}</span>
+          <span>{scope.type === 'portfolio' ? 'Portfolio / region' : 'Hotel'}</span>
           <select value={scope.targetId} onChange={(event) => onScopeChange({ ...scope, targetId: event.target.value })}>
             {targetRows.map((row) => <option key={row.id} value={row.id}>{row.name}</option>)}
           </select>
@@ -362,18 +357,18 @@ function ScopePreview({ data, organizationId, profile, scope, lang }: {
       : hotel?.name;
 
   return (
-    <section className={styles.mutationPreview} aria-label={copy(lang, 'Access preview', 'Vista previa de acceso')}>
+    <section className={styles.mutationPreview} aria-label={'Access preview'}>
       <div className={styles.previewHeading}>
         <ShieldCheck size={17} aria-hidden="true" />
         <div>
-          <strong>{copy(lang, 'Exact access preview', 'Vista previa exacta del acceso')}</strong>
-          <span>{copy(lang, 'Review before you send', 'Revisa antes de enviar')}</span>
+          <strong>{'Exact access preview'}</strong>
+          <span>{'Review before you send'}</span>
         </div>
       </div>
       <dl>
-        <div><dt>{copy(lang, 'Profile', 'Perfil')}</dt><dd>{profileLabel(profile, lang)}</dd></div>
-        <div><dt>{copy(lang, 'Scope', 'Alcance')}</dt><dd>{scopeLabel || copy(lang, 'Select a scope', 'Selecciona un alcance')}</dd></div>
-        <div><dt>{copy(lang, 'Hotels affected', 'Hoteles afectados')}</dt><dd>{hotels.length}</dd></div>
+        <div><dt>{'Profile'}</dt><dd>{profileLabel(profile, lang)}</dd></div>
+        <div><dt>{'Scope'}</dt><dd>{scopeLabel || 'Select a scope'}</dd></div>
+        <div><dt>{'Hotels affected'}</dt><dd>{hotels.length}</dd></div>
       </dl>
       {hotels.length > 0 ? (
         <div className={styles.previewHotels}>
@@ -454,7 +449,7 @@ export function InvitePersonDialog({ data, lang, onClose, onCompleted }: {
       });
       const body = await response.json().catch(() => ({})) as Envelope<InviteResponse>;
       if (!response.ok || !body.ok) {
-        throw new Error(responseError(body, copy(lang, 'Invitation could not be created.', 'No se pudo crear la invitación.')));
+        throw new Error(responseError(body, 'Invitation could not be created.'));
       }
       setSuccess({
         link: body.data?.inviteLink ?? null,
@@ -462,7 +457,7 @@ export function InvitePersonDialog({ data, lang, onClose, onCompleted }: {
         emailError: body.data?.emailError ?? null,
       });
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : copy(lang, 'Invitation could not be sent.', 'No se pudo enviar la invitación.'));
+      setError(caught instanceof Error ? caught.message : 'Invitation could not be sent.');
     } finally {
       setSubmitting(false);
     }
@@ -476,17 +471,17 @@ export function InvitePersonDialog({ data, lang, onClose, onCompleted }: {
   if (success) {
     return (
       <WorkflowDialog
-        title={success.emailSent ? copy(lang, 'Invitation sent', 'Invitación enviada') : copy(lang, 'Invitation ready', 'Invitación lista')}
-        eyebrow={copy(lang, 'Success', 'Éxito')}
-        description={copy(lang, 'The invitation is email-specific, single-use, and expires automatically.', 'La invitación es específica para el correo, de un solo uso y vence automáticamente.')}
+        title={success.emailSent ? 'Invitation sent' : 'Invitation ready'}
+        eyebrow={'Success'}
+        description={'The invitation is email-specific, single-use, and expires automatically.'}
         lang={lang}
         onClose={finish}
       >
         <div className={styles.successState} role="status">
           <span><CheckCircle2 size={30} aria-hidden="true" /></span>
-          <h3>{success.emailSent ? copy(lang, 'Invitation sent', 'Invitación enviada') : copy(lang, 'Copy and share the secure link', 'Copia y comparte el enlace seguro')}</h3>
+          <h3>{success.emailSent ? 'Invitation sent' : 'Copy and share the secure link'}</h3>
           <p>{email.trim().toLowerCase()}</p>
-          {!success.emailSent ? <p>{success.emailError ?? copy(lang, 'Email delivery was unavailable. The invitation is still valid.', 'El envío de correo no estuvo disponible. La invitación sigue siendo válida.')}</p> : null}
+          {!success.emailSent ? <p>{success.emailError ?? 'Email delivery was unavailable. The invitation is still valid.'}</p> : null}
           {success.link ? (
             <button
               type="button"
@@ -497,13 +492,13 @@ export function InvitePersonDialog({ data, lang, onClose, onCompleted }: {
               }}
             >
               <Copy size={15} aria-hidden="true" />
-              {copied ? copy(lang, 'Link copied', 'Enlace copiado') : copy(lang, 'Copy invite link', 'Copiar enlace de invitación')}
+              {copied ? 'Link copied' : 'Copy invite link'}
             </button>
           ) : null}
         </div>
         <div className={styles.dialogFooter}>
-          <span><ShieldCheck size={14} aria-hidden="true" />{copy(lang, 'Access stays pending until accepted', 'El acceso permanece pendiente hasta ser aceptado')}</span>
-          <button type="button" className={styles.primaryButton} onClick={finish}>{copy(lang, 'Done', 'Listo')}</button>
+          <span><ShieldCheck size={14} aria-hidden="true" />{'Access stays pending until accepted'}</span>
+          <button type="button" className={styles.primaryButton} onClick={finish}>{'Done'}</button>
         </div>
       </WorkflowDialog>
     );
@@ -511,9 +506,9 @@ export function InvitePersonDialog({ data, lang, onClose, onCompleted }: {
 
   return (
     <WorkflowDialog
-      title={copy(lang, 'Invite a person', 'Invitar a una persona')}
-      eyebrow={copy(lang, 'New company access', 'Nuevo acceso de empresa')}
-      description={copy(lang, 'A job title never grants access. Choose the profile and exact scope separately.', 'Un cargo nunca concede acceso. Elige el perfil y el alcance exacto por separado.')}
+      title={'Invite a person'}
+      eyebrow={'New company access'}
+      description={'A job title never grants access. Choose the profile and exact scope separately.'}
       lang={lang}
       onClose={onClose}
       busy={submitting}
@@ -521,7 +516,7 @@ export function InvitePersonDialog({ data, lang, onClose, onCompleted }: {
       <form className={styles.workflowForm} onSubmit={submit}>
         <div className={styles.formGrid}>
           <label className={styles.formField}>
-            <span>{copy(lang, 'Email address', 'Correo electrónico')}</span>
+            <span>{'Email address'}</span>
             <input
               type="email"
               value={email}
@@ -531,10 +526,10 @@ export function InvitePersonDialog({ data, lang, onClose, onCompleted }: {
               required
               aria-invalid={email.length > 0 && !emailValid}
             />
-            {email.length > 0 && !emailValid ? <small>{copy(lang, 'Enter a valid email.', 'Ingresa un correo válido.')}</small> : null}
+            {email.length > 0 && !emailValid ? <small>{'Enter a valid email.'}</small> : null}
           </label>
           <label className={styles.formField}>
-            <span>{copy(lang, 'Organization', 'Organización')}</span>
+            <span>{'Organization'}</span>
             <select value={organizationId} onChange={(event) => {
               const nextOrganizationId = event.target.value;
               const nextProfile = data.permissions.delegationPolicies
@@ -551,19 +546,19 @@ export function InvitePersonDialog({ data, lang, onClose, onCompleted }: {
 
         <div className={styles.formGrid}>
           <label className={styles.formField}>
-            <span>{copy(lang, 'Job category', 'Categoría de trabajo')}</span>
+            <span>{'Job category'}</span>
             <select value={jobCategory} onChange={(event) => setJobCategory(event.target.value)}>
               {JOB_CATEGORIES.map((category) => <option key={category} value={category}>{titleCaseAccessValue(category)}</option>)}
             </select>
           </label>
           <label className={styles.formField}>
-            <span>{copy(lang, 'Exact job title', 'Cargo exacto')}</span>
-            <input type="text" value={jobTitle} onChange={(event) => setJobTitle(event.target.value)} placeholder={copy(lang, 'e.g. Regional Manager', 'p. ej., Gerente regional')} />
+            <span>{'Exact job title'}</span>
+            <input type="text" value={jobTitle} onChange={(event) => setJobTitle(event.target.value)} placeholder={'e.g. Regional Manager'} />
           </label>
         </div>
 
         <label className={styles.formField}>
-          <span>{copy(lang, 'Access profile', 'Perfil de acceso')}</span>
+          <span>{'Access profile'}</span>
           <select
             value={profile}
             onChange={(event) => {
@@ -574,17 +569,17 @@ export function InvitePersonDialog({ data, lang, onClose, onCompleted }: {
           >
             {profiles.map((option) => <option key={option} value={option}>{profileLabel(option, lang)}</option>)}
           </select>
-          <em>{copy(lang, 'Only profiles you are allowed to grant are listed.', 'Solo se muestran los perfiles que puedes conceder.')}</em>
+          <em>{'Only profiles you are allowed to grant are listed.'}</em>
         </label>
 
         <ScopeFields data={data} organizationId={organizationId} profile={profile} scope={scope} onScopeChange={setScope} lang={lang} mode="grant" />
 
         <label className={styles.formField}>
             <span>{profile === 'external_collaborator'
-              ? copy(lang, 'Expiration (required)', 'Vencimiento (obligatorio)')
+              ? 'Expiration (required)'
               : profile === 'organization_owner'
-                ? copy(lang, 'Expiration', 'Vencimiento')
-                : copy(lang, 'Expiration (optional)', 'Vencimiento (opcional)')}</span>
+                ? 'Expiration'
+                : 'Expiration (optional)'}</span>
             <div className={styles.inputWithIcon}>
               <CalendarClock size={16} aria-hidden="true" />
               <input
@@ -596,21 +591,21 @@ export function InvitePersonDialog({ data, lang, onClose, onCompleted }: {
                 disabled={profile === 'organization_owner'}
               />
             </div>
-            {profile === 'organization_owner' ? <em>{copy(lang, 'Owner access cannot expire.', 'El acceso del propietario no puede vencer.')}</em> : null}
+            {profile === 'organization_owner' ? <em>{'Owner access cannot expire.'}</em> : null}
             {!expiryValid ? <small>{profile === 'external_collaborator' && !expiresAt
-              ? copy(lang, 'External access requires an expiration date.', 'El acceso externo requiere una fecha de vencimiento.')
-              : copy(lang, 'Choose a date after the seven-day invitation window.', 'Elige una fecha posterior al período de invitación de siete días.')}</small> : null}
+              ? 'External access requires an expiration date.'
+              : 'Choose a date after the seven-day invitation window.'}</small> : null}
         </label>
 
         <ScopePreview data={data} organizationId={organizationId} profile={profile} scope={scope} lang={lang} />
         {error ? <div className={styles.formError} role="alert">{error}</div> : null}
         <div className={styles.dialogFooter}>
-          <span><ShieldCheck size={14} aria-hidden="true" />{copy(lang, 'The server re-checks your authority', 'El servidor vuelve a verificar tu autoridad')}</span>
+          <span><ShieldCheck size={14} aria-hidden="true" />{'The server re-checks your authority'}</span>
           <div className={styles.dialogActions}>
-            <button type="button" className={styles.secondaryButton} onClick={onClose} disabled={submitting}>{copy(lang, 'Cancel', 'Cancelar')}</button>
+            <button type="button" className={styles.secondaryButton} onClick={onClose} disabled={submitting}>{'Cancel'}</button>
             <button type="submit" className={styles.primaryButton} disabled={!formValid || submitting}>
               {submitting ? <span className={styles.buttonSpinner} aria-hidden="true" /> : <Send size={15} aria-hidden="true" />}
-              {submitting ? copy(lang, 'Sending…', 'Enviando…') : copy(lang, 'Send invitation', 'Enviar invitación')}
+              {submitting ? 'Sending…' : 'Send invitation'}
             </button>
           </div>
         </div>
@@ -656,11 +651,11 @@ export function RequestAccessDialog({ data, lang, onClose, onCompleted }: {
       });
       const body = await response.json().catch(() => ({})) as Envelope<RequestResponse>;
       if (!response.ok || !body.ok) {
-        throw new Error(responseError(body, copy(lang, 'Request could not be submitted.', 'No se pudo enviar la solicitud.')));
+        throw new Error(responseError(body, 'Request could not be submitted.'));
       }
       setSuccess(true);
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : copy(lang, 'Request could not be submitted.', 'No se pudo enviar la solicitud.'));
+      setError(caught instanceof Error ? caught.message : 'Request could not be submitted.');
     } finally {
       setSubmitting(false);
     }
@@ -674,20 +669,20 @@ export function RequestAccessDialog({ data, lang, onClose, onCompleted }: {
   if (success) {
     return (
       <WorkflowDialog
-        title={copy(lang, 'Request submitted', 'Solicitud enviada')}
-        eyebrow={copy(lang, 'Pending review', 'Pendiente de revisión')}
-        description={copy(lang, 'The requested access is not active until an authorized manager approves it.', 'El acceso solicitado no está activo hasta que un gerente autorizado lo apruebe.')}
+        title={'Request submitted'}
+        eyebrow={'Pending review'}
+        description={'The requested access is not active until an authorized manager approves it.'}
         lang={lang}
         onClose={finish}
       >
         <div className={styles.successState} role="status">
           <span><CheckCircle2 size={30} aria-hidden="true" /></span>
-          <h3>{copy(lang, 'Your request is in review', 'Tu solicitud está en revisión')}</h3>
+          <h3>{'Your request is in review'}</h3>
           <p>{profileLabel(profile, lang)}</p>
         </div>
         <div className={styles.dialogFooter}>
-          <span><KeyRound size={14} aria-hidden="true" />{copy(lang, 'No access has been granted yet', 'Aún no se ha concedido acceso')}</span>
-          <button type="button" className={styles.primaryButton} onClick={finish}>{copy(lang, 'Done', 'Listo')}</button>
+          <span><KeyRound size={14} aria-hidden="true" />{'No access has been granted yet'}</span>
+          <button type="button" className={styles.primaryButton} onClick={finish}>{'Done'}</button>
         </div>
       </WorkflowDialog>
     );
@@ -695,9 +690,9 @@ export function RequestAccessDialog({ data, lang, onClose, onCompleted }: {
 
   return (
     <WorkflowDialog
-      title={copy(lang, 'Request access', 'Solicitar acceso')}
-      eyebrow={copy(lang, 'Approval required', 'Se requiere aprobación')}
-      description={copy(lang, 'Choose the exact profile and scope you need. Your request does not grant access by itself.', 'Elige el perfil y el alcance exactos que necesitas. Tu solicitud no concede acceso por sí sola.')}
+      title={'Request access'}
+      eyebrow={'Approval required'}
+      description={'Choose the exact profile and scope you need. Your request does not grant access by itself.'}
       lang={lang}
       onClose={onClose}
       busy={submitting}
@@ -705,13 +700,13 @@ export function RequestAccessDialog({ data, lang, onClose, onCompleted }: {
       <form className={styles.workflowForm} onSubmit={submit}>
         <div className={styles.formGrid}>
           <label className={styles.formField}>
-            <span>{copy(lang, 'Organization', 'Organización')}</span>
+            <span>{'Organization'}</span>
             <select value={organizationId} onChange={(event) => { setOrganizationId(event.target.value); setScope({ type: 'property', targetId: '' }); }}>
               {organizations.map((organization) => <option key={organization.id} value={organization.id}>{organization.name}</option>)}
             </select>
           </label>
           <label className={styles.formField}>
-            <span>{copy(lang, 'Requested profile', 'Perfil solicitado')}</span>
+            <span>{'Requested profile'}</span>
             <select value={profile} onChange={(event) => setProfile(event.target.value)}>
               {PROFILE_OPTIONS.map((option) => <option key={option} value={option}>{profileLabel(option, lang)}</option>)}
             </select>
@@ -719,19 +714,19 @@ export function RequestAccessDialog({ data, lang, onClose, onCompleted }: {
         </div>
         <ScopeFields data={data} organizationId={organizationId} profile={profile} scope={scope} onScopeChange={setScope} lang={lang} mode="request" />
         <label className={styles.formField}>
-          <span>{copy(lang, 'Why do you need this access?', '¿Por qué necesitas este acceso?')}</span>
-          <textarea value={reason} onChange={(event) => setReason(event.target.value)} rows={3} maxLength={500} placeholder={copy(lang, 'Explain the work you need to complete…', 'Explica el trabajo que necesitas completar…')} required />
-          <em>{reason.trim().length < 8 ? copy(lang, 'Use at least 8 characters.', 'Usa al menos 8 caracteres.') : `${reason.length} / 500`}</em>
+          <span>{'Why do you need this access?'}</span>
+          <textarea value={reason} onChange={(event) => setReason(event.target.value)} rows={3} maxLength={500} placeholder={'Explain the work you need to complete…'} required />
+          <em>{reason.trim().length < 8 ? 'Use at least 8 characters.' : `${reason.length} / 500`}</em>
         </label>
         <ScopePreview data={data} organizationId={organizationId} profile={profile} scope={scope} lang={lang} />
         {error ? <div className={styles.formError} role="alert">{error}</div> : null}
         <div className={styles.dialogFooter}>
-          <span><KeyRound size={14} aria-hidden="true" />{copy(lang, 'Pending until approved', 'Pendiente hasta su aprobación')}</span>
+          <span><KeyRound size={14} aria-hidden="true" />{'Pending until approved'}</span>
           <div className={styles.dialogActions}>
-            <button type="button" className={styles.secondaryButton} onClick={onClose} disabled={submitting}>{copy(lang, 'Cancel', 'Cancelar')}</button>
+            <button type="button" className={styles.secondaryButton} onClick={onClose} disabled={submitting}>{'Cancel'}</button>
             <button type="submit" className={styles.primaryButton} disabled={!formValid || submitting}>
               {submitting ? <span className={styles.buttonSpinner} aria-hidden="true" /> : <Send size={15} aria-hidden="true" />}
-              {submitting ? copy(lang, 'Submitting…', 'Enviando…') : copy(lang, 'Submit request', 'Enviar solicitud')}
+              {submitting ? 'Submitting…' : 'Submit request'}
             </button>
           </div>
         </div>
@@ -776,21 +771,21 @@ export function ReviewAccessRequestDialog({ request, lang, onClose, onCompleted 
       });
       const body = await response.json().catch(() => ({})) as Envelope<{ request?: { id: string; status: string } }>;
       if (!response.ok || !body.ok) {
-        throw new Error(responseError(body, copy(lang, 'Request could not be reviewed.', 'No se pudo revisar la solicitud.')));
+        throw new Error(responseError(body, 'Request could not be reviewed.'));
       }
       onCompleted();
       onClose();
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : copy(lang, 'Request could not be reviewed.', 'No se pudo revisar la solicitud.'));
+      setError(caught instanceof Error ? caught.message : 'Request could not be reviewed.');
       setSubmitting(false);
     }
   };
 
   return (
     <WorkflowDialog
-      title={copy(lang, 'Review access request', 'Revisar solicitud de acceso')}
-      eyebrow={copy(lang, 'Approval decision', 'Decisión de aprobación')}
-      description={copy(lang, 'The server will re-check your authority over this exact profile and scope.', 'El servidor volverá a verificar tu autoridad sobre este perfil y alcance exactos.')}
+      title={'Review access request'}
+      eyebrow={'Approval decision'}
+      description={'The server will re-check your authority over this exact profile and scope.'}
       lang={lang}
       onClose={onClose}
       busy={submitting}
@@ -802,39 +797,39 @@ export function ReviewAccessRequestDialog({ request, lang, onClose, onCompleted 
             <div><strong>{request.requesterName}</strong><span>{request.scopeLabel}</span></div>
           </div>
           <dl>
-            <div><dt>{copy(lang, 'Profile', 'Perfil')}</dt><dd>{profileLabel(request.requestedProfile, lang)}</dd></div>
-            <div><dt>{copy(lang, 'Hotels affected', 'Hoteles afectados')}</dt><dd>{request.propertyIds.length}</dd></div>
+            <div><dt>{'Profile'}</dt><dd>{profileLabel(request.requestedProfile, lang)}</dd></div>
+            <div><dt>{'Hotels affected'}</dt><dd>{request.propertyIds.length}</dd></div>
           </dl>
         </section>
         <label className={styles.formField}>
-          <span>{copy(lang, 'Decision', 'Decisión')}</span>
+          <span>{'Decision'}</span>
           <select value={decision} onChange={(event) => setDecision(event.target.value as 'approved' | 'denied')}>
-            <option value="approved">{copy(lang, 'Approve', 'Aprobar')}</option>
-            <option value="denied">{copy(lang, 'Deny', 'Rechazar')}</option>
+            <option value="approved">{'Approve'}</option>
+            <option value="denied">{'Deny'}</option>
           </select>
         </label>
         {decision === 'approved' && !owner ? (
           <label className={styles.formField}>
-            <span>{external ? copy(lang, 'Access expiration (required)', 'Vencimiento del acceso (obligatorio)') : copy(lang, 'Access expiration (optional)', 'Vencimiento del acceso (opcional)')}</span>
+            <span>{external ? 'Access expiration (required)' : 'Access expiration (optional)'}</span>
             <div className={styles.inputWithIcon}>
               <CalendarClock size={16} aria-hidden="true" />
               <input type="date" value={expiresAt} onChange={(event) => setExpiresAt(event.target.value)} min={new Date(Date.now() + 86_400_000).toISOString().slice(0, 10)} required={external} />
             </div>
-            {!expiryValid ? <small>{copy(lang, 'Choose a future date.', 'Elige una fecha futura.')}</small> : null}
+            {!expiryValid ? <small>{'Choose a future date.'}</small> : null}
           </label>
         ) : null}
         <label className={styles.formField}>
-          <span>{decision === 'denied' ? copy(lang, 'Denial reason (required)', 'Motivo del rechazo (obligatorio)') : copy(lang, 'Review note (optional)', 'Nota de revisión (opcional)')}</span>
+          <span>{decision === 'denied' ? 'Denial reason (required)' : 'Review note (optional)'}</span>
           <textarea value={reviewNote} onChange={(event) => setReviewNote(event.target.value)} rows={3} maxLength={1000} required={decision === 'denied'} />
         </label>
         {error ? <div className={styles.formError} role="alert">{error}</div> : null}
         <div className={styles.dialogFooter}>
-          <span><KeyRound size={14} aria-hidden="true" />{decision === 'approved' ? copy(lang, 'Approval grants access immediately', 'La aprobación concede acceso inmediatamente') : copy(lang, 'Denial grants no access', 'El rechazo no concede acceso')}</span>
+          <span><KeyRound size={14} aria-hidden="true" />{decision === 'approved' ? 'Approval grants access immediately' : 'Denial grants no access'}</span>
           <div className={styles.dialogActions}>
-            <button type="button" className={styles.secondaryButton} onClick={onClose} disabled={submitting}>{copy(lang, 'Cancel', 'Cancelar')}</button>
+            <button type="button" className={styles.secondaryButton} onClick={onClose} disabled={submitting}>{'Cancel'}</button>
             <button type="submit" className={styles.primaryButton} disabled={!formValid || submitting}>
               {submitting ? <span className={styles.buttonSpinner} aria-hidden="true" /> : decision === 'approved' ? <CheckCircle2 size={15} aria-hidden="true" /> : <X size={15} aria-hidden="true" />}
-              {submitting ? copy(lang, 'Saving…', 'Guardando…') : decision === 'approved' ? copy(lang, 'Approve access', 'Aprobar acceso') : copy(lang, 'Deny request', 'Rechazar solicitud')}
+              {submitting ? 'Saving…' : decision === 'approved' ? 'Approve access' : 'Deny request'}
             </button>
           </div>
         </div>
@@ -855,42 +850,42 @@ export function CompanyLifecycleDialog({ action, lang, onClose, onCompleted }: {
   const reasonValid = reason.trim().length >= 8 && reason.trim().length <= 500;
   const copyByKind = {
     revoke_grant: {
-      title: copy(lang, 'Revoke access grant', 'Revocar concesión de acceso'),
-      eyebrow: copy(lang, 'Access change', 'Cambio de acceso'),
-      description: copy(lang, 'This removes only the selected Company Hub grant. Other grants and hotel-operation roles stay unchanged.', 'Esto elimina solo la concesión seleccionada del Centro de empresa. Las demás concesiones y funciones operativas del hotel no cambian.'),
-      confirm: copy(lang, 'Revoke grant', 'Revocar concesión'),
+      title: 'Revoke access grant',
+      eyebrow: 'Access change',
+      description: 'This removes only the selected Company Hub grant. Other grants and hotel-operation roles stay unchanged.',
+      confirm: 'Revoke grant',
       endpoint: '/api/company-access/grants/revoke',
       body: { grantId: action.id },
     },
     cancel_invitation: {
-      title: copy(lang, 'Cancel invitation', 'Cancelar invitación'),
-      eyebrow: copy(lang, 'Pending invitation', 'Invitación pendiente'),
-      description: copy(lang, 'The invitation link will stop working and no access will be granted.', 'El enlace de invitación dejará de funcionar y no se concederá acceso.'),
-      confirm: copy(lang, 'Cancel invitation', 'Cancelar invitación'),
+      title: 'Cancel invitation',
+      eyebrow: 'Pending invitation',
+      description: 'The invitation link will stop working and no access will be granted.',
+      confirm: 'Cancel invitation',
       endpoint: '/api/company-access/invitations/cancel',
       body: { invitationId: action.id },
     },
     suspend_membership: {
-      title: copy(lang, 'Suspend company member', 'Suspender miembro de la empresa'),
-      eyebrow: copy(lang, 'Temporary access hold', 'Suspensión temporal de acceso'),
-      description: copy(lang, 'Company Hub access stops immediately. The membership and its grants remain on record for a future reactivation workflow.', 'El acceso al Centro de empresa se detiene de inmediato. La membresía y sus concesiones permanecen registradas para una futura reactivación.'),
-      confirm: copy(lang, 'Suspend member', 'Suspender miembro'),
+      title: 'Suspend company member',
+      eyebrow: 'Temporary access hold',
+      description: 'Company Hub access stops immediately. The membership and its grants remain on record for a future reactivation workflow.',
+      confirm: 'Suspend member',
       endpoint: '/api/company-access/memberships/status',
       body: { membershipId: action.id, action: 'suspend' },
     },
     resume_membership: {
-      title: copy(lang, 'Resume company member', 'Reactivar miembro de la empresa'),
-      eyebrow: copy(lang, 'Restore Company Hub access', 'Restaurar acceso al Centro de empresa'),
-      description: copy(lang, 'Any still-valid Company Hub grants become effective again. Cancelled requests stay cancelled, and hotel-operation roles remain unchanged.', 'Las concesiones del Centro de empresa que aún sean válidas vuelven a ser efectivas. Las solicitudes canceladas siguen canceladas y las funciones operativas del hotel no cambian.'),
-      confirm: copy(lang, 'Resume member', 'Reactivar miembro'),
+      title: 'Resume company member',
+      eyebrow: 'Restore Company Hub access',
+      description: 'Any still-valid Company Hub grants become effective again. Cancelled requests stay cancelled, and hotel-operation roles remain unchanged.',
+      confirm: 'Resume member',
       endpoint: '/api/company-access/memberships/status',
       body: { membershipId: action.id, action: 'resume' },
     },
     remove_membership: {
-      title: copy(lang, 'Remove company member', 'Eliminar miembro de la empresa'),
-      eyebrow: copy(lang, 'Permanent removal', 'Eliminación permanente'),
-      description: copy(lang, 'The membership is closed, all of its Company Hub grants are revoked, and pending access requests are cancelled.', 'La membresía se cierra, se revocan todas sus concesiones del Centro de empresa y se cancelan las solicitudes pendientes.'),
-      confirm: copy(lang, 'Remove member', 'Eliminar miembro'),
+      title: 'Remove company member',
+      eyebrow: 'Permanent removal',
+      description: 'The membership is closed, all of its Company Hub grants are revoked, and pending access requests are cancelled.',
+      confirm: 'Remove member',
       endpoint: '/api/company-access/memberships/status',
       body: { membershipId: action.id, action: 'remove' },
     },
@@ -909,12 +904,12 @@ export function CompanyLifecycleDialog({ action, lang, onClose, onCompleted }: {
       });
       const body = await response.json().catch(() => ({})) as Envelope<{ changed?: boolean }>;
       if (!response.ok || !body.ok) {
-        throw new Error(responseError(body, copy(lang, 'The change could not be completed.', 'No se pudo completar el cambio.')));
+        throw new Error(responseError(body, 'The change could not be completed.'));
       }
       onCompleted();
       onClose();
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : copy(lang, 'The change could not be completed.', 'No se pudo completar el cambio.'));
+      setError(caught instanceof Error ? caught.message : 'The change could not be completed.');
       setSubmitting(false);
     }
   };
@@ -937,32 +932,32 @@ export function CompanyLifecycleDialog({ action, lang, onClose, onCompleted }: {
           </div>
         </section>
         <label className={styles.formField}>
-          <span>{copy(lang, 'Reason (required)', 'Motivo (obligatorio)')}</span>
+          <span>{'Reason (required)'}</span>
           <textarea
             value={reason}
             onChange={(event) => setReason(event.target.value)}
             rows={3}
             minLength={8}
             maxLength={500}
-            placeholder={copy(lang, 'Explain why this change is needed…', 'Explica por qué se necesita este cambio…')}
+            placeholder={'Explain why this change is needed…'}
             required
           />
           <em>{reason.trim().length < 8
-            ? copy(lang, 'Use at least 8 characters.', 'Usa al menos 8 caracteres.')
+            ? 'Use at least 8 characters.'
             : `${reason.trim().length} / 500`}</em>
         </label>
         {error ? <div className={styles.formError} role="alert">{error}</div> : null}
         <div className={styles.dialogFooter}>
-          <span><ShieldCheck size={14} aria-hidden="true" />{copy(lang, 'Authority is checked again before saving', 'La autoridad se verifica de nuevo antes de guardar')}</span>
+          <span><ShieldCheck size={14} aria-hidden="true" />{'Authority is checked again before saving'}</span>
           <div className={styles.dialogActions}>
-            <button type="button" className={styles.secondaryButton} onClick={onClose} disabled={submitting}>{copy(lang, 'Keep unchanged', 'Mantener sin cambios')}</button>
+            <button type="button" className={styles.secondaryButton} onClick={onClose} disabled={submitting}>{'Keep unchanged'}</button>
             <button type="submit" className={destructive ? styles.dangerButton : styles.primaryButton} disabled={!reasonValid || submitting}>
               {submitting
                 ? <span className={styles.buttonSpinner} aria-hidden="true" />
                 : action.kind === 'resume_membership'
                   ? <UserCheck size={15} aria-hidden="true" />
                   : <UserMinus size={15} aria-hidden="true" />}
-              {submitting ? copy(lang, 'Saving…', 'Guardando…') : copyByKind.confirm}
+              {submitting ? 'Saving…' : copyByKind.confirm}
             </button>
           </div>
         </div>

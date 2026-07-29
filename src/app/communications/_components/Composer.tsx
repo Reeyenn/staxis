@@ -84,22 +84,22 @@ export function Composer({ pid, me, conversation: c, L, onReloadThread, onReload
         );
         if (!r.ok) {
           setError(r.status === 429
-            ? L('Too many posts right now. Wait a minute and try again.', 'Demasiadas publicaciones. Espera un minuto e inténtalo de nuevo.')
-            : L('Could not post the announcement. Please try again.', 'No se pudo publicar el anuncio. Inténtalo de nuevo.'));
+            ? 'Too many posts right now. Wait a minute and try again.'
+            : 'Could not post the announcement. Please try again.');
           return;
         }
         if (effOrgWide && r.data?.orgWide) setOrgNotice({ postedCount: r.data.postedCount ?? 0, propertyCount: r.data.propertyCount ?? 0, failedCount: r.data.failedCount ?? 0 });
         setRequireAck(false); setOrgWide(false);
       } else if (handoffMode) {
         const r = await apiPost('/api/comms/send', { pid, conversationId: c.id, body, msgType: 'handoff', handoffShift: currentShift(), handoffOutstanding: body });
-        if (!r.ok) { setError(L('Could not send the hand-off. Please try again.', 'No se pudo enviar el relevo. Inténtalo de nuevo.')); return; }
+        if (!r.ok) { setError('Could not send the hand-off. Please try again.'); return; }
       } else {
         const sent = await apiPost('/api/comms/send', { pid, conversationId: c.id, body });
-        if (!sent.ok) { setError(L('Message could not be sent. Please try again.', 'No se pudo enviar el mensaje. Inténtalo de nuevo.')); return; }
+        if (!sent.ok) { setError('Message could not be sent. Please try again.'); return; }
         if (/@staxis/i.test(body)) {
           const q = body.replace(/@staxis/ig, '').trim() || body;
           const assistant = await apiPost('/api/comms/assistant', { pid, conversationId: c.id, question: q });
-          if (!assistant.ok) setError(L('Your message was sent, but Staxis could not answer right now.', 'Tu mensaje se envió, pero Staxis no pudo responder ahora.'));
+          if (!assistant.ok) setError('Your message was sent, but Staxis could not answer right now.');
         } else {
           const det = await apiPost<{ action: { kind: string; description: string | null; roomNumber: string | null; severity: string | null } }>('/api/comms/detect-action', { pid, text: body });
           const a = det.data?.action;
@@ -109,7 +109,7 @@ export function Composer({ pid, me, conversation: c, L, onReloadThread, onReload
       setText(''); setHandoffMode(false);
       await reload();
     } catch {
-      setError(L('Message could not be sent. Please try again.', 'No se pudo enviar el mensaje. Inténtalo de nuevo.'));
+      setError('Message could not be sent. Please try again.');
     } finally { setBusy(false); }
   };
 
@@ -118,7 +118,7 @@ export function Composer({ pid, me, conversation: c, L, onReloadThread, onReload
     setBusy(true); setError(null);
     try {
       const r = await apiPost('/api/comms/action', { pid, conversationId: c.id, kind: actionOffer.kind, description: actionOffer.description, roomNumber: actionOffer.roomNumber, severity: actionOffer.severity });
-      if (!r.ok) { setError(L('Could not create the action. Please try again.', 'No se pudo crear la acción. Inténtalo de nuevo.')); return; }
+      if (!r.ok) { setError('Could not create the action. Please try again.'); return; }
       setActionOffer(null); await onReloadThread();
     } finally { setBusy(false); }
   };
@@ -132,7 +132,7 @@ export function Composer({ pid, me, conversation: c, L, onReloadThread, onReload
       rec.ondataavailable = (e) => { if (e.data.size) chunksRef.current.push(e.data); };
       rec.onstop = () => { stream.getTracks().forEach((t) => t.stop()); void finishVoice(); };
       recorderRef.current = rec; recStartRef.current = Date.now(); rec.start(); setRecording(true);
-    } catch { setError(L('Microphone access is unavailable. Check your browser permission and try again.', 'El acceso al micrófono no está disponible. Revisa el permiso del navegador e inténtalo de nuevo.')); }
+    } catch { setError('Microphone access is unavailable. Check your browser permission and try again.'); }
   };
   const stopRec = () => { recorderRef.current?.stop(); setRecording(false); };
   const finishVoice = async () => {
@@ -142,11 +142,11 @@ export function Composer({ pid, me, conversation: c, L, onReloadThread, onReload
     setBusy(true); setError(null);
     try {
       const pre = await apiPost<{ path: string; signedUrl: string }>('/api/comms/photo-presign', { pid, conversationId: c.id, kind: 'voice', filename: 'voice.webm' });
-      if (!pre.ok || !pre.data) { setError(L('Voice message could not be prepared. Please try again.', 'No se pudo preparar el mensaje de voz. Inténtalo de nuevo.')); return; }
-      if (!(await uploadToSignedUrl(pre.data.signedUrl, blob))) { setError(L('Voice message upload failed. Please try again.', 'Falló la carga del mensaje de voz. Inténtalo de nuevo.')); return; }
+      if (!pre.ok || !pre.data) { setError('Voice message could not be prepared. Please try again.'); return; }
+      if (!(await uploadToSignedUrl(pre.data.signedUrl, blob))) { setError('Voice message upload failed. Please try again.'); return; }
       const tr = await apiPost<{ text: string }>('/api/comms/transcribe', { pid, path: pre.data.path });
       const sent = await apiPost('/api/comms/send', { pid, conversationId: c.id, body: tr.data?.text ?? '', msgType: 'voice', attachmentPath: pre.data.path, attachmentKind: 'voice', voiceDurationMs: durMs });
-      if (!sent.ok) { setError(L('Voice message could not be sent. Please try again.', 'No se pudo enviar el mensaje de voz. Inténtalo de nuevo.')); return; }
+      if (!sent.ok) { setError('Voice message could not be sent. Please try again.'); return; }
       await reload();
     } finally { setBusy(false); }
   };
@@ -157,10 +157,10 @@ export function Composer({ pid, me, conversation: c, L, onReloadThread, onReload
     setBusy(true); setError(null);
     try {
       const pre = await apiPost<{ path: string; signedUrl: string }>('/api/comms/photo-presign', { pid, conversationId: c.id, kind: 'photo', filename: file.name });
-      if (!pre.ok || !pre.data) { setError(L('Photo could not be prepared. Please try again.', 'No se pudo preparar la foto. Inténtalo de nuevo.')); return; }
-      if (!(await uploadToSignedUrl(pre.data.signedUrl, file))) { setError(L('Photo upload failed. Please try again.', 'Falló la carga de la foto. Inténtalo de nuevo.')); return; }
+      if (!pre.ok || !pre.data) { setError('Photo could not be prepared. Please try again.'); return; }
+      if (!(await uploadToSignedUrl(pre.data.signedUrl, file))) { setError('Photo upload failed. Please try again.'); return; }
       const sent = await apiPost('/api/comms/send', { pid, conversationId: c.id, body: '', msgType: 'photo', attachmentPath: pre.data.path, attachmentKind: 'photo' });
-      if (!sent.ok) { setError(L('Photo could not be sent. Please try again.', 'No se pudo enviar la foto. Inténtalo de nuevo.')); return; }
+      if (!sent.ok) { setError('Photo could not be sent. Please try again.'); return; }
       await reload();
     } finally { setBusy(false); }
   };
@@ -171,69 +171,65 @@ export function Composer({ pid, me, conversation: c, L, onReloadThread, onReload
       {actionOffer && (
         <div style={{ margin: '0 0 8px', padding: 12, background: tint(T.terracotta, .08), borderRadius: 10, display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', fontSize: 13, fontFamily: SANS }}>
           {actionOffer.kind === 'work_order' ? <Wrench size={16} color={T.terracotta} /> : <AlertCircle size={16} color={T.terracotta} />}
-          <span style={{ flex: 1 }}>{actionOffer.kind === 'work_order' ? L('Looks like a maintenance issue.', 'Parece un problema de mantenimiento.') : L('Looks like a guest complaint.', 'Parece una queja de huésped.')}</span>
-          <button onClick={doAction} disabled={busy} style={{ background: T.terracotta, color: '#fff', border: 'none', borderRadius: 8, padding: '6px 10px', fontSize: 12.5, fontWeight: 600, fontFamily: SANS, cursor: 'pointer' }}>{actionOffer.kind === 'work_order' ? L('Create work order', 'Crear orden') : L('Log complaint', 'Registrar queja')}</button>
+          <span style={{ flex: 1 }}>{actionOffer.kind === 'work_order' ? 'Looks like a maintenance issue.' : 'Looks like a guest complaint.'}</span>
+          <button onClick={doAction} disabled={busy} style={{ background: T.terracotta, color: '#fff', border: 'none', borderRadius: 8, padding: '6px 10px', fontSize: 12.5, fontWeight: 600, fontFamily: SANS, cursor: 'pointer' }}>{actionOffer.kind === 'work_order' ? 'Create work order' : 'Log complaint'}</button>
           <button onClick={() => setActionOffer(null)} style={paneIcon}><X size={14} /></button>
         </div>
       )}
       {orgNotice && (
         <div style={{ margin: '0 0 8px', padding: 12, background: T.forestTint, borderRadius: 10, display: 'flex', alignItems: 'center', gap: 10, fontSize: 13, fontFamily: SANS }}>
           <Building2 size={16} color={deptColorDark(T.forest)} />
-          <span style={{ flex: 1 }}>{L(`Mandatory read posted to ${orgNotice.postedCount} of ${orgNotice.propertyCount} properties.`, `Lectura obligatoria enviada a ${orgNotice.postedCount} de ${orgNotice.propertyCount} propiedades.`)}{orgNotice.failedCount > 0 ? ' ' + L(`(${orgNotice.failedCount} failed)`, `(${orgNotice.failedCount} fallaron)`) : ''}</span>
+          <span style={{ flex: 1 }}>{`Mandatory read posted to ${orgNotice.postedCount} of ${orgNotice.propertyCount} properties.`}{orgNotice.failedCount > 0 ? ' ' + `(${orgNotice.failedCount} failed)` : ''}</span>
           <button onClick={() => setOrgNotice(null)} style={paneIcon}><X size={14} /></button>
         </div>
       )}
 
       {canPostAnnouncement && (
         <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 14, marginBottom: 10 }}>
-          <Tip width={252} text={L(
-            'Everyone has to tap “I read & understand.” It stays marked unread for them until they do, and you’ll see exactly who has and hasn’t.',
-            'Todos deben tocar “Leí y entiendo”. Sigue como no leído hasta que lo hagan, y verás exactamente quién lo leyó y quién no.')}>
+          <Tip width={252} text={'Everyone has to tap “I read & understand.” It stays marked unread for them until they do, and you’ll see exactly who has and hasn’t.'}>
             <label style={{ display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer', fontSize: 12.5, fontWeight: (requireAck || orgWide) ? 700 : 500, color: (requireAck || orgWide) ? deptColorDark(T.forest) : T.dim, fontFamily: SANS }}>
               <input type="checkbox" checked={requireAck || orgWide} disabled={orgWide} onChange={(e) => setRequireAck(e.target.checked)} style={{ accentColor: T.forestDeep }} />
-              <ShieldCheck size={14} /> {L('Require acknowledgement', 'Requerir confirmación')}
+              <ShieldCheck size={14} /> {'Require acknowledgement'}
             </label>
           </Tip>
           {me.canOrgWide && (
-            <Tip width={252} text={L(
-              'Posts this to every property you manage, and everyone at each one has to acknowledge it.',
-              'Lo publica en todas las propiedades que gestionas, y todos en cada una deben confirmarlo.')}>
+            <Tip width={252} text={'Posts this to every property you manage, and everyone at each one has to acknowledge it.'}>
               <label style={{ display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer', fontSize: 12.5, fontWeight: orgWide ? 700 : 500, color: orgWide ? deptColorDark(T.forest) : T.dim, fontFamily: SANS }}>
                 <input type="checkbox" checked={orgWide} onChange={(e) => setOrgWide(e.target.checked)} style={{ accentColor: T.forestDeep }} />
-                <Building2 size={14} /> {L('Send to all my properties', 'Enviar a todas mis propiedades')}
+                <Building2 size={14} /> {'Send to all my properties'}
               </label>
             </Tip>
           )}
         </div>
       )}
-      {handoffMode && <div style={{ fontSize: 11, color: deptColorDark(T.forest), marginBottom: 6, fontWeight: 600, fontFamily: SANS }}>{L('Shift hand-off post', 'Publicación de relevo')} · {currentShift()}</div>}
+      {handoffMode && <div style={{ fontSize: 11, color: deptColorDark(T.forest), marginBottom: 6, fontWeight: 600, fontFamily: SANS }}>{'Shift hand-off post'} · {currentShift()}</div>}
 
       <div style={{ border: `1px solid ${T.hairer}`, borderRadius: 11, overflow: 'hidden', background: T.bg }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 2, padding: '6px 8px', borderBottom: `1px solid ${T.hairSoft}` }}>
-          <button style={{ ...fmtBtn, fontWeight: 700 }} onMouseDown={(e) => e.preventDefault()} onClick={() => wrap('**')} title={L('Bold', 'Negrita')}><Bold size={14} /></button>
-          <button style={{ ...fmtBtn, fontStyle: 'italic' }} onMouseDown={(e) => e.preventDefault()} onClick={() => wrap('*')} title={L('Italic', 'Cursiva')}><Italic size={14} /></button>
-          <button style={fmtBtn} onMouseDown={(e) => e.preventDefault()} onClick={() => wrap('~~')} title={L('Strikethrough', 'Tachado')}><Strikethrough size={14} /></button>
+          <button style={{ ...fmtBtn, fontWeight: 700 }} onMouseDown={(e) => e.preventDefault()} onClick={() => wrap('**')} title={'Bold'}><Bold size={14} /></button>
+          <button style={{ ...fmtBtn, fontStyle: 'italic' }} onMouseDown={(e) => e.preventDefault()} onClick={() => wrap('*')} title={'Italic'}><Italic size={14} /></button>
+          <button style={fmtBtn} onMouseDown={(e) => e.preventDefault()} onClick={() => wrap('~~')} title={'Strikethrough'}><Strikethrough size={14} /></button>
           {!isAnnouncement && <span style={{ width: 1, height: 16, background: T.hair, margin: '0 4px' }} />}
-          {!isAnnouncement && <button style={fmtBtn} onMouseDown={(e) => e.preventDefault()} onClick={() => insertAt('@')} title={L('Mention', 'Mencionar')}><AtSign size={15} /></button>}
+          {!isAnnouncement && <button style={fmtBtn} onMouseDown={(e) => e.preventDefault()} onClick={() => insertAt('@')} title={'Mention'}><AtSign size={15} /></button>}
           {!isAnnouncement && <>
-            <button style={{ ...fmtBtn, color: recording ? T.terracotta : T.dim }} onClick={recording ? stopRec : startRec} title={L('Voice message', 'Mensaje de voz')}>{recording ? <Square size={15} /> : <Mic size={15} />}</button>
-            <label style={{ ...fmtBtn, cursor: 'pointer' }} title={L('Photo', 'Foto')}><ImageIcon size={15} /><input type="file" accept="image/*" onChange={onPhoto} style={{ display: 'none' }} /></label>
-            <label style={{ ...fmtBtn, cursor: 'pointer', position: 'relative' }} title={L('Attach a file', 'Adjuntar archivo')}><Paperclip size={15} /><input type="file" accept="image/*" onChange={onPhoto} style={{ display: 'none' }} /></label>
-            <button style={{ ...fmtBtn, color: handoffMode ? deptColorDark(T.forest) : T.dim }} onClick={() => setHandoffMode((v) => !v)} title={L('Hand-off post', 'Relevo')}><ClipboardList size={15} /></button>
+            <button style={{ ...fmtBtn, color: recording ? T.terracotta : T.dim }} onClick={recording ? stopRec : startRec} title={'Voice message'}>{recording ? <Square size={15} /> : <Mic size={15} />}</button>
+            <label style={{ ...fmtBtn, cursor: 'pointer' }} title={'Photo'}><ImageIcon size={15} /><input type="file" accept="image/*" onChange={onPhoto} style={{ display: 'none' }} /></label>
+            <label style={{ ...fmtBtn, cursor: 'pointer', position: 'relative' }} title={'Attach a file'}><Paperclip size={15} /><input type="file" accept="image/*" onChange={onPhoto} style={{ display: 'none' }} /></label>
+            <button style={{ ...fmtBtn, color: handoffMode ? deptColorDark(T.forest) : T.dim }} onClick={() => setHandoffMode((v) => !v)} title={'Hand-off post'}><ClipboardList size={15} /></button>
           </>}
         </div>
         <div style={{ display: 'flex', alignItems: 'flex-end', gap: 8, padding: '8px 8px 8px 12px' }}>
           <textarea ref={taRef} value={text} onChange={(e) => setText(e.target.value)} rows={1}
             onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); popNode(sendBtn.current); void doSend(); } }}
-            placeholder={isAnnouncement ? L('Write an announcement…', 'Escribe un anuncio…') : L('Message…  (type @Staxis to ask the assistant)', 'Mensaje…  (escribe @Staxis para el asistente)')}
+            placeholder={isAnnouncement ? 'Write an announcement…' : 'Message…  (type @Staxis to ask the assistant)'}
             style={{ flex: 1, resize: 'none', border: 'none', outline: 'none', background: 'transparent', fontFamily: SANS, fontSize: 14, lineHeight: 1.5, color: T.ink, padding: '4px 0', maxHeight: 120 }} />
-          <button ref={sendBtn} onClick={() => { popNode(sendBtn.current); void doSend(); }} disabled={!canSend} aria-label={L('Send', 'Enviar')}
+          <button ref={sendBtn} onClick={() => { popNode(sendBtn.current); void doSend(); }} disabled={!canSend} aria-label={'Send'}
             style={{ width: 44, height: 44, borderRadius: 9, border: 'none', cursor: canSend ? 'pointer' : 'default', background: canSend ? T.forest : T.hairSoft, color: canSend ? '#fff' : T.dim, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
             {busy ? <Loader2 size={15} className="comms-spin" /> : <Send size={15} />}
           </button>
         </div>
       </div>
-      {recording && <div style={{ fontSize: 12, color: T.terracotta, marginTop: 6, fontFamily: SANS }}>● {L('Recording… tap stop to send', 'Grabando… toca detener para enviar')}</div>}
+      {recording && <div style={{ fontSize: 12, color: T.terracotta, marginTop: 6, fontFamily: SANS }}>● {'Recording… tap stop to send'}</div>}
       {error && <div role="alert" style={{ fontSize: 12, color: T.terracotta, marginTop: 6, fontFamily: SANS }}>{error}</div>}
     </div>
   );

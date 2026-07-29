@@ -43,8 +43,8 @@ function placementOf(w: WorkOrder): Placement {
 }
 
 function roleLabel(role: string | undefined, es: boolean): string {
-  if (role === 'admin') return es ? 'Gerente general' : 'General manager';
-  return es ? 'Personal' : 'Staff';
+  if (role === 'admin') return 'General manager';
+  return 'Staff';
 }
 
 // submitter_role is a free-text column. New rows persist the CANONICAL
@@ -53,7 +53,7 @@ function roleLabel(role: string | undefined, es: boolean): string {
 // Spanish-persisted rows — to the VIEWER's language. Unknown values pass
 // through verbatim.
 function displayRole(stored: string | undefined, es: boolean): string {
-  if (!stored) return es ? 'Personal' : 'Staff';
+  if (!stored) return 'Staff';
   if (stored === 'General manager' || stored === 'Gerente general') return roleLabel('admin', es);
   if (stored === 'Staff' || stored === 'Personal') return roleLabel(undefined, es);
   return stored;
@@ -91,7 +91,7 @@ function ProPill({ w, es }: { w: WorkOrder; es: boolean }) {
         display: 'inline-flex', alignItems: 'center', gap: 5, padding: '3px 9px', borderRadius: 999, height: 22,
         background: 'transparent', color: PRO, border: '1px dashed rgba(31,35,28,0.3)',
         fontFamily: FONT_MONO, fontSize: 10, fontWeight: 600, letterSpacing: '0.06em', textTransform: 'uppercase', whiteSpace: 'nowrap',
-      }}>{es ? 'Necesita un profesional' : 'Needs a professional'}</span>
+      }}>{'Needs a professional'}</span>
     );
   }
   return null;
@@ -152,7 +152,7 @@ function OpenCard({
       <span style={{ position: 'absolute', left: 0, top: 0, bottom: 0, width: 4, background: prioColor[w.priority] }} />
       <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: 8 }}>
         <span style={{ fontFamily: FONT_SANS, fontSize: 15.5, color: T.ink, letterSpacing: '-0.01em', lineHeight: 1.2, fontWeight: 600 }}>
-          {displayLoc(w.location, es)}
+          {displayLoc(w.location)}
         </span>
         <span style={{ fontFamily: FONT_MONO, fontSize: 10, color: T.ink3, letterSpacing: '0.06em', flexShrink: 0 }}>
           {w.id.slice(0, 8)}
@@ -165,11 +165,11 @@ function OpenCard({
       <div style={{ display: 'flex', alignItems: 'center', gap: 7, marginTop: 1 }}>
         <Avatar name={w.submittedByName || '?'} size={20} />
         <span style={{ fontFamily: FONT_SANS, fontSize: 11.5, color: T.ink2, minWidth: 0, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-          {(w.submittedByName || '').split(' ')[0] || (es ? 'Alguien' : 'Someone')}
+          {(w.submittedByName || '').split(' ')[0] || ('Someone')}
         </span>
         {w.submitterPhotoPath && <span style={{ fontFamily: FONT_MONO, fontSize: 9, color: T.ink3 }}>📷</span>}
         <span style={{ marginLeft: 'auto', fontFamily: FONT_MONO, fontSize: 10.5, color: T.ink3, whiteSpace: 'nowrap', flexShrink: 0 }}>
-          {fmtSubmittedAtCompact(w.createdAt, es)}
+          {fmtSubmittedAtCompact(w.createdAt)}
         </span>
       </div>
     </button>
@@ -205,10 +205,10 @@ function DropPhoto({
         <img src={url} alt="" style={{ display: 'block', width: '100%', height: 188, objectFit: 'cover' }} />
         <div style={{ position: 'absolute', left: 0, right: 0, bottom: 0, padding: '20px 12px 9px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, background: 'linear-gradient(to top, rgba(31,35,28,0.62), transparent)' }}>
           <span style={{ fontFamily: FONT_MONO, fontSize: 11, color: '#fff', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-            {busy ? (es ? 'Subiendo…' : 'Uploading…') : value.name}
+            {busy ? ('Uploading…') : value.name}
           </span>
           <button type="button" onClick={() => onChange(null)} disabled={busy} style={{ flexShrink: 0, height: 28, padding: '0 12px', borderRadius: 999, cursor: busy ? 'wait' : 'pointer', background: 'rgba(255,255,255,0.92)', color: T.ink, border: 'none', fontFamily: FONT_SANS, fontSize: 12, fontWeight: 500 }}>
-            {es ? 'Quitar' : 'Remove'}
+            {'Remove'}
           </button>
         </div>
       </div>
@@ -223,8 +223,8 @@ function DropPhoto({
       style={{ cursor: 'pointer', borderRadius: 12, border: `1.5px dashed ${drag ? T.sageDeep : 'rgba(31,35,28,0.18)'}`, background: drag ? T.sageDim : 'rgba(31,35,28,0.03)', padding: '22px 16px', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 5, textAlign: 'center', transition: `background .3s ${CX_SPRING}, border-color .3s ${CX_SPRING}` }}
     >
       <svg width={26} height={26} viewBox="0 0 24 24" fill="none" stroke={drag ? T.sageDeep : T.ink3} strokeWidth={1.6} strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="5" width="18" height="14" rx="2.5" /><circle cx="9" cy="11" r="2" /><path d="M3 17l5-4 4 3 3-2 6 5" /></svg>
-      <span style={{ fontFamily: FONT_SANS, fontSize: 13.5, color: T.ink, fontWeight: 500 }}>{es ? 'Agregar foto' : 'Add a photo'}</span>
-      <span style={{ fontFamily: FONT_SANS, fontSize: 12, color: T.ink3 }}>{es ? 'Tómala o arrastra una imagen · opcional' : 'Snap it or drag an image here · optional'}</span>
+      <span style={{ fontFamily: FONT_SANS, fontSize: 13.5, color: T.ink, fontWeight: 500 }}>{'Add a photo'}</span>
+      <span style={{ fontFamily: FONT_SANS, fontSize: 12, color: T.ink3 }}>{'Snap it or drag an image here · optional'}</span>
       <input ref={inputRef} type="file" accept="image/*" capture="environment" onChange={(e) => { take(e.target.files?.[0]); if (e.target) e.target.value = ''; }} style={{ display: 'none' }} />
     </div>
   );
@@ -233,10 +233,10 @@ function DropPhoto({
 // ── priority / placement chip chooser ──────────────────────────────────────
 function PlacementChips({ value, onChange, es }: { value: Placement; onChange: (v: Placement) => void; es: boolean }) {
   const opts: { value: Placement; label: string }[] = [
-    { value: 'low',          label: es ? 'Baja'    : 'Low' },
-    { value: 'normal',       label: es ? 'Normal'  : 'Normal' },
-    { value: 'urgent',       label: es ? 'Urgente' : 'Urgent' },
-    { value: 'professional', label: es ? 'Llamar a un profesional' : 'Call in a professional' },
+    { value: 'low',          label: 'Low' },
+    { value: 'normal',       label: 'Normal' },
+    { value: 'urgent',       label: 'Urgent' },
+    { value: 'professional', label: 'Call in a professional' },
   ];
   return (
     <ChipChoose<Placement>
@@ -267,7 +267,7 @@ function SubmitModal({
   const { user } = useAuth();
   const { activePropertyId } = useProperty();
   const { lang } = useLang();
-  const es = lang === 'es';
+  const es = false;
   const [loc, setLoc] = useState('');
   const [desc, setDesc] = useState('');
   const [placement, setPlacement] = useState<Placement>('normal');
@@ -281,9 +281,7 @@ function SubmitModal({
   // Guard the eaten-form path: Escape / a stray scrim click used to wipe the
   // half-typed order instantly. Confirm before discarding anything typed.
   const close = () => {
-    if (dirty && !window.confirm(es
-      ? '¿Descartar esta orden sin enviar? Se perderá lo que escribiste.'
-      : 'Discard this work order? What you typed will be lost.')) return;
+    if (dirty && !window.confirm('Discard this work order? What you typed will be lost.')) return;
     reset();
     onClose();
   };
@@ -311,43 +309,43 @@ function SubmitModal({
   return (
     <Modal
       open={open} onClose={close}
-      title={es ? '¿Qué se dañó?' : "What's broken?"}
-      subtitle={es ? 'Cualquiera del equipo puede enviarla. Va directo a la lista de abiertas.' : 'Anyone on the team can submit. It goes straight to the open list.'}
+      title={"What's broken?"}
+      subtitle={'Anyone on the team can submit. It goes straight to the open list.'}
       width={580}
       footer={<>
-        <Btn variant="ghost" onClick={close}>{es ? 'Cancelar' : 'Cancel'}</Btn>
+        <Btn variant="ghost" onClick={close}>{'Cancel'}</Btn>
         <Btn variant="primary" disabled={!canSubmit} onClick={submit}>
-          {busy ? (es ? 'Enviando…' : 'Submitting…') : (es ? 'Enviar orden' : 'Submit work order')}
+          {busy ? ('Submitting…') : ('Submit work order')}
         </Btn>
       </>}
     >
       <div style={{ display: 'flex', flexDirection: 'column', gap: 18 }}>
-        <Field label={es ? 'Ubicación' : 'Location'} required hint={es ? 'Número de habitación, área común, algo específico.' : 'Room number, common area, anything specific.'}>
-          <TextInput value={loc} onChange={setLoc} placeholder={es ? 'ej. "Habitación 312" o "Lobby"' : 'e.g. "Room 312" or "Lobby"'} />
+        <Field label={'Location'} required hint={'Room number, common area, anything specific.'}>
+          <TextInput value={loc} onChange={setLoc} placeholder={'e.g. "Room 312" or "Lobby"'} />
         </Field>
-        <Field label={es ? '¿Qué pasa?' : "What's wrong?"} required hint={es ? 'En tus palabras. Como lo anotarías en el cuaderno.' : "Plain words. The way you'd write it in the book."}>
-          <TextArea value={desc} onChange={setDesc} placeholder={es ? 'ej. El aire sopla caliente. El filtro se veía sucio.' : 'e.g. AC blowing warm air. Filter looked dirty.'} rows={3} />
+        <Field label={"What's wrong?"} required hint={"Plain words. The way you'd write it in the book."}>
+          <TextArea value={desc} onChange={setDesc} placeholder={'e.g. AC blowing warm air. Filter looked dirty.'} rows={3} />
         </Field>
-        <Field label={es ? 'Prioridad' : 'Priority'} hint={es ? 'Elige un carril, o pásala a un profesional externo.' : 'Pick a lane, or hand it to an outside professional.'}>
+        <Field label={'Priority'} hint={'Pick a lane, or hand it to an outside professional.'}>
           <PlacementChips value={placement} onChange={setPlacement} es={es} />
         </Field>
-        <Field label={es ? 'Equipo (opcional)' : 'Equipment (optional)'} hint={es ? 'El activo afectado' : 'The asset this is about'}>
+        <Field label={'Equipment (optional)'} hint={'The asset this is about'}>
           {activePropertyId && <EquipmentPicker pid={activePropertyId} value={equipmentId} onChange={setEquipmentId} lang={lang} />}
         </Field>
-        <Field label={es ? 'Costo de reparación ($, opcional)' : 'Repair cost ($, optional)'} hint={es ? 'Si se conoce (cotización/proveedor)' : 'If known (quote / vendor)'}>
+        <Field label={'Repair cost ($, optional)'} hint={'If known (quote / vendor)'}>
           <TextInput value={repairCost} onChange={setRepairCost} type="number" min={0} step="0.01" placeholder="—" />
         </Field>
-        <Field label={es ? 'Foto' : 'Photo'} hint={es ? 'Ayuda a quien lo arregla a saber qué encontrará.' : "Helps the fixer know what they're walking into."}>
+        <Field label={'Photo'} hint={"Helps the fixer know what they're walking into."}>
           <DropPhoto value={photo} onChange={setPhoto} es={es} />
         </Field>
         <div style={{ background: 'rgba(31,35,28,0.03)', border: `1px solid ${T.rule}`, borderRadius: 10, padding: '10px 14px', display: 'flex', alignItems: 'center', gap: 12 }}>
           <Avatar name={user?.displayName || 'You'} size={28} />
           <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
             <span style={{ fontFamily: FONT_SANS, fontSize: 13, color: T.ink, fontWeight: 500 }}>
-              {es ? 'Enviado por' : 'Submitted by'} {user?.displayName || (es ? 'ti' : 'you')}
+              {'Submitted by'} {user?.displayName || ('you')}
             </span>
             <Caps size={10} tracking="0.06em" c={T.ink3}>
-              {roleLabel(user?.role, es)} · {es ? 'autocompletado · hora al enviar' : 'auto-filled · timestamp set on submit'}
+              {roleLabel(user?.role, es)} · {'auto-filled · timestamp set on submit'}
             </Caps>
           </div>
         </div>
@@ -382,23 +380,23 @@ function ContractorPanel({
   return (
     <div style={{ background: PRO_DIM, border: '1px solid rgba(31,35,28,0.14)', borderRadius: 12, padding: '14px 16px', display: 'flex', flexDirection: 'column', gap: 12 }}>
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10 }}>
-        <Caps size={10} c={PRO} weight={600}>☎ {es ? 'Profesional' : 'Professional'}{w.proTrade ? ` · ${w.proTrade}` : ''}</Caps>
-        {w.proCalledAt && <Caps size={10} c={T.ink3}>{fmtSubmittedAt(w.proCalledAt, es)}</Caps>}
+        <Caps size={10} c={PRO} weight={600}>☎ {'Professional'}{w.proTrade ? ` · ${w.proTrade}` : ''}</Caps>
+        {w.proCalledAt && <Caps size={10} c={T.ink3}>{fmtSubmittedAt(w.proCalledAt)}</Caps>}
       </div>
       {!hasContractor(w) && (
         <span style={{ fontFamily: FONT_SANS, fontSize: 12.5, color: T.ink2 }}>
-          {es ? 'Esta es para un contratista externo. Anota a quién llamaste.' : "This one's with an outside contractor. Note who you called."}
+          {"This one's with an outside contractor. Note who you called."}
         </span>
       )}
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
-        <Field label={es ? 'Oficio' : 'Trade'}><TextInput value={trade} onChange={setTrade} placeholder={es ? 'ej. Plomería' : 'e.g. Plumbing'} /></Field>
-        <Field label={es ? 'Empresa' : 'Company'}><TextInput value={company} onChange={setCompany} placeholder={es ? 'ej. Plomería Acme' : 'e.g. Acme Plumbing'} /></Field>
+        <Field label={'Trade'}><TextInput value={trade} onChange={setTrade} placeholder={'e.g. Plumbing'} /></Field>
+        <Field label={'Company'}><TextInput value={company} onChange={setCompany} placeholder={'e.g. Acme Plumbing'} /></Field>
       </div>
-      <Field label={es ? 'Teléfono' : 'Phone'}><TextInput value={phone} onChange={setPhone} type="tel" placeholder="(409) 555-0142" /></Field>
+      <Field label={'Phone'}><TextInput value={phone} onChange={setPhone} type="tel" placeholder="(409) 555-0142" /></Field>
       <div style={{ display: 'flex', justifyContent: 'flex-end', alignItems: 'center', gap: 10 }}>
-        {savedAt && !dirty && <Caps size={10} c={T.sageDeep}>{es ? 'Guardado' : 'Saved'}</Caps>}
+        {savedAt && !dirty && <Caps size={10} c={T.sageDeep}>{'Saved'}</Caps>}
         <Btn variant="sage" size="sm" disabled={busy || !dirty} onClick={save}>
-          {busy ? (es ? 'Guardando…' : 'Saving…') : (es ? 'Guardar contratista' : 'Save contractor')}
+          {busy ? ('Saving…') : ('Save contractor')}
         </Btn>
       </div>
     </div>
@@ -419,7 +417,7 @@ function DetailModal({
 }) {
   const { lang } = useLang();
   const { activePropertyId } = useProperty();
-  const es = lang === 'es';
+  const es = false;
   const [note, setNote] = useState('');
   const [busy, setBusy] = useState(false);
   const [attaching, setAttaching] = useState(false);
@@ -449,29 +447,29 @@ function DetailModal({
   return (
     <Modal
       open={open} onClose={onClose}
-      title={displayLoc(w.location, es)} subtitle={w.id.slice(0, 8)} width={580}
+      title={displayLoc(w.location)} subtitle={w.id.slice(0, 8)} width={580}
       footer={<>
-        <Btn variant="ghost" onClick={onClose}>{es ? 'Cerrar' : 'Close'}</Btn>
-        <Btn variant="primary" disabled={busy} onClick={done}>{busy ? (es ? 'Guardando…' : 'Saving…') : (es ? '✓ Marcar lista' : '✓ Mark done')}</Btn>
+        <Btn variant="ghost" onClick={onClose}>{'Close'}</Btn>
+        <Btn variant="primary" disabled={busy} onClick={done}>{busy ? ('Saving…') : ('✓ Mark done')}</Btn>
       </>}
     >
       <div style={{ display: 'flex', flexDirection: 'column', gap: 18 }}>
-        <Caps size={11} tracking="0.06em">{es ? 'Abierta · enviada' : 'Open · submitted'} {fmtSubmittedAt(w.createdAt, es)}</Caps>
+        <Caps size={11} tracking="0.06em">{'Open · submitted'} {fmtSubmittedAt(w.createdAt)}</Caps>
 
         {/* On the THING, not the tab: this modal is one room's broken thing, so
             the signpost belongs here and nowhere on the board behind it. */}
         <PatternChip propertyId={activePropertyId} kind="room" value={roomNumber} lang={lang} />
 
-        <Field label={es ? 'Prioridad' : 'Priority'}>
+        <Field label={'Priority'}>
           <PlacementChips value={placement} onChange={(v) => onSetPlacement(w, v)} es={es} />
         </Field>
 
         <div>
-          <Caps>{es ? '¿Qué pasa?' : "What's wrong"}</Caps>
+          <Caps>{"What's wrong"}</Caps>
           <p style={{ fontFamily: FONT_SANS, fontSize: 16, color: T.ink, margin: '8px 0 0', lineHeight: 1.5, fontWeight: 500 }}>{w.description}</p>
         </div>
 
-        <Field label={es ? 'Foto' : 'Photo'} hint={w.submitterPhotoPath ? undefined : (es ? 'Tómala o arrastra una. Opcional.' : 'Snap or drag one in. Optional.')}>
+        <Field label={'Photo'} hint={w.submitterPhotoPath ? undefined : ('Snap or drag one in. Optional.')}>
           {w.submitterPhotoPath
             ? <StorageImage path={w.submitterPhotoPath} alt="work order photo" />
             : <DropPhoto value={null} onChange={attach} busy={attaching} es={es} />}
@@ -484,17 +482,17 @@ function DetailModal({
         <div style={{ background: 'rgba(31,35,28,0.03)', border: `1px solid ${T.rule}`, borderRadius: 10, padding: '10px 14px', display: 'flex', alignItems: 'center', gap: 12 }}>
           <Avatar name={w.submittedByName || '?'} size={28} />
           <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
-            <span style={{ fontFamily: FONT_SANS, fontSize: 13, color: T.ink, fontWeight: 500 }}>{w.submittedByName || (es ? 'Desconocido' : 'Unknown')}</span>
-            <Caps size={10} tracking="0.06em" c={T.ink3}>{displayRole(w.submitterRole, es)} · {fmtSubmittedAt(w.createdAt, es)}</Caps>
+            <span style={{ fontFamily: FONT_SANS, fontSize: 13, color: T.ink, fontWeight: 500 }}>{w.submittedByName || ('Unknown')}</span>
+            <Caps size={10} tracking="0.06em" c={T.ink3}>{displayRole(w.submitterRole, es)} · {fmtSubmittedAt(w.createdAt)}</Caps>
           </div>
         </div>
 
         <div style={{ padding: '18px 0 0', borderTop: `1px solid ${T.rule}` }}>
-          <Caps>{es ? 'Cuando termines' : "When you're done"}</Caps>
+          <Caps>{"When you're done"}</Caps>
           <p style={{ fontFamily: FONT_SANS, fontSize: 12, color: T.ink2, margin: '4px 0 12px' }}>
-            {es ? 'Opcional. El tú del futuro agradecerá la nota.' : 'Optional. Future-you will thank present-you for the note.'}
+            {'Optional. Future-you will thank present-you for the note.'}
           </p>
-          <TextArea value={note} onChange={setNote} placeholder={es ? 'ej. "Cambié el filtro, la unidad es vieja, pronto necesitará reemplazo"' : 'e.g. "Replaced filter, unit is old, will need full replacement soon"'} rows={2} />
+          <TextArea value={note} onChange={setNote} placeholder={'e.g. "Replaced filter, unit is old, will need full replacement soon"'} rows={2} />
         </div>
       </div>
     </Modal>
@@ -507,28 +505,28 @@ function HistoryModal({ open, onClose, done, es }: { open: boolean; onClose: () 
   return (
     <Modal
       open={open} onClose={onClose}
-      title={es ? 'Historial de órdenes' : 'Work order history'}
-      subtitle={es ? `${done.length} resueltas · todo cerrado` : `${done.length} resolved · everything closed out`}
+      title={'Work order history'}
+      subtitle={`${done.length} resolved · everything closed out`}
       width={820}
-      footer={<Btn variant="ghost" onClick={onClose}>{es ? 'Cerrar' : 'Close'}</Btn>}
+      footer={<Btn variant="ghost" onClick={onClose}>{'Close'}</Btn>}
     >
       {done.length === 0 ? (
         <p style={{ fontFamily: FONT_SANS, fontSize: 14, color: T.ink3, margin: '8px 0', textAlign: 'center' }}>
-          {es ? 'Nada cerrado aún.' : 'Nothing closed yet.'}
+          {'Nothing closed yet.'}
         </p>
       ) : (
         <div>
           <div style={{ display: 'grid', gridTemplateColumns: cols, gap: 14, padding: '0 0 12px', borderBottom: `1px solid ${T.rule}` }}>
-            <Caps size={9}>{es ? 'Dónde' : 'Where'}</Caps>
-            <Caps size={9}>{es ? 'Qué y nota' : 'What & note'}</Caps>
-            <Caps size={9}>{es ? 'Resuelta por' : 'Fixed by'}</Caps>
-            <Caps size={9}>{es ? 'Completada' : 'Completed'}</Caps>
-            <Caps size={9}>{es ? 'Estado' : 'Status'}</Caps>
+            <Caps size={9}>{'Where'}</Caps>
+            <Caps size={9}>{'What & note'}</Caps>
+            <Caps size={9}>{'Fixed by'}</Caps>
+            <Caps size={9}>{'Completed'}</Caps>
+            <Caps size={9}>{'Status'}</Caps>
           </div>
           {done.slice().sort((a, b) => (b.completedAt?.getTime() ?? 0) - (a.completedAt?.getTime() ?? 0)).map((w) => (
             <div key={w.id} style={{ display: 'grid', gridTemplateColumns: cols, gap: 14, padding: '14px 0', borderBottom: `1px solid ${T.ruleSoft}`, alignItems: 'center' }}>
               <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
-                <span style={{ fontFamily: FONT_SANS, fontSize: 14, color: T.ink, letterSpacing: '-0.01em', lineHeight: 1.2, fontWeight: 600 }}>{displayLoc(w.location, es)}</span>
+                <span style={{ fontFamily: FONT_SANS, fontSize: 14, color: T.ink, letterSpacing: '-0.01em', lineHeight: 1.2, fontWeight: 600 }}>{displayLoc(w.location)}</span>
                 <span style={{ fontFamily: FONT_MONO, fontSize: 10, color: T.ink3 }}>{w.id.slice(0, 8)}</span>
               </div>
               <div style={{ display: 'flex', flexDirection: 'column', gap: 3, minWidth: 0 }}>
@@ -536,8 +534,8 @@ function HistoryModal({ open, onClose, done, es }: { open: boolean; onClose: () 
                 {w.completionNote && <span style={{ fontFamily: FONT_SANS, fontSize: 12, color: T.ink2, fontStyle: 'italic' }}>“{w.completionNote}”</span>}
               </div>
               <span style={{ fontFamily: FONT_SANS, fontSize: 13, color: T.ink }}>{w.completedByName || '—'}</span>
-              <span style={{ fontFamily: FONT_MONO, fontSize: 12, color: T.ink2 }}>{w.completedAt ? fmtDateShort(w.completedAt, es) : '—'}</span>
-              <Pill tone="sage">✓ {es ? 'Lista' : 'Done'}</Pill>
+              <span style={{ fontFamily: FONT_MONO, fontSize: 12, color: T.ink2 }}>{w.completedAt ? fmtDateShort(w.completedAt) : '—'}</span>
+              <Pill tone="sage">✓ {'Done'}</Pill>
             </div>
           ))}
         </div>
@@ -551,7 +549,7 @@ export function WorkOrdersTab() {
   const { user } = useAuth();
   const { activePropertyId } = useProperty();
   const { lang } = useLang();
-  const es = lang === 'es';
+  const es = false;
 
   const [orders, setOrders] = useState<WorkOrder[]>([]);
   const [loaded, setLoaded] = useState(false);
@@ -629,7 +627,7 @@ export function WorkOrdersTab() {
       if (!p) {
         // Don't silently create a photoless order — the fixer would walk in
         // blind. Surface it and keep the modal open (throw → modal stays).
-        flash(es ? 'No se pudo subir la foto. Inténtalo de nuevo o quítala.' : "Couldn't upload the photo. Try again or remove it.");
+        flash("Couldn't upload the photo. Try again or remove it.");
         throw new Error('photo upload failed');
       }
       submitterPhotoPath = p;
@@ -653,7 +651,7 @@ export function WorkOrdersTab() {
         needsPro: isPro,
       });
     } catch (err) {
-      flash(es ? 'No se pudo enviar la orden. Revisa la conexión e inténtalo de nuevo.' : "Couldn't submit the work order. Check your connection and try again.");
+      flash("Couldn't submit the work order. Check your connection and try again.");
       throw err;
     }
     // Trigger the "arrive & glow" once the new card mounts from the subscription.
@@ -671,7 +669,7 @@ export function WorkOrdersTab() {
         completionNote: note || undefined,
       });
     } catch (err) {
-      flash(es ? 'No se pudo marcar como lista. Revisa la conexión e inténtalo de nuevo.' : "Couldn't mark it done. Check your connection and try again.");
+      flash("Couldn't mark it done. Check your connection and try again.");
       throw err;
     }
     setDetailId(null);
@@ -684,9 +682,7 @@ export function WorkOrdersTab() {
     // (trade / company / phone / called-at) — confirm before a one-tap loss.
     if (val !== 'professional' && hasContractor(w)) {
       const who = w.proCompany || w.proTrade || w.proPhone || '';
-      const msg = es
-        ? `Esto quita el contratista guardado${who ? ` (${who})` : ''} de esta orden. ¿Mover de todos modos?`
-        : `This removes the saved contractor${who ? ` (${who})` : ''} from this order. Move it anyway?`;
+      const msg = `This removes the saved contractor${who ? ` (${who})` : ''} from this order. Move it anyway?`;
       if (!window.confirm(msg)) return;
     }
     // Record the FLIP start position before the board re-renders.
@@ -702,7 +698,7 @@ export function WorkOrdersTab() {
     updateWorkOrder(user.uid, activePropertyId, w.id, patch).catch(() => {
       // Fire-and-forget no more: the card won't move (realtime never fires on
       // a failed write), so tell the user why.
-      flash(es ? 'No se pudo mover la orden. Revisa la conexión e inténtalo de nuevo.' : "Couldn't move the work order. Check your connection and try again.");
+      flash("Couldn't move the work order. Check your connection and try again.");
     });
   };
 
@@ -710,13 +706,13 @@ export function WorkOrdersTab() {
     if (!user || !activePropertyId) return;
     const path = await uploadPhoto(file);
     if (!path) {
-      flash(es ? 'No se pudo subir la foto. Inténtalo de nuevo.' : "Couldn't upload the photo. Try again.");
+      flash("Couldn't upload the photo. Try again.");
       return;
     }
     try {
       await updateWorkOrder(user.uid, activePropertyId, id, { submitterPhotoPath: path });
     } catch {
-      flash(es ? 'No se pudo adjuntar la foto. Inténtalo de nuevo.' : "Couldn't attach the photo. Try again.");
+      flash("Couldn't attach the photo. Try again.");
     }
   };
 
@@ -731,7 +727,7 @@ export function WorkOrdersTab() {
         proCalledAt: new Date(),
       });
     } catch (err) {
-      flash(es ? 'No se pudo guardar el contratista. Revisa la conexión e inténtalo de nuevo.' : "Couldn't save the contractor. Check your connection and try again.");
+      flash("Couldn't save the contractor. Check your connection and try again.");
       throw err;
     }
   };
@@ -744,10 +740,10 @@ export function WorkOrdersTab() {
   };
 
   const lanes: { key: Placement; label: string }[] = [
-    { key: 'low',          label: es ? 'Baja'         : prioLabel.low },
-    { key: 'normal',       label: es ? 'Normal'       : prioLabel.normal },
-    { key: 'urgent',       label: es ? 'Urgente'      : prioLabel.urgent },
-    { key: 'professional', label: es ? 'Profesional'  : 'Professional' },
+    { key: 'low',          label: prioLabel.low },
+    { key: 'normal',       label: prioLabel.normal },
+    { key: 'urgent',       label: prioLabel.urgent },
+    { key: 'professional', label: 'Professional' },
   ];
 
   return (
@@ -770,12 +766,12 @@ export function WorkOrdersTab() {
         }
       `}</style>
       <PageHead
-        eyebrow={es ? 'Órdenes de trabajo · hoy' : 'Work orders · today'}
-        lead={`${open.length} ${es ? 'abiertas' : 'open'}`}
-        rest={`${doneList.length} ${es ? 'listas' : 'done'}`}
+        eyebrow={'Work orders · today'}
+        lead={`${open.length} ${'open'}`}
+        rest={`${doneList.length} ${'done'}`}
         actions={<>
-          <Btn size="lg" variant="ghost" onClick={() => setHistoryOpen(true)}>{es ? 'Historial' : 'History'} ({doneList.length}) →</Btn>
-          <Btn size="lg" variant="primary" onClick={() => setSubmitOpen(true)}>＋ {es ? 'Nueva orden' : 'New work order'}</Btn>
+          <Btn size="lg" variant="ghost" onClick={() => setHistoryOpen(true)}>{'History'} ({doneList.length}) →</Btn>
+          <Btn size="lg" variant="primary" onClick={() => setSubmitOpen(true)}>＋ {'New work order'}</Btn>
         </>}
       />
 
@@ -785,16 +781,16 @@ export function WorkOrdersTab() {
         <BoardLoading es={es} />
       ) : open.length === 0 ? (
         <MtEmptyCard
-          title={es ? 'Todo al día.' : 'All caught up.'}
-          body={es ? 'Nada abierto. Buen trabajo.' : 'Nothing open. Nice work.'}
-          action={<Btn size="lg" variant="primary" onClick={() => setSubmitOpen(true)}>＋ {es ? 'Nueva orden' : 'New work order'}</Btn>}
+          title={'All caught up.'}
+          body={'Nothing open. Nice work.'}
+          action={<Btn size="lg" variant="primary" onClick={() => setSubmitOpen(true)}>＋ {'New work order'}</Btn>}
         />
       ) : (
         <div ref={boardRef} className="mt-workorders-board">
           {lanes.map((l) => {
             const items = laneItems(l.key);
             return (
-              <BoardColumn key={l.key} color={LANE_COLOR[l.key]} label={l.label} count={items.length} empty={es ? 'Nada aquí.' : 'Nothing here.'}>
+              <BoardColumn key={l.key} color={LANE_COLOR[l.key]} label={l.label} count={items.length} empty={'Nothing here.'}>
                 {items.map((w) => <OpenCard key={w.id} w={w} onOpen={(x) => setDetailId(x.id)} isEnter={w.id === enterId} es={es} />)}
               </BoardColumn>
             );

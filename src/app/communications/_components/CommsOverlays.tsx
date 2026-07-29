@@ -49,7 +49,7 @@ export function SearchPalette({ pid, L, onClose, onJump, onOpenDm }: {
       if (r.ok && r.data) {
         setHits(r.data.hits);
       } else {
-        setSearchError(L('Search could not load. Check your connection and try again.', 'No se pudo cargar la búsqueda. Revisa tu conexión e inténtalo de nuevo.'));
+        setSearchError('Search could not load. Check your connection and try again.');
       }
       setSearching(false);
     }, 220);
@@ -68,12 +68,12 @@ export function SearchPalette({ pid, L, onClose, onJump, onOpenDm }: {
       cardStyle={{ width: 560, maxWidth: '92%', maxHeight: '70%', background: T.bg, borderRadius: 14, border: `1px solid ${T.hair}`, boxShadow: '0 24px 64px rgba(31,35,28,.22)', display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '13px 16px', borderBottom: `1px solid ${T.hairSoft}` }}>
           <span style={{ color: T.dim, display: 'flex' }}><Search size={18} /></span>
-          <input ref={inp} value={q} onChange={(e) => setQ(e.target.value)} placeholder={L('Search messages, channels and people…', 'Buscar mensajes, canales y personas…')}
+          <input ref={inp} value={q} onChange={(e) => setQ(e.target.value)} placeholder={'Search messages, channels and people…'}
             style={{ flex: 1, border: 'none', outline: 'none', background: 'transparent', fontFamily: SANS, fontSize: 15, color: T.ink }} />
-          <button onClick={onClose} aria-label={L('Close search', 'Cerrar búsqueda')} style={{ minWidth: 44, minHeight: 44, fontFamily: MONO, fontSize: 10, letterSpacing: '.08em', color: T.dim, border: `1px solid ${T.hair}`, borderRadius: 6, padding: '3px 7px', background: 'transparent', cursor: 'pointer' }}>ESC</button>
+          <button onClick={onClose} aria-label={'Close search'} style={{ minWidth: 44, minHeight: 44, fontFamily: MONO, fontSize: 10, letterSpacing: '.08em', color: T.dim, border: `1px solid ${T.hair}`, borderRadius: 6, padding: '3px 7px', background: 'transparent', cursor: 'pointer' }}>ESC</button>
         </div>
         <div style={{ flex: 1, overflowY: 'auto', padding: '8px 0 12px' }}>
-          {channels.length > 0 && <div style={{ marginBottom: 8 }}><div style={{ padding: '8px 16px 4px' }}><MonoLabel>{L('Channels', 'Canales')}</MonoLabel></div>
+          {channels.length > 0 && <div style={{ marginBottom: 8 }}><div style={{ padding: '8px 16px 4px' }}><MonoLabel>{'Channels'}</MonoLabel></div>
             {channels.map((h) => (
               <button key={'c' + h.conversationId} onClick={() => h.conversationId && onJump(h.conversationId)} style={rowStyle} onMouseEnter={hov} onMouseLeave={out}>
                 <span style={{ color: deptColor(h.dept), display: 'flex' }}>{h.title === 'Announcements' ? <Megaphone size={16} /> : <span style={{ fontFamily: SANS, fontSize: 16, fontWeight: 600 }}>#</span>}</span>
@@ -82,7 +82,7 @@ export function SearchPalette({ pid, L, onClose, onJump, onOpenDm }: {
               </button>
             ))}
           </div>}
-          {people.length > 0 && <div style={{ marginBottom: 8 }}><div style={{ padding: '8px 16px 4px' }}><MonoLabel>{L('People', 'Personas')}</MonoLabel></div>
+          {people.length > 0 && <div style={{ marginBottom: 8 }}><div style={{ padding: '8px 16px 4px' }}><MonoLabel>{'People'}</MonoLabel></div>
             {people.map((h) => (
               <button key={'p' + h.staffId} onClick={() => h.staffId && onOpenDm(h.staffId)} style={rowStyle} onMouseEnter={hov} onMouseLeave={out}>
                 <Avatar name={h.title} dept={h.dept} size={26} />
@@ -90,7 +90,7 @@ export function SearchPalette({ pid, L, onClose, onJump, onOpenDm }: {
               </button>
             ))}
           </div>}
-          {messages.length > 0 && <div style={{ marginBottom: 8 }}><div style={{ padding: '8px 16px 4px' }}><MonoLabel>{L(`Messages (${messages.length})`, `Mensajes (${messages.length})`)}</MonoLabel></div>
+          {messages.length > 0 && <div style={{ marginBottom: 8 }}><div style={{ padding: '8px 16px 4px' }}><MonoLabel>{`Messages (${messages.length})`}</MonoLabel></div>
             {messages.map((h, i) => (
               <button key={'m' + i} onClick={() => h.conversationId && onJump(h.conversationId)} style={{ ...rowStyle, alignItems: 'flex-start' }} onMouseEnter={hov} onMouseLeave={out}>
                 <Avatar name={h.title} dept={h.dept} size={26} />
@@ -101,9 +101,9 @@ export function SearchPalette({ pid, L, onClose, onJump, onOpenDm }: {
               </button>
             ))}
           </div>}
-          {searching && hits.length === 0 && <div role="status" style={{ padding: '24px 16px', textAlign: 'center', fontFamily: SANS, fontSize: 13.5, color: T.dim }}><Loader2 size={16} className="comms-spin" aria-hidden="true" /> {L('Searching…', 'Buscando…')}</div>}
-          {searchError && <div role="alert" style={{ margin: '8px 16px', padding: '12px 14px', borderRadius: 10, border: `1px solid ${tint(T.terracotta, .28)}`, background: tint(T.terracotta, .08), color: T.terracotta, fontFamily: SANS, fontSize: 13, lineHeight: 1.4, display: 'flex', alignItems: 'center', gap: 10 }}><AlertCircle size={17} aria-hidden="true" /><span style={{ flex: 1 }}>{hits.length > 0 ? L('Search could not refresh. Showing the last results.', 'No se pudo actualizar la búsqueda. Se muestran los últimos resultados.') : searchError}</span><button onClick={() => setSearchNonce((n) => n + 1)} aria-label={L('Retry search', 'Reintentar búsqueda')} style={{ minWidth: 44, minHeight: 44, borderRadius: 8, border: `1px solid ${tint(T.terracotta, .3)}`, background: T.bg, color: T.terracotta, cursor: 'pointer' }}><RefreshCw size={15} aria-hidden="true" /></button></div>}
-          {!searching && !searchError && hits.length === 0 && <div style={{ padding: '24px 16px', textAlign: 'center', fontFamily: SANS, fontSize: 13.5, color: T.dim }}>{q ? L(`No results for “${q}”.`, `Sin resultados para “${q}”.`) : L('Type to search.', 'Escribe para buscar.')}</div>}
+          {searching && hits.length === 0 && <div role="status" style={{ padding: '24px 16px', textAlign: 'center', fontFamily: SANS, fontSize: 13.5, color: T.dim }}><Loader2 size={16} className="comms-spin" aria-hidden="true" /> {'Searching…'}</div>}
+          {searchError && <div role="alert" style={{ margin: '8px 16px', padding: '12px 14px', borderRadius: 10, border: `1px solid ${tint(T.terracotta, .28)}`, background: tint(T.terracotta, .08), color: T.terracotta, fontFamily: SANS, fontSize: 13, lineHeight: 1.4, display: 'flex', alignItems: 'center', gap: 10 }}><AlertCircle size={17} aria-hidden="true" /><span style={{ flex: 1 }}>{hits.length > 0 ? 'Search could not refresh. Showing the last results.' : searchError}</span><button onClick={() => setSearchNonce((n) => n + 1)} aria-label={'Retry search'} style={{ minWidth: 44, minHeight: 44, borderRadius: 8, border: `1px solid ${tint(T.terracotta, .3)}`, background: T.bg, color: T.terracotta, cursor: 'pointer' }}><RefreshCw size={15} aria-hidden="true" /></button></div>}
+          {!searching && !searchError && hits.length === 0 && <div style={{ padding: '24px 16px', textAlign: 'center', fontFamily: SANS, fontSize: 13.5, color: T.dim }}>{q ? `No results for “${q}”.` : 'Type to search.'}</div>}
         </div>
     </CommsOverlay>
   );
@@ -119,18 +119,18 @@ export function NewMessageModal({ staff, L, onPick, onClose }: { staff: StaffLit
     <CommsOverlay onClose={onClose} scrim="rgba(31,35,28,.3)"
       cardStyle={{ background: T.bg, borderRadius: 16, width: 400, maxWidth: '92%', maxHeight: '70vh', display: 'flex', flexDirection: 'column', overflow: 'hidden', boxShadow: '0 24px 64px rgba(31,35,28,.2)' }}>
         <div style={{ padding: '14px 18px', borderBottom: `1px solid ${T.hair}`, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-          <span style={{ fontWeight: 700, fontFamily: SANS, fontSize: 15 }}>{L('New message', 'Nuevo mensaje')}</span>
+          <span style={{ fontWeight: 700, fontFamily: SANS, fontSize: 15 }}>{'New message'}</span>
           <button onClick={onClose} style={{ width: 30, height: 30, borderRadius: 8, border: 'none', background: 'transparent', color: T.dim, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }}><X size={16} /></button>
         </div>
-        <input autoFocus value={q} onChange={(e) => setQ(e.target.value)} placeholder={L('Search staff…', 'Buscar personal…')} style={{ margin: 14, padding: '10px 12px', border: `1px solid ${T.hair}`, borderRadius: 10, fontFamily: SANS, fontSize: 14, outline: 'none' }} />
+        <input autoFocus value={q} onChange={(e) => setQ(e.target.value)} placeholder={'Search staff…'} style={{ margin: 14, padding: '10px 12px', border: `1px solid ${T.hair}`, borderRadius: 10, fontFamily: SANS, fontSize: 14, outline: 'none' }} />
         <div style={{ overflowY: 'auto' }}>
           {filtered.map((s) => (
             <button key={s.id} onClick={() => onPick(s.id)} style={{ display: 'flex', alignItems: 'center', gap: 10, width: '100%', textAlign: 'left', padding: '10px 18px', background: 'transparent', border: 'none', borderBottom: `1px solid ${T.hairSoft}`, cursor: 'pointer', fontFamily: SANS, fontSize: 14 }}>
               <Avatar name={s.name} dept={(s.channel === 'all_staff' ? 'management' : s.channel) as CommsDept} size={28} />
-              <span>{s.name} <span style={{ fontSize: 12, color: T.dim }}>· {s.department ?? L('staff', 'personal')}</span></span>
+              <span>{s.name} <span style={{ fontSize: 12, color: T.dim }}>· {s.department ?? 'staff'}</span></span>
             </button>
           ))}
-          {filtered.length === 0 && <div style={{ padding: 18, color: T.dim, fontSize: 13, fontFamily: SANS }}>{L('No staff found', 'Sin resultados')}</div>}
+          {filtered.length === 0 && <div style={{ padding: 18, color: T.dim, fontSize: 13, fontFamily: SANS }}>{'No staff found'}</div>}
         </div>
     </CommsOverlay>
   );
@@ -151,11 +151,11 @@ type DateBucket = 'all' | 'overdue' | 'today' | 'week';
 /** Source tag label + colour per worklist source type. */
 function sourceMeta(L: L): Record<WorklistSourceType, { label: string; color: string }> {
   return {
-    task:       { label: L('To-do', 'Tarea'),           color: T.ink },
-    complaint:  { label: L('Complaint', 'Queja'),       color: T.terracotta },
-    workorder:  { label: L('Work order', 'Orden'),      color: T.gold },
-    inspection: { label: L('Inspection', 'Inspección'), color: T.forest },
-    pm:         { label: L('Preventive', 'Preventivo'), color: T.teal },
+    task:       { label: 'To-do',           color: T.ink },
+    complaint:  { label: 'Complaint',       color: T.terracotta },
+    workorder:  { label: 'Work order',      color: T.gold },
+    inspection: { label: 'Inspection', color: T.forest },
+    pm:         { label: 'Preventive', color: T.teal },
   };
 }
 
@@ -200,7 +200,7 @@ export function TodoMode({ pid, items, staff, isManager, view, onViewChange, L, 
     setMutationError(null);
     const r = await apiPost('/api/worklist/complete', { pid, sourceType: it.sourceType, sourceId: it.sourceId });
     if (!r.ok) {
-      setMutationError(L('The item was not completed. Please try again.', 'No se completó el elemento. Inténtalo de nuevo.'));
+      setMutationError('The item was not completed. Please try again.');
       return;
     }
     reload();
@@ -209,7 +209,7 @@ export function TodoMode({ pid, items, staff, isManager, view, onViewChange, L, 
     setMutationError(null);
     const r = await apiDelete(`/api/comms/tasks?pid=${encodeURIComponent(pid)}&taskId=${encodeURIComponent(it.sourceId)}`);
     if (!r.ok) {
-      setMutationError(L('The to-do was not deleted. Please try again.', 'No se eliminó la tarea. Inténtalo de nuevo.'));
+      setMutationError('The to-do was not deleted. Please try again.');
       return;
     }
     reload();
@@ -242,12 +242,12 @@ export function TodoMode({ pid, items, staff, isManager, view, onViewChange, L, 
   };
 
   const switcher = (
-    <div role="group" aria-label={L('Choose a view', 'Elegir vista')} style={{ marginTop: 16, display: 'flex', flexWrap: 'wrap', gap: 7 }}>
+    <div role="group" aria-label={'Choose a view'} style={{ marginTop: 16, display: 'flex', flexWrap: 'wrap', gap: 7 }}>
       <button className="comms-viewswitch" onClick={() => changeView('list')} aria-pressed={view === 'list'} style={switchChip(view === 'list')}>
-        <ListTodo size={15} aria-hidden="true" /> {L('List', 'Lista')}
+        <ListTodo size={15} aria-hidden="true" /> {'List'}
       </button>
       <button className="comms-viewswitch" onClick={() => changeView('calendar')} aria-pressed={view === 'calendar'} style={switchChip(view === 'calendar')}>
-        <CalendarDays size={15} aria-hidden="true" /> {L('Calendar', 'Calendario')}
+        <CalendarDays size={15} aria-hidden="true" /> {'Calendar'}
       </button>
       <style>{`.comms-viewswitch:focus-visible{outline:2px solid ${T.teal};outline-offset:2px}`}</style>
     </div>
@@ -262,11 +262,11 @@ export function TodoMode({ pid, items, staff, isManager, view, onViewChange, L, 
         <>
         <div style={{ display: 'flex', alignItems: 'flex-end', justifyContent: 'space-between', gap: 16 }}>
           <div>
-            <div style={{ marginBottom: 7 }}><MonoLabel>{L(`${items.length} open · ${overdueCount} overdue`, `${items.length} abiertas · ${overdueCount} vencidas`)}</MonoLabel></div>
-            <div style={{ fontFamily: SERIF, fontSize: 34, fontStyle: 'italic', lineHeight: 1, color: T.ink }}>{L('Worklist', 'Lista')}</div>
+            <div style={{ marginBottom: 7 }}><MonoLabel>{`${items.length} open · ${overdueCount} overdue`}</MonoLabel></div>
+            <div style={{ fontFamily: SERIF, fontSize: 34, fontStyle: 'italic', lineHeight: 1, color: T.ink }}>{'Worklist'}</div>
           </div>
           <button onClick={() => setAdding(true)} style={{ minHeight: 44, display: 'flex', alignItems: 'center', gap: 7, padding: '9px 14px', borderRadius: 10, cursor: 'pointer', flexShrink: 0, border: `1px solid ${tint(T.forest, .4)}`, background: tint(T.forest, .12), color: deptColorDark(T.forest), fontFamily: SANS, fontSize: 13.5, fontWeight: 600 }}>
-            <Plus size={16} /> {L('Add to-do', 'Agregar tarea')}
+            <Plus size={16} /> {'Add to-do'}
           </button>
         </div>
 
@@ -274,14 +274,14 @@ export function TodoMode({ pid, items, staff, isManager, view, onViewChange, L, 
 
         {/* Filters — Type then date bucket (mirrors QUORE) */}
         <div style={{ marginTop: 14, display: 'flex', flexWrap: 'wrap', gap: 7, alignItems: 'center' }}>
-          <button onClick={() => setTypeFilter('all')} style={chipStyle(typeFilter === 'all', T.ink)}>{L('All', 'Todo')} {items.length}</button>
+          <button onClick={() => setTypeFilter('all')} style={chipStyle(typeFilter === 'all', T.ink)}>{'All'} {items.length}</button>
           {presentTypes.map(({ t, n }) => (
             <button key={t} onClick={() => setTypeFilter(t)} style={chipStyle(typeFilter === t, meta[t].color)}>{meta[t].label} {n}</button>
           ))}
           <span style={{ width: 1, height: 18, background: T.hair, margin: '0 3px' }} />
           {(['all', 'overdue', 'today', 'week'] as DateBucket[]).map((b) => (
             <button key={b} onClick={() => setBucket(b)} style={chipStyle(bucket === b, b === 'overdue' ? T.terracotta : T.ink)}>
-              {b === 'all' ? L('Any time', 'Cualquier') : b === 'overdue' ? L('Overdue', 'Vencidas') : b === 'today' ? L('Today', 'Hoy') : L('This week', 'Esta semana')}
+              {b === 'all' ? 'Any time' : b === 'overdue' ? 'Overdue' : b === 'today' ? 'Today' : 'This week'}
             </button>
           ))}
         </div>
@@ -292,28 +292,28 @@ export function TodoMode({ pid, items, staff, isManager, view, onViewChange, L, 
             <div role="alert" style={{ fontFamily: SANS, fontSize: 13, lineHeight: 1.45, color: T.terracotta, padding: '12px 14px', border: `1px solid ${tint(T.terracotta, .28)}`, background: tint(T.terracotta, .08), borderRadius: 12, display: 'flex', alignItems: 'center', gap: 10 }}>
               <AlertCircle size={17} aria-hidden="true" style={{ flexShrink: 0 }} />
               <span style={{ flex: 1 }}>{mutationError}</span>
-              <button onClick={() => setMutationError(null)} aria-label={L('Dismiss error', 'Cerrar error')} style={{ width: 44, height: 44, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', border: 0, borderRadius: 8, background: 'transparent', color: T.terracotta, cursor: 'pointer' }}><X size={17} aria-hidden="true" /></button>
+              <button onClick={() => setMutationError(null)} aria-label={'Dismiss error'} style={{ width: 44, height: 44, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', border: 0, borderRadius: 8, background: 'transparent', color: T.terracotta, cursor: 'pointer' }}><X size={17} aria-hidden="true" /></button>
             </div>
           )}
           {loading && items.length === 0 && (
             <div role="status" aria-live="polite" style={{ fontFamily: SANS, fontSize: 13.5, color: T.dim, padding: '26px 16px', textAlign: 'center', border: `1px dashed ${T.hair}`, borderRadius: 12, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8 }}>
-              <Loader2 size={16} className="comms-spin" aria-hidden="true" /> {L('Loading worklist…', 'Cargando lista…')}
+              <Loader2 size={16} className="comms-spin" aria-hidden="true" /> {'Loading worklist…'}
             </div>
           )}
           {error && (
             <div role="alert" style={{ fontFamily: SANS, fontSize: 13, lineHeight: 1.45, color: T.terracotta, padding: '12px 14px', border: `1px solid ${tint(T.terracotta, .28)}`, background: tint(T.terracotta, .08), borderRadius: 12, display: 'flex', alignItems: 'center', gap: 10 }}>
               <AlertCircle size={17} aria-hidden="true" style={{ flexShrink: 0 }} />
-              <span style={{ flex: 1 }}>{items.length > 0 ? L('The worklist could not refresh. Showing the last results.', 'No se pudo actualizar la lista. Se muestran los últimos resultados.') : L('The worklist could not load. Check your connection and try again.', 'No se pudo cargar la lista. Revisa tu conexión e inténtalo de nuevo.')}</span>
+              <span style={{ flex: 1 }}>{items.length > 0 ? 'The worklist could not refresh. Showing the last results.' : 'The worklist could not load. Check your connection and try again.'}</span>
               <button onClick={reload} disabled={loading} style={{ minWidth: 44, minHeight: 44, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: 6, padding: '0 10px', borderRadius: 8, border: `1px solid ${tint(T.terracotta, .3)}`, background: T.bg, color: T.terracotta, cursor: loading ? 'wait' : 'pointer', fontFamily: SANS, fontSize: 12, fontWeight: 700 }}>
-                {loading ? <Loader2 size={14} className="comms-spin" aria-hidden="true" /> : <RefreshCw size={14} aria-hidden="true" />}{L('Retry', 'Reintentar')}
+                {loading ? <Loader2 size={14} className="comms-spin" aria-hidden="true" /> : <RefreshCw size={14} aria-hidden="true" />}{'Retry'}
               </button>
             </div>
           )}
           {!loading && (!error || items.length > 0) && filtered.length === 0 && (
             <div style={{ fontFamily: SANS, fontSize: 13.5, color: T.dim, padding: '26px 16px', textAlign: 'center', border: `1px dashed ${T.hair}`, borderRadius: 12 }}>
               {items.length === 0
-                ? L('Nothing open across the property. Add a to-do to get started.', 'Nada pendiente en la propiedad. Agrega una tarea para empezar.')
-                : L('No items match these filters.', 'Ningún elemento coincide con estos filtros.')}
+                ? 'Nothing open across the property. Add a to-do to get started.'
+                : 'No items match these filters.'}
             </div>
           )}
           {filtered.map((it) => (
@@ -340,7 +340,7 @@ function AssignModal({ item, pid, staff, L, onClose, onDone }: { item: WorklistI
     if (busy) return; setBusy(true); setError(null);
     try {
       const r = await apiPost('/api/worklist/assign', { pid, sourceType: item.sourceType, sourceId: item.sourceId, ...payload });
-      if (!r.ok) { setError(L('The assignment was not saved. Please try again.', 'No se guardó la asignación. Inténtalo de nuevo.')); return; }
+      if (!r.ok) { setError('The assignment was not saved. Please try again.'); return; }
       onDone();
     }
     finally { setBusy(false); }
@@ -350,7 +350,7 @@ function AssignModal({ item, pid, staff, L, onClose, onDone }: { item: WorklistI
     <CommsOverlay onClose={onClose} scrim="rgba(31,35,28,.3)" zIndex={71} padding={20} escToClose
       cardStyle={{ background: T.bg, borderRadius: 16, width: 400, maxWidth: '94%', maxHeight: '78vh', display: 'flex', flexDirection: 'column', overflow: 'hidden', boxShadow: '0 24px 64px rgba(31,35,28,.22)' }}>
         <div style={{ padding: '14px 18px', borderBottom: `1px solid ${T.hairSoft}`, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-          <span style={{ fontFamily: SANS, fontWeight: 700, fontSize: 15 }}>{isPriority ? L('Set priority', 'Definir prioridad') : L('Assign to', 'Asignar a')}</span>
+          <span style={{ fontFamily: SANS, fontWeight: 700, fontSize: 15 }}>{isPriority ? 'Set priority' : 'Assign to'}</span>
           <button onClick={onClose} style={{ width: 30, height: 30, borderRadius: 8, border: 'none', background: 'transparent', color: T.dim, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }}><X size={16} /></button>
         </div>
 
@@ -358,7 +358,7 @@ function AssignModal({ item, pid, staff, L, onClose, onDone }: { item: WorklistI
 
         {isPriority ? (
           <div style={{ padding: 14, display: 'flex', flexDirection: 'column', gap: 8 }}>
-            {([['urgent', L('Urgent', 'Urgente'), T.terracotta], ['normal', L('Normal', 'Normal'), T.dim], ['low', L('Low', 'Baja'), T.teal]] as [string, string, string][]).map(([id, lbl, col]) => {
+            {([['urgent', 'Urgent', T.terracotta], ['normal', 'Normal', T.dim], ['low', 'Low', T.teal]] as [string, string, string][]).map(([id, lbl, col]) => {
               const on = item.priority === id;
               return (
                 <button key={id} disabled={busy} onClick={() => post({ priority: id })} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '12px 14px', borderRadius: 10, cursor: 'pointer', border: `1px solid ${on ? tint(col, .5) : T.hair}`, background: on ? tint(col, .12) : T.bg, fontFamily: SANS, fontSize: 14, fontWeight: 600, color: on ? deptColorDark(col) : T.ink, textAlign: 'left' }}>
@@ -373,19 +373,19 @@ function AssignModal({ item, pid, staff, L, onClose, onDone }: { item: WorklistI
           <div style={{ overflowY: 'auto', padding: '6px 0' }}>
             <button disabled={busy} onClick={() => post({ assigneeStaffId: null })} style={{ display: 'flex', alignItems: 'center', gap: 10, width: '100%', textAlign: 'left', padding: '10px 18px', background: 'transparent', border: 'none', borderBottom: `1px solid ${T.hairSoft}`, cursor: 'pointer', fontFamily: SANS, fontSize: 13.5, color: T.dim }}>
               <span style={{ width: 28, height: 28, borderRadius: '50%', border: `1.5px dashed ${T.hairer}`, display: 'flex', alignItems: 'center', justifyContent: 'center' }}><X size={14} /></span>
-              {L('Unassigned', 'Sin asignar')}
+              {'Unassigned'}
             </button>
             {staff.map((s) => {
               const on = item.assigneeStaffId === s.id;
               return (
                 <button key={s.id} disabled={busy} onClick={() => post({ assigneeStaffId: s.id })} style={{ display: 'flex', alignItems: 'center', gap: 10, width: '100%', textAlign: 'left', padding: '10px 18px', background: on ? T.paper : 'transparent', border: 'none', borderBottom: `1px solid ${T.hairSoft}`, cursor: 'pointer', fontFamily: SANS, fontSize: 14 }}>
                   <Avatar name={s.name} dept={(s.channel === 'all_staff' ? 'management' : s.channel) as CommsDept} size={28} />
-                  <span style={{ flex: 1 }}>{s.name} <span style={{ fontSize: 12, color: T.dim }}>· {s.department ?? L('staff', 'personal')}</span></span>
+                  <span style={{ flex: 1 }}>{s.name} <span style={{ fontSize: 12, color: T.dim }}>· {s.department ?? 'staff'}</span></span>
                   {on && <Check size={15} color={T.forest} />}
                 </button>
               );
             })}
-            {staff.length === 0 && <div style={{ padding: 18, color: T.dim, fontSize: 13, fontFamily: SANS }}>{L('No staff found', 'Sin personal')}</div>}
+            {staff.length === 0 && <div style={{ padding: 18, color: T.dim, fontSize: 13, fontFamily: SANS }}>{'No staff found'}</div>}
           </div>
         )}
     </CommsOverlay>
@@ -393,7 +393,7 @@ function AssignModal({ item, pid, staff, L, onClose, onDone }: { item: WorklistI
 }
 
 function prioLabel(p: WorklistItem['priority'], L: L): string {
-  return p === 'urgent' ? L('Urgent', 'Urgente') : p === 'high' ? L('High', 'Alta') : p === 'low' ? L('Low', 'Baja') : L('Normal', 'Normal');
+  return p === 'urgent' ? 'Urgent' : p === 'high' ? 'High' : p === 'low' ? 'Low' : 'Normal';
 }
 
 function WorklistRow({ it, meta, L, onComplete, onAssign, onDelete }: { it: WorklistItem; meta: { label: string; color: string }; L: L; onComplete: () => void; onAssign: () => void; onDelete: () => void }) {
@@ -408,7 +408,7 @@ function WorklistRow({ it, meta, L, onComplete, onAssign, onDelete }: { it: Work
           their module; inspections (canComplete=false) show a source dot and are
           actioned via the deep-link instead. */}
       {it.canComplete ? (
-        <button onClick={onComplete} aria-label={L('Mark done', 'Marcar hecho')} style={{ width: 22, height: 22, borderRadius: 6, flexShrink: 0, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', border: `1.5px solid ${hover ? T.forest : T.hairer}`, background: T.bg }}>
+        <button onClick={onComplete} aria-label={'Mark done'} style={{ width: 22, height: 22, borderRadius: 6, flexShrink: 0, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', border: `1.5px solid ${hover ? T.forest : T.hairer}`, background: T.bg }}>
           {hover && <Check size={14} strokeWidth={2.6} color={T.forest} />}
         </button>
       ) : (
@@ -423,32 +423,32 @@ function WorklistRow({ it, meta, L, onComplete, onAssign, onDelete }: { it: Work
         <div style={{ fontFamily: SANS, fontSize: 14, color: T.ink, lineHeight: 1.35, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{it.title}</div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 9, marginTop: 5, flexWrap: 'wrap' }}>
           {it.canAssign ? (
-            <button onClick={onAssign} title={it.sourceType === 'workorder' ? L('Set priority', 'Definir prioridad') : L('Assign', 'Asignar')}
+            <button onClick={onAssign} title={it.sourceType === 'workorder' ? 'Set priority' : 'Assign'}
               style={{ display: 'inline-flex', alignItems: 'center', gap: 5, border: `1px solid ${T.hair}`, borderRadius: 999, padding: '2px 9px 2px 6px', background: T.bg, cursor: 'pointer' }}
               onMouseEnter={(e) => (e.currentTarget.style.borderColor = T.hairer)} onMouseLeave={(e) => (e.currentTarget.style.borderColor = T.hair)}>
               {it.sourceType === 'workorder'
                 ? <MonoLabel style={{ fontSize: 10, color: prColor }}>{prioLabel(it.priority, L)}</MonoLabel>
                 : it.assigneeName
                   ? <><Avatar name={it.assigneeName} size={15} /><MonoLabel style={{ fontSize: 10 }}>{it.assigneeName}</MonoLabel></>
-                  : <MonoLabel style={{ fontSize: 10 }}>{L('Assign', 'Asignar')}</MonoLabel>}
+                  : <MonoLabel style={{ fontSize: 10 }}>{'Assign'}</MonoLabel>}
             </button>
           ) : (
             it.assigneeName && <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5 }}><Avatar name={it.assigneeName} size={16} /><MonoLabel style={{ fontSize: 10 }}>{it.assigneeName}</MonoLabel></span>
           )}
-          {it.overdue && <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}><AlertTriangle size={12} color={T.terracotta} /><MonoLabel style={{ fontSize: 10, color: T.terracotta }}>{L('Overdue', 'Vencida')}</MonoLabel></span>}
+          {it.overdue && <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}><AlertTriangle size={12} color={T.terracotta} /><MonoLabel style={{ fontSize: 10, color: T.terracotta }}>{'Overdue'}</MonoLabel></span>}
           {dueLabel && !it.overdue && <MonoLabel style={{ fontSize: 10, color: prColor }}>{dueLabel}</MonoLabel>}
         </div>
       </div>
 
-      {it.priority === 'urgent' && <span style={{ fontFamily: MONO, fontSize: 9, letterSpacing: '.1em', color: T.terracotta, border: `1px solid ${tint(T.terracotta, .3)}`, borderRadius: 5, padding: '2px 6px' }}>{L('URGENT', 'URGENTE')}</span>}
+      {it.priority === 'urgent' && <span style={{ fontFamily: MONO, fontSize: 9, letterSpacing: '.1em', color: T.terracotta, border: `1px solid ${tint(T.terracotta, .3)}`, borderRadius: 5, padding: '2px 6px' }}>{'URGENT'}</span>}
 
       {!isTask && (
-        <a href={it.deepLink} title={L('Open', 'Abrir')} style={{ width: 28, height: 28, borderRadius: 8, border: `1px solid ${T.hair}`, color: T.dim, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0, textDecoration: 'none' }}
+        <a href={it.deepLink} title={'Open'} style={{ width: 28, height: 28, borderRadius: 8, border: `1px solid ${T.hair}`, color: T.dim, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0, textDecoration: 'none' }}
           onMouseEnter={(e) => { e.currentTarget.style.color = T.ink; e.currentTarget.style.borderColor = T.hairer; }} onMouseLeave={(e) => { e.currentTarget.style.color = T.dim; e.currentTarget.style.borderColor = T.hair; }}>
           <ArrowUpRight size={15} />
         </a>
       )}
-      {isTask && hover && <button onClick={onDelete} title={L('Delete', 'Eliminar')} style={{ width: 26, height: 26, borderRadius: 7, border: 'none', background: 'transparent', color: T.dim, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}><X size={15} /></button>}
+      {isTask && hover && <button onClick={onDelete} title={'Delete'} style={{ width: 26, height: 26, borderRadius: 7, border: 'none', background: 'transparent', color: T.dim, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}><X size={15} /></button>}
     </div>
   );
 }
@@ -470,40 +470,40 @@ function TodoComposer({ pid, staff, L, onClose, onAdded }: { pid: string; staff:
     setBusy(true); setError(null);
     try {
       const r = await apiPost('/api/comms/tasks', { pid, title: t, assignedDepartment: dept, assignedStaffId: assignee || undefined, priority, dueAt: dueIso || undefined });
-      if (!r.ok) { setError(L('The to-do was not added. Please try again.', 'No se agregó la tarea. Inténtalo de nuevo.')); return; }
+      if (!r.ok) { setError('The to-do was not added. Please try again.'); return; }
       onAdded();
     } finally { setBusy(false); }
   };
-  const prios: [typeof priority, string, string][] = [['normal', L('Normal', 'Normal'), T.dim], ['high', L('High', 'Alta'), T.gold], ['urgent', L('Urgent', 'Urgente'), T.terracotta]];
+  const prios: [typeof priority, string, string][] = [['normal', 'Normal', T.dim], ['high', 'High', T.gold], ['urgent', 'Urgent', T.terracotta]];
   const curDept = (DEPT_OPTIONS.find((d) => d.key === dept)?.dept ?? 'management');
 
   return (
     <CommsOverlay onClose={onClose} scrim="rgba(31,35,28,.3)" padding={20} escToClose
       cardStyle={{ background: T.bg, borderRadius: 16, width: 460, maxWidth: '94%', maxHeight: '88vh', overflowY: 'auto', boxShadow: '0 24px 64px rgba(31,35,28,.22)', display: 'flex', flexDirection: 'column' }}>
         <div style={{ padding: '15px 18px 12px', borderBottom: `1px solid ${T.hairSoft}`, display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-          <span style={{ fontFamily: SERIF, fontStyle: 'italic', fontSize: 20, color: T.ink }}>{L('New to-do', 'Nueva tarea')}</span>
+          <span style={{ fontFamily: SERIF, fontStyle: 'italic', fontSize: 20, color: T.ink }}>{'New to-do'}</span>
           <button onClick={onClose} style={{ width: 30, height: 30, borderRadius: 8, border: 'none', background: 'transparent', color: T.dim, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }}><X size={16} /></button>
         </div>
 
         <div style={{ padding: '14px 18px' }}>
           {error && <div role="alert" style={{ marginBottom: 10, color: T.terracotta, fontFamily: SANS, fontSize: 12.5, lineHeight: 1.4 }}>{error}</div>}
-          <input ref={inp} value={text} onChange={(e) => setText(e.target.value)} placeholder={L('What needs doing?', '¿Qué hay que hacer?')}
+          <input ref={inp} value={text} onChange={(e) => setText(e.target.value)} placeholder={'What needs doing?'}
             onKeyDown={(e) => { if (e.key === 'Enter') void submit(); }}
             style={{ width: '100%', border: `1px solid ${T.hair}`, borderRadius: 10, outline: 'none', background: T.paper, fontFamily: SANS, fontSize: 15, color: T.ink, padding: '11px 12px' }} />
 
           <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap', marginTop: 14 }}>
             <label style={{ display: 'flex', alignItems: 'center', gap: 7 }}>
-              <MonoLabel style={{ fontSize: 9.5 }}>{L('For', 'Para')}</MonoLabel>
+              <MonoLabel style={{ fontSize: 9.5 }}>{'For'}</MonoLabel>
               <span style={{ position: 'relative', display: 'inline-flex', alignItems: 'center' }}>
                 <DeptDot dept={curDept} />
                 <select value={dept} onChange={(e) => setDept(e.target.value)} style={{ appearance: 'none', border: `1px solid ${T.hair}`, borderRadius: 8, background: T.paper, fontFamily: SANS, fontSize: 12.5, fontWeight: 600, color: T.ink, padding: '6px 26px 6px 9px', marginLeft: 7, cursor: 'pointer' }}>
-                  {DEPT_OPTIONS.map((d) => <option key={d.key} value={d.key}>{d.key === 'all_staff' ? L('All Staff', 'Todos') : deptLabel(d.dept)}</option>)}
+                  {DEPT_OPTIONS.map((d) => <option key={d.key} value={d.key}>{d.key === 'all_staff' ? 'All Staff' : deptLabel(d.dept)}</option>)}
                 </select>
                 <span style={{ position: 'absolute', right: 8, color: T.dim, pointerEvents: 'none', display: 'flex' }}><ChevronDown size={12} /></span>
               </span>
             </label>
             <select value={assignee} onChange={(e) => setAssignee(e.target.value)} style={{ border: `1px solid ${T.hair}`, borderRadius: 8, background: T.paper, fontFamily: SANS, fontSize: 12.5, color: T.ink, padding: '7px 9px', cursor: 'pointer', maxWidth: 180 }}>
-              <option value="">{L('Anyone', 'Cualquiera')}</option>
+              <option value="">{'Anyone'}</option>
               {staff.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
             </select>
           </div>
@@ -516,15 +516,15 @@ function TodoComposer({ pid, staff, L, onClose, onAdded }: { pid: string; staff:
           </div>
 
           <div style={{ marginTop: 16 }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 7, marginBottom: 8 }}><Clock size={13} color={T.dim} /><MonoLabel style={{ fontSize: 9.5 }}>{L('Due', 'Vence')}</MonoLabel></div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 7, marginBottom: 8 }}><Clock size={13} color={T.dim} /><MonoLabel style={{ fontSize: 9.5 }}>{'Due'}</MonoLabel></div>
             <WheelDatePicker value={dueIso} onChange={setDueIso} L={L} />
           </div>
         </div>
 
         <div style={{ padding: '12px 18px 16px', borderTop: `1px solid ${T.hairSoft}`, display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
-          <button onClick={onClose} style={{ fontFamily: SANS, fontSize: 13, fontWeight: 600, padding: '9px 16px', borderRadius: 9, border: `1px solid ${T.hair}`, background: T.bg, color: T.dim, cursor: 'pointer' }}>{L('Cancel', 'Cancelar')}</button>
+          <button onClick={onClose} style={{ fontFamily: SANS, fontSize: 13, fontWeight: 600, padding: '9px 16px', borderRadius: 9, border: `1px solid ${T.hair}`, background: T.bg, color: T.dim, cursor: 'pointer' }}>{'Cancel'}</button>
           <button onClick={submit} disabled={!text.trim() || busy} style={{ fontFamily: SANS, fontSize: 13, fontWeight: 600, padding: '9px 18px', borderRadius: 9, border: 'none', cursor: text.trim() ? 'pointer' : 'default', background: text.trim() ? T.ink : T.hairSoft, color: text.trim() ? '#fff' : T.dim, display: 'flex', alignItems: 'center', gap: 6 }}>
-            {busy && <Loader2 size={13} className="comms-spin" />} {L('Add to-do', 'Agregar')}
+            {busy && <Loader2 size={13} className="comms-spin" />} {'Add to-do'}
           </button>
         </div>
     </CommsOverlay>
@@ -586,16 +586,16 @@ function pad2(n: number): string { return n < 10 ? `0${n}` : `${n}`; }
 function WheelDatePicker({ value, onChange, L }: { value: string; onChange: (iso: string) => void; L: L }) {
   // Day column: No date + Today + next 30 days. Value = YYYY-MM-DD ('' = none).
   const dayOptions = React.useMemo<WheelOption[]>(() => {
-    const opts: WheelOption[] = [{ value: '', label: L('No date', 'Sin fecha') }];
+    const opts: WheelOption[] = [{ value: '', label: 'No date' }];
     const base = new Date(); base.setHours(0, 0, 0, 0);
     for (let i = 0; i < 31; i++) {
       const d = new Date(base); d.setDate(base.getDate() + i);
       const ymd = `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
-      const label = i === 0 ? L('Today', 'Hoy') : i === 1 ? L('Tomorrow', 'Mañana') : d.toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' });
+      const label = i === 0 ? 'Today' : i === 1 ? 'Tomorrow' : d.toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' });
       opts.push({ value: ymd, label });
     }
     return opts;
-  }, [L]);
+  }, []);
 
   // Time column: every 30 min. Value = minutes-from-midnight (as string).
   const timeOptions = React.useMemo<WheelOption[]>(() => {
