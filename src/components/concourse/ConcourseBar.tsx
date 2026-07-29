@@ -40,7 +40,6 @@ import { useOptionalPortfolio } from '@/contexts/PortfolioContext';
 import { useOptionalHotelActingContext } from '@/contexts/HotelActingContext';
 import { mapPortfolioUiRoute } from '@/lib/portfolio-ui/context';
 import type { AppSection } from '@/lib/sections/registry';
-import { useTheme } from '@/contexts/ThemeContext';
 
 // ── The decisions badge, across remounts ────────────────────────────────────
 // Same remount problem, same shape of fix. The bar is torn down and rebuilt on
@@ -85,7 +84,6 @@ export function ConcourseBar() {
   const searchParams = useSearchParams();
   const portfolio = useOptionalPortfolio();
   const acting = useOptionalHotelActingContext();
-  const { resolvedTheme, toggleTheme } = useTheme();
   const navigation = useReliableNavigation();
   const enabled = useEnabledSections();
   const { platform, installed } = useInstallStaxis();
@@ -410,19 +408,6 @@ export function ConcourseBar() {
                 {LOCALE_META[l].nativeName}
               </button>
             ))}
-
-            <button
-              type="button"
-              className="cx-menu-item"
-              onClick={() => {
-                toggleTheme();
-                setMenuOpen(false);
-              }}
-            >
-              {resolvedTheme === 'dark'
-                ? (lang === 'es' ? 'Usar tema claro' : 'Use light theme')
-                : (lang === 'es' ? 'Usar tema oscuro' : 'Use dark theme')}
-            </button>
 
             {platform === 'desktop' ? (
               <button
