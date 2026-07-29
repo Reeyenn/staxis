@@ -140,12 +140,11 @@ describe('portfolio presentational component contract', () => {
     assert.match(chooser, /closeLabel \?\? `Close \$\{title\}`/);
   });
 
-  test('theme CSS covers touch, themes, motion, zoom breakpoints, and contrast modes', () => {
+  test('theme CSS keeps the light appearance and covers touch, motion, zoom, and contrast modes', () => {
     const css = source('PortfolioUI.module.css');
     assert.match(css, /min-height: 44px/);
-    assert.match(css, /\[data-theme='light'\]/);
-    assert.match(css, /\[data-theme='dark'\]/);
-    assert.match(css, /prefers-color-scheme: dark/);
+    assert.match(css, /color-scheme:\s*light/);
+    assert.doesNotMatch(css, /data-theme|prefers-color-scheme:\s*dark|color-scheme:\s*dark/);
     assert.match(css, /prefers-reduced-motion: reduce/);
     assert.match(css, /prefers-contrast: more/);
     assert.match(css, /forced-colors: active/);
