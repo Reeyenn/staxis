@@ -131,6 +131,15 @@ export async function persistPortfolioKnowledgeReceipt(input: {
       || findingVersions.scopeHash !== input.receipt.scopeHash) {
     throw new Error('knowledge receipt finding provenance does not match the exact scope');
   }
+  if (findingVersions.status !== 'not_mounted'
+      && (findingVersions.accountId !== input.receipt.accountId
+        || findingVersions.authorizationHash !== input.receipt.authorizationHash
+        || findingVersions.coverage.authorizedPropertyCount
+          !== input.receipt.authorizedPropertyIds.length
+        || findingVersions.coverage.selectedPropertyCount !== input.receipt.propertyIds.length
+        || findingVersions.displayedClaimIds.length !== 0)) {
+    throw new Error('knowledge receipt mounted findings do not match the exact non-display scope');
+  }
   const selectionVerdict = validatePortfolioKnowledgeSelection({
     catalog: input.claimCatalog,
     candidate: input.selection,

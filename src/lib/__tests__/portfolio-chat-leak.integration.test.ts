@@ -95,6 +95,7 @@ import {
 } from '@/lib/agent/portfolio-intelligence/knowledge-presentation';
 import type { AuthorizationScopeReceipt } from '@/lib/authorization';
 import type { PlannerScopeCatalog, PortfolioKnowledgeQuery } from '@/lib/agent/portfolio-intelligence/schemas';
+import { portfolioFindingLoader } from '@/lib/agent/portfolio-intelligence/finding-mount';
 
 import { applyMigrationsToPglite } from '../../../tests/fixtures/pglite-migrate';
 import {
@@ -218,6 +219,7 @@ function deterministicRouteDependencies(
     loadAuthorizedMetadata?: PortfolioPostDependencies['loadAuthorizedMetadata'];
     loadCompanyKnowledge?: PortfolioPostDependencies['loadCompanyKnowledge'];
     loadPropertyKnowledge?: PortfolioPostDependencies['loadPropertyKnowledge'];
+    loadPortfolioFindings?: PortfolioPostDependencies['loadPortfolioFindings'];
   } = {},
 ): PortfolioPostDependencies {
   const definition = getAiFeatureDefinition('agent.portfolio_chat');
@@ -321,6 +323,8 @@ function deterministicRouteDependencies(
     loadAuthorizedMetadata: overrides.loadAuthorizedMetadata ?? loadAuthorizedPropertyMetadata,
     loadCompanyKnowledge: overrides.loadCompanyKnowledge ?? (async () => []),
     loadPropertyKnowledge: overrides.loadPropertyKnowledge ?? (async () => []),
+    loadPortfolioFindings:
+      overrides.loadPortfolioFindings ?? portfolioFindingLoader,
     acquireAdmission: overrides.acquireAdmission ?? (async () => ({
       ok: true,
       leaseToken: 'f0000000-0000-4000-8000-000000000002',
@@ -1126,9 +1130,20 @@ describe('deterministic company knowledge answers', () => {
       model_id: string | null;
       model_tier: string | null;
       evidence: Record<string, unknown>;
+      finding_versions: {
+        status: string;
+        coverage: {
+          authorizedPropertyCount: number;
+          selectedPropertyCount: number;
+          acceptedEvaluatedPropertyCount: number;
+          acceptedAffectedPropertyCount: number;
+        };
+        projectedClaimIds: string[];
+        displayedClaimIds: string[];
+      };
     }>(
       `select id, receipt_kind, request_artifact_id, knowledge_artifact_id,
-              model_id, model_tier, evidence
+              model_id, model_tier, evidence, finding_versions
          from portfolio_query_receipts
         where conversation_id = $1
         order by generated_at`,
@@ -1140,6 +1155,15 @@ describe('deterministic company knowledge answers', () => {
     assert.match(receiptRows.rows[0].knowledge_artifact_id ?? '', /^[0-9a-f-]{36}$/);
     assert.equal(receiptRows.rows[0].model_id, null);
     assert.equal(receiptRows.rows[0].model_tier, null);
+    assert.notEqual(receiptRows.rows[0].finding_versions.status, 'not_mounted');
+    assert.deepEqual(receiptRows.rows[0].finding_versions.coverage, {
+      authorizedPropertyCount: 2,
+      selectedPropertyCount: 2,
+      acceptedEvaluatedPropertyCount: 0,
+      acceptedAffectedPropertyCount: 0,
+    });
+    assert.deepEqual(receiptRows.rows[0].finding_versions.projectedClaimIds, []);
+    assert.deepEqual(receiptRows.rows[0].finding_versions.displayedClaimIds, []);
     assert.deepEqual(leaksIn(receiptRows.rows[0]), []);
 
     const artifacts = await pg.query<{
@@ -1172,12 +1196,23 @@ describe('deterministic company knowledge answers', () => {
       };
       rendered_answer_text: string;
       rendered_answer_hash: string;
+      finding_versions: {
+        status: string;
+        coverage: {
+          authorizedPropertyCount: number;
+          selectedPropertyCount: number;
+          acceptedEvaluatedPropertyCount: number;
+          acceptedAffectedPropertyCount: number;
+        };
+        projectedClaimIds: string[];
+        displayedClaimIds: string[];
+      };
     }>(
       `select id, scope_receipt_id, organization_id, account_id,
               authorization_hash, scope_hash, authorized_property_ids,
               selected_property_ids, selected_claim_ids, normalized_question,
               plan, source_versions, knowledge_versions, reproduction_input,
-              rendered_answer_text, rendered_answer_hash
+              rendered_answer_text, rendered_answer_hash, finding_versions
          from portfolio_knowledge_request_artifacts
         where id = $1`,
       [receiptRows.rows[0].knowledge_artifact_id],
@@ -1188,6 +1223,13 @@ describe('deterministic company knowledge answers', () => {
       'Which preferred vendor do we use across all my hotels?',
     );
     assert.equal(artifacts.rows[0].rendered_answer_text, answer);
+    assert.deepEqual(
+      artifacts.rows[0].finding_versions,
+      receiptRows.rows[0].finding_versions,
+      'the deterministic artifact and query receipt share one closed finding receipt',
+    );
+    assert.equal(JSON.stringify(artifacts.rows[0].finding_versions).includes(PID_A1), false);
+    assert.equal(JSON.stringify(artifacts.rows[0].finding_versions).includes(PID_A2), false);
     assert.deepEqual(artifacts.rows[0].knowledge_versions.exclusions, [{
       recordId: excludedFutureFactId,
       propertyId: null,
@@ -1553,13 +1595,13 @@ describe('deterministic company knowledge answers', () => {
       cloneArtifact({
         selected_property_ids: 'array[$2::uuid]',
       }, [PID_A1]),
-      /does not match a live authorization receipt/i,
+      /invalid or cross-scope finding receipt|does not match a live authorization receipt/i,
     );
     await assert.rejects(
       cloneArtifact({
         authorized_property_ids: 'array[$2::uuid, $3::uuid, $4::uuid]',
       }, [PID_A1, PID_A2, PID_B1]),
-      /does not match a live authorization receipt/i,
+      /invalid or cross-scope finding receipt|does not match a live authorization receipt/i,
     );
 
     const foreignScope = await resolveAuthorizationScope({
@@ -1895,8 +1937,16 @@ describe('Portfolio Intelligence acceptance path', () => {
       prompt_version: string;
       model_id: string;
       knowledge_versions: Record<string, unknown>;
+      finding_versions: {
+        status: string;
+        coverage: { authorizedPropertyCount: number; selectedPropertyCount: number };
+        acceptedClaimIds: string[];
+        projectedClaimIds: string[];
+        displayedClaimIds: string[];
+      };
     }>(
-      `select evidence, prompt_hash, prompt_version, model_id, knowledge_versions
+      `select evidence, prompt_hash, prompt_version, model_id, knowledge_versions,
+              finding_versions
          from portfolio_query_receipts
         where conversation_id = $1
         order by generated_at desc limit 1`,
@@ -1932,6 +1982,25 @@ describe('Portfolio Intelligence acceptance path', () => {
     assert.match(aggregateReceipt.rows[0].prompt_version, /portfolio-synthesis\.v2/);
     assert.equal(aggregateReceipt.rows[0].model_id, 'claude-sonnet-4-6');
     assert.equal(aggregateReceipt.rows[0].knowledge_versions.status, 'included');
+    assert.notEqual(aggregateReceipt.rows[0].finding_versions.status, 'not_mounted');
+    assert.equal(
+      aggregateReceipt.rows[0].finding_versions.coverage.authorizedPropertyCount,
+      20,
+    );
+    assert.equal(
+      aggregateReceipt.rows[0].finding_versions.coverage.selectedPropertyCount,
+      20,
+    );
+    assert.ok(aggregateReceipt.rows[0].finding_versions.displayedClaimIds.every(
+      (claimId) => aggregateReceipt.rows[0].finding_versions.projectedClaimIds.includes(claimId),
+    ));
+    assert.equal(
+      propertyIds.some((propertyId) => (
+        JSON.stringify(aggregateReceipt.rows[0].finding_versions).includes(propertyId)
+      )),
+      false,
+      'the compact finding receipt must not persist the authorization universe',
+    );
     assert.ok(
       shim.statements.some((statement) => statement.target === 'staxis_portfolio_booked_room_points'),
       'cold metric reads use the bounded point RPC instead of a globally limited raw curve',
@@ -1966,8 +2035,14 @@ describe('Portfolio Intelligence acceptance path', () => {
     assert.equal(drilldownScope.authorizedHotelCount, 20);
     assert.deepEqual(drilldownScope.coverage, { reported: 1, total: 1, omitted: 0 });
 
-    const receipts = await pg.query<{ evidence: Record<string, unknown> }>(
-      `select evidence from portfolio_query_receipts
+    const receipts = await pg.query<{
+      evidence: Record<string, unknown>;
+      finding_versions: {
+        status: string;
+        coverage: { authorizedPropertyCount: number; selectedPropertyCount: number };
+      };
+    }>(
+      `select evidence, finding_versions from portfolio_query_receipts
         where conversation_id = $1 order by generated_at`,
       [conversationId],
     );
@@ -1985,6 +2060,9 @@ describe('Portfolio Intelligence acceptance path', () => {
       drilldownEvidence.aggregates.find((item) => item.metricId === 'rooms_booked_otb')?.numerator,
       15,
     );
+    assert.notEqual(receipts.rows[1].finding_versions.status, 'not_mounted');
+    assert.equal(receipts.rows[1].finding_versions.coverage.authorizedPropertyCount, 20);
+    assert.equal(receipts.rows[1].finding_versions.coverage.selectedPropertyCount, 1);
     assert.equal(
       shim.statements.some((statement) => statement.target === 'pms_booking_pace'
         || statement.target === 'pms_ingest_runs'),
