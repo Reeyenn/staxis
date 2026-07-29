@@ -17,6 +17,7 @@
 
 import { fetchWithAuth, SessionEndedError } from '@/lib/api-fetch';
 import { readEnvelope, type EnvelopeResult } from '@/lib/api-envelope';
+import { fetchWithDeadline } from '@/lib/fetch-deadline';
 
 async function send<T>(url: string, init: RequestInit): Promise<EnvelopeResult<T>> {
   try {
@@ -58,11 +59,15 @@ export function toldDelete<T>(url: string): Promise<EnvelopeResult<T>> {
  */
 export async function putSigned(signedUrl: string, file: Blob, contentType: string): Promise<boolean> {
   try {
-    const res = await fetch(signedUrl, {
-      method: 'PUT',
-      body: file,
-      headers: { 'Content-Type': contentType },
-    });
+    const res = await fetchWithDeadline(
+      signedUrl,
+      {
+        method: 'PUT',
+        body: file,
+        headers: { 'Content-Type': contentType },
+      },
+      { timeoutMs: 60_000, label: 'Knowledge document upload' },
+    );
     return res.ok;
   } catch {
     return false;

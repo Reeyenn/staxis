@@ -58,10 +58,10 @@ const housekeeperPage = source('src', 'app', 'housekeeper', '[id]', 'page.tsx');
 const dashboardPage = source('src', 'app', 'dashboard', 'page.tsx');
 const roomsDb = source('src', 'lib', 'db', 'rooms.ts');
 const propertySelectorPage = source('src', 'app', 'property-selector', 'page.tsx');
-const communicationsKnowledge = source(
-  'src', 'app', 'communications', '_components', 'KnowledgePane.tsx',
+const toldKnowledge = source(
+  'src', 'components', 'concourse', 'ToldKnowledge.tsx',
 );
-const communicationsClient = source('src', 'lib', 'comms', 'client.ts');
+const toldApi = source('src', 'components', 'concourse', 'told-api.ts');
 const adminIndex = source('src', 'app', 'admin', 'page.tsx');
 
 describe('authenticated route destinations', () => {
@@ -392,16 +392,16 @@ describe('authenticated shell and property-switch isolation', () => {
     assert.match(storageImage, /<img[\s\S]*?onError=\{\(\) => \{[\s\S]*?status: 'error'/);
   });
 
-  test('Communications document uploads have a terminal transport deadline', () => {
+  test('Knows document uploads have a terminal transport deadline', () => {
     assert.match(
-      communicationsKnowledge,
-      /uploadToSignedUrl\(pre\.data\.signedUrl, file, pre\.data\.contentType\)/,
+      toldKnowledge,
+      /put: \(signedUrl, contentType\) => putSigned\(signedUrl, file, contentType\)/,
     );
-    assert.doesNotMatch(communicationsKnowledge, /fetch\(pre\.data\.signedUrl/);
     assert.match(
-      communicationsClient,
-      /export async function uploadToSignedUrl[\s\S]*?fetchWithDeadline\([\s\S]*?timeoutMs: 60_000/,
+      toldApi,
+      /export async function putSigned[\s\S]*?fetchWithDeadline\([\s\S]*?timeoutMs: 60_000/,
     );
+    assert.doesNotMatch(toldApi, /const res = await fetch\(signedUrl/);
   });
 
   test('Maintenance and Housekeeping remount property-owned state on hotel changes', () => {
