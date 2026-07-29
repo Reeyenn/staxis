@@ -23,6 +23,7 @@ import {
   PORTFOLIO_REFUSAL_TEXT,
   resolvePortfolioAccessUncached,
 } from '@/lib/company/portfolio';
+import { resolvePortfolioQueuePolicy } from '@/lib/company/portfolio-data-policy';
 import {
   assertAuthorizationScopeReceipt,
   loadAuthorizedPropertyMetadata,
@@ -51,7 +52,11 @@ import {
   lockLoadAndRecordPortfolioUserTurn,
 } from '@/lib/agent/memory';
 import { PROMPT_VERSION } from '@/lib/agent/prompts';
-import { anchorHotelFor } from '@/lib/agent/portfolio/conversation';
+import {
+  anchorHotelFor,
+  portfolioPolicyFingerprintFromStamp,
+  stampPortfolioPolicy,
+} from '@/lib/agent/portfolio/conversation';
 import type { PortfolioHotel } from '@/lib/agent/portfolio/hotels';
 import { validatePortfolioAnswerNumbers } from '@/lib/agent/portfolio-intelligence/answer-guard';
 import {
@@ -576,7 +581,6 @@ export async function handlePortfolioPost(
       requestId, status: 409, code: 'scope_changed',
     });
   }
-
   // This is the first operation after current authoritative scope resolution.
   // Nothing that loads company metadata or fans out to a hotel may move above
   // it. The database makes the rate slot + account/organization lease one
@@ -625,6 +629,42 @@ export async function handlePortfolioPost(
       requestId, status: 408, code: ApiErrorCode.UpstreamFailure,
     });
   }
+  const conversationPolicy = await resolvePortfolioQueuePolicy(
+    caller,
+    baseReceipt.organizationId,
+    baseReceipt.authorizedPropertyIds,
+  );
+  if (existingScope
+      && portfolioPolicyFingerprintFromStamp(existingScope.promptVersion)
+        !== conversationPolicy.fingerprint) {
+    return err(
+      'Your portfolio module or financial access changed. Start a new portfolio chat for the current scope.',
+      { requestId, status: 409, code: 'scope_changed' },
+    );
+  }
+  const knowledgeConversationPromptVersion = stampPortfolioPolicy(
+    PORTFOLIO_KNOWLEDGE_PRESENTATION_VERSION,
+    conversationPolicy.fingerprint,
+  );
+  const synthesisConversationPromptVersion = stampPortfolioPolicy(
+    PROMPT_VERSION,
+    conversationPolicy.fingerprint,
+  );
+  const exactTurnScopeStillCurrent = async (
+    currentReceipt: AuthorizationScopeReceipt,
+  ): Promise<boolean> => {
+    if (!await exactReceiptStillCurrent(currentReceipt)) return false;
+    try {
+      const currentPolicy = await resolvePortfolioQueuePolicy(
+        caller,
+        baseReceipt.organizationId,
+        baseReceipt.authorizedPropertyIds,
+      );
+      return currentPolicy.fingerprint === conversationPolicy.fingerprint;
+    } catch {
+      return false;
+    }
+  };
 
   const metadata = await dependencies.loadAuthorizedMetadata({
     receipt: baseReceipt,
@@ -665,7 +705,7 @@ export async function handlePortfolioPost(
     // Release is an awaited external boundary. Release first, then make the
     // authorization check the last await before this metadata-bearing SSE.
     await releaseAdmissionOnce();
-    if (!await exactReceiptStillCurrent(baseReceipt)) {
+    if (!await exactTurnScopeStillCurrent(baseReceipt)) {
       return err('Your portfolio access changed while Staxis was clarifying scope. No hotel metadata was released.', {
         requestId, status: 409, code: 'scope_changed',
       });
@@ -696,7 +736,7 @@ export async function handlePortfolioPost(
   // operational data or pattern candidate is read.
   if (receipt.selectedPropertyCount > PORTFOLIO_FINDING_MAX_SELECTED_PROPERTIES) {
     await releaseAdmissionOnce();
-    if (!await exactReceiptStillCurrent(receipt)) {
+    if (!await exactTurnScopeStillCurrent(receipt)) {
       return err('Your portfolio access changed before the scope limit could be shown.', {
         requestId, status: 409, code: 'scope_changed',
       });
@@ -714,7 +754,7 @@ export async function handlePortfolioPost(
     // and metadata loading. Reassert both the exact hotel universe and the
     // company chat capability immediately before the active-only Finding
     // loader. Its own receipt-bound pre/post assertions close the producer read.
-    if (!await exactReceiptStillCurrent(receipt)) {
+    if (!await exactTurnScopeStillCurrent(receipt)) {
       return err('Your hotel access changed before findings or company knowledge could be read. No knowledge was released.', {
         requestId, status: 409, code: 'scope_changed',
       });
@@ -775,7 +815,7 @@ export async function handlePortfolioPost(
         requestId, status: 408, code: ApiErrorCode.UpstreamFailure,
       });
     }
-    if (!await exactReceiptStillCurrent(receipt)) {
+    if (!await exactTurnScopeStillCurrent(receipt)) {
       return err('Your hotel access changed while company knowledge was being verified. No knowledge was released.', {
         requestId, status: 409, code: 'scope_changed',
       });
@@ -785,7 +825,7 @@ export async function handlePortfolioPost(
       const unavailableAnswer =
         'Current company and selected-hotel knowledge for the active scope could not be verified, so I did not answer from stale, unconfirmed, or inferred notes. Try again.';
       await releaseAdmissionOnce();
-      if (!await exactReceiptStillCurrent(receipt)) {
+      if (!await exactTurnScopeStillCurrent(receipt)) {
         return err('Your hotel access changed before the knowledge status could be released.', {
           requestId, status: 409, code: 'scope_changed',
         });
@@ -863,7 +903,7 @@ export async function handlePortfolioPost(
           userAccountId: caller.accountId,
           propertyAnchorId: anchorPropertyId,
           role: caller.role,
-          promptVersion: PORTFOLIO_KNOWLEDGE_PRESENTATION_VERSION,
+          promptVersion: knowledgeConversationPromptVersion,
           title: body.message.slice(0, 120),
           organizationId: receipt.organizationId,
           authorizationHash: receipt.authorizationHash,
@@ -896,7 +936,7 @@ export async function handlePortfolioPost(
         requestId, status: 503, code: ApiErrorCode.UpstreamFailure,
       });
     }
-    if (!conversationId || !await exactReceiptStillCurrent(receipt)) {
+    if (!conversationId || !await exactTurnScopeStillCurrent(receipt)) {
       return err('Your hotel access changed before the knowledge receipt was recorded. No knowledge was released.', {
         requestId, status: 409, code: 'scope_changed',
       });
@@ -930,7 +970,7 @@ export async function handlePortfolioPost(
         requestId, status: 503, code: ApiErrorCode.UpstreamFailure,
       });
     }
-    if (!await exactReceiptStillCurrent(receipt)) {
+    if (!await exactTurnScopeStillCurrent(receipt)) {
       return err('Your hotel access changed before the knowledge turn could be committed. No knowledge was released.', {
         requestId, status: 409, code: 'scope_changed',
       });
@@ -982,7 +1022,7 @@ export async function handlePortfolioPost(
     // reach and the cross-hotel chat feature after it, with no await remaining
     // before the buffered deterministic answer reaches the browser.
     await releaseAdmissionOnce();
-    if (!await exactReceiptStillCurrent(receipt)) {
+    if (!await exactTurnScopeStillCurrent(receipt)) {
       return err('Your hotel access changed before the knowledge answer could be released. No knowledge was shown.', {
         requestId, status: 409, code: 'scope_changed',
       });
@@ -1004,7 +1044,7 @@ export async function handlePortfolioPost(
 
   if (plan.intent === 'generic_tools' || plan.metricIds.length === 0) {
     await releaseAdmissionOnce();
-    if (!await exactReceiptStillCurrent(receipt)) {
+    if (!await exactTurnScopeStillCurrent(receipt)) {
       return err('Your portfolio access changed before the scope could be shown.', {
         requestId, status: 409, code: 'scope_changed',
       });
@@ -1020,7 +1060,7 @@ export async function handlePortfolioPost(
   );
   if (unavailableAdapters.length > 0) {
     await releaseAdmissionOnce();
-    if (!await exactReceiptStillCurrent(receipt)) {
+    if (!await exactTurnScopeStillCurrent(receipt)) {
       return err('Your portfolio access changed before the scope could be shown.', {
         requestId, status: 409, code: 'scope_changed',
       });
@@ -1072,7 +1112,7 @@ export async function handlePortfolioPost(
     });
   }
 
-  if (!await exactReceiptStillCurrent(receipt)) {
+  if (!await exactTurnScopeStillCurrent(receipt)) {
     return err('Your hotel access changed before findings or reference knowledge could be read. No answer was synthesized.', {
       requestId, status: 409, code: 'scope_changed',
     });
@@ -1126,7 +1166,7 @@ export async function handlePortfolioPost(
       requestId, status: 408, code: ApiErrorCode.UpstreamFailure,
     });
   }
-  if (!await exactReceiptStillCurrent(receipt)) {
+  if (!await exactTurnScopeStillCurrent(receipt)) {
     return err('Your hotel access changed while reference knowledge was being prepared. Nothing was sent to the model.', {
       requestId, status: 409, code: 'scope_changed',
     });
@@ -1168,7 +1208,10 @@ export async function handlePortfolioPost(
     });
   }
 
-  const anchorPropertyId = existingScope?.propertyId ?? anchorHotelFor(receipt.propertyIds);
+  const anchorPropertyId = existingScope?.propertyId
+    && receipt.propertyIds.includes(existingScope.propertyId)
+    ? existingScope.propertyId
+    : anchorHotelFor(receipt.propertyIds);
   if (!anchorPropertyId) {
     return err(PORTFOLIO_REFUSAL_TEXT.no_hotels, {
       requestId, status: 403, code: ApiErrorCode.Forbidden,
@@ -1227,7 +1270,7 @@ export async function handlePortfolioPost(
         userAccountId: caller.accountId,
         propertyAnchorId: anchorPropertyId,
         role: caller.role,
-        promptVersion: PROMPT_VERSION,
+          promptVersion: synthesisConversationPromptVersion,
         title: body.message.slice(0, 120),
         organizationId: receipt.organizationId,
         authorizationHash: receipt.authorizationHash,
@@ -1253,7 +1296,7 @@ export async function handlePortfolioPost(
     });
   }
 
-  if (!await exactReceiptStillCurrent(receipt)) {
+  if (!await exactTurnScopeStillCurrent(receipt)) {
     await dependencies.cancelReservation(reservation.reservationId);
     return err('Your hotel access changed before synthesis. Nothing was sent to the model.', {
       requestId, status: 409, code: 'scope_changed',
@@ -1349,7 +1392,7 @@ export async function handlePortfolioPost(
     projection: findingsProjection,
     displayedClaimIds: displayedFindingClaimIds,
   });
-  const authorizationCurrent = await exactReceiptStillCurrent(receipt);
+  const authorizationCurrent = await exactTurnScopeStillCurrent(receipt);
   let queryReceiptId: string;
   try {
     queryReceiptId = await persistPortfolioQueryReceipt({
@@ -1454,7 +1497,7 @@ export async function handlePortfolioPost(
     });
   }
 
-  if (!await exactReceiptStillCurrent(receipt)) {
+  if (!await exactTurnScopeStillCurrent(receipt)) {
     await dependencies.reconcileReservation({
       reservationId: reservation.reservationId,
       conversationId,
@@ -1528,7 +1571,7 @@ export async function handlePortfolioPost(
 
   // Last possible fail-closed check before browser egress. This repeats both
   // receipt/epoch validation and the company cross-hotel-chat capability gate.
-  if (!await exactReceiptStillCurrent(receipt)) {
+  if (!await exactTurnScopeStillCurrent(receipt)) {
     await dependencies.reconcileReservation({
       reservationId: reservation.reservationId,
       conversationId,
@@ -1557,7 +1600,7 @@ export async function handlePortfolioPost(
   // first, then authorize once more and leave no further await before the
   // buffered browser response.
   await releaseAdmissionOnce();
-  if (!await exactReceiptStillCurrent(receipt)) {
+  if (!await exactTurnScopeStillCurrent(receipt)) {
     return err('Your hotel access changed while usage was being finalized. No answer was shown.', {
       requestId, status: 409, code: 'scope_changed',
     });

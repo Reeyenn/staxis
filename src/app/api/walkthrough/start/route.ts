@@ -17,8 +17,10 @@
 import { createHash } from 'crypto';
 import type { NextRequest } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase-admin';
-import { requireSession, userHasPropertyAccess } from '@/lib/api-auth';
+import { requireSession } from '@/lib/api-auth';
+import { capabilityUnavailableResponse } from '@/lib/capabilities/api-gate';
 import { getOrMintRequestId, log } from '@/lib/log';
+import { hotelWriteDecisionForUserId } from '@/lib/team-auth';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -55,8 +57,9 @@ export async function POST(req: NextRequest): Promise<Response> {
     return Response.json({ ok: false, error: 'propertyId is required', requestId }, { status: 400 });
   }
 
-  const hasAccess = await userHasPropertyAccess(auth.userId, body.propertyId);
-  if (!hasAccess) {
+  const writeDecision = await hotelWriteDecisionForUserId(auth.userId, body.propertyId);
+  if (writeDecision === 'unavailable') return capabilityUnavailableResponse(requestId);
+  if (writeDecision === 'denied') {
     return Response.json({ ok: false, error: 'no access to this property', requestId }, { status: 403 });
   }
 

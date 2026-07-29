@@ -191,56 +191,49 @@ async function portfolioFor(
   };
 }
 
-/** Force one hotel's scoped findings read to fail while every other table and
- * hotel still uses the real PGlite-backed PostgREST shim. */
+/** Force a bounded portfolio RPC chunk containing one hotel to fail.
+ *
+ * Portfolio reads are deliberately batched now, so an RPC failure makes the
+ * whole attempted chunk unavailable. The queue must disclose that exact
+ * uncertainty instead of treating the other hotels in the failed chunk as
+ * proven empty.
+ */
 async function withUnavailableScopedReads<T>(
   tables: readonly string[],
   propertyId: string,
   run: () => Promise<T>,
 ): Promise<T> {
-  const previousFrom = supabaseAdmin.from;
-  const failedResponse = Promise.resolve({
-    data: null,
-    error: { message: 'forced property ledger outage', code: 'XX000' },
-  });
-  let failureChain: object;
-  failureChain = new Proxy({}, {
-    get: (_target, property) => (
-      property === 'then'
-        ? failedResponse.then.bind(failedResponse)
-        : () => failureChain
-    ),
-  });
-
-  const patchedFrom = (table: string) => {
-    const builder = previousFrom.call(supabaseAdmin, table);
-    if (!tables.includes(table)) return builder;
-    const mutableBuilder = builder as unknown as {
-      select: (...args: unknown[]) => unknown;
-    };
-    const realSelect = mutableBuilder.select.bind(builder);
-    mutableBuilder.select = (...args: unknown[]) => {
-      const query = realSelect(...args) as {
-        eq: (column: string, value: unknown) => unknown;
-      };
-      const realEq = query.eq.bind(query);
-      query.eq = (column: string, value: unknown) => (
-        column === 'property_id' && value === propertyId
-          ? failureChain
-          : realEq(column, value)
-      );
-      return query;
-    };
-    return builder;
-  };
-
-  // The generic Supabase overload is replaced by a runtime-compatible test
-  // proxy and restored in finally.
-  supabaseAdmin.from = patchedFrom;
+  const previousRpc = supabaseAdmin.rpc;
+  const callPrevious = previousRpc.bind(supabaseAdmin) as (
+    functionName: string,
+    args?: Record<string, unknown>,
+  ) => unknown;
+  const rpcByLegacyTable = new Map([
+    ['findings', 'staxis_portfolio_queue_findings'],
+    ['finding_runs', 'staxis_portfolio_queue_latest_runs'],
+  ]);
+  const failedRpcNames = new Set(
+    tables.map((table) => rpcByLegacyTable.get(table)).filter(Boolean),
+  );
+  supabaseAdmin.rpc = ((
+    functionName: string,
+    args?: Record<string, unknown>,
+  ): unknown => {
+    const selected = Array.isArray(args?.p_property_ids)
+      ? args.p_property_ids
+      : [];
+    if (failedRpcNames.has(functionName) && selected.includes(propertyId)) {
+      return Promise.resolve({
+        data: null,
+        error: { message: 'forced bounded portfolio read outage', code: 'XX000' },
+      });
+    }
+    return callPrevious(functionName, args);
+  }) as typeof supabaseAdmin.rpc;
   try {
     return await run();
   } finally {
-    supabaseAdmin.from = previousFrom;
+    supabaseAdmin.rpc = previousRpc;
   }
 }
 
@@ -1471,7 +1464,7 @@ describe('the company queue consumes one authoritative selected-company receipt'
     assert.deepEqual(scoped.data.cards, []);
   });
 
-  test('one unreadable hotel is disclosed and cannot produce a whole-company brief', async () => {
+  test('a failed bounded chunk is disclosed and cannot produce a whole-company brief', async () => {
     const partial = await withUnavailableScopedReads(
       ['findings'],
       PID_A2,
@@ -1481,17 +1474,17 @@ describe('the company queue consumes one authoritative selected-company receipt'
     assert.deepEqual(partial.data.coverage, {
       authorizedHotelCount: 2,
       attemptedHotelCount: 2,
-      processedHotelCount: 1,
+      processedHotelCount: 0,
       omittedHotelCount: 0,
-      unavailableHotelCount: 1,
+      unavailableHotelCount: 2,
       portfolioChecksStatus: 'held',
       complete: false,
     });
     assert.equal(partial.data.brief, null, 'an unavailable hotel still produced a company brief');
-    assert.ok(partial.data.cards.every((card) => card.hotel?.propertyId !== PID_A2));
+    assert.ok(partial.data.cards.every((card) => card.hotel === null));
   });
 
-  test('run-receipt failure is disclosed and overlapping hotel failures count once', async () => {
+  test('run-receipt failure is disclosed and overlapping chunk failures count once', async () => {
     for (const tables of [['finding_runs'], ['findings', 'finding_runs']] as const) {
       const partial = await withUnavailableScopedReads(
         tables,
@@ -1500,9 +1493,9 @@ describe('the company queue consumes one authoritative selected-company receipt'
       );
       assert.equal(partial.status, 200);
       assert.equal(partial.data.coverage?.attemptedHotelCount, 2);
-      assert.equal(partial.data.coverage?.processedHotelCount, 1);
+      assert.equal(partial.data.coverage?.processedHotelCount, 0);
       assert.equal(partial.data.coverage?.omittedHotelCount, 0);
-      assert.equal(partial.data.coverage?.unavailableHotelCount, 1);
+      assert.equal(partial.data.coverage?.unavailableHotelCount, 2);
       assert.equal(partial.data.coverage?.complete, false);
       assert.equal(partial.data.brief, null);
     }

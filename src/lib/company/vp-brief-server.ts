@@ -49,6 +49,7 @@ interface CachedEnvelope {
   organizationId: string;
   accountId: string;
   localDate: string;
+  policyFingerprint: string;
   brief: PortfolioBrief;
 }
 
@@ -61,8 +62,9 @@ export function portfolioBriefCacheKey(
   organizationId: string,
   accountId: string,
   localDate: string,
+  policyFingerprint: string,
 ): string {
-  return `${BRIEF_CACHE_ROUTE}-${organizationId}-${accountId}-${localDate}`;
+  return `${BRIEF_CACHE_ROUTE}-${organizationId}-${accountId}-${localDate}-${policyFingerprint}`;
 }
 
 export interface PortfolioBriefResult {
@@ -76,6 +78,8 @@ export interface PortfolioBriefResult {
 
 export interface GetPortfolioBriefOptions {
   accountId: string;
+  /** Section/money policy that authorized every sentence in this brief. */
+  policyFingerprint: string;
   input: PortfolioBriefInput;
   /** Skip the cache entirely. Tests only. */
   noCache?: boolean;
@@ -90,7 +94,7 @@ export interface GetPortfolioBriefOptions {
 export async function getPortfolioBrief(
   opts: GetPortfolioBriefOptions,
 ): Promise<PortfolioBriefResult> {
-  const { input, accountId } = opts;
+  const { input, accountId, policyFingerprint } = opts;
 
   // The Morning Briefer writes BOTH morning summaries — the manager's and this
   // one — so one switch stops both. Checked before the cache read: an employee
@@ -99,10 +103,20 @@ export async function getPortfolioBrief(
     return { brief: null, cached: false, stopped: true };
   }
 
-  const key = portfolioBriefCacheKey(input.organizationId, accountId, input.localDate);
+  const key = portfolioBriefCacheKey(
+    input.organizationId,
+    accountId,
+    input.localDate,
+    policyFingerprint,
+  );
 
   if (!opts.noCache) {
-    const cached = await readCache(key, input.organizationId, accountId).catch(() => null);
+    const cached = await readCache(
+      key,
+      input.organizationId,
+      accountId,
+      policyFingerprint,
+    ).catch(() => null);
     if (cached) return { brief: cached, cached: true };
   }
 
@@ -115,7 +129,15 @@ export async function getPortfolioBrief(
     const won = await claim(key).catch(() => false);
     // Losing the claim is not an error. The loser hands back the brief it just
     // built — the same deterministic text the winner is about to store.
-    if (won) await writeCache(key, input.organizationId, accountId, fresh).catch(() => {});
+    if (won) {
+      await writeCache(
+        key,
+        input.organizationId,
+        accountId,
+        policyFingerprint,
+        fresh,
+      ).catch(() => {});
+    }
   }
   return { brief: fresh, cached: false };
 }
@@ -135,6 +157,7 @@ async function readCache(
   key: string,
   organizationId: string,
   accountId: string,
+  policyFingerprint: string,
 ): Promise<PortfolioBrief | null> {
   const { data, error } = await supabaseAdmin
     .from('idempotency_log')
@@ -152,6 +175,7 @@ async function readCache(
   if (payload.v !== BRIEF_CACHE_VERSION) return null;
   if (payload.organizationId !== organizationId) return null;
   if (payload.accountId !== accountId) return null;
+  if (payload.policyFingerprint !== policyFingerprint) return null;
   const brief = payload.brief;
   if (!brief || brief.organizationId !== organizationId) return null;
   if (payload.localDate !== brief.localDate) return null;
@@ -191,6 +215,7 @@ async function writeCache(
   key: string,
   organizationId: string,
   accountId: string,
+  policyFingerprint: string,
   brief: PortfolioBrief,
 ): Promise<void> {
   const envelope: CachedEnvelope = {
@@ -198,6 +223,7 @@ async function writeCache(
     organizationId,
     accountId,
     localDate: brief.localDate,
+    policyFingerprint,
     brief,
   };
   const { error } = await supabaseAdmin

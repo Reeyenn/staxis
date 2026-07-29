@@ -10,6 +10,47 @@ import { useAuth } from '@/contexts/AuthContext';
 import { useProperty } from '@/contexts/PropertyContext';
 import { can } from './can';
 import type { CapabilityKey } from './registry';
+import type { AppRole } from '@/lib/roles';
+
+export function useActiveHotelStanding(): {
+  role: AppRole | null;
+  hotelMutationAllowed: boolean;
+  seesFinancials: boolean;
+  ready: boolean;
+} {
+  const { activePropertyId } = useProperty();
+  const {
+    user,
+    authorizationChecked,
+    platformAdmin,
+    propertyStandings,
+  } = useAuth();
+  if (!user || !authorizationChecked || !activePropertyId) {
+    return {
+      role: null,
+      hotelMutationAllowed: false,
+      seesFinancials: false,
+      ready: false,
+    };
+  }
+  if (platformAdmin && user.role === 'admin') {
+    return {
+      role: 'admin',
+      hotelMutationAllowed: true,
+      seesFinancials: true,
+      ready: true,
+    };
+  }
+  const standing = propertyStandings.find(
+    (candidate) => candidate.propertyId === activePropertyId,
+  );
+  return {
+    role: standing?.operationalRole ?? null,
+    hotelMutationAllowed: standing?.hotelMutationAllowed === true,
+    seesFinancials: standing?.seesFinancials === true,
+    ready: Boolean(standing),
+  };
+}
 
 /**
  * Returns `(capability) => boolean` for the current user at the active hotel.
@@ -27,8 +68,8 @@ export function useCan(): (capability: CapabilityKey) => boolean {
     capabilityOverridesStatus,
     capabilityOverridesViewerKey,
   } = useProperty();
-  const { user } = useAuth();
-  const role = user?.role ?? null;
+  const standing = useActiveHotelStanding();
+  const role = standing.role;
   const viewerKey = activePropertyViewerKey;
   const ready = Boolean(
     viewerKey
@@ -37,7 +78,11 @@ export function useCan(): (capability: CapabilityKey) => boolean {
     && capabilityOverridesViewerKey === viewerKey
   );
   return useCallback(
-    (capability: CapabilityKey) => ready && can(role ? { role } : null, capability, capabilityOverrides),
-    [role, ready, capabilityOverrides],
+    (capability: CapabilityKey) => (
+      ready
+      && standing.ready
+      && can(role ? { role } : null, capability, capabilityOverrides)
+    ),
+    [role, ready, standing.ready, capabilityOverrides],
   );
 }

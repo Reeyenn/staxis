@@ -276,8 +276,11 @@ describe('Concourse navigation reliability', () => {
     assert.equal((reliableNavigation.match(/router\.prefetch\(/g) ?? []).length, 1);
     assert.doesNotMatch(concourse, /PREFETCHED_THIS_SESSION|hrefs\.forEach|SECTION_LIST\.map\(\(m\) => m\.navHref\)/);
     assert.match(reliableNavigation, /const prefetch = useCallback\(\(href: string\) => \{[\s\S]*?router\.prefetch\(href\)/);
-    assert.match(concourse, /onIntent: \(\) => prefetch\(m\.navHref\)/);
-    assert.match(concourse, /onGearIntent=\{\(\) => prefetch\('\/settings'\)\}/);
+    assert.match(concourse, /onIntent: \(\) => prefetch\(href\)/);
+    assert.match(
+      concourse,
+      /onGearIntent=\{\(\) => prefetch\(portfolioScoped \? companyHref : '\/settings'\)\}/,
+    );
     assert.match(concourseView, /onPointerEnter=\{it\.onIntent\}[\s\S]*?onFocus=\{it\.onIntent\}/);
     assert.match(concourseView, /onPointerEnter=\{onLogoIntent\}[\s\S]*?onFocus=\{onLogoIntent\}/);
     assert.match(mobileConcourse, /onPointerDown=\{item\.onIntent\}[\s\S]*?onFocus=\{item\.onIntent\}/);
@@ -345,7 +348,11 @@ describe('authenticated shell and property-switch isolation', () => {
     assert.match(propertyContext, /const \[propertiesErrorViewerUid, setPropertiesErrorViewerUid\]/);
     assert.match(
       propertyContext,
-      /const exposedPropertiesLoading = loading \|\| Boolean\([\s\S]*?propertiesViewerUid !== userUid[\s\S]*?propertiesErrorViewerUid !== userUid/,
+      /const exposedPropertiesLoading = !portfolioScopeQuiescent && \(loading \|\| Boolean\([\s\S]*?propertiesViewerUid !== userUid[\s\S]*?propertiesErrorViewerUid !== userUid/,
+    );
+    assert.match(
+      propertyContext,
+      /propertiesAuthorizationViewerKey !== propertyAuthorizationViewerKey[\s\S]*?propertiesErrorAuthorizationViewerKey !== propertyAuthorizationViewerKey/,
     );
     assert.match(
       propertyContext,

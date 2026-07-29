@@ -26,6 +26,8 @@ import { AskHero } from '@/components/concourse/AskHero';
 import { fetchWithAuth } from '@/lib/api-fetch';
 import { RouteErrorState, RouteLoadingState } from '@/components/layout/RouteResourceState';
 import { useReliableNavigation } from '@/lib/hooks/use-reliable-navigation';
+import { usePortfolio } from '@/contexts/PortfolioContext';
+import { useOptionalHotelActingContext } from '@/contexts/HotelActingContext';
 
 interface TileLine { en: string; es: string; tone: TileTone }
 type Summary = Partial<Record<string, TileLine>>;
@@ -148,8 +150,23 @@ function HomeHub() {
 export default function HomePage() {
   const { user, loading: authLoading } = useAuth();
   const { properties, activeProperty, loading: propertyLoading } = useProperty();
+  const portfolio = usePortfolio();
+  const acting = useOptionalHotelActingContext();
   const navigation = useReliableNavigation();
   const replaceNavigation = navigation.replace;
+  const hotelDrilldown = acting?.request.kind === 'hotel';
+  const portfolioEntryPending = !hotelDrilldown
+    && !portfolio.error
+    && (portfolio.loading || (!portfolio.data && Boolean(user)));
+  const portfolioDestination = !hotelDrilldown && portfolio.data
+    ? portfolio.data.selection.state === 'selected'
+      ? `/portfolio?organizationId=${encodeURIComponent(
+          portfolio.data.selection.selectedOrganizationId!,
+        )}`
+      : portfolio.data.selection.state === 'needs_selection'
+        ? '/portfolio/choose'
+        : null
+    : null;
 
   // Middleware protects full-page requests, but sign-out happens client-side.
   // Unmount the entire app shell immediately so cached hotel details are never
@@ -157,9 +174,13 @@ export default function HomePage() {
   // directly to Company Hub; other zero-access accounts keep the selector's
   // explicit pending/empty state.
   React.useEffect(() => {
-    if (authLoading || propertyLoading) return;
+    if (authLoading || propertyLoading || portfolioEntryPending) return;
     if (!user) {
       replaceNavigation('/signin');
+      return;
+    }
+    if (portfolioDestination) {
+      replaceNavigation(portfolioDestination);
       return;
     }
     if (activeProperty) return;
@@ -168,27 +189,19 @@ export default function HomePage() {
       return;
     }
 
-    let cancelled = false;
-    void (async () => {
-      try {
-        const response = await fetchWithAuth('/api/company-access');
-        const body = await response.json().catch(() => ({})) as {
-          ok?: boolean;
-          data?: { organizations?: Array<{ type?: string }> };
-        };
-        const hasCustomerOrganization = response.ok
-          && body.ok === true
-          && body.data?.organizations?.some((organization) => organization.type !== 'single_hotel') === true;
-        if (!cancelled) replaceNavigation(hasCustomerOrganization ? '/company' : '/property-selector');
-      } catch {
-        if (!cancelled) replaceNavigation('/property-selector');
-      }
-    })();
+    replaceNavigation('/property-selector');
+  }, [
+    user,
+    authLoading,
+    properties.length,
+    activeProperty,
+    propertyLoading,
+    portfolioDestination,
+    portfolioEntryPending,
+    replaceNavigation,
+  ]);
 
-    return () => { cancelled = true; };
-  }, [user, authLoading, properties.length, activeProperty, propertyLoading, replaceNavigation]);
-
-  if (authLoading || propertyLoading) {
+  if (authLoading || propertyLoading || portfolioEntryPending || portfolioDestination) {
     return <AppLayout><RouteLoadingState title="Opening Home…" /></AppLayout>;
   }
   if (!user) {

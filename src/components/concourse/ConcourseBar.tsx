@@ -13,7 +13,7 @@
 
 import React from 'react';
 import { createPortal } from 'react-dom';
-import { usePathname } from 'next/navigation';
+import { usePathname, useSearchParams } from 'next/navigation';
 import { useAuth } from '@/contexts/AuthContext';
 import { useProperty } from '@/contexts/PropertyContext';
 import { useLang } from '@/contexts/LanguageContext';
@@ -36,6 +36,11 @@ import { Download, Smartphone } from 'lucide-react';
 import { roleLabel } from '@/lib/roles';
 import { MobileConcourseNav } from './MobileConcourseNav';
 import { useReliableNavigation } from '@/lib/hooks/use-reliable-navigation';
+import { useOptionalPortfolio } from '@/contexts/PortfolioContext';
+import { useOptionalHotelActingContext } from '@/contexts/HotelActingContext';
+import { mapPortfolioUiRoute } from '@/lib/portfolio-ui/context';
+import type { AppSection } from '@/lib/sections/registry';
+import { useTheme } from '@/contexts/ThemeContext';
 
 // ── The decisions badge, across remounts ────────────────────────────────────
 // Same remount problem, same shape of fix. The bar is torn down and rebuilt on
@@ -77,15 +82,55 @@ export function ConcourseBar() {
   const can = useCan();
   const { lang, locale, setLocale } = useLang();
   const pathname = usePathname();
+  const searchParams = useSearchParams();
+  const portfolio = useOptionalPortfolio();
+  const acting = useOptionalHotelActingContext();
+  const { resolvedTheme, toggleTheme } = useTheme();
   const navigation = useReliableNavigation();
   const enabled = useEnabledSections();
   const { platform, installed } = useInstallStaxis();
-  const companyOnly = !propertyLoading && !!user && properties.length === 0 && user.role !== 'admin';
-  const homeHref = companyOnly ? '/company' : '/home';
-  const homeLabel = companyOnly
-    ? (lang === 'es' ? 'Centro de empresa' : 'Company Hub')
-    : (lang === 'es' ? 'Inicio' : 'Home');
-  const showCompanyInMobileNavigation = Boolean(user && !companyOnly);
+  const purePortfolioContext = pathname === '/portfolio'
+    || pathname.startsWith('/portfolio/')
+    || acting?.request.kind === 'portfolio_scope';
+  const portfolioHotelContext = acting?.context?.source === 'portfolio'
+    ? acting.context
+    : null;
+  const portfolioScoped = purePortfolioContext || Boolean(portfolioHotelContext);
+  const selectedCompany = portfolio?.data?.selectedCompany ?? null;
+  const portfolioOrganizationId = selectedCompany?.organizationId
+    ?? portfolioHotelContext?.organization?.id
+    ?? null;
+  const portfolioOrganizationName = selectedCompany?.organizationName
+    ?? portfolioHotelContext?.organization?.name
+    ?? null;
+  const portfolioQueueAvailable = purePortfolioContext
+    ? selectedCompany?.queueAvailable === true
+    : portfolioHotelContext?.portfolioFeatures.queueAvailable === true;
+  const portfolioFinancialsAvailable = purePortfolioContext
+    ? selectedCompany?.capabilities.canViewFinancials === true
+    : portfolioHotelContext?.standing.seesFinancials === true;
+  const companyOnly = !portfolioScoped
+    && !propertyLoading
+    && !!user
+    && properties.length === 0
+    && user.role !== 'admin';
+  const portfolioHomeHref = portfolioOrganizationId
+    ? `/portfolio?organizationId=${encodeURIComponent(portfolioOrganizationId)}`
+    : '/portfolio/choose';
+  const companyHref = portfolioOrganizationId
+    ? `/company?scope=portfolio&organizationId=${encodeURIComponent(portfolioOrganizationId)}`
+    : '/company';
+  const homeHref = portfolioScoped
+    ? portfolioHomeHref
+    : companyOnly
+      ? '/company'
+      : '/home';
+  const homeLabel = portfolioScoped
+    ? (lang === 'es' ? 'Inicio del portafolio' : 'Portfolio Home')
+    : companyOnly
+      ? (lang === 'es' ? 'Centro de empresa' : 'Company Hub')
+      : (lang === 'es' ? 'Inicio' : 'Home');
+  const showCompanyInMobileNavigation = Boolean(user && (!companyOnly || portfolioScoped));
   const adminWorkspaceActive = pathname === '/admin' || pathname.startsWith('/admin/');
   const verifiedPlatformAdmin = Boolean(
     authorizationChecked && platformAdmin && user?.role === 'admin',
@@ -127,7 +172,9 @@ export function ConcourseBar() {
         onClick: () => go('/admin/properties#live'),
       }
     : undefined;
-  const companyNavigationLabel = user?.role === 'admin'
+  const companyNavigationLabel = portfolioScoped
+    ? (lang === 'es' ? 'Mi portafolio' : 'My Portfolio')
+    : user?.role === 'admin'
     ? (lang === 'es' ? 'Gestión' : 'Management')
     : (lang === 'es' ? 'Centro de empresa' : 'Company Hub');
 
@@ -148,7 +195,7 @@ export function ConcourseBar() {
     ? (propertyStandings ?? []).find((standing) => standing.propertyId === propertyId) ?? null
     : null;
   const signedIn = !!user;
-  const canSeeBadge = shouldReadDecisionBadge(user, propertyId);
+  const canSeeBadge = !portfolioScoped && shouldReadDecisionBadge(user, propertyId);
   const [badge, setBadge] = React.useState<{ pid: string; count: number } | null>(SESSION_BADGE);
 
   const readBadge = React.useCallback(async (pid: string) => {
@@ -224,8 +271,35 @@ export function ConcourseBar() {
   // Same visibility rules as the old Header: per-hotel section toggles hide
   // pills entirely; Financials additionally needs the view_financials
   // capability (server routes enforce the same gate independently).
-  const items: BarItem[] = (propertyLoading || !activeProperty ? [] : SECTION_LIST)
+  const portfolioRouteFor = (key: AppSection): string => {
+    if (purePortfolioContext) {
+      if (!portfolioOrganizationId) return '/portfolio/choose';
+      return key === 'staxis'
+        ? `/portfolio/staxis?organizationId=${encodeURIComponent(portfolioOrganizationId)}`
+        : `/portfolio/${key}?organizationId=${encodeURIComponent(portfolioOrganizationId)}`;
+    }
+    if (portfolioHotelContext && acting?.request.kind === 'hotel') {
+      return mapPortfolioUiRoute(key === 'staxis' ? 'feed' : key, acting.request.context, {
+        existing: searchParams,
+        returnTo: acting.request.returnTo,
+      });
+    }
+    return SECTION_LIST.find((section) => section.key === key)?.navHref ?? '/home';
+  };
+  const items: BarItem[] = (
+    portfolioScoped
+      ? SECTION_LIST
+      : propertyLoading || !activeProperty
+        ? []
+        : SECTION_LIST
+  )
     .filter((m) => {
+      if (portfolioScoped) {
+        if (m.key === 'staxis') return portfolioQueueAvailable;
+        if (m.key === 'financials') return portfolioFinancialsAvailable;
+        return purePortfolioContext
+          || portfolioHotelContext?.sectionAvailability[m.key] === true;
+      }
       if (!enabled[m.key]) return false;
       if (m.key === 'financials') {
         return !!user && (activePropertyStanding
@@ -234,17 +308,25 @@ export function ConcourseBar() {
       }
       return true;
     })
-    .map((m) => ({
-      key: m.key,
-      label: lang === 'es' ? m.label_es : m.label_en,
-      active: pendingHref
-        ? pendingHref === m.navHref
-        : pathname === m.navHref || pathname.startsWith(m.navHref + '/'),
-      badge: m.key === 'staxis' ? decisionBadge?.count : undefined,
-      badgeLabel: m.key === 'staxis' ? decisionBadge?.label : undefined,
-      onIntent: () => prefetch(m.navHref),
-      onClick: () => go(m.navHref),
-    }));
+    .map((m) => {
+      const href = portfolioRouteFor(m.key);
+      const portfolioPath = purePortfolioContext
+        ? m.key === 'staxis' ? '/portfolio/staxis' : `/portfolio/${m.key}`
+        : null;
+      return {
+        key: m.key,
+        label: lang === 'es' ? m.label_es : m.label_en,
+        active: pendingHref
+          ? pendingHref === href
+          : portfolioPath
+            ? pathname === portfolioPath || pathname.startsWith(`${portfolioPath}/`)
+            : pathname === m.navHref || pathname.startsWith(m.navHref + '/'),
+        badge: !portfolioScoped && m.key === 'staxis' ? decisionBadge?.count : undefined,
+        badgeLabel: !portfolioScoped && m.key === 'staxis' ? decisionBadge?.label : undefined,
+        onIntent: () => prefetch(href),
+        onClick: () => go(href),
+      };
+    });
 
   const initial = (user?.displayName?.[0] ?? user?.username?.[0] ?? 'U').toUpperCase();
   const spanishRoleLabels: Record<string, string> = {
@@ -260,7 +342,10 @@ export function ConcourseBar() {
     ? (lang === 'es' ? spanishRoleLabels[user.role] : roleLabel(user.role))
     : '';
   const userName = user?.displayName ?? user?.username ?? (lang === 'es' ? 'Usuario' : 'User');
-  const userMeta = [roleName, activeProperty?.name].filter(Boolean).join(' · ');
+  const userMeta = [
+    roleName,
+    portfolioScoped ? portfolioOrganizationName ?? 'Portfolio' : activeProperty?.name,
+  ].filter(Boolean).join(' · ');
   const showInstallReminder = shouldShowMobileInstallReminder(
     platform,
     installed,
@@ -294,7 +379,7 @@ export function ConcourseBar() {
               </div>
             </div>
 
-            {properties.length > 1 && (
+            {!portfolioScoped && properties.length > 1 && (
               <>
                 <div className="cx-menu-eyebrow">{lang === 'es' ? 'Hoteles' : 'Hotels'}</div>
                 {properties.map((p) => (
@@ -325,6 +410,19 @@ export function ConcourseBar() {
                 {LOCALE_META[l].nativeName}
               </button>
             ))}
+
+            <button
+              type="button"
+              className="cx-menu-item"
+              onClick={() => {
+                toggleTheme();
+                setMenuOpen(false);
+              }}
+            >
+              {resolvedTheme === 'dark'
+                ? (lang === 'es' ? 'Usar tema claro' : 'Use light theme')
+                : (lang === 'es' ? 'Usar tema oscuro' : 'Use dark theme')}
+            </button>
 
             {platform === 'desktop' ? (
               <button
@@ -373,7 +471,8 @@ export function ConcourseBar() {
     <>
       <MobileConcourseNav
         items={items}
-        propertyOptions={properties.map((property) => ({ value: property.id, label: property.name }))}
+        propertyOptions={(portfolioScoped ? [] : properties)
+          .map((property) => ({ value: property.id, label: property.name }))}
         activePropertyId={activeProperty?.id ?? null}
         languageOptions={SUPPORTED_LOCALES.map((supportedLocale) => ({
           value: supportedLocale,
@@ -411,11 +510,11 @@ export function ConcourseBar() {
         settingsActive={pathname.startsWith('/settings')}
         companyActive={pathname === '/company' || pathname.startsWith('/company/')}
         onHome={() => go(homeHref)}
-        onCompany={() => go('/company')}
-        onSettings={() => go('/settings')}
+        onCompany={() => go(companyHref)}
+        onSettings={() => go(portfolioScoped ? companyHref : '/settings')}
         onHomeIntent={() => prefetch(homeHref)}
-        onCompanyIntent={() => prefetch('/company')}
-        onSettingsIntent={() => prefetch('/settings')}
+        onCompanyIntent={() => prefetch(companyHref)}
+        onSettingsIntent={() => prefetch(portfolioScoped ? companyHref : '/settings')}
         onSignOut={() => { void signOut(); }}
         onPropertyChange={(propertyId) => {
           setActivePropertyId(propertyId);
@@ -433,10 +532,10 @@ export function ConcourseBar() {
       <ConcourseBarView
         items={items}
         adminDestination={adminDestination}
-        gearActive={pathname.startsWith('/settings')}
-        onGear={() => go('/settings')}
+        gearActive={portfolioScoped ? pathname.startsWith('/company') : pathname.startsWith('/settings')}
+        onGear={() => go(portfolioScoped ? companyHref : '/settings')}
         onLogo={() => go(homeHref)}
-        onGearIntent={() => prefetch('/settings')}
+        onGearIntent={() => prefetch(portfolioScoped ? companyHref : '/settings')}
         onLogoIntent={() => prefetch(homeHref)}
         homeLabel={homeLabel}
         settingsLabel={lang === 'es' ? 'Configuración' : 'Settings'}

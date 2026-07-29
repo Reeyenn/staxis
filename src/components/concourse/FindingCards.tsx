@@ -47,6 +47,7 @@ import React from 'react';
 import { useAuth } from '@/contexts/AuthContext';
 import { useProperty } from '@/contexts/PropertyContext';
 import { canManageTeam } from '@/lib/roles';
+import { useActiveHotelStanding } from '@/lib/capabilities/useCan';
 import { useApiResource } from '@/lib/hooks/use-api-resource';
 import {
   fetchWithAuth,
@@ -944,10 +945,14 @@ export function FindingCards({
 }) {
   const { user } = useAuth();
   const { activePropertyId } = useProperty();
+  const hotelStanding = useActiveHotelStanding();
   const hotelId = propertyId ?? activePropertyId;
   // Gate at the FETCH, not the render: a housekeeper who opens this tab never
   // asks for findings at all, so a 403 in the logs always means something real.
-  const canSee = !!user && canManageTeam(user.role);
+  const canSee = !!user
+    && hotelStanding.hotelMutationAllowed
+    && !!hotelStanding.role
+    && canManageTeam(hotelStanding.role);
 
   const { data, error, reload } = useApiResource<QueuePayload>(
     `/api/findings?propertyId=${hotelId}`,

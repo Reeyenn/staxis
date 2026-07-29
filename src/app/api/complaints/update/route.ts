@@ -18,9 +18,9 @@ import { ok, err, ApiErrorCode } from '@/lib/api-response';
 import { log, getOrMintRequestId } from '@/lib/log';
 import { errToString } from '@/lib/utils';
 import { validateUuid, validateString, validateEnum } from '@/lib/api-validate';
-import { requireSession, userHasPropertyAccess } from '@/lib/api-auth';
-import { capabilityDecisionForUserId } from '@/lib/capabilities/server';
+import { requireSession } from '@/lib/api-auth';
 import { capabilityUnavailableResponse } from '@/lib/capabilities/api-gate';
+import { hotelWriteDecisionForUserId } from '@/lib/team-auth';
 import { checkAndIncrementRateLimit, rateLimitedResponse } from '@/lib/api-ratelimit';
 import { COMPLAINT_STATUSES, COMPLAINT_DEPTS } from '@/lib/complaints-shared';
 
@@ -72,12 +72,10 @@ export async function POST(req: NextRequest): Promise<Response> {
   if (actV.error) return err(actV.error, { requestId, status: 400, code: ApiErrorCode.ValidationFailed, headers });
   const action = actV.value!;
 
-  const hasAccess = await userHasPropertyAccess(session.userId, pid);
-  if (!hasAccess) return err('property access denied', { requestId, status: 403, code: ApiErrorCode.Forbidden, headers });
-  const capabilityDecision = await capabilityDecisionForUserId(
+  const capabilityDecision = await hotelWriteDecisionForUserId(
     session.userId,
-    'use_complaints',
     pid,
+    'use_complaints',
   );
   if (capabilityDecision === 'unavailable') {
     return capabilityUnavailableResponse(requestId);

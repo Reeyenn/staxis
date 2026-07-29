@@ -26,7 +26,9 @@
 
 import { NextRequest, NextResponse } from 'next/server';
 import { isUuid } from '@/lib/api-validate';
-import { requireSession, userHasPropertyAccess } from '@/lib/api-auth';
+import { requireSession } from '@/lib/api-auth';
+import { capabilityUnavailableResponse } from '@/lib/capabilities/api-gate';
+import { hotelWriteDecisionForUserId } from '@/lib/team-auth';
 import { requireSectionEnabled } from '@/lib/sections/server';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { detectRateAnomalies, type RateObservation } from '@/lib/inventory-anomaly';
@@ -69,7 +71,9 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
   const itemIds = body.itemIds as string[];
   const propertyId = body.propertyId;
 
-  if (!(await userHasPropertyAccess(session.userId, propertyId))) {
+  const writeDecision = await hotelWriteDecisionForUserId(session.userId, propertyId);
+  if (writeDecision === 'unavailable') return capabilityUnavailableResponse(requestId);
+  if (writeDecision === 'denied') {
     return err('forbidden', { requestId, status: 403, code: ApiErrorCode.Forbidden });
   }
   // Section gate (add-on, on top of the tenant guard above): if Inventory is

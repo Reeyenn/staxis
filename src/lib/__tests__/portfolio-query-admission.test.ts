@@ -58,7 +58,10 @@ test('the POST route admits before metadata and releases before its last egress 
     'await releaseAdmissionOnce()',
     route.indexOf('// Reconciliation and lease release'),
   );
-  const finalAuthorization = route.indexOf('if (!await exactReceiptStillCurrent(receipt))', finalRelease);
+  const finalAuthorization = route.indexOf(
+    'if (!await exactTurnScopeStillCurrent(receipt))',
+    finalRelease,
+  );
   const response = route.indexOf('return sseResponse([', finalAuthorization);
   assert.ok(finalRelease > 0 && finalRelease < finalAuthorization && finalAuthorization < response);
 });

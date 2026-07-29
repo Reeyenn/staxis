@@ -24,22 +24,27 @@ import 'server-only';
 // block (`portfolio-prompt-assembly.test.ts` and the cache-purity suite both
 // police it).
 
-import { getPropertyFeedStatus } from '@/lib/pms-feed-status-server';
 import { formatAsOfClock, freshnessTier } from '@/lib/pms/feed-status';
+import {
+  readPortfolioFeedPulses,
+  readPortfolioToolFindings,
+  type PortfolioFeedPulse,
+  type PortfolioToolRow,
+} from '@/lib/company/portfolio-tool-reads';
+import {
+  portfolioHotelFindingPolicyDecision,
+  portfolioSectionDecision,
+  type PortfolioQueuePolicy,
+} from '@/lib/company/portfolio-data-policy';
 
 import {
-  forEachHotel,
-  mapWithConcurrency,
-  PORTFOLIO_READ_CONCURRENCY,
   type PortfolioHotel,
 } from './hotels';
 import { safePortfolioName } from './identity';
 
-/** How many open findings a hotel's line will summarise. */
-const MAX_ROWS_PER_HOTEL = 200;
-
 /** Statuses that mean "this is a live problem at this hotel right now". */
 const LIVE_FINDING_STATUSES = ['open', 'updated'] as const;
+const MAX_ROWS_PER_HOTEL = 50;
 
 export interface PortfolioHotelPulse {
   propertyId: string;
@@ -50,10 +55,16 @@ export interface PortfolioHotelPulse {
   openFindings: number | null;
   /** The subset the manager is being asked to decide on (disposition propose). */
   needsDecision: number | null;
+  /** True means the visible count is a known minimum, never an all-clear. */
+  findingCountLowerBound?: boolean;
+  /** Why a null finding count exists. */
+  findingMode?: 'available' | 'disabled' | 'unavailable';
   /** ISO capture time of this hotel's PMS numbers; null when it has none. */
   pmsCapturedAt: string | null;
   /** Present ⇔ this is a live-PMS hotel. Absent means manual/onboarding. */
   pmsSource: string | null;
+  /** Manual, onboarding and unavailable are distinct operational facts. */
+  pmsMode?: 'live' | 'manual' | 'onboarding' | 'unavailable';
 }
 
 export interface PortfolioSnapshot {
@@ -72,22 +83,43 @@ const CACHE_TTL_MS = 30_000;
 const cache = new Map<string, { snapshot: PortfolioSnapshot; expiresAt: number }>();
 const inflight = new Map<string, Promise<PortfolioSnapshot>>();
 
-function cacheKey(organizationId: string, hotels: readonly PortfolioHotel[]): string {
-  return `${organizationId}::${hotels.map((h) => h.id).join(',')}`;
+function cacheKey(
+  organizationId: string,
+  hotels: readonly PortfolioHotel[],
+  omittedHotelCount: number,
+  findingPolicy: PortfolioQueuePolicy,
+): string {
+  const disabled = hotels
+    .filter((hotel) => portfolioSectionDecision(findingPolicy, 'staxis', hotel.id) === 'disabled')
+    .map((hotel) => hotel.id);
+  const unavailable = hotels
+    .filter((hotel) => portfolioSectionDecision(findingPolicy, 'staxis', hotel.id) === 'unavailable')
+    .map((hotel) => hotel.id);
+  return `${organizationId}::${hotels.map((h) => h.id).join(',')}`
+    + `::omitted=${omittedHotelCount}`
+    + `::policy=${findingPolicy.fingerprint}`
+    + `::staxis-disabled=${disabled.join(',')}`
+    + `::staxis-unavailable=${unavailable.join(',')}`;
 }
 
 export async function buildPortfolioSnapshot(
   organizationId: string,
   hotels: readonly PortfolioHotel[],
   omittedHotelCount: number,
+  findingPolicy: PortfolioQueuePolicy,
 ): Promise<PortfolioSnapshot> {
-  const key = cacheKey(organizationId, hotels);
+  const key = cacheKey(organizationId, hotels, omittedHotelCount, findingPolicy);
   const hit = cache.get(key);
   if (hit && hit.expiresAt > Date.now()) return hit.snapshot;
   const existing = inflight.get(key);
   if (existing) return existing;
 
-  const pending = buildPortfolioSnapshotUncached(organizationId, hotels, omittedHotelCount)
+  const pending = buildPortfolioSnapshotUncached(
+    organizationId,
+    hotels,
+    omittedHotelCount,
+    findingPolicy,
+  )
     .then((snapshot) => {
       cache.set(key, { snapshot, expiresAt: Date.now() + CACHE_TTL_MS });
       return snapshot;
@@ -101,75 +133,138 @@ async function buildPortfolioSnapshotUncached(
   organizationId: string,
   hotels: readonly PortfolioHotel[],
   omittedHotelCount: number,
+  findingPolicy: PortfolioQueuePolicy,
 ): Promise<PortfolioSnapshot> {
-  const byId = new Map(hotels.map((h) => [h.id, h]));
-
-  const { results, failedHotelCount } = await forEachHotel(
-    hotels.map((h) => h.id),
-    async (db, propertyId) => {
-      // Deliberately rows-not-count: the PostgREST `count` header is one more
-      // thing to be right about in three clients (live, pglite shim, fake), and
-      // an open-findings list at one hotel is tens of rows, not thousands.
-      const { data, error } = await db
-        .from('findings')
-        .select('disposition')
-        .in('status', [...LIVE_FINDING_STATUSES])
-        .limit(MAX_ROWS_PER_HOTEL) as unknown as {
-          data: Array<{ disposition: string | null }> | null;
-          error: { message: string } | null;
-        };
-      if (error) throw new Error(`findings read failed for ${propertyId}: ${error.message}`);
-      const rows = data ?? [];
-      return {
-        openFindings: rows.length,
-        needsDecision: rows.filter((r) => r.disposition === 'propose').length,
-      };
-    },
+  const propertyIds = hotels.map((hotel) => hotel.id);
+  const findingPropertyIds = propertyIds.filter(
+    (propertyId) => portfolioSectionDecision(findingPolicy, 'staxis', propertyId) === 'enabled',
   );
+  const findingRead = await readPortfolioToolFindings(
+    organizationId,
+    findingPropertyIds,
+    LIVE_FINDING_STATUSES,
+    MAX_ROWS_PER_HOTEL + 1,
+  ).catch(() => ({
+    rowsByPropertyId: new Map<string, PortfolioToolRow[]>(),
+    unavailablePropertyIds: findingPropertyIds,
+  }));
+  let feedPulses: PortfolioFeedPulse[];
+  try {
+    feedPulses = await readPortfolioFeedPulses(organizationId, propertyIds);
+  } catch {
+    feedPulses = propertyIds.map((propertyId) => ({
+      propertyId,
+      mode: 'unavailable' as const,
+      capturedAt: null,
+      source: null,
+    }));
+  }
+  const feedByPropertyId = new Map(
+    feedPulses.map((pulse) => [pulse.propertyId, pulse]),
+  );
+  const unavailablePropertyIds = new Set(findingRead.unavailablePropertyIds);
+  for (const pulse of feedPulses) {
+    if (pulse.mode === 'unavailable') unavailablePropertyIds.add(pulse.propertyId);
+  }
 
-  // FEED STATUS, IN LANES RATHER THAN IN A QUEUE.
-  //
-  // This used to be a plain `for … await`, which at seventeen hotels is
-  // seventeen round trips END TO END before the prompt could be assembled — and
-  // it happens on EVERY portfolio turn, ahead of the model call, so it was pure
-  // latency a VP watched. `mapWithConcurrency` runs the same reads through the
-  // same per-hotel path, just several at a time, capped by the same rule the
-  // per-hotel data reads follow: never more than the hotel-facing app can spare.
-  const statuses = await mapWithConcurrency(
-    results,
-    PORTFOLIO_READ_CONCURRENCY,
-    async ({ propertyId }) => {
-      try {
-        const status = await getPropertyFeedStatus(propertyId);
-        if (status.mode !== 'live') return { pmsCapturedAt: null, pmsSource: null };
-        return {
-          pmsSource: status.freshness?.source ?? 'none',
-          pmsCapturedAt: status.freshness?.capturedAt ?? null,
-        };
-      } catch {
-        // A hotel whose feed status we cannot read is rendered without an as-of
-        // line, which reads as "manual hotel". That is the conservative direction
-        // here: it removes a freshness CLAIM rather than inventing one.
-        return { pmsCapturedAt: null, pmsSource: null };
+  const pulses: PortfolioHotelPulse[] = hotels.map((hotel) => {
+    const propertyId = hotel.id;
+    const sectionDecision = portfolioSectionDecision(findingPolicy, 'staxis', propertyId);
+    const rows = findingRead.rowsByPropertyId.get(propertyId);
+    let openFindings: number | null = null;
+    let needsDecision: number | null = null;
+    let findingCountLowerBound = false;
+    if (sectionDecision === 'enabled' && rows) {
+      const findingWindowSaturated = rows.length > MAX_ROWS_PER_HOTEL;
+      const policyAllowed = rows.slice(0, MAX_ROWS_PER_HOTEL).filter((row) => {
+        const finding = findingForSnapshotPolicy(row, propertyId);
+        return finding
+          ? portfolioHotelFindingPolicyDecision(finding, findingPolicy) === 'allowed'
+          : false;
+      });
+      if (!(findingWindowSaturated && policyAllowed.length === 0)) {
+        openFindings = policyAllowed.length;
+        const proposed = policyAllowed.filter((row) => row.disposition === 'propose').length;
+        needsDecision = findingWindowSaturated && proposed === 0 ? null : proposed;
+        findingCountLowerBound = findingWindowSaturated;
+      } else {
+        unavailablePropertyIds.add(propertyId);
       }
-    },
-  );
-
-  const pulses: PortfolioHotelPulse[] = results.map(({ propertyId, value }, i) => {
-    const hotel = byId.get(propertyId);
+    } else if (sectionDecision === 'unavailable') {
+      unavailablePropertyIds.add(propertyId);
+    }
+    const feed = feedByPropertyId.get(propertyId) ?? {
+      propertyId,
+      mode: 'unavailable' as const,
+      capturedAt: null,
+      source: null,
+    };
     return {
       propertyId,
-      name: hotel?.name ?? null,
-      totalRooms: hotel?.totalRooms ?? null,
-      timezone: hotel?.timezone ?? null,
-      openFindings: value?.openFindings ?? null,
-      needsDecision: value?.needsDecision ?? null,
-      pmsCapturedAt: statuses[i].pmsCapturedAt,
-      pmsSource: statuses[i].pmsSource,
+      name: hotel.name ?? null,
+      totalRooms: hotel.totalRooms ?? null,
+      timezone: hotel.timezone ?? null,
+      openFindings,
+      needsDecision,
+      findingCountLowerBound,
+      findingMode: sectionDecision === 'disabled'
+        ? 'disabled'
+        : openFindings === null
+          ? 'unavailable'
+          : 'available',
+      pmsCapturedAt: feed.mode === 'live' ? feed.capturedAt : null,
+      pmsSource: feed.mode === 'live' ? feed.source : null,
+      pmsMode: feed.mode,
     };
   });
 
-  return { organizationId, hotels: pulses, omittedHotelCount, failedHotelCount };
+  return {
+    organizationId,
+    hotels: pulses,
+    omittedHotelCount,
+    failedHotelCount: unavailablePropertyIds.size,
+  };
+}
+
+type PolicyFinding = Parameters<typeof portfolioHotelFindingPolicyDecision>[0];
+
+function numeric(value: unknown): number | null {
+  if (value === null || value === undefined) return null;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function findingForSnapshotPolicy(
+  row: PortfolioToolRow,
+  propertyId: string,
+): PolicyFinding | null {
+  if (row.property_id !== propertyId
+      || typeof row.detector_id !== 'string'
+      || typeof row.summary !== 'string'
+      || !row.evidence
+      || typeof row.evidence !== 'object'
+      || Array.isArray(row.evidence)) return null;
+  const low = numeric(row.price_low_cents);
+  const high = numeric(row.price_high_cents);
+  const hasPriceMaterial = row.price_low_cents != null
+    || row.price_high_cents != null
+    || row.price_basis != null;
+  return {
+    propertyId,
+    detectorId: row.detector_id,
+    summary: row.summary,
+    judgedSummaryEn: typeof row.judged_summary_en === 'string' ? row.judged_summary_en : null,
+    judgedSummaryEs: typeof row.judged_summary_es === 'string' ? row.judged_summary_es : null,
+    evidence: row.evidence,
+    price: hasPriceMaterial
+      ? {
+          lowCents: low ?? 0,
+          highCents: high != null && high > (low ?? 0) ? high : (low ?? 0) + 1,
+          currency: typeof row.price_currency === 'string' ? row.price_currency : 'USD',
+          basis: typeof row.price_basis === 'string' ? row.price_basis : '',
+        }
+      : null,
+  } as PolicyFinding;
 }
 
 /** Test seam: forget every portfolio pulse read so far. */
@@ -198,18 +293,21 @@ export function formatPortfolioSnapshotForPrompt(
   for (const hotel of snapshot.hotels) {
     const name = safePortfolioName(hotel.name) ?? 'Unnamed hotel';
     const parts: string[] = [];
-    if (hotel.openFindings === null) {
+    const pmsMode = hotel.pmsMode ?? (hotel.pmsSource ? 'live' : 'manual');
+    if (hotel.findingMode === 'disabled') {
+      parts.push('Staxis findings are disabled for this hotel — do not describe that as an all-clear');
+    } else if (hotel.openFindings === null) {
       parts.push('open items could not be read this turn — do NOT report this hotel as having none');
     } else if (hotel.openFindings === 0) {
       parts.push('no open items');
     } else {
       parts.push(
-        `${hotel.openFindings} open item${hotel.openFindings === 1 ? '' : 's'}`
+        `${hotel.findingCountLowerBound ? 'at least ' : ''}${hotel.openFindings} open item${hotel.openFindings === 1 ? '' : 's'}`
         + (hotel.needsDecision ? ` (${hotel.needsDecision} needing a decision)` : ''),
       );
     }
 
-    if (hotel.pmsSource) {
+    if (pmsMode === 'live' && hotel.pmsSource) {
       const tier = freshnessTier(hotel.pmsCapturedAt, hotel.pmsSource as never, now);
       const clock = hotel.pmsCapturedAt
         ? formatAsOfClock(hotel.pmsCapturedAt, hotel.timezone, now)
@@ -221,8 +319,12 @@ export function formatPortfolioSnapshotForPrompt(
       } else {
         parts.push(`PMS data as of ${clock.time} (${clock.zone}), ${clock.age}`);
       }
-    } else {
+    } else if (pmsMode === 'manual') {
       parts.push('manual hotel — its Staxis numbers are its own records, not PMS reports');
+    } else if (pmsMode === 'onboarding') {
+      parts.push('PMS onboarding is not complete — do not describe its room or occupancy numbers as current');
+    } else {
+      parts.push('PMS feed status could not be read this turn — do not call this a manual hotel');
     }
 
     lines.push(`- ${name}: ${parts.join('; ')}`);
@@ -232,6 +334,9 @@ export function formatPortfolioSnapshotForPrompt(
     lines.push(
       `CAUTION: ${snapshot.failedHotelCount} of this company's hotels could not be read this turn. `
       + 'Say so rather than leaving them out of a ranking silently.',
+    );
+    lines.push(
+      'A shown count is only a known minimum when marked “at least”; never turn an unread, disabled, or bounded hotel into an all-clear.',
     );
   }
   if (snapshot.omittedHotelCount > 0) {

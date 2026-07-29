@@ -1465,7 +1465,10 @@ describe('the selected company survives every portfolio-feed UI boundary', () =>
     assert.ok(
       queueView.includes('`${viewerAuthorizationKey}|organization:${requestedOrganizationId ?? \'auto\'}`')
         && queueView.includes('portfolioScopeForViewer( companyScopeSnapshot, portfolioAuthorizationKey, )')
-        && portfolioView.includes('{ identityKey: authorizationKey, keepDataOnError: false }'),
+        && queueView.includes('key={portfolioAuthorizationKey}')
+        && portfolioView.includes('identityKey: authorizationKey')
+        && portfolioView.includes('keepDataOnError: false')
+        && portfolioView.includes('const responseMismatch = Boolean('),
       'a failed or changing company receipt could leave the prior company scope mounted',
     );
   });

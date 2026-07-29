@@ -22,6 +22,8 @@ import { resolveAuthorizationScope } from '@/lib/authorization/server';
 import type { AuthorizationScopeReceipt } from '@/lib/authorization';
 import { buildPortfolioFindingNotMountedReceipt } from '@/lib/agent/portfolio-intelligence/pattern-contract';
 import { clearPortfolioAccessCache, resolvePortfolioAccessUncached } from '@/lib/company/portfolio';
+import { resolvePortfolioQueuePolicy } from '@/lib/company/portfolio-data-policy';
+import { stampPortfolioPolicy } from '@/lib/agent/portfolio/conversation';
 import { clearPortfolioHotelCache } from '@/lib/agent/portfolio/hotels';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 
@@ -228,11 +230,19 @@ async function createTwoTurnConversation(): Promise<string> {
   const access = await resolvePortfolioAccessUncached(ACCOUNT_MARIA, ORG_A);
   assert.ok(access.ok, access.ok ? undefined : access.reason);
   const allReceipt = access.access.authorizationReceipt;
+  const policy = await resolvePortfolioQueuePolicy(
+    { accountId: ACCOUNT_MARIA, role: 'front_desk', propertyAccess: [] },
+    ORG_A,
+    access.access.propertyIds,
+  );
   const created = await createPortfolioConversation({
     userAccountId: ACCOUNT_MARIA,
     propertyAnchorId: PID_A1,
     role: 'general_manager',
-    promptVersion: 'portfolio-synthesis.test.v1',
+    promptVersion: stampPortfolioPolicy(
+      'portfolio-synthesis.test.v1',
+      policy.fingerprint,
+    ),
     title: 'Portfolio then hotel',
     organizationId: ORG_A,
     authorizationHash: allReceipt.authorizationHash,

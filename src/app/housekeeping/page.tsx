@@ -23,6 +23,7 @@ import { QualityTab } from './_components/QualityTab';
 import { HousekeepingSetup } from './_components/HousekeepingSetup';
 import { T, FONT_SANS, Card } from './_components/_snow';
 import { canManageTeam } from '@/lib/roles';
+import { useActiveHotelStanding } from '@/lib/capabilities/useCan';
 import { useCan } from '@/lib/capabilities/useCan';
 import { isHousekeepingSetupComplete } from '@/lib/housekeeping/setup-gate';
 import { RouteErrorState, RouteLoadingState } from '@/components/layout/RouteResourceState';
@@ -128,6 +129,7 @@ export default function HousekeepingPage() {
   const { user, loading: authLoading } = useAuth();
   const { activePropertyId, activeProperty, loading: propLoading, refreshProperty } = useProperty();
   const can = useCan();
+  const hotelStanding = useActiveHotelStanding();
   const { push, replace } = useReliableNavigation();
 
   // Auth guard — redirect if not logged in or no property
@@ -211,7 +213,9 @@ export default function HousekeepingPage() {
   // guard above redirect.
   if (user && activeProperty && activeProperty.id === activePropertyId
       && !isHousekeepingSetupComplete(activeProperty.housekeepingSetup)) {
-    const isManager = canManageTeam(user.role);
+    const isManager = hotelStanding.hotelMutationAllowed
+      && !!hotelStanding.role
+      && canManageTeam(hotelStanding.role);
     return (
       <AppLayout>
         {!isManager

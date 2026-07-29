@@ -17,8 +17,10 @@ import { isUuid } from '@/lib/api-validate';
 import { visionExtractJSON, VisionTruncatedError, VisionImageInvalidError, VisionSchemaError, type VisionUsageReport } from '@/lib/vision-extract';
 import { AiFeatureDisabledError } from '@/lib/ai/runtime';
 import { errToString } from '@/lib/utils';
-import { log } from '@/lib/log';
-import { requireSession, userHasPropertyAccess } from '@/lib/api-auth';
+import { getOrMintRequestId, log } from '@/lib/log';
+import { requireSession } from '@/lib/api-auth';
+import { capabilityUnavailableResponse } from '@/lib/capabilities/api-gate';
+import { hotelWriteDecisionForUserId } from '@/lib/team-auth';
 import { checkAndIncrementRateLimit, rateLimitedResponse } from '@/lib/api-ratelimit';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { assertAudioBudget, recordNonRequestCost } from '@/lib/agent/cost-controls';
@@ -50,9 +52,10 @@ type VisionMediaType = 'image/jpeg' | 'image/png' | 'image/webp' | 'image/gif';
 
 export async function POST(req: NextRequest) {
   const visionDeadlineAt = Date.now() + 52_000;
+  const requestId = getOrMintRequestId(req);
   // Auth gate — same story as scan-invoice. Vision API has real $$ cost
   // and we don't want random callers spending the budget.
-  const session = await requireSession(req);
+  const session = await requireSession(req, { requestId });
   if (!session.ok) return session.response;
 
   let body: RequestBody;
@@ -66,7 +69,9 @@ export async function POST(req: NextRequest) {
   if (!isUuid(pid)) {
     return NextResponse.json({ ok: false, error: 'invalid_pid' }, { status: 400 });
   }
-  if (!(await userHasPropertyAccess(session.userId, pid))) {
+  const writeDecision = await hotelWriteDecisionForUserId(session.userId, pid);
+  if (writeDecision === 'unavailable') return capabilityUnavailableResponse(requestId);
+  if (writeDecision === 'denied') {
     return NextResponse.json({ ok: false, error: 'forbidden' }, { status: 403 });
   }
   const sectionGate = await requireSectionEnabled(req, pid, 'inventory');

@@ -6,15 +6,15 @@
 //
 // THREE RULES, AND EVERY TOOL IN THIS FILE OBEYS ALL THREE.
 //
-// 1. THE WALL STAYS STRUCTURAL. A portfolio read is a LOOP over `scopedDb(pid)`
-//    for pid in a set the SPINE produced — never a cross-property query. There
-//    is no raw service-role client in this file and the build refuses one
-//    (`scripts/audit-service-role-imports.mjs`). A bug here can return the
-//    wrong subset of the caller's own hotels; it cannot reach anybody else's.
+// 1. THE WALL STAYS STRUCTURAL. A portfolio read is one bounded, company-
+//    intersected RPC over the exact receipt set — never an N+1 client loop and
+//    never a caller-authored company/property universe. Each RPC re-proves the
+//    live organization relationship in SQL before returning one bucket per
+//    requested hotel.
 //
 // 2. NOTHING IS TRUSTED FROM THE CONTEXT. `ctx.portfolio` says which company is
 //    being asked about. It does NOT say what may be read: every tool re-resolves
-//    the caller's coverage through `resolvePortfolioAccess` first, and intersects
+//    the caller's coverage through `resolvePortfolioAccessUncached` first, and intersects
 //    that fresh answer with the context's. Both must agree. The company's
 //    `cross_hotel_ai_chat` setting is re-checked on that same call, so a company
 //    that switches it off closes the door mid-conversation, not at the next login.
@@ -34,20 +34,31 @@
 
 import { registerTool, type ToolResult, type ToolHandlerContext } from '../tools';
 import {
-  normalizeWorkOrderSeverity,
-  type WorkOrderSeverityBucket,
-} from '@/lib/db-mappers';
-import {
   PORTFOLIO_REFUSAL_TEXT,
-  resolvePortfolioAccess,
+  resolvePortfolioAccessUncached,
 } from '@/lib/company/portfolio';
+import { assertAuthorizationScopeReceipt } from '@/lib/authorization/server';
+import {
+  portfolioHotelFindingPolicyDecision,
+  portfolioSectionDecision,
+  resolvePortfolioQueuePolicy,
+  type PortfolioQueuePolicy,
+} from '@/lib/company/portfolio-data-policy';
+import {
+  readPortfolioToolFindings,
+  readPortfolioToolHotels,
+  readPortfolioToolInventory,
+  readPortfolioToolInventoryOrders,
+  readPortfolioToolWorkOrderCounts,
+  readPortfolioToolWorkOrders,
+  type PortfolioToolRow,
+  type PortfolioToolRows,
+} from '@/lib/company/portfolio-tool-reads';
 import { getConfirmedCompanyFacts } from '@/lib/company/rulebook';
 import { COMPANY_CATEGORY_LABELS } from '@/lib/company/rulebook-policy';
 import { stockStatus } from '@/lib/stock-status';
 import {
   boundedHotelIds,
-  forEachHotel,
-  loadPortfolioHotels,
   MAX_PORTFOLIO_HOTELS,
   readOncePerTurn,
   turnNow,
@@ -64,7 +75,7 @@ const UUID_RX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
  * front_desk. Listing `front_desk` here looks alarming and is not: a
  * property-scope front-desk person never reaches a portfolio context, because
  * `ctx.portfolio` is only ever set by the portfolio route and only ever after
- * `resolvePortfolioAccess` found a COMPANY-scope hat. `executeTool` refuses any
+ * `resolvePortfolioAccessUncached` found a COMPANY-scope hat. `executeTool` refuses any
  * tool in this file when that field is absent, and the leak suite drives a real
  * property-scope person at the real route to prove it.
  */
@@ -73,8 +84,9 @@ const PORTFOLIO_ROLES = ['admin', 'owner', 'general_manager', 'front_desk'] as c
 const PORTFOLIO_SURFACES = ['portfolio'] as const;
 
 const MS_PER_DAY = 86_400_000;
-/** Ceiling on rows pulled per hotel, so one strange hotel cannot dominate. */
-const MAX_ROWS = 5_000;
+/** 50 payload rows; the 51st row is an honest "more exists" sentinel. */
+const MAX_ROWS = 50;
+const BATCH_ROW_LIMIT = MAX_ROWS + 1;
 const DEFAULT_WINDOW_DAYS = 30;
 const MAX_WINDOW_DAYS = 365;
 
@@ -92,9 +104,17 @@ interface Reach {
   omittedHotelCount: number;
   /** The caller named specific hotels, so they asked for detail on them. */
   namedHotels: boolean;
+  /** One fresh, fail-closed projection policy for this exact read set. */
+  policy: PortfolioQueuePolicy;
+  /** Receipt reasserted after every asynchronous store/provider boundary. */
+  receiptId: string;
+  scopeHash: string;
+  authorizationHash: string;
 }
 
 type ReachResult = { ok: true; reach: Reach } | { ok: false; error: string };
+
+class PortfolioToolScopeChangedError extends Error {}
 
 /**
  * Resolve which hotels this call may read.
@@ -123,7 +143,10 @@ async function reachFor(
   // built when the conversation's turn started. This asks the spine again —
   // does this person still hold a company job here, and is cross-hotel chat
   // still switched on for this company?
-  const fresh = await resolvePortfolioAccess(ctx.user.accountId, scope.organizationId);
+  const fresh = await resolvePortfolioAccessUncached(
+    ctx.user.accountId,
+    scope.organizationId,
+  ).catch(() => ({ ok: false as const, reason: 'authorization_unavailable' as const }));
   if (!fresh.ok) {
     return { ok: false, error: `Refused: ${PORTFOLIO_REFUSAL_TEXT[fresh.reason]}` };
   }
@@ -163,9 +186,24 @@ async function reachFor(
   }
 
   const { ids, omittedHotelCount } = boundedHotelIds(requested);
-  const hotels = await loadPortfolioHotels(ids);
+  let hotelRead;
+  try {
+    hotelRead = await readPortfolioToolHotels(fresh.access.organizationId, ids);
+  } catch {
+    return { ok: false, error: `Refused: ${PORTFOLIO_REFUSAL_TEXT.authorization_unavailable}` };
+  }
+  if (hotelRead.unavailablePropertyIds.length > 0) {
+    return { ok: false, error: 'Refused: portfolio hotel scope changed while this tool was loading.' };
+  }
+  const hotels: PortfolioHotel[] = hotelRead.hotels;
   const nameById = new Map(hotels.map((h) => [h.id, h.name ?? 'Unnamed hotel']));
   const roomsById = new Map(hotels.map((h) => [h.id, h.totalRooms]));
+  const policy = await resolvePortfolioQueuePolicy(
+    ctx.user,
+    fresh.access.organizationId,
+    ids,
+  );
+  const receipt = fresh.access.authorizationReceipt;
 
   return {
     ok: true,
@@ -178,8 +216,24 @@ async function reachFor(
       roomsOf: (id) => roomsById.get(id) ?? null,
       omittedHotelCount,
       namedHotels,
+      policy,
+      receiptId: receipt.id,
+      scopeHash: receipt.scopeHash,
+      authorizationHash: receipt.authorizationHash,
     },
   };
+}
+
+async function assertReachStillCurrent(ctx: ToolHandlerContext, reach: Reach): Promise<void> {
+  const assertion = await assertAuthorizationScopeReceipt({
+    receiptId: reach.receiptId,
+    accountId: ctx.user.accountId,
+  });
+  if (!assertion.ok
+      || assertion.receipt.scopeHash !== reach.scopeHash
+      || assertion.receipt.authorizationHash !== reach.authorizationHash) {
+    throw new PortfolioToolScopeChangedError('portfolio scope changed while this tool was running');
+  }
 }
 
 /** Every portfolio payload carries the same honesty envelope. */
@@ -222,6 +276,48 @@ function numberOf(value: unknown): number | null {
   if (value === null || value === undefined) return null;
   const n = typeof value === 'string' ? Number(value) : (value as number);
   return Number.isFinite(n) ? n : null;
+}
+
+type PolicyFinding = Parameters<typeof portfolioHotelFindingPolicyDecision>[0];
+
+/**
+ * Minimal, non-rendering projection for the shared source/money classifier.
+ * The batch reader has already validated the full persisted policy shape. This
+ * adapter deliberately carries only fields the classifier consumes.
+ */
+function findingForPortfolioPolicy(
+  row: PortfolioToolRow,
+  propertyId: string,
+): PolicyFinding | null {
+  if (row.property_id !== propertyId
+      || typeof row.detector_id !== 'string'
+      || typeof row.summary !== 'string'
+      || !row.evidence
+      || typeof row.evidence !== 'object'
+      || Array.isArray(row.evidence)) {
+    return null;
+  }
+  const low = numberOf(row.price_low_cents);
+  const high = numberOf(row.price_high_cents);
+  const hasPriceMaterial = row.price_low_cents != null
+    || row.price_high_cents != null
+    || row.price_basis != null;
+  return {
+    propertyId,
+    detectorId: row.detector_id,
+    summary: row.summary,
+    judgedSummaryEn: typeof row.judged_summary_en === 'string' ? row.judged_summary_en : null,
+    judgedSummaryEs: typeof row.judged_summary_es === 'string' ? row.judged_summary_es : null,
+    evidence: row.evidence,
+    price: hasPriceMaterial
+      ? {
+          lowCents: low ?? 0,
+          highCents: high != null && high > (low ?? 0) ? high : (low ?? 0) + 1,
+          currency: typeof row.price_currency === 'string' ? row.price_currency : 'USD',
+          basis: typeof row.price_basis === 'string' ? row.price_basis : '',
+        }
+      : null,
+  } as PolicyFinding;
 }
 
 /** Dollars, rounded to the cent. Never a fabricated precision. */
@@ -274,34 +370,6 @@ export function timesAsMuch(value: number | null, reference: number | null): num
   return rate(value / reference);
 }
 
-interface QueryResult<T> {
-  data: T[] | null;
-  error: { message: string } | null;
-}
-
-function rowsOf<T>(result: QueryResult<T>, what: string): T[] {
-  if (result.error) throw new Error(`${what} read failed: ${result.error.message}`);
-  return result.data ?? [];
-}
-
-/**
- * The count off a `head: true` read, with no rows behind it.
- *
- * A null count is a THROW, not a 0: PostgREST returning no number is a read that
- * did not happen, and reporting it as zero would put a hotel at the bottom of a
- * ranking for being unreadable. The per-hotel loop turns the throw into
- * "unread", which the answer names out loud.
- */
-function countOnly(
-  result: unknown,
-  what: string,
-): number {
-  const { count, error } = result as { count: number | null; error: { message: string } | null };
-  if (error) throw new Error(`${what} count failed: ${error.message}`);
-  if (count === null || count === undefined) throw new Error(`${what} count came back empty`);
-  return count;
-}
-
 /** The `hotelIds` argument every aggregate tool accepts, described once. */
 const HOTEL_IDS_SCHEMA = {
   type: 'array',
@@ -328,7 +396,11 @@ function unreadNote(failed: number): Record<string, unknown> {
 // ─── Reading N hotels, once per turn ────────────────────────────────────────
 
 interface PerHotelRows {
-  results: Array<{ propertyId: string; value: Record<string, unknown>[] | null }>;
+  results: Array<{
+    propertyId: string;
+    value: Record<string, unknown>[] | null;
+    atRowLimit: boolean;
+  }>;
   failedHotelCount: number;
   /** Hotels whose read came back AT the row ceiling, so their totals are floors. */
   cappedHotelCount: number;
@@ -349,19 +421,93 @@ async function readRowsPerHotel(
   ctx: ToolHandlerContext,
   dataset: string,
   ids: string[],
-  read: (
-    db: Parameters<Parameters<typeof forEachHotel>[1]>[0],
-    propertyId: string,
-  ) => Promise<Record<string, unknown>[]>,
+  reach: Reach,
+  read: () => Promise<PortfolioToolRows>,
 ): Promise<PerHotelRows> {
-  return readOncePerTurn(ctx, `${dataset}|${ids.join(',')}`, async () => {
-    const { results, failedHotelCount } = await forEachHotel(ids, read);
-    let cappedHotelCount = 0;
-    for (const { value } of results) {
-      if (value !== null && value.length >= MAX_ROWS) cappedHotelCount += 1;
+  try {
+    return await readOncePerTurn(ctx, `${dataset}|${ids.join(',')}`, async () => {
+      const loaded = await read();
+      await assertReachStillCurrent(ctx, reach);
+      const unavailable = new Set(loaded.unavailablePropertyIds);
+      const results = ids.map((propertyId) => {
+        const rows = loaded.rowsByPropertyId.get(propertyId);
+        if (unavailable.has(propertyId) || !rows) {
+          return { propertyId, value: null, atRowLimit: false };
+        }
+        return {
+          propertyId,
+          value: rows.slice(0, MAX_ROWS),
+          atRowLimit: rows.length > MAX_ROWS,
+        };
+      });
+      let cappedHotelCount = 0;
+      for (const propertyId of ids) {
+        if ((loaded.rowsByPropertyId.get(propertyId)?.length ?? 0) > MAX_ROWS) {
+          cappedHotelCount += 1;
+        }
+      }
+      return {
+        results,
+        failedHotelCount: results.filter(({ value }) => value === null).length,
+        cappedHotelCount,
+      };
+    });
+  } catch (error) {
+    if (error instanceof PortfolioToolScopeChangedError) throw error;
+    return {
+      results: ids.map((propertyId) => ({
+        propertyId,
+        value: null,
+        atRowLimit: false,
+      })),
+      failedHotelCount: ids.length,
+      cappedHotelCount: 0,
+    };
+  }
+}
+
+function idsEnabledFor(
+  reach: Reach,
+  section: Parameters<typeof portfolioSectionDecision>[1],
+): string[] {
+  return reach.ids.filter(
+    (propertyId) => portfolioSectionDecision(reach.policy, section, propertyId) === 'enabled',
+  );
+}
+
+function idsWithFinancialRead(reach: Reach, ids: readonly string[]): string[] {
+  return ids.filter((propertyId) => reach.policy.financials.get(propertyId) === 'allowed');
+}
+
+function policyFilteredFindingRows(
+  loaded: PortfolioToolRows,
+  reach: Reach,
+): PortfolioToolRows {
+  const rowsByPropertyId = new Map<string, PortfolioToolRow[]>();
+  const unavailable = new Set(loaded.unavailablePropertyIds);
+  for (const [propertyId, rows] of loaded.rowsByPropertyId) {
+    const allowed: PortfolioToolRow[] = [];
+    let policyUnavailable = false;
+    for (const row of rows) {
+      const finding = findingForPortfolioPolicy(row, propertyId);
+      if (!finding) {
+        policyUnavailable = true;
+        break;
+      }
+      const decision = portfolioHotelFindingPolicyDecision(finding, reach.policy);
+      if (decision === 'allowed') allowed.push(row);
+      else if (decision === 'unavailable') {
+        policyUnavailable = true;
+        break;
+      }
     }
-    return { results, failedHotelCount, cappedHotelCount };
-  });
+    if (policyUnavailable) unavailable.add(propertyId);
+    else rowsByPropertyId.set(propertyId, allowed);
+  }
+  return {
+    rowsByPropertyId,
+    unavailablePropertyIds: [...unavailable],
+  };
 }
 
 /**
@@ -484,6 +630,7 @@ registerTool<Record<string, never>>({
     const resolved = await reachFor(ctx);
     if (!resolved.ok) return { ok: false, error: resolved.error };
     const { reach } = resolved;
+    await assertReachStillCurrent(ctx, reach);
     return {
       ok: true,
       data: envelope(reach, {
@@ -530,19 +677,24 @@ registerTool<OpenItemsArgs>({
 
     // `magnitude` used to be selected here and never read — one more numeric
     // column per row per hotel, for nobody.
+    const findingHotelIds = idsEnabledFor(reach, 'staxis');
     const { results, failedHotelCount, cappedHotelCount } = await readRowsPerHotel(
-      ctx, 'findings', reach.ids, async (db, propertyId) => {
-        const result = (await db
-          .from('findings')
-          .select('detector_id, summary, severity, disposition, status, price_low_cents, price_high_cents, first_seen_at, last_seen_at')
-          .in('status', ['open', 'updated', 'known_problem'])
-          .order('last_seen_at', { ascending: false })
-          .limit(MAX_ROWS)) as unknown as QueryResult<Record<string, unknown>>;
-        return rowsOf(result, `findings@${propertyId}`);
-      },
+      ctx,
+      'findings',
+      reach.ids,
+      reach,
+      async () => policyFilteredFindingRows(
+        await readPortfolioToolFindings(
+          reach.organizationId,
+          findingHotelIds,
+          ['open', 'updated', 'known_problem'],
+          BATCH_ROW_LIMIT,
+        ),
+        reach,
+      ),
     );
 
-    const measured = results.map(({ propertyId, value }) => {
+    const measured = results.map(({ propertyId, value, atRowLimit }) => {
       if (value === null) {
         return { hotelId: propertyId, hotel: reach.nameOf(propertyId), read: false as const };
       }
@@ -574,7 +726,7 @@ registerTool<OpenItemsArgs>({
         pricedItems: priced.length,
         estimatedDollarsLow: priced.length > 0 ? dollars(lowTotal / 100) : null,
         estimatedDollarsHigh: priced.length > 0 ? dollars(highTotal / 100) : null,
-        ...(value.length >= MAX_ROWS ? { atRowLimit: true as const } : {}),
+        ...(atRowLimit ? { atRowLimit: true as const } : {}),
         _items: ranked.slice(0, perHotel).map((r) => ({
           summary: r.summary,
           severity: r.severity,
@@ -655,62 +807,53 @@ registerTool<WorkOrderArgs>({
 
     // `room_number` used to be selected here and never read — a string per
     // ticket per hotel, carried across the wire for nobody.
-    const { results, failedHotelCount, cappedHotelCount } = await readRowsPerHotel(
-      ctx, `work_orders:${days}`, reach.ids, async (db, propertyId) => {
-        const result = (await db
-          .from('work_orders')
-          .select('status, severity, repair_cost, created_at')
-          .gte('created_at', since)
-          .limit(MAX_ROWS)) as unknown as QueryResult<Record<string, unknown>>;
-        return rowsOf(result, `work_orders@${propertyId}`);
-      },
-    );
-
-    const measured = results.map(({ propertyId, value }) => {
-      if (value === null) {
+    const maintenanceHotelIds = idsEnabledFor(reach, 'maintenance');
+    let loaded: Awaited<ReturnType<typeof readPortfolioToolWorkOrders>> | null = null;
+    try {
+      loaded = await readOncePerTurn(
+        ctx,
+        `work_orders:${days}|${reach.ids.join(',')}`,
+        async () => {
+          const summaries = await readPortfolioToolWorkOrders(
+            reach.organizationId,
+            maintenanceHotelIds,
+            idsWithFinancialRead(reach, maintenanceHotelIds),
+            since,
+          );
+          await assertReachStillCurrent(ctx, reach);
+          return summaries;
+        },
+      );
+    } catch (error) {
+      if (error instanceof PortfolioToolScopeChangedError) throw error;
+    }
+    const unavailable = new Set(loaded?.unavailablePropertyIds ?? reach.ids);
+    const measured = reach.ids.map((propertyId) => {
+      const summary = loaded?.summariesByPropertyId.get(propertyId);
+      if (!summary || unavailable.has(propertyId)) {
         return { hotelId: propertyId, hotel: reach.nameOf(propertyId), read: false as const };
       }
-      const costs = value
-        .map((r) => numberOf(r.repair_cost))
-        .filter((c): c is number => c !== null && c > 0);
       const rooms = reach.roomsOf(propertyId);
-      const opened = value.length;
-      // 'submitted' | 'assigned' | 'in_progress' all read as open on the board;
-      // only 'resolved' is done, and an absent status is an open ticket
-      // (db-mappers.ts STATUS_FROM_DB's own fallback).
-      const openRows = value.filter((r) => String(r.status ?? 'submitted') !== 'resolved');
-      const stillOpen = openRows.length;
-      // ONE vocabulary, whichever the writer used. `work_orders.severity` holds
-      // both `MAJOR`/`MINOR` and `low`/`medium`/`urgent` (see
-      // normalizeWorkOrderSeverity); reading only for the literal string
-      // 'urgent' is why a live answer said "0 urgent" with five MAJOR tickets
-      // sitting open.
-      const buckets = openRows.map((r) => normalizeWorkOrderSeverity(r.severity));
-      const countOf = (b: WorkOrderSeverityBucket) => buckets.filter((x) => x === b).length;
       return {
         hotelId: propertyId,
         hotel: reach.nameOf(propertyId),
         read: true as const,
         rooms,
-        opened,
-        stillOpen,
+        opened: summary.opened,
+        stillOpen: summary.stillOpen,
         /** How the STILL-OPEN tickets grade, in one vocabulary. */
-        stillOpenBySeverity: {
-          urgent: countOf('urgent'),
-          high: countOf('high'),
-          normal: countOf('normal'),
-          low: countOf('low'),
-          ungraded: countOf('unspecified'),
-        },
-        openedPer100Rooms: per100Rooms(opened, rooms),
-        stillOpenPer100Rooms: per100Rooms(stillOpen, rooms),
+        stillOpenBySeverity: summary.stillOpenBySeverity,
+        openedPer100Rooms: per100Rooms(summary.opened, rooms),
+        stillOpenPer100Rooms: per100Rooms(summary.stillOpen, rooms),
         // Only from tickets where somebody typed a cost in. A hotel that never
         // fills that in reports null, not $0 — $0 would read as "free".
-        recordedRepairSpendDollars: costs.length > 0 ? dollars(costs.reduce((a, b) => a + b, 0)) : null,
-        repairCostSamples: costs.length,
-        ...(value.length >= MAX_ROWS ? { atRowLimit: true as const } : {}),
+        recordedRepairSpendDollars: summary.recordedRepairSpend === null
+          ? null
+          : dollars(summary.recordedRepairSpend),
+        repairCostSamples: summary.repairCostSamples,
       };
     });
+    const failedHotelCount = measured.filter((hotel) => !hotel.read).length;
 
     // Worst first on the BACKLOG, not on the volume: a hotel that opened thirty
     // tickets and closed twenty-eight is being run well, and a hotel with nine
@@ -740,7 +883,6 @@ registerTool<WorkOrderArgs>({
           + ' unread hotels last.',
         hotels,
         ...unreadNote(failedHotelCount),
-        ...rowLimitNote(cappedHotelCount),
       }),
     };
   },
@@ -776,18 +918,22 @@ registerTool<SpendArgs>({
     const days = windowDays(args?.days);
     const since = sinceIso(days, turnNow(ctx));
 
+    const inventoryHotelIds = idsEnabledFor(reach, 'inventory');
+    const spendHotelIds = idsWithFinancialRead(reach, inventoryHotelIds);
     const { results, failedHotelCount, cappedHotelCount } = await readRowsPerHotel(
-      ctx, `inventory_orders:${days}`, reach.ids, async (db, propertyId) => {
-        const result = (await db
-          .from('inventory_orders')
-          .select('total_cost, unit_cost, quantity, received_at')
-          .gte('received_at', since)
-          .limit(MAX_ROWS)) as unknown as QueryResult<Record<string, unknown>>;
-        return rowsOf(result, `inventory_orders@${propertyId}`);
-      },
+      ctx,
+      `inventory_orders:${days}`,
+      reach.ids,
+      reach,
+      () => readPortfolioToolInventoryOrders(
+        reach.organizationId,
+        spendHotelIds,
+        since,
+        BATCH_ROW_LIMIT,
+      ),
     );
 
-    const measured = results.map(({ propertyId, value }) => {
+    const measured = results.map(({ propertyId, value, atRowLimit }) => {
       if (value === null) {
         return { hotelId: propertyId, hotel: reach.nameOf(propertyId), read: false as const };
       }
@@ -815,7 +961,7 @@ registerTool<SpendArgs>({
         spendDollars: priced > 0 ? dollars(total) : null,
         spendPerRoomDollars: priced > 0 && rooms && rooms > 0 ? dollars(total / rooms) : null,
         spendPer100RoomsDollars: priced > 0 ? per100Rooms(dollars(total), rooms) : null,
-        ...(value.length >= MAX_ROWS ? { atRowLimit: true as const } : {}),
+        ...(atRowLimit ? { atRowLimit: true as const } : {}),
       };
     });
 
@@ -867,17 +1013,20 @@ registerTool<InventoryArgs>({
     if (!resolved.ok) return { ok: false, error: resolved.error };
     const { reach } = resolved;
 
+    const inventoryHotelIds = idsEnabledFor(reach, 'inventory');
     const { results, failedHotelCount, cappedHotelCount } = await readRowsPerHotel(
-      ctx, 'inventory', reach.ids, async (db, propertyId) => {
-        const result = (await db
-          .from('inventory')
-          .select('name, current_stock, par_level, unit, archived_at')
-          .limit(MAX_ROWS)) as unknown as QueryResult<Record<string, unknown>>;
-        return rowsOf(result, `inventory@${propertyId}`);
-      },
+      ctx,
+      'inventory',
+      reach.ids,
+      reach,
+      () => readPortfolioToolInventory(
+        reach.organizationId,
+        inventoryHotelIds,
+        BATCH_ROW_LIMIT,
+      ),
     );
 
-    const measured = results.map(({ propertyId, value }) => {
+    const measured = results.map(({ propertyId, value, atRowLimit }) => {
       if (value === null) {
         return { hotelId: propertyId, hotel: reach.nameOf(propertyId), read: false as const };
       }
@@ -899,7 +1048,7 @@ registerTool<InventoryArgs>({
         good: classified.filter((i) => i.status === 'good').length,
         low: classified.filter((i) => i.status === 'low').length,
         critical: critical.length,
-        ...(value.length >= MAX_ROWS ? { atRowLimit: true as const } : {}),
+        ...(atRowLimit ? { atRowLimit: true as const } : {}),
         _worstItems: critical
           .sort((a, b) => (a.par > 0 ? a.onHand / a.par : 1) - (b.par > 0 ? b.onHand / b.par : 1))
           .slice(0, 5)
@@ -981,59 +1130,121 @@ registerTool<CompareArgs>({
     const since = sinceIso(days, turnNow(ctx));
     const perRoom = args?.perRoom === true;
 
-    // A RANKING NEEDS TOTALS, NOT ROWS.
-    //
-    // This used to `select('id')` for every matching row and take `.length`,
-    // which at twenty hotels means dragging every open finding's uuid across the
-    // wire to learn one integer per hotel — and it silently topped out at
-    // MAX_ROWS, so the busiest hotel in a company could rank BELOW a quieter one.
-    // `count: 'exact', head: true` asks Postgres for the number and transfers no
-    // rows at all: constant size per hotel however big the hotel is, and exact.
-    const { results, failedHotelCount } = await readOncePerTurn(
+    type CompareRead = {
+      results: Array<{
+        propertyId: string;
+        value: number | null;
+        atRowLimit: boolean;
+      }>;
+      failedHotelCount: number;
+      cappedHotelCount: number;
+    };
+    const compareRead: CompareRead = await readOncePerTurn(
       ctx,
       `compare:${metric}:${metric === 'rooms' ? '-' : days}|${reach.ids.join(',')}`,
-      () => forEachHotel(reach.ids, async (db, propertyId) => {
-        switch (metric) {
-          case 'rooms':
-            return reach.roomsOf(propertyId) ?? 0;
-          case 'supply_spend': {
-            const result = (await db
-              .from('inventory_orders')
-              .select('total_cost, unit_cost, quantity')
-              .gte('received_at', since)
-              .limit(MAX_ROWS)) as unknown as QueryResult<Record<string, unknown>>;
+      async () => {
+        if (metric === 'rooms') {
+          await assertReachStillCurrent(ctx, reach);
+          const results = reach.ids.map((propertyId) => ({
+            propertyId,
+            value: reach.roomsOf(propertyId),
+            atRowLimit: false,
+          }));
+          return {
+            results,
+            failedHotelCount: results.filter(({ value }) => value === null).length,
+            cappedHotelCount: 0,
+          };
+        }
+
+        if (metric === 'work_orders') {
+          const readableIds = idsEnabledFor(reach, 'maintenance');
+          let loaded: Awaited<ReturnType<typeof readPortfolioToolWorkOrderCounts>>;
+          try {
+            loaded = await readPortfolioToolWorkOrderCounts(
+              reach.organizationId,
+              readableIds,
+              since,
+            );
+          } catch {
+            return {
+              results: reach.ids.map((propertyId) => ({
+                propertyId,
+                value: null,
+                atRowLimit: false,
+              })),
+              failedHotelCount: reach.ids.length,
+              cappedHotelCount: 0,
+            };
+          }
+          await assertReachStillCurrent(ctx, reach);
+          const unavailable = new Set(loaded.unavailablePropertyIds);
+          const results = reach.ids.map((propertyId) => ({
+            propertyId,
+            value: unavailable.has(propertyId)
+              ? null
+              : loaded.countsByPropertyId.get(propertyId) ?? null,
+            atRowLimit: false,
+          }));
+          return {
+            results,
+            failedHotelCount: results.filter(({ value }) => value === null).length,
+            cappedHotelCount: 0,
+          };
+        }
+
+        const readableIds = metric === 'supply_spend'
+          ? idsWithFinancialRead(reach, idsEnabledFor(reach, 'inventory'))
+          : idsEnabledFor(reach, 'staxis');
+        const rows = await readRowsPerHotel(
+          ctx,
+          `compare-rows:${metric}:${days}`,
+          reach.ids,
+          reach,
+          async () => {
+            if (metric === 'supply_spend') {
+              return readPortfolioToolInventoryOrders(
+                reach.organizationId,
+                readableIds,
+                since,
+                BATCH_ROW_LIMIT,
+              );
+            }
+            return policyFilteredFindingRows(
+              await readPortfolioToolFindings(
+                reach.organizationId,
+                readableIds,
+                ['open', 'updated'],
+                BATCH_ROW_LIMIT,
+              ),
+              reach,
+            );
+          },
+        );
+        return {
+          results: rows.results.map(({ propertyId, value, atRowLimit }) => {
+            if (value === null) return { propertyId, value: null, atRowLimit };
+            if (metric === 'open_items') {
+              return { propertyId, value: value.length, atRowLimit };
+            }
             let total = 0;
-            for (const row of rowsOf(result, `inventory_orders@${propertyId}`)) {
+            for (const row of value) {
               const amount = numberOf(row.total_cost)
                 ?? ((numberOf(row.unit_cost) ?? 0) * (numberOf(row.quantity) ?? 0));
               total += amount;
             }
-            return dollars(total);
-          }
-          case 'work_orders':
-            return countOnly(
-              await db
-                .from('work_orders')
-                .select('id', { count: 'exact', head: true })
-                .gte('created_at', since),
-              `work_orders@${propertyId}`,
-            );
-          case 'open_items':
-          default:
-            return countOnly(
-              await db
-                .from('findings')
-                .select('id', { count: 'exact', head: true })
-                .in('status', ['open', 'updated']),
-              `findings@${propertyId}`,
-            );
-        }
-      }),
+            return { propertyId, value: dollars(total), atRowLimit };
+          }),
+          failedHotelCount: rows.failedHotelCount,
+          cappedHotelCount: rows.cappedHotelCount,
+        };
+      },
     );
+    const { results, failedHotelCount, cappedHotelCount } = compareRead;
 
     const scored = results
       .filter((r) => r.value !== null)
-      .map(({ propertyId, value }) => {
+      .map(({ propertyId, value, atRowLimit }) => {
         const rooms = reach.roomsOf(propertyId);
         const raw = value as number;
         const usableRooms = rooms && rooms > 0 ? rooms : null;
@@ -1042,6 +1253,7 @@ registerTool<CompareArgs>({
           hotel: reach.nameOf(propertyId),
           rooms,
           value: raw,
+          ...(atRowLimit ? { atRowLimit: true as const } : {}),
           // A per-room figure needs a room count. A hotel without one reports
           // null rather than borrowing the portfolio's average.
           perRoomValue: perRoom && usableRooms ? rate(raw / usableRooms) : null,
@@ -1126,6 +1338,7 @@ registerTool<CompareArgs>({
             : null,
         },
         ...unreadNote(failedHotelCount),
+        ...rowLimitNote(cappedHotelCount),
         ...(perRoom && ranked.some((r) => r.perRoomValue === null)
           ? { perRoomGap: 'Some hotels have no room count recorded and could not be ranked per room.' }
           : {}),
@@ -1157,6 +1370,7 @@ registerTool<Record<string, never>>({
     // a pasted email must not act as company policy before a human approved it.
     // Same function, same filter — there is no second definition of "the rules".
     const facts = await getConfirmedCompanyFacts(reach.organizationId);
+    await assertReachStillCurrent(ctx, reach);
     return {
       ok: true,
       data: envelope(reach, {

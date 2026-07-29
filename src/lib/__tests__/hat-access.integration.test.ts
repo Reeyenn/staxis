@@ -197,11 +197,12 @@ interface RulebookWire {
 
 async function rulebookFor(
   authUserId: string,
-  propertyId: string,
+  scopeId: string,
+  scope: 'organization' | 'property' = 'organization',
 ): Promise<{ status: number; data: RulebookWire | null }> {
   signedInAs = authUserId;
   const res = await rulebookGet(
-    req(`https://staxis.test/api/company/rulebook?propertyId=${propertyId}`),
+    req(`https://staxis.test/api/company/rulebook?${scope === 'organization' ? 'organizationId' : 'propertyId'}=${scopeId}`),
   );
   const parsed = await res.json().catch(() => ({})) as { data?: RulebookWire };
   return { status: res.status, data: parsed.data ?? null };
@@ -209,13 +210,13 @@ async function rulebookFor(
 
 async function flipChatSwitch(
   authUserId: string,
-  propertyId: string,
+  organizationId: string,
   value: 'true' | 'false',
 ): Promise<number> {
   signedInAs = authUserId;
   const res = await rulebookPost(req('https://staxis.test/api/company/rulebook', {
     method: 'POST',
-    body: { propertyId, action: 'settings', settings: { cross_hotel_ai_chat: value } },
+    body: { organizationId, action: 'settings', settings: { cross_hotel_ai_chat: value } },
   }));
   return res.status;
 }
@@ -335,7 +336,12 @@ async function plantCompanyFinding(organizationId: string): Promise<string> {
      returning id`,
     [
       organizationId,
-      JSON.stringify({ queryId: 'probe_receipt', params: {}, values: {}, basis: 'planted' }),
+      JSON.stringify({
+        queryId: 'probe_receipt',
+        params: { hotel_ids: [PID_A1] },
+        values: {},
+        basis: 'planted',
+      }),
       PID_A1,
     ],
   );
@@ -566,7 +572,7 @@ describe('the rulebook and the cross-hotel-chat switch', () => {
   // Mutation: gate the rulebook route on loadManagerCaller. Restores the 404
   // that made the panel render null for the only people allowed to edit it.
   test('a hats-only VP reaches her company book and may edit it', async () => {
-    const maria = await rulebookFor(UID_MARIA, PID_A1);
+    const maria = await rulebookFor(UID_MARIA, ORG_A);
     assert.equal(maria.status, 200, 'the person who owns the book could not open it');
     assert.equal(maria.data?.organizationId, ORG_A);
     assert.equal(maria.data?.canEdit, true, 'rulebook_editors names the VP and she was refused');
@@ -575,30 +581,34 @@ describe('the rulebook and the cross-hotel-chat switch', () => {
   // The switch itself — the control the finding said was unreachable.
   test('and the cross-hotel-chat switch actually flips', async () => {
     assert.equal(
-      (await rulebookFor(UID_MARIA, PID_A1)).data?.settings.cross_hotel_ai_chat ?? 'false',
+      (await rulebookFor(UID_MARIA, ORG_A)).data?.settings.cross_hotel_ai_chat ?? 'false',
       'false',
       'fixture drift: chat was already on',
     );
-    assert.equal(await flipChatSwitch(UID_MARIA, PID_A1, 'true'), 200);
-    assert.equal((await rulebookFor(UID_MARIA, PID_A1)).data?.settings.cross_hotel_ai_chat, 'true');
-    assert.equal(await flipChatSwitch(UID_MARIA, PID_A1, 'false'), 200, 'and back off');
+    assert.equal(await flipChatSwitch(UID_MARIA, ORG_A, 'true'), 200);
+    assert.equal((await rulebookFor(UID_MARIA, ORG_A)).data?.settings.cross_hotel_ai_chat, 'true');
+    assert.equal(await flipChatSwitch(UID_MARIA, ORG_A, 'false'), 200, 'and back off');
   });
 
   // Mutation: gate on loadManagerCaller. Fiona's legacy role is `front_desk`,
   // so she was 404'd out of the book her own company governs her by.
   test("a finance hat may READ the book and may not write it", async () => {
-    const fiona = await rulebookFor(UID_FIONA, PID_A1);
+    const fiona = await rulebookFor(UID_FIONA, ORG_A);
     assert.equal(fiona.status, 200, 'the finance lead was refused the company book');
     assert.equal(fiona.data?.companyRole, 'finance');
     assert.equal(fiona.data?.canEdit, false, 'finance was handed the pen');
-    assert.equal(await flipChatSwitch(UID_FIONA, PID_A1, 'true'), 403, 'finance flipped a company switch');
+    assert.equal(await flipChatSwitch(UID_FIONA, ORG_A, 'true'), 403, 'finance flipped a company switch');
   });
 
   // The wall did not move when the gate did.
   test('a legacy account with no hat is still refused, and the other company is still refused', async () => {
-    assert.equal((await rulebookFor(UID_WANDA, PID_L1)).status, 404, 'an independent hotel grew a rulebook');
-    assert.equal((await rulebookFor(UID_VERA, PID_A1)).status, 403, "company B read company A's book");
-    assert.equal((await rulebookFor(UID_DOLORES, PID_A1)).status, 403, 'a hatless legacy account read the book');
+    assert.equal(
+      (await rulebookFor(UID_WANDA, PID_L1, 'property')).status,
+      404,
+      'an independent hotel grew a rulebook',
+    );
+    assert.equal((await rulebookFor(UID_VERA, ORG_A)).status, 404, "company B read company A's book");
+    assert.equal((await rulebookFor(UID_DOLORES, ORG_A)).status, 404, 'a hatless legacy account read the book');
   });
 });
 

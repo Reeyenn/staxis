@@ -470,7 +470,11 @@ describe('capability override lookups fail closed', () => {
       'src/app/api/maintenance/equipment/[id]/route.ts',
     ]) {
       const route = source(path);
-      assert.match(route, /capabilityDecisionForUserId/, path);
+      assert.match(
+        route,
+        /(?:capabilityDecisionForUserId|hotelWriteDecisionForUserId)/,
+        path,
+      );
       assert.match(route, /=== ['"]unavailable['"][\s\S]*capabilityUnavailableResponse/, path);
       assert.match(route, /=== ['"]denied['"]/, path);
     }

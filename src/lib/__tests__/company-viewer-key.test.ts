@@ -65,6 +65,17 @@ describe('company access viewer identity', () => {
       page,
       /const dataBelongsToCurrentViewer = Boolean\(currentViewerKey && dataViewerKey === currentViewerKey\)/,
     );
-    assert.match(page, /const currentData = adminTargetIsCurrent && dataBelongsToCurrentViewer/);
+    assert.match(
+      page,
+      /const unscopedCurrentData = adminTargetIsCurrent[\s\S]*?&& dataBelongsToCurrentViewer[\s\S]*?&& adminDataMatchesSelection/,
+    );
+    assert.match(
+      page,
+      /const selectedPortfolioCompany = portfolioMode[\s\S]*?selectedOrganizationId === portfolio\.requestedOrganizationId/,
+    );
+    assert.match(
+      page,
+      /const currentData = portfolioMode[\s\S]*?selectCompanyAccessContext\([\s\S]*?selectedPortfolioCompany\.organizationId[\s\S]*?: unscopedCurrentData/,
+    );
   });
 });

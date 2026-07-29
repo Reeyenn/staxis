@@ -31,9 +31,9 @@
  */
 
 import { NextRequest, NextResponse } from 'next/server';
-import { requireSession, userHasPropertyAccess } from '@/lib/api-auth';
-import { capabilityDecisionForUserId } from '@/lib/capabilities/server';
+import { requireSession } from '@/lib/api-auth';
 import { capabilityUnavailableResponse } from '@/lib/capabilities/api-gate';
+import { hotelWriteDecisionForUserId } from '@/lib/team-auth';
 import { ok, err } from '@/lib/api-response';
 import { getOrMintRequestId, log } from '@/lib/log';
 import { errToString } from '@/lib/utils';
@@ -81,10 +81,10 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
   // any signed-in user with two UUIDs (task + housekeeper) could move
   // work between housekeepers at another hotel via the service-role
   // client.
-  const capabilityDecision = await capabilityDecisionForUserId(
+  const capabilityDecision = await hotelWriteDecisionForUserId(
     auth.userId,
-    'assign_work',
     propertyId,
+    'assign_work',
   );
   if (capabilityDecision === 'unavailable') {
     return capabilityUnavailableResponse(requestId);
@@ -92,16 +92,6 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
   if (capabilityDecision === 'denied') {
     return err('forbidden: assigning work is restricted for your role at this property', { requestId, status: 403, code: 'forbidden' });
   }
-  const hasAccess = await userHasPropertyAccess(auth.userId, propertyId);
-  if (!hasAccess) {
-    log.warn('reassign: forbidden — user lacks property access', {
-      requestId, userId: auth.userId, propertyId,
-    });
-    return err('forbidden: no access to this property', {
-      requestId, status: 403, code: 'forbidden',
-    });
-  }
-
   let reason: string | null = null;
   if (body.reason != null) {
     const reasonCheck = validateString(body.reason, { max: 280, label: 'reason' });

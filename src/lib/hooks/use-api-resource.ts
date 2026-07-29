@@ -94,6 +94,19 @@ export interface UseApiResourceOptions {
    * custom fetcher implements its own terminal timeout/error state.
    */
   timeoutMs?: number | null;
+  /**
+   * Revalidate after the document returns to the foreground. This is intended
+   * for authorization-sensitive read models whose grants may have changed
+   * while a tab was parked. Duplicate focus/pageshow/visibility events are
+   * coalesced and an in-flight request is never overlapped.
+   */
+  revalidateOnFocus?: boolean;
+  /**
+   * Mask last-good data before a foreground revalidation. Use this for
+   * tenant/scope DTOs where retaining a revoked company's rows during the
+   * recheck would be a data flash. Default false.
+   */
+  clearDataOnFocusRevalidate?: boolean;
 }
 
 export interface UseApiResourceResult<T> {
@@ -208,6 +221,8 @@ export function useApiResource<T>(
     enabled = true,
     keepDataOnSourceChange = false,
     timeoutMs = NAVIGATION_FETCH_TIMEOUT_MS,
+    revalidateOnFocus = false,
+    clearDataOnFocusRevalidate = false,
   } = opts;
 
   // String sources are resource identities: switching URL (e.g. property
@@ -245,6 +260,10 @@ export function useApiResource<T>(
   keepOnSourceChangeRef.current = keepDataOnSourceChange;
   const timeoutRef = useRef(timeoutMs);
   timeoutRef.current = timeoutMs;
+  const revalidateOnFocusRef = useRef(revalidateOnFocus);
+  revalidateOnFocusRef.current = revalidateOnFocus;
+  const clearOnFocusRef = useRef(clearDataOnFocusRevalidate);
+  clearOnFocusRef.current = clearDataOnFocusRevalidate;
   const dataRef = useRef<T | null>(null);
   const identityStateRef = useRef(identityState);
   identityStateRef.current = identityState;
@@ -410,6 +429,53 @@ export function useApiResource<T>(
     }, pollMs);
     return () => clearInterval(timer);
   }, [enabled, pollMs, sourceKey, identityKey, load]);
+
+  useEffect(() => {
+    if (!enabled || !revalidateOnFocus) return;
+    let lastForegroundAt = 0;
+    const revalidate = () => {
+      if (!revalidateOnFocusRef.current
+        || !enabledRef.current
+        || isDocumentHidden()) return;
+      // Authorization-sensitive resources opt into synchronous masking. A
+      // request started before the tab was parked cannot be trusted after a
+      // foreground transition, so supersede it instead of waiting for it.
+      if (inFlightRef.current && !clearOnFocusRef.current) return;
+      const now = Date.now();
+      // One foreground transition commonly emits visibilitychange, pageshow,
+      // and focus. One fresh read is sufficient.
+      if (now - lastForegroundAt < 100) return;
+      lastForegroundAt = now;
+      if (clearOnFocusRef.current) {
+        dataRef.current = null;
+        setData(null);
+        setError(null);
+        commitIdentityState({
+          data: null,
+          error: null,
+          status: currentIdentityRef.current,
+        });
+        void load('initial');
+      } else {
+        void load('reload');
+      }
+    };
+    window.addEventListener('focus', revalidate);
+    window.addEventListener('pageshow', revalidate);
+    document.addEventListener('visibilitychange', revalidate);
+    return () => {
+      window.removeEventListener('focus', revalidate);
+      window.removeEventListener('pageshow', revalidate);
+      document.removeEventListener('visibilitychange', revalidate);
+    };
+  }, [
+    enabled,
+    revalidateOnFocus,
+    sourceKey,
+    identityKey,
+    load,
+    commitIdentityState,
+  ]);
 
   const reload = useCallback(() => load('reload'), [load]);
 

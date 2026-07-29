@@ -15,8 +15,8 @@ import { ok, err, ApiErrorCode } from '@/lib/api-response';
 import { getOrMintRequestId, log } from '@/lib/log';
 import { errToString } from '@/lib/utils';
 import { checkAndIncrementRateLimit, rateLimitedResponse } from '@/lib/api-ratelimit';
-import { capabilityDecisionForUserId } from '@/lib/capabilities/server';
 import { capabilityUnavailableResponse } from '@/lib/capabilities/api-gate';
+import { hotelWriteDecisionForUserId } from '@/lib/team-auth';
 import { getEquipmentDetail, updateEquipment, deleteEquipment } from '@/lib/equipment/store';
 import { parseEquipmentPatch } from '@/lib/equipment/validate';
 
@@ -37,10 +37,6 @@ export async function GET(req: NextRequest, ctx: Ctx) {
   const pidV = validateUuid(req.nextUrl.searchParams.get('pid'), 'pid');
   if (pidV.error) return err(pidV.error, { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
   const pid = pidV.value!;
-
-  if (!(await userHasPropertyAccess(session.userId, pid))) {
-    return err('Forbidden', { requestId, status: 403, code: ApiErrorCode.Forbidden });
-  }
 
   // Section gate (add-on, on top of the tenant guard above): if Maintenance is off for this hotel, block this route.
   const sectionGate = await requireSectionEnabled(req, pid, 'maintenance');
@@ -79,10 +75,10 @@ export async function PATCH(req: NextRequest, ctx: Ctx) {
   const sectionGate = await requireSectionEnabled(req, pid, 'maintenance');
   if (!sectionGate.ok) return sectionGate.response;
 
-  const capabilityDecision = await capabilityDecisionForUserId(
+  const capabilityDecision = await hotelWriteDecisionForUserId(
     session.userId,
-    'manage_equipment',
     pid,
+    'manage_equipment',
   );
   if (capabilityDecision === 'unavailable') {
     return capabilityUnavailableResponse(requestId);
@@ -119,18 +115,14 @@ export async function DELETE(req: NextRequest, ctx: Ctx) {
   if (pidV.error) return err(pidV.error, { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
   const pid = pidV.value!;
 
-  if (!(await userHasPropertyAccess(session.userId, pid))) {
-    return err('Forbidden', { requestId, status: 403, code: ApiErrorCode.Forbidden });
-  }
-
   // Section gate (add-on, on top of the tenant guard above): if Maintenance is off for this hotel, block this route.
   const sectionGate = await requireSectionEnabled(req, pid, 'maintenance');
   if (!sectionGate.ok) return sectionGate.response;
 
-  const capabilityDecision = await capabilityDecisionForUserId(
+  const capabilityDecision = await hotelWriteDecisionForUserId(
     session.userId,
-    'manage_equipment',
     pid,
+    'manage_equipment',
   );
   if (capabilityDecision === 'unavailable') {
     return capabilityUnavailableResponse(requestId);

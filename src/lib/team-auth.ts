@@ -359,6 +359,42 @@ export async function accountCapabilityDecisionForProperty(
   return capabilityDecision;
 }
 
+/**
+ * Strict hotel-operational mutation boundary for routes reached from either
+ * the local app or a portfolio drill-down. Portfolio reach and financial-read
+ * standing are never sufficient: the current authoritative hotel standing
+ * must explicitly allow mutation, then the requested hotel capability must
+ * also allow the action.
+ */
+export async function hotelWriteDecisionForUserId(
+  authUserId: string,
+  propertyId: string | null | undefined,
+  capability?: CapabilityKey,
+): Promise<CapabilityDecision> {
+  if (!propertyId) return 'denied';
+  if (capability) {
+    return accountCapabilityDecisionForProperty(
+      authUserId,
+      capability,
+      propertyId,
+      { requireMutation: true },
+    );
+  }
+  const { data: account, error } = await supabaseAdmin
+    .from('accounts')
+    .select('id, active')
+    .eq('data_user_id', authUserId)
+    .maybeSingle();
+  if (error) return 'unavailable';
+  if (!account || account.active !== true) return 'denied';
+  const authority = await listAuthoritativePropertyAccess(account.id as string);
+  if (!authority) return 'unavailable';
+  return authoritativeStandingForProperty(authority, propertyId)
+    ?.hotelMutationAllowed === true
+    ? 'allowed'
+    : 'denied';
+}
+
 // ─── Manager identity for a resolved session ─────────────────────────────────
 
 /**

@@ -184,7 +184,9 @@ describe('first-class agent conversation security scope', () => {
   });
 
   test('property APIs filter mode before pending cleanup, replay and history listing', () => {
-    const preflight = commandRoute.indexOf("storedScope.conversationKind !== 'property'");
+    const preflight = commandRoute.indexOf(
+      "preflightConversationScope.conversationKind !== 'property'",
+    );
     const pendingSweep = commandRoute.indexOf('sweepSupersededPending(conversationId', preflight);
     const atomicPrep = commandRoute.indexOf('lockLoadAndRecordUserTurn({', preflight);
     assert.ok(preflight >= 0 && preflight < pendingSweep && pendingSweep < atomicPrep);

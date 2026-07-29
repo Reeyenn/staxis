@@ -60,6 +60,7 @@ import { useAuth } from '@/contexts/AuthContext';
 import { useProperty } from '@/contexts/PropertyContext';
 import { buildCompanyAccessViewerKey } from '@/lib/company-access/viewer-key';
 import { canManageTeam } from '@/lib/roles';
+import { useActiveHotelStanding } from '@/lib/capabilities/useCan';
 import { useApiResource } from '@/lib/hooks/use-api-resource';
 
 import { CxStyle } from './concourse-css';
@@ -206,6 +207,7 @@ export function QueueView({ lang }: { lang: 'en' | 'es' }) {
     : `/api/property-selector/bootstrap?organizationId=${encodeURIComponent(requestedOrganizationId)}`;
 
   const { user } = useAuth();
+  const hotelStanding = useActiveHotelStanding();
   const {
     activePropertyId,
     properties,
@@ -245,7 +247,10 @@ export function QueueView({ lang }: { lang: 'en' | 'es' }) {
   // picker let her in, this screen showed her nothing, and nothing on it said
   // why. The probe now runs for everybody and answers from the person's hats;
   // only the hotel brief stays manager-gated.
-  const canSeeHotelBrief = !!user && canManageTeam(user.role);
+  const canSeeHotelBrief = !!user
+    && hotelStanding.hotelMutationAllowed
+    && !!hotelStanding.role
+    && canManageTeam(hotelStanding.role);
 
   // ── who may open which hotel: asked ONLY when a link named one ────────────
   // The same read the hotel picker uses, so "which hotels do I cover" has one

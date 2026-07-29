@@ -17,6 +17,7 @@ import type { Property, StaffMember } from '@/types';
 import { propertyChangeAllowed } from '@/lib/property-change-guard';
 import { RequestTimeoutError, withPromiseDeadline } from '@/lib/fetch-deadline';
 import { useAuthorizationRefreshKey } from '@/lib/hooks/use-authorization-refresh-key';
+import { useOptionalHotelActingContext } from '@/contexts/HotelActingContext';
 
 export type CapabilityOverridesStatus = 'idle' | 'loading' | 'ready' | 'error';
 
@@ -126,7 +127,20 @@ async function fetchOverridesFor(pid: string): Promise<CapabilityOverrideMap> {
 export function PropertyProvider({ children }: { children: React.ReactNode }) {
   const { user } = useAuth();
   const pathname = usePathname();
+  const acting = useOptionalHotelActingContext();
   const authFlowActive = pathname === '/signin' || pathname.startsWith('/signin/');
+  const portfolioScopeQuiescent = acting?.request.kind === 'portfolio_scope';
+  const actingHotelId = acting?.request.kind === 'hotel'
+    && acting.status === 'allowed'
+    && acting.context
+    ? acting.context.property.id
+    : null;
+  const portfolioHotelContext = acting?.context?.source === 'portfolio'
+    ? acting.context
+    : null;
+  const actingAuthorizationKey = acting
+    ? `${acting.request.requestKey}:${acting.status}:${acting.context?.verifiedAt ?? 'none'}`
+    : 'legacy-shell';
   const [properties, setProperties] = useState<Property[]>([]);
   const [propertiesViewerUid, setPropertiesViewerUid] = useState<string | null>(null);
   const [propertiesAuthorizationViewerKey, setPropertiesAuthorizationViewerKey] = useState<string | null>(null);
@@ -156,11 +170,11 @@ export function PropertyProvider({ children }: { children: React.ReactNode }) {
   // still resolved exclusively by /api/properties; this key never filters it.
   const userPropertyAccessKey = [...(user?.propertyAccess ?? [])].sort().join(',');
   const propertyAuthorizationIdentityKey = userUid && userAccountId
-    ? `${userUid}:${userAccountId}:${userRole ?? 'unknown'}:${userPropertyAccessKey}`
+    ? `${userUid}:${userAccountId}:${userRole ?? 'unknown'}:${userPropertyAccessKey}:${actingAuthorizationKey}`
     : null;
   const propertyAuthorizationViewerKey = useAuthorizationRefreshKey(
     propertyAuthorizationIdentityKey,
-    Boolean(propertyAuthorizationIdentityKey) && !authFlowActive,
+    Boolean(propertyAuthorizationIdentityKey) && !authFlowActive && !portfolioScopeQuiescent,
   );
   const propertyAuthorizationViewerKeyRef = useRef(propertyAuthorizationViewerKey);
   propertyAuthorizationViewerKeyRef.current = propertyAuthorizationViewerKey;
@@ -181,7 +195,7 @@ export function PropertyProvider({ children }: { children: React.ReactNode }) {
   // `loading` bit can therefore still be false for one render while the
   // viewer-stamped rows are already masked. Treat that identity gap as
   // loading unless the new viewer owns a terminal error snapshot.
-  const exposedPropertiesLoading = loading || Boolean(
+  const exposedPropertiesLoading = !portfolioScopeQuiescent && (loading || Boolean(
     userUid
     && propertiesViewerUid !== userUid
     && propertiesErrorViewerUid !== userUid,
@@ -189,12 +203,12 @@ export function PropertyProvider({ children }: { children: React.ReactNode }) {
     propertyAuthorizationViewerKey
     && propertiesAuthorizationViewerKey !== propertyAuthorizationViewerKey
     && propertiesErrorAuthorizationViewerKey !== propertyAuthorizationViewerKey,
-  );
+  ));
   // Derived from the viewer-stamped list — never from a stale selected id.
   const activeProperty = exposedProperties.find(p => p.id === activePropertyId) ?? null;
   const resolvedPropertyId = activeProperty?.id ?? null;
   const activePropertyViewerKey = userUid && userAccountId && resolvedPropertyId
-    ? `${userUid}:${userAccountId}:${resolvedPropertyId}`
+    ? `${userUid}:${userAccountId}:${resolvedPropertyId}:${actingAuthorizationKey}`
     : null;
   // Auth pages deliberately establish a short-lived password/OTP session
   // before device trust is complete. Protected property reads during that
@@ -202,9 +216,13 @@ export function PropertyProvider({ children }: { children: React.ReactNode }) {
   // error. Keep the provider quiescent until navigation leaves the auth flow;
   // pathname is an explicit dependency, so the real load starts immediately
   // after verification succeeds.
-  const staffRosterNeeded = pathname.startsWith('/staff')
-    || pathname.startsWith('/company')
-    || pathname.startsWith('/housekeeping');
+  const hotelRosterAllowed = !portfolioHotelContext
+    || portfolioHotelContext.standing.hotelMutationAllowed;
+  const staffRosterNeeded = hotelRosterAllowed && (
+    pathname.startsWith('/staff')
+      || pathname.startsWith('/company')
+      || pathname.startsWith('/housekeeping')
+  );
 
   // Is the active property still in the PRISTINE wizard phase — mid-onboarding
   // AND the wizard has never been left for the app (onboardingPromptShownAt
@@ -220,6 +238,7 @@ export function PropertyProvider({ children }: { children: React.ReactNode }) {
     : false;
 
   const setActivePropertyId = useCallback((id: string) => {
+    if (actingHotelId && id !== actingHotelId) return;
     // The selector also calls this for one-hotel auto-entry and when a user
     // explicitly chooses the hotel that is already active. That is not a
     // property transition: clearing the capability snapshot here would leave
@@ -240,7 +259,7 @@ export function PropertyProvider({ children }: { children: React.ReactNode }) {
     setCapabilitySnapshot(null);
     setActivePropertyIdState(id);
     try { localStorage.setItem('hotelops-active-property', id); } catch { /* storage unavailable */ }
-  }, [activePropertyId]);
+  }, [activePropertyId, actingHotelId]);
 
   // Cross-tab sync (audit/concurrency #13). Without this, swapping the
   // active property in Tab A leaves Tab B's dashboard/rooms/staff list
@@ -249,6 +268,7 @@ export function PropertyProvider({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     const handler = (e: StorageEvent) => {
       if (e.key !== 'hotelops-active-property') return;
+      if (actingHotelId) return;
       const next = e.newValue;
       if (next && next !== activePropertyId) {
         if (activePropertyId && !propertyChangeAllowed({
@@ -262,7 +282,7 @@ export function PropertyProvider({ children }: { children: React.ReactNode }) {
     };
     window.addEventListener('storage', handler);
     return () => window.removeEventListener('storage', handler);
-  }, [activePropertyId]);
+  }, [activePropertyId, actingHotelId]);
 
   // Load properties list — from /api/properties, which resolves coverage
   // through the company spine with service-role. Never from the browser
@@ -305,7 +325,7 @@ export function PropertyProvider({ children }: { children: React.ReactNode }) {
     refresh: () => Promise<void>;
   } | null>(null);
   useEffect(() => {
-    if (!userUid || !propertyAuthorizationViewerKey || authFlowActive) {
+    if (!userUid || !propertyAuthorizationViewerKey || authFlowActive || portfolioScopeQuiescent) {
       setProperties([]);
       setPropertiesViewerUid(null);
       setPropertiesAuthorizationViewerKey(null);
@@ -320,6 +340,7 @@ export function PropertyProvider({ children }: { children: React.ReactNode }) {
     let cancelled = false;
     const loadUserUid = userUid;
     const loadViewerKey = propertyAuthorizationViewerKey;
+    const loadActingHotelId = actingHotelId;
     // One deadline belongs to the WHOLE load, including permission-race
     // retries and their backoff. Recursive attempts may spend only what is
     // left; none receives a fresh ten seconds.
@@ -347,7 +368,13 @@ export function PropertyProvider({ children }: { children: React.ReactNode }) {
         // `/api/properties` now resolves coverage once, with service-role, as
         // the legacy array UNION every live hat. Re-filtering the result here
         // would only be able to take hotels back away.
-        return await withPromiseDeadline(getProperties(loadUserUid), {
+        const read = loadActingHotelId
+          ? getProperty(loadUserUid, loadActingHotelId).then((property) => {
+              if (!property) throw new Error('The authorized hotel is no longer available.');
+              return [property];
+            })
+          : getProperties(loadUserUid);
+        return await withPromiseDeadline(read, {
           timeoutMs: remainingPropertyLoadBudgetMs(),
           label: 'Hotel access',
         });
@@ -424,8 +451,11 @@ export function PropertyProvider({ children }: { children: React.ReactNode }) {
         setPropertiesErrorAuthorizationViewerKey(null);
 
         let stored: string | null = null;
-        try { stored = localStorage.getItem('hotelops-active-property'); } catch { /* storage unavailable */ }
-        const pid = stored && props.find(p => p.id === stored) ? stored : props[0]?.id ?? null;
+        if (!loadActingHotelId) {
+          try { stored = localStorage.getItem('hotelops-active-property'); } catch { /* storage unavailable */ }
+        }
+        const pid = loadActingHotelId
+          ?? (stored && props.find(p => p.id === stored) ? stored : props[0]?.id ?? null);
         setCapabilitySnapshot(null);
         setActivePropertyIdState(pid);
       } catch (err) {
@@ -447,7 +477,13 @@ export function PropertyProvider({ children }: { children: React.ReactNode }) {
     return () => { cancelled = true; };
     // See note above for why we depend on identity primitives, not `user`.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [propertyAuthorizationViewerKey, propertiesRetryKey, authFlowActive]);
+  }, [
+    propertyAuthorizationViewerKey,
+    propertiesRetryKey,
+    authFlowActive,
+    portfolioScopeQuiescent,
+    actingHotelId,
+  ]);
 
   const retryProperties = useCallback(() => {
     // Set loading in the click event, before the retry effect gets a chance to

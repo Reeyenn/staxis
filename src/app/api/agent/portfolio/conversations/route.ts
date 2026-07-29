@@ -57,6 +57,7 @@ export async function GET(req: NextRequest): Promise<Response> {
       userAccountId: initial.accountId,
       organizationId,
       authorizationHash: initial.receipt.authorizationHash,
+      policyFingerprint: initial.policyFingerprint,
       limit: 30,
     });
 

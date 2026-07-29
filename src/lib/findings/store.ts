@@ -431,6 +431,25 @@ function firstString(row: Record<string, unknown>, candidates: readonly string[]
 }
 
 /**
+ * Pure half of judgedPhrasing for a bounded portfolio row set already read
+ * from the ledger. Re-reading the same rows per hotel would add fan-out and
+ * could pair a card with wording written after the evidence snapshot.
+ */
+export function judgedPhrasingFromRows(
+  rows: readonly Record<string, unknown>[],
+): Map<string, JudgedPhrasing> {
+  const out = new Map<string, JudgedPhrasing>();
+  for (const row of rows) {
+    const id = typeof row.id === 'string' ? row.id : null;
+    if (!id) continue;
+    const en = firstString(row, JUDGED_EN_COLUMNS);
+    const es = firstString(row, JUDGED_ES_COLUMNS);
+    if (en || es) out.set(id, { en, es });
+  }
+  return out;
+}
+
+/**
  * The judge's wording for these findings, keyed by finding id. Empty when the
  * judge has not written any (or has not shipped). Never throws: a phrasing
  * upgrade that fails must not take the cards down with it.
@@ -454,13 +473,9 @@ export async function judgedPhrasing(
       });
       return out;
     }
-    for (const row of (data ?? []) as unknown as Array<Record<string, unknown>>) {
-      const id = typeof row.id === 'string' ? row.id : null;
-      if (!id) continue;
-      const en = firstString(row, JUDGED_EN_COLUMNS);
-      const es = firstString(row, JUDGED_ES_COLUMNS);
-      if (en || es) out.set(id, { en, es });
-    }
+    return judgedPhrasingFromRows(
+      (data ?? []) as unknown as Array<Record<string, unknown>>,
+    );
   } catch (e) {
     log.warn('[findings] judged-phrasing read threw; falling back to detector wording', {
       propertyId,

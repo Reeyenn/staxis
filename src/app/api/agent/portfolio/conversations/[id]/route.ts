@@ -74,6 +74,7 @@ export async function GET(
       userAccountId: initial.accountId,
       organizationId,
       authorizationHash: initial.receipt.authorizationHash,
+      policyFingerprint: initial.policyFingerprint,
       currentAuthorizedPropertyIds: initial.receipt.authorizedPropertyIds,
     });
     if (!loaded.ok) {

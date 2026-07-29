@@ -44,7 +44,7 @@ describe('PropertyContext authorization identity', () => {
     );
     assert.match(
       propertyContext,
-      /const propertyAuthorizationIdentityKey = userUid && userAccountId[\s\S]*?`\$\{userUid\}:\$\{userAccountId\}:\$\{userRole \?\? 'unknown'\}:\$\{userPropertyAccessKey\}`/,
+      /const propertyAuthorizationIdentityKey = userUid && userAccountId[\s\S]*?`\$\{userUid\}:\$\{userAccountId\}:\$\{userRole \?\? 'unknown'\}:\$\{userPropertyAccessKey\}:\$\{actingAuthorizationKey\}`/,
     );
     assert.match(propertyContext, /useAuthorizationRefreshKey\([\s\S]*?propertyAuthorizationIdentityKey/);
     assert.match(
@@ -60,7 +60,10 @@ describe('PropertyContext authorization identity', () => {
     assert.match(load, /const loadViewerKey = propertyAuthorizationViewerKey/);
     assert.match(load, /setPropertiesAuthorizationViewerKey\(loadViewerKey\)/);
     assert.match(load, /setPropertiesErrorAuthorizationViewerKey\(loadViewerKey\)/);
-    assert.match(propertyContext, /\}, \[propertyAuthorizationViewerKey, propertiesRetryKey, authFlowActive\]\)/);
+    assert.match(
+      propertyContext,
+      /\}, \[[\s\S]*?propertyAuthorizationViewerKey,[\s\S]*?propertiesRetryKey,[\s\S]*?authFlowActive,[\s\S]*?portfolioScopeQuiescent,[\s\S]*?actingHotelId,[\s\S]*?\]\)/,
+    );
     assert.match(
       propertyContext,
       /propertyAuthorizationViewerKeyRef\.current !== refreshViewerKey/,
@@ -73,11 +76,17 @@ describe('PropertyContext authorization identity', () => {
       propertyContext,
       /const authFlowActive = pathname === '\/signin' \|\| pathname\.startsWith\('\/signin\/'\)/,
     );
-    const load = section('useEffect(() => {\n    if (!userUid || !propertyAuthorizationViewerKey || authFlowActive)', 'const retryProperties = useCallback');
+    const load = section(
+      'useEffect(() => {\n    if (!userUid || !propertyAuthorizationViewerKey || authFlowActive || portfolioScopeQuiescent)',
+      'const retryProperties = useCallback',
+    );
     assert.match(load, /setProperties\(\[\]\)/);
     assert.match(load, /setPropertiesError\(null\)/);
     assert.match(load, /setLoading\(false\)/);
-    assert.match(load, /\[propertyAuthorizationViewerKey, propertiesRetryKey, authFlowActive\]/);
+    assert.match(
+      load,
+      /\[[\s\S]*?propertyAuthorizationViewerKey,[\s\S]*?propertiesRetryKey,[\s\S]*?authFlowActive,[\s\S]*?portfolioScopeQuiescent,[\s\S]*?actingHotelId,[\s\S]*?\]/,
+    );
   });
 
   test('permission retries share one absolute ten-second load budget', () => {
@@ -88,7 +97,7 @@ describe('PropertyContext authorization identity', () => {
     assert.match(load, /remainingMs <= 0[\s\S]*?new RequestTimeoutError\('Hotel access', PROPERTY_CONTEXT_TIMEOUT_MS\)/);
     assert.match(
       load,
-      /withPromiseDeadline\(getProperties\(loadUserUid\), \{[\s\S]*?timeoutMs: remainingPropertyLoadBudgetMs\(\)/,
+      /const read = loadActingHotelId[\s\S]*?getProperty\(loadUserUid, loadActingHotelId\)[\s\S]*?: getProperties\(loadUserUid\)[\s\S]*?withPromiseDeadline\(read, \{[\s\S]*?timeoutMs: remainingPropertyLoadBudgetMs\(\)/,
     );
     assert.match(
       load,
@@ -123,7 +132,7 @@ describe('PropertyContext authorization identity', () => {
       selection.slice(sameHotelGuard, snapshotClear),
       /if \(id === activePropertyId\)[\s\S]*?return;/,
     );
-    assert.match(selection, /\}, \[activePropertyId\]\);/);
+    assert.match(selection, /\}, \[activePropertyId, actingHotelId\]\);/);
   });
 
   test('the property selector invalidates stale coverage on same-UID authorization changes', () => {
