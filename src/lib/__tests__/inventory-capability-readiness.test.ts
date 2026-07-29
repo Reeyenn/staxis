@@ -44,20 +44,32 @@ test('capability readiness is tagged to the resolved identity and hotel', () => 
   );
 });
 
-test('inventory waits for the matching capability snapshot and masks stale hotel data', () => {
+test('inventory starts ordinary stock from hotel reach while sensitive controls wait for capabilities', () => {
   assert.match(
     inventoryShell,
-    /activeProperty\?\.id === activePropertyId[\s\S]*?capabilityOverridesPropertyId === activePropertyId[\s\S]*?capabilityOverridesViewerKey === capabilityViewerKey/,
+    /const inventoryViewerContextReady = Boolean\([\s\S]*?activeProperty\?\.id === activePropertyId[\s\S]*?\);/,
+  );
+  assert.match(
+    inventoryShell,
+    /const inventoryContextReady = Boolean\([\s\S]*?inventoryViewerContextReady[\s\S]*?capabilityOverridesPropertyId === activePropertyId[\s\S]*?capabilityOverridesViewerKey === capabilityViewerKey/,
   );
   assert.match(inventoryShell, /const canViewFinancials = inventoryFinancialDataEnabled\(\{[\s\S]*?contextReady: inventoryContextReady,[\s\S]*?hasCapability: can\('view_financials'\),[\s\S]*?enabledSections: activeProperty\?\.enabledSections/);
   assert.ok(
-    (inventoryShell.match(/if \(!uid \|\| !activePropertyId \|\| !inventoryContextReady\) return;/g) ?? []).length >= 2,
+    (inventoryShell.match(/if \(!uid \|\| !activePropertyId \|\| !inventoryViewerContextReady\) return;/g) ?? []).length >= 3,
   );
   assert.match(
     inventoryShell,
-    /const inventoryDataMatchesViewer = inventoryContextReady[\s\S]*?inventoryDataViewerKey === capabilityViewerKey/,
+    /const inventoryDataMatchesViewer = inventoryViewerContextReady[\s\S]*?inventoryDataViewerKey === capabilityViewerKey/,
   );
   assert.match(
+    inventoryShell,
+    /const dataReady = inventoryDataMatchesViewer && itemsLoaded && bundleLoaded/,
+  );
+  assert.match(
+    inventoryShell,
+    /if \(!inventoryDataMatchesViewer \|\| !revealed\) \{/,
+  );
+  assert.doesNotMatch(
     inventoryShell,
     /if \(!inventoryDataMatchesViewer \|\| !revealed \|\| !itemsLoaded \|\| !bundleLoaded\) \{/,
   );
