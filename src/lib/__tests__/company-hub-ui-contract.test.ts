@@ -50,7 +50,7 @@ describe('company-only shell routing', () => {
     assert.match(home, /const portfolio = usePortfolio\(\)/);
     assert.match(home, /portfolio\.data\.selection\.state === 'selected'/);
     assert.match(home, /portfolio\.data\.selection\.state === 'needs_selection'/);
-    assert.match(home, /const portfolioEntryPending = !hotelDrilldown/);
+    assert.match(home, /const portfolioEntryPending = shouldWaitForPortfolioEntry\(\{[\s\S]{0,100}?hotelDrilldown,[\s\S]{0,100}?portfolioLoading: portfolio\.loading/);
     assert.match(home, /user\.role === ['"]admin['"] \|\| properties\.length > 0/);
     assert.match(home, /replaceNavigation\('\/property-selector'\)/);
   });
