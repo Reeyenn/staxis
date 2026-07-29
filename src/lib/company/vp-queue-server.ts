@@ -37,12 +37,22 @@ import {
   isCardRenderable,
   type CardSignOff,
 } from '@/components/concourse/finding-cards';
-import { judgedPhrasing, latestRunFacts, listFindings } from '@/lib/findings/store';
-import { loadActionsForFindings } from '@/lib/findings/actions/store';
 import { toQueueFinding } from '@/lib/findings/queue-projection';
 import { hotelBasisSpanish } from '@/lib/findings/basis-spanish';
 import type { Finding } from '@/lib/findings/types';
 import { mapWithConcurrency } from '@/lib/agent/portfolio/hotels';
+import {
+  loadPortfolioQueueReadModel,
+  type PortfolioQueueReadModel,
+} from '@/lib/company/portfolio-queue-bulk-read';
+import {
+  PORTFOLIO_DATA_SECTIONS,
+  portfolioFindingPolicyDecision,
+  portfolioHotelFindingPolicyDecision,
+  portfolioSectionDecision,
+  resolvePortfolioQueuePolicy,
+  type PortfolioQueuePolicy,
+} from '@/lib/company/portfolio-data-policy';
 
 import { listCompanyFindings, type CompanyFinding } from './company-findings';
 import { portfolioSpanish } from './portfolio-checks';
@@ -73,21 +83,6 @@ import {
  */
 export const MAX_HOTELS_PER_LOAD = 250;
 export const PORTFOLIO_QUEUE_READ_CONCURRENCY = 8;
-
-/** Findings read per hotel before the climbing filter. */
-const MAX_FINDINGS_PER_HOTEL = 100;
-
-/**
- * Statuses the climbing rules are allowed to SEE.
- *
- * Deliberately includes the two silences: `known_problem` because a GM saying
- * "I know" must not hide a $3,100 problem from the person who could fund it,
- * and `muted` because the one case where mute is overridden (it grew past the
- * size it was muted at) cannot be evaluated on a row we never fetched. What is
- * excluded — `resolved`, `expired` — is excluded because those mean the problem
- * stopped being true, which is reality rather than a tap.
- */
-const CLIMB_VISIBLE_STATUSES = ['open', 'updated', 'known_problem', 'muted'] as const;
 
 // ─── Who is standing at the door ────────────────────────────────────────────
 
@@ -221,34 +216,12 @@ interface PortfolioRunLoad {
   unavailablePropertyIds: string[];
 }
 
-async function loadPortfolioRun(
-  propertyIds: readonly string[],
-  authorizedHotelCount = propertyIds.length,
-): Promise<PortfolioRunLoad> {
-  if (propertyIds.length === 0) return { run: null, unavailablePropertyIds: [] };
-  const results = await mapWithConcurrency(
-    propertyIds,
-    PORTFOLIO_QUEUE_READ_CONCURRENCY,
-    async (propertyId) => {
-    try {
-      return { propertyId, available: true as const, run: await latestRunFacts(propertyId) };
-    } catch (error) {
-      log.warn('[vp-queue] a hotel run receipt could not be read', {
-        propertyId,
-        err: error instanceof Error ? error.message : String(error),
-      });
-      return { propertyId, available: false as const, run: null };
-    }
-    },
-  );
-  const unavailablePropertyIds = results
-    .filter((result) => !result.available)
-    .map((result) => result.propertyId);
-  const seen = results
-    .filter((result): result is typeof result & { run: NonNullable<typeof result.run> } => (
-      result.available && result.run !== null
-    ))
-    .map((result) => result.run);
+function portfolioRunFromReadModel(
+  readModel: PortfolioQueueReadModel,
+  authorizedHotelCount: number,
+): PortfolioRunLoad {
+  const unavailablePropertyIds = readModel.unavailableRunPropertyIds;
+  const seen = [...readModel.latestRunByPropertyId.values()];
   if (seen.length === 0) return { run: null, unavailablePropertyIds };
 
   let lastRunAt: string | null = null;
@@ -261,7 +234,7 @@ async function loadPortfolioRun(
     run: {
       thingsChecked,
       hotelsChecked: seen.length,
-      hotelsTotal: Math.max(propertyIds.length, authorizedHotelCount),
+      hotelsTotal: Math.max(readModel.propertyIds.length, authorizedHotelCount),
       lastRunAt,
     },
     unavailablePropertyIds,
@@ -272,15 +245,11 @@ export async function portfolioRun(
   propertyIds: readonly string[],
   authorizedHotelCount = propertyIds.length,
 ): Promise<PortfolioRun | null> {
-  return (await loadPortfolioRun(propertyIds, authorizedHotelCount)).run;
+  const readModel = await loadPortfolioQueueReadModel(propertyIds);
+  return portfolioRunFromReadModel(readModel, authorizedHotelCount).run;
 }
 
 // ─── The health chip, per hotel ─────────────────────────────────────────────
-
-export interface HotelHealth {
-  propertyId: string;
-  chip: HotelChip | null;
-}
 
 /**
  * One chip per hotel for the command centre — the picker a company-scope person
@@ -316,65 +285,46 @@ export async function hotelHealthChips(
   if (propertyIds.length === 0) return out;
 
   const bounded = propertyIds.slice(0, MAX_HOTELS_PER_LOAD);
-  const results = await mapWithConcurrency(
-    bounded,
-    PORTFOLIO_QUEUE_READ_CONCURRENCY,
-    async (propertyId): Promise<HotelHealth> => {
-    try {
-      const [rows, run] = await Promise.all([
-        listFindings(propertyId, {
-          statuses: [...CLIMB_VISIBLE_STATUSES],
-          limit: MAX_FINDINGS_PER_HOTEL,
-        }),
-        latestRunFacts(propertyId).catch(() => null),
-      ]);
-
-      const showable = rows.filter((f) => isCardRenderable({
-        disposition: effectiveDisposition(f),
-        detectorId: f.detectorId,
-      }));
-
-      let climbedCount = 0;
-      for (const finding of showable) {
-        const candidate: ClimbCandidate = {
-          status: finding.status,
-          price: finding.price,
-          severity: finding.severity,
-          firstSeenAt: finding.firstSeenAt,
-          magnitude: finding.magnitude,
-          silencedAtMagnitude: finding.silencedAtMagnitude,
-          awaitingMySignOff: false,
-        };
-        if (climbReasonFor(candidate, now)) climbedCount += 1;
-      }
-      const { waitingCount, criticalCount } = liveFeedCounts(showable);
-
-      const hoursSinceRun = run
-        ? (now.getTime() - new Date(run.runAt).getTime()) / 3_600_000
-        : null;
-
-      return {
-        propertyId,
-        chip: chipForHotel({
-          climbedCount,
-          waitingCount,
-          criticalCount,
-          hoursSinceRun: hoursSinceRun !== null && Number.isFinite(hoursSinceRun)
-            ? Math.max(0, hoursSinceRun)
-            : null,
-        }),
-      };
-    } catch (e) {
-      log.warn('[vp-queue] a hotel could not be read; its chip is silent', {
-        propertyId,
-        err: e instanceof Error ? e.message : String(e),
-      });
-      return { propertyId, chip: null };
+  const readModel = await loadPortfolioQueueReadModel(bounded);
+  const unavailableFindings = new Set(readModel.unavailableFindingPropertyIds);
+  const unavailableRuns = new Set(readModel.unavailableRunPropertyIds);
+  for (const propertyId of bounded) {
+    if (unavailableFindings.has(propertyId) || unavailableRuns.has(propertyId)) {
+      out.set(propertyId, null);
+      continue;
     }
-    },
-  );
-
-  for (const { propertyId, chip } of results) out.set(propertyId, chip);
+    const showable = (readModel.findingsByPropertyId.get(propertyId) ?? [])
+      .filter((finding) => isCardRenderable({
+        disposition: effectiveDisposition(finding),
+        detectorId: finding.detectorId,
+      }));
+    let climbedCount = 0;
+    for (const finding of showable) {
+      const candidate: ClimbCandidate = {
+        status: finding.status,
+        price: finding.price,
+        severity: finding.severity,
+        firstSeenAt: finding.firstSeenAt,
+        magnitude: finding.magnitude,
+        silencedAtMagnitude: finding.silencedAtMagnitude,
+        awaitingMySignOff: false,
+      };
+      if (climbReasonFor(candidate, now)) climbedCount += 1;
+    }
+    const { waitingCount, criticalCount } = liveFeedCounts(showable);
+    const run = readModel.latestRunByPropertyId.get(propertyId) ?? null;
+    const hoursSinceRun = run
+      ? (now.getTime() - new Date(run.runAt).getTime()) / 3_600_000
+      : null;
+    out.set(propertyId, chipForHotel({
+      climbedCount,
+      waitingCount,
+      criticalCount,
+      hoursSinceRun: hoursSinceRun !== null && Number.isFinite(hoursSinceRun)
+        ? Math.max(0, hoursSinceRun)
+        : null,
+    }));
+  }
   return out;
 }
 
@@ -417,6 +367,7 @@ function liveFeedCounts(
 async function companyCards(
   scope: CompanyScope,
   now: Date,
+  policy: PortfolioQueuePolicy,
   canActOnFinding?: (finding: CompanyFinding) => Promise<boolean>,
 ): Promise<PortfolioCard[]> {
   const rows = await listCompanyFindings(scope.organizationId, {
@@ -424,10 +375,13 @@ async function companyCards(
     limit: 100,
   });
   return mapWithConcurrency(
-    rows.filter((f) => isCardRenderable({
-      disposition: effectiveDisposition(f),
-      detectorId: f.detectorId,
-    })),
+    rows.filter((f) => (
+      portfolioFindingPolicyDecision(f, policy) === 'allowed'
+      && isCardRenderable({
+        disposition: effectiveDisposition(f),
+        detectorId: f.detectorId,
+      })
+    )),
     PORTFOLIO_QUEUE_READ_CONCURRENCY,
     async (f: CompanyFinding) => {
       // Spanish, rebuilt from this row's own receipt. `company_findings` has no
@@ -469,19 +423,31 @@ async function climbedCards(
   scope: CompanyScope,
   caller: ManagerCaller,
   directory: ApproverDirectory,
+  readModel: PortfolioQueueReadModel,
   now: Date,
 ): Promise<{
   cards: PortfolioCard[];
   busyHotelIds: string[];
   unavailablePropertyIds: string[];
 }> {
+  const bulkUnavailable = new Set(readModel.unavailableFindingPropertyIds);
+  const readablePropertyIds = scope.propertyIds.filter(
+    (propertyId) => !bulkUnavailable.has(propertyId),
+  );
   const perHotel = await mapWithConcurrency(
-    scope.propertyIds,
+    readablePropertyIds,
     PORTFOLIO_QUEUE_READ_CONCURRENCY,
     async (propertyId) => {
     try {
       return {
-        ...await climbedAtHotel(propertyId, scope, caller, directory, now),
+        ...await climbedAtHotel(
+          propertyId,
+          scope,
+          caller,
+          directory,
+          readModel,
+          now,
+        ),
         available: true as const,
       };
     } catch (e) {
@@ -501,10 +467,13 @@ async function climbedCards(
   );
   return {
     cards: perHotel.flatMap((h) => h.cards),
-    busyHotelIds: scope.propertyIds.filter((_, i) => (
+    busyHotelIds: readablePropertyIds.filter((_, i) => (
       perHotel[i].available !== false && perHotel[i].hasLiveWork
     )),
-    unavailablePropertyIds: scope.propertyIds.filter((_, i) => perHotel[i].available === false),
+    unavailablePropertyIds: [
+      ...readModel.unavailableFindingPropertyIds,
+      ...readablePropertyIds.filter((_, i) => perHotel[i].available === false),
+    ],
   };
 }
 
@@ -513,12 +482,10 @@ async function climbedAtHotel(
   scope: CompanyScope,
   caller: ManagerCaller,
   directory: ApproverDirectory,
+  readModel: PortfolioQueueReadModel,
   now: Date,
 ): Promise<HotelClimb> {
-  const rows = await listFindings(propertyId, {
-    statuses: [...CLIMB_VISIBLE_STATUSES],
-    limit: MAX_FINDINGS_PER_HOTEL,
-  });
+  const rows = readModel.findingsByPropertyId.get(propertyId) ?? [];
   const showable = rows.filter((f) => isCardRenderable({ disposition: effectiveDisposition(f), detectorId: f.detectorId }));
   if (showable.length === 0) return { cards: [], hasLiveWork: false };
 
@@ -526,9 +493,7 @@ async function climbedAtHotel(
   // waiting on a signature. Filtering first keeps the action read proportional
   // to the decisions rather than to the whole ledger.
   const proposals = showable.filter((f) => effectiveDisposition(f) === 'propose');
-  const actions = proposals.length > 0
-    ? await loadActionsForFindings(propertyId, proposals.map((f) => f.id))
-    : new Map();
+  const actions = readModel.actionByFindingId;
 
   const signOffs = new Map<string, CardSignOff>();
   const awaitingMe = new Set<string>();
@@ -587,7 +552,7 @@ async function climbedAtHotel(
   // card somebody will read, and a `select('*')` per hotel over a whole ledger
   // to phrase cards that were filtered out is the kind of cost that turns a
   // portfolio screen into a slow one.
-  const phrasing = await judgedPhrasing(propertyId, climbed.map((c) => c.finding.id));
+  const phrasing = readModel.phrasingByFindingId;
   const hotel = { propertyId, name: scope.propertyNames.get(propertyId) ?? 'this hotel' };
 
   return {
@@ -622,6 +587,8 @@ export interface PortfolioQueue {
   cards: PortfolioCard[];
   run: PortfolioRun | null;
   cap: number;
+  /** Cache partition for every current section and money projection decision. */
+  policyFingerprint: string;
   /**
    * Hotels the chip rule considers busy. Handed to the brief so its "N hotels
    * quiet" line cannot call a hotel quiet while the command centre's chip for
@@ -665,12 +632,45 @@ export async function buildPortfolioQueue(
     });
   }
 
-  const directory = await loadApproverDirectory(scope.organizationId);
-  const [company, climbed, runLoad] = await Promise.all([
-    companyCards(scope, now, actionability.canActOnCompanyFinding),
-    climbedCards(scope, caller, directory, now),
-    loadPortfolioRun(scope.propertyIds, scope.coverage.authorizedHotelCount),
+  const [directory, rawReadModel, policy] = await Promise.all([
+    loadApproverDirectory(scope.organizationId),
+    loadPortfolioQueueReadModel(scope.propertyIds),
+    resolvePortfolioQueuePolicy(caller, scope.organizationId, scope.propertyIds),
   ]);
+  const policyUnavailablePropertyIds = new Set<string>();
+  const findingsByPropertyId = new Map<string, Finding[]>();
+  for (const propertyId of scope.propertyIds) {
+    if (PORTFOLIO_DATA_SECTIONS.some(
+      (section) => portfolioSectionDecision(policy, section, propertyId) === 'unavailable',
+    ) || policy.financials.get(propertyId) === 'unavailable') {
+      policyUnavailablePropertyIds.add(propertyId);
+    }
+    const allowed: Finding[] = [];
+    for (const finding of rawReadModel.findingsByPropertyId.get(propertyId) ?? []) {
+      const decision = portfolioHotelFindingPolicyDecision(finding, policy);
+      if (decision === 'allowed') allowed.push(finding);
+      else if (decision === 'unavailable') policyUnavailablePropertyIds.add(propertyId);
+    }
+    findingsByPropertyId.set(propertyId, allowed);
+  }
+  const readModel: PortfolioQueueReadModel = {
+    ...rawReadModel,
+    findingsByPropertyId,
+    unavailableFindingPropertyIds: [
+      ...new Set([
+        ...rawReadModel.unavailableFindingPropertyIds,
+        ...policyUnavailablePropertyIds,
+      ]),
+    ],
+  };
+  const [company, climbed] = await Promise.all([
+    companyCards(scope, now, policy, actionability.canActOnCompanyFinding),
+    climbedCards(scope, caller, directory, readModel, now),
+  ]);
+  const runLoad = portfolioRunFromReadModel(
+    readModel,
+    scope.coverage.authorizedHotelCount,
+  );
   const unavailablePropertyIds = new Set([
     ...climbed.unavailablePropertyIds,
     ...runLoad.unavailablePropertyIds,
@@ -705,6 +705,7 @@ export async function buildPortfolioQueue(
     ]),
     run: runLoad.run,
     cap: DAILY_CARD_CAP,
+    policyFingerprint: policy.fingerprint,
     busyHotelIds: climbed.busyHotelIds,
   };
 }

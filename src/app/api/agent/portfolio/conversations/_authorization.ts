@@ -5,6 +5,7 @@ import type { NextRequest } from 'next/server';
 import { requireSession } from '@/lib/api-auth';
 import type { AuthorizationScopeReceipt } from '@/lib/authorization';
 import { resolvePortfolioAccessUncached } from '@/lib/company/portfolio';
+import { resolvePortfolioQueuePolicy } from '@/lib/company/portfolio-data-policy';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 
 export type PortfolioConversationRequestAuthorization =
@@ -12,6 +13,7 @@ export type PortfolioConversationRequestAuthorization =
       ok: true;
       accountId: string;
       receipt: AuthorizationScopeReceipt;
+      policyFingerprint: string;
     }
   | {
       ok: false;
@@ -57,10 +59,21 @@ export async function authorizePortfolioConversationRequest(
     || access.access.authorizationReceipt.organizationId !== organizationId) {
     return { ok: false, reason: 'not_found' };
   }
+  let policy;
+  try {
+    policy = await resolvePortfolioQueuePolicy(
+      { accountId: account.id as string, role: 'front_desk', propertyAccess: [] },
+      organizationId,
+      access.access.propertyIds,
+    );
+  } catch {
+    return { ok: false, reason: 'unavailable' };
+  }
   return {
     ok: true,
     accountId: account.id as string,
     receipt: access.access.authorizationReceipt,
+    policyFingerprint: policy.fingerprint,
   };
 }
 export function samePortfolioConversationAuthorization(
@@ -70,6 +83,7 @@ export function samePortfolioConversationAuthorization(
   return initial.accountId === current.accountId
     && initial.receipt.organizationId === current.receipt.organizationId
     && initial.receipt.authorizationHash === current.receipt.authorizationHash
+    && initial.policyFingerprint === current.policyFingerprint
     && initial.receipt.authorizedPropertyIds.length === current.receipt.authorizedPropertyIds.length
     && initial.receipt.authorizedPropertyIds.every(
       (propertyId, index) => current.receipt.authorizedPropertyIds[index] === propertyId,

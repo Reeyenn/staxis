@@ -13,6 +13,7 @@ import { useAuth } from '@/contexts/AuthContext';
 import { useProperty } from '@/contexts/PropertyContext';
 import { useLang } from '@/contexts/LanguageContext';
 import { canManageTeam } from '@/lib/roles';
+import { useActiveHotelStanding } from '@/lib/capabilities/useCan';
 import { tr } from '@/lib/i18n-utils';
 import { useToast, ToastHost } from '@/app/_components/ui/toast';
 import { fetchWithAuth } from '@/lib/api-fetch';
@@ -679,7 +680,11 @@ export function EquipmentRegistry({ onBack }: { onBack: () => void }) {
   const { activePropertyId } = useProperty();
   const { lang } = useLang();
   const pid = activePropertyId;
-  const isMgr = user ? canManageTeam(user.role) : false;
+  const hotelStanding = useActiveHotelStanding();
+  const isMgr = !!user
+    && hotelStanding.hotelMutationAllowed
+    && !!hotelStanding.role
+    && canManageTeam(hotelStanding.role);
 
   const [list, setList] = useState<Equipment[]>([]);
   const [loading, setLoading] = useState(true);

@@ -34,6 +34,7 @@ import { fetchWithAuth } from '@/lib/api-fetch';
 import type { OnboardingState } from '@/lib/onboarding/state';
 import { useNavigationReady, useReliableNavigation } from '@/lib/hooks/use-reliable-navigation';
 import { useAuthorizationRefreshKey } from '@/lib/hooks/use-authorization-refresh-key';
+import { usePortfolio } from '@/contexts/PortfolioContext';
 
 import JoinStatusGate from './JoinStatusGate';
 import {
@@ -71,6 +72,7 @@ export default function PropertySelectorPage() {
     authorizationFingerprint,
   } = useAuth();
   const { setActivePropertyId } = useProperty();
+  const portfolio = usePortfolio();
   const { lang } = useLang();
   const navigation = useReliableNavigation();
   const replaceNavigation = navigation.replace;
@@ -164,6 +166,28 @@ export default function PropertySelectorPage() {
     if (data.hotels.length === 1) enter(data.hotels[0]);
   }, [data, enter, requiresCompanySelection]);
 
+  // The role-aware entry resolver owns the first acting-context decision.
+  // Company leaders enter Portfolio Home (or the company/context chooser)
+  // without first selecting a hotel; hotel-only users keep this exact picker.
+  useEffect(() => {
+    if (authLoading || !user || user.role === 'admin' || portfolio.loading) return;
+    const selection = portfolio.data?.selection;
+    if (!selection) return;
+    if (selection.state === 'selected' && selection.selectedOrganizationId) {
+      replaceNavigation(
+        `/portfolio?organizationId=${encodeURIComponent(selection.selectedOrganizationId)}`,
+      );
+    } else if (selection.state === 'needs_selection') {
+      replaceNavigation('/portfolio/choose');
+    }
+  }, [
+    authLoading,
+    portfolio.data?.selection,
+    portfolio.loading,
+    replaceNavigation,
+    user,
+  ]);
+
   // Organization-only leaders intentionally have no inferred legacy hotel
   // access. On later ordinary sign-ins, distinguish them from pending hotel
   // staff before showing the zero-property approval gate. With the spine
@@ -251,6 +275,11 @@ export default function PropertySelectorPage() {
   const settling = authLoading
     || !user
     || !data
+    || (user.role !== 'admin'
+      && !portfolio.error
+      && (portfolio.loading || !portfolio.data))
+    || portfolio.data?.selection.state === 'selected'
+    || portfolio.data?.selection.state === 'needs_selection'
     // A single-hotel person is mid-redirect; showing them the door they are
     // already walking through would be a flash of a screen they never chose.
     || (!requiresCompanySelection && !data.company && data.hotels.length === 1)

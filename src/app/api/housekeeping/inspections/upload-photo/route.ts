@@ -17,7 +17,9 @@
  */
 
 import { NextRequest } from 'next/server';
-import { requireSession, userHasPropertyAccess } from '@/lib/api-auth';
+import { requireSession } from '@/lib/api-auth';
+import { capabilityUnavailableResponse } from '@/lib/capabilities/api-gate';
+import { hotelWriteDecisionForUserId } from '@/lib/team-auth';
 import { ok, err, ApiErrorCode } from '@/lib/api-response';
 import { getOrMintRequestId, log } from '@/lib/log';
 import { errToString } from '@/lib/utils';
@@ -103,8 +105,9 @@ export async function POST(req: NextRequest) {
       });
     }
 
-    const hasAccess = await userHasPropertyAccess(auth.userId, inspection.propertyId);
-    if (!hasAccess) {
+    const writeDecision = await hotelWriteDecisionForUserId(auth.userId, inspection.propertyId);
+    if (writeDecision === 'unavailable') return capabilityUnavailableResponse(requestId);
+    if (writeDecision === 'denied') {
       return err('forbidden: no access to this property', {
         requestId, status: 403, code: ApiErrorCode.Forbidden,
       });

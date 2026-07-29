@@ -20,8 +20,8 @@ import { verifyStaffLinkToken } from '@/lib/staff-link-auth';
 import { log } from '@/lib/log';
 import { errToString } from '@/lib/utils';
 import { validateUuid } from '@/lib/api-validate';
-import { userHasPropertyAccess } from '@/lib/api-auth';
 import { translateNoticeToSpanish } from '@/lib/notice-translate';
+import { hotelWriteDecisionForUserId } from '@/lib/team-auth';
 import {
   checkAndIncrementRateLimit,
   rateLimitedResponse,
@@ -141,8 +141,12 @@ export const POST = defineRoute({
       return ctx.err('body_en too long (max 1000 chars)', { status: 400, code: ApiErrorCode.ValidationFailed });
     }
 
-    const hasAccess = await userHasPropertyAccess(ctx.userId, pid);
-    if (!hasAccess) {
+    const writeDecision = await hotelWriteDecisionForUserId(
+      ctx.userId,
+      pid,
+      'post_announcements',
+    );
+    if (writeDecision !== 'allowed') {
       return ctx.err('property access denied', { status: 403, code: ApiErrorCode.Forbidden });
     }
 
@@ -230,8 +234,12 @@ export const DELETE = defineRoute({
     const pid = pidV.value!;
     const noticeId = noticeIdV.value!;
 
-    const hasAccess = await userHasPropertyAccess(ctx.userId, pid);
-    if (!hasAccess) {
+    const writeDecision = await hotelWriteDecisionForUserId(
+      ctx.userId,
+      pid,
+      'post_announcements',
+    );
+    if (writeDecision !== 'allowed') {
       return ctx.err('property access denied', { status: 403, code: ApiErrorCode.Forbidden });
     }
 

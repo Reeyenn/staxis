@@ -30,6 +30,7 @@ import { PreventiveTab } from './_components/PreventiveTab';
 import { EquipmentTab } from './_components/EquipmentTab';
 import { PatternsModal } from './_components/PatternsModal';
 import { panelText } from './_components/PatternsPanel';
+import { useActiveHotelStanding } from '@/lib/capabilities/useCan';
 
 // Storage can throw in privacy-mode / sandboxed / SSR contexts — guard both
 // get and set so a blocked localStorage never blanks the whole screen.
@@ -47,7 +48,10 @@ export default function MaintenancePage() {
   const { activePropertyId, loading: propLoading } = useProperty();
   const { push, replace } = useReliableNavigation();
   const { lang } = useLang();
-  const canSeePatterns = !!user && canManageTeam(user.role);
+  const hotelStanding = useActiveHotelStanding();
+  const canSeePatterns = hotelStanding.hotelMutationAllowed
+    && !!hotelStanding.role
+    && canManageTeam(hotelStanding.role);
 
   // Auth guard — redirect if not logged in or no property selected.
   useEffect(() => {

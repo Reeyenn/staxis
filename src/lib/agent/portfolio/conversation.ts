@@ -16,6 +16,8 @@ import 'server-only';
 const UUID_RX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 const ORG_SEGMENT_PREFIX = 'org:';
+const POLICY_SEGMENT_PREFIX = 'policy:';
+const POLICY_FINGERPRINT_RX = /^[0-9a-f]{16,64}$/;
 
 export const CONVERSATION_KINDS = ['property', 'portfolio'] as const;
 export type ConversationKind = typeof CONVERSATION_KINDS[number];
@@ -63,6 +65,29 @@ export function orgScopeFromStamp(promptVersion: string | null | undefined): str
     if (!seg.startsWith(ORG_SEGMENT_PREFIX)) continue;
     const value = seg.slice(ORG_SEGMENT_PREFIX.length);
     if (UUID_RX.test(value)) return value;
+  }
+  return null;
+}
+
+export function stampPortfolioPolicy(
+  promptVersion: string,
+  policyFingerprint: string,
+): string {
+  if (!POLICY_FINGERPRINT_RX.test(policyFingerprint)) {
+    throw new Error('portfolio policy fingerprint is invalid');
+  }
+  return `${promptVersion}+${POLICY_SEGMENT_PREFIX}${policyFingerprint}`;
+}
+
+export function portfolioPolicyFingerprintFromStamp(
+  promptVersion: string | null | undefined,
+): string | null {
+  if (typeof promptVersion !== 'string') return null;
+  for (const raw of promptVersion.split('+')) {
+    const segment = raw.trim();
+    if (!segment.startsWith(POLICY_SEGMENT_PREFIX)) continue;
+    const fingerprint = segment.slice(POLICY_SEGMENT_PREFIX.length);
+    return POLICY_FINGERPRINT_RX.test(fingerprint) ? fingerprint : null;
   }
   return null;
 }

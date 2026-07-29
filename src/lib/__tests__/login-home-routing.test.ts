@@ -186,9 +186,11 @@ describe('Home safety boundaries', () => {
     const homePage = home.slice(home.indexOf('export default function HomePage()'));
     assert.match(homePage, /const replaceNavigation = navigation\.replace[\s\S]*?if \(!user\) \{[\s\S]*?replaceNavigation\('\/signin'\)/);
     assert.match(home, /user\.role === ['"]admin['"] \|\| properties\.length > 0/);
-    assert.match(home, /fetchWithAuth\(['"]\/api\/company-access['"]\)/);
-    assert.match(home, /hasCustomerOrganization \? ['"]\/company['"] : ['"]\/property-selector['"]/);
-    assert.match(homePage, /if \(authLoading \|\| propertyLoading\) \{[\s\S]*?<RouteLoadingState title="Opening Home…"/);
+    assert.match(home, /const portfolio = usePortfolio\(\)/);
+    assert.match(home, /portfolio\.data\.selection\.state === 'selected'/);
+    assert.match(home, /portfolio\.data\.selection\.state === 'needs_selection'/);
+    assert.match(homePage, /if \(portfolioDestination\) \{[\s\S]*?replaceNavigation\(portfolioDestination\)/);
+    assert.match(homePage, /if \(authLoading \|\| propertyLoading \|\| portfolioEntryPending \|\| portfolioDestination\) \{[\s\S]*?<RouteLoadingState title="Opening Home…"/);
     assert.match(homePage, /if \(!user\) \{[\s\S]*?<RouteLoadingState title="Returning to Sign In…"/);
     assert.match(homePage, /if \(!activeProperty\) \{[\s\S]*?properties\.length === 0[\s\S]*?<RouteLoadingState title="Opening your workspace…"/);
     assert.match(rootLayout, /<ReliableNavigationProvider>[\s\S]*?\{children\}/);

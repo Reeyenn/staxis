@@ -168,6 +168,47 @@ export async function POST(req: NextRequest): Promise<Response> {
     );
   }
 
+  // A conversation id is an untrusted selector. Prove ownership, immutable
+  // property scope, and conversation kind before model selection or budget
+  // reservation. The atomic prep RPC repeats the same predicates before replay.
+  let preflightConversationScope: Awaited<ReturnType<typeof loadConversationScope>> = null;
+  if (body.conversationId) {
+    try {
+      preflightConversationScope = await loadConversationScope(
+        body.conversationId,
+        userCtx.accountId,
+      );
+    } catch {
+      return Response.json(
+        { ok: false, error: 'conversation authorization is unavailable', requestId },
+        { status: 503 },
+      );
+    }
+    if (!preflightConversationScope) {
+      return Response.json(
+        { ok: false, error: 'conversation not found or not yours', requestId },
+        { status: 404 },
+      );
+    }
+    if (preflightConversationScope.conversationKind !== 'property') {
+      return Response.json(
+        {
+          ok: false,
+          error: 'conversation belongs to portfolio mode',
+          code: 'wrong_conversation_kind',
+          requestId,
+        },
+        { status: 400 },
+      );
+    }
+    if (preflightConversationScope.propertyId !== body.propertyId) {
+      return Response.json(
+        { ok: false, error: 'conversation is scoped to a different property', requestId },
+        { status: 400 },
+      );
+    }
+  }
+
   // ── Cost reservation (Codex review fix #1) ────────────────────────────
   // Atomic: cap check + reservation insert happen under an advisory lock
   // keyed on user_id. Concurrent requests for the same user serialize.
@@ -225,28 +266,7 @@ export async function POST(req: NextRequest): Promise<Response> {
       // sweep below can mutate it. The RPC repeats owner/kind/property checks
       // atomically before replay/append; this preflight protects the earlier
       // cleanup side effect, and conversation kind is DB-immutable.
-      const storedScope = await loadConversationScope(conversationId, userCtx.accountId);
-      if (!storedScope) {
-        await cancelCostReservation(reservationId);
-        return Response.json(
-          { ok: false, error: 'conversation not found or not yours', requestId },
-          { status: 404 },
-        );
-      }
-      if (storedScope.conversationKind !== 'property') {
-        await cancelCostReservation(reservationId);
-        return Response.json(
-          { ok: false, error: 'conversation belongs to portfolio mode', code: 'wrong_conversation_kind', requestId },
-          { status: 400 },
-        );
-      }
-      if (storedScope.propertyId !== body.propertyId) {
-        await cancelCostReservation(reservationId);
-        return Response.json(
-          { ok: false, error: 'conversation is scoped to a different property', requestId },
-          { status: 400 },
-        );
-      }
+      if (!preflightConversationScope) throw new Error('conversation preflight was not retained');
 
       // Sweep any still-pending approval cards BEFORE recording the new user
       // turn: sending a fresh message abandons the earlier proposals. Flipping

@@ -32,16 +32,27 @@ const legacyUsers = source('src', 'app', 'settings', 'users', 'page.tsx');
 const propertyContext = source('src', 'contexts', 'PropertyContext.tsx');
 
 describe('company-only shell routing', () => {
-  test('does not expose hotel sections without an active hotel', () => {
-    assert.match(concourse, /propertyLoading \|\| !activeProperty \? \[\] : SECTION_LIST/);
-    assert.match(concourse, /const companyOnly = !propertyLoading && !!user && properties\.length === 0/);
-    assert.match(concourse, /const homeHref = companyOnly \? ['"]\/company['"] : ['"]\/home['"]/);
+  test('changes the familiar section shell by explicit portfolio context', () => {
+    assert.match(concourse, /const portfolioScoped = purePortfolioContext \|\| Boolean\(portfolioHotelContext\)/);
+    assert.match(
+      concourse,
+      /portfolioScoped[\s\S]*?\? SECTION_LIST[\s\S]*?: propertyLoading \|\| !activeProperty[\s\S]*?\? \[\][\s\S]*?: SECTION_LIST/,
+    );
+    assert.match(concourse, /const companyOnly = !portfolioScoped[\s\S]*?properties\.length === 0/);
+    assert.match(
+      concourse,
+      /const homeHref = portfolioScoped[\s\S]*?\? portfolioHomeHref[\s\S]*?: companyOnly[\s\S]*?\? '\/company'[\s\S]*?: '\/home'/,
+    );
+    assert.match(concourse, /if \(m\.key === 'staxis'\) return portfolioQueueAvailable/);
   });
 
   test('distinguishes an unselected portfolio from a truly zero-property company user', () => {
+    assert.match(home, /const portfolio = usePortfolio\(\)/);
+    assert.match(home, /portfolio\.data\.selection\.state === 'selected'/);
+    assert.match(home, /portfolio\.data\.selection\.state === 'needs_selection'/);
+    assert.match(home, /const portfolioEntryPending = !hotelDrilldown/);
     assert.match(home, /user\.role === ['"]admin['"] \|\| properties\.length > 0/);
-    assert.match(home, /body\.data\?\.organizations\?\.some/);
-    assert.match(home, /organization\.type !== ['"]single_hotel['"]/);
+    assert.match(home, /replaceNavigation\('\/property-selector'\)/);
   });
 });
 

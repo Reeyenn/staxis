@@ -320,7 +320,7 @@ describe('the finance lead keeps every read path she was given', () => {
   // pass fixed and this tightening could have re-introduced.
   test('she reads her company rulebook', async () => {
     assert.equal(
-      await statusOf(rulebookGet, UID_FIONA, `https://staxis.test/api/company/rulebook?propertyId=${PID_A1}`),
+      await statusOf(rulebookGet, UID_FIONA, `https://staxis.test/api/company/rulebook?organizationId=${ORG_A}`),
       200,
       'the finance lead was refused the company book again',
     );
@@ -502,9 +502,9 @@ describe('a hotel two companies both claim has NO company, not the lower UUID', 
         await statusOf(
           rulebookGet,
           UID_MARIA,
-          `https://staxis.test/api/company/rulebook?propertyId=${PID_A1}`,
+          `https://staxis.test/api/company/rulebook?organizationId=${ORG_A}`,
         ),
-        403,
+        503,
         'the rulebook kept reading a partial company during topology ambiguity',
       );
       assert.deepEqual(

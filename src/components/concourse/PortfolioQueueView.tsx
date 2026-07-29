@@ -398,11 +398,30 @@ export function PortfolioQueueView({
       }).then((response) => readEnvelope<PortfolioPayload>(response))),
     [queueUrl],
   );
-  const { data, loading, error, reload } = useApiResource<PortfolioPayload>(
+  const {
+    data: resourceData,
+    loading,
+    error: resourceError,
+    reload,
+  } = useApiResource<PortfolioPayload>(
     readPortfolio,
     // A failed authorization refresh must blank the prior tenant's cards.
-    { identityKey: authorizationKey, keepDataOnError: false },
+    {
+      identityKey: authorizationKey,
+      keepDataOnError: false,
+      revalidateOnFocus: true,
+      clearDataOnFocusRevalidate: true,
+    },
   );
+  const responseMismatch = Boolean(
+    resourceData?.scope
+      && organizationId !== null
+      && resourceData.scope.organizationId !== organizationId,
+  );
+  const data = responseMismatch ? null : resourceData;
+  const error = responseMismatch
+    ? 'The queue response did not match the selected company.'
+    : resourceError;
 
   const scope = data?.scope ?? null;
   const resolvedOrganizationId = scope?.organizationId ?? null;

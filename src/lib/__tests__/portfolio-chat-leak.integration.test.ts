@@ -818,21 +818,25 @@ describe('the tools answer for company A and never for company B', () => {
         );
       }
 
-      // (3) every statement against a hotel-scoped table carried the hotel
-      //     filter — the loop-over-scopedDb shape, proved rather than intended.
+      // (3) every statement against a hotel-scoped table carried either one
+      //     exact hotel or the exact company-intersected batch set.
       for (const stmt of shim.statements as RecordedStatement[]) {
         if (stmt.kind !== 'table') continue;
         if (GLOBAL_TABLES.has(stmt.target)) continue;
         const column = scopeColumnFor(stmt.target);
-        const scoped = stmt.filters.some((f) => f.op === 'eq' && f.column === column);
+        const scopeFilter = stmt.filters.find(
+          (f) => (f.op === 'eq' || f.op === 'in') && f.column === column,
+        );
         assert.ok(
-          scoped,
+          scopeFilter,
           `${name}: ${stmt.verb} on ${stmt.target} carried no ${column} filter\n${stmt.sql}`,
         );
-        const value = stmt.filters.find((f) => f.op === 'eq' && f.column === column)?.value;
+        const values = Array.isArray(scopeFilter?.value)
+          ? scopeFilter.value
+          : [scopeFilter?.value];
         assert.ok(
-          value === PID_A1 || value === PID_A2,
-          `${name}: ${stmt.target} was scoped to ${String(value)}, not one of company A's hotels`,
+          values.length > 0 && values.every((value) => value === PID_A1 || value === PID_A2),
+          `${name}: ${stmt.target} was scoped to ${String(scopeFilter?.value)}, not company A`,
         );
       }
     }

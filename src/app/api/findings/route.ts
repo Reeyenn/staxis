@@ -91,7 +91,12 @@ import { ok, err, ApiErrorCode } from '@/lib/api-response';
 import { getOrMintRequestId, log } from '@/lib/log';
 import { validateUuid, validateEnum } from '@/lib/api-validate';
 import { checkAndIncrementRateLimit } from '@/lib/api-ratelimit';
-import { loadManagerCaller, managerManagesHotel, type ManagerCaller } from '@/lib/team-auth';
+import {
+  callerCanMutateHotel,
+  loadManagerCaller,
+  managerManagesHotel,
+  type ManagerCaller,
+} from '@/lib/team-auth';
 import {
   judgedPhrasing,
   latestRunFacts,
@@ -430,7 +435,9 @@ export async function POST(req: NextRequest) {
   }
 
   const caller = await loadManagerCaller(session.userId);
-  if (!caller || !managerManagesHotel(caller, propertyId)) {
+  if (!caller
+      || !managerManagesHotel(caller, propertyId)
+      || !callerCanMutateHotel(caller, propertyId)) {
     return err('Forbidden', { requestId, status: 403, code: ApiErrorCode.Forbidden });
   }
 

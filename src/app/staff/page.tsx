@@ -28,7 +28,7 @@ import { useAuth } from '@/contexts/AuthContext';
 import { useLang } from '@/contexts/LanguageContext';
 import { useProperty } from '@/contexts/PropertyContext';
 import { canManageTeam } from '@/lib/roles';
-import { useCan } from '@/lib/capabilities/useCan';
+import { useActiveHotelStanding, useCan } from '@/lib/capabilities/useCan';
 import { AppLayout } from '@/components/layout/AppLayout';
 import { UnifiedSchedule } from './_components/schedule';
 import { MyShifts } from './_components/MyShifts';
@@ -56,6 +56,7 @@ export default function StaffPage() {
     loading: propLoading,
   } = useProperty();
   const can = useCan();
+  const hotelStanding = useActiveHotelStanding();
   const { push, replace } = useReliableNavigation();
 
   // No property selected (an account with zero accessible hotels, or the active
@@ -90,7 +91,9 @@ export default function StaffPage() {
     );
   }
 
-  const isManager = canManageTeam(user.role);
+  const isManager = hotelStanding.hotelMutationAllowed
+    && !!hotelStanding.role
+    && canManageTeam(hotelStanding.role);
   const capabilityViewerKey = activePropertyViewerKey;
   const capabilityContextReady = Boolean(
     activeProperty?.id === activePropertyId

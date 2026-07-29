@@ -23,6 +23,7 @@ import { useProperty } from '@/contexts/PropertyContext';
 import { useLang } from '@/contexts/LanguageContext';
 import { fetchWithAuth } from '@/lib/api-fetch';
 import { canManageTeam } from '@/lib/roles';
+import { useActiveHotelStanding } from '@/lib/capabilities/useCan';
 import { groupByDay, ACTIVITY_PAGE_SIZE, type ActivityItem, type ActivityOutcome } from '@/lib/agent/activity-view';
 import styles from './AiActivityButton.module.css';
 
@@ -66,6 +67,7 @@ export function AiActivityButton() {
   const { user } = useAuth();
   const { activePropertyId } = useProperty();
   const { lang } = useLang();
+  const hotelStanding = useActiveHotelStanding();
   const es = lang === 'es';
   const [open, setOpen] = useState(false);
   const [mounted, setMounted] = useState(false);
@@ -73,7 +75,11 @@ export function AiActivityButton() {
   useEffect(() => setMounted(true), []);
 
   // Manager-tier only, and only with an active property to scope the feed to.
-  const canSee = !!user && canManageTeam(user.role) && !!activePropertyId;
+  const canSee = !!user
+    && hotelStanding.hotelMutationAllowed
+    && !!hotelStanding.role
+    && canManageTeam(hotelStanding.role)
+    && !!activePropertyId;
   const scopedCache = activityCache?.propertyId === activePropertyId ? activityCache : null;
   const rememberActivity = useCallback((propertyId: string, items: ActivityItem[], hasMore: boolean) => {
     setActivityCache({ propertyId, items, hasMore });

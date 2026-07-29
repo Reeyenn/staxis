@@ -20,6 +20,7 @@ import type { AgentMessage, AgentToolCall, ModelTier } from './llm';
 import { escapeTrustMarkerContent } from './llm';
 import {
   conversationSecurityScopeFromRow,
+  portfolioPolicyFingerprintFromStamp,
   type ConversationKind,
   type ConversationSecurityScope,
 } from './portfolio/conversation';
@@ -92,6 +93,7 @@ export type LoadPortfolioConversationResult =
 export interface ConversationScope extends ConversationSecurityScope {
   propertyId: string;
   role: AppRole;
+  promptVersion: string | null;
 }
 
 export interface SaveMessageOpts {
@@ -574,6 +576,7 @@ export async function listPortfolioConversationsForAuthorization(opts: {
   userAccountId: string;
   organizationId: string;
   authorizationHash: string;
+  policyFingerprint: string;
   limit?: number;
 }): Promise<PortfolioConversationSummary[]> {
   if (!UUID_RX.test(opts.userAccountId)
@@ -595,7 +598,9 @@ export async function listPortfolioConversationsForAuthorization(opts: {
     if (!scope
       || scope.conversationKind !== 'portfolio'
       || scope.organizationId !== opts.organizationId
-      || scope.authorizationHash !== opts.authorizationHash) return [];
+      || scope.authorizationHash !== opts.authorizationHash
+      || portfolioPolicyFingerprintFromStamp(row.prompt_version as string | null)
+        !== opts.policyFingerprint) return [];
     return [{
       id: row.id as string,
       title: (row.title as string) ?? null,
@@ -618,6 +623,7 @@ export async function loadPortfolioConversationForAuthorization(opts: {
   userAccountId: string;
   organizationId: string;
   authorizationHash: string;
+  policyFingerprint: string;
   currentAuthorizedPropertyIds: readonly string[];
 }): Promise<LoadPortfolioConversationResult> {
   if (!UUID_RX.test(opts.conversationId)
@@ -641,6 +647,10 @@ export async function loadPortfolioConversationForAuthorization(opts: {
     || scope.conversationKind !== 'portfolio'
     || scope.organizationId !== opts.organizationId) return { ok: false, reason: 'not_found' };
   if (scope.authorizationHash !== opts.authorizationHash) {
+    return { ok: false, reason: 'scope_changed' };
+  }
+  if (portfolioPolicyFingerprintFromStamp(convo.prompt_version as string | null)
+      !== opts.policyFingerprint) {
     return { ok: false, reason: 'scope_changed' };
   }
 
@@ -860,6 +870,7 @@ export async function loadConversationScope(
     ...scope,
     propertyId: data.property_id as string,
     role: data.role as AppRole,
+    promptVersion: typeof data.prompt_version === 'string' ? data.prompt_version : null,
   };
 }
 

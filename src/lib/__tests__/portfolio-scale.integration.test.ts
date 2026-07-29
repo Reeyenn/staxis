@@ -58,6 +58,7 @@ import {
   buildPortfolioSnapshot,
   clearPortfolioSnapshotCache,
 } from '@/lib/agent/portfolio/snapshot';
+import { resolvePortfolioQueuePolicy } from '@/lib/company/portfolio-data-policy';
 
 import { applyMigrationsToPglite } from '../../../tests/fixtures/pglite-migrate';
 import {
@@ -213,7 +214,12 @@ async function measureTurn(
   // What the route does before the model is even called: name the hotels for the
   // prompt, then read each one's pulse.
   const hotels = await loadPortfolioHotels(access.access.propertyIds);
-  await buildPortfolioSnapshot(access.access.organizationId, hotels, 0);
+  const policy = await resolvePortfolioQueuePolicy(
+    ctx.user,
+    access.access.organizationId,
+    access.access.propertyIds,
+  );
+  await buildPortfolioSnapshot(access.access.organizationId, hotels, 0, policy);
 
   let bytes = 0;
   for (const call of calls) {
@@ -438,14 +444,17 @@ describe('the numbers are right at seventeen hotels', () => {
         if (stmt.kind !== 'table') continue;
         if (GLOBAL_TABLES.has(stmt.target)) continue;
         const column = scopeColumnFor(stmt.target);
-        const filter = stmt.filters.find((f) => f.op === 'eq' && f.column === column);
+        const filter = stmt.filters.find(
+          (f) => (f.op === 'eq' || f.op === 'in') && f.column === column,
+        );
         assert.ok(
           filter,
           `${call.name}: ${stmt.verb} on ${stmt.target} carried no ${column} filter\n${stmt.sql}`,
         );
+        const values = Array.isArray(filter.value) ? filter.value : [filter.value];
         assert.ok(
-          covered.has(String(filter.value)),
-          `${call.name}: ${stmt.target} was scoped to ${String(filter.value)}, not a hotel of this company`,
+          values.length > 0 && values.every((value) => covered.has(String(value))),
+          `${call.name}: ${stmt.target} was scoped to ${String(filter.value)}, not this company`,
         );
         scopedReads += 1;
       }
@@ -531,14 +540,18 @@ describe('one read per turn, and never across turns', () => {
     shim.reset();
     const second = await executeTool('portfolio_work_orders', { days: 30 }, ctx);
     assert.equal(second.ok, true);
-    assert.equal(readsOf('work_orders'), 0, 'the identical second call went back to the database');
+    assert.equal(
+      readsOf('staxis_portfolio_tool_work_orders'),
+      0,
+      'the identical second call went back to the database',
+    );
 
     // …but a DIFFERENT question is a different question.
     shim.reset();
     const narrower = await executeTool('portfolio_work_orders', { days: 7 }, ctx);
     assert.equal(narrower.ok, true);
     assert.equal(
-      readsOf('work_orders'), HOTEL_COUNT,
+      readsOf('staxis_portfolio_tool_work_orders'), 1,
       'a seven-day window must not be served from a thirty-day read',
     );
   });
@@ -561,8 +574,8 @@ describe('one read per turn, and never across turns', () => {
       'a question about three hotels was answered with all seventeen',
     );
     assert.equal(
-      readsOf('work_orders'), named.length,
-      'three hotels should cost three reads — not seventeen, and not zero',
+      readsOf('staxis_portfolio_tool_work_orders'), 1,
+      'three hotels should cost one exact-set batch read',
     );
   });
 
@@ -591,7 +604,11 @@ describe('one read per turn, and never across turns', () => {
     shim.reset();
     const fresh = await executeTool('portfolio_work_orders', { days: 30 }, turnTwo);
     assert.equal(fresh.ok, true);
-    assert.equal(readsOf('work_orders'), HOTEL_COUNT, 'the second conversation read the database itself');
+    assert.equal(
+      readsOf('staxis_portfolio_tool_work_orders'),
+      1,
+      'the second conversation read the database itself in one batch',
+    );
     assert.equal(
       openedAt(fresh.data, target), before + 1,
       'a second conversation was served the first one\'s stale numbers',
@@ -604,32 +621,30 @@ describe('one read per turn, and never across turns', () => {
     // The memo holds the PROMISE, so a rejected read must be evicted — otherwise
     // one hiccup poisons every later tool in the same turn.
     const ctx = await vpContext();
-    const broken = new Error('database went away');
-    const original = shim.from;
+    const original = shim.rpc;
     let failNext = true;
-    // @ts-expect-error swapping the client for one statement
-    supabaseAdmin.from = (table: string) => {
-      if (table === 'inventory' && failNext) {
+    // @ts-expect-error swapping the client for one bounded RPC
+    supabaseAdmin.rpc = async (fn: string, args?: Record<string, unknown>) => {
+      if (fn === 'staxis_portfolio_tool_inventory' && failNext) {
         failNext = false;
-        throw broken;
+        return { data: null, error: { message: 'database went away' } };
       }
-      return original(table);
+      return original(fn, args);
     };
     try {
       const first = await executeTool('portfolio_inventory_health', {}, ctx);
-      // One hotel's read threw; the answer survives and names it as unread.
+      // The batch failed; every hotel is explicitly unread, never zero.
       assert.equal(first.ok, true);
-      assert.equal((first.data as { hotelsUnread?: number }).hotelsUnread, 1);
+      assert.equal((first.data as { hotelsUnread?: number }).hotelsUnread, HOTEL_COUNT);
     } finally {
       // @ts-expect-error restoring
-      supabaseAdmin.from = original;
+      supabaseAdmin.rpc = original;
     }
 
-    // The failure is not what the turn remembers — but the SUCCESSFUL read that
-    // wrapped it is, so this second call is served from the memo and still
-    // reports the same thing. What must never happen is a thrown answer.
+    // Rejected reads are evicted from the turn memo, so the next call retries.
     const second = await executeTool('portfolio_inventory_health', {}, ctx);
     assert.equal(second.ok, true);
+    assert.equal((second.data as { hotelsUnread?: number }).hotelsUnread, undefined);
   });
 });
 
@@ -696,10 +711,10 @@ describe('nothing is left out quietly', () => {
     assert.match(String(data.detailNote ?? ''), /item lists were left out/);
   });
 
-  test('a hotel that hit the row ceiling is reported as a floor, not a total', async () => {
-    // The ceiling used to be silent: a hotel with more rows than one read returns
-    // reported the ceiling as if it were the whole truth, and ranked BELOW a
-    // quieter hotel. 5,001 tickets in one statement, then put back.
+  test('work-order headline totals stay exact beyond the former row ceiling', async () => {
+    // Work-order headlines use a bounded aggregate RPC, not a truncated row
+    // bucket. 5,001 tickets therefore remain an exact total rather than a
+    // misleading floor.
     const target = plans[plans.length - 1].propertyId;
     await pg.query(
       `insert into work_orders (property_id, room_number, description, severity, status, created_at)
@@ -712,12 +727,13 @@ describe('nothing is left out quietly', () => {
       const result = await executeTool('portfolio_work_orders', { days: 30, hotelIds: [target] }, ctx);
       assert.equal(result.ok, true);
       const data = result.data as { hotels: HotelRow[]; hotelsAtRowLimit?: number; rowLimitNote?: string };
-      assert.equal(data.hotels[0].atRowLimit, true, 'the hotel did not say it was capped');
-      assert.equal(data.hotelsAtRowLimit, 1);
-      assert.match(String(data.rowLimitNote ?? ''), /FLOOR, not a total/);
+      assert.ok((data.hotels[0].opened as number) > 5000);
+      assert.ok((data.hotels[0].stillOpen as number) > 5000);
+      assert.equal(data.hotels[0].atRowLimit, undefined);
+      assert.equal(data.hotelsAtRowLimit, undefined);
+      assert.equal(data.rowLimitNote, undefined);
 
-      // And the ranking, which counts rather than reads rows, is NOT capped —
-      // it reports the real number.
+      // The comparison path uses an independent exact count and must agree.
       const ranked = await executeTool('portfolio_compare', { metric: 'work_orders', days: 30 }, ctx);
       const row = (ranked.data as { ranking: Array<Record<string, unknown>> }).ranking
         .find((r) => r.hotelId === target);
@@ -829,15 +845,16 @@ describe('the answer comes back worst first', () => {
     // An unread hotel has no counts. Sorting it as if its absent numbers were
     // zeros would park it at the "nothing wrong here" end of a worst-first list.
     const ctx = await vpContext();
-    const original = shim.from;
+    const original = shim.rpc;
     let failNext = true;
-    // @ts-expect-error swapping the client for one statement
-    supabaseAdmin.from = (table: string) => {
-      if (table === 'inventory' && failNext) {
+    // @ts-expect-error swapping the client for one bounded RPC
+    supabaseAdmin.rpc = async (fn: string, args?: Record<string, unknown>) => {
+      const result = await original(fn, args);
+      if (fn === 'staxis_portfolio_tool_inventory' && failNext && Array.isArray(result.data)) {
         failNext = false;
-        throw new Error('this hotel is unreachable');
+        return { ...result, data: result.data.slice(1) };
       }
-      return original(table);
+      return result;
     };
     let rows: HotelRow[];
     try {
@@ -846,7 +863,7 @@ describe('the answer comes back worst first', () => {
       rows = hotelsOf(result.data);
     } finally {
       // @ts-expect-error restoring
-      supabaseAdmin.from = original;
+      supabaseAdmin.rpc = original;
     }
     const unread = rows.filter((r) => r.read === false);
     assert.equal(unread.length, 1, 'fixture: exactly one hotel should have failed');
@@ -854,12 +871,7 @@ describe('the answer comes back worst first', () => {
       rows[rows.length - 1].read, false,
       'the unread hotel was not last — it is sitting among hotels with real numbers',
     );
-    // It failed on the FIRST read issued, so in input order it is near the top;
-    // finding it last is therefore the ordering working, not a coincidence.
-    assert.ok(
-      plans.findIndex((p) => p.propertyId === unread[0].hotelId) < PORTFOLIO_READ_CONCURRENCY,
-      'fixture: the failing hotel should be one of the first lanes',
-    );
+    assert.equal(unread[0].hotelId, plans[0].propertyId, 'fixture drops the first exact-set bucket');
   });
 
   test('a per-room column is published only when the ranking asked for one', async () => {

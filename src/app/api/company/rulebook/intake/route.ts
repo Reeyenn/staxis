@@ -1,7 +1,7 @@
 /**
  * The company rulebook's open box — "tell Staxis how your company runs."
  *
- * POST { propertyId, note?: string, file?: { name, mimeType, base64 } }
+ * POST { organizationId, note?: string, file?: { name, mimeType, base64 } }
  *   → { ok, data: { added: [{id, topic, content, category}], skipped,
  *                   readNote, readNoteCode } }
  *   `readNote` is English. `readNoteCode` is the same fact as a code, so the
@@ -42,11 +42,8 @@ import { NextRequest } from 'next/server';
 import { requireSession } from '@/lib/api-auth';
 import { ok, err, ApiErrorCode } from '@/lib/api-response';
 import { getOrMintRequestId, log } from '@/lib/log';
-import { validateUuid } from '@/lib/api-validate';
-import { loadSessionAccount, callerReachesHotel } from '@/lib/team-auth';
+import { loadSessionAccount } from '@/lib/team-auth';
 import { checkAndIncrementRateLimit, rateLimitedResponse } from '@/lib/api-ratelimit';
-import { companyForProperty } from '@/lib/company/access';
-import { rulebookStandingFor } from '@/lib/company/rulebook-access';
 import {
   companyKnowledgeLedgerAvailable,
   storeCompanyFact,
@@ -68,6 +65,10 @@ import {
   parseIntakeFacts,
   type IntakeSourceChunk,
 } from '@/lib/agent/knowledge-intake';
+import {
+  resolveRulebookRequestScope,
+  rulebookRequestScopeStillCurrent,
+} from '@/lib/company/rulebook-request-scope';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -102,6 +103,7 @@ const READ_NOTE_VISION = 'file_read_with_ai';
 
 interface Body {
   propertyId?: unknown;
+  organizationId?: unknown;
   note?: unknown;
   file?: unknown;
 }
@@ -168,31 +170,50 @@ export async function POST(req: NextRequest) {
   const caller = await loadSessionAccount(session.userId);
   if (!caller) return err('Account not found', { requestId, status: 404, code: ApiErrorCode.AccountNotFound });
 
-  const pidV = validateUuid(body.propertyId, 'propertyId');
-  if (pidV.error) return err(pidV.error, { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
-  const propertyId = pidV.value!;
-  if (!callerReachesHotel(caller, propertyId)) {
-    return err('Forbidden', { requestId, status: 403, code: ApiErrorCode.Forbidden });
+  const resolvedScope = await resolveRulebookRequestScope(caller, {
+    organizationId: body.organizationId,
+    propertyId: body.propertyId,
+  });
+  if (!resolvedScope.ok) {
+    if (resolvedScope.reason === 'invalid_request') {
+      return err('Choose exactly one company or hotel context.', {
+        requestId, status: 400, code: ApiErrorCode.ValidationFailed,
+      });
+    }
+    if (resolvedScope.reason === 'unavailable') {
+      return err('The company rulebook is temporarily unavailable.', {
+        requestId, status: 503, code: ApiErrorCode.UpstreamFailure,
+      });
+    }
+    return err(
+      resolvedScope.reason === 'not_found'
+        ? 'Company rulebook not found'
+        : 'Forbidden',
+      {
+        requestId,
+        status: resolvedScope.reason === 'not_found' ? 404 : 403,
+        code: resolvedScope.reason === 'not_found' ? ApiErrorCode.NotFound : ApiErrorCode.Forbidden,
+      },
+    );
   }
-
-  const organizationId = await companyForProperty(propertyId);
-  if (!organizationId) {
-    return err('This hotel is not part of a management company', {
-      requestId, status: 404, code: ApiErrorCode.NoCompany,
-    });
-  }
-  const standing = await rulebookStandingFor(caller.accountId, organizationId);
-  if (!standing.canEdit) {
+  const scope = resolvedScope.scope;
+  if (scope.audience !== 'company' || !scope.standing.canEdit) {
     return err('Only company leadership can add to the rulebook', {
       requestId, status: 403, code: ApiErrorCode.CompanyLeadershipOnly,
     });
   }
+  const { organizationId, billingPropertyId: propertyId, standing } = scope;
 
   // App-first rolling deploy: refuse before extraction/provider spend when the
   // CAS writer is not present yet. Never fall back to an unversioned write.
   if (!await companyKnowledgeLedgerAvailable()) {
     return err('The company rulebook is temporarily read-only.', {
       requestId, status: 503, code: ApiErrorCode.UpstreamFailure,
+    });
+  }
+  if (!await rulebookRequestScopeStillCurrent(scope)) {
+    return err('Your company context changed. Reload and try again.', {
+      requestId, status: 409, code: 'scope_changed',
     });
   }
 
@@ -238,6 +259,11 @@ export async function POST(req: NextRequest) {
           fileNoteCode = READ_NOTE_TRUNCATED;
         }
       } else if (extracted.status === 'needs_ocr' && upload.mimeType === 'application/pdf') {
+        if (!await rulebookRequestScopeStillCurrent(scope)) {
+          return err('Your company context changed. Reload and try again.', {
+            requestId, status: 409, code: 'scope_changed',
+          });
+        }
         const transcript = await visionExtractText(
           { data: upload.base64, mediaType: 'application/pdf' },
           TRANSCRIBE_PROMPT,
@@ -277,6 +303,11 @@ export async function POST(req: NextRequest) {
       });
     }
 
+    if (!await rulebookRequestScopeStillCurrent(scope)) {
+      return err('Your company context changed. Reload and try again.', {
+        requestId, status: 409, code: 'scope_changed',
+      });
+    }
     const run = await runAgent({
       systemPrompt: { stable: COMPANY_INTAKE_SYSTEM_PROMPT, dynamic: '' },
       history: [],

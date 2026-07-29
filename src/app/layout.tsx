@@ -1,5 +1,6 @@
 import type { Metadata, Viewport } from 'next';
 import { Geist, Geist_Mono, Instrument_Serif, Fraunces, Newsreader, Hanken_Grotesk, JetBrains_Mono } from 'next/font/google';
+import { Suspense } from 'react';
 import './globals.css';
 import { AuthProvider } from '@/contexts/AuthContext';
 import { LanguageProvider } from '@/contexts/LanguageContext';
@@ -9,6 +10,10 @@ import { InstallStaxisProvider } from '@/contexts/InstallStaxisContext';
 import { WalkthroughOverlay } from '@/components/walkthrough/WalkthroughOverlay';
 import { AuthenticatedRuntimeBoundary } from '@/components/layout/AuthenticatedRuntimeBoundary';
 import { ReliableNavigationProvider } from '@/lib/hooks/use-reliable-navigation';
+import { ThemeProvider } from '@/contexts/ThemeContext';
+import { PortfolioProvider } from '@/contexts/PortfolioContext';
+import { HotelActingProvider } from '@/contexts/HotelActingContext';
+import { ActingContextBoundary } from '@/components/layout/ActingContextBoundary';
 
 // Snow design system — typography from the locked Dashboard Explorations
 // design. Geist for body, Geist Mono for small caps / numeric callouts,
@@ -80,14 +85,31 @@ export const viewport: Viewport = {
   themeColor: '#F5F7F4',
 };
 
+const INITIAL_THEME_SCRIPT = `(() => {
+  try {
+    const stored = localStorage.getItem('staxis-theme-preference');
+    const preference = stored === 'light' || stored === 'dark' ? stored : 'system';
+    const dark = preference === 'dark'
+      || (preference === 'system' && matchMedia('(prefers-color-scheme: dark)').matches);
+    const theme = dark ? 'dark' : 'light';
+    document.documentElement.dataset.theme = theme;
+    document.documentElement.style.colorScheme = theme;
+  } catch {}
+})();`;
+
 export default function RootLayout({
   children,
 }: {
   children: React.ReactNode;
 }) {
   return (
-    <html lang="en" className={`${geist.variable} ${geistMono.variable} ${instrumentSerif.variable} ${fraunces.variable} ${newsreader.variable} ${hankenGrotesk.variable} ${jetbrainsMono.variable}`}>
+    <html
+      lang="en"
+      suppressHydrationWarning
+      className={`${geist.variable} ${geistMono.variable} ${instrumentSerif.variable} ${fraunces.variable} ${newsreader.variable} ${hankenGrotesk.variable} ${jetbrainsMono.variable}`}
+    >
       <head>
+        <script dangerouslySetInnerHTML={{ __html: INITIAL_THEME_SCRIPT }} />
         <meta name="apple-mobile-web-app-capable" content="yes" />
         <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
         <meta name="apple-mobile-web-app-title" content="Staxis" />
@@ -118,25 +140,51 @@ export default function RootLayout({
         <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:opsz,wght,FILL,GRAD@20..48,100..700,0..1,-50..200&display=block" />
       </head>
       <body>
-        <InstallStaxisProvider>
-          <SyncProvider>
-            <AuthProvider>
-              <LanguageProvider>
-                <ReliableNavigationProvider>
-                  <PropertyProvider>
-                    <AuthenticatedRuntimeBoundary>
-                      {children}
-                      {/* Mounted at the root so the loop survives page navigations
-                          (AppLayout is per-page and unmounts when the URL changes,
-                          which would kill an in-flight multi-step walkthrough). */}
-                      <WalkthroughOverlay />
-                    </AuthenticatedRuntimeBoundary>
-                  </PropertyProvider>
-                </ReliableNavigationProvider>
-              </LanguageProvider>
-            </AuthProvider>
-          </SyncProvider>
-        </InstallStaxisProvider>
+        <ThemeProvider>
+          <InstallStaxisProvider>
+            <SyncProvider>
+              <AuthProvider>
+                <LanguageProvider>
+                  <ReliableNavigationProvider>
+                    <Suspense
+                      fallback={(
+                        <div
+                          role="status"
+                          aria-live="polite"
+                          style={{
+                            minHeight: '100dvh',
+                            display: 'grid',
+                            placeItems: 'center',
+                            background: 'var(--bg)',
+                            color: 'var(--text-secondary)',
+                          }}
+                        >
+                          Opening Staxis…
+                        </div>
+                      )}
+                    >
+                      <HotelActingProvider>
+                        <ActingContextBoundary>
+                          <PortfolioProvider>
+                            <PropertyProvider>
+                              <AuthenticatedRuntimeBoundary>
+                                {children}
+                                {/* Mounted at the root so the loop survives page navigations
+                                    (AppLayout is per-page and unmounts when the URL changes,
+                                    which would kill an in-flight multi-step walkthrough). */}
+                                <WalkthroughOverlay />
+                              </AuthenticatedRuntimeBoundary>
+                            </PropertyProvider>
+                          </PortfolioProvider>
+                        </ActingContextBoundary>
+                      </HotelActingProvider>
+                    </Suspense>
+                  </ReliableNavigationProvider>
+                </LanguageProvider>
+              </AuthProvider>
+            </SyncProvider>
+          </InstallStaxisProvider>
+        </ThemeProvider>
       </body>
     </html>
   );

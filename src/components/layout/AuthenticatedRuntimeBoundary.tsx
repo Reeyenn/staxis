@@ -18,6 +18,7 @@ const AUTHENTICATED_PATH_PREFIXES = [
   '/settings',
   '/admin',
   '/property-selector',
+  '/portfolio',
 ] as const;
 
 export function AuthenticatedRuntimeBoundary({ children }: { children: React.ReactNode }) {

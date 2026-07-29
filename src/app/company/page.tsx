@@ -28,8 +28,10 @@ import {
 } from 'lucide-react';
 
 import { AppLayout } from '@/components/layout/AppLayout';
+import { CompanyRulebookPanel } from '@/components/concourse/CompanyRulebookPanel';
 import { useAuth, type AppUser } from '@/contexts/AuthContext';
 import { useLang } from '@/contexts/LanguageContext';
+import { usePortfolio } from '@/contexts/PortfolioContext';
 import { useProperty } from '@/contexts/PropertyContext';
 import { RouteErrorState } from '@/components/layout/RouteResourceState';
 import { fetchWithAuth } from '@/lib/api-fetch';
@@ -56,6 +58,7 @@ import type {
 } from '@/lib/company-access/access-editor';
 import type { CompanyStructureProjection } from '@/lib/company-access/structure';
 import { buildCompanyAccessViewerKey } from '@/lib/company-access/viewer-key';
+import { selectCompanyAccessContext } from '@/lib/company-access/select-company-context';
 import { notifyAuthorizationChanged } from '@/lib/hooks/use-authorization-refresh-key';
 import { useReliableNavigation } from '@/lib/hooks/use-reliable-navigation';
 import type { StaffMember, Property } from '@/types';
@@ -324,6 +327,8 @@ function CompanyAccessContent() {
     refreshStaff,
   } = useProperty();
   const { lang } = useLang();
+  const portfolio = usePortfolio();
+  const portfolioMode = searchParams.get('scope') === 'portfolio';
 
   const [data, setData] = React.useState<CompanyAccessData | null>(null);
   const [dataViewerKey, setDataViewerKey] = React.useState<string | null>(null);
@@ -548,7 +553,24 @@ function CompanyAccessContent() {
     data?.viewerContext
     && data.viewerContext.requestedPropertyId === activePropertyId,
   );
-  const currentData = adminTargetIsCurrent && dataBelongsToCurrentViewer && adminDataMatchesSelection ? data : null;
+  const unscopedCurrentData = adminTargetIsCurrent
+    && dataBelongsToCurrentViewer
+    && adminDataMatchesSelection
+    ? data
+    : null;
+  const selectedPortfolioCompany = portfolioMode
+    && portfolio.data?.selection.state === 'selected'
+    && portfolio.data.selection.selectedOrganizationId === portfolio.requestedOrganizationId
+    ? portfolio.data.selectedCompany
+    : null;
+  const currentData = portfolioMode
+    ? unscopedCurrentData && selectedPortfolioCompany
+      ? selectCompanyAccessContext(
+          unscopedCurrentData,
+          selectedPortfolioCompany.organizationId,
+        )
+      : null
+    : unscopedCurrentData;
   const currentLoadError = localizeKnownMessage(
     adminTargetIsCurrent && loadErrorViewerKey === currentViewerKey ? loadError : null,
     lang,
@@ -558,7 +580,7 @@ function CompanyAccessContent() {
   const customerStructureViewerKey = accountId && userRole && userRole !== 'admin'
     ? `${accountId}:${userRole}:company-structure:${authorizationFingerprint ?? 'unverified'}`
     : null;
-  const currentStructure = customerStructureViewerKey
+  const currentStructure = !portfolioMode && customerStructureViewerKey
     && structureViewerKey === customerStructureViewerKey
     ? structure
     : null;
@@ -568,7 +590,7 @@ function CompanyAccessContent() {
     const viewerKey = user.role === 'admin'
       ? null
       : `${user.accountId}:${user.role}:company-structure:${authorizationFingerprint ?? 'unverified'}`;
-    if (!viewerKey || !currentData || currentData.legacyFallback) {
+    if (portfolioMode || !viewerKey || !currentData || currentData.legacyFallback) {
       setStructure(null);
       setStructureViewerKey(null);
       setStructureLoading(false);
@@ -613,7 +635,7 @@ function CompanyAccessContent() {
       }
     })();
     return () => { cancelled = true; };
-  }, [accountId, authLoading, authorizationFingerprint, currentData, propertyLoading, retryKey, user, userRole]);
+  }, [accountId, authLoading, authorizationFingerprint, currentData, portfolioMode, propertyLoading, retryKey, user, userRole]);
   // Tab NAMES, not tab keys. The `?tab=` values and the `company-tab-*` ids
   // below never change — old links and bookmarks keep working.
   //
@@ -687,6 +709,8 @@ function CompanyAccessContent() {
   const showLoading = authLoading
     || !authorizationChecked
     || propertyLoading
+    || (portfolioMode && portfolio.loading)
+    || (portfolioMode && !selectedPortfolioCompany && !portfolio.error)
     || (adminPreview && !adminTargetIsCurrent)
     || (loading && !currentData)
     || viewerTransitionLoading
@@ -711,12 +735,15 @@ function CompanyAccessContent() {
         : adminViewerContext?.scope === 'property'
           ? localized(lang, 'My Hotel', 'Mi hotel')
           : localized(lang, 'Hotel View', 'Vista del hotel'))
-    : localized(lang, 'Company & Access', 'Empresa y acceso');
-  const customerContextLabel = resolved.organizations.length === 1
+    : portfolioMode
+      ? localized(lang, 'My Portfolio', 'Mi portafolio')
+      : localized(lang, 'Company & Access', 'Empresa y acceso');
+  const customerContextLabel = selectedPortfolioCompany?.organizationName
+    ?? (resolved.organizations.length === 1
     ? resolved.organizations[0].name
     : resolved.organizations.length > 1
       ? localized(lang, `${resolved.organizations.length} company contexts`, `${resolved.organizations.length} contextos de empresa`)
-      : null;
+      : null);
   const contextLabel = adminPreview
     ? adminViewerContext?.targetName ?? activeProperty?.name ?? null
     : customerContextLabel;
@@ -754,7 +781,9 @@ function CompanyAccessContent() {
                   ? adminToolsActive
                     ? localized(lang, 'Staxis admin view', 'Vista de administrador de Staxis')
                     : localized(lang, 'Staxis hotel view', 'Vista del hotel de Staxis')
-                  : localized(lang, 'Company workspace', 'Espacio de empresa')}
+                  : portfolioMode
+                    ? localized(lang, 'Portfolio workspace', 'Espacio del portafolio')
+                    : localized(lang, 'Company workspace', 'Espacio de empresa')}
               </div>
               <h1 ref={previewHeadingRef} tabIndex={adminPreview ? -1 : undefined}>{workspaceTitle}</h1>
               <p>
@@ -770,17 +799,23 @@ function CompanyAccessContent() {
                         'Review this hotel in read-only mode.',
                         'Revisa este hotel en modo de solo lectura.',
                       )
-                  : localized(
-                      lang,
-                      'See your hotels, team, and exactly why you have access.',
-                      'Consulta tus hoteles, tu equipo y exactamente por qué tienes acceso.',
-                    )}
+                  : portfolioMode
+                    ? localized(
+                        lang,
+                        'Manage company knowledge, hotels, people, and access in one place.',
+                        'Administra el conocimiento, los hoteles, las personas y el acceso de la empresa en un solo lugar.',
+                      )
+                    : localized(
+                        lang,
+                        'See your hotels, team, and exactly why you have access.',
+                        'Consulta tus hoteles, tu equipo y exactamente por qué tienes acceso.',
+                      )}
               </p>
             </div>
           </div>
 
           <div className={styles.heroHotelSlot}>
-            {contextProperties.length > 0 ? (
+            {!portfolioMode && contextProperties.length > 0 ? (
               <HotelSwitcher
                 className={styles.heroHotelSwitcher}
                 hotels={contextProperties}
@@ -900,7 +935,14 @@ function CompanyAccessContent() {
               aria-labelledby={`company-tab-${tab}`}
               className={styles.panel}
             >
-              {tab === 'people' && capabilityOverridesStatus === 'error' ? (
+              {portfolioMode && portfolio.error ? (
+                <RouteErrorState
+                  title={localized(lang, 'Portfolio context could not be confirmed', 'No se pudo confirmar el contexto del portafolio')}
+                  message={portfolio.error}
+                  retryLabel={localized(lang, 'Try again', 'Reintentar')}
+                  onRetry={() => void portfolio.reload()}
+                />
+              ) : tab === 'people' && capabilityOverridesStatus === 'error' ? (
                 <RouteErrorState
                   title={localized(lang, 'People access could not be confirmed', 'No se pudo confirmar el acceso a Personas')}
                   message={capabilityOverridesError ?? undefined}
@@ -916,17 +958,30 @@ function CompanyAccessContent() {
                   description={localized(lang, 'Your company access is tied to your Staxis account.', 'Tu acceso de empresa está vinculado a tu cuenta de Staxis.')}
                 />
               ) : tab === 'overview' ? (
-                <OverviewPanel
-                  data={resolved}
-                  structure={currentStructure}
-                  structureLoading={structureLoading}
-                  structureUnavailable={Boolean(structureError)}
-                  lang={lang}
-                  activePropertyName={activeProperty?.name ?? null}
-                  hotelRosterCount={hotelRosterCount}
-                  hotelRosterUnavailable={currentStaffUnavailable}
-                  onViewReceipt={setSelectedReceipt}
-                />
+                <>
+                  {selectedPortfolioCompany ? (
+                    <CompanyRulebookPanel
+                      lang={lang}
+                      organizationId={selectedPortfolioCompany.organizationId}
+                    />
+                  ) : !portfolioMode && activePropertyId ? (
+                    <CompanyRulebookPanel
+                      lang={lang}
+                      propertyId={activePropertyId}
+                    />
+                  ) : null}
+                  <OverviewPanel
+                    data={resolved}
+                    structure={currentStructure}
+                    structureLoading={structureLoading}
+                    structureUnavailable={Boolean(structureError)}
+                    lang={lang}
+                    activePropertyName={activeProperty?.name ?? null}
+                    hotelRosterCount={hotelRosterCount}
+                    hotelRosterUnavailable={currentStaffUnavailable}
+                    onViewReceipt={setSelectedReceipt}
+                  />
+                </>
               ) : tab === 'hotels' ? (
                 <HotelsPanel
                   data={resolved}

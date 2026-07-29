@@ -307,13 +307,23 @@ describe('AI Staff — the kill switch actually stops the Morning Briefer', () =
       busyHotelIds: [],
     };
 
-    const on = await getPortfolioBrief({ accountId: adminAccountId, input, noCache: true });
+    const on = await getPortfolioBrief({
+      accountId: adminAccountId,
+      policyFingerprint: 'a'.repeat(24),
+      input,
+      noCache: true,
+    });
     assert.ok(on.brief, 'a checked company should have a morning summary');
     assert.notEqual(on.stopped, true);
 
     await flip(MORNING_BRIEFER_ID, true);
 
-    const off = await getPortfolioBrief({ accountId: adminAccountId, input, noCache: true });
+    const off = await getPortfolioBrief({
+      accountId: adminAccountId,
+      policyFingerprint: 'a'.repeat(24),
+      input,
+      noCache: true,
+    });
     assert.equal(off.brief, null, 'the company brief must stop with its author');
     assert.equal(off.stopped, true);
   });

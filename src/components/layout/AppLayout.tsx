@@ -22,6 +22,7 @@ import {
   STALE_CHUNK_STABLE_BOOT_MS,
 } from '@/lib/stale-chunk-recovery';
 import { useNavigationReady } from '@/lib/hooks/use-reliable-navigation';
+import { useOptionalHotelActingContext } from '@/contexts/HotelActingContext';
 
 let legacyServiceWorkerCleanupStarted = false;
 
@@ -34,8 +35,15 @@ const AskStaxisBar = dynamic(
   { ssr: false, loading: () => null },
 );
 
-export function AppLayout({ children }: { children: React.ReactNode }) {
+export function AppLayout({
+  children,
+  hideGlobalAsk = false,
+}: {
+  children: React.ReactNode;
+  hideGlobalAsk?: boolean;
+}) {
   useNavigationReady();
+  const acting = useOptionalHotelActingContext();
   const { lang } = useLang();
   const { isOnline } = useSyncContext();
   const {
@@ -55,10 +63,16 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
      and redirecting would loop if Staxis (or every section) were off. */
   const pathname = usePathname();
   const currentSection = sectionForPath(pathname);
+  const actingSectionEnabled = acting?.context?.source === 'portfolio' && currentSection
+    ? acting.context.sectionAvailability[currentSection]
+    : null;
   const sectionOff = Boolean(
-    activeProperty &&
-    currentSection &&
-    !isSectionEnabled(activeProperty.enabledSections, currentSection),
+    currentSection && (
+      actingSectionEnabled === false
+      || (actingSectionEnabled === null
+        && activeProperty
+        && !isSectionEnabled(activeProperty.enabledSections, currentSection))
+    ),
   );
 
   /* ── Offline banner ──
@@ -218,7 +232,7 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
       </main>
       <div className="staxis-feedback-slot"><FeedbackButton /></div>
       <div className="staxis-ai-activity-slot"><AiActivityButton /></div>
-      <AskStaxisBar />
+      {!hideGlobalAsk ? <AskStaxisBar /> : null}
     </div>
   );
 }

@@ -307,6 +307,7 @@ export async function GET(req: NextRequest) {
       const { localDate } = await companyLocalToday(queue.organizationId, new Date());
       const briefResult = await getPortfolioBrief({
         accountId: caller.accountId,
+        policyFingerprint: queue.policyFingerprint,
         input: {
           organizationId: queue.organizationId,
           localDate,

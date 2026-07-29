@@ -15,9 +15,8 @@ import { ok, err, ApiErrorCode } from '@/lib/api-response';
 import { getOrMintRequestId, log } from '@/lib/log';
 import { errToString } from '@/lib/utils';
 import { checkAndIncrementRateLimit, rateLimitedResponse } from '@/lib/api-ratelimit';
-import { capabilityDecisionForUserId } from '@/lib/capabilities/server';
 import { capabilityUnavailableResponse } from '@/lib/capabilities/api-gate';
-import { loadManagerCaller } from '@/lib/team-auth';
+import { hotelWriteDecisionForUserId, loadManagerCaller } from '@/lib/team-auth';
 import { listEquipment, createEquipment } from '@/lib/equipment/store';
 import { parseEquipmentInput } from '@/lib/equipment/validate';
 
@@ -64,13 +63,10 @@ export async function POST(req: NextRequest) {
   if (pidV.error) return err(pidV.error, { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
   const pid = pidV.value!;
 
-  if (!(await userHasPropertyAccess(session.userId, pid))) {
-    return err('Forbidden', { requestId, status: 403, code: ApiErrorCode.Forbidden });
-  }
-  const capabilityDecision = await capabilityDecisionForUserId(
+  const capabilityDecision = await hotelWriteDecisionForUserId(
     session.userId,
-    'manage_equipment',
     pid,
+    'manage_equipment',
   );
   if (capabilityDecision === 'unavailable') {
     return capabilityUnavailableResponse(requestId);
