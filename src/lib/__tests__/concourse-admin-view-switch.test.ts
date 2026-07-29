@@ -45,7 +45,7 @@ describe('platform Admin destination and in-place hotel Admin tools', () => {
   test('shows the destination only after a fresh platform-admin verdict', () => {
     assert.match(concourse, /authorizationChecked && platformAdmin && user\?\.role === ['"]admin['"]/);
     assert.match(concourse, /const adminDestination:[\s\S]*?= verifiedPlatformAdmin[\s\S]*?\? \{/);
-    assert.match(concourse, /if \(!authorizationChecked \|\| verifiedPlatformAdmin \|\| !adminWorkspaceActive\) return;[\s\S]*?router\.replace\(['"]\/home['"]\)/);
+    assert.match(concourse, /if \(!authorizationChecked \|\| verifiedPlatformAdmin \|\| !adminWorkspaceActive\) return;[\s\S]*?replace\(['"]\/home['"]\)/);
     assert.doesNotMatch(concourse, /user\?\.role === ['"]admin['"] \? \{[\s\S]*?\/admin\/properties#live/);
   });
 

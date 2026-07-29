@@ -1448,7 +1448,7 @@ describe('the selected company survives every portfolio-feed UI boundary', () =>
       ),
       'the feed did not rebuild a company-preserving back link',
     );
-    assert.ok(queueView.includes('organizationId={requestedOrganizationId}'));
+    assert.ok(queueView.includes('organizationId={requestedOrganizationId ?? null}'));
     assert.ok(queueView.includes('backHref={portfolioHref}'));
     assert.ok(
       queueView.includes(
@@ -1463,7 +1463,9 @@ describe('the selected company survives every portfolio-feed UI boundary', () =>
       'the hotel drill-down dropped the selected company needed by its back link',
     );
     assert.ok(
-      portfolioView.includes('onScope?.(undefined)'),
+      queueView.includes('`${viewerAuthorizationKey}|organization:${requestedOrganizationId ?? \'auto\'}`')
+        && queueView.includes('portfolioScopeForViewer( companyScopeSnapshot, portfolioAuthorizationKey, )')
+        && portfolioView.includes('{ identityKey: authorizationKey, keepDataOnError: false }'),
       'a failed or changing company receipt could leave the prior company scope mounted',
     );
   });

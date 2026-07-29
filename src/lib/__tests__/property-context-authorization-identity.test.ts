@@ -161,6 +161,8 @@ describe('PropertyContext authorization identity', () => {
       companyPage,
       /const completeAccessMutation = React\.useCallback\(\(\) => \{[\s\S]*?notifyAuthorizationChanged\(\);[\s\S]*?setRetryKey/,
     );
-    assert.equal((companyPage.match(/onCompleted=\{completeAccessMutation\}/g) ?? []).length, 4);
+    assert.equal((companyPage.match(/onCompleted=\{completeAccessMutation\}/g) ?? []).length, 3);
+    assert.match(companyPage, /onStructureChanged=\{completeAccessMutation\}/);
+    assert.match(companyPage, /onAccessChanged=\{completeAccessMutation\}/);
   });
 });

@@ -99,6 +99,15 @@ function payload(organizationId: string, organizationName: string): PortfolioPay
     cards: [],
     brief: null,
     run: null,
+    coverage: {
+      authorizedHotelCount: 2,
+      attemptedHotelCount: 2,
+      processedHotelCount: 2,
+      omittedHotelCount: 0,
+      unavailableHotelCount: 0,
+      portfolioChecksStatus: 'completed',
+      complete: true,
+    },
   };
 }
 
@@ -155,6 +164,7 @@ describe('Portfolio Queue viewer identity isolation', { concurrency: false }, ()
       root.render(
         <PortfolioQueueView
           lang="en"
+          organizationId="org-a"
           authorizationKey="viewer-a:owner:hotel-a,hotel-b"
           onScope={(scope) => scopes.push(scope?.organizationId ?? 'hotel')}
         />,
@@ -172,6 +182,7 @@ describe('Portfolio Queue viewer identity isolation', { concurrency: false }, ()
       root.render(
         <PortfolioQueueView
           lang="en"
+          organizationId="org-b"
           authorizationKey="viewer-b:finance:hotel-c,hotel-d"
           onScope={(scope) => scopes.push(scope?.organizationId ?? 'hotel')}
         />,
