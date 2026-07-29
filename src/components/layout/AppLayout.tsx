@@ -16,15 +16,11 @@ import { sectionForPath, isSectionEnabled } from '@/lib/sections/registry';
 import { RouteErrorState, RouteLoadingState } from './RouteResourceState';
 import {
   clearStaleChunkRecoveryIncident,
-  LEGACY_WORKER_RECOVERY_PARAM,
-  reloadOnceWithSessionGuard,
   staleChunkFailureSeenThisBoot,
   STALE_CHUNK_STABLE_BOOT_MS,
 } from '@/lib/stale-chunk-recovery';
 import { useNavigationReady } from '@/lib/hooks/use-reliable-navigation';
 import { useOptionalHotelActingContext } from '@/contexts/HotelActingContext';
-
-let legacyServiceWorkerCleanupStarted = false;
 
 // The "Ask Staxis" command bar (~900 lines + react-markdown) sits on every
 // authenticated page but starts collapsed and empty. Load it lazily so it stays
@@ -97,49 +93,6 @@ export function AppLayout({
       });
     }, STALE_CHUNK_STABLE_BOOT_MS);
     return () => window.clearTimeout(timeout);
-  }, []);
-
-  // Retire only known legacy root workers/caches. The live housekeeper worker
-  // is scoped to /housekeeper/ and must survive this cleanup. Old `/sw.js`
-  // installs cached obsolete JS chunks at the origin root and could intercept
-  // a client transition until a hard refresh reset the controller.
-  useEffect(() => {
-    if (legacyServiceWorkerCleanupStarted) return;
-    if (typeof navigator === 'undefined' || !('serviceWorker' in navigator)) return;
-    legacyServiceWorkerCleanupStarted = true;
-    navigator.serviceWorker.getRegistrations()
-      .then(async regs => {
-        let retiredControllingWorker = false;
-        await Promise.all(regs.map(async reg => {
-          const url = reg.active?.scriptURL ?? reg.installing?.scriptURL ?? reg.waiting?.scriptURL ?? '';
-          let path = '';
-          try { path = new URL(url).pathname; } catch { /* malformed legacy URL */ }
-          const legacy = path === '/sw.js' || path === '/firebase-messaging-sw.js';
-          if (!legacy) return;
-          if (navigator.serviceWorker.controller?.scriptURL === url) {
-            retiredControllingWorker = true;
-          }
-          await reg.unregister().catch(() => false);
-        }));
-
-        if ('caches' in window) {
-          await window.caches.delete('hotelops-v1').catch(() => false);
-        }
-
-        // Unregistering does not release a page already controlled by the old
-        // worker. Reload once so the browser can use the network/current build;
-        // the session guard prevents a broken worker from creating a loop.
-        if (retiredControllingWorker) {
-          const recoveryKey = 'staxis-legacy-worker-recovery';
-          reloadOnceWithSessionGuard({
-            key: recoveryKey,
-            fallbackParam: LEGACY_WORKER_RECOVERY_PARAM,
-            getSessionStorage: () => window.sessionStorage,
-            location: window.location,
-          });
-        }
-      })
-      .catch(() => { /* best effort — old browsers */ });
   }, []);
 
   return (
