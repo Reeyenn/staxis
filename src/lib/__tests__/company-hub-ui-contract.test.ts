@@ -245,8 +245,8 @@ describe('My Hotel account and team integration', () => {
     assert.match(company, /if \(!user \|\| authLoading \|\| propertyLoading \|\| !authorizationChecked\) return/);
     // Every value that changes the authoritative viewer, hotel, or fetched
     // projection must invalidate this request; language-only renders must not.
-    assert.match(company, /\[accountId, activePropertyId, adminPreview, authLoading, authorizationChecked, authorizationFingerprint, propertyKey, propertyLoading, retryKey, userRole\]/);
-    assert.match(company, /requestedViewerKey = `\$\{user\.accountId\}:\$\{user\.role\}:[^`]*\$\{authorizationFingerprint \?\? ['"]unverified['"]\}`/);
+    assert.match(company, /\[authLoading, authorizationChecked, currentViewerKey, propertyLoading, retryKey\]/);
+    assert.match(company, /const requestedViewerKey = currentViewerKey/);
     assert.match(company, /currentViewerKey[\s\S]*authorizationFingerprint \?\? ['"]unverified['"]/);
     assert.match(company, /hotel-authorized['"] : ['"]invite-only/);
     assert.match(company, /tab === ['"]people['"] && hotelCapabilitiesLoading/);

@@ -99,6 +99,7 @@ function payload(organizationId: string, organizationName: string): PortfolioPay
     cards: [],
     brief: null,
     run: null,
+    coverage: null,
   };
 }
 
