@@ -1,10 +1,14 @@
 // Front-end-only shared types for the Communications tab.
 import type { ConversationDTO, StaffLite } from '@/lib/comms/types';
 
-export type ViewMode = 'chats' | 'todo' | 'logbook';
+/**
+ * Communications is Messages. To-do and the Log book left for the Staxis list
+ * on 2026-07-30, so there is one view. Kept as a named type rather than
+ * inlined: the shell still branches on it, and narrowing it here is what makes
+ * a stray setMode('todo') a compile error instead of a blank pane.
+ */
+export type ViewMode = 'chats';
 export type RightPanel = null | 'pinned' | 'members';
-/** The two views inside the To-do destination. Calendar has no nav item of its own. */
-export type TodoView = 'list' | 'calendar';
 
 export interface Me {
   staffId: string;

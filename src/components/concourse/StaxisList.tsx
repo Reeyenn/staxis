@@ -69,8 +69,6 @@ export interface StaxisListProps {
 
 export function StaxisList({ propertyId, lang, focusId, onReadState, canSeeFindings }: StaxisListProps) {
   const { user } = useAuth();
-  const now = React.useMemo(() => new Date(), []);
-  const todayIso = React.useMemo(() => localIso(now), [now]);
 
   // ── the work ─────────────────────────────────────────────────────────────
   const { data: worklist, reload: reloadWorklist } = useApiResource<{ items: WorklistItem[] }>(
@@ -78,6 +76,17 @@ export function StaxisList({ propertyId, lang, focusId, onReadState, canSeeFindi
     { enabled: !!propertyId, pollMs: 60_000, keepDataOnError: true },
   );
   const items = React.useMemo(() => worklist?.items ?? [], [worklist]);
+
+  // Re-read the wall clock every time the work refetches, rather than once at
+  // mount. A front-desk terminal left open overnight would otherwise keep
+  // rendering "due today" and "3 days late" against yesterday's clock, and the
+  // people most likely to leave a tab open all day are exactly the people this
+  // screen is for. `worklist` is the dependency ON PURPOSE and is not used in
+  // the body: it is the 60-second poll, which is the cheapest tick available
+  // and is already the moment every date on the screen can change.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const now = React.useMemo(() => new Date(), [worklist]);
+  const todayIso = React.useMemo(() => localIso(now), [now]);
 
   // ── this person's switches ───────────────────────────────────────────────
   const { data: prefsData, reload: reloadPrefs } = useApiResource<{ prefs: FeedPrefs }>(

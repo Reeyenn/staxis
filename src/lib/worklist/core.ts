@@ -232,6 +232,7 @@ export async function gatherWorklist(pid: string, opts: GatherOptions = {}): Pro
     ...taskRows.map((r) => r.assigned_staff_id as string | null),
     ...taskRows.map((r) => r.created_by_staff_id as string | null),
     ...((reminderRes.data ?? []) as Record<string, unknown>[]).map((r) => r.created_by_staff_id as string | null),
+    ...((reminderRes.data ?? []) as Record<string, unknown>[]).map((r) => r.target_staff_id as string | null),
     ...((timeOffRes.data ?? []) as Record<string, unknown>[]).map((r) => r.staff_id as string | null),
   ].filter((x): x is string => !!x));
 

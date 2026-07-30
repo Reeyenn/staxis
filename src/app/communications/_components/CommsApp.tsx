@@ -21,7 +21,7 @@
 // rather than falling through, so old links land on the real thing.
 // ═══════════════════════════════════════════════════════════════════════════
 import React from 'react';
-import { Search, ListTodo, Notebook, Megaphone, Plus, ChevronLeft, AlertCircle, Loader2, RefreshCw, X } from 'lucide-react';
+import { Search, ListTodo, Megaphone, Plus, ChevronLeft, AlertCircle, Loader2, RefreshCw, X } from 'lucide-react';
 import { useProperty } from '@/contexts/PropertyContext';
 import { apiGet, apiPost } from '@/lib/comms/client';
 import type { ConversationDTO, MessageDTO } from '@/lib/comms/types';
@@ -390,8 +390,20 @@ function CommsPropertyApp({ pid }: { pid: string | null }) {
       {searchOpen && <SearchPalette pid={pid} L={L} onClose={() => setSearchOpen(false)} onJump={jump} onOpenDm={openDm} />}
       {showNew && boot && <NewMessageModal staff={boot.staff} L={L} onPick={openDm} onClose={() => setShowNew(false)} />}
 
-      {(bootError || mutationError) && (
+      {(bootError || mutationError || taskNotice) && (
         <div className="comms-alert-stack">
+          {taskNotice && (
+            /* "Turn this into a task" used to switch to the To-do nav item.
+               That item is gone; the to-do is on the Staxis list. Say so and
+               offer the way there, rather than yanking somebody out of a
+               conversation they are in the middle of. */
+            <div className="comms-action-alert" role="status">
+              <ListTodo size={18} aria-hidden="true" />
+              <span>{taskNotice}</span>
+              <a href="/feed" style={{ fontWeight: 600, textDecoration: 'none', color: 'inherit' }}>{'Open Staxis'}</a>
+              <button onClick={() => setTaskNotice(null)} aria-label={'Dismiss'}><X size={18} aria-hidden="true" /></button>
+            </div>
+          )}
           {bootError && (
             <div className="comms-action-alert" role="alert">
               <AlertCircle size={18} aria-hidden="true" />
