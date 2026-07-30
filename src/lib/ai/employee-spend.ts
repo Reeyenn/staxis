@@ -25,8 +25,8 @@ import { getAiFeatureDefinition } from '@/lib/ai/feature-registry';
 import type { AiFeatureKey } from '@/lib/ai/types';
 import { AI_EMPLOYEES, type AiEmployee } from '@/lib/ai/employee-registry';
 
-/** How far back the spend figure looks. Matches the AI recommendations screen's
- *  window so two admin surfaces quoting "recent AI spend" mean the same thing. */
+/** How far back the spend figure looks. Matches the existing admin cost
+ *  reporting window so surfaces quoting "recent AI spend" agree. */
 export const SPEND_WINDOW_DAYS = 30;
 
 export interface SpendRow {

@@ -501,6 +501,8 @@ const RLS_REQUIRED_TABLES = [
   // Fleet-wide AI Control Center (service-role only).
   'ai_model_catalog',
   'ai_feature_config_versions',
+  // Historical recommendation reports remain inert until a future migration
+  // can remove the persisted table; keep its RLS posture monitored meanwhile.
   'ai_recommendation_reports',
 
   // High-sensitivity backend tables — service-role only.
@@ -585,7 +587,7 @@ const RLS_SERVICE_ROLE_ONLY_ALLOWLIST = new Set([
   // 0313 — global AI provider catalog + immutable feature config history.
   'ai_model_catalog',
   'ai_feature_config_versions',
-  // 0316 — saved recommendation reports.
+  // 0316 — inert historical recommendation reports retained without migration.
   'ai_recommendation_reports',
 ]);
 
