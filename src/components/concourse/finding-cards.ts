@@ -1136,13 +1136,19 @@ export function livenessLine(
 
   const hours = (now.getTime() - ranAt.getTime()) / 3_600_000;
   if (hours > RUN_FRESH_HOURS) {
-    const days = Math.max(1, Math.round(hours / 24));
+    // ALWAYS PLURAL, AND THAT IS ARITHMETIC RATHER THAN A GUESS. Reaching here
+    // means hours > 48, so hours / 24 > 2 and the rounded value is 2 at the
+    // minimum. This carried a `days === 1` arm and a `Math.max(1, …)` clamp
+    // until 2026-07-30; both were unreachable, so the singular sentence was
+    // copy that could never appear on a screen.
+    //
+    // The boundary, if RUN_FRESH_HOURS is ever changed: a day count of 1 needs
+    // hours below 36. Lower the freshness gate past that and a singular wording
+    // has to come back with it, or this reads "Last checked 1 days ago".
+    const days = Math.round(hours / 24);
     return {
       kind: 'stale',
-      text:
-        days === 1
-            ? 'Last checked 1 day ago. This may not be up to date.'
-            : `Last checked ${days} days ago. This may not be up to date.`,
+      text: `Last checked ${days} days ago. This may not be up to date.`,
     };
   }
 
