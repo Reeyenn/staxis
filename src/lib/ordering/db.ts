@@ -488,6 +488,12 @@ export interface RecordOrderInput {
    *  so the document the vendor receives and the row we keep carry the same
    *  reference. Omitted elsewhere and minted here. */
   poNumber?: string;
+  /** 'sent' (the default) is for orders already placed by the time we hear
+   *  about them: a store run, a phone call, a website checkout the manager did
+   *  themselves. The email path writes 'draft' first and promotes the row with
+   *  markOrderSent only once the mail is actually accepted. See the note on
+   *  recordPlacedOrder. */
+  status?: 'draft' | 'sent';
 }
 
 /**
@@ -503,6 +509,11 @@ export interface RecordOrderInput {
  *
  * `inventory.last_ordered_at` is what stops an item reappearing on tomorrow's
  * list, and it is the same field the agent's markOrdered already stamps.
+ *
+ * A 'draft' order is deliberately half-written: no sent_at, no recipient, and
+ * NO last_ordered_at stamp. That is what keeps the items on the ordering list
+ * so the manager can retry, and it is why the email path can safely write the
+ * row before it knows whether the mail will go through.
  */
 export async function recordPlacedOrder(
   pid: string,
@@ -510,6 +521,7 @@ export async function recordPlacedOrder(
   actor: InventoryAuditActor,
 ): Promise<{ id: string; poNumber: string } | null> {
   const poNumber = input.poNumber ?? mintPoNumber();
+  const status = input.status ?? 'sent';
   const nowIso = new Date().toISOString();
   const { data, error } = await supabaseAdmin
     .from('purchase_orders')
@@ -518,14 +530,14 @@ export async function recordPlacedOrder(
       po_number: poNumber,
       vendor_id: input.vendorId,
       vendor_name_snapshot: input.vendorName,
-      status: 'sent',
+      status,
       placed_via: input.placedVia,
       subtotal_cents: Math.max(0, Math.round(input.subtotalCents)),
       notes: input.notes,
       created_by: actor.userId,
       created_by_name: actor.name,
-      sent_at: nowIso,
-      sent_to_email: input.sentToEmail,
+      sent_at: status === 'sent' ? nowIso : null,
+      sent_to_email: status === 'sent' ? input.sentToEmail : null,
     })
     .select('id, po_number')
     .maybeSingle();
@@ -551,22 +563,59 @@ export async function recordPlacedOrder(
     }
   }
 
-  const itemIds = input.lines.map((l) => l.itemId).filter(Boolean);
-  if (itemIds.length > 0) {
-    const { error: stampError } = await supabaseAdmin
-      .from('inventory')
-      .update({ last_ordered_at: nowIso })
-      .eq('property_id', pid)
-      .in('id', itemIds);
-    if (stampError) {
-      // The order is real and recorded; the stamp is a convenience that keeps
-      // the item off tomorrow's list. Log and continue rather than telling the
-      // manager the order failed after it has already gone to the vendor.
-      log.error('[ordering] last_ordered_at stamp failed', { pid, orderId, err: stampError.message });
-    }
+  if (status === 'sent') {
+    await stampOrdered(pid, orderId, input.lines.map((l) => l.itemId), nowIso);
   }
 
   return { id: orderId, poNumber: String((data as Record<string, unknown>).po_number ?? poNumber) };
+}
+
+/**
+ * Promote a draft order to sent, once the email has actually been accepted.
+ *
+ * The second half of the email path's two-step. The row and its lines already
+ * exist by the time this runs, so a crash here loses the stamp and the sent_at
+ * but never the order itself, and the manager can see what was attempted.
+ */
+export async function markOrderSent(
+  pid: string,
+  orderId: string,
+  input: { sentToEmail: string | null; itemIds: readonly string[] },
+): Promise<void> {
+  const nowIso = new Date().toISOString();
+  const { error } = await supabaseAdmin
+    .from('purchase_orders')
+    .update({ status: 'sent', sent_at: nowIso, sent_to_email: input.sentToEmail })
+    .eq('id', orderId)
+    .eq('property_id', pid);
+  if (error) {
+    // The vendor has the order. Saying it failed now would be a lie that gets
+    // the same order sent twice, so this is logged and swallowed.
+    log.error('[ordering] markOrderSent failed', { pid, orderId, err: error.message });
+    return;
+  }
+  await stampOrdered(pid, orderId, input.itemIds, nowIso);
+}
+
+/** `inventory.last_ordered_at` is what keeps an item off tomorrow's list. It
+ *  is a convenience, not the record of the order, so a failure here is logged
+ *  and swallowed rather than reported as a failed order. */
+async function stampOrdered(
+  pid: string,
+  orderId: string,
+  itemIds: readonly string[],
+  nowIso: string,
+): Promise<void> {
+  const ids = itemIds.filter(Boolean);
+  if (ids.length === 0) return;
+  const { error } = await supabaseAdmin
+    .from('inventory')
+    .update({ last_ordered_at: nowIso })
+    .eq('property_id', pid)
+    .in('id', ids);
+  if (error) {
+    log.error('[ordering] last_ordered_at stamp failed', { pid, orderId, err: error.message });
+  }
 }
 
 // ─── The one-time welcome ──────────────────────────────────────────────────

@@ -43,6 +43,7 @@ import { todayStr } from '@/lib/utils';
 import { log } from '@/lib/log';
 import { buildInspectionQueue } from '@/lib/housekeeping/inspection-queue';
 import { COMPLAINT_OVERDUE_HOURS, COMPLAINT_OVERDUE_HOURS_HIGH } from '@/lib/complaints-shared';
+import { isAssignable, type AssignableStaffRow } from './assignable';
 import type { AssignedByMeItem, WorklistItem, WorklistPriority, WorklistViewer } from './types';
 
 /** Deep-link targets per source (the page + the tab query param it now reads). */
@@ -459,7 +460,13 @@ export async function gatherWorklist(pid: string, opts: GatherOptions = {}): Pro
       assigneeStaffId: null,
       assigneeName: null,
       dept: null,
-      dueDate: day ? `${day}T00:00:00.000Z` : null,
+      // END of the requested day, not the start of it. UTC midnight is the
+      // PREVIOUS local day everywhere in the US, so `${day}T00:00:00.000Z`
+      // put the request one square early on the calendar and made the "due
+      // today" line contradict the row's own text ("Ana asked for the 14th
+      // off" filed under the 13th). This matches the overdue check directly
+      // below and the composer's convention in list-rows.tsx.
+      dueDate: day ? `${day}T23:59:59.999Z` : null,
       status: 'pending',
       priority: 'normal',
       propertyId: pid,
@@ -525,6 +532,10 @@ export function assignerNotices(
  * a housekeeper's job. Routing this work onto their board is a real feature and
  * a separate one: it means touching the housekeeper page flows, which is
  * exactly what the rule forbids doing casually.
+ *
+ * The rule itself lives in `assignable.ts` and is shared with every WRITE seam,
+ * because filtering the dropdown never stopped a request that named an id
+ * directly. Read and write must not be able to drift apart.
  */
 export async function listAssignees(
   pid: string,
@@ -541,8 +552,7 @@ export async function listAssignees(
     throw new Error(error.message);
   }
   return ((data ?? []) as Record<string, unknown>[])
-    .filter((r) => r.is_active !== false)
-    .filter((r) => (r.department as string | null) !== 'housekeeping')
+    .filter((r) => isAssignable(r as AssignableStaffRow))
     .map((r) => ({
       staffId: String(r.id),
       name: String(r.name ?? ''),

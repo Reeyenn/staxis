@@ -22,6 +22,7 @@ import { checkAndIncrementRateLimit, rateLimitedResponse, hashToRateLimitKey } f
 import { commsContext, ONE_LIST_CTX } from '@/lib/comms/route-helpers';
 import { listTasks, createTask, setTaskStatus, deleteTask, getStaffRow } from '@/lib/comms/core';
 import { createTemplate, RECURRING_CADENCES, type RecurringCadence } from '@/lib/recurring-tasks/store';
+import { assigneeBlockedReason } from '@/lib/worklist/assignable';
 import { errToString } from '@/lib/utils';
 
 export const runtime = 'nodejs';
@@ -68,6 +69,11 @@ export async function POST(req: NextRequest): Promise<Response> {
     if (sv.error) return err(sv.error, { requestId: ctx.requestId, status: 400, code: ApiErrorCode.ValidationFailed, headers: ctx.headers });
     const row = await getStaffRow(ctx.pid, sv.value!);
     if (!row) return err('assignee not found', { requestId: ctx.requestId, status: 404, code: ApiErrorCode.NotFound, headers: ctx.headers });
+    // The row was already being read and then thrown away. Housekeepers never
+    // open the to-do list, so handing one a to-do loses it silently; an
+    // inactive staff member loses it just as thoroughly.
+    const blocked = assigneeBlockedReason(row);
+    if (blocked) return err(blocked, { requestId: ctx.requestId, status: 400, code: ApiErrorCode.ValidationFailed, headers: ctx.headers });
     assignedStaffId = sv.value!;
   }
   let assignedDepartment: string | null = null;

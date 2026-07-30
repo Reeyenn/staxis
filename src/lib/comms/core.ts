@@ -29,6 +29,7 @@ import {
   listAuthoritativePropertyAccess,
   type AuthoritativePropertyAccess,
 } from '@/lib/authorization/server';
+import { assignmentBlockedReason } from '@/lib/worklist/assignable';
 
 const ATTACHMENT_BUCKET = 'housekeeping-issue-photos'; // reuse existing private bucket
 const SIGNED_URL_TTL = 60 * 60; // 1h read URLs
@@ -1195,6 +1196,17 @@ export async function getCampaignStatus(
 
 // ── To-do list ──────────────────────────────────────────────────────────────
 
+/**
+ * The one insert for `comms_tasks`, and therefore the last line of defence on
+ * who may be handed a to-do.
+ *
+ * Every caller above this also checks, because they can each phrase the
+ * refusal better than a thrown error can. This check is here anyway: the rule
+ * was previously enforced only where the assignee dropdown was built, which
+ * left four write paths that never consulted it, and "remember to check" is
+ * what produced that. Throws rather than silently dropping the assignee, so a
+ * caller cannot mistake a refusal for a success.
+ */
 export async function createTask(
   pid: string,
   input: {
@@ -1204,6 +1216,8 @@ export async function createTask(
     createdByStaffId?: string | null; sourceMessageId?: string | null;
   },
 ): Promise<{ id: string }> {
+  const blocked = await assignmentBlockedReason(pid, input.assignedStaffId);
+  if (blocked) throw new Error(blocked);
   const { data, error } = await supabaseAdmin
     .from('comms_tasks')
     .insert({

@@ -15,6 +15,11 @@
 
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { log } from '@/lib/log';
+import {
+  assignmentBlockedReason,
+  isAssignable,
+  type AssignableStaffRow,
+} from '@/lib/worklist/assignable';
 
 export const RECURRING_DEPARTMENTS = ['front_desk', 'housekeeping', 'maintenance', 'general', 'all_staff'] as const;
 export const RECURRING_CADENCES = ['daily', 'weekdays', 'weekly', 'biweekly', 'monthly'] as const;
@@ -117,8 +122,15 @@ export function normalizeCadence(
   return { weekday: null, dayOfMonth: null, anchorDate: null };
 }
 
-/** Create a recurring template. Returns the new row id. */
+/** Create a recurring template. Returns the new row id.
+ *
+ *  Guarded for the same reason createTask is, and more urgently: a template
+ *  aimed at somebody who cannot see to-dos does not lose one task, it loses a
+ *  fresh one every day until somebody notices, and nobody notices work that
+ *  was never visible. */
 export async function createTemplate(input: CreateTemplateInput): Promise<{ id: string }> {
+  const blocked = await assignmentBlockedReason(input.propertyId, input.assignedStaffId);
+  if (blocked) throw new Error(blocked);
   const cadence = input.cadence;
   const params = normalizeCadence(cadence, input, todayLocalIso());
   const { data, error } = await supabaseAdmin
@@ -255,6 +267,12 @@ export async function spawnDueRecurringTodos(now: Date = new Date()): Promise<Sp
   }
 
   const rows = (data ?? []) as Array<Record<string, unknown>>;
+  // Templates written before the assignee rule reached the write paths can
+  // still point at somebody who never opens the to-do list. Left alone they
+  // would keep manufacturing invisible work every single day, so those
+  // instances spawn UNASSIGNED instead: an unassigned to-do sits on the shared
+  // list, which is somewhere people actually look.
+  const unassignable = await unassignableAssignees(rows);
   const propsSeen = new Set<string>();
   let spawned = 0;
   let skipped = 0;
@@ -282,12 +300,20 @@ export async function spawnDueRecurringTodos(now: Date = new Date()): Promise<Sp
     // DIRECTLY (not via createTask) so we can set the recurring_* columns and
     // rely on the unique index to swallow a duplicate.
     const nowIso = new Date().toISOString();
+    const assignedStaffId = template.assignedStaffId && unassignable.has(template.assignedStaffId)
+      ? null
+      : template.assignedStaffId;
+    if (assignedStaffId !== template.assignedStaffId) {
+      log.warn('[recurring-tasks] template assignee cannot receive to-dos, spawning unassigned', {
+        templateId: template.id,
+      });
+    }
     const { error: insErr } = await supabaseAdmin
       .from('comms_tasks')
       .insert({
         property_id: template.propertyId,
         title: template.title,
-        assigned_staff_id: template.assignedStaffId,
+        assigned_staff_id: assignedStaffId,
         assigned_department: template.assignedDepartment,
         priority: template.priority,
         created_by_staff_id: null,
@@ -327,4 +353,33 @@ export async function spawnDueRecurringTodos(now: Date = new Date()): Promise<Sp
   }
 
   return { properties: propsSeen.size, spawned, skipped, failed };
+}
+
+/**
+ * Of the assignees these templates name, which ones may not receive a to-do.
+ *
+ * One batched read rather than one per template. FAILS CLOSED: if the staff
+ * rows cannot be read, every named assignee is treated as unassignable, which
+ * spawns the work onto the shared list. Losing the name is recoverable;
+ * spawning onto a list nobody opens is not.
+ */
+async function unassignableAssignees(rows: Array<Record<string, unknown>>): Promise<Set<string>> {
+  const ids = [...new Set(
+    rows.map((r) => r.assigned_staff_id).filter((v): v is string => typeof v === 'string' && v.length > 0),
+  )];
+  if (ids.length === 0) return new Set<string>();
+
+  const { data, error } = await supabaseAdmin
+    .from('staff')
+    .select('id, department, is_active')
+    .in('id', ids);
+  if (error) {
+    log.warn('[recurring-tasks] assignee check failed, spawning unassigned', { err: error.message });
+    return new Set(ids);
+  }
+  const allowed = new Set<string>();
+  for (const row of (data ?? []) as Array<Record<string, unknown>>) {
+    if (isAssignable(row as AssignableStaffRow)) allowed.add(String(row.id));
+  }
+  return new Set(ids.filter((id) => !allowed.has(id)));
 }

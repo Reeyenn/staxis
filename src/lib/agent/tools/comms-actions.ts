@@ -31,6 +31,7 @@ import {
 import { canForProperty } from '@/lib/capabilities/server';
 import { registerAddon } from '../approval';
 import { resolveStaffByName, type StaffResolution } from './_helpers';
+import { assigneeBlockedReason, assignmentBlockedReason } from '@/lib/worklist/assignable';
 import type { ScopedDb } from '../scoped-db';
 
 // ─── Shared: resolve a recipient staff member by name (or id) ──────────────
@@ -152,6 +153,10 @@ registerAddon('send_message', {
   run: async (ctx) => {
     const r = (ctx.primaryResult ?? {}) as { recipientStaffId?: string; message?: string; messageId?: string };
     if (!r.recipientStaffId) throw new Error('recipient staff id missing from message result');
+    // Messaging a housekeeper is fine and normal. Turning that message into a
+    // to-do for them is not: the message reaches them, the to-do would not.
+    const blocked = await assignmentBlockedReason(ctx.propertyId, r.recipientStaffId);
+    if (blocked) throw new Error(blocked);
     const title = String(r.message ?? '').slice(0, 120) || 'Follow-up';
     await createTask(ctx.propertyId, {
       title,
@@ -233,6 +238,11 @@ registerTool<CreateTodoArgs>({
           data: { ambiguous: true, candidates: res.candidates.map((c) => ({ name: c.name, department: c.department })) },
         };
       }
+      // Resolving a name is not permission to assign to them. A housekeeper
+      // matches by name like anyone else, and the to-do would land on a list
+      // they never open.
+      const blocked = assigneeBlockedReason(res.staff);
+      if (blocked) return { ok: false, error: blocked };
       assignedStaffId = res.staff.id;
       assignedName = res.staff.name;
     }

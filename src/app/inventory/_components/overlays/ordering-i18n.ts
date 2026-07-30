@@ -92,6 +92,11 @@ export function orderingStrings(lang: Lang) {
       copyList: 'Copy list',
       sending: 'Sending',
       sent: 'Sent',
+      // A send that fails must say so. The order is not lost when this shows:
+      // the countdown has ended but nothing was recorded as placed, so the
+      // group is still on the screen with its Send button back.
+      sendFailed: 'Could not send. The order is still here, try again.',
+      actionFailed: 'That did not save. Try again.',
       undo: 'Undo',
       undoCountdown: (s: number) => `Sending in ${s}s. Tap to stop.`,
       undoHonesty: 'Nothing is sent until the countdown ends. If you close this screen first, nothing goes out and the order stays here.',

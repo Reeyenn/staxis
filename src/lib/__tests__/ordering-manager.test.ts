@@ -41,6 +41,11 @@ import { renderPoEmail, sendPoEmail } from '@/lib/ordering/po-email';
 import { mintPoNumber } from '@/lib/ordering/db';
 import type { BucketKey, Vendor } from '@/lib/ordering/types';
 import { orderingStrings } from '@/app/inventory/_components/overlays/ordering-i18n';
+import {
+  createSendCountdown,
+  postOrdering,
+  runOrderingAction,
+} from '@/app/inventory/_components/overlays/ordering-actions';
 
 // ─── Fixtures ───────────────────────────────────────────────────────────────
 
@@ -613,5 +618,242 @@ describe('ordering — the screen promises only what it can do', () => {
         assert.equal(es[key], value);
       }
     }
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 7. When the network says no
+//
+// The ordering panel is the one screen in this product that can make a manager
+// believe a supplier has an order they do not have. Three separate bugs made
+// exactly that possible, and all three were bugs of PLACEMENT rather than
+// logic, which is why the machinery now lives in its own module and is tested
+// here rather than inferred from a component that cannot be rendered under
+// --conditions=react-server.
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('ordering — a send or an action that fails', () => {
+  function jsonResponse(body: unknown): Response {
+    return { json: async () => body } as unknown as Response;
+  }
+
+  test('a dropped connection reads as a failure, not an exception', async () => {
+    // The bug: post() had no try/catch and its caller was an unawaited async
+    // IIFE, so a rejected fetch vanished. The manager saw no message at all.
+    const rejecting = (async () => { throw new TypeError('Failed to fetch'); }) as unknown as typeof fetch;
+    assert.equal(await postOrdering('p1', { action: 'send_po' }, rejecting), false);
+  });
+
+  test('a server that refuses reads as a failure', async () => {
+    const refusing = (async () => jsonResponse({ ok: false, error: 'could not send: smtp refused' })) as unknown as typeof fetch;
+    assert.equal(await postOrdering('p1', { action: 'send_po' }, refusing), false);
+  });
+
+  test('a reply that is not JSON reads as a failure', async () => {
+    // A gateway HTML error page is the realistic shape of this.
+    const garbage = (async () => ({
+      json: async () => { throw new SyntaxError('Unexpected token <'); },
+    })) as unknown as typeof fetch;
+    assert.equal(await postOrdering('p1', { action: 'send_po' }, garbage), false);
+  });
+
+  test('a success reads as a success, and the property id travels with it', async () => {
+    let sent = '';
+    const good = (async (_url: unknown, init: { body?: unknown }) => {
+      sent = String(init.body);
+      return jsonResponse({ ok: true });
+    }) as unknown as typeof fetch;
+    assert.equal(await postOrdering('p1', { action: 'mark_ordered' }, good), true);
+    assert.deepEqual(JSON.parse(sent), { pid: 'p1', action: 'mark_ordered' });
+  });
+
+  test('a request that never comes back still releases the panel', async () => {
+    // The bug: act() was setBusy(key) / await post() / setBusy(null) with no
+    // finally. One rejected fetch left `busy` set forever, every control with
+    // disabled={busy != null} died, and because the panel stays mounted across
+    // close and reopen, only a full page reload brought it back.
+    const busy: Array<string | null> = [];
+    let reloaded = 0;
+    const succeeded = await runOrderingAction({
+      key: 'mark:v1',
+      post: async () => { throw new TypeError('Failed to fetch'); },
+      setBusy: (k) => busy.push(k),
+      onResult: () => {},
+      reload: async () => { reloaded += 1; },
+    });
+    assert.equal(succeeded, false);
+    assert.deepEqual(busy, ['mark:v1', null], 'the busy key must be released even when the request never came back');
+    assert.equal(reloaded, 1, 'a failed write is exactly when the screen is most likely to be stale');
+  });
+
+  test('a refused write is reported rather than swallowed', async () => {
+    const results: boolean[] = [];
+    await runOrderingAction({
+      key: 'method:v1',
+      post: async () => false,
+      setBusy: () => {},
+      onResult: (succeeded) => results.push(succeeded),
+      reload: async () => {},
+    });
+    assert.deepEqual(results, [false]);
+  });
+
+  test('a write that lands releases the panel too', async () => {
+    const busy: Array<string | null> = [];
+    const results: boolean[] = [];
+    assert.equal(
+      await runOrderingAction({
+        key: 'intro',
+        post: async () => true,
+        setBusy: (k) => busy.push(k),
+        onResult: (succeeded) => results.push(succeeded),
+        reload: async () => {},
+      }),
+      true,
+    );
+    assert.deepEqual(busy, ['intro', null]);
+    assert.deepEqual(results, [true]);
+  });
+
+  // ── The 60 seconds, and the once-only promise ──
+
+  /** An interval whose callback this test drives by hand, one tick at a time. */
+  function manualTimer() {
+    let tick: (() => void) | null = null;
+    let cleared = 0;
+    return {
+      impl: {
+        setIntervalImpl: (fn: () => void) => { tick = fn; return 7; },
+        clearIntervalImpl: () => { cleared += 1; },
+      },
+      run: () => {
+        if (!tick) throw new Error('no interval was ever started');
+        tick();
+      },
+      cleared: () => cleared,
+    };
+  }
+
+  test('the order goes out once, and only after the last second', async () => {
+    const timer = manualTimer();
+    const seen: Array<number | null> = [];
+    let sends = 0;
+    const countdown = createSendCountdown({
+      seconds: 3,
+      onSecond: (_key, left) => seen.push(left),
+      ...timer.impl,
+    });
+
+    countdown.start('vendor-1', async () => { sends += 1; });
+    timer.run();
+    timer.run();
+    assert.equal(sends, 0, 'nothing may leave the building while the countdown is still running');
+    timer.run();
+    await Promise.resolve();
+    assert.equal(sends, 1);
+    assert.deepEqual(seen, [3, 2, 1, null], 'the button counts down and then stops counting');
+  });
+
+  test('a doubled tick cannot send the same order twice', async () => {
+    // THE BUG THIS EXISTS FOR. The send used to be dispatched from inside a
+    // setState updater, and React is free to invoke an updater twice. Twice
+    // here is two purchase orders in a real supplier's inbox. This fake
+    // deliberately does not stop delivering ticks after the clear, so the
+    // guards are the only thing standing between one tap and two orders.
+    const timer = manualTimer();
+    let sends = 0;
+    const countdown = createSendCountdown({
+      seconds: 1,
+      onSecond: () => {},
+      ...timer.impl,
+    });
+
+    countdown.start('vendor-1', async () => { sends += 1; });
+    timer.run();
+    timer.run();
+    timer.run();
+    await Promise.resolve();
+    assert.equal(sends, 1, 'one tap, one order');
+  });
+
+  test('the timer is torn down before the send is dispatched', async () => {
+    const timer = manualTimer();
+    let clearedWhenSendBegan = -1;
+    const countdown = createSendCountdown({
+      seconds: 1,
+      onSecond: () => {},
+      ...timer.impl,
+    });
+
+    countdown.start('vendor-1', async () => { clearedWhenSendBegan = timer.cleared(); });
+    timer.run();
+    await Promise.resolve();
+    assert.equal(
+      clearedWhenSendBegan,
+      1,
+      'a tick that can still arrive once the send has begun is a second order waiting to happen',
+    );
+  });
+
+  test('a second tap while the send is in flight is refused', async () => {
+    const timer = manualTimer();
+    let sends = 0;
+    // The executor runs synchronously, so `release` is assigned before use.
+    let release = (): void => {};
+    const inFlight = new Promise<void>((resolve) => { release = resolve; });
+    const countdown = createSendCountdown({ seconds: 1, onSecond: () => {}, ...timer.impl });
+
+    countdown.start('vendor-1', async () => {
+      sends += 1;
+      await inFlight;
+    });
+    timer.run();
+    await Promise.resolve();
+    countdown.start('vendor-1', async () => { sends += 1; });
+    assert.equal(sends, 1, 'the first order is still on its way; a second tap must not start another');
+    release();
+  });
+
+  test('undoing inside the minute sends nothing at all', async () => {
+    const timer = manualTimer();
+    let sends = 0;
+    const countdown = createSendCountdown({ seconds: 5, onSecond: () => {}, ...timer.impl });
+
+    countdown.start('vendor-1', async () => { sends += 1; });
+    timer.run();
+    countdown.cancel('vendor-1');
+    timer.run();
+    timer.run();
+    timer.run();
+    timer.run();
+    timer.run();
+    await Promise.resolve();
+    assert.equal(sends, 0, 'undo means the send was never started, which is stronger than a recall');
+    assert.equal(countdown.isCounting('vendor-1'), false);
+  });
+
+  test('closing the screen mid-countdown sends nothing', async () => {
+    const timer = manualTimer();
+    let sends = 0;
+    const countdown = createSendCountdown({ seconds: 3, onSecond: () => {}, ...timer.impl });
+
+    countdown.start('vendor-1', async () => { sends += 1; });
+    countdown.stopAll();
+    timer.run();
+    timer.run();
+    timer.run();
+    await Promise.resolve();
+    assert.equal(sends, 0, 'the UI promises this in words, so it has to be true');
+  });
+
+  test('the failure copy tells the manager the order is still theirs to retry', () => {
+    const tx = orderingStrings('en');
+    assert.notEqual(tx.sendFailed, tx.sent, 'a failed send must not read like a successful one');
+    assert.ok(tx.sendFailed.trim().length > 0);
+    assert.ok(tx.actionFailed.trim().length > 0);
+    // The one claim this string makes that the code has to keep: the order is
+    // still on the screen. The route writes the purchase order as a draft and
+    // never stamps the items as ordered unless the mail was accepted.
+    assert.match(tx.sendFailed, /still here|try again/i);
   });
 });

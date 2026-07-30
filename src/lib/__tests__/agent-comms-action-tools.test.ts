@@ -34,6 +34,8 @@ const CALLER_STAFF = '00000000-0000-0000-0000-0000000000b2';
 const ACCT = '00000000-0000-0000-0000-0000000000b3';
 const MARIA = '00000000-0000-0000-0000-0000000000b4';
 const MARIO = '00000000-0000-0000-0000-0000000000b5';
+/** Front desk, and therefore somebody a to-do can actually reach. */
+const DANA = '00000000-0000-0000-0000-0000000000b6';
 
 let staffRows: Array<{ id: string; property_id: string; name: string; department: string | null; is_active: boolean }>;
 const postedMessages: Array<Record<string, unknown>> = [];
@@ -48,6 +50,7 @@ beforeEach(() => {
   staffRows = [
     { id: MARIA, property_id: PID, name: 'Maria Garcia', department: 'housekeeping', is_active: true },
     { id: CALLER_STAFF, property_id: PID, name: 'Reeyen Boss', department: 'front_desk', is_active: true },
+    { id: DANA, property_id: PID, name: 'Dana Pike', department: 'front_desk', is_active: true },
   ];
   postedMessages.length = 0;
   createdTasks.length = 0;
@@ -82,12 +85,34 @@ function chain(rows: Record<string, unknown>[]) {
   return api;
 }
 
+/** A `staff` chain that actually applies its eq() filters, evaluated lazily so
+ *  the filters land before the row is read. */
+function staffChain() {
+  let rows: Array<Record<string, unknown>> = staffRows.map((s) => ({ ...s }));
+  const api: Record<string, unknown> = {
+    select: () => api,
+    eq: (column: string, value: unknown) => {
+      rows = rows.filter((r) => r[column] === value);
+      return api;
+    },
+    neq: () => api, is: () => api, in: () => api,
+    ilike: () => api, order: () => api, limit: () => api,
+    maybeSingle: async () => ({ data: rows[0] ?? null, error: null }),
+    single: async () => ({ data: rows[0] ?? null, error: null }),
+    then: (resolve: (v: unknown) => unknown, reject?: (e: unknown) => unknown) =>
+      Promise.resolve({ data: rows, error: null }).then(resolve, reject),
+  };
+  return api;
+}
+
 function buildStub(table: string) {
   if (table === 'staff') {
-    // resolveRecipient reads active staff for this property. The .eq('id',…)
-    // direct-lookup path also lands here; return the full set and let the tool
-    // filter (our chain ignores eq predicates, which is fine for these cases).
-    return chain(staffRows.filter((s) => s.is_active));
+    // resolveRecipient reads active staff for this property, and the assignee
+    // guard looks ONE row up by id. That second read is why this stub honors
+    // eq() instead of handing back the whole table: a stub that ignores the
+    // filter would answer every id with the first row, which is how a guard
+    // can look like it works while checking the wrong person.
+    return staffChain();
   }
   if (table === 'comms_conversations') {
     return {
@@ -207,9 +232,21 @@ describe('create_todo + add_logbook_entry', () => {
   });
 
   test('create_todo assigns to a resolved staff member', async () => {
+    const res = await executeTool('create_todo', { title: 'check pool', assignee: 'Dana' }, ctx());
+    assert.equal(res.ok, true, res.error ?? '');
+    assert.equal(createdTasks[0].assigned_staff_id, DANA);
+  });
+
+  test('create_todo refuses to hand a to-do to a housekeeper', async () => {
+    // Maria is housekeeping. Resolving her name is not permission to assign to
+    // her: housekeepers work off the housekeeping board and never open the
+    // to-do list, so this task would have been written and then seen by
+    // nobody, forever. The chat door bypasses both to-do routes, so the check
+    // has to be here as well as there.
     const res = await executeTool('create_todo', { title: 'check pool', assignee: 'Maria' }, ctx());
-    assert.equal(res.ok, true);
-    assert.equal(createdTasks[0].assigned_staff_id, MARIA);
+    assert.equal(res.ok, false);
+    assert.match(res.error ?? '', /housekeeping board/i);
+    assert.equal(createdTasks.length, 0, 'nothing may be written for somebody who cannot see it');
   });
 
   test('add_logbook_entry writes an entry as the caller', async () => {

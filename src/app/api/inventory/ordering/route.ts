@@ -35,6 +35,7 @@ import {
   lastInvoicePrices,
   buildVendorSuggestions,
   recordPlacedOrder,
+  markOrderSent,
   mintPoNumber,
   getIntroDismissedAt,
   dismissIntro,
@@ -444,6 +445,37 @@ export async function POST(req: NextRequest): Promise<Response> {
         // the email's idempotency key, so a double-tap cannot deliver two
         // copies of the same order.
         const poNumber = mintPoNumber();
+
+        // WRITE THE ORDER BEFORE SENDING IT. The send used to come first, so a
+        // crash or a timeout between the two lost the order entirely: no row,
+        // no lines, no record that anything had been attempted. The draft row
+        // carries no sent_at, no recipient and does NOT stamp the items as
+        // ordered, so the items stay on the list to retry and nothing claims
+        // the vendor has it. markOrderSent promotes it once the mail is
+        // actually accepted.
+        const recorded = await recordPlacedOrder(
+          gate.pid,
+          {
+            vendorId: vendor.id,
+            vendorName: vendor.name,
+            placedVia: 'email',
+            lines: resolved.lines,
+            subtotalCents: resolved.subtotalCents,
+            sentToEmail: vendor.email,
+            notes: null,
+            poNumber,
+            status: 'draft',
+          },
+          actor,
+        );
+        if (!recorded) {
+          return err('could not record the order', {
+            requestId: gate.requestId,
+            status: 500,
+            code: 'action_failed',
+          });
+        }
+
         const sent = await sendPoEmail({
           to: vendor.email,
           vendorName: vendor.name,
@@ -461,6 +493,8 @@ export async function POST(req: NextRequest): Promise<Response> {
           notes: null,
         });
         if (!sent.ok) {
+          // The draft row stays. The panel shows "Could not send. The order is
+          // still here, try again." and the items are still on the list.
           return err(`could not send: ${sent.error}`, {
             requestId: gate.requestId,
             status: 502,
@@ -468,20 +502,10 @@ export async function POST(req: NextRequest): Promise<Response> {
           });
         }
 
-        const recorded = await recordPlacedOrder(
-          gate.pid,
-          {
-            vendorId: vendor.id,
-            vendorName: vendor.name,
-            placedVia: 'email',
-            lines: resolved.lines,
-            subtotalCents: resolved.subtotalCents,
-            sentToEmail: vendor.email,
-            notes: null,
-            poNumber,
-          },
-          actor,
-        );
+        await markOrderSent(gate.pid, recorded.id, {
+          sentToEmail: vendor.email,
+          itemIds: resolved.lines.map((l) => l.itemId),
+        });
         return ok(
           { order: recorded, sentTo: vendor.email },
           { requestId: gate.requestId, status: 201 },

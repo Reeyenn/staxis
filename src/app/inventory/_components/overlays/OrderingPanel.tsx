@@ -29,6 +29,12 @@ import { T, fonts } from '../tokens';
 import { Overlay } from './Overlay';
 import { type Lang } from '../inv-i18n';
 import { orderingStrings, type OrderingStrings } from './ordering-i18n';
+import {
+  createSendCountdown,
+  postOrdering,
+  runOrderingAction,
+  type SendCountdown,
+} from './ordering-actions';
 import { telHref } from '@/components/concourse/told-knowledge';
 import { moneyFromCents } from '@/lib/format';
 import type {
@@ -104,11 +110,28 @@ export function OrderingPanel({ lang, open, onClose, propertyId }: OrderingPanel
   const [state, setState] = useState<OrderingState | null>(null);
   const [loading, setLoading] = useState(false);
   const [busy, setBusy] = useState<string | null>(null);
-  const [notice, setNotice] = useState<string | null>(null);
+  // Carries its own tone: a failure that renders in the same green box as a
+  // success is barely better than no message at all.
+  const [notice, setNotice] = useState<{ tone: 'ok' | 'bad'; text: string } | null>(null);
   // vendorId → seconds remaining. Present means a send is counting down and
   // has NOT been called yet.
   const [pending, setPending] = useState<Record<string, number>>({});
-  const timers = useRef<Record<string, ReturnType<typeof setInterval>>>({});
+  const countdownRef = useRef<SendCountdown | null>(null);
+  if (!countdownRef.current) {
+    countdownRef.current = createSendCountdown({
+      seconds: UNDO_SECONDS,
+      onSecond: (vendorId, secondsLeft) => setPending((prev) => {
+        if (secondsLeft === null) {
+          if (!(vendorId in prev)) return prev;
+          const next = { ...prev };
+          delete next[vendorId];
+          return next;
+        }
+        return { ...prev, [vendorId]: secondsLeft };
+      }),
+    });
+  }
+  const countdown = countdownRef.current;
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -134,72 +157,51 @@ export function OrderingPanel({ lang, open, onClose, propertyId }: OrderingPanel
   // hopeful sentence — the interval that would have fired the send is gone.
   useEffect(() => {
     if (open) return;
-    Object.values(timers.current).forEach(clearInterval);
-    timers.current = {};
+    countdown.stopAll();
     setPending({});
-  }, [open]);
-  useEffect(() => () => {
-    Object.values(timers.current).forEach(clearInterval);
-    timers.current = {};
-  }, []);
+  }, [open, countdown]);
+  useEffect(() => () => { countdown.stopAll(); }, [countdown]);
 
-  const post = useCallback(async (body: Record<string, unknown>): Promise<boolean> => {
-    const res = await fetch('/api/inventory/ordering', {
-      method: 'POST',
-      credentials: 'include',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ pid: propertyId, ...body }),
-    });
-    const json = await res.json().catch(() => null);
-    return Boolean(json?.ok);
-  }, [propertyId]);
+  const post = useCallback(
+    (body: Record<string, unknown>) => postOrdering(propertyId, body),
+    [propertyId],
+  );
 
-  const act = useCallback(async (key: string, body: Record<string, unknown>) => {
-    setBusy(key);
-    const okResult = await post(body);
-    setBusy(null);
-    if (okResult) await load();
-    return okResult;
-  }, [post, load]);
+  const act = useCallback((key: string, body: Record<string, unknown>) => runOrderingAction({
+    key,
+    post: () => post(body),
+    setBusy,
+    // A write that did not land says so. Clearing the notice on success is
+    // what stops a stale failure sitting over a screen that has since worked.
+    onResult: (succeeded) => setNotice(succeeded ? null : { tone: 'bad', text: tx.actionFailed }),
+    reload: load,
+  }), [post, load, tx.actionFailed]);
 
   // ── The send, and the 60 seconds before it ──
   const startSend = useCallback((group: OrderGroup) => {
     const vendorId = group.vendorId;
-    if (!vendorId || timers.current[vendorId]) return;
-    setPending((p) => ({ ...p, [vendorId]: UNDO_SECONDS }));
-    timers.current[vendorId] = setInterval(() => {
-      setPending((prev) => {
-        const left = (prev[vendorId] ?? 0) - 1;
-        if (left > 0) return { ...prev, [vendorId]: left };
-        // Countdown over: NOW the API is called for the first time.
-        clearInterval(timers.current[vendorId]);
-        delete timers.current[vendorId];
-        void (async () => {
-          const sent = await post({
-            action: 'send_po',
-            vendorId,
-            itemIds: group.items.map((i) => i.itemId),
-          });
-          setNotice(sent ? tx.sent : null);
-          await load();
-        })();
-        const next = { ...prev };
-        delete next[vendorId];
-        return next;
-      });
-    }, 1000);
-  }, [post, load, tx.sent]);
-
-  const cancelSend = useCallback((vendorId: string) => {
-    const timer = timers.current[vendorId];
-    if (timer) clearInterval(timer);
-    delete timers.current[vendorId];
-    setPending((prev) => {
-      const next = { ...prev };
-      delete next[vendorId];
-      return next;
+    if (!vendorId) return;
+    const itemIds = group.items.map((i) => i.itemId);
+    countdown.start(vendorId, async () => {
+      let sent = false;
+      try {
+        sent = await post({ action: 'send_po', vendorId, itemIds });
+      } finally {
+        // Whichever way it went, the manager is told and the screen refetches.
+        // A send that fails quietly is the one outcome this panel must never
+        // produce: the manager walks away believing the supplier has the order.
+        setNotice(sent
+          ? { tone: 'ok', text: tx.sent }
+          : { tone: 'bad', text: tx.sendFailed });
+        await load();
+      }
     });
-  }, []);
+  }, [countdown, post, load, tx.sent, tx.sendFailed]);
+
+  const cancelSend = useCallback(
+    (vendorId: string) => countdown.cancel(vendorId),
+    [countdown],
+  );
 
   const categoriesByKey = useMemo(() => {
     const map = new Map<BucketKey, CategoryOption>();
@@ -220,7 +222,14 @@ export function OrderingPanel({ lang, open, onClose, propertyId }: OrderingPanel
     >
       <div style={{ display: 'flex', flexDirection: 'column', gap: 18 }}>
         {notice && (
-          <div style={chipBox(T.forestDim, T.forestText)} role="status">{notice}</div>
+          <div
+            style={notice.tone === 'bad'
+              ? chipBox(T.terraDim, T.terra)
+              : chipBox(T.forestDim, T.forestText)}
+            role={notice.tone === 'bad' ? 'alert' : 'status'}
+          >
+            {notice.text}
+          </div>
         )}
 
         {showWelcome && (

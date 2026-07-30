@@ -29,6 +29,7 @@ import { commsContext, ONE_LIST_CTX } from '@/lib/comms/route-helpers';
 import { checkAndIncrementRateLimit, rateLimitedResponse } from '@/lib/api-ratelimit';
 import { COMPLAINT_DEPTS } from '@/lib/complaints-shared';
 import { worklistSeesAllSources } from '@/lib/worklist/core';
+import { assigneeBlockedReason } from '@/lib/worklist/assignable';
 import { WORKLIST_SOURCE_TYPES } from '@/lib/worklist/types';
 
 export const runtime = 'nodejs';
@@ -84,6 +85,12 @@ export async function POST(req: NextRequest): Promise<Response> {
         if (assigneeStaffId) {
           const staff = await staffOnProperty(assigneeStaffId, pid);
           if (!staff) return err('assignee not found on this property', { requestId, status: 400, code: ApiErrorCode.ValidationFailed, headers });
+          // The dropdown never offers a housekeeper, but a dropdown is not a
+          // rule: this route accepts an id, and an id can arrive from a stale
+          // page or a crafted call. A to-do that lands on a housekeeper is
+          // seen by nobody, so it is refused here rather than lost silently.
+          const blocked = assigneeBlockedReason(staff);
+          if (blocked) return err(blocked, { requestId, status: 400, code: ApiErrorCode.ValidationFailed, headers });
           department = staff.department;
         }
         const { error } = await supabaseAdmin
@@ -146,10 +153,17 @@ export async function POST(req: NextRequest): Promise<Response> {
 }
 
 /** A staff member scoped to this property — name/dept derived server-side, never trusted from the caller. */
-async function staffOnProperty(staffId: string, pid: string): Promise<{ id: string; name: string | null; department: string | null } | null> {
+async function staffOnProperty(staffId: string, pid: string): Promise<{ id: string; name: string | null; department: string | null; is_active: boolean | null } | null> {
   const { data } = await supabaseAdmin
-    .from('staff').select('id, name, department').eq('id', staffId).eq('property_id', pid).maybeSingle();
-  return data ? { id: data.id as string, name: (data.name as string | null) ?? null, department: (data.department as string | null) ?? null } : null;
+    .from('staff').select('id, name, department, is_active').eq('id', staffId).eq('property_id', pid).maybeSingle();
+  return data
+    ? {
+      id: data.id as string,
+      name: (data.name as string | null) ?? null,
+      department: (data.department as string | null) ?? null,
+      is_active: (data.is_active as boolean | null) ?? null,
+    }
+    : null;
 }
 
 async function existsScoped(table: 'comms_tasks' | 'work_orders', id: string, pid: string): Promise<boolean> {

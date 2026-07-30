@@ -28,6 +28,7 @@ import {
   type RecurringPriority,
 } from '@/lib/recurring-tasks/store';
 import { resolveStaffByName } from './_helpers';
+import { assigneeBlockedReason } from '@/lib/worklist/assignable';
 
 const PRIORITIES = ['normal', 'high', 'urgent'] as const;
 /** Exported because list_scheduled_items (tools/reminders.ts) renders recurring
@@ -119,6 +120,10 @@ registerTool<CreateRecurringTodoArgs>({
           data: { ambiguous: true, candidates: res.candidates.map((c) => ({ name: c.name, department: c.department })) },
         };
       }
+      // A standing to-do aimed at a housekeeper is the worst version of the
+      // bug: it would spawn a fresh invisible task every single day.
+      const blocked = assigneeBlockedReason(res.staff);
+      if (blocked) return { ok: false, error: blocked };
       assignedStaffId = res.staff.id;
       assignedName = res.staff.name;
     }
