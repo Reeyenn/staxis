@@ -129,11 +129,19 @@ describe('property-owned draft and action isolation', () => {
     // unchanged and so is the reason for it: everything on this screen must
     // remount for the exact hotel, so a stale row from the previous hotel can
     // never be acted on against the new one.
-    assert.match(queue, /<StaxisList[\s\S]*?key=\{propertyId\}[\s\S]*?propertyId=\{propertyId\}/);
+    //
+    // 2026-07-30 (the DOM-leak outage): the two siblings' keys are now
+    // NAMESPACED via hotelQueueChildKeys — still derived from the hotel, so
+    // the remount-per-hotel invariant holds, but never equal to each other.
+    // Two siblings sharing one bare propertyId key was the leak.
+    // The behavior-level pin lives in staxis-list-remount.client.test.tsx;
+    // these assertions pin that the keys stay derived from the hotel.
+    assert.match(queue, /const childKeys = hotelQueueChildKeys\(propertyId\)/);
+    assert.match(queue, /<StaxisList[\s\S]*?key=\{childKeys\.list\}[\s\S]*?propertyId=\{propertyId\}/);
     assert.match(staxisList, /<FindingCards[\s\S]*?key=\{propertyId\}[\s\S]*?propertyId=\{propertyId\}/);
     // Every write on the list carries the hotel it was captured against.
     assert.match(staxisList, /body: JSON\.stringify\(\{\s*\n?\s*pid: propertyId/);
-    assert.match(queue, /<DripQuestionCard key=\{propertyId \?\? 'no-property'\}[\s\S]*?propertyId=\{propertyId\}/);
+    assert.match(queue, /<DripQuestionCard key=\{childKeys\.drip\}[\s\S]*?propertyId=\{propertyId\}/);
     assert.match(dripQuestion, /const resolvedPropertyId = propertyId \?\? activePropertyId/);
     assert.match(dripQuestion, /const pid = resolvedPropertyId[\s\S]*?body: JSON\.stringify\(\{ propertyId: pid/);
     assert.doesNotMatch(dripQuestion, /const pid = activePropertyId/);
