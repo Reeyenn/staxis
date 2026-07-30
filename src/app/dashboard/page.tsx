@@ -189,7 +189,7 @@ function DashboardWorkspace() {
     // RESUME_GUARD_KEY so a failed resume degrades here instead of looping.
     if (
       activeProperty
-      && shouldResumeOnboarding(user.role, activeProperty.onboardingCompletedAt, activeProperty.onboardingState, activeProperty.onboardingPromptShownAt)
+      && shouldResumeOnboarding(user.accountId, user.role, activeProperty.onboardingCompletedAt, activeProperty.onboardingState, activeProperty.onboardingPromptShownAt)
     ) {
       // Never trade a blocked sessionStorage policy for an automatic redirect
       // loop. The dashboard remains usable when the one-shot guard is absent.

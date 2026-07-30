@@ -3,59 +3,57 @@
 /* ───────────────────────────────────────────────────────────────────────
    AddHotelModal — create a hotel directly from the Live-hotels tab.
 
-   Opened from the "+ Add hotel" control at the top of the Hotels column. Unlike
-   the light-styled CreateHotelModal (a lean INVITE generator that hands the
-   owner a signup link to fill everything in themselves), this is a DIRECT admin
-   create: put in as much or as little as you want (name + rooms are optional),
-   and the hotel appears in the fleet immediately with no PMS ("No system
-   detected"). Admins already see every property, so it's ready to configure
-   (Sections, Inventory, …) right away — the signup link is optional, only for
-   handing the hotel to an outside owner later.
+   Opened from an organization's "+ Add hotel" action or the Independent Hotels
+   toolbar. This is a DIRECT platform-admin create: name + rooms are optional,
+   and the hotel appears immediately with no PMS and no customer accounts. An
+   organization-scoped launch assigns the new shell to that organization in the
+   same request; inviting the first person is a separate People action.
 
-   Posts to the SAME /api/admin/properties/create route the invite flow uses —
-   every field there is optional with a sensible default. Studio chrome (dark
-   Backdrop + light MODAL_CARD), matching SectionsModal / CoveragePickerModal.
+   Posts to /api/admin/properties/create. Studio chrome (dark Backdrop + light
+   MODAL_CARD), matching SectionsModal / CoveragePickerModal.
    English-only (admin studio surface).
    ─────────────────────────────────────────────────────────────────────── */
 
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useRef, useState } from 'react';
 import { fetchWithAuth } from '@/lib/api-fetch';
 import { Backdrop, MODAL_CARD } from './surface-kit';
-import { Btn, Caps, FONT_SERIF, FONT_SANS, FONT_MONO, useRiseIn } from './kit';
+import { Btn, Caps, FONT_SERIF, FONT_SANS, useRiseIn } from './kit';
 
 export interface AddHotelModalProps {
   /** Close without creating (Backdrop / Cancel). */
   onClose: () => void;
-  /** A hotel was created — parent refetches the fleet list. Does NOT close the
-   *  modal (the success view shows the optional signup link + Open-hotel). */
+  /** Exact organization to receive the new hotel. Omitted means independent. */
+  organizationId?: string;
+  organizationName?: string;
+  /** A hotel was created — parent refetches the directory. Does not close the
+   *  modal so the admin can open the new hotel or confirm completion. */
   onCreated: (propertyId: string) => void;
 }
 
 interface CreatedResult {
   propertyId: string;
   name: string;
-  signupUrl: string | null;
 }
 
-export function AddHotelModal({ onClose, onCreated }: AddHotelModalProps) {
+export function AddHotelModal({
+  onClose,
+  onCreated,
+  organizationId,
+  organizationName,
+}: AddHotelModalProps) {
   const cardRef = useRef<HTMLDivElement>(null);
   // Synchronous re-entrancy latch — `submitting` state commits async, so a fast
   // double-click / Enter+click could otherwise fire two POSTs (the create route
   // has no idempotency key → duplicate hotels).
   const submittingRef = useRef(false);
-  // Timer for the "Copied" flash — cleared on unmount so a late tick can't
-  // setState after the modal closes.
-  const copyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [name, setName] = useState('');
   const [rooms, setRooms] = useState('');
   const [isTest, setIsTest] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [created, setCreated] = useState<CreatedResult | null>(null);
-  const [copied, setCopied] = useState(false);
 
   useRiseIn(cardRef, { dy: 26, dur: 440 });
-  useEffect(() => () => { if (copyTimerRef.current) clearTimeout(copyTimerRef.current); }, []);
 
   const submit = async () => {
     setError(null);
@@ -87,6 +85,7 @@ export function AddHotelModal({ onClose, onCreated }: AddHotelModalProps) {
         body: JSON.stringify({
           ...(trimmed ? { name: trimmed } : {}),
           ...(totalRooms !== undefined ? { totalRooms } : {}),
+          ...(organizationId ? { organizationId } : {}),
           isTest,
         }),
       });
@@ -101,7 +100,6 @@ export function AddHotelModal({ onClose, onCreated }: AddHotelModalProps) {
       setCreated({
         propertyId: json.data.propertyId,
         name: (json.data.name as string) || trimmed || 'New hotel',
-        signupUrl: (json.data.signupUrl as string | null) ?? null,
       });
     } catch (e) {
       // A dropped/timed-out response could mean the hotel WAS created
@@ -113,17 +111,6 @@ export function AddHotelModal({ onClose, onCreated }: AddHotelModalProps) {
     } finally {
       setSubmitting(false);
       submittingRef.current = false;
-    }
-  };
-
-  const copyLink = async (text: string) => {
-    try {
-      await navigator.clipboard.writeText(text);
-      setCopied(true);
-      if (copyTimerRef.current) clearTimeout(copyTimerRef.current);
-      copyTimerRef.current = setTimeout(() => setCopied(false), 1500);
-    } catch {
-      window.prompt('Copy this link:', text);
     }
   };
 
@@ -151,27 +138,10 @@ export function AddHotelModal({ onClose, onCreated }: AddHotelModalProps) {
               <span style={{ fontStyle: 'italic' }}>{created.name}</span> is in your fleet
             </h3>
             <p style={{ fontSize: 13, color: 'var(--dim)', margin: '0 0 16px', lineHeight: 1.5 }}>
-              It&apos;s now in your fleet with no PMS connected. Set its sections right from its card.
-              The owner signup link below is optional: hand it to an outside owner, or ignore it and
-              manage the hotel yourself.
+              {organizationName
+                ? <>It&apos;s assigned to {organizationName} with no customer accounts. Add the first person from the hotel&apos;s People action when you&apos;re ready.</>
+                : <>It&apos;s now an independent hotel with no customer accounts. Add the first person from the hotel&apos;s People action when you&apos;re ready.</>}
             </p>
-
-            {created.signupUrl && (
-              <div style={{ marginBottom: 16 }}>
-                <label style={{ display: 'block', marginBottom: 6 }}>
-                  <Caps size={9}>Owner signup link (optional)</Caps>
-                </label>
-                <div style={{ display: 'flex', gap: 6 }}>
-                  <input
-                    readOnly
-                    value={created.signupUrl}
-                    onFocus={(e) => e.target.select()}
-                    style={{ flex: 1, boxSizing: 'border-box', fontSize: 12, fontFamily: FONT_MONO, padding: '9px 11px', border: '1px solid var(--rule)', borderRadius: 9, background: '#fff', color: 'var(--ink)', outline: 'none' }}
-                  />
-                  <Btn variant="ghost" onClick={() => copyLink(created.signupUrl!)}>{copied ? 'Copied' : 'Copy'}</Btn>
-                </div>
-              </div>
-            )}
 
             <div style={{ display: 'flex', gap: 8 }}>
               <Btn variant="primary" onClick={openCreatedHotel}>Open hotel →</Btn>
@@ -184,8 +154,8 @@ export function AddHotelModal({ onClose, onCreated }: AddHotelModalProps) {
               New <span style={{ fontStyle: 'italic' }}>hotel</span>
             </h3>
             <p style={{ fontSize: 13, color: 'var(--dim)', margin: '0 0 18px', lineHeight: 1.5 }}>
-              Put in as much or as little as you want. You can fill the rest in later. It joins the
-              fleet right away with no PMS connected.
+              Put in as much or as little as you want. You can fill the rest in later. It will be
+              {organizationName ? ` assigned to ${organizationName}` : ' independent'} with no PMS connected and no customer accounts.
             </p>
 
             {error && <div style={errorBox}>{error}</div>}

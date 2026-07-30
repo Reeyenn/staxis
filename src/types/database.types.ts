@@ -20497,6 +20497,18 @@ export type Database = {
         Args: { p_patch: Json; p_property_id: string }
         Returns: Json
       }
+      staxis_mint_first_person_onboarding_invite: {
+        Args: {
+          p_actor_account_id: string
+          p_actor_auth_user_id: string
+          p_code: string
+          p_hotel_id: string
+          p_invited_email: string
+          p_request_id: string
+          p_role: string
+        }
+        Returns: Json
+      }
       staxis_mint_privileged_onboarding_join_code: {
         Args: {
           p_actor_account_id: string

@@ -7,7 +7,7 @@ export const dynamic = 'force-dynamic';
  *
  * URL: /onboard?code=XXXX
  *
- * Single page, 8 steps. Replaces the scattered /signup → /signin/verify
+ * Single page, 6 steps. Replaces the scattered /signup → /signin/verify
  * → /onboarding → /settings/pms flow with one resumable wizard. Each
  * step's "Next" handler PATCHes /api/onboard/wizard so the user can
  * close the tab and resume later from the same link.
@@ -17,28 +17,21 @@ export const dynamic = 'force-dynamic';
  *   2. Create account — email/name/password (POSTs /api/auth/use-join-code)
  *   3. Verify email — 6-digit OTP (Supabase verifyOtp)
  *   4. Hotel details — confirm/edit name, rooms, timezone, brand, etc.
- *   5. Connect PMS — credentials + test (POSTs /api/pms/save-credentials
- *      + /api/pms/onboard)
- *   6. Mapping — live progress bar of CUA job (polls /api/pms/job-status)
- *   7. Add team — optional 0-5 staff rows
- *   8. All set — celebration screen + "Go to home" finalize
- *
- * (The former Step 5 "Which services?" toggle screen was removed — every
- * app now always appears in the nav and auto-lights based on real usage,
- * so there's nothing to pick up front.)
+ *   5. Your hotel — optional free-text context for Staxis
+ *   6. All set — celebration screen + "Enter Staxis" finalize
  *
  * Multi-tenancy: the page itself doesn't read property data directly.
  * All reads/writes go through the wizard API which validates the join
  * code on every call. After signup, the user's session is the new
- * owner's session — RLS isolates them from Beaumont automatically.
+ * first person's session — RLS isolates them from other hotels automatically.
  */
 
-import React, { useEffect, useRef, useState, useCallback, Suspense } from 'react';
+import React, { useEffect, useState, useCallback, Suspense } from 'react';
 import { useSearchParams } from 'next/navigation';
 import { supabase } from '@/lib/supabase';
 import { fetchWithAuth, SessionEndedError } from '@/lib/api-fetch';
 import { useReliableNavigation } from '@/lib/hooks/use-reliable-navigation';
-import { Loader2, Check, CheckCircle2, AlertCircle, Building2, Mail, KeyRound, Users, Sparkles, ChevronLeft } from 'lucide-react';
+import { Loader2, Check, CheckCircle2, AlertCircle, Building2, Mail, Sparkles, ChevronLeft } from 'lucide-react';
 import {
   PLACEHOLDER_HOTEL_NAME,
   RESUME_GUARD_KEY,
@@ -48,19 +41,8 @@ import {
 } from '@/lib/onboarding/state';
 import { useLang } from '@/contexts/LanguageContext';
 import { ChevronMark } from '@/components/AuthShell';
-import { mt, MILESTONES, milestoneIndexForLabel, milestoneLabel, type MappingStrings } from './_mapping-i18n';
 import { ot } from './_onboard-i18n';
-import { PMS_DROPDOWN_OPTIONS } from '@/lib/pms';
 import { SECTION_LIST, resolveSections, type AppSection, type EnabledSections } from '@/lib/sections/registry';
-
-// PMS dropdown options come from the registry (src/lib/pms/registry.ts) — the
-// same single source of truth /settings/pms uses, so the wizard, the type
-// system, and the DB constraint stay in sync. Includes "Other / Not Listed".
-const PMS_PICKER_OPTIONS = PMS_DROPDOWN_OPTIONS.map((d) => ({
-  value: d.id,
-  label: `${d.label}${d.hint ? ` (${d.hint})` : ''}`,
-  defaultLoginUrl: d.defaultLoginUrl,
-}));
 
 // ─── Types mirroring the wizard API response ───────────────────────────
 
@@ -76,11 +58,10 @@ interface WizardStateResponse {
     timezone: string;
     brand: string | null;
     propertyKind: string | null;
-    pmsType: string | null;
-    servicesEnabled: Record<string, boolean> | null;
     enabledSections: EnabledSections;
   } | null;
   inviteRole: 'owner' | 'general_manager' | null;
+  invitedEmail: string | null;
 }
 
 interface ApiEnvelope {
@@ -257,11 +238,8 @@ function OnboardWizard() {
         <Step3VerifyEmail code={code} wizard={wizard} onNext={advance} onBack={() => review(2)} />
       )}
       {displayStep === 4 && <Step4HotelDetails code={code} wizard={wizard} onNext={advance} />}
-      {displayStep === 5 && <Step6ConnectPms code={code} wizard={wizard} onNext={advance} />}
-      {displayStep === 6 && <Step7Mapping code={code} onNext={advance} />}
-      {displayStep === 7 && <Step8AddTeam code={code} wizard={wizard} onNext={advance} />}
-      {displayStep === 8 && <Step9TellUs code={code} wizard={wizard} onNext={advance} />}
-      {displayStep === 9 && <Step10AllSet code={code} wizard={wizard} />}
+      {displayStep === 5 && <Step5TellUs code={code} wizard={wizard} onNext={advance} />}
+      {displayStep === 6 && <Step6AllSet code={code} wizard={wizard} />}
     </WizardLayout>
   );
 }
@@ -269,8 +247,7 @@ function OnboardWizard() {
 // ─── Layout (progress bar + container) ──────────────────────────────────
 
 const STEP_LABELS = [
-  'Welcome', 'Account', 'Verify email', 'Hotel',
-  'PMS', 'Mapping', 'Team', 'Your hotel', 'Done',
+  'Welcome', 'Account', 'Verify email', 'About hotel', 'Your hotel', 'All set',
 ];
 
 // Warm animated mesh + paper grain — the same backdrop the /signin flow uses,
@@ -454,61 +431,6 @@ function FullPage({ children }: { children: React.ReactNode }) {
   );
 }
 
-/**
- * Reusable "← Back" control for the wizard's editable form steps. Sends the
- * onboarding_state keys to clear (server allow-list = CLEARABLE_STATE_KEYS),
- * which makes the next refetch land on the previous form so the operator can
- * fix what they entered. Best-effort: a failed PATCH just leaves them on the
- * current step. Only rendered on steps with a SAFE previous form — never on
- * the account/email-verification steps (those are auth-locked) or the Welcome/
- * Done endpoints.
- */
-function WizardBackButton({ code, clearKeys, onNext }: {
-  code: string; clearKeys: string[]; onNext: () => Promise<void>;
-}) {
-  const [backing, setBacking] = useState(false);
-  const [failed, setFailed] = useState(false);
-  const goBack = async () => {
-    if (backing) return;
-    setBacking(true);
-    setFailed(false);
-    try {
-      const res = await fetch('/api/onboard/wizard', {
-        method: 'PATCH',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ code, clearStateKeys: clearKeys }),
-      });
-      if (res.ok) { await onNext(); return; }
-      setFailed(true);
-    } catch {
-      setFailed(true);
-    } finally {
-      setBacking(false);
-    }
-  };
-  return (
-    <div style={{ marginBottom: '16px' }}>
-      <button
-        type="button"
-        className="wizard-back"
-        onClick={goBack}
-        disabled={backing}
-        style={{
-          cursor: backing ? 'default' : 'pointer',
-          opacity: backing ? 0.5 : 1,
-        }}
-      >
-        {backing ? <Loader2 size={14} className="spin" /> : <ChevronLeft size={15} />} Back
-      </button>
-      {failed && (
-        <span style={{ marginLeft: '8px', fontSize: '12px', color: '#B85C3D' }}>
-          Couldn&apos;t go back. Try again.
-        </span>
-      )}
-    </div>
-  );
-}
-
 function WizardReviewBackButton({ label, onClick }: { label: string; onClick: () => void }) {
   return (
     <button type="button" className="wizard-back" onClick={onClick} style={{ marginBottom: '12px' }}>
@@ -573,7 +495,7 @@ function Step1Welcome({ code, wizard, reviewing = false, onNext }: {
 function Step2CreateAccount({ code, wizard, onNext }: { code: string; wizard: WizardStateResponse; onNext: () => Promise<void>; }) {
   const { lang } = useLang();
   const o = ot(lang);
-  const [email, setEmail] = useState('');
+  const email = wizard.invitedEmail?.trim().toLowerCase() ?? '';
   const [displayName, setDisplayName] = useState('');
   const [phone, setPhone] = useState('');
   const [password, setPassword] = useState('');
@@ -596,13 +518,12 @@ function Step2CreateAccount({ code, wizard, onNext }: { code: string; wizard: Wi
     setSubmitting(true);
     try {
       // Create the account via the existing use-join-code endpoint.
-      // Per Phase M1.5 commit 5: if the join code has role=owner baked
-      // in (which all admin-created codes do), use-join-code transfers
-      // properties.owner_id to the new owner.
+      // The hotel's People invitation has the Owner/GM role baked in. The
+      // invitee cannot send or choose a different role here.
       const res = await fetch('/api/auth/use-join-code', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ code, email, displayName, password, phone, role: 'front_desk' /* ignored, baked-in role wins */ }),
+        body: JSON.stringify({ code, email, displayName, password, phone }),
       });
       const json = await res.json() as {
         ok?: boolean;
@@ -635,7 +556,7 @@ function Step2CreateAccount({ code, wizard, onNext }: { code: string; wizard: Wi
           password,
         });
         if (!signInErr && signInData.session) {
-          await fetch('/api/onboard/wizard', {
+          const verifiedProgress = await fetchWithAuth('/api/onboard/wizard', {
             method: 'PATCH',
             headers: { 'content-type': 'application/json' },
             body: JSON.stringify({
@@ -646,6 +567,7 @@ function Step2CreateAccount({ code, wizard, onNext }: { code: string; wizard: Wi
               },
             }),
           });
+          await requireApiSuccess(verifiedProgress, 'Could not save account progress. Please try again.');
           sessionStorage.removeItem('onboard:pendingEmail');
           await onNext();
           return;
@@ -695,8 +617,17 @@ function Step2CreateAccount({ code, wizard, onNext }: { code: string; wizard: Wi
           {o.resumeSignInBtn}
         </button>
       )}
+      <Field label="Assigned role">
+        <div style={{
+          minHeight: 46, padding: '0 14px', display: 'flex', alignItems: 'center',
+          border: '1px solid rgba(31,35,28,0.1)', borderRadius: 12,
+          background: 'rgba(255,255,255,0.45)', fontSize: 15, fontWeight: 600,
+        }}>
+          {wizard.inviteRole === 'general_manager' ? 'General Manager' : 'Owner'}
+        </div>
+      </Field>
       <Field label="Email *">
-        <input className="input" type="email" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="you@hotel.com" />
+        <input className="input" type="email" value={email} readOnly aria-readonly="true" />
       </Field>
       <Field label="Full name *">
         <input className="input" value={displayName} onChange={(e) => setDisplayName(e.target.value)} placeholder="Jane Doe" />
@@ -752,7 +683,7 @@ function Step2AccountReview({ currentStep, onBack, onContinue }: {
 
 // ─── Step 3: Verify email ───────────────────────────────────────────────
 
-function Step3VerifyEmail({ code, onNext, onBack }: {
+function Step3VerifyEmail({ code, wizard, onNext, onBack }: {
   code: string;
   wizard: WizardStateResponse;
   onNext: () => Promise<void>;
@@ -764,10 +695,14 @@ function Step3VerifyEmail({ code, onNext, onBack }: {
   const [submitting, setSubmitting] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [showSignIn, setShowSignIn] = useState(false);
-  const pendingEmail = typeof window !== 'undefined' ? sessionStorage.getItem('onboard:pendingEmail') ?? '' : '';
-  // Tab closed + reopened → sessionStorage email is gone and there's no active
-  // session. We can't re-issue the OTP (the password proof minted at account
-  // creation expires in 60 min, so a stale OTP would 403 at trust-device).
+  const invitedEmail = wizard.invitedEmail?.trim().toLowerCase() ?? '';
+  const pendingEmail = typeof window !== 'undefined'
+    ? sessionStorage.getItem('onboard:pendingEmail')?.trim().toLowerCase() ?? ''
+    : '';
+  // Tab closed + reopened → the tab-scoped OTP marker is gone even though the
+  // durable invited email remains available for display. We can't re-issue the
+  // OTP (the password proof minted at account creation expires in 60 min, so a
+  // stale OTP would 403 at trust-device).
   // Route them to sign in instead: password sign-in writes a fresh proof, and
   // the wizard GET's emailVerified backfill auto-advances a signed-in owner
   // past this step. (accountCreatedAt is now persisted server-side at signup,
@@ -816,7 +751,7 @@ function Step3VerifyEmail({ code, onNext, onBack }: {
         return;
       }
 
-      const verifiedRes = await fetch('/api/onboard/wizard', {
+      const verifiedRes = await fetchWithAuth('/api/onboard/wizard', {
         method: 'PATCH',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({
@@ -834,7 +769,7 @@ function Step3VerifyEmail({ code, onNext, onBack }: {
     }
   };
 
-  // Recovered tab: no email + no session to verify against. Offer sign-in,
+  // Recovered tab: no fresh OTP context to verify against. Offer sign-in,
   // which resumes the wizard cleanly (see `recovered` note above).
   if (recovered) {
     return (
@@ -863,7 +798,7 @@ function Step3VerifyEmail({ code, onNext, onBack }: {
       <Mail size={32} color="#C99644" style={{ marginBottom: '16px' }} />
       <h2 style={{ fontSize: '20px', marginBottom: '4px' }}>Check your email</h2>
       <p style={{ color: '#5C625C', marginBottom: '20px', fontSize: '13px' }}>
-        We sent a 6-digit code to <strong>{pendingEmail || 'your email'}</strong>.
+        We sent a 6-digit code to <strong>{invitedEmail || pendingEmail || 'your email'}</strong>.
       </p>
       {err && <ErrorBox msg={err} />}
       {showSignIn && (
@@ -891,7 +826,6 @@ function Step3VerifyEmail({ code, onNext, onBack }: {
 // ─── Step 4: Hotel details ──────────────────────────────────────────────
 
 function Step4HotelDetails({ code, wizard, onNext }: { code: string; wizard: WizardStateResponse; onNext: () => Promise<void>; }) {
-  const { lang } = useLang();
   const d = wizard.hotelDefaults;
   const [name, setName] = useState(d?.name && d.name !== PLACEHOLDER_HOTEL_NAME ? d.name : '');
   const [totalRooms, setTotalRooms] = useState<number>(d?.totalRooms ?? 0);
@@ -1037,758 +971,10 @@ function Step4HotelDetails({ code, wizard, onNext }: { code: string; wizard: Wiz
   );
 }
 
-// ─── Step 5: Connect PMS ────────────────────────────────────────────────
-
-function Step6ConnectPms({ code, wizard, onNext }: { code: string; wizard: WizardStateResponse; onNext: () => Promise<void>; }) {
-  const { lang } = useLang();
-  const o = ot(lang);
-  // Default to the saved choice (back-nav) or the empty placeholder so the
-  // operator must consciously pick — the picker now lists every supported PMS
-  // plus "Other / Not Listed", not just Choice Advantage.
-  const [pmsType, setPmsType] = useState(wizard.hotelDefaults?.pmsType ?? '');
-  // Free-text name when "Other" is chosen — re-hydrated on back-nav from the
-  // persisted onboarding_state (owner sessions get the full state on GET).
-  const [otherName, setOtherName] = useState(
-    typeof wizard.state?.pmsOtherName === 'string' ? wizard.state.pmsOtherName : '',
-  );
-  const [loginUrl, setLoginUrl] = useState('');
-  const [username, setUsername] = useState('');
-  const [password, setPassword] = useState('');
-  const [submitting, setSubmitting] = useState(false);
-  const [err, setErr] = useState<string | null>(null);
-  // True once /api/pms/save-credentials has run for this property (this wizard
-  // session OR a prior one whose pms_type is already persisted). When set we
-  // HIDE the Skip button: skipping would only write pmsSkippedAt and orphan the
-  // already-provisioned scraper_session + property_sessions row + credentials —
-  // finalizing a "no PMS" hotel that still has a live robot. Skip is only for a
-  // clean slate; to abandon an entered PMS, correct it or detach from Settings.
-  const [pmsProvisioned, setPmsProvisioned] = useState(false);
-  const pmsAlreadyEntered = pmsProvisioned || !!wizard.hotelDefaults?.pmsType;
-
-  // Picking a PMS prefills its standard login URL (mirrors /settings/pms) when
-  // the field is still empty — saves typing for the common case; editable after.
-  const handlePmsTypeChange = (value: string) => {
-    setPmsType(value);
-    const def = PMS_PICKER_OPTIONS.find((p) => p.value === value);
-    if (def?.defaultLoginUrl && !loginUrl) setLoginUrl(def.defaultLoginUrl);
-  };
-
-  const submit = async () => {
-    setErr(null);
-    if (!pmsType) { setErr(o.pmsRequired); return; }
-    const customName = otherName.trim();
-    if (pmsType === 'other' && !customName) { setErr(o.pmsOtherRequired); return; }
-    if (!loginUrl || !username || !password) { setErr('All PMS fields required.'); return; }
-    setSubmitting(true);
-    try {
-      // 1. Save credentials
-      const credRes = await fetchWithAuth('/api/pms/save-credentials', {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ propertyId: wizard.propertyId, pmsType, loginUrl, username, password }),
-      });
-      const credJson = await credRes.json();
-      if (!credRes.ok || !credJson.ok) { setErr(credJson.error || 'Credentials save failed'); return; }
-      // Credentials + a scraper_session/property_sessions row now exist for this
-      // property — hide Skip so it can't orphan them (see pmsProvisioned above).
-      setPmsProvisioned(true);
-
-      // 2. Queue onboarding job
-      const jobRes = await fetchWithAuth('/api/pms/onboard', {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ propertyId: wizard.propertyId }),
-      });
-      const jobJson = await jobRes.json();
-      if (!jobRes.ok || !jobJson.ok) { setErr(jobJson.error || 'Onboarding queue failed'); return; }
-
-      // 3. PATCH wizard state with the job ID (+ the typed name when "Other",
-      //    so it's persisted — the registry only knows the generic `other` id).
-      //    Server clamps pmsOtherName length defensively.
-      await fetch('/api/onboard/wizard', {
-        method: 'PATCH',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({
-          code,
-          partialState: {
-            pmsCredentialsAt: new Date().toISOString(),
-            pmsJobId: jobJson.data.jobId,
-            ...(pmsType === 'other' ? { pmsOtherName: customName } : {}),
-          },
-        }),
-      });
-      await onNext();
-    } catch (e) {
-      if (e instanceof SessionEndedError) return;  // redirect in progress; suppress error
-      setErr(e instanceof Error ? e.message : 'Connection failed');
-    } finally {
-      setSubmitting(false);
-    }
-  };
-
-  // Skip PMS entirely — no credentials, no CUA robot. The hotel goes live with
-  // no PMS ("No system detected"); pmsSkippedAt satisfies the connect + mapping
-  // gates so the wizard jumps straight to Team. For inventory-only properties.
-  const skipPms = async () => {
-    setErr(null);
-    setSubmitting(true);
-    try {
-      const res = await fetch('/api/onboard/wizard', {
-        method: 'PATCH',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({
-          code,
-          partialState: { pmsSkippedAt: new Date().toISOString() },
-        }),
-      });
-      // A failed PATCH (expired code, validation, server hiccup) would otherwise
-      // be a silent dead-click — surface it and stay on the step, like submit().
-      if (!res.ok) {
-        const j = await res.json().catch(() => null);
-        setErr(j?.error || 'Could not skip. Please try again.');
-        return;
-      }
-      await onNext();
-    } catch (e) {
-      if (e instanceof SessionEndedError) return;  // redirect in progress; suppress error
-      setErr(e instanceof Error ? e.message : 'Skip failed');
-    } finally {
-      setSubmitting(false);
-    }
-  };
-
-  return (
-    <div>
-      <WizardBackButton code={code} clearKeys={['hotelDetailsAt']} onNext={onNext} />
-      <KeyRound size={28} color="#C99644" style={{ marginBottom: '12px' }} />
-      <h2 style={{ fontSize: '20px', marginBottom: '4px' }}>Connect your PMS</h2>
-      <p style={{ color: '#5C625C', marginBottom: '20px', fontSize: '13px' }}>
-        We&apos;ll log into your PMS in a remote browser to learn your room layout. Read-only. We never make changes there.
-      </p>
-      {err && <ErrorBox msg={err} />}
-      <Field label={o.pmsLabel}>
-        <select className="input" value={pmsType} onChange={(e) => handlePmsTypeChange(e.target.value)}>
-          <option value="">{o.pmsSelectPlaceholder}</option>
-          {PMS_PICKER_OPTIONS.map((p) => (
-            <option key={p.value} value={p.value}>{p.label}</option>
-          ))}
-        </select>
-      </Field>
-      {pmsType === 'other' && (
-        <Field label={o.pmsOtherLabel}>
-          <input
-            className="input"
-            value={otherName}
-            onChange={(e) => setOtherName(e.target.value)}
-            placeholder={o.pmsOtherPlaceholder}
-            maxLength={120}
-          />
-          <p style={{ fontSize: '12px', color: '#5C625C', marginTop: '4px' }}>{o.pmsOtherHint}</p>
-        </Field>
-      )}
-      <Field label="Login URL *">
-        <input className="input" value={loginUrl} onChange={(e) => setLoginUrl(e.target.value)} placeholder="https://..." />
-      </Field>
-      <Field label="Username *">
-        <input className="input" value={username} onChange={(e) => setUsername(e.target.value)} />
-      </Field>
-      <Field label="Password *">
-        <input className="input" type="password" value={password} onChange={(e) => setPassword(e.target.value)} />
-      </Field>
-      <button className="btn btn-primary" onClick={submit} disabled={submitting} style={{ width: '100%', justifyContent: 'center', marginTop: '12px' }}>
-        {submitting ? 'Saving & starting…' : 'Save & start mapping →'}
-      </button>
-      {!pmsAlreadyEntered && (
-        <>
-          <button className="btn btn-secondary" onClick={skipPms} disabled={submitting} style={{ width: '100%', justifyContent: 'center', marginTop: '8px' }}>
-            {"Skip: this hotel doesn't use a PMS"}
-          </button>
-          <p style={{ fontSize: '12px', color: '#5C625C', marginTop: '8px', textAlign: 'center', lineHeight: 1.5 }}>
-            {'Goes live with no PMS or robot. You can connect one later in Settings.'}
-          </p>
-        </>
-      )}
-    </div>
-  );
-}
-
-// ─── Step 7: Mapping (live CUA progress) ────────────────────────────────
-//
-// Rebuilt 2026-06-10. The old version polled /api/pms/job-status which only
-// reads the coarse property_sessions.status — that sits at
-// paused_no_knowledge_file (=50%) the whole time the mapper runs and NEVER
-// advances on the common park_draft outcome, so the bar froze forever.
-//
-// Now we poll /api/onboard/mapping-status (code-gated, supabaseAdmin) which
-// bridges propertyId → the mapper workflow_jobs row → { phase, outcome,
-// channel, feedsFound, live numbers }, and ADDITIONALLY subscribe to the
-// mapper's realtime broadcast channel for live per-feed milestones. The
-// polled route is the source of truth; the broadcast is an additive live
-// layer (pub/sub only — not a table read, so the silent-empty RLS bug
-// can't apply).
-
-type StatusMetric = { value: number | null; available: boolean };
-interface MappingNumbers {
-  anyAvailable: boolean;
-  capturedAt: string | null;
-  totalRooms: number | null;
-  occupancyPct: StatusMetric;
-  occupiedRooms: StatusMetric;
-  guestsInHouse: StatusMetric;
-  arrivalsToday: StatusMetric;
-  departuresToday: StatusMetric;
-}
-interface FeedStatus { key: string; label: string; captured: boolean; count: number | null }
-interface MappingStatus {
-  phase: 'preparing' | 'learning' | 'mfa' | 'done' | 'failed';
-  outcome: 'auto_promote' | 'park_partial' | 'park_draft' | 'quarantine' | null;
-  workflowJobId: string | null;
-  channel: string | null;
-  pmsLabel: string;
-  feedsFound: number | null;
-  pct: number | null;
-  failReason: 'login' | 'login_url' | 'stopped' | 'generic' | null;
-  numbers: MappingNumbers | null;
-  feeds: FeedStatus[] | null;
-  // Additive (2026-06-26): the hotel hit its daily safe-usage cap mid-learn
-  // and auto-paused (resumes overnight). Optional so an older server response
-  // (no field) degrades to a plain spinner. Only honored while non-terminal.
-  paused?: 'cost_cap' | null;
-}
-
-function Step7Mapping({ code, onNext }: { code: string; onNext: () => Promise<void>; }) {
-  const { lang } = useLang();
-  const t = mt(lang);
-
-  const [resp, setResp] = useState<MappingStatus | null>(null);
-  const [barPct, setBarPct] = useState(0);
-  const [maxMilestone, setMaxMilestone] = useState(-1);
-  const [pollNonce, setPollNonce] = useState(0);
-  const [advancing, setAdvancing] = useState(false);
-  const [advanceError, setAdvanceError] = useState<string | null>(null);
-  const [reentering, setReentering] = useState(false);
-  const [reenterError, setReenterError] = useState<string | null>(null);
-  const advancingRef = useRef(false);
-  const mountedRef = useRef(true);
-  useEffect(() => () => { mountedRef.current = false; }, []);
-
-  // Stuck-screen watchdog (audit P1 2026-06-26): the learning screen used to
-  // be an endless spinner with no escape if the robot was slow / down / cost-
-  // capped. Flip a "taking longer than expected" card after TIMEOUT_MS of NO
-  // forward progress (bar / milestone / phase all frozen). Polling continues
-  // underneath, so a robot that recovers still auto-advances to done/failed.
-  const TIMEOUT_MS = 5 * 60 * 1000; // 5 min of no progress → offer buttons
-  const [timedOut, setTimedOut] = useState(false);
-  const lastProgressAtRef = useRef<number>(Date.now());
-  const respPhase = resp?.phase ?? 'preparing';
-  // Any forward movement (bar %, milestone, or phase change) restarts the
-  // clock and clears the warning — a slow-but-progressing learn never trips it.
-  useEffect(() => {
-    lastProgressAtRef.current = Date.now();
-    setTimedOut(false);
-  }, [barPct, maxMilestone, respPhase]);
-  // Watchdog ticker — while preparing/learning, flip `timedOut` once we've gone
-  // TIMEOUT_MS with no progress. Re-created on phase change (which also resets
-  // the clock above). Cleared on unmount. MFA is excluded: a genuine PMS 2FA
-  // wait legitimately sits with no progress and has its own calm "nothing
-  // needed from you" copy — we must not nudge the operator to needlessly
-  // re-enter login during a healthy security check. (done/failed are terminal.)
-  useEffect(() => {
-    if (respPhase === 'done' || respPhase === 'failed' || respPhase === 'mfa') return;
-    const id = setInterval(() => {
-      if (Date.now() - lastProgressAtRef.current > TIMEOUT_MS) setTimedOut(true);
-    }, 10_000);
-    return () => clearInterval(id);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [respPhase]);
-
-  // Poll the bridge endpoint BY CODE (not the legacy pmsJobId — the route
-  // resolves the property + mapper job from the code itself, so the step is
-  // never stuck waiting on a pmsJobId the wizard may not have persisted).
-  // Plain fetch (NOT fetchWithAuth) — the join code is the trust anchor and
-  // fetchWithAuth can sign the user out on a transient 2FA refresh mid-poll.
-  // Self-scheduling so the cadence can flex (3s in flight; 5s × a few after
-  // done to catch late live numbers).
-  useEffect(() => {
-    if (!code) return;
-    let active = true;
-    let timer: ReturnType<typeof setTimeout> | null = null;
-    let slowRefreshes = 0;
-    const tick = async () => {
-      try {
-        const res = await fetch(`/api/onboard/mapping-status?code=${encodeURIComponent(code)}`);
-        const json = await res.json();
-        if (!active) return;
-        if (json.ok) {
-          const d = json.data as MappingStatus;
-          setResp(d);
-          if (typeof d.pct === 'number') setBarPct((p) => Math.max(p, d.pct as number));
-          if (d.phase === 'done') {
-            setMaxMilestone(MILESTONES.length - 1);
-            setBarPct(100);
-            // Refresh a few more times so live numbers that land a beat after
-            // completion (the mapper's data-write) fill in, then stop.
-            if (slowRefreshes < 6) { slowRefreshes += 1; timer = setTimeout(tick, 5000); }
-            return;
-          }
-          if (d.phase === 'failed') return; // terminal — stop polling
-        }
-        timer = setTimeout(tick, 3000);
-      } catch {
-        if (active) timer = setTimeout(tick, 3000);
-      }
-    };
-    void tick();
-    return () => { active = false; if (timer) clearTimeout(timer); };
-  }, [code, pollNonce]);
-
-  // Live milestone layer: subscribe to the mapper's broadcast channel once
-  // the endpoint hands us its name. Mirrors the admin Live Mapping console.
-  // Cleaned up on unmount / channel change.
-  const channel = resp?.channel ?? null;
-  useEffect(() => {
-    if (!channel) return;
-    const ch = supabase
-      .channel(channel)
-      .on('broadcast' as any, { event: '*' }, (msg: { payload?: { label?: string; pct?: number } }) => {
-        const p = msg?.payload;
-        if (p && typeof p.pct === 'number') setBarPct((prev) => Math.max(prev, p.pct as number));
-        if (p && typeof p.label === 'string') {
-          const idx = milestoneIndexForLabel(p.label);
-          if (idx >= 0) setMaxMilestone((prev) => Math.max(prev, idx));
-        }
-      })
-      .subscribe();
-    return () => { void ch.unsubscribe(); };
-  }, [channel]);
-
-  const phase = resp?.phase ?? 'preparing';
-
-  const advance = async () => {
-    if (advancingRef.current) return; // guard double-tap before `disabled` applies
-    advancingRef.current = true;
-    setAdvancing(true);
-    setAdvanceError(null);
-    try {
-      // Mark mapping complete so deriveCurrentStep moves to step 7. All three
-      // done-outcomes advance — onboarding must not block on an admin review
-      // (park_draft / quarantine finish wiring up in the background). Verify
-      // the save landed before advancing, else the click would look dead.
-      const res = await fetch('/api/onboard/wizard', {
-        method: 'PATCH',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ code, partialState: { mappingCompletedAt: new Date().toISOString() } }),
-      });
-      const json = await res.json().catch(() => null);
-      if (!res.ok || !json?.ok) {
-        setAdvanceError(t.continueError);
-        return;
-      }
-      await onNext();
-    } catch {
-      setAdvanceError(t.continueError);
-    } finally {
-      advancingRef.current = false;
-      if (mountedRef.current) setAdvancing(false);
-    }
-  };
-
-  // "Re-enter login" on a failed mapping → walk back to Step 5 (Connect PMS)
-  // so the operator can fix the credentials and retry. clearStateKeys removes
-  // the PMS completion markers server-side (deriveCurrentStep → 5) and onNext()
-  // refetches, which re-renders Step6ConnectPms. The corrected-creds save then
-  // clears the stale failed mapper job (see /api/pms/save-credentials), so the
-  // driver enqueues a fresh learn against the new login.
-  const reenterPms = async () => {
-    if (reentering) return;
-    setReentering(true);
-    setReenterError(null);
-    try {
-      const res = await fetch('/api/onboard/wizard', {
-        method: 'PATCH',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ code, clearStateKeys: ['pmsCredentialsAt', 'pmsJobId', 'mappingCompletedAt'] }),
-      });
-      const json = await res.json().catch(() => null);
-      if (!res.ok || !json?.ok) { setReenterError(t.reenterError); return; }
-      await onNext();
-    } catch {
-      setReenterError(t.reenterError);
-    } finally {
-      if (mountedRef.current) setReentering(false);
-    }
-  };
-
-  // Reset the view + the watchdog clock and force a fresh poll. Used by the
-  // failed-branch + the new "taking longer" / "paused" cards.
-  const checkAgain = () => {
-    setResp(null);
-    setBarPct(0);
-    setMaxMilestone(-1);
-    setTimedOut(false);
-    lastProgressAtRef.current = Date.now();
-    setPollNonce((n) => n + 1);
-  };
-
-  if (phase === 'done') {
-    return <Step7Done t={t} lang={lang} resp={resp as MappingStatus} advancing={advancing} error={advanceError} onContinue={advance} />;
-  }
-
-  if (phase === 'failed') {
-    const r = resp?.failReason;
-    const msg = r === 'login' ? t.failLogin
-      : r === 'login_url' ? t.failLoginUrl
-        : r === 'stopped' ? t.failStopped
-          : t.failGeneric;
-    return (
-      <div>
-        <AlertCircle size={28} color="#B85C3D" style={{ marginBottom: '12px' }} />
-        <h2 style={{ fontSize: '20px', marginBottom: '8px' }}>{t.failTitle}</h2>
-        <p style={{ color: '#5C625C', marginBottom: '20px', fontSize: '14px', lineHeight: 1.5 }}>{msg}</p>
-        {reenterError && <ErrorBox msg={reenterError} />}
-        <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
-          <button
-            className="btn btn-primary"
-            onClick={reenterPms}
-            disabled={reentering}
-            style={{ justifyContent: 'center' }}
-          >
-            {reentering ? <Loader2 size={14} className="spin" /> : null}
-            {reentering ? '…' : t.reenterLoginBtn}
-          </button>
-          <button
-            className="btn btn-secondary"
-            onClick={() => { setResp(null); setBarPct(0); setMaxMilestone(-1); setPollNonce((n) => n + 1); }}
-            disabled={reentering}
-            style={{ justifyContent: 'center' }}
-          >
-            {t.checkAgainBtn}
-          </button>
-        </div>
-      </div>
-    );
-  }
-
-  // preparing / learning / mfa
-  const title = phase === 'mfa' ? t.mfaTitle
-    : phase === 'preparing' ? t.preparingTitle
-      : t.learningTitle.replace('{pms}', resp?.pmsLabel ?? 'PMS');
-  const body = phase === 'mfa' ? t.mfaBody
-    : phase === 'preparing' ? t.preparingBody
-      : t.learningBody;
-  const showChecklist = phase === 'learning' && maxMilestone >= 0;
-  const indeterminate = !showChecklist; // no real milestone yet → animated bar
-
-  // Cost-cap pause — honest "paused, resumes overnight" card. Checked before
-  // the timeout card (it's the more specific, more reassuring signal). We're
-  // already past the done/failed early-returns, so this never hides a result.
-  if (resp?.paused === 'cost_cap') {
-    return (
-      <div>
-        <AlertCircle size={28} color="#C99644" style={{ marginBottom: '12px' }} />
-        <h2 style={{ fontSize: '20px', marginBottom: '8px' }}>{t.pausedTitle}</h2>
-        <p style={{ color: '#5C625C', marginBottom: '20px', fontSize: '14px', lineHeight: 1.5 }}>{t.pausedBody}</p>
-        <button className="btn btn-primary" onClick={checkAgain} style={{ justifyContent: 'center' }}>
-          {t.checkAgainBtn}
-        </button>
-      </div>
-    );
-  }
-
-  // Stuck-screen escape — robot quiet for TIMEOUT_MS. "Check again" is the
-  // primary (least destructive) action; "Re-enter login" is secondary because
-  // it abandons a possibly-still-healthy in-flight learn. Polling continues
-  // underneath, so a recovered run auto-replaces this with the done screen.
-  if (timedOut) {
-    return (
-      <div>
-        <AlertCircle size={28} color="#C99644" style={{ marginBottom: '12px' }} />
-        <h2 style={{ fontSize: '20px', marginBottom: '8px' }}>{t.slowTitle}</h2>
-        <p style={{ color: '#5C625C', marginBottom: '20px', fontSize: '14px', lineHeight: 1.5 }}>{t.slowBody}</p>
-        {reenterError && <ErrorBox msg={reenterError} />}
-        <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
-          <button className="btn btn-primary" onClick={checkAgain} disabled={reentering} style={{ justifyContent: 'center' }}>
-            {t.checkAgainBtn}
-          </button>
-          <button className="btn btn-secondary" onClick={reenterPms} disabled={reentering} style={{ justifyContent: 'center' }}>
-            {reentering ? <Loader2 size={14} className="spin" /> : null}
-            {reentering ? '…' : t.reenterLoginBtn}
-          </button>
-        </div>
-      </div>
-    );
-  }
-
-  return (
-    <div>
-      <Loader2 size={28} className="spin" color="#C99644" style={{ marginBottom: '12px' }} />
-      <h2 style={{ fontSize: '20px', marginBottom: '4px' }}>{title}</h2>
-      <p style={{ color: '#5C625C', marginBottom: '20px', fontSize: '13px', lineHeight: 1.5 }}>{body}</p>
-
-      <div style={{ height: '6px', background: 'rgba(31,35,28,0.12)', borderRadius: '3px', overflow: 'hidden', marginBottom: '16px' }}>
-        {indeterminate ? (
-          <div className="onboard-indeterminate" style={{ height: '100%', background: '#C99644' }} />
-        ) : (
-          <div style={{ width: `${barPct}%`, height: '100%', background: '#C99644', transition: 'width 0.4s' }} />
-        )}
-      </div>
-
-      {showChecklist && (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
-          {MILESTONES.slice(0, maxMilestone + 1).map((m, i) => (
-            <MilestoneRow key={m.key} label={milestoneLabel(m, lang)} done={i !== maxMilestone} active={i === maxMilestone} />
-          ))}
-        </div>
-      )}
-
-      <style>{`
-        .onboard-indeterminate { width: 40%; animation: onboardSlide 1.3s ease-in-out infinite; }
-        @keyframes onboardSlide { 0% { margin-left: -40% } 100% { margin-left: 100% } }
-      `}</style>
-    </div>
-  );
-}
-
-function MilestoneRow({ label, done, active }: { label: string; done: boolean; active: boolean }) {
-  return (
-    <div style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '13px', color: active ? '#1F231C' : '#5C625C' }}>
-      {done
-        ? <Check size={14} color="#3F8F5F" />
-        : <Loader2 size={14} className="spin" color="#C99644" />}
-      <span>{label}</span>
-    </div>
-  );
-}
-
-function Step7Done({ t, lang, resp, advancing, error, onContinue }: {
-  t: MappingStrings; lang: 'en' | 'es'; resp: MappingStatus; advancing: boolean; error: string | null; onContinue: () => Promise<void>;
-}) {
-  const outcome = resp.outcome ?? 'park_draft';
-  const pms = resp.pmsLabel || 'PMS';
-  const title = outcome === 'auto_promote' ? t.doneTitleAuto
-    : outcome === 'park_partial' ? t.doneTitlePartial
-      : outcome === 'quarantine' ? t.doneTitleQuarantine
-        : t.doneTitlePark;
-  const body = outcome === 'auto_promote' ? t.doneBodyAuto
-    : outcome === 'park_partial' ? t.doneBodyPartial
-      : outcome === 'quarantine' ? t.doneBodyQuarantine
-        : t.doneBodyPark;
-
-  // Honest per-feed breakdown — exactly which feeds the learned map captured
-  // (✓ + live row count) vs didn't (✗), so the operator can judge whether the
-  // map is usable. Shown for EVERY outcome (especially quarantine, where seeing
-  // the missing required feeds is the whole point).
-  const feeds = resp.feeds ?? [];
-  const gotCount = feeds.filter((f) => f.captured).length;
-
-  return (
-    <div>
-      <CheckCircle2 size={30} color="#3F8F5F" style={{ marginBottom: '12px' }} />
-      <h2 style={{ fontSize: '21px', marginBottom: '6px', fontWeight: 700 }}>{title}</h2>
-      <p style={{ color: '#5C625C', marginBottom: '20px', fontSize: '14px', lineHeight: 1.5 }}>{body}</p>
-
-      {feeds.length > 0 && (
-        <div style={{ background: 'rgba(201,150,68,0.10)', borderRadius: '10px', padding: '16px', marginBottom: '16px' }}>
-          <p style={{ fontSize: '13px', fontWeight: 600, margin: '0 0 10px 0' }}>
-            {`Captured ${gotCount} of ${feeds.length} feeds from ${pms}`}
-          </p>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '7px' }}>
-            {feeds.map((f) => (
-              <div key={f.key} style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '13px' }}>
-                {f.captured
-                  ? <Check size={14} color="#3F8F5F" style={{ flexShrink: 0 }} />
-                  : <span style={{ color: '#c2562e', width: 14, textAlign: 'center', flexShrink: 0, fontWeight: 700 }}>✕</span>}
-                <span style={{ color: f.captured ? 'inherit' : '#5C625C' }}>{f.label}</span>
-                <span style={{ marginLeft: 'auto', fontSize: '12px', color: '#5C625C', fontVariantNumeric: 'tabular-nums' }}>
-                  {f.captured
-                    ? (f.count != null && f.count > 0 ? String(f.count) : 'captured')
-                    : 'not found'}
-                </span>
-              </div>
-            ))}
-          </div>
-          <p style={{ fontSize: '11.5px', color: '#5C625C', margin: '10px 0 0', lineHeight: 1.45 }}>
-            Numbers fill in once the map goes live. “captured” means the robot learned where the data is.
-          </p>
-        </div>
-      )}
-
-      <LiveNumbersBlock t={t} lang={lang} numbers={resp.numbers} />
-
-      {error && <ErrorBox msg={error} />}
-
-      <button className="btn btn-primary" onClick={onContinue} disabled={advancing} style={{ width: '100%', justifyContent: 'center', marginTop: '4px' }}>
-        {advancing ? <Loader2 size={14} className="spin" /> : null}
-        {advancing ? '…' : (outcome === 'auto_promote' ? t.continuePlain : t.continueBtn)}
-      </button>
-    </div>
-  );
-}
-
-function LiveNumbersBlock({ t, lang, numbers }: { t: MappingStrings; lang: 'en' | 'es'; numbers: MappingNumbers | null }) {
-  if (!numbers || !numbers.anyAvailable) {
-    return (
-      <p style={{ fontSize: '13px', color: '#5C625C', marginBottom: '16px', lineHeight: 1.5 }}>
-        {t.numbersNone}
-      </p>
-    );
-  }
-
-  const cards: { label: string; main: string; sub?: string }[] = [];
-  if (numbers.occupancyPct.available && numbers.occupancyPct.value != null) {
-    cards.push({
-      label: t.statOccupancy,
-      main: `${numbers.occupancyPct.value}%`,
-      sub: numbers.occupiedRooms.available && numbers.occupiedRooms.value != null && numbers.totalRooms != null
-        ? t.roomsOfTotal.replace('{occ}', String(numbers.occupiedRooms.value)).replace('{total}', String(numbers.totalRooms))
-        : undefined,
-    });
-  } else if (numbers.occupiedRooms.available && numbers.occupiedRooms.value != null) {
-    cards.push({ label: t.statOccupancy, main: String(numbers.occupiedRooms.value) });
-  }
-  if (numbers.arrivalsToday.available && numbers.arrivalsToday.value != null) cards.push({ label: t.statArrivals, main: String(numbers.arrivalsToday.value) });
-  if (numbers.departuresToday.available && numbers.departuresToday.value != null) cards.push({ label: t.statDepartures, main: String(numbers.departuresToday.value) });
-  if (numbers.guestsInHouse.available && numbers.guestsInHouse.value != null) cards.push({ label: t.statGuests, main: String(numbers.guestsInHouse.value) });
-
-  if (cards.length === 0) {
-    return (
-      <p style={{ fontSize: '13px', color: '#5C625C', marginBottom: '16px', lineHeight: 1.5 }}>
-        {t.numbersNone}
-      </p>
-    );
-  }
-
-  const when = numbers.capturedAt ? formatWhen(numbers.capturedAt, lang) : '';
-  return (
-    <div style={{ marginBottom: '16px' }}>
-      <p style={{ fontSize: '13px', fontWeight: 600, margin: '0 0 4px 0' }}>{t.numbersHeading}</p>
-      <p style={{ fontSize: '11px', color: '#5C625C', margin: '0 0 10px 0' }}>{t.numbersCaption.replace('{when}', when)}</p>
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(90px, 1fr))', gap: '8px' }}>
-        {cards.map((c) => (
-          <div key={c.label} style={{ background: 'rgba(201,150,68,0.10)', border: '1px solid rgba(31,35,28,0.12)', borderRadius: '8px', padding: '10px 12px', textAlign: 'center' }}>
-            <div style={{ fontSize: '22px', fontWeight: 700, color: '#1F231C' }}>{c.main}</div>
-            <div style={{ fontSize: '11px', color: '#5C625C', marginTop: '2px' }}>{c.label}</div>
-            {c.sub ? <div style={{ fontSize: '10px', color: '#5C625C', marginTop: '2px' }}>{c.sub}</div> : null}
-          </div>
-        ))}
-      </div>
-    </div>
-  );
-}
-
-function formatWhen(iso: string, lang: 'en' | 'es'): string {
-  const d = new Date(iso);
-  if (isNaN(d.getTime())) return '';
-  try {
-    return ' · ' + d.toLocaleTimeString(lang, { hour: 'numeric', minute: '2-digit' });
-  } catch {
-    return '';
-  }
-}
-
-// ─── Step 8: Add team ───────────────────────────────────────────────────
-
-function Step8AddTeam({ code, wizard, onNext }: { code: string; wizard: WizardStateResponse; onNext: () => Promise<void>; }) {
-  const [staff, setStaff] = useState<{ name: string; phone: string; role: string; language: 'en' | 'es' }[]>([
-    { name: '', phone: '', role: 'housekeeping', language: 'en' },
-  ]);
-  const [submitting, setSubmitting] = useState(false);
-  const [err, setErr] = useState<string | null>(null);
-
-  const skip = async () => {
-    setErr(null);
-    setSubmitting(true);
-    try {
-      const res = await fetch('/api/onboard/wizard', {
-        method: 'PATCH',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({
-          code,
-          partialState: { staffAt: new Date().toISOString() },
-        }),
-      });
-      await requireApiSuccess(res, 'Could not save progress. Please try again.');
-      await onNext();
-    } catch (e) {
-      setErr(e instanceof Error ? e.message : 'Save failed');
-    } finally {
-      setSubmitting(false);
-    }
-  };
-
-  const submit = async () => {
-    setErr(null);
-    setSubmitting(true);
-    try {
-      const filtered = staff.filter((s) => s.name.trim());
-      if (filtered.length > 0) {
-        const res = await fetchWithAuth('/api/onboarding/complete', {
-          method: 'POST',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({
-            propertyId: wizard.propertyId,
-            staff: filtered,
-          }),
-        });
-        const json = await res.json();
-        if (!res.ok || !json.ok) { setErr(json.error || 'Save failed'); return; }
-      }
-      const progressRes = await fetch('/api/onboard/wizard', {
-        method: 'PATCH',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({
-          code,
-          partialState: { staffAt: new Date().toISOString() },
-        }),
-      });
-      await requireApiSuccess(progressRes, 'Could not save progress. Please try again.');
-      await onNext();
-    } catch (e) {
-      if (e instanceof SessionEndedError) return;  // redirect in progress; suppress error
-      setErr(e instanceof Error ? e.message : 'Save failed');
-    } finally {
-      setSubmitting(false);
-    }
-  };
-
-  return (
-    <div>
-      {/* No "← Back" here: the only earlier step is the (completed) mapping
-          progress screen — not an editable form — so a back button would land
-          on a result screen the operator can't act on. Team is the last
-          optional form; "Skip" covers opting out. */}
-      <Users size={28} color="#C99644" style={{ marginBottom: '12px' }} />
-      <h2 style={{ fontSize: '20px', marginBottom: '4px' }}>Add your team (optional)</h2>
-      <p style={{ color: '#5C625C', marginBottom: '20px', fontSize: '13px' }}>
-        Add a few key staff now, or skip and invite them later from settings.
-      </p>
-      {err && <ErrorBox msg={err} />}
-      {staff.map((s, i) => (
-        <div key={i} style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '6px', marginBottom: '8px' }}>
-          <input className="input" placeholder="Name" value={s.name} onChange={(e) => { const c = [...staff]; c[i].name = e.target.value; setStaff(c); }} />
-          <input className="input" placeholder="Phone" value={s.phone} onChange={(e) => { const c = [...staff]; c[i].phone = e.target.value; setStaff(c); }} />
-          <select className="input" value={s.role} onChange={(e) => { const c = [...staff]; c[i].role = e.target.value; setStaff(c); }}>
-            <option value="housekeeping">Housekeeping</option>
-            <option value="front_desk">Front desk</option>
-            <option value="maintenance">Maintenance</option>
-          </select>
-        </div>
-      ))}
-      {staff.length < 5 && (
-        <button className="btn btn-secondary" onClick={() => setStaff([...staff, { name: '', phone: '', role: 'housekeeping', language: 'en' }])} style={{ marginBottom: '12px' }}>+ Another</button>
-      )}
-      <div style={{ display: 'flex', gap: '8px', marginTop: '12px' }}>
-        <button className="btn btn-secondary" onClick={skip} disabled={submitting} style={{ flex: 1, justifyContent: 'center' }}>Skip</button>
-        <button className="btn btn-primary" onClick={submit} disabled={submitting} style={{ flex: 1, justifyContent: 'center' }}>{submitting ? 'Saving…' : 'Add team →'}</button>
-      </div>
-    </div>
-  );
-}
-
-// ─── Step 9: Tell Staxis about your hotel (optional, skippable) ─────────
+// ─── Step 5: Tell Staxis about your hotel (optional, skippable) ─────────
 //
 // The same open box that lives on the Knows screen (/feed → Knows), offered
-// once during setup while the owner is already thinking about their hotel.
+// once during setup while the first person is already thinking about the hotel.
 //
 // Rules this step obeys, deliberately:
 //   • It never blocks. Skip always advances, and it advances even if the
@@ -1800,7 +986,7 @@ function Step8AddTeam({ code, wizard, onNext }: { code: string; wizard: WizardSt
 //     a paste on the Knows screen. Typing it during setup does not make it
 //     established truth.
 
-function Step9TellUs({ code, wizard, onNext }: {
+function Step5TellUs({ code, wizard, onNext }: {
   code: string;
   wizard: WizardStateResponse;
   onNext: () => Promise<void>;
@@ -1812,7 +998,7 @@ function Step9TellUs({ code, wizard, onNext }: {
   const [err, setErr] = useState<string | null>(null);
 
   const markDone = async () => {
-    const res = await fetch('/api/onboard/wizard', {
+    const res = await fetchWithAuth('/api/onboard/wizard', {
       method: 'PATCH',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({
@@ -1894,10 +1080,9 @@ function Step9TellUs({ code, wizard, onNext }: {
   );
 }
 
-// ─── Step 10: All set ───────────────────────────────────────────────────
+// ─── Step 6: All set ───────────────────────────────────────────────────
 
-function Step10AllSet({ code, wizard }: { code: string; wizard: WizardStateResponse; }) {
-  const { lang } = useLang();
+function Step6AllSet({ code, wizard }: { code: string; wizard: WizardStateResponse; }) {
   const [going, setGoing] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const finalize = async () => {
@@ -1940,7 +1125,7 @@ function Step10AllSet({ code, wizard }: { code: string; wizard: WizardStateRespo
         </p>
       </div>
       <button className="btn btn-primary" onClick={finalize} disabled={going} style={{ width: '100%', justifyContent: 'center' }}>
-        {going ? 'Going…' : 'Go to home →'}
+        {going ? 'Entering…' : 'Enter Staxis →'}
       </button>
     </div>
   );

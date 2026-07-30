@@ -54,8 +54,8 @@ export async function sendOnboardingInvite(
     `Staxis is the AI-powered operations platform that runs your housekeeping,`,
     `inventory, and labor planning in the background.`,
     '',
-    `To get started, click the link below. We'll walk you through the setup`,
-    `(account, hotel info, services, PMS connection) in about 10 minutes.`,
+    `To get started, click the link below. We'll help you create your account,`,
+    `confirm the hotel details, and share anything Staxis should know.`,
     '',
     signupUrl,
     '',
@@ -85,7 +85,7 @@ export async function sendOnboardingInvite(
                 You've been added as the <strong>${escapeHtml(role)}</strong> for ${escapeHtml(hotelName)} on Staxis, the AI-powered operations platform that runs housekeeping, inventory, and labor planning in the background.
               </p>
               <p style="font-size:15px;line-height:1.5;color:#444;margin:0 0 24px 0;">
-                Click below to get started. We'll walk you through account setup, hotel details, services, and connecting your PMS in about 10 minutes.
+                Click below to get started. We'll help you create your account, confirm the hotel details, and share anything Staxis should know.
               </p>
             </td>
           </tr>

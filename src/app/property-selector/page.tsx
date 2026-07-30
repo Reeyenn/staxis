@@ -132,6 +132,7 @@ export default function PropertySelectorPage() {
     // it's ever opened for this hotel. RESUME_GUARD_KEY is the same-session
     // loop breaker: a failed resume bounces back here and falls through to Home.
     const onboardingNeedsResume = shouldResumeOnboarding(
+      user?.accountId,
       user?.role,
       hotel.onboardingCompletedAt,
       hotel.onboardingState as OnboardingState | null,
@@ -157,7 +158,7 @@ export default function PropertySelectorPage() {
       ? '/home'
       : safeRedirect(new URLSearchParams(window.location.search).get('redirect'), '/home');
     replaceNavigation(requestedTarget);
-  }, [replaceNavigation, setActivePropertyId, user?.role]);
+  }, [replaceNavigation, setActivePropertyId, user?.accountId, user?.role]);
 
   // Exactly one hotel and nothing company-scope to show → skip the screen
   // entirely. A company person with one hotel keeps the command centre: their

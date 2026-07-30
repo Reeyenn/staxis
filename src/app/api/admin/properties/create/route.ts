@@ -1,33 +1,27 @@
 /**
  * POST /api/admin/properties/create
  *
- * Phase M1 (2026-05-14) — the only path that creates new hotels in the
- * product. Before this, properties had to be hand-inserted via SQL,
- * which made onboarding hotel #2 impossible through the UI. The
- * createProperty() helper that used to live in src/lib/db/properties.ts
- * was deleted as orphan in Phase K — this is the replacement, gated
- * behind admin auth instead of being callable from any client page.
+ * Platform-admin hotel-shell creation. This route owns property creation;
+ * onboarding and PMS setup only configure an existing hotel.
  *
- * What it does, atomically per request:
+ * What it does:
  *   1. Validates inputs (name, total_rooms, IANA timezone, optional
- *      pms_type / brand / property_kind / is_test).
- *   2. Inserts the property with the calling admin as owner_id placeholder.
- *      The guarded one-shot owner claim later replaces that placeholder; a GM
- *      claim receives hotel access but does not become owner of record.
- *   3. Mints an owner/GM onboarding code through the DB-guarded platform-
- *      admin RPC (single-use, 7-day TTL, exact unclaimed hotel).
- *   4. Writes an audit row.
+ *      pms_type / brand / property_kind / is_test / organization_id).
+ *   2. Verifies an optional target organization before inserting anything.
+ *   3. Inserts a hotel shell with zero customer accounts or invitations.
+ *   4. Uses the authoritative organization-transfer RPC when a target was
+ *      supplied, compensating the brand-new insert if assignment fails.
+ *   5. Writes an audit row.
  *
- * Returns: { propertyId, joinCode, signupUrl, expiresAt }
+ * Returns: { propertyId, name, organizationId, relationshipId }
  *
  * Discipline:
  *   - All validation runs server-side. Client-side checks are advisory only.
  *   - Timezone validated via Intl.DateTimeFormat (same mechanism as
  *     ml-service's require_property_timezone after Phase L). Phase K's
  *     CHECK (total_rooms > 0) catches a bypass at the DB layer too.
- *   - If join-code minting fails, the property still exists but no broad
- *     staff-code endpoint is used as a fallback. The response is explicit so
- *     platform operations can retry/repair the guarded bootstrap only.
+ *   - This endpoint never mints a join code or sends an invitation. People are
+ *     invited separately from the exact hotel's People control.
  */
 
 import { NextRequest, after } from 'next/server';
@@ -38,18 +32,47 @@ import { getOrMintRequestId, log } from '@/lib/log';
 import { writeAudit } from '@/lib/audit';
 import { triggerMlTraining } from '@/lib/ml-invoke';
 import {
-  generateJoinCode,
-} from '@/lib/join-codes';
-import { sendOnboardingInvite } from '@/lib/email/onboarding-invite';
-import { env } from '@/lib/env';
-import { PLACEHOLDER_HOTEL_NAME } from '@/lib/onboarding/state';
-import {
   validateBody,
   type CreateBody,
 } from '@/lib/admin-property-create-validation';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
+
+function statusForOrganizationError(error: { code?: string }): number {
+  if (error.code === '42501') return 403;
+  if (error.code === 'P0002' || error.code === '23503') return 404;
+  if (error.code === '23505' || error.code === '23514') return 409;
+  if (error.code === 'PGRST202' || error.code === 'PGRST205' || error.code === '42P01') return 503;
+  return 500;
+}
+
+function apiCodeForStatus(status: number): string {
+  if (status === 403) return ApiErrorCode.Forbidden;
+  if (status === 404) return ApiErrorCode.NotFound;
+  if (status === 409) return ApiErrorCode.IdempotencyConflict;
+  if (status === 503) return ApiErrorCode.UpstreamFailure;
+  return ApiErrorCode.InternalError;
+}
+
+async function rollbackNewHotel(
+  propertyId: string,
+  actorAccountId: string,
+  requestId: string,
+): Promise<boolean> {
+  const { error } = await supabaseAdmin.rpc('staxis_delete_property_and_legacy_accounts', {
+    p_actor_account_id: actorAccountId,
+    p_property_id: propertyId,
+    p_confirmed_name: null,
+  });
+  if (!error) return true;
+  log.error('[admin/properties/create] failed to roll back unassigned hotel shell', {
+    requestId,
+    propertyId,
+    msg: error.message,
+  });
+  return false;
+}
 
 export async function POST(req: NextRequest) {
   const requestId = getOrMintRequestId(req);
@@ -70,10 +93,42 @@ export async function POST(req: NextRequest) {
   }
   const v = validation.values;
 
-  // Insert property. owner_id = the admin creating it, as the exact bootstrap
-  // placeholder 0398 requires until the one-shot owner claim succeeds. Phase
-  // K's CHECK (total_rooms > 0) is the DB-layer safety net if validation here
-  // regresses.
+  let targetOrganizationName: string | null = null;
+  if (v.organizationId) {
+    const { data: target, error: targetError } = await supabaseAdmin
+      .from('organizations')
+      .select('id, name, organization_type, status')
+      .eq('id', v.organizationId)
+      .maybeSingle();
+    if (targetError) {
+      const status = statusForOrganizationError(targetError);
+      return err(status === 503 ? 'Organization access is not ready yet' : 'Could not verify organization', {
+        requestId,
+        status,
+        code: status === 503 ? ApiErrorCode.UpstreamFailure : ApiErrorCode.InternalError,
+      });
+    }
+    if (!target || target.status !== 'active') {
+      return err('Active organization not found', {
+        requestId,
+        status: 404,
+        code: ApiErrorCode.NotFound,
+      });
+    }
+    if (target.organization_type === 'single_hotel') {
+      return err('Legacy single-hotel anchors cannot contain other hotels', {
+        requestId,
+        status: 409,
+        code: ApiErrorCode.ValidationFailed,
+      });
+    }
+    targetOrganizationName = target.name;
+  }
+
+  // owner_id remains a NOT NULL legacy storage column. The platform admin's
+  // auth id is a compatibility placeholder, not a customer owner membership.
+  // This route deliberately creates no account, membership, invite, or code,
+  // so the authoritative hotel roster starts empty.
   const { data: created, error: insErr } = await supabaseAdmin
     .from('properties')
     .insert({
@@ -86,6 +141,7 @@ export async function POST(req: NextRequest) {
       property_kind: v.propertyKind,
       is_test: v.isTest,
       onboarding_source: 'admin',
+      onboarding_state: { step: 1 },
       // Round 15 follow-up: when the admin provided a room list, write it
       // here so phantom-seed can run from day 1. Migration 0125's trigger
       // re-derives total_rooms from this if non-empty (defense against
@@ -103,6 +159,42 @@ export async function POST(req: NextRequest) {
       `Failed to create property: ${insErr?.message ?? 'unknown error'}`,
       { requestId, status: 500, code: ApiErrorCode.InternalError },
     );
+  }
+
+  let relationshipId: string | null = null;
+  if (v.organizationId) {
+    const { data, error: assignmentError } = await supabaseAdmin.rpc(
+      'staxis_set_primary_property_organization',
+      {
+        p_actor_account_id: auth.accountId,
+        p_property_id: created.id,
+        p_organization_id: v.organizationId,
+        p_relationship_type: 'operator',
+      },
+    );
+    if (assignmentError) {
+      const status = statusForOrganizationError(assignmentError);
+      const rolledBack = await rollbackNewHotel(created.id, auth.accountId, requestId);
+      log.error('[admin/properties/create] organization assignment failed', {
+        requestId,
+        propertyId: created.id,
+        organizationId: v.organizationId,
+        rolledBack,
+        msg: assignmentError.message,
+      });
+      return err(
+        rolledBack
+          ? 'Could not create the hotel in that organization. No hotel was kept.'
+          : 'The hotel shell was created but could not be assigned. Open the hotel directory before retrying.',
+        {
+          requestId,
+          status: rolledBack ? status : 500,
+          code: rolledBack ? apiCodeForStatus(status) : ApiErrorCode.InternalError,
+          ...(!rolledBack ? { details: { propertyId: created.id } } : {}),
+        },
+      );
+    }
+    relationshipId = data as string | null;
   }
 
   // Deliberately NO preset inventory (2026-07-09, Reeyen): new hotels start
@@ -141,40 +233,6 @@ export async function POST(req: NextRequest) {
     }
   });
 
-  // Mint the one-shot owner/GM bootstrap credential through the database
-  // guard. 0398 locks the property, rechecks this exact live platform-admin
-  // identity, proves the hotel is still unclaimed/incomplete, and owns the
-  // one-use/seven-day bounds. A direct service-role INSERT is deliberately
-  // rejected by the trigger.
-  let joinCodeRow: { code: string; expires_at: string } | null = null;
-  let codeErr: unknown = null;
-  for (let i = 0; i < 5; i++) {
-    const code = generateJoinCode(created.name);
-    const { data, error: mintError } = await supabaseAdmin.rpc(
-      'staxis_mint_privileged_onboarding_join_code',
-      {
-        p_actor_account_id: auth.accountId,
-        p_actor_auth_user_id: auth.userId,
-        p_hotel_id: created.id,
-        p_code: code,
-        p_role: v.inviteRole,
-        p_request_id: requestId,
-      },
-    );
-    const mint = data as {
-      ok?: boolean;
-      status?: string;
-      code?: string;
-      expiresAt?: string;
-    } | null;
-    if (!mintError && mint?.ok === true && mint.code && mint.expiresAt) {
-      joinCodeRow = { code: mint.code, expires_at: mint.expiresAt };
-      break;
-    }
-    codeErr = mintError ?? new Error(`privileged join-code mint returned ${mint?.status ?? 'invalid response'}`);
-    if (mint?.status !== 'code_collision') break;
-  }
-
   await writeAudit({
     action: 'property.create',
     actorUserId: auth.userId,
@@ -188,80 +246,21 @@ export async function POST(req: NextRequest) {
       timezone: v.timezone,
       pms_type: v.pmsType,
       is_test: v.isTest,
-      owner_email_invited: v.ownerEmail,
-      join_code_minted: Boolean(joinCodeRow),
+      organization_id: v.organizationId,
+      organization_name: targetOrganizationName,
+      relationship_id: relationshipId,
+      customer_accounts_created: 0,
       room_inventory_count: v.roomNumbers.length,
     },
   });
 
-  if (!joinCodeRow) {
-    log.error('[admin/properties/create] property created but join code failed', {
-      requestId, propertyId: created.id, msg: codeErr instanceof Error ? codeErr.message : String(codeErr),
-    });
-    return ok(
-      {
-        propertyId: created.id,
-        joinCode: null,
-        signupUrl: null,
-        expiresAt: null,
-        warning: 'Property created, but its guarded onboarding invite could not be minted. Retry from platform administration before assigning the hotel.',
-      },
-      { requestId },
-    );
-  }
-
-  // Build the signup URL. Use NEXT_PUBLIC_SITE_URL when available so
-  // dev/preview/prod each generate links to themselves; fall back to the
-  // production canonical (matches the smoke test convention).
-  // Phase M1.5: changed path from /signup to /onboard — the new unified
-  // wizard. Old /signup URLs still work via the redirect added in
-  // Commit 8.
-  const siteUrl = env.NEXT_PUBLIC_APP_URL ?? 'https://getstaxis.com';
-  const signupUrl = `${siteUrl}/onboard?code=${encodeURIComponent(joinCodeRow.code)}`;
-
-  // Phase M1.5: optional Resend email send. Failure is NEVER fatal —
-  // the signup URL is still in the response body so the admin can
-  // copy/paste as a fallback.
-  let emailSent = false;
-  let emailError: string | null = null;
-  if (v.sendEmail && v.ownerEmail) {
-    const emailResult = await sendOnboardingInvite({
-      to: v.ownerEmail,
-      // The lean flow doesn't collect a hotel name up front — keep the
-      // invite email reading naturally ("set up your hotel") until the
-      // owner names it in the wizard.
-      hotelName: v.name === PLACEHOLDER_HOTEL_NAME ? 'your hotel' : v.name,
-      signupUrl,
-      inviteRole: v.inviteRole,
-      expiresAt: joinCodeRow.expires_at,
-      auditContext: {
-        actorUserId: auth.userId,
-        actorEmail: auth.email ?? undefined,
-        targetType: 'property',
-        targetId: created.id,
-        hotelId: created.id,
-      },
-    });
-    if (emailResult.ok) {
-      emailSent = true;
-    } else {
-      emailError = emailResult.error;
-      console.warn('[admin/properties/create] email send failed (non-fatal)', {
-        requestId, propertyId: created.id, error: emailResult.error,
-      });
-    }
-  }
-
   return ok(
     {
       propertyId: created.id,
-      joinCode: joinCodeRow.code,
-      signupUrl,
-      expiresAt: joinCodeRow.expires_at,
-      emailSent,
-      emailError,
-      inviteRole: v.inviteRole,
+      name: created.name ?? v.name,
+      organizationId: v.organizationId,
+      relationshipId,
     },
-    { requestId },
+    { requestId, status: 201 },
   );
 }

@@ -5,8 +5,11 @@ import { describe, test } from 'node:test';
 
 const read = (...parts: string[]) => readFileSync(join(process.cwd(), ...parts), 'utf8');
 
-const migration = read(
+const baseMigration = read(
   'supabase', 'migrations', '0398_privileged_onboarding_join_codes.sql',
+);
+const migration = read(
+  'supabase', 'migrations', '0411_first_person_onboarding.sql',
 );
 const createRoute = read(
   'src', 'app', 'api', 'admin', 'properties', 'create', 'route.ts',
@@ -31,19 +34,20 @@ function assertAppearsInOrder(haystack: string, needles: readonly string[]) {
 
 describe('privileged onboarding join-code rollout contract', () => {
   test('restores only the typed one-shot onboarding shape behind a lifecycle trigger', () => {
-    assert.match(migration, /code_kind = 'privileged_onboarding'/);
-    assert.match(migration, /role in \('owner', 'general_manager'\)/);
-    assert.match(migration, /max_uses = 1/);
-    assert.match(migration, /used_count between 0 and 1/);
-    assert.match(migration, /hotel_join_codes_one_privileged_onboarding_idx/);
+    assert.match(baseMigration, /code_kind = 'privileged_onboarding'/);
+    assert.match(baseMigration, /role in \('owner', 'general_manager'\)/);
+    assert.match(baseMigration, /max_uses = 1/);
+    assert.match(baseMigration, /used_count between 0 and 1/);
+    assert.match(baseMigration, /hotel_join_codes_one_privileged_onboarding_idx/);
     assert.match(migration, /_staxis_guard_privileged_onboarding_join_code/);
     assert.match(migration, /onboarding_completed_at is not null/);
     assert.match(migration, /onboarding_state->>'accountCreatedAt'/);
-    assert.match(migration, /v_property_owner_id is distinct from v_creator_auth_user_id/);
+    assert.match(migration, /placeholder\.data_user_id = v_property_owner_id/);
+    assert.doesNotMatch(migration, /v_property_owner_id is distinct from v_creator_auth_user_id/);
   });
 
-  test('platform-admin create and public redemption use the service-only transactional RPCs', () => {
-    assert.match(createRoute, /staxis_mint_privileged_onboarding_join_code/);
+  test('hotel creation stays zero-user while first-person mint and redemption use transactional RPCs', () => {
+    assert.doesNotMatch(createRoute, /staxis_mint_(?:privileged|first_person)_onboarding/);
     assert.doesNotMatch(
       createRoute,
       /from\(['"]hotel_join_codes['"]\)[\s\S]{0,120}\.insert\(/,
@@ -61,7 +65,7 @@ describe('privileged onboarding join-code rollout contract', () => {
     );
     assert.match(
       migration,
-      /grant execute on function public\.staxis_mint_privileged_onboarding_join_code\([\s\S]*?\) to service_role/,
+      /grant execute on function public\.staxis_mint_first_person_onboarding_invite\([\s\S]*?\) to service_role/,
     );
     assert.match(
       migration,
@@ -103,7 +107,7 @@ describe('privileged onboarding join-code rollout contract', () => {
       /staxis_resolve_or_mint_resume_join_code_guarded/,
     );
     assert.match(migration, /p_hotel_id, v_code_text, null, 'onboarding_resume'/);
-    assert.match(migration, /'onboarding_resume'[\s\S]*?role is null[\s\S]*?max_uses = 1[\s\S]*?used_count = 1/);
+    assert.match(baseMigration, /'onboarding_resume'[\s\S]*?role is null[\s\S]*?max_uses = 1[\s\S]*?used_count = 1/);
     assert.doesNotMatch(
       resumeRoute,
       /\.from\(['"]hotel_join_codes['"]\)/,

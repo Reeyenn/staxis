@@ -11,17 +11,17 @@
  * assert outputs. Each case below either accepts a known-valid payload
  * or rejects a known-invalid one with a useful reason string.
  *
- * What we DON'T test here: the .insert() call itself or the join-code
- * minting. Those are exercised end-to-end by M1.5's smoke addition
- * (create + delete a sentinel property in dev). Pure-function unit
- * tests cover the part that's easy to regress in isolation.
+ * What we DON'T test here: the property insert or organization-transfer RPC.
+ * Pure-function unit tests cover the validation boundary that's easy to
+ * regress in isolation.
  */
 
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 
 import { validateBody } from '@/lib/admin-property-create-validation';
-import { PLACEHOLDER_HOTEL_NAME } from '@/lib/onboarding/state';
+
+const ORGANIZATION_ID = '11111111-1111-4111-8111-111111111111';
 
 // ─── HAPPY PATH ────────────────────────────────────────────────────────────
 
@@ -41,7 +41,7 @@ describe('validateBody — happy path', () => {
       assert.equal(result.values.brand, null);
       assert.equal(result.values.propertyKind, 'limited_service');
       assert.equal(result.values.isTest, false);
-      assert.equal(result.values.ownerEmail, null);
+      assert.equal(result.values.organizationId, null);
     }
   });
 
@@ -54,7 +54,7 @@ describe('validateBody — happy path', () => {
       brand: 'Marriott',
       propertyKind: 'full_service',
       isTest: true,
-      ownerEmail: 'owner@hotel.com',
+      organizationId: ORGANIZATION_ID,
     });
     assert.equal(result.ok, true);
     if (result.ok) {
@@ -62,21 +62,19 @@ describe('validateBody — happy path', () => {
       assert.equal(result.values.brand, 'Marriott');
       assert.equal(result.values.propertyKind, 'full_service');
       assert.equal(result.values.isTest, true);
-      assert.equal(result.values.ownerEmail, 'owner@hotel.com');
+      assert.equal(result.values.organizationId, ORGANIZATION_ID);
     }
   });
 
-  test('trims name whitespace and lowercases owner email', () => {
+  test('trims name whitespace', () => {
     const result = validateBody({
       name: '  Hilton Garden  ',
       totalRooms: 120,
       timezone: 'UTC',
-      ownerEmail: '  Alice@HOTEL.com  ',
     });
     assert.equal(result.ok, true);
     if (result.ok) {
       assert.equal(result.values.name, 'Hilton Garden');
-      assert.equal(result.values.ownerEmail, 'alice@hotel.com');
     }
   });
 
@@ -89,26 +87,24 @@ describe('validateBody — happy path', () => {
       timezone: 'America/Chicago',
       pmsType: '',
       brand: '',
-      ownerEmail: '',
+      organizationId: '',
     });
     assert.equal(result.ok, true);
     if (result.ok) {
       assert.equal(result.values.pmsType, null);
       assert.equal(result.values.brand, null);
-      assert.equal(result.values.ownerEmail, null);
+      assert.equal(result.values.organizationId, null);
     }
   });
 
-  test('accepts a BARE invite payload (no hotel details) — the lean admin flow', () => {
-    // The admin link-generator sends only invite fields; name / rooms /
-    // timezone are filled in by the owner during onboarding (Step 4).
-    const result = validateBody({ inviteRole: 'owner' });
+  test('accepts an empty shell payload with safe hotel defaults', () => {
+    const result = validateBody({});
     assert.equal(result.ok, true);
     if (result.ok) {
-      assert.equal(result.values.name, PLACEHOLDER_HOTEL_NAME);
+      assert.equal(result.values.name, 'New hotel');
       assert.equal(result.values.totalRooms, 1);
       assert.equal(result.values.timezone, 'America/Chicago');
-      assert.equal(result.values.inviteRole, 'owner');
+      assert.equal(result.values.organizationId, null);
     }
   });
 });
@@ -116,13 +112,13 @@ describe('validateBody — happy path', () => {
 // ─── NAME ──────────────────────────────────────────────────────────────────
 
 describe('validateBody — name field', () => {
-  test('accepts MISSING name — the owner names the hotel in the wizard; we use a placeholder', () => {
+  test('accepts MISSING name — the shell uses a placeholder until an admin edits it', () => {
     const result = validateBody({
       totalRooms: 50,
       timezone: 'America/Chicago',
     });
     assert.equal(result.ok, true);
-    if (result.ok) assert.equal(result.values.name, PLACEHOLDER_HOTEL_NAME);
+    if (result.ok) assert.equal(result.values.name, 'New hotel');
   });
 
   test('rejects non-string name', () => {
@@ -213,7 +209,7 @@ describe('validateBody — totalRooms field (mirrors DB CHECK from Phase K)', ()
     }
   });
 
-  test('accepts MISSING totalRooms — defaults to 1 (owner sets the real count in the wizard)', () => {
+  test('accepts MISSING totalRooms — defaults to 1 until hotel details are completed', () => {
     const result = validateBody({ name: 'Test', timezone: 'America/Chicago' });
     assert.equal(result.ok, true);
     if (result.ok) assert.equal(result.values.totalRooms, 1);
@@ -258,7 +254,7 @@ describe('validateBody — timezone field', () => {
     assert.equal(result.ok, false);
   });
 
-  test('accepts EMPTY timezone — defaults to America/Chicago (owner sets it in the wizard)', () => {
+  test('accepts EMPTY timezone — defaults to America/Chicago until hotel details are completed', () => {
     const result = validateBody({
       name: 'Test',
       totalRooms: 50,
@@ -338,117 +334,35 @@ describe('validateBody — propertyKind field', () => {
   });
 });
 
-// ─── OWNER_EMAIL ───────────────────────────────────────────────────────────
+// ─── ORGANIZATION ASSIGNMENT ───────────────────────────────────────────────
 
-describe('validateBody — ownerEmail field', () => {
-  test('rejects email without @', () => {
+describe('validateBody — organizationId field', () => {
+  test('accepts a valid organization UUID', () => {
     const result = validateBody({
       name: 'Test', totalRooms: 50, timezone: 'America/Chicago',
-      ownerEmail: 'notanemail',
-    });
-    assert.equal(result.ok, false);
-  });
-
-  test('accepts standard email', () => {
-    const result = validateBody({
-      name: 'Test', totalRooms: 50, timezone: 'America/Chicago',
-      ownerEmail: 'owner@hotel.com',
+      organizationId: ORGANIZATION_ID,
     });
     assert.equal(result.ok, true);
-  });
-});
-
-// ─── PHASE M1.5: inviteRole + sendEmail ────────────────────────────────────
-
-describe('validateBody — inviteRole field (Phase M1.5)', () => {
-  test('defaults to owner when omitted', () => {
-    const result = validateBody({
-      name: 'Test', totalRooms: 50, timezone: 'America/Chicago',
-    });
-    assert.equal(result.ok, true);
-    if (result.ok) assert.equal(result.values.inviteRole, 'owner');
+    if (result.ok) assert.equal(result.values.organizationId, ORGANIZATION_ID);
   });
 
-  test('accepts owner', () => {
-    const result = validateBody({
-      name: 'Test', totalRooms: 50, timezone: 'America/Chicago',
-      inviteRole: 'owner',
-    });
-    assert.equal(result.ok, true);
-    if (result.ok) assert.equal(result.values.inviteRole, 'owner');
-  });
-
-  test('accepts general_manager', () => {
-    const result = validateBody({
-      name: 'Test', totalRooms: 50, timezone: 'America/Chicago',
-      inviteRole: 'general_manager',
-    });
-    assert.equal(result.ok, true);
-    if (result.ok) assert.equal(result.values.inviteRole, 'general_manager');
-  });
-
-  test('rejects staff roles (only owner/GM can be invited via admin flow)', () => {
-    for (const role of ['front_desk', 'housekeeping', 'maintenance', 'admin', 'staff']) {
+  test('defaults to independent when organizationId is omitted, null, or empty', () => {
+    for (const organizationId of [undefined, null, '']) {
       const result = validateBody({
-        name: 'Test', totalRooms: 50, timezone: 'America/Chicago',
-        inviteRole: role,
+        name: 'Test', totalRooms: 50, timezone: 'America/Chicago', organizationId,
       });
-      assert.equal(result.ok, false, `inviteRole=${role} should be rejected`);
-      if (!result.ok) assert.match(result.reason, /inviteRole/);
-    }
-  });
-});
-
-describe('validateBody — sendEmail flag (Phase M1.5)', () => {
-  test('defaults to false when omitted', () => {
-    const result = validateBody({
-      name: 'Test', totalRooms: 50, timezone: 'America/Chicago',
-    });
-    assert.equal(result.ok, true);
-    if (result.ok) assert.equal(result.values.sendEmail, false);
-  });
-
-  test('accepts true with valid ownerEmail', () => {
-    const result = validateBody({
-      name: 'Test', totalRooms: 50, timezone: 'America/Chicago',
-      sendEmail: true,
-      ownerEmail: 'owner@hotel.com',
-    });
-    assert.equal(result.ok, true);
-    if (result.ok) {
-      assert.equal(result.values.sendEmail, true);
-      assert.equal(result.values.ownerEmail, 'owner@hotel.com');
+      assert.equal(result.ok, true);
+      if (result.ok) assert.equal(result.values.organizationId, null);
     }
   });
 
-  test('REJECTS sendEmail=true without ownerEmail (the load-bearing assertion)', () => {
-    // Without this guard, an admin could submit sendEmail=true with no
-    // recipient and the API would silently drop the email send. The form
-    // also enforces this, but server-side guard is the load-bearing one.
-    const result = validateBody({
-      name: 'Test', totalRooms: 50, timezone: 'America/Chicago',
-      sendEmail: true,
-    });
-    assert.equal(result.ok, false);
-    if (!result.ok) assert.match(result.reason, /sendEmail.*ownerEmail/i);
-  });
-
-  test('accepts sendEmail=false even without ownerEmail', () => {
-    const result = validateBody({
-      name: 'Test', totalRooms: 50, timezone: 'America/Chicago',
-      sendEmail: false,
-    });
-    assert.equal(result.ok, true);
-  });
-
-  test('treats truthy non-bool as falsy (defensive)', () => {
-    // Form might send "true" string or 1 — only literal `true` enables
-    // email send, otherwise defaults to false. Prevents accidental sends.
-    const result = validateBody({
-      name: 'Test', totalRooms: 50, timezone: 'America/Chicago',
-      sendEmail: 'true' as unknown,
-    });
-    assert.equal(result.ok, true);
-    if (result.ok) assert.equal(result.values.sendEmail, false);
+  test('rejects a malformed organizationId before property creation', () => {
+    for (const organizationId of ['not-a-uuid', '11111111-1111-1111', 42]) {
+      const result = validateBody({
+        name: 'Test', totalRooms: 50, timezone: 'America/Chicago', organizationId,
+      });
+      assert.equal(result.ok, false);
+      if (!result.ok) assert.match(result.reason, /organizationId/);
+    }
   });
 });

@@ -1,5 +1,4 @@
-import { validateRoomNumbers } from '@/lib/api-validate';
-import { PLACEHOLDER_HOTEL_NAME } from '@/lib/onboarding/state';
+import { isUuid, validateRoomNumbers } from '@/lib/api-validate';
 
 export interface CreateBody {
   name?: unknown;
@@ -9,9 +8,7 @@ export interface CreateBody {
   brand?: unknown;
   propertyKind?: unknown;
   isTest?: unknown;
-  ownerEmail?: unknown;
-  inviteRole?: unknown;
-  sendEmail?: unknown;
+  organizationId?: unknown;
   roomNumbers?: unknown;
 }
 
@@ -25,14 +22,12 @@ interface ValidationResult {
     brand: string | null;
     propertyKind: string;
     isTest: boolean;
-    ownerEmail: string | null;
-    inviteRole: 'owner' | 'general_manager';
-    sendEmail: boolean;
+    organizationId: string | null;
     roomNumbers: string[];
   };
 }
 
-const INVITE_ROLES = new Set(['owner', 'general_manager']);
+const DEFAULT_HOTEL_NAME = 'New hotel';
 const KNOWN_PMS_TYPES = new Set(['choice_advantage', 'manual_csv']);
 const KNOWN_PROPERTY_KINDS = new Set([
   'limited_service',
@@ -51,7 +46,7 @@ function isValidIANATimezone(tz: string): boolean {
 }
 
 export function validateBody(body: CreateBody): ValidationResult | { ok: false; reason: string } {
-  let name = PLACEHOLDER_HOTEL_NAME;
+  let name = DEFAULT_HOTEL_NAME;
   if (body.name !== undefined && body.name !== null && body.name !== '') {
     if (typeof body.name !== 'string' || body.name.trim().length < 3 || body.name.length > 100) {
       return { ok: false, reason: 'name must be a string between 3 and 100 characters' };
@@ -112,28 +107,12 @@ export function validateBody(body: CreateBody): ValidationResult | { ok: false; 
 
   const isTest = body.isTest === true;
 
-  let ownerEmail: string | null = null;
-  if (body.ownerEmail !== undefined && body.ownerEmail !== null && body.ownerEmail !== '') {
-    if (typeof body.ownerEmail !== 'string' || !body.ownerEmail.includes('@')) {
-      return { ok: false, reason: 'ownerEmail must be a valid email address' };
+  let organizationId: string | null = null;
+  if (body.organizationId !== undefined && body.organizationId !== null && body.organizationId !== '') {
+    if (!isUuid(body.organizationId)) {
+      return { ok: false, reason: 'organizationId must be a valid UUID' };
     }
-    ownerEmail = body.ownerEmail.trim().toLowerCase();
-  }
-
-  let inviteRole: 'owner' | 'general_manager' = 'owner';
-  if (body.inviteRole !== undefined && body.inviteRole !== null && body.inviteRole !== '') {
-    if (typeof body.inviteRole !== 'string' || !INVITE_ROLES.has(body.inviteRole)) {
-      return {
-        ok: false,
-        reason: `inviteRole must be one of: ${Array.from(INVITE_ROLES).join(', ')} (got: ${String(body.inviteRole)})`,
-      };
-    }
-    inviteRole = body.inviteRole as 'owner' | 'general_manager';
-  }
-
-  const sendEmail = body.sendEmail === true;
-  if (sendEmail && !ownerEmail) {
-    return { ok: false, reason: 'sendEmail=true requires ownerEmail' };
+    organizationId = body.organizationId;
   }
 
   let roomNumbers: string[] = [];
@@ -160,9 +139,7 @@ export function validateBody(body: CreateBody): ValidationResult | { ok: false; 
       brand,
       propertyKind,
       isTest,
-      ownerEmail,
-      inviteRole,
-      sendEmail,
+      organizationId,
       roomNumbers,
     },
   };

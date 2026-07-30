@@ -1263,6 +1263,180 @@ export function JoinDecisionDialog({
   );
 }
 
+type FirstPersonRole = 'owner' | 'general_manager';
+
+interface FirstPersonInviteData {
+  hotelId: string;
+  invitedEmail: string;
+  assignedRole: FirstPersonRole;
+  signupUrl: string;
+  expiresAt: string;
+  emailSent: boolean;
+  emailError: string | null;
+}
+
+/**
+ * Platform-admin-only first account invitation. This deliberately does not
+ * reuse the ordinary manager-invite form: the first person owns the remaining
+ * hotel setup, while every later person follows the normal account invite and
+ * acceptance flow rendered by HotelInviteDialog below.
+ */
+export function FirstPersonInviteDialog({
+  hotelId,
+  hotelName,
+  onClose,
+  onChanged,
+}: {
+  hotelId: string;
+  hotelName: string;
+  onClose: () => void;
+  onChanged?: () => void | Promise<void>;
+}) {
+  const [email, setEmail] = React.useState('');
+  const [role, setRole] = React.useState<FirstPersonRole | ''>('');
+  const [busy, setBusy] = React.useState(false);
+  const [error, setError] = React.useState('');
+  const [result, setResult] = React.useState<FirstPersonInviteData | null>(null);
+  const [copied, setCopied] = React.useState(false);
+  const [copyError, setCopyError] = React.useState('');
+
+  const submit = async (event: React.FormEvent) => {
+    event.preventDefault();
+    if (busy) return;
+    const normalizedEmail = email.trim().toLowerCase();
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalizedEmail)) {
+      setError('Enter a valid email address.');
+      return;
+    }
+    if (role !== 'owner' && role !== 'general_manager') {
+      setError('Choose the role this person will receive.');
+      return;
+    }
+
+    setBusy(true);
+    setError('');
+    setResult(null);
+    try {
+      const response = await fetchWithAuth('/api/admin/properties/invite-first-person', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ hotelId, email: normalizedEmail, role }),
+        signal: mutationSignal(),
+      });
+      const body = await response.json().catch(() => ({})) as Envelope<FirstPersonInviteData>;
+      if (!response.ok || !body.ok || !body.data) {
+        setError(responseError(body, "Couldn't create the first-person invitation."));
+        return;
+      }
+      setResult(body.data);
+      await onChanged?.();
+    } catch (sendError) {
+      console.error('[FirstPersonInviteDialog] invitation failed', sendError);
+      setError("Couldn't create the invitation. Check your connection and try again.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const copyLink = async () => {
+    if (!result) return;
+    setCopyError('');
+    if (!await copyToClipboard(result.signupUrl)) {
+      setCopyError('Copy failed. Select the link and copy it manually.');
+      return;
+    }
+    setCopied(true);
+    window.setTimeout(() => setCopied(false), 1_800);
+  };
+
+  return (
+    <DialogShell
+      title="Add first person"
+      eyebrow={hotelName}
+      description="Assign the role before sending the invitation. The invitee cannot change it during signup."
+      lang="en"
+      icon={<UserCheck size={21} aria-hidden="true" />}
+      onClose={onClose}
+      busy={busy}
+    >
+      {result ? (
+        <div className={styles.dialogForm}>
+          <div className={styles.successNotice} role="status">
+            <CheckCircle2 size={18} aria-hidden="true" />
+            <div>
+              <strong>{result.emailSent ? 'Invitation sent' : 'Invitation created'}</strong>
+              <span>
+                {result.invitedEmail} is assigned as {roleLabel(result.assignedRole, 'en')}.
+                {result.emailSent ? ' They can use the emailed link to begin.' : ' Copy the link below and send it directly.'}
+              </span>
+            </div>
+          </div>
+          <label className={styles.copyField}>
+            <span>{'First-person onboarding link'}</span>
+            <div>
+              <input value={result.signupUrl} readOnly aria-label="First-person onboarding link" />
+              <button type="button" onClick={() => void copyLink()}>
+                {copied ? <Check size={15} aria-hidden="true" /> : <Copy size={15} aria-hidden="true" />}
+                {copied ? 'Copied' : 'Copy'}
+              </button>
+            </div>
+            {copyError ? <small className={styles.copyError}>{copyError}</small> : null}
+            {!result.emailSent && result.emailError ? (
+              <small className={styles.cautionText}>{'Email delivery was unavailable, but this link is active.'}</small>
+            ) : null}
+          </label>
+          <div className={styles.dialogFooter}>
+            <button type="button" className={styles.primaryButton} onClick={onClose}>{'Done'}</button>
+          </div>
+        </div>
+      ) : (
+        <form className={styles.dialogForm} onSubmit={(event) => void submit(event)}>
+          <label className={styles.field}>
+            <span>{'Email address'}</span>
+            <input
+              type="email"
+              value={email}
+              onChange={(event) => setEmail(event.target.value)}
+              placeholder="person@example.com"
+              autoComplete="email"
+              required
+              disabled={busy}
+            />
+            <small>{'This address is locked into the invitation and signup account.'}</small>
+          </label>
+          <label className={styles.field}>
+            <span>{'Assigned role'}</span>
+            <select
+              value={role}
+              onChange={(event) => setRole(event.target.value as FirstPersonRole | '')}
+              required
+              disabled={busy}
+            >
+              <option value="">{'Choose a role'}</option>
+              <option value="owner">{'Owner'}</option>
+              <option value="general_manager">{'General Manager'}</option>
+            </select>
+            <small>{'The invitee sees this role during signup but cannot edit it.'}</small>
+          </label>
+          <div className={styles.mutationPreview} aria-label="Invitation scope">
+            <div><span>{'Hotel'}</span><strong>{hotelName}</strong></div>
+            <div><span>{'Setup'}</span><strong>{'First person'}</strong></div>
+          </div>
+          {error ? <ErrorBanner message={error} /> : null}
+          <div className={styles.dialogFooter}>
+            <button type="button" className={styles.secondaryButton} onClick={onClose} disabled={busy}>
+              {'Cancel'}
+            </button>
+            <button type="submit" className={styles.primaryButton} disabled={busy || !email.trim() || !role}>
+              {busy ? <BusyLabel en="Sending…" /> : <><Mail size={16} aria-hidden="true" />{'Send invitation'}</>}
+            </button>
+          </div>
+        </form>
+      )}
+    </DialogShell>
+  );
+}
+
 export function HotelInviteDialog({
   hotelId,
   hotelName,

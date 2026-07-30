@@ -4,29 +4,22 @@
    SURFACE — Onboarding · "Launch Bay" (dark).
 
    The design-handoff finalized Onboarding screen, wired to the real v4
-   onboarding pipeline. Watch every hotel move signup → live and unblock the
-   stuck ones.
+   onboarding pipeline. Watch every invited first person move signup → live.
 
    Data (same endpoints the prior OnboardingTab used):
-     • /api/admin/list-properties        → properties + sessionStatus (funnel)
-     • /api/admin/onboarding-jobs?live=1  → in-flight CUA sessions
+     • /api/admin/list-properties        → properties + onboarding state
      • /api/admin/pms-coverage            → PMS readiness + repair feeds
      • /api/admin/prospects               → sales pipeline (full CRUD kept)
-   Mutations kept: create hotel + signup link (CreateHotelModal), repair PMS
-   feed (~$2 re-learn), prospect add/edit/delete, blocker-resolve deep-links.
+   Mutations kept: repair PMS feed (~$2 re-learn) and prospect CRUD.
 
-   Layout: one live 8-step timeline row per onboarding hotel (journeyOf maps
-   wizard onboarding_state + property_sessions.status → a 1-of-8 position).
-   Clicking a row expands a mission-control panel (JourneyPanel) fed by
-   /api/admin/onboarding-detail — robot status + 5-feed freshness + blocker
-   actions for the PMS phase, person/details for the wizard phase. Blocker
-   CTAs deep-link to /admin/mfa-resume/[id], Mission Control (#system), and
-   the live mapper console.
+   Layout: one six-stage timeline row per onboarding hotel (journeyOf maps
+   only onboarding_state + onboarding_completed_at).
+   Clicking a row expands the invited person, hotel details, and current
+   onboarding stage. PMS maps remain in their separate management section.
    ─────────────────────────────────────────────────────────────────────── */
 
 import React, { useEffect, useRef, useState } from 'react';
 import { fetchWithAuth } from '@/lib/api-fetch';
-import { CreateHotelModal } from '@/app/admin/_components/CreateHotelModal';
 import { MapsManagerModal } from '@/app/admin/_components/MapsManager';
 import {
   FONT_SERIF, Caps, Pill, Dot, Btn,
@@ -38,33 +31,19 @@ import { RowButton } from '../ui-kit';
 // ── Real API shapes (mirror the prior OnboardingTab interfaces) ─────────
 interface OnbState {
   step?: number;
+  invitedEmail?: string | null;
+  firstPersonAccountId?: string | null;
   accountCreatedAt?: string | null;
   emailVerifiedAt?: string | null;
   hotelDetailsAt?: string | null;
-  servicesAt?: string | null;
-  pmsCredentialsAt?: string | null;
-  mappingCompletedAt?: string | null;
-  staffAt?: string | null;
+  hotelContextAt?: string | null;
 }
 interface PropertyRow {
   id: string;
   name: string | null;
-  pmsType: string | null;
-  pmsConnected: boolean;
-  lastSyncedAt: string | null;
-  totalRooms: number | null;
-  staffCount: number;
   createdAt: string;
-  sessionStatus: string | null;
-  sessionPausedReason: string | null;
   onboardingState: OnbState | null;
   onboardingCompletedAt: string | null;
-}
-interface JobRow {
-  id: string; propertyId: string; propertyName: string | null;
-  pmsType: string; status: string; step: string | null;
-  progressPct: number | null; error: string | null; createdAt: string;
-  kind?: 'session' | 'mapper';
 }
 // One feed's live status on a learned PMS map. 'live' = captured & flowing,
 // 'learning' = mapped but still proving, 'unavailable' = this PMS doesn't
@@ -97,64 +76,65 @@ interface Prospect {
   created_at: string; updated_at: string;
 }
 
-// ── Blocker kinds → accent tones (used by the timeline rows + panel) ─────
-type HelpKind = 'mfa' | 'mapper' | 'cost' | 'login' | 'stopped';
-const HELP_DOT: Record<HelpKind, DotTone> = { mfa: 'gold', mapper: 'teal', cost: 'gold', login: 'terracotta', stopped: 'terracotta' };
+// ── The six-stage onboarding journey (mirrors the /onboard wizard) ─────
+const STEP_LABELS = ['Welcome', 'Account', 'Verify email', 'About hotel', 'Your hotel', 'Live'] as const;
+const TOTAL_STEPS = STEP_LABELS.length;
 
-// ── The 8-step onboarding journey (mirrors the /onboard customer wizard) ─
-const STEP_LABELS = ['Welcome', 'Account', 'Email', 'Details', 'PMS', 'Connect', 'Team', 'Live'] as const;
-const TOTAL_STEPS = STEP_LABELS.length; // 8
+interface Journey { step: number; label: string; sub: string; href: string; needsYou: boolean; }
 
-interface Journey { step: number; label: string; sub: string; href: string; needsYou: boolean; kind?: HelpKind; }
-
-// Latest activity timestamp across a customer's saved step timestamps —
-// used to sort the most-active onboarding to the top + gate live polling.
+// Latest activity timestamp across the durable customer-step markers.
 function latestStateTs(s: OnbState | null): number {
   if (!s) return 0;
-  let m = 0;
-  for (const v of Object.values(s)) { if (v) { const t = Date.parse(v); if (Number.isFinite(t) && t > m) m = t; } }
-  return m;
+  return [
+    s.accountCreatedAt,
+    s.emailVerifiedAt,
+    s.hotelDetailsAt,
+    s.hotelContextAt,
+  ].reduce((latest, value) => {
+    const parsed = value ? Date.parse(value) : Number.NaN;
+    return Number.isFinite(parsed) && parsed > latest ? parsed : latest;
+  }, 0);
 }
 
-// "Live" = off the timeline, in the green core. True once the wizard is
-// finalized OR the CUA session is alive and polling.
+// Live is normally the durable completion boundary. Retained pre-wizard hotels
+// have the historical `{}`/null state and no completion timestamp; treating
+// exactly that markerless shape as legacy-live prevents them from becoming
+// fake new invitations. New shells explicitly persist `{ step: 1 }`.
 function isLive(p: PropertyRow): boolean {
-  return !!p.onboardingCompletedAt || p.sessionStatus === 'alive';
+  if (p.onboardingCompletedAt) return true;
+  return !p.onboardingState || Object.keys(p.onboardingState).length === 0;
 }
 
-// Map a hotel to its 1-of-8 journey position. Back half (steps 5-8) is
-// driven by the live CUA session state; front half (1-4) by the wizard's
-// saved per-step timestamps. `needsYou` flags steps a chip-click unblocks.
+// Position the hotel at the first unfinished stage. PMS connection and team
+// management happen later from their dedicated operational surfaces.
 function journeyOf(p: PropertyRow): Journey {
   const propHref = `/admin/properties/${p.id}`;
-  switch (p.sessionStatus) {
-    case 'paused_mfa':  return { step: 6, label: 'Needs your code', sub: 'Robot hit 2-factor. Click to enter the code.', href: `/admin/mfa-resume/${p.id}`, needsYou: true, kind: 'mfa' };
-    case 'paused_no_knowledge_file': return { step: 6, label: 'Learning the PMS', sub: 'Robot is learning this PMS for the first time.', href: '/admin/properties#system', needsYou: false, kind: 'mapper' };
-    case 'paused_cost_cap': return { step: 6, label: 'Paused · cost cap', sub: 'Daily AI budget hit. Auto-resumes at midnight.', href: '/admin/properties#system', needsYou: false, kind: 'cost' };
-    case 'paused_circuit_breaker':
-    case 'failed_restart': return { step: 6, label: 'Login failing', sub: 'Sign-in keeps failing. Check the PMS credentials.', href: '/admin/properties#system', needsYou: true, kind: 'login' };
-    case 'stopped': return { step: 6, label: 'Stopped', sub: 'Robot stopped. Click to restart.', href: '/admin/properties#system', needsYou: true, kind: 'stopped' };
-    case 'starting': return { step: 6, label: 'Robot connecting…', sub: 'Robot is logging into the PMS.', href: propHref, needsYou: false };
-  }
   const s = p.onboardingState;
-  if (!s || !s.accountCreatedAt) {
-    // Hotels created straight from "+ New hotel" never walk the customer
-    // wizard, so they have no per-step timestamps — infer their real spot
-    // from the data that exists instead of showing "Just landed" forever.
-    if (p.staffCount > 0) return { step: 7, label: 'Team added', sub: 'Set up by you. Connect their PMS to go live.', href: propHref, needsYou: false };
-    if (p.pmsType)        return { step: 6, label: 'Needs PMS login', sub: 'Set up by you. PMS picked, login not saved yet.', href: propHref, needsYou: false };
-    if (p.totalRooms != null) return { step: 5, label: 'Pick their PMS', sub: 'Set up by you. Details saved, no PMS picked yet.', href: propHref, needsYou: false };
-    if (s?.step === 2) return { step: 2, label: 'Creating account', sub: 'Clicked Begin. Making their login now.', href: propHref, needsYou: false };
-    return { step: 1, label: 'Just landed', sub: 'Opened the invite. Not started yet.', href: propHref, needsYou: false };
+  if (!s?.accountCreatedAt) {
+    if (s?.step === 2) {
+      return { step: 2, label: 'Creating account', sub: 'Clicked Begin. Creating the assigned account.', href: propHref, needsYou: false };
+    }
+    return {
+      step: 1,
+      label: s?.invitedEmail ? 'Invitation ready' : 'Waiting for first person',
+      sub: s?.invitedEmail
+        ? 'The invited person has not started yet.'
+        : 'Invite the first person from this hotel’s People control.',
+      href: propHref,
+      needsYou: false,
+    };
   }
-  if (!s.emailVerifiedAt)   return { step: 3, label: 'Verifying email', sub: 'Account made. Confirming their email.', href: propHref, needsYou: false };
-  if (!s.hotelDetailsAt)    return { step: 4, label: 'Hotel details', sub: 'Entering rooms, brand, timezone.', href: propHref, needsYou: false };
-  if (!s.pmsCredentialsAt)  return { step: 5, label: 'Connecting PMS', sub: 'About to enter their PMS login.', href: propHref, needsYou: false };
-  if (!s.mappingCompletedAt) return { step: 6, label: 'Robot connecting…', sub: 'Robot is logging into the PMS.', href: propHref, needsYou: false };
-  if (!s.staffAt)           return { step: 7, label: 'Adding team', sub: 'Connected. Owner is adding staff.', href: propHref, needsYou: false };
-  return { step: 8, label: 'Wrapping up', sub: 'Final step. Almost live.', href: propHref, needsYou: false };
+  if (!s.emailVerifiedAt) {
+    return { step: 3, label: 'Verifying email', sub: 'Account created. Confirming the invited email.', href: propHref, needsYou: false };
+  }
+  if (!s.hotelDetailsAt) {
+    return { step: 4, label: 'About the hotel', sub: 'Entering rooms, brand, timezone, and hotel details.', href: propHref, needsYou: false };
+  }
+  if (!s.hotelContextAt) {
+    return { step: 5, label: 'Your hotel', sub: 'Optional notes for Staxis, then setup is done.', href: propHref, needsYou: false };
+  }
+  return { step: 6, label: 'Ready to enter', sub: 'All set. Entering Staxis marks the hotel live.', href: propHref, needsYou: false };
 }
-
 
 function pmsState(p: PMSCoverage): { tone: DotTone; label: string; note: string } {
   if (p.recipe && p.recipe.coveragePct === 100) return { tone: 'forest', label: 'Ready', note: 'Ready. Future hotels onboard free.' };
@@ -169,7 +149,7 @@ const NAME_W = 150;   // left "hotel name" column (px)
 const STATUS_W = 140; // right "current step" column (px)
 const ROW_GAP = 12;   // gap between name · rail · status
 
-// A hotel with no robot, stuck early, and untouched this long gets tucked
+// A hotel untouched this long gets tucked
 // into the collapsed "Parked" group so the top of the page is only real
 // activity (owner ask 2026-07-17: old test hotels sat as noise for 40 days).
 const PARK_AFTER_DAYS = 14;
@@ -185,11 +165,9 @@ function Reveal({ open, children }: { open: boolean; children: React.ReactNode }
 
 export function OnboardingSurface() {
   const [props, setProps] = useState<PropertyRow[] | null>(null);
-  const [liveJobs, setLiveJobs] = useState<JobRow[] | null>(null);
   const [pms, setPms] = useState<PMSCoverage[] | null>(null);
   const [prospects, setProspects] = useState<Prospect[] | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [createOpen, setCreateOpen] = useState(false);
   const [mapsOpen, setMapsOpen] = useState(false);
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [parkedOpen, setParkedOpen] = useState(false);
@@ -200,15 +178,13 @@ export function OnboardingSurface() {
 
   const load = async () => {
     try {
-      const [a, b, c, d] = await Promise.all([
+      const [a, c, d] = await Promise.all([
         fetchWithAuth('/api/admin/list-properties'),
-        fetchWithAuth('/api/admin/onboarding-jobs?live=1'),
         fetchWithAuth('/api/admin/pms-coverage'),
         fetchWithAuth('/api/admin/prospects'),
       ]);
-      const [aj, bj, cj, dj] = await Promise.all([a.json(), b.json(), c.json(), d.json()]);
+      const [aj, cj, dj] = await Promise.all([a.json(), c.json(), d.json()]);
       if (aj.ok) setProps(aj.data.properties);
-      if (bj.ok) setLiveJobs(bj.data.jobs);
       if (cj.ok) setPms(cj.data.pmsTypes);
       if (dj.ok) setProspects(dj.data.prospects);
     } catch (err) {
@@ -216,21 +192,18 @@ export function OnboardingSurface() {
     }
   };
   useEffect(() => { void load(); }, []);
-  // Auto-refresh while anything is moving: a CUA session in flight OR any
-  // hotel still mid-wizard. This keeps the timeline advancing in real time
-  // as a customer walks the 8 steps (the early steps have no CUA session).
+  // Keep the six-stage customer journey moving while any hotel is unfinished.
   useEffect(() => {
-    const inFlight = (liveJobs?.length ?? 0) > 0;
     const inWizard = (props ?? []).some((p) => !isLive(p));
-    if (!inFlight && !inWizard) return;
+    if (!inWizard) return;
     refreshTimer.current = setTimeout(() => { void load(); }, 5000);
     return () => { if (refreshTimer.current) clearTimeout(refreshTimer.current); };
-  }, [props, liveJobs]);
+  }, [props]);
 
   // Hover-✕ delete for a junk/test hotel. Confirmed client-side, and the
   // server refuses to delete a hotel that has finished onboarding.
   const deleteHotel = async (p: PropertyRow) => {
-    if (!window.confirm(`Delete “${p.name ?? 'this hotel'}”? This permanently removes the hotel, all of its data, and the owner's login (frees the email to re-use).`)) return;
+    if (!window.confirm(`Delete “${p.name ?? 'this hotel'}”? This permanently removes the hotel, all of its data, and its linked login (frees the email to re-use).`)) return;
     setDeletingId(p.id);
     try {
       const res = await fetchWithAuth('/api/admin/properties/delete', {
@@ -248,7 +221,7 @@ export function OnboardingSurface() {
   };
 
   if (error) return <SurfaceShell glow="forestTR"><div style={{ color: 'var(--terracotta)', fontSize: 13 }}>{error}</div></SurfaceShell>;
-  if (!props || !liveJobs || !pms) {
+  if (!props || !pms) {
     return <SurfaceShell glow="forestTR"><div style={{ padding: '80px 0', textAlign: 'center' }}><span className="spinner" style={{ width: 22, height: 22, display: 'inline-block', borderTopColor: '#fff' }} /></div></SurfaceShell>;
   }
 
@@ -260,16 +233,10 @@ export function OnboardingSurface() {
     .sort((a, c) => (c.ts - a.ts) || (Date.parse(c.p.createdAt) - Date.parse(a.p.createdAt)));
   // Split off long-idle early-stage hotels into the collapsed Parked group.
   const isParkedRow = (r: (typeof allJourneyRows)[number]) =>
-    !r.p.sessionStatus
-    && (Date.now() - Math.max(r.ts, Date.parse(r.p.createdAt))) > PARK_AFTER_DAYS * 86_400_000;
+    (Date.now() - Math.max(r.ts, Date.parse(r.p.createdAt))) > PARK_AFTER_DAYS * 86_400_000;
   const journeyRows = allJourneyRows.filter((r) => !isParkedRow(r));
   const parkedRows = allJourneyRows.filter(isParkedRow);
   const liveCount = props.filter(isLive).length;
-  // Any in-flight learning/robot job, keyed by hotel — shown on the hotel's
-  // own row (replaces the old separate "In-flight sessions" section, which
-  // repeated the same event in different words).
-  const jobByProperty = new Map<string, JobRow>();
-  for (const jb of liveJobs) if (jb.propertyId) jobByProperty.set(jb.propertyId, jb);
   // Show every learned PMS, PLUS any family with a freshly-learned map parked
   // for review (even before it has an active map) so the "needs review" signal
   // never hides behind an empty active list.
@@ -287,7 +254,6 @@ export function OnboardingSurface() {
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
           <Btn variant="ghost" size="lg" href="/admin/pms-inbox" style={{ color: '#fff', borderColor: dim(.3), background: dim(.06) }}>PMS inbox</Btn>
-          <Btn variant="ghost" size="lg" onClick={() => setCreateOpen(true)} style={{ color: '#fff', borderColor: dim(.3), background: dim(.06) }}>+ New hotel</Btn>
         </div>
       </header>
 
@@ -314,10 +280,10 @@ export function OnboardingSurface() {
 
       <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
         {journeyRows.length === 0 && parkedRows.length === 0
-          ? <DarkEmpty text="No hotels onboarding right now. “+ New hotel” to start one." />
+          ? <DarkEmpty text="No hotels onboarding right now." />
           : journeyRows.map((r) => (
             <HotelRow
-              key={r.p.id} row={r} job={jobByProperty.get(r.p.id)}
+              key={r.p.id} row={r}
               hoverId={hoverId} setHoverId={setHoverId}
               deletingId={deletingId} deleteHotel={deleteHotel}
               expandedId={expandedId} setExpandedId={setExpandedId}
@@ -340,7 +306,7 @@ export function OnboardingSurface() {
             <div style={{ display: 'flex', flexDirection: 'column', gap: 8, paddingTop: 6 }}>
               {parkedRows.map((r) => (
                 <HotelRow
-                  key={r.p.id} row={r} job={jobByProperty.get(r.p.id)}
+                  key={r.p.id} row={r}
                   hoverId={hoverId} setHoverId={setHoverId}
                   deletingId={deletingId} deleteHotel={deleteHotel}
                   expandedId={expandedId} setExpandedId={setExpandedId}
@@ -384,16 +350,14 @@ export function OnboardingSurface() {
 
       {selPms && <PmsDetail pms={selPms} onClose={() => setSelPms(null)} onRepaired={load} />}
       <MapsManagerModal open={mapsOpen} onClose={() => setMapsOpen(false)} />
-      <CreateHotelModal open={createOpen} onClose={() => setCreateOpen(false)} onCreated={() => { void load(); }} />
     </SurfaceShell>
   );
 }
 
 // Row + hover-delete + expandable panel, shared by the active list and the
 // Parked group so both behave identically.
-function HotelRow({ row, job, hoverId, setHoverId, deletingId, deleteHotel, expandedId, setExpandedId }: {
+function HotelRow({ row, hoverId, setHoverId, deletingId, deleteHotel, expandedId, setExpandedId }: {
   row: { p: PropertyRow; j: Journey };
-  job: JobRow | undefined;
   hoverId: string | null;
   setHoverId: React.Dispatch<React.SetStateAction<string | null>>;
   deletingId: string | null;
@@ -408,7 +372,7 @@ function HotelRow({ row, job, hoverId, setHoverId, deletingId, deleteHotel, expa
       onMouseEnter={() => setHoverId(p.id)}
       onMouseLeave={() => setHoverId((h) => (h === p.id ? null : h))}
     >
-      <JourneyRow p={p} j={j} job={job} expanded={expandedId === p.id} onClick={() => setExpandedId(expandedId === p.id ? null : p.id)} />
+      <JourneyRow p={p} j={j} expanded={expandedId === p.id} onClick={() => setExpandedId(expandedId === p.id ? null : p.id)} />
       {(hoverId === p.id || deletingId === p.id) && (
         <button
           title="Delete this hotel"
@@ -430,19 +394,19 @@ function HotelRow({ row, job, hoverId, setHoverId, deletingId, deleteHotel, expa
   );
 }
 
-// One hotel = one row: name · a 9-node rail that fills to the live step · the
+// One hotel = one row: name · a six-node rail that fills to the live stage · the
 // current step label. The fill bar + current node animate when the step
 // advances (every poll), so you watch a hotel travel the whole journey.
-function JourneyRow({ p, j, job, expanded, onClick }: { p: PropertyRow; j: Journey; job?: JobRow; expanded: boolean; onClick: () => void }) {
+function JourneyRow({ p, j, expanded, onClick }: { p: PropertyRow; j: Journey; expanded: boolean; onClick: () => void }) {
   const rowRef = useRef<HTMLButtonElement>(null);
   const fillRef = useRef<HTMLDivElement>(null);
   const current = j.step - 1; // 0-based index of the in-progress node
   const fillPct = TOTAL_STEPS > 1 ? (current / (TOTAL_STEPS - 1)) * 100 : 0;
   useRiseIn(rowRef, { dy: 10, dur: 420 });
   useEffect(() => { sweepWidth(fillRef.current, fillPct, { dur: 700 }); }, [fillPct]);
-  const accentTone: DotTone = j.needsYou && j.kind ? HELP_DOT[j.kind] : 'gold';
+  const accentTone: DotTone = j.needsYou ? 'terracotta' : 'gold';
   const accent = `var(--${accentTone})`;
-  const ring = accentTone === 'terracotta' ? 'rgba(194,86,46,.22)' : accentTone === 'teal' ? 'rgba(51,137,160,.22)' : 'rgba(201,154,46,.22)';
+  const ring = accentTone === 'terracotta' ? 'rgba(194,86,46,.22)' : 'rgba(201,154,46,.22)';
   return (
     <button ref={rowRef} onClick={onClick} aria-expanded={expanded} style={{
       display: 'flex', alignItems: 'center', gap: ROW_GAP, width: '100%', textAlign: 'left',
@@ -453,7 +417,6 @@ function JourneyRow({ p, j, job, expanded, onClick }: { p: PropertyRow; j: Journ
       {/* hotel */}
       <div style={{ width: NAME_W, flexShrink: 0, minWidth: 0 }}>
         <div style={{ fontSize: 12.5, fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{p.name ?? '(unnamed)'}</div>
-        {p.pmsType && <div className="mono" style={{ fontSize: 9, color: dim(.4), marginTop: 2, letterSpacing: '.03em', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{p.pmsType}</div>}
       </div>
       {/* rail */}
       <div style={{ flex: 1, minWidth: 0, position: 'relative', height: 16, display: 'flex', alignItems: 'center' }}>
@@ -473,12 +436,10 @@ function JourneyRow({ p, j, job, expanded, onClick }: { p: PropertyRow; j: Journ
           })}
         </div>
       </div>
-      {/* current step — while a learning job runs, its % lives right here
-          instead of a separate section elsewhere on the page. */}
+      {/* Current onboarding stage. */}
       <div style={{ width: STATUS_W, flexShrink: 0, textAlign: 'right', minWidth: 0 }}>
         <div style={{ fontSize: 11.5, fontWeight: 600, color: j.needsYou ? 'var(--terracotta)' : '#fff', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{j.label}{j.needsYou ? ' ›' : ''}</div>
         <div className="mono" style={{ fontSize: 9.5, color: dim(.45), marginTop: 2 }}>
-          {job?.progressPct != null && <span style={{ color: 'var(--gold)' }}>{Math.max(0, Math.min(100, job.progressPct))}% · </span>}
           {j.step} / {TOTAL_STEPS} · {expanded ? 'close ▴' : 'detail ▾'}
         </div>
       </div>
@@ -486,44 +447,15 @@ function JourneyRow({ p, j, job, expanded, onClick }: { p: PropertyRow; j: Journ
   );
 }
 
-// ── Mission-control panel — expands under a clicked row. Shows what
-//    matters for the step the hotel is on; refreshes every 5s while open. ─
+// ── Journey detail — the first person, entered hotel details, and stage. ──
 interface PanelDetail {
   property: {
     id: string; name: string | null; totalRooms: number | null; brand: string | null;
-    timezone: string | null; pmsType: string | null;
-    servicesEnabled: Record<string, boolean> | null; createdAt: string;
+    timezone: string | null; createdAt: string;
     onboardingState: OnbState | null; onboardingCompletedAt: string | null;
   };
   owner: { name: string | null; email: string | null; phone: string | null } | null;
-  staff: { name: string; department: string | null }[];
-  session: {
-    pmsFamily: string; status: string; pausedReason: string | null;
-    lastAliveAt: string | null; lastSuccessfulReadAt: string | null;
-    currentBrowserUrl: string | null; dailySpendMicros: number; capMicros: number;
-    restartCount: number; readFailureStreak: number;
-  } | null;
-  knowledge: { version: number; learnedAt: string | null } | null;
-  feeds: { key: string; label: string; lastSyncedAt: string | null; hasError: boolean }[];
-  mapperJob: {
-    id: string; kind: string; status: string; attempts: number; maxAttempts: number;
-    costMicros: number; createdAt: string;
-    /** Robot parked on a 2FA screen — render the code box. */
-    awaiting2fa: boolean; awaiting2faSince: string | null;
-  } | null;
-  lastHiccup: string | null;
 }
-
-const SESSION_DOT: Record<string, DotTone> = {
-  alive: 'forest', starting: 'gold', paused_mfa: 'gold', paused_no_knowledge_file: 'teal',
-  paused_cost_cap: 'gold', paused_circuit_breaker: 'terracotta', failed_restart: 'terracotta', stopped: 'muted',
-};
-const SESSION_LABEL: Record<string, string> = {
-  alive: 'Alive · polling', starting: 'Connecting…', paused_mfa: 'Waiting on 2FA code',
-  paused_no_knowledge_file: 'Learning this PMS', paused_cost_cap: 'Paused · daily AI cap',
-  paused_circuit_breaker: 'Paused · repeated failures', failed_restart: 'Login failing', stopped: 'Stopped',
-};
-const usdFromMicros = (m: number) => `$${(m / 1_000_000).toFixed(2)}`;
 
 function PanelCaps({ children }: { children: React.ReactNode }) {
   return <div className="mono" style={{ fontSize: 9, letterSpacing: '.14em', textTransform: 'uppercase', color: dim(.45), marginBottom: 8 }}>{children}</div>;
@@ -542,99 +474,9 @@ function NoteBox({ tone, children }: { tone: 'gold' | 'terracotta' | 'teal' | 'f
   return <div style={{ background: bg[tone], border: `1px solid ${br[tone]}`, borderRadius: 10, padding: '9px 11px', fontSize: 11.5, lineHeight: 1.45, color: dim(.85), marginBottom: 8 }}>{children}</div>;
 }
 
-// Freshness tone for a feed: green ≤2 min (healthy at ~30s polls), amber
-// ≤15 min (lagging), red beyond (stalled), muted when no data yet.
-function feedTone(iso: string | null): { tone: DotTone; text: string } {
-  if (!iso) return { tone: 'muted', text: 'no data yet' };
-  const sec = (Date.now() - new Date(iso).getTime()) / 1000;
-  if (!isFinite(sec)) return { tone: 'muted', text: 'no data yet' };
-  if (sec <= 120) return { tone: 'forest', text: `${age(iso)} ago` };
-  if (sec <= 900) return { tone: 'gold', text: `${age(iso)} ago` };
-  return { tone: 'terracotta', text: `${age(iso)} ago` };
-}
-
-/**
- * 2FA code box — shown while a learning run is parked on the PMS's
- * verification screen (mapperJob.awaiting2fa). The PMS texted a code to
- * Reeyen's phone; he types it here and the robot picks it up within ~3s
- * and keeps going. Emailed codes never need this — the robot reads the
- * hotel's @getstaxis.com inbox itself.
- */
-function MfaCodeBox({ propertyId, onDelivered }: { propertyId: string; onDelivered: () => void }) {
-  const [code, setCode] = useState('');
-  const [busy, setBusy] = useState(false);
-  const [note, setNote] = useState<{ tone: 'ok' | 'err'; text: string } | null>(null);
-
-  const send = async () => {
-    const trimmed = code.replace(/[\s-]/g, '');
-    if (!/^\d{4,8}$/.test(trimmed)) {
-      setNote({ tone: 'err', text: 'Codes are 4-8 digits.' });
-      return;
-    }
-    setBusy(true);
-    setNote(null);
-    try {
-      const res = await fetchWithAuth('/api/admin/pms-auth-code', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ propertyId, code: trimmed }),
-      });
-      const json = await res.json();
-      if (json.ok) {
-        setCode('');
-        setNote({ tone: 'ok', text: 'Handed to the robot. It types it in within a few seconds.' });
-        onDelivered();
-      } else {
-        setNote({ tone: 'err', text: json.error ?? 'Could not send the code.' });
-      }
-    } catch (e) {
-      setNote({ tone: 'err', text: `Network error: ${(e as Error).message}` });
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  return (
-    <div style={{ marginTop: 8 }}>
-      <div style={{ display: 'flex', gap: 6 }}>
-        <input
-          value={code}
-          onChange={(e) => setCode(e.target.value)}
-          onKeyDown={(e) => { if (e.key === 'Enter' && !busy) void send(); }}
-          inputMode="numeric"
-          autoComplete="one-time-code"
-          placeholder="Code from your phone"
-          maxLength={10}
-          className="mono"
-          style={{
-            flex: 1, minWidth: 0, fontSize: 13, letterSpacing: '.18em', padding: '7px 10px',
-            background: 'rgba(0,0,0,.3)', color: '#fff', border: `1px solid ${dim(.3)}`,
-            borderRadius: 8, outline: 'none',
-          }}
-        />
-        <Btn
-          size="sm"
-          variant="ghost"
-          onClick={() => void send()}
-          disabled={busy || code.trim() === ''}
-          style={{ color: 'var(--gold)', borderColor: 'rgba(201,154,46,.5)', background: 'rgba(201,154,46,.12)' }}
-        >
-          {busy ? '…' : 'Send to robot'}
-        </Btn>
-      </div>
-      {note && (
-        <div style={{ fontSize: 10.5, marginTop: 5, color: note.tone === 'ok' ? 'var(--forest)' : 'var(--terracotta)' }}>
-          {note.text}
-        </div>
-      )}
-    </div>
-  );
-}
-
 function JourneyPanel({ propertyId, j }: { propertyId: string; j: Journey }) {
   const [d, setD] = useState<PanelDetail | null>(null);
   const [err, setErr] = useState<string | null>(null);
-  const [busy, setBusy] = useState<string | null>(null);
   const panelRef = useRef<HTMLDivElement>(null);
 
   const fetchDetail = React.useCallback(async () => {
@@ -653,15 +495,6 @@ function JourneyPanel({ propertyId, j }: { propertyId: string; j: Journey }) {
     return () => clearInterval(t);
   }, [fetchDetail]);
 
-  // Robot actions — same API the robot console uses.
-  const act = async (action: 'resume_mfa' | 'reset_cost_cap' | 'stop' | 'restart') => {
-    setBusy(action);
-    try {
-      await fetchWithAuth('/api/admin/cua-sessions', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ propertyId, action }) });
-      await fetchDetail();
-    } finally { setBusy(null); }
-  };
-
   const shell: React.CSSProperties = {
     border: `1px solid ${dim(.22)}`, borderTop: 'none', borderRadius: '0 0 12px 12px',
     background: dim(.03), padding: '14px 16px 16px',
@@ -670,167 +503,52 @@ function JourneyPanel({ propertyId, j }: { propertyId: string; j: Journey }) {
   if (!d) return <div ref={panelRef} style={shell}><span className="spinner" style={{ width: 14, height: 14, display: 'inline-block', borderTopColor: '#fff' }} /></div>;
 
   const grid: React.CSSProperties = { display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(230px, 1fr))', gap: 18 };
-  const s = d.session;
-  const pmsPhase = j.step === 5 || j.step === 6;
-  // The robot is mid-learning: this is a normal, healthy state — the panel
-  // shows ONE friendly card about it instead of a wall of red "never"s.
-  const learning = !!d.mapperJob || s?.status === 'paused_no_knowledge_file';
-  const robotWorking = s?.status === 'alive' || s?.status === 'starting';
-  const anyFeedData = d.feeds.some((f) => f.lastSyncedAt);
 
-  // ── Column: the robot (PMS phase) ──
-  const robotCol = (
-    <div>
-      <PanelCaps>Robot</PanelCaps>
-      {s ? (
-        <>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 7, marginBottom: 6 }}>
-            <Dot tone={SESSION_DOT[s.status] ?? 'muted'} size={7} />
-            <span style={{ fontSize: 12.5, fontWeight: 700 }}>{SESSION_LABEL[s.status] ?? s.status}</span>
-          </div>
-          {/* Technical vitals only once the robot is actually on duty — a
-              robot that hasn't started yet showing "Heartbeat: never" in red
-              made every normal onboard look broken. */}
-          {robotWorking && (
-            <>
-              <KV k="Last check-in" v={s.lastAliveAt ? `${age(s.lastAliveAt)} ago` : 'starting up'} tone={!s.lastAliveAt || (Date.now() - new Date(s.lastAliveAt).getTime()) < 300_000 ? undefined : 'var(--terracotta)'} />
-              <KV k="Last good read" v={s.lastSuccessfulReadAt ? `${age(s.lastSuccessfulReadAt)} ago` : 'none yet'} />
-              <KV k="AI spend today" v={`${usdFromMicros(s.dailySpendMicros)} / ${usdFromMicros(s.capMicros)}`} tone={s.dailySpendMicros > s.capMicros * 0.8 ? 'var(--gold)' : undefined} />
-              {(s.readFailureStreak > 0 || s.restartCount > 2) && (
-                <KV k="Crashes · bad reads" v={`${s.restartCount} · ${s.readFailureStreak}`} tone="var(--gold)" />
-              )}
-            </>
-          )}
-          {learning && !robotWorking && (
-            <div style={{ fontSize: 11.5, color: dim(.6), lineHeight: 1.5 }}>
-              Standing by while the map is learned. It starts reading the moment learning finishes.
-            </div>
-          )}
-          <div style={{ display: 'flex', gap: 6, marginTop: 10, flexWrap: 'wrap' }}>
-            {s.status === 'paused_mfa' && <Btn size="sm" variant="terracotta" href={`/admin/mfa-resume/${propertyId}`}>Enter 2FA code</Btn>}
-            {s.status === 'paused_cost_cap' && <Btn size="sm" variant="forest" onClick={() => void act('reset_cost_cap')} disabled={busy !== null}>{busy === 'reset_cost_cap' ? '…' : 'Reset cap'}</Btn>}
-            {(s.status === 'stopped' || s.status === 'failed_restart' || s.status === 'paused_circuit_breaker') && <Btn size="sm" variant="forest" onClick={() => void act('restart')} disabled={busy !== null}>{busy === 'restart' ? '…' : 'Restart'}</Btn>}
-            {(s.status === 'alive' || s.status === 'starting') && <Btn size="sm" variant="ghost" onClick={() => void act('stop')} disabled={busy !== null} style={{ color: '#fff', borderColor: dim(.25) }}>{busy === 'stop' ? '…' : 'Stop'}</Btn>}
-            <Btn size="sm" variant="ghost" href="/admin/properties#system" style={{ color: dim(.7), borderColor: dim(.2) }}>Mission Control</Btn>
-          </div>
-        </>
-      ) : (
-        <div style={{ fontSize: 11.5, color: dim(.5), fontFamily: FONT_SERIF, fontStyle: 'italic' }}>
-          No robot yet. It starts the moment they save their PMS login.
-        </div>
-      )}
-    </div>
-  );
-
-  // ── Column: the 5 feeds (PMS phase). Hidden until at least one feed has
-  //    real data — five grey "no data yet" rows during learning read like
-  //    failure when nothing is wrong. ──
-  const feedsCol = anyFeedData ? (
-    <div>
-      <PanelCaps>Feeds · live every ~30s</PanelCaps>
-      {d.feeds.map((f) => {
-        const t = feedTone(f.lastSyncedAt);
-        return (
-          <div key={f.key} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '4px 0' }}>
-            <Dot tone={t.tone} size={6} />
-            <span style={{ fontSize: 11.5, color: dim(.85), flex: 1, minWidth: 0 }}>{f.label}{f.hasError ? ' ⚠' : ''}</span>
-            <span className="mono" style={{ fontSize: 9.5, color: t.tone === 'muted' ? dim(.35) : `var(--${t.tone})` }}>{t.text}</span>
-          </div>
-        );
-      })}
-      {d.feeds.some((f) => f.hasError) && <div style={{ fontSize: 10, color: 'var(--gold)', marginTop: 6 }}>⚠ bad read. Kept the last good numbers</div>}
-    </div>
-  ) : null;
-
-  // ── Column: needs-you + last hiccup (PMS phase) ──
-  const attentionCol = (
-    <div>
-      <PanelCaps>{learning && !j.needsYou ? 'What’s happening' : 'Attention'}</PanelCaps>
-      {d.mapperJob?.awaiting2fa && (
-        <NoteBox tone="gold">
-          <span style={{ fontWeight: 700, color: 'var(--gold)' }}>Waiting on a 2FA code.</span>{' '}
-          The PMS just sent a verification code{d.mapperJob.awaiting2faSince ? ` (${age(d.mapperJob.awaiting2faSince)} ago)` : ''}.
-          If it was texted to your phone, type it below. Emailed codes are read automatically.
-          <MfaCodeBox propertyId={propertyId} onDelivered={() => void fetchDetail()} />
-        </NoteBox>
-      )}
-      {learning && (
-        <NoteBox tone="teal">
-          The robot is learning how to read this PMS. It happens once per PMS, then every hotel on it connects instantly.
-          {d.mapperJob && <span className="mono" style={{ display: 'block', marginTop: 5, fontSize: 9.5, color: 'var(--teal)' }}>attempt {d.mapperJob.attempts || 1}/{d.mapperJob.maxAttempts} · {usdFromMicros(d.mapperJob.costMicros)} so far</span>}
-          {!d.mapperJob?.awaiting2fa && <span style={{ display: 'block', marginTop: 4, color: dim(.6) }}>Nothing needed from you.</span>}
-          {d.mapperJob && <div style={{ marginTop: 7 }}><Btn size="sm" variant="ghost" href={`/admin/properties/mapper/${d.mapperJob.id}`} style={{ color: 'var(--teal)', borderColor: 'rgba(51,137,160,.4)' }}>Watch it learn →</Btn></div>}
-        </NoteBox>
-      )}
-      {j.needsYou && (
-        <NoteBox tone="terracotta">
-          {j.sub}
-          <div style={{ marginTop: 7 }}><Btn size="sm" variant="terracotta" href={j.href}>Fix it →</Btn></div>
-        </NoteBox>
-      )}
-      {d.lastHiccup
-        ? <NoteBox tone="gold"><span className="mono" style={{ fontSize: 9, letterSpacing: '.1em', color: 'var(--gold)' }}>LAST HICCUP · </span>{d.lastHiccup}</NoteBox>
-        : (!j.needsYou && !learning && <NoteBox tone="forest">Running clean. No hiccups.</NoteBox>)}
-    </div>
-  );
-
-  // ── Column: who is onboarding (wizard phase) ──
   const personCol = (
     <div>
-      <PanelCaps>Who</PanelCaps>
+      <PanelCaps>First person</PanelCaps>
       {d.owner ? (
         <>
           <KV k="Name" v={d.owner.name ?? '—'} />
-          <KV k="Email" v={d.owner.email ?? '—'} />
+          <KV k="Email" v={d.owner.email ?? d.property.onboardingState?.invitedEmail ?? '—'} />
           <KV k="Phone" v={d.owner.phone ?? '—'} />
         </>
       ) : (
-        <div style={{ fontSize: 11.5, color: dim(.5), fontFamily: FONT_SERIF, fontStyle: 'italic' }}>No account yet. They haven’t finished step 2.</div>
+        <>
+          <KV k="Invited email" v={d.property.onboardingState?.invitedEmail ?? 'Not invited yet'} />
+          <div style={{ fontSize: 11.5, color: dim(.5), fontFamily: FONT_SERIF, fontStyle: 'italic', marginTop: 6 }}>
+            No account yet.
+          </div>
+        </>
       )}
-      <KV k="Invited" v={`${age(d.property.createdAt)} ago`} />
+      <KV k="Hotel created" v={`${age(d.property.createdAt)} ago`} />
     </div>
   );
 
-  // ── Column: what they've entered so far (wizard phase) ──
-  const services = d.property.servicesEnabled
-    ? Object.entries(d.property.servicesEnabled).filter(([, on]) => on).map(([k]) => k.replace(/_/g, ' '))
-    : [];
   const enteredCol = (
     <div>
-      <PanelCaps>Entered so far</PanelCaps>
+      <PanelCaps>Hotel details</PanelCaps>
       <KV k="Hotel" v={d.property.name ?? '—'} />
       <KV k="Rooms" v={d.property.totalRooms ?? '—'} />
       <KV k="Brand" v={d.property.brand ?? '—'} />
       <KV k="Timezone" v={d.property.timezone ?? '—'} />
-      <KV k="PMS" v={d.property.pmsType ?? 'not picked yet'} />
-      <KV k="Services" v={services.length ? services.join(', ') : '—'} />
     </div>
   );
 
-  // ── Column: team (steps 8-9) ──
-  const teamCol = (
+  const stageCol = (
     <div>
-      <PanelCaps>Team · {d.staff.length}</PanelCaps>
-      {d.staff.length === 0
-        ? <div style={{ fontSize: 11.5, color: dim(.5), fontFamily: FONT_SERIF, fontStyle: 'italic' }}>No staff added yet.</div>
-        : d.staff.slice(0, 8).map((m, i) => <KV key={i} k={m.name} v={m.department ?? '—'} />)}
-      {d.staff.length > 8 && <div className="mono" style={{ fontSize: 9.5, color: dim(.4), marginTop: 4 }}>+{d.staff.length - 8} more</div>}
+      <PanelCaps>Current stage</PanelCaps>
+      <KV k="Progress" v={`${j.step} / ${TOTAL_STEPS} · ${STEP_LABELS[j.step - 1]}`} />
+      <NoteBox tone={j.step === TOTAL_STEPS ? 'forest' : 'gold'}>{j.sub}</NoteBox>
     </div>
   );
 
   return (
     <div ref={panelRef} style={shell}>
-      <div style={grid}>
-        {pmsPhase
-          ? <>{robotCol}{feedsCol}{attentionCol}</>
-          : j.step >= 7
-            ? <>{teamCol}{robotCol}{feedsCol}</>
-            : <>{personCol}{enteredCol}{attentionCol}</>}
-      </div>
+      <div style={grid}>{personCol}{enteredCol}{stageCol}</div>
     </div>
   );
 }
-
 function BayLiveCount({ n }: { n: number }) {
   const ref = useRef<HTMLSpanElement>(null);
   useEffect(() => { countUp(ref.current, 0, n, { dur: 1100, fmt: (v) => String(Math.round(v)) }); }, [n]);

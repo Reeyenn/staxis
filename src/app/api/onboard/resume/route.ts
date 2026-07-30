@@ -1,11 +1,10 @@
 // GET /api/onboard/resume
 //
 // Authenticated login-funnel helper. When the funnel (property-selector /
-// dashboard) detects that the signed-in owner's property is mid-onboarding
+// dashboard) detects that the signed-in first person's hotel is mid-onboarding
 // (isOnboardingInProgress), it points the browser here. We resolve the
-// owner's incomplete property + a usable join code and 302-redirect into
-// the wizard, so they finish the 8 steps instead of being dropped on an
-// empty dashboard with no PMS connected.
+// incomplete hotel + a usable join code and 302-redirect into the wizard, so
+// they finish the six stages instead of being dropped into the app early.
 //
 // This is the server side of the fix for the 2026-06-15 bug: "I create the
 // account, enter the 2FA code, and instead of the next onboarding step it
@@ -14,7 +13,7 @@
 // "1 property → dashboard" auto-forward then treats them as a returning user.
 // The gate + this route keep an unfinished onboarding INSIDE the wizard.
 //
-// Auth: requireSession (the caller is a manager, with a trusted device from
+// Auth: requireSession (the caller is the invited Owner/GM, with a trusted device from
 // the verify step). We never trust the URL or legacy property_access snapshot:
 // current per-property manage-settings authority is resolved and rechecked
 // before each service-role write.
@@ -23,7 +22,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { requireSession } from '@/lib/api-auth';
 import { getOrMintRequestId, log } from '@/lib/log';
-import { isOnboardingInProgress, type OnboardingState } from '@/lib/onboarding/state';
+import { isOnboardingForAccount, type OnboardingState } from '@/lib/onboarding/state';
 import { generateJoinCode } from '@/lib/join-codes';
 import { accountCapabilityDecisionForProperty } from '@/lib/team-auth';
 import {
@@ -68,44 +67,44 @@ export async function GET(req: NextRequest) {
     .maybeSingle();
   const accountId = account?.id as string | undefined;
 
-  // Platform admins manage hotels but do not own a customer's signup. Hotel
-  // manager capacity is resolved per-property below, so a neutral compatibility
-  // role cannot hide a normalized GM hat and a stale global owner word cannot
-  // create authority at another hotel.
-  if (accountError || !accountId || account?.active !== true || account?.role === 'admin') {
+  // Only the Owner/GM account created by the first-person invitation can own
+  // this setup. Legacy unbound records retain the prior capability fallback.
+  if (accountError || !accountId || account?.active !== true
+      || (account?.role !== 'owner' && account?.role !== 'general_manager')) {
     return to('/property-selector');
   }
   const authority = await listAuthoritativePropertyAccess(accountId);
   if (!authority || authority.all) return to('/property-selector');
 
-  // Candidate properties: the explicit ?propertyId= (must be owned), else the
-  // caller's current manager-capable authoritative set.
+  // Start from exact structural reach. A bound first person does not need the
+  // general manage-settings capability to finish their own setup; that
+  // capability remains the compatibility authority for an unbound legacy row.
   const requestedPid = new URL(req.url).searchParams.get('propertyId');
+  const structurallyReached = authority.propertyStandings
+    .map((standing) => standing.propertyId);
   const managerCandidates = authority.propertyStandings
     .filter((standing) => standing.hotelMutationAllowed && canManageTeam(standing.operationalRole))
     .map((standing) => standing.propertyId);
   const requestedCandidates = requestedPid
-    ? (managerCandidates.includes(requestedPid) ? [requestedPid] : [])
-    : managerCandidates;
+    ? (structurallyReached.includes(requestedPid) ? [requestedPid] : [])
+    : structurallyReached;
   if (requestedCandidates.length === 0) return to('/property-selector');
 
-  const allowedCandidates: string[] = [];
-  for (const propertyId of requestedCandidates) {
+  const legacyAllowed = new Set<string>();
+  for (const propertyId of requestedCandidates.filter(id => managerCandidates.includes(id))) {
     const decision = await accountCapabilityDecisionForProperty(
       session.userId,
       'manage_settings',
       propertyId,
       { requireMutation: true, requireManager: true },
     );
-    if (decision === 'allowed') allowedCandidates.push(propertyId);
+    if (decision === 'allowed') legacyAllowed.add(propertyId);
   }
-  if (allowedCandidates.length === 0) return to('/property-selector');
-  const allowedSet = new Set(allowedCandidates);
 
   const query = supabaseAdmin
     .from('properties')
     .select('id, onboarding_completed_at, onboarding_state, onboarding_prompt_shown_at')
-    .in('id', allowedCandidates);
+    .in('id', requestedCandidates);
 
   const { data: props, error: propErr } = await query;
   if (propErr) {
@@ -116,29 +115,38 @@ export async function GET(req: NextRequest) {
   // The wizard auto-opens at most once per hotel. Skip any property already
   // stamped (onboarding_prompt_shown_at) so a later login lands in the app,
   // even if onboarding never finished.
-  const target = (props ?? []).find(p =>
-    allowedSet.has(p.id as string) &&
-    !p.onboarding_prompt_shown_at &&
-    isOnboardingInProgress(
-      p.onboarding_completed_at as string | null,
-      p.onboarding_state as OnboardingState | null,
-    ),
-  );
+  const target = (props ?? []).find((p) => {
+    const state = p.onboarding_state as OnboardingState | null;
+    const identityAllowed = state?.firstPersonAccountId
+      ? state.firstPersonAccountId === accountId
+      : legacyAllowed.has(p.id as string);
+    return identityAllowed
+      && !p.onboarding_prompt_shown_at
+      && isOnboardingForAccount(
+        accountId,
+        p.onboarding_completed_at as string | null,
+        state,
+      );
+  });
 
   // Nothing to resume (finished, already-shown, or a stale redirect) — don't
   // trap them; hand back to the normal funnel.
   if (!target) return to('/property-selector');
   const propertyId = target.id as string;
+  const targetState = target.onboarding_state as OnboardingState | null;
+  const isBoundFirstPerson = targetState?.firstPersonAccountId === accountId;
 
   // Minting a replacement resume code is a write. Recheck the exact property
   // after all candidate reads and immediately before that helper can insert.
-  const codeDecision = await accountCapabilityDecisionForProperty(
-    session.userId,
-    'manage_settings',
-    propertyId,
-    { requireMutation: true, requireManager: true },
-  );
-  if (codeDecision !== 'allowed') return to('/property-selector');
+  if (!isBoundFirstPerson) {
+    const codeDecision = await accountCapabilityDecisionForProperty(
+      session.userId,
+      'manage_settings',
+      propertyId,
+      { requireMutation: true, requireManager: true },
+    );
+    if (codeDecision !== 'allowed') return to('/property-selector');
+  }
 
   const codeResolution = await resolveOrMintResumeCode(
     propertyId,
@@ -158,18 +166,24 @@ export async function GET(req: NextRequest) {
   // Consume the one-shot: stamp the hotel now that we're actually opening the
   // wizard. Guarded on IS NULL so it records only the first entry; a failed
   // resume above never reaches here, so it never burns the shot. Non-fatal.
-  const stampDecision = await accountCapabilityDecisionForProperty(
-    session.userId,
-    'manage_settings',
-    propertyId,
-    { requireMutation: true, requireManager: true },
-  );
-  if (stampDecision !== 'allowed') return to('/property-selector');
-  const { error: stampErr } = await supabaseAdmin
+  if (!isBoundFirstPerson) {
+    const stampDecision = await accountCapabilityDecisionForProperty(
+      session.userId,
+      'manage_settings',
+      propertyId,
+      { requireMutation: true, requireManager: true },
+    );
+    if (stampDecision !== 'allowed') return to('/property-selector');
+  }
+  let stampQuery = supabaseAdmin
     .from('properties')
     .update({ onboarding_prompt_shown_at: new Date().toISOString() })
     .eq('id', propertyId)
     .is('onboarding_prompt_shown_at', null);
+  if (isBoundFirstPerson) {
+    stampQuery = stampQuery.eq('onboarding_state->>firstPersonAccountId', accountId);
+  }
+  const { error: stampErr } = await stampQuery;
   if (stampErr) {
     log.error('onboard_resume_stamp_failed', { userId: session.userId, propertyId, err: stampErr.message });
   }

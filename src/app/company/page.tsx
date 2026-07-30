@@ -352,6 +352,28 @@ function CompanyAccessContent() {
   const adminPreview = Boolean(
     authorizationChecked && platformAdmin && userRole === 'admin',
   );
+  const requestedAdminHotelId = searchParams.get('pid');
+
+  // Admin > Hotels links People to one exact hotel. Resolve that URL target
+  // through PropertyContext before loading the preview so a stale localStorage
+  // selection can never open another hotel's roster.
+  React.useEffect(() => {
+    if (!adminPreview || propertyLoading || !requestedAdminHotelId) return;
+    const requestedHotelExists = contextProperties.some(
+      (property) => property.id === requestedAdminHotelId,
+    );
+    if (requestedHotelExists && activePropertyId !== requestedAdminHotelId) {
+      setActivePropertyId(requestedAdminHotelId);
+    }
+  }, [
+    activePropertyId,
+    adminPreview,
+    contextProperties,
+    propertyLoading,
+    requestedAdminHotelId,
+    setActivePropertyId,
+  ]);
+
   const currentViewerKey = user && authorizationChecked
     ? `${buildCompanyAccessViewerKey({
         uid: user.uid,
@@ -525,7 +547,14 @@ function CompanyAccessContent() {
     return () => { cancelled = true; };
   }, [authLoading, currentViewerKey, propertyLoading, retryKey]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const adminTargetIsCurrent = !adminPreview || adminTargetPropertyId === activePropertyId;
+  // A hotel-card People deep link may arrive while PropertyContext still holds
+  // the prior localStorage selection. Do not paint that prior hotel's roster
+  // during the one render before the exact `pid` selection effect commits.
+  const adminLinkTargetIsCurrent = !adminPreview
+    || !requestedAdminHotelId
+    || requestedAdminHotelId === activePropertyId;
+  const adminTargetIsCurrent = adminLinkTargetIsCurrent
+    && (!adminPreview || adminTargetPropertyId === activePropertyId);
   const dataBelongsToCurrentViewer = Boolean(currentViewerKey && dataViewerKey === currentViewerKey);
   const adminDataMatchesSelection = !adminPreview || Boolean(
     data?.viewerContext

@@ -30,6 +30,7 @@ import {
   resolveJoinCodeCapability,
   type JoinCodeSignupFinalizationReceipt,
 } from '@/lib/join-code-capability';
+import type { OnboardingState } from '@/lib/onboarding/state';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -196,10 +197,9 @@ export async function POST(req: NextRequest) {
   // claims (or, in the wrong hands, *displaces* the owner of) a hotel.
   //
   // The lean self-onboarding flow legitimately needs exactly one such
-  // code: /api/admin/properties/create mints a SINGLE-USE owner/GM code on
-  // a freshly-created hotel whose owner_id is still the admin placeholder
-  // and whose onboarding hasn't finished — and the redeemer becomes the
-  // real owner. We allow precisely that, and keep the lock for the actual
+  // code: the exact hotel's People control mints a SINGLE-USE Owner/GM invite
+  // after the shell exists, while owner_id is still an admin placeholder and
+  // onboarding has not started. We allow precisely that, and keep the lock for the actual
   // attack surface:
   //   • multi-use owner codes (the DB CHECK already forbids these, belt +
   //     suspenders here), and
@@ -215,7 +215,7 @@ export async function POST(req: NextRequest) {
   if (row.role === 'owner' || row.role === 'general_manager') {
     const { data: claimTarget } = await supabaseAdmin
       .from('properties')
-      .select('onboarding_completed_at')
+      .select('onboarding_completed_at, onboarding_state')
       .eq('id', row.hotel_id)
       .maybeSingle();
     const isSingleUseOnboardingInvite =
@@ -236,6 +236,24 @@ export async function POST(req: NextRequest) {
       });
       return err(
         'Owner and General Manager roles cannot be assigned via shared join codes. Ask your admin for an emailed invite instead.',
+        { requestId, status: 410, code: ApiErrorCode.IdempotencyConflict },
+      );
+    }
+    const invitedEmail = (
+      (claimTarget?.onboarding_state as OnboardingState | null)?.invitedEmail ?? ''
+    ).trim().toLowerCase();
+    // Every new People invitation carries invitedEmail. Historical privileged
+    // links predate that binding, so only enforce equality when the durable
+    // field is present; 0411 preserves those already-issued production links.
+    if (invitedEmail && invitedEmail !== normalizedEmail) {
+      await logSecurityEvent({
+        action: 'auth.privileged_onboarding_email_mismatch',
+        propertyId: row.hotel_id,
+        requestId,
+        metadata: { codeId: row.id, bakedRole: row.role },
+      });
+      return err(
+        'This invitation is not valid for that email address.',
         { requestId, status: 410, code: ApiErrorCode.IdempotencyConflict },
       );
     }

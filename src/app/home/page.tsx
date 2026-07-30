@@ -66,7 +66,7 @@ function HomeHub() {
   // Home hub. Admins are never routed into a hotel's owner wizard.
   React.useEffect(() => {
     if (propertyLoading || !user || !activeProperty) return;
-    if (!shouldResumeOnboarding(user.role, activeProperty.onboardingCompletedAt, activeProperty.onboardingState, activeProperty.onboardingPromptShownAt)) return;
+    if (!shouldResumeOnboarding(user.accountId, user.role, activeProperty.onboardingCompletedAt, activeProperty.onboardingState, activeProperty.onboardingPromptShownAt)) return;
     // Automatic resume needs a durable one-shot guard. If storage is blocked,
     // stay on the terminal Home surface instead of risking a redirect loop.
     try {

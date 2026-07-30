@@ -42,7 +42,6 @@ import { AddHotelModal } from '../AddHotelModal';
 import { AIControlCenter } from '../../AIControlCenter';
 import { AccessPopover } from '../../AccessPopover';
 import { TwoFactorSwitch } from '../../TwoFactorSwitch';
-import { OrganizationLeaderInviteModal } from '../OrganizationLeaderInviteModal';
 import { AdminEffectiveAccess } from '../../AdminEffectiveAccess';
 import { APP_SECTIONS, type AppSection } from '@/lib/sections/registry';
 import { FLEET_STALE_SYNC_MINUTES } from '@/lib/admin-property-health';
@@ -288,10 +287,13 @@ export function LiveSurface() {
   const [pickerHotel, setPickerHotel] = useState<EnrichedRow | null>(null);
   // Hotel whose section on/off toggles are open (null = modal closed).
   const [sectionsHotel, setSectionsHotel] = useState<EnrichedRow | null>(null);
-  // "+ Add hotel" modal — create a new property directly from this tab.
-  const [addOpen, setAddOpen] = useState(false);
+  // "+ Add hotel" modal — an empty intent creates an independent hotel; an
+  // organization intent creates and assigns the shell in one request.
+  const [addIntent, setAddIntent] = useState<{
+    organizationId?: string;
+    organizationName?: string;
+  } | null>(null);
   const [createOrganizationOpen, setCreateOrganizationOpen] = useState(false);
-  const [leaderInviteOrganization, setLeaderInviteOrganization] = useState<OrganizationSummary | null>(null);
   const [assignmentIntent, setAssignmentIntent] = useState<{ organizationId?: string; propertyId?: string } | null>(null);
   const [makeIndependentIntent, setMakeIndependentIntent] = useState<{ hotel: EnrichedRow; organizationName: string } | null>(null);
   // Hotel pending permanent deletion (null = confirm closed).
@@ -562,8 +564,11 @@ export function LiveSurface() {
             onOpenHotel={setSel}
             schemaReady={directory.schemaReady}
             onCreateOrganization={() => setCreateOrganizationOpen(true)}
+            onAddHotel={(organization) => setAddIntent({
+              organizationId: organization.id,
+              organizationName: organization.name,
+            })}
             onAssignHotel={(organizationId) => setAssignmentIntent({ organizationId })}
-            onInviteLeader={setLeaderInviteOrganization}
             onMakeIndependent={(hotel, organizationName) => setMakeIndependentIntent({ hotel, organizationName })}
             hasIndependentHotels={independentHotels.length > 0}
             accessRefreshKey={accessRefreshKey}
@@ -584,7 +589,7 @@ export function LiveSurface() {
             page={currentIndependentPage}
             totalPages={independentTotalPages}
             onPageChange={setPage}
-            onAddHotel={() => setAddOpen(true)}
+            onAddHotel={() => setAddIntent({})}
             onOpenHotel={setSel}
             onAssignCoverage={setPickerHotel}
             onSections={setSectionsHotel}
@@ -652,14 +657,17 @@ export function LiveSurface() {
         />
       )}
 
-      {addOpen && (
+      {addIntent && (
         <AddHotelModal
-          onClose={() => setAddOpen(false)}
+          organizationId={addIntent.organizationId}
+          organizationName={addIntent.organizationName}
+          onClose={() => setAddIntent(null)}
           onCreated={() => {
-            setView('independent');
-            setHotelSearch('');
-            setHotelStatus('all');
-            setPage(1);
+            if (!addIntent.organizationId) {
+              setHotelSearch('');
+              setHotelStatus('all');
+              setPage(1);
+            }
             setReloadNonce((n) => n + 1);
           }}
         />
@@ -680,14 +688,6 @@ export function LiveSurface() {
           initialPropertyId={assignmentIntent.propertyId}
           onClose={() => setAssignmentIntent(null)}
           onAssigned={() => { setAssignmentIntent(null); refreshAccessTruth(); }}
-        />
-      )}
-
-      {leaderInviteOrganization && (
-        <OrganizationLeaderInviteModal
-          organization={leaderInviteOrganization}
-          onClose={() => setLeaderInviteOrganization(null)}
-          onFinished={refreshAccessTruth}
         />
       )}
 
@@ -800,8 +800,8 @@ function OrganizationsPanel({
   schemaReady,
   hasIndependentHotels,
   onCreateOrganization,
+  onAddHotel,
   onAssignHotel,
-  onInviteLeader,
   onMakeIndependent,
   accessRefreshKey,
   onAccessChanged,
@@ -817,8 +817,8 @@ function OrganizationsPanel({
   schemaReady: boolean;
   hasIndependentHotels: boolean;
   onCreateOrganization: () => void;
+  onAddHotel: (organization: OrganizationSummary) => void;
   onAssignHotel: (organizationId: string) => void;
-  onInviteLeader: (organization: OrganizationSummary) => void;
   onMakeIndependent: (hotel: EnrichedRow, organizationName: string) => void;
   accessRefreshKey: number;
   onAccessChanged: () => void;
@@ -884,9 +884,9 @@ function OrganizationsPanel({
               organization={organization}
               propertyById={propertyById}
               onOpenHotel={onOpenHotel}
+              onAddHotel={() => onAddHotel(organization)}
               onAssignHotel={() => onAssignHotel(organization.id)}
-              onInviteLeader={() => onInviteLeader(organization)}
-              canInviteLeader={schemaReady && organization.status === 'active'}
+              canAddHotel={schemaReady && organization.status === 'active'}
               canAssign={schemaReady && organization.status === 'active' && hasIndependentHotels}
               assignDisabledReason={!schemaReady
                 ? 'Organization setup is still being prepared'
@@ -910,9 +910,9 @@ function OrganizationDisclosure({
   organization,
   propertyById,
   onOpenHotel,
+  onAddHotel,
   onAssignHotel,
-  onInviteLeader,
-  canInviteLeader,
+  canAddHotel,
   canAssign,
   assignDisabledReason,
   onMakeIndependent,
@@ -922,9 +922,9 @@ function OrganizationDisclosure({
   organization: OrganizationSummary;
   propertyById: Map<string, EnrichedRow>;
   onOpenHotel: (hotel: EnrichedRow) => void;
+  onAddHotel: () => void;
   onAssignHotel: () => void;
-  onInviteLeader: () => void;
-  canInviteLeader: boolean;
+  canAddHotel: boolean;
   canAssign: boolean;
   assignDisabledReason?: string;
   onMakeIndependent: (hotel: EnrichedRow) => void;
@@ -968,15 +968,15 @@ function OrganizationDisclosure({
             <div className="studio-organization-properties-actions">
               <Btn
                 size="md"
-                variant="ghost"
-                onClick={onInviteLeader}
-                disabled={!canInviteLeader}
-                title={canInviteLeader
-                  ? `Invite an owner or administrator to ${organization.name}`
-                  : 'Only active organizations can receive leader invitations'}
-                style={{ color: '#fff', borderColor: dimWhite(.24), minHeight: 40 }}
+                variant="forest"
+                onClick={onAddHotel}
+                disabled={!canAddHotel}
+                title={canAddHotel
+                  ? `Create a new hotel assigned to ${organization.name}`
+                  : 'Only active organizations can receive new hotels'}
+                style={{ minHeight: 40 }}
               >
-                Invite company lead
+                + Add hotel
               </Btn>
               <Btn
                 size="md"
@@ -986,7 +986,7 @@ function OrganizationDisclosure({
                 title={canAssign ? `Assign an independent hotel to ${organization.name}` : assignDisabledReason}
                 style={{ color: '#fff', borderColor: dimWhite(.24), minHeight: 40 }}
               >
-                Assign hotel
+                Assign existing hotel
               </Btn>
             </div>
           </div>
@@ -1022,15 +1022,28 @@ function OrganizationDisclosure({
                       <span className="studio-organization-property-status">{hotelLink.status.replaceAll('_', ' ')}</span>
                       <span className="studio-organization-property-open" aria-hidden="true">Open →</span>
                     </button>
-                    <button
-                      type="button"
-                      className="studio-organization-make-independent"
-                      disabled={!hotel}
-                      onClick={() => { if (hotel) onMakeIndependent(hotel); }}
-                      aria-label={`Make ${hotelLink.name ?? 'unnamed hotel'} independent`}
-                    >
-                      Make independent
-                    </button>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                      <Btn
+                        size="sm"
+                        variant="ghost"
+                        href={`/company?tab=people&pid=${encodeURIComponent(hotelLink.id)}`}
+                        onClick={() => rememberPeopleHotel(hotelLink.id)}
+                        ariaLabel={`Manage people for ${hotelLink.name ?? 'unnamed hotel'}`}
+                        style={{ color: '#fff', borderColor: dimWhite(.24), minHeight: 44 }}
+                      >
+                        People
+                      </Btn>
+                      <button
+                        type="button"
+                        className="studio-organization-make-independent"
+                        disabled={!hotel}
+                        onClick={() => { if (hotel) onMakeIndependent(hotel); }}
+                        aria-label={`Make ${hotelLink.name ?? 'unnamed hotel'} independent`}
+                        style={{ minHeight: 44 }}
+                      >
+                        Make independent
+                      </button>
+                    </div>
                   </div>
                 );
               })}
@@ -1280,6 +1293,14 @@ function formatRelationshipType(value: string): string {
   return value.replaceAll('_', ' ');
 }
 
+function rememberPeopleHotel(hotelId: string): void {
+  try {
+    window.localStorage.setItem('hotelops-active-property', hotelId);
+  } catch {
+    // The pid query parameter remains authoritative when storage is unavailable.
+  }
+}
+
 // ── Fleet-health big number ──────────────────────────────────────────────
 function DarkHealth({ label, n, tone }: { label: string; n: number; tone: DotTone }) {
   const ref = useRef<HTMLSpanElement>(null);
@@ -1313,6 +1334,7 @@ function MapCard({
   onAssignOrganization: () => void;
   canAssignOrganization: boolean;
 }) {
+  const hotel = h;
   const ref = useRef<HTMLElement>(null);
   const tone = cardTone(h);
   const unassigned = h.pmsType === null;
@@ -1354,6 +1376,16 @@ function MapCard({
         </span>
       </div>
       <div className="studio-independent-card-actions">
+        <Btn
+          size="sm"
+          variant="ghost"
+          href={`/company?tab=people&pid=${encodeURIComponent(hotel.id)}`}
+          onClick={() => rememberPeopleHotel(hotel.id)}
+          ariaLabel={`Manage people for ${hotel.name ?? 'this hotel'}`}
+          style={{ color: '#fff', borderColor: dimWhite(.25), fontSize: 9.5, padding: '3px 8px' }}
+        >
+          People
+        </Btn>
         <Btn
           size="sm"
           variant="forest"
