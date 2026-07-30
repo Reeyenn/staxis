@@ -615,8 +615,8 @@ export async function buildPortfolioQueue(
   now: Date = new Date(),
   actionability: PortfolioQueueActionability = {},
 ): Promise<PortfolioQueue> {
-  // The portfolio checks run on the first load of the company's day, cached
-  // against it. No cron to flip — see portfolio-runner.ts.
+  // The daily cron owns this run. Keep the same idempotent call as a fallback
+  // for a missed tick; the company-day claim prevents duplicate work.
   let portfolioChecksStatus: PortfolioRunCompletion = 'unavailable';
   try {
     const summary = await runPortfolioChecks({ organizationId: scope.organizationId, now });

@@ -103,6 +103,7 @@ const WORKER_META: Record<string, { description: string; group: WorkerGroup }> =
   'pms-auth-codes-purge':                { description: 'Deletes old PMS emails, login codes, and report files, and shreds any report that arrived with a card number on it.', group: 'Cleanup' },
   'agent-costs-rollup':                  { description: 'Keeps a permanent monthly summary of what the AI cost, so old detail can be tidied away without changing any total.', group: 'Cleanup' },
   'pms-observations-purge':              { description: 'Tidies away PMS readings older than five years.',           group: 'Cleanup' },
+  'run-management-patterns':             { description: 'Checks management-company portfolios for patterns and queue findings.', group: 'Other' },
   'vercel-watchdog':                     { description: 'Health-checks the app every few minutes.',                  group: 'Other' },
 };
 

@@ -13,7 +13,7 @@ function request(query = '', secret = process.env.CRON_SECRET ?? ''): NextReques
   }) as unknown as NextRequest;
 }
 
-describe('management-pattern shadow route boundary', () => {
+describe('management-pattern scheduled route boundary', () => {
   for (const parameter of ['active=true', 'projection=true', 'projectionMode=active']) {
     test(`rejects caller-controlled ${parameter} before organization discovery`, async () => {
       const response = await GET(request(`?${parameter}`));
@@ -23,22 +23,25 @@ describe('management-pattern shadow route boundary', () => {
     });
   }
 
-  test('is deliberately absent from the production cron schedule during shadow validation', () => {
+  test('is scheduled daily as the background owner', () => {
     const config = JSON.parse(readFileSync(join(process.cwd(), 'vercel.json'), 'utf8')) as {
-      crons?: Array<{ path?: string }>;
+      crons?: Array<{ path?: string; schedule?: string }>;
     };
-    assert.equal(
-      (config.crons ?? []).some((cron) => cron.path === '/api/cron/run-management-patterns'),
-      false,
+    assert.deepEqual(
+      (config.crons ?? []).find((cron) => cron.path === '/api/cron/run-management-patterns'),
+      { path: '/api/cron/run-management-patterns', schedule: '0 8 * * *' },
     );
   });
 
-  test('source contains no active projection invocation', () => {
+  test('updates the live legacy queue while keeping v2 projection shadow-only', () => {
     const source = readFileSync(
       join(process.cwd(), 'src', 'app', 'api', 'cron', 'run-management-patterns', 'route.ts'),
       'utf8',
     );
     assert.doesNotMatch(source, /projectManagementPattern|projectActiveRun|project_management_pattern_run/);
-    assert.match(source, /projectionMode:\s*'shadow'/);
+    assert.match(source, /runPortfolioChecks\(\{ organizationId \}\)/);
+    assert.match(source, /managementPatternProjectionMode:\s*'shadow'/);
+    assert.match(source, /writeCronHeartbeat\('run-management-patterns'/);
+    assert.match(source, /if \(failed\.length > 0\)[\s\S]*?return err\([\s\S]*?writeCronHeartbeat/);
   });
 });

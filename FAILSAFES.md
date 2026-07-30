@@ -138,6 +138,8 @@ Symptom → diagnosis → fix → verify → prevention, per failure type. When 
 
 **Touch points:** every file under `src/app/api/cron/`, plus the doctor route's `EXPECTED_CRONS` list. When you add a new cron, update both.
 
+`run-management-patterns` is the daily background owner for management-company findings. It runs the live legacy portfolio checks and the shadow-only v2 evaluator through their existing claims/leases. It writes no heartbeat when any organization is incomplete or unavailable, so production cannot advertise a successful fleet pass from partial coverage.
+
 ---
 
 ## 8. Tier 3 fleet-ops invariants

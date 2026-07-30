@@ -99,6 +99,7 @@ export const SCHEDULE_REGISTRY: ReadonlyArray<ScheduleEntry> = [
   // 5-year window, so it is a guaranteed no-op today — wired now so the plumbing
   // exists before report ingestion restarts and these tables take real volume.
   { heartbeatName: 'pms-observations-purge',            source: { kind: 'vercel', cronPath: '/api/cron/pms-observations-purge' },       cronExpr: '40 5 * * *' },
+  { heartbeatName: 'run-management-patterns',           source: { kind: 'vercel', cronPath: '/api/cron/run-management-patterns' },      cronExpr: '0 8 * * *' },
   // Weekly
   { heartbeatName: 'ml-train-inventory',    source: { kind: 'github', workflowFile: 'ml-cron.yml' },                 cronExpr: '0 9 * * 0' },
   // Plan v4 (2026-05-24): removed `scraper-weekly-digest` — Railway

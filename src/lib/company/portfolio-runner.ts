@@ -4,17 +4,12 @@ import 'server-only';
 // Running the portfolio checks: gather the company's hotels, ask the pure
 // detectors, write the answers through the silencer.
 //
-// ─── WHY THERE IS NO CRON HERE ────────────────────────────────────────────
-// Same reason the morning brief has none. Every cron in this product is a
-// switch the founder owns and both findings crons are currently OFF; a screen
-// that needs a new one flipped is a screen that does not work. So the checks
-// run on the FIRST load of the company's day and are cached against that day
-// through `claim_idempotency_key` — the same atomic claim the brief uses, so
-// twelve tabs opening at 7am produce one run.
-//
-// The cost of that choice is one slower page load per company per day (two
-// feed reads per hotel). The cost of the alternative is a feature that silently
-// does nothing until somebody remembers to schedule it.
+// ─── THE BACKGROUND OWNER ─────────────────────────────────────────────────
+// `/api/cron/run-management-patterns` runs these checks daily. The company
+// queue retains a safe same-runner fallback, so a missed cron cannot strand a
+// customer, but the feature no longer depends on somebody opening a page.
+// Both callers share this atomic company-day claim, so overlap produces one
+// run and incomplete coverage remains retryable rather than authoring truth.
 //
 // ─── A COMPANY HAS NO TIMEZONE, SO IT BORROWS ONE ─────────────────────────
 // "Once per day" needs a calendar, and a company that operates hotels in two
