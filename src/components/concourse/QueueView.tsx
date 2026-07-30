@@ -70,6 +70,7 @@ import { type QueueReadState } from './FindingCards';
 import { MorningBriefView, type BriefPayload } from './MorningBriefCard';
 import { PortfolioQueueView, type PortfolioScope } from './PortfolioQueueView';
 import { parseFocusParam, parsePidParam, resolveDrillDown } from './finding-cards';
+import { hotelQueueChildKeys } from './hotel-queue-keys';
 import {
   hotelFallbackState,
   portfolioScopeForViewer,
@@ -527,6 +528,10 @@ function HotelQueue({
   const es = false;
   const L = <K extends keyof typeof S>(k: K) => (S[k].en);
   const [readState, setReadState] = React.useState<QueueReadState>('idle');
+  // Distinct by construction. See hotelQueueChildKeys: two siblings sharing a
+  // key made this component remount its own list on every render and orphan
+  // the old DOM, forever.
+  const childKeys = hotelQueueChildKeys(propertyId);
 
   return (
     <div
@@ -569,7 +574,7 @@ function HotelQueue({
           preventive work and decisions, in one order. */}
       {propertyId && (
         <StaxisList
-          key={propertyId}
+          key={childKeys.list}
           propertyId={propertyId}
           lang={lang}
           focusId={focusId}
@@ -584,7 +589,8 @@ function HotelQueue({
           would actually cost somebody money. */}
       {readState === 'loading' && <div className="qv-wait">{L('loading')}</div>}
 
-      <DripQuestionCard key={propertyId ?? 'no-property'} lang={lang} propertyId={propertyId} />
+      {/* Its key must never equal the list's above. See hotelQueueChildKeys. */}
+      <DripQuestionCard key={childKeys.drip} lang={lang} propertyId={propertyId} />
     </div>
   );
 }
