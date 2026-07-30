@@ -60,25 +60,34 @@ test('communications has a phone list/detail flow and does not collapse failures
   const contacts = source('src', 'components', 'concourse', 'ToldContacts.tsx');
   const knowledge = source('src', 'components', 'concourse', 'ToldKnowledge.tsx');
   const logbook = source('src', 'app', 'communications', '_components', 'LogbookPane.tsx');
+  // The worklist left Communications for the Staxis list on 2026-07-30, the
+  // same way Contacts and the knowledge hub left before it. These lines follow
+  // the SURVIVING code so the protection stays attached to what actually runs.
+  const staxisList = source('src', 'components', 'concourse', 'StaxisList.tsx');
+  const listRows = source('src', 'components', 'concourse', 'list-rows.tsx');
 
   assert.match(app, /comms-mobile-detail/);
   assert.match(app, /min-width:44px;min-height:44px/);
   assert.match(app, /<CommsPropertyApp key=\{activePropertyId \?\? 'no-property'\}/);
   assert.match(app, /<ThreadPanel key=\{`\$\{selConvo\.id\}:\$\{threadParent\.id\}`\}/);
   assert.match(app, /data: boot, loading: bootLoading, error: bootError/);
-  assert.match(app, /const worklistEnabled = !!pid && mode === 'todo' && todoView === 'list'/);
-  assert.match(app, /pollMs: worklistEnabled \? 15000 : undefined[\s\S]*?enabled: worklistEnabled/);
-  assert.match(app, /worklistEnabled && worklistData == null && worklistError == null/);
-  assert.doesNotMatch(app, /if \(mode === 'todo' && todoView === 'list'\) void loadWorklist\(\)/);
+  // The worklist read now belongs to the screen it IS, so it is no longer
+  // lazy — it is the page's main content. What still has to hold is that a
+  // failed refresh keeps the last-good rows instead of blanking the list.
+  assert.match(staxisList, /`\/api\/worklist\?pid=\$\{propertyId\}`[\s\S]*?keepDataOnError: true/);
+  assert.doesNotMatch(app, /\/api\/worklist/);
   assert.match(app, /messagesError=\{messagesError\}/);
   assert.match(app, /if \(!r\.ok\)[\s\S]*?Could not update the acknowledgement/);
   assert.match(pane, /Messages could not load/);
   assert.match(pane, /minWidth: 44, minHeight: 44/);
   assert.match(composer, /if \(!sent\.ok\)[\s\S]*?Message could not be sent/);
   assert.match(composer, /role="alert"/);
-  assert.match(overlays, /The worklist could not load/);
-  assert.match(overlays, /if \(!r\.ok\)[\s\S]*?The item was not completed/);
-  assert.doesNotMatch(overlays, /r\.data\?\.summary \?\? L\('You are all caught up'/);
+  // A write that did not land must never look like one that did: the row stays
+  // on the list and says so. Restated against the envelope shape the concourse
+  // surface uses (envelope.error, not result.ok).
+  assert.match(staxisList, /if \(envelope\.error !== undefined\)[\s\S]*?That did not save\. Nothing changed/);
+  // A failed read of what you handed out is never drawn as "nothing outstanding".
+  assert.match(listRows, /readFailed[\s\S]*?could not read this just now/);
   assert.match(row, /if \(!r\.ok\)[\s\S]*?Acknowledgement was not saved/);
   for (const pane of [calendar, contacts, knowledge, logbook]) {
     assert.match(pane, /error: loadError/);

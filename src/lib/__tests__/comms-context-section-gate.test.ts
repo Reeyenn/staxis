@@ -19,16 +19,19 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 
+import { readFileSync } from 'node:fs';
+
 import {
   resolveSectionGate,
   KNOWLEDGE_CTX,
+  ONE_LIST_CTX,
   type CommsContextOptions,
 } from '@/lib/comms/route-helpers';
 
 describe('resolveSectionGate — which section a comms-context call is gated on', () => {
   test('no options at all gates on communications', () => {
-    // Every /api/comms/* and /api/worklist/* route takes this path. Their UI
-    // lives in Communications and should disappear with it.
+    // The messaging routes take this path. Their UI lives in Communications
+    // (Messages) and should disappear with it.
     assert.equal(resolveSectionGate(undefined), 'communications');
   });
 
@@ -62,5 +65,64 @@ describe('resolveSectionGate — which section a comms-context call is gated on'
     // It is a module-level object handed to 20 call sites. If anything ever
     // mutated it, every knowledge route would change behavior at once.
     assert.deepEqual(KNOWLEDGE_CTX, { sectionGate: null });
+  });
+
+  test('ONE_LIST_CTX resolves to no gate', () => {
+    // Same precedent, one section later (2026-07-30). The to-do list and the
+    // log book MOVED to the Staxis tab. Left on the default they would keep
+    // dying with a Communications section they are no longer part of: a hotel
+    // that switched off a messaging tab would lose its whole to-do list and its
+    // shift log from a screen that was still on the nav and still loading.
+    assert.equal(resolveSectionGate(ONE_LIST_CTX), null);
+    assert.deepEqual(ONE_LIST_CTX, { sectionGate: null });
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// THE CORD IS ACTUALLY CUT
+//
+// A source-text assertion, deliberately, and it is the exception the house rule
+// allows: "this route is not gated on that section" is a NO-RUNTIME invariant.
+// Proving it by behaviour would mean standing up a session, a hotel with the
+// section off, and a database — for a claim that is really about one argument
+// at one call site. The resolver above is where the logic is tested; this is
+// where the WIRING is, because the wiring is what regressed twice before.
+// ─────────────────────────────────────────────────────────────────────────────
+
+const UNGATED_ROUTES = [
+  'src/app/api/worklist/route.ts',
+  'src/app/api/worklist/complete/route.ts',
+  'src/app/api/worklist/assign/route.ts',
+  'src/app/api/comms/tasks/route.ts',
+  'src/app/api/comms/logbook/route.ts',
+  'src/app/api/comms/logbook/replies/route.ts',
+  'src/app/api/feed/prefs/route.ts',
+] as const;
+
+describe('the Staxis list keeps working when Communications is switched off', () => {
+  for (const file of UNGATED_ROUTES) {
+    test(`${file} opts out of the section gate`, () => {
+      const src = readFileSync(file, 'utf8');
+      const contextCalls = src.match(/commsContext\(/g) ?? [];
+      const optedOut = src.match(/ONE_LIST_CTX/g) ?? [];
+      assert.ok(contextCalls.length > 0, 'expected this route to resolve a comms context');
+      // One opt-out per call site, plus the import.
+      assert.ok(
+        optedOut.length >= contextCalls.length + 1,
+        `every commsContext call in ${file} must pass ONE_LIST_CTX`,
+      );
+      assert.ok(
+        !/requireSectionEnabled\([^)]*'communications'/.test(src),
+        `${file} must not re-gate on communications inside the handler`,
+      );
+    });
+  }
+
+  test('the recurring spawner no longer stops on a Communications toggle', () => {
+    // A skipped local day never comes back: the spawner runs once per property
+    // per day, so a section toggle used to cancel that day's standing work
+    // permanently rather than pausing it.
+    const src = readFileSync('src/lib/recurring-tasks/store.ts', 'utf8');
+    assert.ok(!src.includes('isSectionEnabledForProperty'), 'the section check must be gone');
   });
 });

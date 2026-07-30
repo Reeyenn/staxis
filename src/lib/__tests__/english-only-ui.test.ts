@@ -39,7 +39,10 @@ describe('English-only application UI', () => {
     for (const [label, href] of [
       ['Dashboard', '/dashboard'],
       ['Housekeeping', '/housekeeping'],
-      ['Communications', '/communications'],
+      // Renamed 2026-07-30: To-do, Calendar and the Log book moved to the
+      // Staxis list, so the tab holds messaging and says so. The section KEY is
+      // still 'communications' (stored enabled_sections maps are keyed by it).
+      ['Messages', '/communications'],
       ['Maintenance', '/maintenance'],
       ['Inventory', '/inventory'],
       ['Staff', '/staff'],

@@ -38,8 +38,14 @@ describe('worklistSeesAllSources — complaint / work-order visibility gate', ()
 });
 
 describe('worklist source taxonomy', () => {
-  test('the source set is exactly the five known sources', () => {
-    assert.deepEqual([...WORKLIST_SOURCE_TYPES].sort(), ['complaint', 'inspection', 'pm', 'task', 'workorder']);
+  test('the source set is exactly the seven known sources', () => {
+    // 'reminder' and 'approval' joined on 2026-07-30 when the worklist became
+    // THE list on the Staxis tab: a reminder that has come due needs a person,
+    // and so does somebody waiting to be let onto the payroll.
+    assert.deepEqual(
+      [...WORKLIST_SOURCE_TYPES].sort(),
+      ['approval', 'complaint', 'inspection', 'pm', 'reminder', 'task', 'workorder'],
+    );
   });
 
   test('every source type has an absolute-path deep-link target', () => {

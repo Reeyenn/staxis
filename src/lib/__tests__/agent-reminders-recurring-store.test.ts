@@ -219,19 +219,78 @@ describe('spawnDueRecurringTodos', () => {
     assert.equal(spawnedTasks[0].title, 'monday task');
   });
 
-  test('does not spawn recurring Communications tasks while the section is disabled', async () => {
+  // ── the cord was CUT on 2026-07-30, and this pins the new behaviour ──────
+  // This test used to assert the OPPOSITE: that a disabled Communications
+  // section stopped recurring to-dos from spawning. To-dos moved to the Staxis
+  // list, so that check was gating a hotel's standing work on a messaging tab.
+  // Worse, it was not a pause: the spawner runs once per property per local
+  // day, so every day the section was off was a day of work that never came
+  // back. A section toggle governs what a hotel SEES, not what it may reach.
+  test('keeps spawning while the Communications section is off', async () => {
     communicationsSectionEnabled = false;
     templateRows = [{
-      id: 't-disabled', property_id: DISABLED_PID, title: 'paused template',
+      id: 't-disabled', property_id: DISABLED_PID, title: 'still spawns',
       assigned_staff_id: null, assigned_department: 'maintenance', priority: 'normal',
-      cadence: 'daily', weekday: null, active: true, last_spawned_on: null,
+      cadence: 'daily', weekday: null, day_of_month: null, anchor_date: null,
+      active: true, last_spawned_on: null,
       created_at: new Date().toISOString(), properties: { timezone: 'America/Chicago' },
     }];
     const res = await spawnDueRecurringTodos(new Date());
-    assert.equal(res.spawned, 0);
-    assert.equal(res.skipped, 1);
+    assert.equal(res.spawned, 1);
+    assert.equal(res.skipped, 0);
     assert.equal(res.failed, 0);
-    assert.equal(spawnedTasks.length, 0);
-    assert.equal(templateUpdates.length, 0);
+    assert.equal(spawnedTasks.length, 1);
+    assert.equal(spawnedTasks[0].title, 'still spawns');
+  });
+
+  test('a biweekly template spawns on its ON week and stays off the other one', async () => {
+    // 2026-08-04 and 2026-08-18 are Tuesdays a fortnight apart; the 11th is the
+    // week in between. Driven through the real spawner, not the pure predicate,
+    // so the anchor actually survives the row mapping.
+    communicationsSectionEnabled = true;
+    const base = {
+      id: 't-biweekly', property_id: PID, title: 'every other tuesday',
+      assigned_staff_id: null, assigned_department: 'maintenance', priority: 'normal',
+      cadence: 'biweekly', weekday: 2, day_of_month: null, anchor_date: '2026-08-04',
+      active: true, created_at: new Date().toISOString(),
+      properties: { timezone: 'UTC' },
+    };
+
+    templateRows = [{ ...base, last_spawned_on: null }];
+    assert.equal((await spawnDueRecurringTodos(new Date('2026-08-04T18:00:00.000Z'))).spawned, 1);
+
+    spawnedTasks.length = 0;
+    templateRows = [{ ...base, last_spawned_on: '2026-08-04' }];
+    assert.equal(
+      (await spawnDueRecurringTodos(new Date('2026-08-11T18:00:00.000Z'))).spawned,
+      0,
+      'the week in between is skipped, which is the whole point of biweekly',
+    );
+
+    spawnedTasks.length = 0;
+    templateRows = [{ ...base, last_spawned_on: '2026-08-04' }];
+    assert.equal((await spawnDueRecurringTodos(new Date('2026-08-18T18:00:00.000Z'))).spawned, 1);
+  });
+
+  test('a monthly template spawns on its day and no other', async () => {
+    communicationsSectionEnabled = true;
+    const base = {
+      id: 't-monthly', property_id: PID, title: 'fifteenth of the month',
+      assigned_staff_id: null, assigned_department: 'maintenance', priority: 'normal',
+      cadence: 'monthly', weekday: null, day_of_month: 15, anchor_date: null,
+      active: true, created_at: new Date().toISOString(),
+      properties: { timezone: 'UTC' },
+    };
+
+    templateRows = [{ ...base, last_spawned_on: null }];
+    assert.equal((await spawnDueRecurringTodos(new Date('2026-08-14T18:00:00.000Z'))).spawned, 0);
+
+    spawnedTasks.length = 0;
+    templateRows = [{ ...base, last_spawned_on: null }];
+    assert.equal((await spawnDueRecurringTodos(new Date('2026-08-15T18:00:00.000Z'))).spawned, 1);
+
+    spawnedTasks.length = 0;
+    templateRows = [{ ...base, last_spawned_on: '2026-08-15' }];
+    assert.equal((await spawnDueRecurringTodos(new Date('2026-09-15T18:00:00.000Z'))).spawned, 1);
   });
 });

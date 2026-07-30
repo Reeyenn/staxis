@@ -23,6 +23,7 @@ const myShifts = source('src', 'app', 'staff', '_components', 'MyShifts.tsx');
 const staffPage = source('src', 'app', 'staff', 'page.tsx');
 const queue = source('src', 'components', 'concourse', 'QueueView.tsx');
 const dripQuestion = source('src', 'components', 'concourse', 'DripQuestionCard.tsx');
+const staxisList = source('src', 'components', 'concourse', 'StaxisList.tsx');
 const financialsPage = source('src', 'app', 'financials', 'page.tsx');
 const checkbook = source('src', 'app', 'financials', '_components', 'CheckbookTab.tsx');
 const budget = source('src', 'app', 'financials', '_components', 'BudgetTab.tsx');
@@ -124,7 +125,14 @@ describe('property-owned draft and action isolation', () => {
 
   test('Feed cards and questions remount for the exact hotel and post to the captured scope', () => {
     assert.match(queue, /<HotelQueue[\s\S]*?propertyId=\{activePropertyId \?\? undefined\}/);
-    assert.match(queue, /<FindingCards[\s\S]*?key=\{propertyId \?\? 'no-property'\}[\s\S]*?propertyId=\{propertyId\}/);
+    // The cards are inside StaxisList now (2026-07-30). The invariant is
+    // unchanged and so is the reason for it: everything on this screen must
+    // remount for the exact hotel, so a stale row from the previous hotel can
+    // never be acted on against the new one.
+    assert.match(queue, /<StaxisList[\s\S]*?key=\{propertyId\}[\s\S]*?propertyId=\{propertyId\}/);
+    assert.match(staxisList, /<FindingCards[\s\S]*?key=\{propertyId\}[\s\S]*?propertyId=\{propertyId\}/);
+    // Every write on the list carries the hotel it was captured against.
+    assert.match(staxisList, /body: JSON\.stringify\(\{\s*\n?\s*pid: propertyId/);
     assert.match(queue, /<DripQuestionCard key=\{propertyId \?\? 'no-property'\}[\s\S]*?propertyId=\{propertyId\}/);
     assert.match(dripQuestion, /const resolvedPropertyId = propertyId \?\? activePropertyId/);
     assert.match(dripQuestion, /const pid = resolvedPropertyId[\s\S]*?body: JSON\.stringify\(\{ propertyId: pid/);
