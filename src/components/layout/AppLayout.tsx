@@ -13,18 +13,14 @@ import { useSyncContext } from '@/contexts/SyncContext';
 import { t } from '@/lib/translations';
 import { WifiOff } from 'lucide-react';
 import { sectionForPath, isSectionEnabled } from '@/lib/sections/registry';
-import { RouteErrorState, RouteLoadingState } from './RouteResourceState';
+import { RouteErrorState } from './RouteResourceState';
 import {
   clearStaleChunkRecoveryIncident,
-  LEGACY_WORKER_RECOVERY_PARAM,
-  reloadOnceWithSessionGuard,
   staleChunkFailureSeenThisBoot,
   STALE_CHUNK_STABLE_BOOT_MS,
 } from '@/lib/stale-chunk-recovery';
 import { useNavigationReady } from '@/lib/hooks/use-reliable-navigation';
 import { useOptionalHotelActingContext } from '@/contexts/HotelActingContext';
-
-let legacyServiceWorkerCleanupStarted = false;
 
 // The "Ask Staxis" command bar (~900 lines + react-markdown) sits on every
 // authenticated page but starts collapsed and empty. Load it lazily so it stays
@@ -49,7 +45,6 @@ export function AppLayout({
   const {
     activeProperty,
     capabilityOverridesStatus,
-    capabilityOverridesError,
     propertiesError,
     refreshCapabilities,
     retryProperties,
@@ -99,49 +94,6 @@ export function AppLayout({
     return () => window.clearTimeout(timeout);
   }, []);
 
-  // Retire only known legacy root workers/caches. The live housekeeper worker
-  // is scoped to /housekeeper/ and must survive this cleanup. Old `/sw.js`
-  // installs cached obsolete JS chunks at the origin root and could intercept
-  // a client transition until a hard refresh reset the controller.
-  useEffect(() => {
-    if (legacyServiceWorkerCleanupStarted) return;
-    if (typeof navigator === 'undefined' || !('serviceWorker' in navigator)) return;
-    legacyServiceWorkerCleanupStarted = true;
-    navigator.serviceWorker.getRegistrations()
-      .then(async regs => {
-        let retiredControllingWorker = false;
-        await Promise.all(regs.map(async reg => {
-          const url = reg.active?.scriptURL ?? reg.installing?.scriptURL ?? reg.waiting?.scriptURL ?? '';
-          let path = '';
-          try { path = new URL(url).pathname; } catch { /* malformed legacy URL */ }
-          const legacy = path === '/sw.js' || path === '/firebase-messaging-sw.js';
-          if (!legacy) return;
-          if (navigator.serviceWorker.controller?.scriptURL === url) {
-            retiredControllingWorker = true;
-          }
-          await reg.unregister().catch(() => false);
-        }));
-
-        if ('caches' in window) {
-          await window.caches.delete('hotelops-v1').catch(() => false);
-        }
-
-        // Unregistering does not release a page already controlled by the old
-        // worker. Reload once so the browser can use the network/current build;
-        // the session guard prevents a broken worker from creating a loop.
-        if (retiredControllingWorker) {
-          const recoveryKey = 'staxis-legacy-worker-recovery';
-          reloadOnceWithSessionGuard({
-            key: recoveryKey,
-            fallbackParam: LEGACY_WORKER_RECOVERY_PARAM,
-            getSessionStorage: () => window.sessionStorage,
-            location: window.location,
-          });
-        }
-      })
-      .catch(() => { /* best effort — old browsers */ });
-  }, []);
-
   return (
     <div className="staxis-app-shell" style={{
       minHeight: '100vh', display: 'flex', flexDirection: 'column',
@@ -166,6 +118,35 @@ export function AppLayout({
         </div>
       )}
 
+      {activeProperty && capabilityOverridesStatus === 'error' && (
+        <div
+          role="alert"
+          aria-live="assertive"
+          style={{
+            borderBottom: '1px solid var(--snow-warm, rgba(184,92,61,0.3))',
+            background: 'var(--snow-warm-dim, rgba(184,92,61,0.1))',
+            padding: '8px 16px',
+            display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '10px',
+            flexWrap: 'wrap',
+          }}
+        >
+          <span style={{ fontSize: '12px', fontWeight: 600, color: 'var(--snow-ink, var(--fg))' }}>
+            Some actions are unavailable while hotel access settings are refreshed.
+          </span>
+          <button
+            type="button"
+            onClick={() => void refreshCapabilities()}
+            style={{
+              border: '1px solid currentColor', borderRadius: '8px', background: 'transparent',
+              minHeight: 44, padding: '4px 12px', font: 'inherit', fontSize: '12px', fontWeight: 650,
+              color: 'var(--snow-ink, var(--fg))', cursor: 'pointer',
+            }}
+          >
+            Try again
+          </button>
+        </div>
+      )}
+
       <main className="cx-swap" style={{
         flex: 1,
         width: '100%',
@@ -181,26 +162,10 @@ export function AppLayout({
         {/* Home navigation lives in the leftmost Concourse bar pill. */}
         {propertiesError ? (
           <RouteErrorState
-            title={lang === 'es' ? 'No pudimos cargar tus hoteles' : 'We could not load your hotels'}
-            message={lang === 'es'
-              ? 'No se cambió ningún dato. Revisa tu conexión e inténtalo de nuevo.'
-              : 'No data was changed. Check your connection and try again.'}
-            retryLabel={lang === 'es' ? 'Reintentar' : 'Try again'}
+            title={'We could not load your hotels'}
+            message={'No data was changed. Check your connection and try again.'}
+            retryLabel={'Try again'}
             onRetry={retryProperties}
-          />
-        ) : activeProperty && capabilityOverridesStatus === 'error' ? (
-          <RouteErrorState
-            title={lang === 'es' ? 'No pudimos confirmar el acceso' : 'We could not confirm hotel access'}
-            message={capabilityOverridesError ?? (lang === 'es'
-              ? 'Revisa tu conexión e inténtalo de nuevo.'
-              : 'Check your connection and try again.')}
-            retryLabel={lang === 'es' ? 'Reintentar' : 'Try again'}
-            onRetry={() => void refreshCapabilities()}
-          />
-        ) : activeProperty && capabilityOverridesStatus !== 'ready' ? (
-          <RouteLoadingState
-            title={lang === 'es' ? 'Comprobando el acceso al hotel…' : 'Checking hotel access…'}
-            message={lang === 'es' ? 'Abriendo el espacio de trabajo actual.' : 'Opening the current hotel workspace.'}
           />
         ) : sectionOff ? (
           <div style={{
@@ -213,17 +178,13 @@ export function AppLayout({
               fontFamily: 'var(--font-geist), -apple-system, BlinkMacSystemFont, sans-serif',
               fontSize: '18px', fontWeight: 600, color: 'var(--snow-ink, var(--fg))',
             }}>
-              {lang === 'es'
-                ? 'Esta sección está desactivada para tu hotel'
-                : 'This section is turned off for your hotel'}
+              {'This section is turned off for your hotel'}
             </div>
             <div style={{
               fontFamily: 'var(--font-geist), -apple-system, BlinkMacSystemFont, sans-serif',
               fontSize: '14px', color: 'var(--snow-ink2, var(--muted))', maxWidth: '420px', lineHeight: 1.5,
             }}>
-              {lang === 'es'
-                ? 'Tu administrador de Staxis puede volver a activarla.'
-                : 'Your Staxis admin can turn it back on.'}
+              {'Your Staxis admin can turn it back on.'}
             </div>
           </div>
         ) : (

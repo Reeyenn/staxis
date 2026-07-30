@@ -120,9 +120,7 @@ function VerifyInner() {
   const [resending, setResending] = useState(false);
   const [resendError, setResendError] = useState(
     initialDeliveryFailed
-      ? (lang === 'es'
-          ? 'No pudimos enviar el código. Envía uno nuevo para continuar.'
-          : "We couldn't send the code. Send a new one to continue.")
+      ? ("We couldn't send the code. Send a new one to continue.")
       : '',
   );
   const [resendCooldown, setResendCooldown] = useState(0);
@@ -166,9 +164,7 @@ function VerifyInner() {
       setResendCooldown(30);
     } catch (err) {
       console.warn('verify: resend code failed', err);
-      setResendError(lang === 'es'
-        ? 'No se pudo enviar un código nuevo. Intenta de nuevo.'
-        : "Couldn't send a new code. Try again.");
+      setResendError("Couldn't send a new code. Try again.");
     } finally {
       resendInFlightRef.current = false;
       setResending(false);
@@ -243,9 +239,7 @@ function VerifyInner() {
       // just after our outer deadline. Never re-enable this OTP form. The
       // settlement observer above discards an eventual exact-token session;
       // recovery is a full fresh sign-in.
-      enterFreshSigninRecovery(lang === 'es'
-        ? 'No pudimos confirmar el resultado. Inicia sesión de nuevo.'
-        : "We couldn't confirm the result — please sign in again.");
+      enterFreshSigninRecovery("We couldn't confirm the result — please sign in again.");
       console.warn('verify: code verification failed', err);
       return;
     }
@@ -255,15 +249,13 @@ function VerifyInner() {
     if (verifyErr || !data.session) {
       submitInFlightRef.current = false;
       setSubmitting(false);
-      setError(verifyErr?.message ?? (lang === 'es' ? 'Código incorrecto.' : 'Incorrect code.'));
+      setError(verifyErr?.message ?? ('Incorrect code.'));
       return;
     }
 
     let ownedSession = data.session;
     if (!isAuthSessionCurrent(ownedSession)) {
-      enterFreshSigninRecovery(lang === 'es'
-        ? 'El estado de inicio de sesión cambió. Inicia sesión de nuevo.'
-        : 'Sign-in state changed — please sign in again.');
+      enterFreshSigninRecovery('Sign-in state changed — please sign in again.');
       return;
     }
 
@@ -322,17 +314,13 @@ function VerifyInner() {
       // Fix: do NOT navigate into a half-secured (blank) app. The OTP code
       // is already consumed, so the clean recovery is a fresh sign-in.
       discardAuthSession(ownedSession);
-      enterFreshSigninRecovery(lang === 'es'
-        ? 'No pudimos terminar de proteger tu sesión. Inicia sesión de nuevo.'
-        : "Couldn't finish securing your session. Please sign in again.");
+      enterFreshSigninRecovery("Couldn't finish securing your session. Please sign in again.");
       console.warn('verify: securing session failed', err);
       return;
     }
 
     if (!isAuthSessionCurrent(ownedSession)) {
-      enterFreshSigninRecovery(lang === 'es'
-        ? 'El estado de inicio de sesión cambió. Inicia sesión de nuevo.'
-        : 'Sign-in state changed — please sign in again.');
+      enterFreshSigninRecovery('Sign-in state changed — please sign in again.');
       return;
     }
     replaceNavigation(redirectTarget);
@@ -341,18 +329,14 @@ function VerifyInner() {
   return (
     <AuthShell subtitle={
       postSignup
-        ? (lang === 'es' ? 'Confirma tu correo' : 'Confirm your email')
-        : (lang === 'es' ? 'Verifica tu correo' : 'Verify your email')
+        ? ('Confirm your email')
+        : ('Verify your email')
     }>
 
       <p style={{ fontSize: 13.5, color: '#5C625C', lineHeight: 1.5, textAlign: 'center', margin: '0 0 18px' }}>
         {codeDelivered
-          ? (lang === 'es'
-              ? <>Enviamos un código de 6 dígitos a <strong style={{ color: '#1F231C' }}>{email}</strong>. Ingrésalo abajo.</>
-              : <>We sent a 6-digit code to <strong style={{ color: '#1F231C' }}>{email}</strong>. Enter it below.</>)
-          : (lang === 'es'
-              ? <>Aún no se envió un código a <strong style={{ color: '#1F231C' }}>{email}</strong>.</>
-              : <>A code has not been sent to <strong style={{ color: '#1F231C' }}>{email}</strong> yet.</>)}
+          ? (<>We sent a 6-digit code to <strong style={{ color: '#1F231C' }}>{email}</strong>. Enter it below.</>)
+          : (<>A code has not been sent to <strong style={{ color: '#1F231C' }}>{email}</strong> yet.</>)}
       </p>
 
       <form onSubmit={handleSubmit} style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
@@ -360,7 +344,7 @@ function VerifyInner() {
         {resendError && <AuthError id="otp-resend-error">{resendError}</AuthError>}
 
         <div className="si-rise si-d-2" style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-          <AuthLabel htmlFor="signin-otp">{lang === 'es' ? 'Código de 6 dígitos' : '6-digit code'}</AuthLabel>
+          <AuthLabel htmlFor="signin-otp">{'6-digit code'}</AuthLabel>
           <input
             id="signin-otp"
             name="one-time-code"
@@ -398,7 +382,7 @@ function VerifyInner() {
               disabled={submitting || requiresFreshSignin}
               style={{ width: 16, height: 16, accentColor: '#C99644', cursor: submitting || requiresFreshSignin ? 'not-allowed' : 'pointer' }}
             />
-            {lang === 'es' ? 'Confiar en este dispositivo' : 'Trust this device'}
+            {'Trust this device'}
           </label>
         )}
 
@@ -412,7 +396,7 @@ function VerifyInner() {
         >
           {submitting
             ? <div className="spinner" style={{ width: 18, height: 18, borderTopColor: '#FFFFFF', borderColor: 'rgba(255,255,255,0.3)' }} />
-            : (lang === 'es' ? 'Verificar' : 'Verify')
+            : ('Verify')
           }
         </button>
 
@@ -430,12 +414,12 @@ function VerifyInner() {
           }}
         >
           {resending
-            ? (lang === 'es' ? 'Enviando…' : 'Sending…')
+            ? ('Sending…')
             : resendCooldown > 0
-              ? (lang === 'es' ? `Reenviar en ${resendCooldown}s` : `Resend in ${resendCooldown}s`)
+              ? (`Resend in ${resendCooldown}s`)
               : codeDelivered
-                ? (lang === 'es' ? 'Reenviar código' : 'Resend code')
-                : (lang === 'es' ? 'Enviar un código nuevo' : 'Send a new code')}
+                ? ('Resend code')
+                : ('Send a new code')}
         </button>
 
         {requiresFreshSignin ? (
@@ -443,14 +427,14 @@ function VerifyInner() {
             href={freshSigninHref}
             style={authBackLinkStyle}
           >
-            {lang === 'es' ? '← Volver al inicio de sesión' : '← Back to sign in'}
+            {'← Back to sign in'}
           </a>
         ) : (
           <Link
             href={usesCompanyInvitationHandoff ? COMPANY_INVITATION_SIGN_IN_HREF : '/signin'}
             style={authBackLinkStyle}
           >
-            {lang === 'es' ? '← Volver al inicio de sesión' : '← Back to sign in'}
+            {'← Back to sign in'}
           </Link>
         )}
       </form>

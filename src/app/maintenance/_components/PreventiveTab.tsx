@@ -34,18 +34,18 @@ import { WheelDatePicker } from '@/components/ui/WheelDatePicker';
 import { PatternChip } from '@/components/concourse/PatternChip';
 
 type Band = 'overdue' | 'soon' | 'upcoming';
-const BAND: Record<Band, { color: string; tone: 'warm' | 'caramel' | 'sage'; en: string; es: string }> = {
-  overdue:  { color: T.warm,     tone: 'warm',    en: 'Overdue',        es: 'Vencidas' },
-  soon:     { color: T.caramel,  tone: 'caramel', en: 'Due this month', es: 'Este mes' },
-  upcoming: { color: T.sageDeep, tone: 'sage',    en: 'Upcoming',       es: 'Próximas' },
+const BAND: Record<Band, { color: string; tone: 'warm' | 'caramel' | 'sage'; en: string }> = {
+  overdue:  { color: T.warm,     tone: 'warm',    en: 'Overdue',        },
+  soon:     { color: T.caramel,  tone: 'caramel', en: 'Due this month', },
+  upcoming: { color: T.sageDeep, tone: 'sage',    en: 'Upcoming',       },
 };
 const BAND_ORDER: Band[] = ['overdue', 'soon', 'upcoming'];
 
 const UNITS = [
-  { value: 'days',   mult: 1,   en: 'days',   es: 'días' },
-  { value: 'weeks',  mult: 7,   en: 'weeks',  es: 'semanas' },
-  { value: 'months', mult: 30,  en: 'months', es: 'meses' },
-  { value: 'years',  mult: 365, en: 'years',  es: 'años' },
+  { value: 'days',   mult: 1,   en: 'days',   },
+  { value: 'weeks',  mult: 7,   en: 'weeks',  },
+  { value: 'months', mult: 30,  en: 'months', },
+  { value: 'years',  mult: 365, en: 'years',  },
 ] as const;
 type Unit = typeof UNITS[number]['value'];
 
@@ -80,11 +80,11 @@ function calledLine(t: PreventiveTask, es: boolean): string | null {
   const who = t.calledBy?.trim();
   const when =
     days === 0
-      ? (es ? 'hoy' : 'today')
+      ? ('today')
       : days === 1
-        ? (es ? 'ayer' : 'yesterday')
-        : (es ? `hace ${days} días` : `${days} days ago`);
-  if (es) return who ? `${who} llamó a alguien ${when}` : `Llamaron a alguien ${when}`;
+        ? ('yesterday')
+        : (`${days} days ago`);
+
   return who ? `${who} called somebody ${when}` : `Somebody was called ${when}`;
 }
 // Editor draft (count text + unit + optional last-done ISO date) → concrete
@@ -117,7 +117,7 @@ function FreqEditor({
 }) {
   return (
     <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
-      <span style={{ fontFamily: FONT_SANS, fontSize: 14, color: T.ink2 }}>{es ? 'Cada' : 'Every'}</span>
+      <span style={{ fontFamily: FONT_SANS, fontSize: 14, color: T.ink2 }}>{'Every'}</span>
       <input
         value={count} onChange={(e) => onCount(e.target.value)} type="number" min={1}
         style={{ width: 92, height: 44, textAlign: 'center', borderRadius: 12, border: '1px solid rgba(31,35,28,0.14)', background: '#FFFFFF', fontFamily: FONT_MONO, fontSize: 18, fontWeight: 600, color: T.ink, outline: 'none' }}
@@ -128,7 +128,7 @@ function FreqEditor({
           return (
             <button key={u.value} type="button" onClick={() => onUnit(u.value)}
               style={{ border: 'none', background: on ? '#1F231C' : 'transparent', cursor: 'pointer', padding: '8px 16px', borderRadius: 999, fontFamily: FONT_SANS, fontSize: 13, fontWeight: on ? 600 : 500, color: on ? '#FFFFFF' : T.ink2, transition: 'background .2s, color .2s' }}>
-              {es ? u.es : u.en}
+              {u.en}
             </button>
           );
         })}
@@ -146,7 +146,7 @@ function NewTaskModal({
   onCreate: (args: { name: string; area: string; frequencyDays: number; lastCompletedISO: string | null }) => Promise<void>;
 }) {
   const { lang } = useLang();
-  const es = lang === 'es';
+  const es = false;
   const [name, setName] = useState('');
   const [area, setArea] = useState('');
   const [count, setCount] = useState('1');
@@ -159,9 +159,7 @@ function NewTaskModal({
   // Guard the eaten-form path: Escape / a stray scrim click used to wipe the
   // half-typed task instantly. Confirm before discarding anything typed.
   const close = () => {
-    if (dirty && !window.confirm(es
-      ? '¿Descartar esta tarea sin agregar? Se perderá lo que escribiste.'
-      : 'Discard this task? What you typed will be lost.')) return;
+    if (dirty && !window.confirm('Discard this task? What you typed will be lost.')) return;
     reset();
     onClose();
   };
@@ -184,12 +182,12 @@ function NewTaskModal({
   return (
     <Modal
       open={open} onClose={close}
-      title={es ? 'Nueva tarea preventiva' : 'New preventive task'}
-      subtitle={es ? 'Un trabajo recurrente que vuelve según un calendario.' : 'A recurring job that comes back on a schedule.'}
+      title={'New preventive task'}
+      subtitle={'A recurring job that comes back on a schedule.'}
       width={600}
       footer={<>
-        <Btn variant="ghost" onClick={close}>{es ? 'Cancelar' : 'Cancel'}</Btn>
-        <Btn variant="primary" disabled={!can} onClick={submit}>{busy ? (es ? 'Agregando…' : 'Adding…') : (es ? 'Agregar tarea' : 'Add task')}</Btn>
+        <Btn variant="ghost" onClick={close}>{'Cancel'}</Btn>
+        <Btn variant="primary" disabled={!can} onClick={submit}>{busy ? ('Adding…') : ('Add task')}</Btn>
       </>}
     >
       <div style={{ display: 'flex', flexDirection: 'column', gap: 18 }}>
@@ -198,18 +196,18 @@ function NewTaskModal({
             and into the model call behind them, so a pasted document in this
             box is somebody else's spend cap. The database refuses it too — this
             just means the manager finds out here rather than on save. */}
-        <Field label={es ? 'Tarea' : 'Task'} required><TextInput maxLength={120} value={name} onChange={setName} placeholder={es ? 'ej. "Revisión de extintores"' : 'e.g. "Fire extinguisher check"'} /></Field>
-        <Field label={es ? 'Área' : 'Area'} required><TextInput value={area} onChange={setArea} placeholder={es ? 'ej. "Edificio" o "Piscina"' : 'e.g. "Building" or "Pool"'} /></Field>
-        <Field label={es ? 'Frecuencia' : 'Frequency'} required hint={es ? '¿Cada cuánto vuelve?' : 'How often does it come around?'}>
+        <Field label={'Task'} required><TextInput maxLength={120} value={name} onChange={setName} placeholder={'e.g. "Fire extinguisher check"'} /></Field>
+        <Field label={'Area'} required><TextInput value={area} onChange={setArea} placeholder={'e.g. "Building" or "Pool"'} /></Field>
+        <Field label={'Frequency'} required hint={'How often does it come around?'}>
           <FreqEditor count={count} unit={unit} onCount={setCount} onUnit={setUnit} es={es} />
         </Field>
-        <Field label={es ? 'Última vez completada' : 'Last completed'} hint={es ? 'Para configurar por primera vez' : 'For backfilling on first setup'}>
-          <WheelDatePicker value={last} onChange={setLast} lang={es ? 'es' : 'en'} />
+        <Field label={'Last completed'} hint={'For backfilling on first setup'}>
+          <WheelDatePicker value={last} onChange={setLast} lang={'en'} />
         </Field>
         <div style={{ background: 'rgba(158,183,166,0.14)', border: '1px solid rgba(92,122,96,0.25)', borderRadius: 12, padding: '14px 16px', display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
-          <Caps size={10} c={T.sageDeep} weight={600}>{es ? 'Calculado' : 'Auto-calculated'}</Caps>
+          <Caps size={10} c={T.sageDeep} weight={600}>{'Auto-calculated'}</Caps>
           <span style={{ fontFamily: FONT_SANS, fontSize: 15, color: T.ink }}>
-            {es ? 'Próxima: ' : 'Next due: '}<strong style={{ fontWeight: 600 }}>{can ? fmtDate(nextDue, es) : '—'}</strong>
+            {'Next due: '}<strong style={{ fontWeight: 600 }}>{can ? fmtDate(nextDue) : '—'}</strong>
           </span>
         </div>
       </div>
@@ -230,7 +228,7 @@ function TaskModal({
   propertyId: string | null;
 }) {
   const { lang } = useLang();
-  const es = lang === 'es';
+  const es = false;
   const [count, setCount] = useState('1');
   const [unit, setUnit] = useState<Unit>('months');
   const [last, setLast] = useState('');
@@ -291,23 +289,23 @@ function TaskModal({
       open={open} onClose={onClose}
       title={task.name} subtitle={task.area} width={580}
       footer={<>
-        <Btn variant="ghost" onClick={onClose}>{es ? 'Cerrar' : 'Close'}</Btn>
+        <Btn variant="ghost" onClick={onClose}>{'Close'}</Btn>
         {/* Only offered on a task that is actually late. On one that is not yet
             due there is nothing to have called anybody about, and a button that
             silences a card which does not exist would be a trap. */}
         {isLate && !task.calledAt && (
           <Btn variant="ghost" disabled={busy} onClick={called}>
-            {busy ? '…' : (es ? 'Ya llamamos a alguien' : "Somebody's been called")}
+            {busy ? '…' : ("Somebody's been called")}
           </Btn>
         )}
-        <Btn variant="sage" disabled={busy} onClick={completeToday}>{busy ? '…' : (es ? '✓ Hecho hoy' : '✓ Done today')}</Btn>
-        <Btn variant="primary" disabled={busy} onClick={save}>{busy ? '…' : (es ? 'Guardar' : 'Save changes')}</Btn>
+        <Btn variant="sage" disabled={busy} onClick={completeToday}>{busy ? '…' : ('✓ Done today')}</Btn>
+        <Btn variant="primary" disabled={busy} onClick={save}>{busy ? '…' : ('Save changes')}</Btn>
       </>}
     >
       <div style={{ display: 'flex', flexDirection: 'column', gap: 18 }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
-          <Pill tone={meta.tone}>{es ? meta.es : meta.en}</Pill>
-          <Caps size={11} tracking="0.06em">{es ? 'Próxima' : 'Next due'} {fmtDate(nextDue, es)} · {relDue(du, es)}</Caps>
+          <Pill tone={meta.tone}>{meta.en}</Pill>
+          <Caps size={11} tracking="0.06em">{'Next due'} {fmtDate(nextDue)} · {relDue(du)}</Caps>
         </div>
 
         {/* On the THING, not the tab: this modal is one upkeep schedule, so the
@@ -321,19 +319,17 @@ function TaskModal({
             borderRadius: 12, padding: '12px 14px', fontFamily: FONT_SANS, fontSize: 13.5,
             color: '#7A5518', lineHeight: 1.45,
           }}>
-            {wasCalled}. {es
-              ? 'Sigue pendiente hasta que se marque como hecha.'
-              : 'It still counts as outstanding until it is marked done.'}
+            {wasCalled}. {'It still counts as outstanding until it is marked done.'}
           </div>
         )}
-        <Field label={es ? 'Frecuencia' : 'Frequency'} required hint={es ? '¿Cada cuánto vuelve?' : 'How often does it come around?'}>
+        <Field label={'Frequency'} required hint={'How often does it come around?'}>
           <FreqEditor count={count} unit={unit} onCount={setCount} onUnit={setUnit} es={es} />
         </Field>
-        <Field label={es ? 'Última vez completada' : 'Last completed'} hint={es ? 'La próxima se calcula desde aquí.' : 'Next due is calculated from here.'}>
-          <WheelDatePicker value={last} onChange={setLast} lang={es ? 'es' : 'en'} />
+        <Field label={'Last completed'} hint={'Next due is calculated from here.'}>
+          <WheelDatePicker value={last} onChange={setLast} lang={'en'} />
         </Field>
-        <Field label={es ? 'Notas' : 'Notes'} hint={es ? 'Lo que la próxima persona debería saber.' : 'What the next person should know.'}>
-          <TextArea value={notes} onChange={setNotes} placeholder={es ? 'ej. MERV 8, 20×25×1. La caja está en el cuarto de máquinas.' : 'e.g. MERV 8, 20×25×1. Box is in the mechanical room.'} rows={3} />
+        <Field label={'Notes'} hint={'What the next person should know.'}>
+          <TextArea value={notes} onChange={setNotes} placeholder={'e.g. MERV 8, 20×25×1. Box is in the mechanical room.'} rows={3} />
         </Field>
       </div>
     </Modal>
@@ -345,7 +341,7 @@ export function PreventiveTab() {
   const { user } = useAuth();
   const { activePropertyId } = useProperty();
   const { lang } = useLang();
-  const es = lang === 'es';
+  const es = false;
 
   const [tasks, setTasks] = useState<PreventiveTask[]>([]);
   const [loaded, setLoaded] = useState(false);
@@ -388,7 +384,7 @@ export function PreventiveTab() {
         equipmentId: null,
       });
     } catch (err) {
-      flash(es ? 'No se pudo agregar la tarea. Revisa la conexión e inténtalo de nuevo.' : "Couldn't add the task. Check your connection and try again.");
+      flash("Couldn't add the task. Check your connection and try again.");
       throw err;
     }
   };
@@ -405,7 +401,7 @@ export function PreventiveTab() {
     try {
       await updatePreventiveTask(user.uid, activePropertyId, id, patch);
     } catch (err) {
-      flash(es ? 'No se pudieron guardar los cambios. Revisa la conexión e inténtalo de nuevo.' : "Couldn't save the changes. Check your connection and try again.");
+      flash("Couldn't save the changes. Check your connection and try again.");
       throw err;
     }
   };
@@ -421,7 +417,7 @@ export function PreventiveTab() {
       }
       await completePreventiveTask(id, { completedISO: new Date().toISOString(), completedByName: user.displayName });
     } catch (err) {
-      flash(es ? 'No se pudo marcar como hecha. Revisa la conexión e inténtalo de nuevo.' : "Couldn't mark it done. Check your connection and try again.");
+      flash("Couldn't mark it done. Check your connection and try again.");
       throw err;
     }
   };
@@ -436,9 +432,7 @@ export function PreventiveTab() {
         calledBy: user.displayName,
       });
     } catch (err) {
-      flash(es
-        ? 'No se pudo guardar. Revisa la conexión e inténtalo de nuevo.'
-        : "Couldn't save that. Check your connection and try again.");
+      flash("Couldn't save that. Check your connection and try again.");
       throw err;
     }
   };
@@ -450,22 +444,15 @@ export function PreventiveTab() {
   return (
     <div style={{ padding: '28px 48px 130px', background: 'transparent', color: T.ink, fontFamily: FONT_SANS, minHeight: 'calc(100dvh - 130px)' }}>
       <PageHead
-        eyebrow={es ? 'Preventivo · programado' : 'Preventive · scheduled'}
-        lead={overdueCount > 0 ? `${overdueCount} ${es ? 'vencidas' : 'overdue'}` : (es ? 'Todo al día' : 'All on track')}
-        rest={`${tasks.length} ${tasks.length === 1 ? (es ? 'tarea recurrente' : 'recurring task') : (es ? 'tareas recurrentes' : 'recurring tasks')}`}
+        eyebrow={'Preventive · scheduled'}
+        lead={overdueCount > 0 ? `${overdueCount} ${'overdue'}` : ('All on track')}
+        rest={`${tasks.length} ${tasks.length === 1 ? ('recurring task') : ('recurring tasks')}`}
         actions={<>
           <Btn variant="ghost" onClick={() => setRegistryOpen(true)}>
-            {/* Two different screens in this section are called "Equipment":
-                this one — the asset REGISTRY, the HVAC units and pumps a hotel
-                owns — and the storeroom board in the Equipment tab. English
-                distinguishes them by a shared head noun and a differing tail
-                ("Equipment assets" / "Equipment · storeroom"). Spanish said
-                "Activos" and "Equipo · almacén", which share no word at all, so
-                a Spanish reader had no way to see that they are two halves of
-                the same subject. "Activos y equipos" restores the pairing. */}
-            <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}><Wrench size={14} /> {es ? 'Activos y equipos' : 'Equipment assets'}</span>
+            {/* This opens the asset registry, distinct from the storeroom board. */}
+            <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}><Wrench size={14} /> {'Equipment assets'}</span>
           </Btn>
-          <Btn variant="primary" onClick={() => setNewOpen(true)}>＋ {es ? 'Nueva tarea' : 'New task'}</Btn>
+          <Btn variant="primary" onClick={() => setNewOpen(true)}>＋ {'New task'}</Btn>
         </>}
       />
 
@@ -475,9 +462,9 @@ export function PreventiveTab() {
         <BoardLoading es={es} />
       ) : tasks.length === 0 ? (
         <MtEmptyCard
-          title={es ? 'Sin tareas preventivas aún.' : 'No preventive tasks yet.'}
-          body={es ? 'Inspecciones, cambios de filtro, revisiones de extintores, todo lo que vuelve según un calendario.' : 'Inspections, filter swaps, fire-extinguisher checks, anything on a recurring schedule.'}
-          action={<Btn variant="primary" onClick={() => setNewOpen(true)}>＋ {es ? 'Agrega tu primera tarea' : 'Add your first task'}</Btn>}
+          title={'No preventive tasks yet.'}
+          body={'Inspections, filter swaps, fire-extinguisher checks, anything on a recurring schedule.'}
+          action={<Btn variant="primary" onClick={() => setNewOpen(true)}>＋ {'Add your first task'}</Btn>}
         />
       ) : (
         <CenteredBoard>
@@ -486,16 +473,16 @@ export function PreventiveTab() {
             const items = tasks.filter((t) => bandFor(t) === b)
               .sort((a, c) => daysBetween(new Date(), nextDueDate(a)) - daysBetween(new Date(), nextDueDate(c)));
             return (
-              <BoardColumn key={b} color={meta.color} label={es ? meta.es : meta.en} count={items.length}>
+              <BoardColumn key={b} color={meta.color} label={meta.en} count={items.length}>
                 {items.map((t) => {
                   const du = daysBetween(new Date(), nextDueDate(t));
                   return (
                     <BoardCard key={t.id} accent={meta.color} onClick={() => setSelId(t.id)}>
                       <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: 8 }}>
                         <span style={{ fontFamily: FONT_SANS, fontSize: 15, color: T.ink, letterSpacing: '-0.01em', lineHeight: 1.25, fontWeight: 600 }}>{t.name}</span>
-                        <span style={{ fontFamily: FONT_MONO, fontSize: 10.5, fontWeight: 600, color: meta.color, whiteSpace: 'nowrap', flexShrink: 0 }}>{relDue(du, es)}</span>
+                        <span style={{ fontFamily: FONT_MONO, fontSize: 10.5, fontWeight: 600, color: meta.color, whiteSpace: 'nowrap', flexShrink: 0 }}>{relDue(du)}</span>
                       </div>
-                      <span style={{ fontFamily: FONT_SANS, fontSize: 12.5, color: T.ink2, lineHeight: 1.4 }}>{t.area ? `${t.area} · ` : ''}{cadenceLabel(t.frequencyDays, es)}</span>
+                      <span style={{ fontFamily: FONT_SANS, fontSize: 12.5, color: T.ink2, lineHeight: 1.4 }}>{t.area ? `${t.area} · ` : ''}{cadenceLabel(t.frequencyDays)}</span>
                       {/* Still outstanding, but somebody is on it. Said on the
                           card so the board is not silently identical to one
                           where nobody has done anything at all. */}
@@ -505,8 +492,8 @@ export function PreventiveTab() {
                         </span>
                       )}
                       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, marginTop: 1 }}>
-                        <Caps size={10} tracking="0.06em" c={T.ink3}>{es ? 'próx' : 'next'} · {fmtDateShort(nextDueDate(t), es)}</Caps>
-                        <Btn variant={b === 'upcoming' ? 'ghost' : 'sage'} size="sm" onClick={(e) => { e.stopPropagation(); handleCompleteToday(t.id).catch(() => { /* toast shown */ }); }}>✓ {es ? 'Hecho hoy' : 'Done today'}</Btn>
+                        <Caps size={10} tracking="0.06em" c={T.ink3}>{'next'} · {fmtDateShort(nextDueDate(t))}</Caps>
+                        <Btn variant={b === 'upcoming' ? 'ghost' : 'sage'} size="sm" onClick={(e) => { e.stopPropagation(); handleCompleteToday(t.id).catch(() => { /* toast shown */ }); }}>✓ {'Done today'}</Btn>
                       </div>
                     </BoardCard>
                   );

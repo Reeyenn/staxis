@@ -81,73 +81,21 @@ const STRINGS = {
     failGeneric:
       'Something went wrong while connecting to your PMS. Our team has been notified and will reach out.',
   },
-  es: {
-    preparingTitle: 'Preparando tu sistema…',
-    preparingBody: 'Estamos preparando la conexión. Solo toma un momento.',
-    learningTitle: 'Aprendiendo tu {pms}…',
-    learningBody:
-      'Nuestro asistente está leyendo tu sistema: llegadas, salidas, estado de habitaciones y más. Esto suele tomar unos minutos; puedes dejar esta página abierta.',
-    mfaTitle: 'Completando una verificación de seguridad…',
-    mfaBody:
-      'Tu sistema pidió confirmar un paso de seguridad. Puede tomar unos minutos. No necesitas hacer nada.',
-    doneTitleAuto: 'Tu sistema está conectado y activo.',
-    doneTitlePartial: 'El primer mapa de tu sistema está listo. Una revisión rápida antes de activarlo.',
-    doneTitlePark: 'Aprendimos tu sistema. Dando los toques finales.',
-    doneTitleQuarantine: 'Aprendimos tu sistema.',
-    doneBodyAuto: 'Todo listo. Tus datos en vivo ya están fluyendo.',
-    doneBodyPartial:
-      'El robot aprendió algunas de tus fuentes pero no todas. El desglose abajo muestra exactamente qué encontró. Nada está en vivo todavía: nuestro equipo revisa el resultado y lo activa, normalmente en menos de un día. Una vez activo, las fuentes aprendidas fluyen de inmediato, y lo que falte mostrará una nota honesta de “aún aprendiendo” en la app mientras lo reintentamos automáticamente cada día.',
-    doneBodyPark:
-      'Puedes continuar. Terminaremos de conectar los últimos detalles en segundo plano.',
-    doneBodyQuarantine:
-      'Nuestro equipo está revisando un par de fuentes antes de activar todo. Te enviaremos un correo. Puedes continuar.',
-    foundFeeds: 'Aprendimos {n} fuentes de tu {pms}:',
-    foundFeedsNoCount: 'Esto es lo que encontramos en tu {pms}:',
-    numbersHeading: 'Números en vivo que acaba de leer',
-    numbersCaption: 'Directo de tu sistema{when}. Compáralos con tu panel para verificar.',
-    numbersNone: 'Los conteos de habitaciones aparecerán en tu panel en breve.',
-    statOccupancy: 'Ocupación',
-    statArrivals: 'Llegadas hoy',
-    statDepartures: 'Salidas hoy',
-    statGuests: 'Huéspedes en casa',
-    roomsOfTotal: '{occ} de {total} habitaciones',
-    andMore: '+ {n} más',
-    continueBtn: 'Se ve bien, continuar →',
-    continuePlain: 'Continuar →',
-    checkAgainBtn: 'Revisar de nuevo',
-    reenterLoginBtn: 'Volver a ingresar →',
-    reenterError: 'No se pudo regresar. Toca para reintentar.',
-    continueError: 'No se pudo guardar. Toca para reintentar.',
-    slowTitle: 'Esto está tardando más de lo normal',
-    slowBody:
-      'Leer tu sistema puede tomar unos minutos y seguimos trabajando en segundo plano. Esta página se actualizará sola cuando esté lista. Si crees que los datos de inicio de sesión estaban mal, puedes volver a ingresarlos.',
-    pausedTitle: 'En pausa por ahora, continuará esta noche',
-    pausedBody:
-      'Alcanzamos el límite de uso seguro de hoy mientras leíamos tu sistema, así que pausamos. Se reanuda automáticamente durante la noche y termina solo. No necesitas hacer nada. Puedes cerrar esta página y volver más tarde, o revisar de nuevo ahora.',
-    failTitle: 'No pudimos terminar la conexión',
-    failLogin:
-      'No pudimos iniciar sesión en tu sistema. Verifica el usuario y la contraseña que ingresaste.',
-    failLoginUrl:
-      'No pudimos abrir la página de inicio de sesión. La dirección web puede estar mal. Verifica la URL de inicio de sesión.',
-    failStopped: 'La configuración se pausó. Contáctanos y la retomamos.',
-    failGeneric:
-      'Algo salió mal al conectar con tu sistema. Nuestro equipo fue notificado y se comunicará contigo.',
-  },
+
 };
 
 export type MappingStrings = (typeof STRINGS)['en'];
 
 export function mt(lang: Lang): MappingStrings {
-  return STRINGS[lang] ?? STRINGS.en;
+  return STRINGS['en'] ?? STRINGS.en;
 }
 
 /**
  * Curated, customer-friendly milestone checklist for the learning phase.
  * The mapper broadcasts English progress labels on `mapping:{jobId}`; we
- * NEVER render those raw strings (keeps ES clean + guarantees no raw
- * robot-action text leaks). Instead each broadcast label is matched by
- * keyword to one of these milestones, which advances our own bilingual
- * checklist + the progress bar.
+ * NEVER render those raw strings. Instead each broadcast label is matched by
+ * keyword to one of these milestones, which advances our own checklist and
+ * progress bar.
  *
  * Keyword sets are mutually non-overlapping across milestones, so the first
  * match is the correct one regardless of order.
@@ -155,26 +103,25 @@ export function mt(lang: Lang): MappingStrings {
 export interface Milestone {
   key: string;
   en: string;
-  es: string;
   /** lowercase keywords; matched via substring against the lowercased label */
   kw: string[];
 }
 
 export const MILESTONES: Milestone[] = [
-  { key: 'login', en: 'Signing in securely', es: 'Iniciando sesión de forma segura', kw: ['login', 'logging', 'signing', 'url ok', 'starting', 'start'] },
-  { key: 'rooms', en: 'Reading room status', es: 'Leyendo el estado de las habitaciones', kw: ['housekeeping', 'room status', 'room'] },
-  { key: 'arrivals', en: "Finding today's arrivals", es: 'Encontrando las llegadas de hoy', kw: ['arrival'] },
-  { key: 'departures', en: "Finding today's departures", es: 'Encontrando las salidas de hoy', kw: ['departure'] },
-  { key: 'maintenance', en: 'Checking maintenance & work orders', es: 'Revisando mantenimiento y órdenes de trabajo', kw: ['work order', 'maintenance'] },
-  { key: 'revenue', en: 'Reading the daily revenue summary', es: 'Leyendo el resumen de ingresos del día', kw: ['revenue summary', 'daily revenue'] },
-  { key: 'rates', en: 'Finding rates & availability', es: 'Encontrando tarifas y disponibilidad', kw: ['rate', 'inventory', 'availab'] },
-  { key: 'channels', en: 'Reviewing booking channels', es: 'Revisando canales de reserva', kw: ['channel'] },
-  { key: 'guests', en: 'Looking at guest profiles', es: 'Revisando perfiles de huéspedes', kw: ['guest'] },
-  { key: 'forecast', en: 'Reading the occupancy forecast', es: 'Leyendo el pronóstico de ocupación', kw: ['forecast'] },
-  { key: 'groups', en: 'Finding group bookings', es: 'Encontrando reservas de grupo', kw: ['group', 'block'] },
-  { key: 'lostfound', en: 'Finding the lost & found log', es: 'Encontrando el registro de objetos perdidos', kw: ['lost'] },
-  { key: 'activity', en: 'Reviewing the activity log', es: 'Revisando el registro de actividad', kw: ['audit', 'activity'] },
-  { key: 'finalizing', en: 'Saving what it learned', es: 'Guardando lo aprendido', kw: ['recipe saved', 'extraction', 'finishing', 'saving', 'done', 'complete'] },
+  { key: 'login', en: 'Signing in securely',  kw: ['login', 'logging', 'signing', 'url ok', 'starting', 'start'] },
+  { key: 'rooms', en: 'Reading room status',  kw: ['housekeeping', 'room status', 'room'] },
+  { key: 'arrivals', en: "Finding today's arrivals",  kw: ['arrival'] },
+  { key: 'departures', en: "Finding today's departures",  kw: ['departure'] },
+  { key: 'maintenance', en: 'Checking maintenance & work orders',  kw: ['work order', 'maintenance'] },
+  { key: 'revenue', en: 'Reading the daily revenue summary',  kw: ['revenue summary', 'daily revenue'] },
+  { key: 'rates', en: 'Finding rates & availability',  kw: ['rate', 'inventory', 'availab'] },
+  { key: 'channels', en: 'Reviewing booking channels',  kw: ['channel'] },
+  { key: 'guests', en: 'Looking at guest profiles',  kw: ['guest'] },
+  { key: 'forecast', en: 'Reading the occupancy forecast',  kw: ['forecast'] },
+  { key: 'groups', en: 'Finding group bookings',  kw: ['group', 'block'] },
+  { key: 'lostfound', en: 'Finding the lost & found log',  kw: ['lost'] },
+  { key: 'activity', en: 'Reviewing the activity log',  kw: ['audit', 'activity'] },
+  { key: 'finalizing', en: 'Saving what it learned',  kw: ['recipe saved', 'extraction', 'finishing', 'saving', 'done', 'complete'] },
 ];
 
 /** Match a broadcast label to a milestone index, or -1 if unrecognized. */
@@ -187,5 +134,5 @@ export function milestoneIndexForLabel(label: string): number {
 }
 
 export function milestoneLabel(m: Milestone, lang: Lang): string {
-  return lang === 'es' ? m.es : m.en;
+  return m.en;
 }

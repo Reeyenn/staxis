@@ -1,11 +1,10 @@
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, test } from 'node:test';
 
 import {
   isStaleDeploymentChunkError,
-  LEGACY_WORKER_RECOVERY_PARAM,
   reloadOnceWithSessionGuard,
   STALE_CHUNK_RECOVERY_PARAM,
   staleChunkRecoveryKey,
@@ -24,7 +23,10 @@ function section(contents: string, start: string, end: string): string {
 }
 
 const propertyContext = source('src', 'contexts', 'PropertyContext.tsx');
+const capabilityHook = source('src', 'lib', 'capabilities', 'useCan.ts');
 const inventoryPage = source('src', 'app', 'inventory', 'page.tsx');
+const inventoryShell = source('src', 'app', 'inventory', '_components', 'InventoryShell.tsx');
+const financialsPage = source('src', 'app', 'financials', 'page.tsx');
 const appLoading = source('src', 'app', 'loading.tsx');
 const appError = source('src', 'app', 'error.tsx');
 const globalError = source('src', 'app', 'global-error.tsx');
@@ -142,28 +144,161 @@ describe('property and capability readiness', () => {
     assert.match(refresh, /catch \(err\)[\s\S]*?status: 'error'/);
   });
 
-  test('Inventory terminates no-property and capability failures instead of waiting forever', () => {
+  test('ready, delayed, and failed capability reads add zero full-page wait after hotel reach', () => {
+    const main = section(
+      appLayout,
+      '<main className="cx-swap"',
+      '<div className="staxis-feedback-slot">',
+    );
+    assert.match(main, /propertiesError[\s\S]*?<RouteErrorState/);
+    assert.match(main, /sectionOff[\s\S]*?children/);
+    assert.doesNotMatch(main, /capabilityOverridesStatus/);
+    assert.doesNotMatch(appLayout, /Checking hotel access/);
+    assert.equal(
+      (main.match(/RouteLoadingState|setTimeout|setInterval|withPromiseDeadline|\bsleep\b/g) ?? []).length,
+      0,
+      'the authorized-page branch must contain no capability-driven wait mechanism',
+    );
+
+    const capabilityNotice = section(
+      appLayout,
+      "activeProperty && capabilityOverridesStatus === 'error'",
+      '<main className="cx-swap"',
+    );
+    assert.match(capabilityNotice, /role="alert"/);
+    assert.match(capabilityNotice, /Some actions are unavailable/);
+    assert.match(capabilityNotice, /onClick=\{\(\) => void refreshCapabilities\(\)\}/);
+    assert.match(capabilityNotice, /minHeight: 44/);
+  });
+
+  test('ordinary pathname navigation starts no additional capability request', () => {
+    const capabilityEffect = section(
+      propertyContext,
+      '// Load the active hotel\'s capability overrides',
+      'const refreshCapabilities = useCallback(',
+    );
+    assert.equal(
+      (capabilityEffect.match(/fetchOverridesFor\(resolvedPropertyId\)/g) ?? []).length,
+      1,
+      'one viewer/hotel effect run starts exactly one background override request',
+    );
+    const capabilityDependencies = capabilityEffect.slice(capabilityEffect.lastIndexOf('}, ['));
+    assert.match(
+      capabilityDependencies,
+      /resolvedPropertyId, expectedCapabilityViewerKey, activeOnboardingInProgress/,
+    );
+    assert.doesNotMatch(
+      capabilityDependencies,
+      /pathname/,
+      'moving between ordinary authenticated pages must not refetch capability overrides',
+    );
+
+    const refresh = section(
+      propertyContext,
+      'const refreshCapabilities = useCallback(',
+      'const refreshProperty = async',
+    );
+    assert.equal(
+      (refresh.match(/fetchOverridesFor\(propertyId\)/g) ?? []).length,
+      1,
+      'an explicit retry starts exactly one new bounded request',
+    );
+  });
+
+  test('delayed, failed, revoked, and retry states remain fail-closed for restricted actions', () => {
+    assert.match(
+      capabilityHook,
+      /capabilityOverridesStatus === 'ready'[\s\S]*?capabilityOverridesPropertyId === activePropertyId[\s\S]*?capabilityOverridesViewerKey === viewerKey/,
+    );
+    assert.match(
+      capabilityHook,
+      /ready[\s\S]*?standing\.ready[\s\S]*?can\(role \? \{ role \} : null, capability, capabilityOverrides\)/,
+    );
+
+    const capabilityEffect = section(
+      propertyContext,
+      '// Load the active hotel\'s capability overrides',
+      'const refreshCapabilities = useCallback(',
+    );
+    assert.match(
+      capabilityEffect,
+      /withPromiseDeadline\(fetchOverridesFor\(resolvedPropertyId\), \{[\s\S]*?timeoutMs: PROPERTY_CONTEXT_TIMEOUT_MS/,
+    );
+    assert.match(capabilityEffect, /catch \(err\)[\s\S]*?status: 'error'/);
+
+    const refresh = section(
+      propertyContext,
+      'const refreshCapabilities = useCallback(',
+      'const refreshProperty = async',
+    );
+    assert.match(refresh, /status: 'loading'[\s\S]*?withPromiseDeadline\(fetchOverridesFor\(propertyId\)/);
+    assert.match(refresh, /status: 'ready'[\s\S]*?catch \(err\)[\s\S]*?status: 'error'/);
+
+    assert.match(
+      propertyContext,
+      /const exposedProperties = propertiesViewerUid === userUid[\s\S]*?propertiesAuthorizationViewerKey === propertyAuthorizationViewerKey[\s\S]*?\? properties[\s\S]*?: \[\]/,
+      'revoked or replaced authorization must mask retained hotel reach immediately',
+    );
+    assert.match(
+      propertyContext,
+      /const activeProperty = exposedProperties\.find\(p => p\.id === activePropertyId\) \?\? null/,
+      'protected hotel content must derive only from the viewer-stamped reach snapshot',
+    );
+  });
+
+  test('Inventory renders ordinary stock workflows without waiting on capability overrides', () => {
     const loading = inventoryPage.indexOf('if (loading) return <InventoryLoading />;');
     const noProperty = inventoryPage.indexOf('if (!activePropertyId) {', loading);
-    const capabilityFailure = inventoryPage.indexOf("if (capabilityOverridesStatus === 'error')", noProperty);
-    const capabilityWait = inventoryPage.indexOf("if (capabilityOverridesStatus !== 'ready')", capabilityFailure);
-    const content = inventoryPage.indexOf('<InventoryShell key={activePropertyId} />', capabilityWait);
+    const content = inventoryPage.indexOf('<InventoryShell key={activePropertyId} />', noProperty);
     assert.ok(
       loading >= 0
       && noProperty > loading
-      && capabilityFailure > noProperty
-      && capabilityWait > capabilityFailure
-      && content > capabilityWait,
+      && content > noProperty,
     );
     assert.match(
-      inventoryPage.slice(noProperty, capabilityFailure),
+      inventoryPage.slice(noProperty, content),
       /<RouteErrorState[\s\S]*?No hotel is selected[\s\S]*?push\('\/property-selector'\)/,
     );
-    assert.match(
-      inventoryPage.slice(capabilityFailure, capabilityWait),
-      /Inventory access could not be confirmed[\s\S]*?refreshCapabilities\(\)/,
-    );
+    assert.doesNotMatch(inventoryPage, /capabilityOverridesStatus|refreshCapabilities/);
     assert.doesNotMatch(inventoryPage, /loading \|\| !activePropertyId/);
+    assert.match(
+      inventoryShell,
+      /const inventoryViewerContextReady = Boolean\([\s\S]*?activeProperty\?\.id === activePropertyId[\s\S]*?\);/,
+    );
+    assert.match(
+      inventoryShell,
+      /const inventoryContextReady = Boolean\([\s\S]*?inventoryViewerContextReady[\s\S]*?capabilityOverridesPropertyId === activePropertyId/,
+    );
+    assert.match(inventoryShell, /const canManage = inventoryContextReady && can\('manage_inventory_orders'\)/);
+    assert.match(
+      inventoryShell,
+      /inventoryFinancialDataEnabled\(\{[\s\S]*?contextReady: inventoryContextReady/,
+    );
+    assert.match(
+      inventoryShell,
+      /if \(!uid \|\| !activePropertyId \|\| !inventoryViewerContextReady\) return;[\s\S]*?subscribeToInventory/,
+    );
+    assert.doesNotMatch(
+      inventoryShell,
+      /if \(!inventoryDataMatchesViewer \|\| !revealed \|\| !itemsLoaded \|\| !bundleLoaded\)/,
+      'a later money-capability refresh must not hide an already revealed stock board',
+    );
+  });
+
+  test('Financials renders its familiar shell before capability-dependent data', () => {
+    const shellHeader = financialsPage.indexOf('<h1 style');
+    const accessGate = financialsPage.indexOf(
+      '{!authorizationContextReady || !accessContextReady ? (',
+      shellHeader,
+    );
+    const summary = financialsPage.indexOf('{/* Summary tiles */}', accessGate);
+    assert.ok(shellHeader >= 0 && accessGate > shellHeader && summary > accessGate);
+    assert.match(
+      financialsPage.slice(accessGate, summary),
+      /Financial access could not be confirmed[\s\S]*Checking financial access for this hotel/,
+    );
+    assert.match(financialsPage, /enabled: !!activePropertyId && allowed/);
+    assert.match(financialsPage, /const allowed = accessContextReady[\s\S]*authorizationContextReady/);
   });
 });
 
@@ -246,29 +381,6 @@ describe('route loading and error recovery', () => {
     assert.equal(reloads, 0);
   });
 
-  test('reload recovery uses sessionStorage without changing the URL when available', () => {
-    const values = new Map<string, string>();
-    let reloads = 0;
-    let replacements = 0;
-    const options = {
-      key: 'staxis-legacy-worker-recovery',
-      fallbackParam: LEGACY_WORKER_RECOVERY_PARAM,
-      getSessionStorage: () => ({
-        getItem: (key: string) => values.get(key) ?? null,
-        setItem: (key: string, value: string) => { values.set(key, value); },
-      }),
-      location: {
-        href: 'https://getstaxis.com/staff',
-        reload: () => { reloads += 1; },
-        replace: () => { replacements += 1; },
-      },
-    };
-
-    assert.equal(reloadOnceWithSessionGuard(options), true);
-    assert.equal(reloadOnceWithSessionGuard(options), false);
-    assert.equal(reloads, 1);
-    assert.equal(replacements, 0);
-  });
 });
 
 describe('Concourse navigation reliability', () => {
@@ -362,25 +474,15 @@ describe('authenticated shell and property-switch isolation', () => {
     assert.match(propertyContext, /propertiesError: exposedPropertiesError/);
   });
 
-  test('AppLayout omits global auto-translation and retires only legacy root workers', () => {
+  test('AppLayout omits global auto-translation and legacy worker cleanup', () => {
     assert.doesNotMatch(`${rootLayout}\n${appLayout}`, /GlobalAutoTranslate/);
-    assert.match(appLayout, /let legacyServiceWorkerCleanupStarted = false/);
-    const cleanup = section(
+    assert.doesNotMatch(appLayout, /navigator\.serviceWorker|getRegistrations\(|\.unregister\(/);
+    assert.doesNotMatch(appLayout, /window\.caches|hotelops-v1|firebase-messaging-sw/);
+    assert.doesNotMatch(
       appLayout,
-      'navigator.serviceWorker.getRegistrations()',
-      ".catch(() => { /* best effort — old browsers */ });",
+      /staxis-legacy-worker-recovery|LEGACY_WORKER_RECOVERY_PARAM|reloadOnceWithSessionGuard|location\.reload/,
     );
-    const allowlist = cleanup.indexOf("const legacy = path === '/sw.js' || path === '/firebase-messaging-sw.js';");
-    const rejectOtherWorkers = cleanup.indexOf('if (!legacy) return;', allowlist);
-    const unregister = cleanup.indexOf('await reg.unregister()', rejectOtherWorkers);
-    assert.ok(allowlist >= 0 && rejectOtherWorkers > allowlist && unregister > rejectOtherWorkers);
-    assert.equal((cleanup.match(/reg\.unregister\(/g) ?? []).length, 1);
-    assert.doesNotMatch(cleanup, /sw-housekeeper|caches\.keys\(/);
-    assert.match(cleanup, /window\.caches\.delete\('hotelops-v1'\)/);
-    assert.match(
-      appLayout,
-      /staxis-legacy-worker-recovery[\s\S]*?reloadOnceWithSessionGuard\(\{[\s\S]*?fallbackParam: LEGACY_WORKER_RECOVERY_PARAM[\s\S]*?getSessionStorage: \(\) => window\.sessionStorage[\s\S]*?location: window\.location/,
-    );
+    assert.equal(existsSync(join(process.cwd(), 'public', 'sw.js')), false);
     assert.match(
       housekeeperPage,
       /serviceWorker\.register\('\/sw-housekeeper\.js', \{ scope: '\/housekeeper\/' \}\)/,
@@ -495,7 +597,7 @@ describe('authenticated shell and property-switch isolation', () => {
     );
     assert.match(
       dashboardPage,
-      /\{operationalFeedsCurrent\s*\? \(ES \? 'Todo en orden\.' : 'All clear — nothing needs you right now\.'\)/,
+      /\{operationalFeedsCurrent\s*\? \('All clear — nothing needs you right now\.'\)/,
     );
     assert.doesNotMatch(dashboardPage, /const \[rooms, setRooms\]|const \[workOrders, setWorkOrders\]|const \[complaints, setComplaints\]/);
   });

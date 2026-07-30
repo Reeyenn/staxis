@@ -90,84 +90,84 @@ interface IntakeResult {
 // ─── Copy ───────────────────────────────────────────────────────────────────
 
 const S = {
-  title: { en: 'What Staxis knows', es: 'Lo que Staxis sabe' },
+  title: { en: 'What Staxis knows', },
   sub: {
     en: 'Two kinds of knowledge, kept apart on purpose: what Staxis worked out by itself, and what your team has told it.',
-    es: 'Dos tipos de conocimiento, separados a propósito: lo que Staxis dedujo por su cuenta y lo que tu equipo le contó.',
+
   },
 
   // ── The two halves ────────────────────────────────────────────────────────
   // Named so nobody has to be told which is which. "Figured out on its own"
   // is a guess Staxis made and may be wrong; "What you've told it" is a person
   // vouching. Mixing them in one list would erase that difference.
-  halfLearned: { en: 'Figured out on its own', es: 'Lo que dedujo solo' },
-  halfTold: { en: 'What you’ve told it', es: 'Lo que le contaste' },
+  halfLearned: { en: 'Figured out on its own', },
+  halfTold: { en: 'What you’ve told it', },
   learnedSub: {
     en: 'Everything Staxis believes about your hotel, and where it learned it. Tell it if it is wrong.',
-    es: 'Todo lo que Staxis cree sobre tu hotel, y dónde lo aprendió. Dile si está equivocado.',
+
   },
   toldSub: {
     en: 'Contacts, procedures, and documents your team wrote or uploaded. Staxis answers from these.',
-    es: 'Contactos, procedimientos y documentos que tu equipo escribió o subió. Staxis responde con esto.',
+
   },
-  boxEyebrow: { en: 'Tell Staxis about your hotel', es: 'Cuéntale a Staxis sobre tu hotel' },
+  boxEyebrow: { en: 'Tell Staxis about your hotel', },
   boxPlaceholder: {
     en: 'Anything at all: how things run, who to call, what keeps breaking.',
-    es: 'Lo que sea: cómo funciona todo, a quién llamar, qué se rompe siempre.',
+
   },
   boxHint: {
     en: 'Optional. Or drop in a file you already have: a vendor list, a house rules sheet, an SOP.',
-    es: 'Opcional. O sube un archivo que ya tengas: lista de proveedores, reglas de la casa, un procedimiento.',
+
   },
-  addFile: { en: 'Add a file', es: 'Agregar archivo' },
-  removeFile: { en: 'Remove file', es: 'Quitar archivo' },
-  submit: { en: 'Add this', es: 'Agregar esto' },
-  submitting: { en: 'Reading…', es: 'Leyendo…' },
+  addFile: { en: 'Add a file', },
+  removeFile: { en: 'Remove file', },
+  submit: { en: 'Add this', },
+  submitting: { en: 'Reading…', },
   intakeDoneOne: {
     en: '1 fact added below. Check it before Staxis uses it.',
-    es: '1 dato agregado abajo: revísalo antes de que Staxis lo use.',
+
   },
   intakeDoneMany: {
     en: 'facts added below. Check each one before Staxis uses it.',
-    es: 'datos agregados abajo: revisa cada uno antes de que Staxis lo use.',
+
   },
   intakeNothing: {
     en: 'Nothing lasting in that one. Nothing was saved.',
-    es: 'Nada duradero en eso: no se guardó nada.',
+
   },
-  fileTooBig: { en: 'That file is too big. Keep it under 4MB.', es: 'Ese archivo es muy grande: máximo 4MB.' },
+  fileTooBig: { en: 'That file is too big. Keep it under 4MB.', },
   fileWrongType: {
     en: 'Staxis can read PDF, Word, and plain text files.',
-    es: 'Staxis puede leer archivos PDF, Word y de texto.',
+
   },
-  emptyTitle: { en: 'Staxis does not know anything about your hotel yet', es: 'Staxis aún no sabe nada de tu hotel' },
+  emptyTitle: { en: 'Staxis does not know anything about your hotel yet', },
   emptyBody: {
     en: 'That is expected on day one. Tell it something above. One sentence is enough to start. It also learns on its own from what your team logs.',
-    es: 'Es normal el primer día. Cuéntale algo arriba: una frase basta para empezar. También aprende solo de lo que registra tu equipo.',
+
   },
-  confirm: { en: 'Confirm', es: 'Confirmar' },
-  edit: { en: 'Edit', es: 'Editar' },
-  remove: { en: 'Remove', es: 'Quitar' },
-  save: { en: 'Save', es: 'Guardar' },
-  cancel: { en: 'Cancel', es: 'Cancelar' },
+  confirm: { en: 'Confirm', },
+  edit: { en: 'Edit', },
+  remove: { en: 'Remove', },
+  save: { en: 'Save', },
+  cancel: { en: 'Cancel', },
   removeSure: {
     en: 'Remove for good? Staxis will not learn this again on its own.',
-    es: '¿Quitar definitivamente? Staxis no lo volverá a aprender por su cuenta.',
+
   },
-  removeYes: { en: 'Yes, remove', es: 'Sí, quitar' },
-  nothingHere: { en: 'Nothing here yet', es: 'Nada aquí todavía' },
+  removeYes: { en: 'Yes, remove', },
+  nothingHere: { en: 'Nothing here yet', },
   // Scoped to the LEARNED half only. The told half beside it is open to
   // everyone, so this points there rather than dead-ending the reader.
   managerOnly: {
     en: 'What Staxis has figured out on its own is a manager view. Ask your manager to open it. The contacts, procedures, and documents next door are open to you.',
-    es: 'Lo que Staxis dedujo por su cuenta es una vista de gerencia. Pídele a tu gerente que la abra. Los contactos, procedimientos y documentos de al lado sí puedes verlos.',
+
   },
   loadFailed: {
     en: 'Could not load what Staxis knows right now. Do not read this as "it knows nothing".',
-    es: 'No se pudo cargar lo que Staxis sabe. No lo tomes como "no sabe nada".',
+
   },
-  pending: { en: 'waiting for you', es: 'esperando tu revisión' },
-  known: { en: 'confirmed', es: 'confirmados' },
+  pending: { en: 'waiting for you', },
+  known: { en: 'confirmed', },
 
   // ── What the banner says when the server refuses ──────────────────────────
   // The routes' own `error` strings are English and always will be — they are
@@ -175,95 +175,95 @@ const S = {
   // it may only read Spanish. One entry per code the Knows routes can return.
   bannerGeneric: {
     en: 'That did not work. Nothing changed. Try again in a moment.',
-    es: 'No funcionó. Nada cambió: inténtalo de nuevo en un momento.',
+
   },
   errAccountNotFound: {
     en: 'Staxis could not find your account. Sign out and sign back in.',
-    es: 'Staxis no encontró tu cuenta. Cierra sesión y vuelve a entrar.',
+
   },
   errForbidden: {
     en: 'You do not have access to this hotel.',
-    es: 'No tienes acceso a este hotel.',
+
   },
   errInvalidBody: {
     en: 'Staxis could not read that. Nothing changed. Try again.',
-    es: 'Staxis no pudo leer eso. Nada cambió: inténtalo de nuevo.',
+
   },
   errUnknownAction: {
     en: 'Staxis did not understand that. Nothing changed.',
-    es: 'Staxis no entendió eso. Nada cambió.',
+
   },
   errUnknownCategory: {
     en: 'Pick one of the groups in the list.',
-    es: 'Elige uno de los grupos de la lista.',
+
   },
   errContentRequired: {
     en: 'Write something first. A fact cannot be empty.',
-    es: 'Escribe algo primero: un dato no puede quedar vacío.',
+
   },
   errConfirmFailed: {
     en: 'Could not confirm that. Nothing changed. Try again in a moment.',
-    es: 'No se pudo confirmar. Nada cambió: inténtalo de nuevo en un momento.',
+
   },
   errFactGone: {
     en: 'That one is not here anymore. Somebody may have removed it.',
-    es: 'Ese ya no está: puede que alguien lo haya quitado.',
+
   },
   errRemoveFailed: {
     en: 'Could not remove that. Nothing changed. Try again in a moment.',
-    es: 'No se pudo quitar. Nada cambió: inténtalo de nuevo en un momento.',
+
   },
   errSaveFailed: {
     en: 'Could not save that. Nothing changed. Try again in a moment.',
-    es: 'No se guardó. Nada cambió: inténtalo de nuevo en un momento.',
+
   },
   errNothingToRead: {
     en: 'Type something or add a file first.',
-    es: 'Escribe algo o agrega un archivo primero.',
+
   },
   errFileNoText: {
     en: 'There was no text in that file for Staxis to read.',
-    es: 'Ese archivo no tenía texto que Staxis pudiera leer.',
+
   },
   errFileUnreadable: {
     en: 'Staxis could not read that file. Try another copy of it.',
-    es: 'Staxis no pudo leer ese archivo. Prueba con otra copia.',
+
   },
   errFileMalformed: {
     en: 'That file did not come through. Add it again.',
-    es: 'Ese archivo no llegó completo. Agrégalo de nuevo.',
+
   },
   errNothingReadable: {
     en: 'There was nothing readable in that. Nothing was saved.',
-    es: 'No había nada legible en eso: no se guardó nada.',
+
   },
   errAiDisabled: {
     en: 'Reading with AI is turned off right now. Nothing was saved.',
-    es: 'La lectura con IA está desactivada ahora mismo. No se guardó nada.',
+
   },
   errAiUnavailable: {
     en: 'Staxis could not read that just now. Nothing was saved. Try again in a moment.',
-    es: 'Staxis no pudo leerlo ahora mismo. No se guardó nada: inténtalo de nuevo en un momento.',
+
   },
   errBudget: {
     en: 'Your hotel has used up its AI for today. It starts fresh at midnight.',
-    es: 'Tu hotel ya usó toda su IA de hoy. Se reinicia a medianoche.',
+
   },
   errRateLimited: {
     en: 'That is a lot of changes in one hour. Give it a few minutes.',
-    es: 'Son muchos cambios en una hora. Espera unos minutos.',
+
   },
   errOffline: {
     en: 'Staxis could not reach the server. Check your connection and try again.',
-    es: 'Staxis no pudo conectarse. Revisa tu conexión e inténtalo de nuevo.',
+
   },
   readNoteTruncated: {
     en: 'That file is long. Staxis read the first part of it.',
-    es: 'Ese archivo es largo: Staxis leyó solo la primera parte.',
+
   },
   readNoteVision: {
     en: 'That looked like a scan, so Staxis read it with AI. Double-check the wording.',
-    es: 'Parecía un escaneo, así que Staxis lo leyó con IA: revisa bien el texto.',
+
   },
 } as const;
 
@@ -330,14 +330,14 @@ export function knowsBannerText(
 ): string {
   const key = code ?? serverError;
   const entry = key !== undefined ? BANNER_COPY.get(key) : undefined;
-  return S[entry ?? 'bannerGeneric'][lang];
+  return S[entry ?? 'bannerGeneric']['en'];
 }
 
 /** How a file got read, in the reader's language. Empty when there is nothing
  *  worth saying (or the server sent a note this build does not know). */
 export function knowsReadNoteText(code: string | null | undefined, lang: 'en' | 'es'): string {
   const entry = code ? READ_NOTE_COPY.get(code) : undefined;
-  return entry ? S[entry][lang] : '';
+  return entry ? S[entry]['en'] : '';
 }
 
 /**
@@ -482,8 +482,8 @@ function KnowsPropertyView({
   propertyId: string | null;
   scopeKey: string;
 }) {
-  const es = lang === 'es';
-  const L = <K extends keyof typeof S>(k: K) => S[k][es ? 'es' : 'en'];
+  const es = false;
+  const L = <K extends keyof typeof S>(k: K) => S[k]['en'];
 
   const canSee = canReadLearned(user?.role);
 
@@ -807,10 +807,10 @@ function KnowsPropertyView({
           return (
             <div className="kn-grp" key={g.category}>
               <div className="kn-grph">
-                <span className="kn-grpt">{label.title[es ? 'es' : 'en']}</span>
+                <span className="kn-grpt">{label.title['en']}</span>
                 <span className="kn-grpc">{g.items.length}</span>
               </div>
-              <div className="kn-grps">{label.hint[es ? 'es' : 'en']}</div>
+              <div className="kn-grps">{label.hint['en']}</div>
 
               {g.items.length === 0 ? (
                 <div className="kn-rows">
@@ -846,7 +846,7 @@ function KnowsPropertyView({
                                   aria-label={L('edit')}
                                 >
                                   {MEMORY_CATEGORIES.map((c) => (
-                                    <option key={c} value={c}>{CATEGORY_LABELS[c].title[es ? 'es' : 'en']}</option>
+                                    <option key={c} value={c}>{CATEGORY_LABELS[c].title['en']}</option>
                                   ))}
                                 </select>
                               </>

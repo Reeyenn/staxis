@@ -164,7 +164,6 @@ function DashboardWorkspace() {
   const { lang } = useLang();
   const { push, replace } = useReliableNavigation();
   const today = useTodayStr();
-  const ES = lang === 'es';
 
   // Per-hotel section gates (default-ON while the property loads). Each embed
   // below is owned by another section — when that section is off for the hotel
@@ -447,15 +446,15 @@ function DashboardWorkspace() {
     : dirtyRooms;
   const housekeepingSub = roomsFeed.error
     ? (roomsFeed.hasSnapshot
-        ? (ES ? 'la última actualización no se pudo refrescar' : "last update couldn't refresh")
-        : (ES ? 'datos de habitaciones no disponibles' : 'room data unavailable'))
+        ? ("last update couldn't refresh")
+        : ('room data unavailable'))
     : !roomsFeed.hasSnapshot
-      ? (ES ? 'cargando habitaciones actuales…' : 'loading current rooms…')
+      ? ('loading current rooms…')
       : connPending
-        ? (ES ? 'conectando con el PMS…' : 'connecting to your PMS…')
+        ? ('connecting to your PMS…')
         : roomStatusLearning
-          ? (ES ? 'aprendiendo del PMS' : 'learning from your PMS')
-          : (ES ? 'por limpiar' : 'rooms to clean');
+          ? ('learning from your PMS')
+          : ('rooms to clean');
 
   // Tile values. With live feed status the numbers come from the
   // server-derived block (pms_* is deny-all-browser).
@@ -612,12 +611,12 @@ function DashboardWorkspace() {
     const out: { n: number; text: string }[] = [];
     // Each line is filtered by the section that owns it — an off section
     // contributes nothing (and its feed above never subscribed).
-    if (maintenanceEnabled && urgentOrders.length) out.push({ n: urgentOrders.length, text: attentionText('urgentOrders', urgentOrders.length, ES) });
-    if (communicationsEnabled && overdueComplaints > 0) out.push({ n: overdueComplaints, text: attentionText('complaintsOverdue', overdueComplaints, ES) });
-    if (communicationsEnabled && callbacksDueCount > 0) out.push({ n: callbacksDueCount, text: attentionText('callbacksDue', callbacksDueCount, ES) });
-    if (housekeepingEnabled && dirtyRooms > 0) out.push({ n: dirtyRooms, text: attentionText('roomsToClean', dirtyRooms, ES) });
+    if (maintenanceEnabled && urgentOrders.length) out.push({ n: urgentOrders.length, text: attentionText('urgentOrders', urgentOrders.length) });
+    if (communicationsEnabled && overdueComplaints > 0) out.push({ n: overdueComplaints, text: attentionText('complaintsOverdue', overdueComplaints) });
+    if (communicationsEnabled && callbacksDueCount > 0) out.push({ n: callbacksDueCount, text: attentionText('callbacksDue', callbacksDueCount) });
+    if (housekeepingEnabled && dirtyRooms > 0) out.push({ n: dirtyRooms, text: attentionText('roomsToClean', dirtyRooms) });
     return out.slice(0, 5);
-  }, [urgentOrders.length, overdueComplaints, callbacksDueCount, dirtyRooms, ES, maintenanceEnabled, communicationsEnabled, housekeepingEnabled]);
+  }, [urgentOrders.length, overdueComplaints, callbacksDueCount, dirtyRooms, maintenanceEnabled, communicationsEnabled, housekeepingEnabled]);
   const attnTotal = attention.reduce((a, x) => a + x.n, 0);
   const attentionIncomplete = !operationalFeedsCurrent;
   const attentionTone = attention.length
@@ -698,11 +697,11 @@ function DashboardWorkspace() {
   const marginNow = rowNow.revenue > 0 ? Math.round((rowNow.profit / rowNow.revenue) * 100) : 37;
 
   const kpis: { key: TodayMetricKey; label: string; tone: string; sub: string }[] = [
-    { key: 'occ',     label: ES ? 'Ocupación' : 'Occupancy', tone: C.green, sub: ES ? `${soldNow} de ${totalRooms}` : `${soldNow} of ${totalRooms} rooms` },
-    { key: 'revenue', label: ES ? 'Ingresos' : 'Revenue',    tone: C.rust,  sub: `${soldNow} × $${Math.round(rowNow.adr)}` },
-    { key: 'adr',     label: 'ADR',                            tone: C.ink,   sub: ES ? 'tarifa de hoy' : 'rate today' },
-    { key: 'revpar',  label: 'RevPAR',                         tone: C.rust,  sub: ES ? `en las ${totalRooms}` : `across all ${totalRooms}` },
-    { key: 'profit',  label: ES ? 'Ganancia' : 'Profit',       tone: C.green, sub: `${marginNow}% ${ES ? 'margen' : 'margin'}` },
+    { key: 'occ',     label: 'Occupancy', tone: C.green, sub: `${soldNow} of ${totalRooms} rooms` },
+    { key: 'revenue', label: 'Revenue',    tone: C.rust,  sub: `${soldNow} × $${Math.round(rowNow.adr)}` },
+    { key: 'adr',     label: 'ADR',                            tone: C.ink,   sub: 'rate today' },
+    { key: 'revpar',  label: 'RevPAR',                         tone: C.rust,  sub: `across all ${totalRooms}` },
+    { key: 'profit',  label: 'Profit',       tone: C.green, sub: `${marginNow}% ${'margin'}` },
   ];
 
   // ── month-to-date footer (from the daily history) ────────────────────
@@ -715,29 +714,29 @@ function DashboardWorkspace() {
     const dim = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
     return { occ: avg('occ'), revenue: sum('revenue'), profit: sum('profit'), adr: avg('adr'), soldRooms: sum('rooms'), elapsed: cur.length, dim };
   }, [history]);
-  const monthFull = new Date().toLocaleDateString(ES ? 'es-ES' : 'en-US', { month: 'long' });
-  const dateLong = new Date().toLocaleDateString(ES ? 'es-ES' : 'en-US', { weekday: 'long', month: 'long', day: 'numeric' });
+  const monthFull = new Date().toLocaleDateString('en-US', { month: 'long' });
+  const dateLong = new Date().toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric' });
 
   if (authLoading || propLoading) {
-    return <AppLayout><RouteLoadingState title={ES ? 'Cargando Tablero…' : 'Loading Dashboard…'} /></AppLayout>;
+    return <AppLayout><RouteLoadingState title={'Loading Dashboard…'} /></AppLayout>;
   }
   if (!user) {
-    return <AppLayout><RouteLoadingState title={ES ? 'Volviendo al inicio de sesión…' : 'Returning to Sign In…'} /></AppLayout>;
+    return <AppLayout><RouteLoadingState title={'Returning to Sign In…'} /></AppLayout>;
   }
   if (!activePropertyId) {
     return (
       <AppLayout>
         <RouteErrorState
-          title={ES ? 'No hay ningún hotel seleccionado' : 'No hotel is selected'}
-          message={ES ? 'Elige un hotel antes de abrir el Tablero.' : 'Choose a hotel before opening Dashboard.'}
-          retryLabel={ES ? 'Elegir un hotel' : 'Choose a hotel'}
+          title={'No hotel is selected'}
+          message={'Choose a hotel before opening Dashboard.'}
+          retryLabel={'Choose a hotel'}
           onRetry={() => push('/property-selector')}
         />
       </AppLayout>
     );
   }
 
-  const STATUS = ES ? STATUS_ES : STATUS_EN;
+  const STATUS = STATUS_EN;
 
   // ring center: hovered room → its number+status; else the active metric.
   // When there's no real occupancy (and not a demo) → neutral "—". On a real
@@ -746,13 +745,13 @@ function DashboardWorkspace() {
   // leftover "revenue" metric could paint a fabricated "$8.2k" in the center.
   const center = room
     ? (room.num
-      ? { big: room.num, label: ES ? 'HABITACIÓN' : 'ROOM', sub: STATUS[room.status], color: RING[room.status] }
-      : { big: STATUS[room.status], label: ES ? 'ESTADO' : 'STATUS', sub: '', color: RING[room.status] })
+      ? { big: room.num, label: 'ROOM', sub: STATUS[room.status], color: RING[room.status] }
+      : { big: STATUS[room.status], label: 'STATUS', sub: '', color: RING[room.status] })
     : !ringReady
-      ? { big: '—', label: ES ? 'OCUPACIÓN' : 'OCCUPANCY', sub: ES ? 'aprendiendo del PMS' : 'learning from your PMS', color: C.ink3 }
+      ? { big: '—', label: 'OCCUPANCY', sub: 'learning from your PMS', color: C.ink3 }
     : (!showFinancials || metric === 'occ')
-      ? { big: Math.round(live.occ) + '%', label: ES ? 'OCUPACIÓN' : 'OCCUPANCY', sub: hov ? hov.d : (ES ? `${soldNow} de ${totalRooms} habitaciones` : `${soldNow} of ${totalRooms} rooms`), color: C.green }
-      : { big: def.fmt === 'money' ? fmtCompact(live[metric]) : fmtVal(def.fmt, live[metric]), label: def.label.toUpperCase(), sub: hov ? hov.d : (ES ? 'hoy' : 'today'), color: def.color };
+      ? { big: Math.round(live.occ) + '%', label: 'OCCUPANCY', sub: hov ? hov.d : (`${soldNow} of ${totalRooms} rooms`), color: C.green }
+      : { big: def.fmt === 'money' ? fmtCompact(live[metric]) : fmtVal(def.fmt, live[metric]), label: def.label.toUpperCase(), sub: hov ? hov.d : ('today'), color: def.color };
 
   const pill = (on: boolean): React.CSSProperties => ({
     padding: '6px 12px', borderRadius: 999, border: `1px solid ${C.line2}`, cursor: 'pointer',
@@ -812,13 +811,9 @@ function DashboardWorkspace() {
               <span>
                 {countsError
                   ? (countsUnavailable
-                      ? (ES
-                          ? 'No pudimos cargar el resumen de habitaciones de hoy.'
-                          : "We couldn't load today's room summary.")
-                      : (ES
-                          ? 'No se pudo refrescar el resumen de habitaciones de hoy. Se muestran los últimos valores conocidos.'
-                          : "Today's room summary couldn't refresh. Showing last-known values."))
-                  : (ES ? 'Cargando el resumen de habitaciones…' : 'Loading room summary…')}
+                      ? ("We couldn't load today's room summary.")
+                      : ("Today's room summary couldn't refresh. Showing last-known values."))
+                  : ('Loading room summary…')}
               </span>
               {countsError && (
                 <button
@@ -837,7 +832,7 @@ function DashboardWorkspace() {
                     cursor: 'pointer',
                   }}
                 >
-                  {ES ? 'Intentar de nuevo' : 'Try again'}
+                  {'Try again'}
                 </button>
               )}
             </div>
@@ -866,10 +861,8 @@ function DashboardWorkspace() {
             >
               <span>
                 {operationalFeedsFailed
-                  ? (ES
-                      ? 'Algunos detalles operativos en vivo no están disponibles. Los últimos valores conocidos pueden estar incompletos.'
-                      : 'Some live operational details are unavailable. Last-known values may be incomplete.')
-                  : (ES ? 'Cargando detalles operativos en vivo…' : 'Loading live operational details…')}
+                  ? ('Some live operational details are unavailable. Last-known values may be incomplete.')
+                  : ('Loading live operational details…')}
               </span>
               {operationalFeedsFailed && (
                 <button
@@ -888,7 +881,7 @@ function DashboardWorkspace() {
                     cursor: 'pointer',
                   }}
                 >
-                  {ES ? 'Intentar de nuevo' : 'Try again'}
+                  {'Try again'}
                 </button>
               )}
             </div>
@@ -911,7 +904,7 @@ function DashboardWorkspace() {
                   <div style={{ display: 'flex', alignItems: 'flex-end', justifyContent: 'space-between', marginBottom: 14, gap: 12, flexWrap: 'wrap' }}>
                     <div style={{ ...LABEL, marginBottom: 6 }}>{def.label} · {RG.full}</div>
                     <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-                      <button onClick={togglePlay} title={playing ? (ES ? 'Pausar' : 'Pause') : (ES ? 'Reproducir' : 'Play through ' + RG.full)}
+                      <button onClick={togglePlay} title={playing ? ('Pause') : ('Play through ' + RG.full)}
                         style={{ width: 36, height: 36, borderRadius: 18, border: 'none', cursor: 'pointer', flexShrink: 0, background: playing ? C.rust : def.color, color: '#fff', display: 'grid', placeItems: 'center', transition: `background .3s ${SPRING}` }}>
                         {playing
                           ? <svg width="13" height="13" viewBox="0 0 16 16" fill="currentColor"><rect x="3" y="2" width="3.6" height="12" rx="1" /><rect x="9.4" y="2" width="3.6" height="12" rx="1" /></svg>
@@ -933,11 +926,9 @@ function DashboardWorkspace() {
                   height: 236, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
                   textAlign: 'center', gap: 10, border: `1px dashed ${C.line2}`, borderRadius: 16, padding: '24px',
                 }}>
-                  <div style={{ ...LABEL }}>{ES ? 'Aún sin historial' : 'No history yet'}</div>
+                  <div style={{ ...LABEL }}>{'No history yet'}</div>
                   <div style={{ fontFamily: SANS, fontWeight: 500, fontSize: 16, color: C.ink2, maxWidth: 460, lineHeight: 1.5 }}>
-                    {ES
-                      ? 'Tus tendencias de ocupación e ingresos aparecerán aquí a medida que se acumule el historial diario de tu hotel.'
-                      : 'Your occupancy and revenue trends will appear here as your hotel’s daily history builds up.'}
+                    {'Your occupancy and revenue trends will appear here as your hotel’s daily history builds up.'}
                   </div>
                 </div>
               )}
@@ -966,18 +957,18 @@ function DashboardWorkspace() {
               const active = metric === k.key;
               const val = mdef.fmt === 'pct' ? Math.round(live[k.key]) + '%' : fmtMoney(live[k.key]);
               return (
-                <div key={k.key} onClick={() => { setMetric(k.key); setRoom(null); }} title={`${ES ? 'Graficar' : 'Chart'} ${k.label}`}
+                <div key={k.key} onClick={() => { setMetric(k.key); setRoom(null); }} title={`${'Chart'} ${k.label}`}
                   style={{ padding: '20px 22px', borderLeft: i ? `1px solid ${C.line}` : 'none', cursor: 'pointer', background: active ? C.paper2 : 'transparent', boxShadow: active ? `inset 0 3px 0 ${mdef.color}` : 'none', transition: `background .3s ${SPRING}` }}>
                   <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10, minHeight: 14 }}>
                     <span style={LABEL}>{k.label}</span>
-                    {active && <span style={{ display: 'flex', alignItems: 'center', gap: 5, fontFamily: MONO, fontSize: 10, fontWeight: 600, letterSpacing: '.08em', color: C.green }}><span style={{ width: 6, height: 6, borderRadius: 3, background: C.green }} />{ES ? 'EN GRÁFICO' : 'ON CHART'}</span>}
+                    {active && <span style={{ display: 'flex', alignItems: 'center', gap: 5, fontFamily: MONO, fontSize: 10, fontWeight: 600, letterSpacing: '.08em', color: C.green }}><span style={{ width: 6, height: 6, borderRadius: 3, background: C.green }} />{'ON CHART'}</span>}
                   </div>
                   <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between' }}>
                     <span style={{ fontFamily: SANS, fontWeight: 600, fontSize: 'clamp(32px, 3vw, 46px)', lineHeight: .95, letterSpacing: '-0.02em', color: k.tone, fontVariantNumeric: 'tabular-nums' }}>{val}</span>
                     {!scrubbing && (
                       <span style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
                         <Delta v={kpiDelta(k.key)} />
-                        <span style={{ fontSize: 10, color: C.ink4 }}>{ES ? 'vs sem.' : 'vs last wk'}</span>
+                        <span style={{ fontSize: 10, color: C.ink4 }}>{'vs last wk'}</span>
                       </span>
                     )}
                   </div>
@@ -994,7 +985,7 @@ function DashboardWorkspace() {
           {/* right now + needs attention */}
           <section className="stx-now">
             <div>
-              <div style={{ ...LABEL, marginBottom: 18 }}>{ES ? 'Ahora mismo' : 'Right now'}</div>
+              <div style={{ ...LABEL, marginBottom: 18 }}>{'Right now'}</div>
               <div className="stx-ops">
                 {([
                   // feat/cua-partial-promotion — when a tile's source feed
@@ -1002,26 +993,26 @@ function DashboardWorkspace() {
                   // ("learning" = auto-retrying daily; "not in this PMS
                   // feed" = the connection doesn't provide it). A live feed
                   // renders exactly as before, genuine zeros included.
-                  [ES ? 'Huéspedes' : 'Guests', inHouse,
-                    inHouseState === 'connecting' ? (ES ? 'conectando con el PMS…' : 'connecting to your PMS…')
-                      : inHouseState === 'learning' ? (ES ? 'aprendiendo del PMS' : 'learning from your PMS')
-                      : inHouseState === 'unavailable' ? (ES ? 'no provisto por el PMS' : 'not in this PMS feed')
-                      : (ES ? 'en casa' : 'in-house'), C.green, typeof inHouse === 'number' ? inHouseAsOf : null],
-                  [ES ? 'Llegadas' : 'Arrivals', arrivals,
-                    arrivalsState === 'connecting' ? (ES ? 'conectando con el PMS…' : 'connecting to your PMS…')
-                      : arrivalsState === 'learning' ? (ES ? 'aprendiendo del PMS' : 'learning from your PMS')
-                      : arrivalsState === 'unavailable' ? (ES ? 'no provisto por el PMS' : 'not in this PMS feed')
-                      : (ES ? 'esperadas' : 'expected'), C.greenL, typeof arrivals === 'number' ? arrivalsAsOf : null],
-                  [ES ? 'Salidas' : 'Departures', departures,
-                    departuresState === 'connecting' ? (ES ? 'conectando con el PMS…' : 'connecting to your PMS…')
-                      : departuresState === 'learning' ? (ES ? 'aprendiendo del PMS' : 'learning from your PMS')
-                      : departuresState === 'unavailable' ? (ES ? 'no provisto por el PMS' : 'not in this PMS feed')
-                      : (ES ? 'saliendo' : 'checking out'), C.gold, typeof departures === 'number' ? departuresAsOf : null],
+                  ['Guests', inHouse,
+                    inHouseState === 'connecting' ? ('connecting to your PMS…')
+                      : inHouseState === 'learning' ? ('learning from your PMS')
+                      : inHouseState === 'unavailable' ? ('not in this PMS feed')
+                      : ('in-house'), C.green, typeof inHouse === 'number' ? inHouseAsOf : null],
+                  ['Arrivals', arrivals,
+                    arrivalsState === 'connecting' ? ('connecting to your PMS…')
+                      : arrivalsState === 'learning' ? ('learning from your PMS')
+                      : arrivalsState === 'unavailable' ? ('not in this PMS feed')
+                      : ('expected'), C.greenL, typeof arrivals === 'number' ? arrivalsAsOf : null],
+                  ['Departures', departures,
+                    departuresState === 'connecting' ? ('connecting to your PMS…')
+                      : departuresState === 'learning' ? ('learning from your PMS')
+                      : departuresState === 'unavailable' ? ('not in this PMS feed')
+                      : ('checking out'), C.gold, typeof departures === 'number' ? departuresAsOf : null],
                   // Housekeeping tile is owned by the housekeeping section —
                   // dropped entirely when that section is off for the hotel.
-                  ...(housekeepingEnabled ? [[ES ? 'Limpieza' : 'Housekeeping', housekeepingValue,
+                  ...(housekeepingEnabled ? [['Housekeeping', housekeepingValue,
                     housekeepingSub, C.rust, null]] : []),
-                  [ES ? 'Tiempo' : 'Turnover', avgTurnover ?? '—', ES ? 'min / hab.' : 'min / room', C.ink, null],
+                  ['Turnover', avgTurnover ?? '—', 'min / room', C.ink, null],
                 ] as [string, React.ReactNode, string, string, AsOfLabel | null][]).map((o, i) => (
                   <div key={o[0]} style={{ flex: 1, minWidth: 90, paddingLeft: i ? 22 : 0, borderLeft: i ? `1px solid ${C.line}` : 'none' }}>
                     <OpsTile label={o[0]} value={o[1]} sub={o[2]} tone={o[3]} asOf={o[4]} />
@@ -1032,7 +1023,7 @@ function DashboardWorkspace() {
 
             <div style={{ background: attentionBackground, borderRadius: 16, padding: 22 }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14 }}>
-                <span style={{ ...LABEL, color: attentionInk }}>{ES ? 'Necesita atención' : 'Needs attention'}</span>
+                <span style={{ ...LABEL, color: attentionInk }}>{'Needs attention'}</span>
                 <span style={{ background: attentionTone, color: '#fff', borderRadius: 999, minWidth: 24, height: 24, padding: '0 7px', display: 'grid', placeItems: 'center', fontSize: 13, fontWeight: 700 }}>{attentionBadge}</span>
               </div>
               {attention.length ? attention.map((a, i) => (
@@ -1043,17 +1034,17 @@ function DashboardWorkspace() {
               )) : (
                 <div style={{ fontSize: 14, color: attentionInk, paddingTop: 2 }}>
                   {operationalFeedsCurrent
-                    ? (ES ? 'Todo en orden.' : 'All clear — nothing needs you right now.')
+                    ? ('All clear — nothing needs you right now.')
                     : operationalFeedsFailed
-                      ? (ES ? 'No se pudieron comprobar algunas alertas.' : "Some alerts couldn't be checked.")
-                      : (ES ? 'Comprobando las operaciones actuales…' : 'Checking current operations…')}
+                      ? ("Some alerts couldn't be checked.")
+                      : ('Checking current operations…')}
                 </div>
               )}
               {attention.length > 0 && attentionIncomplete && (
                 <div style={{ borderTop: '1px solid rgba(184,92,61,.2)', marginTop: 8, paddingTop: 10, fontSize: 12, lineHeight: 1.4, color: C.rustD }}>
                   {operationalFeedsFailed
-                    ? (ES ? 'No se pudieron refrescar algunas fuentes en vivo.' : "Some live sources couldn't refresh.")
-                    : (ES ? 'Aún se están cargando algunas fuentes en vivo.' : 'Some live sources are still loading.')}
+                    ? ("Some live sources couldn't refresh.")
+                    : ('Some live sources are still loading.')}
                 </div>
               )}
             </div>
@@ -1063,15 +1054,15 @@ function DashboardWorkspace() {
           {showFinancials && mtd && (
             <section className="stx-mtd" style={{ borderTop: `1px solid ${C.line}`, paddingTop: 22 }}>
               <span style={{ fontFamily: SANS, fontWeight: 600, fontSize: 16, letterSpacing: '-0.02em', color: C.ink2, width: 200, flexShrink: 0, textTransform: 'capitalize' }}>
-                {ES ? `${monthFull}, hasta hoy` : `${monthFull}, month to date`}
+                {`${monthFull}, month to date`}
               </span>
               {([
-                [ES ? 'Ocupación media' : 'Avg occupancy', mtd.occ + '%', C.green],
-                [ES ? 'Ingresos' : 'Revenue', fmtCompact(mtd.revenue), C.rust],
-                [ES ? 'Ganancia' : 'Profit', fmtCompact(mtd.profit), C.green],
-                ['ADR ' + (ES ? 'medio' : 'avg'), '$' + mtd.adr, C.ink],
-                [ES ? 'Hab. vendidas' : 'Rooms sold', mtd.soldRooms.toLocaleString(), C.ink],
-                [ES ? 'Días' : 'Days in', `${mtd.elapsed} ${ES ? 'de' : 'of'} ${mtd.dim}`, C.ink2],
+                ['Avg occupancy', mtd.occ + '%', C.green],
+                ['Revenue', fmtCompact(mtd.revenue), C.rust],
+                ['Profit', fmtCompact(mtd.profit), C.green],
+                ['ADR ' + ('avg'), '$' + mtd.adr, C.ink],
+                ['Rooms sold', mtd.soldRooms.toLocaleString(), C.ink],
+                ['Days in', `${mtd.elapsed} ${'of'} ${mtd.dim}`, C.ink2],
               ] as [string, string, string][]).map(m => (
                 <div key={m[0]} style={{ flex: 1, minWidth: 110, paddingLeft: 22, borderLeft: `1px solid ${C.line}` }}>
                   <div style={{ ...LABEL, marginBottom: 6 }}>{m[0]}</div>

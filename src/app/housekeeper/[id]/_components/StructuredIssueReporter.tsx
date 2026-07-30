@@ -346,7 +346,7 @@ export function StructuredIssueReporter(props: Props) {
                   {/* eslint-disable-next-line @next/next/no-img-element */}
                   <img
                     src={photoPreview}
-                    alt={lang === 'es' ? 'Vista previa del problema' : 'Issue preview'}
+                    alt={'Issue preview'}
                     style={{
                       maxWidth: 200,
                       maxHeight: 200,

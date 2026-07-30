@@ -24,10 +24,10 @@ function useNameById(staff: StaffMember[]) {
 }
 
 function useFmtDate(today: string, lang: 'en' | 'es') {
-  const es = lang === 'es';
+  const es = false;
   return (ymd: string) => {
     const d = dayInfo(ymd, today, lang);
-    return es ? `${d.dowFull} ${d.dayNum} ${d.mon}` : `${d.dowFull}, ${d.mon} ${d.dayNum}`;
+    return `${d.dowFull}, ${d.mon} ${d.dayNum}`;
   };
 }
 
@@ -43,7 +43,7 @@ export function TimeOffSection({
   onDecide: (id: string, decision: 'approve' | 'deny', denyReason?: string) => Promise<void>;
   onOpenHistory: () => void;
 }) {
-  const es = lang === 'es';
+  const es = false;
   const [busyId, setBusyId] = useState<string | null>(null);
   const [denyFor, setDenyFor] = useState<string | null>(null);
   const [denyReason, setDenyReason] = useState('');
@@ -59,7 +59,7 @@ export function TimeOffSection({
       setDenyFor(null);
       setDenyReason('');
     } catch (e) {
-      setErrorMsg(e instanceof Error ? e.message : (es ? 'No se pudo actualizar' : 'Update failed'));
+      setErrorMsg(e instanceof Error ? e.message : ('Update failed'));
     } finally {
       setBusyId(null);
     }
@@ -73,26 +73,26 @@ export function TimeOffSection({
         display: 'flex', alignItems: 'center', gap: 10, padding: '11px 16px',
         background: 'rgba(31,35,28,0.03)', borderBottom: `1px solid ${T.rule}`,
       }}>
-        <Caps size={9}>{es ? 'Tiempo libre' : 'Time off'}</Caps>
+        <Caps size={9}>{'Time off'}</Caps>
         <span style={{
           fontFamily: fonts.mono, fontSize: 9.5, fontWeight: 700,
           color: pending.length > 0 ? T.caramelDeep : T.ink3,
           background: pending.length > 0 ? 'rgba(201,150,68,0.16)' : 'rgba(31,35,28,0.04)',
           border: `1px solid ${pending.length > 0 ? 'rgba(140,106,51,0.32)' : T.rule}`,
           padding: '1px 8px', borderRadius: 999,
-        }}>{pending.length} {es ? `pendiente${pending.length === 1 ? '' : 's'}` : 'pending'}</span>
+        }}>{pending.length} {'pending'}</span>
         <span style={{ flex: 1 }}/>
         {decidedCount > 0 && (
-          <Btn variant="ghost" size="sm" onClick={onOpenHistory}>{es ? 'Historial' : 'History'}</Btn>
+          <Btn variant="ghost" size="sm" onClick={onOpenHistory}>{'History'}</Btn>
         )}
       </div>
 
       {pending.length === 0 ? (
         <div style={{ padding: '12px 16px', fontSize: 12.5, color: T.ink3 }}>
-          {es ? 'No hay solicitudes pendientes.' : 'No pending requests.'}
+          {'No pending requests.'}
         </div>
       ) : pending.map(r => {
-        const name = nameById.get(r.staffId) ?? (es ? 'Personal' : 'Staff');
+        const name = nameById.get(r.staffId) ?? ('Staff');
         const isDenying = denyFor === r.id;
         const busy = busyId === r.id;
         return (
@@ -113,10 +113,10 @@ export function TimeOffSection({
               {!isDenying && (
                 <>
                   <Btn variant="ghost" size="sm" onClick={() => { setDenyFor(r.id); setDenyReason(''); }} disabled={busy}>
-                    {es ? 'Rechazar' : 'Deny'}
+                    {'Deny'}
                   </Btn>
                   <Btn variant="sage" size="sm" onClick={() => decide(r, 'approve')} disabled={busy}>
-                    {busy ? '…' : es ? '✓ Aprobar' : '✓ Approve'}
+                    {busy ? '…' : '✓ Approve'}
                   </Btn>
                 </>
               )}
@@ -124,14 +124,14 @@ export function TimeOffSection({
             {isDenying && (
               <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
                 <label className={dialogStyles.visuallyHidden} htmlFor={`deny-reason-${r.id}`}>
-                  {es ? `Motivo para rechazar la solicitud de ${name}` : `Reason for denying ${name}'s request`}
+                  {`Reason for denying ${name}'s request`}
                 </label>
                 <input
                   id={`deny-reason-${r.id}`}
                   autoFocus
                   value={denyReason}
                   onChange={e => setDenyReason(e.target.value)}
-                  placeholder={es ? 'Motivo (opcional)' : 'Reason (optional)'}
+                  placeholder={'Reason (optional)'}
                   style={{
                     flex: 1, minWidth: 140, boxSizing: 'border-box',
                     padding: '8px 12px', borderRadius: 10, border: `1px solid ${T.rule}`,
@@ -139,7 +139,7 @@ export function TimeOffSection({
                   }}
                 />
                 <Btn variant="ghost" size="sm" onClick={() => { setDenyFor(null); setDenyReason(''); }} disabled={busy}>
-                  {es ? 'Cancelar' : 'Cancel'}
+                  {'Cancel'}
                 </Btn>
                 <Btn
                   variant="ghost" size="sm"
@@ -147,7 +147,7 @@ export function TimeOffSection({
                   disabled={busy}
                   style={{ color: T.red, borderColor: 'rgba(184,92,61,0.30)' }}
                 >
-                  {busy ? '…' : es ? 'Confirmar' : 'Confirm deny'}
+                  {busy ? '…' : 'Confirm deny'}
                 </Btn>
               </div>
             )}
@@ -175,7 +175,7 @@ export function TimeOffHistoryModal({
   lang: 'en' | 'es';
   onClose: () => void;
 }) {
-  const es = lang === 'es';
+  const es = false;
   const nameById = useNameById(staff);
   const fmtDate = useFmtDate(today, lang);
   const titleId = useId();
@@ -209,16 +209,16 @@ export function TimeOffHistoryModal({
           padding: '20px 24px 13px', borderBottom: `1px solid ${T.rule}`,
         }}>
           <div>
-            <Caps>{es ? 'Tiempo libre' : 'Time off'}</Caps>
+            <Caps>{'Time off'}</Caps>
             <h2 id={titleId} style={{
               margin: '3px 0 0', fontFamily: fonts.sans, fontSize: 22,
               fontWeight: 600, letterSpacing: '-0.02em', color: T.ink,
-            }}>{es ? 'Historial' : 'History'}</h2>
+            }}>{'History'}</h2>
           </div>
           <button
             type="button"
             onClick={onClose}
-            aria-label={es ? 'Cerrar' : 'Close'}
+            aria-label={'Close'}
             style={{
               background: 'transparent', border: `1px solid ${T.rule}`, borderRadius: '50%',
               width: 30, height: 30, cursor: 'pointer', color: T.ink2, fontSize: 16, flexShrink: 0,
@@ -230,11 +230,11 @@ export function TimeOffHistoryModal({
         <div style={{ overflowY: 'auto' }}>
           {decided.length === 0 && (
             <div style={{ padding: '20px 24px', fontSize: 13, color: T.ink3 }}>
-              {es ? 'Aún no hay decisiones.' : 'No past requests yet.'}
+              {'No past requests yet.'}
             </div>
           )}
           {decided.map(r => {
-            const name = nameById.get(r.staffId) ?? (es ? 'Personal' : 'Staff');
+            const name = nameById.get(r.staffId) ?? ('Staff');
             const approved = r.status === 'approved';
             return (
               <div key={r.id} style={{
@@ -247,7 +247,7 @@ export function TimeOffHistoryModal({
                   <span style={{ display: 'block', fontSize: 11.5, color: T.ink3 }}>
                     {fmtDate(r.requestDate)}
                     {r.reason && <>, “{r.reason}”</>}
-                    {r.status === 'denied' && r.denyReason && <> · {es ? 'motivo' : 'reason'}: “{r.denyReason}”</>}
+                    {r.status === 'denied' && r.denyReason && <> · {'reason'}: “{r.denyReason}”</>}
                   </span>
                 </span>
                 <span style={{ flex: 1 }}/>
@@ -257,7 +257,7 @@ export function TimeOffHistoryModal({
                   background: approved ? 'rgba(92,122,96,0.12)' : 'rgba(184,92,61,0.10)',
                   border: `1px solid ${approved ? 'rgba(92,122,96,0.30)' : 'rgba(184,92,61,0.30)'}`,
                   padding: '1px 7px', borderRadius: 999, flexShrink: 0,
-                }}>{approved ? (es ? 'APROBADO' : 'APPROVED') : (es ? 'RECHAZADO' : 'DENIED')}</span>
+                }}>{approved ? ('APPROVED') : ('DENIED')}</span>
               </div>
             );
           })}

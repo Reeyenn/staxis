@@ -153,103 +153,8 @@ function hpStrings(lang: Lang) {
         'config.updated': 'Updated inventory setup',
       } satisfies Record<InventoryAuditAction, string>,
     },
-    es: {
-      eyebrow: 'Historial',
-      italic: 'Actividad de inventario',
-      event: 'acción',
-      events: 'acciones',
-      noHistory: 'Nada aún. Los conteos, entregas y artículos nuevos aparecerán aquí.',
-      startedCount: 'Conteo iniciado',
-      quickCount: (item: string) => `Conteo rápido · ${item}`,
-      scannedInvoice: 'Factura escaneada',
-      addedDelivery: 'Entrega agregada',
-      recordedLoss: 'Pérdida de existencias registrada',
-      aiMarkedOrdered: 'Asistente IA · marcado como pedido',
-      addedItems: (n: number) => (n === 1 ? 'Artículo nuevo agregado' : `${n} artículos nuevos agregados`),
-      closedMonth: (month: string) => `Cierre de ${month}`,
-      pillCount: 'Conteo',
-      pillQuick: 'Conteo rápido',
-      pillScan: 'Factura',
-      pillDelivery: 'Entrega',
-      pillLoss: 'Pérdida',
-      pillAssistant: 'IA',
-      pillItems: 'Artículos',
-      pillMonthClose: 'Cierre mensual',
-      byAI: 'Staxis IA',
-      team: 'equipo',
-      invoiceNo: (n: string) => `factura #${n}`,
-      item: 'artículo',
-      items: 'artículos',
-      counted: 'contado',
-      received: 'recibido',
-      removed: 'retirado',
-      corrected: 'Corregida',
-      voided: 'Anulada',
-      correctDelivery: 'Corregir entrega',
-      addNewDelivery: 'Agregar nueva entrega',
-      correctionReason: 'Motivo',
-      lossReasons: { missing: 'Faltante', stained: 'Manchado', damaged: 'Dañado', lost: 'Perdido', theft: 'Robo', other: 'Otro' },
-      stockChange: (before: number, after: number) => `Existencias ${before} → ${after}`,
-      cases: (n: number) => `${n} ${n === 1 ? 'caja' : 'cajas'}`,
-      asExpected: 'como se esperaba',
-      monthlyActualFinalized: 'Uso real mensual finalizado',
-      partialPeriod: 'Primer período parcial',
-      noFullBudgetComparison: 'sin comparar con un presupuesto mensual completo',
-      totalOnly: 'Solo total',
-      noCategorySplit: 'sin desglose por categoría',
-      beginningInventory: 'Inventario inicial',
-      openingAdjustment: (amount: string) => `Se agregaron ${amount} de inventario preexistente después de la base. Está incluido en el inventario inicial, no en compras ni uso.`,
-      purchases: 'Compras',
-      sourceLogged: 'entregas registradas',
-      sourceManual: 'total mensual manual',
-      sourceZero: 'cero confirmado',
-      loggedDeliveries: 'Entregas registradas',
-      costsIncomplete: 'costos incompletos',
-      costsMissing: 'faltan costos',
-      endingInventory: 'Inventario final',
-      actualUsed: 'Uso real',
-      closeEquation: 'Inicial + compras − final = uso real',
-      close: 'Ocultar detalle',
-      showDetails: 'Ver detalle',
-      completeHistoryUnavailable: 'No se pudo cargar el historial completo. La actividad reciente aparece abajo.',
-      retryHistory: 'Reintentar historial completo',
-      searchHistory: 'Buscar en el historial',
-      allActivity: 'Toda la actividad',
-      countsActivity: 'Conteos',
-      deliveriesActivity: 'Entregas',
-      catalogActivity: 'Artículos',
-      monthlyActivity: 'Mensual',
-      settingsActivity: 'Configuración',
-      noAuditMatches: 'Ningún registro coincide con estos filtros.',
-      loadOlder: 'Cargar historial anterior',
-      loadingHistory: 'Cargando historial…',
-      requestId: 'ID de solicitud',
-      changed: 'Cambios',
-      totalCost: 'Total',
-      previousTotalCost: 'Total anterior',
-      currentTotalCost: 'Total actual',
-      varianceValue: 'Valor de la diferencia',
-      inventoryValue: 'Valor del inventario',
-      actualUsedValue: 'Uso real',
-      budgetValue: 'Presupuesto',
-      unitCostValue: 'Costo unitario',
-      loadingDelivery: 'Cargando detalles de la entrega…',
-      deliveryUnavailable: 'Los detalles de la entrega no están disponibles.',
-      retryDelivery: 'Reintentar detalles de la entrega',
-      existingItemBaseline: 'Artículo de inventario existente',
-      actionTitles: {
-        'item.created': 'Artículo de inventario agregado', 'item.updated': 'Artículo de inventario actualizado', 'item.archived': 'Artículo de inventario archivado',
-        'count.saved': 'Conteo de inventario guardado', 'delivery.received': 'Entrega recibida', 'order_intent.recorded': 'Artículo marcado como pedido', 'loss.recorded': 'Pérdida de existencias registrada',
-        'reconciliation.recorded': 'Inventario conciliado', 'delivery.corrected': 'Entrega corregida', 'delivery.voided': 'Entrega anulada',
-        'opening_adjustment.recorded': 'Inventario inicial ajustado', 'month.started': 'Seguimiento mensual iniciado', 'month.closed': 'Mes de inventario cerrado',
-        'vendor.created': 'Proveedor agregado', 'vendor.updated': 'Proveedor actualizado', 'vendor.inactivated': 'Proveedor desactivado',
-        'budget.created': 'Presupuesto de inventario agregado', 'budget.updated': 'Presupuesto de inventario actualizado', 'budget.deleted': 'Presupuesto de inventario eliminado',
-        'category.created': 'Categoría de inventario agregada', 'category.updated': 'Categoría de inventario actualizada', 'category.deleted': 'Categoría de inventario eliminada',
-        'budget_section.created': 'Sección de presupuesto agregada', 'budget_section.updated': 'Sección de presupuesto actualizada', 'budget_section.deleted': 'Sección de presupuesto eliminada',
-        'config.updated': 'Configuración de inventario actualizada',
-      } satisfies Record<InventoryAuditAction, string>,
-    },
-  }[lang];
+
+  }['en'];
 }
 
 function auditEventTitle(
@@ -306,7 +211,7 @@ export function HistoryPanel({
       return 'UTC';
     }
   }, [timezone]);
-  const locale = lang === 'es' ? 'es-ES' : 'en-US';
+  const locale = 'en-US';
   const dateFmt = useMemo(
     () => new Intl.DateTimeFormat(locale, { month: 'short', day: 'numeric', year: 'numeric', timeZone: safeTimezone }),
     [locale, safeTimezone],
@@ -741,7 +646,7 @@ function AuditHistoryFeed({
     }
   };
 
-  const locale = lang === 'es' ? 'es-ES' : 'en-US';
+  const locale = 'en-US';
   const dateTime = useMemo(() => new Intl.DateTimeFormat(locale, {
     month: 'short', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit', timeZone: timezone,
   }), [locale, timezone]);

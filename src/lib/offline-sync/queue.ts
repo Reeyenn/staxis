@@ -9,9 +9,9 @@
  *
  * No service worker / Workbox dependency for the queue itself — IndexedDB
  * + the window 'online' event is enough for the housekeeper page (which
- * is a single tab on a phone). The companion service worker (public/sw.js
- * extended) handles cache-of-page-shell only; replay happens in the
- * page itself.
+ * is a single tab on a phone). The companion service worker
+ * (public/sw-housekeeper.js) handles cache-of-page-shell only; replay happens
+ * in the page itself.
  *
  * Public surface:
  *   - enqueueAction(action): persist a queued mutation

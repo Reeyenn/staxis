@@ -18,11 +18,11 @@ import {
   fmtClock, fmtDayLabel, dayKey,
 } from './comms-ui';
 
-const CATS: { key: string; dept: CommsDept; en: string; es: string }[] = [
-  { key: 'general', dept: 'management', en: 'General', es: 'General' },
-  { key: 'front_desk', dept: 'front_desk', en: 'Front Desk', es: 'Recepción' },
-  { key: 'housekeeping', dept: 'housekeeping', en: 'Housekeeping', es: 'Limpieza' },
-  { key: 'maintenance', dept: 'maintenance', en: 'Maintenance', es: 'Mantenimiento' },
+const CATS: { key: string; dept: CommsDept; en: string }[] = [
+  { key: 'general', dept: 'management', en: 'General', },
+  { key: 'front_desk', dept: 'front_desk', en: 'Front Desk', },
+  { key: 'housekeeping', dept: 'housekeeping', en: 'Housekeeping', },
+  { key: 'maintenance', dept: 'maintenance', en: 'Maintenance', },
 ];
 function catDept(category: string | null | undefined): CommsDept {
   switch (category) {
@@ -34,7 +34,7 @@ function catDept(category: string | null | undefined): CommsDept {
 }
 function catLabel(category: string | null | undefined, L: L): string {
   const c = CATS.find((x) => x.key === category);
-  return c ? L(c.en, c.es) : L('General', 'General');
+  return c ? c.en : 'General';
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -69,27 +69,27 @@ export function LogbookMode({ pid, meName, L }: { pid: string; meName: string; L
       <div style={{ maxWidth: 720, margin: '0 auto', padding: '26px 28px 60px' }}>
         <div style={{ display: 'flex', alignItems: 'flex-end', justifyContent: 'space-between', gap: 16 }}>
           <div>
-            <div style={{ marginBottom: 7 }}><MonoLabel>{data ? L(`${entries.length} recaps`, `${entries.length} resúmenes`) : (loading ? L('Loading recaps', 'Cargando resúmenes') : L('Log unavailable', 'Bitácora no disponible'))}</MonoLabel></div>
-            <div style={{ fontFamily: SERIF, fontSize: 34, fontStyle: 'italic', lineHeight: 1, color: T.ink }}>{L('Log book', 'Bitácora')}</div>
+            <div style={{ marginBottom: 7 }}><MonoLabel>{data ? `${entries.length} recaps` : (loading ? 'Loading recaps' : 'Log unavailable')}</MonoLabel></div>
+            <div style={{ fontFamily: SERIF, fontSize: 34, fontStyle: 'italic', lineHeight: 1, color: T.ink }}>{'Log book'}</div>
           </div>
           <button onClick={() => setAdding((v) => !v)} style={{ minHeight: 44, display: 'flex', alignItems: 'center', gap: 7, padding: '9px 14px', borderRadius: 10, cursor: 'pointer', flexShrink: 0, border: `1px solid ${adding ? T.hair : tint(T.forest, .4)}`, background: adding ? T.bg : tint(T.forest, .12), color: adding ? T.dim : deptColorDark(T.forest), fontFamily: SANS, fontSize: 13.5, fontWeight: 600 }}>
-            {adding ? <><X size={15} /> {L('Cancel', 'Cancelar')}</> : <><Plus size={16} /> {L('New entry', 'Nueva entrada')}</>}
+            {adding ? <><X size={15} /> {'Cancel'}</> : <><Plus size={16} /> {'New entry'}</>}
           </button>
         </div>
 
         {adding && <LogComposer pid={pid} L={L} onAdded={() => { setAdding(false); void load(); }} />}
 
         <div style={{ marginTop: 18, display: 'flex', flexDirection: 'column', gap: 8 }}>
-          {loading && !data && <div role="status" style={{ fontFamily: SANS, fontSize: 13.5, color: T.dim, padding: '22px 16px', textAlign: 'center' }}><Loader2 size={16} className="comms-spin" aria-hidden="true" /> {L('Loading recaps…', 'Cargando resúmenes…')}</div>}
-          {loadError && <div role="alert" style={{ fontFamily: SANS, fontSize: 13, lineHeight: 1.45, color: T.terracotta, padding: '12px 14px', border: `1px solid ${tint(T.terracotta, .28)}`, background: tint(T.terracotta, .08), borderRadius: 12, display: 'flex', alignItems: 'center', gap: 10 }}><AlertCircle size={17} aria-hidden="true" /><span style={{ flex: 1 }}>{data ? L('The log book could not refresh. Showing the last results.', 'No se pudo actualizar la bitácora. Se muestran los últimos resultados.') : L('The log book could not load. Check your connection and try again.', 'No se pudo cargar la bitácora. Revisa tu conexión e inténtalo de nuevo.')}</span><button onClick={() => void load()} aria-label={L('Retry loading the log book', 'Reintentar cargar la bitácora')} style={{ minWidth: 44, minHeight: 44, borderRadius: 8, border: `1px solid ${tint(T.terracotta, .3)}`, background: T.bg, color: T.terracotta, cursor: 'pointer' }}><RefreshCw size={15} aria-hidden="true" /></button></div>}
+          {loading && !data && <div role="status" style={{ fontFamily: SANS, fontSize: 13.5, color: T.dim, padding: '22px 16px', textAlign: 'center' }}><Loader2 size={16} className="comms-spin" aria-hidden="true" /> {'Loading recaps…'}</div>}
+          {loadError && <div role="alert" style={{ fontFamily: SANS, fontSize: 13, lineHeight: 1.45, color: T.terracotta, padding: '12px 14px', border: `1px solid ${tint(T.terracotta, .28)}`, background: tint(T.terracotta, .08), borderRadius: 12, display: 'flex', alignItems: 'center', gap: 10 }}><AlertCircle size={17} aria-hidden="true" /><span style={{ flex: 1 }}>{data ? 'The log book could not refresh. Showing the last results.' : 'The log book could not load. Check your connection and try again.'}</span><button onClick={() => void load()} aria-label={'Retry loading the log book'} style={{ minWidth: 44, minHeight: 44, borderRadius: 8, border: `1px solid ${tint(T.terracotta, .3)}`, background: T.bg, color: T.terracotta, cursor: 'pointer' }}><RefreshCw size={15} aria-hidden="true" /></button></div>}
           {loaded && !loadError && entries.length === 0 && !adding && (
             <div style={{ fontFamily: SANS, fontSize: 13.5, color: T.dim, padding: '22px 16px', textAlign: 'center', border: `1px dashed ${T.hair}`, borderRadius: 12 }}>
-              {L('No recaps yet. Post a shift handoff to get started.', 'Sin resúmenes aún. Publica un resumen de turno para empezar.')}
+              {'No recaps yet. Post a shift handoff to get started.'}
             </div>
           )}
           {groupByDay(entries).map((grp) => (
             <React.Fragment key={grp.key}>
-              <div style={{ padding: '12px 2px 4px' }}><MonoLabel>{fmtDayLabel(grp.entries[0].createdAt, L('Today', 'Hoy'), L('Yesterday', 'Ayer'))}</MonoLabel></div>
+              <div style={{ padding: '12px 2px 4px' }}><MonoLabel>{fmtDayLabel(grp.entries[0].createdAt, 'Today', 'Yesterday')}</MonoLabel></div>
               {grp.entries.map((e) => <LogEntryRow key={e.id} e={e} L={L} onOpen={() => setSelectedId(e.id)} />)}
             </React.Fragment>
           ))}
@@ -124,12 +124,12 @@ function LogEntryRow({ e, L, onOpen }: { e: LogEntryDTO; L: L; onOpen: () => voi
       <div style={{ fontFamily: SANS, fontSize: 15, fontWeight: 700, color: T.ink, lineHeight: 1.3 }}>{e.title}</div>
       {e.body && <div style={{ fontFamily: SANS, fontSize: 13, color: T.dim, lineHeight: 1.45, marginTop: 4, overflow: 'hidden', display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical' }}>{e.body}</div>}
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 9 }}>
-        <Avatar name={e.authorName ?? L('Staff', 'Personal')} dept={dept} size={20} />
-        <span style={{ fontFamily: SANS, fontSize: 12.5, fontWeight: 600, color: T.ink }}>{e.authorName ?? L('Staff', 'Personal')}</span>
+        <Avatar name={e.authorName ?? 'Staff'} dept={dept} size={20} />
+        <span style={{ fontFamily: SANS, fontSize: 12.5, fontWeight: 600, color: T.ink }}>{e.authorName ?? 'Staff'}</span>
         <span style={{ flex: 1 }} />
         <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5, color: e.replyCount > 0 ? deptColorDark(T.teal) : T.dim }}>
           <MessageSquare size={13} />
-          <span style={{ fontFamily: SANS, fontSize: 12.5, fontWeight: 600 }}>{e.replyCount === 1 ? L('1 reply', '1 respuesta') : L(`${e.replyCount} replies`, `${e.replyCount} respuestas`)}</span>
+          <span style={{ fontFamily: SANS, fontSize: 12.5, fontWeight: 600 }}>{e.replyCount === 1 ? '1 reply' : `${e.replyCount} replies`}</span>
         </span>
       </div>
     </button>
@@ -153,7 +153,7 @@ function LogComposer({ pid, L, onAdded }: { pid: string; L: L; onAdded: () => vo
     setBusy(true); setError(null);
     try {
       const r = await apiPost('/api/comms/logbook', { pid, title: t, body: body.trim() || undefined, category });
-      if (!r.ok) { setError(L('The recap was not posted. Please try again.', 'No se publicó el resumen. Inténtalo de nuevo.')); return; }
+      if (!r.ok) { setError('The recap was not posted. Please try again.'); return; }
       onAdded();
     } finally { setBusy(false); }
   };
@@ -161,25 +161,25 @@ function LogComposer({ pid, L, onAdded }: { pid: string; L: L; onAdded: () => vo
 
   return (
     <div style={{ marginTop: 16, border: `1px solid ${tint(T.forest, .35)}`, borderRadius: 13, background: T.bg, padding: '14px 16px', boxShadow: '0 8px 28px rgba(31,35,28,.07)' }}>
-      <input ref={inp} value={title} onChange={(e) => setTitle(e.target.value)} placeholder={L('Recap title, e.g. “Night shift handoff”', 'Título, p. ej. “Resumen turno de noche”')}
+      <input ref={inp} value={title} onChange={(e) => setTitle(e.target.value)} placeholder={'Recap title, e.g. “Night shift handoff”'}
         style={{ width: '100%', border: 'none', outline: 'none', background: 'transparent', fontFamily: SANS, fontSize: 16, fontWeight: 700, color: T.ink, padding: '2px 0 8px' }} />
-      <textarea value={body} onChange={(e) => setBody(e.target.value)} placeholder={L('What happened this shift? Anything the next team should know.', '¿Qué pasó en este turno? Lo que el próximo equipo debe saber.')}
+      <textarea value={body} onChange={(e) => setBody(e.target.value)} placeholder={'What happened this shift? Anything the next team should know.'}
         rows={4}
         style={{ width: '100%', border: 'none', outline: 'none', background: 'transparent', resize: 'vertical', fontFamily: SANS, fontSize: 14, color: T.ink, lineHeight: 1.5, padding: '0 0 10px', minHeight: 72 }} />
       <div style={{ display: 'flex', alignItems: 'center', gap: 14, flexWrap: 'wrap', borderTop: `1px solid ${T.hairSoft}`, paddingTop: 12 }}>
         <label style={{ display: 'flex', alignItems: 'center', gap: 7 }}>
-          <MonoLabel style={{ fontSize: 9.5 }}>{L('Area', 'Área')}</MonoLabel>
+          <MonoLabel style={{ fontSize: 9.5 }}>{'Area'}</MonoLabel>
           <span style={{ position: 'relative', display: 'inline-flex', alignItems: 'center' }}>
             <DeptDot dept={curDept} />
             <select value={category} onChange={(e) => setCategory(e.target.value)} style={{ minHeight: 44, appearance: 'none', border: `1px solid ${T.hair}`, borderRadius: 8, background: T.paper, fontFamily: SANS, fontSize: 12.5, fontWeight: 600, color: T.ink, padding: '5px 26px 5px 9px', marginLeft: 7, cursor: 'pointer' }}>
-              {CATS.map((c) => <option key={c.key} value={c.key}>{L(c.en, c.es)}</option>)}
+              {CATS.map((c) => <option key={c.key} value={c.key}>{c.en}</option>)}
             </select>
             <span style={{ position: 'absolute', right: 8, color: T.dim, pointerEvents: 'none', display: 'flex' }}><ChevronDown size={12} /></span>
           </span>
         </label>
         <div style={{ flex: 1 }} />
         <button onClick={submit} disabled={!title.trim() || busy} style={{ minHeight: 44, fontFamily: SANS, fontSize: 13, fontWeight: 600, padding: '8px 16px', borderRadius: 9, border: 'none', cursor: title.trim() ? 'pointer' : 'default', background: title.trim() ? T.ink : T.hairSoft, color: title.trim() ? '#fff' : T.dim, display: 'flex', alignItems: 'center', gap: 6 }}>
-          {busy && <Loader2 size={13} className="comms-spin" />} {L('Post recap', 'Publicar')}
+          {busy && <Loader2 size={13} className="comms-spin" />} {'Post recap'}
         </button>
       </div>
       {error && <div role="alert" style={{ marginTop: 8, color: T.terracotta, fontFamily: SANS, fontSize: 12.5 }}>{error}</div>}
@@ -209,7 +209,7 @@ function LogEntryDetail({ pid, entry, meName, L, onBack, onReplied }: {
     setBusy(true); setSendError(null);
     try {
       const r = await apiPost('/api/comms/logbook/replies', { pid, entryId: entry.id, body: t });
-      if (!r.ok) { setSendError(L('The reply was not sent. Please try again.', 'No se envió la respuesta. Inténtalo de nuevo.')); return; }
+      if (!r.ok) { setSendError('The reply was not sent. Please try again.'); return; }
       setText(''); await load(); onReplied();
     } finally { setBusy(false); }
   };
@@ -218,7 +218,7 @@ function LogEntryDetail({ pid, entry, meName, L, onBack, onReplied }: {
     <div style={{ flex: 1, overflowY: 'auto', background: T.bg }}>
       <div style={{ maxWidth: 720, margin: '0 auto', padding: '22px 28px 60px' }}>
         <button onClick={onBack} style={{ minHeight: 44, display: 'inline-flex', alignItems: 'center', gap: 6, background: 'transparent', border: 'none', cursor: 'pointer', color: T.dim, fontFamily: SANS, fontSize: 13, fontWeight: 600, padding: '4px 0' }}>
-          <ArrowLeft size={15} /> {L('Back to log', 'Volver a la bitácora')}
+          <ArrowLeft size={15} /> {'Back to log'}
         </button>
 
         {/* Recap card */}
@@ -231,25 +231,25 @@ function LogEntryDetail({ pid, entry, meName, L, onBack, onReplied }: {
           </div>
           <div style={{ fontFamily: SANS, fontSize: 20, fontWeight: 700, color: T.ink, lineHeight: 1.25 }}>{entry.title}</div>
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 10 }}>
-            <Avatar name={entry.authorName ?? L('Staff', 'Personal')} dept={dept} size={26} />
-            <span style={{ fontFamily: SANS, fontSize: 13, fontWeight: 600, color: T.ink }}>{entry.authorName ?? L('Staff', 'Personal')}</span>
+            <Avatar name={entry.authorName ?? 'Staff'} dept={dept} size={26} />
+            <span style={{ fontFamily: SANS, fontSize: 13, fontWeight: 600, color: T.ink }}>{entry.authorName ?? 'Staff'}</span>
           </div>
           {entry.body && <div style={{ fontFamily: SANS, fontSize: 14.5, color: T.ink, lineHeight: 1.6, marginTop: 14, whiteSpace: 'pre-wrap' }}>{entry.body}</div>}
         </div>
 
         {/* Replies */}
         <div style={{ marginTop: 22 }}>
-          <MonoLabel>{data ? (replies.length === 1 ? L('1 reply', '1 respuesta') : L(`${replies.length} replies`, `${replies.length} respuestas`)) : (loading ? L('Loading replies', 'Cargando respuestas') : L('Replies unavailable', 'Respuestas no disponibles'))}</MonoLabel>
+          <MonoLabel>{data ? (replies.length === 1 ? '1 reply' : `${replies.length} replies`) : (loading ? 'Loading replies' : 'Replies unavailable')}</MonoLabel>
         </div>
         <div style={{ marginTop: 12, display: 'flex', flexDirection: 'column', gap: 12 }}>
-          {loading && !data && <div role="status" style={{ color: T.dim, fontFamily: SANS, fontSize: 12.5 }}>{L('Loading replies…', 'Cargando respuestas…')}</div>}
-          {loadError && <div role="alert" style={{ color: T.terracotta, fontFamily: SANS, fontSize: 12.5, lineHeight: 1.4, display: 'flex', alignItems: 'center', gap: 8 }}><span style={{ flex: 1 }}>{data ? L('Replies could not refresh. Showing the last results.', 'No se pudieron actualizar las respuestas. Se muestran los últimos resultados.') : L('Replies could not load.', 'No se pudieron cargar las respuestas.')}</span><button onClick={() => void load()} aria-label={L('Retry loading replies', 'Reintentar cargar respuestas')} style={{ minWidth: 44, minHeight: 44, borderRadius: 8, border: `1px solid ${T.hair}`, background: T.bg, color: T.terracotta, cursor: 'pointer' }}><RefreshCw size={14} /></button></div>}
+          {loading && !data && <div role="status" style={{ color: T.dim, fontFamily: SANS, fontSize: 12.5 }}>{'Loading replies…'}</div>}
+          {loadError && <div role="alert" style={{ color: T.terracotta, fontFamily: SANS, fontSize: 12.5, lineHeight: 1.4, display: 'flex', alignItems: 'center', gap: 8 }}><span style={{ flex: 1 }}>{data ? 'Replies could not refresh. Showing the last results.' : 'Replies could not load.'}</span><button onClick={() => void load()} aria-label={'Retry loading replies'} style={{ minWidth: 44, minHeight: 44, borderRadius: 8, border: `1px solid ${T.hair}`, background: T.bg, color: T.terracotta, cursor: 'pointer' }}><RefreshCw size={14} /></button></div>}
           {replies.map((r) => (
             <div key={r.id} style={{ display: 'flex', gap: 10 }}>
-              <Avatar name={r.authorName ?? L('Staff', 'Personal')} dept="management" size={28} />
+              <Avatar name={r.authorName ?? 'Staff'} dept="management" size={28} />
               <div style={{ flex: 1, minWidth: 0 }}>
                 <div style={{ display: 'flex', alignItems: 'baseline', gap: 8 }}>
-                  <span style={{ fontFamily: SANS, fontSize: 13, fontWeight: 700, color: T.ink }}>{r.authorName ?? L('Staff', 'Personal')}</span>
+                  <span style={{ fontFamily: SANS, fontSize: 13, fontWeight: 700, color: T.ink }}>{r.authorName ?? 'Staff'}</span>
                   <MonoLabel style={{ fontSize: 9.5 }}>{fmtClock(r.createdAt)}</MonoLabel>
                 </div>
                 <div style={{ fontFamily: SANS, fontSize: 13.5, color: T.ink, lineHeight: 1.5, marginTop: 2, whiteSpace: 'pre-wrap' }}>{r.body}</div>
@@ -264,9 +264,9 @@ function LogEntryDetail({ pid, entry, meName, L, onBack, onReplied }: {
           <Avatar name={meName} dept="management" size={28} me />
           <textarea value={text} onChange={(e) => setText(e.target.value)}
             onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); void send(); } }}
-            placeholder={L('Reply to this recap…', 'Responder a este resumen…')} rows={1}
+            placeholder={'Reply to this recap…'} rows={1}
             style={{ flex: 1, border: `1px solid ${T.hair}`, borderRadius: 12, background: T.paper, resize: 'vertical', fontFamily: SANS, fontSize: 14, color: T.ink, lineHeight: 1.5, padding: '10px 12px', outline: 'none', minHeight: 44 }} />
-          <button onClick={send} disabled={!text.trim() || busy} title={L('Send reply', 'Enviar respuesta')} style={{ width: 44, height: 44, borderRadius: 10, border: 'none', cursor: text.trim() ? 'pointer' : 'default', background: text.trim() ? T.ink : T.hairSoft, color: text.trim() ? '#fff' : T.dim, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+          <button onClick={send} disabled={!text.trim() || busy} title={'Send reply'} style={{ width: 44, height: 44, borderRadius: 10, border: 'none', cursor: text.trim() ? 'pointer' : 'default', background: text.trim() ? T.ink : T.hairSoft, color: text.trim() ? '#fff' : T.dim, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
             {busy ? <Loader2 size={16} className="comms-spin" /> : <Send size={16} />}
           </button>
         </div>

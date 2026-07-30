@@ -214,10 +214,6 @@ const LazyAddStaffDialog = React.lazy(async () => {
   return { default: dialog.AddStaffDialog };
 });
 
-function copy(lang: HotelTeamLang, en: string, es: string): string {
-  return lang === 'es' ? es : en;
-}
-
 function responseError(body: Envelope<unknown>, fallback: string): string {
   if (typeof body.error === 'string') return body.error;
   if (body.error && typeof body.error === 'object') {
@@ -267,7 +263,7 @@ interface CompanyJobLine {
   membershipId: string;
   scope: 'company' | 'property';
   role: string;
-  label: { en: string; es: string };
+  label: { en: string; es?: string };
   propertyIds: string[];
   propertyNames: string[];
   /** Additional hotels the API deliberately disclosed but did not name. */
@@ -280,48 +276,46 @@ function jobHotelsLabel(job: CompanyJobLine, lang: HotelTeamLang): string {
   const named = job.propertyNames.join(', ');
   if (hidden === 0) return named;
   const others = hidden === 1
-    ? copy(lang, '1 other hotel', '1 hotel más')
-    : copy(lang, `${hidden} other hotels`, `${hidden} hoteles más`);
-  return named ? `${named} ${copy(lang, 'and', 'y')} ${others}` : others;
+    ? '1 other hotel'
+    : `${hidden} other hotels`;
+  return named ? `${named} ${'and'} ${others}` : others;
 }
 
 function roleLabel(role: AppRole, lang: HotelTeamLang): string {
-  const labels: Record<AppRole, [string, string]> = {
-    admin: ['Staxis administrator', 'Administrador de Staxis'],
-    owner: ['Owner', 'Propietario'],
-    general_manager: ['General Manager', 'Gerente general'],
-    front_desk: ['Front Desk', 'Recepción'],
-    housekeeping: ['Housekeeping', 'Limpieza'],
-    maintenance: ['Maintenance', 'Mantenimiento'],
-    staff: ['Staff', 'Personal'],
+  const labels: Record<AppRole, string> = {
+    admin: 'Staxis administrator',
+    owner: 'Owner',
+    general_manager: 'General Manager',
+    front_desk: 'Front Desk',
+    housekeeping: 'Housekeeping',
+    maintenance: 'Maintenance',
+    staff: 'Staff',
   };
-  const pair = labels[role] ?? [role, role];
-  return copy(lang, pair[0], pair[1]);
+  return labels[role] ?? role;
 }
 
 function departmentLabel(value: string, lang: HotelTeamLang): string {
-  const labels: Record<string, [string, string]> = {
-    front_desk: ['Front Desk', 'Recepción'],
-    housekeeping: ['Housekeeping', 'Limpieza'],
-    maintenance: ['Maintenance', 'Mantenimiento'],
-    other: ['Other', 'Otro'],
+  const labels: Record<string, string> = {
+    front_desk: 'Front Desk',
+    housekeeping: 'Housekeeping',
+    maintenance: 'Maintenance',
+    other: 'Other',
   };
-  const pair = labels[value];
-  if (pair) return copy(lang, pair[0], pair[1]);
+  const label = labels[value];
+  if (label) return label;
   return value.replaceAll('_', ' ').replace(/\b\w/g, (letter) => letter.toUpperCase());
 }
 
-const GROUP_LABELS: Record<RosterGroupKey, [string, string]> = {
-  management: ['Management & office', 'Dirección y oficina'],
-  housekeeping: ['Housekeeping', 'Limpieza'],
-  front_desk: ['Front Desk', 'Recepción'],
-  maintenance: ['Maintenance', 'Mantenimiento'],
-  other: ['Other', 'Otro'],
+const GROUP_LABELS: Record<RosterGroupKey, string> = {
+  management: 'Management & office',
+  housekeeping: 'Housekeeping',
+  front_desk: 'Front Desk',
+  maintenance: 'Maintenance',
+  other: 'Other',
 };
 
 function groupLabel(group: RosterGroupKey, lang: HotelTeamLang): string {
-  const pair = GROUP_LABELS[group];
-  return copy(lang, pair[0], pair[1]);
+  return GROUP_LABELS[group];
 }
 
 function initials(name: string): string {
@@ -341,29 +335,29 @@ function formatPhone(value: string): string {
 
 function timeAgo(value: string, lang: HotelTeamLang): string {
   const timestamp = new Date(value).getTime();
-  if (!Number.isFinite(timestamp)) return copy(lang, 'Recently', 'Recientemente');
+  if (!Number.isFinite(timestamp)) return 'Recently';
   const minutes = Math.max(0, Math.floor((Date.now() - timestamp) / 60_000));
-  if (minutes < 1) return copy(lang, 'Just now', 'Ahora mismo');
-  if (minutes < 60) return copy(lang, `${minutes} min ago`, `Hace ${minutes} min`);
+  if (minutes < 1) return 'Just now';
+  if (minutes < 60) return `${minutes} min ago`;
   const hours = Math.floor(minutes / 60);
-  if (hours < 24) return copy(lang, `${hours}h ago`, `Hace ${hours} h`);
+  if (hours < 24) return `${hours}h ago`;
   const days = Math.floor(hours / 24);
-  return copy(lang, `${days}d ago`, `Hace ${days} d`);
+  return `${days}d ago`;
 }
 
 function lastSignInLabel(known: boolean, value: string | null, lang: HotelTeamLang): string {
-  if (!known) return copy(lang, 'Last sign-in unavailable', 'Último acceso no disponible');
-  if (!value) return copy(lang, 'No sign-ins yet', 'Aún no ha iniciado sesión');
+  if (!known) return 'Last sign-in unavailable';
+  if (!value) return 'No sign-ins yet';
   const parsed = new Date(value);
   if (Number.isNaN(parsed.getTime())) {
-    return copy(lang, 'Last sign-in unavailable', 'Último acceso no disponible');
+    return 'Last sign-in unavailable';
   }
-  const formatted = new Intl.DateTimeFormat(lang === 'es' ? 'es-US' : 'en-US', {
+  const formatted = new Intl.DateTimeFormat('en-US', {
     month: 'short',
     day: 'numeric',
     year: 'numeric',
   }).format(parsed);
-  return copy(lang, `Last signed in ${formatted}`, `Último acceso: ${formatted}`);
+  return `Last signed in ${formatted}`;
 }
 
 function actionFlag(
@@ -502,14 +496,14 @@ function DialogLoading({
   const onCloseRef = React.useRef(onClose);
   onCloseRef.current = onClose;
   const titleId = React.useId();
-  const loadingLabel = copy(lang, 'Opening dialog…', 'Abriendo diálogo…');
+  const loadingLabel = 'Opening dialog…';
   const title = variant === 'invite'
-    ? copy(lang, 'Invite hotel staff', 'Invitar personal del hotel')
+    ? 'Invite hotel staff'
     : variant === 'member'
-      ? copy(lang, 'Person details', 'Detalles de la persona')
+      ? 'Person details'
       : variant === 'remove'
-        ? copy(lang, 'Remove hotel access', 'Quitar acceso al hotel')
-        : copy(lang, 'Review join request', 'Revisar solicitud de acceso');
+        ? 'Remove hotel access'
+        : 'Review join request';
   const shellClass = variant === 'invite'
     ? `${styles.dialogWide} ${styles.dialogLoadingInvite}`
     : variant === 'member'
@@ -558,7 +552,7 @@ function DialogLoading({
         type="button"
         className={styles.dialogScrim}
         onClick={onClose}
-        aria-label={copy(lang, 'Close dialog', 'Cerrar diálogo')}
+        aria-label={'Close dialog'}
       />
       <div
         ref={dialogRef}
@@ -579,7 +573,7 @@ function DialogLoading({
             type="button"
             className={styles.iconButton}
             onClick={onClose}
-            aria-label={copy(lang, 'Close', 'Cerrar')}
+            aria-label={'Close'}
           >
             <X size={18} aria-hidden="true" />
           </button>
@@ -642,7 +636,7 @@ function HoursMeter({ hours, max, lang }: { hours: number; max: number; lang: Ho
   return (
     <span
       className={`${styles.hoursMeter}${near ? ` ${styles.hoursMeterNear}` : ''}`}
-      title={copy(lang, `${hours} of ${safeMax} hours this week`, `${hours} de ${safeMax} horas esta semana`)}
+      title={`${hours} of ${safeMax} hours this week`}
     >
       <span className={styles.hoursTrack} aria-hidden="true">
         <span className={styles.hoursFill} style={{ width: `${ratio * 100}%` }} />
@@ -775,7 +769,7 @@ export function HotelTeamPanel({
       if (!response.ok || !body.ok) {
         throw new Error(responseError(
           body,
-          copy(lang, "Couldn't load the people at this hotel.", 'No se pudieron cargar las personas de este hotel.'),
+          "Couldn't load the people at this hotel.",
         ));
       }
       if (controller.signal.aborted || sequence !== teamSequenceRef.current) return;
@@ -791,11 +785,11 @@ export function HotelTeamPanel({
       setTeam([]);
       setTeamError(error instanceof Error && error.message
         ? error.message
-        : copy(lang, "Couldn't load the people at this hotel. Check your connection and try again.", 'No se pudieron cargar las personas. Revisa tu conexión e intenta de nuevo.'));
+        : "Couldn't load the people at this hotel. Check your connection and try again.");
     } finally {
       if (!controller.signal.aborted && sequence === teamSequenceRef.current) setTeamLoading(false);
     }
-  }, [adminPreview, canManageTeam, hotelId, lang, readOnly]);
+  }, [adminPreview, canManageTeam, hotelId, readOnly]);
 
   const loadRequests = React.useCallback(async (clearFirst = false) => {
     requestAbortRef.current?.abort();
@@ -821,7 +815,7 @@ export function HotelTeamPanel({
       if (!response.ok || !body.ok) {
         throw new Error(responseError(
           body,
-          copy(lang, "Couldn't load pending approvals.", 'No se pudieron cargar las aprobaciones pendientes.'),
+          "Couldn't load pending approvals.",
         ));
       }
       if (controller.signal.aborted || sequence !== requestSequenceRef.current) return;
@@ -832,11 +826,11 @@ export function HotelTeamPanel({
       setRequests([]);
       setRequestsError(error instanceof Error && error.message
         ? error.message
-        : copy(lang, "Couldn't load pending approvals. Check your connection and try again.", 'No se pudieron cargar las aprobaciones. Revisa tu conexión e intenta de nuevo.'));
+        : "Couldn't load pending approvals. Check your connection and try again.");
     } finally {
       if (!controller.signal.aborted && sequence === requestSequenceRef.current) setRequestsLoading(false);
     }
-  }, [canManageTeam, hotelId, lang]);
+  }, [canManageTeam, hotelId]);
 
   const loadContacts = React.useCallback(async (signal?: AbortSignal) => {
     if (!hotelId || !canManageTeam) return;
@@ -1091,8 +1085,8 @@ export function HotelTeamPanel({
       <section className={styles.root} aria-labelledby="hotel-team-title">
         <div className={styles.emptyState}>
           <span><ShieldCheck size={22} aria-hidden="true" /></span>
-          <h3 id="hotel-team-title">{copy(lang, 'Choose one hotel', 'Elige un hotel')}</h3>
-          <p>{copy(lang, 'Select the exact hotel before viewing or changing its accounts.', 'Selecciona el hotel exacto antes de ver o cambiar sus cuentas.')}</p>
+          <h3 id="hotel-team-title">{'Choose one hotel'}</h3>
+          <p>{'Select the exact hotel before viewing or changing its accounts.'}</p>
         </div>
       </section>
     );
@@ -1105,8 +1099,8 @@ export function HotelTeamPanel({
           <div className={styles.permissionState}>
             <span><KeyRound size={20} aria-hidden="true" /></span>
             <div>
-              <h3 id="hotel-team-title">{copy(lang, 'Hotel account settings are private', 'La configuración de cuentas del hotel es privada')}</h3>
-              <p>{copy(lang, 'Only an explicitly authorized hotel manager can view or change this private roster.', 'Solo un gerente de hotel autorizado explícitamente puede ver o cambiar este registro privado.')}</p>
+              <h3 id="hotel-team-title">{'Hotel account settings are private'}</h3>
+              <p>{'Only an explicitly authorized hotel manager can view or change this private roster.'}</p>
             </div>
           </div>
         </section>
@@ -1174,11 +1168,11 @@ export function HotelTeamPanel({
       <section className={styles.subsection} aria-labelledby="team-members-title">
         <div className={styles.subheading}>
           <div className={styles.subheadingCopy}>
-            <span>{copy(lang, 'Hotel roster', 'Registro del hotel')}</span>
+            <span>{'Hotel roster'}</span>
             <div className={styles.subheadingTitleRow}>
-              <h2 id="team-members-title">{copy(lang, 'Everyone at this hotel', 'Todos en este hotel')}</h2>
+              <h2 id="team-members-title">{'Everyone at this hotel'}</h2>
               {!teamLoading && !teamError ? (
-                <strong aria-label={copy(lang, `${peopleCount} people at this hotel`, `${peopleCount} personas en este hotel`)}>
+                <strong aria-label={`${peopleCount} people at this hotel`}>
                   {peopleCount}
                 </strong>
               ) : null}
@@ -1191,59 +1185,55 @@ export function HotelTeamPanel({
             disabled={locked}
             aria-haspopup="dialog"
             title={locked
-              ? copy(lang, 'Unavailable in read-only preview', 'No disponible en la vista de solo lectura')
+              ? 'Unavailable in read-only preview'
               : undefined}
           >
             <UserPlus size={16} aria-hidden="true" />
-            {copy(lang, 'Invite staff', 'Invitar personal')}
+            {'Invite staff'}
           </button>
         </div>
 
         <div className={styles.kpiStrip}>
           <div className={styles.kpiCard}>
-            <span className={styles.kpiLabel}>{copy(lang, 'Roster', 'Registro')}</span>
+            <span className={styles.kpiLabel}>{'Roster'}</span>
             <strong>{counts.roster}</strong>
-            <small>{copy(lang, 'people on the books', 'personas en la nómina')}</small>
+            <small>{'people on the books'}</small>
           </div>
           <div className={styles.kpiCard}>
-            <span className={styles.kpiLabel}>{copy(lang, 'On shift', 'En turno')}</span>
+            <span className={styles.kpiLabel}>{'On shift'}</span>
             <strong>{counts.onShift}</strong>
-            <small>{copy(lang, 'working right now', 'trabajando ahora')}</small>
+            <small>{'working right now'}</small>
           </div>
           <div className={`${styles.kpiCard}${counts.nearOvertime > 0 ? ` ${styles.kpiCardAlert}` : ''}`}>
-            <span className={styles.kpiLabel}>{copy(lang, 'Near overtime', 'Cerca de horas extra')}</span>
+            <span className={styles.kpiLabel}>{'Near overtime'}</span>
             <strong>{counts.nearOvertime}</strong>
-            <small>{copy(lang, 'within 4h of their weekly cap', 'a menos de 4 h de su límite semanal')}</small>
+            <small>{'within 4h of their weekly cap'}</small>
           </div>
         </div>
 
         {rosterUnavailable ? (
           <div className={styles.warningNotice} role="alert">
             <AlertTriangle size={17} aria-hidden="true" />
-            <span>{copy(
-              lang,
-              'The schedule roster is temporarily unavailable, so some people may be missing. It will reconnect automatically.',
-              'El registro de horarios no está disponible temporalmente, por lo que pueden faltar personas. Se volverá a conectar automáticamente.',
-            )}</span>
+            <span>{'The schedule roster is temporarily unavailable, so some people may be missing. It will reconnect automatically.'}</span>
           </div>
         ) : null}
 
         {requestsLoading || requestsError || requests.length > 0 ? (
-          <div className={styles.teamList} role="list" aria-label={copy(lang, 'Waiting to approve', 'Esperando aprobación')}>
+          <div className={styles.teamList} role="list" aria-label={'Waiting to approve'}>
             {requestsLoading ? (
               <div className={`${styles.approvalRow} ${styles.approvalLoadingRow}`} role="listitem">
                 <span className={styles.spinner} aria-hidden="true" />
-                <span role="status">{copy(lang, 'Checking pending approvals…', 'Buscando aprobaciones pendientes…')}</span>
+                <span role="status">{'Checking pending approvals…'}</span>
               </div>
             ) : requestsError ? (
               <div className={`${styles.approvalRow} ${styles.approvalErrorRow}`} role="listitem">
                 <AlertCircle size={18} aria-hidden="true" />
                 <div className={styles.approvalErrorCopy} role="alert">
-                  <strong>{copy(lang, 'Pending approvals did not load', 'Las aprobaciones pendientes no se cargaron')}</strong>
+                  <strong>{'Pending approvals did not load'}</strong>
                   <span>{requestsError}</span>
                 </div>
                 <button type="button" onClick={() => void loadRequests()}>
-                  <RefreshCw size={15} aria-hidden="true" />{copy(lang, 'Retry', 'Reintentar')}
+                  <RefreshCw size={15} aria-hidden="true" />{'Retry'}
                 </button>
               </div>
             ) : requests.map((request) => (
@@ -1252,28 +1242,28 @@ export function HotelTeamPanel({
                 <div className={styles.rowBody}>
                   <strong>{request.name}</strong>
                   <span>
-                    {departmentLabel(request.department, lang)} · {request.language === 'es' ? 'Español' : 'English'} · {timeAgo(request.created_at, lang)}
+                    {departmentLabel(request.department, lang)} · {'English'} · {timeAgo(request.created_at, lang)}
                   </span>
                 </div>
-                <span className={styles.pendingBadge}>{copy(lang, 'Pending approval', 'Aprobación pendiente')}</span>
+                <span className={styles.pendingBadge}>{'Pending approval'}</span>
                 <div className={styles.approvalActions}>
                   <button
                     type="button"
                     className={styles.approveButton}
                     onClick={() => setDecision({ request, decision: 'approve' })}
                     disabled={locked}
-                    aria-label={copy(lang, `Approve ${request.name}`, `Aprobar a ${request.name}`)}
+                    aria-label={`Approve ${request.name}`}
                   >
-                    <UserCheck size={15} aria-hidden="true" />{copy(lang, 'Approve', 'Aprobar')}
+                    <UserCheck size={15} aria-hidden="true" />{'Approve'}
                   </button>
                   <button
                     type="button"
                     className={styles.denyButton}
                     onClick={() => setDecision({ request, decision: 'deny' })}
                     disabled={locked}
-                    aria-label={copy(lang, `Deny ${request.name}`, `Rechazar a ${request.name}`)}
+                    aria-label={`Deny ${request.name}`}
                   >
-                    {copy(lang, 'Deny', 'Rechazar')}
+                    {'Deny'}
                   </button>
                 </div>
               </div>
@@ -1282,26 +1272,22 @@ export function HotelTeamPanel({
         ) : null}
 
         {teamLoading ? (
-          <div className={styles.skeletonList} role="status" aria-label={copy(lang, 'Loading the hotel roster', 'Cargando el registro del hotel')}>
+          <div className={styles.skeletonList} role="status" aria-label={'Loading the hotel roster'}>
             {[0, 1, 2].map((item) => <span key={item} />)}
           </div>
         ) : teamError ? (
           <div className={styles.errorState} role="alert">
             <AlertCircle size={18} aria-hidden="true" />
-            <div><strong>{copy(lang, 'The hotel roster did not load', 'El registro del hotel no se cargó')}</strong><span>{teamError}</span></div>
+            <div><strong>{'The hotel roster did not load'}</strong><span>{teamError}</span></div>
             <button type="button" onClick={() => void loadTeam()}>
-              <RefreshCw size={15} aria-hidden="true" />{copy(lang, 'Retry', 'Reintentar')}
+              <RefreshCw size={15} aria-hidden="true" />{'Retry'}
             </button>
           </div>
         ) : peopleCount === 0 ? (
           <div className={styles.emptyState}>
             <span><Users size={22} aria-hidden="true" /></span>
-            <h3>{copy(lang, 'Nobody here yet', 'Aún no hay nadie')}</h3>
-            <p>{copy(
-              lang,
-              'Add someone to the schedule, or invite them to create a Staxis login.',
-              'Agrega a alguien al horario o invítalo a crear un acceso de Staxis.',
-            )}</p>
+            <h3>{'Nobody here yet'}</h3>
+            <p>{'Add someone to the schedule, or invite them to create a Staxis login.'}</p>
             {!locked ? (
               <div className={styles.emptyStateActions}>
                 {/* Both halves of the sentence above need a button behind them.
@@ -1315,11 +1301,11 @@ export function HotelTeamPanel({
                     aria-haspopup="dialog"
                   >
                     <UserPlus size={16} aria-hidden="true" />
-                    {copy(lang, 'Add to the schedule', 'Agregar al horario')}
+                    {'Add to the schedule'}
                   </button>
                 ) : null}
                 <button type="button" className={styles.secondaryButton} onClick={() => onInviteDialogOpenChange(true)}>
-                  <UserPlus size={16} aria-hidden="true" />{copy(lang, 'Invite staff', 'Invitar personal')}
+                  <UserPlus size={16} aria-hidden="true" />{'Invite staff'}
                 </button>
               </div>
             ) : null}
@@ -1335,7 +1321,7 @@ export function HotelTeamPanel({
                 </div>
                 {group.people.length === 0 ? (
                   <p className={styles.departmentEmpty}>
-                    {copy(lang, 'Nobody in this department yet.', 'Aún no hay nadie en este departamento.')}
+                    {'Nobody in this department yet.'}
                   </p>
                 ) : (
                 <div className={styles.personList} role="list">
@@ -1369,11 +1355,7 @@ export function HotelTeamPanel({
                     aria-haspopup="dialog"
                   >
                     <UserPlus size={15} aria-hidden="true" />
-                    {copy(
-                      lang,
-                      `Add to ${groupLabel(group.key, 'en')}`,
-                      `Agregar a ${groupLabel(group.key, 'es')}`,
-                    )}
+                    {`Add to ${groupLabel(group.key, 'en')}`}
                   </button>
                 ) : null}
               </section>
@@ -1534,20 +1516,20 @@ function PersonRow({
 
   const identityLine = [
     account ? `@${account.username}` : null,
-    account ? roleLabel(account.role, lang) : copy(lang, 'Schedule only, no login', 'Solo horario, sin acceso'),
+    account ? roleLabel(account.role, lang) : 'Schedule only, no login',
   ].filter(Boolean).join(' · ');
 
   const contactLine = staff
     ? (contactsUnavailable
-        ? copy(lang, 'Phone unavailable', 'Teléfono no disponible')
+        ? 'Phone unavailable'
         : !contactsReady
-          ? copy(lang, 'Loading…', 'Cargando…')
+          ? 'Loading…'
           : phone
             ? formatPhone(phone)
-            : copy(lang, 'No phone', 'Sin teléfono'))
+            : 'No phone')
     : null;
   const emailLine = account
-    ? account.email || copy(lang, 'Email unavailable', 'Correo no disponible')
+    ? account.email || 'Email unavailable'
     : null;
 
   return (
@@ -1564,10 +1546,10 @@ function PersonRow({
       <div className={styles.rowBody}>
         <strong>
           {person.name}
-          {self ? <small>{copy(lang, 'You', 'Tú')}</small> : null}
+          {self ? <small>{'You'}</small> : null}
           {staff?.isSenior ? (
-            <small className={styles.seniorTag} title={copy(lang, 'Senior', 'Sénior')}>
-              {copy(lang, 'SENIOR', 'SÉNIOR')}
+            <small className={styles.seniorTag} title={'Senior'}>
+              {'SENIOR'}
             </small>
           ) : null}
         </strong>
@@ -1576,9 +1558,9 @@ function PersonRow({
           <span className={styles.companyJobLines}>
             {jobLines.map((job) => (
               <em key={job.membershipId}>
-                {`${lang === 'es' ? job.label.es : job.label.en}, ${
+                {`${job.label.en}, ${
                   job.scope === 'company'
-                    ? copy(lang, 'every hotel', 'todos los hoteles')
+                    ? 'every hotel'
                     : jobHotelsLabel(job, lang)
                 }`}
               </em>
@@ -1595,23 +1577,15 @@ function PersonRow({
         {lifecycleIsPending ? (
           <em className={styles.pendingLifecycleMeta}>
             {lifecyclePollingPaused
-              ? copy(
-                  lang,
-                  'Verification paused. Reload to check the final status.',
-                  'La verificación está en pausa. Recarga para comprobar el estado final.',
-                )
-              : copy(lang, 'Verifying the account status…', 'Verificando el estado de la cuenta…')}
+              ? 'Verification paused. Reload to check the final status.'
+              : 'Verifying the account status…'}
           </em>
         ) : null}
         {account?.ownerProtected ? (
-          <em>{copy(
-            lang,
-            'Organization owner access is protected',
-            'El acceso de propietario de la organización está protegido',
-          )}</em>
+          <em>{'Organization owner access is protected'}</em>
         ) : null}
         {availableActions?.roleIsSharedAcrossHotels ? (
-          <em>{copy(lang, 'Role shared across multiple hotels', 'Rol compartido entre varios hoteles')}</em>
+          <em>{'Role shared across multiple hotels'}</em>
         ) : null}
       </div>
 
@@ -1634,17 +1608,17 @@ function PersonRow({
             role={lifecycleIsPending ? 'status' : undefined}
           >
             {lifecycleIsPending
-              ? copy(lang, 'Status change pending', 'Cambio de estado pendiente')
+              ? 'Status change pending'
               : account.active
-                ? copy(lang, 'Login active', 'Acceso activo')
-                : copy(lang, 'Login disabled', 'Acceso desactivado')}
+                ? 'Login active'
+                : 'Login disabled'}
           </span>
         ) : (
-          <span className={styles.linkedBadge}>{copy(lang, 'No login', 'Sin acceso')}</span>
+          <span className={styles.linkedBadge}>{'No login'}</span>
         )}
         {staff?.isActive === false ? (
           <span className={`${styles.accountStatusBadge} ${styles.accountStatusDisabled}`}>
-            {copy(lang, 'Off the roster', 'Fuera del registro')}
+            {'Off the roster'}
           </span>
         ) : null}
       </div>
@@ -1658,11 +1632,11 @@ function PersonRow({
               onClick={onOpen}
               disabled={lifecycleIsPending}
               aria-label={editable
-                ? copy(lang, `Edit ${person.name}`, `Editar a ${person.name}`)
-                : copy(lang, `View ${person.name}`, `Ver a ${person.name}`)}
+                ? `Edit ${person.name}`
+                : `View ${person.name}`}
             >
               <Pencil size={15} aria-hidden="true" />
-              <span>{editable ? copy(lang, 'Edit', 'Editar') : copy(lang, 'View', 'Ver')}</span>
+              <span>{editable ? 'Edit' : 'View'}</span>
             </button>
           ) : null}
           {account && availableActions?.canRemove ? (
@@ -1671,10 +1645,10 @@ function PersonRow({
               className={styles.removeButton}
               onClick={() => onRemoveAccess(account)}
               disabled={lifecycleIsPending}
-              aria-label={copy(lang, `Remove ${person.name} from this hotel`, `Quitar a ${person.name} de este hotel`)}
+              aria-label={`Remove ${person.name} from this hotel`}
             >
               <Trash2 size={15} aria-hidden="true" />
-              <span className={styles.visuallyHidden}>{copy(lang, 'Remove', 'Quitar')}</span>
+              <span className={styles.visuallyHidden}>{'Remove'}</span>
             </button>
           ) : null}
         </div>

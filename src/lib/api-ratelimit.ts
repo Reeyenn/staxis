@@ -208,7 +208,6 @@ export type RateLimitEndpoint =
   // hashToRateLimitKey pseudo-UUID. api_limits.property_id has an FK to
   // properties(id) (migration 0142), so a pseudo-UUID FK-violates → the RPC
   // errors → billing endpoints fail CLOSED. RAW pid avoids that. Cached.
-  | 'comms-translate'        // per-message + UI-string auto-translate (cache-miss only)
   | 'comms-assistant'        // @Staxis in-chat assistant
   | 'comms-detect-action'    // message → work-order/complaint detection
   | 'comms-polish'           // AI-polished announcements
@@ -536,8 +535,6 @@ const HOURLY_CAPS: Record<RateLimitEndpoint, number> = {
   'housekeeper-report-found-item': 200,
   'housekeeper-found-item-photo-presign': 200,
   // ── Communications ───────────────────────────────────────────────────
-  // Translation is cache-first: only cache MISSES hit the model + counter.
-  'comms-translate':           1500,
   'comms-assistant':             80,
   'comms-detect-action':        400,
   'comms-polish':                80,
@@ -778,8 +775,7 @@ const BILLING_IMPACTING_ENDPOINTS: ReadonlySet<RateLimitEndpoint> = new Set<Rate
   // Communications AI endpoints — each call costs Claude/OpenAI credit.
   // Keyed on the RAW property UUID (real properties.id), so failing closed
   // is never triggered by an FK violation. Clients degrade gracefully on 429
-  // (translate → original text; assistant → "try again").
-  'comms-translate',
+  // (assistant → "try again").
   'comms-assistant',
   'comms-detect-action',
   'comms-polish',

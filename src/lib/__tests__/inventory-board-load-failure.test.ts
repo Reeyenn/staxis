@@ -44,6 +44,14 @@ test('the board bundle has a firm terminal deadline and no cosmetic reveal fails
   assert.doesNotMatch(shell, /setTimeout\(\(\) => setRevealed\(true\), 3500\)/);
   assert.match(
     shell,
+    /const dataReady = inventoryDataMatchesViewer && itemsLoaded && bundleLoaded;[\s\S]*?if \(dataReady\) setRevealed\(true\)/,
+  );
+  assert.match(
+    shell,
+    /if \(!inventoryDataMatchesViewer \|\| !revealed\)/,
+  );
+  assert.doesNotMatch(
+    shell,
     /if \(!inventoryDataMatchesViewer \|\| !revealed \|\| !itemsLoaded \|\| !bundleLoaded\)/,
   );
 });

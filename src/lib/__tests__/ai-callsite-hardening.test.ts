@@ -12,7 +12,9 @@ test('scoped provider attempts forward the runtime signal and reject truncation'
     // Three Claude paths + Whisper (the unread-summary path went with "Catch
     // up" on 2026-07-27).
     ['src/lib/comms/assistant.ts', 4, 3],
-    ['src/lib/comms/translate.ts', 2, 2],
+    // Built-in app-chrome translation was removed with the language selector;
+    // the independent per-message translation path remains.
+    ['src/lib/comms/translate.ts', 1, 1],
     ['src/lib/notice-translate.ts', 1, 1],
     ['src/lib/reports/catalog/ai-summary.ts', 1, 1],
     // (reports/weekly-insights.ts removed 2026-07-19 with the automatic
@@ -50,7 +52,6 @@ test('malformed output is rejected before executeAiFeature can accept an attempt
     ]],
     ['src/lib/comms/translate.ts', [
       'translation model returned empty output',
-      'translation batch returned an invalid JSON schema',
     ]],
     ['src/lib/notice-translate.ts', ['notice translation returned empty output']],
     // Overlong-but-valid outputs are truncated, not rejected (2026-07-17
@@ -95,7 +96,6 @@ test('authenticated scoped routes attribute every provider attempt to agent_cost
   const routes = [
     'src/app/api/comms/detect-action/route.ts',
     'src/app/api/comms/polish/route.ts',
-    'src/app/api/comms/translate/route.ts',
     'src/app/api/comms/transcribe/route.ts',
     'src/app/api/comms/assistant/route.ts',
     'src/app/api/comms/announce/route.ts',

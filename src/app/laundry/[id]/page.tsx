@@ -8,16 +8,12 @@ import { useTodayStr } from '@/lib/use-today-str';
 import { withStaffLinkToken, withStaffLinkTokenBody } from '@/lib/staff-link-client';
 import {
   getStaffSelfPublic,
-  saveStaffLanguagePublic,
 } from '@/lib/db';
 import { isAreaDueToday, calcLaundryMinutes } from '@/lib/calculations';
 import type { PublicArea, LaundryCategory, Room } from '@/types';
 import { format } from 'date-fns';
-import { es as esLocale } from 'date-fns/locale';
 import { CheckCircle, AlertTriangle } from 'lucide-react';
-import { t, SUPPORTED_LOCALES } from '@/lib/translations';
-import type { HousekeeperLocale } from '@/lib/translations';
-import { LanguageSwitcher } from '@/components/i18n/LanguageSwitcher';
+import { t } from '@/lib/translations';
 
 type CompletionSnapshot = {
   pid: string;
@@ -52,11 +48,7 @@ export default function LaundryPersonPage({ params }: { params: Promise<{ id: st
   // this page from one shift into the next.
   const today = useTodayStr();
 
-  // ── Language is LOCAL to this page ──
-  // See the matching comment block on /housekeeper/[id]. Using the global
-  // LanguageContext here was flipping Maria's admin UI to Spanish any time
-  // she opened a staff member's personal link.
-  const [lang, setLang] = useState<HousekeeperLocale>('en');
+  const lang = 'en' as const;
 
   const [laundryPersonName, setLaundryPersonName] = useState('');
   const [publicAreas, setPublicAreas] = useState<PublicArea[]>([]);
@@ -86,9 +78,7 @@ export default function LaundryPersonPage({ params }: { params: Promise<{ id: st
   const saveInFlightRef = useRef(false);
   const mountedRef = useRef(true);
 
-  // Seed BOTH the page language and this worker's name from the staff row on
-  // mount. These used to be two effects firing one identical getStaffSelfPublic
-  // round-trip each; folded into a single fetch. Goes through
+  // Seed this worker's name from the staff row on mount. Goes through
   // /api/housekeeper/me (service-role) instead of getStaffMember(), because
   // this page has no auth session and the supabase browser client would
   // silently return null under RLS. Same RLS-blocks-anon trap as the
@@ -105,11 +95,6 @@ export default function LaundryPersonPage({ params }: { params: Promise<{ id: st
       try {
         const s = await getStaffSelfPublic(pid, laundryPersonId);
         if (cancelled || !s) return;
-        // Full housekeeper locale set (en/es/ht/tl/vi) — the /api/housekeeper/me
-        // read now round-trips ht/tl/vi instead of collapsing them to English.
-        if (s.language && (SUPPORTED_LOCALES as readonly string[]).includes(s.language)) {
-          setLang(s.language);
-        }
         if (s.name) setLaundryPersonName(s.name);
       } catch (err) {
         console.error('[laundry] staff row load failed:', err);
@@ -400,27 +385,10 @@ export default function LaundryPersonPage({ params }: { params: Promise<{ id: st
               {`${t('cxHelloPrefix', lang)}, ${firstName}`}
             </h1>
             <p style={{ fontSize: '12px', opacity: 0.7, fontWeight: 500 }}>
-              {format(new Date(), 'EEEE, MMMM d', { locale: lang === 'es' ? esLocale : undefined })}
+              {format(new Date(), 'EEEE, MMMM d', { locale: undefined })}
             </p>
           </div>
 
-          <LanguageSwitcher
-            current={lang}
-            onChange={async (next) => {
-              setLang(next);
-              if (laundryPersonId && pid) {
-                // Service-role write — same reasoning as the housekeeper
-                // page's switch from saveStaffLanguage to the *Public
-                // variant. The browser-client write silently no-op'd
-                // under RLS for unauthenticated laundry workers.
-                try {
-                  await saveStaffLanguagePublic(pid, laundryPersonId, next);
-                } catch (err) {
-                  console.error('[laundry] lang persist failed:', err);
-                }
-              }
-            }}
-          />
         </div>
 
         {/* Progress bar */}

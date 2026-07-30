@@ -21,10 +21,10 @@ describe('inventory manager workflow regressions', () => {
     assert.doesNotMatch(shell, /onSaved=\{\(\) => \{[\s\S]*?setOverlay\('close'\)/);
   });
 
-  test('month close requires a bilingual final review before the existing safe submit', () => {
+  test('month close requires an English final review before the existing safe submit', () => {
     const panel = source('app', 'inventory', '_components', 'overlays', 'MonthClosePanel.tsx');
     assert.match(panel, /confirmTitle: \(month: string\) => `Close \$\{month\}\?`/);
-    assert.match(panel, /confirmTitle: \(month: string\) => `¿Cerrar \$\{month\}\?`/);
+    assert.doesNotMatch(panel, /confirmTitle: \(month: string\) => `¿Cerrar \$\{month\}\?`/);
     assert.match(panel, /if \(action === 'close' && !confirmingClose\)/);
     assert.match(panel, /ref=\{cancelConfirmationRef\}[\s\S]*?aria-describedby=\{`\$\{formId\}-confirm-title \$\{formId\}-confirm-copy`\}/);
     assert.match(panel, /if \(!confirmingClose\) return;[\s\S]*?cancelConfirmationRef\.current\?\.focus/);

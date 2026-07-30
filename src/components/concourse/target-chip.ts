@@ -80,12 +80,8 @@ export function chipFor(findingIds: readonly string[], lang: Lang): PatternChip 
   // not tell small lies about its own numbers.
   const text =
     ids.length === 1
-      ? lang === 'es'
-        ? 'Staxis ve un patrón aquí →'
-        : 'Staxis sees a pattern here →'
-      : lang === 'es'
-        ? `Staxis ve ${ids.length} patrones aquí →`
-        : `Staxis sees ${ids.length} patterns here →`;
+      ? 'Staxis sees a pattern here →'
+      : `Staxis sees ${ids.length} patterns here →`;
 
   return { href: queueFocusHref(ids[0]), text, count: ids.length };
 }

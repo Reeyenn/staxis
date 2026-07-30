@@ -291,9 +291,12 @@ export function InventoryShell() {
   const stableUser = user ?? lastUserRef.current;
   const uid = stableUser?.uid ?? null;
   const capabilityViewerKey = activePropertyViewerKey;
-  const inventoryContextReady = Boolean(
+  const inventoryViewerContextReady = Boolean(
     capabilityViewerKey
     && activeProperty?.id === activePropertyId
+  );
+  const inventoryContextReady = Boolean(
+    inventoryViewerContextReady
     && capabilityOverridesPropertyId === activePropertyId
     && capabilityOverridesViewerKey === capabilityViewerKey
   );
@@ -492,7 +495,7 @@ export function InventoryShell() {
   }, [uid, activePropertyId, canViewFinancials]);
 
   useEffect(() => {
-    if (!uid || !activePropertyId || !inventoryContextReady) return;
+    if (!uid || !activePropertyId || !inventoryViewerContextReady) return;
     setInventoryDataViewerKey(capabilityViewerKey);
     financialEvidenceRef.current = EMPTY_INVENTORY_FINANCIAL_EVIDENCE;
     setItems([]);
@@ -568,7 +571,7 @@ export function InventoryShell() {
       if (retryTimer != null) window.clearTimeout(retryTimer);
       activeUnsubscribe?.();
     };
-  }, [uid, activePropertyId, capabilityViewerKey, inventoryContextReady, inventoryReload, canViewFinancials]);
+  }, [uid, activePropertyId, capabilityViewerKey, inventoryViewerContextReady, inventoryReload]);
 
   // ONE assembly of the board's data fetch — shared by the initial-load effect
   // and refreshData so the two query sets can never drift apart.
@@ -691,7 +694,7 @@ export function InventoryShell() {
   }, []);
 
   useEffect(() => {
-    if (!uid || !activePropertyId || !inventoryContextReady) return;
+    if (!uid || !activePropertyId || !inventoryViewerContextReady) return;
     let cancelled = false;
     const sequence = ++boardLoadSequence.current;
     setBundleLoaded(false);
@@ -721,7 +724,7 @@ export function InventoryShell() {
     return () => {
       cancelled = true;
     };
-  }, [uid, activePropertyId, inventoryContextReady, fetchBoardData, applyBoardData, inventoryReload]);
+  }, [uid, activePropertyId, inventoryViewerContextReady, fetchBoardData, applyBoardData, inventoryReload]);
 
   const loadAuditHistory = useCallback(async (cursor: string | null, append: boolean) => {
     const propertyId = activePropertyId;
@@ -1424,7 +1427,7 @@ export function InventoryShell() {
   }, [activePropertyId, uid, submitQuickCountAttempt]);
 
   const refreshData = useCallback(async () => {
-    if (!uid || !activePropertyId || !inventoryContextReady) return;
+    if (!uid || !activePropertyId || !inventoryViewerContextReady) return;
     const requestedPropertyId = activePropertyId;
     const sequence = ++boardLoadSequence.current;
     try {
@@ -1445,7 +1448,7 @@ export function InventoryShell() {
         setBundleLoadError(true);
       }
     }
-  }, [uid, activePropertyId, inventoryContextReady, fetchBoardData, applyBoardData]);
+  }, [uid, activePropertyId, inventoryViewerContextReady, fetchBoardData, applyBoardData]);
 
   // ── Custom category tabs (0307) — add / delete ──────────────────────
   const addCustomCategory = useCallback(async (name: string) => {
@@ -1463,12 +1466,10 @@ export function InventoryShell() {
     } catch (err) {
       console.error('[inventory] add category failed', err);
       setInventoryConfigError(
-        L === 'es'
-          ? 'No se pudo agregar la categoría. No se guardaron cambios; inténtalo de nuevo.'
-          : 'The category could not be added. Nothing was saved; try again.',
+        'The category could not be added. Nothing was saved; try again.',
       );
     }
-  }, [uid, activePropertyId, customCategories, refreshData, L]);
+  }, [uid, activePropertyId, customCategories, refreshData]);
 
   const deleteCustomCategory = useCallback(async (id: string) => {
     if (!uid || !activePropertyId) return false;
@@ -1481,13 +1482,11 @@ export function InventoryShell() {
     } catch (err) {
       console.error('[inventory] delete category failed', err);
       setInventoryConfigError(
-        L === 'es'
-          ? 'No se pudo eliminar la categoría. Sigue disponible; inténtalo de nuevo.'
-          : 'The category could not be removed. It is still available; try again.',
+        'The category could not be removed. It is still available; try again.',
       );
       return false;
     }
-  }, [uid, activePropertyId, refreshData, L]);
+  }, [uid, activePropertyId, refreshData]);
 
   // ── Tab layout (0308) — reorder / remove / restore built-ins ────────────
   // Persist optimistically: update local state now, write in the background.
@@ -1498,9 +1497,7 @@ export function InventoryShell() {
   const persistLayout = useCallback((next: InventoryTabLayout) => {
     if (!uid || !activePropertyId) {
       setInventoryConfigError(
-        L === 'es'
-          ? 'No se pudo guardar el diseño porque no hay un hotel activo.'
-          : 'The tab layout could not be saved because no hotel is active.',
+        'The tab layout could not be saved because no hotel is active.',
       );
       return;
     }
@@ -1558,22 +1555,16 @@ export function InventoryShell() {
       }
       setInventoryConfigError(
         outcome.kind === 'conflict'
-          ? (L === 'es'
-              ? 'El diseño de pestañas cambió en otro lugar. Se muestra la versión guardada más reciente; vuelve a intentar tu cambio.'
-              : 'The tab layout changed elsewhere. The latest saved layout is shown; try your change again.')
+          ? ('The tab layout changed elsewhere. The latest saved layout is shown; try your change again.')
           : outcome.kind === 'unconfirmed'
-            ? (L === 'es'
-                ? 'No se pudo confirmar el cambio de pestañas. Se actualizó el estado del servidor cuando fue posible; vuelve a intentarlo.'
-                : 'The tab change could not be confirmed. Server state was refreshed when possible; try again.')
-            : (L === 'es'
-                ? 'No se pudo guardar el diseño de pestañas. No se aplicaron más cambios en cola; vuelve a intentarlo.'
-                : 'The tab layout could not be saved. No further queued changes were applied; try again.'),
+            ? ('The tab change could not be confirmed. Server state was refreshed when possible; try again.')
+            : ('The tab layout could not be saved. No further queued changes were applied; try again.'),
       );
     };
 
     const queued = layoutSaveChainRef.current.catch(() => {}).then(save);
     layoutSaveChainRef.current = queued;
-  }, [uid, activePropertyId, L]);
+  }, [uid, activePropertyId]);
 
   const reorderTabs = useCallback((keys: string[]) => {
     persistLayout({ order: keys, hidden: tabLayout.hidden });
@@ -1610,7 +1601,7 @@ export function InventoryShell() {
   // refreshes transiently null the user; without the latch each blip
   // unmounted the whole board back to the loading branch and replayed the
   // entrance — the "UI pops up over and over" bug.
-  const inventoryDataMatchesViewer = inventoryContextReady
+  const inventoryDataMatchesViewer = inventoryViewerContextReady
     && inventoryDataViewerKey === capabilityViewerKey;
   const dataReady = inventoryDataMatchesViewer && itemsLoaded && bundleLoaded;
   const [revealed, setRevealed] = useState(false);
@@ -1643,7 +1634,7 @@ export function InventoryShell() {
     }
   }
 
-  if (!inventoryDataMatchesViewer || !revealed || !itemsLoaded || !bundleLoaded) {
+  if (!inventoryDataMatchesViewer || !revealed) {
     // Byte-identical to InventoryLoading in ../page.tsx (the SSR Suspense
     // fallback); any drift between the two makes React hydration re-render
     // the whole tree and the loading text visibly flash mid-load.
@@ -1729,7 +1720,7 @@ export function InventoryShell() {
                 fontFamily: fonts.sans, fontSize: 12, fontWeight: 700, cursor: 'pointer',
               }}
             >
-              {L === 'es' ? 'Reintentar conteos pendientes' : 'Retry pending counts'}
+              {'Retry pending counts'}
             </button>
           )}
         </div>
@@ -1750,7 +1741,7 @@ export function InventoryShell() {
           <button
             type="button"
             onClick={() => setInventoryConfigError(null)}
-            aria-label={L === 'es' ? 'Cerrar aviso' : 'Dismiss notice'}
+            aria-label={'Dismiss notice'}
             style={{
               flex: 'none', minWidth: 44, minHeight: 44,
               border: `1px solid ${T.terra}66`, borderRadius: 8,
@@ -1758,7 +1749,7 @@ export function InventoryShell() {
               fontFamily: fonts.sans, fontSize: 12, fontWeight: 700, cursor: 'pointer',
             }}
           >
-            {L === 'es' ? 'Cerrar' : 'Dismiss'}
+            {'Dismiss'}
           </button>
         </div>
       )}

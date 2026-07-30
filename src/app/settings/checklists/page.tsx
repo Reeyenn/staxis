@@ -39,53 +39,53 @@ import {
 
 const CLEANING_TYPES = ['departure', 'stayover', 'deep', 'refresh', 'inspection'] as const;
 type CleaningType = (typeof CLEANING_TYPES)[number];
-const CLEANING_TYPE_LABEL: Record<CleaningType, { en: string; es: string }> = {
-  departure: { en: 'Departure', es: 'Salida' },
-  stayover: { en: 'Stayover', es: 'Estancia' },
-  deep: { en: 'Deep clean', es: 'Limpieza profunda' },
-  refresh: { en: 'Refresh', es: 'Retoque' },
-  inspection: { en: 'Inspection', es: 'Inspección' },
+const CLEANING_TYPE_LABEL: Record<CleaningType, { en: string }> = {
+  departure: { en: 'Departure', },
+  stayover: { en: 'Stayover', },
+  deep: { en: 'Deep clean', },
+  refresh: { en: 'Refresh', },
+  inspection: { en: 'Inspection', },
 };
 
 const CLEANING_AREAS = ['bathroom', 'bedroom', 'living', 'kitchen', 'entry', 'amenities', 'final'] as const;
 type CleaningArea = (typeof CLEANING_AREAS)[number];
-const AREA_LABEL: Record<CleaningArea, { en: string; es: string }> = {
-  bathroom: { en: 'Bathroom', es: 'Baño' },
-  bedroom: { en: 'Bedroom', es: 'Dormitorio' },
-  living: { en: 'Living', es: 'Sala' },
-  kitchen: { en: 'Kitchen', es: 'Cocina' },
-  entry: { en: 'Entry', es: 'Entrada' },
-  amenities: { en: 'Amenities', es: 'Amenidades' },
-  final: { en: 'Final', es: 'Final' },
+const AREA_LABEL: Record<CleaningArea, { en: string }> = {
+  bathroom: { en: 'Bathroom', },
+  bedroom: { en: 'Bedroom', },
+  living: { en: 'Living', },
+  kitchen: { en: 'Kitchen', },
+  entry: { en: 'Entry', },
+  amenities: { en: 'Amenities', },
+  final: { en: 'Final', },
 };
 
 const INSPECTION_CATEGORIES = ['bathroom', 'bedroom', 'living', 'kitchen', 'welcome', 'other'] as const;
 type InspectionCategory = (typeof INSPECTION_CATEGORIES)[number];
-const CATEGORY_LABEL: Record<InspectionCategory, { en: string; es: string }> = {
-  bathroom: { en: 'Bathroom', es: 'Baño' },
-  bedroom: { en: 'Bedroom', es: 'Dormitorio' },
-  living: { en: 'Living', es: 'Sala' },
-  kitchen: { en: 'Kitchen', es: 'Cocina' },
-  welcome: { en: 'Welcome', es: 'Bienvenida' },
-  other: { en: 'Other', es: 'Otro' },
+const CATEGORY_LABEL: Record<InspectionCategory, { en: string }> = {
+  bathroom: { en: 'Bathroom', },
+  bedroom: { en: 'Bedroom', },
+  living: { en: 'Living', },
+  kitchen: { en: 'Kitchen', },
+  welcome: { en: 'Welcome', },
+  other: { en: 'Other', },
 };
 
 const SEVERITIES = ['minor', 'major', 'critical'] as const;
 type Severity = (typeof SEVERITIES)[number];
-const SEVERITY_LABEL: Record<Severity, { en: string; es: string }> = {
-  minor: { en: 'Minor', es: 'Menor' },
-  major: { en: 'Major', es: 'Mayor' },
-  critical: { en: 'Critical', es: 'Crítico' },
+const SEVERITY_LABEL: Record<Severity, { en: string }> = {
+  minor: { en: 'Minor', },
+  major: { en: 'Major', },
+  critical: { en: 'Critical', },
 };
 
 const INSPECTION_CLEANING_TYPES = ['departure', 'departure_deep', 'stayover', 'deep', 'refresh'] as const;
 type InspectionCleaningType = (typeof INSPECTION_CLEANING_TYPES)[number];
-const INSPECTION_CT_LABEL: Record<InspectionCleaningType, { en: string; es: string }> = {
-  departure: { en: 'Departure', es: 'Salida' },
-  departure_deep: { en: 'Departure deep', es: 'Salida profunda' },
-  stayover: { en: 'Stayover', es: 'Estancia' },
-  deep: { en: 'Deep', es: 'Profunda' },
-  refresh: { en: 'Refresh', es: 'Retoque' },
+const INSPECTION_CT_LABEL: Record<InspectionCleaningType, { en: string }> = {
+  departure: { en: 'Departure', },
+  departure_deep: { en: 'Departure deep', },
+  stayover: { en: 'Stayover', },
+  deep: { en: 'Deep', },
+  refresh: { en: 'Refresh', },
 };
 
 // ─── DTOs (mirror the API envelope payloads) ────────────────────────────────
@@ -123,22 +123,20 @@ export default function ChecklistsPage() {
   const can = useCan();
 
   if (!uid) {
-    return <AppLayout><div style={{ padding: 24 }}>{lang === 'es' ? 'Inicia sesión para continuar.' : 'Sign in to continue.'}</div></AppLayout>;
+    return <AppLayout><div style={{ padding: 24 }}>{'Sign in to continue.'}</div></AppLayout>;
   }
   if (!can('manage_checklists')) {
     return (
       <AppLayout>
         <div style={{ padding: 24, maxWidth: 520, margin: '40px auto', textAlign: 'center' }}>
           <h1 style={{ fontFamily: fonts.serif, fontSize: 24, color: T.ink, marginBottom: 12 }}>
-            {lang === 'es' ? 'Acceso restringido' : 'You don’t have access'}
+            {'You don’t have access'}
           </h1>
           <p style={{ fontFamily: fonts.sans, fontSize: 14, color: T.ink2, marginBottom: 20 }}>
-            {lang === 'es'
-              ? 'Las listas de verificación solo están disponibles para gerentes, propietarios y administradores.'
-              : 'Checklists are restricted to managers, owners, and admins.'}
+            {'Checklists are restricted to managers, owners, and admins.'}
           </p>
           <Link href="/settings">
-            <Btn variant="ghost"><ChevronLeft size={14} /> {lang === 'es' ? 'Volver' : 'Back to Settings'}</Btn>
+            <Btn variant="ghost"><ChevronLeft size={14} /> {'Back to Settings'}</Btn>
           </Link>
         </div>
       </AppLayout>
@@ -165,7 +163,7 @@ function ChecklistsBody({ pid, lang, properties }: {
     return (
       <div style={{ padding: '16px 16px 40px', maxWidth: 980, margin: '0 auto' }}>
         <div style={{ fontFamily: fonts.sans, fontSize: 14, color: T.ink2 }}>
-          {lang === 'es' ? 'Selecciona una propiedad primero.' : 'Select a property first.'}
+          {'Select a property first.'}
         </div>
       </div>
     );
@@ -175,7 +173,7 @@ function ChecklistsBody({ pid, lang, properties }: {
     <div style={{ padding: '16px 16px 48px', display: 'flex', flexDirection: 'column', gap: 16, maxWidth: 980, margin: '0 auto', width: '100%' }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
         <Link href="/settings" style={{ textDecoration: 'none', color: T.ink2 }}>
-          <Btn variant="ghost" size="sm"><ChevronLeft size={14} /> {lang === 'es' ? 'Ajustes' : 'Settings'}</Btn>
+          <Btn variant="ghost" size="sm"><ChevronLeft size={14} /> {'Settings'}</Btn>
         </Link>
         <h1 style={{ fontFamily: fonts.serif, fontSize: 26, lineHeight: 1.1, color: T.ink, margin: 0, letterSpacing: '-0.01em' }}>
           {t('checklistsTitle', lang)}
@@ -188,10 +186,10 @@ function ChecklistsBody({ pid, lang, properties }: {
       {/* Tabs */}
       <div style={{ display: 'flex', gap: 6 }}>
         <TabBtn active={tab === 'cleaning'} onClick={() => setTab('cleaning')}>
-          {lang === 'es' ? 'Limpieza' : 'Cleaning'}
+          {'Cleaning'}
         </TabBtn>
         <TabBtn active={tab === 'inspection'} onClick={() => setTab('inspection')}>
-          {lang === 'es' ? 'Inspección' : 'Inspection'}
+          {'Inspection'}
         </TabBtn>
       </div>
 
@@ -274,13 +272,11 @@ function CleaningEditor({ pid, lang, properties }: {
     // Bulk-replace safety: never write items that belong to another cleaning
     // type (or to a failed load) under the currently selected one.
     if (loadedTypeRef.current !== type) {
-      setError(lang === 'es'
-        ? 'Esta lista no terminó de cargar. Recarga la página antes de guardar.'
-        : 'This checklist didn’t finish loading. Refresh the page before saving.');
+      setError('This checklist didn’t finish loading. Refresh the page before saving.');
       return;
     }
-    const blank = items.find((it) => !it.itemEn.trim() || !it.itemEs.trim());
-    if (blank) { setError(lang === 'es' ? 'Cada tarea necesita texto en inglés y español.' : 'Every item needs English and Spanish text.'); return; }
+    const blank = items.find((it) => !it.itemEn.trim());
+    if (blank) { setError('Every item needs text.'); return; }
     setSaving(true); setError(null); setNotice(null);
     try {
       const r = await fetchWithAuth('/api/settings/checklists/cleaning', {
@@ -289,19 +285,27 @@ function CleaningEditor({ pid, lang, properties }: {
         body: JSON.stringify({
           propertyId: pid,
           cleaningType: type,
-          items: items.map((it) => ({ area: it.area, itemEn: it.itemEn.trim(), itemEs: it.itemEs.trim(), isCritical: it.isCritical })),
+          // itemEs is a required legacy database/API field. Preserve existing
+          // content exactly; new rows use the English label at that contract
+          // seam without exposing a second UI-copy field.
+          items: items.map((it) => ({
+            area: it.area,
+            itemEn: it.itemEn.trim(),
+            itemEs: it.itemEs || it.itemEn.trim(),
+            isCritical: it.isCritical,
+          })),
         }),
       });
       const body = await r.json().catch(() => null);
       if (!r.ok) { setError(body?.error ?? `Failed (${r.status})`); return; }
-      setNotice(lang === 'es' ? 'Guardado.' : 'Saved.');
+      setNotice('Saved.');
       await load();
     } catch (e) {
       setError((e as Error)?.message ?? 'Network error');
     } finally {
       setSaving(false);
     }
-  }, [pid, type, items, lang, load]);
+  }, [pid, type, items, load]);
 
   const reset = useCallback(async () => {
     setConfirmReset(false);
@@ -310,14 +314,14 @@ function CleaningEditor({ pid, lang, properties }: {
       const r = await fetchWithAuth(`/api/settings/checklists/cleaning?propertyId=${encodeURIComponent(pid)}&cleaningType=${type}`, { method: 'DELETE' });
       const body = await r.json().catch(() => null);
       if (!r.ok) { setError(body?.error ?? `Failed (${r.status})`); return; }
-      setNotice(lang === 'es' ? 'Restablecido al valor de Staxis.' : 'Reset to the Staxis default.');
+      setNotice('Reset to the Staxis default.');
       await load();
     } catch (e) {
       setError((e as Error)?.message ?? 'Network error');
     } finally {
       setSaving(false);
     }
-  }, [pid, type, lang, load]);
+  }, [pid, type, load]);
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
@@ -335,7 +339,7 @@ function CleaningEditor({ pid, lang, properties }: {
               fontFamily: fonts.sans, fontSize: 12.5, fontWeight: 500, cursor: 'pointer',
             }}
           >
-            {CLEANING_TYPE_LABEL[ct][lang]}
+            {CLEANING_TYPE_LABEL[ct]['en']}
           </button>
         ))}
       </div>
@@ -352,17 +356,16 @@ function CleaningEditor({ pid, lang, properties }: {
         <Loading lang={lang} />
       ) : (
         <ChecklistEditor<EditCleaning>
-          grid="120px 1fr 1fr 78px 96px"
+          grid="120px 1fr 78px 96px"
           gap={8}
           headers={[
-            lang === 'es' ? 'Área' : 'Area',
-            lang === 'es' ? 'Tarea (Inglés)' : 'Item (English)',
-            lang === 'es' ? 'Tarea (Español)' : 'Item (Spanish)',
-            lang === 'es' ? 'Clave' : 'Critical',
-            lang === 'es' ? 'Orden' : 'Order',
+            'Area',
+            'Item',
+            'Critical',
+            'Order',
           ]}
-          emptyText={lang === 'es' ? 'Sin tareas todavía. Agrega la primera.' : 'No items yet. Add the first one.'}
-          addLabel={lang === 'es' ? 'Agregar tarea' : 'Add item'}
+          emptyText={'No items yet. Add the first one.'}
+          addLabel={'Add item'}
           items={items}
           setItems={setItems}
           newItem={() => ({ area: 'bedroom', itemEn: '', itemEs: '', isCritical: false, _key: nextKey() })}
@@ -371,29 +374,22 @@ function CleaningEditor({ pid, lang, properties }: {
               <select
                 value={it.area}
                 onChange={(e) => update({ area: e.target.value as CleaningArea })}
-                aria-label={lang === 'es' ? 'Área' : 'Area'}
+                aria-label={'Area'}
                 style={inputStyle}
               >
-                {CLEANING_AREAS.map((a) => <option key={a} value={a}>{AREA_LABEL[a][lang]}</option>)}
+                {CLEANING_AREAS.map((a) => <option key={a} value={a}>{AREA_LABEL[a]['en']}</option>)}
               </select>
               <input
                 value={it.itemEn}
                 onChange={(e) => update({ itemEn: e.target.value })}
-                placeholder={lang === 'es' ? 'p. ej. Limpiar el inodoro' : 'e.g. Clean toilet'}
+                placeholder={'e.g. Clean toilet'}
                 aria-label="Item English"
-                style={inputStyle}
-              />
-              <input
-                value={it.itemEs}
-                onChange={(e) => update({ itemEs: e.target.value })}
-                placeholder={lang === 'es' ? 'p. ej. Limpiar el inodoro' : 'p. ej. Limpiar el inodoro'}
-                aria-label="Item Spanish"
                 style={inputStyle}
               />
               <button
                 onClick={() => update({ isCritical: !it.isCritical })}
-                aria-label={lang === 'es' ? 'Marcar como clave' : 'Toggle critical'}
-                title={lang === 'es' ? 'Tarea clave' : 'Critical item'}
+                aria-label={'Toggle critical'}
+                title={'Critical item'}
                 style={{
                   height: 34, borderRadius: 8, cursor: 'pointer',
                   border: `1px solid ${it.isCritical ? 'rgba(160,74,44,0.4)' : T.rule}`,
@@ -403,7 +399,7 @@ function CleaningEditor({ pid, lang, properties }: {
                   fontFamily: fonts.sans, fontSize: 11.5, fontWeight: 600,
                 }}
               >
-                <AlertTriangle size={13} /> {it.isCritical ? (lang === 'es' ? 'Sí' : 'Yes') : (lang === 'es' ? 'No' : 'No')}
+                <AlertTriangle size={13} /> {it.isCritical ? ('Yes') : ('No')}
               </button>
             </>
           )}
@@ -415,7 +411,7 @@ function CleaningEditor({ pid, lang, properties }: {
         saving={saving}
         loading={loading}
         isOverride={data?.isOverride ?? false}
-        copyLockedTitle={lang === 'es' ? 'Personaliza y guarda primero para copiar.' : 'Customize and save first to copy.'}
+        copyLockedTitle={'Customize and save first to copy.'}
         onSave={() => void save()}
         onCopy={() => setShowCopy(true)}
         onDelete={() => setConfirmReset(true)}
@@ -426,7 +422,7 @@ function CleaningEditor({ pid, lang, properties }: {
           lang={lang}
           pid={pid}
           properties={properties}
-          label={CLEANING_TYPE_LABEL[type][lang]}
+          label={CLEANING_TYPE_LABEL[type]['en']}
           onClose={() => setShowCopy(false)}
           buildBody={(targetIds) => ({ sourceType: 'cleaning', key: type, sourcePropertyId: pid, targetPropertyIds: targetIds })}
         />
@@ -434,11 +430,9 @@ function CleaningEditor({ pid, lang, properties }: {
       {confirmReset && (
         <ConfirmModal
           lang={lang}
-          title={lang === 'es' ? 'Eliminar esta lista' : 'Delete this checklist'}
-          message={lang === 'es'
-            ? `Esto eliminará la lista “${CLEANING_TYPE_LABEL[type].es}” de esta propiedad de forma permanente. Quedará vacía hasta que crees una nueva desde cero.`
-            : `This permanently deletes the “${CLEANING_TYPE_LABEL[type].en}” checklist for this property. It will be empty until you build a new one from scratch.`}
-          confirmLabel={lang === 'es' ? 'Eliminar' : 'Delete'}
+          title={'Delete this checklist'}
+          message={`This permanently deletes the “${CLEANING_TYPE_LABEL[type].en}” checklist for this property. It will be empty until you build a new one from scratch.`}
+          confirmLabel={'Delete'}
           onConfirm={() => void reset()}
           onCancel={() => setConfirmReset(false)}
         />
@@ -498,14 +492,12 @@ function InspectionEditor({ pid, lang, properties }: {
 
   const save = useCallback(async () => {
     if (!loadedRef.current) {
-      setError(lang === 'es'
-        ? 'Esta lista no terminó de cargar. Recarga la página antes de guardar.'
-        : 'This checklist didn’t finish loading. Refresh the page before saving.');
+      setError('This checklist didn’t finish loading. Refresh the page before saving.');
       return;
     }
-    if (!name.trim()) { setError(lang === 'es' ? 'La lista necesita un nombre.' : 'The checklist needs a name.'); return; }
-    const blank = items.find((it) => !it.label.trim() || !it.labelEs.trim());
-    if (blank) { setError(lang === 'es' ? 'Cada punto necesita texto en inglés y español.' : 'Every item needs English and Spanish text.'); return; }
+    if (!name.trim()) { setError('The checklist needs a name.'); return; }
+    const blank = items.find((it) => !it.label.trim());
+    if (blank) { setError('Every item needs text.'); return; }
     setSaving(true); setError(null); setNotice(null);
     try {
       const r = await fetchWithAuth('/api/settings/checklists/inspection', {
@@ -518,21 +510,25 @@ function InspectionEditor({ pid, lang, properties }: {
           appliesToCleaningTypes: applies,
           appliesToRoomTypes: [],
           items: items.map((it) => ({
-            category: it.category, label: it.label.trim(), labelEs: it.labelEs.trim(),
+            category: it.category,
+            label: it.label.trim(),
+            // Preserve the required legacy contract field without maintaining
+            // a second presentation string in the editor.
+            labelEs: it.labelEs || it.label.trim(),
             severityDefault: it.severityDefault, requiresPhotoOnFail: it.requiresPhotoOnFail,
           })),
         }),
       });
       const body = await r.json().catch(() => null);
       if (!r.ok) { setError(body?.error ?? `Failed (${r.status})`); return; }
-      setNotice(lang === 'es' ? 'Guardado.' : 'Saved.');
+      setNotice('Saved.');
       await load();
     } catch (e) {
       setError((e as Error)?.message ?? 'Network error');
     } finally {
       setSaving(false);
     }
-  }, [pid, data, name, applies, items, lang, load]);
+  }, [pid, data, name, applies, items, load]);
 
   const reset = useCallback(async () => {
     setConfirmReset(false);
@@ -542,14 +538,14 @@ function InspectionEditor({ pid, lang, properties }: {
       const r = await fetchWithAuth(`/api/settings/checklists/inspection?propertyId=${encodeURIComponent(pid)}&checklistId=${encodeURIComponent(data.checklistId)}`, { method: 'DELETE' });
       const body = await r.json().catch(() => null);
       if (!r.ok) { setError(body?.error ?? `Failed (${r.status})`); return; }
-      setNotice(lang === 'es' ? 'Restablecido al valor de Staxis.' : 'Reset to the Staxis default.');
+      setNotice('Reset to the Staxis default.');
       await load();
     } catch (e) {
       setError((e as Error)?.message ?? 'Network error');
     } finally {
       setSaving(false);
     }
-  }, [pid, data, lang, load]);
+  }, [pid, data, load]);
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
@@ -558,9 +554,7 @@ function InspectionEditor({ pid, lang, properties }: {
       {(data?.otherCount ?? 0) > 0 && (
         <div style={{ display: 'flex', gap: 8, alignItems: 'center', fontFamily: fonts.sans, fontSize: 12.5, color: T.caramelDeep, background: 'rgba(215,176,126,0.14)', border: '1px solid rgba(140,106,51,0.25)', borderRadius: 8, padding: '8px 12px' }}>
           <AlertTriangle size={13} style={{ flexShrink: 0 }} />
-          {lang === 'es'
-            ? `Esta propiedad tiene ${(data?.otherCount ?? 0) + 1} listas de inspección. Estás editando la más reciente; las demás siguen activas para la inspección.`
-            : `This property has ${(data?.otherCount ?? 0) + 1} inspection checklists. You’re editing the most recent; the others stay active for inspections.`}
+          {`This property has ${(data?.otherCount ?? 0) + 1} inspection checklists. You’re editing the most recent; the others stay active for inspections.`}
         </div>
       )}
 
@@ -573,18 +567,18 @@ function InspectionEditor({ pid, lang, properties }: {
         <>
           {/* Name */}
           <label style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-            <Caps>{lang === 'es' ? 'Nombre de la lista' : 'Checklist name'}</Caps>
+            <Caps>{'Checklist name'}</Caps>
             <input
               value={name}
               onChange={(e) => setName(e.target.value)}
-              placeholder={lang === 'es' ? 'p. ej. Inspección de salida estándar' : 'e.g. Standard Departure Clean'}
+              placeholder={'e.g. Standard Departure Clean'}
               style={{ ...inputStyle, height: 38, maxWidth: 420 }}
             />
           </label>
 
           {/* Applies-to cleaning types */}
           <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-            <Caps>{lang === 'es' ? 'Aplica a tipos de limpieza (vacío = todos)' : 'Applies to cleaning types (empty = all)'}</Caps>
+            <Caps>{'Applies to cleaning types (empty = all)'}</Caps>
             <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
               {INSPECTION_CLEANING_TYPES.map((ct) => {
                 const on = applies.includes(ct);
@@ -600,7 +594,7 @@ function InspectionEditor({ pid, lang, properties }: {
                       fontFamily: fonts.sans, fontSize: 12, fontWeight: 500, cursor: 'pointer',
                     }}
                   >
-                    {INSPECTION_CT_LABEL[ct][lang]}
+                    {INSPECTION_CT_LABEL[ct]['en']}
                   </button>
                 );
               })}
@@ -608,19 +602,18 @@ function InspectionEditor({ pid, lang, properties }: {
           </div>
 
           <ChecklistEditor<EditInspection>
-            grid="110px 1fr 1fr 96px 70px 96px"
+            grid="110px 1fr 96px 70px 96px"
             gap={14}
             headerStyle={{ marginTop: 4 }}
             headers={[
-              lang === 'es' ? 'Categoría' : 'Category',
-              lang === 'es' ? 'Punto (Inglés)' : 'Item (English)',
-              lang === 'es' ? 'Punto (Español)' : 'Item (Spanish)',
-              lang === 'es' ? 'Severidad' : 'Severity',
-              lang === 'es' ? 'Foto' : 'Photo',
-              lang === 'es' ? 'Orden' : 'Order',
+              'Category',
+              'Item',
+              'Severity',
+              'Photo',
+              'Order',
             ]}
-            emptyText={lang === 'es' ? 'Sin puntos todavía. Agrega el primero.' : 'No items yet. Add the first one.'}
-            addLabel={lang === 'es' ? 'Agregar punto' : 'Add item'}
+            emptyText={'No items yet. Add the first one.'}
+            addLabel={'Add item'}
             items={items}
             setItems={setItems}
             newItem={() => ({ category: 'bedroom', label: '', labelEs: '', severityDefault: 'minor', requiresPhotoOnFail: false, _key: nextKey() })}
@@ -629,37 +622,30 @@ function InspectionEditor({ pid, lang, properties }: {
                 <select
                   value={it.category}
                   onChange={(e) => update({ category: e.target.value as InspectionCategory })}
-                  aria-label={lang === 'es' ? 'Categoría' : 'Category'}
+                  aria-label={'Category'}
                   style={inputStyle}
                 >
-                  {INSPECTION_CATEGORIES.map((c) => <option key={c} value={c}>{CATEGORY_LABEL[c][lang]}</option>)}
+                  {INSPECTION_CATEGORIES.map((c) => <option key={c} value={c}>{CATEGORY_LABEL[c]['en']}</option>)}
                 </select>
                 <input
                   value={it.label}
                   onChange={(e) => update({ label: e.target.value })}
-                  placeholder={lang === 'es' ? 'p. ej. El baño está impecable' : 'e.g. Bathroom is spotless'}
+                  placeholder={'e.g. Bathroom is spotless'}
                   aria-label="Item English"
-                  style={inputStyle}
-                />
-                <input
-                  value={it.labelEs}
-                  onChange={(e) => update({ labelEs: e.target.value })}
-                  placeholder={lang === 'es' ? 'p. ej. El baño está impecable' : 'p. ej. El baño está impecable'}
-                  aria-label="Item Spanish"
                   style={inputStyle}
                 />
                 <select
                   value={it.severityDefault}
                   onChange={(e) => update({ severityDefault: e.target.value as Severity })}
-                  aria-label={lang === 'es' ? 'Severidad' : 'Severity'}
+                  aria-label={'Severity'}
                   style={inputStyle}
                 >
-                  {SEVERITIES.map((s) => <option key={s} value={s}>{SEVERITY_LABEL[s][lang]}</option>)}
+                  {SEVERITIES.map((s) => <option key={s} value={s}>{SEVERITY_LABEL[s]['en']}</option>)}
                 </select>
                 <button
                   onClick={() => update({ requiresPhotoOnFail: !it.requiresPhotoOnFail })}
-                  aria-label={lang === 'es' ? 'Requiere foto al fallar' : 'Requires photo on fail'}
-                  title={lang === 'es' ? 'Requiere foto al fallar' : 'Requires photo on fail'}
+                  aria-label={'Requires photo on fail'}
+                  title={'Requires photo on fail'}
                   style={{
                     height: 34, borderRadius: 8, cursor: 'pointer',
                     border: `1px solid ${it.requiresPhotoOnFail ? T.sageDeep : T.rule}`,
@@ -668,7 +654,7 @@ function InspectionEditor({ pid, lang, properties }: {
                     fontFamily: fonts.sans, fontSize: 11.5, fontWeight: 600,
                   }}
                 >
-                  {it.requiresPhotoOnFail ? (lang === 'es' ? 'Sí' : 'Yes') : (lang === 'es' ? 'No' : 'No')}
+                  {it.requiresPhotoOnFail ? ('Yes') : ('No')}
                 </button>
               </>
             )}
@@ -681,7 +667,7 @@ function InspectionEditor({ pid, lang, properties }: {
         saving={saving}
         loading={loading}
         isOverride={data?.isOverride ?? false}
-        copyLockedTitle={lang === 'es' ? 'Guarda primero para personalizar esta propiedad.' : 'Save first to customize this property.'}
+        copyLockedTitle={'Save first to customize this property.'}
         onSave={() => void save()}
         onCopy={() => setShowCopy(true)}
         onDelete={() => setConfirmReset(true)}
@@ -692,7 +678,7 @@ function InspectionEditor({ pid, lang, properties }: {
           lang={lang}
           pid={pid}
           properties={properties}
-          label={name || (lang === 'es' ? 'Inspección' : 'Inspection')}
+          label={name || ('Inspection')}
           onClose={() => setShowCopy(false)}
           buildBody={(targetIds) => ({ sourceType: 'inspection', key: data.checklistId, targetPropertyIds: targetIds })}
         />
@@ -700,11 +686,9 @@ function InspectionEditor({ pid, lang, properties }: {
       {confirmReset && (
         <ConfirmModal
           lang={lang}
-          title={lang === 'es' ? 'Eliminar esta lista' : 'Delete this checklist'}
-          message={lang === 'es'
-            ? 'Esto eliminará la lista de inspección de esta propiedad de forma permanente. Quedará vacía hasta que crees una nueva desde cero.'
-            : 'This permanently deletes this property’s inspection checklist. It will be empty until you build a new one from scratch.'}
-          confirmLabel={lang === 'es' ? 'Eliminar' : 'Delete'}
+          title={'Delete this checklist'}
+          message={'This permanently deletes this property’s inspection checklist. It will be empty until you build a new one from scratch.'}
+          confirmLabel={'Delete'}
           onConfirm={() => void reset()}
           onCancel={() => setConfirmReset(false)}
         />

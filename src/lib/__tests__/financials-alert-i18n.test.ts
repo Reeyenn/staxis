@@ -5,12 +5,9 @@
  *
  * Covers the extractable pure logic behind three verified bugs:
  *
- * 1. EN/ES alert parity — the forecast/anomaly APIs return English-only
- *    `message` strings; BudgetTab now rebuilds them client-side from the
- *    structured fields via forecastTrendingMsg / anomalySpikeMsg. The EN
- *    rebuild must stay byte-identical to the server sentences (built in
- *    src/lib/financials/forecast.ts / anomaly.ts) so English users see no
- *    change, and the ES rebuild must be fully translated.
+ * 1. Forecast/anomaly APIs return English `message` strings. BudgetTab
+ *    rebuilds them client-side from structured fields; the rebuild must stay
+ *    byte-identical to the server sentences.
  *
  * 2. Scan error mapping — ScanButton collapsed every failure into "try a
  *    clearer photo"; scanErrorLabel now routes rate-limit (429), the daily
@@ -35,11 +32,6 @@ describe('forecastTrendingMsg', () => {
     assert.equal(rebuilt, f.message);
   });
 
-  test('ES rebuild is fully translated (no English fragments)', () => {
-    const msg = forecastTrendingMsg('es', 'housekeeping', 23.4, 410_000, 320_000);
-    assert.equal(msg, 'Limpieza va camino a exceder el presupuesto en 23% (proyectado $4,100.00 vs $3,200.00).');
-    assert.ok(!/trending|over budget|projected/.test(msg));
-  });
 });
 
 describe('anomalySpikeMsg', () => {
@@ -52,11 +44,6 @@ describe('anomalySpikeMsg', () => {
     assert.equal(rebuilt, a.message);
   });
 
-  test('ES rebuild is fully translated with the localized department name', () => {
-    const msg = anomalySpikeMsg('es', 'utilities', 1.4, 70_000, 50_000);
-    assert.equal(msg, 'El gasto de Servicios está 40% por encima del mes pasado ($700.00 vs $500.00).');
-    assert.ok(!/spend is|over last month/.test(msg));
-  });
 });
 
 describe('scanErrorLabel', () => {
@@ -87,11 +74,4 @@ describe('scanErrorLabel', () => {
     assert.equal(scanErrorLabel(S, 'fallback', undefined, undefined, 'network'), 'fallback');
   });
 
-  test('ES strings exist and differ from EN (parity)', () => {
-    const ES = ft('es');
-    for (const k of ['scanRateLimited', 'scanBudgetCap', 'scanServiceDown'] as const) {
-      assert.ok(ES[k].length > 0);
-      assert.notEqual(ES[k], S[k]);
-    }
-  });
 });

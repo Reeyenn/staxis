@@ -260,12 +260,11 @@ describe('the status on an employee row', () => {
     assert.ok(!text.includes(EMPLOYEE_STATUS_LABEL.waiting_for_master.en));
   });
 
-  test('the sentence is the registry\'s, in the reader\'s language', () => {
+  test('the sentence stays English for legacy language input', () => {
     const es = textFor({ status: 'waiting_for_master' }, 'es');
-    assert.ok(es.includes(EMPLOYEE_STATUS_LABEL.waiting_for_master.es));
-    assert.ok(es.includes(BRIEFER.name.es));
-    assert.ok(es.includes(BRIEFER.job.es));
-    assert.ok(!es.includes(BRIEFER.job.en), 'a Spanish reader should not be handed the English job');
+    assert.ok(es.includes(EMPLOYEE_STATUS_LABEL.waiting_for_master.en));
+    assert.ok(es.includes(BRIEFER.name.en));
+    assert.ok(es.includes(BRIEFER.job.en));
   });
 
   test('the row is a way through to the page with the controls on it', () => {

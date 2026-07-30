@@ -71,8 +71,8 @@ const UNDO_SECONDS = 60;
  *  custom category's label is the hotel's own text and is shown verbatim. */
 function categoryLabel(option: CategoryOption, lang: Lang): string {
   if (option.label) return option.label;
-  if (option.bucketKey === 'breakfast') return lang === 'es' ? 'Desayuno' : 'Breakfast';
-  return lang === 'es' ? 'General' : 'General';
+  if (option.bucketKey === 'breakfast') return 'Breakfast';
+  return 'General';
 }
 
 function blockedLabel(reason: OrderBlockReason, tx: OrderingStrings): string {

@@ -5,6 +5,7 @@ import { usePathname, useSearchParams } from 'next/navigation';
 
 import { useApiResource } from '@/lib/hooks/use-api-resource';
 import type { PortfolioUiBootstrapV1 } from '@/lib/portfolio-ui/contracts';
+import { shouldLoadPortfolioBootstrap } from '@/lib/portfolio-ui/entry-routing';
 import { useAuth } from '@/contexts/AuthContext';
 
 interface PortfolioContextValue {
@@ -27,6 +28,8 @@ export function PortfolioProvider({ children }: { children: React.ReactNode }) {
     loading: authLoading,
     authorizationFingerprint,
     authorizationChecked,
+    platformAdmin,
+    propertyStandings,
   } = useAuth();
   const rawOrganizationId = searchParams.get('organizationId');
   const requestedOrganizationId = rawOrganizationId && UUID.test(rawOrganizationId)
@@ -38,9 +41,16 @@ export function PortfolioProvider({ children }: { children: React.ReactNode }) {
   const hotelDrilldown = searchParams.get('scope') === 'hotel';
   const entryRoute = (pathname === '/home' || pathname === '/property-selector') && !hotelDrilldown;
   const adminPortfolioContext = user?.role === 'admin' && (portfolioRoute || portfolioQuery);
-  const enabled = Boolean(
-    user && user.role !== 'admin' && !authLoading && (portfolioRoute || portfolioQuery || entryRoute),
-  );
+  const enabled = shouldLoadPortfolioBootstrap({
+    signedIn: Boolean(user),
+    authLoading,
+    browserRoleIsAdmin: user?.role === 'admin',
+    authorizationChecked,
+    platformAdmin,
+    propertyStandings,
+    explicitPortfolioContext: portfolioRoute || portfolioQuery,
+    entryRoute,
+  });
   const endpoint = requestedOrganizationId
     ? `/api/portfolio/v1/bootstrap?organizationId=${encodeURIComponent(requestedOrganizationId)}`
     : '/api/portfolio/v1/bootstrap';

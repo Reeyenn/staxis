@@ -96,34 +96,8 @@ function dsStrings(lang: Lang) {
       note: 'Delivery, added manually',
       otherGroup: 'Other',
     },
-    es: {
-      title: 'Agregar entrega',
-      scanOption: '📷 Escanear la factura',
-      manualOption: 'Elegir artículos',
-      selectItem: 'Elige un artículo…',
-      qtyPh: 'Cant.',
-      costPh: '$ unidad',
-      costRequired: 'Completa el artículo, la cantidad y el costo unitario real en cada fila iniciada.',
-      fieldsRequired: 'Completa el artículo y la cantidad en cada fila iniciada.',
-      costsHidden: 'Los costos están ocultos para tu función. Un gerente puede agregar después el costo verificado de la factura.',
-      addAnother: '+ Agregar otro artículo',
-      remove: 'Quitar',
-      back: 'Atrás',
-      saving: 'Guardando…',
-      addBtn: '✓ Agregar al inventario',
-      discardConfirm: 'Tienes una entrega sin guardar. ¿Cerrar y descartarla?',
-      draftRestored: 'Se restauró tu entrega sin guardar.',
-      noItems: 'No hay artículos activos para recibir. Agrega un artículo primero.',
-      itemLabel: 'Artículo',
-      quantityLabel: 'Cantidad recibida',
-      unitCostLabel: 'Costo unitario real',
-      saveFailed: 'No se pudo guardar la entrega. Inténtalo de nuevo.',
-      retryPending: 'No se pudo confirmar el resultado. Esta entrega exacta está bloqueada hasta que la reintentes correctamente.',
-      retryBtn: 'Reintentar la misma entrega',
-      note: 'Entrega, agregada a mano',
-      otherGroup: 'Otros',
-    },
-  }[lang];
+
+  }['en'];
 }
 
 type Mode = null | 'manual' | 'scan';

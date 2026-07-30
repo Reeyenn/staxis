@@ -67,14 +67,14 @@ describe('parseLocalDate', () => {
 // ─── shortDateFromYmd (CheckbookTab / CapexTab) ─────────────────────────────
 
 describe('shortDateFromYmd', () => {
-  test("CheckbookTab variant: month-day, uppercased — 'JUL 4' / '4 JUL'", () => {
+  test("CheckbookTab variant: month-day, uppercased — 'JUL 4'", () => {
     assert.equal(shortDateFromYmd('2026-07-04', 'en', { fields: 'month-day', uppercase: true }), 'JUL 4');
-    assert.equal(shortDateFromYmd('2026-07-04', 'es', { fields: 'month-day', uppercase: true }), '4 JUL');
+    assert.equal(shortDateFromYmd('2026-07-04', 'es', { fields: 'month-day', uppercase: true }), 'JUL 4');
   });
 
-  test("CapexTab variant: month-year — 'Jul 2026' / 'jul 2026'", () => {
+  test("CapexTab variant: month-year — 'Jul 2026'", () => {
     assert.equal(shortDateFromYmd('2026-07-04', 'en', { fields: 'month-year' }), 'Jul 2026');
-    assert.equal(shortDateFromYmd('2026-07-04', 'es', { fields: 'month-year' }), 'jul 2026');
+    assert.equal(shortDateFromYmd('2026-07-04', 'es', { fields: 'month-year' }), 'Jul 2026');
   });
 
   test('parses AND renders in UTC — Jan 1 never slides to Dec 31 locally', () => {
@@ -96,10 +96,10 @@ describe('shortDateFromYmd', () => {
 // ─── shortDateFromDate (inventory HistoryPanel) ─────────────────────────────
 
 describe('shortDateFromDate', () => {
-  test("local render with the es-ES/en-US pair — 'Jan 5' / '5 ene'", () => {
+  test("local render stays English — 'Jan 5'", () => {
     // Input built with the local constructor → same wall-clock parts on any TZ.
     assert.equal(shortDateFromDate(new Date(2026, 0, 5), 'en'), 'Jan 5');
-    assert.equal(shortDateFromDate(new Date(2026, 0, 5), 'es'), '5 ene');
+    assert.equal(shortDateFromDate(new Date(2026, 0, 5), 'es'), 'Jan 5');
   });
 });
 
@@ -110,10 +110,10 @@ describe('fmtWhenAgo', () => {
   // date fallback are deterministic on every machine TZ.
   const NOW = new Date(2026, 2, 15, 12, 0, 0).getTime(); // local Mar 15 noon
 
-  test('same day → today / hoy', () => {
+  test('same day → today', () => {
     const iso = new Date(NOW - 3_600_000).toISOString();
     assert.equal(fmtWhenAgo(iso, 'en', NOW), 'today');
-    assert.equal(fmtWhenAgo(iso, 'es', NOW), 'hoy');
+    assert.equal(fmtWhenAgo(iso, 'es', NOW), 'today');
   });
 
   test('future timestamps also read today (original days <= 0 branch)', () => {
@@ -121,24 +121,24 @@ describe('fmtWhenAgo', () => {
     assert.equal(fmtWhenAgo(iso, 'en', NOW), 'today');
   });
 
-  test('1 day → yesterday / ayer', () => {
+  test('1 day → yesterday', () => {
     const iso = new Date(NOW - DAY).toISOString();
     assert.equal(fmtWhenAgo(iso, 'en', NOW), 'yesterday');
-    assert.equal(fmtWhenAgo(iso, 'es', NOW), 'ayer');
+    assert.equal(fmtWhenAgo(iso, 'es', NOW), 'yesterday');
   });
 
-  test('2–6 days → Nd ago / hace Nd', () => {
+  test('2–6 days → Nd ago', () => {
     const iso = new Date(NOW - 3 * DAY).toISOString();
     assert.equal(fmtWhenAgo(iso, 'en', NOW), '3d ago');
-    assert.equal(fmtWhenAgo(iso, 'es', NOW), 'hace 3d');
+    assert.equal(fmtWhenAgo(iso, 'es', NOW), '3d ago');
     const six = new Date(NOW - 6 * DAY).toISOString();
     assert.equal(fmtWhenAgo(six, 'en', NOW), '6d ago');
   });
 
-  test("7+ days → local short date with the es-US/en-US pair — 'Mar 5' / '5 mar'", () => {
+  test("7+ days → local short date — 'Mar 5'", () => {
     const iso = new Date(NOW - 10 * DAY).toISOString(); // local Mar 5 noon
     assert.equal(fmtWhenAgo(iso, 'en', NOW), 'Mar 5');
-    assert.equal(fmtWhenAgo(iso, 'es', NOW), '5 mar');
+    assert.equal(fmtWhenAgo(iso, 'es', NOW), 'Mar 5');
   });
 
   test("null / unparseable → ''", () => {
@@ -151,10 +151,10 @@ describe('fmtWhenAgo', () => {
 // ─── fmtWhenDateTime (dashboard LogBookCard) ────────────────────────────────
 
 describe('fmtWhenDateTime', () => {
-  test("local date+time with the bare es/en locales — 'Mar 5, 3:30 PM' / '5 mar, 15:30'", () => {
+  test("local date+time stays English — 'Mar 5, 3:30 PM'", () => {
     const iso = new Date(2026, 2, 5, 15, 30).toISOString();
     assert.equal(fmtWhenDateTime(iso, 'en'), 'Mar 5, 3:30 PM');
-    assert.equal(fmtWhenDateTime(iso, 'es'), '5 mar, 15:30');
+    assert.equal(fmtWhenDateTime(iso, 'es'), 'Mar 5, 3:30 PM');
   });
 
   test("invalid input → ''", () => {
@@ -219,9 +219,9 @@ describe('fmtTimeInZone', () => {
 // ─── monthLabelFromYm (financials page / CapexTab) ──────────────────────────
 
 describe('monthLabelFromYm', () => {
-  test("UTC-pinned long label — 'July 2026' / 'julio de 2026'", () => {
+  test("UTC-pinned long label — 'July 2026'", () => {
     assert.equal(monthLabelFromYm('2026-07', 'en'), 'July 2026');
-    assert.equal(monthLabelFromYm('2026-07', 'es'), 'julio de 2026');
+    assert.equal(monthLabelFromYm('2026-07', 'es'), 'July 2026');
   });
 
   test('January stays January on any machine TZ (timeZone: UTC)', () => {
@@ -236,10 +236,10 @@ describe('monthLabelFromYm', () => {
 // ─── currentMonthLabel (inventory ReportsPanel) ─────────────────────────────
 
 describe('currentMonthLabel', () => {
-  test("long LOCAL month with the es-ES/en-US pair — 'July' / 'julio'", () => {
+  test("long LOCAL month stays English — 'July'", () => {
     const now = new Date(2026, 6, 15); // local Jul 15
     assert.equal(currentMonthLabel('en', now), 'July');
-    assert.equal(currentMonthLabel('es', now), 'julio');
+    assert.equal(currentMonthLabel('es', now), 'July');
   });
 });
 
@@ -254,10 +254,10 @@ describe('shortMonthFromYmd', () => {
     });
   });
 
-  test('also accepts a YYYY-MM month key and uses the requested language', () => {
+  test('also accepts a YYYY-MM month key and stays English', () => {
     assert.equal(shortMonthFromYmd('2026-01', 'en'), 'Jan');
     assert.equal(shortMonthFromYmd('2026-07', 'en'), 'Jul');
-    assert.match(shortMonthFromYmd('2026-07', 'es'), /^jul\.?$/i);
+    assert.equal(shortMonthFromYmd('2026-07', 'es'), 'Jul');
   });
 
   test("malformed or out-of-range month → '—'", () => {

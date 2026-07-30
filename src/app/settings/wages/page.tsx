@@ -37,7 +37,7 @@ export default function WagesSettingsPage() {
     return (
       <AppLayout>
         <div style={{ padding: 24, fontFamily: fonts.sans, color: T.ink2 }}>
-          {lang === 'es' ? 'Acceso solo para gerentes.' : 'Manager access only.'}
+          {'Manager access only.'}
         </div>
       </AppLayout>
     );
@@ -53,7 +53,7 @@ function centsToInput(cents: number | null | undefined): string {
 }
 
 function WagesBody({ pid, lang }: { pid: string; lang: 'en' | 'es' }) {
-  const es = lang === 'es';
+  const es = false;
   const [data, setData] = useState<WageSettingsData | null>(null);
   const [roleInputs, setRoleInputs] = useState<Record<LaborRole, string>>(
     () => Object.fromEntries(LABOR_ROLE_DEPARTMENTS.map((d) => [d, ''])) as Record<LaborRole, string>,
@@ -70,7 +70,7 @@ function WagesBody({ pid, lang }: { pid: string; lang: 'en' | 'es' }) {
     setLoading(true);
     void fetchWageSettings(pid).then((d) => {
       if (!active) return;
-      if (!d) { setError(es ? 'No se pudieron cargar los salarios' : 'Failed to load wages'); setLoading(false); return; }
+      if (!d) { setError('Failed to load wages'); setLoading(false); return; }
       setData(d);
       setRoleInputs(
         Object.fromEntries(
@@ -86,11 +86,10 @@ function WagesBody({ pid, lang }: { pid: string; lang: 'en' | 'es' }) {
       // page stuck on "LOADING…" forever.
       console.error('[wages:settings] load failed', err);
       if (!active) return;
-      setError(es ? 'No se pudieron cargar los salarios' : 'Failed to load wages');
+      setError('Failed to load wages');
       setLoading(false);
     });
     return () => { active = false; };
-  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pid]);
 
   // Active staff grouped by department (overrides only make sense for people
@@ -113,7 +112,7 @@ function WagesBody({ pid, lang }: { pid: string; lang: 'en' | 'es' }) {
     // If the load never succeeded, the inputs are all blank — saving would
     // clear every role default and per-person override. Block it.
     if (!data) {
-      setError(es ? 'No se pudieron cargar los salarios. Recarga la página antes de guardar.' : 'Wages didn’t load. Refresh the page before saving.');
+      setError('Wages didn’t load. Refresh the page before saving.');
       return;
     }
     setError(null);
@@ -125,9 +124,7 @@ function WagesBody({ pid, lang }: { pid: string; lang: 'en' | 'es' }) {
       if (raw === '') { roleDefaults[dept] = null; continue; }
       const cents = parseDollarsToCents(raw);
       if (cents == null || cents <= 0 || cents > MAX_HOURLY_WAGE_CENTS) {
-        setError(es
-          ? `Salario inválido para ${deptMeta[dept].label} (usa un número entre $0 y $2,000)`
-          : `Invalid wage for ${deptMeta[dept].label} (use a number between $0 and $2,000)`);
+        setError(`Invalid wage for ${deptMeta[dept].label} (use a number between $0 and $2,000)`);
         return;
       }
       roleDefaults[dept] = cents;
@@ -140,9 +137,7 @@ function WagesBody({ pid, lang }: { pid: string; lang: 'en' | 'es' }) {
       if (raw === '') { overrides.push({ staffId: s.id, hourlyWageCents: null }); continue; }
       const cents = parseDollarsToCents(raw);
       if (cents == null || cents <= 0 || cents > MAX_HOURLY_WAGE_CENTS) {
-        setError(es
-          ? `Salario inválido para ${s.name || 'empleado'} (usa un número entre $0 y $2,000)`
-          : `Invalid wage for ${s.name || 'staff member'} (use a number between $0 and $2,000)`);
+        setError(`Invalid wage for ${s.name || 'staff member'} (use a number between $0 and $2,000)`);
         return;
       }
       overrides.push({ staffId: s.id, hourlyWageCents: cents });
@@ -152,7 +147,7 @@ function WagesBody({ pid, lang }: { pid: string; lang: 'en' | 'es' }) {
     try {
       const res = await saveWageSettings(pid, { roleDefaults, overrides });
       if (!res.ok || !res.data) {
-        setError(res.error || (es ? 'No se pudo guardar' : 'Save failed'));
+        setError(res.error || ('Save failed'));
         return;
       }
       // Re-seed from the server's fresh state.
@@ -170,7 +165,7 @@ function WagesBody({ pid, lang }: { pid: string; lang: 'en' | 'es' }) {
       // A network throw used to skip setSaving(false), freezing the button on
       // "Saving…" with no error and no way to retry.
       console.error('[wages:settings] save failed', err);
-      setError(es ? 'No se pudo guardar. Revisa tu conexión e intenta de nuevo' : 'Couldn’t save. Check your connection and try again');
+      setError('Couldn’t save. Check your connection and try again');
     } finally {
       setSaving(false);
     }
@@ -185,38 +180,34 @@ function WagesBody({ pid, lang }: { pid: string; lang: 'en' | 'es' }) {
           display: 'inline-flex', alignItems: 'center', gap: 4,
           fontFamily: fonts.sans, fontSize: 12, color: T.ink2, textDecoration: 'none', marginBottom: 14,
         }}>
-          <ChevronLeft size={14} /> {es ? 'Configuración' : 'Settings'}
+          <ChevronLeft size={14} /> {'Settings'}
         </Link>
 
         <div style={{ marginBottom: 22 }}>
-          <Caps>{es ? 'Configuración · Salarios' : 'Settings · Wages'}</Caps>
+          <Caps>{'Settings · Wages'}</Caps>
           <h1 style={{
             fontFamily: fonts.serif, fontSize: 36, color: T.ink, margin: '4px 0 0',
             letterSpacing: '-0.03em', lineHeight: 1.1, fontWeight: 400,
           }}>
-            <span style={{ fontStyle: 'italic' }}>{es ? 'Salarios por hora' : 'Hourly wages'}</span>
+            <span style={{ fontStyle: 'italic' }}>{'Hourly wages'}</span>
           </h1>
           <p style={{ fontFamily: fonts.sans, fontSize: 13, color: T.ink2, marginTop: 6, maxWidth: 600, lineHeight: 1.5 }}>
-            {es
-              ? 'Se usan para calcular el costo laboral de hoy como % de los ingresos en el panel. No registran tiempo nuevo: solo cuestan el horario publicado.'
-              : "Used to cost today's published schedule into the Labor Cost % tile on the dashboard. No new time tracking: these only price the schedule you already publish."}
+            {"Used to cost today's published schedule into the Labor Cost % tile on the dashboard. No new time tracking: these only price the schedule you already publish."}
           </p>
         </div>
 
         {loading ? (
-          <Caps>{es ? 'CARGANDO…' : 'LOADING…'}</Caps>
+          <Caps>{'LOADING…'}</Caps>
         ) : (
           <>
             {/* ── Section 1 — role defaults ─────────────────────────── */}
             <Card style={{ marginBottom: 16, padding: 0, overflow: 'hidden' }}>
               <div style={{ padding: '16px 20px 10px', borderBottom: `1px solid ${T.rule}` }}>
                 <div style={{ fontWeight: 600, fontSize: 15, color: T.ink }}>
-                  {es ? 'Salario por defecto por rol' : 'Default wage per role'}
+                  {'Default wage per role'}
                 </div>
                 <div style={{ fontSize: 12.5, color: T.ink2, marginTop: 3 }}>
-                  {es
-                    ? `Se aplica a cualquier persona de ese rol sin salario propio. En blanco usa el valor de referencia (${benchmarkLabel}/h).`
-                    : `Applies to anyone in that role without their own wage. Blank uses the benchmark (${benchmarkLabel}/hr).`}
+                  {`Applies to anyone in that role without their own wage. Blank uses the benchmark (${benchmarkLabel}/hr).`}
                 </div>
               </div>
               {LABOR_ROLE_DEPARTMENTS.map((dept, i) => (
@@ -231,7 +222,7 @@ function WagesBody({ pid, lang }: { pid: string; lang: 'en' | 'es' }) {
                   <MoneyInput
                     value={roleInputs[dept]}
                     onChange={(v) => setRoleInputs((p) => ({ ...p, [dept]: v }))}
-                    placeholder={es ? 'referencia' : 'benchmark'}
+                    placeholder={'benchmark'}
                   />
                 </div>
               ))}
@@ -241,16 +232,16 @@ function WagesBody({ pid, lang }: { pid: string; lang: 'en' | 'es' }) {
             <Card style={{ padding: 0, overflow: 'hidden' }}>
               <div style={{ padding: '16px 20px 10px', borderBottom: `1px solid ${T.rule}` }}>
                 <div style={{ fontWeight: 600, fontSize: 15, color: T.ink }}>
-                  {es ? 'Salarios por persona (opcional)' : 'Per-person wages (optional)'}
+                  {'Per-person wages (optional)'}
                 </div>
                 <div style={{ fontSize: 12.5, color: T.ink2, marginTop: 3 }}>
-                  {es ? 'En blanco usa el salario del rol.' : 'Blank uses the role default above.'}
+                  {'Blank uses the role default above.'}
                 </div>
               </div>
 
               {orderedDepts.length === 0 ? (
                 <div style={{ padding: '20px', textAlign: 'center', color: T.ink3, fontSize: 13 }}>
-                  {es ? 'No hay personal activo todavía.' : 'No active staff yet.'}
+                  {'No active staff yet.'}
                 </div>
               ) : (
                 orderedDepts.map((dept) => (
@@ -269,18 +260,18 @@ function WagesBody({ pid, lang }: { pid: string; lang: 'en' | 'es' }) {
                       }}>
                         <div style={{ minWidth: 0 }}>
                           <div style={{ fontSize: 14, color: T.ink, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                            {s.name || (es ? '(sin nombre)' : '(no name)')}
+                            {s.name || ('(no name)')}
                           </div>
                           {s.hourlyWageCents != null && (
                             <div style={{ fontSize: 11.5, color: T.ink3, marginTop: 1 }}>
-                              {es ? `base ${formatCents(s.hourlyWageCents)}/h` : `base ${formatCents(s.hourlyWageCents)}/hr`}
+                              {`base ${formatCents(s.hourlyWageCents)}/hr`}
                             </div>
                           )}
                         </div>
                         <MoneyInput
                           value={overrideInputs[s.id] ?? ''}
                           onChange={(v) => setOverrideInputs((p) => ({ ...p, [s.id]: v }))}
-                          placeholder={es ? 'rol' : 'role default'}
+                          placeholder={'role default'}
                         />
                       </div>
                     ))}
@@ -299,11 +290,11 @@ function WagesBody({ pid, lang }: { pid: string; lang: 'en' | 'es' }) {
             <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 12, marginTop: 16, alignItems: 'center' }}>
               {savedAt && (
                 <span style={{ fontFamily: fonts.mono, fontSize: 11, color: T.ink3, letterSpacing: '0.06em' }}>
-                  {es ? 'GUARDADO' : 'SAVED'} · {new Date(savedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                  {'SAVED'} · {new Date(savedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
                 </span>
               )}
               <Btn variant="primary" size="md" onClick={save} disabled={saving}>
-                {saving ? (es ? 'Guardando…' : 'Saving…') : (es ? 'Guardar' : 'Save')}
+                {saving ? ('Saving…') : ('Save')}
               </Btn>
             </div>
           </>
@@ -314,8 +305,7 @@ function WagesBody({ pid, lang }: { pid: string; lang: 'en' | 'es' }) {
 }
 
 function deptLabel(dept: LaborRole, es: boolean): string {
-  if (!es) return deptMeta[dept].label;
-  return { housekeeping: 'Limpieza', front_desk: 'Recepción', maintenance: 'Mantenimiento', other: 'Otro' }[dept];
+  return deptMeta[dept].label;
 }
 
 function MoneyInput({

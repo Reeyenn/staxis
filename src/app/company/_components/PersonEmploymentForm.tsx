@@ -103,19 +103,14 @@ const DEPARTMENTS: readonly StaffDepartment[] = [
 
 const STAFF_WRITE_TIMEOUT_MS = 15_000;
 
-function copy(lang: HotelTeamLang, en: string, es: string): string {
-  return lang === 'es' ? es : en;
-}
-
 function departmentLabel(value: string | undefined, lang: HotelTeamLang): string {
-  const labels: Record<string, [string, string]> = {
-    housekeeping: ['Housekeeping', 'Limpieza'],
-    front_desk: ['Front Desk', 'Recepción'],
-    maintenance: ['Maintenance', 'Mantenimiento'],
-    other: ['Other', 'Otro'],
+  const labels: Record<string, string> = {
+    housekeeping: 'Housekeeping',
+    front_desk: 'Front Desk',
+    maintenance: 'Maintenance',
+    other: 'Other',
   };
-  const pair = labels[value ?? 'other'] ?? labels.other;
-  return copy(lang, pair[0], pair[1]);
+  return labels[value ?? 'other'] ?? labels.other;
 }
 
 function draftFrom(
@@ -270,11 +265,7 @@ export function PersonEmploymentForm({
       let timeoutId: ReturnType<typeof setTimeout> | undefined;
       const timeout = new Promise<never>((_, reject) => {
         timeoutId = setTimeout(
-          () => reject(new Error(copy(
-            lang,
-            'Saving took too long. Check your connection and try again.',
-            'El guardado tardó demasiado. Revisa tu conexión e inténtalo de nuevo.',
-          ))),
+          () => reject(new Error('Saving took too long. Check your connection and try again.')),
           STAFF_WRITE_TIMEOUT_MS,
         );
       });
@@ -284,7 +275,7 @@ export function PersonEmploymentForm({
         if (timeoutId) clearTimeout(timeoutId);
       }
 
-      if (!savedStaffId) throw new Error(copy(lang, 'Save failed.', 'No se pudo guardar.'));
+      if (!savedStaffId) throw new Error('Save failed.');
 
       // Phone: written only after real input on an existing person, always on a
       // brand-new one so the field is initialized.
@@ -296,11 +287,7 @@ export function PersonEmploymentForm({
           body: JSON.stringify({ propertyId: hotelId, staffId: savedStaffId, phone: desiredPhone }),
         });
         if (!response.ok) {
-          throw new Error(copy(
-            lang,
-            "Details saved, but the phone number couldn't be updated. Try again.",
-            'Los detalles se guardaron, pero no se pudo actualizar el teléfono. Inténtalo de nuevo.',
-          ));
+          throw new Error("Details saved, but the phone number couldn't be updated. Try again.");
         }
         onContactSaved(savedStaffId, desiredPhone || null);
       }
@@ -315,11 +302,7 @@ export function PersonEmploymentForm({
             body: JSON.stringify({ hotelId, accountId: linkedAccountId, staffId: null }),
           });
           if (!detach.ok) {
-            throw new Error(copy(
-              lang,
-              "Details saved, but the login couldn't be unlinked. Try again.",
-              'Los detalles se guardaron, pero no se pudo desvincular el acceso. Inténtalo de nuevo.',
-            ));
+            throw new Error("Details saved, but the login couldn't be unlinked. Try again.");
           }
         }
         if (nextAccountId) {
@@ -329,11 +312,7 @@ export function PersonEmploymentForm({
             body: JSON.stringify({ hotelId, accountId: nextAccountId, staffId: savedStaffId }),
           });
           if (!attach.ok) {
-            throw new Error(copy(
-              lang,
-              "Details saved, but the login couldn't be linked. Try again.",
-              'Los detalles se guardaron, pero no se pudo vincular el acceso. Inténtalo de nuevo.',
-            ));
+            throw new Error("Details saved, but the login couldn't be linked. Try again.");
           }
         }
       }
@@ -348,11 +327,7 @@ export function PersonEmploymentForm({
           body: JSON.stringify({ propertyId: hotelId, staffId: savedStaffId, hourlyWage: desiredWage }),
         });
         if (!response.ok) {
-          throw new Error(copy(
-            lang,
-            "Details saved, but the pay rate couldn't be updated. Try again.",
-            'Los detalles se guardaron, pero no se pudo actualizar el salario. Inténtalo de nuevo.',
-          ));
+          throw new Error("Details saved, but the pay rate couldn't be updated. Try again.");
         }
         onWageSaved(savedStaffId, desiredWage);
       }
@@ -372,11 +347,7 @@ export function PersonEmploymentForm({
             }),
           });
           if (!response.ok) {
-            throw new Error(copy(
-              lang,
-              "Details saved, but the automatic room assignment setting couldn't be changed. Try again.",
-              'Los detalles se guardaron, pero no se pudo cambiar el reparto automático de cuartos. Inténtalo de nuevo.',
-            ));
+            throw new Error("Details saved, but the automatic room assignment setting couldn't be changed. Try again.");
           }
         }
       }
@@ -402,7 +373,7 @@ export function PersonEmploymentForm({
       console.error('[PersonEmploymentForm] save failed', saveError);
       setError(saveError instanceof Error && saveError.message
         ? saveError.message
-        : copy(lang, 'Save failed. Please try again.', 'No se pudo guardar. Inténtalo de nuevo.'));
+        : 'Save failed. Please try again.');
     } finally {
       setSaving(false);
     }
@@ -419,11 +390,7 @@ export function PersonEmploymentForm({
     } catch (deleteError) {
       console.error('[PersonEmploymentForm] delete failed', deleteError);
       setDeleteConfirming(false);
-      setError(copy(
-        lang,
-        "Couldn't remove this person from the schedule. Try again.",
-        'No se pudo quitar a esta persona del horario. Inténtalo de nuevo.',
-      ));
+      setError("Couldn't remove this person from the schedule. Try again.");
     } finally {
       setSaving(false);
     }
@@ -439,16 +406,12 @@ export function PersonEmploymentForm({
         <div className={styles.employmentHeader}>
           <span className={styles.sectionIcon}><UserRoundCog size={18} aria-hidden="true" /></span>
           <div>
-            <span>{copy(lang, 'Employment', 'Empleo')}</span>
-            <h3 id={headingId}>{copy(lang, 'No schedule profile', 'Sin perfil de horario')}</h3>
+            <span>{'Employment'}</span>
+            <h3 id={headingId}>{'No schedule profile'}</h3>
           </div>
         </div>
         <p className={styles.employmentCopy}>
-          {copy(
-            lang,
-            'This person has a login but no schedule profile, so they do not appear on schedules, the housekeeping board, or printed rosters. Add them with the Add button on a department, then open that person and link this login.',
-            'Esta persona tiene acceso pero no tiene perfil de horario, así que no aparece en los horarios, el tablero de limpieza ni las listas impresas. Agrégala con el botón Agregar de un departamento y luego abre esa persona y vincula este acceso.',
-          )}
+          {'This person has a login but no schedule profile, so they do not appear on schedules, the housekeeping board, or printed rosters. Add them with the Add button on a department, then open that person and link this login.'}
         </p>
       </section>
     );
@@ -461,36 +424,28 @@ export function PersonEmploymentForm({
         <div className={styles.employmentHeader}>
           <span className={styles.sectionIcon}><UserRoundCog size={18} aria-hidden="true" /></span>
           <div>
-            <span>{copy(lang, 'Employment', 'Empleo')}</span>
-            <h3 id={headingId}>{copy(lang, 'Schedule profile', 'Perfil de horario')}</h3>
+            <span>{'Employment'}</span>
+            <h3 id={headingId}>{'Schedule profile'}</h3>
           </div>
         </div>
         <dl className={styles.employmentFacts}>
           <div>
-            <dt>{copy(lang, 'Department', 'Departamento')}</dt>
+            <dt>{'Department'}</dt>
             <dd>{departmentLabel(staff.department, lang)}</dd>
           </div>
           <div>
-            <dt>{copy(lang, 'Hours cap', 'Límite de horas')}</dt>
-            <dd>{copy(
-              lang,
-              `${staff.maxWeeklyHours ?? 40}h · ${staff.maxDaysPerWeek ?? 5} days`,
-              `${staff.maxWeeklyHours ?? 40} h · ${staff.maxDaysPerWeek ?? 5} días`,
-            )}</dd>
+            <dt>{'Hours cap'}</dt>
+            <dd>{`${staff.maxWeeklyHours ?? 40}h · ${staff.maxDaysPerWeek ?? 5} days`}</dd>
           </div>
           <div>
-            <dt>{copy(lang, 'Status', 'Estado')}</dt>
+            <dt>{'Status'}</dt>
             <dd>{staff.isActive === false
-              ? copy(lang, 'Inactive', 'Inactivo')
-              : copy(lang, 'Active', 'Activo')}</dd>
+              ? 'Inactive'
+              : 'Active'}</dd>
           </div>
         </dl>
         <p className={styles.employmentCopy}>
-          {copy(
-            lang,
-            'You do not have permission to change this person’s employment details.',
-            'No tienes permiso para cambiar los datos de empleo de esta persona.',
-          )}
+          {'You do not have permission to change this person’s employment details.'}
         </p>
       </section>
     );
@@ -501,14 +456,14 @@ export function PersonEmploymentForm({
       <div className={styles.employmentHeader}>
         <span className={styles.sectionIcon}><UserRoundCog size={18} aria-hidden="true" /></span>
         <div>
-          <span>{copy(lang, 'Employment', 'Empleo')}</span>
-          <h3 id={headingId}>{copy(lang, 'Schedule profile and pay', 'Perfil de horario y pago')}</h3>
+          <span>{'Employment'}</span>
+          <h3 id={headingId}>{'Schedule profile and pay'}</h3>
         </div>
       </div>
 
       <div className={styles.dialogForm}>
         <label className={styles.field} htmlFor={nameId}>
-          <span>{copy(lang, 'Name', 'Nombre')}</span>
+          <span>{'Name'}</span>
           <input
             id={nameId}
             type="text"
@@ -521,7 +476,7 @@ export function PersonEmploymentForm({
         </label>
 
         <div className={styles.field}>
-          <span id={departmentLabelId}>{copy(lang, 'Department', 'Departamento')}</span>
+          <span id={departmentLabelId}>{'Department'}</span>
           <div className={styles.choiceRow} role="group" aria-labelledby={departmentLabelId}>
             {DEPARTMENTS.map((department) => (
               <button
@@ -539,7 +494,7 @@ export function PersonEmploymentForm({
         </div>
 
         <label className={styles.field} htmlFor={phoneId}>
-          <span>{copy(lang, 'Phone', 'Teléfono')}</span>
+          <span>{'Phone'}</span>
           <input
             id={phoneId}
             type="tel"
@@ -555,16 +510,12 @@ export function PersonEmploymentForm({
             disabled={saving}
           />
           {contactsUnavailable ? (
-            <small className={styles.cautionText}>{copy(
-              lang,
-              'Phone numbers could not be loaded. Saving this field will overwrite the stored number.',
-              'No se pudieron cargar los teléfonos. Guardar este campo sobrescribirá el número guardado.',
-            )}</small>
+            <small className={styles.cautionText}>{'Phone numbers could not be loaded. Saving this field will overwrite the stored number.'}</small>
           ) : null}
         </label>
 
         <div className={styles.field}>
-          <span id={languageLabelId}>{copy(lang, 'Preferred language', 'Idioma preferido')}</span>
+          <span id={languageLabelId}>{'Preferred language'}</span>
           <div className={styles.choiceRow} role="group" aria-labelledby={languageLabelId}>
             {(['en', 'es'] as const).map((value) => (
               <button
@@ -586,7 +537,7 @@ export function PersonEmploymentForm({
             again server-side. */}
         {canViewWages ? (
           <label className={styles.field} htmlFor={wageId}>
-            <span>{copy(lang, 'Hourly pay', 'Pago por hora')}</span>
+            <span>{'Hourly pay'}</span>
             <input
               id={wageId}
               type="number"
@@ -609,7 +560,7 @@ export function PersonEmploymentForm({
 
         <div className={styles.fieldGrid}>
           <label className={styles.field} htmlFor={maxHoursId}>
-            <span>{copy(lang, 'Max hours per week', 'Máx. horas por semana')}</span>
+            <span>{'Max hours per week'}</span>
             <DraftNumberInput
               value={draft.maxWeeklyHours}
               onCommit={(value) => { setDraft((c) => ({ ...c, maxWeeklyHours: value })); setSaved(false); }}
@@ -620,7 +571,7 @@ export function PersonEmploymentForm({
             />
           </label>
           <label className={styles.field} htmlFor={maxDaysId}>
-            <span>{copy(lang, 'Max days per week', 'Máx. días por semana')}</span>
+            <span>{'Max days per week'}</span>
             <DraftNumberInput
               value={draft.maxDaysPerWeek}
               onCommit={(value) => { setDraft((c) => ({ ...c, maxDaysPerWeek: value })); setSaved(false); }}
@@ -637,7 +588,7 @@ export function PersonEmploymentForm({
             housekeeping board shows "EXCLUDED" and cannot clear it. */}
         {draft.department === 'housekeeping' ? (
           <label className={styles.field} htmlFor={priorityId}>
-            <span>{copy(lang, 'Automatic room assignment', 'Reparto automático de cuartos')}</span>
+            <span>{'Automatic room assignment'}</span>
             <select
               id={priorityId}
               aria-describedby={priorityHintId}
@@ -648,33 +599,17 @@ export function PersonEmploymentForm({
               }}
               disabled={saving}
             >
-              <option value="priority">{copy(
-                lang,
-                'First: give them rooms before the others',
-                'Primero: dale cuartos antes que a los demás',
-              )}</option>
-              <option value="normal">{copy(
-                lang,
-                'Normal: share the work evenly',
-                'Normal: reparto parejo',
-              )}</option>
-              <option value="excluded">{copy(
-                lang,
-                'Never: don’t hand them rooms automatically',
-                'Nunca: no le repartas cuartos automáticamente',
-              )}</option>
+              <option value="priority">{'First: give them rooms before the others'}</option>
+              <option value="normal">{'Normal: share the work evenly'}</option>
+              <option value="excluded">{'Never: don’t hand them rooms automatically'}</option>
             </select>
-            <small id={priorityHintId}>{copy(
-              lang,
-              'How soon they get rooms when the board hands out the day’s work.',
-              'Qué tan pronto le toca cuando el tablero reparte los cuartos del día.',
-            )}</small>
+            <small id={priorityHintId}>{'How soon they get rooms when the board hands out the day’s work.'}</small>
           </label>
         ) : null}
 
         <div className={styles.toggleRow}>
           <label className={styles.toggleField}>
-            <span>{copy(lang, 'On the active roster', 'En el registro activo')}</span>
+            <span>{'On the active roster'}</span>
             <input
               type="checkbox"
               checked={draft.isActive}
@@ -683,7 +618,7 @@ export function PersonEmploymentForm({
             />
           </label>
           <label className={styles.toggleField}>
-            <span>{copy(lang, 'Senior', 'Sénior')}</span>
+            <span>{'Senior'}</span>
             <input
               type="checkbox"
               checked={draft.isSenior}
@@ -694,7 +629,7 @@ export function PersonEmploymentForm({
         </div>
 
         <label className={styles.field} htmlFor={loginId}>
-          <span>{copy(lang, 'Linked login', 'Acceso vinculado')}</span>
+          <span>{'Linked login'}</span>
           <select
             id={loginId}
             aria-describedby={loginHintId}
@@ -702,22 +637,18 @@ export function PersonEmploymentForm({
             onChange={(event) => { setNextAccountId(event.target.value || null); setSaved(false); }}
             disabled={saving}
           >
-            <option value="">{copy(lang, 'No login linked', 'Sin acceso vinculado')}</option>
+            <option value="">{'No login linked'}</option>
             {linkableAccounts.map((account) => (
               <option key={account.accountId} value={account.accountId}>
                 {`${account.displayName} (@${account.username})`}
               </option>
             ))}
           </select>
-          <small id={loginHintId}>{copy(
-            lang,
-            'The linked login sees this person’s own shifts in My Shifts. Without a link that page stays empty.',
-            'El acceso vinculado ve sus propios turnos en Mis turnos. Sin vínculo, esa página queda vacía.',
-          )}</small>
+          <small id={loginHintId}>{'The linked login sees this person’s own shifts in My Shifts. Without a link that page stays empty.'}</small>
         </label>
 
         <label className={styles.field} htmlFor={vacationId}>
-          <span>{copy(lang, 'Vacation dates', 'Fechas de vacaciones')}</span>
+          <span>{'Vacation dates'}</span>
           <textarea
             id={vacationId}
             aria-describedby={vacationHintId}
@@ -727,19 +658,15 @@ export function PersonEmploymentForm({
             placeholder="2026-06-15"
             disabled={saving}
           />
-          <small id={vacationHintId}>{copy(
-            lang,
-            'One per line, YYYY-MM-DD.',
-            'Una por línea, AAAA-MM-DD.',
-          )}</small>
+          <small id={vacationHintId}>{'One per line, YYYY-MM-DD.'}</small>
         </label>
 
         {saved && !error ? (
           <div className={styles.successNotice} role="status">
             <CheckCircle2 size={18} aria-hidden="true" />
             <div>
-              <strong>{copy(lang, 'Employment details saved', 'Datos de empleo guardados')}</strong>
-              <span>{copy(lang, 'The roster is up to date.', 'El registro está actualizado.')}</span>
+              <strong>{'Employment details saved'}</strong>
+              <span>{'The roster is up to date.'}</span>
             </div>
           </div>
         ) : null}
@@ -758,16 +685,8 @@ export function PersonEmploymentForm({
             tabIndex={-1}
             aria-labelledby={deleteHeadingId}
           >
-            <h3 id={deleteHeadingId}>{copy(
-              lang,
-              `Remove ${staff.name} from the schedule?`,
-              `¿Quitar a ${staff.name} del horario?`,
-            )}</h3>
-            <p>{copy(
-              lang,
-              'Their schedule history is deleted too. Any login they have is kept and keeps working.',
-              'También se elimina su historial de horarios. Si tiene un acceso, se conserva y sigue funcionando.',
-            )}</p>
+            <h3 id={deleteHeadingId}>{`Remove ${staff.name} from the schedule?`}</h3>
+            <p>{'Their schedule history is deleted too. Any login they have is kept and keeps working.'}</p>
             <div className={styles.lifecycleConfirmationActions}>
               <button
                 type="button"
@@ -775,7 +694,7 @@ export function PersonEmploymentForm({
                 onClick={() => setDeleteConfirming(false)}
                 disabled={saving}
               >
-                {copy(lang, 'Keep them', 'Conservar')}
+                {'Keep them'}
               </button>
               <button
                 type="button"
@@ -783,7 +702,7 @@ export function PersonEmploymentForm({
                 onClick={() => void remove()}
                 disabled={saving}
               >
-                {copy(lang, 'Remove from schedule', 'Quitar del horario')}
+                {'Remove from schedule'}
               </button>
             </div>
           </div>
@@ -797,7 +716,7 @@ export function PersonEmploymentForm({
             disabled={saving || deleteConfirming}
           >
             <Trash2 size={15} aria-hidden="true" />
-            {copy(lang, 'Remove from schedule', 'Quitar del horario')}
+            {'Remove from schedule'}
           </button>
           <button
             type="button"
@@ -806,8 +725,8 @@ export function PersonEmploymentForm({
             disabled={saving || !trimmedName || deleteConfirming}
           >
             {saving
-              ? <><span className={styles.buttonSpinner} aria-hidden="true" />{copy(lang, 'Saving…', 'Guardando…')}</>
-              : copy(lang, 'Save employment details', 'Guardar datos de empleo')}
+              ? <><span className={styles.buttonSpinner} aria-hidden="true" />{'Saving…'}</>
+              : 'Save employment details'}
           </button>
         </div>
       </div>

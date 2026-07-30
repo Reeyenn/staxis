@@ -21,7 +21,7 @@ export type ReportCategory =
   | 'activity'
   | 'lost_found';
 
-/** Bilingual label. EN + ES per CLAUDE.md. */
+/** Bilingual label retained for report/export contract compatibility. */
 export interface Bilingual {
   en: string;
   es: string;

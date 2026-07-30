@@ -188,7 +188,7 @@ export function RequestModal({
         </Field>
         {form.pendingLines.length > 0 && (
           <div style={{ padding: '10px 12px', borderRadius: 10, background: T.sageDim, fontFamily: FONT_SANS, fontSize: 12, color: T.ink2 }}>
-            {form.pendingLines.length} {S.lineItems.toLowerCase()} {lang === 'es' ? 'del escaneo se agregarán' : 'from the scan will be added'}.
+            {form.pendingLines.length} {S.lineItems.toLowerCase()} {'from the scan will be added'}.
           </div>
         )}
         <Field label={`${S.description} (${S.optional})`}>

@@ -55,14 +55,15 @@ interface RunResult {
   aiSummary: string | null;
 }
 
+// The shared report DTO still requires both fields; product chrome reads en.
 const CATEGORY_LABEL: Record<ReportCategory, Bilingual> = {
-  housekeeping: { en: 'Housekeeping', es: 'Limpieza' },
-  inspections: { en: 'Inspections', es: 'Inspecciones' },
-  maintenance: { en: 'Maintenance', es: 'Mantenimiento' },
-  inventory: { en: 'Inventory', es: 'Inventario' },
-  occupancy: { en: 'Occupancy', es: 'Ocupación' },
-  activity: { en: 'Activity', es: 'Actividad' },
-  lost_found: { en: 'Lost & Found', es: 'Objetos perdidos' },
+  housekeeping: { en: 'Housekeeping', es: 'Housekeeping' },
+  inspections: { en: 'Inspections', es: 'Inspections' },
+  maintenance: { en: 'Maintenance', es: 'Maintenance' },
+  inventory: { en: 'Inventory', es: 'Inventory' },
+  occupancy: { en: 'Occupancy', es: 'Occupancy' },
+  activity: { en: 'Activity', es: 'Activity' },
+  lost_found: { en: 'Lost & Found', es: 'Lost & Found' },
 };
 
 const CATEGORY_ORDER: ReportCategory[] = [
@@ -80,22 +81,20 @@ export default function ReportsPage() {
   const canDelivery = can('manage_notifications');
 
   if (!uid) {
-    return <AppLayout><div style={{ padding: 24 }}>{lang === 'es' ? 'Inicia sesión para continuar.' : 'Sign in to continue.'}</div></AppLayout>;
+    return <AppLayout><div style={{ padding: 24 }}>{'Sign in to continue.'}</div></AppLayout>;
   }
   if (!canReports && !canDelivery) {
     return (
       <AppLayout>
         <div style={{ padding: 24, maxWidth: 520, margin: '40px auto', textAlign: 'center' }}>
           <h1 style={{ fontFamily: fonts.serif, fontSize: 24, color: T.ink, marginBottom: 12 }}>
-            {lang === 'es' ? 'Acceso restringido' : 'You don’t have access'}
+            {'You don’t have access'}
           </h1>
           <p style={{ fontFamily: fonts.sans, fontSize: 14, color: T.ink2, marginBottom: 20 }}>
-            {lang === 'es'
-              ? 'Los reportes solo están disponibles para gerentes, propietarios y administradores.'
-              : 'Reports are restricted to managers, owners, and admins.'}
+            {'Reports are restricted to managers, owners, and admins.'}
           </p>
           <Link href="/settings">
-            <Btn variant="ghost"><ChevronLeft size={14} /> {lang === 'es' ? 'Volver' : 'Back to Settings'}</Btn>
+            <Btn variant="ghost"><ChevronLeft size={14} /> {'Back to Settings'}</Btn>
           </Link>
         </div>
       </AppLayout>
@@ -170,20 +169,20 @@ function ReportsBody({ pid, lang, timezone, canReports, canDelivery }: { pid: st
   const header = (
     <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
       <Link href="/settings" style={{ textDecoration: 'none', color: T.ink2 }}>
-        <Btn variant="ghost" size="sm"><ChevronLeft size={14} /> {lang === 'es' ? 'Ajustes' : 'Settings'}</Btn>
+        <Btn variant="ghost" size="sm"><ChevronLeft size={14} /> {'Settings'}</Btn>
       </Link>
       <h1 style={{ fontFamily: fonts.serif, fontSize: 26, lineHeight: 1.1, color: T.ink, margin: 0, letterSpacing: '-0.01em' }}>
-        {lang === 'es' ? 'Reportes' : 'Reports'}
+        {'Reports'}
       </h1>
     </div>
   );
   const tabsEl = (canReports && canDelivery) ? (
     <div style={{ display: 'inline-flex', alignSelf: 'flex-start', background: T.paper, border: `1px solid ${T.rule}`, borderRadius: 999, padding: 3, gap: 2 }}>
       <button onClick={() => setTab('reports')} style={segTabStyle(tab === 'reports')}>
-        {lang === 'es' ? 'Generar reporte' : 'Run a report'}
+        {'Run a report'}
       </button>
       <button onClick={() => setTab('delivery')} style={segTabStyle(tab === 'delivery')}>
-        {lang === 'es' ? 'Envío automático' : 'Auto-send'}
+        {'Auto-send'}
       </button>
     </div>
   ) : null;
@@ -226,9 +225,7 @@ function ReportsBody({ pid, lang, timezone, canReports, canDelivery }: { pid: st
       {header}
       {tabsEl}
       <p style={{ fontFamily: fonts.sans, fontSize: 14, color: T.ink2, margin: 0, maxWidth: 640 }}>
-        {lang === 'es'
-          ? 'Genera cualquier reporte cuando lo necesites, expórtalo o márcalo como favorito.'
-          : 'Run any report on demand, export it, or star your favorites.'}
+        {'Run any report on demand, export it, or star your favorites.'}
       </p>
 
       {error && (
@@ -237,12 +234,12 @@ function ReportsBody({ pid, lang, timezone, canReports, canDelivery }: { pid: st
 
       {loadingCatalog && catalog.length === 0 && (
         <div style={{ fontFamily: fonts.mono, fontSize: 11, color: T.ink3, textTransform: 'uppercase', letterSpacing: '0.04em' }}>
-          {lang === 'es' ? 'Cargando…' : 'Loading…'}
+          {'Loading…'}
         </div>
       )}
 
       {favs.length > 0 && (
-        <Section title={lang === 'es' ? '★ Favoritos' : '★ Favorites'}>
+        <Section title={'★ Favorites'}>
           <CardGrid>
             {favs.map((c) => (
               <ReportCard key={c.key} entry={c} lang={lang} favorited onOpen={() => setSelected(c)} onStar={() => toggleFavorite(c.key)} />
@@ -252,7 +249,7 @@ function ReportsBody({ pid, lang, timezone, canReports, canDelivery }: { pid: st
       )}
 
       {grouped.map((g) => (
-        <Section key={g.cat} title={CATEGORY_LABEL[g.cat][lang]}>
+        <Section key={g.cat} title={CATEGORY_LABEL[g.cat]['en']}>
           <CardGrid>
             {g.items.map((c) => (
               <ReportCard key={c.key} entry={c} lang={lang} favorited={favorites.has(c.key)} onOpen={() => setSelected(c)} onStar={() => toggleFavorite(c.key)} />
@@ -282,7 +279,7 @@ function ReportCard({ entry, lang, favorited, onOpen, onStar }: {
   return (
     <div style={{ border: `1px solid ${T.rule}`, borderRadius: 12, padding: 14, background: T.paper, display: 'flex', flexDirection: 'column', gap: 8, minHeight: 120 }}>
       <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 8 }}>
-        <h3 style={{ fontFamily: fonts.serif, fontSize: 17, color: T.ink, margin: 0, lineHeight: 1.2 }}>{entry.title[lang]}</h3>
+        <h3 style={{ fontFamily: fonts.serif, fontSize: 17, color: T.ink, margin: 0, lineHeight: 1.2 }}>{entry.title['en']}</h3>
         <button
           onClick={onStar}
           aria-label={favorited ? 'Unfavorite' : 'Favorite'}
@@ -291,9 +288,9 @@ function ReportCard({ entry, lang, favorited, onOpen, onStar }: {
           <Star size={16} fill={favorited ? T.caramel : 'none'} />
         </button>
       </div>
-      <p style={{ fontFamily: fonts.sans, fontSize: 12.5, color: T.ink2, margin: 0, flex: 1, lineHeight: 1.4 }}>{entry.description[lang]}</p>
+      <p style={{ fontFamily: fonts.sans, fontSize: 12.5, color: T.ink2, margin: 0, flex: 1, lineHeight: 1.4 }}>{entry.description['en']}</p>
       <div>
-        <Btn variant="ghost" size="sm" onClick={onOpen}><Play size={13} /> {lang === 'es' ? 'Abrir' : 'Open'}</Btn>
+        <Btn variant="ghost" size="sm" onClick={onOpen}><Play size={13} /> {'Open'}</Btn>
       </div>
     </div>
   );
@@ -363,19 +360,19 @@ function ReportRunner({ pid, lang, timezone, entry, favorited, onToggleFavorite,
     <div style={{ padding: '16px 16px 40px', display: 'flex', flexDirection: 'column', gap: 14, maxWidth: 1100, margin: '0 auto', width: '100%' }}>
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, flexWrap: 'wrap' }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-          <Btn variant="ghost" size="sm" onClick={onBack}><ChevronLeft size={14} /> {lang === 'es' ? 'Reportes' : 'Reports'}</Btn>
-          <h1 style={{ fontFamily: fonts.serif, fontSize: 24, color: T.ink, margin: 0, letterSpacing: '-0.01em' }}>{entry.title[lang]}</h1>
+          <Btn variant="ghost" size="sm" onClick={onBack}><ChevronLeft size={14} /> {'Reports'}</Btn>
+          <h1 style={{ fontFamily: fonts.serif, fontSize: 24, color: T.ink, margin: 0, letterSpacing: '-0.01em' }}>{entry.title['en']}</h1>
         </div>
         <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
           <Btn variant="ghost" size="sm" onClick={onToggleFavorite}>
-            <Star size={14} fill={favorited ? T.caramel : 'none'} /> {favorited ? (lang === 'es' ? 'Favorito' : 'Favorited') : (lang === 'es' ? 'Favorito' : 'Favorite')}
+            <Star size={14} fill={favorited ? T.caramel : 'none'} /> {favorited ? ('Favorited') : ('Favorite')}
           </Btn>
           <Btn variant="ghost" size="sm" onClick={() => handleExport('csv')}><Download size={14} /> CSV</Btn>
           <Btn variant="ghost" size="sm" onClick={() => handleExport('xlsx')}><Download size={14} /> Excel</Btn>
         </div>
       </div>
 
-      <p style={{ fontFamily: fonts.sans, fontSize: 13.5, color: T.ink2, margin: 0, maxWidth: 680 }}>{entry.description[lang]}</p>
+      <p style={{ fontFamily: fonts.sans, fontSize: 13.5, color: T.ink2, margin: 0, maxWidth: 680 }}>{entry.description['en']}</p>
 
       {/* Date range */}
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
@@ -401,7 +398,7 @@ function ReportRunner({ pid, lang, timezone, entry, favorited, onToggleFavorite,
             <input type="date" value={customTo} onChange={(e) => setCustomTo(e.target.value)} style={dateInputStyle} />
           </div>
         )}
-        <Btn variant="ghost" size="sm" onClick={() => void run()}><Play size={13} /> {lang === 'es' ? 'Actualizar' : 'Run'}</Btn>
+        <Btn variant="ghost" size="sm" onClick={() => void run()}><Play size={13} /> {'Run'}</Btn>
       </div>
 
       {error && (
@@ -421,7 +418,7 @@ function ReportRunner({ pid, lang, timezone, entry, favorited, onToggleFavorite,
         <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
           {result.stats.map((s, i) => (
             <div key={i} style={{ border: `1px solid ${T.rule}`, borderRadius: 10, padding: '8px 14px', background: T.paper, minWidth: 120 }}>
-              <Caps>{s.label[lang]}</Caps>
+              <Caps>{s.label['en']}</Caps>
               <div style={{ fontFamily: fonts.serif, fontSize: 22, color: T.ink, marginTop: 2 }}>{s.value}</div>
             </div>
           ))}
@@ -430,7 +427,7 @@ function ReportRunner({ pid, lang, timezone, entry, favorited, onToggleFavorite,
 
       {loading && (
         <div style={{ fontFamily: fonts.mono, fontSize: 11, color: T.ink3, textTransform: 'uppercase', letterSpacing: '0.04em' }}>
-          {lang === 'es' ? 'Ejecutando…' : 'Running…'}
+          {'Running…'}
         </div>
       )}
 
@@ -438,7 +435,7 @@ function ReportRunner({ pid, lang, timezone, entry, favorited, onToggleFavorite,
       {result && <ResultTable result={result} lang={lang} />}
 
       {result?.notes && (
-        <div style={{ fontFamily: fonts.sans, fontSize: 12, color: T.ink3 }}>{result.notes[lang]}</div>
+        <div style={{ fontFamily: fonts.sans, fontSize: 12, color: T.ink3 }}>{result.notes['en']}</div>
       )}
     </div>
   );
@@ -451,12 +448,12 @@ function ResultTable({ result, lang }: { result: RunResult; lang: Lang }) {
     <div style={{ border: `1px solid ${T.rule}`, borderRadius: 12, overflow: 'auto', background: T.paper }}>
       <div style={{ display: 'grid', gridTemplateColumns: grid, gap: 10, padding: '10px 14px', borderBottom: `1px solid ${T.rule}`, minWidth: 'fit-content' }}>
         {cols.map((c) => (
-          <div key={c.key} style={{ textAlign: c.align ?? 'left' }}><Caps>{c.label[lang]}</Caps></div>
+          <div key={c.key} style={{ textAlign: c.align ?? 'left' }}><Caps>{c.label['en']}</Caps></div>
         ))}
       </div>
       {result.rows.length === 0 && (
         <div style={{ padding: '20px 14px', color: T.ink3, fontFamily: fonts.sans, fontSize: 13 }}>
-          {lang === 'es' ? 'No hay datos en este intervalo.' : 'No data in this range.'}
+          {'No data in this range.'}
         </div>
       )}
       {result.rows.map((row, i) => (
@@ -473,9 +470,7 @@ function ResultTable({ result, lang }: { result: RunResult; lang: Lang }) {
 }
 
 function rangeLabel(k: RangeKey, lang: Lang): string {
-  if (lang === 'es') {
-    return k === 'last7' ? 'Últimos 7 días' : k === 'last30' ? 'Últimos 30 días' : k === 'mtd' ? 'Mes a la fecha' : 'Personalizado';
-  }
+
   return k === 'last7' ? 'Last 7 days' : k === 'last30' ? 'Last 30 days' : k === 'mtd' ? 'Month to date' : 'Custom';
 }
 

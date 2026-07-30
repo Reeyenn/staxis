@@ -144,36 +144,36 @@ const S = {
   //    approvals were not wired up yet; see the note on HotelQueue below. ──
   hotelSub: {
     en: 'What Staxis noticed here, and anything waiting on your decision.',
-    es: 'Lo que Staxis notó aquí y lo que espera tu decisión.',
+
   },
-  loading: { en: 'One moment…', es: 'Un momento…' },
+  loading: { en: 'One moment…', },
   // ── the drill-down ──
-  backTo: { en: 'Back to', es: 'Volver a' },
-  backToPortfolio: { en: 'Back to your hotels', es: 'Volver a tus hoteles' },
-  refusedTitle: { en: 'You do not cover that hotel', es: 'No tienes acceso a ese hotel' },
+  backTo: { en: 'Back to', },
+  backToPortfolio: { en: 'Back to your hotels', },
+  refusedTitle: { en: 'You do not cover that hotel', },
   refusedBody: {
     en: 'That link points at a hotel outside the ones you oversee, so Staxis did not open it.',
-    es: 'Ese enlace apunta a un hotel fuera de los que supervisas, así que Staxis no lo abrió.',
+
   },
-  unavailableTitle: { en: 'Staxis could not open that hotel', es: 'Staxis no pudo abrir ese hotel' },
+  unavailableTitle: { en: 'Staxis could not open that hotel', },
   unavailableBody: {
     en: 'The check on which hotels you cover did not answer. This is not "you do not have access". Try again in a moment.',
-    es: 'La comprobación de tus hoteles no respondió. Esto no significa "no tienes acceso": inténtalo de nuevo en un momento.',
+
   },
   // Said to somebody whose job is to READ the portfolio — a company's finance
   // lead — who followed a card into one hotel. Names whose screen it is rather
   // than implying she took a wrong turn.
   readerOnlyBody: {
     en: 'This hotel’s own queue belongs to the people who run it. Everything that reached you about it is on your company queue.',
-    es: 'La cola de este hotel es de las personas que lo operan. Todo lo que llegó hasta ti sobre él está en la cola de tu empresa.',
+
   },
   noHotelQueueTitle: {
     en: 'The hotel findings queue is for managers',
-    es: 'La cola de hallazgos del hotel es para gerentes',
+
   },
   noHotelQueueBody: {
     en: 'This account has no company queue and does not manage this hotel’s findings. Your assigned hotel sections are still available above.',
-    es: 'Esta cuenta no tiene una cola de empresa y no administra los hallazgos de este hotel. Tus secciones asignadas siguen disponibles arriba.',
+
   },
 } as const;
 
@@ -193,8 +193,8 @@ const QV_CSS = `
 `;
 
 export function QueueView({ lang }: { lang: 'en' | 'es' }) {
-  const es = lang === 'es';
-  const L = <K extends keyof typeof S>(k: K) => (es ? S[k].es : S[k].en);
+  const es = false;
+  const L = <K extends keyof typeof S>(k: K) => (S[k].en);
 
   const [focusId, setFocusId] = useFocusedFinding();
   const requestedPid = useRequestedHotel();
@@ -510,8 +510,8 @@ function HotelQueue({
   setFocusId: (id: string | null) => void;
   backHref?: string;
 }) {
-  const es = lang === 'es';
-  const L = <K extends keyof typeof S>(k: K) => (es ? S[k].es : S[k].en);
+  const es = false;
+  const L = <K extends keyof typeof S>(k: K) => (S[k].en);
   const [readState, setReadState] = React.useState<QueueReadState>('idle');
 
   return (

@@ -54,28 +54,7 @@ interface CorrectionDraft {
 }
 
 function copy(lang: Lang) {
-  return lang === 'es' ? {
-    eyebrow: 'Historial de entrega', title: 'Corregir entrega guardada',
-    intro: 'La entrega original nunca se borra. Esta acción agrega una corrección permanente al historial.',
-    item: 'Artículo correcto', quantity: 'Cantidad correcta', unitCost: 'Costo unitario correcto (opcional si se desconoce)', reason: 'Motivo requerido',
-    before: 'Guardado ahora', after: 'Después de la corrección', voided: 'Entrega anulada',
-    correctionCount: (n: number) => `${n} ${n === 1 ? 'corrección anterior' : 'correcciones anteriores'}`,
-    physicalCount: 'Si se hizo un conteo físico después de esta entrega, el historial y los dólares se corrigen, pero el conteo físico más reciente sigue mandando sobre las existencias actuales.',
-    void: 'Anular entrega', undoVoid: 'No anular', save: 'Guardar corrección', retry: 'Reintentar exactamente', cancel: 'Cancelar',
-    addDelivery: 'Agregar nueva entrega', terminalTitle: 'Esta entrega ya fue anulada',
-    terminalBody: 'Una anulación es final para mantener el historial claro. Si la mercancía sí llegó, registra una nueva entrega.',
-    restored: 'Se recuperó una corrección sin guardar de esta pestaña.',
-    locked: 'El resultado anterior no se pudo confirmar. Reintenta exactamente estos datos para no crear una corrección duplicada.',
-    required: 'Selecciona un artículo, escribe una cantidad mayor que cero y el motivo. Si ingresas un costo, debe ser válido.',
-    unchanged: 'Cambia el artículo, la cantidad o el costo antes de guardar.',
-    voidConfirm: '¿Anular esta entrega? La anulación es permanente; si luego llegó mercancía, tendrás que agregar una entrega nueva.',
-    discard: '¿Cerrar esta pantalla? La corrección queda guardada y podrás recuperarla al volver.',
-    stale: 'Esta entrega cambió desde que abriste la pantalla. Cierra, actualiza el historial y vuelve a intentarlo.',
-    closedMonth: 'Esta entrega pertenece a un mes cerrado y no puede cambiarse.',
-    failed: 'No se pudo guardar la corrección. Nada fue reemplazado.',
-    unsafe: 'La corrección no se envió porque no se pudo guardar un reintento seguro en esta pestaña. Tus cambios siguen aquí.',
-    unavailableItem: 'Artículo original eliminado',
-  } : {
+  return {
     eyebrow: 'Delivery history', title: 'Correct saved delivery',
     intro: 'The original delivery is never erased. This adds a permanent correction to its history.',
     item: 'Correct item', quantity: 'Correct quantity', unitCost: 'Correct unit cost (optional if unknown)', reason: 'Required reason',

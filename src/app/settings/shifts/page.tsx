@@ -53,7 +53,7 @@ export default function ShiftPresetsPage() {
     return (
       <AppLayout>
         <div style={{ padding: 24, fontFamily: fonts.sans, color: T.ink2 }}>
-          {lang === 'es' ? 'Solo para gerentes.' : 'Manager access only.'}
+          {'Manager access only.'}
         </div>
       </AppLayout>
     );
@@ -109,9 +109,7 @@ function ShiftPresetsBody({ pid, lang }: { pid: string; lang: 'en' | 'es' }) {
         console.error('[shifts:settings] load failed', err);
         if (active) {
           setLoadFailed(true);
-          setError(langRef.current === 'es'
-            ? 'No se pudieron cargar tus turnos. Recarga la página para intentar de nuevo.'
-            : 'Couldn’t load your shifts. Refresh the page to try again.');
+          setError('Couldn’t load your shifts. Refresh the page to try again.');
           setLoading(false);
         }
       });
@@ -156,9 +154,9 @@ function ShiftPresetsBody({ pid, lang }: { pid: string; lang: 'en' | 'es' }) {
     if (loadFailed) return;
     // Validate.
     for (const d of drafts) {
-      if (!d.name.trim()) { setError(lang === 'es' ? `El ajuste "${deptLabel(d.department, lang)}" necesita un nombre` : `"${deptLabel(d.department, lang)}" preset needs a name`); return; }
+      if (!d.name.trim()) { setError(`"${deptLabel(d.department, lang)}" preset needs a name`); return; }
       if (!TIME_RE.test(d.startTime) || !TIME_RE.test(d.endTime)) {
-        setError(lang === 'es' ? `"${d.name}" tiene una hora inválida (usa HH:MM, p. ej. 08:00)` : `"${d.name}" has an invalid time (use HH:MM, e.g. 08:00)`); return;
+        setError(`"${d.name}" has an invalid time (use HH:MM, e.g. 08:00)`); return;
       }
     }
     setSaving(true);
@@ -221,7 +219,7 @@ function ShiftPresetsBody({ pid, lang }: { pid: string; lang: 'en' | 'es' }) {
           fontFamily: fonts.sans, fontSize: 12, color: T.ink2,
           textDecoration: 'none', marginBottom: 14,
         }}>
-          <ChevronLeft size={14}/> {lang === 'es' ? 'Configuración' : 'Settings'}
+          <ChevronLeft size={14}/> {'Settings'}
         </Link>
 
         <div style={{
@@ -229,25 +227,23 @@ function ShiftPresetsBody({ pid, lang }: { pid: string; lang: 'en' | 'es' }) {
           marginBottom: 22, gap: 24,
         }}>
           <div>
-            <Caps>{lang === 'es' ? 'Configuración · Turnos' : 'Settings · Shifts'}</Caps>
+            <Caps>{'Settings · Shifts'}</Caps>
             <h1 style={{
               fontFamily: fonts.serif, fontSize: 36, color: T.ink,
               margin: '4px 0 0', letterSpacing: '-0.03em', lineHeight: 1.1, fontWeight: 400,
             }}>
               <span style={{ fontStyle: 'italic' }}>
-                {lang === 'es' ? 'Plantillas de turnos' : 'Shift presets'}
+                {'Shift presets'}
               </span>
             </h1>
             <p style={{ fontFamily: fonts.sans, fontSize: 13, color: T.ink2, marginTop: 6, maxWidth: 560, lineHeight: 1.5 }}>
-              {lang === 'es'
-                ? 'Define los turnos que usas con más frecuencia. Aparecerán como opciones al asignar a alguien en el horario semanal.'
-                : 'Define the shifts you use most often. They’ll show up as one-click picks when you assign someone in the week grid.'}
+              {'Define the shifts you use most often. They’ll show up as one-click picks when you assign someone in the week grid.'}
             </p>
           </div>
         </div>
 
         {loading ? (
-          <Caps>{lang === 'es' ? 'CARGANDO…' : 'LOADING…'}</Caps>
+          <Caps>{'LOADING…'}</Caps>
         ) : loadFailed ? (
           // Load-error state. Deliberately NOT the empty state: it hides the
           // "Load defaults" invitation whose Save would wipe the real presets.
@@ -262,19 +258,17 @@ function ShiftPresetsBody({ pid, lang }: { pid: string; lang: 'en' | 'es' }) {
             textAlign: 'center', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 14,
           }}>
             <div style={{ fontFamily: fonts.serif, fontSize: 18, fontStyle: 'italic', color: T.ink, letterSpacing: '-0.01em' }}>
-              {lang === 'es' ? 'Sin turnos configurados.' : 'No shifts configured yet.'}
+              {'No shifts configured yet.'}
             </div>
             <div style={{ fontSize: 13, color: T.ink2, maxWidth: 420, lineHeight: 1.5 }}>
-              {lang === 'es'
-                ? 'Empieza con un set típico (HK 8a–4p, Recepción AM/PM/Nocturno, Mantenimiento). Puedes editar después.'
-                : 'Start with a typical set (HK 8a–4p, Front desk AM/PM/Overnight, Maintenance). You can edit afterwards.'}
+              {'Start with a typical set (HK 8a–4p, Front desk AM/PM/Overnight, Maintenance). You can edit afterwards.'}
             </div>
             <div style={{ display: 'flex', gap: 10 }}>
               <Btn variant="primary" size="md" onClick={seedDefaults}>
-                {lang === 'es' ? 'Cargar predeterminados' : 'Load defaults'}
+                {'Load defaults'}
               </Btn>
               <Btn variant="ghost" size="md" onClick={() => addNew('housekeeping')}>
-                {lang === 'es' ? '+ Empezar vacío' : '+ Start blank'}
+                {'+ Start blank'}
               </Btn>
             </div>
           </div>
@@ -297,15 +291,13 @@ function ShiftPresetsBody({ pid, lang }: { pid: string; lang: 'en' | 'es' }) {
                       <span style={{ fontWeight: 600, fontSize: 15, color: T.ink }}>{deptLabel(dept, lang)}</span>
                     </div>
                     <span style={{ fontFamily: fonts.mono, fontSize: 11, color: T.ink3 }}>
-                      {list.length} {lang === 'es'
-                        ? (list.length === 1 ? 'turno' : 'turnos')
-                        : (list.length === 1 ? 'preset' : 'presets')}
+                      {list.length} {(list.length === 1 ? 'preset' : 'presets')}
                     </span>
                   </div>
 
                   {list.length === 0 && (
                     <div style={{ padding: '18px 18px', textAlign: 'center', color: T.ink3, fontSize: 12.5 }}>
-                      {lang === 'es' ? 'Sin turnos.' : 'No shifts yet.'}
+                      {'No shifts yet.'}
                     </div>
                   )}
 
@@ -318,7 +310,7 @@ function ShiftPresetsBody({ pid, lang }: { pid: string; lang: 'en' | 'es' }) {
                       <input
                         value={p.name}
                         onChange={e => updateField(p.localId, { name: e.target.value })}
-                        placeholder={lang === 'es' ? 'Nombre (p. ej. Mañana HK)' : 'Name (e.g. Morning HK)'}
+                        placeholder={'Name (e.g. Morning HK)'}
                         style={inputStyle}
                       />
                       <input
@@ -356,7 +348,7 @@ function ShiftPresetsBody({ pid, lang }: { pid: string; lang: 'en' | 'es' }) {
                       display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6,
                     }}
                   >
-                    <Plus size={14}/> {lang === 'es' ? `Agregar turno a ${deptLabel(dept, lang)}` : `Add shift to ${m.label}`}
+                    <Plus size={14}/> {`Add shift to ${m.label}`}
                   </button>
                 </section>
               );
@@ -376,13 +368,13 @@ function ShiftPresetsBody({ pid, lang }: { pid: string; lang: 'en' | 'es' }) {
             }}>
               {savedAt && (
                 <span style={{ fontFamily: fonts.mono, fontSize: 11, color: T.ink3, letterSpacing: '0.06em' }}>
-                  {lang === 'es' ? 'GUARDADO' : 'SAVED'} · {new Date(savedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                  {'SAVED'} · {new Date(savedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
                 </span>
               )}
               <Btn variant="primary" size="md" onClick={save} disabled={saving}>
                 {saving
-                  ? (lang === 'es' ? 'Guardando…' : 'Saving…')
-                  : (lang === 'es' ? 'Guardar' : 'Save')}
+                  ? ('Saving…')
+                  : ('Save')}
               </Btn>
             </div>
           </>
@@ -392,11 +384,8 @@ function ShiftPresetsBody({ pid, lang }: { pid: string; lang: 'en' | 'es' }) {
   );
 }
 
-// Bilingual department labels — deptMeta.label is English-only (same fix as
-// settings/wages' deptLabel helper).
 function deptLabel(dept: StaffDepartment, lang: 'en' | 'es'): string {
-  if (lang !== 'es') return deptMeta[dept].label;
-  return { housekeeping: 'Limpieza', front_desk: 'Recepción', maintenance: 'Mantenimiento', other: 'Otro' }[dept];
+  return deptMeta[dept].label;
 }
 
 const inputStyle: React.CSSProperties = {

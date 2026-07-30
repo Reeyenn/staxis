@@ -31,19 +31,14 @@ interface Envelope<T> {
   error?: string;
 }
 
-function copy(lang: string, en: string, es: string): string {
-  return lang === 'es' ? es : en;
-}
-
 function portfolioTypeLabel(type: string, lang: string): string {
-  const labels: Record<string, [string, string]> = {
-    portfolio: ['Portfolio', 'Cartera'],
-    region: ['Region', 'Región'],
-    division: ['Division', 'División'],
-    other: ['Group', 'Grupo'],
+  const labels: Record<string, string> = {
+    portfolio: 'Portfolio',
+    region: 'Region',
+    division: 'Division',
+    other: 'Group',
   };
-  const label = labels[type] ?? labels.other;
-  return copy(lang, label[0], label[1]);
+  return labels[type] ?? labels.other;
 }
 
 function responseError(body: Envelope<unknown>, fallback: string): string {
@@ -129,35 +124,23 @@ export function CompanyStructureOverview({ structure, lang, loading, unavailable
   const problemCopy = ({ organization, problem }: (typeof problems)[number]) => {
     if (problem.code === 'hotel_without_portfolio') {
       const hotelName = organization.hotels.find((hotel) => hotel.propertyId === problem.propertyId)?.name
-        ?? copy(lang, 'Hotel', 'Hotel');
+        ?? 'Hotel';
       return {
-        title: copy(lang, `${hotelName} is not assigned to a portfolio or region`, `${hotelName} no está asignado a una cartera o región`),
-        detail: copy(
-          lang,
-          'Company-wide access remains active, but portfolio-scoped people will not inherit this hotel until it is assigned.',
-          'El acceso para toda la empresa permanece activo, pero las personas con alcance de cartera no heredarán este hotel hasta que se asigne.',
-        ),
+        title: `${hotelName} is not assigned to a portfolio or region`,
+        detail: 'Company-wide access remains active, but portfolio-scoped people will not inherit this hotel until it is assigned.',
       };
     }
     if (problem.code === 'empty_portfolio') {
       const portfolioName = organization.portfolios.find((portfolio) => portfolio.id === problem.portfolioId)?.name
-        ?? copy(lang, 'Portfolio or region', 'Cartera o región');
+        ?? 'Portfolio or region';
       return {
-        title: copy(lang, `${portfolioName} has no hotels`, `${portfolioName} no tiene hoteles`),
-        detail: copy(
-          lang,
-          'This active portfolio or region currently grants no hotel reach.',
-          'Esta cartera o región activa actualmente no concede acceso a ningún hotel.',
-        ),
+        title: `${portfolioName} has no hotels`,
+        detail: 'This active portfolio or region currently grants no hotel reach.',
       };
     }
     return {
-      title: copy(lang, 'Company hotel relationships are protected', 'Las relaciones empresariales de los hoteles están protegidas'),
-      detail: copy(
-        lang,
-        'Only a verified Staxis platform administrator can add, remove, or move a hotel between companies.',
-        'Solo un administrador de plataforma Staxis verificado puede agregar, eliminar o mover un hotel entre empresas.',
-      ),
+      title: 'Company hotel relationships are protected',
+      detail: 'Only a verified Staxis platform administrator can add, remove, or move a hotel between companies.',
     };
   };
 
@@ -165,58 +148,46 @@ export function CompanyStructureOverview({ structure, lang, loading, unavailable
     <section className={styles.overview} aria-labelledby="company-structure-overview-title">
       <div className={styles.heading}>
         <div>
-          <span>{copy(lang, 'Structure and access health', 'Estado de estructura y acceso')}</span>
+          <span>{'Structure and access health'}</span>
           <h2 id="company-structure-overview-title">
-            {copy(lang, 'Company → portfolio/region → hotel', 'Empresa → cartera/región → hotel')}
+            {'Company → portfolio/region → hotel'}
           </h2>
-          <p>{copy(
-            lang,
-            'This is the live structure used to calculate inherited hotel access. Warnings identify assignments or access boundaries that need attention.',
-            'Esta es la estructura en vivo utilizada para calcular el acceso heredado a hoteles. Las advertencias identifican asignaciones o límites de acceso que requieren atención.',
-          )}</p>
+          <p>{'This is the live structure used to calculate inherited hotel access. Warnings identify assignments or access boundaries that need attention.'}</p>
         </div>
-        <span className={styles.liveBadge}><ShieldCheck size={14} aria-hidden="true" />{copy(lang, 'Current access', 'Acceso actual')}</span>
+        <span className={styles.liveBadge}><ShieldCheck size={14} aria-hidden="true" />{'Current access'}</span>
       </div>
 
       {loading ? (
         <div className={styles.overviewLoading} role="status" aria-live="polite">
           <RefreshCw className={styles.spin} size={17} aria-hidden="true" />
-          <span>{copy(lang, 'Verifying current structure and access…', 'Verificando la estructura y el acceso actuales…')}</span>
+          <span>{'Verifying current structure and access…'}</span>
         </div>
       ) : unavailable || legacyFallback ? (
         <div className={styles.overviewWarning} role="status">
           <AlertTriangle size={18} aria-hidden="true" />
           <div>
             <strong>{legacyFallback
-              ? copy(lang, 'Normalized company structure is not active', 'La estructura empresarial normalizada no está activa')
-              : copy(lang, 'Live structure health is unavailable', 'El estado de la estructura en vivo no está disponible')}</strong>
+              ? 'Normalized company structure is not active'
+              : 'Live structure health is unavailable'}</strong>
             <span>{legacyFallback
-              ? copy(
-                  lang,
-                  'Hotel access is being shown from the legacy account projection. Portfolio assignments cannot be safely changed here until access is migrated.',
-                  'El acceso al hotel se muestra desde la proyección de cuenta heredada. Las asignaciones de cartera no se pueden cambiar de forma segura aquí hasta que se migre el acceso.',
-                )
-              : copy(
-                  lang,
-                  'Existing access remains visible below, but Staxis cannot verify structure problems or accept changes right now.',
-                  'El acceso existente sigue visible abajo, pero Staxis no puede verificar problemas de estructura ni aceptar cambios en este momento.',
-                )}</span>
+              ? 'Hotel access is being shown from the legacy account projection. Portfolio assignments cannot be safely changed here until access is migrated.'
+              : 'Existing access remains visible below, but Staxis cannot verify structure problems or accept changes right now.'}</span>
           </div>
         </div>
       ) : (
         <>
           <div className={styles.overviewStats}>
-            <div><span>{copy(lang, 'Companies', 'Empresas')}</span><strong>{organizations.length}</strong></div>
-            <div><span>{copy(lang, 'Portfolios / regions', 'Carteras / regiones')}</span><strong>{portfolios}</strong></div>
-            <div><span>{copy(lang, 'Governed hotels', 'Hoteles administrados')}</span><strong>{hotels}</strong></div>
+            <div><span>{'Companies'}</span><strong>{organizations.length}</strong></div>
+            <div><span>{'Portfolios / regions'}</span><strong>{portfolios}</strong></div>
+            <div><span>{'Governed hotels'}</span><strong>{hotels}</strong></div>
             <div className={attentionProblems.length > 0 ? styles.statAttention : undefined}>
-              <span>{copy(lang, 'Needs attention', 'Requiere atención')}</span>
+              <span>{'Needs attention'}</span>
               <strong>{attentionProblems.length}</strong>
             </div>
           </div>
 
           {problems.length > 0 ? (
-            <div className={styles.problemList} role="list" aria-label={copy(lang, 'Structure and access notices', 'Avisos de estructura y acceso')}>
+            <div className={styles.problemList} role="list" aria-label={'Structure and access notices'}>
               {problems.map((entry, index) => {
                 const display = problemCopy(entry);
                 const { problem } = entry;
@@ -239,11 +210,7 @@ export function CompanyStructureOverview({ structure, lang, loading, unavailable
           ) : (
             <div className={styles.overviewClear}>
               <CheckCircle2 size={18} aria-hidden="true" />
-              <span>{copy(
-                lang,
-                'No structure or inherited-access problems were detected in your current scope.',
-                'No se detectaron problemas de estructura ni de acceso heredado dentro de tu alcance actual.',
-              )}</span>
+              <span>{'No structure or inherited-access problems were detected in your current scope.'}</span>
             </div>
           )}
         </>
@@ -315,21 +282,13 @@ function AssignmentDialog({ selection, lang, onClose, onCompleted, onStale }: {
       const body = await response.json().catch(() => ({})) as Envelope<PortfolioAssignmentPreview>;
       if (!response.ok || !body.ok || !body.data) {
         if (response.status === 403 || response.status === 409) setStale(true);
-        throw new Error(responseError(body, copy(
-          lang,
-          'The impact preview could not be loaded.',
-          'No se pudo cargar la vista previa del impacto.',
-        )));
+        throw new Error(responseError(body, 'The impact preview could not be loaded.'));
       }
       setPreview(body.data);
       idempotencyKeyRef.current = crypto.randomUUID();
     } catch (caught) {
       setPreview(null);
-      setError(caught instanceof Error ? caught.message : copy(
-        lang,
-        'The impact preview could not be loaded.',
-        'No se pudo cargar la vista previa del impacto.',
-      ));
+      setError(caught instanceof Error ? caught.message : 'The impact preview could not be loaded.');
     } finally {
       setBusy(false);
     }
@@ -360,19 +319,11 @@ function AssignmentDialog({ selection, lang, onClose, onCompleted, onStale }: {
       const body = await response.json().catch(() => ({})) as Envelope<unknown>;
       if (!response.ok || !body.ok) {
         if (response.status === 403 || response.status === 409) setStale(true);
-        throw new Error(responseError(body, copy(
-          lang,
-          'The hotel assignment could not be saved.',
-          'No se pudo guardar la asignación del hotel.',
-        )));
+        throw new Error(responseError(body, 'The hotel assignment could not be saved.'));
       }
       onCompleted();
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : copy(
-        lang,
-        'The hotel assignment could not be saved.',
-        'No se pudo guardar la asignación del hotel.',
-      ));
+      setError(caught instanceof Error ? caught.message : 'The hotel assignment could not be saved.');
     } finally {
       setBusy(false);
     }
@@ -383,7 +334,7 @@ function AssignmentDialog({ selection, lang, onClose, onCompleted, onStale }: {
       <button
         type="button"
         className={styles.scrim}
-        aria-label={copy(lang, 'Close dialog', 'Cerrar diálogo')}
+        aria-label={'Close dialog'}
         onClick={() => { if (!busy) onClose(); }}
       />
       <div
@@ -399,7 +350,7 @@ function AssignmentDialog({ selection, lang, onClose, onCompleted, onStale }: {
         <header className={styles.dialogHeader}>
           <span className={styles.dialogIcon}><Layers3 size={20} aria-hidden="true" /></span>
           <div>
-            <span>{copy(lang, 'Hotel structure', 'Estructura del hotel')}</span>
+            <span>{'Hotel structure'}</span>
             <h2 id={titleId}>{hotel.name}</h2>
           </div>
           <button
@@ -408,37 +359,29 @@ function AssignmentDialog({ selection, lang, onClose, onCompleted, onStale }: {
             className={styles.iconButton}
             onClick={onClose}
             disabled={busy}
-            aria-label={copy(lang, 'Close', 'Cerrar')}
+            aria-label={'Close'}
           >
             <X size={17} aria-hidden="true" />
           </button>
         </header>
 
         <p id={descriptionId} className={styles.dialogIntro}>
-          {copy(
-            lang,
-            `Choose the portfolio and region assignments inside ${selection.organization.name}. This cannot move the hotel to another company.`,
-            `Elige las asignaciones de cartera y región dentro de ${selection.organization.name}. Esto no puede mover el hotel a otra empresa.`,
-          )}
+          {`Choose the portfolio and region assignments inside ${selection.organization.name}. This cannot move the hotel to another company.`}
         </p>
 
         <div className={styles.relationshipLock}>
           <LockKeyhole size={17} aria-hidden="true" />
           <div>
-            <strong>{copy(lang, 'Company relationship is protected', 'La relación empresarial está protegida')}</strong>
+            <strong>{'Company relationship is protected'}</strong>
             <span>
-              {copy(
-                lang,
-                `${hotel.relationshipType === 'owner' ? 'Owner' : 'Operator'} · active. Only a verified Staxis platform administrator can change or transfer it.`,
-                `${hotel.relationshipType === 'owner' ? 'Propietario' : 'Operador'} · activa. Solo un administrador de plataforma Staxis verificado puede cambiarla o transferirla.`,
-              )}
+              {`${hotel.relationshipType === 'owner' ? 'Owner' : 'Operator'} · active. Only a verified Staxis platform administrator can change or transfer it.`}
             </span>
           </div>
         </div>
 
         {manageablePortfolios.length > 0 ? (
           <fieldset className={styles.assignmentChoices} disabled={busy || Boolean(preview)}>
-            <legend>{copy(lang, 'Portfolio and region assignments', 'Asignaciones de cartera y región')}</legend>
+            <legend>{'Portfolio and region assignments'}</legend>
             {manageablePortfolios.map((portfolio) => (
               <label key={portfolio.id}>
                 <input
@@ -456,11 +399,7 @@ function AssignmentDialog({ selection, lang, onClose, onCompleted, onStale }: {
         ) : (
           <div className={styles.notice}>
             <AlertTriangle size={17} aria-hidden="true" />
-            <span>{copy(
-              lang,
-              'There are no active portfolios or regions you are authorized to manage. Ask Staxis support to review the structure.',
-              'No hay carteras ni regiones activas que tengas autorización para administrar. Pide al soporte de Staxis que revise la estructura.',
-            )}</span>
+            <span>{'There are no active portfolios or regions you are authorized to manage. Ask Staxis support to review the structure.'}</span>
           </div>
         )}
 
@@ -469,27 +408,19 @@ function AssignmentDialog({ selection, lang, onClose, onCompleted, onStale }: {
             <div className={styles.impactHeading}>
               <ShieldCheck size={18} aria-hidden="true" />
               <div>
-                <strong>{copy(lang, 'Access impact preview', 'Vista previa del impacto en el acceso')}</strong>
-                <span>{copy(
-                  lang,
-                  'This exact preview is bound to the current company access version.',
-                  'Esta vista previa exacta está vinculada a la versión actual del acceso de la empresa.',
-                )}</span>
+                <strong>{'Access impact preview'}</strong>
+                <span>{'This exact preview is bound to the current company access version.'}</span>
               </div>
             </div>
             <dl>
-              <div><dt>{copy(lang, 'Assignments added', 'Asignaciones agregadas')}</dt><dd>{preview.addedPortfolioIds.length}</dd></div>
-              <div><dt>{copy(lang, 'Assignments removed', 'Asignaciones eliminadas')}</dt><dd>{preview.removedPortfolioIds.length}</dd></div>
-              <div><dt>{copy(lang, 'People gaining hotel reach', 'Personas que obtienen acceso al hotel')}</dt><dd>{preview.gainingAccessCount}</dd></div>
-              <div><dt>{copy(lang, 'People losing hotel reach', 'Personas que pierden acceso al hotel')}</dt><dd>{preview.losingAccessCount}</dd></div>
+              <div><dt>{'Assignments added'}</dt><dd>{preview.addedPortfolioIds.length}</dd></div>
+              <div><dt>{'Assignments removed'}</dt><dd>{preview.removedPortfolioIds.length}</dd></div>
+              <div><dt>{'People gaining hotel reach'}</dt><dd>{preview.gainingAccessCount}</dd></div>
+              <div><dt>{'People losing hotel reach'}</dt><dd>{preview.losingAccessCount}</dd></div>
             </dl>
             <div className={styles.immediateWarning}>
               <AlertTriangle size={17} aria-hidden="true" />
-              <span>{copy(
-                lang,
-                'Saving takes effect immediately. Open sessions cannot use their prior hotel reach, and portfolio AI scope receipts are invalidated; affected people must re-resolve access.',
-                'Al guardar, el cambio entra en vigor de inmediato. Las sesiones abiertas no pueden usar su acceso anterior a hoteles y los recibos de alcance de IA de cartera quedan invalidados; las personas afectadas deben volver a resolver el acceso.',
-              )}</span>
+              <span>{'Saving takes effect immediately. Open sessions cannot use their prior hotel reach, and portfolio AI scope receipts are invalidated; affected people must re-resolve access.'}</span>
             </div>
             <label className={styles.confirmation}>
               <input
@@ -498,11 +429,7 @@ function AssignmentDialog({ selection, lang, onClose, onCompleted, onStale }: {
                 onChange={(event) => setConfirmed(event.target.checked)}
                 disabled={busy}
               />
-              <span>{copy(
-                lang,
-                `I confirm these exact assignments for ${hotel.name} and understand the immediate access impact.`,
-                `Confirmo estas asignaciones exactas para ${hotel.name} y comprendo el impacto inmediato en el acceso.`,
-              )}</span>
+              <span>{`I confirm these exact assignments for ${hotel.name} and understand the immediate access impact.`}</span>
             </label>
           </section>
         ) : null}
@@ -511,7 +438,7 @@ function AssignmentDialog({ selection, lang, onClose, onCompleted, onStale }: {
 
         <footer className={styles.dialogActions}>
           <button type="button" className={styles.secondaryButton} onClick={onClose} disabled={busy}>
-            {copy(lang, 'Cancel', 'Cancelar')}
+            {'Cancel'}
           </button>
           {stale ? (
             <button
@@ -521,7 +448,7 @@ function AssignmentDialog({ selection, lang, onClose, onCompleted, onStale }: {
               disabled={busy}
             >
               <RefreshCw size={15} aria-hidden="true" />
-              {copy(lang, 'Reload current access', 'Recargar acceso actual')}
+              {'Reload current access'}
             </button>
           ) : preview ? (
             <>
@@ -537,7 +464,7 @@ function AssignmentDialog({ selection, lang, onClose, onCompleted, onStale }: {
                 }}
                 disabled={busy}
               >
-                {copy(lang, 'Edit assignments', 'Editar asignaciones')}
+                {'Edit assignments'}
               </button>
               <button
                 type="button"
@@ -546,7 +473,7 @@ function AssignmentDialog({ selection, lang, onClose, onCompleted, onStale }: {
                 disabled={busy || !confirmed}
               >
                 {busy ? <RefreshCw className={styles.spin} size={15} aria-hidden="true" /> : <CheckCircle2 size={15} aria-hidden="true" />}
-                {copy(lang, 'Confirm and save', 'Confirmar y guardar')}
+                {'Confirm and save'}
               </button>
             </>
           ) : (
@@ -557,7 +484,7 @@ function AssignmentDialog({ selection, lang, onClose, onCompleted, onStale }: {
               disabled={busy || manageablePortfolios.length === 0}
             >
               {busy ? <RefreshCw className={styles.spin} size={15} aria-hidden="true" /> : <ArrowRight size={15} aria-hidden="true" />}
-              {copy(lang, 'Preview access impact', 'Ver impacto en el acceso')}
+              {'Preview access impact'}
             </button>
           )}
         </footer>
@@ -578,17 +505,13 @@ export function CompanyStructureManager({ structure, lang, onChanged }: {
     <section className={styles.root} aria-labelledby="company-structure-management-title">
       <div className={styles.heading}>
         <div>
-          <span>{copy(lang, 'Structure management', 'Administración de estructura')}</span>
+          <span>{'Structure management'}</span>
           <h2 id="company-structure-management-title">
-            {copy(lang, 'Company, portfolio, region, and hotel relationships', 'Relaciones de empresa, cartera, región y hotel')}
+            {'Company, portfolio, region, and hotel relationships'}
           </h2>
-          <p>{copy(
-            lang,
-            'Portfolio assignments control inherited hotel reach. Company ownership and operator relationships are visible here but protected.',
-            'Las asignaciones de cartera controlan el acceso heredado al hotel. Las relaciones de propiedad y operación de la empresa son visibles aquí, pero están protegidas.',
-          )}</p>
+          <p>{'Portfolio assignments control inherited hotel reach. Company ownership and operator relationships are visible here but protected.'}</p>
         </div>
-        <span className={styles.liveBadge}><KeyRound size={14} aria-hidden="true" />{copy(lang, 'Audited access', 'Acceso auditado')}</span>
+        <span className={styles.liveBadge}><KeyRound size={14} aria-hidden="true" />{'Audited access'}</span>
       </div>
 
       <div className={styles.organizationList}>
@@ -598,12 +521,12 @@ export function CompanyStructureManager({ structure, lang, onChanged }: {
               <span className={styles.organizationIcon}><Building2 size={18} aria-hidden="true" /></span>
               <div>
                 <strong>{organization.name}</strong>
-                <span>{organization.hotels.length} {copy(lang, organization.hotels.length === 1 ? 'hotel' : 'hotels', organization.hotels.length === 1 ? 'hotel' : 'hoteles')} · {organization.portfolios.length} {copy(lang, 'portfolios/regions', 'carteras/regiones')}</span>
+                <span>{organization.hotels.length} {organization.hotels.length === 1 ? 'hotel' : 'hotels'} · {organization.portfolios.length} {'portfolios/regions'}</span>
               </div>
               <span className={organization.canManagePortfolios ? styles.canManage : styles.readOnly}>
                 {organization.canManagePortfolios
-                  ? copy(lang, 'Can manage', 'Puede administrar')
-                  : copy(lang, 'Read only', 'Solo lectura')}
+                  ? 'Can manage'
+                  : 'Read only'}
               </span>
             </header>
 
@@ -619,12 +542,12 @@ export function CompanyStructureManager({ structure, lang, onChanged }: {
                       <strong>{hotel.name}</strong>
                       <span>
                         {hotel.relationshipType === 'owner'
-                          ? copy(lang, 'Owner relationship', 'Relación de propietario')
-                          : copy(lang, 'Operator relationship', 'Relación de operador')}
+                          ? 'Owner relationship'
+                          : 'Operator relationship'}
                         {' · '}
                         {assigned.length > 0
                           ? assigned.map((portfolio) => portfolio.name).join(', ')
-                          : copy(lang, 'No portfolio or region', 'Sin cartera ni región')}
+                          : 'No portfolio or region'}
                       </span>
                     </div>
                     {hotel.manageable && organization.portfolios.some((portfolio) => portfolio.manageable) ? (
@@ -634,14 +557,10 @@ export function CompanyStructureManager({ structure, lang, onChanged }: {
                         onClick={() => setSelection({ organization, propertyId: hotel.propertyId })}
                       >
                         <Layers3 size={14} aria-hidden="true" />
-                        {copy(lang, 'Edit assignment', 'Editar asignación')}
+                        {'Edit assignment'}
                       </button>
                     ) : (
-                      <span className={styles.lockedRelationship} title={copy(
-                        lang,
-                        'You do not have manage_portfolios for this scope.',
-                        'No tienes manage_portfolios para este alcance.',
-                      )}><LockKeyhole size={14} aria-hidden="true" />{copy(lang, 'Protected', 'Protegido')}</span>
+                      <span className={styles.lockedRelationship} title={'You do not have manage_portfolios for this scope.'}><LockKeyhole size={14} aria-hidden="true" />{'Protected'}</span>
                     )}
                   </div>
                 );

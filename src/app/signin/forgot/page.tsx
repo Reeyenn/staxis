@@ -33,7 +33,7 @@ export default function ForgotPasswordPage() {
       setSent(true);
     } catch (err) {
       console.error('resetPasswordForEmail failed', err);
-      setError(lang === 'es' ? 'Algo salió mal. Intenta de nuevo.' : 'Something went wrong. Try again.');
+      setError('Something went wrong. Try again.');
     } finally {
       setSubmitting(false);
     }
@@ -41,30 +41,26 @@ export default function ForgotPasswordPage() {
 
   return (
     <AuthShell subtitle={
-      lang === 'es'
-        ? 'Ingresa tu correo y te enviaremos un enlace para restablecer tu contraseña.'
-        : 'Enter your email and we’ll send a link to reset your password.'
+      'Enter your email and we’ll send a link to reset your password.'
     }>
 
       {sent ? (
         <AuthPanel>
           <p style={{ fontSize: 14, color: '#1F231C', marginBottom: 12, lineHeight: 1.5 }}>
-            {lang === 'es'
-              ? 'Si existe una cuenta para ese correo, recibirás un enlace para restablecer tu contraseña en breve.'
-              : 'If an account exists for that email, you’ll receive a password-reset link shortly.'}
+            {'If an account exists for that email, you’ll receive a password-reset link shortly.'}
           </p>
           <p style={{ fontSize: 13, color: '#5C625C' }}>
-            {lang === 'es' ? 'Revisa tu bandeja de entrada (y spam).' : 'Check your inbox (and spam).'}
+            {'Check your inbox (and spam).'}
           </p>
           <Link href="/signin" style={{ display: 'inline-block', marginTop: 20, fontSize: 13, color: AUTH_LINK, textDecoration: 'none', fontWeight: 600 }}>
-            {lang === 'es' ? '← Volver al inicio de sesión' : '← Back to sign in'}
+            {'← Back to sign in'}
           </Link>
         </AuthPanel>
       ) : (
         <form onSubmit={handleSubmit} style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
 
           <div className="si-rise si-d-2" style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-            <AuthLabel htmlFor="forgot-email">{lang === 'es' ? 'Correo electrónico' : 'Email'}</AuthLabel>
+            <AuthLabel htmlFor="forgot-email">{'Email'}</AuthLabel>
             <input
               id="forgot-email"
               name="email"
@@ -90,12 +86,12 @@ export default function ForgotPasswordPage() {
           >
             {submitting
               ? <div className="spinner" style={{ width: 18, height: 18, borderTopColor: '#FFFFFF', borderColor: 'rgba(255,255,255,0.3)' }} />
-              : (lang === 'es' ? 'Enviar enlace' : 'Send reset link')
+              : ('Send reset link')
             }
           </button>
 
           <Link href="/signin" style={authBackLinkStyle}>
-            {lang === 'es' ? '← Volver al inicio de sesión' : '← Back to sign in'}
+            {'← Back to sign in'}
           </Link>
         </form>
       )}

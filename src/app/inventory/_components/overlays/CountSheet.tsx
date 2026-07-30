@@ -201,63 +201,8 @@ function csStrings(lang: Lang) {
       openingAdjustmentCost: 'Enter its unit cost so the opening adjustment can be valued.',
       openingAdjustmentPermission: 'Only a manager who can enter costs can add positive starting stock. Otherwise add the item at zero, then log a delivery.',
     },
-    es: {
-      title: 'Conteo de inventario',
-      generalInventory: 'Inventario general',
-      breakfastInventory: 'Inventario de desayuno',
-      everything: 'Todo',
-      otherGroup: 'Otros',
-      items: 'artículos',
-      cancel: 'Cancelar',
-      back: 'Atrás',
-      saving: 'Guardando…',
-      saveCount: '✓ Guardar conteo',
-      retryCount: 'Reintentar el mismo conteo',
-      retryPending: 'No se pudo confirmar el resultado. Este conteo exacto está bloqueado hasta reintentarlo para que no se duplique el historial.',
-      changeWhatToCount: 'Cambiar qué contar',
-      changeScopeConfirm: 'Cambiar qué contar descartará los conteos ya ingresados. ¿Continuar?',
-      countByPhoto: '📷 Contar por foto',
-      reading: 'Leyendo foto…',
-      photoCheck: 'Revisa los conteos de la foto',
-      useCounts: 'Usar estos conteos',
-      notInPhoto: (n: number) => `${n} artículo${n === 1 ? '' : 's'} no salen en la foto`,
-      saveFailed: 'No se pudo guardar el conteo. Inténtalo de nuevo.',
-      stockChanged: 'El inventario cambió mientras este conteo estaba abierto. No se guardó nada. Cierra, actualiza y vuelve a contar para no sobrescribir un conteo o una entrega más reciente.',
-      discardConfirm: 'Tienes conteos sin guardar. ¿Cerrar y descartarlos?',
-      draftRestored: 'Se restauró tu conteo sin guardar.',
-      noItemsInGroup: 'No hay artículos para contar.',
-      errTooMany: 'Demasiados artículos para una foto. Toma un estante a la vez.',
-      errBadImage: 'No se pudo leer la imagen. Intenta una foto más clara y bien iluminada.',
-      errRateLimit: 'Demasiados escaneos de foto esta hora. Inténtalo de nuevo en un momento.',
-      errUnavailable: 'El conteo por foto no está disponible por ahora. Escribe los conteos.',
-      errGeneric: 'No se pudo contar esa foto. Inténtalo de nuevo.',
-      couldntReadPhoto: 'No se pudo leer la foto. Intenta una toma más clara y bien iluminada.',
-      nothingRecognized: 'Nada en la foto coincidió con tus artículos. Intenta una toma más cercana.',
-      addItem: 'Agregar un artículo',
-      fName: 'Nombre',
-      fNamePh: 'ej. Jugo de naranja',
-      fCount: 'Conteo',
-      fPar: 'Nivel par',
-      fCost: 'Costo unitario',
-      fSetAside: 'Apartado',
-      fVendor: 'Proveedor',
-      fCategory: 'Categoría',
-      optional: 'opcional',
-      addBtn: 'Agregar',
-      addFailed: 'No se pudo agregar el artículo. Inténtalo de nuevo.',
-      discardInlineAddConfirm: '¿Descartar los datos del artículo nuevo?',
-      setAsideTooHigh: 'La cantidad apartada no puede ser mayor que el conteo.',
-      addUnsafe: 'Este artículo no se envió porque no se pudo guardar una copia segura para recuperarlo. Tus datos siguen aquí.',
-      addUnconfirmed: 'No se pudo confirmar el resultado. Estos datos exactos están guardados y se bloqueó otra inserción mientras el inventario busca la fila marcada.',
-      addChecking: 'Verificando el artículo…',
-      completeRequired: 'El cierre mensual requiere un conteo de cada artículo activo. Completa todas las filas antes de guardar.',
-      openingAdjustmentTitle: 'Ya estaba en el hotel',
-      openingAdjustmentBody: 'El conteo de este artículo nuevo es inventario de apertura preexistente, no una entrega ni una compra.',
-      openingAdjustmentConfirm: 'Sí, este inventario ya estaba en el hotel.',
-      openingAdjustmentCost: 'Ingresa el costo unitario para valorar el ajuste de apertura.',
-      openingAdjustmentPermission: 'Solo un gerente que pueda ingresar costos puede agregar inventario inicial positivo. Si no, agrega el artículo en cero y luego registra una entrega.',
-    },
-  }[lang];
+
+  }['en'];
 }
 
 export function CountSheet({
@@ -1561,7 +1506,7 @@ function CountLine({
       </span>
       <input
         className={overlayStyles.formControl}
-        aria-label={`${d.name} ${lang === 'es' ? 'conteo' : 'count'}`}
+        aria-label={`${d.name} ${'count'}`}
         type="number"
         min="0"
         inputMode="decimal"

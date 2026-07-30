@@ -32,10 +32,6 @@ interface Envelope<T> {
   error?: unknown;
 }
 
-function copy(lang: string, en: string, es: string): string {
-  return lang === 'es' ? es : en;
-}
-
 function responseError(body: Envelope<unknown>, fallback: string): string {
   if (typeof body.error === 'string') return body.error;
   if (body.error && typeof body.error === 'object') {
@@ -47,18 +43,17 @@ function responseError(body: Envelope<unknown>, fallback: string): string {
 }
 
 function profileLabel(profile: string, lang: string): string {
-  const labels: Record<string, [string, string]> = {
-    organization_owner: ['Organization Owner', 'Propietario de la organización'],
-    organization_admin: ['Organization Administrator', 'Administrador de la organización'],
-    portfolio_manager: ['Portfolio Manager', 'Gerente de cartera'],
-    property_manager: ['Property Manager', 'Gerente de hotel'],
-    department_lead: ['Department Lead', 'Líder de departamento'],
-    contributor: ['Contributor', 'Colaborador'],
-    viewer: ['Viewer', 'Lector'],
-    external_collaborator: ['External Collaborator', 'Colaborador externo'],
+  const labels: Record<string, string> = {
+    organization_owner: 'Organization Owner',
+    organization_admin: 'Organization Administrator',
+    portfolio_manager: 'Portfolio Manager',
+    property_manager: 'Property Manager',
+    department_lead: 'Department Lead',
+    contributor: 'Contributor',
+    viewer: 'Viewer',
+    external_collaborator: 'External Collaborator',
   };
-  const pair = labels[profile] ?? [titleCaseAccessValue(profile), titleCaseAccessValue(profile)];
-  return copy(lang, pair[0], pair[1]);
+  return labels[profile] ?? titleCaseAccessValue(profile);
 }
 
 function initialScope(
@@ -287,22 +282,14 @@ export function AccessEditorDialog({
       });
       const body = await response.json().catch(() => ({})) as Envelope<CompanyAccessEditPreview>;
       if (!response.ok || !body.ok || !body.data) {
-        throw new Error(responseError(body, copy(
-          lang,
-          'Access impact could not be previewed.',
-          'No se pudo obtener la vista previa del impacto del acceso.',
-        )));
+        throw new Error(responseError(body, 'Access impact could not be previewed.'));
       }
       setPreview(body.data);
       setIdempotencyKey(crypto.randomUUID());
     } catch (caught) {
       setPreview(null);
       setIdempotencyKey(null);
-      setError(caught instanceof Error ? caught.message : copy(
-        lang,
-        'Access impact could not be previewed.',
-        'No se pudo obtener la vista previa del impacto del acceso.',
-      ));
+      setError(caught instanceof Error ? caught.message : 'Access impact could not be previewed.');
     } finally {
       setBusy(false);
     }
@@ -327,19 +314,11 @@ export function AccessEditorDialog({
       });
       const body = await response.json().catch(() => ({})) as Envelope<unknown>;
       if (!response.ok || !body.ok) {
-        throw new Error(responseError(body, copy(
-          lang,
-          'Access could not be saved.',
-          'No se pudo guardar el acceso.',
-        )));
+        throw new Error(responseError(body, 'Access could not be saved.'));
       }
       setSuccess(true);
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : copy(
-        lang,
-        'Access could not be saved.',
-        'No se pudo guardar el acceso.',
-      ));
+      setError(caught instanceof Error ? caught.message : 'Access could not be saved.');
     } finally {
       setBusy(false);
     }
@@ -360,7 +339,7 @@ export function AccessEditorDialog({
       <button
         type="button"
         className={styles.dialogScrim}
-        aria-label={copy(lang, 'Close dialog', 'Cerrar diálogo')}
+        aria-label={'Close dialog'}
         onClick={() => { if (!busy) onClose(); }}
       />
       <div
@@ -376,8 +355,8 @@ export function AccessEditorDialog({
         <div className={styles.dialogHeader}>
           <span className={styles.dialogIcon}><KeyRound size={21} aria-hidden="true" /></span>
           <div>
-            <span>{copy(lang, 'Role and scope', 'Rol y alcance')}</span>
-            <h2 id={titleId}>{copy(lang, 'Edit access for', 'Editar acceso para')} {membership.displayName}</h2>
+            <span>{'Role and scope'}</span>
+            <h2 id={titleId}>{'Edit access for'} {membership.displayName}</h2>
           </div>
           <button
             ref={closeRef}
@@ -385,27 +364,19 @@ export function AccessEditorDialog({
             className={styles.iconButton}
             onClick={onClose}
             disabled={busy}
-            aria-label={copy(lang, 'Close', 'Cerrar')}
+            aria-label={'Close'}
           >
             <X size={17} aria-hidden="true" />
           </button>
         </div>
         <p id={descriptionId} className={styles.dialogIntro}>
-          {copy(
-            lang,
-            'Choose one profile and an exact whole-company, portfolio/region, or selected-hotel scope. Nothing changes until you preview and confirm.',
-            'Elige un perfil y un alcance exacto para toda la empresa, una cartera/región o hoteles seleccionados. Nada cambia hasta que revises y confirmes.',
-          )}
+          {'Choose one profile and an exact whole-company, portfolio/region, or selected-hotel scope. Nothing changes until you preview and confirm.'}
         </p>
 
         {editorMembership.sourceKind === 'membership_hat' ? (
           <div className={styles.formNotice} role="note">
             <AlertTriangle size={16} aria-hidden="true" />
-            <span>{copy(
-              lang,
-              `This replaces the current ${titleCaseAccessValue(editorMembership.sourceRole ?? 'company role')} ${editorMembership.sourceScope === 'company' ? 'company-wide' : 'hotel-scoped'} role with one normalized role and exact scope. Other roles this person holds are unchanged.`,
-              `Esto reemplaza el rol actual ${titleCaseAccessValue(editorMembership.sourceRole ?? 'de empresa')} ${editorMembership.sourceScope === 'company' ? 'de toda la empresa' : 'con alcance de hotel'} por un rol normalizado y un alcance exacto. Los demás roles de esta persona no cambian.`,
-            )}</span>
+            <span>{`This replaces the current ${titleCaseAccessValue(editorMembership.sourceRole ?? 'company role')} ${editorMembership.sourceScope === 'company' ? 'company-wide' : 'hotel-scoped'} role with one normalized role and exact scope. Other roles this person holds are unchanged.`}</span>
           </div>
         ) : null}
 
@@ -413,22 +384,18 @@ export function AccessEditorDialog({
           <>
             <div className={styles.successState} role="status">
               <span><CheckCircle2 size={30} aria-hidden="true" /></span>
-              <h3>{copy(lang, 'Access updated', 'Acceso actualizado')}</h3>
-              <p>{copy(
-                lang,
-                'The new authority is active now and the audit trail records the exact change.',
-                'La nueva autoridad está activa ahora y el registro de auditoría conserva el cambio exacto.',
-              )}</p>
+              <h3>{'Access updated'}</h3>
+              <p>{'The new authority is active now and the audit trail records the exact change.'}</p>
             </div>
             <div className={styles.dialogFooter}>
-              <span><ShieldCheck size={14} aria-hidden="true" />{copy(lang, 'Authorization was rechecked at commit', 'La autorización se volvió a verificar al confirmar')}</span>
-              <button type="button" className={styles.primaryButton} onClick={finish}>{copy(lang, 'Done', 'Listo')}</button>
+              <span><ShieldCheck size={14} aria-hidden="true" />{'Authorization was rechecked at commit'}</span>
+              <button type="button" className={styles.primaryButton} onClick={finish}>{'Done'}</button>
             </div>
           </>
         ) : (
           <form className={styles.workflowForm} onSubmit={loadPreview}>
             <fieldset className={styles.accessOperationGroup}>
-              <legend>{copy(lang, 'Change mode', 'Modo de cambio')}</legend>
+              <legend>{'Change mode'}</legend>
               {editorMembership.canReplace ? (
                 <label>
                   <input
@@ -439,8 +406,8 @@ export function AccessEditorDialog({
                     onChange={() => { setOperation('replace'); invalidatePreview(); }}
                   />
                   <span>
-                    <strong>{copy(lang, 'Replace current access', 'Reemplazar acceso actual')}</strong>
-                    <small>{copy(lang, 'Remove grants outside the new exact scope.', 'Elimina concesiones fuera del nuevo alcance exacto.')}</small>
+                    <strong>{'Replace current access'}</strong>
+                    <small>{'Remove grants outside the new exact scope.'}</small>
                   </span>
                 </label>
               ) : null}
@@ -454,8 +421,8 @@ export function AccessEditorDialog({
                     onChange={() => { setOperation('add'); invalidatePreview(); }}
                   />
                   <span>
-                    <strong>{copy(lang, 'Add another scope', 'Agregar otro alcance')}</strong>
-                    <small>{copy(lang, 'Keep current grants and add this exact scope.', 'Conserva las concesiones actuales y agrega este alcance exacto.')}</small>
+                    <strong>{'Add another scope'}</strong>
+                    <small>{'Keep current grants and add this exact scope.'}</small>
                   </span>
                 </label>
               ) : null}
@@ -463,7 +430,7 @@ export function AccessEditorDialog({
 
             <div className={styles.formGrid}>
               <label className={styles.formField}>
-                <span>{copy(lang, 'Access profile', 'Perfil de acceso')}</span>
+                <span>{'Access profile'}</span>
                 <select
                   value={profile}
                   onChange={(event) => {
@@ -483,10 +450,10 @@ export function AccessEditorDialog({
                     </option>
                   ))}
                 </select>
-                <em>{copy(lang, 'Only profiles you may delegate are shown.', 'Solo se muestran los perfiles que puedes delegar.')}</em>
+                <em>{'Only profiles you may delegate are shown.'}</em>
               </label>
               <label className={styles.formField}>
-                <span>{copy(lang, 'Exact scope', 'Alcance exacto')}</span>
+                <span>{'Exact scope'}</span>
                 <select
                   value={scopeKind}
                   onChange={(event) => {
@@ -501,10 +468,10 @@ export function AccessEditorDialog({
                 >
                   {scopeOptions.map((scope) => (
                     <option key={scope} value={scope}>{scope === 'organization'
-                      ? copy(lang, 'Whole company', 'Toda la empresa')
+                      ? 'Whole company'
                       : scope === 'portfolio'
-                        ? copy(lang, 'One portfolio / region', 'Una cartera / región')
-                        : copy(lang, 'Selected hotels', 'Hoteles seleccionados')}</option>
+                        ? 'One portfolio / region'
+                        : 'Selected hotels'}</option>
                   ))}
                 </select>
               </label>
@@ -512,7 +479,7 @@ export function AccessEditorDialog({
 
             {scopeKind === 'portfolio' ? (
               <label className={styles.formField}>
-                <span>{copy(lang, 'Portfolio / region', 'Cartera / región')}</span>
+                <span>{'Portfolio / region'}</span>
                 <select
                   value={portfolioId}
                   onChange={(event) => { setPortfolioId(event.target.value); invalidatePreview(); }}
@@ -526,19 +493,19 @@ export function AccessEditorDialog({
 
             {scopeKind === 'selected_properties' ? (
               <fieldset className={styles.hotelScopePicker}>
-                <legend>{copy(lang, 'Selected hotels', 'Hoteles seleccionados')}</legend>
+                <legend>{'Selected hotels'}</legend>
                 <div className={styles.hotelScopeToolbar}>
                   <label>
                     <Search size={15} aria-hidden="true" />
-                    <span className={styles.srOnly}>{copy(lang, 'Search hotels', 'Buscar hoteles')}</span>
+                    <span className={styles.srOnly}>{'Search hotels'}</span>
                     <input
                       type="search"
                       value={hotelQuery}
                       onChange={(event) => setHotelQuery(event.target.value)}
-                      placeholder={copy(lang, 'Search hotels', 'Buscar hoteles')}
+                      placeholder={'Search hotels'}
                     />
                   </label>
-                  <span>{propertyIds.length} / 500 {copy(lang, 'selected', 'seleccionados')}</span>
+                  <span>{propertyIds.length} / 500 {'selected'}</span>
                 </div>
                 <div className={styles.hotelScopeList}>
                   {filteredProperties.map((property) => {
@@ -563,19 +530,19 @@ export function AccessEditorDialog({
                     );
                   })}
                   {filteredProperties.length === 0 ? (
-                    <p>{copy(lang, 'No authorized hotels match this search.', 'Ningún hotel autorizado coincide con esta búsqueda.')}</p>
+                    <p>{'No authorized hotels match this search.'}</p>
                   ) : null}
                 </div>
-                {propertyIds.length === 0 ? <small>{copy(lang, 'Select at least one hotel.', 'Selecciona al menos un hotel.')}</small> : null}
+                {propertyIds.length === 0 ? <small>{'Select at least one hotel.'}</small> : null}
               </fieldset>
             ) : null}
 
             <label className={styles.formField}>
               <span>{profile === 'external_collaborator'
-                ? copy(lang, 'Expiration (required)', 'Vencimiento (obligatorio)')
+                ? 'Expiration (required)'
                 : profile === 'organization_owner'
-                  ? copy(lang, 'Expiration', 'Vencimiento')
-                  : copy(lang, 'Expiration (optional)', 'Vencimiento (opcional)')}</span>
+                  ? 'Expiration'
+                  : 'Expiration (optional)'}</span>
               <div className={styles.inputWithIcon}>
                 <CalendarClock size={16} aria-hidden="true" />
                 <input
@@ -587,27 +554,27 @@ export function AccessEditorDialog({
                   onChange={(event) => { setExpiresAt(event.target.value); invalidatePreview(); }}
                 />
               </div>
-              {!expirationValid ? <small>{copy(lang, 'Choose a future expiration date.', 'Elige una fecha de vencimiento futura.')}</small> : null}
+              {!expirationValid ? <small>{'Choose a future expiration date.'}</small> : null}
             </label>
 
             {preview ? (
-              <section className={`${styles.mutationPreview} ${operation === 'replace' && preview.revokedGrantCount > 0 ? styles.lifecyclePreview : ''}`} aria-label={copy(lang, 'Confirmed access impact', 'Impacto de acceso confirmado')}>
+              <section className={`${styles.mutationPreview} ${operation === 'replace' && preview.revokedGrantCount > 0 ? styles.lifecyclePreview : ''}`} aria-label={'Confirmed access impact'}>
                 <div className={styles.previewHeading}>
                   {operation === 'replace' && preview.revokedGrantCount > 0
                     ? <AlertTriangle size={17} aria-hidden="true" />
                     : <ShieldCheck size={17} aria-hidden="true" />}
                   <div>
-                    <strong>{copy(lang, 'Server-verified impact', 'Impacto verificado por el servidor')}</strong>
-                    <span>{copy(lang, 'Authority will be checked again at confirmation.', 'La autoridad se volverá a verificar al confirmar.')}</span>
+                    <strong>{'Server-verified impact'}</strong>
+                    <span>{'Authority will be checked again at confirmation.'}</span>
                   </div>
                 </div>
                 <dl>
-                  <div><dt>{copy(lang, 'Current access entries', 'Entradas de acceso actuales')}</dt><dd>{preview.currentGrantCount}</dd></div>
-                  <div><dt>{copy(lang, 'Revoked', 'Revocadas')}</dt><dd>{preview.revokedGrantCount}</dd></div>
-                  <div><dt>{copy(lang, 'Ensured', 'Garantizadas')}</dt><dd>{preview.upsertedGrantCount}</dd></div>
-                  <div><dt>{copy(lang, 'Hotels before', 'Hoteles antes')}</dt><dd>{preview.beforePropertyIds.length}</dd></div>
-                  <div><dt>{copy(lang, 'Hotels after', 'Hoteles después')}</dt><dd>{preview.afterPropertyIds.length}</dd></div>
-                  <div><dt>{copy(lang, 'Immediate', 'Inmediato')}</dt><dd>{copy(lang, 'Yes', 'Sí')}</dd></div>
+                  <div><dt>{'Current access entries'}</dt><dd>{preview.currentGrantCount}</dd></div>
+                  <div><dt>{'Revoked'}</dt><dd>{preview.revokedGrantCount}</dd></div>
+                  <div><dt>{'Ensured'}</dt><dd>{preview.upsertedGrantCount}</dd></div>
+                  <div><dt>{'Hotels before'}</dt><dd>{preview.beforePropertyIds.length}</dd></div>
+                  <div><dt>{'Hotels after'}</dt><dd>{preview.afterPropertyIds.length}</dd></div>
+                  <div><dt>{'Immediate'}</dt><dd>{'Yes'}</dd></div>
                 </dl>
                 {afterProperties.length > 0 ? (
                   <div className={styles.previewHotels}>
@@ -622,26 +589,26 @@ export function AccessEditorDialog({
 
             {error ? <div className={styles.formError} role="alert">{error}</div> : null}
             <div className={styles.dialogFooter}>
-              <span><ShieldCheck size={14} aria-hidden="true" />{copy(lang, 'Exact scope · audited · immediate', 'Alcance exacto · auditado · inmediato')}</span>
+              <span><ShieldCheck size={14} aria-hidden="true" />{'Exact scope · audited · immediate'}</span>
               <div className={styles.dialogActions}>
                 <button type="button" className={styles.secondaryButton} onClick={onClose} disabled={busy}>
-                  {copy(lang, 'Cancel', 'Cancelar')}
+                  {'Cancel'}
                 </button>
                 {preview ? (
                   <button type="button" className={styles.primaryButton} onClick={commit} disabled={busy}>
                     {busy ? <span className={styles.buttonSpinner} aria-hidden="true" /> : <ShieldCheck size={15} aria-hidden="true" />}
                     {busy
-                      ? copy(lang, 'Saving…', 'Guardando…')
+                      ? 'Saving…'
                       : operation === 'replace'
-                        ? copy(lang, 'Confirm replacement', 'Confirmar reemplazo')
-                        : copy(lang, 'Confirm addition', 'Confirmar adición')}
+                        ? 'Confirm replacement'
+                        : 'Confirm addition'}
                   </button>
                 ) : (
                   <button type="submit" className={styles.primaryButton} disabled={!formValid || busy}>
                     {busy ? <span className={styles.buttonSpinner} aria-hidden="true" /> : <ShieldCheck size={15} aria-hidden="true" />}
                     {busy
-                      ? copy(lang, 'Checking…', 'Verificando…')
-                      : copy(lang, 'Preview access impact', 'Vista previa del impacto')}
+                      ? 'Checking…'
+                      : 'Preview access impact'}
                   </button>
                 )}
               </div>

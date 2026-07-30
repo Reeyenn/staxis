@@ -42,7 +42,7 @@ interface Question {
   topic: string;
   category: string;
   en: string;
-  es: string;
+  es?: string;
 }
 
 type Phase = 'idle' | 'showing' | 'saving' | 'thanks' | 'gone';
@@ -58,7 +58,7 @@ export function DripQuestionCard({
   /** Explicit during a portfolio drill-down; otherwise the active hotel. */
   propertyId?: string | null;
 }) {
-  const es = lang === 'es';
+  const es = false;
   const { activePropertyId } = useProperty();
   const resolvedPropertyId = propertyId ?? activePropertyId;
   const [question, setQuestion] = React.useState<Question | null>(null);
@@ -138,11 +138,9 @@ export function DripQuestionCard({
           <CxIcon name="staxis" size={17} />
         </div>
         <div style={{ flex: 1, minWidth: 0 }}>
-          <div className="cx-dec-t">{es ? 'Guardado. Gracias.' : 'Saved. Thank you.'}</div>
+          <div className="cx-dec-t">{'Saved. Thank you.'}</div>
           <div className="cx-dec-s">
-            {es
-              ? 'Staxis no volverá a preguntar esto.'
-              : 'Staxis will not ask this again.'}
+            {'Staxis will not ask this again.'}
           </div>
         </div>
       </div>
@@ -157,12 +155,10 @@ export function DripQuestionCard({
         <CxIcon name="staxis" size={17} />
       </div>
       <div style={{ flex: 1, minWidth: 0 }}>
-        <div className="cx-dec-eyebrow">{es ? 'STAXIS PREGUNTA' : 'STAXIS ASKS'}</div>
-        <div className="cx-dec-t">{es ? question.es : question.en}</div>
+        <div className="cx-dec-eyebrow">{'STAXIS ASKS'}</div>
+        <div className="cx-dec-t">{question.en}</div>
         <div className="cx-dec-s">
-          {es
-            ? 'Una pregunta, un toque. Puedes ignorarla. Desaparece sola.'
-            : 'One question, one tap. Ignore it if you like. It goes away on its own.'}
+          {'One question, one tap. Ignore it if you like. It goes away on its own.'}
         </div>
         <div style={{ display: 'flex', gap: 8, marginTop: 12, flexWrap: 'wrap' }}>
           <button
@@ -171,7 +167,7 @@ export function DripQuestionCard({
             disabled={busy}
             onClick={() => void answer('yes')}
           >
-            {es ? 'Sí' : 'Yes'}
+            {'Yes'}
           </button>
           <button
             type="button"
@@ -179,16 +175,16 @@ export function DripQuestionCard({
             disabled={busy}
             onClick={() => void answer('no')}
           >
-            {es ? 'No' : 'No'}
+            {'No'}
           </button>
           <button
             type="button"
             className="cx-nobtn"
             disabled={busy}
             onClick={() => setPhase('gone')}
-            aria-label={es ? 'Descartar la pregunta' : 'Dismiss the question'}
+            aria-label={'Dismiss the question'}
           >
-            {es ? 'Ahora no' : 'Not now'}
+            {'Not now'}
           </button>
         </div>
       </div>

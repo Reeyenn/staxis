@@ -27,7 +27,7 @@ export function ShiftEditorModal({
   onRemove: () => void;
   onClose: () => void;
 }) {
-  const es = lang === 'es';
+  const es = false;
   const m = deptMeta[asDeptKey(shift.dept)];
   const [start, setStart] = useState(toHHMM(shift.startMin));
   const [end, setEnd] = useState(toHHMM(shift.endMin));
@@ -42,12 +42,12 @@ export function ShiftEditorModal({
 
   const save = () => {
     if (!TIME_RE.test(start.trim()) || !TIME_RE.test(end.trim())) {
-      setErrorMsg(es ? 'Usa HH:MM, ej. 08:00' : 'Use HH:MM, e.g. 08:00');
+      setErrorMsg('Use HH:MM, e.g. 08:00');
       return;
     }
     const s = toMin(start.trim()), endClock = toMin(end.trim());
     if (endClock === s) {
-      setErrorMsg(es ? 'El inicio y el fin no pueden ser iguales' : 'Start and end cannot be the same');
+      setErrorMsg('Start and end cannot be the same');
       return;
     }
     const e = normalizeShiftEnd(s, endClock);
@@ -101,7 +101,7 @@ export function ShiftEditorModal({
           <button
             type="button"
             onClick={onClose}
-            aria-label={es ? 'Cerrar' : 'Close'}
+            aria-label={'Close'}
             style={{
               background: 'transparent', border: `1px solid ${T.rule}`, borderRadius: '50%',
               width: 30, height: 30, cursor: 'pointer', color: T.ink2, fontSize: 16, flexShrink: 0,
@@ -112,7 +112,7 @@ export function ShiftEditorModal({
 
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, marginTop: 18 }}>
           <div>
-            <label htmlFor={startId}><Caps size={9}>{es ? 'Inicio' : 'Start'}</Caps></label>
+            <label htmlFor={startId}><Caps size={9}>{'Start'}</Caps></label>
             <input
               id={startId}
               value={start}
@@ -126,7 +126,7 @@ export function ShiftEditorModal({
             />
           </div>
           <div>
-            <label htmlFor={endId}><Caps size={9}>{es ? 'Fin' : 'End'}</Caps></label>
+            <label htmlFor={endId}><Caps size={9}>{'End'}</Caps></label>
             <input
               id={endId}
               value={end}
@@ -142,17 +142,17 @@ export function ShiftEditorModal({
         <div style={{
           marginTop: 6, fontFamily: fonts.mono, fontSize: 10, color: T.ink3, letterSpacing: '0.04em',
         }}>
-          {es ? 'Reloj de 24h' : '24h clock'} · {es ? 'ahora' : 'currently'} {fmtMinRange(shift.startMin, shift.endMin)}
+          {'24h clock'} · {'currently'} {fmtMinRange(shift.startMin, shift.endMin)}
         </div>
 
         <div style={{ marginTop: 14 }}>
-          <label htmlFor={noteId}><Caps size={9}>{es ? 'Nota (opcional)' : 'Note (optional)'}</Caps></label>
+          <label htmlFor={noteId}><Caps size={9}>{'Note (optional)'}</Caps></label>
           <input
             id={noteId}
             value={note}
             onChange={e => setNote(e.target.value)}
             onKeyDown={e => { if (e.key === 'Enter') save(); }}
-            placeholder={es ? 'ej. limpieza profunda piso 3' : 'e.g. deep clean floor 3'}
+            placeholder={'e.g. deep clean floor 3'}
             maxLength={300}
             style={{ ...inputStyle, marginTop: 6 }}
           />
@@ -170,10 +170,10 @@ export function ShiftEditorModal({
           <Btn
             variant="ghost" size="md" onClick={onRemove}
             style={{ color: T.red, borderColor: 'rgba(184,92,61,0.25)' }}
-          >{es ? 'Quitar' : 'Remove'}</Btn>
+          >{'Remove'}</Btn>
           <span style={{ flex: 1 }}/>
-          <Btn variant="ghost" size="md" onClick={onClose}>{es ? 'Cancelar' : 'Cancel'}</Btn>
-          <Btn variant="primary" size="md" onClick={save}>{es ? 'Guardar' : 'Save'}</Btn>
+          <Btn variant="ghost" size="md" onClick={onClose}>{'Cancel'}</Btn>
+          <Btn variant="primary" size="md" onClick={save}>{'Save'}</Btn>
         </div>
       </div>
     </div>

@@ -24,8 +24,6 @@ import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react'
 import { createPortal } from 'react-dom';
 import { useAuth } from '@/contexts/AuthContext';
 import { useProperty } from '@/contexts/PropertyContext';
-import { useLang } from '@/contexts/LanguageContext';
-import { localizeKnownMessage, type LocalizedMessagePair } from '@/lib/localized-ui-message';
 import {
   getDeepCleanConfig, setDeepCleanConfig, getDeepCleanRecords,
   assignRoomDeepClean,
@@ -79,17 +77,7 @@ function StatChip({
 export function DeepCleanTab() {
   const { user } = useAuth();
   const { activePropertyId, activeProperty } = useProperty();
-  const { lang } = useLang();
   const todayStrReactive = useTodayStr();
-  const es = lang === 'es';
-  // Keep the current language in a ref so `refreshRecords` (below) does NOT
-  // depend on `es`. Without this, toggling EN/ES changes refreshRecords'
-  // identity, which re-runs the mount effect — flashing the whole tab back to
-  // the "Loading deep clean…" spinner and re-fetching config+records even
-  // though nothing about the data changed. The ref is used only for the
-  // error-toast string, which stays correctly localized.
-  const langRef = useRef(es);
-  langRef.current = es;
 
   const [config, setConfigState] = useState<DeepCleanConfig | null>(null);
   // True when the config fetch itself failed (distinct from a genuine
@@ -156,7 +144,7 @@ export function DeepCleanTab() {
       console.error('[DeepCleanTab] records fetch failed:', err);
       if (!opts?.silent) {
         setToastKind('error');
-        setToast(langRef.current ? 'No se pudo cargar limpieza profunda' : 'Could not load deep clean data');
+        setToast('Could not load deep clean data');
         if (toastTimer.current) clearTimeout(toastTimer.current);
         toastTimer.current = setTimeout(() => setToast(null), 3500);
       }
@@ -218,10 +206,7 @@ export function DeepCleanTab() {
   };
 
   const parDays = config?.frequencyDays ?? 90;
-  const visibleToast = localizeKnownMessage(toast, lang, [[
-    'Could not load deep clean data',
-    'No se pudo cargar limpieza profunda',
-  ]] as const satisfies readonly LocalizedMessagePair[]);
+  const visibleToast = toast;
 
   // ── Derived per-room info ──────────────────────────────────────────────
   const allInfo: RoomInfo[] = useMemo(() => allRoomNumbers.map(num => {
@@ -274,7 +259,7 @@ export function DeepCleanTab() {
           key: rec.roomNumber + ':ip',
           roomNumber: rec.roomNumber,
           agoDays: 0,
-          team: (rec.cleanedByTeam ?? []).join(', ') || (es ? 'En cola' : 'Queued'),
+          team: (rec.cleanedByTeam ?? []).join(', ') || ('Queued'),
           status: 'in_progress',
           sortTs: Number.POSITIVE_INFINITY,
         });
@@ -286,17 +271,17 @@ export function DeepCleanTab() {
           key: rec.roomNumber + ':' + rec.lastDeepClean,
           roomNumber: rec.roomNumber,
           agoDays: ago,
-          team: (rec.cleanedByTeam ?? []).join(', ') || (es ? 'Sin asignar' : 'Unassigned'),
+          team: (rec.cleanedByTeam ?? []).join(', ') || ('Unassigned'),
           status: 'completed',
           sortTs: last.getTime(),
         });
       }
     }
     return list.sort((a, b) => b.sortTs - a.sortTs).slice(0, 12);
-  }, [records, today, es]);
+  }, [records, today]);
 
   const agoLabel = (n: number) =>
-    n === 0 ? (es ? 'hoy' : 'today') : (es ? `hace ${n}d` : `${n}d ago`);
+    n === 0 ? ('today') : (`${n}d ago`);
 
   // Schedule a deep clean for one room — sets status='in_progress' via
   // assignRoomDeepClean (NOT markRoomDeepCleaned, which would mark it
@@ -316,10 +301,10 @@ export function DeepCleanTab() {
           cleanedByTeam: prev[roomNumber]?.cleanedByTeam ?? [],
         } as DeepCleanRecord,
       }));
-      flashToast(es ? `Limpieza profunda programada · ${roomNumber}` : `Deep clean scheduled · ${roomNumber}`);
+      flashToast(`Deep clean scheduled · ${roomNumber}`);
     } catch (err) {
       console.error('[DeepCleanTab] schedule failed:', err);
-      flashToast(es ? 'No se pudo programar' : 'Could not schedule', 'error');
+      flashToast('Could not schedule', 'error');
     }
   };
 
@@ -330,8 +315,7 @@ export function DeepCleanTab() {
     // targetPerWeek with defaults the manager never saw.
     if (configError) {
       flashToast(
-        es ? 'No se pudo cargar la configuración actual. Recarga antes de guardar'
-           : 'Couldn’t load current settings. Reload before saving',
+        'Couldn’t load current settings. Reload before saving',
         'error',
       );
       return;
@@ -345,10 +329,10 @@ export function DeepCleanTab() {
       await setDeepCleanConfig(uid, pid, next);
       setConfigState(next);
       setShowCadence(false);
-      flashToast(es ? 'Cadencia guardada' : 'Cadence saved');
+      flashToast('Cadence saved');
     } catch (err) {
       console.error('[DeepCleanTab] save cadence failed:', err);
-      flashToast(es ? 'No se pudo guardar la cadencia' : 'Could not save cadence', 'error');
+      flashToast('Could not save cadence', 'error');
     } finally {
       setSavingCadence(false);
     }
@@ -370,7 +354,7 @@ export function DeepCleanTab() {
           border: `2px solid ${T.rule}`, borderTopColor: T.ink, borderRadius: '50%',
         }} />
         <p style={{ color: T.ink2, fontSize: 13 }}>
-          {es ? 'Cargando limpieza profunda…' : 'Loading deep clean…'}
+          {'Loading deep clean…'}
         </p>
       </div>
     );
@@ -398,33 +382,31 @@ export function DeepCleanTab() {
             fontFamily: FONT_SANS, fontSize: 26, fontWeight: 600, lineHeight: 1.1,
             color: T.ink, margin: 0, letterSpacing: '-0.02em',
           }}>
-            <span>{es ? 'Limpieza' : 'Deep'}</span>{' '}
-            {es ? 'profunda' : 'clean'}
+            <span>{'Deep'}</span>{' '}
+            {'clean'}
           </h1>
           <div style={{
             fontFamily: FONT_MONO, fontSize: 11, letterSpacing: '0.04em',
             color: T.ink2, marginTop: 7, textTransform: 'uppercase',
           }}>
-            {es
-              ? `Cadencia de ${parDays} días · Rotación y programación`
-              : `${parDays}-day cadence · Rotation & scheduling`}
+            {`${parDays}-day cadence · Rotation & scheduling`}
           </div>
         </div>
         <Btn variant="ghost" size="sm" onClick={() => setShowCadence(true)}>
-          ⚙ {es ? 'Cadencia' : 'Cadence settings'}
+          ⚙ {'Cadence settings'}
         </Btn>
       </div>
 
       {/* FRESHNESS CHIPS */}
       <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginBottom: 18 }}>
-        <StatChip label={es ? 'Atrasadas' : 'Overdue'} value={overdue.length} color={T.warm} />
+        <StatChip label={'Overdue'} value={overdue.length} color={T.warm} />
         {scheduled.length > 0 && (
-          <StatChip label={es ? 'Programadas' : 'Scheduled'} value={scheduled.length} />
+          <StatChip label={'Scheduled'} value={scheduled.length} />
         )}
-        <StatChip label={es ? 'Próximas' : 'Due soon'} value={dueSoon.length} color={T.caramelDeep} />
-        <StatChip label={es ? 'Frescas' : 'Fresh'} value={freshCount} color={T.sageDeep} />
+        <StatChip label={'Due soon'} value={dueSoon.length} color={T.caramelDeep} />
+        <StatChip label={'Fresh'} value={freshCount} color={T.sageDeep} />
         <StatChip
-          label={es ? 'Cadencia' : 'Cadence'}
+          label={'Cadence'}
           value={<>{parDays}<span style={{ fontSize: 14, color: T.ink3 }}>d</span></>}
         />
       </div>
@@ -441,9 +423,9 @@ export function DeepCleanTab() {
             display: 'grid', gridTemplateColumns: '60px 1fr 64px 96px', gap: 12,
             padding: '10px 6px', borderBottom: `1px solid ${T.rule}`, alignItems: 'center',
           }}>
-            <Caps size={9} tracking="0.14em">{es ? 'Cuarto' : 'Room'}</Caps>
-            <Caps size={9} tracking="0.14em">{es ? 'Estado' : 'Status'}</Caps>
-            <Caps size={9} tracking="0.14em">{es ? 'Días' : 'Days'}</Caps>
+            <Caps size={9} tracking="0.14em">{'Room'}</Caps>
+            <Caps size={9} tracking="0.14em">{'Status'}</Caps>
+            <Caps size={9} tracking="0.14em">{'Days'}</Caps>
             <span />
           </div>
 
@@ -452,7 +434,7 @@ export function DeepCleanTab() {
               fontFamily: FONT_SANS, fontSize: 13, color: T.ink2,
               padding: '22px 6px', margin: 0,
             }}>
-              {es ? 'Nada vencido. Buen trabajo.' : 'Nothing overdue. Nice work.'}
+              {'Nothing overdue. Nice work.'}
             </p>
           )}
 
@@ -469,15 +451,15 @@ export function DeepCleanTab() {
                 }}>{r.number}</span>
                 <span>
                   {r.daysSince === Infinity
-                    ? <Pill tone="warm">{es ? 'Nunca limpiada' : 'Never cleaned'}</Pill>
-                    : <Pill tone="warm">{over}d {es ? 'sobre par' : 'over par'}</Pill>}
+                    ? <Pill tone="warm">{'Never cleaned'}</Pill>
+                    : <Pill tone="warm">{over}d {'over par'}</Pill>}
                 </span>
                 <span style={{ fontFamily: FONT_MONO, fontSize: 13, color: T.ink, fontWeight: 600 }}>
                   {r.daysSince === Infinity ? '—' : `${r.daysSince}d`}
                 </span>
                 <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
                   <Btn variant="ghost" size="sm" onClick={() => handleSchedule(r.number)}>
-                    {es ? 'Programar' : 'Schedule'}
+                    {'Schedule'}
                   </Btn>
                 </div>
               </div>
@@ -487,7 +469,7 @@ export function DeepCleanTab() {
           {/* DUE SOON — inline pills */}
           {dueSoon.length > 0 && (
             <div style={{ paddingTop: 14, marginTop: 6 }}>
-              <Caps>{es ? 'Próximas' : 'Due soon'}</Caps>
+              <Caps>{'Due soon'}</Caps>
               <div style={{ display: 'flex', gap: 7, flexWrap: 'wrap', marginTop: 8 }}>
                 {dueSoon.map(r => (
                   <div key={r.number} style={{
@@ -512,14 +494,14 @@ export function DeepCleanTab() {
           background: T.paper, border: `1px solid ${T.rule}`, borderRadius: 16,
           padding: '18px 20px',
         }}>
-          <Caps>{es ? 'Limpiezas recientes' : 'Recent deep cleans'}</Caps>
+          <Caps>{'Recent deep cleans'}</Caps>
           <div style={{ marginTop: 6 }}>
             {recentLog.length === 0 && (
               <p style={{
                 fontFamily: FONT_SANS, fontSize: 13, color: T.ink2,
                 padding: '16px 0', margin: 0,
               }}>
-                {es ? 'Sin registro reciente.' : 'No recent records yet.'}
+                {'No recent records yet.'}
               </p>
             )}
             {recentLog.map(e => (
@@ -572,17 +554,15 @@ export function DeepCleanTab() {
             }}
           >
             <div>
-              <Caps>{es ? 'Configuración' : 'Settings'}</Caps>
+              <Caps>{'Settings'}</Caps>
               <h3 style={{
                 fontFamily: FONT_SANS, fontSize: 18, color: T.ink, margin: '4px 0 0',
                 letterSpacing: '-0.02em', lineHeight: 1.2, fontWeight: 600,
               }}>
-                {es ? 'Cadencia de limpieza profunda' : 'Deep clean cadence'}
+                {'Deep clean cadence'}
               </h3>
               <p style={{ fontFamily: FONT_SANS, fontSize: 13, color: T.ink2, margin: '8px 0 0' }}>
-                {es
-                  ? 'Días entre limpiezas profundas de cada cuarto. Los cuartos que pasen este límite están atrasados.'
-                  : 'Days between deep cleans for each room. Rooms past this are overdue.'}
+                {'Days between deep cleans for each room. Rooms past this are overdue.'}
               </p>
             </div>
             <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
@@ -599,15 +579,15 @@ export function DeepCleanTab() {
                 }}
               />
               <span style={{ fontFamily: FONT_SANS, fontSize: 13, color: T.ink2 }}>
-                {es ? 'días' : 'days'}
+                {'days'}
               </span>
             </div>
             <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
               <Btn variant="ghost" size="sm" onClick={() => setShowCadence(false)}>
-                {es ? 'Cancelar' : 'Cancel'}
+                {'Cancel'}
               </Btn>
               <Btn variant="primary" size="sm" onClick={handleSaveCadence} disabled={savingCadence}>
-                {savingCadence ? (es ? 'Guardando…' : 'Saving…') : (es ? 'Guardar' : 'Save')}
+                {savingCadence ? ('Saving…') : ('Save')}
               </Btn>
             </div>
           </div>

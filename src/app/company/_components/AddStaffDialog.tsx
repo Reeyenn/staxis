@@ -61,10 +61,6 @@ interface AddStaffDialogProps {
   onPendingAttemptChange: (attempt: AddStaffAttempt | null) => void;
 }
 
-function copy(lang: HotelTeamLang, en: string, es: string): string {
-  return lang === 'es' ? es : en;
-}
-
 function freshIdempotencyKey(): string {
   if (globalThis.crypto?.randomUUID) return globalThis.crypto.randomUUID();
   return `staff_${Date.now().toString(36)}_${Math.random().toString(36).slice(2)}`;
@@ -187,7 +183,7 @@ export function AddStaffDialog({
     if (busyRef.current) return;
     const trimmedName = name.trim();
     if (!trimmedName) {
-      setError(copy(lang, 'Enter the person’s name.', 'Ingresa el nombre de la persona.'));
+      setError('Enter the person’s name.');
       nameRef.current?.focus();
       return;
     }
@@ -266,28 +262,12 @@ export function AddStaffDialog({
       const stillProcessing = caught instanceof Error && caught.message === 'IdempotencyInProgress';
       setRetryLocked(!definitiveFailure || timedOut || stillProcessing);
       setError(timedOut
-        ? copy(
-            lang,
-            'The save took too long. Wait a moment, then try again; Staxis will reuse this request.',
-            'El guardado tardó demasiado. Espera un momento y vuelve a intentarlo; Staxis reutilizará esta solicitud.',
-          )
+        ? 'The save took too long. Wait a moment, then try again; Staxis will reuse this request.'
         : stillProcessing
-          ? copy(
-              lang,
-              'That save is still processing. Wait a moment, then try again.',
-              'Ese guardado todavía se está procesando. Espera un momento y vuelve a intentarlo.',
-            )
+          ? 'That save is still processing. Wait a moment, then try again.'
           : accessChanged
-            ? copy(
-                lang,
-                'Your team-management access changed. Refresh the page before trying again.',
-                'Tu acceso para administrar el equipo cambió. Actualiza la página antes de intentarlo de nuevo.',
-              )
-            : copy(
-                lang,
-                'This person could not be added. Check your connection and try again.',
-                'No se pudo agregar a esta persona. Revisa tu conexión e inténtalo de nuevo.',
-              ));
+            ? 'Your team-management access changed. Refresh the page before trying again.'
+            : 'This person could not be added. Check your connection and try again.');
       busyRef.current = false;
       setBusy(false);
     }
@@ -310,30 +290,26 @@ export function AddStaffDialog({
           <span className={styles.dialogIcon}><UserPlus size={19} aria-hidden="true" /></span>
           <div>
             <span>{hotelName}</span>
-            <h2 id={titleId}>{copy(lang, 'Add someone to the schedule', 'Agregar a alguien al horario')}</h2>
+            <h2 id={titleId}>{'Add someone to the schedule'}</h2>
           </div>
           <button
             type="button"
             className={styles.iconButton}
             onClick={requestClose}
             disabled={busy}
-            aria-label={copy(lang, 'Close', 'Cerrar')}
+            aria-label={'Close'}
           >
             <X size={18} aria-hidden="true" />
           </button>
         </div>
 
         <p id={descriptionId} className={styles.dialogIntro}>
-          {copy(
-            lang,
-            'This creates a schedule-only staff profile. It does not create a Staxis login or send an invitation.',
-            'Esto crea un perfil solo para horarios. No crea un acceso a Staxis ni envía una invitación.',
-          )}
+          {'This creates a schedule-only staff profile. It does not create a Staxis login or send an invitation.'}
         </p>
 
         <form className={styles.dialogForm} onSubmit={submit}>
           <label className={styles.field} htmlFor={nameId}>
-            <span>{copy(lang, 'Name', 'Nombre')}</span>
+            <span>{'Name'}</span>
             <input
               ref={nameRef}
               id={nameId}
@@ -342,7 +318,7 @@ export function AddStaffDialog({
               onChange={(event) => setName(event.target.value)}
               maxLength={120}
               autoComplete="off"
-              placeholder={copy(lang, 'Maria Lopez', 'María López')}
+              placeholder={'Maria Lopez'}
               disabled={busy || retryLocked}
               required
             />
@@ -350,22 +326,22 @@ export function AddStaffDialog({
 
           <div className={styles.fieldGrid}>
             <label className={styles.field} htmlFor={departmentId}>
-              <span>{copy(lang, 'Department', 'Departamento')}</span>
+              <span>{'Department'}</span>
               <select
                 id={departmentId}
                 value={department}
                 onChange={(event) => setDepartment(event.target.value as StaffDepartment)}
                 disabled={busy || retryLocked}
               >
-                <option value="housekeeping">{copy(lang, 'Housekeeping', 'Limpieza')}</option>
-                <option value="front_desk">{copy(lang, 'Front Desk', 'Recepción')}</option>
-                <option value="maintenance">{copy(lang, 'Maintenance', 'Mantenimiento')}</option>
-                <option value="other">{copy(lang, 'Other', 'Otro')}</option>
+                <option value="housekeeping">{'Housekeeping'}</option>
+                <option value="front_desk">{'Front Desk'}</option>
+                <option value="maintenance">{'Maintenance'}</option>
+                <option value="other">{'Other'}</option>
               </select>
             </label>
 
             <label className={styles.field} htmlFor={languageId}>
-              <span>{copy(lang, 'Preferred language', 'Idioma preferido')}</span>
+              <span>{'Preferred language'}</span>
               <select
                 id={languageId}
                 value={language}
@@ -379,7 +355,7 @@ export function AddStaffDialog({
           </div>
 
           <label className={styles.field} htmlFor={phoneId}>
-            <span>{copy(lang, 'Phone (optional)', 'Teléfono (opcional)')}</span>
+            <span>{'Phone (optional)'}</span>
             <input
               id={phoneId}
               type="tel"
@@ -401,14 +377,14 @@ export function AddStaffDialog({
 
           <div className={styles.dialogFooter}>
             <button type="button" className={styles.secondaryButton} onClick={requestClose} disabled={busy}>
-              {copy(lang, 'Cancel', 'Cancelar')}
+              {'Cancel'}
             </button>
             <button type="submit" className={styles.primaryButton} disabled={busy || !name.trim()}>
               {busy
-                ? <><span className={styles.buttonSpinner} aria-hidden="true" />{copy(lang, 'Adding…', 'Agregando…')}</>
+                ? <><span className={styles.buttonSpinner} aria-hidden="true" />{'Adding…'}</>
                 : retryLocked
-                  ? copy(lang, 'Retry add', 'Reintentar')
-                  : copy(lang, 'Add to schedule', 'Agregar al horario')}
+                  ? 'Retry add'
+                  : 'Add to schedule'}
             </button>
           </div>
         </form>

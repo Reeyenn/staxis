@@ -118,18 +118,6 @@ export default function FinancialsPage() {
   // Tabs call this after any mutation so the header totals stay live.
   const onTabChanged = useCallback(() => setSummaryNonce((n) => n + 1), []);
 
-  if (capabilityOverridesStatus === 'error') {
-    return (
-      <AppLayout>
-        <RouteErrorState
-          title="Financial access could not be confirmed"
-          message={capabilityOverridesError ?? undefined}
-          onRetry={() => void refreshCapabilities()}
-        />
-      </AppLayout>
-    );
-  }
-
   if (!authLoading && !propLoading && user && !activePropertyId) {
     return (
       <AppLayout>
@@ -156,30 +144,17 @@ export default function FinancialsPage() {
     );
   }
 
-  if (authLoading || propLoading || !authorizationContextReady || !accessContextReady) {
+  if (authLoading || propLoading) {
     return (
       <AppLayout>
-        <RouteLoadingState title={S.loading} message="Checking hotel access and current accounting data." />
-      </AppLayout>
-    );
-  }
-
-  if (!allowed) {
-    return (
-      <AppLayout>
-        <RouteErrorState
-          title="Financials is not available for this account"
-          message="Your current hotel role does not include financial access."
-          retryLabel="Return to Dashboard"
-          onRetry={() => window.location.assign('/dashboard')}
-        />
+        <RouteLoadingState title={S.loading} message="Opening Financials for the selected hotel." />
       </AppLayout>
     );
   }
 
   // The terminal no-hotel branch above handles the reachable case. Keep this
   // explicit guard so request URLs below remain non-null under strict typing.
-  if (!activePropertyId) return null;
+  if (!user || !activePropertyId) return null;
   const financialScopeKey = `${user.uid}:${activePropertyId}`;
 
   const tabs: { key: TabKey; label: string }[] = [
@@ -225,6 +200,25 @@ export default function FinancialsPage() {
           </div>
         </div>
 
+        {!authorizationContextReady || !accessContextReady ? (
+          capabilityOverridesStatus === 'error' ? (
+            <RouteErrorState
+              title="Financial access could not be confirmed"
+              message={capabilityOverridesError ?? undefined}
+              onRetry={() => void refreshCapabilities()}
+            />
+          ) : (
+            <RouteLoadingState title={S.loading} message="Checking financial access for this hotel." />
+          )
+        ) : !allowed ? (
+          <RouteErrorState
+            title="Financials is not available for this account"
+            message="Your current hotel role does not include financial access."
+            retryLabel="Return to Dashboard"
+            onRetry={() => window.location.assign('/dashboard')}
+          />
+        ) : (
+          <>
         {/* Summary tiles */}
         <div style={{ display: 'flex', gap: 10, marginTop: 20, flexWrap: 'wrap' }}>
           {summaryLoading ? (
@@ -314,6 +308,8 @@ export default function FinancialsPage() {
           {tab === 'budget' && <BudgetTab key={financialScopeKey} scopeKey={financialScopeKey} pid={activePropertyId} lang={lang as Lang} month={month} onChanged={onTabChanged} readOnly={readOnly} />}
           {tab === 'capex' && <CapexTab key={financialScopeKey} scopeKey={financialScopeKey} pid={activePropertyId} lang={lang as Lang} onChanged={onTabChanged} readOnly={readOnly} />}
         </div>
+          </>
+        )}
         </div>
       </div>
     </AppLayout>

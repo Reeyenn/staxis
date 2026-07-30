@@ -43,8 +43,7 @@ import {
 } from '@/lib/pms/feed-status';
 
 export interface AsOfLabel {
-  /** The chip text. Short by design — it sits under a tile value.
-   *  e.g. "as of 6:40 AM · 4 hr ago" / "a las 6:40 AM · hace 4 h" */
+  /** The chip text. Short by design — it sits under a tile value. */
   text: string;
   /** The full sentence, for `title` + screen readers: includes the timezone
    *  and says plainly what the age means. */
@@ -92,22 +91,6 @@ const COPY = {
     detailUnknown:
       'Staxis cannot tell how old this number is. This hotel’s PMS feed carries no capture time.',
   },
-  es: {
-    asOf: (t: string) => `a las ${t}`,
-    asOfAged: (t: string, age: string) => `a las ${t} · ${age}`,
-    lastChanged: (t: string) => `último cambio a las ${t}`,
-    unknown: 'hora de actualización desconocida',
-    detailFresh: (t: string, z: string, age: string) =>
-      `De tu PMS, a las ${t} (${z}), ${age}.`,
-    detailStale: (t: string, z: string, age: string) =>
-      `De tu PMS, a las ${t} (${z}), ${age}. Es más de un ciclo de reportes, así que este número describe las ${t}, no este momento.`,
-    detailVeryStale: (t: string, z: string, age: string, hours: number) =>
-      `De tu PMS, a las ${t} (${z}), ${age}. No llega ningún reporte desde hace más de ${hours} horas, así que la conexión parece atascada. Este es el último número que llegó.`,
-    detailChangeOnly: (t: string, z: string, age: string) =>
-      `Este número cambió por última vez a las ${t} (${z}), ${age}. Tu conexión al PMS no informa cuándo revisó por última vez, así que podría ser más reciente.`,
-    detailUnknown:
-      'Staxis no puede saber qué tan antiguo es este número. El PMS de este hotel no envía la hora de captura.',
-  },
 } as const;
 
 /** PMS_STALE_MAX_MINUTES stated in whole hours, for the copy. */
@@ -128,11 +111,11 @@ export function buildAsOfLabel(input: AsOfLabelInput): AsOfLabel | null {
   // (3) No real number behind this tile to stamp.
   if (!feeds.some((k) => feedHasRealSource(status.feeds[k]))) return null;
 
-  const copy = COPY[lang] ?? COPY.en;
+  const copy = COPY.en;
   const capturedAt = status.freshness?.capturedAt ?? null;
   const source = status.freshness?.source ?? 'none';
   const tier = freshnessTier(capturedAt, source, now);
-  const clock = capturedAt ? formatAsOfClock(capturedAt, timezone ?? null, now, lang) : null;
+  const clock = capturedAt ? formatAsOfClock(capturedAt, timezone ?? null, now, 'en') : null;
 
   // Unusable / absent capture time. Say so rather than implying "now" — the
   // number stays on screen, the claim about its age does not.

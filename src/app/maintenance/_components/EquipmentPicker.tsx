@@ -9,7 +9,6 @@
 import React, { useEffect, useState } from 'react';
 import { fetchEquipmentList } from '@/lib/db';
 import type { Equipment } from '@/lib/equipment/types';
-import { tr } from '@/lib/i18n-utils';
 import { T, FONT_SANS } from './_mt-snow';
 
 export function EquipmentPicker({
@@ -42,7 +41,7 @@ export function EquipmentPicker({
         boxSizing: 'border-box', outline: 'none', cursor: 'pointer',
       }}
     >
-      <option value="">{tr(lang, '(No asset)', '(Sin equipo)')}</option>
+      <option value="">{'(No asset)'}</option>
       {items.map((eq) => (
         <option key={eq.id} value={eq.id}>
           {eq.name}{eq.location ? ` · ${eq.location}` : ''}

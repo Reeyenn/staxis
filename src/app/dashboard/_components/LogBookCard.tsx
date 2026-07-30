@@ -35,7 +35,7 @@ export function LogBookCard() {
   // section is off for the hotel (default-ON while loading).
   const commsEnabled = useSectionEnabled('communications');
 
-  const es = lang === 'es';
+  const es = false;
   // Management OR front desk — the people doing shift handoffs.
   const canSee = !!user && (canManageTeam(user.role) || user.role === 'front_desk');
 
@@ -56,7 +56,7 @@ export function LogBookCard() {
   return (
     <GlassCard>
       <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: 12 }}>
-        <div style={CARD_LABEL}>{es ? 'Bitácora' : 'Log book'}</div>
+        <div style={CARD_LABEL}>{'Log book'}</div>
         <Link
           href="/communications?view=logbook"
           style={{
@@ -69,7 +69,7 @@ export function LogBookCard() {
             fontWeight: 600,
           }}
         >
-          {es ? 'Ir a la bitácora →' : 'Go to Log Book →'}
+          {'Go to Log Book →'}
         </Link>
       </div>
 
@@ -94,7 +94,7 @@ export function LogBookCard() {
               </span>
               <span style={{ display: 'block', fontSize: 11.5, color: CARD.ink3, marginTop: 2 }}>
                 {[e.authorName, fmtWhenDateTime(e.createdAt, lang)].filter(Boolean).join(' · ')}
-                {e.replyCount > 0 && ` · ${e.replyCount} ${e.replyCount === 1 ? (es ? 'respuesta' : 'reply') : (es ? 'respuestas' : 'replies')}`}
+                {e.replyCount > 0 && ` · ${e.replyCount} ${e.replyCount === 1 ? ('reply') : ('replies')}`}
               </span>
             </span>
           </Link>

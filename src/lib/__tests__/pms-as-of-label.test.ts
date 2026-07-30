@@ -157,31 +157,35 @@ describe('buildAsOfLabel — what the stamp says', () => {
   });
 });
 
-describe('buildAsOfLabel — Spanish', () => {
-  it('translates every tier, and never leaves English in the chip', () => {
-    const cases: Array<{ capturedAt: string | null; source?: FreshnessSource; expect: RegExp }> = [
-      { capturedAt: agedBy(20), expect: /^a las / },
-      { capturedAt: agedBy(120), expect: /^a las .* · hace 2 h$/ },
-      { capturedAt: agedBy(480), expect: /^a las 6:40 AM · hace 8 h$/ },
-      { capturedAt: agedBy(400), source: 'row_change', expect: /^último cambio a las / },
-      { capturedAt: null, source: 'none', expect: /^hora de actualización desconocida$/ },
+describe('buildAsOfLabel — freshness classification stays complete in English-only UI', () => {
+  it('classifies every source/age tier without inventing freshness', () => {
+    const cases: Array<{
+      capturedAt: string | null;
+      source?: FreshnessSource;
+      tier: string;
+      tone: string;
+    }> = [
+      { capturedAt: agedBy(20), tier: 'fresh', tone: 'quiet' },
+      { capturedAt: agedBy(120), tier: 'stale', tone: 'caution' },
+      { capturedAt: agedBy(480), tier: 'very_stale', tone: 'caution' },
+      { capturedAt: agedBy(400), source: 'row_change', tier: 'change_only', tone: 'quiet' },
+      { capturedAt: null, source: 'none', tier: 'unknown', tone: 'caution' },
     ];
-    for (const c of cases) {
-      const l = label(liveStatus({ capturedAt: c.capturedAt, source: c.source }), ['dashboardCounts'], 'es');
-      assert.match(l?.text ?? '', c.expect);
-      assert.doesNotMatch(l?.text ?? '', /\bas of\b|\bago\b|unknown/);
-      assert.doesNotMatch(l?.detail ?? '', /\bas of\b|\bago\b|cannot tell/);
+
+    for (const expected of cases) {
+      const result = label(liveStatus({
+        capturedAt: expected.capturedAt,
+        source: expected.source,
+      }));
+      assert.equal(result?.tier, expected.tier);
+      assert.equal(result?.tone, expected.tone);
+      assert.ok((result?.text ?? '').length > 0, `${expected.tier}: missing honest freshness copy`);
     }
   });
 
-  it('quotes the same clock time in both languages', () => {
-    // A bilingual team comparing two screens must see one "6:40 AM", not two
-    // different-looking stamps for one report.
-    const en = label(liveStatus({ capturedAt: agedBy(480) }), ['dashboardCounts'], 'en');
-    const es = label(liveStatus({ capturedAt: agedBy(480) }), ['dashboardCounts'], 'es');
-    assert.ok(en?.text.includes('6:40 AM'));
-    assert.ok(es?.text.includes('6:40 AM'));
-    assert.equal(en?.tier, es?.tier);
-    assert.equal(en?.tone, es?.tone);
+  it('keeps the source clock visible for stale data', () => {
+    const result = label(liveStatus({ capturedAt: agedBy(480) }));
+    assert.match(result?.text ?? '', /6:40 AM/);
+    assert.match(result?.detail ?? '', /6:40 AM/);
   });
 });

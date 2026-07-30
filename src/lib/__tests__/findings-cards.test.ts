@@ -383,19 +383,18 @@ describe('every card can be put down, and the ways of putting it down differ', (
     );
   });
 
-  test('every button speaks Spanish, and it is not the English string', () => {
+  test('legacy language input cannot re-enable localized product buttons', () => {
     for (const disposition of ['propose', 'recommend', 'fyi'] as const) {
       const en = closureButtons({ disposition }, 'en');
       const es = closureButtons({ disposition }, 'es');
       assert.equal(en.length, es.length, disposition);
       for (let i = 0; i < en.length; i += 1) {
-        assert.ok(es[i].label.trim().length > 0, `${disposition}[${i}] has no Spanish label`);
-        assert.notEqual(es[i].label, en[i].label, `${disposition}[${i}] is untranslated`);
-        assert.equal(es[i].verdict, en[i].verdict, 'the Spanish card sends a different verdict');
-        if (en[i].hint) assert.notEqual(es[i].hint, en[i].hint, `${disposition}[${i}] hint`);
+        assert.equal(es[i].label, en[i].label, `${disposition}[${i}] changed with legacy locale`);
+        assert.equal(es[i].verdict, en[i].verdict, 'legacy locale changed the verdict');
+        if (en[i].hint) assert.equal(es[i].hint, en[i].hint, `${disposition}[${i}] hint`);
         if (en[i].confirm) {
-          assert.notEqual(es[i].confirm!.prompt, en[i].confirm!.prompt);
-          assert.notEqual(es[i].confirm!.yes, en[i].confirm!.yes);
+          assert.equal(es[i].confirm!.prompt, en[i].confirm!.prompt);
+          assert.equal(es[i].confirm!.yes, en[i].confirm!.yes);
         }
       }
     }
@@ -435,7 +434,7 @@ describe('"needs a decision" means the badge is counting it', () => {
     // all claiming to want an answer.
     const loudButNoQuestion = finding({ id: 'u', severity: 'critical', disposition: 'recommend' });
     assert.equal(cardEyebrowLabel(loudButNoQuestion, 'en'), 'URGENT');
-    assert.equal(cardEyebrowLabel(loudButNoQuestion, 'es'), 'URGENTE');
+    assert.equal(cardEyebrowLabel(loudButNoQuestion, 'es'), 'URGENT');
   });
 
   test('a propose card says NEEDS A DECISION whatever its severity', () => {
@@ -444,7 +443,7 @@ describe('"needs a decision" means the badge is counting it', () => {
     for (const severity of ['critical', 'attention', 'info'] as const) {
       const asking = finding({ id: `p_${severity}`, severity, disposition: 'propose' });
       assert.equal(cardEyebrowLabel(asking, 'en'), 'NEEDS A DECISION', severity);
-      assert.equal(cardEyebrowLabel(asking, 'es'), 'REQUIERE UNA DECISIÓN', severity);
+      assert.equal(cardEyebrowLabel(asking, 'es'), 'NEEDS A DECISION', severity);
     }
   });
 
@@ -459,7 +458,7 @@ describe('"needs a decision" means the badge is counting it', () => {
     );
     assert.equal(
       cardEyebrowLabel(finding({ id: 'i2', severity: 'info', disposition: 'fyi' }), 'es'),
-      'PARA TU INFORMACIÓN',
+      'FOR YOUR INFORMATION',
     );
   });
 
@@ -478,7 +477,7 @@ describe('"needs a decision" means the badge is counting it', () => {
 // ─── Phrasing ───────────────────────────────────────────────────────────────
 
 describe('judged phrasing when it exists, the detector’s own sentence when it does not', () => {
-  test('the judge’s wording wins in the manager’s language', () => {
+  test('the judge’s English wording wins regardless of legacy language input', () => {
     const f = finding({
       id: 'p',
       summary: 'raw template sentence',
@@ -486,7 +485,7 @@ describe('judged phrasing when it exists, the detector’s own sentence when it 
       phrasedEs: 'La 214 lleva cuatro visitas de aire este mes.',
     });
     assert.equal(cardPhrasing(f, 'en'), 'Room 214 has eaten four HVAC visits this month.');
-    assert.equal(cardPhrasing(f, 'es'), 'La 214 lleva cuatro visitas de aire este mes.');
+    assert.equal(cardPhrasing(f, 'es'), 'Room 214 has eaten four HVAC visits this month.');
   });
 
   test('an absent judge leaves a card that still says something true', () => {
@@ -494,12 +493,7 @@ describe('judged phrasing when it exists, the detector’s own sentence when it 
     assert.equal(cardPhrasing(f, 'en'), 'raw template sentence');
   });
 
-  // Mutation: `return text.length > 0 ? text : f.summary` for both languages —
-  // which is what it did, and `summary` is written by the DETECTOR, in English,
-  // always. So every card the judge had not phrased showed English prose under a
-  // Spanish heading, including EVERY company-scope card (company_findings has no
-  // judged_* columns at all). This was live on the VP queue.
-  test('Spanish never falls back to the English sentence', () => {
+  test('legacy language input still uses the truthful English detector sentence', () => {
     const f = finding({
       id: 'p',
       summary: 'Room 231 has had 4 work orders in the last 30 days.',
@@ -511,10 +505,7 @@ describe('judged phrasing when it exists, the detector’s own sentence when it 
       },
     });
     const es = cardPhrasing(f, 'es');
-    assert.notEqual(es, f.summary);
-    assert.ok(!es.includes('work orders'), `still English: ${es}`);
-    assert.match(es, /Room 231/, 'the hotel’s own label for the place is carried across');
-    assert.match(es, /Ver los números/);
+    assert.equal(es, f.summary);
   });
 
   test('a judge that phrased only English does not leave the Spanish card blank', () => {
@@ -537,13 +528,12 @@ describe('"now 5" and "this rests on old data"', () => {
     assert.equal(occurrenceLine(finding({ id: 'a', occurrenceCount: 1 }), 'en', NOW), null);
   });
 
-  test('a repeat sighting counts, in both languages', () => {
+  test('a repeat sighting remains English for legacy language input', () => {
     const f = finding({ id: 'a', occurrenceCount: 6, firstSeenAt: '2026-07-12T06:00:00.000Z' });
     const en = occurrenceLine(f, 'en', NOW);
     const es = occurrenceLine(f, 'es', NOW);
     assert.match(String(en), /Seen 6 times since /);
-    assert.match(String(es), /Visto 6 veces desde el /);
-    assert.notEqual(en, es, 'the Spanish string is the English one');
+    assert.equal(es, en);
   });
 
   test('a broken first-seen timestamp still produces a count rather than "Invalid Date"', () => {
@@ -557,7 +547,7 @@ describe('"now 5" and "this rests on old data"', () => {
     assert.equal(dataAgeNote(finding({ id: 'a', weakestInputAgeDays: 9 }), 'en'),
       'Based on data that is 9 days old.');
     assert.equal(dataAgeNote(finding({ id: 'a', weakestInputAgeDays: 9 }), 'es'),
-      'Basado en datos de hace 9 días.');
+      'Based on data that is 9 days old.');
   });
 
   test('an unknown input age makes no claim either way', () => {
@@ -589,11 +579,10 @@ describe('a quiet watcher and a dead one must not look the same', () => {
     assert.equal(line.text, 'Checked 34 things last night. 34 look normal.');
   });
 
-  test('the Spanish line is Spanish, not the English one', () => {
+  test('legacy language input keeps the liveness line English', () => {
     const en = livenessLine(run(9), 1, 'en', NOW).text;
     const es = livenessLine(run(9), 1, 'es', NOW).text;
-    assert.equal(es, 'Se revisaron 34 cosas anoche. 33 se ven normales.');
-    assert.notEqual(en, es);
+    assert.equal(es, en);
   });
 
   test('an old run says how old instead of implying it is current', () => {
@@ -603,9 +592,9 @@ describe('a quiet watcher and a dead one must not look the same', () => {
     assert.doesNotMatch(String(line.text), /normal/, 'a stale line must not recite last week’s all-clear');
   });
 
-  test('the stale line is Spanish in Spanish', () => {
+  test('the stale line remains English for legacy language input', () => {
     const line = livenessLine(run(72), 1, 'es', NOW);
-    assert.equal(line.text, 'Última revisión hace 3 días. Puede que esto no esté al día.');
+    assert.equal(line.text, 'Last checked 3 days ago. This may not be up to date.');
   });
 
   test('the freshness boundary is where it says it is', () => {
@@ -639,11 +628,11 @@ describe('a quiet watcher and a dead one must not look the same', () => {
   // every check but one is skipping for want of data, reads "Checked 1 things
   // last night" — which is the sentence that tells a manager nobody looked at
   // this screen before they did.
-  test('one check reads as one thing, in both languages', () => {
+  test('one check reads as one thing in English for every legacy language input', () => {
     const single = run(1, { detectorsChecked: 1 });
     assert.equal(livenessLine(single, 0, 'en', NOW).text, 'Checked 1 thing last night. 1 look normal.');
-    assert.equal(livenessLine(single, 1, 'es', NOW).text, 'Se revisó 1 cosa anoche. 0 se ven normales.');
-    assert.equal(livenessLine(single, 0, 'es', NOW).text, 'Se revisó 1 cosa anoche. 1 se ve normal.');
+    assert.equal(livenessLine(single, 1, 'es', NOW).text, 'Checked 1 thing last night. 0 look normal.');
+    assert.equal(livenessLine(single, 0, 'es', NOW).text, 'Checked 1 thing last night. 1 look normal.');
   });
 
   test('"normal" counts distinct CHECKS, not findings — five cards from one check is one', () => {
@@ -663,7 +652,10 @@ describe('a quiet watcher and a dead one must not look the same', () => {
       "1 check couldn't run yet. Not enough history.");
     assert.equal(skippedNote(run(3, { detectorsSkipped: 4 }), 'en', NOW),
       "4 checks couldn't run yet. Not enough history.");
-    assert.match(String(skippedNote(run(3, { detectorsSkipped: 4 }), 'es', NOW)), /falta de datos/);
+    assert.equal(
+      skippedNote(run(3, { detectorsSkipped: 4 }), 'es', NOW),
+      "4 checks couldn't run yet. Not enough history.",
+    );
     assert.equal(skippedNote(null, 'en', NOW), null);
   });
 

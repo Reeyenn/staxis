@@ -80,45 +80,8 @@ function cmStrings(lang: Lang) {
       noRecordHint: 'No closed monthly inventory snapshot exists for that month.',
       loadFailed: 'Couldn’t load one of the periods. Try again.',
     },
-    es: {
-      eyebrow: 'Comparar',
-      italic: 'Lado a lado',
-      modeMonths: 'Meses',
-      modeYears: 'Años',
-      modeCustom: 'Fechas propias',
-      vs: 'vs',
-      from: 'Desde',
-      to: 'hasta',
-      actualUsed: 'Uso real',
-      actualUsedSub: 'inicial + compras − final',
-      purchases: 'Compras',
-      purchasesSub: 'entregas registradas recibidas en el período elegido',
-      closedMonthCoverage: (closed: number, ended: number) =>
-        `${closed} de ${ended} ${ended === 1 ? 'mes terminado cubierto' : 'meses terminados cubiertos'}`,
-      missingCost: 'Falta costo',
-      pendingClose: 'Cierre pendiente',
-      partial: 'Mes parcial',
-      unavailable: 'No disponible',
-      customUsageHint: 'El uso real es mensual, por lo que no se estima para fechas personalizadas.',
-      thrownOut: 'Desechado',
-      thrownOutSub: 'dañado, manchado, perdido',
-      beginningInventory: 'Inventario inicial',
-      beginningInventorySub: 'valor al conteo inicial del mes',
-      endingInventory: 'Inventario final',
-      endingInventorySub: 'valor al conteo final del mes',
-      countsDone: 'Conteos hechos',
-      countsDoneSub: 'veces que se contó',
-      soFar: 'hasta hoy',
-      more: 'más',
-      less: 'menos',
-      same: 'igual',
-      noData: 'Sin datos',
-      noDataHint: 'Staxis aún no llevaba el inventario aquí.',
-      noRecord: 'Sin registro',
-      noRecordHint: 'No existe un cierre mensual de inventario para ese mes.',
-      loadFailed: 'No se pudo cargar uno de los períodos. Intente de nuevo.',
-    },
-  }[lang];
+
+  }['en'];
 }
 
 type Mode = 'months' | 'years' | 'custom';
@@ -161,7 +124,7 @@ export function ComparePanel({ lang, open, onClose, timezone }: ComparePanelProp
   const cm = cmStrings(lang);
   const { user } = useAuth();
   const { activePropertyId } = useProperty();
-  const locale = lang === 'es' ? 'es' : 'en';
+  const locale = 'en';
   // Re-resolve "today" each time the panel opens. A remote manager therefore
   // sees the hotel's current month/day, not the browser's calendar.
   const todayKey = inventoryDateKeyInZone(new Date(), timezone);

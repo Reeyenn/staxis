@@ -300,16 +300,12 @@ describe('the locked card', () => {
     assert.equal(offersApproval(plain), true);
   });
 
-  // Mutation: build the sentence from an English string the server sent. A
-  // Spanish reader gets English, or a stale translation.
-  test('the notice is written in the reader\'s own language, from the role', () => {
+  test('the notice stays English for legacy language input', () => {
     const en = signOffNotice(signOff(), 'en');
     const es = signOffNotice(signOff(), 'es');
     assert.match(en, /Needs VP sign-off/);
     assert.match(en, /Maria/);
-    assert.match(es, /aprobación/);
-    assert.match(es, /Maria/);
-    assert.notEqual(en, es);
+    assert.equal(es, en);
   });
 
   // Mutation: return null / render nothing when nobody holds the job. The
@@ -322,23 +318,19 @@ describe('the locked card', () => {
 
   test('several approvers are listed readably', () => {
     assert.match(signOffNotice(signOff({ approverNames: ['Ana', 'Maria'] }), 'en'), /Ana and Maria/);
-    assert.match(signOffNotice(signOff({ approverNames: ['Ana', 'Maria'] }), 'es'), /Ana y Maria/);
+    assert.match(signOffNotice(signOff({ approverNames: ['Ana', 'Maria'] }), 'es'), /Ana and Maria/);
   });
 
-  // Mutation: build the Spanish sentence as "de " + the role word. Two of the
-  // four roles then read "de el VP" / "de el gerente", which Spanish contracts
-  // to "del". Caught on screen, so it is pinned here.
-  test('the Spanish notice contracts, for every role', () => {
+  test('every role uses the English product notice for legacy language input', () => {
     const expected: Record<string, RegExp> = {
-      owner: /Necesita la aprobación de la propiedad\b/,
-      vp: /Necesita la aprobación del VP\b/,
-      finance: /Necesita la aprobación de finanzas\b/,
-      general_manager: /Necesita la aprobación del gerente\b/,
+      owner: /Needs owner sign-off\b/,
+      vp: /Needs VP sign-off\b/,
+      finance: /Needs finance sign-off\b/,
+      general_manager: /Needs GM sign-off\b/,
     };
     for (const [approverRole, pattern] of Object.entries(expected)) {
       const text = signOffNotice(signOff({ approverRole, approverNames: [] }), 'es');
-      assert.match(text, pattern, `wrong Spanish for ${approverRole}: ${text}`);
-      assert.doesNotMatch(text, /\bde el\b/, `uncontracted "de el" for ${approverRole}`);
+      assert.match(text, pattern, `wrong English notice for ${approverRole}: ${text}`);
     }
   });
 });
@@ -1595,14 +1587,11 @@ function stoppedHotel(name: string, silentDays: number): PortfolioHotel {
   };
 }
 
-describe('a Spanish reader gets Spanish', () => {
-  // THE BUG: "según your other hotels spent $700-$2,100 that week" — a Spanish
-  // label bolted onto an English sentence, on the only screen a company card
-  // ever appears on. Mutation: return the English basis in Spanish.
-  test('a basis with a Spanish rendering is preferred in Spanish', () => {
+describe('legacy language input keeps built-in portfolio UI English', () => {
+  test('an English basis is preferred even when a Spanish compatibility field exists', () => {
     assert.equal(
       basisInLang('your other hotels spent $700–$2,100 that week', 'tus otros hoteles gastaron $700–$2,100 esa semana', 'es'),
-      'tus otros hoteles gastaron $700–$2,100 esa semana',
+      'your other hotels spent $700–$2,100 that week',
     );
   });
 

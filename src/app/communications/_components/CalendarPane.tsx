@@ -53,11 +53,11 @@ export function CalendarMode({ pid, isManager, L, switcher }: { pid: string; isM
   const items = data?.events ?? null;
 
   const remove = async (ev: KnowledgeEventDTO) => {
-    if (!window.confirm(L(`Delete "${ev.title}"?`, `¿Eliminar "${ev.title}"?`))) return;
+    if (!window.confirm(`Delete "${ev.title}"?`)) return;
     setMutationError(null);
     const r = await apiDelete(`/api/knowledge/events?pid=${encodeURIComponent(pid)}&id=${encodeURIComponent(ev.id)}`);
     if (!r.ok) {
-      setMutationError(L('The event was not deleted. Please try again.', 'No se eliminó el evento. Inténtalo de nuevo.'));
+      setMutationError('The event was not deleted. Please try again.');
       return;
     }
     await reload();
@@ -74,12 +74,12 @@ export function CalendarMode({ pid, isManager, L, switcher }: { pid: string; isM
     <>
       <div style={{ display: 'flex', alignItems: 'flex-end', justifyContent: 'space-between', gap: 16 }}>
         <div>
-          <div style={{ marginBottom: 7 }}><MonoLabel>{data ? (count === 1 ? L('1 event', '1 evento') : L(`${count} events`, `${count} eventos`)) : (loading ? L('Loading events', 'Cargando eventos') : L('Events unavailable', 'Eventos no disponibles'))}</MonoLabel></div>
-          <div style={{ fontFamily: SERIF, fontSize: 34, fontStyle: 'italic', lineHeight: 1, color: T.ink }}>{L('Calendar', 'Calendario')}</div>
+          <div style={{ marginBottom: 7 }}><MonoLabel>{data ? (count === 1 ? '1 event' : `${count} events`) : (loading ? 'Loading events' : 'Events unavailable')}</MonoLabel></div>
+          <div style={{ fontFamily: SERIF, fontSize: 34, fontStyle: 'italic', lineHeight: 1, color: T.ink }}>{'Calendar'}</div>
         </div>
         {isManager && (
           <button onClick={() => setAdding((v) => !v)} style={{ minHeight: 44, display: 'flex', alignItems: 'center', gap: 7, padding: '9px 14px', borderRadius: 10, cursor: 'pointer', flexShrink: 0, border: `1px solid ${adding ? T.hair : tint(T.forest, .4)}`, background: adding ? T.bg : tint(T.forest, .12), color: adding ? T.dim : deptColorDark(T.forest), fontFamily: SANS, fontSize: 13.5, fontWeight: 600 }}>
-            {adding ? <><X size={15} /> {L('Cancel', 'Cancelar')}</> : <><Plus size={16} /> {L('Add event', 'Agregar evento')}</>}
+            {adding ? <><X size={15} /> {'Cancel'}</> : <><Plus size={16} /> {'Add event'}</>}
           </button>
         )}
       </div>
@@ -93,26 +93,26 @@ export function CalendarMode({ pid, isManager, L, switcher }: { pid: string; isM
           <div role="alert" style={{ marginBottom: 10, fontFamily: SANS, fontSize: 13, lineHeight: 1.45, color: T.terracotta, padding: '12px 14px', border: `1px solid ${tint(T.terracotta, .28)}`, background: tint(T.terracotta, .08), borderRadius: 12, display: 'flex', alignItems: 'center', gap: 10 }}>
             <AlertCircle size={17} aria-hidden="true" style={{ flexShrink: 0 }} />
             <span style={{ flex: 1 }}>{mutationError}</span>
-            <button onClick={() => setMutationError(null)} aria-label={L('Dismiss error', 'Cerrar error')} style={{ width: 44, height: 44, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', border: 0, borderRadius: 8, background: 'transparent', color: T.terracotta, cursor: 'pointer' }}><X size={17} aria-hidden="true" /></button>
+            <button onClick={() => setMutationError(null)} aria-label={'Dismiss error'} style={{ width: 44, height: 44, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', border: 0, borderRadius: 8, background: 'transparent', color: T.terracotta, cursor: 'pointer' }}><X size={17} aria-hidden="true" /></button>
           </div>
         )}
         {loadError && (
           <div role="alert" style={{ marginBottom: 10, fontFamily: SANS, fontSize: 13, lineHeight: 1.45, color: T.terracotta, padding: '12px 14px', border: `1px solid ${tint(T.terracotta, .28)}`, background: tint(T.terracotta, .08), borderRadius: 12, display: 'flex', alignItems: 'center', gap: 10 }}>
             <AlertCircle size={17} aria-hidden="true" style={{ flexShrink: 0 }} />
-            <span style={{ flex: 1 }}>{data ? L('Events could not refresh. Showing the last results.', 'No se pudieron actualizar los eventos. Se muestran los últimos resultados.') : L('Events could not load. Check your connection and try again.', 'No se pudieron cargar los eventos. Revisa tu conexión e inténtalo de nuevo.')}</span>
-            <button onClick={() => void reload()} aria-label={L('Retry loading events', 'Reintentar cargar eventos')} style={{ minWidth: 44, minHeight: 44, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', borderRadius: 8, border: `1px solid ${tint(T.terracotta, .3)}`, background: T.bg, color: T.terracotta, cursor: 'pointer' }}><RefreshCw size={15} aria-hidden="true" /></button>
+            <span style={{ flex: 1 }}>{data ? 'Events could not refresh. Showing the last results.' : 'Events could not load. Check your connection and try again.'}</span>
+            <button onClick={() => void reload()} aria-label={'Retry loading events'} style={{ minWidth: 44, minHeight: 44, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', borderRadius: 8, border: `1px solid ${tint(T.terracotta, .3)}`, background: T.bg, color: T.terracotta, cursor: 'pointer' }}><RefreshCw size={15} aria-hidden="true" /></button>
           </div>
         )}
         {loading && !data ? (
           <div role="status" aria-live="polite" style={{ ...dashedBoxStyle, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8 }}>
-            <Loader2 size={16} className="comms-spin" aria-hidden="true" /> {L('Loading events…', 'Cargando eventos…')}
+            <Loader2 size={16} className="comms-spin" aria-hidden="true" /> {'Loading events…'}
           </div>
         ) : data && count === 0 ? (
-          <div style={dashedBoxStyle}>{L('No events yet. Add training days, vendor visits, or brand audits.', 'Aún no hay eventos. Agrega días de capacitación, visitas de proveedores o auditorías.')}</div>
+          <div style={dashedBoxStyle}>{'No events yet. Add training days, vendor visits, or brand audits.'}</div>
         ) : data ? (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-            {upcoming.length > 0 && <EventList title={L('Upcoming', 'Próximos')} events={upcoming} isManager={isManager} onRemove={remove} L={L} />}
-            {past.length > 0 && <EventList title={L('Past', 'Pasados')} events={past} isManager={isManager} onRemove={remove} L={L} dim />}
+            {upcoming.length > 0 && <EventList title={'Upcoming'} events={upcoming} isManager={isManager} onRemove={remove} L={L} />}
+            {past.length > 0 && <EventList title={'Past'} events={past} isManager={isManager} onRemove={remove} L={L} dim />}
           </div>
         ) : null}
       </div>
@@ -136,7 +136,7 @@ function EventList({ title, events, isManager, onRemove, L, dim }: { title: stri
               {ev.notes && <div style={{ fontFamily: SANS, fontSize: 12.5, color: T.dim, marginTop: 3, whiteSpace: 'pre-wrap' }}>{ev.notes}</div>}
             </div>
             {isManager && (
-              <button onClick={() => onRemove(ev)} title={L('Delete', 'Eliminar')} aria-label={L(`Delete ${ev.title}`, `Eliminar ${ev.title}`)}
+              <button onClick={() => onRemove(ev)} title={'Delete'} aria-label={`Delete ${ev.title}`}
                 style={{ width: 44, height: 44, flexShrink: 0, background: 'transparent', border: 'none', cursor: 'pointer', padding: 0, borderRadius: 8, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', color: T.dim }}>
                 <Trash2 size={14} aria-hidden="true" />
               </button>
@@ -168,7 +168,7 @@ function EventEditor({ pid, L, onDone, onCancel }: { pid: string; L: L; onDone: 
     const r = await apiPost('/api/knowledge/events', { pid, title: title.trim(), eventDate, endDate: endDate || null, notes: notes.trim() || null });
     setBusy(false);
     if (r.ok) onDone();
-    else setError(r.error || L('Could not save. Try again.', 'No se pudo guardar. Inténtalo de nuevo.'));
+    else setError(r.error || 'Could not save. Try again.');
   };
 
   const canSave = !!title.trim() && !!eventDate && !busy;
@@ -176,30 +176,30 @@ function EventEditor({ pid, L, onDone, onCancel }: { pid: string; L: L; onDone: 
   return (
     <div style={{ ...cardStyle, padding: 16, display: 'flex', flexDirection: 'column', gap: 12, marginTop: 16, maxWidth: 520 }}>
       <div>
-        <label style={fieldLabelStyle}>{L('Title', 'Título')}</label>
-        <input value={title} onChange={(e) => setTitle(e.target.value)} maxLength={KNOWLEDGE_LIMITS.TITLE_MAX} placeholder={L('e.g. Fire safety training', 'ej. Capacitación contra incendios')} style={fieldStyle} autoFocus />
+        <label style={fieldLabelStyle}>{'Title'}</label>
+        <input value={title} onChange={(e) => setTitle(e.target.value)} maxLength={KNOWLEDGE_LIMITS.TITLE_MAX} placeholder={'e.g. Fire safety training'} style={fieldStyle} autoFocus />
       </div>
       <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
         <div style={{ flex: 1, minWidth: 150 }}>
-          <label style={fieldLabelStyle}>{L('Date', 'Fecha')}</label>
+          <label style={fieldLabelStyle}>{'Date'}</label>
           <input type="date" value={eventDate} onChange={(e) => setEventDate(e.target.value)} style={fieldStyle} />
         </div>
         <div style={{ flex: 1, minWidth: 150 }}>
-          <label style={fieldLabelStyle}>{L('End date (optional)', 'Fecha fin (opcional)')}</label>
+          <label style={fieldLabelStyle}>{'End date (optional)'}</label>
           <input type="date" value={endDate} min={eventDate || undefined} onChange={(e) => setEndDate(e.target.value)} style={fieldStyle} />
         </div>
       </div>
       <div>
-        <label style={fieldLabelStyle}>{L('Notes (optional)', 'Notas (opcional)')}</label>
+        <label style={fieldLabelStyle}>{'Notes (optional)'}</label>
         <textarea value={notes} onChange={(e) => setNotes(e.target.value)} maxLength={KNOWLEDGE_LIMITS.NOTES_MAX} rows={2} style={{ ...fieldStyle, resize: 'vertical' }} />
       </div>
       {error && <div role="alert" style={{ fontFamily: SANS, fontSize: 12.5, lineHeight: 1.4, color: T.terracotta }}>{error}</div>}
       <div style={{ display: 'flex', gap: 8 }}>
         <button onClick={save} disabled={!canSave}
           style={{ minHeight: 44, fontFamily: SANS, fontSize: 13, fontWeight: 600, padding: '9px 18px', borderRadius: 9, border: 'none', display: 'inline-flex', alignItems: 'center', gap: 6, cursor: canSave ? 'pointer' : 'default', background: canSave ? T.ink : T.hairSoft, color: canSave ? '#fff' : T.dim }}>
-          {busy && <Loader2 size={13} className="comms-spin" aria-hidden="true" />} {L('Save', 'Guardar')}
+          {busy && <Loader2 size={13} className="comms-spin" aria-hidden="true" />} {'Save'}
         </button>
-        <button onClick={onCancel} style={ghostBtnStyle}>{L('Cancel', 'Cancelar')}</button>
+        <button onClick={onCancel} style={ghostBtnStyle}>{'Cancel'}</button>
       </div>
     </div>
   );

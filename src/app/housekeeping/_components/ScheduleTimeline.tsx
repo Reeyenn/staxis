@@ -112,7 +112,7 @@ export function ScheduleTimeline({
     }}>
       {crew.length === 0 && orphaned.length === 0 && (
         <div style={{ padding: '28px 8px', textAlign: 'center', color: T.ink2, fontFamily: FONT_SANS, fontSize: 14 }}>
-          {lang === 'es' ? 'No hay personal para mostrar.' : 'No crew to show.'}
+          {'No crew to show.'}
         </div>
       )}
 
@@ -159,7 +159,7 @@ export function ScheduleTimeline({
                       whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
                     }}>{hk.name}</div>
                     <div style={{ fontFamily: FONT_MONO, fontSize: 10, color: T.ink3, whiteSpace: 'nowrap' }}>
-                      {myTasks.length} {lang === 'es' ? 'cu' : 'rms'} · {fmtMinutes(load)}
+                      {myTasks.length} {'rms'} · {fmtMinutes(load)}
                     </div>
                   </div>
                 </div>
@@ -254,9 +254,9 @@ export function ScheduleTimeline({
                     <div style={{
                       fontFamily: FONT_SANS, fontSize: 12.5, fontWeight: 600, color: T.ink,
                       whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
-                    }}>{lang === 'es' ? 'Sin asignar' : 'Unassigned'}</div>
+                    }}>{'Unassigned'}</div>
                     <div style={{ fontFamily: FONT_MONO, fontSize: 10, color: T.ink3, whiteSpace: 'nowrap' }}>
-                      {orphaned.length} {lang === 'es' ? 'cu' : 'rms'} · {fmtMinutes(load)}
+                      {orphaned.length} {'rms'} · {fmtMinutes(load)}
                     </div>
                   </div>
                 </div>
@@ -332,7 +332,7 @@ export function ScheduleTimeline({
                 background: T.warm, color: '#fff',
                 fontFamily: FONT_MONO, fontSize: 8, fontWeight: 700, letterSpacing: '0.08em',
                 padding: '2px 5px', borderRadius: 4, whiteSpace: 'nowrap',
-              }}>{lang === 'es' ? 'AHORA' : 'NOW'}</span>
+              }}>{'NOW'}</span>
             </div>
           )}
         </>

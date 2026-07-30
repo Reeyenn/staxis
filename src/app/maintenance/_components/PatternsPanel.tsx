@@ -64,38 +64,38 @@ export type PanelLang = 'en' | 'es';
 const S = {
   title: {
     en: 'Patterns Staxis has spotted',
-    es: 'Patrones que Staxis ha detectado',
+
   },
   subtitle: {
     en: 'Repeat maintenance problems at this hotel, and what happened to each one.',
-    es: 'Problemas de mantenimiento que se repiten en este hotel, y qué pasó con cada uno.',
+
   },
-  button: { en: 'Patterns spotted', es: 'Patrones detectados' },
-  close: { en: 'Close', es: 'Cerrar' },
-  standing: { en: 'Open now', es: 'Abiertos ahora' },
-  before: { en: 'History', es: 'Historial' },
+  button: { en: 'Patterns spotted', },
+  close: { en: 'Close', },
+  standing: { en: 'Open now', },
+  before: { en: 'History', },
   nothingStanding: {
     en: 'Nothing open right now.',
-    es: 'Nada abierto ahora mismo.',
+
   },
   // The one line a hotel with no findings ever sees. Calm, complete, no alarm.
   empty: {
     en: 'Staxis hasn’t caught any repeat maintenance problems here yet.',
-    es: 'Staxis todavía no ha detectado problemas de mantenimiento que se repitan aquí.',
+
   },
   // An error is NOT an empty list. Saying "no patterns" when the read failed
   // would be Staxis claiming the building is fine on the strength of a broken
   // query — the same lie the queue route refuses to tell.
   failed: {
     en: 'Couldn’t check just now. Try again in a moment.',
-    es: 'No se pudo comprobar ahora mismo. Inténtalo de nuevo en un momento.',
+
   },
-  loading: { en: 'One moment…', es: 'Un momento…' },
+  loading: { en: 'One moment…', },
   whereToAct: {
     en: 'Read only here. Close these out on the Staxis tab.',
-    es: 'Solo lectura aquí. Ciérralos en la pestaña Staxis.',
+
   },
-  cameBack: { en: 'Came back', es: 'Volvió' },
+  cameBack: { en: 'Came back', },
 } as const;
 
 export type PanelTextKey = keyof typeof S;
@@ -108,7 +108,7 @@ export type PanelTextKey = keyof typeof S;
 export const PANEL_TEXT_KEYS = Object.keys(S) as PanelTextKey[];
 
 export const panelText = <K extends PanelTextKey>(k: K, lang: PanelLang) =>
-  (lang === 'es' ? S[k].es : S[k].en);
+  (S[k].en);
 
 export function MaintenancePatternsBody({
   state,
@@ -186,7 +186,7 @@ function HistoryRow({ pattern, lang }: { pattern: PatternHistory; lang: PanelLan
       <div style={{
         fontFamily: FONT_SANS, fontSize: 13.5, color: T.ink,
         fontWeight: 600, lineHeight: 1.4,
-      }}>{lang === 'es' ? pattern.titleEs : pattern.titleEn}</div>
+      }}>{pattern.titleEn}</div>
       <div style={{
         fontFamily: FONT_SANS, fontSize: 12.5, color: T.ink2,
         margin: '4px 0 0', lineHeight: 1.5,

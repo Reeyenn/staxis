@@ -43,11 +43,11 @@ export default function ResetPasswordPage() {
     e.preventDefault();
     setError('');
     if (password.length < 6) {
-      setError(lang === 'es' ? 'La contraseña debe tener al menos 6 caracteres.' : 'Password must be at least 6 characters.');
+      setError('Password must be at least 6 characters.');
       return;
     }
     if (password !== confirm) {
-      setError(lang === 'es' ? 'Las contraseñas no coinciden.' : 'Passwords do not match.');
+      setError('Passwords do not match.');
       return;
     }
     setSubmitting(true);
@@ -101,30 +101,28 @@ export default function ResetPasswordPage() {
   const disabled = submitting || !password || !confirm;
 
   return (
-    <AuthShell subtitle={lang === 'es' ? 'Elige una nueva contraseña' : 'Choose a new password'}>
+    <AuthShell subtitle={'Choose a new password'}>
 
       {hasRecovery === false ? (
         <AuthPanel>
           <p style={{ fontSize: 14, color: '#1F231C', lineHeight: 1.5, marginBottom: 16 }}>
-            {lang === 'es'
-              ? 'Este enlace no es válido o ha expirado. Solicita uno nuevo.'
-              : 'This link is invalid or has expired. Request a new one.'}
+            {'This link is invalid or has expired. Request a new one.'}
           </p>
           <Link href="/signin/forgot" style={{ fontSize: 14, color: AUTH_LINK, textDecoration: 'none', fontWeight: 600 }}>
-            {lang === 'es' ? 'Pedir un nuevo enlace' : 'Request a new link'}
+            {'Request a new link'}
           </Link>
         </AuthPanel>
       ) : done ? (
         <AuthPanel>
           <p style={{ fontSize: 14, color: '#1F231C' }}>
-            {lang === 'es' ? 'Contraseña actualizada. Redirigiendo…' : 'Password updated. Redirecting…'}
+            {'Password updated. Redirecting…'}
           </p>
         </AuthPanel>
       ) : (
         <form onSubmit={handleSubmit} style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
 
           <div className="si-rise si-d-2" style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-            <AuthLabel htmlFor="reset-password">{lang === 'es' ? 'Nueva contraseña' : 'New password'}</AuthLabel>
+            <AuthLabel htmlFor="reset-password">{'New password'}</AuthLabel>
             <input
               id="reset-password"
               name="new-password"
@@ -139,7 +137,7 @@ export default function ResetPasswordPage() {
           </div>
 
           <div className="si-rise si-d-2" style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-            <AuthLabel htmlFor="reset-password-confirm">{lang === 'es' ? 'Confirmar contraseña' : 'Confirm password'}</AuthLabel>
+            <AuthLabel htmlFor="reset-password-confirm">{'Confirm password'}</AuthLabel>
             <input
               id="reset-password-confirm"
               name="new-password-confirm"
@@ -163,7 +161,7 @@ export default function ResetPasswordPage() {
           >
             {submitting
               ? <div className="spinner" style={{ width: 18, height: 18, borderTopColor: '#FFFFFF', borderColor: 'rgba(255,255,255,0.3)' }} />
-              : (lang === 'es' ? 'Guardar contraseña' : 'Save password')
+              : ('Save password')
             }
           </button>
         </form>

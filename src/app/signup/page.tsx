@@ -43,11 +43,11 @@ function SignupInner() {
     e.preventDefault();
     setError('');
     if (password.length < 6) {
-      setError(lang === 'es' ? 'La contraseña debe tener al menos 6 caracteres.' : 'Password must be at least 6 characters.');
+      setError('Password must be at least 6 characters.');
       return;
     }
     if (password !== confirm) {
-      setError(lang === 'es' ? 'Las contraseñas no coinciden.' : 'Passwords do not match.');
+      setError('Passwords do not match.');
       return;
     }
     // Phone is required for staff signups — the hotel texts staff their
@@ -55,9 +55,7 @@ function SignupInner() {
     // non-empty value with at least 7 digits (the server normalizes any
     // formatting like "(555) 123-4567" down to digits).
     if (phone.replace(/\D/g, '').length < 7) {
-      setError(lang === 'es'
-        ? 'Ingresa un número de teléfono válido. El hotel te enviará tu horario por mensaje.'
-        : 'Enter a valid phone number. The hotel texts you your schedule.');
+      setError('Enter a valid phone number. The hotel texts you your schedule.');
       return;
     }
     setSubmitting(true);
@@ -81,7 +79,7 @@ function SignupInner() {
         data?: { email?: string; twoFactorEnabled?: boolean; pendingApproval?: boolean };
       };
       if (!res.ok || !body.ok) {
-        setError(body.error ?? (lang === 'es' ? 'No se pudo crear la cuenta.' : 'Failed to create account.'));
+        setError(body.error ?? ('Failed to create account.'));
         setSubmitting(false);
         return;
       }
@@ -136,7 +134,7 @@ function SignupInner() {
         otpDeliveryFailed ? '&delivery=failed' : ''
       }`);
     } catch {
-      setError(lang === 'es' ? 'Algo salió mal.' : 'Something went wrong.');
+      setError('Something went wrong.');
       setSubmitting(false);
     }
   };
@@ -151,15 +149,13 @@ function SignupInner() {
 
   return (
     <AuthShell maxWidth={420} subtitle={
-      lang === 'es'
-        ? 'Usa el código que te dio el dueño del hotel.'
-        : 'Use the code your hotel owner gave you.'
+      'Use the code your hotel owner gave you.'
     }>
 
       <form onSubmit={submit} style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
 
         <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-          <AuthLabel htmlFor="signup-hotel-code">{lang === 'es' ? 'Código del hotel' : 'Hotel code'}</AuthLabel>
+          <AuthLabel htmlFor="signup-hotel-code">{'Hotel code'}</AuthLabel>
           <input
             id="signup-hotel-code"
             name="hotel-code"
@@ -174,13 +170,13 @@ function SignupInner() {
           />
         </div>
 
-        <Input id="signup-display-name" label={lang === 'es' ? 'Nombre completo' : 'Full name'} value={displayName} onChange={setDisplayName} disabled={submitting} autoFocus={!!codeFromUrl} />
-        <Input id="signup-email" label={lang === 'es' ? 'Correo electrónico' : 'Email'} type="email" value={email} onChange={setEmail} disabled={submitting} autoComplete="email" placeholder="you@hotel.com" />
-        <Input id="signup-phone" label={lang === 'es' ? 'Teléfono' : 'Phone'} type="tel" value={phone} onChange={setPhone} disabled={submitting} autoComplete="tel" placeholder="(555) 123-4567" />
+        <Input id="signup-display-name" label={'Full name'} value={displayName} onChange={setDisplayName} disabled={submitting} autoFocus={!!codeFromUrl} />
+        <Input id="signup-email" label={'Email'} type="email" value={email} onChange={setEmail} disabled={submitting} autoComplete="email" placeholder="you@hotel.com" />
+        <Input id="signup-phone" label={'Phone'} type="tel" value={phone} onChange={setPhone} disabled={submitting} autoComplete="tel" placeholder="(555) 123-4567" />
 
         <fieldset style={{ display: 'flex', flexDirection: 'column', gap: 6, margin: 0, padding: 0, border: 0 }}>
           <legend style={{ ...authLabelStyle, padding: 0, marginBottom: 6 }}>
-            {lang === 'es' ? 'Departamento' : 'Department'}
+            {'Department'}
           </legend>
           <div role="radiogroup" style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
             {(['front_desk', 'housekeeping', 'maintenance'] as SignupRole[]).map(r => {
@@ -212,8 +208,8 @@ function SignupInner() {
           </div>
         </fieldset>
 
-        <Input id="signup-password" label={lang === 'es' ? 'Contraseña' : 'Password'} type="password" value={password} onChange={setPassword} disabled={submitting} autoComplete="new-password" placeholder="••••••••" />
-        <Input id="signup-password-confirm" label={lang === 'es' ? 'Confirmar contraseña' : 'Confirm password'} type="password" value={confirm} onChange={setConfirm} disabled={submitting} autoComplete="new-password" placeholder="••••••••" />
+        <Input id="signup-password" label={'Password'} type="password" value={password} onChange={setPassword} disabled={submitting} autoComplete="new-password" placeholder="••••••••" />
+        <Input id="signup-password-confirm" label={'Confirm password'} type="password" value={confirm} onChange={setConfirm} disabled={submitting} autoComplete="new-password" placeholder="••••••••" />
 
         {error && <AuthError>{error}</AuthError>}
 
@@ -225,11 +221,11 @@ function SignupInner() {
         >
           {submitting
             ? <div className="spinner" style={{ width: 18, height: 18, borderTopColor: '#FFFFFF', borderColor: 'rgba(255,255,255,0.3)' }} />
-            : (lang === 'es' ? 'Crear cuenta' : 'Create account')}
+            : ('Create account')}
         </button>
 
         <Link href="/signin" style={authBackLinkStyle}>
-          {lang === 'es' ? '← Ya tengo una cuenta' : '← I already have an account'}
+          {'← I already have an account'}
         </Link>
       </form>
     </AuthShell>

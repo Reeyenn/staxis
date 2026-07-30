@@ -69,12 +69,12 @@ export function WeekRoster({
         <div style={{
           padding: '10px 14px', fontFamily: fonts.mono, fontSize: 9,
           color: T.ink3, letterSpacing: '0.08em', fontWeight: 600,
-        }}>{lang === 'es' ? 'PERSONAL' : 'STAFF'}</div>
+        }}>{'STAFF'}</div>
         {days.map(d => (
           <button
             key={d.date}
             onClick={() => onPickDay?.(d.date)}
-            title={onPickDay ? (lang === 'es' ? `Abrir ${d.dowFull} en vista Día` : `Open ${d.dowFull} in Day view`) : undefined}
+            title={onPickDay ? (`Open ${d.dowFull} in Day view`) : undefined}
             style={{
               padding: '8px 4px', textAlign: 'center',
               cursor: onPickDay ? 'pointer' : 'default',
@@ -85,7 +85,7 @@ export function WeekRoster({
             <div style={{
               fontFamily: fonts.mono, fontSize: 8.5,
               color: d.today ? T.caramelDeep : T.ink3, fontWeight: 600, letterSpacing: '0.05em',
-            }}>{d.dow.toUpperCase()}{d.today ? (lang === 'es' ? ' · HOY' : ' · NOW') : ''}</div>
+            }}>{d.dow.toUpperCase()}{d.today ? (' · NOW') : ''}</div>
             <div style={{ fontFamily: fonts.sans, fontSize: 15, fontWeight: 600, letterSpacing: '-0.02em', color: T.ink }}>{d.dayNum}</div>
           </button>
         ))}
@@ -118,9 +118,7 @@ export function WeekRoster({
                   {min > 0 && (
                     <span
                       title={over
-                        ? (lang === 'es'
-                          ? `${fmtHours(min)} esta semana, supera el límite de ${fmtHours(capMinOf(s))}`
-                          : `${fmtHours(min)} this week, over the ${fmtHours(capMinOf(s))} cap`)
+                        ? (`${fmtHours(min)} this week, over the ${fmtHours(capMinOf(s))} cap`)
                         : undefined}
                       style={{
                         fontFamily: fonts.mono, fontSize: 8.5, flexShrink: 0,

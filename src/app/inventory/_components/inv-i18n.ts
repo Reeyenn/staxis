@@ -1,54 +1,43 @@
-// Bilingual (EN + ES) strings for the Inventory module. Co-located with the
-// feature (same pattern as financials/_components/fin-i18n.ts) rather than
-// added to the global translations.ts so parallel features don't collide.
-//
-// Threading: InventoryShell reads `lang` from useLang() and passes it down as
-// a prop to every text-rendering child + overlay. Components call t(lang) to
-// get the strings object, or the small helpers below for status/category
-// labels and month names.
+// English strings for the Inventory module.
 
 import { makeT, makeLabelFor } from '@/lib/i18n-utils';
 import type { StockStatus, InvCat } from './tokens';
 
 export type Lang = 'en' | 'es';
 
-// Narrow any LanguageContext value (en|es|ht|tl|vi) down to the en/es branch
-// the inventory UI keys off — mirrors the app-wide `lang === 'es'` ternary.
-export function invLang(l: string | undefined): Lang {
-  return l === 'es' ? 'es' : 'en';
+export function invLang(_storedLanguage: string | undefined): Lang {
+  return 'en';
 }
 
 // ── Status labels (tokens.statusLabel, now lang-aware) ────────────────────
-const STATUS_LABELS: Record<Lang, Record<StockStatus, string>> = {
+const STATUS_LABELS: Record<'en', Record<StockStatus, string>> = {
   en: { good: 'Good', low: 'Low', critical: 'Critical' },
-  es: { good: 'Bien', low: 'Bajo', critical: 'Crítico' },
+
 };
 export const statusLabelFor = makeLabelFor(STATUS_LABELS);
 
 // ── Category labels (tokens.catLabel, now lang-aware) ─────────────────────
-const CAT_LABELS: Record<Lang, Record<InvCat, string>> = {
+const CAT_LABELS: Record<'en', Record<InvCat, string>> = {
   en: { housekeeping: 'Housekeeping', maintenance: 'Maintenance', breakfast: 'Food & Beverage' },
-  es: { housekeeping: 'Limpieza', maintenance: 'Mantenimiento', breakfast: 'Alimentos y Bebidas' },
+
 };
 export const catLabelFor = makeLabelFor(CAT_LABELS);
 
 // ── Month abbreviations (BudgetsPanel) ────────────────────────────────────
-const MONTHS: Record<Lang, string[]> = {
+const MONTHS: Record<'en', string[]> = {
   en: ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'],
-  es: ['Ene', 'Feb', 'Mar', 'Abr', 'May', 'Jun', 'Jul', 'Ago', 'Sep', 'Oct', 'Nov', 'Dic'],
+
 };
 // ── Set-aside marker (0321) — label + the ⓘ hover explanation ─────────────
 export function setAsideTagLabel(lang: Lang, count: number): string {
-  return lang === 'es' ? `${count} apartado${count === 1 ? '' : 's'}` : `${count} set aside`;
+  return `${count} set aside`;
 }
 export function setAsideTip(lang: Lang): string {
-  return lang === 'es'
-    ? 'Apartado = no se puede usar por ahora (manchado, dañado, en reparación) pero sigue siendo suyo. Cuenta en el valor del inventario, no en el stock utilizable.'
-    : "Set aside = can't be used right now (stained, damaged, being fixed) but still yours. Counts in inventory value, not in usable stock.";
+  return "Set aside = can't be used right now (stained, damaged, being fixed) but still yours. Counts in inventory value, not in usable stock.";
 }
 
 export function monthsFor(lang: Lang): string[] {
-  return MONTHS[lang] ?? MONTHS.en;
+  return MONTHS['en'] ?? MONTHS.en;
 }
 
 // Date-locale string for toLocaleDateString ('es-ES' / 'en-US' — the shared
@@ -169,119 +158,7 @@ const STRINGS = {
     removeConfirmBtn: 'Remove',
     cancelBtn: 'Cancel',
   },
-  es: {
-    // ── Shell ──
-    loading: 'Cargando…',
-    loadFailed: 'No se pudo cargar el inventario. Revisa la conexión e inténtalo de nuevo.',
-    detailsLoadFailed: 'Algunos detalles del inventario no están disponibles. Inténtalo de nuevo.',
-    retry: 'Intentar de nuevo',
-    quickCountSaveFailed: 'Un conteo rápido no se guardó por completo. Actualiza antes de intentar ese artículo otra vez.',
-    pageTitle: 'Inventario',
-    stockHealth: 'Salud del inventario',
-    orderNow: 'Pedir ahora',
-    onTheShelf: 'En estante',
-    shelfCostsMissing: 'faltan costos de algunos artículos',
-    shelfValueWarningIntro: 'Este total está incompleto porque faltan precios.',
-    shelfValueWarningList: 'Precios faltantes:',
-    shelfValueWarningResolution: 'Al agregarlos, el total se actualizará automáticamente.',
-    allClear: 'Todo en orden',
-    allClearSub: 'no hay nada que pedir',
-    // ── Sidebar ──
-    do: 'Acciones',
-    look: 'Ver',
-    startCount: 'Iniciar conteo',
-    addDelivery: 'Agregar entrega',
-    ordering: 'Pedidos',
-    monthClose: 'Cierre mensual',
-    reports: 'Informes',
-    compareMonths: 'Comparar meses',
-    history: 'Historial',
-    aiHelper: 'Asistente IA',
-    budgets: 'Presupuestos',
-    thisMonth: 'Este mes',
-    usagePending: 'Uso pendiente',
-    partialUsage: 'Período parcial',
-    actualUsed: 'uso real',
-    purchasesLogged: 'compras registradas',
-    purchaseCostsMissing: 'faltan costos de algunas entregas',
-    purchasesUnavailable: 'totales de compras no disponibles',
-    budgetAfterClose: 'El estado del presupuesto aparece después del cierre mensual',
-    leftInBudget: 'disponible en presupuesto',
-    overBudget: 'sobre presupuesto',
-    of: 'de',
-    stillToSpend: 'por gastar',
-    noBudgetSet: 'Sin presupuesto',
-    // ── FilterBar ──
-    all: 'Todos',
-    generalInventory: 'Inventario general',
-    breakfastInventory: 'Inventario de desayuno',
-    search: 'Buscar…',
-    searchInventory: 'Buscar en inventario',
-    clearSearch: 'Borrar búsqueda',
-    previousActions: 'Mostrar acciones anteriores',
-    moreActions: 'Mostrar más acciones',
-    savingQuickCount: 'Guardando conteo rápido',
-    addItem: '+ Agregar artículo',
-    // ── StockList columns ──
-    colOrderNow: 'Pedir ahora',
-    colOrderSoon: 'Pedir pronto',
-    colStocked: 'En stock',
-    subBelowHalfPar: 'menos de la mitad del par',
-    subUnderPar: 'bajo el par',
-    subAtOrAbovePar: 'en o sobre el par',
-    nothingHere: 'Nada aquí.',
-    // ── Not-counted-yet (new-hotel day 1) ──
-    notCountedTitle: 'Sin contar aún',
-    notCountedSub: 'Cuéntalos para ver qué reordenar',
-    notCountedHint: 'Aún sin conteos. Inicia tu primer conteo de inventario para ver qué hay que pedir.',
-    countInventory: 'Contar inventario',
-    // ── BoardCard ──
-    daysLeft: 'd restantes',
-    daysLeft90: '90+d restantes',
-    aiTracked: 'seguido por IA',
-    value: 'valor',
-    lead: 'entrega',
-    count: 'Contar',
-    reorder: 'Pedir',
-    edit: 'Editar',
-    flipBack: 'Voltear',
-    // ── Empty catalog (zero items — StockList panel) ──
-    noItemsBody: 'Agrega tu primer artículo para empezar a controlar el stock.',
-    noItemsYet: 'Aún no hay artículos',
-    team: 'equipo',
-    // ── Ledger table (redesign) ──
-    sort: 'Ordenar',
-    sortAttention: 'Poco stock primero',
-    sortAZ: 'A a Z',
-    sortValue: 'Mayor valor',
-    sortStale: 'Sin contar hace tiempo',
-    colItem: 'Artículo',
-    colStatus: 'Estado',
-    colStockVsPar: 'Stock vs par',
-    colOnHand: 'En mano · conteo rápido',
-    colPar: 'Par',
-    colDays: 'Días',
-    colValue: 'Valor',
-    notCountedPill: 'Sin contar',
-    nothingMatches: 'Nada coincide con tu búsqueda.',
-    emptyTab: 'Aún no hay artículos en esta pestaña. Agrega uno, o mueve artículos aquí desde Editar artículo.',
-    ledgerHint: 'Los conteos rápidos se guardan tras una pausa breve · el recorrido completo está en Iniciar conteo',
-    // ── View toggle (tabla Libro ↔ tablero) ──
-    viewLedger: 'Tabla',
-    viewBoard: 'Tablero',
-    // ── Pestañas de categoría personalizadas (0307) + edición de pestañas (0308) ──
-    addTab: 'Agregar pestaña',
-    newTabPh: 'Nombre (ej. Licor)',
-    removeTab: 'Quitar pestaña',
-    editTabs: 'Editar pestañas',
-    doneEditing: 'Listo',
-    dragHint: 'Arrastra para reordenar · toca ✕ para quitar · toca Listo al terminar',
-    removeTabTitle: '¿Quitar esta pestaña?',
-    removeCustomMsg: 'Esto elimina la pestaña de forma permanente. Sus artículos no se eliminan. Vuelven a su categoría normal y aparecen en Todos.',
-    removeBuiltinMsg: 'Sus artículos conservan su categoría y siguen apareciendo en Todos. Para recuperar la pestaña más tarde, agrega una pestaña con el mismo nombre.',
-    removeConfirmBtn: 'Quitar',
-    cancelBtn: 'Cancelar',
-  },
+
 };
 
 export type InvStrings = (typeof STRINGS)['en'];

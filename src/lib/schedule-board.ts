@@ -82,22 +82,13 @@ export function daysBetween(a: string, b: string): number {
   return Math.round((parseYmd(b).getTime() - parseYmd(a).getTime()) / 86_400_000);
 }
 
-// ─── Calendar labels (EN / ES) ──────────────────────────────────────────────
+// ─── Calendar labels ────────────────────────────────────────────────────────
 
 export type Lang = 'en' | 'es';
 
-const DOW_SHORT: Record<Lang, string[]> = {
-  en: ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'],
-  es: ['dom', 'lun', 'mar', 'mié', 'jue', 'vie', 'sáb'],
-};
-const DOW_FULL: Record<Lang, string[]> = {
-  en: ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'],
-  es: ['domingo', 'lunes', 'martes', 'miércoles', 'jueves', 'viernes', 'sábado'],
-};
-const MON_SHORT: Record<Lang, string[]> = {
-  en: ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'],
-  es: ['ene', 'feb', 'mar', 'abr', 'may', 'jun', 'jul', 'ago', 'sep', 'oct', 'nov', 'dic'],
-};
+const DOW_SHORT = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+const DOW_FULL = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+const MON_SHORT = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 
 export interface DayInfo {
   date: string;     // YYYY-MM-DD
@@ -116,10 +107,10 @@ export function dayInfo(date: string, todayYmd: string, lang: Lang): DayInfo {
   const dow = d.getDay();
   return {
     date,
-    dow: DOW_SHORT[lang][dow],
-    dowFull: DOW_FULL[lang][dow],
+    dow: DOW_SHORT[dow],
+    dowFull: DOW_FULL[dow],
     dayNum: d.getDate(),
-    mon: MON_SHORT[lang][d.getMonth()],
+    mon: MON_SHORT[d.getMonth()],
     today: date === todayYmd,
     tomorrow: date === addDaysYmd(todayYmd, 1),
     yesterday: date === addDaysYmd(todayYmd, -1),
@@ -139,7 +130,7 @@ export interface WeekInfo {
 export function weekLabel(start: string, lang: Lang): string {
   const a = parseYmd(start);
   const b = parseYmd(addDaysYmd(start, 6));
-  const am = MON_SHORT[lang][a.getMonth()], bm = MON_SHORT[lang][b.getMonth()];
+  const am = MON_SHORT[a.getMonth()], bm = MON_SHORT[b.getMonth()];
   return am === bm
     ? `${am} ${a.getDate()}–${b.getDate()}`
     : `${am} ${a.getDate()} – ${bm} ${b.getDate()}`;

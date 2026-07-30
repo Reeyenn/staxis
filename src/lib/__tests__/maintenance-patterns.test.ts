@@ -585,14 +585,13 @@ describe('what the popup says', () => {
     }
   });
 
-  test('the empty line is bilingual', () => {
+  test('the empty line remains English for legacy language input', () => {
     const es = textOf(panel.MaintenancePatternsBody({
       state: 'ready',
       payload: payload() as never,
       lang: 'es',
     })).join(' ');
-    assert.match(es, /Staxis todavía no ha detectado/);
-    assert.ok(!es.includes('hasn’t caught'));
+    assert.match(es, /Staxis hasn’t caught/);
   });
 
   test('A FAILED READ IS NEVER DRAWN AS AN EMPTY ONE', () => {

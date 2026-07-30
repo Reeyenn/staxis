@@ -35,11 +35,11 @@ import {
 const S = {
   noProperty: {
     en: 'Pick a hotel to see what it has told Staxis.',
-    es: 'Elige un hotel para ver lo que le ha contado a Staxis.',
+
   },
-  signedOut: { en: 'Sign in to see this.', es: 'Inicia sesión para ver esto.' },
-  loading: { en: 'Loading…', es: 'Cargando…' },
-  tablist: { en: 'What you have told Staxis', es: 'Lo que le has contado a Staxis' },
+  signedOut: { en: 'Sign in to see this.', },
+  loading: { en: 'Loading…', },
+  tablist: { en: 'What you have told Staxis', },
 };
 
 export function ToldView({ lang }: { lang: Lang }) {

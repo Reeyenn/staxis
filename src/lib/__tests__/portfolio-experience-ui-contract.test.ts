@@ -8,7 +8,6 @@ function source(...parts: string[]): string {
 }
 
 const portfolioProvider = source('src', 'contexts', 'PortfolioContext.tsx');
-const themeProvider = source('src', 'contexts', 'ThemeContext.tsx');
 const portfolioServer = source('src', 'lib', 'portfolio-ui', 'server.ts');
 const portfolioTypes = source('src', 'components', 'portfolio', 'types.ts');
 const portfolioCss = source('src', 'components', 'portfolio', 'PortfolioUI.module.css');
@@ -155,7 +154,7 @@ describe('hotel drilldown and return contract', () => {
     assert.ok(homePageStart >= 0, 'HomePage must remain an explicit portfolio-routing boundary');
     const homePage = home.slice(homePageStart);
     assert.match(homePage, /const hotelDrilldown = acting\?\.request\.kind === 'hotel'/);
-    assert.match(homePage, /const portfolioEntryPending = !hotelDrilldown/);
+    assert.match(homePage, /const portfolioEntryPending = shouldWaitForPortfolioEntry\(\{[\s\S]{0,100}?hotelDrilldown,[\s\S]{0,100}?portfolioLoading: portfolio\.loading/);
     assert.match(homePage, /const portfolioDestination = !hotelDrilldown && portfolio\.data/);
     assert.match(homePage, /if \(portfolioDestination\) \{[\s\S]{0,120}?replaceNavigation\(portfolioDestination\)/);
   });
@@ -165,7 +164,7 @@ describe('Company Hub portfolio contract', () => {
   test('keeps exactly Overview, Hotels, People, and Access', () => {
     assert.match(company, /type TabId = 'overview' \| 'hotels' \| 'people' \| 'access';/);
     const tabsStart = company.indexOf('const tabs = React.useMemo<TabDefinition[]>');
-    const tabsEnd = company.indexOf('}, [lang]);', tabsStart);
+    const tabsEnd = company.indexOf('}, []);', tabsStart);
     assert.ok(tabsStart >= 0 && tabsEnd > tabsStart);
     const tabIds = [...company.slice(tabsStart, tabsEnd).matchAll(/\{ id: '([^']+)'/g)]
       .map((match) => match[1]);
@@ -184,9 +183,19 @@ describe('Company Hub portfolio contract', () => {
   });
 
   test('binds the rulebook to the selected company and keeps hotel mode local', () => {
-    assert.match(
-      company,
-      /selectedPortfolioCompany[\s\S]{0,240}?organizationId=\{selectedPortfolioCompany\.organizationId\}[\s\S]{0,180}?!portfolioMode && activePropertyId[\s\S]{0,180}?propertyId=\{activePropertyId\}/,
+    const portfolioBranch = company.indexOf('{selectedPortfolioCompany ? (');
+    const organizationBinding = company.indexOf(
+      'organizationId={selectedPortfolioCompany.organizationId}',
+      portfolioBranch,
+    );
+    const hotelBranch = company.indexOf(') : !portfolioMode && activePropertyId ? (', organizationBinding);
+    const propertyBinding = company.indexOf('propertyId={activePropertyId}', hotelBranch);
+    assert.ok(
+      portfolioBranch >= 0
+        && organizationBinding > portfolioBranch
+        && hotelBranch > organizationBinding
+        && propertyBinding > hotelBranch,
+      'the rulebook must bind portfolio mode to the selected company and hotel mode to the active hotel',
     );
     assert.match(companyRulebook, /const activePropertyId = organizationId \? null : \(propertyId \?\? contextPropertyId\)/);
     assert.match(companyRulebook, /const selectorPayload = organizationId[\s\S]{0,160}?\{ propertyId: activePropertyId \}/);
@@ -215,29 +224,23 @@ describe('financial navigation authorization', () => {
 });
 
 describe('theme and motion accessibility', () => {
-  test('supports persisted system/light/dark themes and reduced-motion portfolio chrome', () => {
-    assert.match(themeProvider, /type StaxisThemePreference = 'system' \| 'light' \| 'dark'/);
-    assert.match(themeProvider, /window\.matchMedia\('\(prefers-color-scheme: dark\)'\)/);
-    assert.match(themeProvider, /window\.localStorage\.setItem\(STORAGE_KEY, next\)/);
-    assert.match(themeProvider, /root\.dataset\.theme = resolvedTheme/);
-    assert.match(concourseCss, /html\[data-theme='dark'\] \.staxis-app-shell/);
+  test('keeps the application shell light while preserving reduced-motion portfolio chrome', () => {
+    assert.doesNotMatch(rootLayout, /ThemeProvider|INITIAL_THEME_SCRIPT|data-theme|colorScheme|prefers-color-scheme/);
+    assert.doesNotMatch(concourse, /useTheme|toggleTheme|Use dark theme|Usar tema oscuro/);
+    assert.doesNotMatch(concourseCss, /data-theme|color-scheme\s*:\s*dark/);
+    assert.doesNotMatch(mobileConcourseCss, /data-theme|color-scheme\s*:\s*dark/);
     assert.match(concourseCss, /\.staxis-app-shell\{--staxis-app-background:radial-gradient/);
     assert.match(
       concourseCss,
-      /html\[data-theme='dark'\] \.staxis-app-shell\{[\s\S]{0,180}?--staxis-app-background:radial-gradient/,
+      /@media \(max-width:760px\)\{[\s\S]{0,180}?\.staxis-app-shell\{[^}]*#FFFFFF 0%,#F0F3EF 100%/,
     );
     assert.equal((concourseCss.match(/--staxis-app-background:radial-gradient/g) ?? []).length, 2);
-    assert.ok(
-      concourseCss.lastIndexOf('--staxis-app-background:radial-gradient')
-        < concourseCss.indexOf('@media (max-width:760px)'),
-      'mobile uses the selected theme background instead of replacing it with a light-only wash',
-    );
-    assert.match(portfolioCss, /\[data-theme='light'\]/);
-    assert.match(portfolioCss, /\[data-theme='dark'\]/);
+    assert.doesNotMatch(portfolioCss, /data-theme|prefers-color-scheme:\s*dark|color-scheme:\s*dark/);
+    assert.match(portfolioCss, /color-scheme:\s*light/);
     assert.match(portfolioCss, /@media \(prefers-reduced-motion: reduce\)/);
     assert.match(portfolioCss, /skeletonCommand::after[\s\S]*animation: none/);
     assert.match(mobileConcourseCss, /@media \(prefers-reduced-motion: reduce\)/);
-    assert.equal((portfolioCss.match(/--pf-caramel: #865f28;/g) ?? []).length, 2);
+    assert.equal((portfolioCss.match(/--pf-caramel: #865f28;/g) ?? []).length, 1);
     assert.doesNotMatch(portfolioCss, /--pf-caramel: #8c6a33;/);
     assert.match(portfolioCss, /padding-left: max\(var\(--pf-page-inline\), env\(safe-area-inset-left, 0px\)\)/);
     assert.match(portfolioCss, /padding-right: max\(var\(--pf-page-inline\), env\(safe-area-inset-right, 0px\)\)/);

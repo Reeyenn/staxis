@@ -19,11 +19,21 @@ describe('Inventory and Staff pilot hardening', () => {
     assert.doesNotMatch(myShifts, /publishedDates\.has/);
   });
 
-  test('manager Staff surfaces wait for exact property capabilities before rendering', () => {
+  test('manager Staff gates only the schedule while exact property capabilities load', () => {
     const page = source('src/app/staff/page.tsx');
     assert.match(page, /capabilityOverridesPropertyId === activePropertyId/);
     assert.match(page, /capabilityOverridesViewerKey === capabilityViewerKey/);
+    assert.doesNotMatch(page, /if \(!hotelStanding\.ready\) \{[\s\S]*?<ManagerScheduleStatus/);
+    assert.match(page, /Until that[\s\S]*?render the ordinary My Shifts experience/);
     assert.match(page, /if \(isManager && !capabilityContextReady\)/);
+    assert.match(page, /<ManagerScheduleStatus/);
+    assert.doesNotMatch(
+      page.slice(
+        page.indexOf('if (isManager && !capabilityContextReady)'),
+        page.indexOf('const canManageSchedule'),
+      ),
+      /<LoadingState/,
+    );
     assert.match(page, /const canManageSchedule = isManager && can\('manage_shifts'\)/);
     // The Directory tab is gone (folded into My Hotel → People on 2026-07-27),
     // but the same manage_team gate still decides whether a manager is offered

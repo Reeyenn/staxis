@@ -147,10 +147,10 @@ export function isSignOffLocked(f: Pick<QueueFinding, 'signOff'>): boolean {
  * it the same way.
  */
 const APPROVER_WORD: Record<string, Bi> = {
-  owner: { en: 'owner', es: 'de la propiedad' },
-  vp: { en: 'VP', es: 'del VP' },
-  finance: { en: 'finance', es: 'de finanzas' },
-  general_manager: { en: 'GM', es: 'del gerente' },
+  owner: { en: 'owner', },
+  vp: { en: 'VP', },
+  finance: { en: 'finance', },
+  general_manager: { en: 'GM', },
 };
 
 /**
@@ -165,17 +165,14 @@ const APPROVER_WORD: Record<string, Bi> = {
 export function signOffNotice(signOff: CardSignOff, lang: Lang): string {
   const role = pick(APPROVER_WORD[signOff.approverRole] ?? APPROVER_WORD.vp, lang);
   const names = signOff.approverNames.filter((n) => n && n.trim().length > 0);
-  if (lang === 'es') {
-    const head = `Necesita la aprobación ${role}`;
-    return names.length > 0 ? `${head}. Enviado a ${listNames(names, 'es')}` : head;
-  }
+
   const head = `Needs ${role} sign-off`;
   return names.length > 0 ? `${head}. Sent to ${listNames(names, 'en')}` : head;
 }
 
 /** "Maria", "Maria and Ana", "Maria, Ana and Bo". */
 function listNames(names: readonly string[], lang: Lang): string {
-  const and = lang === 'es' ? 'y' : 'and';
+  const and = 'and';
   if (names.length === 1) return names[0];
   return `${names.slice(0, -1).join(', ')} ${and} ${names[names.length - 1]}`;
 }
@@ -233,40 +230,28 @@ export function offersUndo(f: Pick<QueueFinding, 'action'>): boolean {
  * both numbers — an honest generic beats a blank.
  */
 export function declinedExplanation(action: CardAction, lang: Lang): string {
-  const es = lang === 'es';
+  const es = false;
   const subject = action.changed?.subject ?? '';
   const was = String(action.changed?.was ?? '');
   const now = String(action.changed?.now ?? '');
 
   switch (action.changed?.field) {
     case 'open_work_orders':
-      return es
-        ? `Staxis no lo hizo: ${subject} tenía ${was} órdenes de trabajo abiertas cuando lo propuso y ahora tiene ${now}. Alguien ya se está ocupando.`
-        : `Staxis did not do it: ${subject} had ${was} open work orders when this was offered and now has ${now}. Somebody is already on it.`;
+      return `Staxis did not do it: ${subject} had ${was} open work orders when this was offered and now has ${now}. Somebody is already on it.`;
     case 'reorder_at':
-      return es
-        ? `Staxis no lo hizo: el punto de pedido de ${subject} era ${was} cuando lo propuso y ahora es ${now}. Alguien ya lo cambió.`
-        : `Staxis did not do it: the reorder point for ${subject} was ${was} when this was offered and is now ${now}. Somebody has already changed it.`;
+      return `Staxis did not do it: the reorder point for ${subject} was ${was} when this was offered and is now ${now}. Somebody has already changed it.`;
     case 'item':
-      return es
-        ? `Staxis no lo hizo: ${subject} ya no está en la lista de inventario de este hotel.`
-        : `Staxis did not do it: ${subject} is no longer on this hotel's inventory list.`;
+      return `Staxis did not do it: ${subject} is no longer on this hotel's inventory list.`;
     // The preventive pair. Deliberately no dates in either sentence: `was` and
     // `now` here are raw timestamps, and rendering one would put a UTC instant
     // in front of a manager who thinks in local days. WHAT happened is the
     // useful part, and it is the part we can state exactly.
     case 'preventive_last_done':
-      return es
-        ? `Staxis no lo hizo: alguien ya marcó "${subject}" como hecho. No hace falta una orden de trabajo.`
-        : `Staxis did not do it: somebody has already marked "${subject}" done. No work order is needed.`;
+      return `Staxis did not do it: somebody has already marked "${subject}" done. No work order is needed.`;
     case 'preventive_task':
-      return es
-        ? `Staxis no lo hizo: "${subject}" ya no está en el calendario de mantenimiento de este hotel.`
-        : `Staxis did not do it: "${subject}" is no longer on this hotel's upkeep schedule.`;
+      return `Staxis did not do it: "${subject}" is no longer on this hotel's upkeep schedule.`;
     default:
-      return es
-        ? `Staxis no lo hizo: los datos cambiaron desde que lo propuso (era ${was}, ahora ${now}).`
-        : `Staxis did not do it: the facts changed since it was offered (was ${was}, now ${now}).`;
+      return `Staxis did not do it: the facts changed since it was offered (was ${was}, now ${now}).`;
   }
 }
 
@@ -741,16 +726,10 @@ export function formatPriceRange(price: CardPrice | null | undefined): string | 
  * and old rows read correctly without rewriting the stored record.
  */
 export function cardPhrasing(f: QueueFinding, lang: Lang): string {
-  const judged = lang === 'es' ? f.phrasedEs : f.phrasedEn;
+  const judged = f.phrasedEn;
   const text = (judged ?? '').trim();
   if (text.length > 0) return withoutEmDash(text);
-  if (lang === 'es') {
-    return spanishTemplateSentence({
-      severity: f.severity,
-      evidence: f.evidence,
-      price: f.price,
-    });
-  }
+
   return withoutEmDash(f.summary);
 }
 
@@ -769,10 +748,7 @@ export function basisInLang(
   spanish: string | null | undefined,
   lang: Lang,
 ): string | null {
-  if (lang === 'es') {
-    const es = (spanish ?? '').trim();
-    if (es.length > 0) return withoutEmDash(es);
-  }
+
   const en = (primary ?? '').trim();
   // Stored text, same as `cardPhrasing`: a basis written before the no-em-dash
   // ruling still has to read correctly today.
@@ -781,8 +757,8 @@ export function basisInLang(
 
 // ─── Copy ───────────────────────────────────────────────────────────────────
 
-type Bi = { en: string; es: string };
-const pick = (b: Bi, lang: Lang) => (lang === 'es' ? b.es : b.en);
+type Bi = { en: string; es?: string };
+const pick = (b: Bi, lang: Lang) => (b.en);
 
 /**
  * The one label the nav badge is counting. Reserved for `propose`.
@@ -794,13 +770,13 @@ const pick = (b: Bi, lang: Lang) => (lang === 'es' ? b.es : b.en);
  * how loud something is; a disposition is whether Staxis is actually asking
  * for an answer, and only the second one is a decision.
  */
-const DECISION_LABEL: Bi = { en: 'NEEDS A DECISION', es: 'REQUIERE UNA DECISIÓN' };
+const DECISION_LABEL: Bi = { en: 'NEEDS A DECISION', };
 
 const SEVERITY_LABEL: Record<FindingSeverity, Bi> = {
   // Loud, but there is nothing to answer: it is news, not a question.
-  critical: { en: 'URGENT', es: 'URGENTE' },
-  attention: { en: 'WORTH A LOOK', es: 'VALE LA PENA REVISARLO' },
-  info: { en: 'FOR YOUR INFORMATION', es: 'PARA TU INFORMACIÓN' },
+  critical: { en: 'URGENT', },
+  attention: { en: 'WORTH A LOOK', },
+  info: { en: 'FOR YOUR INFORMATION', },
 };
 
 /**
@@ -895,7 +871,7 @@ interface ClosureSpec {
  */
 const KNOWN_HINT: Bi = {
   en: 'Staxis stops bringing this up, unless it gets meaningfully worse.',
-  es: 'Staxis deja de mencionarlo, salvo que empeore de forma clara.',
+
 };
 
 /**
@@ -906,7 +882,7 @@ const KNOWN_HINT: Bi = {
  */
 const HANDLED_HINT: Bi = {
   en: 'Staxis closes this out. If it happens again it comes back as a new card.',
-  es: 'Staxis lo da por cerrado. Si vuelve a pasar, volverá como una tarjeta nueva.',
+
 };
 
 /**
@@ -916,7 +892,7 @@ const HANDLED_HINT: Bi = {
  */
 const PM_DONE_HINT: Bi = {
   en: 'Staxis marks it done today and starts counting to the next one.',
-  es: 'Staxis lo marca como hecho hoy y empieza a contar hasta el próximo.',
+
 };
 
 /**
@@ -928,13 +904,13 @@ const PM_DONE_HINT: Bi = {
  */
 const PM_CALLED_HINT: Bi = {
   en: 'Staxis goes quiet for a week, then asks once whether it happened.',
-  es: 'Staxis se calla una semana y luego pregunta una vez si se hizo.',
+
 };
 
 /** Unconditional, so it asks first. The one verdict with no escape hatch. */
 const STOP_WATCHING: Bi = {
   en: 'Staxis will stop watching this. Sure?',
-  es: 'Staxis dejará de vigilar esto. ¿Seguro?',
+
 };
 
 /**
@@ -954,34 +930,34 @@ const STOP_WATCHING: Bi = {
  */
 const CLOSURE_SETS: Record<FindingDisposition, readonly ClosureSpec[]> = {
   propose: [
-    { verdict: 'known_problem', tone: 'primary', label: { en: 'Known problem', es: 'Ya lo sé' }, hint: KNOWN_HINT, confirm: null },
-    { verdict: 'resolved', tone: 'plain', label: { en: 'Fixed', es: 'Resuelto' }, hint: null, confirm: null },
+    { verdict: 'known_problem', tone: 'primary', label: { en: 'Known problem', }, hint: KNOWN_HINT, confirm: null },
+    { verdict: 'resolved', tone: 'plain', label: { en: 'Fixed', }, hint: null, confirm: null },
     {
       verdict: 'muted',
       tone: 'danger',
-      label: { en: 'Mute', es: 'Silenciar' },
+      label: { en: 'Mute', },
       hint: null,
-      confirm: { prompt: STOP_WATCHING, yes: { en: 'Yes, mute it', es: 'Sí, silenciar' } },
+      confirm: { prompt: STOP_WATCHING, yes: { en: 'Yes, mute it', } },
     },
   ],
   recommend: [
-    { verdict: 'resolved', tone: 'primary', label: { en: 'Handled it', es: 'Ya me encargué' }, hint: HANDLED_HINT, confirm: null },
-    { verdict: 'known_problem', tone: 'plain', label: { en: 'Seen', es: 'Visto' }, hint: KNOWN_HINT, confirm: null },
+    { verdict: 'resolved', tone: 'primary', label: { en: 'Handled it', }, hint: HANDLED_HINT, confirm: null },
+    { verdict: 'known_problem', tone: 'plain', label: { en: 'Seen', }, hint: KNOWN_HINT, confirm: null },
     {
       verdict: 'muted',
       tone: 'danger',
-      label: { en: 'Not doing this', es: 'No lo voy a hacer' },
+      label: { en: 'Not doing this', },
       hint: null,
       // The prompt is the same sentence Mute has always asked. The yes button
       // is not: "Yes, mute it" after tapping "Not doing this" reads like a
       // different button than the one the manager pressed.
-      confirm: { prompt: STOP_WATCHING, yes: { en: 'Yes, stop watching', es: 'Sí, deja de vigilarlo' } },
+      confirm: { prompt: STOP_WATCHING, yes: { en: 'Yes, stop watching', } },
     },
   ],
   // Information, not a task. One quiet way to put it away, and nothing that
   // looks like it wants a decision.
   fyi: [
-    { verdict: 'known_problem', tone: 'plain', label: { en: 'Got it', es: 'Entendido' }, hint: KNOWN_HINT, confirm: null },
+    { verdict: 'known_problem', tone: 'plain', label: { en: 'Got it', }, hint: KNOWN_HINT, confirm: null },
   ],
   ask: [],
   drop: [],
@@ -1022,27 +998,27 @@ const DETECTOR_CLOSURE_SETS: Readonly<Record<string, Readonly<Partial<Record<Fin
     // rendered separately, by offersApproval), and these are what a manager
     // says instead when the answer is about the building rather than the board.
     propose: [
-      { verdict: 'pm_done', tone: 'primary', label: { en: 'Done', es: 'Hecho' }, hint: PM_DONE_HINT, confirm: null },
-      { verdict: 'pm_called', tone: 'plain', label: { en: "Somebody's been called", es: 'Ya llamamos a alguien' }, hint: PM_CALLED_HINT, confirm: null },
+      { verdict: 'pm_done', tone: 'primary', label: { en: 'Done', }, hint: PM_DONE_HINT, confirm: null },
+      { verdict: 'pm_called', tone: 'plain', label: { en: "Somebody's been called", }, hint: PM_CALLED_HINT, confirm: null },
       {
         verdict: 'muted',
         tone: 'danger',
-        label: { en: 'Stop tracking this', es: 'Dejar de seguir esto' },
+        label: { en: 'Stop tracking this', },
         hint: null,
-        confirm: { prompt: STOP_WATCHING, yes: { en: 'Yes, stop watching', es: 'Sí, deja de vigilarlo' } },
+        confirm: { prompt: STOP_WATCHING, yes: { en: 'Yes, stop watching', } },
       },
     ],
     // The follow-up card, a week after somebody was called. Same two facts, and
     // "still waiting" re-arms another quiet week rather than nagging daily.
     recommend: [
-      { verdict: 'pm_done', tone: 'primary', label: { en: 'Yes, it got done', es: 'Sí, ya se hizo' }, hint: PM_DONE_HINT, confirm: null },
-      { verdict: 'pm_called', tone: 'plain', label: { en: 'Still waiting', es: 'Todavía esperando' }, hint: PM_CALLED_HINT, confirm: null },
+      { verdict: 'pm_done', tone: 'primary', label: { en: 'Yes, it got done', }, hint: PM_DONE_HINT, confirm: null },
+      { verdict: 'pm_called', tone: 'plain', label: { en: 'Still waiting', }, hint: PM_CALLED_HINT, confirm: null },
       {
         verdict: 'muted',
         tone: 'danger',
-        label: { en: 'Stop tracking this', es: 'Dejar de seguir esto' },
+        label: { en: 'Stop tracking this', },
         hint: null,
-        confirm: { prompt: STOP_WATCHING, yes: { en: 'Yes, stop watching', es: 'Sí, deja de vigilarlo' } },
+        confirm: { prompt: STOP_WATCHING, yes: { en: 'Yes, stop watching', } },
       },
     ],
   },
@@ -1087,13 +1063,9 @@ export function occurrenceLine(f: QueueFinding, lang: Lang, now: Date = new Date
   if (f.occurrenceCount <= 1) return null;
   const since = formatShortDate(f.firstSeenAt, lang, now);
   if (!since) {
-    return lang === 'es'
-      ? `Visto ${f.occurrenceCount} veces`
-      : `Seen ${f.occurrenceCount} times`;
+    return `Seen ${f.occurrenceCount} times`;
   }
-  return lang === 'es'
-    ? `Visto ${f.occurrenceCount} veces desde el ${since}`
-    : `Seen ${f.occurrenceCount} times since ${since}`;
+  return `Seen ${f.occurrenceCount} times since ${since}`;
 }
 
 /** "Jul 12", or null when the timestamp is unusable. */
@@ -1101,7 +1073,7 @@ export function formatShortDate(iso: string | null, lang: Lang, _now: Date = new
   if (!iso) return null;
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return null;
-  return d.toLocaleDateString(lang === 'es' ? 'es-US' : 'en-US', { month: 'short', day: 'numeric' });
+  return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
 }
 
 /**
@@ -1116,9 +1088,7 @@ export function dataAgeNote(f: QueueFinding, lang: Lang): string | null {
   if (age === null || age === undefined || !Number.isFinite(age)) return null;
   if (age < STALE_INPUT_DAYS) return null;
   const days = Math.round(age);
-  return lang === 'es'
-    ? `Basado en datos de hace ${days} días.`
-    : `Based on data that is ${days} days old.`;
+  return `Based on data that is ${days} days old.`;
 }
 
 // ─── The liveness line ──────────────────────────────────────────────────────
@@ -1170,11 +1140,7 @@ export function livenessLine(
     return {
       kind: 'stale',
       text:
-        lang === 'es'
-          ? days === 1
-            ? 'Última revisión hace 1 día. Puede que esto no esté al día.'
-            : `Última revisión hace ${days} días. Puede que esto no esté al día.`
-          : days === 1
+        days === 1
             ? 'Last checked 1 day ago. This may not be up to date.'
             : `Last checked ${days} days ago. This may not be up to date.`,
     };
@@ -1189,9 +1155,7 @@ export function livenessLine(
   return {
     kind: 'fresh',
     text:
-      lang === 'es'
-        ? `Se ${one ? 'revisó' : 'revisaron'} ${checked} ${one ? 'cosa' : 'cosas'} anoche. ${normal} se ${normal === 1 ? 've normal' : 'ven normales'}.`
-        : `Checked ${checked} ${one ? 'thing' : 'things'} last night. ${normal} look normal.`,
+      `Checked ${checked} ${one ? 'thing' : 'things'} last night. ${normal} look normal.`,
   };
 }
 
@@ -1218,7 +1182,5 @@ export function skippedNote(
   if (!run || run.detectorsSkipped <= 0) return null;
   if (livenessLine(run, 0, lang, now).kind !== 'fresh') return null;
   const n = run.detectorsSkipped;
-  return lang === 'es'
-    ? `${n} ${n === 1 ? 'revisión no pudo hacerse' : 'revisiones no pudieron hacerse'} por falta de datos.`
-    : `${n} ${n === 1 ? 'check' : 'checks'} couldn't run yet. Not enough history.`;
+  return `${n} ${n === 1 ? 'check' : 'checks'} couldn't run yet. Not enough history.`;
 }
