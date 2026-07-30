@@ -82,7 +82,13 @@ export default function PropertySelectorPage() {
   const authorizationIdentityKey = user
     ? `${user.uid}:${user.accountId}:${user.role}:${[...user.propertyAccess].sort().join(',')}:${authorizationFingerprint ?? 'unchecked'}`
     : null;
-  const authorizationViewerKey = useAuthorizationRefreshKey(
+  // The door, not a workspace: there is no in-progress UI state to protect
+  // here and stale coverage is at its most dangerous on the screen that hands
+  // out hotels. So this screen keeps the strict behaviour — `refreshKey` moves
+  // at every restore boundary, dropping the old picker payload and re-resolving
+  // server coverage. Surfaces the operator actually works in revalidate behind
+  // their data instead; see use-authorization-refresh-key.ts.
+  const { refreshKey: authorizationViewerKey } = useAuthorizationRefreshKey(
     authorizationIdentityKey,
     !authLoading && Boolean(user),
   );

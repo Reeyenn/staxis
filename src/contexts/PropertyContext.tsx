@@ -17,6 +17,12 @@ import type { Property, StaffMember } from '@/types';
 import { propertyChangeAllowed } from '@/lib/property-change-guard';
 import { RequestTimeoutError, withPromiseDeadline } from '@/lib/fetch-deadline';
 import { useAuthorizationRefreshKey } from '@/lib/hooks/use-authorization-refresh-key';
+import {
+  reconcilePropertyList,
+  resolveAuthorizationLoadMode,
+  resolveCoverageSelection,
+  sameAuthorizationValue,
+} from '@/lib/property-coverage';
 import { useOptionalHotelActingContext } from '@/contexts/HotelActingContext';
 
 export type CapabilityOverridesStatus = 'idle' | 'loading' | 'ready' | 'error';
@@ -172,12 +178,33 @@ export function PropertyProvider({ children }: { children: React.ReactNode }) {
   const propertyAuthorizationIdentityKey = userUid && userAccountId
     ? `${userUid}:${userAccountId}:${userRole ?? 'unknown'}:${userPropertyAccessKey}:${actingAuthorizationKey}`
     : null;
-  const propertyAuthorizationViewerKey = useAuthorizationRefreshKey(
+  // TWO VALUES, TWO JOBS — do not collapse them back into one.
+  //
+  // `authorizationKey` is what this file stamps and masks with. It holds still
+  // across tab focus, so the hotels on screen stay on screen while coverage is
+  // re-checked behind them. `revalidationToken` ticks at every browser restore
+  // boundary and only feeds reload dependencies. When these were a single key,
+  // every refocus blanked the hotel list, nulled the active hotel, flipped the
+  // shell to loading and remounted the tree — all day, for staff who click back
+  // into the tab constantly. See use-authorization-refresh-key.ts.
+  const {
+    authorizationKey: propertyAuthorizationViewerKey,
+    revalidationToken: authorizationRevalidationToken,
+  } = useAuthorizationRefreshKey(
     propertyAuthorizationIdentityKey,
     Boolean(propertyAuthorizationIdentityKey) && !authFlowActive && !portfolioScopeQuiescent,
   );
   const propertyAuthorizationViewerKeyRef = useRef(propertyAuthorizationViewerKey);
   propertyAuthorizationViewerKeyRef.current = propertyAuthorizationViewerKey;
+  // Stamps describing what is CURRENTLY exposed. The load effect reads these to
+  // tell a first load for this identity (mask, spin, surface a terminal error)
+  // apart from a quiet re-check of coverage the operator is already working in.
+  const propertiesViewerUidRef = useRef(propertiesViewerUid);
+  propertiesViewerUidRef.current = propertiesViewerUid;
+  const propertiesAuthorizationViewerKeyRef = useRef(propertiesAuthorizationViewerKey);
+  propertiesAuthorizationViewerKeyRef.current = propertiesAuthorizationViewerKey;
+  const activePropertyIdRef = useRef(activePropertyId);
+  activePropertyIdRef.current = activePropertyId;
   // A same-tab account switch can render once before the loading effect runs.
   // Stamp the hotel list with both the account and its authorization identity
   // so same-UID role/grant changes mask old coverage during that render too.
@@ -345,6 +372,16 @@ export function PropertyProvider({ children }: { children: React.ReactNode }) {
     const loadUserUid = userUid;
     const loadViewerKey = propertyAuthorizationViewerKey;
     const loadActingHotelId = actingHotelId;
+    // Is this the first coverage this exact identity has held, or a re-check of
+    // coverage already on screen? Only the first kind may mask and spin. A
+    // revalidation runs silently behind the data and commits only a real
+    // difference — src/lib/property-coverage.ts owns those rules.
+    const loadMode = resolveAuthorizationLoadMode({
+      stampedViewerUid: propertiesViewerUidRef.current,
+      stampedAuthorizationKey: propertiesAuthorizationViewerKeyRef.current,
+      loadViewerUid: loadUserUid,
+      loadAuthorizationKey: loadViewerKey,
+    });
     // One deadline belongs to the WHOLE load, including permission-race
     // retries and their backoff. Recursive attempts may spend only what is
     // left; none receives a fresh ten seconds.
@@ -440,14 +477,26 @@ export function PropertyProvider({ children }: { children: React.ReactNode }) {
     };
 
     void (async () => {
-      setLoading(true);
-      setPropertiesError(null);
-      setPropertiesErrorViewerUid(null);
-      setPropertiesErrorAuthorizationViewerKey(null);
+      // A revalidation must not touch the spinner: the operator is mid-task and
+      // nothing is known to be wrong yet.
+      if (loadMode === 'initial') {
+        setLoading(true);
+        setPropertiesError(null);
+        setPropertiesErrorViewerUid(null);
+        setPropertiesErrorAuthorizationViewerKey(null);
+      }
       try {
         const props = await loadProps();
         if (cancelled) return;
-        setProperties(props);
+        if (loadMode === 'initial') {
+          setProperties(props);
+        } else {
+          // Identical coverage keeps its exact array and hotel object
+          // references, so a re-check that changes nothing re-renders nothing.
+          // Anything the server actually changed still lands here immediately —
+          // a revoked hotel is gone from this list the moment it comes back.
+          setProperties((prev) => reconcilePropertyList(prev, props));
+        }
         setPropertiesViewerUid(loadUserUid);
         setPropertiesAuthorizationViewerKey(loadViewerKey);
         setPropertiesError(null);
@@ -458,13 +507,29 @@ export function PropertyProvider({ children }: { children: React.ReactNode }) {
         if (!loadActingHotelId) {
           try { stored = localStorage.getItem('hotelops-active-property'); } catch { /* storage unavailable */ }
         }
-        const pid = loadActingHotelId
-          ?? (stored && props.find(p => p.id === stored) ? stored : props[0]?.id ?? null);
-        setCapabilitySnapshot(null);
-        setActivePropertyIdState(pid);
+        // On a revalidation the hotel the operator is working in survives if it
+        // is still covered — re-deriving from localStorage on every refocus is
+        // what dropped the capability snapshot and blanked gated pages. If that
+        // hotel is GONE from the new coverage, this falls through to the normal
+        // derivation and its capability map is dropped with it.
+        const selection = resolveCoverageSelection({
+          mode: loadMode,
+          coverageIds: props.map(p => p.id),
+          activePropertyId: activePropertyIdRef.current,
+          actingHotelId: loadActingHotelId,
+          storedPropertyId: stored,
+        });
+        if (selection.resetCapabilitySnapshot) setCapabilitySnapshot(null);
+        setActivePropertyIdState(selection.activePropertyId);
       } catch (err) {
         if (cancelled) return;
         console.error('PropertyContext: failed to load properties', err);
+        // A FAILED revalidation is not evidence that access was revoked — it is
+        // usually the network blip that comes with waking a laptop. Blanking a
+        // working shell for it would recreate the exact failure this file spends
+        // 200 lines avoiding. Keep what is on screen; the next boundary retries.
+        // Only a load with nothing behind it may surface the terminal error.
+        if (loadMode === 'revalidation') return;
         setProperties([]);
         setPropertiesViewerUid(null);
         setPropertiesAuthorizationViewerKey(null);
@@ -487,6 +552,10 @@ export function PropertyProvider({ children }: { children: React.ReactNode }) {
     authFlowActive,
     portfolioScopeQuiescent,
     actingHotelId,
+    // Focus / network recovery / bfcache restore land here as a background
+    // re-check. This dependency is the ONLY thing a boundary is allowed to
+    // move; it must never reach a masking comparison.
+    authorizationRevalidationToken,
   ]);
 
   const retryProperties = useCallback(() => {
@@ -564,6 +633,8 @@ export function PropertyProvider({ children }: { children: React.ReactNode }) {
   const expectedCapabilityViewerKey = activePropertyViewerKey;
   const expectedCapabilityViewerKeyRef = useRef(expectedCapabilityViewerKey);
   expectedCapabilityViewerKeyRef.current = expectedCapabilityViewerKey;
+  const capabilitySnapshotRef = useRef(capabilitySnapshot);
+  capabilitySnapshotRef.current = capabilitySnapshot;
   // Never expose a snapshot from a previous identity/property while the next
   // request settles, even for the render before the clearing effect runs.
   const exposedCapabilitySnapshot = capabilitySnapshot
@@ -608,13 +679,26 @@ export function PropertyProvider({ children }: { children: React.ReactNode }) {
       return;
     }
     let cancelled = false;
-    setCapabilitySnapshot({
-      viewerKey: expectedCapabilityViewerKey,
-      propertyId: resolvedPropertyId,
-      overrides: EMPTY_CAPABILITY_OVERRIDES,
-      status: 'loading',
-      error: null,
-    });
+    // A re-run for access this viewer already holds is a background re-check.
+    // Flipping a confirmed snapshot back to 'loading' is what made every
+    // capability-gated page blank on tab refocus, so the confirmed access stays
+    // on screen and only a genuinely different answer is committed below.
+    const held = capabilitySnapshotRef.current;
+    const revalidating = Boolean(
+      held
+      && held.viewerKey === expectedCapabilityViewerKey
+      && held.propertyId === resolvedPropertyId
+      && held.status === 'ready',
+    );
+    if (!revalidating) {
+      setCapabilitySnapshot({
+        viewerKey: expectedCapabilityViewerKey,
+        propertyId: resolvedPropertyId,
+        overrides: EMPTY_CAPABILITY_OVERRIDES,
+        status: 'loading',
+        error: null,
+      });
+    }
     void (async () => {
       try {
         const map = await withPromiseDeadline(fetchOverridesFor(resolvedPropertyId), {
@@ -625,18 +709,34 @@ export function PropertyProvider({ children }: { children: React.ReactNode }) {
           !cancelled
           && expectedCapabilityViewerKeyRef.current === expectedCapabilityViewerKey
         ) {
-          setCapabilitySnapshot({
-            viewerKey: expectedCapabilityViewerKey,
-            propertyId: resolvedPropertyId,
-            overrides: map,
-            status: 'ready',
-            error: null,
-          });
+          // Same answer as what is already exposed → do not touch state at all,
+          // so the overrides object keeps its reference and every useCan()
+          // consumer stays exactly where it is.
+          const settled = capabilitySnapshotRef.current;
+          const unchanged = Boolean(
+            settled
+            && settled.status === 'ready'
+            && settled.viewerKey === expectedCapabilityViewerKey
+            && settled.propertyId === resolvedPropertyId
+            && sameAuthorizationValue(settled.overrides, map),
+          );
+          if (!unchanged) {
+            setCapabilitySnapshot({
+              viewerKey: expectedCapabilityViewerKey,
+              propertyId: resolvedPropertyId,
+              overrides: map,
+              status: 'ready',
+              error: null,
+            });
+          }
         }
       } catch (err) {
         console.error('PropertyContext: failed to load capability access', err);
+        // A failed background re-check must not tear down access that is
+        // already confirmed and in use. The next boundary tries again.
         if (
           !cancelled
+          && !revalidating
           && expectedCapabilityViewerKeyRef.current === expectedCapabilityViewerKey
         ) {
           setCapabilitySnapshot({
@@ -651,7 +751,7 @@ export function PropertyProvider({ children }: { children: React.ReactNode }) {
     })();
     return () => { cancelled = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [resolvedPropertyId, expectedCapabilityViewerKey, activeOnboardingInProgress]);
+  }, [resolvedPropertyId, expectedCapabilityViewerKey, activeOnboardingInProgress, authorizationRevalidationToken]);
 
   const refreshCapabilities = useCallback(async () => {
     const viewerKey = expectedCapabilityViewerKey;
