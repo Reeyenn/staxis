@@ -247,7 +247,7 @@ function OnboardWizard() {
 // ─── Layout (progress bar + container) ──────────────────────────────────
 
 const STEP_LABELS = [
-  'Welcome', 'Account', 'Verify email', 'About hotel', 'Your hotel', 'All set',
+  'Welcome', 'Account', 'Verify email', 'About hotel', 'Your hotel', 'Done',
 ];
 
 // Warm animated mesh + paper grain — the same backdrop the /signin flow uses,

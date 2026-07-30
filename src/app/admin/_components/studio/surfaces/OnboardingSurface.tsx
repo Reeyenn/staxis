@@ -77,7 +77,7 @@ interface Prospect {
 }
 
 // ── The six-stage onboarding journey (mirrors the /onboard wizard) ─────
-const STEP_LABELS = ['Welcome', 'Account', 'Verify email', 'About hotel', 'Your hotel', 'Live'] as const;
+const STEP_LABELS = ['Welcome', 'Account', 'Verify email', 'About hotel', 'Your hotel', 'Done'] as const;
 const TOTAL_STEPS = STEP_LABELS.length;
 
 interface Journey { step: number; label: string; sub: string; href: string; needsYou: boolean; }

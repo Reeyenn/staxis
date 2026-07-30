@@ -25,7 +25,7 @@ describe('shortened first-person onboarding UI contract', () => {
   test('customer wizard renders the exact six requested stages', () => {
     assert.match(
       customerPage,
-      /const STEP_LABELS = \[\s*'Welcome', 'Account', 'Verify email', 'About hotel', 'Your hotel', 'All set',?\s*\]/,
+      /const STEP_LABELS = \[\s*'Welcome', 'Account', 'Verify email', 'About hotel', 'Your hotel', 'Done',?\s*\]/,
     );
     assert.match(
       customerPage,
@@ -87,7 +87,7 @@ describe('Admin Live Journey stays synchronized with the customer wizard', () =>
   test('uses the matching six stages without the removed launcher or stage dependencies', () => {
     assert.match(
       adminJourney,
-      /const STEP_LABELS = \['Welcome', 'Account', 'Verify email', 'About hotel', 'Your hotel', 'Live'\] as const/,
+      /const STEP_LABELS = \['Welcome', 'Account', 'Verify email', 'About hotel', 'Your hotel', 'Done'\] as const/,
     );
     assert.doesNotMatch(adminJourney, /CreateHotelModal|\/api\/admin\/onboarding-jobs/);
 
