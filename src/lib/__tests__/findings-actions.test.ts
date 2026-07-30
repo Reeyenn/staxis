@@ -573,7 +573,7 @@ describe('when a card is allowed to carry a button', () => {
 });
 
 // ═══════════════════════════════════════════════════════════════════════════
-describe('when Staxis declines, the card says what moved — in both languages', () => {
+describe('when Staxis declines, the English-only card says what moved', () => {
   const declined = (field: string, was: unknown, now: unknown, subject: string) =>
     cardAction({
       state: 'declined_changed',
@@ -588,8 +588,7 @@ describe('when Staxis declines, the card says what moved — in both languages',
     assert.match(en, /already on it/i);
 
     const es = declinedExplanation(declined('open_work_orders', 4, 1, 'Room 214'), 'es');
-    assert.match(es, /Room 214/);
-    assert.notEqual(es, en, 'a Spanish speaker must not be handed the English sentence');
+    assert.equal(es, en, 'legacy language input must not re-enable localized product UI');
   });
 
   test('a reorder point somebody already changed', () => {

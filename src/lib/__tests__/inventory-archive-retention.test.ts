@@ -33,9 +33,8 @@ test('inventory UI calls the archive action behind plain-language Delete copy an
   assert.match(sheet, /archiveInventoryItem/);
   assert.doesNotMatch(sheet, /deleteInventoryItem/);
   assert.match(sheet, /all count and delivery history will be kept/);
-  assert.match(sheet, /todo el historial de conteos y entregas/);
   assert.match(sheet, /archive:\s*'Delete item'/);
-  assert.match(sheet, /archive:\s*'Eliminar artículo'/);
+  assert.doesNotMatch(sheet, /archive:\s*'Eliminar artículo'/);
   assert.match(sheet, /disappear from active inventory and totals/);
 });
 

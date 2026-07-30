@@ -25,7 +25,6 @@ export const dynamic = 'force-dynamic';
 import React, { useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
 import { useAuth } from '@/contexts/AuthContext';
-import { useLang } from '@/contexts/LanguageContext';
 import { useProperty } from '@/contexts/PropertyContext';
 import { canManageTeam } from '@/lib/roles';
 import { useActiveHotelStanding, useCan } from '@/lib/capabilities/useCan';
@@ -301,8 +300,6 @@ function ManagerView({ canManagePeople }: { canManagePeople: boolean }) {
 }
 
 function ManagerAccessUnavailable({ canManagePeople }: { canManagePeople: boolean }) {
-  const { lang } = useLang();
-  const es = false;
   return (
     <div style={{
       minHeight: '60vh', display: 'grid', placeItems: 'center', padding: 24,
@@ -347,8 +344,6 @@ function ManagerScheduleStatus({
   message?: string;
   onRetry?: () => void;
 }) {
-  const { lang } = useLang();
-  const es = lang === 'es';
   return (
     <div style={{
       minHeight: 360, display: 'grid', placeItems: 'center', padding: 24,
@@ -361,13 +356,13 @@ function ManagerScheduleStatus({
       }}>
         <div style={{ fontSize: 17, fontWeight: 600, marginBottom: 7 }}>
           {pending
-            ? (es ? 'Cargando el horario…' : 'Loading the schedule…')
-            : (es ? 'No se pudo confirmar el acceso al horario' : 'Schedule access could not be confirmed')}
+            ? 'Loading the schedule…'
+            : 'Schedule access could not be confirmed'}
         </div>
         <div style={{ fontSize: 13, lineHeight: 1.5, color: T.ink3 }}>
           {pending
-            ? (es ? 'Los controles estarán disponibles cuando el acceso esté listo.' : 'Controls will be available once access is ready.')
-            : (message ?? (es ? 'Revisa tu conexión e inténtalo de nuevo.' : 'Check your connection and try again.'))}
+            ? 'Controls will be available once access is ready.'
+            : (message ?? 'Check your connection and try again.')}
         </div>
         {!pending && onRetry ? (
           <button
@@ -380,7 +375,7 @@ function ManagerScheduleStatus({
               cursor: 'pointer',
             }}
           >
-            {es ? 'Reintentar' : 'Retry'}
+            Retry
           </button>
         ) : null}
       </div>

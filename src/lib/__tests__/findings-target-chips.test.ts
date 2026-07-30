@@ -337,14 +337,14 @@ describe('the chip', () => {
     assert.equal(chipFor([''], 'en'), null);
   });
 
-  test('one pattern is the founder-approved sentence, in both languages', () => {
+  test('one pattern uses the English product sentence for legacy language input', () => {
     assert.equal(chipFor(['f1'], 'en')!.text, 'Staxis sees a pattern here →');
-    assert.equal(chipFor(['f1'], 'es')!.text, 'Staxis ve un patrón aquí →');
+    assert.equal(chipFor(['f1'], 'es')!.text, 'Staxis sees a pattern here →');
   });
 
   test('two patterns say two — the count is never rounded down to "a"', () => {
     assert.equal(chipFor(['f1', 'f2'], 'en')!.text, 'Staxis sees 2 patterns here →');
-    assert.equal(chipFor(['f1', 'f2'], 'es')!.text, 'Staxis ve 2 patrones aquí →');
+    assert.equal(chipFor(['f1', 'f2'], 'es')!.text, 'Staxis sees 2 patterns here →');
     assert.equal(chipFor(['f1', 'f2', 'f3'], 'en')!.count, 3);
   });
 

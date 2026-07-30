@@ -597,7 +597,7 @@ describe('authenticated shell and property-switch isolation', () => {
     );
     assert.match(
       dashboardPage,
-      /\{operationalFeedsCurrent\s*\? \(ES \? 'Todo en orden\.' : 'All clear — nothing needs you right now\.'\)/,
+      /\{operationalFeedsCurrent\s*\? \('All clear — nothing needs you right now\.'\)/,
     );
     assert.doesNotMatch(dashboardPage, /const \[rooms, setRooms\]|const \[workOrders, setWorkOrders\]|const \[complaints, setComplaints\]/);
   });

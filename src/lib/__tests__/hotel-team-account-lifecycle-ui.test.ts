@@ -20,7 +20,7 @@ describe('My Hotel account status UI', () => {
     assert.match(panel, /ownerProtected: boolean;/);
     assert.match(panel, /Login disabled/);
     assert.match(panel, /No sign-ins yet/);
-    assert.match(panel, /if \(!known\) return copy\(lang, 'Last sign-in unavailable'/);
+    assert.match(panel, /if \(!known\) return 'Last sign-in unavailable'/);
     assert.match(panel, /lastSignInLabel\(account\.lastSignInKnown, account\.lastSignInAt, lang\)/);
   });
 
@@ -122,8 +122,8 @@ describe('My Hotel account lifecycle dialog', () => {
     assert.match(dialogs, /discardReturnFocusRef\.current[\s\S]*returnTarget\.focus/);
     assert.match(dialogs, /Keep editing/);
     assert.match(dialogs, /Discard changes/);
-    assert.match(dialogs, /Seguir editando/);
-    assert.match(dialogs, /Descartar cambios/);
+    assert.doesNotMatch(dialogs, /Seguir editando/);
+    assert.doesNotMatch(dialogs, /Descartar cambios/);
   });
 
   test('does not offer owner in ordinary role selection and leaves existing owners readable', () => {

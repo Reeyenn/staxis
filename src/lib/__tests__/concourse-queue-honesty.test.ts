@@ -177,10 +177,10 @@ describe('a receipt with no numbered rows', () => {
     basisEs: 'Vaciado del calentador: se hizo por última vez hace 210 días',
   };
 
-  test('falls back to the basis line in the reader\'s language', () => {
+  test('uses the English basis line for built-in UI regardless of legacy language input', () => {
     const es = textOf(cards.Receipt({ finding: findingWith(bilingual), lang: 'es' }));
-    assert.ok(es.some((t) => t.includes('se hizo por última vez')));
-    assert.ok(!es.some((t) => t.includes('was last done')));
+    assert.ok(es.some((t) => t.includes('was last done')));
+    assert.ok(!es.some((t) => t.includes('se hizo por última vez')));
   });
 
   test('an English reader still gets the English one', () => {

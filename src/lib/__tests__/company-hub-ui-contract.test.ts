@@ -98,11 +98,11 @@ describe('Home management entry', () => {
     assert.doesNotMatch(home, /management=\{user && user\.role !== ['"]admin['"]/);
   });
 
-  test('localizes both adaptive labels and always opens the Company Hub route', () => {
+  test('uses English adaptive labels and always opens the Company Hub route', () => {
     assert.match(home, /['"]Company Hub['"]/);
     assert.match(home, /['"]My Hotel['"]/);
-    assert.match(home, /['"]Centro de empresa['"]/);
-    assert.match(home, /['"]Mi hotel['"]/);
+    assert.doesNotMatch(home, /['"]Centro de empresa['"]/);
+    assert.doesNotMatch(home, /['"]Mi hotel['"]/);
     assert.match(home, /href: ['"]\/company['"]/);
   });
 
@@ -144,7 +144,7 @@ describe('truthful Company Hub filters', () => {
   test('hotels use not-active semantics instead of calling every non-active row pending', () => {
     assert.match(company, /type HotelStatusFilter = ['"]all['"] \| ['"]active['"] \| ['"]not_active['"]/);
     assert.match(company, /property\.status === ['"]active['"] : property\.status !== ['"]active['"]/);
-    assert.match(company, /value: ['"]not_active['"], label: localized\(lang, ['"]Not active['"]/);
+    assert.match(company, /value: ['"]not_active['"], label: ['"]Not active['"]/);
   });
 
   test('People is ONE list of everyone at the hotel, not logins stacked on leftovers', () => {
@@ -225,7 +225,7 @@ describe('My Hotel account and team integration', () => {
     assert.ok(tabsIndex > heroEnd && tabListIndex > tabsIndex && tabListEnd > tabListIndex && tabsEnd > tabListEnd);
     assert.ok(panelIndex > tabsEnd);
     assert.ok(subheadingIndex >= 0 && titleRowIndex > subheadingIndex && countIndex > titleRowIndex && inviteIndex > countIndex && teamListIndex > inviteIndex);
-    assert.match(company.slice(switcherIndex, heroEnd), /label=\{localized\(lang, ['"]Choose hotel to manage['"]/);
+    assert.match(company.slice(switcherIndex, heroEnd), /label=\{['"]Choose hotel to manage['"]\}/);
     assert.doesNotMatch(company, /styles\.teamInviteRow|styles\.teamInviteButton/);
     assert.match(hotelTeam, /onClick=\{\(\) => onInviteDialogOpenChange\(true\)\}/);
     assert.match(hotelTeam, /disabled=\{locked\}/);
@@ -318,10 +318,10 @@ describe('My Hotel account and team integration', () => {
     // only thing on this page that needs an answer today.
     assert.ok(approvalList >= 0 && approvalRows > approvalList && peopleGrid > approvalRows);
     assert.match(hotelTeam, /Pending approval/);
-    assert.match(hotelTeam, /copy\(lang, ['"]Approve['"]/);
-    assert.match(hotelTeam, /copy\(lang, ['"]Deny['"]/);
-    assert.match(hotelTeam, /aria-label=\{copy\(lang, `Approve \$\{request\.name\}`/);
-    assert.match(hotelTeam, /aria-label=\{copy\(lang, `Deny \$\{request\.name\}`/);
+    assert.match(hotelTeam, /\{'Approve'\}/);
+    assert.match(hotelTeam, /\{'Deny'\}/);
+    assert.match(hotelTeam, /aria-label=\{`Approve \$\{request\.name\}`\}/);
+    assert.match(hotelTeam, /aria-label=\{`Deny \$\{request\.name\}`\}/);
     assert.doesNotMatch(hotelTeam, /Pending staff approvals|pending-approvals-title|No one is waiting for approval|Waiting room/);
     assert.match(hotelTeam, /LazyMemberDialog/);
     assert.match(hotelTeam, /LazyRemoveDialog/);
@@ -406,7 +406,7 @@ describe('My Hotel account and team integration', () => {
     assert.match(hotelTeamDialogs, /document\.body/);
     assert.match(hotelTeamDialogs, /AbortSignal\.timeout\(15_000\)/);
     assert.match(hotelTeamDialogs, /This display name appears at every hotel/);
-    assert.match(hotelTeamDialogs, /member\.email \|\| copy\(lang, ['"]Email unavailable['"]/);
+    assert.match(hotelTeamDialogs, /member\.email \|\| ['"]Email unavailable['"]/);
     assert.match(hotelTeam, /createPortal\(/);
     assert.doesNotMatch(hotelTeamCss, /font:\s*[^;]*\binherit\s*;/);
     assert.doesNotMatch(hotelTeamCss, /min-height:\s*40px/);

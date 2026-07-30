@@ -216,7 +216,7 @@ describe('section gates fail closed and cover high-risk routes', () => {
     for (const file of routeFilesBelow('src/app/api/comms')) {
       if (file.endsWith('/language/route.ts')) {
         const language = readFileSync(file, 'utf8');
-        assert.match(language, /Property-agnostic/);
+        assert.match(language, /property-agnostic/);
         assert.doesNotMatch(language, /comms_conversations|comms_messages|comms_members/);
         continue;
       }
