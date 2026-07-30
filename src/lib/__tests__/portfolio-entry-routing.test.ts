@@ -5,6 +5,7 @@ import { describe, test } from 'node:test';
 
 import {
   shouldLoadPortfolioBootstrap,
+  shouldWaitForPortfolioBootstrapResult,
   shouldWaitForPortfolioEntry,
 } from '@/lib/portfolio-ui/entry-routing';
 
@@ -51,6 +52,12 @@ describe('portfolio bootstrap entry routing', () => {
       hotelDrilldown: false,
       portfolioLoading: false,
     }), false);
+    assert.equal(shouldWaitForPortfolioBootstrapResult({
+      enabled: false,
+      loading: false,
+      hasData: false,
+      hasError: false,
+    }), false, 'a disabled bootstrap has no terminal payload to wait for');
   });
 
   test('fresh company and regional portfolio standing enables bootstrap and its terminal wait', () => {
@@ -81,6 +88,27 @@ describe('portfolio bootstrap entry routing', () => {
       portfolioLoading: false,
     }), false);
     assert.equal(homeDecision({ propertyStandings: [HOTEL_ONLY_STANDING] }), false);
+    assert.equal(shouldWaitForPortfolioBootstrapResult({
+      enabled: true,
+      loading: false,
+      hasData: false,
+      hasError: true,
+    }), false);
+  });
+
+  test('an enabled bootstrap waits through its data-less transition only', () => {
+    assert.equal(shouldWaitForPortfolioBootstrapResult({
+      enabled: true,
+      loading: false,
+      hasData: false,
+      hasError: false,
+    }), true);
+    assert.equal(shouldWaitForPortfolioBootstrapResult({
+      enabled: true,
+      loading: false,
+      hasData: true,
+      hasError: false,
+    }), false);
   });
 
   test('multi-hat actors retain explicit hotel and portfolio acting-context rules', () => {
@@ -106,5 +134,8 @@ describe('portfolio bootstrap entry routing', () => {
     assert.match(provider, /useApiResource<PortfolioUiBootstrapV1>[\s\S]{0,300}?enabled: enabled && !malformedSelection/);
     assert.match(home, /portfolioEntryPending = shouldWaitForPortfolioEntry\(\{[\s\S]{0,120}?portfolioLoading: portfolio\.loading/);
     assert.doesNotMatch(home, /!portfolio\.data && Boolean\(user\)/);
+    const selector = source('src', 'app', 'property-selector', 'page.tsx');
+    assert.match(selector, /shouldWaitForPortfolioBootstrapResult\(\{/);
+    assert.match(selector, /enabled: portfolio\.enabled/);
   });
 });

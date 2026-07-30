@@ -10,6 +10,8 @@ import { useAuth } from '@/contexts/AuthContext';
 
 interface PortfolioContextValue {
   data: PortfolioUiBootstrapV1 | null;
+  /** Whether this acting context is issuing a portfolio bootstrap request. */
+  enabled: boolean;
   loading: boolean;
   error: string | null;
   requestedOrganizationId: string | null;
@@ -76,6 +78,7 @@ export function PortfolioProvider({ children }: { children: React.ReactNode }) {
 
   const value = React.useMemo<PortfolioContextValue>(() => ({
     data: safeData,
+    enabled: enabled && !malformedSelection,
     loading: enabled && !malformedSelection ? resource.loading : false,
     error: adminPortfolioContext
       ? 'Platform administrators must enter through an explicitly authorized customer context.'

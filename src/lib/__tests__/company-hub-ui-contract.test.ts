@@ -54,6 +54,12 @@ describe('company-only shell routing', () => {
     assert.match(home, /user\.role === ['"]admin['"] \|\| properties\.length > 0/);
     assert.match(home, /replaceNavigation\('\/property-selector'\)/);
   });
+
+  test('a two-company My Portfolio link reaches a terminal company chooser', () => {
+    assert.match(company, /portfolioNeedsSelection[\s\S]{0,220}?router\.replace\('\/portfolio\/choose'\)/);
+    assert.match(company, /title=\{'Choose a management company'\}/);
+    assert.match(company, /&& !portfolioNeedsSelection/);
+  });
 });
 
 describe('Home management entry', () => {

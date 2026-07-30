@@ -249,7 +249,11 @@ export function portfolioFindingPolicyDecision(
   }
 
   if (finding.detectorId === 'portfolio_activity_stopped') {
-    const propertyIds = evidencePropertyIds(finding);
+    // Current producers write hotel_ids. The canonical affected-property
+    // column safely recovers legacy rows that wrote only affected_hotel_ids;
+    // for this detector the stopped hotels are the entire evaluated set.
+    const propertyIds = evidencePropertyIds(finding)
+      ?? (finding.affectedPropertyIds.length > 0 ? finding.affectedPropertyIds : null);
     const stream = finding.evidence?.params?.stream;
     const sourceSection = typeof stream === 'string' ? portfolioStreamSection(stream) : null;
     if (!propertyIds || !sourceSection) return 'unavailable';

@@ -24,6 +24,13 @@ describe('Admin authoritative permission integration', () => {
     assert.match(server, /standing\.seesFinancials/);
     assert.match(server, /loadOverridesForPropertyFresh/);
     assert.match(server, /organization_access_epochs/);
+    assert.match(server, /resolveOrganizationPropertyTopology\(organizationId, now\)/);
+    assert.match(server, /resolveCompanyForProperty\(propertyId\)/);
+    assert.doesNotMatch(
+      server,
+      /targetEntitlements[\s\S]{0,300}?const organizationId/,
+      'hotel company AI settings must come from topology, not current roster members',
+    );
   });
 
   it('keeps global AI configuration separate from the company permission row', () => {

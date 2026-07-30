@@ -127,9 +127,13 @@ async function selectCompanyFacts(
   if (!current.error && current.data) return (current.data as unknown as RawFact[]).map(mapFact);
   // App-first rolling deploy: reads remain available against a pre-0406 DB,
   // but the null token makes every new mutation fail closed until 0406 lands.
-  if (!isMissingRevisionColumn(current.error)) return [];
+  if (!isMissingRevisionColumn(current.error)) {
+    throw current.error ?? new Error('company_knowledge_read_unavailable');
+  }
   const legacy = await query(SELECT_COLS);
-  if (legacy.error || !legacy.data) return [];
+  if (legacy.error || !legacy.data) {
+    throw legacy.error ?? new Error('company_knowledge_read_unavailable');
+  }
   return (legacy.data as unknown as RawFact[]).map(mapFact);
 }
 

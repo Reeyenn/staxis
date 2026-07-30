@@ -33,3 +33,18 @@ export function shouldWaitForPortfolioEntry(input: {
 }): boolean {
   return !input.hotelDrilldown && input.portfolioLoading;
 }
+
+/**
+ * An entry surface waits for a terminal portfolio bootstrap only when that
+ * request was actually enabled. Hotel-only users deliberately do not issue the
+ * request, so their permanent null result must never become a permanent
+ * property-selector spinner.
+ */
+export function shouldWaitForPortfolioBootstrapResult(input: {
+  enabled: boolean;
+  loading: boolean;
+  hasData: boolean;
+  hasError: boolean;
+}): boolean {
+  return input.enabled && !input.hasError && (input.loading || !input.hasData);
+}

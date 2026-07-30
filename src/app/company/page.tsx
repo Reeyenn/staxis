@@ -541,6 +541,13 @@ function CompanyAccessContent() {
     && portfolio.data.selection.selectedOrganizationId === portfolio.requestedOrganizationId
     ? portfolio.data.selectedCompany
     : null;
+  const portfolioNeedsSelection = portfolioMode
+    && portfolio.data?.selection.state === 'needs_selection';
+
+  React.useEffect(() => {
+    if (!portfolioNeedsSelection) return;
+    router.replace('/portfolio/choose');
+  }, [portfolioNeedsSelection, router]);
   const currentData = portfolioMode
     ? unscopedCurrentData && selectedPortfolioCompany
       ? selectCompanyAccessContext(
@@ -677,7 +684,10 @@ function CompanyAccessContent() {
     || !authorizationChecked
     || propertyLoading
     || (portfolioMode && portfolio.loading)
-    || (portfolioMode && !selectedPortfolioCompany && !portfolio.error)
+    || (portfolioMode
+      && !selectedPortfolioCompany
+      && !portfolio.error
+      && !portfolioNeedsSelection)
     || (adminPreview && !adminTargetIsCurrent)
     || (loading && !currentData)
     || viewerTransitionLoading
@@ -886,7 +896,15 @@ function CompanyAccessContent() {
               aria-labelledby={`company-tab-${tab}`}
               className={styles.panel}
             >
-              {portfolioMode && portfolio.error ? (
+              {portfolioNeedsSelection ? (
+                <EmptyState
+                  icon={Building2}
+                  title={'Choose a management company'}
+                  description={'Each company remains separate. Choose one before opening My Portfolio.'}
+                  actionLabel={'Choose company'}
+                  onAction={() => router.push('/portfolio/choose')}
+                />
+              ) : portfolioMode && portfolio.error ? (
                 <RouteErrorState
                   title={'Portfolio context could not be confirmed'}
                   message={portfolio.error}

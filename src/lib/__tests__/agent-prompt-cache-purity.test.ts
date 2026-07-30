@@ -211,6 +211,26 @@ describe('prompt cache purity', () => {
     assert.match(stable, /Orders over \$500 need VP sign-off\./);
   });
 
+  it('never sends the company rulebook to line-role hotel prompts', async () => {
+    for (const role of ['front_desk', 'maintenance'] as const) {
+      const { stable, factual } = await buildSystemPrompt(
+        role,
+        snapshot(agedBy(5)),
+        `conv-line-${role}`,
+        undefined,
+        undefined,
+        NOW,
+        undefined,
+        { seesFinancials: false, hotelMutationAllowed: role === 'front_desk' },
+      );
+      for (const block of [stable, factual]) {
+        assert.equal(/Company rulebook/.test(block), false, `${role} received the company tier`);
+        assert.equal(/Ecolab/.test(block), false, `${role} received company vendor knowledge`);
+        assert.equal(/\$500/.test(block), false, `${role} received company money knowledge`);
+      }
+    }
+  });
+
   it('the company block carries no clock, no age, no count and no "updated"', async () => {
     // The worst version of the cache bug: this block is shared by every hotel
     // the company operates, so one moving value in it misses the cache on every
@@ -425,7 +445,7 @@ describe('version label', () => {
     const withCompany = await buildSystemPrompt(
       'general_manager', snapshot(agedBy(5)), 'conv-1', undefined, undefined, NOW,
     );
-    assert.match(withCompany.stableStamp, /company-rulebook-v1/);
+    assert.match(withCompany.stableStamp, /company-rulebook-v2/);
 
     // An independent hotel gets no section, so its stamp must not claim one —
     // otherwise "which rules was this turn run under" is answered with a lie.
@@ -433,7 +453,7 @@ describe('version label', () => {
     const independent = await buildSystemPrompt(
       'general_manager', snapshot(agedBy(5)), 'conv-1', undefined, undefined, NOW,
     );
-    assert.equal(/company-rulebook-v1/.test(independent.stableStamp), false);
+    assert.equal(/company-rulebook-v2/.test(independent.stableStamp), false);
     assert.equal(/Company rulebook/.test(independent.stable), false);
   });
 });

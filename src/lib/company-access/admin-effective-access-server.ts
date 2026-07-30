@@ -9,6 +9,10 @@ import {
 } from '@/lib/company-access/projection-query';
 import { accessProfileForHat, type HatRole } from '@/lib/company/roles';
 import { companyAccessSetting } from '@/lib/company/rulebook-access';
+import {
+  resolveCompanyForProperty,
+  resolveOrganizationPropertyTopology,
+} from '@/lib/company/access';
 import { resolveAiFeatureConfig } from '@/lib/ai/model-config-store';
 import {
   listAuthoritativePropertyAccess,
@@ -43,13 +47,6 @@ interface OrganizationRow {
   name: string;
   organization_type: string;
   status: string;
-}
-
-interface RelationshipRow {
-  organization_id: string;
-  property_id: string;
-  starts_at: string | null;
-  ends_at: string | null;
 }
 
 interface MembershipRow {
@@ -438,16 +435,21 @@ async function hotelProjection(propertyId: string): Promise<AdminEffectiveAccess
   if (propertyError) throw propertyError;
   if (!property) throw new Error('hotel_not_found');
 
-  const firstRoster = await loadAuthoritativeHotelRoster(propertyId, false);
+  const [firstRoster, companyResolution] = await Promise.all([
+    loadAuthoritativeHotelRoster(propertyId, false),
+    resolveCompanyForProperty(propertyId),
+  ]);
+  if (companyResolution.status === 'unavailable' || companyResolution.status === 'ambiguous') {
+    throw new Error('company_topology_unavailable');
+  }
   const accounts = await loadAccounts(firstRoster.accounts.map((account) => account.accountId));
   const resolved = await resolveAccounts(accounts.filter((account) => account.role !== 'admin'));
-  const targetEntitlements = resolved.flatMap(({ access }) => (
-    access.propertyStandings.find((standing) => standing.propertyId === propertyId)?.entitlements ?? []
-  ));
-  const organizationIds = [...new Set(targetEntitlements
-    .map((entitlement) => entitlement.organizationId)
-    .filter((id): id is string => Boolean(id)))];
-  const organizationId = organizationIds.length === 1 ? organizationIds[0] : null;
+  // The governing company belongs to hotel topology, not to whoever happens
+  // to appear in today's roster. A newly assigned hotel with no accepted
+  // member still has a real company AI permission that Admin must display.
+  const organizationId = companyResolution.status === 'company'
+    ? companyResolution.organizationId
+    : null;
   const target: AdminEffectiveAccessTarget = {
     kind: 'hotel', id: propertyId, name: property.name ?? 'Unnamed hotel', organizationId,
   };
@@ -475,18 +477,16 @@ async function organizationProjection(organizationId: string): Promise<AdminEffe
     throw startingEpochError ?? new Error('access_changed');
   }
   const startingEpoch = Number(startingEpochRow!.version);
-  const nowMs = Date.now();
-  const [relationships, memberships] = await Promise.all([
-    readCompleteCompanyPages<RelationshipRow>((from, to) => supabaseAdmin.from('organization_property_relationships')
-      .select('organization_id, property_id, starts_at, ends_at', { count: 'exact' })
-      .eq('organization_id', organizationId).order('property_id').range(from, to) as unknown as PromiseLike<CompanyProjectionPage<RelationshipRow>>),
+  const now = new Date();
+  const nowMs = now.getTime();
+  const [topology, memberships] = await Promise.all([
+    resolveOrganizationPropertyTopology(organizationId, now),
     readCompleteCompanyPages<MembershipRow>((from, to) => supabaseAdmin.from('organization_memberships')
       .select('id, organization_id, account_id, membership_scope, staxis_role, job_title, status, starts_at, ended_at', { count: 'exact' })
       .eq('organization_id', organizationId).order('id').range(from, to) as unknown as PromiseLike<CompanyProjectionPage<MembershipRow>>),
   ]);
-  const propertyIds = [...new Set(relationships
-    .filter((row) => activeWindow(row.starts_at, row.ends_at, nowMs))
-    .map((row) => row.property_id))].sort();
+  if (!topology.ok) throw new Error('company_topology_unavailable');
+  const propertyIds = [...topology.topology.propertyIds].sort();
   const organizationPropertyIds = new Set(propertyIds);
   const membershipAccountIds = new Set(memberships.map((row) => row.account_id));
   const accounts = (await loadAccounts()).filter((account) => (

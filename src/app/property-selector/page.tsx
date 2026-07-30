@@ -35,6 +35,7 @@ import type { OnboardingState } from '@/lib/onboarding/state';
 import { useNavigationReady, useReliableNavigation } from '@/lib/hooks/use-reliable-navigation';
 import { useAuthorizationRefreshKey } from '@/lib/hooks/use-authorization-refresh-key';
 import { usePortfolio } from '@/contexts/PortfolioContext';
+import { shouldWaitForPortfolioBootstrapResult } from '@/lib/portfolio-ui/entry-routing';
 
 import JoinStatusGate from './JoinStatusGate';
 import {
@@ -272,12 +273,16 @@ export default function PropertySelectorPage() {
     );
   }
 
+  const portfolioBootstrapPending = shouldWaitForPortfolioBootstrapResult({
+    enabled: portfolio.enabled,
+    loading: portfolio.loading,
+    hasData: portfolio.data !== null,
+    hasError: portfolio.error !== null,
+  });
   const settling = authLoading
     || !user
     || !data
-    || (user.role !== 'admin'
-      && !portfolio.error
-      && (portfolio.loading || !portfolio.data))
+    || (user.role !== 'admin' && portfolioBootstrapPending)
     || portfolio.data?.selection.state === 'selected'
     || portfolio.data?.selection.state === 'needs_selection'
     // A single-hotel person is mid-redirect; showing them the door they are

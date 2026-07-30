@@ -617,7 +617,7 @@ Conflict rules, stated as two because "more specific wins" is only half true:
   merely well-guarded. The header, the ceiling
   (`COMPANY_TIER_TRUST_NOTE`) and both `<staxis-company-rulebook
   trust="untrusted">` tags are printed by `company-tier.ts`, never by a row,
-  and the ceiling is versioned into `stableStamp` as `company-rulebook-v1`.
+  and the ceiling is versioned into `stableStamp` as `company-rulebook-v2`.
   Escaping is deterministic, so the cached prefix is unaffected (INV-TIER-5).
   **Tested by:** `agent-company-tier-envelope.test.ts` — the reviewer's exact
   forgery strings in EN and ES are neutralised, a fact only ever appears inside

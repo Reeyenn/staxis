@@ -262,16 +262,30 @@ export async function GET(req: NextRequest) {
   });
   if (!g.ok) return g.response;
 
-  const [facts, rules, settings, hotelSettings] = await Promise.all([
-    listCompanyFacts(g.organizationId),
-    listAuthorityRules(g.organizationId),
-    g.audience === 'company'
-      ? companyAccessSettings(g.organizationId)
-      : Promise.resolve(null),
-    g.audience === 'company'
-      ? companyHotelSettings(g.organizationId)
-      : Promise.resolve([]),
-  ]);
+  let facts: CompanyFact[];
+  let rules: Awaited<ReturnType<typeof listAuthorityRules>>;
+  let settings: Awaited<ReturnType<typeof companyAccessSettings>> | null;
+  let hotelSettings: Awaited<ReturnType<typeof companyHotelSettings>>;
+  try {
+    [facts, rules, settings, hotelSettings] = await Promise.all([
+      listCompanyFacts(g.organizationId),
+      listAuthorityRules(g.organizationId),
+      g.audience === 'company'
+        ? companyAccessSettings(g.organizationId)
+        : Promise.resolve(null),
+      g.audience === 'company'
+        ? companyHotelSettings(g.organizationId)
+        : Promise.resolve([]),
+    ]);
+  } catch (error) {
+    log.error('[company/rulebook:GET] read unavailable', { requestId, error });
+    return err('Company rulebook is temporarily unavailable. Please retry.', {
+      requestId,
+      status: 503,
+      code: ApiErrorCode.UpstreamFailure,
+      headers: { 'Retry-After': '5' },
+    });
+  }
 
   // Quiet FYI only, and only for the people who own the book. A GM reading the
   // policies they are governed by does not need a list of the ways their peers'

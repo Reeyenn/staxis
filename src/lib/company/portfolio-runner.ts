@@ -93,14 +93,25 @@ interface PortfolioGatherReceipt {
   sourceUnavailableHotels: number;
 }
 
+/**
+ * A company comparison may write only from complete hotel coverage. Partial
+ * input is not merely a presentation caveat: running detectors could open or
+ * refresh a claim from a biased subset, and the stale sweep could expire a
+ * still-true claim whose source was the hotel that failed.
+ */
+export function portfolioRunMayPersist(sourceUnavailableHotels: number): boolean {
+  return sourceUnavailableHotels === 0;
+}
+
 // ─── Gathering ──────────────────────────────────────────────────────────────
 
 /**
  * The company's hotels with the two feeds the portfolio checks read.
  *
  * Failure-isolated per hotel and per feed: a hotel whose delivery log will not
- * load arrives with `supplySpend: null` and simply does not take part in the
- * comparison. A broken source at one hotel must not silence a company.
+ * load arrives with `supplySpend: null`, and the receipt marks the whole run
+ * incomplete. The runner then abstains from every finding mutation and leaves
+ * the claim retryable; a biased subset must not author or expire company truth.
  */
 export async function gatherPortfolio(
   organizationId: string,
@@ -326,15 +337,17 @@ export async function runPortfolioChecks(opts: {
       });
     }
 
-    for (const detector of PORTFOLIO_DETECTORS) {
-      try {
-        await runOne(detector, ctx, summary, now);
-        summary.detectorsChecked += 1;
-      } catch (e) {
-        summary.errors.push({
-          detectorId: detector.id,
-          error: e instanceof Error ? e.message : String(e),
-        });
+    if (portfolioRunMayPersist(gathered.sourceUnavailableHotels)) {
+      for (const detector of PORTFOLIO_DETECTORS) {
+        try {
+          await runOne(detector, ctx, summary, now);
+          summary.detectorsChecked += 1;
+        } catch (e) {
+          summary.errors.push({
+            detectorId: detector.id,
+            error: e instanceof Error ? e.message : String(e),
+          });
+        }
       }
     }
   } catch (e) {

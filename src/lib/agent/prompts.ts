@@ -757,9 +757,14 @@ export async function buildSystemPrompt(
   //
   // `deriveCompanyRulebook` goes through `companyForProperty`, the single place
   // a hotel becomes a company, and never throws — an independent hotel and an
-  // unreachable store both render no section at all.
+  // unreachable store both render no section at all. Company books contain
+  // portfolio, money, people and vendor policy, so a hotel line-role prompt
+  // must not receive the block. The narrow finance lens is the one non-manager
+  // role with an explicit exact-hotel entitlement to that content.
   const companyBlock = formatCompanyRulebookForPrompt(
-    await deriveCompanyRulebook(snapshot.property.id),
+    hasInventoryAccountingAccess
+      ? await deriveCompanyRulebook(snapshot.property.id)
+      : null,
   );
 
   if (family && !familyToRender) {

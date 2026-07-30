@@ -391,6 +391,10 @@ function detectPortfolioActivityStopped(ctx: PortfolioContext): FindingDraft[] {
           // Exact machine scope for the verdict boundary. Names remain display
           // text and are never reverse-resolved into authorization.
           affected_hotel_ids: stopped.map((item) => item.hotel.propertyId).sort(),
+          // For this detector the affected hotels are also the full evaluated
+          // set. Persist the standard evidence key used by queue projection;
+          // affected_hotel_ids remains the stricter verdict target contract.
+          hotel_ids: stopped.map((item) => item.hotel.propertyId).sort(),
         },
         values: {
           hotels_stopped: stopped.length,

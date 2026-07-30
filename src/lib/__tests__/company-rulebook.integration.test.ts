@@ -116,6 +116,9 @@ const originalListUsers = supabaseAdmin.auth.admin.listUsers.bind(supabaseAdmin.
 let signedInAs: string | null = null;
 const ACCOUNT_RULEBOOK_MULTI = 'c9c91111-0000-4000-8000-000000000001';
 const UID_RULEBOOK_MULTI = 'c9c92222-0000-4000-8000-000000000001';
+const RULEBOOK_ACQUIRE_KEY = 'c9c93333-0000-4000-8000-000000000001';
+const RULEBOOK_TRANSFER_KEY = 'c9c93333-0000-4000-8000-000000000002';
+const RULEBOOK_DEACTIVATE_KEY = 'c9c93333-0000-4000-8000-000000000003';
 const multiMembershipIds = new Map<string, string>();
 
 const ACTOR = { accountId: null, name: 'Ana', role: 'owner' };
@@ -198,6 +201,47 @@ async function stableBlockFor(propertyId: string, name: string): Promise<string>
     'general_manager', snapshot(propertyId, name), `conv-${propertyId}`,
   );
   return stable;
+}
+
+async function relationshipProjection(propertyId: string): Promise<Record<string, unknown>> {
+  const result = await pg.query<{ value: Record<string, unknown> }>(
+    `select public.staxis_admin_hotel_relationship_projection($1, $2, '') as value`,
+    [ACCOUNT_ADMIN, propertyId],
+  );
+  return result.rows[0].value;
+}
+
+async function changeHotelCompany(
+  propertyId: string,
+  targetOrganizationId: string | null,
+  idempotencyKey: string,
+): Promise<void> {
+  const current = await relationshipProjection(propertyId);
+  const revision = String(current.relationshipRevision);
+  const preview = await pg.query<{ value: Record<string, unknown> }>(
+    `select public._staxis_preview_admin_hotel_relationship($1, $2, $3, $4, $5) as value`,
+    [
+      ACCOUNT_ADMIN,
+      propertyId,
+      targetOrganizationId,
+      targetOrganizationId ? 'operator' : null,
+      revision,
+    ],
+  );
+  await pg.query(
+    `select public.staxis_commit_admin_hotel_relationship(
+       $1, $2, $3, $4, $5, $6, true, $7
+     )`,
+    [
+      ACCOUNT_ADMIN,
+      propertyId,
+      targetOrganizationId,
+      targetOrganizationId ? 'operator' : null,
+      revision,
+      String(preview.rows[0].value.previewFingerprint),
+      idempotencyKey,
+    ],
+  );
 }
 
 /** Put a fact in a company's book and confirm it, as the company's owner would. */
@@ -315,6 +359,35 @@ describe('the book reaches its own company\'s hotels and nobody else\'s', () => 
     assert.equal(/Standard Textile/.test(waco), false);
   });
 
+  test('a warm hotel prompt cannot retain an old operator across acquisition and transfer', async () => {
+    clearCompanyRulebookCache();
+    clearHotelIdentityCache();
+    const independent = await buildSystemPrompt(
+      'general_manager', snapshot(PID_L1, 'Waco Inn'), 'conv-transfer-independent',
+    );
+    assert.equal(/Company rulebook/.test(independent.stable), false);
+
+    try {
+      await changeHotelCompany(PID_L1, ORG_A, RULEBOOK_ACQUIRE_KEY);
+      const acquired = await buildSystemPrompt(
+        'general_manager', snapshot(PID_L1, 'Waco Inn'), 'conv-transfer-acquired',
+      );
+      assert.match(acquired.stable, /Ecolab/, 'the acquiring company rulebook did not replace the warm null');
+      assert.equal(/Standard Textile/.test(acquired.stable), false);
+
+      await changeHotelCompany(PID_L1, ORG_B, RULEBOOK_TRANSFER_KEY);
+      const transferred = await buildSystemPrompt(
+        'general_manager', snapshot(PID_L1, 'Waco Inn'), 'conv-transfer-new-operator',
+      );
+      assert.match(transferred.stable, /Standard Textile/, 'the new operator rulebook did not replace the old operator');
+      assert.equal(/Ecolab/.test(transferred.stable), false, 'the former operator rulebook survived the transfer');
+    } finally {
+      await changeHotelCompany(PID_L1, null, RULEBOOK_DEACTIVATE_KEY);
+      clearCompanyRulebookCache();
+      clearHotelIdentityCache();
+    }
+  });
+
   test('an unconfirmed line does not reach any prompt', async () => {
     const stored = await storeCompanyFact({
       organizationId: ORG_A,
@@ -347,8 +420,8 @@ describe('the book reaches its own company\'s hotels and nobody else\'s', () => 
     const without = await buildSystemPrompt(
       'general_manager', snapshot(PID_L1, 'Waco Inn'), 'conv-stamp-l',
     );
-    assert.match(withCompany.stableStamp, /company-rulebook-v1/);
-    assert.equal(/company-rulebook-v1/.test(without.stableStamp), false);
+    assert.match(withCompany.stableStamp, /company-rulebook-v2/);
+    assert.equal(/company-rulebook-v2/.test(without.stableStamp), false);
   });
 });
 

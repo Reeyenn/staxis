@@ -89,7 +89,7 @@ export const COMPANY_TRUST_MARKER_OPEN = '<staxis-company-rulebook trust="untrus
 export const COMPANY_TRUST_MARKER_CLOSE = '</staxis-company-rulebook>';
 
 /** Version stamp for this tier. Bump on a rendering change. */
-export const COMPANY_RULEBOOK_VERSION = 'company-rulebook-v1';
+export const COMPANY_RULEBOOK_VERSION = 'company-rulebook-v2';
 
 const CATEGORY_ORDER: readonly CompanyCategory[] = [
   'standards', 'money', 'vendors', 'people', 'guests',
@@ -171,16 +171,20 @@ export function formatCompanyRulebookForPrompt(rulebook: CompanyRulebook | null)
 
 // ─── Derivation + cache ─────────────────────────────────────────────────────
 //
-// Same shape as `deriveHotelIdentity`: a short TTL, single-flight, and a test
-// seam. The TTL is also a prompt-cache consideration in the other direction —
-// an expiry that lands mid-conversation re-derives the SAME rows and therefore
-// renders the SAME bytes, so Anthropic's cache still hits. Only a real edit to
-// the rulebook moves the block, which is exactly when it should move.
+// Resolve the hotel's CURRENT company on every model turn. A settled cache
+// keyed by property id can retain an independent-hotel null after acquisition,
+// or the former operator's book after a transfer. Organization-keyed settled
+// facts have the same problem for a revision written by another application
+// instance. Single-flight still collapses concurrent reads without carrying
+// authority or content across turns.
+//
+// The two explicit seed maps are test/eval seams only. They preserve fully
+// deterministic prompt tests without weakening production freshness.
 
-const RULEBOOK_TTL_MS = 10 * 60_000;
-
-const cache = new Map<string, { rulebook: CompanyRulebook | null; expiresAt: number }>();
-const inflight = new Map<string, Promise<CompanyRulebook | null>>();
+const seededPropertyRulebooks = new Map<string, CompanyRulebook | null>();
+const seededOrganizationRulebooks = new Map<string, CompanyRulebook | null>();
+const propertyInflight = new Map<string, Promise<CompanyRulebook | null>>();
+const organizationInflight = new Map<string, Promise<CompanyRulebook | null>>();
 
 export async function deriveCompanyRulebookUncached(
   propertyId: string,
@@ -203,29 +207,25 @@ export async function deriveCompanyRulebookUncached(
  * the caller's OWN hats (`resolvePortfolioAccess`), never from a request body.
  * This function is not a lookup a user can aim.
  *
- * Shares one cache with the per-hotel path, keyed `org:<uuid>` so a company id
- * and a property id can never collide on the same entry.
+ * Concurrent readers share only the in-flight read; later turns re-read the
+ * current revision so an edit from another application instance is visible.
  */
 export async function deriveCompanyRulebookByOrganization(
   organizationId: string,
 ): Promise<CompanyRulebook | null> {
   if (!organizationId) return null;
-  const key = `org:${organizationId}`;
-  const hit = cache.get(key);
-  if (hit && hit.expiresAt > Date.now()) return hit.rulebook;
+  if (seededOrganizationRulebooks.has(organizationId)) {
+    return seededOrganizationRulebooks.get(organizationId) ?? null;
+  }
 
-  const existing = inflight.get(key);
+  const existing = organizationInflight.get(organizationId);
   if (existing) return existing;
 
   const pending = getConfirmedCompanyFacts(organizationId)
-    .then((facts) => {
-      const rulebook = facts.length === 0 ? null : { organizationId, facts };
-      cache.set(key, { rulebook, expiresAt: Date.now() + RULEBOOK_TTL_MS });
-      return rulebook;
-    })
+    .then((facts) => facts.length === 0 ? null : { organizationId, facts })
     .catch(() => null)
-    .finally(() => inflight.delete(key));
-  inflight.set(key, pending);
+    .finally(() => organizationInflight.delete(organizationId));
+  organizationInflight.set(organizationId, pending);
   return pending;
 }
 
@@ -234,37 +234,36 @@ export function seedCompanyRulebookCacheForOrganization(
   organizationId: string,
   rulebook: CompanyRulebook | null,
 ): void {
-  cache.set(`org:${organizationId}`, { rulebook, expiresAt: Date.now() + RULEBOOK_TTL_MS });
+  seededOrganizationRulebooks.set(organizationId, rulebook);
 }
 
 export async function deriveCompanyRulebook(propertyId: string): Promise<CompanyRulebook | null> {
   if (!propertyId) return null;
-  const hit = cache.get(propertyId);
-  if (hit && hit.expiresAt > Date.now()) return hit.rulebook;
+  if (seededPropertyRulebooks.has(propertyId)) {
+    return seededPropertyRulebooks.get(propertyId) ?? null;
+  }
 
-  const existing = inflight.get(propertyId);
+  const existing = propertyInflight.get(propertyId);
   if (existing) return existing;
 
   const pending = deriveCompanyRulebookUncached(propertyId)
-    .then((rulebook) => {
-      cache.set(propertyId, { rulebook, expiresAt: Date.now() + RULEBOOK_TTL_MS });
-      return rulebook;
-    })
     // A rulebook we cannot read is NO rulebook — the hotel's copilot answers as
     // an independent hotel's would. It is never a reason to fail a turn.
     .catch(() => null)
-    .finally(() => inflight.delete(propertyId));
-  inflight.set(propertyId, pending);
+    .finally(() => propertyInflight.delete(propertyId));
+  propertyInflight.set(propertyId, pending);
   return pending;
 }
 
 /** Test/eval seam, mirroring `seedHotelIdentityCache`. */
 export function seedCompanyRulebookCache(propertyId: string, rulebook: CompanyRulebook | null): void {
-  cache.set(propertyId, { rulebook, expiresAt: Date.now() + RULEBOOK_TTL_MS });
+  seededPropertyRulebooks.set(propertyId, rulebook);
 }
 
 /** Test seam: forget everything derived so far. */
 export function clearCompanyRulebookCache(): void {
-  cache.clear();
-  inflight.clear();
+  seededPropertyRulebooks.clear();
+  seededOrganizationRulebooks.clear();
+  propertyInflight.clear();
+  organizationInflight.clear();
 }

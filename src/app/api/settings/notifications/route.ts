@@ -29,7 +29,14 @@ import { requireSession } from '@/lib/api-auth';
 import { ok, err, ApiErrorCode } from '@/lib/api-response';
 import { getOrMintRequestId, log } from '@/lib/log';
 import { validateUuid, isValidEmail, validateFutureTimestamp } from '@/lib/api-validate';
-import { callerReachesHotel, loadSessionAccount, type ManagerCaller } from '@/lib/team-auth';
+import { capabilityUnavailableResponse } from '@/lib/capabilities/api-gate';
+import { capabilityDecisionForProperty } from '@/lib/capabilities/server';
+import {
+  callerReachesHotel,
+  callerRoleAtHotel,
+  loadSessionAccount,
+  type ManagerCaller,
+} from '@/lib/team-auth';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -59,8 +66,14 @@ async function resolveCallerAccount(authUserId: string): Promise<ManagerCaller |
   return loadSessionAccount(authUserId);
 }
 
-function callerCanManageProperty(account: ManagerCaller, propertyId: string): boolean {
-  return callerReachesHotel(account, propertyId);
+async function notificationCapabilityDecision(
+  account: ManagerCaller,
+  propertyId: string,
+) {
+  if (!callerReachesHotel(account, propertyId)) return 'denied' as const;
+  const role = callerRoleAtHotel(account, propertyId);
+  if (!role) return 'denied' as const;
+  return capabilityDecisionForProperty({ role }, 'manage_notifications', propertyId);
 }
 
 export async function GET(req: NextRequest) {
@@ -75,7 +88,9 @@ export async function GET(req: NextRequest) {
 
   const account = await resolveCallerAccount(session.userId);
   if (!account) return err('Account not found', { requestId, status: 404, code: ApiErrorCode.NotFound });
-  if (!callerCanManageProperty(account, pidV.value!)) {
+  const capabilityDecision = await notificationCapabilityDecision(account, pidV.value!);
+  if (capabilityDecision === 'unavailable') return capabilityUnavailableResponse(requestId);
+  if (capabilityDecision === 'denied') {
     return err('Forbidden', { requestId, status: 403, code: ApiErrorCode.Forbidden });
   }
 
@@ -123,7 +138,9 @@ export async function PUT(req: NextRequest) {
 
   const account = await resolveCallerAccount(session.userId);
   if (!account) return err('Account not found', { requestId, status: 404, code: ApiErrorCode.NotFound });
-  if (!callerCanManageProperty(account, pidV.value!)) {
+  const capabilityDecision = await notificationCapabilityDecision(account, pidV.value!);
+  if (capabilityDecision === 'unavailable') return capabilityUnavailableResponse(requestId);
+  if (capabilityDecision === 'denied') {
     return err('Forbidden', { requestId, status: 403, code: ApiErrorCode.Forbidden });
   }
 

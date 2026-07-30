@@ -97,6 +97,17 @@ describe('inventory HTTP gates use the authoritative per-hotel standing', () => 
     }
   });
 
+  test('the Admin Notifications toggle is enforced by its backing read and write route', () => {
+    const route = source('src/app/api/settings/notifications/route.ts');
+    assert.match(route, /capabilityDecisionForProperty\(\{ role \}, 'manage_notifications', propertyId\)/);
+    assert.match(route, /capabilityDecision === 'unavailable'[\s\S]{0,100}?capabilityUnavailableResponse/);
+    assert.equal(
+      route.match(/notificationCapabilityDecision\(account, pidV\.value!\)/g)?.length,
+      2,
+      'both GET and PUT must consume the capability displayed by Admin',
+    );
+  });
+
   test('hotel writes are fenced from read-only company standings', () => {
     const mutationRoutes = [
       'src/app/api/staff/wages/route.ts',
