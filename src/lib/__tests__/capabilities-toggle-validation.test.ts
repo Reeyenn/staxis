@@ -12,6 +12,7 @@ import {
   isCapabilityKey,
   isHotelRole,
   isAdminOnlyCapability,
+  isLiveCapability,
   CAPABILITY_KEYS,
   HOTEL_ROLES,
 } from '@/lib/capabilities/registry';
@@ -20,6 +21,7 @@ import {
 function toggleWouldAccept(capability: unknown, role: unknown): boolean {
   if (!isCapabilityKey(capability)) return false;
   if (isAdminOnlyCapability(capability)) return false; // never grantable/restrictable
+  if (!isLiveCapability(capability)) return false; // no runtime consumer, no truthful toggle
   if (!isHotelRole(role)) return false;
   return true;
 }
@@ -66,5 +68,9 @@ describe('toggle accept rule', () => {
   it('accepts a real hotel capability for a real hotel role', () => {
     assert.equal(toggleWouldAccept('view_financials', 'housekeeping'), true);
     assert.equal(toggleWouldAccept('manage_inventory_orders', 'front_desk'), true);
+  });
+
+  it('rejects a stored compatibility key that has no runtime gate', () => {
+    assert.equal(toggleWouldAccept('use_lost_and_found', 'owner'), false);
   });
 });

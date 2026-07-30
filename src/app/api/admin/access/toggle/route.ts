@@ -17,7 +17,12 @@ import { getOrMintRequestId } from '@/lib/log';
 import { validateUuid } from '@/lib/api-validate';
 import { requireAdmin } from '@/lib/admin-auth';
 import { supabaseAdmin } from '@/lib/supabase-admin';
-import { isCapabilityKey, isHotelRole, isAdminOnlyCapability } from '@/lib/capabilities/registry';
+import {
+  isCapabilityKey,
+  isHotelRole,
+  isAdminOnlyCapability,
+  isLiveCapability,
+} from '@/lib/capabilities/registry';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -47,6 +52,11 @@ export async function POST(req: NextRequest): Promise<Response> {
   // Never let an override touch a Staxis-internal capability.
   if (isAdminOnlyCapability(capability)) {
     return err('admin-only capabilities cannot be granted or restricted', {
+      requestId, status: 400, code: ApiErrorCode.ValidationFailed,
+    });
+  }
+  if (!isLiveCapability(capability)) {
+    return err('capability is not enforced by the authoritative runtime', {
       requestId, status: 400, code: ApiErrorCode.ValidationFailed,
     });
   }

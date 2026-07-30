@@ -53,7 +53,7 @@ export async function GET(req: NextRequest): Promise<Response> {
     {
       hotelRoles: HOTEL_ROLES,
       groups: CAPABILITY_GROUPS.map((g) => ({ key: g, label_en: GROUP_LABELS[g].en, label_es: GROUP_LABELS[g].es })),
-      capabilities: CAPABILITY_LIST.map((m) => ({
+      capabilities: CAPABILITY_LIST.filter((m) => m.adminOnly || isLiveCapability(m.key)).map((m) => ({
         key: m.key,
         adminOnly: m.adminOnly,
         live: isLiveCapability(m.key),

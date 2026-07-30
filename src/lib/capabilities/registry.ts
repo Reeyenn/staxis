@@ -281,12 +281,17 @@ export function isManagerFloorCapability(cap: CapabilityKey): boolean {
   return MANAGER_FLOOR_CAPABILITIES.has(cap);
 }
 
-// Every hotel-facing capability is live — its gates consult the resolver, so an
-// Access-tab toggle takes effect immediately (default: every role gets it; an
-// admin switches a role OFF per hotel). Only the admin-only Staxis-internal caps
-// are never toggleable (they render as a locked row).
+// Only capabilities with an authoritative runtime consumer are live in the
+// Access grid. Lost & Found currently has no route/page gate, so retaining a
+// switch for it would falsely claim that an override changes runtime access.
+// Keep the key for stored-row compatibility, but do not expose it as mutable
+// until the feature consumes the shared resolver.
+const NON_RUNTIME_CAPABILITIES: ReadonlySet<CapabilityKey> = new Set([
+  'use_lost_and_found',
+]);
+
 export function isLiveCapability(cap: CapabilityKey): boolean {
-  return !isAdminOnlyCapability(cap);
+  return !isAdminOnlyCapability(cap) && !NON_RUNTIME_CAPABILITIES.has(cap);
 }
 
 // ── ROLE_DEFAULTS ────────────────────────────────────────────────────────────

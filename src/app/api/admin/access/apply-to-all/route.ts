@@ -13,7 +13,7 @@ import { getOrMintRequestId } from '@/lib/log';
 import { validateUuid } from '@/lib/api-validate';
 import { requireAdmin } from '@/lib/admin-auth';
 import { supabaseAdmin } from '@/lib/supabase-admin';
-import { isCapabilityKey, isHotelRole } from '@/lib/capabilities/registry';
+import { isCapabilityKey, isHotelRole, isLiveCapability } from '@/lib/capabilities/registry';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -51,7 +51,7 @@ export async function POST(req: NextRequest): Promise<Response> {
     .eq('property_id', source);
   if (srcErr) return err('could not read source hotel', { requestId, status: 500, code: ApiErrorCode.UpstreamFailure });
   const rows = (sourceRows ?? []).filter(
-    (r) => isCapabilityKey(r.capability) && isHotelRole(r.role),
+    (r) => isCapabilityKey(r.capability) && isLiveCapability(r.capability) && isHotelRole(r.role),
   );
 
   // Refuse to clear the whole fleet's restrictions unless the caller explicitly
