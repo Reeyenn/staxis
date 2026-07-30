@@ -1,14 +1,3 @@
-/**
- * Phase M1.5 (2026-05-14) — behavior tests for the onboarding state
- * derivation logic. Pure-function tests, no DB.
- *
- * The `deriveCurrentStep` function is the load-bearing piece: when an
- * owner closes the tab mid-wizard and comes back, we look at their
- * persisted state and decide which step to render. A bug here means
- * they either get sent BACK to a completed step (annoying) or FORWARD
- * past an incomplete step (confusing UX).
- */
-
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 
@@ -16,369 +5,189 @@ import {
   deriveCurrentStep,
   isValidPartialState,
   isOnboardingInProgress,
+  isOnboardingForAccount,
   shouldResumeOnboarding,
   resolveOnboardingDisplayStep,
   type OnboardingState,
 } from '@/lib/onboarding/state';
 
+const accountCreatedAt = '2026-07-30T12:00:00Z';
+const emailVerifiedAt = '2026-07-30T12:01:00Z';
+const hotelDetailsAt = '2026-07-30T12:02:00Z';
+const hotelContextAt = '2026-07-30T12:03:00Z';
+
 describe('resolveOnboardingDisplayStep — safe early-step review', () => {
-  test('verify email can review Account, then Welcome', () => {
+  test('Welcome and Account can be reviewed without rewinding progress', () => {
     assert.equal(resolveOnboardingDisplayStep(3, 2), 2);
     assert.equal(resolveOnboardingDisplayStep(3, 1), 1);
-  });
-
-  test('review never advances beyond durable progress', () => {
-    assert.equal(resolveOnboardingDisplayStep(2, 2), 2);
-    assert.equal(resolveOnboardingDisplayStep(1, 2), 1);
-  });
-
-  test('leaving review returns to the durable current step', () => {
     assert.equal(resolveOnboardingDisplayStep(3, null), 3);
-    assert.equal(resolveOnboardingDisplayStep(7, null), 7);
+  });
+
+  test('review never advances past durable progress', () => {
+    assert.equal(resolveOnboardingDisplayStep(1, 2), 1);
+    assert.equal(resolveOnboardingDisplayStep(2, 2), 2);
   });
 });
 
-describe('deriveCurrentStep — fresh wizard', () => {
-  test('empty state → step 1 (welcome)', () => {
+describe('deriveCurrentStep — exact six-stage flow', () => {
+  test('Welcome is step 1 and its explicit Begin hop is step 2', () => {
     assert.equal(deriveCurrentStep({ step: 1 }), 1);
-  });
-
-  test('only step field set → still step 1', () => {
-    // Defensive: client-sent step shouldn't matter — we re-derive from
-    // the completion timestamps. (Exception: step 2, the welcome hop —
-    // see the dedicated describe below.)
-    assert.equal(deriveCurrentStep({ step: 5 }), 1);
-    assert.equal(deriveCurrentStep({ step: 8 }), 1);
-  });
-});
-
-describe('deriveCurrentStep — the welcome→account hop (step 2)', () => {
-  // Step 1→2 is the only transition with no completion timestamp, so
-  // "Begin" persists `step: 2` and derive honors exactly that value.
-  // Regression test for the dead Begin button (2026-06-09): derive could
-  // never return 2, so the welcome screen refetched itself forever.
-  test('step 2 persisted, no account yet → step 2 (account form)', () => {
     assert.equal(deriveCurrentStep({ step: 2 }), 2);
+    assert.equal(deriveCurrentStep({ step: 6 }), 1);
   });
 
-  test('step 2 persisted but account already created → timestamps win (step 3)', () => {
-    assert.equal(
-      deriveCurrentStep({ step: 2, accountCreatedAt: '2026-06-09T00:00:00Z' }),
-      3,
-    );
+  test('account creation advances to Verify email', () => {
+    assert.equal(deriveCurrentStep({ step: 2, accountCreatedAt }), 3);
   });
 
-  test('steps beyond 2 still cannot be skipped into pre-account', () => {
-    assert.equal(deriveCurrentStep({ step: 3 }), 1);
-    assert.equal(deriveCurrentStep({ step: 7 }), 1);
+  test('verification advances to About your hotel', () => {
+    assert.equal(deriveCurrentStep({ step: 3, accountCreatedAt, emailVerifiedAt }), 4);
+  });
+
+  test('hotel details advance directly to Your hotel', () => {
+    assert.equal(deriveCurrentStep({
+      step: 4,
+      accountCreatedAt,
+      emailVerifiedAt,
+      hotelDetailsAt,
+    }), 5);
+  });
+
+  test('optional hotel context advances to All set', () => {
+    assert.equal(deriveCurrentStep({
+      step: 5,
+      accountCreatedAt,
+      emailVerifiedAt,
+      hotelDetailsAt,
+      hotelContextAt,
+    }), 6);
+  });
+
+  test('legacy PMS, mapping, and team markers are inert', () => {
+    const state: OnboardingState = {
+      step: 6,
+      accountCreatedAt,
+      emailVerifiedAt,
+      hotelDetailsAt,
+      pmsCredentialsAt: 'legacy',
+      pmsJobId: 'legacy',
+      mappingCompletedAt: 'legacy',
+      pmsSkippedAt: 'legacy',
+      staffAt: 'legacy',
+      servicesAt: 'legacy',
+      pmsOtherName: 'legacy',
+    };
+    assert.equal(deriveCurrentStep(state), 5);
+    assert.equal(deriveCurrentStep({ ...state, hotelContextAt }), 6);
   });
 });
 
-describe('deriveCurrentStep — sequential progress', () => {
-  const baseState: OnboardingState = { step: 1 };
-
-  test('after account creation → step 3 (verify email)', () => {
-    // Note: jumps from 2 (account form) directly to 3 (verify) because
-    // there's nothing to "load" at step 2 — clicking submit takes you
-    // straight to OTP entry. Step 2 is render-only, no persisted state.
-    const s: OnboardingState = { ...baseState, accountCreatedAt: '2026-05-14T00:00:00Z' };
-    assert.equal(deriveCurrentStep(s), 3);
-  });
-
-  test('after email verified → step 4 (hotel details)', () => {
-    const s: OnboardingState = {
-      step: 1,
-      accountCreatedAt: '2026-05-14T00:00:00Z',
-      emailVerifiedAt: '2026-05-14T00:01:00Z',
-    };
-    assert.equal(deriveCurrentStep(s), 4);
-  });
-
-  test('after hotel details → step 5 (PMS)', () => {
-    // The old Step 5 "Which services?" screen was removed — hotel details now
-    // hands straight off to Connect PMS.
-    const s: OnboardingState = {
-      step: 1,
-      accountCreatedAt: '2026-05-14T00:00:00Z',
-      emailVerifiedAt: '2026-05-14T00:01:00Z',
-      hotelDetailsAt: '2026-05-14T00:02:00Z',
-    };
-    assert.equal(deriveCurrentStep(s), 5);
-  });
-
-  test('after PMS creds → step 6 (mapping)', () => {
-    const s: OnboardingState = {
-      step: 1,
-      accountCreatedAt: '2026-05-14T00:00:00Z',
-      emailVerifiedAt: '2026-05-14T00:01:00Z',
-      hotelDetailsAt: '2026-05-14T00:02:00Z',
-      pmsCredentialsAt: '2026-05-14T00:04:00Z',
-      pmsJobId: 'job-uuid',
-    };
-    assert.equal(deriveCurrentStep(s), 6);
-  });
-
-  test('after mapping completes → step 7 (team)', () => {
-    const s: OnboardingState = {
-      step: 1,
-      accountCreatedAt: '2026-05-14T00:00:00Z',
-      emailVerifiedAt: '2026-05-14T00:01:00Z',
-      hotelDetailsAt: '2026-05-14T00:02:00Z',
-      pmsCredentialsAt: '2026-05-14T00:04:00Z',
-      pmsJobId: 'job-uuid',
-      mappingCompletedAt: '2026-05-14T00:08:00Z',
-    };
-    assert.equal(deriveCurrentStep(s), 7);
-  });
-
-  test('after team added → step 8 (tell us about your hotel)', () => {
-    const s: OnboardingState = {
-      step: 1,
-      accountCreatedAt: '2026-05-14T00:00:00Z',
-      emailVerifiedAt: '2026-05-14T00:01:00Z',
-      hotelDetailsAt: '2026-05-14T00:02:00Z',
-      pmsCredentialsAt: '2026-05-14T00:04:00Z',
-      pmsJobId: 'job-uuid',
-      mappingCompletedAt: '2026-05-14T00:08:00Z',
-      staffAt: '2026-05-14T00:09:00Z',
-    };
-    assert.equal(deriveCurrentStep(s), 8);
-  });
-
-  test('after the optional hotel-context step → step 9 (all set)', () => {
-    const s: OnboardingState = {
-      step: 1,
-      accountCreatedAt: '2026-05-14T00:00:00Z',
-      emailVerifiedAt: '2026-05-14T00:01:00Z',
-      hotelDetailsAt: '2026-05-14T00:02:00Z',
-      pmsCredentialsAt: '2026-05-14T00:04:00Z',
-      pmsJobId: 'job-uuid',
-      mappingCompletedAt: '2026-05-14T00:08:00Z',
-      staffAt: '2026-05-14T00:09:00Z',
-      hotelContextAt: '2026-05-14T00:10:00Z',
-    };
-    assert.equal(deriveCurrentStep(s), 9);
-  });
-
-  test('the hotel-context step is a real gate — skipping it stamps the same marker', () => {
-    // Skip and "Add this" both write hotelContextAt, so an owner who skips is
-    // NOT parked forever on step 8. Without the marker they stay on 8; with it
-    // (however it got there) they reach Done.
-    const base: OnboardingState = {
-      step: 1,
-      accountCreatedAt: '2026-05-14T00:00:00Z',
-      emailVerifiedAt: '2026-05-14T00:01:00Z',
-      hotelDetailsAt: '2026-05-14T00:02:00Z',
-      pmsSkippedAt: '2026-05-14T00:03:00Z',
-      staffAt: '2026-05-14T00:09:00Z',
-    };
-    assert.equal(deriveCurrentStep(base), 8);
-    assert.equal(deriveCurrentStep({ ...base, hotelContextAt: '2026-05-14T00:10:00Z' }), 9);
-  });
-
-  test('a legacy servicesAt timestamp is ignored (no longer a gate)', () => {
-    // Wizard states persisted before the Services step was removed still
-    // carry servicesAt — it must not change where derive lands.
-    const s: OnboardingState = {
-      step: 1,
-      accountCreatedAt: '2026-05-14T00:00:00Z',
-      emailVerifiedAt: '2026-05-14T00:01:00Z',
-      hotelDetailsAt: '2026-05-14T00:02:00Z',
-      servicesAt: '2026-05-14T00:03:00Z',
-    };
-    assert.equal(deriveCurrentStep(s), 5); // PMS, exactly as without servicesAt
-  });
-});
-
-describe('deriveCurrentStep — Skip PMS (inventory-only hotel)', () => {
-  test('pmsSkippedAt jumps past PMS + mapping straight to Team (step 7)', () => {
-    const s: OnboardingState = {
-      step: 1,
-      accountCreatedAt: '2026-05-14T00:00:00Z',
-      emailVerifiedAt: '2026-05-14T00:01:00Z',
-      hotelDetailsAt: '2026-05-14T00:02:00Z',
-      pmsSkippedAt: '2026-05-14T00:03:00Z',
-      // NOTE: no pmsCredentialsAt / pmsJobId / mappingCompletedAt — PMS skipped.
-    };
-    assert.equal(deriveCurrentStep(s), 7);
-  });
-
-  test('skip does NOT leapfrog required steps — no hotel details yet → still step 4', () => {
-    const s: OnboardingState = {
-      step: 1,
-      accountCreatedAt: '2026-05-14T00:00:00Z',
-      emailVerifiedAt: '2026-05-14T00:01:00Z',
-      pmsSkippedAt: '2026-05-14T00:03:00Z',
-    };
-    assert.equal(deriveCurrentStep(s), 4);
-  });
-
-  test('skipped PMS + team added → step 8 (tell us), no mapping ever required', () => {
-    const s: OnboardingState = {
-      step: 1,
-      accountCreatedAt: '2026-05-14T00:00:00Z',
-      emailVerifiedAt: '2026-05-14T00:01:00Z',
-      hotelDetailsAt: '2026-05-14T00:02:00Z',
-      pmsSkippedAt: '2026-05-14T00:03:00Z',
-      staffAt: '2026-05-14T00:09:00Z',
-    };
-    assert.equal(deriveCurrentStep(s), 8);
-  });
-
-  test('isValidPartialState accepts pmsSkippedAt (in the allowlist)', () => {
-    assert.equal(isValidPartialState({ pmsSkippedAt: '2026-05-14T00:03:00Z' }), true);
-  });
-});
-
-describe('deriveCurrentStep — out-of-order completion is ignored', () => {
-  test('staff added before email verified → still step 3 (next-unfinished wins)', () => {
-    // Defensive: if a buggy client manages to set a later step's
-    // timestamp before an earlier one, derive returns the EARLIEST
-    // unfinished step rather than skipping ahead.
-    const s: OnboardingState = {
-      step: 1,
-      accountCreatedAt: '2026-05-14T00:00:00Z',
-      // skipping emailVerifiedAt
-      staffAt: '2026-05-14T00:09:00Z',
-    };
-    assert.equal(deriveCurrentStep(s), 3);
-  });
-});
-
-describe('isValidPartialState', () => {
-  test('accepts empty object', () => {
+describe('isValidPartialState — client-owned markers only', () => {
+  test('accepts the six-stage client markers', () => {
     assert.equal(isValidPartialState({}), true);
+    assert.equal(isValidPartialState({ step: 2 }), true);
+    assert.equal(isValidPartialState({ accountCreatedAt }), true);
+    assert.equal(isValidPartialState({ emailVerifiedAt }), true);
+    assert.equal(isValidPartialState({ hotelDetailsAt }), true);
+    assert.equal(isValidPartialState({ hotelContextAt }), true);
   });
 
-  test('accepts partial with valid step', () => {
-    assert.equal(isValidPartialState({ step: 5 }), true);
-    assert.equal(isValidPartialState({ step: 9 }), true); // the wizard's last step
-  });
-
-  test('accepts hotelContextAt (in the allowlist)', () => {
-    assert.equal(isValidPartialState({ hotelContextAt: '2026-05-14T00:10:00Z' }), true);
-  });
-
-  test('rejects step out of range', () => {
+  test('rejects steps outside 1..6', () => {
     assert.equal(isValidPartialState({ step: 0 }), false);
-    assert.equal(isValidPartialState({ step: 10 }), false); // wizard is 9 steps
-    assert.equal(isValidPartialState({ step: -1 }), false);
+    assert.equal(isValidPartialState({ step: 7 }), false);
+    assert.equal(isValidPartialState({ step: 9 }), false);
   });
 
-  test('rejects non-number step', () => {
-    assert.equal(isValidPartialState({ step: '5' }), false);
+  test('rejects database-owned invite identity', () => {
+    assert.equal(isValidPartialState({ invitedEmail: 'owner@example.com' }), false);
+    assert.equal(isValidPartialState({ firstPersonAccountId: 'account-id' }), false);
   });
 
-  test('rejects non-string timestamp', () => {
-    assert.equal(isValidPartialState({ accountCreatedAt: 12345 }), false);
-    assert.equal(isValidPartialState({ pmsJobId: { id: 'x' } }), false);
+  test('rejects obsolete onboarding PMS/mapping/team writes', () => {
+    assert.equal(isValidPartialState({ pmsCredentialsAt: 'legacy' }), false);
+    assert.equal(isValidPartialState({ pmsJobId: 'legacy' }), false);
+    assert.equal(isValidPartialState({ mappingCompletedAt: 'legacy' }), false);
+    assert.equal(isValidPartialState({ pmsSkippedAt: 'legacy' }), false);
+    assert.equal(isValidPartialState({ staffAt: 'legacy' }), false);
+    assert.equal(isValidPartialState({ servicesAt: 'legacy' }), false);
+    assert.equal(isValidPartialState({ pmsOtherName: 'legacy' }), false);
   });
 
-  // Security audit 2026-06-26: unknown keys are now REJECTED (previously
-  // accepted for forward-compat), to bound the onboarding_state jsonb against
-  // attacker-chosen keys. A genuinely new field must be added to the allowlist.
-  test('rejects unknown extra fields', () => {
-    assert.equal(isValidPartialState({ futureField: 'whatever' }), false);
-    assert.equal(isValidPartialState({ step: 5, sneaky: 'x' }), false);
-  });
-
-  test('rejects over-long string fields', () => {
-    assert.equal(isValidPartialState({ pmsOtherName: 'a'.repeat(201) }), false);
-    assert.equal(isValidPartialState({ pmsOtherName: 'a'.repeat(50) }), true);
-  });
-
-  test('rejects null and arrays', () => {
+  test('rejects malformed and unbounded values', () => {
+    assert.equal(isValidPartialState({ accountCreatedAt: 123 }), false);
+    assert.equal(isValidPartialState({ hotelContextAt: 'a'.repeat(201) }), false);
+    assert.equal(isValidPartialState({ sneaky: 'value' }), false);
     assert.equal(isValidPartialState(null), false);
-    assert.equal(isValidPartialState([]), true);  // arrays are objects in JS — no harm
-    assert.equal(isValidPartialState('not an object'), false);
+    assert.equal(isValidPartialState([]), false);
   });
 });
 
-describe('isOnboardingInProgress — login-funnel gate', () => {
-  // This decides whether a signed-in owner is sent into the wizard or onto
-  // the dashboard. Getting it wrong in the "false positive" direction would
-  // TRAP a real, live hotel in a wizard it can't finish — so the legacy /
-  // complete cases below are the load-bearing ones.
+describe('first-person resume identity', () => {
+  const firstPersonAccountId = '00000000-0000-4000-8000-000000000001';
+  const laterManagerAccountId = '00000000-0000-4000-8000-000000000002';
+  const bound: OnboardingState = {
+    step: 4,
+    invitedEmail: 'gm@example.com',
+    firstPersonAccountId,
+    accountCreatedAt,
+    emailVerifiedAt,
+  };
 
-  test('mid-onboarding owner (account created, not completed) → true', () => {
-    assert.equal(
-      isOnboardingInProgress(null, { step: 3, accountCreatedAt: '2026-06-15T19:28:43Z' }),
-      true,
-    );
-  });
-
-  test('mid-onboarding at a later step (e.g. PMS) → still true', () => {
-    assert.equal(
-      isOnboardingInProgress(null, {
-        step: 5,
-        accountCreatedAt: '2026-06-15T19:28:43Z',
-        emailVerifiedAt: '2026-06-15T19:29:00Z',
-        hotelDetailsAt: '2026-06-15T19:30:00Z',
-        pmsCredentialsAt: '2026-06-15T19:31:00Z',
-      }),
-      true,
-    );
-  });
-
-  test('COMPLETED onboarding → false (normal login to Home)', () => {
-    assert.equal(
-      isOnboardingInProgress('2026-06-15T20:00:00Z', {
-        step: 8,
-        accountCreatedAt: '2026-06-15T19:28:43Z',
-      }),
-      false,
-    );
-  });
-
-  test('legacy / imported hotel — both null → false (NEVER trap a live hotel)', () => {
-    assert.equal(isOnboardingInProgress(null, null), false);
-    assert.equal(isOnboardingInProgress(null, undefined), false);
-    assert.equal(isOnboardingInProgress(undefined, undefined), false);
-  });
-
-  test('legacy hotel with a stale {step:1} state but no accountCreatedAt → false', () => {
-    // e.g. Test Hotel after an onboarding reset — must log in normally.
+  test('an incomplete started hotel is in progress', () => {
+    assert.equal(isOnboardingInProgress(null, bound), true);
+    assert.equal(isOnboardingInProgress('2026-07-30T13:00:00Z', bound), false);
     assert.equal(isOnboardingInProgress(null, { step: 1 }), false);
   });
 
-  test('completed wins even if accountCreatedAt is also present', () => {
+  test('only the bound account owns new-flow setup', () => {
+    assert.equal(isOnboardingForAccount(firstPersonAccountId, null, bound), true);
+    assert.equal(isOnboardingForAccount(laterManagerAccountId, null, bound), false);
+  });
+
+  test('retained unbound records preserve manager resume compatibility', () => {
+    const legacy: OnboardingState = { step: 4, accountCreatedAt, emailVerifiedAt };
+    assert.equal(isOnboardingForAccount(firstPersonAccountId, null, legacy), true);
+  });
+
+  test('Owner and GM first people resume, later people and staff do not', () => {
     assert.equal(
-      isOnboardingInProgress('2026-06-15T20:00:00Z', { step: 8, accountCreatedAt: 'x' }),
+      shouldResumeOnboarding(firstPersonAccountId, 'owner', null, bound, null),
+      true,
+    );
+    assert.equal(
+      shouldResumeOnboarding(firstPersonAccountId, 'general_manager', null, bound, null),
+      true,
+    );
+    assert.equal(
+      shouldResumeOnboarding(laterManagerAccountId, 'general_manager', null, bound, null),
+      false,
+    );
+    assert.equal(
+      shouldResumeOnboarding(firstPersonAccountId, 'front_desk', null, bound, null),
       false,
     );
   });
-});
 
-describe('shouldResumeOnboarding — who the funnel opens the wizard for', () => {
-  const midState: OnboardingState = { step: 4, accountCreatedAt: '2026-06-15T19:28:43Z' };
-
-  test('owner mid-onboarding, never shown → true (first-time setup)', () => {
-    assert.equal(shouldResumeOnboarding('owner', null, midState, null), true);
-  });
-
-  test('general_manager counts as a manager → true', () => {
-    assert.equal(shouldResumeOnboarding('general_manager', null, midState, null), true);
-  });
-
-  test('line staff never see the wizard (the housekeeper-approval bug) → false', () => {
-    assert.equal(shouldResumeOnboarding('housekeeping', null, midState, null), false);
-    assert.equal(shouldResumeOnboarding('front_desk', null, midState, null), false);
-    assert.equal(shouldResumeOnboarding('maintenance', null, midState, null), false);
-  });
-
-  test('admins are never routed into a hotel wizard → false', () => {
-    assert.equal(shouldResumeOnboarding('admin', null, midState, null), false);
-  });
-
-  test('already shown once → false forever after (2nd/3rd/… login lands in app)', () => {
-    assert.equal(shouldResumeOnboarding('owner', null, midState, '2026-07-17T10:00:00Z'), false);
-  });
-
-  test('completed onboarding → false even if never stamped', () => {
-    assert.equal(shouldResumeOnboarding('owner', '2026-07-17T09:00:00Z', { step: 8, accountCreatedAt: 'x' }, null), false);
-  });
-
-  test('missing/undefined role → false', () => {
-    assert.equal(shouldResumeOnboarding(undefined, null, midState, null), false);
+  test('completion and one-shot prompt suppress resume', () => {
+    assert.equal(
+      shouldResumeOnboarding(
+        firstPersonAccountId,
+        'owner',
+        '2026-07-30T13:00:00Z',
+        bound,
+        null,
+      ),
+      false,
+    );
+    assert.equal(
+      shouldResumeOnboarding(
+        firstPersonAccountId,
+        'owner',
+        null,
+        bound,
+        '2026-07-30T12:30:00Z',
+      ),
+      false,
+    );
   });
 });

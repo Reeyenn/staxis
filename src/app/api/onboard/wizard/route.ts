@@ -148,6 +148,17 @@ async function settingsDecision(
   );
 }
 
+async function accountIdForAuthUser(authUserId: string): Promise<string | null> {
+  const { data, error } = await supabaseAdmin
+    .from('accounts')
+    .select('id')
+    .eq('data_user_id', authUserId)
+    .eq('active', true)
+    .maybeSingle();
+  if (error || !data?.id) return null;
+  return data.id as string;
+}
+
 export async function GET(req: NextRequest) {
   const requestId = getOrMintRequestId(req);
 
@@ -166,8 +177,8 @@ export async function GET(req: NextRequest) {
     // blind code-spray enumeration — checking it only on the MISS path keeps
     // that protection while never throttling a legitimate in-progress
     // onboarding, which makes many valid GET/PATCH calls (now including
-    // back-navigation). Mirrors /api/onboard/mapping-status. Security review
-    // 2026-05-16 (Pattern G); refined 2026-06-13 to not 429-lock real
+    // back-navigation). Security review 2026-05-16 (Pattern G); refined
+    // 2026-06-13 to not 429-lock real
     // operators who go back to fix a form.
     const limit = await checkAndIncrementRateLimit('onboard-wizard', ipToRateLimitKey(clientIp(req)));
     if (!limit.allowed) return rateLimitedResponse(limit.current, limit.cap, limit.retryAfterSec);
@@ -180,13 +191,14 @@ export async function GET(req: NextRequest) {
   // anchor for unauth reads here.
   const { data: prop, error: propErr } = await supabaseAdmin
     .from('properties')
-    .select('id, name, total_rooms, timezone, brand, property_kind, pms_type, services_enabled, enabled_sections, onboarding_state, onboarding_completed_at')
+    .select('id, name, total_rooms, timezone, brand, property_kind, enabled_sections, onboarding_state, onboarding_completed_at')
     .eq('id', resolved.propertyId)
     .maybeSingle();
   if (propErr || !prop) {
     log.error('[onboard/wizard:GET] property fetch failed', { requestId, propertyId: resolved.propertyId, msg: errToString(propErr) });
     return err('Property not found', { requestId, status: 404, code: ApiErrorCode.NotFound });
   }
+  const persistedState = (prop.onboarding_state as OnboardingState | null) ?? { step: 1 };
 
   // Plan v2 M-2 — narrow the unauth-callable response. The route is
   // gated by a join code, but a brute-forced or phished code used to
@@ -196,15 +208,25 @@ export async function GET(req: NextRequest) {
   //
   // New shape:
   //   - Unauthenticated caller → { propertyName, currentStep, completed,
-  //     inviteRole }. Enough to render the welcome card.
+  //     inviteRole, invitedEmail }. Enough to render the invitation and the
+  //     locked account-creation form.
   //   - Authenticated caller with current manager/settings authority → full payload
   //     (state + hotelDefaults), same as before.
   let sessionUserId: string | null = null;
+  let sessionAccountId: string | null = null;
   const session = await requireSession(req);
   if (session.ok) {
     const decision = await settingsDecision(session.userId, resolved.propertyId);
-    if (decision === 'allowed') {
+    const accountId = await accountIdForAuthUser(session.userId);
+    const isBoundFirstPerson = !!accountId
+      && !!persistedState.firstPersonAccountId
+      && persistedState.firstPersonAccountId === accountId;
+    const isAuthorizedLegacyManager = !!accountId
+      && !persistedState.firstPersonAccountId
+      && decision === 'allowed';
+    if (isBoundFirstPerson || isAuthorizedLegacyManager) {
       sessionUserId = session.userId;
+      sessionAccountId = accountId;
     }
   }
 
@@ -215,17 +237,18 @@ export async function GET(req: NextRequest) {
     return ok({
       propertyId: prop.id,
       propertyName: prop.name,
-      currentStep: 8 as const,
+      currentStep: 6 as const,
       completed: true,
       state: canReadFullState
-        ? ((prop.onboarding_state as OnboardingState) ?? { step: 8 })
-        : { step: 8 } as OnboardingState,
+        ? ((prop.onboarding_state as OnboardingState) ?? { step: 6 })
+        : { step: 6 } as OnboardingState,
       hotelDefaults: null,
       inviteRole: resolved.codeRow.role,
+      invitedEmail: persistedState.invitedEmail ?? null,
     }, { requestId });
   }
 
-  let state = (prop.onboarding_state as OnboardingState) ?? { step: 1 };
+  let state = persistedState;
 
   // Durable email-verified backfill (2026-06-15). An authenticated manager has,
   // by definition, already passed the email-OTP step — their session was
@@ -242,8 +265,11 @@ export async function GET(req: NextRequest) {
     backfilled.step = deriveCurrentStep(backfilled);
     // Authorization can be revoked or the hotel transferred after the first
     // decision. Recheck immediately before this service-role write.
-    const backfillDecision = await settingsDecision(sessionUserId, resolved.propertyId);
-    if (backfillDecision === 'allowed') {
+    const backfillAllowed = !!sessionAccountId
+      && state.firstPersonAccountId === sessionAccountId
+      || (!state.firstPersonAccountId
+        && await settingsDecision(sessionUserId, resolved.propertyId) === 'allowed');
+    if (backfillAllowed) {
       const { error: bfErr } = await supabaseAdmin
         .from('properties')
         .update({ onboarding_state: backfilled })
@@ -255,6 +281,7 @@ export async function GET(req: NextRequest) {
       }
     } else {
       sessionUserId = null;
+      sessionAccountId = null;
     }
   }
 
@@ -263,7 +290,12 @@ export async function GET(req: NextRequest) {
   // A final decision prevents a role revocation or hotel transfer during this
   // request from turning a formerly-valid session into a full-state leak.
   const canReadFullState = sessionUserId !== null
-    && await settingsDecision(sessionUserId, resolved.propertyId) === 'allowed';
+    && sessionAccountId !== null
+    && (
+      state.firstPersonAccountId === sessionAccountId
+      || (!state.firstPersonAccountId
+        && await settingsDecision(sessionUserId, resolved.propertyId) === 'allowed')
+    );
   if (!canReadFullState) {
     return ok({
       propertyId: prop.id,
@@ -275,6 +307,7 @@ export async function GET(req: NextRequest) {
       state: { step: currentStep } as OnboardingState,
       hotelDefaults: null,
       inviteRole: resolved.codeRow.role,
+      invitedEmail: state.invitedEmail ?? null,
     }, { requestId });
   }
 
@@ -290,28 +323,24 @@ export async function GET(req: NextRequest) {
       timezone: prop.timezone,
       brand: prop.brand,
       propertyKind: prop.property_kind,
-      pmsType: prop.pms_type,
-      // Back-nav (2026-06-13): expose saved service toggles so Step 5 can
-      // re-hydrate them when the operator navigates back, instead of resetting
-      // every toggle to ON and silently overwriting their prior choices.
-      servicesEnabled: (prop.services_enabled as Record<string, boolean> | null) ?? null,
       // Per-hotel app on/off (WP4). Return the stored map so Step 4 can
       // re-hydrate its 8 toggles on back-nav instead of resetting to all-ON
-      // and silently overwriting the owner's prior choices. Normalized so the
+      // and silently overwriting the first person's prior choices. Normalized so the
       // client always gets an object-or-null (never a jsonb string).
       enabledSections: normalizeSectionFlags(prop.enabled_sections),
     },
     inviteRole: resolved.codeRow.role,
+    invitedEmail: state.invitedEmail ?? null,
   }, { requestId });
 }
 
 interface PatchBody {
   code?: unknown;
   partialState?: unknown;
-  // Steps 4-8 may also bundle property updates (name change, services,
+  // Steps 4-5 may also bundle property updates (name change, services,
   // etc.) into the same PATCH so the client doesn't need 2 round-trips.
   propertyUpdates?: unknown;
-  // When the wizard hits Step 9 + the user clicks "Go to Dashboard",
+  // When the wizard hits Step 6 + the user clicks "Enter Staxis",
   // the client sends finalize=true so we set onboarding_completed_at.
   finalize?: unknown;
   // Back-navigation: the "← Back" / "Re-enter login" buttons send a list of
@@ -334,8 +363,7 @@ const ALLOWED_PROPERTY_UPDATE_FIELDS = new Set([
 // mid-signup would strand the login (the auth user already exists). Welcome→
 // account is also not reversible here (nothing to edit on the welcome screen).
 const CLEARABLE_STATE_KEYS = new Set<keyof OnboardingState>([
-  'hotelDetailsAt', 'servicesAt', 'pmsCredentialsAt', 'pmsJobId',
-  'mappingCompletedAt', 'staffAt', 'hotelContextAt',
+  'hotelDetailsAt', 'hotelContextAt',
 ]);
 
 export async function PATCH(req: NextRequest) {
@@ -360,9 +388,8 @@ export async function PATCH(req: NextRequest) {
   if (resolved.outcome === 'not_found') {
     // Rate-limit ONLY invalid-code probes (per IP) — caps brute-force code
     // enumeration without throttling a legitimate operator who makes many
-    // valid PATCHes (now including back-navigation). Same model as GET above
-    // + /api/onboard/mapping-status. Security review 2026-05-16 (Pattern G);
-    // refined 2026-06-13.
+    // valid PATCHes (now including back-navigation). Same model as GET above.
+    // Security review 2026-05-16 (Pattern G); refined 2026-06-13.
     const limit = await checkAndIncrementRateLimit('onboard-wizard', ipToRateLimitKey(clientIp(req)));
     if (!limit.allowed) return rateLimitedResponse(limit.current, limit.cap, limit.retryAfterSec);
     return err('Invalid or expired code', { requestId, status: 404, code: ApiErrorCode.NotFound });
@@ -488,7 +515,7 @@ export async function PATCH(req: NextRequest) {
       && receipt.transition === transition
       && Number.isInteger(receipt.currentStep)
       && (receipt.currentStep as number) >= 1
-      && (receipt.currentStep as number) <= 9
+      && (receipt.currentStep as number) <= 6
       && actualKeys.length === expectedKeys.length
       && actualKeys.every((key, index) => key === expectedKeys[index]);
     if (!validReceipt) {
@@ -506,13 +533,13 @@ export async function PATCH(req: NextRequest) {
 
   const session = await requireSession(req);
   if (!session.ok) return session.response;
-  const decision = await settingsDecision(session.userId, resolved.propertyId);
-  if (decision === 'unavailable') return capabilityUnavailableResponse(requestId);
-  if (decision === 'denied') {
-    return err('Forbidden: your session cannot manage this property', {
+  const authorizedAccountId = await accountIdForAuthUser(session.userId);
+  if (!authorizedAccountId) {
+    return err('Forbidden: active account not found', {
       requestId, status: 403, code: ApiErrorCode.Forbidden,
     });
   }
+  const decision = await settingsDecision(session.userId, resolved.propertyId);
   const authorizedUserId = session.userId;
 
   // Read current state so we can MERGE (not overwrite) onboarding_state.
@@ -526,30 +553,31 @@ export async function PATCH(req: NextRequest) {
     return err('Property not found', { requestId, status: 404, code: ApiErrorCode.NotFound });
   }
   const currentState = (current.onboarding_state as OnboardingState) ?? { step: 1 };
+  if (currentState.firstPersonAccountId
+      && currentState.firstPersonAccountId !== authorizedAccountId) {
+    return err('Forbidden: setup belongs to another account', {
+      requestId, status: 403, code: ApiErrorCode.Forbidden,
+    });
+  }
+  const isBoundFirstPerson = currentState.firstPersonAccountId === authorizedAccountId;
+  if (!isBoundFirstPerson && decision === 'unavailable') {
+    return capabilityUnavailableResponse(requestId);
+  }
+  if (!isBoundFirstPerson && decision === 'denied') {
+    return err('Forbidden: your session cannot manage this property', {
+      requestId, status: 403, code: ApiErrorCode.Forbidden,
+    });
+  }
   const mergedState: OnboardingState = {
     ...currentState,
     ...partialState,
   };
-  // Defensive server-side cap on the free-text "Other" PMS name (Fix 1):
-  // isValidPartialState accepts any string here, so without this a hostile
-  // client could PATCH a multi-MB value straight into the onboarding_state
-  // jsonb (read on every wizard GET). Trim + clamp to a sane label length.
-  if (typeof mergedState.pmsOtherName === 'string') {
-    mergedState.pmsOtherName = mergedState.pmsOtherName.trim().slice(0, 120);
-  }
-  // Back-navigation (2026-06-13): the "← Back" buttons (and "Re-enter login"
-  // on a failed mapping) send clearStateKeys to walk the operator back to an
+  // Back-navigation sends clearStateKeys to walk the operator back to an
   // earlier form. We can't express "clear a key" through partialState
   // (JSON.stringify drops undefined, and isValidPartialState rejects null), so
   // handle it here: delete each allow-listed completion marker, which makes
   // deriveCurrentStep return the corresponding earlier step. Auth markers are
   // not in the allow-list, so a back can never strand the login.
-  //
-  // PMS retry note: going back from a FAILED mapping leaves the failed mapper
-  // job in place on purpose — it holds the per-property idempotency key, so
-  // the session driver can't auto-re-run with the OLD bad credentials in the
-  // gap before the operator re-submits. That job is cleared (and the session
-  // re-armed) in /api/pms/save-credentials once NEW creds are saved.
   if (Array.isArray(body.clearStateKeys)) {
     for (const k of body.clearStateKeys) {
       if (typeof k === 'string' && CLEARABLE_STATE_KEYS.has(k as keyof OnboardingState)) {
@@ -559,6 +587,13 @@ export async function PATCH(req: NextRequest) {
   }
   // Recompute step from the merged state (don't trust client-sent step).
   mergedState.step = deriveCurrentStep(mergedState);
+  if (body.finalize === true && mergedState.step !== 6) {
+    return err('Complete every onboarding stage before entering Staxis', {
+      requestId,
+      status: 409,
+      code: ApiErrorCode.IdempotencyConflict,
+    });
+  }
 
   // Build the UPDATE payload.
   const update: Record<string, unknown> = {
@@ -573,12 +608,14 @@ export async function PATCH(req: NextRequest) {
   // have been revoked or the hotel may have moved organizations since the
   // first decision above. The two deliberately unauthenticated minimal
   // transitions remain code-bound and never alter hotel data or completion.
-  const commitDecision = await settingsDecision(authorizedUserId, resolved.propertyId);
-  if (commitDecision === 'unavailable') return capabilityUnavailableResponse(requestId);
-  if (commitDecision === 'denied') {
-    return err('Forbidden: property access changed before the update', {
-      requestId, status: 403, code: ApiErrorCode.Forbidden,
-    });
+  if (!isBoundFirstPerson) {
+    const commitDecision = await settingsDecision(authorizedUserId, resolved.propertyId);
+    if (commitDecision === 'unavailable') return capabilityUnavailableResponse(requestId);
+    if (commitDecision === 'denied') {
+      return err('Forbidden: property access changed before the update', {
+        requestId, status: 403, code: ApiErrorCode.Forbidden,
+      });
+    }
   }
 
   const { error: updErr } = await supabaseAdmin

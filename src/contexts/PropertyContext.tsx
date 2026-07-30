@@ -12,7 +12,7 @@ import {
   getStaff,
   subscribeToStaff,
 } from '@/lib/db';
-import { isOnboardingInProgress } from '@/lib/onboarding/state';
+import { isOnboardingForAccount } from '@/lib/onboarding/state';
 import type { Property, StaffMember } from '@/types';
 import { propertyChangeAllowed } from '@/lib/property-change-guard';
 import { RequestTimeoutError, withPromiseDeadline } from '@/lib/fetch-deadline';
@@ -233,7 +233,11 @@ export function PropertyProvider({ children }: { children: React.ReactNode }) {
   // property object) so the capabilities effect depends on it without re-firing
   // on unrelated property-data updates.
   const activeOnboardingInProgress = activeProperty
-    ? isOnboardingInProgress(activeProperty.onboardingCompletedAt, activeProperty.onboardingState)
+    ? isOnboardingForAccount(
+      userAccountId,
+      activeProperty.onboardingCompletedAt,
+      activeProperty.onboardingState,
+    )
       && !activeProperty.onboardingPromptShownAt
     : false;
 

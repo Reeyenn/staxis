@@ -3,6 +3,8 @@ import { requireAdmin } from '@/lib/admin-auth';
 import { ok, err, ApiErrorCode } from '@/lib/api-response';
 import { getOrMintRequestId } from '@/lib/log';
 import { listAiModels } from '@/lib/ai/model-catalog';
+import { isMessagesProviderConfigured } from '@/lib/ai/messages-client';
+import { AI_DISCOVERABLE_PROVIDERS } from '@/lib/ai/types';
 import type { AiModelsResponse } from '@/lib/ai/types';
 import { aiControlError, NO_STORE_HEADERS, parseHostedProvider } from '../_shared';
 
@@ -24,6 +26,7 @@ export async function GET(req: NextRequest): Promise<Response> {
     const data: AiModelsResponse = {
       models: await listAiModels(provider ?? undefined),
       provider,
+      configuredProviders: AI_DISCOVERABLE_PROVIDERS.filter(isMessagesProviderConfigured),
     };
     return ok(data, { requestId, headers: NO_STORE_HEADERS });
   } catch (error) {

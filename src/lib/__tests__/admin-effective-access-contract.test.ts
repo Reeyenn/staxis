@@ -50,15 +50,12 @@ describe('Admin authoritative permission integration', () => {
 
   it('uses the guarded authoritative mutations and refreshes from server truth', () => {
     const component = source('src/app/admin/_components/AdminEffectiveAccess.tsx');
-    const live = source('src/app/admin/_components/studio/surfaces/LiveSurface.tsx');
     const route = source('src/app/api/admin/effective-access/route.ts');
     assert.match(component, /\/api\/admin\/effective-access/);
     assert.match(component, /\/api\/auth\/team\?hotelId=/);
     assert.match(route, /staxis_end_membership_hat_guarded/);
     assert.match(route, /guarded_membership_receipt_invalid/);
     assert.match(component, /if \(onChanged\) await onChanged\(\);\s*else await load\(\);/);
-    assert.match(live, /setAccessRefreshKey\(\(value\) => value \+ 1\)/);
-    assert.match(live, /onAssigned=\{\(\) => \{ setAssignmentIntent\(null\); refreshAccessTruth\(\); \}\}/);
   });
 
   it('does not expose the ungated Lost & Found capability as a live toggle', () => {

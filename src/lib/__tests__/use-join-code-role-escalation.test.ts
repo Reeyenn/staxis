@@ -5,9 +5,9 @@
  *
  *   1. Owner / general_manager codes are an ownership-ASSIGNMENT primitive:
  *      the redeem path rewrites properties.owner_id when finalRole='owner'.
- *      The lean self-onboarding flow (admin "+ New hotel") legitimately
- *      needs exactly one — a SINGLE-USE owner/GM code on a hotel that hasn't
- *      finished onboarding yet (owner_id still the admin placeholder). That
+ *      The hotel People flow legitimately needs exactly one — a SINGLE-USE
+ *      owner/GM code on a hotel shell that hasn't finished onboarding yet
+ *      (owner_id still the admin placeholder). That
  *      is ALLOWED. Everything else stays locked (audit finding F-06):
  *        • multi-use owner/GM codes  → 410 (displacement vector), and
  *        • owner/GM code on a hotel that already COMPLETED onboarding
@@ -65,6 +65,8 @@ interface MockState {
   cleanupFindsLinkedAccount: boolean;
   /** Drives the properties.onboarding_completed_at lookup in the F-06 gate. */
   propertyOnboardingCompletedAt: string | null;
+  /** Durable email binding written when the People flow creates the invite. */
+  propertyInvitedEmail: string | null;
   insertedEvents: Array<{ event_type: string; metadata: Record<string, unknown> }>;
   finalizationCalls: number;
   authDeleteCalls: number;
@@ -78,6 +80,7 @@ const state: MockState = {
   createAuthUser: false,
   cleanupFindsLinkedAccount: false,
   propertyOnboardingCompletedAt: null,
+  propertyInvitedEmail: null,
   insertedEvents: [],
   finalizationCalls: 0,
   authDeleteCalls: 0,
@@ -91,6 +94,7 @@ beforeEach(() => {
   state.createAuthUser = false;
   state.cleanupFindsLinkedAccount = false;
   state.propertyOnboardingCompletedAt = null;
+  state.propertyInvitedEmail = null;
   state.insertedEvents = [];
   state.finalizationCalls = 0;
   state.authDeleteCalls = 0;
@@ -135,14 +139,19 @@ beforeEach(() => {
       throw new Error('use-join-code must not access hotel_join_codes directly');
     }
     if (table === 'properties') {
-      // The F-06 gate reads onboarding_completed_at to tell an unclaimed
-      // onboarding hotel from a live, claimed one.
+      // The F-06 gate reads lifecycle state plus the invitation's durable
+      // email binding before it creates an Auth identity.
       return {
         select: (columns: string) => ({
           eq: () => ({
             maybeSingle: async () => ({
-              data: columns === 'onboarding_completed_at'
-                ? { onboarding_completed_at: state.propertyOnboardingCompletedAt }
+              data: columns === 'onboarding_completed_at, onboarding_state'
+                ? {
+                    onboarding_completed_at: state.propertyOnboardingCompletedAt,
+                    onboarding_state: state.propertyInvitedEmail
+                      ? { invitedEmail: state.propertyInvitedEmail }
+                      : {},
+                  }
                 : null,
               error: null,
             }),
@@ -431,6 +440,66 @@ describe('use-join-code — lean single-use owner invite (now allowed)', () => {
       (e) => e.event_type === 'auth.legacy_privileged_code_rejected',
     );
     assert.equal(refused?.metadata.reason, 'database_finalization_recheck');
+  });
+
+  test('first-person invite is locked to the assigned email before Auth creation', async () => {
+    state.joinCode = {
+      id: 'code-email-bound-owner',
+      hotel_id: HOTEL_ID,
+      role: 'owner',
+      expires_at: FUTURE_EXP,
+      max_uses: 1,
+      used_count: 0,
+      revoked_at: null,
+    };
+    state.propertyInvitedEmail = 'assigned.owner@example.com';
+
+    const res = await POST(
+      mockReq({
+        code: 'EMAIL001',
+        email: 'different.person@example.com',
+        displayName: 'Different Person',
+        password: 'pw_long_enough',
+      }) as unknown as Parameters<typeof POST>[0],
+    );
+
+    assert.equal(res.status, 410);
+    assert.equal(state.finalizationCalls, 0);
+    const mismatch = state.insertedEvents.find(
+      (event) => event.event_type === 'auth.privileged_onboarding_email_mismatch',
+    );
+    assert.ok(mismatch, 'email substitution must be logged and blocked');
+  });
+
+  test('first-person invite accepts the assigned email case-insensitively', async () => {
+    state.joinCode = {
+      id: 'code-email-bound-gm',
+      hotel_id: HOTEL_ID,
+      role: 'general_manager',
+      expires_at: FUTURE_EXP,
+      max_uses: 1,
+      used_count: 0,
+      revoked_at: null,
+    };
+    state.propertyInvitedEmail = 'assigned.gm@example.com';
+
+    const res = await POST(
+      mockReq({
+        code: 'EMAIL002',
+        email: ' Assigned.GM@Example.com ',
+        displayName: 'Assigned GM',
+        password: 'pw_long_enough',
+      }) as unknown as Parameters<typeof POST>[0],
+    );
+
+    assert.equal(res.status, 400, 'mocked Auth failure proves the request passed the email guard');
+    assert.equal(state.finalizationCalls, 0);
+    assert.equal(
+      state.insertedEvents.some(
+        (event) => event.event_type === 'auth.privileged_onboarding_email_mismatch',
+      ),
+      false,
+    );
   });
 });
 

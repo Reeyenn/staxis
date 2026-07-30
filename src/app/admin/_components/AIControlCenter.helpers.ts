@@ -1,3 +1,11 @@
+import type {
+  AiFeatureSummary,
+  AiHostedProvider,
+  AiModelCatalogEntry,
+  AiModelPricing,
+  AiModelRef,
+} from '@/lib/ai/types';
+
 export interface SearchableAiFeature {
   key: string;
   label: string;
@@ -54,8 +62,272 @@ export interface RuntimeCompatibleModel {
   capabilities: readonly string[];
 }
 
+export interface GlobalDraftSkip {
+  key: string;
+  label: string;
+  reason: string;
+}
+
+export interface GlobalDraftPlan {
+  drafts: Record<string, AiFeatureDraft>;
+  changed: string[];
+  unchanged: string[];
+  skipped: GlobalDraftSkip[];
+}
+
 export const NO_FALLBACK = '__none__';
 export const DEFAULT_MODEL_CATALOG_STALE_MS = 12 * 60 * 60 * 1000;
+
+/**
+ * Models intentionally presented as current production choices. Availability,
+ * account access and app compatibility are still checked from the live catalog;
+ * this list only prevents the provider's long-tail API inventory from becoming
+ * the Control Center's UI.
+ */
+export const CURATED_AI_MODEL_IDS: Readonly<Record<AiHostedProvider, readonly string[]>> = {
+  anthropic: [
+    'claude-sonnet-5',
+    'claude-sonnet-4-6',
+    'claude-haiku-4-5',
+    'claude-opus-4-7',
+  ],
+  openai: [
+    'gpt-5.6-sol',
+    'gpt-5.6-terra',
+    'gpt-5.6-luna',
+    'gpt-5.5',
+    'gpt-5.5-pro',
+    'gpt-5.4',
+    'gpt-5.4-mini',
+    'gpt-5.4-nano',
+    'gpt-5.4-pro',
+    'gpt-5.3-codex',
+    'chat-latest',
+    'whisper-1',
+  ],
+};
+
+export const CURATED_AI_MODEL_PROVIDER_CAP = 20;
+
+const GLOBAL_CONTROL_EXCLUDED_FEATURE_KEYS = new Set<string>([
+  // Knowledge OCR has its own protected ingestion lifecycle. The Control
+  // Center can still show its existing configuration, but whole-center bulk
+  // actions must not reach into that system.
+  'knowledge.document_ocr',
+]);
+
+/**
+ * Fail-closed selectable catalog for this deployment.
+ *
+ * `provider+registry` is the intersection of two authoritative facts: the
+ * configured account listed the model, and Staxis has an explicit capability /
+ * pricing overlay for it. Registry-only safety-net rows and provider-only
+ * unknown rows remain useful for runtime/history, but are never new choices.
+ */
+export function curateSelectableAiModels(
+  models: readonly AiModelCatalogEntry[],
+  configuredProviders: readonly AiHostedProvider[],
+): AiModelCatalogEntry[] {
+  const configured = new Set(configuredProviders);
+  return (Object.keys(CURATED_AI_MODEL_IDS) as AiHostedProvider[]).flatMap((provider) => {
+    if (!configured.has(provider)) return [];
+    const byId = new Map(
+      models
+        .filter((model) => (
+          model.provider === provider
+          && model.available
+          && model.status === 'available'
+          && model.source === 'provider+registry'
+          && model.capabilities.length > 0
+          && model.pricing !== null
+        ))
+        .map((model) => [model.modelId, model]),
+    );
+    return CURATED_AI_MODEL_IDS[provider]
+      .map((modelId) => byId.get(modelId))
+      .filter((model): model is AiModelCatalogEntry => Boolean(model))
+      .slice(0, CURATED_AI_MODEL_PROVIDER_CAP);
+  });
+}
+
+export function currentModelRefs(features: readonly AiFeatureSummary[]): AiModelRef[] {
+  const refs = new Map<string, AiModelRef>();
+  for (const feature of features) {
+    for (const ref of [feature.activeConfig.primary, feature.activeConfig.fallback]) {
+      if (!ref || (ref.provider !== 'anthropic' && ref.provider !== 'openai')) continue;
+      refs.set(modelRefKey(ref), ref);
+    }
+  }
+  return [...refs.values()];
+}
+
+export interface PresentableAiModel {
+  model: AiModelCatalogEntry;
+  currentOnly: boolean;
+}
+
+export function modelsForControlCenterPresentation(
+  models: readonly AiModelCatalogEntry[],
+  selectableModels: readonly AiModelCatalogEntry[],
+  features: readonly AiFeatureSummary[],
+): PresentableAiModel[] {
+  const rows = new Map<string, PresentableAiModel>();
+  selectableModels.forEach((model) => rows.set(modelRefKey(model), { model, currentOnly: false }));
+  const fullByKey = new Map(models.map((model) => [modelRefKey(model), model]));
+
+  for (const ref of currentModelRefs(features)) {
+    const key = modelRefKey(ref);
+    if (rows.has(key)) continue;
+    const catalog = fullByKey.get(key);
+    rows.set(key, {
+      currentOnly: true,
+      model: catalog ?? {
+        provider: ref.provider as AiHostedProvider,
+        modelId: ref.modelId,
+        displayName: ref.displayName ?? ref.modelId,
+        status: 'unavailable',
+        available: false,
+        capabilities: ref.capabilities ?? [],
+        maxInputTokens: null,
+        maxOutputTokens: null,
+        releasedAt: null,
+        pricing: ref.pricing,
+        source: 'registry',
+        firstSeenAt: '',
+        lastSeenAt: '',
+        updatedAt: '',
+      },
+    });
+  }
+  return [...rows.values()];
+}
+
+export function essentialAiModelRates(pricing: AiModelPricing | null): {
+  inputUsdPerMillionTokens: number | null;
+  outputUsdPerMillionTokens: number | null;
+  audioUsdPerMinute: number | null;
+} {
+  return {
+    inputUsdPerMillionTokens: pricing?.inputUsdPerMillionTokens ?? null,
+    outputUsdPerMillionTokens: pricing?.outputUsdPerMillionTokens ?? null,
+    audioUsdPerMinute: pricing?.usdPerAudioMinute ?? null,
+  };
+}
+
+export function isGloballyControllableAiFeature(feature: AiFeatureSummary): boolean {
+  return !GLOBAL_CONTROL_EXCLUDED_FEATURE_KEYS.has(feature.key)
+    && feature.editable
+    && feature.switchable
+    && feature.availability === 'available'
+    && (feature.activeConfig.primary.provider === 'anthropic'
+      || feature.activeConfig.primary.provider === 'openai');
+}
+
+function globalFeatureSkip(feature: AiFeatureSummary, modelsOnly: boolean): GlobalDraftSkip | null {
+  if (GLOBAL_CONTROL_EXCLUDED_FEATURE_KEYS.has(feature.key)) {
+    return { key: feature.key, label: feature.label, reason: 'Managed outside whole-center controls' };
+  }
+  if (feature.availability === 'unavailable') {
+    return { key: feature.key, label: feature.label, reason: 'Unavailable' };
+  }
+  if (!feature.editable || (modelsOnly ? !feature.modelSwitchable : !feature.switchable)) {
+    return {
+      key: feature.key,
+      label: feature.label,
+      reason: modelsOnly ? 'Read-only or fixed model' : 'Read-only',
+    };
+  }
+  if (feature.activeConfig.primary.provider !== 'anthropic'
+    && feature.activeConfig.primary.provider !== 'openai') {
+    return { key: feature.key, label: feature.label, reason: 'Not an external-AI feature' };
+  }
+  return null;
+}
+
+export function stageGlobalEnabledDrafts(
+  features: readonly AiFeatureSummary[],
+  drafts: Readonly<Record<string, AiFeatureDraft>>,
+  enabled: boolean,
+): GlobalDraftPlan {
+  const next = { ...drafts };
+  const changed: string[] = [];
+  const unchanged: string[] = [];
+  const skipped: GlobalDraftSkip[] = [];
+
+  for (const feature of features) {
+    const skip = globalFeatureSkip(feature, false);
+    if (skip) {
+      skipped.push(skip);
+      continue;
+    }
+    const draft = drafts[feature.key] ?? draftFromConfig(feature.activeConfig);
+    if (draft.enabled === enabled) {
+      unchanged.push(feature.key);
+      continue;
+    }
+    next[feature.key] = { ...draft, enabled };
+    changed.push(feature.key);
+  }
+
+  return { drafts: next, changed, unchanged, skipped };
+}
+
+export function planGlobalModelDrafts(
+  features: readonly AiFeatureSummary[],
+  models: readonly AiModelCatalogEntry[],
+  drafts: Readonly<Record<string, AiFeatureDraft>>,
+  primaryKey: string,
+  fallbackKey: string,
+): GlobalDraftPlan {
+  const next = { ...drafts };
+  const changed: string[] = [];
+  const unchanged: string[] = [];
+  const skipped: GlobalDraftSkip[] = [];
+  const primary = models.find((model) => modelRefKey(model) === primaryKey);
+  const fallback = models.find((model) => modelRefKey(model) === fallbackKey);
+
+  if (!primary || !fallback || primaryKey === fallbackKey) {
+    return { drafts: next, changed, unchanged, skipped };
+  }
+
+  for (const feature of features) {
+    const skip = globalFeatureSkip(feature, true);
+    if (skip) {
+      skipped.push(skip);
+      continue;
+    }
+    if (!feature.fallbackAllowed) {
+      skipped.push({ key: feature.key, label: feature.label, reason: 'Fallback models are not supported' });
+      continue;
+    }
+    if (!isRuntimeCompatibleAiModel(feature, primary)) {
+      skipped.push({
+        key: feature.key,
+        label: feature.label,
+        reason: `${primary.displayName} is incompatible`,
+      });
+      continue;
+    }
+    if (!isRuntimeCompatibleAiModel(feature, fallback)) {
+      skipped.push({
+        key: feature.key,
+        label: feature.label,
+        reason: `${fallback.displayName} cannot be the fallback`,
+      });
+      continue;
+    }
+
+    const draft = drafts[feature.key] ?? draftFromConfig(feature.activeConfig);
+    if (draft.primaryKey === primaryKey && draft.fallbackKey === fallbackKey) {
+      unchanged.push(feature.key);
+      continue;
+    }
+    next[feature.key] = { ...draft, primaryKey, fallbackKey };
+    changed.push(feature.key);
+  }
+
+  return { drafts: next, changed, unchanged, skipped };
+}
 
 export function normalizeAiSearchText(value: string): string {
   return value

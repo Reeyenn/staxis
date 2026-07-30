@@ -51,9 +51,6 @@ export type RateLimitEndpoint =
   // Anthropic/OpenAI + bulk catalog upserts. Not token-billable, so fail-open,
   // but bounded against a scripted retry loop rewriting the fleet catalog.
   | 'admin-ai-models-refresh'
-  // Recommendations tab generation — one real Claude call over the whole
-  // catalog + spend history (several cents per run). Billable, fail-closed.
-  | 'admin-ai-recommendations'
   // Manual 2FA code entry from the Launch Bay panel. Costs nothing,
   // but it feeds the robot's login — cap retries so a scripted storm
   // can't spray guesses into pms_auth_codes.
@@ -88,15 +85,12 @@ export type RateLimitEndpoint =
   | 'auth-phone-pairing-resend'
   | 'auth-phone-pairing-verify'
   | 'auth-phone-pairing-complete'
-  // Onboard wizard PATCH + GET — IP-keyed. Pre-account paths (steps 1-3)
+  // Onboard wizard PATCH + GET — IP-keyed. Pre-account paths (steps 1-2)
   // are gated only by a hotel-join-code, which is brute-forceable at
   // ~50 bits without a rate limit. Without this cap, an attacker could
   // enumerate codes by hammering /api/onboard/wizard. Same 10/hr bucket
   // shape as auth-use-join-code. (Security review 2026-05-16, Pattern G.)
   | 'onboard-wizard'
-  // Public onboarding mapping-status poll — dedicated bucket so invalid-code
-  // probes can't eat into the wizard's per-IP budget. 10/hr, same shape.
-  | 'onboard-mapping-status'
   // Phase M1.5 (2026-05-14) — transactional email send via Resend.
   // Keyed on the recipient (normalized email, plus-addressing collapsed)
   // so an admin can't accidentally spam alice@hotel.com by re-clicking
@@ -392,8 +386,6 @@ const HOURLY_CAPS: Record<RateLimitEndpoint, number> = {
   // Catalog refreshes hit two provider list APIs; a human clicks this a few
   // times a day at most.
   'admin-ai-models-refresh':    30,
-  // A human asks for fresh advice a handful of times a day at most.
-  'admin-ai-recommendations':   10,
   // Manual 2FA code entry — a human typo-retries a few times at most.
   'admin-pms-auth-code':        30,
   // Invoice scans cost $0.003-0.01 each; 50/hr per property absorbs
@@ -422,9 +414,6 @@ const HOURLY_CAPS: Record<RateLimitEndpoint, number> = {
   // 'signup-ip' (real signups are rare, anything higher is abuse).
   'auth-use-join-code':         10,
   'onboard-wizard':             10,
-  // Public mapping-status poll — only INVALID-code probes increment (valid
-  // polling never does), bounding join-code enumeration on a dedicated budget.
-  'onboard-mapping-status':     10,
   // Invite acceptance — 10/hour per source IP. One-shot per token in
   // normal use; the cap exists to bound token-spray brute force.
   'auth-accept-invite':         10,
@@ -748,7 +737,6 @@ const BILLING_IMPACTING_ENDPOINTS: ReadonlySet<RateLimitEndpoint> = new Set<Rate
   // Recipe regeneration is the same shape as pms-onboard.
   'admin-regenerate-recipe',
   'admin-ai-config-validate',
-  'admin-ai-recommendations',
   // Claude Vision calls.
   'scan-invoice',
   'photo-count',

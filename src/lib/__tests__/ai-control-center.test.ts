@@ -1,6 +1,6 @@
 import { afterEach, describe, test } from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 import {
@@ -24,7 +24,7 @@ afterEach(() => {
 describe('AI Control Center feature registry', () => {
   // 2026-07-17: the front-desk surface retirement removed lost-found photo
   // description, lost-found match rerank, and package label scan (28→25);
-  // the Recommendations tab added admin.model_recommendations (25→26).
+  // the retired Recommendations tab briefly added an administrative-only row.
   // 2026-07-19: reports.weekly_insight removed with the automatic report
   // emails (26→25 controllable, 34→33 keys); the compliance section removal
   // took compliance.photo_reading/text_reading_parse/setup_parse/
@@ -63,8 +63,11 @@ describe('AI Control Center feature registry', () => {
   // translation were retired, removing communications.ui_translation. Direct
   // team-message translation remains independently available (27→26
   // controllable, 34→33 keys).
-  test('covers 26 controllable hosted features and 7 display-only features', () => {
-    assert.equal(AI_FEATURE_KEYS.length, 33);
+  // 2026-07-30: the administrative Model Recommendations feature and tab were
+  // removed (26→25 controllable, 33→32 keys). Historical database rows remain
+  // inert by design; removing them would require an out-of-scope migration.
+  test('covers 25 controllable hosted features and 7 display-only features', () => {
+    assert.equal(AI_FEATURE_KEYS.length, 32);
     assert.equal(new Set(AI_FEATURE_KEYS).size, AI_FEATURE_KEYS.length);
     assert.deepEqual(Object.keys(AI_FEATURE_REGISTRY).sort(), [...AI_FEATURE_KEYS].sort());
 
@@ -153,6 +156,78 @@ describe('AI Control Center feature registry', () => {
     assert.equal(daily.availability, 'unavailable');
     assert.equal(daily.defaultConfig.enabled, false);
   });
+});
+
+test('Model Recommendations is absent from the Control Center feature surface and owned code', () => {
+  const root = process.cwd();
+  assert.equal(existsSync(join(root, 'src/lib/ai/recommendations.ts')), false);
+  assert.equal(existsSync(join(root, 'src/app/api/admin/ai-control/recommendations/route.ts')), false);
+  assert.ok(!AI_FEATURE_KEYS.includes('admin.model_recommendations' as never));
+
+  for (const path of [
+    'src/app/admin/_components/AIControlCenter.tsx',
+    'src/lib/ai/feature-registry.ts',
+    'src/lib/ai/types.ts',
+    'src/lib/api-ratelimit.ts',
+    'src/app/api/admin/doctor/route.ts',
+  ]) {
+    const source = readFileSync(join(root, path), 'utf8');
+    assert.doesNotMatch(source, /admin\.model_recommendations|AiRecommendation|recommendations\/route|Model Recommendations/i, path);
+  }
+});
+
+test('whole-center header controls retain accessible focus, responsive, and draft workflow contracts', () => {
+  const source = readFileSync(
+    join(process.cwd(), 'src/app/admin/_components/AIControlCenter.tsx'),
+    'utf8',
+  );
+  const enableIndex = source.indexOf('className={styles.headerEnable}');
+  const modelsIndex = source.indexOf('className={styles.headerModelButton}');
+  const closeIndex = source.indexOf('className={styles.closeButton}', modelsIndex);
+  assert.ok(enableIndex > 0 && modelsIndex > enableIndex && closeIndex > modelsIndex);
+  assert.match(source, /type="checkbox"[\s\S]*aria-label="Stage all controllable AI features/);
+  assert.match(source, /aria-haspopup="dialog"/);
+  assert.match(source, /role="dialog"[\s\S]*aria-modal="true"/);
+  assert.match(source, /Apply to drafts/);
+  assert.match(source, /Test each changed feature before making it live/);
+  assert.match(source, /globalModelsOpenRef\.current \? globalModelsDialogRef\.current : dialogRef\.current/);
+
+  const css = readFileSync(
+    join(process.cwd(), 'src/app/admin/_components/AIControlCenter.module.css'),
+    'utf8',
+  );
+  assert.match(css, /\.headerEnable[\s\S]*min-height:\s*44px/);
+  assert.match(css, /\.headerModelButton[\s\S]*min-height:\s*44px/);
+  assert.match(css, /\.headerEnable:focus-within/);
+  assert.match(css, /\.headerModelButton:focus-visible/);
+  assert.match(css, /@media \(max-width:\s*1040px\)/);
+  assert.match(css, /@media \(prefers-reduced-motion:\s*reduce\)/);
+});
+
+test('Models tab and every model picker share the curated usable catalog without technical clutter', () => {
+  const source = readFileSync(
+    join(process.cwd(), 'src/app/admin/_components/AIControlCenter.tsx'),
+    'utf8',
+  );
+  assert.match(source, /curateSelectableAiModels\(models, configuredProviders\)/);
+  assert.match(source, /const globalPickerModels = useMemo\(\(\) => selectableModels\.filter/);
+  assert.match(source, /<FeaturesPanel[\s\S]*models=\{selectableModels\}/);
+  assert.match(source, /<ModelsPanel[\s\S]*selectableModels=\{selectableModels\}/);
+  assert.match(source, /disabled=\{!model\.available\}[\s\S]*current\/legacy, choose another model/);
+
+  const modelCard = source.slice(source.indexOf('function ModelCard'), source.indexOf('function HistoryPanel'));
+  assert.match(modelCard, /model\.displayName/);
+  assert.match(modelCard, /providerLabel\(model\.provider\)/);
+  assert.match(modelCard, />Input<strong>\{inputPrice\}/);
+  assert.match(modelCard, />Output<strong>\{outputPrice\}/);
+  assert.match(modelCard, /Current · legacy only/);
+  assert.doesNotMatch(modelCard, /Max input|Max output|Context window|Released|Capabilities|Catalog source|cache write/i);
+
+  const route = readFileSync(
+    join(process.cwd(), 'src/app/api/admin/ai-control/models/route.ts'),
+    'utf8',
+  );
+  assert.match(route, /configuredProviders:\s*AI_DISCOVERABLE_PROVIDERS\.filter\(isMessagesProviderConfigured\)/);
 });
 
 // ─── Which providers may serve a feature ────────────────────────────────────

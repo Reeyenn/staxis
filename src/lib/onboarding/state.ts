@@ -6,16 +6,14 @@
  * client + server import the same source of truth.
  */
 
-export type OnboardingStep = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9;
+export type OnboardingStep = 1 | 2 | 3 | 4 | 5 | 6;
 export type OnboardingReviewStep = 1 | 2;
 
 /**
- * Placeholder name a property is created with when the admin generates an
- * onboarding link WITHOUT naming the hotel (the lean admin flow — the
- * owner names the hotel themselves in the wizard's "Hotel Details" step).
- * The wizard UI shows a friendly fallback ("your hotel") while the stored
- * name still equals this sentinel, and Step 4's PATCH overwrites it with
- * the owner's real hotel name.
+ * Legacy placeholder retained for already-created records from the old
+ * link-first admin flow. New platform-admin hotel creation names the shell
+ * before a first person is invited, but Step 4 can still repair a retained
+ * placeholder record when that person resumes setup.
  */
 export const PLACEHOLDER_HOTEL_NAME = 'New hotel';
 
@@ -26,6 +24,16 @@ export interface OnboardingState {
    */
   step: OnboardingStep;
 
+  /** Email selected by the platform admin when the first person is invited. */
+  invitedEmail?: string;
+
+  /**
+   * Account created from that invitation. This database-owned binding makes
+   * the setup wizard resumable only by the exact first person, not by every
+   * later Owner or General Manager at the hotel.
+   */
+  firstPersonAccountId?: string;
+
   /** Step 2: account creation completed. */
   accountCreatedAt?: string;
 
@@ -35,29 +43,26 @@ export interface OnboardingState {
   /** Step 4: hotel details (room count, timezone, brand, etc.) saved. */
   hotelDetailsAt?: string;
 
-  /** Step 5: PMS credentials saved. */
+  /** Legacy, inert: onboarding-era PMS credentials marker. */
   pmsCredentialsAt?: string;
 
-  /** Step 5→6: onboarding_jobs.id of the active CUA mapping job. */
+  /** Legacy, inert: onboarding-era mapping job id. */
   pmsJobId?: string;
 
-  /** Step 6: CUA mapping completed (pms_connected flipped to true). */
+  /** Legacy, inert: onboarding-era mapping completion marker. */
   mappingCompletedAt?: string;
 
   /**
-   * Step 5: the owner clicked "Skip — this hotel doesn't use a PMS". No
-   * credentials saved, no CUA robot queued; the hotel goes live with no PMS
-   * ("No system detected") — e.g. an inventory-only property. Satisfies BOTH
-   * the PMS-connect (5) and mapping (6) gates in deriveCurrentStep so the wizard
-   * jumps straight to Team. The owner can connect a PMS later from Settings.
+   * Legacy, inert: the old onboarding PMS-skip marker. PMS is configured later
+   * from the general integration settings.
    */
   pmsSkippedAt?: string;
 
-  /** Step 7: at least one staff row inserted (or step skipped). */
+  /** Legacy, inert: the old onboarding team marker. */
   staffAt?: string;
 
   /**
-   * Step 8: the owner either told Staxis something about their hotel in the
+   * Step 5: the first person either told Staxis something about the hotel in the
    * open box, or skipped it. ENTIRELY OPTIONAL — the step is one paragraph and
    * a Skip button, and the timestamp is written either way so the wizard moves
    * on. Whatever they typed becomes UNCONFIRMED facts on the Knows screen
@@ -67,11 +72,8 @@ export interface OnboardingState {
   hotelContextAt?: string;
 
   /**
-   * Step 5: when the operator picks "Other / Not Listed" as their PMS, the
-   * free-text name they typed for their booking system. Persisted so it isn't
-   * lost (the registry only knows the generic `other` id) and so whoever maps
-   * the new PMS later can see what it is. Length-capped server-side in the
-   * wizard PATCH handler.
+   * Legacy, inert: the old onboarding free-text PMS name. Retained for stored
+   * production-state compatibility.
    */
   pmsOtherName?: string;
 
@@ -93,11 +95,8 @@ export interface OnboardingState {
  *   1 → 2 (welcome → account)
  *   2 → 3 (account → verify email) requires accountCreatedAt
  *   3 → 4 (verify → hotel details) requires emailVerifiedAt
- *   4 → 5 (hotel → PMS) requires hotelDetailsAt
- *   5 → 6 (PMS → mapping) requires pmsCredentialsAt + pmsJobId
- *   6 → 7 (mapping → team) requires mappingCompletedAt
- *   7 → 8 (team → about your hotel) requires staffAt
- *   8 → 9 (about your hotel → done) requires hotelContextAt, which the step
+ *   4 → 5 (about your hotel → your hotel) requires hotelDetailsAt
+ *   5 → 6 (your hotel → done) requires hotelContextAt, which the step
  *         writes whether the owner typed something or pressed Skip
  */
 export function deriveCurrentStep(state: OnboardingState): OnboardingStep {
@@ -109,17 +108,12 @@ export function deriveCurrentStep(state: OnboardingState): OnboardingStep {
   if (!state.accountCreatedAt) return state.step === 2 ? 2 : 1;
   if (!state.emailVerifiedAt) return 3;
   if (!state.hotelDetailsAt) return 4;
-  // PMS is optional: the owner can Skip it (inventory-only hotel, no robot).
-  // pmsSkippedAt satisfies BOTH the connect (5) and mapping (6) gates so the
-  // wizard jumps straight to Team. Legacy flows (no pmsSkippedAt) are unchanged.
-  if (!state.pmsCredentialsAt && !state.pmsSkippedAt) return 5;
-  if (!state.mappingCompletedAt && !state.pmsSkippedAt) return 6;
-  if (!state.staffAt) return 7;
   // Optional, skippable, and never a wall: the step itself stamps
-  // hotelContextAt on both "Add this" and "Skip", so an owner is one click
-  // from Done either way.
-  if (!state.hotelContextAt) return 8;
-  return 9;
+  // hotelContextAt on both "Add this" and "Skip", so the first person is one
+  // click from Done either way. Legacy PMS/mapping/team markers remain stored
+  // for compatibility but are intentionally inert in the shortened flow.
+  if (!state.hotelContextAt) return 5;
+  return 6;
 }
 
 /**
@@ -136,15 +130,15 @@ export function resolveOnboardingDisplayStep(
 }
 
 /**
- * Is this property an owner who STARTED the signup wizard but hasn't
+ * Is this property one whose first person STARTED the signup wizard but hasn't
  * finished it? Used by the login funnel (Home, property-selector, dashboard)
- * to keep a mid-onboarding owner inside the wizard instead of dropping
- * them on an empty app with no PMS connected.
+ * to keep that exact person inside the wizard instead of dropping
+ * them in the app before setup is complete.
  *
  * The signal is deliberately narrow:
  *   - `completedAt` set  → fully onboarded, never gated (normal login).
- *   - `accountCreatedAt` set + not completed → the wizard minted an owner
- *     account (Step 2) but the 8 steps aren't done → resume the wizard.
+ *   - `accountCreatedAt` set + not completed → the invite minted the first
+ *     account (Step 2) but the six stages aren't done → resume the wizard.
  *
  * Legacy / admin-imported hotels (e.g. Test Hotel) have BOTH null —
  * `accountCreatedAt` was never written — so they are treated as fully
@@ -159,10 +153,24 @@ export function isOnboardingInProgress(
   return !!state?.accountCreatedAt;
 }
 
+/** True only for the exact account created by the first-person invitation. */
+export function isOnboardingForAccount(
+  accountId: string | null | undefined,
+  completedAt: string | null | undefined,
+  state: OnboardingState | null | undefined,
+): boolean {
+  if (!accountId) return false;
+  // New People invitations always bind the exact account. Historical
+  // in-progress records predate this field; keep their prior manager resume
+  // behavior instead of stranding a retained production onboarding record.
+  if (state?.firstPersonAccountId && state.firstPersonAccountId !== accountId) return false;
+  return isOnboardingInProgress(completedAt, state);
+}
+
 /**
  * Should the login funnel auto-open the setup wizard for this person on this
  * hotel? True only when ALL hold:
- *   - the caller is the hotel's owner or manager (line staff and admins never
+ *   - the caller is the invited Owner or General Manager (line staff and admins never
  *     see the wizard — a housekeeper who joins a half-set-up hotel just lands
  *     in the app),
  *   - the hotel's onboarding is genuinely mid-flight (isOnboardingInProgress),
@@ -173,6 +181,7 @@ export function isOnboardingInProgress(
  * dashboard) and the server-side resume route.
  */
 export function shouldResumeOnboarding(
+  accountId: string | null | undefined,
   role: string | null | undefined,
   completedAt: string | null | undefined,
   state: OnboardingState | null | undefined,
@@ -180,12 +189,12 @@ export function shouldResumeOnboarding(
 ): boolean {
   if (role !== 'owner' && role !== 'general_manager') return false;
   if (promptShownAt) return false;
-  return isOnboardingInProgress(completedAt, state);
+  return isOnboardingForAccount(accountId, completedAt, state);
 }
 
 /**
  * sessionStorage property id, set by the login-funnel gate (Home /
- * property-selector / dashboard) right before it sends a mid-onboarding owner to
+ * property-selector / dashboard) right before it sends a mid-onboarding first person to
  * /api/onboard/resume. It is a ONE-SHOT loop-breaker: if the resume route
  * can't complete (e.g. the device-trust/2FA session lapsed, or no join code
  * could be produced) it falls back to /property-selector — which would
@@ -199,12 +208,11 @@ export const RESUME_GUARD_KEY = 'staxis-onboard-resume-tried';
 /** Every key the PATCH endpoint will accept into onboarding_state. */
 const ONBOARDING_STATE_STRING_KEYS = [
   'accountCreatedAt', 'emailVerifiedAt', 'hotelDetailsAt',
-  'servicesAt', 'pmsCredentialsAt', 'pmsJobId',
-  'mappingCompletedAt', 'staffAt', 'pmsOtherName', 'pmsSkippedAt', 'hotelContextAt',
+  'hotelContextAt',
 ] as const;
 const ONBOARDING_STATE_KEYS = new Set<string>(['step', ...ONBOARDING_STATE_STRING_KEYS]);
-/** Generous upper bound on any single persisted string field. Timestamps (~30),
- *  job UUIDs (36) and the free-text pmsOtherName all fit comfortably; this only
+/** Generous upper bound on any single client-owned persisted marker. Timestamps
+ *  fit comfortably; this only
  *  exists to bound the jsonb so a caller can't grow the row unboundedly. */
 const ONBOARDING_STATE_MAX_STRING = 200;
 
@@ -219,13 +227,13 @@ const ONBOARDING_STATE_MAX_STRING = 200;
  * field just needs adding to ONBOARDING_STATE_STRING_KEYS.
  */
 export function isValidPartialState(value: unknown): value is Partial<OnboardingState> {
-  if (typeof value !== 'object' || value === null) return false;
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return false;
   const obj = value as Record<string, unknown>;
   for (const key of Object.keys(obj)) {
     if (!ONBOARDING_STATE_KEYS.has(key)) return false;
   }
   if (obj.step !== undefined) {
-    if (typeof obj.step !== 'number' || obj.step < 1 || obj.step > 9) return false;
+    if (typeof obj.step !== 'number' || obj.step < 1 || obj.step > 6) return false;
   }
   for (const key of ONBOARDING_STATE_STRING_KEYS) {
     const v = obj[key];

@@ -14,11 +14,11 @@ import {
   CheckCircle2,
   History,
   Info,
-  Lightbulb,
   RefreshCw,
   RotateCcw,
   Search,
   Settings2,
+  SlidersHorizontal,
   Sparkles,
   X,
   XCircle,
@@ -35,10 +35,6 @@ import {
   type AiFeatureKey,
   type AiFeatureSummary,
   type AiFeaturesResponse,
-  type AiRecommendationsResponse,
-  type AiRecommendationReportsResponse,
-  type AiRecommendationReport,
-  type AiRecommendation,
   type AiModelCatalogEntry,
   type AiModelPricing,
   type AiModelRef,
@@ -53,23 +49,30 @@ import {
 } from '@/lib/ai/types';
 import {
   NO_FALLBACK,
+  curateSelectableAiModels,
   describeConfigChange,
   draftFromConfig,
+  essentialAiModelRates,
   findStaleModelProviders,
   formatAiCatalogDate,
   formatAiDate,
   groupAiFeatures,
   hasAiConfigBaseChanged,
   isAiFeatureDraftDirty,
+  isGloballyControllableAiFeature,
   isRuntimeCompatibleAiModel,
   modelRefKey,
+  modelsForControlCenterPresentation,
   normalizeAiSearchText,
   parseModelRefKey,
+  planGlobalModelDrafts,
+  stageGlobalEnabledDrafts,
   type AiFeatureDraft,
+  type GlobalDraftPlan,
 } from './AIControlCenter.helpers';
 import styles from './AIControlCenter.module.css';
 
-type TabId = 'features' | 'models' | 'recommendations' | 'history';
+type TabId = 'features' | 'models' | 'history';
 type ProviderFilter = 'all' | AiHostedProvider;
 type FeatureActionPhase = 'creating' | 'validating' | 'activating';
 type ToastKind = 'success' | 'error' | 'info';
@@ -100,7 +103,6 @@ const API_ROOT = '/api/admin/ai-control';
 const TABS: Array<{ id: TabId; label: string; icon: React.ReactNode }> = [
   { id: 'features', label: 'Features', icon: <Settings2 size={14} /> },
   { id: 'models', label: 'Models', icon: <Sparkles size={14} /> },
-  { id: 'recommendations', label: 'Recommendations', icon: <Lightbulb size={14} /> },
   { id: 'history', label: 'History', icon: <History size={14} /> },
 ];
 const FOCUSABLE = [
@@ -161,14 +163,6 @@ function capabilityLabel(capability: string): string {
 function validationFailed(response: ValidateAiConfigResponse): string | null {
   if (response.report.valid) return null;
   return response.report.errors[0] ?? 'This model setup did not pass its safety test.';
-}
-
-function formatTokenLimit(value: number | null): string {
-  if (value === null) return 'Not provided';
-  return new Intl.NumberFormat('en-US', {
-    notation: 'compact',
-    maximumFractionDigits: 1,
-  }).format(value);
 }
 
 function formatCatalogDate(value: string | null): string {
@@ -268,6 +262,7 @@ export function AIControlCenter() {
   const [tab, setTab] = useState<TabId>('features');
   const [features, setFeatures] = useState<AiFeatureSummary[]>([]);
   const [models, setModels] = useState<AiModelCatalogEntry[]>([]);
+  const [configuredProviders, setConfiguredProviders] = useState<AiHostedProvider[]>([]);
   const [history, setHistory] = useState<AiConfigVersion[]>([]);
   const [providers, setProviders] = useState<AiHostedProvider[]>([...AI_DISCOVERABLE_PROVIDERS]);
   const [generatedAt, setGeneratedAt] = useState<string | null>(null);
@@ -275,8 +270,8 @@ export function AIControlCenter() {
   const [featureQuery, setFeatureQuery] = useState('');
   const [modelQuery, setModelQuery] = useState('');
   const [providerFilter, setProviderFilter] = useState<ProviderFilter>('all');
-  const [panelLoading, setPanelLoading] = useState<PanelStatus<boolean>>({ features: false, models: false, history: false, recommendations: false });
-  const [panelErrors, setPanelErrors] = useState<PanelStatus<string | null>>({ features: null, models: null, history: null, recommendations: null });
+  const [panelLoading, setPanelLoading] = useState<PanelStatus<boolean>>({ features: false, models: false, history: false });
+  const [panelErrors, setPanelErrors] = useState<PanelStatus<string | null>>({ features: null, models: null, history: null });
   const [featureActions, setFeatureActions] = useState<Record<string, FeatureActionPhase | undefined>>({});
   const [featureErrors, setFeatureErrors] = useState<Record<string, string | undefined>>({});
   const [pendingActivations, setPendingActivations] = useState<Record<string, PendingActivation | undefined>>({});
@@ -290,6 +285,11 @@ export function AIControlCenter() {
   const triggerRef = useRef<HTMLButtonElement>(null);
   const dialogRef = useRef<HTMLDivElement>(null);
   const closeRef = useRef<HTMLButtonElement>(null);
+  const globalEnableRef = useRef<HTMLInputElement>(null);
+  const globalModelsButtonRef = useRef<HTMLButtonElement>(null);
+  const globalModelsDialogRef = useRef<HTMLDivElement>(null);
+  const globalPrimaryRef = useRef<HTMLSelectElement>(null);
+  const globalModelsOpenRef = useRef(false);
   const featuresRef = useRef<AiFeatureSummary[]>([]);
   const returnFocusRef = useRef<HTMLElement | null>(null);
   const rollbackIdRef = useRef<string | null>(null);
@@ -297,15 +297,9 @@ export function AIControlCenter() {
   const featureActionsRef = useRef<Record<string, FeatureActionPhase | undefined>>({});
   const [groupBulkBusy, setGroupBulkBusy] = useState<string | null>(null);
   const groupBulkBusyRef = useRef<string | null>(null);
-  const [recState, setRecState] = useState<{
-    status: 'idle' | 'loading-history' | 'generating' | 'ready' | 'error';
-    reports: AiRecommendationReport[];
-    error: string | null;
-  }>({ status: 'idle', reports: [], error: null });
-  const recBusyRef = useRef(false);
-  const recHistoryLoadedRef = useRef(false);
-  const [expandedReportId, setExpandedReportId] = useState<string | null>(null);
-  const [appliedRecs, setAppliedRecs] = useState<Record<string, 'applying' | 'applied' | undefined>>({});
+  const [globalModelsOpen, setGlobalModelsOpen] = useState(false);
+  const [globalPrimaryKey, setGlobalPrimaryKey] = useState('');
+  const [globalFallbackKey, setGlobalFallbackKey] = useState('');
   const draftsRef = useRef<Record<string, AiFeatureDraft>>({});
   const draftReviewRequiredRef = useRef<Record<string, boolean | undefined>>({});
   const toastIdRef = useRef(0);
@@ -316,8 +310,45 @@ export function AIControlCenter() {
 
   useEffect(() => setMounted(true), []);
 
+  const selectableModels = useMemo(
+    () => curateSelectableAiModels(models, configuredProviders),
+    [configuredProviders, models],
+  );
+  const globalPickerModels = useMemo(() => selectableModels.filter((model) => (
+    features.some((feature) => (
+      feature.editable
+      && feature.modelSwitchable
+      && feature.fallbackAllowed
+      && feature.availability === 'available'
+      && isRuntimeCompatibleAiModel(feature, model)
+    ))
+  )), [features, selectableModels]);
+  const globallyControllable = useMemo(
+    () => features.filter(isGloballyControllableAiFeature),
+    [features],
+  );
+  const globallyEnabledCount = globallyControllable.filter((feature) => (
+    drafts[feature.key]?.enabled ?? feature.activeConfig.enabled
+  )).length;
+  const globalAllEnabled = globallyControllable.length > 0
+    && globallyEnabledCount === globallyControllable.length;
+  const globalEnableMixed = globallyEnabledCount > 0
+    && globallyEnabledCount < globallyControllable.length;
+  const globalModelPlan = useMemo(() => planGlobalModelDrafts(
+    features,
+    globalPickerModels,
+    drafts,
+    globalPrimaryKey,
+    globalFallbackKey,
+  ), [drafts, features, globalFallbackKey, globalPickerModels, globalPrimaryKey]);
+
+  useEffect(() => {
+    if (globalEnableRef.current) globalEnableRef.current.indeterminate = globalEnableMixed;
+  }, [globalEnableMixed]);
+
   rollbackIdRef.current = rollbackId;
   rollingBackIdRef.current = rollingBackId;
+  globalModelsOpenRef.current = globalModelsOpen;
 
   const toast = useCallback((kind: ToastKind, message: string) => {
     const id = ++toastIdRef.current;
@@ -370,6 +401,7 @@ export function AIControlCenter() {
       try {
         const modelData = await apiRequest<AiModelsResponse>('/models');
         setModels(modelData.models);
+        setConfiguredProviders(modelData.configuredProviders);
       } catch (error) {
         const message = error instanceof Error ? error.message : 'Could not reload the combined model catalog.';
         toast('error', `Provider refresh succeeded, but the updated catalog could not be loaded: ${message}`);
@@ -392,8 +424,8 @@ export function AIControlCenter() {
     );
     const sequence = ++loadSequenceRef.current;
     if (!quiet) {
-      setPanelLoading({ features: true, models: true, history: true, recommendations: false });
-      setPanelErrors({ features: null, models: null, history: null, recommendations: null });
+      setPanelLoading({ features: true, models: true, history: true });
+      setPanelErrors({ features: null, models: null, history: null });
     }
 
     const finishPanel = (panel: TabId) => {
@@ -466,6 +498,7 @@ export function AIControlCenter() {
       .then((modelData) => {
         if (sequence !== loadSequenceRef.current) return;
         setModels(modelData.models);
+        setConfiguredProviders(modelData.configuredProviders);
         setPanelErrors((current) => ({ ...current, models: null }));
       })
       .catch((error: unknown) => failPanel('models', error))
@@ -518,6 +551,7 @@ export function AIControlCenter() {
 
   const close = useCallback(() => {
     if (rollingBackIdRef.current || Object.values(featureActionsRef.current).some(Boolean)) return;
+    setGlobalModelsOpen(false);
     setOpen(false);
     setRollbackId(null);
     setRollbackWarnings({});
@@ -537,6 +571,11 @@ export function AIControlCenter() {
       if (event.key === 'Escape') {
         event.preventDefault();
         if (rollingBackIdRef.current || Object.values(featureActionsRef.current).some(Boolean)) return;
+        if (globalModelsOpenRef.current) {
+          setGlobalModelsOpen(false);
+          requestAnimationFrame(() => globalModelsButtonRef.current?.focus({ preventScroll: true }));
+          return;
+        }
         if (rollbackIdRef.current) {
           setRollbackId(null);
           setRollbackWarnings({});
@@ -545,11 +584,12 @@ export function AIControlCenter() {
         return;
       }
       if (event.key !== 'Tab') return;
-      const nodes = Array.from(dialogRef.current?.querySelectorAll<HTMLElement>(FOCUSABLE) ?? [])
+      const focusScope = globalModelsOpenRef.current ? globalModelsDialogRef.current : dialogRef.current;
+      const nodes = Array.from(focusScope?.querySelectorAll<HTMLElement>(FOCUSABLE) ?? [])
         .filter((node) => node.tabIndex >= 0 && !node.hasAttribute('disabled') && node.offsetParent !== null);
       if (nodes.length === 0) {
         event.preventDefault();
-        dialogRef.current?.focus();
+        focusScope?.focus();
         return;
       }
       const first = nodes[0];
@@ -575,6 +615,12 @@ export function AIControlCenter() {
     };
   }, [close, open]);
 
+  useEffect(() => {
+    if (!globalModelsOpen) return;
+    const frame = requestAnimationFrame(() => globalPrimaryRef.current?.focus({ preventScroll: true }));
+    return () => cancelAnimationFrame(frame);
+  }, [globalModelsOpen]);
+
   const updateDraft = useCallback((key: AiFeatureKey, patch: Partial<AiFeatureDraft>) => {
     const currentDraft = draftsRef.current[key];
     if (!currentDraft) return;
@@ -587,6 +633,59 @@ export function AIControlCenter() {
     setFeatureErrors((current) => ({ ...current, [key]: undefined }));
     setPendingActivations((current) => ({ ...current, [key]: undefined }));
   }, []);
+
+  const stageGlobalEnabled = useCallback((enabled: boolean) => {
+    const plan = stageGlobalEnabledDrafts(featuresRef.current, draftsRef.current, enabled);
+    draftsRef.current = plan.drafts;
+    setDrafts(plan.drafts);
+    if (plan.changed.length > 0) {
+      const changed = new Set(plan.changed);
+      setFeatureErrors((current) => Object.fromEntries(
+        Object.entries(current).map(([key, value]) => [key, changed.has(key) ? undefined : value]),
+      ));
+      setPendingActivations((current) => Object.fromEntries(
+        Object.entries(current).map(([key, value]) => [key, changed.has(key) ? undefined : value]),
+      ));
+    }
+    toast(
+      'info',
+      `Staged ${plan.changed.length} feature${plan.changed.length === 1 ? '' : 's'} ${enabled ? 'on' : 'off'}; `
+      + `${plan.unchanged.length} already matched and ${plan.skipped.length} read-only or unavailable skipped. `
+      + 'Test each changed feature before making it live.',
+    );
+  }, [toast]);
+
+  const applyGlobalModelDrafts = useCallback(() => {
+    if (!globalPrimaryKey || !globalFallbackKey || globalPrimaryKey === globalFallbackKey) return;
+    const plan = planGlobalModelDrafts(
+      featuresRef.current,
+      globalPickerModels,
+      draftsRef.current,
+      globalPrimaryKey,
+      globalFallbackKey,
+    );
+    draftsRef.current = plan.drafts;
+    setDrafts(plan.drafts);
+    if (plan.changed.length > 0) {
+      const changed = new Set(plan.changed);
+      setFeatureErrors((current) => Object.fromEntries(
+        Object.entries(current).map(([key, value]) => [key, changed.has(key) ? undefined : value]),
+      ));
+      setPendingActivations((current) => Object.fromEntries(
+        Object.entries(current).map(([key, value]) => [key, changed.has(key) ? undefined : value]),
+      ));
+    }
+    setGlobalModelsOpen(false);
+    setGlobalPrimaryKey('');
+    setGlobalFallbackKey('');
+    toast(
+      'info',
+      `Staged both models for ${plan.changed.length} feature${plan.changed.length === 1 ? '' : 's'}; `
+      + `${plan.unchanged.length} already matched and ${plan.skipped.length} incompatible or fixed skipped. `
+      + 'Test each changed feature before making it live.',
+    );
+    requestAnimationFrame(() => globalModelsButtonRef.current?.focus({ preventScroll: true }));
+  }, [globalFallbackKey, globalPickerModels, globalPrimaryKey, toast]);
 
   const resetDraft = useCallback((feature: AiFeatureSummary) => {
     const next = {
@@ -831,13 +930,13 @@ export function AIControlCenter() {
     fallbackKey: string,
   ) => {
     if (groupBulkBusyRef.current || rollingBackIdRef.current || Object.values(featureActionsRef.current).some(Boolean)) return;
-    const primaryEntry = models.find((model) => modelRefKey(model) === primaryKey);
+    const primaryEntry = selectableModels.find((model) => modelRefKey(model) === primaryKey);
     if (!primaryEntry || !primaryEntry.available) {
       toast('error', 'Pick an available primary model first.');
       return;
     }
     const fallbackEntry = fallbackKey !== NO_FALLBACK
-      ? models.find((model) => modelRefKey(model) === fallbackKey)
+      ? selectableModels.find((model) => modelRefKey(model) === fallbackKey)
       : undefined;
     const reason = `Set ${primaryEntry.displayName}${fallbackEntry ? ` (fallback ${fallbackEntry.displayName})` : ''} for the whole ${groupName} category`;
     const targets: Array<{ feature: AiFeatureSummary; body: CreateAiConfigRequest }> = [];
@@ -887,100 +986,7 @@ export function AIControlCenter() {
       reason,
       successNoun: `switched to ${primaryEntry.displayName}`,
     });
-  }, [models, runGroupCycle, toast]);
-
-  /** Load the saved advice history once, when the tab is first opened. */
-  const loadRecommendationHistory = useCallback(async () => {
-    if (recBusyRef.current) return;
-    recBusyRef.current = true;
-    setRecState((current) => ({ ...current, status: 'loading-history', error: null }));
-    try {
-      const data = await apiRequest<AiRecommendationReportsResponse>('/recommendations');
-      setRecState({ status: 'ready', reports: data.reports, error: null });
-      setExpandedReportId((current) => current ?? data.reports[0]?.id ?? null);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : 'Could not load saved recommendations.';
-      setRecState((current) => ({ status: 'error', reports: current.reports, error: message }));
-    } finally {
-      recBusyRef.current = false;
-    }
-  }, []);
-
-  // Saved advice history loads once, the first time the tab is opened.
-  useEffect(() => {
-    if (!open || tab !== 'recommendations' || recHistoryLoadedRef.current) return;
-    recHistoryLoadedRef.current = true;
-    void loadRecommendationHistory();
-  }, [open, tab, loadRecommendationHistory]);
-
-  /** Generate fresh advice on demand — one billable Claude call (a few cents).
-   * The run is saved server-side and lands at the top of the history. */
-  const generateRecommendations = useCallback(async () => {
-    if (recBusyRef.current) return;
-    recBusyRef.current = true;
-    setRecState((current) => ({ ...current, status: 'generating', error: null }));
-    try {
-      const data = await apiRequest<AiRecommendationsResponse>('/recommendations', { method: 'POST' });
-      setRecState((current) => ({ status: 'ready', reports: [data.report, ...current.reports], error: null }));
-      setExpandedReportId(data.report.id ?? 'fresh');
-    } catch (error) {
-      const message = error instanceof Error ? error.message : 'Could not generate recommendations.';
-      setRecState((current) => ({ status: 'error', reports: current.reports, error: message }));
-      toast('error', `Recommendations: ${message}`);
-    } finally {
-      recBusyRef.current = false;
-    }
-  }, [toast]);
-
-  /** Apply one suggestion via the normal create → test → activate cycle. */
-  const applyRecommendation = useCallback(async (rec: AiRecommendation, applyKey: string) => {
-    if (!rec.featureKey || !rec.suggestedPrimary) return;
-    if (groupBulkBusyRef.current || rollingBackIdRef.current || featureActionsRef.current[rec.featureKey]) return;
-    const feature = featuresRef.current.find((row) => row.key === rec.featureKey);
-    if (!feature) return;
-    const reason = `Applied recommendation: ${rec.title}`;
-    setAppliedRecs((current) => ({ ...current, [applyKey]: 'applying' }));
-    setFeatureAction(feature.key, 'validating');
-    try {
-      const createBody: CreateAiConfigRequest = {
-        featureKey: feature.key,
-        enabled: feature.activeConfig.enabled,
-        primary: { provider: rec.suggestedPrimary.provider as AiHostedProvider, modelId: rec.suggestedPrimary.modelId },
-        fallback: rec.suggestedFallback && isHostedProvider(rec.suggestedFallback.provider)
-          ? { provider: rec.suggestedFallback.provider, modelId: rec.suggestedFallback.modelId }
-          : null,
-        parameters: feature.activeConfig.parameters,
-        parentId: feature.activeConfig.versionId,
-        changeReason: reason,
-      };
-      const created = await apiRequest<CreateAiConfigResponse>('/configs', {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify(createBody),
-      });
-      const validated = await apiRequest<ValidateAiConfigResponse>(`/configs/${encodeURIComponent(created.config.id)}/validate`, {
-        method: 'POST',
-      });
-      const validationError = validationFailed(validated);
-      if (validationError) throw new Error(validationError);
-      setFeatureAction(feature.key, 'activating');
-      await apiRequest<ActivateAiConfigResponse>(`/configs/${encodeURIComponent(created.config.id)}/activate`, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ expectedActiveId: feature.activeConfig.versionId, reason } satisfies ActivateAiConfigRequest),
-      });
-      setAppliedRecs((current) => ({ ...current, [applyKey]: 'applied' }));
-      toast('success', `${feature.label} is now on the recommended setup.`);
-      await loadAll(true, true, [feature.key]);
-    } catch (error) {
-      setAppliedRecs((current) => ({ ...current, [applyKey]: undefined }));
-      const message = error instanceof Error ? error.message : 'failed';
-      toast('error', `${feature.label}: ${message}`);
-      await loadAll(true, true);
-    } finally {
-      setFeatureAction(feature.key, undefined);
-    }
-  }, [loadAll, setFeatureAction, toast]);
+  }, [runGroupCycle, selectableModels, toast]);
 
   const refreshModels = useCallback(async () => {
     if (catalogRefreshInFlightRef.current) return;
@@ -1068,6 +1074,7 @@ export function AIControlCenter() {
   )).length;
   const featureActionInFlight = Object.values(featureActions).some(Boolean);
   const featureMutationInFlight = Boolean(rollingBackId) || featureActionInFlight;
+  const globalControlsDisabled = featureMutationInFlight || Boolean(groupBulkBusy) || panelLoading.features;
   const currentPanelLoading = panelLoading[tab];
   const currentPanelError = panelErrors[tab];
 
@@ -1103,17 +1110,53 @@ export function AIControlCenter() {
                   {generatedAt && <StatusChip>updated {formatAiDate(generatedAt)}</StatusChip>}
                 </div>
               </div>
-              <button
-                ref={closeRef}
-                type="button"
-                className={styles.closeButton}
-                onClick={close}
-                disabled={featureMutationInFlight}
-                aria-label="Close AI Control Center"
-                title={featureMutationInFlight ? 'Wait for the current AI settings change to finish' : 'Close AI Control Center'}
-              >
-                <X size={18} />
-              </button>
+              <div className={styles.headerActions}>
+                <label
+                  className={styles.headerEnable}
+                  title="Stage every controllable AI feature on or off"
+                >
+                  <span className={styles.headerActionLabel}>All AI</span>
+                  <input
+                    ref={globalEnableRef}
+                    type="checkbox"
+                    className={styles.srOnly}
+                    checked={globalAllEnabled}
+                    disabled={globalControlsDisabled || globallyControllable.length === 0}
+                    aria-label="Stage all controllable AI features on or off"
+                    onChange={(event) => stageGlobalEnabled(event.target.checked)}
+                  />
+                  <span className={styles.headerEnableTrack} aria-hidden="true">
+                    <span className={styles.headerEnableHandle} />
+                  </span>
+                </label>
+                <button
+                  ref={globalModelsButtonRef}
+                  type="button"
+                  className={styles.headerModelButton}
+                  disabled={globalControlsDisabled || globalPickerModels.length < 2}
+                  aria-label="Set all models"
+                  aria-haspopup="dialog"
+                  aria-expanded={globalModelsOpen}
+                  onClick={() => setGlobalModelsOpen(true)}
+                  title={globalPickerModels.length < 2
+                    ? 'At least two confirmed usable models are required'
+                    : 'Stage one primary and fallback across compatible AI features'}
+                >
+                  <SlidersHorizontal size={15} aria-hidden="true" />
+                  <span className={styles.headerActionLabel}>Set all models</span>
+                </button>
+                <button
+                  ref={closeRef}
+                  type="button"
+                  className={styles.closeButton}
+                  onClick={close}
+                  disabled={featureMutationInFlight}
+                  aria-label="Close AI Control Center"
+                  title={featureMutationInFlight ? 'Wait for the current AI settings change to finish' : 'Close AI Control Center'}
+                >
+                  <X size={18} />
+                </button>
+              </div>
             </div>
 
             <div className={styles.tabs} role="tablist" aria-label="AI Control Center sections">
@@ -1150,7 +1193,7 @@ export function AIControlCenter() {
             ) : tab === 'features' ? (
               <FeaturesPanel
                 features={features}
-                models={models}
+                models={selectableModels}
                 drafts={drafts}
                 query={featureQuery}
                 actions={featureActions}
@@ -1170,6 +1213,7 @@ export function AIControlCenter() {
             ) : tab === 'models' ? (
               <ModelsPanel
                 models={models}
+                selectableModels={selectableModels}
                 features={features}
                 query={modelQuery}
                 provider={providerFilter}
@@ -1178,17 +1222,6 @@ export function AIControlCenter() {
                 onQuery={setModelQuery}
                 onProvider={setProviderFilter}
                 onRefresh={refreshModels}
-              />
-            ) : tab === 'recommendations' ? (
-              <RecommendationsPanel
-                state={recState}
-                applied={appliedRecs}
-                features={features}
-                busy={featureActionInFlight || Boolean(groupBulkBusy)}
-                expandedReportId={expandedReportId}
-                onToggleReport={(id) => setExpandedReportId((current) => (current === id ? null : id))}
-                onGenerate={generateRecommendations}
-                onApply={applyRecommendation}
               />
             ) : (
               <HistoryPanel
@@ -1203,6 +1236,27 @@ export function AIControlCenter() {
               />
             )}
           </div>
+          {globalModelsOpen && (
+            <GlobalModelsDialog
+              dialogRef={globalModelsDialogRef}
+              primaryRef={globalPrimaryRef}
+              models={globalPickerModels}
+              features={features}
+              plan={globalModelPlan}
+              primaryKey={globalPrimaryKey}
+              fallbackKey={globalFallbackKey}
+              onPrimary={(value) => {
+                setGlobalPrimaryKey(value);
+                if (value === globalFallbackKey) setGlobalFallbackKey('');
+              }}
+              onFallback={setGlobalFallbackKey}
+              onCancel={() => {
+                setGlobalModelsOpen(false);
+                requestAnimationFrame(() => globalModelsButtonRef.current?.focus({ preventScroll: true }));
+              }}
+              onApply={applyGlobalModelDrafts}
+            />
+          )}
           <ToastViewport items={toasts} onDismiss={dismissToast} />
         </div>
       </div>
@@ -1669,7 +1723,136 @@ function GroupModelControls({
   );
 }
 
+function GlobalModelsDialog({
+  dialogRef,
+  primaryRef,
+  models,
+  features,
+  plan,
+  primaryKey,
+  fallbackKey,
+  onPrimary,
+  onFallback,
+  onCancel,
+  onApply,
+}: {
+  dialogRef: React.RefObject<HTMLDivElement | null>;
+  primaryRef: React.RefObject<HTMLSelectElement | null>;
+  models: AiModelCatalogEntry[];
+  features: AiFeatureSummary[];
+  plan: GlobalDraftPlan;
+  primaryKey: string;
+  fallbackKey: string;
+  onPrimary: (value: string) => void;
+  onFallback: (value: string) => void;
+  onCancel: () => void;
+  onApply: () => void;
+}) {
+  const featureByKey = useMemo(
+    () => new Map(features.map((feature) => [feature.key as string, feature])),
+    [features],
+  );
+  const hasPair = Boolean(primaryKey && fallbackKey && primaryKey !== fallbackKey);
+  return (
+    <div className={styles.bulkDialogScrim} onMouseDown={(event) => {
+      if (event.target === event.currentTarget) onCancel();
+    }}>
+      <div
+        ref={dialogRef}
+        className={styles.bulkDialog}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="global-model-title"
+        aria-describedby="global-model-description"
+        tabIndex={-1}
+      >
+        <div className={styles.bulkDialogHeader}>
+          <div>
+            <span className={styles.eyebrow}>Whole Control Center</span>
+            <h3 id="global-model-title" className={styles.bulkDialogTitle}>Set all models</h3>
+          </div>
+          <button type="button" className={styles.closeButton} onClick={onCancel} aria-label="Close Set all models dialog">
+            <X size={17} />
+          </button>
+        </div>
+        <p id="global-model-description" className={styles.bulkDialogCopy}>
+          Choose a primary and fallback. Apply stages the pair only for features that can run both models; every changed feature must still be tested and made live individually.
+        </p>
+
+        <div className={styles.bulkModelFields}>
+          <label className={styles.field}>
+            <span className={styles.fieldLabel}>Primary model</span>
+            <ModelSelect
+              inputRef={primaryRef}
+              value={primaryKey}
+              models={models}
+              preserve={[]}
+              placeholder="Choose primary"
+              ariaLabel="Whole Control Center primary model"
+              disabled={false}
+              onChange={onPrimary}
+            />
+          </label>
+          <label className={styles.field}>
+            <span className={styles.fieldLabel}>Fallback model</span>
+            <ModelSelect
+              value={fallbackKey}
+              models={models.filter((model) => modelRefKey(model) !== primaryKey)}
+              preserve={[]}
+              placeholder="Choose fallback"
+              ariaLabel="Whole Control Center fallback model"
+              disabled={!primaryKey}
+              onChange={onFallback}
+            />
+          </label>
+        </div>
+
+        <div className={styles.bulkPlan} aria-live="polite">
+          {!hasPair ? (
+            <p>Select two different confirmed usable models to see the exact effect.</p>
+          ) : (
+            <>
+              <div className={styles.bulkPlanCounts}>
+                <StatusChip tone="info">{plan.changed.length} affected</StatusChip>
+                <StatusChip>{plan.unchanged.length} already set</StatusChip>
+                <StatusChip tone={plan.skipped.length > 0 ? 'warn' : 'good'}>{plan.skipped.length} skipped</StatusChip>
+              </div>
+              <div className={styles.bulkPlanLists}>
+                <div>
+                  <strong>Affected</strong>
+                  {plan.changed.length > 0 ? (
+                    <ul>{plan.changed.map((key) => <li key={key}>{featureByKey.get(key)?.label ?? key}</li>)}</ul>
+                  ) : <p>No compatible draft would change.</p>}
+                </div>
+                <div>
+                  <strong>Skipped</strong>
+                  {plan.skipped.length > 0 ? (
+                    <ul>{plan.skipped.map((item) => <li key={item.key}>{item.label} · {item.reason}</li>)}</ul>
+                  ) : <p>Nothing skipped.</p>}
+                </div>
+              </div>
+            </>
+          )}
+        </div>
+
+        <div className={styles.bulkDialogActions}>
+          <button type="button" className={styles.textButton} onClick={onCancel}>Cancel</button>
+          <button
+            type="button"
+            className={styles.primaryButton}
+            disabled={!hasPair || plan.changed.length === 0}
+            onClick={onApply}
+          >
+            <Check size={14} aria-hidden="true" /> Apply to drafts
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function ModelSelect({
+  inputRef,
   value,
   models,
   preserve,
@@ -1681,6 +1864,7 @@ function ModelSelect({
   disabled,
   onChange,
 }: {
+  inputRef?: React.RefObject<HTMLSelectElement | null>;
   value: string;
   models: AiModelCatalogEntry[];
   preserve: AiModelRef[];
@@ -1726,6 +1910,7 @@ function ModelSelect({
 
   return (
     <select
+      ref={inputRef}
       className={compact ? styles.selectCompact : styles.select}
       value={value}
       aria-label={ariaLabel}
@@ -1738,7 +1923,7 @@ function ModelSelect({
         <optgroup key={group.provider} label={providerLabel(group.provider)}>
           {group.models.map((model) => (
             <option key={modelRefKey(model)} value={modelRefKey(model)} disabled={!model.available}>
-              {model.displayName}{model.available ? '' : ' · not available right now'}
+              {model.displayName}{model.available ? '' : ' · current/legacy, choose another model'}
             </option>
           ))}
         </optgroup>
@@ -1749,6 +1934,7 @@ function ModelSelect({
 
 function ModelsPanel({
   models,
+  selectableModels,
   features,
   query,
   provider,
@@ -1759,6 +1945,7 @@ function ModelsPanel({
   onRefresh,
 }: {
   models: AiModelCatalogEntry[];
+  selectableModels: AiModelCatalogEntry[];
   features: AiFeatureSummary[];
   query: string;
   provider: ProviderFilter;
@@ -1781,33 +1968,25 @@ function ModelsPanel({
     });
     return usage;
   }, [features]);
-  const eligibilityByModel = useMemo(() => {
-    const eligibility = new Map<string, string[]>();
-    models.forEach((model) => {
-      const labels = features
-        .filter((feature) => (
-          feature.editable
-          && feature.modelSwitchable
-          && feature.availability === 'available'
-          && isRuntimeCompatibleAiModel(feature, model)
-        ))
-        .map((feature) => feature.label);
-      eligibility.set(modelRefKey(model), labels);
-    });
-    return eligibility;
-  }, [features, models]);
+  const selectableKeys = useMemo(
+    () => new Set(selectableModels.map(modelRefKey)),
+    [selectableModels],
+  );
+  const displayed = useMemo(
+    () => modelsForControlCenterPresentation(models, selectableModels, features),
+    [features, models, selectableModels],
+  );
   const needle = normalizeAiSearchText(query);
-  const visible = models.filter((model) => (
+  const visible = displayed.filter(({ model }) => (
     (provider === 'all' || model.provider === provider)
     && (!needle
       || normalizeAiSearchText(model.displayName).includes(needle)
       || normalizeAiSearchText(model.modelId).includes(needle)
-      || normalizeAiSearchText(model.provider).includes(needle)
-      || model.capabilities.some((capability) => normalizeAiSearchText(capability).includes(needle)))
+      || normalizeAiSearchText(model.provider).includes(needle))
   ));
   const groups = providers.map((item) => ({
     provider: item,
-    models: visible.filter((model) => model.provider === item),
+    models: visible.filter(({ model }) => model.provider === item),
   })).filter((group) => group.models.length > 0);
 
   return (
@@ -1816,7 +1995,7 @@ function ModelsPanel({
         <label className={styles.searchWrap}>
           <span className={styles.srOnly}>Search model catalog</span>
           <Search className={styles.searchIcon} size={15} aria-hidden="true" />
-          <input type="search" className={styles.searchInput} value={query} onChange={(event) => onQuery(event.target.value)} placeholder="Find a provider model or capability…" />
+          <input type="search" className={styles.searchInput} value={query} onChange={(event) => onQuery(event.target.value)} placeholder="Find a model or provider…" />
         </label>
         <button type="button" className={styles.secondaryButton} disabled={refreshing} onClick={onRefresh}>
           {refreshing ? <span className={styles.spinner} aria-hidden="true" /> : <RefreshCw size={14} />}
@@ -1831,7 +2010,7 @@ function ModelsPanel({
             <button key={item} type="button" className={`${styles.providerButton} ${provider === item ? styles.providerButtonActive : ''}`} aria-pressed={provider === item} onClick={() => onProvider(item)}>{providerLabel(item)}</button>
           ))}
         </div>
-        <span className={styles.summaryText}>{visible.length} shown · finding new models never switches anything automatically</span>
+        <span className={styles.summaryText}>{visible.length} main or current model{visible.length === 1 ? '' : 's'} · refresh never switches anything</span>
       </div>
 
       {groups.length === 0 ? (
@@ -1845,12 +2024,12 @@ function ModelsPanel({
                 <span className={styles.groupCount}>{group.models.length}</span>
               </div>
               <div className={styles.modelGrid}>
-                {group.models.map((model) => (
+                {group.models.map(({ model, currentOnly }) => (
                   <ModelCard
                     key={modelRefKey(model)}
                     model={model}
                     usageLabels={usageByModel.get(modelRefKey(model)) ?? []}
-                    eligibleLabels={eligibilityByModel.get(modelRefKey(model)) ?? []}
+                    currentOnly={currentOnly || !selectableKeys.has(modelRefKey(model))}
                   />
                 ))}
               </div>
@@ -1865,280 +2044,41 @@ function ModelsPanel({
 function ModelCard({
   model,
   usageLabels,
-  eligibleLabels,
+  currentOnly,
 }: {
   model: AiModelCatalogEntry;
   usageLabels: string[];
-  eligibleLabels: string[];
+  currentOnly: boolean;
 }) {
-  const notEligibleHere = model.available && eligibleLabels.length === 0;
-  const providerListedNotSelectable = notEligibleHere && model.capabilities.length === 0;
-  const conservativePricing = model.pricing?.source === 'conservative-unverified';
-  const unverified = model.source === 'provider' || model.pricing === null || conservativePricing;
-  const notices: string[] = [];
-  if (providerListedNotSelectable) {
-    notices.push('The provider lists this model, but we haven\'t verified what it can do yet, so it can\'t be picked for features.');
-  } else if (notEligibleHere) {
-    notices.push('This model works, but none of the features on this page can use its type, so there\'s nothing to pick it for.');
-  }
-  if (conservativePricing) {
-    notices.push('The price shown is a safe overestimate, not the confirmed rate.');
-  } else if (model.pricing === null) {
-    notices.push('No confirmed price on file. Check the provider\'s price list before switching anything to it.');
-  } else if (model.source === 'provider') {
-    notices.push('Newly discovered. Some details may still be missing.');
-  }
-
-  const prices: Array<{ label: string; value: string }> = [];
-  if (model.pricing?.inputUsdPerMillionTokens !== undefined) {
-    prices.push({ label: 'Input', value: `${formatUsd(model.pricing.inputUsdPerMillionTokens)} / 1M tokens` });
-  }
-  if (model.pricing?.outputUsdPerMillionTokens !== undefined) {
-    prices.push({ label: 'Output', value: `${formatUsd(model.pricing.outputUsdPerMillionTokens)} / 1M tokens` });
-  }
-  if (model.pricing?.cachedInputUsdPerMillionTokens !== undefined) {
-    prices.push({ label: 'Re-used input (cheaper)', value: `${formatUsd(model.pricing.cachedInputUsdPerMillionTokens)} / 1M tokens` });
-  }
-  if (model.pricing?.cacheCreation5mInputUsdPerMillionTokens !== undefined) {
-    prices.push({ label: 'Cache write · 5 min', value: `${formatUsd(model.pricing.cacheCreation5mInputUsdPerMillionTokens)} / 1M tokens` });
-  }
-  if (model.pricing?.cacheCreation1hInputUsdPerMillionTokens !== undefined) {
-    prices.push({ label: 'Cache write · 1 hour', value: `${formatUsd(model.pricing.cacheCreation1hInputUsdPerMillionTokens)} / 1M tokens` });
-  }
-  if (model.pricing?.usdPerAudioMinute !== undefined) {
-    prices.push({ label: 'Audio', value: `${formatUsd(model.pricing.usdPerAudioMinute)} / minute` });
-  }
-
-  const catalogSource = model.source === 'provider+registry'
-    ? 'From the provider + built into the app'
-      : model.source === 'provider'
-      ? 'From the provider\'s list'
-      : 'Built into the app';
-  const shownUsage = usageLabels.slice(0, 3);
-  const usageCopy = shownUsage.length === 0
-    ? 'Not used by any feature right now.'
-    : `${shownUsage.join(' · ')}${usageLabels.length > shownUsage.length ? ` · +${usageLabels.length - shownUsage.length} more` : ''}`;
+  const rates = essentialAiModelRates(model.pricing);
+  const inputPrice = rates.inputUsdPerMillionTokens !== null
+    ? `${formatUsd(rates.inputUsdPerMillionTokens)} / 1M`
+    : rates.audioUsdPerMinute !== null
+      ? `${formatUsd(rates.audioUsdPerMinute)} / min audio`
+      : '—';
+  const outputPrice = rates.outputUsdPerMillionTokens !== null
+    ? `${formatUsd(rates.outputUsdPerMillionTokens)} / 1M`
+    : rates.audioUsdPerMinute !== null
+      ? 'Included'
+      : '—';
   return (
-    <article className={styles.modelCard}>
-      <div className={styles.modelCardTop}>
-        <div className={styles.modelCardTitle}>
-          <div className={styles.modelName}>{model.displayName}</div>
-          <span className={styles.modelId} title={model.modelId}>{model.modelId}</span>
-        </div>
-        <StatusChip tone={!model.available ? 'danger' : notEligibleHere ? 'warn' : 'good'}>
-          {!model.available
-            ? 'Not available'
-            : providerListedNotSelectable
-              ? 'Listed, not usable yet'
-              : notEligibleHere
-                ? 'No feature can use it'
-                : `Usable by ${eligibleLabels.length} feature${eligibleLabels.length === 1 ? '' : 's'}`}
-        </StatusChip>
-        {unverified && <StatusChip tone="warn">Unverified metadata</StatusChip>}
+    <article className={styles.modelCard} data-selectable={currentOnly ? 'false' : 'true'}>
+      <div className={styles.modelCardTitle}>
+        <div className={styles.modelName}>{model.displayName}</div>
+        <span className={styles.modelProvider}>{providerLabel(model.provider)}</span>
       </div>
-      <div className={styles.capabilities}>
-        {model.capabilities.length > 0
-          ? model.capabilities.map((capability) => <StatusChip key={capability}>{capabilityLabel(capability)}</StatusChip>)
-          : <StatusChip tone="warn">No verified capabilities</StatusChip>}
+      <div className={styles.modelEssentialPrice}>
+        <span>Input<strong>{inputPrice}</strong></span>
+        <span>Output<strong>{outputPrice}</strong></span>
       </div>
-
-      <div className={styles.modelUsage}>
-        <strong>{usageLabels.length} current feature {usageLabels.length === 1 ? 'assignment' : 'assignments'}</strong>
-        <span title={usageLabels.join(', ')}>{usageCopy}</span>
-        <span title={eligibleLabels.join(', ')}>
-          {eligibleLabels.length > 0
-            ? `Test-eligible here: ${eligibleLabels.slice(0, 3).join(' · ')}${eligibleLabels.length > 3 ? ` · +${eligibleLabels.length - 3} more` : ''}`
-            : 'Test-eligible here: none'}
+      {currentOnly && <StatusChip tone="warn">Current · legacy only</StatusChip>}
+      {currentOnly && <span className={styles.srOnly}>Not selectable for a new configuration.</span>}
+      {currentOnly && usageLabels.length > 0 && (
+        <span className={styles.modelCurrentUse} title={usageLabels.join(', ')}>
+          Used by {usageLabels.length} feature{usageLabels.length === 1 ? '' : 's'}
         </span>
-      </div>
-
-      {notices.length > 0 && (
-        <div className={styles.modelNotice} role="note">
-          <AlertTriangle size={14} aria-hidden="true" />
-          <span>{notices.join(' ')}</span>
-        </div>
       )}
-
-      <div className={styles.modelFacts}>
-        <div className={styles.modelFact}>
-          <span>Context</span>
-          <strong>{model.maxInputTokens === null ? 'Not provided' : `${formatTokenLimit(model.maxInputTokens)} tokens`}</strong>
-        </div>
-        <div className={styles.modelFact}>
-          <span>Max output</span>
-          <strong>{model.maxOutputTokens === null ? 'Not provided' : `${formatTokenLimit(model.maxOutputTokens)} tokens`}</strong>
-        </div>
-        <div className={styles.modelFact}>
-          <span>Released</span>
-          <strong>{formatCatalogDate(model.releasedAt)}</strong>
-        </div>
-      </div>
-
-      <div className={styles.modelPricing}>
-        <div className={styles.modelPricingHeader}>
-          <strong>Pricing</strong>
-          <span title={model.pricing?.source}>
-            {model.pricing
-              ? `${pricingSourceLabel(model.pricing.source)} · as of ${formatCatalogDate(model.pricing.asOf)}`
-              : 'No verified source or as-of date'}
-          </span>
-        </div>
-        <div className={styles.priceList}>
-          {prices.length > 0
-            ? prices.map((price) => (
-                <div key={price.label} className={styles.priceRow}>
-                  <span>{price.label}</span>
-                  <strong>{price.value}</strong>
-                </div>
-              ))
-            : <div className={styles.priceMissing}>No verified rate fields.</div>}
-        </div>
-      </div>
-
-      <div className={styles.modelMeta}>
-        <span>Catalog source · {catalogSource}</span>
-        <span>{model.source === 'registry' ? 'Registry record' : 'Provider last checked'} · {formatAiDate(model.lastSeenAt)}</span>
-      </div>
     </article>
-  );
-}
-
-function RecommendationsPanel({
-  state,
-  applied,
-  features,
-  busy,
-  expandedReportId,
-  onToggleReport,
-  onGenerate,
-  onApply,
-}: {
-  state: { status: 'idle' | 'loading-history' | 'generating' | 'ready' | 'error'; reports: AiRecommendationReport[]; error: string | null };
-  applied: Record<string, 'applying' | 'applied' | undefined>;
-  features: AiFeatureSummary[];
-  busy: boolean;
-  expandedReportId: string | null;
-  onToggleReport: (id: string) => void;
-  onGenerate: () => void;
-  onApply: (rec: AiRecommendation, applyKey: string) => void;
-}) {
-  const featureByKey = useMemo(() => new Map(features.map((feature) => [feature.key as string, feature])), [features]);
-  const reportDate = (iso: string) => {
-    const date = new Date(iso);
-    return `${date.toLocaleDateString('en-US', { month: 'long', day: 'numeric' })} at ${date.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })}`;
-  };
-  return (
-    <section
-      id="ai-control-panel-recommendations"
-      className={styles.panel}
-      role="tabpanel"
-      aria-labelledby="ai-control-tab-recommendations"
-    >
-      <div className={styles.toolbar}>
-        <span className={styles.summaryText}>
-          Every run is saved below with its date. Open any of them to reread the full advice.
-        </span>
-        <button type="button" className={styles.secondaryButton} disabled={state.status === 'generating'} onClick={onGenerate}>
-          {state.status === 'generating' ? <span className={styles.spinner} aria-hidden="true" /> : <Lightbulb size={14} />}
-          {state.status === 'generating' ? 'Thinking… (can take a minute)' : 'Get recommendations'}
-        </button>
-      </div>
-
-      {state.status === 'loading-history' && state.reports.length === 0 && (
-        <div className={styles.emptyState}><span className={styles.spinner} aria-hidden="true" />Loading saved recommendations…</div>
-      )}
-      {state.status === 'error' && state.reports.length === 0 && (
-        <div className={styles.emptyState}><AlertTriangle size={22} />{state.error ?? 'Could not load recommendations.'}</div>
-      )}
-      {state.status === 'ready' && state.reports.length === 0 && (
-        <div className={styles.emptyState}>
-          <Lightbulb size={22} />
-          No saved runs yet. Click “Get recommendations” to have the AI look over your setup. Costs a few cents per run and changes nothing by itself.
-        </div>
-      )}
-
-      {state.reports.length > 0 && (
-        <div className={styles.featureList}>
-          {state.reports.map((report, reportIndex) => {
-            const reportKey = report.id ?? `fresh-${reportIndex}`;
-            const expanded = expandedReportId === reportKey || (report.id !== null && expandedReportId === report.id);
-            return (
-              <article key={reportKey} className={styles.featureCard}>
-                <button
-                  type="button"
-                  className={styles.reportHeader}
-                  aria-expanded={expanded}
-                  onClick={() => onToggleReport(report.id ?? reportKey)}
-                >
-                  <span className={styles.reportHeaderDate}>{reportDate(report.generatedAt)}</span>
-                  <StatusChip>{report.recommendations.length} suggestion{report.recommendations.length === 1 ? '' : 's'}</StatusChip>
-                  <span className={styles.reportHeaderMeta}>
-                    based on ${report.spend30dUsd.toFixed(2)} of 30-day spend · {report.modelUsed}
-                  </span>
-                  <span className={styles.reportHeaderChevron} aria-hidden="true">{expanded ? '▾' : '▸'}</span>
-                </button>
-                {expanded && (
-                  report.recommendations.length === 0 ? (
-                    <p className={styles.featureDescription}>Nothing worth changing at that time. The setup already looked sensible.</p>
-                  ) : (
-                    <div className={styles.reportBody}>
-                      {report.recommendations.map((rec, index) => {
-                        const applyKey = `${reportKey}:${index}`;
-                        const feature = rec.featureKey ? featureByKey.get(rec.featureKey) : undefined;
-                        const applyState = applied[applyKey];
-                        const canApply = Boolean(rec.featureKey && rec.suggestedPrimary && feature);
-                        return (
-                          <div key={applyKey} className={styles.reportItem}>
-                            <div className={styles.featureTop}>
-                              <div className={styles.featureIdentity}>
-                                <div className={styles.featureTitleRow}>
-                                  <h4 className={styles.featureTitle}>{rec.title}</h4>
-                                  {feature && <StatusChip>{feature.label}</StatusChip>}
-                                  {rec.estimatedMonthlySavingsUsd !== null && rec.estimatedMonthlySavingsUsd > 0 && (
-                                    <StatusChip tone="good">~${rec.estimatedMonthlySavingsUsd.toFixed(2)}/mo less</StatusChip>
-                                  )}
-                                  <StatusChip tone={rec.confidence === 'high' ? 'good' : rec.confidence === 'medium' ? 'info' : undefined}>
-                                    {rec.confidence === 'high' ? 'Confident' : rec.confidence === 'medium' ? 'Fairly confident' : 'Worth a look'}
-                                  </StatusChip>
-                                </div>
-                                <p className={styles.featureDescription}>{rec.why}</p>
-                                {rec.suggestedPrimary && (
-                                  <p className={styles.featureDescription}>
-                                    Suggests: <strong>{rec.suggestedPrimary.modelId}</strong>
-                                    {rec.suggestedFallback ? <> with backup <strong>{rec.suggestedFallback.modelId}</strong></> : null}
-                                    {feature ? <> (currently {feature.activeConfig.primary.modelId})</> : null}
-                                  </p>
-                                )}
-                              </div>
-                              {canApply && (
-                                <div className={styles.featureActions}>
-                                  <button
-                                    type="button"
-                                    className={styles.primaryButton}
-                                    disabled={busy || applyState === 'applying' || applyState === 'applied'}
-                                    onClick={() => onApply(rec, applyKey)}
-                                  >
-                                    {applyState === 'applying'
-                                      ? <span className={styles.spinner} aria-hidden="true" />
-                                      : <CheckCircle2 size={14} />}
-                                    {applyState === 'applied' ? 'Applied ✓' : applyState === 'applying' ? 'Testing…' : 'Test & apply'}
-                                  </button>
-                                </div>
-                              )}
-                            </div>
-                          </div>
-                        );
-                      })}
-                    </div>
-                  )
-                )}
-              </article>
-            );
-          })}
-        </div>
-      )}
-      <p className={styles.summaryText}>Suggestions never apply themselves. Every switch is tested first.</p>
-    </section>
   );
 }
 

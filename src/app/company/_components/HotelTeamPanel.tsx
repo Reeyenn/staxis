@@ -98,6 +98,10 @@ export interface HotelTeamMember {
   isPlatformAdmin?: boolean;
   hotelAccessCount?: number | null;
   hasOtherHotelAccess?: boolean;
+  /** Authoritative account-access surface returned by /api/auth/team. Company
+   * access can make an organization member visible here without creating the
+   * hotel's direct first-person/setup account. */
+  managementSurface: 'legacy_hotel' | 'company_access';
   globalImpact?: {
     displayNameAffectsAllHotels: boolean;
     roleAffectsAllHotels: boolean;
@@ -197,6 +201,11 @@ const LazyRemoveDialog = React.lazy(async () => {
 const LazyInviteDialog = React.lazy(async () => {
   const dialogs = await import('./HotelTeamDialogs');
   return { default: dialogs.HotelInviteDialog };
+});
+
+const LazyFirstPersonInviteDialog = React.lazy(async () => {
+  const dialogs = await import('./HotelTeamDialogs');
+  return { default: dialogs.FirstPersonInviteDialog };
 });
 
 const LazyDecisionDialog = React.lazy(async () => {
@@ -1041,6 +1050,17 @@ export function HotelTeamPanel({
     () => groups.reduce((total, group) => total + group.people.length, 0),
     [groups],
   );
+  // The first-person lifecycle is about a direct hotel account, not every
+  // account that can reach the hotel. Organization-scope company access makes
+  // inherited members appear in this authoritative roster, but those members
+  // do not replace the hotel's first Owner/GM setup account.
+  const hasDirectHotelAccount = team.some(
+    (member) => member.managementSurface === 'legacy_hotel',
+  );
+  const needsFirstPerson = adminPreview
+    && !teamLoading
+    && !teamError
+    && !hasDirectHotelAccount;
   const counts = React.useMemo(() => rosterCounts(rosterStaff), [rosterStaff]);
   const linkAccounts = React.useMemo(
     () => team.map((member) => ({
@@ -1182,14 +1202,16 @@ export function HotelTeamPanel({
             type="button"
             className={`${styles.primaryButton} ${styles.headingInviteButton}`}
             onClick={() => onInviteDialogOpenChange(true)}
-            disabled={locked}
+            disabled={locked || (adminPreview && (teamLoading || Boolean(teamError)))}
             aria-haspopup="dialog"
             title={locked
               ? 'Unavailable in read-only preview'
               : undefined}
           >
             <UserPlus size={16} aria-hidden="true" />
-            {'Invite staff'}
+            {needsFirstPerson
+              ? 'Add first person'
+              : adminPreview ? 'Add another person' : 'Invite staff'}
           </button>
         </div>
 
@@ -1286,14 +1308,16 @@ export function HotelTeamPanel({
         ) : peopleCount === 0 ? (
           <div className={styles.emptyState}>
             <span><Users size={22} aria-hidden="true" /></span>
-            <h3>{'Nobody here yet'}</h3>
-            <p>{'Add someone to the schedule, or invite them to create a Staxis login.'}</p>
+            <h3>{needsFirstPerson ? 'Add first person' : 'Nobody here yet'}</h3>
+            <p>{needsFirstPerson
+              ? 'Invite this hotel’s first Owner or General Manager. Their assigned role is locked into signup.'
+              : 'Add someone to the schedule, or invite them to create a Staxis login.'}</p>
             {!locked ? (
               <div className={styles.emptyStateActions}>
                 {/* Both halves of the sentence above need a button behind them.
                     The department cards carry Add once anybody exists; with
                     nobody on the roster there are no cards to carry it. */}
-                {canAddStaff ? (
+                {canAddStaff && !needsFirstPerson ? (
                   <button
                     type="button"
                     className={styles.secondaryButton}
@@ -1304,8 +1328,13 @@ export function HotelTeamPanel({
                     {'Add to the schedule'}
                   </button>
                 ) : null}
-                <button type="button" className={styles.secondaryButton} onClick={() => onInviteDialogOpenChange(true)}>
-                  <UserPlus size={16} aria-hidden="true" />{'Invite staff'}
+                <button
+                  type="button"
+                  className={needsFirstPerson ? styles.primaryButton : styles.secondaryButton}
+                  onClick={() => onInviteDialogOpenChange(true)}
+                >
+                  <UserPlus size={16} aria-hidden="true" />
+                  {needsFirstPerson ? 'Add first person' : 'Invite staff'}
                 </button>
               </div>
             ) : null}
@@ -1415,7 +1444,14 @@ export function HotelTeamPanel({
             }}
           />
         ) : null}
-        {inviteDialogOpen ? (
+        {inviteDialogOpen && needsFirstPerson ? (
+          <LazyFirstPersonInviteDialog
+            hotelId={hotelId}
+            hotelName={hotelName}
+            onClose={() => onInviteDialogOpenChange(false)}
+            onChanged={() => changedRef.current?.()}
+          />
+        ) : inviteDialogOpen ? (
           <LazyInviteDialog
             hotelId={hotelId}
             hotelName={hotelName}

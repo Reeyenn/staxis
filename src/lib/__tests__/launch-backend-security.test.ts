@@ -489,7 +489,7 @@ describe('capability override lookups fail closed', () => {
     assert.match(home, /=== ['"]unavailable['"][\s\S]*capabilityUnavailableResponse/);
     assert.match(home, /canViewFinancials = financialCapabilityDecision === ['"]allowed['"]/);
 
-    const onboarding = source('src/app/api/onboarding/complete/route.ts');
+    const onboarding = source('src/app/api/onboard/wizard/route.ts');
     assert.match(onboarding, /accountCapabilityDecisionForProperty/);
     assert.match(onboarding, /=== ['"]unavailable['"][\s\S]*capabilityUnavailableResponse/);
     assert.match(onboarding, /=== ['"]denied['"]/);

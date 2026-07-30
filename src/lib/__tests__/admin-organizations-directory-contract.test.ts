@@ -21,12 +21,16 @@ const assignRouteSource = readFileSync(
   join(process.cwd(), 'src', 'app', 'api', 'admin', 'organizations', 'assign', 'route.ts'),
   'utf8',
 );
-const bootstrapInviteRouteSource = readFileSync(
-  join(process.cwd(), 'src', 'app', 'api', 'admin', 'organizations', 'invitations', 'route.ts'),
+const createPropertyRouteSource = readFileSync(
+  join(process.cwd(), 'src', 'app', 'api', 'admin', 'properties', 'create', 'route.ts'),
   'utf8',
 );
-const bootstrapInviteModalSource = readFileSync(
-  join(process.cwd(), 'src', 'app', 'admin', '_components', 'studio', 'OrganizationLeaderInviteModal.tsx'),
+const addHotelModalSource = readFileSync(
+  join(process.cwd(), 'src', 'app', 'admin', '_components', 'studio', 'AddHotelModal.tsx'),
+  'utf8',
+);
+const bootstrapInviteRouteSource = readFileSync(
+  join(process.cwd(), 'src', 'app', 'api', 'admin', 'organizations', 'invitations', 'route.ts'),
   'utf8',
 );
 const surfaceKitSource = readFileSync(
@@ -80,12 +84,51 @@ describe('Admin Studio Hotels information architecture', () => {
     assert.match(surfaceSource, /organizationId: null,[\s\S]*Make independent/);
   });
 
-  test('lets Staxis bootstrap a first customer leader without joining the company', () => {
-    assert.match(surfaceSource, /Invite company lead/);
-    assert.match(bootstrapInviteModalSource, /organization_owner/);
-    assert.match(bootstrapInviteModalSource, /organization_admin/);
-    assert.match(bootstrapInviteModalSource, /Staxis remains separate and never becomes a company member/);
-    assert.match(bootstrapInviteModalSource, /emailSent \? 'Invitation sent' : 'Invitation ready'/);
+  test('separates new-hotel creation from existing-hotel assignment for every organization', () => {
+    assert.match(surfaceSource, /\+ Add hotel/);
+    assert.match(surfaceSource, /Assign existing hotel/);
+    assert.doesNotMatch(surfaceSource, /Invite company lead/);
+    assert.match(surfaceSource, /onAddHotel=\{\(organization\) => setAddIntent/);
+    assert.match(addHotelModalSource, /\.\.\.\(organizationId \? \{ organizationId \} : \{\}\)/);
+    assert.match(createPropertyRouteSource, /staxis_set_primary_property_organization/);
+    assert.match(createPropertyRouteSource, /p_organization_id: v\.organizationId/);
+  });
+
+  test('links organization and independent hotel cards to the exact hotel People flow', () => {
+    const peopleLinks = surfaceSource.match(
+      /\/company\?tab=people&pid=\$\{encodeURIComponent\([^)]*\.id\)\}/g,
+    ) ?? [];
+    assert.equal(peopleLinks.length, 2);
+    assert.match(surfaceSource, />\s*People\s*</);
+    assert.match(surfaceSource, /hotelops-active-property/);
+  });
+
+  test('creates hotel shells without coupling creation to an owner invitation', () => {
+    assert.doesNotMatch(addHotelModalSource, /signupUrl|Owner signup link|copyLink/);
+    assert.doesNotMatch(createPropertyRouteSource, /staxis_mint_privileged_onboarding_join_code/);
+    assert.doesNotMatch(createPropertyRouteSource, /sendOnboardingInvite|generateJoinCode/);
+    assert.doesNotMatch(createPropertyRouteSource, /\.from\(['"]accounts['"]\)[\s\S]{0,160}\.insert/);
+    assert.match(createPropertyRouteSource, /customer_accounts_created: 0/);
+  });
+
+  test('ends expanded organizations after assigned-hotel controls without inline effective access', () => {
+    const organizationDisclosure = surfaceSource.slice(
+      surfaceSource.indexOf('function OrganizationDisclosure'),
+      surfaceSource.indexOf('function IndependentHotelsPanel'),
+    );
+
+    assert.doesNotMatch(surfaceSource, /AdminEffectiveAccess/);
+    assert.doesNotMatch(organizationDisclosure, /Effective access/);
+    assert.doesNotMatch(organizationDisclosure, /Company portfolio AI permission/);
+    assert.doesNotMatch(organizationDisclosure, /role="switch"/);
+    assert.doesNotMatch(organizationDisclosure, /Exact hotel coverage/);
+    assert.doesNotMatch(organizationDisclosure, /<strong>Scope<\/strong>/);
+    assert.doesNotMatch(organizationDisclosure, /Remove .* access/);
+    assert.doesNotMatch(surfaceSource, /\/api\/admin\/effective-access/);
+
+    assert.match(organizationDisclosure, /Assign existing hotel/);
+    assert.match(organizationDisclosure, /Make independent/);
+    assert.match(organizationDisclosure, /aria-label=\{`Open \$\{hotelLink\.name \?\? 'unnamed hotel'\} details`\}/);
   });
 });
 
