@@ -26,6 +26,7 @@ import type { LogEntryDTO } from '@/lib/comms/types';
 import type { AssignedByMeItem, WorklistItem } from '@/lib/worklist/types';
 import {
   assignedStateLine,
+  completionNotice,
   dueLine,
   repeatLabel,
   rowFrom,
@@ -81,6 +82,10 @@ export const LIST_CSS = `
   padding:11px 13px;font-size:12.5px;line-height:1.6;color:#5C625C;}
 .sl-sw{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:11px 0;}
 .sl-swl{font-size:13.5px;color:#1F231C;}
+.sl-back{margin-top:12px;border-radius:14px;border:1px solid rgba(92,122,96,.28);background:rgba(158,183,166,.14);
+  padding:11px 14px;}
+.sl-backl{font-size:13px;color:#3E5C48;line-height:1.55;}
+.sl-backl + .sl-backl{margin-top:3px;}
 `;
 
 /** Which chip colour a row wears. Matches the finding cards' severity chips so
@@ -407,6 +412,33 @@ export function ComposerView({
           {busy ? 'Adding…' : 'Add'}
         </button>
         <button type="button" className="fd-act" disabled={busy} onClick={onCancel}>Cancel</button>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * "Marcus finished the lobby filters." One line per thing that came back since
+ * you last looked, and then it is gone.
+ *
+ * Not a notification and not a toast: it does not chase anybody, it cannot be
+ * missed by being away from the screen, and there is nothing to dismiss. It
+ * clears when the drawer is opened, because opening the drawer IS having seen
+ * it. Same discipline as the findings queue: nothing on this page ever has to
+ * be cleared.
+ */
+export function AssignerNoticesView({ notices, onOpenDrawer }: {
+  notices: readonly AssignedByMeItem[];
+  onOpenDrawer?: () => void;
+}) {
+  if (notices.length === 0) return null;
+  return (
+    <div className="sl-back" data-testid="assigner-notices">
+      {notices.map((n) => (
+        <div className="sl-backl" key={n.taskId}>{completionNotice(n)}</div>
+      ))}
+      <div className="fd-acts">
+        <button type="button" className="fd-act" onClick={() => onOpenDrawer?.()}>See what you assigned</button>
       </div>
     </div>
   );

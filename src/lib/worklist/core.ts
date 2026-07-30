@@ -479,6 +479,43 @@ export async function gatherWorklist(pid: string, opts: GatherOptions = {}): Pro
 }
 
 /**
+ * Work you handed out that has come back since you last looked.
+ *
+ * The closing half of the assignment loop. A delegated task is deliberately not
+ * on the assigner's list, so without this the only way to learn it got done is
+ * to remember to open a drawer, and nobody opens a drawer for news they do not
+ * know is there.
+ *
+ * Pure, and derived rather than stored: there is no notification table, no
+ * unread counter and nothing to mark read. "Since you last looked" is one
+ * timestamp on one preference row, so a notice cannot get stuck, cannot be
+ * delivered twice, and cannot outlive the thing it is about.
+ *
+ * A NULL stamp means the drawer has never been opened, and everything recent
+ * counts. That is on purpose: the first thing that comes back is what teaches
+ * somebody the drawer exists.
+ */
+export function assignerNotices(
+  assigned: readonly AssignedByMeItem[],
+  seenAt: string | null,
+  now: Date,
+  windowDays = 7,
+): AssignedByMeItem[] {
+  const since = seenAt ? Date.parse(seenAt) : Number.NEGATIVE_INFINITY;
+  const floor = now.getTime() - windowDays * 86_400_000;
+  return assigned.filter((entry) => {
+    if (entry.state === 'waiting') return false;
+    if (!entry.settledAt) return false;
+    const settled = Date.parse(entry.settledAt);
+    if (Number.isNaN(settled)) return false;
+    // Stale news is not news. A task settled three weeks ago by somebody who
+    // never opened the drawer is history, not a notice.
+    if (settled < floor) return false;
+    return !Number.isFinite(since) || settled > since;
+  });
+}
+
+/**
  * Who a to-do can be handed to at this hotel.
  *
  * HOUSEKEEPERS ARE EXCLUDED, and the exclusion is HERE rather than only in the

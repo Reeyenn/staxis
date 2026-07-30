@@ -1,9 +1,10 @@
 // ═══════════════════════════════════════════════════════════════════════════
 // /api/feed/prefs — one person's choices about their Staxis list.
-//   GET ?pid=...                 → { prefs }
-//   PUT { pid, logbookInList }   → { prefs }
+//   GET ?pid=...                             → { prefs }
+//   PUT { pid, logbookInList?, markAssignedSeen? } → { prefs }
 //
-// Today it holds exactly one switch: "Include log book in Staxis". A new route
+// Today it holds one switch ("Include log book in Staxis") and one stamp (when
+// the Assigned-by-me drawer was last opened). A new route
 // rather than a field on an existing one because there was no per-person
 // preference surface in the product at all — /api/settings/notifications is
 // report-delivery shaped and orphaned since the report crons were deleted, and
@@ -20,7 +21,7 @@ import { errToString } from '@/lib/utils';
 import { log } from '@/lib/log';
 import { commsContext, ONE_LIST_CTX } from '@/lib/comms/route-helpers';
 import { checkAndIncrementRateLimit, rateLimitedResponse, hashToRateLimitKey } from '@/lib/api-ratelimit';
-import { readFeedPrefs, writeFeedPrefs } from '@/lib/feed/prefs';
+import { readFeedPrefs, writeFeedPrefs, type FeedPrefs } from '@/lib/feed/prefs';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -38,14 +39,21 @@ export async function GET(req: NextRequest): Promise<Response> {
 }
 
 export async function PUT(req: NextRequest): Promise<Response> {
-  let body: { pid?: string; logbookInList?: unknown };
+  let body: { pid?: string; logbookInList?: unknown; markAssignedSeen?: unknown };
   try { body = await req.json(); } catch { body = {}; }
 
   const ctx = await commsContext(req, body.pid ?? null, ONE_LIST_CTX);
   if (!ctx.ok) return ctx.response;
 
-  if (typeof body.logbookInList !== 'boolean') {
-    return err('logbookInList must be true or false', {
+  const patch: Partial<FeedPrefs> = {};
+  if (typeof body.logbookInList === 'boolean') patch.logbookInList = body.logbookInList;
+  // The stamp is a SERVER clock, never a value the caller supplies: a browser
+  // with a wrong clock could otherwise stamp itself into the future and never
+  // be told about anything again.
+  if (body.markAssignedSeen === true) patch.assignedSeenAt = new Date().toISOString();
+
+  if (Object.keys(patch).length === 0) {
+    return err('nothing to change', {
       requestId: ctx.requestId, status: 400, code: ApiErrorCode.ValidationFailed, headers: ctx.headers,
     });
   }
@@ -57,7 +65,7 @@ export async function PUT(req: NextRequest): Promise<Response> {
   if (!rl.allowed) return rateLimitedResponse(rl.current, rl.cap, rl.retryAfterSec);
 
   try {
-    const prefs = await writeFeedPrefs(ctx.accountId, ctx.pid, { logbookInList: body.logbookInList });
+    const prefs = await writeFeedPrefs(ctx.accountId, ctx.pid, patch);
     return ok({ prefs }, { requestId: ctx.requestId, headers: ctx.headers });
   } catch (e) {
     log.error('[feed-prefs] PUT failed', { requestId: ctx.requestId, pid: ctx.pid, err: errToString(e) });

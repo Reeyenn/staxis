@@ -168,18 +168,24 @@ describe('who a to-do can be handed to', () => {
 describe('one person’s list preferences', () => {
   test('a preference is read for one person at one hotel', async () => {
     tables.staxis_user_prefs = [
-      { account_id: ACCOUNT, property_id: HOTEL_A, logbook_in_list: true },
-      { account_id: ACCOUNT, property_id: HOTEL_B, logbook_in_list: false },
+      { account_id: ACCOUNT, property_id: HOTEL_A, logbook_in_list: true, assigned_seen_at: '2026-07-30T08:00:00.000Z' },
+      { account_id: ACCOUNT, property_id: HOTEL_B, logbook_in_list: false, assigned_seen_at: null },
     ];
-    assert.deepEqual(await readFeedPrefs(ACCOUNT, HOTEL_A), { logbookInList: true });
-    assert.deepEqual(await readFeedPrefs(ACCOUNT, HOTEL_B), { logbookInList: false });
+    assert.deepEqual(
+      await readFeedPrefs(ACCOUNT, HOTEL_A),
+      { logbookInList: true, assignedSeenAt: '2026-07-30T08:00:00.000Z' },
+    );
+    assert.deepEqual(
+      await readFeedPrefs(ACCOUNT, HOTEL_B),
+      { logbookInList: false, assignedSeenAt: null },
+    );
   });
 
   test('no stored row is the default, not an error and not "on"', async () => {
     // The log book is a place you go. A hotel that never opened the switch must
     // not find its shift notes interleaved with its money.
     tables.staxis_user_prefs = [];
-    assert.deepEqual(await readFeedPrefs(ACCOUNT, HOTEL_A), { logbookInList: false });
+    assert.deepEqual(await readFeedPrefs(ACCOUNT, HOTEL_A), { logbookInList: false, assignedSeenAt: null });
   });
 
   test('a write always carries both keys', async () => {
@@ -190,5 +196,16 @@ describe('one person’s list preferences', () => {
     assert.equal(write.payload!.account_id, ACCOUNT);
     assert.equal(write.payload!.property_id, HOTEL_A);
     assert.equal(write.payload!.logbook_in_list, true);
+  });
+
+  test('a partial write does not clobber the other field', () => {
+    // writeFeedPrefs reads-then-merges, so stamping the drawer as seen must not
+    // silently turn somebody's log book switch back off.
+    tables.staxis_user_prefs = [{ account_id: ACCOUNT, property_id: HOTEL_A, logbook_in_list: true, assigned_seen_at: null }];
+    return writeFeedPrefs(ACCOUNT, HOTEL_A, { assignedSeenAt: '2026-07-30T12:00:00.000Z' }).then(() => {
+      const write = calls.find((c) => c.table === 'staxis_user_prefs' && c.payload);
+      assert.equal(write!.payload!.logbook_in_list, true, 'the switch survived');
+      assert.equal(write!.payload!.assigned_seen_at, '2026-07-30T12:00:00.000Z');
+    });
   });
 });

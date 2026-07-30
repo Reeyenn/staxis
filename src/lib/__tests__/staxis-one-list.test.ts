@@ -39,11 +39,11 @@ import {
   type ListRow,
 } from '@/lib/feed/one-list';
 import { listRendersFor, listShowsFindings, listStandingFor } from '@/lib/feed/list-access';
-import { taskVisibleToViewer, viewerDepartment, worklistSeesApprovals, mapAssignedRow } from '@/lib/worklist/core';
+import { assignerNotices, taskVisibleToViewer, viewerDepartment, worklistSeesApprovals, mapAssignedRow } from '@/lib/worklist/core';
 import { isTemplateDueOn, normalizeCadence } from '@/lib/recurring-tasks/store';
 import { rankFindings, type QueueFinding } from '@/components/concourse/finding-cards';
 import type { LogEntryDTO } from '@/lib/comms/types';
-import type { WorklistItem, WorklistViewer } from '@/lib/worklist/types';
+import type { AssignedByMeItem, WorklistItem, WorklistViewer } from '@/lib/worklist/types';
 import { ALL_ROLES, type AppRole } from '@/lib/roles';
 
 // ── fixtures ────────────────────────────────────────────────────────────────
@@ -401,6 +401,55 @@ describe('assigned by me: three states, with receipts', () => {
   test('an unreadable created_at does not produce a negative or NaN age', () => {
     const row = mapAssignedRow({ id: 't5', title: 'x', assigned_staff_id: 'ana', status: 'open', created_at: null }, names, NOW);
     assert.equal(row.ageDays, 0);
+  });
+});
+
+// ── the loop closes: work that came back ────────────────────────────────────
+
+describe('what came back since you last looked', () => {
+  function entry(over: Partial<AssignedByMeItem> = {}): AssignedByMeItem {
+    return {
+      taskId: 't', title: 'Change the lobby filters', assigneeStaffId: 'm', assigneeName: 'Marcus',
+      assignedDepartment: null, state: 'done', dueDate: null, createdAt: '2026-07-24T00:00:00.000Z',
+      settledByName: 'Marcus', settledAt: '2026-07-30T09:00:00.000Z', reason: null, ageDays: 6,
+      ...over,
+    };
+  }
+
+  test('a task settled after you last looked is news', () => {
+    const out = assignerNotices([entry()], '2026-07-30T08:00:00.000Z', NOW);
+    assert.equal(out.length, 1);
+  });
+
+  test('a task settled BEFORE you last looked is not', () => {
+    // The bug this catches: a notice that never clears, because the loop has
+    // no unread flag and "since you last looked" is the only thing stopping it.
+    const out = assignerNotices([entry()], '2026-07-30T10:00:00.000Z', NOW);
+    assert.equal(out.length, 0);
+  });
+
+  test('still waiting is never news', () => {
+    assert.equal(assignerNotices([entry({ state: 'waiting', settledAt: null })], null, NOW).length, 0);
+  });
+
+  test('never having opened the drawer means everything recent counts', () => {
+    // Deliberate: the first thing that comes back is what teaches somebody the
+    // drawer is there at all.
+    assert.equal(assignerNotices([entry()], null, NOW).length, 1);
+  });
+
+  test('stale news is not news', () => {
+    const old = entry({ settledAt: '2026-07-01T09:00:00.000Z' });
+    assert.equal(assignerNotices([old], null, NOW).length, 0, 'three weeks ago is history');
+  });
+
+  test('a refusal comes back too, not just a completion', () => {
+    const out = assignerNotices([entry({ state: 'cant', reason: 'no part' })], null, NOW);
+    assert.equal(out.length, 1);
+  });
+
+  test('an unreadable settled stamp is dropped rather than shown as now', () => {
+    assert.equal(assignerNotices([entry({ settledAt: 'not a date' })], null, NOW).length, 0);
   });
 });
 

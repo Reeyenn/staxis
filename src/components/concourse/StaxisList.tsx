@@ -48,6 +48,7 @@ import { CalendarView, isoDay } from './list-calendar';
 import { EventEditor } from '@/app/communications/_components/CalendarPane';
 import {
   AssignedByMeView,
+  AssignerNoticesView,
   ComposerView,
   LIST_CSS,
   LogRowView,
@@ -71,11 +72,15 @@ export function StaxisList({ propertyId, lang, focusId, onReadState, canSeeFindi
   const { user } = useAuth();
 
   // ── the work ─────────────────────────────────────────────────────────────
-  const { data: worklist, reload: reloadWorklist } = useApiResource<{ items: WorklistItem[] }>(
+  const { data: worklist, reload: reloadWorklist } = useApiResource<{
+    items: WorklistItem[];
+    notices: AssignedByMeItem[];
+  }>(
     `/api/worklist?pid=${propertyId}`,
     { enabled: !!propertyId, pollMs: 60_000, keepDataOnError: true },
   );
   const items = React.useMemo(() => worklist?.items ?? [], [worklist]);
+  const notices = React.useMemo(() => worklist?.notices ?? [], [worklist]);
 
   // Re-read the wall clock every time the work refetches, rather than once at
   // mount. A front-desk terminal left open overnight would otherwise keep
@@ -227,6 +232,27 @@ export function StaxisList({ propertyId, lang, focusId, onReadState, canSeeFindi
     })();
   }, [composer, propertyId, reloadWorklist, meStaffId, todayIso, now]);
 
+  /** Opening the drawer IS having seen it. Stamp, then let the poll clear the
+   *  strip. Fire and forget: a failed stamp costs one repeated line, and
+   *  blocking the drawer on a preference write would be the worse trade. */
+  const openDrawer = React.useCallback(() => {
+    setDrawerOpen(true);
+    if (notices.length === 0) return;
+    void (async () => {
+      try {
+        await fetchWithAuth('/api/feed/prefs', {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ pid: propertyId, markAssignedSeen: true }),
+          timeoutMs: INTERACTIVE_ACTION_TIMEOUT_MS,
+        });
+        await reloadWorklist();
+      } catch (e) {
+        if (e instanceof SessionEndedError) throw e;
+      }
+    })();
+  }, [notices.length, propertyId, reloadWorklist]);
+
   const removeEvent = React.useCallback((ev: KnowledgeEventDTO) => {
     void (async () => {
       try {
@@ -322,13 +348,20 @@ export function StaxisList({ propertyId, lang, focusId, onReadState, canSeeFindi
             Calendar
           </button>
         </div>
-        <button type="button" className="fd-act" onClick={() => setDrawerOpen((v) => !v)} aria-expanded={drawerOpen}>
-          Assigned by me
+        <button
+          type="button"
+          className={notices.length > 0 ? 'fd-act fd-yes' : 'fd-act'}
+          onClick={() => (drawerOpen ? setDrawerOpen(false) : openDrawer())}
+          aria-expanded={drawerOpen}
+        >
+          Assigned by me{notices.length > 0 ? ` (${notices.length})` : ''}
         </button>
         <button type="button" className="fd-act" onClick={() => setLogbookOpen(true)}>
           Log book
         </button>
       </div>
+
+      {!drawerOpen && <AssignerNoticesView notices={notices} onOpenDrawer={openDrawer} />}
 
       {drawerOpen && (
         <AssignedByMeView

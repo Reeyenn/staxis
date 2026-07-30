@@ -16,14 +16,23 @@ import { log } from '@/lib/log';
 export interface FeedPrefs {
   /** "Include log book in Staxis". */
   logbookInList: boolean;
+  /**
+   * When this person last opened their Assigned-by-me drawer, or null.
+   *
+   * Anything they handed out that got settled AFTER this is news, and shows as
+   * a one-line notice on their list. NULL means never opened, and that is the
+   * right default: the first task that comes back is what teaches somebody the
+   * drawer is there.
+   */
+  assignedSeenAt: string | null;
 }
 
-export const DEFAULT_FEED_PREFS: FeedPrefs = { logbookInList: false };
+export const DEFAULT_FEED_PREFS: FeedPrefs = { logbookInList: false, assignedSeenAt: null };
 
 export async function readFeedPrefs(accountId: string, propertyId: string): Promise<FeedPrefs> {
   const { data, error } = await supabaseAdmin
     .from('staxis_user_prefs')
-    .select('logbook_in_list')
+    .select('logbook_in_list, assigned_seen_at')
     .eq('account_id', accountId)
     .eq('property_id', propertyId)
     .maybeSingle();
@@ -34,7 +43,11 @@ export async function readFeedPrefs(accountId: string, propertyId: string): Prom
     return DEFAULT_FEED_PREFS;
   }
   if (!data) return DEFAULT_FEED_PREFS;
-  return { logbookInList: (data as { logbook_in_list?: boolean }).logbook_in_list === true };
+  const row = data as { logbook_in_list?: boolean; assigned_seen_at?: string | null };
+  return {
+    logbookInList: row.logbook_in_list === true,
+    assignedSeenAt: row.assigned_seen_at ?? null,
+  };
 }
 
 export async function writeFeedPrefs(
@@ -51,6 +64,7 @@ export async function writeFeedPrefs(
         account_id: accountId,
         property_id: propertyId,
         logbook_in_list: merged.logbookInList,
+        assigned_seen_at: merged.assignedSeenAt,
         updated_at: new Date().toISOString(),
       },
       { onConflict: 'account_id,property_id' },

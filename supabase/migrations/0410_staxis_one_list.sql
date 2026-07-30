@@ -203,6 +203,13 @@ CREATE TABLE IF NOT EXISTS public.staxis_user_prefs (
   -- interleaved with its money.
   logbook_in_list boolean NOT NULL DEFAULT false,
 
+  -- When this person last opened their "Assigned by me" drawer. A task they
+  -- handed out that got settled AFTER this stamp is news, and shows as a
+  -- one-line notice on their list; opening the drawer moves the stamp and the
+  -- notice stops. NULL means never opened, which is correct: the first thing
+  -- that comes back should be the thing that teaches them the drawer exists.
+  assigned_seen_at timestamptz,
+
   created_at timestamptz NOT NULL DEFAULT now(),
   updated_at timestamptz NOT NULL DEFAULT now(),
 
@@ -223,13 +230,13 @@ BEGIN
 END $$;
 
 COMMENT ON TABLE public.staxis_user_prefs IS
-  'One row per (person, hotel) holding that person''s choices about their Staxis list. Today: whether log book entries are merged into the list. Service-role only; every access goes through /api/feed/prefs.';
+  'One row per (person, hotel) holding that person''s state on their Staxis list: whether log book entries are merged in, and when they last opened the Assigned-by-me drawer. Service-role only; every access goes through /api/feed/prefs.';
 
 -- ─── applied_migrations bookkeeping ──────────────────────────────────────
 INSERT INTO public.applied_migrations (version, description)
 VALUES (
   '0410',
-  'the one list: comms_tasks gains a blocked status with blocked_at/blocked_by_staff_id/blocked_reason and a CHECK making a reasonless refusal unrepresentable, plus the assigner-drawer index; recurring_task_templates gains biweekly (weekday + anchor_date) and monthly (day_of_month 1..28) cadences with a per-cadence shape CHECK and all_staff in the department domain; new staxis_user_prefs (account, property) holding the per-person "include log book in Staxis" switch. Service-role only.'
+  'the one list: comms_tasks gains a blocked status with blocked_at/blocked_by_staff_id/blocked_reason and a CHECK making a reasonless refusal unrepresentable, plus the assigner-drawer index; recurring_task_templates gains biweekly (weekday + anchor_date) and monthly (day_of_month 1..28) cadences with a per-cadence shape CHECK and all_staff in the department domain; new staxis_user_prefs (account, property) holding the per-person "include log book in Staxis" switch and the assigned-by-me seen stamp. Service-role only.'
 )
 ON CONFLICT (version) DO NOTHING;
 

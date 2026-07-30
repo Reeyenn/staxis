@@ -25,7 +25,14 @@ import { errToString } from '@/lib/utils';
 import { log } from '@/lib/log';
 import { commsContext, ONE_LIST_CTX } from '@/lib/comms/route-helpers';
 import { checkAndIncrementRateLimit, rateLimitedResponse } from '@/lib/api-ratelimit';
-import { gatherAssignedByMe, gatherWorklist, listAssignees, worklistSeesAllSources } from '@/lib/worklist/core';
+import {
+  assignerNotices,
+  gatherAssignedByMe,
+  gatherWorklist,
+  listAssignees,
+  worklistSeesAllSources,
+} from '@/lib/worklist/core';
+import { readFeedPrefs } from '@/lib/feed/prefs';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -59,16 +66,31 @@ export async function GET(req: NextRequest): Promise<Response> {
     // Floor staff (housekeeping/maintenance/staff) see only their manual to-dos;
     // complaints/work-orders/inspections/pm stay management + front-desk only.
     // The viewer narrows it once more, to what is on THIS person's plate.
-    const items = await gatherWorklist(ctx.pid, {
-      tasksOnly: !worklistSeesAllSources(ctx.role),
-      viewer: {
-        staffId: ctx.staffId,
-        accountId: ctx.accountId,
-        role: ctx.role,
-        dept: ctx.dept,
-      },
-    });
-    return ok({ items }, { requestId: ctx.requestId, headers: ctx.headers });
+    //
+    // The notices ride along on the SAME read rather than getting a poll of
+    // their own: they are three lines derived from a query this route already
+    // knows how to run, and a second 60-second poll for three lines is how a
+    // screen ends up costing more than it is worth.
+    const [items, assigned, prefs] = await Promise.all([
+      gatherWorklist(ctx.pid, {
+        tasksOnly: !worklistSeesAllSources(ctx.role),
+        viewer: {
+          staffId: ctx.staffId,
+          accountId: ctx.accountId,
+          role: ctx.role,
+          dept: ctx.dept,
+        },
+      }),
+      gatherAssignedByMe(ctx.pid, ctx.staffId).catch((e) => {
+        // A failed drawer read must not take the whole list down with it. The
+        // work is what the screen is for; the notices are the garnish.
+        log.error('[worklist] notices read failed', { requestId: ctx.requestId, pid: ctx.pid, err: errToString(e) });
+        return [];
+      }),
+      readFeedPrefs(ctx.accountId, ctx.pid),
+    ]);
+    const notices = assignerNotices(assigned, prefs.assignedSeenAt, new Date());
+    return ok({ items, notices }, { requestId: ctx.requestId, headers: ctx.headers });
   } catch (e) {
     log.error('[worklist] GET failed', { requestId: ctx.requestId, pid: ctx.pid, err: errToString(e) });
     return err('Internal server error', {
