@@ -206,4 +206,50 @@ describe('cron cadences', () => {
       );
     }
   });
+
+  it('the AI master switch is off: none of its four crons is scheduled', () => {
+    // Founder ruling: the whole AI findings layer stays off behind ONE master
+    // switch, flipped when the first real hotel is onboarded. On 2026-07-29
+    // `run-management-patterns` was given a daily schedule on its own, on a
+    // production fleet whose only management company is the seeded demo one, so
+    // the sole effect would have been paid AI runs against fake data.
+    //
+    // This asserts the switch is a switch. Turning the layer on means adding all
+    // four crons across all four surfaces at once — docs/cron-triggers.md, "The
+    // AI master switch". When that day comes, DELETE this test in the same
+    // commit; do not carve exceptions into it one route at a time, because a
+    // per-route exception is precisely the drift the ruling exists to prevent.
+    const AI_MASTER_SWITCH_CRONS = [
+      { heartbeatName: 'run-findings',             cronPath: '/api/cron/run-findings' },
+      { heartbeatName: 'findings-sweep',           cronPath: '/api/cron/findings-sweep' },
+      { heartbeatName: 'findings-janitor',         cronPath: '/api/cron/findings-janitor' },
+      { heartbeatName: 'run-management-patterns',  cronPath: '/api/cron/run-management-patterns' },
+    ] as const;
+
+    const vercel = JSON.parse(readFileSync(VERCEL_JSON_PATH, 'utf8')) as {
+      crons?: Array<{ path: string; schedule: string }>;
+    };
+
+    for (const cron of AI_MASTER_SWITCH_CRONS) {
+      const hint = `The AI layer goes on all at once — see docs/cron-triggers.md, `
+        + `"The AI master switch". If you are turning it on, delete this test rather `
+        + `than exempting "${cron.heartbeatName}".`;
+      assert.equal(
+        (vercel.crons ?? []).find((entry) => entry.path === cron.cronPath),
+        undefined,
+        `vercel.json schedules "${cron.cronPath}", which must be dormant. ${hint}`,
+      );
+      assert.equal(
+        SCHEDULE_REGISTRY.find((entry) => entry.heartbeatName === cron.heartbeatName),
+        undefined,
+        `SCHEDULE_REGISTRY has "${cron.heartbeatName}", which must be dormant. ${hint}`,
+      );
+      assert.equal(
+        EXPECTED_CRONS.find((entry) => entry.name === cron.heartbeatName),
+        undefined,
+        `The doctor's EXPECTED_CRONS has "${cron.heartbeatName}", which must be dormant. `
+        + `An expected heartbeat with no scheduler reports "missing" forever. ${hint}`,
+      );
+    }
+  });
 });

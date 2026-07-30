@@ -997,7 +997,10 @@ export const EXPECTED_CRONS: Array<{ name: string; cadenceHours: number; descrip
   { name: 'agent-costs-rollup',            cadenceHours: 24,    description: 'daily 5:20am AI-books rollup — folds agent_costs into agent_costs_monthly, verifies the fold, and prunes only verified months past the 6-month window (sole owner of agent_costs retention)' },
   { name: 'pms-auth-codes-purge',          cadenceHours: 24,    description: 'daily 4:45am purge of pms_auth_codes older than 7 days (Okta 2FA inbox, migration 0274)' },
   { name: 'pms-observations-purge',        cadenceHours: 24,    description: 'daily 5:40am retention sweep for the five append-only PMS observation tables via 0343\'s sanctioned purge function (5-year window — a no-op until report ingestion restarts)' },
-  { name: 'run-management-patterns',       cadenceHours: 24,    description: 'daily management-company findings owner — refreshes the live portfolio queue and retries the weekly shadow evaluator' },
+  // 2026-07-29 (owner ruling, restored): run-management-patterns is unscheduled
+  // again, so the doctor must not expect its heartbeat — an expected heartbeat
+  // with no scheduler reports "missing" forever. It re-enters this list with the
+  // rest of the AI layer; see docs/cron-triggers.md, "The AI master switch".
   // Weekly
   { name: 'ml-train-inventory',            cadenceHours: 168,   description: 'weekly inventory training (Sunday)' },
   // Plan v4 (2026-05-24): removed `scraper-weekly-digest` — Railway

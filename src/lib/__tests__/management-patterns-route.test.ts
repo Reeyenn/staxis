@@ -23,13 +23,18 @@ describe('management-pattern scheduled route boundary', () => {
     });
   }
 
-  test('is scheduled daily as the background owner', () => {
+  test('is unscheduled, because the AI layer goes on in one act', () => {
     const config = JSON.parse(readFileSync(join(process.cwd(), 'vercel.json'), 'utf8')) as {
       crons?: Array<{ path?: string; schedule?: string }>;
     };
-    assert.deepEqual(
+    assert.equal(
       (config.crons ?? []).find((cron) => cron.path === '/api/cron/run-management-patterns'),
-      { path: '/api/cron/run-management-patterns', schedule: '0 8 * * *' },
+      undefined,
+      'This route was scheduled on 2026-07-29 and parked again the same day on the '
+      + "owner's ruling: the whole AI layer stays off behind one master switch, and the "
+      + 'only management company in production today is the seeded demo one. Do not '
+      + 'schedule it on its own — docs/cron-triggers.md, "The AI master switch", turns '
+      + 'this cron on together with run-findings, findings-sweep and findings-janitor.',
     );
   });
 

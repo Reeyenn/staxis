@@ -54,10 +54,6 @@
       "schedule": "40 5 * * *"
     },
     {
-      "path": "/api/cron/run-management-patterns",
-      "schedule": "0 8 * * *"
-    },
-    {
       "path": "/api/cron/vercel-watchdog",
       "schedule": "*/5 * * * *"
     }

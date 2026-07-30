@@ -35,7 +35,10 @@ These routes also live under `/api/cron/*` (or `/api/agent/*`) and accept `CRON_
 | `/api/cron/webhook-dedup-purge` | **DORMANT** (2026-07-27 chore audit) | Never | Both dedup tables have no live writer: the Sentry producer was deleted 2026-07-17, and `stripe_processed_events` has never held a row because `/api/stripe/webhook` is inert while billing is unconfigured. **Re-schedule the day billing goes live** — that route writes a row per delivery and this is its only pruner. |
 | `/api/cron/expire-help-requests` | **DORMANT** (2026-07-27 chore audit) | Never | Its producer is the decommissioned robot's human-assist flow. All 4 prod rows expired 2026-07-01; it was a proven no-op 288×/day. Re-schedule when cua-service runs mapper jobs again. |
 | `/api/cron/claude-sessions-purge` | **DORMANT** (2026-07-27 chore audit) | Never | `claude_sessions` has never held a row — the writer is a developer-laptop hook whose POSTs die on the vercel.app→getstaxis.com 308. Developer tooling, not a hotel chore. Re-enable the hook and this cron together or not at all. |
-| `/api/cron/findings-janitor` | **DORMANT** by design | Never | Retention for the findings engine, shipped unscheduled like `run-findings` and `findings-sweep` — the founder's master switch turns the pattern engine on. Deletes only settled `findings_ai_spend` rows and surplus `finding_runs`; refuses to touch `findings`, `finding_actions`, `finding_detector_state` or `finding_sweep_runs`. |
+| `/api/cron/run-findings` | **DORMANT** by design — the AI master switch | Never | The nightly per-hotel findings pass (demote, detect, judge). Unscheduled since it shipped 2026-07-26: the founder turns the AI on, not a deploy. Intended schedule `0 6 * * *`. See "The AI master switch" below. |
+| `/api/cron/findings-sweep` | **DORMANT** by design — the AI master switch | Never | The weekly discovery pass over a rotating sample of hotels; proposes new detectors into the founder's promotion queue. Intended schedule `0 7 * * 1`. See "The AI master switch" below. |
+| `/api/cron/findings-janitor` | **DORMANT** by design — the AI master switch | Never | Retention for the findings engine, shipped unscheduled like `run-findings` and `findings-sweep`. Deletes only settled `findings_ai_spend` rows and surplus `finding_runs`; refuses to touch `findings`, `finding_actions`, `finding_detector_state` or `finding_sweep_runs`. Intended schedule `40 7 * * 1`, behind the sweep. See "The AI master switch" below. |
+| `/api/cron/run-management-patterns` | **DORMANT** by design — the AI master switch | Never | The management-company equivalent: refreshes the live portfolio queue and retries the shadow-only v2 evaluator, for every management company. Briefly scheduled `0 8 * * *` on 2026-07-29 and parked again the same day on the owner's ruling — the AI layer goes on all at once, and the only management company in production today is the seeded demo one. Intended schedule `0 8 * * *`. Its scheduled discovery excludes demo-only portfolios; the company queue's page-open fallback does not, so live demos still generate cards. See "The AI master switch" below. |
 | `/api/cron/ml-aggregate-priors` | GitHub Actions | Daily, post-training | Aggregate Bayesian priors after the training run. |
 | `/api/cron/ml-predict-inventory` | GitHub Actions | Multiple times/day | Run inventory rate predictions across all properties. |
 | `/api/cron/ml-retention-purge` | **DORMANT** — schedule commented out in `.github/workflows/ml-retention-purge.yml` since 2026-05-30 | Never | Retention for `prediction_log`, `app_events`, `phone_pairings`. **`agent_costs` was removed 2026-07-27** — the books have one owner, `agent-costs-rollup`. Deletes in bounded batches with a per-run cap, and supports `?dryRun=true`; run the dry run FIRST when re-enabling. |
@@ -50,6 +53,37 @@ These routes also live under `/api/cron/*` (or `/api/agent/*`) and accept `CRON_
 | `/api/cron/seal-daily` | GitHub Actions | Daily, end-of-day local | Seal the day's records — locks `rooms` from edits, freezes the ML training rows. |
 
 > **If you add a NEW cron-style route**: declare it in `vercel.json` and remove it from this list, OR add it to the external table above with the exact workflow file or scheduler that triggers it. Routes that aren't in EITHER list are silently dead.
+
+## The AI master switch
+
+**The entire AI findings layer is unscheduled on purpose, and it goes on in ONE act.** The founder's standing ruling: nothing in this layer runs on a timer until the first real hotel is onboarded. Until then every one of these routes is hand-callable with the `CRON_SECRET` bearer, which is how each gets exercised against real data before it is ever scheduled.
+
+**Do not schedule one of these on its own.** That is exactly what happened on 2026-07-29 — `run-management-patterns` was given a daily schedule in isolation, on a production fleet whose only management company is the seeded demo one, so the single effect would have been paid AI runs against fake data. It was parked again the same day.
+
+### The four crons, and the schedule each one wants
+
+| Route | Heartbeat name | Schedule to restore | `cadenceHours` for the doctor |
+|---|---|---|---|
+| `/api/cron/run-findings` | `run-findings` | `0 6 * * *` | 24 |
+| `/api/cron/findings-sweep` | `findings-sweep` | `0 7 * * 1` | 168 |
+| `/api/cron/findings-janitor` | `findings-janitor` | `40 7 * * 1` | 168 |
+| `/api/cron/run-management-patterns` | `run-management-patterns` | `0 8 * * *` | 24 |
+
+### The checklist — four files, four rows each
+
+For **every** route in the table above, add its row to all four places. The `cron-cadences` and `cron-coverage` tests fail loudly if you do three of the four, so a half-finished switch cannot ship.
+
+1. **`vercel.json`** → `{ "path": "<route>", "schedule": "<schedule>" }`
+2. **`src/lib/cron-schedule-registry.ts`** → `{ heartbeatName: '<name>', source: { kind: 'vercel', cronPath: '<route>' }, cronExpr: '<schedule>' }`
+3. **`src/app/api/admin/doctor/route.ts`** → an `EXPECTED_CRONS` entry with the `cadenceHours` from the table
+4. **`src/app/api/admin/mission/workers/route.ts`** → a `WORKER_META` line, so the chore shows up in Mission Control
+
+Then: deploy, and confirm each route appears in the Vercel **Cron Jobs** tab. After the first tick, `select route, last_run_at from cron_heartbeats order by last_run_at desc` should show all four.
+
+### Two things to check before flipping it
+
+- **The per-hotel spend cap is real money.** `run-findings` makes one batched model call per hotel per night and `findings-sweep` one per sampled hotel; both reserve against the per-hotel-per-day findings cap. Turning the layer on for N hotels is an N-shaped cost change, not a fixed one.
+- **Demo data.** `run-management-patterns`'s scheduled discovery already excludes companies whose whole portfolio is `properties.is_test` hotels (`src/lib/company/demo-portfolio.ts`). The hotel-level crons have no equivalent filter — if the demo hotels are still in production when the switch goes on, decide deliberately whether they should be getting nightly findings runs.
 
 ## How to verify
 

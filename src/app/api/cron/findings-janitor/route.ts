@@ -13,6 +13,10 @@
  *   2. src/lib/cron-schedule-registry.ts  → { heartbeatName: 'findings-janitor', source: { kind: 'vercel', cronPath: '/api/cron/findings-janitor' }, cronExpr: '40 7 * * 1' }
  *   3. src/app/api/admin/doctor/route.ts  → EXPECTED_CRONS entry, cadenceHours: 168
  *   4. src/app/api/admin/mission/workers/route.ts → WORKER_META line
+ * Do not do it for this route alone. The AI layer goes on in one act, and
+ * docs/cron-triggers.md, "The AI master switch", is the single checklist that
+ * covers all four of its crons (this one, run-findings, findings-sweep and
+ * run-management-patterns).
  * Weekly, Monday, after findings-sweep — a janitor should run behind the jobs
  * whose output it tidies, never ahead of them.
  *

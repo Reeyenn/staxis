@@ -28,6 +28,10 @@
  *   2. src/lib/cron-schedule-registry.ts  → { heartbeatName: 'run-findings', source: { kind: 'vercel', cronPath: '/api/cron/run-findings' }, cronExpr: '0 6 * * *' }
  *   3. src/app/api/admin/doctor/route.ts  → EXPECTED_CRONS entry, cadenceHours: 24
  *   4. src/app/api/admin/mission/workers/route.ts → WORKER_META line
+ * Do not do it for this route alone. The AI layer goes on in one act, and
+ * docs/cron-triggers.md, "The AI master switch", is the single checklist that
+ * covers all four of its crons (this one, findings-sweep, findings-janitor and
+ * run-management-patterns).
  * Until then it is callable by hand with the cron bearer, which is how it gets
  * exercised against a real hotel before it is ever scheduled.
  *

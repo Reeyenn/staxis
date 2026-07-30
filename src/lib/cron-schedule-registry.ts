@@ -99,7 +99,15 @@ export const SCHEDULE_REGISTRY: ReadonlyArray<ScheduleEntry> = [
   // 5-year window, so it is a guaranteed no-op today — wired now so the plumbing
   // exists before report ingestion restarts and these tables take real volume.
   { heartbeatName: 'pms-observations-purge',            source: { kind: 'vercel', cronPath: '/api/cron/pms-observations-purge' },       cronExpr: '40 5 * * *' },
-  { heartbeatName: 'run-management-patterns',           source: { kind: 'vercel', cronPath: '/api/cron/run-management-patterns' },      cronExpr: '0 8 * * *' },
+  // 2026-07-29 (owner ruling, restored): `run-management-patterns` was
+  // scheduled daily at '0 8 * * *' and is now unscheduled again. The whole AI
+  // layer stays off behind ONE master switch the founder flips when the first
+  // real hotel is onboarded, which is why its hotel-level siblings
+  // (run-findings, findings-sweep, findings-janitor) have never been scheduled
+  // either. Scheduling this one alone would have started the AI on the only
+  // organization that exists today: the fake demo company. Route KEPT dormant
+  // and hand-callable. ONE checklist re-enables all four together —
+  // docs/cron-triggers.md, "The AI master switch".
   // Weekly
   { heartbeatName: 'ml-train-inventory',    source: { kind: 'github', workflowFile: 'ml-cron.yml' },                 cronExpr: '0 9 * * 0' },
   // Plan v4 (2026-05-24): removed `scraper-weekly-digest` — Railway

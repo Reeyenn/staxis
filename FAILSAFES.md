@@ -138,7 +138,7 @@ Symptom → diagnosis → fix → verify → prevention, per failure type. When 
 
 **Touch points:** every file under `src/app/api/cron/`, plus the doctor route's `EXPECTED_CRONS` list. When you add a new cron, update both.
 
-`run-management-patterns` is the daily background owner for management-company findings. It runs the live legacy portfolio checks and the shadow-only v2 evaluator through their existing claims/leases. It writes no heartbeat when any organization is incomplete or unavailable, so production cannot advertise a successful fleet pass from partial coverage.
+`run-management-patterns` is the background owner for management-company findings: it runs the live legacy portfolio checks and the shadow-only v2 evaluator through their existing claims/leases, and it writes no heartbeat when any organization is incomplete or unavailable, so production cannot advertise a successful fleet pass from partial coverage. **It is unscheduled, and its heartbeat is deliberately NOT in `EXPECTED_CRONS`.** It was briefly scheduled daily on 2026-07-29 and parked again the same day on the owner's ruling: the whole AI layer stays off behind one master switch, so this cron re-enters `vercel.json`, `SCHEDULE_REGISTRY`, `EXPECTED_CRONS` and `WORKER_META` together with `run-findings`, `findings-sweep` and `findings-janitor` and not before. The single checklist is `docs/cron-triggers.md`, "The AI master switch". Re-adding it to `EXPECTED_CRONS` on its own would make the doctor report a missing heartbeat forever, which is the second "Don't" above.
 
 ---
 
