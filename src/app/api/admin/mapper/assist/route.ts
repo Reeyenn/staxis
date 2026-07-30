@@ -29,6 +29,7 @@ import { requireAdmin } from '@/lib/admin-auth';
 import { ok, err } from '@/lib/api-response';
 import { getOrMintRequestId } from '@/lib/log';
 import { validateAssistBody, validateCoordinateBounds } from '@/lib/pms/takeover-validate';
+import { robotDecommissionedResponse } from '@/lib/pms/decommission';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -41,6 +42,9 @@ export async function POST(req: NextRequest): Promise<Response> {
   // standard envelope — return its response verbatim instead.
   const admin = await requireAdmin(req);
   if (!admin.ok) return admin.response;
+
+  const robotOff = robotDecommissionedResponse(requestId);
+  if (robotOff) return robotOff;
 
   let body: unknown;
   try {

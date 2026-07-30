@@ -7,8 +7,9 @@
  * │ mapping_help_requests rows are already 'expired', the newest expired    │
  * │ 2026-07-01. At every-5-minutes that was a proven no-op 288 times a day. │
  * │                                                                         │
- * │ RE-ENABLE WHEN THE ROBOT COMES BACK — specifically when cua-service     │
- * │ starts running mapper jobs again. Both halves of this route depend on   │
+ * │ RETIRED WITH THE ROBOT. If browser automation is ever redesigned, this  │
+ * │ cleanup must be reviewed as part of that new implementation. Both       │
+ * │ halves of this route depend on                                          │
  * │ it: the expiry RPC drains pending help requests (15-min TTL, so the     │
  * │ 5-min cadence matters), and the live-frame sweep cleans up after        │
  * │ hard-crashed mapper runs. Restore all five registry rows: vercel.json   │
@@ -51,6 +52,7 @@ import { requireCronSecret } from '@/lib/api-auth';
 import { ok, err } from '@/lib/api-response';
 import { getOrMintRequestId } from '@/lib/log';
 import { writeCronHeartbeat } from '@/lib/cron-heartbeat';
+import { CUA_DECOMMISSIONED, CUA_DECOMMISSION_REASON } from '@/lib/pms/decommission';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -67,6 +69,18 @@ export async function GET(req: NextRequest): Promise<Response> {
   // (matches every other admin/cron route).
   const authErr = requireCronSecret(req);
   if (authErr) return authErr;
+
+  if (CUA_DECOMMISSIONED) {
+    return ok({
+      decommissioned: true,
+      reason: CUA_DECOMMISSION_REASON,
+      expired: 0,
+      storageDeleted: 0,
+      storageFailed: 0,
+      liveFramesSwept: 0,
+      liveFrameSweepFailed: false,
+    }, { requestId });
+  }
 
   // Step 1: flip pending rows past expires_at to 'expired'.
   // expire_stale_help_requests() returns (id, screenshot_storage_path) per row.

@@ -25,6 +25,7 @@ import { log, getOrMintRequestId } from '@/lib/log';
 import { validateUuid, validateString, validateEnum } from '@/lib/api-validate';
 import { checkAndIncrementRateLimit } from '@/lib/api-ratelimit';
 import { PMS_TYPES, isPMSType } from '@/lib/pms';
+import { robotDecommissionedResponse } from '@/lib/pms/decommission';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -44,6 +45,9 @@ export async function POST(req: NextRequest) {
   // ─── Auth ────────────────────────────────────────────────────────────────
   const session = await requireSession(req);
   if (!session.ok) return session.response;
+
+  const robotOff = robotDecommissionedResponse(requestId);
+  if (robotOff) return robotOff;
 
   // ─── Parse + validate ────────────────────────────────────────────────────
   const body = (await req.json().catch(() => null)) as Body | null;

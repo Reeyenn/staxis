@@ -62,6 +62,7 @@ import {
   validateAttachmentClaim,
   type AttachmentDecision,
 } from '@/lib/pms-inbox/report-files';
+import { PMS_ROBOT_ENABLED } from '@/lib/pms/robot-status';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -185,9 +186,19 @@ export async function POST(req: NextRequest): Promise<Response> {
     return ok({ stored: false, reason: 'bad_recipient' }, { requestId });
   }
 
-  return recipient.kind === 'report'
-    ? handleReport(body, recipient.local, recipient.domain, requestId)
-    : handleAuthCode(body, recipient.normalized, requestId);
+  if (recipient.kind === 'report') {
+    return handleReport(body, recipient.local, recipient.domain, requestId);
+  }
+
+  // The shared-secret boundary has already authenticated the courier. Retired
+  // robot login mail is now a uniform accepted-but-dropped path: do not resolve
+  // credentials, consume a property rate limit, retain the message, or insert
+  // a code. Scheduled-report recipients continue through the branch above.
+  if (!PMS_ROBOT_ENABLED) {
+    return ok({ stored: false, reason: 'robot_retired' }, { requestId });
+  }
+
+  return handleAuthCode(body, recipient.normalized, requestId);
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

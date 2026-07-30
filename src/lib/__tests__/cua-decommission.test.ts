@@ -6,9 +6,9 @@
  * *shape* of the codebase tells you the robot is off — only behaviour does.
  * These tests pin that behaviour:
  *
- *   1. The switch itself is on. A deliberate tripwire, not a tautology: the
- *      only way to re-arm the robot is to edit this test too, which forces
- *      whoever does it to read the checklist in cua-service/README.md.
+ *   1. The switch itself is off. A deliberate tripwire, not a tautology: a
+ *      future browser-automation product must make an explicit reviewed code
+ *      change rather than drift back through deployment configuration.
  *   2. The pull-enqueue cron route enqueues NOTHING — and, more strongly,
  *      never so much as reads the properties table. If it queried, the
  *      poisoned supabaseAdmin stub below would make it throw.
@@ -64,14 +64,12 @@ function restoreDb(): void {
 
 describe('CUA decommission — the switch', () => {
   test('the robot is decommissioned', () => {
-    // Tripwire. If you are here because this failed, you re-armed the PMS
-    // robot. That is allowed — but do the whole checklist in
-    // cua-service/README.md (web-app flag, fly.toml + deploy, the cron
-    // workflow schedule) rather than only the one line that made this pass.
+    // Tripwire. If this fails, browser automation was reintroduced without
+    // updating the retirement contract and its full product review.
     assert.equal(
       CUA_DECOMMISSIONED,
       true,
-      'CUA_DECOMMISSIONED flipped — see the re-arm checklist in cua-service/README.md',
+      'CUA_DECOMMISSIONED flipped — browser automation has no supported configuration-only re-enable path',
     );
   });
 });
@@ -95,10 +93,11 @@ describe('CUA decommission — health-check verdict', () => {
     );
   });
 
-  test('tells the operator how to turn it back on', () => {
+  test('states that configuration alone cannot turn it back on', () => {
     const verdict = decommissionedCheck('anything');
-    assert.match(verdict.fix, /CUA_DECOMMISSIONED/);
-    assert.match(verdict.fix, /README/);
+    assert.match(verdict.fix, /no supported configuration-only re-enable path/i);
+    assert.match(verdict.fix, /product and architecture review/i);
+    assert.doesNotMatch(verdict.fix, /fly deploy|schedule:|CUA_DECOMMISSIONED=false/i);
   });
 });
 
@@ -168,7 +167,7 @@ describe('/api/admin/doctor — cua_* checks are honest about the decommission',
       );
       assert.match(
         check.detail,
-        /decommission/i,
+        /decommission|retir/i,
         `${name} must say it is decommissioned, not imply it is watching a live robot`,
       );
     }

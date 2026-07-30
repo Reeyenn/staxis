@@ -382,9 +382,9 @@ function DashboardWorkspace() {
     && (!maintenanceEnabled || (workOrdersFeed.hasSnapshot && !workOrdersFeed.error))
     && (!communicationsEnabled || (complaintsFeed.hasSnapshot && !complaintsFeed.error));
 
-  // feat/cua-partial-promotion — per-feed PMS trust. The robot may be live
-  // with only SOME feeds learned; a tile whose source feed is missing must
-  // say "still learning", never a confident 0. When feed status is unknown
+  // Per-feed PMS trust. A report may contain only SOME expected data; a tile
+  // whose source data is missing must show an unknown state, never a confident
+  // 0. When feed status is unknown
   // (manual hotel / onboarding / hook not yet loaded) every value below
   // keeps its exact pre-existing behavior.
   const feedStatus = useFeedStatus(activePropertyId);
@@ -397,9 +397,9 @@ function DashboardWorkspace() {
   const connPending = fsLive && feedStatus.connection === 'pending';
   const roomStatusLearning = fsLive && (feedStatus.feeds.roomStatus === 'learning' || connPending);
   // 'ok' = at least one source feed is live → render the number (genuine
-  // zeros included). 'learning' = being auto-retried. 'unavailable' = this
-  // PMS connection doesn't provide it (never claim "retrying").
-  // 'connecting' = first sync hasn't landed yet.
+  // zeros included). 'learning' = the latest data is incomplete.
+  // 'unavailable' = the current PMS data doesn't provide it.
+  // 'connecting' = the first PMS dataset hasn't arrived yet.
   const tileState = (keys: FeedKey[]): 'ok' | 'learning' | 'unavailable' | 'connecting' => {
     if (!fsLive) return 'ok';
     if (connPending) return 'connecting';
@@ -451,9 +451,9 @@ function DashboardWorkspace() {
     : !roomsFeed.hasSnapshot
       ? ('loading current rooms…')
       : connPending
-        ? ('connecting to your PMS…')
+        ? ('waiting for PMS data…')
         : roomStatusLearning
-          ? ('learning from your PMS')
+          ? ('latest PMS data is incomplete')
           : ('rooms to clean');
 
   // Tile values. With live feed status the numbers come from the
@@ -748,7 +748,7 @@ function DashboardWorkspace() {
       ? { big: room.num, label: 'ROOM', sub: STATUS[room.status], color: RING[room.status] }
       : { big: STATUS[room.status], label: 'STATUS', sub: '', color: RING[room.status] })
     : !ringReady
-      ? { big: '—', label: 'OCCUPANCY', sub: 'learning from your PMS', color: C.ink3 }
+      ? { big: '—', label: 'OCCUPANCY', sub: 'waiting for PMS data', color: C.ink3 }
     : (!showFinancials || metric === 'occ')
       ? { big: Math.round(live.occ) + '%', label: 'OCCUPANCY', sub: hov ? hov.d : (`${soldNow} of ${totalRooms} rooms`), color: C.green }
       : { big: def.fmt === 'money' ? fmtCompact(live[metric]) : fmtVal(def.fmt, live[metric]), label: def.label.toUpperCase(), sub: hov ? hov.d : ('today'), color: def.color };
@@ -989,24 +989,23 @@ function DashboardWorkspace() {
               <div className="stx-ops">
                 {([
                   // feat/cua-partial-promotion — when a tile's source feed
-                  // isn't trustworthy the value is '—' and the sub says WHY
-                  // ("learning" = auto-retrying daily; "not in this PMS
-                  // feed" = the connection doesn't provide it). A live feed
+                  // isn't trustworthy the value is '—' and the sub says WHY.
+                  // A complete dataset
                   // renders exactly as before, genuine zeros included.
                   ['Guests', inHouse,
-                    inHouseState === 'connecting' ? ('connecting to your PMS…')
-                      : inHouseState === 'learning' ? ('learning from your PMS')
-                      : inHouseState === 'unavailable' ? ('not in this PMS feed')
+                    inHouseState === 'connecting' ? ('waiting for PMS data…')
+                      : inHouseState === 'learning' ? ('latest PMS data is incomplete')
+                      : inHouseState === 'unavailable' ? ('not in latest PMS data')
                       : ('in-house'), C.green, typeof inHouse === 'number' ? inHouseAsOf : null],
                   ['Arrivals', arrivals,
-                    arrivalsState === 'connecting' ? ('connecting to your PMS…')
-                      : arrivalsState === 'learning' ? ('learning from your PMS')
-                      : arrivalsState === 'unavailable' ? ('not in this PMS feed')
+                    arrivalsState === 'connecting' ? ('waiting for PMS data…')
+                      : arrivalsState === 'learning' ? ('latest PMS data is incomplete')
+                      : arrivalsState === 'unavailable' ? ('not in latest PMS data')
                       : ('expected'), C.greenL, typeof arrivals === 'number' ? arrivalsAsOf : null],
                   ['Departures', departures,
-                    departuresState === 'connecting' ? ('connecting to your PMS…')
-                      : departuresState === 'learning' ? ('learning from your PMS')
-                      : departuresState === 'unavailable' ? ('not in this PMS feed')
+                    departuresState === 'connecting' ? ('waiting for PMS data…')
+                      : departuresState === 'learning' ? ('latest PMS data is incomplete')
+                      : departuresState === 'unavailable' ? ('not in latest PMS data')
                       : ('checking out'), C.gold, typeof departures === 'number' ? departuresAsOf : null],
                   // Housekeeping tile is owned by the housekeeping section —
                   // dropped entirely when that section is off for the hotel.

@@ -4,16 +4,13 @@
  * ┌──────────────────────────────────────────────────────────────────────┐
  * │ DECOMMISSIONED 2026-07-25 — disabled, NOT deleted.                   │
  * │                                                                      │
- * │ env.CUA_DECOMMISSIONED defaults to 'true'. main() parks immediately  │
- * │ when it is set: it never touches Supabase, never constructs a        │
- * │ SessionSupervisor or WorkflowRuntime, never opens a browser, never   │
- * │ calls Claude. Everything below that guard is intact and unchanged.   │
+ * │ The compile-time PMS_ROBOT_ENABLED switch is false and the           │
+ * │ deployment flag defaults to decommissioned. main() parks before it   │
+ * │ touches Supabase, constructs a runtime, opens a browser, or calls    │
+ * │ Claude. Everything below that guard remains intact.                  │
  * │                                                                      │
- * │ Bring it back with:                                                  │
- * │   CUA_DECOMMISSIONED = "false" in cua-service/fly.toml [env]         │
- * │   fly deploy            (from cua-service/)                          │
- * │ …and flip CUA_DECOMMISSIONED in the web app's                        │
- * │ src/lib/pms/decommission.ts. See cua-service/README.md.              │
+ * │ Changing deployment configuration alone cannot re-enable it.        │
+ * │ Reintroduction requires a separately reviewed product change.       │
  * └──────────────────────────────────────────────────────────────────────┘
  *
  * Plan v4 architecture: this entry replaces the old poll-for-jobs model
@@ -52,6 +49,7 @@ import { runRecipeEditJob, type RecipeEditJobInput } from './recipe-edit.js';
 import { getPingerSingleton } from './rules-engine-pinger.js';
 import { writeJobHandler } from './write-job-handler.js';
 import { runDocOcrJob } from './doc-ocr-handler.js';
+import { PMS_ROBOT_ENABLED } from './robot-status.js';
 
 const WORKER_ID = makeWorkerId();
 
@@ -103,11 +101,11 @@ async function main(): Promise<void> {
   // Supabase preflight, so a parked worker doesn't even hold a DB connection.
   // Park (stay alive, do nothing) rather than exit — fly.toml's restart
   // policy is "always", so exiting would boot-loop forever.
-  if (env.CUA_DECOMMISSIONED === 'true') {
+  if (!PMS_ROBOT_ENABLED || env.CUA_DECOMMISSIONED === 'true') {
     log.warn('cua-service DECOMMISSIONED — parking idle, no sessions, no spend', {
       workerId: WORKER_ID,
       flyMachineId: env.FLY_MACHINE_ID,
-      revive: 'set CUA_DECOMMISSIONED=false in cua-service/fly.toml, then fly deploy',
+      status: 'retired PMS browser robot is compile-time disabled',
     });
     // Signal handlers still work: SIGTERM resolves nothing here, but the
     // handler calls process.exit itself, so `fly deploy` / `fly machine stop`

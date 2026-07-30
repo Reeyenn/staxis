@@ -26,6 +26,7 @@ import { getOrMintRequestId } from '@/lib/log';
 import { validateUuid } from '@/lib/api-validate';
 import { isPMSType } from '@/lib/pms/types';
 import { assignPropertyToFamily } from '../_assign';
+import { robotDecommissionedResponse } from '@/lib/pms/decommission';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -37,6 +38,9 @@ export async function POST(req: NextRequest): Promise<Response> {
 
   const auth = await requireAdmin(req);
   if (!auth.ok) return auth.response;
+
+  const robotOff = robotDecommissionedResponse(requestId);
+  if (robotOff) return robotOff;
 
   let body: Body;
   try { body = (await req.json()) as Body; } catch { body = {}; }

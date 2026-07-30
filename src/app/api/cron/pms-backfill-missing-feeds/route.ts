@@ -108,10 +108,6 @@ async function run(req: NextRequest) {
   // robotDecommissionedResponse.
   if (CUA_DECOMMISSIONED) {
     log.info('[cron/pms-backfill-missing-feeds] skipped — robot decommissioned', { requestId });
-    await writeCronHeartbeat('pms-backfill-missing-feeds', {
-      requestId,
-      notes: { decommissioned: true, enqueued: 0 },
-    });
     return ok({
       decommissioned: true,
       reason: CUA_DECOMMISSION_REASON,

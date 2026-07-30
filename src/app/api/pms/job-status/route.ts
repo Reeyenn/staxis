@@ -33,6 +33,7 @@ import { ok, err, ApiErrorCode } from '@/lib/api-response';
 import { getOrMintRequestId } from '@/lib/log';
 import { validateUuid } from '@/lib/api-validate';
 import { mapPropertySessionStatusToJobShape } from '@/lib/cua-session-job-mapping';
+import { robotDecommissionedResponse } from '@/lib/pms/decommission';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -53,6 +54,9 @@ export async function GET(req: NextRequest) {
 
   const session = await requireSession(req);
   if (!session.ok) return session.response;
+
+  const robotOff = robotDecommissionedResponse(requestId);
+  if (robotOff) return robotOff;
 
   const url = new URL(req.url);
   const idV = validateUuid(url.searchParams.get('id'), 'id');

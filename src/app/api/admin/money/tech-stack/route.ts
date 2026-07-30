@@ -58,7 +58,7 @@ interface SubscriptionLine { id: string; name: string; monthlyUsd: number; servi
 const KNOWN_SERVICES: Array<{ key: string; name: string; desc: string; detect: () => boolean }> = [
   { key: 'vercel',   name: 'Vercel',        desc: 'Hosts the website and app',                 detect: () => true },
   { key: 'supabase', name: 'Supabase',      desc: 'The database everything lives in',          detect: () => true },
-  { key: 'fly',      name: 'Fly.io',        desc: 'Computers the robot & forecasts run on',    detect: () => true },
+  { key: 'fly',      name: 'Fly.io',        desc: 'Hosts background services and forecast workers', detect: () => true },
   { key: 'github',   name: 'GitHub',        desc: 'Stores the code',                           detect: () => true },
   { key: 'domain',   name: 'getstaxis.com', desc: 'The domain name (billed yearly)',           detect: () => true },
   { key: 'openai',   name: 'OpenAI',        desc: 'Voice-to-text for mic dictation',           detect: () => Boolean(env.OPENAI_API_KEY) },

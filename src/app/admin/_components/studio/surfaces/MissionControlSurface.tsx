@@ -59,6 +59,7 @@ import {
   SurfaceShell, DarkCard, DarkSpinner, DarkEmpty, dimWhite,
 } from '../surface-kit';
 import { PromotionQueue } from './PromotionQueue';
+import { PMS_ROBOT_ENABLED } from '@/lib/pms/robot-status';
 
 type Lang = 'en' | 'es';
 
@@ -154,6 +155,12 @@ interface ErrorGroup {
   sampleStack: string | null;
 }
 
+function isRetiredRobotError(group: ErrorGroup): boolean {
+  const source = (group.source ?? '').toLowerCase();
+  return source === 'generic-table-writer'
+    || /(^|[-_.\s])(cua|mapper|robot|session[-_ ]?driver)([-_.\s]|$)/.test(source);
+}
+
 // ── Tone helpers ──────────────────────────────────────────────────────────
 const TONE_VAR: Record<DotTone, string> = {
   forest: 'var(--forest)', gold: 'var(--gold)', terracotta: 'var(--terracotta)',
@@ -223,8 +230,8 @@ function tierOf(w: WorkerRow): WorkerTier {
 }
 
 // Read one settled fetch as JSON without ever throwing (404 → null).
-async function jsonOf(r: PromiseSettledResult<Response>) {
-  if (r.status !== 'fulfilled') return null;
+async function jsonOf(r: PromiseSettledResult<Response | null>) {
+  if (r.status !== 'fulfilled' || !r.value) return null;
   try { return await r.value.json(); } catch { return null; }
 }
 function asArray(v: unknown): unknown[] {
@@ -256,15 +263,18 @@ export function MissionControlSurface() {
     const since72h = new Date(Date.now() - 72 * 60 * 60 * 1000).toISOString();
     const settled = await Promise.allSettled([
       fetchWithAuth('/api/admin/system-status'),
-      fetchWithAuth('/api/admin/cua-sessions'),
+      PMS_ROBOT_ENABLED ? fetchWithAuth('/api/admin/cua-sessions') : Promise.resolve(null),
       fetchWithAuth('/api/agent/metrics'),
       fetchWithAuth('/api/admin/mission/workers'),
-      fetchWithAuth('/api/admin/mission/inbox'),
+      PMS_ROBOT_ENABLED ? fetchWithAuth('/api/admin/mission/inbox') : Promise.resolve(null),
       fetchWithAuth(`/api/admin/recent-errors?since=${encodeURIComponent(since72h)}`),
       fetchWithAuth('/api/admin/mission/ai-staff'),
     ]);
 
-    if (settled.every((r) => r.status === 'rejected')) {
+    const activeResults = PMS_ROBOT_ENABLED
+      ? settled
+      : settled.filter((_, index) => index !== 1 && index !== 4);
+    if (activeResults.every((r) => r.status === 'rejected')) {
       setFatalError('Could not reach the server. Check your connection and try again.');
       setLoaded(true);
       return;
@@ -301,7 +311,10 @@ export function MissionControlSurface() {
       setStaff(asArray(staffJson.data?.employees) as StaffMember[]);
     }
 
-    if (errorsJson?.data?.groups) setErrors(errorsJson.data.groups as ErrorGroup[]);
+    if (errorsJson?.data?.groups) {
+      const groups = errorsJson.data.groups as ErrorGroup[];
+      setErrors(PMS_ROBOT_ENABLED ? groups : groups.filter((group) => !isRetiredRobotError(group)));
+    }
 
     setLoadedAt(new Date().toISOString());
     setLoaded(true);
@@ -314,7 +327,7 @@ export function MissionControlSurface() {
   }, [load]);
 
   const runAction = async (key: string, propertyId: string, action: string) => {
-    if (busyKey) return;
+    if (!PMS_ROBOT_ENABLED || busyKey) return;
     setBusyKey(key);
     try {
       await fetchWithAuth('/api/admin/cua-sessions', {
@@ -354,7 +367,7 @@ export function MissionControlSurface() {
   // daily work. Learning = no knowledge file yet, or a learning run in flight.
   const isOnboardingPhase = (s: CuaSession): boolean =>
     (s.status || '').toLowerCase().includes('no_knowledge') || s.active_mapper_job != null;
-  const liveRobots = sessions.filter((s) => !isOnboardingPhase(s));
+  const liveRobots = PMS_ROBOT_ENABLED ? sessions.filter((s) => !isOnboardingPhase(s)) : [];
   const enabledSessions = liveRobots.filter((s) => (s.status || '').toLowerCase() !== 'stopped');
 
   // Split the worker roster by the owner's three-way mental model. A missing
@@ -370,7 +383,8 @@ export function MissionControlSurface() {
   // are not "AI staff". Counted the way everything else here is counted, by
   // existing rather than by being healthy: a stopped robot and a switched-off
   // employee are both still on the payroll, and their row says which.
-  const aiStaffCount = 1 /* copilot */ + hiredStaff.length + liveRobots.length + aiWorkers.length;
+  const aiStaffCount = 1 /* copilot */ + hiredStaff.length + aiWorkers.length
+    + (PMS_ROBOT_ENABLED ? liveRobots.length : 0);
 
   // App light — website + database drive the colour; expanded shows all four.
   const appLight = (() => {
@@ -411,24 +425,26 @@ export function MissionControlSurface() {
   const copilotSpend = (metrics?.today?.totalCostUsd ?? 0) + (metrics?.today?.backgroundCostUsd ?? 0);
   const globalCap = metrics?.caps?.global ?? 0;
   const copilotPct = globalCap > 0 ? copilotSpend / globalCap : 0;
-  const robotWorst = sessions.reduce(
+  const robotWorst = (PMS_ROBOT_ENABLED ? sessions : []).reduce(
     (m, s) => { const u = robotSpendUsd(s); return u > m.usd ? { name: s.display_name ?? 'a hotel', usd: u } : m; },
     { name: '', usd: 0 },
   );
   const robotPct = robotWorst.usd / ROBOT_CAP_USD;
   const spendLight = (() => {
     if (!metrics && liveRobots.length === 0) return { tone: 'muted' as DotTone, detail: 'No AI spend yet today.' };
-    const pct = Math.max(copilotPct, robotPct);
+    const pct = PMS_ROBOT_ENABLED ? Math.max(copilotPct, robotPct) : copilotPct;
     const tone: DotTone = pct >= 1 ? 'terracotta' : pct >= 0.7 ? 'gold' : 'forest';
     const detail = `Copilot ${money(copilotSpend)}${globalCap > 0 ? ` of $${globalCap}` : ''} today` +
-      (robotWorst.usd > 0 ? ` · busiest robot ${money(robotWorst.usd)} of $${ROBOT_CAP_USD}` : '');
+      (PMS_ROBOT_ENABLED && robotWorst.usd > 0 ? ` · busiest robot ${money(robotWorst.usd)} of $${ROBOT_CAP_USD}` : '');
     return { tone, detail };
   })();
 
   // Inbox — endpoint when live, else derived from reliable cua-sessions data.
-  const inboxCards: InboxCard[] = (inboxRows !== null)
-    ? inboxRows.map((it, i) => endpointInboxCard(it, i, runAction, busyKey))
-    : derivedInboxCards(liveRobots, runAction, busyKey);
+  const inboxCards: InboxCard[] = PMS_ROBOT_ENABLED
+    ? (inboxRows !== null)
+      ? inboxRows.map((it, i) => endpointInboxCard(it, i, runAction, busyKey))
+      : derivedInboxCards(liveRobots, runAction, busyKey)
+    : [];
 
   const attentionCount = inboxCards.length;
 
@@ -459,8 +475,8 @@ export function MissionControlSurface() {
           card doesn't stretch its two siblings into hollow boxes. ──────── */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))', gap: 14, marginBottom: 26, alignItems: 'start' }}>
         <HealthLight tone={appLight.tone} label="App" detail={appLight.detail} expanded={<AppDetail system={system} />} />
-        <HealthLight tone={robotLight.tone} label="Robots" detail={robotLight.detail} expanded={<RobotLightDetail sessions={enabledSessions} />} />
-        <HealthLight tone={spendLight.tone} label="AI spend today" detail={spendLight.detail} expanded={<SpendDetail copilotSpend={copilotSpend} robots={enabledSessions.map((s) => ({ name: s.display_name ?? 'A hotel', usd: robotSpendUsd(s) }))} />} />
+        {PMS_ROBOT_ENABLED && <HealthLight tone={robotLight.tone} label="Robots" detail={robotLight.detail} expanded={<RobotLightDetail sessions={enabledSessions} />} />}
+        <HealthLight tone={spendLight.tone} label="AI spend today" detail={spendLight.detail} expanded={<SpendDetail copilotSpend={copilotSpend} robots={PMS_ROBOT_ENABLED ? enabledSessions.map((s) => ({ name: s.display_name ?? 'A hotel', usd: robotSpendUsd(s) })) : []} />} />
       </div>
 
       {/* ── Block 2 — the roster in three side-by-side columns (owner's
@@ -473,7 +489,7 @@ export function MissionControlSurface() {
         <AiStaffColumn
           metrics={metrics}
           employees={hiredStaff}
-          robots={liveRobots}
+          robots={PMS_ROBOT_ENABLED ? liveRobots : []}
           l={l}
           busyKey={busyKey}
           onAction={runAction}
@@ -543,8 +559,9 @@ export function MissionControlSurface() {
           )}
         </RosterSection>
 
-        {/* Needs your okay */}
-        <section style={{ minWidth: 0 }}>
+        {/* Robot attention inbox remains implemented, but is absent while the
+            retired browser robot is disabled. */}
+        {PMS_ROBOT_ENABLED && <section style={{ minWidth: 0 }}>
           <span className="caps" style={{ color: dimWhite(.5) }}>Needs your okay · {attentionCount}</span>
           {inboxCards.length === 0 ? (
             <div style={{ marginTop: 10 }}><DarkEmpty text="Nothing needs you." /></div>
@@ -553,7 +570,7 @@ export function MissionControlSurface() {
               {inboxCards.map((c) => <InboxCardView key={c.key} card={c} />)}
             </div>
           )}
-        </section>
+        </section>}
 
         {/* Shared-knowledge approvals — Reeyen only; hotels never see it */}
         <PromotionQueue />
@@ -630,7 +647,9 @@ const SERVICE_LABEL: Record<keyof SystemServices, string> = {
 };
 function AppDetail({ system }: { system: SystemServices | null }) {
   if (!system) return <span style={{ fontSize: 12, color: dimWhite(.5) }}>Still checking…</span>;
-  const order: Array<keyof SystemServices> = ['web', 'supabase', 'ml', 'cua'];
+  const order: Array<keyof SystemServices> = PMS_ROBOT_ENABLED
+    ? ['web', 'supabase', 'ml', 'cua']
+    : ['web', 'supabase', 'ml'];
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
       {order.map((k) => {

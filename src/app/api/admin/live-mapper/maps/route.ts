@@ -23,6 +23,7 @@ import { requireAdmin } from '@/lib/admin-auth';
 import { ok, err, ApiErrorCode } from '@/lib/api-response';
 import { getOrMintRequestId } from '@/lib/log';
 import { PMS_REGISTRY } from '@/lib/pms/registry';
+import { robotDecommissionedResponse } from '@/lib/pms/decommission';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -184,6 +185,9 @@ export async function GET(req: NextRequest) {
 
   const auth = await requireAdmin(req);
   if (!auth.ok) return auth.response;
+
+  const robotOff = robotDecommissionedResponse(requestId);
+  if (robotOff) return robotOff;
 
   const { data, error } = await supabaseAdmin
     .from('pms_knowledge_files')

@@ -146,10 +146,9 @@ export default function HousekeeperRoomPage({
   const [rooms, setRooms] = useState<RoomRow[]>([]);
   const [activeDate, setActiveDate] = useState<string>(today);
   const [reservationsByRoom, setReservationsByRoom] = useState<Record<string, RoomReservationContext>>({});
-  // feat/cua-partial-promotion — true when the hotel's PMS connection is
-  // live but the arrivals/departures/room-status feeds are still being
-  // learned: checkout/arrival badges may be missing, so show one honest
-  // pill instead of letting "no badge" read as "no checkout today".
+  // True when the latest PMS data is missing expected arrival, departure, or
+  // room-status details. Checkout/arrival badges may be absent, so show one
+  // honest notice instead of letting "no badge" mean "no checkout today".
   const [pmsLearning, setPmsLearning] = useState(false);
   // Always sort by room number (the floor/number toggle was removed per design).
   const [groupBy] = useState<GroupBy>('number');
@@ -987,9 +986,8 @@ export default function HousekeeperRoomPage({
               when there are no active or undismissed notices. */}
           <NoticeBoardBanner pid={pid} staffId={housekeeperId} lang={lang} />
 
-          {/* feat/cua-partial-promotion — honest "still syncing" pill while
-              the PMS feeds behind checkout/arrival badges are learning.
-              Translated via the page's own 5-locale mechanism. */}
+          {/* Keep checkout/arrival badges honest while the latest PMS data is
+              incomplete; an absent badge must not imply a confident zero. */}
           {pmsLearning && (
             <div
               role="status"
@@ -1003,7 +1001,7 @@ export default function HousekeeperRoomPage({
                 lineHeight: 1.45,
               }}
             >
-              {t('hkPmsLearningBanner', lang)}
+              {'Some PMS data is not available yet. Checkout and arrival details may be incomplete.'}
             </div>
           )}
 

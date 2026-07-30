@@ -1,4 +1,4 @@
-# Staxis PMS auth-code inbox — Cloudflare Email Worker.
+# Staxis PMS report inbox — Cloudflare Email Worker.
 #
 # Bound as the catch-all destination for Email Routing on the getstaxis.com apex.
 # Deploy:  npm install && npx wrangler deploy

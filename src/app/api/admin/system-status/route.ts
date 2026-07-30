@@ -32,6 +32,7 @@ import { supabaseAdmin } from '@/lib/supabase-admin';
 import { listMlShardUrls } from '@/lib/ml-routing';
 import { getOrMintRequestId, log } from '@/lib/log';
 import { env } from '@/lib/env';
+import { PMS_ROBOT_ENABLED } from '@/lib/pms/robot-status';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -110,6 +111,10 @@ async function checkMl(): Promise<ServiceStatus> {
 }
 
 async function checkCua(): Promise<ServiceStatus> {
+  if (!PMS_ROBOT_ENABLED) {
+    return { status: 'green', message: 'PMS browser robot retired by design.' };
+  }
+
   const t0 = Date.now();
   // Queue freshness signal: oldest 'queued' job. CUA polls every 5s
   // (POLL_INTERVAL_MS in cua-service/fly.toml). >5 min unprocessed = yellow;

@@ -44,6 +44,7 @@ import { AccessPopover } from '../../AccessPopover';
 import { TwoFactorSwitch } from '../../TwoFactorSwitch';
 import { APP_SECTIONS, type AppSection } from '@/lib/sections/registry';
 import { FLEET_STALE_SYNC_MINUTES } from '@/lib/admin-property-health';
+import { PMS_ROBOT_ENABLED } from '@/lib/pms/robot-status';
 
 const API_PAGE_SIZE = 200;
 const MAX_API_PAGES = 100;
@@ -126,6 +127,11 @@ function syncColor(p: { pmsConnected: boolean; isStale12h: boolean; syncFreshnes
 }
 // Health-strip tone for a single hotel (matches LiveMap's per-card toneOf).
 function cardTone(p: EnrichedRow): DotTone {
+  if (!PMS_ROBOT_ENABLED) {
+    if (p.subscriptionStatus === 'past_due') return 'terracotta';
+    if (p.subscriptionStatus === 'trial') return 'gold';
+    return p.subscriptionStatus === 'active' ? 'forest' : 'muted';
+  }
   // No system detected (pms_type IS NULL) → needs action. Check first.
   if (p.pmsType === null) return 'terracotta';
   if (p.subscriptionStatus === 'past_due' || p.isStale12h || !p.pmsConnected) return 'terracotta';
@@ -133,11 +139,17 @@ function cardTone(p: EnrichedRow): DotTone {
   return 'forest';
 }
 
-const STATUS_OPTS: [StatusFilter, string][] = [
+const SUBSCRIPTION_STATUS_OPTS: [StatusFilter, string][] = [
   ['all', 'All statuses'], ['active', 'Active'], ['trial', 'Trial'], ['past_due', 'Past due'],
-  ['stale', 'Stale (no PMS sync >12h)'], ['pms_disconnected', 'PMS disconnected'],
-  ['no_pms', 'No system detected'],
 ];
+const STATUS_OPTS: [StatusFilter, string][] = PMS_ROBOT_ENABLED
+  ? [
+      ...SUBSCRIPTION_STATUS_OPTS,
+      ['stale', 'Stale (no PMS sync >12h)'],
+      ['pms_disconnected', 'PMS disconnected'],
+      ['no_pms', 'No system detected'],
+    ]
+  : SUBSCRIPTION_STATUS_OPTS;
 
 const HOTEL_VIEWS: { id: HotelsView; label: string }[] = [
   { id: 'organizations', label: 'Organizations' },
@@ -254,6 +266,7 @@ function normalizeOrganizationDirectory(value: unknown): OrganizationDirectory |
 
 function matchesHotelStatus(hotel: EnrichedRow, status: StatusFilter): boolean {
   if (status === 'all') return true;
+  if (!PMS_ROBOT_ENABLED && (status === 'stale' || status === 'pms_disconnected' || status === 'no_pms')) return false;
   if (status === 'stale') return hotel.isStale12h;
   if (status === 'pms_disconnected') return !hotel.pmsConnected;
   if (status === 'no_pms') return hotel.pmsType === null;
@@ -417,14 +430,14 @@ export function LiveSurface() {
   const enriched = useMemo<EnrichedRow[]>(() => {
     const hotels = (props ?? []).map((property) => ({
       ...property,
-      isStale12h: property.pmsConnected
+      isStale12h: PMS_ROBOT_ENABLED && property.pmsConnected
         && property.syncFreshnessMin !== null
         && property.syncFreshnessMin > FLEET_STALE_SYNC_MINUTES,
     }));
     hotels.sort((a, b) => {
       const score = (hotel: EnrichedRow) => {
         if (hotel.subscriptionStatus === 'past_due') return 0;
-        if (hotel.isStale12h) return 1;
+        if (PMS_ROBOT_ENABLED && hotel.isStale12h) return 1;
         return 2;
       };
       return score(a) - score(b) || Date.parse(b.createdAt) - Date.parse(a.createdAt);
@@ -495,12 +508,19 @@ export function LiveSurface() {
     return organization?.id === feedbackOrganization;
   }), [feedback, feedbackHotel, feedbackOrganization, feedbackStatus, organizationByProperty]);
 
-  const health = {
-    ok: independentHotels.filter((hotel) => hotel.pmsConnected && !hotel.isStale12h && hotel.subscriptionStatus !== 'past_due').length,
-    watch: independentHotels.filter((hotel) => hotel.subscriptionStatus === 'trial' || (hotel.pmsConnected && hotel.syncFreshnessMin !== null && hotel.syncFreshnessMin > 60 && !hotel.isStale12h)).length,
-    attn: independentHotels.filter((hotel) => hotel.subscriptionStatus === 'past_due' || hotel.isStale12h || !hotel.pmsConnected).length,
-    disc: independentHotels.filter((hotel) => !hotel.pmsConnected).length,
-  };
+  const health = PMS_ROBOT_ENABLED
+    ? {
+        ok: independentHotels.filter((hotel) => hotel.pmsConnected && !hotel.isStale12h && hotel.subscriptionStatus !== 'past_due').length,
+        watch: independentHotels.filter((hotel) => hotel.subscriptionStatus === 'trial' || (hotel.pmsConnected && hotel.syncFreshnessMin !== null && hotel.syncFreshnessMin > 60 && !hotel.isStale12h)).length,
+        attn: independentHotels.filter((hotel) => hotel.subscriptionStatus === 'past_due' || hotel.isStale12h || !hotel.pmsConnected).length,
+        disc: independentHotels.filter((hotel) => !hotel.pmsConnected).length,
+      }
+    : {
+        ok: independentHotels.filter((hotel) => hotel.subscriptionStatus === 'active').length,
+        watch: independentHotels.filter((hotel) => hotel.subscriptionStatus === 'trial').length,
+        attn: independentHotels.filter((hotel) => hotel.subscriptionStatus === 'past_due').length,
+        disc: 0,
+      };
   const newFeedbackCount = (feedback ?? []).filter((item) => item.status === 'new').length;
   const viewCounts: Record<HotelsView, number> = {
     organizations: directory?.organizations.length ?? 0,
@@ -633,7 +653,7 @@ export function LiveSurface() {
         />
       )}
 
-      {pickerHotel && (
+      {PMS_ROBOT_ENABLED && pickerHotel && (
         <CoveragePickerModal
           propertyId={pickerHotel.id}
           currentPmsFamily={pickerHotel.pmsType}
@@ -1099,10 +1119,10 @@ function IndependentHotelsPanel({
       </div>
 
       <div className="studio-hotels-summary-grid" aria-label="Independent hotel health">
-        <DarkHealth label="Healthy" n={health.ok} tone="forest" />
-        <DarkHealth label="Watch" n={health.watch} tone="gold" />
-        <DarkHealth label="Needs attention" n={health.attn} tone="terracotta" />
-        <DarkHealth label="Disconnected PMS" n={health.disc} tone="terracotta" />
+        <DarkHealth label={PMS_ROBOT_ENABLED ? 'Healthy' : 'Active'} n={health.ok} tone="forest" />
+        <DarkHealth label={PMS_ROBOT_ENABLED ? 'Watch' : 'Trial'} n={health.watch} tone="gold" />
+        <DarkHealth label={PMS_ROBOT_ENABLED ? 'Needs attention' : 'Past due'} n={health.attn} tone="terracotta" />
+        {PMS_ROBOT_ENABLED && <DarkHealth label="Disconnected PMS" n={health.disc} tone="terracotta" />}
       </div>
 
       {hotels.length === 0 ? (
@@ -1344,14 +1364,14 @@ function MapCard({
       </button>
       <div className="mono studio-independent-card-meta">{h.totalRooms ?? '—'} rooms · {h.staffCount} staff</div>
       <div className="studio-independent-card-status">
-        <Pill tone={unassigned ? 'gold' : subTone(h.subscriptionStatus)} style={{ fontSize: 9, padding: '2px 6px' }}>
-          {unassigned ? 'NO SYSTEM DETECTED' : (h.subscriptionStatus ?? 'unknown').toUpperCase()}
+        <Pill tone={PMS_ROBOT_ENABLED && unassigned ? 'gold' : subTone(h.subscriptionStatus)} style={{ fontSize: 9, padding: '2px 6px' }}>
+          {PMS_ROBOT_ENABLED && unassigned ? 'NO SYSTEM DETECTED' : (h.subscriptionStatus ?? 'unknown').toUpperCase()}
         </Pill>
-        <span className="mono" style={{ color: syncColor(h) }}>
+        {PMS_ROBOT_ENABLED && <span className="mono" style={{ color: syncColor(h) }}>
           {h.pmsConnected
             ? `${h.pmsType}${h.syncFreshnessMin !== null ? ` · ${freshLabel(h.syncFreshnessMin)}` : ''}`
             : unassigned ? 'coverage needed' : 'not connected'}
-        </span>
+        </span>}
       </div>
       <div className="studio-independent-card-actions">
         <Btn
@@ -1374,7 +1394,7 @@ function MapCard({
         >
           Assign organization
         </Btn>
-        {unassigned && (
+        {PMS_ROBOT_ENABLED && unassigned && (
           <Btn size="sm" variant="ghost" onClick={onAssign} style={{ color: '#fff', borderColor: dimWhite(.25), fontSize: 9.5, padding: '3px 8px' }}>
             Assign coverage
           </Btn>
@@ -1812,7 +1832,7 @@ function DeleteHotelModal({ h, onClose, onDeleted }: {
           Permanently delete <span style={{ fontStyle: 'italic' }}>{h.name ?? '(unnamed)'}</span>?
         </h3>
         <p id="delete-hotel-description" style={{ fontSize: 13, color: 'var(--ink)', lineHeight: 1.5, marginBottom: 12 }}>
-          This erases the hotel and <strong>all</strong> its data (rooms, staff, schedules, messages, coverage) and frees the owner’s login. It <strong>cannot be undone</strong>. Type the hotel’s name to confirm.
+          This erases the hotel and <strong>all</strong> its data (rooms, staff, schedules, messages, and operational records) and frees the owner’s login. It <strong>cannot be undone</strong>. Type the hotel’s name to confirm.
         </p>
         <input
           autoFocus
@@ -1892,7 +1912,7 @@ function MapDetail({ h, onClose, onPickCoverage, onOpenSections, onDetached, onR
         onClick={(e) => e.stopPropagation()}
         style={{ ...MODAL_CARD, width: 460 }}
       >
-        <Caps>{h.pmsConnected ? (h.pmsType ?? 'PMS') : 'No PMS'}</Caps>
+        <Caps>{PMS_ROBOT_ENABLED ? (h.pmsConnected ? (h.pmsType ?? 'PMS') : 'No PMS') : 'Hotel details'}</Caps>
         <h3 id="hotel-detail-title" style={{ fontFamily: FONT_SERIF, fontSize: 26, fontWeight: 400, letterSpacing: '-0.02em', margin: '6px 0 12px' }}>
           <span style={{ fontStyle: 'italic' }}>{h.name ?? '(unnamed)'}</span>
         </h3>
@@ -1901,16 +1921,16 @@ function MapDetail({ h, onClose, onPickCoverage, onOpenSections, onDetached, onR
           <Stat label="Staff" v={h.staffCount} />
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 16, flexWrap: 'wrap' }}>
-          <Pill tone={hasSystem ? subTone(h.subscriptionStatus) : 'gold'}>
-            {hasSystem ? (h.subscriptionStatus ?? 'unknown').toUpperCase() : 'NO SYSTEM DETECTED'}
+          <Pill tone={PMS_ROBOT_ENABLED && !hasSystem ? 'gold' : subTone(h.subscriptionStatus)}>
+            {PMS_ROBOT_ENABLED && !hasSystem ? 'NO SYSTEM DETECTED' : (h.subscriptionStatus ?? 'unknown').toUpperCase()}
           </Pill>
-          <span className="mono" style={{ fontSize: 11, color: syncColor(h) }}>
+          {PMS_ROBOT_ENABLED && <span className="mono" style={{ fontSize: 11, color: syncColor(h) }}>
             {h.pmsConnected ? `${h.pmsType}${h.syncFreshnessMin !== null ? ` · synced ${freshLabel(h.syncFreshnessMin)} ago` : ''}` : hasSystem ? 'PMS not connected' : 'No coverage assigned'}
-          </span>
+          </span>}
         </div>
 
         {/* Coverage actions — attach (no system) / switch + detach (has system) */}
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: detachError ? 10 : 16, flexWrap: 'wrap' }}>
+        {PMS_ROBOT_ENABLED && <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: detachError ? 10 : 16, flexWrap: 'wrap' }}>
           {hasSystem ? (
             <>
               <Btn variant="ghost" onClick={onPickCoverage} disabled={detaching}>Switch coverage</Btn>
@@ -1921,8 +1941,8 @@ function MapDetail({ h, onClose, onPickCoverage, onOpenSections, onDetached, onR
           ) : (
             <Btn variant="forest" onClick={onPickCoverage}>Assign coverage</Btn>
           )}
-        </div>
-        {detachError && (
+        </div>}
+        {PMS_ROBOT_ENABLED && detachError && (
           <div role="alert" style={{ padding: '11px 13px', marginBottom: 16, background: 'var(--terracotta-dim)', border: '1px solid rgba(194,86,46,.3)', borderRadius: 12, color: 'var(--terracotta-deep)', fontSize: 12.5, lineHeight: 1.45 }}>
             {detachError}
           </div>

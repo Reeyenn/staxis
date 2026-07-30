@@ -28,6 +28,8 @@ import assert from 'node:assert/strict';
 import type { NextRequest } from 'next/server';
 
 import { supabaseAdmin } from '@/lib/supabase-admin';
+import { ApiErrorCode } from '@/lib/api-response';
+import { PMS_ROBOT_ENABLED } from '@/lib/pms/robot-status';
 
 // ─── Mock infrastructure ─────────────────────────────────────────────────
 
@@ -236,7 +238,34 @@ const VALID_BODY = {
 
 // ─── Tests ───────────────────────────────────────────────────────────────
 
-describe('POST /api/pms/save-credentials — RPC contract', () => {
+describe('POST /api/pms/save-credentials — retired robot refusal', () => {
+  test('authenticates, then refuses before parsing or touching robot storage', async () => {
+    const req = makeRequest(VALID_BODY) as NextRequest & { json: () => Promise<unknown> };
+    req.json = async () => { throw new Error('body must not be parsed while robot is retired'); };
+
+    const { POST } = await import('@/app/api/pms/save-credentials/route');
+    const res = await POST(req);
+    assert.equal(res.status, 503);
+    const body = (await res.json()) as { ok: boolean; code: string };
+    assert.equal(body.ok, false);
+    assert.equal(body.code, ApiErrorCode.RobotDecommissioned);
+    assert.equal(
+      rpcCalls.some((c) => c.fn === 'staxis_upsert_scraper_credentials' || c.fn === 'staxis_api_limit_hit'),
+      false,
+    );
+    assert.equal(fromCalls.some((c) => [
+      'properties',
+      'scraper_credentials',
+      'workflow_jobs',
+      'property_sessions',
+    ].includes(c.table)), false);
+  });
+});
+
+// Historical contract retained with the implementation. It becomes relevant
+// only as part of a reviewed replacement that deliberately enables the old
+// path; it must not assert success while the product switch is off.
+describe('POST /api/pms/save-credentials — RPC contract', { skip: !PMS_ROBOT_ENABLED }, () => {
   test('happy path → calls staxis_upsert_scraper_credentials with exact param shape', async () => {
     const { POST } = await import('@/app/api/pms/save-credentials/route');
     const res = await POST(makeRequest(VALID_BODY));
@@ -349,7 +378,7 @@ describe('POST /api/pms/save-credentials — RPC contract', () => {
   });
 });
 
-describe('POST /api/pms/save-credentials — manage_settings authorization', () => {
+describe('POST /api/pms/save-credentials — manage_settings authorization', { skip: !PMS_ROBOT_ENABLED }, () => {
   // The route gates on manage_settings (owner / GM / admin) + property scope,
   // replacing the old owner-id-only check. A GM can now save; line staff cannot.
   // (Access cleanup 2026-06-26.)

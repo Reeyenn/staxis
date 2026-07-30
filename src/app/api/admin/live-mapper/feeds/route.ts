@@ -44,6 +44,7 @@ import {
   LEARNABLE_ACTION_KEYS,
   DRILLDOWN_ACTION_KEYS,
 } from '@/lib/pms/recipe-coverage';
+import { robotDecommissionedResponse } from '@/lib/pms/decommission';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -78,6 +79,9 @@ export async function GET(req: NextRequest): Promise<Response> {
 
   const admin = await requireAdmin(req);
   if (!admin.ok) return admin.response;
+
+  const robotOff = robotDecommissionedResponse(requestId);
+  if (robotOff) return robotOff;
 
   const pmsFamily = req.nextUrl.searchParams.get('pmsFamily')?.trim() ?? '';
   if (!pmsFamily) {

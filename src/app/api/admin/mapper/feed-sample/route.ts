@@ -23,6 +23,7 @@ import { getOrMintRequestId } from '@/lib/log';
 // gating so the two can never disagree on which artifact proves a feed
 // (feed-sample-key.ts).
 import { sanitizeFeedKey as sanitizeKey, sampleIndicatesSuccess } from '@/lib/pms/feed-sample-key';
+import { robotDecommissionedResponse } from '@/lib/pms/decommission';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -63,6 +64,9 @@ export async function GET(req: NextRequest): Promise<Response> {
   const requestId = getOrMintRequestId(req);
   const admin = await requireAdmin(req);
   if (!admin.ok) return admin.response;
+
+  const robotOff = robotDecommissionedResponse(requestId);
+  if (robotOff) return robotOff;
 
   const sp = req.nextUrl.searchParams;
   const propertyId = sp.get('propertyId') ?? '';

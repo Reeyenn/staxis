@@ -17,7 +17,7 @@
 // it, and nothing is edited chip-by-chip here. On 2026-07-24 everything that
 // made this an editing and configuration surface was stripped out —
 //
-//   • cleaning-time settings modal (gear icon on the PMS pull strip) — it
+//   • cleaning-time settings modal (gear icon on the PMS data strip) — it
 //     wrote `properties` from the browser, which is admin-only RLS, so for a
 //     general manager it flashed "Settings saved" and saved NOTHING. The
 //     clean times were duplicates of /settings/clean-times (the board reads
@@ -200,7 +200,7 @@ export function ScheduleTab() {
   }, []);
   useEffect(() => () => { if (toastTimer.current) clearTimeout(toastTimer.current); }, []);
 
-  // Dashboard pull (In House / Arrivals / Departures).
+  // Dashboard PMS data (In House / Arrivals / Departures).
   useEffect(() => {
     if (!pid) return;
     setDashboardLoaded(false);
@@ -504,8 +504,8 @@ export function ScheduleTab() {
         <div style={{ marginBottom: 16 }}>
           <FeedLearningBanner
             variant="strip"
-            title={'Connecting to your PMS.'}
-            text={'Schedule data will appear once the first sync lands.'}
+            title={'Waiting for PMS data.'}
+            text={'Schedule data will appear after the first report is processed.'}
           />
         </div>
       )}
@@ -513,8 +513,8 @@ export function ScheduleTab() {
         <div style={{ marginBottom: 16 }}>
           <FeedLearningBanner
             variant="strip"
-            title={'PMS connection paused.'}
-            text={'Data may be out of date until it resumes.'}
+            title={'PMS data is out of date.'}
+            text={'The latest available values remain visible while new data is unavailable.'}
           />
         </div>
       )}
@@ -522,8 +522,8 @@ export function ScheduleTab() {
         <div style={{ marginBottom: 16 }}>
           <FeedLearningBanner
             variant="strip"
-            title={'Still learning your PMS.'}
-            text={'PMS arrivals/departures are still being learned. Checkout vs. stayover labels may be incomplete, and an empty count does not mean nobody checks out today.'}
+            title={'Waiting for complete PMS data.'}
+            text={'The latest data does not include all arrivals and departures. Checkout and stayover labels may be incomplete.'}
           />
         </div>
       )}
@@ -555,7 +555,7 @@ export function ScheduleTab() {
         </div>
       </div>
 
-      {/* PMS PULL STRIP */}
+      {/* PMS DATA STRIP */}
       <div style={{
         background: T.paper, border: `1px solid ${T.rule}`, borderRadius: 16,
         padding: '15px 20px', marginBottom: 16,
@@ -566,7 +566,7 @@ export function ScheduleTab() {
               cleaning-time settings modal. It saved nothing for anyone but an
               admin (see the file header); its fields now live on
               /settings/clean-times, which saves for real. */}
-          <Caps size={9}>{'Latest PMS pull'}</Caps>
+          <Caps size={9}>{'Latest PMS data'}</Caps>
           <span style={{ fontFamily: FONT_SANS, fontSize: 13, color: T.ink, fontWeight: 600, marginTop: 3 }}>
             {!dashboardLoaded
               ? ('Loading…')
@@ -704,7 +704,7 @@ export function ScheduleTab() {
               border: `1px dashed ${T.rule}`, borderRadius: 12,
               background: T.paper, color: T.ink2, fontFamily: FONT_SANS, fontSize: 13,
             }}>
-              {'No rooms to clean for this date yet. They\'ll appear here on the next PMS pull.'}
+              {'No rooms to clean for this date yet. They’ll appear here when new PMS data arrives.'}
             </div>
           )}
           {view === 'board' ? (

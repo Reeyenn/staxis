@@ -14,7 +14,7 @@
 >
 > | # | Where | What it does now |
 > |---|---|---|
-> | 1 | `fly.toml` `[env] CUA_DECOMMISSIONED = "true"` + the same default in `src/env.ts` | The flag. Defaults to ON in code too, so deleting the fly.toml line does **not** re-arm it. |
+> | 1 | `src/robot-status.ts` plus `fly.toml` `[env] CUA_DECOMMISSIONED = "true"` | The compile-time switch is OFF and the deployment flag defaults to decommissioned. Changing Fly configuration alone cannot re-arm it. |
 > | 2 | `src/index.ts` `main()` | Parks immediately: no Supabase preflight, no supervisor, no runtime, no Playwright, no Claude call. It stays alive and idle rather than exiting, because `fly.toml` sets `[[restart]] policy = "always"` and exiting would boot-loop. |
 > | 3 | `src/session-supervisor.ts` `start()` | Refuses to start — so no `SessionDriver`, no PMS login, from *any* caller. |
 > | 4 | `src/workflow-runtime.ts` `start()` | Refuses to start — this is the queue poller that dispatches `mapper.learn_pms_family` / `doc_ocr`, i.e. the Claude-spend path. |
@@ -24,21 +24,11 @@
 >
 > Nothing was deleted: no code, no `pms_*` tables, no Fly app, no secrets.
 >
-> ### To bring it back — all four, in this order
+> ### Retained implementation
 >
-> 1. `src/lib/pms/decommission.ts` (web app) → `export const CUA_DECOMMISSIONED = false;`
->    — re-arms the enqueue route and the three doctor checks.
-> 2. `cua-service/fly.toml` → `CUA_DECOMMISSIONED = "false"`, then `fly deploy`
->    from this directory — re-arms the worker, supervisor and runtime.
-> 3. `.github/workflows/pull-jobs-cron.yml` → add back a `schedule:` block on a
->    15-minute cron (`workflow_dispatch` alone will not produce pulls).
-> 4. Confirm the Fly app is actually running (`flyctl status -a staxis-cua`) and
->    that its secrets are still valid — `ANTHROPIC_API_KEY` especially, since a
->    live robot resumes spending against the $5/hotel/day cap immediately.
->
-> Steps 1 and 2 are independent brakes. Flipping only one leaves the system
-> half-off (worker awake with nothing to do, or work queued with nobody to run
-> it) — which is safe, but not what you wanted.
+> The source remains for reference, but it has no supported product re-enable
+> path. Reintroducing browser automation would be a separately reviewed product
+> decision, not an environment-variable change.
 
 Computer Use Agent worker that maps and extracts data from any PMS.
 Runs on Fly.io. Polls Supabase `onboarding_jobs` for queued jobs and

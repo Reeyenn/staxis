@@ -635,15 +635,15 @@ export function QualityTab() {
               </Pill>
             </div>
 
-            {/* feat/cua-partial-promotion (review pass) — the queue derives
-                from PMS-cleaned rooms; while room statuses are learning,
+            {/* The queue derives from PMS-cleaned rooms; while the latest
+                room-status data is incomplete,
                 "0 waiting" must not read as "nothing to inspect". */}
             {roomStatusLearningQt && (
               <div style={{ marginBottom: 12 }}>
                 <FeedLearningBanner
                   variant="strip"
-                  title={'Still learning your PMS.'}
-                  text={'Rooms cleaned in the PMS may not appear here yet. The queue reflects in-app activity only.'}
+                  title={'Waiting for complete PMS data.'}
+                  text={'The latest PMS data may not include every cleaned room. The queue currently reflects in-app activity only.'}
                 />
               </div>
             )}

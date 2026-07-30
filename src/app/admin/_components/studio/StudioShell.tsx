@@ -28,6 +28,7 @@ import { LiveSurface } from './surfaces/LiveSurface';
 import { MissionControlSurface } from './surfaces/MissionControlSurface';
 import { MoneySurface } from './surfaces/MoneySurface';
 import { MlSurface } from './surfaces/MlSurface';
+import { PMS_ROBOT_ENABLED } from '@/lib/pms/robot-status';
 
 export type StudioTab = 'onboarding' | 'live' | 'system' | 'money' | 'ml';
 
@@ -64,11 +65,10 @@ export function StudioShell() {
   const [tab, setTab] = useState<StudioTab>('onboarding');
   const [ov, setOv] = useState<Overview | null>(null);
   const [refreshedAgo, setRefreshedAgo] = useState(0);
-  // Which tabs have been mounted at least once. We mount a surface on first
-  // visit and KEEP it mounted (hidden) afterwards, so re-visiting a tab is
-  // instant — no re-fetch, no spinner. 'onboarding' starts mounted; the rest
-  // are prefetched a tick after first paint (see below) so by the time you
-  // click them their data is usually already loaded.
+  // Which tabs have been mounted at least once. A surface mounts only after it
+  // is visited, then stays mounted for fast return visits. Do not pre-mount
+  // hidden surfaces: retired robot panels used to start their polling simply
+  // because Admin opened.
   const [mounted, setMounted] = useState<Set<StudioTab>>(() => new Set<StudioTab>(['onboarding']));
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const tick = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -115,21 +115,14 @@ export function StudioShell() {
     }
   };
 
-  // Prefetch every surface shortly after first paint, so tab switches are
-  // instant (each surface fetches its data on mount, then stays mounted).
-  // Delayed slightly so the initial Onboarding paint isn't competing for the
-  // network on load.
-  useEffect(() => {
-    const t = setTimeout(() => setMounted(new Set<StudioTab>(['onboarding', 'live', 'system', 'money', 'ml'])), 500);
-    return () => clearTimeout(t);
-  }, []);
-
   // Bright tones — the stat strip sits on the dark canvas now.
   const stats: { label: string; node: React.ReactNode }[] = [
     { label: 'Live', node: <StatVal v={ov?.liveHotels} tone="var(--forest)" /> },
     { label: 'Onboarding', node: <StatVal v={ov?.onboarding} tone="var(--gold)" /> },
     { label: 'Errors', node: <StatVal v={ov?.errorsToday} tone={(ov?.errorsToday ?? 0) > 0 ? 'var(--terracotta)' : '#fff'} /> },
-    { label: 'Jobs', node: <StatVal v={ov?.activeJobs} tone="var(--teal)" /> },
+    ...(PMS_ROBOT_ENABLED
+      ? [{ label: 'Jobs', node: <StatVal v={ov?.activeJobs} tone="var(--teal)" /> }]
+      : []),
     // Shared-knowledge approvals. Deliberately on the strip rather than only
     // inside Mission Control: it's visible on every admin tab, so a decision
     // waiting on Reeyen can't sit unnoticed behind a tab he didn't open.
