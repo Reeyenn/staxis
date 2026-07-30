@@ -216,7 +216,7 @@ describe('no second price list', () => {
 
   /** The one file allowed to write a price down, plus tests, which need
    * synthetic rates to exercise the estimator against known values. */
-  const ALLOWED = /(?:^|[/\\])(?:feature-registry\.ts|__tests__[/\\].*)$/;
+  const ALLOWED = /(?:^|[/\\])(?:feature-registry\.ts|__tests__[/\\].*|.*\.test\.[tj]sx?)$/;
 
   function walk(dir: string): string[] {
     return readdirSync(dir).flatMap((entry) => {

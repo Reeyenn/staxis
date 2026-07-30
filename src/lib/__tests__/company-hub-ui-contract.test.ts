@@ -331,8 +331,9 @@ describe('My Hotel account and team integration', () => {
     assert.doesNotMatch(hotelTeam, /Pending staff approvals|pending-approvals-title|No one is waiting for approval|Waiting room/);
     assert.match(hotelTeam, /LazyMemberDialog/);
     assert.match(hotelTeam, /LazyRemoveDialog/);
+    assert.match(hotelTeam, /LazyFirstPersonInviteDialog/);
     assert.match(hotelTeam, /LazyInviteDialog/);
-    assert.match(hotelTeam, /\{inviteDialogOpen \? \(/);
+    assert.match(hotelTeam, /\{inviteDialogOpen && needsFirstPerson \? \([\s\S]*: inviteDialogOpen \? \(/);
     assert.match(hotelTeam, /onClose=\{\(\) => onInviteDialogOpenChange\(false\)\}/);
     assert.match(hotelTeamDialogs, /Staff signup link/);
     assert.match(hotelTeamDialogs, /Invite by email/);

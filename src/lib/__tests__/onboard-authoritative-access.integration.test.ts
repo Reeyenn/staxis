@@ -520,7 +520,7 @@ describe('onboarding uses live normalized authority', () => {
     assert.ok(prompt.rows[0].onboarding_prompt_shown_at);
   });
 
-  test('resume code access honors an explicit manage_team denial even when manage_settings remains allowed', async () => {
+  test('the exact bound first person can resume setup independently of team-management capability', async () => {
     await pg.query(
       `update properties set onboarding_prompt_shown_at=null where id=$1`,
       [PID_L1],
@@ -537,12 +537,12 @@ describe('onboarding uses live normalized authority', () => {
         `https://staxis.test/api/onboard/resume?propertyId=${PID_L1}`,
       ));
       assert.equal(response.status, 307);
-      assert.equal(new URL(response.headers.get('location')!).pathname, '/property-selector');
+      assert.equal(new URL(response.headers.get('location')!).pathname, '/onboard');
       const prompt = await pg.query<{ onboarding_prompt_shown_at: string | null }>(
         `select onboarding_prompt_shown_at from properties where id=$1`,
         [PID_L1],
       );
-      assert.equal(prompt.rows[0].onboarding_prompt_shown_at, null);
+      assert.ok(prompt.rows[0].onboarding_prompt_shown_at);
     } finally {
       await pg.query(
         `delete from capability_overrides
