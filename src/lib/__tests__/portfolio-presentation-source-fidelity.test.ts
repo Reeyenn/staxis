@@ -486,12 +486,22 @@ describe('accepted Finding presentation seam', () => {
       plan: verdict.plan,
       selectorLabel: 'All authorized hotels',
     });
-    assert.match(answer, /Accepted finding — observed fact/);
-    assert.match(answer, /Accepted finding — supported pattern/);
+    assert.match(answer, /Accepted finding, observed fact/);
+    assert.match(answer, /Accepted finding, supported pattern/);
     assert.match(answer, /UNVERIFIED HYPOTHESIS/);
     assert.match(answer, /accepted source recorded 17 rooms\./i);
     assert.doesNotMatch(answer, /rooms\.\./);
     assert.doesNotMatch(answer, /REJECTED_SECRET|9999|recommendation/i);
+    // Founder ruling, 2026-07-28: no em dashes in user-facing copy. This IS
+    // user-facing copy — the route streams this exact string to the browser as
+    // the chat answer; the model only orders claim ids. Asserted on the rendered
+    // output rather than the source because these sentences are assembled from
+    // joiners in two files, and a dash can arrive from either one.
+    assert.doesNotMatch(
+      answer,
+      /—/,
+      'a portfolio chat answer must contain no em dash; use a period, comma, or colon',
+    );
 
     const displayed = displayedPortfolioFindingClaimIds(catalog, verdict.plan);
     const receipt = buildPortfolioFindingProjectionReceipt({

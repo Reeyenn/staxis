@@ -197,6 +197,13 @@ describe('deterministic portfolio knowledge presentation', () => {
     assert.match(answer, /company default effective at 2 of 2 selected hotels/i);
     assert.match(answer, /Ecolab/);
     assert.match(answer, /updated 2026-07-20T10:00:00\.000Z/);
+    // Founder ruling, 2026-07-28: no em dashes in user-facing copy. This string
+    // is streamed to the browser verbatim as the knowledge answer.
+    assert.doesNotMatch(
+      answer,
+      /—/,
+      'a portfolio knowledge answer must contain no em dash; use a period, comma, or colon',
+    );
     assert.deepEqual(Object.keys(selected.selection).sort(), ['orderedClaimIds', 'version']);
     assert.equal(selected.selection.orderedClaimIds.every((id) => /^pk_[0-9a-f]{24}$/.test(id)), true);
 

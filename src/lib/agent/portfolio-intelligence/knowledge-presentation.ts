@@ -376,7 +376,7 @@ function renderClaim(
     )).length;
     const inherited = Math.max(0, catalog.receipt.selectedPropertyCount - exceptions);
     return [
-      `- **${key}** — company default effective at ${inherited} of ${catalog.receipt.selectedPropertyCount} selected hotels: ${quoted(claim.companyClaim.content)}.`,
+      `- **${key}**: company default effective at ${inherited} of ${catalog.receipt.selectedPropertyCount} selected hotels: ${quoted(claim.companyClaim.content)}.`,
       `  Provenance: ${provenance(claim.companyClaim.provenance)}.`,
     ];
   }
@@ -389,7 +389,7 @@ function renderClaim(
 
   if (claim.kind === 'property_override' && claim.effectiveClaim && claim.companyClaim) {
     return [
-      `- **${hotel}** — explicit property override for ${key}: ${quoted(claim.effectiveClaim.content)}.`,
+      `- **${hotel}**: explicit property override for ${key}: ${quoted(claim.effectiveClaim.content)}.`,
       `  Override status: resolved by an explicit link to the confirmed company reference; company default was ${quoted(claim.companyClaim.content)}.`,
       `  Provenance: property ${propertySources}; company ${provenance(claim.companyClaim.provenance)}.`,
     ];
@@ -398,27 +398,27 @@ function renderClaim(
     const companyText = claim.companyClaim ? quoted(claim.companyClaim.content) : 'unavailable';
     const propertyText = propertyFacts.map((value) => quoted(value.content)).join(' | ') || 'unavailable';
     return [
-      `- **${hotel}** — unresolved conflict for ${key}; no value was selected.`,
+      `- **${hotel}**: unresolved conflict for ${key}; no value was selected.`,
       `  Company reference: ${companyText}. Property reference: ${propertyText}.`,
       `  Provenance: company ${claim.companyClaim ? provenance(claim.companyClaim.provenance) : 'unavailable'}; property ${propertySources || 'unavailable'}.`,
     ];
   }
   if (claim.kind === 'orphaned_override' && claim.effectiveClaim) {
     return [
-      `- **${hotel}** — property fact for ${key}: ${quoted(claim.effectiveClaim.content)}.`,
+      `- **${hotel}**: property fact for ${key}: ${quoted(claim.effectiveClaim.content)}.`,
       '  Override status: the referenced company fact is unavailable; this is shown as a property fact with unresolved override provenance, not as a company-wide rule.',
       `  Provenance: ${propertySources}.`,
     ];
   }
   if (claim.kind === 'consistent_with_company' && claim.companyClaim) {
     return [
-      `- **${hotel}** — property source confirms the company default for ${key}: ${quoted(claim.companyClaim.content)}.`,
+      `- **${hotel}**: property source confirms the company default for ${key}: ${quoted(claim.companyClaim.content)}.`,
       `  Provenance: company ${provenance(claim.companyClaim.provenance)}; property ${propertySources}.`,
     ];
   }
   if (claim.kind === 'property_only' && claim.effectiveClaim) {
     return [
-      `- **${hotel}** — property-only fact for ${key}: ${quoted(claim.effectiveClaim.content)}.`,
+      `- **${hotel}**: property-only fact for ${key}: ${quoted(claim.effectiveClaim.content)}.`,
       `  Provenance: ${propertySources}.`,
     ];
   }
@@ -451,8 +451,8 @@ export function renderPortfolioKnowledgeAnswer(input: {
   const { receipt, overlay } = input.catalog;
   const organization = safeMarkdown(receipt.organizationName || 'Management company', 160);
   const lines = [
-    `**Active scope** — ${organization}; ${safeMarkdown(input.selectorLabel, 140)}; ${receipt.selectedPropertyCount} selected of ${receipt.authorizedPropertyCount} currently authorized hotels.`,
-    `**Knowledge status** — active, confirmed references as of ${safeMarkdown(overlay.asOf, 40)}; ${input.totalMatched} matching claims.`,
+    `**Active scope**: ${organization}; ${safeMarkdown(input.selectorLabel, 140)}; ${receipt.selectedPropertyCount} selected of ${receipt.authorizedPropertyCount} currently authorized hotels.`,
+    `**Knowledge status**: active, confirmed references as of ${safeMarkdown(overlay.asOf, 40)}; ${input.totalMatched} matching claims.`,
   ];
 
   if (verdict.claims.length === 0) {

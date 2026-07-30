@@ -539,7 +539,7 @@ function renderFact(
     ? `; definition: ${safeLabel(metric.definition)}; window: ${safeLabel(metric.window)}`
     : '';
   const exclusion = fact.exclusionReason ? `; unavailable because ${safeLabel(fact.exclusionReason)}` : '';
-  return `${safeLabel(fact.propertyName)} — ${metricLabel(fact.metricId)}: ${renderedNumber(fact.numerator)} ${safeLabel(fact.unit)}${normalized}${definition}; business date ${safeLabel(fact.businessDate)} (${safeLabel(fact.timezone)}); ${fact.freshness} freshness; ${renderedSource(fact)}${comparison}${exclusion}.`;
+  return `${safeLabel(fact.propertyName)}, ${metricLabel(fact.metricId)}: ${renderedNumber(fact.numerator)} ${safeLabel(fact.unit)}${normalized}${definition}; business date ${safeLabel(fact.businessDate)} (${safeLabel(fact.timezone)}); ${fact.freshness} freshness; ${renderedSource(fact)}${comparison}${exclusion}.`;
 }
 
 function comparisonLines(evidence: PortfolioEvidencePackageV1): string[] {
@@ -561,7 +561,7 @@ function comparisonLines(evidence: PortfolioEvidencePackageV1): string[] {
       const names = shown.map((hotel) => safeLabel(hotel.propertyName)).join(', ');
       const omitted = group.hotels.length - shown.length;
       lines.push(
-        `  - Unavailable — ${safeLabel(group.code.replaceAll('_', ' '))}: ${group.hotels.length} hotels${names ? ` (${names}${omitted > 0 ? '; additional hotels omitted from this bounded list' : ''})` : ''}; ${safeLabel(group.reason)}.`,
+        `  - Unavailable, ${safeLabel(group.code.replaceAll('_', ' '))}: ${group.hotels.length} hotels${names ? ` (${names}${omitted > 0 ? '; additional hotels omitted from this bounded list' : ''})` : ''}; ${safeLabel(group.reason)}.`,
       );
     }
     const abnormal = [...above, ...below].slice(0, Math.min(25, evidence.plan.detailLimit));
@@ -709,12 +709,12 @@ function renderFinding(
   switch (finding.claim.kind) {
     case 'fact':
       return [
-        `- **Accepted finding — ${safeLabel(finding.claim.factType)} fact**: ${statement}`,
+        `- **Accepted finding, ${safeLabel(finding.claim.factType)} fact**: ${statement}`,
         `  Provenance: ${findingProvenance(finding, evidence)}.`,
       ];
     case 'pattern':
       return [
-        `- **Accepted finding — supported pattern** (${safeLabel(finding.claim.assertion.replaceAll('_', ' '))}; ${safeLabel(finding.claim.direction)}): ${statement}`,
+        `- **Accepted finding, supported pattern** (${safeLabel(finding.claim.assertion.replaceAll('_', ' '))}; ${safeLabel(finding.claim.direction)}): ${statement}`,
         `  Provenance: ${findingProvenance(finding, evidence)}.`,
       ];
     case 'hypothesis':
@@ -819,8 +819,8 @@ export function renderPortfolioAnswerArtifact(input: {
 }): PortfolioRenderedAnswerArtifact {
   const { evidence } = input;
   const organization = safeLabel(evidence.organizationName ?? 'Management company');
-  const scopeLine = `**Active scope** — ${organization}; ${safeLabel(input.selectorLabel)}; ${evidence.coverage.selected} selected of ${evidence.coverage.authorized} currently authorized hotels.`;
-  const coverageLine = `**Coverage** — ${evidence.coverage.reported} of ${evidence.coverage.selected} hotels reported; ${evidence.coverage.excluded} omitted.`;
+  const scopeLine = `**Active scope**: ${organization}; ${safeLabel(input.selectorLabel)}; ${evidence.coverage.selected} selected of ${evidence.coverage.authorized} currently authorized hotels.`;
+  const coverageLine = `**Coverage**: ${evidence.coverage.reported} of ${evidence.coverage.selected} hotels reported; ${evidence.coverage.excluded} omitted.`;
   const summary = ['**Deterministic results**', ...aggregateLines(evidence)];
   const comparisons = comparisonLines(evidence);
   const metrics = new Map<string, PortfolioMetricDefinition>(
@@ -835,7 +835,7 @@ export function renderPortfolioAnswerArtifact(input: {
     ? [
         '**Omissions**',
         ...evidence.coverage.excludedHotels.slice(0, 25).map((item) =>
-          `- ${safeLabel(item.propertyName)} — ${safeLabel(item.code)}: ${safeLabel(item.reason)}.`),
+          `- ${safeLabel(item.propertyName)}, ${safeLabel(item.code)}: ${safeLabel(item.reason)}.`),
         ...(evidence.coverage.excludedHotels.length > 25
           ? [`- ${evidence.coverage.excludedHotels.length - 25} additional omissions are retained in the audit receipt.`]
           : []),

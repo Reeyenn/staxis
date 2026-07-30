@@ -421,7 +421,7 @@ export async function POST(req: NextRequest) {
     return err(
       busy ? 'Invitation completion is busy. Please retry shortly.'
         : conflict ? 'Invite no longer valid'
-        : duplicate ? 'An account with this email already exists — please sign in instead.'
+        : duplicate ? 'An account with this email already exists. Please sign in instead.'
           : 'Failed to create account',
       {
         requestId,

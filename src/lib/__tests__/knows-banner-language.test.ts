@@ -149,6 +149,29 @@ describe('Company Rulebook banner copy', () => {
       rulebook.rulebookBannerText('fact_gone', undefined, 'en'),
     );
   });
+
+  test('no banner or read note contains an em dash', () => {
+    // Founder ruling, 2026-07-28: no em dashes in user-facing copy. Two rulebook
+    // banners shipped with one on 2026-07-29 ("The newer version was kept — …"
+    // and "Nothing changed — …"), which is why this walks the producers over the
+    // whole code set instead of trusting a reviewer to spot the next one.
+    const codes = [...SHARED_CODES, ...RULEBOOK_ONLY_CODES];
+    const producers: Array<[string, (code: string | undefined) => string]> = [
+      ['knowsBannerText', (code) => knows.knowsBannerText(code, undefined, 'en')],
+      ['knowsReadNoteText', (code) => knows.knowsReadNoteText(code, 'en')],
+      ['rulebookBannerText', (code) => rulebook.rulebookBannerText(code, undefined, 'en')],
+      ['rulebookReadNoteText', (code) => rulebook.rulebookReadNoteText(code, 'en')],
+    ];
+    for (const [name, produce] of producers) {
+      for (const code of [undefined, ...codes]) {
+        const copy = produce(code);
+        assert.ok(
+          !copy.includes('—'),
+          `${name}(${code ?? 'undefined'}) contains an em dash: ${copy}`,
+        );
+      }
+    }
+  });
 });
 
 describe('raw server output never becomes banner copy', () => {

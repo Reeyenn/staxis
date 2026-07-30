@@ -239,7 +239,7 @@ function VerifyInner() {
       // just after our outer deadline. Never re-enable this OTP form. The
       // settlement observer above discards an eventual exact-token session;
       // recovery is a full fresh sign-in.
-      enterFreshSigninRecovery("We couldn't confirm the result — please sign in again.");
+      enterFreshSigninRecovery("We couldn't confirm the result. Please sign in again.");
       console.warn('verify: code verification failed', err);
       return;
     }
@@ -255,7 +255,7 @@ function VerifyInner() {
 
     let ownedSession = data.session;
     if (!isAuthSessionCurrent(ownedSession)) {
-      enterFreshSigninRecovery('Sign-in state changed — please sign in again.');
+      enterFreshSigninRecovery('Sign-in state changed. Please sign in again.');
       return;
     }
 
@@ -320,7 +320,7 @@ function VerifyInner() {
     }
 
     if (!isAuthSessionCurrent(ownedSession)) {
-      enterFreshSigninRecovery('Sign-in state changed — please sign in again.');
+      enterFreshSigninRecovery('Sign-in state changed. Please sign in again.');
       return;
     }
     replaceNavigation(redirectTarget);

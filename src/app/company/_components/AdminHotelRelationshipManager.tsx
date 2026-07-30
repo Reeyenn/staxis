@@ -301,7 +301,7 @@ function RelationshipDialog({
                   invalidate();
                 }}
               >
-                <option value="independent">{'Independent — no active company relationship'}</option>
+                <option value="independent">{'Independent, no active company relationship'}</option>
                 {organizations.map((organization) => <option key={organization.id} value={organization.id}>{organization.name}</option>)}
               </select>
               <em>{'Only active management or ownership companies are eligible.'}</em>

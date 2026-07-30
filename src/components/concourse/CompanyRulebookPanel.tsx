@@ -298,11 +298,11 @@ const S = {
 
   },
   errRevisionConflict: {
-    en: 'That line changed somewhere else. The newer version was kept — review it and try again.',
+    en: 'That line changed somewhere else. The newer version was kept. Review it and try again.',
 
   },
   errLedgerUnavailable: {
-    en: 'The company rulebook is temporarily read only. Nothing changed — try again shortly.',
+    en: 'The company rulebook is temporarily read only. Nothing changed. Try again shortly.',
 
   },
   errNothingToRead: {

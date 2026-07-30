@@ -695,7 +695,7 @@ export async function handlePortfolioPost(
       scope: {
         organizationId: baseReceipt.organizationId,
         organizationName: baseReceipt.organizationName,
-        selectorLabel: 'No data scope selected — clarification required',
+        selectorLabel: 'No data scope selected, clarification required',
         selectedHotelCount: 0,
         authorizedHotelCount: baseReceipt.authorizedPropertyCount,
         hotelNames: [],

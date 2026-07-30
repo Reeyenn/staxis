@@ -111,7 +111,7 @@ export async function PUT(req: NextRequest) {
     log.error('[join-requests:PUT] transactional decision failed', {
       requestId, joinRequestId, code: rpcError.code, msg: errToString(rpcError),
     });
-    return err('Failed to decide the request — try again.', {
+    return err('Failed to decide the request. Try again.', {
       requestId, status: 500, code: ApiErrorCode.InternalError,
     });
   }
@@ -127,7 +127,7 @@ export async function PUT(req: NextRequest) {
       return err('Forbidden', { requestId, status: 403, code: ApiErrorCode.Unauthorized });
     }
     if (reason === 'account_unavailable') {
-      return err('That signup no longer exists — the account was deleted.', {
+      return err('That signup no longer exists. The account was deleted.', {
         requestId, status: 410, code: ApiErrorCode.NotFound,
       });
     }
@@ -145,7 +145,7 @@ export async function PUT(req: NextRequest) {
         requestId, status: 409, code: ApiErrorCode.IdempotencyConflict,
       });
     }
-    return err('Failed to decide the request — try again.', {
+    return err('Failed to decide the request. Try again.', {
       requestId, status: 500, code: ApiErrorCode.InternalError,
     });
   }

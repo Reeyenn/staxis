@@ -86,18 +86,18 @@ async function authorize(
   const propertyId = pidCheck.value!;
   const caller = await loadSessionAccount(userId);
   if (!caller || !managerManagesHotel(caller, propertyId)) {
-    return { ok: false, response: err('forbidden — no access to this property', { requestId, status: 403, code: ApiErrorCode.Forbidden }) };
+    return { ok: false, response: err('forbidden: no access to this property', { requestId, status: 403, code: ApiErrorCode.Forbidden }) };
   }
   const role = callerRoleAtHotel(caller, propertyId);
   if (!role) {
-    return { ok: false, response: err('forbidden — no role at this property', { requestId, status: 403, code: ApiErrorCode.Forbidden }) };
+    return { ok: false, response: err('forbidden: no role at this property', { requestId, status: 403, code: ApiErrorCode.Forbidden }) };
   }
   if (req.method !== 'GET' && req.method !== 'HEAD') {
     const mutationAllowed = caller.reachesAllProperties
       || caller.propertyStandings?.find((standing) => standing.propertyId === propertyId)
         ?.hotelMutationAllowed === true;
     if (!mutationAllowed) {
-      return { ok: false, response: err('forbidden — current access is read-only', { requestId, status: 403, code: ApiErrorCode.Forbidden }) };
+      return { ok: false, response: err('forbidden: current access is read-only', { requestId, status: 403, code: ApiErrorCode.Forbidden }) };
     }
   }
   const capabilityDecision = await capabilityDecisionForProperty(

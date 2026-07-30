@@ -52,7 +52,7 @@ const COPY: Record<PortfolioModuleId, {
   },
   housekeeping: {
     title: 'Portfolio housekeeping',
-    description: 'Completion, exceptions, and staffing signals by hotel—not a room-by-room dump.',
+    description: 'Completion, exceptions, and staffing signals by hotel, not a room-by-room dump.',
     listTitle: 'Housekeeping by hotel',
     listDescription: 'Open a hotel for its detailed rooms and assignments.',
   },

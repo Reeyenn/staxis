@@ -509,7 +509,7 @@ export async function PATCH(req: NextRequest) {
   const decision = await settingsDecision(session.userId, resolved.propertyId);
   if (decision === 'unavailable') return capabilityUnavailableResponse(requestId);
   if (decision === 'denied') {
-    return err('Forbidden — your session cannot manage this property', {
+    return err('Forbidden: your session cannot manage this property', {
       requestId, status: 403, code: ApiErrorCode.Forbidden,
     });
   }
@@ -576,7 +576,7 @@ export async function PATCH(req: NextRequest) {
   const commitDecision = await settingsDecision(authorizedUserId, resolved.propertyId);
   if (commitDecision === 'unavailable') return capabilityUnavailableResponse(requestId);
   if (commitDecision === 'denied') {
-    return err('Forbidden — property access changed before the update', {
+    return err('Forbidden: property access changed before the update', {
       requestId, status: 403, code: ApiErrorCode.Forbidden,
     });
   }

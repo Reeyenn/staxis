@@ -1034,7 +1034,7 @@ function DashboardWorkspace() {
               )) : (
                 <div style={{ fontSize: 14, color: attentionInk, paddingTop: 2 }}>
                   {operationalFeedsCurrent
-                    ? ('All clear — nothing needs you right now.')
+                    ? ('All clear. Nothing needs you right now.')
                     : operationalFeedsFailed
                       ? ("Some alerts couldn't be checked.")
                       : ('Checking current operations…')}
