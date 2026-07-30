@@ -1,26 +1,38 @@
 'use client';
 
-/* ───────────────────────────────────────────────────────────────────────
-   Admin Studio → Access surface.
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import {
+  Building2,
+  Check,
+  CircleMinus,
+  Hotel,
+  Info,
+  KeyRound,
+  Lock,
+  RotateCcw,
+  ShieldCheck,
+  X,
+} from 'lucide-react';
 
-   Per-hotel access control. Pick a hotel, then a grid of capabilities (rows,
-   grouped) × the 5 hotel roles (columns). Every cell starts ON (everyone gets
-   everything). Switch a cell OFF to restrict that capability for that role at
-   THAT hotel — it writes an allowed=false override; switching back ON deletes
-   it. Admin-only capabilities render as a locked "always you" row and can never
-   be toggled. Capabilities whose per-hotel enforcement isn't live yet render as
-   "manager default" (disabled) so a toggle is never shown that does nothing.
-
-   All reads/writes go through /api/admin/access/* (admin-gated, service-role).
-   ─────────────────────────────────────────────────────────────────────── */
-
-import React, { useCallback, useEffect, useState } from 'react';
-import { Check, Lock } from 'lucide-react';
 import { fetchWithAuth } from '@/lib/api-fetch';
-import { useLang } from '@/contexts/LanguageContext';
-import { FONT_SANS, FONT_SERIF, FONT_MONO, Caps } from '../kit';
+import {
+  ACCESS_PROFILES,
+  ACCESS_PROFILE_CAPABILITIES,
+  ORGANIZATION_CAPABILITIES,
+  type AccessProfile,
+  type OrganizationCapability,
+} from '@/lib/organization-access/domain';
+import { COMPANY_SCOPE_ROLES } from '@/lib/company/roles';
 
-interface HotelLite { id: string; name: string | null }
+import styles from '../../AccessModal.module.css';
+
+type AccessMode = 'organization' | 'hotel';
+type Requester = typeof fetchWithAuth;
+
+interface HotelLite {
+  id: string;
+  name: string | null;
+}
 
 interface CapMeta {
   key: string;
@@ -29,18 +41,16 @@ interface CapMeta {
   managerFloor?: boolean;
   group: string;
   label_en: string;
-  label_es: string;
   desc_en: string;
-  desc_es: string;
 }
 
-// Roles that keep a manager-floor capability (owner / GM). Line-staff columns
-// (front_desk / housekeeping / maintenance) are locked OFF for those caps — the
-// resolver ignores any override that tries to grant them, so the grid shows a
-// disabled cell rather than a toggle that silently does nothing.
-const MANAGER_FLOOR_ROLES = new Set(['owner', 'general_manager']);
-interface GroupMeta { key: string; label_en: string; label_es: string }
+interface GroupMeta {
+  key: string;
+  label_en: string;
+}
+
 type OverrideMap = Record<string, Record<string, boolean>>;
+
 interface Matrix {
   hotelRoles: string[];
   groups: GroupMeta[];
@@ -48,328 +58,854 @@ interface Matrix {
   overrides: OverrideMap;
 }
 
-const ROLE_COL_EN: Record<string, string> = {
-  owner: 'Owner', general_manager: 'GM', front_desk: 'Front desk',
-  housekeeping: 'Housekeeping', maintenance: 'Maintenance',
+interface AdminOrganization {
+  id: string;
+  name: string;
+  type: string;
+  status: string;
+  hotelCount: number;
+  warnings: string[];
+}
+
+interface OrganizationDirectory {
+  organizations: AdminOrganization[];
+  schemaReady: boolean;
+}
+
+interface Envelope<T> {
+  ok?: boolean;
+  data?: T;
+  error?: string | { message?: string; error?: string };
+}
+
+const MODE_TABS: ReadonlyArray<{ id: AccessMode; label: string }> = [
+  { id: 'organization', label: 'Organization' },
+  { id: 'hotel', label: 'Hotel' },
+];
+
+const MANAGER_FLOOR_ROLES = new Set(['owner', 'general_manager']);
+
+const ROLE_LABELS: Record<string, string> = {
+  owner: 'Owner',
+  general_manager: 'GM',
+  front_desk: 'Front desk',
+  housekeeping: 'Housekeeping',
+  maintenance: 'Maintenance',
 };
-export function AccessSurface() {
-  const { lang } = useLang();
-  const es = false;
+
+const COMPANY_ROLE_LABELS: Record<(typeof COMPANY_SCOPE_ROLES)[number], string> = {
+  owner: 'Owner',
+  vp: 'VP',
+  finance: 'Finance',
+};
+
+const PROFILE_LABELS: Record<AccessProfile, string> = {
+  organization_owner: 'Organization owner',
+  organization_admin: 'Organization administrator',
+  portfolio_manager: 'Portfolio manager',
+  property_manager: 'Property manager',
+  department_lead: 'Department lead',
+  contributor: 'Contributor',
+  viewer: 'Viewer',
+  external_collaborator: 'External collaborator',
+};
+
+const ORGANIZATION_CAPABILITY_GROUPS: ReadonlyArray<{
+  label: string;
+  capabilities: readonly OrganizationCapability[];
+}> = [
+  {
+    label: 'Visibility',
+    capabilities: [
+      'view_company',
+      'view_properties',
+      'portfolio_intelligence_read',
+      'view_people',
+      'view_access',
+      'view_activity',
+    ],
+  },
+  {
+    label: 'Management',
+    capabilities: [
+      'manage_people',
+      'manage_access',
+      'manage_portfolios',
+      'manage_properties',
+      'manage_company',
+    ],
+  },
+  {
+    label: 'Ownership',
+    capabilities: ['manage_billing', 'transfer_ownership'],
+  },
+];
+
+const ORGANIZATION_CAPABILITY_COPY: Record<OrganizationCapability, { label: string; description: string }> = {
+  view_company: { label: 'View company', description: 'Company identity and structure' },
+  view_properties: { label: 'View hotels', description: 'Hotels inside the authorized scope' },
+  portfolio_intelligence_read: { label: 'Portfolio intelligence', description: 'Portfolio and regional operational insights' },
+  view_people: { label: 'View people', description: 'Company people directory' },
+  view_access: { label: 'View access', description: 'Existing access grants and receipts' },
+  view_activity: { label: 'View activity', description: 'Company access activity and audit context' },
+  manage_people: { label: 'Manage people', description: 'Company membership lifecycle' },
+  manage_access: { label: 'Manage access', description: 'Delegate authorized profiles and exact scopes' },
+  manage_portfolios: { label: 'Manage portfolios', description: 'Portfolio, region, and division structure' },
+  manage_properties: { label: 'Manage hotels', description: 'Company hotel relationships' },
+  manage_company: { label: 'Manage company', description: 'Company-level settings' },
+  manage_billing: { label: 'Manage billing', description: 'Company billing authority' },
+  transfer_ownership: { label: 'Transfer ownership', description: 'Protected organization ownership transfer' },
+};
+
+function responseError<T>(payload: Envelope<T>, fallback: string): string {
+  if (typeof payload.error === 'string') return payload.error;
+  if (payload.error && typeof payload.error.message === 'string') return payload.error.message;
+  if (payload.error && typeof payload.error.error === 'string') return payload.error.error;
+  return fallback;
+}
+
+function profileScopeLabel(profile: AccessProfile): string {
+  if (profile === 'organization_owner' || profile === 'organization_admin') return 'Company';
+  if (profile === 'portfolio_manager') return 'Portfolio / region';
+  if (profile === 'property_manager') return 'Property';
+  return 'Authorized scope';
+}
+
+function countRestrictions(overrides: OverrideMap): number {
+  return Object.values(overrides).reduce(
+    (total, roles) => total + Object.values(roles).filter((allowed) => allowed === false).length,
+    0,
+  );
+}
+
+export function AccessSurface({
+  onClose,
+  closeButtonRef,
+  request = fetchWithAuth,
+}: {
+  onClose: () => void;
+  closeButtonRef: React.RefObject<HTMLButtonElement | null>;
+  request?: Requester;
+}) {
+  const [mode, setMode] = useState<AccessMode>('hotel');
+  const bodyRef = useRef<HTMLDivElement>(null);
+  const tabRefs = useRef<Array<HTMLButtonElement | null>>([]);
+
   const [hotels, setHotels] = useState<HotelLite[] | null>(null);
-  const [pid, setPid] = useState<string | null>(null);
+  const [hotelId, setHotelId] = useState<string | null>(null);
+  const [hotelDirectoryError, setHotelDirectoryError] = useState<string | null>(null);
   const [matrix, setMatrix] = useState<Matrix | null>(null);
-  const [loadingMatrix, setLoadingMatrix] = useState(false);
-  const [savingKey, setSavingKey] = useState<string | null>(null);
-  const [savedKey, setSavedKey] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [applying, setApplying] = useState(false);
-  const [applyNote, setApplyNote] = useState<string | null>(null);
+  const [matrixLoading, setMatrixLoading] = useState(false);
+  const [matrixError, setMatrixError] = useState<string | null>(null);
 
-  // Load the admin's hotels once.
+  const [organizationDirectory, setOrganizationDirectory] = useState<OrganizationDirectory | null>(null);
+  const [organizationId, setOrganizationId] = useState<string | null>(null);
+  const [organizationError, setOrganizationError] = useState<string | null>(null);
+
+  const changeMode = useCallback((next: AccessMode) => {
+    setMode(next);
+    bodyRef.current?.scrollTo({ top: 0, left: 0 });
+  }, []);
+
+  const loadHotels = useCallback(async () => {
+    setHotels(null);
+    setHotelDirectoryError(null);
+    try {
+      const response = await request('/api/admin/list-properties?pageSize=200&status=all');
+      const payload = await response.json().catch(() => ({})) as Envelope<{ properties?: HotelLite[] }>;
+      if (!response.ok || payload.ok !== true || !payload.data) {
+        throw new Error(responseError(payload, 'Hotels could not be loaded.'));
+      }
+      const list = (payload.data.properties ?? []).map((hotel) => ({ id: hotel.id, name: hotel.name }));
+      setHotels(list);
+      setHotelId((current) => (
+        current && list.some((hotel) => hotel.id === current) ? current : list[0]?.id ?? null
+      ));
+    } catch (caught) {
+      setHotelDirectoryError(caught instanceof Error ? caught.message : 'Hotels could not be loaded.');
+      setHotels([]);
+      setHotelId(null);
+    }
+  }, [request]);
+
+  const loadMatrix = useCallback(async (propertyId: string) => {
+    setMatrixLoading(true);
+    setMatrixError(null);
+    setMatrix(null);
+    try {
+      const response = await request(`/api/admin/access/matrix?propertyId=${encodeURIComponent(propertyId)}`);
+      const payload = await response.json().catch(() => ({})) as Envelope<Matrix>;
+      if (!response.ok || payload.ok !== true || !payload.data) {
+        throw new Error(responseError(payload, 'Access settings could not be loaded.'));
+      }
+      setMatrix(payload.data);
+    } catch (caught) {
+      setMatrixError(caught instanceof Error ? caught.message : 'Access settings could not be loaded.');
+    } finally {
+      setMatrixLoading(false);
+    }
+  }, [request]);
+
+  const loadOrganizations = useCallback(async () => {
+    setOrganizationDirectory(null);
+    setOrganizationError(null);
+    try {
+      const response = await request('/api/admin/organizations');
+      const payload = await response.json().catch(() => ({})) as Envelope<OrganizationDirectory>;
+      if (!response.ok || payload.ok !== true || !payload.data) {
+        throw new Error(responseError(payload, 'Organizations could not be loaded.'));
+      }
+      setOrganizationDirectory(payload.data);
+      setOrganizationId((current) => (
+        current && payload.data?.organizations.some((organization) => organization.id === current)
+          ? current
+          : payload.data?.organizations[0]?.id ?? null
+      ));
+    } catch (caught) {
+      setOrganizationError(caught instanceof Error ? caught.message : 'Organizations could not be loaded.');
+      setOrganizationDirectory({ organizations: [], schemaReady: true });
+      setOrganizationId(null);
+    }
+  }, [request]);
+
+  useEffect(() => { void loadHotels(); }, [loadHotels]);
+  useEffect(() => { if (hotelId) void loadMatrix(hotelId); else setMatrix(null); }, [hotelId, loadMatrix]);
   useEffect(() => {
-    let alive = true;
-    void (async () => {
-      try {
-        const res = await fetchWithAuth('/api/admin/list-properties?pageSize=200&status=all');
-        const json = await res.json();
-        if (!alive) return;
-        if (json.ok) {
-          const list: HotelLite[] = (json.data.properties ?? []).map(
-            (p: { id: string; name: string | null }) => ({ id: p.id, name: p.name }),
-          );
-          setHotels(list);
-          setPid((cur) => cur ?? list[0]?.id ?? null);
-        } else {
-          setError(json.error || 'Could not load hotels');
-        }
-      } catch (e) {
-        if (alive) setError(`Network error: ${(e as Error).message}`);
-      }
-    })();
-    return () => { alive = false; };
-  }, []);
-
-  const loadMatrix = useCallback(async (hotelId: string) => {
-    setLoadingMatrix(true);
-    setError(null);
-    try {
-      const res = await fetchWithAuth(`/api/admin/access/matrix?propertyId=${encodeURIComponent(hotelId)}`);
-      const json = await res.json();
-      if (json.ok) setMatrix(json.data as Matrix);
-      else setError(json.error || 'Could not load access settings');
-    } catch (e) {
-      setError(`Network error: ${(e as Error).message}`);
-    } finally {
-      setLoadingMatrix(false);
+    if (mode === 'organization' && organizationDirectory === null && organizationError === null) {
+      void loadOrganizations();
     }
-  }, []);
+  }, [loadOrganizations, mode, organizationDirectory, organizationError]);
 
-  useEffect(() => { if (pid) void loadMatrix(pid); }, [pid, loadMatrix]);
+  const organizations = organizationDirectory?.organizations ?? [];
+  const selectedOrganization = organizations.find((organization) => organization.id === organizationId) ?? null;
 
-  const isRestricted = (cap: string, role: string): boolean => matrix?.overrides?.[cap]?.[role] === false;
-
-  async function setCell(cap: string, role: string, nextAllowed: boolean) {
-    if (!pid || !matrix) return;
-    const key = `${cap}:${role}`;
-    // Optimistic local update.
-    setMatrix((prev) => {
-      if (!prev) return prev;
-      const ov: OverrideMap = JSON.parse(JSON.stringify(prev.overrides ?? {}));
-      if (nextAllowed) {
-        if (ov[cap]) { delete ov[cap][role]; if (Object.keys(ov[cap]).length === 0) delete ov[cap]; }
-      } else {
-        ov[cap] = ov[cap] ?? {};
-        ov[cap][role] = false;
-      }
-      return { ...prev, overrides: ov };
-    });
-    setSavingKey(key);
-    setError(null);
-    try {
-      const res = await fetchWithAuth('/api/admin/access/toggle', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ propertyId: pid, capability: cap, role, allowed: nextAllowed }),
-      });
-      const json = await res.json();
-      if (!res.ok || !json.ok) throw new Error(json.error || 'Save failed');
-      setSavedKey(key);
-      setTimeout(() => setSavedKey((k) => (k === key ? null : k)), 1200);
-    } catch (e) {
-      setError(`Couldn't save. ${(e as Error).message}`);
-      await loadMatrix(pid); // revert to server truth
-    } finally {
-      setSavingKey((k) => (k === key ? null : k));
-    }
-  }
-
-  async function applyToAll() {
-    if (!pid) return;
-    setApplying(true);
-    setApplyNote(null);
-    setError(null);
-    try {
-      const res = await fetchWithAuth('/api/admin/access/apply-to-all', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ propertyId: pid }),
-      });
-      const json = await res.json();
-      if (!res.ok || !json.ok) throw new Error(json.error || 'Apply failed');
-      setApplyNote(`Applied to ${json.data.hotelsUpdated} hotel(s).`);
-      setTimeout(() => setApplyNote(null), 4000);
-    } catch (e) {
-      setError(`Couldn't apply. ${(e as Error).message}`);
-    } finally {
-      setApplying(false);
-    }
-  }
+  const onTabKeyDown = (event: React.KeyboardEvent<HTMLButtonElement>, index: number) => {
+    if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
+    event.preventDefault();
+    const nextIndex = event.key === 'Home'
+      ? 0
+      : event.key === 'End'
+        ? MODE_TABS.length - 1
+        : (index + (event.key === 'ArrowRight' ? 1 : -1) + MODE_TABS.length) % MODE_TABS.length;
+    changeMode(MODE_TABS[nextIndex].id);
+    tabRefs.current[nextIndex]?.focus();
+  };
 
   return (
-    <div style={{ padding: '28px 32px 64px', fontFamily: FONT_SANS, color: '#fff', maxWidth: 1180, margin: '0 auto' }}>
-      {/* Title + hotel picker */}
-      <div style={{ display: 'flex', alignItems: 'flex-end', justifyContent: 'space-between', flexWrap: 'wrap', gap: 16, marginBottom: 6 }}>
-        <div>
-          <div style={{ fontFamily: FONT_SERIF, fontStyle: 'italic', fontSize: 30, lineHeight: 1.1 }}>
-            {'Per-hotel access'}
+    <>
+      <header className={styles.header} data-access-modal-header>
+        <div className={styles.titleRow}>
+          <span className={styles.titleIcon}><KeyRound size={21} aria-hidden="true" /></span>
+          <div>
+            <span className={styles.eyebrow}>Admin · Access control</span>
+            <h2 id="access-modal-title" className={styles.title}>Access</h2>
+            <p id="access-modal-description" className={styles.description}>
+              Review organization policy and configure each hotel’s existing role capabilities from one contained workspace.
+            </p>
           </div>
-          <div style={{ fontSize: 13, color: 'rgba(255,255,255,.55)', marginTop: 6, maxWidth: 640 }}>
-            {'Every role sees everything by default. Switch OFF what a role should NOT reach at this hotel.'}
-          </div>
         </div>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-          <Caps size={9} c="rgba(255,255,255,.5)">{'Hotel'}</Caps>
-          <select
-            value={pid ?? ''}
-            onChange={(e) => setPid(e.target.value)}
-            disabled={!hotels}
-            style={{
-              background: 'rgba(255,255,255,.07)', color: '#fff', border: '1px solid rgba(255,255,255,.18)',
-              borderRadius: 10, padding: '8px 12px', fontFamily: FONT_SANS, fontSize: 14, minWidth: 220, cursor: 'pointer',
-            }}
-          >
-            {(hotels ?? []).map((h) => (
-              <option key={h.id} value={h.id} style={{ color: '#111' }}>{h.name || h.id.slice(0, 8)}</option>
-            ))}
-          </select>
-        </div>
-      </div>
+        <button
+          ref={closeButtonRef}
+          type="button"
+          className={styles.closeButton}
+          onClick={onClose}
+          aria-label="Close access settings"
+        >
+          <X size={17} aria-hidden="true" />
+          <span>Close</span>
+        </button>
 
-      {error && (
-        <div style={{ marginTop: 14, padding: '12px 14px', background: 'var(--terracotta-dim)', border: '1px solid rgba(194,86,46,.4)', borderRadius: 12, color: 'var(--terracotta)', fontSize: 13 }}>
-          {error}
-        </div>
-      )}
-
-      {loadingMatrix || !matrix ? (
-        <div style={{ padding: '70px 0', textAlign: 'center', color: 'rgba(255,255,255,.5)', fontFamily: FONT_MONO, fontSize: 13 }}>
-          {'Loading…'}
-        </div>
-      ) : (
-        <>
-          {/* Grid */}
-          <div style={{ marginTop: 20, border: '1px solid rgba(255,255,255,.10)', borderRadius: 16, overflow: 'hidden' }}>
-            {/* Header row */}
-            <div style={{ display: 'grid', gridTemplateColumns: `minmax(220px, 1.6fr) repeat(${matrix.hotelRoles.length}, 1fr)`, background: 'rgba(255,255,255,.04)', borderBottom: '1px solid rgba(255,255,255,.10)' }}>
-              <div style={{ padding: '12px 16px' }}><Caps size={9} c="rgba(255,255,255,.5)">{'Capability'}</Caps></div>
-              {matrix.hotelRoles.map((r) => (
-                <div key={r} style={{ padding: '12px 8px', textAlign: 'center' }}>
-                  <Caps size={9} c="rgba(255,255,255,.6)">{(ROLE_COL_EN)[r] ?? r}</Caps>
-                </div>
-              ))}
-            </div>
-
-            {matrix.groups.map((g) => {
-              const caps = matrix.capabilities.filter((c) => c.group === g.key);
-              if (caps.length === 0) return null;
+        <div className={styles.controls}>
+          <div className={styles.tabs} role="tablist" aria-label="Access scope mode">
+            {MODE_TABS.map((tab, index) => {
+              const selected = mode === tab.id;
               return (
-                <div key={g.key}>
-                  <div style={{ padding: '9px 16px', background: 'rgba(255,255,255,.02)', borderBottom: '1px solid rgba(255,255,255,.07)' }}>
-                    <Caps size={9} c="var(--gold)">{g.label_en}</Caps>
-                  </div>
-                  {caps.map((c) => (
-                    <CapRow
-                      key={c.key}
-                      cap={c}
-                      es={es}
-                      roles={matrix.hotelRoles}
-                      isRestricted={isRestricted}
-                      savingKey={savingKey}
-                      savedKey={savedKey}
-                      onToggle={setCell}
-                    />
-                  ))}
-                </div>
+                <button
+                  key={tab.id}
+                  ref={(element) => { tabRefs.current[index] = element; }}
+                  id={`access-mode-${tab.id}`}
+                  type="button"
+                  className={styles.tab}
+                  role="tab"
+                  aria-selected={selected}
+                  aria-controls={`access-panel-${tab.id}`}
+                  tabIndex={selected ? 0 : -1}
+                  onClick={() => changeMode(tab.id)}
+                  onKeyDown={(event) => onTabKeyDown(event, index)}
+                >
+                  {tab.id === 'organization'
+                    ? <Building2 size={16} aria-hidden="true" />
+                    : <Hotel size={16} aria-hidden="true" />}
+                  {tab.label}
+                </button>
               );
             })}
           </div>
 
-          {/* Apply-to-all */}
-          <div style={{ marginTop: 18, display: 'flex', alignItems: 'center', gap: 14, flexWrap: 'wrap' }}>
-            <button
-              onClick={() => void applyToAll()}
-              disabled={applying || !pid}
-              style={{
-                background: 'rgba(255,255,255,.08)', color: '#fff', border: '1px solid rgba(255,255,255,.2)',
-                borderRadius: 10, padding: '9px 16px', fontFamily: FONT_SANS, fontSize: 13, fontWeight: 600,
-                cursor: applying ? 'default' : 'pointer', opacity: applying ? 0.6 : 1,
-              }}
-            >
-              {applying ? ('Applying…') : ("Apply this hotel's setup to all hotels")}
-            </button>
-            {applyNote && <span style={{ fontSize: 13, color: 'var(--forest)' }}>{applyNote}</span>}
-          </div>
-        </>
-      )}
-    </div>
+          {mode === 'hotel' ? (
+            <label className={styles.scopeField}>
+              <span>Hotel</span>
+              <select
+                className={styles.select}
+                value={hotelId ?? ''}
+                onChange={(event) => {
+                  setHotelId(event.target.value || null);
+                  bodyRef.current?.scrollTo({ top: 0, left: 0 });
+                }}
+                disabled={hotels === null || hotels.length === 0}
+                aria-label="Hotel access scope"
+              >
+                {hotels === null ? <option value="">Loading hotels…</option> : null}
+                {hotels?.length === 0 ? <option value="">No hotels available</option> : null}
+                {(hotels ?? []).map((hotel) => (
+                  <option key={hotel.id} value={hotel.id}>{hotel.name || `Hotel ${hotel.id.slice(0, 8)}`}</option>
+                ))}
+              </select>
+            </label>
+          ) : (
+            <label className={styles.scopeField}>
+              <span>Management organization</span>
+              <select
+                className={styles.select}
+                value={organizationId ?? ''}
+                onChange={(event) => {
+                  setOrganizationId(event.target.value || null);
+                  bodyRef.current?.scrollTo({ top: 0, left: 0 });
+                }}
+                disabled={organizationDirectory === null || organizations.length === 0}
+                aria-label="Organization access scope"
+              >
+                {organizationDirectory === null ? <option value="">Loading organizations…</option> : null}
+                {organizationDirectory && organizations.length === 0 ? <option value="">No organizations available</option> : null}
+                {organizations.map((organization) => (
+                  <option key={organization.id} value={organization.id}>{organization.name}</option>
+                ))}
+              </select>
+            </label>
+          )}
+        </div>
+      </header>
+
+      <div ref={bodyRef} className={styles.body} data-access-modal-scroll>
+        {mode === 'hotel' ? (
+          <section
+            id="access-panel-hotel"
+            className={styles.panel}
+            role="tabpanel"
+            aria-labelledby="access-mode-hotel"
+            tabIndex={0}
+          >
+            <HotelAccessPanel
+              hotelId={hotelId}
+              hotels={hotels}
+              directoryError={hotelDirectoryError}
+              matrix={matrix}
+              loading={matrixLoading}
+              matrixError={matrixError}
+              request={request}
+              onRetryHotels={() => void loadHotels()}
+              onRetryMatrix={() => { if (hotelId) void loadMatrix(hotelId); }}
+              onReloadMatrix={loadMatrix}
+            />
+          </section>
+        ) : (
+          <section
+            id="access-panel-organization"
+            className={styles.panel}
+            role="tabpanel"
+            aria-labelledby="access-mode-organization"
+            tabIndex={0}
+          >
+            <OrganizationAccessPanel
+              organization={selectedOrganization}
+              directory={organizationDirectory}
+              error={organizationError}
+              onRetry={() => void loadOrganizations()}
+            />
+          </section>
+        )}
+      </div>
+    </>
   );
 }
 
-function CapRow({
-  cap, es, roles, isRestricted, savingKey, savedKey, onToggle,
+function OrganizationAccessPanel({
+  organization,
+  directory,
+  error,
+  onRetry,
 }: {
-  cap: CapMeta;
-  es: boolean;
-  roles: string[];
-  isRestricted: (cap: string, role: string) => boolean;
-  savingKey: string | null;
-  savedKey: string | null;
-  onToggle: (cap: string, role: string, nextAllowed: boolean) => void;
+  organization: AdminOrganization | null;
+  directory: OrganizationDirectory | null;
+  error: string | null;
+  onRetry: () => void;
 }) {
-  const label = cap.label_en;
-  const desc = cap.desc_en;
-
-  // Admin-only: a single locked row spanning all role columns.
-  if (cap.adminOnly) {
+  if (directory === null && !error) {
+    return <LoadingState label="Loading organization access policy…" />;
+  }
+  if (error) {
+    return <ErrorState message={error} onRetry={onRetry} />;
+  }
+  if (!directory?.schemaReady) {
     return (
-      <div style={{ display: 'grid', gridTemplateColumns: `minmax(220px, 1.6fr) 1fr`, borderBottom: '1px solid rgba(255,255,255,.06)', background: 'rgba(255,255,255,.015)' }}>
-        <CapLabel label={label} desc={desc} />
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '0 16px', color: 'rgba(255,255,255,.45)', fontSize: 12 }}>
-          <Lock size={13} />
-          {'Admin only. Always you'}
-        </div>
+      <div className={styles.notice} role="status">
+        <Info size={17} aria-hidden="true" />
+        Organization access is still being prepared. Hotel access remains available in Hotel mode.
+      </div>
+    );
+  }
+  if (!organization) {
+    return (
+      <div className={styles.message} role="status">
+        No management organizations are available.
       </div>
     );
   }
 
   return (
-    <div style={{ display: 'grid', gridTemplateColumns: `minmax(220px, 1.6fr) repeat(${roles.length}, 1fr)`, borderBottom: '1px solid rgba(255,255,255,.06)', alignItems: 'stretch' }}>
-      <CapLabel label={label} desc={desc} pending={!cap.live} es={es} />
+    <>
+      <div className={styles.panelHeading}>
+        <div>
+          <span className={styles.sectionLabel}>Organization policy · {organization.name}</span>
+          <h3>Roles, scopes, and capabilities</h3>
+          <p>
+            These are the current authoritative organization access profiles. The policy is fixed by the existing permission system; it is not a configurable template.
+          </p>
+        </div>
+        <span className={styles.count} aria-label={`${ORGANIZATION_CAPABILITIES.length} fixed organization capabilities across ${ACCESS_PROFILES.length} access profiles`}>
+          {ORGANIZATION_CAPABILITIES.length} fixed capabilities · {ACCESS_PROFILES.length} profiles
+        </span>
+      </div>
+
+      {organization.status !== 'active' ? (
+        <div className={styles.notice} role="status">
+          <Info size={17} aria-hidden="true" />
+          {organization.name} is {organization.status.replaceAll('_', ' ')}. Its policy remains visible, but access operations stay disabled.
+        </div>
+      ) : null}
+
+      <div className={styles.roleSummary} aria-label="Existing company roles and scopes">
+        {COMPANY_SCOPE_ROLES.map((role) => (
+          <span key={role} className={styles.companyRoleChip}>
+            {COMPANY_ROLE_LABELS[role]} <small>· Company scope</small>
+          </span>
+        ))}
+        <span className={styles.companyRoleChip}>Portfolio manager <small>· Portfolio / region</small></span>
+        <span className={styles.companyRoleChip}>Property manager <small>· Selected hotels</small></span>
+      </div>
+
+      <div className={styles.notice} role="note">
+        <Lock size={17} aria-hidden="true" />
+        <span>
+          Platform Admin can inspect this policy but cannot rewrite company access templates or act as a company member. Authorized company leaders assign existing profiles and exact scopes through the current Company Hub preview-and-confirm flow, where authorization is rechecked at commit.
+        </span>
+      </div>
+
+      <div className={styles.matrixKey} aria-label="Organization matrix legend">
+        <span><i className={styles.allowedMark}><Check size={14} aria-hidden="true" /></i> Included</span>
+        <span><i className={styles.deniedMark}><CircleMinus size={13} aria-hidden="true" /></i> Not included</span>
+        <span><i className={styles.fixedMark}><Lock size={14} aria-hidden="true" /></i> Fixed authoritative policy</span>
+      </div>
+
+      <div
+        className={styles.matrixScroller}
+        role="region"
+        aria-label="Organization role and capability matrix"
+        tabIndex={0}
+      >
+        <table className={`${styles.matrix} ${styles.organizationMatrix}`}>
+          <thead>
+            <tr>
+              <th scope="col">Organization capability</th>
+              {ACCESS_PROFILES.map((profile) => (
+                <th key={profile} scope="col">
+                  {PROFILE_LABELS[profile]}
+                  <span className={styles.profileScope}>{profileScopeLabel(profile)}</span>
+                </th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {ORGANIZATION_CAPABILITY_GROUPS.flatMap((group) => [
+              <tr key={`${group.label}-heading`} className={styles.groupRow}>
+                <th colSpan={ACCESS_PROFILES.length + 1} scope="colgroup">{group.label}</th>
+              </tr>,
+              ...group.capabilities.map((capability) => {
+                const copy = ORGANIZATION_CAPABILITY_COPY[capability];
+                return (
+                  <tr key={capability}>
+                    <th className={styles.capabilityCell} scope="row">
+                      {copy.label}
+                      <small>{copy.description}</small>
+                    </th>
+                    {ACCESS_PROFILES.map((profile) => {
+                      const included = ACCESS_PROFILE_CAPABILITIES[profile].includes(capability);
+                      return (
+                        <td key={profile} className={styles.cell}>
+                          <span
+                            className={included ? styles.allowedMark : styles.deniedMark}
+                            aria-label={included ? 'Included' : 'Not included'}
+                          >
+                            {included
+                              ? <Check size={15} aria-hidden="true" />
+                              : <CircleMinus size={13} aria-hidden="true" />}
+                          </span>
+                        </td>
+                      );
+                    })}
+                  </tr>
+                );
+              }),
+            ])}
+          </tbody>
+        </table>
+      </div>
+      <p className={styles.statusText}>
+        Scope availability is narrowed further per authorized leader, organization, portfolio or region, and hotel by the server projection.
+      </p>
+    </>
+  );
+}
+
+function HotelAccessPanel({
+  hotelId,
+  hotels,
+  directoryError,
+  matrix,
+  loading,
+  matrixError,
+  request,
+  onRetryHotels,
+  onRetryMatrix,
+  onReloadMatrix,
+}: {
+  hotelId: string | null;
+  hotels: HotelLite[] | null;
+  directoryError: string | null;
+  matrix: Matrix | null;
+  loading: boolean;
+  matrixError: string | null;
+  request: Requester;
+  onRetryHotels: () => void;
+  onRetryMatrix: () => void;
+  onReloadMatrix: (hotelId: string) => Promise<void>;
+}) {
+  const [savingKey, setSavingKey] = useState<string | null>(null);
+  const [savedKey, setSavedKey] = useState<string | null>(null);
+  const [mutationError, setMutationError] = useState<string | null>(null);
+  const [applying, setApplying] = useState(false);
+  const [applyConfirmation, setApplyConfirmation] = useState(false);
+  const [applyNote, setApplyNote] = useState<string | null>(null);
+  const [optimisticMatrix, setOptimisticMatrix] = useState<Matrix | null>(matrix);
+  const savedTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => { setOptimisticMatrix(matrix); }, [matrix]);
+  useEffect(() => {
+    setMutationError(null);
+    setApplyConfirmation(false);
+    setApplyNote(null);
+  }, [hotelId]);
+  useEffect(() => () => {
+    if (savedTimerRef.current) clearTimeout(savedTimerRef.current);
+  }, []);
+
+  const activeMatrix = optimisticMatrix;
+  const selectedHotel = hotels?.find((hotel) => hotel.id === hotelId) ?? null;
+  const restrictionCount = activeMatrix ? countRestrictions(activeMatrix.overrides) : 0;
+  const configurableCount = activeMatrix?.capabilities.filter((capability) => !capability.adminOnly && capability.live).length ?? 0;
+  const adminOnlyCount = activeMatrix?.capabilities.filter((capability) => capability.adminOnly).length ?? 0;
+
+  const setCell = async (capability: string, role: string, nextAllowed: boolean) => {
+    if (!hotelId || !activeMatrix || savingKey) return;
+    const key = `${capability}:${role}`;
+    const serverSnapshot = activeMatrix;
+    setOptimisticMatrix((current) => {
+      if (!current) return current;
+      const overrides: OverrideMap = Object.fromEntries(
+        Object.entries(current.overrides ?? {}).map(([capabilityKey, roles]) => [capabilityKey, { ...roles }]),
+      );
+      if (nextAllowed) {
+        if (overrides[capability]) {
+          delete overrides[capability][role];
+          if (Object.keys(overrides[capability]).length === 0) delete overrides[capability];
+        }
+      } else {
+        overrides[capability] = overrides[capability] ?? {};
+        overrides[capability][role] = false;
+      }
+      return { ...current, overrides };
+    });
+    setSavingKey(key);
+    setSavedKey(null);
+    setMutationError(null);
+    setApplyNote(null);
+    try {
+      const response = await request('/api/admin/access/toggle', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ propertyId: hotelId, capability, role, allowed: nextAllowed }),
+      });
+      const payload = await response.json().catch(() => ({})) as Envelope<unknown>;
+      if (!response.ok || payload.ok !== true) {
+        throw new Error(responseError(payload, 'The access change could not be saved.'));
+      }
+      setSavedKey(key);
+      if (savedTimerRef.current) clearTimeout(savedTimerRef.current);
+      savedTimerRef.current = setTimeout(() => setSavedKey((current) => current === key ? null : current), 1600);
+    } catch (caught) {
+      setOptimisticMatrix(serverSnapshot);
+      setMutationError(caught instanceof Error ? caught.message : 'The access change could not be saved.');
+      await onReloadMatrix(hotelId);
+    } finally {
+      setSavingKey((current) => current === key ? null : current);
+    }
+  };
+
+  const applyToAll = async (confirmClearAll: boolean) => {
+    if (!hotelId || applying) return;
+    setApplying(true);
+    setMutationError(null);
+    setApplyNote(null);
+    try {
+      const response = await request('/api/admin/access/apply-to-all', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ propertyId: hotelId, ...(confirmClearAll ? { confirmClearAll: true } : {}) }),
+      });
+      const payload = await response.json().catch(() => ({})) as Envelope<{ hotelsUpdated?: number }>;
+      if (!response.ok || payload.ok !== true || !payload.data) {
+        throw new Error(responseError(payload, 'The hotel setup could not be applied.'));
+      }
+      const updated = payload.data.hotelsUpdated ?? 0;
+      setApplyNote(`Applied this setup to ${updated} other ${updated === 1 ? 'hotel' : 'hotels'}.`);
+      setApplyConfirmation(false);
+    } catch (caught) {
+      setMutationError(caught instanceof Error ? caught.message : 'The hotel setup could not be applied.');
+    } finally {
+      setApplying(false);
+    }
+  };
+
+  if (hotels === null && !directoryError) return <LoadingState label="Loading hotels…" />;
+  if (directoryError) return <ErrorState message={directoryError} onRetry={onRetryHotels} />;
+  if (hotels?.length === 0 || !hotelId) {
+    return <div className={styles.message} role="status">No hotels are available for access configuration.</div>;
+  }
+  if (loading || (!activeMatrix && !matrixError)) return <LoadingState label="Loading hotel access settings…" />;
+  if (matrixError || !activeMatrix) {
+    return <ErrorState message={matrixError ?? 'Access settings could not be loaded.'} onRetry={onRetryMatrix} />;
+  }
+
+  const isRestricted = (capability: string, role: string): boolean => (
+    activeMatrix.overrides?.[capability]?.[role] === false
+  );
+
+  return (
+    <>
+      <div className={styles.panelHeading}>
+        <div>
+          <span className={styles.sectionLabel}>Hotel policy · {selectedHotel?.name || 'Selected hotel'}</span>
+          <h3>Role capability overrides</h3>
+          <p>
+            Allowed means the role receives the authoritative default. Restricted is a hotel-specific override. Locked cells are enforced by server policy and cannot be changed here.
+          </p>
+        </div>
+        <span className={styles.count} aria-label={`${configurableCount} configurable capabilities across ${activeMatrix.hotelRoles.length} hotel roles`}>
+          {configurableCount} configurable capabilities · {activeMatrix.hotelRoles.length} roles
+        </span>
+      </div>
+
+      {mutationError ? (
+        <div className={styles.error} role="alert">
+          <Info size={17} aria-hidden="true" />
+          <span>{mutationError}</span>
+        </div>
+      ) : null}
+      {applyNote ? (
+        <div className={styles.success} role="status">
+          <ShieldCheck size={17} aria-hidden="true" />
+          <span>{applyNote}</span>
+        </div>
+      ) : null}
+
+      <div className={styles.matrixKey} aria-label="Hotel override legend">
+        <span><i className={styles.allowedMark}><Check size={14} aria-hidden="true" /></i> Allowed by default</span>
+        <span><i className={styles.deniedMark}><CircleMinus size={13} aria-hidden="true" /></i> Restricted here</span>
+        <span><i className={styles.fixedMark}><Lock size={14} aria-hidden="true" /></i> Fixed server policy</span>
+        {adminOnlyCount > 0 ? <span>{adminOnlyCount} admin-only {adminOnlyCount === 1 ? 'control' : 'controls'}</span> : null}
+      </div>
+
+      <div
+        className={styles.matrixScroller}
+        role="region"
+        aria-label="Hotel role and capability matrix"
+        tabIndex={0}
+      >
+        <table className={styles.matrix}>
+          <thead>
+            <tr>
+              <th scope="col">Capability</th>
+              {activeMatrix.hotelRoles.map((role) => <th key={role} scope="col">{ROLE_LABELS[role] ?? role}</th>)}
+            </tr>
+          </thead>
+          <tbody>
+            {activeMatrix.groups.flatMap((group) => {
+              const capabilities = activeMatrix.capabilities.filter((capability) => capability.group === group.key);
+              if (capabilities.length === 0) return [];
+              return [
+                <tr key={`${group.key}-heading`} className={styles.groupRow}>
+                  <th colSpan={activeMatrix.hotelRoles.length + 1} scope="colgroup">{group.label_en}</th>
+                </tr>,
+                ...capabilities.map((capability) => (
+                  <HotelCapabilityRow
+                    key={capability.key}
+                    capability={capability}
+                    roles={activeMatrix.hotelRoles}
+                    isRestricted={isRestricted}
+                    savingKey={savingKey}
+                    savedKey={savedKey}
+                    onToggle={(role, nextAllowed) => { void setCell(capability.key, role, nextAllowed); }}
+                  />
+                )),
+              ];
+            })}
+          </tbody>
+        </table>
+      </div>
+
+      <div className={styles.footerActions}>
+        {restrictionCount === 0 && applyConfirmation ? (
+          <>
+            <div className={styles.notice} role="alert">
+              <Info size={17} aria-hidden="true" />
+              This hotel has no overrides. Confirming will clear hotel-specific restrictions on every other hotel.
+            </div>
+            <button
+              type="button"
+              className={styles.confirmButton}
+              disabled={applying || savingKey !== null}
+              onClick={() => void applyToAll(true)}
+            >
+              {applying ? <span className={styles.spinner} aria-hidden="true" /> : <RotateCcw size={16} aria-hidden="true" />}
+              {applying ? 'Clearing restrictions…' : 'Confirm clear on other hotels'}
+            </button>
+            <button type="button" className={styles.actionButton} disabled={applying} onClick={() => setApplyConfirmation(false)}>
+              Cancel
+            </button>
+          </>
+        ) : (
+          <button
+            type="button"
+            className={styles.actionButton}
+            disabled={applying || savingKey !== null}
+            onClick={() => {
+              if (restrictionCount === 0) setApplyConfirmation(true);
+              else void applyToAll(false);
+            }}
+          >
+            {applying ? <span className={styles.spinner} aria-hidden="true" /> : <RotateCcw size={16} aria-hidden="true" />}
+            {applying ? 'Applying…' : "Apply this hotel's setup to all hotels"}
+          </button>
+        )}
+        <span className={styles.statusText} role="status" aria-live="polite">
+          {savingKey ? 'Saving hotel access change…' : savedKey ? 'Hotel access change saved.' : ''}
+        </span>
+      </div>
+    </>
+  );
+}
+
+function HotelCapabilityRow({
+  capability,
+  roles,
+  isRestricted,
+  savingKey,
+  savedKey,
+  onToggle,
+}: {
+  capability: CapMeta;
+  roles: string[];
+  isRestricted: (capability: string, role: string) => boolean;
+  savingKey: string | null;
+  savedKey: string | null;
+  onToggle: (role: string, nextAllowed: boolean) => void;
+}) {
+  if (capability.adminOnly) {
+    return (
+      <tr>
+        <th className={styles.capabilityCell} scope="row">
+          {capability.label_en}
+          <small>{capability.desc_en}</small>
+        </th>
+        <td className={styles.fixedCell} colSpan={roles.length}>
+          <Lock size={13} aria-hidden="true" />{' '}
+          Staxis admin only. This control is fixed and never delegated to a hotel role.
+        </td>
+      </tr>
+    );
+  }
+
+  return (
+    <tr>
+      <th className={styles.capabilityCell} scope="row">
+        {capability.label_en}
+        <small>{capability.desc_en}</small>
+      </th>
       {roles.map((role) => {
-        const key = `${cap.key}:${role}`;
-        // A manager-floor cap is locked OFF for line-staff columns — the resolver
-        // can never grant it to them, so the cell is a fixed, disabled "no".
-        const floorLocked = !!cap.managerFloor && !MANAGER_FLOOR_ROLES.has(role);
-        const restricted = isRestricted(cap.key, role);
+        const key = `${capability.key}:${role}`;
+        const floorLocked = Boolean(capability.managerFloor) && !MANAGER_FLOOR_ROLES.has(role);
+        const restricted = isRestricted(capability.key, role);
         const allowed = floorLocked ? false : !restricted;
         const saving = savingKey === key;
-        const saved = savedKey === key;
+        const disabled = floorLocked || !capability.live || savingKey !== null;
+        const label = floorLocked
+          ? `${capability.label_en} is managers only and cannot be granted to ${ROLE_LABELS[role] ?? role}`
+          : !capability.live
+            ? `${capability.label_en} uses fixed manager defaults because runtime enforcement is not available`
+            : `${capability.label_en} for ${ROLE_LABELS[role] ?? role}: ${allowed ? 'allowed by default' : 'restricted at this hotel'}`;
         return (
-          <div key={role} style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '10px 8px' }}>
-            <Toggle
-              allowed={allowed}
-              disabled={floorLocked || !cap.live || saving}
-              saving={saving}
-              saved={saved}
-              onClick={() => onToggle(cap.key, role, restricted /* next = allow if currently restricted */)}
-              title={
-                floorLocked
-                  ? ('Managers only. Can’t be granted to line staff')
-                  : !cap.live
-                    ? ('Manager default')
-                    : allowed
-                      ? ('Allowed. Click to restrict')
-                      : ('Restricted. Click to allow')
-              }
-            />
-          </div>
+          <td key={role} className={styles.cell}>
+            <button
+              type="button"
+              role="switch"
+              aria-checked={allowed}
+              aria-label={label}
+              className={styles.switchButton}
+              disabled={disabled}
+              onClick={() => onToggle(role, restricted)}
+              title={label}
+            >
+              <span className={styles.switchTrack} aria-hidden="true">
+                <span className={styles.switchKnob}>
+                  {savedKey === key && allowed ? <Check size={10} aria-hidden="true" /> : null}
+                  {saving ? <span className={styles.srOnly}>Saving</span> : null}
+                </span>
+              </span>
+            </button>
+          </td>
         );
       })}
+    </tr>
+  );
+}
+
+function LoadingState({ label }: { label: string }) {
+  return (
+    <div className={styles.message} role="status" aria-live="polite">
+      <span className={styles.spinner} aria-hidden="true" />
+      {label}
     </div>
   );
 }
 
-function CapLabel({ label, desc, pending, es }: { label: string; desc: string; pending?: boolean; es?: boolean }) {
+function ErrorState({ message, onRetry }: { message: string; onRetry: () => void }) {
   return (
-    <div style={{ padding: '11px 16px' }}>
-      <div style={{ fontSize: 14, fontWeight: 600, color: '#fff', display: 'flex', alignItems: 'center', gap: 8 }}>
-        {label}
-        {pending && (
-          <span style={{ fontSize: 9, letterSpacing: '.04em', textTransform: 'uppercase', color: 'rgba(255,255,255,.4)', border: '1px solid rgba(255,255,255,.18)', borderRadius: 5, padding: '1px 5px' }}>
-            {'Manager default'}
-          </span>
-        )}
+    <div className={styles.stateStack}>
+      <div className={styles.error} role="alert">
+        <Info size={17} aria-hidden="true" />
+        <span>{message}</span>
       </div>
-      <div style={{ fontSize: 11.5, color: 'rgba(255,255,255,.45)', marginTop: 2 }}>{desc}</div>
+      <button type="button" className={styles.retryButton} onClick={onRetry}>Try again</button>
     </div>
-  );
-}
-
-function Toggle({ allowed, disabled, saving, saved, onClick, title }: {
-  allowed: boolean; disabled?: boolean; saving?: boolean; saved?: boolean; onClick: () => void; title: string;
-}) {
-  const base: React.CSSProperties = {
-    width: 38, height: 22, borderRadius: 999, position: 'relative', cursor: disabled ? 'default' : 'pointer',
-    border: '1px solid', transition: 'background .15s, border-color .15s, opacity .15s',
-    display: 'inline-flex', alignItems: 'center', padding: 2,
-  };
-  const on: React.CSSProperties = { background: 'var(--forest)', borderColor: 'var(--forest)' };
-  const off: React.CSSProperties = { background: 'rgba(255,255,255,.10)', borderColor: 'rgba(255,255,255,.22)' };
-  const knob: React.CSSProperties = {
-    width: 16, height: 16, borderRadius: '50%', background: '#fff',
-    transform: allowed ? 'translateX(16px)' : 'translateX(0)', transition: 'transform .15s',
-    display: 'flex', alignItems: 'center', justifyContent: 'center',
-  };
-  return (
-    <button
-      type="button"
-      onClick={disabled ? undefined : onClick}
-      title={title}
-      aria-pressed={allowed}
-      disabled={disabled}
-      style={{ ...base, ...(allowed ? on : off), opacity: disabled ? 0.4 : (saving ? 0.7 : 1) }}
-    >
-      <span style={knob}>{saved && allowed ? <Check size={10} color="var(--forest)" /> : null}</span>
-    </button>
   );
 }

@@ -1,67 +1,178 @@
 'use client';
 
-// Access grid popover — the former Access tab, relocated per Reeyen
-// (2026-07-17): a trigger on the Live-hotels header, left of the AI Control
-// Center, that pops the per-hotel capability grid open as an overlay.
-// Reuses the AI Control Center's trigger styling so the two read as one
-// family of control-center buttons.
-
-import React, { useEffect, useState } from 'react';
+import React, { useCallback, useLayoutEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { KeyRound } from 'lucide-react';
-import { AccessSurface } from './studio/surfaces/AccessSurface';
-import styles from './AIControlCenter.module.css';
 
-export function AccessPopover() {
+import { fetchWithAuth } from '@/lib/api-fetch';
+
+import aiStyles from './AIControlCenter.module.css';
+import styles from './AccessModal.module.css';
+import { AccessSurface } from './studio/surfaces/AccessSurface';
+
+const FOCUSABLE_SELECTOR = [
+  'a[href]',
+  'button:not([disabled])',
+  'input:not([disabled])',
+  'select:not([disabled])',
+  'textarea:not([disabled])',
+  '[contenteditable="true"]',
+  '[tabindex]:not([tabindex="-1"])',
+].join(',');
+
+function focusableElements(dialog: HTMLElement): HTMLElement[] {
+  return Array.from(dialog.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTOR)).filter(
+    (element) => element.tabIndex >= 0
+      && !element.hidden
+      && element.getAttribute('aria-hidden') !== 'true',
+  );
+}
+
+export interface AccessPopoverProps {
+  /** Test seam only. Production always uses the authenticated request helper. */
+  request?: typeof fetchWithAuth;
+}
+
+export function AccessPopover({ request = fetchWithAuth }: AccessPopoverProps) {
   const [mounted, setMounted] = useState(false);
   const [open, setOpen] = useState(false);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const dialogRef = useRef<HTMLDivElement>(null);
+  const closeRef = useRef<HTMLButtonElement>(null);
+  const scrimRef = useRef<HTMLDivElement>(null);
+  const close = useCallback(() => setOpen(false), []);
 
-  useEffect(() => { setMounted(true); }, []);
+  React.useEffect(() => { setMounted(true); }, []);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (!open) return;
-    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setOpen(false); };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, [open]);
+
+    const returnTarget = triggerRef.current;
+    const scrollX = window.scrollX;
+    const scrollY = window.scrollY;
+    const previousBodyOverflow = document.body.style.overflow;
+    const previousDocumentOverflow = document.documentElement.style.overflow;
+    const previousOverscroll = document.documentElement.style.overscrollBehavior;
+    document.body.style.overflow = 'hidden';
+    document.documentElement.style.overflow = 'hidden';
+    document.documentElement.style.overscrollBehavior = 'none';
+    document.body.dataset.accessScrollLocked = 'true';
+
+    const backgroundStates = Array.from(document.body.children).flatMap((element) => {
+      if (!(element instanceof HTMLElement)
+          || element === scrimRef.current
+          || element.contains(scrimRef.current)) return [];
+      const state = {
+        element,
+        inert: element.inert,
+        ariaHidden: element.getAttribute('aria-hidden'),
+      };
+      element.inert = true;
+      element.setAttribute('aria-hidden', 'true');
+      return [state];
+    });
+
+    const focusFrame = requestAnimationFrame(() => {
+      (closeRef.current ?? dialogRef.current)?.focus({ preventScroll: true });
+    });
+
+    const onKeyDown = (event: KeyboardEvent) => {
+      const dialog = dialogRef.current;
+      if (!dialog) return;
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        event.stopPropagation();
+        close();
+        return;
+      }
+      if (event.key !== 'Tab') return;
+
+      const focusable = focusableElements(dialog);
+      if (focusable.length === 0) {
+        event.preventDefault();
+        dialog.focus({ preventScroll: true });
+        return;
+      }
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      const active = document.activeElement;
+      if (event.shiftKey && (active === first || !dialog.contains(active))) {
+        event.preventDefault();
+        last.focus({ preventScroll: true });
+      } else if (!event.shiftKey && (active === last || !dialog.contains(active))) {
+        event.preventDefault();
+        first.focus({ preventScroll: true });
+      }
+    };
+
+    const onFocusIn = (event: FocusEvent) => {
+      const dialog = dialogRef.current;
+      if (!dialog || dialog.contains(event.target as Node)) return;
+      (focusableElements(dialog)[0] ?? dialog).focus({ preventScroll: true });
+    };
+
+    document.addEventListener('keydown', onKeyDown, true);
+    document.addEventListener('focusin', onFocusIn, true);
+    return () => {
+      cancelAnimationFrame(focusFrame);
+      document.removeEventListener('keydown', onKeyDown, true);
+      document.removeEventListener('focusin', onFocusIn, true);
+      document.body.style.overflow = previousBodyOverflow;
+      document.documentElement.style.overflow = previousDocumentOverflow;
+      document.documentElement.style.overscrollBehavior = previousOverscroll;
+      delete document.body.dataset.accessScrollLocked;
+      backgroundStates.forEach(({ element, inert, ariaHidden }) => {
+        element.inert = inert;
+        if (ariaHidden === null) element.removeAttribute('aria-hidden');
+        else element.setAttribute('aria-hidden', ariaHidden);
+      });
+      if (window.scrollX !== scrollX || window.scrollY !== scrollY) {
+        window.scrollTo(scrollX, scrollY);
+      }
+      if (returnTarget?.isConnected) returnTarget.focus({ preventScroll: true });
+    };
+  }, [close, open]);
 
   const overlay = open ? (
     <div
-      role="dialog"
-      aria-modal="true"
-      aria-label="Per-hotel access"
-      style={{ position: 'fixed', inset: 0, zIndex: 1000, background: 'var(--ink)', overflowY: 'auto' }}
+      ref={scrimRef}
+      className={styles.scrim}
+      data-access-modal-backdrop
+      onMouseDown={(event) => {
+        if (event.target === event.currentTarget) close();
+      }}
     >
-      <button
-        type="button"
-        onClick={() => setOpen(false)}
-        aria-label="Close access settings"
-        title="Close access settings"
-        style={{
-          position: 'fixed', top: 78, right: 22, zIndex: 1001,
-          width: 34, height: 34, borderRadius: 999,
-          border: '1px solid rgba(255,255,255,.25)', background: 'rgba(255,255,255,.08)',
-          color: '#fff', cursor: 'pointer', fontSize: 14, lineHeight: 1,
-        }}
+      <div
+        ref={dialogRef}
+        id="access-modal-dialog"
+        className={styles.dialog}
+        data-access-modal-dialog
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="access-modal-title"
+        aria-describedby="access-modal-description"
+        tabIndex={-1}
+        onMouseDown={(event) => event.stopPropagation()}
       >
-        ✕
-      </button>
-      <AccessSurface />
+        <AccessSurface onClose={close} closeButtonRef={closeRef} request={request} />
+      </div>
     </div>
   ) : null;
 
   return (
     <>
       <button
+        ref={triggerRef}
         type="button"
-        className={styles.trigger}
+        className={aiStyles.trigger}
         onClick={() => setOpen(true)}
         aria-haspopup="dialog"
         aria-expanded={open}
-        title="Open per-hotel access"
+        aria-controls={open ? 'access-modal-dialog' : undefined}
+        title="Open access settings"
       >
-        <KeyRound className={styles.triggerIcon} size={15} aria-hidden="true" />
-        <span className={styles.triggerText}>Access</span>
+        <KeyRound className={aiStyles.triggerIcon} size={15} aria-hidden="true" />
+        <span className={aiStyles.triggerText}>Access</span>
       </button>
       {mounted && overlay ? createPortal(overlay, document.body) : null}
     </>
