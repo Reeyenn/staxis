@@ -55,14 +55,15 @@ interface RunResult {
   aiSummary: string | null;
 }
 
+// The shared report DTO still requires both fields; product chrome reads en.
 const CATEGORY_LABEL: Record<ReportCategory, Bilingual> = {
-  housekeeping: { en: 'Housekeeping', },
-  inspections: { en: 'Inspections', },
-  maintenance: { en: 'Maintenance', },
-  inventory: { en: 'Inventory', },
-  occupancy: { en: 'Occupancy', },
-  activity: { en: 'Activity', },
-  lost_found: { en: 'Lost & Found', },
+  housekeeping: { en: 'Housekeeping', es: 'Housekeeping' },
+  inspections: { en: 'Inspections', es: 'Inspections' },
+  maintenance: { en: 'Maintenance', es: 'Maintenance' },
+  inventory: { en: 'Inventory', es: 'Inventory' },
+  occupancy: { en: 'Occupancy', es: 'Occupancy' },
+  activity: { en: 'Activity', es: 'Activity' },
+  lost_found: { en: 'Lost & Found', es: 'Lost & Found' },
 };
 
 const CATEGORY_ORDER: ReportCategory[] = [

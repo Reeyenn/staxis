@@ -156,3 +156,36 @@ describe('buildAsOfLabel — what the stamp says', () => {
     assert.match(l?.text ?? '', /Jul 23/);
   });
 });
+
+describe('buildAsOfLabel — freshness classification stays complete in English-only UI', () => {
+  it('classifies every source/age tier without inventing freshness', () => {
+    const cases: Array<{
+      capturedAt: string | null;
+      source?: FreshnessSource;
+      tier: string;
+      tone: string;
+    }> = [
+      { capturedAt: agedBy(20), tier: 'fresh', tone: 'quiet' },
+      { capturedAt: agedBy(120), tier: 'stale', tone: 'caution' },
+      { capturedAt: agedBy(480), tier: 'very_stale', tone: 'caution' },
+      { capturedAt: agedBy(400), source: 'row_change', tier: 'change_only', tone: 'quiet' },
+      { capturedAt: null, source: 'none', tier: 'unknown', tone: 'caution' },
+    ];
+
+    for (const expected of cases) {
+      const result = label(liveStatus({
+        capturedAt: expected.capturedAt,
+        source: expected.source,
+      }));
+      assert.equal(result?.tier, expected.tier);
+      assert.equal(result?.tone, expected.tone);
+      assert.ok((result?.text ?? '').length > 0, `${expected.tier}: missing honest freshness copy`);
+    }
+  });
+
+  it('keeps the source clock visible for stale data', () => {
+    const result = label(liveStatus({ capturedAt: agedBy(480) }));
+    assert.match(result?.text ?? '', /6:40 AM/);
+    assert.match(result?.detail ?? '', /6:40 AM/);
+  });
+});

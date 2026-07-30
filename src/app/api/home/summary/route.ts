@@ -63,6 +63,8 @@ type ManagementHubContext = 'company' | 'hotel';
 
 interface TileLine {
   en: string;
+  /** Rolling response compatibility for already-open clients; always mirrors en. */
+  es: string;
   tone: TileTone;
 }
 
@@ -81,14 +83,14 @@ interface HomeSummaryTiles {
 // per-tile error state — a failed query renders as a neutral door into
 // the section, never as a red herring or a crashed page.
 const FALLBACK: Record<keyof HomeSummaryTiles, TileLine> = {
-  staxis:         { en: 'Open Staxis',       tone: 'muted' },
-  dashboard:      { en: 'Open dashboard',    tone: 'muted' },
-  housekeeping:   { en: 'Open housekeeping', tone: 'muted' },
-  communications: { en: 'Open messages',     tone: 'muted' },
-  maintenance:    { en: 'Open maintenance',  tone: 'muted' },
-  inventory:      { en: 'Open inventory',    tone: 'muted' },
-  staff:          { en: 'Open staff',        tone: 'muted' },
-  financials:     { en: 'Open financials',   tone: 'muted' },
+  staxis:         { en: 'Open Staxis',       es: 'Open Staxis',       tone: 'muted' },
+  dashboard:      { en: 'Open dashboard',    es: 'Open dashboard',    tone: 'muted' },
+  housekeeping:   { en: 'Open housekeeping', es: 'Open housekeeping', tone: 'muted' },
+  communications: { en: 'Open messages',     es: 'Open messages',     tone: 'muted' },
+  maintenance:    { en: 'Open maintenance',  es: 'Open maintenance',  tone: 'muted' },
+  inventory:      { en: 'Open inventory',    es: 'Open inventory',    tone: 'muted' },
+  staff:          { en: 'Open staff',        es: 'Open staff',        tone: 'muted' },
+  financials:     { en: 'Open financials',   es: 'Open financials',   tone: 'muted' },
 };
 
 /**
@@ -296,9 +298,9 @@ async function staxisTile(pid: string, userId: string): Promise<TileLine> {
 
   const n = count ?? 0;
   if (n > 0) {
-    return { en: `${n} need you`, tone: 'warn' };
+    return { en: `${n} need you`, es: `${n} need you`, tone: 'warn' };
   }
-  return { en: 'All handled', tone: 'ok' };
+  return { en: 'All handled', es: 'All handled', tone: 'ok' };
 }
 
 /** dashboard — occupancy % today from the Plan-v4 counts RPC. */
@@ -317,7 +319,7 @@ async function dashboardTile(pid: string, today: string): Promise<TileLine> {
     return FALLBACK.dashboard;
   }
   const pct = Math.round((inHouse / totalRooms) * 100);
-  return { en: `${pct}% occupied`, tone: 'ok' };
+  return { en: `${pct}% occupied`, es: `${pct}% occupied`, tone: 'ok' };
 }
 
 /** housekeeping — rooms still to clean today (cleaning_tasks not finished). */
@@ -334,14 +336,14 @@ async function housekeepingTile(pid: string, today: string, localHour: number): 
 
   const n = count ?? 0;
   if (n === 0) {
-    return { en: 'All rooms done', tone: 'ok' };
+    return { en: 'All rooms done', es: 'All rooms done', tone: 'ok' };
   }
   // Rooms left mid-morning is normal (ok); rooms left late-day is worth a
   // nudge (warn). 3pm local is the simple cut line.
   const tone: TileTone = localHour >= 15 ? 'warn' : 'ok';
   return n === 1
-    ? { en: '1 room left', tone }
-    : { en: `${n} rooms left`, tone };
+    ? { en: '1 room left', es: '1 room left', tone }
+    : { en: `${n} rooms left`, es: `${n} rooms left`, tone };
 }
 
 /** communications — open complaints (open or in_progress). */
@@ -355,11 +357,11 @@ async function communicationsTile(pid: string): Promise<TileLine> {
 
   const n = count ?? 0;
   if (n === 0) {
-    return { en: 'All clear', tone: 'ok' };
+    return { en: 'All clear', es: 'All clear', tone: 'ok' };
   }
   return n === 1
-    ? { en: '1 open item', tone: 'warn' }
-    : { en: `${n} open items`, tone: 'warn' };
+    ? { en: '1 open item', es: '1 open item', tone: 'warn' }
+    : { en: `${n} open items`, es: `${n} open items`, tone: 'warn' };
 }
 
 /** maintenance — open work orders + how many are urgent. */
@@ -379,16 +381,18 @@ async function maintenanceTile(pid: string): Promise<TileLine> {
   const high = rows.filter((r) => (r as { severity?: unknown }).severity === 'urgent').length;
 
   if (open === 0) {
-    return { en: 'No open work orders', tone: 'ok' };
+    return { en: 'No open work orders', es: 'No open work orders', tone: 'ok' };
   }
   const enBase = open === 1 ? '1 open' : `${open} open`;
   if (high > 0) {
+    const text = `${enBase} · ${high} high`;
     return {
-      en: `${enBase} · ${high} high`,
+      en: text,
+      es: text,
       tone: 'bad',
     };
   }
-  return { en: enBase, tone: 'warn' };
+  return { en: enBase, es: enBase, tone: 'warn' };
 }
 
 /** inventory — items at/below the 70/30 stock thresholds vs par. */
@@ -400,7 +404,8 @@ async function inventoryTile(pid: string): Promise<TileLine> {
     .is('archived_at', null)
     .limit(1000);
   if (error) throw new Error(error.message);
-  return summarizeHomeInventory(data ?? []);
+  const summary = summarizeHomeInventory(data ?? []);
+  return { ...summary, es: summary.en };
 }
 
 /** staff — distinct staff with an assigned shift today. */
@@ -421,7 +426,7 @@ async function staffTile(pid: string, today: string): Promise<TileLine> {
   // 0 assigned rows usually means "this hotel doesn't build schedules in
   // the app" rather than "nobody is working" — muted door, not a scary 0.
   if (n === 0) return FALLBACK.staff;
-  return { en: `${n} on today`, tone: 'ok' };
+  return { en: `${n} on today`, es: `${n} on today`, tone: 'ok' };
 }
 
 /** financials — month-to-date PMS revenue (single source of truth). */
@@ -431,7 +436,7 @@ async function financialsTile(pid: string, today: string): Promise<TileLine> {
   const rev = await getMonthRevenue(pid, month);
   if (rev.revenueCents == null) return FALLBACK.financials;
   const compact = formatCompactDollars(rev.revenueCents);
-  return { en: `${compact} MTD`, tone: 'ok' };
+  return { en: `${compact} MTD`, es: `${compact} MTD`, tone: 'ok' };
 }
 
 // ─── Route ────────────────────────────────────────────────────────────────

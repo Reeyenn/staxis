@@ -66,7 +66,7 @@ describe('outcomeForStatus', () => {
 describe('mapActivityRows', () => {
   const nameFor = (id: string) => (id === ACCT_A ? 'Maria Garcia' : id === ACCT_B ? 'Sam Lee' : 'Staxis');
 
-  test('builds bilingual summaries + who + outcome from a row', () => {
+  test('keeps the bilingual summary response contract while the product UI stays English', () => {
     const [item] = mapActivityRows(
       [{
         id: 'r1', account_id: ACCT_A, tool_name: 'send_message',
@@ -77,8 +77,10 @@ describe('mapActivityRows', () => {
     );
     assert.equal(item.who, 'Maria Garcia');
     assert.equal(item.outcome, 'done');
-    // Real action copy from buildActionSummary — not a generic "Run <tool>".
+    // Shared/API consumers still receive both response fields even though the
+    // built-in app chrome renders the English field only.
     assert.match(item.summary.en, /Send Ana this message/);
+    assert.equal(item.summary.es, item.summary.en);
     assert.equal(item.error, null);
   });
 

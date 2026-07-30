@@ -11,10 +11,10 @@ type Lang = 'en' | 'es';
 export function formatCell(
   value: string | number | null | undefined,
   kind: ColumnKind = 'text',
-  _storedLanguage: Lang = 'en',
+  lang: Lang = 'en',
 ): string {
   if (value === null || value === undefined || value === '') return '—';
-  const locale = 'en-US';
+  const locale = lang === 'es' ? 'es-MX' : 'en-US';
   switch (kind) {
     case 'minutes': {
       const n = Number(value);
