@@ -43,7 +43,6 @@ import { AIControlCenter } from '../../AIControlCenter';
 import { AccessPopover } from '../../AccessPopover';
 import { TwoFactorSwitch } from '../../TwoFactorSwitch';
 import { OrganizationLeaderInviteModal } from '../OrganizationLeaderInviteModal';
-import { AdminEffectiveAccess } from '../../AdminEffectiveAccess';
 import { APP_SECTIONS, type AppSection } from '@/lib/sections/registry';
 import { FLEET_STALE_SYNC_MINUTES } from '@/lib/admin-property-health';
 
@@ -281,8 +280,6 @@ export function LiveSurface() {
   // state. Calling load() directly there would use the stale closure and can
   // resolve after the reset fetch, hiding the just-created hotel.
   const [reloadNonce, setReloadNonce] = useState(0);
-  const [accessRefreshKey, setAccessRefreshKey] = useState(0);
-
   const [sel, setSel] = useState<EnrichedRow | null>(null);
   // Hotel currently being assigned a PMS coverage (null = picker closed).
   const [pickerHotel, setPickerHotel] = useState<EnrichedRow | null>(null);
@@ -411,8 +408,7 @@ export function LiveSurface() {
 
   useEffect(() => { void load(); }, [load]);
 
-  const refreshAccessTruth = useCallback(() => {
-    setAccessRefreshKey((value) => value + 1);
+  const refreshDirectory = useCallback(() => {
     void load();
   }, [load]);
 
@@ -566,8 +562,6 @@ export function LiveSurface() {
             onInviteLeader={setLeaderInviteOrganization}
             onMakeIndependent={(hotel, organizationName) => setMakeIndependentIntent({ hotel, organizationName })}
             hasIndependentHotels={independentHotels.length > 0}
-            accessRefreshKey={accessRefreshKey}
-            onAccessChanged={refreshAccessTruth}
           />
         )}
 
@@ -679,7 +673,7 @@ export function LiveSurface() {
           initialOrganizationId={assignmentIntent.organizationId}
           initialPropertyId={assignmentIntent.propertyId}
           onClose={() => setAssignmentIntent(null)}
-          onAssigned={() => { setAssignmentIntent(null); refreshAccessTruth(); }}
+          onAssigned={() => { setAssignmentIntent(null); refreshDirectory(); }}
         />
       )}
 
@@ -687,7 +681,7 @@ export function LiveSurface() {
         <OrganizationLeaderInviteModal
           organization={leaderInviteOrganization}
           onClose={() => setLeaderInviteOrganization(null)}
-          onFinished={refreshAccessTruth}
+          onFinished={refreshDirectory}
         />
       )}
 
@@ -696,7 +690,7 @@ export function LiveSurface() {
           hotel={makeIndependentIntent.hotel}
           organizationName={makeIndependentIntent.organizationName}
           onClose={() => setMakeIndependentIntent(null)}
-          onChanged={() => { setMakeIndependentIntent(null); refreshAccessTruth(); }}
+          onChanged={() => { setMakeIndependentIntent(null); refreshDirectory(); }}
         />
       )}
 
@@ -803,8 +797,6 @@ function OrganizationsPanel({
   onAssignHotel,
   onInviteLeader,
   onMakeIndependent,
-  accessRefreshKey,
-  onAccessChanged,
 }: {
   organizations: OrganizationSummary[];
   totalOrganizations: number;
@@ -820,8 +812,6 @@ function OrganizationsPanel({
   onAssignHotel: (organizationId: string) => void;
   onInviteLeader: (organization: OrganizationSummary) => void;
   onMakeIndependent: (hotel: EnrichedRow, organizationName: string) => void;
-  accessRefreshKey: number;
-  onAccessChanged: () => void;
 }) {
   const hotelCount = organizations.reduce((sum, organization) => sum + organization.hotelCount, 0);
   const userCount = organizations.reduce((sum, organization) => sum + organization.userCount, 0);
@@ -896,8 +886,6 @@ function OrganizationsPanel({
                   ? 'No independent hotels are available to assign'
                   : undefined}
               onMakeIndependent={(hotel) => onMakeIndependent(hotel, organization.name)}
-              accessRefreshKey={accessRefreshKey}
-              onAccessChanged={onAccessChanged}
             />
           ))}
         </div>
@@ -916,8 +904,6 @@ function OrganizationDisclosure({
   canAssign,
   assignDisabledReason,
   onMakeIndependent,
-  accessRefreshKey,
-  onAccessChanged,
 }: {
   organization: OrganizationSummary;
   propertyById: Map<string, EnrichedRow>;
@@ -928,8 +914,6 @@ function OrganizationDisclosure({
   canAssign: boolean;
   assignDisabledReason?: string;
   onMakeIndependent: (hotel: EnrichedRow) => void;
-  accessRefreshKey: number;
-  onAccessChanged: () => void;
 }) {
   const [expanded, setExpanded] = useState(false);
   const panelId = `organization-hotels-${organization.id}`;
@@ -1036,12 +1020,6 @@ function OrganizationDisclosure({
               })}
             </div>
           )}
-          <AdminEffectiveAccess
-            organizationId={organization.id}
-            tone="dark"
-            refreshKey={accessRefreshKey}
-            onChanged={onAccessChanged}
-          />
         </div>
       )}
     </article>

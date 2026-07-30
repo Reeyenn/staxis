@@ -87,6 +87,27 @@ describe('Admin Studio Hotels information architecture', () => {
     assert.match(bootstrapInviteModalSource, /Staxis remains separate and never becomes a company member/);
     assert.match(bootstrapInviteModalSource, /emailSent \? 'Invitation sent' : 'Invitation ready'/);
   });
+
+  test('ends expanded organizations after assigned-hotel controls without inline effective access', () => {
+    const organizationDisclosure = surfaceSource.slice(
+      surfaceSource.indexOf('function OrganizationDisclosure'),
+      surfaceSource.indexOf('function IndependentHotelsPanel'),
+    );
+
+    assert.doesNotMatch(surfaceSource, /AdminEffectiveAccess/);
+    assert.doesNotMatch(organizationDisclosure, /Effective access/);
+    assert.doesNotMatch(organizationDisclosure, /Company portfolio AI permission/);
+    assert.doesNotMatch(organizationDisclosure, /role="switch"/);
+    assert.doesNotMatch(organizationDisclosure, /Exact hotel coverage/);
+    assert.doesNotMatch(organizationDisclosure, /<strong>Scope<\/strong>/);
+    assert.doesNotMatch(organizationDisclosure, /Remove .* access/);
+    assert.doesNotMatch(surfaceSource, /\/api\/admin\/effective-access/);
+
+    assert.match(organizationDisclosure, /Invite company lead/);
+    assert.match(organizationDisclosure, /Assign hotel/);
+    assert.match(organizationDisclosure, /Make independent/);
+    assert.match(organizationDisclosure, /aria-label=\{`Open \$\{hotelLink\.name \?\? 'unnamed hotel'\} details`\}/);
+  });
 });
 
 describe('Admin organization directory read boundary', () => {
