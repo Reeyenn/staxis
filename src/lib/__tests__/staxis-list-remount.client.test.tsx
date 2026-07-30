@@ -189,16 +189,18 @@ interface Lifecycle {
 function ListProbe({
   propertyId,
   onReadState,
-  lifecycle,
+  onMount,
+  onUnmount,
 }: {
   propertyId: string;
   onReadState: (state: 'loading' | 'ready') => void;
-  lifecycle: Lifecycle;
+  onMount: () => void;
+  onUnmount: () => void;
 }) {
   React.useEffect(() => {
-    lifecycle.mounts += 1;
-    return () => { lifecycle.unmounts += 1; };
-  }, [lifecycle]);
+    onMount();
+    return () => { onUnmount(); };
+  }, [onMount, onUnmount]);
 
   const worklist = useApiResource<{ items: unknown[] }>(
     `/api/worklist?pid=${propertyId}`,
@@ -242,12 +244,14 @@ function DripProbe() {
 function HotelQueueShape({
   propertyId,
   keys,
-  lifecycle,
+  onMount,
+  onUnmount,
   backLabel,
 }: {
   propertyId: string;
   keys: { list: string; drip: string };
-  lifecycle: Lifecycle;
+  onMount: () => void;
+  onUnmount: () => void;
   backLabel?: string;
 }) {
   const [readState, setReadState] = React.useState<'loading' | 'ready'>('loading');
@@ -264,7 +268,8 @@ function HotelQueueShape({
         key={keys.list}
         propertyId={propertyId}
         onReadState={setReadState}
-        lifecycle={lifecycle}
+        onMount={onMount}
+        onUnmount={onUnmount}
       />
       {readState === 'loading' && <div className="qv-wait">One moment</div>}
       <DripProbe key={keys.drip} />
@@ -302,12 +307,18 @@ async function mountQueue(
     restoreBrowser();
   });
 
+  // Mutating the shared counter happens here, in a plain closure created
+  // outside any component, so the components only ever call a callback prop.
+  const onMount = () => { lifecycle.mounts += 1; };
+  const onUnmount = () => { lifecycle.unmounts += 1; };
+
   await act(async () => {
     root.render(
       <HotelQueueShape
         propertyId={PID}
         keys={keys}
-        lifecycle={lifecycle}
+        onMount={onMount}
+        onUnmount={onUnmount}
         backLabel={backLabel}
       />,
     );
