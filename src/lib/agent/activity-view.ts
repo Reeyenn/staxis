@@ -35,7 +35,8 @@ export interface ActivityItem {
   who: string;                // account display name (or a neutral fallback)
   toolName: string;
   outcome: ActivityOutcome;
-  summary: { en: string; es?: string };
+  // Shared response compatibility; product UI and both aliases use English.
+  summary: { en: string; es: string };
   error: string | null;       // present for failed rows only
 }
 
@@ -78,7 +79,7 @@ export function mapActivityRows(
       outcome: outcomeForStatus(r.status),
       summary: {
         en: buildActionSummary(r.tool_name, args, 'en'),
-
+        es: buildActionSummary(r.tool_name, args, 'en'),
       },
       // Only surface the error string for genuinely-failed rows — a denied or
       // expired row carries a housekeeping "declined by user" note that isn't

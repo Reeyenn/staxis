@@ -59,8 +59,12 @@ describe('AI Control Center feature registry', () => {
   // mission-control-ai-staff-roster.test.ts, "a de-registered feature's history".
   // (The title said 27 while the registry held 28 for a few hours between those
   // two commits — only the title, which nothing asserts. It is true again now.)
-  test('covers 27 controllable hosted features and 7 display-only features', () => {
-    assert.equal(AI_FEATURE_KEYS.length, 34);
+  // 2026-07-29: the built-in language selector and automatic app-chrome
+  // translation were retired, removing communications.ui_translation. Direct
+  // team-message translation remains independently available (27→26
+  // controllable, 34→33 keys).
+  test('covers 26 controllable hosted features and 7 display-only features', () => {
+    assert.equal(AI_FEATURE_KEYS.length, 33);
     assert.equal(new Set(AI_FEATURE_KEYS).size, AI_FEATURE_KEYS.length);
     assert.deepEqual(Object.keys(AI_FEATURE_REGISTRY).sort(), [...AI_FEATURE_KEYS].sort());
 
