@@ -10,6 +10,7 @@ import { createRoot, type Root } from 'react-dom/client';
 // exercises is replaced below.
 import { supabase } from '@/lib/supabase';
 import { useApiResource } from '@/lib/hooks/use-api-resource';
+import { useReportedValue } from '@/lib/hooks/use-reported-value';
 import { hotelQueueChildKeys } from '@/components/concourse/hotel-queue-keys';
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -216,7 +217,9 @@ function ListProbe({
   );
 
   const readState = findings.data ? 'ready' : 'loading';
-  React.useEffect(() => { onReadState(readState); }, [readState, onReadState]);
+  // Reported the way the real StaxisList reports it, so this stays a faithful
+  // model rather than a shape production no longer has.
+  useReportedValue(readState, onReadState);
 
   return (
     <>
@@ -476,6 +479,197 @@ describe('the Staxis one list does not remount itself', { concurrency: false }, 
     assert.ok(
       warnings.some((line) => line.includes('two children with the same key')),
       'development React must be the thing that names this defect',
+    );
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// The OTHER half of the same feedback edge.
+//
+// The key collision above was only an outage because reporting readState
+// upward re-entered the parent. The reporting side carried its own latent
+// version of that trap: the effect used to name the callback prop in its
+// dependency array, which is safe only while every caller happens to pass a
+// referentially stable function. HotelQueue passes `setReadState`, so it was.
+//
+// A future caller writing the natural thing — `onReadState={(s) => setX(s)}` —
+// hands down a NEW function on every render, and the effect then fires on
+// every render of the parent rather than on every change of the value. On this
+// particular edge that firing goes straight back into the parent's setState.
+//
+// These tests pin the value-only behaviour against a real renderer and the
+// real useApiResource, with a parent that passes a fresh inline arrow every
+// single render.
+// ═══════════════════════════════════════════════════════════════════════════
+
+type ProbeReadState = 'loading' | 'ready';
+
+interface ProbeProps {
+  propertyId: string;
+  onReadState: (state: ProbeReadState) => void;
+}
+
+function useProbeReadState(propertyId: string): ProbeReadState {
+  const findings = useApiResource<{ findings: unknown[] }>(
+    `/api/findings?propertyId=${propertyId}`,
+    { keepDataOnError: true },
+  );
+  return findings.data ? 'ready' : 'loading';
+}
+
+/** FindingCards' reporting shape, as shipped. */
+function RefProbe({ propertyId, onReadState }: ProbeProps) {
+  useReportedValue(useProbeReadState(propertyId), onReadState);
+  return <div className="probe" />;
+}
+
+/** The shape this fix removed: the callback's IDENTITY schedules the report. */
+function LegacyProbe({ propertyId, onReadState }: ProbeProps) {
+  const readState = useProbeReadState(propertyId);
+  React.useEffect(() => { onReadState(readState); }, [readState, onReadState]);
+  return <div className="probe" />;
+}
+
+/**
+ * Passes a brand-new arrow down on every render, which is what a caller who
+ * has not read hotel-queue-keys.ts will write. `tick` exists only to force the
+ * re-renders that a real parent gets for its own unrelated reasons.
+ */
+function UnstableCallbackParent({
+  propertyId,
+  probe: Probe,
+  onReport,
+  tick,
+}: {
+  propertyId: string;
+  probe: (props: ProbeProps) => React.ReactElement;
+  onReport: (state: ProbeReadState) => void;
+  tick: number;
+}) {
+  return (
+    <div className="cx-page" data-tick={tick}>
+      <Probe propertyId={propertyId} onReadState={(state) => onReport(state)} />
+    </div>
+  );
+}
+
+interface ReportRun {
+  /** Every value the child handed up, in order. */
+  reports: ProbeReadState[];
+  requests: Requests;
+  /** Re-render the parent `times` more times, changing nothing but identity. */
+  rerender(times: number): Promise<void>;
+  /** Answer whatever reads are in flight and let the result commit. */
+  drain(): Promise<void>;
+}
+
+async function mountReporter(
+  context: TestContext,
+  probe: (props: ProbeProps) => React.ReactElement,
+): Promise<ReportRun> {
+  const requests = installRequests(context);
+  const restoreBrowser = installBrowser();
+  const container = document.createElement('div');
+  document.body.append(container);
+  const root: Root = createRoot(container);
+
+  context.after(async () => {
+    await act(async () => { root.unmount(); });
+    requests.drain();
+    await act(async () => { await flushMicrotasks(24); });
+    container.remove();
+    restoreBrowser();
+  });
+
+  const reports: ProbeReadState[] = [];
+  const onReport = (state: ProbeReadState) => { reports.push(state); };
+  let tick = 0;
+
+  const paint = async () => {
+    await act(async () => {
+      root.render(
+        <UnstableCallbackParent
+          propertyId={PID}
+          probe={probe}
+          onReport={onReport}
+          tick={tick}
+        />,
+      );
+      await flushMicrotasks();
+    });
+  };
+
+  await paint();
+
+  return {
+    reports,
+    requests,
+    async rerender(times: number) {
+      for (let index = 0; index < times; index += 1) {
+        tick += 1;
+        await paint();
+      }
+    },
+    async drain() {
+      await act(async () => {
+        requests.drain();
+        await flushMicrotasks();
+      });
+    },
+  };
+}
+
+describe('reporting a value upward survives an unstable callback', { concurrency: false }, () => {
+  test('a fresh inline callback every render adds no reports and no refetches', async (context) => {
+    const run = await mountReporter(context, RefProbe);
+
+    // Mounted, read still in flight: exactly one report, and it is honest.
+    assert.deepEqual(run.reports, ['loading']);
+
+    // Twelve parent renders, twelve brand-new arrows, nothing else changed.
+    await run.rerender(12);
+    assert.deepEqual(
+      run.reports,
+      ['loading'],
+      'the callback changing identity must not report anything',
+    );
+
+    // The value finally changes. That, and only that, reports.
+    await run.drain();
+    assert.deepEqual(run.reports, ['loading', 'ready']);
+
+    await run.rerender(12);
+    assert.deepEqual(
+      run.reports,
+      ['loading', 'ready'],
+      'a settled value must stay quiet however often the parent re-renders',
+    );
+
+    // And the reporting path never perturbs the fetch layer underneath it.
+    assert.equal(
+      run.requests.urls.filter((url) => url.includes('/api/findings')).length,
+      1,
+      '/api/findings must be read once across 25 renders',
+    );
+  });
+
+  test('the harness detects the defect it was written for', async (context) => {
+    // Teeth. The identical parent driving the OLD shape must report on every
+    // render, otherwise the test above proves nothing. In production each of
+    // these extra reports lands in HotelQueue's setState.
+    const run = await mountReporter(context, LegacyProbe);
+
+    assert.deepEqual(run.reports, ['loading']);
+
+    await run.rerender(12);
+    assert.equal(
+      run.reports.length,
+      13,
+      `the old shape must report once per render (saw ${run.reports.length})`,
+    );
+    assert.ok(
+      run.reports.every((state) => state === 'loading'),
+      'and every one of them re-reports a value that never changed',
     );
   });
 });

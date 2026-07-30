@@ -49,6 +49,7 @@ import { useProperty } from '@/contexts/PropertyContext';
 import { canManageTeam } from '@/lib/roles';
 import { useActiveHotelStanding } from '@/lib/capabilities/useCan';
 import { useApiResource } from '@/lib/hooks/use-api-resource';
+import { useReportedValue } from '@/lib/hooks/use-reported-value';
 import {
   fetchWithAuth,
   INTERACTIVE_ACTION_TIMEOUT_MS,
@@ -1036,7 +1037,10 @@ export function FindingCards({
       : data
         ? 'ready'
         : 'loading';
-  React.useEffect(() => { onReadState?.(readState); }, [readState, onReadState]);
+  // Reported through the ref hook, NOT a bare effect with onReadState in its
+  // deps: this is the readState feedback edge, and a caller passing an inline
+  // arrow would turn it into a render loop. See hotel-queue-keys.ts.
+  useReportedValue(readState, onReadState);
 
   const [busyId, setBusyId] = React.useState<string | null>(null);
   const [saveFailed, setSaveFailed] = React.useState(false);

@@ -28,6 +28,7 @@
 import React from 'react';
 
 import { useApiResource } from '@/lib/hooks/use-api-resource';
+import { useReportedValue } from '@/lib/hooks/use-reported-value';
 import {
   fetchWithAuth,
   INTERACTIVE_ACTION_TIMEOUT_MS,
@@ -403,9 +404,14 @@ export function PortfolioQueueView({
 
   const scope = data?.scope ?? null;
   const resolvedOrganizationId = scope?.organizationId ?? null;
-  React.useEffect(() => {
-    if (data) onScope?.(scope);
-  }, [data, scope, onScope]);
+  // `undefined` means no read has landed yet, which must stay distinguishable
+  // from a landed read that carried no scope (null). Reported through the ref
+  // hook so an inline arrow from the caller cannot re-fire this on every
+  // render. Same edge as FindingCards' readState. See hotel-queue-keys.ts.
+  const landedScope: PortfolioScope | null | undefined = data ? scope : undefined;
+  useReportedValue(landedScope, (next) => {
+    if (next !== undefined) onScope?.(next);
+  });
 
   const [busyId, setBusyId] = React.useState<string | null>(null);
   const [saveFailed, setSaveFailed] = React.useState(false);
