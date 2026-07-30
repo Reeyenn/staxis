@@ -126,6 +126,30 @@ export interface CommsContextOptions {
 export const KNOWLEDGE_CTX: CommsContextOptions = { sectionGate: null };
 
 /**
+ * The options every route behind the Staxis LIST passes: to-dos, the worklist,
+ * and the log book.
+ *
+ * Same precedent, same reason, one section later. Those three surfaces MOVED
+ * off the Communications tab and onto the Staxis tab: the list of everything
+ * that needs a person is the Staxis page, and the log book is a button on it.
+ * Communications keeps Messages and nothing else.
+ *
+ * Left on the default gate they would have kept dying with a section they are
+ * no longer part of — a hotel that switched off a Communications tab now
+ * holding only messages would lose its whole to-do list and its log book from a
+ * screen that was still on the nav, still loading, and still saying it worked.
+ * That is the knowledge blackout again, with different tables.
+ *
+ * Gating them on 'staxis' instead was the other option and it is worse: a
+ * recurring to-do would then stop spawning, and a shift note would fail to
+ * save, because of a nav toggle. Section toggles govern what a hotel SEES,
+ * never what it may reach. commsContext still enforces requireSession +
+ * userHasPropertyAccess above this, and every route keeps its own per-verb
+ * capability check.
+ */
+export const ONE_LIST_CTX: CommsContextOptions = { sectionGate: null };
+
+/**
  * Which section a call is gated on: an AppSection, or null for "don't gate".
  *
  * Extracted so it can be tested, because the obvious one-liner is wrong in a

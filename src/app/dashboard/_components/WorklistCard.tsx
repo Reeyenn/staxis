@@ -1,7 +1,7 @@
 'use client';
 
 // "Open items" card for the Dashboard — a compact read-only window onto the
-// unified worklist (the Communications To-do view). Shows the open-item count +
+// unified worklist (the Staxis list). Shows the open-item count +
 // the top few items, each tagged by source, and links to the full list.
 // Gated to management + front desk and ADDITIVE-ONLY: renders nothing until
 // there is at least one open item, so the dashboard is unchanged on a quiet day.
@@ -25,6 +25,8 @@ const SRC: Record<WorklistSourceType, { en: string; color: string }> = {
   workorder:  { en: 'Work order',  color: '#C99644' },
   inspection: { en: 'Inspection',  color: '#5C7A60' },
   pm:         { en: 'Preventive',  color: '#3E5C48' },
+  reminder:   { en: 'Reminder',  color: '#4B8C9E' },
+  approval:   { en: 'Your call',  color: '#8B6BA8' },
 };
 
 export function WorklistCard() {
@@ -32,14 +34,15 @@ export function WorklistCard() {
   const { activePropertyId } = useProperty();
   const { lang } = useLang();
   const es = false;
-  // The unified worklist lives under Communications — hide this embed when
-  // that section is off for the hotel (default-ON while loading).
-  const commsEnabled = useSectionEnabled('communications');
+  // The unified worklist moved to the Staxis list. Hide this embed when THAT
+  // section is off for the hotel (default-ON while loading). It used to follow
+  // 'communications', which now owns only Messages.
+  const commsEnabled = useSectionEnabled('staxis');
 
   // Management + front desk. Floor staff don't see the cross-department list.
   const canSee = !!user && (canManageTeam(user.role) || user.role === 'front_desk');
 
-  // Communications-owned embed: `enabled` gates the FETCH, not just the
+  // Staxis-owned embed: `enabled` gates the FETCH, not just the
   // render — nothing hits the wire when the section is off. Polled so a
   // long-lived (wall-TV) dashboard doesn't keep showing work completed hours
   // ago; keepDataOnError holds last-good through a failed poll so the card
@@ -61,7 +64,7 @@ export function WorklistCard() {
     <GlassCard>
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
         <div style={CARD_LABEL}>{'Open items'}</div>
-        <Link href="/communications" style={{ fontFamily: CARD_MONO, fontSize: 11, letterSpacing: '0.1em', textTransform: 'uppercase', color: CARD.ink3, textDecoration: 'none' }}>
+        <Link href="/feed" style={{ fontFamily: CARD_MONO, fontSize: 11, letterSpacing: '0.1em', textTransform: 'uppercase', color: CARD.ink3, textDecoration: 'none' }}>
           {'View all →'}
         </Link>
       </div>

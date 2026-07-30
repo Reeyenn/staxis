@@ -11,8 +11,12 @@
 //                              open→in_progress
 //   workorder   work_orders  → severity (priority lane: urgent|normal|low) — the
 //                              legacy table has no per-staff assignee column
-//   pm / inspection → 400 (no assign control: preventive has no department col;
-//                          inspections are auto-derived)
+//   pm / inspection / reminder / approval → 400 (no assign control: preventive
+//                          has no department column, inspections are derived, a
+//                          reminder belongs to whoever set it, and a decision
+//                          cannot be handed to somebody else)
+//
+// NOT gated on the Communications section. See ONE_LIST_CTX.
 // ═══════════════════════════════════════════════════════════════════════════
 
 import type { NextRequest } from 'next/server';
@@ -21,7 +25,7 @@ import { ok, err, ApiErrorCode } from '@/lib/api-response';
 import { errToString } from '@/lib/utils';
 import { log } from '@/lib/log';
 import { validateUuid, validateEnum } from '@/lib/api-validate';
-import { commsContext } from '@/lib/comms/route-helpers';
+import { commsContext, ONE_LIST_CTX } from '@/lib/comms/route-helpers';
 import { checkAndIncrementRateLimit, rateLimitedResponse } from '@/lib/api-ratelimit';
 import { COMPLAINT_DEPTS } from '@/lib/complaints-shared';
 import { worklistSeesAllSources } from '@/lib/worklist/core';
@@ -42,7 +46,7 @@ export async function POST(req: NextRequest): Promise<Response> {
   let body: Body;
   try { body = (await req.json()) as Body; } catch { body = {}; }
 
-  const ctx = await commsContext(req, body.pid ?? null);
+  const ctx = await commsContext(req, body.pid ?? null, ONE_LIST_CTX);
   if (!ctx.ok) return ctx.response;
   const { pid, requestId, headers } = ctx;
 
@@ -128,6 +132,8 @@ export async function POST(req: NextRequest): Promise<Response> {
       }
       case 'pm':
       case 'inspection':
+      case 'reminder':
+      case 'approval':
         return err('this item type cannot be reassigned from the worklist', {
           requestId, status: 400, code: ApiErrorCode.ValidationFailed, headers,
         });

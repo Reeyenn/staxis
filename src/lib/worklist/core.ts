@@ -15,6 +15,27 @@
 //   workorder   work_orders       DB status != 'resolved'       complete ✓  assign(lane)  ✓
 //   inspection  buildInspectionQueue(today)                     deep-link   (no assign)
 //   pm          preventive_tasks  overdue/soon (derived)         complete ✓  (no assign)
+//   reminder    agent_reminders   pending + due by end of today  complete ✓  (no assign)
+//   approval    join_requests + time_off_requests, status='pending'
+//                                                                deep-link   (no assign)
+//
+// ─── who sees what ─────────────────────────────────────────────────────────
+// Two independent narrowings, and they answer different questions:
+//
+//   worklistSeesAllSources(role)  — WHICH SOURCES a role may read at all. The
+//     security boundary: complaints carry guest PII and are management-gated
+//     everywhere else in the product.
+//
+//   taskVisibleToViewer(task, viewer) — WHOSE LIST a to-do belongs on. Not a
+//     security boundary (a manager could read the row through a dozen other
+//     surfaces); a product rule. The founder's: a task you handed to somebody
+//     else lives on THEIR page and nowhere else. What you handed out is
+//     answered by the Assigned-by-me drawer, which is a different question and
+//     gets a different screen.
+//
+// Passing no viewer keeps the old whole-property behaviour, which is what the
+// agent-side readers want: they are answering "what is open at this hotel",
+// not "what is on my screen".
 // ═══════════════════════════════════════════════════════════════════════════
 
 import { supabaseAdmin } from '@/lib/supabase-admin';
@@ -22,17 +43,23 @@ import { todayStr } from '@/lib/utils';
 import { log } from '@/lib/log';
 import { buildInspectionQueue } from '@/lib/housekeeping/inspection-queue';
 import { COMPLAINT_OVERDUE_HOURS, COMPLAINT_OVERDUE_HOURS_HIGH } from '@/lib/complaints-shared';
-import type { WorklistItem, WorklistPriority } from './types';
+import type { AssignedByMeItem, WorklistItem, WorklistPriority, WorklistViewer } from './types';
 
 /** Deep-link targets per source (the page + the tab query param it now reads). */
 export const WORKLIST_DEEPLINK: Record<WorklistItem['sourceType'], string> = {
-  // Bare /communications lands on Messages; these two live on the To-do
-  // worklist, so say so rather than dropping the reader on the wrong screen.
-  task: '/communications?view=todo',
-  complaint: '/communications?view=todo',
+  // To-dos and reminders now live on the Staxis list itself. The link exists so
+  // a row opened from anywhere else in the app lands somewhere real; it is not
+  // a "go somewhere to do this", because the doing happens on the row.
+  task: '/feed',
+  complaint: '/feed',
+  reminder: '/feed',
   workorder: '/maintenance?tab=work',
   inspection: '/housekeeping?tab=quality',
   pm: '/maintenance?tab=preventive',
+  // Decisions keep their own screens: approving somebody onto the payroll or
+  // granting a day off needs the fields that screen has, and a one-tap yes on a
+  // list row would be a decision made with less than the facts.
+  approval: '/company',
 };
 
 const QUERY_ROW_CAP = 500;
@@ -47,17 +74,88 @@ export function worklistSeesAllSources(role: string): boolean {
   return role === 'admin' || role === 'owner' || role === 'general_manager' || role === 'front_desk';
 }
 
+/**
+ * Roles that see decisions waiting on a manager (join requests, time off).
+ * Deliberately NARROWER than worklistSeesAllSources: the front desk sees the
+ * hotel's work, not its personnel decisions.
+ */
+export function worklistSeesApprovals(role: string): boolean {
+  return role === 'admin' || role === 'owner' || role === 'general_manager';
+}
+
+/** The department a viewer counts as, for department-targeted to-dos. */
+export function viewerDepartment(viewer: Pick<WorklistViewer, 'dept' | 'role'>): string | null {
+  if (viewer.dept) return viewer.dept;
+  if (viewer.role === 'housekeeping' || viewer.role === 'maintenance' || viewer.role === 'front_desk') {
+    return viewer.role;
+  }
+  return null;
+}
+
+/**
+ * Is this to-do on THIS person's list?
+ *
+ * Pure and exported because it is the whole of the founder's assignment rule,
+ * and the rule is only worth anything if it holds in both directions: the
+ * assignee sees it, and the assigner does not. A test that only checks the
+ * first half would pass on the bug that matters.
+ *
+ * `viewer === null` means "no particular person is asking" — the agent tools
+ * and any cross-hotel reader. They get the whole property, unchanged.
+ */
+export function taskVisibleToViewer(
+  task: {
+    assignedStaffId: string | null;
+    assignedDepartment: string | null;
+    createdByStaffId: string | null;
+  },
+  viewer: WorklistViewer | null,
+): boolean {
+  if (!viewer) return true;
+
+  // Handed to a person: theirs, and only theirs. This is the line the whole
+  // assignment loop rests on — if a manager's own list kept a copy of
+  // everything they delegated, the list would grow with every hand-off and stop
+  // being a list of what THEY have to do.
+  if (task.assignedStaffId) return task.assignedStaffId === viewer.staffId;
+
+  // Handed to a role: everyone in that role, plus the two catch-alls.
+  if (task.assignedDepartment) {
+    if (task.assignedDepartment === 'all_staff' || task.assignedDepartment === 'general') return true;
+    return task.assignedDepartment === viewerDepartment(viewer);
+  }
+
+  // Handed to nobody. It is the house's, so it is the manager's — and always
+  // the author's, so a to-do somebody typed for themselves through the chat
+  // door can never end up on nobody's screen.
+  if (task.createdByStaffId && task.createdByStaffId === viewer.staffId) return true;
+  return worklistSeesApprovals(viewer.role);
+}
+
+export interface GatherOptions {
+  tasksOnly?: boolean;
+  /** Who is looking. Omit for the whole-property view. */
+  viewer?: WorklistViewer | null;
+}
+
 /** Gather every open actionable item for one property, normalized + sorted. */
-export async function gatherWorklist(pid: string, opts: { tasksOnly?: boolean } = {}): Promise<WorklistItem[]> {
+export async function gatherWorklist(pid: string, opts: GatherOptions = {}): Promise<WorklistItem[]> {
   const now = Date.now();
   const today = todayStr();
   const tasksOnly = !!opts.tasksOnly;
+  const viewer = opts.viewer ?? null;
+  const wantsApprovals = !tasksOnly && (!viewer || worklistSeesApprovals(viewer.role));
   const emptyRes = () => Promise.resolve({ data: [] as Record<string, unknown>[], error: null as { message: string } | null });
+  const endOfTodayMs = (() => { const d = new Date(now); d.setHours(23, 59, 59, 999); return d.getTime(); })();
+  const endOfTodayIso = new Date(endOfTodayMs).toISOString();
 
-  const [taskRes, complaintRes, workorderRes, pmRes, inspectionQueue] = await Promise.all([
+  const [
+    taskRes, complaintRes, workorderRes, pmRes, inspectionQueue,
+    reminderRes, joinRes, timeOffRes,
+  ] = await Promise.all([
     supabaseAdmin
       .from('comms_tasks')
-      .select('id, title, assigned_staff_id, assigned_department, due_at, status, priority, created_at')
+      .select('id, title, assigned_staff_id, assigned_department, due_at, status, priority, created_at, created_by_staff_id')
       .eq('property_id', pid)
       .eq('status', 'open')
       .limit(QUERY_ROW_CAP),
@@ -83,11 +181,36 @@ export async function gatherWorklist(pid: string, opts: { tasksOnly?: boolean } 
       log.error('[worklist] inspection queue failed', { pid, err: e instanceof Error ? e.message : String(e) });
       return [];
     }),
+    // A reminder somebody set is a thing that needs a person the moment it comes
+    // due, so it belongs on the list rather than only arriving as a message.
+    // Only ones due by tonight: a reminder set for next month is not today's work.
+    supabaseAdmin
+      .from('agent_reminders')
+      .select('id, body, fire_at, target_staff_id, target_department, created_by_staff_id, created_at')
+      .eq('property_id', pid)
+      .is('fired_at', null)
+      .is('canceled_at', null)
+      .lte('fire_at', endOfTodayIso)
+      .limit(QUERY_ROW_CAP),
+    wantsApprovals ? supabaseAdmin
+      .from('join_requests')
+      .select('id, name, department, status, created_at')
+      .eq('property_id', pid)
+      .eq('status', 'pending')
+      .limit(QUERY_ROW_CAP) : emptyRes(),
+    wantsApprovals ? supabaseAdmin
+      .from('time_off_requests')
+      .select('id, staff_id, request_date, reason, status, submitted_at, created_at')
+      .eq('property_id', pid)
+      .eq('status', 'pending')
+      .limit(QUERY_ROW_CAP) : emptyRes(),
   ]);
 
   for (const [label, res] of [
     ['comms_tasks', taskRes], ['complaints', complaintRes],
     ['work_orders', workorderRes], ['preventive_tasks', pmRes],
+    ['agent_reminders', reminderRes], ['join_requests', joinRes],
+    ['time_off_requests', timeOffRes],
   ] as const) {
     if (res.error) log.error(`[worklist] ${label} query failed`, { pid, err: res.error.message });
   }
@@ -95,15 +218,27 @@ export async function gatherWorklist(pid: string, opts: { tasksOnly?: boolean } 
   const items: WorklistItem[] = [];
 
   // ── Manual to-dos ──────────────────────────────────────────────────────────
-  const taskRows = (taskRes.data ?? []) as Record<string, unknown>[];
-  // Resolve assignee display names for the tasks that have one (one staff read).
-  const taskAssigneeIds = taskRows
-    .map((r) => r.assigned_staff_id as string | null)
-    .filter((x): x is string => !!x);
-  const nameMap = await staffNameMap(pid, taskAssigneeIds);
+  const taskRows = ((taskRes.data ?? []) as Record<string, unknown>[]).filter((r) =>
+    taskVisibleToViewer({
+      assignedStaffId: (r.assigned_staff_id as string | null) ?? null,
+      assignedDepartment: (r.assigned_department as string | null) ?? null,
+      createdByStaffId: (r.created_by_staff_id as string | null) ?? null,
+    }, viewer),
+  );
+  // Resolve display names for the tasks that name a person — the assignee for
+  // the row itself, and the author for the "Marcus asked you to" half of the
+  // sentence. One staff read covers both.
+  const nameMap = await staffNameMap(pid, [
+    ...taskRows.map((r) => r.assigned_staff_id as string | null),
+    ...taskRows.map((r) => r.created_by_staff_id as string | null),
+    ...((reminderRes.data ?? []) as Record<string, unknown>[]).map((r) => r.created_by_staff_id as string | null),
+    ...((timeOffRes.data ?? []) as Record<string, unknown>[]).map((r) => r.staff_id as string | null),
+  ].filter((x): x is string => !!x));
+
   for (const r of taskRows) {
     const due = (r.due_at as string | null) ?? null;
     const assignedStaffId = (r.assigned_staff_id as string | null) ?? null;
+    const authorId = (r.created_by_staff_id as string | null) ?? null;
     items.push({
       id: `task:${r.id}`,
       sourceType: 'task',
@@ -122,6 +257,12 @@ export async function gatherWorklist(pid: string, opts: { tasksOnly?: boolean } 
       canAssign: true,
       deepLink: WORKLIST_DEEPLINK.task,
       createdAt: (r.created_at as string | null) ?? null,
+      // Only somebody ELSE gets named. "You asked you to" is not a sentence, and
+      // a to-do you typed for yourself does not need to be introduced.
+      fromLabel: authorId && authorId !== viewer?.staffId
+        ? (nameMap.get(authorId) ?? null)
+        : null,
+      amountCents: null,
     });
   }
 
@@ -148,6 +289,8 @@ export async function gatherWorklist(pid: string, opts: { tasksOnly?: boolean } 
       canAssign: true,
       deepLink: WORKLIST_DEEPLINK.complaint,
       createdAt: created,
+      fromLabel: 'A guest',
+      amountCents: null,
     });
   }
 
@@ -174,6 +317,8 @@ export async function gatherWorklist(pid: string, opts: { tasksOnly?: boolean } 
       canAssign: true,   // priority lane (no per-staff column on work_orders)
       deepLink: WORKLIST_DEEPLINK.workorder,
       createdAt: (r.created_at as string | null) ?? null,
+      fromLabel: null,
+      amountCents: null,
     });
   }
 
@@ -198,6 +343,8 @@ export async function gatherWorklist(pid: string, opts: { tasksOnly?: boolean } 
       canAssign: false,
       deepLink: WORKLIST_DEEPLINK.inspection,
       createdAt: room.completedAt,
+      fromLabel: null,
+      amountCents: null,
     });
   }
 
@@ -206,7 +353,6 @@ export async function gatherWorklist(pid: string, opts: { tasksOnly?: boolean } 
   // stamps last_completed_at=now, pushing next-due to now+frequency — so even a
   // daily PM drops off the list the moment it's done (no "I tapped done but it's
   // still here" confusion), then returns tomorrow.
-  const endOfTodayMs = (() => { const d = new Date(now); d.setHours(23, 59, 59, 999); return d.getTime(); })();
   for (const r of (pmRes.data ?? []) as Record<string, unknown>[]) {
     const freqDays = Number(r.frequency_days ?? 1);
     const lastCompleted = (r.last_completed_at as string | null) ?? null;
@@ -232,10 +378,225 @@ export async function gatherWorklist(pid: string, opts: { tasksOnly?: boolean } 
       canAssign: false,   // preventive_tasks has no department/assignee column
       deepLink: WORKLIST_DEEPLINK.pm,
       createdAt: (r.created_at as string | null) ?? null,
+      fromLabel: null,
+      amountCents: null,
+    });
+  }
+
+  // ── Due reminders ────────────────────────────────────────────────────────────
+  for (const r of (reminderRes.data ?? []) as Record<string, unknown>[]) {
+    const targetStaffId = (r.target_staff_id as string | null) ?? null;
+    const targetDept = (r.target_department as string | null) ?? null;
+    const authorId = (r.created_by_staff_id as string | null) ?? null;
+    // Same rule as a to-do: a reminder aimed at one person is that person's.
+    if (!taskVisibleToViewer(
+      { assignedStaffId: targetStaffId, assignedDepartment: targetDept, createdByStaffId: authorId },
+      viewer,
+    )) continue;
+    const fireAt = (r.fire_at as string | null) ?? null;
+    items.push({
+      id: `reminder:${r.id}`,
+      sourceType: 'reminder',
+      sourceId: String(r.id),
+      title: String(r.body ?? '') || 'Reminder',
+      location: null,
+      assigneeStaffId: targetStaffId,
+      assigneeName: targetStaffId ? nameMap.get(targetStaffId) ?? null : null,
+      dept: targetDept,
+      dueDate: fireAt,
+      status: 'pending',
+      priority: 'normal',
+      propertyId: pid,
+      overdue: !!fireAt && Date.parse(fireAt) < now,
+      canComplete: true,   // "Done" cancels the pending reminder
+      canAssign: false,
+      deepLink: WORKLIST_DEEPLINK.reminder,
+      createdAt: (r.created_at as string | null) ?? null,
+      fromLabel: authorId && authorId !== viewer?.staffId ? (nameMap.get(authorId) ?? null) : null,
+      amountCents: null,
+    });
+  }
+
+  // ── Decisions waiting on a manager ──────────────────────────────────────────
+  for (const r of (joinRes.data ?? []) as Record<string, unknown>[]) {
+    const created = (r.created_at as string | null) ?? null;
+    items.push({
+      id: `approval:join_${r.id}`,
+      sourceType: 'approval',
+      sourceId: `join_${r.id}`,
+      title: `${String(r.name ?? 'Somebody')} wants to join the team`,
+      location: null,
+      assigneeStaffId: null,
+      assigneeName: null,
+      dept: (r.department as string | null) ?? null,
+      dueDate: null,
+      status: 'pending',
+      priority: 'high',
+      propertyId: pid,
+      // A person waiting to be let in is waiting on you from the moment they
+      // ask. Two days is where it stops being "I'll get to it".
+      overdue: !!created && now - Date.parse(created) > 2 * 86_400_000,
+      canComplete: false,
+      canAssign: false,
+      deepLink: '/company',
+      createdAt: created,
+      fromLabel: String(r.name ?? '') || null,
+      amountCents: null,
+    });
+  }
+  for (const r of (timeOffRes.data ?? []) as Record<string, unknown>[]) {
+    const staffId = (r.staff_id as string | null) ?? null;
+    const who = staffId ? nameMap.get(staffId) ?? null : null;
+    const created = (r.submitted_at as string | null) ?? (r.created_at as string | null) ?? null;
+    const day = (r.request_date as string | null) ?? null;
+    items.push({
+      id: `approval:timeoff_${r.id}`,
+      sourceType: 'approval',
+      sourceId: `timeoff_${r.id}`,
+      title: `${who ?? 'Somebody'} asked for ${day ?? 'a day'} off`,
+      location: null,
+      assigneeStaffId: null,
+      assigneeName: null,
+      dept: null,
+      dueDate: day ? `${day}T00:00:00.000Z` : null,
+      status: 'pending',
+      priority: 'normal',
+      propertyId: pid,
+      // Overdue the moment the day itself arrives: an unanswered request for
+      // today is a person who does not know whether to come in.
+      overdue: !!day && Date.parse(`${day}T23:59:59.999Z`) < now,
+      canComplete: false,
+      canAssign: false,
+      deepLink: '/staff',
+      createdAt: created,
+      fromLabel: who,
+      amountCents: null,
     });
   }
 
   return sortWorklist(items);
+}
+
+/**
+ * Who a to-do can be handed to at this hotel.
+ *
+ * HOUSEKEEPERS ARE EXCLUDED, and the exclusion is HERE rather than only in the
+ * composer's dropdown, so it holds however the list is reached. They work from
+ * the housekeeping board; a to-do assigned to them would sit on a page they
+ * never open, and the founder's standing rule is that nothing may ADD a step to
+ * a housekeeper's job. Routing this work onto their board is a real feature and
+ * a separate one: it means touching the housekeeper page flows, which is
+ * exactly what the rule forbids doing casually.
+ */
+export async function listAssignees(
+  pid: string,
+  limit = 200,
+): Promise<Array<{ staffId: string; name: string; department: string | null }>> {
+  const { data, error } = await supabaseAdmin
+    .from('staff')
+    .select('id, name, department, is_active')
+    .eq('property_id', pid)
+    .order('name', { ascending: true })
+    .limit(limit);
+  if (error) {
+    log.error('[worklist] assignee query failed', { pid, err: error.message });
+    throw new Error(error.message);
+  }
+  return ((data ?? []) as Record<string, unknown>[])
+    .filter((r) => r.is_active !== false)
+    .filter((r) => (r.department as string | null) !== 'housekeeping')
+    .map((r) => ({
+      staffId: String(r.id),
+      name: String(r.name ?? ''),
+      department: (r.department as string | null) ?? null,
+    }))
+    .filter((r) => !!r.name);
+}
+
+/**
+ * What this person handed to somebody else, and where each one got to.
+ *
+ * The other half of the assignment rule. Because a delegated task is not on the
+ * assigner's list, "did that ever happen" would otherwise have no answer at all
+ * — and an assigner who cannot check stops delegating.
+ *
+ * Only tasks handed to a PERSON. A to-do left for a department was never handed
+ * to anybody in particular, so there is nobody to be waiting on.
+ */
+export async function gatherAssignedByMe(
+  pid: string,
+  staffId: string,
+  now: Date = new Date(),
+  limit = 100,
+): Promise<AssignedByMeItem[]> {
+  const { data, error } = await supabaseAdmin
+    .from('comms_tasks')
+    .select('id, title, assigned_staff_id, assigned_department, due_at, status, created_at, completed_at, completed_by_staff_id, blocked_at, blocked_by_staff_id, blocked_reason')
+    .eq('property_id', pid)
+    .eq('created_by_staff_id', staffId)
+    .not('assigned_staff_id', 'is', null)
+    .neq('assigned_staff_id', staffId)
+    .order('created_at', { ascending: false })
+    .limit(limit);
+  if (error) {
+    log.error('[worklist] assigned-by-me query failed', { pid, err: error.message });
+    throw new Error(error.message);
+  }
+
+  const rows = (data ?? []) as Record<string, unknown>[];
+  const nameMap = await staffNameMap(pid, rows.flatMap((r) => [
+    r.assigned_staff_id as string | null,
+    r.completed_by_staff_id as string | null,
+    r.blocked_by_staff_id as string | null,
+  ]).filter((x): x is string => !!x));
+
+  return rows.map((r) => mapAssignedRow(r, nameMap, now));
+}
+
+/**
+ * Row → drawer item. Split out and exported so the three states and the
+ * staleness count can be exercised without a database: "waiting 6 days" is the
+ * line that makes the drawer worth opening, and off-by-one on it is invisible
+ * until somebody chases a colleague a day early.
+ */
+export function mapAssignedRow(
+  r: Record<string, unknown>,
+  nameMap: Map<string, string>,
+  now: Date,
+): AssignedByMeItem {
+  const status = String(r.status ?? 'open');
+  const state: AssignedByMeItem['state'] =
+    status === 'done' ? 'done' : status === 'blocked' ? 'cant' : 'waiting';
+  const settledById = state === 'done'
+    ? (r.completed_by_staff_id as string | null) ?? null
+    : state === 'cant'
+      ? (r.blocked_by_staff_id as string | null) ?? null
+      : null;
+  const settledAt = state === 'done'
+    ? (r.completed_at as string | null) ?? null
+    : state === 'cant'
+      ? (r.blocked_at as string | null) ?? null
+      : null;
+  const createdAt = (r.created_at as string | null) ?? null;
+  const createdMs = createdAt ? Date.parse(createdAt) : NaN;
+  const ageDays = Number.isFinite(createdMs)
+    ? Math.max(0, Math.floor((now.getTime() - createdMs) / 86_400_000))
+    : 0;
+  const assigneeId = (r.assigned_staff_id as string | null) ?? null;
+  return {
+    taskId: String(r.id),
+    title: String(r.title ?? ''),
+    assigneeStaffId: assigneeId,
+    assigneeName: assigneeId ? nameMap.get(assigneeId) ?? null : null,
+    assignedDepartment: (r.assigned_department as string | null) ?? null,
+    state,
+    dueDate: (r.due_at as string | null) ?? null,
+    createdAt,
+    settledByName: settledById ? nameMap.get(settledById) ?? null : null,
+    settledAt,
+    reason: state === 'cant' ? ((r.blocked_reason as string | null) ?? null) : null,
+    ageDays,
+  };
 }
 
 // ── helpers ──────────────────────────────────────────────────────────────────

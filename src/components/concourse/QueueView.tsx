@@ -59,13 +59,14 @@ import React from 'react';
 import { useAuth } from '@/contexts/AuthContext';
 import { useProperty } from '@/contexts/PropertyContext';
 import { buildCompanyAccessViewerKey } from '@/lib/company-access/viewer-key';
-import { canManageTeam } from '@/lib/roles';
+import { listRendersFor, listShowsFindings, listStandingFor } from '@/lib/feed/list-access';
 import { useActiveHotelStanding } from '@/lib/capabilities/useCan';
 import { useApiResource } from '@/lib/hooks/use-api-resource';
 
 import { CxStyle } from './concourse-css';
 import { DripQuestionCard } from './DripQuestionCard';
-import { FindingCards, type QueueReadState } from './FindingCards';
+import { StaxisList } from './StaxisList';
+import { type QueueReadState } from './FindingCards';
 import { MorningBriefView, type BriefPayload } from './MorningBriefCard';
 import { PortfolioQueueView, type PortfolioScope } from './PortfolioQueueView';
 import { parseFocusParam, parsePidParam, resolveDrillDown } from './finding-cards';
@@ -168,11 +169,11 @@ const S = {
 
   },
   noHotelQueueTitle: {
-    en: 'The hotel findings queue is for managers',
+    en: 'Your work lives on the housekeeping board',
 
   },
   noHotelQueueBody: {
-    en: 'This account has no company queue and does not manage this hotel’s findings. Your assigned hotel sections are still available above.',
+    en: 'Housekeeping rooms and checklists are on the Housekeeping tab, which is where your shift is run from. Nothing here is waiting on you.',
 
   },
 } as const;
@@ -247,10 +248,18 @@ export function QueueView({ lang }: { lang: 'en' | 'es' }) {
   // picker let her in, this screen showed her nothing, and nothing on it said
   // why. The probe now runs for everybody and answers from the person's hats;
   // only the hotel brief stays manager-gated.
-  const canSeeHotelBrief = !!user
-    && hotelStanding.hotelMutationAllowed
-    && !!hotelStanding.role
-    && canManageTeam(hotelStanding.role);
+  //
+  // ─── one page, sized to the person (2026-07-30) ──────────────────────────
+  // The queue used to render for MANAGERS ONLY: a front-desk clerk or a
+  // maintenance tech opened the Staxis tab and got "the hotel findings queue is
+  // for managers" over blank space. It is now the page they run the hotel on,
+  // so they get it too — the same page, whose list naturally contains only
+  // their world. What stays manager-only is the FINDINGS half: the brief, the
+  // prices and the recommendations. HOUSEKEEPERS still get nothing here, on
+  // purpose; see list-access.ts.
+  const listStanding = !user ? 'none' : listStandingFor(hotelStanding.role, hotelStanding.hotelMutationAllowed);
+  const canSeeHotelBrief = listShowsFindings(listStanding);
+  const canOpenHotelList = listRendersFor(listStanding);
 
   // ── who may open which hotel: asked ONLY when a link named one ────────────
   // The same read the hotel picker uses, so "which hotels do I cover" has one
@@ -332,7 +341,7 @@ export function QueueView({ lang }: { lang: 'en' | 'es' }) {
   // Not fetched until the probe has said this is a hotel person. A VP would
   // otherwise pull one arbitrary hotel's morning brief on every load. The GET
   // is deterministic, but it is still work for a screen the VP does not use.
-  const fallback = hotelFallbackState(companyScope, canSeeHotelBrief);
+  const fallback = hotelFallbackState(companyScope, canOpenHotelList);
   const showPortfolioProbe = shouldRenderPortfolioProbe(companyScope);
   const isHotelPerson = !drilling && fallback === 'hotel';
   const briefFor = drill.state === 'open' ? drill.propertyId : (isHotelPerson ? activePropertyId : null);
@@ -426,6 +435,7 @@ export function QueueView({ lang }: { lang: 'en' | 'es' }) {
         focusId={focusId}
         setFocusId={setFocusId}
         backHref={portfolioHref}
+        canSeeFindings={canSeeHotelBrief}
       />
     );
   }
@@ -454,6 +464,7 @@ export function QueueView({ lang }: { lang: 'en' | 'es' }) {
           readFailed={!!error}
           focusId={focusId}
           setFocusId={setFocusId}
+          canSeeFindings={canSeeHotelBrief}
         />
       )}
       {!drilling && fallback === 'empty' && (
@@ -498,6 +509,7 @@ function HotelQueue({
   focusId,
   setFocusId,
   backHref = '/feed',
+  canSeeFindings,
 }: {
   lang: 'en' | 'es';
   /** Set only on a portfolio drill-down. Absent = the hotel the app is in. */
@@ -509,6 +521,8 @@ function HotelQueue({
   focusId: string | null;
   setFocusId: (id: string | null) => void;
   backHref?: string;
+  /** Manager+ only: the brief, the prices and the recommendations. */
+  canSeeFindings: boolean;
 }) {
   const es = false;
   const L = <K extends keyof typeof S>(k: K) => (S[k].en);
@@ -540,23 +554,29 @@ function HotelQueue({
       <div className="cx-ptitle" style={{ marginTop: 0 }}>{hotelName ?? 'Staxis'}</div>
       <div className="cx-psub">{L('hotelSub')}</div>
 
-      {/* Pinned above everything. A brief line that names a card jumps to it. */}
-      <MorningBriefView
-        brief={brief}
-        lang={lang}
-        readFailed={readFailed}
-        onFocusFinding={setFocusId}
-      />
+      {/* Pinned above everything, exactly as before. A brief line that names a
+          card jumps to it. Manager+ only: it is a summary of the findings. */}
+      {canSeeFindings && (
+        <MorningBriefView
+          brief={brief}
+          lang={lang}
+          readFailed={readFailed}
+          onFocusFinding={setFocusId}
+        />
+      )}
 
-      <FindingCards
-        key={propertyId ?? 'no-property'}
-        lang={lang}
-        propertyId={propertyId}
-        focusId={focusId}
-        hideLiveness={!!brief}
-        bottomHeadroom
-        onReadState={setReadState}
-      />
+      {/* THE LIST. Findings, to-dos, reminders, work orders, inspections,
+          preventive work and decisions, in one order. */}
+      {propertyId && (
+        <StaxisList
+          key={propertyId}
+          propertyId={propertyId}
+          lang={lang}
+          focusId={focusId}
+          onReadState={setReadState}
+          canSeeFindings={canSeeFindings}
+        />
+      )}
 
       {/* A neutral wait, and nothing else. It says only that we have not
           finished reading — never "unavailable", which is a claim about the

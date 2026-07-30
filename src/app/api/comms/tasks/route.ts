@@ -1,25 +1,40 @@
 /**
- * /api/comms/tasks — the Communications to-do list.
+ * /api/comms/tasks — to-dos. Lives on the Staxis list now, not Communications.
  *   GET   ?pid=...                              → list tasks
- *   POST  { pid, title, notes?, assignedStaffId?, assignedDepartment?, dueAt?, sourceMessageId? }
+ *   POST  { pid, title, notes?, assignedStaffId?, assignedDepartment?, dueAt?,
+ *           sourceMessageId?, repeat?, weekday?, dayOfMonth? }
  *   PATCH { pid, taskId, status }               → check off / reopen
  * Authenticated. NO SMS.
+ *
+ * ─── one engine for both doors ─────────────────────────────────────────────
+ * `repeat` is anything other than 'once' ⇒ this creates a recurring TEMPLATE
+ * (recurring_task_templates) instead of a single row, through the exact same
+ * createTemplate() the chat door's create_recurring_todo tool calls. There is
+ * one scheduler in the product and this route does not become a second one:
+ * process-agent-schedules spawns the instances either way.
+ *
+ * NOT gated on the Communications section. See ONE_LIST_CTX.
  */
 import type { NextRequest } from 'next/server';
 import { ok, err, ApiErrorCode } from '@/lib/api-response';
 import { validateUuid, validateString, validateEnum } from '@/lib/api-validate';
 import { checkAndIncrementRateLimit, rateLimitedResponse, hashToRateLimitKey } from '@/lib/api-ratelimit';
-import { commsContext } from '@/lib/comms/route-helpers';
+import { commsContext, ONE_LIST_CTX } from '@/lib/comms/route-helpers';
 import { listTasks, createTask, setTaskStatus, deleteTask, getStaffRow } from '@/lib/comms/core';
+import { createTemplate, RECURRING_CADENCES, type RecurringCadence } from '@/lib/recurring-tasks/store';
+import { errToString } from '@/lib/utils';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
 const DEPARTMENTS = ['housekeeping', 'front_desk', 'maintenance', 'all_staff'] as const;
+/** What the composer's Repeat chip can say. 'once' is the default and creates
+ *  a plain task; everything else creates a template. */
+const REPEATS = ['once', ...RECURRING_CADENCES] as const;
 
 export async function GET(req: NextRequest): Promise<Response> {
   const { searchParams } = new URL(req.url);
-  const ctx = await commsContext(req, searchParams.get('pid'));
+  const ctx = await commsContext(req, searchParams.get('pid'), ONE_LIST_CTX);
   if (!ctx.ok) return ctx.response;
   const rl = await checkAndIncrementRateLimit('comms-read', hashToRateLimitKey(`${ctx.pid}:${ctx.userId}`));
   if (!rl.allowed) return rateLimitedResponse(rl.current, rl.cap, rl.retryAfterSec);
@@ -31,10 +46,11 @@ export async function POST(req: NextRequest): Promise<Response> {
   let body: {
     pid?: string; title?: string; notes?: string; priority?: string;
     assignedStaffId?: string; assignedDepartment?: string; dueAt?: string; sourceMessageId?: string;
+    repeat?: string; weekday?: number; dayOfMonth?: number;
   };
   try { body = await req.json(); } catch { body = {}; }
 
-  const ctx = await commsContext(req, body.pid ?? null);
+  const ctx = await commsContext(req, body.pid ?? null, ONE_LIST_CTX);
   if (!ctx.ok) return ctx.response;
 
   const titleV = validateString(body.title, { max: 300, label: 'title' });
@@ -78,6 +94,42 @@ export async function POST(req: NextRequest): Promise<Response> {
     if (!mv.error) sourceMessageId = mv.value!;
   }
 
+  let repeat: (typeof REPEATS)[number] = 'once';
+  if (body.repeat) {
+    const rv = validateEnum(body.repeat, REPEATS, 'repeat');
+    if (rv.error) return err(rv.error, { requestId: ctx.requestId, status: 400, code: ApiErrorCode.ValidationFailed, headers: ctx.headers });
+    repeat = rv.value!;
+  }
+
+  // ── A repeating to-do is a TEMPLATE, not a task ──────────────────────────
+  // The same createTemplate the chat door calls, so there is exactly one
+  // recurrence engine and one spawner. A template does not produce today's row
+  // itself: process-agent-schedules does that on the first tick of each due
+  // local day, which is what keeps a per-day done/undone history.
+  if (repeat !== 'once') {
+    try {
+      const tpl = await createTemplate({
+        propertyId: ctx.pid,
+        createdByStaffId: ctx.staffId,
+        title: titleV.value!,
+        assignedStaffId,
+        assignedDepartment,
+        priority,
+        cadence: repeat as RecurringCadence,
+        weekday: typeof body.weekday === 'number' ? body.weekday : null,
+        dayOfMonth: typeof body.dayOfMonth === 'number' ? body.dayOfMonth : null,
+      });
+      return ok({ templateId: tpl.id, repeat }, { requestId: ctx.requestId, status: 201, headers: ctx.headers });
+    } catch (e) {
+      // normalizeCadence throws a sentence a person can act on ("a monthly
+      // recurring to-do needs a day of the month between 1 and 28"). Pass it
+      // through rather than flattening it to "invalid request".
+      return err(errToString(e), {
+        requestId: ctx.requestId, status: 400, code: ApiErrorCode.ValidationFailed, headers: ctx.headers,
+      });
+    }
+  }
+
   const res = await createTask(ctx.pid, {
     title: titleV.value!,
     notes: body.notes ? String(body.notes).slice(0, 2000) : null,
@@ -95,7 +147,7 @@ export async function PATCH(req: NextRequest): Promise<Response> {
   let body: { pid?: string; taskId?: string; status?: string };
   try { body = await req.json(); } catch { body = {}; }
 
-  const ctx = await commsContext(req, body.pid ?? null);
+  const ctx = await commsContext(req, body.pid ?? null, ONE_LIST_CTX);
   if (!ctx.ok) return ctx.response;
 
   const idV = validateUuid(body.taskId, 'taskId');
@@ -113,7 +165,7 @@ export async function PATCH(req: NextRequest): Promise<Response> {
 
 export async function DELETE(req: NextRequest): Promise<Response> {
   const { searchParams } = new URL(req.url);
-  const ctx = await commsContext(req, searchParams.get('pid'));
+  const ctx = await commsContext(req, searchParams.get('pid'), ONE_LIST_CTX);
   if (!ctx.ok) return ctx.response;
 
   const idV = validateUuid(searchParams.get('taskId'), 'taskId');

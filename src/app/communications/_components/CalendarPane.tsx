@@ -154,7 +154,13 @@ function fmtRange(start: string, end: string | null): string {
   return `${fmt(start)} → ${fmt(end)}`;
 }
 
-function EventEditor({ pid, L, onDone, onCancel }: { pid: string; L: L; onDone: () => void; onCancel: () => void }) {
+/**
+ * Add one dated event. Exported on 2026-07-30: the Calendar view moved to the
+ * Staxis list (calendar = the same list items, with dates), and this is the
+ * only "add an event" flow in the product. Re-typing it there would have been a
+ * second form against the same route with its own validation drift.
+ */
+export function EventEditor({ pid, L, onDone, onCancel }: { pid: string; L: L; onDone: () => void; onCancel: () => void }) {
   const [title, setTitle] = React.useState('');
   const [eventDate, setEventDate] = React.useState('');
   const [endDate, setEndDate] = React.useState('');

@@ -15,10 +15,9 @@
 
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { log } from '@/lib/log';
-import { isSectionEnabledForProperty } from '@/lib/sections/server';
 
-export const RECURRING_DEPARTMENTS = ['front_desk', 'housekeeping', 'maintenance', 'general'] as const;
-export const RECURRING_CADENCES = ['daily', 'weekdays', 'weekly'] as const;
+export const RECURRING_DEPARTMENTS = ['front_desk', 'housekeeping', 'maintenance', 'general', 'all_staff'] as const;
+export const RECURRING_CADENCES = ['daily', 'weekdays', 'weekly', 'biweekly', 'monthly'] as const;
 export type RecurringCadence = (typeof RECURRING_CADENCES)[number];
 export type RecurringPriority = 'normal' | 'high' | 'urgent';
 
@@ -30,8 +29,16 @@ export interface CreateTemplateInput {
   assignedDepartment?: string | null;
   priority?: RecurringPriority;
   cadence: RecurringCadence;
-  /** 0=Sun … 6=Sat. Required for cadence='weekly', ignored otherwise. */
+  /** 0=Sun … 6=Sat. Required for 'weekly' and 'biweekly', ignored otherwise. */
   weekday?: number | null;
+  /** 1..28. Required for 'monthly', ignored otherwise. */
+  dayOfMonth?: number | null;
+  /**
+   * A property-local YYYY-MM-DD inside an ON week. Required for 'biweekly';
+   * defaults to the day the template was created, which is what "every other
+   * Tuesday starting this week" means to the person who typed it.
+   */
+  anchorDate?: string | null;
 }
 
 export interface TemplateRow {
@@ -43,6 +50,8 @@ export interface TemplateRow {
   priority: RecurringPriority;
   cadence: RecurringCadence;
   weekday: number | null;
+  dayOfMonth: number | null;
+  anchorDate: string | null;
   active: boolean;
   lastSpawnedOn: string | null;
   createdAt: string;
@@ -58,19 +67,60 @@ function mapRow(r: Record<string, unknown>): TemplateRow {
     priority: ((r.priority as string | null) ?? 'normal') as RecurringPriority,
     cadence: (r.cadence as RecurringCadence),
     weekday: r.weekday === null || r.weekday === undefined ? null : Number(r.weekday),
+    dayOfMonth: r.day_of_month === null || r.day_of_month === undefined ? null : Number(r.day_of_month),
+    anchorDate: (r.anchor_date as string | null) ?? null,
     active: (r.active as boolean | null) ?? true,
     lastSpawnedOn: (r.last_spawned_on as string | null) ?? null,
     createdAt: r.created_at as string,
   };
 }
 
+/**
+ * The parameters a cadence carries, normalized. Pure and exported because the
+ * form door and the chat door both go through it, and "biweekly forgot its
+ * anchor" must fail the same way for both rather than only at the database.
+ */
+export interface CadenceParams {
+  weekday: number | null;
+  dayOfMonth: number | null;
+  anchorDate: string | null;
+}
+
+const YMD_RX = /^\d{4}-\d{2}-\d{2}$/;
+
+export function normalizeCadence(
+  cadence: RecurringCadence,
+  input: { weekday?: number | null; dayOfMonth?: number | null; anchorDate?: string | null },
+  todayLocal: string,
+): CadenceParams {
+  const weekday = input.weekday ?? null;
+  if (cadence === 'weekly' || cadence === 'biweekly') {
+    if (weekday === null || !Number.isInteger(weekday) || weekday < 0 || weekday > 6) {
+      throw new Error('a weekly recurring to-do needs a weekday (0=Sunday … 6=Saturday)');
+    }
+  }
+  if (cadence === 'monthly') {
+    const dom = input.dayOfMonth ?? null;
+    if (dom === null || !Number.isInteger(dom) || dom < 1 || dom > 28) {
+      // 28 is the cap, not a typo: a monthly task set to the 31st would skip
+      // seven months a year and nothing on screen would explain the silence.
+      throw new Error('a monthly recurring to-do needs a day of the month between 1 and 28');
+    }
+    return { weekday: null, dayOfMonth: dom, anchorDate: null };
+  }
+  if (cadence === 'biweekly') {
+    const anchor = input.anchorDate ?? todayLocal;
+    if (!YMD_RX.test(anchor)) throw new Error('a biweekly recurring to-do needs a start date');
+    return { weekday, dayOfMonth: null, anchorDate: anchor };
+  }
+  if (cadence === 'weekly') return { weekday, dayOfMonth: null, anchorDate: null };
+  return { weekday: null, dayOfMonth: null, anchorDate: null };
+}
+
 /** Create a recurring template. Returns the new row id. */
 export async function createTemplate(input: CreateTemplateInput): Promise<{ id: string }> {
   const cadence = input.cadence;
-  const weekday = cadence === 'weekly' ? (input.weekday ?? null) : null;
-  if (cadence === 'weekly' && (weekday === null || weekday < 0 || weekday > 6)) {
-    throw new Error('a weekly recurring to-do needs a weekday (0=Sunday … 6=Saturday)');
-  }
+  const params = normalizeCadence(cadence, input, todayLocalIso());
   const { data, error } = await supabaseAdmin
     .from('recurring_task_templates')
     .insert({
@@ -81,12 +131,18 @@ export async function createTemplate(input: CreateTemplateInput): Promise<{ id: 
       assigned_department: input.assignedDepartment ?? null,
       priority: input.priority ?? 'normal',
       cadence,
-      weekday,
+      weekday: params.weekday,
+      day_of_month: params.dayOfMonth,
+      anchor_date: params.anchorDate,
     })
     .select('id')
     .single();
   if (error) throw error;
   return { id: data.id as string };
+}
+
+function todayLocalIso(): string {
+  return new Date().toISOString().slice(0, 10);
 }
 
 /** Stop (deactivate) a template. Already-spawned tasks are left alone. Returns
@@ -131,12 +187,44 @@ function localDayParts(now: Date, tz: string): { date: string; weekday: number }
   return { date, weekday };
 }
 
-/** Is a template due to spawn on the given local weekday? */
-function isDueOn(template: TemplateRow, weekday: number): boolean {
+/** Whole days from the Unix epoch to a property-local YYYY-MM-DD. */
+function dayNumber(ymd: string): number {
+  const [y, m, d] = ymd.split('-').map((n) => Number(n));
+  return Math.floor(Date.UTC(y, m - 1, d) / 86_400_000);
+}
+
+/**
+ * Is a template due to spawn on this property-local day?
+ *
+ * Exported and pure so every cadence can be driven over a run of fake days in a
+ * test — "biweekly actually comes back a fortnight later" is not a claim any
+ * amount of reading the insert path can settle.
+ *
+ * Biweekly is anchored rather than counted: the ON weeks are the ones an even
+ * number of whole weeks away from `anchorDate`. Candidate days for a biweekly
+ * template are exactly seven apart (the weekday has to match first), so the
+ * parity alternates on its own and no bookkeeping column can drift. A template
+ * that misses a fortnight because the cron was down comes back on the NEXT on
+ * week, still on the same fortnight it always had.
+ */
+export function isTemplateDueOn(
+  template: Pick<TemplateRow, 'cadence' | 'weekday' | 'dayOfMonth' | 'anchorDate'>,
+  local: { date: string; weekday: number },
+): boolean {
   switch (template.cadence) {
     case 'daily': return true;
-    case 'weekdays': return weekday >= 1 && weekday <= 5; // Mon–Fri
-    case 'weekly': return template.weekday === weekday;
+    case 'weekdays': return local.weekday >= 1 && local.weekday <= 5; // Mon–Fri
+    case 'weekly': return template.weekday === local.weekday;
+    case 'biweekly': {
+      if (template.weekday !== local.weekday) return false;
+      if (!template.anchorDate) return false;
+      const weeks = Math.floor((dayNumber(local.date) - dayNumber(template.anchorDate)) / 7);
+      return ((weeks % 2) + 2) % 2 === 0;
+    }
+    case 'monthly': {
+      if (template.dayOfMonth === null) return false;
+      return Number(local.date.slice(8, 10)) === template.dayOfMonth;
+    }
     default: return false;
   }
 }
@@ -159,7 +247,7 @@ export async function spawnDueRecurringTodos(now: Date = new Date()): Promise<Sp
   // scale today (one property); a join keeps it a single round trip.
   const { data, error } = await supabaseAdmin
     .from('recurring_task_templates')
-    .select('id, property_id, title, assigned_staff_id, assigned_department, priority, cadence, weekday, active, last_spawned_on, created_at, properties(timezone)')
+    .select('id, property_id, title, assigned_staff_id, assigned_department, priority, cadence, weekday, day_of_month, anchor_date, active, last_spawned_on, created_at, properties(timezone)')
     .eq('active', true);
   if (error) {
     log.error('[recurring-tasks] spawn query failed', { err: error.message });
@@ -168,7 +256,6 @@ export async function spawnDueRecurringTodos(now: Date = new Date()): Promise<Sp
 
   const rows = (data ?? []) as Array<Record<string, unknown>>;
   const propsSeen = new Set<string>();
-  const communicationsEnabled = new Map<string, boolean>();
   let spawned = 0;
   let skipped = 0;
   let failed = 0;
@@ -176,18 +263,20 @@ export async function spawnDueRecurringTodos(now: Date = new Date()): Promise<Sp
   for (const raw of rows) {
     const template = mapRow(raw);
     propsSeen.add(template.propertyId);
-    let sectionEnabled = communicationsEnabled.get(template.propertyId);
-    if (sectionEnabled === undefined) {
-      sectionEnabled = await isSectionEnabledForProperty(template.propertyId, 'communications');
-      communicationsEnabled.set(template.propertyId, sectionEnabled);
-    }
-    if (!sectionEnabled) { skipped += 1; continue; }
+    // ── the Communications gate is gone, on purpose ────────────────────────
+    // To-dos moved to the Staxis list; Communications is Messages now. Leaving
+    // the old check here meant a hotel that switched off a messaging tab
+    // silently stopped spawning its recurring work — and because spawning is
+    // per-local-day, a skipped day never comes back. Gating on 'staxis'
+    // instead would be the same bug wearing a different section name: a nav
+    // toggle must not be able to cancel a hotel's standing work. Section
+    // toggles govern what a hotel SEES, never what it may reach.
     const tz = ((raw.properties as { timezone?: string } | null)?.timezone) || 'America/Chicago';
     const { date, weekday } = localDayParts(now, tz);
 
     // Already spawned for this local day → nothing to do.
     if (template.lastSpawnedOn === date) { skipped += 1; continue; }
-    if (!isDueOn(template, weekday)) { skipped += 1; continue; }
+    if (!isTemplateDueOn(template, { date, weekday })) { skipped += 1; continue; }
 
     // Insert the instance stamped for idempotency. Do the stamped insert
     // DIRECTLY (not via createTask) so we can set the recurring_* columns and

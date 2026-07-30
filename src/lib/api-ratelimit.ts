@@ -245,6 +245,12 @@ export type RateLimitEndpoint =
   | 'worklist-read'
   | 'worklist-assign'
   | 'worklist-complete'
+  // One person's Staxis-list preference write ("Include log book in Staxis").
+  // Keyed on the HASHED (property, user) composite, not the raw pid: this is a
+  // per-person switch, and a shared per-property bucket would let one impatient
+  // manager 429 their colleagues out of their own settings. Costs nothing and
+  // is not billing-impacting, so it fails OPEN.
+  | 'feed-prefs-write'
   // ── Inventory vendors (2026-05-31) — keyed on the RAW property id (a real
   // properties.id) — api_limits.property_id has an FK to properties(id)
   // (migration 0142), so a hashToRateLimitKey pseudo-UUID would FK-violate.
@@ -562,6 +568,9 @@ const HOURLY_CAPS: Record<RateLimitEndpoint, number> = {
   'worklist-read':             3600,
   'worklist-assign':            300,
   'worklist-complete':          300,
+  // A human flipping one switch. 120/hr per person is two per minute for an
+  // hour, which is well past deliberate and well short of a runaway tab.
+  'feed-prefs-write':           120,
   // Inventory Ordering — per-property (raw pid). order-create/approve/receive
   // are deliberate manager actions; order-send fires email (billing); reads are
   // panel polls. Tuned to "a manager working through orders" with headroom.

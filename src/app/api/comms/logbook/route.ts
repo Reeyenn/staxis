@@ -10,8 +10,7 @@ import { ApiErrorCode } from '@/lib/api-response';
 import { validateString, validateEnum } from '@/lib/api-validate';
 import { checkAndIncrementRateLimit, rateLimitedResponse, hashToRateLimitKey } from '@/lib/api-ratelimit';
 import { defineRoute } from '@/lib/api-route';
-import { commsContext } from '@/lib/comms/route-helpers';
-import { requireSectionEnabled } from '@/lib/sections/server';
+import { commsContext, ONE_LIST_CTX } from '@/lib/comms/route-helpers';
 import { listLogEntries, createLogEntry } from '@/lib/comms/core';
 
 export const runtime = 'nodejs';
@@ -20,11 +19,8 @@ export const dynamic = 'force-dynamic';
 const CATEGORIES = ['front_desk', 'housekeeping', 'maintenance', 'general'] as const;
 
 export const GET = defineRoute({
-  resolve: (req) => commsContext(req, new URL(req.url).searchParams.get('pid')),
+  resolve: (req) => commsContext(req, new URL(req.url).searchParams.get('pid'), ONE_LIST_CTX),
   handler: async (ctx) => {
-    // Section gate (add-on, on top of the tenant guard above): if Communications is off for this hotel, block this route.
-    const sectionGate = await requireSectionEnabled(ctx.req, ctx.pid, 'communications');
-    if (!sectionGate.ok) return sectionGate.response;
     // Polled read (~8s) → shared 'comms-read' bucket (3600/hr), like tasks GET.
     const rl = await checkAndIncrementRateLimit('comms-read', hashToRateLimitKey(`${ctx.pid}:${ctx.userId}`));
     if (!rl.allowed) return rateLimitedResponse(rl.current, rl.cap, rl.retryAfterSec);
@@ -35,12 +31,9 @@ export const GET = defineRoute({
 
 export const POST = defineRoute({
   body: 'empty',
-  resolve: (req, body: { pid?: string; title?: string; body?: string; category?: string }) => commsContext(req, body.pid ?? null),
+  resolve: (req, body: { pid?: string; title?: string; body?: string; category?: string }) => commsContext(req, body.pid ?? null, ONE_LIST_CTX),
   handler: async (ctx) => {
     const body = ctx.body;
-    // Section gate (add-on, on top of the tenant guard above): if Communications is off for this hotel, block this route.
-    const sectionGate = await requireSectionEnabled(ctx.req, ctx.pid, 'communications');
-    if (!sectionGate.ok) return sectionGate.response;
 
     // Trim before validating so a whitespace-only title is rejected (the reply
     // route does the same) — otherwise a direct API call could log a blank recap.

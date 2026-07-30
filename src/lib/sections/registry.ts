@@ -49,7 +49,12 @@ export const SECTION_LIST: readonly SectionMeta[] = [
   { key: 'staxis',         navHref: '/feed',           routePrefixes: ['/feed'],           label_en: 'Staxis',         desc_en: 'The decision feed and AI copilot home' },
   { key: 'dashboard',      navHref: '/dashboard',      routePrefixes: ['/dashboard'],      label_en: 'Dashboard',      desc_en: 'Live occupancy, KPIs, and what needs attention' },
   { key: 'housekeeping',   navHref: '/housekeeping',   routePrefixes: ['/housekeeping'],   label_en: 'Housekeeping',   desc_en: 'Who cleans what today, and how well it got done' },
-  { key: 'communications', navHref: '/communications', routePrefixes: ['/communications'], label_en: 'Communications', desc_en: 'Messages, log book, calendar, and announcements' },
+  // Renamed 2026-07-30. To-do, Calendar and the Log book left for the Staxis
+  // list; what is left is messaging, so the tab says so. The KEY stays
+  // 'communications' on purpose: hotels have stored enabled_sections maps
+  // keyed by it, and renaming the key would silently re-enable the section at
+  // every hotel that had turned it off.
+  { key: 'communications', navHref: '/communications', routePrefixes: ['/communications'], label_en: 'Messages',       desc_en: 'Team messages, channels, and announcements' },
   { key: 'maintenance',    navHref: '/maintenance',    routePrefixes: ['/maintenance'],    label_en: 'Maintenance',    desc_en: 'Work orders and preventive maintenance' },
   { key: 'inventory',      navHref: '/inventory',      routePrefixes: ['/inventory'],      label_en: 'Inventory',      desc_en: 'Supplies, counts, reorders, and vendors' },
   // People moved to My Hotel → People on 2026-07-27; Staff is the schedule now.

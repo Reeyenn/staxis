@@ -168,7 +168,7 @@ const SURFACE_ROUTES: readonly SurfaceRoute[] = [
   { test: /^\/housekeeping$/, surface: 'Housekeeping' },
   { test: /^\/staff$/, surface: 'Staff' },
   { test: /^\/financials$/, surface: 'Financials' },
-  { test: /^\/communications$/, surface: 'Communications' },
+  { test: /^\/communications$/, surface: 'Messages' },
   { test: /^\/company$/, surface: 'the company (multi-hotel) screen' },
   { test: /^\/feed$/, surface: 'the activity feed' },
   { test: /^\/dashboard$/, surface: 'the dashboard' },

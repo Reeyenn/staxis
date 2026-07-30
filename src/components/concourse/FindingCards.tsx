@@ -55,6 +55,9 @@ import {
   SessionEndedError,
 } from '@/lib/api-fetch';
 import { readEnvelope } from '@/lib/api-envelope';
+import { buildOneList, type ListRow } from '@/lib/feed/one-list';
+import type { LogEntryDTO } from '@/lib/comms/types';
+import type { WorklistItem } from '@/lib/worklist/types';
 
 import { CxIcon } from './icons';
 import {
@@ -755,6 +758,28 @@ export interface FindingCardsViewProps {
    * its buttons. See the note in QueueView.
    */
   bottomHeadroom?: boolean;
+  /**
+   * THE ONE LIST. Everything else that needs a person, ranked together with the
+   * cards rather than parked in a second block underneath them.
+   *
+   * Absent on every findings-only caller (the portfolio queue, the maintenance
+   * patterns popup) and the code path is then byte-for-byte what it was — the
+   * cards' own ordering, fold and empty states are untouched by construction,
+   * not by care. When present, `buildOneList` decides the interleaving and this
+   * component still owns the fold, the liveness line and the empty state.
+   *
+   * The renderers are passed in rather than imported so this module never has
+   * to learn what a to-do is; it already exports the vocabulary those rows are
+   * ranked by, and importing them back would be a cycle.
+   */
+  interleave?: {
+    items: readonly WorklistItem[];
+    logEntries?: readonly LogEntryDTO[];
+    renderItem: (item: WorklistItem) => React.ReactNode;
+    renderLog?: (entry: LogEntryDTO) => React.ReactNode;
+  };
+  /** The inline "+" composer row, pinned directly under the heading. */
+  composer?: React.ReactNode;
 }
 
 /**
@@ -823,6 +848,8 @@ export function FindingCardsView({
   emptyNote,
   hideOccurrence = false,
   bottomHeadroom = false,
+  interleave,
+  composer,
 }: FindingCardsViewProps) {
   const es = false;
   const L = <K extends keyof typeof S>(k: K) => (S[k].en);
@@ -832,13 +859,34 @@ export function FindingCardsView({
   const ranked = rankFindings(all);
   const { visible, showFoldToggle } = focusedSplit(ranked, cap, focusId, showAll);
 
+  // The fold is decided FIRST, over the cards alone, then the survivors are
+  // interleaved. Two separate jobs kept separate: `focusedSplit` owns "which
+  // cards are above the fold and does a ?focus= link force it open",
+  // `buildOneList` owns "in what order does everything on screen go". Handing
+  // work items to the cap would let a busy morning's to-dos push findings
+  // behind "show all", which is the AI going quiet for the wrong reason.
+  const merged = interleave
+    ? buildOneList({
+        findings: visible,
+        items: interleave.items,
+        logEntries: interleave.logEntries,
+        findingCap: visible.length,
+      })
+    : null;
+  const rows: ListRow[] = merged
+    ? merged.rows
+    : visible.map((f) => ({ kind: 'finding', key: `finding:${f.id}`, finding: f }));
+
   const liveness = livenessLine(run, distinctDetectors(all), lang);
   const skipped = skippedNote(run, lang);
 
   const blank = blankQueueOutcome({
     readFailed,
     livenessText: liveness.text,
-    visibleCount: visible.length,
+    // A composer counts as something on the screen: a page whose only content
+    // is a "+" is not blank, and printing "nothing has been checked" above a
+    // live control reads as a broken page rather than a quiet hotel.
+    visibleCount: rows.length + (composer ? 1 : 0),
     emptyNote,
   });
   if (blank.kind === 'silent') return null;
@@ -865,31 +913,38 @@ export function FindingCardsView({
       )}
       {liveness.text && skipped && <div className="fd-skipped">{skipped}</div>}
 
-      {visible.length > 0 && (
+      {(rows.length > 0 || composer) && (
         <div className="fd-head">
           <span className="fd-headt">{heading ?? L('heading')}</span>
         </div>
       )}
 
+      {composer}
+
       {saveFailed && <div className="fd-err">{L('saveFailed')}</div>}
 
-      {visible.map((f) => (
-        <FindingCard
-          key={f.id}
-          finding={f}
-          lang={lang}
-          busy={busyId === f.id}
-          focused={focusId === f.id}
-          readOnly={readOnly || readOnlyFor?.(f) === true}
-          onVerdict={onVerdict}
-          onEngage={onEngage}
-          onAction={onAction}
-          note={noteFor ? noteFor(f) : null}
-          href={hrefFor ? hrefFor(f) : null}
-          hrefLabel={hrefLabel}
-          hideOccurrence={hideOccurrence}
-        />
-      ))}
+      {rows.map((row) => {
+        if (row.kind === 'item') return <React.Fragment key={row.key}>{interleave?.renderItem(row.item)}</React.Fragment>;
+        if (row.kind === 'log') return <React.Fragment key={row.key}>{interleave?.renderLog?.(row.entry)}</React.Fragment>;
+        const f = row.finding;
+        return (
+          <FindingCard
+            key={row.key}
+            finding={f}
+            lang={lang}
+            busy={busyId === f.id}
+            focused={focusId === f.id}
+            readOnly={readOnly || readOnlyFor?.(f) === true}
+            onVerdict={onVerdict}
+            onEngage={onEngage}
+            onAction={onAction}
+            note={noteFor ? noteFor(f) : null}
+            href={hrefFor ? hrefFor(f) : null}
+            hrefLabel={hrefLabel}
+            hideOccurrence={hideOccurrence}
+          />
+        );
+      })}
 
       {showFoldToggle && (
         <div className="fd-fold">
@@ -907,7 +962,7 @@ export function FindingCardsView({
           spacer here rather than more global page padding: the overlap is a
           property of a list whose last row is interactive, and every other
           section page ends in something you do not have to press. */}
-      {bottomHeadroom && visible.length > 0 && <div className="fd-headroom" aria-hidden />}
+      {bottomHeadroom && rows.length > 0 && <div className="fd-headroom" aria-hidden />}
     </>
   );
 }
@@ -924,6 +979,9 @@ export function FindingCards({
   propertyId,
   bottomHeadroom = false,
   onReadState,
+  interleave,
+  composer,
+  emptyNote,
 }: {
   lang: Lang;
   focusId?: string | null;
@@ -942,6 +1000,15 @@ export function FindingCards({
   propertyId?: string | null;
   bottomHeadroom?: boolean;
   onReadState?: (state: QueueReadState) => void;
+  /** THE ONE LIST. See FindingCardsViewProps.interleave. */
+  interleave?: FindingCardsViewProps['interleave'];
+  composer?: React.ReactNode;
+  /**
+   * Overrides the "nothing has been checked here" line. The Staxis list says
+   * something different, because on that screen an empty queue is not only a
+   * statement about the AI: there is also no work on it.
+   */
+  emptyNote?: string;
 }) {
   const { user } = useAuth();
   const { activePropertyId } = useProperty();
@@ -1075,7 +1142,11 @@ export function FindingCards({
     [hotelId],
   );
 
-  if (!canSee) return null;
+  // A person who may not read findings still gets the LIST when one is passed:
+  // returning null here would take their own to-dos, the composer and the work
+  // rows with it. Nothing about the findings half renders for them, because
+  // `findings` is empty and the read never fired.
+  if (!canSee && !interleave && !composer) return null;
 
   return (
     <FindingCardsView
@@ -1092,10 +1163,12 @@ export function FindingCards({
       // Only once the read has actually landed. Passed while `data` is still
       // undefined, "nothing has been checked here" would flash on every load
       // of a hotel that IS checked — a worse lie than the silence it replaces.
-      emptyNote={readState === 'ready' ? (S.neverChecked.en) : undefined}
+      emptyNote={readState === 'ready' ? (emptyNote ?? S.neverChecked.en) : undefined}
       onVerdict={onVerdict}
       onEngage={onEngage}
       onAction={onAction}
+      interleave={interleave}
+      composer={composer}
     />
   );
 }

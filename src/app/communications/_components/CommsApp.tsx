@@ -27,11 +27,10 @@ import { apiGet, apiPost } from '@/lib/comms/client';
 import type { ConversationDTO, MessageDTO } from '@/lib/comms/types';
 import type { WorklistItem } from '@/lib/worklist/types';
 import { useCommsResource } from './comms-data';
-import type { BootstrapData, ViewMode, TodoView, RightPanel, L as LType } from './comms-types-fe';
+import type { BootstrapData, ViewMode, RightPanel, L as LType } from './comms-types-fe';
 import { T, SANS, MONO, deptColorDark, Avatar, Presence } from './comms-ui';
 import { MessagePane, ThreadPanel, PinnedPanel, MembersPanel } from './MessagePane';
-import { SearchPalette, NewMessageModal, TodoMode } from './CommsOverlays';
-import { LogbookMode } from './LogbookPane';
+import { SearchPalette, NewMessageModal } from './CommsOverlays';
 
 /**
  * Coalesce concurrent attempts to run the same read into one request. The
@@ -109,10 +108,6 @@ function CommsPropertyApp({ pid }: { pid: string | null }) {
   const [selId, setSelId] = React.useState<string | null>(null);
   const [messages, setMessages] = React.useState<MessageDTO[]>([]);
   const [mode, setMode] = React.useState<ViewMode>('chats');
-  // Which of To-do's two views is showing. Held HERE, not inside TodoMode:
-  // TodoMode is conditionally rendered, so component-local state would reset
-  // every time the user visited another nav item and came back.
-  const [todoView, setTodoView] = React.useState<TodoView>('list');
   const [threadParent, setThreadParent] = React.useState<MessageDTO | null>(null);
   const [panel, setPanel] = React.useState<RightPanel>(null);
   const [searchOpen, setSearchOpen] = React.useState(false);
@@ -122,6 +117,8 @@ function CommsPropertyApp({ pid }: { pid: string | null }) {
   const [messagesLoading, setMessagesLoading] = React.useState(false);
   const [messagesError, setMessagesError] = React.useState<string | null>(null);
   const [mutationError, setMutationError] = React.useState<string | null>(null);
+  /** Confirmation that "turn this into a task" landed, and where. */
+  const [taskNotice, setTaskNotice] = React.useState<string | null>(null);
   const scrollRef = React.useRef<HTMLDivElement | null>(null);
   const threadRequestRef = React.useRef(0);
   const threadLoadRef = React.useRef<{
@@ -137,30 +134,22 @@ function CommsPropertyApp({ pid }: { pid: string | null }) {
   const [mounted, setMounted] = React.useState(false);
   React.useEffect(() => {
     setMounted(true);
-    // Dashboard "Go to Log Book" deep-links with ?view=logbook. Read it
-    // client-only (after mount) so SSR/first-render markup stays identical —
-    // same hydration discipline as the pid branch below (#418).
+    // Every ?view= this tab ever answered still has to arrive somewhere real.
+    // Read client-only (after mount) so SSR/first-render markup stays identical
+    // (#418).
     //
-    // ?view=calendar is a LIVE inbound link from the dashboard Calendar card
-    // and outlived Calendar's own nav item — it now lands on To-do with the
-    // Calendar view selected. Unknown values fall through silently to Messages,
-    // so a link that stops being handled here looks like a dead button rather
-    // than an error: keep every shipped value mapped.
+    // To-do, Calendar and the Log book LEFT on 2026-07-30: the list of
+    // everything that needs a person is the Staxis tab now, and the log book is
+    // a button on it. Every one of those links redirects rather than falling
+    // through, because falling through lands on Messages with no explanation
+    // and reads as a broken button. Knowledge and Contacts left earlier, the
+    // same way.
     try {
       const v = new URLSearchParams(window.location.search).get('view');
-      if (v === 'calendar') {
-        setMode('todo');
-        setTodoView('calendar');
-        setMobileDetail(true);
+      if (v === 'todo' || v === 'calendar' || v === 'logbook') {
+        window.location.replace('/feed');
       } else if (v === 'knowledge' || v === 'contacts') {
-        // Both moved to the Knows tab's told half. Redirect rather than fall
-        // through: falling through lands on Messages with no explanation, which
-        // reads as a broken link. An old bookmark or a link in someone's notes
-        // should still arrive at the thing it was pointing at.
         window.location.replace('/feed?tab=knows');
-      } else if (v === 'logbook' || v === 'todo') {
-        setMode(v);
-        setMobileDetail(true);
       }
     } catch { /* */ }
   }, []);
@@ -172,22 +161,6 @@ function CommsPropertyApp({ pid }: { pid: string | null }) {
     `/api/comms/bootstrap?pid=${encodeURIComponent(pid ?? '')}`,
     { pollMs: 8000, keepDataOnError: true, enabled: !!pid },
   );
-  // The full worklist is substantially heavier than the Communications
-  // bootstrap. Fetch it only when the To-do list is actually visible; a
-  // sidebar badge is not worth putting it on every cold navigation's blocking
-  // request graph. The To-do calendar is an independent resource.
-  const worklistEnabled = !!pid && mode === 'todo' && todoView === 'list';
-  const { data: worklistData, loading: worklistRequestLoading, error: worklistError, reload: loadWorklist } = useCommsResource<{ items: WorklistItem[] }>(
-    `/api/worklist?pid=${encodeURIComponent(pid ?? '')}`,
-    { pollMs: worklistEnabled ? 15000 : undefined, keepDataOnError: true, enabled: worklistEnabled },
-  );
-  const worklist = worklistData?.items ?? [];
-  // `enabled` flips in an effect inside the resource hook. Cover the render
-  // before that effect starts the request so To-do never flashes a false
-  // empty state while its first lazy read is pending.
-  const worklistLoading = worklistRequestLoading
-    || (worklistEnabled && worklistData == null && worklistError == null);
-
   const selConvo = boot?.conversations.find((c) => c.id === selId) ?? null;
   const online = React.useMemo(() => new Set(boot?.onlineStaffIds ?? []), [boot?.onlineStaffIds]);
 
@@ -303,10 +276,12 @@ function CommsPropertyApp({ pid }: { pid: string | null }) {
     setMutationError(null);
     const r = await apiPost('/api/comms/tasks', { pid, title: (m.originalBody || m.body).slice(0, 200) || 'Message task', sourceMessageId: m.id });
     if (!r.ok) { actionFailed('Could not turn this message into a task. Please try again.'); return; }
-    // Enabling the list resource starts exactly one initial load. Calling its
-    // reload callback while it is still disabled is a no-op and used to pair
-    // with an eager request; select the list and let the resource own loading.
-    setMode('todo'); setTodoView('list'); setThreadParent(null); setPanel(null);
+    // The to-do it just created lives on the Staxis list now, so this used to
+    // switch to a nav item that no longer exists. Say where it went rather than
+    // navigating away mid-conversation: the person is reading a thread, and
+    // yanking them to another tab to look at a row they already know about is
+    // the more annoying of the two wrong answers.
+    setTaskNotice('Added to your Staxis list.');
   };
   const openDm = async (staffId: string) => {
     if (!pid) return;
@@ -343,7 +318,6 @@ function CommsPropertyApp({ pid }: { pid: string | null }) {
   const channels = conversations.filter((c) => c.kind === 'channel');
   const dms = conversations.filter((c) => c.kind === 'dm');
   const onShiftCount = (boot?.onlineStaffIds ?? []).filter((id) => id !== boot?.me.staffId).length;
-  const openItems = worklistEnabled && worklistData ? worklist.length : undefined;
 
   const right = mode === 'chats'
     ? (threadParent && selConvo
@@ -363,7 +337,7 @@ function CommsPropertyApp({ pid }: { pid: string | null }) {
       {/* ── Sidebar ── */}
       <aside className="comms-sidebar" style={{ width: 272, background: T.bg, borderRight: `1px solid ${T.hair}`, display: 'flex', flexDirection: 'column', flexShrink: 0, overflow: 'hidden' }}>
         <div style={{ padding: '14px 14px 10px', borderBottom: `1px solid ${T.hairSoft}` }}>
-          <div style={{ fontFamily: SANS, fontWeight: 700, fontSize: 16, color: T.ink }}>{'Communications'}</div>
+          <div style={{ fontFamily: SANS, fontWeight: 700, fontSize: 16, color: T.ink }}>{'Messages'}</div>
           <div style={{ fontFamily: SANS, fontSize: 11.5, color: T.dim, display: 'flex', alignItems: 'center', gap: 5, marginTop: 2 }}>
             <Presence on={onShiftCount > 0} size={7} /> {`${onShiftCount} on shift`}
           </div>
@@ -376,8 +350,6 @@ function CommsPropertyApp({ pid }: { pid: string | null }) {
         </div>
 
         <div style={{ flex: 1, overflowY: 'auto', paddingTop: 4, paddingBottom: 14 }}>
-          <NavItem icon={<ListTodo size={17} />} label={'To-do'} active={mode === 'todo'} onClick={() => switchMode('todo')} badge={openItems || undefined} />
-          <NavItem icon={<Notebook size={17} />} label={'Log book'} active={mode === 'logbook'} onClick={() => switchMode('logbook')} />
 
           <SidebarSection label={'Announcements'} onAdd={() => setSearchOpen(true)} tip={'Post an announcement'} />
           {announce.map((c) => <ConvoRow key={c.id} c={c} active={mode === 'chats' && c.id === selId} online={online} onClick={() => selectConversation(c.id)} L={L} />)}
@@ -411,8 +383,6 @@ function CommsPropertyApp({ pid }: { pid: string | null }) {
               {right}
             </>
           )}
-          {mode === 'todo' && <TodoMode pid={pid} items={worklist} staff={boot.staff ?? []} isManager={!!boot.me.isManager} view={todoView} onViewChange={setTodoView} L={L} reload={loadWorklist} loading={worklistLoading} error={worklistError} />}
-          {mode === 'logbook' && <LogbookMode key={pid} pid={pid} meName={boot.me.displayName ?? 'You'} L={L} />}
         </div>
       </div>
 

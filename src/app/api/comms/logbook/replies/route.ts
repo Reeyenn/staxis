@@ -11,7 +11,7 @@ import type { NextRequest } from 'next/server';
 import { ok, err, ApiErrorCode } from '@/lib/api-response';
 import { validateUuid, validateString } from '@/lib/api-validate';
 import { checkAndIncrementRateLimit, rateLimitedResponse, hashToRateLimitKey } from '@/lib/api-ratelimit';
-import { commsContext } from '@/lib/comms/route-helpers';
+import { commsContext, ONE_LIST_CTX } from '@/lib/comms/route-helpers';
 import { listLogReplies, createLogReply } from '@/lib/comms/core';
 
 export const runtime = 'nodejs';
@@ -19,7 +19,7 @@ export const dynamic = 'force-dynamic';
 
 export async function GET(req: NextRequest): Promise<Response> {
   const { searchParams } = new URL(req.url);
-  const ctx = await commsContext(req, searchParams.get('pid'));
+  const ctx = await commsContext(req, searchParams.get('pid'), ONE_LIST_CTX);
   if (!ctx.ok) return ctx.response;
 
   const idV = validateUuid(searchParams.get('entryId'), 'entryId');
@@ -37,7 +37,7 @@ export async function POST(req: NextRequest): Promise<Response> {
   let body: { pid?: string; entryId?: string; body?: string };
   try { body = await req.json(); } catch { body = {}; }
 
-  const ctx = await commsContext(req, body.pid ?? null);
+  const ctx = await commsContext(req, body.pid ?? null, ONE_LIST_CTX);
   if (!ctx.ok) return ctx.response;
 
   const idV = validateUuid(body.entryId, 'entryId');

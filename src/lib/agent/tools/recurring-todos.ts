@@ -1,6 +1,7 @@
 // ─── Recurring to-do tools ─────────────────────────────────────────────────
 //
-// Daily/weekly checklists that reappear as normal to-dos. Backed by
+// Daily, weekly, biweekly and monthly checklists that reappear as normal
+// to-dos. Backed by
 // recurring_task_templates (migration 0303) + src/lib/recurring-tasks/store.ts.
 // The process-agent-schedules cron materializes each due active template
 // into a plain comms_tasks row, so the to-do pane shows recurring instances
@@ -51,6 +52,7 @@ interface CreateRecurringTodoArgs {
   title: string;
   cadence: string;
   weekday?: string | number;
+  dayOfMonth?: number;
   assignee?: string;
   department?: string;
   priority?: string;
@@ -61,15 +63,16 @@ registerTool<CreateRecurringTodoArgs>({
   description:
     'Set up a repeating checklist item — a to-do that comes back on the shared list every time it is due. ' +
     'Use when: the user describes a routine, not a one-off — "every morning check the pool chemicals", "every Monday deep-clean the lobby", "cada día revisar el desayuno". A single task is create_todo; a message at one future time is create_reminder. ' +
-    'Args: title — what the task says, capped at 200 characters. cadence — "daily", "weekdays" (Mon–Fri) or "weekly". weekday — required for weekly; a day name like "Monday" or 0–6 with 0 = Sunday. assignee — optional person by name. department — optional. priority — normal (default), high or urgent. ' +
+    'Args: title — what the task says, capped at 200 characters. cadence — "daily", "weekdays" (Mon–Fri), "weekly", "biweekly" (every other week) or "monthly". weekday — required for weekly and biweekly; a day name like "Monday" or 0–6 with 0 = Sunday. dayOfMonth — required for monthly; 1 to 28. assignee — optional person by name. department — optional. priority — normal (default), high or urgent. ' +
     'Returns: the template id, its title, cadence and target. A proposal until the manager approves the card. ' +
     'Refuses: an empty title, a cadence it does not recognise, a weekly item with no weekday, and an assignee matching several people. Two things to be straight about: this creates the RULE, not today\'s task — nothing appears until the next time it is due — and it notifies nobody when it spawns. Stopping it later needs stop_recurring_todo; to-dos already spawned stay on the list.',
   inputSchema: {
     type: 'object',
     properties: {
       title: { type: 'string', description: 'What the recurring task says. Max 200 chars.' },
-      cadence: { type: 'string', enum: [...RECURRING_CADENCES], description: 'daily, weekdays (Mon–Fri), or weekly.' },
-      weekday: { type: 'string', description: 'For weekly cadence — the day, e.g. "Monday" or 0–6 (0=Sunday).' },
+      cadence: { type: 'string', enum: [...RECURRING_CADENCES], description: 'daily, weekdays (Mon–Fri), weekly, biweekly (every other week), or monthly.' },
+      weekday: { type: 'string', description: 'For weekly and biweekly cadence — the day, e.g. "Monday" or 0–6 (0=Sunday).' },
+      dayOfMonth: { type: 'number', description: 'For monthly cadence — which day of the month, 1 to 28.' },
       assignee: { type: 'string', description: 'Optional staff member to assign it to, by name.' },
       department: { type: 'string', enum: [...RECURRING_DEPARTMENTS], description: 'Optional department to assign it to.' },
       priority: { type: 'string', enum: [...PRIORITIES], description: 'Optional priority. Defaults to normal.' },
@@ -79,17 +82,24 @@ registerTool<CreateRecurringTodoArgs>({
   allowedRoles: ['admin', 'owner', 'general_manager'],
   mutates: true,
   approval: 'card',
-  handler: async ({ title, cadence, weekday, assignee, department, priority }, ctx: ToolHandlerContext): Promise<ToolResult> => {
+  handler: async ({ title, cadence, weekday, dayOfMonth, assignee, department, priority }, ctx: ToolHandlerContext): Promise<ToolResult> => {
     const cleanTitle = String(title ?? '').trim().slice(0, 200);
     if (!cleanTitle) return { ok: false, error: 'Give the recurring to-do a short title.' };
 
     const cad = (RECURRING_CADENCES as readonly string[]).includes(cadence) ? (cadence as RecurringCadence) : null;
-    if (!cad) return { ok: false, error: 'Say how often it repeats: daily, weekdays, or weekly.' };
+    if (!cad) return { ok: false, error: 'Say how often it repeats: daily, weekdays, weekly, biweekly, or monthly.' };
 
     let wd: number | null = null;
-    if (cad === 'weekly') {
+    if (cad === 'weekly' || cad === 'biweekly') {
       wd = parseWeekday(weekday);
-      if (wd === null) return { ok: false, error: 'For a weekly to-do, tell me which day (e.g. "every Monday").' };
+      if (wd === null) return { ok: false, error: 'For a weekly or biweekly to-do, tell me which day (e.g. "every Monday").' };
+    }
+    let dom: number | null = null;
+    if (cad === 'monthly') {
+      dom = Number.isInteger(dayOfMonth) ? Number(dayOfMonth) : NaN;
+      if (!Number.isInteger(dom) || dom! < 1 || dom! > 28) {
+        return { ok: false, error: 'For a monthly to-do, tell me which day of the month, 1 to 28.' };
+      }
     }
 
     const dept = department && (RECURRING_DEPARTMENTS as readonly string[]).includes(department) ? department : null;
@@ -114,7 +124,7 @@ registerTool<CreateRecurringTodoArgs>({
     }
 
     if (ctx.dryRun) {
-      return { ok: true, data: { dryRun: true, title: cleanTitle, cadence: cad, weekday: wd, assignee: assignedName, department: dept, priority: prio } };
+      return { ok: true, data: { dryRun: true, title: cleanTitle, cadence: cad, weekday: wd, dayOfMonth: dom, assignee: assignedName, department: dept, priority: prio } };
     }
 
     try {
@@ -127,6 +137,7 @@ registerTool<CreateRecurringTodoArgs>({
         priority: prio,
         cadence: cad,
         weekday: wd,
+        dayOfMonth: dom,
       });
       return {
         ok: true,
@@ -135,6 +146,7 @@ registerTool<CreateRecurringTodoArgs>({
           title: cleanTitle,
           cadence: cad,
           weekday: wd,
+          dayOfMonth: dom,
           weekdayName: wd !== null ? WEEKDAY_NAMES[wd] : null,
           assignee: assignedName,
           department: dept,
