@@ -20,6 +20,7 @@
 
 import Link from 'next/link';
 import { useEffect, useRef, useState } from 'react';
+import { PMS_ROBOT_ENABLED } from '@/lib/pms/robot-status';
 
 /* ------------------------------------------------------------------ */
 /* ChevronMark — the real in-app logo (src/components/layout/Header)  */
@@ -41,7 +42,7 @@ function ChevronMark({ size = 26, color = '#1A1F1B' }: { size?: number; color?: 
 }
 
 /* ------------------------------------------------------------------ */
-/* Live ops feed — deterministic script, cycles forever               */
+/* Operations preview — the retired live animation stays flag-gated. */
 /* ------------------------------------------------------------------ */
 
 type FeedItem = {
@@ -52,7 +53,7 @@ type FeedItem = {
 };
 
 const FEED_SCRIPT: FeedItem[] = [
-  { time: '6:02 AM', icon: '◉', text: 'Read 42 arrivals + 38 departures from your PMS', tone: 'info' },
+  { time: '6:02 AM', icon: '◉', text: 'Latest PMS data: 42 arrivals + 38 departures', tone: 'info' },
   { time: '6:02 AM', icon: '✓', text: 'Maria confirmed for today: “¡Sí!”', tone: 'ok' },
   { time: '6:03 AM', icon: '⚡', text: 'Housekeeping board built, 31 rooms assigned', tone: 'ok' },
   { time: '6:07 AM', icon: '▲', text: 'Towels running low, reorder drafted', tone: 'warn' },
@@ -238,7 +239,10 @@ function ChipDemo({ id, sub }: { id: string; sub: number }) {
             <span className="xb-light">Tomorrow →</span>
           </div>
           <div className="ap-card x-pmsstrip">
-            <div className="x-stat first"><span>LATEST PMS PULL ⚙</span><b className="sm">2m ago</b></div>
+            <div className="x-stat first">
+              <span>{PMS_ROBOT_ENABLED ? 'LATEST PMS PULL ⚙' : 'LATEST PMS DATA'}</span>
+              <b className="sm">{PMS_ROBOT_ENABLED ? '2m ago' : 'Today · 6:02 AM'}</b>
+            </div>
             <div className="x-stat"><span>IN HOUSE</span><b>42</b></div>
             <div className="x-stat"><span>ARRIVALS</span><b>8</b></div>
             <div className="x-stat"><span>DEPARTURES</span><b>6</b></div>
@@ -630,10 +634,10 @@ export default function MarketingLanding() {
   const notifRef = useRef<HTMLDivElement>(null);
   const orbitRef = useRef<HTMLDivElement>(null);
 
-  /* ticking ops feed */
+  /* The ticking preview belonged to the retired robot experience. */
   useEffect(() => {
     const reduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
-    if (reduced) return;
+    if (!PMS_ROBOT_ENABLED || reduced) return;
     const id = setInterval(() => {
       const idx = feedIdx.current;
       feedIdx.current += 1;
@@ -779,9 +783,8 @@ export default function MarketingLanding() {
             <span className="line"><span className="w" style={{ animationDelay: '.22s' }}>for&nbsp;hotels.</span></span>
           </h1>
           <p className="lede rise" style={{ animationDelay: '.42s' }}>
-            Hotel operations that finally run themselves. Staxis handles the
-            busywork around the clock and only taps you when something needs a
-            person.
+            Hotel operations that stay organized. Staxis handles the daily
+            busywork and only taps you when something needs a person.
           </p>
           <div className="cta-row rise" style={{ animationDelay: '.55s' }}>
             <a className="btn btn-solid btn-lg" href="#contact">Request a demo</a>
@@ -795,7 +798,11 @@ export default function MarketingLanding() {
           <div className="console-head">
             <span className="dot r" /><span className="dot y" /><span className="dot g" />
             <span className="console-title">STAXIS · OPS CONSOLE</span>
-            <span className="console-live"><span className="pulse-dot" />WATCHING</span>
+            {PMS_ROBOT_ENABLED ? (
+              <span className="console-live"><span className="pulse-dot" />WATCHING</span>
+            ) : (
+              <span className="console-live">OPERATIONS PREVIEW</span>
+            )}
           </div>
           <div className="console-body">
             <div className="room-board">
@@ -816,7 +823,7 @@ export default function MarketingLanding() {
           <div className="console-foot">
             <span>ALL FEEDS HEALTHY</span>
             <span className="foot-sep">·</span>
-            <span>ALWAYS WATCHING</span>
+            <span>{PMS_ROBOT_ENABLED ? 'ALWAYS WATCHING' : 'LATEST DAILY VIEW'}</span>
             <span className="foot-sep">·</span>
             <span>EN / ES</span>
           </div>
@@ -832,7 +839,7 @@ export default function MarketingLanding() {
               <span>Work orders</span><i>✦</i>
               <span>Inventory that reorders itself</span><i>✦</i>
               <span>Daily staff texts</span><i>✦</i>
-              <span>Room status, live</span><i>✦</i>
+              <span>Room status in one place</span><i>✦</i>
               <span>Labor cost tracking</span><i>✦</i>
               <span>Voice copilot</span><i>✦</i>
               <span>Bilingual by default</span><i>✦</i>
@@ -990,7 +997,7 @@ export default function MarketingLanding() {
                 '▲ Higher labor costs',
                 'Hours lost walking and checking',
                 'Budget surprises at month end',
-                'Nights and weekends unwatched',
+                'No clear view after hours',
               ].map((o, i) => (
                 <span className="oc bad rv" key={o} style={{ transitionDelay: `${i * 110}ms` }}>{o}</span>
               ))}
@@ -1036,12 +1043,12 @@ export default function MarketingLanding() {
               only brings you the decision.
             </p>
             <div className="dream-extra">
-              <div className="de-h">ALSO HANDLED, WHILE YOU SLEPT</div>
+              <div className="de-h">ALSO READY FOR YOUR DAY</div>
               {[
                 'Tomorrow’s cleaning board built',
                 'AC ticket sent to maintenance',
                 'Breakfast coffee reorder drafted',
-                'Every room status up to date',
+                'Latest room status in one place',
               ].map((d, i) => (
                 <div className="de-item rv" key={d} style={{ transitionDelay: `${300 + i * 140}ms` }}>
                   <span className="de-check">✓</span>{d}
@@ -1053,7 +1060,7 @@ export default function MarketingLanding() {
                 '▼ Lower labor costs',
                 'Hours back, every single week',
                 'Budget checked before every order',
-                'Watched around the clock',
+                'Clear daily visibility',
               ].map((o, i) => (
                 <span className="oc good rv" key={o} style={{ transitionDelay: `${i * 110}ms` }}>{o}</span>
               ))}
@@ -1074,18 +1081,25 @@ export default function MarketingLanding() {
             <h3>Autonomous</h3>
             <div className="tier-tag">It just does it.</div>
             <div className="tier-visual">
-              <span className="pulse-dot" />
-              <span className="tv-mono">WATCHING · 24/7</span>
+              {PMS_ROBOT_ENABLED && <span className="pulse-dot" />}
+              <span className="tv-mono">{PMS_ROBOT_ENABLED ? 'WATCHING · 24/7' : 'LATEST OPERATIONS DATA'}</span>
               <span className="tv-line">✓ board built · 31 rooms</span>
             </div>
-            {[
+            {(PMS_ROBOT_ENABLED ? [
               'Watches your property system day and night',
               'Housekeeping boards built every morning',
               'Live room status, all day',
               'A log book that writes itself',
               'Labor costs tracked daily',
               'Staff texted in their language',
-            ].map((t, i) => (
+            ] : [
+              'Uses your latest property-system data',
+              'Housekeeping boards built every morning',
+              'Room status in one place',
+              'A log book that writes itself',
+              'Labor costs tracked daily',
+              'Staff texted in their language',
+            ]).map((t, i) => (
               <div className="tier-item rv" key={t} style={{ transitionDelay: `${i * 60}ms` }}>
                 <span className="de-check">✓</span>{t}
               </div>
@@ -1147,7 +1161,7 @@ export default function MarketingLanding() {
       <section className="cta-panel rv" id="contact">
         <div className="cta-inner">
           <div className="kicker">SEE IT ON YOUR HOTEL</div>
-          <h2>Watch Staxis run <em>your</em> property.</h2>
+          <h2>See Staxis organize <em>your</em> property.</h2>
           <p>
             A walkthrough with the founder, on your own hotel&rsquo;s data.
             No contract, no setup fee to look.

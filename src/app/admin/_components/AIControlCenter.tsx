@@ -1101,7 +1101,7 @@ export function AIControlCenter() {
                 <h2 id="ai-control-title" className={styles.title}>AI Control Center</h2>
                 <p id="ai-control-description" className={styles.intro}>
                   App AI features controlled here, with active models, fallbacks, pricing, and change history.
-                  PMS onboarding, the entire PMS/CUA mapping system, and Knowledge OCR are managed elsewhere and explicitly excluded.
+                  Core operational workflows and Knowledge OCR are managed elsewhere and explicitly excluded.
                 </p>
                 <div className={styles.headerMeta}>
                   <StatusChip tone="good">{activeCount} on</StatusChip>

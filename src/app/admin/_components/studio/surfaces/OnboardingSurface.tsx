@@ -27,6 +27,7 @@ import {
 } from '../kit';
 import { SurfaceShell, DarkEmpty, Backdrop, MODAL_CARD, dimWhite as dim } from '../surface-kit';
 import { RowButton } from '../ui-kit';
+import { PMS_ROBOT_ENABLED } from '@/lib/pms/robot-status';
 
 // ── Real API shapes (mirror the prior OnboardingTab interfaces) ─────────
 interface OnbState {
@@ -165,7 +166,7 @@ function Reveal({ open, children }: { open: boolean; children: React.ReactNode }
 
 export function OnboardingSurface() {
   const [props, setProps] = useState<PropertyRow[] | null>(null);
-  const [pms, setPms] = useState<PMSCoverage[] | null>(null);
+  const [pms, setPms] = useState<PMSCoverage[] | null>(PMS_ROBOT_ENABLED ? null : []);
   const [prospects, setProspects] = useState<Prospect[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [mapsOpen, setMapsOpen] = useState(false);
@@ -180,12 +181,12 @@ export function OnboardingSurface() {
     try {
       const [a, c, d] = await Promise.all([
         fetchWithAuth('/api/admin/list-properties'),
-        fetchWithAuth('/api/admin/pms-coverage'),
+        PMS_ROBOT_ENABLED ? fetchWithAuth('/api/admin/pms-coverage') : Promise.resolve(null),
         fetchWithAuth('/api/admin/prospects'),
       ]);
-      const [aj, cj, dj] = await Promise.all([a.json(), c.json(), d.json()]);
+      const [aj, cj, dj] = await Promise.all([a.json(), c ? c.json() : null, d.json()]);
       if (aj.ok) setProps(aj.data.properties);
-      if (cj.ok) setPms(cj.data.pmsTypes);
+      if (PMS_ROBOT_ENABLED && cj?.ok) setPms(cj.data.pmsTypes);
       if (dj.ok) setProspects(dj.data.prospects);
     } catch (err) {
       setError(`Network error: ${(err as Error).message}`);
@@ -221,7 +222,7 @@ export function OnboardingSurface() {
   };
 
   if (error) return <SurfaceShell glow="forestTR"><div style={{ color: 'var(--terracotta)', fontSize: 13 }}>{error}</div></SurfaceShell>;
-  if (!props || !pms) {
+  if (!props || (PMS_ROBOT_ENABLED && !pms)) {
     return <SurfaceShell glow="forestTR"><div style={{ padding: '80px 0', textAlign: 'center' }}><span className="spinner" style={{ width: 22, height: 22, display: 'inline-block', borderTopColor: '#fff' }} /></div></SurfaceShell>;
   }
 
@@ -240,7 +241,7 @@ export function OnboardingSurface() {
   // Show every learned PMS, PLUS any family with a freshly-learned map parked
   // for review (even before it has an active map) so the "needs review" signal
   // never hides behind an empty active list.
-  const learnedPms = pms.filter((p) => p.recipe !== null || p.pendingReview);
+  const learnedPms = (pms ?? []).filter((p) => p.recipe !== null || p.pendingReview);
   const activeProspects = (prospects ?? []).filter((p) => p.status !== 'onboarded' && p.status !== 'dropped');
 
   return (
@@ -252,9 +253,9 @@ export function OnboardingSurface() {
             Everything <span style={{ fontStyle: 'italic' }}>inbound to live</span>
           </h1>
         </div>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+        {PMS_ROBOT_ENABLED && <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
           <Btn variant="ghost" size="lg" href="/admin/pms-inbox" style={{ color: '#fff', borderColor: dim(.3), background: dim(.06) }}>PMS inbox</Btn>
-        </div>
+        </div>}
       </header>
 
       {/* ── Live onboarding journey — one rail per hotel, fills as they move ── */}
@@ -317,9 +318,8 @@ export function OnboardingSurface() {
         </div>
       )}
 
-      {/* PMS maps · Prospects */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(300px,1fr))', gap: 16, marginTop: 26, position: 'relative' }}>
-        <div>
+      <div style={{ display: 'grid', gridTemplateColumns: PMS_ROBOT_ENABLED ? 'repeat(auto-fit,minmax(300px,1fr))' : '1fr', gap: 16, marginTop: 26, position: 'relative' }}>
+        {PMS_ROBOT_ENABLED && <div>
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
             <span className="caps" style={{ color: dim(.5) }}>PMS maps</span>
             <button
@@ -334,7 +334,7 @@ export function OnboardingSurface() {
               ? <DarkEmpty text="No PMSes learned yet." />
               : learnedPms.map((p) => <BayPms key={p.pmsType} pms={p} onClick={() => setSelPms(p)} />)}
           </div>
-        </div>
+        </div>}
         <div>
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
             <span className="caps" style={{ color: dim(.5) }}>Prospects</span>
@@ -348,8 +348,8 @@ export function OnboardingSurface() {
         </div>
       </div>
 
-      {selPms && <PmsDetail pms={selPms} onClose={() => setSelPms(null)} onRepaired={load} />}
-      <MapsManagerModal open={mapsOpen} onClose={() => setMapsOpen(false)} />
+      {PMS_ROBOT_ENABLED && selPms && <PmsDetail pms={selPms} onClose={() => setSelPms(null)} onRepaired={load} />}
+      {PMS_ROBOT_ENABLED && <MapsManagerModal open={mapsOpen} onClose={() => setMapsOpen(false)} />}
     </SurfaceShell>
   );
 }
@@ -985,7 +985,7 @@ function ProspectModal({ p, onClose, onSaved }: { p: Prospect; onClose: () => vo
         </label>
         <div style={{ marginTop: 12 }}><Caps size={9}>Launch checklist</Caps>
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 6, marginTop: 6 }}>
-            {CHECKLIST.map((c) => {
+            {CHECKLIST.filter((c) => PMS_ROBOT_ENABLED || c.key !== 'pmsCredsCollected').map((c) => {
               const on = !!d.checklist?.[c.key];
               return (
                 <label key={c.key} style={{ display: 'flex', alignItems: 'center', gap: 7, padding: '7px 10px', borderRadius: 999, fontSize: 12, cursor: 'pointer', background: on ? 'var(--forest-dim)' : 'var(--rule-soft)', border: `1px solid ${on ? 'rgba(60,156,104,.3)' : 'var(--rule)'}`, color: on ? 'var(--forest-deep)' : 'var(--dim)' }}>

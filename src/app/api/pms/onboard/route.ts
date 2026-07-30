@@ -33,6 +33,7 @@ import { accountCanForProperty } from '@/lib/team-auth';
 import { ok, err, ApiErrorCode } from '@/lib/api-response';
 import { log, getOrMintRequestId } from '@/lib/log';
 import { validateUuid } from '@/lib/api-validate';
+import { robotDecommissionedResponse } from '@/lib/pms/decommission';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -47,6 +48,9 @@ export async function POST(req: NextRequest) {
 
   const session = await requireSession(req);
   if (!session.ok) return session.response;
+
+  const robotOff = robotDecommissionedResponse(requestId);
+  if (robotOff) return robotOff;
 
   const body = (await req.json().catch(() => null)) as Body | null;
   if (!body) {

@@ -39,6 +39,7 @@ import { log } from './log.js';
 import { recordSpend } from './cost-cap.js';
 import { getJobCostMicros } from './usage-log.js';
 import { env } from './env.js';
+import { PMS_ROBOT_ENABLED } from './robot-status.js';
 import type { SessionSupervisor } from './session-supervisor.js';
 
 const POLL_INTERVAL_MS = 5_000;
@@ -159,9 +160,9 @@ export class WorkflowRuntime {
     // that dispatches mapper.learn_pms_family / doc_ocr — i.e. the path that
     // actually spends Claude money. index.ts parks before reaching it; this
     // guard covers any other caller.
-    if (env.CUA_DECOMMISSIONED === 'true') {
-      log.warn('workflow-runtime: refusing to start — CUA_DECOMMISSIONED', {
-        revive: 'set CUA_DECOMMISSIONED=false in cua-service/fly.toml, then fly deploy',
+    if (!PMS_ROBOT_ENABLED || env.CUA_DECOMMISSIONED === 'true') {
+      log.warn('workflow-runtime: refusing to start — PMS robot disabled', {
+        status: 'retired PMS browser robot is compile-time disabled',
       });
       return;
     }

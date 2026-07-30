@@ -1,7 +1,12 @@
-# Staxis PMS auth-code inbox — Cloudflare Email Worker
+# Staxis PMS report inbox — Cloudflare Email Worker
 
-Receives the Okta mail for the CUA robot's PMS login and forwards each message to
-the Staxis webhook. One Worker serves every hotel via a **catch-all** on the
+> The browser robot's Okta auth-code path is retired. The Worker remains a
+> thin courier because it also carries scheduled PMS reports; authenticated
+> auth-code recipients are accepted and dropped by the webhook without a
+> database write while `PMS_ROBOT_ENABLED` is false.
+
+Receives PMS inbox mail and forwards each message to the Staxis webhook. One
+Worker serves every hotel via a **catch-all** on the
 `getstaxis.com` **apex** — `<propertycode>@getstaxis.com` (Beaumont =
 `txa32@getstaxis.com`). The inbox lives on the apex because Choice's Okta user
 form rejects subdomained emails (`…@pms.getstaxis.com` → "Enter a valid email").
@@ -12,8 +17,8 @@ Okta → txa32@getstaxis.com → Cloudflare Email Routing (apex catch-all)
      → POST {to,from,subject,text,html,messageId,ts,dkim,spf,dmarc,dkimDomain}
        + Authorization: Bearer <PMS_INBOX_WEBHOOK_SECRET>
      → https://getstaxis.com/api/pms-inbox/inbound
-       → pms_inbox_messages  (full email + account-setup links, migration 0275)
-       → pms_auth_codes       (6-digit codes for the robot,       migration 0274)
+       → report recipient: report ledger + attachment upload handshake
+       → old auth recipient: accepted and dropped while the robot is retired
 ```
 
 The Worker is a **thin courier**. Every security decision (sender allowlist,
@@ -121,7 +126,7 @@ leave; remove its MX/TXT/`_dmarc` records later if you want to tidy up.
 - **Secret** is a Cloudflare secret + a Vercel env var; rotate via the webhook's
   `PMS_INBOX_WEBHOOK_SECRET_NEXT` slot (accepts either during the overlap).
 
-## ⚠️ Empirical-verification step (do this against a real Okta email)
+## Historical robot-auth verification (retained, inactive)
 
 The verdict is parsed from Cloudflare's `Authentication-Results` header. Confirm,
 with `npx wrangler tail` while a real Okta code email arrives, that:

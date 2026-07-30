@@ -6,7 +6,7 @@ export const dynamic = 'force-static';
 export const metadata: Metadata = {
   title: 'Staxis · AI operations for hotels',
   description:
-    'Staxis is an AI operations platform for limited and select-service hotels. It watches your property systems around the clock and turns what it sees into housekeeping schedules, work orders, and supply reorders, automatically.',
+    'Staxis is an AI operations platform for limited and select-service hotels. It turns available hotel data into housekeeping schedules, work orders, and supply reorders.',
 };
 
 export default function LandingPage() {

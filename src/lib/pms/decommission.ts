@@ -1,5 +1,5 @@
 /**
- * PMS robot (CUA) decommission switch — ONE place the whole app agrees on.
+ * PMS browser robot (CUA) retirement switch — one place the app agrees on.
  *
  * ─── What was decommissioned, and why ────────────────────────────────────
  * `cua-service/` is the 24/7 Playwright + Claude-vision worker (Fly app
@@ -11,29 +11,24 @@
  * tokens and a Fly machine, and it makes the health dashboard lie.
  *
  * ─── Disable, do NOT delete ──────────────────────────────────────────────
- * Every line of robot code is deliberately KEPT. This flag is the single
- * gate: while it is `true`, nothing may spawn robot work and nothing may
- * claim to be monitoring a live robot.
+ * The implementation is deliberately kept for historical reference. This
+ * compile-time product switch is the single web-app gate: while false, no
+ * route may expose robot-only state, store robot credentials, mutate a robot
+ * session, or enqueue work for the retired worker.
  *
- * ─── To bring the robot back ─────────────────────────────────────────────
- *   1. Flip `CUA_DECOMMISSIONED` to `false` here (re-arms the pull-enqueue
- *      cron route + the three cua_* doctor checks).
- *   2. Set `CUA_DECOMMISSIONED = "false"` in `cua-service/fly.toml` `[env]`,
- *      then `fly deploy` from `cua-service/` (the worker parks itself at boot
- *      while that var is unset or 'true' — see cua-service/src/index.ts).
- *   3. Re-add a `schedule:` block on a 15-minute cron to
- *      `.github/workflows/pull-jobs-cron.yml`.
- * Full checklist: `cua-service/README.md`.
+ * There is intentionally no supported configuration-only re-enable path.
+ * Reintroducing browser automation would be a new product/architecture
+ * decision and must include a coordinated implementation and review.
  */
 
 import { NextResponse } from 'next/server';
 import { err, ApiErrorCode } from '@/lib/api-response';
+import { PMS_ROBOT_ENABLED } from '@/lib/pms/robot-status';
 
 /**
- * `true` = the robot is decommissioned. Flip to `false` to re-arm the app
- * side (step 1 above). Deliberately a compile-time constant, not an env var:
- * an env var can be set by accident on one platform and drift; a constant
- * means "the robot is off" is visible in the diff and reviewable.
+ * Legacy inverse kept for older server-only callers. The authoritative switch
+ * is the client-safe compile-time constant in `robot-status.ts`; it is not an
+ * environment variable that can drift between deployments.
  *
  * Annotated `: boolean` on purpose. Without it the inferred type is the
  * literal `true`, which makes TypeScript treat every guarded branch as
@@ -41,17 +36,15 @@ import { err, ApiErrorCode } from '@/lib/api-response';
  * "unreachable" noise across the files that read it. `boolean` keeps the flip
  * a genuine one-line change.
  */
-export const CUA_DECOMMISSIONED: boolean = true;
+export const CUA_DECOMMISSIONED: boolean = !PMS_ROBOT_ENABLED;
 
 /** One-line human explanation, reused by every surface that reports it. */
 export const CUA_DECOMMISSION_REASON =
-  'PMS robot decommissioned 2026-07-25 — PMS data arrives by scheduled report email now. Code kept, disabled.';
+  'The PMS browser robot is retired. PMS data arrives by scheduled report email; the old robot code is retained but disabled.';
 
-/** How an operator turns it back on. Shown in doctor `fix` fields. */
+/** Honest operator guidance shown in legacy doctor `fix` fields. */
 export const CUA_DECOMMISSION_REVIVE_HINT =
-  'To re-arm: set CUA_DECOMMISSIONED=false in src/lib/pms/decommission.ts AND in ' +
-  'cua-service/fly.toml (then fly deploy), and restore the schedule: block in ' +
-  '.github/workflows/pull-jobs-cron.yml. See cua-service/README.md.';
+  'There is no supported configuration-only re-enable path. Reintroducing browser automation requires an explicit product and architecture review.';
 
 export type DecommissionVerdict = {
   status: 'ok';
@@ -80,7 +73,7 @@ export function decommissionedCheck(what: string): DecommissionVerdict {
 }
 
 /**
- * The admin-facing refusal for a button that would have queued robot work.
+ * The authenticated refusal for any robot-only route or action.
  *
  * ─── The bug this closes (2026-07-27 chore audit) ────────────────────────
  * Seven admin routes INSERT into `workflow_jobs`. The only consumer of that
@@ -112,16 +105,15 @@ export function decommissionedCheck(what: string): DecommissionVerdict {
  * written, why, and that the work still needs doing another way.
  */
 export const CUA_DECOMMISSIONED_ADMIN_MESSAGE =
-  'Nothing was queued. The PMS robot is switched off, so this job would sit in the ' +
-  'queue forever with nobody to run it. ' + CUA_DECOMMISSION_REASON;
+  'The PMS browser robot is unavailable. No robot data was returned and no robot action was performed. ' +
+  CUA_DECOMMISSION_REASON;
 
 /**
- * Guard for any admin route that would enqueue `workflow_jobs`. Returns a ready
- * 503 response when the robot is off, or `null` to continue.
+ * Guard for an authenticated robot-only route. Returns a ready 503 response
+ * when the robot is off, or `null` to continue.
  *
- * Call it IMMEDIATELY after the auth gate and before any rate-limit
- * increment, cooldown stamp, audit write, or insert — see the note above on
- * why the ordering is the whole point.
+ * Call it immediately after the auth gate and before parsing request data or
+ * touching storage, rate limits, audit logs, or queues.
  *
  *   const robotOff = robotDecommissionedResponse(requestId);
  *   if (robotOff) return robotOff;
@@ -132,6 +124,6 @@ export function robotDecommissionedResponse(requestId: string): NextResponse | n
     requestId,
     status: 503,
     code: ApiErrorCode.RobotDecommissioned,
-    details: { decommissioned: true, revive: CUA_DECOMMISSION_REVIVE_HINT },
+    details: { decommissioned: true },
   });
 }

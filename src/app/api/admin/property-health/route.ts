@@ -28,6 +28,7 @@ import { requireAdmin } from '@/lib/admin-auth';
 import { ok, err, ApiErrorCode } from '@/lib/api-response';
 import { getOrMintRequestId } from '@/lib/log';
 import { validateUuid } from '@/lib/api-validate';
+import { PMS_ROBOT_ENABLED } from '@/lib/pms/robot-status';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -71,25 +72,27 @@ export async function GET(req: NextRequest): Promise<Response> {
         updatedAt: string;
       }
     | null = null;
-  try {
-    const { data: creds, error: credsErr } = await supabaseAdmin
-      .from('scraper_credentials')
-      .select('pms_type, ca_login_url, is_active, scraper_instance, created_at, updated_at')
-      .eq('property_id', pid)
-      .maybeSingle();
-    if (!credsErr && creds) {
-      const c = creds as Record<string, unknown>;
-      credentials = {
-        pmsType: String(c.pms_type ?? ''),
-        loginUrl: (c.ca_login_url as string | null) ?? null,
-        username: null,
-        isActive: (c.is_active as boolean | null) ?? false,
-        scraperInstance: (c.scraper_instance as string | null) ?? null,
-        createdAt: String(c.created_at ?? ''),
-        updatedAt: String(c.updated_at ?? ''),
-      };
-    }
-  } catch { credentials = null; }
+  if (PMS_ROBOT_ENABLED) {
+    try {
+      const { data: creds, error: credsErr } = await supabaseAdmin
+        .from('scraper_credentials')
+        .select('pms_type, ca_login_url, is_active, scraper_instance, created_at, updated_at')
+        .eq('property_id', pid)
+        .maybeSingle();
+      if (!credsErr && creds) {
+        const c = creds as Record<string, unknown>;
+        credentials = {
+          pmsType: String(c.pms_type ?? ''),
+          loginUrl: (c.ca_login_url as string | null) ?? null,
+          username: null,
+          isActive: (c.is_active as boolean | null) ?? false,
+          scraperInstance: (c.scraper_instance as string | null) ?? null,
+          createdAt: String(c.created_at ?? ''),
+          updatedAt: String(c.updated_at ?? ''),
+        };
+      }
+    } catch { credentials = null; }
+  }
 
   // ─── Active mapping recipe — v4 lives in pms_knowledge_files (was the
   //     deleted pms_recipes). One active file per PMS family. Best-effort. ─
@@ -97,7 +100,7 @@ export async function GET(req: NextRequest): Promise<Response> {
     | { id: string; version: number; status: string; learned_by_property_id: string | null; notes: string | null; created_at: string }
     | null = null;
   const family = credentials?.pmsType || (p.pms_type as string | null) || null;
-  if (family) {
+  if (PMS_ROBOT_ENABLED && family) {
     try {
       const { data: kf } = await supabaseAdmin
         .from('pms_knowledge_files')
@@ -124,15 +127,17 @@ export async function GET(req: NextRequest): Promise<Response> {
 
   // ─── Recent onboarding jobs (table + columns unchanged) ────────────────
   let jobs: unknown[] = [];
-  try {
-    const { data } = await supabaseAdmin
-      .from('onboarding_jobs')
-      .select('id, status, step, progress_pct, error, recipe_id, worker_id, created_at, started_at, completed_at')
-      .eq('property_id', pid)
-      .order('created_at', { ascending: false })
-      .limit(10);
-    jobs = data ?? [];
-  } catch { jobs = []; }
+  if (PMS_ROBOT_ENABLED) {
+    try {
+      const { data } = await supabaseAdmin
+        .from('onboarding_jobs')
+        .select('id, status, step, progress_pct, error, recipe_id, worker_id, created_at, started_at, completed_at')
+        .eq('property_id', pid)
+        .order('created_at', { ascending: false })
+        .limit(10);
+      jobs = data ?? [];
+    } catch { jobs = []; }
+  }
 
   // ─── Staff (count + sample) ────────────────────────────────────────────
   let staffCount = 0;
@@ -200,8 +205,8 @@ export async function GET(req: NextRequest): Promise<Response> {
         propertyKind: (p.property_kind as string | null) ?? null,
         onboardingSource: (p.onboarding_source as string | null) ?? null,
         pmsType: (p.pms_type as string | null) ?? null,
-        pmsConnected: (p.pms_connected as boolean | null) ?? null,
-        lastSyncedAt: (p.last_synced_at as string | null) ?? null,
+        pmsConnected: PMS_ROBOT_ENABLED ? ((p.pms_connected as boolean | null) ?? null) : false,
+        lastSyncedAt: PMS_ROBOT_ENABLED ? ((p.last_synced_at as string | null) ?? null) : null,
         timezone: (p.timezone as string | null) ?? null,
         createdAt: String(p.created_at ?? ''),
       },

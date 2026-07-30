@@ -24,6 +24,7 @@
 
 import { supabase } from './supabase.js';
 import { env } from './env.js';
+import { PMS_ROBOT_ENABLED } from './robot-status.js';
 import { log, makeWorkerId } from './log.js';
 import { SessionDriver } from './session-driver.js';
 import { start as startMemoryMonitor, stop as stopMemoryMonitor, shouldRestart } from './memory-monitor.js';
@@ -76,10 +77,10 @@ export class SessionSupervisor {
     // a test harness, a future entrypoint) constructs a supervisor directly.
     // Refusing HERE is what makes "the session driver cannot start" true of
     // the whole module, not just of one entry point.
-    if (env.CUA_DECOMMISSIONED === 'true') {
-      log.warn('session-supervisor: refusing to start — CUA_DECOMMISSIONED', {
+    if (!PMS_ROBOT_ENABLED || env.CUA_DECOMMISSIONED === 'true') {
+      log.warn('session-supervisor: refusing to start — PMS robot disabled', {
         workerMachineId: this.workerMachineId,
-        revive: 'set CUA_DECOMMISSIONED=false in cua-service/fly.toml, then fly deploy',
+        status: 'retired PMS browser robot is compile-time disabled',
       });
       return;
     }

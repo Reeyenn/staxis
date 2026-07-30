@@ -19,6 +19,7 @@ import { supabaseAdmin } from '@/lib/supabase-admin';
 import { requireAdminOrCron } from '@/lib/admin-auth';
 import { ok, err } from '@/lib/api-response';
 import { getOrMintRequestId } from '@/lib/log';
+import { robotDecommissionedResponse } from '@/lib/pms/decommission';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -60,6 +61,9 @@ export async function GET(req: NextRequest) {
 
   const auth = await requireAdminOrCron(req);
   if (!auth.ok) return err('Admin sign-in required.', { requestId, status: 401, code: 'unauthorized' });
+
+  const robotOff = robotDecommissionedResponse(requestId);
+  if (robotOff) return robotOff;
 
   const { data: sessionRows, error: sessErr } = await supabaseAdmin
     .from('property_sessions')

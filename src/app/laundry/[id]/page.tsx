@@ -56,13 +56,13 @@ export default function LaundryPersonPage({ params }: { params: Promise<{ id: st
   const [rooms, setRooms] = useState<Room[]>([]);
   const [loading, setLoading] = useState(true);
   const [completedAreas, setCompletedAreas] = useState<Set<string>>(new Set());
-  // feat/cua-partial-promotion — checkout/stayover load counts derive from
-  // PMS reservations + room statuses; while those feeds are still being
-  // learned a zero count is NOT "no laundry today". One honest pill.
+  // Checkout/stayover load counts derive from PMS reservations and room
+  // statuses; while the latest data is incomplete a zero count is NOT
+  // "no laundry today". One honest status notice handles that case.
   const [pmsLearning, setPmsLearning] = useState(false);
   // Completed laundry-load CATEGORY names (not card index) — matches the
   // persistence keying so a checkmark survives the displayed load count
-  // shifting through the day as the CUA updates checkout/stayover rooms.
+  // shifting through the day as new checkout/stayover data arrives.
   const [completedLoads, setCompletedLoads] = useState<Set<string>>(new Set());
   const [error, setError] = useState(false);
   const [saveStatus, setSaveStatus] = useState<'idle' | 'saving' | 'error'>('idle');
@@ -420,8 +420,8 @@ export default function LaundryPersonPage({ params }: { params: Promise<{ id: st
       {/* ── Task list ── */}
       <div style={{ padding: '16px', display: 'flex', flexDirection: 'column', gap: '12px' }}>
 
-        {/* feat/cua-partial-promotion — load counts below may be incomplete
-            while the PMS feeds are learning; never let 0 read as "done". */}
+        {/* Load counts may be incomplete while the latest PMS data is missing;
+            never let 0 read as "done". */}
         {pmsLearning && (
           <div
             role="status"
@@ -435,7 +435,7 @@ export default function LaundryPersonPage({ params }: { params: Promise<{ id: st
               lineHeight: 1.45,
             }}
           >
-            {t('lndSyncingBanner', lang)}
+            {'Some PMS data is not available yet. Load counts may be incomplete.'}
           </div>
         )}
 
@@ -478,8 +478,8 @@ export default function LaundryPersonPage({ params }: { params: Promise<{ id: st
           </div>
         )}
 
-        {/* Review pass (Codex #7): while PMS feeds are learning, the load
-            list may be missing entire categories — a celebratory "All
+        {/* While PMS data is incomplete, the load list may be missing entire
+            categories — a celebratory "All
             done!" or "No tasks today" off that data is a confident wrong
             claim. The pill above stays; the celebration waits. */}
         {allDone && !pmsLearning ? (
@@ -507,7 +507,7 @@ export default function LaundryPersonPage({ params }: { params: Promise<{ id: st
             borderRadius: '20px', boxShadow: '0 2px 8px rgba(0,0,0,0.06)',
             color: 'var(--text-secondary)', fontSize: '15px', lineHeight: 1.5,
           }}>
-            {t('lndLoadsAppearWhenSynced', lang)}
+            {"Today's loads will appear when PMS data is available."}
           </div>
         ) : totalTasks === 0 ? (
           <div style={{

@@ -1667,7 +1667,7 @@ async function checkPmsReportIntakeHealth(): Promise<Omit<Check, 'name' | 'durat
     return {
       status: 'warn',
       detail: `${stuck} report upload(s) stuck over an hour; ${refused} file(s) quarantined or hash-mismatched in the last 24h`,
-      fix: 'Stuck uploads: check the Email Worker (wrangler tail) for failed PUTs to Supabase Storage. Quarantined: open the file in /admin/pms-inbox — a PAN hit or tampered bytes needs a human decision.',
+      fix: 'Stuck uploads: check the Email Worker (wrangler tail) for failed PUTs to Supabase Storage. Quarantined: inspect the pms_report_files receipt and its pms-raw Storage object — a PAN hit or tampered file needs a human decision.',
     };
   } catch (err) {
     return { status: 'warn', detail: `check threw: ${errToString(err)}` };

@@ -63,6 +63,7 @@ import { log } from './log';
 import { todayStr } from './utils';
 import { parseRoomId } from './pms-rooms-server';
 import { recordStaffAlias } from './pms/dimension-values';
+import { PMS_ROBOT_ENABLED } from './pms/robot-status';
 
 // Room fields with no destination on the Staxis side of the split.
 // `type` and `assignedName` are PMS-reported and live on the mirror, which the
@@ -495,25 +496,27 @@ export async function applyRoomUpdate(
     // if the limiter errs, allowEnqueue stays false — the mirror still updates,
     // the PMS push is just skipped (reconcilable on the next change).
     let allowEnqueue = false;
-    try {
-      const { data: wbRow } = await supabaseAdmin
-        .from('properties')
-        .select('pms_writeback_enabled')
-        .eq('id', pid)
-        .maybeSingle();
-      if (wbRow?.pms_writeback_enabled) {
-        const rl = await checkAndIncrementRateLimit('pms-writeback-enqueue', pid);
-        allowEnqueue = rl.allowed;
-        if (!rl.allowed) {
-          log.warn('[pms-rooms-writes] pms-writeback enqueue rate-limited; mirror updated, PMS push skipped this time', {
-            pid, roomNumber,
-          });
+    if (PMS_ROBOT_ENABLED) {
+      try {
+        const { data: wbRow } = await supabaseAdmin
+          .from('properties')
+          .select('pms_writeback_enabled')
+          .eq('id', pid)
+          .maybeSingle();
+        if (wbRow?.pms_writeback_enabled) {
+          const rl = await checkAndIncrementRateLimit('pms-writeback-enqueue', pid);
+          allowEnqueue = rl.allowed;
+          if (!rl.allowed) {
+            log.warn('[pms-rooms-writes] pms-writeback enqueue rate-limited; mirror updated, PMS push skipped this time', {
+              pid, roomNumber,
+            });
+          }
         }
+      } catch (e) {
+        log.warn('[pms-rooms-writes] pms-writeback gate check failed; PMS push skipped (mirror still updates)', {
+          pid, roomNumber, msg: (e as Error).message,
+        });
       }
-    } catch (e) {
-      log.warn('[pms-rooms-writes] pms-writeback gate check failed; PMS push skipped (mirror still updates)', {
-        pid, roomNumber, msg: (e as Error).message,
-      });
     }
 
     const { error: logInsertErr } = await supabaseAdmin.rpc('staxis_enqueue_pms_write', {

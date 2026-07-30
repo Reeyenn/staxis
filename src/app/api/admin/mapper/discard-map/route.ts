@@ -20,6 +20,7 @@ import { requireAdmin } from '@/lib/admin-auth';
 import { ok, err } from '@/lib/api-response';
 import { getOrMintRequestId } from '@/lib/log';
 import { resolveDraftForJob } from '@/lib/pms/job-draft';
+import { robotDecommissionedResponse } from '@/lib/pms/decommission';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -28,6 +29,9 @@ export async function POST(req: NextRequest): Promise<Response> {
   const requestId = getOrMintRequestId(req);
   const admin = await requireAdmin(req);
   if (!admin.ok) return err('Unauthorized', { requestId, status: 401, code: 'unauthorized' });
+
+  const robotOff = robotDecommissionedResponse(requestId);
+  if (robotOff) return robotOff;
 
   let body: { jobId?: unknown };
   try { body = await req.json(); } catch { return err('Invalid JSON', { requestId, status: 400, code: 'bad_request' }); }

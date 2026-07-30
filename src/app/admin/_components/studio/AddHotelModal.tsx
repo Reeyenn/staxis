@@ -155,7 +155,7 @@ export function AddHotelModal({
             </h3>
             <p style={{ fontSize: 13, color: 'var(--dim)', margin: '0 0 18px', lineHeight: 1.5 }}>
               Put in as much or as little as you want. You can fill the rest in later. It will be
-              {organizationName ? ` assigned to ${organizationName}` : ' independent'} with no PMS connected and no customer accounts.
+              {organizationName ? ` assigned to ${organizationName}` : ' independent'} with no customer accounts yet.
             </p>
 
             {error && <div style={errorBox}>{error}</div>}

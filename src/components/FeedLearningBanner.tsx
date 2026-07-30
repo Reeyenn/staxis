@@ -1,11 +1,11 @@
 'use client';
 
 /**
- * FeedLearningBanner (feat/cua-partial-promotion)
+ * FeedLearningBanner
  *
- * The honesty affordance for partially-promoted PMS connections: tells the
- * user WHICH data is still being learned instead of letting an empty/zero
- * view read as "nothing is happening today". Deliberately dumb — pages pass
+ * A data-availability notice for incomplete PMS reports. It keeps an
+ * empty/zero view from reading as "nothing is happening today". Deliberately
+ * dumb — pages pass
  * PRE-TRANSLATED strings (manager pages own EN/ES via useLang(); the
  * housekeeper page has its own per-staff language mechanism), this component
  * only owns the look.
@@ -14,9 +14,8 @@
  *  - 'strip' — board-level banner (Schedule, front-desk)
  *  - 'pill'  — compact inline label (dashboard tiles, mobile pages)
  *
- * Tone rules (load-bearing — see plan): calm caramel "learning", never red,
- * never the word "error", never a fake count. Copy is supplied by callers
- * via the helpers in src/lib/pms/feed-status.ts (learningFeeds).
+ * Tone rules: calm caramel status, never red, never a fake count. Copy is
+ * supplied by callers.
  */
 
 const SANS = 'var(--font-geist-sans), system-ui, sans-serif';
@@ -26,7 +25,7 @@ export function FeedLearningBanner({
   variant = 'strip',
   title,
 }: {
-  /** Pre-translated message, e.g. "Still learning departures from your PMS — checkout info isn't shown yet." */
+  /** Pre-translated data-availability message. */
   text: string;
   variant?: 'strip' | 'pill';
   /** Optional pre-translated bold lead-in (strip only). */
@@ -51,7 +50,7 @@ export function FeedLearningBanner({
           whiteSpace: 'nowrap',
         }}
       >
-        <LearningDot />
+        <StatusDot />
         {text}
       </span>
     );
@@ -75,7 +74,7 @@ export function FeedLearningBanner({
       }}
     >
       <span style={{ marginTop: 2, flexShrink: 0 }}>
-        <LearningDot size={8} />
+        <StatusDot size={8} />
       </span>
       <span>
         {title && (
@@ -89,7 +88,7 @@ export function FeedLearningBanner({
   );
 }
 
-function LearningDot({ size = 6 }: { size?: number }) {
+function StatusDot({ size = 6 }: { size?: number }) {
   return (
     <span
       aria-hidden
@@ -99,10 +98,7 @@ function LearningDot({ size = 6 }: { size?: number }) {
         height: size,
         borderRadius: '50%',
         background: 'var(--snow-caramel, #C99644)',
-        animation: 'feedLearningPulse 2s ease-in-out infinite',
       }}
-    >
-      <style>{`@keyframes feedLearningPulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.35; } }`}</style>
-    </span>
+    />
   );
 }

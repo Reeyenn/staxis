@@ -40,6 +40,7 @@ import { ok, err, ApiErrorCode } from '@/lib/api-response';
 import { getOrMintRequestId } from '@/lib/log';
 import { validateUuid } from '@/lib/api-validate';
 import { promoteMap } from '@/lib/pms/promote-map';
+import { robotDecommissionedResponse } from '@/lib/pms/decommission';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -49,6 +50,9 @@ export async function POST(req: NextRequest) {
 
   const auth = await requireAdmin(req);
   if (!auth.ok) return auth.response;
+
+  const robotOff = robotDecommissionedResponse(requestId);
+  if (robotOff) return robotOff;
 
   let body: { id?: unknown; expectedVersion?: unknown; expectedStatus?: unknown; propertyId?: unknown };
   try {

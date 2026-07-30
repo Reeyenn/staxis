@@ -32,6 +32,7 @@ import { supabaseAdmin } from '@/lib/supabase-admin';
 import { requireAdmin } from '@/lib/admin-auth';
 import { ok, err } from '@/lib/api-response';
 import { getOrMintRequestId } from '@/lib/log';
+import { robotDecommissionedResponse } from '@/lib/pms/decommission';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -45,6 +46,9 @@ export async function GET(
   if (!admin.ok) {
     return err('Unauthorized', { requestId, status: 401, code: 'unauthorized' });
   }
+  const robotOff = robotDecommissionedResponse(requestId);
+  if (robotOff) return robotOff;
+
   const { jobId } = await params;
   if (!/^[0-9a-f-]{36}$/i.test(jobId)) {
     return err('jobId must be a uuid', { requestId, status: 400, code: 'bad_request' });

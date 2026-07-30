@@ -27,6 +27,7 @@ import { JoinCodesSection } from '@/app/admin/_components/JoinCodesSection';
 import { MlHealthPanel } from '@/app/admin/_components/MlHealthPanel';
 import { AdminEffectiveAccess } from '@/app/admin/_components/AdminEffectiveAccess';
 import { T, FONT_SANS, FONT_MONO, FONT_SERIF, Caps, Btn, Pill } from '@/app/admin/_components/_snow';
+import { PMS_ROBOT_ENABLED } from '@/lib/pms/robot-status';
 
 interface HealthData {
   property: {
@@ -125,6 +126,7 @@ export default function AdminPropertyDetailPage(props: { params: Promise<{ id: s
   }, [authLoading, user, id]);
 
   const handleRegenerate = async () => {
+    if (!PMS_ROBOT_ENABLED) return;
     if (!confirm('Demote the current active recipe and queue a fresh CUA mapping run? This costs ~$1-3 in API tokens.')) return;
     setRegenerating(true);
     setRegenerateMsg(null);
@@ -237,7 +239,7 @@ export default function AdminPropertyDetailPage(props: { params: Promise<{ id: s
                 )}
               </DetailCard>
 
-              <DetailCard title="PMS">
+              {PMS_ROBOT_ENABLED && <DetailCard title="PMS">
                 {data.credentials ? (
                   <>
                     <p style={{ fontSize: 14, fontWeight: 600, color: T.ink, letterSpacing: '-0.005em' }}>{data.credentials.pmsType}</p>
@@ -254,7 +256,7 @@ export default function AdminPropertyDetailPage(props: { params: Promise<{ id: s
                 ) : (
                   <p style={{ fontSize: 13, color: T.ink2, fontStyle: 'italic', fontFamily: FONT_SERIF }}>No credentials saved</p>
                 )}
-              </DetailCard>
+              </DetailCard>}
 
               <DetailCard title="Owner">
                 {data.owner ? (
@@ -272,7 +274,7 @@ export default function AdminPropertyDetailPage(props: { params: Promise<{ id: s
 
             {/* Action: regenerate recipe — kept near the header as a small
                 utility. The big "Active recipe" card itself is gone. */}
-            {data.credentials?.isActive && (
+            {PMS_ROBOT_ENABLED && data.credentials?.isActive && (
               <div style={{
                 padding: '14px 16px', border: `1px solid ${T.rule}`, borderRadius: 14,
                 marginBottom: 28, display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap',

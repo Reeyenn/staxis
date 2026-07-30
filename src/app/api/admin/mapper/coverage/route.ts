@@ -36,6 +36,7 @@ import {
   addableFeeds,
   type FeedView,
 } from '@/lib/pms/recipe-coverage';
+import { robotDecommissionedResponse } from '@/lib/pms/decommission';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -58,6 +59,9 @@ export async function GET(req: NextRequest): Promise<Response> {
   const requestId = getOrMintRequestId(req);
   const admin = await requireAdmin(req);
   if (!admin.ok) return err('Unauthorized', { requestId, status: 401, code: 'unauthorized' });
+
+  const robotOff = robotDecommissionedResponse(requestId);
+  if (robotOff) return robotOff;
 
   const propertyId = req.nextUrl.searchParams.get('propertyId') ?? '';
   if (!/^[0-9a-f-]{36}$/i.test(propertyId)) {

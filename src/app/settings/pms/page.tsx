@@ -3,6 +3,7 @@
 
 export const dynamic = 'force-dynamic';
 import React, { useState, useCallback, useEffect, useRef } from 'react';
+import { redirect } from 'next/navigation';
 import { useAuth } from '@/contexts/AuthContext';
 import { useProperty } from '@/contexts/PropertyContext';
 import { AppLayout } from '@/components/layout/AppLayout';
@@ -12,6 +13,7 @@ import { t } from '@/lib/translations';
 import { fetchWithAuth, INTERACTIVE_ACTION_TIMEOUT_MS } from '@/lib/api-fetch';
 import { parsePmsOnboardResult } from '@/lib/api-validate';
 import { PMS_DROPDOWN_OPTIONS } from '@/lib/pms';
+import { PMS_ROBOT_ENABLED } from '@/lib/pms/robot-status';
 import { Wifi, WifiOff, Shield, Zap, AlertCircle, CheckCircle, Loader2 } from 'lucide-react';
 import Link from 'next/link';
 import { usePmsOnboardJob } from './use-pms-onboard-job';
@@ -26,6 +28,13 @@ const PMS_SYSTEMS = PMS_DROPDOWN_OPTIONS.map((d) => ({
 }));
 
 export default function PMSPage() {
+  if (!PMS_ROBOT_ENABLED) redirect('/settings');
+
+  return <EnabledPMSPage />;
+}
+
+/** Retained intact for a deliberate future re-enable; unreachable while the robot flag is off. */
+function EnabledPMSPage() {
   const { user } = useAuth();
   const { activePropertyId } = useProperty();
   const scopeKey = `${user?.uid ?? 'signed-out'}:${activePropertyId ?? 'no-property'}`;

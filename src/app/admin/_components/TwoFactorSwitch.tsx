@@ -4,8 +4,8 @@
  * Compact global 2FA master switch — reads/writes /api/admin/settings.
  * Sits inline in the admin Live-hotels controls row, to the left of the
  * hotel search box. OFF disables ALL human Staxis 2FA fleet-wide (signup,
- * new-device login, admin panel, phone handoff); the PMS/CUA robot MFA is
- * unaffected. Default/fail-safe is ON. A confirm dialog gates turning it OFF.
+ * new-device login, admin panel, phone handoff). Default/fail-safe is ON. A
+ * confirm dialog gates turning it OFF.
  */
 
 import React, { useEffect, useState } from 'react';
@@ -39,8 +39,7 @@ export function TwoFactorSwitch() {
       const okConfirm = window.confirm(
         'Turn OFF two-factor for EVERY human login?\n\n'
         + 'Signup, password login on a new device, the admin panel, and phone handoff '
-        + 'will all skip the security code until you turn this back on.\n\n'
-        + 'The hotel PMS robot is unaffected.',
+        + 'will all skip the security code until you turn this back on.',
       );
       if (!okConfirm) return;
     }
@@ -71,7 +70,7 @@ export function TwoFactorSwitch() {
   const title = enabled === null
     ? 'Two-factor authentication'
     : on
-      ? 'Two-factor is ON. Click to turn OFF for all human logins (not the PMS robot).'
+      ? 'Two-factor is ON. Click to turn OFF for all human logins.'
       : 'Two-factor is OFF for all human logins. Click to turn back ON.';
 
   return (

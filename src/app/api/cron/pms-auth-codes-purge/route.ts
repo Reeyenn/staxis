@@ -3,8 +3,8 @@
  *
  * Runs daily. Owns retention for the whole PMS-inbox table family:
  *
- *   - pms_auth_codes (0274) — single-use 2FA codes, valid for minutes. Kept 7
- *     days for the masked /admin/pms-inbox viewer, then deleted.
+ *   - pms_auth_codes (0274) — legacy single-use robot 2FA codes. The retired
+ *     intake no longer writes them; this sweep securely removes old rows.
  *   - pms_inbox_messages (0275) — full setup/report emails. 30 days.
  *   - pms_report_files (0340) — the raw report zone. Three sweeps, added here
  *     rather than in a new cron because this route already owns this family

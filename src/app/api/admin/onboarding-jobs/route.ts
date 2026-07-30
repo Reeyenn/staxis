@@ -42,6 +42,7 @@ import {
   mapPropertySessionStatusToJobShape,
   type LegacyJobStatus,
 } from '@/lib/cua-session-job-mapping';
+import { robotDecommissionedResponse } from '@/lib/pms/decommission';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -86,6 +87,9 @@ export async function GET(req: NextRequest) {
 
   const auth = await requireAdmin(req);
   if (!auth.ok) return auth.response;
+
+  const robotOff = robotDecommissionedResponse(requestId);
+  if (robotOff) return robotOff;
 
   const url = new URL(req.url);
   const filter = url.searchParams.get('status');

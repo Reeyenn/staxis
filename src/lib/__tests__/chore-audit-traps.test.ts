@@ -47,16 +47,15 @@ describe('trap 1: robot-off refusal for admin buttons', () => {
     assert.equal(res.status, 503);
 
     const body = (await res.json()) as {
-      ok: boolean; error: string; code: string; details?: { revive?: string };
+      ok: boolean; error: string; code: string; details?: { decommissioned?: boolean; revive?: string };
     };
     assert.equal(body.ok, false);
     assert.equal(body.code, ApiErrorCode.RobotDecommissioned);
 
-    // The three things an operator needs: nothing was written, why, and how to
-    // undo it.
-    assert.match(body.error, /nothing was queued/i);
-    assert.match(body.error, /switched off|decommission/i);
-    assert.match(String(body.details?.revive), /CUA_DECOMMISSIONED/);
+    assert.match(body.error, /unavailable|retired/i);
+    assert.match(body.error, /no robot action was performed/i);
+    assert.equal(body.details?.decommissioned, true);
+    assert.equal(body.details?.revive, undefined);
   });
 
   test('does not reuse ai_disabled, which owns the knowledge screens\' banner copy', () => {

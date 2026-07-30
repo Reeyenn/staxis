@@ -49,6 +49,7 @@ import {
   computeFamilyCoverage,
   type PerFeed,
 } from '@/lib/pms/family-coverage';
+import { robotDecommissionedResponse } from '@/lib/pms/decommission';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -216,6 +217,9 @@ export async function GET(req: NextRequest) {
 
   const auth = await requireAdmin(req);
   if (!auth.ok) return auth.response;
+
+  const robotOff = robotDecommissionedResponse(requestId);
+  if (robotOff) return robotOff;
 
   // ─── Active knowledge files per PMS family (one per family by partial
   //     unique index, see migration 0201). ────────────────────────────────

@@ -30,6 +30,7 @@ import { getOrMintRequestId } from '@/lib/log';
 import { mapPropertySessionStatusToJobShape } from '@/lib/cua-session-job-mapping';
 import { normalizeSectionFlags, resolveSections } from '@/lib/sections/registry';
 import { FLEET_STALE_SYNC_MINUTES } from '@/lib/admin-property-health';
+import { PMS_ROBOT_ENABLED } from '@/lib/pms/robot-status';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -166,22 +167,24 @@ export async function GET(req: NextRequest) {
   }
   const sessionsRaw: SessionLite[] = [];
   const idBatchSize = 100;
-  for (let index = 0; index < propertyIds.length; index += idBatchSize) {
-    const ids = propertyIds.slice(index, index + idBatchSize);
-    const { data, error: sessionsErr } = await supabaseAdmin
-      .from('property_sessions')
-      .select(
-        'property_id, status, paused_reason, last_alive_at, last_successful_read_at, updated_at',
-      )
-      .in('property_id', ids);
+  if (PMS_ROBOT_ENABLED) {
+    for (let index = 0; index < propertyIds.length; index += idBatchSize) {
+      const ids = propertyIds.slice(index, index + idBatchSize);
+      const { data, error: sessionsErr } = await supabaseAdmin
+        .from('property_sessions')
+        .select(
+          'property_id, status, paused_reason, last_alive_at, last_successful_read_at, updated_at',
+        )
+        .in('property_id', ids);
 
-    if (sessionsErr) {
-      return err(`Could not load property sessions: ${sessionsErr.message}`, {
-        requestId, status: 500,
-      });
+      if (sessionsErr) {
+        return err(`Could not load property sessions: ${sessionsErr.message}`, {
+          requestId, status: 500,
+        });
+      }
+
+      sessionsRaw.push(...((data ?? []) as SessionLite[]));
     }
-
-    sessionsRaw.push(...((data ?? []) as SessionLite[]));
   }
 
   const sessionByProperty = new Map<string, SessionLite>();
@@ -256,13 +259,17 @@ export async function GET(req: NextRequest) {
     // not properties.last_synced_at (which nothing writes anymore). Treat
     // session.last_successful_read_at as the freshness signal; fall back to
     // properties.last_synced_at for legacy display.
-    const lastSyncIso = session?.last_successful_read_at ?? p.last_synced_at;
+    const lastSyncIso = PMS_ROBOT_ENABLED
+      ? (session?.last_successful_read_at ?? p.last_synced_at)
+      : null;
     const lastSyncMs = lastSyncIso ? Date.parse(lastSyncIso) : null;
     const syncFreshnessMin = lastSyncMs ? Math.round((now - lastSyncMs) / 60_000) : null;
 
     // A stopped session is the canonical detached state. For properties
     // without any session row, retain the legacy boolean as a fallback.
-    const pmsConnected = session ? session.status !== 'stopped' : !!p.pms_connected;
+    const pmsConnected = PMS_ROBOT_ENABLED
+      ? (session ? session.status !== 'stopped' : !!p.pms_connected)
+      : false;
 
     // A property is "stale" if it has a PMS connected and sync is >12h old.
     // Only counts if pmsConnected — fresh trial signups without PMS

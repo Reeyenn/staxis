@@ -14,6 +14,8 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { requireAdminOrCron } from '@/lib/admin-auth';
+import { getOrMintRequestId } from '@/lib/log';
+import { robotDecommissionedResponse } from '@/lib/pms/decommission';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -78,8 +80,12 @@ interface MapperJobSummary {
 }
 
 export async function GET(req: NextRequest) {
+  const requestId = getOrMintRequestId(req);
   const auth = await requireAdminOrCron(req);
   if (!auth.ok) return auth.response;
+
+  const robotOff = robotDecommissionedResponse(requestId);
+  if (robotOff) return robotOff;
 
   const [
     { data: sessionRows, error: sessErr },
@@ -280,8 +286,12 @@ export async function GET(req: NextRequest) {
 }
 
 export async function POST(req: NextRequest) {
+  const requestId = getOrMintRequestId(req);
   const auth = await requireAdminOrCron(req);
   if (!auth.ok) return auth.response;
+
+  const robotOff = robotDecommissionedResponse(requestId);
+  if (robotOff) return robotOff;
 
   let body: { propertyId?: string; action?: string };
   try {

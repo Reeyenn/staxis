@@ -29,6 +29,7 @@ import { getOrMintRequestId } from '@/lib/log';
 import {
   columnsFromAction, REQUIRED_ACTION_KEYS, ACTION_FEED_CONTRACTS, prettifyKey,
 } from '@/lib/pms/recipe-coverage';
+import { robotDecommissionedResponse } from '@/lib/pms/decommission';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -42,6 +43,9 @@ export async function GET(
   // (correct 403 for a non-admin session) instead of re-minting a flat 401.
   const admin = await requireAdmin(req);
   if (!admin.ok) return admin.response;
+  const robotOff = robotDecommissionedResponse(requestId);
+  if (robotOff) return robotOff;
+
   const { jobId } = await params;
   if (!/^[0-9a-f-]{36}$/i.test(jobId)) {
     return err('jobId must be a uuid', { requestId, status: 400, code: 'bad_request' });
@@ -354,6 +358,9 @@ export async function POST(
   const requestId = getOrMintRequestId(req);
   const admin = await requireAdmin(req);
   if (!admin.ok) return admin.response;
+  const robotOff = robotDecommissionedResponse(requestId);
+  if (robotOff) return robotOff;
+
   const { jobId } = await params;
   if (!/^[0-9a-f-]{36}$/i.test(jobId)) {
     return err('jobId must be a uuid', { requestId, status: 400, code: 'bad_request' });
