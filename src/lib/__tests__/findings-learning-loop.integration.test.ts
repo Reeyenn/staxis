@@ -35,6 +35,7 @@ import { GET, POST } from '@/app/api/findings/route';
 import { registerDetector } from '@/lib/findings/registry';
 import { runFindingsForProperty } from '@/lib/findings/runner';
 import { rearmDetector } from '@/lib/findings/demotion';
+import { recordFindingsShown } from '@/lib/findings/store';
 import { answerDripQuestion, getDripQuestion } from '@/lib/agent/drip-questions';
 import { findingQuestionTopic } from '@/lib/findings/ask-drip';
 import type { Detector, DetectorParams, FindingDraft } from '@/lib/findings/types';
@@ -155,13 +156,18 @@ async function insertFinding(opts: {
 async function counters(id: string) {
   const r = await pg.query<{
     shown_count: number; acted_count: number; ignored_count: number;
-    last_shown_on: string | null; status: string;
+    last_shown_on: string | Date | null; status: string;
   }>(
     `select shown_count, acted_count, ignored_count, last_shown_on, status
        from public.findings where id = $1`,
     [id],
   );
   return r.rows[0] ?? null;
+}
+
+function dateKey(value: string | Date | null | undefined): string | null {
+  if (value instanceof Date) return value.toISOString().slice(0, 10);
+  return value?.slice(0, 10) ?? null;
 }
 
 async function state(propertyId: string, detectorId = 'probe_demote') {
@@ -334,11 +340,39 @@ describe('the findings learning loop, against a real database', () => {
     test('a new hotel-day counts again', async () => {
       const id = await insertFinding({ propertyId: PID_A, dedupeKey: 'probe_demote:a' });
       await GET(getReq(PID_A));
+      const firstHotelDay = dateKey((await counters(id))?.last_shown_on);
+      assert.ok(firstHotelDay, 'the first queue load did not record its hotel-local day');
       await pg.query(
-        `update public.findings set last_shown_on = current_date - 1 where id = $1`, [id],
+        `update public.findings set last_shown_on = $2::date - 1 where id = $1`,
+        [id, firstHotelDay],
       );
       await GET(getReq(PID_A));
       assert.equal((await counters(id))?.shown_count, 2);
+    });
+
+    test('UTC midnight does not start a new America/Chicago hotel-day', async () => {
+      const id = await insertFinding({ propertyId: PID_A, dedupeKey: 'probe_demote:utc-boundary' });
+
+      assert.equal(
+        await recordFindingsShown(PID_A, [id], new Date('2026-01-15T00:30:00.000Z')),
+        1,
+      );
+      assert.equal(dateKey((await counters(id))?.last_shown_on), '2026-01-14');
+
+      assert.equal(
+        await recordFindingsShown(PID_A, [id], new Date('2026-01-15T05:59:59.999Z')),
+        0,
+        'UTC changed dates, but the Chicago hotel-day had not changed',
+      );
+
+      assert.equal(
+        await recordFindingsShown(PID_A, [id], new Date('2026-01-15T06:00:00.000Z')),
+        1,
+        'Chicago midnight must start a new hotel-day',
+      );
+      const afterMidnight = await counters(id);
+      assert.equal(afterMidnight?.shown_count, 2);
+      assert.equal(dateKey(afterMidnight?.last_shown_on), '2026-01-15');
     });
 
     test('opening the numbers counts as engagement and changes nothing else', async () => {
