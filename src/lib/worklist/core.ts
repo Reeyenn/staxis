@@ -631,16 +631,19 @@ export async function gatherAssignedByMe(
   pid: string,
   staffId: string,
   now: Date = new Date(),
-  limit = 100,
+  limit = 200,
 ): Promise<AssignedByMeItem[]> {
   const { data, error } = await supabaseAdmin
     .from('comms_tasks')
     .select('id, title, assigned_staff_id, assigned_department, due_at, status, created_at, completed_at, completed_by_staff_id, blocked_at, blocked_by_staff_id, blocked_reason')
     .eq('property_id', pid)
     .eq('created_by_staff_id', staffId)
-    // Anything the author handed AWAY: to another person, to a department, or
-    // to the house. A to-do they kept for themselves is already on their list.
-    .or(`assigned_staff_id.is.null,assigned_staff_id.neq.${staffId}`)
+    // Everything this person wrote. Which of them belong in the drawer is
+    // decided by keepForAssigner below rather than in the filter: the rule now
+    // spans three columns and two states, and "unassigned OR not mine" cannot
+    // be said in a filter chain without an interpolated PostgREST expression.
+    // The limit is doubled to cover the self-assigned rows the query used to
+    // drop and now carries.
     .order('created_at', { ascending: false })
     .limit(limit);
   if (error) {
@@ -668,7 +671,10 @@ export async function gatherAssignedByMe(
  * somebody ELSE has finished or refused it, because until then it is not news,
  * and an author who settles their own to-do does not need to be told.
  */
-function keepForAssigner(item: AssignedByMeItem, authorStaffId: string): boolean {
+export function keepForAssigner(item: AssignedByMeItem, authorStaffId: string): boolean {
+  // Kept for yourself: it is already on your own list, and showing it in both
+  // places would double-count every to-do a manager writes for themselves.
+  if (item.assigneeStaffId === authorStaffId) return false;
   if (item.assigneeStaffId) return true;
   if (item.state === 'waiting') return false;
   return item.settledByStaffId !== authorStaffId;

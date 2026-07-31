@@ -425,17 +425,36 @@ describe('a time-off request lands on the day it is about', () => {
     assert.equal(dayOf(item), day, 'and the calendar must agree with it');
   });
 
-  test('it still reads as the right day at every US offset', async () => {
-    // The product ships to US hotels, which is also the assumption the
-    // composer already makes when it stamps a due date. Hawaii through the
-    // Atlantic edge covers the whole range.
+  test('the day ends when the HOTEL\'s day ends, not when Greenwich\'s does', async () => {
+    // This test used to check that the instant read as the right calendar day
+    // at every US offset, which was the best available check while the code did
+    // not know the hotel's timezone: it had to pick one instant that looked
+    // acceptable everywhere, and `T23:59:59Z` was it. That stamp expires at
+    // 6:59pm in Texas, so a request for today went stale while the front desk
+    // was still on shift.
+    //
+    // Now the row is dated in the hotel's own zone, so the real invariant is
+    // sharper: it is the LAST instant of the named day where the hotel is.
     const day = '2026-08-14';
     const item = await timeOffItem(day);
-    const instant = Date.parse(String(item.dueDate));
-    for (const offsetHours of [-10, -9, -8, -7, -6, -5, -4]) {
-      const localDay = new Date(instant + offsetHours * 3_600_000).toISOString().slice(0, 10);
-      assert.equal(localDay, day, `read at UTC${offsetHours} the request must still be about ${day}`);
-    }
+    const instant = new Date(String(item.dueDate));
+
+    const inHotelZone = new Intl.DateTimeFormat('en-CA', {
+      timeZone: 'America/Chicago',
+      year: 'numeric', month: '2-digit', day: '2-digit',
+      hour: '2-digit', minute: '2-digit', hour12: false,
+    }).formatToParts(instant);
+    const part = (t: string) => inHotelZone.find((p) => p.type === t)?.value;
+    assert.equal(`${part('year')}-${part('month')}-${part('day')}`, day, 'the named day, at the hotel');
+    assert.equal(`${part('hour')}:${part('minute')}`, '23:59', 'and the very end of it');
+
+    // One minute later is already the next day at the hotel, so the boundary is
+    // where it claims to be rather than merely somewhere inside the right day.
+    const justAfter = new Date(instant.getTime() + 60_000);
+    assert.notEqual(
+      new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Chicago' }).format(justAfter),
+      day,
+    );
   });
 
   test('a request for a day still to come is not overdue', async () => {
