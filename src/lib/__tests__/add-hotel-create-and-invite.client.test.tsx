@@ -1,22 +1,25 @@
 /**
- * Admin "create a hotel and invite its first person in one motion".
+ * Admin "create a hotel, then invite from the confirmation".
  *
- * These exercise the real AddHotelModal against a recorded request seam, so
- * they fail on the behavior that matters rather than on renamed source text:
+ * The create FORM asks nothing about people (founder ruling 2026-07-31, revised
+ * after seeing the email-in-form version live). The confirmation offers "Invite
+ * people", which opens the SAME dialog the My Hotel → People control opens for
+ * a hotel with no direct account yet, scoped to the hotel just created.
  *
- *   1. An email in the new field must reach the EXISTING first-person invite
- *      route exactly once. There is one invite system; a clone would show up
- *      here as a different URL or a second call.
- *   2. A blank email must send nothing at all and keep the People pointer.
- *   3. A create that succeeds while its invite fails must say exactly that,
- *      must never claim an invitation went out, and must let the admin retry
- *      the invitation WITHOUT creating a second hotel.
- *   4. A malformed email must be rejected before the create fires, so a typo
- *      cannot leave an orphan hotel behind (the create is not idempotent).
+ * These drive the real components against a recorded transport, so they fail on
+ * behavior rather than on renamed source text:
  *
- * The last test covers the admin Onboarding journey label, which reads the
- * `invitedEmail` the guarded mint stamps onto the hotel: a hotel created WITH
- * an invitation must start at "Invitation ready", not at the pointer state.
+ *   1. The form collects no person and the create sends exactly one request.
+ *   2. "Invite people" opens the real dialog bound to the NEW hotel id, and
+ *      sending posts to the one existing first-person invite route. A clone
+ *      would show up here as a different URL or a different hotel id.
+ *   3. Completing the dialog reports the outcome on the confirmation, and an
+ *      undelivered email is not reported as sent.
+ *   4. Opening the dialog and dismissing it invites nobody and leaves the
+ *      invite-later pointer standing.
+ *
+ * The last test covers the admin Onboarding journey label for both paths: a
+ * hotel invited now vs. one left for later.
  */
 
 import assert from 'node:assert/strict';
@@ -47,9 +50,11 @@ const DOM_GLOBALS = [
   'HTMLSelectElement',
   'HTMLButtonElement',
   'HTMLAnchorElement',
+  'HTMLFormElement',
   'Node',
   'Event',
   'InputEvent',
+  'SubmitEvent',
   'EventTarget',
   'MouseEvent',
   'KeyboardEvent',
@@ -66,10 +71,12 @@ const DOM_GLOBALS = [
 
 const HOTEL_ID = '33333333-3333-4333-8333-333333333333';
 const SIGNUP_URL = 'https://staxis.test/onboard?code=HARBOR-4821';
+const CREATE_URL = '/api/admin/properties/create';
+const INVITE_URL = '/api/admin/properties/invite-first-person';
 
-/** Load a studio module with CSS-module imports neutralized (MapsManager, which
- *  OnboardingSurface pulls in, imports a .module.css). */
-function loadStudioModule<T>(specifier: () => Promise<T>): Promise<T> {
+/** Load a module with CSS-module imports neutralized (the invite dialog and
+ *  MapsManager both import a .module.css). */
+function loadWithCssShim<T>(specifier: () => Promise<T>): Promise<T> {
   const nodeRequire = createRequire(import.meta.url);
   const extensions = nodeRequire.extensions as Record<
     string,
@@ -85,7 +92,7 @@ function loadStudioModule<T>(specifier: () => Promise<T>): Promise<T> {
 
 let addHotelPromise: Promise<AddHotelModule> | null = null;
 function loadAddHotel(): Promise<AddHotelModule> {
-  addHotelPromise ??= loadStudioModule(
+  addHotelPromise ??= loadWithCssShim(
     () => import('@/app/admin/_components/studio/AddHotelModal'),
   );
   return addHotelPromise;
@@ -93,10 +100,20 @@ function loadAddHotel(): Promise<AddHotelModule> {
 
 let onboardingPromise: Promise<OnboardingModule> | null = null;
 function loadOnboarding(): Promise<OnboardingModule> {
-  onboardingPromise ??= loadStudioModule(
+  onboardingPromise ??= loadWithCssShim(
     () => import('@/app/admin/_components/studio/surfaces/OnboardingSurface'),
   );
   return onboardingPromise;
+}
+
+/** The dialog is a lazy import inside the modal. Preloading it with the CSS
+ *  shim installed keeps Suspense from resolving mid-assertion. */
+let dialogPromise: Promise<unknown> | null = null;
+function loadInviteDialog(): Promise<unknown> {
+  dialogPromise ??= loadWithCssShim(
+    () => import('@/app/company/_components/HotelTeamDialogs'),
+  );
+  return dialogPromise;
 }
 
 function installBrowser(): () => void {
@@ -139,34 +156,11 @@ function jsonResponse(body: unknown, status = 200): Response {
 
 async function flush(): Promise<void> {
   await act(async () => {
-    for (let index = 0; index < 12; index += 1) await Promise.resolve();
+    for (let index = 0; index < 14; index += 1) await Promise.resolve();
   });
 }
 
 interface RecordedCall { method: string; url: string; body: unknown }
-
-/** Records every request the modal makes and answers from the given handlers.
- *  An unmatched URL fails loudly instead of silently succeeding. */
-function recorder(handlers: Record<string, () => Response>): {
-  calls: RecordedCall[];
-  request: Requester;
-} {
-  const calls: RecordedCall[] = [];
-  return {
-    calls,
-    request: async (input, init) => {
-      const url = String(input);
-      let body: unknown = null;
-      if (typeof init?.body === 'string') {
-        try { body = JSON.parse(init.body); } catch { body = init.body; }
-      }
-      calls.push({ method: init?.method ?? 'GET', url, body });
-      const handler = handlers[url];
-      if (!handler) return jsonResponse({ ok: false, error: `Unexpected request ${url}` }, 500);
-      return handler();
-    },
-  };
-}
 
 const createOk = () => jsonResponse(
   { ok: true, data: { propertyId: HOTEL_ID, name: 'Harbor Inn' } },
@@ -177,7 +171,7 @@ const inviteOk = (emailSent = true) => jsonResponse({
   data: {
     hotelId: HOTEL_ID,
     invitedEmail: 'gm@harbor.test',
-    assignedRole: 'owner',
+    assignedRole: 'general_manager',
     signupUrl: SIGNUP_URL,
     expiresAt: new Date(Date.now() + 7 * 86_400_000).toISOString(),
     emailSent,
@@ -185,37 +179,64 @@ const inviteOk = (emailSent = true) => jsonResponse({
   },
 }, 201);
 
-const CREATE_URL = '/api/admin/properties/create';
-const INVITE_URL = '/api/admin/properties/invite-first-person';
-
 interface Harness {
   container: HTMLElement;
+  calls: RecordedCall[];
   createdWith: string[];
   type(label: string, value: string): Promise<void>;
-  choose(label: string, value: string): Promise<void>;
   click(text: string): Promise<void>;
-  /** The element itself, so a test can press the SAME control twice even after
-   *  its label changes to the in-flight wording. */
   buttonEl(text: string): HTMLButtonElement;
   press(element: Element): Promise<void>;
+  /** The portalled invite dialog, or null when it is not open. */
+  dialog(): HTMLElement | null;
+  /** Fill and submit the invite dialog exactly as an admin would. */
+  sendInvite(email: string, role: string): Promise<void>;
+  /** Swap the transport mid-test (used to hold a request open). */
+  setTransport(next: (url: string, init?: RequestInit) => Promise<Response>): void;
   text(): string;
-  link(): HTMLAnchorElement | null;
-  /** The onboarding link lives in an input value, which textContent never sees. */
-  signupLink(): string | null;
+  peopleLink(): HTMLAnchorElement | null;
 }
 
 async function mountModal(
   context: TestContext,
-  request: Requester,
+  handlers: Record<string, () => Response>,
 ): Promise<Harness> {
   const restoreBrowser = installBrowser();
   const { AddHotelModal } = await loadAddHotel();
+  await loadInviteDialog();
   // The modal pulls in the authenticated fetch helper, which pulls in the
   // Supabase browser client. Its token auto-refresh timer would otherwise keep
   // the test process alive after the last assertion.
   const { supabase } = await import('@/lib/supabase');
   supabase.auth.stopAutoRefresh();
   const { createRoot } = await import('react-dom/client');
+
+  const calls: RecordedCall[] = [];
+  let transport: ((url: string, init?: RequestInit) => Promise<Response>) | null = null;
+  const answer = async (url: string, init?: RequestInit): Promise<Response> => {
+    let body: unknown = null;
+    if (typeof init?.body === 'string') {
+      try { body = JSON.parse(init.body); } catch { body = init.body; }
+    }
+    calls.push({ method: init?.method ?? 'GET', url, body });
+    if (transport) return transport(url, init);
+    const handler = handlers[url];
+    if (!handler) return jsonResponse({ ok: false, error: `Unexpected request ${url}` }, 500);
+    return handler();
+  };
+
+  // The modal's create goes through its injected seam. The DIALOG owns its own
+  // transport (fetchWithAuth -> global fetch), which is exactly the point: the
+  // test cannot fake the dialog's route, so the assertions below prove the real
+  // invite route was called.
+  const request: Requester = async (input, init) => answer(String(input), init);
+  const originalFetch = globalThis.fetch;
+  Object.defineProperty(globalThis, 'fetch', {
+    configurable: true,
+    writable: true,
+    value: async (input: RequestInfo | URL, init?: RequestInit) => answer(String(input), init),
+  });
+
   const container = document.createElement('div');
   document.body.append(container);
   const root: Root = createRoot(container);
@@ -234,6 +255,9 @@ async function mountModal(
     supabase.auth.stopAutoRefresh();
     await act(async () => { root.unmount(); });
     container.remove();
+    Object.defineProperty(globalThis, 'fetch', {
+      configurable: true, writable: true, value: originalFetch,
+    });
     restoreBrowser();
   });
 
@@ -259,117 +283,182 @@ async function mountModal(
     await flush();
   };
 
+  const dialog = () => document.querySelector<HTMLElement>('[role="dialog"]');
+  const findButton = (text: string) => Array.from(container.querySelectorAll('button')).find(
+    (candidate) => (candidate.textContent ?? '').includes(text),
+  );
+
   return {
     container,
+    calls,
     createdWith,
+    setTransport(next) { transport = next; },
     async type(label, value) {
       const input = container.querySelector(`input[aria-label="${label}"]`);
       assert.ok(input, `input "${label}" must render`);
       await setValue(input, value, 'input');
     },
-    async choose(label, value) {
-      const select = container.querySelector(`select[aria-label="${label}"]`);
-      assert.ok(select, `select "${label}" must render`);
-      await setValue(select, value, 'select');
-    },
     async click(text) {
-      const button = Array.from(container.querySelectorAll('button')).find(
-        (candidate) => (candidate.textContent ?? '').includes(text),
-      );
+      const button = findButton(text);
       assert.ok(button, `button "${text}" must render`);
       await press(button);
     },
     buttonEl(text) {
-      const button = Array.from(container.querySelectorAll('button')).find(
-        (candidate) => (candidate.textContent ?? '').includes(text),
-      );
+      const button = findButton(text);
       assert.ok(button, `button "${text}" must render`);
       return button;
     },
     press,
+    dialog,
+    async sendInvite(email, role) {
+      const open = dialog();
+      assert.ok(open, 'the invite dialog must be open');
+      const emailInput = open.querySelector('input[type="email"]');
+      const roleSelect = open.querySelector('select');
+      const form = open.querySelector('form');
+      assert.ok(emailInput, 'the dialog must ask for an email');
+      assert.ok(roleSelect, 'the dialog must ask for a role');
+      assert.ok(form, 'the dialog must submit a form');
+      await setValue(emailInput, email, 'input');
+      await setValue(roleSelect, role, 'select');
+      await act(async () => {
+        form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
+        for (let index = 0; index < 12; index += 1) await Promise.resolve();
+      });
+      await flush();
+    },
     text: () => container.textContent ?? '',
-    link: () => container.querySelector<HTMLAnchorElement>('a[href*="tab=people"]'),
-    signupLink: () => container.querySelector<HTMLInputElement>(
-      'input[aria-label="First-person onboarding link"]',
-    )?.value ?? null,
+    peopleLink: () => container.querySelector<HTMLAnchorElement>('a[href*="tab=people"]'),
   };
 }
 
-describe('Add hotel: create and invite in one motion', { concurrency: false }, () => {
-  test('an entered first person is invited through the existing invite route, exactly once', async (context) => {
-    const { calls, request } = recorder({
+describe('Add hotel: invite from the confirmation', { concurrency: false }, () => {
+  test('the create form asks nothing about people and sends only the create', async (context) => {
+    const ui = await mountModal(context, { [CREATE_URL]: createOk });
+
+    assert.equal(
+      ui.container.querySelector('input[type="email"]'),
+      null,
+      'the form must not collect a first person',
+    );
+    assert.equal(ui.container.querySelector('select'), null, 'no role picker on the form');
+    assert.doesNotMatch(ui.text(), /First person/i);
+    ui.buttonEl('Create hotel');
+
+    await ui.type('Hotel name (optional)', 'Harbor Inn');
+    await ui.click('Create hotel');
+
+    assert.deepEqual(ui.calls.map((call) => call.url), [CREATE_URL]);
+    assert.deepEqual(ui.createdWith, [HOTEL_ID], 'the fleet refetches with the new hotel');
+    assert.match(ui.text(), /is in your fleet/);
+    assert.match(ui.text(), /Invite the first person now or later from People/);
+  });
+
+  test('Invite people opens the real People dialog bound to the hotel just created', async (context) => {
+    const ui = await mountModal(context, {
       [CREATE_URL]: createOk,
       [INVITE_URL]: () => inviteOk(true),
     });
-    const ui = await mountModal(context, request);
 
     await ui.type('Hotel name (optional)', 'Harbor Inn');
-    await ui.type("First person's email (optional)", '  GM@Harbor.test  ');
-    await ui.choose("First person's role", 'general_manager');
-    await ui.click('Create hotel and invite');
+    await ui.click('Create hotel');
+    assert.equal(ui.dialog(), null, 'the dialog stays shut until asked for');
 
-    assert.deepEqual(
-      calls.map((call) => `${call.method} ${call.url}`),
-      [`POST ${CREATE_URL}`, `POST ${INVITE_URL}`],
-      'the create runs first, then the one existing invite route',
-    );
-    assert.equal(
-      calls.filter((call) => call.url === INVITE_URL).length,
-      1,
-      'exactly one invitation is sent',
-    );
-    assert.deepEqual(calls[1].body, {
+    await ui.click('Invite people');
+    const dialog = ui.dialog();
+    assert.ok(dialog, 'the invite dialog opens in place, with no navigation');
+    assert.match(dialog.textContent ?? '', /Add first person/);
+    assert.match(dialog.textContent ?? '', /Harbor Inn/, 'scoped to the new hotel by name');
+
+    await ui.sendInvite('GM@Harbor.test', 'general_manager');
+
+    const invites = ui.calls.filter((call) => call.url === INVITE_URL);
+    assert.equal(invites.length, 1, 'exactly one invitation, through the one existing route');
+    assert.deepEqual(invites[0].body, {
       hotelId: HOTEL_ID,
       email: 'gm@harbor.test',
       role: 'general_manager',
-    }, 'the invite body matches the People control contract, normalized');
-    assert.deepEqual(ui.createdWith, [HOTEL_ID], 'the fleet refetches with the new hotel');
-    assert.match(ui.text(), /Invitation sent/);
-    assert.match(ui.text(), /gm@harbor\.test/);
-    assert.equal(ui.signupLink(), SIGNUP_URL, 'the onboarding link is available to copy');
+    }, 'bound to the new hotel id, normalized, matching the People contract');
   });
 
-  test('the default role reaches the wire as owner when the picker is left alone', async (context) => {
-    const { calls, request } = recorder({
+  test('completing the dialog reports the invitation on the confirmation', async (context) => {
+    const ui = await mountModal(context, {
       [CREATE_URL]: createOk,
       [INVITE_URL]: () => inviteOk(true),
     });
-    const ui = await mountModal(context, request);
 
-    await ui.type("First person's email (optional)", 'owner@harbor.test');
-    await ui.click('Create hotel and invite');
+    await ui.click('Create hotel');
+    assert.doesNotMatch(ui.text(), /Invitation sent/);
 
-    assert.equal(
-      (calls.find((call) => call.url === INVITE_URL)?.body as { role?: string })?.role,
-      'owner',
-      'the untouched picker must send owner, not an empty or missing role',
+    await ui.click('Invite people');
+    await ui.sendInvite('gm@harbor.test', 'general_manager');
+
+    assert.match(ui.text(), /Invitation sent/);
+    assert.match(ui.text(), /gm@harbor\.test/);
+    assert.match(ui.text(), /General Manager/);
+    assert.doesNotMatch(
+      ui.text(),
+      /Invite the first person now or later/,
+      'the invite-later pointer retires once someone is invited',
     );
+    // A hotel gets one first-person invitation; the server refuses a second for
+    // a different address. Re-offering it here would send the admin at a wall.
+    assert.doesNotMatch(ui.text(), /Invite people|Invite someone else/);
+    assert.ok(ui.peopleLink(), 'People remains the way to do anything further');
   });
 
-  test('a double-fired submit creates one hotel and sends one invitation', async (context) => {
-    let releaseCreate: ((response: Response) => void) | null = null;
-    const { calls, request } = recorder({
-      [CREATE_URL]: () => { throw new Error('unused'); },
+  test('an undelivered invitation email is not reported as sent', async (context) => {
+    const ui = await mountModal(context, {
+      [CREATE_URL]: createOk,
+      [INVITE_URL]: () => inviteOk(false),
+    });
+
+    await ui.click('Create hotel');
+    await ui.click('Invite people');
+    await ui.sendInvite('gm@harbor.test', 'general_manager');
+
+    assert.match(ui.text(), /Invitation ready, email not delivered/);
+    assert.doesNotMatch(ui.text(), /Invitation sent/);
+  });
+
+  test('opening the dialog and dismissing it invites nobody and keeps the pointer', async (context) => {
+    const ui = await mountModal(context, {
+      [CREATE_URL]: createOk,
       [INVITE_URL]: () => inviteOk(true),
     });
+
+    await ui.click('Create hotel');
+    await ui.click('Invite people');
+    assert.ok(ui.dialog());
+
+    const close = document.querySelector<HTMLButtonElement>('[role="dialog"] button');
+    assert.ok(close, 'the dialog offers a way out');
+    await ui.press(close);
+
+    assert.deepEqual(
+      ui.calls.map((call) => call.url),
+      [CREATE_URL],
+      'dismissing the dialog must invite nobody',
+    );
+    assert.doesNotMatch(ui.text(), /Invitation sent|Invitation ready/);
+    assert.match(ui.text(), /Invite the first person now or later from People/);
+    assert.ok(ui.peopleLink(), 'the People control is still offered');
+  });
+
+  test('a double-fired submit creates exactly one hotel', async (context) => {
+    const ui = await mountModal(context, { [CREATE_URL]: createOk });
     // Hold the create open so the second press lands while the first is still
     // in flight: that is the window the synchronous latch exists to close.
-    const gated: Requester = async (input, init) => {
-      if (String(input) === CREATE_URL) {
-        calls.push({ method: init?.method ?? 'GET', url: CREATE_URL, body: null });
-        return new Promise<Response>((resolve) => { releaseCreate = resolve; });
-      }
-      return request(input, init);
-    };
-    const ui = await mountModal(context, gated);
+    let releaseCreate: ((response: Response) => void) | null = null;
+    const gate = new Promise<Response>((resolve) => { releaseCreate = resolve; });
+    ui.setTransport(() => gate);
 
-    await ui.type("First person's email (optional)", 'gm@harbor.test');
-    const submitButton = ui.buttonEl('Create hotel and invite');
+    const submitButton = ui.buttonEl('Create hotel');
     await ui.press(submitButton);
     await ui.press(submitButton);
 
     assert.equal(
-      calls.filter((call) => call.url === CREATE_URL).length,
+      ui.calls.filter((call) => call.url === CREATE_URL).length,
       1,
       'the second press must not start a second hotel',
     );
@@ -381,121 +470,12 @@ describe('Add hotel: create and invite in one motion', { concurrency: false }, (
     });
     await flush();
 
-    assert.equal(calls.filter((call) => call.url === CREATE_URL).length, 1);
-    assert.equal(calls.filter((call) => call.url === INVITE_URL).length, 1);
-    assert.match(ui.text(), /Invitation sent/);
-  });
-
-  test('a blank first person sends no invitation and keeps the People pointer', async (context) => {
-    const { calls, request } = recorder({ [CREATE_URL]: createOk });
-    const ui = await mountModal(context, request);
-
-    await ui.type('Hotel name (optional)', 'Harbor Inn');
-    await ui.click('Create hotel');
-
-    assert.deepEqual(
-      calls.map((call) => call.url),
-      [CREATE_URL],
-      'no invitation machinery runs when the field is left blank',
-    );
-    assert.doesNotMatch(ui.text(), /Invitation sent|Invitation ready/);
-    assert.match(ui.text(), /Add the first person from the hotel/);
-    assert.equal(ui.container.querySelector('select'), null, 'the role picker stays hidden');
-  });
-
-  test('a created hotel whose invitation failed says so, points at People, and retries only the invitation', async (context) => {
-    let inviteShouldFail = true;
-    const { calls, request } = recorder({
-      [CREATE_URL]: createOk,
-      [INVITE_URL]: () => (inviteShouldFail
-        ? jsonResponse({ ok: false, error: 'First-person invitations are temporarily unavailable' }, 503)
-        : inviteOk(true)),
-    });
-    const ui = await mountModal(context, request);
-
-    await ui.type("First person's email (optional)", 'gm@harbor.test');
-    await ui.click('Create hotel and invite');
-
-    assert.match(ui.text(), /The hotel was created\. The invitation was not sent\./);
-    assert.match(ui.text(), /First-person invitations are temporarily unavailable/);
-    assert.match(ui.text(), /Trying again is safe/);
-    assert.doesNotMatch(ui.text(), /Invitation sent/, 'never claims an invitation went out');
-    assert.deepEqual(ui.createdWith, [HOTEL_ID], 'the hotel is still real and still surfaced');
-    const peopleLink = ui.link();
-    assert.ok(peopleLink, 'the failure state points at the exact hotel People control');
-    assert.equal(peopleLink.getAttribute('href'), `/company?tab=people&pid=${HOTEL_ID}`);
-
-    inviteShouldFail = false;
-    await ui.click('Send invitation again');
-
-    assert.equal(
-      calls.filter((call) => call.url === CREATE_URL).length,
-      1,
-      'the retry never creates a second hotel',
-    );
-    assert.equal(calls.filter((call) => call.url === INVITE_URL).length, 2);
-    assert.match(ui.text(), /Invitation sent/);
-    assert.doesNotMatch(ui.text(), /The invitation was not sent/);
-  });
-
-  test('an invite whose response never arrived is reported as uncertain, not as definitely unsent', async (context) => {
-    const { request } = recorder({
-      [CREATE_URL]: createOk,
-      // A dropped connection: the request throws, so the invitation may or may
-      // not exist server-side. Claiming nobody was emailed would be a guess.
-      [INVITE_URL]: () => { throw new Error('network down'); },
-    });
-    const ui = await mountModal(context, request);
-
-    await ui.type("First person's email (optional)", 'gm@harbor.test');
-    await ui.click('Create hotel and invite');
-
-    assert.match(ui.text(), /The hotel was created\. The invitation may not have gone out\./);
-    assert.doesNotMatch(
-      ui.text(),
-      /The invitation was not sent/,
-      'an unanswered request must not be reported as a definite non-send',
-    );
-    assert.doesNotMatch(ui.text(), /Invitation sent/);
-    assert.ok(ui.link(), 'the People control is still offered as the way out');
-  });
-
-  test('a created invitation whose email bounced is not reported as sent', async (context) => {
-    const { request } = recorder({
-      [CREATE_URL]: createOk,
-      [INVITE_URL]: () => inviteOk(false),
-    });
-    const ui = await mountModal(context, request);
-
-    await ui.type("First person's email (optional)", 'gm@harbor.test');
-    await ui.click('Create hotel and invite');
-
-    assert.match(ui.text(), /Invitation ready, email not delivered/);
-    assert.doesNotMatch(ui.text(), /Invitation sent/);
-    assert.equal(ui.signupLink(), SIGNUP_URL, 'the link is the recovery path when mail fails');
-  });
-
-  test('a malformed first-person email is rejected before any hotel is created', async (context) => {
-    const { calls, request } = recorder({
-      [CREATE_URL]: createOk,
-      [INVITE_URL]: () => inviteOk(true),
-    });
-    const ui = await mountModal(context, request);
-
-    await ui.type('Hotel name (optional)', 'Harbor Inn');
-    await ui.type("First person's email (optional)", 'gm@harbor');
-    await ui.click('Create hotel and invite');
-
-    assert.deepEqual(calls, [], 'no hotel is left behind by a doomed submission');
-    assert.deepEqual(ui.createdWith, []);
-    assert.match(
-      ui.container.querySelector('[role="alert"]')?.textContent ?? '',
-      /valid email for the first person/,
-    );
+    assert.equal(ui.calls.filter((call) => call.url === CREATE_URL).length, 1);
+    assert.match(ui.text(), /is in your fleet/);
   });
 });
 
-describe('Admin onboarding journey reflects a create-time invitation', { concurrency: false }, () => {
+describe('Admin onboarding journey reflects both invite paths', { concurrency: false }, () => {
   test('an invited hotel starts at Invitation ready, an uninvited one keeps the People pointer', async () => {
     const restoreBrowser = installBrowser();
     try {
@@ -509,6 +489,8 @@ describe('Admin onboarding journey reflects a create-time invitation', { concurr
         onboardingCompletedAt: null,
       };
 
+      // Invited from the confirmation, or later from People: the guarded mint
+      // stamps invitedEmail either way, so the journey reads the same.
       const invited = journeyOf({
         ...base,
         onboardingState: { step: 1, invitedEmail: 'gm@harbor.test' },
@@ -517,6 +499,7 @@ describe('Admin onboarding journey reflects a create-time invitation', { concurr
       assert.equal(invited.label, 'Invitation ready');
       assert.doesNotMatch(invited.sub, /People control/);
 
+      // Created and left for later.
       const uninvited = journeyOf({ ...base, onboardingState: { step: 1 } });
       assert.equal(uninvited.step, 1);
       assert.equal(uninvited.label, 'Waiting for first person');

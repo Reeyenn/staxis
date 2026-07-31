@@ -103,15 +103,15 @@ describe('Admin Studio Hotels information architecture', () => {
     assert.match(surfaceSource, /hotelops-active-property/);
   });
 
-  // The modal may now offer an OPTIONAL first person, which is invited right
-  // after the create returns (founder ruling 2026-07-31: create-and-invite in
-  // one motion). What must never change is WHERE that invitation comes from:
-  // the hotel-shell create route stays a pure create, and the modal delegates
-  // to the one existing first-person invite route instead of growing its own
-  // code minting or mail sending. Behavior for this flow is exercised in
+  // The confirmation may now offer "Invite people" (founder ruling 2026-07-31),
+  // but the invitation itself belongs entirely to the People control's own
+  // dialog: the modal opens FirstPersonInviteDialog and owns no invite
+  // transport of its own, not even the route URL. The hotel-shell create route
+  // stays a pure create. Behavior for this flow is exercised in
   // add-hotel-create-and-invite.client.test.tsx; these are source invariants.
   test('creates hotel shells without the creation path growing its own invitation machinery', () => {
-    assert.match(addHotelModalSource, /'\/api\/admin\/properties\/invite-first-person'/);
+    assert.match(addHotelModalSource, /FirstPersonInviteDialog/);
+    assert.doesNotMatch(addHotelModalSource, /invite-first-person/);
     assert.doesNotMatch(addHotelModalSource, /generateJoinCode|sendOnboardingInvite|staxis_mint_/);
     assert.doesNotMatch(createPropertyRouteSource, /staxis_mint_privileged_onboarding_join_code/);
     assert.doesNotMatch(createPropertyRouteSource, /sendOnboardingInvite|generateJoinCode/);

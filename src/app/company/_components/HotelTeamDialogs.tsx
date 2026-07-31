@@ -1241,7 +1241,7 @@ export function JoinDecisionDialog({
 
 type FirstPersonRole = 'owner' | 'general_manager';
 
-interface FirstPersonInviteData {
+export interface FirstPersonInviteData {
   hotelId: string;
   invitedEmail: string;
   assignedRole: FirstPersonRole;
@@ -1262,11 +1262,19 @@ export function FirstPersonInviteDialog({
   hotelName,
   onClose,
   onChanged,
+  onInvited,
 }: {
   hotelId: string;
   hotelName: string;
   onClose: () => void;
   onChanged?: () => void | Promise<void>;
+  /**
+   * Fired once with the server's receipt when an invitation actually exists.
+   * Additive: the People panel ignores it and keeps using onChanged to refetch.
+   * The admin Add-hotel confirmation uses it to report the outcome behind the
+   * dialog, so it never has to guess whether the invitation went out.
+   */
+  onInvited?: (result: FirstPersonInviteData) => void;
 }) {
   const [email, setEmail] = React.useState('');
   const [role, setRole] = React.useState<FirstPersonRole | ''>('');
@@ -1305,6 +1313,7 @@ export function FirstPersonInviteDialog({
         return;
       }
       setResult(body.data);
+      onInvited?.(body.data);
       await onChanged?.();
     } catch (sendError) {
       console.error('[FirstPersonInviteDialog] invitation failed', sendError);
