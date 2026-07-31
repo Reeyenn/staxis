@@ -194,6 +194,10 @@ interface Harness {
   type(label: string, value: string): Promise<void>;
   choose(label: string, value: string): Promise<void>;
   click(text: string): Promise<void>;
+  /** The element itself, so a test can press the SAME control twice even after
+   *  its label changes to the in-flight wording. */
+  buttonEl(text: string): HTMLButtonElement;
+  press(element: Element): Promise<void>;
   text(): string;
   link(): HTMLAnchorElement | null;
   /** The onboarding link lives in an input value, which textContent never sees. */
@@ -247,6 +251,14 @@ async function mountModal(
     });
   };
 
+  const press = async (element: Element): Promise<void> => {
+    await act(async () => {
+      element.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      for (let index = 0; index < 10; index += 1) await Promise.resolve();
+    });
+    await flush();
+  };
+
   return {
     container,
     createdWith,
@@ -265,12 +277,16 @@ async function mountModal(
         (candidate) => (candidate.textContent ?? '').includes(text),
       );
       assert.ok(button, `button "${text}" must render`);
-      await act(async () => {
-        button.dispatchEvent(new MouseEvent('click', { bubbles: true }));
-        for (let index = 0; index < 10; index += 1) await Promise.resolve();
-      });
-      await flush();
+      await press(button);
     },
+    buttonEl(text) {
+      const button = Array.from(container.querySelectorAll('button')).find(
+        (candidate) => (candidate.textContent ?? '').includes(text),
+      );
+      assert.ok(button, `button "${text}" must render`);
+      return button;
+    },
+    press,
     text: () => container.textContent ?? '',
     link: () => container.querySelector<HTMLAnchorElement>('a[href*="tab=people"]'),
     signupLink: () => container.querySelector<HTMLInputElement>(
@@ -313,6 +329,63 @@ describe('Add hotel: create and invite in one motion', { concurrency: false }, (
     assert.equal(ui.signupLink(), SIGNUP_URL, 'the onboarding link is available to copy');
   });
 
+  test('the default role reaches the wire as owner when the picker is left alone', async (context) => {
+    const { calls, request } = recorder({
+      [CREATE_URL]: createOk,
+      [INVITE_URL]: () => inviteOk(true),
+    });
+    const ui = await mountModal(context, request);
+
+    await ui.type("First person's email (optional)", 'owner@harbor.test');
+    await ui.click('Create hotel and invite');
+
+    assert.equal(
+      (calls.find((call) => call.url === INVITE_URL)?.body as { role?: string })?.role,
+      'owner',
+      'the untouched picker must send owner, not an empty or missing role',
+    );
+  });
+
+  test('a double-fired submit creates one hotel and sends one invitation', async (context) => {
+    let releaseCreate: ((response: Response) => void) | null = null;
+    const { calls, request } = recorder({
+      [CREATE_URL]: () => { throw new Error('unused'); },
+      [INVITE_URL]: () => inviteOk(true),
+    });
+    // Hold the create open so the second press lands while the first is still
+    // in flight: that is the window the synchronous latch exists to close.
+    const gated: Requester = async (input, init) => {
+      if (String(input) === CREATE_URL) {
+        calls.push({ method: init?.method ?? 'GET', url: CREATE_URL, body: null });
+        return new Promise<Response>((resolve) => { releaseCreate = resolve; });
+      }
+      return request(input, init);
+    };
+    const ui = await mountModal(context, gated);
+
+    await ui.type("First person's email (optional)", 'gm@harbor.test');
+    const submitButton = ui.buttonEl('Create hotel and invite');
+    await ui.press(submitButton);
+    await ui.press(submitButton);
+
+    assert.equal(
+      calls.filter((call) => call.url === CREATE_URL).length,
+      1,
+      'the second press must not start a second hotel',
+    );
+
+    assert.ok(releaseCreate);
+    await act(async () => {
+      (releaseCreate as (response: Response) => void)(createOk());
+      for (let index = 0; index < 12; index += 1) await Promise.resolve();
+    });
+    await flush();
+
+    assert.equal(calls.filter((call) => call.url === CREATE_URL).length, 1);
+    assert.equal(calls.filter((call) => call.url === INVITE_URL).length, 1);
+    assert.match(ui.text(), /Invitation sent/);
+  });
+
   test('a blank first person sends no invitation and keeps the People pointer', async (context) => {
     const { calls, request } = recorder({ [CREATE_URL]: createOk });
     const ui = await mountModal(context, request);
@@ -345,7 +418,7 @@ describe('Add hotel: create and invite in one motion', { concurrency: false }, (
 
     assert.match(ui.text(), /The hotel was created\. The invitation was not sent\./);
     assert.match(ui.text(), /First-person invitations are temporarily unavailable/);
-    assert.match(ui.text(), /Nobody has been emailed/);
+    assert.match(ui.text(), /Trying again is safe/);
     assert.doesNotMatch(ui.text(), /Invitation sent/, 'never claims an invitation went out');
     assert.deepEqual(ui.createdWith, [HOTEL_ID], 'the hotel is still real and still surfaced');
     const peopleLink = ui.link();
@@ -363,6 +436,28 @@ describe('Add hotel: create and invite in one motion', { concurrency: false }, (
     assert.equal(calls.filter((call) => call.url === INVITE_URL).length, 2);
     assert.match(ui.text(), /Invitation sent/);
     assert.doesNotMatch(ui.text(), /The invitation was not sent/);
+  });
+
+  test('an invite whose response never arrived is reported as uncertain, not as definitely unsent', async (context) => {
+    const { request } = recorder({
+      [CREATE_URL]: createOk,
+      // A dropped connection: the request throws, so the invitation may or may
+      // not exist server-side. Claiming nobody was emailed would be a guess.
+      [INVITE_URL]: () => { throw new Error('network down'); },
+    });
+    const ui = await mountModal(context, request);
+
+    await ui.type("First person's email (optional)", 'gm@harbor.test');
+    await ui.click('Create hotel and invite');
+
+    assert.match(ui.text(), /The hotel was created\. The invitation may not have gone out\./);
+    assert.doesNotMatch(
+      ui.text(),
+      /The invitation was not sent/,
+      'an unanswered request must not be reported as a definite non-send',
+    );
+    assert.doesNotMatch(ui.text(), /Invitation sent/);
+    assert.ok(ui.link(), 'the People control is still offered as the way out');
   });
 
   test('a created invitation whose email bounced is not reported as sent', async (context) => {

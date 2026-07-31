@@ -81,11 +81,18 @@ interface CreatedResult {
   invite: InviteSent | null;
   /** Present when the hotel exists but its invitation did not go out. */
   inviteError: string | null;
+  /**
+   * True when the server definitively answered "no" (an HTTP error response),
+   * false when the request never produced an answer (network drop, timeout).
+   * A lost response is genuinely ambiguous: the invitation may have been minted
+   * and emailed anyway, so the copy must not claim nobody was contacted.
+   */
+  inviteFailureCertain: boolean;
 }
 
 type InviteOutcome =
   | { ok: true; invite: InviteSent }
-  | { ok: false; message: string };
+  | { ok: false; message: string; certain: boolean };
 
 export function AddHotelModal({
   onClose,
@@ -132,7 +139,17 @@ export function AddHotelModal({
       });
       const json = await res.json().catch(() => ({}));
       if (!res.ok || !json.ok || !json.data) {
-        return { ok: false, message: json.error || `Server returned ${res.status}` };
+        // Only a rejection the ROUTE itself authored proves nothing was minted:
+        // every error return in the invite route fires before the mail send, and
+        // once the mint succeeds the route always answers ok. A status without
+        // our envelope (a gateway 502/504, an unhandled 500) proves nothing, so
+        // it is treated as an unconfirmed outcome.
+        const routeAuthored = json.ok === false && typeof json.error === 'string';
+        return {
+          ok: false,
+          message: routeAuthored ? json.error : `Server returned ${res.status}`,
+          certain: routeAuthored,
+        };
       }
       return {
         ok: true,
@@ -144,9 +161,11 @@ export function AddHotelModal({
         },
       };
     } catch (e) {
+      // No answer came back. The invitation may or may not exist server-side.
       return {
         ok: false,
         message: `Couldn't reach the server${e instanceof Error && e.message ? ` (${e.message})` : ''}.`,
+        certain: false,
       };
     }
   };
@@ -210,15 +229,15 @@ export function AddHotelModal({
         inviteRequested: wantsInvite,
       };
       if (!wantsInvite) {
-        setCreated({ ...base, invite: null, inviteError: null });
+        setCreated({ ...base, invite: null, inviteError: null, inviteFailureCertain: true });
         return;
       }
       // The hotel now exists. Whatever happens next, the admin sees the truth
       // about the invitation separately from the truth about the hotel.
       const outcome = await sendInvite(propertyId, normalizedEmail, role);
       setCreated(outcome.ok
-        ? { ...base, invite: outcome.invite, inviteError: null }
-        : { ...base, invite: null, inviteError: outcome.message });
+        ? { ...base, invite: outcome.invite, inviteError: null, inviteFailureCertain: true }
+        : { ...base, invite: null, inviteError: outcome.message, inviteFailureCertain: outcome.certain });
     } catch (e) {
       // A dropped/timed-out response could mean the hotel WAS created
       // server-side (the route has no idempotency key). Warn the admin to check
@@ -232,21 +251,21 @@ export function AddHotelModal({
     }
   };
 
-  /** Re-send ONLY the invitation for the hotel that already exists. */
+  /** Re-send ONLY the invitation for the hotel that already exists. Safe to
+   *  press repeatedly: the guarded mint returns the SAME invitation for an
+   *  identical hotel + email + role, so this never makes a second one, and it
+   *  can never reach the create route. */
   const retryInvite = async () => {
     if (!created || retryingRef.current) return;
-    const normalizedEmail = email.trim().toLowerCase();
-    if (!EMAIL_RX.test(normalizedEmail)) {
-      setCreated({ ...created, inviteError: 'Enter a valid email for the first person.' });
-      return;
-    }
     retryingRef.current = true;
     setRetrying(true);
     try {
-      const outcome = await sendInvite(created.propertyId, normalizedEmail, role);
-      setCreated(outcome.ok
-        ? { ...created, invite: outcome.invite, inviteError: null }
-        : { ...created, invite: null, inviteError: outcome.message });
+      const outcome = await sendInvite(created.propertyId, email.trim().toLowerCase(), role);
+      setCreated((prev) => (prev
+        ? (outcome.ok
+          ? { ...prev, invite: outcome.invite, inviteError: null, inviteFailureCertain: true }
+          : { ...prev, invite: null, inviteError: outcome.message, inviteFailureCertain: outcome.certain })
+        : prev));
     } finally {
       setRetrying(false);
       retryingRef.current = false;
@@ -288,7 +307,7 @@ export function AddHotelModal({
   };
 
   return (
-    <Backdrop onClose={() => { if (!submitting) onClose(); }}>
+    <Backdrop onClose={() => { if (!submitting && !retrying) onClose(); }}>
       <div
         ref={cardRef}
         className="admin-studio"
@@ -306,10 +325,14 @@ export function AddHotelModal({
             {created.inviteError ? (
               /* The hotel is real. The invitation is not. Say both. */
               <div style={alertBox} role="alert">
-                <strong style={{ display: 'block', marginBottom: 4 }}>The hotel was created. The invitation was not sent.</strong>
+                <strong style={{ display: 'block', marginBottom: 4 }}>
+                  {created.inviteFailureCertain
+                    ? 'The hotel was created. The invitation was not sent.'
+                    : 'The hotel was created. The invitation may not have gone out.'}
+                </strong>
                 <span style={{ display: 'block', marginBottom: 6 }}>{created.inviteError}</span>
                 <span style={{ display: 'block' }}>
-                  Nobody has been emailed. Try again below, or invite {email.trim().toLowerCase() || 'the first person'} from the hotel&apos;s People control.
+                  Try again below, or invite {email.trim().toLowerCase() || 'the first person'} from the hotel&apos;s People control. Trying again is safe: it reuses the same invitation instead of making a second one.
                 </span>
               </div>
             ) : created.invite ? (
@@ -337,13 +360,17 @@ export function AddHotelModal({
               </div>
             ) : null}
 
-            {!created.inviteRequested && (
-              <p style={{ fontSize: 13, color: 'var(--dim)', margin: '0 0 16px', lineHeight: 1.5 }}>
-                {organizationName
-                  ? <>It&apos;s assigned to {organizationName} with no customer accounts. Add the first person from the hotel&apos;s People action when you&apos;re ready.</>
-                  : <>It&apos;s now an independent hotel with no customer accounts. Add the first person from the hotel&apos;s People action when you&apos;re ready.</>}
-              </p>
-            )}
+            {/* Where the hotel landed is worth confirming either way. Only the
+                "invite someone later" pointer is specific to a blank first
+                person. */}
+            <p style={{ fontSize: 13, color: 'var(--dim)', margin: '0 0 16px', lineHeight: 1.5 }}>
+              {organizationName
+                ? <>It&apos;s assigned to {organizationName}.</>
+                : <>It&apos;s now an independent hotel.</>}
+              {!created.inviteRequested && (
+                <> No customer accounts yet. Add the first person from the hotel&apos;s People action when you&apos;re ready.</>
+              )}
+            </p>
 
             <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
               {created.inviteError && (
@@ -355,7 +382,9 @@ export function AddHotelModal({
                 <Btn variant="ghost" href={peopleHref} onClick={rememberPeopleHotel}>People control →</Btn>
               )}
               {!created.inviteError && <Btn variant="primary" onClick={openCreatedHotel}>Open hotel →</Btn>}
-              <Btn variant="ghost" onClick={onClose}>Done</Btn>
+              {/* Dismissing mid-retry would throw away the outcome the admin is
+                  waiting on, so Done waits for the retry to land. */}
+              <Btn variant="ghost" onClick={onClose} disabled={retrying}>Done</Btn>
             </div>
           </>
         ) : (
