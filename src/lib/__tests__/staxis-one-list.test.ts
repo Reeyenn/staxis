@@ -39,7 +39,7 @@ import {
   type ListRow,
 } from '@/lib/feed/one-list';
 import { listRendersFor, listShowsFindings, listStandingFor } from '@/lib/feed/list-access';
-import { assignerNotices, taskVisibleToViewer, viewerDepartment, worklistSeesApprovals, mapAssignedRow } from '@/lib/worklist/core';
+import { assignerNotices, taskVisibleToViewer, viewerDepartment, worklistSeesApprovals, mapAssignedRow, mayActOnItem, keepForAssigner } from '@/lib/worklist/core';
 import { isTemplateDueOn, normalizeCadence } from '@/lib/recurring-tasks/store';
 import { rankFindings, type QueueFinding } from '@/components/concourse/finding-cards';
 import type { LogEntryDTO } from '@/lib/comms/types';
@@ -486,5 +486,111 @@ describe('log book in the list', () => {
       built.rows.map((r) => (r as { entry: LogEntryDTO }).entry.id),
       ['l1', 'old'],
     );
+  });
+});
+
+
+// ═══════════════════════════════════════════════════════════════════════════
+// The WRITE seam.
+//
+// The list narrowed to "what is on my screen" while the complete handler still
+// accepted any id in the property. Filtering a read has never stopped a request
+// that names an id directly, so the two rules have to agree.
+// ═══════════════════════════════════════════════════════════════════════════
+
+describe('who may close a to-do', () => {
+  const clerk: WorklistViewer = { staffId: 'clerk', accountId: 'a1', role: 'front_desk', dept: 'front_desk' };
+  const housekeeper: WorklistViewer = { staffId: 'hk', accountId: 'a2', role: 'housekeeping', dept: 'housekeeping' };
+  const gm: WorklistViewer = { staffId: 'gm', accountId: 'a3', role: 'general_manager', dept: null };
+
+  const handedTo = (staffId: string, createdBy: string | null = 'gm') => ({
+    assignedStaffId: staffId, assignedDepartment: null, createdByStaffId: createdBy,
+  });
+
+  test('the person holding it may close it', () => {
+    assert.equal(mayActOnItem(handedTo('clerk'), clerk), true);
+  });
+
+  test('somebody else on the floor may NOT close it', () => {
+    // The bug: this returned true for any id in the property, so a housekeeper
+    // with an id could close work handed to the front desk.
+    assert.equal(mayActOnItem(handedTo('clerk'), housekeeper), false);
+  });
+
+  test('the person who asked for it may call it off', () => {
+    const askedByTheClerk = handedTo('hk', 'clerk');
+    assert.equal(mayActOnItem(askedByTheClerk, clerk), true);
+  });
+
+  test('a manager may close out anything, including what they delegated', () => {
+    // Load-bearing: a delegated to-do deliberately LEAVES the manager's list,
+    // so gating the write on visibility alone would take away their ability to
+    // close out their own hand-off.
+    assert.equal(taskVisibleToViewer(handedTo('clerk'), gm), false, 'not on their list');
+    assert.equal(mayActOnItem(handedTo('clerk'), gm), true, 'still theirs to close');
+  });
+
+  test('a department reminder is not one stranger\'s to cancel for everyone', () => {
+    const forHousekeeping = {
+      assignedStaffId: null, assignedDepartment: 'housekeeping', createdByStaffId: 'gm',
+    };
+    assert.equal(mayActOnItem(forHousekeeping, housekeeper), true, 'in the department');
+    assert.equal(mayActOnItem(forHousekeeping, clerk), false, 'not in the department');
+  });
+
+  test('an all-staff item stays everybody\'s', () => {
+    const everyone = { assignedStaffId: null, assignedDepartment: 'all_staff', createdByStaffId: 'gm' };
+    assert.equal(mayActOnItem(everyone, housekeeper), true);
+    assert.equal(mayActOnItem(everyone, clerk), true);
+  });
+
+  test('no viewer means a server-side caller, which is unrestricted', () => {
+    assert.equal(mayActOnItem(handedTo('clerk'), null), true);
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// The receipt reaches the person who asked.
+//
+// "Can't do this" flips one shared row to blocked, so a department to-do that
+// one housekeeper refuses leaves EVERY housekeeper's list at once. Because it
+// named no person, it reached no drawer either, and the refusal reason (the
+// whole justification for the blocked state) was written where nobody would
+// read it.
+// ═══════════════════════════════════════════════════════════════════════════
+
+describe('what comes back to the person who asked', () => {
+  const item = (over: Partial<AssignedByMeItem> = {}): AssignedByMeItem => ({
+    taskId: 't', title: 'Check the pool chemicals', assigneeStaffId: null, assigneeName: null,
+    assignedDepartment: null, state: 'waiting', dueDate: null,
+    createdAt: '2026-07-28T00:00:00.000Z', settledByName: null, settledByStaffId: null,
+    settledAt: null, reason: null, ageDays: 2, ...over,
+  });
+
+  test('a to-do handed to a person is tracked from the moment it is handed over', () => {
+    assert.equal(keepForAssigner(item({ assigneeStaffId: 'ana', state: 'waiting' }), 'gm'), true);
+  });
+
+  test('a department to-do somebody REFUSED comes back with its reason', () => {
+    const refused = item({
+      assignedDepartment: 'housekeeping', state: 'cant',
+      settledByStaffId: 'hk', settledByName: 'Ana', reason: 'The pump is locked out',
+    });
+    assert.equal(keepForAssigner(refused, 'gm'), true);
+  });
+
+  test('a department to-do still WAITING does not, because nobody is being waited on', () => {
+    const waiting = item({ assignedDepartment: 'housekeeping', state: 'waiting' });
+    assert.equal(keepForAssigner(waiting, 'gm'), false);
+  });
+
+  test('an unassigned to-do somebody else finished comes back', () => {
+    const done = item({ state: 'done', settledByStaffId: 'hk', settledByName: 'Ana' });
+    assert.equal(keepForAssigner(done, 'gm'), true);
+  });
+
+  test('closing your own to-do is not news to yourself', () => {
+    const selfClosed = item({ state: 'done', settledByStaffId: 'gm', settledByName: 'Marcus' });
+    assert.equal(keepForAssigner(selfClosed, 'gm'), false);
   });
 });

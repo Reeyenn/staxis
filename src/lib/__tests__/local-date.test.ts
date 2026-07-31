@@ -13,6 +13,8 @@ import {
   propertyLocalToday,
   addDaysInTz,
   propertyLocalDateOffset,
+  startOfLocalDay,
+  endOfLocalDay,
 } from '@/lib/schedule/local-date';
 
 describe('propertyLocalToday', () => {
@@ -150,5 +152,94 @@ describe('propertyLocalDateOffset — DST transitions', () => {
     assert.equal(propertyLocalDateOffset(now, 'America/Chicago', 0), '2026-11-01');
     assert.equal(propertyLocalDateOffset(now, 'America/Chicago', 1), '2026-11-02');
     assert.equal(propertyLocalDateOffset(now, 'America/Chicago', -1), '2026-10-31');
+  });
+});
+
+
+// ═══════════════════════════════════════════════════════════════════════════
+// A local calendar day → the instants it actually spans.
+//
+// The bug these pin: every due date in the product was built as
+// `${day}T23:59:59Z`, which is the end of the day in GREENWICH. In Texas that
+// is 6:59pm, so a to-do created "due today" turned red over dinner; east of
+// Greenwich it is the following morning, so the item landed on the wrong
+// calendar square outright.
+// ═══════════════════════════════════════════════════════════════════════════
+
+describe('startOfLocalDay / endOfLocalDay', () => {
+  it('ends the day when the HOTEL\'s day ends, not when Greenwich\'s does', () => {
+    // Chicago in July is UTC-5. Local 23:59:59.999 is 04:59:59.999 the NEXT
+    // day in UTC — not 23:59:59Z, which is only 6:59pm in the lobby.
+    const end = endOfLocalDay('2026-07-30', 'America/Chicago');
+    assert.equal(end.toISOString(), '2026-07-31T04:59:59.999Z');
+
+    // The old convention, for contrast: still mid-evening at the hotel.
+    const oldConvention = Date.parse('2026-07-30T23:59:59.999Z');
+    assert.ok(oldConvention < end.getTime(), 'the old stamp expired hours early');
+  });
+
+  it('starts the day at local midnight', () => {
+    assert.equal(
+      startOfLocalDay('2026-07-30', 'America/Chicago').toISOString(),
+      '2026-07-30T05:00:00.000Z',
+    );
+  });
+
+  it('keeps a day east of Greenwich on its own calendar square', () => {
+    // Kiritimati is UTC+14: local midnight on the 30th is the 29th in UTC.
+    // The `T23:59:59Z` convention put the whole day one square late here.
+    assert.equal(
+      startOfLocalDay('2026-07-30', 'Pacific/Kiritimati').toISOString(),
+      '2026-07-29T10:00:00.000Z',
+    );
+    assert.equal(
+      endOfLocalDay('2026-07-30', 'Pacific/Kiritimati').toISOString(),
+      '2026-07-30T09:59:59.999Z',
+    );
+  });
+
+  it('is correct on both sides of a DST boundary', () => {
+    // 2026-03-08 is US spring-forward: the day STARTS on CST (-6) and ENDS on
+    // CDT (-5). A single-pass offset lookup gets one of these two wrong, which
+    // is exactly why the resolver runs twice.
+    assert.equal(
+      startOfLocalDay('2026-03-08', 'America/Chicago').toISOString(),
+      '2026-03-08T06:00:00.000Z',
+    );
+    assert.equal(
+      endOfLocalDay('2026-03-08', 'America/Chicago').toISOString(),
+      '2026-03-09T04:59:59.999Z',
+    );
+    // That day really is 23 hours long.
+    const span = endOfLocalDay('2026-03-08', 'America/Chicago').getTime()
+      - startOfLocalDay('2026-03-08', 'America/Chicago').getTime();
+    assert.equal(Math.round(span / 3_600_000), 23);
+  });
+
+  it('is correct across fall-back, when a day is 25 hours long', () => {
+    const span = endOfLocalDay('2026-11-01', 'America/Chicago').getTime()
+      - startOfLocalDay('2026-11-01', 'America/Chicago').getTime();
+    assert.equal(Math.round(span / 3_600_000), 25);
+  });
+
+  it('never lets one local day overlap the next', () => {
+    for (const tz of ['America/Chicago', 'Pacific/Kiritimati', 'Asia/Kolkata', 'UTC']) {
+      for (const day of ['2026-03-07', '2026-03-08', '2026-07-30', '2026-11-01']) {
+        const end = endOfLocalDay(day, tz).getTime();
+        const nextStart = startOfLocalDay(addDaysInTz(day, 1), tz).getTime();
+        assert.equal(nextStart - end, 1, `${tz} ${day}: days must abut exactly`);
+      }
+    }
+  });
+
+  it('degrades to UTC rather than throwing on a junk timezone', () => {
+    assert.equal(
+      endOfLocalDay('2026-07-30', 'Not/AZone').toISOString(),
+      '2026-07-30T23:59:59.999Z',
+    );
+    assert.equal(
+      endOfLocalDay('2026-07-30', null).toISOString(),
+      '2026-07-30T23:59:59.999Z',
+    );
   });
 });
