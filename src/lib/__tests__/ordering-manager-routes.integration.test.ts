@@ -289,6 +289,36 @@ describe('ordering — the screen only asks for what it does not hold', () => {
     assert.deepEqual(linen!.bucketHints, ['general'], 'the category its items landed in is offered as a hint');
   });
 
+  test('a scanned invoice naming the HOTEL ITSELF is never offered as a supplier', async () => {
+    // The extractor sometimes reads the bill-to — the hotel — as vendor_name
+    // (live example: "Grand Harbor Hotel" suggested to Grand Harbor Hotel).
+    // Hotel A here is "Beaumont Suites"; both its exact name and its printed
+    // legal variant must be dropped, while "Beaumont Paper Co" — a real
+    // supplier that shares the town name — must keep being suggested.
+    await pg.query(
+      `insert into inventory_orders
+         (property_id, item_id, item_name, quantity, received_at, entry_kind, vendor_name)
+       values
+         ($1,$2,'Bath towels',5, now() - interval '40 days', 'receipt', 'Beaumont Suites'),
+         ($1,$2,'Bath towels',5, now() - interval '41 days', 'receipt', 'Beaumont Suites LLC')`,
+      [PID_A1, towelsA],
+    );
+    const suggestions = await buildVendorSuggestions(PID_A1, await listVendors(PID_A1));
+    assert.equal(
+      suggestions.find((s) => /beaumont suites/i.test(s.name)),
+      undefined,
+      'the hotel must never be suggested as its own supplier',
+    );
+    assert.ok(
+      suggestions.find((s) => s.name === 'Beaumont Paper Co'),
+      'a real supplier sharing a word with the hotel must not be swallowed',
+    );
+    await pg.query(
+      `delete from inventory_orders where property_id = $1 and vendor_name like 'Beaumont Suites%'`,
+      [PID_A1],
+    );
+  });
+
   test('suggestions never cross the tenant wall', async () => {
     const forB = await buildVendorSuggestions(PID_B1, await listVendors(PID_B1));
     assert.equal(

@@ -57,8 +57,9 @@ export interface PredictionResult {
 
 // Minimum days of occupancy data we need before committing to a prediction.
 // Below this, we return urgency='unknown' so the UI stays honest instead of
-// projecting noise into the future.
-const MIN_DAYS_OF_DATA = 7;
+// projecting noise into the future. Exported so the ordering screen can apply
+// the same gate to the per-item rates it shows (selectOrderingBurn below).
+export const MIN_DAYS_OF_DATA = 7;
 
 // Default lead time when an item doesn't specify. Matches the schema default.
 const DEFAULT_LEAD_DAYS = 3;
@@ -328,6 +329,66 @@ export function selectBurnRate(
     burn: 1,
     burnUnit: '/day',
     burnSource: 'no-data',
+  };
+}
+
+// ─── Ordering-screen burn selection ────────────────────────────────────────
+//
+// 2026-07-31: the Ordering screen consumed selectBurnRate's burnPerDay
+// directly, which for the rule-occupancy source is max(perCheckout,
+// perStayover) × (checkouts + stayovers) — the over-counting formula that
+// ruleOccupancyBurnPerDay exists to replace (see its comment). Two visible
+// symptoms on the live panel: inflated weekly rates, and UNRELATED items
+// showing the exact same rate whenever their larger per-room number matched
+// (hand towels and pillowcases both "518 a week"). The item cards already
+// recompute with the correct per-room-type math (adapter.toDisplayItem does
+// exactly this dance); this helper gives the ordering route the same
+// treatment in one place, plus the honesty gate predictReorder applies: an
+// occupancy average built from fewer than MIN_DAYS_OF_DATA distinct days is
+// noise, and a rate derived from it must not be presented as a fact.
+
+export interface OrderingBurn {
+  /** Per-day rate. For rule-occupancy this is pc·co + ps·so, never the
+   *  max-rate shortcut. */
+  burnPerDay: number;
+  burnSource: BurnSource;
+  /** True when the rate came from the occupancy rule but the occupancy sample
+   *  is smaller than MIN_DAYS_OF_DATA distinct days. Callers must not show
+   *  the number as a fact — the ordering route downgrades it to 'thin'. */
+  thinSample: boolean;
+}
+
+export function selectOrderingBurn(
+  item: {
+    id: string;
+    usagePerCheckout?: number | null;
+    usagePerStayover?: number | null;
+    parLevel?: number | null;
+  },
+  mlRate: number | undefined,
+  averages: DailyAverages,
+): OrderingBurn {
+  const selected = selectBurnRate(
+    item,
+    mlRate,
+    averages.avgDailyCheckouts + averages.avgDailyStayovers,
+  );
+  if (selected.burnSource !== 'rule-occupancy') {
+    return {
+      burnPerDay: selected.burnPerDay,
+      burnSource: selected.burnSource,
+      thinSample: false,
+    };
+  }
+  return {
+    burnPerDay: ruleOccupancyBurnPerDay(
+      item.usagePerCheckout,
+      item.usagePerStayover,
+      averages.avgDailyCheckouts,
+      averages.avgDailyStayovers,
+    ),
+    burnSource: 'rule-occupancy',
+    thinSample: averages.daysOfData < MIN_DAYS_OF_DATA,
   };
 }
 

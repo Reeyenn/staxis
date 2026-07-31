@@ -23,7 +23,7 @@ import type {
   VendorSuggestion,
   VendorSuggestionSource,
 } from './types';
-import { bucketKeyForItem } from './resolve';
+import { bucketKeyForItem, looksLikePropertyItself } from './resolve';
 
 function fromVendorRow(r: Record<string, unknown>): Vendor {
   return {
@@ -323,6 +323,11 @@ function normalizeVendorName(name: string): string {
  * the linked contact id — is EXCLUDED, so the screen never asks about a
  * supplier it has already been told about. That exclusion is the whole
  * "never re-ask" rule in one filter.
+ *
+ * The hotel's OWN name is excluded too (looksLikePropertyItself): the invoice
+ * scanner sometimes reads the bill-to — the hotel — as vendor_name, and a
+ * screen that suggests the hotel supplies itself reads as broken. The filter
+ * runs over both sources so no path can offer it.
  */
 export async function buildVendorSuggestions(
   pid: string,
@@ -333,6 +338,15 @@ export async function buildVendorSuggestions(
     existing.map((v) => v.knowledgeContactId).filter((v): v is string => !!v),
   );
   const out = new Map<string, VendorSuggestion>();
+
+  const { data: propertyRow } = await supabaseAdmin
+    .from('properties')
+    .select('name')
+    .eq('id', pid)
+    .maybeSingle();
+  const propertyName = propertyRow
+    ? String((propertyRow as Record<string, unknown>).name ?? '')
+    : '';
 
   // ── Source 1: the contacts directory ──
   const { data: contacts, error: contactErr } = await supabaseAdmin
@@ -352,6 +366,7 @@ export async function buildVendorSuggestions(
     const name = String(r.company ?? '').trim() || String(r.name ?? '').trim();
     if (!name) continue;
     if (takenContacts.has(id) || takenNames.has(normalizeVendorName(name))) continue;
+    if (looksLikePropertyItself(name, propertyName)) continue;
     out.set(`contact:${id}`, {
       key: `contact:${id}`,
       name,
@@ -415,6 +430,9 @@ export async function buildVendorSuggestions(
 
   for (const [key, entry] of byName) {
     if (takenNames.has(key)) continue;
+    // The scanner read this name off a photographed page. If it is the hotel
+    // itself (the bill-to, not the counterparty), it is not a supplier.
+    if (looksLikePropertyItself(entry.name, propertyName)) continue;
     const hints = new Set<BucketKey>();
     for (const itemId of entry.itemIds) {
       const bucket = bucketByItem.get(itemId);

@@ -37,6 +37,7 @@ import {
 } from './ordering-actions';
 import { telHref } from '@/components/concourse/told-knowledge';
 import { moneyFromCents } from '@/lib/format';
+import { approxWeekly, daysLeftCue, levelRatio } from './ordering-presentation';
 import type {
   BucketKey,
   OrderBlockReason,
@@ -496,11 +497,20 @@ export function GroupCard({
           </span>
         )}
         {group.knownSubtotalCents > 0 && (
-          <span style={{ marginLeft: 'auto', fontFamily: fonts.mono, fontSize: 13, fontWeight: 650, color: T.ink }}>
+          <span style={{ marginLeft: 'auto', fontFamily: fonts.sans, fontSize: 13, fontWeight: 650, color: T.ink }}>
             {tx.subtotal} {moneyFromCents(group.knownSubtotalCents)}
           </span>
         )}
       </header>
+
+      {/* Caveats live at GROUP level, said once. The item rows below never
+          repeat them: a missing price or a thin burn rate is silence on the
+          row and a plain sentence behind the tap. */}
+      {unmatched && (
+        <div style={{ fontFamily: fonts.sans, fontSize: 12, lineHeight: 1.5, color: T.ink2 }}>
+          {tx.unmatchedHint}
+        </div>
+      )}
 
       {group.itemsWithoutPrice > 0 && (
         <div style={{ fontFamily: fonts.sans, fontSize: 11.5, color: T.ink2 }}>
@@ -545,7 +555,7 @@ export function GroupCard({
         </div>
       )}
 
-      <ul style={{ listStyle: 'none', margin: 0, padding: 0, display: 'flex', flexDirection: 'column', gap: 8 }}>
+      <ul style={{ listStyle: 'none', margin: 0, padding: 0, display: 'flex', flexDirection: 'column' }}>
         {group.items.map((item) => (
           <ItemRow
             key={item.itemId}
@@ -618,6 +628,16 @@ export function GroupCard({
   );
 }
 
+// ─── One item, one calm line ────────────────────────────────────────────────
+//
+// The collapsed row carries exactly three things: the level gauge, the name,
+// and what to order. The one extra line it may earn is days-left, and only
+// when the item is close to running out. Everything else — exact counts, the
+// weekly rate, prices, the supplier control — lives behind a tap on the row.
+// Caveats are NEVER printed here: a thin burn rate or a missing price is
+// silence on the row (the group and the footer already said it once) and a
+// plain sentence in the details.
+
 function ItemRow({
   item, tx, lang, unmatched, vendors, categoriesByKey, busy, onSetItemVendor, onSetCategoryVendor,
 }: {
@@ -631,80 +651,148 @@ function ItemRow({
   onSetItemVendor: (itemId: string, vendorId: string) => void;
   onSetCategoryVendor: (bucketKey: BucketKey, vendorId: string) => void;
 }) {
+  const [open, setOpen] = useState(false);
   const [picking, setPicking] = useState(false);
   const [scope, setScope] = useState<'item' | 'category'>('item');
   const category = categoriesByKey.get(item.bucketKey);
-  const weekly = item.burnPerDay != null ? item.burnPerDay * 7 : null;
+  const weekly = approxWeekly(item.burnPerDay);
+  const cue = daysLeftCue(item.daysLeft);
+  const ratio = levelRatio(item.onHand, item.par);
+  const levelColor = item.status === 'critical' ? T.terra : T.gold;
+  const detailFont: React.CSSProperties = {
+    fontFamily: fonts.sans, fontSize: 12, lineHeight: 1.5, color: T.ink2,
+  };
 
   return (
-    <li style={{ borderTop: `1px solid ${T.ruleSoft}`, paddingTop: 8 }}>
-      <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, flexWrap: 'wrap' }}>
-        <span
-          aria-hidden="true"
+    <li style={{ borderTop: `1px solid ${T.ruleSoft}` }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+        <button
+          type="button"
+          onClick={() => { setOpen(!open); if (open) setPicking(false); }}
+          aria-expanded={open}
           style={{
-            width: 7, height: 7, borderRadius: 999,
-            background: item.status === 'critical' ? T.terra : T.gold,
-            display: 'inline-block',
+            flex: 1,
+            minWidth: 0,
+            display: 'flex',
+            alignItems: 'center',
+            gap: 10,
+            padding: '10px 0',
+            background: 'transparent',
+            border: 'none',
+            cursor: 'pointer',
+            textAlign: 'left',
           }}
-        />
-        <span style={{ fontFamily: fonts.sans, fontSize: 13.5, fontWeight: 600, color: T.ink }}>{item.name}</span>
-        <span style={{ fontFamily: fonts.sans, fontSize: 12, color: T.ink2 }}>
-          {tx.onHandOfPar(trim(item.onHand), trim(item.par))}
-        </span>
-        <span style={{ marginLeft: 'auto', fontFamily: fonts.mono, fontSize: 12.5, color: T.ink }}>
-          {tx.order} {trim(item.suggestedQty)} {item.unit}
-        </span>
-      </div>
-      <div style={{ display: 'flex', alignItems: 'baseline', gap: 10, flexWrap: 'wrap', marginTop: 3, paddingLeft: 15 }}>
-        <span style={{ fontFamily: fonts.sans, fontSize: 11.5, color: T.ink2 }}>
-          {/* A rate with no evidence behind it is a sentence, not a number. */}
-          {weekly != null ? tx.burnRate(trim(weekly)) : tx.burnUnknown}
-        </span>
-        <span style={{ fontFamily: fonts.sans, fontSize: 11.5, color: T.ink2 }}>
-          {item.lastPriceCents != null ? tx.lastPaid(moneyFromCents(item.lastPriceCents)) : tx.noPrice}
-        </span>
-        {item.lineTotalCents != null && (
-          <span style={{ fontFamily: fonts.mono, fontSize: 11.5, color: T.ink2 }}>{moneyFromCents(item.lineTotalCents)}</span>
+        >
+          <span
+            aria-hidden="true"
+            style={{
+              flex: 'none', width: 34, height: 5, borderRadius: 999,
+              background: T.inkWash, overflow: 'hidden', display: 'inline-block',
+            }}
+          >
+            <span
+              style={{
+                display: 'block', height: '100%', borderRadius: 999,
+                width: `${Math.max(ratio * 100, 6)}%`, background: levelColor,
+              }}
+            />
+          </span>
+          <span style={{ minWidth: 0, display: 'flex', flexDirection: 'column', gap: 1 }}>
+            <span
+              style={{
+                fontFamily: fonts.sans, fontSize: 13.5, fontWeight: 600, color: T.ink,
+                whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
+              }}
+            >
+              {item.name}
+            </span>
+            {cue && (
+              <span style={{ fontFamily: fonts.sans, fontSize: 11.5, color: cue.kind === 'today' ? T.terra : T.ink2 }}>
+                {cue.kind === 'today' ? tx.daysToday : tx.daysLeftLine(cue.days)}
+              </span>
+            )}
+          </span>
+          <span style={{ marginLeft: 'auto', flex: 'none', fontFamily: fonts.sans, fontSize: 12.5, fontWeight: 650, color: T.ink }}>
+            {tx.order} {trim(item.suggestedQty)} {item.unit}
+          </span>
+          <svg
+            width="10" height="10" viewBox="0 0 10 10" aria-hidden="true"
+            style={{ flex: 'none', transition: 'transform 140ms ease', transform: open ? 'rotate(90deg)' : 'none' }}
+          >
+            <path d="M3 1.5 L7 5 L3 8.5" fill="none" stroke={T.ink2} strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+          </svg>
+        </button>
+        {unmatched && !open && (
+          <button
+            type="button"
+            onClick={() => { setOpen(true); setPicking(true); }}
+            style={{ ...plainBtn(), flex: 'none', padding: '5px 11px', fontSize: 12 }}
+          >
+            {tx.whoSupplies}
+          </button>
         )}
       </div>
 
-      {/* Setup by doing: one tap, right where the answer is wrong. */}
-      <div style={{ paddingLeft: 15, marginTop: 5 }}>
-        {!picking ? (
-          <button type="button" onClick={() => setPicking(true)} style={linkBtn()}>
-            {unmatched ? tx.whoSupplies : tx.actuallyFrom}
-          </button>
-        ) : (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginTop: 4 }}>
-            <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-              <button type="button" onClick={() => setScope('item')} style={pillBtn(scope === 'item')}>{tx.justThisItem}</button>
-              {category && (
-                <button type="button" onClick={() => setScope('category')} style={pillBtn(scope === 'category')}>
-                  {tx.wholeCategory(categoryLabel(category, lang))}
-                </button>
-              )}
+      {open && (
+        <div style={{ padding: '0 0 12px 44px', display: 'flex', flexDirection: 'column', gap: 5 }}>
+          <span style={detailFont}>{tx.onHandOfPar(trim(item.onHand), trim(item.par))}</span>
+          {/* A rate is a number only when the evidence backs it; otherwise the
+              honest sentence, here and nowhere else. */}
+          {item.burnPerDay != null
+            ? (weekly && <span style={detailFont}>{tx.burnRate(weekly)}</span>)
+            : <span style={detailFont}>{tx.burnUnknown}</span>}
+          {item.lastPriceCents != null
+            ? (
+              <span style={detailFont}>
+                {tx.lastPaid(moneyFromCents(item.lastPriceCents))}
+                {item.lineTotalCents != null && `. ${tx.lineTotalAt(moneyFromCents(item.lineTotalCents))}`}
+              </span>
+            )
+            : <span style={detailFont}>{tx.noPrice}</span>}
+
+          {/* Setup by doing: the supplier control, right where it matters. */}
+          {!picking ? (
+            <div style={{ marginTop: 3 }}>
+              <button
+                type="button"
+                onClick={() => setPicking(true)}
+                style={{ ...plainBtn(), padding: '5px 11px', fontSize: 12 }}
+              >
+                {unmatched ? tx.whoSupplies : tx.actuallyFrom}
+              </button>
             </div>
-            <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-              {vendors.filter((v) => v.reviewState === 'confirmed').map((v) => (
-                <button
-                  key={v.id}
-                  type="button"
-                  disabled={busy != null}
-                  onClick={() => {
-                    if (scope === 'category') onSetCategoryVendor(item.bucketKey, v.id);
-                    else onSetItemVendor(item.itemId, v.id);
-                    setPicking(false);
-                  }}
-                  style={pillBtn(false)}
-                >
-                  {v.name}
-                </button>
-              ))}
-              <button type="button" onClick={() => setPicking(false)} style={linkBtn()}>{tx.cancel}</button>
+          ) : (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginTop: 3 }}>
+              <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                <button type="button" onClick={() => setScope('item')} style={pillBtn(scope === 'item')}>{tx.justThisItem}</button>
+                {category && (
+                  <button type="button" onClick={() => setScope('category')} style={pillBtn(scope === 'category')}>
+                    {tx.wholeCategory(categoryLabel(category, lang))}
+                  </button>
+                )}
+              </div>
+              <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center' }}>
+                {vendors.filter((v) => v.reviewState === 'confirmed').map((v) => (
+                  <button
+                    key={v.id}
+                    type="button"
+                    disabled={busy != null}
+                    onClick={() => {
+                      if (scope === 'category') onSetCategoryVendor(item.bucketKey, v.id);
+                      else onSetItemVendor(item.itemId, v.id);
+                      setPicking(false);
+                    }}
+                    style={pillBtn(false)}
+                  >
+                    {v.name}
+                  </button>
+                ))}
+                <button type="button" onClick={() => setPicking(false)} style={linkBtn()}>{tx.cancel}</button>
+              </div>
             </div>
-          </div>
-        )}
-      </div>
+          )}
+        </div>
+      )}
     </li>
   );
 }

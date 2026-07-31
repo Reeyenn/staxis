@@ -52,6 +52,46 @@ export function bucketKeyForItem(item: BucketableItem): BucketKey {
   return 'general';
 }
 
+// ─── The hotel's own name ───────────────────────────────────────────────────
+
+/** Lowercase, punctuation-free, single-spaced — the comparison form for
+ *  "is this the same trading name?". */
+function comparableName(name: string): string {
+  return name
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim()
+    .replace(/\s+/g, ' ');
+}
+
+/**
+ * Does this candidate supplier name look like the property itself?
+ *
+ * The invoice scanner reads vendor_name off a photographed page, and on some
+ * layouts the most prominent name on the page is the BILL-TO — the hotel.
+ * Live example: "Grand Harbor Hotel" was offered to Grand Harbor Hotel as a
+ * supplier it might use. A hotel is never its own supplier, so suggestion
+ * building drops any candidate whose normalized name equals, contains, or is
+ * contained by the property's own name. Containment matters because the
+ * printed form is rarely exact: "Grand Harbor Hotel LLC" (longer) and "Grand
+ * Harbor" (shorter) are both the hotel. The shorter side must still be a
+ * substantial name (6+ characters) so a short real vendor can never be
+ * swallowed by a hotel that happens to share a word with it.
+ */
+export function looksLikePropertyItself(
+  candidate: string,
+  propertyName: string | null | undefined,
+): boolean {
+  const a = comparableName(candidate);
+  const b = comparableName(propertyName ?? '');
+  if (!a || !b) return false;
+  if (a === b) return true;
+  const shorter = a.length <= b.length ? a : b;
+  const longer = a.length <= b.length ? b : a;
+  // Whole words only: "Grand Harbor" is the hotel, "Harborview Supply" is not.
+  return shorter.length >= 6 && ` ${longer} `.includes(` ${shorter} `);
+}
+
 // ─── Vendor resolution ──────────────────────────────────────────────────────
 
 export interface VendorResolvableItem extends BucketableItem {

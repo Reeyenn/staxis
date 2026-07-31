@@ -67,7 +67,7 @@ CASE LOGIC (this is critical for hotel inventory):
 - If pack size is implied by phrasing ("dozen" = 12, "gross" = 144) infer it.
 
 Also extract:
-- vendor_name (string, or null)
+- vendor_name (string, or null): the SUPPLIER that issued the invoice, i.e. the company being paid. It is NEVER the customer. Ignore the bill-to / ship-to / sold-to party, which on hotel invoices is the hotel itself. If the only name you can find is the customer's, return null.
 - invoice_date (string in YYYY-MM-DD format, or null)
 - invoice_number (string, or null)
 

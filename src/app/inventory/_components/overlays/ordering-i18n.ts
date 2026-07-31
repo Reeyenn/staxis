@@ -109,21 +109,29 @@ export function orderingStrings(lang: Lang) {
       blockedPhone: 'No phone number on file',
       blockedUnconfirmed: 'Confirm this supplier first',
 
-      // ── Unmatched ──
-      unmatchedTitle: 'Nobody assigned',
-      whoSupplies: 'Who supplies this?',
-      actuallyFrom: 'Actually from…',
+      // ── Needs a supplier ──
+      unmatchedTitle: 'Needs a supplier',
+      unmatchedHint: 'Tell us who supplies these and they move into that supplier’s order.',
+      whoSupplies: 'Pick a supplier',
+      actuallyFrom: 'Change supplier',
       justThisItem: 'Only this item',
       wholeCategory: (name: string) => `Everything in ${name}`,
 
       // ── Item rows ──
+      // The collapsed row is one calm line: level, name, what to order. The
+      // ONE extra line it may carry is days-left, and only when the item is
+      // close to running out (ordering-presentation.ts owns that judgement).
+      // Everything below the fold is a short plain fragment, not a paragraph.
       onHandOfPar: (onHand: string, par: string) => `${onHand} left of ${par}`,
-      burnRate: (n: string) => `you go through about ${n} a week`,
-      burnUnknown: 'not enough count history to say how fast this moves',
-      daysLeft: (n: string) => `about ${n} days left`,
+      burnRate: (n: string) => `You go through about ${n} a week`,
+      burnUnknown: 'Not enough history to say how fast this goes',
+      daysLeftLine: (n: number) => (n === 1 ? 'About 1 day left' : `About ${n} days left`),
+      daysToday: 'Could run out today',
       order: 'Order',
       lastPaid: (money: string) => `${money} on your last invoice`,
-      noPrice: 'no price on file',
+      lineTotalAt: (money: string) => `${money} for this order at last invoice prices`,
+      noPrice: 'No price on file yet',
+      details: 'Details',
       linesWithoutPrice: (n: number) => (n === 1
         ? '1 item has no price on file. The total leaves it out.'
         : `${n} items have no price on file. The total leaves them out.`),

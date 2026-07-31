@@ -36,7 +36,13 @@ import {
   rankCandidates,
   groupByVendor,
   blockReasonFor,
+  looksLikePropertyItself,
 } from '@/lib/ordering/resolve';
+import {
+  approxWeekly,
+  daysLeftCue,
+  levelRatio,
+} from '@/app/inventory/_components/overlays/ordering-presentation';
 import { renderPoEmail, sendPoEmail } from '@/lib/ordering/po-email';
 import { mintPoNumber } from '@/lib/ordering/db';
 import type { BucketKey, Vendor } from '@/lib/ordering/types';
@@ -855,5 +861,115 @@ describe('ordering — a send or an action that fails', () => {
     // still on the screen. The route writes the purchase order as a draft and
     // never stamps the items as ordered unless the mail was accepted.
     assert.match(tx.sendFailed, /still here|try again/i);
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// 8. A hotel is never its own supplier
+//
+// The invoice scanner reads vendor_name off a photographed page, and on some
+// layouts the biggest name on the page is the BILL-TO — the hotel. The live
+// panel offered "Grand Harbor Hotel" to Grand Harbor Hotel as a supplier it
+// might use. buildVendorSuggestions filters both sources through this
+// predicate; these tests pin what counts as "the hotel itself".
+// ═══════════════════════════════════════════════════════════════════════════
+
+describe('ordering — the hotel itself is never a supplier suggestion', () => {
+  test('an exact match is the hotel, however it is cased or punctuated', () => {
+    assert.equal(looksLikePropertyItself('Grand Harbor Hotel', 'Grand Harbor Hotel'), true);
+    assert.equal(looksLikePropertyItself('GRAND HARBOR HOTEL', 'Grand Harbor Hotel'), true);
+    assert.equal(looksLikePropertyItself('Grand Harbor Hotel, LLC.', 'Grand Harbor Hotel LLC'), true);
+  });
+
+  test('the printed form is rarely exact: longer and shorter variants still match', () => {
+    // The invoice prints the legal entity; the property record holds the
+    // trading name. Or the reverse.
+    assert.equal(looksLikePropertyItself('Grand Harbor Hotel LLC', 'Grand Harbor Hotel'), true);
+    assert.equal(looksLikePropertyItself('Grand Harbor', 'Grand Harbor Hotel'), true);
+  });
+
+  test('a real supplier that shares a word with the hotel is NOT swallowed', () => {
+    // "Beaumont Paper Co" supplies Beaumont Suites. Sharing a town name must
+    // not make it disappear from the suggestion list.
+    assert.equal(looksLikePropertyItself('Beaumont Paper Co', 'Beaumont Suites'), false);
+    assert.equal(looksLikePropertyItself('Harborview Supply', 'Grand Harbor Hotel'), false);
+    assert.equal(looksLikePropertyItself('Sysco', 'Grand Harbor Hotel'), false);
+  });
+
+  test('word-boundary containment only: a mid-word overlap is not the hotel', () => {
+    assert.equal(looksLikePropertyItself('Randhar Foods', 'Grand Harbor Hotel'), false);
+  });
+
+  test('a short shared word is not enough to be "the hotel"', () => {
+    // The 6-character floor: one short token in common must never blank a
+    // real vendor. ("Suites" alone is 6 letters and generic, but a candidate
+    // that IS a single word of the hotel's name is far more likely the hotel
+    // than a supplier — the floor exists for names shorter than that.)
+    assert.equal(looksLikePropertyItself('Grand', 'Grand Harbor Hotel'), false);
+  });
+
+  test('missing names on either side never match', () => {
+    assert.equal(looksLikePropertyItself('', 'Grand Harbor Hotel'), false);
+    assert.equal(looksLikePropertyItself('Sysco', null), false);
+    assert.equal(looksLikePropertyItself('Sysco', ''), false);
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// 9. Numbers a human would say
+//
+// Founder ruling, 2026-07-31: the panel showed "about 207.2 a week", "about
+// 777 a week", and machine caveats on seven consecutive rows. The collapsed
+// row now carries at most one earned context line, and every spoken figure is
+// rounded the way a person rounds. These helpers are the whole judgement, so
+// they are pinned directly.
+// ═══════════════════════════════════════════════════════════════════════════
+
+describe('ordering — the weekly figure is speech, not telemetry', () => {
+  test('rounds like a person: nearest 10 in the hundreds, nearest 5 in the tens', () => {
+    assert.equal(approxWeekly(518 / 7), '520');
+    assert.equal(approxWeekly(207.2 / 7), '210');
+    assert.equal(approxWeekly(777 / 7), '780');
+    assert.equal(approxWeekly(74 / 7), '75');
+    assert.equal(approxWeekly(6.3 / 7), '6');
+  });
+
+  test('a figure it cannot say confidently is silence, never "about 0"', () => {
+    assert.equal(approxWeekly(0.05), null, 'under one a week reads as a glitch');
+    assert.equal(approxWeekly(0), null);
+    assert.equal(approxWeekly(null), null);
+    assert.equal(approxWeekly(Number.NaN), null);
+  });
+
+  test('never emits a decimal', () => {
+    for (const perDay of [0.37, 1.234, 29.6, 74.03, 518 / 7]) {
+      const said = approxWeekly(perDay);
+      if (said != null) assert.doesNotMatch(said, /\./, `"${said}" is telemetry, not speech`);
+    }
+  });
+});
+
+describe('ordering — the one context line a row may earn', () => {
+  test('close to running out earns the line, in whole days', () => {
+    assert.deepEqual(daysLeftCue(3.4), { kind: 'days', days: 3 });
+    assert.deepEqual(daysLeftCue(1), { kind: 'days', days: 1 });
+    assert.deepEqual(daysLeftCue(14.2), { kind: 'days', days: 14 });
+  });
+
+  test('under a day is "today", not "0 days"', () => {
+    assert.deepEqual(daysLeftCue(0.4), { kind: 'today' });
+  });
+
+  test('far away or unknown earns nothing — silence, not a caveat', () => {
+    assert.equal(daysLeftCue(40), null, 'a comfortable item must not shout');
+    assert.equal(daysLeftCue(15), null);
+    assert.equal(daysLeftCue(null), null, 'an unmeasured rate must not fake a day count');
+  });
+
+  test('the level gauge is clamped and safe against a zero par', () => {
+    assert.equal(levelRatio(50, 100), 0.5);
+    assert.equal(levelRatio(120, 100), 1);
+    assert.equal(levelRatio(-3, 100), 0);
+    assert.equal(levelRatio(5, 0), 0);
   });
 });

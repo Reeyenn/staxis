@@ -13,7 +13,7 @@
  */
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { selectBurnRate } from '../inventory-predictions';
+import { selectBurnRate, selectOrderingBurn, type DailyAverages } from '../inventory-predictions';
 
 const ITEM_BASE = {
   id: 'item-1',
@@ -157,5 +157,65 @@ describe('selectBurnRate — priority order', () => {
       ).burnSource,
       'no-data',
     );
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// selectOrderingBurn — the Ordering screen's burn, 2026-07-31
+//
+// THE BUG THIS EXISTS FOR: the ordering route consumed selectBurnRate's
+// burnPerDay directly, which for rule-occupancy is max(pc, ps) × (co + so).
+// That formula over-counts (it applies the larger rate to BOTH room types)
+// and, worse, collapses UNRELATED items onto one identical figure whenever
+// their larger per-room rate matches — the live panel showed hand towels and
+// pillowcases both moving at exactly "518 a week". The correct math is
+// pc·co + ps·so, the same ruleOccupancyBurnPerDay the item cards use.
+// ═══════════════════════════════════════════════════════════════════════════
+
+function averages(co: number, so: number, days = 14): DailyAverages {
+  return { avgDailyCheckouts: co, avgDailyStayovers: so, daysOfData: days, source: 'daily_logs' };
+}
+
+describe('selectOrderingBurn — the ordering screen cannot show the max() shortcut', () => {
+  it('uses pc·co + ps·so, not max(pc, ps) × (co + so)', () => {
+    const item = { id: 'i', usagePerCheckout: 1, usagePerStayover: 0, parLevel: 100 };
+    const r = selectOrderingBurn(item, undefined, averages(10, 20));
+    assert.equal(r.burnSource, 'rule-occupancy');
+    // The shortcut would say 30/day (1 × 30 occupied rooms). The truth is 10:
+    // only checkouts consume this item.
+    assert.equal(r.burnPerDay, 10);
+  });
+
+  it('two items with different usage configs get DIFFERENT rates even when their max matches', () => {
+    // The "518 a week" twins: same larger rate (2), different smaller rate.
+    const handTowels = { id: 'a', usagePerCheckout: 2, usagePerStayover: 1, parLevel: 100 };
+    const pillowcases = { id: 'b', usagePerCheckout: 2, usagePerStayover: 2, parLevel: 100 };
+    const avg = averages(20, 17);
+    const a = selectOrderingBurn(handTowels, undefined, avg);
+    const b = selectOrderingBurn(pillowcases, undefined, avg);
+    assert.equal(a.burnPerDay, 2 * 20 + 1 * 17);
+    assert.equal(b.burnPerDay, 2 * 20 + 2 * 17);
+    assert.notEqual(a.burnPerDay, b.burnPerDay, 'distinct configs must not collapse onto one number');
+  });
+
+  it('flags a too-thin occupancy sample so the UI degrades the rate to a caveat', () => {
+    const item = { id: 'i', usagePerCheckout: 1, usagePerStayover: 0, parLevel: 100 };
+    assert.equal(selectOrderingBurn(item, undefined, averages(10, 0, 3)).thinSample, true);
+    assert.equal(selectOrderingBurn(item, undefined, averages(10, 0, 7)).thinSample, false);
+  });
+
+  it('an ML rate passes through untouched and is never marked thin', () => {
+    const item = { id: 'i', usagePerCheckout: 1, usagePerStayover: 0, parLevel: 100 };
+    const r = selectOrderingBurn(item, 4.25, averages(10, 0, 2));
+    assert.equal(r.burnSource, 'ml');
+    assert.equal(r.burnPerDay, 4.25);
+    assert.equal(r.thinSample, false, 'the Bayesian posterior already carries its own uncertainty');
+  });
+
+  it('no rule and no model still classifies like selectBurnRate', () => {
+    const parOnly = { id: 'i', usagePerCheckout: null, usagePerStayover: null, parLevel: 60 };
+    assert.equal(selectOrderingBurn(parOnly, undefined, averages(10, 5)).burnSource, 'fallback-60d');
+    const nothing = { id: 'i', usagePerCheckout: null, usagePerStayover: null, parLevel: null };
+    assert.equal(selectOrderingBurn(nothing, undefined, averages(10, 5)).burnSource, 'no-data');
   });
 });

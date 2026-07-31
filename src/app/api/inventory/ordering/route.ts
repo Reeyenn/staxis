@@ -55,7 +55,7 @@ import {
 import {
   fetchDailyAverages,
   fetchMlPredictedRates,
-  selectBurnRate,
+  selectOrderingBurn,
   type BurnSource,
 } from '@/lib/inventory-predictions';
 
@@ -139,7 +139,6 @@ async function loadState(pid: string): Promise<OrderingState> {
     categoryLinks.map((l) => [l.bucketKey, l.vendorId] as const),
   );
 
-  const occRoomsPerDay = averages.avgDailyCheckouts + averages.avgDailyStayovers;
   const itemIds = items.map((r) => String(r.id));
   const prices = await lastInvoicePrices(pid, itemIds);
 
@@ -156,7 +155,13 @@ async function loadState(pid: string): Promise<OrderingState> {
     // counting them would suppress a real shortage.
     const onHand = Math.max(0, currentStock - setAside);
 
-    const burn = selectBurnRate(
+    // selectOrderingBurn, not raw selectBurnRate: the rule-occupancy math here
+    // must be the same pc·co + ps·so the item cards use, or the two surfaces
+    // contradict each other AND unrelated items collapse onto one identical
+    // weekly figure whenever their larger per-room rate matches. It also flags
+    // a too-thin occupancy sample so the rate degrades to a caveat, matching
+    // what the footer already tells the manager in that state.
+    const burn = selectOrderingBurn(
       {
         id,
         usagePerCheckout: row.usage_per_checkout == null ? null : Number(row.usage_per_checkout),
@@ -164,7 +169,7 @@ async function loadState(pid: string): Promise<OrderingState> {
         parLevel,
       },
       mlRates.get(id),
-      occRoomsPerDay,
+      averages,
     );
 
     const price = prices.get(id) ?? null;
@@ -180,7 +185,7 @@ async function loadState(pid: string): Promise<OrderingState> {
         vendorId: (row.vendor_id as string | null) ?? null,
         vendorName: (row.vendor_name as string | null) ?? null,
         burnPerDay: burn.burnPerDay,
-        burnConfidence: toConfidence(burn.burnSource),
+        burnConfidence: burn.thinSample ? 'thin' : toConfidence(burn.burnSource),
         lastPriceCents: price?.cents ?? null,
         lastPriceAt: price?.at ?? null,
       },
