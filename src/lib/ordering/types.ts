@@ -105,6 +105,21 @@ export interface ResolvedVendorRef {
  *  confident-looking figure derived from par/60. */
 export type BurnConfidence = 'ml' | 'rule-occupancy' | 'thin' | 'none';
 
+/**
+ * An order for this item that has gone out and has not arrived.
+ *
+ * "Gone out" is `purchase_orders.sent_at` on a row whose status is 'sent',
+ * which both paths produce: the email send promotes its draft, and "I placed
+ * it" writes the row already sent. "Has not arrived" is the absence of a
+ * receipt on the invoice ledger dated at or after that send.
+ */
+export interface OpenOrderRef {
+  /** ISO. When the order actually went to the vendor. */
+  orderedAt: string;
+  /** The reference on the document, so the row and the vendor agree. */
+  poNumber: string | null;
+}
+
 export interface OrderCandidate {
   itemId: string;
   name: string;
@@ -129,6 +144,11 @@ export interface OrderCandidate {
   lastPriceAt: string | null;
   /** suggestedQty × lastPriceCents, or null when lastPriceCents is null. */
   lineTotalCents: number | null;
+  /** An order already on its way for this item, on the rare occasion the item
+   *  is listed anyway: an order old enough to have arrived and not have. While
+   *  the order is still fresh the item is not a candidate at all. NULL is the
+   *  ordinary case, and it is the only case that carries no claim. */
+  openOrder: (OpenOrderRef & { daysAgo: number }) | null;
   vendor: ResolvedVendorRef;
 }
 

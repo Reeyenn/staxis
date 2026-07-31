@@ -39,6 +39,10 @@ import {
   mintPoNumber,
   getIntroDismissedAt,
   dismissIntro,
+  openOrdersByItem,
+  findRecentMatchingOrder,
+  replaceDraftOrderLines,
+  knowledgeContactBelongsToProperty,
 } from '@/lib/ordering/db';
 import { buildCandidate, rankCandidates, groupByVendor, blockReasonFor } from '@/lib/ordering/resolve';
 import { sendPoEmail } from '@/lib/ordering/po-email';
@@ -140,7 +144,13 @@ async function loadState(pid: string): Promise<OrderingState> {
   );
 
   const itemIds = items.map((r) => String(r.id));
-  const prices = await lastInvoicePrices(pid, itemIds);
+  // One clock for the whole payload: the order-age judgement and the list it
+  // filters must not be able to disagree with each other.
+  const now = new Date();
+  const [prices, openOrders] = await Promise.all([
+    lastInvoicePrices(pid, itemIds),
+    openOrdersByItem(pid, itemIds, now),
+  ]);
 
   const candidates: OrderCandidate[] = [];
   const bucketCounts = new Map<BucketKey, number>();
@@ -188,9 +198,15 @@ async function loadState(pid: string): Promise<OrderingState> {
         burnConfidence: burn.thinSample ? 'thin' : toConfidence(burn.burnSource),
         lastPriceCents: price?.cents ?? null,
         lastPriceAt: price?.at ?? null,
+        // An order already on its way takes the item off this list until the
+        // delivery is scanned. Without it the screen asks for the same order
+        // again tomorrow, which is the one thing that makes the list a chore
+        // instead of an answer.
+        openOrder: openOrders.get(id) ?? null,
       },
       categoryMap,
       vendorsById,
+      now,
     );
     if (candidate) candidates.push(candidate);
 
@@ -249,7 +265,15 @@ export async function GET(req: NextRequest): Promise<Response> {
 
 // ─── Actions ────────────────────────────────────────────────────────────────
 
-const BUCKET_KEY_RE = /^(general|breakfast|custom:[0-9a-f-]{36})$/;
+// MUST MATCH THE CHECK IN MIGRATION 0377 CHARACTER FOR CHARACTER. It used to
+// be the looser `custom:[0-9a-f-]{36}`, which accepts 36 hex characters with
+// no hyphens (and hyphens in any position). Those values passed this route and
+// were then refused by the database, so a validation problem arrived as a 500
+// — and in confirm_suggestion it arrived AFTER the vendor row had been
+// written, leaving a half-done confirm behind. A route regex looser than the
+// column's is not validation, it is a delayed crash.
+const BUCKET_KEY_RE
+  = /^(general|breakfast|custom:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/;
 
 function parseBucketKey(raw: unknown): BucketKey | null {
   if (typeof raw !== 'string' || !BUCKET_KEY_RE.test(raw)) return null;
@@ -311,6 +335,27 @@ export async function POST(req: NextRequest): Promise<Response> {
         const contactId = typeof body.knowledgeContactId === 'string' ? body.knowledgeContactId : null;
         if (contactId && !isUuid(contactId)) return badRequest(gate, 'invalid knowledgeContactId');
 
+        // EVERYTHING THAT CAN REFUSE THIS CONFIRM RUNS BEFORE THE FIRST WRITE.
+        // The category keys used to be parsed inside the loop that follows the
+        // vendor insert, so a key this route accepted and the database refused
+        // failed with the vendor already created and its categories not
+        // applied. A confirm either happens or it does not.
+        const rawBuckets = Array.isArray(body.bucketKeys) ? body.bucketKeys : [];
+        const buckets: BucketKey[] = [];
+        for (const raw of rawBuckets) {
+          const key = parseBucketKey(raw);
+          if (!key) return badRequest(gate, 'invalid bucketKey');
+          buckets.push(key);
+        }
+
+        // The contact must be THIS hotel's. Nothing renders the link, so a
+        // foreign id leaks no data, but it plants a cross-tenant reference and
+        // turns the confirm into an existence oracle for another hotel's
+        // contact ids. Checked here, before anything is written.
+        if (contactId && !(await knowledgeContactBelongsToProperty(gate.pid, contactId))) {
+          return badRequest(gate, 'invalid knowledgeContactId');
+        }
+
         const vendor = await createVendor(
           gate.pid,
           {
@@ -333,10 +378,8 @@ export async function POST(req: NextRequest): Promise<Response> {
         // Categories offered pre-ticked in the confirm step are applied here,
         // which is what makes "one minute of setup" true: confirming Sysco and
         // ticking Breakfast is the entire mapping for every breakfast item.
-        const buckets = Array.isArray(body.bucketKeys) ? body.bucketKeys : [];
-        for (const raw of buckets) {
-          const key = parseBucketKey(raw);
-          if (key) await setVendorCategory(gate.pid, key, vendor.id, actor);
+        for (const key of buckets) {
+          await setVendorCategory(gate.pid, key, vendor.id, actor);
         }
         return ok({ vendorId: vendor.id }, { requestId: gate.requestId, status: 201 });
       }
@@ -401,6 +444,28 @@ export async function POST(req: NextRequest): Promise<Response> {
         }
         const resolved = await resolveOrderLines(gate.pid, body);
         if ('error' in resolved) return badRequest(gate, resolved.error);
+        // The same guard send_po has always had. Without it a list whose items
+        // were all restocked since the screen loaded records an order with no
+        // lines: a purchase order for nothing, which then stamps nothing and
+        // reads in the history as an order the manager never placed.
+        if (resolved.lines.length === 0) return badRequest(gate, 'nothing to order');
+
+        const lineItemIds = resolved.lines.map((l) => l.itemId);
+        // A double tap is one order. Marking a store run twice would double
+        // the hotel's own record of what it bought.
+        //
+        // ONLY a SENT match counts. A draft is an email attempt that was never
+        // accepted, and treating it as "already recorded" would swallow a
+        // genuine "I placed it": the manager would be told it was recorded
+        // while the row stayed a draft and the items were never stamped.
+        const already = await findRecentMatchingOrder(gate.pid, resolved.vendorId, lineItemIds);
+        if (already && already.status === 'sent') {
+          return ok(
+            { order: { id: already.id, poNumber: already.poNumber }, alreadyRecorded: true },
+            { requestId: gate.requestId },
+          );
+        }
+
         const recorded = await recordPlacedOrder(
           gate.pid,
           {
@@ -445,11 +510,39 @@ export async function POST(req: NextRequest): Promise<Response> {
         if (resolved.lines.length === 0) return badRequest(gate, 'nothing to order');
 
         const hotelName = await propertyName(gate.pid);
+        const lineItemIds = resolved.lines.map((l) => l.itemId);
+
+        // ── ONE ORDER PER ORDER, HOWEVER MANY TIMES IT IS ASKED FOR ──
+        //
+        // The send can fail in a way that tells the manager nothing certain: a
+        // 15-second timeout, a 502 from a slow mail hop. The panel's own copy
+        // then invites the retry ("The order is still here, try again"). This
+        // used to mint a fresh number on that retry and put a SECOND purchase
+        // order, under a second reference, in a real supplier's inbox for the
+        // same goods. So the order is identified by its content — this hotel,
+        // this vendor, this set of items — not by the request that created it.
+        //
+        //   already SENT  → the vendor has it. Report the SAME order and do
+        //                   not go near the mail server.
+        //   still a DRAFT → the mail was never confirmed accepted. Reuse the
+        //                   row and its number so the retry cannot become a
+        //                   second reference, and refresh its lines so the
+        //                   document and the row cannot disagree.
+        const existing = await findRecentMatchingOrder(gate.pid, vendor.id, lineItemIds);
+        if (existing && existing.status === 'sent') {
+          return ok(
+            {
+              order: { id: existing.id, poNumber: existing.poNumber },
+              sentTo: vendor.email,
+              alreadySent: true,
+            },
+            { requestId: gate.requestId },
+          );
+        }
+
         // Mint the number BEFORE rendering: the reference the vendor quotes
-        // back on the phone has to be the one on the row we kept. It is also
-        // the email's idempotency key, so a double-tap cannot deliver two
-        // copies of the same order.
-        const poNumber = mintPoNumber();
+        // back on the phone has to be the one on the row we kept.
+        const poNumber = existing ? existing.poNumber : mintPoNumber();
 
         // WRITE THE ORDER BEFORE SENDING IT. The send used to come first, so a
         // crash or a timeout between the two lost the order entirely: no row,
@@ -458,21 +551,27 @@ export async function POST(req: NextRequest): Promise<Response> {
         // ordered, so the items stay on the list to retry and nothing claims
         // the vendor has it. markOrderSent promotes it once the mail is
         // actually accepted.
-        const recorded = await recordPlacedOrder(
-          gate.pid,
-          {
-            vendorId: vendor.id,
-            vendorName: vendor.name,
-            placedVia: 'email',
-            lines: resolved.lines,
-            subtotalCents: resolved.subtotalCents,
-            sentToEmail: vendor.email,
-            notes: null,
-            poNumber,
-            status: 'draft',
-          },
-          actor,
-        );
+        let recorded: { id: string; poNumber: string } | null;
+        if (existing) {
+          await replaceDraftOrderLines(gate.pid, existing.id, resolved.lines, resolved.subtotalCents);
+          recorded = { id: existing.id, poNumber: existing.poNumber };
+        } else {
+          recorded = await recordPlacedOrder(
+            gate.pid,
+            {
+              vendorId: vendor.id,
+              vendorName: vendor.name,
+              placedVia: 'email',
+              lines: resolved.lines,
+              subtotalCents: resolved.subtotalCents,
+              sentToEmail: vendor.email,
+              notes: null,
+              poNumber,
+              status: 'draft',
+            },
+            actor,
+          );
+        }
         if (!recorded) {
           return err('could not record the order', {
             requestId: gate.requestId,
@@ -579,7 +678,14 @@ async function resolveOrderLines(
     const id = String(raw.id);
     const par = Number(raw.par_level ?? 0);
     const onHand = Math.max(0, Number(raw.current_stock ?? 0) - Number(raw.set_aside ?? 0));
-    const qty = Math.max(1, Math.ceil(par - onHand));
+    // NO FLOOR OF ONE. This used to be Math.max(1, …), which put a line on a
+    // real purchase order for an item that needs nothing: restocked since the
+    // screen loaded, or never given a par level at all. buildCandidate can
+    // never produce that case, so the guard only ever fired on a stale or
+    // tampered page — and it fired by inventing a unit the hotel would be
+    // billed for. An item with nothing to order gets no line.
+    const qty = Math.ceil(par - onHand);
+    if (!(qty > 0)) continue;
     const price = prices.get(id)?.cents ?? null;
     lines.push({
       itemId: id,

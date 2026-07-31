@@ -177,7 +177,7 @@ describe('ordering — vendor resolution precedence', () => {
 describe('ordering — what is worth ordering now', () => {
   const empty = new Map<BucketKey, string>();
 
-  function candidate(over: Partial<Parameters<typeof buildCandidate>[0]> = {}) {
+  function candidate(over: Partial<Parameters<typeof buildCandidate>[0]> = {}, now?: Date) {
     return buildCandidate(
       {
         itemId: 'i1', name: 'Bath towels', unit: 'each',
@@ -187,9 +187,11 @@ describe('ordering — what is worth ordering now', () => {
         burnPerDay: 9 / 7, burnConfidence: 'rule-occupancy',
         lastPriceCents: 250, lastPriceAt: '2026-07-01T00:00:00Z',
         ...over,
+        openOrder: over.openOrder ?? null,
       },
       empty,
       VENDORS,
+      now,
     );
   }
 
@@ -239,6 +241,47 @@ describe('ordering — what is worth ordering now', () => {
     assert.equal(unpriced.lineTotalCents, null, 'a missing price must stay missing, never become 0');
     assert.equal(unpriced.lastPriceAt, null, 'no price means no "as of" claim either');
   });
+
+  // ── An order already on its way ──
+  //
+  // The screen's core promise: ordering something takes it off the list. Stock
+  // does not move until the delivery lands, so without this rule the same
+  // shortage is presented as new work every single day until it arrives, which
+  // is what makes a manager stop trusting the list.
+
+  const NOW = new Date('2026-07-31T12:00:00Z');
+  const ordered = (daysAgo: number) => ({
+    orderedAt: new Date(NOW.getTime() - daysAgo * 86_400_000).toISOString(),
+    poNumber: 'PO-260730-AB12',
+  });
+
+  test('an item ordered yesterday is not asked for again', () => {
+    assert.equal(
+      candidate({ onHand: 0, openOrder: ordered(1) }, NOW),
+      null,
+      'the shelf is still empty, and the order is still on its way',
+    );
+    assert.equal(candidate({ onHand: 0, openOrder: ordered(6.5) }, NOW), null);
+  });
+
+  test('an order late enough to have arrived puts the item back, and says so', () => {
+    const late = candidate({ onHand: 0, openOrder: ordered(9) }, NOW);
+    assert.ok(late, 'a lost order must not hide a real shortage forever');
+    assert.equal(late!.openOrder?.daysAgo, 9, 'the row can tell the manager it was already ordered');
+    assert.equal(late!.openOrder?.poNumber, 'PO-260730-AB12');
+  });
+
+  test('an ordinary item carries no order claim at all', () => {
+    assert.equal(candidate({ onHand: 0 }, NOW)!.openOrder, null);
+  });
+
+  test('an unreadable order date never hides a shortage', () => {
+    // Fail towards showing the item. Hiding stock the hotel needs on the
+    // strength of a timestamp we could not parse is the worse mistake.
+    const c = candidate({ onHand: 0, openOrder: { orderedAt: 'not a date', poNumber: null } }, NOW);
+    assert.ok(c, 'we could not tell, so the shortage wins');
+    assert.equal(c!.openOrder, null, 'and it claims nothing about an order it cannot read');
+  });
 });
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -255,6 +298,7 @@ describe('ordering — the order of the list', () => {
         vendorId: null, vendorName: null,
         burnPerDay: 1, burnConfidence: 'ml',
         lastPriceCents: priceCents, lastPriceAt: '2026-07-01T00:00:00Z',
+        openOrder: null,
       },
       empty,
       VENDORS,
@@ -333,6 +377,7 @@ describe('ordering — grouping and blocked reasons', () => {
           vendorId, vendorName,
           burnPerDay: 1, burnConfidence: 'ml',
           lastPriceCents: price, lastPriceAt: null,
+          openOrder: null,
         },
         empty,
         VENDORS,
@@ -367,6 +412,7 @@ describe('ordering — grouping and blocked reasons', () => {
           vendorId: 'v-sysco', vendorName: null,
           burnPerDay: 1, burnConfidence: 'ml',
           lastPriceCents: price, lastPriceAt: null,
+          openOrder: null,
         },
         empty,
         VENDORS,

@@ -15,6 +15,7 @@ import { supabaseAdmin } from '@/lib/supabase-admin';
 import { log } from '@/lib/log';
 import type {
   BucketKey,
+  OpenOrderRef,
   OrderCandidate,
   OrderMethod,
   Vendor,
@@ -301,6 +302,38 @@ export async function lastInvoicePrices(
     out.set(id, { cents: Math.round(dollars * 100), at: String(r.received_at ?? '') });
   }
   return out;
+}
+
+// ─── The contacts directory ────────────────────────────────────────────────
+
+/**
+ * Does this contact belong to this hotel?
+ *
+ * `vendors.knowledge_contact_id` is a plain FK with no tenant trigger behind
+ * it, so a contact id from another hotel would be accepted by the database.
+ * Nothing joins it back for display, so no data leaks, but a dangling
+ * cross-tenant reference is the tenant wall failing quietly and the accept /
+ * reject answer is an existence oracle for another hotel's contact ids.
+ *
+ * FAILS CLOSED. A read that errors returns false and the caller refuses the
+ * write: refusing a legitimate confirm on a blip is recoverable in one tap,
+ * writing a cross-tenant reference is not.
+ */
+export async function knowledgeContactBelongsToProperty(
+  pid: string,
+  contactId: string,
+): Promise<boolean> {
+  const { data, error } = await supabaseAdmin
+    .from('knowledge_contacts')
+    .select('id')
+    .eq('id', contactId)
+    .eq('property_id', pid)
+    .maybeSingle();
+  if (error) {
+    log.error('[ordering] knowledge contact tenant check failed', { pid, err: error.message });
+    return false;
+  }
+  return !!data;
 }
 
 // ─── Pre-built vendor suggestions ──────────────────────────────────────────
@@ -633,6 +666,231 @@ async function stampOrdered(
     .in('id', ids);
   if (error) {
     log.error('[ordering] last_ordered_at stamp failed', { pid, orderId, err: error.message });
+  }
+}
+
+// ─── Orders already on their way ───────────────────────────────────────────
+
+/** How far back an order can have been sent and still be treated as in
+ *  flight at all. Past this it is history, not a delivery anyone is waiting
+ *  for, and the row exists only so the item can say it was ordered before. */
+const OPEN_ORDER_LOOKBACK_DAYS = 30;
+const MS_PER_DAY = 86_400_000;
+
+/**
+ * The most recent order for each item that has gone out and not arrived.
+ *
+ * This is the read that makes "ordering something takes it off the list" true.
+ * The stamp on `inventory.last_ordered_at` cannot answer it: the delivery path
+ * writes that column too (migration 0312), so it means "last order activity",
+ * not "waiting on a delivery". The purchase order itself is the honest source.
+ *
+ * ARRIVAL is a receipt on `inventory_orders` dated at or after the send. That
+ * is the same ledger the prices come from and the same one the invoice scan
+ * writes, so scanning the delivery is what puts a still-short item back on the
+ * list, exactly when the manager would expect it.
+ *
+ * DEGRADES TO "NOTHING ON ORDER". A failed read here must not hide a real
+ * shortage, so an error returns an empty map and every item stays listed.
+ */
+export async function openOrdersByItem(
+  pid: string,
+  itemIds: readonly string[],
+  now: Date = new Date(),
+): Promise<Map<string, OpenOrderRef>> {
+  const out = new Map<string, OpenOrderRef>();
+  if (itemIds.length === 0) return out;
+  const wanted = new Set(itemIds);
+  const cutoff = new Date(now.getTime() - OPEN_ORDER_LOOKBACK_DAYS * MS_PER_DAY).toISOString();
+
+  // Embedded lines rather than a second query keyed on order ids: the id list
+  // would be hundreds of uuids in a URL, and PostgREST joins this for free.
+  const { data, error } = await supabaseAdmin
+    .from('purchase_orders')
+    .select('id, po_number, sent_at, purchase_order_lines(item_id)')
+    .eq('property_id', pid)
+    .eq('status', 'sent')
+    .gte('sent_at', cutoff)
+    .order('sent_at', { ascending: false })
+    .limit(200);
+  if (error) {
+    log.error('[ordering] openOrdersByItem failed', { pid, err: error.message });
+    return out;
+  }
+
+  // Rows arrive newest first, so the first order carrying an item wins.
+  for (const raw of (data ?? []) as Array<Record<string, unknown>>) {
+    const sentAt = raw.sent_at == null ? '' : String(raw.sent_at);
+    if (!sentAt) continue;
+    const lines = Array.isArray(raw.purchase_order_lines) ? raw.purchase_order_lines : [];
+    for (const line of lines as Array<Record<string, unknown>>) {
+      const itemId = line.item_id == null ? '' : String(line.item_id);
+      if (!itemId || !wanted.has(itemId) || out.has(itemId)) continue;
+      out.set(itemId, { orderedAt: sentAt, poNumber: (raw.po_number as string | null) ?? null });
+    }
+  }
+  if (out.size === 0) return out;
+
+  const { data: receipts, error: receiptError } = await supabaseAdmin
+    .from('inventory_orders')
+    .select('item_id, received_at')
+    .eq('property_id', pid)
+    .eq('entry_kind', 'receipt')
+    .gte('received_at', cutoff)
+    .order('received_at', { ascending: false })
+    .limit(4000);
+  if (receiptError) {
+    // We know an order went out but cannot tell whether it landed. Saying
+    // "still on the way" would hide an item the hotel may have already
+    // received and burned through, so the shortage wins.
+    log.error('[ordering] open-order receipt read failed', { pid, err: receiptError.message });
+    return new Map();
+  }
+
+  for (const raw of (receipts ?? []) as Array<Record<string, unknown>>) {
+    const itemId = raw.item_id == null ? '' : String(raw.item_id);
+    const open = itemId ? out.get(itemId) : undefined;
+    if (!open) continue;
+    // Parsed, not string-compared. The two timestamps come from different
+    // writers and a difference in offset spelling ("Z" against "+00:00") would
+    // silently reverse a string comparison, which here means a delivered item
+    // held off the list or a waiting one put back on it.
+    const receivedAt = Date.parse(raw.received_at == null ? '' : String(raw.received_at));
+    const orderedAt = Date.parse(open.orderedAt);
+    if (Number.isFinite(receivedAt) && Number.isFinite(orderedAt) && receivedAt >= orderedAt) {
+      out.delete(itemId);
+    }
+  }
+
+  return out;
+}
+
+// ─── One tap, one order ────────────────────────────────────────────────────
+
+/** How long two identical order requests are treated as the same order.
+ *
+ *  Sized for the retry, not for the workflow: a send that times out at 15
+ *  seconds and a manager who taps again after the 60-second countdown are
+ *  minutes apart at most. Ordering the very same items from the very same
+ *  supplier again inside ten minutes is a double tap, not a second order. */
+const SAME_ORDER_WINDOW_MINUTES = 10;
+
+export interface MatchingOrder {
+  id: string;
+  poNumber: string;
+  /** 'sent' means the vendor already has it. Nothing may email it again. */
+  status: string;
+}
+
+/**
+ * An order for exactly these items, from exactly this vendor, just now.
+ *
+ * THE DUPLICATE-EMAIL FIX. The send used to mint a fresh PO number per
+ * request, so an ambiguous outcome — a 15-second timeout, a 502 from a slow
+ * mail hop — followed by the retry the panel invites put a SECOND purchase
+ * order in a real supplier's inbox, under a different reference, for the same
+ * goods. The order's identity is its content (hotel, vendor, line set), not
+ * the request that happened to create it, so that is what is matched here.
+ *
+ * The set of item ids is compared exactly. Adding one item to the list is a
+ * different order and correctly gets its own number; quantities are not part
+ * of the identity because the server re-derives them from live stock on every
+ * attempt and may legitimately land on a different figure.
+ */
+export async function findRecentMatchingOrder(
+  pid: string,
+  vendorId: string | null,
+  itemIds: readonly string[],
+  now: Date = new Date(),
+): Promise<MatchingOrder | null> {
+  if (itemIds.length === 0) return null;
+  const wanted = new Set(itemIds);
+  const cutoff = new Date(now.getTime() - SAME_ORDER_WINDOW_MINUTES * 60_000).toISOString();
+
+  let q = supabaseAdmin
+    .from('purchase_orders')
+    .select('id, po_number, status, purchase_order_lines(item_id)')
+    .eq('property_id', pid)
+    .gte('created_at', cutoff)
+    .in('status', ['draft', 'sent']);
+  q = vendorId === null ? q.is('vendor_id', null) : q.eq('vendor_id', vendorId);
+
+  const { data, error } = await q.order('created_at', { ascending: false }).limit(25);
+  if (error) {
+    // Unknown rather than "no match". Minting a new order on a failed read is
+    // the exact duplicate this exists to prevent, so the caller is told
+    // nothing matched only when we actually looked.
+    log.error('[ordering] findRecentMatchingOrder failed', { pid, err: error.message });
+    throw error;
+  }
+
+  for (const raw of (data ?? []) as Array<Record<string, unknown>>) {
+    const lines = Array.isArray(raw.purchase_order_lines) ? raw.purchase_order_lines : [];
+    const ids = new Set(
+      (lines as Array<Record<string, unknown>>)
+        .map((l) => (l.item_id == null ? '' : String(l.item_id)))
+        .filter(Boolean),
+    );
+    if (ids.size !== wanted.size) continue;
+    let same = true;
+    for (const id of wanted) if (!ids.has(id)) { same = false; break; }
+    if (!same) continue;
+    return {
+      id: String(raw.id),
+      poNumber: String(raw.po_number ?? ''),
+      status: String(raw.status ?? ''),
+    };
+  }
+  return null;
+}
+
+/**
+ * Put the freshly resolved lines onto an existing draft.
+ *
+ * Only ever called on a draft, which by construction has never been sent and
+ * has stamped nothing. It exists so a retry keeps ONE purchase order number
+ * while the document the vendor receives still matches the row we keep: the
+ * quantities are re-derived from live stock on every attempt, and a row saying
+ * 40 towels beside an email asking for 36 is the kind of disagreement a hotel
+ * gets billed over.
+ */
+export async function replaceDraftOrderLines(
+  pid: string,
+  orderId: string,
+  lines: readonly RecordedOrderLine[],
+  subtotalCents: number,
+): Promise<void> {
+  const { error: delError } = await supabaseAdmin
+    .from('purchase_order_lines')
+    .delete()
+    .eq('purchase_order_id', orderId);
+  if (delError) {
+    log.error('[ordering] replaceDraftOrderLines delete failed', { pid, orderId, err: delError.message });
+    throw delError;
+  }
+  if (lines.length > 0) {
+    const { error: insError } = await supabaseAdmin.from('purchase_order_lines').insert(
+      lines.map((line) => ({
+        purchase_order_id: orderId,
+        item_id: line.itemId,
+        description: line.description,
+        qty_ordered: line.qty,
+        unit_cost_cents: line.unitCostCents == null ? 0 : Math.max(0, Math.round(line.unitCostCents)),
+      })),
+    );
+    if (insError) {
+      log.error('[ordering] replaceDraftOrderLines insert failed', { pid, orderId, err: insError.message });
+      throw insError;
+    }
+  }
+  const { error: sumError } = await supabaseAdmin
+    .from('purchase_orders')
+    .update({ subtotal_cents: Math.max(0, Math.round(subtotalCents)) })
+    .eq('id', orderId)
+    .eq('property_id', pid);
+  if (sumError) {
+    log.error('[ordering] replaceDraftOrderLines subtotal failed', { pid, orderId, err: sumError.message });
+    throw sumError;
   }
 }
 

@@ -57,6 +57,13 @@ export function orderingStrings(lang: Lang) {
       allClearTitle: 'Nothing needs ordering',
       allClearBody: 'Everything with a par level is above it right now.',
 
+      // ── Could not read the screen ──
+      // An empty box reads as "you have nothing to order". A failure has to
+      // say it is a failure, and offer the tap that fixes it.
+      loadFailedTitle: 'Could not load your ordering list',
+      loadFailedBody: 'Nothing was sent and nothing was changed. Check your connection and try again.',
+      retry: 'Try again',
+
       // ── Suggestions ──
       suggestionsTitle: 'Suppliers we think you use',
       suggestionsHint: 'These are guesses from your contacts and your scanned invoices. Nothing is saved until you confirm.',
@@ -131,6 +138,12 @@ export function orderingStrings(lang: Lang) {
       lastPaid: (money: string) => `${money} on your last invoice`,
       lineTotalAt: (money: string) => `${money} for this order at last invoice prices`,
       noPrice: 'No price on file yet',
+      // An item comes back on the list only once its order is old enough to
+      // have arrived. When it does, the row says what already happened, so
+      // nobody orders it a second time without knowing.
+      orderedDaysAgo: (n: number) => (n === 1
+        ? 'Ordered 1 day ago. No delivery recorded yet.'
+        : `Ordered ${n} days ago. No delivery recorded yet.`),
       details: 'Details',
       linesWithoutPrice: (n: number) => (n === 1
         ? '1 item has no price on file. The total leaves it out.'

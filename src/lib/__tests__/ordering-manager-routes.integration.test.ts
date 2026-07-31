@@ -34,12 +34,23 @@ process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ??= 'placeholder-anon-key-min-20-chars
 process.env.CRON_SECRET ??= 'placeholder-cron-secret-min-16';
 process.env.OPENAI_API_KEY ??= 'sk-placeholder';
 process.env.ANTHROPIC_API_KEY ??= 'sk-ant-placeholder';
+// Local-dev/test break-glass: skips the trusted-device half of requireSession
+// so the route tests below exercise the ORDERING route's own behaviour rather
+// than the 2FA plumbing, which has its own suites.
+process.env.DISABLE_SERVER_2FA_ENFORCEMENT = 'true';
+// DELIBERATELY NO RESEND KEY. With no mail credential sendTransactionalEmail
+// soft-fails, which is exactly the ambiguous send outcome the duplicate-order
+// tests need: the route writes its draft, the mail does not go, and the panel
+// invites the retry that used to produce a second purchase order.
+delete process.env.RESEND_API_KEY;
 
 import assert from 'node:assert/strict';
 import { after, before, describe, test } from 'node:test';
+import { NextRequest } from 'next/server';
 import type { PGlite } from '@electric-sql/pglite';
 
 import { supabaseAdmin } from '@/lib/supabase-admin';
+import { GET as ORDERING_GET, POST as ORDERING_POST } from '@/app/api/inventory/ordering/route';
 import {
   listVendors,
   updateVendorOrdering,
@@ -51,6 +62,9 @@ import {
   recordPlacedOrder,
   getIntroDismissedAt,
   dismissIntro,
+  openOrdersByItem,
+  findRecentMatchingOrder,
+  knowledgeContactBelongsToProperty,
 } from '@/lib/ordering/db';
 import { resolveVendorForItem, buildCandidate, groupByVendor, rankCandidates } from '@/lib/ordering/resolve';
 import type { BucketKey } from '@/lib/ordering/types';
@@ -61,13 +75,19 @@ import {
   loadCatalog,
   type PglitePostgrest,
 } from '../../../tests/fixtures/postgrest-pglite';
-import { PID_A1, PID_B1, seedTwoCompanies } from '../../../tests/fixtures/pglite-two-company-seed';
+import {
+  PID_A1,
+  PID_B1,
+  UID_MARIA,
+  seedTwoCompanies,
+} from '../../../tests/fixtures/pglite-two-company-seed';
 
 let pg: PGlite;
 let shim: PglitePostgrest;
 
 const originalFrom = supabaseAdmin.from.bind(supabaseAdmin);
 const originalRpc = supabaseAdmin.rpc.bind(supabaseAdmin);
+const originalGetUser = supabaseAdmin.auth.getUser.bind(supabaseAdmin.auth);
 
 const ACTOR = { userId: 'aaaa2222-0000-4000-8000-000000000001', name: 'Maria Garcia' };
 
@@ -107,6 +127,63 @@ async function refuses(fn: () => Promise<unknown>, pattern: RegExp): Promise<voi
   assert.match(message, pattern);
 }
 
+// ─── Driving the real route ─────────────────────────────────────────────────
+//
+// Maria is the seed's property-scope GM at hotel A, so requireOrderingAccess
+// resolves her to general_manager with hotelMutationAllowed. (UID_ANA, the
+// audit ACTOR above, is a COMPANY-scope owner and is read-only at the hotel —
+// using her here would 403 every write and prove nothing.)
+let signedInAs: string | null = UID_MARIA;
+
+function orderingPost(body: Record<string, unknown>): NextRequest {
+  return new NextRequest('https://staxis.test/api/inventory/ordering', {
+    method: 'POST',
+    headers: {
+      authorization: 'Bearer ordering-route-test-token',
+      'content-type': 'application/json',
+    },
+    body: JSON.stringify(body),
+  });
+}
+
+interface RouteReply {
+  status: number;
+  body: { ok: boolean; error?: string; data?: Record<string, unknown> };
+}
+
+async function post(body: Record<string, unknown>): Promise<RouteReply> {
+  const res = await ORDERING_POST(orderingPost(body));
+  return { status: res.status, body: (await res.json()) as RouteReply['body'] };
+}
+
+async function getScreen(pid: string): Promise<RouteReply> {
+  const res = await ORDERING_GET(new NextRequest(
+    `https://staxis.test/api/inventory/ordering?pid=${pid}`,
+    { method: 'GET', headers: { authorization: 'Bearer ordering-route-test-token' } },
+  ));
+  return { status: res.status, body: (await res.json()) as RouteReply['body'] };
+}
+
+/** Every purchase order this hotel holds, newest first. */
+async function ordersFor(pid: string) {
+  const r = await pg.query<{
+    id: string; po_number: string; status: string; vendor_id: string | null;
+  }>(
+    `select id, po_number, status, vendor_id from purchase_orders
+      where property_id = $1 order by created_at desc, po_number`,
+    [pid],
+  );
+  return r.rows;
+}
+
+async function linesOf(orderId: string) {
+  const r = await pg.query<{ item_id: string; qty_ordered: string }>(
+    'select item_id, qty_ordered from purchase_order_lines where purchase_order_id = $1',
+    [orderId],
+  );
+  return r.rows;
+}
+
 before(async () => {
   const migrated = await applyMigrationsToPglite();
   pg = migrated.pg;
@@ -116,6 +193,14 @@ before(async () => {
   supabaseAdmin.from = shim.from;
   // @ts-expect-error installing the pglite-backed client on the singleton
   supabaseAdmin.rpc = shim.rpc;
+  // requireSession's token check. Which session it is, is what the route tests
+  // vary; that a session exists is not what they are about.
+  supabaseAdmin.auth.getUser = (async () => (signedInAs
+    ? { data: { user: { id: signedInAs, email: `${signedInAs}@ordering.test` } }, error: null }
+    : {
+        data: { user: null },
+        error: { message: 'invalid token', status: 401, name: 'AuthApiError' },
+      })) as unknown as typeof supabaseAdmin.auth.getUser;
   await seedTwoCompanies(pg);
 
   // ── Hotel A: two suppliers, one of them a website vendor ──
@@ -168,6 +253,7 @@ before(async () => {
 after(async () => {
   supabaseAdmin.from = originalFrom;
   supabaseAdmin.rpc = originalRpc;
+  supabaseAdmin.auth.getUser = originalGetUser;
   await pg?.close();
 });
 
@@ -513,6 +599,7 @@ describe('ordering — the assembled screen', () => {
         burnPerDay: null, burnConfidence: 'none',
         lastPriceCents: prices.get(r.id)?.cents ?? null,
         lastPriceAt: prices.get(r.id)?.at ?? null,
+        openOrder: null,
       },
       map, byId,
     )).filter((c): c is NonNullable<typeof c> => c != null);
@@ -572,5 +659,406 @@ describe('ordering — the assembled screen', () => {
     assert.equal(row!.order_method, 'phone');
     assert.equal(row!.website_url, null);
     await pg.query('delete from vendors where id = $1', [id]);
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// 6. The route itself, through requireOrderingAccess
+//
+// Everything below drives the REAL handler with a real session, because every
+// bug it pins lives at the route seam and not in the pure layer: the qty floor
+// and the empty-order guard are in resolveOrderLines, the duplicate-send is in
+// the send path's ordering, and the two validation bugs are in what the route
+// checks and in what order it writes.
+// ═══════════════════════════════════════════════════════════════════════════
+
+describe('ordering route — one tap, one order', () => {
+  /** A vendor + one genuinely short item, isolated per test. Names carry a
+   *  uuid because `inventory` is unique on (property, name) per hotel. */
+  async function scratchItem(label: string, stock = 0, par = 40): Promise<string> {
+    return (await one<{ id: string }>(
+      `insert into inventory (property_id, name, category, current_stock, par_level, unit)
+       values ($1, $2 || ' ' || gen_random_uuid(), 'housekeeping', $3, $4, 'each') returning id`,
+      [PID_A1, label, stock, par],
+    ))!.id;
+  }
+
+  async function scratchOrder(opts: { stock?: number; par?: number } = {}) {
+    const vendorId = (await one<{ id: string }>(
+      `insert into vendors (property_id, name, email, order_method, review_state)
+       values ($1, 'Scratch Supply ' || gen_random_uuid(), 'ap@scratch.test', 'email', 'confirmed')
+       returning id`,
+      [PID_A1],
+    ))!.id;
+    const itemId = await scratchItem('Scratch item', opts.stock ?? 0, opts.par ?? 40);
+    return { vendorId, itemId };
+  }
+
+  test('the ambiguous send, retried, reuses ONE purchase order and one number', async () => {
+    // THE DUPLICATE-VENDOR-EMAIL BUG. With no mail credential the send fails
+    // the way a timeout or a 502 fails: the manager is told "could not send,
+    // try again", and the order is still on the screen. The retry used to mint
+    // a second PO number and put a second order in the vendor's inbox.
+    const { vendorId, itemId } = await scratchOrder();
+
+    const first = await post({ pid: PID_A1, action: 'send_po', vendorId, itemIds: [itemId] });
+    assert.equal(first.status, 502, 'the send could not go out, and says so');
+
+    const afterFirst = (await ordersFor(PID_A1)).filter((o) => o.vendor_id === vendorId);
+    assert.equal(afterFirst.length, 1, 'the attempt is recorded, so nothing is lost');
+    assert.equal(afterFirst[0].status, 'draft', 'nothing claims the vendor has it');
+
+    const second = await post({ pid: PID_A1, action: 'send_po', vendorId, itemIds: [itemId] });
+    assert.equal(second.status, 502);
+
+    const afterRetry = (await ordersFor(PID_A1)).filter((o) => o.vendor_id === vendorId);
+    assert.equal(afterRetry.length, 1, 'the retry is the SAME order, not a second one');
+    assert.equal(
+      afterRetry[0].po_number,
+      afterFirst[0].po_number,
+      'one reference, so the vendor cannot be looking at two orders for one delivery',
+    );
+    assert.equal(afterRetry[0].id, afterFirst[0].id);
+
+    await pg.query('delete from purchase_orders where vendor_id = $1', [vendorId]);
+  });
+
+  test('a send whose outcome was lost is never emailed a second time', async () => {
+    // The other ambiguous outcome: the mail WAS accepted and the reply never
+    // reached the browser. The order is 'sent', so the retry must report that
+    // same order and must not go near the mail server again.
+    const { vendorId, itemId } = await scratchOrder();
+    await post({ pid: PID_A1, action: 'send_po', vendorId, itemIds: [itemId] });
+    const [draft] = (await ordersFor(PID_A1)).filter((o) => o.vendor_id === vendorId);
+    await pg.query(
+      "update purchase_orders set status = 'sent', sent_at = now() where id = $1",
+      [draft.id],
+    );
+
+    const retry = await post({ pid: PID_A1, action: 'send_po', vendorId, itemIds: [itemId] });
+    assert.equal(retry.status, 200, 'the manager is told it went, because it did');
+    assert.equal(retry.body.ok, true);
+    assert.equal(retry.body.data?.alreadySent, true);
+    assert.equal(
+      (retry.body.data?.order as { poNumber: string }).poNumber,
+      draft.po_number,
+      'the same order, reported again',
+    );
+
+    const rows = (await ordersFor(PID_A1)).filter((o) => o.vendor_id === vendorId);
+    assert.equal(rows.length, 1, 'no second purchase order exists to be emailed');
+
+    await pg.query('delete from purchase_orders where vendor_id = $1', [vendorId]);
+  });
+
+  test('a different set of items is a different order and gets its own number', async () => {
+    // The idempotency must not swallow a real second order. Adding one item is
+    // a new order, not a retry of the old one.
+    const { vendorId, itemId } = await scratchOrder();
+    const extra = await scratchItem('Scratch extra', 0, 10);
+
+    await post({ pid: PID_A1, action: 'send_po', vendorId, itemIds: [itemId] });
+    await post({ pid: PID_A1, action: 'send_po', vendorId, itemIds: [itemId, extra] });
+
+    const rows = (await ordersFor(PID_A1)).filter((o) => o.vendor_id === vendorId);
+    assert.equal(rows.length, 2);
+    assert.notEqual(rows[0].po_number, rows[1].po_number);
+
+    await pg.query('delete from purchase_orders where vendor_id = $1', [vendorId]);
+    await pg.query('delete from inventory where id = $1', [extra]);
+  });
+
+  test('an item that needs nothing never gets a line, whatever the screen said', async () => {
+    // THE QTY FLOOR. resolveOrderLines used to force every requested item to at
+    // least one unit, so an item restocked between the screen loading and the
+    // send went onto a real purchase order for a unit nobody needed.
+    const { vendorId, itemId } = await scratchOrder();
+    const full = await scratchItem('Already full', 50, 20);
+
+    const reply = await post({
+      pid: PID_A1, action: 'mark_ordered', placedVia: 'store', vendorId, itemIds: [itemId, full],
+    });
+    assert.equal(reply.status, 201);
+
+    const orderId = (reply.body.data?.order as { id: string }).id;
+    const lines = await linesOf(orderId);
+    assert.deepEqual(lines.map((l) => l.item_id), [itemId], 'only the item that was actually short');
+
+    await pg.query('delete from purchase_orders where vendor_id = $1', [vendorId]);
+    await pg.query('delete from inventory where id = $1', [full]);
+  });
+
+  test('a failed email attempt does not swallow a later "I placed it"', async () => {
+    // The idempotency must not mistake an abandoned draft for a placed order.
+    // If it did, the manager who gave up on emailing and phoned it in instead
+    // would be told it was recorded while the row stayed a draft and the items
+    // were never stamped, so the same order would be asked for again tomorrow.
+    const { vendorId, itemId } = await scratchOrder();
+    await post({ pid: PID_A1, action: 'send_po', vendorId, itemIds: [itemId] });
+    const [draft] = (await ordersFor(PID_A1)).filter((o) => o.vendor_id === vendorId);
+    assert.equal(draft.status, 'draft');
+
+    const placed = await post({
+      pid: PID_A1, action: 'mark_ordered', placedVia: 'phone', vendorId, itemIds: [itemId],
+    });
+    assert.equal(placed.status, 201, 'the phone order is really recorded');
+
+    const rows = (await ordersFor(PID_A1)).filter((o) => o.vendor_id === vendorId);
+    assert.equal(rows.filter((o) => o.status === 'sent').length, 1, 'and it counts as placed');
+
+    // A SECOND tap on the same button is still one order.
+    const again = await post({
+      pid: PID_A1, action: 'mark_ordered', placedVia: 'phone', vendorId, itemIds: [itemId],
+    });
+    assert.equal(again.body.data?.alreadyRecorded, true);
+    assert.equal(
+      (await ordersFor(PID_A1)).filter((o) => o.vendor_id === vendorId && o.status === 'sent').length,
+      1,
+      'a double tap does not double the hotel\'s record of what it bought',
+    );
+
+    await pg.query('delete from purchase_orders where vendor_id = $1', [vendorId]);
+  });
+
+  test('marking an order with nothing to order records no order at all', async () => {
+    // send_po has always refused an empty order. mark_ordered did not, so a
+    // list whose items were all restocked wrote a purchase order with no lines
+    // and no meaning.
+    const { vendorId } = await scratchOrder();
+    const full = await scratchItem('Stocked up', 99, 10);
+
+    const reply = await post({
+      pid: PID_A1, action: 'mark_ordered', placedVia: 'store', vendorId, itemIds: [full],
+    });
+    assert.equal(reply.status, 400);
+    assert.match(String(reply.body.error), /nothing to order/);
+    assert.equal(
+      (await ordersFor(PID_A1)).filter((o) => o.vendor_id === vendorId).length,
+      0,
+      'no empty purchase order in the hotel\'s history',
+    );
+
+    await pg.query('delete from inventory where id = $1', [full]);
+  });
+});
+
+describe('ordering route — what it refuses before it writes', () => {
+  // Confirming a supplier goes through `staxis_create_inventory_vendor` (0326),
+  // which refuses anything that is not the service role. In production the
+  // service-role key makes PostgREST set that claim; PGlite's `auth.role()`
+  // stub reads the same setting and nothing sets it. Without this the confirm
+  // fails for a reason that does not exist in production, and the "nothing was
+  // written" assertions below would pass for the wrong reason.
+  before(async () => {
+    await pg.query("select set_config('request.jwt.claim.role', 'service_role', false)");
+  });
+  after(async () => {
+    await pg.query("select set_config('request.jwt.claim.role', '', false)");
+  });
+
+  test('a category key the database would refuse is a 400, not a 500', async () => {
+    // The route regex used to accept 36 hex characters with no hyphens, which
+    // the 0377 CHECK refuses. The manager got an opaque failure from a value
+    // this layer was supposed to catch.
+    const noHyphens = `custom:${'a'.repeat(32)}${'b'.repeat(4)}`;
+    const reply = await post({
+      pid: PID_A1, action: 'set_category_vendor', bucketKey: noHyphens, vendorId: sysco,
+    });
+    assert.equal(reply.status, 400, 'refused here, where it can be explained');
+    assert.match(String(reply.body.error), /bucketKey/);
+  });
+
+  test('a real custom category key still works', async () => {
+    // The tightened regex must not have closed the legitimate door.
+    const custom = (await one<{ id: string }>(
+      "insert into inventory_custom_categories (property_id, name) values ($1, 'Pool') returning id",
+      [PID_A1],
+    ))!.id;
+    const reply = await post({
+      pid: PID_A1, action: 'set_category_vendor', bucketKey: `custom:${custom}`, vendorId: sysco,
+    });
+    assert.equal(reply.status, 200);
+    await pg.query('delete from vendor_category_map where property_id = $1 and bucket_key = $2',
+      [PID_A1, `custom:${custom}`]);
+    await pg.query('delete from inventory_custom_categories where id = $1', [custom]);
+  });
+
+  test('a confirm that cannot finish leaves no half-made supplier behind', async () => {
+    // The category keys used to be parsed AFTER the vendor was written, so a
+    // key the database refused failed with the supplier already created and
+    // its categories not applied.
+    const before = await pg.query<{ n: string }>(
+      'select count(*)::text as n from vendors where property_id = $1', [PID_A1],
+    );
+    const reply = await post({
+      pid: PID_A1,
+      action: 'confirm_suggestion',
+      name: 'Half Made Co',
+      orderMethod: 'phone',
+      bucketKeys: ['general', `custom:${'f'.repeat(36)}`],
+    });
+    assert.equal(reply.status, 400);
+    const after = await pg.query<{ n: string }>(
+      'select count(*)::text as n from vendors where property_id = $1', [PID_A1],
+    );
+    assert.equal(after.rows[0].n, before.rows[0].n, 'nothing was written');
+    const named = await one('select id from vendors where property_id = $1 and name = $2',
+      [PID_A1, 'Half Made Co']);
+    assert.equal(named, null);
+  });
+
+  test('a contact from another hotel cannot be linked, and answers nothing', async () => {
+    // THE CROSS-TENANT PROBE. vendors.knowledge_contact_id is a plain FK with
+    // no tenant trigger, so hotel B's contact id would have been accepted and
+    // stored. Nothing renders it, but the accept/reject answer alone is an
+    // existence oracle for another hotel's contact ids.
+    const foreign = (await one<{ id: string }>(
+      `insert into knowledge_contacts (property_id, name, company, category)
+       values ($1, 'Tyler Vendor', 'Tyler Paper', 'vendor') returning id`,
+      [PID_B1],
+    ))!.id;
+
+    const reply = await post({
+      pid: PID_A1,
+      action: 'confirm_suggestion',
+      name: 'Borrowed Contact Co',
+      knowledgeContactId: foreign,
+    });
+    assert.equal(reply.status, 400, 'refused');
+    assert.equal(
+      await one('select id from vendors where property_id = $1 and name = $2',
+        [PID_A1, 'Borrowed Contact Co']),
+      null,
+      'and refused BEFORE the vendor row was written',
+    );
+
+    // A contact id that does not exist at all must be refused the same way, or
+    // the difference between the two answers is the oracle.
+    const missing = await post({
+      pid: PID_A1,
+      action: 'confirm_suggestion',
+      name: 'Ghost Contact Co',
+      knowledgeContactId: '99999999-9999-4999-8999-999999999999',
+    });
+    assert.equal(missing.status, reply.status);
+    assert.equal(missing.body.error, reply.body.error, 'same refusal, no information leaked');
+
+    // The hotel's OWN contact still confirms, so the check guards rather than blocks.
+    const mine = (await one<{ id: string }>(
+      `insert into knowledge_contacts (property_id, name, company, category)
+       values ($1, 'Local Dana', 'Local Paper', 'vendor') returning id`,
+      [PID_A1],
+    ))!.id;
+    const okReply = await post({
+      pid: PID_A1, action: 'confirm_suggestion', name: 'Local Paper', knowledgeContactId: mine,
+    });
+    assert.equal(okReply.status, 201);
+
+    assert.equal(await knowledgeContactBelongsToProperty(PID_A1, foreign), false);
+    assert.equal(await knowledgeContactBelongsToProperty(PID_A1, mine), true);
+
+    await pg.query('delete from vendors where property_id = $1 and name = $2', [PID_A1, 'Local Paper']);
+    await pg.query('delete from knowledge_contacts where id = any($1::uuid[])', [[foreign, mine]]);
+  });
+});
+
+describe('ordering — an order already on its way', () => {
+  async function scratchItem(name: string, stock = 0, par = 40): Promise<string> {
+    return (await one<{ id: string }>(
+      `insert into inventory (property_id, name, category, current_stock, par_level, unit)
+       values ($1, $2, 'housekeeping', $3, $4, 'each') returning id`,
+      [PID_A1, name, stock, par],
+    ))!.id;
+  }
+
+
+  async function placeOrder(itemId: string, daysAgo: number): Promise<string> {
+    const id = (await one<{ id: string }>(
+      `insert into purchase_orders
+         (property_id, po_number, status, placed_via, sent_at, created_at)
+       values ($1, 'PO-TEST-' || substr(gen_random_uuid()::text, 1, 8), 'sent', 'store',
+               now() - ($2 || ' days')::interval, now() - ($2 || ' days')::interval)
+       returning id`,
+      [PID_A1, String(daysAgo)],
+    ))!.id;
+    await pg.query(
+      `insert into purchase_order_lines (purchase_order_id, item_id, description, qty_ordered)
+       values ($1, $2, 'Scratch', 5)`,
+      [id, itemId],
+    );
+    return id;
+  }
+
+  test('an order sent yesterday is on its way; a delivery clears it', async () => {
+    const itemId = await scratchItem('On the way');
+    const orderId = await placeOrder(itemId, 1);
+
+    const open = await openOrdersByItem(PID_A1, [itemId]);
+    assert.ok(open.get(itemId), 'the item has an order in flight');
+
+    // Scanning the delivery is what puts a still-short item back on the list.
+    await pg.query(
+      `insert into inventory_orders
+         (property_id, item_id, item_name, quantity, unit_cost, total_cost, received_at, entry_kind)
+       values ($1,$2,'On the way',5,1.00,5.00, now(), 'receipt')`,
+      [PID_A1, itemId],
+    );
+    const afterDelivery = await openOrdersByItem(PID_A1, [itemId]);
+    assert.equal(afterDelivery.get(itemId), undefined, 'delivered, so nothing is on its way');
+
+    await pg.query('delete from purchase_orders where id = $1', [orderId]);
+    await pg.query('delete from inventory_orders where item_id = $1', [itemId]);
+    await pg.query('delete from inventory where id = $1', [itemId]);
+  });
+
+  test('the screen stops asking for what was just ordered, and asks again when it is late',
+    async () => {
+      // THE FEATURE'S CORE PROMISE, end to end through the real GET. The stamp
+      // this used to write was read by nothing, so an ordered item sat on the
+      // list every day until the delivery landed.
+      const fresh = await scratchItem('Ordered today');
+      const late = await scratchItem('Ordered long ago');
+      const freshOrder = await placeOrder(fresh, 1);
+      const lateOrder = await placeOrder(late, 12);
+
+      const screen = await getScreen(PID_A1);
+      assert.equal(screen.status, 200);
+      const names = (screen.body.data?.groups as Array<{ items: Array<{ name: string }> }>)
+        .flatMap((g) => g.items.map((i) => i.name));
+      assert.ok(!names.includes('Ordered today'), 'already ordered, so not asked for again');
+      assert.ok(names.includes('Ordered long ago'), 'late enough that it must be chased');
+
+      const lateRow = (screen.body.data?.groups as Array<{
+        items: Array<{ name: string; openOrder: { daysAgo: number } | null }>;
+      }>).flatMap((g) => g.items).find((i) => i.name === 'Ordered long ago')!;
+      assert.equal(lateRow.openOrder?.daysAgo, 12, 'and says it was already ordered, so nobody double-orders blind');
+
+      await pg.query('delete from purchase_orders where id = any($1::uuid[])', [[freshOrder, lateOrder]]);
+      await pg.query('delete from inventory where id = any($1::uuid[])', [[fresh, late]]);
+    });
+
+  test('an identical order minutes ago is found; the same order from another hotel is not', async () => {
+    const itemId = await scratchItem('Content keyed');
+    const orderId = (await one<{ id: string }>(
+      `insert into purchase_orders (property_id, po_number, status, vendor_id, placed_via)
+       values ($1, 'PO-MATCH-01', 'draft', $2, 'email') returning id`,
+      [PID_A1, sysco],
+    ))!.id;
+    await pg.query(
+      `insert into purchase_order_lines (purchase_order_id, item_id, description, qty_ordered)
+       values ($1, $2, 'Content keyed', 5)`,
+      [orderId, itemId],
+    );
+
+    const match = await findRecentMatchingOrder(PID_A1, sysco, [itemId]);
+    assert.equal(match?.poNumber, 'PO-MATCH-01');
+    assert.equal(match?.status, 'draft');
+
+    // A different vendor, and a different hotel, are different orders.
+    assert.equal(await findRecentMatchingOrder(PID_A1, guestSupply, [itemId]), null);
+    assert.equal(await findRecentMatchingOrder(PID_B1, sysco, [itemId]), null);
+
+    await pg.query('delete from purchase_orders where id = $1', [orderId]);
+    await pg.query('delete from inventory where id = $1', [itemId]);
   });
 });

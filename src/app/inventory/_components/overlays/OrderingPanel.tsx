@@ -31,6 +31,7 @@ import { type Lang } from '../inv-i18n';
 import { orderingStrings, type OrderingStrings } from './ordering-i18n';
 import {
   createSendCountdown,
+  fetchOrderingState,
   postOrdering,
   runOrderingAction,
   type SendCountdown,
@@ -110,6 +111,12 @@ export function OrderingPanel({ lang, open, onClose, propertyId }: OrderingPanel
   const tx = orderingStrings(lang);
   const [state, setState] = useState<OrderingState | null>(null);
   const [loading, setLoading] = useState(false);
+  // A first load that fails has to SAY so. Without this the panel rendered an
+  // empty box and only recovered if the manager thought to close and reopen
+  // it, which reads as "the hotel has nothing to order" rather than as a
+  // failure. A reload that fails while there is already something on screen
+  // still keeps the last good render, which is the honest choice there.
+  const [loadFailed, setLoadFailed] = useState(false);
   const [busy, setBusy] = useState<string | null>(null);
   // Carries its own tone: a failure that renders in the same green box as a
   // success is barely better than no message at all.
@@ -136,17 +143,16 @@ export function OrderingPanel({ lang, open, onClose, propertyId }: OrderingPanel
 
   const load = useCallback(async () => {
     setLoading(true);
-    try {
-      const res = await fetch(`/api/inventory/ordering?pid=${encodeURIComponent(propertyId)}`, {
-        credentials: 'include',
-      });
-      const json = await res.json();
-      if (json?.ok) setState(json.data as OrderingState);
-    } catch {
-      /* the panel stays on its last good render rather than blanking */
-    } finally {
-      setLoading(false);
+    const result = await fetchOrderingState<OrderingState>(propertyId);
+    if (result.ok) {
+      setState(result.state);
+      setLoadFailed(false);
+    } else {
+      // The panel stays on its last good render rather than blanking; the
+      // flag only decides what shows when there is no good render yet.
+      setLoadFailed(true);
     }
+    setLoading(false);
   }, [propertyId]);
 
   useEffect(() => {
@@ -311,6 +317,10 @@ export function OrderingPanel({ lang, open, onClose, propertyId }: OrderingPanel
           </>
         )}
 
+        {loadFailed && !state && !loading && (
+          <LoadFailed tx={tx} onRetry={() => void load()} />
+        )}
+
         {loading && !state && (
           <div style={{ fontFamily: fonts.sans, fontSize: 13, color: T.ink2, padding: '20px 4px' }}>…</div>
         )}
@@ -357,6 +367,26 @@ export function Welcome({ tx, onGo, busy }: { tx: OrderingStrings; onGo: () => v
       </ul>
       <div>
         <button type="button" onClick={onGo} disabled={busy} style={primaryBtn()}>{tx.welcomeGo}</button>
+      </div>
+    </section>
+  );
+}
+
+/** The screen could not be read at all. Says so, and offers the one thing
+ *  that can help, rather than leaving an empty box that reads as "nothing to
+ *  order". */
+export function LoadFailed({ tx, onRetry }: { tx: OrderingStrings; onRetry: () => void }) {
+  return (
+    <section
+      style={{ padding: '20px 4px', display: 'flex', flexDirection: 'column', gap: 8 }}
+      role="alert"
+    >
+      <div style={{ fontFamily: fonts.sans, fontSize: 15, fontWeight: 650, color: T.ink }}>{tx.loadFailedTitle}</div>
+      <p style={{ margin: 0, fontFamily: fonts.sans, fontSize: 13, lineHeight: 1.6, color: T.ink2 }}>
+        {tx.loadFailedBody}
+      </p>
+      <div style={{ marginTop: 4 }}>
+        <button type="button" onClick={onRetry} style={primaryBtn()}>{tx.retry}</button>
       </div>
     </section>
   );
@@ -749,6 +779,11 @@ function ItemRow({
               </span>
             )
             : <span style={detailFont}>{tx.noPrice}</span>}
+          {/* Only ever present on an item whose order is late. A fresh order
+              takes the item off this list entirely. */}
+          {item.openOrder && (
+            <span style={detailFont}>{tx.orderedDaysAgo(item.openOrder.daysAgo)}</span>
+          )}
 
           {/* Setup by doing: the supplier control, right where it matters. */}
           {!picking ? (

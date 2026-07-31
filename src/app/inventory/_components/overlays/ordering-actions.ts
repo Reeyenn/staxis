@@ -22,13 +22,48 @@
 // The rule these three share: a failure the manager cannot see is worse than
 // an error message. Everything here reports, and everything releases.
 
+import { fetchWithAuth } from '@/lib/api-fetch';
+
+/**
+ * THE ONLY FETCH THIS SCREEN USES.
+ *
+ * The panel called the bare `fetch` for both its read and its writes, so it
+ * sent no Authorization header and had none of the house recovery: a session
+ * that expired while the overlay sat open turned every button on the screen
+ * into a silent failure, with no way back except a full page reload. Every
+ * sibling panel in this folder already goes through fetchWithAuth, which
+ * refreshes the token and retries before anything is reported as failed.
+ *
+ * Exported so the pin on this can compare identities rather than read source.
+ */
+export const orderingFetch: typeof fetch = fetchWithAuth;
+
+/** GET the whole screen. Reports failure rather than throwing, so the panel
+ *  can render an honest "could not load" instead of nothing at all. */
+export async function fetchOrderingState<T>(
+  propertyId: string,
+  fetchImpl: typeof fetch = orderingFetch,
+): Promise<{ ok: true; state: T } | { ok: false }> {
+  try {
+    const res = await fetchImpl(`/api/inventory/ordering?pid=${encodeURIComponent(propertyId)}`, {
+      credentials: 'include',
+      cache: 'no-store',
+    });
+    const json = await res.json().catch(() => null) as { ok?: unknown; data?: T } | null;
+    if (!res.ok || !json?.ok || json.data == null) return { ok: false };
+    return { ok: true, state: json.data };
+  } catch {
+    return { ok: false };
+  }
+}
+
 /** POST one action to the ordering route. Never throws, never rejects: a
  *  dropped connection is a `false` the caller must show, not an exception
  *  thrown into a void. */
 export async function postOrdering(
   propertyId: string,
   body: Record<string, unknown>,
-  fetchImpl: typeof fetch = fetch,
+  fetchImpl: typeof fetch = orderingFetch,
 ): Promise<boolean> {
   try {
     const res = await fetchImpl('/api/inventory/ordering', {

@@ -17,6 +17,7 @@ import { stockStatus } from '@/lib/stock-status';
 import type {
   BucketKey,
   BurnConfidence,
+  OpenOrderRef,
   OrderBlockReason,
   OrderCandidate,
   OrderGroup,
@@ -176,6 +177,35 @@ export interface CandidateInput {
   /** Most recent price actually seen on a scanned invoice, in CENTS. */
   lastPriceCents: number | null;
   lastPriceAt: string | null;
+  /** An order already placed for this item that nothing has been delivered
+   *  against, or null. REQUIRED, not optional, and that is the point: the
+   *  screen's core promise is that ordering something takes it off the list,
+   *  and a caller that forgets to look it up must fail to compile rather than
+   *  quietly re-list everything the hotel ordered yesterday. */
+  openOrder: OpenOrderRef | null;
+}
+
+/**
+ * How long an order keeps its items off the list.
+ *
+ * The honest bound on "we already ordered this". An order normally leaves the
+ * list the moment the delivery is scanned, which is the real signal; this is
+ * the backstop for the order that never arrives, because an item that is
+ * genuinely out of stock and whose order has vanished must come back rather
+ * than stay hidden forever behind a purchase order nobody honoured. A week is
+ * long enough to cover any supplier's lead time and short enough that a lost
+ * order surfaces before the hotel runs dry.
+ */
+export const OPEN_ORDER_SUPPRESS_DAYS = 7;
+
+const MS_PER_DAY = 86_400_000;
+
+/** Whole days between an ISO timestamp and now, or null when the timestamp is
+ *  unreadable. Callers treat null as "we cannot say", never as zero. */
+export function daysSince(iso: string, now: Date): number | null {
+  const then = Date.parse(iso);
+  if (!Number.isFinite(then)) return null;
+  return (now.getTime() - then) / MS_PER_DAY;
 }
 
 /** Burn sources that are allowed to produce a days-left number.
@@ -195,16 +225,35 @@ const TRUSTED_BURN: ReadonlySet<BurnConfidence> = new Set<BurnConfidence>(['ml',
  * a candidate: with nothing to compare against there is no shortfall to
  * compute, and inventing one would put items on a purchase order because
  * nobody had finished setting them up.
+ *
+ * AND IT IS NOT WORTH ORDERING TWICE. An item with an order already on its way
+ * is not a candidate at all, however low the shelf is: stock does not move
+ * until the delivery lands, so without this the screen asks the manager to
+ * re-order everything they ordered yesterday, every day, until it arrives.
+ * That is the one failure that makes the whole list untrustworthy, so the rule
+ * lives here rather than in a caller. An order old enough that the delivery
+ * should have come (OPEN_ORDER_SUPPRESS_DAYS) puts the item BACK on the list
+ * and carries the order with it, so the row can say it was already ordered
+ * instead of pretending nothing happened.
  */
 export function buildCandidate(
   input: CandidateInput,
   categoryMap: ReadonlyMap<BucketKey, string>,
   vendorsById: ReadonlyMap<string, Vendor>,
+  now: Date = new Date(),
 ): OrderCandidate | null {
   if (!(input.par > 0)) return null;
 
   const status = stockStatus(input.onHand, input.par);
   if (status === 'good') return null;
+
+  // An unreadable order date is "we cannot say", and we do not hide a real
+  // shortage on the strength of something we cannot read.
+  const orderAgeDays = input.openOrder ? daysSince(input.openOrder.orderedAt, now) : null;
+  if (orderAgeDays !== null && orderAgeDays < OPEN_ORDER_SUPPRESS_DAYS) return null;
+  const openOrder = input.openOrder && orderAgeDays !== null
+    ? { ...input.openOrder, daysAgo: Math.max(0, Math.floor(orderAgeDays)) }
+    : null;
 
   const suggestedQty = Math.max(1, Math.ceil(input.par - input.onHand));
 
@@ -230,6 +279,7 @@ export function buildCandidate(
     lastPriceCents,
     lastPriceAt: lastPriceCents == null ? null : input.lastPriceAt,
     lineTotalCents: lastPriceCents == null ? null : lastPriceCents * suggestedQty,
+    openOrder,
     vendor: resolveVendorForItem(input, categoryMap, vendorsById),
   };
 }
