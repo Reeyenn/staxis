@@ -30,7 +30,7 @@ import { RowButton } from '../ui-kit';
 import { PMS_ROBOT_ENABLED } from '@/lib/pms/robot-status';
 
 // ── Real API shapes (mirror the prior OnboardingTab interfaces) ─────────
-interface OnbState {
+export interface OnbState {
   step?: number;
   invitedEmail?: string | null;
   firstPersonAccountId?: string | null;
@@ -39,7 +39,7 @@ interface OnbState {
   hotelDetailsAt?: string | null;
   hotelContextAt?: string | null;
 }
-interface PropertyRow {
+export interface PropertyRow {
   id: string;
   name: string | null;
   createdAt: string;
@@ -78,10 +78,10 @@ interface Prospect {
 }
 
 // ── The six-stage onboarding journey (mirrors the /onboard wizard) ─────
-const STEP_LABELS = ['Welcome', 'Account', 'Verify email', 'About hotel', 'Your hotel', 'Done'] as const;
+export const STEP_LABELS = ['Welcome', 'Account', 'Verify email', 'About hotel', 'Your hotel', 'Done'] as const;
 const TOTAL_STEPS = STEP_LABELS.length;
 
-interface Journey { step: number; label: string; sub: string; href: string; needsYou: boolean; }
+export interface Journey { step: number; label: string; sub: string; href: string; needsYou: boolean; }
 
 // Latest activity timestamp across the durable customer-step markers.
 function latestStateTs(s: OnbState | null): number {
@@ -101,14 +101,22 @@ function latestStateTs(s: OnbState | null): number {
 // have the historical `{}`/null state and no completion timestamp; treating
 // exactly that markerless shape as legacy-live prevents them from becoming
 // fake new invitations. New shells explicitly persist `{ step: 1 }`.
-function isLive(p: PropertyRow): boolean {
+export function isLive(p: PropertyRow): boolean {
   if (p.onboardingCompletedAt) return true;
   return !p.onboardingState || Object.keys(p.onboardingState).length === 0;
 }
 
 // Position the hotel at the first unfinished stage. PMS connection and team
 // management happen later from their dedicated operational surfaces.
-function journeyOf(p: PropertyRow): Journey {
+//
+// Stage 1 has two truthful shapes, and `invitedEmail` is the only thing that
+// tells them apart. Both admin entry points that mint a first-person
+// invitation (the Add-hotel modal's optional first-person field, and the My
+// Hotel → People control) go through the same guarded mint, which stamps
+// `invitedEmail` onto the hotel's onboarding state. So a hotel created WITH an
+// invitation lands on "Invitation ready", and only a hotel with nobody invited
+// shows the pointer at the People control.
+export function journeyOf(p: PropertyRow): Journey {
   const propHref = `/admin/properties/${p.id}`;
   const s = p.onboardingState;
   if (!s?.accountCreatedAt) {

@@ -21,6 +21,7 @@ import {
 
 import type { AppUser } from '@/contexts/AuthContext';
 import { fetchWithAuth } from '@/lib/api-fetch';
+import { copyToClipboard } from '@/lib/copy-to-clipboard';
 import { HAT_ROLE_LABELS, isHatRole } from '@/lib/company/roles';
 import { ASSIGNABLE_ROLES, type AppRole, type AssignableRole } from '@/lib/roles';
 
@@ -280,31 +281,6 @@ function signupLinkFor(code: string): string {
     return `${origin}/signup?code=${encodeURIComponent(code)}`;
   }
   return `https://getstaxis.com/signup?code=${encodeURIComponent(code)}`;
-}
-
-async function copyToClipboard(value: string): Promise<boolean> {
-  try {
-    if (navigator.clipboard?.writeText) {
-      await navigator.clipboard.writeText(value);
-      return true;
-    }
-  } catch {
-    // Continue to the selection fallback below.
-  }
-  try {
-    const textarea = document.createElement('textarea');
-    textarea.value = value;
-    textarea.setAttribute('readonly', '');
-    textarea.style.position = 'fixed';
-    textarea.style.opacity = '0';
-    document.body.appendChild(textarea);
-    textarea.select();
-    const copied = document.execCommand('copy');
-    textarea.remove();
-    return copied;
-  } catch {
-    return false;
-  }
 }
 
 function useDialogBehavior(onClose: () => void, busy: boolean) {
