@@ -104,6 +104,9 @@ export interface AssignedByMeItem {
   createdAt: string | null;
   /** Who tapped, and when. Null while waiting. */
   settledByName: string | null;
+  /** The settler's staff id, so "somebody else finished it" can be told apart
+   *  from the author closing their own to-do without comparing display names. */
+  settledByStaffId: string | null;
   settledAt: string | null;
   /** Verbatim, for a 'cant'. */
   reason: string | null;

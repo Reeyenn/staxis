@@ -107,15 +107,28 @@ export function PromotionQueue() {
   const [busyId, setBusyId] = useState<string | null>(null);
   const [problem, setProblem] = useState<string | null>(null);
   const [showPromoted, setShowPromoted] = useState(false);
+  // A read that FAILED is not a queue that is empty. Both used to collapse into
+  // EMPTY and render "Nothing waiting on you.", so an outage looked exactly
+  // like calm — the one thing this screen must never do, because the whole
+  // point of it is that somebody is waiting on you.
+  const [readFailed, setReadFailed] = useState(false);
 
   const load = useCallback(async () => {
     try {
       const res = await fetchWithAuth('/api/admin/mission/promotions');
       const json = await res.json();
-      if (json?.ok && json.data) setPayload(json.data as QueuePayload);
-      else if (!json?.ok) setPayload(EMPTY);
+      if (json?.ok && json.data) {
+        setPayload(json.data as QueuePayload);
+        setReadFailed(false);
+      } else {
+        // Includes ok-but-no-data: a success envelope with nothing in it is
+        // still a read that told us nothing.
+        setPayload(EMPTY);
+        setReadFailed(true);
+      }
     } catch {
       setPayload(EMPTY);
+      setReadFailed(true);
     } finally {
       setLoaded(true);
     }
@@ -169,7 +182,11 @@ export function PromotionQueue() {
             </div>
           )}
 
-          {pending.length === 0 ? (
+          {readFailed ? (
+            <div style={{ marginTop: 10, padding: '9px 12px', background: 'var(--terracotta-dim)', border: '1px solid rgba(194,86,46,.4)', borderRadius: 10, color: 'var(--terracotta)', fontSize: 11.5, lineHeight: 1.45 }}>
+              Could not load the queue just now, so this list may be incomplete. Try again in a moment.
+            </div>
+          ) : pending.length === 0 ? (
             <div style={{ marginTop: 10 }}><DarkEmpty text="Nothing waiting on you." /></div>
           ) : (
             <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginTop: 10 }}>

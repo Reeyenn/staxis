@@ -146,8 +146,14 @@ function CommsPropertyApp({ pid }: { pid: string | null }) {
     // same way.
     try {
       const v = new URLSearchParams(window.location.search).get('view');
-      if (v === 'todo' || v === 'calendar' || v === 'logbook') {
+      if (v === 'todo') {
         window.location.replace('/feed');
+      } else if (v === 'calendar' || v === 'logbook') {
+        // Carry the destination across. Dropping it sent every "Go to Log Book"
+        // and "Go to Calendar" link on the dashboard to the plain queue, so the
+        // button appeared to do nothing and the thing it named stayed one more
+        // tap away, behind a control the person had just tried to press.
+        window.location.replace(`/feed?view=${v}`);
       } else if (v === 'knowledge' || v === 'contacts') {
         window.location.replace('/feed?tab=knows');
       }

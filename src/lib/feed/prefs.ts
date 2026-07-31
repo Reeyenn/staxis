@@ -29,7 +29,18 @@ export interface FeedPrefs {
 
 export const DEFAULT_FEED_PREFS: FeedPrefs = { logbookInList: false, assignedSeenAt: null };
 
-export async function readFeedPrefs(accountId: string, propertyId: string): Promise<FeedPrefs> {
+/**
+ * Read, plus whether the read actually worked.
+ *
+ * `degraded` is the distinction the write path was missing. A failed read and a
+ * genuinely-unset preference both produced DEFAULT_FEED_PREFS, so a merge on
+ * top of a degraded read looked exactly like a merge on top of real values —
+ * and wrote the defaults back over whatever was really in the row.
+ */
+async function readFeedPrefsChecked(
+  accountId: string,
+  propertyId: string,
+): Promise<{ prefs: FeedPrefs; degraded: boolean }> {
   const { data, error } = await supabaseAdmin
     .from('staxis_user_prefs')
     .select('logbook_in_list, assigned_seen_at')
@@ -40,14 +51,21 @@ export async function readFeedPrefs(accountId: string, propertyId: string): Prom
     // Degrade to the default rather than failing the whole list read. A
     // preference is the least important thing on the screen; the work is not.
     log.warn('[feed-prefs] read failed', { propertyId, err: error.message });
-    return DEFAULT_FEED_PREFS;
+    return { prefs: DEFAULT_FEED_PREFS, degraded: true };
   }
-  if (!data) return DEFAULT_FEED_PREFS;
+  if (!data) return { prefs: DEFAULT_FEED_PREFS, degraded: false };
   const row = data as { logbook_in_list?: boolean; assigned_seen_at?: string | null };
   return {
-    logbookInList: row.logbook_in_list === true,
-    assignedSeenAt: row.assigned_seen_at ?? null,
+    prefs: {
+      logbookInList: row.logbook_in_list === true,
+      assignedSeenAt: row.assigned_seen_at ?? null,
+    },
+    degraded: false,
   };
+}
+
+export async function readFeedPrefs(accountId: string, propertyId: string): Promise<FeedPrefs> {
+  return (await readFeedPrefsChecked(accountId, propertyId)).prefs;
 }
 
 export async function writeFeedPrefs(
@@ -55,20 +73,29 @@ export async function writeFeedPrefs(
   propertyId: string,
   next: Partial<FeedPrefs>,
 ): Promise<FeedPrefs> {
-  const current = await readFeedPrefs(accountId, propertyId);
+  const { prefs: current, degraded } = await readFeedPrefsChecked(accountId, propertyId);
   const merged: FeedPrefs = { ...current, ...next };
+
+  // ── never write back a value we only guessed ─────────────────────────────
+  // The patches are genuinely partial: turning the log book on says nothing
+  // about the drawer, and marking the drawer seen says nothing about the log
+  // book. On a healthy read the merge fills the untouched half with its real
+  // value. On a FAILED read it filled it with the default, and the upsert then
+  // wrote that default over the truth — switching somebody's log book off, or
+  // re-flagging every assignment they had already seen, with a 200 and no sign
+  // anything was lost. When the read degraded, write only what the caller
+  // actually asked for and leave the rest of the row alone.
+  const row: Record<string, unknown> = {
+    account_id: accountId,
+    property_id: propertyId,
+    updated_at: new Date().toISOString(),
+  };
+  if (!degraded || next.logbookInList !== undefined) row.logbook_in_list = merged.logbookInList;
+  if (!degraded || next.assignedSeenAt !== undefined) row.assigned_seen_at = merged.assignedSeenAt;
+
   const { error } = await supabaseAdmin
     .from('staxis_user_prefs')
-    .upsert(
-      {
-        account_id: accountId,
-        property_id: propertyId,
-        logbook_in_list: merged.logbookInList,
-        assigned_seen_at: merged.assignedSeenAt,
-        updated_at: new Date().toISOString(),
-      },
-      { onConflict: 'account_id,property_id' },
-    );
+    .upsert(row, { onConflict: 'account_id,property_id' });
   if (error) throw new Error(error.message);
   return merged;
 }

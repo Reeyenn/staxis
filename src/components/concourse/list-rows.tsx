@@ -260,7 +260,17 @@ export interface ComposerPayload {
   title: string;
   assignedStaffId: string | null;
   assignedDepartment: string | null;
-  dueAt: string | null;
+  /**
+   * The calendar DAY the work is due, YYYY-MM-DD — not an instant.
+   *
+   * The composer deliberately does not decide when that day ends. It used to
+   * send `${day}T23:59:59Z`, which is the end of the day in Greenwich: a to-do
+   * added on Tuesday morning in Texas turned red at 7pm that evening, and east
+   * of Greenwich it landed on the wrong calendar square outright. Only the
+   * server knows the hotel's timezone, so only the server can say when the
+   * hotel's day is over.
+   */
+  dueDate: string | null;
   repeat: RepeatChoice;
   weekday?: number;
   dayOfMonth?: number;
@@ -281,7 +291,7 @@ export function composerPayload(state: ComposerState, meStaffId: string | null):
     assignedStaffId,
     assignedDepartment,
     // A repeating item has no single due date; the template decides each day.
-    dueAt: state.repeat === 'once' && state.when ? `${state.when}T23:59:59.000Z` : null,
+    dueDate: state.repeat === 'once' && state.when ? state.when : null,
     repeat: state.repeat,
   };
   if (state.repeat === 'weekly' || state.repeat === 'biweekly') payload.weekday = state.weekday;

@@ -39,7 +39,9 @@
 // ═══════════════════════════════════════════════════════════════════════════
 
 import { supabaseAdmin } from '@/lib/supabase-admin';
-import { todayStr } from '@/lib/utils';
+import { APP_TIMEZONE } from '@/lib/utils';
+import { endOfLocalDay, propertyLocalToday } from '@/lib/schedule/local-date';
+import { validPropertyTimezone } from '@/lib/property-timezone';
 import { log } from '@/lib/log';
 import { buildInspectionQueue } from '@/lib/housekeeping/inspection-queue';
 import { COMPLAINT_OVERDUE_HOURS, COMPLAINT_OVERDUE_HOURS_HIGH } from '@/lib/complaints-shared';
@@ -133,6 +135,40 @@ export function taskVisibleToViewer(
   return worklistSeesApprovals(viewer.role);
 }
 
+/**
+ * May this person ACT on this item — check it off, or say they could not do it?
+ *
+ * The write-seam twin of taskVisibleToViewer, and it exists because filtering a
+ * read has never stopped a request that named an id directly. The list narrowed
+ * to "what is on my screen" while the complete handler still accepted any id in
+ * the property, so a line cook who had an id could close the general manager's
+ * private to-do, and any one person could cancel a reminder aimed at somebody
+ * else. Read and write must not be able to drift apart.
+ *
+ * Deliberately WIDER than taskVisibleToViewer, because closing work is not the
+ * same question as being shown it:
+ *   - it is on your list          → yours to finish
+ *   - you asked for it            → yours to call off
+ *   - you manage the hotel        → yours to close, whoever is holding it
+ *
+ * That last line is why this is not simply taskVisibleToViewer: a delegated
+ * to-do deliberately leaves the manager's list, and a manager who can no longer
+ * close out something they handed over would be worse off than before.
+ */
+export function mayActOnItem(
+  item: {
+    assignedStaffId: string | null;
+    assignedDepartment: string | null;
+    createdByStaffId: string | null;
+  },
+  viewer: WorklistViewer | null,
+): boolean {
+  if (!viewer) return true;
+  if (taskVisibleToViewer(item, viewer)) return true;
+  if (item.createdByStaffId && item.createdByStaffId === viewer.staffId) return true;
+  return worklistSeesApprovals(viewer.role);
+}
+
 export interface GatherOptions {
   tasksOnly?: boolean;
   /** Who is looking. Omit for the whole-property view. */
@@ -142,12 +178,20 @@ export interface GatherOptions {
 /** Gather every open actionable item for one property, normalized + sorted. */
 export async function gatherWorklist(pid: string, opts: GatherOptions = {}): Promise<WorklistItem[]> {
   const now = Date.now();
-  const today = todayStr();
   const tasksOnly = !!opts.tasksOnly;
   const viewer = opts.viewer ?? null;
   const wantsApprovals = !tasksOnly && (!viewer || worklistSeesApprovals(viewer.role));
   const emptyRes = () => Promise.resolve({ data: [] as Record<string, unknown>[], error: null as { message: string } | null });
-  const endOfTodayMs = (() => { const d = new Date(now); d.setHours(23, 59, 59, 999); return d.getTime(); })();
+
+  // ── the hotel's clock, not the server's ──────────────────────────────────
+  // "End of today" used to be `setHours(23,59,59)` on the SERVER's clock, and
+  // the server runs in UTC — so end-of-today was 6:59pm in Texas. A reminder
+  // set for tonight did not reach tonight's list, and a preventive task due
+  // this evening was filed as tomorrow's. One read of the hotel's timezone
+  // fixes every date on this list at once.
+  const tz = await propertyTimezoneOf(pid);
+  const today = propertyLocalToday(new Date(now), tz);
+  const endOfTodayMs = endOfLocalDay(today, tz).getTime();
   const endOfTodayIso = new Date(endOfTodayMs).toISOString();
 
   const [
@@ -460,19 +504,20 @@ export async function gatherWorklist(pid: string, opts: GatherOptions = {}): Pro
       assigneeStaffId: null,
       assigneeName: null,
       dept: null,
-      // END of the requested day, not the start of it. UTC midnight is the
+      // END of the requested day, IN THE HOTEL'S OWN ZONE. UTC midnight is the
       // PREVIOUS local day everywhere in the US, so `${day}T00:00:00.000Z`
       // put the request one square early on the calendar and made the "due
       // today" line contradict the row's own text ("Ana asked for the 14th
-      // off" filed under the 13th). This matches the overdue check directly
-      // below and the composer's convention in list-rows.tsx.
-      dueDate: day ? `${day}T23:59:59.999Z` : null,
+      // off" filed under the 13th). `T23:59:59.999Z` fixed the calendar square
+      // but still ended the day at 6:59pm in Texas, so a request for today went
+      // red over dinner. endOfLocalDay ends it when the hotel's day ends.
+      dueDate: day ? endOfLocalDay(day, tz).toISOString() : null,
       status: 'pending',
       priority: 'normal',
       propertyId: pid,
-      // Overdue the moment the day itself arrives: an unanswered request for
+      // Overdue the moment the day itself is over: an unanswered request for
       // today is a person who does not know whether to come in.
-      overdue: !!day && Date.parse(`${day}T23:59:59.999Z`) < now,
+      overdue: !!day && endOfLocalDay(day, tz).getTime() < now,
       canComplete: false,
       canAssign: false,
       deepLink: '/staff',
@@ -568,8 +613,19 @@ export async function listAssignees(
  * assigner's list, "did that ever happen" would otherwise have no answer at all
  * — and an assigner who cannot check stops delegating.
  *
- * Only tasks handed to a PERSON. A to-do left for a department was never handed
- * to anybody in particular, so there is nobody to be waiting on.
+ * WAITING is only ever about a to-do handed to a PERSON: one left for a
+ * department was never handed to anybody in particular, so there is nobody to
+ * be waiting on, and listing it as outstanding would just be the author's own
+ * list a second time.
+ *
+ * SETTLED is different, and this is the hole that was here. "Can't do this"
+ * flips the single shared row to blocked, so a department to-do that one
+ * housekeeper refuses leaves every housekeeper's list at once — and because it
+ * named no person, it reached no drawer either. The refusal reason, which is
+ * the entire justification for the blocked state, was written somewhere nobody
+ * would ever read it. So a department or unassigned to-do the author created
+ * appears here ONCE SOMEBODY ELSE HAS SETTLED IT: not as work outstanding, as
+ * news that it is over.
  */
 export async function gatherAssignedByMe(
   pid: string,
@@ -582,8 +638,9 @@ export async function gatherAssignedByMe(
     .select('id, title, assigned_staff_id, assigned_department, due_at, status, created_at, completed_at, completed_by_staff_id, blocked_at, blocked_by_staff_id, blocked_reason')
     .eq('property_id', pid)
     .eq('created_by_staff_id', staffId)
-    .not('assigned_staff_id', 'is', null)
-    .neq('assigned_staff_id', staffId)
+    // Anything the author handed AWAY: to another person, to a department, or
+    // to the house. A to-do they kept for themselves is already on their list.
+    .or(`assigned_staff_id.is.null,assigned_staff_id.neq.${staffId}`)
     .order('created_at', { ascending: false })
     .limit(limit);
   if (error) {
@@ -598,7 +655,23 @@ export async function gatherAssignedByMe(
     r.blocked_by_staff_id as string | null,
   ]).filter((x): x is string => !!x));
 
-  return rows.map((r) => mapAssignedRow(r, nameMap, now));
+  return rows
+    .map((r) => mapAssignedRow(r, nameMap, now))
+    .filter((item) => keepForAssigner(item, staffId));
+}
+
+/**
+ * Does this row belong in the author's drawer?
+ *
+ * Handed to a person: always, because "still waiting" is the question the
+ * drawer exists to answer. Handed to a department or to nobody: only once
+ * somebody ELSE has finished or refused it, because until then it is not news,
+ * and an author who settles their own to-do does not need to be told.
+ */
+function keepForAssigner(item: AssignedByMeItem, authorStaffId: string): boolean {
+  if (item.assigneeStaffId) return true;
+  if (item.state === 'waiting') return false;
+  return item.settledByStaffId !== authorStaffId;
 }
 
 /**
@@ -641,6 +714,7 @@ export function mapAssignedRow(
     dueDate: (r.due_at as string | null) ?? null,
     createdAt,
     settledByName: settledById ? nameMap.get(settledById) ?? null : null,
+    settledByStaffId: settledById,
     settledAt,
     reason: state === 'cant' ? ((r.blocked_reason as string | null) ?? null) : null,
     ageDays,
@@ -657,6 +731,27 @@ function complaintOverdue(severity: string, createdIso: string | null, now: numb
   if (!createdIso) return false;
   const limitH = severity === 'high' ? COMPLAINT_OVERDUE_HOURS_HIGH : COMPLAINT_OVERDUE_HOURS;
   return now - Date.parse(createdIso) > limitH * 3600_000;
+}
+
+/**
+ * The hotel's own timezone, falling back to the app default rather than UTC.
+ *
+ * The fallback matters: this list used to date itself with todayStr(), which
+ * defaults to APP_TIMEZONE, so degrading to UTC on a failed read would move
+ * every date on the list for a hotel that simply has no timezone set. A failed
+ * read must leave the dates where they were.
+ */
+export async function propertyTimezoneOf(pid: string): Promise<string> {
+  const { data, error } = await supabaseAdmin
+    .from('properties')
+    .select('timezone')
+    .eq('id', pid)
+    .maybeSingle();
+  if (error) {
+    log.warn('[worklist] timezone read failed; dating the list in the app default', { pid, err: error.message });
+    return APP_TIMEZONE;
+  }
+  return validPropertyTimezone((data as { timezone?: string | null } | null)?.timezone) ?? APP_TIMEZONE;
 }
 
 async function staffNameMap(pid: string, ids: string[]): Promise<Map<string, string>> {

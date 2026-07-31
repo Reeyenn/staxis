@@ -81,9 +81,13 @@ export interface PortfolioPayload {
   cap?: number;
   /**
    * May this reader cast a verdict? Comes from the ROUTE, which asks the
-   * caller's company hat — owner and VP act, finance reads. Absent on an older
-   * server bundle, and absent means "act", which is what every payload meant
-   * before this field existed.
+   * caller's company hat — owner and VP act, finance reads.
+   *
+   * ABSENT STAYS READ-ONLY. The right to act has to be proven by a fresh
+   * receipt, never inferred from a field that failed to arrive: an older or
+   * half-deployed bundle omitting it must not hand somebody buttons the server
+   * will refuse. This comment used to claim the opposite ("absent means act")
+   * while every reader in this file defaulted to false; the code was right.
    *
    * It is a RENDERING of the rule, not the rule: /api/company/queue refuses a
    * finance verdict again on the POST. What this field buys is that she is never

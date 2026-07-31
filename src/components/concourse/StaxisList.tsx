@@ -144,6 +144,23 @@ export function StaxisList({ propertyId, lang, focusId, onReadState, canSeeFindi
 
   const [drawerOpen, setDrawerOpen] = React.useState(false);
   const [logbookOpen, setLogbookOpen] = React.useState(false);
+
+  // ── ?view= opens the thing the link named ────────────────────────────────
+  // The dashboard's "Go to Log Book" and "Go to Calendar" buttons point here.
+  // Without this they landed on the plain queue: the calendar and the log book
+  // live in local state only, so the destination was reachable by button but
+  // not by link, and a link that visibly does nothing reads as broken.
+  //
+  // Read in an effect rather than during render, for the same reason the tab
+  // does one level up: useSearchParams would force a Suspense boundary, and
+  // touching window during render is a hydration mismatch.
+  React.useEffect(() => {
+    try {
+      const v = new URLSearchParams(window.location.search).get('view');
+      if (v === 'calendar') setView('calendar');
+      else if (v === 'logbook') setLogbookOpen(true);
+    } catch { /* no search params available — keep the defaults */ }
+  }, []);
   const [mergeBusy, setMergeBusy] = React.useState(false);
   const [mergeError, setMergeError] = React.useState<string | null>(null);
 
@@ -383,6 +400,12 @@ export function StaxisList({ propertyId, lang, focusId, onReadState, canSeeFindi
           hideLiveness
           bottomHeadroom
           onReadState={onReadState}
+          // "What Staxis noticed" is a manager's heading, and findings are
+          // manager-only. A front-desk clerk sees this same list for their own
+          // to-dos and nothing Staxis noticed, so the default heading described
+          // a half of the screen they cannot be shown, over rows they typed
+          // themselves.
+          heading={canSeeFindings ? undefined : 'What needs doing'}
           emptyNote={emptyListNote({ canSeeFindings })}
           composer={(
             <ComposerView
