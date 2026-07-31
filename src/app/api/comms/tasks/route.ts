@@ -1,8 +1,8 @@
 /**
  * /api/comms/tasks — to-dos. Lives on the Staxis list now, not Communications.
  *   GET   ?pid=...                              → list tasks
- *   POST  { pid, title, notes?, assignedStaffId?, assignedDepartment?, dueAt?,
- *           sourceMessageId?, repeat?, weekday?, dayOfMonth? }
+ *   POST  { pid, title, notes?, assignedStaffId?, assignedDepartment?,
+ *           dueDate? | dueAt?, sourceMessageId?, repeat?, weekday?, dayOfMonth? }
  *   PATCH { pid, taskId, status }               → check off / reopen
  * Authenticated. NO SMS.
  *
@@ -23,6 +23,9 @@ import { commsContext, ONE_LIST_CTX } from '@/lib/comms/route-helpers';
 import { listTasks, createTask, setTaskStatus, deleteTask, getStaffRow } from '@/lib/comms/core';
 import { createTemplate, RECURRING_CADENCES, type RecurringCadence } from '@/lib/recurring-tasks/store';
 import { assigneeBlockedReason } from '@/lib/worklist/assignable';
+import { propertyTimezoneOf } from '@/lib/worklist/core';
+import { endOfLocalDay, propertyLocalToday } from '@/lib/schedule/local-date';
+import { isBusinessDate } from '@/lib/business-date';
 import { errToString } from '@/lib/utils';
 
 export const runtime = 'nodejs';
@@ -46,7 +49,7 @@ export async function GET(req: NextRequest): Promise<Response> {
 export async function POST(req: NextRequest): Promise<Response> {
   let body: {
     pid?: string; title?: string; notes?: string; priority?: string;
-    assignedStaffId?: string; assignedDepartment?: string; dueAt?: string; sourceMessageId?: string;
+    assignedStaffId?: string; assignedDepartment?: string; dueAt?: string; dueDate?: string; sourceMessageId?: string;
     repeat?: string; weekday?: number; dayOfMonth?: number;
   };
   try { body = await req.json(); } catch { body = {}; }
@@ -82,8 +85,19 @@ export async function POST(req: NextRequest): Promise<Response> {
     if (dv.error) return err(dv.error, { requestId: ctx.requestId, status: 400, code: ApiErrorCode.ValidationFailed, headers: ctx.headers });
     assignedDepartment = dv.value!;
   }
+  // ── when the work is due ─────────────────────────────────────────────────
+  // Two doors. `dueDate` (YYYY-MM-DD) is a calendar DAY and is resolved to the
+  // end of that day IN THE HOTEL'S OWN TIMEZONE — the composer sends this,
+  // because a client that stamps its own instant produces "due today" items
+  // that go red at 7pm. `dueAt` stays for callers that genuinely mean a precise
+  // moment. dueDate wins when both are present.
   let dueAt: string | null = null;
-  if (body.dueAt) {
+  if (body.dueDate) {
+    if (!isBusinessDate(body.dueDate)) {
+      return err('invalid dueDate', { requestId: ctx.requestId, status: 400, code: ApiErrorCode.ValidationFailed, headers: ctx.headers });
+    }
+    dueAt = endOfLocalDay(body.dueDate, await propertyTimezoneOf(ctx.pid)).toISOString();
+  } else if (body.dueAt) {
     const ms = Date.parse(body.dueAt);
     if (!Number.isFinite(ms)) return err('invalid dueAt', { requestId: ctx.requestId, status: 400, code: ApiErrorCode.ValidationFailed, headers: ctx.headers });
     dueAt = new Date(ms).toISOString();
@@ -124,6 +138,12 @@ export async function POST(req: NextRequest): Promise<Response> {
         cadence: repeat as RecurringCadence,
         weekday: typeof body.weekday === 'number' ? body.weekday : null,
         dayOfMonth: typeof body.dayOfMonth === 'number' ? body.dayOfMonth : null,
+        // "Every other Tuesday starting this week" is anchored on the day the
+        // person said it, in the hotel's own calendar. Left to default, the
+        // anchor was the UTC day, which after ~7pm Central is TOMORROW — and an
+        // anchor one day late flips the fortnight, so the to-do quietly came
+        // back on the wrong alternating week for as long as it existed.
+        anchorDate: propertyLocalToday(new Date(), await propertyTimezoneOf(ctx.pid)),
       });
       return ok({ templateId: tpl.id, repeat }, { requestId: ctx.requestId, status: 201, headers: ctx.headers });
     } catch (e) {

@@ -72,6 +72,80 @@ export function addDaysInTz(yyyymmdd: string, days: number): string {
   return `${y}-${mo}-${d}`;
 }
 
+/**
+ * The zone's UTC offset in milliseconds at a given instant (local wall clock
+ * minus UTC). Positive east of Greenwich.
+ *
+ * Derived by formatting the instant in the zone and reading the wall clock back
+ * as if it were UTC — the difference IS the offset. Evaluated at a specific
+ * instant rather than looked up per-zone, which is what makes it correct on
+ * both sides of a DST boundary.
+ */
+function tzOffsetMsAt(instant: Date, timezone: string): number {
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    timeZone: timezone,
+    year: 'numeric', month: '2-digit', day: '2-digit',
+    hour: '2-digit', minute: '2-digit', second: '2-digit',
+    hour12: false,
+  }).formatToParts(instant);
+  const get = (t: string) => Number(parts.find((p) => p.type === t)?.value ?? '0');
+  // Some ICU versions render midnight as hour "24"; % 24 folds it back.
+  const asIfUtc = Date.UTC(get('year'), get('month') - 1, get('day'), get('hour') % 24, get('minute'), get('second'));
+  // Compare against the instant truncated to the second: asIfUtc carries no ms.
+  return asIfUtc - Math.floor(instant.getTime() / 1000) * 1000;
+}
+
+/**
+ * A hotel-local wall-clock time on a given local day → the instant it happens.
+ *
+ * The inverse of propertyLocalToday, and the piece that was missing: everything
+ * here could turn an instant into a local date, but nothing could turn a local
+ * date back into an instant. Callers filled the gap with `${day}T23:59:59Z`,
+ * which is not the end of the hotel's day — it is the end of the day in
+ * Greenwich, i.e. 6:59pm in Texas and the following morning in Sydney.
+ *
+ * TWO PASSES, and the second one is the whole point. The offset that applies at
+ * a wall-clock time is the offset AT THE ANSWER, not at the guess. Pass one
+ * lands within an hour; pass two is evaluated at that instant and lands exactly.
+ * They differ only across a DST boundary, which is precisely the day a
+ * single-pass version is wrong.
+ *
+ * A null/invalid timezone degrades to UTC rather than throwing: a bad tz string
+ * must never take a write down.
+ */
+function localWallClockToInstant(
+  yyyymmdd: string,
+  h: number, mi: number, s: number, ms: number,
+  timezone: string | null,
+): Date {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(yyyymmdd);
+  if (!m) throw new Error(`Invalid YYYY-MM-DD: ${yyyymmdd}`);
+  const wallMs = Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3]), h, mi, s, ms);
+  if (!timezone || !timezone.trim()) return new Date(wallMs);
+  try {
+    const firstPass = wallMs - tzOffsetMsAt(new Date(wallMs), timezone);
+    return new Date(wallMs - tzOffsetMsAt(new Date(firstPass), timezone));
+  } catch {
+    return new Date(wallMs);
+  }
+}
+
+/** The instant a hotel-local calendar day BEGINS (00:00:00.000 local). */
+export function startOfLocalDay(yyyymmdd: string, timezone: string | null): Date {
+  return localWallClockToInstant(yyyymmdd, 0, 0, 0, 0, timezone);
+}
+
+/**
+ * The last instant of a hotel-local calendar day (23:59:59.999 local).
+ *
+ * THE due-date convention for the whole app: "due today" means due by the end
+ * of today where the hotel is, so a to-do created this morning does not turn
+ * red over dinner and a day-off request files under the day it names.
+ */
+export function endOfLocalDay(yyyymmdd: string, timezone: string | null): Date {
+  return localWallClockToInstant(yyyymmdd, 23, 59, 59, 999, timezone);
+}
+
 /** Convenience: get the property's local YYYY-MM-DD for now + offset days,
  *  computing the date shift purely in the local calendar (not via UTC
  *  round-trip).

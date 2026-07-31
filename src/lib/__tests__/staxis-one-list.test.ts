@@ -411,7 +411,7 @@ describe('what came back since you last looked', () => {
     return {
       taskId: 't', title: 'Change the lobby filters', assigneeStaffId: 'm', assigneeName: 'Marcus',
       assignedDepartment: null, state: 'done', dueDate: null, createdAt: '2026-07-24T00:00:00.000Z',
-      settledByName: 'Marcus', settledAt: '2026-07-30T09:00:00.000Z', reason: null, ageDays: 6,
+      settledByName: 'Marcus', settledByStaffId: 'm', settledAt: '2026-07-30T09:00:00.000Z', reason: null, ageDays: 6,
       ...over,
     };
   }

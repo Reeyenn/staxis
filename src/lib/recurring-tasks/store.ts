@@ -132,7 +132,7 @@ export async function createTemplate(input: CreateTemplateInput): Promise<{ id: 
   const blocked = await assignmentBlockedReason(input.propertyId, input.assignedStaffId);
   if (blocked) throw new Error(blocked);
   const cadence = input.cadence;
-  const params = normalizeCadence(cadence, input, todayLocalIso());
+  const params = normalizeCadence(cadence, input, await propertyLocalDay(input.propertyId));
   const { data, error } = await supabaseAdmin
     .from('recurring_task_templates')
     .insert({
@@ -153,8 +153,24 @@ export async function createTemplate(input: CreateTemplateInput): Promise<{ id: 
   return { id: data.id as string };
 }
 
-function todayLocalIso(): string {
-  return new Date().toISOString().slice(0, 10);
+/**
+ * Today, in the hotel's own calendar.
+ *
+ * The default anchor for a biweekly template, and it has to be the HOTEL's day:
+ * the UTC day is already tomorrow after ~7pm Central, and an anchor one day
+ * late puts the template on the opposite fortnight. "Every other Tuesday
+ * starting this week" then silently started next week and stayed a week off for
+ * as long as the template lived. Degrades to the app default rather than
+ * throwing, because a bad timezone must not stop somebody creating a to-do.
+ */
+async function propertyLocalDay(propertyId: string): Promise<string> {
+  const { data } = await supabaseAdmin
+    .from('properties')
+    .select('timezone')
+    .eq('id', propertyId)
+    .maybeSingle();
+  const tz = (data as { timezone?: string | null } | null)?.timezone;
+  return localDayParts(new Date(), tz && tz.trim() ? tz : 'America/Chicago').date;
 }
 
 /** Stop (deactivate) a template. Already-spawned tasks are left alone. Returns
@@ -259,7 +275,7 @@ export async function spawnDueRecurringTodos(now: Date = new Date()): Promise<Sp
   // scale today (one property); a join keeps it a single round trip.
   const { data, error } = await supabaseAdmin
     .from('recurring_task_templates')
-    .select('id, property_id, title, assigned_staff_id, assigned_department, priority, cadence, weekday, day_of_month, anchor_date, active, last_spawned_on, created_at, properties(timezone)')
+    .select('id, property_id, title, assigned_staff_id, assigned_department, priority, cadence, weekday, day_of_month, anchor_date, active, last_spawned_on, created_at, created_by_staff_id, properties(timezone)')
     .eq('active', true);
   if (error) {
     log.error('[recurring-tasks] spawn query failed', { err: error.message });
@@ -316,7 +332,14 @@ export async function spawnDueRecurringTodos(now: Date = new Date()): Promise<Sp
         assigned_staff_id: assignedStaffId,
         assigned_department: template.assignedDepartment,
         priority: template.priority,
-        created_by_staff_id: null,
+        // The person who set the template up is the author of every instance it
+        // spawns. Stamping null orphaned them: an unassigned instance fell
+        // through to "the house's", so it showed only to management and never
+        // to whoever actually asked for it, and no instance could ever reach
+        // the author's Assigned-by-me drawer — so somebody who set up "every
+        // Tuesday, check the pool" for Ana had no way to learn it got done, or
+        // that Ana said she could not do it.
+        created_by_staff_id: (raw.created_by_staff_id as string | null) ?? null,
         recurring_template_id: template.id,
         recurring_instance_date: date,
         created_at: nowIso,

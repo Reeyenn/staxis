@@ -69,7 +69,7 @@ import 'server-only';
 import { scopedDb, unscopedBecause } from '@/lib/agent/scoped-db';
 import { captureException } from '@/lib/sentry';
 import type { AppRole } from '@/lib/roles';
-import { addDaysInTz, propertyLocalToday } from '@/lib/schedule/local-date';
+import { addDaysInTz, propertyLocalToday, startOfLocalDay } from '@/lib/schedule/local-date';
 import { countProposeFindings, latestRunFacts } from '@/lib/findings/store';
 import { scheduleState } from '@/lib/findings/detectors/preventive-due';
 import { lensAllowsTool } from './lenses';
@@ -432,19 +432,13 @@ function joinCapped(items: string[], max: number): string {
 
 /** Start-of-day in the property's own calendar, as an ISO instant for `gte`. */
 function startOfLocalDayIso(now: Date, timezone: string | null): string {
-  const today = propertyLocalToday(now, timezone);
-  // Resolve the property's UTC offset at `now` by formatting the same instant in
-  // both zones and differencing. Cheaper and more robust than a tz database
-  // lookup, and correct across DST because it is evaluated AT `now`.
-  try {
-    const tz = timezone || 'UTC';
-    const local = new Date(now.toLocaleString('en-US', { timeZone: tz }));
-    const utc = new Date(now.toLocaleString('en-US', { timeZone: 'UTC' }));
-    const offsetMs = local.getTime() - utc.getTime();
-    return new Date(Date.parse(`${today}T00:00:00.000Z`) - offsetMs).toISOString();
-  } catch {
-    return `${today}T00:00:00.000Z`;
-  }
+  // Was: resolve the offset AT `now` and apply it to today's local midnight.
+  // Those are two different instants, and on the two DST days a year they carry
+  // two different offsets — so "since midnight" started an hour early or late
+  // and quietly counted an hour of yesterday's work as today's. It also leaned
+  // on Date(toLocaleString(...)), which no spec requires an engine to parse.
+  // startOfLocalDay evaluates the offset at the answer instead of at the guess.
+  return startOfLocalDay(propertyLocalToday(now, timezone), timezone).toISOString();
 }
 
 /** The count off a `head: true` read, or null when the query failed. */

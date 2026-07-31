@@ -90,7 +90,7 @@ function assigned(over: Partial<AssignedByMeItem> = {}): AssignedByMeItem {
     taskId: 't', title: 'Change the lobby filters', assigneeStaffId: 'm',
     assigneeName: 'Marcus', assignedDepartment: null, state: 'waiting',
     dueDate: null, createdAt: '2026-07-24T00:00:00.000Z',
-    settledByName: null, settledAt: null, reason: null, ageDays: 6,
+    settledByName: null, settledByStaffId: null, settledAt: null, reason: null, ageDays: 6,
     ...over,
   };
 }
@@ -144,7 +144,7 @@ describe('the composer: type and press Enter', () => {
     assert.equal(payload.assignedStaffId, 'my-staff-id');
     assert.equal(payload.assignedDepartment, null);
     assert.equal(payload.repeat, 'once');
-    assert.ok(payload.dueAt?.startsWith('2026-07-30'), 'due today');
+    assert.equal(payload.dueDate, '2026-07-30', 'sends the calendar day, not an instant');
     assert.equal(payload.weekday, undefined);
     assert.equal(payload.dayOfMonth, undefined);
   });
@@ -181,7 +181,7 @@ describe('the composer: type and press Enter', () => {
     );
     assert.equal(weekly?.repeat, 'weekly');
     assert.equal(weekly?.weekday, 2);
-    assert.equal(weekly?.dueAt, null);
+    assert.equal(weekly?.dueDate, null);
 
     const monthly = rows.composerPayload(
       { ...rows.composerDefaults('2026-07-30', 4), title: 'x', repeat: 'monthly', dayOfMonth: 15 },

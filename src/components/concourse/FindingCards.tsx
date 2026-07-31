@@ -103,6 +103,15 @@ interface QueuePayload {
  */
 type Verdict = ClosureVerdict;
 
+/**
+ * How long a card stays optimistically hidden after a verdict.
+ *
+ * Long enough to cover the reload that follows the write, short enough that the
+ * server is authoritative again well before anybody could act on a stale
+ * screen. It is a render bridge, not a record of anything.
+ */
+export const SETTLED_HIDE_MS = 15_000;
+
 // ─── Copy ───────────────────────────────────────────────────────────────────
 
 /**
@@ -983,6 +992,7 @@ export function FindingCards({
   interleave,
   composer,
   emptyNote,
+  heading,
 }: {
   lang: Lang;
   focusId?: string | null;
@@ -1010,6 +1020,11 @@ export function FindingCards({
    * statement about the AI: there is also no work on it.
    */
   emptyNote?: string;
+  /**
+   * Overrides the section heading. Findings are manager-only, so a reader who
+   * cannot be shown them must not be given a heading that announces them.
+   */
+  heading?: string;
 }) {
   const { user } = useAuth();
   const { activePropertyId } = useProperty();
@@ -1045,7 +1060,8 @@ export function FindingCards({
   const [busyId, setBusyId] = React.useState<string | null>(null);
   const [saveFailed, setSaveFailed] = React.useState(false);
   // Optimistically hidden after a verdict lands, so the card leaves the moment
-  // the manager acts rather than after the refetch.
+  // the manager acts rather than after the refetch. It covers the gap until the
+  // reload returns and NOTHING MORE — see the expiry below.
   const [settled, setSettled] = React.useState<Set<string>>(new Set());
 
   const onVerdict = React.useCallback(
@@ -1146,6 +1162,20 @@ export function FindingCards({
     [hotelId],
   );
 
+  // ── the optimistic hide EXPIRES ──────────────────────────────────────────
+  // It only ever had one job: bridge the moment between the tap and the reload.
+  // Held forever, it became a second, invisible silencer that outranked the
+  // server's — escalation reuses the SAME finding row, so a problem the manager
+  // silenced and that later grew serious enough to come back was filtered out
+  // by its own id and never seen again on that tab. Clearing the set shortly
+  // after the last verdict hands authority back to the payload, which is the
+  // only thing that actually knows whether a finding is still quiet.
+  React.useEffect(() => {
+    if (settled.size === 0) return;
+    const t = setTimeout(() => setSettled(new Set()), SETTLED_HIDE_MS);
+    return () => clearTimeout(t);
+  }, [settled]);
+
   // A person who may not read findings still gets the LIST when one is passed:
   // returning null here would take their own to-dos, the composer and the work
   // rows with it. Nothing about the findings half renders for them, because
@@ -1162,6 +1192,7 @@ export function FindingCards({
       saveFailed={saveFailed}
       busyId={busyId}
       focusId={focusId}
+      heading={heading}
       hideLiveness={hideLiveness}
       bottomHeadroom={bottomHeadroom}
       // Only once the read has actually landed. Passed while `data` is still

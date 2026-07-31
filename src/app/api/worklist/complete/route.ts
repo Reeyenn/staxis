@@ -34,7 +34,7 @@ import { validateUuid, validateEnum, validateString } from '@/lib/api-validate';
 import { commsContext, ONE_LIST_CTX } from '@/lib/comms/route-helpers';
 import { checkAndIncrementRateLimit, rateLimitedResponse } from '@/lib/api-ratelimit';
 import { setTaskStatus } from '@/lib/comms/core';
-import { worklistSeesAllSources } from '@/lib/worklist/core';
+import { worklistSeesAllSources, mayActOnItem } from '@/lib/worklist/core';
 import { WORKLIST_SOURCE_TYPES } from '@/lib/worklist/types';
 
 export const runtime = 'nodejs';
@@ -95,6 +95,24 @@ export async function POST(req: NextRequest): Promise<Response> {
 
   const rl = await checkAndIncrementRateLimit('worklist-complete', pid);
   if (!rl.allowed) return rateLimitedResponse(rl.current, rl.cap, rl.retryAfterSec);
+
+  // ── whose item is this? ──────────────────────────────────────────────────
+  // The list narrowed to "what is on my screen" but this handler still took any
+  // id in the property, so the two drifted: a to-do handed to one person could
+  // be closed by anybody who had its id, and a reminder aimed at one person
+  // could be cancelled by somebody it was never for. The read rule and the
+  // write rule are now the same rule. Management and the author keep their
+  // override — see mayActOnItem.
+  const viewer = { staffId: ctx.staffId, accountId: ctx.accountId, role: ctx.role, dept: ctx.dept };
+  if (sourceType === 'task' || sourceType === 'reminder') {
+    const owner = await itemOwnership(sourceType, sourceId, pid);
+    if (!owner) return notFound(requestId, headers);
+    if (!mayActOnItem(owner, viewer)) {
+      return err('this one is not yours to close', {
+        requestId, status: 403, code: ApiErrorCode.Forbidden, headers,
+      });
+    }
+  }
 
   try {
     switch (sourceType) {
@@ -181,6 +199,35 @@ export async function POST(req: NextRequest): Promise<Response> {
     log.error('[worklist] complete failed', { requestId, pid, sourceType, err: errToString(e) });
     return err('Internal server error', { requestId, status: 500, code: ApiErrorCode.InternalError, headers });
   }
+}
+
+/**
+ * Who a to-do or reminder belongs to, scoped by id AND property_id.
+ *
+ * Returns null when the row is not this hotel's — a foreign id is
+ * indistinguishable from a missing one, so it 404s rather than 403s and never
+ * reveals that the id exists somewhere.
+ */
+async function itemOwnership(
+  sourceType: 'task' | 'reminder',
+  id: string,
+  pid: string,
+): Promise<{ assignedStaffId: string | null; assignedDepartment: string | null; createdByStaffId: string | null } | null> {
+  const [table, assignee, dept] = sourceType === 'task'
+    ? ['comms_tasks', 'assigned_staff_id', 'assigned_department'] as const
+    : ['agent_reminders', 'target_staff_id', 'target_department'] as const;
+  const { data } = await supabaseAdmin
+    .from(table)
+    .select(`${assignee}, ${dept}, created_by_staff_id`)
+    .eq('id', id).eq('property_id', pid)
+    .maybeSingle();
+  if (!data) return null;
+  const row = data as Record<string, unknown>;
+  return {
+    assignedStaffId: (row[assignee] as string | null) ?? null,
+    assignedDepartment: (row[dept] as string | null) ?? null,
+    createdByStaffId: (row.created_by_staff_id as string | null) ?? null,
+  };
 }
 
 /** Re-read a row scoped by BOTH id AND property_id — a foreign id is indistinguishable from a missing one. */
