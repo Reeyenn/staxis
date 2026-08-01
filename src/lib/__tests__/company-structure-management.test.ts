@@ -136,6 +136,16 @@ describe('My Hotel structure surface contract', () => {
     assert.doesNotMatch(page, /id: 'structure'|id: 'portfolio'/);
   });
 
+  test('keeps structure load failures visible and the Hotels structure heading compact', () => {
+    const managerSurface = manager.slice(manager.indexOf('export function CompanyStructureManager'));
+    assert.match(page, /const \[structureError, setStructureError\]/);
+    assert.match(page, /Company structure could not be loaded/);
+    assert.match(page, /onStructureRetry=\{\(\) => setRetryKey\(\(value\) => value \+ 1\)\}/);
+    assert.match(page, /disabled=\{structureLoading\}/);
+    assert.match(managerSurface, /<h2 id="company-structure-management-title">\{'Company structure'\}<\/h2>/);
+    assert.doesNotMatch(managerSurface, /Structure management|Company, portfolio, region, and hotel relationships|Portfolio assignments control inherited hotel reach|Audited access/);
+  });
+
   test('keeps authorization, epoch, same-company topology, and audit inside SQL', () => {
     assert.match(migration, /security definer/g);
     assert.match(migration, /_staxis_nonlegacy_property_authorizations/);

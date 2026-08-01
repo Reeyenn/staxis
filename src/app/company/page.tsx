@@ -263,9 +263,7 @@ function CompanyPageFallback() {
   return (
     <AppLayout>
       <div className={styles.page} aria-busy="true" aria-label="Loading My Hotel">
-        <div className={styles.skeletonStack} aria-hidden="true">
-          <div className={styles.skeletonPanel}><span /><strong /><small /><div /></div>
-        </div>
+        <CompanyHubSkeleton />
       </div>
     </AppLayout>
   );
@@ -326,6 +324,8 @@ function CompanyAccessContent() {
   const [lifecycleAction, setLifecycleAction] = React.useState<CompanyLifecycleAction | null>(null);
   const [structure, setStructure] = React.useState<CompanyStructureProjection | null>(null);
   const [structureViewerKey, setStructureViewerKey] = React.useState<string | null>(null);
+  const [structureLoading, setStructureLoading] = React.useState(false);
+  const [structureError, setStructureError] = React.useState<string | null>(null);
   const previewHeadingRef = React.useRef<HTMLHeadingElement | null>(null);
   const focusPreviewAfterRetryRef = React.useRef(false);
   const completeAccessMutation = React.useCallback(() => {
@@ -582,19 +582,27 @@ function CompanyAccessContent() {
     : null;
 
   React.useEffect(() => {
-    if (!user || authLoading || propertyLoading) return;
+    if (!user || authLoading || propertyLoading) {
+      setStructureLoading(false);
+      setStructureError(null);
+      return;
+    }
     const viewerKey = user.role === 'admin'
       ? null
       : `${user.accountId}:${user.role}:company-structure:${authorizationFingerprint ?? 'unverified'}`;
     if (portfolioMode || !viewerKey || !currentData || currentData.legacyFallback) {
       setStructure(null);
       setStructureViewerKey(null);
+      setStructureLoading(false);
+      setStructureError(null);
       return;
     }
 
     let cancelled = false;
     setStructure(null);
     setStructureViewerKey(null);
+    setStructureLoading(true);
+    setStructureError(null);
     void (async () => {
       try {
         const response = await fetchWithAuth('/api/company-access/structure');
@@ -605,12 +613,16 @@ function CompanyAccessContent() {
         if (!cancelled) {
           setStructure(body.data);
           setStructureViewerKey(viewerKey);
+          setStructureError(null);
         }
-      } catch {
+      } catch (caught) {
         if (!cancelled) {
           setStructure(null);
           setStructureViewerKey(viewerKey);
+          setStructureError(caught instanceof Error ? caught.message : 'Live company structure could not be loaded.');
         }
+      } finally {
+        if (!cancelled) setStructureLoading(false);
       }
     })();
     return () => { cancelled = true; };
@@ -674,7 +686,8 @@ function CompanyAccessContent() {
   const viewerTransitionLoading = Boolean(
     user && currentViewerKey && !dataBelongsToCurrentViewer && !currentLoadError,
   );
-  const propertyRosterLoading = currentData?.viewerContext?.scope === 'property'
+  const peopleRosterLoading = tab === 'people'
+    && currentData?.viewerContext?.scope === 'property'
     && !currentStaffSettled;
   const showLoading = authLoading
     || !authorizationChecked
@@ -687,7 +700,7 @@ function CompanyAccessContent() {
     || (adminPreview && !adminTargetIsCurrent)
     || (loading && !currentData)
     || viewerTransitionLoading
-    || propertyRosterLoading
+    || peopleRosterLoading
     || (tab === 'people' && hotelCapabilitiesLoading);
   const adminPreviewFailed = adminPreview && !showLoading && Boolean(currentLoadError) && !currentData;
   const adminViewerContext = adminPreview ? resolved.viewerContext : undefined;
@@ -744,21 +757,7 @@ function CompanyAccessContent() {
               <Building2 size={23} strokeWidth={1.8} />
             </div>
             <div className={styles.heroCopy}>
-              <div className={styles.eyebrow}>
-                {adminPreview
-                  ? 'Staxis admin view'
-                  : portfolioMode
-                    ? 'Portfolio workspace'
-                    : 'Company workspace'}
-              </div>
               <h1 ref={previewHeadingRef} tabIndex={adminPreview ? -1 : undefined}>{workspaceTitle}</h1>
-              <p>
-                {adminPreview
-                  ? 'Manage this hotel without leaving My Hotel.'
-                  : portfolioMode
-                    ? 'Manage company knowledge, hotels, people, and access in one place.'
-                    : 'See your hotels, team, and exactly why you have access.'}
-              </p>
             </div>
           </div>
 
@@ -883,7 +882,7 @@ function CompanyAccessContent() {
                   onRetry={() => void refreshCapabilities()}
                 />
               ) : showLoading ? (
-                <CompanyHubSkeleton lang={lang} />
+                <CompanyHubSkeleton />
               ) : !user ? (
                 <EmptyState
                   icon={ShieldCheck}
@@ -894,12 +893,15 @@ function CompanyAccessContent() {
                 <HotelsPanel
                   data={resolved}
                   structure={currentStructure}
+                  structureError={structureError}
+                  structureLoading={structureLoading}
                   lang={lang}
                   activeProperty={activeProperty}
                   query={query}
                   onQueryChange={setQuery}
                   statusFilter={hotelStatusFilter}
                   onStatusFilterChange={setHotelStatusFilter}
+                  onStructureRetry={() => setRetryKey((value) => value + 1)}
                   onStructureChanged={completeAccessMutation}
                 />
               ) : tab === 'people' ? (
@@ -982,15 +984,18 @@ function CompanyAccessContent() {
   );
 }
 
-function HotelsPanel({ data, structure, lang, activeProperty, query, onQueryChange, statusFilter, onStatusFilterChange, onStructureChanged }: {
+function HotelsPanel({ data, structure, structureError, structureLoading, lang, activeProperty, query, onQueryChange, statusFilter, onStatusFilterChange, onStructureRetry, onStructureChanged }: {
   data: CompanyAccessData;
   structure: CompanyStructureProjection | null;
+  structureError: string | null;
+  structureLoading: boolean;
   lang: string;
   activeProperty: Property | null;
   query: string;
   onQueryChange: (value: string) => void;
   statusFilter: HotelStatusFilter;
   onStatusFilterChange: (value: HotelStatusFilter) => void;
+  onStructureRetry: () => void;
   onStructureChanged: () => void;
 }) {
   const normalizedQuery = query.trim().toLowerCase();
@@ -1029,6 +1034,19 @@ function HotelsPanel({ data, structure, lang, activeProperty, query, onQueryChan
           onAction={() => { onQueryChange(''); onStatusFilterChange('all'); }}
         />
       )}
+      {!data.viewerContext && structureError ? (
+        <div className={styles.partialNotice} role="status">
+          <AlertTriangle size={17} aria-hidden="true" />
+          <div>
+            <strong>{'Company structure could not be loaded'}</strong>
+            <span>{structureError}</span>
+          </div>
+          <button type="button" onClick={onStructureRetry} disabled={structureLoading}>
+            <RefreshCw size={14} aria-hidden="true" />
+            {'Retry'}
+          </button>
+        </div>
+      ) : null}
       {data.viewerContext?.kind === 'staxis_admin_preview' && activeProperty ? (
         <AdminHotelRelationshipManager
           key={activeProperty.id}
@@ -1920,17 +1938,25 @@ function EmptyState({ icon: Icon, title, description, actionLabel, onAction, com
   );
 }
 
-function CompanyHubSkeleton({ lang }: { lang: string }) {
+function CompanyHubSkeleton() {
   return (
-    <div
-      className={styles.skeletonStack}
-      role="status"
-      aria-label={'Loading company access'}
-    >
-      <div className={styles.skeletonGrid} aria-hidden="true">
-        {[0, 1, 2].map((key) => <div key={key} className={styles.skeletonCard}><span /><strong /><small /></div>)}
+    <div className={styles.skeletonSurface} role="status" aria-label={'Loading company access'}>
+      <div className={styles.skeletonToolbar} aria-hidden="true">
+        <span />
+        <span />
       </div>
-      <div className={styles.skeletonPanel} aria-hidden="true"><span /><strong /><small /><div /></div>
+      <div className={styles.skeletonRows} aria-hidden="true">
+        {[0, 1, 2].map((key) => (
+          <div key={key} className={styles.skeletonRow}>
+            <span />
+            <div>
+              <strong />
+              <small />
+            </div>
+            <span />
+          </div>
+        ))}
+      </div>
     </div>
   );
 }

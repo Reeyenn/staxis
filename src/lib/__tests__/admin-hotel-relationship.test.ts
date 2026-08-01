@@ -116,6 +116,7 @@ describe('existing /company Hotels-tab lifecycle surface', () => {
     assert.match(page, /data\.viewerContext\?\.kind === 'staxis_admin_preview'/);
     assert.match(page, /AdminHotelRelationshipManager/);
     assert.doesNotMatch(component, /adminToolsEnabled|Admin view is ON|Turn on Admin view/);
+    assert.doesNotMatch(component, /Staxis platform administration/);
     assert.match(component, /Every lifecycle change starts with a fresh impact preview and explicit confirmation/);
     assert.match(component, /disabled=\{loading \|\| !projection\}/);
     assert.match(component, /Acquire and link hotel/);

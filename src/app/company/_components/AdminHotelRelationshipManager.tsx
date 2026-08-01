@@ -255,7 +255,6 @@ function RelationshipDialog({
         <header className={styles.dialogHeader}>
           <span className={`${styles.dialogIcon} ${styles.iconRust}`}><ArrowRightLeft size={19} aria-hidden="true" /></span>
           <div>
-            <span>{'Staxis platform administration'}</span>
             <h2 id={titleId}>{'Manage hotel company relationship'}</h2>
           </div>
           <button ref={closeRef} className={styles.iconButton} type="button" disabled={busy} onClick={onClose} aria-label={'Close'}><X size={18} /></button>
@@ -418,7 +417,6 @@ export function AdminHotelRelationshipManager({
     <section className={styles.adminRelationshipCard} aria-labelledby="admin-hotel-relationship-title" data-admin-hotel-relationship-manager>
       <div className={styles.adminRelationshipIcon}><Building2 size={20} aria-hidden="true" /></div>
       <div className={styles.adminRelationshipBody}>
-        <span>{'Staxis platform administration'}</span>
         <h3 id="admin-hotel-relationship-title">{'Company relationship and status'}</h3>
         {loading ? (
           <p><RefreshCw className={styles.spin} size={14} aria-hidden="true" /> {'Verifying the current primary relationship…'}</p>

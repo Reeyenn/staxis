@@ -257,12 +257,28 @@ describe('My Hotel account and team integration', () => {
     assert.match(company, /return isTabId\(requested\) \? requested : ['"]hotels['"]/);
     assert.match(company, /const next = isTabId\(requested\) \? requested : ['"]hotels['"]/);
     assert.doesNotMatch(company, /OverviewPanel|SummaryCard|CompanyStructureOverview|CompanyRulebookPanel/);
+    assert.doesNotMatch(company, /Staxis admin view|Portfolio workspace|Company workspace|See your hotels, team, and exactly why you have access/);
     assert.doesNotMatch(company, /Property scope|Hotels you can access|Grouped by organization, portfolio, or region\./);
     assert.doesNotMatch(company, /Company people|Effective access|Access records|Access is managed/);
     assert.match(company, /<FilterBar[\s\S]*<OrganizationHierarchy/);
     assert.match(company, /data\.viewerContext\?\.kind === ['"]staxis_admin_preview['"][\s\S]*<AdminHotelRelationshipManager/);
     assert.match(company, /title=\{['"]Memberships and invitations['"]\}/);
     assert.match(company, /title=\{adminPreview[\s\S]*['"]Customer grants['"][\s\S]*['"]Access grants['"]/);
+    assert.doesNotMatch(hotelTeam, /<span>\{'Hotel roster'\}<\/span>/);
+  });
+
+  test('keeps property roster loading local to People and uses a neutral surface skeleton', () => {
+    const loadingExpression = company.slice(
+      company.indexOf('const showLoading'),
+      company.indexOf('const adminPreviewFailed'),
+    );
+    assert.match(company, /const peopleRosterLoading = tab === ['"]people['"][\s\S]*currentData\?\.viewerContext\?\.scope === ['"]property['"]/);
+    assert.doesNotMatch(company, /const propertyRosterLoading/);
+    assert.match(loadingExpression, /\|\| peopleRosterLoading/);
+    assert.doesNotMatch(loadingExpression, /propertyRosterLoading/);
+    assert.match(company, /function CompanyHubSkeleton\(\)/);
+    assert.match(company, /className=\{styles\.skeletonSurface\}/);
+    assert.doesNotMatch(company, /skeletonStack|skeletonGrid|skeletonCard|skeletonPanel/);
   });
 
   test('waits for the exact hotel capability snapshot before showing team controls', () => {
