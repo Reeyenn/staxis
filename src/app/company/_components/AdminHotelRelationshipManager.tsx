@@ -370,13 +370,11 @@ function RelationshipDialog({
 export function AdminHotelRelationshipManager({
   propertyId,
   propertyName,
-  adminToolsEnabled,
   lang,
   onChanged,
 }: {
   propertyId: string;
   propertyName: string;
-  adminToolsEnabled: boolean;
   lang: string;
   onChanged: () => void;
 }) {
@@ -439,9 +437,7 @@ export function AdminHotelRelationshipManager({
             </span>
           </p>
         ) : null}
-        <small>{adminToolsEnabled
-          ? 'Admin view is ON. Acquire, link, transfer, deactivate, or change owner/operator status through a confirmed impact preview.'
-          : 'Turn on Admin view above to make a lifecycle change. This read-only status remains safe to inspect.'}</small>
+        <small>{'Every lifecycle change starts with a fresh impact preview and explicit confirmation.'}</small>
       </div>
       <div className={styles.adminRelationshipActions}>
         {error ? (
@@ -449,7 +445,7 @@ export function AdminHotelRelationshipManager({
             <RefreshCw size={14} aria-hidden="true" />{'Retry'}
           </button>
         ) : (
-          <button className={styles.primaryButton} type="button" disabled={!adminToolsEnabled || loading || !projection} onClick={() => setDialogOpen(true)}>
+          <button className={styles.primaryButton} type="button" disabled={loading || !projection} onClick={() => setDialogOpen(true)}>
             <ArrowRightLeft size={14} aria-hidden="true" />{'Manage relationship'}
           </button>
         )}

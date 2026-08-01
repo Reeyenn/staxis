@@ -156,12 +156,6 @@ export interface HotelTeamPanelProps {
   canViewWages?: boolean;
   readOnly?: boolean;
   adminPreview?: boolean;
-  /** Unlocks only the separately authorized hotel-team routes while keeping
-   * the admin preview DTO and company-access mutations read-only. */
-  allowAdminActions?: boolean;
-  /** A deliberate invite click may enter editable admin mode before opening
-   * the dialog. Server-side authorization still guards every mutation. */
-  onRequestAdminActions?: () => void;
   inviteDialogOpen: boolean;
   onInviteDialogOpenChange: (open: boolean) => void;
   /** The employment roster for this hotel, from PropertyContext. */
@@ -681,8 +675,6 @@ export function HotelTeamPanel({
   canViewWages = false,
   readOnly = false,
   adminPreview = false,
-  allowAdminActions = false,
-  onRequestAdminActions,
   inviteDialogOpen,
   onInviteDialogOpenChange,
   staffProfiles = [],
@@ -728,16 +720,9 @@ export function HotelTeamPanel({
   const changedRef = React.useRef(onChanged);
   changedRef.current = onChanged;
 
-  const locked = readOnly || (adminPreview && !allowAdminActions);
-  const inviteActionCanEnableAdmin = adminPreview
-    && !allowAdminActions
-    && Boolean(onRequestAdminActions);
-  const inviteActionDisabled = (locked && !inviteActionCanEnableAdmin)
+  const locked = readOnly;
+  const inviteActionDisabled = locked
     || (adminPreview && (teamLoading || Boolean(teamError)));
-  const openInviteDialog = React.useCallback(() => {
-    if (inviteActionCanEnableAdmin) onRequestAdminActions?.();
-    onInviteDialogOpenChange(true);
-  }, [inviteActionCanEnableAdmin, onInviteDialogOpenChange, onRequestAdminActions]);
 
   // A definitive fresh authorization refresh can revoke hotel-operational
   // standing while this tab is open. Drop every private roster projection as
@@ -1241,10 +1226,9 @@ export function HotelTeamPanel({
             <button
               type="button"
               className={`${styles.primaryButton} ${styles.headingInviteButton}`}
-              onClick={openInviteDialog}
+              onClick={() => onInviteDialogOpenChange(true)}
               disabled={inviteActionDisabled}
               aria-haspopup="dialog"
-              title={inviteActionCanEnableAdmin ? 'Turn on Admin view and invite people' : undefined}
             >
               <UserPlus size={16} aria-hidden="true" />
               {'Add first person'}
@@ -1274,10 +1258,9 @@ export function HotelTeamPanel({
             <button
               type="button"
               className={`${styles.peopleAction} ${styles.peopleActionPrimary}`}
-              onClick={openInviteDialog}
+              onClick={() => onInviteDialogOpenChange(true)}
               disabled={inviteActionDisabled}
               aria-haspopup="dialog"
-              title={inviteActionCanEnableAdmin ? 'Turn on Admin view and invite people' : undefined}
             >
               <span className={styles.peopleActionIcon} aria-hidden="true">
                 <LogIn size={19} />

@@ -330,7 +330,6 @@ function CompanyAccessContent() {
   const [requestOpen, setRequestOpen] = React.useState(false);
   const [reviewRequest, setReviewRequest] = React.useState<CompanyAccessRequest | null>(null);
   const [lifecycleAction, setLifecycleAction] = React.useState<CompanyLifecycleAction | null>(null);
-  const [adminToolsEnabled, setAdminToolsEnabled] = React.useState(false);
   const [structure, setStructure] = React.useState<CompanyStructureProjection | null>(null);
   const [structureViewerKey, setStructureViewerKey] = React.useState<string | null>(null);
   const [structureLoading, setStructureLoading] = React.useState(false);
@@ -346,9 +345,9 @@ function CompanyAccessContent() {
   const accountId = user?.accountId ?? null;
   const userRole = user?.role ?? null;
   const activePropertyId = activeProperty?.id ?? null;
-  // The local Admin view is privilege-bearing discovery just like the global
-  // Admin destination. Never derive it from the initial browser account row;
-  // wait for the fresh no-store session authorization verdict.
+  // The in-place admin destination is privilege-bearing discovery just like the
+  // global Admin destination. Never derive it from the initial browser account
+  // row; wait for the fresh no-store session authorization verdict.
   const adminPreview = Boolean(
     authorizationChecked && platformAdmin && userRole === 'admin',
   );
@@ -447,12 +446,6 @@ function CompanyAccessContent() {
   const currentStaffSettled = canManageTeam && staffBelongsToCurrentViewer
     && (staffLoaded || staffLoadFailed);
   const currentStaffUnavailable = canManageTeam && staffBelongsToCurrentViewer && staffLoadFailed;
-
-  // Admin tools are an explicit, hotel-scoped choice. Never carry an enabled
-  // mutation surface into a different hotel or a different signed-in role.
-  React.useEffect(() => {
-    setAdminToolsEnabled(false);
-  }, [activePropertyId, userRole]);
 
   // Read language via a ref so the company-access load effect below does not
   // depend on `lang` — otherwise toggling EN/ES tears down the request, flashes
@@ -724,16 +717,15 @@ function CompanyAccessContent() {
     || (tab === 'people' && hotelCapabilitiesLoading);
   const adminPreviewFailed = adminPreview && !showLoading && Boolean(currentLoadError) && !currentData;
   const adminViewerContext = adminPreview ? resolved.viewerContext : undefined;
-  const adminToolsActive = Boolean(
+  const adminActionsAvailable = Boolean(
     adminPreview
-    && adminToolsEnabled
     && adminViewerContext
     && adminDataMatchesSelection,
   );
   const hotelTeamLocked = Boolean(
     showLoading
     || !currentData
-    || ((adminPreview || resolved.viewerContext?.readOnly === true) && !adminToolsActive),
+    || (resolved.viewerContext?.readOnly === true && !adminActionsAvailable),
   );
   const workspaceTitle = adminPreview
     ? (adminViewerContext?.scope === 'organization'
@@ -784,9 +776,7 @@ function CompanyAccessContent() {
             <div className={styles.heroCopy}>
               <div className={styles.eyebrow}>
                 {adminPreview
-                  ? adminToolsActive
-                    ? 'Staxis admin view'
-                    : 'Staxis hotel view'
+                  ? 'Staxis admin view'
                   : portfolioMode
                     ? 'Portfolio workspace'
                     : 'Company workspace'}
@@ -794,9 +784,7 @@ function CompanyAccessContent() {
               <h1 ref={previewHeadingRef} tabIndex={adminPreview ? -1 : undefined}>{workspaceTitle}</h1>
               <p>
                 {adminPreview
-                  ? adminToolsActive
-                    ? 'Manage this hotel without leaving My Hotel.'
-                    : 'Review this hotel in read-only mode.'
+                  ? 'Manage this hotel without leaving My Hotel.'
                   : portfolioMode
                     ? 'Manage company knowledge, hotels, people, and access in one place.'
                     : 'See your hotels, team, and exactly why you have access.'}
@@ -825,29 +813,6 @@ function CompanyAccessContent() {
             ) : null}
           </div>
 
-          <div className={styles.heroActions}>
-            {adminPreview ? (
-              <label className={styles.adminViewSwitch}>
-                <span className={styles.adminViewSwitchLabel}>
-                  {'Admin view'}
-                  <small>{adminToolsActive
-                    ? 'On'
-                    : 'Off'}</small>
-                </span>
-                <input
-                  type="checkbox"
-                  role="switch"
-                  checked={adminToolsActive}
-                  aria-checked={adminToolsActive}
-                  disabled={showLoading || !adminViewerContext}
-                  onChange={(event) => setAdminToolsEnabled(event.target.checked)}
-                />
-                <span className={styles.adminViewSwitchTrack} aria-hidden="true">
-                  <span className={styles.adminViewSwitchHandle} />
-                </span>
-              </label>
-            ) : null}
-          </div>
         </header>
 
         {currentLoadError && currentData ? (
@@ -986,7 +951,6 @@ function CompanyAccessContent() {
                   structure={currentStructure}
                   lang={lang}
                   activeProperty={activeProperty}
-                  adminToolsEnabled={adminToolsActive}
                   query={query}
                   onQueryChange={setQuery}
                   statusFilter={hotelStatusFilter}
@@ -1003,10 +967,9 @@ function CompanyAccessContent() {
                   currentUser={user}
                   currentAccountId={user.accountId}
                   activeProperty={activeProperty}
-                  adminToolsEnabled={adminToolsActive}
                   canManageTeam={canManageTeam}
                   canInviteAccounts={Boolean(
-                    (adminToolsActive && platformAdmin)
+                    adminActionsAvailable
                     || (activeProperty
                       && resolved.permissions.accountInvitePropertyIds?.includes(activeProperty.id))
                   )}
@@ -1014,7 +977,6 @@ function CompanyAccessContent() {
                   canAddOperationalStaff={!hotelTeamLocked && canManageTeam}
                   inviteDialogOpen={teamInviteHotelId === activeProperty?.id}
                   onInviteDialogOpenChange={(open) => setTeamInviteHotelId(open ? activeProperty?.id ?? null : null)}
-                  onRequestAdminActions={() => setAdminToolsEnabled(true)}
                   onChanged={refreshStaff}
                   onLifecycleAction={setLifecycleAction}
                 />
@@ -1165,12 +1127,11 @@ function OverviewPanel({ data, structure, structureLoading, structureUnavailable
   );
 }
 
-function HotelsPanel({ data, structure, lang, activeProperty, adminToolsEnabled, query, onQueryChange, statusFilter, onStatusFilterChange, onStructureChanged }: {
+function HotelsPanel({ data, structure, lang, activeProperty, query, onQueryChange, statusFilter, onStatusFilterChange, onStructureChanged }: {
   data: CompanyAccessData;
   structure: CompanyStructureProjection | null;
   lang: string;
   activeProperty: Property | null;
-  adminToolsEnabled: boolean;
   query: string;
   onQueryChange: (value: string) => void;
   statusFilter: HotelStatusFilter;
@@ -1199,7 +1160,6 @@ function HotelsPanel({ data, structure, lang, activeProperty, adminToolsEnabled,
           key={activeProperty.id}
           propertyId={activeProperty.id}
           propertyName={activeProperty.name}
-          adminToolsEnabled={adminToolsEnabled}
           lang={lang}
           onChanged={onStructureChanged}
         />
@@ -1245,7 +1205,7 @@ function HotelsPanel({ data, structure, lang, activeProperty, adminToolsEnabled,
  * could appear in both with nothing on screen explaining why. HotelTeamPanel
  * now merges them.
  */
-function PeoplePanel({ data, staff, hotelRosterUnavailable, lang, currentUser, currentAccountId, activeProperty, adminToolsEnabled, canManageTeam, canInviteAccounts, canViewWages, canAddOperationalStaff, inviteDialogOpen, onInviteDialogOpenChange, onRequestAdminActions, onChanged, onLifecycleAction }: {
+function PeoplePanel({ data, staff, hotelRosterUnavailable, lang, currentUser, currentAccountId, activeProperty, canManageTeam, canInviteAccounts, canViewWages, canAddOperationalStaff, inviteDialogOpen, onInviteDialogOpenChange, onChanged, onLifecycleAction }: {
   data: CompanyAccessData;
   staff: StaffMember[];
   hotelRosterUnavailable: boolean;
@@ -1253,14 +1213,12 @@ function PeoplePanel({ data, staff, hotelRosterUnavailable, lang, currentUser, c
   currentUser: AppUser;
   currentAccountId: string;
   activeProperty: Property | null;
-  adminToolsEnabled: boolean;
   canManageTeam: boolean;
   canInviteAccounts: boolean;
   canViewWages: boolean;
   canAddOperationalStaff: boolean;
   inviteDialogOpen: boolean;
   onInviteDialogOpenChange: (open: boolean) => void;
-  onRequestAdminActions: () => void;
   onChanged: () => void | Promise<void>;
   onLifecycleAction: (action: CompanyLifecycleAction) => void;
 }) {
@@ -1322,7 +1280,7 @@ function PeoplePanel({ data, staff, hotelRosterUnavailable, lang, currentUser, c
       ) : null}
       {activeProperty ? (
         <HotelTeamPanel
-          key={`${activeProperty.id}:${adminToolsEnabled ? 'admin' : 'preview'}:${canManageTeam ? 'hotel-authorized' : 'invite-only'}`}
+          key={`${activeProperty.id}:${adminPreview ? 'admin' : 'customer'}:${canManageTeam ? 'hotel-authorized' : 'invite-only'}`}
           hotelId={activeProperty.id}
           hotelName={activeProperty.name}
           currentUser={currentUser}
@@ -1331,10 +1289,8 @@ function PeoplePanel({ data, staff, hotelRosterUnavailable, lang, currentUser, c
           canManageTeam={canManageTeam}
           canInviteAccounts={canInviteAccounts}
           canViewWages={canViewWages}
-          readOnly={Boolean(data.viewerContext?.readOnly) && !adminToolsEnabled}
-          adminPreview={data.viewerContext?.kind === 'staxis_admin_preview'}
-          allowAdminActions={adminToolsEnabled}
-          onRequestAdminActions={onRequestAdminActions}
+          readOnly={Boolean(data.viewerContext?.readOnly) && !adminPreview}
+          adminPreview={adminPreview}
           inviteDialogOpen={inviteDialogOpen}
           onInviteDialogOpenChange={onInviteDialogOpenChange}
           staffProfiles={staff}

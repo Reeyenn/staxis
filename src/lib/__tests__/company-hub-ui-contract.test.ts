@@ -175,9 +175,9 @@ describe('truthful Company Hub filters', () => {
     assert.match(company, /rosterUnavailable=\{hotelRosterUnavailable\}/);
     assert.match(hotelTeam, /schedule roster is temporarily unavailable/);
     assert.match(company, /hotelId=\{activeProperty\.id\}/);
-    assert.match(company, /readOnly=\{Boolean\(data\.viewerContext\?\.readOnly\) && !adminToolsEnabled\}/);
+    assert.match(company, /readOnly=\{Boolean\(data\.viewerContext\?\.readOnly\) && !adminPreview\}/);
     assert.match(company, /data\.viewerContext\?\.kind === ['"]staxis_admin_preview['"]/);
-    assert.match(company, /allowAdminActions=\{adminToolsEnabled\}/);
+    assert.doesNotMatch(company, /allowAdminActions|onRequestAdminActions|adminToolsEnabled|adminToolsActive/);
     assert.match(company, /statusLabel\(membership\.status, lang\)/);
     assert.match(hotelTeam, /responseTeam\.filter\(\(member\) => !member\.isPlatformAdmin && member\.role !== ['"]admin['"]\)/);
   });
@@ -233,7 +233,7 @@ describe('My Hotel account and team integration', () => {
     assert.ok(subheadingIndex >= 0 && titleRowIndex > subheadingIndex && countIndex > titleRowIndex && inviteIndex > countIndex && teamListIndex > inviteIndex);
     assert.match(company.slice(switcherIndex, heroEnd), /label=\{['"]Choose hotel to manage['"]\}/);
     assert.doesNotMatch(company, /styles\.teamInviteRow|styles\.teamInviteButton/);
-    assert.match(hotelTeam, /onClick=\{openInviteDialog\}/);
+    assert.match(hotelTeam, /onClick=\{\(\) => onInviteDialogOpenChange\(true\)\}/);
     assert.match(hotelTeam, /disabled=\{inviteActionDisabled\}/);
     assert.match(hotelTeam, /aria-haspopup="dialog"/);
     assert.match(company, /inviteDialogOpen=\{teamInviteHotelId === activeProperty\?\.id\}/);
@@ -274,7 +274,7 @@ describe('My Hotel account and team integration', () => {
 
   test('keeps company invitations in People while private hotel roster access stays explicit', () => {
     assert.match(company, /resolved\.permissions\.accountInvitePropertyIds\?\.includes\(activeProperty\.id\)/);
-    assert.match(company, /canInviteAccounts=\{Boolean\([\s\S]*adminToolsActive[\s\S]*accountInvitePropertyIds/);
+    assert.match(company, /canInviteAccounts=\{Boolean\([\s\S]*adminActionsAvailable[\s\S]*accountInvitePropertyIds/);
     assert.match(company, /canInviteAccounts=\{canInviteAccounts\}/);
     assert.match(company, /!adminPreview && !canManageTeam && canInviteAccounts/);
     assert.doesNotMatch(company, /<InvitePersonDialog/);
