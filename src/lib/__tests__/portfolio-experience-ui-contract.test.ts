@@ -173,6 +173,11 @@ describe('Company Hub portfolio contract', () => {
     assert.match(company, /selectCompanyAccessContext\([\s\S]{0,140}?selectedPortfolioCompany\.organizationId/);
   });
 
+  test('describes the My Portfolio destination with the current Company Hub tabs', () => {
+    assert.match(portfolioHome, /portfolioDescription="Hotels, People, and Access"/);
+    assert.doesNotMatch(portfolioHome, /portfolioDescription="Overview, Hotels, People, and Access"/);
+  });
+
   test('does not allow a portfolio-branded Company Hub without one explicit company', () => {
     assert.match(company, /portfolio\.data\?\.selection\.state === 'selected'/);
     assert.match(

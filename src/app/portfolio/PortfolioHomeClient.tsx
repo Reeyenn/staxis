@@ -454,7 +454,7 @@ export function PortfolioHomeClient() {
           label: 'My Portfolio',
           href: `/company?scope=portfolio&organizationId=${encodeURIComponent(company.organizationId)}`,
         }}
-        portfolioDescription="Overview, Hotels, People, and Access"
+        portfolioDescription="Hotels, People, and Access"
         state={trueEmptyPortfolio ? 'empty' : incompletePortfolio ? 'partial' : 'ready'}
         stateContent={trueEmptyPortfolio ? {
           title: 'No hotels are in this portfolio yet',
