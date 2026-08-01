@@ -27,8 +27,10 @@ import { createPortal } from 'react-dom';
 import {
   AlertCircle,
   AlertTriangle,
+  CalendarPlus,
   Clock3,
   KeyRound,
+  LogIn,
   Pencil,
   RefreshCw,
   ShieldCheck,
@@ -126,6 +128,13 @@ export interface HotelJoinRequest {
   language: HotelTeamLang;
   department: string;
   created_at: string;
+}
+
+/** A current-hotel schedule profile that does not already own a login link. */
+export interface HotelInviteRosterProfile {
+  id: string;
+  name: string;
+  department: StaffDepartment;
 }
 
 export interface HotelTeamPanelProps {
@@ -1038,6 +1047,23 @@ export function HotelTeamPanel({
     ];
   }, [optimisticStaff, staffProfiles]);
 
+  const unlinkedRosterProfiles = React.useMemo<HotelInviteRosterProfile[]>(() => {
+    // Do not offer a possibly stale profile while either half of the merged
+    // roster is unavailable. The POST rechecks the chosen id server-side too.
+    if (teamLoading || teamError || rosterUnavailable) return [];
+    const linkedStaffIds = new Set(
+      team.flatMap((member) => member.staffId ? [member.staffId] : []),
+    );
+    return rosterStaff
+      .filter((member) => member.isActive !== false && !linkedStaffIds.has(member.id))
+      .map((member) => ({
+        id: member.id,
+        name: member.name,
+        department: member.department ?? 'housekeeping',
+      }))
+      .sort((left, right) => left.name.localeCompare(right.name));
+  }, [rosterStaff, rosterUnavailable, team, teamError, teamLoading]);
+
   const groups = React.useMemo(
     () => buildHotelRoster(team, rosterStaff),
     [rosterStaff, team],
@@ -1198,22 +1224,57 @@ export function HotelTeamPanel({
               ) : null}
             </div>
           </div>
-          <button
-            type="button"
-            className={`${styles.primaryButton} ${styles.headingInviteButton}`}
-            onClick={() => onInviteDialogOpenChange(true)}
-            disabled={locked || (adminPreview && (teamLoading || Boolean(teamError)))}
-            aria-haspopup="dialog"
-            title={locked
-              ? 'Unavailable in read-only preview'
-              : undefined}
-          >
-            <UserPlus size={16} aria-hidden="true" />
-            {needsFirstPerson
-              ? 'Add first person'
-              : adminPreview ? 'Add another person' : 'Invite staff'}
-          </button>
+          {needsFirstPerson ? (
+            <button
+              type="button"
+              className={`${styles.primaryButton} ${styles.headingInviteButton}`}
+              onClick={() => onInviteDialogOpenChange(true)}
+              disabled={locked || (adminPreview && (teamLoading || Boolean(teamError)))}
+              aria-haspopup="dialog"
+              title={locked ? 'Unavailable in read-only preview' : undefined}
+            >
+              <UserPlus size={16} aria-hidden="true" />
+              {'Add first person'}
+            </button>
+          ) : null}
         </div>
+
+        {!needsFirstPerson ? (
+          <div className={styles.peopleActions} aria-label="Ways to add people">
+            {canAddStaff ? (
+              <button
+                type="button"
+                className={styles.peopleAction}
+                onClick={() => setAddDepartment('housekeeping')}
+                disabled={locked}
+                aria-haspopup="dialog"
+              >
+                <span className={styles.peopleActionIcon} aria-hidden="true">
+                  <CalendarPlus size={19} />
+                </span>
+                <span className={styles.peopleActionCopy}>
+                  <strong>{'Add staff member'}</strong>
+                  <small>{'Roster and schedule only · no Staxis login'}</small>
+                </span>
+              </button>
+            ) : null}
+            <button
+              type="button"
+              className={`${styles.peopleAction} ${styles.peopleActionPrimary}`}
+              onClick={() => onInviteDialogOpenChange(true)}
+              disabled={locked || (adminPreview && (teamLoading || Boolean(teamError)))}
+              aria-haspopup="dialog"
+            >
+              <span className={styles.peopleActionIcon} aria-hidden="true">
+                <LogIn size={19} />
+              </span>
+              <span className={styles.peopleActionCopy}>
+                <strong>{'Invite people'}</strong>
+                <small>{'Creates login access · share an invite or send email'}</small>
+              </span>
+            </button>
+          </div>
+        ) : null}
 
         <div className={styles.kpiStrip}>
           <div className={styles.kpiCard}>
@@ -1311,30 +1372,16 @@ export function HotelTeamPanel({
             <h3>{needsFirstPerson ? 'Add first person' : 'Nobody here yet'}</h3>
             <p>{needsFirstPerson
               ? 'Invite this hotel’s first Owner or General Manager. Their assigned role is locked into signup.'
-              : 'Add someone to the schedule, or invite them to create a Staxis login.'}</p>
-            {!locked ? (
+              : 'Use Add staff member for someone who only needs the roster and schedule. Use Invite people when they need Staxis login access.'}</p>
+            {!locked && needsFirstPerson ? (
               <div className={styles.emptyStateActions}>
-                {/* Both halves of the sentence above need a button behind them.
-                    The department cards carry Add once anybody exists; with
-                    nobody on the roster there are no cards to carry it. */}
-                {canAddStaff && !needsFirstPerson ? (
-                  <button
-                    type="button"
-                    className={styles.secondaryButton}
-                    onClick={() => setAddDepartment('housekeeping')}
-                    aria-haspopup="dialog"
-                  >
-                    <UserPlus size={16} aria-hidden="true" />
-                    {'Add to the schedule'}
-                  </button>
-                ) : null}
                 <button
                   type="button"
-                  className={needsFirstPerson ? styles.primaryButton : styles.secondaryButton}
+                  className={styles.primaryButton}
                   onClick={() => onInviteDialogOpenChange(true)}
                 >
                   <UserPlus size={16} aria-hidden="true" />
-                  {needsFirstPerson ? 'Add first person' : 'Invite staff'}
+                  {'Add first person'}
                 </button>
               </div>
             ) : null}
@@ -1458,6 +1505,7 @@ export function HotelTeamPanel({
             lang={lang}
             canInviteManager={canInviteAccounts}
             canManageHotelRoster
+            unlinkedRosterProfiles={unlinkedRosterProfiles}
             onClose={() => onInviteDialogOpenChange(false)}
             onChanged={() => changedRef.current?.()}
           />

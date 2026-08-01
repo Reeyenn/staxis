@@ -103,6 +103,7 @@ export type Database = {
           membership_scope: string | null
           organization_id: string | null
           role: string
+          target_staff_id: string | null
           token_hash: string
         }
         Insert: {
@@ -120,6 +121,7 @@ export type Database = {
           membership_scope?: string | null
           organization_id?: string | null
           role: string
+          target_staff_id?: string | null
           token_hash: string
         }
         Update: {
@@ -137,6 +139,7 @@ export type Database = {
           membership_scope?: string | null
           organization_id?: string | null
           role?: string
+          target_staff_id?: string | null
           token_hash?: string
         }
         Relationships: [
@@ -167,6 +170,13 @@ export type Database = {
             isOneToOne: false
             referencedRelation: "organizations"
             referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "account_invites_target_staff_property_fkey"
+            columns: ["target_staff_id", "hotel_id"]
+            isOneToOne: false
+            referencedRelation: "staff"
+            referencedColumns: ["id", "property_id"]
           },
         ]
       }
@@ -18691,6 +18701,16 @@ export type Database = {
         Returns: undefined
       }
       _pms_lineage_tables: { Args: never; Returns: string[] }
+      _staxis_accept_account_invite_0393_impl: {
+        Args: {
+          p_auth_user_id: string
+          p_claim_token: string
+          p_display_name: string
+          p_token_hash: string
+          p_username: string
+        }
+        Returns: Json
+      }
       _staxis_account_ambiguous_portfolio_organizations: {
         Args: { p_account_id: string }
         Returns: {
@@ -18968,6 +18988,22 @@ export type Database = {
           starts_at: string
         }[]
       }
+      _staxis_create_account_invite_guarded_0395_impl: {
+        Args: {
+          p_actor_account_id: string
+          p_actor_auth_user_id: string
+          p_covered_property_ids: string[]
+          p_email: string
+          p_expires_at: string
+          p_hotel_id: string
+          p_membership_scope: string
+          p_organization_id: string
+          p_request_id?: string
+          p_role: string
+          p_token_hash: string
+        }
+        Returns: Json
+      }
       _staxis_jsonb_bounded_integer: {
         Args: { p_max: number; p_min: number; p_value: Json }
         Returns: boolean
@@ -18984,6 +19020,17 @@ export type Database = {
       _staxis_jsonb_identifier_or_null: {
         Args: { p_fingerprint?: boolean; p_value: Json }
         Returns: boolean
+      }
+      _staxis_lock_invite_target_staff: {
+        Args: {
+          p_actor_account_id: string
+          p_allowed_account_id?: string
+          p_allowed_invite_id?: string
+          p_hotel_id: string
+          p_role: string
+          p_target_staff_id: string
+        }
+        Returns: string
       }
       _staxis_lock_organization: {
         Args: { p_organization_id: string }
@@ -20002,6 +20049,7 @@ export type Database = {
           p_organization_id: string
           p_request_id?: string
           p_role: string
+          p_target_staff_id?: string
           p_token_hash: string
         }
         Returns: Json
@@ -20283,6 +20331,22 @@ export type Database = {
           p_staff: string
         }
         Returns: string
+      }
+      staxis_grant_existing_account_invite_guarded: {
+        Args: {
+          p_actor_account_id: string
+          p_actor_auth_user_id: string
+          p_covered_property_ids: string[]
+          p_email: string
+          p_hotel_id: string
+          p_membership_scope: string
+          p_organization_id: string
+          p_request_id?: string
+          p_role: string
+          p_target_account_id: string
+          p_target_staff_id?: string
+        }
+        Returns: Json
       }
       staxis_grant_organization_access: {
         Args: {

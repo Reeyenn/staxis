@@ -11,6 +11,7 @@ import {
   KeyRound,
   Link2,
   Mail,
+  QrCode,
   RefreshCw,
   ShieldCheck,
   Trash2,
@@ -26,6 +27,7 @@ import { HAT_ROLE_LABELS, isHatRole } from '@/lib/company/roles';
 import { ASSIGNABLE_ROLES, type AppRole, type AssignableRole } from '@/lib/roles';
 
 import type {
+  HotelInviteRosterProfile,
   HotelJoinRequest,
   HotelTeamLifecycleAction,
   HotelTeamLang,
@@ -86,6 +88,25 @@ interface InvitePostData {
   inviteLink?: string;
   emailSent?: boolean;
   deliveryStatus?: 'sent' | 'link_only';
+  accessGranted?: boolean;
+  profileLinked?: boolean;
+}
+
+type InviteMode = 'shared' | 'email';
+type OperationalInviteJob = 'housekeeping' | 'front_desk' | 'maintenance';
+
+const OPERATIONAL_INVITE_JOBS = new Set<OperationalInviteJob>([
+  'housekeeping',
+  'front_desk',
+  'maintenance',
+]);
+
+const NO_UNLINKED_ROSTER_PROFILES: readonly HotelInviteRosterProfile[] = [];
+
+function operationalInviteJob(value: string): OperationalInviteJob | null {
+  return OPERATIONAL_INVITE_JOBS.has(value as OperationalInviteJob)
+    ? value as OperationalInviteJob
+    : null;
 }
 
 /**
@@ -1428,6 +1449,7 @@ export function HotelInviteDialog({
   lang,
   canInviteManager,
   canManageHotelRoster = true,
+  unlinkedRosterProfiles = NO_UNLINKED_ROSTER_PROFILES,
   onClose,
   onChanged,
 }: {
@@ -1436,9 +1458,13 @@ export function HotelInviteDialog({
   lang: HotelTeamLang;
   canInviteManager: boolean;
   canManageHotelRoster?: boolean;
+  unlinkedRosterProfiles?: readonly HotelInviteRosterProfile[];
   onClose: () => void;
   onChanged?: () => void | Promise<void>;
 }) {
+  const [inviteMode, setInviteMode] = React.useState<InviteMode>(
+    canManageHotelRoster ? 'shared' : 'email',
+  );
   const [code, setCode] = React.useState<JoinCode | null>(null);
   const [codeLoading, setCodeLoading] = React.useState(canManageHotelRoster);
   const [codeError, setCodeError] = React.useState('');
@@ -1456,15 +1482,34 @@ export function HotelInviteDialog({
   const [inviteJob, setInviteJob] = React.useState('');
   const [inviteHotelIds, setInviteHotelIds] = React.useState<string[]>([]);
   const [inviteAllHotels, setInviteAllHotels] = React.useState(true);
+  const [inviteStaffId, setInviteStaffId] = React.useState('');
   const [inviteBusy, setInviteBusy] = React.useState(false);
   const [inviteError, setInviteError] = React.useState('');
-  const [lastInvite, setLastInvite] = React.useState<{
-    email: string;
-    link: string | null;
-    emailSent: boolean;
-  } | null>(null);
+  const [lastInvite, setLastInvite] = React.useState<
+    | {
+        kind: 'invitation';
+        email: string;
+        link: string | null;
+        emailSent: boolean;
+        profileName: string | null;
+      }
+    | {
+        kind: 'access';
+        email: string;
+        profileName: string | null;
+      }
+    | null
+  >(null);
   const [revokeInviteId, setRevokeInviteId] = React.useState<string | null>(null);
   const [revokingInviteId, setRevokingInviteId] = React.useState<string | null>(null);
+
+  const sharedTabRef = React.useRef<HTMLButtonElement | null>(null);
+  const emailTabRef = React.useRef<HTMLButtonElement | null>(null);
+  const sharedTabId = React.useId();
+  const emailTabId = React.useId();
+  const sharedPanelId = React.useId();
+  const emailPanelId = React.useId();
+  const rosterProfileHelpId = React.useId();
 
   const codeAbortRef = React.useRef<AbortController | null>(null);
   const invitesAbortRef = React.useRef<AbortController | null>(null);
@@ -1475,6 +1520,48 @@ export function HotelInviteDialog({
   const allowedInviteHotels = inviteOptions.hotels.filter(
     (hotel) => allowedInviteHotelIds.has(hotel.id),
   );
+  const selectedOperationalJob = operationalInviteJob(inviteJob);
+  const currentHotelCoveredByInvite = Boolean(
+    selectedInviteJob?.scope === 'property'
+      && allowedInviteHotelIds.has(hotelId)
+      && (!inviteOptions.choosesHotels
+        || inviteAllHotels
+        || inviteHotelIds.includes(hotelId)),
+  );
+  const linkableRosterProfiles = React.useMemo(() => (
+    selectedOperationalJob && currentHotelCoveredByInvite
+      ? unlinkedRosterProfiles.filter(
+          (profile) => profile.department === selectedOperationalJob,
+        )
+      : []
+  ), [currentHotelCoveredByInvite, selectedOperationalJob, unlinkedRosterProfiles]);
+  const hasInviteModeChoice = canManageHotelRoster && canInviteManager;
+
+  React.useEffect(() => {
+    // Roster refreshes and concurrent links can invalidate a still-open form.
+    // Never retain an id that is no longer one of the visible exact matches.
+    setInviteStaffId((current) => (
+      current && !linkableRosterProfiles.some((profile) => profile.id === current)
+        ? ''
+        : current
+    ));
+  }, [linkableRosterProfiles]);
+
+  const chooseInviteMode = (nextMode: InviteMode, focusTab = false) => {
+    setInviteMode(nextMode);
+    if (focusTab) {
+      (nextMode === 'shared' ? sharedTabRef.current : emailTabRef.current)?.focus();
+    }
+  };
+
+  const onInviteModeKeyDown = (event: React.KeyboardEvent<HTMLButtonElement>) => {
+    let nextMode: InviteMode | null = null;
+    if (event.key === 'ArrowLeft' || event.key === 'Home') nextMode = 'shared';
+    if (event.key === 'ArrowRight' || event.key === 'End') nextMode = 'email';
+    if (!nextMode) return;
+    event.preventDefault();
+    chooseInviteMode(nextMode, true);
+  };
 
   const loadCode = React.useCallback(async () => {
     if (!canManageHotelRoster) {
@@ -1519,6 +1606,7 @@ export function HotelInviteDialog({
       setInviteOptions(NO_INVITE_OPTIONS);
       setInviteJob('');
       setInviteHotelIds([]);
+      setInviteStaffId('');
       setInvitesLoading(false);
       setInvitesError('');
       return;
@@ -1550,6 +1638,7 @@ export function HotelInviteDialog({
       ));
       setInviteHotelIds([]);
       setInviteAllHotels(true);
+      setInviteStaffId('');
       setRevokeInviteId(null);
     } catch (loadError) {
       if (controller.signal.aborted || sequence !== invitesSequenceRef.current) return;
@@ -1558,6 +1647,7 @@ export function HotelInviteDialog({
       setInviteOptions(NO_INVITE_OPTIONS);
       setInviteJob('');
       setInviteHotelIds([]);
+      setInviteStaffId('');
       setInvitesError(loadError instanceof Error && loadError.message
         ? loadError.message
         : "Couldn't load manager invitations.");
@@ -1691,6 +1781,15 @@ export function HotelInviteDialog({
       scoped = { role: selectedJob.value, scope: 'property', propertyIds: chosen };
     }
 
+    const selectedRosterProfile = inviteStaffId
+      ? linkableRosterProfiles.find((profile) => profile.id === inviteStaffId) ?? null
+      : null;
+    if (inviteStaffId && !selectedRosterProfile) {
+      setInviteError('That roster profile is no longer available. Choose another profile or continue without one.');
+      setInviteStaffId('');
+      return;
+    }
+
     setInviteBusy(true);
     setInviteError('');
     setLastInvite(null);
@@ -1698,7 +1797,12 @@ export function HotelInviteDialog({
       const response = await fetchWithAuth('/api/auth/invites', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ hotelId, email, ...scoped }),
+        body: JSON.stringify({
+          hotelId,
+          email,
+          ...scoped,
+          ...(selectedRosterProfile ? { staffId: selectedRosterProfile.id } : {}),
+        }),
         signal: mutationSignal(),
       });
       const body = await response.json().catch(() => ({})) as Envelope<InvitePostData>;
@@ -1707,10 +1811,25 @@ export function HotelInviteDialog({
         return;
       }
       const data = body.data ?? {};
-      const emailSent = data.emailSent === true || data.deliveryStatus === 'sent';
-      setLastInvite({ email, link: data.inviteLink ?? null, emailSent });
+      if (data.accessGranted === true) {
+        setLastInvite({
+          kind: 'access',
+          email,
+          profileName: data.profileLinked === true ? selectedRosterProfile?.name ?? null : null,
+        });
+      } else {
+        const emailSent = data.emailSent === true || data.deliveryStatus === 'sent';
+        setLastInvite({
+          kind: 'invitation',
+          email,
+          link: data.inviteLink ?? null,
+          emailSent,
+          profileName: selectedRosterProfile?.name ?? null,
+        });
+      }
       setInviteEmail('');
       setInviteHotelIds([]);
+      setInviteStaffId('');
       await loadInvites();
       await onChanged?.();
     } catch (sendError) {
@@ -1752,13 +1871,13 @@ export function HotelInviteDialog({
 
   return (
     <DialogShell
-      title={canManageHotelRoster ? 'Invite hotel staff' : 'Invite a company member'}
+      title={'Invite people to Staxis'}
       eyebrow={hotelName}
       description={!canManageHotelRoster
-          ? 'Choose the person’s job and the exact company or hotels they may access.'
+          ? 'Email one person who needs to log in, then choose their job and exact company or hotel access.'
           : canInviteManager
-          ? 'Staff use the shared link or QR code. General Managers receive an email-specific invitation.'
-          : 'Staff use the shared link, signup code, or QR code.'}
+          ? 'Invite someone who needs to log in. Choose a shared hotel invitation or email one person.'
+          : 'Share one hotel invitation as a link, QR code, or signup code.'}
       lang={lang}
       icon={<UserCheck size={21} aria-hidden="true" />}
       onClose={onClose}
@@ -1766,13 +1885,67 @@ export function HotelInviteDialog({
       wide
     >
       <div className={styles.inviteBody} aria-busy={(canManageHotelRoster && codeLoading) || invitesLoading}>
-        {canManageHotelRoster ? (
-        <section className={styles.inviteSection} aria-labelledby="staff-invite-heading">
+        {hasInviteModeChoice ? (
+          <div className={styles.inviteModePicker} role="tablist" aria-label="Invitation method">
+            <button
+              ref={sharedTabRef}
+              id={sharedTabId}
+              type="button"
+              role="tab"
+              aria-selected={inviteMode === 'shared'}
+              aria-controls={sharedPanelId}
+              tabIndex={inviteMode === 'shared' ? 0 : -1}
+              className={styles.inviteModeButton}
+              onClick={() => chooseInviteMode('shared')}
+              onKeyDown={onInviteModeKeyDown}
+            >
+              <span aria-hidden="true"><Link2 size={18} /></span>
+              <span><strong>{'Shared hotel invite'}</strong><small>{'Link, QR, or code · staff request approval'}</small></span>
+            </button>
+            <button
+              ref={emailTabRef}
+              id={emailTabId}
+              type="button"
+              role="tab"
+              aria-selected={inviteMode === 'email'}
+              aria-controls={emailPanelId}
+              tabIndex={inviteMode === 'email' ? 0 : -1}
+              className={styles.inviteModeButton}
+              onClick={() => chooseInviteMode('email')}
+              onKeyDown={onInviteModeKeyDown}
+            >
+              <span aria-hidden="true"><Mail size={18} /></span>
+              <span><strong>{'Email one person'}</strong><small>{'Assign their job and company or hotel access'}</small></span>
+            </button>
+          </div>
+        ) : null}
+
+        {canManageHotelRoster && inviteMode === 'shared' ? (
+        <section
+          id={sharedPanelId}
+          className={styles.inviteSection}
+          role={hasInviteModeChoice ? 'tabpanel' : undefined}
+          aria-labelledby={hasInviteModeChoice ? sharedTabId : 'staff-invite-heading'}
+          tabIndex={hasInviteModeChoice ? 0 : undefined}
+        >
           <div className={styles.inviteSectionHeading}>
             <span className={styles.sectionIcon}><Link2 size={18} aria-hidden="true" /></span>
             <div>
-              <h3 id="staff-invite-heading">{'Staff signup link'}</h3>
-              <p>{'Staff choose their department, then wait for your approval.'}</p>
+              <h3 id="staff-invite-heading">{'Shared hotel invite'}</h3>
+              <p>{'Staff create their own account, choose their department, then wait for your approval.'}</p>
+            </div>
+          </div>
+
+          <div className={styles.sharedInviteExplanation}>
+            <div>
+              <strong>{'One invitation, three ways to share it'}</strong>
+              <span>{`Every option opens the same Staxis signup for ${hotelName}.`}</span>
+              <span>{'When you approve someone, Staxis reuses one clear matching roster profile or creates a new one.'}</span>
+            </div>
+            <div className={styles.sharedInviteMethods} aria-label="Ways to share this invitation">
+              <span><Link2 size={15} aria-hidden="true" />{'Link'}</span>
+              <span><QrCode size={15} aria-hidden="true" />{'QR code'}</span>
+              <span><KeyRound size={15} aria-hidden="true" />{'Signup code'}</span>
             </div>
           </div>
 
@@ -1787,7 +1960,7 @@ export function HotelInviteDialog({
             <div className={styles.codeLayout}>
               <div className={styles.codeDetails}>
                 <label className={styles.copyField}>
-                  <span>{'Invite link'}</span>
+                  <span>{'Shareable link'}</span>
                   <div>
                     <input value={activeLink} readOnly aria-label={'Staff invite link'} />
                     <button type="button" onClick={() => void announceCopy(activeLink, 'link')}>
@@ -1798,7 +1971,7 @@ export function HotelInviteDialog({
                 </label>
 
                 <div className={styles.codeBlock}>
-                  <span>{'Signup code'}</span>
+                  <span>{'Shareable signup code'}</span>
                   <div>
                     <strong>{code.code}</strong>
                     <button type="button" onClick={() => void announceCopy(code.code, 'code')} aria-label={'Copy signup code'}>
@@ -1836,9 +2009,9 @@ export function HotelInviteDialog({
           ) : (
             <div className={styles.noCodeState}>
               <Link2 size={22} aria-hidden="true" />
-              <div><strong>{'No active staff link'}</strong><span>{'Create one when you are ready to invite staff.'}</span></div>
+              <div><strong>{'No active shared invitation'}</strong><span>{'Create one to get its link, QR code, and signup code.'}</span></div>
               <button type="button" className={styles.primaryButton} onClick={() => void createCode(false)} disabled={codeBusy}>
-                {codeBusy ? <BusyLabel en="Creating…" /> : 'Create invite link'}
+                {codeBusy ? <BusyLabel en="Creating…" /> : 'Create shared invite'}
               </button>
             </div>
           )}
@@ -1846,15 +2019,29 @@ export function HotelInviteDialog({
         </section>
         ) : null}
 
-        {canInviteManager ? (
-        <section className={styles.inviteSection} aria-labelledby="manager-invite-heading">
+        {canInviteManager && inviteMode === 'email' ? (
+        <section
+          id={emailPanelId}
+          className={styles.inviteSection}
+          role={hasInviteModeChoice ? 'tabpanel' : undefined}
+          aria-labelledby={hasInviteModeChoice ? emailTabId : 'manager-invite-heading'}
+          tabIndex={hasInviteModeChoice ? 0 : undefined}
+        >
           <div className={styles.inviteSectionHeading}>
             <span className={styles.sectionIcon}><Mail size={18} aria-hidden="true" /></span>
             <div>
-              <h3 id="manager-invite-heading">{'Invite by email'}</h3>
+              <h3 id="manager-invite-heading">{'Email one person'}</h3>
               <p>{canManageHotelRoster
-                  ? 'Choose the job and hotel scope. Operational staff can also use the shared link above.'
-                  : 'Choose the job and exact company or hotel scope shown below.'}</p>
+                  ? 'Send a private invitation, then choose the job and exact company or hotel access.'
+                  : 'Choose the job and exact company or hotel access shown below.'}</p>
+            </div>
+          </div>
+
+          <div className={styles.emailInviteExplanation}>
+            <Mail size={17} aria-hidden="true" />
+            <div>
+              <strong>{'For one person who needs login access'}</strong>
+              <span>{'If they already use Staxis, access is added now. Otherwise, Staxis emails an invitation.'}</span>
             </div>
           </div>
 
@@ -1883,6 +2070,7 @@ export function HotelInviteDialog({
                     setInviteJob(event.target.value);
                     setInviteHotelIds([]);
                     setInviteAllHotels(true);
+                    setInviteStaffId('');
                     setInviteError('');
                     setLastInvite(null);
                   }}
@@ -1909,7 +2097,12 @@ export function HotelInviteDialog({
                     <input
                       type="checkbox"
                       checked={inviteAllHotels}
-                      onChange={(event) => { setInviteAllHotels(event.target.checked); setInviteError(''); }}
+                      onChange={(event) => {
+                        setInviteAllHotels(event.target.checked);
+                        setInviteStaffId('');
+                        setInviteError('');
+                        setLastInvite(null);
+                      }}
                     />
                     {'All allowed hotels'}
                   </label>
@@ -1919,7 +2112,9 @@ export function HotelInviteDialog({
                         type="checkbox"
                         checked={inviteHotelIds.includes(hotel.id)}
                         onChange={(event) => {
+                          setInviteStaffId('');
                           setInviteError('');
+                          setLastInvite(null);
                           setInviteHotelIds((current) => (
                             event.target.checked
                               ? [...new Set([...current, hotel.id])]
@@ -1933,6 +2128,33 @@ export function HotelInviteDialog({
                 </fieldset>
               ) : null}
 
+            {linkableRosterProfiles.length > 0 ? (
+              <label className={`${styles.field} ${styles.rosterLinkField}`}>
+                <span className={styles.fieldLabelWithMeta}>
+                  {'Link to roster profile'}
+                  <em>{'Optional'}</em>
+                </span>
+                <select
+                  value={inviteStaffId}
+                  onChange={(event) => {
+                    setInviteStaffId(event.target.value);
+                    setInviteError('');
+                    setLastInvite(null);
+                  }}
+                  aria-describedby={rosterProfileHelpId}
+                  disabled={inviteBusy}
+                >
+                  <option value="">{'Do not link a roster profile'}</option>
+                  {linkableRosterProfiles.map((profile) => (
+                    <option key={profile.id} value={profile.id}>{profile.name}</option>
+                  ))}
+                </select>
+                <small id={rosterProfileHelpId}>
+                  {'Choose this when the person already appears on this hotel’s schedule. Their login and roster details will stay together.'}
+                </small>
+              </label>
+            ) : null}
+
             <button
               type="submit"
               className={styles.primaryButton}
@@ -1940,7 +2162,7 @@ export function HotelInviteDialog({
             >
               {inviteBusy
                 ? <BusyLabel en="Creating…" />
-                : <><Mail size={15} aria-hidden="true" />{'Create invitation'}</>}
+                : <><Mail size={15} aria-hidden="true" />{'Send email invitation'}</>}
             </button>
           </form>
           {!invitesLoading && inviteOptions.jobs.length === 0 && !invitesError ? (
@@ -1949,17 +2171,33 @@ export function HotelInviteDialog({
           {inviteError ? <ErrorBanner message={inviteError} /> : null}
 
           {lastInvite ? (
-            <div className={lastInvite.emailSent ? styles.successNotice : styles.deliveryNotice} role="status">
-              {lastInvite.emailSent ? <CheckCircle2 size={18} aria-hidden="true" /> : <AlertCircle size={18} aria-hidden="true" />}
+            <div
+              className={lastInvite.kind === 'access' || lastInvite.emailSent
+                ? styles.successNotice
+                : styles.deliveryNotice}
+              role="status"
+            >
+              {lastInvite.kind === 'access' || lastInvite.emailSent
+                ? <CheckCircle2 size={18} aria-hidden="true" />
+                : <AlertCircle size={18} aria-hidden="true" />}
               <div>
-                <strong>{lastInvite.emailSent
-                  ? 'Invitation email sent'
-                  : 'Invitation created, delivery not confirmed'}</strong>
-                <span>{lastInvite.emailSent
-                  ? `An invitation was sent to ${lastInvite.email}.`
-                  : `Staxis cannot confirm an email reached ${lastInvite.email}. Copy and send the link directly.`}</span>
+                <strong>{lastInvite.kind === 'access'
+                  ? 'Access granted — no email sent'
+                  : lastInvite.emailSent
+                    ? 'Invitation email sent'
+                    : 'Invitation created, delivery not confirmed'}</strong>
+                <span>{lastInvite.kind === 'access'
+                  ? `${lastInvite.email} already has a Staxis account. Their access is ready now.`
+                  : lastInvite.emailSent
+                    ? `An invitation was sent to ${lastInvite.email}.`
+                    : `Staxis cannot confirm an email reached ${lastInvite.email}. Copy and send the link directly.`}</span>
+                {lastInvite.profileName ? (
+                  <span>{lastInvite.kind === 'access'
+                    ? `Their login is now linked to ${lastInvite.profileName}’s roster profile.`
+                    : `When they accept, Staxis will link their login to ${lastInvite.profileName}’s roster profile.`}</span>
+                ) : null}
               </div>
-              {lastInvite.link ? (
+              {lastInvite.kind === 'invitation' && lastInvite.link ? (
                 <button type="button" onClick={() => void announceCopy(lastInvite.link!, 'manager-link')}>
                   {copied === 'manager-link' ? <Check size={15} aria-hidden="true" /> : <Copy size={15} aria-hidden="true" />}
                   {copied === 'manager-link' ? 'Copied' : 'Copy link'}
@@ -1969,7 +2207,7 @@ export function HotelInviteDialog({
           ) : null}
 
           <div className={styles.inviteListHeading}>
-            <h4>{'Email invitations'}</h4>
+            <h4>{'Pending email invitations'}</h4>
             {!invitesLoading && !invitesError ? <span>{invites.length}</span> : null}
           </div>
           {invitesLoading ? (

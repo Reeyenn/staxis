@@ -290,7 +290,7 @@ export function AddStaffDialog({
           <span className={styles.dialogIcon}><UserPlus size={19} aria-hidden="true" /></span>
           <div>
             <span>{hotelName}</span>
-            <h2 id={titleId}>{'Add someone to the schedule'}</h2>
+            <h2 id={titleId}>{'Add staff member'}</h2>
           </div>
           <button
             type="button"
@@ -304,7 +304,7 @@ export function AddStaffDialog({
         </div>
 
         <p id={descriptionId} className={styles.dialogIntro}>
-          {'This creates a schedule-only staff profile. It does not create a Staxis login or send an invitation.'}
+          {'Use this for someone who only needs to appear on the hotel roster and schedule. No Staxis account will be created, and they will not be able to log in.'}
         </p>
 
         <form className={styles.dialogForm} onSubmit={submit}>
@@ -384,7 +384,7 @@ export function AddStaffDialog({
                 ? <><span className={styles.buttonSpinner} aria-hidden="true" />{'Adding…'}</>
                 : retryLocked
                   ? 'Retry add'
-                  : 'Add to schedule'}
+                  : 'Add without login'}
             </button>
           </div>
         </form>

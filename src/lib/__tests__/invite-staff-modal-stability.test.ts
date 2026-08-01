@@ -26,12 +26,32 @@ describe('Invite Staff popup layout stability', () => {
     assert.match(hotelTeamDialogs, /QRCode\.toDataURL\(signupLinkFor\(code\.code\)/);
     assert.match(hotelTeamDialogs, /<img src=\{qrDataUrl\}/);
     assert.match(hotelTeamDialogs, /copyToClipboard\(/);
-    assert.match(hotelTeamDialogs, /Staff signup link/);
+    assert.match(hotelTeamDialogs, /Shared hotel invite/);
+    assert.match(hotelTeamDialogs, /One invitation, three ways to share it/);
+    assert.match(hotelTeamDialogs, /Every option opens the same Staxis signup/);
+    assert.match(hotelTeamDialogs, /\{'Link'\}/);
+    assert.match(hotelTeamDialogs, /\{'QR code'\}/);
+    assert.match(hotelTeamDialogs, /\{'Signup code'\}/);
     // The email surface now projects the caller's current server-authorized
     // jobs and hotel scopes instead of hard-coding a GM-only invitation.
-    assert.match(hotelTeamDialogs, /Invite by email/);
+    assert.match(hotelTeamDialogs, /Email one person/);
+    assert.match(hotelTeamDialogs, /For one person who needs login access/);
+    assert.match(hotelTeamDialogs, /If they already use Staxis, access is added now/);
     assert.match(hotelTeamDialogs, /inviteOptions\.jobs\.map/);
     assert.match(hotelTeamDialogs, /allowedInviteHotels\.map/);
+    assert.match(hotelTeamDialogs, /role="tablist"/);
+    assert.match(hotelTeamDialogs, /aria-selected=\{inviteMode === 'shared'\}/);
+    assert.match(hotelTeamDialogs, /aria-selected=\{inviteMode === 'email'\}/);
+    assert.match(hotelTeamDialogs, /event\.key === 'ArrowLeft' \|\| event\.key === 'Home'/);
+    assert.match(hotelTeamDialogs, /event\.key === 'ArrowRight' \|\| event\.key === 'End'/);
+    assert.match(hotelTeamDialogs, /When you approve someone, Staxis reuses one clear matching roster profile or creates a new one/);
+    assert.match(hotelTeamDialogs, /linkableRosterProfiles\.map/);
+    assert.match(hotelTeamDialogs, /aria-describedby=\{rosterProfileHelpId\}/);
+    const safeProfileResets = hotelTeamDialogs.match(/setInviteStaffId\(['"]['"]\)/g) ?? [];
+    assert.ok(safeProfileResets.length >= 6, 'role, scope, reload, and success paths must clear stale roster choices');
+    assert.match(hotelTeamDialogs, /\.\.\.\(selectedRosterProfile \? \{ staffId: selectedRosterProfile\.id \} : \{\}\)/);
+    assert.match(hotelTeamDialogs, /lastInvite\.kind === 'access'/);
+    assert.match(hotelTeamCss, /\.fieldLabelWithMeta em \{/);
     // Replacing a link must say the old link and QR stop working.
     assert.match(hotelTeamDialogs, /The current link and QR code will stop working/);
   });

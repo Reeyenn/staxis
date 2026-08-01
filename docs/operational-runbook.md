@@ -25,6 +25,25 @@ prod state.
 
 ---
 
+## 2026-08-01 — My Hotel / My Company People invitations
+
+### Migration applied to prod (via `scripts/apply-migration.ts`)
+
+| File | What | How to verify |
+|---|---|---|
+| `0416_people_invite_identity_linking.sql` | Adds optional roster-profile targets to email invitations, atomic invite-acceptance linking, guarded access grants for existing Staxis accounts, pending-profile reservations, and deterministic roster reuse for shared-link approvals. | Migration `0416` has one row; `account_invites.target_staff_id` exists; the targeted invite and existing-account grant RPCs exist; only `service_role` can execute the grant RPC. |
+
+Applied with:
+
+```text
+set -a; source /Users/reeyen/.config/staxis/tokens.env; set +a
+npx tsx scripts/apply-migration.ts supabase/migrations/0416_people_invite_identity_linking.sql
+```
+
+Post-apply verification: `npx tsx scripts/check-migrations-applied.ts` reported all 360 production-required migrations applied. Direct production checks confirmed the `0416` row, target-staff column, both new RPC signatures, service-role execution, and browser-role denial. Roll back application callers first. Preserve account access, staff links, invitation history, and audit rows; a forward fix is safer than dropping linked identity data. If a schema rollback is unavoidable, restore the 0393/0395 function definitions, remove the new grant/helper functions after callers are gone, and remove the target column only after clearing every remaining target safely.
+
+---
+
 ## 2026-07-22 — My Hotel account access controls
 
 ### Migration applied to prod (via `scripts/apply-migration.ts`)

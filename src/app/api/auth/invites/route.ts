@@ -1,6 +1,6 @@
-// /api/auth/invites — manage email-based account invites.
+// /api/auth/invites — invite new accounts or add hotel access by email.
 //   GET     ?hotelId=…  — list pending invites for that hotel
-//   POST                — create + email an invite (body: hotelId, email, role)
+//   POST                — invite a new email or grant an existing account
 //   DELETE  ?id=…       — revoke an invite (deletes the row)
 //
 // Caller must be admin / owner / general_manager. Owner/GM are scoped to
@@ -8,12 +8,11 @@
 //
 // COMPANY SPINE (0364). The same button now sends two shapes:
 //
-//   { hotelId, email, role }                         the hotel invite, exactly
-//                                                    as it has always worked.
-//                                                    A GM is never asked which
-//                                                    hotel — theirs is implied.
-//   { hotelId, email, role, scope, propertyIds }     the company invite. Only a
-//                                                    company-scoped inviter
+//   { hotelId, email, role, staffId? }               the hotel request. A GM is
+//                                                    never asked which hotel —
+//                                                    theirs is implied.
+//   { hotelId, email, role, scope, propertyIds,      the company request. Only a
+//     staffId? }                                     company-scoped inviter
 //                                                    (owner / VP) may send it,
 //                                                    and `propertyIds` may name
 //                                                    only hotels inside THEIR
@@ -24,8 +23,8 @@
 //                                                    company operates, now and
 //                                                    in future.
 //
-// Inviting the same person twice with different answers is how multi-hat
-// happens: two invitations, two hats, one person.
+// A new email gets a pending invitation. An active existing account receives
+// the authorized access directly, without another email round trip.
 
 import { NextRequest, type NextResponse } from 'next/server';
 import { createHash, randomBytes } from 'node:crypto';
@@ -39,6 +38,7 @@ import type { SendEmailResult } from '@/lib/email/resend';
 import { env } from '@/lib/env';
 import { getOrMintRequestId, log } from '@/lib/log';
 import { errToString } from '@/lib/utils';
+import { findStaxisAccountByEmail } from '@/lib/auth-create-user';
 import {
   companyInviteAuthorityUnchanged,
   loadFreshCompanyInviteAuthorityContext,
@@ -70,6 +70,7 @@ export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
 const INVITE_TTL_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
+const STAFF_LINKABLE_ROLES = new Set(['front_desk', 'housekeeping', 'maintenance']);
 
 function hashToken(t: string) { return createHash('sha256').update(t).digest('hex'); }
 function isEmail(s: string) { return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(s); }
@@ -574,6 +575,7 @@ export async function POST(req: NextRequest) {
     role?: string;
     scope?: string;
     propertyIds?: unknown;
+    staffId?: unknown;
   };
   try {
     body = await req.json() as typeof body;
@@ -643,6 +645,62 @@ export async function POST(req: NextRequest) {
     return err('Invalid email', { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
   }
 
+  let targetStaffId: string | null = null;
+  if (Object.prototype.hasOwnProperty.call(body, 'staffId')) {
+    const staffIdValidation = validateUuid(body.staffId, 'staffId');
+    if (staffIdValidation.error || !staffIdValidation.value) {
+      return err(staffIdValidation.error ?? 'Invalid staffId', {
+        requestId,
+        status: 400,
+        code: ApiErrorCode.ValidationFailed,
+      });
+    }
+    targetStaffId = staffIdValidation.value;
+  }
+  if (targetStaffId) {
+    if (!STAFF_LINKABLE_ROLES.has(role)) {
+      return err('A staff profile can only be linked to an operational hotel role', {
+        requestId,
+        status: 400,
+        code: ApiErrorCode.ValidationFailed,
+      });
+    }
+    const selectedScopeCoversCurrentHotel = !hat
+      || hat.scope === 'company'
+      || hat.propertyIds.includes(hotelId);
+    if (!selectedScopeCoversCurrentHotel) {
+      return err('The selected access scope must include the staff profile\'s hotel', {
+        requestId,
+        status: 400,
+        code: ApiErrorCode.ValidationFailed,
+      });
+    }
+    const { data: staff, error: staffError } = await supabaseAdmin
+      .from('staff')
+      .select('id, property_id, department, is_active')
+      .eq('id', targetStaffId)
+      .eq('property_id', hotelId)
+      .maybeSingle();
+    if (staffError) {
+      log.error('[invites:POST] staff lookup failed', {
+        requestId,
+        staffId: targetStaffId,
+        msg: errToString(staffError),
+      });
+      return capabilityUnavailableResponse(requestId);
+    }
+    if (!staff
+        || staff.property_id !== hotelId
+        || staff.is_active !== true
+        || (staff.department ?? 'housekeeping') !== role) {
+      return err('The selected staff profile is not available for this hotel and role', {
+        requestId,
+        status: 400,
+        code: ApiErrorCode.ValidationFailed,
+      });
+    }
+  }
+
   // Re-resolve from current primary authority immediately before the write.
   // Revocation, transfer, or target-hotel removal between form load and submit
   // therefore fails closed instead of preserving a stale invitation promise.
@@ -676,16 +734,168 @@ export async function POST(req: NextRequest) {
     }
   }
 
-  const rawToken = randomBytes(24).toString('hex');
-  const tokenHash = hashToken(rawToken);
-  const expiresAt = new Date(Date.now() + INVITE_TTL_MS).toISOString();
   // `hotel_id` is the authority anchor used again at revoke and acceptance.
   // For an exact property promise it must be one of the promised hotels, not
   // merely whichever company hotel happened to have the People screen open.
-  // The resolver returns a sorted, non-empty set, giving us a stable anchor.
-  const inviteAnchorHotelId = hat?.scope === 'property'
-    ? hat.propertyIds[0]!
-    : hotelId;
+  // A linked staff profile makes its own hotel the anchor; otherwise the
+  // resolver's sorted, non-empty set gives us a stable anchor.
+  const inviteAnchorHotelId = targetStaffId
+    ? hotelId
+    : hat?.scope === 'property'
+      ? hat.propertyIds[0]!
+      : hotelId;
+
+  const accountLookup = await findStaxisAccountByEmail(normalizedEmail);
+  if (accountLookup.kind === 'unavailable') {
+    return capabilityUnavailableResponse(requestId);
+  }
+  if (accountLookup.kind === 'protected_identity') {
+    const protectedIdentityMessage = accountLookup.reason === 'property_owner'
+      ? 'This login is already tied to a hotel owner. Restore its account before adding access.'
+      : 'This login was just created. Finish or recover that signup before adding access.';
+    return err(protectedIdentityMessage, {
+      requestId,
+      status: 409,
+      code: ApiErrorCode.IdempotencyConflict,
+    });
+  }
+  if (accountLookup.kind === 'found') {
+    if (!accountLookup.active) {
+      return err('This Staxis account is inactive. Reactivate it before adding hotel access.', {
+        requestId,
+        status: 409,
+        code: ApiErrorCode.IdempotencyConflict,
+      });
+    }
+    const accountIdValidation = validateUuid(accountLookup.accountId, 'accountId');
+    if (accountIdValidation.error || !accountIdValidation.value) {
+      log.error('[invites:POST] account lookup returned a malformed account id', { requestId });
+      return err('Failed to add hotel access', {
+        requestId,
+        status: 500,
+        code: ApiErrorCode.InternalError,
+      });
+    }
+    const { data: guardedGrantData, error: guardedGrantError } = await supabaseAdmin.rpc(
+      'staxis_grant_existing_account_invite_guarded',
+      {
+        p_actor_account_id: actor.accountId,
+        p_actor_auth_user_id: actor.authUserId,
+        p_hotel_id: inviteAnchorHotelId,
+        p_target_account_id: accountIdValidation.value,
+        p_email: normalizedEmail,
+        p_role: role,
+        p_organization_id: hat?.organizationId ?? null,
+        p_membership_scope: hat?.scope ?? null,
+        p_covered_property_ids: hat?.scope === 'property' ? hat.propertyIds : null,
+        p_target_staff_id: targetStaffId,
+        p_request_id: requestId,
+      },
+    );
+    if (guardedGrantError) {
+      log.error('[invites:POST] guarded existing-account grant failed', {
+        requestId,
+        code: guardedGrantError.code,
+        msg: errToString(guardedGrantError),
+      });
+      if (guardedGrantError.code === '55P03' || guardedGrantError.code === '40001') {
+        return capabilityUnavailableResponse(requestId);
+      }
+      return err('Failed to add hotel access', {
+        requestId,
+        status: 500,
+        code: ApiErrorCode.InternalError,
+      });
+    }
+    const guardedGrant = guardedGrantData !== null
+        && typeof guardedGrantData === 'object'
+        && !Array.isArray(guardedGrantData)
+      ? guardedGrantData as Record<string, unknown>
+      : null;
+    if (!guardedGrant || guardedGrant.ok !== true) {
+      if (guardedGrant?.reason === 'invalid') {
+        return err('Invalid access grant', {
+          requestId,
+          status: 400,
+          code: ApiErrorCode.ValidationFailed,
+        });
+      }
+      if (guardedGrant?.reason === 'denied') return authorityDenied(requestId);
+      if (guardedGrant?.reason === 'not_found') {
+        return err('The account or staff profile is no longer available', {
+          requestId,
+          status: 404,
+          code: ApiErrorCode.NotFound,
+        });
+      }
+      if (guardedGrant?.reason === 'role_conflict') {
+        return err('This account already has a different access role', {
+          requestId,
+          status: 409,
+          code: ApiErrorCode.IdempotencyConflict,
+        });
+      }
+      if (guardedGrant?.reason === 'staff_in_use') {
+        return err('This staff profile is already linked to another account', {
+          requestId,
+          status: 409,
+          code: ApiErrorCode.IdempotencyConflict,
+        });
+      }
+      log.error('[invites:POST] guarded existing-account grant returned an unknown refusal', {
+        requestId,
+        reason: guardedGrant?.reason,
+      });
+      return err('Failed to add hotel access', {
+        requestId,
+        status: 500,
+        code: ApiErrorCode.InternalError,
+      });
+    }
+
+    const grantedAccountId = validateUuid(guardedGrant.accountId, 'accountId');
+    const grantedHotelId = validateUuid(guardedGrant.hotelId, 'hotelId');
+    const grantedMembershipId = guardedGrant.membershipId === null
+      ? null
+      : validateUuid(guardedGrant.membershipId, 'membershipId');
+    const grantedStaffId = guardedGrant.staffId === null
+      ? null
+      : validateUuid(guardedGrant.staffId, 'staffId');
+    const expectedNormalized = hat !== null;
+    const malformedGrantReceipt = grantedAccountId.error
+      || grantedAccountId.value !== accountIdValidation.value
+      || grantedHotelId.error
+      || grantedHotelId.value !== inviteAnchorHotelId
+      || guardedGrant.role !== role
+      || (guardedGrant.status !== 'granted' && guardedGrant.status !== 'noop')
+      || guardedGrant.normalized !== expectedNormalized
+      || (expectedNormalized
+        ? grantedMembershipId === null || !!grantedMembershipId.error || !grantedMembershipId.value
+        : grantedMembershipId !== null)
+      || (grantedStaffId === null
+        ? targetStaffId !== null
+        : !!grantedStaffId.error || grantedStaffId.value !== targetStaffId);
+    if (malformedGrantReceipt) {
+      log.error('[invites:POST] guarded existing-account grant returned a malformed receipt', {
+        requestId,
+      });
+      return err('Failed to add hotel access', {
+        requestId,
+        status: 500,
+        code: ApiErrorCode.InternalError,
+      });
+    }
+
+    return ok({
+      accessGranted: true,
+      profileLinked: targetStaffId !== null,
+      emailSent: false,
+    }, { requestId });
+  }
+
+  const rawToken = randomBytes(24).toString('hex');
+  const tokenHash = hashToken(rawToken);
+  const expiresAt = new Date(Date.now() + INVITE_TTL_MS).toISOString();
 
   const { data: guardedCreateData, error: guardedCreateError } = await supabaseAdmin.rpc(
     'staxis_create_account_invite_guarded',
@@ -701,6 +911,7 @@ export async function POST(req: NextRequest) {
       p_membership_scope: hat?.scope ?? null,
       p_covered_property_ids: hat?.scope === 'property' ? hat.propertyIds : null,
       p_request_id: requestId,
+      p_target_staff_id: targetStaffId,
     },
   );
   if (guardedCreateError) {
@@ -727,7 +938,37 @@ export async function POST(req: NextRequest) {
         requestId, status: 400, code: ApiErrorCode.ValidationFailed,
       });
     }
-    return authorityDenied(requestId);
+    if (guardedCreate?.reason === 'denied') return authorityDenied(requestId);
+    if (guardedCreate?.reason === 'not_found') {
+      return err('The selected staff profile is no longer available', {
+        requestId,
+        status: 404,
+        code: ApiErrorCode.NotFound,
+      });
+    }
+    if (guardedCreate?.reason === 'role_conflict') {
+      return err('The selected staff profile no longer matches this role', {
+        requestId,
+        status: 409,
+        code: ApiErrorCode.IdempotencyConflict,
+      });
+    }
+    if (guardedCreate?.reason === 'staff_in_use') {
+      return err('This staff profile is already linked to another account', {
+        requestId,
+        status: 409,
+        code: ApiErrorCode.IdempotencyConflict,
+      });
+    }
+    log.error('[invites:POST] guarded create returned an unknown refusal', {
+      requestId,
+      reason: guardedCreate?.reason,
+    });
+    return err('Failed to create invite', {
+      requestId,
+      status: 500,
+      code: ApiErrorCode.InternalError,
+    });
   }
   const inviteIdReceipt = validateUuid(guardedCreate.inviteId, 'inviteId');
   const hotelIdReceipt = validateUuid(guardedCreate.hotelId, 'hotelId');
@@ -737,7 +978,17 @@ export async function POST(req: NextRequest) {
     && guardedCreate.hotelName.trim().length > 0
     ? guardedCreate.hotelName
     : null;
-  if (!inviteId || committedHotelId !== inviteAnchorHotelId || !hotelName) {
+  const targetStaffIdReceipt = guardedCreate.targetStaffId === null
+    ? null
+    : validateUuid(guardedCreate.targetStaffId, 'targetStaffId');
+  const committedTargetStaffId = targetStaffIdReceipt === null
+    ? null
+    : targetStaffIdReceipt.error ? null : targetStaffIdReceipt.value ?? null;
+  if (!inviteId
+      || committedHotelId !== inviteAnchorHotelId
+      || !hotelName
+      || committedTargetStaffId !== targetStaffId
+      || (guardedCreate.targetStaffId !== null && targetStaffIdReceipt?.error)) {
     log.error('[invites:POST] guarded create returned a malformed receipt', { requestId });
     return err('Failed to create invite', {
       requestId, status: 500, code: ApiErrorCode.InternalError,

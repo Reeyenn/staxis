@@ -26,6 +26,9 @@ const HOTEL_B = '22222222-2222-2222-2222-222222222222';
 const CALLER_ACCOUNT_ID = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa';
 const CALLER_AUTH_ID = '10000000-0000-0000-0000-000000000001';
 const CREATED_AUTH_ID = '10000000-0000-0000-0000-000000000099';
+const EXISTING_ACCOUNT_ID = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+const EXISTING_AUTH_ID = '10000000-0000-4000-8000-000000000002';
+const STAFF_ID = '77777777-7777-4777-8777-777777777777';
 const ORGANIZATION_A = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd';
 const SCOPE_RECEIPT_ID = 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeee01';
 
@@ -53,7 +56,15 @@ interface InviteRow {
   organization_id?: string | null;
   membership_scope?: 'company' | 'property' | null;
   covered_property_ids?: string[] | null;
+  target_staff_id?: string | null;
   acceptance_claim_token?: string | null;
+}
+
+interface StaffRow {
+  id: string;
+  property_id: string;
+  department: string | null;
+  is_active: boolean | null;
 }
 
 interface TestState {
@@ -74,6 +85,12 @@ interface TestState {
     role: string;
     allowed: boolean;
   }>;
+  authUsers: Array<{ id: string; email: string; createdAt: string }>;
+  authLookupError: boolean;
+  accountLookupError: boolean;
+  propertyOwnerAuthUserIds: string[];
+  staffRows: StaffRow[];
+  grantCalls: Array<Record<string, unknown>>;
   createdAuthUsers: Array<{ id: string; email: string }>;
   auditRows: Array<Record<string, unknown>>;
   finalizeErrorCode: string | null;
@@ -125,6 +142,12 @@ function resetState(): void {
     normalizedStandings: [],
     companyPropertyIds: [],
     capabilityOverrides: [],
+    authUsers: [],
+    authLookupError: false,
+    accountLookupError: false,
+    propertyOwnerAuthUserIds: [],
+    staffRows: [],
+    grantCalls: [],
     createdAuthUsers: [],
     auditRows: [],
     finalizeErrorCode: null,
@@ -147,6 +170,41 @@ function normalizeAuthorityAtHotel(
   state.authorityMode = 'normalized';
   state.normalizedStandings = [{ propertyId: HOTEL_A, operationalRole, hotelMutationAllowed }];
   state.companyPropertyIds = [HOTEL_A];
+}
+
+function seedExistingAccount(
+  email: string,
+  overrides: Partial<AccountRow> = {},
+): AccountRow {
+  state.authUsers.push({
+    id: EXISTING_AUTH_ID,
+    email,
+    createdAt: new Date(Date.now() - 86_400_000).toISOString(),
+  });
+  const account: AccountRow = {
+    id: EXISTING_ACCOUNT_ID,
+    role: 'front_desk',
+    property_access: [],
+    active: true,
+    data_user_id: EXISTING_AUTH_ID,
+    display_name: 'Existing Teammate',
+    username: 'existing.teammate',
+    ...overrides,
+  };
+  state.accounts.push(account);
+  return account;
+}
+
+function seedStaff(overrides: Partial<StaffRow> = {}): StaffRow {
+  const staff: StaffRow = {
+    id: STAFF_ID,
+    property_id: HOTEL_A,
+    department: 'front_desk',
+    is_active: true,
+    ...overrides,
+  };
+  state.staffRows.push(staff);
+  return staff;
 }
 
 function seedInvite(role: string, token = `invite-token-${role}`): string {
@@ -191,10 +249,23 @@ function installSupabaseStub(): void {
     state.createdAuthUsers = state.createdAuthUsers.filter((user) => user.id !== id);
     return { data: {}, error: null };
   }) as unknown as DeleteUserFn;
-  supabaseAdmin.auth.admin.listUsers = (async () => ({
-    data: { users: [], aud: 'authenticated', nextPage: null, lastPage: 1, total: 0 },
-    error: null,
-  })) as unknown as ListUsersFn;
+  supabaseAdmin.auth.admin.listUsers = (async () => {
+    if (state.authLookupError) {
+      return { data: { users: [] }, error: { message: 'forced Auth lookup failure' } };
+    }
+    const users = state.authUsers.map((identity) => ({
+      id: identity.id,
+      email: identity.email,
+      created_at: identity.createdAt,
+      app_metadata: {},
+      user_metadata: {},
+      aud: 'authenticated',
+    }));
+    return {
+      data: { users, aud: 'authenticated', nextPage: null, lastPage: 1, total: users.length },
+      error: null,
+    };
+  }) as unknown as ListUsersFn;
 
   supabaseAdmin.rpc = (async (fn: string, args?: Record<string, unknown>) => {
     if (fn === 'staxis_api_limit_hit') return { data: 1, error: null };
@@ -210,6 +281,80 @@ function installSupabaseStub(): void {
           organizationId: args?.p_organization_id,
           effectiveAt,
           propertyIds,
+        },
+        error: null,
+      };
+    }
+    if (fn === 'staxis_grant_existing_account_invite_guarded') {
+      state.grantCalls.push({ ...args });
+      const actor = state.accounts.find((row) => row.id === args?.p_actor_account_id);
+      const target = state.accounts.find((row) => row.id === args?.p_target_account_id);
+      const normalized = args?.p_organization_id !== null;
+      const propertyIds = Array.isArray(args?.p_covered_property_ids)
+        ? args.p_covered_property_ids as string[]
+        : [];
+      const standing = actor?.role === 'admin'
+        ? { operationalRole: 'admin' as AppRole, hotelMutationAllowed: true }
+        : state.authorityMode === 'normalized'
+          ? state.normalizedStandings.find((row) => row.propertyId === args?.p_hotel_id)
+          : actor?.property_access.includes(args?.p_hotel_id as string)
+            ? { operationalRole: actor.role, hotelMutationAllowed: true }
+            : null;
+      const role = args?.p_role as string;
+      const mayGrant = !!actor?.active
+        && actor.data_user_id === args?.p_actor_auth_user_id
+        && !!standing?.hotelMutationAllowed
+        && ['admin', 'owner', 'general_manager'].includes(standing.operationalRole)
+        && (!['owner', 'general_manager'].includes(role)
+          || ['admin', 'owner'].includes(standing.operationalRole))
+        && (!normalized
+          || (state.authorityMode === 'normalized'
+            && args?.p_organization_id === ORGANIZATION_A
+            && args?.p_membership_scope === 'property'
+            && propertyIds.length > 0
+            && propertyIds.every((id) => state.normalizedStandings.some(
+              (candidate) => candidate.propertyId === id,
+            ))));
+      if (!mayGrant) return { data: { ok: false, reason: 'denied' }, error: null };
+      if (!target?.active) return { data: { ok: false, reason: 'not_found' }, error: null };
+      if (target.role !== role && target.property_access.length > 0) {
+        return { data: { ok: false, reason: 'role_conflict' }, error: null };
+      }
+      const staffId = typeof args?.p_target_staff_id === 'string'
+        ? args.p_target_staff_id
+        : null;
+      if (staffId) {
+        const staff = state.staffRows.find((row) => row.id === staffId);
+        const allowedStaffPropertyIds = normalized
+          ? propertyIds
+          : [args?.p_hotel_id as string];
+        if (!staff
+            || !allowedStaffPropertyIds.includes(staff.property_id)
+            || staff.is_active !== true
+            || (staff.department ?? 'housekeeping') !== role) {
+          return { data: { ok: false, reason: 'not_found' }, error: null };
+        }
+      }
+      const alreadyGranted = !normalized
+        && target.property_access.includes(args?.p_hotel_id as string);
+      if (!normalized && !alreadyGranted) {
+        target.property_access = [...target.property_access, args?.p_hotel_id as string];
+      }
+      state.auditRows.push({
+        action: 'invite.existing_account_grant',
+        target_id: target.id,
+        request_id: args?.p_request_id,
+      });
+      return {
+        data: {
+          ok: true,
+          status: alreadyGranted ? 'noop' : 'granted',
+          accountId: target.id,
+          hotelId: args?.p_hotel_id,
+          role,
+          normalized,
+          membershipId: normalized ? 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeee98' : null,
+          staffId,
         },
         error: null,
       };
@@ -263,6 +408,9 @@ function installSupabaseStub(): void {
         covered_property_ids: normalized && args?.p_membership_scope === 'property'
           ? propertyIds
           : null,
+        target_staff_id: typeof args?.p_target_staff_id === 'string'
+          ? args.p_target_staff_id
+          : null,
         acceptance_claim_token: null,
       };
       state.invites.push(invite);
@@ -277,6 +425,7 @@ function installSupabaseStub(): void {
           inviteId: invite.id,
           hotelId: invite.hotel_id,
           hotelName: 'Hotel A',
+          targetStaffId: invite.target_staff_id ?? null,
         },
         error: null,
       };
@@ -524,6 +673,7 @@ function installSupabaseStub(): void {
   supabaseAdmin.from = ((table: string) => {
     if (table === 'accounts') return accountsBuilder();
     if (table === 'account_invites') return invitesBuilder();
+    if (table === 'staff') return staffBuilder();
     if (table === 'capability_overrides') return capabilityOverridesBuilder();
     if (table === 'organization_property_relationships') {
       const equals = new Map<string, unknown>();
@@ -573,6 +723,7 @@ function installSupabaseStub(): void {
     if (table === 'properties') {
       let hotelId: unknown;
       let hotelIds: unknown[] | null = null;
+      let ownerAuthUserId: unknown;
       const hotelName = (id: unknown) => id === HOTEL_A
         ? 'Hotel A'
         : id === HOTEL_B ? 'Hotel B' : null;
@@ -580,18 +731,30 @@ function installSupabaseStub(): void {
         select: () => builder,
         eq: (column: string, value: unknown) => {
           if (column === 'id') hotelId = value;
+          if (column === 'owner_id') ownerAuthUserId = value;
           return builder;
         },
+        limit: () => builder,
         in: (_column: string, values: unknown[]) => {
           hotelIds = values;
           return builder;
         },
         order: () => builder,
         range: () => builder,
-        maybeSingle: async () => ({
-          data: hotelName(hotelId) ? { id: hotelId, name: hotelName(hotelId) } : null,
-          error: null,
-        }),
+        maybeSingle: async () => {
+          if (typeof ownerAuthUserId === 'string') {
+            return {
+              data: state.propertyOwnerAuthUserIds.includes(ownerAuthUserId)
+                ? { id: HOTEL_A }
+                : null,
+              error: null,
+            };
+          }
+          return {
+            data: hotelName(hotelId) ? { id: hotelId, name: hotelName(hotelId) } : null,
+            error: null,
+          };
+        },
         then: (resolve: (value: unknown) => unknown) => {
           const rows = (hotelIds ?? []).flatMap((id) => {
             const name = hotelName(id);
@@ -657,7 +820,12 @@ function accountsBuilder(): Record<string, unknown> {
       equals.set(column, value);
       return builder;
     },
-    maybeSingle: async () => ({ data: matches()[0] ?? null, error: null }),
+    maybeSingle: async () => {
+      if (state.accountLookupError && equals.get('data_user_id') === EXISTING_AUTH_ID) {
+        return { data: null, error: { message: 'forced account lookup failure' } };
+      }
+      return { data: matches()[0] ?? null, error: null };
+    },
     insert: (values: Record<string, unknown>) => {
       insertValues = values;
       return builder;
@@ -773,6 +941,25 @@ function invitesBuilder(): Record<string, unknown> {
   return builder;
 }
 
+function staffBuilder(): Record<string, unknown> {
+  const equals = new Map<string, unknown>();
+  const matches = () => state.staffRows.filter((row) => {
+    for (const [column, value] of equals) {
+      if ((row as unknown as Record<string, unknown>)[column] !== value) return false;
+    }
+    return true;
+  });
+  const builder: Record<string, unknown> = {
+    select: () => builder,
+    eq: (column: string, value: unknown) => {
+      equals.set(column, value);
+      return builder;
+    },
+    maybeSingle: async () => ({ data: matches()[0] ?? null, error: null }),
+  };
+  return builder;
+}
+
 function capabilityOverridesBuilder(): Record<string, unknown> {
   let propertyId: string | null = null;
   const builder: Record<string, unknown> = {
@@ -882,6 +1069,210 @@ describe('POST /api/auth/invites hierarchy', () => {
     }));
     assert.equal(response.status, 201);
     assert.equal(state.invites.at(-1)?.role, 'front_desk');
+  });
+
+  test('a selected active staff profile is validated and carried by the pending invite', async () => {
+    seedStaff({ department: null });
+    const response = await createInvite(managerRequest({
+      hotelId: HOTEL_A,
+      email: 'housekeeper@example.test',
+      role: 'housekeeping',
+      staffId: STAFF_ID,
+    }));
+    assert.equal(response.status, 201);
+    assert.equal(state.invites.at(-1)?.target_staff_id, STAFF_ID);
+  });
+
+  test('staff selection rejects malformed, non-operational, and mismatched profiles', async () => {
+    const malformed = await createInvite(managerRequest({
+      hotelId: HOTEL_A,
+      email: 'malformed@example.test',
+      role: 'front_desk',
+      staffId: 'not-a-uuid',
+    }));
+    assert.equal(malformed.status, 400);
+
+    caller().role = 'owner';
+    seedStaff({ department: 'housekeeping' });
+    const privilegedRole = await createInvite(managerRequest({
+      hotelId: HOTEL_A,
+      email: 'gm-profile@example.test',
+      role: 'general_manager',
+      staffId: STAFF_ID,
+    }));
+    assert.equal(privilegedRole.status, 400);
+
+    const wrongDepartment = await createInvite(managerRequest({
+      hotelId: HOTEL_A,
+      email: 'wrong-department@example.test',
+      role: 'front_desk',
+      staffId: STAFF_ID,
+    }));
+    assert.equal(wrongDepartment.status, 400);
+    assert.equal(state.invites.length, 0);
+  });
+
+  test('an existing active account receives idempotent access without a pending invite', async () => {
+    seedStaff();
+    seedExistingAccount('Existing.Person@Example.Test');
+    const requestBody = {
+      hotelId: HOTEL_A,
+      email: ' existing.person@example.test ',
+      role: 'front_desk',
+      staffId: STAFF_ID,
+    };
+    const response = await createInvite(managerRequest(requestBody));
+    assert.equal(response.status, 200);
+    const body = await response.json() as {
+      data?: { accessGranted?: boolean; profileLinked?: boolean; emailSent?: boolean };
+    };
+    assert.deepEqual(body.data, {
+      accessGranted: true,
+      profileLinked: true,
+      emailSent: false,
+    });
+    assert.equal(state.invites.length, 0);
+    assert.equal(state.grantCalls.length, 1);
+    assert.equal(state.grantCalls[0]?.p_target_account_id, EXISTING_ACCOUNT_ID);
+    assert.equal(state.grantCalls[0]?.p_email, 'existing.person@example.test');
+    assert.equal(state.grantCalls[0]?.p_target_staff_id, STAFF_ID);
+
+    const retry = await createInvite(managerRequest(requestBody));
+    assert.equal(retry.status, 200);
+    assert.deepEqual((await retry.json()).data, body.data);
+    assert.equal(state.invites.length, 0);
+    assert.equal(state.grantCalls.length, 2);
+  });
+
+  test('an inactive existing account fails clearly instead of creating an invite', async () => {
+    seedExistingAccount('inactive@example.test', { active: false });
+    const response = await createInvite(managerRequest({
+      hotelId: HOTEL_A,
+      email: 'inactive@example.test',
+      role: 'front_desk',
+    }));
+    assert.equal(response.status, 409);
+    assert.match((await response.json()).error, /inactive.*reactivate/i);
+    assert.equal(state.invites.length, 0);
+    assert.equal(state.grantCalls.length, 0);
+  });
+
+  test('a confirmed orphan Auth identity remains on the pending-invite path', async () => {
+    state.authUsers.push({
+      id: EXISTING_AUTH_ID,
+      email: 'orphan@example.test',
+      createdAt: new Date(Date.now() - 86_400_000).toISOString(),
+    });
+    const response = await createInvite(managerRequest({
+      hotelId: HOTEL_A,
+      email: 'orphan@example.test',
+      role: 'front_desk',
+    }));
+    assert.equal(response.status, 201);
+    assert.equal(state.invites.at(-1)?.email, 'orphan@example.test');
+    assert.equal(state.grantCalls.length, 0);
+  });
+
+  test('a recent Auth-only identity stays protected as an in-flight signup', async () => {
+    state.authUsers.push({
+      id: EXISTING_AUTH_ID,
+      email: 'recent-signup@example.test',
+      createdAt: new Date().toISOString(),
+    });
+    const response = await createInvite(managerRequest({
+      hotelId: HOTEL_A,
+      email: 'recent-signup@example.test',
+      role: 'front_desk',
+    }));
+    assert.equal(response.status, 409);
+    assert.match((await response.json()).error, /just created.*finish or recover/i);
+    assert.equal(state.invites.length, 0);
+    assert.equal(state.grantCalls.length, 0);
+  });
+
+  test('a property-owner Auth identity without an account stays protected', async () => {
+    state.authUsers.push({
+      id: EXISTING_AUTH_ID,
+      email: 'owner-identity@example.test',
+      createdAt: new Date(Date.now() - 86_400_000).toISOString(),
+    });
+    state.propertyOwnerAuthUserIds.push(EXISTING_AUTH_ID);
+    const response = await createInvite(managerRequest({
+      hotelId: HOTEL_A,
+      email: 'owner-identity@example.test',
+      role: 'front_desk',
+    }));
+    assert.equal(response.status, 409);
+    assert.match((await response.json()).error, /owner.*restore/i);
+    assert.equal(state.invites.length, 0);
+    assert.equal(state.grantCalls.length, 0);
+  });
+
+  test('Auth and account lookup failures fail closed without creating or granting access', async () => {
+    state.authLookupError = true;
+    const authFailure = await createInvite(managerRequest({
+      hotelId: HOTEL_A,
+      email: 'lookup-failure@example.test',
+      role: 'front_desk',
+    }));
+    assert.equal(authFailure.status, 503);
+
+    state.authLookupError = false;
+    state.accountLookupError = true;
+    state.authUsers.push({
+      id: EXISTING_AUTH_ID,
+      email: 'account-lookup-failure@example.test',
+      createdAt: new Date(Date.now() - 86_400_000).toISOString(),
+    });
+    const accountFailure = await createInvite(managerRequest({
+      hotelId: HOTEL_A,
+      email: 'account-lookup-failure@example.test',
+      role: 'front_desk',
+    }));
+    assert.equal(accountFailure.status, 503);
+    assert.equal(state.invites.length, 0);
+    assert.equal(state.grantCalls.length, 0);
+  });
+
+  test('a staff-linked multi-property invite covers and anchors on the current hotel', async () => {
+    caller().role = 'front_desk';
+    caller().property_access = [];
+    state.authorityMode = 'normalized';
+    state.companyPropertyIds = [HOTEL_A, HOTEL_B];
+    state.normalizedStandings = [HOTEL_A, HOTEL_B].map((propertyId) => ({
+      propertyId,
+      operationalRole: 'owner' as AppRole,
+      hotelMutationAllowed: true,
+      accessProfile: 'organization_owner' as const,
+      scopeType: 'organization' as const,
+    }));
+    seedStaff({
+      property_id: HOTEL_B,
+      department: 'housekeeping',
+    });
+
+    const excluded = await createInvite(managerRequest({
+      hotelId: HOTEL_B,
+      email: 'excluded-hotel@example.test',
+      role: 'housekeeping',
+      scope: 'property',
+      propertyIds: [HOTEL_A],
+      staffId: STAFF_ID,
+    }));
+    assert.equal(excluded.status, 400);
+
+    const included = await createInvite(managerRequest({
+      hotelId: HOTEL_B,
+      email: 'included-hotel@example.test',
+      role: 'housekeeping',
+      scope: 'property',
+      propertyIds: [HOTEL_A, HOTEL_B],
+      staffId: STAFF_ID,
+    }));
+    assert.equal(included.status, 201);
+    assert.equal(state.invites.at(-1)?.hotel_id, HOTEL_B);
+    assert.deepEqual(state.invites.at(-1)?.covered_property_ids, [HOTEL_A, HOTEL_B]);
+    assert.equal(state.invites.at(-1)?.target_staff_id, STAFF_ID);
   });
 
   test('an owner and admin can create privileged invitations', async () => {
