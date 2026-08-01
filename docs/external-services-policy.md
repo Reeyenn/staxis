@@ -79,7 +79,10 @@ Reference implementations:
 
 Wire new crons into:
 - [vercel.json](../vercel.json) (`crons[]`)
-- `EXPECTED_CRONS` in [src/app/api/admin/doctor/route.ts](../src/app/api/admin/doctor/route.ts) (so the doctor monitors freshness)
-- `SCHEDULE_REGISTRY` in [src/lib/cron-schedule-registry.ts](../src/lib/cron-schedule-registry.ts) (cadence drift guard)
+- [src/lib/automation/job-catalog.ts](../src/lib/automation/job-catalog.ts)
+  (lifecycle, source, schedule, heartbeat, and Mission Control metadata)
+
+`SCHEDULE_REGISTRY` and the legacy `EXPECTED_CRONS` CI projection are derived
+from the catalog. The runtime Doctor currently does not check cron freshness.
 
 The [`cron-coverage.test.ts`](../src/lib/__tests__/cron-coverage.test.ts) test fails the build if any of those are missing.

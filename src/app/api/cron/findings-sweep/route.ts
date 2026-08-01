@@ -23,11 +23,9 @@
  * for the rare candidate that clears the bar.
  *
  * DORMANT ON PURPOSE (2026-07-26). There is no vercel.json entry: the founder
- * turns this on, not a deploy. To enable, four places:
+ * turns this on, not a deploy. To enable, two coordinated changes:
  *   1. vercel.json                        → { "path": "/api/cron/findings-sweep", "schedule": "0 7 * * 1" }
- *   2. src/lib/cron-schedule-registry.ts  → { heartbeatName: 'findings-sweep', source: { kind: 'vercel', cronPath: '/api/cron/findings-sweep' }, cronExpr: '0 7 * * 1' }
- *   3. src/app/api/admin/doctor/route.ts  → EXPECTED_CRONS entry, cadenceHours: 168
- *   4. src/app/api/admin/mission/workers/route.ts → WORKER_META line
+ *   2. src/lib/automation/job-catalog.ts  → promote its staged row to active
  * Do not do it for this route alone. The AI layer goes on in one act, and
  * docs/cron-triggers.md, "The AI master switch", is the single checklist that
  * covers all four of its crons (this one, run-findings, findings-janitor and

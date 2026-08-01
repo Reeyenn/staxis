@@ -2,7 +2,13 @@
 
 This codebase has TWO sets of cron-style routes that look identical at the URL level but are triggered by different schedulers. Reading `vercel.json` alone gives a misleading picture — many `/api/cron/*` routes exist but aren't in `vercel.json` because they're triggered externally.
 
-Source of truth: this document. If you add a new cron-shaped route, list it here.
+Runtime trigger sources are `vercel.json` and `.github/workflows/*`. The
+behavior-preserving inventory is `src/lib/automation/job-catalog.ts`; Mission
+Control and the legacy schedule/cadence projections are derived from its active
+rows. This document is an operator guide, not executable metadata.
+
+If you add a new cron-shaped route, add one catalog row even when the route is
+staged, manual-only, or retired. Adding a catalog row never schedules the job.
 
 ## Triggered by Vercel Cron (declared in `vercel.json`)
 
@@ -25,34 +31,36 @@ These 14 schedules run automatically as part of Vercel deploys. Auth via `CRON_S
 | `/api/cron/pms-observations-purge` | `40 5 * * *` | Retention sweep for the five append-only PMS observation tables via 0343's sanctioned purge function. 5-year window — a no-op until report ingestion restarts. |
 | `/api/cron/vercel-watchdog` | `*/5 * * * *` | Poll the production doctor and alert when the app is unhealthy. |
 
-## Triggered externally (NOT in `vercel.json`)
+## Triggered by active GitHub schedules
 
-These routes also live under `/api/cron/*` (or `/api/agent/*`) and accept `CRON_SECRET`, but are kicked off by some other scheduler. Re-deploying without their trigger configured means they stop running.
+These are the only uncommented GitHub `schedule:` entries that invoke Staxis
+operations. The catalog parity test reads the workflow files directly.
 
-| Path | Trigger | Cadence | Purpose |
+| Target | Workflow | Schedule | Purpose |
 |---|---|---|---|
-| `/api/cron/enqueue-property-pulls` | **DORMANT** — `.github/workflows/pull-jobs-cron.yml` has no `schedule:` block | Never | Was: enqueue a PMS pull per connected property for the CUA robot. Robot decommissioned 2026-07-25 — the route also self-refuses while `CUA_DECOMMISSIONED` is true in `src/lib/pms/decommission.ts`. Route code kept dormant; see `cua-service/README.md` to re-enable. |
-| `/api/cron/webhook-dedup-purge` | **DORMANT** (2026-07-27 chore audit) | Never | Both dedup tables have no live writer: the Sentry producer was deleted 2026-07-17, and `stripe_processed_events` has never held a row because `/api/stripe/webhook` is inert while billing is unconfigured. **Re-schedule the day billing goes live** — that route writes a row per delivery and this is its only pruner. |
-| `/api/cron/expire-help-requests` | **DORMANT** (2026-07-27 chore audit) | Never | Its producer is the decommissioned robot's human-assist flow. All 4 prod rows expired 2026-07-01; it was a proven no-op 288×/day. Re-schedule when cua-service runs mapper jobs again. |
-| `/api/cron/claude-sessions-purge` | **DORMANT** (2026-07-27 chore audit) | Never | `claude_sessions` has never held a row — the writer is a developer-laptop hook whose POSTs die on the vercel.app→getstaxis.com 308. Developer tooling, not a hotel chore. Re-enable the hook and this cron together or not at all. |
-| `/api/cron/run-findings` | **DORMANT** by design — the AI master switch | Never | The nightly per-hotel findings pass (demote, detect, judge). Unscheduled since it shipped 2026-07-26: the founder turns the AI on, not a deploy. Intended schedule `0 6 * * *`. See "The AI master switch" below. |
-| `/api/cron/findings-sweep` | **DORMANT** by design — the AI master switch | Never | The weekly discovery pass over a rotating sample of hotels; proposes new detectors into the founder's promotion queue. Intended schedule `0 7 * * 1`. See "The AI master switch" below. |
-| `/api/cron/findings-janitor` | **DORMANT** by design — the AI master switch | Never | Retention for the findings engine, shipped unscheduled like `run-findings` and `findings-sweep`. Deletes only settled `findings_ai_spend` rows and surplus `finding_runs`; refuses to touch `findings`, `finding_actions`, `finding_detector_state` or `finding_sweep_runs`. Intended schedule `40 7 * * 1`, behind the sweep. See "The AI master switch" below. |
-| `/api/cron/run-management-patterns` | **DORMANT** by design — the AI master switch | Never | The management-company equivalent: refreshes the live portfolio queue and retries the shadow-only v2 evaluator, for every management company. Briefly scheduled `0 8 * * *` on 2026-07-29 and parked again the same day on the owner's ruling — the AI layer goes on all at once, and the only management company in production today is the seeded demo one. Intended schedule `0 8 * * *`. Its scheduled discovery excludes demo-only portfolios; the company queue's page-open fallback does not, so live demos still generate cards. See "The AI master switch" below. |
-| `/api/cron/ml-aggregate-priors` | GitHub Actions | Daily, post-training | Aggregate Bayesian priors after the training run. |
-| `/api/cron/ml-predict-inventory` | GitHub Actions | Multiple times/day | Run inventory rate predictions across all properties. |
-| `/api/cron/ml-retention-purge` | **DORMANT** — schedule commented out in `.github/workflows/ml-retention-purge.yml` since 2026-05-30 | Never | Retention for `prediction_log`, `app_events`, `phone_pairings`. **`agent_costs` was removed 2026-07-27** — the books have one owner, `agent-costs-rollup`. Deletes in bounded batches with a per-run cap, and supports `?dryRun=true`; run the dry run FIRST when re-enabling. |
-| `/api/cron/ml-run-inference` | GitHub Actions | Daily ~05:30 CT | Demand/supply/optimizer inference across all properties. Sharded. |
-| `/api/cron/ml-shadow-evaluate` | GitHub Actions | Per shadow-model deploy | Validate shadow model accuracy before promotion. |
-| `/api/cron/ml-train-demand` | GitHub Actions | Daily | Retrain demand model (XGBoost quantile). |
-| `/api/cron/ml-train-supply` | GitHub Actions | Daily | Retrain supply (cleaning duration) model. |
-| `/api/cron/ml-train-inventory` | GitHub Actions | Daily | Retrain inventory consumption-rate model. |
-| `/api/cron/purge-old-error-logs` | GitHub Actions | Weekly | Compact `app_events.error_*` rows past retention. |
-| `/api/cron/schedule-auto-fill` | GitHub Actions | Every morning ~07:00 local | Auto-fill schedule_assignments for properties with `auto_fill_enabled = true`. |
-| `/api/cron/scraper-weekly-digest` | GitHub Actions | Weekly | Per-PMS scraper health digest to the ops channel. |
-| `/api/cron/seal-daily` | GitHub Actions | Daily, end-of-day local | Seal the day's records — locks `rooms` from edits, freezes the ML training rows. |
+| `/api/cron/ml-aggregate-priors` | `ml-cron.yml` | `30 7 * * 0` | Weekly inventory cohort priors before training. |
+| `/api/cron/ml-train-inventory` | `ml-cron.yml` | `0 9 * * 0` | Weekly inventory-rate training. |
+| `/api/cron/ml-predict-inventory` | `ml-cron.yml` | `0 11 * * *` | Daily inventory-rate prediction. |
+| `/api/cron/purge-old-error-logs` | `purge-old-error-logs-cron.yml` | `30 9 * * *` | Daily error-log retention. |
+| Workflow only | `dependency-audit.yml` | `17 9 * * 1` | Weekly dependency advisory check. |
 
-> **If you add a NEW cron-style route**: declare it in `vercel.json` and remove it from this list, OR add it to the external table above with the exact workflow file or scheduler that triggers it. Routes that aren't in EITHER list are silently dead.
+## Manual, event-driven, and retired operations
+
+- Housekeeping ML training/inference and ML retention remain manual-only.
+- The sharded memory-consolidation workflow is a manual alternate runner; the
+  normal unsharded job remains on Vercel.
+- The ML smoke and Sentry test workflows are manual-only.
+- The retained ML shadow-evaluation and auto-rollback workflow jobs reference
+  API routes that are no longer present and are cataloged as retired.
+- The CUA pull workflow is retained but manual dispatch is a guarded no-op.
+- `/api/agent/nudges/check` writes a heartbeat but currently has no repository
+  scheduler, so it is cataloged as staged.
+- Push/pull-request and post-deploy workflows are cataloged as event-driven,
+  not as timed jobs.
+
+All other `/api/cron/*` routes are explicitly classified in the catalog as
+staged, manual-only, or retired. No route is considered scheduled merely
+because its handler still exists.
 
 ## The AI master switch
 
@@ -69,14 +77,19 @@ These routes also live under `/api/cron/*` (or `/api/agent/*`) and accept `CRON_
 | `/api/cron/findings-janitor` | `findings-janitor` | `40 7 * * 1` | 168 |
 | `/api/cron/run-management-patterns` | `run-management-patterns` | `0 8 * * *` | 24 |
 
-### The checklist — four files, four rows each
+### The checklist — runtime trigger plus catalog state
 
-For **every** route in the table above, add its row to all four places. The `cron-cadences` and `cron-coverage` tests fail loudly if you do three of the four, so a half-finished switch cannot ship.
+For **every** route in the table above, make both changes. The job-catalog,
+cron-cadence, and cron-coverage tests fail loudly if the trigger and catalog
+drift, so a half-finished switch cannot ship.
 
 1. **`vercel.json`** → `{ "path": "<route>", "schedule": "<schedule>" }`
-2. **`src/lib/cron-schedule-registry.ts`** → `{ heartbeatName: '<name>', source: { kind: 'vercel', cronPath: '<route>' }, cronExpr: '<schedule>' }`
-3. **`src/app/api/admin/doctor/route.ts`** → an `EXPECTED_CRONS` entry with the `cadenceHours` from the table
-4. **`src/app/api/admin/mission/workers/route.ts`** → a `WORKER_META` line, so the chore shows up in Mission Control
+2. **`src/lib/automation/job-catalog.ts`** → change the existing staged row to
+   `active`, record the exact runner/source/schedule, and provide Doctor and
+   Mission metadata.
+
+Do not edit `SCHEDULE_REGISTRY`, `EXPECTED_CRONS`, or Mission Control metadata
+separately; they are catalog projections.
 
 Then: deploy, and confirm each route appears in the Vercel **Cron Jobs** tab. After the first tick, `select route, last_run_at from cron_heartbeats order by last_run_at desc` should show all four.
 
@@ -89,7 +102,7 @@ Then: deploy, and confirm each route appears in the Vercel **Cron Jobs** tab. Af
 
 - Vercel-scheduled: see the **Cron Jobs** tab of the Vercel project dashboard. Each invocation logs in **Functions**.
 - Externally triggered: `gh workflow list` shows the GitHub Actions side; per-route invocation logs land in Vercel **Functions** logs (filter by route).
-- All routes write a `cron_heartbeats` row on success — `select route, last_run_at from cron_heartbeats order by last_run_at desc` is the fastest "is this thing running?" check.
+- Routes with a cataloged heartbeat write `cron_heartbeats` on success — `select route, last_run_at from cron_heartbeats order by last_run_at desc` is the fastest "is this thing running?" check.
 
 ## Audit reference
 

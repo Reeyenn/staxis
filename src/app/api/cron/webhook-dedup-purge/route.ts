@@ -17,10 +17,10 @@
  * │   stripe_processed_events row per delivery and NOTHING ELSE prunes that │
  * │   table. This is the only pruner it has ever had.                       │
  * │                                                                         │
- * │ To re-enable, restore all five registry rows: this route's vercel.json  │
- * │ crons[] entry ("15 4 * * *"), its SCHEDULE_REGISTRY row, its            │
- * │ EXPECTED_CRONS row in the doctor, and its WORKER_META line in           │
- * │ /api/admin/mission/workers. The handler below still works as written.   │
+ * │ To re-enable, restore its vercel.json crons[] entry ("15 4 * * *") and  │
+ * │ promote its staged job-catalog row to active. Mission Control and CI    │
+ * │ parity metadata derive from the catalog. The handler still works as     │
+ * │ written.                                                                │
  * └─────────────────────────────────────────────────────────────────────────┘
  *
  * Runs daily. Purges old rows from the webhook-dedup tables:

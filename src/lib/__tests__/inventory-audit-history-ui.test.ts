@@ -293,7 +293,7 @@ describe('inventory audit-history financial access boundary', () => {
     assert.match(route, /canViewFinancials\(role\)[\s\S]*capabilityDecisionForProperty\(\{ role \}, 'view_financials', propertyId\)/);
     assert.match(route, /capabilityDecisionForProperty\(\{ role \}, 'view_financials', propertyId\)/);
     assert.match(route, /capabilityDecision === 'unavailable'[\s\S]*capabilityUnavailableResponse/);
-    assert.match(route, /isSectionEnabled\(sectionGate\.enabledSections, 'financials'\)/);
+    assert.match(route, /isSectionEnabled\(hotel\.enabledSections \?\? null, 'financials'\)/);
     assert.match(route, /includeFinancials,/);
     assert.match(panel, /historyEventsForViewer\(events, canViewFinancials\)/);
     assert.match(shell, /canCorrectDeliveries=\{canManage && canViewFinancials\}/);

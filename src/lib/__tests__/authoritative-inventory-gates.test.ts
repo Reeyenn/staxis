@@ -67,11 +67,21 @@ describe('inventory HTTP gates use the authoritative per-hotel standing', () => 
 
   test('inventory history uses exact reach and the explicit finance-read bit', () => {
     const route = source('src/app/api/inventory/history/route.ts');
-    assert.match(route, /listAuthoritativePropertyAccess\(account\.id as string\)/);
-    assert.match(route, /authoritativeStandingForProperty\(authority, propertyId\)/);
+    const facade = source('src/lib/authorization/request.ts');
+    assert.match(route, /createRequestAuthorization\(req, \{ requestId \}\)/);
+    assert.match(route, /session\.authorizeHotel\(\{/);
+    assert.match(route, /const \{ standing \} = hotel/);
     assert.match(route, /const role = standing\.operationalRole/);
     assert.match(route, /!standing\.seesFinancials/);
+    assert.match(facade, /listAuthoritativePropertyAccess/);
+    assert.match(facade, /authoritativeStandingForProperty\(authority, hotelInput\.propertyId\)/);
+    assert.ok(
+      facade.indexOf('authoritativeStandingForProperty(authority, hotelInput.propertyId)')
+        < facade.indexOf('dependencies.capabilityDecision('),
+      'property reach must be proven before reading property-specific capability state',
+    );
     assert.doesNotMatch(route, /account\.property_access|\.select\([^\n]*property_access/);
+    assert.doesNotMatch(facade, /account\.property_access|\.select\([^\n]*property_access/);
   });
 
   test('both gates fail closed and retryably when central authority is unavailable', () => {
