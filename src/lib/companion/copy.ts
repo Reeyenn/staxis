@@ -88,6 +88,29 @@ export function cleanName(raw: string | null | undefined): string | null {
   return first;
 }
 
+/**
+ * Is this a shared or generic login rather than a person?
+ *
+ * A desk account called "Front Desk", or one whose display name is an address,
+ * is a shift and not somebody. Greeting a shift by name is the fastest way to
+ * sound like a machine pretending to know you, and the person reading it is
+ * usually the third person to sit at that terminal today.
+ *
+ * `cleanName` already refuses addresses and anything that is not a plain word.
+ * This adds the handful of names that ARE plain words but are job titles.
+ */
+const GENERIC_NAMES = new Set([
+  'front', 'frontdesk', 'desk', 'reception', 'staff', 'manager', 'admin',
+  'hotel', 'office', 'team', 'user', 'guest', 'gm', 'owner', 'maintenance',
+  'housekeeping', 'laundry', 'test', 'demo',
+]);
+
+export function looksSharedLogin(displayName: string | null | undefined): boolean {
+  const first = cleanName(displayName ?? null);
+  if (!first) return true;
+  return GENERIC_NAMES.has(first.toLowerCase());
+}
+
 // ─── The one thing it may say ───────────────────────────────────────────────
 
 export interface OfferCopyInput {

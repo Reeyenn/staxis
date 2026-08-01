@@ -260,6 +260,33 @@ export async function resolveAskStaxisExecutionPlan(): Promise<AiExecutionPlan> 
  * answers company questions independently of the per-hotel copilot. Same shape,
  * same legacy-override handling — only the registry key differs.
  */
+/**
+ * The companion bubble's own plan.
+ *
+ * Same shape, same legacy-override handling, only the registry key differs —
+ * exactly like the portfolio plan above. It exists so the AI Control Center can
+ * govern which model answers through the bubble without moving the chat bar that
+ * managers type into all day.
+ *
+ * Falls back to Ask Staxis's plan rather than failing the turn. The companion is
+ * a FACE on that conversation, so "the companion's own slot is misconfigured" is
+ * not a reason a person cannot talk to the assistant they already had. The
+ * fallback is silent by design: the alternative is a bubble that 503s because
+ * somebody unpriced a model on a screen in the admin area.
+ */
+export async function resolveCompanionChatExecutionPlan(): Promise<AiExecutionPlan> {
+  try {
+    const resolved = await resolveAiExecutionPlan(
+      'companion.conversation',
+      MESSAGES_RUNTIME_PROVIDERS,
+      { requirePricing: true },
+    );
+    return applyLegacyModelOverrideToPlan(resolved, 'sonnet');
+  } catch {
+    return resolveAskStaxisExecutionPlan();
+  }
+}
+
 export async function resolvePortfolioChatExecutionPlan(): Promise<AiExecutionPlan> {
   const resolved = await resolveAiExecutionPlan(
     'agent.portfolio_chat',
