@@ -51,7 +51,10 @@ describe('hotel account invitation route contract', () => {
       peopleLifecycleMigration,
       /create or replace function public\.staxis_create_account_invite_guarded[\s\S]*for share nowait[\s\S]*_staxis_can_control_account_invite[\s\S]*insert into public\.account_invites[\s\S]*'invite\.create'/i,
     );
-    assert.match(inviteRoute, /const inviteAnchorHotelId = hat\?\.scope === 'property'[\s\S]*p_hotel_id: inviteAnchorHotelId/);
+    assert.match(
+      inviteRoute,
+      /const inviteAnchorHotelId = targetStaffId\s*\? hotelId\s*:\s*hat\?\.scope === 'property'[\s\S]*p_hotel_id: inviteAnchorHotelId/,
+    );
     assert.match(inviteAuthority, /!coveredPropertyIds\.includes\(invite\.hotelId\)/);
     assert.match(peopleLifecycleMigration, /p_hotel_id = any\(p_covered_property_ids\)/);
     assert.match(transactionalInviteMigration, /account_invites_property_anchor_check[\s\S]*hotel_id = any\(covered_property_ids\)/);

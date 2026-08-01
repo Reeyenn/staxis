@@ -280,7 +280,7 @@ describe('My Hotel account and team integration', () => {
     assert.doesNotMatch(company, /<InvitePersonDialog/);
     assert.match(hotelTeam, /inviteDialogOpen && canInviteAccounts[\s\S]*canManageHotelRoster=\{false\}/);
     assert.match(hotelTeamDialogs, /if \(!canManageHotelRoster\)[\s\S]*setCodeLoading\(false\)/);
-    assert.match(hotelTeamDialogs, /\{canManageHotelRoster \? \([\s\S]*staff-invite-heading[\s\S]*\) : null\}/);
+    assert.match(hotelTeamDialogs, /\{canManageHotelRoster && inviteMode === 'shared' \? \([\s\S]*staff-invite-heading/);
     assert.match(hotelTeamDialogs, /fetchWithAuth\(`\/api\/auth\/invites\?hotelId=/);
   });
 
@@ -335,10 +335,34 @@ describe('My Hotel account and team integration', () => {
     assert.match(hotelTeam, /LazyInviteDialog/);
     assert.match(hotelTeam, /\{inviteDialogOpen && needsFirstPerson \? \([\s\S]*: inviteDialogOpen \? \(/);
     assert.match(hotelTeam, /onClose=\{\(\) => onInviteDialogOpenChange\(false\)\}/);
-    assert.match(hotelTeamDialogs, /Staff signup link/);
-    assert.match(hotelTeamDialogs, /Invite by email/);
+    assert.match(hotelTeam, /Add staff member/);
+    assert.match(hotelTeam, /Roster and schedule only · no Staxis login/);
+    assert.match(hotelTeam, /Invite people/);
+    assert.match(hotelTeam, /Creates login access · share an invite or send email/);
+    assert.match(hotelTeam, /Use Invite people when they need Staxis login access/);
+    assert.match(hotelTeamDialogs, /Shared hotel invite/);
+    assert.match(hotelTeamDialogs, /Email one person/);
+    assert.match(hotelTeamDialogs, /role="tablist"/);
+    assert.match(hotelTeamDialogs, /role="tab"/);
+    assert.match(hotelTeamDialogs, /role=\{hasInviteModeChoice \? 'tabpanel' : undefined\}/);
     assert.match(hotelTeamDialogs, /deliveryStatus === ['"]sent['"]/);
     assert.match(hotelTeamDialogs, /Copy and send the link directly/);
+    assert.match(hotelTeam, /member\.isActive !== false && !linkedStaffIds\.has\(member\.id\)/);
+    assert.match(hotelTeam, /unlinkedRosterProfiles=\{unlinkedRosterProfiles\}/);
+    assert.match(hotelTeamDialogs, /const OPERATIONAL_INVITE_JOBS[\s\S]*'housekeeping'[\s\S]*'front_desk'[\s\S]*'maintenance'/);
+    assert.match(hotelTeamDialogs, /profile\.department === selectedOperationalJob/);
+    assert.match(
+      hotelTeamDialogs,
+      /const currentHotelCoveredByInvite[\s\S]*selectedInviteJob\?\.scope === 'property'[\s\S]*allowedInviteHotelIds\.has\(hotelId\)[\s\S]*inviteHotelIds\.includes\(hotelId\)/,
+    );
+    assert.match(hotelTeamDialogs, /linkableRosterProfiles\.length > 0/);
+    assert.match(hotelTeamDialogs, /Link to roster profile/);
+    assert.match(hotelTeamDialogs, /staffId: selectedRosterProfile\.id/);
+    assert.match(hotelTeamDialogs, /data\.accessGranted === true/);
+    assert.match(hotelTeamDialogs, /Access granted — no email sent/);
+    assert.match(hotelTeamDialogs, /Their login is now linked to/);
+    assert.match(hotelTeamDialogs, /reuses one clear matching roster profile or creates a new one/);
+    assert.match(hotelTeamCss, /\.rosterLinkField \{[\s\S]*grid-column: 1 \/ -1;/);
   });
 
   test('keeps one Add that creates a schedule profile and no login', () => {
@@ -368,6 +392,8 @@ describe('My Hotel account and team integration', () => {
     assert.match(hotelTeam, /optimisticStaff\.filter/);
     assert.match(addStaffDialog, /document\.addEventListener\(['"]focusin['"]/);
     assert.match(addStaffDialog, /element\.inert = true/);
+    assert.match(addStaffDialog, /No Staxis account will be created/);
+    assert.match(addStaffDialog, /Add without login/);
     assert.match(operationalStaffRoute, /verifyTeamManager\(req\)/);
     assert.match(operationalStaffRoute, /accountCapabilityDecisionForProperty\(/);
     assert.match(operationalStaffRoute, /caller\.authUserId,[\s\S]*['"]manage_team['"],[\s\S]*hotelId,[\s\S]*\{ requireMutation: true \}/);
@@ -390,7 +416,7 @@ describe('My Hotel account and team integration', () => {
     assert.match(staffWriteGate, /create policy staff_manage_update[\s\S]*for update/);
     assert.match(staffWriteGate, /create policy staff_manage_delete[\s\S]*for delete/);
     assert.match(staffWriteGate, /public\.mfa_verified_or_grace\(\)/);
-    assert.match(addStaffDialog, /does not create a Staxis login or send an invitation/);
+    assert.match(addStaffDialog, /No Staxis account will be created, and they will not be able to log in/);
     assert.doesNotMatch(addStaffDialog, /type="search"|All.*Active.*Not active/);
     assert.match(hotelTeamCss, /\.departmentAdd \{[\s\S]*min-height: 44px;/);
     assert.match(hotelTeamCss, /@media \(prefers-reduced-motion: reduce\)/);

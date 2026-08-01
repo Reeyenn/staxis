@@ -77,26 +77,99 @@ export interface CreateOrReclaimResult {
   error?: { message?: string; status?: number } | null;
 }
 
+type AuthUserEmailLookup =
+  | { kind: 'found'; user: AuthUser }
+  | { kind: 'not_found' }
+  | { kind: 'unavailable' };
+
+export type StaxisAccountEmailLookup =
+  | {
+      kind: 'found';
+      accountId: string;
+      authUserId: string;
+      active: boolean;
+    }
+  | { kind: 'protected_identity'; reason: 'property_owner' | 'recent_identity' }
+  | { kind: 'not_found' }
+  | { kind: 'unavailable' };
+
 // supabase-js has no admin "get user by email", so we page through listUsers
 // (1000/page — same call accounts/route.ts GET uses) and match on the
-// already-normalized email. Returns null on miss OR on a listUsers error:
-// a lookup that can't confirm the orphan must never lead to a delete.
-async function findAuthUserByEmail(email: string): Promise<AuthUser | null> {
+// already-normalized email. Miss and lookup failure stay distinct so callers
+// that may create durable state can fail closed when Auth is unavailable.
+async function findAuthUserByEmail(email: string): Promise<AuthUserEmailLookup> {
   const target = email.trim().toLowerCase();
   // 50 pages * 1000 = 50k accounts ceiling — orders of magnitude above scale;
   // the inner break exits on the first short page in practice.
   for (let page = 1; page <= 50; page++) {
     const { data, error } = await supabaseAdmin.auth.admin.listUsers({ page, perPage: 1000 });
     if (error) {
-      log.error('[auth-create-user] listUsers failed during reclaim lookup', { err: error.message });
-      return null;
+      log.error('[auth-create-user] listUsers failed during email lookup', { err: error.message });
+      return { kind: 'unavailable' };
     }
     const users = data?.users ?? [];
     const hit = users.find(u => (u.email ?? '').toLowerCase() === target);
-    if (hit) return hit;
-    if (users.length < 1000) break; // last page
+    if (hit) return { kind: 'found', user: hit };
+    if (users.length < 1000) return { kind: 'not_found' }; // last page
   }
-  return null;
+  log.error('[auth-create-user] listUsers lookup exceeded the safe page limit');
+  return { kind: 'unavailable' };
+}
+
+/**
+ * Resolve an email to the product account that owns its Supabase Auth login.
+ * An old, unlinked Auth-only identity is deliberately a confirmed miss:
+ * invitation acceptance owns reconciliation for that orphan. Recent signup
+ * identities and property owners stay protected, and infrastructure/query
+ * failures are never collapsed into a miss.
+ */
+export async function findStaxisAccountByEmail(
+  email: string,
+): Promise<StaxisAccountEmailLookup> {
+  const authLookup = await findAuthUserByEmail(email);
+  if (authLookup.kind !== 'found') return authLookup;
+
+  const { data: account, error } = await supabaseAdmin
+    .from('accounts')
+    .select('id, active')
+    .eq('data_user_id', authLookup.user.id)
+    .maybeSingle();
+  if (error) {
+    log.error('[auth-create-user] accounts lookup failed during email resolution', {
+      authUserId: authLookup.user.id,
+      err: error.message,
+    });
+    return { kind: 'unavailable' };
+  }
+  if (!account) {
+    const createdAtMs = new Date(authLookup.user.created_at).getTime();
+    if (!Number.isFinite(createdAtMs)
+        || Date.now() - createdAtMs < MIN_INLINE_ORPHAN_AGE_MS) {
+      return { kind: 'protected_identity', reason: 'recent_identity' };
+    }
+    const { data: ownedProperty, error: ownerError } = await supabaseAdmin
+      .from('properties')
+      .select('id')
+      .eq('owner_id', authLookup.user.id)
+      .limit(1)
+      .maybeSingle();
+    if (ownerError) {
+      log.error('[auth-create-user] property-owner lookup failed during email resolution', {
+        authUserId: authLookup.user.id,
+        err: ownerError.message,
+      });
+      return { kind: 'unavailable' };
+    }
+    if (ownedProperty) return { kind: 'protected_identity', reason: 'property_owner' };
+    return { kind: 'not_found' };
+  }
+
+  return {
+    kind: 'found',
+    accountId: account.id,
+    authUserId: authLookup.user.id,
+    active: account.active === true,
+  };
 }
 
 export async function createOrReclaimAuthUser(
@@ -116,12 +189,14 @@ export async function createOrReclaimAuthUser(
   }
 
   // 2) createUser failed. Is there already a login for this email?
-  const existing = await findAuthUserByEmail(email);
-  if (!existing) {
+  const existingLookup = await findAuthUserByEmail(email);
+  if (existingLookup.kind !== 'found') {
     // No existing login → the failure is something else (weak password,
-    // invalid email, transient). Surface the original error unchanged.
+    // invalid email, transient), or Auth lookup was unavailable. Surface the
+    // original error unchanged and never attempt a delete.
     return { error: first.error ?? { message: 'Failed to create account' } };
   }
+  const existing = existingLookup.user;
 
   // 3) A login exists. Does it have an accounts row? If so it's REAL.
   const { data: acct, error: acctErr } = await supabaseAdmin

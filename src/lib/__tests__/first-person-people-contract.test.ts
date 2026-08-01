@@ -38,7 +38,7 @@ describe('hotel-scoped first-person People flow', () => {
     );
     assert.doesNotMatch(hotelTeam, /const needsFirstPerson = adminPreview[\s\S]*team\.length === 0/);
     assert.match(hotelTeam, /['"]Add first person['"]/);
-    assert.match(hotelTeam, /['"]Add another person['"]/);
+    assert.match(hotelTeam, /['"]Invite people['"]/);
     assert.match(hotelTeam, /inviteDialogOpen && needsFirstPerson[\s\S]*LazyFirstPersonInviteDialog/);
     assert.match(hotelTeam, /: inviteDialogOpen \? \([\s\S]*<LazyInviteDialog/);
   });
