@@ -41,6 +41,7 @@ import { SectionsModal } from '../SectionsModal';
 import { AddHotelModal } from '../AddHotelModal';
 import { AIControlCenter } from '../../AIControlCenter';
 import { AccessPopover } from '../../AccessPopover';
+import { DataAtlasLink } from '../../DataAtlasLink';
 import { TwoFactorSwitch } from '../../TwoFactorSwitch';
 import { APP_SECTIONS, type AppSection } from '@/lib/sections/registry';
 import { FLEET_STALE_SYNC_MINUTES } from '@/lib/admin-property-health';
@@ -738,6 +739,7 @@ function SurfaceHeader({ count }: { count: number }) {
       </div>
       <div className="studio-hotels-global-actions" aria-label="Hotel administration tools">
         <AccessPopover />
+        <DataAtlasLink />
         <AIControlCenter />
         <TwoFactorSwitch />
       </div>
