@@ -2,32 +2,16 @@
 
 export const dynamic = 'force-dynamic';
 
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import Link from 'next/link';
-import {
-  ArrowLeft,
-  BedDouble,
-  Building2,
-  Database,
-  GitBranch,
-  RefreshCw,
-  Search,
-  Server,
-  TriangleAlert,
-  Users,
-} from 'lucide-react';
+import { ArrowLeft, RefreshCw, Search, TriangleAlert } from 'lucide-react';
 
 import { AppLayout } from '@/components/layout/AppLayout';
 import { useAuth } from '@/contexts/AuthContext';
 import { fetchWithAuth } from '@/lib/api-fetch';
 import type { DataAtlasPayload } from '@/lib/admin-data-atlas';
-import { APP_SECTIONS } from '@/lib/sections/registry';
+import { age } from '@/app/admin/_components/studio/kit';
 import {
-  FONT_SERIF,
-  age,
-} from '@/app/admin/_components/studio/kit';
-import {
-  DarkCard,
   DarkEmpty,
   DarkScope,
   DarkSpinner,
@@ -40,15 +24,11 @@ import styles from './DataAtlas.module.css';
 const AUTO_REFRESH_MS = 60_000;
 
 type HealthTone = 'good' | 'info' | 'warning' | 'bad' | 'muted';
-
 type DataAtlasSnapshot = DataAtlasPayload;
-type HotelReportSnapshot = DataAtlasPayload['hotels'][number]['report'];
 type AtlasService = DataAtlasPayload['services'][number];
 
 interface SystemServiceStatus {
   status: 'green' | 'yellow' | 'red';
-  latency_ms?: number;
-  message?: string;
 }
 
 interface SystemStatusSnapshot {
@@ -61,11 +41,11 @@ interface SystemStatusSnapshot {
   };
 }
 
-type DisplayService = Omit<AtlasService, 'status'> & {
+interface DisplayService {
+  id: 'web' | 'database' | 'predictions';
+  label: string;
   status: string;
-  live: boolean;
-  latencyMs?: number;
-};
+}
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null;
@@ -79,7 +59,7 @@ function apiErrorMessage(payload: unknown, status: number): string {
       return error.message;
     }
   }
-  return `The Database Atlas could not be loaded (${status}).`;
+  return 'The Database Atlas could not be loaded (' + status + ').';
 }
 
 function isAtlasSnapshot(value: unknown): value is DataAtlasSnapshot {
@@ -113,24 +93,38 @@ function statusLabel(status: string | null | undefined): string {
   switch ((status ?? '').toLowerCase()) {
     case 'green':
     case 'healthy':
+    case 'live':
       return 'Healthy';
     case 'yellow':
     case 'attention':
-      return 'Needs attention';
+      return 'Attention';
     case 'red':
-      return 'Problem';
-    case 'learning':
-      return 'Learning';
-    case 'no_expectations':
-      return 'Not expected';
-    case 'unavailable':
-      return 'Unavailable';
-    case 'available':
-      return 'Available';
+      return 'Down';
+    case 'setup':
+      return 'Setup';
+    case 'retired':
+      return 'Off';
     case 'past_due':
       return 'Past due';
     default:
       return titleCase(status);
+  }
+}
+
+function feedLabel(status: string | null | undefined): string {
+  switch ((status ?? '').toLowerCase()) {
+    case 'live':
+      return 'Current';
+    case 'stale':
+      return 'Late';
+    case 'learning':
+      return 'Learning';
+    case 'no_expectations':
+      return 'No feeds';
+    case 'unavailable':
+      return 'Off';
+    default:
+      return 'Unknown';
   }
 }
 
@@ -175,103 +169,37 @@ function formatCount(value: number | null | undefined): string {
     : '—';
 }
 
-function formatDateTime(value: string | null | undefined): string {
-  if (!value) return 'Not recorded';
-  const date = new Date(value);
-  if (!Number.isFinite(date.getTime())) return 'Not recorded';
-  return date.toLocaleString('en-US', {
-    month: 'short',
-    day: 'numeric',
-    year: 'numeric',
-    hour: 'numeric',
-    minute: '2-digit',
-  });
-}
-
 function ageLabel(value: string | null | undefined): string {
-  if (!value) return 'No signal yet';
+  if (!value) return 'unknown';
   const result = age(value);
-  return result === '—' ? 'Time unknown' : `${result} ago`;
+  return result === '—' ? 'unknown' : result + ' ago';
 }
 
-function reportSummary(report: HotelReportSnapshot | null): string {
-  if (!report) return 'No report status returned';
-  if (report.state === 'no_expectations') return 'No scheduled feed is expected';
-  if (report.state === 'learning') return 'Staxis is learning this report format';
-  if (report.state === 'unavailable') return 'Scheduled feeds are turned off for this hotel';
-  if (report.state === 'unknown') return 'Report status could not be checked';
-  if (typeof report.minutesLate === 'number' && report.minutesLate > 0) {
-    return `${formatCount(report.minutesLate)}m late · ${formatCount(report.feedCount)} scheduled feeds`;
-  }
-  if (report.lastSignalAt) {
-    return `${ageLabel(report.lastSignalAt)} · ${formatCount(report.feedCount)} scheduled feeds`;
-  }
-  return `${formatCount(report.feedCount)} scheduled feeds`;
+function atlasStatus(services: AtlasService[] | undefined, aliases: string[]): string {
+  return services?.find((service) => aliases.includes(service.id.toLowerCase()))?.status ?? 'unknown';
 }
 
-function friendlyLiveSummary(kind: 'web' | 'database' | 'ml', status: string): string {
-  const tone = toneFor(status);
-  if (kind === 'web') {
-    return tone === 'good' ? 'The Staxis website is responding.' : 'The website check found something to look at.';
-  }
-  if (kind === 'database') {
-    return tone === 'good' ? 'The Staxis database is responding.' : 'The database check found something to look at.';
-  }
-  return tone === 'good' ? 'The prediction service is responding.' : 'The prediction service needs attention.';
-}
-
-function friendlyAtlasSummary(service: AtlasService): string {
-  if (service.id === 'admin-api') return 'This page reached the Staxis backend successfully.';
-  return service.summary;
-}
-
-function mergeServices(
+function servicesFor(
   atlasServices: AtlasService[] | undefined,
   system: SystemStatusSnapshot | null,
 ): DisplayService[] {
-  const result: DisplayService[] = (atlasServices ?? []).map((service) => ({
-    ...service,
-    summary: friendlyAtlasSummary(service),
-    live: false,
-  }));
-  if (!system) return result;
-
-  const liveServices: Array<DisplayService & { aliases: string[] }> = [
+  return [
     {
       id: 'web',
-      aliases: ['web', 'app', 'vercel', 'admin-api'],
       label: 'Web app',
-      summary: friendlyLiveSummary('web', system.services.web.status),
-      status: system.services.web.status,
-      latencyMs: system.services.web.latency_ms,
-      live: true,
+      status: system?.services.web.status ?? atlasStatus(atlasServices, ['web', 'app', 'vercel', 'admin-api']),
     },
     {
       id: 'database',
-      aliases: ['database', 'supabase'],
       label: 'Database',
-      summary: friendlyLiveSummary('database', system.services.supabase.status),
-      status: system.services.supabase.status,
-      latencyMs: system.services.supabase.latency_ms,
-      live: true,
+      status: system?.services.supabase.status ?? atlasStatus(atlasServices, ['database', 'supabase']),
     },
     {
-      id: 'ml',
-      aliases: ['ml', 'ml_service', 'machine_learning'],
+      id: 'predictions',
       label: 'Predictions',
-      summary: friendlyLiveSummary('ml', system.services.ml.status),
-      status: system.services.ml.status,
-      latencyMs: system.services.ml.latency_ms,
-      live: true,
+      status: system?.services.ml.status ?? atlasStatus(atlasServices, ['ml', 'ml_service', 'machine_learning']),
     },
   ];
-
-  liveServices.forEach(({ aliases, ...liveService }) => {
-    const index = result.findIndex((service) => aliases.includes(service.id.toLowerCase()));
-    if (index === -1) result.push(liveService);
-    else result[index] = { ...result[index], ...liveService, id: result[index].id };
-  });
-  return result;
 }
 
 function toneClass(tone: HealthTone): string {
@@ -282,40 +210,18 @@ function toneClass(tone: HealthTone): string {
   return styles.statusMuted;
 }
 
-function StatusBadge({ status, label }: { status: string | null | undefined; label?: string }) {
-  const tone = toneFor(status);
+function StatusBadge({
+  status,
+  label,
+}: {
+  status: string | null | undefined;
+  label?: string;
+}) {
   return (
-    <span className={`${styles.statusBadge} ${toneClass(tone)}`}>
+    <span className={styles.statusBadge + ' ' + toneClass(toneFor(status))}>
       <span className={styles.statusDot} aria-hidden="true" />
       {label ?? statusLabel(status)}
     </span>
-  );
-}
-
-function SummaryCard({
-  label,
-  value,
-  note,
-  icon,
-  tone = 'muted',
-}: {
-  label: string;
-  value: number | null | undefined;
-  note: string;
-  icon: React.ReactNode;
-  tone?: HealthTone;
-}) {
-  return (
-    <DarkCard style={{ minHeight: 132, padding: '16px 18px' }}>
-      <div className={styles.summaryCard}>
-        <div className={`${styles.summaryIcon} ${toneClass(tone)}`} aria-hidden="true">{icon}</div>
-        <dl>
-          <dt>{label}</dt>
-          <dd style={{ fontFamily: FONT_SERIF }}>{formatCount(value)}</dd>
-        </dl>
-        <p>{note}</p>
-      </div>
-    </DarkCard>
   );
 }
 
@@ -407,52 +313,45 @@ export default function DataAtlasPage() {
     const normalized = query.trim().toLocaleLowerCase('en-US');
     if (!normalized) return snapshot?.hotels ?? [];
     return (snapshot?.hotels ?? []).filter((hotel) => (
-      `${hotel.name ?? ''} ${hotel.id} ${hotel.subscriptionStatus ?? ''}`
+      (hotel.name + ' ' + hotel.id + ' ' + hotel.subscriptionStatus)
         .toLocaleLowerCase('en-US')
         .includes(normalized)
     ));
   }, [query, snapshot?.hotels]);
 
-  const domainSnapshots = useMemo(
-    () => new Map((snapshot?.domains ?? []).map((domain) => [domain.id, domain])),
-    [snapshot?.domains],
-  );
   const services = useMemo(
-    () => mergeServices(snapshot?.services, systemStatus),
+    () => servicesFor(snapshot?.services, systemStatus),
     [snapshot?.services, systemStatus],
   );
 
   const initialLoading = authLoading || (loading && snapshot === null && error === null);
   const accessDenied = !authLoading && user?.role !== 'admin';
+  const pageStatus = accessDenied
+    ? 'unavailable'
+    : error ? (snapshot ? 'stale' : 'unavailable') : snapshot ? 'live' : 'unknown';
+  const pageStatusLabel = accessDenied
+    ? 'Admin only'
+    : error ? (snapshot ? 'Stale' : 'Unavailable') : snapshot ? 'Live' : 'Loading';
+  const isFiltering = query.trim().length > 0;
 
   return (
     <AppLayout>
       <DarkScope>
         <SurfaceShell glow="tealTL" style={{ padding: '24px clamp(16px, 3vw, 32px) 56px' }}>
           <main className={styles.page} aria-labelledby="atlas-title">
-            <Link href="/admin/properties#live" className={styles.backLink}>
-              <ArrowLeft size={14} aria-hidden="true" /> Back to Hotels
-            </Link>
-
             <header className={styles.header}>
-              <div className={styles.headerCopy}>
-                <span className={styles.eyebrow}>Admin · Live backend view</span>
-                <div className={styles.titleRow}>
-                  <Database size={27} strokeWidth={1.7} aria-hidden="true" />
-                  <h1 id="atlas-title">Database <em>Atlas</em></h1>
-                </div>
-                <p>
-                  A simple, read-only window into what Staxis stores and what is happening behind the app.
-                </p>
-                <div className={styles.headerBadges} aria-label="Atlas behavior">
-                  <StatusBadge
-                    status={error ? (snapshot ? 'attention' : 'unavailable') : snapshot ? 'live' : 'unknown'}
-                    label={error ? (snapshot ? 'Showing last snapshot' : 'Database unavailable') : snapshot ? 'Live database' : 'Checking database'}
-                  />
-                  <span className={styles.readOnlyBadge}>Read-only controls · this page cannot edit hotel data</span>
-                </div>
+              <div className={styles.heading}>
+                <Link href="/admin/properties#live" className={styles.backLink}>
+                  <ArrowLeft size={15} aria-hidden="true" />
+                  Hotels
+                </Link>
+                <h1 id="atlas-title">Database Atlas</h1>
               </div>
-              <div className={styles.refreshArea}>
+              <div className={styles.headerActions}>
+                <div className={styles.liveMeta} aria-live="polite">
+                  <StatusBadge status={pageStatus} label={pageStatusLabel} />
+                  <span>{snapshot ? 'Updated ' + ageLabel(snapshot.generatedAt) : 'Not updated'}</span>
+                </div>
                 <button
                   type="button"
                   className={styles.refreshButton}
@@ -460,30 +359,22 @@ export default function DataAtlasPage() {
                   disabled={loading || accessDenied}
                   aria-busy={loading}
                 >
-                  <RefreshCw className={loading ? styles.spinning : undefined} size={15} aria-hidden="true" />
-                  {loading && snapshot ? 'Refreshing…' : 'Refresh now'}
+                  <RefreshCw className={loading ? styles.spinning : undefined} size={16} aria-hidden="true" />
+                  {loading && snapshot ? 'Refreshing' : 'Refresh'}
                 </button>
-                <p aria-live="polite">
-                  {snapshot
-                    ? `Updated ${ageLabel(snapshot.generatedAt)} · refreshes every minute`
-                    : 'Refreshes automatically every minute'}
-                </p>
               </div>
             </header>
 
             {accessDenied ? (
               <div className={styles.errorPanel} role="alert">
-                <TriangleAlert size={20} aria-hidden="true" />
-                <div>
-                  <strong>Admin access only</strong>
-                  <p>This backend view is only available to the Staxis platform administrator.</p>
-                </div>
+                <TriangleAlert size={19} aria-hidden="true" />
+                <strong>Admin access only</strong>
               </div>
             ) : error && snapshot === null ? (
               <div className={styles.errorPanel} role="alert">
-                <TriangleAlert size={20} aria-hidden="true" />
+                <TriangleAlert size={19} aria-hidden="true" />
                 <div>
-                  <strong>The Atlas could not load</strong>
+                  <strong>Database Atlas could not load</strong>
                   <p>{error}</p>
                   <button type="button" onClick={() => { void load(); }}>Try again</button>
                 </div>
@@ -494,87 +385,70 @@ export default function DataAtlasPage() {
               <>
                 {error ? (
                   <div className={styles.inlineWarning} role="alert">
-                    The latest refresh failed. The page is still showing the last successful snapshot. {error}
+                    Showing the last update. Refresh failed: {error}
                   </div>
                 ) : null}
 
-                <section className={styles.section} aria-labelledby="atlas-overview-title">
-                  <SectionHeading
-                    id="atlas-overview-title"
-                    eyebrow="Right now"
-                    title="Staxis at a glance"
-                    description="These numbers come from the live database, so a new hotel appears here automatically."
-                  />
-                  <div className={styles.summaryGrid}>
-                    <SummaryCard
-                      label="Hotels"
-                      value={snapshot.overview.hotels}
-                      note={`${formatCount(snapshot.overview.organizations)} organizations`}
-                      icon={<Building2 size={20} />}
-                      tone="info"
-                    />
-                    <SummaryCard
-                      label="Rooms configured"
-                      value={snapshot.overview.roomsConfigured}
-                      note="Rooms set up across every hotel"
-                      icon={<BedDouble size={20} />}
-                      tone="good"
-                    />
-                    <SummaryCard
-                      label="Active people"
-                      value={snapshot.overview.activeStaff}
-                      note="Active hotel staff records"
-                      icon={<Users size={20} />}
-                      tone="good"
-                    />
-                    <SummaryCard
-                      label="Warnings"
-                      value={snapshot.overview.warnings.length}
-                      note={snapshot.overview.warnings.length === 0 ? 'No Atlas data warnings in this snapshot' : 'Items worth looking at'}
-                      icon={<TriangleAlert size={20} />}
-                      tone={snapshot.overview.warnings.length === 0 ? 'good' : 'warning'}
-                    />
+                <dl className={styles.metrics} aria-label="Database Atlas totals">
+                  <div>
+                    <dt>Hotels</dt>
+                    <dd>{formatCount(snapshot.overview.hotels)}</dd>
                   </div>
-                  {snapshot.overview.warnings.length > 0 ? (
-                    <div className={styles.overviewWarnings} role="status">
-                      <strong>What needs attention</strong>
+                  <div>
+                    <dt>Rooms</dt>
+                    <dd>{formatCount(snapshot.overview.roomsConfigured)}</dd>
+                  </div>
+                  <div>
+                    <dt>Staff</dt>
+                    <dd>{formatCount(snapshot.overview.activeStaff)}</dd>
+                  </div>
+                </dl>
+
+                {snapshot.overview.warnings.length > 0 ? (
+                  <div className={styles.warningPanel} role="status">
+                    <TriangleAlert size={18} aria-hidden="true" />
+                    <div>
+                      <strong>
+                        {formatCount(snapshot.overview.warnings.length)}
+                        {' '}
+                        {snapshot.overview.warnings.length === 1 ? 'warning' : 'warnings'}
+                      </strong>
                       <ul>
                         {snapshot.overview.warnings.map((warning) => <li key={warning}>{warning}</li>)}
                       </ul>
                     </div>
-                  ) : null}
-                </section>
+                  </div>
+                ) : null}
 
-                <section className={styles.section} aria-labelledby="atlas-hotels-title">
-                  <div className={styles.sectionHeadingWithTool}>
-                    <SectionHeading
-                      id="atlas-hotels-title"
-                      eyebrow="Live hotel catalog"
-                      title="Every hotel"
-                      description="One row per hotel, with the useful backend facts translated into normal language."
-                    />
+                <section className={styles.hotelsSection} aria-labelledby="atlas-hotels-title">
+                  <div className={styles.sectionBar}>
+                    <h2 id="atlas-hotels-title">Hotels</h2>
                     <label className={styles.searchField}>
-                      <span>Search hotels</span>
-                      <span className={styles.searchInputWrap}>
-                        <Search size={15} aria-hidden="true" />
-                        <input
-                          type="search"
-                          value={query}
-                          onChange={(event) => setQuery(event.target.value)}
-                          placeholder="Hotel name"
-                          aria-describedby="atlas-hotel-results"
-                        />
-                      </span>
+                      <span className={styles.srOnly}>Search hotels</span>
+                      <Search size={16} aria-hidden="true" />
+                      <input
+                        type="search"
+                        value={query}
+                        onChange={(event) => setQuery(event.target.value)}
+                        placeholder="Search hotels"
+                        aria-describedby="atlas-hotel-results"
+                      />
                     </label>
                   </div>
-                  <p id="atlas-hotel-results" className={styles.resultCount} aria-live="polite">
-                    Showing {formatCount(filteredHotels.length)} of {formatCount(snapshot.hotels.length)} hotels
+                  <p
+                    id="atlas-hotel-results"
+                    className={isFiltering ? styles.resultCount : styles.srOnly}
+                    aria-live="polite"
+                  >
+                    {isFiltering
+                      ? formatCount(filteredHotels.length) + ' of ' + formatCount(snapshot.hotels.length) + ' hotels'
+                      : formatCount(snapshot.hotels.length) + ' hotels'}
                   </p>
 
                   {snapshot.hotels.length === 0 ? (
                     <div role="status"><DarkEmpty text="No hotels have been added yet." /></div>
                   ) : filteredHotels.length === 0 ? (
-                    <div role="status"><DarkEmpty text={`No hotels match “${query.trim()}”.`} /></div>
+                    <div role="status"><DarkEmpty text={'No hotels match “' + query.trim() + '”.'} /></div>
                   ) : (
                     <div className={styles.tableScroller} role="region" aria-label="Hotel backend status" tabIndex={0}>
                       <table className={styles.hotelTable}>
@@ -583,49 +457,46 @@ export default function DataAtlasPage() {
                           <tr>
                             <th scope="col">Hotel</th>
                             <th scope="col">Rooms</th>
-                            <th scope="col">People</th>
-                            <th scope="col">Product</th>
-                            <th scope="col">Scheduled feeds</th>
+                            <th scope="col">Staff</th>
+                            <th scope="col">Setup</th>
+                            <th scope="col">Data</th>
                           </tr>
                         </thead>
                         <tbody>
                           {filteredHotels.map((hotel) => {
                             const warnings = hotel.report?.warnings ?? [];
+                            const reportState = hotel.report?.state ?? 'unknown';
+                            const needsAttention = !['live', 'no_expectations', 'unavailable'].includes(reportState)
+                              || (reportState === 'live' && warnings.length > 0);
                             return (
                               <tr key={hotel.id}>
                                 <td data-label="Hotel">
-                                  <Link href={`/admin/properties/${encodeURIComponent(hotel.id)}`} className={styles.hotelLink}>
-                                    {hotel.name?.trim() || '(unnamed hotel)'}
+                                  <Link
+                                    href={'/admin/properties/' + encodeURIComponent(hotel.id)}
+                                    className={styles.hotelLink}
+                                  >
+                                    {hotel.name?.trim() || 'Unnamed hotel'}
                                   </Link>
-                                  <span className={styles.cellMeta}>
-                                    <StatusBadge status={hotel.subscriptionStatus} />
-                                    <StatusBadge
-                                      status={hotel.onboardingCompleted ? 'ready' : 'pending'}
-                                      label={hotel.onboardingCompleted ? 'Ready' : 'Onboarding'}
-                                    />
-                                  </span>
+                                  <StatusBadge status={hotel.subscriptionStatus} />
                                 </td>
-                                <td data-label="Rooms">
-                                  <strong className={styles.numeric}>{formatCount(hotel.totalRooms)}</strong>
-                                  <span className={styles.cellSubtext}>configured</span>
+                                <td data-label="Rooms" className={styles.numberCell}>
+                                  {formatCount(hotel.totalRooms)}
                                 </td>
-                                <td data-label="People">
-                                  <strong className={styles.numeric}>{formatCount(hotel.activeStaff)}</strong>
-                                  <span className={styles.cellSubtext}>active staff</span>
+                                <td data-label="Staff" className={styles.numberCell}>
+                                  {formatCount(hotel.activeStaff)}
                                 </td>
-                                <td data-label="Product">
-                                  <strong className={styles.numeric}>{formatCount(hotel.enabledSectionCount)}</strong>
-                                  <span className={styles.cellSubtext}>of {APP_SECTIONS.length} app areas on</span>
-                                </td>
-                                <td data-label="Scheduled feeds">
+                                <td data-label="Setup">
                                   <StatusBadge
-                                    status={hotel.report?.state ?? 'unavailable'}
-                                    label={hotel.report?.state === 'unavailable' ? 'Feeds off' : undefined}
+                                    status={hotel.onboardingCompleted ? 'ready' : 'pending'}
+                                    label={hotel.onboardingCompleted ? 'Ready' : 'Onboarding'}
                                   />
-                                  <span className={styles.cellSubtext}>{reportSummary(hotel.report)}</span>
-                                  {warnings.length > 0 ? (
+                                </td>
+                                <td data-label="Data">
+                                  <StatusBadge status={reportState} label={feedLabel(reportState)} />
+                                  {needsAttention && warnings[0] ? (
                                     <span className={styles.warningText} title={warnings.join('\n')}>
-                                      {warnings[0]}{warnings.length > 1 ? ` · +${warnings.length - 1} more` : ''}
+                                      {warnings[0]}
+                                      {warnings.length > 1 ? ' · +' + (warnings.length - 1) : ''}
                                     </span>
                                   ) : null}
                                 </td>
@@ -638,125 +509,58 @@ export default function DataAtlasPage() {
                   )}
                 </section>
 
-                <section className={styles.section} aria-labelledby="atlas-data-title">
-                  <SectionHeading
-                    id="atlas-data-title"
-                    eyebrow="The filing cabinets"
-                    title="How the data is organized"
-                    description={`${formatCount(snapshot.schema.tableCount)} database tables, grouped by what they do. Open a group only when you want the technical names.`}
-                  />
-                  <p className={styles.schemaNote}>
-                    These are safety-setting counts, not a full security score. Some behind-the-scenes tables are intentionally hidden from everyone using the browser.
-                  </p>
-                  {snapshot.schema.domains.length === 0 ? (
-                    <div role="status"><DarkEmpty text="The database groups could not be listed." /></div>
-                  ) : (
-                    <div className={styles.domainGrid}>
-                      {snapshot.schema.domains.map((domain) => {
-                        const liveDomain = domainSnapshots.get(domain.id);
-                        const security = domain.security;
-                        return (
-                          <article className={styles.domainCard} key={domain.id}>
-                            <div className={styles.domainTopline}>
-                              <div>
-                                <h3>{domain.label}</h3>
-                                <p>{liveDomain?.description || domain.purpose}</p>
-                              </div>
-                              <StatusBadge status={liveDomain?.status ?? 'unavailable'} />
-                            </div>
-                            <dl className={styles.domainFacts}>
-                              <div><dt>Tables</dt><dd>{formatCount(domain.tables.length)}</dd></div>
-                              <div><dt>Data guard on</dt><dd>{formatCount(security?.rlsEnabled)}</dd></div>
-                              <div><dt>Tables with rules</dt><dd>{formatCount(security?.withPolicies)}</dd></div>
-                              <div><dt>Recognized tenant key</dt><dd>{formatCount(security?.directTenantColumn)}</dd></div>
-                            </dl>
-                            <details className={styles.tableDetails}>
-                              <summary>Show technical table names</summary>
-                              {domain.tables.length > 0 ? (
-                                <ul>
-                                  {domain.tables.map((table) => <li key={table}>{table}</li>)}
-                                </ul>
-                              ) : (
-                                <p>No table names were returned for this group.</p>
-                              )}
-                            </details>
-                          </article>
-                        );
-                      })}
+                <section className={styles.backendGrid} aria-label="Backend status">
+                  <article className={styles.systemsPanel}>
+                    <div className={styles.panelHeader}>
+                      <h2>Systems</h2>
+                      {systemCheckUnavailable ? <span className={styles.checkWarning}>Live check unavailable</span> : null}
                     </div>
-                  )}
-                </section>
+                    <ul className={styles.serviceList}>
+                      {services.map((service) => (
+                        <li key={service.id}>
+                          <span>{service.label}</span>
+                          <StatusBadge status={service.status} />
+                        </li>
+                      ))}
+                    </ul>
+                  </article>
 
-                <section className={styles.section} aria-labelledby="atlas-systems-title">
-                  <SectionHeading
-                    id="atlas-systems-title"
-                    eyebrow="The machinery"
-                    title="Systems and database history"
-                    description="Quick checks for the main services Staxis depends on, plus the database change receipt book."
-                  />
-
-                  {systemCheckUnavailable ? (
-                    <div className={styles.inlineNotice} role="status">
-                      The live system ping is unavailable. Service cards below use the Atlas snapshot when one exists.
-                    </div>
-                  ) : null}
-
-                  <div className={styles.systemGrid}>
-                    <div className={styles.servicesPanel}>
-                      <div className={styles.panelTitle}>
-                        <Server size={17} aria-hidden="true" />
-                        <h3>Live systems</h3>
-                      </div>
-                      {services.length === 0 ? (
-                        <DarkEmpty text="System checks are unavailable right now." />
+                  <details className={styles.databaseDetails}>
+                    <summary>
+                      <span>Database details</span>
+                      <span>
+                        {snapshot.schema.status === 'unavailable'
+                          ? 'Unavailable'
+                          : formatCount(snapshot.schema.tableCount)
+                            + ' tables · '
+                            + formatCount(snapshot.schema.domains.length)
+                            + ' areas'}
+                      </span>
+                    </summary>
+                    <div className={styles.databaseBody}>
+                      {snapshot.schema.status === 'unavailable' ? (
+                        <div role="status"><DarkEmpty text="Database details are unavailable." /></div>
+                      ) : snapshot.schema.domains.length === 0 ? (
+                        <div role="status"><DarkEmpty text="No database areas were returned." /></div>
                       ) : (
-                        <ul className={styles.serviceList}>
-                          {services.map((service) => (
-                            <li key={service.id}>
-                              <div>
-                                <strong>{service.label}</strong>
-                                <p>{service.summary}</p>
-                              </div>
-                              <div className={styles.serviceStatus}>
-                                <StatusBadge status={service.status} />
-                                {service.live && typeof service.latencyMs === 'number' ? (
-                                  <span>{formatCount(service.latencyMs)}ms</span>
-                                ) : null}
-                              </div>
-                            </li>
-                          ))}
-                        </ul>
+                        snapshot.schema.domains.map((domain) => (
+                          <details className={styles.areaDetails} key={domain.id}>
+                            <summary>
+                              <span>{domain.label}</span>
+                              <span>{formatCount(domain.tables.length)}</span>
+                            </summary>
+                            {domain.tables.length > 0 ? (
+                              <ul className={styles.tableNames}>
+                                {domain.tables.map((table) => <li key={table}>{table}</li>)}
+                              </ul>
+                            ) : (
+                              <p>No tables in this area.</p>
+                            )}
+                          </details>
+                        ))
                       )}
                     </div>
-
-                    <article className={styles.migrationPanel}>
-                      <div className={styles.panelTitle}>
-                        <GitBranch size={17} aria-hidden="true" />
-                        <h3>Database change history</h3>
-                      </div>
-                      <StatusBadge
-                        status={snapshot.migrations.status}
-                        label={snapshot.migrations.status === 'available' ? 'History available' : 'History unavailable'}
-                      />
-                      <dl className={styles.migrationFacts}>
-                        <div>
-                          <dt>Changes recorded</dt>
-                          <dd>{formatCount(snapshot.migrations.appliedCount)}</dd>
-                        </div>
-                        <div>
-                          <dt>Latest version</dt>
-                          <dd>{snapshot.migrations.latestVersion || 'Not recorded'}</dd>
-                        </div>
-                        <div>
-                          <dt>Latest recorded change</dt>
-                          <dd>{formatDateTime(snapshot.migrations.latestAppliedAt)}</dd>
-                        </div>
-                      </dl>
-                      <p className={styles.ledgerNote}>
-                        Think of this as a receipt book. It shows recorded database changes; it does not claim that no code file is waiting to be applied.
-                      </p>
-                    </article>
-                  </div>
+                  </details>
                 </section>
               </>
             ) : null}
@@ -767,34 +571,11 @@ export default function DataAtlasPage() {
   );
 }
 
-function SectionHeading({
-  id,
-  eyebrow,
-  title,
-  description,
-}: {
-  id: string;
-  eyebrow: string;
-  title: string;
-  description: string;
-}) {
-  return (
-    <div className={styles.sectionHeading}>
-      <span>{eyebrow}</span>
-      <h2 id={id}>{title}</h2>
-      <p>{description}</p>
-    </div>
-  );
-}
-
 function LoadingAtlas() {
   return (
     <div className={styles.loadingState} role="status" aria-live="polite">
-      <DarkSpinner size={24} />
-      <span>Reading the live Staxis backend…</span>
-      <div className={styles.skeletonGrid} aria-hidden="true">
-        {Array.from({ length: 4 }, (_, index) => <span key={index} />)}
-      </div>
+      <DarkSpinner size={22} />
+      <span>Loading Database Atlas…</span>
     </div>
   );
 }
