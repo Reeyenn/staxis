@@ -14,6 +14,7 @@ import {
 import { apiPost, uploadToSignedUrl } from '@/lib/comms/client';
 import { T, SANS, deptColorDark, tint, Tip, paneIcon, popNode } from './comms-ui';
 import type { MessagePaneProps } from './MessagePane';
+import { reportCompanionFlow } from '@/components/companion/companion-events';
 
 const fmtBtn: React.CSSProperties = { minWidth: 26, height: 26, borderRadius: 6, border: 'none', background: 'transparent', color: T.dim, cursor: 'pointer', fontFamily: SANS, fontSize: 13.5, display: 'inline-flex', alignItems: 'center', justifyContent: 'center' };
 
@@ -90,6 +91,10 @@ export function Composer({ pid, me, conversation: c, L, onReloadThread, onReload
         }
         if (effOrgWide && r.data?.orgWide) setOrgNotice({ postedCount: r.data.postedCount ?? 0, propertyCount: r.data.propertyCount ?? 0, failedCount: r.data.failedCount ?? 0 });
         setRequireAck(false); setOrgWide(false);
+        // Posted by hand, and post_announcement is a real tool. On success only,
+        // after the post landed. The companion shows the tip at most once ever,
+        // and never while somebody is still typing. See decideTeachMoment.
+        reportCompanionFlow('announcement');
       } else if (handoffMode) {
         const r = await apiPost('/api/comms/send', { pid, conversationId: c.id, body, msgType: 'handoff', handoffShift: currentShift(), handoffOutstanding: body });
         if (!r.ok) { setError('Could not send the hand-off. Please try again.'); return; }
