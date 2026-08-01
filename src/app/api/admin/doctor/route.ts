@@ -812,7 +812,7 @@ export const EXPECTED_MIGRATIONS_STATIC: ReadonlyArray<string> = [
   '0384', '0385', '0386', '0387', '0388', '0389', '0390', '0391', '0392', '0393',
   '0394', '0395', '0396', '0397', '0398', '0399', '0400', '0401',
   '0402', '0403', '0404', '0405', '0406', '0407', '0408', '0409', '0410', '0411',
-  '0412', '0413', '0414',
+  '0412', '0413', '0414', '0415',
 ];
 
 /**
@@ -831,11 +831,17 @@ function discoverMigrationsFromDisk(): ReadonlyArray<string> | null {
     const { readdirSync } = require('node:fs') as typeof import('node:fs');
     const { join } = require('node:path') as typeof import('node:path');
     const dir = join(process.cwd(), 'supabase', 'migrations');
-    const versions = readdirSync(dir)
-      .filter(f => f.endsWith('.sql'))
-      .map(f => f.match(/^(\d{4})_/)?.[1])
-      .filter((v): v is string => Boolean(v))
-      .sort();
+    // Dedupe: a version is a Postgres applied_migrations key, and more than
+    // one file can carry the same 4-digit prefix (0015 ships a real tracker
+    // file plus a documented no-op stub). Without the Set, '0015' appeared
+    // twice in EXPECTED_MIGRATIONS and every count the doctor reported off
+    // that list was one too high.
+    const versions = [...new Set(
+      readdirSync(dir)
+        .filter(f => f.endsWith('.sql'))
+        .map(f => f.match(/^(\d{4})_/)?.[1])
+        .filter((v): v is string => Boolean(v)),
+    )].sort();
     return versions.length > 0 ? versions : null;
   } catch {
     return null;

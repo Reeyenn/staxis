@@ -15,12 +15,12 @@ import type {
   ActivityQueryFilters,
   ActivityQueryResult,
 } from './types';
-import { clampPage, clampPageSize, escapeIlike } from './pure';
+import { clampPage, clampPageSize, escapeIlike, sanitizeActivityRowCopy } from './pure';
 
 // Re-exported here so callers + tests can import either from this
 // module or from ./pure. Keeping the pure helpers in their own file
 // means tests don't have to load supabase-admin to use them.
-export { clampPage, clampPageSize, escapeIlike };
+export { clampPage, clampPageSize, escapeIlike, sanitizeActivityRowCopy };
 
 export interface QueryOptions {
   /**
@@ -101,7 +101,10 @@ export async function queryActivityLog(
   }
 
   return {
-    rows: (data ?? []) as ActivityLogRow[],
+    // Every row leaves this module through the em-dash seam, so a stored
+    // sentence written before migration 0415 still renders to the copy
+    // ruling. See sanitizeActivityRowCopy in ./pure.
+    rows: ((data ?? []) as ActivityLogRow[]).map(sanitizeActivityRowCopy),
     total: count ?? 0,
     page,
     pageSize,
@@ -120,5 +123,7 @@ export async function getActivityEvent(
     .eq('id', eventId)
     .maybeSingle();
   if (error) throw new Error(`activity_log event lookup failed: ${error.message}`);
-  return (data as ActivityLogRow | null) ?? null;
+  const row = (data as ActivityLogRow | null) ?? null;
+  // Same em-dash seam as the list path — the side panel reads this one.
+  return row ? sanitizeActivityRowCopy(row) : null;
 }

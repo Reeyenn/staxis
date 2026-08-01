@@ -16,18 +16,55 @@ import { strict as assert } from 'node:assert';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
-const RAW_SQL = readFileSync(
-  join(process.cwd(), 'supabase', 'migrations', '0228_activity_log.sql'),
-  'utf-8',
-);
+function readMigration(filename: string): string {
+  return readFileSync(join(process.cwd(), 'supabase', 'migrations', filename), 'utf-8');
+}
 
 // Strip line + block comments before scanning so phrases like
 // "uses SECURITY DEFINER for…" in the migration header don't trip the
 // "every definer must pin search_path" check. The lint scripts under
 // scripts/ do the same.
-const SQL = RAW_SQL
-  .replace(/--[^\n]*/g, '')
-  .replace(/\/\*[\s\S]*?\*\//g, '');
+function stripComments(sql: string): string {
+  return sql
+    .replace(/--[^\n]*/g, '')
+    .replace(/\/\*[\s\S]*?\*\//g, '');
+}
+
+const RAW_SQL = readMigration('0228_activity_log.sql');
+const SQL = stripComments(RAW_SQL);
+
+const RAW_SQL_0415 = readMigration('0415_activity_log_copy_no_dashes.sql');
+const SQL_0415 = stripComments(RAW_SQL_0415);
+const RAW_SQL_0272 = readMigration('0272_drop_legacy_rooms.sql');
+
+/** U+2014. Named because it is invisible in a diff otherwise. */
+const EM_DASH = '—';
+
+/**
+ * Every `create or replace function public.NAME() returns trigger … $$;`
+ * block in a migration, keyed by function name.
+ *
+ * Deliberately scoped to trigger functions (the ones that pre-render the
+ * sentences a manager reads) rather than all functions, so a future helper
+ * with a dash in a code comment can't be mistaken for user-facing copy.
+ */
+function triggerFunctionBodies(sql: string): Map<string, string> {
+  const out = new Map<string, string>();
+  const re = /create or replace function public\.([a-z0-9_]+)\(\)\s*\nreturns trigger([\s\S]*?)\n\$\$;/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(sql)) !== null) out.set(m[1], m[0]);
+  return out;
+}
+
+/**
+ * Single-quoted SQL string literals inside a block, with `''` escapes
+ * handled. These are the bytes that end up in activity_log.description
+ * and .target_label, which is where the copy ruling applies. Everything
+ * outside them is identifiers, keywords, and comments, which are exempt.
+ */
+function sqlStringLiterals(block: string): string[] {
+  return block.match(/'(?:[^']|'')*'/g) ?? [];
+}
 
 describe('migration 0228 — activity_log', () => {
   test('creates the activity_log table with the service-role-only marker', () => {
@@ -110,5 +147,122 @@ describe('migration 0228 — activity_log', () => {
 
   test('reloads the PostgREST schema cache at the end', () => {
     assert.match(SQL, /notify pgrst, 'reload schema'/);
+  });
+});
+
+/**
+ * The em-dash copy ruling (founder, 2026-07-28) reached activity_log three
+ * months after 0228 pre-rendered its sentences. 0415 is the fix. These are
+ * source-string assertions on purpose: a migration file is a no-runtime
+ * artifact, so there is no handler to exercise, and the bytes ARE the
+ * behavior once Postgres compiles them.
+ */
+describe('migration 0415 — activity_log copy has no em dashes', () => {
+  const replaced = triggerFunctionBodies(SQL_0415);
+
+  const EXPECTED_REPLACED = [
+    '_activity_log_on_account_role_update',
+    '_activity_log_on_callout_event_insert',
+    '_activity_log_on_callout_event_update',
+    '_activity_log_on_cleaning_task_insert',
+    '_activity_log_on_inspection_update',
+    '_activity_log_on_work_order_insert',
+  ];
+
+  test('replaces exactly the six live trigger functions that carried a dash', () => {
+    assert.deepEqual([...replaced.keys()].sort(), EXPECTED_REPLACED);
+  });
+
+  test('no replaced function body contains an em dash in a SQL string literal', () => {
+    for (const [name, body] of replaced) {
+      const offenders = sqlStringLiterals(body).filter((lit) => lit.includes(EM_DASH));
+      assert.deepEqual(
+        offenders, [],
+        `${name} still renders an em dash into activity_log copy: ${offenders.join(' | ')}`,
+      );
+    }
+  });
+
+  test('no replaced function body contains an em dash anywhere', () => {
+    // Belt to the literal check above: catches a dash smuggled in via an
+    // identifier, a dollar-quoted fragment, or a stray operator.
+    for (const [name, body] of replaced) {
+      assert.equal(body.includes(EM_DASH), false, `${name} contains an em dash`);
+    }
+  });
+
+  test('covers every dashed 0228 trigger function that is still alive', () => {
+    // The cross-file invariant that makes this suite more than a spell
+    // check: walk 0228's OWN trigger functions, find the ones whose copy
+    // carries a dash, and require each to be either replaced by 0415 or
+    // dropped outright by a later migration. A new dashed template added
+    // to 0228, or a resurrected room_pause function, fails here.
+    const original = triggerFunctionBodies(SQL);
+    const dashed = [...original.entries()]
+      .filter(([, body]) => sqlStringLiterals(body).some((lit) => lit.includes(EM_DASH)))
+      .map(([name]) => name)
+      .sort();
+
+    // 0272 dropped room_pause_events together with the legacy `rooms`
+    // table its trigger read from, so 0415 must NOT recreate it.
+    const droppedLater = dashed.filter((name) =>
+      new RegExp(`drop function if exists public\\.${name}\\(\\)`).test(RAW_SQL_0272),
+    );
+    assert.deepEqual(droppedLater, ['_activity_log_on_room_pause_insert']);
+
+    const stillAlive = dashed.filter((name) => !droppedLater.includes(name));
+    assert.deepEqual(
+      stillAlive, EXPECTED_REPLACED,
+      'a 0228 trigger function still renders an em dash and 0415 does not replace it',
+    );
+  });
+
+  test('does not resurrect the trigger functions 0272 deliberately dropped', () => {
+    assert.doesNotMatch(SQL_0415, /_activity_log_on_room_pause_(insert|update)\s*\(/);
+  });
+
+  test('does not re-run the one-time 90-day backfill', () => {
+    // 0228's backfill already ran in prod. Re-running it here would be a
+    // second write pass over three months of drifted source rows.
+    assert.doesNotMatch(SQL_0415, /interval\s+'90 days'/);
+    assert.doesNotMatch(SQL_0415, /insert\s+into\s+public\.activity_log/i);
+  });
+
+  test('cleans stored rows on both copy columns, guarded on the character', () => {
+    // Idempotency: each UPDATE only touches rows that still contain the
+    // dash, so a re-run of the migration is a no-op.
+    for (const column of ['description', 'target_label']) {
+      const updates = [...SQL_0415.matchAll(
+        new RegExp(`update public\\.activity_log\\s+set ${column} = replace\\([\\s\\S]*?;`, 'g'),
+      )].map((m) => m[0]);
+      assert.equal(updates.length, 2, `expected padded + bare dash passes for ${column}`);
+      for (const stmt of updates) {
+        assert.ok(stmt.includes(EM_DASH), `${column} cleanup must target the em dash`);
+        assert.match(
+          stmt,
+          new RegExp(`where ${column} like '%`),
+          `${column} cleanup must be guarded on the character so re-runs no-op`,
+        );
+      }
+    }
+  });
+
+  test('every SECURITY DEFINER function pins search_path', () => {
+    const definerBlocks = [...SQL_0415.matchAll(/security\s+definer/gi)];
+    assert.equal(definerBlocks.length, EXPECTED_REPLACED.length);
+    for (const m of definerBlocks) {
+      const window = SQL_0415.slice(m.index, (m.index ?? 0) + 240);
+      assert.match(
+        window,
+        /set\s+search_path\s*=\s*public,\s*pg_temp/i,
+        `SECURITY DEFINER block missing pinned search_path near offset ${m.index}`,
+      );
+    }
+  });
+
+  test('self-registers and reloads the PostgREST schema cache', () => {
+    assert.match(SQL_0415, /insert into public\.applied_migrations/i);
+    assert.match(SQL_0415, /'0415'/);
+    assert.match(SQL_0415, /notify pgrst, 'reload schema'/);
   });
 });

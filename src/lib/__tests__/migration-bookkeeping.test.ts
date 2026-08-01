@@ -97,6 +97,33 @@ describe('migration bookkeeping', () => {
     );
   });
 
+  it('lists every expected migration version exactly once', () => {
+    // EXPECTED_MIGRATIONS is normally derived from disk, and two files on
+    // disk legitimately share the 0015 prefix (the real applied_migrations
+    // tracker plus a documented no-op stub). Before the dedupe, '0015'
+    // appeared twice in the list, so every count the doctor derived from it
+    // was one too high. A version is a Postgres applied_migrations key; a
+    // key cannot be present twice.
+    const seen = new Map<string, number>();
+    for (const version of EXPECTED_MIGRATIONS) {
+      seen.set(version, (seen.get(version) ?? 0) + 1);
+    }
+    const duplicates = [...seen.entries()]
+      .filter(([, count]) => count > 1)
+      .map(([version, count]) => `${version} x${count}`);
+    assert.deepEqual(
+      duplicates, [],
+      `EXPECTED_MIGRATIONS contains duplicate versions: ${duplicates.join(', ')}`,
+    );
+  });
+
+  it('keeps the static fallback free of duplicates too', () => {
+    assert.deepEqual(
+      [...new Set(EXPECTED_MIGRATIONS_STATIC)],
+      [...EXPECTED_MIGRATIONS_STATIC],
+    );
+  });
+
   it('only suppresses the operator-verified historical production aliases', () => {
     assert.deepEqual(
       [...ALLOWED_EXTRA_APPLIED_MIGRATIONS].sort(),
