@@ -51,7 +51,6 @@
 }
 
 .heroMark,
-.summaryIcon,
 .groupIcon,
 .hotelIcon,
 .receiptSeal,
@@ -76,7 +75,6 @@
 }
 
 .eyebrow,
-.sectionHeading > span,
 .receiptEyebrow {
   color: var(--company-muted);
   font-family: var(--font-geist-mono), ui-monospace, monospace;
@@ -354,62 +352,6 @@
   display: flex;
   flex-direction: column;
   gap: 24px;
-}
-
-.summaryGrid {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 12px;
-}
-
-.summaryCard {
-  display: flex;
-  align-items: flex-start;
-  min-width: 0;
-  gap: 12px;
-  padding: 16px;
-  border: 1px solid var(--company-rule);
-  border-radius: 14px;
-  background: var(--company-paper);
-  box-shadow: 0 9px 22px -20px rgba(31, 42, 32, 0.38);
-}
-
-.summaryIcon {
-  width: 36px;
-  height: 36px;
-  border-radius: 11px;
-}
-
-.summaryCard > div {
-  display: flex;
-  min-width: 0;
-  flex-direction: column;
-}
-
-.summaryCard span:not(.summaryIcon) {
-  color: var(--company-ink-3);
-  font-size: 10.5px;
-  font-weight: 550;
-  line-height: 15px;
-}
-
-.summaryCard strong {
-  margin-top: 3px;
-  color: var(--company-ink);
-  font-size: 23px;
-  font-weight: 650;
-  line-height: 28px;
-  letter-spacing: -0.025em;
-}
-
-.summaryCard small {
-  overflow: hidden;
-  margin-top: 2px;
-  color: var(--company-muted);
-  font-size: 10.5px;
-  line-height: 15px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 .sectionBlock {
@@ -1237,12 +1179,6 @@
   flex-direction: column;
   overflow: hidden;
   padding: 17px;
-}
-
-.receiptFeatured {
-  background:
-    radial-gradient(circle at 96% 0%, rgba(158, 183, 166, 0.18), transparent 34%),
-    var(--company-paper);
 }
 
 .receiptHeader {
@@ -2339,26 +2275,8 @@
     max-width: none;
   }
 
-  .summaryGrid,
   .skeletonGrid {
     grid-template-columns: 1fr;
-  }
-
-  .summaryCard {
-    align-items: center;
-  }
-
-  .summaryCard > div {
-    display: grid;
-    flex: 1;
-    grid-template-columns: minmax(0, 1fr) auto;
-    align-items: center;
-    column-gap: 12px;
-  }
-
-  .summaryCard strong {
-    grid-row: 1 / span 2;
-    grid-column: 2;
   }
 
   .filterBar,
@@ -2528,11 +2446,6 @@
 
   .adminCompanySearch {
     grid-template-columns: 1fr;
-  }
-
-  .summaryCard {
-    min-height: 70px;
-    padding: 13px;
   }
 
   .sectionHeading h2 {

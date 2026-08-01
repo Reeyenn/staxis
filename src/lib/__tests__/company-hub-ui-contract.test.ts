@@ -163,7 +163,7 @@ describe('truthful Company Hub filters', () => {
     assert.match(hotelTeam, /const rosterStaff = React\.useMemo/);
     assert.match(company, /staffProfiles=\{staff\}/);
     assert.doesNotMatch(company, /statusFilter === ['"]invited['"]/);
-    assert.match(company, /Organization access/);
+    assert.match(company, /Roles and scopes by person/);
     assert.match(company, /data\.invitations\.map/);
   });
 
@@ -211,7 +211,7 @@ describe('My Hotel account and team integration', () => {
     assert.match(hotelTeam, /<h2 id="team-members-title">/);
   });
 
-  test('keeps four connected tabs and moves the team count and invite action into the roster header', () => {
+  test('keeps three connected tabs and moves the team count and invite action into the roster header', () => {
     const heroIndex = company.indexOf('<header className={styles.hero}>');
     const hotelSlotIndex = company.indexOf('<div className={styles.heroHotelSlot}>', heroIndex);
     const switcherIndex = company.indexOf('<HotelSwitcher', hotelSlotIndex);
@@ -241,7 +241,9 @@ describe('My Hotel account and team integration', () => {
     assert.doesNotMatch(company, /Hotel being managed|Hotel administrado/);
     assert.doesNotMatch(company, /id:\s*['"]activity['"]/);
     assert.doesNotMatch(company, /function ActivityPanel/);
-    assert.match(company, /requested !== null && !isTabId\(requested\)[\s\S]*params\.set\(['"]tab['"], ['"]overview['"]\)[\s\S]*router\.replace/);
+    assert.match(company, /\{ id: ['"]hotels['"][\s\S]*?\{ id: ['"]people['"][\s\S]*?\{ id: ['"]access['"]/);
+    assert.doesNotMatch(company, /\{ id: ['"]overview['"]/);
+    assert.match(company, /requested === ['"]overview['"] \|\| \(requested !== null && !isTabId\(requested\)\)[\s\S]*params\.set\(['"]tab['"], ['"]hotels['"]\)[\s\S]*router\.replace/);
     assert.match(companyCss, /\.hero \{[\s\S]*grid-template-columns: minmax\(0, 1fr\) auto minmax\(0, 1fr\);/);
     assert.match(hotelSwitcherCss, /\.trigger \{[\s\S]*min-height: 44px;[\s\S]*grid-template-columns: 24px minmax\(0, 1fr\) 24px;/);
     assert.doesNotMatch(hotelSwitcherCss, /\.root \{[^}]*\n\s*width:/);
@@ -249,6 +251,18 @@ describe('My Hotel account and team integration', () => {
     assert.doesNotMatch(companyCss, /\.teamInviteRow|\.teamInviteButton/);
     assert.match(hotelTeamCss, /\.subheadingTitleRow \{[\s\S]*display: flex;[\s\S]*gap: 8px;/);
     assert.match(hotelTeamCss, /\.headingInviteButton \{[\s\S]*width: calc\(\(100% - 12px\) \/ 4\);[\s\S]*min-width: 172px;/);
+  });
+
+  test('defaults legacy and invalid URLs to Hotels and removes Overview-only copy', () => {
+    assert.match(company, /return isTabId\(requested\) \? requested : ['"]hotels['"]/);
+    assert.match(company, /const next = isTabId\(requested\) \? requested : ['"]hotels['"]/);
+    assert.doesNotMatch(company, /OverviewPanel|SummaryCard|CompanyStructureOverview|CompanyRulebookPanel/);
+    assert.doesNotMatch(company, /Property scope|Hotels you can access|Grouped by organization, portfolio, or region\./);
+    assert.doesNotMatch(company, /Company people|Effective access|Access records|Access is managed/);
+    assert.match(company, /<FilterBar[\s\S]*<OrganizationHierarchy/);
+    assert.match(company, /data\.viewerContext\?\.kind === ['"]staxis_admin_preview['"][\s\S]*<AdminHotelRelationshipManager/);
+    assert.match(company, /title=\{['"]Memberships and invitations['"]\}/);
+    assert.match(company, /title=\{adminPreview[\s\S]*['"]Customer grants['"][\s\S]*['"]Access grants['"]/);
   });
 
   test('waits for the exact hotel capability snapshot before showing team controls', () => {

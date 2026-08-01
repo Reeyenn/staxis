@@ -13,7 +13,6 @@ import {
   CheckCircle2,
   ChevronDown,
   CircleHelp,
-  Clock3,
   Hotel,
   Inbox,
   KeyRound,
@@ -28,7 +27,6 @@ import {
 } from 'lucide-react';
 
 import { AppLayout } from '@/components/layout/AppLayout';
-import { CompanyRulebookPanel } from '@/components/concourse/CompanyRulebookPanel';
 import { useAuth, type AppUser } from '@/contexts/AuthContext';
 import { useLang } from '@/contexts/LanguageContext';
 import { usePortfolio } from '@/contexts/PortfolioContext';
@@ -74,12 +72,9 @@ import { AdminHotelRelationshipManager } from './_components/AdminHotelRelations
 import { HotelTeamPanel } from './_components/HotelTeamPanel';
 import { HotelSwitcher } from './_components/HotelSwitcher';
 import { LegacyOwnershipTransferPanel } from './_components/LegacyOwnershipTransferPanel';
-import {
-  CompanyStructureManager,
-  CompanyStructureOverview,
-} from './_components/CompanyStructureManager';
+import { CompanyStructureManager } from './_components/CompanyStructureManager';
 
-type TabId = 'overview' | 'hotels' | 'people' | 'access';
+type TabId = 'hotels' | 'people' | 'access';
 type HotelStatusFilter = 'all' | 'active' | 'not_active';
 
 interface TabDefinition {
@@ -95,8 +90,7 @@ interface Envelope<T> {
 }
 
 function isTabId(value: string | null): value is TabId {
-  return value === 'overview'
-    || value === 'hotels'
+  return value === 'hotels'
     || value === 'people'
     || value === 'access';
 }
@@ -321,7 +315,7 @@ function CompanyAccessContent() {
   const [retryKey, setRetryKey] = React.useState(0);
   const [tab, setTab] = React.useState<TabId>(() => {
     const requested = searchParams.get('tab');
-    return isTabId(requested) ? requested : 'overview';
+    return isTabId(requested) ? requested : 'hotels';
   });
   const [query, setQuery] = React.useState('');
   const [hotelStatusFilter, setHotelStatusFilter] = React.useState<HotelStatusFilter>('all');
@@ -332,8 +326,6 @@ function CompanyAccessContent() {
   const [lifecycleAction, setLifecycleAction] = React.useState<CompanyLifecycleAction | null>(null);
   const [structure, setStructure] = React.useState<CompanyStructureProjection | null>(null);
   const [structureViewerKey, setStructureViewerKey] = React.useState<string | null>(null);
-  const [structureLoading, setStructureLoading] = React.useState(false);
-  const [structureError, setStructureError] = React.useState<string | null>(null);
   const previewHeadingRef = React.useRef<HTMLHeadingElement | null>(null);
   const focusPreviewAfterRetryRef = React.useRef(false);
   const completeAccessMutation = React.useCallback(() => {
@@ -597,16 +589,12 @@ function CompanyAccessContent() {
     if (portfolioMode || !viewerKey || !currentData || currentData.legacyFallback) {
       setStructure(null);
       setStructureViewerKey(null);
-      setStructureLoading(false);
-      setStructureError(null);
       return;
     }
 
     let cancelled = false;
     setStructure(null);
     setStructureViewerKey(null);
-    setStructureLoading(true);
-    setStructureError(null);
     void (async () => {
       try {
         const response = await fetchWithAuth('/api/company-access/structure');
@@ -618,33 +606,19 @@ function CompanyAccessContent() {
           setStructure(body.data);
           setStructureViewerKey(viewerKey);
         }
-      } catch (caught) {
+      } catch {
         if (!cancelled) {
           setStructure(null);
           setStructureViewerKey(viewerKey);
-          setStructureError(caught instanceof Error
-            ? caught.message
-            : 'Live company structure could not be loaded.');
         }
-      } finally {
-        if (!cancelled) setStructureLoading(false);
       }
     })();
     return () => { cancelled = true; };
   }, [accountId, authLoading, authorizationFingerprint, currentData, portfolioMode, propertyLoading, retryKey, user, userRole]);
-  // Tab NAMES, not tab keys. The `?tab=` values and the `company-tab-*` ids
-  // below never change — old links and bookmarks keep working.
-  //
-  // Until 2026-07-27 a single-hotel manager saw a tab literally called
-  // "My Hotel" *inside* the screen already called My Hotel, and it listed
-  // hotels; their colleagues were filed under "My Team". People went looking
-  // for employees under the tab that shared the page's name and found a hotel
-  // list, which is a large part of why the hotel felt like it had two staff
-  // directories. Every viewer now gets the same two plain nouns: "Hotels" is
-  // buildings, "People" is humans.
+  // The tab values are URL-facing. Overview is a legacy value and is
+  // normalized to Hotels below so old bookmarks still land on useful content.
   const tabs = React.useMemo<TabDefinition[]>(() => {
     return [
-      { id: 'overview', label: 'Overview', icon: Building2 },
       { id: 'hotels', label: 'Hotels', icon: Hotel },
       { id: 'people', label: 'People', icon: Users },
       { id: 'access', label: 'Access', icon: KeyRound },
@@ -653,14 +627,14 @@ function CompanyAccessContent() {
 
   React.useEffect(() => {
     const requested = searchParams.get('tab');
-    const next = isTabId(requested) ? requested : 'overview';
+    const next = isTabId(requested) ? requested : 'hotels';
     setTab(next);
     setQuery('');
     setHotelStatusFilter('all');
     if (next !== 'people') setTeamInviteHotelId(null);
-    if (requested !== null && !isTabId(requested)) {
+    if (requested === 'overview' || (requested !== null && !isTabId(requested))) {
       const params = new URLSearchParams(searchParams.toString());
-      params.set('tab', 'overview');
+      params.set('tab', 'hotels');
       router.replace(`${pathname}?${params.toString()}`, { scroll: false });
     }
   }, [pathname, router, searchParams]);
@@ -668,9 +642,9 @@ function CompanyAccessContent() {
   React.useEffect(() => {
     if (loading || (user && !currentData && !currentLoadError)) return;
     if (tabs.some((item) => item.id === tab)) return;
-    setTab('overview');
+    setTab('hotels');
     const params = new URLSearchParams(searchParams.toString());
-    params.set('tab', 'overview');
+    params.set('tab', 'hotels');
     router.replace(`${pathname}?${params.toString()}`, { scroll: false });
   }, [currentData, currentLoadError, loading, pathname, router, searchParams, tab, tabs, user]);
 
@@ -745,10 +719,6 @@ function CompanyAccessContent() {
   const contextLabel = adminPreview
     ? adminViewerContext?.targetName ?? activeProperty?.name ?? null
     : customerContextLabel;
-  const hotelRosterCount = resolved.viewerContext?.scope === 'property'
-    ? currentStaff.filter((member) => member.isActive !== false).length
-    : null;
-
   React.useEffect(() => {
     if (tab !== 'people' || !canManageTeam || hotelTeamLocked) {
       setTeamInviteHotelId(null);
@@ -920,31 +890,6 @@ function CompanyAccessContent() {
                   title={'Sign in to view access'}
                   description={'Your company access is tied to your Staxis account.'}
                 />
-              ) : tab === 'overview' ? (
-                <>
-                  {selectedPortfolioCompany ? (
-                    <CompanyRulebookPanel
-                      lang={lang}
-                      organizationId={selectedPortfolioCompany.organizationId}
-                    />
-                  ) : !portfolioMode && activePropertyId ? (
-                    <CompanyRulebookPanel
-                      lang={lang}
-                      propertyId={activePropertyId}
-                    />
-                  ) : null}
-                  <OverviewPanel
-                    data={resolved}
-                    structure={currentStructure}
-                    structureLoading={structureLoading}
-                    structureUnavailable={Boolean(structureError)}
-                    lang={lang}
-                    activePropertyName={activeProperty?.name ?? null}
-                    hotelRosterCount={hotelRosterCount}
-                    hotelRosterUnavailable={currentStaffUnavailable}
-                    onViewReceipt={setSelectedReceipt}
-                  />
-                </>
               ) : tab === 'hotels' ? (
                 <HotelsPanel
                   data={resolved}
@@ -1037,96 +982,6 @@ function CompanyAccessContent() {
   );
 }
 
-function OverviewPanel({ data, structure, structureLoading, structureUnavailable, lang, activePropertyName, hotelRosterCount, hotelRosterUnavailable, onViewReceipt }: {
-  data: CompanyAccessData;
-  structure: CompanyStructureProjection | null;
-  structureLoading: boolean;
-  structureUnavailable: boolean;
-  lang: string;
-  activePropertyName: string | null;
-  hotelRosterCount: number | null;
-  hotelRosterUnavailable: boolean;
-  onViewReceipt: (receipt: EffectiveAccessReceipt) => void;
-}) {
-  const primaryReceipt = data.effectiveAccess[0] ?? null;
-  const membershipPeopleCount = data.memberships.filter((membership) => membership.status === 'active').length;
-  const propertyPreview = data.viewerContext?.scope === 'property';
-  const peopleCount = propertyPreview ? hotelRosterCount ?? 0 : membershipPeopleCount;
-  const pendingCount = data.invitations.filter((invitation) => invitation.status === 'pending').length
-    + data.requests.filter((request) => request.status === 'pending').length;
-
-  return (
-    <div className={styles.stack}>
-      {!data.viewerContext ? (
-        <CompanyStructureOverview
-          structure={structure}
-          lang={lang}
-          loading={structureLoading}
-          unavailable={structureUnavailable}
-          legacyFallback={data.legacyFallback}
-        />
-      ) : null}
-      <div className={styles.summaryGrid}>
-        <SummaryCard
-          icon={Hotel}
-          label={'Hotels in scope'}
-          value={String(data.properties.length)}
-          detail={activePropertyName ?? 'No active hotel'}
-        />
-        <SummaryCard
-          icon={Users}
-          label={propertyPreview
-            ? 'Active hotel staff'
-            : 'Active people'}
-          value={propertyPreview && hotelRosterUnavailable ? '—' : String(peopleCount)}
-          detail={propertyPreview
-            ? hotelRosterUnavailable
-              ? 'Roster temporarily unavailable'
-              : 'From the hotel roster'
-            : data.permissions.viewPeople
-              ? 'Based on your scope'
-              : 'Only your access is shown'}
-        />
-        <SummaryCard
-          icon={Clock3}
-          label={'Open access work'}
-          value={String(pendingCount)}
-          detail={'Invites and requests'}
-        />
-      </div>
-
-      {!data.viewerContext ? (
-        <section className={styles.sectionBlock}>
-          <SectionHeading
-            eyebrow={'Your access receipt'}
-            title={'Why you can see this workspace'}
-            description={'Your title describes your work. Your access profile and scope control what you can actually open.'}
-          />
-          {primaryReceipt ? (
-            <AccessReceiptCard receipt={primaryReceipt} properties={data.properties} lang={lang} onView={() => onViewReceipt(primaryReceipt)} featured />
-          ) : (
-            <EmptyState
-              icon={KeyRound}
-              compact
-              title={'No active access grant'}
-              description={'Ask your manager or Staxis support to review your account.'}
-            />
-          )}
-        </section>
-      ) : null}
-
-      <section className={styles.sectionBlock}>
-        <SectionHeading
-          eyebrow={'Your structure'}
-          title={'Companies, regions, and hotels'}
-            description={'Each company relationship shows the hotels in that exact scope.'}
-        />
-        <OrganizationHierarchy data={data} lang={lang} limit={5} />
-      </section>
-    </div>
-  );
-}
-
 function HotelsPanel({ data, structure, lang, activeProperty, query, onQueryChange, statusFilter, onStatusFilterChange, onStructureChanged }: {
   data: CompanyAccessData;
   structure: CompanyStructureProjection | null;
@@ -1150,20 +1005,6 @@ function HotelsPanel({ data, structure, lang, activeProperty, query, onQueryChan
 
   return (
     <div className={styles.stack}>
-      <SectionHeading
-        eyebrow={'Property scope'}
-        title={'Hotels you can access'}
-        description={'Grouped by organization, portfolio, or region.'}
-      />
-      {data.viewerContext?.kind === 'staxis_admin_preview' && activeProperty ? (
-        <AdminHotelRelationshipManager
-          key={activeProperty.id}
-          propertyId={activeProperty.id}
-          propertyName={activeProperty.name}
-          lang={lang}
-          onChanged={onStructureChanged}
-        />
-      ) : null}
       <FilterBar
         lang={lang}
         query={query}
@@ -1188,6 +1029,15 @@ function HotelsPanel({ data, structure, lang, activeProperty, query, onQueryChan
           onAction={() => { onQueryChange(''); onStatusFilterChange('all'); }}
         />
       )}
+      {data.viewerContext?.kind === 'staxis_admin_preview' && activeProperty ? (
+        <AdminHotelRelationshipManager
+          key={activeProperty.id}
+          propertyId={activeProperty.id}
+          propertyName={activeProperty.name}
+          lang={lang}
+          onChanged={onStructureChanged}
+        />
+      ) : null}
       {!data.viewerContext && structure && structure.organizations.length > 0 ? (
         <CompanyStructureManager
           structure={structure}
@@ -1234,9 +1084,7 @@ function PeoplePanel({ data, staff, hotelRosterUnavailable, lang, currentUser, c
         <section className={styles.sectionBlock}>
           <div className={styles.headingWithAction}>
             <SectionHeading
-              eyebrow={'Company people'}
               title={'Memberships and invitations'}
-              description={'Company membership says who belongs to this company. The hotel roster below is the operational team for the selected hotel.'}
             />
             {!adminPreview && !canManageTeam && canInviteAccounts ? (
               <button type="button" className={styles.primaryButton} onClick={() => onInviteDialogOpenChange(true)}>
@@ -1389,30 +1237,18 @@ function AccessPanel({ data, lang, currentUser, currentAccountId, activeProperty
       <div className={styles.stack}>
       <div className={styles.headingWithAction}>
         <SectionHeading
-          eyebrow={adminPreview
-            ? 'Access records'
-            : 'Effective access'}
           title={adminPreview
-            ? 'Customer access records'
-            : 'What you can reach and why'}
-          description={adminPreview
-            ? 'Review this scope without changing customer access.'
-            : 'Manage each person’s role and exact scope: whole company, portfolio or region, or selected hotels. Revocation is immediate and audited.'}
+            ? 'Customer grants'
+            : 'Access grants'}
         />
-        {!adminPreview ? <div className={styles.headingActions}>
-          {data.permissions.requestAccess ? (
+        {!adminPreview && data.permissions.requestAccess ? (
+          <div className={styles.headingActions}>
             <button type="button" className={styles.secondaryButton} onClick={onRequestAccess}>
               <KeyRound size={16} aria-hidden="true" />
               {'Request access'}
             </button>
-          ) : null}
-          {!data.permissions.manageAccess ? (
-            <button type="button" className={styles.secondaryButton} disabled title={'A company administrator manages access.'}>
-              <ShieldCheck size={16} aria-hidden="true" />
-              {'Access is managed'}
-            </button>
-          ) : null}
-        </div> : null}
+          </div>
+        ) : null}
       </div>
 
       {!adminPreview && editorError && data.permissions.manageAccess ? (
@@ -1434,9 +1270,7 @@ function AccessPanel({ data, lang, currentUser, currentAccountId, activeProperty
       {visibleMemberships.length > 0 ? (
         <section className={styles.sectionBlock}>
           <SectionHeading
-            eyebrow={'Organization access'}
             title={'Roles and scopes by person'}
-            description={'Company-wide, portfolio/region, and selected-hotel grants are shown separately from membership and the operational hotel roster.'}
           />
           <div className={styles.listCard} role="list">
             {visibleMemberships.map((membership) => {
@@ -1504,7 +1338,7 @@ function AccessPanel({ data, lang, currentUser, currentAccountId, activeProperty
           <EmptyState
             icon={KeyRound}
             title={adminPreview
-              ? 'No customer access records found'
+              ? 'No customer grants found'
               : 'No access grants found'}
             description={adminPreview
               ? 'There are no customer grant records in this preview scope.'
@@ -1515,7 +1349,6 @@ function AccessPanel({ data, lang, currentUser, currentAccountId, activeProperty
       {data.permissions.viewAccess && data.requests.length > 0 ? (
         <section className={styles.sectionBlock}>
           <SectionHeading
-            eyebrow={'Open work'}
             title={'Requests and invitations'}
             description={'Pending access never counts as active access.'}
           />
@@ -1559,10 +1392,9 @@ function AccessPanel({ data, lang, currentUser, currentAccountId, activeProperty
   );
 }
 
-function OrganizationHierarchy({ data, lang, limit, visiblePropertyIds }: {
+function OrganizationHierarchy({ data, lang, visiblePropertyIds }: {
   data: CompanyAccessData;
   lang: string;
-  limit?: number;
   visiblePropertyIds?: Set<string>;
 }) {
   const realOrganizations = data.organizations.filter((organization) => organization.type !== 'single_hotel');
@@ -1584,8 +1416,6 @@ function OrganizationHierarchy({ data, lang, limit, visiblePropertyIds }: {
     name,
     properties: operated.filter((property) => property.operatingCompanyName === name),
   }));
-  const organizationRows = typeof limit === 'number' ? realOrganizations.slice(0, limit) : realOrganizations;
-
   if (data.properties.length === 0) {
     return (
       <EmptyState
@@ -1599,7 +1429,7 @@ function OrganizationHierarchy({ data, lang, limit, visiblePropertyIds }: {
 
   return (
     <div className={styles.hierarchy}>
-      {organizationRows.map((organization, index) => {
+      {realOrganizations.map((organization, index) => {
         const properties = data.properties.filter((property) => property.organizationId === organization.id);
         if (visiblePropertyIds && properties.every((property) => !visiblePropertyIds.has(property.nodeId))) return null;
         const portfolios = data.portfolios.filter((portfolio) => portfolio.organizationId === organization.id);
@@ -1610,7 +1440,7 @@ function OrganizationHierarchy({ data, lang, limit, visiblePropertyIds }: {
             portfolios={portfolios}
             properties={properties}
             lang={lang}
-            defaultOpen={organizationRows.length === 1 || index === 0}
+            defaultOpen={realOrganizations.length === 1 || index === 0}
           />
         );
       })}
@@ -1724,18 +1554,17 @@ function PropertyRow({ property, lang }: { property: CompanyProperty; lang: stri
   );
 }
 
-function AccessReceiptCard({ receipt, properties, lang, onView, featured = false }: {
+function AccessReceiptCard({ receipt, properties, lang, onView }: {
   receipt: EffectiveAccessReceipt;
   properties: CompanyProperty[];
   lang: string;
   onView: () => void;
-  featured?: boolean;
 }) {
   const hotelNames = receipt.propertyIds
     .map((propertyId) => properties.find((property) => property.id === propertyId)?.name)
     .filter((name): name is string => Boolean(name));
   return (
-    <article className={`${styles.receiptCard}${featured ? ` ${styles.receiptFeatured}` : ''}`}>
+    <article className={styles.receiptCard}>
       <div className={styles.receiptHeader}>
         <span className={styles.receiptSeal}><ShieldCheck size={20} aria-hidden="true" /></span>
         <div>
@@ -1888,25 +1717,12 @@ function AccessPreviewDialog({ receipt, organizations, properties, lang, onClose
   );
 }
 
-function SummaryCard({ icon: Icon, label, value, detail }: { icon: typeof Hotel; label: string; value: string; detail: string }) {
-  return (
-    <article className={styles.summaryCard}>
-      <span className={styles.summaryIcon}><Icon size={18} aria-hidden="true" /></span>
-      <div>
-        <span>{label}</span>
-        <strong>{value}</strong>
-        <small>{detail}</small>
-      </div>
-    </article>
-  );
-}
-
-function SectionHeading({ eyebrow, title, description }: { eyebrow: string; title: string; description: string }) {
+function SectionHeading({ eyebrow, title, description }: { eyebrow?: string; title: string; description?: string }) {
   return (
     <div className={styles.sectionHeading}>
-      <span>{eyebrow}</span>
+      {eyebrow ? <span>{eyebrow}</span> : null}
       <h2>{title}</h2>
-      <p>{description}</p>
+      {description ? <p>{description}</p> : null}
     </div>
   );
 }

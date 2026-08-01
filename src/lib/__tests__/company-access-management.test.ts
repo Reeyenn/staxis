@@ -144,7 +144,7 @@ describe('existing Access-tab management surface contract', () => {
     );
     assert.deepEqual(
       [...tabBlock.matchAll(/id: '([^']+)'/g)].map((match) => match[1]),
-      ['overview', 'hotels', 'people', 'access'],
+      ['hotels', 'people', 'access'],
     );
     assert.match(page, /Edit role and scope/);
     assert.match(page, /api\/company-access\/access-editor/);

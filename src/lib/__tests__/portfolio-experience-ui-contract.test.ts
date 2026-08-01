@@ -161,14 +161,14 @@ describe('hotel drilldown and return contract', () => {
 });
 
 describe('Company Hub portfolio contract', () => {
-  test('keeps exactly Overview, Hotels, People, and Access', () => {
-    assert.match(company, /type TabId = 'overview' \| 'hotels' \| 'people' \| 'access';/);
+  test('keeps exactly Hotels, People, and Access', () => {
+    assert.match(company, /type TabId = 'hotels' \| 'people' \| 'access';/);
     const tabsStart = company.indexOf('const tabs = React.useMemo<TabDefinition[]>');
     const tabsEnd = company.indexOf('}, []);', tabsStart);
     assert.ok(tabsStart >= 0 && tabsEnd > tabsStart);
     const tabIds = [...company.slice(tabsStart, tabsEnd).matchAll(/\{ id: '([^']+)'/g)]
       .map((match) => match[1]);
-    assert.deepEqual(tabIds, ['overview', 'hotels', 'people', 'access']);
+    assert.deepEqual(tabIds, ['hotels', 'people', 'access']);
     assert.match(company, /portfolioMode[\s\S]*'My Portfolio'/);
     assert.match(company, /selectCompanyAccessContext\([\s\S]{0,140}?selectedPortfolioCompany\.organizationId/);
   });
@@ -182,21 +182,10 @@ describe('Company Hub portfolio contract', () => {
     assert.match(company, /const currentData = portfolioMode[\s\S]{0,300}?: null[\s\S]{0,40}?: unscopedCurrentData/);
   });
 
-  test('binds the rulebook to the selected company and keeps hotel mode local', () => {
-    const portfolioBranch = company.indexOf('{selectedPortfolioCompany ? (');
-    const organizationBinding = company.indexOf(
-      'organizationId={selectedPortfolioCompany.organizationId}',
-      portfolioBranch,
-    );
-    const hotelBranch = company.indexOf(') : !portfolioMode && activePropertyId ? (', organizationBinding);
-    const propertyBinding = company.indexOf('propertyId={activePropertyId}', hotelBranch);
-    assert.ok(
-      portfolioBranch >= 0
-        && organizationBinding > portfolioBranch
-        && hotelBranch > organizationBinding
-        && propertyBinding > hotelBranch,
-      'the rulebook must bind portfolio mode to the selected company and hotel mode to the active hotel',
-    );
+  test('keeps the Company Hub independent from rulebook placement', () => {
+    assert.doesNotMatch(company, /CompanyRulebookPanel/);
+    assert.doesNotMatch(company, /organizationId=\{selectedPortfolioCompany\.organizationId\}/);
+    assert.doesNotMatch(company, /propertyId=\{activePropertyId\}/);
     assert.match(companyRulebook, /const activePropertyId = organizationId \? null : \(propertyId \?\? contextPropertyId\)/);
     assert.match(companyRulebook, /const selectorPayload = organizationId[\s\S]{0,160}?\{ propertyId: activePropertyId \}/);
     assert.match(companyRulebook, /identityKey: selectorQuery/);
