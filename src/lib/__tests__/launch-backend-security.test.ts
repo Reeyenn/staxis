@@ -177,7 +177,7 @@ describe('section gates fail closed and cover high-risk routes', () => {
     assert.doesNotMatch(propertyConfig, /requireSectionEnabled|isSectionEnabledForProperty/);
 
     const inventoryHistory = source('src/app/api/inventory/history/route.ts');
-    assert.match(inventoryHistory, /isSectionEnabled\(sectionGate\.enabledSections, ['"]financials['"]\)/);
+    assert.match(inventoryHistory, /isSectionEnabled\(hotel\.enabledSections \?\? null, ['"]financials['"]\)/);
     assert.doesNotMatch(inventoryHistory, /isSectionEnabledForProperty/);
 
     // Internal schedule processors deliberately propagate a section lookup
@@ -249,9 +249,12 @@ describe('section gates fail closed and cover high-risk routes', () => {
   test('every Inventory and Staff API route has a direct or shared section gate', () => {
     assert.match(source('src/lib/ordering/api-gate.ts'), /requireSectionEnabled\(req, pid, ['"]inventory['"]\)/);
     for (const file of routeFilesBelow('src/app/api/inventory')) {
-      assert.match(
-        readFileSync(file, 'utf8'),
-        /requireSectionEnabled|requireOrderingAccess/,
+      const route = readFileSync(file, 'utf8');
+      const directOrSharedGate = /requireSectionEnabled|requireOrderingAccess/.test(route);
+      const facadeSectionGate = /createRequestAuthorization/.test(route)
+        && /session\.authorizeHotel\(\{[\s\S]{0,300}?kind:\s*['"]section['"]/.test(route);
+      assert.ok(
+        directOrSharedGate || facadeSectionGate,
         `${file} must enforce Inventory section policy`,
       );
     }

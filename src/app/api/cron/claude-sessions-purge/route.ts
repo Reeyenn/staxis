@@ -21,9 +21,9 @@
  * │ branch"), not a hotel chore — which is why it lost its slot rather than │
  * │ getting repaired. To re-enable BOTH halves: add `-L` to the curl in     │
  * │ .claude/hooks/heartbeat.sh (or point it at getstaxis.com directly),     │
- * │ then restore this route's five registry rows — vercel.json crons[]      │
- * │ ("30 3 * * *"), SCHEDULE_REGISTRY, the doctor's EXPECTED_CRONS, and     │
- * │ WORKER_META in /api/admin/mission/workers.                              │
+ * │ then restore its vercel.json crons[] entry ("30 3 * * *") and promote  │
+ * │ its retired job-catalog row; Mission Control and CI parity metadata     │
+ * │ are catalog projections.                                                │
  * └─────────────────────────────────────────────────────────────────────────┘
  *
  * Daily at 03:30 UTC. DELETEs rows in `claude_sessions` whose

@@ -1,6 +1,7 @@
 // ─── POST /api/agent/nudges/check ──────────────────────────────────────────
-// Cron entry point. Runs every 5 min via Vercel Cron, iterates all properties
-// and runs nudge checks. Protected by CRON_SECRET.
+// Cron-shaped entry point. It currently has no repository scheduler; a manual
+// call iterates active properties and runs nudge checks. Protected by
+// CRON_SECRET. Any future schedule must promote its staged job-catalog row.
 
 import type { NextRequest } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase-admin';

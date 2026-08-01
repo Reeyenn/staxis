@@ -31,6 +31,7 @@ import {
   type TodayRoomWorkRow,
   type TodayPropertyCounts,
 } from './today-room-work';
+import { fetchTodayHotelOperations } from '@/lib/hotel-operations';
 
 export interface PlanSnapshot {
   date: string;
@@ -111,15 +112,16 @@ export interface PlanSnapshot {
  * fact until now.
  */
 async function buildSnapshot(pid: string, date: string): Promise<PlanSnapshot> {
-  const [workRows, counts, propRow] = await Promise.all([
-    fetchTodayRoomWork(pid, date, { throwOnError: true }),
-    fetchTodayPropertyCounts(pid, date, { throwOnError: true }),
+  const [operations, propRow] = await Promise.all([
+    fetchTodayHotelOperations(pid, date, { throwOnError: true }),
     supabase
       .from('properties')
       .select('checkout_minutes, stayover_day1_minutes, stayover_day2_minutes, shift_minutes')
       .eq('id', pid)
       .maybeSingle(),
   ]);
+
+  const { rooms: workRows, counts } = operations;
 
   if (propRow.error) throw propRow.error;
   if (!propRow.data) throw new Error('Property cleaning settings are unavailable.');

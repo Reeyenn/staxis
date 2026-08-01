@@ -12,9 +12,9 @@
  * │ halves of this route depend on                                          │
  * │ it: the expiry RPC drains pending help requests (15-min TTL, so the     │
  * │ 5-min cadence matters), and the live-frame sweep cleans up after        │
- * │ hard-crashed mapper runs. Restore all five registry rows: vercel.json   │
- * │ crons[] on a five-minute schedule, SCHEDULE_REGISTRY, the doctor's      │
- * │ EXPECTED_CRONS, and WORKER_META in /api/admin/mission/workers.          │
+ * │ hard-crashed mapper runs. A future redesign must add its runtime         │
+ * │ schedule and deliberately replace or promote the retired job-catalog     │
+ * │ row; Mission Control and CI parity metadata are catalog projections.     │
  * └─────────────────────────────────────────────────────────────────────────┘
  *
  * Plan v8 hardening (Codex P1 #5) — runs every few minutes to:

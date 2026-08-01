@@ -90,6 +90,7 @@ import {
 } from '@/lib/pms/feed-health';
 import { CUA_DECOMMISSIONED, decommissionedCheck } from '@/lib/pms/decommission';
 import { FEATURE_ABANDON_MINUTES } from '@/lib/findings/judge-budget';
+import { ACTIVE_MISSION_JOBS, cronCadenceHours } from '@/lib/automation/job-catalog';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -934,90 +935,18 @@ async function checkAppliedMigrations(): Promise<Omit<Check, 'name' | 'durationM
 
 
 /**
- * Cron heartbeat freshness — generalized stand-in for the per-workflow
- * checks the doctor previously didn't have. Each cron route writes its
- * heartbeat at the end of every successful run; this check fails if any
- * expected cron's heartbeat is older than 2× the cadence (e.g. hourly
- * crons fail at 2h stale, daily crons fail at 48h stale).
- *
- * EXPECTED_CRONS encodes the cadence per workflow — keep in sync with
- * .github/workflows/*.yml. Adding a new cron means:
- *   1. Write its heartbeat via writeCronHeartbeat(name) on success.
- *   2. Add an entry here so the doctor watches it.
- *   3. Note it in FAILSAFES.md "Cron heartbeats" section.
- *
- * "first-run grace": if the heartbeat row doesn't exist yet (cron has
- * never succeeded since deploy of this file), we WARN rather than FAIL.
- * Otherwise the deploy itself would turn the doctor red until the next
- * tick — a brief window but enough to scare an operator.
+ * Legacy schedule/cadence projection retained for CI drift tests and older
+ * imports. The runtime Doctor check registry does not consume this list;
+ * Mission Control is the current heartbeat-status surface.
  */
-// GitHub Actions cron skew constant — see checkCronHeartbeatsFresh for
-// the math. Exported so the cron-cadences drift test can sanity-check
-// us if we ever bump it: any future change here should be paired with
-// a deliberate decision about which cron tier needs more headroom.
 export const GH_ACTIONS_SKEW_BUFFER_HOURS = 0.25;
 
-export const EXPECTED_CRONS: Array<{ name: string; cadenceHours: number; description: string }> = [
-  // 2026-07-19: run-scheduled-reports / run-daily-report / run-weekly-report
-  // removed from this list — the automatic report emails were deleted
-  // entirely (owner call), so their heartbeats will never land again.
-  // 2026-07-19 (owner call, pre-launch trim): agent-nudges-check,
-  // compliance-reminders, seal-daily, schedule-auto-fill, expire-trials,
-  // pms-backfill-missing-feeds, run-rules-engine, run-auto-assign, and
-  // lost-found-disposal-check unscheduled — they only matter once a hotel
-  // is live on the PMS robot. Route code kept dormant; re-add here when
-  // re-scheduling (see cron-schedule-registry.ts for the full checklist).
-  // Tight cadences
-  // Plan v4 (2026-05-24): removed `scraper-health` — Railway scraper cron,
-  // service is gone. The new `vercel-watchdog` (5-min, listed at the
-  // bottom) replaces it.
-  // 2026-07-19: compliance-reminders + compliance-anomaly-sweep removed —
-  // the engineering-compliance section was deleted entirely (owner call).
-  // 2026-07-27 (chore audit): webhook-dedup-purge, expire-help-requests and
-  // claude-sessions-purge unscheduled — each swept a table with no live
-  // producer, so the doctor would otherwise report a missing heartbeat
-  // forever. Routes kept dormant; see cron-schedule-registry.ts for the
-  // per-cron re-enable condition (the Stripe one matters when billing ships).
-  { name: 'agent-sweep-reservations',      cadenceHours: 5/60,  description: 'every-5-min reserved-row sweeper (Vercel native cron, Codex round-5 R2)' },
-  { name: 'sweep-account-lifecycle',       cadenceHours: 5/60,  description: 'every-5-min recovery of durable account activation/deactivation intents' },
-  { name: 'process-agent-schedules',       cadenceHours: 5/60,  description: 'every-5-min delivery of due agent reminders and recurring Communications tasks' },
-  { name: 'agent-summarize-long-conversations', cadenceHours: 30/60, description: 'every-30-min summarization of long agent conversations (L4 part B)' },
-  { name: 'agent-consolidate-memory',      cadenceHours: 24,    description: 'nightly per-hotel memory consolidation — auto-learns durable facts from conversations (self-learning Move #2)' },
-  { name: 'walkthrough-heal-stale',        cadenceHours: 30/60, description: 'every-30-min walkthrough recovery (heals stale runs left mid-walkthrough by crashed clients)' },
-  { name: 'sweep-orphan-auth-users',       cadenceHours: 24,    description: 'daily orphan auth-user reconciler — deletes auth.users rows with no matching accounts row (audit fix #4; slowed from 30-min 2026-07-19, owner call)' },
-  { name: 'sweep-mfa-verified-sessions',   cadenceHours: 6,     description: 'every-6-hour sweep of mfa_verified_sessions rows older than 30 days — Phase 2B Door B fix' },
-  // Plan v4 (2026-05-24): removed `seed-rooms-daily` — depended on the
-  // legacy `rooms` table (dropped in v4). CUA writes room state to
-  // pms_room_status_log (event-sourced, no per-day seeding needed).
-  // Daily
-  { name: 'ml-predict-inventory',          cadenceHours: 24,    description: 'daily inventory predictions for tomorrow' },
-  // 2026-05-24: removed `ml-aggregate-priors` — cross-fleet cohort
-  // aggregation is a no-op at N<5 hotels per cohort. Re-add when scale
-  // makes the cron meaningful. (See route.ts for the matching log demote.)
-  { name: 'purge-old-error-logs',          cadenceHours: 24,    description: 'daily error_logs retention sweep' },
-  { name: 'agent-archive-stale-conversations', cadenceHours: 24, description: 'daily 3am archival of stale agent conversations (L4 part A)' },
-  { name: 'agent-heal-counters',           cadenceHours: 24,    description: 'daily 4am counter-drift heal (Round 12 T12.12, invariant doctrine safety net)' },
-  { name: 'agent-costs-rollup',            cadenceHours: 24,    description: 'daily 5:20am AI-books rollup — folds agent_costs into agent_costs_monthly, verifies the fold, and prunes only verified months past the 6-month window (sole owner of agent_costs retention)' },
-  { name: 'pms-auth-codes-purge',          cadenceHours: 24,    description: 'daily 4:45am purge of pms_auth_codes older than 7 days (Okta 2FA inbox, migration 0274)' },
-  { name: 'pms-observations-purge',        cadenceHours: 24,    description: 'daily 5:40am retention sweep for the five append-only PMS observation tables via 0343\'s sanctioned purge function (5-year window — a no-op until report ingestion restarts)' },
-  // 2026-07-29 (owner ruling, restored): run-management-patterns is unscheduled
-  // again, so the doctor must not expect its heartbeat — an expected heartbeat
-  // with no scheduler reports "missing" forever. It re-enters this list with the
-  // rest of the AI layer; see docs/cron-triggers.md, "The AI master switch".
-  // Weekly
-  { name: 'ml-train-inventory',            cadenceHours: 168,   description: 'weekly inventory training (Sunday)' },
-  // Plan v4 (2026-05-24): removed `scraper-weekly-digest` — Railway
-  // scraper observability cron, scraper service is gone.
-  // Plan v4 (2026-05-23): replaces the Railway-hosted vercel-watchdog.js.
-  // Runs the doctor every 5 min, Sentry-alerts on fail with business-hours-only SMS bump.
-  { name: 'vercel-watchdog',               cadenceHours: 5/60,  description: '5-min Vercel cron that polls /api/admin/doctor and alerts on fail (replaces scraper/vercel-watchdog.js post-v4)' },
-  // 2026-05-24: cua-parity-diff retired — shadow gate removed alongside
-  // legacy CA normalizers; new generic-table-writer is the only path now.
-  // 2026-05-24: sick-callout coverage flow (feature #6). Sweeps callouts
-  // whose redistribute_at has passed (or whose 'after_current_room'
-  // gate is now satisfied) and fires the redistribute. Safety net for
-  // inline failures on the report routes.
-];
+export const EXPECTED_CRONS: Array<{ name: string; cadenceHours: number; description: string }> =
+  ACTIVE_MISSION_JOBS.map((job) => ({
+    name: job.heartbeat.name,
+    cadenceHours: cronCadenceHours(job.schedule),
+    description: job.heartbeat.cadenceDescription,
+  }));
 
 
 

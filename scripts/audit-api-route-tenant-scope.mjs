@@ -156,11 +156,22 @@ function checkFile(f, kind) {
 
   const usesAdmin = ADMIN_IMPORT_RX.test(src);
   const usesServer = SERVER_CLIENT_IMPORT_RX.test(src);
-  if (!usesAdmin && !usesServer) return;
 
   if (kind === 'route') {
     if (!METHOD_EXPORT_RX.test(src)) return; // not a handler-exporting file
-  } else if (kind === 'page') {
+    if (/\bcreateRequestAuthorizationWithDependencies\b/.test(src)) {
+      violations.push({
+        file: rel,
+        reason: 'route imports the dependency-injected authorization test seam; use createRequestAuthorization instead',
+      });
+      scanned++;
+      return;
+    }
+  }
+
+  if (!usesAdmin && !usesServer) return;
+
+  if (kind === 'page') {
     // Server components that import supabaseAdmin are a red flag in their
     // own right — most should go through createSupabaseServerClient
     // (RLS-enforced) instead. The escape marker exists for genuine

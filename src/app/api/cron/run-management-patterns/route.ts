@@ -17,11 +17,9 @@
  * run-findings, findings-sweep and findings-janitor have never been scheduled
  * either. This route was briefly scheduled at '0 8 * * *'; on a fleet whose only
  * management company is the seeded demo one, that started the AI on nobody's
- * behalf. To enable, four places:
+ * behalf. To enable, two coordinated changes:
  *   1. vercel.json                        → { "path": "/api/cron/run-management-patterns", "schedule": "0 8 * * *" }
- *   2. src/lib/cron-schedule-registry.ts  → { heartbeatName: 'run-management-patterns', source: { kind: 'vercel', cronPath: '/api/cron/run-management-patterns' }, cronExpr: '0 8 * * *' }
- *   3. src/app/api/admin/doctor/route.ts  → EXPECTED_CRONS entry, cadenceHours: 24
- *   4. src/app/api/admin/mission/workers/route.ts → WORKER_META line
+ *   2. src/lib/automation/job-catalog.ts  → promote its staged row to active
  * Do not flip this one on its own. docs/cron-triggers.md, "The AI master switch",
  * is the single checklist that turns all four crons on together.
  *
