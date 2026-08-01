@@ -34,6 +34,7 @@ export async function listInventoryOrders(
     .eq('property_id', pid)
     .eq('entry_kind', 'receipt')
     .order('received_at', { ascending: false })
+    .order('id', { ascending: false })
     .limit(limit);
   if (error) { logErr('listInventoryOrders', error); throw error; }
   return asRecordRows(data).map(fromInventoryOrderRow);

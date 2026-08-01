@@ -46,7 +46,7 @@ function nowMinutes(): number {
 
 export function DayBoard({
   shifts, presets, isToday, lang, nameOf, otTitles,
-  onUpdate, onGestureStart, onGestureEnd, onRemove, onTapShift,
+  readOnlyStaffIds, onUpdate, onGestureStart, onGestureEnd, onRemove, onTapShift,
 }: {
   shifts: BoardShift[];
   presets: ShiftPreset[];
@@ -55,6 +55,8 @@ export function DayBoard({
   nameOf: (staffId: string) => string;
   /** staffId → tooltip for staff projected over their weekly-hours cap. */
   otTitles: Map<string, string>;
+  /** Archived historical assignments remain visible but cannot be mutated. */
+  readOnlyStaffIds?: ReadonlySet<string>;
   /** Local-only patch during a drag (no save). */
   onUpdate: (id: string, patch: Partial<BoardShift>) => void;
   /** Called once at first real movement: push an undo snapshot + mark gesture. */
@@ -129,6 +131,7 @@ export function DayBoard({
                 presets={presets} nameOf={nameOf}
                 reducedMotion={reducedMotion}
                 otTitle={otTitles.get(sh.staffId)}
+                readOnly={readOnlyStaffIds?.has(sh.staffId) === true}
                 onUpdate={onUpdate}
                 onGestureStart={onGestureStart}
                 onGestureEnd={onGestureEnd}
@@ -156,7 +159,7 @@ export function DayBoard({
 // ── One staff row with a draggable / resizable shift block ────────────────
 function ShiftRow({
   sh, tone, dim, rangeStart, rangeEnd, span, ticks, nowMin,
-  presets, nameOf, reducedMotion, otTitle,
+  presets, nameOf, reducedMotion, otTitle, readOnly,
   onUpdate, onGestureStart, onGestureEnd, onHoverLane, onRemove, onTapShift,
 }: {
   sh: BoardShift;
@@ -171,6 +174,7 @@ function ShiftRow({
   nameOf: (staffId: string) => string;
   reducedMotion: boolean;
   otTitle?: string;
+  readOnly: boolean;
   onUpdate: (id: string, patch: Partial<BoardShift>) => void;
   onGestureStart: () => void;
   onGestureEnd: () => void;
@@ -216,7 +220,7 @@ function ShiftRow({
 
   // Exit mirrors the entrance, then actually removes from state.
   const animateOut = () => {
-    if (leaving) return;
+    if (leaving || readOnly) return;
     if (reducedMotion) { onRemove(sh.id); return; }
     setLeaving(true);
     const blk = blockRef.current, row = rowRef.current, gut = gutterRef.current;
@@ -234,6 +238,7 @@ function ShiftRow({
   };
 
   const startDrag = (e: React.PointerEvent, mode: 'move' | 'resize') => {
+    if (readOnly) return;
     e.preventDefault();
     e.stopPropagation();
     const track = (e.currentTarget as HTMLElement).closest('[data-track]');
@@ -304,6 +309,12 @@ function ShiftRow({
           fontSize: 12, fontWeight: 600, color: T.ink, minWidth: 0,
           whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
         }}>{name}</span>
+        {readOnly ? (
+          <span style={{
+            fontFamily: fonts.mono, fontSize: 7.5, color: T.ink3,
+            textTransform: 'uppercase', letterSpacing: '0.05em',
+          }}>{'Archived'}</span>
+        ) : null}
         {otTitle && (
           <span title={otTitle} style={{
             fontFamily: fonts.mono, fontSize: 8, fontWeight: 700, letterSpacing: '0.04em',
@@ -328,11 +339,11 @@ function ShiftRow({
         {/* block */}
         <div
           ref={blockRef}
-          onPointerDown={e => startDrag(e, 'move')}
-          title={`${nameOf(sh.staffId)}${sh.note ? `: ${sh.note}` : ''}`}
+          onPointerDown={readOnly ? undefined : e => startDrag(e, 'move')}
+          title={`${nameOf(sh.staffId)}${readOnly ? ' · Archived history' : ''}${sh.note ? `: ${sh.note}` : ''}`}
           style={{
             position: 'absolute', top: 4, height: 26, left: `${left}%`, width: `${width}%`,
-            borderRadius: 8, background: dim, border: `1px solid ${tone}66`, cursor: 'grab',
+            borderRadius: 8, background: dim, border: `1px solid ${tone}66`, cursor: readOnly ? 'default' : 'grab',
             display: 'flex', alignItems: 'center', gap: 7, padding: '0 8px',
             overflow: 'hidden', userSelect: 'none', touchAction: 'none', boxSizing: 'border-box',
           }}
@@ -351,18 +362,20 @@ function ShiftRow({
             color: tone, whiteSpace: 'nowrap',
           }}>{fmtMinRange(sh.startMin, sh.endMin)}</span>
           {/* resize handle */}
-          <span
-            onPointerDown={e => startDrag(e, 'resize')}
-            style={{
-              position: 'absolute', right: 0, top: 0, bottom: 0, width: 9, cursor: 'ew-resize',
-              borderRight: `3px solid ${tone}`,
-              borderTopRightRadius: 8, borderBottomRightRadius: 8,
-              opacity: hover ? 0.9 : 0.35, touchAction: 'none',
-            }}
-          />
+          {!readOnly ? (
+            <span
+              onPointerDown={e => startDrag(e, 'resize')}
+              style={{
+                position: 'absolute', right: 0, top: 0, bottom: 0, width: 9, cursor: 'ew-resize',
+                borderRight: `3px solid ${tone}`,
+                borderTopRightRadius: 8, borderBottomRightRadius: 8,
+                opacity: hover ? 0.9 : 0.35, touchAction: 'none',
+              }}
+            />
+          ) : null}
         </div>
         {/* remove */}
-        {hover && !leaving && (
+        {hover && !leaving && !readOnly && (
           <button
             onClick={animateOut}
             title="Remove"

@@ -28,10 +28,15 @@ import { supabaseAdmin } from '@/lib/supabase-admin';
 import { ok, err, ApiErrorCode } from '@/lib/api-response';
 import { getOrMintRequestId, log } from '@/lib/log';
 import { errToString } from '@/lib/utils';
-import { verifyTeamManager, callerCapabilityDecision } from '@/lib/team-auth';
+import {
+  verifyTeamManager,
+  callerCapabilityDecision,
+  hotelWriteDecisionForUserId,
+} from '@/lib/team-auth';
 import { capabilityUnavailableResponse } from '@/lib/capabilities/api-gate';
 import { requireSectionEnabled } from '@/lib/sections/server';
 import { validateUuid } from '@/lib/api-validate';
+import { staffScheduleGuardConflict } from '@/lib/schedule/assignment-guards';
 import type { StaffDepartment } from '@/types';
 
 export const runtime = 'nodejs';
@@ -68,14 +73,6 @@ interface FillDay {
 function toMin(t: string): number {
   const [h, m] = t.split(':').map(Number);
   return h * 60 + m;
-}
-
-/** YYYY-MM-DD of the Sunday on or before the given date (UTC math on the string). */
-function sundayOf(date: string): string {
-  const [y, m, d] = date.split('-').map(Number);
-  const dt = new Date(Date.UTC(y, m - 1, d));
-  dt.setUTCDate(dt.getUTCDate() - dt.getUTCDay());
-  return dt.toISOString().slice(0, 10);
 }
 
 export async function POST(req: NextRequest) {
@@ -128,173 +125,75 @@ export async function POST(req: NextRequest) {
     }
   }
 
-  // Staff that may legitimately appear on this property's schedule.
-  const { data: staffRows, error: staffErr } = await supabaseAdmin
-    .from('staff').select('id, is_active')
-    .eq('property_id', hotelId);
-  if (staffErr) {
-    log.error('[fill:POST] staff query failed', { requestId, msg: errToString(staffErr) });
-    return err('Failed to read staff', { requestId, status: 500, code: ApiErrorCode.InternalError });
-  }
-  const activeStaff = new Set(
-    (staffRows ?? []).filter(r => r.is_active !== false).map(r => String(r.id)),
+  // Re-resolve current hotel standing immediately before the single atomic
+  // service-role mutation. A caller may retain portfolio/read reach after
+  // their right to operate this hotel has been removed.
+  const commitDecision = await hotelWriteDecisionForUserId(
+    caller.authUserId,
+    hotelId,
+    'manage_shifts',
   );
+  if (commitDecision === 'unavailable') return capabilityUnavailableResponse(requestId);
+  if (commitDecision === 'denied') {
+    return err('Forbidden', { requestId, status: 403, code: ApiErrorCode.Forbidden });
+  }
 
-  // Approved time-off in the affected window → those (staff, date) pairs are
-  // skipped, exactly like the old Copy Last Week behaviour.
-  const dates = days.map(d => d.date).sort();
-  const { data: tor, error: torErr } = await supabaseAdmin
-    .from('time_off_requests').select('staff_id, request_date')
-    .eq('property_id', hotelId).eq('status', 'approved')
-    .gte('request_date', dates[0]).lte('request_date', dates[dates.length - 1]);
-  if (torErr) {
-    // Fail closed. Treating a failed time-off lookup as "no time off" could
-    // silently schedule people on approved leave.
-    log.error('[fill:POST] time-off query failed', { requestId, msg: errToString(torErr) });
-    return err('Failed to verify approved time off', {
-      requestId,
-      status: 500,
-      code: ApiErrorCode.InternalError,
+  const rpcDays = [...days]
+    .sort((a, b) => a.date.localeCompare(b.date))
+    .map(day => ({
+      date: day.date,
+      shifts: day.shifts.map(shift => ({
+        staffId: shift.staffId,
+        department: shift.department,
+        startTime: shift.startTime,
+        endTime: shift.endTime,
+        note: cleanNote(shift.note),
+        overrideTimeOff: shift.overrideTimeOff === true,
+      })),
+    }));
+  const { data, error } = await supabaseAdmin.rpc('staxis_replace_staff_schedule_days', {
+    p_property_id: hotelId,
+    p_days: rpcDays,
+    p_published_by: caller.accountId,
+  });
+  if (error) {
+    log.error('[fill:POST] atomic replacement failed', { requestId, msg: errToString(error) });
+    const conflict = staffScheduleGuardConflict(error);
+    if (conflict || error.code === '23P01') {
+      return err(
+        conflict === 'approved_time_off'
+          ? 'Schedule changed because time off was approved. Refresh and try again.'
+          : conflict === 'inactive_staff'
+            ? 'Schedule changed because a staff profile was archived. Refresh and try again.'
+            : conflict === 'archived_history'
+              ? 'Archived shift history cannot be changed. Refresh and try again.'
+              : 'Schedule changed while it was being saved. Refresh and try again.',
+        { requestId, status: 409, code: ApiErrorCode.IdempotencyConflict },
+      );
+    }
+    return err('Failed to save schedule', {
+      requestId, status: 500, code: ApiErrorCode.InternalError,
     });
   }
-  const torKeys = new Set((tor ?? []).map(r => `${r.staff_id}:${r.request_date}`));
 
-  let inserted = 0, updated = 0, deleted = 0, skippedTimeOff = 0, skippedUnknown = 0;
-
-  for (const day of days) {
-    const { data: existing, error: exErr } = await supabaseAdmin
-      .from('scheduled_shifts')
-      .select('id, staff_id, department, start_time, end_time, status, note')
-      .eq('property_id', hotelId).eq('shift_date', day.date).eq('kind', 'shift');
-    if (exErr) {
-      log.error('[fill:POST] existing query failed', { requestId, msg: errToString(exErr) });
-      return err('Failed to read existing shifts', { requestId, status: 500, code: ApiErrorCode.InternalError });
-    }
-    const existingStaff = new Set((existing ?? []).map(r => String(r.staff_id)));
-
-    // Desired end-state, one shift per staff member (board invariant; the DB
-    // exclusion constraint enforces the same thing). Approved time off only
-    // blocks NET-NEW placements without an explicit manager override — a
-    // shift that already exists on the day is the manager's call and must
-    // never be silently dropped by an unrelated re-save of the day.
-    const desired = new Map<string, FillShift>();
-    for (const s of day.shifts) {
-      if (desired.has(s.staffId)) continue;
-      if (!activeStaff.has(s.staffId)) { skippedUnknown++; continue; }
-      if (
-        torKeys.has(`${s.staffId}:${day.date}`)
-        && !existingStaff.has(s.staffId)
-        && !s.overrideTimeOff
-      ) { skippedTimeOff++; continue; }
-      desired.set(s.staffId, s);
-    }
-
-    const keepRowByStaff = new Map<string, { id: string; department: string; start: string; end: string; status: string; note: string | null }>();
-    const toDelete: string[] = [];
-    for (const row of existing ?? []) {
-      const sid = row.staff_id ? String(row.staff_id) : null;
-      if (!sid || !desired.has(sid) || keepRowByStaff.has(sid)) {
-        toDelete.push(String(row.id));
-        continue;
-      }
-      keepRowByStaff.set(sid, {
-        id: String(row.id),
-        department: String(row.department),
-        start: String(row.start_time).slice(0, 5),
-        end: String(row.end_time).slice(0, 5),
-        status: String(row.status),
-        note: row.note == null ? null : String(row.note),
-      });
-    }
-
-    const toInsert: Record<string, unknown>[] = [];
-    for (const [staffId, want] of desired) {
-      const cur = keepRowByStaff.get(staffId);
-      const wantNote = cleanNote(want.note);
-      if (!cur) {
-        toInsert.push({
-          property_id: hotelId,
-          staff_id: staffId,
-          department: want.department,
-          shift_date: day.date,
-          start_time: want.startTime,
-          end_time: want.endTime,
-          kind: 'shift',
-          status: 'published',
-          note: wantNote,
-        });
-        continue;
-      }
-      const changed = cur.department !== want.department
-        || cur.start !== want.startTime || cur.end !== want.endTime
-        || (cur.note ?? null) !== wantNote;
-      // 'sent'/'confirmed' are mid-SMS-cycle (housekeeping flow) — keep them
-      // unless the shift itself changed; everything else lands at published.
-      const nextStatus = !changed && (cur.status === 'sent' || cur.status === 'confirmed')
-        ? cur.status : 'published';
-      if (!changed && nextStatus === cur.status) continue;
-      const { error: upErr } = await supabaseAdmin
-        .from('scheduled_shifts')
-        .update({
-          department: want.department,
-          start_time: want.startTime,
-          end_time: want.endTime,
-          status: nextStatus,
-          note: wantNote,
-        })
-        .eq('id', cur.id).eq('property_id', hotelId);
-      if (upErr) {
-        log.error('[fill:POST] update failed', { requestId, msg: errToString(upErr) });
-        return err('Failed to update a shift', { requestId, status: 500, code: ApiErrorCode.InternalError });
-      }
-      updated++;
-    }
-
-    if (toInsert.length > 0) {
-      const { error: insErr } = await supabaseAdmin.from('scheduled_shifts').insert(toInsert);
-      if (insErr) {
-        log.error('[fill:POST] insert failed', { requestId, msg: errToString(insErr) });
-        return err('Failed to add shifts', { requestId, status: 500, code: ApiErrorCode.InternalError });
-      }
-      inserted += toInsert.length;
-    }
-
-    // Delete stale rows last. If an update/insert fails, preserving extra old
-    // shifts is recoverable; deleting first could leave the whole day blank.
-    if (toDelete.length > 0) {
-      const { error: delErr } = await supabaseAdmin
-        .from('scheduled_shifts').delete()
-        .eq('property_id', hotelId).in('id', toDelete);
-      if (delErr) {
-        log.error('[fill:POST] delete failed', { requestId, msg: errToString(delErr) });
-        return err('Failed to clear replaced shifts', { requestId, status: 500, code: ApiErrorCode.InternalError });
-      }
-      deleted += toDelete.length;
-    }
+  const result = data && typeof data === 'object'
+    ? data as Record<string, unknown>
+    : null;
+  if (!result || result.ok !== true) {
+    log.error('[fill:POST] atomic replacement returned failure', {
+      requestId,
+      reason: typeof result?.reason === 'string' ? result.reason : 'invalid_result',
+    });
+    return err('Failed to save schedule', {
+      requestId, status: 500, code: ApiErrorCode.InternalError,
+    });
   }
 
-  // Make the affected weeks visible to staff (My Shifts gates future weeks
-  // on a week_publications row). One row per week is enough — insert only
-  // when the (Sunday-keyed) week has none yet.
-  const weekStarts = [...new Set(days.map(d => sundayOf(d.date)))];
-  for (const ws of weekStarts) {
-    const { data: existingPub } = await supabaseAdmin
-      .from('week_publications').select('id')
-      .eq('property_id', hotelId).eq('week_start', ws).limit(1).maybeSingle();
-    if (!existingPub) {
-      const { error: pubErr } = await supabaseAdmin
-        .from('week_publications').insert({
-          property_id: hotelId,
-          week_start: ws,
-          published_by: caller.accountId,
-        });
-      if (pubErr) {
-        log.error('[fill:POST] publication stamp failed', { requestId, msg: errToString(pubErr) });
-        // Non-fatal: shifts are saved; the week stamp can be retried by the
-        // next edit. Surface in the response instead of failing the write.
-      }
-    }
-  }
-
-  return ok({ inserted, updated, deleted, skippedTimeOff, skippedUnknown }, { requestId });
+  return ok({
+    inserted: Number(result.inserted ?? 0),
+    updated: Number(result.updated ?? 0),
+    deleted: Number(result.deleted ?? 0),
+    skippedTimeOff: Number(result.skippedTimeOff ?? 0),
+    skippedUnknown: Number(result.skippedUnknown ?? 0),
+  }, { requestId });
 }

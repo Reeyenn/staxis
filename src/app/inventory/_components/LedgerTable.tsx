@@ -58,7 +58,7 @@ interface LedgerTableProps {
   /** Open the Add/Edit sheet for a row (click anywhere outside the stepper). */
   onEdit?: (item: DisplayItem) => void;
   /** Persist a single-item quick count (debounced save lives in the shell). */
-  onQuickCount: (itemId: string, nextValue: number) => void;
+  onQuickCount?: (itemId: string, nextValue: number) => void;
   /** Items whose exact request is in flight or has an ambiguous result. */
   quickCountLockedIds?: ReadonlySet<string>;
   /** Open the full Count overlay (empty / not-counted CTAs). */
@@ -310,9 +310,11 @@ export function LedgerTable({
         </div>
       </div>
 
-      <div style={{ textAlign: 'center', marginTop: 10 }}>
-        <Caps size={8.5}>{tx.ledgerHint}</Caps>
-      </div>
+      {(onEdit || onQuickCount) && (
+        <div style={{ textAlign: 'center', marginTop: 10 }}>
+          <Caps size={8.5}>{tx.ledgerHint}</Caps>
+        </div>
+      )}
 
       {/* Not-counted items keep a way to reach the full count flow. */}
       {onCount && uncounted.length > 0 && !dayOne && (
@@ -368,7 +370,7 @@ function LedgerRow({
   canViewFinancials: boolean;
   customNameById?: ReadonlyMap<string, string>;
   onEdit?: (item: DisplayItem) => void;
-  onQuickCount: (itemId: string, nextValue: number) => void;
+  onQuickCount?: (itemId: string, nextValue: number) => void;
   quickCountLocked: boolean;
 }) {
   const uncounted = d.uncounted;
@@ -471,11 +473,13 @@ function LedgerRow({
 
       {/* On hand · quick count */}
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8 }}>
-        <StepBtn
-          kind="minus"
-          disabled={quickCountLocked}
-          onClick={(e) => { stop(e); onQuickCount(d.id, onHand - 1); }}
-        />
+        {onQuickCount ? (
+          <StepBtn
+            kind="minus"
+            disabled={quickCountLocked || onHand === 0}
+            onClick={(e) => { stop(e); onQuickCount(d.id, Math.max(0, onHand - 1)); }}
+          />
+        ) : null}
         <span
           style={{
             width: 44,
@@ -490,11 +494,13 @@ function LedgerRow({
         >
           {onHand}
         </span>
-        <StepBtn
-          kind="plus"
-          disabled={quickCountLocked}
-          onClick={(e) => { stop(e); onQuickCount(d.id, onHand + 1); }}
-        />
+        {onQuickCount ? (
+          <StepBtn
+            kind="plus"
+            disabled={quickCountLocked}
+            onClick={(e) => { stop(e); onQuickCount(d.id, onHand + 1); }}
+          />
+        ) : null}
       </div>
 
       {/* Par */}

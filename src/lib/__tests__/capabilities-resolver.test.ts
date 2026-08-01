@@ -84,12 +84,22 @@ describe('can() — everyone-everything default', () => {
       assert.equal(can({ role: 'general_manager' }, cap), true, `general_manager should default-have ${cap}`);
     }
   });
-  it('the manager floor covers the sensitive caps it should (wages/financials/audit/settings/team/reports)', () => {
-    for (const cap of ['view_wages', 'view_financials', 'view_activity_log', 'manage_settings', 'manage_team', 'manage_users', 'run_reports'] as CapabilityKey[]) {
+  it('the manager floor covers the sensitive caps it should (wages/financials/audit/settings/team/scheduling/reports)', () => {
+    for (const cap of ['view_wages', 'view_financials', 'view_activity_log', 'manage_settings', 'manage_team', 'manage_users', 'manage_shifts', 'run_reports'] as CapabilityKey[]) {
       assert.equal(MANAGER_FLOOR_CAPABILITIES.has(cap), true, `${cap} should be a manager-floor cap`);
     }
     // A clearly line-staff-safe cap must NOT be floored.
     assert.equal(MANAGER_FLOOR_CAPABILITIES.has('use_lost_and_found'), false);
+  });
+  it('manage_shifts is manager-only and cannot be granted to a line role', () => {
+    for (const role of ['front_desk', 'housekeeping', 'maintenance', 'staff'] as const) {
+      assert.equal(can({ role }, 'manage_shifts'), false);
+      assert.equal(can({ role }, 'manage_shifts', {
+        manage_shifts: { [role]: true },
+      }), false);
+    }
+    assert.equal(can({ role: 'owner' }, 'manage_shifts'), true);
+    assert.equal(can({ role: 'general_manager' }, 'manage_shifts'), true);
   });
   it('run_reports (self-serve report hub) is manager-only and override-proof (embeds money + audit log)', () => {
     // The reports hub can render inventory spend, budgets, and the activity

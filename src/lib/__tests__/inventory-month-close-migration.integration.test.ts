@@ -60,7 +60,10 @@ describe('inventory month close migration 0322', () => {
     await pg.query(`select set_config('request.jwt.claim.role', 'service_role', false)`);
     await pg.query(
       `select public.staxis_start_inventory_month_close(
-         $1, date_trunc('month', now())::date, $2, $3, 'Manager'
+         $1,
+         (select date_trunc('month', now() at time zone p.timezone)::date
+            from public.properties p where p.id=$1),
+         $2, $3, 'Manager'
        )`,
       [PROPERTY_ID, START_REQUEST_ID, USER_ID],
     );

@@ -35,6 +35,7 @@ describe('inventory manager workflow regressions', () => {
 
   test('mobile inventory exposes search, overflow controls, and per-item save locks', () => {
     const mobile = source('app', 'inventory', '_components', 'MobileInventoryTriage.tsx');
+    const desktop = source('app', 'inventory', '_components', 'LedgerTable.tsx');
     const css = source('app', 'inventory', '_components', 'MobileInventoryTriage.module.css');
     const shell = source('app', 'inventory', '_components', 'InventoryShell.tsx');
 
@@ -45,6 +46,8 @@ describe('inventory manager workflow regressions', () => {
     assert.match(mobile, /aria-busy=\{quickCountLocked\}/);
     assert.match(mobile, /disabled=\{quickCountLocked \|\| onHand === 0\}/);
     assert.match(mobile, /disabled=\{quickCountLocked\}/);
+    assert.match(desktop, /disabled=\{quickCountLocked \|\| onHand === 0\}/);
+    assert.match(desktop, /onQuickCount\(d\.id, Math\.max\(0, onHand - 1\)\)/);
     assert.match(shell, /<MobileInventoryTriage[\s\S]*?query=\{query\}[\s\S]*?quickCountLockedIds=\{quickCountLockedIds\}/);
     assert.match(css, /\.searchWrap\s*\{[\s\S]*?height:\s*48px/);
     assert.match(css, /\.railScrollButton\s*\{[\s\S]*?width:\s*44px;[\s\S]*?height:\s*44px/);

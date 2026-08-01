@@ -6,13 +6,13 @@
 //   • Open shifts in your dept that you can pick up
 //   • Time-off requests (real list + "+ Request" modal)
 //
-// Requires accounts.staff_id to be set. If null, render a friendly
+// Requires an active account/property staff link. If absent, render a friendly
 // empty state — the manager has to link the login to the person's schedule
 // profile from My Hotel → People.
 
 'use client';
 
-import React, { useId, useMemo, useState } from 'react';
+import React, { useEffect, useId, useMemo, useState } from 'react';
 import { useAuth } from '@/contexts/AuthContext';
 import { useLang } from '@/contexts/LanguageContext';
 import { useProperty } from '@/contexts/PropertyContext';
@@ -21,10 +21,12 @@ import { RequestTimeoutError } from '@/lib/fetch-deadline';
 import type { ScheduledShift, TimeOffRequest } from '@/types';
 import { T, fonts, deptMeta, asDeptKey, Btn, Caps } from './_tokens';
 import { Avatar } from './_people';
-import { useWeekShifts, mondayOf } from './useWeekShifts';
-import { fmtRange } from '@/lib/schedule-board';
+import { useWeekShifts } from './useWeekShifts';
+import { fmtRange, sundayOf } from '@/lib/schedule-board';
 import { isStaffVisibleScheduleStatus } from './staff-shift-visibility';
 import { useStaffDialog } from './useStaffDialog';
+import { useActiveStaffIdentity } from './useActiveStaffIdentity';
+import { propertyLocalToday } from '@/lib/schedule/local-date';
 import dialogStyles from './StaffDialog.module.css';
 
 export function MyShifts({ previewStaffId }: { previewStaffId?: string | null } = {}) {
@@ -56,18 +58,38 @@ function MyShiftsPropertyView({
     activeProperty, activePropertyId, staff, staffLoaded, staffLoadFailed,
   } = useProperty();
   const [requestOpen, setRequestOpen] = useState(false);
-  const weekStart = useMemo(() => mondayOf(new Date()), []);
+  const [today, setToday] = useState(() => propertyLocalToday(new Date(), activeProperty?.timezone ?? null));
+  useEffect(() => {
+    const refreshToday = () => {
+      const next = propertyLocalToday(new Date(), activeProperty?.timezone ?? null);
+      setToday(current => current === next ? current : next);
+    };
+    refreshToday();
+    const interval = setInterval(refreshToday, 60_000);
+    return () => clearInterval(interval);
+  }, [activeProperty?.timezone]);
+  const weekStart = useMemo(() => sundayOf(today), [today]);
 
   // In demo "preview as staff" mode the page passes the staff row to render
   // as; otherwise this is the logged-in employee's own linked staffId.
-  const staffId = previewStaffId !== undefined ? previewStaffId : (user?.staffId ?? null);
+  const identity = useActiveStaffIdentity(activePropertyId, previewStaffId === undefined);
+  const staffId = previewStaffId !== undefined ? previewStaffId : identity.staffId;
   const me = useMemo(() => staff.find(s => s.id === staffId) ?? null, [staff, staffId]);
   const {
     days, byStaff, openShifts, torByStaff,
     loading: shiftsLoading, loadError: shiftsLoadError, retry: retryShifts,
-  } = useWeekShifts(activePropertyId, weekStart, staffId);
+  } = useWeekShifts(activePropertyId, weekStart, staffId, today);
 
   const propName = activeProperty?.name ?? 'Your property';
+
+  if (previewStaffId === undefined && (identity.loading || identity.error)) {
+    return (
+      <MyShiftsLoadState
+        error={identity.error}
+        onRetry={identity.retry}
+      />
+    );
+  }
 
   if (staffId && (!staffLoaded || staffLoadFailed)) {
     return (
@@ -102,7 +124,6 @@ function MyShiftsPropertyView({
   // `published` immediately; the legacy week stamp is non-fatal bookkeeping
   // and must not hide a successfully saved shift or expose a draft.
   const myWeekFull = byStaff[me.id] ?? Array.from({ length: 7 }, () => ({ kind: 'off' as const }));
-  const today = new Date().toLocaleDateString('en-CA');
   const myWeek = myWeekFull.map((c) => {
     if (c.kind !== 'shift') return c;
     return isStaffVisibleScheduleStatus(c.shift.status) ? c : { kind: 'off' as const };
@@ -273,6 +294,7 @@ function MyShiftsPropertyView({
         <RequestTimeOffModal
           hotelId={activePropertyId ?? ''}
           scopeKey={scopeKey}
+          today={today}
           onClose={() => setRequestOpen(false)}
           es={es}
         />
@@ -604,9 +626,8 @@ function TorRow({ r, es }: { r: TimeOffRequest; es: boolean }) {
 
 // ── Request modal ─────────────────────────────────────────────────────────
 function RequestTimeOffModal({
-  hotelId, scopeKey, onClose, es,
-}: { hotelId: string; scopeKey: string; onClose: () => void; es: boolean }) {
-  const today = new Date().toLocaleDateString('en-CA');
+  hotelId, scopeKey, today, onClose, es,
+}: { hotelId: string; scopeKey: string; today: string; onClose: () => void; es: boolean }) {
   const [requestDate, setRequestDate] = useState<string>(today);
   const [reason, setReason] = useState<string>('');
   const [busy, setBusy] = useState(false);

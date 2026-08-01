@@ -32,7 +32,7 @@ import { AlertCircle, CheckCircle2, Trash2, UserRoundCog } from 'lucide-react';
 
 import { DraftNumberInput } from '@/components/DraftNumberInput';
 import { fetchWithAuth } from '@/lib/api-fetch';
-import { addStaffMember, deleteStaffMember, updateStaffMember } from '@/lib/db';
+import { addStaffMember, updateStaffMember } from '@/lib/db';
 import type { SchedulePriority, StaffDepartment, StaffMember } from '@/types';
 
 import type { HotelTeamLang } from './HotelTeamPanel';
@@ -90,7 +90,6 @@ interface EmploymentDraft {
   maxWeeklyHours: number;
   maxDaysPerWeek: number;
   vacationDates: string;
-  isActive: boolean;
   schedulePriority: SchedulePriority;
 }
 
@@ -128,7 +127,6 @@ function draftFrom(
     maxWeeklyHours: staff?.maxWeeklyHours ?? 40,
     maxDaysPerWeek: staff?.maxDaysPerWeek ?? 5,
     vacationDates: (staff?.vacationDates ?? []).join('\n'),
-    isActive: staff?.isActive ?? true,
     schedulePriority: staff?.schedulePriority ?? 'normal',
   };
 }
@@ -241,7 +239,6 @@ export function PersonEmploymentForm({
         maxWeeklyHours: draft.maxWeeklyHours,
         maxDaysPerWeek: draft.maxDaysPerWeek,
         vacationDates,
-        isActive: draft.isActive,
         // hourlyWage and schedulePriority are deliberately absent — see the
         // file header. They travel over their own service-role routes below.
       };
@@ -255,7 +252,12 @@ export function PersonEmploymentForm({
         // scheduledToday is DEPRECATED (2026-07-24) — a non-date-aware boolean
         // nothing writes. Housekeeping derives who is working from
         // scheduled_shifts. Kept only for the NOT NULL column default.
-        : addStaffMember(uid, hotelId, { ...record, scheduledToday: false, weeklyHours: 0 })
+        : addStaffMember(uid, hotelId, {
+            ...record,
+            isActive: true,
+            scheduledToday: false,
+            weeklyHours: 0,
+          })
             .then((newId: string | void) => {
               if (typeof newId === 'string') {
                 savedStaffId = newId;
@@ -384,7 +386,14 @@ export function PersonEmploymentForm({
     setSaving(true);
     setError('');
     try {
-      await deleteStaffMember(uid, hotelId, staffId);
+      const response = await fetchWithAuth(
+        `/api/staff/operational?hotelId=${encodeURIComponent(hotelId)}&staffId=${encodeURIComponent(staffId)}`,
+        { method: 'DELETE', timeoutMs: STAFF_WRITE_TIMEOUT_MS },
+      );
+      if (!response.ok) {
+        const body = await response.json().catch(() => ({}));
+        throw new Error(body?.error || 'Archive failed');
+      }
       await onChanged();
       onClosePanel();
     } catch (deleteError) {
@@ -609,15 +618,6 @@ export function PersonEmploymentForm({
 
         <div className={styles.toggleRow}>
           <label className={styles.toggleField}>
-            <span>{'On the active roster'}</span>
-            <input
-              type="checkbox"
-              checked={draft.isActive}
-              onChange={(event) => { setDraft((c) => ({ ...c, isActive: event.target.checked })); setSaved(false); }}
-              disabled={saving}
-            />
-          </label>
-          <label className={styles.toggleField}>
             <span>{'Senior'}</span>
             <input
               type="checkbox"
@@ -685,8 +685,8 @@ export function PersonEmploymentForm({
             tabIndex={-1}
             aria-labelledby={deleteHeadingId}
           >
-            <h3 id={deleteHeadingId}>{`Remove ${staff.name} from the schedule?`}</h3>
-            <p>{'Their schedule history is deleted too. Any login they have is kept and keeps working.'}</p>
+            <h3 id={deleteHeadingId}>{`Archive ${staff.name}'s schedule profile?`}</h3>
+            <p>{'Past schedule history is kept. Any assignment today or later becomes an open shift for coverage. Their login, if any, is kept and keeps working.'}</p>
             <div className={styles.lifecycleConfirmationActions}>
               <button
                 type="button"
@@ -702,7 +702,7 @@ export function PersonEmploymentForm({
                 onClick={() => void remove()}
                 disabled={saving}
               >
-                {'Remove from schedule'}
+                {'Archive schedule profile'}
               </button>
             </div>
           </div>
@@ -716,7 +716,7 @@ export function PersonEmploymentForm({
             disabled={saving || deleteConfirming}
           >
             <Trash2 size={15} aria-hidden="true" />
-            {'Remove from schedule'}
+            {'Archive schedule profile'}
           </button>
           <button
             type="button"

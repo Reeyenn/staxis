@@ -32,7 +32,7 @@ export interface MobileInventoryTriageProps {
   canManage: boolean;
   canViewFinancials: boolean;
   onAction: (action: SidebarAction) => void;
-  onQuickCount: (itemId: string, nextValue: number) => void;
+  onQuickCount?: (itemId: string, nextValue: number) => void;
   quickCountLockedIds?: ReadonlySet<string>;
   /** Opens the same complete Add/Edit sheet used on desktop. */
   onEdit?: (item: DisplayItem) => void;
@@ -102,15 +102,16 @@ export function MobileInventoryTriage({
   };
 
   const actions = useMemo<MobileAction[]>(() => {
-    const next: MobileAction[] = [
-      {
+    const next: MobileAction[] = [];
+    if (canManage) {
+      next.push({
         key: 'count',
         label: tx.startCount,
         variant: 'primary',
         leading: 'arrow',
         badge: items.length,
-      },
-    ];
+      });
+    }
     // Add-delivery writes stock + the received-purchase ledger — management only, same as the
     // desktop rail. openOverlay already blocks the tap for non-managers;
     // gating here too avoids showing a button that silently does nothing.
@@ -467,7 +468,7 @@ function TriageGroup({
   items: DisplayItem[];
   lang: Lang;
   emptyLabel: string;
-  onQuickCount: (itemId: string, nextValue: number) => void;
+  onQuickCount?: (itemId: string, nextValue: number) => void;
   quickCountLockedIds?: ReadonlySet<string>;
   onEdit?: (item: DisplayItem) => void;
 }) {
@@ -509,7 +510,7 @@ function InventoryCard({
 }: {
   item: DisplayItem;
   lang: Lang;
-  onQuickCount: (itemId: string, nextValue: number) => void;
+  onQuickCount?: (itemId: string, nextValue: number) => void;
   quickCountLocked: boolean;
   onEdit?: (item: DisplayItem) => void;
 }) {
@@ -577,38 +578,40 @@ function InventoryCard({
             {t(lang).edit}
           </button>
         ) : null}
-        <div
-          className={styles.stepper}
-          role="group"
-          aria-label={`Quick count ${item.name}`}
-          aria-busy={quickCountLocked}
-        >
-          <button
-            type="button"
-            className={styles.stepButton}
-            onClick={() => onQuickCount(item.id, Math.max(0, onHand - 1))}
-            aria-label={decrease}
-            disabled={quickCountLocked || onHand === 0}
+        {onQuickCount ? (
+          <div
+            className={styles.stepper}
+            role="group"
+            aria-label={`Quick count ${item.name}`}
+            aria-busy={quickCountLocked}
           >
-            <span aria-hidden="true">−</span>
-          </button>
-          <span className={styles.stepValue} aria-live="polite">
-            {quickCountLocked ? (
-              <span className={styles.quickSaving} role="status" aria-label={savingLabel}>
-                <span aria-hidden="true" />
-              </span>
-            ) : onHand}
-          </span>
-          <button
-            type="button"
-            className={`${styles.stepButton} ${styles.stepButtonPlus}`}
-            onClick={() => onQuickCount(item.id, onHand + 1)}
-            aria-label={increase}
-            disabled={quickCountLocked}
-          >
-            <span aria-hidden="true">+</span>
-          </button>
-        </div>
+            <button
+              type="button"
+              className={styles.stepButton}
+              onClick={() => onQuickCount(item.id, Math.max(0, onHand - 1))}
+              aria-label={decrease}
+              disabled={quickCountLocked || onHand === 0}
+            >
+              <span aria-hidden="true">−</span>
+            </button>
+            <span className={styles.stepValue} aria-live="polite">
+              {quickCountLocked ? (
+                <span className={styles.quickSaving} role="status" aria-label={savingLabel}>
+                  <span aria-hidden="true" />
+                </span>
+              ) : onHand}
+            </span>
+            <button
+              type="button"
+              className={`${styles.stepButton} ${styles.stepButtonPlus}`}
+              onClick={() => onQuickCount(item.id, onHand + 1)}
+              aria-label={increase}
+              disabled={quickCountLocked}
+            >
+              <span aria-hidden="true">+</span>
+            </button>
+          </div>
+        ) : null}
       </div>
     </article>
   );

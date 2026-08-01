@@ -50,6 +50,21 @@ describe('inventory HTTP gates use the authoritative per-hotel standing', () => 
     assert.doesNotMatch(gate, /account\.property_access|\.select\([^\n]*property_access/);
   });
 
+  test('only the external send_po action adds a manager floor', () => {
+    const route = source('src/app/api/inventory/ordering/route.ts');
+    assert.match(route, /action === 'send_po' && !canManageTeam\(gate\.role\)/);
+    assert.ok(
+      route.indexOf("action === 'send_po' && !canManageTeam(gate.role)")
+        < route.indexOf("checkAndIncrementRateLimit(bucket, gate.pid)"),
+      'line staff must be refused before rate-limit state or any ordering side effect',
+    );
+    assert.doesNotMatch(
+      source('src/lib/ordering/api-gate.ts'),
+      /canManageTeam|isManagerRole/,
+      'ordinary inventory/vendor workflows retain their existing per-hotel capability',
+    );
+  });
+
   test('inventory history uses exact reach and the explicit finance-read bit', () => {
     const route = source('src/app/api/inventory/history/route.ts');
     assert.match(route, /listAuthoritativePropertyAccess\(account\.id as string\)/);

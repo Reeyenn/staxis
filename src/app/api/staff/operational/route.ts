@@ -206,3 +206,120 @@ export async function POST(req: NextRequest) {
   }
   return NextResponse.json(responseBody, { status: 201 });
 }
+
+/**
+ * Archive an operational staff profile without deleting schedule history.
+ * Current/future assignments are reopened for coverage atomically with the
+ * deactivation; past shifts keep their original staff attribution.
+ */
+export async function DELETE(req: NextRequest) {
+  const requestId = getOrMintRequestId(req);
+  const caller = await verifyTeamManager(req);
+  if (!caller) {
+    return err('Unauthorized', {
+      requestId,
+      status: 403,
+      code: ApiErrorCode.Unauthorized,
+    });
+  }
+
+  const { searchParams } = new URL(req.url);
+  const hotelIdCheck = validateUuid(searchParams.get('hotelId'), 'hotelId');
+  if (hotelIdCheck.error) {
+    return err(hotelIdCheck.error, {
+      requestId,
+      status: 400,
+      code: ApiErrorCode.ValidationFailed,
+    });
+  }
+  const staffIdCheck = validateUuid(searchParams.get('staffId'), 'staffId');
+  if (staffIdCheck.error) {
+    return err(staffIdCheck.error, {
+      requestId,
+      status: 400,
+      code: ApiErrorCode.ValidationFailed,
+    });
+  }
+  const hotelId = hotelIdCheck.value!;
+  const staffId = staffIdCheck.value!;
+
+  const authorization = await authorizeStaffMutation(caller, hotelId);
+  if (authorization === 'unavailable') {
+    return err('Team permissions are temporarily unavailable', {
+      requestId,
+      status: 503,
+      code: ApiErrorCode.UpstreamFailure,
+      headers: { 'Retry-After': '5' },
+    });
+  }
+  if (authorization === 'denied') {
+    return err('Forbidden', {
+      requestId,
+      status: 403,
+      code: ApiErrorCode.Forbidden,
+    });
+  }
+  const sectionGate = await requireSectionEnabled(req, hotelId, 'staff');
+  if (!sectionGate.ok) return sectionGate.response;
+
+  const { data, error } = await supabaseAdmin.rpc('staxis_archive_staff_member', {
+    p_property_id: hotelId,
+    p_staff_id: staffId,
+    p_archived_by: caller.accountId,
+  });
+  if (error) {
+    log.error('[staff-operational:DELETE] archive failed', {
+      requestId,
+      hotelId,
+      staffId,
+      msg: errToString(error),
+    });
+    return err('Failed to archive staff profile', {
+      requestId,
+      status: 500,
+      code: ApiErrorCode.InternalError,
+    });
+  }
+
+  const result = data && typeof data === 'object'
+    ? data as Record<string, unknown>
+    : null;
+  if (!result || result.ok !== true) {
+    if (result?.reason === 'not_found') {
+      return err('Staff profile not found', {
+        requestId,
+        status: 404,
+        code: ApiErrorCode.NotFound,
+      });
+    }
+    return err('Failed to archive staff profile', {
+      requestId,
+      status: 500,
+      code: ApiErrorCode.InternalError,
+    });
+  }
+
+  await writeAudit({
+    action: 'staff.archive_schedule_profile',
+    actorUserId: caller.authUserId,
+    targetType: 'staff',
+    targetId: staffId,
+    hotelId,
+    metadata: {
+      openedShifts: Number(result.openedShifts ?? 0),
+      cancelledConfirmations: Number(result.cancelledConfirmations ?? 0),
+      cancelledTimeOffRequests: Number(result.cancelledTimeOffRequests ?? 0),
+      deactivatedLinks: Number(result.deactivatedLinks ?? 0),
+      clearedLegacyLinks: Number(result.clearedLegacyLinks ?? 0),
+    },
+  });
+
+  return NextResponse.json(buildOkBody({
+    archived: true,
+    alreadyArchived: result.alreadyArchived === true,
+    openedShifts: Number(result.openedShifts ?? 0),
+    cancelledConfirmations: Number(result.cancelledConfirmations ?? 0),
+    cancelledTimeOffRequests: Number(result.cancelledTimeOffRequests ?? 0),
+    deactivatedLinks: Number(result.deactivatedLinks ?? 0),
+  }, requestId));
+}

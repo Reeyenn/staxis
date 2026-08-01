@@ -19,9 +19,11 @@ import {
 } from '@/lib/db';
 import type { ScheduledShift, ShiftPreset, StaffMember, TimeOffRequest, StaffDepartment } from '@/types';
 import {
-  addDaysYmd, sundayOf, toMin, toHHMM, normalizeShiftEnd, sameShiftSet, ymdToday,
+  addDaysYmd, sundayOf, toMin, toHHMM, normalizeShiftEnd, sameShiftSet,
   type BoardShift,
 } from '@/lib/schedule-board';
+import { propertyLocalToday } from '@/lib/schedule/local-date';
+import { scheduleRevisionStillOwned } from '@/lib/schedule/save-revision';
 import { asDeptKey } from '../_tokens';
 
 const WEEKS_BACK = 12;        // initial history window
@@ -64,16 +66,24 @@ function freshNonce(): number {
   return Date.now() + Math.floor(Math.random() * 1000);
 }
 
-export function useScheduleData(propertyId: string | null, staff: StaffMember[]) {
+export function useScheduleData(
+  propertyId: string | null,
+  staff: StaffMember[],
+  timezone: string | null = null,
+) {
   // ── Today + rolling window ────────────────────────────────────────────
-  const [today, setToday] = useState<string>(() => ymdToday());
+  const [today, setToday] = useState<string>(() => propertyLocalToday(new Date(), timezone));
   useEffect(() => {
-    const t = setInterval(() => {
-      const now = ymdToday();
+    const refreshToday = () => {
+      const now = propertyLocalToday(new Date(), timezone);
       setToday(prev => (prev === now ? prev : now));
+    };
+    refreshToday();
+    const t = setInterval(() => {
+      refreshToday();
     }, 60_000);
     return () => clearInterval(t);
-  }, []);
+  }, [timezone]);
 
   const thisSunday = sundayOf(today);
   const [weeksBack, setWeeksBack] = useState(WEEKS_BACK);
@@ -181,6 +191,7 @@ export function useScheduleData(propertyId: string | null, staff: StaffMember[])
   // flushes too late; reading state here once shipped an empty day to the
   // server right after "Add staff"). `overrides` is its render mirror.
   const liveOv = useRef<Record<string, BoardShift[]>>({});
+  const revisionByDate = useRef<Record<string, number>>({});
   const [overrides, setOverrides] = useState<Record<string, BoardShift[]>>({});
   const syncOv = useCallback(() => setOverrides({ ...liveOv.current }), []);
   const serverDayMapRef = useRef(serverDayMap);
@@ -196,6 +207,7 @@ export function useScheduleData(propertyId: string | null, staff: StaffMember[])
   // Property switch → drop another hotel's local edits and undo history.
   useEffect(() => {
     liveOv.current = {};
+    revisionByDate.current = {};
     setOverrides({});
     pendingSaves.current.clear();
     saveChain.current.clear();
@@ -230,14 +242,28 @@ export function useScheduleData(propertyId: string | null, staff: StaffMember[])
     if (dropped) syncOv();
   }, [serverDayMap, syncOv]);
 
-  const clearOverrides = useCallback((dates: string[]) => {
-    for (const d of dates) delete liveOv.current[d];
-    syncOv();
+  const clearOwnedOverrides = useCallback((
+    dates: string[],
+    ownedRevisions: Readonly<Record<string, number>>,
+  ) => {
+    let changed = false;
+    for (const d of dates) {
+      // A later queued save may intentionally own the same revision (for
+      // example, a duplicate gesture-end event). Let the final owner decide.
+      if ((pendingSaves.current.get(d) ?? 0) > 1) continue;
+      if (!scheduleRevisionStillOwned(revisionByDate.current[d], ownedRevisions[d])) continue;
+      if (Object.prototype.hasOwnProperty.call(liveOv.current, d)) {
+        delete liveOv.current[d];
+        changed = true;
+      }
+    }
+    if (changed) syncOv();
   }, [syncOv]);
 
   const setDayLocal = useCallback((date: string, next: BoardShift[] | ((cur: BoardShift[]) => BoardShift[])) => {
     const cur = liveOv.current[date] ?? serverDayMapRef.current[date] ?? [];
     liveOv.current[date] = typeof next === 'function' ? next(cur) : next;
+    revisionByDate.current[date] = (revisionByDate.current[date] ?? 0) + 1;
     syncOv();
   }, [syncOv]);
 
@@ -253,6 +279,9 @@ export function useScheduleData(propertyId: string | null, staff: StaffMember[])
       return Promise.reject(new Error('Wait for the schedule to finish loading before making changes'));
     }
     const dates = entries.map(e => e.date);
+    const ownedRevisions = Object.fromEntries(
+      dates.map(date => [date, revisionByDate.current[date] ?? 0]),
+    );
     for (const d of dates) {
       pendingSaves.current.set(d, (pendingSaves.current.get(d) ?? 0) + 1);
     }
@@ -304,18 +333,22 @@ export function useScheduleData(propertyId: string | null, staff: StaffMember[])
         // Server intentionally diverged (time-off / departed staff): show its
         // truth as soon as the refetch lands instead of pinning our version.
         if ((data.skippedTimeOff ?? 0) > 0 || (data.skippedUnknown ?? 0) > 0) {
-          clearOverrides(dates);
+          clearOwnedOverrides(dates, ownedRevisions);
         } else {
           // Failsafe: never leave an override pinned forever if the refetch
           // and the override disagree for reasons we didn't anticipate.
           setTimeout(() => {
             const stillPending = dates.some(d => (pendingSaves.current.get(d) ?? 0) > 0);
-            if (!stillPending && !gestureActive.current) clearOverrides(dates);
+            if (!stillPending && !gestureActive.current) {
+              clearOwnedOverrides(dates, ownedRevisions);
+            }
           }, 8000);
         }
         return data;
       } catch (e) {
-        clearOverrides(dates); // revert to server truth
+        // Revert only the optimistic revision owned by this save. A later edit
+        // may already be queued for the same day and must remain visible.
+        clearOwnedOverrides(dates, ownedRevisions);
         // Multi-week fills chunk by week; earlier chunks may have committed
         // before a later one failed. Tag the count so the UI can say some
         // weeks saved instead of implying nothing did.
@@ -339,7 +372,7 @@ export function useScheduleData(propertyId: string | null, staff: StaffMember[])
       }
     });
     return run;
-  }, [propertyId, requestedKey, loadedKey, clearOverrides, getDayLive]);
+  }, [propertyId, requestedKey, loadedKey, clearOwnedOverrides, getDayLive]);
 
   /** Persist the current local state of a single day (gesture end). */
   const commitDay = useCallback((date: string) => {
@@ -354,6 +387,7 @@ export function useScheduleData(propertyId: string | null, staff: StaffMember[])
         ...s,
         ...(animate ? { anim: true, nonce: nonce + i } : {}),
       }));
+      revisionByDate.current[e.date] = (revisionByDate.current[e.date] ?? 0) + 1;
     }
     syncOv();
     return saveDays(entries);

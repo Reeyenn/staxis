@@ -11,6 +11,7 @@ import {
   fmtHours, fmtMinRange, shortName, weekMinutesByStaff,
   type BoardShift, type DayInfo,
 } from '@/lib/schedule-board';
+import { staffVisibleInWeekRoster } from '@/lib/schedule/week-roster-staff';
 import { T, fonts, deptMeta, asDeptKey, Caps, type DeptKey } from '../_tokens';
 import { Avatar } from '../_people';
 
@@ -41,23 +42,31 @@ export function WeekRoster({
     });
   }, [animNonce, days, reducedMotion]);
 
-  // Lane order HK → FD → MT (+ Other when someone's assigned there), full
-  // active roster per department, alpha within group.
-  const active = staff.filter(s => s.isActive !== false);
+  // Build the displayed shift set before roster filtering. Active people are
+  // always shown; archived people are included only when this week contains a
+  // preserved assigned shift for them.
+  const shiftsByDay = days.map(d => getDay(d.date));
+  const assignedStaffIds = new Set(
+    shiftsByDay.flatMap(shifts => shifts.map(shift => shift.staffId)).filter(Boolean),
+  );
+  const visibleStaff = staffVisibleInWeekRoster(staff, assignedStaffIds);
+
+  // Lane order HK → FD → MT (+ Other when someone's assigned there), alpha
+  // within each group.
   const byDept = (dep: DeptKey) =>
-    active.filter(s => asDeptKey(s.department) === dep)
+    visibleStaff.filter(s => asDeptKey(s.department) === dep)
       .sort((a, b) => a.name.localeCompare(b.name));
   const lanes: DeptKey[] = ['housekeeping', 'front_desk', 'maintenance'];
   if (byDept('other').length > 0) lanes.push('other');
 
   // Per-day shift lookup keyed by staff for O(1) cell rendering.
   const shiftFor = new Map<string, BoardShift>();
-  for (const d of days) {
-    for (const s of getDay(d.date)) shiftFor.set(`${s.staffId}:${d.date}`, s);
+  for (const [index, d] of days.entries()) {
+    for (const s of shiftsByDay[index]) shiftFor.set(`${s.staffId}:${d.date}`, s);
   }
   // Projected weekly hours per person — the overtime flag's whole value is
   // catching an over-cap week while the manager is still building it.
-  const weekMin = weekMinutesByStaff(days.map(d => getDay(d.date)));
+  const weekMin = weekMinutesByStaff(shiftsByDay);
   const capMinOf = (s: StaffMember) => (s.maxWeeklyHours || DEFAULT_WEEKLY_CAP) * 60;
 
   return (
@@ -115,6 +124,15 @@ export function WeekRoster({
                     fontSize: 11.5, fontWeight: 600, color: T.ink, minWidth: 0,
                     whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
                   }}>{shortName(s.name)}</span>
+                  {s.isActive === false ? (
+                    <span style={{
+                      fontFamily: fonts.mono,
+                      fontSize: 7.5,
+                      color: T.ink3,
+                      textTransform: 'uppercase',
+                      letterSpacing: '0.05em',
+                    }}>{'Archived'}</span>
+                  ) : null}
                   {min > 0 && (
                     <span
                       title={over

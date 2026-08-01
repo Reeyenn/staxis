@@ -39,7 +39,7 @@ const HL_SHADOW = `inset 0 0 0 1px ${T.brand}`;
 export function UnifiedSchedule({ onOpenPeople }: { onOpenPeople?: () => void }) {
   const { activePropertyId, activeProperty, staff } = useProperty();
   const { lang } = useLang();
-  const data = useScheduleData(activePropertyId, staff);
+  const data = useScheduleData(activePropertyId, staff, activeProperty?.timezone ?? null);
   if (data.loading || data.loadError) {
     const es = false;
     return (
@@ -132,6 +132,10 @@ export function ScheduleView({ staff, lang, data, propertyName, onOpenPeople }: 
   // Active staff + name lookup shared with children.
   const activeStaff = useMemo(() => staff.filter(s => s.isActive !== false), [staff]);
   const activeIds = useMemo(() => new Set(activeStaff.map(s => s.id)), [activeStaff]);
+  const archivedIds = useMemo(
+    () => new Set(staff.filter(s => s.isActive === false).map(s => s.id)),
+    [staff],
+  );
   const capMinById = useMemo(() => {
     const m = new Map<string, number>();
     for (const s of staff) m.set(s.id, (s.maxWeeklyHours || DEFAULT_WEEKLY_CAP) * 60);
@@ -242,7 +246,12 @@ export function ScheduleView({ staff, lang, data, propertyName, onOpenPeople }: 
   // Keyed by staffId, not row id: the tmpId→realId swap on a background save's
   // refetch changes the row id but never the (day, staffId) pair, so the open
   // editor survives the swap instead of unmounting mid-edit.
-  const editorShift = editorStaffId ? dayShifts.find(s => s.staffId === editorStaffId) ?? null : null;
+  const editorShiftCandidate = editorStaffId
+    ? dayShifts.find(s => s.staffId === editorStaffId) ?? null
+    : null;
+  const editorShift = editorShiftCandidate && !archivedIds.has(editorShiftCandidate.staffId)
+    ? editorShiftCandidate
+    : null;
   const onEditorSave = (patch: { startMin: number; endMin: number; note: string | null }) => {
     if (!editorShift) return;
     data.pushUndo([selDate]);
@@ -659,13 +668,14 @@ export function ScheduleView({ staff, lang, data, propertyName, onOpenPeople }: 
               lang={lang}
               nameOf={data.nameOf}
               otTitles={otTitles}
+              readOnlyStaffIds={archivedIds}
               onUpdate={onBoardUpdate}
               onGestureStart={onGestureStart}
               onGestureEnd={onGestureEnd}
               onRemove={onRemoveShift}
               onTapShift={(id) => {
                 const sh = dayShifts.find(s => s.id === id);
-                if (sh) setEditorStaffId(sh.staffId);
+                if (sh && !archivedIds.has(sh.staffId)) setEditorStaffId(sh.staffId);
               }}
             />
           </Card>

@@ -174,14 +174,3 @@ export async function updateStaffMember(_uid: string, pid: string, sid: string, 
     if (error) throw error;
   } catch (err) { logErr('updateStaffMember', err); throw err; }
 }
-
-export async function deleteStaffMember(_uid: string, pid: string, sid: string): Promise<void> {
-  try {
-    const { error } = await supabase
-      .from('staff')
-      .delete()
-      .eq('property_id', pid)
-      .eq('id', sid);
-    if (error) throw error;
-  } catch (err) { logErr('deleteStaffMember', err); throw err; }
-}

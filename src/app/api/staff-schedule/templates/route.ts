@@ -18,7 +18,11 @@ import { supabaseAdmin } from '@/lib/supabase-admin';
 import { ok, err, ApiErrorCode } from '@/lib/api-response';
 import { getOrMintRequestId, log } from '@/lib/log';
 import { errToString } from '@/lib/utils';
-import { verifyTeamManager, callerCapabilityDecision } from '@/lib/team-auth';
+import {
+  verifyTeamManager,
+  callerCapabilityDecision,
+  hotelWriteDecisionForUserId,
+} from '@/lib/team-auth';
 import { capabilityUnavailableResponse } from '@/lib/capabilities/api-gate';
 import { requireSectionEnabled } from '@/lib/sections/server';
 import { validateUuid } from '@/lib/api-validate';
@@ -131,6 +135,16 @@ export async function POST(req: NextRequest) {
     return err('Template limit reached. Delete one first', { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
   }
 
+  const commitDecision = await hotelWriteDecisionForUserId(
+    auth.caller.authUserId,
+    auth.hotelId,
+    'manage_shifts',
+  );
+  if (commitDecision === 'unavailable') return capabilityUnavailableResponse(requestId);
+  if (commitDecision === 'denied') {
+    return err('Forbidden', { requestId, status: 403, code: ApiErrorCode.Forbidden });
+  }
+
   const { data, error } = await supabaseAdmin
     .from('schedule_templates')
     .insert({
@@ -167,6 +181,16 @@ export async function DELETE(req: NextRequest) {
 
   const idCheck = validateUuid(searchParams.get('id'), 'id');
   if (idCheck.error) return err(idCheck.error, { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
+
+  const commitDecision = await hotelWriteDecisionForUserId(
+    auth.caller.authUserId,
+    auth.hotelId,
+    'manage_shifts',
+  );
+  if (commitDecision === 'unavailable') return capabilityUnavailableResponse(requestId);
+  if (commitDecision === 'denied') {
+    return err('Forbidden', { requestId, status: 403, code: ApiErrorCode.Forbidden });
+  }
 
   const { error } = await supabaseAdmin
     .from('schedule_templates').delete()

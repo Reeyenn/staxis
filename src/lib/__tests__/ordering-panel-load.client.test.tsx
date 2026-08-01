@@ -111,7 +111,7 @@ function installBrowser(): () => void {
 interface Seen { url: string; auth: string | null }
 
 /** One screen's worth of payload: a single supplier with one short item. */
-function payload() {
+function payload(orderMethod: 'store' | 'email' = 'store') {
   return {
     introDismissedAt: '2026-07-01T00:00:00Z',
     hasInventory: true,
@@ -122,8 +122,8 @@ function payload() {
     groups: [{
       vendorId: 'v-1',
       vendorName: 'Sysco',
-      orderMethod: 'store',
-      vendorEmail: null,
+      orderMethod,
+      vendorEmail: orderMethod === 'email' ? 'orders@sysco.test' : null,
       vendorPhone: null,
       websiteUrl: null,
       reviewState: 'confirmed',
@@ -143,8 +143,8 @@ function payload() {
   };
 }
 
-function okBody(): Response {
-  return new Response(JSON.stringify({ ok: true, requestId: 'panel-test', data: payload() }), {
+function okBody(orderMethod: 'store' | 'email' = 'store'): Response {
+  return new Response(JSON.stringify({ ok: true, requestId: 'panel-test', data: payload(orderMethod) }), {
     status: 200, headers: { 'Content-Type': 'application/json' },
   });
 }
@@ -209,13 +209,19 @@ function installSession(opts: { expired?: boolean } = {}): { refreshes: number }
 let container: HTMLElement | null = null;
 let root: Root | null = null;
 
-async function mountPanel(): Promise<void> {
+async function mountPanel(canSendPurchaseOrders = true): Promise<void> {
   container = document.createElement('div');
   document.body.appendChild(container);
   await act(async () => {
     root = createRoot(container as HTMLElement);
     root.render(
-      <OrderingPanel lang="en" open onClose={() => {}} propertyId={PID} />,
+      <OrderingPanel
+        lang="en"
+        open
+        onClose={() => {}}
+        propertyId={PID}
+        canSendPurchaseOrders={canSendPurchaseOrders}
+      />,
     );
   });
   await settle();
@@ -327,6 +333,17 @@ describe('ordering panel — a read that does not come back', () => {
     assert.ok(session.refreshes > 0, 'the 401 triggered a refresh');
     assert.ok(seen.length >= 2, 'and the read was tried again with the new token');
     assert.match(screenText(), /Bath towels/);
+
+    unmount();
+  });
+
+  test('line staff never receive the control that emails a real vendor', async () => {
+    installSession();
+    installFetch([() => okBody('email')]);
+    await mountPanel(false);
+
+    assert.match(screenText(), /Bath towels/);
+    assert.equal(buttonSaying('Send order'), null);
 
     unmount();
   });

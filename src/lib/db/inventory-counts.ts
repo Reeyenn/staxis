@@ -33,6 +33,7 @@ export async function listInventoryCounts(
         .select(columns)
         .eq('property_id', pid)
         .order('counted_at', { ascending: false })
+        .order('id', { ascending: false })
         .range(from, to) as unknown as PromiseLike<{ data: Record<string, unknown>[] | null; error: unknown }>,
       { maxRows: limit },
     );

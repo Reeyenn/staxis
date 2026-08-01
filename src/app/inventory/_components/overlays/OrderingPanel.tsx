@@ -71,6 +71,8 @@ interface OrderingPanelProps {
   open: boolean;
   onClose: () => void;
   propertyId: string;
+  /** External vendor email is manager-only; ordinary inventory/order setup is not. */
+  canSendPurchaseOrders: boolean;
 }
 
 const UNDO_SECONDS = 60;
@@ -107,7 +109,13 @@ function trim(n: number): string {
   return String(Math.round(n * 10) / 10);
 }
 
-export function OrderingPanel({ lang, open, onClose, propertyId }: OrderingPanelProps) {
+export function OrderingPanel({
+  lang,
+  open,
+  onClose,
+  propertyId,
+  canSendPurchaseOrders,
+}: OrderingPanelProps) {
   const tx = orderingStrings(lang);
   const [state, setState] = useState<OrderingState | null>(null);
   const [loading, setLoading] = useState(false);
@@ -286,6 +294,7 @@ export function OrderingPanel({ lang, open, onClose, propertyId }: OrderingPanel
                 categoriesByKey={categoriesByKey}
                 pendingSeconds={group.vendorId ? pending[group.vendorId] : undefined}
                 busy={busy}
+                canSendPurchaseOrders={canSendPurchaseOrders}
                 onStartSend={() => startSend(group)}
                 onCancelSend={() => group.vendorId && cancelSend(group.vendorId)}
                 onMarkOrdered={(method) => void act(`mark:${group.vendorId ?? 'x'}`, {
@@ -494,6 +503,7 @@ export function Suggestions({
 
 export function GroupCard({
   group, tx, lang, vendors, categoriesByKey, pendingSeconds, busy,
+  canSendPurchaseOrders,
   onStartSend, onCancelSend, onMarkOrdered, onSetMethod, onSetItemVendor, onSetCategoryVendor,
 }: {
   group: OrderGroup;
@@ -503,6 +513,7 @@ export function GroupCard({
   categoriesByKey: Map<BucketKey, CategoryOption>;
   pendingSeconds: number | undefined;
   busy: string | null;
+  canSendPurchaseOrders: boolean;
   onStartSend: () => void;
   onCancelSend: () => void;
   onMarkOrdered: (method: OrderMethod) => void;
@@ -603,7 +614,7 @@ export function GroupCard({
       </ul>
 
       {/* Per-method actions. Every label says what actually happens. */}
-      {!unmatched && !group.blocked && group.orderMethod === 'email' && (
+      {canSendPurchaseOrders && !unmatched && !group.blocked && group.orderMethod === 'email' && (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
           {counting ? (
             <>

@@ -17,11 +17,16 @@ import { supabaseAdmin } from '@/lib/supabase-admin';
 import { ok, err, ApiErrorCode } from '@/lib/api-response';
 import { getOrMintRequestId, log } from '@/lib/log';
 import { errToString } from '@/lib/utils';
-import { verifyTeamManager, callerCapabilityDecision } from '@/lib/team-auth';
+import {
+  verifyTeamManager,
+  callerCapabilityDecision,
+  hotelWriteDecisionForUserId,
+} from '@/lib/team-auth';
 import { capabilityUnavailableResponse } from '@/lib/capabilities/api-gate';
 import { requireSectionEnabled } from '@/lib/sections/server';
 import { validateUuid } from '@/lib/api-validate';
 import { fromScheduledShiftRow } from '@/lib/db-mappers';
+import { staffScheduleGuardConflict } from '@/lib/schedule/assignment-guards';
 import type { StaffDepartment, ScheduledShiftKind } from '@/types';
 
 export const runtime = 'nodejs';
@@ -139,7 +144,23 @@ export async function POST(req: NextRequest) {
     preset_id:   s.presetId ?? null,
     note,
     reason,
+    // This endpoint has no explicit leave-override confirmation UI. Clearing
+    // the marker also prevents an edited/moved former override from bypassing
+    // the database leave guard on a different assignment.
+    time_off_override: false,
   };
+
+  // Re-resolve authoritative hotel standing immediately before crossing the
+  // service-role boundary. Company/portfolio read reach is not write authority.
+  const commitDecision = await hotelWriteDecisionForUserId(
+    caller.authUserId,
+    hotelId,
+    'manage_shifts',
+  );
+  if (commitDecision === 'unavailable') return capabilityUnavailableResponse(requestId);
+  if (commitDecision === 'denied') {
+    return err('Forbidden', { requestId, status: 403, code: ApiErrorCode.Forbidden });
+  }
 
   let savedId: string | null = null;
   if (s.id) {
@@ -150,6 +171,17 @@ export async function POST(req: NextRequest) {
       .eq('property_id', hotelId).select('*').single();
     if (error) {
       log.error('[shifts:POST] update failed', { requestId, msg: errToString(error) });
+      const conflict = staffScheduleGuardConflict(error);
+      if (conflict) {
+        return err(
+          conflict === 'approved_time_off'
+            ? 'That staff member has approved time off that day'
+            : conflict === 'inactive_staff'
+              ? 'That staff profile is no longer active'
+              : 'Archived shift history cannot be reassigned or removed',
+          { requestId, status: 409, code: ApiErrorCode.IdempotencyConflict },
+        );
+      }
       return err('Failed to update shift', { requestId, status: 500, code: ApiErrorCode.InternalError });
     }
     savedId = String(data.id);
@@ -170,12 +202,34 @@ export async function POST(req: NextRequest) {
           .eq('kind', 'shift').select('*').single();
         if (upErr) {
           log.error('[shifts:POST] conflict-retry update failed', { requestId, msg: errToString(upErr) });
+          const conflict = staffScheduleGuardConflict(upErr);
+          if (conflict) {
+            return err(
+              conflict === 'approved_time_off'
+                ? 'That staff member has approved time off that day'
+                : conflict === 'inactive_staff'
+                  ? 'That staff profile is no longer active'
+                  : 'Archived shift history cannot be reassigned or removed',
+              { requestId, status: 409, code: ApiErrorCode.IdempotencyConflict },
+            );
+          }
           return err('Failed to upsert shift', { requestId, status: 500, code: ApiErrorCode.InternalError });
         }
         savedId = String(upd.id);
         return ok({ shift: fromScheduledShiftRow(upd) }, { requestId });
       }
       log.error('[shifts:POST] insert failed', { requestId, msg: errToString(error) });
+      const conflict = staffScheduleGuardConflict(error);
+      if (conflict) {
+        return err(
+          conflict === 'approved_time_off'
+            ? 'That staff member has approved time off that day'
+            : conflict === 'inactive_staff'
+              ? 'That staff profile is no longer active'
+              : 'Archived shift history cannot be reassigned or removed',
+          { requestId, status: 409, code: ApiErrorCode.IdempotencyConflict },
+        );
+      }
       return err('Failed to create shift', { requestId, status: 500, code: ApiErrorCode.InternalError });
     }
     savedId = String(data.id);
@@ -205,11 +259,26 @@ export async function DELETE(req: NextRequest) {
   const idCheck = validateUuid(searchParams.get('id'), 'id');
   if (idCheck.error) return err(idCheck.error, { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
 
+  const commitDecision = await hotelWriteDecisionForUserId(
+    caller.authUserId,
+    hotelId,
+    'manage_shifts',
+  );
+  if (commitDecision === 'unavailable') return capabilityUnavailableResponse(requestId);
+  if (commitDecision === 'denied') {
+    return err('Forbidden', { requestId, status: 403, code: ApiErrorCode.Forbidden });
+  }
+
   const { error } = await supabaseAdmin
     .from('scheduled_shifts').delete()
     .eq('id', idCheck.value!).eq('property_id', hotelId);
   if (error) {
     log.error('[shifts:DELETE] failed', { requestId, msg: errToString(error) });
+    if (staffScheduleGuardConflict(error) === 'archived_history') {
+      return err('Archived shift history cannot be removed', {
+        requestId, status: 409, code: ApiErrorCode.IdempotencyConflict,
+      });
+    }
     return err('Failed to delete shift', { requestId, status: 500, code: ApiErrorCode.InternalError });
   }
   return ok({ ok: true }, { requestId });

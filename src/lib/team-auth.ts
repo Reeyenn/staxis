@@ -101,8 +101,8 @@ export async function verifyTeamManager(
     // RESTRICT a manager further but can never grant them to line staff
     // (front_desk/housekeeping/maintenance). This mirrors can()'s step b.5 and
     // sits on top of each cap's manager-tier default in the registry (defense in
-    // depth). Other capabilities (manage_shifts, manage_checklists, run_reports)
-    // keep the everyone-default.
+    // depth). Capabilities that do not declare a manager floor keep the
+    // everyone-default.
     if (candidateRoles.length === 0) return null;
     if (MANAGER_FLOOR_CAPABILITIES.has(opts.capability)
       && !candidateRoles.some(canManageTeam)) return null;

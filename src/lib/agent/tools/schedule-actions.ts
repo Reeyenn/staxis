@@ -30,7 +30,8 @@
 
 import { registerTool, type ToolResult, type ToolHandlerContext } from '../tools';
 import { resolveStaffByName } from './_helpers';
-import { todayStr } from '@/lib/utils';
+import { staffScheduleGuardConflict } from '@/lib/schedule/assignment-guards';
+import { addDaysInTz, propertyLocalToday } from '@/lib/schedule/local-date';
 
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 const TIME_RE = /^([01]\d|2[0-3]):[0-5]\d$/;
@@ -47,16 +48,33 @@ const DEFAULT_END = '16:00';
  * explicit YYYY-MM-DD into a concrete property-local ISO date. Returns null for
  * anything we can't parse so the tool refuses rather than writing the wrong day.
  */
-function resolveScheduleDate(input: string | undefined): string | null {
+async function resolveScheduleDate(
+  input: string | undefined,
+  ctx: ToolHandlerContext,
+): Promise<{ date: string } | { error: string }> {
   const raw = String(input ?? '').trim().toLowerCase();
-  if (!raw || raw === 'today') return todayStr();
-  if (raw === 'tomorrow') {
-    const d = new Date(`${todayStr()}T00:00:00`);
-    d.setDate(d.getDate() + 1);
-    return d.toISOString().slice(0, 10);
+  if (DATE_RE.test(raw)) return { date: raw };
+  if (!raw || raw === 'today' || raw === 'tomorrow') {
+    const { data, error } = await ctx.db
+      .from('properties')
+      .select('timezone')
+      .maybeSingle();
+    if (error || !data) {
+      return { error: 'I could not verify the hotel timezone, so I did not use a relative schedule date.' };
+    }
+    const timezone = (data as { timezone?: string | null }).timezone;
+    if (typeof timezone !== 'string' || !timezone.trim()) {
+      return { error: 'I could not verify the hotel timezone, so I did not use a relative schedule date.' };
+    }
+    try {
+      new Intl.DateTimeFormat('en-CA', { timeZone: timezone }).format(new Date());
+    } catch {
+      return { error: 'I could not verify the hotel timezone, so I did not use a relative schedule date.' };
+    }
+    const today = propertyLocalToday(new Date(), timezone);
+    return { date: raw === 'tomorrow' ? addDaysInTz(today, 1) : today };
   }
-  if (DATE_RE.test(raw)) return raw;
-  return null;
+  return { error: 'I couldn\'t read that date. Give me a day like "tomorrow" or a date like 2026-07-08.' };
 }
 
 // ─── get_schedule ────────────────────────────────────────────────────────────
@@ -86,10 +104,9 @@ registerTool<GetScheduleArgs>({
   // Chat-only (default). Kept off voice so the whole new ability set lands on one
   // reviewed surface; a spoken "who's working?" read can be added later.
   handler: async ({ date, department }, ctx: ToolHandlerContext): Promise<ToolResult> => {
-    const target = resolveScheduleDate(date);
-    if (!target) {
-      return { ok: false, error: 'I couldn\'t read that date. Give me a day like "tomorrow" or a date like 2026-07-08.' };
-    }
+    const resolvedDate = await resolveScheduleDate(date, ctx);
+    if ('error' in resolvedDate) return { ok: false, error: resolvedDate.error };
+    const target = resolvedDate.date;
     const dept = department && (SHIFT_DEPARTMENTS as readonly string[]).includes(department) ? department : null;
 
     let shiftQ = ctx.db
@@ -179,8 +196,9 @@ registerTool<RemoveFromShiftArgs>({
   mutates: true,
   approval: 'card',
   handler: async ({ staffName, date }, ctx: ToolHandlerContext): Promise<ToolResult> => {
-    const target = resolveScheduleDate(date);
-    if (!target) return { ok: false, error: 'I couldn\'t read that date. Use "tomorrow" or a date like 2026-07-08.' };
+    const resolvedDate = await resolveScheduleDate(date, ctx);
+    if ('error' in resolvedDate) return { ok: false, error: resolvedDate.error };
+    const target = resolvedDate.date;
 
     const res = await resolveStaffByName(ctx.db, staffName);
     if (res.kind === 'none') return { ok: false, error: `No active staff member matching "${staffName}".` };
@@ -256,8 +274,9 @@ registerTool<AssignShiftArgs>({
   mutates: true,
   approval: 'card',
   handler: async ({ staffName, date, startTime, endTime, department }, ctx: ToolHandlerContext): Promise<ToolResult> => {
-    const target = resolveScheduleDate(date);
-    if (!target) return { ok: false, error: 'I couldn\'t read that date. Use "tomorrow" or a date like 2026-07-08.' };
+    const resolvedDate = await resolveScheduleDate(date, ctx);
+    if ('error' in resolvedDate) return { ok: false, error: resolvedDate.error };
+    const target = resolvedDate.date;
 
     const start = startTime && TIME_RE.test(startTime) ? startTime : DEFAULT_START;
     const end = endTime && TIME_RE.test(endTime) ? endTime : DEFAULT_END;
@@ -292,6 +311,7 @@ registerTool<AssignShiftArgs>({
       start_time: start,
       end_time: end,
       kind: 'shift' as const,
+      time_off_override: false,
     };
 
     // INSERT, retrying as an UPDATE on the exclusion-constraint conflict (23P01)
@@ -303,17 +323,38 @@ registerTool<AssignShiftArgs>({
       if (insErr.code === '23P01') {
         const { data: upd, error: upErr } = await ctx.db
           .from('scheduled_shifts')
-          .update({ department: dept, start_time: start, end_time: end })
+          .update({
+            department: dept,
+            start_time: start,
+            end_time: end,
+            time_off_override: false,
+          })
           .eq('staff_id', staff.id)
           .eq('shift_date', target)
           .eq('kind', 'shift')
           .select('id')
           .single();
-        if (upErr) return { ok: false, error: 'Failed to update the shift.' };
+        if (upErr) {
+          const conflict = staffScheduleGuardConflict(upErr);
+          if (conflict === 'approved_time_off') {
+            return { ok: false, error: `${staff.name} has approved time off on ${target}. Use the Schedule board if an explicit override is required.` };
+          }
+          if (conflict === 'inactive_staff') {
+            return { ok: false, error: `${staff.name}'s staff profile is no longer active.` };
+          }
+          return { ok: false, error: 'Failed to update the shift.' };
+        }
         return {
           ok: true,
           data: { shiftId: upd.id as string, staffName: staff.name, staffId: staff.id, date: target, start, end, department: dept, updated: true },
         };
+      }
+      const conflict = staffScheduleGuardConflict(insErr);
+      if (conflict === 'approved_time_off') {
+        return { ok: false, error: `${staff.name} has approved time off on ${target}. Use the Schedule board if an explicit override is required.` };
+      }
+      if (conflict === 'inactive_staff') {
+        return { ok: false, error: `${staff.name}'s staff profile is no longer active.` };
       }
       return { ok: false, error: 'Failed to add the shift.' };
     }

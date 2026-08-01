@@ -1,6 +1,7 @@
 import type { InventoryDiscard, InventoryDiscardReason } from '@/types';
 import { supabase, logErr, asRecordRows } from './_common';
 import { parseStringField, toDate } from '../db-mappers';
+import { fetchAllRows } from '../supabase-paginate';
 
 const LOSS_REASONS: readonly InventoryDiscardReason[] = [
   'missing', 'stained', 'damaged', 'lost', 'theft', 'other',
@@ -43,12 +44,23 @@ export async function listInventoryDiscards(
   // Cost evidence is hydrated separately through the finance-gated server
   // route. Never let a caller opt a browser PostgREST query into cost columns.
   const columns = 'id,property_id,activity_sequence,item_id,item_name,quantity,reason,discarded_at,discarded_by,notes,request_id,expected_stock,stock_before,stock_after,recorded_by_user_id,created_at';
-  const { data, error } = await supabase
-    .from('inventory_discards')
-    .select(columns)
-    .eq('property_id', pid)
-    .order('discarded_at', { ascending: false })
-    .limit(boundedLimit);
-  if (error) { logErr('listInventoryDiscards', error); throw error; }
-  return asRecordRows(data).map(fromInventoryDiscardRow);
+  try {
+    const rows = await fetchAllRows<Record<string, unknown>>(
+      (from, to) => supabase
+        .from('inventory_discards')
+        .select(columns)
+        .eq('property_id', pid)
+        .order('discarded_at', { ascending: false })
+        .order('id', { ascending: false })
+        .range(from, to) as unknown as PromiseLike<{
+          data: Record<string, unknown>[] | null;
+          error: unknown;
+        }>,
+      { maxRows: boundedLimit },
+    );
+    return asRecordRows(rows).map(fromInventoryDiscardRow);
+  } catch (error) {
+    logErr('listInventoryDiscards', error);
+    throw error;
+  }
 }

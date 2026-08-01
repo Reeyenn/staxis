@@ -487,6 +487,8 @@ registerTool<{ staffName: string; decision: 'approve' | 'deny'; date?: string; d
         ? 'That request was already decided.'
         : result.reason === 'not_found'
           ? 'That request no longer exists.'
+          : result.reason === 'past_date'
+            ? 'Past time-off requests cannot be approved.'
           : 'Failed to update the request.';
       return { ok: false, error: msg };
     }
