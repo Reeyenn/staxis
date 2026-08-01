@@ -42,6 +42,10 @@ import './staxis-decisions';
 // proposes a structured vendor list, reads it back, and writes only after the
 // route has recorded a human message since. See chat-confirm.ts.
 import './ordering';
+// The companion's one wire (2026-08-01): a manager teaches the hotel copilot a
+// standing rule in plain language. Same two-call confirmInChat shape as the
+// setup tools; the read-back is verbatim rather than structured, on purpose.
+import './companion';
 // Cross-hotel chat. Every tool in here declares `surfaces: ['portfolio']`, so
 // importing it does NOT widen the chat/voice/walkthrough catalogs — the surface
 // filter in getToolsForRole keeps the two sets disjoint by construction.

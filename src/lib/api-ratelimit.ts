@@ -358,6 +358,8 @@ export type RateLimitEndpoint =
   // of the company's own hotels, because api_limits.property_id FKs
   // properties(id) — with the ORGANIZATION folded into the sub-key, so two
   // companies can never share a bucket.
+  | 'companion-read'
+  | 'companion-write'
   | 'company-queue'
   // The hotel picker / command centre bootstrap. Read-only and model-free, but
   // for a company-scope caller it reads one findings ledger per covered hotel,
@@ -622,6 +624,11 @@ const HOURLY_CAPS: Record<RateLimitEndpoint, number> = {
   // makes the expensive half (the portfolio checks) happen once. A scripted
   // loop, which would be reading a dozen hotels' ledgers per request, hits the
   // wall in about a minute.
+  // The bubble bootstraps once per page mount, so a manager clicking through
+  // the app all morning is the normal case rather than abuse. The write bucket
+  // is small: it moves only when the companion actually speaks or is answered.
+  'companion-read':             1200,
+  'companion-write':            300,
   'company-queue':              120,
   // The picker is hit on sign-in, on every "switch hotel", and on a tab
   // refocus. A person doing that all morning never approaches 240; a loop

@@ -21,6 +21,7 @@ export type AiCapability = (typeof AI_CAPABILITIES)[number];
 export const AI_FEATURE_KEYS = [
   'agent.ask_staxis',
   'agent.portfolio_chat',
+  'companion.conversation',
   'agent.conversation_summary',
   'agent.memory_consolidation',
   'findings.judge',
