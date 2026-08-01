@@ -174,6 +174,29 @@ describe('inventory financial evidence hydration', () => {
     assert.doesNotMatch(countRead, /variance_value|unit_cost/);
     assert.doesNotMatch(orderRead, /total_cost|unit_cost/);
     assert.doesNotMatch(discardRead, /cost_value|unit_cost/);
+
+    // Counts and losses both exceed PostgREST's fixed 1,000-row response cap
+    // during a pilot month, so their requested 2,000-row windows must page on
+    // a deterministic timestamp + id order.
+    for (const readPath of [countRead, discardRead]) {
+      assert.match(readPath, /fetchAllRows/);
+      assert.match(readPath, /\.order\('id', \{ ascending: false \}\)/);
+      assert.match(readPath, /\.range\(from, to\)/);
+    }
+  });
+
+  test('the service-only financial overlay is explicitly bounded', () => {
+    const migration = readFileSync(join(
+      process.cwd(), 'supabase', 'migrations',
+      '0413_bounded_inventory_financial_evidence.sql',
+    ), 'utf8');
+    for (const table of ['inventory_counts', 'inventory_orders', 'inventory_discards']) {
+      assert.match(
+        migration,
+        new RegExp(`from public\\.${table} row[\\s\\S]{0,220}?limit 2000`),
+      );
+    }
+    assert.match(migration, /current_receipts[\s\S]*?month_spend/);
   });
 
   test('the live receipt subtotal never fabricates unused category or item maps', () => {

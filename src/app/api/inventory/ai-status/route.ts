@@ -56,6 +56,11 @@ import {
 } from '@/lib/inventory-ml-active';
 import { err, ApiErrorCode } from '@/lib/api-response';
 import { requireSectionEnabled } from '@/lib/sections/server';
+import {
+  fetchInventoryAiRows,
+  inventoryAiUnavailableResponse,
+  requireInventoryAiResult,
+} from '@/lib/inventory-ai-query';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -89,7 +94,7 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
 
     // Use the service-role client so the multi-table aggregate doesn't fight
     // RLS. The auth check above guarantees the caller is authorized.
-    const [propRes, countRes, itemsRes, runsRes, predRes, predsLast7Res] = await Promise.all([
+    const [propRes, countRes, itemRows, runRows, predictionRows, predictionsLast7Rows] = await Promise.all([
       supabaseAdmin
         .from('properties')
         .select('inventory_ai_mode')
@@ -97,51 +102,83 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
         .maybeSingle(),
       supabaseAdmin
         .from('inventory_counts')
-        .select('counted_at')
+        .select('id,counted_at')
         .eq('property_id', propertyId)
         .order('counted_at', { ascending: true })
+        .order('id', { ascending: true })
         .limit(1)
         .maybeSingle(),
-      supabaseAdmin
-        .from('inventory')
-        .select('id')
-        .eq('property_id', propertyId)
-        .is('archived_at', null)
-        .limit(2000),
-      supabaseAdmin
-        .from('model_runs')
-        // Honesty-audit Phase 2: also pull `hyperparameters` (JSONB) so we can
-        // read the persisted mean_observed_rate per active model_run for the
-        // true activation-gate ratio.
-        .select('item_id,validation_mae,training_mae,auto_fill_enabled,training_row_count,consecutive_passing_runs,hyperparameters')
-        .eq('property_id', propertyId)
-        .eq('layer', 'inventory_rate')
-        .eq('is_active', true)
-        .limit(2000),
-      supabaseAdmin
-        .from('inventory_rate_predictions')
-        .select('item_id,predicted_at')
-        .eq('property_id', propertyId)
-        .order('predicted_at', { ascending: false })
-        .limit(50000),
+      fetchInventoryAiRows<{ id: string }>(
+        'inventory items',
+        (from, to) => supabaseAdmin
+          .from('inventory')
+          .select('id')
+          .eq('property_id', propertyId)
+          .is('archived_at', null)
+          .order('id', { ascending: true })
+          .range(from, to),
+        2_000,
+      ),
+      fetchInventoryAiRows<{
+        id: string;
+        item_id: string | null;
+        validation_mae: number | null;
+        training_mae: number | null;
+        auto_fill_enabled: boolean | null;
+        training_row_count: number | null;
+        consecutive_passing_runs: number | null;
+        hyperparameters: Record<string, unknown> | null;
+      }>(
+        'active inventory model runs',
+        (from, to) => supabaseAdmin
+          .from('model_runs')
+          // Also pull `hyperparameters` (JSONB) for the persisted
+          // mean_observed_rate used by the true activation-gate ratio.
+          .select('id,item_id,validation_mae,training_mae,auto_fill_enabled,training_row_count,consecutive_passing_runs,hyperparameters')
+          .eq('property_id', propertyId)
+          .eq('layer', 'inventory_rate')
+          .eq('is_active', true)
+          .order('id', { ascending: true })
+          .range(from, to),
+        2_000,
+      ),
+      fetchInventoryAiRows<{ id: string; item_id: string | null; predicted_at: string | null }>(
+        'latest inventory inference',
+        (from, to) => supabaseAdmin
+          .from('inventory_rate_predictions')
+          .select('id,item_id,predicted_at')
+          .eq('property_id', propertyId)
+          .order('predicted_at', { ascending: false })
+          .order('id', { ascending: false })
+          .range(from, to),
+        50_000,
+      ),
       // Seven days is bounded by active item count × seven daily writes. Pull
       // item ids so archived items can be excluded from the health signal.
-      supabaseAdmin
-        .from('inventory_rate_predictions')
-        .select('item_id')
-        .eq('property_id', propertyId)
-        .gte('predicted_at', sevenDaysAgoIso)
-        .limit(50000),
+      fetchInventoryAiRows<{ id: string; item_id: string | null; predicted_at: string | null }>(
+        'seven-day inventory predictions',
+        (from, to) => supabaseAdmin
+          .from('inventory_rate_predictions')
+          .select('id,item_id,predicted_at')
+          .eq('property_id', propertyId)
+          .gte('predicted_at', sevenDaysAgoIso)
+          .order('predicted_at', { ascending: false })
+          .order('id', { ascending: false })
+          .range(from, to),
+        50_000,
+      ),
     ]);
 
-    const aiMode = ((propRes.data?.inventory_ai_mode ?? 'auto') as string) as 'off' | 'auto' | 'always-on';
-    const firstCountAt = countRes.data?.counted_at ? new Date(countRes.data.counted_at).getTime() : null;
+    const property = requireInventoryAiResult('property AI mode', propRes);
+    const firstCount = requireInventoryAiResult('first inventory count', countRes);
+    const aiMode = ((property?.inventory_ai_mode ?? 'auto') as string) as 'off' | 'auto' | 'always-on';
+    const firstCountAt = firstCount?.counted_at ? new Date(firstCount.counted_at).getTime() : null;
     const daysSinceFirstCount = firstCountAt
       ? Math.max(0, Math.floor((Date.now() - firstCountAt) / 86400000))
       : 0;
-    const activeItemIds = activeInventoryItemIds(itemsRes.data ?? []);
+    const activeItemIds = activeInventoryItemIds(itemRows);
     const itemsTotal = activeItemIds.size;
-    const runs = filterInventoryMlRowsToActiveItems(runsRes.data ?? [], activeItemIds);
+    const runs = filterInventoryMlRowsToActiveItems(runRows, activeItemIds);
     const itemsWithModel = runs.length;
     const itemsGraduated = runs.filter((r) => r.auto_fill_enabled).length;
     const itemsExpectedToGraduate = runs.filter((r) => {
@@ -194,7 +231,7 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
       currentMaeRatioVsMean = gateRatios.reduce((a, b) => a + b, 0) / gateRatios.length;
     }
 
-    const activePredictions = filterInventoryMlRowsToActiveItems(predRes.data ?? [], activeItemIds);
+    const activePredictions = filterInventoryMlRowsToActiveItems(predictionRows, activeItemIds);
     const lastInferenceAt = activePredictions[0]?.predicted_at ?? null;
     const lastInferenceStale = (() => {
       if (!lastInferenceAt) return true;
@@ -202,7 +239,7 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
       return ageHours > STALE_INFERENCE_HOURS;
     })();
     const predictionsLast7Days = filterInventoryMlRowsToActiveItems(
-      predsLast7Res.data ?? [],
+      predictionsLast7Rows,
       activeItemIds,
     ).length;
 
@@ -228,6 +265,6 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
     });
   } catch (e) {
     log.error('inventory/ai-status: failed', { requestId, err: e as Error });
-    return err('internal_error', { requestId, status: 500, code: ApiErrorCode.InternalError });
+    return inventoryAiUnavailableResponse(requestId);
   }
 }

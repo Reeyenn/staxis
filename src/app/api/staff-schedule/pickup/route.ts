@@ -1,8 +1,8 @@
 // /api/staff-schedule/pickup — staff picks up an open shift.
 //
 //   POST  body: { hotelId, shiftId }
-//     Logged-in account must have accounts.staff_id set + access to
-//     this hotel. The shift must be kind='open' and not yet picked up.
+//     Logged-in account must have an active per-property staff link + access
+//     to this hotel. The shift must be kind='open' and not yet picked up.
 //     First-come wins via a conditional UPDATE; subsequent picks get
 //     "already covered".
 
@@ -15,7 +15,15 @@ import { requireSession } from '@/lib/api-auth';
 import { validateUuid } from '@/lib/api-validate';
 import { fromScheduledShiftRow } from '@/lib/db-mappers';
 import { requireSectionEnabled } from '@/lib/sections/server';
-import { callerCanMutateHotel, callerReachesHotel, loadSessionAccount } from '@/lib/team-auth';
+import {
+  callerCanMutateHotel,
+  callerReachesHotel,
+  hotelWriteDecisionForUserId,
+  loadSessionAccount,
+} from '@/lib/team-auth';
+import { capabilityUnavailableResponse } from '@/lib/capabilities/api-gate';
+import { activeStaffIdForAccountAtProperty } from '@/lib/schedule/staff-identity';
+import { staffScheduleGuardConflict } from '@/lib/schedule/assignment-guards';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -36,7 +44,14 @@ export async function POST(req: NextRequest) {
   if (!account || !callerReachesHotel(account, hotelId) || !callerCanMutateHotel(account, hotelId)) {
     return err('Forbidden', { requestId, status: 403, code: ApiErrorCode.Unauthorized });
   }
-  if (!account.staffId) {
+  const staffId = await activeStaffIdForAccountAtProperty(account.accountId, hotelId).catch((error) => {
+    log.error('[pickup:POST] staff identity lookup failed', { requestId, msg: errToString(error) });
+    return undefined;
+  });
+  if (staffId === undefined) {
+    return err('Failed to verify your staff record', { requestId, status: 500, code: ApiErrorCode.InternalError });
+  }
+  if (!staffId) {
     return err('Your account is not linked to a staff record', { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
   }
 
@@ -47,7 +62,7 @@ export async function POST(req: NextRequest) {
   // their own dept; the design's open-shifts card already filters this
   // client-side, but enforce server-side too).
   const { data: staffRow, error: staffErr } = await supabaseAdmin
-    .from('staff').select('id, department, property_id, is_active').eq('id', account.staffId).maybeSingle();
+    .from('staff').select('id, department, property_id, is_active').eq('id', staffId).maybeSingle();
   if (staffErr) {
     log.error('[pickup:POST] staff lookup failed', { requestId, msg: errToString(staffErr) });
     return err('Failed to verify your staff record', { requestId, status: 500, code: ApiErrorCode.InternalError });
@@ -79,7 +94,7 @@ export async function POST(req: NextRequest) {
     .from('time_off_requests')
     .select('id')
     .eq('property_id', hotelId)
-    .eq('staff_id', account.staffId)
+    .eq('staff_id', staffId)
     .eq('request_date', openShift.shift_date)
     .eq('status', 'approved')
     .limit(1)
@@ -92,14 +107,21 @@ export async function POST(req: NextRequest) {
     return err('You have approved time off that day', { requestId, status: 409, code: ApiErrorCode.ValidationFailed });
   }
 
+  const commitDecision = await hotelWriteDecisionForUserId(session.userId, hotelId);
+  if (commitDecision === 'unavailable') return capabilityUnavailableResponse(requestId);
+  if (commitDecision === 'denied') {
+    return err('Forbidden', { requestId, status: 403, code: ApiErrorCode.Forbidden });
+  }
+
   // Conditional update: only succeeds if the row is still open. Equivalent
   // to a SELECT FOR UPDATE + INSERT inside a TX, but using PostgREST's
   // conditional update + RETURNING. The .eq('kind','open') filter is the
   // optimistic-lock — losers get 0 rows and a polite "already covered".
   const { data: updated, error: upErr } = await supabaseAdmin
     .from('scheduled_shifts').update({
-      staff_id: account.staffId,
+      staff_id: staffId,
       kind:     'shift',
+      time_off_override: false,
       // Status remains whatever it was (most likely 'published' since
       // open shifts are visible to staff; if it was 'draft' that's a
       // manager who hasn't published yet and shouldn't be visible —
@@ -114,6 +136,17 @@ export async function POST(req: NextRequest) {
 
   if (upErr) {
     log.error('[pickup:POST] update failed', { requestId, msg: errToString(upErr) });
+    const guardConflict = staffScheduleGuardConflict(upErr);
+    if (guardConflict === 'approved_time_off') {
+      return err('You have approved time off that day', {
+        requestId, status: 409, code: ApiErrorCode.IdempotencyConflict,
+      });
+    }
+    if (guardConflict === 'inactive_staff') {
+      return err('Your staff profile is no longer active', {
+        requestId, status: 409, code: ApiErrorCode.IdempotencyConflict,
+      });
+    }
     // 23P01 = exclusion_violation: the staffer already has an overlapping shift
     // that day. Surface a friendly message + 409 instead of leaking the raw
     // Postgres constraint text with a 500. (Audit fix 2026-06-18.)

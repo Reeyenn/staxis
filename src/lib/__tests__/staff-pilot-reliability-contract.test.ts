@@ -25,13 +25,19 @@ describe('staff pilot reliability contracts', () => {
     assert.match(ui, /@media \(max-width: 640px\)[\s\S]*\.staff-schedule-toolbar[\s\S]*flex-wrap: wrap/);
   });
 
-  test('fill fails closed on time-off lookup and deletes stale rows last', () => {
+  test('fill delegates the complete multi-day replacement to one database transaction', () => {
     const route = source('src/app/api/staff-schedule/fill/route.ts');
-    assert.match(route, /error: torErr/);
-    assert.match(route, /if \(torErr\)[\s\S]*Failed to verify approved time off/);
-    const insert = route.indexOf("from('scheduled_shifts').insert(toInsert)");
-    const deletion = route.indexOf("from('scheduled_shifts').delete()", insert);
-    assert.ok(insert >= 0 && deletion > insert, 'destructive delete must follow insert/update work');
+    const migration = source('supabase/migrations/0412_staff_schedule_authority_and_history.sql');
+    assert.equal(
+      (route.match(/rpc\('staxis_replace_staff_schedule_days'/g) ?? []).length,
+      1,
+    );
+    assert.doesNotMatch(route, /\.from\('scheduled_shifts'\)|\.from\('time_off_requests'\)|\.from\('week_publications'\)/);
+    const rpc = migration.slice(migration.indexOf('create or replace function public.staxis_replace_staff_schedule_days'));
+    assert.match(rpc, /v_has_approved_leave/);
+    assert.match(rpc, /inactive_staff\.is_active is false/);
+    assert.match(rpc, /insert into public\.week_publications/);
+    assert.match(rpc, /grant execute[\s\S]*to service_role/);
   });
 
   test('join approval delegates the whole decision to the authoritative transaction', () => {

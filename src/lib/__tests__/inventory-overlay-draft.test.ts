@@ -128,7 +128,7 @@ describe('inventory overlay usability contracts', () => {
     ), 'utf8');
     assert.match(component, /onEdit\?: \(item: DisplayItem\) => void/);
     assert.match(component, /onClick=\{\(\) => onEdit\(item\)\}/);
-    assert.match(shell, /<MobileInventoryTriage[\s\S]*?onEdit=\{onEditItem\}/);
+    assert.match(shell, /<MobileInventoryTriage[\s\S]*?onEdit=\{canManage \? onEditItem : undefined\}/);
     assert.match(css, /\.editButton\s*\{[\s\S]*?height:\s*44px/);
     assert.match(css, /\.stepButton\s*\{[\s\S]*?width:\s*44px;[\s\S]*?height:\s*44px/);
   });

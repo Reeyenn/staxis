@@ -27,7 +27,7 @@ interface FilterBarProps {
   onAddCategory: (name: string) => void;
   view: InventoryView;
   onView: (v: InventoryView) => void;
-  onAdd: () => void;
+  onAdd?: () => void;
 }
 
 export function FilterBar({
@@ -100,7 +100,7 @@ export function FilterBar({
           );
         })}
       </div>
-      <Btn variant="ghost" size="md" onClick={onAdd}>{tx.addItem}</Btn>
+      {onAdd ? <Btn variant="ghost" size="md" onClick={onAdd}>{tx.addItem}</Btn> : null}
     </div>
   );
 }

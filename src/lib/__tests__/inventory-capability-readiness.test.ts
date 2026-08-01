@@ -75,6 +75,30 @@ test('inventory starts ordinary stock from hotel reach while sensitive controls 
   );
 });
 
+test('read-only hotel standings retain reads but receive no inventory mutation path', () => {
+  assert.match(inventoryShell, /const hotelStanding = useActiveHotelStanding\(\)/);
+  assert.match(
+    inventoryShell,
+    /const canManage = inventoryContextReady[\s\S]*?hotelStanding\.ready[\s\S]*?hotelStanding\.hotelMutationAllowed[\s\S]*?can\('manage_inventory_orders'\)/,
+  );
+  assert.match(
+    inventoryShell,
+    /\(action === 'count' \|\| action === 'delivery' \|\| action === 'ordering' \|\| action === 'add'\) && !canManage/,
+  );
+  assert.match(inventoryShell, /onQuickCount=\{canManage \? onQuickCount : undefined\}/);
+  assert.match(inventoryShell, /onEdit=\{canManage \? onEditItem : undefined\}/);
+  assert.match(inventoryShell, /open=\{overlay === 'count' && canManage\}/);
+  assert.match(inventoryShell, /open=\{overlay === 'add' && canManage\}/);
+  assert.match(inventoryShell, /if \(!canManageRef\.current\) return/);
+
+  // Financial and AI reads are deliberately not tied to mutation standing.
+  assert.doesNotMatch(
+    inventoryShell,
+    /const canViewFinancials = [^;]*hotelMutationAllowed/,
+  );
+  assert.match(inventoryShell, /open=\{overlay === 'ai'\}/);
+});
+
 test('finance availability is separate from the generic inventory connection warning', () => {
   assert.match(
     inventoryShell,

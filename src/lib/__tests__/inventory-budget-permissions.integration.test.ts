@@ -70,6 +70,12 @@ describe('inventory financial permissions migration 0331', () => {
         migrated.report.failedAtRuntime.filter((entry) => entry.file.startsWith('0331')),
       )}`,
     );
+    assert.ok(
+      migrated.report.applied.includes('0413_bounded_inventory_financial_evidence.sql'),
+      `0413 must apply in PGlite: ${JSON.stringify(
+        migrated.report.failedAtRuntime.filter((entry) => entry.file.startsWith('0413')),
+      )}`,
+    );
 
     await pg.query(
       `insert into auth.users(id,email) values
@@ -393,6 +399,28 @@ describe('inventory financial permissions migration 0331', () => {
       asUser(STAFF, `select public.staxis_list_inventory_financial_evidence($1)`, [PROPERTY]),
       /permission denied|service-role only/i,
     );
+  });
+
+  test('financial hydration stays bounded while current-month accounting remains exact', async () => {
+    await pg.query(
+      `insert into public.inventory_counts(
+         property_id,count_session_id,item_id,item_name,counted_stock,
+         estimated_stock,variance,variance_value,unit_cost,counted_at,counted_by
+       )
+       select $1,gen_random_uuid(),$2,'Bath Towels',5,5,0,0,3,
+              now() + s * interval '1 millisecond','Load test'
+       from generate_series(1,2050) s`,
+      [PROPERTY, ITEM],
+    );
+
+    const evidence = await asService<Record<string, unknown>>(
+      `select public.staxis_list_inventory_financial_evidence($1)`,
+      [PROPERTY],
+    );
+    const counts = evidence.counts as Record<string, unknown>;
+    assert.equal(Object.keys(counts).length, 2_000);
+    assert.equal(counts[COUNT], undefined, 'older rows do not make the live-board payload grow forever');
+    assert.deepEqual(evidence.currentMonthSpend, { total: 10, complete: true });
   });
 
   test('item cost writes keep manager Add/Edit working and reject line-staff tampering', async () => {

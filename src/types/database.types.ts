@@ -16706,6 +16706,7 @@ export type Database = {
           staff_id: string | null
           start_time: string
           status: string
+          time_off_override: boolean
           updated_at: string
         }
         Insert: {
@@ -16723,6 +16724,7 @@ export type Database = {
           staff_id?: string | null
           start_time: string
           status?: string
+          time_off_override?: boolean
           updated_at?: string
         }
         Update: {
@@ -16740,6 +16742,7 @@ export type Database = {
           staff_id?: string | null
           start_time?: string
           status?: string
+          time_off_override?: boolean
           updated_at?: string
         }
         Relationships: [
@@ -21173,6 +21176,14 @@ export type Database = {
           p_property_id: string
           p_supersede_id: string
           p_verify: Json
+        }
+        Returns: Json
+      }
+      staxis_replace_staff_schedule_days: {
+        Args: {
+          p_days: Json
+          p_property_id: string
+          p_published_by: string
         }
         Returns: Json
       }

@@ -21,6 +21,7 @@ import { requireSession } from '@/lib/api-auth';
 import {
   callerCapabilityDecision,
   callerReachesHotel,
+  hotelWriteDecisionForUserId,
   loadSessionAccount,
   teamCallerCanMutateHotel,
   verifyTeamManager,
@@ -163,6 +164,16 @@ export async function PUT(req: NextRequest) {
     }
   });
   const toDelete = [...existingIds].filter(id => !keepIds.has(id));
+
+  const commitDecision = await hotelWriteDecisionForUserId(
+    caller.authUserId,
+    hotelId,
+    'manage_shifts',
+  );
+  if (commitDecision === 'unavailable') return capabilityUnavailableResponse(requestId);
+  if (commitDecision === 'denied') {
+    return err('Forbidden', { requestId, status: 403, code: ApiErrorCode.Forbidden });
+  }
 
   for (const u of toUpdate) {
     const { error } = await supabaseAdmin

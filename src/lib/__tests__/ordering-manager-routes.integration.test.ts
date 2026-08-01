@@ -78,6 +78,8 @@ import {
 import {
   PID_A1,
   PID_B1,
+  PID_L1,
+  UID_HANK,
   UID_MARIA,
   seedTwoCompanies,
 } from '../../../tests/fixtures/pglite-two-company-seed';
@@ -671,6 +673,25 @@ describe('ordering — the assembled screen', () => {
 // the send path's ordering, and the two validation bugs are in what the route
 // checks and in what order it writes.
 // ═══════════════════════════════════════════════════════════════════════════
+
+test('line staff retain ordinary ordering work but cannot email a real vendor PO', async () => {
+  signedInAs = UID_HANK;
+  try {
+    const ordinary = await post({ pid: PID_L1, action: 'dismiss_intro' });
+    assert.equal(ordinary.status, 200, 'the manager floor must not replace the shared inventory capability');
+
+    const send = await post({
+      pid: PID_L1,
+      action: 'send_po',
+      vendorId: '99999999-0000-4000-8000-000000000001',
+      itemIds: [],
+    });
+    assert.equal(send.status, 403);
+    assert.match(String(send.body.error), /only hotel management/i);
+  } finally {
+    signedInAs = UID_MARIA;
+  }
+});
 
 describe('ordering route — one tap, one order', () => {
   /** A vendor + one genuinely short item, isolated per test. Names carry a

@@ -269,7 +269,10 @@ describe('property and capability readiness', () => {
       inventoryShell,
       /const inventoryContextReady = Boolean\([\s\S]*?inventoryViewerContextReady[\s\S]*?capabilityOverridesPropertyId === activePropertyId/,
     );
-    assert.match(inventoryShell, /const canManage = inventoryContextReady && can\('manage_inventory_orders'\)/);
+    assert.match(
+      inventoryShell,
+      /const canManage = inventoryContextReady[\s\S]*?hotelStanding\.ready[\s\S]*?hotelStanding\.hotelMutationAllowed[\s\S]*?can\('manage_inventory_orders'\)/,
+    );
     assert.match(
       inventoryShell,
       /inventoryFinancialDataEnabled\(\{[\s\S]*?contextReady: inventoryContextReady/,
@@ -526,7 +529,7 @@ describe('authenticated shell and property-switch isolation', () => {
     for (const [name, rowType] of [
       ['rooms', 'Room'],
       ['workOrders', 'WorkOrder'],
-      ['complaints', 'Complaint'],
+      ['complaints', 'ComplaintDashboardSummary'],
     ] as const) {
       const title = `${name[0].toUpperCase()}${name.slice(1)}`;
       assert.match(

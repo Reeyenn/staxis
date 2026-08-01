@@ -13,7 +13,11 @@ import { supabaseAdmin } from '@/lib/supabase-admin';
 import { ok, err, ApiErrorCode } from '@/lib/api-response';
 import { getOrMintRequestId, log } from '@/lib/log';
 import { errToString } from '@/lib/utils';
-import { verifyTeamManager, callerCapabilityDecision } from '@/lib/team-auth';
+import {
+  verifyTeamManager,
+  callerCapabilityDecision,
+  hotelWriteDecisionForUserId,
+} from '@/lib/team-auth';
 import { capabilityUnavailableResponse } from '@/lib/capabilities/api-gate';
 import { requireSectionEnabled } from '@/lib/sections/server';
 import { validateUuid } from '@/lib/api-validate';
@@ -76,6 +80,16 @@ export async function POST(req: NextRequest) {
   }
   if (typeof body.done !== 'boolean') {
     return err('done boolean required', { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
+  }
+
+  const commitDecision = await hotelWriteDecisionForUserId(
+    caller.authUserId,
+    hotelId,
+    'manage_shifts',
+  );
+  if (commitDecision === 'unavailable') return capabilityUnavailableResponse(requestId);
+  if (commitDecision === 'denied') {
+    return err('Forbidden', { requestId, status: 403, code: ApiErrorCode.Forbidden });
   }
 
   if (body.done) {

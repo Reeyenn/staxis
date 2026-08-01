@@ -264,7 +264,10 @@ describe('inventory operational corrections migration 0324', () => {
     try {
       await pg.query(
         `select public.staxis_start_inventory_month_close(
-           $1,date_trunc('month', now())::date,$2,$3,'Maria'
+           $1,
+           (select date_trunc('month', now() at time zone p.timezone)::date
+              from public.properties p where p.id=$1),
+           $2,$3,'Maria'
          )`,
         [PROP_START_COST_ONLY, '75000000-0000-4000-8000-000000000117', USER_A],
       );
@@ -324,7 +327,10 @@ describe('inventory operational corrections migration 0324', () => {
       await assert.rejects(
         pg.query(
           `select public.staxis_start_inventory_month_close(
-             $1,date_trunc('month', now())::date,$2,$3,'Maria'
+             $1,
+             (select date_trunc('month', now() at time zone p.timezone)::date
+                from public.properties p where p.id=$1),
+             $2,$3,'Maria'
            )`,
           [PROP_START_BACKDATED, '75000000-0000-4000-8000-000000000121', USER_A],
         ),

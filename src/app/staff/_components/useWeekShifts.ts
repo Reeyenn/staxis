@@ -3,8 +3,8 @@
 // request history. Shift row status is the draft/published visibility gate.
 //
 // Returns:
-//   • days[]            — Mon..Sun metadata for the visible week
-//   • byStaff{}         — per-staff [Mon..Sun] assigned-shift cells
+//   • days[]            — Sun..Sat metadata for the visible week
+//   • byStaff{}         — per-staff [Sun..Sat] assigned-shift cells
 //   • openShifts[]      — kind='open' rows in the visible week
 //   • torPending{}      — pending TOR rows in the visible week, indexed
 //                         by `${staffId}:${date}` for cell pin lookup
@@ -18,11 +18,12 @@ import {
 import type {
   ScheduledShift, TimeOffRequest,
 } from '@/types';
+import { addDaysYmd, dayInfo, sundayOf } from '@/lib/schedule-board';
 
 const INITIAL_SNAPSHOT_TIMEOUT_MS = 8_000;
 
-export type WeekDayKey = 'mon' | 'tue' | 'wed' | 'thu' | 'fri' | 'sat' | 'sun';
-export const DAY_KEYS: readonly WeekDayKey[] = ['mon','tue','wed','thu','fri','sat','sun'];
+export type WeekDayKey = 'sun' | 'mon' | 'tue' | 'wed' | 'thu' | 'fri' | 'sat';
+export const DAY_KEYS: readonly WeekDayKey[] = ['sun','mon','tue','wed','thu','fri','sat'];
 export const DAY_LABELS: Record<WeekDayKey, string> = {
   mon:'Mon', tue:'Tue', wed:'Wed', thu:'Thu', fri:'Fri', sat:'Sat', sun:'Sun',
 };
@@ -54,47 +55,21 @@ export interface WeekShiftsResult {
 }
 
 // ── Date helpers ──────────────────────────────────────────────────────────
-function ymd(d: Date): string {
-  return d.toLocaleDateString('en-CA');
-}
-function parseYmd(s: string): Date {
-  const [y, m, d] = s.split('-').map(Number);
-  return new Date(y, m - 1, d);
-}
+export { sundayOf };
 
-/** YYYY-MM-DD of the Monday on or before `reference`. */
-export function mondayOf(reference: Date | string): string {
-  const ref = typeof reference === 'string' ? parseYmd(reference) : reference;
-  const dow = ref.getDay(); // 0=Sun
-  const back = dow === 0 ? 6 : dow - 1;
-  const mon = new Date(ref.getFullYear(), ref.getMonth(), ref.getDate() - back);
-  return ymd(mon);
-}
-
-/** Add n days to a YYYY-MM-DD date. */
-export function addDays(date: string, n: number): string {
-  const d = parseYmd(date);
-  d.setDate(d.getDate() + n);
-  return ymd(d);
-}
-
-const MONTH_SHORT = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
-
-function buildDays(weekStart: string): WeekDay[] {
-  const today = ymd(new Date());
-  const tomorrow = addDays(today, 1);
+export function buildWeekDays(weekStart: string, today: string): WeekDay[] {
   return DAY_KEYS.map((key, i) => {
-    const date = addDays(weekStart, i);
-    const dt = parseYmd(date);
+    const date = addDaysYmd(weekStart, i);
+    const info = dayInfo(date, today, 'en');
     return {
       key,
       label: DAY_LABELS[key],
       date,
-      dateLabel: `${MONTH_SHORT[dt.getMonth()]} ${dt.getDate()}`,
-      dayNum: String(dt.getDate()),
-      today: date === today,
-      tomorrow: date === tomorrow,
-      past: date < today,
+      dateLabel: `${info.mon} ${info.dayNum}`,
+      dayNum: String(info.dayNum),
+      today: info.today,
+      tomorrow: info.tomorrow,
+      past: info.past,
     };
   });
 }
@@ -107,8 +82,9 @@ export function useWeekShifts(
   propertyId: string | null,
   weekStart: string,
   staffId: string | null,
+  today: string,
 ): WeekShiftsResult {
-  const days = buildDays(weekStart);
+  const days = buildWeekDays(weekStart, today);
   const weekEnd = days[6].date;
 
   const [shifts, setShifts] = useState<ScheduledShift[]>([]);

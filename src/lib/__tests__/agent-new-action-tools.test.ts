@@ -40,6 +40,7 @@ let shiftRows: Array<Record<string, unknown>>;
 let inventoryRows: Array<Record<string, unknown>>;
 let timeOffRows: Array<Record<string, unknown>>;
 let lafRows: Array<Record<string, unknown>>;
+let propertyRows: Array<Record<string, unknown>>;
 
 const inserted: Record<string, Array<Record<string, unknown>>> = {};
 const updated: Record<string, Array<Record<string, unknown>>> = {};
@@ -59,6 +60,7 @@ beforeEach(() => {
   inventoryRows = [];
   timeOffRows = [];
   lafRows = [];
+  propertyRows = [{ id: PID, timezone: 'America/Chicago' }];
   for (const k of Object.keys(inserted)) delete inserted[k];
   for (const k of Object.keys(updated)) delete updated[k];
   for (const k of Object.keys(deleted)) delete deleted[k];
@@ -151,6 +153,7 @@ function buildStub(table: string) {
     case 'recurring_task_templates': return chain('recurring_task_templates', []);
     case 'lost_and_found_items': return chain('lost_and_found_items', lafRows);
     case 'pms_lost_and_found': return chain('pms_lost_and_found', []);
+    case 'properties': return chain('properties', propertyRows);
     default: return chain(table, []);
   }
 }
@@ -199,6 +202,32 @@ describe('get_schedule', () => {
     const res = await executeTool('get_schedule', { date: 'someday' }, ctx());
     assert.equal(res.ok, false);
     assert.match(res.error ?? '', /date/i);
+  });
+
+  test('today follows the hotel timezone rather than the server timezone', async () => {
+    propertyRows = [{ id: PID, timezone: 'Pacific/Kiritimati' }];
+    const east = await executeTool('get_schedule', { date: 'today' }, ctx());
+    propertyRows = [{ id: PID, timezone: 'Pacific/Honolulu' }];
+    const west = await executeTool('get_schedule', { date: 'today' }, ctx());
+
+    assert.equal(east.ok, true);
+    assert.equal(west.ok, true);
+    const eastDate = (east.data as { date: string }).date;
+    const westDate = (west.data as { date: string }).date;
+    assert.notEqual(eastDate, westDate, 'UTC+14 and UTC-10 are always different hotel days');
+  });
+
+  test('relative dates fail closed when the hotel timezone cannot be loaded', async () => {
+    for (const rows of [
+      [],
+      [{ id: PID, timezone: null }],
+      [{ id: PID, timezone: 'Not/A_Timezone' }],
+    ]) {
+      propertyRows = rows;
+      const res = await executeTool('get_schedule', { date: 'tomorrow' }, ctx());
+      assert.equal(res.ok, false);
+      assert.match(res.error ?? '', /timezone/i);
+    }
   });
 
   test('a housekeeper cannot read the schedule (manager-gated)', async () => {

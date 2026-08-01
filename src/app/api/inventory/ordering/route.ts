@@ -46,6 +46,7 @@ import {
 } from '@/lib/ordering/db';
 import { buildCandidate, rankCandidates, groupByVendor, blockReasonFor } from '@/lib/ordering/resolve';
 import { sendPoEmail } from '@/lib/ordering/po-email';
+import { canManageTeam } from '@/lib/roles';
 import {
   ORDER_METHODS,
   type BucketKey,
@@ -302,6 +303,16 @@ export async function POST(req: NextRequest): Promise<Response> {
   if (!gate.ok) return gate.response;
 
   const action = typeof body.action === 'string' ? body.action : '';
+  // Keep routine inventory/vendor workflows on their existing hotel
+  // capability. The only action that crosses the hotel boundary by sending
+  // real mail has an additional, override-proof manager floor.
+  if (action === 'send_po' && !canManageTeam(gate.role)) {
+    return err('forbidden: only hotel management can email a purchase order', {
+      requestId: gate.requestId,
+      status: 403,
+      code: 'forbidden_role',
+    });
+  }
   // The email send has its own, much tighter bucket: it is the only action
   // that leaves the building.
   const bucket = action === 'send_po' ? 'inventory-po-send' : 'inventory-ordering';

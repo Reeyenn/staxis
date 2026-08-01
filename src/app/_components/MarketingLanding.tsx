@@ -54,9 +54,9 @@ type FeedItem = {
 
 const FEED_SCRIPT: FeedItem[] = [
   { time: '6:02 AM', icon: '◉', text: 'Latest PMS data: 42 arrivals + 38 departures', tone: 'info' },
-  { time: '6:02 AM', icon: '✓', text: 'Maria confirmed for today: “¡Sí!”', tone: 'ok' },
+  { time: '6:02 AM', icon: '✓', text: 'Maria confirmed for today: “Yes”', tone: 'ok' },
   { time: '6:03 AM', icon: '⚡', text: 'Housekeeping board built, 31 rooms assigned', tone: 'ok' },
-  { time: '6:07 AM', icon: '▲', text: 'Towels running low, reorder drafted', tone: 'warn' },
+  { time: '6:07 AM', icon: '▲', text: 'Towels running low, count ready to review', tone: 'warn' },
   { time: '6:11 AM', icon: '⚡', text: 'Room 118 AC ticket assigned to maintenance', tone: 'info' },
   { time: '6:14 AM', icon: '✓', text: 'Room 204 flipped dirty → clean, inspection queued', tone: 'ok' },
   { time: '6:18 AM', icon: '◉', text: 'Occupancy tonight projected 84%, staffing holds', tone: 'info' },
@@ -111,12 +111,12 @@ function ChipDemo({ id, sub }: { id: string; sub: number }) {
     return (
       <div className="ap gx">
         {[
-          ['✆', 'An AI voice agent answering every guest call, 24/7'],
-          ['☾', 'After-hours bookings, never missed again'],
-          ['⇄', 'Reservation changes handled automatically'],
-          ['✉', 'Instant replies to guest texts and emails'],
-          ['✓', 'Late checkouts and requests taken by phone'],
-          ['🌎', 'Guests greeted in their own language'],
+          ['◎', 'Guest complaints captured in one shared queue'],
+          ['☾', 'Outstanding issues kept visible between shifts'],
+          ['⇄', 'Requests routed to the right hotel team'],
+          ['✉', 'Service-recovery drafts ready for manager review'],
+          ['✓', 'Late checkouts and requests tracked to completion'],
+          ['◉', 'Every guest issue linked to hotel operations'],
         ].map(([ic, t], i) => (
           <div className="gx-item" key={t} style={{ animationDelay: `${i * 90}ms` }}>
             <span className="gx-ic">{ic}</span>{t}
@@ -582,7 +582,7 @@ function ChipDemo({ id, sub }: { id: string; sub: number }) {
           {sub === 1 ? (
             <>
               <div className="ap-h">LOG BOOK · WRITES ITSELF</div>
-              {[['7:12 AM', 'Late checkout on 312 approved'], ['7:04 AM', 'Towel reorder drafted'], ['6:41 AM', 'AC ticket assigned to Luis'], ['6:03 AM', 'Board built, 31 rooms']].map(([t, txt]) => (
+              {[['7:12 AM', 'Late checkout on 312 approved'], ['7:04 AM', 'Towel count flagged for review'], ['6:41 AM', 'AC ticket assigned to Luis'], ['6:03 AM', 'Board built, 31 rooms']].map(([t, txt]) => (
                 <div className="ap-feedrow" key={txt as string}><span>{t}</span>{txt}</div>
               ))}
             </>
@@ -598,15 +598,15 @@ function ChipDemo({ id, sub }: { id: string; sub: number }) {
               <div className="ap-panehead"># Housekeeping<span>4 members</span></div>
               <div className="ap-msgrow">
                 <span className="ap-avatar">MG</span>
-                <div className="mr-mid"><b>Maria <i>7:02 AM</i></b>Room 204 lista ✓</div>
+                <div className="mr-mid"><b>Maria <i>7:02 AM</i></b>Room 204 is ready ✓</div>
               </div>
               <div className="ap-msgrow">
                 <span className="ap-avatar">JD</span>
-                <div className="mr-mid"><b>Jade <i>7:04 AM</i></b>Gracias! 118 next please 🙏</div>
+                <div className="mr-mid"><b>Jade <i>7:04 AM</i></b>Thanks! 118 next please 🙏</div>
               </div>
               <div className="ap-msgrow">
                 <span className="ap-avatar">MG</span>
-                <div className="mr-mid"><b>Maria <i>7:05 AM</i></b>Ok voy 👍</div>
+                <div className="mr-mid"><b>Maria <i>7:05 AM</i></b>On my way 👍</div>
               </div>
               <div className="ap-msginput">Message #housekeeping…</div>
             </>
@@ -825,7 +825,7 @@ export default function MarketingLanding() {
             <span className="foot-sep">·</span>
             <span>{PMS_ROBOT_ENABLED ? 'ALWAYS WATCHING' : 'LATEST DAILY VIEW'}</span>
             <span className="foot-sep">·</span>
-            <span>EN / ES</span>
+            <span>ONE HOTEL VIEW</span>
           </div>
         </div>
       </header>
@@ -837,12 +837,12 @@ export default function MarketingLanding() {
             <div className="marquee-set" key={k}>
               <span>Housekeeping boards</span><i>✦</i>
               <span>Work orders</span><i>✦</i>
-              <span>Inventory that reorders itself</span><i>✦</i>
+              <span>Inventory counts and par alerts</span><i>✦</i>
               <span>Daily staff texts</span><i>✦</i>
               <span>Room status in one place</span><i>✦</i>
               <span>Labor cost tracking</span><i>✦</i>
-              <span>Voice copilot</span><i>✦</i>
-              <span>Bilingual by default</span><i>✦</i>
+              <span>AI-assisted decisions</span><i>✦</i>
+              <span>Role-based team views</span><i>✦</i>
             </div>
           ))}
         </div>
@@ -1023,12 +1023,12 @@ export default function MarketingLanding() {
                   <span className="notif-time">6:07 AM</span>
                 </div>
                 <p className="notif-body">
-                  Towels are running low. I counted, checked the budget, and
-                  drafted the reorder.
+                  Towels are below par. The latest count and budget context are
+                  ready for your review.
                 </p>
                 <div className="notif-actions">
                   <button type="button" className="notif-btn" tabIndex={-1}>
-                    {notifStage === 'done' ? '✓ Ordered' : 'Approve reorder'}
+                    {notifStage === 'done' ? '✓ Reviewed' : 'Review order list'}
                   </button>
                   {notifStage === 'done' && (
                     <span className="notif-burst" aria-hidden="true">
@@ -1039,15 +1039,15 @@ export default function MarketingLanding() {
               </div>
             </div>
             <p className="vs-caption">
-              One tap. Staxis did the walking, the counting, and the math. It
-              only brings you the decision.
+              One view. Staxis brings the latest count, budget context, and
+              next decision together for your team.
             </p>
             <div className="dream-extra">
               <div className="de-h">ALSO READY FOR YOUR DAY</div>
               {[
                 'Tomorrow’s cleaning board built',
                 'AC ticket sent to maintenance',
-                'Breakfast coffee reorder drafted',
+                'Breakfast coffee count flagged',
                 'Latest room status in one place',
               ].map((d, i) => (
                 <div className="de-item rv" key={d} style={{ transitionDelay: `${300 + i * 140}ms` }}>
@@ -1059,7 +1059,7 @@ export default function MarketingLanding() {
               {[
                 '▼ Lower labor costs',
                 'Hours back, every single week',
-                'Budget checked before every order',
+                'Budget context before purchasing',
                 'Clear daily visibility',
               ].map((o, i) => (
                 <span className="oc good rv" key={o} style={{ transitionDelay: `${i * 110}ms` }}>{o}</span>
@@ -1091,36 +1091,36 @@ export default function MarketingLanding() {
               'Live room status, all day',
               'A log book that writes itself',
               'Labor costs tracked daily',
-              'Staff texted in their language',
+              'Staff updates organized by department',
             ] : [
               'Uses your latest property-system data',
               'Housekeeping boards built every morning',
               'Room status in one place',
               'A log book that writes itself',
               'Labor costs tracked daily',
-              'Staff texted in their language',
+              'Staff updates organized by department',
             ]).map((t, i) => (
               <div className="tier-item rv" key={t} style={{ transitionDelay: `${i * 60}ms` }}>
                 <span className="de-check">✓</span>{t}
               </div>
             ))}
-            <div className="tier-item soon rv"><span className="rm-soon-dot">✦</span>AI voice agent answering every call, 24/7<span className="soon-pill">SOON</span></div>
+            <div className="tier-item soon rv"><span className="rm-soon-dot">✦</span>Guest request intake connected to operations<span className="soon-pill">SOON</span></div>
             <div className="tier-item soon rv"><span className="rm-soon-dot">✦</span>Instant replies to guest texts<span className="soon-pill">SOON</span></div>
           </div>
 
           {/* SEMI-AUTONOMOUS */}
           <div className="tier tier-semi rv" style={{ transitionDelay: '120ms' }}>
             <div className="tier-gauge"><i className="on" /><i className="on" /><i /></div>
-            <h3>Semi-autonomous</h3>
-            <div className="tier-tag">It does the work, you tap approve.</div>
+            <h3>Decision support</h3>
+            <div className="tier-tag">It prepares the context; you decide.</div>
             <div className="tier-visual">
               <span className="ti-dot warn" />
-              <span className="tv-line">Towels low · reorder drafted</span>
-              <span className="tv-approve">Approve</span>
+              <span className="tv-line">Towels low · review list</span>
+              <span className="tv-approve">Review</span>
             </div>
             {[
-              'Reorders drafted before you run out',
-              'Budgets checked on every order',
+              'Low-stock items surfaced before you run out',
+              'Budget context shown before purchasing',
               'Tomorrow’s crew confirmed by text',
               'Work orders that need a decision come to you',
               'Guest complaints followed to the end',
@@ -1130,7 +1130,7 @@ export default function MarketingLanding() {
               </div>
             ))}
             <div className="tier-item soon rv"><span className="rm-soon-dot">✦</span>Reservation changes, with your rules<span className="soon-pill">SOON</span></div>
-            <div className="tier-note">Anything touching money or people gets your yes first.</div>
+            <div className="tier-note">Purchases and staffing changes stay with your team.</div>
           </div>
 
           {/* ASSISTED */}
@@ -1143,7 +1143,7 @@ export default function MarketingLanding() {
               <span className="tv-a">Maria. Done in ~20 minutes.</span>
             </div>
             {[
-              'A voice copilot you can talk to',
+              'An AI copilot you can message',
               'Scan an invoice, it logs itself',
               'Reports and financials in one tap',
               'Ask what happened overnight',

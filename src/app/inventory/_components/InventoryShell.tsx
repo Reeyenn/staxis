@@ -49,7 +49,8 @@ import {
   fetchDailyAverages,
   type DailyAverages,
 } from '@/lib/inventory-predictions';
-import { useCan } from '@/lib/capabilities/useCan';
+import { useActiveHotelStanding, useCan } from '@/lib/capabilities/useCan';
+import { isManagerRole } from '@/lib/capabilities/dept-scope';
 import type {
   InventoryItem,
   InventoryCount,
@@ -282,6 +283,7 @@ export function InventoryShell() {
   const L = invLang(lang);
   const tx = t(L);
   const can = useCan();
+  const hotelStanding = useActiveHotelStanding();
   // Latch the signed-in user through token-refresh blips — Supabase
   // transiently nulls the session mid-refresh, and reacting to that unmounted
   // subscriptions and flickered capability-gated UI. A real sign-out
@@ -300,7 +302,21 @@ export function InventoryShell() {
     && capabilityOverridesPropertyId === activePropertyId
     && capabilityOverridesViewerKey === capabilityViewerKey
   );
-  const canManage = inventoryContextReady && can('manage_inventory_orders');
+  // Capability overrides answer which inventory workflows this role may use;
+  // the normalized standing separately answers whether this viewer may mutate
+  // this hotel at all. Company/portfolio viewers can retain inventory reads,
+  // but must never be offered controls that the authoritative write boundary
+  // will reject.
+  const canManage = inventoryContextReady
+    && hotelStanding.ready
+    && hotelStanding.hotelMutationAllowed
+    && can('manage_inventory_orders');
+  // Ordinary inventory work intentionally remains available to operational
+  // roles. Only the action that sends external mail in the hotel's name has a
+  // manager floor, mirrored by the route immediately before that side effect.
+  const canSendPurchaseOrders = canManage && isManagerRole(hotelStanding.role);
+  const canManageRef = React.useRef(canManage);
+  canManageRef.current = canManage;
   // Money capability — gates every budget/spend surface (sidebar spend strip,
   // Reports + Budgets panels, the reorder budget meters) AND the budget/spend
   // data fetch below, so the figures never reach a line-staff browser. Stock
@@ -809,11 +825,11 @@ export function InventoryShell() {
       // The budget/spend overlays are money — never honour a ?action= deep link
       // to them for a non-money role (closes the deep-link back door).
       if ((action === 'reports' || action === 'compare' || action === 'budgets' || action === 'close') && !canViewFinancials) return;
+      if ((action === 'count' || action === 'delivery' || action === 'ordering' || action === 'add') && !canManage) return;
       // `?action=scan` is the historical direct link to invoice OCR. Manual
       // delivery entry uses the distinct `delivery` overlay and stays usable
       // for Inventory-only hotels without exposing a route that will 403.
       if (action === 'scan' && !canScanInvoices) return;
-      if (action === 'delivery' && !canManage) return;
       if (action === 'close' && !canManage) return;
       // A deep-linked add opens a NEW item — clear any stale edited item (we no
       // longer clear it on close, see closeOverlay).
@@ -1053,7 +1069,7 @@ export function InventoryShell() {
   const openOverlay = useCallback((k: SidebarAction | 'add') => {
     // The "AI Helper" rail button opens the AI report as a large overlay like
     // any other action — the inventory tab itself stays manual.
-    if (k === 'delivery' && !canManage) return;
+    if ((k === 'count' || k === 'delivery' || k === 'ordering' || k === 'add') && !canManage) return;
     if ((k === 'reports' || k === 'compare' || k === 'budgets' || k === 'close') && !canViewFinancials) return;
     if (k === 'close' && !canManage) return;
     if (k === 'count') setCountForMonthClose(false);
@@ -1077,9 +1093,10 @@ export function InventoryShell() {
   }, [router]);
 
   const onEditItem = useCallback((d: DisplayItem) => {
+    if (!canManage) return;
     setEditItem(d.raw);
     setOverlay('add');
-  }, []);
+  }, [canManage]);
 
   const onRecordStockLoss = useCallback((item: InventoryItem) => {
     if (!canManage) return;
@@ -1161,6 +1178,10 @@ export function InventoryShell() {
   // Submit one already-persisted immutable envelope. This function never
   // rebuilds expectedStock/actor/estimate on retry.
   const submitQuickCountAttempt = useCallback(async (attempt: FrozenQuickCountAttempt) => {
+    // A hotel can become read-only while a debounced count is waiting. Keep
+    // the durable envelope for a later authorized retry, but do not knowingly
+    // send a write after the active standing/capability has been revoked.
+    if (!canManageRef.current) return;
     const { itemId } = attempt;
     if (quickInFlight.current.has(itemId)) return;
     quickInFlight.current.add(itemId);
@@ -1247,7 +1268,7 @@ export function InventoryShell() {
   // Ledger row tapped −/+ : update the draft immediately, debounce the save so a
   // burst of taps writes once (~1.5s after the last tap).
   const onQuickCount = useCallback((itemId: string, nextValue: number) => {
-    if (!uid || !activePropertyId || !stableUser) return;
+    if (!canManage || !uid || !activePropertyId || !stableUser) return;
     // Once an RPC begins (or its response is ambiguous), do not allow a new
     // value to replace the frozen envelope. The row's controls are also
     // disabled; this ref guard closes the one-render click race.
@@ -1338,7 +1359,7 @@ export function InventoryShell() {
       quickPending.current.delete(itemId);
       void submitQuickCountAttempt(attempt);
     }, 1500));
-  }, [uid, activePropertyId, stableUser, tx.team, submitQuickCountAttempt, setQuickLocked, removeDraft]);
+  }, [canManage, uid, activePropertyId, stableUser, tx.team, submitQuickCountAttempt, setQuickLocked, removeDraft]);
 
   // Reconcile: once a realtime snapshot reflects a SAVED quick count
   // (savedCounts[id] === currentStock) drop the draft, and cancel the now-
@@ -1409,22 +1430,22 @@ export function InventoryShell() {
 
   // Once authentication is ready, resolve restored envelopes automatically.
   useEffect(() => {
-    if (!uid || !activePropertyId) return;
+    if (!canManage || !uid || !activePropertyId) return;
     for (const attempt of quickAttempts.current.values()) {
       if (attempt.propertyId === activePropertyId && attempt.userId === uid) {
         void submitQuickCountAttemptRef.current(attempt);
       }
     }
-  }, [uid, activePropertyId]);
+  }, [canManage, uid, activePropertyId]);
 
   const retryQuickCounts = useCallback(() => {
-    if (!activePropertyId) return;
+    if (!canManage || !activePropertyId) return;
     for (const attempt of quickAttempts.current.values()) {
       if (attempt.propertyId === activePropertyId && attempt.userId === uid) {
         void submitQuickCountAttempt(attempt);
       }
     }
-  }, [activePropertyId, uid, submitQuickCountAttempt]);
+  }, [canManage, activePropertyId, uid, submitQuickCountAttempt]);
 
   const refreshData = useCallback(async () => {
     if (!uid || !activePropertyId || !inventoryViewerContextReady) return;
@@ -1452,7 +1473,7 @@ export function InventoryShell() {
 
   // ── Custom category tabs (0307) — add / delete ──────────────────────
   const addCustomCategory = useCallback(async (name: string) => {
-    if (!uid || !activePropertyId || !name.trim()) return;
+    if (!canManage || !uid || !activePropertyId || !name.trim()) return;
     const trimmed = name.trim();
     // Don't create a duplicate — if a tab with this name already exists, just
     // jump to it.
@@ -1469,10 +1490,10 @@ export function InventoryShell() {
         'The category could not be added. Nothing was saved; try again.',
       );
     }
-  }, [uid, activePropertyId, customCategories, refreshData]);
+  }, [canManage, uid, activePropertyId, customCategories, refreshData]);
 
   const deleteCustomCategory = useCallback(async (id: string) => {
-    if (!uid || !activePropertyId) return false;
+    if (!canManage || !uid || !activePropertyId) return false;
     setInventoryConfigError(null);
     try {
       await deleteInventoryCustomCategory(uid, activePropertyId, id);
@@ -1486,7 +1507,7 @@ export function InventoryShell() {
       );
       return false;
     }
-  }, [uid, activePropertyId, refreshData]);
+  }, [canManage, uid, activePropertyId, refreshData]);
 
   // ── Tab layout (0308) — reorder / remove / restore built-ins ────────────
   // Persist optimistically: update local state now, write in the background.
@@ -1495,7 +1516,7 @@ export function InventoryShell() {
   // UPDATE, so a GM's direct write was a silent no-op and their tab setup
   // reverted on reload.
   const persistLayout = useCallback((next: InventoryTabLayout) => {
-    if (!uid || !activePropertyId) {
+    if (!canManage || !uid || !activePropertyId) {
       setInventoryConfigError(
         'The tab layout could not be saved because no hotel is active.',
       );
@@ -1564,7 +1585,7 @@ export function InventoryShell() {
 
     const queued = layoutSaveChainRef.current.catch(() => {}).then(save);
     layoutSaveChainRef.current = queued;
-  }, [uid, activePropertyId]);
+  }, [canManage, uid, activePropertyId]);
 
   const reorderTabs = useCallback((keys: string[]) => {
     persistLayout({ order: keys, hidden: tabLayout.hidden });
@@ -1710,7 +1731,7 @@ export function InventoryShell() {
           }}
         >
           <span>{tx.quickCountSaveFailed}</span>
-          {quickCountLockedIds.size > 0 && (
+          {canManage && quickCountLockedIds.size > 0 && (
             <button
               type="button"
               onClick={retryQuickCounts}
@@ -1767,10 +1788,10 @@ export function InventoryShell() {
         canManage={canManage}
         canViewFinancials={canViewFinancials}
         onAction={openOverlay}
-        onQuickCount={onQuickCount}
+        onQuickCount={canManage ? onQuickCount : undefined}
         quickCountLockedIds={quickCountLockedIds}
-        onEdit={onEditItem}
-        onAdd={() => { setEditItem(null); setOverlay('add'); }}
+        onEdit={canManage ? onEditItem : undefined}
+        onAdd={canManage ? () => { setEditItem(null); setOverlay('add'); } : undefined}
       />
 
       <div className={mobileStyles.desktopOnly}>
@@ -1910,7 +1931,7 @@ export function InventoryShell() {
               onAddCategory={(name) => void addCustomCategory(name)}
               view={view}
               onView={setView}
-              onAdd={() => { setEditItem(null); setOverlay('add'); }}
+              onAdd={canManage ? () => { setEditItem(null); setOverlay('add'); } : undefined}
             />
           </div>
           {view === 'ledger' ? (
@@ -1921,11 +1942,11 @@ export function InventoryShell() {
               query={query}
               canViewFinancials={canViewFinancials}
               customNameById={customNameById}
-              onEdit={onEditItem}
-              onQuickCount={onQuickCount}
+              onEdit={canManage ? onEditItem : undefined}
+              onQuickCount={canManage ? onQuickCount : undefined}
               quickCountLockedIds={quickCountLockedIds}
-              onCount={() => setOverlay('count')}
-              onAdd={() => { setEditItem(null); setOverlay('add'); }}
+              onCount={canManage ? () => setOverlay('count') : undefined}
+              onAdd={canManage ? () => { setEditItem(null); setOverlay('add'); } : undefined}
             />
           ) : (
             <StockList
@@ -1934,9 +1955,9 @@ export function InventoryShell() {
               bucket={bucket}
               query={query}
               customNameById={customNameById}
-              onEdit={onEditItem}
-              onCount={() => setOverlay('count')}
-              onAdd={() => { setEditItem(null); setOverlay('add'); }}
+              onEdit={canManage ? onEditItem : undefined}
+              onCount={canManage ? () => setOverlay('count') : undefined}
+              onAdd={canManage ? () => { setEditItem(null); setOverlay('add'); } : undefined}
             />
           )}
         </div>
@@ -1946,7 +1967,7 @@ export function InventoryShell() {
       {loadedOverlays.has('count') && (
       <CountSheet
         lang={L}
-        open={overlay === 'count'}
+        open={overlay === 'count' && canManage}
         onClose={() => { setCountForMonthClose(false); closeOverlay(); void refreshData(); }}
         startWithAll={countForMonthClose}
         requireComplete={countForMonthClose}
@@ -1995,7 +2016,7 @@ export function InventoryShell() {
         timezone={propertyTimezone}
         canCorrectDeliveries={canManage && canViewFinancials}
         onCorrectDelivery={onCorrectDelivery}
-        onAddDelivery={() => { setDeliveryCorrection(null); setOverlay('delivery'); }}
+        onAddDelivery={canManage ? () => { setDeliveryCorrection(null); setOverlay('delivery'); } : undefined}
         auditPropertyId={auditMatchesActiveProperty ? auditPropertyId : null}
         auditEvents={!auditMatchesActiveProperty ? [] : auditStatus === 'error' ? null : auditEvents}
         auditLoading={!auditMatchesActiveProperty || auditStatus === 'idle' || auditStatus === 'loading'}
@@ -2061,17 +2082,16 @@ export function InventoryShell() {
       />
       )}
 
-      {/* Ordering — what is worth ordering now, grouped by supplier, with a
-          truthful action per supplier. Management-only (it can send mail to a
-          vendor in the hotel's name); the same capability the rail button and
-          the API gate use. Refreshes the list on close because marking items
-          ordered changes what the page should show. */}
+      {/* Ordering — ordinary vendor/setup work follows the hotel's inventory
+          capability. Sending an actual vendor email is separately manager-
+          only, enforced here for honest UI and again in the route. */}
       {loadedOverlays.has('ordering') && activePropertyId && (
       <OrderingPanel
         lang={L}
         open={overlay === 'ordering' && canManage}
         onClose={() => { closeOverlay(); void refreshData(); }}
         propertyId={activePropertyId}
+        canSendPurchaseOrders={canSendPurchaseOrders}
       />
       )}
 
@@ -2094,7 +2114,7 @@ export function InventoryShell() {
       {loadedOverlays.has('add') && (
       <AddItemSheet
         lang={L}
-        open={overlay === 'add'}
+        open={overlay === 'add' && canManage}
         onClose={() => { closeOverlay(); void refreshData(); }}
         item={editItem}
         canViewFinancials={canViewFinancials}

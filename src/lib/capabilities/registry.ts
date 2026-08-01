@@ -213,6 +213,7 @@ export const CAPABILITY_LIST: readonly CapabilityMeta[] = [
   },
   {
     key: 'manage_shifts', adminOnly: false, deptScoped: false, group: 'team_settings',
+    defaultRoles: MANAGER_ROLES,
     label_en: 'Shifts', label_es: 'Turnos',
     desc_en: 'Shift templates & presets', desc_es: 'Plantillas y ajustes de turnos',
   },
@@ -267,6 +268,7 @@ export function isAdminOnlyCapability(cap: CapabilityKey): boolean {
 //   - view_activity_log — the full searchable/exportable audit history.
 //   - manage_settings — the hotel's PMS connection / credentials surface.
 //     (Pre-onboarding lockdown 2026-06-26.)
+//   - manage_shifts — publishes and changes other employees' schedules.
 //   - run_reports — the self-serve report hub embeds money (inventory spend,
 //     budgets) and the activity-log audit timeline, so it's manager-only too.
 //     (Pre-onboarding access cleanup 2026-06-26.)

@@ -41,6 +41,7 @@ import {
   scopedFeedView,
 } from './_components/operational-feed-state';
 import { RoomRing, type RingTick } from './_components/RoomRing';
+import { buildRoomRingTicks } from './_components/room-ring-model';
 import { MetricChart } from './_components/MetricChart';
 import { Sparkline } from './_components/Sparkline';
 import { MemoryRecapCard } from './_components/MemoryRecapCard';
@@ -51,9 +52,9 @@ import { CalendarCard } from './_components/CalendarCard';
 import {
   subscribeToRooms,
   subscribeToWorkOrders,
-  subscribeToComplaints,
+  subscribeToComplaintSummary,
 } from '@/lib/db';
-import { type Complaint, isOverdue, isCallbackDue, isOpenStatus } from '@/lib/complaints-shared';
+import type { ComplaintDashboardSummary } from '@/lib/complaints-summary';
 import { fetchTodayPropertyCounts, type TodayPropertyCounts } from '@/lib/db/today-room-work';
 import { useTodayStr } from '@/lib/use-today-str';
 import { useFeedStatus } from '@/lib/use-feed-status';
@@ -210,7 +211,7 @@ function DashboardWorkspace() {
   const [countsRetryKey, setCountsRetryKey] = useState(0);
   const [operationalRetryKey, setOperationalRetryKey] = useState(0);
   const [workOrdersSnapshot, setWorkOrdersSnapshot] = useState(() => emptyScopedFeed<WorkOrder>());
-  const [complaintsSnapshot, setComplaintsSnapshot] = useState(() => emptyScopedFeed<Complaint>());
+  const [complaintsSnapshot, setComplaintsSnapshot] = useState(() => emptyScopedFeed<ComplaintDashboardSummary>());
   // Mask the previous hotel/day synchronously in render; effect cleanup alone
   // is one paint too late and can flash Hotel A or yesterday's numbers beneath
   // the current hotel/date. The ref also lets subscription callbacks reject an
@@ -237,7 +238,7 @@ function DashboardWorkspace() {
     () => scopedFeedView(complaintsSnapshot, activePropertyId, today),
     [complaintsSnapshot, activePropertyId, today],
   );
-  const complaints = complaintsFeed.rows;
+  const complaintSummary = complaintsFeed.rows[0] ?? null;
 
   // The configured room count is the property's true inventory; the PMS
   // snapshot's total_rooms can be a partial sample, so don't let it shrink
@@ -356,7 +357,7 @@ function DashboardWorkspace() {
     const date = today;
     let alive = true;
     setComplaintsSnapshot((previous) => beginScopedFeed(previous, propertyId, date));
-    const unsubscribe = subscribeToComplaints(user.uid, propertyId, (rows) => {
+    const unsubscribe = subscribeToComplaintSummary(user.uid, propertyId, (rows) => {
       const currentScope = dashboardScopeRef.current;
       if (!alive || currentScope.propertyId !== propertyId || currentScope.date !== date) return;
       setComplaintsSnapshot(publishScopedFeed(propertyId, date, rows));
@@ -479,8 +480,9 @@ function DashboardWorkspace() {
         : (feedStatus.derived?.snapshotDeparturesRemaining ?? '—');
 
   // Real occupancy signal (occupied rooms / inventory). Null when the PMS
-  // snapshot carries no occupancy yet — the chart + ring then fall back to
-  // the synthetic trend, same as the rest of the dashboard.
+  // snapshot carries no occupancy yet; real hotels then show an unknown center
+  // value. The room ticks below remain independently grounded in room-level
+  // facts and never inherit this aggregate percentage.
   const occPct = useMemo(() => {
     if (counts && counts.total_rooms > 0) {
       const denom = totalRooms || counts.total_rooms || 1;
@@ -492,17 +494,13 @@ function DashboardWorkspace() {
   // ~2y daily history for the chart; today's row anchored to real occupancy
   // when we have it.
   const history = useMemo<HistRow[]>(() => buildHistory(totalRooms, occPct), [totalRooms, occPct]);
-  // The occupancy the dashboard is showing for today (real if anchored, else
-  // the synthetic trend) — used to keep the ring consistent with the figure.
-  const displayOcc = history.length ? history[history.length - 1].occ : 0;
-
   // ── honesty gate ─────────────────────────────────────────────────────
   // Two distinct signals, because occupancy and the financial showcase have
   // very different "is this real?" answers:
   //
-  //  • ringReady — do we have a real occupancy reading (or a demo)? When yes,
-  //    the occupancy RING shows a real picture (today's occupied rooms). When
-  //    no, the ring goes neutral.
+  //  • occupancyReady — do we have a real occupancy reading (or an explicit
+  //    demo)? This controls the aggregate center figure only; tick colours are
+  //    built separately from room-level facts.
   //
   //  • showFinancials — should we show the synthetic KPI strip / chart /
   //    month-to-date? These are built ENTIRELY from generated numbers
@@ -517,68 +515,21 @@ function DashboardWorkspace() {
   //    demo-only; real occupancy still drives the ring above.)
   const hasRealData = occPct != null;
   const isDemo = !!activeProperty?.isTest;
-  const ringReady = hasRealData || isDemo;
+  const occupancyReady = hasRealData || isDemo;
   // Synthetic financial showcase: demo-only AND only when the Financials
   // section is on for the hotel (AND with the existing demo gate, never a
   // replacement). Turning Financials off hides the KPI strip / chart / MTD.
   const showFinancials = isDemo && financialsEnabled;
 
-  // FULL roster of the property's rooms — one tick = one specific room, each
-  // with a stable floor-based number (101.., 201..) and a unique idx. Sized to
-  // the property's room count (set at onboarding). Real status counts from the
-  // PMS snapshot / cleaning feed drive the mix where we have them; the rest is
-  // filled toward the occupancy shown. Deterministic shuffle so statuses
-  // scatter naturally + stay stable across renders. Becomes fully real
-  // per-room as CUA coverage fills in.
-  const ringRooms = useMemo<RingTick[]>(() => {
-    const total = Math.max(1, Math.min(totalRooms, 400));
-    // feat/cua-partial-promotion — while the room-status feed is still being
-    // learned, NEVER synthesize a plausible-looking board (the mock fill
-    // below would paint clean/occupied rooms out of thin air). Every tick
-    // renders the neutral 'none' ("no data") state instead.
-    // Honesty gate: also go fully neutral when there's no real occupancy at all
-    // (a manual / no-PMS / zero-data hotel where roomStatusLearning is false) —
-    // otherwise the fill below would paint a fake ~80%-occupied ring from the
-    // synthetic occupancy trend. (ringReady is true on a real-occupancy hotel
-    // AND on a demo, so both keep a populated ring.)
-    if (roomStatusLearning || !ringReady) {
-      const floorsL = Math.max(1, Math.ceil(total / 20));
-      const perFloorL = Math.ceil(total / floorsL);
-      return Array.from({ length: total }, (_, i) => ({
-        idx: i,
-        num: String((Math.floor(i / perFloorL) + 1) * 100 + (i % perFloorL) + 1),
-        status: 'none' as RingKey,
-      }));
-    }
-    const c = counts;
-    const feedDirty = rooms.filter(r => r.status === 'dirty').length;
-    const feedClean = rooms.filter(r => r.status === 'clean' || r.status === 'inspected').length;
-    let dirty = Math.min(total, Math.max(c?.vacant_dirty ?? 0, feedDirty));
-    let clean = Math.min(total, Math.max(c?.vacant_clean ?? 0, feedClean));
-    const ooo = Math.min(total, c?.ooo ?? 0);
-    const departing = Math.min(total, c?.checkouts ?? 0);
-    let occupied = Math.min(total, c?.stayovers ?? 0);
-    let known = occupied + departing + dirty + clean + ooo;
-    if (known < total) {
-      const wantOccupied = Math.round((displayOcc / 100) * total);
-      occupied += Math.max(0, wantOccupied - (occupied + departing));
-      known = occupied + departing + dirty + clean + ooo;
-      clean += Math.max(0, total - known);
-    }
-    const plan: RingKey[] = [];
-    const add = (count: number, s: RingKey) => { for (let i = 0; i < count && plan.length < total; i++) plan.push(s); };
-    add(occupied, 'occupied'); add(departing, 'departing'); add(clean, 'clean'); add(dirty, 'dirty'); add(ooo, 'ooo');
-    while (plan.length < total) plan.push('clean');
-    let seed = 7; const rnd = () => (seed = (seed * 1103515245 + 12345) & 0x7fffffff) / 0x7fffffff;
-    for (let i = plan.length - 1; i > 0; i--) { const j = Math.floor(rnd() * (i + 1)); [plan[i], plan[j]] = [plan[j], plan[i]]; }
-    const floors = Math.max(1, Math.ceil(total / 20));
-    const perFloor = Math.ceil(total / floors);
-    return plan.map((status, i) => ({
-      idx: i,
-      num: String((Math.floor(i / perFloor) + 1) * 100 + (i % perFloor) + 1),
-      status,
-    }));
-  }, [counts, rooms, totalRooms, displayOcc, roomStatusLearning, ringReady]);
+  // One tick = one real room identity. The configured inventory supplies the
+  // roster; today's room feed supplies only statuses attached to those exact
+  // identities. Rooms with no room-level signal stay neutral — aggregate PMS
+  // totals still drive the center occupancy figure, but are never scattered
+  // across named rooms.
+  const ringRooms = useMemo<RingTick[]>(
+    () => buildRoomRingTicks(rooms, activeProperty?.roomInventory ?? []),
+    [rooms, activeProperty?.roomInventory],
+  );
 
   // ring distribution for the legend
   const ringCounts = useMemo(() => {
@@ -603,10 +554,8 @@ function DashboardWorkspace() {
   }, [rooms]);
 
   // ── needs attention (live alerts) ────────────────────────────────────
-  const nowD = new Date();
-  const openComplaints = complaints.filter(c => isOpenStatus(c.status)).length;
-  const overdueComplaints = complaints.filter(c => isOverdue(c, nowD)).length;
-  const callbacksDueCount = complaints.filter(c => isCallbackDue(c, nowD)).length;
+  const overdueComplaints = complaintSummary?.visible ? complaintSummary.overdue : 0;
+  const callbacksDueCount = complaintSummary?.visible ? complaintSummary.callbacksDue : 0;
   const attention = useMemo(() => {
     const out: { n: number; text: string }[] = [];
     // Each line is filtered by the section that owns it — an off section
@@ -747,7 +696,7 @@ function DashboardWorkspace() {
     ? (room.num
       ? { big: room.num, label: 'ROOM', sub: STATUS[room.status], color: RING[room.status] }
       : { big: STATUS[room.status], label: 'STATUS', sub: '', color: RING[room.status] })
-    : !ringReady
+    : !occupancyReady
       ? { big: '—', label: 'OCCUPANCY', sub: 'waiting for PMS data', color: C.ink3 }
     : (!showFinancials || metric === 'occ')
       ? { big: Math.round(live.occ) + '%', label: 'OCCUPANCY', sub: hov ? hov.d : (`${soldNow} of ${totalRooms} rooms`), color: C.green }
@@ -945,7 +894,7 @@ function DashboardWorkspace() {
                 {STATUS[k]} <span style={{ fontFamily: MONO, color: C.ink3 }}>{ringCounts[k]}</span>
               </span>
             ))}
-            {ringReady && !roomStatusLearning && <FeedAsOfLabel label={occupancyAsOf} variant="pill" />}
+            {occupancyReady && !roomStatusLearning && <FeedAsOfLabel label={occupancyAsOf} variant="pill" />}
           </div>
 
           {/* KPI strip — synthetic financials; shown on a demo property only,

@@ -46,6 +46,7 @@ import 'server-only';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { log } from '@/lib/log';
 import { SCHEDULE_REGISTRY } from '@/lib/cron-schedule-registry';
+import type { Database } from '@/types/database.types';
 
 /** "That table is not there yet." Migrations are applied by hand, so the code
  *  reaches production before the table does, and every table-backed feature has
@@ -182,7 +183,7 @@ export async function setEmployeeSwitch(opts: {
   byAccountId: string | null;
   note?: string | null;
 }): Promise<{ ok: true } | { ok: false; reason: string }> {
-  const row = opts.switchedOff
+  const row: Database['public']['Tables']['ai_employee_switches']['Insert'] = opts.switchedOff
     ? {
       employee_id: opts.employeeId,
       switched_off: true,

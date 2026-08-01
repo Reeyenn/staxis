@@ -38,6 +38,11 @@ import {
   filterInventoryMlRowsToActiveItems,
 } from '@/lib/inventory-ml-active';
 import { requireSectionEnabled } from '@/lib/sections/server';
+import {
+  fetchInventoryAiRows,
+  inventoryAiUnavailableResponse,
+  requireInventoryAiResult,
+} from '@/lib/inventory-ai-query';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -111,55 +116,112 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
     const censusStart = new Date(Date.now() - (OCCUPANCY_CENSUS_DAYS + 2) * 86400000)
       .toISOString().slice(0, 10);
 
-    const [itemsRes, runsRes, predsRes, logRes, countsRes, lastPredRes, predsLast7Res, occRes, propRes] =
+    const [items, rawRuns, predictionRows, logRows, countRows, lastPredictionRows, predictionsLast7Rows, occRes, propRes] =
       await Promise.all([
-        supabaseAdmin
-          .from('inventory')
-          .select('id,name')
-          .eq('property_id', propertyId)
-          .is('archived_at', null)
-          .limit(2000),
-        supabaseAdmin
-          .from('model_runs')
-          .select('item_id,validation_mae,auto_fill_enabled,training_row_count,hyperparameters')
-          .eq('property_id', propertyId)
-          .eq('layer', 'inventory_rate')
-          .eq('is_active', true)
-          .limit(2000),
+        fetchInventoryAiRows<{ id: string; name: string }>(
+          'inventory items',
+          (from, to) => supabaseAdmin
+            .from('inventory')
+            .select('id,name')
+            .eq('property_id', propertyId)
+            .is('archived_at', null)
+            .order('id', { ascending: true })
+            .range(from, to),
+          2_000,
+        ),
+        fetchInventoryAiRows<{
+          id: string;
+          item_id: string | null;
+          validation_mae: number | null;
+          auto_fill_enabled: boolean | null;
+          training_row_count: number | null;
+          hyperparameters: Record<string, unknown> | null;
+        }>(
+          'active inventory model runs',
+          (from, to) => supabaseAdmin
+            .from('model_runs')
+            .select('id,item_id,validation_mae,auto_fill_enabled,training_row_count,hyperparameters')
+            .eq('property_id', propertyId)
+            .eq('layer', 'inventory_rate')
+            .eq('is_active', true)
+            .order('id', { ascending: true })
+            .range(from, to),
+          2_000,
+        ),
         // Latest prediction per item (most-recent-first, first hit wins in JS).
-        supabaseAdmin
-          .from('inventory_rate_predictions')
-          .select('item_id,predicted_daily_rate,predicted_current_stock,predicted_at')
-          .eq('property_id', propertyId)
-          .order('predicted_at', { ascending: false })
-          .limit(4000),
+        fetchInventoryAiRows<Record<string, unknown>>(
+          'inventory predictions',
+          (from, to) => supabaseAdmin
+            .from('inventory_rate_predictions')
+            .select('id,item_id,predicted_daily_rate,predicted_current_stock,predicted_at')
+            .eq('property_id', propertyId)
+            .order('predicted_at', { ascending: false })
+            .order('id', { ascending: false })
+            .range(from, to) as unknown as PromiseLike<{
+              data: Record<string, unknown>[] | null;
+              error: unknown;
+            }>,
+          4_000,
+        ),
         // Latest predicted-vs-actual comparison per item.
-        supabaseAdmin
-          .from('prediction_log')
-          .select('predicted_value,actual_value,logged_at,inventory_count_id')
-          .eq('property_id', propertyId)
-          .eq('layer', 'inventory_rate')
-          .order('logged_at', { ascending: false })
-          .limit(4000),
+        fetchInventoryAiRows<{
+          id: string;
+          predicted_value: number | null;
+          actual_value: number | null;
+          logged_at: string | null;
+          inventory_count_id: string | null;
+        }>(
+          'inventory prediction comparisons',
+          (from, to) => supabaseAdmin
+            .from('prediction_log')
+            .select('id,predicted_value,actual_value,logged_at,inventory_count_id')
+            .eq('property_id', propertyId)
+            .eq('layer', 'inventory_rate')
+            .order('logged_at', { ascending: false })
+            .order('id', { ascending: false })
+            .range(from, to),
+          4_000,
+        ),
         // All count rows (item_id + counted_at) — bucket distinct events per item in JS.
-        supabaseAdmin
-          .from('inventory_counts')
-          .select('item_id,counted_at')
-          .eq('property_id', propertyId)
-          .limit(100000),
+        fetchInventoryAiRows<{
+          id: string;
+          item_id: string | null;
+          counted_at: string | null;
+        }>(
+          'inventory count history',
+          (from, to) => supabaseAdmin
+            .from('inventory_counts')
+            .select('id,item_id,counted_at')
+            .eq('property_id', propertyId)
+            .order('counted_at', { ascending: false })
+            .order('id', { ascending: false })
+            .range(from, to),
+          100_000,
+        ),
         // Most-recent prediction overall — drives lastInferenceAt / stale flag.
-        supabaseAdmin
-          .from('inventory_rate_predictions')
-          .select('item_id,predicted_at')
-          .eq('property_id', propertyId)
-          .order('predicted_at', { ascending: false })
-          .limit(50000),
-        supabaseAdmin
-          .from('inventory_rate_predictions')
-          .select('item_id')
-          .eq('property_id', propertyId)
-          .gte('predicted_at', sevenDaysAgoIso)
-          .limit(50000),
+        fetchInventoryAiRows<{ id: string; item_id: string | null; predicted_at: string | null }>(
+          'latest inventory inference',
+          (from, to) => supabaseAdmin
+            .from('inventory_rate_predictions')
+            .select('id,item_id,predicted_at')
+            .eq('property_id', propertyId)
+            .order('predicted_at', { ascending: false })
+            .order('id', { ascending: false })
+            .range(from, to),
+          50_000,
+        ),
+        fetchInventoryAiRows<{ id: string; item_id: string | null; predicted_at: string | null }>(
+          'seven-day inventory predictions',
+          (from, to) => supabaseAdmin
+            .from('inventory_rate_predictions')
+            .select('id,item_id,predicted_at')
+            .eq('property_id', propertyId)
+            .gte('predicted_at', sevenDaysAgoIso)
+            .order('predicted_at', { ascending: false })
+            .order('id', { ascending: false })
+            .range(from, to),
+          50_000,
+        ),
         // Robot-data census: which recent days have real checkout/stayover
         // numbers? NULL (or a missing row) = robot gap = every learning
         // window spanning that day is voided. Drives the starvation banner.
@@ -179,20 +241,15 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
           .maybeSingle(),
       ]);
 
-    const items = (itemsRes.data ?? []) as Array<{ id: string; name: string }>;
+    const occupancyRows = requireInventoryAiResult('daily occupancy census', occRes) ?? [];
+    const property = requireInventoryAiResult('property timezone', propRes);
     const activeItemIds = activeInventoryItemIds(items);
-    const runs = filterInventoryMlRowsToActiveItems((runsRes.data ?? []) as Array<{
-      item_id: string | null;
-      validation_mae: number | null;
-      auto_fill_enabled: boolean | null;
-      training_row_count: number | null;
-      hyperparameters: Record<string, unknown> | null;
-    }>, activeItemIds);
+    const runs = filterInventoryMlRowsToActiveItems(rawRuns, activeItemIds);
 
     // Latest prediction per item.
     const predByItem = new Map<string, { rate: number | null; stock: number | null; at: string | null }>();
     const activePredictions = filterInventoryMlRowsToActiveItems(
-      (predsRes.data ?? []) as Array<Record<string, unknown>>,
+      predictionRows,
       activeItemIds,
     );
     for (const p of activePredictions) {
@@ -207,12 +264,6 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
 
     // prediction_log rows carry no item_id column — pair them back to items via
     // the inventory_count they were logged against. Look up the count → item_id.
-    const logRows = (logRes.data ?? []) as Array<{
-      predicted_value: number | null;
-      actual_value: number | null;
-      logged_at: string | null;
-      inventory_count_id: string | null;
-    }>;
     const logCountIds = Array.from(
       new Set(logRows.map((r) => r.inventory_count_id).filter((v): v is string => !!v)),
     );
@@ -223,10 +274,11 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
       const CHUNK = 200;
       for (let i = 0; i < logCountIds.length; i += CHUNK) {
         const slice = logCountIds.slice(i, i + CHUNK);
-        const { data: cRows } = await supabaseAdmin
+        const countLookupRes = await supabaseAdmin
           .from('inventory_counts')
           .select('id,item_id')
           .in('id', slice);
+        const cRows = requireInventoryAiResult('prediction count lookup', countLookupRes) ?? [];
         for (const c of (cRows ?? []) as Array<{ id: string; item_id: string }>) {
           countIdToItem.set(String(c.id), String(c.item_id));
         }
@@ -248,7 +300,7 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
 
     // Distinct count events per item (dedupe by counted_at timestamp).
     const countEventsByItem = new Map<string, Set<string>>();
-    for (const c of (countsRes.data ?? []) as Array<{ item_id: string | null; counted_at: string | null }>) {
+    for (const c of countRows) {
       if (!c.item_id || !c.counted_at) continue;
       const id = String(c.item_id);
       const set = countEventsByItem.get(id) ?? new Set<string>();
@@ -361,7 +413,7 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
     }
 
     const latestActivePredictions = filterInventoryMlRowsToActiveItems(
-      lastPredRes.data ?? [],
+      lastPredictionRows,
       activeItemIds,
     );
     const lastInferenceAt = latestActivePredictions[0]?.predicted_at ?? null;
@@ -371,7 +423,7 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
       return ageHours > STALE_INFERENCE_HOURS;
     })();
     const predictionsLast7Days = filterInventoryMlRowsToActiveItems(
-      predsLast7Res.data ?? [],
+      predictionsLast7Rows,
       activeItemIds,
     ).length;
 
@@ -388,7 +440,7 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
     //     hotel onboarded 3 days ago is not "missing" 11 pre-go-live days,
     //     and those can never be repaired. No rows at all → no census (the
     //     empty/no-jobs states already cover brand-new hotels).
-    const occRows = (occRes.data ?? []) as Array<{ date: string; checkouts: number | null; stayovers: number | null }>;
+    const occRows = occupancyRows as Array<{ date: string; checkouts: number | null; stayovers: number | null }>;
     const occByDate = new Map<string, boolean>();
     let earliestLogDate: string | null = null;
     for (const r of occRows) {
@@ -396,7 +448,7 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
       occByDate.set(d, r.checkouts !== null && r.stayovers !== null);
       if (earliestLogDate === null || d < earliestLogDate) earliestLogDate = d;
     }
-    const tz = (propRes.data?.timezone as string | null) ?? null;
+    const tz = (property?.timezone as string | null) ?? null;
     const localToday = propertyLocalToday(new Date(), tz);
     let occupancyDaysMissing = 0;
     // Oldest-first day strip for the UI's visual data-pulse (one tick per
@@ -439,6 +491,6 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
     );
   } catch (e) {
     log.error('inventory/ai-report: failed', { requestId, err: e as Error });
-    return err('internal_error', { requestId, status: 500, code: ApiErrorCode.InternalError });
+    return inventoryAiUnavailableResponse(requestId);
   }
 }
