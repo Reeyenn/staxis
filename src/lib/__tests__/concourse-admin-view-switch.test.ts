@@ -114,8 +114,12 @@ describe('platform Admin destination and in-place hotel Admin tools', () => {
     assert.match(company, /key=\{`\$\{activeProperty\.id\}:\$\{adminToolsEnabled \? ['"]admin['"] : ['"]preview['"]\}:\$\{canManageTeam \? ['"]hotel-authorized['"] : ['"]invite-only['"]\}`\}/);
     assert.match(company, /readOnly=\{Boolean\(data\.viewerContext\?\.readOnly\) && !adminToolsEnabled\}/);
     assert.match(company, /allowAdminActions=\{adminToolsEnabled\}/);
+    assert.match(company, /onRequestAdminActions=\{onRequestAdminActions\}/);
+    assert.match(company, /onRequestAdminActions=\{\(\) => setAdminToolsEnabled\(true\)\}/);
     assert.match(company, /const hotelTeamLocked = Boolean\([\s\S]*?\(\(adminPreview \|\| resolved\.viewerContext\?\.readOnly === true\) && !adminToolsActive\)/);
-    assert.match(hotelTeam, /styles\.headingInviteButton[\s\S]*?disabled=\{locked\}/);
+    assert.match(hotelTeam, /const inviteActionCanEnableAdmin = adminPreview[\s\S]*?Boolean\(onRequestAdminActions\)/);
+    assert.match(hotelTeam, /if \(inviteActionCanEnableAdmin\) onRequestAdminActions\?\.\(\)/);
+    assert.match(hotelTeam, /styles\.headingInviteButton[\s\S]*?onClick=\{openInviteDialog\}[\s\S]*?disabled=\{inviteActionDisabled\}/);
     assert.match(company, /inviteDialogOpen=\{teamInviteHotelId === activeProperty\?\.id\}/);
     assert.match(hotelTeam, /const locked = readOnly \|\| \(adminPreview && !allowAdminActions\)/);
     assert.match(hotelTeam, /const nextTeam = \(adminPreview \|\| readOnly\)[\s\S]*?!member\.isPlatformAdmin/);
