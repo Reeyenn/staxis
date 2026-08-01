@@ -107,23 +107,24 @@ describe('My Hotel structure surface contract', () => {
   const previewRoute = source('src', 'app', 'api', 'company-access', 'structure', 'preview', 'route.ts');
   const commitRoute = source('src', 'app', 'api', 'company-access', 'structure', 'commit', 'route.ts');
 
-  test('keeps exactly Overview, Hotels, People, and Access', () => {
+  test('keeps exactly Hotels, People, and Access', () => {
     const tabBlock = page.slice(page.indexOf('const tabs = React.useMemo'), page.indexOf('React.useEffect(() => {', page.indexOf('const tabs = React.useMemo')));
     assert.deepEqual(
       [...tabBlock.matchAll(/id: '([^']+)'/g)].map((match) => match[1]),
-      ['overview', 'hotels', 'people', 'access'],
+      ['hotels', 'people', 'access'],
     );
     assert.doesNotMatch(tabBlock, /structure|portfolio|admin/i);
   });
 
   test('maps People to membership/invitations and Access to exact role/scope', () => {
-    assert.match(page, /Company people/);
     assert.match(page, /Memberships and invitations/);
     assert.match(page, /Invite company member/);
-    assert.match(page, /whole company, portfolio or region, or selected hotels/);
-    assert.match(page, /Revocation is immediate and audited/);
+    assert.match(page, /Access grants/);
+    assert.match(page, /Roles and scopes by person/);
     assert.match(page, /showGrantActions=\{false\}/);
     assert.match(page, /showMembershipActions=\{false\}/);
+    assert.doesNotMatch(page, /Company people/);
+    assert.doesNotMatch(page, /Revocation is immediate and audited/);
   });
 
   test('requires impact preview and explicit confirmation in the existing Hotels tab', () => {
@@ -133,6 +134,16 @@ describe('My Hotel structure surface contract', () => {
     assert.match(manager, /takes effect immediately/);
     assert.match(manager, /Only a verified Staxis platform administrator can change or transfer it/);
     assert.doesNotMatch(page, /id: 'structure'|id: 'portfolio'/);
+  });
+
+  test('keeps structure load failures visible and the Hotels structure heading compact', () => {
+    const managerSurface = manager.slice(manager.indexOf('export function CompanyStructureManager'));
+    assert.match(page, /const \[structureError, setStructureError\]/);
+    assert.match(page, /Company structure could not be loaded/);
+    assert.match(page, /onStructureRetry=\{\(\) => setRetryKey\(\(value\) => value \+ 1\)\}/);
+    assert.match(page, /disabled=\{structureLoading\}/);
+    assert.match(managerSurface, /<h2 id="company-structure-management-title">\{'Company structure'\}<\/h2>/);
+    assert.doesNotMatch(managerSurface, /Structure management|Company, portfolio, region, and hotel relationships|Portfolio assignments control inherited hotel reach|Audited access/);
   });
 
   test('keeps authorization, epoch, same-company topology, and audit inside SQL', () => {

@@ -25,7 +25,8 @@ describe('single customer people/access surface', () => {
   });
 
   test('keeps the legacy-only ownership handoff inside the existing Access tab', () => {
-    assert.match(company, /type TabId = ['"]overview['"] \| ['"]hotels['"] \| ['"]people['"] \| ['"]access['"]/);
+    assert.match(company, /type TabId = ['"]hotels['"] \| ['"]people['"] \| ['"]access['"]/);
+    assert.doesNotMatch(company, /type TabId = [^\n]*['"]overview['"]/);
     assert.match(company, /<LegacyOwnershipTransferPanel/);
     assert.match(company, /enabled=\{!adminPreview && data\.legacyFallback && canManageUsers/);
     assert.match(company, /propertyId=\{activeProperty\?\.id \?\? null\}/);

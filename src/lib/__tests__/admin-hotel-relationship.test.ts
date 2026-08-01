@@ -104,18 +104,19 @@ describe('existing /company Hotels-tab lifecycle surface', () => {
   const previewRoute = source('src', 'app', 'api', 'admin', 'company-relationship', 'preview', 'route.ts');
   const commitRoute = source('src', 'app', 'api', 'admin', 'company-relationship', 'commit', 'route.ts');
 
-  test('keeps exactly Overview, Hotels, People, Access and renders lifecycle controls only in verified admin preview', () => {
+  test('keeps exactly Hotels, People, Access and renders lifecycle controls only in verified admin preview', () => {
     const tabBlock = page.slice(
       page.indexOf('const tabs = React.useMemo'),
       page.indexOf('React.useEffect(() => {', page.indexOf('const tabs = React.useMemo')),
     );
     assert.deepEqual(
       [...tabBlock.matchAll(/id: '([^']+)'/g)].map((match) => match[1]),
-      ['overview', 'hotels', 'people', 'access'],
+      ['hotels', 'people', 'access'],
     );
     assert.match(page, /data\.viewerContext\?\.kind === 'staxis_admin_preview'/);
     assert.match(page, /AdminHotelRelationshipManager/);
     assert.doesNotMatch(component, /adminToolsEnabled|Admin view is ON|Turn on Admin view/);
+    assert.doesNotMatch(component, /Staxis platform administration/);
     assert.match(component, /Every lifecycle change starts with a fresh impact preview and explicit confirmation/);
     assert.match(component, /disabled=\{loading \|\| !projection\}/);
     assert.match(component, /Acquire and link hotel/);

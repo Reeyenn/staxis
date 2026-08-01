@@ -8,7 +8,6 @@ import {
   Building2,
   CheckCircle2,
   Hotel,
-  KeyRound,
   Layers3,
   LockKeyhole,
   RefreshCw,
@@ -504,14 +503,7 @@ export function CompanyStructureManager({ structure, lang, onChanged }: {
   return (
     <section className={styles.root} aria-labelledby="company-structure-management-title">
       <div className={styles.heading}>
-        <div>
-          <span>{'Structure management'}</span>
-          <h2 id="company-structure-management-title">
-            {'Company, portfolio, region, and hotel relationships'}
-          </h2>
-          <p>{'Portfolio assignments control inherited hotel reach. Company ownership and operator relationships are visible here but protected.'}</p>
-        </div>
-        <span className={styles.liveBadge}><KeyRound size={14} aria-hidden="true" />{'Audited access'}</span>
+        <h2 id="company-structure-management-title">{'Company structure'}</h2>
       </div>
 
       <div className={styles.organizationList}>

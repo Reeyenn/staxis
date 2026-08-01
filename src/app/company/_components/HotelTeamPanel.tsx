@@ -1212,7 +1212,6 @@ export function HotelTeamPanel({
       <section className={styles.subsection} aria-labelledby="team-members-title">
         <div className={styles.subheading}>
           <div className={styles.subheadingCopy}>
-            <span>{'Hotel roster'}</span>
             <div className={styles.subheadingTitleRow}>
               <h2 id="team-members-title">{'Everyone at this hotel'}</h2>
               {!teamLoading && !teamError ? (

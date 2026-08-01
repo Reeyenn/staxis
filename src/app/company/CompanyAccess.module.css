@@ -51,7 +51,6 @@
 }
 
 .heroMark,
-.summaryIcon,
 .groupIcon,
 .hotelIcon,
 .receiptSeal,
@@ -75,8 +74,6 @@
   min-width: 0;
 }
 
-.eyebrow,
-.sectionHeading > span,
 .receiptEyebrow {
   color: var(--company-muted);
   font-family: var(--font-geist-mono), ui-monospace, monospace;
@@ -94,13 +91,6 @@
   font-weight: 650;
   line-height: 1.15;
   letter-spacing: -0.025em;
-}
-
-.hero p {
-  margin: 5px 0 0;
-  color: var(--company-ink-2);
-  font-size: 13px;
-  line-height: 1.5;
 }
 
 .heroHotelSlot {
@@ -356,62 +346,6 @@
   gap: 24px;
 }
 
-.summaryGrid {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 12px;
-}
-
-.summaryCard {
-  display: flex;
-  align-items: flex-start;
-  min-width: 0;
-  gap: 12px;
-  padding: 16px;
-  border: 1px solid var(--company-rule);
-  border-radius: 14px;
-  background: var(--company-paper);
-  box-shadow: 0 9px 22px -20px rgba(31, 42, 32, 0.38);
-}
-
-.summaryIcon {
-  width: 36px;
-  height: 36px;
-  border-radius: 11px;
-}
-
-.summaryCard > div {
-  display: flex;
-  min-width: 0;
-  flex-direction: column;
-}
-
-.summaryCard span:not(.summaryIcon) {
-  color: var(--company-ink-3);
-  font-size: 10.5px;
-  font-weight: 550;
-  line-height: 15px;
-}
-
-.summaryCard strong {
-  margin-top: 3px;
-  color: var(--company-ink);
-  font-size: 23px;
-  font-weight: 650;
-  line-height: 28px;
-  letter-spacing: -0.025em;
-}
-
-.summaryCard small {
-  overflow: hidden;
-  margin-top: 2px;
-  color: var(--company-muted);
-  font-size: 10.5px;
-  line-height: 15px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
 .sectionBlock {
   display: flex;
   flex-direction: column;
@@ -591,13 +525,6 @@
 .adminRelationshipBody {
   flex: 1;
   min-width: 0;
-}
-
-.adminRelationshipBody > span {
-  color: var(--company-rust);
-  font: 600 8.5px/12px var(--font-geist-mono), ui-monospace, monospace;
-  letter-spacing: 0.09em;
-  text-transform: uppercase;
 }
 
 .adminRelationshipBody h3 {
@@ -1237,12 +1164,6 @@
   flex-direction: column;
   overflow: hidden;
   padding: 17px;
-}
-
-.receiptFeatured {
-  background:
-    radial-gradient(circle at 96% 0%, rgba(158, 183, 166, 0.18), transparent 34%),
-    var(--company-paper);
 }
 
 .receiptHeader {
@@ -2229,64 +2150,89 @@
   margin-top: 15px;
 }
 
-.skeletonStack {
-  display: flex;
-  flex-direction: column;
-  gap: 20px;
-}
-
-.skeletonGrid {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 12px;
-}
-
-.skeletonCard,
-.skeletonPanel {
+.skeletonSurface {
   position: relative;
   overflow: hidden;
+  min-height: 220px;
+  padding: 16px;
   border: 1px solid var(--company-rule);
   border-radius: 14px;
   background: var(--company-paper);
 }
 
-.skeletonCard {
+.skeletonToolbar {
   display: flex;
-  min-height: 96px;
-  padding: 17px;
-  flex-direction: column;
-  gap: 8px;
+  gap: 12px;
+  padding-bottom: 14px;
+  border-bottom: 1px solid var(--company-rule);
 }
 
-.skeletonCard span,
-.skeletonCard strong,
-.skeletonCard small,
-.skeletonPanel span,
-.skeletonPanel strong,
-.skeletonPanel small,
-.skeletonPanel div {
+.skeletonToolbar span,
+.skeletonRow > span,
+.skeletonRow strong,
+.skeletonRow small {
   display: block;
-  height: 10px;
-  border-radius: 5px;
   background: #e8ece7;
 }
 
-.skeletonCard span { width: 42%; }
-.skeletonCard strong { width: 24%; height: 22px; }
-.skeletonCard small { width: 68%; }
-
-.skeletonPanel {
-  min-height: 260px;
-  padding: 22px;
+.skeletonToolbar span {
+  flex: 1;
+  min-height: 44px;
+  border-radius: 10px;
 }
 
-.skeletonPanel span { width: 22%; }
-.skeletonPanel strong { width: 48%; height: 22px; margin-top: 10px; }
-.skeletonPanel small { width: 62%; margin-top: 9px; }
-.skeletonPanel div { width: 100%; height: 140px; margin-top: 26px; border-radius: 12px; }
+.skeletonToolbar span:last-child {
+  flex: 0 0 180px;
+}
 
-.skeletonCard::after,
-.skeletonPanel::after {
+.skeletonRows {
+  display: flex;
+  flex-direction: column;
+}
+
+.skeletonRow {
+  display: flex;
+  align-items: center;
+  min-height: 58px;
+  gap: 11px;
+  border-bottom: 1px solid rgba(31, 35, 28, 0.055);
+}
+
+.skeletonRow:last-child {
+  border-bottom: 0;
+}
+
+.skeletonRow > span {
+  flex: none;
+  width: 32px;
+  height: 32px;
+  border-radius: 10px;
+}
+
+.skeletonRow > div {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.skeletonRow strong,
+.skeletonRow small {
+  height: 10px;
+  border-radius: 5px;
+}
+
+.skeletonRow strong { width: 42%; }
+.skeletonRow small { width: 68%; }
+
+.skeletonRow > span:last-child {
+  width: 56px;
+  height: 22px;
+  border-radius: 999px;
+}
+
+.skeletonSurface::after {
   position: absolute;
   inset: 0;
   background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.72), transparent);
@@ -2339,26 +2285,12 @@
     max-width: none;
   }
 
-  .summaryGrid,
-  .skeletonGrid {
-    grid-template-columns: 1fr;
+  .skeletonToolbar {
+    flex-direction: column;
   }
 
-  .summaryCard {
-    align-items: center;
-  }
-
-  .summaryCard > div {
-    display: grid;
-    flex: 1;
-    grid-template-columns: minmax(0, 1fr) auto;
-    align-items: center;
-    column-gap: 12px;
-  }
-
-  .summaryCard strong {
-    grid-row: 1 / span 2;
-    grid-column: 2;
+  .skeletonToolbar span:last-child {
+    flex-basis: 44px;
   }
 
   .filterBar,
@@ -2431,10 +2363,6 @@
 
   .hero h1 {
     font-size: 22px;
-  }
-
-  .hero p {
-    font-size: 12px;
   }
 
   .partialNotice {
@@ -2528,11 +2456,6 @@
 
   .adminCompanySearch {
     grid-template-columns: 1fr;
-  }
-
-  .summaryCard {
-    min-height: 70px;
-    padding: 13px;
   }
 
   .sectionHeading h2 {
@@ -2677,8 +2600,7 @@
   .panel,
   .dialog,
   .dialogScrim,
-  .skeletonCard::after,
-  .skeletonPanel::after {
+  .skeletonSurface::after {
     animation: none;
   }
 

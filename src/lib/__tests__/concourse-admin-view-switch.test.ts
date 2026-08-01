@@ -63,7 +63,7 @@ describe('platform Admin destination and default in-place hotel Admin tools', ()
     assert.doesNotMatch(heroMarkup, /adminViewSwitch|type="checkbox"|role="switch"|Admin view|setAdminToolsEnabled/);
     assert.doesNotMatch(company, /adminToolsEnabled|adminToolsActive|setAdminToolsEnabled/);
     assert.doesNotMatch(company, /Review this hotel in read-only mode/);
-    assert.match(company, /\{ id: ['"]overview['"][\s\S]*?\{ id: ['"]hotels['"][\s\S]*?\{ id: ['"]people['"][\s\S]*?\{ id: ['"]access['"]/);
+    assert.match(company, /\{ id: ['"]hotels['"][\s\S]*?\{ id: ['"]people['"][\s\S]*?\{ id: ['"]access['"]/);
   });
 
   test('revalidates open sessions on authorization events, with focus and interval recovery', () => {
