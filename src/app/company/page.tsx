@@ -1014,6 +1014,7 @@ function CompanyAccessContent() {
                   canAddOperationalStaff={!hotelTeamLocked && canManageTeam}
                   inviteDialogOpen={teamInviteHotelId === activeProperty?.id}
                   onInviteDialogOpenChange={(open) => setTeamInviteHotelId(open ? activeProperty?.id ?? null : null)}
+                  onRequestAdminActions={() => setAdminToolsEnabled(true)}
                   onChanged={refreshStaff}
                   onLifecycleAction={setLifecycleAction}
                 />
@@ -1244,7 +1245,7 @@ function HotelsPanel({ data, structure, lang, activeProperty, adminToolsEnabled,
  * could appear in both with nothing on screen explaining why. HotelTeamPanel
  * now merges them.
  */
-function PeoplePanel({ data, staff, hotelRosterUnavailable, lang, currentUser, currentAccountId, activeProperty, adminToolsEnabled, canManageTeam, canInviteAccounts, canViewWages, canAddOperationalStaff, inviteDialogOpen, onInviteDialogOpenChange, onChanged, onLifecycleAction }: {
+function PeoplePanel({ data, staff, hotelRosterUnavailable, lang, currentUser, currentAccountId, activeProperty, adminToolsEnabled, canManageTeam, canInviteAccounts, canViewWages, canAddOperationalStaff, inviteDialogOpen, onInviteDialogOpenChange, onRequestAdminActions, onChanged, onLifecycleAction }: {
   data: CompanyAccessData;
   staff: StaffMember[];
   hotelRosterUnavailable: boolean;
@@ -1259,6 +1260,7 @@ function PeoplePanel({ data, staff, hotelRosterUnavailable, lang, currentUser, c
   canAddOperationalStaff: boolean;
   inviteDialogOpen: boolean;
   onInviteDialogOpenChange: (open: boolean) => void;
+  onRequestAdminActions: () => void;
   onChanged: () => void | Promise<void>;
   onLifecycleAction: (action: CompanyLifecycleAction) => void;
 }) {
@@ -1332,6 +1334,7 @@ function PeoplePanel({ data, staff, hotelRosterUnavailable, lang, currentUser, c
           readOnly={Boolean(data.viewerContext?.readOnly) && !adminToolsEnabled}
           adminPreview={data.viewerContext?.kind === 'staxis_admin_preview'}
           allowAdminActions={adminToolsEnabled}
+          onRequestAdminActions={onRequestAdminActions}
           inviteDialogOpen={inviteDialogOpen}
           onInviteDialogOpenChange={onInviteDialogOpenChange}
           staffProfiles={staff}

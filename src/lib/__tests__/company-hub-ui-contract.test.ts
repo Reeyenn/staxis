@@ -233,8 +233,8 @@ describe('My Hotel account and team integration', () => {
     assert.ok(subheadingIndex >= 0 && titleRowIndex > subheadingIndex && countIndex > titleRowIndex && inviteIndex > countIndex && teamListIndex > inviteIndex);
     assert.match(company.slice(switcherIndex, heroEnd), /label=\{['"]Choose hotel to manage['"]\}/);
     assert.doesNotMatch(company, /styles\.teamInviteRow|styles\.teamInviteButton/);
-    assert.match(hotelTeam, /onClick=\{\(\) => onInviteDialogOpenChange\(true\)\}/);
-    assert.match(hotelTeam, /disabled=\{locked\}/);
+    assert.match(hotelTeam, /onClick=\{openInviteDialog\}/);
+    assert.match(hotelTeam, /disabled=\{inviteActionDisabled\}/);
     assert.match(hotelTeam, /aria-haspopup="dialog"/);
     assert.match(company, /inviteDialogOpen=\{teamInviteHotelId === activeProperty\?\.id\}/);
     assert.doesNotMatch(company, /styles\.hotelSwitcher/);
