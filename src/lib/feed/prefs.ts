@@ -25,9 +25,24 @@ export interface FeedPrefs {
    * drawer is there.
    */
   assignedSeenAt: string | null;
+  /**
+   * What the companion remembers about this person at this hotel.
+   *
+   * Lives here rather than in its own store because 0410 said the next
+   * per-person thing should be a column on this table, and because it is read
+   * on the same key at the same moment as the rest of this row. Kept as the raw
+   * jsonb value: this module has no business knowing the shape, and the one
+   * place that does is parseCompanionMemory() in src/lib/companion/manners.ts.
+   * Nothing that comes out of here is trusted until it has been through that.
+   */
+  companionMemory: unknown;
 }
 
-export const DEFAULT_FEED_PREFS: FeedPrefs = { logbookInList: false, assignedSeenAt: null };
+export const DEFAULT_FEED_PREFS: FeedPrefs = {
+  logbookInList: false,
+  assignedSeenAt: null,
+  companionMemory: null,
+};
 
 /**
  * Read, plus whether the read actually worked.
@@ -43,7 +58,7 @@ async function readFeedPrefsChecked(
 ): Promise<{ prefs: FeedPrefs; degraded: boolean }> {
   const { data, error } = await supabaseAdmin
     .from('staxis_user_prefs')
-    .select('logbook_in_list, assigned_seen_at')
+    .select('logbook_in_list, assigned_seen_at, companion_memory')
     .eq('account_id', accountId)
     .eq('property_id', propertyId)
     .maybeSingle();
@@ -54,11 +69,16 @@ async function readFeedPrefsChecked(
     return { prefs: DEFAULT_FEED_PREFS, degraded: true };
   }
   if (!data) return { prefs: DEFAULT_FEED_PREFS, degraded: false };
-  const row = data as { logbook_in_list?: boolean; assigned_seen_at?: string | null };
+  const row = data as {
+    logbook_in_list?: boolean;
+    assigned_seen_at?: string | null;
+    companion_memory?: unknown;
+  };
   return {
     prefs: {
       logbookInList: row.logbook_in_list === true,
       assignedSeenAt: row.assigned_seen_at ?? null,
+      companionMemory: row.companion_memory ?? null,
     },
     degraded: false,
   };
@@ -92,6 +112,12 @@ export async function writeFeedPrefs(
   };
   if (!degraded || next.logbookInList !== undefined) row.logbook_in_list = merged.logbookInList;
   if (!degraded || next.assignedSeenAt !== undefined) row.assigned_seen_at = merged.assignedSeenAt;
+  // The companion writes only its own key, and only ever the whole blob it just
+  // derived from the value it read in the same request. The degraded guard
+  // matters most here: a failed read followed by an unguarded write would erase
+  // a welcome stamp, and the visible symptom of that is the companion
+  // introducing itself to somebody for the second time.
+  if (!degraded || next.companionMemory !== undefined) row.companion_memory = merged.companionMemory ?? {};
 
   const { error } = await supabaseAdmin
     .from('staxis_user_prefs')
