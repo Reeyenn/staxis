@@ -566,6 +566,22 @@ export const AI_FEATURE_REGISTRY: Readonly<Record<AiFeatureKey, AiFeatureDefinit
     'Lets an owner or VP ask the helper about all of their company\'s hotels at once, comparing spend, maintenance and open problems across the group. Off unless the company turns it on.',
     ['text', 'tool_use'], SONNET,
   ),
+  // The companion bubble's own conversation. Its own row rather than a share
+  // of Ask Staxis for one honest reason: it is a DIFFERENT product surface with
+  // a different shape of turn. A companion turn starts from a bubble somebody
+  // tapped on a screen they were already using, is usually one short question,
+  // and is the surface most people will meet the AI through. Reeyen must be
+  // able to move it, or drop it to a cheaper model, without touching the chat
+  // bar that managers type long questions into all day.
+  //
+  // A turn is billed here ONLY when it actually came from the companion (the
+  // route reads `origin` off the request). Everything typed into the bar stays
+  // on agent.ask_staxis, so this knob is never a knob that does nothing.
+  'companion.conversation': defineFeature(
+    'companion.conversation', 'Agent', 'Companion bubble',
+    'The helper bubble in the corner of every screen. Same assistant and same abilities as the main helper: this only decides which model answers when somebody talks to it through the bubble.',
+    ['text', 'tool_use'], SONNET,
+  ),
   'agent.conversation_summary': defineFeature(
     'agent.conversation_summary', 'Agent', 'Conversation summaries',
     'Shortens long AI chats behind the scenes so the helper remembers earlier parts of the conversation.',

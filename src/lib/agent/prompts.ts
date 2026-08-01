@@ -27,6 +27,11 @@ import {
   deriveCompanyRulebook,
   formatCompanyRulebookForPrompt,
 } from './company-tier';
+import {
+  deriveStandingRules,
+  formatStandingRulesForPrompt,
+  HOTEL_RULES_VERSION,
+} from './hotel-rules-tier';
 import { escapeTrustMarkerContent } from './loop-core';
 import { lensFor } from './lenses';
 import { familyContentIsSafe } from './prompt-tiers';
@@ -438,6 +443,7 @@ type StableTier =
   | 'pms_family'
   | 'company'
   | 'hotel_identity'
+  | 'hotel_rules'
   | 'version_line';
 
 /** Segments of the UNCACHED per-turn block, in their fixed assembly order. */
@@ -450,9 +456,13 @@ type DynamicTier = 'hotel_snapshot' | 'hotel_memory' | 'right_now' | 'room_hint'
  * management company's own standard beats a shared PMS note), and the hotel's
  * own durable identity sits after the company (this hotel beats its company —
  * the company standard is the default everywhere, the hotel in front of you is
- * the exception). Live hotel STATE is still not in the stable block at all — it
- * arrives via search_knowledge and the <staxis-memory> / snapshot blocks in the
- * DYNAMIC half, which the model reads after the entire stable block.
+ * the exception). The hotel's STANDING RULES sit after its identity, because a
+ * rule a manager said out loud last week beats a fact about how the building is
+ * configured — "always call me before touching 214" is an instruction, and the
+ * room mix is background. Live hotel STATE is still not in the stable block at
+ * all — it arrives via search_knowledge and the <staxis-memory> / snapshot
+ * blocks in the DYNAMIC half, which the model reads after the entire stable
+ * block.
  */
 const STABLE_TIER_ORDER: readonly StableTier[] = [
   'global_base',
@@ -465,6 +475,7 @@ const STABLE_TIER_ORDER: readonly StableTier[] = [
   'pms_family',
   'company',
   'hotel_identity',
+  'hotel_rules',
   'version_line',
 ];
 
@@ -767,6 +778,21 @@ export async function buildSystemPrompt(
       : null,
   );
 
+  // 0417 — the plain-language standing rules a manager at THIS hotel gave the
+  // companion. STABLE tier: the rows are ordered by created_at at the database
+  // and their text never varies, so the block is byte-identical turn to turn and
+  // only a real edit moves it.
+  //
+  // NOT gated on money-visibility, unlike the company block above. The reasoning
+  // is written out in hotel-rules-tier.ts: a standing rule is an instruction
+  // about how to behave at this hotel, the person who most needs it is the one
+  // on shift, and a rule cannot carry hotel data because it is stored verbatim
+  // and read by nothing. `deriveStandingRules` never throws — an unreachable
+  // store renders no section at all.
+  const standingRulesBlock = formatStandingRulesForPrompt(
+    await deriveStandingRules(snapshot.property.id),
+  );
+
   if (family && !familyToRender) {
     captureException(
       new Error('[prompts] family prompt row rejected: forged marker or over length cap'),
@@ -802,6 +828,7 @@ export async function buildSystemPrompt(
   // for the company tier — an independent hotel's stamp must not claim one.
   if (companyBlock) stampParts.push(COMPANY_RULEBOOK_VERSION);
   if (identityBlock) stampParts.push(HOTEL_IDENTITY_VERSION);
+  if (standingRulesBlock) stampParts.push(HOTEL_RULES_VERSION);
   const stableStamp = stampParts.join('+');
 
   const receiptParts = [stableStamp];
@@ -874,6 +901,12 @@ export async function buildSystemPrompt(
   }
   if (identityBlock) {
     stable.push({ tier: 'hotel_identity', lines: ['', identityBlock] });
+  }
+  if (standingRulesBlock) {
+    // Header, ceiling and both marker tags come from hotel-rules-tier.ts, never
+    // from a row — the same envelope discipline as the family and company tiers,
+    // protected by the same '───' / '<staxis-' forgery CHECKs in migration 0417.
+    stable.push({ tier: 'hotel_rules', lines: ['', standingRulesBlock] });
   }
   stable.push({ tier: 'version_line', lines: ['', `Prompt version: ${stableStamp}`] });
 

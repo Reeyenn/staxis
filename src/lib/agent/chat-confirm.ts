@@ -82,7 +82,13 @@ export type ChatConfirmKind =
   // another: a token minted for a vendor list must not be spendable on a
   // maintenance schedule, and this one carries a whole structured list where
   // the others carry a single record.
-  | 'vendor_setup';
+  | 'vendor_setup'
+  // 0417 — a plain-language standing rule for ONE hotel, set from the
+  // companion. Its own kind rather than reusing 'company_rule' because a token
+  // minted for one kind cannot be spent on another, and these two write to
+  // different tables with different authority: a company rule binds every hotel
+  // its operator runs, a standing rule binds this building.
+  | 'hotel_standing_rule';
 
 /** How long a read-back stays answerable. A "yes" the next morning is still a
  *  yes to the same sentence; a "yes" next week is answering something the

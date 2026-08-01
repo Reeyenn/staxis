@@ -66,8 +66,11 @@ describe('AI Control Center feature registry', () => {
   // 2026-07-30: the administrative Model Recommendations feature and tab were
   // removed (26→25 controllable, 33→32 keys). Historical database rows remain
   // inert by design; removing them would require an out-of-scope migration.
-  test('covers 25 controllable hosted features and 7 display-only features', () => {
-    assert.equal(AI_FEATURE_KEYS.length, 32);
+  // 2026-08-01: the companion bubble got its own conversation slot so its
+  // model can be chosen without moving the main chat bar (25→26 controllable,
+  // 32→33 keys). Display-only count is unchanged.
+  test('covers 26 controllable hosted features and 7 display-only features', () => {
+    assert.equal(AI_FEATURE_KEYS.length, 33);
     assert.equal(new Set(AI_FEATURE_KEYS).size, AI_FEATURE_KEYS.length);
     assert.deepEqual(Object.keys(AI_FEATURE_REGISTRY).sort(), [...AI_FEATURE_KEYS].sort());
 

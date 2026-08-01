@@ -86,8 +86,8 @@ export function defaultHalf(role: AppRole | null | undefined): KnowsHalf {
 
 /** Sections of the told half. Contacts is FIRST and is the default — see
  *  defaultToldSection. */
-export type ToldSection = 'contacts' | 'sops' | 'documents';
-export const TOLD_SECTIONS: readonly ToldSection[] = ['contacts', 'sops', 'documents'];
+export type ToldSection = 'contacts' | 'sops' | 'documents' | 'rules';
+export const TOLD_SECTIONS: readonly ToldSection[] = ['contacts', 'sops', 'documents', 'rules'];
 
 /**
  * Contacts opens first, for ONE reason: somebody at the front desk with a
@@ -102,6 +102,10 @@ export const TOLD_SECTION_LABEL: Record<ToldSection, Bilingual> = {
   contacts: { en: 'Contacts', },
   sops: { en: 'How we do things', },
   documents: { en: 'Documents', },
+  // The standing instructions somebody gave the companion in plain language.
+  // LAST in the strip: contacts is the emergency path and must stay first (see
+  // defaultToldSection), and this is the newest and least urgent of the four.
+  rules: { en: 'Standing rules', },
 };
 
 // ── Document access (the permission control) ────────────────────────────────

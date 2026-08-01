@@ -109,6 +109,11 @@ function leaksIn(value: unknown): string[] {
 const UNSEEDABLE_TABLES = new Set([
   'admin_hotel_relationship_mutation_requests', // actor/relationship lifecycle request shape
   'company_structure_mutation_requests', // actor/company structure request shape
+  // 0417. rule_text carries a CHECK requiring 8 to 400 characters and no trust
+  // marker, which the generated value cannot satisfy. The scope-filter check
+  // below still covers it, and the renderer's own fence is proven in
+  // companion-rules-tier.test.ts.
+  'hotel_standing_rules',
   'inventory_delivery_reentries',  // NOT NULL key onto a replacement-request row
   'management_pattern_candidate_local_instances', // immutable candidate/run lineage
   'management_pattern_candidate_properties', // immutable candidate/run lineage

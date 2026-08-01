@@ -43,10 +43,12 @@ import {
   ASK_STAXIS_EXECUTION_BUDGET_MS,
   ASK_STAXIS_FALLBACK_RESERVE_MS,
   resolveAskStaxisExecutionPlan,
+  resolveCompanionChatExecutionPlan,
   streamAgent,
   type AgentMessage,
 } from '@/lib/agent/llm';
 import { scaleAiReservationUsd, type AiExecutionPlan } from '@/lib/ai/runtime';
+import type { AiFeatureKey } from '@/lib/ai/types';
 import { anthropicTierTokenRates } from '@/lib/ai/feature-registry';
 import { getToolsForRole } from '@/lib/agent/tools';
 import { chatIsMountedForRole } from '@/lib/agent/lenses';
@@ -101,6 +103,21 @@ interface RequestBody {
    * src/lib/agent/awareness.ts.
    */
   pathname?: string;
+  /**
+   * Which surface this turn came from.
+   *
+   * OPTIONAL, and absent means the Ask Staxis bar, which is every existing
+   * caller. The ONLY thing it changes is which AI Control Center slot governs
+   * the model and carries the cost: 'companion' turns run on
+   * `companion.conversation`, everything else on `agent.ask_staxis`.
+   *
+   * UNTRUSTED, and safely so. It cannot widen anything: the auth, the property
+   * access, the section gate, the role lens and the tool catalog are all
+   * resolved before this is read, and both slots resolve through the same
+   * registry with the same pricing requirement. The worst a forged value can do
+   * is bill a turn to the wrong line of Reeyen's own cost book.
+   */
+  origin?: string;
 }
 
 export async function POST(req: NextRequest): Promise<Response> {
@@ -212,10 +229,14 @@ export async function POST(req: NextRequest): Promise<Response> {
   // ── Cost reservation (Codex review fix #1) ────────────────────────────
   // Atomic: cap check + reservation insert happen under an advisory lock
   // keyed on user_id. Concurrent requests for the same user serialize.
+  const fromCompanion = body.origin === 'companion';
+  const featureKey: AiFeatureKey = fromCompanion ? 'companion.conversation' : 'agent.ask_staxis';
   let estimatedUsd: number;
   let executionPlan: AiExecutionPlan;
   try {
-    executionPlan = await resolveAskStaxisExecutionPlan();
+    executionPlan = fromCompanion
+      ? await resolveCompanionChatExecutionPlan()
+      : await resolveAskStaxisExecutionPlan();
     estimatedUsd = scaleAiReservationUsd(
       [executionPlan.primary, executionPlan.fallback].filter(
         (model): model is NonNullable<typeof model> => model !== null,
@@ -412,7 +433,7 @@ export async function POST(req: NextRequest): Promise<Response> {
           // (pending row + card), NOT executed inline. Read-only tools still
           // run inline.
           approvalMode: true,
-          featureKey: 'agent.ask_staxis',
+          featureKey,
           executionPlan,
           deadlineAt: executionDeadlineAt,
           fallbackReserveMs: ASK_STAXIS_FALLBACK_RESERVE_MS,

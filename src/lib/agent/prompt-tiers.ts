@@ -168,6 +168,32 @@ export function companyFactIsSafe(content: string): boolean {
   return true;
 }
 
+/**
+ * Hard ceiling on the whole HOTEL standing-rules block (0417).
+ *
+ * A quarter of the company cap, and that is not a rounding choice. A company
+ * rulebook is a written policy document that a VP maintains; a hotel's standing
+ * rules are sentences a manager said out loud to the companion, one at a time.
+ * Fifty of them is a hotel that has started using the companion as a filing
+ * cabinet, and past that point the block is crowding out the hotel's own live
+ * numbers in the same prompt. Rules past the budget are dropped whole, never
+ * truncated: half a rule is worse than no rule.
+ */
+export const HOTEL_RULES_BLOCK_MAX_CHARS = 1000;
+
+/**
+ * Is this standing rule safe to splice into the cached prompt?
+ *
+ * Deliberately the same predicate as `companyFactIsSafe`, because the two land
+ * in the same prompt inside the same kind of untrusted envelope and a divergence
+ * between them would be a hole in whichever one drifted. Named separately so
+ * that a future change to one is a decision about that one, and so the hotel
+ * tier's call site does not read as though it is checking company content.
+ */
+export function hotelRuleIsSafe(content: string): boolean {
+  return companyFactIsSafe(content);
+}
+
 /** One agent_prompts row, as the tier-health evaluator needs it. */
 export interface PromptTierRow {
   role: string;
