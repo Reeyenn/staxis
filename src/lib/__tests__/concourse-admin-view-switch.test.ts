@@ -27,7 +27,7 @@ const hotelTeamCss = source('src', 'app', 'company', '_components', 'HotelTeamPa
  * destination from both shared navigation surfaces and changed this test to
  * require that deletion. These assertions keep the two concepts independent.
  */
-describe('platform Admin destination and in-place hotel Admin tools', () => {
+describe('platform Admin destination and default in-place hotel Admin tools', () => {
   test('restores one distinct, exact Admin destination on desktop and phone', () => {
     assert.match(concourse, /onClick: \(\) => go\(['"]\/admin\/properties#live['"]\)/);
     assert.match(concourse, /adminDestination=\{adminDestination\}/g);
@@ -49,23 +49,20 @@ describe('platform Admin destination and in-place hotel Admin tools', () => {
     assert.doesNotMatch(concourse, /user\?\.role === ['"]admin['"] \? \{[\s\S]*?\/admin\/properties#live/);
   });
 
-  test('keeps the switch inside My Hotel and changes local state without routing', () => {
+  test('enables verified platform-admin actions by default without a local toggle', () => {
     const heroIndex = company.indexOf('<header className={styles.hero}>');
-    const switchIndex = company.indexOf('<label className={styles.adminViewSwitch}>', heroIndex);
-    const heroEnd = company.indexOf('</header>', switchIndex);
-    const switchMarkup = company.slice(switchIndex, heroEnd);
+    const heroEnd = company.indexOf('</header>', heroIndex);
+    const heroMarkup = company.slice(heroIndex, heroEnd);
 
-    assert.ok(heroIndex >= 0 && switchIndex > heroIndex && heroEnd > switchIndex);
+    assert.ok(heroIndex >= 0 && heroEnd > heroIndex);
     assert.match(company, /const adminPreview = Boolean\(\s*authorizationChecked && platformAdmin && userRole === ['"]admin['"]/);
     assert.match(company, /if \(!user \|\| authLoading \|\| propertyLoading \|\| !authorizationChecked\) return/);
     assert.doesNotMatch(company, /const adminPreview = userRole === ['"]admin['"]/);
-    assert.match(switchMarkup, /type="checkbox"/);
-    assert.match(switchMarkup, /role="switch"/);
-    assert.match(switchMarkup, /checked=\{adminToolsActive\}/);
-    assert.match(switchMarkup, /aria-checked=\{adminToolsActive\}/);
-    assert.match(switchMarkup, /onChange=\{\(event\) => setAdminToolsEnabled\(event\.target\.checked\)\}/);
-    assert.doesNotMatch(switchMarkup, /router\.(push|replace)|\/admin\/properties/);
-    assert.match(company, /setAdminToolsEnabled\(false\);\s*\}, \[activePropertyId, userRole\]\)/);
+    assert.match(company, /const adminActionsAvailable = Boolean\(\s*adminPreview[\s\S]*?adminViewerContext[\s\S]*?adminDataMatchesSelection/);
+    assert.match(company, /readOnly=\{Boolean\(data\.viewerContext\?\.readOnly\) && !adminPreview\}/);
+    assert.doesNotMatch(heroMarkup, /adminViewSwitch|type="checkbox"|role="switch"|Admin view|setAdminToolsEnabled/);
+    assert.doesNotMatch(company, /adminToolsEnabled|adminToolsActive|setAdminToolsEnabled/);
+    assert.doesNotMatch(company, /Review this hotel in read-only mode/);
     assert.match(company, /\{ id: ['"]overview['"][\s\S]*?\{ id: ['"]hotels['"][\s\S]*?\{ id: ['"]people['"][\s\S]*?\{ id: ['"]access['"]/);
   });
 
@@ -107,46 +104,41 @@ describe('platform Admin destination and in-place hotel Admin tools', () => {
     assert.match(authorizationRoute, /if \(!account\)[\s\S]*?active: false[\s\S]*?platformAdmin: false/);
   });
 
-  test('unlocks only independently authorized hotel-team tools and remounts dialogs on mode changes', () => {
+  test('renders independently authorized hotel-team tools for the verified admin preview', () => {
     assert.match(company, /\/api\/admin\/company-access-preview\?pid=/);
     assert.match(company, /normalized\.viewerContext\?\.kind !== ['"]staxis_admin_preview['"]/);
     assert.match(company, /normalized\.viewerContext\.readOnly !== true/);
-    assert.match(company, /key=\{`\$\{activeProperty\.id\}:\$\{adminToolsEnabled \? ['"]admin['"] : ['"]preview['"]\}:\$\{canManageTeam \? ['"]hotel-authorized['"] : ['"]invite-only['"]\}`\}/);
-    assert.match(company, /readOnly=\{Boolean\(data\.viewerContext\?\.readOnly\) && !adminToolsEnabled\}/);
-    assert.match(company, /allowAdminActions=\{adminToolsEnabled\}/);
-    assert.match(company, /onRequestAdminActions=\{onRequestAdminActions\}/);
-    assert.match(company, /onRequestAdminActions=\{\(\) => setAdminToolsEnabled\(true\)\}/);
-    assert.match(company, /const hotelTeamLocked = Boolean\([\s\S]*?\(\(adminPreview \|\| resolved\.viewerContext\?\.readOnly === true\) && !adminToolsActive\)/);
-    assert.match(hotelTeam, /const inviteActionCanEnableAdmin = adminPreview[\s\S]*?Boolean\(onRequestAdminActions\)/);
-    assert.match(hotelTeam, /if \(inviteActionCanEnableAdmin\) onRequestAdminActions\?\.\(\)/);
-    assert.match(hotelTeam, /styles\.headingInviteButton[\s\S]*?onClick=\{openInviteDialog\}[\s\S]*?disabled=\{inviteActionDisabled\}/);
+    assert.match(company, /key=\{`\$\{activeProperty\.id\}:\$\{adminPreview \? ['"]admin['"] : ['"]customer['"]\}:\$\{canManageTeam \? ['"]hotel-authorized['"] : ['"]invite-only['"]\}`\}/);
+    assert.match(company, /readOnly=\{Boolean\(data\.viewerContext\?\.readOnly\) && !adminPreview\}/);
+    assert.doesNotMatch(company, /allowAdminActions|onRequestAdminActions|setAdminToolsEnabled/);
+    assert.match(company, /const hotelTeamLocked = Boolean\([\s\S]*?\(resolved\.viewerContext\?\.readOnly === true && !adminActionsAvailable\)/);
+    assert.match(hotelTeam, /const locked = readOnly;/);
+    assert.match(hotelTeam, /styles\.headingInviteButton[\s\S]*?onClick=\{\(\) => onInviteDialogOpenChange\(true\)\}[\s\S]*?disabled=\{inviteActionDisabled\}/);
     assert.match(company, /inviteDialogOpen=\{teamInviteHotelId === activeProperty\?\.id\}/);
-    assert.match(hotelTeam, /const locked = readOnly \|\| \(adminPreview && !allowAdminActions\)/);
     assert.match(hotelTeam, /const nextTeam = \(adminPreview \|\| readOnly\)[\s\S]*?!member\.isPlatformAdmin/);
   });
 
-  test('removes both duplicate admin-only status banners without weakening read-only mode', () => {
+  test('removes the obsolete admin-only toggle copy without weakening customer read-only mode', () => {
     assert.doesNotMatch(company, /styles\.adminPreviewNotice|styles\.adminToolsNotice/);
     assert.doesNotMatch(company, /Hotel view · Read-only|Reviewing the hotel workspace/);
     assert.doesNotMatch(companyCss, /\.adminPreviewNotice|\.adminToolsNotice/);
     assert.doesNotMatch(hotelTeam, /styles\.readOnlyNotice|Read-only preview|You can review this hotel/);
     assert.doesNotMatch(hotelTeamCss, /\.readOnlyNotice/);
-    assert.match(company, /readOnly=\{Boolean\(data\.viewerContext\?\.readOnly\) && !adminToolsEnabled\}/);
-    assert.match(hotelTeam, /const locked = readOnly \|\| \(adminPreview && !allowAdminActions\)/);
+    assert.doesNotMatch(company, /Admin view|adminToolsEnabled|adminToolsActive/);
+    assert.doesNotMatch(hotelTeam, /allowAdminActions|onRequestAdminActions|Turn on Admin view/);
+    assert.match(company, /readOnly=\{Boolean\(data\.viewerContext\?\.readOnly\) && !adminPreview\}/);
+    assert.match(hotelTeam, /const locked = readOnly;/);
   });
 
-  test('is admin-only, compact, keyboard visible, mobile safe, and reduced-motion safe', () => {
-    assert.match(company, /\{adminPreview \? \(\s*<label className=\{styles\.adminViewSwitch\}>/);
-    assert.match(companyCss, /\.adminViewSwitch \{[\s\S]*?min-height: 48px;/);
-    assert.match(companyCss, /\.adminViewSwitchTrack \{[\s\S]*?width: 48px;[\s\S]*?height: 28px;/);
-    assert.match(companyCss, /\.adminViewSwitch input:focus-visible \+ \.adminViewSwitchTrack \{[\s\S]*?outline:/);
+  test('removes the obsolete switch styling while keeping the responsive hero layout', () => {
+    assert.doesNotMatch(company, /adminViewSwitch|type="checkbox"|role="switch"/);
+    assert.doesNotMatch(companyCss, /\.adminViewSwitch|\.heroActions/);
     const mobileRules = companyCss.slice(companyCss.indexOf('@media (max-width: 800px)'));
     assert.match(mobileRules, /\.hero \{[\s\S]*?grid-template-columns: minmax\(0, 1fr\) auto minmax\(0, 1fr\);/);
     assert.match(mobileRules, /\.heroHotelSlot \{[\s\S]*?grid-column: 2;[\s\S]*?width: min\(240px, 100%\);[\s\S]*?justify-self: center;/);
-    assert.match(mobileRules, /\.heroActions \{[\s\S]*?grid-column: 3;[\s\S]*?width: 100%;/);
     const phoneRules = companyCss.slice(companyCss.indexOf('@media (max-width: 600px)'));
-    assert.match(phoneRules, /\.heroIdentity,[\s\S]*?\.heroHotelSlot,[\s\S]*?\.heroActions \{\s*grid-column: 1;/);
+    assert.match(phoneRules, /\.heroIdentity,[\s\S]*?\.heroHotelSlot \{\s*grid-column: 1;/);
     const reducedMotion = companyCss.slice(companyCss.indexOf('@media (prefers-reduced-motion: reduce)'));
-    assert.match(reducedMotion, /\.adminViewSwitchTrack,[\s\S]*?\.adminViewSwitchHandle,/);
+    assert.doesNotMatch(reducedMotion, /adminViewSwitch|heroActions/);
   });
 });

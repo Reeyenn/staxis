@@ -1,8 +1,9 @@
 // GET /api/company-access/access-editor
 //
 // Returns only the normalized memberships and exact scope catalog this caller
-// may manage right now. Platform admins remain in read-only Admin view; hats,
-// legacy grants, and customer↔hotel relationships are not editable here.
+// may manage right now. Platform admins do not edit customer access through
+// this surface; hats, legacy grants, and customer↔hotel relationships are not
+// editable here.
 //
 // @tenant-scope session user -> accounts.id -> fresh normalized manage_access
 // delegation; the SECURITY DEFINER projection emits no foreign organization.
