@@ -88,6 +88,11 @@ ALTER TABLE public.staxis_user_prefs
 
 -- ─── 2. Standing rules ──────────────────────────────────────────────────────
 
+-- @rls: service-role-only — read and written only by /api/companion/rules and
+-- the staxis_set_standing_rule tool, both using supabaseAdmin behind a session
+-- + property-access check, and by the prompt assembler on the server. Anon and
+-- authenticated get no policies (deny-all), mirroring staxis_user_prefs (0410)
+-- and findings (0360).
 CREATE TABLE IF NOT EXISTS public.hotel_standing_rules (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
 

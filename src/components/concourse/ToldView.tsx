@@ -27,6 +27,7 @@ import { useAuth } from '@/contexts/AuthContext';
 import { useProperty } from '@/contexts/PropertyContext';
 import { ToldContacts } from './ToldContacts';
 import { ToldSops, ToldDocuments } from './ToldKnowledge';
+import { ToldRules } from './ToldRules';
 import {
   TOLD_SECTIONS, TOLD_SECTION_LABEL, canEditTold, defaultToldSection, say,
   type Lang, type ToldSection,
@@ -91,6 +92,9 @@ export function ToldView({ lang }: { lang: Lang }) {
         )}
         {section === 'documents' && (
           <ToldDocuments key={`d:${activePropertyId}`} pid={activePropertyId} canEdit={canEdit} lang={lang} />
+        )}
+        {section === 'rules' && (
+          <ToldRules key={`r:${activePropertyId}`} pid={activePropertyId} canEdit={canEdit} lang={lang} />
         )}
       </div>
     </div>

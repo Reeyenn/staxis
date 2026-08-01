@@ -34,6 +34,7 @@ import React from 'react';
 import { useAuth } from '@/contexts/AuthContext';
 import { useApiResource } from '@/lib/hooks/use-api-resource';
 import { fetchWithAuth, INTERACTIVE_ACTION_TIMEOUT_MS, SessionEndedError } from '@/lib/api-fetch';
+import { reportCompanionFlow } from '@/components/companion/companion-events';
 import { readEnvelope } from '@/lib/api-envelope';
 import type { LogEntryDTO } from '@/lib/comms/types';
 import type { AssignedByMeItem, WorklistItem } from '@/lib/worklist/types';
@@ -239,6 +240,12 @@ export function StaxisList({ propertyId, lang, focusId, onReadState, canSeeFindi
         }
         setComposer(composerDefaults(todayIso, now.getDay()));
         setComposerOpen(false);
+        // Somebody just wrote a task by hand that they could have asked for in
+        // a sentence. Fired AFTER the composer closes and only on success, so
+        // the tip never lands as an obstacle and never follows a failed save.
+        // The companion decides whether to say anything; it will say it at most
+        // once, ever. See decideTeachMoment.
+        reportCompanionFlow('create_task');
         await reloadWorklist();
       } catch (e) {
         if (e instanceof SessionEndedError) throw e;

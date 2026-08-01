@@ -24,7 +24,7 @@ import { useProperty } from '@/contexts/PropertyContext';
 import { useAgentChat } from './useAgentChat';
 import { ApprovalOverlay } from './ApprovalOverlay';
 import type { DisplayMessage } from './MessageList';
-import { subscribeToAskCommands } from './ask-command-bridge';
+import { subscribeToAskCommands, subscribeToAskOpen, type AskOrigin } from './ask-command-bridge';
 import { chatIsMountedForRole } from '@/lib/agent/lenses';
 import type { AppRole } from '@/lib/roles';
 import { AssistantMarkdown } from './AssistantMarkdown';
@@ -219,7 +219,11 @@ export function AskStaxisBar() {
     setDictating(false);
   }, []);
 
-  const submit = useCallback((raw: string) => {
+  // `origin` is set only by the companion bubble, which hands its turns to this
+  // one brain rather than running a second chat. It selects the AI Control
+  // Center slot for the turn and nothing else. A person typing into the bar
+  // never sets it, so the bar's own turns stay on agent.ask_staxis.
+  const submit = useCallback((raw: string, origin?: AskOrigin) => {
     const text = raw.trim();
     if (!text || streaming) return;
     clearCloseTimer();
@@ -229,8 +233,18 @@ export function AskStaxisBar() {
     setChatState('active');
     if (window.matchMedia('(max-width: 760px)').matches) setMobileOpen(true);
     setInput('');
-    void sendMessage(text);
+    void sendMessage(text, origin ? { origin } : undefined);
   }, [streaming, sendMessage, clearCloseTimer, stopDictation]);
+
+  // The companion bubble opening with nothing to say. Wake into the same
+  // surface a click on the pill would, without inventing a first message.
+  const wake = useCallback(() => {
+    clearCloseTimer();
+    setClosing(false);
+    setHistoryOpen(false);
+    setChatState('active');
+    if (window.matchMedia('(max-width: 760px)').matches) setMobileOpen(true);
+  }, [clearCloseTimer]);
 
   const openMobile = useCallback(() => {
     setMobileOpen(true);
@@ -371,6 +385,10 @@ export function AskStaxisBar() {
   useEffect(() => {
     return subscribeToAskCommands(submit);
   }, [submit]);
+
+  useEffect(() => {
+    return subscribeToAskOpen(wake);
+  }, [wake]);
 
   const dockClass = useMemo(() => [
     'asx-dock',

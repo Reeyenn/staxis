@@ -31,12 +31,28 @@ const AskStaxisBar = dynamic(
   { ssr: false, loading: () => null },
 );
 
+// The companion bubble. Same treatment as the Ask bar: lazy, ssr:false, nothing
+// to server-render at rest, and it pops in post-hydration with no layout shift
+// because it is fixed-position.
+//
+// MOUNTED HERE, which is why housekeeper and laundry screens never see it: they
+// do not import AppLayout. That is a fact about today's file layout though, so
+// the component ALSO refuses on those paths itself (companionMounts in
+// src/lib/companion/mount.ts). Two independent gates, on purpose.
+const CompanionBubble = dynamic(
+  () => import('@/components/companion/CompanionBubble').then((m) => m.CompanionBubble),
+  { ssr: false, loading: () => null },
+);
+
 export function AppLayout({
   children,
   hideGlobalAsk = false,
+  hideCompanion = false,
 }: {
   children: React.ReactNode;
   hideGlobalAsk?: boolean;
+  /** Opt out on a surface that owns its own assistant chrome, like hideGlobalAsk. */
+  hideCompanion?: boolean;
 }) {
   useNavigationReady();
   const acting = useOptionalHotelActingContext();
@@ -194,6 +210,7 @@ export function AppLayout({
       <div className="staxis-feedback-slot"><FeedbackButton /></div>
       <div className="staxis-ai-activity-slot"><AiActivityButton /></div>
       {!hideGlobalAsk ? <AskStaxisBar /> : null}
+      {!hideCompanion ? <CompanionBubble /> : null}
     </div>
   );
 }

@@ -13,6 +13,7 @@ import { apiPost } from '@/lib/comms/client';
 import type { LogEntryDTO, LogReplyDTO, CommsDept } from '@/lib/comms/types';
 import type { L } from './comms-types-fe';
 import { useCommsResource } from './comms-data';
+import { reportCompanionFlow } from '@/components/companion/companion-events';
 import {
   T, SANS, SERIF, MONO, deptColor, deptColorDark, tint, Avatar, MonoLabel, DeptDot,
   fmtClock, fmtDayLabel, dayKey,
@@ -154,6 +155,9 @@ function LogComposer({ pid, L, onAdded }: { pid: string; L: L; onAdded: () => vo
     try {
       const r = await apiPost('/api/comms/logbook', { pid, title: t, body: body.trim() || undefined, category });
       if (!r.ok) { setError('The recap was not posted. Please try again.'); return; }
+      // Written by hand, and add_logbook_entry is a real tool. Success only,
+      // after the post landed. Shown at most once ever. See decideTeachMoment.
+      reportCompanionFlow('log_book_entry');
       onAdded();
     } finally { setBusy(false); }
   };

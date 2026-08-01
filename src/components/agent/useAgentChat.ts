@@ -11,6 +11,7 @@ import { useLang } from '@/contexts/LanguageContext';
 import { fetchWithAuth, SessionEndedError } from '@/lib/api-fetch';
 import type { DisplayMessage } from './MessageList';
 import type { BiText, PendingAction, PendingAddon, ResultCard } from './approval-types';
+import type { AskOrigin } from './ask-command-bridge';
 
 export interface ConversationListItem {
   id: string;
@@ -77,7 +78,12 @@ export interface UseAgentChatReturn {
   loadingConversation: boolean;
   streaming: boolean;
   error: string | null;
-  sendMessage: (text: string) => Promise<void>;
+  /**
+   * `opts.origin` marks which surface the turn came from. It travels only to
+   * the request body, where it selects the AI Control Center slot that governs
+   * the model and carries the cost. Absent means the Ask bar.
+   */
+  sendMessage: (text: string, opts?: { origin?: AskOrigin }) => Promise<void>;
   startNew: () => void;
   loadConversation: (id: string) => Promise<void>;
   reloadConversations: () => Promise<void>;
@@ -929,7 +935,7 @@ export function useAgentChat({
     clearDeltaBuffer,
   ]);
 
-  const sendMessage = useCallback(async (text: string) => {
+  const sendMessage = useCallback(async (text: string, opts?: { origin?: AskOrigin }) => {
     const message = text.trim();
     const hasRequiredScope = mode === 'portfolio'
       ? Boolean(organizationId)
@@ -975,6 +981,7 @@ export function useAgentChat({
                   // Read off the ref, never a closed-over value. This keeps the
                   // stable callback while giving hotel awareness the live page.
                   ...(pathnameRef.current ? { pathname: pathnameRef.current } : {}),
+                  ...(opts?.origin ? { origin: opts.origin } : {}),
                 },
           ),
         },
