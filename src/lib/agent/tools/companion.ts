@@ -66,7 +66,7 @@ registerTool<{ rule?: string; confirmToken?: string }>({
   mutates: true,
   confirmInChat: true,
   description: [
-    'Use when a manager tells you how they want things done from now on, in their own words:',
+    'Use when: a manager tells you how they want things done from now on, in their own words:',
     '"always tell me before any order over $200", "never promise a late checkout without asking me",',
     '"check the pool chemicals before you close a maintenance ticket about the pool".',
     'Two calls. FIRST call with `rule` only: nothing is written, and you get the rule read back plus a token.',

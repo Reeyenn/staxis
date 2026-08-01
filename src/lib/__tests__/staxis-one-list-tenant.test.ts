@@ -173,11 +173,11 @@ describe('one person’s list preferences', () => {
     ];
     assert.deepEqual(
       await readFeedPrefs(ACCOUNT, HOTEL_A),
-      { logbookInList: true, assignedSeenAt: '2026-07-30T08:00:00.000Z' },
+      { logbookInList: true, assignedSeenAt: '2026-07-30T08:00:00.000Z', companionMemory: null },
     );
     assert.deepEqual(
       await readFeedPrefs(ACCOUNT, HOTEL_B),
-      { logbookInList: false, assignedSeenAt: null },
+      { logbookInList: false, assignedSeenAt: null, companionMemory: null },
     );
   });
 
@@ -185,7 +185,7 @@ describe('one person’s list preferences', () => {
     // The log book is a place you go. A hotel that never opened the switch must
     // not find its shift notes interleaved with its money.
     tables.staxis_user_prefs = [];
-    assert.deepEqual(await readFeedPrefs(ACCOUNT, HOTEL_A), { logbookInList: false, assignedSeenAt: null });
+    assert.deepEqual(await readFeedPrefs(ACCOUNT, HOTEL_A), { logbookInList: false, assignedSeenAt: null, companionMemory: null });
   });
 
   test('a write always carries both keys', async () => {
@@ -196,6 +196,22 @@ describe('one person’s list preferences', () => {
     assert.equal(write.payload!.account_id, ACCOUNT);
     assert.equal(write.payload!.property_id, HOTEL_A);
     assert.equal(write.payload!.logbook_in_list, true);
+  });
+
+  test('a companion memory write does not clobber the list preferences', async () => {
+    // The companion shares this row (0417). A write of its memory that dropped
+    // the other two columns would switch somebody's log book off as a side
+    // effect of being greeted, which is the exact failure the degraded-read
+    // guard in writeFeedPrefs exists to prevent.
+    tables.staxis_user_prefs = [{
+      account_id: ACCOUNT, property_id: HOTEL_A,
+      logbook_in_list: true, assigned_seen_at: '2026-07-30T08:00:00.000Z', companion_memory: {},
+    }];
+    await writeFeedPrefs(ACCOUNT, HOTEL_A, { companionMemory: { welcomedAt: '2026-08-01T00:00:00.000Z' } });
+    const write = calls.find((c) => c.table === 'staxis_user_prefs' && c.payload);
+    assert.equal(write!.payload!.logbook_in_list, true, 'the switch survived');
+    assert.equal(write!.payload!.assigned_seen_at, '2026-07-30T08:00:00.000Z', 'the stamp survived');
+    assert.deepEqual(write!.payload!.companion_memory, { welcomedAt: '2026-08-01T00:00:00.000Z' });
   });
 
   test('a partial write does not clobber the other field', () => {
