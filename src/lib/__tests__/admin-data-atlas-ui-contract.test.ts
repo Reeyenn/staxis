@@ -30,8 +30,7 @@ describe('Database Atlas entry point', () => {
 describe('Database Atlas page states', () => {
   test('is one read-only page with a clear way back to Hotels', () => {
     assert.match(page, /href="\/admin\/properties#live"/);
-    assert.match(page, /Read-only controls · this page cannot edit hotel data/);
-    assert.match(page, /A simple, read-only window into what Staxis stores/);
+    assert.match(page, /<h1 id="atlas-title">Database Atlas<\/h1>/);
     assert.doesNotMatch(page, /\.(insert|update|upsert|delete)\s*\(/);
   });
 
@@ -40,28 +39,47 @@ describe('Database Atlas page states', () => {
     assert.match(page, /fetchWithAuth\('\/api\/admin\/system-status',[\s\S]*cache:\s*'no-store'/);
     assert.match(page, /const AUTO_REFRESH_MS = 60_000/);
     assert.match(page, /window\.setInterval/);
-    assert.match(page, /Refresh now/);
+    assert.match(page, /\? 'Refreshing' : 'Refresh'/);
   });
 
   test('renders honest loading, error, retry, stale-snapshot, and empty states', () => {
-    assert.match(page, /Reading the live Staxis backend/);
-    assert.match(page, /The Atlas could not load/);
+    assert.match(page, /Loading Database Atlas/);
+    assert.match(page, /Database Atlas could not load/);
     assert.match(page, /Try again/);
-    assert.match(page, /The latest refresh failed\. The page is still showing the last successful snapshot/);
+    assert.match(page, /Showing the last update\. Refresh failed/);
     assert.match(page, /No hotels have been added yet/);
-    assert.match(page, /Database unavailable/);
-    assert.match(page, /Showing last snapshot/);
-    assert.doesNotMatch(page, /status="healthy" label="Live database"/);
+    assert.match(page, /Database details are unavailable/);
+    assert.match(page, /snapshot \? 'Stale' : 'Unavailable'/);
+    assert.match(page, /accessDenied[\s\S]*\? 'Admin only'/);
+    assert.match(page, /snapshot\.schema\.status === 'unavailable'[\s\S]*\? 'Unavailable'/);
   });
 
-  test('explains backend details in founder language and keeps table names collapsed', () => {
-    assert.match(page, /The filing cabinets/);
-    assert.match(page, /Data guard on/);
-    assert.match(page, /Tables with rules/);
-    assert.match(page, /Recognized tenant key/);
-    assert.match(page, /<details className=\{styles\.tableDetails\}>/);
-    assert.match(page, /Show technical table names/);
-    assert.match(page, /receipt book/);
+  test('keeps the live view simple and hides technical table names behind disclosures', () => {
+    assert.match(page, /<dt>Hotels<\/dt>/);
+    assert.match(page, /<dt>Rooms<\/dt>/);
+    assert.match(page, /<dt>Staff<\/dt>/);
+    assert.match(page, /placeholder="Search hotels"/);
+    assert.match(page, /<th scope="col">Hotel<\/th>[\s\S]*<th scope="col">Rooms<\/th>[\s\S]*<th scope="col">Staff<\/th>[\s\S]*<th scope="col">Setup<\/th>[\s\S]*<th scope="col">Data<\/th>/);
+    assert.match(page, /<h2>Systems<\/h2>/);
+    assert.match(page, /<span>Database details<\/span>/);
+    assert.match(page, /<details className=\{styles\.areaDetails\}/);
+
+    [
+      'Admin · Live backend view',
+      'A simple, read-only window',
+      'Read-only controls',
+      'Right now',
+      'Staxis at a glance',
+      'Live hotel catalog',
+      'The filing cabinets',
+      'The machinery',
+      'Data guard on',
+      'Tables with rules',
+      'Recognized tenant key',
+      'receipt book',
+      'Latest version',
+      'app areas on',
+    ].forEach((removedCopy) => assert.doesNotMatch(page, new RegExp(removedCopy)));
   });
 });
 
@@ -72,5 +90,8 @@ describe('Database Atlas responsive and motion contract', () => {
     assert.match(css, /@media \(max-width: 520px\)/);
     assert.match(css, /@media \(prefers-reduced-motion: reduce\)/);
     assert.match(css, /min-height:\s*44px/);
+    assert.match(css, /\.hotelLink\s*\{[\s\S]*?min-height:\s*44px/);
+    assert.match(css, /@media \(max-width: 760px\)[\s\S]*?\.searchField input\s*\{\s*font-size:\s*16px/);
+    assert.match(css, /@media \(prefers-reduced-motion: reduce\)[\s\S]*?\.spinning\s*\{\s*animation:\s*none/);
   });
 });
