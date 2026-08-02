@@ -73,6 +73,14 @@ function loadEmployment(): Promise<EmploymentModule> {
   return employmentPromise;
 }
 
+let dialogsPromise: Promise<unknown> | null = null;
+function loadDialogs(): Promise<unknown> {
+  dialogsPromise ??= loadWithCssShim(
+    () => import('@/app/company/_components/HotelTeamDialogs'),
+  );
+  return dialogsPromise;
+}
+
 function installBrowser(): () => void {
   const dom = new JSDOM('<!doctype html><html><body></body></html>', {
     pretendToBeVisual: true,
@@ -102,6 +110,19 @@ function installBrowser(): () => void {
       else Reflect.deleteProperty(globalThis, key);
     }
   };
+}
+
+function jsonResponse(body: unknown, status = 200): Response {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: { 'Content-Type': 'application/json' },
+  });
+}
+
+async function flush(): Promise<void> {
+  await act(async () => {
+    for (let index = 0; index < 18; index += 1) await Promise.resolve();
+  });
 }
 
 function currentUser(): AppUser {
@@ -193,7 +214,9 @@ function restoreAfter(context: TestContext, restoreBrowser: () => void, root: Ro
 describe('My Hotel People mounted identity and actions', { concurrency: false }, () => {
   test('renders an archived linked identity once with a View-only off-roster action', async (context) => {
     const restoreBrowser = installBrowser();
-    const { PersonRow } = await loadHotelTeam();
+    const { HotelTeamPanel } = await loadHotelTeam();
+    await loadEmployment();
+    await loadDialogs();
     const { supabase } = await import('@/lib/supabase');
     supabase.auth.stopAutoRefresh();
     const { createRoot } = await import('react-dom/client');
@@ -201,10 +224,100 @@ describe('My Hotel People mounted identity and actions', { concurrency: false },
     document.body.append(container);
     const root = createRoot(container);
     const archivedAccount = account({ historicalStaffId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc' });
-    const person = buildHotelRoster([archivedAccount], [staff()])
+    const originalFetch = globalThis.fetch;
+    Object.defineProperty(globalThis, 'fetch', {
+      configurable: true,
+      writable: true,
+      value: async (input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url.includes('/api/auth/team?')) {
+          return jsonResponse({ ok: true, data: { team: [archivedAccount], hatsByAccountId: {} } });
+        }
+        if (url.includes('/api/staff/join-requests?')) {
+          return jsonResponse({ ok: true, data: { requests: [] } });
+        }
+        if (url.includes('/api/staff/contacts?')) {
+          return jsonResponse({ ok: true, data: { contacts: {} } });
+        }
+        return jsonResponse({ ok: false, error: `Unexpected request ${url}` }, 500);
+      },
+    });
+
+    restoreAfter(context, restoreBrowser, root, container);
+    context.after(() => {
+      Object.defineProperty(globalThis, 'fetch', {
+        configurable: true,
+        writable: true,
+        value: originalFetch,
+      });
+    });
+    await act(async () => {
+      root.render(
+        <HotelTeamPanel
+          hotelId={HOTEL_ID}
+          hotelName="Harbor Inn"
+          currentUser={currentUser()}
+          lang="en"
+          canManageTeam
+          inviteDialogOpen={false}
+          onInviteDialogOpenChange={() => undefined}
+          staffProfiles={[staff()]}
+          onChanged={() => undefined}
+        />,
+      );
+    });
+    await flush();
+
+    const view = container.querySelector<HTMLButtonElement>('button[aria-label="View Maria Archived"]');
+    assert.ok(view, 'the merged archived row must expose its View action');
+    assert.equal(container.querySelector('button[aria-label="Edit Maria Archived"]'), null);
+    assert.equal(container.querySelector('button[aria-label="Remove Maria Archived from this hotel"]'), null);
+
+    await act(async () => {
+      view.click();
+      await Promise.resolve();
+    });
+    await flush();
+
+    const dialog = document.querySelector<HTMLElement>('[role="dialog"]');
+    assert.ok(dialog, 'clicking View must open the real person dialog');
+    const controls = Array.from(dialog.querySelectorAll<HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement>(
+      'input, select, textarea',
+    ));
+    assert.ok(controls.length > 0, 'the dialog must expose the identity input for a read-only assertion');
+    assert.ok(controls.every((control) => control.disabled), 'off-roster dialog inputs must be disabled');
+    assert.equal(dialog.querySelector('input[type="password"]'), null);
+    assert.equal(dialog.querySelector('select'), null);
+    assert.equal(dialog.querySelector('button[type="submit"]'), null);
+    assert.doesNotMatch(dialog.textContent ?? '', /New password|Disable login everywhere|Reactivate login|Save changes/);
+    assert.equal(document.querySelector('button[aria-label="Remove Maria Archived from this hotel"]'), null);
+  });
+
+  test('keeps pending lifecycle row actions behind the existing disabled gate', async (context) => {
+    const restoreBrowser = installBrowser();
+    const { PersonRow } = await loadHotelTeam();
+    const { supabase } = await import('@/lib/supabase');
+    supabase.auth.stopAutoRefresh();
+    const { createRoot } = await import('react-dom/client');
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+    const pendingAccount = account({
+      displayName: 'Pending Login',
+      lifecyclePending: true,
+      actions: {
+        canEditProfile: true,
+        canChangeRole: false,
+        canResetPassword: false,
+        canDeactivate: false,
+        canReactivate: false,
+        canRemove: true,
+      },
+    });
+    const person = buildHotelRoster([pendingAccount], [])
       .flatMap((group) => group.people)
-      .find((candidate) => candidate.account?.accountId === archivedAccount.accountId);
-    assert.ok(person, 'the archived account must produce a merged person');
+      .find((candidate) => candidate.account?.accountId === pendingAccount.accountId);
+    assert.ok(person, 'the pending account must produce a row');
 
     restoreAfter(context, restoreBrowser, root, container);
     await act(async () => {
@@ -224,15 +337,13 @@ describe('My Hotel People mounted identity and actions', { concurrency: false },
       );
     });
 
-    const rows = container.querySelectorAll('[role="listitem"]');
-    assert.equal(rows.length, 1);
-    assert.equal((container.textContent ?? '').match(/Maria Archived/g)?.length, 1);
-    assert.match(container.textContent ?? '', /STAXIS LOGIN/);
-    assert.match(container.textContent ?? '', /Off roster/);
-    const action = container.querySelector<HTMLButtonElement>('button[aria-label="View Maria Archived"]');
-    assert.ok(action, 'an inactive off-roster person still has a safe view action');
-    assert.equal(action.textContent?.trim(), 'View');
-    assert.equal(container.querySelector('button[aria-label="Edit Maria Archived"]'), null);
+    const action = container.querySelector<HTMLButtonElement>('button[aria-label="Edit Pending Login"]');
+    const remove = container.querySelector<HTMLButtonElement>('button[aria-label="Remove Pending Login from this hotel"]');
+    assert.ok(action);
+    assert.ok(remove);
+    assert.equal(action.disabled, true);
+    assert.equal(remove.disabled, true);
+    assert.match(container.textContent ?? '', /Status change pending/);
   });
 
   test('offers only server-compatible accounts in the linked-login picker', async (context) => {
