@@ -1341,7 +1341,8 @@ for".
   deactivated account, matching every other account reader;
   `callerReachesHotel` / `managerManagesHotel` / `canManageHotel` /
   `callerControlsEveryTargetHotel` (`src/lib/team-auth.ts`);
-  `resolveInviteScope` (`src/lib/company/invite-scope.ts`).
+  `resolveAuthoritativeInviteScope`
+  (`src/lib/company/account-invite-authority.ts`).
 - **INV-COMPANY-1b — CAPACITY is resolved at the hotel being asked about, never
   from the global `accounts.role`.** Reach ("may you open this hotel?") and
   capacity ("in what job?") are two questions and the manager gates used to
@@ -1387,7 +1388,7 @@ for".
   company"; "a manager at one company cannot touch a person's job at another".
   Verified by mutation: widening `loadHats` to ignore `covered_property_ids`
   turns 8 cases red; making `canManageHotel` blind to hats turns 8 red; deleting
-  the cross-company hotel check in `resolveInviteScope` turns 1 red; skipping the
+  the cross-company hotel check in `resolveAuthoritativeInviteScope` turns 1 red; skipping the
   authority check inside `staxis_set_membership_hat` turns 3 red.
 
   Wall B specifically needs BOTH of its mechanisms broken before anything leaks —
