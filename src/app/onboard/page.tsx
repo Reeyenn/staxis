@@ -7,8 +7,8 @@ export const dynamic = 'force-dynamic';
  *
  * URL: /onboard?code=XXXX
  *
- * Single page, 6 steps. Replaces the scattered /signup → /signin/verify
- * → /onboarding → /settings/pms flow with one resumable wizard. Each
+ * Single page, 6 steps. Replaces the scattered legacy signup and onboarding
+ * flow with one resumable wizard. Each
  * step's "Next" handler PATCHes /api/onboard/wizard so the user can
  * close the tab and resume later from the same link.
  *

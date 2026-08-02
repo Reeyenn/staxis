@@ -1224,7 +1224,7 @@ async function checkCuaMfaPending(): Promise<Omit<Check, 'name' | 'durationMs'>>
     return {
       status: 'warn',
       detail: `${data.length} hotel(s) waiting on manual MFA re-login: ${ids.join(', ')}`,
-      fix: 'Resolve via /admin/mfa-resume/[propertyId]. Walk through the PMS login in a side browser, then click Resume.',
+      fix: 'No supported browser login flow remains. Review the shared retirement contract before reintroducing one.',
     };
   } catch (err) {
     return { status: 'warn', detail: `check threw: ${errToString(err)}` };

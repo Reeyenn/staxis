@@ -33,16 +33,6 @@ export type RateLimitEndpoint =
   // compromised account or a runaway UI loop can't fire thousands of PMS
   // writes. Billing-impacting (fails CLOSED below).
   | 'pms-writeback-enqueue'
-  // PMS onboarding endpoints — tight caps because each onboarding
-  // job spawns a Fly worker that potentially burns Claude tokens.
-  // A malicious authenticated user shouldn't be able to queue 1000
-  // jobs and exhaust the daily budget.
-  | 'pms-save-credentials'
-  | 'pms-onboard'
-  // Admin actions that incur Claude API cost. Even though only admins
-  // hit them, a compromised admin account or scripted retry storm
-  // could rack up real spend. Cap at 10/hr per property.
-  | 'admin-regenerate-recipe'
   // AI Control Center validation runs a real synthetic provider probe before
   // a model can be activated. Admin-only, but still billable and therefore
   // bounded/fail-closed against a compromised session or retry loop.
@@ -51,10 +41,6 @@ export type RateLimitEndpoint =
   // Anthropic/OpenAI + bulk catalog upserts. Not token-billable, so fail-open,
   // but bounded against a scripted retry loop rewriting the fleet catalog.
   | 'admin-ai-models-refresh'
-  // Manual 2FA code entry from the Launch Bay panel. Costs nothing,
-  // but it feeds the robot's login — cap retries so a scripted storm
-  // can't spray guesses into pms_auth_codes.
-  | 'admin-pms-auth-code'
   // Invoice OCR — Claude Vision call per image ($0.003-0.01/scan).
   // Maria might scan 5-10 invoices a week in normal use; 50/hr per
   // property is generous headroom. A compromised session or buggy
@@ -375,21 +361,10 @@ export type RateLimitEndpoint =
 const HOURLY_CAPS: Record<RateLimitEndpoint, number> = {
   'reports-run':                 120,
   'reports-export':              120,
-  // PMS onboarding — testing creds is cheap so 30/hr handles a GM
-  // typo-fixing iteratively. Onboard kicks off a real CUA mapping
-  // run that costs $1-3, so 5/hr is plenty (one onboarding usually
-  // succeeds the first time; this leaves room for a few retries).
-  'pms-save-credentials':       30,
-  'pms-onboard':                 5,
-  // Admin recipe regeneration costs $1-3 each. 10/hour/property is
-  // generous for legitimate ops use; tight enough to stop a runaway.
-  'admin-regenerate-recipe':    10,
   'admin-ai-config-validate':   30,
   // Catalog refreshes hit two provider list APIs; a human clicks this a few
   // times a day at most.
   'admin-ai-models-refresh':    30,
-  // Manual 2FA code entry — a human typo-retries a few times at most.
-  'admin-pms-auth-code':        30,
   // Invoice scans cost $0.003-0.01 each; 50/hr per property absorbs
   // legitimate use (Maria scanning a stack of weekly invoices) but
   // caps runaway loops fast.
@@ -736,13 +711,9 @@ export const NO_PROPERTY_RATE_LIMIT_KEY = '00000000-0000-0000-0000-000000000000'
  */
 const BILLING_IMPACTING_ENDPOINTS: ReadonlySet<RateLimitEndpoint> = new Set<RateLimitEndpoint>([
   'reports-run',
-  // Each pms-onboard burns $1-3 of Anthropic credit on the Fly worker.
-  'pms-onboard',
   // PMS write-back enqueue mutates the hotel's real PMS — fail CLOSED so a
   // Supabase blip can't let a runaway uncap real-PMS writes (Codex P1-7).
   'pms-writeback-enqueue',
-  // Recipe regeneration is the same shape as pms-onboard.
-  'admin-regenerate-recipe',
   'admin-ai-config-validate',
   // Claude Vision calls.
   'scan-invoice',

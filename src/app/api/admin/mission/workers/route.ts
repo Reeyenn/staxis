@@ -7,7 +7,8 @@
  * does in plain English, how often it should run, when it last ran, and
  * whether it's on time.
  *
- * Auth + service-role reads mirror /api/admin/cua-sessions exactly:
+ * Auth + service-role reads use the same admin-or-cron boundary as the other
+ * mission data routes:
  * requireAdminOrCron gate, supabaseAdmin only, envelope via ok()/err().
  *
  * "Late" is amber-only and never alerts — it means a heartbeat is older

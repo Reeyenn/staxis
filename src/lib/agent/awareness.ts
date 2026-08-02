@@ -155,7 +155,6 @@ const SURFACE_ROUTES: readonly SurfaceRoute[] = [
   { test: /^\/settings\/checklists$/, surface: 'Settings → Checklists' },
   { test: /^\/settings\/clean-times$/, surface: 'Settings → Clean times' },
   { test: /^\/settings\/notifications$/, surface: 'Settings → Notifications' },
-  { test: /^\/settings\/pms$/, surface: 'Settings → the hotel-system connection' },
   { test: /^\/settings\/reports$/, surface: 'Settings → Reports' },
   { test: /^\/settings\/shifts$/, surface: 'Settings → Shifts' },
   { test: /^\/settings\/users$/, surface: 'Settings → Users' },
@@ -177,12 +176,8 @@ const SURFACE_ROUTES: readonly SurfaceRoute[] = [
   // ── Admin (Staxis staff only). Dynamic segments matched structurally; the
   //    id itself is discarded — "an admin hotel page" is the useful fact. ──
   { test: /^\/admin\/ai-staff$/, surface: 'the admin AI-staff screen' },
-  { test: /^\/admin\/pms-inbox$/, surface: 'the admin report inbox' },
-  { test: /^\/admin\/properties\/coverage\/[^/]+$/, surface: 'an admin hotel-coverage page' },
-  { test: /^\/admin\/properties\/mapper\/[^/]+$/, surface: 'an admin mapper page' },
   { test: /^\/admin\/properties\/[^/]+$/, surface: 'an admin hotel page' },
   { test: /^\/admin\/properties$/, surface: 'the admin hotels list' },
-  { test: /^\/admin\/mfa-resume\/[^/]+$/, surface: 'an admin sign-in-resume page' },
 ];
 
 /** Longest client path we will even look at. A path longer than this is not a

@@ -195,8 +195,7 @@ export async function GET(req: NextRequest) {
   // Project a session row → legacy onboarding-job shape so the
   // PropertyRow.latestJob field the UI already consumes keeps working.
   // Status/step/progressPct projection is centralized in
-  // src/lib/cua-session-job-mapping.ts (also used by /api/admin/onboarding-jobs
-  // and /api/pms/job-status). One source of truth — no drift.
+  // src/lib/cua-session-job-mapping.ts. One source of truth — no drift.
   const mapSessionToJob = (s: SessionLite) => {
     const mapped = mapPropertySessionStatusToJobShape(s.status);
     return {

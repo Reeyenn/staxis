@@ -7,13 +7,11 @@
  * from here so there's exactly one definition of "what does an arrival
  * look like" no matter which PMS produced it.
  *
- * This file is intentionally type-only. No runtime logic lives here —
- * adapters live in src/lib/pms/adapters/, the registry is in registry.ts,
- * and the recipe runner is in recipe.ts.
+ * This file is intentionally type-only. Report-era runtime logic lives in
+ * the active feed and ingest helpers alongside this module.
  *
- * Keep PMS_TYPES in sync with:
- *   - the dropdown in src/app/settings/pms/page.tsx
- *   - the check constraint on scraper_credentials.pms_type (migration 0031)
+ * Keep PMS_TYPES in sync with active PMS-selection surfaces and the check
+ * constraint on scraper_credentials.pms_type (migration 0031).
  */
 
 // ─── PMS family identifiers ──────────────────────────────────────────────

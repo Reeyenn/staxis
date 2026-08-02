@@ -1,15 +1,7 @@
 /**
- * Map a `property_sessions.status` to the legacy "onboarding job" shape
- * the admin Onboarding tab + owner wizard UIs already consume.
- *
- * Plan v4 collapsed onboarding into a one-row-per-hotel `property_sessions`
- * table, but three independent UI surfaces (admin Onboarding tab funnel,
- * owner wizard /onboard, /settings/pms) still poll legacy
- * `/api/admin/onboarding-jobs`, `/api/pms/job-status`, and
- * `/api/admin/list-properties` for a job-shaped response with
- * `{status, step, progressPct}` fields. Before this helper existed, each
- * of those routes hand-rolled the same status→shape projection and they
- * drifted.
+ * Map a `property_sessions.status` to the legacy job-shaped fields in the
+ * active property list response. The property list still exposes
+ * `{status, step, progressPct}` for existing hotel-directory consumers.
  *
  * One source of truth. If you tweak a label here it shows up everywhere.
  */
@@ -31,15 +23,6 @@ export interface MappedSessionJobShape {
   /** 0-100 (null = indeterminate). */
   progressPct: number | null;
 }
-
-/** Statuses that count as "in flight" — non-terminal, surface in the
- *  Onboarding tab's live-status column + funnel "Needs help" stage. */
-export const IN_FLIGHT_LEGACY_STATUSES = new Set<LegacyJobStatus>([
-  'queued',
-  'running',
-  'mapping',
-  'extracting',
-]);
 
 /**
  * Project a property_sessions.status to the legacy job shape.

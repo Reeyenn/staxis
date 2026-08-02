@@ -5,7 +5,7 @@
  *   2. Chat reminders accepted at hotels that cannot deliver them.
  *   3. ml-retention-purge's re-enable cliff, and its second claim on the AI books.
  *
- * Plus the retirements themselves: three chores must be gone from every
+ * Plus the retirements themselves: the remaining retired chores must be gone from every
  * registry, or the doctor reports a missing heartbeat forever.
  */
 
@@ -86,9 +86,9 @@ describe('trap 1: robot-off refusal for admin buttons', () => {
         const src = readFileSync(full, 'utf8');
         // Does it queue robot work? The `(?!\.from\()` guard stops the match
         // running past this chain into an unrelated `.insert` on a different
-        // table — /api/admin/mapper/note SELECTS workflow_jobs for context and
-        // then inserts a mapping_notes row, which is a perfectly fine thing to
-        // do while the robot is off and must not be flagged.
+        // table. A notes route may SELECT workflow_jobs for context and then
+        // insert a mapping_notes row, which is a perfectly fine thing to do
+        // while the robot is off and must not be flagged.
         const enqueues =
           /\.from\(\s*['"]workflow_jobs['"]\s*\)((?!\.from\()[\s\S]){0,300}?\.insert\(/.test(src) ||
           /staxis_enqueue_pms_write/.test(src);
@@ -111,20 +111,6 @@ describe('trap 1: robot-off refusal for admin buttons', () => {
       'Add: const robotOff = robotDecommissionedResponse(requestId); if (robotOff) return robotOff; ' +
       'immediately after the auth gate — BEFORE any rate-limit increment, cooldown stamp or audit write.',
     );
-  });
-
-  test('the guard did not turn these into open endpoints', async () => {
-    // The refusal sits AFTER auth on purpose. An unauthenticated caller must
-    // still be rejected rather than told about fleet state.
-    const { POST: regenerate } = await import('@/app/api/admin/regenerate-recipe/route');
-    const res = await regenerate(
-      new NextRequest('https://example.test/api/admin/regenerate-recipe', {
-        method: 'POST',
-        body: JSON.stringify({ propertyId: '00000000-0000-0000-0000-000000000000' }),
-      }),
-    );
-    assert.notEqual(res.status, 503, 'auth must be checked before the robot-off guard');
-    assert.ok(res.status === 401 || res.status === 403, `expected an auth refusal, got ${res.status}`);
   });
 
   test('the robot is still off — if this fails, re-read the guards above', () => {
@@ -359,7 +345,7 @@ describe('findings janitor', () => {
 // ═══════════════════════════════════════════════════════════════════════════
 
 describe('retired chores are gone from every registry', () => {
-  const RETIRED = ['webhook-dedup-purge', 'expire-help-requests', 'claude-sessions-purge'];
+  const RETIRED = ['webhook-dedup-purge', 'claude-sessions-purge'];
 
   test('not scheduled, not expected, not listed', () => {
     const vercel = JSON.parse(readFileSync(join(process.cwd(), 'vercel.json'), 'utf8')) as {
@@ -377,9 +363,7 @@ describe('retired chores are gone from every registry', () => {
     }
   });
 
-  test('their routes are kept, not deleted', () => {
-    // House precedent: retirements unschedule and leave the handler dormant so
-    // re-enabling is a registry change, not a rewrite.
+  test('the remaining retired routes explain their dormant state', () => {
     for (const name of RETIRED) {
       const src = readFileSync(join(process.cwd(), 'src/app/api/cron', name, 'route.ts'), 'utf8');
       assert.match(src, /DORMANT/, `${name}'s route should explain why it is dormant`);

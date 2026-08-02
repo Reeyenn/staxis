@@ -8,26 +8,23 @@
 
    Data (same endpoints the prior OnboardingTab used):
      • /api/admin/list-properties        → properties + onboarding state
-     • /api/admin/pms-coverage            → PMS readiness + repair feeds
      • /api/admin/prospects               → sales pipeline (full CRUD kept)
-   Mutations kept: repair PMS feed (~$2 re-learn) and prospect CRUD.
+   Mutations kept: prospect CRUD.
 
    Layout: one six-stage timeline row per onboarding hotel (journeyOf maps
    only onboarding_state + onboarding_completed_at).
    Clicking a row expands the invited person, hotel details, and current
-   onboarding stage. PMS maps remain in their separate management section.
+   onboarding stage.
    ─────────────────────────────────────────────────────────────────────── */
 
 import React, { useEffect, useRef, useState } from 'react';
 import { fetchWithAuth } from '@/lib/api-fetch';
-import { MapsManagerModal } from '@/app/admin/_components/MapsManager';
 import {
-  FONT_SERIF, Caps, Pill, Dot, Btn,
+  FONT_SERIF, Caps, Dot, Btn,
   countUp, sweepWidth, useRiseIn, age, type DotTone,
 } from '../kit';
 import { SurfaceShell, DarkEmpty, Backdrop, MODAL_CARD, dimWhite as dim } from '../surface-kit';
 import { RowButton } from '../ui-kit';
-import { PMS_ROBOT_ENABLED } from '@/lib/pms/robot-status';
 
 // ── Real API shapes (mirror the prior OnboardingTab interfaces) ─────────
 export interface OnbState {
@@ -45,29 +42,6 @@ export interface PropertyRow {
   createdAt: string;
   onboardingState: OnbState | null;
   onboardingCompletedAt: string | null;
-}
-// One feed's live status on a learned PMS map. 'live' = captured & flowing,
-// 'learning' = mapped but still proving, 'unavailable' = this PMS doesn't
-// expose it. Drives the per-feed chips that replace the misleading single %.
-type FeedState = 'live' | 'learning' | 'unavailable';
-interface PerFeed { key: string; label: string; state: FeedState }
-interface PMSCoverage {
-  pmsType: string; label: string; hint: string; tier: 1 | 2 | 3;
-  recipe: { coveragePct: number; version: number; createdAt: string; actionKeys?: string[] } | null;
-  propertyCount: number;
-  representativePropertyId?: string | null;
-  latestJob: { status: string; error: string | null; createdAt: string } | null;
-  /** Plan v9 coverage-mgmt — editable label (COALESCE(display_name, registry label)). */
-  displayName?: string;
-  /** Fixed coverage %: live feeds / available feeds (excludes 'unavailable'). */
-  coveragePct?: number;
-  /** Per-feed live status — replaces the single "% of actions captured". */
-  perFeed?: PerFeed[];
-  /** A newly-learned map parked as a DRAFT awaiting review. When present, the
-   *  row shows a "needs review" badge alongside the active-map status. */
-  pendingReview?: { version: number; score?: number; threshold?: number; reason?: string };
-  /** Hotels with no PMS detected (properties.pms_type IS NULL). */
-  unassignedHotelCount?: number;
 }
 type ProspectStatus = 'talking' | 'negotiating' | 'committed' | 'onboarded' | 'dropped';
 interface Prospect {
@@ -145,13 +119,6 @@ export function journeyOf(p: PropertyRow): Journey {
   return { step: 6, label: 'Ready to enter', sub: 'All set. Entering Staxis marks the hotel live.', href: propHref, needsYou: false };
 }
 
-function pmsState(p: PMSCoverage): { tone: DotTone; label: string; note: string } {
-  if (p.recipe && p.recipe.coveragePct === 100) return { tone: 'forest', label: 'Ready', note: 'Ready. Future hotels onboard free.' };
-  if (p.recipe && p.recipe.coveragePct < 100) return { tone: 'gold', label: `${p.recipe.coveragePct}%`, note: `Partial. ${p.recipe.coveragePct}% of actions captured.` };
-  if (!p.recipe && p.latestJob?.status === 'failed') return { tone: 'terracotta', label: 'Failed', note: 'Last mapping failed. First hotel retries.' };
-  return { tone: 'muted', label: 'New', note: 'Not learned. First hotel triggers ~$0.50, ~7 min mapping.' };
-}
-
 // Timeline row layout — header labels + each hotel row share these so the
 // step labels line up exactly above the node dots.
 const NAME_W = 150;   // left "hotel name" column (px)
@@ -174,27 +141,22 @@ function Reveal({ open, children }: { open: boolean; children: React.ReactNode }
 
 export function OnboardingSurface() {
   const [props, setProps] = useState<PropertyRow[] | null>(null);
-  const [pms, setPms] = useState<PMSCoverage[] | null>(PMS_ROBOT_ENABLED ? null : []);
   const [prospects, setProspects] = useState<Prospect[] | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [mapsOpen, setMapsOpen] = useState(false);
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [parkedOpen, setParkedOpen] = useState(false);
   const [hoverId, setHoverId] = useState<string | null>(null);
   const [deletingId, setDeletingId] = useState<string | null>(null);
-  const [selPms, setSelPms] = useState<PMSCoverage | null>(null);
   const refreshTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const load = async () => {
     try {
-      const [a, c, d] = await Promise.all([
+      const [a, d] = await Promise.all([
         fetchWithAuth('/api/admin/list-properties'),
-        PMS_ROBOT_ENABLED ? fetchWithAuth('/api/admin/pms-coverage') : Promise.resolve(null),
         fetchWithAuth('/api/admin/prospects'),
       ]);
-      const [aj, cj, dj] = await Promise.all([a.json(), c ? c.json() : null, d.json()]);
+      const [aj, dj] = await Promise.all([a.json(), d.json()]);
       if (aj.ok) setProps(aj.data.properties);
-      if (PMS_ROBOT_ENABLED && cj?.ok) setPms(cj.data.pmsTypes);
       if (dj.ok) setProspects(dj.data.prospects);
     } catch (err) {
       setError(`Network error: ${(err as Error).message}`);
@@ -230,7 +192,7 @@ export function OnboardingSurface() {
   };
 
   if (error) return <SurfaceShell glow="forestTR"><div style={{ color: 'var(--terracotta)', fontSize: 13 }}>{error}</div></SurfaceShell>;
-  if (!props || (PMS_ROBOT_ENABLED && !pms)) {
+  if (!props) {
     return <SurfaceShell glow="forestTR"><div style={{ padding: '80px 0', textAlign: 'center' }}><span className="spinner" style={{ width: 22, height: 22, display: 'inline-block', borderTopColor: '#fff' }} /></div></SurfaceShell>;
   }
 
@@ -246,10 +208,6 @@ export function OnboardingSurface() {
   const journeyRows = allJourneyRows.filter((r) => !isParkedRow(r));
   const parkedRows = allJourneyRows.filter(isParkedRow);
   const liveCount = props.filter(isLive).length;
-  // Show every learned PMS, PLUS any family with a freshly-learned map parked
-  // for review (even before it has an active map) so the "needs review" signal
-  // never hides behind an empty active list.
-  const learnedPms = (pms ?? []).filter((p) => p.recipe !== null || p.pendingReview);
   const activeProspects = (prospects ?? []).filter((p) => p.status !== 'onboarded' && p.status !== 'dropped');
 
   return (
@@ -261,9 +219,6 @@ export function OnboardingSurface() {
             Everything <span style={{ fontStyle: 'italic' }}>inbound to live</span>
           </h1>
         </div>
-        {PMS_ROBOT_ENABLED && <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-          <Btn variant="ghost" size="lg" href="/admin/pms-inbox" style={{ color: '#fff', borderColor: dim(.3), background: dim(.06) }}>PMS inbox</Btn>
-        </div>}
       </header>
 
       {/* ── Live onboarding journey — one rail per hotel, fills as they move ── */}
@@ -326,23 +281,7 @@ export function OnboardingSurface() {
         </div>
       )}
 
-      <div style={{ display: 'grid', gridTemplateColumns: PMS_ROBOT_ENABLED ? 'repeat(auto-fit,minmax(300px,1fr))' : '1fr', gap: 16, marginTop: 26, position: 'relative' }}>
-        {PMS_ROBOT_ENABLED && <div>
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
-            <span className="caps" style={{ color: dim(.5) }}>PMS maps</span>
-            <button
-              onClick={() => setMapsOpen(true)}
-              className="mono"
-              title="See every learned map and pick / roll back / delete which one is live"
-              style={{ fontSize: 9, letterSpacing: '.06em', color: dim(.62), background: dim(.05), border: `1px solid ${dim(.16)}`, borderRadius: 7, padding: '4px 10px', cursor: 'pointer' }}
-            >Manage maps →</button>
-          </div>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginTop: 10 }}>
-            {learnedPms.length === 0
-              ? <DarkEmpty text="No PMSes learned yet." />
-              : learnedPms.map((p) => <BayPms key={p.pmsType} pms={p} onClick={() => setSelPms(p)} />)}
-          </div>
-        </div>}
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr', gap: 16, marginTop: 26, position: 'relative' }}>
         <div>
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
             <span className="caps" style={{ color: dim(.5) }}>Prospects</span>
@@ -356,8 +295,6 @@ export function OnboardingSurface() {
         </div>
       </div>
 
-      {PMS_ROBOT_ENABLED && selPms && <PmsDetail pms={selPms} onClose={() => setSelPms(null)} onRepaired={load} />}
-      {PMS_ROBOT_ENABLED && <MapsManagerModal open={mapsOpen} onClose={() => setMapsOpen(false)} />}
     </SurfaceShell>
   );
 }
@@ -563,36 +500,6 @@ function BayLiveCount({ n }: { n: number }) {
   return <span ref={ref} className="serif-num" style={{ fontSize: 44, color: '#fff', margin: '4px 0' }}>0</span>;
 }
 
-function BayPms({ pms, onClick }: { pms: PMSCoverage; onClick: () => void }) {
-  const st = pmsState(pms);
-  const pr = pms.pendingReview;
-  // The detail card now does more than repair (rename · view · use-for-all ·
-  // detach), so any learned PMS row is clickable.
-  return (
-    <RowButton onClick={onClick}>
-      <Dot tone={st.tone} />
-      <span style={{ fontSize: 12, fontWeight: 600, color: '#fff', flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{pms.displayName ?? pms.label}</span>
-      {/* A freshly-learned map is parked for the founder to review — surface it
-          right on the list (NOT a button; BayPms is already a <button>). The
-          active-map status (dot + label) stays beside it. */}
-      {pr && (
-        <span
-          className="mono"
-          title={`A new map (v${pr.version}) is waiting for you to review${pr.reason ? `: ${pr.reason}` : ''}.`}
-          style={{
-            flexShrink: 0, fontSize: 9, letterSpacing: '.04em', whiteSpace: 'nowrap',
-            color: 'var(--gold)', background: 'rgba(201,154,46,.12)',
-            border: '1px solid rgba(201,154,46,.4)', borderRadius: 7, padding: '2px 7px',
-          }}
-        >New map ready · review</span>
-      )}
-      {/* Don't stack "New" next to a new-map chip — one message per row. */}
-      {!(pr && !pms.recipe) && <span style={{ fontSize: 11, color: st.tone === 'muted' ? dim(.5) : `var(--${st.tone})` }}>{st.label}</span>}
-      <span className="mono" style={{ fontSize: 9, color: dim(.35) }}>manage ›</span>
-    </RowButton>
-  );
-}
-
 function BayProspect({ p, onSaved }: { p: Prospect; onSaved: () => Promise<void> }) {
   const [open, setOpen] = useState(false);
   const tone: DotTone = p.status === 'committed' ? 'forest' : p.status === 'negotiating' ? 'gold' : 'teal';
@@ -605,315 +512,6 @@ function BayProspect({ p, onSaved }: { p: Prospect; onSaved: () => Promise<void>
       </RowButton>
       {open && <ProspectModal p={p} onClose={() => setOpen(false)} onSaved={onSaved} />}
     </>
-  );
-}
-
-// Per-feed chip tone: live = green, learning = teal, unavailable = muted.
-const FEED_STATE_TONE: Record<FeedState, DotTone> = { live: 'forest', learning: 'teal', unavailable: 'muted' };
-const FEED_STATE_WORD: Record<FeedState, string> = { live: 'live', learning: 'learning', unavailable: 'not provided' };
-
-// One hotel as returned by /api/admin/coverage/hotels — attached = currently
-// reading through this map; otherwise it's an "Attach" candidate on the family.
-interface CoverageHotel { id: string; name: string | null; attached: boolean; pmsType: string | null; sessionStatus: string | null }
-
-// ── PMS detail · per-feed status · rename · view captures · hotels · bulk · detach · delete ─
-function PmsDetail({ pms, onClose, onRepaired }: { pms: PMSCoverage; onClose: () => void; onRepaired: () => Promise<void> }) {
-  const ref = useRef<HTMLDivElement>(null);
-  const [key, setKey] = useState('');
-  const [busy, setBusy] = useState(false);
-  const [msg, setMsg] = useState<string | null>(null);
-  // Inline rename state.
-  const [editingName, setEditingName] = useState(false);
-  const [name, setName] = useState(pms.displayName ?? pms.label);
-  const [title, setTitle] = useState(pms.displayName ?? pms.label);
-  const [nameBusy, setNameBusy] = useState(false);
-  // Bulk / detach / delete state — separate so a long-running action doesn't lock the others.
-  const [actionBusy, setActionBusy] = useState<'bulk' | 'detach' | 'delete' | null>(null);
-  // "Hotels on this coverage" list — fetched on mount.
-  const [hotels, setHotels] = useState<CoverageHotel[] | null>(null);
-  const [hotelsErr, setHotelsErr] = useState<string | null>(null);
-  // Per-row in-flight attach/detach — keyed by hotel id.
-  const [rowBusy, setRowBusy] = useState<string | null>(null);
-  useRiseIn(ref, { dy: 30, dur: 440 });
-
-  // Load the hotels on this coverage family (attached + attach-candidates).
-  const loadHotels = React.useCallback(async () => {
-    try {
-      const res = await fetchWithAuth(`/api/admin/coverage/hotels?pmsFamily=${encodeURIComponent(pms.pmsType)}`);
-      const json = await res.json();
-      if (json.ok) { setHotels(json.data?.hotels ?? []); setHotelsErr(null); }
-      else setHotelsErr(json.error ?? 'Could not load hotels.');
-    } catch (err) { setHotelsErr(`Network error: ${(err as Error).message}`); }
-  }, [pms.pmsType]);
-  useEffect(() => { void loadHotels(); }, [loadHotels]);
-
-  const st = pmsState(pms);
-  const keys = pms.recipe?.actionKeys ?? [];
-  const propertyId = pms.representativePropertyId;
-  // Prefer the backend's fixed coveragePct (live / available feeds) over the
-  // recipe's raw captured/5 — only show it if the backend actually sent it.
-  const pct = typeof pms.coveragePct === 'number' ? pms.coveragePct : pms.recipe?.coveragePct;
-  const feeds = pms.perFeed ?? [];
-
-  const fire = async () => {
-    if (!key) { setMsg('Pick a feed first.'); return; }
-    if (!propertyId) { setMsg('No representative hotel.'); return; }
-    if (!confirm(`Re-learn the "${key}" feed for ${pms.pmsType}? Costs about $2 in Claude API spend.`)) return;
-    setBusy(true); setMsg(null);
-    try {
-      const res = await fetchWithAuth('/api/admin/mapper/repair-feed', { method: 'POST', body: JSON.stringify({ pmsFamily: pms.pmsType, propertyId, targetKey: key }) });
-      const json = await res.json();
-      if (json.ok) { setMsg(json.data.enqueued ? `Enqueued. Watch at /admin/properties/mapper/${json.data.jobId}` : 'Already running.'); setKey(''); void onRepaired(); }
-      else setMsg(`Failed: ${json.error ?? 'unknown'}`);
-    } catch (err) { setMsg(`Network error: ${(err as Error).message}`); }
-    finally { setBusy(false); }
-  };
-
-  // Rename → POST /api/admin/coverage/rename. Optimistically updates the title.
-  const saveName = async () => {
-    const trimmed = name.trim();
-    if (!trimmed || trimmed === title) { setEditingName(false); return; }
-    setNameBusy(true); setMsg(null);
-    try {
-      const res = await fetchWithAuth('/api/admin/coverage/rename', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ pmsFamily: pms.pmsType, displayName: trimmed }) });
-      const json = await res.json();
-      if (json.ok) { setTitle(json.data?.displayName ?? trimmed); setEditingName(false); void onRepaired(); }
-      else setMsg(`Rename failed: ${json.error ?? 'unknown'}`);
-    } catch (err) { setMsg(`Network error: ${(err as Error).message}`); }
-    finally { setNameBusy(false); }
-  };
-
-  // Use for all hotels on this PMS → POST /api/admin/coverage/bulk-assign.
-  const bulkAssign = async () => {
-    if (!confirm(`Use this map for every hotel on ${title}? Their robots start reading with it right away. One learned map works for every hotel on the same PMS.`)) return;
-    setActionBusy('bulk'); setMsg(null);
-    try {
-      const res = await fetchWithAuth('/api/admin/coverage/bulk-assign', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ pmsFamily: pms.pmsType }) });
-      const json = await res.json();
-      if (json.ok) {
-        const n = json.data?.appliedCount ?? 0;
-        const failed = json.data?.failedCount ?? 0;
-        setMsg(failed > 0
-          ? `Applied to ${n} ${n === 1 ? 'hotel' : 'hotels'}; ${failed} failed to start. Retry or check Live Hotels.`
-          : `Applied to ${n} ${n === 1 ? 'hotel' : 'hotels'}.`);
-        await loadHotels();
-        void onRepaired();
-      }
-      else setMsg(`Failed: ${json.error ?? 'unknown'}`);
-    } catch (err) { setMsg(`Network error: ${(err as Error).message}`); }
-    finally { setActionBusy(null); }
-  };
-
-  // Detach → POST /api/admin/coverage/detach. Frees the hotels; keeps the map.
-  const detach = async () => {
-    if (!confirm("These hotels will show as 'No system detected' on Live Hotels. The map is kept and can be re-matched.")) return;
-    setActionBusy('detach'); setMsg(null);
-    try {
-      const res = await fetchWithAuth('/api/admin/coverage/detach', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ pmsFamily: pms.pmsType }) });
-      const json = await res.json();
-      if (json.ok) { const n = json.data?.detachedCount ?? 0; setMsg(`Detached ${n} ${n === 1 ? 'hotel' : 'hotels'}. Map kept.`); await loadHotels(); void onRepaired(); }
-      else setMsg(`Failed: ${json.error ?? 'unknown'}`);
-    } catch (err) { setMsg(`Network error: ${(err as Error).message}`); }
-    finally { setActionBusy(null); }
-  };
-
-  // Detach one hotel → POST /api/admin/coverage/detach with its propertyId.
-  // The map stays; that hotel drops to "No system detected" until re-attached.
-  const detachOne = async (h: CoverageHotel) => {
-    setRowBusy(h.id); setMsg(null);
-    try {
-      const res = await fetchWithAuth('/api/admin/coverage/detach', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ pmsFamily: pms.pmsType, propertyId: h.id }) });
-      const json = await res.json();
-      if (json.ok) { await loadHotels(); void onRepaired(); }
-      else setMsg(`Failed: ${json.error ?? 'unknown'}`);
-    } catch (err) { setMsg(`Network error: ${(err as Error).message}`); }
-    finally { setRowBusy(null); }
-  };
-
-  // Attach one hotel → POST /api/admin/coverage/assign. 409 'no_active_map'
-  // means this coverage has no live map yet to point the hotel at.
-  const attachOne = async (h: CoverageHotel) => {
-    setRowBusy(h.id); setMsg(null);
-    try {
-      const res = await fetchWithAuth('/api/admin/coverage/assign', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ propertyId: h.id, pmsFamily: pms.pmsType }) });
-      const json = await res.json();
-      if (json.ok) { await loadHotels(); void onRepaired(); }
-      else if (json.code === 'no_active_map') setMsg('This coverage has no active map yet. Learn or finish mapping first.');
-      else setMsg(`Failed: ${json.error ?? 'unknown'}`);
-    } catch (err) { setMsg(`Network error: ${(err as Error).message}`); }
-    finally { setRowBusy(null); }
-  };
-
-  // Delete the whole coverage → POST /api/admin/coverage/delete. Soft-deletes
-  // the map and detaches every hotel. A backup is kept and can be restored.
-  const deleteCoverage = async () => {
-    if (!confirm(`Delete this PMS coverage?\n\nThe robot will forget how to read "${title}", and every hotel on it drops to "No system detected".\n\nA backup is kept. This can be restored.`)) return;
-    setActionBusy('delete'); setMsg(null);
-    try {
-      const res = await fetchWithAuth('/api/admin/coverage/delete', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ pmsFamily: pms.pmsType }) });
-      const json = await res.json();
-      if (json.ok) {
-        // Success unmounts this modal — refetch the board, then close LAST so
-        // no state is written after unmount.
-        void onRepaired();
-        onClose();
-        return;
-      }
-      setMsg(`Failed: ${json.error ?? 'unknown'}`);
-      setActionBusy(null);
-    } catch (err) {
-      setMsg(`Network error: ${(err as Error).message}`);
-      setActionBusy(null);
-    }
-  };
-
-  const anyBusy = busy || nameBusy || actionBusy !== null;
-
-  return (
-    <Backdrop onClose={onClose}>
-      <div ref={ref} onClick={(e) => e.stopPropagation()} style={{ ...MODAL_CARD, width: 480 }}>
-        <Caps>PMS map</Caps>
-
-        {/* Editable display name — pencil to edit, Save to commit. */}
-        {editingName ? (
-          <div style={{ display: 'flex', gap: 6, alignItems: 'center', margin: '6px 0 4px' }}>
-            <input
-              autoFocus value={name} onChange={(e) => setName(e.target.value)}
-              onKeyDown={(e) => { if (e.key === 'Enter' && !nameBusy) void saveName(); if (e.key === 'Escape') { setName(title); setEditingName(false); } }}
-              maxLength={60}
-              style={{ flex: 1, minWidth: 0, fontFamily: 'var(--serif)', fontSize: 22, fontStyle: 'italic', padding: '4px 8px', border: '1px solid var(--rule)', borderRadius: 8, background: '#fff', color: 'var(--ink)', outline: 'none' }}
-            />
-            <Btn size="sm" variant="primary" onClick={() => void saveName()} disabled={nameBusy || !name.trim()}>{nameBusy ? '…' : 'Save'}</Btn>
-          </div>
-        ) : (
-          <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, margin: '6px 0 4px' }}>
-            <h3 style={{ fontFamily: FONT_SERIF, fontSize: 24, fontWeight: 400, letterSpacing: '-0.02em', margin: 0, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}><span style={{ fontStyle: 'italic' }}>{title}</span></h3>
-            <button onClick={() => { setName(title); setEditingName(true); }} title="Rename this PMS"
-              style={{ flexShrink: 0, background: 'none', border: 'none', padding: 4, cursor: 'pointer', color: 'var(--dim)', fontSize: 13, lineHeight: 1 }}>✎</button>
-          </div>
-        )}
-
-        {/* One plain status line — was three contradictory chips ("0% live" +
-            "Not learned" + "parked draft v19") describing the same state. */}
-        <div style={{ margin: '8px 0 14px' }}>
-          {!pms.recipe && pms.pendingReview ? (
-            <p style={{ fontSize: 13, color: 'var(--gold)', lineHeight: 1.5, margin: 0 }}>
-              A freshly-learned map (v{pms.pendingReview.version}) is ready. Review it below, then turn it on for your hotels.
-            </p>
-          ) : pms.recipe ? (
-            <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-              {typeof pct === 'number' && <Pill tone={pct === 100 ? 'forest' : pct > 0 ? 'gold' : 'neutral'}>{pct}% live</Pill>}
-              <span className="mono" style={{ fontSize: 11, color: 'var(--dim2)' }}>{pms.propertyCount} {pms.propertyCount === 1 ? 'hotel' : 'hotels'} · map v{pms.recipe.version}</span>
-            </div>
-          ) : (
-            <p style={{ fontSize: 13, color: 'var(--dim)', lineHeight: 1.5, margin: 0 }}>{st.note}</p>
-          )}
-        </div>
-
-        {/* ── Per-feed status — replaces the single "0% captured". ── */}
-        {feeds.length > 0 && (
-          <div style={{ borderTop: '1px solid var(--rule)', paddingTop: 14 }}>
-            <Caps size={9}>What the robot captures</Caps>
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 2, margin: '8px 0 4px' }}>
-              {feeds.map((f) => {
-                const tone = FEED_STATE_TONE[f.state];
-                return (
-                  <div key={f.key} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '4px 0' }}>
-                    <Dot tone={tone} size={6} />
-                    <span style={{ fontSize: 12.5, color: 'var(--ink)', flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{f.label}</span>
-                    <span className="mono" style={{ fontSize: 10, color: f.state === 'unavailable' ? 'var(--dim2)' : `var(--${tone})`, letterSpacing: '.04em' }}>{FEED_STATE_WORD[f.state]}</span>
-                  </div>
-                );
-              })}
-            </div>
-          </div>
-        )}
-
-        {/* ── Open the map editor (the page where the map can be adjusted). ── */}
-        {propertyId && (
-          <div style={{ marginTop: 12 }}>
-            <Btn size="sm" variant="ghost" href={`/admin/properties/coverage/${propertyId}`} style={{ color: 'var(--teal)', borderColor: 'rgba(51,137,160,.4)' }}>Review & adjust the map →</Btn>
-          </div>
-        )}
-
-        {/* ── Hotels using this map — one learned map fits every hotel on the
-            same PMS, so the headline action applies it to all of them. ── */}
-        <div style={{ borderTop: '1px solid var(--rule)', paddingTop: 14, marginTop: 14 }}>
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, flexWrap: 'wrap' }}>
-            <Caps size={9}>Hotels using this map</Caps>
-            {pms.recipe && (
-              <Btn size="sm" variant="forest" onClick={() => void bulkAssign()} disabled={anyBusy}>
-                {actionBusy === 'bulk' ? '…' : 'Use for every hotel on this PMS'}
-              </Btn>
-            )}
-          </div>
-          {hotelsErr ? (
-            <p style={{ fontSize: 12, color: 'var(--terracotta)', margin: '8px 0 0' }}>{hotelsErr}</p>
-          ) : hotels === null ? (
-            <div style={{ display: 'flex', alignItems: 'center', gap: 8, margin: '10px 0 2px' }}>
-              <span className="spinner" style={{ width: 13, height: 13, display: 'inline-block' }} />
-              <span style={{ fontSize: 12, color: 'var(--dim)' }}>Loading hotels…</span>
-            </div>
-          ) : hotels.length === 0 ? (
-            <p style={{ fontSize: 12.5, color: 'var(--dim)', fontFamily: FONT_SERIF, fontStyle: 'italic', margin: '8px 0 2px' }}>No hotels yet.</p>
-          ) : (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 4, margin: '8px 0 2px' }}>
-              {hotels.map((h) => {
-                const rb = rowBusy === h.id;
-                return (
-                  <div key={h.id} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '5px 0' }}>
-                    <Dot tone={h.attached ? 'forest' : 'muted'} size={6} />
-                    <span style={{ fontSize: 12.5, color: 'var(--ink)', flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{h.name ?? '(unnamed)'}</span>
-                    <span className="mono" style={{ fontSize: 9.5, color: h.attached ? 'var(--forest)' : 'var(--dim2)' }}>{h.attached ? 'using it' : 'not using it'}</span>
-                    {h.attached ? (
-                      <Btn size="sm" variant="ghost" onClick={() => void detachOne(h)} disabled={rb || anyBusy} style={{ color: 'var(--terracotta)', borderColor: 'rgba(194,86,46,.3)' }}>{rb ? '…' : 'Stop'}</Btn>
-                    ) : (
-                      <Btn size="sm" variant="forest" onClick={() => void attachOne(h)} disabled={rb || anyBusy}>{rb ? '…' : 'Use map'}</Btn>
-                    )}
-                  </div>
-                );
-              })}
-            </div>
-          )}
-        </div>
-
-        {/* ── Repair a feed (kept) — re-learn one drifted action (~$2). ── */}
-        {keys.length > 0 && propertyId ? (
-          <div style={{ borderTop: '1px solid var(--rule)', paddingTop: 14, marginTop: 14 }}>
-            <Caps size={9}>Repair a feed</Caps>
-            <p style={{ fontSize: 12, color: 'var(--dim)', margin: '4px 0 8px', lineHeight: 1.4 }}>Re-learn one action if its extraction drifted. ~$2, ~few min.</p>
-            <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
-              <select value={key} onChange={(e) => setKey(e.target.value)} disabled={busy} className="mono"
-                style={{ flex: 1, fontSize: 11.5, padding: '7px 9px', border: '1px solid var(--rule)', borderRadius: 9, background: '#fff', color: 'var(--ink)' }}>
-                <option value="">Pick a feed</option>
-                {keys.map((k) => <option key={k} value={k}>{k}</option>)}
-              </select>
-              <Btn size="sm" variant="terracotta" onClick={fire} disabled={busy || !key}>{busy ? '…' : 'Fix'}</Btn>
-            </div>
-          </div>
-        ) : null}
-
-        {msg && <p className="mono" style={{ fontSize: 10.5, color: 'var(--dim)', marginTop: 10, wordBreak: 'break-all' }}>{msg}</p>}
-
-        {/* ── Footer — stop-for-all · close. (The apply-to-all button lives up
-            by the hotel list where it reads naturally.) ── */}
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, marginTop: 18, borderTop: '1px solid var(--rule)', paddingTop: 14, flexWrap: 'wrap' }}>
-          <button onClick={() => void detach()} disabled={anyBusy} title="Every hotel stops using this map. The map itself is kept and can be re-applied"
-            style={{ background: 'var(--terracotta-dim)', color: 'var(--terracotta-deep)', border: '1px solid rgba(194,86,46,.32)', borderRadius: 999, height: 28, padding: '0 12px', fontFamily: 'var(--sans)', fontSize: 12, fontWeight: 600, cursor: anyBusy ? 'not-allowed' : 'pointer', opacity: anyBusy ? 0.5 : 1 }}>
-            {actionBusy === 'detach' ? '…' : 'Stop for all hotels'}
-          </button>
-          <Btn size="sm" variant="ghost" onClick={onClose} disabled={anyBusy}>Close</Btn>
-        </div>
-
-        {/* ── Danger zone — soft-delete the whole coverage (backup kept). ── */}
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, marginTop: 12, borderTop: '1px solid var(--rule)', paddingTop: 12, flexWrap: 'wrap' }}>
-          <Caps size={9} c="var(--terracotta-deep)">Danger zone</Caps>
-          <Btn size="sm" variant="terracotta" onClick={() => void deleteCoverage()} disabled={anyBusy} title="Forget this map and free every hotel. A backup is kept and can be restored">
-            {actionBusy === 'delete' ? '…' : 'Delete coverage'}
-          </Btn>
-        </div>
-      </div>
-    </Backdrop>
   );
 }
 
@@ -993,7 +591,7 @@ function ProspectModal({ p, onClose, onSaved }: { p: Prospect; onClose: () => vo
         </label>
         <div style={{ marginTop: 12 }}><Caps size={9}>Launch checklist</Caps>
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 6, marginTop: 6 }}>
-            {CHECKLIST.filter((c) => PMS_ROBOT_ENABLED || c.key !== 'pmsCredsCollected').map((c) => {
+            {CHECKLIST.filter((c) => c.key !== 'pmsCredsCollected').map((c) => {
               const on = !!d.checklist?.[c.key];
               return (
                 <label key={c.key} style={{ display: 'flex', alignItems: 'center', gap: 7, padding: '7px 10px', borderRadius: 999, fontSize: 12, cursor: 'pointer', background: on ? 'var(--forest-dim)' : 'var(--rule-soft)', border: `1px solid ${on ? 'rgba(60,156,104,.3)' : 'var(--rule)'}`, color: on ? 'var(--forest-deep)' : 'var(--dim)' }}>

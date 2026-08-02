@@ -19,9 +19,6 @@
    operational detail modal as independent-hotel cards. Feedback is a distinct
    filtered view, so the fleet list is no longer competing for horizontal room.
 
-   Sync-freshness color (handoff): not connected = dim; stale(>12h) =
-   terracotta; >60m = gold-deep; else forest-deep.
-
    This is a DARK surface: <SurfaceShell glow="tealTL"> + DarkCard / dimWhite
    for cards, Backdrop + MODAL_CARD for the light detail modal.
    ─────────────────────────────────────────────────────────────────────── */
@@ -30,13 +27,12 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { fetchWithAuth } from '@/lib/api-fetch';
 import {
   FONT_SERIF, FONT_MONO, Caps, Pill, Dot, Btn, SerifNum,
-  countUp, useRiseIn, freshLabel, age,
+  countUp, useRiseIn, age,
   type PillTone, type DotTone,
 } from '../kit';
 import {
   SurfaceShell, DarkCard, DarkSpinner, DarkEmpty, dimWhite, Backdrop, MODAL_CARD,
 } from '../surface-kit';
-import { CoveragePickerModal } from '../CoveragePickerModal';
 import { SectionsModal } from '../SectionsModal';
 import { AddHotelModal } from '../AddHotelModal';
 import { AIControlCenter } from '../../AIControlCenter';
@@ -44,8 +40,6 @@ import { AccessPopover } from '../../AccessPopover';
 import { DataAtlasLink } from '../../DataAtlasLink';
 import { TwoFactorSwitch } from '../../TwoFactorSwitch';
 import { APP_SECTIONS, type AppSection } from '@/lib/sections/registry';
-import { FLEET_STALE_SYNC_MINUTES } from '@/lib/admin-property-health';
-import { PMS_ROBOT_ENABLED } from '@/lib/pms/robot-status';
 
 const API_PAGE_SIZE = 200;
 const MAX_API_PAGES = 100;
@@ -107,50 +101,28 @@ interface FeedbackItem {
   resolved_at: string | null;
   created_at: string;
 }
-type StatusFilter = 'all' | 'active' | 'trial' | 'past_due' | 'stale' | 'pms_disconnected' | 'no_pms';
+type StatusFilter = 'all' | 'active' | 'trial' | 'past_due';
 type HotelsView = 'organizations' | 'independent' | 'feedback';
 type OrganizationStatusFilter = 'all' | 'active' | 'suspended' | 'inactive';
 type FeedbackStatusFilter = 'all' | 'new' | 'in_progress' | 'resolved' | 'wontfix';
 
-// A property enriched with the staleness flag (= prior tab's isStale12h).
-type EnrichedRow = PropertyRow & { isStale12h: boolean };
+type EnrichedRow = PropertyRow;
 
 // ── Shared derivations (mirror the prototype + prior tab semantics) ──────
 function subTone(s: string | null): PillTone {
   return s === 'active' ? 'forest' : s === 'past_due' ? 'terracotta' : s === 'trial' ? 'gold' : 'neutral';
 }
-// Sync-freshness color per the handoff.
-function syncColor(p: { pmsConnected: boolean; isStale12h: boolean; syncFreshnessMin: number | null }): string {
-  if (!p.pmsConnected) return 'var(--dim)';
-  if (p.isStale12h) return 'var(--terracotta)';
-  if (p.syncFreshnessMin !== null && p.syncFreshnessMin > 60) return 'var(--gold-deep)';
-  return 'var(--forest-deep)';
-}
 // Health-strip tone for a single hotel (matches LiveMap's per-card toneOf).
 function cardTone(p: EnrichedRow): DotTone {
-  if (!PMS_ROBOT_ENABLED) {
-    if (p.subscriptionStatus === 'past_due') return 'terracotta';
-    if (p.subscriptionStatus === 'trial') return 'gold';
-    return p.subscriptionStatus === 'active' ? 'forest' : 'muted';
-  }
-  // No system detected (pms_type IS NULL) → needs action. Check first.
-  if (p.pmsType === null) return 'terracotta';
-  if (p.subscriptionStatus === 'past_due' || p.isStale12h || !p.pmsConnected) return 'terracotta';
-  if (p.subscriptionStatus === 'trial' || (p.pmsConnected && p.syncFreshnessMin !== null && p.syncFreshnessMin > 60)) return 'gold';
-  return 'forest';
+  if (p.subscriptionStatus === 'past_due') return 'terracotta';
+  if (p.subscriptionStatus === 'trial') return 'gold';
+  return p.subscriptionStatus === 'active' ? 'forest' : 'muted';
 }
 
 const SUBSCRIPTION_STATUS_OPTS: [StatusFilter, string][] = [
   ['all', 'All statuses'], ['active', 'Active'], ['trial', 'Trial'], ['past_due', 'Past due'],
 ];
-const STATUS_OPTS: [StatusFilter, string][] = PMS_ROBOT_ENABLED
-  ? [
-      ...SUBSCRIPTION_STATUS_OPTS,
-      ['stale', 'Stale (no PMS sync >12h)'],
-      ['pms_disconnected', 'PMS disconnected'],
-      ['no_pms', 'No system detected'],
-    ]
-  : SUBSCRIPTION_STATUS_OPTS;
+const STATUS_OPTS: [StatusFilter, string][] = SUBSCRIPTION_STATUS_OPTS;
 
 const HOTEL_VIEWS: { id: HotelsView; label: string }[] = [
   { id: 'organizations', label: 'Organizations' },
@@ -267,10 +239,6 @@ function normalizeOrganizationDirectory(value: unknown): OrganizationDirectory |
 
 function matchesHotelStatus(hotel: EnrichedRow, status: StatusFilter): boolean {
   if (status === 'all') return true;
-  if (!PMS_ROBOT_ENABLED && (status === 'stale' || status === 'pms_disconnected' || status === 'no_pms')) return false;
-  if (status === 'stale') return hotel.isStale12h;
-  if (status === 'pms_disconnected') return !hotel.pmsConnected;
-  if (status === 'no_pms') return hotel.pmsType === null;
   return hotel.subscriptionStatus === status;
 }
 
@@ -294,8 +262,6 @@ export function LiveSurface() {
   // resolve after the reset fetch, hiding the just-created hotel.
   const [reloadNonce, setReloadNonce] = useState(0);
   const [sel, setSel] = useState<EnrichedRow | null>(null);
-  // Hotel currently being assigned a PMS coverage (null = picker closed).
-  const [pickerHotel, setPickerHotel] = useState<EnrichedRow | null>(null);
   // Hotel whose section on/off toggles are open (null = modal closed).
   const [sectionsHotel, setSectionsHotel] = useState<EnrichedRow | null>(null);
   // "+ Add hotel" modal — an empty intent creates an independent hotel; an
@@ -429,16 +395,11 @@ export function LiveSurface() {
   }, [load]);
 
   const enriched = useMemo<EnrichedRow[]>(() => {
-    const hotels = (props ?? []).map((property) => ({
-      ...property,
-      isStale12h: PMS_ROBOT_ENABLED && property.pmsConnected
-        && property.syncFreshnessMin !== null
-        && property.syncFreshnessMin > FLEET_STALE_SYNC_MINUTES,
-    }));
+    const hotels = [...(props ?? [])];
     hotels.sort((a, b) => {
       const score = (hotel: EnrichedRow) => {
         if (hotel.subscriptionStatus === 'past_due') return 0;
-        if (PMS_ROBOT_ENABLED && hotel.isStale12h) return 1;
+        if (hotel.subscriptionStatus === 'trial') return 1;
         return 2;
       };
       return score(a) - score(b) || Date.parse(b.createdAt) - Date.parse(a.createdAt);
@@ -509,19 +470,11 @@ export function LiveSurface() {
     return organization?.id === feedbackOrganization;
   }), [feedback, feedbackHotel, feedbackOrganization, feedbackStatus, organizationByProperty]);
 
-  const health = PMS_ROBOT_ENABLED
-    ? {
-        ok: independentHotels.filter((hotel) => hotel.pmsConnected && !hotel.isStale12h && hotel.subscriptionStatus !== 'past_due').length,
-        watch: independentHotels.filter((hotel) => hotel.subscriptionStatus === 'trial' || (hotel.pmsConnected && hotel.syncFreshnessMin !== null && hotel.syncFreshnessMin > 60 && !hotel.isStale12h)).length,
-        attn: independentHotels.filter((hotel) => hotel.subscriptionStatus === 'past_due' || hotel.isStale12h || !hotel.pmsConnected).length,
-        disc: independentHotels.filter((hotel) => !hotel.pmsConnected).length,
-      }
-    : {
-        ok: independentHotels.filter((hotel) => hotel.subscriptionStatus === 'active').length,
-        watch: independentHotels.filter((hotel) => hotel.subscriptionStatus === 'trial').length,
-        attn: independentHotels.filter((hotel) => hotel.subscriptionStatus === 'past_due').length,
-        disc: 0,
-      };
+  const health = {
+    ok: independentHotels.filter((hotel) => hotel.subscriptionStatus === 'active').length,
+    watch: independentHotels.filter((hotel) => hotel.subscriptionStatus === 'trial').length,
+    attn: independentHotels.filter((hotel) => hotel.subscriptionStatus === 'past_due').length,
+  };
   const newFeedbackCount = (feedback ?? []).filter((item) => item.status === 'new').length;
   const viewCounts: Record<HotelsView, number> = {
     organizations: directory?.organizations.length ?? 0,
@@ -606,7 +559,6 @@ export function LiveSurface() {
             onPageChange={setPage}
             onAddHotel={() => setAddIntent({})}
             onOpenHotel={setSel}
-            onAssignCoverage={setPickerHotel}
             onSections={setSectionsHotel}
             onDelete={setDeleteHotel}
             canAssignOrganization={directory.schemaReady && directory.organizations.some((organization) => organization.status === 'active')}
@@ -647,19 +599,8 @@ export function LiveSurface() {
         <MapDetail
           h={sel}
           onClose={() => setSel(null)}
-          onPickCoverage={() => setPickerHotel(sel)}
           onOpenSections={() => setSectionsHotel(sel)}
-          onDetached={() => { setSel(null); void load(); }}
           onRequestDelete={() => setDeleteHotel(sel)}
-        />
-      )}
-
-      {PMS_ROBOT_ENABLED && pickerHotel && (
-        <CoveragePickerModal
-          propertyId={pickerHotel.id}
-          currentPmsFamily={pickerHotel.pmsType}
-          onClose={() => setPickerHotel(null)}
-          onAssigned={() => { setPickerHotel(null); setSel(null); void load(); }}
         />
       )}
 
@@ -1075,7 +1016,6 @@ function IndependentHotelsPanel({
   onPageChange,
   onAddHotel,
   onOpenHotel,
-  onAssignCoverage,
   onSections,
   onDelete,
   canAssignOrganization,
@@ -1088,13 +1028,12 @@ function IndependentHotelsPanel({
   onSearchChange: (value: string) => void;
   status: StatusFilter;
   onStatusChange: (value: StatusFilter) => void;
-  health: { ok: number; watch: number; attn: number; disc: number };
+  health: { ok: number; watch: number; attn: number };
   page: number;
   totalPages: number;
   onPageChange: (page: number) => void;
   onAddHotel: () => void;
   onOpenHotel: (hotel: EnrichedRow) => void;
-  onAssignCoverage: (hotel: EnrichedRow) => void;
   onSections: (hotel: EnrichedRow) => void;
   onDelete: (hotel: EnrichedRow) => void;
   canAssignOrganization: boolean;
@@ -1121,10 +1060,9 @@ function IndependentHotelsPanel({
       </div>
 
       <div className="studio-hotels-summary-grid" aria-label="Independent hotel health">
-        <DarkHealth label={PMS_ROBOT_ENABLED ? 'Healthy' : 'Active'} n={health.ok} tone="forest" />
-        <DarkHealth label={PMS_ROBOT_ENABLED ? 'Watch' : 'Trial'} n={health.watch} tone="gold" />
-        <DarkHealth label={PMS_ROBOT_ENABLED ? 'Needs attention' : 'Past due'} n={health.attn} tone="terracotta" />
-        {PMS_ROBOT_ENABLED && <DarkHealth label="Disconnected PMS" n={health.disc} tone="terracotta" />}
+        <DarkHealth label="Active" n={health.ok} tone="forest" />
+        <DarkHealth label="Trial" n={health.watch} tone="gold" />
+        <DarkHealth label="Past due" n={health.attn} tone="terracotta" />
       </div>
 
       {hotels.length === 0 ? (
@@ -1142,7 +1080,6 @@ function IndependentHotelsPanel({
               <MapCard
                 h={hotel}
                 onOpen={() => onOpenHotel(hotel)}
-                onAssign={() => onAssignCoverage(hotel)}
                 onSections={() => onSections(hotel)}
                 onDelete={() => onDelete(hotel)}
                 onAssignOrganization={() => onAssignOrganization(hotel.id)}
@@ -1320,7 +1257,6 @@ function DarkHealth({ label, n, tone }: { label: string; n: number; tone: DotTon
 function MapCard({
   h,
   onOpen,
-  onAssign,
   onSections,
   onDelete,
   onAssignOrganization,
@@ -1328,7 +1264,6 @@ function MapCard({
 }: {
   h: EnrichedRow;
   onOpen: () => void;
-  onAssign: () => void;
   onSections: () => void;
   onDelete: () => void;
   onAssignOrganization: () => void;
@@ -1337,7 +1272,6 @@ function MapCard({
   const hotel = h;
   const ref = useRef<HTMLElement>(null);
   const tone = cardTone(h);
-  const unassigned = h.pmsType === null;
   const sectionsOff = APP_SECTIONS.filter((s) => h.enabledSections[s] === false).length;
   useRiseIn(ref, { dy: 10, dur: 320 });
   return (
@@ -1366,14 +1300,9 @@ function MapCard({
       </button>
       <div className="mono studio-independent-card-meta">{h.totalRooms ?? '—'} rooms · {h.staffCount} staff</div>
       <div className="studio-independent-card-status">
-        <Pill tone={PMS_ROBOT_ENABLED && unassigned ? 'gold' : subTone(h.subscriptionStatus)} style={{ fontSize: 9, padding: '2px 6px' }}>
-          {PMS_ROBOT_ENABLED && unassigned ? 'NO SYSTEM DETECTED' : (h.subscriptionStatus ?? 'unknown').toUpperCase()}
+        <Pill tone={subTone(h.subscriptionStatus)} style={{ fontSize: 9, padding: '2px 6px' }}>
+          {(h.subscriptionStatus ?? 'unknown').toUpperCase()}
         </Pill>
-        {PMS_ROBOT_ENABLED && <span className="mono" style={{ color: syncColor(h) }}>
-          {h.pmsConnected
-            ? `${h.pmsType}${h.syncFreshnessMin !== null ? ` · ${freshLabel(h.syncFreshnessMin)}` : ''}`
-            : unassigned ? 'coverage needed' : 'not connected'}
-        </span>}
       </div>
       <div className="studio-independent-card-actions">
         <Btn
@@ -1396,11 +1325,6 @@ function MapCard({
         >
           Assign organization
         </Btn>
-        {PMS_ROBOT_ENABLED && unassigned && (
-          <Btn size="sm" variant="ghost" onClick={onAssign} style={{ color: '#fff', borderColor: dimWhite(.25), fontSize: 9.5, padding: '3px 8px' }}>
-            Assign coverage
-          </Btn>
-        )}
         <Btn size="sm" variant="ghost" onClick={onSections} style={{ color: '#fff', borderColor: dimWhite(.25), fontSize: 9.5, padding: '3px 8px' }}>
           Sections
         </Btn>
@@ -1861,60 +1785,28 @@ function DeleteHotelModal({ h, onClose, onDeleted }: {
 }
 
 // ── Hotel detail modal (light card on blurred ink) ───────────────────────
-function MapDetail({ h, onClose, onPickCoverage, onOpenSections, onDetached, onRequestDelete }: {
+function MapDetail({ h, onClose, onOpenSections, onRequestDelete }: {
   h: EnrichedRow;
   onClose: () => void;
-  onPickCoverage: () => void;   // opens CoveragePickerModal (assign or switch)
-  onOpenSections: () => void;   // opens SectionsModal for this hotel
-  onDetached: () => void;       // detach succeeded → refetch + close
-  onRequestDelete: () => void;  // open the shared DeleteHotelModal for this hotel
+  onOpenSections: () => void;
+  onRequestDelete: () => void;
 }) {
   const ref = useRef<HTMLDivElement>(null);
-  const hasSystem = h.pmsType !== null;
-  const [detaching, setDetaching] = useState(false);
-  const [detachError, setDetachError] = useState<string | null>(null);
   useRiseIn(ref, { dy: 26, dur: 440 });
-  useDialogKeyboard(ref, onClose, detaching);
-
-  // Detach this hotel from its current coverage. Mirrors the FeedbackRow
-  // fetch+envelope+busy pattern: POST through fetchWithAuth, read { ok }, and
-  // on success let the parent refetch (load()) and close the modal.
-  const detach = async () => {
-    if (detaching || !hasSystem) return;
-    setDetaching(true);
-    setDetachError(null);
-    try {
-      const res = await fetchWithAuth('/api/admin/coverage/detach', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ pmsFamily: h.pmsType, propertyId: h.id }),
-      });
-      const json = await res.json();
-      if (!json.ok) {
-        setDetachError(json.error ?? 'Could not detach coverage. Please try again.');
-        return;
-      }
-      onDetached();
-    } catch (err) {
-      setDetachError(`Network error: ${(err as Error).message}`);
-    } finally {
-      setDetaching(false);
-    }
-  };
+  useDialogKeyboard(ref, onClose, false);
 
   return (
-    <Backdrop onClose={() => { if (!detaching) onClose(); }}>
+    <Backdrop onClose={onClose}>
       <div
         ref={ref}
         role="dialog"
         aria-modal="true"
         aria-labelledby="hotel-detail-title"
         aria-describedby="hotel-detail-description"
-        aria-busy={detaching}
         onClick={(e) => e.stopPropagation()}
         style={{ ...MODAL_CARD, width: 460 }}
       >
-        <Caps>{PMS_ROBOT_ENABLED ? (h.pmsConnected ? (h.pmsType ?? 'PMS') : 'No PMS') : 'Hotel details'}</Caps>
+        <Caps>Hotel details</Caps>
         <h3 id="hotel-detail-title" style={{ fontFamily: FONT_SERIF, fontSize: 26, fontWeight: 400, letterSpacing: '-0.02em', margin: '6px 0 12px' }}>
           <span style={{ fontStyle: 'italic' }}>{h.name ?? '(unnamed)'}</span>
         </h3>
@@ -1923,32 +1815,10 @@ function MapDetail({ h, onClose, onPickCoverage, onOpenSections, onDetached, onR
           <Stat label="Staff" v={h.staffCount} />
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 16, flexWrap: 'wrap' }}>
-          <Pill tone={PMS_ROBOT_ENABLED && !hasSystem ? 'gold' : subTone(h.subscriptionStatus)}>
-            {PMS_ROBOT_ENABLED && !hasSystem ? 'NO SYSTEM DETECTED' : (h.subscriptionStatus ?? 'unknown').toUpperCase()}
+          <Pill tone={subTone(h.subscriptionStatus)}>
+            {(h.subscriptionStatus ?? 'unknown').toUpperCase()}
           </Pill>
-          {PMS_ROBOT_ENABLED && <span className="mono" style={{ fontSize: 11, color: syncColor(h) }}>
-            {h.pmsConnected ? `${h.pmsType}${h.syncFreshnessMin !== null ? ` · synced ${freshLabel(h.syncFreshnessMin)} ago` : ''}` : hasSystem ? 'PMS not connected' : 'No coverage assigned'}
-          </span>}
         </div>
-
-        {/* Coverage actions — attach (no system) / switch + detach (has system) */}
-        {PMS_ROBOT_ENABLED && <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: detachError ? 10 : 16, flexWrap: 'wrap' }}>
-          {hasSystem ? (
-            <>
-              <Btn variant="ghost" onClick={onPickCoverage} disabled={detaching}>Switch coverage</Btn>
-              <Btn variant="terracotta" onClick={detach} disabled={detaching}>
-                {detaching ? 'Detaching…' : 'Detach'}
-              </Btn>
-            </>
-          ) : (
-            <Btn variant="forest" onClick={onPickCoverage}>Assign coverage</Btn>
-          )}
-        </div>}
-        {PMS_ROBOT_ENABLED && detachError && (
-          <div role="alert" style={{ padding: '11px 13px', marginBottom: 16, background: 'var(--terracotta-dim)', border: '1px solid rgba(194,86,46,.3)', borderRadius: 12, color: 'var(--terracotta-deep)', fontSize: 12.5, lineHeight: 1.45 }}>
-            {detachError}
-          </div>
-        )}
 
         <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
           <Btn

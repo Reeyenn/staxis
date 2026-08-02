@@ -9,10 +9,7 @@
  *   1. The switch itself is off. A deliberate tripwire, not a tautology: a
  *      future browser-automation product must make an explicit reviewed code
  *      change rather than drift back through deployment configuration.
- *   2. The pull-enqueue cron route enqueues NOTHING — and, more strongly,
- *      never so much as reads the properties table. If it queried, the
- *      poisoned supabaseAdmin stub below would make it throw.
- *   3. The three cua_* doctor checks report a plain "decommissioned" ok
+ *   2. The three cua_* doctor checks report a plain "decommissioned" ok
  *      rather than failing the deploy gate or claiming to be watching a live
  *      robot. Same poisoned stub proves they query nothing either.
  *
@@ -23,18 +20,13 @@
 
 import { test, describe, before, after } from 'node:test';
 import assert from 'node:assert/strict';
-import { NextRequest } from 'next/server';
-
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import {
   CUA_DECOMMISSIONED,
   CUA_DECOMMISSION_REASON,
   decommissionedCheck,
 } from '@/lib/pms/decommission';
-import { GET as enqueuePropertyPulls } from '@/app/api/cron/enqueue-property-pulls/route';
 import { runAllChecks } from '@/app/api/admin/doctor/route';
-
-const CRON_SECRET = process.env.CRON_SECRET ?? 'placeholder-cron-secret-min-16';
 
 // ─── Poisoned Supabase stub ──────────────────────────────────────────────
 // Every database entry point throws. Any code path that tries to talk to
@@ -98,51 +90,6 @@ describe('CUA decommission — health-check verdict', () => {
     assert.match(verdict.fix, /no supported configuration-only re-enable path/i);
     assert.match(verdict.fix, /product and architecture review/i);
     assert.doesNotMatch(verdict.fix, /fly deploy|schedule:|CUA_DECOMMISSIONED=false/i);
-  });
-});
-
-describe('/api/cron/enqueue-property-pulls — dormant while decommissioned', () => {
-  before(() => {
-    dbTouches = [];
-    poisonDb();
-  });
-  after(restoreDb);
-
-  test('enqueues nothing and never reads the database', async () => {
-    const res = await enqueuePropertyPulls(
-      new NextRequest('https://example.test/api/cron/enqueue-property-pulls', {
-        headers: { authorization: `Bearer ${CRON_SECRET}` },
-      }),
-    );
-
-    assert.equal(res.status, 200);
-    const body = (await res.json()) as {
-      ok: boolean;
-      data: { decommissioned?: boolean; enqueued: number; totalProperties: number };
-    };
-
-    // ok:true on purpose — a manual workflow_dispatch greps for "ok":true,
-    // and "did nothing, deliberately" is a success, not an incident.
-    assert.equal(body.ok, true);
-    assert.equal(body.data.decommissioned, true);
-    assert.equal(body.data.enqueued, 0);
-    assert.equal(body.data.totalProperties, 0);
-    assert.deepEqual(
-      dbTouches,
-      [],
-      `route touched the database while decommissioned: ${dbTouches.join(', ')}`,
-    );
-  });
-
-  test('still refuses callers without the cron secret', async () => {
-    // The decommission guard sits AFTER auth — turning the robot off must not
-    // turn this into an open endpoint that reports fleet state to anyone.
-    const res = await enqueuePropertyPulls(
-      new NextRequest('https://example.test/api/cron/enqueue-property-pulls', {
-        headers: { authorization: 'Bearer not-the-secret' },
-      }),
-    );
-    assert.notEqual(res.status, 200);
   });
 });
 

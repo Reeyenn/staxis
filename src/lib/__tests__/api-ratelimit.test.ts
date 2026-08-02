@@ -1,6 +1,6 @@
 /**
  * Tests for src/lib/api-ratelimit.ts — the per-endpoint hourly cap that
- * stops a runaway SMS loop, scripted email-bombing, or PMS-onboard abuse
+ * stops a runaway SMS loop or scripted email-bombing
  * from burning through real money or hitting Twilio/Resend's downstream
  * limits.
  *
@@ -107,30 +107,6 @@ describe('ipToRateLimitKey — IP → UUID-shaped key', () => {
 // ─── checkAndIncrementRateLimit ──────────────────────────────────────────
 
 describe('checkAndIncrementRateLimit — Postgres-backed counter', () => {
-  test('current count under cap → allowed', async () => {
-    nextRpcResult = { data: 3, error: null };
-    const result = await checkAndIncrementRateLimit('pms-onboard', NO_PROPERTY_RATE_LIMIT_KEY);
-    assert.equal(result.allowed, true);
-  });
-
-  test('current count equal to cap → allowed (cap is "more than", not "equal or more")', async () => {
-    nextRpcResult = { data: 5, error: null }; // pms-onboard cap = 5
-    const result = await checkAndIncrementRateLimit('pms-onboard', NO_PROPERTY_RATE_LIMIT_KEY);
-    assert.equal(result.allowed, true);
-  });
-
-  test('current count over cap → denied with retryAfterSec / current / cap', async () => {
-    nextRpcResult = { data: 6, error: null }; // pms-onboard cap = 5
-    const result = await checkAndIncrementRateLimit('pms-onboard', NO_PROPERTY_RATE_LIMIT_KEY);
-    assert.equal(result.allowed, false);
-    if (!result.allowed) {
-      assert.equal(result.current, 6);
-      assert.equal(result.cap, 5);
-      assert.ok(result.retryAfterSec >= 1, 'retryAfterSec must be >= 1');
-      assert.ok(result.retryAfterSec <= 3600, 'retryAfterSec must be at most one hour');
-    }
-  });
-
   // Fail-open vs fail-closed: 2026-05-17 audit (Flow 2 #6 / Flow 3 #5)
   // switched billing-impacting endpoints (Twilio, Claude, Resend) to
   // fail-CLOSED on RPC error/throw, because a Postgres hiccup leaving
@@ -190,12 +166,6 @@ describe('checkAndIncrementRateLimit — Postgres-backed counter', () => {
   });
 
   test('different endpoints use the configured cap independently', async () => {
-    // pms-onboard cap = 5
-    nextRpcResult = { data: 6, error: null };
-    const onboard = await checkAndIncrementRateLimit('pms-onboard', NO_PROPERTY_RATE_LIMIT_KEY);
-    assert.equal(onboard.allowed, false);
-    if (!onboard.allowed) assert.equal(onboard.cap, 5);
-
     // worklist-read cap = 3600
     nextRpcResult = { data: 3599, error: null };
     const sync = await checkAndIncrementRateLimit('worklist-read', NO_PROPERTY_RATE_LIMIT_KEY);

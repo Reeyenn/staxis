@@ -297,10 +297,9 @@ export async function callerControlsEveryTargetHotel(
  *       '*' wildcard reaches all; otherwise the id must be in property_access).
  *
  * Use this at a route boundary that already ran requireSession and just needs
- * "is this user allowed to do <capability> at <propertyId>?". The PMS write
- * routes use it to admit owner + GM (manage_settings) instead of the old
- * owner-id-only check, so a GM can save/onboard PMS credentials — matching the
- * /settings/pms page gate. (Access cleanup 2026-06-26.)
+ * "is this user allowed to do <capability> at <propertyId>?". Historical PMS
+ * write routes used it to admit owner + GM (manage_settings) instead of the
+ * old owner-id-only check. (Access cleanup 2026-06-26.)
  */
 export async function accountCanForProperty(
   authUserId: string,

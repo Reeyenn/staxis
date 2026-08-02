@@ -24,8 +24,8 @@
  * HOW IT RUNS. `npm test` runs under `--conditions=react-server`, where
  * react-dom/server will not load, so the house pattern applies: the two pieces
  * under test are hook-free, they are called as plain functions, and the
- * element tree they return is walked. Child elements (CopilotRow, RobotRow)
- * are never executed — they are nodes in that tree, which is exactly what the
+ * element tree they return is walked. The CopilotRow child is never executed —
+ * it is a node in that tree, which is exactly what the
  * count-and-membership checks need to look at.
  */
 
@@ -152,18 +152,12 @@ const FUTURE_HIRE: AiEmployee = {
   bundle: { features: [], detectors: [], crons: [], surfaces: [] },
 };
 
-function column(employees: StaffMember[], robots: unknown[] = []) {
+function column(employees: StaffMember[]) {
   return surface.AiStaffColumn({
     metrics: null,
     employees,
-    robots: robots as Parameters<SurfaceModule['AiStaffColumn']>[0]['robots'],
-    l: 'en',
-    busyKey: null,
-    onAction: () => {},
   });
 }
-
-const ROBOT = { property_id: 'p1', status: 'alive', last_alive_at: null } as unknown;
 
 // ─── 1. the column reads the roster ─────────────────────────────────────────
 
@@ -199,7 +193,7 @@ describe('who the AI STAFF column lists', () => {
 
   test('an unread roster leaves the column exactly as it was', () => {
     // A failed read hands down an empty list. That must draw the copilot and
-    // the robots, never an empty-roster claim.
+    // no named staff, never an empty-roster claim.
     const rows = elementsNamed(column([]), surface.AiEmployeeRow);
     assert.equal(rows.length, 0);
     const all = elementsOf(column([]));
@@ -210,16 +204,15 @@ describe('who the AI STAFF column lists', () => {
 // ─── 2. the header count ────────────────────────────────────────────────────
 
 describe('the number in the AI STAFF header', () => {
-  function headerCount(employees: StaffMember[], robots: unknown[] = []): number {
-    const section = elementsOf(column(employees, robots))[0];
+  function headerCount(employees: StaffMember[]): number {
+    const section = elementsOf(column(employees))[0];
     return section.props.count as number;
   }
 
-  test('counts the copilot, the named staff and the robots', () => {
+  test('counts the copilot and named staff', () => {
     assert.equal(headerCount([]), 1);
     assert.equal(headerCount([memberOf(BRIEFER)]), 2);
     assert.equal(headerCount([memberOf(BRIEFER), memberOf(FUTURE_HIRE)]), 3);
-    assert.equal(headerCount([memberOf(BRIEFER)], [ROBOT, ROBOT]), 4);
   });
 
   test('the count matches the rows the column actually drew', () => {
@@ -235,8 +228,8 @@ describe('the number in the AI STAFF header', () => {
 
   test('a switched-off employee is still on the payroll', () => {
     // Everything else in this column counts by existing, not by being
-    // healthy: a stopped robot is counted, and so is an employee the founder
-    // switched off. Their row is where the bad news goes.
+    // healthy: an employee the founder switched off is counted. Their row is
+    // where the bad news goes.
     assert.equal(headerCount([memberOf(BRIEFER, { status: 'switched_off' })]), 2);
   });
 });
@@ -244,8 +237,8 @@ describe('the number in the AI STAFF header', () => {
 // ─── 3. what a row says about how it is doing ───────────────────────────────
 
 describe('the status on an employee row', () => {
-  function textFor(over: Partial<StaffMember>, l: 'en' | 'es' = 'en'): string[] {
-    return stringsOf(surface.AiEmployeeRow({ e: memberOf(BRIEFER, over), l }));
+  function textFor(over: Partial<StaffMember>): string[] {
+    return stringsOf(surface.AiEmployeeRow({ e: memberOf(BRIEFER, over) }));
   }
 
   test('built, switched on, and its overnight check unscheduled — it says so', () => {
@@ -260,15 +253,8 @@ describe('the status on an employee row', () => {
     assert.ok(!text.includes(EMPLOYEE_STATUS_LABEL.waiting_for_master.en));
   });
 
-  test('the sentence stays English for legacy language input', () => {
-    const es = textFor({ status: 'waiting_for_master' }, 'es');
-    assert.ok(es.includes(EMPLOYEE_STATUS_LABEL.waiting_for_master.en));
-    assert.ok(es.includes(BRIEFER.name.en));
-    assert.ok(es.includes(BRIEFER.job.en));
-  });
-
   test('the row is a way through to the page with the controls on it', () => {
-    const href = elementsOf(surface.AiEmployeeRow({ e: memberOf(BRIEFER), l: 'en' }))
+    const href = elementsOf(surface.AiEmployeeRow({ e: memberOf(BRIEFER) }))
       .map((el) => el.props.href)
       .find((h) => typeof h === 'string');
     assert.equal(href, '/admin/ai-staff');
@@ -279,7 +265,7 @@ describe('the status on an employee row', () => {
 
 describe('what an employee row says it cost', () => {
   function textFor(spend: StaffMember['spend']): string[] {
-    return stringsOf(surface.AiEmployeeRow({ e: memberOf(BRIEFER, { spend }), l: 'en' }));
+    return stringsOf(surface.AiEmployeeRow({ e: memberOf(BRIEFER, { spend }) }));
   }
 
   test('a figure the ledger separates out is shown, to the cent', () => {

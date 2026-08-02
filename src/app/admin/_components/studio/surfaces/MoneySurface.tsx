@@ -24,7 +24,6 @@ import React, { useEffect, useState } from 'react';
 import { fetchWithAuth } from '@/lib/api-fetch';
 import { FONT_SERIF, Dot, Btn, type DotTone } from '../kit';
 import { SurfaceShell, DarkCard, DarkSpinner, dimWhite } from '../surface-kit';
-import { PMS_ROBOT_ENABLED } from '@/lib/pms/robot-status';
 
 // ── API shapes (mirror /api/admin/money/tech-stack) ──────────────────────
 interface WorkspaceSpend { workspaceId: string | null; name: string; monthUsd: number; todayUsd: number }
@@ -122,7 +121,7 @@ function WorkspaceCard({ w, models }: {
           <div style={{ fontSize: 13, fontWeight: 700 }}>{w.name}</div>
           <div style={{ fontSize: 10.5, color: dimWhite(.45), marginTop: 1 }}>
             {isHotel
-              ? (PMS_ROBOT_ENABLED ? 'Robots, Copilot, scanning, reports, map learning' : 'Copilot, scanning, reports, and in-app AI')
+              ? 'Copilot, scanning, reports, and in-app AI'
               : 'Future AI employees. Their own bucket from day one'}
           </div>
         </div>
@@ -148,9 +147,7 @@ function WorkspaceCard({ w, models }: {
           )}
           {isHotel && models.length > 0 && (
             <div style={{ fontSize: 10, color: dimWhite(.4), marginTop: 8, lineHeight: 1.45 }}>
-              {PMS_ROBOT_ENABLED
-                ? <>These are the AI brains everything shares: the robots, Copilot, scanning and map learning all draw from them. Straight from Anthropic&rsquo;s bill, to the penny.</>
-                : <>These are the AI models shared by Copilot, scanning, reports, and in-app AI. Straight from Anthropic&rsquo;s bill, to the penny.</>}
+              These are the AI models shared by Copilot, scanning, reports, and in-app AI. Straight from Anthropic&rsquo;s bill, to the penny.
             </div>
           )}
         </div>
@@ -364,9 +361,6 @@ export function MoneySurface() {
               {d.billing.byWorkspace.map((w) => (
                 <WorkspaceCard key={w.workspaceId ?? 'default'} w={w} models={modelsFor(w.workspaceId)} />
               ))}
-              {PMS_ROBOT_ENABLED && <div style={{ fontSize: 10.5, color: dimWhite(.4) }}>
-                Map learning: {money(d.learning.monthUsd)} of this month&rsquo;s Hotel-AI number{d.learning.runs > 0 ? ` (${d.learning.runs} run${d.learning.runs === 1 ? '' : 's'})` : ''}. Click a card to see exactly which AI brains the money went to. ~5 min behind.
-              </div>}
             </div>
           ) : (
             <div style={{ fontSize: 12, color: 'var(--gold)', lineHeight: 1.5 }}>

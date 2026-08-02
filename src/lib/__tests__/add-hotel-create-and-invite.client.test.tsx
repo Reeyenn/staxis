@@ -75,7 +75,7 @@ const CREATE_URL = '/api/admin/properties/create';
 const INVITE_URL = '/api/admin/properties/invite-first-person';
 
 /** Load a module with CSS-module imports neutralized (the invite dialog and
- *  MapsManager both import a .module.css). */
+ *  other Studio modals both import a .module.css). */
 function loadWithCssShim<T>(specifier: () => Promise<T>): Promise<T> {
   const nodeRequire = createRequire(import.meta.url);
   const extensions = nodeRequire.extensions as Record<

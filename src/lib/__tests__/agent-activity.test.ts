@@ -15,7 +15,7 @@
  *   2. ROUTE AUTH + PAGINATION (GET /api/agent/activity) — the three gates:
  *      non-manager → 403, wrong property → 403, and the hasMore/offset paging
  *      contract of fetchActivity. Auth is exercised for real by monkey-patching
- *      supabaseAdmin (the same idiom pms-save-credentials.test.ts uses) so the
+ *      supabaseAdmin (the same idiom the API rate-limit tests use) so the
  *      request flows through requireSession → validateDeviceTrust →
  *      userHasPropertyAccess → canManageTeam.
  */
