@@ -10,11 +10,8 @@
  * the inbox UI passes the id in the body.
  */
 
-import { NextRequest } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase-admin';
-import { requireAdmin } from '@/lib/admin-auth';
-import { ok, err } from '@/lib/api-response';
-import { getOrMintRequestId } from '@/lib/log';
+import { defineRoute, adminGate } from '@/lib/api-route';
 import { writeAuditLog } from '@/lib/admin-audit';
 
 export const runtime = 'nodejs';
@@ -23,10 +20,9 @@ export const maxDuration = 15;
 
 const VALID_STATUSES = new Set(['new', 'in_progress', 'resolved', 'wontfix']);
 
-export async function GET(req: NextRequest) {
-  const requestId = getOrMintRequestId(req);
-  const auth = await requireAdmin(req);
-  if (!auth.ok) return auth.response;
+export const GET = defineRoute({
+  resolve: (req) => adminGate(req),
+  handler: async (ctx) => {
 
   const { data, error } = await supabaseAdmin
     .from('user_feedback')
@@ -34,7 +30,7 @@ export async function GET(req: NextRequest) {
     .order('created_at', { ascending: false })
     .limit(200);
 
-  if (error) return err(`feedback list failed: ${error.message}`, { requestId, status: 500 });
+  if (error) return ctx.err(`feedback list failed: ${error.message}`, { status: 500 });
 
   // Resolve property names
   const propertyIds = Array.from(new Set((data ?? []).map((r) => (r as { property_id: string | null }).property_id).filter((v): v is string => !!v)));
@@ -59,22 +55,22 @@ export async function GET(req: NextRequest) {
     total: enriched.length,
   };
 
-  return ok({ feedback: enriched, counts }, { requestId });
-}
+  return ctx.ok({ feedback: enriched, counts });
+  },
+});
 
-export async function PATCH(req: NextRequest) {
-  const requestId = getOrMintRequestId(req);
-  const auth = await requireAdmin(req);
-  if (!auth.ok) return auth.response;
+export const PATCH = defineRoute({
+  resolve: (req) => adminGate(req),
+  handler: async (ctx) => {
 
-  const body = await req.json().catch(() => ({}));
+  const body = await ctx.req.json().catch(() => ({}));
   const id = body.id as string | undefined;
   const status = body.status as string | undefined;
   const adminNote = body.adminNote as string | undefined;
 
-  if (!id) return err('id is required', { requestId, status: 400 });
+  if (!id) return ctx.err('id is required', { status: 400 });
   if (status && !VALID_STATUSES.has(status)) {
-    return err(`invalid status: ${status}`, { requestId, status: 400 });
+    return ctx.err(`invalid status: ${status}`, { status: 400 });
   }
 
   const update: Record<string, unknown> = {};
@@ -89,7 +85,7 @@ export async function PATCH(req: NextRequest) {
   if (typeof adminNote === 'string') update.admin_note = adminNote;
 
   if (Object.keys(update).length === 0) {
-    return err('no fields to update', { requestId, status: 400 });
+    return ctx.err('no fields to update', { status: 400 });
   }
 
   const { data, error } = await supabaseAdmin
@@ -99,16 +95,17 @@ export async function PATCH(req: NextRequest) {
     .select('*')
     .single();
 
-  if (error) return err(`feedback update failed: ${error.message}`, { requestId, status: 500 });
+  if (error) return ctx.err(`feedback update failed: ${error.message}`, { status: 500 });
 
   await writeAuditLog({
-    actorUserId: auth.userId,
-    actorEmail: auth.email,
+    actorUserId: ctx.userId,
+    actorEmail: ctx.email,
     action: 'feedback.update',
     targetType: 'feedback',
     targetId: id,
     metadata: { status: status ?? null },
   });
 
-  return ok({ feedback: data }, { requestId });
-}
+  return ctx.ok({ feedback: data });
+  },
+});

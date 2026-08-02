@@ -16,11 +16,8 @@
  * Properties with zero non-admin activity in the window are omitted.
  */
 
-import { NextRequest } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase-admin';
-import { requireAdmin } from '@/lib/admin-auth';
-import { ok, err } from '@/lib/api-response';
-import { getOrMintRequestId } from '@/lib/log';
+import { defineRoute, adminGate } from '@/lib/api-route';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -36,10 +33,9 @@ interface ActivityRow {
   topFeatures: { path: string; count: number }[];
 }
 
-export async function GET(req: NextRequest) {
-  const requestId = getOrMintRequestId(req);
-  const auth = await requireAdmin(req);
-  if (!auth.ok) return auth.response;
+export const GET = defineRoute({
+  resolve: (req) => adminGate(req),
+  handler: async (ctx) => {
 
   const now = Date.now();
   const dayAgoIso = new Date(now - 24 * 60 * 60 * 1000).toISOString();
@@ -56,7 +52,7 @@ export async function GET(req: NextRequest) {
     .limit(20000);
 
   if (error) {
-    return err(`activity query failed: ${error.message}`, { requestId, status: 500 });
+    return ctx.err(`activity query failed: ${error.message}`, { status: 500 });
   }
 
   type Bucket = {
@@ -106,7 +102,7 @@ export async function GET(req: NextRequest) {
       .select('id, name')
       .in('id', propertyIds);
     if (nameErr) {
-      return err(`activity name lookup failed: ${nameErr.message}`, { requestId, status: 500 });
+      return ctx.err(`activity name lookup failed: ${nameErr.message}`, { status: 500 });
     }
     nameById = new Map((nameRows ?? []).map((r) => [(r as { id: string; name: string | null }).id, (r as { id: string; name: string | null }).name]));
   }
@@ -127,5 +123,6 @@ export async function GET(req: NextRequest) {
   // Most recent activity first.
   rows.sort((a, b) => Date.parse(b.lastActiveTs) - Date.parse(a.lastActiveTs));
 
-  return ok({ rows }, { requestId });
-}
+  return ctx.ok({ rows });
+  },
+});
