@@ -199,9 +199,7 @@ after(() => {
 // ─────────────────────────────────────────────────────────────────────────────
 describe('the control: the HOTEL prompt really does carry the facts in question', () => {
   it('renders this hotel\'s own setup and its PMS family notes', async () => {
-    const { stable } = await buildSystemPrompt(
-      'general_manager', hotelSnapshot(agedBy(5)), 'conv-hotel', undefined, undefined, NOW,
-    );
+    const { stable } = await buildSystemPrompt({ role: 'general_manager', snapshot: hotelSnapshot(agedBy(5)), conversationId: 'conv-hotel', now: NOW });
     assert.match(stable, /About this hotel/);
     assert.match(stable, /Housekeeping runs at Level 1/);
     assert.match(stable, /Roster: 2 active staff members/);

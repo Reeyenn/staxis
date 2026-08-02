@@ -28,10 +28,11 @@ import {
   formatCompanyRulebookForPrompt,
 } from './company-tier';
 import {
-  deriveStandingRules,
-  formatStandingRulesForPrompt,
-  HOTEL_RULES_VERSION,
-} from './hotel-rules-tier';
+  codeOwnedRuleTierLines,
+  codeOwnedRuleTierVersions,
+  exactHotelScope,
+  hotelScopedRuleTier,
+} from './rule-tiers';
 import { escapeTrustMarkerContent } from './loop-core';
 import { lensFor } from './lenses';
 import { familyContentIsSafe } from './prompt-tiers';
@@ -226,57 +227,23 @@ export const INVENTORY_ACCOUNTING_ROUTING_PROMPT = `─── Inventory accounti
 
 const INVENTORY_ACCOUNTING_ROUTING_VERSION = 'inventory-accounting-v2';
 
-/**
- * A2 — code-owned data-age rule. The hotel's numbers arrive in scheduled PMS
- * reports, not continuously, so "what's our occupancy right now" can only ever
- * be answered as of a moment in the past.
- *
- * This is the constant RULE and belongs in the STABLE (cached) block: it is
- * identical for every turn of every conversation on a given deploy, so the
- * cached prefix stays byte-identical. The as-of VALUE lives in the dynamic
- * snapshot block, which llm.ts appends without cache_control. Moving the value
- * up here to "make sure the model sees it" would break the prompt cache on
- * EVERY turn — a large, silent, recurring bill increase. That is what the
- * cache-purity test exists to prevent.
- */
-export const DATA_FRESHNESS_PROMPT = `─── How old the numbers are ───
-
-- The hotel snapshot is NOT live. Room, occupancy, arrival/departure and money numbers arrive in scheduled PMS reports, typically every 30-60 minutes. The snapshot's "PMS data as of" line is the moment those numbers describe, and tool results carry the same moment as \`asOf\` with \`dataAgeMinutes\`.
-- When your answer USES occupancy, room counts, arrivals/departures, balances or money — or when the user asks about "now", "right now", "currently", "at the moment" — give the as-of time in your answer ("As of the 2:40 PM report, 62 of 88 rooms are occupied").
-- When the snapshot or a tool result marks the data older than one report cycle, say so plainly and give its age.
-- Otherwise stay quiet about freshness: no disclaimers, and don't repeat the as-of time on questions that aren't about the current state (policies, schedules, history, to-dos, knowledge documents).
-- NEVER tell the user to refresh the page. Refreshing does not fetch new PMS numbers — those only change when the next report arrives.
-- If a number looks wrong to the user, do not claim refreshing updates it. Say when it was last captured, and that a manager can check the hotel's report connection.`;
-
-const DATA_FRESHNESS_VERSION = 'data-freshness-v1';
-
-// ─── Number honesty (the guard's half of the bargain) ──────────────────────
-// `src/lib/agent/number-guard.ts` CHECKS this. This text is why the check
-// should almost never fire: a model that knows the rule quotes instead of
-// calculating, and a guard that never has to fire is a guard nobody is tempted
-// to switch off.
+// ─── The code-owned rule tiers ─────────────────────────────────────────────
 //
-// Both halves are needed and neither is sufficient. A prompt rule alone is what
-// we had — the model is asked to be careful and mostly is, until it isn't, and
-// nothing notices. A check alone would retract honest arithmetic the model had
-// no way to know it was not allowed to do.
+// The data-age rule and the number-honesty rule USED TO BE DEFINED HERE, and
+// that is precisely why the walkthrough never got either of them: a rule that
+// lives inside one surface's assembler reaches another surface only if somebody
+// remembers to import it, and nothing anywhere notices when nobody does.
 //
-// Deliberately does NOT say "a guard will catch you". Telling a model it is
-// being graded on numerals invites it to avoid numerals — and an answer that
-// dodges the figure is a worse answer to a manager who asked for the figure.
-export const NUMBER_HONESTY_PROMPT = `─── Numbers you may say ───
-
-- Every number in your answer must come from somewhere you were SHOWN it: a tool result, the hotel snapshot, this hotel's own confirmed facts, or what the user just typed. Copy it; do not adjust it.
-- Do NOT calculate a new number. No percentages, averages, per-room figures, totals, differences or "on pace to" projections worked out in your head — not even from numbers you were correctly given. Arithmetic done in prose is where wrong figures come from, and a manager cannot tell one of those from a real one.
-- The tools already carry the derived figures people ask for: percent of budget used, what is left, cost per occupied room, share of the month's spend, how far into the month you are, and what an amount someone is thinking of spending would do to their budget. When a question needs one, CALL THE TOOL WITH THE RIGHT ARGUMENT and quote what comes back. Read the tool's arguments before deciding you cannot answer — "what percent of my budget is $600" is a question the tool answers when you hand it the $600.
-- If the number that answers the question is not in front of you, say that plainly and offer to look it up: "I don't have that figure — want me to check?" Never estimate, never round to a comfortable number, never say "roughly" over a figure you made up.
-- Do not lecture the user about any of this. They asked a question; either give them the figure or tell them in one short sentence that you don't have it. Never explain that you are not allowed to do arithmetic, never mention your rules, and never tell a manager to work the number out themselves — that is a worse answer than no answer.
-- Never quote a tool's field names or its notes to you back at the user. They have never seen "pctUsed", "pctElapsed" or "the tool returned"; they see a hotel. Say "61% of the budget used" and "87% through the month" and leave the plumbing out of it.
-- Money is the strictest case. Never invent a price, a total, a fee or a cost, and never turn a range into a single number — "$750–$1,750" is the claim; "$750" and "about $1,200" are not.
-
-En español, la misma regla: los números se copian tal cual del dato que tienes delante. No calcules porcentajes ni promedios ni totales de cabeza. Si no tienes la cifra, dilo — "esa cifra no la tengo" — y ofrécete a buscarla. Nunca inventes un precio.`;
-
-export const NUMBER_HONESTY_VERSION = 'number-honesty-v3';
+// They now live in `rule-tiers.ts` as a REGISTRY that all three model-calling
+// pipelines iterate. Re-exported here because this file is the hotel chat's
+// public face and several callers already import them from it; the definitions
+// are one file away and adding a rule there needs no edit in this one.
+export {
+  DATA_FRESHNESS_PROMPT,
+  DATA_FRESHNESS_VERSION,
+  NUMBER_HONESTY_PROMPT,
+  NUMBER_HONESTY_VERSION,
+} from './rule-tiers';
 
 // ─── PMS-family trust envelope (INV-TIER-8) ────────────────────────────────
 // The family tier is the ONLY channel in the whole prompt where text written
@@ -438,8 +405,10 @@ type StableTier =
   | 'voice_approval'
   | 'voice_mode'
   | 'inventory_routing'
-  | 'data_freshness'
-  | 'number_honesty'
+  // ONE slot for the whole shared registry, not one slot per rule. A rule added
+  // to `rule-tiers.ts` has to reach this block without editing this union, or
+  // the single-source-of-truth property is a comment rather than a fact.
+  | 'code_rules'
   | 'pms_family'
   | 'company'
   | 'hotel_identity'
@@ -470,8 +439,7 @@ const STABLE_TIER_ORDER: readonly StableTier[] = [
   'voice_approval',
   'voice_mode',
   'inventory_routing',
-  'data_freshness',
-  'number_honesty',
+  'code_rules',
   'pms_family',
   'company',
   'hotel_identity',
@@ -518,8 +486,8 @@ const INSTRUCTIONAL_STABLE_TIERS: ReadonlySet<StableTier> = new Set<StableTier>(
   'voice_approval',
   'voice_mode',
   'inventory_routing',
-  'data_freshness',
-  'number_honesty',
+  // The shared registry is rules ABOUT answering, never facts about this hotel.
+  'code_rules',
   // "Prompt version: 2026.07.05-v9+…" — a build stamp, not a hotel fact.
   'version_line',
 ]);
@@ -661,14 +629,45 @@ function financeReadRolePrompt(authorization: AgentPromptAuthorization): {
   };
 }
 
-export async function buildSystemPrompt(
-  role: AppRole,
-  snapshot: HotelSnapshot,
-  conversationId: string,
-  voiceCtx?: VoiceModeContext,
+/**
+ * Everything a hotel-chat turn's prompt is assembled from.
+ *
+ * WHY AN OBJECT, AND WHAT IT ALREADY COST TO NOT BE ONE.
+ *
+ * This used to be eight positional parameters whose seventh was union-typed
+ * `string | AgentPromptAuthorization`, because awareness was added late and
+ * slotting it where it read best would have shifted `now` one position right
+ * for every existing caller. The union made the call sites type-check in both
+ * shapes, and that is exactly what a compiler is supposed to stop.
+ *
+ * It did not stop this: the live chat turn passed awareness in slot 7 and
+ * authorization in slot 8, while the approval-resume turn passed authorization
+ * in slot 7 and nothing in slot 8. Both compiled. Both were "correct" by the
+ * signature. And the resume turn — the one that runs immediately after a
+ * manager taps Approve, when what they just did is the single most relevant
+ * fact in the conversation — silently had no "right now" block at all. Nobody
+ * saw it, because a prompt that is missing a section still answers.
+ *
+ * Named fields cannot express that mistake. A caller that forgets `awareness`
+ * has visibly forgotten it.
+ */
+export interface BuildSystemPromptOptions {
+  role: AppRole;
+  snapshot: HotelSnapshot;
+  conversationId: string;
+  voiceCtx?: VoiceModeContext;
   /** Pre-formatted, escaped <staxis-memory> block from retrieveMemoryForTurn().
    *  Appended to the DYNAMIC block (never the cached stable block). '' = none. */
-  memoryBlock?: string,
+  memoryBlock?: string;
+  /**
+   * Pre-rendered <staxis-awareness> block from formatAwarenessForPrompt().
+   *
+   * DYNAMIC only — it carries a wall clock, so putting it in the cached half
+   * would miss the prompt cache on every turn, forever. '' / undefined = none.
+   */
+  awarenessBlock?: string;
+  /** Current exact-hotel authority (financial entitlement + mutation standing). */
+  authorization?: AgentPromptAuthorization;
   /** The clock the snapshot's "as of … , N min ago" line is rendered against.
    *  Defaults to real now, which is what every production caller wants.
    *
@@ -680,33 +679,22 @@ export async function buildSystemPrompt(
    *  overnight, on unchanged code, once the fixture aged past a day. A red main
    *  that means nothing is worse than no test, because it trains everyone to
    *  ignore the light. */
-  now: Date = new Date(),
-  /**
-   * Pre-rendered <staxis-awareness> block from formatAwarenessForPrompt().
-   *
-   * DYNAMIC only — it carries a wall clock, so putting it in the cached half
-   * would miss the prompt cache on every turn, forever. '' / undefined = none,
-   * which is what every caller that has not adopted it yet passes.
-   *
-   * LAST, after `now`, on purpose. Slotting it in beside `memoryBlock` where it
-   * reads better silently shifted `now` one position right for every existing
-   * caller — the cache-purity and hotel-identity suites both started passing a
-   * Date where a string belonged. A trailing optional cannot do that.
-   */
-  awarenessOrAuthorization?: string | AgentPromptAuthorization,
-  /** Current exact-hotel authority. Kept as a separate trailing argument so
-   * awareness and finance-read context can be supplied on the same turn. */
-  authorizationInput?: AgentPromptAuthorization,
+  now?: Date;
+}
+
+export async function buildSystemPrompt(
+  options: BuildSystemPromptOptions,
 ): Promise<SystemPromptBlocks> {
-  // Before awareness existed, the seventh argument was authorization. Accept
-  // both closed shapes so older callers keep their meaning while new callers
-  // can pass awareness followed by authorization explicitly.
-  const awarenessBlock = typeof awarenessOrAuthorization === 'string'
-    ? awarenessOrAuthorization
-    : undefined;
-  const authorization = typeof awarenessOrAuthorization === 'string'
-    ? authorizationInput
-    : awarenessOrAuthorization ?? authorizationInput;
+  const {
+    role,
+    snapshot,
+    conversationId,
+    voiceCtx,
+    memoryBlock,
+    awarenessBlock,
+    authorization,
+    now = new Date(),
+  } = options;
   // A3 tiers: the hotel's PMS family selects the shared family addendum. It
   // rides in on the snapshot the caller already built — no extra query.
   const pmsFamily = snapshot.property.pmsFamily ?? null;
@@ -789,8 +777,15 @@ export async function buildSystemPrompt(
   // on shift, and a rule cannot carry hotel data because it is stored verbatim
   // and read by nothing. `deriveStandingRules` never throws — an unreachable
   // store renders no section at all.
-  const standingRulesBlock = formatStandingRulesForPrompt(
-    await deriveStandingRules(snapshot.property.id),
+  //
+  // Reached through the shared registry's scope resolver rather than by calling
+  // the loader directly. A hotel chat turn is about exactly one hotel, so the
+  // resolver always answers with an id here — the point of routing through it
+  // is that the portfolio surface asks the SAME function and gets null when its
+  // turn spans several hotels, so "whose house rules are these" has one answer
+  // in one place instead of one per pipeline.
+  const standingRules = await hotelScopedRuleTier(
+    exactHotelScope([snapshot.property.id]),
   );
 
   if (family && !familyToRender) {
@@ -812,8 +807,9 @@ export async function buildSystemPrompt(
   //                printed, so it can carry the per-turn receipt.
   const stampParts = [versionLabel];
   if (hasInventoryAccountingAccess) stampParts.push(INVENTORY_ACCOUNTING_ROUTING_VERSION);
-  stampParts.push(DATA_FRESHNESS_VERSION);
-  stampParts.push(NUMBER_HONESTY_VERSION);
+  // Every rule in the shared registry stamps itself, in assembly order. A rule
+  // added there appears in this stamp with no edit here.
+  stampParts.push(...codeOwnedRuleTierVersions());
   if (familyToRender) {
     // Sanitized because stableStamp is PRINTED into the stable block; the
     // persisted receipt below keeps the raw key, which is never shown to a model.
@@ -828,7 +824,7 @@ export async function buildSystemPrompt(
   // for the company tier — an independent hotel's stamp must not claim one.
   if (companyBlock) stampParts.push(COMPANY_RULEBOOK_VERSION);
   if (identityBlock) stampParts.push(HOTEL_IDENTITY_VERSION);
-  if (standingRulesBlock) stampParts.push(HOTEL_RULES_VERSION);
+  if (standingRules) stampParts.push(standingRules.version);
   const stableStamp = stampParts.join('+');
 
   const receiptParts = [stableStamp];
@@ -865,14 +861,13 @@ export async function buildSystemPrompt(
   if (hasInventoryAccountingAccess) {
     stable.push({ tier: 'inventory_routing', lines: ['', INVENTORY_ACCOUNTING_ROUTING_PROMPT] });
   }
-  // Unconditional: every role can be handed a PMS-derived number, so every
-  // role needs the data-age rule. Constant per deploy ⇒ safe in the cached block.
-  stable.push({ tier: 'data_freshness', lines: ['', DATA_FRESHNESS_PROMPT] });
-  // Also unconditional: every role can be handed a figure, and the two floor
-  // lenses (front desk, maintenance) are the ones where an invented number does
-  // the most damage — it is repeated verbatim to a paying guest, or acted on
-  // with a wrench. Constant per deploy ⇒ safe in the cached block.
-  stable.push({ tier: 'number_honesty', lines: ['', NUMBER_HONESTY_PROMPT] });
+  // The shared registry, unconditional and rendered by iteration. Every role can
+  // be handed a PMS-derived number, so every role needs the data-age rule; every
+  // role can be handed a figure, and the two floor lenses (front desk,
+  // maintenance) are where an invented one does the most damage — repeated
+  // verbatim to a paying guest, or acted on with a wrench. Each rule is constant
+  // per deploy ⇒ the whole group is safe in the cached block.
+  stable.push({ tier: 'code_rules', lines: codeOwnedRuleTierLines() });
   if (familyToRender) {
     // The header, the ceiling and BOTH marker tags are supplied HERE, never by
     // the row — which is what the '───' and '<staxis-' forgery CHECKs in
@@ -902,11 +897,12 @@ export async function buildSystemPrompt(
   if (identityBlock) {
     stable.push({ tier: 'hotel_identity', lines: ['', identityBlock] });
   }
-  if (standingRulesBlock) {
-    // Header, ceiling and both marker tags come from hotel-rules-tier.ts, never
-    // from a row — the same envelope discipline as the family and company tiers,
-    // protected by the same '───' / '<staxis-' forgery CHECKs in migration 0417.
-    stable.push({ tier: 'hotel_rules', lines: ['', standingRulesBlock] });
+  if (standingRules) {
+    // Header, ceiling and both marker tags come from hotel-rules-tier.ts via the
+    // shared envelope renderer, never from a row — the same discipline as the
+    // family and company tiers, protected by the same '───' / '<staxis-' forgery
+    // CHECKs in migration 0417.
+    stable.push({ tier: 'hotel_rules', lines: ['', standingRules.block] });
   }
   stable.push({ tier: 'version_line', lines: ['', `Prompt version: ${stableStamp}`] });
 

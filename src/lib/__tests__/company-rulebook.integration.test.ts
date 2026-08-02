@@ -197,9 +197,7 @@ function snapshot(propertyId: string, name: string): HotelSnapshot {
 async function stableBlockFor(propertyId: string, name: string): Promise<string> {
   clearCompanyRulebookCache();
   clearHotelIdentityCache();
-  const { stable } = await buildSystemPrompt(
-    'general_manager', snapshot(propertyId, name), `conv-${propertyId}`,
-  );
+  const { stable } = await buildSystemPrompt({ role: 'general_manager', snapshot: snapshot(propertyId, name), conversationId: `conv-${propertyId}` });
   return stable;
 }
 
@@ -362,23 +360,17 @@ describe('the book reaches its own company\'s hotels and nobody else\'s', () => 
   test('a warm hotel prompt cannot retain an old operator across acquisition and transfer', async () => {
     clearCompanyRulebookCache();
     clearHotelIdentityCache();
-    const independent = await buildSystemPrompt(
-      'general_manager', snapshot(PID_L1, 'Waco Inn'), 'conv-transfer-independent',
-    );
+    const independent = await buildSystemPrompt({ role: 'general_manager', snapshot: snapshot(PID_L1, 'Waco Inn'), conversationId: 'conv-transfer-independent' });
     assert.equal(/Company rulebook/.test(independent.stable), false);
 
     try {
       await changeHotelCompany(PID_L1, ORG_A, RULEBOOK_ACQUIRE_KEY);
-      const acquired = await buildSystemPrompt(
-        'general_manager', snapshot(PID_L1, 'Waco Inn'), 'conv-transfer-acquired',
-      );
+      const acquired = await buildSystemPrompt({ role: 'general_manager', snapshot: snapshot(PID_L1, 'Waco Inn'), conversationId: 'conv-transfer-acquired' });
       assert.match(acquired.stable, /Ecolab/, 'the acquiring company rulebook did not replace the warm null');
       assert.equal(/Standard Textile/.test(acquired.stable), false);
 
       await changeHotelCompany(PID_L1, ORG_B, RULEBOOK_TRANSFER_KEY);
-      const transferred = await buildSystemPrompt(
-        'general_manager', snapshot(PID_L1, 'Waco Inn'), 'conv-transfer-new-operator',
-      );
+      const transferred = await buildSystemPrompt({ role: 'general_manager', snapshot: snapshot(PID_L1, 'Waco Inn'), conversationId: 'conv-transfer-new-operator' });
       assert.match(transferred.stable, /Standard Textile/, 'the new operator rulebook did not replace the old operator');
       assert.equal(/Ecolab/.test(transferred.stable), false, 'the former operator rulebook survived the transfer');
     } finally {
@@ -412,14 +404,10 @@ describe('the book reaches its own company\'s hotels and nobody else\'s', () => 
   test('the version stamp claims the tier only when a block was rendered', async () => {
     clearCompanyRulebookCache();
     clearHotelIdentityCache();
-    const withCompany = await buildSystemPrompt(
-      'general_manager', snapshot(PID_A1, 'Beaumont Suites'), 'conv-stamp-a',
-    );
+    const withCompany = await buildSystemPrompt({ role: 'general_manager', snapshot: snapshot(PID_A1, 'Beaumont Suites'), conversationId: 'conv-stamp-a' });
     clearCompanyRulebookCache();
     clearHotelIdentityCache();
-    const without = await buildSystemPrompt(
-      'general_manager', snapshot(PID_L1, 'Waco Inn'), 'conv-stamp-l',
-    );
+    const without = await buildSystemPrompt({ role: 'general_manager', snapshot: snapshot(PID_L1, 'Waco Inn'), conversationId: 'conv-stamp-l' });
     assert.match(withCompany.stableStamp, /company-rulebook-v2/);
     assert.equal(/company-rulebook-v2/.test(without.stableStamp), false);
   });
@@ -468,13 +456,7 @@ describe('precedence — the hotel beats its company', () => {
   test('the hotel\'s own saved facts land in the DYNAMIC block, after everything', async () => {
     clearCompanyRulebookCache();
     clearHotelIdentityCache();
-    const { stable, dynamic } = await buildSystemPrompt(
-      'general_manager',
-      snapshot(PID_A1, 'Beaumont Suites'),
-      'conv-mem',
-      undefined,
-      '<staxis-memory-block trust="system-derived-from-untrusted"><staxis-memory scope="hotel" topic="hk_start" by="role:general_manager" confidence="high">Beaumont housekeeping actually starts at 6:30.</staxis-memory></staxis-memory-block>',
-    );
+    const { stable, dynamic } = await buildSystemPrompt({ role: 'general_manager', snapshot: snapshot(PID_A1, 'Beaumont Suites'), conversationId: 'conv-mem', memoryBlock: '<staxis-memory-block trust="system-derived-from-untrusted"><staxis-memory scope="hotel" topic="hk_start" by="role:general_manager" confidence="high">Beaumont housekeeping actually starts at 6:30.</staxis-memory></staxis-memory-block>' });
     assert.match(stable, /Housekeeping starts at 8am/, 'the company line is in the cached half');
     assert.equal(/6:30/.test(stable), false, 'a hotel memory must never enter the cached half');
     assert.match(dynamic, /6:30/, 'and it does land in the per-turn half, which the model reads last');
@@ -501,8 +483,8 @@ describe('the cached block stays byte-identical with the new tier in it', () => 
   test('two builds of the same hotel produce identical stable blocks', async () => {
     clearCompanyRulebookCache();
     clearHotelIdentityCache();
-    const a = await buildSystemPrompt('general_manager', snapshot(PID_A1, 'Beaumont Suites'), 'conv-p');
-    const b = await buildSystemPrompt('general_manager', snapshot(PID_A1, 'Beaumont Suites'), 'conv-p');
+    const a = await buildSystemPrompt({ role: 'general_manager', snapshot: snapshot(PID_A1, 'Beaumont Suites'), conversationId: 'conv-p' });
+    const b = await buildSystemPrompt({ role: 'general_manager', snapshot: snapshot(PID_A1, 'Beaumont Suites'), conversationId: 'conv-p' });
     assert.equal(a.stable, b.stable);
     assert.match(a.stable, /Company rulebook/, 'and the tier really was in the block being compared');
   });

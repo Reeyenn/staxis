@@ -194,6 +194,51 @@ export function hotelRuleIsSafe(content: string): boolean {
   return companyFactIsSafe(content);
 }
 
+// ─── The envelope discipline ───────────────────────────────────────────────
+
+/**
+ * Render text that SOMEBODY ELSE WROTE into the cached system block.
+ *
+ * Three tiers do this today (PMS family, company rulebook, hotel standing
+ * rules) and each one had assembled the same five-part shape by hand. The shape
+ * is not decoration; every part of it is load-bearing:
+ *
+ *   header      a section rule the CONTENT cannot forge, because the predicates
+ *               above reject drawn dividers in every alphabet.
+ *   trustNote   the code-owned CEILING: what this channel is allowed to do.
+ *               Printed by code, so an operator with psql cannot edit it.
+ *   markerOpen  an attribute-bearing tag naming the channel and its trust level.
+ *   body        the other party's text, ALREADY escaped by the caller.
+ *   markerClose unforgeable, because escaping `< > &` is arithmetic rather than
+ *               recognition — no byte sequence in the body can close it.
+ *
+ * The caller still owns escaping and dropping, because the caller is the only
+ * one that knows which predicate above applies and what to do with a row it
+ * rejects (every current caller reports the drop to Sentry with the row's
+ * identity and never its content). This function owns the SHAPE, so a fourth
+ * fenced tier cannot ship without a ceiling above it or a closing tag under it.
+ *
+ * Lives in this leaf module rather than with the rule registry so that the
+ * tiers which use it do not have to import the registry that imports them.
+ */
+export function renderTrustEnvelope(input: {
+  header: string;
+  trustNote: string;
+  markerOpen: string;
+  markerClose: string;
+  /** Already escaped. This function never escapes: it cannot know the predicate. */
+  bodyLines: readonly string[];
+}): string {
+  return [
+    input.header,
+    input.trustNote,
+    '',
+    input.markerOpen,
+    ...input.bodyLines,
+    input.markerClose,
+  ].join('\n');
+}
+
 /** One agent_prompts row, as the tier-health evaluator needs it. */
 export interface PromptTierRow {
   role: string;

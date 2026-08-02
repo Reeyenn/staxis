@@ -470,9 +470,7 @@ describe('the identity rides in the STABLE half of the system prompt', () => {
 
   test('it appears in the cached block and not in the per-turn block', async () => {
     tables = populated();
-    const { stable, dynamic } = await buildSystemPrompt(
-      'general_manager', snapshot(agedBy(5)), 'conv-identity', undefined, undefined, NOW,
-    );
+    const { stable, dynamic } = await buildSystemPrompt({ role: 'general_manager', snapshot: snapshot(agedBy(5)), conversationId: 'conv-identity', now: NOW });
     assert.match(stable, /About this hotel/);
     assert.match(stable, /Housekeeping runs at Level 1/);
     assert.equal(/About this hotel/.test(dynamic), false,
@@ -481,17 +479,15 @@ describe('the identity rides in the STABLE half of the system prompt', () => {
 
   test('two turns whose only difference is the clock share a byte-identical stable block', async () => {
     tables = populated();
-    const a = await buildSystemPrompt('general_manager', snapshot(agedBy(5)), 'c', undefined, undefined, NOW);
-    const b = await buildSystemPrompt('general_manager', snapshot(agedBy(45)), 'c', undefined, undefined, NOW);
+    const a = await buildSystemPrompt({ role: 'general_manager', snapshot: snapshot(agedBy(5)), conversationId: 'c', now: NOW });
+    const b = await buildSystemPrompt({ role: 'general_manager', snapshot: snapshot(agedBy(45)), conversationId: 'c', now: NOW });
     assert.equal(a.stable, b.stable);
     assert.notEqual(a.dynamic, b.dynamic, 'or the assertion above proves nothing');
   });
 
   test('the identity sits after the PMS-family tier, so a hotel fact beats a family fact', async () => {
     tables = populated();
-    const { stable } = await buildSystemPrompt(
-      'general_manager', snapshot(agedBy(5)), 'c', undefined, undefined, NOW,
-    );
+    const { stable } = await buildSystemPrompt({ role: 'general_manager', snapshot: snapshot(agedBy(5)), conversationId: 'c', now: NOW });
     const identityAt = stable.indexOf(HOTEL_IDENTITY_HEADER);
     const versionAt = stable.indexOf('Prompt version:');
     const freshnessAt = stable.indexOf('How old the numbers are');
@@ -501,9 +497,7 @@ describe('the identity rides in the STABLE half of the system prompt', () => {
 
   test('a day-zero hotel adds no section and no version stamp for one', async () => {
     tables = dayZero();
-    const { stable, stableStamp } = await buildSystemPrompt(
-      'general_manager', snapshot(agedBy(5)), 'c', undefined, undefined, NOW,
-    );
+    const { stable, stableStamp } = await buildSystemPrompt({ role: 'general_manager', snapshot: snapshot(agedBy(5)), conversationId: 'c', now: NOW });
     assert.equal(/About this hotel/.test(stable), false);
     assert.equal(/hotel-identity/.test(stableStamp), false,
       'stamping a section that was never rendered would claim the model saw it');
@@ -511,9 +505,7 @@ describe('the identity rides in the STABLE half of the system prompt', () => {
 
   test('a configured hotel records the identity version so the change is auditable', async () => {
     tables = populated();
-    const { stableStamp, versionLabel } = await buildSystemPrompt(
-      'general_manager', snapshot(agedBy(5)), 'c', undefined, undefined, NOW,
-    );
+    const { stableStamp, versionLabel } = await buildSystemPrompt({ role: 'general_manager', snapshot: snapshot(agedBy(5)), conversationId: 'c', now: NOW });
     assert.match(stableStamp, /hotel-identity-v1/);
     assert.match(versionLabel, /hotel-identity-v1/);
   });

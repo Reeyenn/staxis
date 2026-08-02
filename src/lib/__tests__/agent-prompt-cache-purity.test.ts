@@ -194,18 +194,14 @@ describe('prompt cache purity', () => {
     // Guards every other assertion in this file: if the derivation silently
     // stopped rendering, "the stable block carries no clock" would become true
     // for the boring reason that it carries almost nothing.
-    const { stable } = await buildSystemPrompt(
-      'general_manager', snapshot(agedBy(5)), 'conv-1', undefined, undefined, NOW,
-    );
+    const { stable } = await buildSystemPrompt({ role: 'general_manager', snapshot: snapshot(agedBy(5)), conversationId: 'conv-1', now: NOW });
     assert.match(stable, /About this hotel/);
     assert.match(stable, /Housekeeping runs at Level 1/);
     assert.match(stable, /Roster: 2 active staff members/);
   });
 
   it('the derived COMPANY section really is in the block being policed too', async () => {
-    const { stable } = await buildSystemPrompt(
-      'general_manager', snapshot(agedBy(5)), 'conv-1', undefined, undefined, NOW,
-    );
+    const { stable } = await buildSystemPrompt({ role: 'general_manager', snapshot: snapshot(agedBy(5)), conversationId: 'conv-1', now: NOW });
     assert.match(stable, /Company rulebook/);
     assert.match(stable, /All our hotels use Ecolab for chemicals\./);
     assert.match(stable, /Orders over \$500 need VP sign-off\./);
@@ -213,16 +209,7 @@ describe('prompt cache purity', () => {
 
   it('never sends the company rulebook to line-role hotel prompts', async () => {
     for (const role of ['front_desk', 'maintenance'] as const) {
-      const { stable, factual } = await buildSystemPrompt(
-        role,
-        snapshot(agedBy(5)),
-        `conv-line-${role}`,
-        undefined,
-        undefined,
-        NOW,
-        undefined,
-        { seesFinancials: false, hotelMutationAllowed: role === 'front_desk' },
-      );
+      const { stable, factual } = await buildSystemPrompt({ role, snapshot: snapshot(agedBy(5)), conversationId: `conv-line-${role}`, now: NOW, authorization: { seesFinancials: false, hotelMutationAllowed: role === 'front_desk' } });
       for (const block of [stable, factual]) {
         assert.equal(/Company rulebook/.test(block), false, `${role} received the company tier`);
         assert.equal(/Ecolab/.test(block), false, `${role} received company vendor knowledge`);
@@ -235,9 +222,7 @@ describe('prompt cache purity', () => {
     // The worst version of the cache bug: this block is shared by every hotel
     // the company operates, so one moving value in it misses the cache on every
     // turn of every conversation across the whole portfolio at once.
-    const { stable } = await buildSystemPrompt(
-      'general_manager', snapshot(agedBy(5)), 'conv-1', undefined, undefined, NOW,
-    );
+    const { stable } = await buildSystemPrompt({ role: 'general_manager', snapshot: snapshot(agedBy(5)), conversationId: 'conv-1', now: NOW });
     const block = stable.slice(
       stable.indexOf('Company rulebook'),
       stable.indexOf('</staxis-company-rulebook>'),
@@ -254,16 +239,14 @@ describe('prompt cache purity', () => {
     // Assembly order IS the conflict rule (later text wins). Reordering these
     // three silently changes which fact the model believes, and nothing else in
     // the suite would notice.
-    const { stable } = await buildSystemPrompt(
-      'general_manager', snapshot(agedBy(5)), 'conv-1', undefined, undefined, NOW,
-    );
+    const { stable } = await buildSystemPrompt({ role: 'general_manager', snapshot: snapshot(agedBy(5)), conversationId: 'conv-1', now: NOW });
     assert.ok(stable.indexOf('How old the numbers are') < stable.indexOf('Company rulebook'));
     assert.ok(stable.indexOf('Company rulebook') < stable.indexOf('About this hotel'));
   });
 
   it('two snapshots 40 minutes apart produce byte-identical stable blocks', async () => {
-    const a = await buildSystemPrompt('general_manager', snapshot(agedBy(5)), 'conv-1', undefined, undefined, NOW);
-    const b = await buildSystemPrompt('general_manager', snapshot(agedBy(45)), 'conv-1', undefined, undefined, NOW);
+    const a = await buildSystemPrompt({ role: 'general_manager', snapshot: snapshot(agedBy(5)), conversationId: 'conv-1', now: NOW });
+    const b = await buildSystemPrompt({ role: 'general_manager', snapshot: snapshot(agedBy(45)), conversationId: 'conv-1', now: NOW });
     assert.equal(a.stable, b.stable);
     // …and the dynamic blocks genuinely differ, or the assertion above would
     // be vacuously true for a build that dropped the as-of line entirely.
@@ -271,14 +254,7 @@ describe('prompt cache purity', () => {
   });
 
   it('the stable block carries the RULE but never a clock or an age', async () => {
-    const { stable, dynamic } = await buildSystemPrompt(
-      'general_manager',
-      snapshot(agedBy(5)),
-      'conv-1',
-      undefined,
-      undefined,
-      NOW,
-    );
+    const { stable, dynamic } = await buildSystemPrompt({ role: 'general_manager', snapshot: snapshot(agedBy(5)), conversationId: 'conv-1', now: NOW });
     assert.match(stable, /How old the numbers are/);
     assert.match(stable, /snapshot is NOT live/);
 
@@ -295,8 +271,8 @@ describe('prompt cache purity', () => {
   });
 
   it('applies to every role, including one without the inventory addendum', async () => {
-    const a = await buildSystemPrompt('housekeeping', snapshot(agedBy(5)), 'conv-2', undefined, undefined, NOW);
-    const b = await buildSystemPrompt('housekeeping', snapshot(agedBy(45)), 'conv-2', undefined, undefined, NOW);
+    const a = await buildSystemPrompt({ role: 'housekeeping', snapshot: snapshot(agedBy(5)), conversationId: 'conv-2', now: NOW });
+    const b = await buildSystemPrompt({ role: 'housekeeping', snapshot: snapshot(agedBy(45)), conversationId: 'conv-2', now: NOW });
     assert.equal(a.stable, b.stable);
     assert.match(a.stable, /How old the numbers are/);
   });
@@ -304,14 +280,7 @@ describe('prompt cache purity', () => {
 
 describe('the refresh-the-page lie is gone', () => {
   it('appears in neither block', async () => {
-    const { stable, dynamic } = await buildSystemPrompt(
-      'general_manager',
-      snapshot(agedBy(5)),
-      'conv-1',
-      undefined,
-      undefined,
-      NOW,
-    );
+    const { stable, dynamic } = await buildSystemPrompt({ role: 'general_manager', snapshot: snapshot(agedBy(5)), conversationId: 'conv-1', now: NOW });
     // The deleted sentence, both halves of it.
     assert.equal(/suggest they refresh the page/i.test(stable + dynamic), false);
     assert.equal(/rebuilt every turn from live data/i.test(stable + dynamic), false);
@@ -321,7 +290,7 @@ describe('the refresh-the-page lie is gone', () => {
   });
 
   it('the stable rule explicitly forbids it instead', async () => {
-    const { stable } = await buildSystemPrompt('owner', snapshot(agedBy(5)), 'conv-1', undefined, undefined, NOW);
+    const { stable } = await buildSystemPrompt({ role: 'owner', snapshot: snapshot(agedBy(5)), conversationId: 'conv-1', now: NOW });
     assert.match(stable, /NEVER tell the user to refresh/i);
   });
 });
@@ -426,7 +395,7 @@ describe('prompt cache purity — the portfolio surface', () => {
 
 describe('version label', () => {
   it('records the freshness rule so the behaviour change is auditable', async () => {
-    const gm = await buildSystemPrompt('general_manager', snapshot(agedBy(5)), 'conv-1', undefined, undefined, NOW);
+    const gm = await buildSystemPrompt({ role: 'general_manager', snapshot: snapshot(agedBy(5)), conversationId: 'conv-1', now: NOW });
     assert.match(gm.versionLabel, /data-freshness-v1/);
     // A3 split the stamp in two: `stableStamp` is what gets PRINTED (constant
     // for the conversation), `versionLabel` is what gets PERSISTED and carries
@@ -434,7 +403,7 @@ describe('version label', () => {
     // prompt cache every turn — see agent-prompt-tiers.test.ts.
     assert.ok(gm.stable.includes(`Prompt version: ${gm.stableStamp}`));
     // Every role gets the rule, so every role's label carries the version.
-    const hk = await buildSystemPrompt('housekeeping', snapshot(agedBy(5)), 'conv-1', undefined, undefined, NOW);
+    const hk = await buildSystemPrompt({ role: 'housekeeping', snapshot: snapshot(agedBy(5)), conversationId: 'conv-1', now: NOW });
     assert.match(hk.versionLabel, /data-freshness-v1/);
     // The pre-existing inventory routing version is not displaced by it.
     assert.match(gm.versionLabel, /inventory-accounting-v2/);
@@ -442,17 +411,13 @@ describe('version label', () => {
   });
 
   it('records the company tier only when a company block was actually rendered', async () => {
-    const withCompany = await buildSystemPrompt(
-      'general_manager', snapshot(agedBy(5)), 'conv-1', undefined, undefined, NOW,
-    );
+    const withCompany = await buildSystemPrompt({ role: 'general_manager', snapshot: snapshot(agedBy(5)), conversationId: 'conv-1', now: NOW });
     assert.match(withCompany.stableStamp, /company-rulebook-v2/);
 
     // An independent hotel gets no section, so its stamp must not claim one —
     // otherwise "which rules was this turn run under" is answered with a lie.
     seedCompanyRulebookCache(PROPERTY_ID, null);
-    const independent = await buildSystemPrompt(
-      'general_manager', snapshot(agedBy(5)), 'conv-1', undefined, undefined, NOW,
-    );
+    const independent = await buildSystemPrompt({ role: 'general_manager', snapshot: snapshot(agedBy(5)), conversationId: 'conv-1', now: NOW });
     assert.equal(/company-rulebook-v2/.test(independent.stableStamp), false);
     assert.equal(/Company rulebook/.test(independent.stable), false);
   });

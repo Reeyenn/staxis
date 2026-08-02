@@ -41,7 +41,11 @@ import 'server-only';
 import { companyForProperty } from '@/lib/company/access';
 import { getConfirmedCompanyFacts, type CompanyFact } from '@/lib/company/rulebook';
 import { COMPANY_CATEGORY_LABELS, type CompanyCategory } from '@/lib/company/rulebook-policy';
-import { COMPANY_BLOCK_MAX_CHARS, companyFactIsSafe } from '@/lib/agent/prompt-tiers';
+import {
+  COMPANY_BLOCK_MAX_CHARS,
+  companyFactIsSafe,
+  renderTrustEnvelope,
+} from '@/lib/agent/prompt-tiers';
 import { escapeTrustMarkerContent } from '@/lib/agent/loop-core';
 import { captureException } from '@/lib/sentry';
 
@@ -153,20 +157,23 @@ export function formatCompanyRulebookForPrompt(rulebook: CompanyRulebook | null)
   }
   if (byCategory.size === 0) return null;
 
-  const lines: string[] = [
-    COMPANY_RULEBOOK_HEADER,
-    COMPANY_TIER_TRUST_NOTE,
-    '',
-    COMPANY_TRUST_MARKER_OPEN,
-  ];
+  const bodyLines: string[] = [];
   for (const category of CATEGORY_ORDER) {
     const bucket = byCategory.get(category);
     if (!bucket || bucket.length === 0) continue;
-    lines.push(`${COMPANY_CATEGORY_LABELS[category].title.en}:`);
-    lines.push(...bucket);
+    bodyLines.push(`${COMPANY_CATEGORY_LABELS[category].title.en}:`);
+    bodyLines.push(...bucket);
   }
-  lines.push(COMPANY_TRUST_MARKER_CLOSE);
-  return lines.join('\n');
+  // Header, ceiling and both marker tags come from the shared renderer, so this
+  // tier and the hotel-rules tier cannot drift apart on the shape of the fence.
+  // The grouping above is this tier's own concern and stays here.
+  return renderTrustEnvelope({
+    header: COMPANY_RULEBOOK_HEADER,
+    trustNote: COMPANY_TIER_TRUST_NOTE,
+    markerOpen: COMPANY_TRUST_MARKER_OPEN,
+    markerClose: COMPANY_TRUST_MARKER_CLOSE,
+    bodyLines,
+  });
 }
 
 // ─── Derivation + cache ─────────────────────────────────────────────────────

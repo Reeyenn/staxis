@@ -30,6 +30,13 @@ import 'server-only';
 //   • the portfolio identity block: names + sizes, cached, sanitised.
 //   • a code-owned PORTFOLIO ceiling — the rules that make this surface safe,
 //     printed by this file and not editable from any row.
+//   • the SHARED code-owned rule registry (`../rule-tiers.ts`) — data age and
+//     number honesty today, whatever is added there tomorrow. Iterated, not
+//     named, so a rule reaches this surface without an edit in this file.
+//   • the hotel's own STANDING RULES, but ONLY on a turn whose selected scope
+//     is exactly one hotel. On a multi-hotel turn there is no hotel whose house
+//     rules are the right ones to state, and the block is absent. See the gate
+//     at the call to `exactHotelScope` below.
 //
 // TIER PLACEMENT is typed exactly the way `prompts.ts` types it, for exactly
 // the same reason: moving a tier from stable to dynamic breaks nothing visible
@@ -39,12 +46,13 @@ import { createHash } from 'node:crypto';
 
 import { formatCompanyRulebookForPrompt } from '@/lib/agent/company-tier';
 import { deriveCompanyRulebookByOrganization } from '@/lib/agent/company-tier';
+import type { SystemPromptBlocks } from '@/lib/agent/prompts';
 import {
-  DATA_FRESHNESS_PROMPT,
-  NUMBER_HONESTY_PROMPT,
-  NUMBER_HONESTY_VERSION,
-  type SystemPromptBlocks,
-} from '@/lib/agent/prompts';
+  codeOwnedRuleTierLines,
+  codeOwnedRuleTierVersions,
+  exactHotelScope,
+  hotelScopedRuleTier,
+} from '@/lib/agent/rule-tiers';
 import { resolvePrompts } from '@/lib/agent/prompts-store';
 import { COMPANY_RULEBOOK_VERSION } from '@/lib/agent/company-tier';
 import type { CompanyScopeRole } from '@/lib/company/roles';
@@ -60,8 +68,6 @@ import { formatPortfolioSnapshotForPrompt, type PortfolioSnapshot } from './snap
 // The stamp is part of the cached prefix's identity, so it moves whenever the
 // text does — otherwise a stale cache entry could serve the old ceiling.
 export const PORTFOLIO_MODE_VERSION = 'portfolio-mode-v3';
-/** Repeated verbatim from `prompts.ts` — folding the same rule's version in. */
-const DATA_FRESHNESS_VERSION = 'data-freshness-v1';
 
 const COMPANY_ROLE_WORDS: Record<CompanyScopeRole, string> = {
   owner: 'an owner of this management company',
@@ -117,10 +123,12 @@ type StableTier =
   | 'global_base'
   | 'global_role'
   | 'portfolio_mode'
-  | 'data_freshness'
-  | 'number_honesty'
+  // ONE slot for the whole shared registry — see the twin comment in
+  // ../prompts.ts. A rule added to rule-tiers.ts must land here without an edit.
+  | 'code_rules'
   | 'company'
   | 'portfolio_identity'
+  | 'hotel_rules'
   | 'version_line';
 
 /** Segments of the UNCACHED per-turn block. */
@@ -136,10 +144,13 @@ const STABLE_TIER_ORDER: readonly StableTier[] = [
   'global_base',
   'global_role',
   'portfolio_mode',
-  'data_freshness',
-  'number_honesty',
+  'code_rules',
   'company',
   'portfolio_identity',
+  // LAST of the content tiers, and only ever present on a one-hotel turn. Same
+  // conflict rule as the hotel surface: an instruction a manager gave about
+  // this specific hotel beats the company standard and the portfolio framing.
+  'hotel_rules',
   'version_line',
 ];
 
@@ -151,8 +162,7 @@ const INSTRUCTIONAL_STABLE_TIERS: ReadonlySet<StableTier> = new Set<StableTier>(
   'global_base',
   'global_role',
   'portfolio_mode',
-  'data_freshness',
-  'number_honesty',
+  'code_rules',
   'version_line',
 ]);
 
@@ -222,11 +232,29 @@ export async function buildPortfolioSystemPrompt(
       );
   const identityBlock = formatPortfolioIdentityForPrompt(input.identity);
 
+  // ─── The hotel's own standing rules, and the scope test that gates them ───
+  //
+  // A standing rule belongs to exactly ONE hotel. This surface usually answers
+  // over several, and on such a turn there is no hotel whose house rules are
+  // the right ones to state — rendering the first hotel's would put its
+  // manager's instructions in front of a question about twenty others, which is
+  // the same leak the company tier is gated against, arrived at from the other
+  // direction (see hotel-rules-tier.ts).
+  //
+  // `exactHotelScope` is the shared decision: an id when the turn's selected set
+  // is one hotel, null otherwise. `identity.hotels` IS that selected set — the
+  // route builds it from the authorization receipt's `propertyIds` — so a null
+  // here is a scope fact, not a missing lookup, and it renders no section.
+  const standingRules = await hotelScopedRuleTier(
+    exactHotelScope(input.identity.hotels.map((hotel) => hotel.id)),
+  );
+
   const stampParts = [
-    versionLabel, PORTFOLIO_MODE_VERSION, DATA_FRESHNESS_VERSION, NUMBER_HONESTY_VERSION,
+    versionLabel, PORTFOLIO_MODE_VERSION, ...codeOwnedRuleTierVersions(),
   ];
   if (companyBlock) stampParts.push(COMPANY_RULEBOOK_VERSION);
   if (identityBlock) stampParts.push(PORTFOLIO_IDENTITY_VERSION);
+  if (standingRules) stampParts.push(standingRules.version);
   const stableStamp = stampParts.join('+');
 
   // The persisted receipt records WHICH hotels this turn was answered over, as
@@ -254,11 +282,11 @@ export async function buildPortfolioSystemPrompt(
         `You are talking to ${COMPANY_ROLE_WORDS[input.companyRole]}.`,
       ],
     },
-    { tier: 'data_freshness', lines: ['', DATA_FRESHNESS_PROMPT] },
-    { tier: 'number_honesty', lines: ['', NUMBER_HONESTY_PROMPT] },
+    { tier: 'code_rules', lines: codeOwnedRuleTierLines() },
   ];
   if (companyBlock) stable.push({ tier: 'company', lines: ['', companyBlock] });
   if (identityBlock) stable.push({ tier: 'portfolio_identity', lines: ['', identityBlock] });
+  if (standingRules) stable.push({ tier: 'hotel_rules', lines: ['', standingRules.block] });
   stable.push({ tier: 'version_line', lines: ['', `Prompt version: ${stableStamp}`] });
 
   const dynamic: Segment<DynamicTier>[] = input.snapshot

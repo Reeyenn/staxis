@@ -235,13 +235,12 @@ export async function runHermetic(input: HermeticCaseInput): Promise<HermeticRes
   const memoryBlock = input.fixture?.memory?.length
     ? formatMemoryForPrompt(input.fixture.memory)
     : '';
-  const systemPrompt = await buildSystemPrompt(
-    input.role,
+  const systemPrompt = await buildSystemPrompt({
+    role: input.role,
     snapshot,
-    'hermetic-eval',
-    undefined,
+    conversationId: 'hermetic-eval',
     memoryBlock,
-  );
+  });
   if (!systemPrompt.versionLabel.includes(HERMETIC_PROMPT_VERSION)) {
     throw new Error(
       `[hermetic-runner] prompt fixture did not take effect (version=${systemPrompt.versionLabel}). ` +
