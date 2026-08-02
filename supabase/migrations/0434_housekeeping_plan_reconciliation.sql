@@ -167,6 +167,30 @@ begin
 end;
 $$;
 
+do $$
+declare
+  duplicate_natural_keys bigint;
+begin
+  -- room_work has one canonical row per property/date/room. The legacy table
+  -- only guaranteed property/dedupe uniqueness, so refuse an ambiguous
+  -- natural-key group before INSERT ... ON CONFLICT could discard a task.
+  select count(*)
+    into duplicate_natural_keys
+    from (
+      select property_id, business_date, room_number
+        from public.cleaning_tasks
+       group by property_id, business_date, room_number
+      having count(*) > 1
+    ) conflicts;
+
+  if duplicate_natural_keys > 0 then
+    raise exception
+      '0434 preflight: % cleaning_tasks natural-key group(s) contain multiple rows for the same property/date/room; refusing to reconcile',
+      duplicate_natural_keys;
+  end if;
+end;
+$$;
+
 -- Every legacy task gets a canonical row. Existing room-work state wins for
 -- workflow fields; the task row supplies only the manager plan metadata and
 -- fills missing workflow timestamps. This prevents a stale rules row from

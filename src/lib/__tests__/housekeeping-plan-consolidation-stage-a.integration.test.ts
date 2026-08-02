@@ -13,6 +13,8 @@ const LEGACY_TASK = 'a4000000-0000-4000-8000-000000000001';
 const LEGACY_ASSIGNMENT = 'a5000000-0000-4000-8000-000000000001';
 const NEW_TASK = 'a4000000-0000-4000-8000-000000000002';
 const NEW_ASSIGNMENT = 'a5000000-0000-4000-8000-000000000002';
+const DUPLICATE_TASK_ONE = 'a4000000-0000-4000-8000-000000000004';
+const DUPLICATE_TASK_TWO = 'a4000000-0000-4000-8000-000000000005';
 const PASS_INSPECTION = 'a6000000-0000-4000-8000-000000000001';
 const FAIL_TASK = 'a4000000-0000-4000-8000-000000000003';
 const FAIL_INSPECTION = 'a6000000-0000-4000-8000-000000000002';
@@ -213,6 +215,56 @@ describe('housekeeping canonical plan expand stage', () => {
       await scalar<string | null>("select assigned_staff_id from public.room_work where legacy_task_id = $1", [NEW_TASK]),
       null,
     );
+
+    const baselineAssignment = await rows<{
+      id: string;
+      property_id: string;
+      cleaning_task_id: string;
+      housekeeper_id: string;
+      is_active: boolean;
+    }>(
+      "select id, property_id, cleaning_task_id, housekeeper_id, is_active from public.hk_assignments where id = $1",
+      [LEGACY_ASSIGNMENT],
+    );
+    const baselineCanonical = await rows<{
+      assigned_staff_id: string | null;
+      assignment_history: unknown;
+    }>(
+      "select assigned_staff_id, assignment_history from public.room_work where legacy_task_id = $1",
+      [LEGACY_TASK],
+    );
+    const identityMutations: Array<{ sql: string; params: unknown[] }> = [
+      {
+        sql: "update public.hk_assignments set property_id = $1 where id = $2",
+        params: [OTHER_PROPERTY, LEGACY_ASSIGNMENT],
+      },
+      {
+        sql: "update public.hk_assignments set cleaning_task_id = $1 where id = $2",
+        params: [NEW_TASK, LEGACY_ASSIGNMENT],
+      },
+      {
+        sql: "update public.hk_assignments set housekeeper_id = $1 where id = $2",
+        params: [SECOND_HOUSEKEEPER, LEGACY_ASSIGNMENT],
+      },
+    ];
+    for (const mutation of identityMutations) {
+      const identityError = await failsWith(mutation.sql, mutation.params);
+      assert.match(identityError, /IDENTITY_MUTATION/i);
+      assert.deepEqual(
+        await rows(
+          "select id, property_id, cleaning_task_id, housekeeper_id, is_active from public.hk_assignments where id = $1",
+          [LEGACY_ASSIGNMENT],
+        ),
+        baselineAssignment,
+      );
+      assert.deepEqual(
+        await rows(
+          "select assigned_staff_id, assignment_history from public.room_work where legacy_task_id = $1",
+          [LEGACY_TASK],
+        ),
+        baselineCanonical,
+      );
+    }
   });
 
   test('keeps the old reassignment RPC contract while its writes land canonically', async () => {
@@ -244,7 +296,7 @@ describe('housekeeping canonical plan expand stage', () => {
 
   test('completes the exact component set atomically, retries safely, and rolls back on a child failure', async () => {
     await pg.query(
-      "insert into public.room_work(property_id, date, room_number, status) values ($1, $2, '101', 'not_started'), ($1, $2, '102', 'not_started'), ($1, $2, '103', 'not_started'), ($1, $2, '104', 'not_started') on conflict (property_id, date, room_number) do update set status = 'not_started', completed_at = null, is_paused = false",
+      "insert into public.room_work(property_id, date, room_number, status) values ($1, $2, '101', 'not_started'), ($1, $2, '102', 'not_started'), ($1, $2, '104', 'not_started') on conflict (property_id, date, room_number) do update set status = 'not_started', completed_at = null, is_paused = false",
       [PROPERTY, BUSINESS_DATE],
     );
     await pg.query(
@@ -261,6 +313,22 @@ describe('housekeeping canonical plan expand stage', () => {
       { room_number: '103', status: 'completed' },
       { room_number: '104', status: 'not_started' },
     ]);
+    const componentAudit = await rows<{
+      event_type: string;
+      target_id: string;
+      metadata: { component_only?: boolean };
+    }>(
+      "select event_type, target_id, metadata from public.activity_log where property_id = $1 and target_id = public.housekeeping_plan_id($1, $2, '103')::text and event_type = 'cleaning_task_completed'",
+      [PROPERTY, BUSINESS_DATE],
+    );
+    assert.deepEqual(componentAudit, [{
+      event_type: 'cleaning_task_completed',
+      target_id: await scalar<string>(
+        "select public.housekeeping_plan_id($1, $2, '103')::text",
+        [PROPERTY, BUSINESS_DATE],
+      ),
+      metadata: { component_only: true, room_number: '103', business_date: BUSINESS_DATE, status: 'completed' },
+    }]);
 
     await pg.query(
       "update public.room_work set status = 'not_started', completed_at = null, is_paused = false where property_id = $1 and date = $2 and room_number in ('101','102','103')",
@@ -405,6 +473,48 @@ describe('housekeeping canonical plan expand stage', () => {
       assert.deepEqual(historyRows.rows, [{ count: 1 }]);
     } finally {
       await invalid.pg.close();
+    }
+  });
+
+  test('0434 refuses duplicate legacy natural keys without dropping either task', async () => {
+    const duplicate = await applyMigrationsToPgliteWithHook(async ({ pg: db, file }) => {
+      if (file !== '0434_housekeeping_plan_reconciliation.sql') return;
+
+      await db.query(
+        "insert into auth.users(id, email) values ($1, 'phase5-duplicate@example.test') on conflict (id) do nothing",
+        [OWNER],
+      );
+      await db.query(
+        "insert into public.properties(id, owner_id, name, total_rooms, timezone) values ($1, $2, 'Phase Five Inn', 60, 'America/Chicago') on conflict (id) do nothing",
+        [PROPERTY, OWNER],
+      );
+      await db.query(
+        "insert into public.cleaning_tasks(id, property_id, room_number, business_date, dedupe_key, cleaning_type, priority, estimated_minutes, requires_inspection, extras, notes, rules_fired, rule_inputs, status, source_engine_run_id, source_property_timezone, scheduled_at, last_evaluated_at) values ($1, $3, '501', $4, '501::departure::2026-08-02', 'departure', 'normal', 30, false, '[]'::jsonb, 'first duplicate', '[]'::jsonb, '{}'::jsonb, 'scheduled', $5, 'America/Chicago', $6::timestamptz, $6::timestamptz), ($2, $3, '501', $4, '501::stayover::2026-08-02', 'stayover', 'low', 20, false, '[]'::jsonb, 'second duplicate', '[]'::jsonb, '{}'::jsonb, 'scheduled', $5, 'America/Chicago', $6::timestamptz, $6::timestamptz)",
+        [DUPLICATE_TASK_ONE, DUPLICATE_TASK_TWO, PROPERTY, BUSINESS_DATE, 'b4000000-0000-4000-8000-000000000005', '2026-08-02T12:00:00Z'],
+      );
+    });
+
+    try {
+      const failure = duplicate.report.failedAtRuntime.find(
+        (entry) => entry.file === '0434_housekeeping_plan_reconciliation.sql',
+      );
+      assert.ok(failure, JSON.stringify(duplicate.report.failedAtRuntime.filter((entry) => entry.file.startsWith('043'))));
+      assert.match(failure.error, /natural-key group/i);
+      assert.equal(
+        duplicate.report.applied.includes('0434_housekeeping_plan_reconciliation.sql'),
+        false,
+      );
+      await duplicate.pg.exec('rollback;').catch(() => undefined);
+      const legacyTasks = await duplicate.pg.query<{ id: string; dedupe_key: string }>(
+        "select id, dedupe_key from public.cleaning_tasks where property_id = $1 and business_date = $2 and room_number = '501' order by id",
+        [PROPERTY, BUSINESS_DATE],
+      );
+      assert.deepEqual(legacyTasks.rows, [
+        { id: DUPLICATE_TASK_ONE, dedupe_key: '501::departure::2026-08-02' },
+        { id: DUPLICATE_TASK_TWO, dedupe_key: '501::stayover::2026-08-02' },
+      ]);
+    } finally {
+      await duplicate.pg.close();
     }
   });
 });

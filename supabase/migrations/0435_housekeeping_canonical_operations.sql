@@ -310,6 +310,18 @@ declare
   v_seen_inactive boolean;
   v_clear boolean;
 begin
+  if tg_op = 'UPDATE'
+     and (
+       old.id is distinct from new.id
+       or old.property_id is distinct from new.property_id
+       or old.cleaning_task_id is distinct from new.cleaning_task_id
+       or old.housekeeper_id is distinct from new.housekeeper_id
+     ) then
+    raise exception
+      'E_LEGACY_ASSIGNMENT_IDENTITY_MUTATION: assignment id, property, task, and housekeeper identity cannot change in place'
+      using errcode = 'integrity_constraint_violation';
+  end if;
+
   select t.property_id, t.business_date, t.room_number
     into v_task
     from public.cleaning_tasks t
@@ -961,6 +973,7 @@ begin
     select distinct value
       from jsonb_array_elements_text(v_children)
      where value is not null and btrim(value) <> ''
+     order by value
   loop
     update public.room_work w
        set status = 'completed',
@@ -1035,24 +1048,44 @@ begin
     return new;
   end if;
 
-  if tg_op = 'INSERT' and new.plan_cleaning_type is not null then
-    perform public._activity_log_write(
-      new.property_id, new.created_at, 'housekeeping', 'cleaning_task_created',
-      null, null, 'cleaning_task', v_target::text,
-      'Room ' || new.room_number,
-      format('Cleaning task created for room %s (%s, priority %s)', new.room_number, new.plan_cleaning_type, coalesce(new.plan_priority, 'normal')),
-      'rules_engine', v_target,
-      jsonb_build_object(
-        'room_number', new.room_number,
-        'business_date', new.date,
-        'cleaning_type', new.plan_cleaning_type,
-        'priority', new.plan_priority,
-        'estimated_minutes', new.plan_estimated_minutes,
-        'requires_inspection', new.plan_requires_inspection,
-        'status', new.plan_status,
-        'rules_fired', new.plan_rules_fired
-      )
-    );
+  if tg_op = 'INSERT' then
+    if new.plan_cleaning_type is not null then
+      perform public._activity_log_write(
+        new.property_id, new.created_at, 'housekeeping', 'cleaning_task_created',
+        null, null, 'cleaning_task', v_target::text,
+        'Room ' || new.room_number,
+        format('Cleaning task created for room %s (%s, priority %s)', new.room_number, new.plan_cleaning_type, coalesce(new.plan_priority, 'normal')),
+        'rules_engine', v_target,
+        jsonb_build_object(
+          'room_number', new.room_number,
+          'business_date', new.date,
+          'cleaning_type', new.plan_cleaning_type,
+          'priority', new.plan_priority,
+          'estimated_minutes', new.plan_estimated_minutes,
+          'requires_inspection', new.plan_requires_inspection,
+          'status', new.plan_status,
+          'rules_fired', new.plan_rules_fired
+        )
+      );
+    elsif new.status = 'completed' then
+      -- A component-only child can be materialized by the completion trigger
+      -- with no manager plan metadata. It still represents an auditable
+      -- housekeeping completion and must not be lost from the timeline.
+      perform public._activity_log_write(
+        new.property_id, coalesce(new.completed_at, new.updated_at, new.created_at),
+        'housekeeping', 'cleaning_task_completed',
+        new.assigned_staff_id, new.assignment_assigned_by_user_id,
+        'cleaning_task', v_target::text, 'Room ' || new.room_number,
+        format('Component room %s completed', new.room_number),
+        'housekeeper_app', v_target,
+        jsonb_build_object(
+          'room_number', new.room_number,
+          'business_date', new.date,
+          'status', new.status,
+          'component_only', true
+        )
+      );
+    end if;
   elsif tg_op = 'UPDATE' then
     if old.status is distinct from new.status or old.plan_status is distinct from new.plan_status then
       v_status := case
