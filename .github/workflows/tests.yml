@@ -1,11 +1,17 @@
 name: Tests
 
-# Runs on every push to main and every PR. The chain catches regressions
-# *before* they reach Vercel. Each step has a comment explaining what it
-# protects against — keep them when editing.
+# Runs on every push to main and every PR. Independent suites/checks run in
+# parallel; the final `test` job preserves the one required aggregate status.
 #
-# Order is intentional: cheap checks first (lint, type-check) so a broken
-# import surfaces in <30s, then unit tests, then the more expensive build.
+# Order within a job remains intentional: setup precedes the checks that need
+# it, while unrelated root, ML, CUA, email-worker, and build jobs do not wait
+# on one another.
+#
+# 2026-05-12 (Codex audit): pin permissions to the minimum needed.
+# The default GITHUB_TOKEN scope on PR runs depends on org/repo
+# settings; if defaults are permissive, an untrusted PR's code (run
+# via `npm ci` + `npm run build`) could exfiltrate a token with
+# write access. These jobs only need to read the checked-out code.
 
 on:
   push:
@@ -13,44 +19,18 @@ on:
   pull_request:
     branches: [main]
 
-# 2026-05-12 (Codex audit): pin permissions to the minimum needed.
-# The default GITHUB_TOKEN scope on PR runs depends on org/repo
-# settings; if defaults are permissive, an untrusted PR's code (run
-# via `npm ci` + `npm run build`) could exfiltrate a token with
-# write access. This job only needs to read the checked-out code.
 permissions:
   contents: read
 
 jobs:
-  test:
+  # The independent root checks share no artifacts or mutable state. Keeping
+  # the full-history checkout here is load-bearing for audit-eval-regressions:
+  # it compares this event's commit range and must not pass vacuously on a
+  # shallow clone.
+  quality:
     runs-on: ubuntu-latest
-    # 2026-07-26: was 10, which the job outgrew. The ceiling was set when a
-    # broken type-check step short-circuited the run and SKIPPED the 12 steps
-    # after it, so for 25 commits main only ever paid for lint + type-check.
-    # With type-check fixed the full chain runs again, and the weekend's
-    # +700 tests landed on top of that. Run 30205302397 was cancelled mid
-    # `Test cua-service` at the 10m0s wall.
-    #
-    # Worst observed time per step, summed across runs 30204336858 (passed,
-    # 7m44s) and the two cancelled runs: 10m57s — i.e. the old ceiling had
-    # zero headroom even on a good runner. The slow steps also swing hard
-    # run-to-run on hosted runners: TypeScript unit tests 181s -> 299s,
-    # Lint 79s -> 119s, Type-check 26s -> 43s (+51-65% each) for the same
-    # workload. 25 gives ~2.3x the worst observed sum, which absorbs both
-    # that variance and continued growth of the test suite, while still
-    # killing a genuinely hung test far inside GitHub's 6h default.
-    #
-    # This is a ceiling, not a gate: raise it when the suite honestly grows,
-    # never to paper over a step that has started hanging.
     timeout-minutes: 25
     steps:
-      # fetch-depth: 0 is LOAD-BEARING, not a convenience. The lint chain runs
-      # scripts/audit-eval-regressions.mjs (the ratchet: a `fix(` commit to the
-      # agent/PMS/ingestion code must carry a test). It audits the commit range
-      # of THIS event — github.event.before..after on a push, merge-base..head
-      # on a PR. The default depth-1 checkout has neither endpoint's history, so
-      # the audit cannot see the pushed commits. It fails loudly rather than
-      # passing vacuously, so removing this line turns the gate red, not silent.
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
@@ -62,21 +42,6 @@ jobs:
 
       - run: npm ci
 
-      # Phase M3.1 (2026-05-14): Python toolchain for ml-service.
-      # Adding pytest to CI was the missing root-cause gate that let two
-      # NameError/AttributeError cold-start crashes ship in M3 — the test
-      # suite existed locally but never ran in CI. Setup is cached on
-      # requirements.txt so this only re-installs when deps change.
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
-          cache: 'pip'
-          cache-dependency-path: ml-service/requirements.txt
-
-      - name: Install ml-service deps
-        working-directory: ml-service
-        run: pip install -r requirements.txt
-
       # Lint — ESLint flat config (eslint.config.js) bridged to
       # eslint-config-next via FlatCompat. The cosmetic
       # react/no-unescaped-entities rule is disabled project-wide.
@@ -87,13 +52,6 @@ jobs:
       # process.env directly. Forces new code to import { env }.
       - name: Lint
         run: npm run lint
-
-      # Audit Batch 2 (F-13a): PII guard. `scripts/check-no-pii-logs.sh`
-      # fails when `console.{error,warn,log}` interpolates a known-PII
-      # identifier. It's defined as `npm run test:pii-logs` in
-      # package.json but wasn't wired into CI before this step.
-      - name: PII-log check
-        run: npm run test:pii-logs
 
       # Audit Batch 1 (NEW-1): block Finder-style duplicates from ever
       # shipping a workflow file. macOS creates `foo 2.yml` when copying
@@ -114,43 +72,53 @@ jobs:
           fi
           echo "No duplicate workflow files."
 
-      # Type-check — fails on any tsc error.
-      - name: Type-check
-        run: npx tsc --noEmit
+  # This is the complete root npm test contract. It intentionally runs as one
+  # logical suite so package.json remains the source of truth: type-check and
+  # PII guard, all server/integration *.test.ts files, and the client-behavior
+  # *.client.test.tsx glob. The latter automatically includes every matching
+  # future file; no hand-maintained allowlist can silently omit a new test.
+  root-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
-      # (The legacy `scraper/` unit-test step was removed here: the scraper
-      # directory was deleted in the Plan v4 rebuild (2026-05-23), so
-      # `node --test scraper/__tests__/*.test.js` matched no files and exited
-      # non-zero on every run, failing CI before the real tests below ran.)
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
 
-      # TypeScript test suites run via tsx --test. The env module (src/lib/env.ts)
-      # validates required vars at boot and several test files transitively
-      # import it; pass placeholder env so the imports succeed. Tests don't
-      # make real Supabase calls. Placeholder values are >= 20 chars to satisfy
-      # the schema's min length validators.
-      - name: Run TypeScript unit tests
-        env:
-          NEXT_PUBLIC_SUPABASE_URL: 'https://placeholder.supabase.co'
-          NEXT_PUBLIC_SUPABASE_ANON_KEY: 'placeholder-anon-key-min-20-chars'
-          SUPABASE_SERVICE_ROLE_KEY: 'placeholder-service-role-key-min-20-chars'
-          # OPENAI_API_KEY became required (z.string().startsWith('sk-')) in
-          # the security/02 voice-replay-close batch. tsx --test imports
-          # env.ts transitively from many test files; without this placeholder
-          # the env-validation throw fires before any test runs and every
-          # tsx test fails immediately.
-          OPENAI_API_KEY: 'sk-placeholder-test-key-min-20-chars'
-          # CRON_SECRET is optional in the schema but some tests poke
-          # requireCronSecret directly. Min length matches the schema rules.
-          CRON_SECRET: 'placeholder-cron-secret-min-16'
-        # `--conditions=react-server` MUST match the `test` script in
-        # package.json. Without it, tsx resolves the default export
-        # condition and `server-only` throws "cannot be imported from a
-        # Client Component" the moment a test transitively imports
-        # src/lib/supabase-admin.ts — crashing the runner and cascading
-        # into ~115 spurious failures. The npm script gained this flag on
-        # 2026-06-10 but this CI step was missed, leaving `test` red on
-        # main. Keep the two invocations in lock-step.
-        run: npx tsx --conditions=react-server --test src/lib/__tests__/*.test.ts
+      - run: npm ci
+
+      - name: Run complete npm test contract
+        run: npm test
+
+  # ML checks have a separate Python dependency boundary and do not depend on
+  # the root JavaScript checks. They therefore run concurrently with them.
+  ml:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # Phase M3.1 (2026-05-14): Python toolchain for ml-service.
+      # Adding pytest to CI was the missing root-cause gate that let two
+      # NameError/AttributeError cold-start crashes ship in M3 — the test
+      # suite existed locally but never ran in CI. Setup is cached on
+      # requirements.txt so this only re-installs when deps change.
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+          cache-dependency-path: ml-service/requirements.txt
+
+      - name: Install ml-service deps
+        working-directory: ml-service
+        run: pip install -r requirements.txt
 
       # Phase M3.1 (2026-05-14): static check for undefined names. F821
       # would have caught the demand.py:214 NameError on `property_meta`
@@ -175,6 +143,43 @@ jobs:
           SUPABASE_SERVICE_ROLE_KEY: 'placeholder-service-role-key'
           ML_SERVICE_SECRET: 'placeholder-secret-12345'
         run: python -m pytest -v --tb=short
+
+      # Codex round-5 META J1.4 (2026-05-13): warn on overgrown ML files.
+      # This remains a soft warning, as it was in the serial workflow.
+      - name: Warn on oversized ML files
+        run: |
+          THRESHOLD=600
+          # Use NUL-delimited find output so an unusual filename cannot split
+          # the warning scan into a different file/argument.
+          OVERSIZED=$(while IFS= read -r -d '' file; do
+            lines=$(wc -l < "$file")
+            [ "$lines" -gt "$THRESHOLD" ] && printf '%s %s\n' "$lines" "$file"
+          done < <(find ml-service/src src/lib/db src/app/api/cron/ml-* \
+            \( -name '*.py' -o -name '*.ts' \) -type f -print0 2>/dev/null) \
+            | sort -rn || true)
+          if [ -n "$OVERSIZED" ]; then
+            echo "$OVERSIZED" | while IFS=' ' read -r lines file; do
+              echo "::warning file=${file},line=1::ML file is ${lines} lines (>${THRESHOLD}). Extract a module before adding more logic — see Phase J in the plan history."
+            done
+          else
+            echo "All ML files are under ${THRESHOLD} lines. ✓"
+          fi
+
+  # CUA retains its own install, lint, browser-backed tests, and build
+  # contract. It is independent of the root and Python jobs.
+  cua:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: cua-service/package-lock.json
 
       # deploy-ci-cron Step 4 (2026-05-22): cua-service had no CI coverage.
       # A TypeScript regression in the Fly worker only surfaced at deploy
@@ -204,8 +209,22 @@ jobs:
         working-directory: cua-service
         run: npm run build
 
-      # The Cloudflare email worker has its own package boundary and
-      # TypeScript config, so the root type-check cannot validate it.
+  # The Cloudflare email worker has its own package boundary and TypeScript
+  # config, so the root type-check cannot validate it.
+  email:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: email-worker/package-lock.json
+
       - name: Install email-worker deps
         working-directory: email-worker
         run: npm ci
@@ -214,49 +233,72 @@ jobs:
         working-directory: email-worker
         run: npm run typecheck
 
-      # Codex round-5 META J1.4 (2026-05-13): warn on overgrown ML files.
-      # The `_train_single_item` function in inventory_rate.py grew from
-      # 908 → 979 lines across 5 review rounds, mostly comments
-      # explaining what the prior round got wrong. Each new edit lands
-      # in a function too big for any reviewer to keep in head. This is
-      # a SOFT WARN — doesn't fail the build — to surface the problem
-      # before it blocks the next reviewer. Threshold tuned to current
-      # state (inventory_rate.py is ~960 lines today; aim to get under
-      # 600 by extracting modules, NOT by inflating the threshold).
-      - name: Warn on oversized ML files
-        run: |
-          # Find ML-layer source files over the threshold; emit GH
-          # workflow warnings (yellow annotation in the PR view).
-          THRESHOLD=600
-          OVERSIZED=$(find ml-service/src src/lib/db src/app/api/cron/ml-* \
-            \( -name '*.py' -o -name '*.ts' \) -type f 2>/dev/null \
-            | xargs -I{} sh -c 'lines=$(wc -l < "$1"); [ "$lines" -gt '"$THRESHOLD"' ] && echo "$lines $1"' _ {} \
-            | sort -rn || true)
-          if [ -n "$OVERSIZED" ]; then
-            echo "$OVERSIZED" | while IFS=' ' read -r lines file; do
-              echo "::warning file=${file},line=1::ML file is ${lines} lines (>${THRESHOLD}). Extract a module before adding more logic — see Phase J in the plan history."
-            done
-          else
-            echo "All ML files are under ${THRESHOLD} lines. ✓"
-          fi
+  # The app build shares no mutable state with tests, lint, ML, CUA, or the
+  # email worker, so it can consume its own runner concurrently.
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - run: npm ci
 
       # Final guard: actually build the app. Catches Next.js bundler errors
       # (missing client/server boundaries, dynamic-import paths, etc.) that
       # tsc happily ignores. Without this, a "type-clean" PR can still break
-      # production. Skipped if NEXT_TELEMETRY_DISABLED isn't set; we set it
-      # to avoid the telemetry prompt blocking CI on a fresh runner.
+      # production. Placeholders keep env validation from blocking the build.
       - name: Build
         env:
           NEXT_TELEMETRY_DISABLED: '1'
-          # Build needs *some* values for any process.env reads at module
-          # load time. We give safe placeholders here — the build doesn't
-          # actually call Supabase, so wrong values are fine.
           NEXT_PUBLIC_SUPABASE_URL: 'https://placeholder.supabase.co'
           NEXT_PUBLIC_SUPABASE_ANON_KEY: 'placeholder-anon-key-min-20-chars'
           SUPABASE_SERVICE_ROLE_KEY: 'placeholder-service-role-key-min-20-chars'
-          # OPENAI_API_KEY became required after the voice-replay batch.
-          # Build's "Collecting page data" step boots route handlers and
-          # transitively imports env.ts, so the validation throw fires
-          # without this placeholder.
           OPENAI_API_KEY: 'sk-placeholder-test-key-min-20-chars'
         run: npm run build
+
+  # Keep the protected-branch context named `test`. This job is deliberately
+  # always evaluated after every independent job so a failed, cancelled, or
+  # skipped dependency cannot leave the required aggregate check green.
+  test:
+    if: ${{ always() }}
+    needs: [quality, root-tests, ml, cua, email, build]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Require every Tests workflow job to pass
+        env:
+          QUALITY_RESULT: ${{ needs.quality.result }}
+          ROOT_TESTS_RESULT: ${{ needs.root-tests.result }}
+          ML_RESULT: ${{ needs.ml.result }}
+          CUA_RESULT: ${{ needs.cua.result }}
+          EMAIL_RESULT: ${{ needs.email.result }}
+          BUILD_RESULT: ${{ needs.build.result }}
+        run: |
+          set -euo pipefail
+          failed=0
+          results=(
+            "quality=${QUALITY_RESULT}"
+            "root-tests=${ROOT_TESTS_RESULT}"
+            "ml=${ML_RESULT}"
+            "cua=${CUA_RESULT}"
+            "email=${EMAIL_RESULT}"
+            "build=${BUILD_RESULT}"
+          )
+          for result in "${results[@]}"; do
+            job=${result%%=*}
+            status=${result#*=}
+            if [ "$status" = success ]; then
+              echo "${job}: passed"
+            else
+              echo "::error::${job} ended with ${status}; required test gate fails."
+              failed=1
+            fi
+          done
+          exit "$failed"
