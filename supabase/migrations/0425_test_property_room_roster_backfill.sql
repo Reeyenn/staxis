@@ -23,7 +23,10 @@ as $$
 declare
   v_property public.properties%rowtype;
   v_expected text[];
+  v_existing_numbers text[];
   v_existing_count integer;
+  v_mirror_count integer;
+  v_expected_count integer;
   v_missing_count integer;
   v_inserted integer;
   v_run_id uuid;
@@ -33,7 +36,8 @@ begin
   -- operation. Room rows never supply their own property_id.
   select * into v_property
     from public.properties
-   where id = p_property_id;
+   where id = p_property_id
+   for update;
 
   if not found or coalesce(v_property.is_test, false) is not true then
     raise notice '0425: property % is not an is_test property; no roster written', p_property_id;
@@ -46,6 +50,7 @@ begin
          )
     into v_expected
     from generate_series(0, v_property.total_rooms - 1) as generated(ordinal);
+  v_expected_count := coalesce(array_length(v_expected, 1), 0);
 
   -- The service caller must use the same explicit stable roster as the seed
   -- path. This prevents an accidental test-only RPC call from manufacturing
@@ -56,35 +61,43 @@ begin
       p_property_id;
   end if;
 
-  -- An existing onboarding roster is authoritative. Do not replace it when
-  -- it differs from the test generator; leave that property for an explicit
-  -- operator decision instead of creating a second identity set.
-  if coalesce(array_length(v_property.room_inventory, 1), 0) > 0
-     and v_property.room_inventory is distinct from v_expected then
-    raise notice '0425: property % has a different non-empty onboarding roster; no rows written', p_property_id;
+  -- A non-empty mirror is safe only when it is the exact deterministic prefix
+  -- that the canonical table already contains. This is the proven T-50 state:
+  -- room_inventory is 101-410 and pms_rooms_inventory contains exactly 101-410.
+  -- Empty mirrors are allowed while the canonical table is an equal or shorter
+  -- deterministic prefix, because this function will fill the mirror after it
+  -- inserts the missing canonical identities.
+  v_mirror_count := coalesce(array_length(v_property.room_inventory, 1), 0);
+  if v_mirror_count > v_expected_count
+     or (
+       v_mirror_count > 0
+       and v_property.room_inventory is distinct from v_expected[1:v_mirror_count]
+     ) then
+    raise notice '0425: property % has a non-generated or out-of-order room mirror; no rows written', p_property_id;
     return 0;
   end if;
 
-  -- A non-generated canonical identity is evidence that this is not a safe
-  -- prefix-extension case. Preserve it and do not manufacture a parallel
-  -- roster.
-  if exists (
-    select 1
-      from public.pms_rooms_inventory existing
-     where existing.property_id = p_property_id
-       and not (existing.room_number = any(v_expected))
-  ) then
-    raise notice '0425: property % has non-generated canonical room identities; no rows written', p_property_id;
+  select coalesce(array_agg(existing.room_number order by existing.room_number), '{}'::text[])
+    into v_existing_numbers
+    from public.pms_rooms_inventory existing
+   where existing.property_id = p_property_id;
+  v_existing_count := coalesce(array_length(v_existing_numbers, 1), 0);
+
+  if v_existing_count > v_expected_count
+     or (
+       v_existing_count > 0
+       and v_existing_numbers is distinct from v_expected[1:v_existing_count]
+     ) then
+    raise notice '0425: property % has a non-generated or non-prefix canonical roster; no rows written', p_property_id;
     return 0;
   end if;
 
-  select count(*)::integer into v_existing_count
-    from public.pms_rooms_inventory
-   where property_id = p_property_id;
-
-  if v_existing_count > v_property.total_rooms then
-    raise notice '0425: property % already has % canonical rooms for configured %; no rows written',
-      p_property_id, v_existing_count, v_property.total_rooms;
+  if v_mirror_count > 0
+     and (
+       v_existing_count <> v_mirror_count
+       or v_existing_numbers is distinct from v_property.room_inventory
+     ) then
+    raise notice '0425: property % has a room mirror inconsistent with its canonical prefix; no rows written', p_property_id;
     return 0;
   end if;
 
@@ -97,13 +110,13 @@ begin
         and existing.room_number = expected.room_number
    );
 
-  -- Complete canonical data is already truthful. The room_inventory mirror is
-  -- filled only when it was empty, never replaced when it contains data.
+  -- Complete canonical data is already truthful. A valid empty or partial
+  -- deterministic mirror is completed; a custom mirror was rejected above.
   if v_missing_count = 0 then
     update public.properties
        set room_inventory = v_expected
      where id = p_property_id
-       and coalesce(array_length(room_inventory, 1), 0) = 0;
+       and room_inventory is distinct from v_expected;
     return 0;
   end if;
 
@@ -165,13 +178,13 @@ begin
          diff = diff || jsonb_build_object('inserted', v_inserted)
    where id = v_run_id;
 
-  -- Keep the existing property roster mirror aligned with the canonical
-  -- identities, but only when it was empty. This update never alters a valid
-  -- onboarding list supplied by an operator.
+  -- Keep the valid deterministic mirror aligned with the canonical identities.
+  -- The validation above prevents this from replacing an operator-supplied
+  -- custom list.
   update public.properties
      set room_inventory = v_expected
    where id = p_property_id
-     and coalesce(array_length(room_inventory, 1), 0) = 0;
+     and room_inventory is distinct from v_expected;
 
   return v_inserted;
 end;
@@ -183,17 +196,108 @@ comment on function public.staxis_restore_test_room_roster(uuid, text[]) is
 revoke all on function public.staxis_restore_test_room_roster(uuid, text[]) from public, anon, authenticated;
 grant execute on function public.staxis_restore_test_room_roster(uuid, text[]) to service_role;
 
+create or replace function public.staxis_create_test_property_with_roster(
+  p_owner_id uuid,
+  p_name text,
+  p_total_rooms integer,
+  p_timezone text,
+  p_pms_type text,
+  p_brand text,
+  p_property_kind text,
+  p_room_numbers text[]
+)
+returns jsonb
+language plpgsql
+security definer
+set search_path = pg_catalog, public
+as $$
+declare
+  v_property public.properties%rowtype;
+  v_inserted integer;
+begin
+  if p_owner_id is null
+     or p_name is null
+     or length(btrim(p_name)) < 3
+     or length(p_name) > 100
+     or p_total_rooms is null
+     or p_total_rooms < 1
+     or p_total_rooms > 2000
+     or p_room_numbers is null then
+    raise exception '0425: explicit deterministic test-property inputs are invalid'
+      using errcode = '22023';
+  end if;
+
+  -- The shell starts with an empty mirror so the canonical restore function
+  -- owns both sides of the consistency boundary inside this transaction.
+  insert into public.properties (
+    owner_id,
+    name,
+    total_rooms,
+    timezone,
+    pms_type,
+    brand,
+    property_kind,
+    is_test,
+    onboarding_source,
+    onboarding_state,
+    room_inventory
+  ) values (
+    p_owner_id,
+    btrim(p_name),
+    p_total_rooms,
+    p_timezone,
+    p_pms_type,
+    p_brand,
+    p_property_kind,
+    true,
+    'admin',
+    jsonb_build_object('step', 1),
+    '{}'::text[]
+  ) returning * into v_property;
+
+  v_inserted := public.staxis_restore_test_room_roster(
+    v_property.id,
+    p_room_numbers
+  );
+  if v_inserted <> p_total_rooms then
+    raise exception '0425: atomic test-property roster did not create the configured canonical count'
+      using errcode = 'P0001';
+  end if;
+
+  return jsonb_build_object(
+    'id', v_property.id,
+    'name', v_property.name,
+    'created_at', v_property.created_at
+  );
+end;
+$$;
+
+comment on function public.staxis_create_test_property_with_roster(uuid, text, integer, text, text, text, text, text[]) is
+  'Service-only atomic creation of an explicit deterministic is_test property shell and its canonical roster. A roster failure rolls back the shell and every related row.';
+
+revoke all on function public.staxis_create_test_property_with_roster(uuid, text, integer, text, text, text, text, text[]) from public, anon, authenticated;
+grant execute on function public.staxis_create_test_property_with_roster(uuid, text, integer, text, text, text, text, text[]) to service_role;
+
 do $$
 declare
   property_row record;
 begin
-  -- The migration supplies the exact same explicit roster accepted by the
-  -- service function. Real properties never enter this loop.
+  -- This is a one-time allowlist from the QA seed manifest and the verified
+  -- production sweep. Counts are an eligibility guard, not the allowlist.
+  -- Future test properties use the service boundary explicitly; they are not
+  -- silently swept by this migration.
   for property_row in
-    select id, total_rooms
-      from public.properties
-     where coalesce(is_test, false) is true
-       and total_rooms > 0
+    select property_row_source.id, property_row_source.total_rooms
+      from (
+        values
+          ('c7ec4be3-ba00-4ff0-bc69-c7e09d8e4f8f'::uuid, 50),
+          ('96a26a7f-7129-47db-8855-b7b34407b843'::uuid, 62),
+          ('cc000003-0000-4000-8000-000000000003'::uuid, 74)
+      ) as eligible(property_id, configured_total)
+      join public.properties property_row_source
+        on property_row_source.id = eligible.property_id
+       and property_row_source.total_rooms = eligible.configured_total
+       and property_row_source.is_test is true
      order by id
   loop
     perform public.staxis_restore_test_room_roster(
