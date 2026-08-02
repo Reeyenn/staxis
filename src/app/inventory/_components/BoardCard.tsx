@@ -42,7 +42,7 @@ export function BoardCard({ lang, it, customNameById, onEdit }: BoardCardProps) 
   const open = () => onEdit?.(it);
 
   return (
-    <div data-flip-id={it.id}>
+    <div data-flip-id={it.id} data-trace-anchor={`inv:${it.id}`}>
       <div
         className="inv-card"
         role="button"

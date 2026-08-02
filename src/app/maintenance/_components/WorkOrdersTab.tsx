@@ -139,6 +139,7 @@ function OpenCard({
     <button
       ref={ref}
       data-wo-id={w.id}
+      data-trace-anchor={`wo:${w.id}`}
       onClick={() => onOpen(w)}
       onMouseEnter={(e) => { e.currentTarget.style.borderColor = CX_CARD_BORDER_HOVER; e.currentTarget.style.transform = 'translateY(-5px)'; e.currentTarget.style.boxShadow = CX_CARD_SHADOW_HOVER; }}
       onMouseLeave={(e) => { e.currentTarget.style.borderColor = T.rule; e.currentTarget.style.transform = 'translateY(0)'; e.currentTarget.style.boxShadow = CX_CARD_SHADOW; }}
