@@ -57,6 +57,7 @@ import {
   groupAccessMemberships,
   isAccessHistoryStatus,
   isDirectAccessGrant,
+  shouldRenderAccessEmptyState,
   splitAccessMemberships,
   type AccessPersonGroup,
 } from '@/lib/company-access/access-people';
@@ -1315,7 +1316,13 @@ function AccessPanel({ data, lang, currentUser, currentAccountId, activeProperty
             />
           ))}
         </div>
-      ) : !adminPreview && renderedPeople.length === 0 && currentRequests.length === 0 ? (
+      ) : shouldRenderAccessEmptyState({
+        adminPreview,
+        renderedPeopleCount: renderedPeople.length,
+        currentRequestCount: currentRequests.length,
+        showHistory,
+        historyRequestCount: historyRequests.length,
+      }) ? (
           <EmptyState
             icon={KeyRound}
             title={'No access grants found'}
