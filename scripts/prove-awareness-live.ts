@@ -74,9 +74,13 @@ async function main(): Promise<void> {
   const { buildSystemPrompt } = await import('../src/lib/agent/prompts');
 
   const block = formatAwarenessForPrompt(awareness);
-  const systemPrompt = await buildSystemPrompt(
-    'general_manager', snapshot, 'proof-conv', undefined, undefined, NOW, block,
-  );
+  const systemPrompt = await buildSystemPrompt({
+    role: 'general_manager',
+    snapshot,
+    conversationId: 'proof-conv',
+    awarenessBlock: block,
+    now: NOW,
+  });
 
   // ── The recorded model input. This exact array is what gets sent. ──
   const systemBlocks: Anthropic.Messages.TextBlockParam[] = [

@@ -38,6 +38,7 @@ import { chatIsMountedForRole } from '@/lib/agent/lenses';
 import { getEnabledSectionsFresh, requireSectionEnabled } from '@/lib/sections/server';
 import { isSectionEnabled } from '@/lib/sections/registry';
 import { buildHotelSnapshot } from '@/lib/agent/context';
+import { buildAwareness, formatAwarenessForPrompt } from '@/lib/agent/awareness';
 import { buildSystemPrompt } from '@/lib/agent/prompts';
 import { retrieveMemoryForTurn } from '@/lib/agent/memory-context';
 import { loadConversation, recordToolResult } from '@/lib/agent/memory';
@@ -170,6 +171,10 @@ export async function POST(req: NextRequest): Promise<Response> {
     return Response.json({ ok: false, error: 'account not found', requestId }, { status: 404 });
   }
   let { userCtx, staffId } = ctxLoad;
+  // Same value the live chat turn reads from the same loader. Only the
+  // company-queue feed of the awareness block uses it, and it is null for a
+  // hotel-only person.
+  const { companyOrganizationId } = ctxLoad;
 
   // WHO LENSES: same door as /api/agent/command. A hat with no chat cannot
   // resolve an approval card either — including one minted before the lens
@@ -670,15 +675,41 @@ export async function POST(req: NextRequest): Promise<Response> {
           buildHotelSnapshot(body.pid, userCtx.role, staffId),
           retrieveMemoryForTurn(body.pid, userCtx.accountId),
         ]);
-        const systemPrompt = await buildSystemPrompt(
-          userCtx.role,
+        // ── The "right now" block, which this turn used to be missing ──────
+        //
+        // Until 2026-08-01 the resume turn built no awareness block at all. Not
+        // by decision: `buildSystemPrompt` took eight positional arguments whose
+        // seventh was `string | AgentPromptAuthorization`, this call site passed
+        // authorization there, and the awareness slot simply went unfilled. Both
+        // call sites type-checked, so nothing ever said a word.
+        //
+        // The turn it silently degraded is the worst one to degrade. This runs
+        // immediately after a manager taps Approve, so "what this person has
+        // done today" — which now includes the thing they just approved — and
+        // "what is still waiting on them" are the most relevant facts in the
+        // conversation, and the follow-up was written without either.
+        //
+        // Built AFTER the snapshot for the same reason as the live turn: it
+        // reuses the snapshot's timezone and PMS-freshness gate. Never throws.
+        // No `pathname` here — a card is resolved from wherever the chat is
+        // open and the client does not send it, so the screen line is omitted
+        // rather than guessed.
+        const awareness = await buildAwareness({
+          propertyId: body.pid,
+          role: userCtx.role,
+          accountId: userCtx.accountId,
+          authUserId: auth.userId,
+          organizationId: companyOrganizationId,
           snapshot,
-          pending.conversationId,
-          undefined,
+        });
+        const systemPrompt = await buildSystemPrompt({
+          role: userCtx.role,
+          snapshot,
+          conversationId: pending.conversationId,
           memoryBlock,
-          undefined,
-          userCtx,
-        );
+          awarenessBlock: formatAwarenessForPrompt(awareness),
+          authorization: userCtx,
+        });
         runnerCtx.promptVersion = systemPrompt.versionLabel;
         const tools = getToolsForRole(
           userCtx.role,

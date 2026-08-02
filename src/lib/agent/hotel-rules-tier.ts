@@ -37,7 +37,11 @@
 
 import 'server-only';
 import { escapeTrustMarkerContent } from './loop-core';
-import { HOTEL_RULES_BLOCK_MAX_CHARS, hotelRuleIsSafe } from './prompt-tiers';
+import {
+  HOTEL_RULES_BLOCK_MAX_CHARS,
+  hotelRuleIsSafe,
+  renderTrustEnvelope,
+} from './prompt-tiers';
 import { captureException } from '@/lib/sentry';
 import { loadStandingRulesForPrompt, type StandingRule } from '@/lib/companion/rules';
 
@@ -118,14 +122,17 @@ export function formatStandingRulesForPrompt(rules: readonly StandingRule[] | nu
   }
   if (lines.length === 0) return null;
 
-  return [
-    HOTEL_RULES_HEADER,
-    HOTEL_RULES_TRUST_NOTE,
-    '',
-    HOTEL_RULES_MARKER_OPEN,
-    ...lines,
-    HOTEL_RULES_MARKER_CLOSE,
-  ].join('\n');
+  // The five-part shape is supplied by the shared renderer, never assembled
+  // here: header, ceiling, both marker tags. A tier that hand-rolls it is a
+  // tier that can ship without one of them. Escaping stays above, because only
+  // this file knows which predicate applies and what to do with a row it drops.
+  return renderTrustEnvelope({
+    header: HOTEL_RULES_HEADER,
+    trustNote: HOTEL_RULES_TRUST_NOTE,
+    markerOpen: HOTEL_RULES_MARKER_OPEN,
+    markerClose: HOTEL_RULES_MARKER_CLOSE,
+    bodyLines: lines,
+  });
 }
 
 /**

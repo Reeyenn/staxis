@@ -368,16 +368,15 @@ export async function POST(req: NextRequest): Promise<Response> {
     pathname: body.pathname,
     snapshot,
   });
-  const systemPrompt = await buildSystemPrompt(
-    userCtx.role,
+  const systemPrompt = await buildSystemPrompt({
+    role: userCtx.role,
     snapshot,
     conversationId,
-    undefined,
     memoryBlock,
-    new Date(),
-    formatAwarenessForPrompt(awareness),
-    userCtx,
-  );
+    awarenessBlock: formatAwarenessForPrompt(awareness),
+    authorization: userCtx,
+    now: new Date(),
+  });
   const tools = getToolsForRole(
     userCtx.role,
     'chat',

@@ -343,7 +343,7 @@ function seedPrompts(): void {
 describe('the lens prompt', () => {
   it('replaces the role prompt for a lensed hat, and stamps its own version', async () => {
     seedPrompts();
-    const built = await buildSystemPrompt('front_desk', snapshot(), 'conv-1');
+    const built = await buildSystemPrompt({ role: 'front_desk', snapshot: snapshot(), conversationId: 'conv-1' });
     // Before lenses, prompts-store mapped front_desk → the GENERAL_MANAGER row.
     // A front-desk agent was reading the manager's job description, listing
     // tools they could not call. That is the bug this line pins shut.
@@ -356,7 +356,7 @@ describe('the lens prompt', () => {
 
   it('maintenance gets the wrench prompt, not the housekeeper one', async () => {
     seedPrompts();
-    const built = await buildSystemPrompt('maintenance', snapshot(), 'conv-2');
+    const built = await buildSystemPrompt({ role: 'maintenance', snapshot: snapshot(), conversationId: 'conv-2' });
     assert.equal(built.stable.includes('HOUSEKEEPER PROMPT BODY'), false);
     assert.ok(built.stable.includes(CHAT_LENSES.maintenance!.prompt));
     assert.match(built.stableStamp, /role:lens-maintenance-v1/);
@@ -365,15 +365,7 @@ describe('the lens prompt', () => {
 
   it('replaces the front-desk no-money prompt for an explicit read-only finance standing', async () => {
     seedPrompts();
-    const built = await buildSystemPrompt(
-      'front_desk',
-      snapshot(),
-      'conv-finance',
-      undefined,
-      undefined,
-      new Date('2026-07-27T12:00:00.000Z'),
-      { seesFinancials: true, hotelMutationAllowed: false },
-    );
+    const built = await buildSystemPrompt({ role: 'front_desk', snapshot: snapshot(), conversationId: 'conv-finance', now: new Date('2026-07-27T12:00:00.000Z'), authorization: { seesFinancials: true, hotelMutationAllowed: false } });
     assert.match(built.stable, /READ-ONLY Financials access/);
     assert.match(built.stable, /Payroll and individual wages are NOT granted/);
     assert.match(built.stable, /cannot change hotel data or propose an approval card/);
@@ -384,7 +376,7 @@ describe('the lens prompt', () => {
 
   it('an unlensed hat still reads its operator-editable DB row', async () => {
     seedPrompts();
-    const built = await buildSystemPrompt('general_manager', snapshot(), 'conv-3');
+    const built = await buildSystemPrompt({ role: 'general_manager', snapshot: snapshot(), conversationId: 'conv-3' });
     assert.ok(built.stable.includes('MANAGER PROMPT BODY'));
     assert.match(built.stableStamp, /test-gm-v1/);
     invalidatePromptsCache();
@@ -394,8 +386,8 @@ describe('the lens prompt', () => {
     // A per-turn value in the stable block rewrites the cached prefix on every
     // single turn. Nothing breaks; the input-token bill silently multiplies.
     seedPrompts();
-    const a = await buildSystemPrompt('front_desk', snapshot(), 'conv-4');
-    const b = await buildSystemPrompt('front_desk', snapshot(), 'conv-4');
+    const a = await buildSystemPrompt({ role: 'front_desk', snapshot: snapshot(), conversationId: 'conv-4' });
+    const b = await buildSystemPrompt({ role: 'front_desk', snapshot: snapshot(), conversationId: 'conv-4' });
     assert.equal(a.stable, b.stable);
     assert.equal(a.stableStamp, b.stableStamp);
     assert.equal(a.dynamic.includes(CHAT_LENSES.front_desk!.prompt), false);

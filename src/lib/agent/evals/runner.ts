@@ -199,7 +199,11 @@ export async function runOneEval(
   if (evalCase.companyRulebook) {
     armCompanyRulebook();
     try {
-      systemPrompt = await buildSystemPrompt(evalCase.role, snapshot, evalConversationId);
+      systemPrompt = await buildSystemPrompt({
+        role: evalCase.role,
+        snapshot,
+        conversationId: evalConversationId,
+      });
     } finally {
       clearCompanyRulebookCache();
     }
@@ -229,7 +233,11 @@ export async function runOneEval(
       content: evalCase.familyAddendum.content,
     });
     try {
-      systemPrompt = await buildSystemPrompt(evalCase.role, snapshot, evalConversationId);
+      systemPrompt = await buildSystemPrompt({
+        role: evalCase.role,
+        snapshot,
+        conversationId: evalConversationId,
+      });
     } finally {
       setFamilyAddendumOverride(null);
     }
@@ -257,7 +265,11 @@ export async function runOneEval(
       };
     }
   } else {
-    systemPrompt = await buildSystemPrompt(evalCase.role, snapshot, evalConversationId);
+    systemPrompt = await buildSystemPrompt({
+        role: evalCase.role,
+        snapshot,
+        conversationId: evalConversationId,
+      });
   }
   const tools = getToolsForRole(evalCase.role, 'chat');
 

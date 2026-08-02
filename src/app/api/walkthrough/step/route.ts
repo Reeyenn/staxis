@@ -19,33 +19,25 @@
 //   per-step estimate fixes them all in one place.
 
 import type { NextRequest } from 'next/server';
-import type Anthropic from '@anthropic-ai/sdk';
 import { supabaseAdmin } from '@/lib/supabase-admin';
-import {
-  getMessagesClient,
-  MESSAGES_RUNTIME_PROVIDERS,
-} from '@/lib/ai/messages-client';
-import type { AiProvider } from '@/lib/ai/types';
+import { MESSAGES_RUNTIME_PROVIDERS } from '@/lib/ai/messages-client';
 import { requireSession } from '@/lib/api-auth';
 import { capabilityUnavailableResponse } from '@/lib/capabilities/api-gate';
 import { getOrMintRequestId, log } from '@/lib/log';
 import { hotelWriteDecisionForUserId } from '@/lib/team-auth';
-import { escapeTrustMarkerContent, modelTierForModelId, type ModelTier } from '@/lib/agent/llm';
+import {
+  escapeTrustMarkerContent,
+  runAgent,
+  type UsageReport,
+} from '@/lib/agent/llm';
 import { anthropicTierTokenRates } from '@/lib/ai/feature-registry';
 import {
   AiFeatureDisabledError,
-  executeAiPlan,
-  estimateAiCostUsd,
   resolveAiExecutionPlan,
   scaleAiReservationUsd,
   type AiExecutionPlan,
 } from '@/lib/ai/runtime';
 import { applyLegacyModelOverrideToPlan } from '@/lib/ai/legacy-model-overrides';
-import { normalizeAnthropicUsage } from '@/lib/ai/usage';
-import {
-  ANTHROPIC_WALKTHROUGH_TIMEOUT_MS,
-  ANTHROPIC_MAX_RETRIES,
-} from '@/lib/external-service-config';
 import {
   reserveCostBudget,
   finalizeCostReservation,
@@ -54,11 +46,11 @@ import {
 import { buildHotelSnapshot, formatSnapshotForPrompt } from '@/lib/agent/context';
 import type { SnapshotElement } from '@/components/walkthrough/snapshotDom';
 import type { AppRole } from '@/lib/roles';
-import { env } from '@/lib/env';
 import {
   buildSystemPrompt,
   checkRunOwnership,
-  validateAction,
+  parseStepAction,
+  WALKTHROUGH_STEP_OUTPUT_CONFIG,
   type StepAction,
 } from '@/lib/walkthrough-step';
 
@@ -98,7 +90,6 @@ interface StepRequestBody {
 
 const MAX_TASK_CHARS = 200;
 const MAX_HISTORY_ENTRIES = 16;
-const MAX_OUTPUT_TOKENS = 512;
 const MAX_ELEMENTS_TO_CLAUDE = 60;
 const WALKTHROUGH_ROUTE_AI_DEADLINE_MS = 25_000;
 const WALKTHROUGH_FALLBACK_RESERVE_MS = 8_000;
@@ -112,21 +103,6 @@ const WALKTHROUGH_FALLBACK_RESERVE_MS = 8_000;
 // Per-call cap headroom — bail early if a step would push the user past
 // today's cap.
 const PER_STEP_ESTIMATE_USD = 0.03;
-
-// ─── Anthropic client ────────────────────────────────────────────────────
-
-// Per src/lib/external-service-config.ts: explicit timeout < route's
-// maxDuration (30s), maxRetries=1 so a hiccup doesn't blow past the function
-// ceiling. Pre-2026-05-17 this was `new Anthropic({ apiKey })` — no timeout,
-// SDK default 2 retries — which the audit flagged as the highest-blast-radius
-// finding (every onboarding user hung 60s on a bad Anthropic regional
-// incident). Both providers' clients now inherit that same budget.
-function client(provider: AiProvider) {
-  return getMessagesClient(provider, {
-    timeoutMs: ANTHROPIC_WALKTHROUGH_TIMEOUT_MS,
-    maxRetries: ANTHROPIC_MAX_RETRIES,
-  });
-}
 
 function buildUserContent(body: StepRequestBody, role: AppRole): string {
   const elements = body.snapshot.elements.slice(0, MAX_ELEMENTS_TO_CLAUDE);
@@ -200,35 +176,9 @@ function buildUserContent(body: StepRequestBody, role: AppRole): string {
     ...elementLines,
     repetitionGuard,
     '',
-    'Now call emit_step with the next action.',
+    'Now return the next step.',
   ].join('\n');
 }
-
-// ─── The emit_step tool ──────────────────────────────────────────────────
-
-const EMIT_STEP_TOOL = {
-  name: 'emit_step',
-  description: 'Emit the single next walkthrough step for the user.',
-  input_schema: {
-    type: 'object' as const,
-    properties: {
-      type: {
-        type: 'string',
-        enum: ['click', 'done', 'cannot_help'],
-        description: 'click = ask the user to click an element; done = task complete; cannot_help = task not reachable / not sensible from here.',
-      },
-      elementId: {
-        type: 'string',
-        description: 'Required ONLY when type=click. Must be one of the ids from the elements list.',
-      },
-      narration: {
-        type: 'string',
-        description: 'One short imperative sentence describing what the user should do (or that the task is done / cannot be done).',
-      },
-    },
-    required: ['type', 'narration'],
-  },
-};
 
 // ─── Route ───────────────────────────────────────────────────────────────
 
@@ -457,93 +407,85 @@ export async function POST(req: NextRequest): Promise<Response> {
     log.warn('[walkthrough/step] hotel snapshot failed; continuing without', { requestId, err });
   }
 
-  // ── Call Claude (Sonnet for multi-step reasoning) ─────────────────────
-  // History — RC1: Haiku looped on multi-step cases; Sonnet plans
-  // coherently across steps and recognizes "this element was already
-  // actioned" from the history. Per-step cost ~$0.02 vs Haiku's $0.005.
-  const systemPrompt = buildSystemPrompt(role, body.task.trim(), hotelContextStr);
+  // ── Call the model through the canonical agent path ───────────────────
+  //
+  // History — RC1: Haiku looped on multi-step cases; Sonnet plans coherently
+  // across steps and recognizes "this element was already actioned" from the
+  // history. Per-step cost ~$0.02 vs Haiku's $0.005.
+  //
+  // 2026-08-01: this route used to call `messages.create` itself and hand-roll
+  // its own usage accumulation, cost arithmetic and model-tier resolution.
+  // Everything below now goes through `runAgent`, the same function the hotel
+  // chat uses, which owns the usage ledger, the per-attempt billing (including
+  // a failed primary before a successful fallback), the cached/uncached prompt
+  // split, and the `assertStableBlockIsCacheable` guard. The route keeps its own
+  // reservation lifecycle because a walkthrough has no `agent_conversations`
+  // row to reconcile against.
+  //
+  // `tools: []` is not a downgrade: the old `emit_step` tool was never executed.
+  // It existed only to get structured JSON back, which is what the output
+  // grammar does directly — and a tool in the catalog would make `runAgent`'s
+  // loop try to run it.
+  const systemPrompt = await buildSystemPrompt({
+    role,
+    task: body.task.trim(),
+    propertyId: body.propertyId,
+    hotelContext: hotelContextStr,
+  });
   const userContent = buildUserContent(body, role);
 
   let action: StepAction | null = null;
-  let actualUsd = 0;
-  const usageState: { current: {
-    inputTokens: number;
-    uncachedInputTokens: number;
-    outputTokens: number;
-    cachedInputTokens: number;
-    cacheCreationInputTokens: number;
-    cacheCreation5mInputTokens: number;
-    cacheCreation1hInputTokens: number;
-    modelId: string;
-    model: ModelTier;
-  } | null } = { current: null };
+  let finalUsage: UsageReport | null = null;
 
   try {
     try {
-      const configured = await executeAiPlan(
-        walkthroughPlan,
-        async (model, context) => {
-          const response = await client(model.provider).messages.create(
-            {
-              model: model.modelId,
-              max_tokens: MAX_OUTPUT_TOKENS,
-              system: systemPrompt,
-              tools: [EMIT_STEP_TOOL],
-              tool_choice: { type: 'tool', name: 'emit_step' },
-              messages: [{ role: 'user', content: userContent }],
-            },
-            { signal: context.signal },
-          );
-
-          const usage = normalizeAnthropicUsage(response.usage);
-          actualUsd += estimateAiCostUsd(model.pricing!, {
-            uncachedInputTokens: usage.uncachedInputTokens,
-            outputTokens: usage.outputTokens,
-            cacheReadInputTokens: usage.cachedInputTokens,
-            cacheCreationInputTokens: usage.cacheCreationInputTokens,
-            cacheCreation5mInputTokens: usage.cacheCreation5mInputTokens,
-            cacheCreation1hInputTokens: usage.cacheCreation1hInputTokens,
-          });
-          usageState.current = {
-            inputTokens: (usageState.current?.inputTokens ?? 0) + usage.inputTokens,
-            uncachedInputTokens: (usageState.current?.uncachedInputTokens ?? 0) + usage.uncachedInputTokens,
-            outputTokens: (usageState.current?.outputTokens ?? 0) + usage.outputTokens,
-            cachedInputTokens: (usageState.current?.cachedInputTokens ?? 0) + usage.cachedInputTokens,
-            cacheCreationInputTokens: (usageState.current?.cacheCreationInputTokens ?? 0) + usage.cacheCreationInputTokens,
-            cacheCreation5mInputTokens: (usageState.current?.cacheCreation5mInputTokens ?? 0) + usage.cacheCreation5mInputTokens,
-            cacheCreation1hInputTokens: (usageState.current?.cacheCreation1hInputTokens ?? 0) + usage.cacheCreation1hInputTokens,
-            modelId: response.model,
-            model: modelTierForModelId(model.modelId, 'sonnet'),
-          };
-
-          // Tool/schema validation belongs to the attempt. A malformed 200
-          // response is eligible for the configured fallback and its spend is
-          // still retained above.
-          const toolUseBlocks = response.content.filter(
-            (b): b is Anthropic.ToolUseBlock => b.type === 'tool_use' && b.name === 'emit_step',
-          );
-          if (toolUseBlocks.length === 0) {
-            throw new Error('AI returned no emit_step tool call');
+      const run = await runAgent({
+        systemPrompt,
+        history: [],
+        newUserMessage: userContent,
+        tools: [],
+        featureKey: 'walkthrough.step_generation',
+        executionPlan: walkthroughPlan,
+        deadlineAt: routeAiDeadlineAt,
+        fallbackReserveMs: WALKTHROUGH_FALLBACK_RESERVE_MS,
+        abortSignal: req.signal,
+        outputConfig: WALKTHROUGH_STEP_OUTPUT_CONFIG,
+        // Runs INSIDE each provider attempt, so a malformed primary response is
+        // eligible for the configured fallback instead of failing the step.
+        // Its spend is still retained by the ledger either way.
+        validateAssistantResponse: ({ text, toolCallCount }) => {
+          if (toolCallCount !== 0) throw new Error('walkthrough returned an unmounted tool call');
+          if (!parseStepAction(text, body.snapshot.elements)) {
+            throw new Error('AI returned an invalid walkthrough action');
           }
-          if (toolUseBlocks.length > 1) {
-            log.warn('[walkthrough/step] multiple emit_step tool_use blocks; using first', {
-              requestId, count: toolUseBlocks.length,
-            });
-          }
-          const raw = toolUseBlocks[0].input as { type?: string; elementId?: string; narration?: string };
-          const parsed = validateAction(raw, body.snapshot.elements);
-          if (!parsed) throw new Error('AI returned an invalid walkthrough action');
-          return parsed;
         },
-        {
-          deadlineAt: routeAiDeadlineAt,
-          fallbackReserveMs: WALKTHROUGH_FALLBACK_RESERVE_MS,
-          abortSignal: req.signal,
+        // Fires exactly once when runAgent exits, including when both attempts
+        // fail — so a failed step still reconciles to what it actually cost.
+        onUsage: (usage) => { finalUsage = usage; },
+        // No tool can run this turn (`tools: []`), so nothing reads this. It is
+        // still filled honestly rather than cast: the day a walkthrough step
+        // does mount a read-only tool, a context that lied about who is asking
+        // is the wrong thing to inherit.
+        toolContext: {
+          user: {
+            uid: auth.userId,
+            accountId,
+            username: 'walkthrough',
+            displayName: 'Walkthrough',
+            role,
+            propertyAccess: [body.propertyId],
+          },
+          propertyId: body.propertyId,
+          staffId: null,
+          requestId,
+          surface: 'walkthrough',
         },
-      );
-      action = configured.value;
+      });
+      finalUsage = run.usage;
+      action = parseStepAction(run.text, body.snapshot.elements);
+      if (!action) throw new Error('AI returned an invalid walkthrough action');
     } catch (err) {
-      log.error('[walkthrough/step] Anthropic call failed', { requestId, err });
+      log.error('[walkthrough/step] model call failed', { requestId, err });
       return Response.json(
         { ok: false, error: 'AI service is temporarily unavailable. Try again in a moment.', requestId },
         { status: 502 },
@@ -551,17 +493,17 @@ export async function POST(req: NextRequest): Promise<Response> {
     }
 
   } finally {
-    // RC1: reconcile to actual. If we made the Claude call and got usage,
-    // finalize. Otherwise (early validation failure, parse failure, abort)
-    // cancel the reservation to release the budget hold. This replaces the
-    // old fire-and-forget `void ... .then()` insert (Codex CX3).
-    const usageMeta = usageState.current;
+    // RC1: reconcile to actual. If the model call produced usage, finalize.
+    // Otherwise (early validation failure, abort) cancel the reservation to
+    // release the budget hold. This replaces the old fire-and-forget
+    // `void ... .then()` insert (Codex CX3).
+    const usageMeta: UsageReport | null = finalUsage;
     if (usageMeta) {
       try {
         await finalizeCostReservation({
           reservationId: reservation.reservationId,
           conversationId: null, // walkthroughs have no agent_conversations row
-          actualUsd: Math.round(actualUsd * 1_000_000) / 1_000_000,
+          actualUsd: Math.round(usageMeta.costUsd * 1_000_000) / 1_000_000,
           model: usageMeta.model,
           modelId: usageMeta.modelId,
           tokensIn: usageMeta.inputTokens,

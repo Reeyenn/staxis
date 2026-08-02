@@ -292,9 +292,7 @@ describe('awareness: prompt-cache purity', () => {
   });
 
   it('the block lands in the DYNAMIC half and never in the cached one', async () => {
-    const built = await buildSystemPrompt(
-      'general_manager', snapshot(), 'conv-1', undefined, undefined, NOW, AWARE,
-    );
+    const built = await buildSystemPrompt({ role: 'general_manager', snapshot: snapshot(), conversationId: 'conv-1', now: NOW, awarenessBlock: AWARE });
     assert.ok(built.dynamic.includes(AWARENESS_HEADER), 'dynamic carries the block');
     assert.equal(built.stable.includes(AWARENESS_HEADER), false, 'stable must not');
     assert.equal(built.stable.includes('</staxis-awareness>'), false);
@@ -307,35 +305,23 @@ describe('awareness: prompt-cache purity', () => {
   });
 
   it('two turns with DIFFERENT awareness produce byte-identical stable blocks', async () => {
-    const a = await buildSystemPrompt(
-      'general_manager', snapshot(), 'conv-1', undefined, undefined, NOW,
-      `${AWARENESS_HEADER}\n<staxis-awareness trust="system">\nTime: 2:47 PM Mon.\n</staxis-awareness>`,
-    );
-    const b = await buildSystemPrompt(
-      'general_manager', snapshot(), 'conv-1', undefined, undefined, NOW,
-      `${AWARENESS_HEADER}\n<staxis-awareness trust="system">\nTime: 9:13 AM Tue.\n</staxis-awareness>`,
-    );
+    const a = await buildSystemPrompt({ role: 'general_manager', snapshot: snapshot(), conversationId: 'conv-1', now: NOW, awarenessBlock: `${AWARENESS_HEADER}\n<staxis-awareness trust="system">\nTime: 2:47 PM Mon.\n</staxis-awareness>` });
+    const b = await buildSystemPrompt({ role: 'general_manager', snapshot: snapshot(), conversationId: 'conv-1', now: NOW, awarenessBlock: `${AWARENESS_HEADER}\n<staxis-awareness trust="system">\nTime: 9:13 AM Tue.\n</staxis-awareness>` });
     assert.equal(a.stable, b.stable);
     // …and the dynamic halves genuinely differ, or the line above is vacuous.
     assert.notEqual(a.dynamic, b.dynamic);
   });
 
   it('passing no block changes nothing at all', async () => {
-    const without = await buildSystemPrompt(
-      'general_manager', snapshot(), 'conv-1', undefined, undefined, NOW,
-    );
-    const empty = await buildSystemPrompt(
-      'general_manager', snapshot(), 'conv-1', undefined, undefined, NOW, '   ',
-    );
+    const without = await buildSystemPrompt({ role: 'general_manager', snapshot: snapshot(), conversationId: 'conv-1', now: NOW });
+    const empty = await buildSystemPrompt({ role: 'general_manager', snapshot: snapshot(), conversationId: 'conv-1', now: NOW, awarenessBlock: '   ' });
     assert.equal(without.dynamic, empty.dynamic);
     assert.equal(without.stable, empty.stable);
   });
 
   it('the block sits AFTER memory, so what is true now beats what we were told', async () => {
     const memory = '─── What Staxis remembers about this hotel ───\n<staxis-memory-block trust="system-derived-from-untrusted"></staxis-memory-block>';
-    const built = await buildSystemPrompt(
-      'general_manager', snapshot(), 'conv-1', undefined, memory, NOW, AWARE,
-    );
+    const built = await buildSystemPrompt({ role: 'general_manager', snapshot: snapshot(), conversationId: 'conv-1', memoryBlock: memory, now: NOW, awarenessBlock: AWARE });
     assert.ok(
       built.dynamic.indexOf('staxis-memory-block') < built.dynamic.indexOf(AWARENESS_HEADER),
       'later text wins, and "right now" must win over a durable memory',
@@ -362,9 +348,7 @@ describe('awareness: numbers become legitimate receipt evidence', () => {
   const AWARE = `${AWARENESS_HEADER}\n<staxis-awareness trust="system">\nWaiting on them: 4173 preventive tasks due or overdue.\n</staxis-awareness>`;
 
   async function receiptFor(awarenessBlock?: string) {
-    const systemPrompt = await buildSystemPrompt(
-      'general_manager', snapshot(), 'conv-1', undefined, undefined, NOW, awarenessBlock,
-    );
+    const systemPrompt = await buildSystemPrompt({ role: 'general_manager', snapshot: snapshot(), conversationId: 'conv-1', now: NOW, awarenessBlock });
     return buildAnswerReceipt({
       systemPrompt, history: [], newUserMessage: null, toolPayloads: [],
     });
