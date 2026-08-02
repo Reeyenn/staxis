@@ -34,6 +34,8 @@ const HISTORY_STALE_ASSIGNMENT = 'a5000000-0000-4000-8000-000000000012';
 const HISTORY_STALE_ROOM_ASSIGNMENT = 'a5000000-0000-4000-8000-000000000013';
 const LOCK_BRIDGE_TASK = 'a4000000-0000-4000-8000-000000000018';
 const LOCK_BRIDGE_ASSIGNMENT = 'a5000000-0000-4000-8000-000000000014';
+const COMPATIBILITY_TASK = 'a4000000-0000-4000-8000-000000000019';
+const COMPATIBILITY_ASSIGNMENT = 'a5000000-0000-4000-8000-000000000015';
 const INACTIVE_STAFF = 'a3000000-0000-4000-8000-000000000004';
 const NON_HOUSEKEEPING_STAFF = 'a3000000-0000-4000-8000-000000000005';
 const DUPLICATE_TASK_ONE = 'a4000000-0000-4000-8000-000000000004';
@@ -1951,5 +1953,149 @@ describe('housekeeping canonical plan expand stage', () => {
     } finally {
       await reconciled.pg.close();
     }
+  });
+
+  test('old task and assignment metadata writes tolerate an archived unchanged assignee', async () => {
+    const migrated = await applyMigrationsToPgliteWithHook(async ({ pg: db, file }) => {
+      if (file !== '0434_housekeeping_plan_reconciliation.sql') return;
+
+      await db.query(
+        "insert into auth.users(id, email) values ($1, 'phase5-archive-compat@example.test') on conflict (id) do nothing",
+        [OWNER],
+      );
+      await db.query(
+        "insert into public.properties(id, owner_id, name, total_rooms, timezone) values ($1, $2, 'Phase Five Inn', 80, 'America/Chicago') on conflict (id) do nothing",
+        [PROPERTY, OWNER],
+      );
+      await db.query(
+        "insert into public.staff(id, property_id, name, department, is_active) values ($1, $3, 'Soon Archived Housekeeper', 'housekeeping', true), ($2, $3, 'Invalid Front Desk Target', 'front_desk', true) on conflict (id) do nothing",
+        [SECOND_HOUSEKEEPER, NON_HOUSEKEEPING_STAFF, PROPERTY],
+      );
+      await db.query(
+        "insert into public.cleaning_tasks(id, property_id, room_number, business_date, dedupe_key, cleaning_type, priority, estimated_minutes, requires_inspection, extras, rules_fired, status, assignee_id, source_property_timezone, scheduled_at, last_evaluated_at) values ($1, $2, '630', $3, '630::2026-08-02', 'stayover', 'normal', 20, false, '[]'::jsonb, '[]'::jsonb, 'scheduled', $4, 'America/Chicago', $5::timestamptz, $5::timestamptz)",
+        [COMPATIBILITY_TASK, PROPERTY, BUSINESS_DATE, SECOND_HOUSEKEEPER, '2026-08-02T12:00:00Z'],
+      );
+      await db.query(
+        "insert into public.hk_assignments(id, property_id, cleaning_task_id, housekeeper_id, queue_order, is_active, assigned_at, assigned_by, reason, score) values ($1, $2, $3, $4, 1, true, $5::timestamptz, 'auto', 'archive compatibility', 2.5)",
+        [COMPATIBILITY_ASSIGNMENT, PROPERTY, COMPATIBILITY_TASK, SECOND_HOUSEKEEPER, '2026-08-02T12:01:00Z'],
+      );
+    });
+
+    try {
+      assert.deepEqual(
+        migrated.report.failedAtRuntime.filter((entry) => entry.file.startsWith('043')),
+        [],
+      );
+
+      await migrated.pg.query(
+        "update public.staff set is_active = false where id = $1 and property_id = $2",
+        [SECOND_HOUSEKEEPER, PROPERTY],
+      );
+
+      // These mirror old task status, inspection, and rules-engine updates.
+      // The cache still names the now-archived staff member, and the active
+      // hk row still agrees with it while each unrelated write is attempted.
+      await migrated.pg.query(
+        "update public.cleaning_tasks set status = 'ready_now', priority = 'high', notes = 'archive-compatible status write' where id = $1",
+        [COMPATIBILITY_TASK],
+      );
+      await migrated.pg.query(
+        "update public.cleaning_tasks set status = 'inspected_pass', inspected_at = $2::timestamptz where id = $1",
+        [COMPATIBILITY_TASK, '2026-08-02T12:02:00Z'],
+      );
+      await migrated.pg.query(
+        "update public.cleaning_tasks set rules_fired = '[{\"id\":\"archive-rule\"}]'::jsonb, rule_inputs = '{\"source\":\"archive-compat\"}'::jsonb where id = $1",
+        [COMPATIBILITY_TASK],
+      );
+
+      // hk_assignments keeps the FK/property identity checks, but inactive
+      // history rows intentionally do not require active staff eligibility.
+      await migrated.pg.query(
+        "update public.hk_assignments set is_active = false, reason = 'archived assignment' where id = $1",
+        [COMPATIBILITY_ASSIGNMENT],
+      );
+      await migrated.pg.query(
+        "update public.hk_assignments set reason = 'archived metadata', score = 0 where id = $1",
+        [COMPATIBILITY_ASSIGNMENT],
+      );
+
+      let invalidTargetError = '';
+      try {
+        await migrated.pg.query(
+          "update public.cleaning_tasks set assignee_id = $1 where id = $2",
+          [NON_HOUSEKEEPING_STAFF, COMPATIBILITY_TASK],
+        );
+      } catch (error) {
+        invalidTargetError = error instanceof Error ? error.message : String(error);
+      }
+      assert.match(invalidTargetError, /active same-property housekeeper|invalid target/i);
+
+      assert.deepEqual(
+        (await migrated.pg.query<{
+          assignee_id: string | null;
+          status: string;
+          rule_id: string | null;
+          rule_source: string | null;
+        }>(
+          "select assignee_id, status, rules_fired->0->>'id' as rule_id, rule_inputs->>'source' as rule_source from public.cleaning_tasks where id = $1",
+          [COMPATIBILITY_TASK],
+        )).rows,
+        [{
+          assignee_id: SECOND_HOUSEKEEPER,
+          status: 'inspected_pass',
+          rule_id: 'archive-rule',
+          rule_source: 'archive-compat',
+        }],
+      );
+      assert.deepEqual(
+        (await migrated.pg.query<{ assigned_staff_id: string | null }>(
+          "select assigned_staff_id from public.room_work where legacy_task_id = $1",
+          [COMPATIBILITY_TASK],
+        )).rows,
+        [{ assigned_staff_id: null }],
+      );
+      assert.deepEqual(
+        (await migrated.pg.query<{ is_active: boolean; reason: string }>(
+          "select is_active, reason from public.hk_assignments where id = $1",
+          [COMPATIBILITY_ASSIGNMENT],
+        )).rows,
+        [{ is_active: false, reason: 'archived metadata' }],
+      );
+    } finally {
+      await migrated.pg.close();
+    }
+  });
+
+  test('assign_room_work_atomic picks the latest ambiguous legacy match deterministically', async () => {
+    const ambiguousTaskId = await scalar<string>(
+      "select public.housekeeping_plan_id($1, $2::date, '901')::text",
+      [PROPERTY, '2026-08-03'],
+    );
+    await pg.query(
+      `insert into public.room_work(
+         id, legacy_task_id, property_id, date, room_number, status, plan_status
+       ) values
+         (public.housekeeping_plan_id($1, $2::date, '901'), null::uuid, $1::uuid, $2::date, '901', 'not_started', 'scheduled'),
+         (public.housekeeping_plan_id($1, $3::date, '902'), public.housekeeping_plan_id($1, $2::date, '901'), $1::uuid, $3::date, '902', 'not_started', 'scheduled')`,
+      [PROPERTY, '2026-08-03', '2026-08-04'],
+    );
+
+    assert.deepEqual(
+      await rows<{ task_id: string; assignee_id: string; noop: boolean }>(
+        "select * from public.assign_room_work_atomic($1, $2, $3, $4, 'deterministic legacy match', 1, 1.5, false, 'manual')",
+        [PROPERTY, ambiguousTaskId, SECOND_HOUSEKEEPER, OWNER],
+      ),
+      [{ task_id: ambiguousTaskId, assignee_id: SECOND_HOUSEKEEPER, noop: false }],
+    );
+    assert.deepEqual(
+      await rows<{ date: string; room_number: string; assigned_staff_id: string | null }>(
+        "select date::text, room_number, assigned_staff_id from public.room_work where property_id = $1 and (id = $2 or legacy_task_id = $2) order by date",
+        [PROPERTY, ambiguousTaskId],
+      ),
+      [
+        { date: '2026-08-03', room_number: '901', assigned_staff_id: null },
+        { date: '2026-08-04', room_number: '902', assigned_staff_id: SECOND_HOUSEKEEPER },
+      ],
+    );
   });
 });

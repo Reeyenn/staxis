@@ -546,6 +546,12 @@ declare
   v_has_work boolean;
   v_assignee_changed boolean;
 begin
+  if tg_op = 'INSERT' then
+    v_assignee_changed := true;
+  else
+    v_assignee_changed := old.assignee_id is distinct from new.assignee_id;
+  end if;
+
   if tg_op = 'UPDATE'
      and (
        old.id is distinct from new.id
@@ -567,7 +573,11 @@ begin
       using errcode = 'not_null_violation';
   end if;
 
-  if new.assignee_id is not null then
+  -- Old task writers update status, inspection, and rules metadata without
+  -- changing the denormalized assignee cache. Do not revalidate an unchanged
+  -- archived assignee; only a new or changed cache target needs eligibility
+  -- validation during the compatibility window.
+  if v_assignee_changed and new.assignee_id is not null then
     select s.property_id, s.department, coalesce(s.is_active, true) as is_active
       into v_cache_staff
       from public.staff s
@@ -697,12 +707,6 @@ begin
   end if;
   perform set_config('staxis.housekeeping_legacy_bridge', 'off', true);
 
-  if tg_op = 'INSERT' then
-    v_assignee_changed := true;
-  else
-    v_assignee_changed := old.assignee_id is distinct from new.assignee_id;
-  end if;
-
   select a.housekeeper_id into v_active_staff
     from public.hk_assignments a
    where a.property_id = new.property_id
@@ -711,7 +715,8 @@ begin
    order by a.assigned_at desc, a.created_at desc, a.id desc
    limit 1;
 
-  if new.assignee_id is not null
+  if v_assignee_changed
+     and new.assignee_id is not null
      and v_active_staff is not null
      and v_active_staff is distinct from new.assignee_id then
     raise exception

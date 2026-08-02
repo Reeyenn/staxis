@@ -711,6 +711,7 @@ begin
     from public.room_work w
    where w.property_id = p_property_id
      and (w.id = p_task_id or w.legacy_task_id = p_task_id)
+   order by w.date desc, w.id
    limit 1;
 
   if not found then
@@ -738,6 +739,8 @@ begin
    where w.property_id = p_property_id
      and (w.id = p_task_id or w.legacy_task_id = p_task_id
        or (w.date = v_lock_date and w.room_number = v_lock_room))
+   order by w.date desc, w.id
+   limit 1
    for update;
 
   if not found then
