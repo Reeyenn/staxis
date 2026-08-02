@@ -311,6 +311,15 @@ const CX_CSS = `
 // /feed — the Staxis page
 // ═══════════════════════════════════════════════════════════════════════════
 
+/**
+ * Exported for the one thing a test can honestly check about a stylesheet:
+ * that every class a component NAMES is a class this file DEFINES. The
+ * 2026-08-01 redesign deleted `.sl-sw` while the log book popup still asked
+ * for it, and the switch silently lost its layout. That is a no-runtime
+ * invariant, so it is guarded as one. See feed-logbook-merge.client.test.tsx.
+ */
+export const FEED_CSS_FOR_TEST_ONLY = (): string => FEED_CSS;
+
 const FEED_CSS = `
 @keyframes fx-sweep{0%{transform:translateX(-120%);}100%{transform:translateX(320%);}}
 @keyframes fx-pulsering{
@@ -319,7 +328,6 @@ const FEED_CSS = `
   100%{box-shadow:0 0 0 0 rgba(92,122,96,0);}
 }
 @keyframes fx-fade{from{opacity:0;}to{opacity:1;}}
-@keyframes fx-slidein{from{transform:translateX(28px);opacity:.4;}to{transform:none;opacity:1;}}
 
 /* The page's own wash. Scoped with :has so no other section's background moves. */
 .staxis-app-shell:has(.fx-page){
@@ -607,12 +615,30 @@ button.fx-bchip:focus-visible{outline:2px solid #9EB7A6;outline-offset:2px;}
   box-shadow:0 30px 60px -30px rgba(31,42,32,.55);animation:fx-fade .16s ease;}
 .fx-headr{position:relative;}
 
-/* ── The Knows slide-over ── */
+/* ── The log book popup ──
+   Header and footer only; the pane inside brings its own. Type roles follow
+   the page: Geist for the title, Geist Mono for the tally. */
+.fx-lbhead{display:flex;align-items:center;gap:12px;padding:18px 20px 14px;flex-shrink:0;
+  border-bottom:1px solid rgba(31,35,28,.08);}
+.fx-lbt{font-size:16px;font-weight:600;color:#1F231C;letter-spacing:-.01em;}
+.fx-lbhead .fx-tally-r{margin-left:auto;}
+.fx-lbfoot{padding:12px 20px 16px;flex-shrink:0;border-top:1px solid rgba(31,35,28,.07);}
+.fx-lbfoot .fx-foot{margin-top:0;padding-top:0;border-top:none;}
+
+/* ── What Staxis knows ──
+   A CENTRED overlay, not a right-hand drawer. It is a place you look at, not a
+   sidebar you work beside, and it now wears the same card the month grid does:
+   white, 18px radius, one hairline, one deep soft shadow, one short fade. The
+   page stays mounted behind it either way, which was always the point. */
 .fx-scrim{position:fixed;inset:0;z-index:60;background:rgba(20,26,20,.34);border:none;padding:0;
   animation:fx-fade .18s ease;cursor:pointer;}
-.fx-drawer{position:fixed;top:0;right:0;bottom:0;z-index:61;width:min(440px,100vw);background:#fff;
-  display:flex;flex-direction:column;box-shadow:-30px 0 70px -40px rgba(31,42,32,.7);
-  animation:fx-slidein .2s ease;}
+.fx-drawer{position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);z-index:61;
+  width:min(620px,calc(100vw - 40px));max-height:min(760px,calc(100vh - 64px));background:#fff;
+  display:flex;flex-direction:column;border:1px solid rgba(31,35,28,.1);border-radius:18px;overflow:hidden;
+  box-shadow:0 30px 60px -30px rgba(31,42,32,.55);
+  animation:fx-riseover .18s ease;}
+@keyframes fx-riseover{from{opacity:0;transform:translate(-50%,calc(-50% + 10px));}
+  to{opacity:1;transform:translate(-50%,-50%);}}
 .fx-drawerhead{display:flex;align-items:center;gap:12px;padding:20px 22px;flex-shrink:0;
   border-bottom:1px solid rgba(31,35,28,.08);}
 .fx-draweri{display:grid;place-items:center;width:32px;height:32px;border-radius:10px;flex-shrink:0;
@@ -625,7 +651,7 @@ button.fx-bchip:focus-visible{outline:2px solid #9EB7A6;outline-offset:2px;}
 .fx-drawerx:focus-visible{outline:2px solid #3E5C48;outline-offset:2px;}
 .fx-drawerbody{flex:1;overflow-y:auto;-webkit-overflow-scrolling:touch;}
 /* Knows was written as a full page. Inside the drawer it is one column. */
-.fx-drawerbody .cx-page{max-width:none;padding:0 22px 40px;}
+.fx-drawerbody .cx-page{max-width:none;padding:0 22px 26px;}
 
 @media (max-width:1180px){
   .fx-body{grid-template-columns:1fr;}
