@@ -312,7 +312,7 @@ describe('My Hotel account and team integration', () => {
     assert.match(company, /const inviteCapabilityKey = \[[\s\S]*data\.viewerContext\?\.readOnly \? 'read-only' : 'interactive'/);
     assert.match(company, /const \[, setInviteCapabilityRevision\] = React\.useState\(0\)/);
     assert.match(company, /const inviteCapabilitiesStable = inviteCapabilityRef\.current === inviteCapabilityKey/);
-    assert.match(company, /setInviteCapabilityRevision\(\(current\) => current \+ 1\);[\s\S]*if \(inviteDialogOpen\) onInviteDialogOpenChange\(false\)/);
+    assert.match(company, /setInviteCapabilityRevision\(\(current\) => current \+ 1\);[\s\S]*if \(inviteDialogOpen\) \{[\s\S]*onInviteDialogOpenChange\(false\);/);
     assert.match(hotelTeamDialogs, /if \(!canManageHotelRoster\)[\s\S]*setCodeLoading\(false\)/);
     assert.match(hotelTeamDialogs, /\{canManageHotelRoster \? \([\s\S]*hotel-invite-heading/);
     assert.match(hotelTeamDialogs, /\{canInviteManager \? \([\s\S]*email-invite-heading/);
