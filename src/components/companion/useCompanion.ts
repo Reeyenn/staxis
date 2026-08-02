@@ -37,9 +37,11 @@ import { fetchWithAuth, SessionEndedError } from '@/lib/api-fetch';
 import { readEnvelope } from '@/lib/api-envelope';
 import type { AppRole } from '@/lib/roles';
 import { companionMounts } from '@/lib/companion/mount';
+import { COMPANION_DECLINES_BEFORE_DROP } from '@/lib/companion/charter';
 import {
   decideCompanionSpeech,
   decideDailyHello,
+  decidePanelAsk,
   decideTeachMoment,
   parseCompanionMemory,
   DEFAULT_COMPANION_SEVERITY,
@@ -49,6 +51,10 @@ import {
   type CompanionSpeech,
   type TeachFlow,
 } from '@/lib/companion/manners';
+import { isTraceTopic, traceCandidate } from '@/lib/companion/trace';
+import type { TracePage, TracePattern } from '@/lib/companion/trace/types';
+import { useTrace } from './useTrace';
+import { publishTraceLine } from './trace-events';
 import { arrivalLine, greetingLine, offerQuestion, todayFact, type SleepReason } from '@/lib/companion/copy';
 import {
   resolveDestination,
@@ -100,6 +106,45 @@ export interface CompanionPeek {
   severity: CompanionSeverity;
 }
 
+/** What the trace has to say, and the four things a person can do about it. */
+export interface CompanionTraceApi {
+  /** The pattern currently drawn on the page, or null. One at a time, ever. */
+  showing: TracePattern | null;
+  /**
+   * The honest line for a walk that arrived too late.
+   *
+   * Set when somebody said yes on the Staxis list, the router moved, and the
+   * pattern was gone by the time the new screen finished loading. Nothing is
+   * drawn; this sentence is shown instead.
+   */
+  stale: string | null;
+  /**
+   * A pattern that may only be said inside the panel somebody opened.
+   *
+   * Anything about a named person lives here and nowhere else. See
+   * `decidePanelAsk` for why the venue is the whole rule.
+   */
+  panelAsk: { topic: string; sentence: string; pattern: TracePattern | null } | null;
+  /** Runs the one thing the card offered, on the server, from its own plan. */
+  act: (index: number) => Promise<{ done: boolean; receipt?: TraceActReceipt; reason?: string }>;
+  /** Not interested. Melts everything and counts as a decline. */
+  decline: () => void;
+  /** Finished with. Melts everything without counting as a decline. */
+  close: () => void;
+  /** Yes, from the panel ask. */
+  acceptPanelAsk: () => void;
+  /** No, from the panel ask. */
+  declinePanelAsk: () => void;
+}
+
+export interface TraceActReceipt {
+  table: string;
+  id: string;
+  kind: 'created';
+  label: string;
+  where: string | null;
+}
+
 export interface CompanionApi {
   /** False on a housekeeper screen, a public screen, or for a hat with no chat. */
   mounts: boolean;
@@ -131,13 +176,28 @@ export interface CompanionApi {
   startTour: () => void;
   nextTourStep: () => void;
   goTo: (page: CompanionPage) => void;
+  /** The Trace. See CompanionTraceApi. */
+  trace: CompanionTraceApi;
+}
+
+/** Screens a trace can be about. Anything else asks for nothing. */
+function tracePageFor(page: CompanionPage | null): TracePage | null {
+  if (!page) return null;
+  if (page.key === 'maintenance' || page.key === 'inventory' || page.key === 'staxis') return page.key;
+  return null;
 }
 
 /**
  * @param onSeed  How to hand a turn to the one chat brain. The companion never
  *                sends a message itself; it asks the caller to.
+ * @param panel   What the panel is doing, for the one decision that depends on
+ *                it. A pattern about a person may only be said to somebody who
+ *                opened the panel themselves, so the venue has to be an input.
  */
-export function useCompanion(onSeed: (text?: string) => void): CompanionApi {
+export function useCompanion(
+  onSeed: (text?: string) => void,
+  panel: { open: boolean; threadEmpty: boolean } = { open: false, threadEmpty: true },
+): CompanionApi {
   const { user } = useAuth();
   const { activeProperty, activePropertyId, properties } = useProperty();
   const pathname = usePathname();
@@ -229,6 +289,52 @@ export function useCompanion(onSeed: (text?: string) => void): CompanionApi {
 
   const page = useMemo(() => pageForPath(pathname), [pathname]);
 
+  // ── The Trace ────────────────────────────────────────────────────────────
+  //
+  // Patterns for the screen underneath, folded into the same candidate list
+  // everything else the companion says goes through. From here down there is
+  // no such thing as a "trace decision": the manners engine sees candidates,
+  // and a trace is a candidate.
+  const tracePage = useMemo(() => tracePageFor(page), [page]);
+  const traces = useTrace(
+    activePropertyId,
+    tracePage,
+    gate.mounts && boot !== null && boot.availability.awake,
+  );
+
+  const candidates = useMemo<CompanionCandidate[]>(() => {
+    const fromFindings = boot?.candidates ?? [];
+    if (traces.patterns.length === 0) return [...fromFindings];
+    // Traces lead. A pattern about the screen somebody is looking at is more
+    // use than a card about somewhere else, and the manners engine takes the
+    // first candidate that survives its rules.
+    return [...traces.patterns.map(traceCandidate), ...fromFindings];
+  }, [boot, traces.patterns]);
+
+  const [traceShowing, setTraceShowing] = useState<TracePattern | null>(null);
+  const [traceStale, setTraceStale] = useState<string | null>(null);
+  // A yes given on one screen, waiting for another screen to finish loading.
+  const walkingToRef = useRef<string | null>(null);
+
+  // Nothing survives a change of screen. A trace is drawn against rows that no
+  // longer exist the moment the router moves.
+  useEffect(() => {
+    setTraceShowing(null);
+    setTraceStale(null);
+  }, [pathname]);
+
+  // The landing half of a walk. The patterns for the NEW screen have come back;
+  // either the one somebody said yes to is still there, or it is not and that
+  // gets said in one sentence rather than drawn as an empty diagram.
+  useEffect(() => {
+    const wanted = walkingToRef.current;
+    if (!wanted || !traces.settled) return;
+    walkingToRef.current = null;
+    const landed = traces.patterns.find((p) => p.key === wanted);
+    if (landed) setTraceShowing(landed);
+    else setTraceStale('This got handled already, so there is nothing to show you.');
+  }, [traces.settled, traces.patterns]);
+
   // ── Deciding to speak ────────────────────────────────────────────────────
   // Runs when the bootstrap lands and when the page changes. Every rule is in
   // decideCompanionSpeech; this only supplies the inputs and acts on the answer.
@@ -246,6 +352,11 @@ export function useCompanion(onSeed: (text?: string) => void): CompanionApi {
       ? boot.candidates.flatMap((c) => c.covers)
       : [];
 
+    // A trace already drawn on this screen is the loudest thing in the room.
+    // Offering a second one over the top of it would be two things at once,
+    // which is the rule the whole engine exists to keep.
+    if (traceShowing !== null) return;
+
     const speech = decideCompanionSpeech({
       now: new Date(),
       today: boot.hotel.today,
@@ -255,7 +366,7 @@ export function useCompanion(onSeed: (text?: string) => void): CompanionApi {
         sharedLogin: boot.person.sharedLogin,
       },
       memory: boot.memory,
-      candidates: boot.candidates,
+      candidates,
       onScreen,
       userIsBusy: busy,
       quietThisSession,
@@ -302,6 +413,7 @@ export function useCompanion(onSeed: (text?: string) => void): CompanionApi {
   }, [
     boot, gate.mounts, showing.kind, pathname, page, busy, quietThisSession,
     properties.length, activeProperty?.name, activeProperty?.enabledSections, role, remember,
+    candidates, traceShowing,
   ]);
 
   // ── Teach at the moment ──────────────────────────────────────────────────
@@ -410,6 +522,28 @@ export function useCompanion(onSeed: (text?: string) => void): CompanionApi {
       });
       setShowing({ kind: 'none' });
       void remember('accepted', { topic }, (m) => m);
+
+      // A yes to a trace draws it rather than walking anywhere, when the thing
+      // it is about is on the screen already. Walking somebody to the page they
+      // are standing on is the one-voice rule broken in the other direction.
+      if (isTraceTopic(topic)) {
+        const here = traces.patterns.find((p) => p.key === topic);
+        if (here && here.page === tracePage) {
+          setTraceStale(null);
+          setTraceShowing(here);
+          return;
+        }
+        // Found somewhere else. Walk over, and remember what we came for so the
+        // reveal is already drawn on arrival. `goTo` only ever takes a constant
+        // from the allowlist in pages.ts.
+        if (target) {
+          walkingToRef.current = topic;
+          goTo(target);
+          return;
+        }
+        return;
+      }
+
       if (target) goTo(target);
       return;
     }
@@ -420,7 +554,10 @@ export function useCompanion(onSeed: (text?: string) => void): CompanionApi {
       return;
     }
     setShowing({ kind: 'none' });
-  }, [showing, startTour, role, activeProperty?.enabledSections, goTo, remember, onSeed]);
+  }, [
+    showing, startTour, role, activeProperty?.enabledSections, goTo, remember, onSeed,
+    traces.patterns, tracePage,
+  ]);
 
   const dismiss = useCallback(() => {
     setShowing({ kind: 'none' });
@@ -494,11 +631,251 @@ export function useCompanion(onSeed: (text?: string) => void): CompanionApi {
       const text = showing.speech.sentence.trim();
       if (text) return { text, severity: showing.severity };
     }
+    // The honest end of a walk that arrived too late. It rides the same pill
+    // because it is the same kind of thing: one clause, true and current. A
+    // trace that cannot be drawn says so in the corner rather than drawing an
+    // empty diagram in the middle of the board.
+    if (traceStale) return { text: traceStale, severity: 'ok' };
     // The daily hello rides the same pill. It never outranks an offer: a
     // hotel with something wrong in it gets told about the thing, not greeted.
     if (hello) return { text: hello, severity: 'ok' };
     return null;
-  }, [showing, hello]);
+  }, [showing, hello, traceStale]);
+
+  // The stale note retreats on its own, exactly as the hello does. The corner
+  // is not a place to leave a sentence.
+  useEffect(() => {
+    if (traceStale === null) return;
+    const timer = setTimeout(() => setTraceStale(null), HELLO_VISIBLE_MS);
+    return () => clearTimeout(timer);
+  }, [traceStale]);
+
+  // The companion going away takes its line with it.
+  useEffect(() => () => publishTraceLine(null), []);
+
+  // ── The panel ask ────────────────────────────────────────────────────────
+  //
+  // The one venue where a pattern about a named person may be said, and the
+  // only surface in this feature that is not drawn on a page. Every rule about
+  // topics still applies; what does not apply is the daily speech budget,
+  // because the person opened the panel themselves.
+  const [panelAskDone, setPanelAskDone] = useState<Set<string>>(() => new Set());
+  const panelAsk = useMemo(() => {
+    if (!boot) return null;
+    const decision = decidePanelAsk({
+      today: boot.hotel.today,
+      memory: boot.memory,
+      // Traces only. A finding candidate belongs to the peek and the offer
+      // path, which knows how to walk somebody to it; accepted here it would
+      // have no pattern to show and would silently do nothing.
+      candidates: candidates.filter((c) => isTraceTopic(c.topic) && !panelAskDone.has(c.topic)),
+      panelOpen: panel.open,
+      threadEmpty: panel.threadEmpty,
+      otherSpeechShowing: showing.kind !== 'none',
+      userIsBusy: busy,
+      quietThisSession,
+      aiAwake: boot.availability.awake,
+    });
+    if (!decision.ask) return null;
+    return {
+      topic: decision.topic,
+      sentence: decision.sentence,
+      pattern: traces.patterns.find((p) => p.key === decision.topic) ?? null,
+    };
+  }, [
+    boot, candidates, panel.open, panel.threadEmpty, showing.kind, busy, quietThisSession,
+    traces.patterns, panelAskDone,
+  ]);
+
+  // Shown is spent, exactly as `rememberSpoke` treats an offer. Without this
+  // the same sentence would be back the moment the panel is reopened.
+  const panelAskTopic = panelAsk?.topic ?? null;
+  useEffect(() => {
+    if (!panelAskTopic || !boot) return;
+    void remember('spoke', { topic: panelAskTopic }, (m) => {
+      const prior = m.topics[panelAskTopic] ?? { declines: 0, dropped: false, lastOfferedDay: null };
+      return {
+        ...m,
+        topics: { ...m.topics, [panelAskTopic]: { ...prior, lastOfferedDay: boot.hotel.today } },
+      };
+    });
+  }, [panelAskTopic, boot, remember]);
+
+  const spendPanelAsk = useCallback((topic: string) => {
+    setPanelAskDone((prior) => {
+      const next = new Set(prior);
+      next.add(topic);
+      return next;
+    });
+  }, []);
+
+  const acceptPanelAsk = useCallback(() => {
+    if (!panelAsk) return;
+    const { topic, pattern } = panelAsk;
+    spendPanelAsk(topic);
+    void remember('accepted', { topic }, (m) => m);
+    if (!pattern) return;
+    // A pattern with no page has nothing to draw and nowhere to draw it, which
+    // is exactly the case this venue exists for. It shows in place, in the
+    // panel, as the companion's own answer.
+    if (!pattern.page || pattern.page === tracePage) {
+      setTraceStale(null);
+      setTraceShowing(pattern);
+      return;
+    }
+    // Anything else lives on another screen, and a yes walks there for the same
+    // reason a yes to the peek does.
+    const target = resolveDestination(pattern.page, {
+      role, enabledSections: activeProperty?.enabledSections,
+    });
+    if (target) {
+      walkingToRef.current = topic;
+      goTo(target);
+    }
+  }, [panelAsk, spendPanelAsk, remember, tracePage, role, activeProperty?.enabledSections, goTo]);
+
+  const declinePanelAsk = useCallback(() => {
+    if (!panelAsk) return;
+    const { topic } = panelAsk;
+    spendPanelAsk(topic);
+    void remember('declined', { topic }, (m) => {
+      const prior = m.topics[topic] ?? { declines: 0, dropped: false, lastOfferedDay: null };
+      const declines = prior.declines + 1;
+      return {
+        ...m,
+        topics: {
+          ...m.topics,
+          [topic]: {
+            ...prior,
+            declines,
+            dropped: prior.dropped || declines >= COMPANION_DECLINES_BEFORE_DROP,
+          },
+        },
+      };
+    });
+  }, [panelAsk, spendPanelAsk, remember]);
+
+  // ── Acting on a trace ────────────────────────────────────────────────────
+  //
+  // The browser sends the pattern's KEY and which button. It does not send the
+  // description, the room or the severity: the server finds the pattern again
+  // and runs its own plan, so a stale tab cannot write a ticket about a run
+  // somebody already fixed. See the route header.
+  const actOnTrace = useCallback(async (index: number) => {
+    const pattern = traceShowing;
+    if (!pattern || !activePropertyId) return { done: false as const };
+    try {
+      const res = await fetchWithAuth('/api/companion/trace', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          pid: activePropertyId,
+          key: pattern.key,
+          page: pattern.page,
+          action: index,
+        }),
+      });
+      const envelope = await readEnvelope<{
+        done: boolean; receipt?: TraceActReceipt; reason?: string;
+      }>(res);
+      if (envelope.error !== undefined || !envelope.data) {
+        return { done: false as const, reason: 'I could not do that just now, so I left it alone.' };
+      }
+      return envelope.data;
+    } catch (e) {
+      if (e instanceof SessionEndedError) return { done: false as const };
+      return { done: false as const, reason: 'I could not do that just now, so I left it alone.' };
+    }
+  }, [traceShowing, activePropertyId]);
+
+  const declineTrace = useCallback(() => {
+    const pattern = traceShowing;
+    setTraceShowing(null);
+    setTraceStale(null);
+    if (!pattern) return;
+    const topic = pattern.key;
+    // "Not interested" is a No, counted the same way a No to the peek is, on
+    // the same topic key. Twice and this pattern never comes back.
+    void remember('declined', { topic }, (m) => {
+      const prior = m.topics[topic] ?? { declines: 0, dropped: false, lastOfferedDay: null };
+      const declines = prior.declines + 1;
+      return {
+        ...m,
+        topics: {
+          ...m.topics,
+          [topic]: {
+            ...prior,
+            declines,
+            dropped: prior.dropped || declines >= COMPANION_DECLINES_BEFORE_DROP,
+          },
+        },
+      };
+    });
+  }, [traceShowing, remember]);
+
+  const closeTrace = useCallback(() => {
+    setTraceShowing(null);
+    setTraceStale(null);
+  }, []);
+
+  // ── Found elsewhere ──────────────────────────────────────────────────────
+  //
+  // On the Staxis list, and only there, a pattern that lives on another screen
+  // is published as one plain line with the same two buttons. The list renders
+  // it and calls back; every rule about whether it should be said at all was
+  // already applied above, by the same manners engine that decided the peek.
+  //
+  // Nothing is ever DRAWN on the list. It is the one screen in the product
+  // whose whole job is to be a list of everything, and a diagram over the top
+  // of that would be the second design this feature exists to avoid.
+  const offerTopic = showing.kind === 'speech' && showing.speech.kind === 'offer'
+    ? showing.speech.topic
+    : null;
+  const offerSentenceText = showing.kind === 'speech' && showing.speech.kind === 'offer'
+    ? showing.speech.sentence
+    : null;
+  useEffect(() => {
+    if (page?.key !== 'staxis' || !offerTopic || !offerSentenceText || !isTraceTopic(offerTopic)) {
+      publishTraceLine(null);
+      return;
+    }
+    const pattern = traces.patterns.find((p) => p.key === offerTopic);
+    // No page, this page, or anything about a person: not a line. The
+    // sensitivity check is belt and braces (the manners engine already refuses
+    // to make such a candidate an offer), and it is here because this is the
+    // one surface in the feature that renders into a screen full of other
+    // people's work.
+    if (!pattern || !pattern.page || pattern.page === 'staxis') {
+      publishTraceLine(null);
+      return;
+    }
+    if (pattern.sensitivity !== 'operational') {
+      publishTraceLine(null);
+      return;
+    }
+    const target = resolveDestination(pattern.page, {
+      role, enabledSections: activeProperty?.enabledSections,
+    });
+    if (!target) {
+      publishTraceLine(null);
+      return;
+    }
+    publishTraceLine({
+      topic: offerTopic,
+      text: offerSentenceText,
+      whereFound: `Found on ${target.label}`,
+      onYes: answerYes,
+      onNo: answerNo,
+    });
+    // No cleanup. This effect re-runs whenever the callbacks are rebuilt, and a
+    // cleanup that published null would blank the line and re-add it on every
+    // one of those, which the list would render as a flicker. Every branch that
+    // should retire the line publishes null above, and the unmount case is the
+    // effect below.
+  }, [
+    page, offerTopic, offerSentenceText, traces.patterns, role,
+    activeProperty?.enabledSections, answerYes, answerNo,
+  ]);
 
   return {
     mounts: gate.mounts,
@@ -518,5 +895,15 @@ export function useCompanion(onSeed: (text?: string) => void): CompanionApi {
     startTour,
     nextTourStep,
     goTo,
+    trace: {
+      showing: traceShowing,
+      stale: traceStale,
+      panelAsk,
+      act: actOnTrace,
+      decline: declineTrace,
+      close: closeTrace,
+      acceptPanelAsk,
+      declinePanelAsk,
+    },
   };
 }

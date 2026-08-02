@@ -68,6 +68,7 @@ import {
   weekRangeLabel,
 } from './list-calendar';
 import { CxIcon } from './icons';
+import { TraceFoundLine } from './TraceFoundLine';
 import { EventEditor } from '@/app/communications/_components/CalendarPane';
 import {
   AssignedRailPanel,
@@ -509,6 +510,13 @@ export function StaxisList({
       <div className="fx-body">
         <div>
           {rowError && <div className="sl-err">{rowError}</div>}
+
+          {/* Found somewhere else. ONE PLAIN LINE and the same ask the peek
+              carries, because this screen is a list of everything and a
+              diagram over the top of it would be a second design. Saying yes
+              walks over and the reveal is already drawn on arrival. The
+              companion decides whether this appears at all; this renders it. */}
+          <TraceFoundLine />
 
           {addingEvent && canSeeFindings && (
             <div style={{ marginBottom: 14 }}>

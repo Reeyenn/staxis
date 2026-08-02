@@ -49,6 +49,7 @@ import { AssistantMarkdown } from './AssistantMarkdown';
 import { AiActivityButton } from './AiActivityButton';
 import { FeedbackButton } from '@/components/layout/FeedbackButton';
 import { useCompanion } from '@/components/companion/useCompanion';
+import { TraceLayer } from '@/components/companion/TraceLayer';
 import { companionLabels, panelEyebrow, pastChatsHeading, sleepLine } from '@/lib/companion/copy';
 import {
   clampDockPosition,
@@ -247,7 +248,13 @@ export function AskStaxisBar() {
     setLeaving(null);
     if (text) submitRef.current(text, 'companion');
   }, [cancelSink]);
-  const companion = useCompanion(seed);
+  // The panel's own state is an input to exactly one decision: a pattern about
+  // a named person may only be said to somebody who opened the panel, so the
+  // venue has to be something the companion can see. See `decidePanelAsk`.
+  const companion = useCompanion(seed, {
+    open: open || mobileOpen,
+    threadEmpty: messages.length === 0,
+  });
 
   const scrollBottomSoon = useCallback(() => {
     requestAnimationFrame(() => {
@@ -859,13 +866,27 @@ export function AskStaxisBar() {
                 onNo={companion.dismiss}
               />
             )}
+            {/* The one thing that may only be said to somebody who opened this
+                panel. Anything about a named person lives here and nowhere
+                else: it never peeks, and it is never drawn on a page. */}
+            {showing.kind === 'none' && companion.trace.panelAsk && (
+              <CompanionBlock
+                lines={[companion.trace.panelAsk.sentence]}
+                yesLabel={labels.yes}
+                noLabel={labels.no}
+                onYes={companion.trace.acceptPanelAsk}
+                onNo={companion.trace.declinePanelAsk}
+                onQuiet={companion.quiet}
+                quietLabel={labels.quietForNow}
+              />
+            )}
             {/* Staxis speaks first. Prose, no bubble: its voice is the panel
                 talking. Built from the hotel's own clock, this person's name
                 and a count the browser already holds, with zero model calls
                 and no number it was not given. When the bootstrap has said
                 nothing yet, the old invitation stands rather than a greeting
                 about a hotel nothing has been read from. */}
-            {messages.length === 0 && showing.kind === 'none' && (
+            {messages.length === 0 && showing.kind === 'none' && !companion.trace.panelAsk && (
               <p className="asx-turn-s">{companion.opening ?? labels.askPlaceholder}</p>
             )}
             {messages.map((m, i) => (
@@ -1075,6 +1096,19 @@ export function AskStaxisBar() {
           {(view === 'thread' || leaving === 'thread') && threadView}
           {(view === 'history' || leaving === 'history') && historyView}
         </div>
+      )}
+
+      {/* ── The Trace ── the companion reaching into the page. It renders
+          only after a yes, is drawn in the page's own empty space, and clears
+          on Escape, on a No and on navigation. It is rendered from here, and
+          not from the app shell, because it is this object doing it. */}
+      {companion.trace.showing && (
+        <TraceLayer
+          pattern={companion.trace.showing}
+          onAct={companion.trace.act}
+          onDismiss={companion.trace.decline}
+          onClose={companion.trace.close}
+        />
       )}
 
       {/* ── The peek ── one clause, no click, aria-hidden: the same sentence
