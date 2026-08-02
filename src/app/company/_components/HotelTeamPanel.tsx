@@ -669,6 +669,7 @@ function DialogLoadingChoices({ count }: { count: number }) {
         <span key={index} className={styles.dialogLoadingChoice}>
           <span className={styles.dialogLoadingChoiceIcon} />
           <span className={styles.dialogLoadingChoiceCopy}>
+            <span className={styles.dialogLoadingChoiceBadge} />
             <span className={styles.dialogLoadingChoiceTitle} />
             <span className={styles.dialogLoadingChoiceDescription} />
           </span>

@@ -325,7 +325,7 @@
 .peopleInviteChoice {
   display: flex;
   width: 100%;
-  min-height: 76px;
+  min-height: 104px;
   align-items: center;
   gap: 12px;
   padding: 13px 12px;
@@ -362,7 +362,26 @@
   min-width: 0;
   flex: 1;
   flex-direction: column;
-  gap: 3px;
+  align-items: flex-start;
+  gap: 4px;
+}
+
+.peopleInviteChoiceBadge {
+  display: inline-flex;
+  min-height: 22px;
+  align-items: center;
+  padding: 0 7px;
+  border-radius: 999px;
+  color: var(--team-sage);
+  background: var(--team-sage-dim);
+  font: 650 9px/13px var(--font-geist-mono), ui-monospace, monospace;
+  letter-spacing: 0.055em;
+  text-transform: uppercase;
+}
+
+.peopleInviteChoiceBadgeNoLogin {
+  color: var(--team-caramel);
+  background: var(--team-caramel-dim);
 }
 
 .peopleInviteChoiceCopy strong {
@@ -928,6 +947,7 @@
 .dialogLoadingRow,
 .dialogLoadingField,
 .dialogLoadingChoiceIcon,
+.dialogLoadingChoiceBadge,
 .dialogLoadingChoiceTitle,
 .dialogLoadingChoiceDescription,
 .dialogLoadingChoiceChevron,
@@ -1019,7 +1039,7 @@
 
 .dialogLoadingChoice {
   display: flex;
-  min-height: 76px;
+  min-height: 104px;
   align-items: center;
   gap: 12px;
   padding: 13px;
@@ -1041,6 +1061,12 @@
   flex: 1;
   flex-direction: column;
   gap: 8px;
+}
+
+.dialogLoadingChoiceBadge {
+  width: 72px;
+  height: 14px;
+  border-radius: 999px;
 }
 
 .dialogLoadingChoiceTitle {
@@ -2338,6 +2364,7 @@
   .dialogLoadingRow::after,
   .dialogLoadingField::after,
   .dialogLoadingChoiceIcon::after,
+  .dialogLoadingChoiceBadge::after,
   .dialogLoadingChoiceTitle::after,
   .dialogLoadingChoiceDescription::after,
   .dialogLoadingChoiceChevron::after,

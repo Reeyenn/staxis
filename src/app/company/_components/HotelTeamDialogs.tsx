@@ -1467,8 +1467,6 @@ export function FirstPersonInviteDialog({
 export function PeopleInviteChooserDialog({
   canAddStaff,
   canInviteToStaxis,
-  canSendEmailInvite,
-  canShareHotelInvite,
   onAddStaff,
   onInviteToStaxis,
   onClose,
@@ -1487,11 +1485,7 @@ export function PeopleInviteChooserDialog({
 }) {
   const addStaffDescriptionId = React.useId();
   const inviteDescriptionId = React.useId();
-  const inviteDescription = canShareHotelInvite
-    ? canSendEmailInvite
-      ? 'Send an email invite or share a link, QR code, or invite code.'
-      : 'Share a link, QR code, or invite code.'
-    : 'Send an email invite.';
+  const inviteDescription = 'They create a login and can sign in to Staxis.';
 
   if (!canAddStaff && !canInviteToStaxis) return null;
 
@@ -1499,14 +1493,14 @@ export function PeopleInviteChooserDialog({
     <DialogShell
       title={'Invite people'}
       eyebrow={'People'}
-      description={'Does this person need a Staxis login?'}
+      description={'What does this person need?'}
       lang={'en'}
       icon={<UserRoundCog size={21} aria-hidden="true" />}
       onClose={onClose}
       returnFocusRef={returnFocusRef}
       fallbackFocusRef={fallbackFocusRef}
     >
-      <div className={styles.peopleInviteChoices} role="group" aria-label="Choose whether this person needs a Staxis login">
+      <div className={styles.peopleInviteChoices} role="group" aria-label="Choose what this person needs">
         {canAddStaff ? (
           <button
             type="button"
@@ -1518,8 +1512,11 @@ export function PeopleInviteChooserDialog({
               <CalendarPlus size={19} />
             </span>
             <span className={styles.peopleInviteChoiceCopy}>
-              <strong>{'Add staff member'}</strong>
-              <small id={addStaffDescriptionId}>{"Add them to this hotel's roster and schedule. No Staxis account."}</small>
+              <span className={`${styles.peopleInviteChoiceBadge} ${styles.peopleInviteChoiceBadgeNoLogin}`}>
+                {'NO LOGIN'}
+              </span>
+              <strong>{'Add to schedule only'}</strong>
+              <small id={addStaffDescriptionId}>{'Add them to the hotel roster and schedule. They cannot sign in to Staxis.'}</small>
             </span>
             <ChevronRight size={18} aria-hidden="true" />
           </button>
@@ -1535,7 +1532,8 @@ export function PeopleInviteChooserDialog({
               <LogIn size={19} />
             </span>
             <span className={styles.peopleInviteChoiceCopy}>
-              <strong>{'Invite to Staxis'}</strong>
+              <span className={styles.peopleInviteChoiceBadge}>{'STAXIS LOGIN'}</span>
+              <strong>{'Invite to create an account'}</strong>
               <small id={inviteDescriptionId}>{inviteDescription}</small>
             </span>
             <ChevronRight size={18} aria-hidden="true" />
