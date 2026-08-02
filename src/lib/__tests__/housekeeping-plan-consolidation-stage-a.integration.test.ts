@@ -44,6 +44,8 @@ const FAIL_INSPECTION = 'a6000000-0000-4000-8000-000000000002';
 const WRONG_PROPERTY_INSPECTION = 'a6000000-0000-4000-8000-000000000003';
 const LEGACY_FAIL_TASK = 'a4000000-0000-4000-8000-000000000008';
 const LEGACY_FAIL_INSPECTION = 'a6000000-0000-4000-8000-000000000004';
+const DIFFERENT_ROOM_INSPECTION = 'a6000000-0000-4000-8000-000000000005';
+const ROOM_ONLY_INSPECTION = 'a6000000-0000-4000-8000-000000000006';
 const BUSINESS_DATE = '2026-08-02';
 const LOCK_DATE = '2026-08-03';
 
@@ -840,6 +842,31 @@ describe('housekeeping canonical plan expand stage', () => {
       }
     }
 
+    const inspectionSources = await rows<{ proname: string; prosrc: string }>(
+      "select p.proname, p.prosrc from pg_proc p join pg_namespace n on n.oid = p.pronamespace where n.nspname = 'public' and p.proname in ('apply_inspection_cleaning_plan_side_effect', 'complete_inspection_atomic_canonical') order by p.proname",
+    );
+    assert.deepEqual(inspectionSources.map((row) => row.proname), [
+      'apply_inspection_cleaning_plan_side_effect',
+      'complete_inspection_atomic_canonical',
+    ]);
+    for (const source of inspectionSources) {
+      const sourceText = source.prosrc.toLowerCase();
+      const helperPosition = sourceText.indexOf('_lock_room_work_component_set');
+      const firstUnlockedRead = sourceText.indexOf(
+        source.proname === 'apply_inspection_cleaning_plan_side_effect'
+          ? 'select * into v_work'
+          : 'select * into v_plan_work',
+      );
+      const firstCanonicalLock = sourceText.indexOf('for update', firstUnlockedRead);
+      assert.ok(helperPosition >= 0, `${source.proname} must call the shared component lock helper`);
+      assert.ok(firstUnlockedRead >= 0, `${source.proname} must resolve a room_work row before locking it`);
+      assert.ok(firstCanonicalLock >= 0, `${source.proname} must re-read its canonical row for update`);
+      assert.ok(
+        helperPosition < firstCanonicalLock,
+        `${source.proname} must enter the shared lock helper before its first canonical room lock`,
+      );
+    }
+
     await pg.query(
       "select public._lock_room_work_component_set($1, $2, array['900']::text[])",
       [PROPERTY, LOCK_DATE],
@@ -982,6 +1009,34 @@ describe('housekeeping canonical plan expand stage', () => {
   });
 
   test('keeps old inspection finalization behavior while reconciling its canonical plan status', async () => {
+    const sideEffectTask = await scalar<string>(
+      "select public.housekeeping_plan_id($1, $2, '204')::text",
+      [PROPERTY, BUSINESS_DATE],
+    );
+    await pg.query(
+      "select * from public.upsert_room_work_plan($1, $2::jsonb)",
+      [PROPERTY, JSON.stringify([{
+        property_id: PROPERTY,
+        room_number: '204',
+        business_date: BUSINESS_DATE,
+        dedupe_key: '204::2026-08-02',
+        cleaning_type: 'stayover',
+        priority: 'normal',
+        status: 'scheduled',
+      }])],
+    );
+    await pg.query(
+      "select public.apply_inspection_cleaning_plan_side_effect($1, $2, 'pass', null)",
+      [PROPERTY, sideEffectTask],
+    );
+    assert.deepEqual(
+      await rows<{ room_number: string; plan_status: string }>(
+        "select room_number, plan_status from public.room_work where property_id = $1 and date = $2 and room_number = '204'",
+        [PROPERTY, BUSINESS_DATE],
+      ),
+      [{ room_number: '204', plan_status: 'inspected_pass' }],
+    );
+
     await pg.query(
       "insert into public.inspections(id, property_id, room_number, cleaning_task_id, result, started_at) values ($1, $2, '201', $3, 'in_progress', $4::timestamptz)",
       [PASS_INSPECTION, PROPERTY, NEW_TASK, '2026-08-02T13:00:00Z'],
@@ -1058,6 +1113,47 @@ describe('housekeeping canonical plan expand stage', () => {
         [FAIL_TASK],
       ),
       [{ plan_status: 'correction_pending', plan_priority: 'high', plan_notes: 'mirror streaks' }],
+    );
+
+    const pmsOnlyTask = await scalar<string>(
+      "select public.housekeeping_plan_id($1, $2, '701')::text",
+      [PROPERTY, BUSINESS_DATE],
+    );
+    await pg.query(
+      "insert into public.inspections(id, property_id, room_number, cleaning_task_id, result, started_at) values ($1, $2, '702', $3, 'in_progress', $4::timestamptz)",
+      [DIFFERENT_ROOM_INSPECTION, PROPERTY, pmsOnlyTask, '2026-08-02T14:30:00Z'],
+    );
+    await pg.query(
+      "select * from public.complete_inspection_atomic_canonical($1, $2, 'pass', '[]'::jsonb, '[]'::jsonb, null, false, null, null, null)",
+      [DIFFERENT_ROOM_INSPECTION, PROPERTY],
+    );
+    assert.deepEqual(
+      await rows<{ room_number: string; status: string; plan_status: string | null }>(
+        "select room_number, status, plan_status from public.room_work where property_id = $1 and date = $2 and room_number in ('701', '702') order by room_number",
+        [PROPERTY, BUSINESS_DATE],
+      ),
+      [
+        { room_number: '701', status: 'not_started', plan_status: 'inspected_pass' },
+        { room_number: '702', status: 'completed', plan_status: null },
+      ],
+      'canonical inspection must lock and update the task room even when it differs from the inspection room',
+    );
+
+    await pg.query(
+      "insert into public.inspections(id, property_id, room_number, cleaning_task_id, result, started_at) values ($1, $2, '703', null, 'in_progress', $3::timestamptz)",
+      [ROOM_ONLY_INSPECTION, PROPERTY, '2026-08-02T15:00:00Z'],
+    );
+    await pg.query(
+      "select * from public.complete_inspection_atomic_canonical($1, $2, 'pass', '[]'::jsonb, '[]'::jsonb, null, false, null, null, null)",
+      [ROOM_ONLY_INSPECTION, PROPERTY],
+    );
+    assert.equal(
+      await scalar<string>(
+        "select status from public.room_work where property_id = $1 and date = $2 and room_number = '703'",
+        [PROPERTY, BUSINESS_DATE],
+      ),
+      'completed',
+      'canonical inspection without a task mapping must retain its room-only behavior',
     );
 
     await pg.query(

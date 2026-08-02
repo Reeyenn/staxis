@@ -767,13 +767,33 @@ begin
     raise exception 'E_BAD_RESULT: p_result must be pass or fail' using errcode = 'check_violation';
   end if;
 
+  -- Resolve the natural key without a row lock, then take the shared
+  -- parent/component lock set before re-reading the canonical row. This keeps
+  -- the fallback inspection seam in the same lock order as every other
+  -- room_work writer.
   select * into v_work
-    from public.room_work w
+   from public.room_work w
    where w.property_id = p_property_id
-     and (w.id = p_task_id or w.legacy_task_id = p_task_id)
-   for update;
+     and (w.id = p_task_id or w.legacy_task_id = p_task_id);
   if not found then
     raise exception 'E_TASK_PROPERTY_MISMATCH: cleaning plan % does not belong to property %', p_task_id, p_property_id
+      using errcode = 'no_data_found';
+  end if;
+
+  perform public._lock_room_work_component_set(
+    v_work.property_id,
+    v_work.date,
+    array[v_work.room_number]::text[]
+  );
+
+  select * into v_work
+    from public.room_work w
+   where w.property_id = v_work.property_id
+     and w.date = v_work.date
+     and w.room_number = v_work.room_number
+   for update;
+  if not found then
+    raise exception 'E_TASK_PROPERTY_MISMATCH: cleaning plan % disappeared during lock acquisition', p_task_id
       using errcode = 'no_data_found';
   end if;
 
@@ -1202,6 +1222,8 @@ declare
   v_plan_work public.room_work;
   v_task_id uuid;
   v_count integer;
+  v_has_plan_work boolean;
+  v_has_pms_plan boolean;
 begin
   if p_result not in ('pass', 'fail') then
     raise exception 'E_BAD_RESULT: p_result must be pass or fail, got %', p_result
@@ -1286,15 +1308,39 @@ begin
   -- Resolve the historical or deterministic task id to the same canonical
   -- row. A property mismatch is an integrity error, not a no-op.
   if v_row.cleaning_task_id is not null then
+    -- Resolve the exact canonical task room without a row lock first. The
+    -- shared helper must own the complete parent/component lock order before
+    -- this task row is re-read and locked.
     select * into v_plan_work
       from public.room_work w
      where w.property_id = p_property_id
        and (w.legacy_task_id = v_row.cleaning_task_id or w.id = v_row.cleaning_task_id)
      order by w.date desc
-     limit 1
-     for update;
+     limit 1;
+    v_has_plan_work := found;
 
-    if not found then
+    if v_has_plan_work then
+      v_task_date := v_plan_work.date;
+      v_task_room := v_plan_work.room_number;
+      perform public._lock_room_work_component_set(
+        v_plan_work.property_id,
+        v_task_date,
+        array[v_task_room]::text[]
+      );
+
+      select * into v_plan_work
+        from public.room_work w
+       where w.property_id = p_property_id
+         and w.date = v_task_date
+         and w.room_number = v_task_room
+       for update;
+      if not found then
+        raise exception 'E_TASK_PROPERTY_MISMATCH: cleaning plan % disappeared during lock acquisition', v_row.cleaning_task_id
+          using errcode = 'no_data_found';
+      end if;
+    end if;
+
+    if not v_has_plan_work then
       select a.date, a.room_number
         into v_task_date, v_task_room
         from public.pms_housekeeping_assignments a
@@ -1302,7 +1348,14 @@ begin
          and public.housekeeping_plan_id(a.property_id, a.date, a.room_number) = v_row.cleaning_task_id
        order by a.date desc
        limit 1;
-      if found then
+      v_has_pms_plan := found;
+      if v_has_pms_plan then
+        perform public._lock_room_work_component_set(
+          p_property_id,
+          v_task_date,
+          array[v_task_room]::text[]
+        );
+
         insert into public.room_work (
           id, property_id, date, room_number, plan_status
         ) values (
@@ -1315,10 +1368,15 @@ begin
            and w.date = v_task_date
            and w.room_number = v_task_room
          for update;
+        if not found then
+          raise exception 'E_TASK_PROPERTY_MISMATCH: cleaning plan % disappeared during lock acquisition', v_row.cleaning_task_id
+            using errcode = 'no_data_found';
+        end if;
       end if;
     end if;
 
-    if not found or v_plan_work.property_id is distinct from p_property_id then
+    if (not coalesce(v_has_plan_work, false) and not coalesce(v_has_pms_plan, false))
+       or v_plan_work.property_id is distinct from p_property_id then
       raise exception 'E_TASK_PROPERTY_MISMATCH: cleaning plan % does not belong to property %', v_row.cleaning_task_id, p_property_id
         using errcode = 'no_data_found';
     end if;
