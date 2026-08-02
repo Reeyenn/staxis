@@ -249,11 +249,19 @@ function createPortfolioStreamGuard(
     void reader.cancel().catch(() => undefined);
   };
 
+  const clearTimers = () => {
+    if (inactivityTimer) clearTimeout(inactivityTimer);
+    if (absoluteTimer) clearTimeout(absoluteTimer);
+    inactivityTimer = null;
+    absoluteTimer = null;
+  };
+
   const abortForTimeout = () => {
     if (disposed || timedOut) return;
     timedOut = true;
     controller.abort();
     cancelReader();
+    clearTimers();
   };
 
   const resetInactivity = () => {
@@ -274,13 +282,11 @@ function createPortfolioStreamGuard(
     cancel: () => {
       if (!controller.signal.aborted) controller.abort();
       cancelReader();
+      clearTimers();
     },
     dispose: () => {
       disposed = true;
-      if (inactivityTimer) clearTimeout(inactivityTimer);
-      if (absoluteTimer) clearTimeout(absoluteTimer);
-      inactivityTimer = null;
-      absoluteTimer = null;
+      clearTimers();
       reader = null;
     },
     timedOut: () => timedOut,
@@ -1273,6 +1279,7 @@ export function useAgentChat({
       controller,
       cancel: () => {
         portfolioGuard?.cancel();
+        portfolioGuard?.dispose();
         if (!controller.signal.aborted) controller.abort();
       },
     };
