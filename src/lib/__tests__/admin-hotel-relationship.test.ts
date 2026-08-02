@@ -104,7 +104,7 @@ describe('existing /company Hotels-tab lifecycle surface', () => {
   const previewRoute = source('src', 'app', 'api', 'admin', 'company-relationship', 'preview', 'route.ts');
   const commitRoute = source('src', 'app', 'api', 'admin', 'company-relationship', 'commit', 'route.ts');
 
-  test('keeps exactly Hotels, People, Access and renders lifecycle controls only in verified admin preview', () => {
+  test('keeps lifecycle controls out of My Hotel Hotels while preserving the separate admin capability', () => {
     const tabBlock = page.slice(
       page.indexOf('const tabs = React.useMemo'),
       page.indexOf('React.useEffect(() => {', page.indexOf('const tabs = React.useMemo')),
@@ -113,8 +113,10 @@ describe('existing /company Hotels-tab lifecycle surface', () => {
       [...tabBlock.matchAll(/id: '([^']+)'/g)].map((match) => match[1]),
       ['hotels', 'people', 'access'],
     );
-    assert.match(page, /data\.viewerContext\?\.kind === 'staxis_admin_preview'/);
-    assert.match(page, /AdminHotelRelationshipManager/);
+    assert.doesNotMatch(page, /AdminHotelRelationshipManager/);
+    assert.doesNotMatch(page, /Manage relationship/);
+    assert.match(component, /data-admin-hotel-relationship-manager/);
+    assert.match(component, /Manage relationship/);
     assert.doesNotMatch(component, /adminToolsEnabled|Admin view is ON|Turn on Admin view/);
     assert.doesNotMatch(component, /Staxis platform administration/);
     assert.match(component, /Every lifecycle change starts with a fresh impact preview and explicit confirmation/);
