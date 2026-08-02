@@ -1,7 +1,5 @@
-import type { NextRequest } from 'next/server';
-import { requireAdmin } from '@/lib/admin-auth';
-import { ok, err, ApiErrorCode } from '@/lib/api-response';
-import { getOrMintRequestId } from '@/lib/log';
+import { defineRoute, adminGate } from '@/lib/api-route';
+import { ApiErrorCode } from '@/lib/api-response';
 import { checkAndIncrementRateLimit, hashToRateLimitKey, rateLimitedResponse } from '@/lib/api-ratelimit';
 import { refreshAiModelCatalog } from '@/lib/ai/model-catalog';
 import type { RefreshAiModelsRequest, RefreshAiModelsResponse } from '@/lib/ai/types';
@@ -12,42 +10,45 @@ export const dynamic = 'force-dynamic';
 export const maxDuration = 30;
 const REFRESH_EXECUTION_BUDGET_MS = 25_000;
 
-export async function POST(req: NextRequest): Promise<Response> {
-  const refreshDeadlineAt = Date.now() + REFRESH_EXECUTION_BUDGET_MS;
-  const requestId = getOrMintRequestId(req);
-  const auth = await requireAdmin(req);
-  if (!auth.ok) return auth.response;
-  let body: Partial<RefreshAiModelsRequest>;
-  try { body = await req.json() as Partial<RefreshAiModelsRequest>; }
-  catch {
-    return err('invalid json', { requestId, status: 400, code: ApiErrorCode.ValidationFailed, headers: NO_STORE_HEADERS });
-  }
-  const provider = parseHostedProvider(body.provider);
-  if (!provider) {
-    return err('provider must be anthropic or openai', {
-      requestId, status: 400, code: ApiErrorCode.ValidationFailed, headers: NO_STORE_HEADERS,
-    });
-  }
-  const rateLimit = await checkAndIncrementRateLimit(
-    'admin-ai-models-refresh',
-    hashToRateLimitKey(`admin-ai-control:${auth.accountId}`),
-  );
-  if (!rateLimit.allowed) {
-    return rateLimitedResponse(rateLimit.current, rateLimit.cap, rateLimit.retryAfterSec);
-  }
-  try {
-    const refreshed = await refreshAiModelCatalog(provider, {
-      accountId: auth.accountId,
-      userId: auth.userId,
-      email: auth.email,
-      requestId,
-    }, {
-      deadlineAt: refreshDeadlineAt,
-      abortSignal: req.signal,
-    });
-    const data: RefreshAiModelsResponse = { provider, ...refreshed };
-    return ok(data, { requestId, headers: NO_STORE_HEADERS });
-  } catch (error) {
-    return aiControlError(error, requestId);
-  }
-}
+export const POST = defineRoute({
+  resolve: async (req) => {
+    const refreshDeadlineAt = Date.now() + REFRESH_EXECUTION_BUDGET_MS;
+    const gate = await adminGate(req);
+    return gate.ok ? { ...gate, refreshDeadlineAt } : gate;
+  },
+  handler: async (ctx) => {
+    let body: Partial<RefreshAiModelsRequest>;
+    try { body = await ctx.req.json() as Partial<RefreshAiModelsRequest>; }
+    catch {
+      return ctx.err('invalid json', { status: 400, code: ApiErrorCode.ValidationFailed, headers: NO_STORE_HEADERS });
+    }
+    const provider = parseHostedProvider(body.provider);
+    if (!provider) {
+      return ctx.err('provider must be anthropic or openai', {
+        status: 400, code: ApiErrorCode.ValidationFailed, headers: NO_STORE_HEADERS,
+      });
+    }
+    const rateLimit = await checkAndIncrementRateLimit(
+      'admin-ai-models-refresh',
+      hashToRateLimitKey(`admin-ai-control:${ctx.accountId}`),
+    );
+    if (!rateLimit.allowed) {
+      return rateLimitedResponse(rateLimit.current, rateLimit.cap, rateLimit.retryAfterSec);
+    }
+    try {
+      const refreshed = await refreshAiModelCatalog(provider, {
+        accountId: ctx.accountId,
+        userId: ctx.userId,
+        email: ctx.email,
+        requestId: ctx.requestId,
+      }, {
+        deadlineAt: ctx.refreshDeadlineAt,
+        abortSignal: ctx.req.signal,
+      });
+      const data: RefreshAiModelsResponse = { provider, ...refreshed };
+      return ctx.ok(data, { headers: NO_STORE_HEADERS });
+    } catch (error) {
+      return aiControlError(error, ctx.requestId);
+    }
+  },
+});
