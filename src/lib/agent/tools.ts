@@ -29,11 +29,9 @@ import {
 } from '@/lib/sections/registry';
 import { getEnabledSectionsFresh } from '@/lib/sections/server';
 
-// VoiceMode used to live in the ElevenLabs voice-session module (removed
-// 2026-07-15 when the "Talk to Staxis" voice feature + ElevenLabs were torn
-// out). The dedicated voice surface no longer has a live entry point, but the
-// tool registry's generic surface/voiceMode plumbing is still referenced by
-// chat/walkthrough provenance logic, so the type stays here as its home.
+// Retained because the protected prompt composer still imports this legacy
+// type for its inert VoiceModeContext compatibility shape. No tool registry
+// or runtime surface uses it.
 export type VoiceMode = 'general' | 'housekeeper_issue' | 'compliance';
 
 // ─── Public types ──────────────────────────────────────────────────────────
@@ -88,33 +86,13 @@ export interface ToolContext {
   requestId: string;
   /** agent_conversations.id for this turn — lets memory writes record which
    *  conversation taught a fact (source_conversation_id). Optional; threaded
-   *  from both the chat and voice routes. */
+   *  from the chat route. */
   conversationId?: string;
   /** Which surface is invoking this tool. REQUIRED so executeTool() can
-   *  enforce per-tool surface opt-in (a tool without `surfaces: ['voice']`
-   *  refuses a voice-surface call, etc.). Codex 2026-05-16 P0 fix
+   *  enforce per-tool surface opt-in. Codex 2026-05-16 P0 fix
    *  (Pattern E — surface required at the type level so the compiler
    *  catches any caller that forgets). */
   surface: AgentSurface;
-  /** Voice operating mode (only meaningful when surface === 'voice'). Tools
-   *  may opt into specific voice modes via `voiceModes`; an unmatched mode
-   *  causes executeTool to refuse. Feature #11 (housekeeper voice issue
-   *  reporting) — a tool that only makes sense inside the housekeeper-issue
-   *  mode declares `voiceModes: ['housekeeper_issue']` so it cannot be
-   *  reached from a general voice session. */
-  voiceMode?: VoiceMode;
-  /** Room number hint forwarded from the UI on session mint. Tools that
-   *  default a room argument (e.g. createMaintenanceWorkOrder) consult this
-   *  when the user doesn't restate the room. Voice-only. */
-  currentRoomNumber?: string | null;
-  /** Voice-session id — the server-minted identifier for a voice session,
-   *  used as a stable idempotency key so a retried model call can't file the
-   *  same ticket twice. Voice-only, and INERT: the voice surface was removed
-   *  (a500fa02), and migration 0352 dropped its backing table plus the
-   *  pms_work_orders_v2 columns that stored it. Nothing assigns or reads this
-   *  today; it is kept as the seam a future voice surface would plug into.
-   *  Codex 2026-05-25 (MAJOR fix). */
-  voiceSessionId?: string;
   /** The active hotel's resolved section on/off map, loaded once at the route
    *  boundary (getEnabledSections(propertyId)). executeTool consults it to
    *  refuse a tool whose `section` is turned off for this hotel — the
@@ -123,11 +101,6 @@ export interface ToolContext {
    *  default-on policy; `undefined` means no route proof and fails closed at
    *  execution. */
   enabledSections?: EnabledSections;
-  /** The caller's spoken language ('en' | 'es'), resolved server-side from the
-   *  staff row at the voice-brain boundary. Used ONLY for deterministic spoken
-   *  copy in the voice control tools (confirm/cancel read-backs) — never for
-   *  authorization. Absent → treat as 'en'. Voice-only. */
-  voiceLang?: string | null;
   /**
    * Cross-hotel chat (2026-07-26). Present ONLY on a portfolio-surface turn,
    * and set ONLY by the portfolio route after the whole gate stack passed:
@@ -180,13 +153,12 @@ export interface ToolResult {
 
 /**
  * Surface types that can invoke tools. Each agent surface (chat UI,
- * voice agent, Clicky walkthrough) declares its surface when fetching
+ * Clicky walkthrough, portfolio chat) declares its surface when fetching
  * tools, and individual tools can opt in/out per surface.
  *
- * Longevity fix L3, 2026-05-13: future-proofs the registry for voice
- * and walkthrough surfaces. Default is 'chat' only — tools must
- * explicitly opt into other surfaces. Stops a voice-specific tool
- * (e.g. play_alert_sound) from being callable from the chat agent.
+ * Longevity fix L3, 2026-05-13: future-proofs the registry for walkthrough
+ * surfaces. Default is 'chat' only — tools must explicitly opt into other
+ * surfaces.
  *
  * 'portfolio' (2026-07-26, cross-hotel chat) is why this mechanism was worth
  * having. Every one of the ~70 existing tools declares no `surfaces` and is
@@ -197,7 +169,7 @@ export interface ToolResult {
  * list leaked it. That disjointness is the wall, and it is the reason this
  * surface did NOT need a second tool registry or a second tool loop.
  */
-export type AgentSurface = 'chat' | 'voice' | 'walkthrough' | 'portfolio';
+export type AgentSurface = 'chat' | 'walkthrough' | 'portfolio';
 
 export interface ToolDefinition<TArgs = unknown> {
   /** Stable identifier — what the model calls (e.g. "mark_room_clean"). */
@@ -215,17 +187,9 @@ export interface ToolDefinition<TArgs = unknown> {
   /**
    * Surfaces this tool is callable from. Defaults to `['chat']` — every
    * existing tool registered before L3 is implicitly chat-only.
-   * Voice + walkthrough tools must opt in explicitly. Longevity L3.
+   * Walkthrough tools must opt in explicitly. Longevity L3.
    */
   surfaces?: readonly AgentSurface[];
-  /**
-   * Voice modes the tool opts into. Only consulted when `surface === 'voice'`.
-   * Undefined means "all voice modes" (the standard voice catalog), matching
-   * pre-feature-#11 behaviour. A list restricts the tool to those modes — e.g.
-   * `voiceModes: ['housekeeper_issue']` makes the tool unreachable from a
-   * general voice session, which is what we want for createMaintenanceWorkOrder.
-   */
-  voiceModes?: readonly VoiceMode[];
   /**
    * True when this tool MUTATES data (writes to DB, sends SMS, sends nudges).
    * False/undefined for read-only queries. Eval refusal checks derive the
@@ -501,16 +465,10 @@ export function confirmsInChat(name: string): boolean {
  *
  *  Codex 2026-05-16 P0 fix (Pattern E): `surface` is REQUIRED — no default.
  *  The compiler now refuses any caller that forgets to declare its surface,
- *  closing the gap that let `/api/agent/voice-brain` silently inherit the
- *  full chat tool catalog. A tool without an explicit `surfaces` field
- *  defaults to chat-only (matching pre-L3 behaviour) so voice + walkthrough
- *  remain toolless until tools deliberately opt in.
- *
- *  Feature #11 (2026-05-24): when `surface === 'voice'` and a `voiceMode`
- *  is supplied, tools also filter on `voiceModes` — a tool with an explicit
- *  voiceModes list is hidden from any session whose mode isn't on it. The
- *  default (no `voiceModes` declared) means "all voice modes" so the
- *  existing voice catalog is unaffected.
+ *  closing the gap that let a retired voice route silently inherit the full
+ *  chat tool catalog. A tool without an explicit `surfaces` field defaults to
+ *  chat-only (matching pre-L3 behaviour), so walkthrough remains toolless
+ *  until tools deliberately opt in.
  *
  *  Sections (WP7): when the caller passes the active hotel's `enabledSections`
  *  map, any tool tagged with a `section` that the hotel has turned OFF is
@@ -559,7 +517,6 @@ function explicitlyAuthorizedFinanceRead(
 export function getToolsForRole(
   role: AppRole,
   surface: AgentSurface,
-  voiceMode?: VoiceMode,
   enabledSections?: EnabledSections,
   authorization?: ToolCatalogAuthorization,
 ): ToolDefinition[] {
@@ -590,9 +547,6 @@ export function getToolsForRole(
       && authorization.capabilitySnapshot?.[t.requiresCapability] !== true) return false;
     const allowedSurfaces = t.surfaces ?? ['chat'];
     if (!allowedSurfaces.includes(surface)) return false;
-    if (surface === 'voice' && t.voiceModes && voiceMode) {
-      if (!t.voiceModes.includes(voiceMode)) return false;
-    }
     // Catalog UX filter only: drop an explicitly disabled section. Null is the
     // valid default-on DB value; undefined leaves legacy/background catalogs
     // unchanged, but executeTool later refuses it as a missing route proof.
@@ -719,10 +673,9 @@ export async function executeTool(
     return { ok: false, error: `Tool not found: ${name}. Available tools are listed in your system prompt.` };
   }
   // Codex 2026-05-16 P0 fix (Pattern E): the surface gate runs BEFORE the
-  // role check. If the caller is `surface: 'voice'` and the tool didn't opt
-  // in via `surfaces: ['voice']`, refuse. This is the safety net behind
-  // `getToolsForRole`'s surface filter — even if a stale tool list leaks
-  // through, the executor itself enforces the surface boundary.
+  // role check. This is the safety net behind `getToolsForRole`'s surface
+  // filter — even if a stale tool list leaks through, the executor itself
+  // enforces the surface boundary.
   const allowedSurfaces = tool.surfaces ?? ['chat'];
   if (!allowedSurfaces.includes(ctx.surface)) {
     return {
@@ -745,18 +698,6 @@ export async function executeTool(
       ok: false,
       error: `Tool ${name} answers about a whole management company and can only run in a portfolio conversation. Tell the user this question has to be asked from the company view.`,
     };
-  }
-  // Feature #11: voice-mode gate. Matches the getToolsForRole filter so
-  // executeTool refuses a tool whose voiceModes list doesn't include the
-  // current session mode, even if the model somehow hallucinated a call
-  // for a tool it shouldn't see. Belt-and-braces against tool-list leaks.
-  if (ctx.surface === 'voice' && tool.voiceModes && ctx.voiceMode) {
-    if (!tool.voiceModes.includes(ctx.voiceMode)) {
-      return {
-        ok: false,
-        error: `Tool ${name} is not available in this voice mode.`,
-      };
-    }
   }
   const staleFinanceRead = explicitlyAuthorizedFinanceRead(
     tool,
@@ -908,8 +849,8 @@ export async function executeTool(
   }
   try {
     // Attach the one-hotel database accessor. Built here rather than at the
-    // route boundary so EVERY execution path (chat, voice, walkthrough,
-    // approval resolve, evals) gets it without a single call site changing.
+    // route boundary so EVERY execution path (chat, walkthrough, approval
+    // resolve, evals) gets it without a single call site changing.
     let db: ScopedDb | null = null;
     const handlerCtx: ToolHandlerContext = {
       ...freshCtx,

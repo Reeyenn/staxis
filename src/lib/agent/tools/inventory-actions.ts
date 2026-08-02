@@ -5,7 +5,7 @@
 //
 //   get_low_stock  — READ: what's running low or critical right now, classified
 //                    with the 70/30-style Good/Low/Critical thresholds the
-//                    Inventory tab uses. Chat + general voice.
+//                    Inventory tab uses. Chat only.
 //   adjust_stock   — MUTATION (card): set an item's on-hand count, and
 //                    optionally stamp an order-intent timestamp. The marker is
 //                    not a purchase order, delivery, or accounting entry.

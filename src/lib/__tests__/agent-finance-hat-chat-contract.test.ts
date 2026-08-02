@@ -31,14 +31,14 @@ describe('finance-hat hotel chat wiring', () => {
   test('the initial turn passes current standing to both prompt and catalog', () => {
     const promptCall = sourceWindow(commandRoute, 'const systemPrompt = await buildSystemPrompt');
     const catalogCall = sourceWindow(commandRoute, 'const tools = getToolsForRole');
-    assert.match(promptCall, /memoryBlock,[\s\S]*?undefined,[\s\S]*?userCtx,/);
+    assert.match(promptCall, /memoryBlock,[\s\S]*?authorization: userCtx,/);
     assert.match(catalogCall, /'chat',[\s\S]*?enabledSections,[\s\S]*?userCtx,/);
   });
 
   test('approval resume rebuilds prompt and catalog from newly resolved standing', () => {
     const promptCall = sourceWindow(resolveRoute, 'const systemPrompt = await buildSystemPrompt');
     const catalogCall = sourceWindow(resolveRoute, 'const tools = getToolsForRole');
-    assert.match(promptCall, /memoryBlock,[\s\S]*?undefined,[\s\S]*?userCtx,/);
+    assert.match(promptCall, /memoryBlock,[\s\S]*?authorization: userCtx,/);
     assert.match(catalogCall, /'chat',[\s\S]*?enabledSections,[\s\S]*?userCtx,/);
   });
 });

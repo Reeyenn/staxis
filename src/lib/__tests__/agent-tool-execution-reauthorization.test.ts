@@ -469,7 +469,7 @@ describe('executeTool fresh authorization boundary', () => {
     seesFinancials = true;
     const stale = financeHatContext();
 
-    const catalog = getToolsForRole('front_desk', 'chat', undefined, undefined, {
+    const catalog = getToolsForRole('front_desk', 'chat', undefined, {
       seesFinancials: true,
       hotelMutationAllowed: false,
       capabilitySnapshot: {

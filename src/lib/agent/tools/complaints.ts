@@ -1,6 +1,6 @@
 // ─── log_complaint tool ──────────────────────────────────────────────────────
-// Lets a manager/front-desk/housekeeper log a guest complaint by text OR voice
-// ("Hey Staxis, log a complaint — room 214, AC not cooling, guest upset").
+// Lets a manager/front-desk/housekeeper log a guest complaint by chat
+// ("Log a complaint — room 214, AC not cooling, guest upset").
 // Shares createComplaint() with the API route, so the AI categorize + severity +
 // auto-route-to-work-order behaviour is identical across surfaces.
 //
@@ -48,10 +48,7 @@ registerTool<LogComplaintArgs>({
     required: ['description'],
   },
   allowedRoles: ['admin', 'owner', 'general_manager', 'front_desk', 'housekeeping', 'maintenance'],
-  surfaces: ['chat', 'voice'],
-  // Voice: only the GENERAL assistant ("Hey Staxis, log a complaint…"), not the
-  // housekeeper_issue entry point. Audited in voice-surface-tools.test.ts.
-  voiceModes: ['general'],
+  surfaces: ['chat'],
   mutates: true,
   approval: 'card',
   handler: async (args: LogComplaintArgs, ctx: ToolContext): Promise<ToolResult> => {
@@ -61,7 +58,7 @@ registerTool<LogComplaintArgs>({
     const description = (args.description ?? '').trim().slice(0, 2000);
     if (!description) return { ok: false, error: 'Please include what the complaint is about.' };
 
-    const roomNumber = (args.roomNumber ?? ctx.currentRoomNumber ?? '').toString().trim().slice(0, 20) || null;
+    const roomNumber = (args.roomNumber ?? '').toString().trim().slice(0, 20) || null;
     const guestName = (args.guestName ?? '').toString().trim().slice(0, 120) || null;
 
     if (ctx.dryRun) {
@@ -82,7 +79,7 @@ registerTool<LogComplaintArgs>({
         guestName,
         category: args.category ?? null,
         severity: args.severity ?? null,
-        source: ctx.surface === 'voice' ? 'voice' : 'front_desk',
+        source: 'front_desk',
         createdBy: ctx.user.uid,
         createdByName: ctx.user.displayName,
       });

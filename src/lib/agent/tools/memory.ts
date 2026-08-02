@@ -11,9 +11,6 @@
 //   • content is PII-redacted before storage (redactMemoryContent).
 //   • per-request write cap (the DB row-caps in staxis_store_memory are the hard
 //     backstop) stops a single coerced turn from flooding memory.
-//   • voiceModes:['general'] keeps these out of the single-purpose
-//     housekeeper_issue voice mode.
-
 import { registerTool, type ToolResult, type ToolContext } from '../tools';
 import { isManagerOrAbove } from './_helpers';
 import { redactMemoryContent } from '../memory-redact';
@@ -75,8 +72,7 @@ registerTool<{ scope: string; topic: string; content: string; confidence?: strin
     required: ['scope', 'topic', 'content'],
   },
   allowedRoles: ALL_MEMORY_ROLES,
-  surfaces: ['chat', 'voice'],
-  voiceModes: ['general'],
+  surfaces: ['chat'],
   mutates: true,
   approval: 'quick',
   handler: async ({ scope, topic, content, confidence }, ctx: ToolContext): Promise<ToolResult> => {
@@ -157,8 +153,7 @@ registerTool<{ scope: string; topic: string }>({
     required: ['scope', 'topic'],
   },
   allowedRoles: ALL_MEMORY_ROLES,
-  surfaces: ['chat', 'voice'],
-  voiceModes: ['general'],
+  surfaces: ['chat'],
   mutates: true,
   approval: 'quick',
   handler: async ({ scope, topic }, ctx: ToolContext): Promise<ToolResult> => {

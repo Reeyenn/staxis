@@ -446,20 +446,6 @@ export interface RunAgentOpts {
    */
   approvalMode?: boolean;
   /**
-   * Voice variant of the approval gate. When true, only CARD-tier mutations are
-   * HELD (staged as a spoken read-back the user confirms next turn); QUICK-tier
-   * mutations still execute INLINE this turn (they're low-stakes logging, and a
-   * spoken yes/no on every compliance reading would ruin the walkthrough). A
-   * turn with only quick mutations runs to completion and the model speaks its
-   * result — the gate does NOT end early in that case.
-   *
-   * The voice-brain route sets this; chat leaves it off (chat uses
-   * `approvalMode`, which holds ALL mutations). The two flags are mutually
-   * exclusive in practice; if both were set, `approvalMode` wins (chat semantics
-   * are byte-for-byte preserved) because its branch is checked first.
-   */
-  voiceApprovalMode?: boolean;
-  /**
    * Override the model client for THIS call. Production never passes it; the
    * hermetic eval harness passes a scripted fake so the full loop runs with
    * zero API spend and zero network. When absent, the client is chosen from
@@ -995,39 +981,25 @@ export async function runAgent(opts: RunAgentOpts): Promise<RunAgentResult> {
 // unit-testable WITHOUT mocking the whole Anthropic stream.
 //
 //   • Chat (approvalMode)      → hold EVERY mutation. Byte-for-byte the prior
-//                                behaviour; the only mode where any mutation is
-//                                held. Quick vs card tier is irrelevant here —
-//                                both go to a card.
-//   • Voice (voiceApprovalMode) → hold ONLY card-tier mutations. Quick-tier
-//                                mutations (remember/forget/log_found_item/
-//                                log_reading/log_pm_check) run inline this turn.
+//                                behaviour; quick vs card tier is irrelevant
+//                                here — both go to a card.
 //   • Neither                  → hold nothing (evals + sync runAgent path).
 //
 // `held` and `inline` together partition the mutation calls; read-only calls are
 // never held and are handled by the normal read-only path.
-export type ApprovalGateMode = 'chat' | 'voice' | 'off';
+export type ApprovalGateMode = 'chat' | 'off';
 
 export function approvalGateMode(opts: {
   approvalMode?: boolean;
-  voiceApprovalMode?: boolean;
 }): ApprovalGateMode {
-  // approvalMode (chat) takes precedence so chat semantics are never altered by
-  // a caller that (mistakenly) also set voiceApprovalMode.
   if (opts.approvalMode) return 'chat';
-  if (opts.voiceApprovalMode) return 'voice';
   return 'off';
 }
 
 /**
  * Partition a turn's proposed tool calls into the mutations that must be HELD
  * for approval and the rest that execute inline, under the given gate mode.
- * Read-only calls are always inline. In 'voice' mode a card-tier mutation is
- * held; a quick-tier (or tier-less, treated as 'card' defensively — matching the
- * gate's own default) mutation... see below.
- *
- * Defaulting rule mirrors the gate: a mutation missing an explicit tier defaults
- * to 'card' (the safe, held choice). In voice that means an untiered mutation is
- * HELD, not silently executed — fail-safe.
+ * Read-only calls are always inline.
  */
 export function partitionGatedCalls(
   calls: AgentToolCall[],
@@ -1057,10 +1029,6 @@ export function partitionGatedCalls(
       held.push(c); // chat holds every mutation
       continue;
     }
-    // voice: hold only card-tier mutations; quick-tier runs inline.
-    const tier = approvalTierFor(c.name) ?? 'card';
-    if (tier === 'card') held.push(c);
-    else inline.push(c);
   }
   return { held, inline };
 }
@@ -1561,22 +1529,18 @@ export async function* streamAgent(opts: RunAgentOpts): AsyncGenerator<AgentEven
         return;
       }
 
-      // ── Approval gate (approvalMode / voiceApprovalMode) ───────────────
+      // ── Approval gate (approvalMode) ───────────────────────────────────
       // Some proposed calls must be HELD for approval rather than executed:
       //   • Chat (approvalMode)       → hold EVERY mutation. Unchanged.
-      //   • Voice (voiceApprovalMode) → hold only CARD-tier mutations; quick-tier
-      //                                 mutations run inline this turn (below).
       // partitionGatedCalls is the single source of truth for that split.
       //
       // If nothing is held, we FALL THROUGH to the normal execution path so the
-      // turn runs to completion and emits `done`. Critical for voice: a turn
-      // with only quick-tier mutations (e.g. "log the pool reading") must run
-      // fully so the model speaks its result — it must NOT end early here.
+      // turn runs to completion and emits `done`.
       //
       // If something IS held, we do NOT run the held calls. We stage a
       // `tool_call_pending_approval` per held call FIRST, then execute every
-      // NON-held call in this turn inline (read-only calls AND, in voice,
-      // quick-tier mutations), then STOP — the turn ends here (no `done`).
+      // NON-held read-only call in this turn inline, then STOP — the turn ends
+      // here (no `done`).
       //
       // Why stop instead of continue: Anthropic requires EVERY tool_use in the
       // assistant message to get a tool_result before the conversation can go
@@ -1622,9 +1586,8 @@ export async function* streamAgent(opts: RunAgentOpts): AsyncGenerator<AgentEven
           }
 
           // Non-held calls in the same turn still run inline, AFTER the held
-          // proposals are staged. In chat these are all read-only; in voice
-          // they may also include quick-tier mutations (which the gate does
-          // not hold), so they really do execute and mutate here.
+          // proposals are staged. In chat these are read-only calls because
+          // every mutation is held by the gate.
           for (const call of inline) {
             const stopped = agentStopReason(deadlineAt, opts.abortSignal)
               ?? agentToolStopReason(call.name, deadlineAt, opts.abortSignal);
@@ -1642,12 +1605,10 @@ export async function* streamAgent(opts: RunAgentOpts): AsyncGenerator<AgentEven
           }
 
           // Turn ends here — no `done`. The route holds the stream open only
-          // long enough to persist, then closes; the browser shows the card(s)
-          // / voice speaks the read-back confirmation.
+          // long enough to persist, then closes; the browser shows the card(s).
           return;
         }
-        // held.length === 0 → fall through to normal execution (voice quick-only
-        // turn runs fully; chat with no mutations runs fully).
+        // held.length === 0 → fall through to normal execution.
       }
 
       // Run the tools and feed results back.

@@ -138,7 +138,7 @@ describe('trap 1: robot-off refusal for admin buttons', () => {
 
 describe('trap 2: reminders at a hotel with Communications off', () => {
   const namesFor = (sections: Record<string, boolean> | undefined) =>
-    getToolsForRole('general_manager', 'chat', undefined, sections).map((t) => t.name);
+    getToolsForRole('general_manager', 'chat', sections).map((t) => t.name);
 
   test('create_reminder is not offered when Communications is off', () => {
     const names = namesFor({ communications: false });
@@ -169,7 +169,7 @@ describe('trap 2: reminders at a hotel with Communications off', () => {
 
   test('turning Communications off drops exactly the Communications tools', () => {
     const off = new Set(namesFor({ communications: false }));
-    const onTools = getToolsForRole('general_manager', 'chat', undefined, { communications: true });
+    const onTools = getToolsForRole('general_manager', 'chat', { communications: true });
     const removed = onTools.filter((t) => !off.has(t.name)).map((t) => t.name).sort();
 
     // The honest assertion: what disappears is precisely the set of tools that

@@ -265,17 +265,16 @@ describe('a lens is a keyhole, never a grant', () => {
     }
   });
 
-  it('lenses do not touch the voice, walkthrough or portfolio surfaces', () => {
+  it('lenses do not touch the walkthrough or portfolio surfaces', () => {
     // The lens narrows the CHAT mount. A lens reaching the portfolio surface
     // would be a category error — that surface answers for a company, not for
-    // a hat at one hotel — and the housekeeping voice catalog must survive.
-    for (const surface of ['voice', 'walkthrough', 'portfolio'] as const) {
+    // a hat at one hotel.
+    for (const surface of ['walkthrough', 'portfolio'] as const) {
       for (const role of ALL_ROLES) {
         assert.equal(lensFor(role, surface), null, `${role}/${surface}`);
         assert.equal(lensAllowsTool(role, surface, 'anything_at_all'), true);
       }
     }
-    assert.ok(getToolsForRole('housekeeping', 'voice', 'general').length > 0);
   });
 });
 

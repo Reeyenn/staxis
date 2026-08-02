@@ -110,7 +110,7 @@ export function computeOccupancySummary(
  */
 export async function getCurrentRoomsDate(db: ScopedDb): Promise<string> {
   // Bound to ON OR BEFORE today: a pre-loaded FUTURE assignment (tomorrow's
-  // plan) must never become the default mutation date, or agent/voice commands
+  // plan) must never become the default mutation date, or agent commands
   // (mark clean, reset, DND, flag, assign) would silently write tomorrow's row.
   const today = todayStr();
   // Two sources since migration 0355: the PMS plan (pms_housekeeping_assignments)

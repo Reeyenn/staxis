@@ -309,7 +309,7 @@ registerTool<Record<string, never>>({
 
 // ─── get_time_off_requests ────────────────────────────────────────────────
 // Lets a manager ask "any time-off requests?" and get a straight answer
-// instead of hunting the schedule grid. Read-only; chat + general voice.
+// instead of hunting the schedule grid. Read-only chat tool.
 
 const TOR_STATUS_FILTERS = ['pending', 'approved', 'denied', 'all'] as const;
 
@@ -334,8 +334,7 @@ registerTool<{ status?: 'pending' | 'approved' | 'denied' | 'all' }>({
     },
   },
   allowedRoles: ['admin', 'owner', 'general_manager'],
-  surfaces: ['chat', 'voice'],
-  voiceModes: ['general'],
+  surfaces: ['chat'],
   handler: async ({ status }, ctx): Promise<ToolResult> => {
     const filter = TOR_STATUS_FILTERS.includes(status as typeof TOR_STATUS_FILTERS[number])
       ? (status as typeof TOR_STATUS_FILTERS[number])
@@ -372,8 +371,8 @@ registerTool<{ status?: 'pending' | 'approved' | 'denied' | 'all' }>({
 
 // ─── decide_time_off ──────────────────────────────────────────────────────
 // Approve or deny a PENDING time-off request by staff name (+ optional date).
-// Mutating + manager-only + chat-only (no voice approvals — a misheard "approve"
-// shouldn't delete a shift). Shares the approve-cascade with the HTTP route via
+// Mutating + manager-only + chat-only. Shares the approve-cascade with the HTTP
+// route via
 // applyTimeOffDecision so the two surfaces can't drift.
 
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;

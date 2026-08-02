@@ -1,6 +1,6 @@
 // ─── POST /api/agent/command ───────────────────────────────────────────────
-// The main entry point to the agent layer. All surfaces (chat UI, voice,
-// Clicky walkthrough) call this with a user message and get back a streamed
+// The main entry point to the agent layer. Chat UI, Clicky walkthrough, and
+// portfolio chat call this with a user message and get back a streamed
 // SSE response with the model's tokens, tool calls, and final result.
 //
 // Codex adversarial review fixes (2026-05-13) wired in here:
@@ -380,7 +380,6 @@ export async function POST(req: NextRequest): Promise<Response> {
   const tools = getToolsForRole(
     userCtx.role,
     'chat',
-    undefined,
     enabledSections,
     userCtx,
   );
