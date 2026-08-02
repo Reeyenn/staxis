@@ -89,18 +89,52 @@ function serializeAccount(row: {
   username: string;
   display_name: string;
   role: string;
-  property_access: string[];
+  active: boolean;
   created_at: string | null;
   data_user_id: string;
-}, emailByUserId: Map<string, string>) {
+}, emailByUserId: Map<string, string>, scope: { all: boolean; propertyIds: string[] }) {
   return {
     accountId: row.id,
     username: row.username,
     displayName: row.display_name,
     email: emailByUserId.get(row.data_user_id) ?? '',
     role: row.role as AccountRole,
-    propertyAccess: row.role === 'admin' ? ['*'] : (row.property_access ?? []),
+    propertyAccess: scope.all ? ['*'] : scope.propertyIds,
     createdAt: row.created_at,
+  };
+}
+
+interface CanonicalAdminScope {
+  all: boolean;
+  active: boolean;
+  authorityMode: string;
+  authorityVersion: number;
+  propertyIds: string[];
+}
+
+async function loadCanonicalAdminScope(accountId: string): Promise<CanonicalAdminScope | null> {
+  const { data, error } = await supabaseAdmin.rpc(
+    'staxis_list_account_authorization_admin',
+    { p_account_id: accountId },
+  );
+  if (error || !data || typeof data !== 'object' || Array.isArray(data)) return null;
+  const raw = data as Record<string, unknown>;
+  const authorityVersion = raw.authorityVersion;
+  if (raw.ok !== true
+    || typeof raw.all !== 'boolean'
+    || typeof raw.active !== 'boolean'
+    || typeof raw.authorityMode !== 'string'
+    || typeof authorityVersion !== 'number'
+    || !Number.isSafeInteger(authorityVersion)
+    || authorityVersion <= 0
+    || !Array.isArray(raw.propertyIds)
+    || !raw.propertyIds.every((id) => typeof id === 'string' && isUuid(id))) return null;
+  return {
+    all: raw.all,
+    active: raw.active,
+    authorityMode: raw.authorityMode,
+    authorityVersion,
+    propertyIds: [...raw.propertyIds] as string[],
   };
 }
 
@@ -115,7 +149,7 @@ export async function GET(req: NextRequest) {
 
   const { data, error } = await supabaseAdmin
     .from('accounts')
-    .select('id, username, display_name, role, property_access, created_at, data_user_id')
+    .select('id, username, display_name, role, active, created_at, data_user_id')
     .order('created_at', { ascending: true });
 
   if (error) {
@@ -136,7 +170,20 @@ export async function GET(req: NextRequest) {
     }
   }
 
-  return ok({ accounts: (data ?? []).map(r => serializeAccount(r, emailByUserId)) }, { requestId });
+  const scopes = await Promise.all((data ?? []).map(async (row) => (
+    [row, await loadCanonicalAdminScope(row.id)] as const
+  )));
+  if (scopes.some(([row, scope]) => !scope || scope.active !== row.active)) {
+    log.error('[accounts:GET] canonical account scope lookup failed', { requestId });
+    return err('Failed to load canonical account access', {
+      requestId, status: 503, code: ApiErrorCode.UpstreamFailure,
+    });
+  }
+  return ok({ accounts: scopes.map(([row, scope]) => serializeAccount(
+    row,
+    emailByUserId,
+    scope ?? { all: false, propertyIds: [] },
+  )) }, { requestId });
 }
 
 // POST /api/auth/accounts - create account (admin only)
@@ -178,6 +225,24 @@ export async function POST(req: NextRequest) {
     return err('A valid email is required', {
       requestId, status: 400, code: ApiErrorCode.ValidationFailed,
     });
+  }
+
+  let requestedPropertyAccess: string[] = [];
+  if (propertyAccess !== undefined) {
+    if (!Array.isArray(propertyAccess) || propertyAccess.length > 1000) {
+      return err('propertyAccess must be an array', {
+        requestId, status: 400, code: ApiErrorCode.ValidationFailed,
+      });
+    }
+    for (const propertyId of propertyAccess) {
+      if (typeof propertyId !== 'string'
+        || (propertyId !== '*' && !isUuid(propertyId))) {
+        return err('propertyAccess contains an invalid property id', {
+          requestId, status: 400, code: ApiErrorCode.ValidationFailed,
+        });
+      }
+    }
+    requestedPropertyAccess = [...new Set(propertyAccess.filter((id) => id !== '*'))];
   }
 
   // Duplicate check (application-level — also enforced by DB unique index).
@@ -222,21 +287,15 @@ export async function POST(req: NextRequest) {
   }
   const authData = { user: authResult.user };
 
-  // Admin accounts don't get explicit property_access — RLS grants them
-  // access to everything via the accounts.role = 'admin' branch in
-  // user_owns_property().
-  const effectivePropertyAccess = role === 'admin' ? [] : (propertyAccess ?? []).filter(id => id !== '*');
-
   const { data: inserted, error: insErr } = await supabaseAdmin
     .from('accounts')
     .insert({
       username: normalizedUsername,
       display_name: displayName || normalizedUsername,
       role,
-      property_access: effectivePropertyAccess,
       data_user_id: authData.user.id,
     })
-    .select('id')
+    .select('id, role, active')
     .single();
 
   if (insErr || !inserted) {
@@ -288,13 +347,45 @@ export async function POST(req: NextRequest) {
     return err('Failed to create account record', { requestId, status: 500, code: ApiErrorCode.InternalError });
   }
 
+  const initialScope = await loadCanonicalAdminScope(inserted.id);
+  if (!initialScope) {
+    await supabaseAdmin.from('accounts').delete().eq('id', inserted.id);
+    await supabaseAdmin.auth.admin.deleteUser(authData.user.id);
+    return err('Failed to initialize canonical account access', {
+      requestId, status: 500, code: ApiErrorCode.InternalError,
+    });
+  }
+  const { data: scopeResult, error: scopeError } = await supabaseAdmin.rpc(
+    'staxis_set_account_authorization_scope',
+    {
+      p_actor_account_id: caller.id,
+      p_account_id: inserted.id,
+      p_property_ids: role === 'admin' ? [] : requestedPropertyAccess,
+      p_expected_authority_version: initialScope.authorityVersion,
+      p_expected_role: role,
+      p_new_role: role,
+      p_reason: 'Admin account creation',
+    },
+  );
+  if (scopeError || !scopeResult || typeof scopeResult !== 'object'
+      || (scopeResult as { ok?: unknown }).ok !== true) {
+    log.error('[accounts:POST] canonical scope initialization failed', {
+      requestId, accountId: inserted.id, msg: errToString(scopeError),
+    });
+    await supabaseAdmin.from('accounts').delete().eq('id', inserted.id);
+    await supabaseAdmin.auth.admin.deleteUser(authData.user.id);
+    return err('Failed to initialize canonical account access', {
+      requestId, status: 409, code: ApiErrorCode.IdempotencyConflict,
+    });
+  }
+
   await writeAudit({
     action: 'account.create',
     actorUserId: caller.userId,
     actorEmail: caller.userEmail,
     targetType: 'account',
     targetId: inserted.id,
-    metadata: { username: normalizedUsername, email: normalizedEmail, role, hotelIds: effectivePropertyAccess },
+    metadata: { username: normalizedUsername, email: normalizedEmail, role, hotelIds: requestedPropertyAccess },
   });
 
   return ok({ accountId: inserted.id }, { requestId });
@@ -381,7 +472,7 @@ export async function PUT(req: NextRequest) {
   // fields are removed before the safe-separation check below.
   const { data: target, error: fetchErr } = await supabaseAdmin
     .from('accounts')
-    .select('id, data_user_id, role, display_name, property_access')
+    .select('id, data_user_id, role, display_name, active')
     .eq('id', accountId)
     .maybeSingle();
 
@@ -394,15 +485,26 @@ export async function PUT(req: NextRequest) {
   if (normalizedDisplayName !== undefined && normalizedDisplayName !== target.display_name) {
     updates.display_name = normalizedDisplayName;
   }
-  if (role !== undefined && role !== target.role) updates.role = role;
-  if (normalizedPropertyAccess !== undefined || role !== undefined) {
-    const currentAccess = Array.isArray(target.property_access) ? target.property_access as string[] : [];
-    const effectiveRole = (role ?? target.role) as AccountRole;
-    const effectiveAccess = effectiveRole === 'admin'
+  const scopeMutationRequested = normalizedPropertyAccess !== undefined || role !== undefined;
+  let canonicalScope: CanonicalAdminScope | null = null;
+  let canonicalRequestedAccess: string[] = [];
+  let canonicalRole = target.role as AccountRole;
+  let scopeMutationNeeded = false;
+  if (scopeMutationRequested) {
+    canonicalScope = await loadCanonicalAdminScope(accountId);
+    if (!canonicalScope) {
+      return err('Canonical account access is temporarily unavailable', {
+        requestId, status: 503, code: ApiErrorCode.UpstreamFailure,
+      });
+    }
+    canonicalRole = (role ?? target.role) as AccountRole;
+    const currentAccess = canonicalScope.all ? [] : canonicalScope.propertyIds;
+    canonicalRequestedAccess = canonicalRole === 'admin'
       ? []
       : (normalizedPropertyAccess ?? currentAccess).filter((id) => id !== '*');
-    const sameAccess = [...effectiveAccess].sort().join('\0') === [...currentAccess].sort().join('\0');
-    if (!sameAccess) updates.property_access = effectiveAccess;
+    scopeMutationNeeded = canonicalRole !== target.role
+      || normalizedPropertyAccess !== undefined
+        && [...canonicalRequestedAccess].sort().join('\0') !== [...currentAccess].sort().join('\0');
   }
 
   // Determine whether the submitted email is an actual credential change.
@@ -437,7 +539,7 @@ export async function PUT(req: NextRequest) {
     authUpdates.email_confirm = true;
   }
 
-  const hasAccountUpdates = Object.keys(updates).length > 0;
+  const hasAccountUpdates = Object.keys(updates).length > 0 || scopeMutationNeeded;
   const hasAuthUpdates = Object.keys(authUpdates).length > 0;
   if (hasAccountUpdates && hasAuthUpdates) {
     return err('Update profile/access and login credentials in separate saves', {
@@ -451,13 +553,38 @@ export async function PUT(req: NextRequest) {
   }
 
   if (hasAccountUpdates) {
-    const { error: updErr } = await supabaseAdmin
-      .from('accounts')
-      .update(updates)
-      .eq('id', accountId);
-    if (updErr) {
-      log.error('[accounts:PUT] accounts update failed', { requestId, msg: errToString(updErr), accountId });
-      return err('Failed to update account', { requestId, status: 500, code: ApiErrorCode.InternalError });
+    if (scopeMutationNeeded) {
+      const { data: scopeResult, error: scopeError } = await supabaseAdmin.rpc(
+        'staxis_set_account_authorization_scope',
+        {
+          p_actor_account_id: caller.id,
+          p_account_id: accountId,
+          p_property_ids: canonicalRequestedAccess,
+          p_expected_authority_version: canonicalScope?.authorityVersion ?? null,
+          p_expected_role: target.role,
+          p_new_role: canonicalRole,
+          p_reason: 'Admin account update',
+        },
+      );
+      if (scopeError || !scopeResult || typeof scopeResult !== 'object'
+          || (scopeResult as { ok?: unknown }).ok !== true) {
+        log.error('[accounts:PUT] canonical scope update failed', {
+          requestId, msg: errToString(scopeError), accountId,
+        });
+        return err('Failed to update canonical account access', {
+          requestId, status: 409, code: ApiErrorCode.IdempotencyConflict,
+        });
+      }
+    }
+    if (Object.keys(updates).length > 0) {
+      const { error: updErr } = await supabaseAdmin
+        .from('accounts')
+        .update(updates)
+        .eq('id', accountId);
+      if (updErr) {
+        log.error('[accounts:PUT] accounts update failed', { requestId, msg: errToString(updErr), accountId });
+        return err('Failed to update account', { requestId, status: 500, code: ApiErrorCode.InternalError });
+      }
     }
   }
 

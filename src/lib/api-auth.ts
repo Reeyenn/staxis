@@ -204,8 +204,8 @@ function authFailureResponse(
  *
  * Skip-2FA escape hatch: the same demo bypass that check-trust uses
  * (account.skip_2fa=true + SKIP_2FA_ENABLED=true env + user in
- * SKIP_2FA_USER_IDS allowlist + role!='admin' + no '*' in
- * property_access) is honored here too, so investor demo accounts
+ * SKIP_2FA_USER_IDS allowlist + role!='admin' + canonical authority is not
+ * all-properties) is honored here too, so investor demo accounts
  * keep working exactly as before.
  *
  * Global switch: when the admin-toggleable human-2FA switch (migration
@@ -295,11 +295,11 @@ async function validateDeviceTrust(
   }
 
   try {
-    // Look up the caller's accounts row. We need role + property_access
-    // for the skip_2fa privileged-account refusal.
+    // Look up the caller's identity row. Canonical authority is resolved only
+    // if the skip_2fa branch needs the privileged-account refusal.
     const { data: account, error: acctErr } = await supabaseAdmin
       .from('accounts')
-      .select('id, skip_2fa, role, property_access')
+      .select('id, skip_2fa, role')
       .eq('data_user_id', userId)
       .maybeSingle();
 
@@ -393,8 +393,12 @@ async function validateDeviceTrust(
         .filter(Boolean);
       const onAllowlist = allowlist.includes(userId);
       const role = (account.role as string) ?? '';
-      const access = (account.property_access ?? []) as string[];
-      const isPrivileged = role === 'admin' || access.includes('*');
+      const authority = await listAuthoritativePropertyAccess(account.id);
+      // An unavailable canonical snapshot cannot prove that a demo account is
+      // scoped. Fail closed into the normal 2FA-required result.
+      if (!authority) return { ok: false, reason: 'db_error' };
+      const hadWildcardAccess = authority.all;
+      const isPrivileged = role === 'admin' || hadWildcardAccess;
 
       // Privileged refusal takes precedence: an admin row with skip_2fa
       // should NEVER bypass, even if the env gate + allowlist are
@@ -408,7 +412,7 @@ async function validateDeviceTrust(
           metadata: {
             accountId: account.id,
             role,
-            hadWildcardAccess: access.includes('*'),
+            hadWildcardAccess,
             enforcement_point: 'requireSession',
           },
         });

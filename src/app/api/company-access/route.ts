@@ -27,7 +27,6 @@ import {
 import {
   activeGrantsForActor,
   activeMembershipsForActor,
-  isOrganizationSchemaMissing,
   loadOrganizationActor,
 } from '@/lib/organization-access/server';
 import {
@@ -56,6 +55,7 @@ import {
 } from '@/lib/company-access/dto';
 import type { AppRole } from '@/lib/roles';
 import { resolveHatCoverage } from '@/lib/company/access';
+import { listAuthoritativePropertyAccess } from '@/lib/authorization/server';
 import {
   accessProfileForHat,
   isHatRole,
@@ -73,7 +73,6 @@ interface AccountRow {
   id: string;
   display_name: string | null;
   role: AppRole;
-  property_access: string[] | null;
   active: boolean;
 }
 
@@ -279,51 +278,6 @@ function activeWindow(startsAt: string, endsAt: string | null | undefined, nowMs
   return Number.isFinite(startMs) && startMs <= nowMs && (endMs === null || (Number.isFinite(endMs) && endMs > nowMs));
 }
 
-function missingSchemaError(error: unknown): boolean {
-  if (isOrganizationSchemaMissing(error)) return true;
-  if (!error || typeof error !== 'object') return false;
-  const record = error as { code?: string; message?: string };
-  return record.code === '42P01'
-    || record.code === '42883'
-    || record.code === 'PGRST202'
-    || record.code === 'PGRST205'
-    || /relation .* does not exist|function .* does not exist|schema cache/i.test(record.message ?? '');
-}
-
-type CompanyAuthorityMode = 'legacy' | 'shadow' | 'normalized' | 'schema_absent';
-
-/**
- * Decide which authority is allowed to feed the Company Hub before reading a
- * projection. A normalized account must never fall through to the legacy
- * `accounts.property_access` array merely because its last membership was
- * revoked (or moved) between requests.
- *
- * The authoritative resolver is intentionally queried through its
- * SECURITY DEFINER DTO rather than by reading account_authorization_state:
- * direct table reads are revoked even from service_role. A malformed or
- * unavailable resolver fails closed; only a genuinely absent schema permits
- * the pre-0378 compatibility path.
- */
-async function companyAuthorityMode(accountId: string): Promise<CompanyAuthorityMode> {
-  const { data, error } = await supabaseAdmin.rpc(
-    'staxis_list_account_authorized_properties',
-    { p_account_id: accountId },
-  );
-  if (error) {
-    if (missingSchemaError(error)) return 'schema_absent';
-    throw error;
-  }
-  if (!data || typeof data !== 'object' || Array.isArray(data)) {
-    throw new Error('Authoritative account access response was malformed');
-  }
-  const record = data as Record<string, unknown>;
-  if (record.ok !== true
-      || !['legacy', 'shadow', 'normalized'].includes(String(record.authorityMode))) {
-    throw new Error(`Authoritative account access was unavailable: ${String(record.reason ?? 'invalid_response')}`);
-  }
-  return record.authorityMode as Exclude<CompanyAuthorityMode, 'schema_absent'>;
-}
-
 class StaleCompanyProjectionError extends Error {
   constructor() {
     super('Organization access changed while the Company Hub projection was loading');
@@ -452,7 +406,7 @@ function eventSummary(eventType: string): string {
  *
  * Asked only about hotels the caller sees WITHOUT a real company behind them:
  * through the hidden single-hotel anchor from migration 0325, or through the
- * legacy `accounts.property_access` array. Every one of those was filed under
+ * canonical legacy/shadow resolver projection. Every one of those was filed under
  * "Hotels not grouped under a management company", and for a front-desk person
  * at a hotel run by a real operator that is false in the most confusing
  * possible direction — they were told nobody runs their hotel.
@@ -531,8 +485,11 @@ async function operatingCompanyNames(
   }
 }
 
-async function legacyProjection(account: AccountRow): Promise<CompanyAccessData> {
-  const access = account.property_access ?? [];
+async function legacyProjection(
+  account: AccountRow,
+  authority: { propertyIds: string[]; all: boolean },
+): Promise<CompanyAccessData> {
+  const access = authority.all ? [] : authority.propertyIds;
   if (account.role !== 'admin' && !access.includes('*')) {
     if (access.length === 0) {
       return {
@@ -1452,7 +1409,7 @@ export async function GET(req: NextRequest) {
     const actor = await loadOrganizationActor(session.userId, session.email);
     if (!actor) return err('Account not found', { requestId, status: 404, code: ApiErrorCode.NotFound });
     const { data: accountData, error: accountError } = await supabaseAdmin.from('accounts')
-      .select('id, display_name, role, property_access, active')
+      .select('id, display_name, role, active')
       .eq('id', actor.accountId)
       .maybeSingle();
     if (accountError) throw accountError;
@@ -1467,13 +1424,15 @@ export async function GET(req: NextRequest) {
       });
     }
 
-    const authorityMode = await companyAuthorityMode(actor.accountId);
+    const authority = await listAuthoritativePropertyAccess(actor.accountId);
+    if (!authority) throw new Error('Authoritative account access was unavailable');
+    const authorityMode = authority.authorityMode;
 
     // Legacy and shadow are deliberately legacy-only authority modes. In
     // particular, a shadow account may already have normalized rows for drift
     // comparison, but those rows are not yet allowed to drive this surface.
     if (authorityMode === 'legacy' || authorityMode === 'shadow') {
-      const projection = await legacyProjection(account);
+      const projection = await legacyProjection(account, authority);
       const { data: endingAccount, error: endingAccountError } = await supabaseAdmin
         .from('accounts')
         .select('active')
@@ -1486,38 +1445,22 @@ export async function GET(req: NextRequest) {
       return ok(projection, { requestId });
     }
 
-    try {
-      for (let attempt = 0; attempt < 2; attempt += 1) {
-        try {
-          const normalized = await normalizedProjection(actor.accountId);
-          if (normalized) return ok(normalized, { requestId });
-
-          // Normalized is a one-way cutover. No active company membership is
-          // an empty/denied company projection, never permission to resurrect
-          // stale accounts.property_access from before revocation or transfer.
-          if (authorityMode === 'normalized') {
-            return ok(EMPTY_COMPANY_ACCESS, { requestId });
-          }
-          break;
-        } catch (normalizedError) {
-          if ((normalizedError instanceof StaleCompanyProjectionError
-            || normalizedError instanceof IncompleteCompanyProjectionError) && attempt === 0) continue;
-          throw normalizedError;
-        }
-      }
-    } catch (normalizedError) {
-      // The compatibility fallback exists only when the organization schema
-      // itself is absent. Once the authoritative mode RPC exists, any
-      // normalized projection failure is an error, not a legacy grant.
-      if (authorityMode !== 'schema_absent' || !missingSchemaError(normalizedError)) {
+    let normalized: CompanyAccessData | null = null;
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      try {
+        normalized = await normalizedProjection(actor.accountId);
+        break;
+      } catch (normalizedError) {
+        if ((normalizedError instanceof StaleCompanyProjectionError
+          || normalizedError instanceof IncompleteCompanyProjectionError) && attempt === 0) continue;
         throw normalizedError;
       }
     }
+    if (normalized) return ok(normalized, { requestId });
 
     // The normalized projection deliberately ignores inactive memberships.
-    // Re-check the account after the multi-query projection before falling
-    // back to legacy property_access so a concurrent deactivation cannot turn
-    // an authorization failure into a legacy read.
+    // Re-check the account after the multi-query projection before returning
+    // an empty, fail-closed company projection.
     const { data: fallbackAccount, error: fallbackAccountError } = await supabaseAdmin
       .from('accounts')
       .select('active')
@@ -1528,10 +1471,7 @@ export async function GET(req: NextRequest) {
       return err('Account not found', { requestId, status: 404, code: ApiErrorCode.NotFound });
     }
 
-    if (authorityMode !== 'schema_absent') {
-      throw new Error('Authoritative company access could not be projected');
-    }
-    return ok(await legacyProjection(account), { requestId });
+    return ok(EMPTY_COMPANY_ACCESS, { requestId });
   } catch (caught) {
     log.error('[company-access:GET] projection failed', { requestId, error: errToString(caught) });
     return err('Could not load company access', { requestId, status: 500, code: ApiErrorCode.InternalError });

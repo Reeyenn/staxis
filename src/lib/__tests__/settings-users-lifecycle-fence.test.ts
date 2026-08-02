@@ -36,7 +36,9 @@ describe('retired Settings user API', () => {
 
 describe('legacy ownership handoff in Company Access', () => {
   test('rejects inactive callers and routes every mutation through the Auth-bound atomic RPC', () => {
-    assert.match(transferRoute, /select\(['"]id, role, property_access, active, lifecycle_intent_version['"]\)/);
+    assert.match(transferRoute, /select\(['"]id, role, active, lifecycle_intent_version['"]\)/);
+    assert.match(transferRoute, /listAuthoritativePropertyAccess\(data\.id\)/);
+    assert.doesNotMatch(transferRoute, /select\(['"]id, role, property_access/);
     assert.match(transferRoute, /data\.active !== true/);
     assert.match(transferRoute, /requireSession\(req\)/);
     assert.match(transferRoute, /loadAuthoritativeHotelRoster\(pidV\.value!, caller\.role === ['"]admin['"]\)/);

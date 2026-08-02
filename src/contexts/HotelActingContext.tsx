@@ -52,7 +52,11 @@ function responseData(value: unknown): unknown {
 export function HotelActingProvider({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
   const searchParams = useSearchParams();
-  const { user, loading: authLoading } = useAuth();
+  const {
+    user,
+    loading: authLoading,
+    authorizationChecked,
+  } = useAuth();
   const searchKey = searchParams.toString();
   const request = React.useMemo(
     () => resolveHotelActingRequest({ pathname, search: searchKey }),
@@ -106,6 +110,15 @@ export function HotelActingProvider({ children }: { children: React.ReactNode })
       return;
     }
     if (authLoading) {
+      setSnapshot({ requestIdentity, status: 'checking', context: null, httpStatus: null });
+      return;
+    }
+    // The browser account projection deliberately starts without property
+    // authority. Wait for the server-backed canonical snapshot before
+    // starting the hotel-context request; otherwise the snapshot hydration
+    // would change requestIdentity and issue a duplicate request while the
+    // first one is still unresolved.
+    if (!authorizationChecked) {
       setSnapshot({ requestIdentity, status: 'checking', context: null, httpStatus: null });
       return;
     }
@@ -175,7 +188,7 @@ export function HotelActingProvider({ children }: { children: React.ReactNode })
       if (activeControllerRef.current === controller) activeControllerRef.current = null;
       controller.abort();
     };
-  }, [attempt, authLoading, requestIdentity, userUid]);
+  }, [attempt, authLoading, authorizationChecked, requestIdentity, userUid]);
 
   // A background tab can outlive its grant. Clear the full hotel subtree before
   // every foreground recheck; pagehide also destroys the current verdict so a

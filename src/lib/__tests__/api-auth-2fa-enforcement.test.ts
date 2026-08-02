@@ -38,9 +38,11 @@ import { hashDeviceToken, TRUST_COOKIE_NAME } from '@/lib/trusted-device';
 type GetUserResult = Awaited<ReturnType<typeof supabaseAdmin.auth.getUser>>;
 type GetUserFn = typeof supabaseAdmin.auth.getUser;
 type FromFn = typeof supabaseAdmin.from;
+type RpcFn = typeof supabaseAdmin.rpc;
 
 const originalGetUser: GetUserFn = supabaseAdmin.auth.getUser.bind(supabaseAdmin.auth);
 const originalFrom: FromFn = supabaseAdmin.from.bind(supabaseAdmin);
+const originalRpc: RpcFn = supabaseAdmin.rpc.bind(supabaseAdmin);
 
 interface AccountRow {
   id: string;
@@ -115,6 +117,52 @@ beforeEach(() => {
     error: state.userError,
   })) as unknown as GetUserFn;
 
+  // Skip-2FA now consumes the canonical resolver rather than the legacy
+  // account array. Keep the fixture's array only as a compact description of
+  // the scoped/wildcard scenario and return the validated resolver DTO that
+  // production code expects.
+  supabaseAdmin.rpc = (async (fn: string) => {
+    if (fn !== 'staxis_list_account_authorized_properties') {
+      throw new Error(`unexpected rpc in test mock: ${fn}`);
+    }
+    const propertyIds = state.account?.property_access?.includes('*')
+      ? []
+      : state.account?.property_access?.length
+        ? ['99999999-8888-4777-8666-555555555555']
+        : [];
+    const all = state.account?.property_access?.includes('*') ?? false;
+    return {
+      data: {
+        ok: true,
+        all,
+        authorityMode: 'legacy',
+        authorityVersion: 1,
+        effectiveAccessHash: 'a'.repeat(64),
+        propertyIds,
+        legacyPropertyIds: propertyIds,
+        membershipPropertyIds: [],
+        propertyStandings: propertyIds.map((propertyId) => ({
+          propertyId,
+          operationalRole: 'general_manager',
+          seesFinancials: false,
+          hotelMutationAllowed: true,
+          portfolioIntelligenceRead: false,
+          entitlements: [{
+            kind: 'legacy',
+            entitlementId: propertyId,
+            organizationId: null,
+            membershipId: null,
+            accessProfile: null,
+            staxisRole: null,
+            scopeType: null,
+            portfolioId: null,
+          }],
+        })),
+      },
+      error: null,
+    };
+  }) as unknown as RpcFn;
+
   // Two-table mock. .from('accounts')... and .from('trusted_devices')...
   // both return chainable builders that resolve to maybeSingle / insert.
   // @ts-expect-error monkey-patch singleton
@@ -160,6 +208,7 @@ beforeEach(() => {
 afterEach(() => {
   supabaseAdmin.auth.getUser = originalGetUser;
   supabaseAdmin.from = originalFrom;
+  supabaseAdmin.rpc = originalRpc;
   for (const k of ENV_KEYS) {
     if (savedEnv[k] === undefined) delete process.env[k];
     else (process.env as Record<string, string>)[k] = savedEnv[k]!;

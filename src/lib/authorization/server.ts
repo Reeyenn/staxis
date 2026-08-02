@@ -341,6 +341,52 @@ export async function listAuthoritativePropertyAccess(
   }
 }
 
+/**
+ * Find one active manager for a background property's cost attribution using
+ * the same canonical resolver as request authorization. Attribution is not a
+ * permission gate, but it must not break when Stage C clears the rollback
+ * array or charge a cross-property account chosen by a stale snapshot.
+ */
+export async function findAuthoritativeRepresentativeAccount(
+  propertyId: string,
+): Promise<string | null> {
+  if (!isUuid(propertyId)) return null;
+  const findInCandidates = async (
+    candidates: Array<{ id: string }>,
+  ): Promise<string | null> => {
+    for (const account of candidates) {
+      const access = await listAuthoritativePropertyAccess(account.id);
+      if (access && (access.all || access.propertyIds.includes(propertyId))) {
+        return account.id;
+      }
+    }
+    return null;
+  };
+
+  const { data: managers, error: managerError } = await supabaseAdmin
+    .from('accounts')
+    .select('id')
+    .eq('active', true)
+    .in('role', ['owner', 'general_manager', 'admin'])
+    .order('id')
+    .limit(5000);
+  if (managerError || !managers) return null;
+  const managerMatch = await findInCandidates(managers);
+  if (managerMatch) return managerMatch;
+
+  // Preserve the old attribution fallback for properties whose only active
+  // canonical account is staff-level, while keeping the resolver as the sole
+  // source of the property relationship.
+  const { data: anyActive, error: anyActiveError } = await supabaseAdmin
+    .from('accounts')
+    .select('id')
+    .eq('active', true)
+    .order('id')
+    .limit(5000);
+  if (anyActiveError || !anyActive) return null;
+  return findInCandidates(anyActive);
+}
+
 const AUTHORITY_MODES_SET = new Set<AuthorityMode>(['legacy', 'shadow', 'normalized']);
 
 interface PropertyMetadataRow {

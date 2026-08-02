@@ -97,6 +97,7 @@ import {
 import { recordNonRequestCost } from '@/lib/agent/cost-controls';
 import { getActiveMemoryForTurn } from '@/lib/db/agent-memory';
 import { formatMemoryForPrompt } from '@/lib/agent/memory-context';
+import { findAuthoritativeRepresentativeAccount } from '@/lib/authorization/server';
 
 import { clampJudgedDisposition } from '@/components/concourse/finding-cards';
 
@@ -1022,14 +1023,7 @@ export async function persistJudgments(
  *  `agent_costs` (whose user_id is NOT NULL). Null when the hotel has no
  *  account at all — the spend gate still held, only the books are thinner. */
 async function representativeAccountId(propertyId: string): Promise<string | null> {
-  const { data } = await supabaseAdmin
-    .from('accounts')
-    .select('id')
-    .contains('property_access', [propertyId])
-    .in('role', ['owner', 'general_manager', 'admin'])
-    .limit(1);
-  const rows = (data ?? []) as Array<{ id: string }>;
-  return rows[0]?.id ?? null;
+  return findAuthoritativeRepresentativeAccount(propertyId);
 }
 
 export function defaultJudgeDeps(): JudgeDeps {

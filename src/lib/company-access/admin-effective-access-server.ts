@@ -39,7 +39,6 @@ interface AccountRow {
   display_name: string | null;
   role: AppRole;
   active: boolean;
-  property_access: string[] | null;
 }
 
 interface OrganizationRow {
@@ -124,7 +123,7 @@ async function loadAccounts(ids?: readonly string[]): Promise<AccountRow[]> {
   if (ids) {
     return readCompleteCompanyIdChunks<AccountRow>(ids, (chunk, from, to) => (
       supabaseAdmin.from('accounts')
-        .select('id, display_name, role, active, property_access', { count: 'exact' })
+        .select('id, display_name, role, active', { count: 'exact' })
         .in('id', [...chunk])
         .order('id')
         .range(from, to) as unknown as PromiseLike<CompanyProjectionPage<AccountRow>>
@@ -132,7 +131,7 @@ async function loadAccounts(ids?: readonly string[]): Promise<AccountRow[]> {
   }
   return readCompleteCompanyPages<AccountRow>((from, to) => (
     supabaseAdmin.from('accounts')
-      .select('id, display_name, role, active, property_access', { count: 'exact' })
+      .select('id, display_name, role, active', { count: 'exact' })
       .order('id')
       .range(from, to) as unknown as PromiseLike<CompanyProjectionPage<AccountRow>>
   ), { maxRows: MAX_ACCOUNTS });
@@ -478,23 +477,11 @@ async function organizationProjection(organizationId: string): Promise<AdminEffe
   }
   const startingEpoch = Number(startingEpochRow!.version);
   const now = new Date();
-  const nowMs = now.getTime();
-  const [topology, memberships] = await Promise.all([
-    resolveOrganizationPropertyTopology(organizationId, now),
-    readCompleteCompanyPages<MembershipRow>((from, to) => supabaseAdmin.from('organization_memberships')
-      .select('id, organization_id, account_id, membership_scope, staxis_role, job_title, status, starts_at, ended_at', { count: 'exact' })
-      .eq('organization_id', organizationId).order('id').range(from, to) as unknown as PromiseLike<CompanyProjectionPage<MembershipRow>>),
-  ]);
+  const topology = await resolveOrganizationPropertyTopology(organizationId, now);
   if (!topology.ok) throw new Error('company_topology_unavailable');
   const propertyIds = [...topology.topology.propertyIds].sort();
   const organizationPropertyIds = new Set(propertyIds);
-  const membershipAccountIds = new Set(memberships.map((row) => row.account_id));
-  const accounts = (await loadAccounts()).filter((account) => (
-    account.role !== 'admin'
-    && account.active
-    && (membershipAccountIds.has(account.id)
-      || (account.property_access ?? []).some((propertyId) => organizationPropertyIds.has(propertyId)))
-  ));
+  const accounts = (await loadAccounts()).filter((account) => account.role !== 'admin');
   const resolved = await resolveAccounts(accounts);
   const target: AdminEffectiveAccessTarget = {
     kind: 'organization', id: organizationId, name: organization.name,

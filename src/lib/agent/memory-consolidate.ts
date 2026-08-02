@@ -25,6 +25,7 @@ import { storeMemory } from '@/lib/db/agent-memory';
 import { redactMemoryContent } from './memory-redact';
 import { gatherOperationalSignals, templateContent, MAX_SIGNALS } from './operational-signals';
 import { runWithConcurrency } from '@/lib/parallel';
+import { findAuthoritativeRepresentativeAccount } from '@/lib/authorization/server';
 
 const LOOKBACK_HOURS = 24;
 const MAX_TRANSCRIPT_CHARS = 24_000; // bounds the Claude input cost
@@ -187,19 +188,7 @@ export function parseExtractionStrict(
 /** A representative accounts.id for the property (for the background cost row's
  *  user_id FK). Prefers a manager/owner; null when none. */
 async function representativeAccountId(propertyId: string): Promise<string | null> {
-  const { data } = await supabaseAdmin
-    .from('accounts')
-    .select('id, role')
-    .contains('property_access', [propertyId])
-    .in('role', ['owner', 'general_manager', 'admin'])
-    .limit(1);
-  if (data && data.length) return data[0].id as string;
-  const { data: any2 } = await supabaseAdmin
-    .from('accounts')
-    .select('id')
-    .contains('property_access', [propertyId])
-    .limit(1);
-  return any2 && any2.length ? (any2[0].id as string) : null;
+  return findAuthoritativeRepresentativeAccount(propertyId);
 }
 
 export interface ConsolidateResult {

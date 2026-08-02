@@ -50,6 +50,7 @@ import {
   type UsageReport,
 } from '@/lib/agent/llm';
 import { recordNonRequestCost } from '@/lib/agent/cost-controls';
+import { findAuthoritativeRepresentativeAccount } from '@/lib/authorization/server';
 
 import {
   cancelFindingsSpend,
@@ -857,14 +858,7 @@ export async function recordSweepRun(result: SweepRunResult, now: Date): Promise
 /** A representative manager, so background spend lands in the same books every
  *  other background caller writes to (agent_costs.user_id is NOT NULL). */
 async function representativeAccountId(propertyId: string): Promise<string | null> {
-  const { data } = await supabaseAdmin
-    .from('accounts')
-    .select('id')
-    .contains('property_access', [propertyId])
-    .in('role', ['owner', 'general_manager', 'admin'])
-    .limit(1);
-  const rows = (data ?? []) as Array<{ id: string }>;
-  return rows[0]?.id ?? null;
+  return findAuthoritativeRepresentativeAccount(propertyId);
 }
 
 export function defaultSweepDeps(): SweepDeps {

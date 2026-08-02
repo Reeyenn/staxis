@@ -23,8 +23,10 @@ import { supabaseAdmin } from '@/lib/supabase-admin';
 
 type GetUserFn = typeof supabaseAdmin.auth.getUser;
 type FromFn = typeof supabaseAdmin.from;
+type RpcFn = typeof supabaseAdmin.rpc;
 const originalGetUser: GetUserFn = supabaseAdmin.auth.getUser.bind(supabaseAdmin.auth);
 const originalFrom: FromFn = supabaseAdmin.from.bind(supabaseAdmin);
+const originalRpc: RpcFn = supabaseAdmin.rpc.bind(supabaseAdmin);
 
 interface MockState {
   user: { id: string } | null;
@@ -34,12 +36,14 @@ interface MockState {
     role: string;
     property_access: string[] | null;
   } | null;
+  authorityUnavailable: boolean;
   device: { id: string; expires_at: string; absolute_expires_at: string | null } | null;
   insertedEvents: Array<{ event_type: string; metadata: Record<string, unknown> }>;
 }
 const state: MockState = {
   user: null,
   account: null,
+  authorityUnavailable: false,
   device: null,
   insertedEvents: [],
 };
@@ -47,6 +51,7 @@ const state: MockState = {
 beforeEach(() => {
   state.user = null;
   state.account = null;
+  state.authorityUnavailable = false;
   state.device = null;
   state.insertedEvents = [];
 
@@ -54,6 +59,69 @@ beforeEach(() => {
     data: { user: state.user },
     error: null,
   })) as unknown as GetUserFn;
+
+  // The route now asks the canonical resolver for the wildcard/scoped fact.
+  // Return a fully shaped DTO so this test exercises the same validation used
+  // in production instead of accidentally treating an unavailable resolver as
+  // a non-privileged account.
+  supabaseAdmin.rpc = (async (fn: string) => {
+    if (fn !== 'staxis_list_account_authorized_properties') {
+      throw new Error(`unexpected rpc: ${fn}`);
+    }
+    if (state.authorityUnavailable) {
+      return { data: null, error: { message: 'canonical authority unavailable' } };
+    }
+    const account = state.account;
+    const propertyIds = account?.property_access?.filter((id) =>
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(id),
+    ) ?? [];
+    if (account?.property_access?.includes('*')) {
+      return {
+        data: {
+          ok: true,
+          all: true,
+          authorityMode: 'legacy',
+          authorityVersion: 1,
+          effectiveAccessHash: 'a'.repeat(64),
+          propertyIds: [],
+          legacyPropertyIds: [],
+          membershipPropertyIds: [],
+          propertyStandings: [],
+        },
+        error: null,
+      };
+    }
+    return {
+      data: {
+        ok: true,
+        all: false,
+        authorityMode: 'legacy',
+        authorityVersion: 1,
+        effectiveAccessHash: 'a'.repeat(64),
+        propertyIds,
+        legacyPropertyIds: propertyIds,
+        membershipPropertyIds: [],
+        propertyStandings: propertyIds.map((propertyId) => ({
+          propertyId,
+          operationalRole: 'general_manager',
+          seesFinancials: false,
+          hotelMutationAllowed: true,
+          portfolioIntelligenceRead: false,
+          entitlements: [{
+            kind: 'legacy',
+            entitlementId: propertyId,
+            organizationId: null,
+            membershipId: null,
+            accessProfile: null,
+            staxisRole: null,
+            scopeType: null,
+            portfolioId: null,
+          }],
+        })),
+      },
+      error: null,
+    };
+  }) as unknown as RpcFn;
 
   // @ts-expect-error monkey-patch
   supabaseAdmin.from = (table: string) => {
@@ -95,6 +163,7 @@ beforeEach(() => {
 afterEach(() => {
   supabaseAdmin.auth.getUser = originalGetUser;
   supabaseAdmin.from = originalFrom;
+  supabaseAdmin.rpc = originalRpc;
   delete process.env.SKIP_2FA_ENABLED;
   delete process.env.SKIP_2FA_USER_IDS;
 });
@@ -129,6 +198,7 @@ function mockReq(opts: { jwt: string; deviceCookie?: string }): import('next/ser
 
 const USER_ID = '11111111-2222-3333-4444-555555555555';
 const ACCOUNT_ID = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee';
+const SCOPED_PROPERTY_ID = '99999999-8888-4777-8666-555555555555';
 const JWT = 'header.payload.signature';
 
 // ─── Tests ───────────────────────────────────────────────────────────────
@@ -196,7 +266,7 @@ describe('check-trust — demo bypass preserved (investor account regression)', 
       id: ACCOUNT_ID,
       skip_2fa: true,
       role: 'general_manager',
-      property_access: ['comfort-suites-uuid'],
+      property_access: [SCOPED_PROPERTY_ID],
     };
 
     const res = await POST(mockReq({ jwt: JWT }));
@@ -219,7 +289,7 @@ describe('check-trust — demo bypass preserved (investor account regression)', 
       id: ACCOUNT_ID,
       skip_2fa: true,
       role: 'general_manager',
-      property_access: ['hotel-1'],
+      property_access: [SCOPED_PROPERTY_ID],
     };
 
     const res = await POST(mockReq({ jwt: JWT }));
@@ -233,5 +303,31 @@ describe('check-trust — demo bypass preserved (investor account regression)', 
       (e) => e.event_type === 'auth.skip_2fa_refused_privileged',
     );
     assert.equal(refused, undefined);
+  });
+
+  test('skip_2fa + allowlisted + canonical authority unavailable → fail closed', async () => {
+    process.env.SKIP_2FA_ENABLED = 'true';
+    process.env.SKIP_2FA_USER_IDS = USER_ID;
+    state.authorityUnavailable = true;
+    state.user = { id: USER_ID };
+    state.account = {
+      id: ACCOUNT_ID,
+      skip_2fa: true,
+      role: 'general_manager',
+      property_access: [SCOPED_PROPERTY_ID],
+    };
+
+    const res = await POST(mockReq({ jwt: JWT }));
+    const body = await res.json();
+    assert.equal(body.data?.trusted, false);
+    assert.equal(
+      state.insertedEvents.some((e) => e.event_type === 'auth.skip_2fa_used'),
+      false,
+      'an unavailable canonical snapshot must never grant the bypass',
+    );
+    assert.equal(
+      state.insertedEvents.some((e) => e.event_type === 'auth.skip_2fa_blocked_authority_unavailable'),
+      true,
+    );
   });
 });

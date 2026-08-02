@@ -182,7 +182,6 @@ export async function POST(req: NextRequest) {
         username,
         display_name: displayName,
         role: 'staff',
-        property_access: [],
         data_user_id: authUserId,
       }).select('id').single();
       if (!error && account) {

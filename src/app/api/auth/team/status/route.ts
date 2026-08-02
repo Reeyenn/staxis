@@ -14,6 +14,7 @@ import { getOrMintRequestId, log } from '@/lib/log';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { verifyTeamManager } from '@/lib/team-auth';
 import { errToString } from '@/lib/utils';
+import { loadAuthoritativeHotelRoster } from '@/lib/authorization/hotel-account-roster';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -141,7 +142,7 @@ export async function PUT(req: NextRequest) {
   const { data: target, error: targetError } = await supabaseAdmin
     .from('accounts')
     .select(
-      'id, role, active, data_user_id, property_access, lifecycle_intent_version',
+      'id, role, active, data_user_id, lifecycle_intent_version',
     )
     .eq('id', targetAccountId)
     .maybeSingle();
@@ -156,11 +157,28 @@ export async function PUT(req: NextRequest) {
       requestId, status: 404, code: ApiErrorCode.NotFound,
     });
   }
-  if (!Array.isArray(target.property_access)
-      || typeof target.data_user_id !== 'string'
+  if (typeof target.data_user_id !== 'string'
       || typeof target.lifecycle_intent_version !== 'number') {
     return lifecycleUnavailable(requestId, lifecycleOperationId, false);
   }
+
+  let targetPropertyIds: string[] | null = null;
+  try {
+    const roster = await loadAuthoritativeHotelRoster(hotelId.value!, false);
+    const rosterTarget = roster.accounts.find((account) => account.accountId === targetAccountId);
+    if (!rosterTarget || rosterTarget.managementSurface === 'company_access') {
+      return err('Account does not have current access to this hotel', {
+        requestId, status: 404, code: ApiErrorCode.NotFound,
+      });
+    }
+    targetPropertyIds = rosterTarget.propertyIds;
+  } catch (rosterError) {
+    log.error('[team/status:PUT] authoritative lifecycle scope failed', {
+      requestId, accountId: targetAccountId, msg: errToString(rosterError),
+    });
+    return lifecycleUnavailable(requestId, lifecycleOperationId, false);
+  }
+  if (!targetPropertyIds) return lifecycleUnavailable(requestId, lifecycleOperationId, false);
 
   let registrationData: unknown = null;
   let registrationError: unknown | null = null;
@@ -178,7 +196,7 @@ export async function PUT(req: NextRequest) {
         p_expected_active: target.active !== false,
         p_expected_role: target.role,
         p_expected_auth_user_id: target.data_user_id,
-        p_expected_property_access: target.property_access,
+        p_expected_property_access: targetPropertyIds,
         p_expected_intent_version: target.lifecycle_intent_version,
       },
     );
