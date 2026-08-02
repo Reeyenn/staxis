@@ -1541,6 +1541,13 @@ begin
     join public.account_authorization_state state
       on state.account_id = subject.account_id
      and state.authority_mode in ('legacy', 'shadow')
+    -- A platform admin is an explicit customer-context actor, not a hotel
+    -- subject.  Importing its empty rollback-era array would normalize it and
+    -- bump its canonical authority version during an unrelated transfer.
+    where not (
+      subject.account_id = p_actor_account_id
+      and v_actor.role = 'admin'
+    )
   loop
     v_import := public._staxis_stage_b_validate_legacy_scope(v_property_id);
     if coalesce((v_import->>'ok')::boolean, false) is not true then
@@ -1559,6 +1566,10 @@ begin
     join public.account_authorization_state state
       on state.account_id = subject.account_id
      and state.authority_mode in ('legacy', 'shadow')
+    where not (
+      subject.account_id = p_actor_account_id
+      and v_actor.role = 'admin'
+    )
   loop
     v_import := public._staxis_stage_b_import_legacy_scope(
       v_property_id, 'Stage B ownership transfer import'

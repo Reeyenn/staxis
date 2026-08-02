@@ -637,6 +637,24 @@ describe('Access Stage B canonical mutation boundary', () => {
     assert.equal(next.lifecycle_intent_version, 0);
     assert.equal(old.data_user_id, NORMALIZED_OLD_AUTH);
     assert.equal(next.data_user_id, NORMALIZED_NEW_AUTH);
+    const adminBeforeTransfer = await accountState(ADMIN_ACCOUNT);
+    const adminEvidenceBeforeTransfer = await pg.query<{
+      bridge_count: string;
+      snapshot_count: string;
+      write_event_count: string;
+    }>(
+      `select
+         (select count(*)::text
+            from public.account_property_authorization_bridges
+           where account_id = $1) as bridge_count,
+         (select count(*)::text
+            from public.account_access_cutover_legacy_snapshots
+           where account_id = $1) as snapshot_count,
+         (select count(*)::text
+            from public.account_access_cutover_legacy_write_events
+           where account_id = $1) as write_event_count`,
+      [ADMIN_ACCOUNT],
+    );
     const transferred = await serviceJson(
       `select public.staxis_transfer_ownership_guarded(
          $1,$2,$3,'stage-b-normalized-old@example.test',$4,$5,$6,
@@ -667,6 +685,33 @@ describe('Access Stage B canonical mutation boundary', () => {
     assert.equal((await accountState(NORMALIZED_NEW_OWNER)).role, 'owner');
     assert.equal(await activeBridgeCount(NORMALIZED_OLD_OWNER, PROPERTY_MAIN), 1);
     assert.equal(await activeBridgeCount(NORMALIZED_NEW_OWNER, PROPERTY_MAIN), 1);
+    assert.deepEqual(
+      await accountState(ADMIN_ACCOUNT),
+      adminBeforeTransfer,
+      'the platform-admin actor keeps explicit customer-context authority during hotel transfer',
+    );
+    const adminEvidenceAfterTransfer = await pg.query<{
+      bridge_count: string;
+      snapshot_count: string;
+      write_event_count: string;
+    }>(
+      `select
+         (select count(*)::text
+            from public.account_property_authorization_bridges
+           where account_id = $1) as bridge_count,
+         (select count(*)::text
+            from public.account_access_cutover_legacy_snapshots
+           where account_id = $1) as snapshot_count,
+         (select count(*)::text
+            from public.account_access_cutover_legacy_write_events
+           where account_id = $1) as write_event_count`,
+      [ADMIN_ACCOUNT],
+    );
+    assert.deepEqual(
+      adminEvidenceAfterTransfer.rows[0],
+      adminEvidenceBeforeTransfer.rows[0],
+      'ownership transfer does not create platform-admin bridge or cutover evidence',
+    );
   });
 
   test('unresolved legacy rows fail closed at the canonical mutation boundary', async () => {
