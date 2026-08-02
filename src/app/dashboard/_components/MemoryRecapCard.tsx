@@ -22,16 +22,12 @@ interface LearnedItem {
   topic: string;
   content: string;
 }
-interface NoticedItem extends LearnedItem {
-  severity: 'attention';
-}
 interface RecapData {
   recap: string | null;
   ranAt: string | null;
   learnedCount: number;
   updatedCount: number;
   operationalRecap: string | null;
-  noticed: NoticedItem[];
   items: LearnedItem[];
 }
 
@@ -90,10 +86,9 @@ export function MemoryRecapCard() {
   );
 
   if (!canSee || !activePropertyId) return null;
-  const noticed = (data?.noticed ?? []).filter((i) => !removed.has(i.id));
   const items = (data?.items ?? []).filter((i) => !removed.has(i.id));
-  // Additive-only: nothing to show until Staxis has actually learned/noticed something.
-  if (loading || !data || (noticed.length === 0 && items.length === 0)) return null;
+  // Additive-only: nothing to show until Staxis has actually learned something.
+  if (loading || !data || items.length === 0) return null;
 
   const removeBtn = (id: string) => (
     <button
@@ -117,39 +112,10 @@ export function MemoryRecapCard() {
 
   return (
     <GlassCard>
-      {/* What Staxis noticed — proactive operational insights (attention) */}
-      {noticed.length > 0 && (
-        <>
-          <div style={{ ...CARD_LABEL, color: CARD.attn }}>
-            {'⚠ What Staxis noticed'}
-          </div>
-          <div style={{ marginTop: 12, display: 'flex', flexDirection: 'column' }}>
-            {noticed.map((it) => (
-              <div
-                key={it.id}
-                style={{
-                  display: 'flex',
-                  alignItems: 'flex-start',
-                  justifyContent: 'space-between',
-                  gap: 12,
-                  padding: '8px 0',
-                  borderTop: `1px solid ${CARD.attnRule}`,
-                }}
-              >
-                <span style={{ fontSize: 13.5, color: CARD.ink, lineHeight: 1.4, fontWeight: 500 }}>
-                  {it.content}
-                </span>
-                {removeBtn(it.id)}
-              </div>
-            ))}
-          </div>
-        </>
-      )}
-
       {/* What Staxis learned — facts from conversations + lower-signal patterns */}
       {items.length > 0 && (
         <>
-          <div style={{ ...CARD_LABEL, marginTop: noticed.length > 0 ? 20 : 0 }}>
+          <div style={CARD_LABEL}>
             {'What Staxis learned'}
           </div>
 
