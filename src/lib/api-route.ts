@@ -99,13 +99,25 @@ export interface BoundEnvelope {
   err(error: string, opts?: Omit<ErrOptions, 'requestId'>): NextResponse;
 }
 
+export type RouteContext<
+  TParams extends Record<string, string> = Record<string, string>,
+> = [TParams] extends [never]
+  ? { params: Promise<{}> }
+  : { params: Promise<TParams> };
+
 /** What the handler receives: the gate's fields (minus its `ok` flag), the bound
  *  envelope helpers, the raw request, and the parsed body. */
-export type RouteCtx<R extends ResolveResult, TBody> = Omit<
+export type RouteCtx<
+  R extends ResolveResult,
+  TBody,
+  TParams extends Record<string, string> = never,
+> = Omit<
   Extract<R, { ok: true }>,
   'ok'
 > &
-  BoundEnvelope & { req: NextRequest; body: TBody };
+  BoundEnvelope &
+  { req: NextRequest; body: TBody } &
+  ([TParams] extends [never] ? {} : { params: Promise<TParams> });
 
 export interface WrapErrorsConfig<R extends ResolveResult> {
   /** Human-readable message for the 500 body. Default 'Internal server error'. */
@@ -118,7 +130,11 @@ export interface WrapErrorsConfig<R extends ResolveResult> {
   log?: (e: unknown, ctx: Extract<R, { ok: true }>) => void;
 }
 
-export interface DefineRouteConfig<R extends ResolveResult, TBody> {
+export interface DefineRouteConfig<
+  R extends ResolveResult,
+  TBody,
+  TParams extends Record<string, string> = never,
+> {
   /**
    * `'empty'` → parse JSON, falling back to `{}` on bad JSON, BEFORE the gate.
    * `'none'`  → don't touch the body (GET, or the handler parses it itself).
@@ -130,7 +146,7 @@ export interface DefineRouteConfig<R extends ResolveResult, TBody> {
   /** Opt in to a try/catch → 500 epilogue that matches an existing inline catch. */
   wrapErrors?: WrapErrorsConfig<R>;
   handler: (
-    ctx: RouteCtx<R, TBody>,
+    ctx: RouteCtx<R, TBody, TParams>,
   ) => Promise<Response | NextResponse> | Response | NextResponse;
 }
 
@@ -145,13 +161,21 @@ function bindEnvelope(
 }
 
 /**
- * Build a Next.js route handler from a declarative config. Returns
- * `(req) => Promise<Response>` — assign it to `export const GET`/`POST`/etc.
+ * Build a Next.js route handler from a declarative config. Returns a handler
+ * accepting the request and optional Next route context. Dynamic routes receive
+ * the params promise unchanged through ctx.params.
  */
-export function defineRoute<R extends ResolveResult, TBody = unknown>(
-  cfg: DefineRouteConfig<R, TBody>,
-): (req: NextRequest) => Promise<Response> {
-  return async (req: NextRequest): Promise<Response> => {
+export function defineRoute<
+  R extends ResolveResult,
+  TBody = unknown,
+  TParams extends Record<string, string> = never,
+>(
+  cfg: DefineRouteConfig<R, TBody, TParams>,
+): (req: NextRequest, routeContext?: RouteContext<TParams>) => Promise<Response> {
+  return async (
+    req: NextRequest,
+    routeContext?: RouteContext<TParams>,
+  ): Promise<Response> => {
     // 1) Body (only when 'empty' — the fallback never short-circuits, so
     //    parsing it ahead of the gate is unobservable).
     let body = undefined as unknown as TBody;
@@ -175,7 +199,8 @@ export function defineRoute<R extends ResolveResult, TBody = unknown>(
       success,
       bound,
       { req, body },
-    ) as unknown as RouteCtx<R, TBody>;
+      routeContext ? { params: routeContext.params } : {},
+    ) as unknown as RouteCtx<R, TBody, TParams>;
 
     // 4) Run the handler, optionally under a matching try/catch epilogue.
     if (cfg.wrapErrors) {
