@@ -5,13 +5,8 @@ export const dynamic = 'force-dynamic';
 /**
  * /admin/properties/[id] — single property triage view.
  *
- * Shows everything Reeyen needs to debug what's going on with a
- * property: subscription state, PMS connection, active recipe,
- * recent onboarding jobs (with errors), staff sample, owner info.
- *
- * Action: "Regenerate recipe" — POST /api/admin/regenerate-recipe.
- * Used when a PMS UI change has broken the active recipe and we
- * want to force a fresh CUA mapping run.
+ * Shows the active hotel's subscription state, staff sample, owner info,
+ * and current admin access/activity details.
  */
 
 import React, { useEffect, useState, use } from 'react';
@@ -21,13 +16,12 @@ import { fetchWithAuth } from '@/lib/api-fetch';
 import { AppLayout } from '@/components/layout/AppLayout';
 import {
   ArrowLeft, RefreshCw,
-  ShieldAlert, Loader2, Activity, FileText,
+  ShieldAlert, Activity, FileText,
 } from 'lucide-react';
 import { JoinCodesSection } from '@/app/admin/_components/JoinCodesSection';
 import { MlHealthPanel } from '@/app/admin/_components/MlHealthPanel';
 import { AdminEffectiveAccess } from '@/app/admin/_components/AdminEffectiveAccess';
 import { T, FONT_SANS, FONT_MONO, FONT_SERIF, Caps, Btn, Pill } from '@/app/admin/_components/_snow';
-import { PMS_ROBOT_ENABLED } from '@/lib/pms/robot-status';
 
 interface HealthData {
   property: {
@@ -88,9 +82,6 @@ export default function AdminPropertyDetailPage(props: { params: Promise<{ id: s
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  const [regenerating, setRegenerating] = useState(false);
-  const [regenerateMsg, setRegenerateMsg] = useState<string | null>(null);
-
   const load = async () => {
     setLoading(true);
     setError(null);
@@ -124,31 +115,6 @@ export default function AdminPropertyDetailPage(props: { params: Promise<{ id: s
     // it from deps avoids a re-fire loop on every parent render.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [authLoading, user, id]);
-
-  const handleRegenerate = async () => {
-    if (!PMS_ROBOT_ENABLED) return;
-    if (!confirm('Demote the current active recipe and queue a fresh CUA mapping run? This costs ~$1-3 in API tokens.')) return;
-    setRegenerating(true);
-    setRegenerateMsg(null);
-    try {
-      const res = await fetchWithAuth('/api/admin/regenerate-recipe', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ propertyId: id, reason: 'manual admin trigger' }),
-      });
-      const json = await res.json();
-      if (!res.ok || !json.ok) {
-        setRegenerateMsg(`Error: ${json.error ?? 'unknown'}`);
-      } else {
-        setRegenerateMsg(`Queued. Job ${json.data.jobId.slice(0, 8)}…`);
-        // Refresh after a beat so the new job appears in the list
-        setTimeout(load, 2000);
-      }
-    } catch (e) {
-      setRegenerateMsg(`Network error: ${(e as Error).message}`);
-    }
-    setRegenerating(false);
-  };
 
   if (authLoading || (user && user.role !== 'admin')) {
     return (
@@ -214,10 +180,7 @@ export default function AdminPropertyDetailPage(props: { params: Promise<{ id: s
               </Btn>
             </div>
 
-            {/* Summary cards — kept Subscription, PMS, Owner per Reeyen.
-                Removed: Active recipe, Staff sample, Source. Property UUID
-                under the name and the Recent onboarding jobs section are
-                also gone. */}
+            {/* Summary cards for the active hotel and its owner. */}
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gap: 14, marginBottom: 24 }}>
               <DetailCard title="Subscription">
                 <Pill tone={
@@ -239,25 +202,6 @@ export default function AdminPropertyDetailPage(props: { params: Promise<{ id: s
                 )}
               </DetailCard>
 
-              {PMS_ROBOT_ENABLED && <DetailCard title="PMS">
-                {data.credentials ? (
-                  <>
-                    <p style={{ fontSize: 14, fontWeight: 600, color: T.ink, letterSpacing: '-0.005em' }}>{data.credentials.pmsType}</p>
-                    {data.credentials.loginUrl && (
-                      <p style={{ fontFamily: FONT_MONO, fontSize: 11, color: T.ink2, wordBreak: 'break-all', marginTop: 4 }}>
-                        {data.credentials.loginUrl}
-                      </p>
-                    )}
-                    <p style={{ fontSize: 11, color: T.ink3, marginTop: 4 }}>
-                      {data.credentials.username ? `user: ${data.credentials.username} · ` : ''}
-                      {data.credentials.isActive ? 'active' : 'inactive'}
-                    </p>
-                  </>
-                ) : (
-                  <p style={{ fontSize: 13, color: T.ink2, fontStyle: 'italic', fontFamily: FONT_SERIF }}>No credentials saved</p>
-                )}
-              </DetailCard>}
-
               <DetailCard title="Owner">
                 {data.owner ? (
                   <>
@@ -271,28 +215,6 @@ export default function AdminPropertyDetailPage(props: { params: Promise<{ id: s
                 )}
               </DetailCard>
             </div>
-
-            {/* Action: regenerate recipe — kept near the header as a small
-                utility. The big "Active recipe" card itself is gone. */}
-            {PMS_ROBOT_ENABLED && data.credentials?.isActive && (
-              <div style={{
-                padding: '14px 16px', border: `1px solid ${T.rule}`, borderRadius: 14,
-                marginBottom: 28, display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap',
-                background: T.paper,
-              }}>
-                <span style={{ fontSize: 12, color: T.ink2, flex: 1, minWidth: 180, fontStyle: 'italic', fontFamily: FONT_SERIF }}>
-                  Use when a PMS UI change has broken the active recipe (~$1-3).
-                </span>
-                <Btn variant="ghost" size="md" onClick={handleRegenerate} disabled={regenerating}>
-                  {regenerating
-                    ? (<><Loader2 size={14} style={{ animation: 'spin 1s linear infinite' }} /> Queuing…</>)
-                    : (<>Regenerate recipe</>)}
-                </Btn>
-                {regenerateMsg && (
-                  <span style={{ fontFamily: FONT_MONO, fontSize: 11, color: T.ink3, letterSpacing: '0.04em' }}>{regenerateMsg}</span>
-                )}
-              </div>
-            )}
 
             {/* 3-column horizontal layout below the cards.
                 Left: People with access · Middle: GM activity · Right: Audit log */}

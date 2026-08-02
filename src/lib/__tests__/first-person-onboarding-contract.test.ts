@@ -89,12 +89,12 @@ describe('Admin Live Journey stays synchronized with the customer wizard', () =>
       adminJourney,
       /const STEP_LABELS = \['Welcome', 'Account', 'Verify email', 'About hotel', 'Your hotel', 'Done'\] as const/,
     );
-    assert.doesNotMatch(adminJourney, /CreateHotelModal|\/api\/admin\/onboarding-jobs/);
+    assert.doesNotMatch(adminJourney, /CreateHotelModal/);
 
-    const propertyShape = between(adminJourney, 'interface PropertyRow', '// One feed');
+    const propertyShape = between(adminJourney, 'interface PropertyRow', 'type ProspectStatus');
     assert.doesNotMatch(propertyShape, /session|pms|mapping|team|job/i);
 
-    const stageLogic = between(adminJourney, 'function journeyOf', 'function pmsState');
+    const stageLogic = between(adminJourney, 'function journeyOf', '// Timeline row layout');
     assert.match(stageLogic, /accountCreatedAt/);
     assert.match(stageLogic, /emailVerifiedAt/);
     assert.match(stageLogic, /hotelDetailsAt/);

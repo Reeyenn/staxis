@@ -39,13 +39,12 @@ describe('Hotels admin directory filters', () => {
     assert.match(source, /independentPropertyIds[\s\S]*!groupedPropertyIds\.has\(hotel\.id\)/);
   });
 
-  test('applies every independent-hotel health filter to the complete local fleet', () => {
+  test('keeps the independent-hotel filters on the active subscription states', () => {
     assert.match(source, /function matchesHotelStatus/);
-    assert.match(source, /status === ['"]no_pms['"][\s\S]*hotel\.pmsType === null/);
-    assert.match(source, /status === ['"]pms_disconnected['"][\s\S]*!hotel\.pmsConnected/);
-  });
-
-  test('shares the API staleness threshold', () => {
-    assert.match(source, /syncFreshnessMin > FLEET_STALE_SYNC_MINUTES/);
+    assert.match(source, /const SUBSCRIPTION_STATUS_OPTS/);
+    assert.match(source, /return hotel\.subscriptionStatus === status/);
+    assert.doesNotMatch(source, /status === ['"]no_pms['"]/);
+    assert.doesNotMatch(source, /status === ['"]pms_disconnected['"]/);
+    assert.doesNotMatch(source, /FLEET_STALE_SYNC_MINUTES/);
   });
 });

@@ -10,15 +10,8 @@ function source(...segments: string[]): string {
 }
 
 describe('retired PMS robot customer UI', () => {
-  test('the shared robot flag is off and the legacy settings page redirects before mounting', () => {
+  test('the shared robot flag remains off for surviving report-era gates', () => {
     assert.equal(PMS_ROBOT_ENABLED, false);
-
-    const settings = source('src', 'app', 'settings', 'pms', 'page.tsx');
-    const redirectIndex = settings.indexOf("if (!PMS_ROBOT_ENABLED) redirect('/settings')");
-    const enabledPageIndex = settings.indexOf('function EnabledPMSPage()');
-
-    assert.ok(redirectIndex >= 0, 'the disabled settings route must redirect');
-    assert.ok(enabledPageIndex > redirectIndex, 'legacy credential UI must remain behind the redirect');
   });
 
   test('the active onboarding wizard has no PMS robot calls or mapping steps', () => {

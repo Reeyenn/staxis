@@ -31,7 +31,6 @@ const capex = source('src', 'app', 'financials', '_components', 'CapexTab.tsx');
 const capexRequest = source('src', 'app', 'financials', '_components', 'CapexRequestModal.tsx');
 const capexDetail = source('src', 'app', 'financials', '_components', 'CapexDetailModal.tsx');
 const financialUi = source('src', 'app', 'financials', '_components', 'fin-ui.tsx');
-const pms = source('src', 'app', 'settings', 'pms', 'page.tsx');
 
 describe('property-owned draft and action isolation', () => {
   test('Knows remounts drafts for the exact viewer and hotel and drops late completions', () => {
@@ -196,26 +195,4 @@ describe('property-owned draft and action isolation', () => {
     assert.ok((capexDetail.match(/if \(!ownsAttempt\(\)\) return;/g) ?? []).length >= 3);
   });
 
-  test('PMS credentials, tests, saves, and jobs are owned by one viewer and hotel', () => {
-    assert.match(pms, /const scopeKey = `\$\{user\?\.uid \?\? 'signed-out'\}:\$\{activePropertyId \?\? 'no-property'\}`/);
-    assert.match(pms, /<PMSPropertyEditor[\s\S]*?key=\{scopeKey\}[\s\S]*?scopeKey=\{scopeKey\}[\s\S]*?propertyId=\{activePropertyId \?\? null\}/);
-    assert.match(pms, /const scopedProperty = activeProperty\?\.id === propertyId \? activeProperty : null/);
-    assert.doesNotMatch(pms, /setPms(?:Type|Url)\(prev => prev \|\|/);
-    assert.match(pms, /activeScopeRef = useRef<string \| null>\(scopeKey\)/);
-    assert.match(pms, /activeScopeRef\.current = null/);
-    assert.match(pms, /activeScopeRef\.current === scopeKey/);
-
-    const testAction = section(pms, 'const handleTest = async', '// ─── Save & Onboard');
-    assert.match(testAction, /const requestedPropertyId = propertyId/);
-    assert.match(testAction, /propertyId: requestedPropertyId/);
-    assert.match(testAction, /timeoutMs: INTERACTIVE_ACTION_TIMEOUT_MS/);
-    assert.ok((testAction.match(/if \(!ownsAttempt\(\)\) return;/g) ?? []).length >= 2);
-
-    const saveAction = section(pms, 'const handleSave = async', '// ─── Access gate');
-    assert.match(saveAction, /const requestedPropertyId = propertyId/);
-    assert.match(saveAction, /JSON\.stringify\(\{ propertyId: requestedPropertyId \}\)/);
-    assert.match(saveAction, /timeoutMs: INTERACTIVE_ACTION_TIMEOUT_MS/);
-    assert.ok((saveAction.match(/if \(!ownsAttempt\(\)\) return;/g) ?? []).length >= 3);
-    assert.match(pms, /usePmsOnboardJob\(\{[\s\S]*?propertyId,[\s\S]*?if \(!ownsScope\(\)\) return;/);
-  });
 });

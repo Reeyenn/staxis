@@ -494,22 +494,6 @@ const OTHER_JOBS: ReadonlyArray<JobCatalogEntry> = [
     heartbeat: { name: 'claude-sessions-purge', visibility: 'record-only' }, description: 'Historical cleanup for an unused developer-session table.',
   },
   {
-    id: 'enqueue-property-pulls', lifecycle: 'retired', owner: 'pms', runner: 'none',
-    source: { kind: 'github', workflowFile: 'pull-jobs-cron.yml' },
-    target: { kind: 'route', path: '/api/cron/enqueue-property-pulls' }, schedule: null,
-    heartbeat: null, description: 'Historical CUA property-pull enqueuer; the route refuses work.',
-  },
-  {
-    id: 'expire-help-requests', lifecycle: 'retired', owner: 'pms', runner: 'none',
-    source: { kind: 'route-only' }, target: { kind: 'route', path: '/api/cron/expire-help-requests' }, schedule: null,
-    heartbeat: { name: 'expire-help-requests', visibility: 'record-only' }, description: 'Historical cleanup for the retired CUA human-assist flow.',
-  },
-  {
-    id: 'pms-backfill-missing-feeds', lifecycle: 'retired', owner: 'pms', runner: 'none',
-    source: { kind: 'route-only' }, target: { kind: 'route', path: '/api/cron/pms-backfill-missing-feeds' }, schedule: null,
-    heartbeat: { name: 'pms-backfill-missing-feeds', visibility: 'record-only' }, description: 'Historical repair path for robot-generated PMS feeds.',
-  },
-  {
     id: 'ml-shadow-evaluate', lifecycle: 'retired', owner: 'inventory-ml', runner: 'none',
     source: { kind: 'github', workflowFile: 'ml-shadow-evaluate-cron.yml' },
     target: { kind: 'route', path: '/api/cron/ml-shadow-evaluate' }, schedule: null,

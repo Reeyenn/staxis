@@ -38,8 +38,10 @@ describe('admin property-health credential contract', () => {
     assert.doesNotMatch(credentialSelect, /username|password|encrypted/i);
   });
 
-  test('only offers regeneration for active credentials', () => {
-    assert.match(pageSource, /data\.credentials\?\.isActive/);
+  test('does not render retired robot credential or recipe controls', () => {
+    assert.doesNotMatch(pageSource, /data\.credentials/);
+    assert.doesNotMatch(pageSource, /Regenerate recipe/);
+    assert.doesNotMatch(pageSource, /handleRegenerate/);
   });
 
   test('reads the active recipe from the current knowledge-file table', () => {

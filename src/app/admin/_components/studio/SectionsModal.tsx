@@ -14,8 +14,8 @@
 
    Reuses the shared Studio modal chrome (Backdrop + MODAL_CARD) and kit
    primitives (Btn / Caps), wrapped in `.admin-studio` so the studio CSS vars
-   resolve even when opened from the legacy _snow-based Live tab — same guard
-   CoveragePickerModal documents. English-only (admin studio surface).
+   resolve even when opened from the legacy _snow-based Live tab. English-only
+   (admin studio surface).
    ─────────────────────────────────────────────────────────────────────── */
 
 import React, { useCallback, useEffect, useRef, useState } from 'react';

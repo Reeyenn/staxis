@@ -50,7 +50,7 @@ describe('bug-hunt regression contracts', () => {
     assert.match(offline, /requestSeqAtStart !== drainRequestSeqRef\.current\) continue/);
   });
 
-  test('assistant fallbacks and bulk coverage failures are visible in the requested language/UI', () => {
+  test('assistant fallbacks remain visible in the requested language/UI', () => {
     const assistant = source('src/lib/comms/assistant.ts');
     for (const lang of ['en', 'es', 'ht', 'tl', 'vi']) {
       assert.match(assistant, new RegExp(`\\n  ${lang}: \\{`));
@@ -58,9 +58,5 @@ describe('bug-hunt regression contracts', () => {
     assert.match(assistant, /assistantFallback\(args\.lang, 'unavailable'\)/);
     assert.match(assistant, /assistantFallback\(args\.lang, 'exhausted'\)/);
     assert.match(assistant, /assistantFallback\(args\.lang, 'error'\)/);
-
-    const onboarding = source('src/app/admin/_components/studio/surfaces/OnboardingSurface.tsx');
-    assert.match(onboarding, /const failed = json\.data\?\.failedCount \?\? 0/);
-    assert.match(onboarding, /failed to start\. Retry or check Live Hotels/);
   });
 });

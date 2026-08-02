@@ -8,21 +8,18 @@
    below is real data — nothing mocked.
 
    Three blocks, top → bottom:
-     1. Three health lights — App · Robots · AI spend today. Big status dot +
+     1. Two health lights — App · AI spend today. Big status dot +
         plain-English one-liner, click to expand the detail.
      2. AI employees roster — the copilot, the NAMED AI staff (the roster the
-        /admin/ai-staff page owns), the per-hotel robots (with inline
-        Restart / Stop / Reset-cap / Enter-2FA controls), and the background
+        /admin/ai-staff page owns), and the background
         workers grouped by job family.
-     3. Needs-your-okay inbox + the 72h grouped-errors panel (the same card UI
+     3. Shared-knowledge approvals + the 72h grouped-errors panel (the same card UI
         LiveSurface uses for its errors column).
 
    Data sources:
-     • GET /api/admin/system-status        → web/db/ml/cua service colours
-     • GET /api/admin/cua-sessions         → per-hotel robot sessions
+     • GET /api/admin/system-status        → web/db/ml service colours
      • GET /api/agent/metrics              → copilot spend / requests / errors
      • GET /api/admin/mission/workers      → background cron heartbeats  (NEW)
-     • GET /api/admin/mission/inbox        → robot attention items       (NEW)
      • GET /api/admin/mission/ai-staff     → the named AI employees
      • GET /api/admin/recent-errors?since= → 72h grouped app errors
 
@@ -35,11 +32,9 @@
    knowing: hiring employee #2 is a flag in the roster registry and nothing on
    this page changes.
 
-   The two /api/admin/mission/* endpoints are landing in parallel. This
-   surface tolerates them 404-ing or returning partial shapes: the errors
-   panel and every light/roster row still render, and the inbox falls back to
-   deriving robot-attention items straight from the (reliable) cua-sessions
-   feed so it stays honest before mission/inbox is live.
+   The mission endpoints are landing in parallel. This surface tolerates them
+   404-ing or returning partial shapes: the errors panel and every light/roster
+   row still render.
 
    Dark surface: <SurfaceShell glow="forestTop"> + DarkCard / dimWhite, the
    same chrome LiveSurface and MoneySurface use.
@@ -48,7 +43,6 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import Link from 'next/link';
 import { fetchWithAuth } from '@/lib/api-fetch';
-import { useLang } from '@/contexts/LanguageContext';
 import { EMPLOYEE_STATUS_LABEL, EMPLOYEE_STATUS_TONE } from '@/lib/ai/employee-registry';
 import type { AiEmployeeStatus, Bilingual } from '@/lib/ai/employee-registry';
 import {
@@ -59,34 +53,13 @@ import {
   SurfaceShell, DarkCard, DarkSpinner, DarkEmpty, dimWhite,
 } from '../surface-kit';
 import { PromotionQueue } from './PromotionQueue';
-import { PMS_ROBOT_ENABLED } from '@/lib/pms/robot-status';
-
-type Lang = 'en' | 'es';
-
-// $5/hotel/day Claude cost cap (cua-service operational guardrail).
-const ROBOT_CAP_USD = 5;
 // Poll cadence — system-status is designed for light client polling.
 const POLL_MS = 30_000;
 
 // ── Consumed shapes (kept loose — endpoints may add fields / land partial) ──
 type ServiceColor = 'green' | 'yellow' | 'red';
 interface ServiceStatus { status: ServiceColor; latency_ms?: number; message?: string }
-interface SystemServices { web: ServiceStatus; ml: ServiceStatus; cua: ServiceStatus; supabase: ServiceStatus }
-
-interface CuaSession {
-  property_id: string;
-  display_name?: string | null;
-  pms_family?: string | null;
-  status: string;
-  last_alive_at: string | null;
-  last_successful_read_at?: string | null;
-  daily_claude_cost_micros?: number;
-  paused_reason?: string | null;
-  restart_count?: number;
-  read_failure_streak?: number;
-  active_mapper_job?: { id: string; status: string; created_at: string; needs_help?: boolean } | null;
-  last_mapper_job?: { id: string; status: string; created_at: string } | null;
-}
+interface SystemServices { web: ServiceStatus; ml: ServiceStatus; supabase: ServiceStatus }
 
 interface AgentMetrics {
   caps?: { user: number; property: number; global: number };
@@ -108,24 +81,6 @@ interface WorkerRow {
   lastBeatAt?: string | null;
   ageHours?: number | null;
   state?: string; // 'ok' | 'late' | 'never' | (defensive: anything)
-}
-
-// mission/inbox row. `action` is a structured control descriptor from the
-// endpoint ({type:'link'|'reset_cost_cap'|'restart', …}); tolerated loosely.
-interface InboxAction {
-  type?: string;
-  href?: string | null;
-  label?: string | null;
-  propertyId?: string | null;
-}
-interface InboxRow {
-  kind?: string;
-  propertyId?: string | null;
-  propertyName?: string | null;
-  title?: string | null;
-  detail?: string | null;
-  action?: InboxAction | string | null;
-  count?: number | null;
 }
 
 // mission/ai-staff row. Kept as loose as its neighbours: the endpoint owns the
@@ -180,32 +135,6 @@ function humanize(raw: string): string {
   const s = (raw || '').replace(/[-_]+/g, ' ').trim();
   return s ? s.charAt(0).toUpperCase() + s.slice(1) : '—';
 }
-function robotSpendUsd(s: CuaSession): number {
-  const micros = typeof s.daily_claude_cost_micros === 'number' ? s.daily_claude_cost_micros : 0;
-  return micros / 1_000_000;
-}
-
-// Robot status → plain-English label + tone (owner reads "Working", not "alive").
-function robotView(status: string): { tone: DotTone; label: string } {
-  const s = (status || '').toLowerCase();
-  if (s === 'alive') return { tone: 'forest', label: 'Working' };
-  if (s === 'starting') return { tone: 'gold', label: 'Starting up' };
-  if (s === 'stopped') return { tone: 'muted', label: 'Stopped' };
-  if (s.includes('cost_cap')) return { tone: 'gold', label: 'Hit its $5 cap' };
-  // paused_mfa is amber for the health light + roster pill (spec groups it
-  // with cost-cap as "attention", not "outage"). The inbox card still flags
-  // the blocking 2FA action in red.
-  if (s.includes('mfa')) return { tone: 'gold', label: 'Waiting for a 2FA code' };
-  if (s.includes('circuit')) return { tone: 'terracotta', label: 'Paused after repeated errors' };
-  if (s.includes('fail')) return { tone: 'terracotta', label: 'Crashed' };
-  if (s.includes('no_knowledge')) return { tone: 'gold', label: 'Still learning' };
-  if (s.includes('paused')) return { tone: 'gold', label: 'Paused' };
-  return { tone: 'muted', label: humanize(status) };
-}
-function robotSeverity(tone: DotTone): number {
-  return tone === 'terracotta' ? 3 : tone === 'gold' ? 2 : tone === 'muted' ? 1 : 0;
-}
-
 // Worker heartbeat state → label + tone. The workers feed only emits
 // 'ok' | 'late' | 'never', so a worker row stays calm — green when on time,
 // amber when running late, gray when it hasn't run yet. Never red.
@@ -242,78 +171,46 @@ function asArray(v: unknown): unknown[] {
 //  SURFACE
 // ════════════════════════════════════════════════════════════════════════
 export function MissionControlSurface() {
-  const { lang } = useLang();
-  const l: Lang = 'en';
-
   const [system, setSystem] = useState<SystemServices | null>(null);
-  const [sessions, setSessions] = useState<CuaSession[]>([]);
   const [metrics, setMetrics] = useState<AgentMetrics | null>(null);
   const [workers, setWorkers] = useState<WorkerRow[] | null>(null); // null = not loaded / unavailable
-  const [inboxRows, setInboxRows] = useState<InboxRow[] | null>(null); // null = endpoint not live yet
   const [staff, setStaff] = useState<StaffMember[] | null>(null); // null = roster not read yet
   const [errors, setErrors] = useState<ErrorGroup[]>([]);
 
   const [loaded, setLoaded] = useState(false);
   const [fatalError, setFatalError] = useState<string | null>(null);
   const [loadedAt, setLoadedAt] = useState<string | null>(null);
-  // Keyed busy flag so a single Restart/Stop/Reset button spins alone.
-  const [busyKey, setBusyKey] = useState<string | null>(null);
-
   const load = useCallback(async () => {
     const since72h = new Date(Date.now() - 72 * 60 * 60 * 1000).toISOString();
     const settled = await Promise.allSettled([
       fetchWithAuth('/api/admin/system-status'),
-      PMS_ROBOT_ENABLED ? fetchWithAuth('/api/admin/cua-sessions') : Promise.resolve(null),
       fetchWithAuth('/api/agent/metrics'),
       fetchWithAuth('/api/admin/mission/workers'),
-      PMS_ROBOT_ENABLED ? fetchWithAuth('/api/admin/mission/inbox') : Promise.resolve(null),
       fetchWithAuth(`/api/admin/recent-errors?since=${encodeURIComponent(since72h)}`),
       fetchWithAuth('/api/admin/mission/ai-staff'),
     ]);
-
-    const activeResults = PMS_ROBOT_ENABLED
-      ? settled
-      : settled.filter((_, index) => index !== 1 && index !== 4);
-    if (activeResults.every((r) => r.status === 'rejected')) {
+    if (settled.every((result) => result.status === 'rejected')) {
       setFatalError('Could not reach the server. Check your connection and try again.');
       setLoaded(true);
       return;
     }
     setFatalError(null);
 
-    const [sysJson, cuaJson, metricsJson, workersJson, inboxJson, errorsJson, staffJson] =
+    const [sysJson, metricsJson, workersJson, errorsJson, staffJson] =
       await Promise.all(settled.map(jsonOf));
 
-    // system-status returns services at the top level (no data envelope).
     if (sysJson?.services) setSystem(sysJson.services as SystemServices);
-
-    if (cuaJson?.data?.sessions) setSessions(cuaJson.data.sessions as CuaSession[]);
-
-    // agent/metrics uses the ok() envelope → payload under data.
     if (metricsJson?.data) setMetrics(metricsJson.data as AgentMetrics);
-
-    // mission/workers — tolerate data:[...] OR data:{workers:[...]}.
     if (workersJson?.ok) {
       const arr = asArray(workersJson.data?.workers ?? workersJson.data) as WorkerRow[];
       setWorkers(arr);
     }
-
-    // mission/inbox — tolerate data:[...] OR data:{items:[...]}.
-    if (inboxJson?.ok) {
-      const arr = asArray(inboxJson.data?.items ?? inboxJson.data) as InboxRow[];
-      setInboxRows(arr);
-    }
-
-    // mission/ai-staff — the named roster. Left null on a failed read, which
-    // draws the copilot and the robots and says nothing about the staff,
-    // rather than drawing a roster of nobody.
     if (staffJson?.ok) {
       setStaff(asArray(staffJson.data?.employees) as StaffMember[]);
     }
-
     if (errorsJson?.data?.groups) {
       const groups = errorsJson.data.groups as ErrorGroup[];
-      setErrors(PMS_ROBOT_ENABLED ? groups : groups.filter((group) => !isRetiredRobotError(group)));
+      setErrors(groups.filter((group) => !isRetiredRobotError(group)));
     }
 
     setLoadedAt(new Date().toISOString());
@@ -325,21 +222,6 @@ export function MissionControlSurface() {
     const id = setInterval(() => { void load(); }, POLL_MS);
     return () => clearInterval(id);
   }, [load]);
-
-  const runAction = async (key: string, propertyId: string, action: string) => {
-    if (!PMS_ROBOT_ENABLED || busyKey) return;
-    setBusyKey(key);
-    try {
-      await fetchWithAuth('/api/admin/cua-sessions', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ propertyId, action }),
-      });
-      await load();
-    } finally {
-      setBusyKey(null);
-    }
-  };
 
   // ── First-load states ────────────────────────────────────────────────
   if (!loaded) {
@@ -362,31 +244,14 @@ export function MissionControlSurface() {
   }
 
   // ── Derivations ──────────────────────────────────────────────────────
-  // Owner's rule (2026-07-17): robots still LEARNING their PMS belong to the
-  // Onboarding tab — Mission Control only shows robots that graduated to
-  // daily work. Learning = no knowledge file yet, or a learning run in flight.
-  const isOnboardingPhase = (s: CuaSession): boolean =>
-    (s.status || '').toLowerCase().includes('no_knowledge') || s.active_mapper_job != null;
-  const liveRobots = PMS_ROBOT_ENABLED ? sessions.filter((s) => !isOnboardingPhase(s)) : [];
-  const enabledSessions = liveRobots.filter((s) => (s.status || '').toLowerCase() !== 'stopped');
-
   // Split the worker roster by the owner's three-way mental model. A missing
   // tier (old cached response) falls back to 'timer' inside tierOf().
   const aiWorkers = (workers ?? []).filter((w) => tierOf(w) === 'ai');
   const predictionWorkers = (workers ?? []).filter((w) => tierOf(w) === 'prediction');
   const timerWorkers = (workers ?? []).filter((w) => tierOf(w) === 'timer');
-  // The named employees that actually exist. The roster carries the whole plan
-  // — twelve of the thirteen are names on it — and a name is not staff.
   const hiredStaff = (staff ?? []).filter((e) => e.hired === true);
-  // Headline counts ONLY the AI staff — the copilot, the named employees, the
-  // hotel robots, and the thinking-model background jobs. Prediction + chores
-  // are not "AI staff". Counted the way everything else here is counted, by
-  // existing rather than by being healthy: a stopped robot and a switched-off
-  // employee are both still on the payroll, and their row says which.
-  const aiStaffCount = 1 /* copilot */ + hiredStaff.length + aiWorkers.length
-    + (PMS_ROBOT_ENABLED ? liveRobots.length : 0);
+  const aiStaffCount = 1 /* copilot */ + hiredStaff.length + aiWorkers.length;
 
-  // App light — website + database drive the colour; expanded shows all four.
   const appLight = (() => {
     if (!system) return { tone: 'muted' as DotTone, detail: 'Checking the website and database…' };
     const worst = worstColor([system.web?.status, system.supabase?.status]);
@@ -399,54 +264,15 @@ export function MissionControlSurface() {
     return { tone, detail };
   })();
 
-  // Robot light. Learning robots are Onboarding's business — this page
-  // doesn't mention them at all (owner rule, twice-stated 2026-07-17).
-  const robotLight = (() => {
-    if (liveRobots.length === 0) {
-      return { tone: 'muted' as DotTone, detail: 'No robots on duty yet.' };
-    }
-    if (enabledSessions.length === 0) return { tone: 'muted' as DotTone, detail: 'All robots are stopped.' };
-    const views = enabledSessions.map((s) => robotView(s.status));
-    const worstSev = Math.max(...views.map((v) => robotSeverity(v.tone)));
-    const tone: DotTone = worstSev === 3 ? 'terracotta' : worstSev === 2 ? 'gold' : worstSev === 1 ? 'muted' : 'forest';
-    if (tone === 'forest') {
-      const working = enabledSessions.filter((s) => (s.status || '').toLowerCase() === 'alive').length;
-      return { tone, detail: `${working} of ${enabledSessions.length} robot${enabledSessions.length === 1 ? '' : 's'} working normally.` };
-    }
-    const trouble = enabledSessions
-      .filter((s) => robotSeverity(robotView(s.status).tone) >= 2)
-      .slice(0, 2)
-      // Lowercase the label mid-sentence but keep acronyms like 2FA intact.
-      .map((s) => `${s.display_name ?? 'A hotel'}: ${robotView(s.status).label.toLowerCase().replace('2fa', '2FA')}`);
-    return { tone, detail: trouble.join('; ') || 'One or more robots need attention.' };
-  })();
-
-  // Spend light — worst of copilot-vs-global-cap and worst robot-vs-$5.
   const copilotSpend = (metrics?.today?.totalCostUsd ?? 0) + (metrics?.today?.backgroundCostUsd ?? 0);
   const globalCap = metrics?.caps?.global ?? 0;
   const copilotPct = globalCap > 0 ? copilotSpend / globalCap : 0;
-  const robotWorst = (PMS_ROBOT_ENABLED ? sessions : []).reduce(
-    (m, s) => { const u = robotSpendUsd(s); return u > m.usd ? { name: s.display_name ?? 'a hotel', usd: u } : m; },
-    { name: '', usd: 0 },
-  );
-  const robotPct = robotWorst.usd / ROBOT_CAP_USD;
   const spendLight = (() => {
-    if (!metrics && liveRobots.length === 0) return { tone: 'muted' as DotTone, detail: 'No AI spend yet today.' };
-    const pct = PMS_ROBOT_ENABLED ? Math.max(copilotPct, robotPct) : copilotPct;
-    const tone: DotTone = pct >= 1 ? 'terracotta' : pct >= 0.7 ? 'gold' : 'forest';
-    const detail = `Copilot ${money(copilotSpend)}${globalCap > 0 ? ` of $${globalCap}` : ''} today` +
-      (PMS_ROBOT_ENABLED && robotWorst.usd > 0 ? ` · busiest robot ${money(robotWorst.usd)} of $${ROBOT_CAP_USD}` : '');
+    if (!metrics) return { tone: 'muted' as DotTone, detail: 'No AI spend yet today.' };
+    const tone: DotTone = copilotPct >= 1 ? 'terracotta' : copilotPct >= 0.7 ? 'gold' : 'forest';
+    const detail = 'Copilot ' + money(copilotSpend) + (globalCap > 0 ? ' of $' + globalCap : '') + ' today';
     return { tone, detail };
   })();
-
-  // Inbox — endpoint when live, else derived from reliable cua-sessions data.
-  const inboxCards: InboxCard[] = PMS_ROBOT_ENABLED
-    ? (inboxRows !== null)
-      ? inboxRows.map((it, i) => endpointInboxCard(it, i, runAction, busyKey))
-      : derivedInboxCards(liveRobots, runAction, busyKey)
-    : [];
-
-  const attentionCount = inboxCards.length;
 
   return (
     <SurfaceShell glow="forestTop">
@@ -471,16 +297,15 @@ export function MissionControlSurface() {
         </div>
       </header>
 
-      {/* ── Block 1 — three health lights. alignItems start so an expanded
+      {/* ── Block 1 — two health lights. alignItems start so an expanded
           card doesn't stretch its two siblings into hollow boxes. ──────── */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))', gap: 14, marginBottom: 26, alignItems: 'start' }}>
         <HealthLight tone={appLight.tone} label="App" detail={appLight.detail} expanded={<AppDetail system={system} />} />
-        {PMS_ROBOT_ENABLED && <HealthLight tone={robotLight.tone} label="Robots" detail={robotLight.detail} expanded={<RobotLightDetail sessions={enabledSessions} />} />}
-        <HealthLight tone={spendLight.tone} label="AI spend today" detail={spendLight.detail} expanded={<SpendDetail copilotSpend={copilotSpend} robots={PMS_ROBOT_ENABLED ? enabledSessions.map((s) => ({ name: s.display_name ?? 'A hotel', usd: robotSpendUsd(s) })) : []} />} />
+        <HealthLight tone={spendLight.tone} label="AI spend today" detail={spendLight.detail} expanded={<SpendDetail copilotSpend={copilotSpend} />} />
       </div>
 
       {/* ── Block 2 — the roster in three side-by-side columns (owner's
-          layout, 2026-07-17): left = Copilot + hotel robots, middle =
+          layout, 2026-07-17): left = Copilot + named staff, middle =
           automatic AI jobs, right = prediction engine over scheduled
           chores. Fills the width instead of one long scroll; columns wrap
           on narrow windows. */}
@@ -489,10 +314,6 @@ export function MissionControlSurface() {
         <AiStaffColumn
           metrics={metrics}
           employees={hiredStaff}
-          robots={PMS_ROBOT_ENABLED ? liveRobots : []}
-          l={l}
-          busyKey={busyKey}
-          onAction={runAction}
         />
 
         {/* MIDDLE — the AI-written background jobs. */}
@@ -534,7 +355,7 @@ export function MissionControlSurface() {
         </RosterSection>
       </div>
 
-      {/* ── Block 3 — second row (owner's layout): chores · needs-your-okay ·
+      {/* ── Block 3 — second row (owner's layout): chores ·
           shared-knowledge approvals · errors. The approvals column is the
           Staxis-side promotion queue: the only place a fact learned at one
           hotel becomes advice given to another. It sits here, next to the
@@ -558,19 +379,6 @@ export function MissionControlSurface() {
             <ChoresRow rows={timerWorkers} />
           )}
         </RosterSection>
-
-        {/* Robot attention inbox remains implemented, but is absent while the
-            retired browser robot is disabled. */}
-        {PMS_ROBOT_ENABLED && <section style={{ minWidth: 0 }}>
-          <span className="caps" style={{ color: dimWhite(.5) }}>Needs your okay · {attentionCount}</span>
-          {inboxCards.length === 0 ? (
-            <div style={{ marginTop: 10 }}><DarkEmpty text="Nothing needs you." /></div>
-          ) : (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginTop: 10 }}>
-              {inboxCards.map((c) => <InboxCardView key={c.key} card={c} />)}
-            </div>
-          )}
-        </section>}
 
         {/* Shared-knowledge approvals — Reeyen only; hotels never see it */}
         <PromotionQueue />
@@ -643,13 +451,11 @@ function HealthLight({ tone, label, detail, expanded }: {
 }
 
 const SERVICE_LABEL: Record<keyof SystemServices, string> = {
-  web: 'Website', supabase: 'Database', ml: 'Prediction service', cua: 'Robot worker',
+  web: 'Website', supabase: 'Database', ml: 'Prediction service',
 };
 function AppDetail({ system }: { system: SystemServices | null }) {
   if (!system) return <span style={{ fontSize: 12, color: dimWhite(.5) }}>Still checking…</span>;
-  const order: Array<keyof SystemServices> = PMS_ROBOT_ENABLED
-    ? ['web', 'supabase', 'ml', 'cua']
-    : ['web', 'supabase', 'ml'];
+  const order: Array<keyof SystemServices> = ['web', 'supabase', 'ml'];
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
       {order.map((k) => {
@@ -669,37 +475,11 @@ function AppDetail({ system }: { system: SystemServices | null }) {
   );
 }
 
-function RobotLightDetail({ sessions }: { sessions: CuaSession[] }) {
-  if (sessions.length === 0) return <span style={{ fontSize: 12, color: dimWhite(.5) }}>No active robots.</span>;
-  return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 7 }}>
-      {sessions.map((s) => {
-        const v = robotView(s.status);
-        return (
-          <div key={s.property_id} style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-            <Dot tone={v.tone} size={7} />
-            <span style={{ fontSize: 12, color: '#fff', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{s.display_name ?? s.property_id}</span>
-            <span className="mono" style={{ marginLeft: 'auto', fontSize: 10.5, color: dimWhite(.5), flexShrink: 0 }}>{v.label}</span>
-          </div>
-        );
-      })}
-    </div>
-  );
-}
-
 // ── Spend light click-through — a compact live summary; the full
 //    tech-stack spend board lives on the Money tab (owner ask 2026-07-18).
-function SpendDetail({ copilotSpend, robots }: {
-  copilotSpend: number; robots: { name: string; usd: number }[];
-}) {
+function SpendDetail({ copilotSpend }: { copilotSpend: number }) {
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 8, fontSize: 12, color: dimWhite(.7) }}>
-      {robots.map((r) => (
-        <div key={r.name} style={{ display: 'flex', justifyContent: 'space-between', gap: 10 }}>
-          <span>{r.name} robot</span>
-          <span className="mono" style={{ color: '#fff' }}>{money(r.usd)} / ${ROBOT_CAP_USD} today</span>
-        </div>
-      ))}
       <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10 }}>
         <span>Copilot &amp; in-app AI</span>
         <span className="mono" style={{ color: '#fff' }}>{money(copilotSpend)} today</span>
@@ -715,9 +495,8 @@ function SpendDetail({ copilotSpend, robots }: {
 
 // ══ The AI staff column ════════════════════════════════════════════════════
 //
-// The copilot, then the named employees, then the hotel robots — in that
-// order because that is how permanent they are: the copilot is always here,
-// an employee is a job Staxis has hired for, a robot belongs to one hotel.
+// The copilot, then the named employees. The copilot is always here, and an
+// employee is a job Staxis has hired for.
 //
 // HOOK-FREE ON PURPOSE. Every row below owns its own open/closed state, so
 // this component holds none, and the standing test can call it as a plain
@@ -731,18 +510,14 @@ const AI_STAFF_COPY = {
   openRoster: { en: 'Open the AI Staff page', },
 } as const;
 
-export function AiStaffColumn({ metrics, employees, robots, l, busyKey, onAction }: {
+export function AiStaffColumn({ metrics, employees }: {
   metrics: AgentMetrics | null;
   employees: StaffMember[];
-  robots: CuaSession[];
-  l: Lang;
-  busyKey: string | null;
-  onAction: (key: string, propertyId: string, action: string) => void;
 }) {
   return (
     <RosterSection
       eyebrow="AI staff"
-      count={1 /* copilot */ + employees.length + robots.length}
+      count={1 /* copilot */ + employees.length}
       eyebrowColor={dimWhite(.62)}
       subtitle="Thinks with a language model. Couldn't exist before AI."
       last
@@ -752,19 +527,7 @@ export function AiStaffColumn({ metrics, employees, robots, l, busyKey, onAction
         {/* The named roster, straight from the registry by way of the
             endpoint. Hiring employee #2 is a flag in that registry; nothing
             here needs editing for their row to appear. */}
-        {employees.map((e) => <AiEmployeeRow key={e.id} e={e} l={l} />)}
-        {/* Hotel robots appear here ONLY once graduated — zero robots
-            means zero mention (learning ones are Onboarding's business). */}
-        {robots.length > 0 && (
-          <div>
-            <span className="caps" style={{ color: dimWhite(.4), fontSize: 9.5 }}>Hotel robots · {robots.length}</span>
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginTop: 9 }}>
-              {robots.map((s) => (
-                <RobotRow key={s.property_id} s={s} busyKey={busyKey} onAction={onAction} />
-              ))}
-            </div>
-          </div>
-        )}
+        {employees.map((e) => <AiEmployeeRow key={e.id} e={e} />)}
       </div>
     </RosterSection>
   );
@@ -784,7 +547,7 @@ export function AiStaffColumn({ metrics, employees, robots, l, busyKey, onAction
  * The whole card is a link to /admin/ai-staff, where the controls are. There
  * is nothing to click here — Mission Control is the glance.
  */
-export function AiEmployeeRow({ e, l }: { e: StaffMember; l: Lang }) {
+export function AiEmployeeRow({ e }: { e: StaffMember }) {
   const tone: DotTone = EMPLOYEE_STATUS_TONE[e.status] ?? 'muted';
   const label = (EMPLOYEE_STATUS_LABEL[e.status] ?? EMPLOYEE_STATUS_LABEL.not_hired).en;
   const spentToday = e.spend?.known === true && typeof e.spend.todayUsd === 'number'
@@ -880,81 +643,6 @@ function Metric({ label, value, tone }: { label: string; value: string; tone?: D
   );
 }
 
-// ── Hotel robot row ───────────────────────────────────────────────────────
-function RobotRow({ s, busyKey, onAction }: {
-  s: CuaSession;
-  busyKey: string | null;
-  onAction: (key: string, propertyId: string, action: string) => void;
-}) {
-  const v = robotView(s.status);
-  const status = (s.status || '').toLowerCase();
-  const spend = robotSpendUsd(s);
-  const spendTone: DotTone = spend >= ROBOT_CAP_USD ? 'terracotta' : spend >= ROBOT_CAP_USD * 0.7 ? 'gold' : 'muted';
-  const needsHelp = s.active_mapper_job?.needs_help === true;
-  const learnJobId = s.active_mapper_job?.id ?? null;
-
-  const canRestart = status.includes('fail') || status === 'stopped' || status.includes('circuit');
-  const canReset = status.includes('cost_cap');
-  const needsMfa = status.includes('mfa');
-  const canStop = status === 'alive' || status === 'starting' || (!canRestart && !needsMfa);
-
-  const btnStyle = { color: '#fff', borderColor: dimWhite(.25), fontSize: 9.5, padding: '3px 9px' } as const;
-  const restartKey = `${s.property_id}:restart`;
-  const stopKey = `${s.property_id}:stop`;
-  const resetKey = `${s.property_id}:reset_cost_cap`;
-
-  return (
-    <div style={{
-      background: dimWhite(.05),
-      border: `1px solid ${v.tone === 'forest' || v.tone === 'muted' ? dimWhite(.12) : `var(--${v.tone})`}`,
-      borderRadius: 12, padding: '11px 13px', color: '#fff',
-    }}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 9, flexWrap: 'wrap' }}>
-        <Dot tone={v.tone} size={8} />
-        <span style={{ fontSize: 12.5, fontWeight: 600, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-          {s.display_name ?? s.property_id}
-        </span>
-        <Pill tone={pillOf(v.tone)} style={{ fontSize: 9, padding: '2px 7px' }}>{v.label}</Pill>
-        <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 12 }}>
-          <span className="mono" style={{ fontSize: 9.5, color: dimWhite(.5) }}>{s.last_alive_at ? `last seen ${age(s.last_alive_at)} ago` : 'not seen yet'}</span>
-          <span className="mono" style={{ fontSize: 9.5, color: TONE_VAR[spendTone] }}>{money(spend)} of ${ROBOT_CAP_USD}</span>
-        </div>
-      </div>
-
-      {(needsHelp || s.pms_family) && (
-        <div className="mono" style={{ fontSize: 9.5, color: needsHelp ? 'var(--terracotta)' : dimWhite(.4), marginTop: 6 }}>
-          {needsHelp ? 'Stuck. It needs your help to keep learning' : s.pms_family}
-        </div>
-      )}
-
-      <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 8, flexWrap: 'wrap' }}>
-        {canRestart && (
-          <Btn size="sm" variant="ghost" disabled={busyKey === restartKey} onClick={() => onAction(restartKey, s.property_id, 'restart')} style={btnStyle}>
-            {busyKey === restartKey ? 'Restarting…' : 'Restart'}
-          </Btn>
-        )}
-        {canReset && (
-          <Btn size="sm" variant="forest" disabled={busyKey === resetKey} onClick={() => onAction(resetKey, s.property_id, 'reset_cost_cap')} style={{ fontSize: 9.5, padding: '3px 9px' }}>
-            {busyKey === resetKey ? 'Resetting…' : 'Reset cap'}
-          </Btn>
-        )}
-        {needsMfa && (
-          <Btn size="sm" variant="ghost" href={`/admin/mfa-resume/${s.property_id}`} style={btnStyle}>Enter 2FA code</Btn>
-        )}
-        {canStop && (
-          <Btn size="sm" variant="ghost" disabled={busyKey === stopKey} onClick={() => onAction(stopKey, s.property_id, 'stop')} style={btnStyle}>
-            {busyKey === stopKey ? 'Stopping…' : 'Stop'}
-          </Btn>
-        )}
-        {learnJobId && (
-          <Btn size="sm" variant="ghost" href={`/admin/properties/mapper/${learnJobId}`} style={btnStyle}>Watch it learn</Btn>
-        )}
-        <Btn size="sm" variant="ghost" href={`/admin/properties/coverage/${s.property_id}`} style={btnStyle}>What it captures</Btn>
-      </div>
-    </div>
-  );
-}
-
 // ── Roster section header — caps eyebrow + serif count + one dim subtitle.
 // The three roster sections share this so they read as a set; each dials its
 // eyebrow brightness so the eye lands on AI staff first.
@@ -1043,129 +731,6 @@ function ChoresRow({ rows }: { rows: WorkerRow[] }) {
         </div>
       </Reveal>
     </div>
-  );
-}
-
-// ── Inbox card model + views ──────────────────────────────────────────────
-interface InboxCard {
-  key: string;
-  tone: DotTone;
-  title: string;
-  detail: string;
-  action?:
-    | { kind: 'link'; label: string; href: string }
-    | { kind: 'button'; label: string; busyLabel: string; onClick: () => void; busy: boolean; variant?: 'ghost' | 'forest' };
-}
-
-type ActionRunner = (key: string, propertyId: string, action: string) => void;
-
-// Build inbox cards straight from cua-sessions — always correct, used as
-// the source of truth until mission/inbox lands. Only owner-actionable
-// robot states; hotels' own pending decisions don't belong here.
-function derivedInboxCards(sessions: CuaSession[], run: ActionRunner, busyKey: string | null): InboxCard[] {
-  const cards: InboxCard[] = [];
-  for (const s of sessions) {
-    const status = (s.status || '').toLowerCase();
-    const name = s.display_name ?? 'A hotel';
-    if (status.includes('mfa')) {
-      cards.push({
-        key: `mfa:${s.property_id}`, tone: 'terracotta',
-        title: `${name} needs a 2FA code`,
-        detail: 'The robot is locked out until someone enters the login code.',
-        action: { kind: 'link', label: 'Enter 2FA code', href: `/admin/mfa-resume/${s.property_id}` },
-      });
-    } else if (status.includes('cost_cap')) {
-      const resetKey = `${s.property_id}:reset_cost_cap`;
-      cards.push({
-        key: `cap:${s.property_id}`, tone: 'gold',
-        title: `${name} hit its $${ROBOT_CAP_USD} cap`,
-        detail: 'It paused to avoid overspending. Reset to let it keep working today.',
-        action: { kind: 'button', label: 'Reset cap', busyLabel: 'Resetting…', busy: busyKey === resetKey, variant: 'forest', onClick: () => run(resetKey, s.property_id, 'reset_cost_cap') },
-      });
-    } else if (status.includes('fail') || status.includes('circuit')) {
-      const restartKey = `${s.property_id}:restart`;
-      cards.push({
-        key: `fail:${s.property_id}`, tone: 'terracotta',
-        title: `${name}'s robot stopped`,
-        detail: s.paused_reason ? humanize(s.paused_reason) : 'It stopped unexpectedly and needs a restart.',
-        action: { kind: 'button', label: 'Restart', busyLabel: 'Restarting…', busy: busyKey === restartKey, onClick: () => run(restartKey, s.property_id, 'restart') },
-      });
-    }
-  }
-  return cards;
-}
-
-// Map a mission/inbox row to a card. Consumes the endpoint's own title/detail
-// and structured `action`; tone is inferred from `kind`. Kinds are the real
-// endpoint values (needs_2fa / cost_cap / failed) plus loose fallbacks so
-// an added kind still renders.
-function endpointInboxCard(it: InboxRow, i: number, run: ActionRunner, busyKey: string | null): InboxCard {
-  const kind = (it.kind || '').toLowerCase();
-  const urgent = kind.includes('2fa') || kind.includes('mfa') || kind.includes('fail') || kind.includes('circuit');
-  const attention = kind.includes('cap') || kind.includes('decision') || kind.includes('pending') || kind.includes('nudge');
-  const tone: DotTone = urgent ? 'terracotta' : attention ? 'gold' : 'muted';
-  return {
-    key: `in:${i}`,
-    tone,
-    title: it.title || humanize(it.kind || 'Attention needed'),
-    detail: it.detail || '',
-    action: buildInboxAction(it.action, it.propertyId ?? null, run, busyKey),
-  };
-}
-
-// Turn the endpoint's action descriptor into a rendered control. Unknown /
-// null actions render as plain text (no button).
-function buildInboxAction(
-  action: InboxAction | string | null | undefined,
-  fallbackPid: string | null,
-  run: ActionRunner,
-  busyKey: string | null,
-): InboxCard['action'] {
-  if (!action || typeof action !== 'object') return undefined;
-  const type = (action.type || '').toLowerCase();
-  const label = action.label || 'Open';
-  if (type === 'link' && action.href) return { kind: 'link', label, href: action.href };
-  const pid = action.propertyId ?? fallbackPid ?? '';
-  if (!pid) return undefined;
-  if (type === 'reset_cost_cap') {
-    const key = `${pid}:reset_cost_cap`;
-    return { kind: 'button', label, busyLabel: 'Resetting…', busy: busyKey === key, variant: 'forest', onClick: () => run(key, pid, 'reset_cost_cap') };
-  }
-  if (type === 'restart') {
-    const key = `${pid}:restart`;
-    return { kind: 'button', label, busyLabel: 'Working…', busy: busyKey === key, onClick: () => run(key, pid, 'restart') };
-  }
-  return undefined;
-}
-
-function InboxCardView({ card }: { card: InboxCard }) {
-  return (
-    <DarkCard style={{ padding: '12px 14px' }}>
-      <div style={{ display: 'flex', alignItems: 'flex-start', gap: 9 }}>
-        <Dot tone={card.tone} size={8} style={{ marginTop: 4 }} />
-        <div style={{ flex: 1, minWidth: 0 }}>
-          <div style={{ fontSize: 12.5, fontWeight: 600, color: '#fff', lineHeight: 1.4 }}>{card.title}</div>
-          {card.detail && <div style={{ fontSize: 11.5, color: dimWhite(.6), marginTop: 3, lineHeight: 1.45 }}>{card.detail}</div>}
-          {card.action && (
-            <div style={{ marginTop: 9 }}>
-              {card.action.kind === 'link' ? (
-                <Btn size="sm" variant="ghost" href={card.action.href} style={{ color: '#fff', borderColor: dimWhite(.25) }}>{card.action.label}</Btn>
-              ) : (
-                <Btn
-                  size="sm"
-                  variant={card.action.variant ?? 'ghost'}
-                  disabled={card.action.busy}
-                  onClick={card.action.onClick}
-                  style={card.action.variant === 'forest' ? undefined : { color: '#fff', borderColor: dimWhite(.25) }}
-                >
-                  {card.action.busy ? card.action.busyLabel : card.action.label}
-                </Btn>
-              )}
-            </div>
-          )}
-        </div>
-      </div>
-    </DarkCard>
   );
 }
 

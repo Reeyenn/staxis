@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
-import { readdirSync, readFileSync, statSync } from 'node:fs';
-import { join, relative } from 'node:path';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { describe, test } from 'node:test';
 import { NextRequest } from 'next/server';
 
@@ -11,82 +11,9 @@ import { PMS_ROBOT_ENABLED } from '@/lib/pms/robot-status';
 const root = process.cwd();
 const source = (path: string): string => readFileSync(join(root, path), 'utf8');
 
-function routeFilesUnder(path: string): string[] {
-  const out: string[] = [];
-  const walk = (dir: string): void => {
-    for (const entry of readdirSync(dir)) {
-      const full = join(dir, entry);
-      if (statSync(full).isDirectory()) walk(full);
-      else if (entry === 'route.ts') out.push(relative(root, full));
-    }
-  };
-  walk(join(root, path));
-  return out.sort();
-}
-
-function assertAuthenticatedRobotGuard(path: string): void {
-  const text = source(path);
-  const handlers = text
-    .split(/(?=export async function (?:GET|POST|PATCH|DELETE)\b)/)
-    .filter((part) => /^export async function (?:GET|POST|PATCH|DELETE)\b/.test(part));
-  assert.ok(handlers.length > 0, `${path} should contain an API handler`);
-
-  for (const handler of handlers) {
-    const name = /export async function (GET|POST|PATCH|DELETE)/.exec(handler)?.[1] ?? 'handler';
-    const authAt = handler.search(/await require(?:Admin|AdminOrCron|Session)\s*\(/);
-    const guardAt = handler.indexOf('robotDecommissionedResponse(requestId)');
-    assert.ok(authAt >= 0, `${path} ${name} must authenticate`);
-    assert.ok(
-      guardAt > authAt,
-      `${path} ${name} must refuse through robotDecommissionedResponse immediately after auth`,
-    );
-  }
-}
-
-describe('retired PMS robot — backend route ratchet', () => {
+describe('retired PMS robot — surviving report-era contract', () => {
   test('the compile-time product switch is off', () => {
     assert.equal(PMS_ROBOT_ENABLED, false);
-  });
-
-  test('every mapper, takeover, live-map, and coverage handler is authenticated then guarded', () => {
-    const paths = [
-      ...routeFilesUnder('src/app/api/admin/mapper'),
-      ...routeFilesUnder('src/app/api/admin/live-mapper'),
-      ...routeFilesUnder('src/app/api/admin/coverage'),
-    ];
-    for (const path of paths) assertAuthenticatedRobotGuard(path);
-  });
-
-  test('credential, session, onboarding, MFA, and robot-state routes are guarded', () => {
-    const paths = [
-      'src/app/api/pms/save-credentials/route.ts',
-      'src/app/api/pms/onboard/route.ts',
-      'src/app/api/pms/job-status/route.ts',
-      'src/app/api/admin/cua-sessions/route.ts',
-      'src/app/api/admin/heartbeat/route.ts',
-      'src/app/api/admin/onboarding-jobs/route.ts',
-      'src/app/api/admin/pms-auth-code/route.ts',
-      'src/app/api/admin/pms-coverage/route.ts',
-      'src/app/api/admin/pms-inbox/route.ts',
-      'src/app/api/admin/mission/inbox/route.ts',
-      'src/app/api/admin/regenerate-recipe/route.ts',
-    ];
-    for (const path of paths) assertAuthenticatedRobotGuard(path);
-  });
-
-  test('robot-only crons authenticate before returning a disabled no-op', () => {
-    for (const path of [
-      'src/app/api/cron/enqueue-property-pulls/route.ts',
-      'src/app/api/cron/pms-backfill-missing-feeds/route.ts',
-      'src/app/api/cron/expire-help-requests/route.ts',
-    ]) {
-      const text = source(path);
-      const authAt = text.indexOf('requireCronSecret(req)');
-      const guardAt = text.search(/if \(CUA_DECOMMISSIONED\)/);
-      assert.ok(authAt >= 0 && guardAt > authAt, `${path} must authenticate before its no-op`);
-      const guardBody = text.slice(guardAt, text.indexOf('\n  }', guardAt));
-      assert.doesNotMatch(guardBody, /(?:supabaseAdmin|writeCronHeartbeat)/, `${path} no-op must not touch the database`);
-    }
   });
 });
 

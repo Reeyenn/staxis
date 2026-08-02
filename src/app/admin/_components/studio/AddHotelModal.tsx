@@ -26,7 +26,7 @@
    dismissed without sending.
 
    Posts to /api/admin/properties/create. Studio chrome (dark Backdrop + light
-   MODAL_CARD), matching SectionsModal / CoveragePickerModal.
+   MODAL_CARD), matching the other Studio modals.
    English-only (admin studio surface).
    ─────────────────────────────────────────────────────────────────────── */
 
