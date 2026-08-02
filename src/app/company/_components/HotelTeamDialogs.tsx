@@ -29,6 +29,7 @@ import { copyToClipboard } from '@/lib/copy-to-clipboard';
 import { HAT_ROLE_LABELS, isHatRole } from '@/lib/company/roles';
 import { ASSIGNABLE_ROLES, type AppRole, type AssignableRole } from '@/lib/roles';
 
+import { restoreDialogFocus } from './dialog-focus';
 import type {
   HotelInviteRosterProfile,
   HotelJoinRequest,
@@ -311,6 +312,7 @@ function useDialogBehavior(
   onClose: () => void,
   busy: boolean,
   returnFocusRef?: React.RefObject<HTMLElement | null>,
+  fallbackFocusRef?: React.RefObject<HTMLElement | null>,
 ) {
   const closeRef = React.useRef<HTMLButtonElement | null>(null);
   const dialogRef = React.useRef<HTMLDivElement | null>(null);
@@ -320,8 +322,9 @@ function useDialogBehavior(
   busyRef.current = busy;
 
   React.useEffect(() => {
-    const returnFocusElement = returnFocusRef?.current
-      ?? (document.activeElement instanceof HTMLElement ? document.activeElement : null);
+    const previousFocusElement = document.activeElement instanceof HTMLElement
+      ? document.activeElement
+      : null;
     const previousOverflow = document.body.style.overflow;
     document.body.style.overflow = 'hidden';
     closeRef.current?.focus();
@@ -352,9 +355,9 @@ function useDialogBehavior(
     return () => {
       document.body.style.overflow = previousOverflow;
       document.removeEventListener('keydown', onKeyDown);
-      if (returnFocusElement?.isConnected) returnFocusElement.focus({ preventScroll: true });
+      restoreDialogFocus(returnFocusRef, fallbackFocusRef, previousFocusElement);
     };
-  }, [returnFocusRef]);
+  }, [fallbackFocusRef, returnFocusRef]);
 
   return { closeRef, dialogRef };
 }
@@ -369,6 +372,7 @@ function DialogShell({
   busy = false,
   wide = false,
   returnFocusRef,
+  fallbackFocusRef,
   children,
 }: {
   title: string;
@@ -380,9 +384,15 @@ function DialogShell({
   busy?: boolean;
   wide?: boolean;
   returnFocusRef?: React.RefObject<HTMLElement | null>;
+  fallbackFocusRef?: React.RefObject<HTMLElement | null>;
   children: React.ReactNode;
 }) {
-  const { closeRef, dialogRef } = useDialogBehavior(onClose, busy, returnFocusRef);
+  const { closeRef, dialogRef } = useDialogBehavior(
+    onClose,
+    busy,
+    returnFocusRef,
+    fallbackFocusRef,
+  );
   const titleId = React.useId();
   const descriptionId = React.useId();
   return createPortal(
@@ -1460,6 +1470,7 @@ export function PeopleInviteChooserDialog({
   onInviteToStaxis,
   onClose,
   returnFocusRef,
+  fallbackFocusRef,
 }: {
   canAddStaff: boolean;
   canInviteToStaxis: boolean;
@@ -1469,6 +1480,7 @@ export function PeopleInviteChooserDialog({
   onInviteToStaxis: () => void;
   onClose: () => void;
   returnFocusRef?: React.RefObject<HTMLElement | null>;
+  fallbackFocusRef?: React.RefObject<HTMLElement | null>;
 }) {
   const addStaffDescriptionId = React.useId();
   const inviteDescriptionId = React.useId();
@@ -1489,6 +1501,7 @@ export function PeopleInviteChooserDialog({
       icon={<UserRoundCog size={21} aria-hidden="true" />}
       onClose={onClose}
       returnFocusRef={returnFocusRef}
+      fallbackFocusRef={fallbackFocusRef}
     >
       <div className={styles.peopleInviteChoices} role="group" aria-label="Choose whether this person needs a Staxis login">
         {canAddStaff ? (
@@ -1545,6 +1558,7 @@ export function HotelInviteDialog({
   onClose,
   onChanged,
   returnFocusRef,
+  fallbackFocusRef,
 }: {
   hotelId: string;
   hotelName: string;
@@ -1555,6 +1569,7 @@ export function HotelInviteDialog({
   onClose: () => void;
   onChanged?: () => void | Promise<void>;
   returnFocusRef?: React.RefObject<HTMLElement | null>;
+  fallbackFocusRef?: React.RefObject<HTMLElement | null>;
 }) {
   const [inviteMode, setInviteMode] = React.useState<InviteMode>(
     canManageHotelRoster ? 'shared' : 'email',
@@ -1978,6 +1993,7 @@ export function HotelInviteDialog({
       busy={busy}
       wide
       returnFocusRef={returnFocusRef}
+      fallbackFocusRef={fallbackFocusRef}
     >
       <div className={styles.inviteBody} aria-busy={(canManageHotelRoster && codeLoading) || invitesLoading}>
         {hasInviteModeChoice ? (

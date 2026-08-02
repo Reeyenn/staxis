@@ -18,6 +18,7 @@ function section(sourceText: string, startMarker: string, endMarker: string, lab
 const panel = source('src', 'app', 'company', '_components', 'HotelTeamPanel.tsx');
 const dialogs = source('src', 'app', 'company', '_components', 'HotelTeamDialogs.tsx');
 const addStaff = source('src', 'app', 'company', '_components', 'AddStaffDialog.tsx');
+const focusUtility = source('src', 'app', 'company', '_components', 'dialog-focus.ts');
 const companyPage = source('src', 'app', 'company', 'page.tsx');
 const css = source('src', 'app', 'company', '_components', 'HotelTeamPanel.module.css');
 
@@ -91,14 +92,15 @@ describe('People invite entry choice', () => {
     assert.doesNotMatch(earlyActionArea, /Add someone to the schedule/);
     assert.doesNotMatch(earlyActionArea, /Add staff member|CalendarPlus|staffProfiles|rosterStaff/);
 
-    assert.match(earlyBranch, /inviteChoiceOpen && canInviteAccounts && !locked/);
+    assert.match(earlyBranch, /inviteChoiceOpen && canInviteAccounts && !locked && !inviteActionDisabled/);
     assert.match(earlyBranch, /canAddStaff=\{false\}/);
     assert.match(earlyBranch, /canInviteToStaxis=\{!inviteActionDisabled\}/);
     assert.match(earlyBranch, /canSendEmailInvite=\{canInviteAccounts && !inviteActionDisabled\}/);
     assert.match(earlyBranch, /canShareHotelInvite=\{false\}/);
-    assert.match(earlyBranch, /inviteDialogOpen && canInviteAccounts && !locked/);
+    assert.match(earlyBranch, /inviteDialogOpen && canInviteAccounts && !locked && !inviteActionDisabled/);
     assert.match(earlyBranch, /canInviteManager\s+canManageHotelRoster=\{false\}/);
     assert.match(earlyBranch, /returnFocusRef=\{inviteEntryReturnFocusRef\}/);
+    assert.match(earlyBranch, /fallbackFocusRef=\{peopleHeadingRef\}/);
     assert.doesNotMatch(earlyBranch, /<LazyAddStaffDialog/);
   });
 
@@ -158,7 +160,7 @@ describe('People invite entry choice', () => {
     );
     assert.match(
       panel,
-      /React\.useEffect\(\(\) => \{\s*if \(!inviteActionDisabled\) return;\s*setInviteChoiceOpen\(false\);\s*\}, \[inviteActionDisabled\]\)/,
+      /React\.useEffect\(\(\) => \{\s*if \(!inviteActionDisabled\) return;\s*setInviteChoiceOpen\(false\);\s*setAddDepartment\(null\);\s*if \(inviteDialogOpen\) onInviteDialogOpenChange\(false\);\s*\}, \[inviteActionDisabled, inviteDialogOpen, onInviteDialogOpenChange\]\)/,
     );
 
     const addStaffCallback = section(
@@ -176,22 +178,42 @@ describe('People invite entry choice', () => {
     assert.match(earlyBranch, /inviteChoiceOpen && canInviteAccounts && !locked && !inviteActionDisabled/);
     assert.match(earlyBranch, /canInviteToStaxis=\{!inviteActionDisabled\}/);
     assert.match(earlyBranch, /canSendEmailInvite=\{canInviteAccounts && !inviteActionDisabled\}/);
+    assert.match(normalDialogArea, /addDepartment && !inviteActionDisabled/);
+    assert.match(earlyBranch, /fallbackFocusRef=\{peopleHeadingRef\}/);
     assert.match(panel, /returnFocusRef=\{inviteEntryReturnFocusRef\}/);
   });
 
-  test('both handoffs retain the original visible trigger through lazy loading and close', () => {
+  test('both handoffs restore to the enabled trigger or the People heading fallback', () => {
     assert.match(panel, /const inviteEntryRef = React\.useRef<HTMLButtonElement \| null>\(null\)/);
     assert.match(panel, /const inviteEntryReturnFocusRef = React\.useRef<HTMLElement \| null>\(null\)/);
+    assert.match(panel, /const peopleHeadingRef = React\.useRef<HTMLHeadingElement \| null>\(null\)/);
     assert.match(panel, /inviteEntryReturnFocusRef\.current = inviteEntryRef\.current/);
+    assert.match(earlyBranch, /<h3 ref=\{peopleHeadingRef\} id="hotel-team-title" tabIndex=\{-1\}/);
+    assert.match(panel, /<h2 ref=\{peopleHeadingRef\} id="team-members-title" tabIndex=\{-1\}/);
     assert.match(normalDialogArea, /returnFocusRef=\{inviteEntryReturnFocusRef\}/);
+    assert.match(normalDialogArea, /fallbackFocusRef=\{peopleHeadingRef\}/);
     assert.match(normalDialogArea, /<LazyAddStaffDialog[\s\S]*returnFocusRef=\{inviteEntryReturnFocusRef\}/);
+    assert.match(normalDialogArea, /<LazyAddStaffDialog[\s\S]*fallbackFocusRef=\{peopleHeadingRef\}/);
     assert.match(normalDialogArea, /<LazyInviteDialog[\s\S]*returnFocusRef=\{inviteEntryReturnFocusRef\}/);
+    assert.match(normalDialogArea, /<LazyInviteDialog[\s\S]*fallbackFocusRef=\{peopleHeadingRef\}/);
     assert.match(normalDialogArea, /<DialogLoading[\s\S]*returnFocusRef=\{needsFirstPerson \? undefined : inviteEntryReturnFocusRef\}/);
     assert.match(earlyBranch, /<DialogLoading[\s\S]*returnFocusRef=\{inviteEntryReturnFocusRef\}/);
-    assert.match(dialogs, /returnFocusRef\?\.current[\s\S]*document\.activeElement/);
-    assert.match(dialogs, /if \(returnFocusElement\?\.isConnected\) returnFocusElement\.focus/);
-    assert.match(addStaff, /returnFocusRef\?\.current[\s\S]*document\.activeElement/);
-    assert.match(addStaff, /if \(returnFocusElement\?\.isConnected\) returnFocusElement\.focus/);
+    assert.match(focusUtility, /isConnected[\s\S]*!element\.matches\(':disabled'\)[\s\S]*aria-disabled/);
+    assert.match(
+      focusUtility,
+      /isUsableFocusTarget\(returnFocusElement\)[\s\S]*\? returnFocusElement[\s\S]*isUsableFocusTarget\(fallbackFocusElement\)[\s\S]*\? fallbackFocusElement/,
+    );
+    assert.match(focusUtility, /!returnFocusRef && !fallbackFocusRef && isUsableFocusTarget\(previousFocusElement\)/);
+    assert.match(dialogs, /restoreDialogFocus\(returnFocusRef, fallbackFocusRef, previousFocusElement\)/);
+    assert.match(addStaff, /restoreDialogFocus\(returnFocusRef, fallbackFocusRef, previousFocusElement\)/);
+
+    const firstPersonHandoff = section(
+      normalDialogArea,
+      '{inviteDialogOpen && !inviteActionDisabled && needsFirstPerson ? (',
+      ') : inviteDialogOpen && !inviteActionDisabled ? (',
+      'first-person invite handoff',
+    );
+    assert.doesNotMatch(firstPersonHandoff, /returnFocusRef|fallbackFocusRef/);
   });
 
   test('loading states match their destination and close the correct state', () => {

@@ -45,6 +45,7 @@ import type { AppRole } from '@/lib/roles';
 import type { StaffDepartment, StaffMember } from '@/types';
 
 import type { AddStaffAttempt } from './AddStaffDialog';
+import { restoreDialogFocus } from './dialog-focus';
 import {
   ALWAYS_VISIBLE_GROUPS,
   buildHotelRoster,
@@ -504,6 +505,7 @@ function DialogLoading({
   variant,
   onClose,
   returnFocusRef,
+  fallbackFocusRef,
   choiceCount = 2,
 }: {
   lang: HotelTeamLang;
@@ -511,6 +513,7 @@ function DialogLoading({
   variant: DialogLoadingVariant;
   onClose: () => void;
   returnFocusRef?: React.RefObject<HTMLElement | null>;
+  fallbackFocusRef?: React.RefObject<HTMLElement | null>;
   choiceCount?: number;
 }) {
   const closeRef = React.useRef<HTMLButtonElement | null>(null);
@@ -539,8 +542,9 @@ function DialogLoading({
       : styles.dialogLoadingConfirmation;
 
   React.useEffect(() => {
-    const returnFocusElement = returnFocusRef?.current
-      ?? (document.activeElement instanceof HTMLElement ? document.activeElement : null);
+    const previousFocusElement = document.activeElement instanceof HTMLElement
+      ? document.activeElement
+      : null;
     const previousOverflow = document.body.style.overflow;
     document.body.style.overflow = 'hidden';
     closeRef.current?.focus({ preventScroll: true });
@@ -569,9 +573,9 @@ function DialogLoading({
     return () => {
       document.body.style.overflow = previousOverflow;
       document.removeEventListener('keydown', onKeyDown);
-      if (returnFocusElement?.isConnected) returnFocusElement.focus({ preventScroll: true });
+      restoreDialogFocus(returnFocusRef, fallbackFocusRef, previousFocusElement);
     };
-  }, [returnFocusRef]);
+  }, [fallbackFocusRef, returnFocusRef]);
 
   return createPortal(
     <div className={styles.dialogLayer}>
@@ -753,6 +757,7 @@ export function HotelTeamPanel({
   const requestSequenceRef = React.useRef(0);
   const inviteEntryRef = React.useRef<HTMLButtonElement | null>(null);
   const inviteEntryReturnFocusRef = React.useRef<HTMLElement | null>(null);
+  const peopleHeadingRef = React.useRef<HTMLHeadingElement | null>(null);
   const changedRef = React.useRef(onChanged);
   changedRef.current = onChanged;
 
@@ -786,7 +791,9 @@ export function HotelTeamPanel({
   React.useEffect(() => {
     if (!inviteActionDisabled) return;
     setInviteChoiceOpen(false);
-  }, [inviteActionDisabled]);
+    setAddDepartment(null);
+    if (inviteDialogOpen) onInviteDialogOpenChange(false);
+  }, [inviteActionDisabled, inviteDialogOpen, onInviteDialogOpenChange]);
 
   // A definitive fresh authorization refresh can revoke hotel-operational
   // standing while this tab is open. Drop every private roster projection as
@@ -1220,7 +1227,7 @@ export function HotelTeamPanel({
           <div className={styles.permissionState}>
             <span><KeyRound size={20} aria-hidden="true" /></span>
             <div>
-              <h3 id="hotel-team-title">{'Hotel account settings are private'}</h3>
+              <h3 ref={peopleHeadingRef} id="hotel-team-title" tabIndex={-1}>{'Hotel account settings are private'}</h3>
               <p>{'Only an explicitly authorized hotel manager can view or change this private roster.'}</p>
             </div>
           </div>
@@ -1252,6 +1259,7 @@ export function HotelTeamPanel({
             variant={loadingDialogVariant}
             choiceCount={1}
             returnFocusRef={inviteEntryReturnFocusRef}
+            fallbackFocusRef={peopleHeadingRef}
             onClose={closeLoadingDialog}
           />
         )}>
@@ -1262,12 +1270,13 @@ export function HotelTeamPanel({
               canSendEmailInvite={canInviteAccounts && !inviteActionDisabled}
               canShareHotelInvite={false}
               returnFocusRef={inviteEntryReturnFocusRef}
+              fallbackFocusRef={peopleHeadingRef}
               onAddStaff={chooseAddStaff}
               onInviteToStaxis={chooseInviteToStaxis}
               onClose={() => setInviteChoiceOpen(false)}
             />
           ) : null}
-          {inviteDialogOpen && canInviteAccounts && !locked ? (
+          {inviteDialogOpen && canInviteAccounts && !locked && !inviteActionDisabled ? (
             <LazyInviteDialog
               hotelId={hotelId}
               hotelName={hotelName}
@@ -1275,6 +1284,7 @@ export function HotelTeamPanel({
               canInviteManager
               canManageHotelRoster={false}
               returnFocusRef={inviteEntryReturnFocusRef}
+              fallbackFocusRef={peopleHeadingRef}
               onClose={() => onInviteDialogOpenChange(false)}
               onChanged={() => changedRef.current?.()}
             />
@@ -1330,7 +1340,7 @@ export function HotelTeamPanel({
         <div className={styles.subheading}>
           <div className={styles.subheadingCopy}>
             <div className={styles.subheadingTitleRow}>
-              <h2 id="team-members-title">{'Everyone at this hotel'}</h2>
+              <h2 ref={peopleHeadingRef} id="team-members-title" tabIndex={-1}>{'Everyone at this hotel'}</h2>
               {!teamLoading && !teamError ? (
                 <strong aria-label={`${peopleCount} people at this hotel`}>
                   {peopleCount}
@@ -1544,6 +1554,7 @@ export function HotelTeamPanel({
           variant={loadingDialogVariant}
           choiceCount={Number(canAddStaff && !locked) + Number(canInviteToStaxis)}
           returnFocusRef={needsFirstPerson ? undefined : inviteEntryReturnFocusRef}
+          fallbackFocusRef={needsFirstPerson ? undefined : peopleHeadingRef}
           onClose={closeLoadingDialog}
         />
       )}>
@@ -1597,19 +1608,20 @@ export function HotelTeamPanel({
             canSendEmailInvite={canInviteAccounts && !inviteActionDisabled}
             canShareHotelInvite={canManageTeam && !inviteActionDisabled}
             returnFocusRef={inviteEntryReturnFocusRef}
+            fallbackFocusRef={peopleHeadingRef}
             onAddStaff={chooseAddStaff}
             onInviteToStaxis={chooseInviteToStaxis}
             onClose={() => setInviteChoiceOpen(false)}
           />
         ) : null}
-        {inviteDialogOpen && needsFirstPerson ? (
+        {inviteDialogOpen && !inviteActionDisabled && needsFirstPerson ? (
           <LazyFirstPersonInviteDialog
             hotelId={hotelId}
             hotelName={hotelName}
             onClose={() => onInviteDialogOpenChange(false)}
             onChanged={() => changedRef.current?.()}
           />
-        ) : inviteDialogOpen ? (
+        ) : inviteDialogOpen && !inviteActionDisabled ? (
           <LazyInviteDialog
             hotelId={hotelId}
             hotelName={hotelName}
@@ -1618,6 +1630,7 @@ export function HotelTeamPanel({
             canManageHotelRoster
             unlinkedRosterProfiles={unlinkedRosterProfiles}
             returnFocusRef={inviteEntryReturnFocusRef}
+            fallbackFocusRef={peopleHeadingRef}
             onClose={() => onInviteDialogOpenChange(false)}
             onChanged={() => changedRef.current?.()}
           />
@@ -1636,13 +1649,14 @@ export function HotelTeamPanel({
             }}
           />
         ) : null}
-        {addDepartment ? (
+        {addDepartment && !inviteActionDisabled ? (
           <LazyAddStaffDialog
             hotelId={hotelId}
             hotelName={hotelName}
             lang={lang}
             initialDepartment={addDepartment}
             returnFocusRef={inviteEntryReturnFocusRef}
+            fallbackFocusRef={peopleHeadingRef}
             onClose={() => setAddDepartment(null)}
             onAdded={(member) => setOptimisticStaff((current) => (
               current.some((item) => item.id === member.id) ? current : [...current, member]

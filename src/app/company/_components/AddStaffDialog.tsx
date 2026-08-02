@@ -27,6 +27,7 @@ import { fetchWithAuth } from '@/lib/api-fetch';
 import type { StaffDepartment, StaffMember } from '@/types';
 
 import type { HotelTeamLang } from './HotelTeamPanel';
+import { restoreDialogFocus } from './dialog-focus';
 import styles from './HotelTeamPanel.module.css';
 
 interface CreateStaffPayload {
@@ -60,6 +61,7 @@ interface AddStaffDialogProps {
   pendingAttempt: AddStaffAttempt | null;
   onPendingAttemptChange: (attempt: AddStaffAttempt | null) => void;
   returnFocusRef?: React.RefObject<HTMLElement | null>;
+  fallbackFocusRef?: React.RefObject<HTMLElement | null>;
 }
 
 function freshIdempotencyKey(): string {
@@ -78,6 +80,7 @@ export function AddStaffDialog({
   pendingAttempt,
   onPendingAttemptChange,
   returnFocusRef,
+  fallbackFocusRef,
 }: AddStaffDialogProps) {
   const [name, setName] = React.useState(pendingAttempt?.payload.name ?? '');
   const [department, setDepartment] = React.useState<StaffDepartment>(
@@ -110,8 +113,9 @@ export function AddStaffDialog({
 
   React.useEffect(() => {
     mountedRef.current = true;
-    const returnFocusElement = returnFocusRef?.current
-      ?? (document.activeElement instanceof HTMLElement ? document.activeElement : null);
+    const previousFocusElement = document.activeElement instanceof HTMLElement
+      ? document.activeElement
+      : null;
     const previousOverflow = document.body.style.overflow;
     document.body.style.overflow = 'hidden';
     const dialogLayer = dialogRef.current?.parentElement ?? null;
@@ -175,9 +179,9 @@ export function AddStaffDialog({
         if (ariaHidden === null) element.removeAttribute('aria-hidden');
         else element.setAttribute('aria-hidden', ariaHidden);
       });
-      if (returnFocusElement?.isConnected) returnFocusElement.focus({ preventScroll: true });
+      restoreDialogFocus(returnFocusRef, fallbackFocusRef, previousFocusElement);
     };
-  }, [returnFocusRef]);
+  }, [fallbackFocusRef, returnFocusRef]);
 
   const submit = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
