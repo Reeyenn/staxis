@@ -816,6 +816,7 @@ export const EXPECTED_MIGRATIONS_STATIC: ReadonlyArray<string> = [
   // Stage A authoritative access compatibility and invariant evidence.
   '0418', '0419', '0420', '0421', '0422', '0423',
   '0424',
+  '0425',
   // Stage A cleaning compatibility and evidence migrations.
   '0434', '0435',
   // Cleaning Stage A compatibility plus the non-destructive Stage B

@@ -55,6 +55,12 @@ function apiCodeForStatus(status: number): string {
   return ApiErrorCode.InternalError;
 }
 
+function statusForRosterError(error: { code?: string }): number {
+  if (error.code === 'PGRST202' || error.code === 'PGRST205' || error.code === '42P01') return 503;
+  if (error.code === '23514' || error.code === 'P0001') return 409;
+  return 500;
+}
+
 async function rollbackNewHotel(
   propertyId: string,
   actorAccountId: string,
@@ -195,6 +201,41 @@ export async function POST(req: NextRequest) {
       );
     }
     relationshipId = data as string | null;
+  }
+
+  // Test properties are created by the approved deterministic seed path. Keep
+  // their property mirror and canonical PMS roster in sync through the
+  // service-only lineage boundary. Real properties are never populated by
+  // this test restoration operation.
+  if (v.isTest && v.roomNumbers.length > 0) {
+    const { error: rosterError } = await supabaseAdmin.rpc(
+      'staxis_restore_test_room_roster',
+      {
+        p_property_id: created.id,
+        p_room_numbers: v.roomNumbers,
+      },
+    );
+    if (rosterError) {
+      const status = statusForRosterError(rosterError);
+      const rolledBack = await rollbackNewHotel(created.id, auth.accountId, requestId);
+      log.error('[admin/properties/create] test property roster write failed', {
+        requestId,
+        propertyId: created.id,
+        rolledBack,
+        msg: rosterError.message,
+      });
+      return err(
+        rolledBack
+          ? 'Could not create the test hotel roster. No hotel was kept.'
+          : 'The test hotel shell was created but its roster could not be written. Open the hotel directory before retrying.',
+        {
+          requestId,
+          status: rolledBack ? status : 500,
+          code: rolledBack ? apiCodeForStatus(status) : ApiErrorCode.InternalError,
+          ...(!rolledBack ? { details: { propertyId: created.id } } : {}),
+        },
+      );
+    }
   }
 
   // Deliberately NO preset inventory (2026-07-09, Reeyen): new hotels start

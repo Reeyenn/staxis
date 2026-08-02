@@ -20,6 +20,7 @@ import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 
 import { validateBody } from '@/lib/admin-property-create-validation';
+import { buildStandardTestRoomNumbers } from '@/lib/test-room-roster';
 
 const ORGANIZATION_ID = '11111111-1111-4111-8111-111111111111';
 
@@ -64,6 +65,20 @@ describe('validateBody — happy path', () => {
       assert.equal(result.values.isTest, true);
       assert.equal(result.values.organizationId, ORGANIZATION_ID);
     }
+  });
+
+  test('accepts the deterministic roster emitted by the test-property seed path', () => {
+    const roomNumbers = buildStandardTestRoomNumbers(50);
+    const result = validateBody({
+      name: 'Seeded Test Hotel',
+      totalRooms: 50,
+      timezone: 'America/Chicago',
+      isTest: true,
+      roomNumbers,
+    });
+
+    assert.equal(result.ok, true);
+    if (result.ok) assert.deepEqual(result.values.roomNumbers, roomNumbers);
   });
 
   test('trims name whitespace', () => {
