@@ -93,7 +93,9 @@ describe('People invite entry choice', () => {
 
     assert.match(earlyBranch, /inviteChoiceOpen && canInviteAccounts && !locked/);
     assert.match(earlyBranch, /canAddStaff=\{false\}/);
-    assert.match(earlyBranch, /canInviteToStaxis\s+canSendEmailInvite\s+canShareHotelInvite=\{false\}/);
+    assert.match(earlyBranch, /canInviteToStaxis=\{!inviteActionDisabled\}/);
+    assert.match(earlyBranch, /canSendEmailInvite=\{canInviteAccounts && !inviteActionDisabled\}/);
+    assert.match(earlyBranch, /canShareHotelInvite=\{false\}/);
     assert.match(earlyBranch, /inviteDialogOpen && canInviteAccounts && !locked/);
     assert.match(earlyBranch, /canInviteManager\s+canManageHotelRoster=\{false\}/);
     assert.match(earlyBranch, /returnFocusRef=\{inviteEntryReturnFocusRef\}/);
@@ -118,10 +120,10 @@ describe('People invite entry choice', () => {
     assert.match(chooser, /Add them to this hotel's roster and schedule\. No Staxis account\./);
     assert.match(chooser, /canInviteToStaxis \? \([\s\S]*?\{'Invite to Staxis'\}/);
     assert.match(chooser, /const inviteDescription = canShareHotelInvite[\s\S]*canSendEmailInvite[\s\S]*Share a link, QR code, or invite code\./);
-    assert.match(normalDialogArea, /canAddStaff=\{canAddStaff && !locked\}/);
-    assert.match(normalDialogArea, /canInviteToStaxis=\{canInviteToStaxis\}/);
-    assert.match(normalDialogArea, /canSendEmailInvite=\{canInviteAccounts\}/);
-    assert.match(normalDialogArea, /canShareHotelInvite=\{canManageTeam\}/);
+    assert.match(normalDialogArea, /canAddStaff=\{canAddStaff && !locked && !inviteActionDisabled\}/);
+    assert.match(normalDialogArea, /canInviteToStaxis=\{canInviteToStaxis && !inviteActionDisabled\}/);
+    assert.match(normalDialogArea, /canSendEmailInvite=\{canInviteAccounts && !inviteActionDisabled\}/);
+    assert.match(normalDialogArea, /canShareHotelInvite=\{canManageTeam && !inviteActionDisabled\}/);
     assert.match(chooser, /canShareHotelInvite ?/);
   });
 
@@ -145,8 +147,36 @@ describe('People invite entry choice', () => {
     assert.match(normalActionArea, /\{!needsFirstPerson && !locked && inviteEntryAvailable \?/);
     assert.match(normalActionArea, /disabled=\{inviteActionDisabled\}/);
     assert.match(earlyBranch, /\{canInviteAccounts && !locked \?/);
-    assert.match(panel, /if \(!canAddStaff \|\| locked\) return;/);
+    assert.match(panel, /if \(!canAddStaff \|\| locked \|\| inviteActionDisabled\) return;/);
     assert.match(panel, /if \(!canInviteToStaxis \|\| inviteActionDisabled\) return;/);
+  });
+
+  test('an open chooser fails closed during read-only and admin-preview loading transitions', () => {
+    assert.match(
+      panel,
+      /const inviteActionDisabled = locked[\s\S]*adminPreview && \(teamLoading \|\| Boolean\(teamError\)\)/,
+    );
+    assert.match(
+      panel,
+      /React\.useEffect\(\(\) => \{\s*if \(!inviteActionDisabled\) return;\s*setInviteChoiceOpen\(false\);\s*\}, \[inviteActionDisabled\]\)/,
+    );
+
+    const addStaffCallback = section(
+      panel,
+      'const chooseAddStaff = React.useCallback',
+      'const chooseInviteToStaxis = React.useCallback',
+      'Add staff chooser callback',
+    );
+    assert.match(addStaffCallback, /if \(!canAddStaff \|\| locked \|\| inviteActionDisabled\) return;/);
+    assert.match(addStaffCallback, /\[canAddStaff, inviteActionDisabled, locked\]/);
+
+    assert.match(normalDialogArea, /inviteChoiceOpen && !inviteActionDisabled/);
+    assert.match(normalDialogArea, /canAddStaff=\{canAddStaff && !locked && !inviteActionDisabled\}/);
+    assert.match(normalDialogArea, /canInviteToStaxis=\{canInviteToStaxis && !inviteActionDisabled\}/);
+    assert.match(earlyBranch, /inviteChoiceOpen && canInviteAccounts && !locked && !inviteActionDisabled/);
+    assert.match(earlyBranch, /canInviteToStaxis=\{!inviteActionDisabled\}/);
+    assert.match(earlyBranch, /canSendEmailInvite=\{canInviteAccounts && !inviteActionDisabled\}/);
+    assert.match(panel, /returnFocusRef=\{inviteEntryReturnFocusRef\}/);
   });
 
   test('both handoffs retain the original visible trigger through lazy loading and close', () => {

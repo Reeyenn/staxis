@@ -772,16 +772,21 @@ export function HotelTeamPanel({
   }, [inviteActionDisabled, inviteEntryAvailable]);
 
   const chooseAddStaff = React.useCallback(() => {
-    if (!canAddStaff || locked) return;
+    if (!canAddStaff || locked || inviteActionDisabled) return;
     setInviteChoiceOpen(false);
     setAddDepartment('housekeeping');
-  }, [canAddStaff, locked]);
+  }, [canAddStaff, inviteActionDisabled, locked]);
 
   const chooseInviteToStaxis = React.useCallback(() => {
     if (!canInviteToStaxis || inviteActionDisabled) return;
     setInviteChoiceOpen(false);
     onInviteDialogOpenChange(true);
   }, [canInviteToStaxis, inviteActionDisabled, onInviteDialogOpenChange]);
+
+  React.useEffect(() => {
+    if (!inviteActionDisabled) return;
+    setInviteChoiceOpen(false);
+  }, [inviteActionDisabled]);
 
   // A definitive fresh authorization refresh can revoke hotel-operational
   // standing while this tab is open. Drop every private roster projection as
@@ -1250,11 +1255,11 @@ export function HotelTeamPanel({
             onClose={closeLoadingDialog}
           />
         )}>
-          {inviteChoiceOpen && canInviteAccounts && !locked ? (
+          {inviteChoiceOpen && canInviteAccounts && !locked && !inviteActionDisabled ? (
             <LazyPeopleInviteChooserDialog
               canAddStaff={false}
-              canInviteToStaxis
-              canSendEmailInvite
+              canInviteToStaxis={!inviteActionDisabled}
+              canSendEmailInvite={canInviteAccounts && !inviteActionDisabled}
               canShareHotelInvite={false}
               returnFocusRef={inviteEntryReturnFocusRef}
               onAddStaff={chooseAddStaff}
@@ -1585,12 +1590,12 @@ export function HotelTeamPanel({
             }}
           />
         ) : null}
-        {inviteChoiceOpen ? (
+        {inviteChoiceOpen && !inviteActionDisabled ? (
           <LazyPeopleInviteChooserDialog
-            canAddStaff={canAddStaff && !locked}
-            canInviteToStaxis={canInviteToStaxis}
-            canSendEmailInvite={canInviteAccounts}
-            canShareHotelInvite={canManageTeam}
+            canAddStaff={canAddStaff && !locked && !inviteActionDisabled}
+            canInviteToStaxis={canInviteToStaxis && !inviteActionDisabled}
+            canSendEmailInvite={canInviteAccounts && !inviteActionDisabled}
+            canShareHotelInvite={canManageTeam && !inviteActionDisabled}
             returnFocusRef={inviteEntryReturnFocusRef}
             onAddStaff={chooseAddStaff}
             onInviteToStaxis={chooseInviteToStaxis}
