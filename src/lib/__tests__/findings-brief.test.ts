@@ -593,12 +593,18 @@ describe('a reader whose app is in Spanish still gets the English brief', () => 
     assert.ok(es.text.some((t) => t.includes('The ice machine has had 3 service calls.')));
   });
 
-  // Mutation: restore `S.heading.es` / the `es ? … : …` on the eyebrow. A
-  // Spanish eyebrow over eight English sentences reads as a rendering bug.
-  test('the eyebrow above the lines says THIS MORNING, not ESTA MAÑANA', () => {
+  // Mutation: restore `S.heading.es` / the `es ? … : …` on the badge. A
+  // Spanish badge over eight English sentences reads as a rendering bug.
+  //
+  // The words changed on 2026-08-01 with the ink card: the brief moved from
+  // pinned at the TOP of the page to the LAST entry on the day's spine, so the
+  // badge had to stop saying "this morning" (a claim about now) and start
+  // saying what the card IS. The ruling under test is unchanged.
+  test('the badge above the lines is in English, not Spanish', () => {
     const out = render('es');
-    assert.ok(out.text.includes('This morning'), out.text.join(' | '));
+    assert.ok(out.text.includes('The morning brief'), out.text.join(' | '));
     assert.ok(!out.text.some((t) => t.includes('Esta mañana')));
+    assert.ok(!out.text.some((t) => t.includes('resumen')));
   });
 
   // Mutation: restore `S.jump.es`. The link title is chrome on an

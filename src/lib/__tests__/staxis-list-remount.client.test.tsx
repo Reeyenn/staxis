@@ -221,14 +221,22 @@ function ListProbe({
   // model rather than a shape production no longer has.
   useReportedValue(readState, onReadState);
 
+  // The chrome StaxisList actually renders since the 2026-08-01 redesign: its
+  // own stylesheet, the day header, then the two lanes — the timeline (whose
+  // first control is the composer) and the rail.
   return (
     <>
       <style />
-      <div className="sl-toggle" />
-      <style />
-      <div className="fd-head" />
-      <button type="button" className="sl-add" />
-      {worklist.data ? <div className="sl-row" /> : null}
+      <div className="fx-head">
+        <h1 className="fx-day">Thursday</h1>
+      </div>
+      <div className="fx-body">
+        <div className="fx-lane">
+          <button type="button" className="fx-comp" />
+          {worklist.data ? <div className="fx-row" /> : null}
+        </div>
+        <div className="fx-rail" />
+      </div>
     </>
   );
 }
@@ -260,13 +268,11 @@ function HotelQueueShape({
   const [readState, setReadState] = React.useState<'loading' | 'ready'>('loading');
 
   return (
-    <div className="cx-page cx-swap" data-feed-state={readState}>
+    <div className="fx-page cx-swap" data-feed-state={readState}>
+      <style />
       <style />
       <style />
       {backLabel && <div className="qv-back">{backLabel}</div>}
-      <div className="cx-ptitle">Staxis</div>
-      <div className="cx-psub">What Staxis noticed here.</div>
-      <div className="mb-card" />
       <ListProbe
         key={keys.list}
         propertyId={propertyId}
@@ -330,7 +336,7 @@ async function mountQueue(
 
   return {
     container,
-    page: () => container.querySelector('.cx-page') as HTMLElement,
+    page: () => container.querySelector('.fx-page') as HTMLElement,
     async settle(cycles = 8) {
       // Each pass answers whatever is in flight and lets the resulting state
       // change commit. A stable tree goes quiet after the first pass and every
@@ -398,19 +404,19 @@ describe('the Staxis one list does not remount itself', { concurrency: false }, 
     );
     // The production signature was one stacked composer per orphaned copy.
     assert.equal(
-      queue.container.querySelectorAll('.sl-add').length,
+      queue.container.querySelectorAll('.fx-comp').length,
       1,
       'exactly one composer may exist; more than one means an orphaned subtree',
     );
     assert.equal(
-      queue.container.querySelectorAll('.fd-head').length,
+      queue.container.querySelectorAll('.fx-day').length,
       1,
-      'exactly one "What Staxis noticed" heading may exist',
+      'exactly one day title may exist',
     );
     assert.equal(
-      queue.container.querySelectorAll('.cx-ptitle').length,
+      queue.container.querySelectorAll('.fx-rail').length,
       1,
-      'the page title is rendered once',
+      'the rail is rendered once',
     );
   });
 
@@ -434,7 +440,7 @@ describe('the Staxis one list does not remount itself', { concurrency: false }, 
 
     assert.equal(lifecycle.mounts, 1);
     assert.equal(urls.filter((url) => url.includes('/api/findings')).length, 1);
-    assert.equal(container.querySelectorAll('.sl-add').length, 1);
+    assert.equal(container.querySelectorAll('.fx-comp').length, 1);
   });
 
   test('the harness detects the defect it was written for', async (context) => {
@@ -467,7 +473,7 @@ describe('the Staxis one list does not remount itself', { concurrency: false }, 
       'colliding keys must produce the repeated read storm',
     );
     assert.ok(
-      queue.container.querySelectorAll('.sl-add').length > 1,
+      queue.container.querySelectorAll('.fx-comp').length > 1,
       'colliding keys must leave orphaned copies of the chrome behind',
     );
     // And the leak is silent: React never removed what it orphaned.
@@ -547,7 +553,7 @@ function UnstableCallbackParent({
   tick: number;
 }) {
   return (
-    <div className="cx-page" data-tick={tick}>
+    <div className="fx-page" data-tick={tick}>
       <Probe propertyId={propertyId} onReadState={(state) => onReport(state)} />
     </div>
   );

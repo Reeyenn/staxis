@@ -63,7 +63,7 @@ import { listRendersFor, listShowsFindings, listStandingFor } from '@/lib/feed/l
 import { useActiveHotelStanding } from '@/lib/capabilities/useCan';
 import { useApiResource } from '@/lib/hooks/use-api-resource';
 
-import { CxStyle } from './concourse-css';
+import { CxStyle, FeedStyle } from './concourse-css';
 import { DripQuestionCard } from './DripQuestionCard';
 import { StaxisList } from './StaxisList';
 import { type QueueReadState } from './FindingCards';
@@ -527,6 +527,11 @@ function HotelQueue({
 }) {
   const es = false;
   const L = <K extends keyof typeof S>(k: K) => (S[k].en);
+  // The hotel the app is standing in, for the day header's context line. A
+  // drill-down already carries `hotelName`; an ordinary load does not, and the
+  // header must never say "August 1 · undefined".
+  const { properties, activePropertyId } = useProperty();
+  const activeHotelName = properties.find((p) => p.id === activePropertyId)?.name ?? null;
   const [readState, setReadState] = React.useState<QueueReadState>('idle');
   // Distinct by construction. See hotelQueueChildKeys: two siblings sharing a
   // key made this component remount its own list on every render and orphan
@@ -535,7 +540,7 @@ function HotelQueue({
 
   return (
     <div
-      className="cx-page cx-swap"
+      className="fx-page cx-swap"
       data-feed-state={
         readState === 'failed'
           ? 'error'
@@ -545,6 +550,7 @@ function HotelQueue({
       }
     >
       <CxStyle />
+      <FeedStyle />
       <style dangerouslySetInnerHTML={{ __html: QV_CSS }} />
 
       {/* The way out of a drill-down, above the title, where a back control
@@ -556,22 +562,15 @@ function HotelQueue({
         </div>
       )}
 
-      <div className="cx-ptitle" style={{ marginTop: 0 }}>{hotelName ?? 'Staxis'}</div>
-      <div className="cx-psub">{L('hotelSub')}</div>
+      {/* THE PAGE. The day header, the timeline and the rail all live in here:
+          the list already owns the work, the events and the preferences the day
+          header is drawn from, and a second component reading them again would
+          be two clocks on one screen.
 
-      {/* Pinned above everything, exactly as before. A brief line that names a
-          card jumps to it. Manager+ only: it is a summary of the findings. */}
-      {canSeeFindings && (
-        <MorningBriefView
-          brief={brief}
-          lang={lang}
-          readFailed={readFailed}
-          onFocusFinding={setFocusId}
-        />
-      )}
-
-      {/* THE LIST. Findings, to-dos, reminders, work orders, inspections,
-          preventive work and decisions, in one order. */}
+          The morning brief is built HERE and handed down, so this file keeps
+          the read (see the note at the top of this module) while the list
+          decides where on the spine it lands: at the bottom, where the day
+          started. Manager+ only, because it is a summary of the findings. */}
       {propertyId && (
         <StaxisList
           key={childKeys.list}
@@ -580,6 +579,15 @@ function HotelQueue({
           focusId={focusId}
           onReadState={setReadState}
           canSeeFindings={canSeeFindings}
+          hotelName={hotelName ?? activeHotelName ?? null}
+          brief={canSeeFindings ? (
+            <MorningBriefView
+              brief={brief}
+              lang={lang}
+              readFailed={readFailed}
+              onFocusFinding={setFocusId}
+            />
+          ) : null}
         />
       )}
 

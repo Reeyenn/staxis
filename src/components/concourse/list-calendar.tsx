@@ -25,24 +25,35 @@ import React from 'react';
 import type { KnowledgeEventDTO } from '@/lib/knowledge/types';
 import type { WorklistItem } from '@/lib/worklist/types';
 
+import { CxIcon } from './icons';
+
 export const CALENDAR_CSS = `
-.sc-bar{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-top:14px;}
+.sc-bar{display:flex;align-items:center;justify-content:space-between;gap:10px;}
 .sc-mon{font-size:14.5px;font-weight:600;color:#1F231C;}
-.sc-grid{display:grid;grid-template-columns:repeat(7,1fr);gap:4px;margin-top:10px;}
+.sc-grid{display:grid;grid-template-columns:repeat(7,1fr);gap:4px;margin-top:11px;}
 .sc-dow{font-family:var(--font-geist-mono),ui-monospace,monospace;font-size:9.5px;color:#A6ABA6;
   text-transform:uppercase;letter-spacing:.07em;text-align:center;padding-bottom:2px;}
-.sc-day{min-height:56px;border-radius:10px;border:1px solid rgba(31,35,28,.07);background:#fff;
-  padding:5px 6px;cursor:pointer;text-align:left;display:flex;flex-direction:column;gap:3px;
+.sc-day{height:42px;border-radius:9px;border:1px solid rgba(31,35,28,.07);background:#fff;
+  padding:5px 6px;cursor:pointer;text-align:left;display:flex;flex-direction:column;
+  justify-content:space-between;gap:3px;
   font-family:var(--font-geist),-apple-system,BlinkMacSystemFont,sans-serif;}
 .sc-day:disabled{background:transparent;border-color:transparent;cursor:default;}
-.sc-day.sc-today{border-color:rgba(62,92,72,.45);}
-.sc-day.sc-on{background:#F1F5F0;border-color:#5C7A60;}
+.sc-day.sc-today{background:#F1F5F0;border:1.5px solid #3E5C48;}
+.sc-day.sc-today .sc-dn{font-weight:600;color:#1F231C;}
+.sc-day.sc-on:not(.sc-today){border-color:#5C7A60;background:#F7FAF6;}
 .sc-day:focus-visible{outline:2px solid #3E5C48;outline-offset:2px;}
-.sc-dn{font-size:11.5px;color:#5C625C;font-family:var(--font-geist-mono),ui-monospace,monospace;}
+.sc-dn{font-size:11px;color:#5C625C;font-family:var(--font-geist-mono),ui-monospace,monospace;line-height:1;}
 .sc-dots{display:flex;gap:3px;flex-wrap:wrap;}
-.sc-dot{width:6px;height:6px;border-radius:50%;background:#5C7A60;}
+.sc-dot{width:5px;height:5px;border-radius:50%;background:#5C7A60;}
 .sc-dot.sc-late{background:#B85C3D;}
 .sc-dot.sc-ev{background:#4B8C9E;}
+.sc-legend{display:flex;align-items:center;gap:13px;margin-top:13px;padding-top:11px;flex-wrap:wrap;
+  border-top:1px solid rgba(31,35,28,.07);}
+.sc-key{display:inline-flex;align-items:center;gap:6px;font-size:11.5px;color:#8A9187;}
+.sc-add{margin-left:auto;font-size:12.5px;font-weight:600;color:#3E5C48;background:none;border:none;
+  padding:0;cursor:pointer;font-family:inherit;white-space:nowrap;}
+.sc-add:hover{text-decoration:underline;text-underline-offset:3px;}
+.sc-add:focus-visible{outline:2px solid #3E5C48;outline-offset:3px;border-radius:4px;}
 .sc-sel{margin-top:12px;font-size:13px;font-weight:600;color:#1F231C;}
 .sc-ev-row{display:flex;align-items:center;gap:10px;padding:9px 0;
   border-bottom:1px solid rgba(31,35,28,.06);}
@@ -51,9 +62,14 @@ export const CALENDAR_CSS = `
 `;
 
 const DOW = ['S', 'M', 'T', 'W', 'T', 'F', 'S'] as const;
+const WEEK_LABELS = ['SUN', 'MON', 'TUE', 'WED', 'THU', 'FRI', 'SAT'] as const;
 const MONTHS = [
   'January', 'February', 'March', 'April', 'May', 'June',
   'July', 'August', 'September', 'October', 'November', 'December',
+] as const;
+const MONTHS_SHORT = [
+  'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
+  'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec',
 ] as const;
 
 /** YYYY-MM-DD in the reader's own timezone. */
@@ -132,6 +148,161 @@ export function monthCells(
   return cells;
 }
 
+// ═══════════════════════════════════════════════════════════════════════════
+// The week strip — the ambient calendar
+// ═══════════════════════════════════════════════════════════════════════════
+
+/**
+ * Seven days, always on screen, in the day header.
+ *
+ * The 2026-08-01 redesign deleted the `List` / `Calendar` toggle: swapping the
+ * whole page to see the shape of the week was too expensive an act for a
+ * question a manager asks constantly. So the week is permanent and the MONTH is
+ * what opens on demand.
+ */
+export type WeekDot = 'todo' | 'late' | 'event' | 'past';
+
+export interface WeekCell {
+  iso: string;
+  dayOfMonth: number;
+  /** 0 = Sunday. */
+  weekday: number;
+  label: string;
+  past: boolean;
+  today: boolean;
+  /** At most three, in the order the design reads them: late, then work, then events. */
+  dots: WeekDot[];
+  /** A future day carrying an event or something already late. Gets a tinted border. */
+  notable: boolean;
+}
+
+/** Noon-anchored so a date-only string never lands on the previous day. */
+function atNoon(iso: string): Date {
+  return new Date(`${iso}T12:00:00`);
+}
+
+function shiftIso(iso: string, days: number): string {
+  const d = atNoon(iso);
+  d.setDate(d.getDate() + days);
+  return isoDay(d);
+}
+
+/** The Sunday of the week containing `iso`. */
+export function weekStart(iso: string): string {
+  return shiftIso(iso, -atNoon(iso).getDay());
+}
+
+/**
+ * The seven cells around `anchorIso`, with their dots.
+ *
+ * Pure, so "does a late to-do put a rust dot on Tuesday" is answerable without
+ * a renderer. A day in the past shows grey dots whatever was on it: what
+ * matters about Monday on Thursday is that it is over.
+ */
+export function weekCells(
+  anchorIso: string,
+  todayIso: string,
+  items: readonly WorklistItem[],
+  events: readonly KnowledgeEventDTO[],
+): WeekCell[] {
+  const start = weekStart(anchorIso);
+  const cells: WeekCell[] = [];
+
+  for (let i = 0; i < 7; i++) {
+    const iso = shiftIso(start, i);
+    const onDay = items.filter((it) => dayOf(it) === iso);
+    const eventsOnDay = events.filter((ev) => iso >= ev.eventDate && iso <= (ev.endDate ?? ev.eventDate));
+    const past = iso < todayIso;
+    const late = onDay.filter((it) => it.overdue).length;
+    const plain = onDay.length - late;
+
+    const dots: WeekDot[] = past
+      ? new Array(Math.min(3, onDay.length + eventsOnDay.length)).fill('past' as WeekDot)
+      : [
+          ...new Array(late).fill('late' as WeekDot),
+          ...new Array(plain).fill('todo' as WeekDot),
+          ...new Array(eventsOnDay.length).fill('event' as WeekDot),
+        ].slice(0, 3);
+
+    cells.push({
+      iso,
+      dayOfMonth: atNoon(iso).getDate(),
+      weekday: i,
+      label: WEEK_LABELS[i],
+      past,
+      today: iso === todayIso,
+      dots,
+      notable: !past && (eventsOnDay.length > 0 || late > 0),
+    });
+  }
+
+  return cells;
+}
+
+/** "Jul 27 – Aug 2". En dash, which is a range, not the banned em dash. */
+export function weekRangeLabel(cells: readonly WeekCell[]): string {
+  if (cells.length === 0) return '';
+  const first = atNoon(cells[0].iso);
+  const last = atNoon(cells[cells.length - 1].iso);
+  const left = `${MONTHS_SHORT[first.getMonth()]} ${first.getDate()}`;
+  const right = first.getMonth() === last.getMonth()
+    ? `${last.getDate()}`
+    : `${MONTHS_SHORT[last.getMonth()]} ${last.getDate()}`;
+  return `${left} – ${right}`;
+}
+
+/** "Thursday" and "August 1", for the day title and the context line. */
+export function dayTitle(iso: string): string {
+  return atNoon(iso).toLocaleDateString('en-US', { weekday: 'long' });
+}
+
+export function dayStamp(iso: string): string {
+  const d = atNoon(iso);
+  return `${MONTHS[d.getMonth()]} ${d.getDate()}`;
+}
+
+export function WeekStrip({ cells, selectedIso, onSelectDay }: {
+  cells: readonly WeekCell[];
+  selectedIso: string;
+  onSelectDay: (iso: string) => void;
+}) {
+  return (
+    <div className="fx-week" role="group" aria-label="This week">
+      {cells.map((cell) => {
+        const classes = [
+          'fx-wd',
+          cell.past ? 'fx-past' : '',
+          cell.today ? 'fx-today' : '',
+          cell.iso === selectedIso ? 'fx-sel' : '',
+          cell.notable ? 'fx-notable' : '',
+        ].filter(Boolean).join(' ');
+        return (
+          <button
+            key={cell.iso}
+            type="button"
+            className={classes}
+            data-day={cell.iso}
+            aria-pressed={cell.iso === selectedIso}
+            aria-label={`${cell.label} ${cell.dayOfMonth}`}
+            onClick={() => onSelectDay(cell.iso)}
+          >
+            <span className="fx-wdk">{cell.label}</span>
+            <span className="fx-wdn">{cell.dayOfMonth}</span>
+            <span className="fx-wdots" aria-hidden>
+              {cell.dots.map((dot, i) => (
+                <span
+                  key={`${cell.iso}-${i}`}
+                  className={`fx-wdot${dot === 'late' ? ' fx-late' : dot === 'event' ? ' fx-ev' : dot === 'past' ? ' fx-gone' : ''}`}
+                />
+              ))}
+            </span>
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
 export interface CalendarViewProps {
   year: number;
   monthIndex: number;
@@ -146,11 +317,24 @@ export interface CalendarViewProps {
   renderItem: (item: WorklistItem) => React.ReactNode;
   canManageEvents?: boolean;
   onDeleteEvent?: (ev: KnowledgeEventDTO) => void;
+  /**
+   * Opens the event editor. Present only when this reader may manage events.
+   * The month grid is now an overlay rather than a page, so the "Add event"
+   * control that used to sit above it belongs in its own footer.
+   */
+  onAddEvent?: () => void;
+  /**
+   * Draw only the grid: the header, the dots and the legend. Set by the month
+   * overlay, where picking a day CLOSES the popup and re-anchors the timeline,
+   * so listing that day's rows underneath would be showing them twice.
+   */
+  gridOnly?: boolean;
 }
 
 export function CalendarView({
   year, monthIndex, todayIso, selectedIso, items, events,
   onSelectDay, onStepMonth, renderItem, canManageEvents = false, onDeleteEvent,
+  onAddEvent, gridOnly = false,
 }: CalendarViewProps) {
   const cells = monthCells(year, monthIndex, items, events);
   const selected = selectedIso
@@ -161,9 +345,13 @@ export function CalendarView({
     <div data-testid="staxis-calendar">
       <style dangerouslySetInnerHTML={{ __html: CALENDAR_CSS }} />
       <div className="sc-bar">
-        <button type="button" className="fd-act" onClick={() => onStepMonth(-1)} aria-label="Previous month">←</button>
+        <button type="button" className="fx-step" onClick={() => onStepMonth(-1)} aria-label="Previous month">
+          <CxIcon name="back" size={12} />
+        </button>
         <div className="sc-mon">{MONTHS[monthIndex]} {year}</div>
-        <button type="button" className="fd-act" onClick={() => onStepMonth(1)} aria-label="Next month">→</button>
+        <button type="button" className="fx-step" onClick={() => onStepMonth(1)} aria-label="Next month">
+          <CxIcon name="forward" size={12} />
+        </button>
       </div>
 
       <div className="sc-grid" role="grid">
@@ -189,7 +377,16 @@ export function CalendarView({
         ))}
       </div>
 
-      {selected && (
+      <div className="sc-legend">
+        <span className="sc-key"><span className="sc-dot" aria-hidden />To-do</span>
+        <span className="sc-key"><span className="sc-dot sc-late" aria-hidden />Late</span>
+        <span className="sc-key"><span className="sc-dot sc-ev" aria-hidden />Event</span>
+        {canManageEvents && onAddEvent && (
+          <button type="button" className="sc-add" onClick={onAddEvent}>Add event</button>
+        )}
+      </div>
+
+      {!gridOnly && selected && (
         <>
           <div className="sc-sel">{selected.iso}</div>
           {selected.events.map((ev) => (
@@ -197,7 +394,7 @@ export function CalendarView({
               <span className="sc-dot sc-ev" aria-hidden />
               <span className="sc-ev-t">{ev.title}</span>
               {canManageEvents && onDeleteEvent && (
-                <button type="button" className="fd-act fd-danger" onClick={() => onDeleteEvent(ev)}>Remove</button>
+                <button type="button" className="fx-btn fx-danger" onClick={() => onDeleteEvent(ev)}>Remove</button>
               )}
             </div>
           ))}

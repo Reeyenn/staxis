@@ -45,32 +45,14 @@ export interface BriefPayload {
 /** The card's own chrome. English, like the lines it sits around — a Spanish
  *  eyebrow over eight English sentences would read as a rendering bug. */
 const S = {
-  heading: 'This morning',
+  // The badge on the ink card. It says what this card IS, because it now sits
+  // at the BOTTOM of the day rather than pinned at the top: by the afternoon a
+  // manager scrolling down to it needs to be told they have reached the
+  // morning, not that they are looking at "this morning" right now.
+  heading: 'The morning brief',
+  stamp: 'where the day started',
   jump: 'Show me',
 } as const;
-
-const MB_CSS = `
-.mb-card{background:#fff;border:1px solid rgba(62,92,72,.22);border-radius:18px;
-  padding:16px 17px 15px;margin-top:20px;display:flex;gap:14px;align-items:flex-start;
-  box-shadow:0 10px 26px -22px rgba(31,35,28,.5);}
-.mb-chip{width:36px;height:36px;border-radius:12px;flex-shrink:0;display:grid;place-items:center;
-  color:#3E5C48;background:rgba(158,183,166,.22);}
-.mb-body{flex:1;min-width:0;}
-.mb-eyebrow{font-family:var(--font-geist-mono),ui-monospace,monospace;font-size:9.5px;
-  letter-spacing:.14em;text-transform:uppercase;color:#8A9187;}
-.mb-line{font-size:13.5px;line-height:1.6;color:#1F231C;margin-top:6px;display:flex;gap:8px;
-  align-items:baseline;}
-.mb-line:first-of-type{margin-top:8px;font-weight:600;}
-.mb-bullet{width:4px;height:4px;border-radius:50%;background:#9EB7A6;flex-shrink:0;
-  transform:translateY(-3px);}
-.mb-jump{background:transparent;border:none;padding:0;margin:0;text-align:left;cursor:pointer;
-  font:inherit;color:#1F231C;text-decoration:underline;text-decoration-color:rgba(62,92,72,.35);
-  text-underline-offset:3px;}
-.mb-jump:hover{text-decoration-color:#3E5C48;}
-.mb-jump:focus-visible{outline:2px solid #3E5C48;outline-offset:2px;border-radius:4px;}
-.mb-last{font-family:var(--font-geist-mono),ui-monospace,monospace;font-size:11.5px;color:#8A9187;
-  margin-top:9px;letter-spacing:.01em;}
-`;
 
 /**
  * Only the two fields this card draws.
@@ -80,7 +62,10 @@ const MB_CSS = `
  * key and the identical line shape — and a company-scope reader should see the
  * same pinned card their GMs do, not a second one that looks almost like it.
  */
-export type RenderableBrief = Pick<MorningBrief, 'kind' | 'lines'>;
+export type RenderableBrief = Pick<MorningBrief, 'kind' | 'lines'> & {
+  /** When it was built. Optional: the portfolio brief predates the stamp. */
+  generatedAt?: string;
+};
 
 export interface MorningBriefViewProps {
   brief: RenderableBrief | null;
@@ -120,44 +105,83 @@ export function MorningBriefView({
   const last = brief.lines[brief.lines.length - 1];
   const lines = brief.kind === 'quiet' ? brief.lines : body;
 
-  return (
-    <>
-      <style dangerouslySetInnerHTML={{ __html: MB_CSS }} />
-      <div className="mb-card">
-        <div className="mb-chip">
-          <CxIcon name="staxis" size={17} />
-        </div>
-        <div className="mb-body">
-          <div className="mb-eyebrow">{S.heading}</div>
+  // The first line is what the night came to. It gets the serif sentence; the
+  // rest become chips, which is the honest shape — they are three separate
+  // facts, not a paragraph.
+  const [headline, ...rest] = lines;
 
-          {lines.map((line, index) => {
-            const text = line.text;
+  return (
+    <div className="fx-ink-card" data-brief-kind={brief.kind}>
+      <span className="fx-scan fx-slow" aria-hidden />
+
+      <div className="fx-inkhead">
+        <span className="fx-badge">
+          <CxIcon name="staxis" size={11} strokeWidth={2.2} />
+          {S.heading}
+        </span>
+        <span className="fx-stamp">
+          {[clockStamp(brief.generatedAt), S.stamp].filter(Boolean).join(' · ')}
+        </span>
+        {brief.kind !== 'quiet' && last && (
+          <span className="fx-tally">{last.text}</span>
+        )}
+      </div>
+
+      {headline && (
+        headline.findingId && onFocusFinding ? (
+          <button
+            type="button"
+            className="fx-brief"
+            title={S.jump}
+            onClick={() => onFocusFinding(headline.findingId!)}
+          >
+            {headline.text}
+          </button>
+        ) : (
+          <div className="fx-brief">{headline.text}</div>
+        )
+      )}
+
+      {rest.length > 0 && (
+        <div className="fx-bchips">
+          {rest.map((line, index) => {
             const id = line.findingId;
-            return (
-              <div className="mb-line" key={`${index}-${text.slice(0, 24)}`}>
-                {index > 0 && <span className="mb-bullet" aria-hidden />}
-                {id && onFocusFinding ? (
-                  <button
-                    type="button"
-                    className="mb-jump"
-                    title={S.jump}
-                    onClick={() => onFocusFinding(id)}
-                  >
-                    {text}
-                  </button>
-                ) : (
-                  <span>{text}</span>
-                )}
-              </div>
+            // A line that names a card is a thing still open, so it wears the
+            // amber dot. One that names nothing already resolved itself or is
+            // context, and stays sage. Nothing is invented: the difference is
+            // whether the brief could point at a finding.
+            const cls = `fx-bchip${id ? ' fx-flag' : ''}`;
+            const inner = (
+              <>
+                <span className="fx-bdot" aria-hidden />
+                {line.text}
+              </>
+            );
+            return id && onFocusFinding ? (
+              <button
+                key={`${index}-${line.text.slice(0, 24)}`}
+                type="button"
+                className={cls}
+                title={S.jump}
+                onClick={() => onFocusFinding(id)}
+              >
+                {inner}
+              </button>
+            ) : (
+              <span key={`${index}-${line.text.slice(0, 24)}`} className={cls}>{inner}</span>
             );
           })}
-
-          {brief.kind !== 'quiet' && last && (
-            <div className="mb-last">{last.text}</div>
-          )}
         </div>
-      </div>
-    </>
+      )}
+    </div>
   );
+}
+
+/** "6:04 AM", or empty when there is no usable stamp. */
+function clockStamp(iso: string | null | undefined): string {
+  if (!iso) return '';
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return '';
+  return d.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
 }
 
