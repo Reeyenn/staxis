@@ -733,10 +733,10 @@ function CompanyAccessContent() {
     ? adminViewerContext?.targetName ?? activeProperty?.name ?? null
     : customerContextLabel;
   React.useEffect(() => {
-    if (tab !== 'people' || !canManageTeam || hotelTeamLocked) {
+    if (portfolioMode || tab !== 'people' || !canManageTeam || hotelTeamLocked) {
       setTeamInviteHotelId(null);
     }
-  }, [canManageTeam, hotelTeamLocked, tab]);
+  }, [canManageTeam, hotelTeamLocked, portfolioMode, tab]);
 
   React.useEffect(() => {
     if (!focusPreviewAfterRetryRef.current || showLoading) return;
@@ -914,6 +914,7 @@ function CompanyAccessContent() {
                   currentUser={user}
                   currentAccountId={user.accountId}
                   activeProperty={activeProperty}
+                  portfolioMode={portfolioMode}
                   canManageTeam={canManageTeam}
                   canInviteAccounts={Boolean(
                     adminActionsAvailable
@@ -1073,7 +1074,7 @@ function HotelsPanel({ data, structure, structureError, structureLoading, lang, 
  * could appear in both with nothing on screen explaining why. HotelTeamPanel
  * now merges them.
  */
-function PeoplePanel({ data, staff, hotelRosterUnavailable, lang, currentUser, currentAccountId, activeProperty, canManageTeam, canInviteAccounts, canViewWages, canAddOperationalStaff, inviteDialogOpen, onInviteDialogOpenChange, onChanged, onLifecycleAction }: {
+function PeoplePanel({ data, staff, hotelRosterUnavailable, lang, currentUser, currentAccountId, activeProperty, portfolioMode, canManageTeam, canInviteAccounts, canViewWages, canAddOperationalStaff, inviteDialogOpen, onInviteDialogOpenChange, onChanged, onLifecycleAction }: {
   data: CompanyAccessData;
   staff: StaffMember[];
   hotelRosterUnavailable: boolean;
@@ -1081,6 +1082,7 @@ function PeoplePanel({ data, staff, hotelRosterUnavailable, lang, currentUser, c
   currentUser: AppUser;
   currentAccountId: string;
   activeProperty: Property | null;
+  portfolioMode: boolean;
   canManageTeam: boolean;
   canInviteAccounts: boolean;
   canViewWages: boolean;
@@ -1091,6 +1093,7 @@ function PeoplePanel({ data, staff, hotelRosterUnavailable, lang, currentUser, c
   onLifecycleAction: (action: CompanyLifecycleAction) => void;
 }) {
   const adminPreview = data.viewerContext?.kind === 'staxis_admin_preview';
+  const showHotelPeople = Boolean(activeProperty && !portfolioMode);
   const visibleMemberships = data.permissions.viewPeople
     ? data.memberships
     : data.memberships.filter((membership) => (
@@ -1098,7 +1101,7 @@ function PeoplePanel({ data, staff, hotelRosterUnavailable, lang, currentUser, c
     ));
   return (
     <div className={styles.stack}>
-      {(visibleMemberships.length > 0 || data.invitations.length > 0 || data.permissions.manageInvitations) ? (
+      {!showHotelPeople && (visibleMemberships.length > 0 || data.invitations.length > 0 || data.permissions.manageInvitations) ? (
         <section className={styles.sectionBlock}>
           <div className={styles.headingWithAction}>
             <SectionHeading
@@ -1144,7 +1147,7 @@ function PeoplePanel({ data, staff, hotelRosterUnavailable, lang, currentUser, c
           ) : null}
         </section>
       ) : null}
-      {activeProperty ? (
+      {showHotelPeople && activeProperty ? (
         <HotelTeamPanel
           key={`${activeProperty.id}:${adminPreview ? 'admin' : 'customer'}:${canManageTeam ? 'hotel-authorized' : 'invite-only'}`}
           hotelId={activeProperty.id}
@@ -1164,13 +1167,13 @@ function PeoplePanel({ data, staff, hotelRosterUnavailable, lang, currentUser, c
           canAddStaff={canAddOperationalStaff}
           onChanged={onChanged}
         />
-      ) : (
+      ) : !portfolioMode ? (
         <EmptyState
           icon={Hotel}
           title={'Choose a hotel first'}
           description={'Team accounts are always managed for one exact hotel.'}
         />
-      )}
+      ) : null}
     </div>
   );
 }

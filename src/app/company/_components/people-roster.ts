@@ -14,13 +14,13 @@
 // `staff` table, My Hotel → People listed `accounts` and then, underneath, the
 // leftover `staff` rows. The same human appeared twice with no explanation.
 // This module collapses both tables into ONE list keyed by person, so a linked
-// human is exactly one card that carries whatever we know about them.
+// human is exactly one row that carries whatever we know about them.
 //
 // Pure and DOM-free on purpose: the merge is the part worth testing, and the
 // test must not need React or a CSS module.
 // ═══════════════════════════════════════════════════════════════════════════
 
-/** The five buckets a hotel manager actually thinks in. */
+/** The five buckets used to choose a person's department label. */
 export type RosterGroupKey =
   | 'management'
   | 'housekeeping'
@@ -28,9 +28,7 @@ export type RosterGroupKey =
   | 'maintenance'
   | 'other';
 
-/** Department order on screen. Management sits first — it answers "who runs
- *  this hotel" before "who cleans it", and it is where people with a login and
- *  no employment record land. */
+/** Stable department order used by the flat roster. */
 export const ROSTER_GROUP_ORDER: readonly RosterGroupKey[] = [
   'management',
   'housekeeping',
@@ -38,15 +36,6 @@ export const ROSTER_GROUP_ORDER: readonly RosterGroupKey[] = [
   'maintenance',
   'other',
 ] as const;
-
-/** Departments that always get a card, even when empty — the Directory did
- *  this so a hotel with nobody in Maintenance still had somewhere to add one.
- *  `management` and `other` only appear when somebody is in them. */
-export const ALWAYS_VISIBLE_GROUPS: ReadonlySet<RosterGroupKey> = new Set<RosterGroupKey>([
-  'housekeeping',
-  'front_desk',
-  'maintenance',
-]);
 
 const STAFF_DEPARTMENTS: ReadonlySet<string> = new Set([
   'housekeeping',
@@ -79,7 +68,6 @@ export interface RosterStaffLike {
   id: string;
   name: string;
   department?: string;
-  scheduledToday?: boolean;
   isActive?: boolean;
 }
 
@@ -149,8 +137,8 @@ function compareNames(left: string, right: string): number {
  * we were not given (a roster still loading, or a row from another hotel) is
  * kept as a login-only person rather than vanishing.
  *
- * Sort order inside a group is the Directory's: whoever is on shift first, then
- * alphabetical — a manager scanning the list sees today before everybody else.
+ * Sort order inside a group is alphabetical. Operational schedule data does not
+ * affect this identity-first surface; it belongs on the manager Staff page.
  */
 export function buildHotelRoster<
   A extends RosterAccountLike,
@@ -197,34 +185,6 @@ export function buildHotelRoster<
 
   return ROSTER_GROUP_ORDER.map((key) => ({
     key,
-    people: byGroup.get(key)!.sort((left, right) => {
-      const leftOnShift = left.staff?.scheduledToday === true;
-      const rightOnShift = right.staff?.scheduledToday === true;
-      if (leftOnShift !== rightOnShift) return leftOnShift ? -1 : 1;
-      return compareNames(left.name, right.name);
-    }),
+    people: byGroup.get(key)!.sort((left, right) => compareNames(left.name, right.name)),
   }));
-}
-
-/** The three numbers the Directory's KPI strip showed, computed from the same
- *  employment records it used. People with a login and no employment record
- *  are deliberately NOT counted: they are not on the books for hours. */
-export function rosterCounts(staff: readonly RosterCountStaff[]): {
-  roster: number;
-  onShift: number;
-  nearOvertime: number;
-} {
-  return {
-    roster: staff.length,
-    onShift: staff.filter((member) => member.scheduledToday === true).length,
-    nearOvertime: staff.filter((member) => (
-      (member.weeklyHours ?? 0) >= (member.maxWeeklyHours ?? 40) - 4
-    )).length,
-  };
-}
-
-export interface RosterCountStaff {
-  scheduledToday?: boolean;
-  weeklyHours?: number;
-  maxWeeklyHours?: number;
 }

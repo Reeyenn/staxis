@@ -8,14 +8,12 @@
 // (logins) and then, underneath, the `staff` rows that had no login. Nothing on
 // screen explained why a housekeeper appeared in two places, or why her manager
 // appeared in one. This panel merges both tables into a single roster keyed by
-// person and grouped by department — the way a hotel manager actually thinks
-// about their people — so one human is one card.
+// person — the way a hotel manager needs to see their people — so one human is
+// one row.
 //
 // What each half still contributes:
-//   • employment (`staff`) — department, on-shift ring, hours-vs-cap bar,
-//     SENIOR tag, dimming when inactive, and the Roster / On shift / Near OT
-//     counts.
-//   • login (`accounts`)   — role, email, last sign-in, disabled state, the
+//   • employment (`staff`) — department, SENIOR tag, and dimming when inactive.
+//   • login (`accounts`)   — role, disabled state, the
 //     owner-protected and shared-across-hotels notices, and the linked marker.
 //
 // The join is `account_property_staff_links`, surfaced as `staffId` on each row
@@ -47,9 +45,7 @@ import type { StaffDepartment, StaffMember } from '@/types';
 import type { AddStaffAttempt } from './AddStaffDialog';
 import { restoreDialogFocus } from './dialog-focus';
 import {
-  ALWAYS_VISIBLE_GROUPS,
   buildHotelRoster,
-  rosterCounts,
   type RosterGroupKey,
   type RosterPerson,
 } from './people-roster';
@@ -337,19 +333,19 @@ function groupLabel(group: RosterGroupKey, lang: HotelTeamLang): string {
   return GROUP_LABELS[group];
 }
 
+function personJobLabel(
+  person: RosterPerson<HotelTeamMember, StaffMember>,
+  lang: HotelTeamLang,
+): string {
+  if (person.staff) return departmentLabel(person.staff.department ?? 'housekeeping', lang);
+  if (person.account) return roleLabel(person.account.role, lang);
+  return groupLabel(person.group, lang);
+}
+
 function initials(name: string): string {
   const parts = name.trim().split(/\s+/).filter(Boolean);
   if (parts.length === 0) return '?';
   return `${parts[0]?.[0] ?? ''}${parts.length > 1 ? parts.at(-1)?.[0] ?? '' : ''}`.toUpperCase();
-}
-
-function formatPhone(value: string): string {
-  const digits = value.replace(/\D/g, '');
-  if (digits.length === 10) return `(${digits.slice(0, 3)}) ${digits.slice(3, 6)}-${digits.slice(6)}`;
-  if (digits.length === 11 && digits.startsWith('1')) {
-    return `(${digits.slice(1, 4)}) ${digits.slice(4, 7)}-${digits.slice(7)}`;
-  }
-  return value;
 }
 
 function timeAgo(value: string, lang: HotelTeamLang): string {
@@ -362,21 +358,6 @@ function timeAgo(value: string, lang: HotelTeamLang): string {
   if (hours < 24) return `${hours}h ago`;
   const days = Math.floor(hours / 24);
   return `${days}d ago`;
-}
-
-function lastSignInLabel(known: boolean, value: string | null, lang: HotelTeamLang): string {
-  if (!known) return 'Last sign-in unavailable';
-  if (!value) return 'No sign-ins yet';
-  const parsed = new Date(value);
-  if (Number.isNaN(parsed.getTime())) {
-    return 'Last sign-in unavailable';
-  }
-  const formatted = new Intl.DateTimeFormat('en-US', {
-    month: 'short',
-    day: 'numeric',
-    year: 'numeric',
-  }).format(parsed);
-  return `Last signed in ${formatted}`;
 }
 
 function actionFlag(
@@ -677,28 +658,6 @@ function DialogLoadingChoices({ count }: { count: number }) {
         </span>
       ))}
     </div>
-  );
-}
-
-/** Hours worked against this person's weekly cap. Turns rust within 4 hours of
- *  the cap — the same threshold the Near OT count uses. */
-function HoursMeter({ hours, max, lang }: { hours: number; max: number; lang: HotelTeamLang }) {
-  const safeMax = max > 0 ? max : 40;
-  const ratio = Math.min(1, hours / safeMax);
-  const near = hours >= safeMax - 4;
-  return (
-    <span
-      className={`${styles.hoursMeter}${near ? ` ${styles.hoursMeterNear}` : ''}`}
-      title={`${hours} of ${safeMax} hours this week`}
-    >
-      <span className={styles.hoursTrack} aria-hidden="true">
-        <span className={styles.hoursFill} style={{ width: `${ratio * 100}%` }} />
-      </span>
-      <span className={styles.hoursText}>
-        {hours}
-        <small>/{safeMax}h</small>
-      </span>
-    </span>
   );
 }
 
@@ -1141,14 +1100,11 @@ export function HotelTeamPanel({
     () => buildHotelRoster(team, rosterStaff),
     [rosterStaff, team],
   );
-  const visibleGroups = React.useMemo(
-    () => groups.filter((group) => group.people.length > 0 || ALWAYS_VISIBLE_GROUPS.has(group.key)),
+  const people = React.useMemo(
+    () => groups.flatMap((group) => group.people),
     [groups],
   );
-  const peopleCount = React.useMemo(
-    () => groups.reduce((total, group) => total + group.people.length, 0),
-    [groups],
-  );
+  const peopleCount = people.length;
   // The first-person lifecycle is about a direct hotel account, not every
   // account that can reach the hotel. Organization-scope company access makes
   // inherited members appear in this authoritative roster, but those members
@@ -1160,7 +1116,6 @@ export function HotelTeamPanel({
     && !teamLoading
     && !teamError
     && !hasDirectHotelAccount;
-  const counts = React.useMemo(() => rosterCounts(rosterStaff), [rosterStaff]);
   const linkAccounts = React.useMemo(
     () => team.map((member) => ({
       accountId: member.accountId,
@@ -1172,8 +1127,8 @@ export function HotelTeamPanel({
     [team],
   );
   const editPerson = React.useMemo(
-    () => groups.flatMap((group) => group.people).find((person) => person.key === editKey) ?? null,
-    [editKey, groups],
+    () => people.find((person) => person.key === editKey) ?? null,
+    [editKey, people],
   );
 
   const loadingDialogVariant: DialogLoadingVariant = editPerson
@@ -1397,24 +1352,6 @@ export function HotelTeamPanel({
           </div>
         ) : null}
 
-        <div className={styles.kpiStrip}>
-          <div className={styles.kpiCard}>
-            <span className={styles.kpiLabel}>{'Roster'}</span>
-            <strong>{counts.roster}</strong>
-            <small>{'people on the books'}</small>
-          </div>
-          <div className={styles.kpiCard}>
-            <span className={styles.kpiLabel}>{'On shift'}</span>
-            <strong>{counts.onShift}</strong>
-            <small>{'working right now'}</small>
-          </div>
-          <div className={`${styles.kpiCard}${counts.nearOvertime > 0 ? ` ${styles.kpiCardAlert}` : ''}`}>
-            <span className={styles.kpiLabel}>{'Near overtime'}</span>
-            <strong>{counts.nearOvertime}</strong>
-            <small>{'within 4h of their weekly cap'}</small>
-          </div>
-        </div>
-
         {rosterUnavailable ? (
           <div className={styles.warningNotice} role="alert">
             <AlertTriangle size={17} aria-hidden="true" />
@@ -1493,7 +1430,7 @@ export function HotelTeamPanel({
             <h3>{needsFirstPerson ? 'Add first person' : 'Nobody here yet'}</h3>
             <p>{needsFirstPerson
               ? 'Invite this hotel’s first Owner or General Manager. Their assigned role is locked into signup.'
-              : 'Use Add staff member for someone who only needs the roster and schedule. Use Invite people when they need Staxis login access.'}</p>
+              : 'Use Invite people to add someone to the schedule only, or invite them to create a Staxis login.'}</p>
             {!locked && needsFirstPerson ? (
               <div className={styles.emptyStateActions}>
                 <button
@@ -1508,57 +1445,23 @@ export function HotelTeamPanel({
             ) : null}
           </div>
         ) : (
-          <div className={styles.departmentGrid}>
-            {visibleGroups.map((group) => (
-              <section key={group.key} className={styles.departmentCard} aria-label={groupLabel(group.key, lang)}>
-                <div className={styles.departmentHeader}>
-                  <span className={`${styles.departmentDot} ${styles[`dept_${group.key}`] ?? ''}`} aria-hidden="true" />
-                  <h3>{groupLabel(group.key, lang)}</h3>
-                  <span className={styles.departmentCount}>{group.people.length}</span>
-                </div>
-                {group.people.length === 0 ? (
-                  <p className={styles.departmentEmpty}>
-                    {'Nobody in this department yet.'}
-                  </p>
-                ) : (
-                <div className={styles.personList} role="list">
-                  {group.people.map((person) => (
-                    <PersonRow
-                      key={person.key}
-                      person={person}
-                      lang={lang}
-                      currentUser={currentUser}
-                      currentAccountId={currentAccountId}
-                      locked={locked}
-                      jobsByAccountId={jobsByAccountId}
-                      phone={person.staff ? contacts[person.staff.id] ?? null : null}
-                      contactsReady={contactsReady}
-                      contactsUnavailable={contactsError}
-                      pendingLifecycle={person.account
-                        ? pendingLifecycleByAccount[person.account.accountId]
-                        : undefined}
-                      serverLifecyclePollingPaused={serverLifecyclePollingPaused}
-                      onOpen={() => setEditKey(person.key)}
-                      onRemoveAccess={(member) => setRemoveMember(member)}
-                    />
-                  ))}
-                </div>
-                )}
-                {canAddStaff && !locked && group.key !== 'management' ? (
-                  <button
-                    type="button"
-                    className={styles.departmentAdd}
-                    onClick={(event) => {
-                      addStaffReturnFocusRef.current = event.currentTarget;
-                      setAddDepartment(group.key as StaffDepartment);
-                    }}
-                    aria-haspopup="dialog"
-                  >
-                    <UserPlus size={15} aria-hidden="true" />
-                    {`Add to ${groupLabel(group.key, 'en')}`}
-                  </button>
-                ) : null}
-              </section>
+          <div className={styles.rosterList} role="list" aria-label={'People at this hotel'}>
+            {people.map((person) => (
+              <PersonRow
+                key={person.key}
+                person={person}
+                lang={lang}
+                currentUser={currentUser}
+                currentAccountId={currentAccountId}
+                locked={locked}
+                jobsByAccountId={jobsByAccountId}
+                pendingLifecycle={person.account
+                  ? pendingLifecycleByAccount[person.account.accountId]
+                  : undefined}
+                serverLifecyclePollingPaused={serverLifecyclePollingPaused}
+                onOpen={() => setEditKey(person.key)}
+                onRemoveAccess={(member) => setRemoveMember(member)}
+              />
             ))}
           </div>
         )}
@@ -1696,9 +1599,6 @@ function PersonRow({
   currentAccountId,
   locked,
   jobsByAccountId,
-  phone,
-  contactsReady,
-  contactsUnavailable,
   pendingLifecycle,
   serverLifecyclePollingPaused,
   onOpen,
@@ -1710,9 +1610,6 @@ function PersonRow({
   currentAccountId: string;
   locked: boolean;
   jobsByAccountId: Record<string, CompanyJobLine[]>;
-  phone: string | null;
-  contactsReady: boolean;
-  contactsUnavailable: boolean;
   pendingLifecycle: PendingLifecycleReconciliation | undefined;
   serverLifecyclePollingPaused: boolean;
   onOpen: () => void;
@@ -1739,37 +1636,16 @@ function PersonRow({
   // behind the button — don't offer one.
   const canOpen = canOpenAccountEditor || Boolean(staff);
   const editable = canOpenAccountEditor || (Boolean(staff) && employmentEditable);
-  const onShift = staff?.scheduledToday === true;
   const dimmed = staff?.isActive === false || (account ? !account.active : false);
   const jobLines = account ? jobsByAccountId[account.accountId] ?? [] : [];
-
-  const identityLine = [
-    account ? `@${account.username}` : null,
-    account ? roleLabel(account.role, lang) : 'Schedule only, no login',
-  ].filter(Boolean).join(' · ');
-
-  const contactLine = staff
-    ? (contactsUnavailable
-        ? 'Phone unavailable'
-        : !contactsReady
-          ? 'Loading…'
-          : phone
-            ? formatPhone(phone)
-            : 'No phone')
-    : null;
-  const emailLine = account
-    ? account.email || 'Email unavailable'
-    : null;
+  const jobLabel = personJobLabel(person, lang);
 
   return (
     <div
       className={`${styles.teamRow}${self ? ` ${styles.selfRow}` : ''}${dimmed ? ` ${styles.dimmedRow}` : ''}`}
       role="listitem"
     >
-      <span
-        className={`${styles.avatar}${onShift ? ` ${styles.avatarOnShift}` : ''}`}
-        aria-hidden="true"
-      >
+      <span className={styles.avatar} aria-hidden="true">
         {initials(person.name)}
       </span>
       <div className={styles.rowBody}>
@@ -1782,7 +1658,7 @@ function PersonRow({
             </small>
           ) : null}
         </strong>
-        <span>{identityLine}</span>
+        <span className={styles.personJob}>{jobLabel}</span>
         {jobLines.length > 0 ? (
           <span className={styles.companyJobLines}>
             {jobLines.map((job) => (
@@ -1794,13 +1670,6 @@ function PersonRow({
                 }`}
               </em>
             ))}
-          </span>
-        ) : null}
-        {contactLine ? <span>{contactLine}</span> : null}
-        {emailLine ? <span>{emailLine}</span> : null}
-        {account ? (
-          <span className={styles.signInMetadata}>
-            {lastSignInLabel(account.lastSignInKnown, account.lastSignInAt, lang)}
           </span>
         ) : null}
         {lifecycleIsPending ? (
@@ -1818,36 +1687,25 @@ function PersonRow({
         ) : null}
       </div>
 
-      {staff ? (
-        <HoursMeter
-          hours={staff.weeklyHours ?? 0}
-          max={staff.maxWeeklyHours ?? 40}
-          lang={lang}
-        />
-      ) : null}
-
       <div className={styles.rowBadges}>
         {account ? (
-          <span
-            className={`${styles.accountStatusBadge}${
-              lifecycleIsPending
-                ? ` ${styles.accountStatusPending}`
-                : account.active ? '' : ` ${styles.accountStatusDisabled}`
-            }`}
-            role={lifecycleIsPending ? 'status' : undefined}
-          >
-            {lifecycleIsPending
-              ? 'Status change pending'
-              : account.active
-                ? 'Login active'
-                : 'Login disabled'}
-          </span>
+          <span className={styles.accountStatusBadge}>{'STAXIS LOGIN'}</span>
         ) : (
-          <span className={styles.linkedBadge}>{'No login'}</span>
+          <span className={styles.linkedBadge}>{'NO LOGIN'}</span>
         )}
+        {lifecycleIsPending ? (
+          <span className={`${styles.accountStatusBadge} ${styles.accountStatusPending}`} role="status">
+            {'Status change pending'}
+          </span>
+        ) : null}
+        {account && !account.active ? (
+          <span className={`${styles.accountStatusBadge} ${styles.accountStatusDisabled}`}>
+            {'Inactive'}
+          </span>
+        ) : null}
         {staff?.isActive === false ? (
           <span className={`${styles.accountStatusBadge} ${styles.accountStatusDisabled}`}>
-            {'Off the roster'}
+            {'Off roster'}
           </span>
         ) : null}
       </div>
