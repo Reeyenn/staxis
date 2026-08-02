@@ -1046,7 +1046,9 @@ begin
   select * into v_work
    from public.room_work w
    where w.property_id = p_property_id
-     and (w.id = p_task_id or w.legacy_task_id = p_task_id);
+     and (w.id = p_task_id or w.legacy_task_id = p_task_id)
+   order by w.date desc, w.id
+   limit 1;
   if not found then
     raise exception 'E_TASK_PROPERTY_MISMATCH: cleaning plan % does not belong to property %', p_task_id, p_property_id
       using errcode = 'no_data_found';

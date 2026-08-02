@@ -2098,4 +2098,45 @@ describe('housekeeping canonical plan expand stage', () => {
       ],
     );
   });
+
+  test('apply_inspection_cleaning_plan_side_effect picks the latest ambiguous legacy match deterministically', async () => {
+    // One plan id can legitimately match two rows: the canonical row owns it as
+    // `id`, while a second row carries it as `legacy_task_id` (0434 indexes the
+    // two columns separately). The side-effect seam must resolve that the same
+    // way assign_room_work_atomic does instead of taking whichever row the scan
+    // happens to surface first.
+    const ambiguousTaskId = await scalar<string>(
+      "select public.housekeeping_plan_id($1, $2::date, '903')::text",
+      [PROPERTY, '2026-08-05'],
+    );
+    await pg.query(
+      `insert into public.room_work(
+         id, legacy_task_id, property_id, date, room_number, status, plan_status
+       ) values
+         (public.housekeeping_plan_id($1, $2::date, '903'), null::uuid, $1::uuid, $2::date, '903', 'not_started', 'scheduled'),
+         (public.housekeeping_plan_id($1, $3::date, '904'), public.housekeeping_plan_id($1, $2::date, '903'), $1::uuid, $3::date, '904', 'not_started', 'scheduled')`,
+      [PROPERTY, '2026-08-05', '2026-08-06'],
+    );
+
+    await pg.query(
+      "select public.apply_inspection_cleaning_plan_side_effect($1, $2, 'pass', null)",
+      [PROPERTY, ambiguousTaskId],
+    );
+
+    assert.deepEqual(
+      await rows<{
+        date: string;
+        room_number: string;
+        plan_status: string;
+        inspected: boolean;
+      }>(
+        "select date::text, room_number, plan_status, inspected_at is not null as inspected from public.room_work where property_id = $1 and (id = $2 or legacy_task_id = $2) order by date",
+        [PROPERTY, ambiguousTaskId],
+      ),
+      [
+        { date: '2026-08-05', room_number: '903', plan_status: 'scheduled', inspected: false },
+        { date: '2026-08-06', room_number: '904', plan_status: 'inspected_pass', inspected: true },
+      ],
+    );
+  });
 });
