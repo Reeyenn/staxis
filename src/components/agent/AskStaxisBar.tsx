@@ -197,6 +197,9 @@ export function AskStaxisBar() {
   // Without it, hover intent would re-open on the spot and the close would read
   // as the click having done nothing.
   const hoverSuppressedRef = useRef(false);
+  // The live value of `open`, for the timers and callbacks that fire long after
+  // the render that armed them.
+  const openRef = useRef(false);
 
   const {
     messages,
@@ -238,6 +241,7 @@ export function AskStaxisBar() {
 
   const seed = useCallback((text?: string) => {
     cancelSink();
+    openRef.current = true;
     setOpen(true);
     setView('thread');
     setLeaving(null);
@@ -271,6 +275,7 @@ export function AskStaxisBar() {
     if (!text || streaming) return;
     if (recognitionRef.current) stopDictation();
     cancelSink();
+    openRef.current = true;
     setOpen(true);
     setView('thread');
     setLeaving(null);
@@ -284,6 +289,7 @@ export function AskStaxisBar() {
 
   const wake = useCallback(() => {
     cancelSink();
+    openRef.current = true;
     setOpen(true);
     setView('thread');
     setLeaving(null);
@@ -308,19 +314,23 @@ export function AskStaxisBar() {
     if (slab && document.activeElement && slab.contains(document.activeElement)) {
       markRef.current?.focus({ preventScroll: true });
     }
-    setOpen((wasOpen) => {
-      if (!wasOpen) return false;
-      if (sinkTimerRef.current) clearTimeout(sinkTimerRef.current);
-      setClosing(true);
-      const reduced = typeof window !== 'undefined'
-        && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
-      sinkTimerRef.current = setTimeout(() => {
-        sinkTimerRef.current = null;
-        setClosing(false);
-      }, panelExitMs(reduced));
-      return false;
-    });
+    // Guarded on the ref rather than inside a state updater: a second call in
+    // the same tick (Escape landing on top of an outside pointerdown) must not
+    // restart the Sink, and an updater is not the place for a timer.
+    if (!openRef.current) return;
+    openRef.current = false;
+    setOpen(false);
+    if (sinkTimerRef.current) clearTimeout(sinkTimerRef.current);
+    setClosing(true);
+    const reduced = typeof window !== 'undefined'
+      && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    sinkTimerRef.current = setTimeout(() => {
+      sinkTimerRef.current = null;
+      setClosing(false);
+    }, panelExitMs(reduced));
   }, []);
+
+  useEffect(() => { openRef.current = open; }, [open]);
 
   useEffect(() => () => {
     if (sinkTimerRef.current) clearTimeout(sinkTimerRef.current);
@@ -341,9 +351,6 @@ export function AskStaxisBar() {
     return () => media.removeEventListener('change', sync);
   }, []);
 
-  // Read inside the timers, which fire long after the render that armed them.
-  const openRef = useRef(open);
-  useEffect(() => { openRef.current = open; }, [open]);
   const panelBusy = streaming || dictating || menuOpen || input.trim().length > 0;
   const busyRef = useRef(false);
   busyRef.current = panelBusy;
@@ -652,6 +659,7 @@ export function AskStaxisBar() {
     }
     setMenuOpen(false);
     cancelSink();
+    openRef.current = true;
     setOpen(true);
     setView('thread');
     setLeaving(null);
