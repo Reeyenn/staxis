@@ -59,6 +59,7 @@ interface AddStaffDialogProps {
   onChanged: () => void | Promise<void>;
   pendingAttempt: AddStaffAttempt | null;
   onPendingAttemptChange: (attempt: AddStaffAttempt | null) => void;
+  returnFocusRef?: React.RefObject<HTMLElement | null>;
 }
 
 function freshIdempotencyKey(): string {
@@ -76,6 +77,7 @@ export function AddStaffDialog({
   onChanged,
   pendingAttempt,
   onPendingAttemptChange,
+  returnFocusRef,
 }: AddStaffDialogProps) {
   const [name, setName] = React.useState(pendingAttempt?.payload.name ?? '');
   const [department, setDepartment] = React.useState<StaffDepartment>(
@@ -108,9 +110,8 @@ export function AddStaffDialog({
 
   React.useEffect(() => {
     mountedRef.current = true;
-    const returnFocusElement = document.activeElement instanceof HTMLElement
-      ? document.activeElement
-      : null;
+    const returnFocusElement = returnFocusRef?.current
+      ?? (document.activeElement instanceof HTMLElement ? document.activeElement : null);
     const previousOverflow = document.body.style.overflow;
     document.body.style.overflow = 'hidden';
     const dialogLayer = dialogRef.current?.parentElement ?? null;
@@ -176,7 +177,7 @@ export function AddStaffDialog({
       });
       if (returnFocusElement?.isConnected) returnFocusElement.focus({ preventScroll: true });
     };
-  }, []);
+  }, [returnFocusRef]);
 
   const submit = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();

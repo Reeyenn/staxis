@@ -906,6 +906,14 @@
   height: min(800px, calc(100dvh - 40px));
 }
 
+.dialogLoadingInviteChoice {
+  height: min(430px, calc(100dvh - 40px));
+}
+
+.dialogLoadingAddStaff {
+  height: min(680px, calc(100dvh - 40px));
+}
+
 .dialogLoadingMember {
   height: min(680px, calc(100dvh - 40px));
 }
@@ -919,6 +927,10 @@
 .dialogLoadingHeading,
 .dialogLoadingRow,
 .dialogLoadingField,
+.dialogLoadingChoiceIcon,
+.dialogLoadingChoiceTitle,
+.dialogLoadingChoiceDescription,
+.dialogLoadingChoiceChevron,
 .dialogLoadingButton {
   position: relative;
   display: block;
@@ -1000,6 +1012,56 @@
   grid-column: 1 / -1;
 }
 
+.dialogLoadingChoices {
+  display: grid;
+  gap: 12px;
+}
+
+.dialogLoadingChoice {
+  display: flex;
+  min-height: 76px;
+  align-items: center;
+  gap: 12px;
+  padding: 13px;
+  border: 1px solid var(--team-rule);
+  border-radius: 14px;
+  background: var(--team-paper);
+}
+
+.dialogLoadingChoiceIcon {
+  width: 40px;
+  height: 40px;
+  flex: none;
+  border-radius: 12px;
+}
+
+.dialogLoadingChoiceCopy {
+  display: flex;
+  min-width: 0;
+  flex: 1;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.dialogLoadingChoiceTitle {
+  width: min(180px, 55%);
+  height: 12px;
+  border-radius: 4px;
+}
+
+.dialogLoadingChoiceDescription {
+  width: min(360px, 88%);
+  height: 10px;
+  border-radius: 4px;
+}
+
+.dialogLoadingChoiceChevron {
+  width: 18px;
+  height: 18px;
+  flex: none;
+  border-radius: 999px;
+}
+
 .dialogLoadingButton {
   width: 112px;
   height: 44px;
@@ -1011,6 +1073,10 @@
 .dialogLoadingHeading::after,
 .dialogLoadingRow::after,
 .dialogLoadingField::after,
+.dialogLoadingChoiceIcon::after,
+.dialogLoadingChoiceTitle::after,
+.dialogLoadingChoiceDescription::after,
+.dialogLoadingChoiceChevron::after,
 .dialogLoadingButton::after {
   position: absolute;
   inset: 0;
@@ -2089,6 +2155,14 @@
     height: calc(100dvh - 24px);
   }
 
+  .dialogLoadingInviteChoice {
+    height: min(430px, calc(100dvh - 24px));
+  }
+
+  .dialogLoadingAddStaff {
+    height: min(680px, calc(100dvh - 24px));
+  }
+
   .dialogLoadingMember {
     height: min(680px, calc(100dvh - 24px));
   }
@@ -2263,6 +2337,10 @@
   .dialogLoadingHeading::after,
   .dialogLoadingRow::after,
   .dialogLoadingField::after,
+  .dialogLoadingChoiceIcon::after,
+  .dialogLoadingChoiceTitle::after,
+  .dialogLoadingChoiceDescription::after,
+  .dialogLoadingChoiceChevron::after,
   .dialogLoadingButton::after {
     animation: none;
   }

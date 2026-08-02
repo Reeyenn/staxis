@@ -496,18 +496,22 @@ function canEditEmployment(
   return false;
 }
 
-type DialogLoadingVariant = 'invite' | 'invite-choice' | 'member' | 'remove' | 'decision';
+type DialogLoadingVariant = 'invite' | 'invite-choice' | 'add-staff' | 'member' | 'remove' | 'decision';
 
 function DialogLoading({
   lang,
   hotelName,
   variant,
   onClose,
+  returnFocusRef,
+  choiceCount = 2,
 }: {
   lang: HotelTeamLang;
   hotelName: string;
   variant: DialogLoadingVariant;
   onClose: () => void;
+  returnFocusRef?: React.RefObject<HTMLElement | null>;
+  choiceCount?: number;
 }) {
   const closeRef = React.useRef<HTMLButtonElement | null>(null);
   const dialogRef = React.useRef<HTMLDivElement | null>(null);
@@ -517,6 +521,8 @@ function DialogLoading({
   const loadingLabel = 'Opening dialog…';
   const title = variant === 'invite' || variant === 'invite-choice'
     ? 'Invite people'
+    : variant === 'add-staff'
+      ? 'Add staff member'
     : variant === 'member'
       ? 'Person details'
       : variant === 'remove'
@@ -524,14 +530,17 @@ function DialogLoading({
         : 'Review join request';
   const shellClass = variant === 'invite'
     ? `${styles.dialogWide} ${styles.dialogLoadingInvite}`
+    : variant === 'invite-choice'
+      ? styles.dialogLoadingInviteChoice
+    : variant === 'add-staff'
+      ? styles.dialogLoadingAddStaff
     : variant === 'member'
       ? styles.dialogLoadingMember
       : styles.dialogLoadingConfirmation;
 
   React.useEffect(() => {
-    const returnFocusElement = document.activeElement instanceof HTMLElement
-      ? document.activeElement
-      : null;
+    const returnFocusElement = returnFocusRef?.current
+      ?? (document.activeElement instanceof HTMLElement ? document.activeElement : null);
     const previousOverflow = document.body.style.overflow;
     document.body.style.overflow = 'hidden';
     closeRef.current?.focus({ preventScroll: true });
@@ -562,7 +571,7 @@ function DialogLoading({
       document.removeEventListener('keydown', onKeyDown);
       if (returnFocusElement?.isConnected) returnFocusElement.focus({ preventScroll: true });
     };
-  }, []);
+  }, [returnFocusRef]);
 
   return createPortal(
     <div className={styles.dialogLayer}>
@@ -608,6 +617,10 @@ function DialogLoading({
               <DialogLoadingSection rows={4} tall />
               <DialogLoadingSection rows={3} />
             </>
+          ) : variant === 'invite-choice' ? (
+            <DialogLoadingChoices count={choiceCount} />
+          ) : variant === 'add-staff' ? (
+            <DialogLoadingFields rows={4} />
           ) : variant === 'member' ? (
             <DialogLoadingFields rows={5} />
           ) : (
@@ -640,6 +653,23 @@ function DialogLoadingFields({ rows, compact = false }: { rows: number; compact?
     <div className={`${styles.dialogLoadingFields}${compact ? ` ${styles.dialogLoadingFieldsCompact}` : ''}`} aria-hidden="true">
       {Array.from({ length: rows }, (_, index) => (
         <span key={index} className={styles.dialogLoadingField} />
+      ))}
+    </div>
+  );
+}
+
+function DialogLoadingChoices({ count }: { count: number }) {
+  return (
+    <div className={styles.dialogLoadingChoices} aria-hidden="true">
+      {Array.from({ length: Math.max(1, count) }, (_, index) => (
+        <span key={index} className={styles.dialogLoadingChoice}>
+          <span className={styles.dialogLoadingChoiceIcon} />
+          <span className={styles.dialogLoadingChoiceCopy}>
+            <span className={styles.dialogLoadingChoiceTitle} />
+            <span className={styles.dialogLoadingChoiceDescription} />
+          </span>
+          <span className={styles.dialogLoadingChoiceChevron} />
+        </span>
       ))}
     </div>
   );
@@ -721,6 +751,8 @@ export function HotelTeamPanel({
   const requestAbortRef = React.useRef<AbortController | null>(null);
   const teamSequenceRef = React.useRef(0);
   const requestSequenceRef = React.useRef(0);
+  const inviteEntryRef = React.useRef<HTMLButtonElement | null>(null);
+  const inviteEntryReturnFocusRef = React.useRef<HTMLElement | null>(null);
   const changedRef = React.useRef(onChanged);
   changedRef.current = onChanged;
 
@@ -735,6 +767,7 @@ export function HotelTeamPanel({
 
   const openPeopleInviteChooser = React.useCallback(() => {
     if (inviteActionDisabled || !inviteEntryAvailable) return;
+    inviteEntryReturnFocusRef.current = inviteEntryRef.current;
     setInviteChoiceOpen(true);
   }, [inviteActionDisabled, inviteEntryAvailable]);
 
@@ -1136,6 +1169,8 @@ export function HotelTeamPanel({
         ? 'invite'
         : inviteChoiceOpen
           ? 'invite-choice'
+          : addDepartment
+            ? 'add-staff'
           : 'decision';
   const closeLoadingDialog = React.useCallback(() => {
     if (editKey) {
@@ -1154,8 +1189,12 @@ export function HotelTeamPanel({
       setInviteChoiceOpen(false);
       return;
     }
+    if (addDepartment) {
+      setAddDepartment(null);
+      return;
+    }
     setDecision(null);
-  }, [editKey, inviteChoiceOpen, inviteDialogOpen, onInviteDialogOpenChange, removeMember]);
+  }, [addDepartment, editKey, inviteChoiceOpen, inviteDialogOpen, onInviteDialogOpenChange, removeMember]);
 
   if (!hotelId) {
     return (
@@ -1180,17 +1219,57 @@ export function HotelTeamPanel({
               <p>{'Only an explicitly authorized hotel manager can view or change this private roster.'}</p>
             </div>
           </div>
+          {canInviteAccounts && !locked ? (
+            <div className={styles.peopleActions} aria-label="Ways to add people">
+              <button
+                ref={inviteEntryRef}
+                type="button"
+                className={`${styles.peopleAction} ${styles.peopleActionPrimary}`}
+                onClick={openPeopleInviteChooser}
+                disabled={inviteActionDisabled}
+                aria-haspopup="dialog"
+              >
+                <span className={styles.peopleActionIcon} aria-hidden="true">
+                  <UserPlus size={19} />
+                </span>
+                <span className={styles.peopleActionCopy}>
+                  <strong>{'Invite people'}</strong>
+                  <small>{'Add someone to the schedule, or invite them to create a Staxis account.'}</small>
+                </span>
+              </button>
+            </div>
+          ) : null}
         </section>
         <React.Suspense fallback={(
-          <DialogLoading lang={lang} hotelName={hotelName} variant="invite" onClose={() => onInviteDialogOpenChange(false)} />
+          <DialogLoading
+            lang={lang}
+            hotelName={hotelName}
+            variant={loadingDialogVariant}
+            choiceCount={1}
+            returnFocusRef={inviteEntryReturnFocusRef}
+            onClose={closeLoadingDialog}
+          />
         )}>
-          {inviteDialogOpen && canInviteAccounts ? (
+          {inviteChoiceOpen && canInviteAccounts && !locked ? (
+            <LazyPeopleInviteChooserDialog
+              canAddStaff={false}
+              canInviteToStaxis
+              canSendEmailInvite
+              canShareHotelInvite={false}
+              returnFocusRef={inviteEntryReturnFocusRef}
+              onAddStaff={chooseAddStaff}
+              onInviteToStaxis={chooseInviteToStaxis}
+              onClose={() => setInviteChoiceOpen(false)}
+            />
+          ) : null}
+          {inviteDialogOpen && canInviteAccounts && !locked ? (
             <LazyInviteDialog
               hotelId={hotelId}
               hotelName={hotelName}
               lang={lang}
               canInviteManager
               canManageHotelRoster={false}
+              returnFocusRef={inviteEntryReturnFocusRef}
               onClose={() => onInviteDialogOpenChange(false)}
               onChanged={() => changedRef.current?.()}
             />
@@ -1268,9 +1347,10 @@ export function HotelTeamPanel({
           ) : null}
         </div>
 
-        {!needsFirstPerson && inviteEntryAvailable ? (
+        {!needsFirstPerson && !locked && inviteEntryAvailable ? (
           <div className={styles.peopleActions} aria-label="Ways to add people">
             <button
+              ref={inviteEntryRef}
               type="button"
               className={`${styles.peopleAction} ${styles.peopleActionPrimary}`}
               onClick={openPeopleInviteChooser}
@@ -1457,6 +1537,8 @@ export function HotelTeamPanel({
           lang={lang}
           hotelName={hotelName}
           variant={loadingDialogVariant}
+          choiceCount={Number(canAddStaff && !locked) + Number(canInviteToStaxis)}
+          returnFocusRef={needsFirstPerson ? undefined : inviteEntryReturnFocusRef}
           onClose={closeLoadingDialog}
         />
       )}>
@@ -1508,6 +1590,8 @@ export function HotelTeamPanel({
             canAddStaff={canAddStaff && !locked}
             canInviteToStaxis={canInviteToStaxis}
             canSendEmailInvite={canInviteAccounts}
+            canShareHotelInvite={canManageTeam}
+            returnFocusRef={inviteEntryReturnFocusRef}
             onAddStaff={chooseAddStaff}
             onInviteToStaxis={chooseInviteToStaxis}
             onClose={() => setInviteChoiceOpen(false)}
@@ -1528,6 +1612,7 @@ export function HotelTeamPanel({
             canInviteManager={canInviteAccounts}
             canManageHotelRoster
             unlinkedRosterProfiles={unlinkedRosterProfiles}
+            returnFocusRef={inviteEntryReturnFocusRef}
             onClose={() => onInviteDialogOpenChange(false)}
             onChanged={() => changedRef.current?.()}
           />
@@ -1552,6 +1637,7 @@ export function HotelTeamPanel({
             hotelName={hotelName}
             lang={lang}
             initialDepartment={addDepartment}
+            returnFocusRef={inviteEntryReturnFocusRef}
             onClose={() => setAddDepartment(null)}
             onAdded={(member) => setOptimisticStaff((current) => (
               current.some((item) => item.id === member.id) ? current : [...current, member]

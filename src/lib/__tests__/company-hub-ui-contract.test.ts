@@ -306,7 +306,7 @@ describe('My Hotel account and team integration', () => {
     assert.match(company, /resolved\.permissions\.accountInvitePropertyIds\?\.includes\(activeProperty\.id\)/);
     assert.match(company, /canInviteAccounts=\{Boolean\([\s\S]*adminActionsAvailable[\s\S]*accountInvitePropertyIds/);
     assert.match(company, /canInviteAccounts=\{canInviteAccounts\}/);
-    assert.match(company, /!adminPreview && !canManageTeam && canInviteAccounts/);
+    assert.match(company, /!adminPreview && !activeProperty && !canManageTeam && canInviteAccounts/);
     assert.doesNotMatch(company, /<InvitePersonDialog/);
     assert.match(hotelTeam, /inviteDialogOpen && canInviteAccounts[\s\S]*canManageHotelRoster=\{false\}/);
     assert.match(hotelTeamDialogs, /if \(!canManageHotelRoster\)[\s\S]*setCodeLoading\(false\)/);

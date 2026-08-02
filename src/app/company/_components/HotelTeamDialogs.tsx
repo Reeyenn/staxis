@@ -307,7 +307,11 @@ function signupLinkFor(code: string): string {
   return `https://getstaxis.com/signup?code=${encodeURIComponent(code)}`;
 }
 
-function useDialogBehavior(onClose: () => void, busy: boolean) {
+function useDialogBehavior(
+  onClose: () => void,
+  busy: boolean,
+  returnFocusRef?: React.RefObject<HTMLElement | null>,
+) {
   const closeRef = React.useRef<HTMLButtonElement | null>(null);
   const dialogRef = React.useRef<HTMLDivElement | null>(null);
   const onCloseRef = React.useRef(onClose);
@@ -316,9 +320,8 @@ function useDialogBehavior(onClose: () => void, busy: boolean) {
   busyRef.current = busy;
 
   React.useEffect(() => {
-    const returnFocusElement = document.activeElement instanceof HTMLElement
-      ? document.activeElement
-      : null;
+    const returnFocusElement = returnFocusRef?.current
+      ?? (document.activeElement instanceof HTMLElement ? document.activeElement : null);
     const previousOverflow = document.body.style.overflow;
     document.body.style.overflow = 'hidden';
     closeRef.current?.focus();
@@ -351,7 +354,7 @@ function useDialogBehavior(onClose: () => void, busy: boolean) {
       document.removeEventListener('keydown', onKeyDown);
       if (returnFocusElement?.isConnected) returnFocusElement.focus({ preventScroll: true });
     };
-  }, []);
+  }, [returnFocusRef]);
 
   return { closeRef, dialogRef };
 }
@@ -365,6 +368,7 @@ function DialogShell({
   onClose,
   busy = false,
   wide = false,
+  returnFocusRef,
   children,
 }: {
   title: string;
@@ -375,9 +379,10 @@ function DialogShell({
   onClose: () => void;
   busy?: boolean;
   wide?: boolean;
+  returnFocusRef?: React.RefObject<HTMLElement | null>;
   children: React.ReactNode;
 }) {
-  const { closeRef, dialogRef } = useDialogBehavior(onClose, busy);
+  const { closeRef, dialogRef } = useDialogBehavior(onClose, busy, returnFocusRef);
   const titleId = React.useId();
   const descriptionId = React.useId();
   return createPortal(
@@ -1450,22 +1455,28 @@ export function PeopleInviteChooserDialog({
   canAddStaff,
   canInviteToStaxis,
   canSendEmailInvite,
+  canShareHotelInvite,
   onAddStaff,
   onInviteToStaxis,
   onClose,
+  returnFocusRef,
 }: {
   canAddStaff: boolean;
   canInviteToStaxis: boolean;
   canSendEmailInvite: boolean;
+  canShareHotelInvite: boolean;
   onAddStaff: () => void;
   onInviteToStaxis: () => void;
   onClose: () => void;
+  returnFocusRef?: React.RefObject<HTMLElement | null>;
 }) {
   const addStaffDescriptionId = React.useId();
   const inviteDescriptionId = React.useId();
-  const inviteDescription = canSendEmailInvite
-    ? 'Send an email invite or share a link, QR code, or invite code.'
-    : 'Share a link, QR code, or invite code.';
+  const inviteDescription = canShareHotelInvite
+    ? canSendEmailInvite
+      ? 'Send an email invite or share a link, QR code, or invite code.'
+      : 'Share a link, QR code, or invite code.'
+    : 'Send an email invite.';
 
   if (!canAddStaff && !canInviteToStaxis) return null;
 
@@ -1477,6 +1488,7 @@ export function PeopleInviteChooserDialog({
       lang={'en'}
       icon={<UserRoundCog size={21} aria-hidden="true" />}
       onClose={onClose}
+      returnFocusRef={returnFocusRef}
     >
       <div className={styles.peopleInviteChoices} role="group" aria-label="Choose whether this person needs a Staxis login">
         {canAddStaff ? (
@@ -1532,6 +1544,7 @@ export function HotelInviteDialog({
   unlinkedRosterProfiles = NO_UNLINKED_ROSTER_PROFILES,
   onClose,
   onChanged,
+  returnFocusRef,
 }: {
   hotelId: string;
   hotelName: string;
@@ -1541,6 +1554,7 @@ export function HotelInviteDialog({
   unlinkedRosterProfiles?: readonly HotelInviteRosterProfile[];
   onClose: () => void;
   onChanged?: () => void | Promise<void>;
+  returnFocusRef?: React.RefObject<HTMLElement | null>;
 }) {
   const [inviteMode, setInviteMode] = React.useState<InviteMode>(
     canManageHotelRoster ? 'shared' : 'email',
@@ -1963,6 +1977,7 @@ export function HotelInviteDialog({
       onClose={onClose}
       busy={busy}
       wide
+      returnFocusRef={returnFocusRef}
     >
       <div className={styles.inviteBody} aria-busy={(canManageHotelRoster && codeLoading) || invitesLoading}>
         {hasInviteModeChoice ? (

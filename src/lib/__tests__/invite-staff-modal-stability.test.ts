@@ -57,7 +57,7 @@ describe('Invite Staff popup layout stability', () => {
   });
 
   test('Company Suspense fallback uses the destination dialog shape instead of a tiny spinner', () => {
-    assert.match(hotelTeam, /type DialogLoadingVariant = 'invite' \| 'invite-choice' \| 'member' \| 'remove' \| 'decision'/);
+    assert.match(hotelTeam, /type DialogLoadingVariant = 'invite' \| 'invite-choice' \| 'add-staff' \| 'member' \| 'remove' \| 'decision'/);
     assert.match(hotelTeam, /className=\{`\$\{styles\.dialog\} \$\{styles\.dialogLoadingShell\} \$\{shellClass\}`\}/);
     assert.match(hotelTeam, /role="dialog"[\s\S]*?aria-modal="true"[\s\S]*?aria-busy="true"/);
     assert.match(hotelTeam, /variant === 'invite'[\s\S]*?<DialogLoadingSection rows=\{4\} tall \/>/);

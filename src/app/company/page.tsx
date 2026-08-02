@@ -1104,7 +1104,7 @@ function PeoplePanel({ data, staff, hotelRosterUnavailable, lang, currentUser, c
             <SectionHeading
               title={'Memberships and invitations'}
             />
-            {!adminPreview && !canManageTeam && canInviteAccounts ? (
+            {!adminPreview && !activeProperty && !canManageTeam && canInviteAccounts ? (
               <button type="button" className={styles.primaryButton} onClick={() => onInviteDialogOpenChange(true)}>
                 <UserPlus size={16} aria-hidden="true" />
                 {'Invite company member'}
