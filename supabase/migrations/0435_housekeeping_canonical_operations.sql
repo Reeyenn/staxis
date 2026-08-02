@@ -79,6 +79,81 @@ where w.plan_cleaning_type is not null
 revoke all on public.room_work_plan_v1 from public, anon, authenticated;
 grant select on public.room_work_plan_v1 to service_role;
 
+-- Every canonical room-work mutation takes the same lock set: the natural
+-- parent key plus its exact direct component children, all in one sorted
+-- room-number order. Advisory locks cover rows that have not been
+-- materialized yet; row locks cover existing rows. The BEFORE trigger below
+-- makes the protected old-app room_work upsert obey the same order before its
+-- parent row can be changed.
+create or replace function public._lock_room_work_component_set(
+  p_property_id uuid,
+  p_date date,
+  p_room_numbers text[]
+)
+returns void
+language plpgsql
+security definer
+set search_path = public, pg_temp
+as $function$
+declare
+  v_room_number text;
+begin
+  for v_room_number in
+    select lock_keys.room_number
+      from (
+        select btrim(input.room_number) as room_number
+          from unnest(coalesce(p_room_numbers, array[]::text[])) as input(room_number)
+         where input.room_number is not null
+           and btrim(input.room_number) <> ''
+        union
+        select btrim(child.value) as room_number
+          from unnest(coalesce(p_room_numbers, array[]::text[])) as input(room_number)
+          join public.component_rooms c
+            on c.property_id = p_property_id
+           and c.parent_room_number = btrim(input.room_number)
+          cross join lateral jsonb_array_elements_text(c.child_room_numbers) child(value)
+         where jsonb_typeof(c.child_room_numbers) = 'array'
+           and btrim(child.value) <> ''
+      ) lock_keys
+     order by lock_keys.room_number
+  loop
+    perform pg_advisory_xact_lock(hashtextextended(
+      format('staxis.housekeeping-plan:%s:%s:%s', p_property_id, p_date, v_room_number),
+      0
+    ));
+    perform 1
+      from public.room_work w
+     where w.property_id = p_property_id
+       and w.date = p_date
+       and w.room_number = v_room_number
+     for update;
+  end loop;
+end;
+$function$;
+
+create or replace function public._room_work_lock_component_set()
+returns trigger
+language plpgsql
+security definer
+set search_path = public, pg_temp
+as $function$
+begin
+  if new.property_id is not null and new.date is not null and new.room_number is not null then
+    perform public._lock_room_work_component_set(
+      new.property_id,
+      new.date,
+      array[new.room_number]::text[]
+    );
+  end if;
+  return new;
+end;
+$function$;
+
+drop trigger if exists room_work_lock_component_set on public.room_work;
+create trigger room_work_lock_component_set
+  before insert or update on public.room_work
+  for each row execute function public._room_work_lock_component_set();
+
 -- Rules-engine persistence. The caller submits a property-scoped batch; the
 -- function locks each natural row and refuses to overwrite workflow that has
 -- started or finished. A missing room_work row is materialized, including a
@@ -201,21 +276,16 @@ begin
   end if;
 
   for v_key in
-    select business_date, room_number
+    select business_date, array_agg(room_number order by room_number) as room_numbers
       from pg_temp.staxis_housekeeping_plan_batch
-     group by business_date, room_number
-     order by business_date, room_number
+     group by business_date
+     order by business_date
   loop
-    perform pg_advisory_xact_lock(hashtextextended(
-      format('staxis.housekeeping-plan:%s:%s:%s', p_property_id, v_key.business_date, v_key.room_number),
-      0
-    ));
-    perform 1
-      from public.room_work w
-     where w.property_id = p_property_id
-       and w.date = v_key.business_date
-       and w.room_number = v_key.room_number
-     for update;
+    perform public._lock_room_work_component_set(
+      p_property_id,
+      v_key.business_date,
+      v_key.room_numbers
+    );
   end loop;
 
   for v_row in
@@ -362,12 +432,17 @@ declare
   v_by text;
   v_assignment_id uuid;
   v_now timestamptz;
+  v_lock_date date;
+  v_lock_room text;
 begin
-  select * into v_work
+  -- Discover the natural key without taking its row lock. The shared helper
+  -- must acquire the parent plus direct children first, in sorted order.
+  select w.date, w.room_number
+    into v_lock_date, v_lock_room
     from public.room_work w
    where w.property_id = p_property_id
      and (w.id = p_task_id or w.legacy_task_id = p_task_id)
-   for update;
+   limit 1;
 
   if not found then
     select a.date, a.room_number, a.cleaning_type, a.scheduled_time, a.notes
@@ -379,7 +454,24 @@ begin
     if not found then
       raise exception 'task not found' using errcode = 'P0002';
     end if;
+    v_lock_date := v_pms.date;
+    v_lock_room := v_pms.room_number;
+  end if;
 
+  perform public._lock_room_work_component_set(
+    p_property_id,
+    v_lock_date,
+    array[v_lock_room]::text[]
+  );
+
+  select * into v_work
+    from public.room_work w
+   where w.property_id = p_property_id
+     and (w.id = p_task_id or w.legacy_task_id = p_task_id
+       or (w.date = v_lock_date and w.room_number = v_lock_room))
+   for update;
+
+  if not found then
     insert into public.room_work (
       id, property_id, date, room_number, plan_status, plan_scheduled_at
     ) values (
@@ -541,7 +633,7 @@ begin
   -- plan upsert. This prevents reverse-order callers from deadlocking while
   -- they overlap on a suite's component rooms.
   for v_key in
-    select w.date, w.room_number
+    select w.date, array_agg(w.room_number order by w.room_number) as room_numbers
       from public.room_work w
      where w.property_id = p_property_id
        and w.date = p_date
@@ -551,18 +643,14 @@ begin
          or w.id = p_task_id
          or w.legacy_task_id = p_task_id
        )
-     order by w.date, w.room_number
+     group by w.date
+     order by w.date
   loop
-    perform pg_advisory_xact_lock(hashtextextended(
-      format('staxis.housekeeping-plan:%s:%s:%s', p_property_id, v_key.date, v_key.room_number),
-      0
-    ));
-    perform 1
-      from public.room_work w
-     where w.property_id = p_property_id
-       and w.date = v_key.date
-       and w.room_number = v_key.room_number
-     for update;
+    perform public._lock_room_work_component_set(
+      p_property_id,
+      v_key.date,
+      v_key.room_numbers
+    );
   end loop;
 
   for v_work in
@@ -735,25 +823,15 @@ begin
     return new;
   end if;
 
-  -- Lock every direct child in the same sorted order before mutating any of
-  -- them. The advisory key also covers a child row that must be materialized.
-  for v_child in
-    select distinct value
-      from jsonb_array_elements_text(v_children)
-     where value is not null and btrim(value) <> ''
-     order by value
-  loop
-    perform pg_advisory_xact_lock(hashtextextended(
-      format('staxis.housekeeping-plan:%s:%s:%s', new.property_id, new.date, v_child),
-      0
-    ));
-    perform 1
-      from public.room_work w
-     where w.property_id = new.property_id
-       and w.date = new.date
-       and w.room_number = v_child
-     for update;
-  end loop;
+  -- The BEFORE room_work trigger already locked the parent plus every direct
+  -- child in the shared global order. Re-entering the helper is harmless and
+  -- documents that this fanout uses the same lock contract if invoked by a
+  -- future trigger seam.
+  perform public._lock_room_work_component_set(
+    new.property_id,
+    new.date,
+    array[new.room_number]::text[]
+  );
 
   for v_child in
     select distinct value
@@ -946,8 +1024,12 @@ create trigger trg_activity_log_room_work_change
 
 revoke all on function public._room_work_complete_components() from public, anon, authenticated;
 revoke all on function public._activity_log_on_room_work_change() from public, anon, authenticated;
+revoke all on function public._lock_room_work_component_set(uuid, date, text[]) from public, anon, authenticated;
+revoke all on function public._room_work_lock_component_set() from public, anon, authenticated;
 grant execute on function public._room_work_complete_components() to service_role;
 grant execute on function public._activity_log_on_room_work_change() to service_role;
+grant execute on function public._lock_room_work_component_set(uuid, date, text[]) to service_role;
+grant execute on function public._room_work_lock_component_set() to service_role;
 
 -- Preserve the deployed inspection RPC signature and response behavior during
 -- the expand window. Its room_work and cleaning_tasks side-effects are marked

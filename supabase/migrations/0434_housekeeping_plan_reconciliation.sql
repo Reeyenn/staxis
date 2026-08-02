@@ -228,6 +228,7 @@ declare
   invalid_work bigint;
   invalid_legacy_links bigint;
   invalid_history bigint;
+  invalid_active_history bigint;
   ambiguous_sources bigint;
 begin
   select count(*)
@@ -235,22 +236,32 @@ begin
     from public.cleaning_tasks t
     left join public.staff s on s.id = t.assignee_id
    where t.assignee_id is not null
-     and (s.id is null or s.property_id is distinct from t.property_id);
+     and (
+       s.id is null
+       or s.property_id is distinct from t.property_id
+       or s.department is distinct from 'housekeeping'
+       or coalesce(s.is_active, true) = false
+     );
   if invalid_cache > 0 then
     raise exception
-      '0434 preflight: % cleaning_tasks assignee cache row(s) cross a staff/property boundary or reference a missing staff row; refusing to reconcile',
+      '0434 preflight: % cleaning_tasks assignee cache row(s) do not target an active same-property housekeeping staff row; refusing to reconcile',
       invalid_cache;
   end if;
 
   select count(*)
     into invalid_work
-    from public.room_work w
+   from public.room_work w
     left join public.staff s on s.id = w.assigned_staff_id
    where w.assigned_staff_id is not null
-     and (s.id is null or s.property_id is distinct from w.property_id);
+     and (
+       s.id is null
+       or s.property_id is distinct from w.property_id
+       or s.department is distinct from 'housekeeping'
+       or coalesce(s.is_active, true) = false
+     );
   if invalid_work > 0 then
     raise exception
-      '0434 preflight: % room_work assignment row(s) cross a staff/property boundary or reference a missing staff row; refusing to reconcile',
+      '0434 preflight: % room_work assignment row(s) do not target an active same-property housekeeping staff row; refusing to reconcile',
       invalid_work;
   end if;
 
@@ -311,6 +322,25 @@ begin
       invalid_history;
   end if;
 
+  select count(*)
+    into invalid_active_history
+    from public.room_work w
+    cross join lateral jsonb_array_elements(w.assignment_history) h
+    left join public.staff s on s.id::text = h->>'housekeeper_id'
+   where coalesce((h->>'is_active')::boolean, false)
+     and h->>'housekeeper_id' is not null
+     and (
+       s.id is null
+       or s.property_id is distinct from w.property_id
+       or s.department is distinct from 'housekeeping'
+       or coalesce(s.is_active, true) = false
+     );
+  if invalid_active_history > 0 then
+    raise exception
+      '0434 preflight: % active room_work assignment history snapshot(s) do not target an active same-property housekeeping staff row; refusing to reconcile',
+      invalid_active_history;
+  end if;
+
   with source_staff as (
     select t.property_id, t.business_date, t.room_number, t.assignee_id as staff_id
       from public.cleaning_tasks t
@@ -362,6 +392,7 @@ declare
   v_current jsonb;
   v_cache_snapshot jsonb;
   v_active_staff uuid;
+  v_cache_staff record;
   v_workflow_status text;
   v_cache_now timestamptz;
   v_has_work boolean;
@@ -386,6 +417,25 @@ begin
     raise exception
       'E_LEGACY_PLAN_AMBIGUOUS: property, date, room, and task id are required'
       using errcode = 'not_null_violation';
+  end if;
+
+  if new.assignee_id is not null then
+    select s.property_id, s.department, coalesce(s.is_active, true) as is_active
+      into v_cache_staff
+      from public.staff s
+     where s.id = new.assignee_id;
+    if not found then
+      raise exception
+        'E_LEGACY_ASSIGNMENT_INVALID_TARGET: task cache assignee must be an active same-property housekeeper'
+        using errcode = 'check_violation';
+    end if;
+    if v_cache_staff.property_id is distinct from new.property_id
+       or v_cache_staff.department is distinct from 'housekeeping'
+       or v_cache_staff.is_active = false then
+      raise exception
+        'E_LEGACY_ASSIGNMENT_INVALID_TARGET: task cache assignee must be an active same-property housekeeper'
+        using errcode = 'check_violation';
+    end if;
   end if;
 
   select * into v_owner
@@ -783,8 +833,59 @@ begin
     'changed_at', now()
   );
   v_same_payload := v_latest is not null
-    and (v_latest - 'event' - 'changed_at' - 'updated_at')
-      = (v_snapshot - 'event' - 'changed_at' - 'updated_at');
+    and v_latest ? 'property_id'
+    and v_latest ? 'cleaning_task_id'
+    and v_latest ? 'housekeeper_id'
+    and v_latest ? 'queue_order'
+    and v_latest ? 'is_active'
+    and v_latest ? 'assigned_at'
+    and v_latest ? 'assigned_by'
+    and v_latest ? 'assigned_by_user_id'
+    and v_latest ? 'reason'
+    and v_latest ? 'score'
+    and v_latest ? 'created_at'
+    and v_latest ? 'updated_at'
+    and jsonb_build_object(
+      'id', v_latest->>'id',
+      'property_id', v_latest->>'property_id',
+      'cleaning_task_id', v_latest->>'cleaning_task_id',
+      'housekeeper_id', v_latest->>'housekeeper_id',
+      'queue_order', (v_latest->>'queue_order')::integer,
+      'is_active', (v_latest->>'is_active')::boolean,
+      'assigned_at', (v_latest->>'assigned_at')::timestamptz,
+      'assigned_by', v_latest->>'assigned_by',
+      'assigned_by_user_id', (v_latest->>'assigned_by_user_id')::uuid,
+      'reason', v_latest->>'reason',
+      'score', (v_latest->>'score')::numeric,
+      'created_at', (v_latest->>'created_at')::timestamptz,
+      'updated_at', (v_latest->>'updated_at')::timestamptz
+    ) = jsonb_build_object(
+      'id', new.id,
+      'property_id', new.property_id,
+      'cleaning_task_id', new.cleaning_task_id,
+      'housekeeper_id', new.housekeeper_id,
+      'queue_order', new.queue_order,
+      'is_active', new.is_active,
+      'assigned_at', new.assigned_at,
+      'assigned_by', new.assigned_by,
+      'assigned_by_user_id', new.assigned_by_user_id,
+      'reason', new.reason,
+      'score', new.score,
+      'created_at', new.created_at,
+      'updated_at', new.updated_at
+    );
+  -- hk_assignments inherits the deployed _pms_set_updated_at BEFORE trigger,
+  -- so a retry changes only updated_at even when the caller repeats the exact
+  -- same payload. Keep updated_at in the full comparator above, but treat
+  -- this one server-generated timestamp as an exact retry when every other
+  -- identity/payload field is byte-for-byte unchanged.
+  if not v_same_payload
+     and v_latest is not null
+     and v_latest ? 'updated_at'
+     and (v_latest - 'event' - 'changed_at' - 'updated_at')
+       = (v_snapshot - 'event' - 'changed_at' - 'updated_at') then
+    v_same_payload := true;
+  end if;
   v_clear := not new.is_active
     and v_work.assigned_staff_id = new.housekeeper_id
     and (v_latest is null or coalesce((v_latest->>'is_active')::boolean, false));
@@ -1061,35 +1162,103 @@ update public.room_work w
                   select 1
                     from jsonb_array_elements(w.assignment_history) h
                    where h->>'id' = a.id::text
-                     and h->>'property_id' = a.property_id::text
-                     and h->>'cleaning_task_id' = a.cleaning_task_id::text
-                     and h->>'housekeeper_id' = a.housekeeper_id::text
-                     and h->>'queue_order' = a.queue_order::text
-                     and h->>'is_active' = a.is_active::text
-                     and h->>'assigned_by' is not distinct from a.assigned_by
-                     and h->>'reason' is not distinct from a.reason
-                     and h->>'score' is not distinct from a.score::text
+                     and h ? 'property_id'
+                     and h ? 'cleaning_task_id'
+                     and h ? 'housekeeper_id'
+                     and h ? 'queue_order'
+                     and h ? 'is_active'
+                     and h ? 'assigned_at'
+                     and h ? 'assigned_by'
+                     and h ? 'assigned_by_user_id'
+                     and h ? 'reason'
+                     and h ? 'score'
+                     and h ? 'created_at'
+                     and h ? 'updated_at'
+                     and jsonb_build_object(
+                       'id', h->>'id',
+                       'property_id', h->>'property_id',
+                       'cleaning_task_id', h->>'cleaning_task_id',
+                       'housekeeper_id', h->>'housekeeper_id',
+                       'queue_order', (h->>'queue_order')::integer,
+                       'is_active', (h->>'is_active')::boolean,
+                       'assigned_at', (h->>'assigned_at')::timestamptz,
+                       'assigned_by', h->>'assigned_by',
+                       'assigned_by_user_id', (h->>'assigned_by_user_id')::uuid,
+                       'reason', h->>'reason',
+                       'score', (h->>'score')::numeric,
+                       'created_at', (h->>'created_at')::timestamptz,
+                       'updated_at', (h->>'updated_at')::timestamptz
+                     ) = jsonb_build_object(
+                       'id', a.id,
+                       'property_id', a.property_id,
+                       'cleaning_task_id', a.cleaning_task_id,
+                       'housekeeper_id', a.housekeeper_id,
+                       'queue_order', a.queue_order,
+                       'is_active', a.is_active,
+                       'assigned_at', a.assigned_at,
+                       'assigned_by', a.assigned_by,
+                       'assigned_by_user_id', a.assigned_by_user_id,
+                       'reason', a.reason,
+                       'score', a.score,
+                       'created_at', a.created_at,
+                       'updated_at', a.updated_at
+                     )
                 )
            ) snapshots
        ), '[]'::jsonb)
  where w.legacy_task_id is not null;
 
--- Reconcile the current assignment from all three proven sources. The
+-- Reconcile the current assignment from all four proven sources. The
 -- preflight above guarantees that every non-null candidate agrees, so source
--- priority is deterministic rather than a hidden conflict resolver.
+-- priority is deterministic rather than a hidden conflict resolver. A
+-- complete active history snapshot is last: it restores current state only
+-- when hk_assignments, the task cache, and room_work current columns are all
+-- absent, while preserving every history receipt.
 update public.room_work w
-   set assigned_staff_id = coalesce(s.active_staff_id, s.cache_staff_id, w.assigned_staff_id),
+   set assigned_staff_id = coalesce(s.active_staff_id, s.cache_staff_id, w.assigned_staff_id, s.history_staff_id),
        assigned_source = case
          when s.active_staff_id is not null then case when s.active_assigned_by = 'auto' then 'auto' else 'manager' end
          when s.cache_staff_id is not null then coalesce(w.assigned_source, 'pms_import')
+         when w.assigned_staff_id is not null then w.assigned_source
+         when s.history_staff_id is not null then case when s.history_assigned_by = 'auto' then 'auto' else 'manager' end
          else w.assigned_source
        end,
-       assignment_queue_order = coalesce(s.active_queue_order, w.assignment_queue_order),
-       assignment_assigned_at = coalesce(s.active_assigned_at, w.assignment_assigned_at),
-       assignment_assigned_by = coalesce(s.active_assigned_by, w.assignment_assigned_by),
-       assignment_assigned_by_user_id = coalesce(s.active_assigned_by_user_id, w.assignment_assigned_by_user_id),
-       assignment_reason = coalesce(s.active_reason, w.assignment_reason),
-       assignment_score = coalesce(s.active_score, w.assignment_score)
+       assignment_queue_order = case
+         when s.active_staff_id is not null then s.active_queue_order
+         when s.cache_staff_id is not null or w.assigned_staff_id is not null then w.assignment_queue_order
+         when s.history_staff_id is not null then s.history_queue_order
+         else w.assignment_queue_order
+       end,
+       assignment_assigned_at = case
+         when s.active_staff_id is not null then s.active_assigned_at
+         when s.cache_staff_id is not null or w.assigned_staff_id is not null then w.assignment_assigned_at
+         when s.history_staff_id is not null then s.history_assigned_at
+         else w.assignment_assigned_at
+       end,
+       assignment_assigned_by = case
+         when s.active_staff_id is not null then s.active_assigned_by
+         when s.cache_staff_id is not null or w.assigned_staff_id is not null then w.assignment_assigned_by
+         when s.history_staff_id is not null then s.history_assigned_by
+         else w.assignment_assigned_by
+       end,
+       assignment_assigned_by_user_id = case
+         when s.active_staff_id is not null then s.active_assigned_by_user_id
+         when s.cache_staff_id is not null or w.assigned_staff_id is not null then w.assignment_assigned_by_user_id
+         when s.history_staff_id is not null then s.history_assigned_by_user_id
+         else w.assignment_assigned_by_user_id
+       end,
+       assignment_reason = case
+         when s.active_staff_id is not null then s.active_reason
+         when s.cache_staff_id is not null or w.assigned_staff_id is not null then w.assignment_reason
+         when s.history_staff_id is not null then s.history_reason
+         else w.assignment_reason
+       end,
+       assignment_score = case
+         when s.active_staff_id is not null then s.active_score
+         when s.cache_staff_id is not null or w.assigned_staff_id is not null then w.assignment_score
+         when s.history_staff_id is not null then s.history_score
+         else w.assignment_score
+       end
   from (
     select w0.id,
            t.assignee_id as cache_staff_id,
@@ -1099,7 +1268,14 @@ update public.room_work w
            a.assigned_by as active_assigned_by,
            a.assigned_by_user_id as active_assigned_by_user_id,
            a.reason as active_reason,
-           a.score as active_score
+           a.score as active_score,
+           history.history_staff_id,
+           history.history_queue_order,
+           history.history_assigned_at,
+           history.history_assigned_by,
+           history.history_assigned_by_user_id,
+           history.history_reason,
+           history.history_score
       from public.room_work w0
       left join public.cleaning_tasks t on t.id = w0.legacy_task_id
       left join lateral (
@@ -1112,6 +1288,31 @@ update public.room_work w
          order by a.assigned_at desc, a.created_at desc, a.id desc
          limit 1
       ) a on true
+      left join lateral (
+        select
+          (h.snapshot->>'housekeeper_id')::uuid as history_staff_id,
+          (h.snapshot->>'queue_order')::integer as history_queue_order,
+          (h.snapshot->>'assigned_at')::timestamptz as history_assigned_at,
+          h.snapshot->>'assigned_by' as history_assigned_by,
+          (h.snapshot->>'assigned_by_user_id')::uuid as history_assigned_by_user_id,
+          h.snapshot->>'reason' as history_reason,
+          (h.snapshot->>'score')::numeric as history_score
+          from jsonb_array_elements(coalesce(w0.assignment_history, '[]'::jsonb)) with ordinality h(snapshot, position)
+         where h.snapshot->>'property_id' = w0.property_id::text
+           and h.snapshot->>'cleaning_task_id' = coalesce(w0.legacy_task_id, w0.id)::text
+           and h.snapshot->>'housekeeper_id' is not null
+           and h.snapshot ? 'queue_order'
+           and h.snapshot ? 'assigned_at'
+           and h.snapshot ? 'assigned_by'
+           and h.snapshot ? 'assigned_by_user_id'
+           and h.snapshot ? 'reason'
+           and h.snapshot ? 'score'
+           and h.snapshot ? 'created_at'
+           and h.snapshot ? 'updated_at'
+           and coalesce((h.snapshot->>'is_active')::boolean, false)
+         order by h.position desc
+         limit 1
+      ) history on true
   ) s
  where w.id = s.id;
 
