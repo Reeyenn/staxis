@@ -148,7 +148,10 @@ describe('property and capability readiness', () => {
     const main = section(
       appLayout,
       '<main className="cx-swap"',
-      '<div className="staxis-feedback-slot">',
+      // The corner slots that used to close this section are gone: the
+      // Obsidian redesign folded feedback and AI activity into the one AI
+      // object's overflow menu. The bar is what follows </main> now.
+      '<AskStaxisBar />',
     );
     assert.match(main, /propertiesError[\s\S]*?<RouteErrorState/);
     assert.match(main, /sectionOff[\s\S]*?children/);

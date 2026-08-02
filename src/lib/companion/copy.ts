@@ -305,5 +305,38 @@ export function companionLabels(): Record<string, string> {
     rulesEmpty: 'No standing rules yet. Tell Staxis one in the chat, like "always tell me before any order over $200".',
     rulesDelete: 'Remove',
     quietedNote: 'I will stay out of the way until you open me.',
+    pastChats: 'Past chats',
+    newChat: 'Start a new chat…',
+    search: 'Search',
+    back: 'Back',
+    more: 'More',
+    sendFeedback: 'Send feedback',
+    aiActivity: 'AI activity',
+    backToCorner: 'Back to the corner',
+    noPastChats: 'No past chats yet',
+    undo: 'Undo',
   };
+}
+
+// ─── The panel's eyebrow ────────────────────────────────────────────────────
+
+/**
+ * The one line of status at the top of the open panel.
+ *
+ * Says where the person is standing, because a companion that answers about
+ * the screen in front of you should be able to name it. Falls back to what it
+ * is doing rather than to nothing: an empty eyebrow reads as a broken header.
+ */
+export function panelEyebrow(input: {
+  page: CompanionPage | null;
+  streaming: boolean;
+}): string {
+  if (input.streaming) return 'Staxis · thinking…';
+  if (input.page) return `Staxis · on ${input.page.label.toLowerCase()}`;
+  return 'Staxis · thinking with you';
+}
+
+/** The counted heading over the past-chats list. */
+export function pastChatsHeading(count: number): string {
+  return count === 1 ? 'Past chats · 1' : `Past chats · ${count}`;
 }

@@ -63,14 +63,35 @@ const OUTCOME: Record<ActivityOutcome, OutcomeStyle> = {
   pending: { en: 'Pending',                 fg: C.ink2,     bg: C.ruleSoft,                Icon: Clock },
 };
 
-export function AiActivityButton() {
+export interface AiActivityButtonProps {
+  /** `menu` renders one row inside the companion panel's overflow menu. */
+  variant?: 'floating' | 'menu';
+  menuClassName?: string;
+  menuLabel?: string;
+  /** Controlled open state. Required by the menu variant. */
+  open?: boolean;
+  onOpenChange?: (open: boolean) => void;
+}
+
+export function AiActivityButton({
+  variant = 'floating',
+  menuClassName,
+  menuLabel = 'AI activity',
+  open: controlledOpen,
+  onOpenChange,
+}: AiActivityButtonProps = {}) {
   const { user } = useAuth();
   const { activePropertyId } = useProperty();
   const { lang } = useLang();
   const hotelStanding = useActiveHotelStanding();
   const es = false;
-  const [open, setOpen] = useState(false);
+  const [uncontrolledOpen, setUncontrolledOpen] = useState(false);
   const [mounted, setMounted] = useState(false);
+  const open = controlledOpen ?? uncontrolledOpen;
+  const setOpen = useCallback((next: boolean) => {
+    setUncontrolledOpen(next);
+    onOpenChange?.(next);
+  }, [onOpenChange]);
   const [activityCache, setActivityCache] = useState<ActivityCache | null>(null);
   useEffect(() => setMounted(true), []);
 
@@ -87,7 +108,17 @@ export function AiActivityButton() {
 
   return (
     <>
-      {canSee && !open && (
+      {canSee && variant === 'menu' && (
+        <button
+          type="button"
+          role="menuitem"
+          className={menuClassName}
+          onClick={() => setOpen(true)}
+        >
+          {menuLabel}
+        </button>
+      )}
+      {canSee && variant === 'floating' && !open && (
         <button
           onClick={() => setOpen(true)}
           aria-label={'AI activity'}

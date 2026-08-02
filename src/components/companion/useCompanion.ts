@@ -1,66 +1,60 @@
 'use client';
 
 // ═══════════════════════════════════════════════════════════════════════════
-// The companion bubble.
+// The companion's brain, with no face of its own.
 //
-// A FACE ON THE CHAT THAT ALREADY EXISTS. Everything the assistant can do, it
-// does through AskStaxisBar and /api/agent/command. This component starts no
-// second conversation, holds no messages, and owns no prompt. When somebody
-// opens it and wants to talk, it wakes the bar and gets out of the way.
+// This was CompanionBubble.tsx until the Obsidian design landed. The design
+// makes the mark in the corner BOTH the companion at rest and the way into the
+// conversation, so there cannot be two objects down there any more. The chat
+// surface (thread, composer, streaming, approvals) already lives in
+// AskStaxisBar, so the face moved there and everything that decides WHAT the
+// companion has to say moved here.
 //
-// WHAT IT DOES OWN
-//   • the four states: resting, has-something, speaking, open
-//   • the decision to speak, which is delegated whole to decideCompanionSpeech
-//   • walking somebody to a screen, from a constant allowlist
+// WHAT THIS OWNS
+//   • the once-per-(person, hotel) bootstrap read of /api/companion
+//   • the decision to speak, delegated whole to decideCompanionSpeech
 //   • the one-time teach line after a manual flow
-//   • the standing-rules and tour entries in the panel
+//   • the tour, and walking somebody to a screen from a constant allowlist
+//   • persisting what was said, declined, accepted and taught
 //
-// WHY SO LITTLE LOGIC IS IN HERE
-// The suite runs under --conditions=react-server, where react-dom/server will
-// not load, so a component with hooks cannot be mounted in a test. The house
-// answer is to keep the decisions in plain modules and exercise THOSE. So this
-// file is a shell over src/lib/companion/*: every rule with a consequence lives
-// there and is tested there, and what is left here is wiring.
+// WHAT IT DOES NOT OWN
+//   Any pixel, and any message. It starts no conversation and holds none: when
+//   somebody says yes to something that needs talking about, it hands the turn
+//   to the one chat brain through the ask bridge, exactly as the bubble did.
 //
-// MOUNTING is gated by companionMounts() before anything else runs, so a
-// housekeeper screen or a housekeeping hat gets nothing at all. See mount.ts.
+// WHY THE RULES ARE STILL NOT IN HERE
+// The suite runs under --conditions=react-server, where a component or hook
+// with React state cannot be mounted in a test. So every rule with a
+// consequence stays in src/lib/companion/*, is tested there, and what is left
+// here is wiring. Nothing below decides anything a test cannot already reach.
 // ═══════════════════════════════════════════════════════════════════════════
 
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { usePathname, useRouter } from 'next/navigation';
 import { useAuth } from '@/contexts/AuthContext';
 import { useProperty } from '@/contexts/PropertyContext';
 import { fetchWithAuth, SessionEndedError } from '@/lib/api-fetch';
 import { readEnvelope } from '@/lib/api-envelope';
-import { dispatchAskCommand, dispatchAskOpen } from '@/components/agent/ask-command-bridge';
 import type { AppRole } from '@/lib/roles';
 import { companionMounts } from '@/lib/companion/mount';
 import {
   decideCompanionSpeech,
   decideTeachMoment,
-  EMPTY_COMPANION_MEMORY,
   parseCompanionMemory,
+  DEFAULT_COMPANION_SEVERITY,
   type CompanionCandidate,
   type CompanionMemory,
+  type CompanionSeverity,
   type CompanionSpeech,
   type TeachFlow,
 } from '@/lib/companion/manners';
+import { arrivalLine, offerQuestion, type SleepReason } from '@/lib/companion/copy';
 import {
-  arrivalLine,
-  companionLabels,
-  offerQuestion,
-  sleepLine,
-  type SleepReason,
-} from '@/lib/companion/copy';
-import {
-  pagesFor,
   resolveDestination,
   tourFor,
   pageForPath,
   type CompanionPage,
-  type CompanionPageKey,
 } from '@/lib/companion/pages';
-import { COMPANION_CSS } from './companion-css';
 import {
   focusIsTyping,
   subscribeToCompanionBusy,
@@ -76,29 +70,70 @@ interface Bootstrap {
   availability: { awake: boolean; reason: SleepReason | null };
 }
 
-type Panel = 'closed' | 'open';
-
-/** What is currently on the card, if anything. */
-type Showing =
+/** What the companion currently has to say, if anything. */
+export type CompanionShowing =
   | { kind: 'none' }
-  | { kind: 'speech'; speech: Extract<CompanionSpeech, { kind: 'welcome' | 'offer' }> }
-  | { kind: 'teach'; flow: TeachFlow; text: string; example: string }
-  | { kind: 'arrived'; line: string };
+  | {
+      kind: 'speech';
+      speech: Extract<CompanionSpeech, { kind: 'welcome' | 'offer' }>;
+      /** The question under the sentence, already resolved for the panel. */
+      question: string;
+      severity: CompanionSeverity;
+    }
+  | { kind: 'teach'; flow: TeachFlow; text: string; example: string; severity: CompanionSeverity }
+  | { kind: 'arrived'; line: string; severity: CompanionSeverity };
 
-export function CompanionBubble() {
+/**
+ * The one clause the peek shows on hover.
+ *
+ * Null when there is nothing. That is not a failure state and must not be
+ * papered over with a greeting or a tip: the peek is a promise that the
+ * sentence in it is true and current, and hover doing nothing is the correct
+ * behaviour when no such sentence exists. A wrong sentence is worse than none.
+ */
+export interface CompanionPeek {
+  text: string;
+  severity: CompanionSeverity;
+}
+
+export interface CompanionApi {
+  /** False on a housekeeper screen, a public screen, or for a hat with no chat. */
+  mounts: boolean;
+  /** The AI layer is unavailable, and says so rather than spinning. */
+  asleep: boolean;
+  sleepReason: SleepReason | null;
+  showing: CompanionShowing;
+  peek: CompanionPeek | null;
+  /** The screen the person is standing on, for the panel's eyebrow. */
+  page: CompanionPage | null;
+  /** The role-sized tour, or empty when there is nothing worth touring. */
+  tour: readonly CompanionPage[];
+  tourStep: number | null;
+  answerYes: () => void;
+  answerNo: () => void;
+  dismiss: () => void;
+  quiet: () => void;
+  startTour: () => void;
+  nextTourStep: () => void;
+  goTo: (page: CompanionPage) => void;
+}
+
+/**
+ * @param onSeed  How to hand a turn to the one chat brain. The companion never
+ *                sends a message itself; it asks the caller to.
+ */
+export function useCompanion(onSeed: (text?: string) => void): CompanionApi {
   const { user } = useAuth();
   const { activeProperty, activePropertyId, properties } = useProperty();
   const pathname = usePathname();
   const router = useRouter();
 
   const [boot, setBoot] = useState<Bootstrap | null>(null);
-  const [panel, setPanel] = useState<Panel>('closed');
-  const [showing, setShowing] = useState<Showing>({ kind: 'none' });
+  const [showing, setShowing] = useState<CompanionShowing>({ kind: 'none' });
   const [quietThisSession, setQuiet] = useState(false);
   const [busy, setBusy] = useState(false);
   const [tourStep, setTourStep] = useState<number | null>(null);
 
-  const labels = useMemo(() => companionLabels(), []);
   const role = (user?.role ?? null) as AppRole | null;
   const gate = companionMounts({ pathname, role });
 
@@ -128,8 +163,8 @@ export function CompanionBubble() {
         });
       } catch (e) {
         // A signed-out mid-request is already redirecting; anything else means
-        // the companion simply does not appear this page load. It is a greeter,
-        // not a dependency.
+        // the companion simply has nothing to offer this page load. It is a
+        // greeter, not a dependency.
         if (e instanceof SessionEndedError) return;
       }
     })();
@@ -172,11 +207,12 @@ export function CompanionBubble() {
       });
       const envelope = await readEnvelope<{ memory: CompanionMemory }>(res);
       if (envelope.error === undefined && envelope.data) {
-        const server = parseCompanionMemory(envelope.data.memory);
-        setBoot((b) => (b ? { ...b, memory: server } : b));
+        setBoot((b) => (b ? { ...b, memory: parseCompanionMemory(envelope.data!.memory) } : b));
       }
     } catch { /* optimistic state stands for this page load */ }
   }, [activePropertyId]);
+
+  const page = useMemo(() => pageForPath(pathname), [pathname]);
 
   // ── Deciding to speak ────────────────────────────────────────────────────
   // Runs when the bootstrap lands and when the page changes. Every rule is in
@@ -184,9 +220,9 @@ export function CompanionBubble() {
   const spokenFor = useRef<string | null>(null);
   useEffect(() => {
     if (!boot || !gate.mounts) return;
-    if (showing.kind !== 'none' || panel === 'open') return;
+    if (showing.kind !== 'none') return;
 
-    const onScreen = pageForPath(pathname)?.key === 'staxis'
+    const onScreen = page?.key === 'staxis'
       // The Staxis list shows the findings themselves. Announcing one while it
       // is on the screen is the app saying the same true thing twice, which
       // reads as a bug. Suppress the whole class rather than diffing ids: the
@@ -227,7 +263,16 @@ export function CompanionBubble() {
     if (spokenFor.current === key) return;
     spokenFor.current = key;
 
-    setShowing({ kind: 'speech', speech });
+    setShowing({
+      kind: 'speech',
+      speech,
+      question: speech.kind === 'welcome'
+        ? speech.question
+        : offerQuestion(resolveDestination(speech.destination, {
+          role, enabledSections: activeProperty?.enabledSections,
+        })),
+      severity: speech.kind === 'offer' ? speech.severity : DEFAULT_COMPANION_SEVERITY,
+    });
     if (speech.kind === 'welcome') {
       void remember('welcomed', {}, (m) => ({ ...m, welcomedAt: new Date().toISOString() }));
     } else {
@@ -240,8 +285,8 @@ export function CompanionBubble() {
       }));
     }
   }, [
-    boot, gate.mounts, showing.kind, panel, pathname, busy, quietThisSession,
-    properties.length, activeProperty?.name, remember,
+    boot, gate.mounts, showing.kind, pathname, page, busy, quietThisSession,
+    properties.length, activeProperty?.name, activeProperty?.enabledSections, role, remember,
   ]);
 
   // ── Teach at the moment ──────────────────────────────────────────────────
@@ -260,7 +305,11 @@ export function CompanionBubble() {
         });
         if (!decision.teach) return b;
         setShowing({
-          kind: 'teach', flow, text: decision.text, example: decision.example,
+          kind: 'teach',
+          flow,
+          text: decision.text,
+          example: decision.example,
+          severity: 'ok',
         });
         void remember('taught', { flow }, (m) => ({
           ...m, taught: { ...m.taught, [flow]: true },
@@ -274,16 +323,11 @@ export function CompanionBubble() {
   // Client-side navigation to a CONSTANT from the allowlist. `page.href` is a
   // literal declared in pages.ts; nothing typed, stored or returned by a model
   // ever reaches router.push.
-  const goTo = useCallback((page: CompanionPage) => {
-    setPanel('closed');
-    router.push(page.href);
-    setShowing({ kind: 'arrived', line: arrivalLine(page.key) });
+  const goTo = useCallback((target: CompanionPage) => {
+    router.push(target.href);
+    setShowing({ kind: 'arrived', line: arrivalLine(target.key), severity: 'ok' });
   }, [router]);
 
-  const destinations = useMemo(
-    () => pagesFor({ role, enabledSections: activeProperty?.enabledSections }),
-    [role, activeProperty?.enabledSections],
-  );
   const tour = useMemo(
     () => tourFor({ role, enabledSections: activeProperty?.enabledSections }),
     [role, activeProperty?.enabledSections],
@@ -291,7 +335,6 @@ export function CompanionBubble() {
 
   const startTour = useCallback(() => {
     setShowing({ kind: 'none' });
-    setPanel('closed');
     if (tour.length === 0) return;
     setTourStep(0);
     goTo(tour[0]);
@@ -347,163 +390,63 @@ export function CompanionBubble() {
     }
     if (current.kind === 'speech' && current.speech.kind === 'offer') {
       const topic = current.speech.topic;
-      const page = resolveDestination(current.speech.destination, {
+      const target = resolveDestination(current.speech.destination, {
         role, enabledSections: activeProperty?.enabledSections,
       });
       setShowing({ kind: 'none' });
       void remember('accepted', { topic }, (m) => m);
-      if (page) goTo(page);
+      if (target) goTo(target);
+      return;
+    }
+    if (current.kind === 'teach') {
+      const example = current.example;
+      setShowing({ kind: 'none' });
+      onSeed(example);
       return;
     }
     setShowing({ kind: 'none' });
-  }, [showing, startTour, role, activeProperty?.enabledSections, goTo, remember]);
+  }, [showing, startTour, role, activeProperty?.enabledSections, goTo, remember, onSeed]);
 
-  const openConversation = useCallback((seed?: string) => {
+  const dismiss = useCallback(() => {
     setShowing({ kind: 'none' });
-    setPanel('closed');
-    if (seed) dispatchAskCommand(seed, window, 'companion');
-    else dispatchAskOpen();
+    setTourStep(null);
   }, []);
 
-  // ── Render ───────────────────────────────────────────────────────────────
+  const quiet = useCallback(() => {
+    setShowing({ kind: 'none' });
+    setTourStep(null);
+    setQuiet(true);
+  }, []);
 
-  if (!gate.mounts || !user || !activePropertyId) return null;
+  // ── The peek ─────────────────────────────────────────────────────────────
+  //
+  // Only an OFFER becomes a peek. A welcome is a conversation to have with the
+  // panel open, not a clause to flash under a cursor, and an arrival line is
+  // about a screen the person is already looking at. When there is no offer the
+  // peek is null and hover does nothing, which is the whole point.
+  const peek = useMemo<CompanionPeek | null>(() => {
+    if (showing.kind !== 'speech') return null;
+    if (showing.speech.kind !== 'offer') return null;
+    const text = showing.speech.sentence.trim();
+    if (!text) return null;
+    return { text, severity: showing.severity };
+  }, [showing]);
 
-  const asleep = boot !== null && !boot.availability.awake;
-  const hasSomething = showing.kind !== 'none';
-
-  return (
-    <>
-      <style dangerouslySetInnerHTML={{ __html: COMPANION_CSS }} />
-      <div className="cmp-root">
-        {panel === 'open' && (
-          <div className="cmp-panel" role="dialog" aria-label={labels.panelTitle}>
-            <div className="cmp-head">
-              <span className="cmp-title">{labels.panelTitle}</span>
-              <button type="button" className="cmp-quiet" onClick={() => setPanel('closed')}>
-                {labels.close}
-              </button>
-            </div>
-
-            {asleep ? (
-              // The honest sleep state. Never a spinner: a spinner is a lie told
-              // slowly, and the reason is knowable, so it gets said.
-              <p className="cmp-say">{sleepLine(boot?.availability.reason ?? 'unknown')}</p>
-            ) : (
-              <>
-                <button type="button" className="cmp-row" onClick={() => openConversation()}>
-                  {labels.askPlaceholder}
-                </button>
-                <div className="cmp-sep" />
-                <span className="cmp-title">{labels.whereTo}</span>
-                <div className="cmp-rows">
-                  {destinations.map((page) => (
-                    <button
-                      key={page.key}
-                      type="button"
-                      className="cmp-row"
-                      onClick={() => goTo(page)}
-                    >
-                      {page.label}
-                    </button>
-                  ))}
-                </div>
-                <div className="cmp-sep" />
-                {/* A No to the tour means never offered again UNPROMPTED. The
-                    entry stays here forever, because "I said no on my first
-                    day" and "I never want this" are different sentences. */}
-                <button type="button" className="cmp-row" onClick={startTour}>
-                  {labels.showMeAround}
-                </button>
-              </>
-            )}
-          </div>
-        )}
-
-        {panel === 'closed' && showing.kind === 'speech' && (
-          <div className="cmp-card" role="status">
-            <p className="cmp-say">
-              {showing.speech.kind === 'welcome'
-                ? showing.speech.greeting
-                : showing.speech.sentence}
-            </p>
-            <p className="cmp-ask">
-              {showing.speech.kind === 'welcome'
-                ? showing.speech.question
-                : offerQuestion(resolveDestination(showing.speech.destination, {
-                  role, enabledSections: activeProperty?.enabledSections,
-                }))}
-            </p>
-            <div className="cmp-acts">
-              <button type="button" className="cmp-btn cmp-yes" onClick={answerYes}>
-                {labels.yes}
-              </button>
-              <button type="button" className="cmp-btn" onClick={answerNo}>
-                {labels.no}
-              </button>
-            </div>
-          </div>
-        )}
-
-        {panel === 'closed' && showing.kind === 'teach' && (
-          <div className="cmp-card" role="status">
-            <p className="cmp-say">{showing.text}</p>
-            <p className="cmp-eg">{showing.example}</p>
-            <div className="cmp-acts">
-              <button
-                type="button"
-                className="cmp-btn cmp-yes"
-                onClick={() => openConversation(showing.example)}
-              >
-                {labels.yes}
-              </button>
-              <button type="button" className="cmp-btn" onClick={() => setShowing({ kind: 'none' })}>
-                {labels.dismiss}
-              </button>
-            </div>
-          </div>
-        )}
-
-        {panel === 'closed' && showing.kind === 'arrived' && (
-          <div className="cmp-card" role="status">
-            <p className="cmp-say">{showing.line}</p>
-            <div className="cmp-acts">
-              {tourStep !== null && tourStep + 1 < tour.length ? (
-                <button type="button" className="cmp-btn cmp-yes" onClick={nextTourStep}>
-                  {`Next: ${tour[tourStep + 1].label}`}
-                </button>
-              ) : null}
-              <button
-                type="button"
-                className="cmp-btn"
-                onClick={() => { setShowing({ kind: 'none' }); setTourStep(null); }}
-              >
-                {labels.close}
-              </button>
-            </div>
-          </div>
-        )}
-
-        {hasSomething && panel === 'closed' && (
-          <button type="button" className="cmp-quiet" onClick={() => { setShowing({ kind: 'none' }); setQuiet(true); }}>
-            {labels.quietForNow}
-          </button>
-        )}
-
-        <button
-          type="button"
-          className={['cmp-dot', hasSomething && 'cmp-nudge', asleep && 'cmp-asleep']
-            .filter(Boolean).join(' ')}
-          aria-label={panel === 'open' ? labels.close : labels.open}
-          aria-expanded={panel === 'open'}
-          onClick={() => {
-            setShowing({ kind: 'none' });
-            setPanel((p) => (p === 'open' ? 'closed' : 'open'));
-          }}
-        >
-          <span className="cmp-mark" />
-        </button>
-      </div>
-    </>
-  );
+  return {
+    mounts: gate.mounts,
+    asleep: boot !== null && !boot.availability.awake,
+    sleepReason: boot?.availability.reason ?? null,
+    showing,
+    peek,
+    page,
+    tour,
+    tourStep,
+    answerYes,
+    answerNo,
+    dismiss,
+    quiet,
+    startTour,
+    nextTourStep,
+    goTo,
+  };
 }
