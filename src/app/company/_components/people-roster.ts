@@ -8,7 +8,9 @@
 //                   A housekeeper who shares a phone at the linen closet has
 //                   one and no login at all.
 // The canonical join is `account_property_staff_links`, surfaced by
-// GET /api/auth/team as `staffId` on each account row.
+// GET /api/auth/team as `staffId` on each account row. A historical inactive
+// link is surfaced separately as `historicalStaffId` for identity matching
+// only; it is never an authority input.
 //
 // Until 2026-07-27 the UI mirrored the storage: Staff → Directory listed the
 // `staff` table, My Hotel → People listed `accounts` and then, underneath, the
@@ -61,6 +63,8 @@ export interface RosterAccountLike {
   /** From `account_property_staff_links` for THIS hotel, never the legacy
    *  account-wide `accounts.staff_id`. */
   staffId: string | null;
+  /** Read-only identity hint from an inactive link for THIS hotel. */
+  historicalStaffId?: string | null;
 }
 
 /** The minimum a staff row must carry to be merged. */
@@ -133,9 +137,9 @@ function compareNames(left: string, right: string): number {
  * Merge every login and every employment record for one hotel into a single
  * roster, grouped by department.
  *
- * A linked human appears ONCE. An account whose `staffId` points at a staff row
- * we were not given (a roster still loading, or a row from another hotel) is
- * kept as a login-only person rather than vanishing.
+ * A linked human appears ONCE. An account whose active or historical identity
+ * points at a staff row we were not given (a roster still loading, or a row
+ * from another hotel) is kept as a login-only person rather than vanishing.
  *
  * Sort order inside a group is alphabetical. Operational schedule data does not
  * affect this identity-first surface; it belongs on the manager Staff page.
@@ -150,12 +154,24 @@ export function buildHotelRoster<
   const claimedStaffIds = new Set<string>();
   const people: RosterPerson<A, S>[] = [];
 
+  const identityStaffId = (account: A): string | null => {
+    const activeStaffId = account.staffId;
+    const historicalStaffId = account.historicalStaffId ?? null;
+    // The route rejects this shape before it reaches the panel. Keep the pure
+    // merge conservative as well if a stale/test payload bypasses that route.
+    if (activeStaffId && historicalStaffId && activeStaffId !== historicalStaffId) {
+      return null;
+    }
+    return activeStaffId ?? historicalStaffId;
+  };
+
   for (const account of accounts) {
     // A staff row can only be claimed once. The database enforces this too
     // (one active link per staff row), but a stale payload must not delete a
     // person from the screen.
-    const linked = account.staffId && !claimedStaffIds.has(account.staffId)
-      ? staffById.get(account.staffId) ?? null
+    const linkedStaffId = identityStaffId(account);
+    const linked = linkedStaffId && !claimedStaffIds.has(linkedStaffId)
+      ? staffById.get(linkedStaffId) ?? null
       : null;
     if (linked) claimedStaffIds.add(linked.id);
     people.push({

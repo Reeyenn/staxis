@@ -1119,6 +1119,45 @@ describe('GET /api/auth/team action contract', () => {
     }
   });
 
+  test('projects an archived selected-hotel link as identity history without active authority', async () => {
+    const archivedStaff = '44444444-4444-4444-8444-444444444444';
+    state.staffLinks.push({
+      account_id: LOCAL_ID,
+      property_id: HOTEL_A,
+      staff_id: archivedStaff,
+      is_active: false,
+    });
+
+    const response = await GET(request('GET', `/api/auth/team?hotelId=${HOTEL_A}`));
+    assert.equal(response.status, 200);
+    const body = await response.json();
+    const local = body.data.team.find((row: { accountId: string }) => row.accountId === LOCAL_ID);
+    assert.ok(local);
+    assert.equal(local.staffId, null);
+    assert.equal(local.historicalStaffId, archivedStaff);
+    assert.equal(local.staffLinkAllowed, false);
+  });
+
+  test('fails closed when archived and active links make one account identity ambiguous', async () => {
+    state.staffLinks.push(
+      {
+        account_id: LOCAL_ID,
+        property_id: HOTEL_A,
+        staff_id: '44444444-4444-4444-8444-444444444444',
+        is_active: true,
+      },
+      {
+        account_id: LOCAL_ID,
+        property_id: HOTEL_A,
+        staff_id: '55555555-5555-5555-8555-555555555555',
+        is_active: false,
+      },
+    );
+    const response = await GET(request('GET', `/api/auth/team?hotelId=${HOTEL_A}`));
+    assert.equal(response.status, 503);
+    assert.equal(response.headers.get('retry-after'), '5');
+  });
+
   test('keeps roster access under manage_team while manage_users disables sensitive actions', async () => {
     state.capabilityOverrides.push({
       property_id: HOTEL_A,
