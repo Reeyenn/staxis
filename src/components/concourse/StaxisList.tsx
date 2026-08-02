@@ -44,15 +44,28 @@ import { emptyListNote } from '@/lib/feed/one-list-copy';
 import type { KnowledgeEventDTO } from '@/lib/knowledge/types';
 
 import { FindingCards, type QueueReadState } from './FindingCards';
+import { KnowsPanel } from './KnowsView';
 import { LogbookPopup } from './LogbookPopup';
-import { CalendarView, isoDay } from './list-calendar';
+import {
+  CalendarView,
+  WeekStrip,
+  dayOf,
+  dayStamp,
+  dayTitle,
+  isoDay,
+  weekCells,
+  weekRangeLabel,
+} from './list-calendar';
+import { CxIcon } from './icons';
 import { EventEditor } from '@/app/communications/_components/CalendarPane';
 import {
-  AssignedByMeView,
-  AssignerNoticesView,
+  AssignedRailPanel,
   ComposerView,
+  EventRowView,
+  KnowsRailButton,
   LIST_CSS,
   LogRowView,
+  LogbookRailPanel,
   WorkRowView,
   composerDefaults,
   composerPayload,
@@ -67,9 +80,19 @@ export interface StaxisListProps {
   onReadState?: (state: QueueReadState) => void;
   /** Manager+ only. Gates the findings FETCH, not just the render. */
   canSeeFindings: boolean;
+  /** The hotel's name, for the day header's context line. */
+  hotelName?: string | null;
+  /**
+   * The morning brief, already built by QueueView (which owns the read, so the
+   * brief and the liveness line cannot drift apart). Rendered as the LAST entry
+   * on the spine: it is where the day started.
+   */
+  brief?: React.ReactNode;
 }
 
-export function StaxisList({ propertyId, lang, focusId, onReadState, canSeeFindings }: StaxisListProps) {
+export function StaxisList({
+  propertyId, lang, focusId, onReadState, canSeeFindings, hotelName = null, brief,
+}: StaxisListProps) {
   const { user } = useAuth();
 
   // ── the work ─────────────────────────────────────────────────────────────
@@ -101,15 +124,22 @@ export function StaxisList({ propertyId, lang, focusId, onReadState, canSeeFindi
   );
   const logbookInList = prefsData?.prefs.logbookInList === true;
 
-  // Only fetched when the switch is on. A hotel that never turned it on never
-  // pays for the read.
+  // Always read now, not only when the merge switch is on: the rail's log-book
+  // panel shows today's notes on its face, which was the point of making it a
+  // PANEL rather than a button. The switch below still decides whether those
+  // notes also become rows on the timeline.
   const { data: logData } = useApiResource<{ entries: LogEntryDTO[] }>(
     `/api/comms/logbook?pid=${propertyId}`,
-    { enabled: !!propertyId && logbookInList, pollMs: 120_000, keepDataOnError: true },
+    { enabled: !!propertyId, pollMs: 120_000, keepDataOnError: true },
   );
   // Bounded on purpose: the log book is a place you go. Merging every note
   // ever written into the list would bury the work under the diary.
   const logEntries = React.useMemo(() => (logbookInList ? (logData?.entries ?? []).slice(0, 5) : []), [logbookInList, logData]);
+  // What the rail panel shows: today's notes, whatever the switch says.
+  const railLog = React.useMemo(
+    () => (logData?.entries ?? []).filter((e) => localIso(new Date(e.createdAt)) === todayIso),
+    [logData, todayIso],
+  );
 
   // ── who a task can go to, and who I am ───────────────────────────────────
   // Housekeepers are already absent from what this returns; the exclusion lives
@@ -133,18 +163,28 @@ export function StaxisList({ propertyId, lang, focusId, onReadState, canSeeFindi
   const [composerBusy, setComposerBusy] = React.useState(false);
   const [composerError, setComposerError] = React.useState<string | null>(null);
 
-  // List or Calendar. Both are the SAME rows; the calendar keeps the ones that
-  // name a day and puts them on one. The switch moved here from the old
-  // Communications To-do pane along with the list itself.
-  const [view, setView] = React.useState<'list' | 'calendar'>('list');
+  // ── which day the timeline is showing ────────────────────────────────────
+  // The `List` / `Calendar` toggle is gone (2026-08-01). The week strip in the
+  // day header is the ambient calendar and is always on screen; the MONTH grid
+  // opens over it. Clicking a day in either re-anchors this list.
+  const [anchorIso, setAnchorIso] = React.useState<string>(() => isoDay(now));
+  const [monthOpen, setMonthOpen] = React.useState(false);
   const [month, setMonth] = React.useState<{ year: number; monthIndex: number }>(
     () => ({ year: now.getFullYear(), monthIndex: now.getMonth() }),
   );
-  const [selectedDay, setSelectedDay] = React.useState<string | null>(() => isoDay(now));
   const [addingEvent, setAddingEvent] = React.useState(false);
 
   const [drawerOpen, setDrawerOpen] = React.useState(false);
   const [logbookOpen, setLogbookOpen] = React.useState(false);
+  // Knows is an overlay, not a route and not a tab. The page stays mounted
+  // behind it, so it is never somewhere you have to navigate back from.
+  const [knowsOpen, setKnowsOpen] = React.useState(false);
+  // Reported up by the panel the first time it reads. Never guessed: until
+  // Knows has actually answered, the rail button says nothing about how much
+  // Staxis knows rather than printing a number it has not been told.
+  const [factCount, setFactCount] = React.useState<number | null>(null);
+
+  const isToday = anchorIso === todayIso;
 
   // ── ?view= opens the thing the link named ────────────────────────────────
   // The dashboard's "Go to Log Book" and "Go to Calendar" buttons point here.
@@ -157,9 +197,15 @@ export function StaxisList({ propertyId, lang, focusId, onReadState, canSeeFindi
   // touching window during render is a hydration mismatch.
   React.useEffect(() => {
     try {
-      const v = new URLSearchParams(window.location.search).get('view');
-      if (v === 'calendar') setView('calendar');
+      const params = new URLSearchParams(window.location.search);
+      const v = params.get('view');
+      if (v === 'calendar') setMonthOpen(true);
       else if (v === 'logbook') setLogbookOpen(true);
+      // ?tab=knows used to select a TAB on this page. The tab is gone; the
+      // link still has to land somebody on what Staxis knows, so it opens the
+      // panel instead. The old Communications Knowledge and Contacts screens
+      // still redirect here.
+      if (params.get('tab') === 'knows') setKnowsOpen(true);
     } catch { /* no search params available — keep the defaults */ }
   }, []);
   const [mergeBusy, setMergeBusy] = React.useState(false);
@@ -171,11 +217,13 @@ export function StaxisList({ propertyId, lang, focusId, onReadState, canSeeFindi
       { enabled: !!propertyId && drawerOpen, keepDataOnError: true },
     );
 
-  // The hotel's own dated events share the calendar. Only fetched when the
-  // calendar is actually on screen: the list view has no use for them.
+  // The hotel's own dated events. Fetched on every load now, not only when a
+  // calendar was open: the week strip is permanent chrome and a 2pm vendor
+  // visit is a timeline row, so "is anything on today" is a question this page
+  // always has to answer.
   const { data: eventData, reload: reloadEvents } = useApiResource<{ events: KnowledgeEventDTO[] }>(
     `/api/knowledge/events?pid=${propertyId}`,
-    { enabled: !!propertyId && view === 'calendar', keepDataOnError: true },
+    { enabled: !!propertyId, keepDataOnError: true },
   );
   const events = React.useMemo(() => eventData?.events ?? [], [eventData]);
 
@@ -348,124 +396,210 @@ export function StaxisList({ propertyId, lang, focusId, onReadState, canSeeFindi
     return { year: d.getFullYear(), monthIndex: d.getMonth() };
   });
 
+  /** Re-anchor the whole page on a day. The title, the context line and the
+   *  spine all follow, from either the week strip or the month grid. */
+  const anchorOn = React.useCallback((iso: string) => {
+    setAnchorIso(iso);
+    setMonthOpen(false);
+    const d = new Date(`${iso}T12:00:00`);
+    if (!Number.isNaN(d.getTime())) setMonth({ year: d.getFullYear(), monthIndex: d.getMonth() });
+  }, []);
+
+  const stepWeek = (delta: number) => {
+    const d = new Date(`${anchorIso}T12:00:00`);
+    d.setDate(d.getDate() + delta * 7);
+    anchorOn(isoDay(d));
+  };
+
+  // ── what belongs on the day being shown ──────────────────────────────────
+  // TODAY is the live page and shows everything still open, however old — the
+  // late fire-extinguisher check from Tuesday is the first thing anybody needs
+  // to see on Thursday, and hiding it behind its own date would be the bug.
+  // ANY OTHER DAY shows only what that day names, which is what a person means
+  // when they click Saturday.
+  const dayItems = React.useMemo(
+    () => (isToday ? items : items.filter((it) => dayOf(it) === anchorIso)),
+    [isToday, items, anchorIso],
+  );
+  const dayEvents = React.useMemo(
+    () => events.filter((ev) => anchorIso >= ev.eventDate && anchorIso <= (ev.endDate ?? ev.eventDate)),
+    [events, anchorIso],
+  );
+  const cells = React.useMemo(
+    () => weekCells(anchorIso, todayIso, items, events),
+    [anchorIso, todayIso, items, events],
+  );
+
+  const context = [
+    dayStamp(anchorIso),
+    hotelName,
+  ].filter(Boolean).join(' · ');
+
   return (
     <>
       <style dangerouslySetInnerHTML={{ __html: LIST_CSS }} />
 
-      {/* Right side, below the Queue/Knows row, down by profile and settings. */}
-      <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 10, flexWrap: 'wrap' }}>
-        <div role="group" aria-label="Choose a view" style={{ display: 'flex', gap: 6, marginRight: 'auto' }}>
-          <button
-            type="button"
-            className={view === 'list' ? 'fd-act fd-yes' : 'fd-act'}
-            aria-pressed={view === 'list'}
-            onClick={() => setView('list')}
-          >
-            List
-          </button>
-          <button
-            type="button"
-            className={view === 'calendar' ? 'fd-act fd-yes' : 'fd-act'}
-            aria-pressed={view === 'calendar'}
-            onClick={() => setView('calendar')}
-          >
-            Calendar
-          </button>
+      {/* ── the day header ── */}
+      <div className="fx-head">
+        <div>
+          <h1 className="fx-day">{dayTitle(anchorIso)}</h1>
+          <div className="fx-context">{context}</div>
         </div>
-        <button
-          type="button"
-          className={notices.length > 0 ? 'fd-act fd-yes' : 'fd-act'}
-          onClick={() => (drawerOpen ? setDrawerOpen(false) : openDrawer())}
-          aria-expanded={drawerOpen}
-        >
-          Assigned by me{notices.length > 0 ? ` (${notices.length})` : ''}
-        </button>
-        <button type="button" className="fd-act" onClick={() => setLogbookOpen(true)}>
-          Log book
-        </button>
-      </div>
 
-      {!drawerOpen && <AssignerNoticesView notices={notices} onOpenDrawer={openDrawer} />}
-
-      {drawerOpen && (
-        <AssignedByMeView
-          entries={assignedData?.assigned ?? []}
-          now={now}
-          loading={!assignedData && !assignedError}
-          readFailed={!!assignedError}
-        />
-      )}
-
-      {rowError && <div className="sl-err">{rowError}</div>}
-
-      {view === 'list' ? (
-        <FindingCards
-          key={propertyId}
-          lang={lang}
-          propertyId={propertyId}
-          focusId={focusId}
-          hideLiveness
-          bottomHeadroom
-          onReadState={onReadState}
-          // "What Staxis noticed" is a manager's heading, and findings are
-          // manager-only. A front-desk clerk sees this same list for their own
-          // to-dos and nothing Staxis noticed, so the default heading described
-          // a half of the screen they cannot be shown, over rows they typed
-          // themselves.
-          heading={canSeeFindings ? undefined : 'What needs doing'}
-          emptyNote={emptyListNote({ canSeeFindings })}
-          composer={(
-            <ComposerView
-              open={composerOpen}
-              state={composer}
-              people={people}
-              busy={composerBusy}
-              error={composerError}
-              onOpen={() => setComposerOpen(true)}
-              onCancel={() => { setComposerOpen(false); setComposerError(null); }}
-              onChange={setComposer}
-              onSubmit={submitComposer}
-            />
-          )}
-          interleave={{
-            items,
-            logEntries,
-            renderItem,
-            renderLog: (entry) => <LogRowView entry={entry} onOpen={() => setLogbookOpen(true)} />,
-          }}
-        />
-      ) : (
-        <>
-        {canSeeFindings && (
-          <div className="fd-acts">
-            <button type="button" className="fd-act" onClick={() => setAddingEvent((v) => !v)}>
-              {addingEvent ? 'Cancel' : 'Add event'}
+        <div className="fx-headr">
+          <div className="fx-cal">
+            <button type="button" className="fx-step" aria-label="Previous week" onClick={() => stepWeek(-1)}>
+              <CxIcon name="back" size={12} />
+            </button>
+            <span className="fx-range">{weekRangeLabel(cells)}</span>
+            <button type="button" className="fx-step" aria-label="Next week" onClick={() => stepWeek(1)}>
+              <CxIcon name="forward" size={12} />
+            </button>
+            <span className="fx-vrule" aria-hidden />
+            <button
+              type="button"
+              className="fx-month"
+              aria-expanded={monthOpen}
+              onClick={() => setMonthOpen((v) => !v)}
+            >
+              <CxIcon name="calendar" size={13} />
+              Month
             </button>
           </div>
-        )}
-        {addingEvent && canSeeFindings && (
-          <EventEditor
-            pid={propertyId}
-            L={IDENTITY_COPY}
-            onDone={async () => { setAddingEvent(false); await reloadEvents(); }}
-            onCancel={() => setAddingEvent(false)}
+
+          <WeekStrip cells={cells} selectedIso={anchorIso} onSelectDay={anchorOn} />
+
+          {monthOpen && (
+            <div className="fx-monthpop">
+              <CalendarView
+                year={month.year}
+                monthIndex={month.monthIndex}
+                todayIso={todayIso}
+                selectedIso={anchorIso}
+                items={items}
+                events={events}
+                onSelectDay={anchorOn}
+                onStepMonth={stepMonth}
+                renderItem={renderItem}
+                canManageEvents={canSeeFindings}
+                onDeleteEvent={removeEvent}
+                onAddEvent={() => { setMonthOpen(false); setAddingEvent(true); }}
+                gridOnly
+              />
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* ── the two lanes ── */}
+      <div className="fx-body">
+        <div>
+          {rowError && <div className="sl-err">{rowError}</div>}
+
+          {addingEvent && canSeeFindings && (
+            <div style={{ marginBottom: 14 }}>
+              <EventEditor
+                pid={propertyId}
+                L={IDENTITY_COPY}
+                onDone={async () => { setAddingEvent(false); await reloadEvents(); }}
+                onCancel={() => setAddingEvent(false)}
+              />
+            </div>
+          )}
+
+          <FindingCards
+            key={propertyId}
+            lang={lang}
+            propertyId={propertyId}
+            focusId={focusId}
+            // The brief in the tail already ends in the same sentence, built by
+            // the same function over the same run row. Two copies drift the
+            // moment a card is silenced, and a manager reading two nearly
+            // identical lines with different numbers reads a bug.
+            hideLiveness
+            bottomHeadroom
+            spine
+            onReadState={onReadState}
+            // "What Staxis noticed" is a manager's heading, and findings are
+            // manager-only. A front-desk clerk sees this same list for their own
+            // to-dos and nothing Staxis noticed, so the default heading described
+            // a half of the screen they cannot be shown, over rows they typed
+            // themselves.
+            heading={canSeeFindings ? undefined : 'What needs doing'}
+            emptyNote={emptyListNote({ canSeeFindings })}
+            // Both belong to TODAY. The brief is this morning's record and a
+            // finding is what Staxis believes right now; neither happened on
+            // the Saturday somebody just clicked.
+            showFindings={isToday}
+            tail={isToday ? brief : null}
+            composer={(
+              <ComposerView
+                open={composerOpen}
+                state={composer}
+                people={people}
+                busy={composerBusy}
+                error={composerError}
+                onOpen={() => setComposerOpen(true)}
+                onCancel={() => { setComposerOpen(false); setComposerError(null); }}
+                onChange={setComposer}
+                onSubmit={submitComposer}
+              />
+            )}
+            interleave={{
+              items: dayItems,
+              // The log book and the AI's findings are both about NOW. On any
+              // day but today the page is a dated list, and pinning today's
+              // notes under Saturday would be filing them on the wrong day.
+              logEntries: isToday ? logEntries : [],
+              events: dayEvents,
+              renderItem,
+              renderLog: (entry) => <LogRowView entry={entry} onOpen={() => setLogbookOpen(true)} />,
+              renderEvent: (event) => (
+                <EventRowView
+                  event={event}
+                  meta={eventMeta(event)}
+                  canManage={canSeeFindings}
+                  onRemove={removeEvent}
+                />
+              ),
+            }}
           />
-        )}
-        <CalendarView
-          year={month.year}
-          monthIndex={month.monthIndex}
-          todayIso={todayIso}
-          selectedIso={selectedDay}
-          items={items}
-          events={events}
-          onSelectDay={setSelectedDay}
-          onStepMonth={stepMonth}
-          renderItem={renderItem}
-          canManageEvents={canSeeFindings}
-          onDeleteEvent={removeEvent}
-        />
-        </>
-      )}
+        </div>
+
+        {/* ── the rail: three panels with their content showing ── */}
+        <div className="fx-rail">
+          <KnowsRailButton factCount={factCount} onOpen={() => setKnowsOpen(true)} />
+
+          <AssignedRailPanel
+            notices={notices}
+            entries={assignedData?.assigned ?? []}
+            now={now}
+            open={drawerOpen}
+            loading={!assignedData && !assignedError}
+            readFailed={!!assignedError}
+            onOpen={openDrawer}
+            onClose={() => setDrawerOpen(false)}
+          />
+
+          <LogbookRailPanel
+            entries={railLog}
+            mergeOn={logbookInList}
+            mergeReady={!!prefsData}
+            mergeBusy={mergeBusy}
+            mergeError={mergeError}
+            onToggleMerge={toggleMerge}
+            onOpen={() => setLogbookOpen(true)}
+          />
+        </div>
+      </div>
+
+      <KnowsPanel
+        open={knowsOpen}
+        lang={lang}
+        hotelName={hotelName}
+        onClose={() => setKnowsOpen(false)}
+        onStats={setFactCount}
+      />
 
       <LogbookPopup
         open={logbookOpen}
@@ -480,6 +614,20 @@ export function StaxisList({ propertyId, lang, focusId, onReadState, canSeeFindi
       />
     </>
   );
+}
+
+/**
+ * The mono line beside an event's title.
+ *
+ * Deliberately NOT a clock time. A `knowledge_events` row carries a DAY and an
+ * optional end day, and nothing finer — inventing "2:00 PM" to match the design
+ * reference would be the screen making something up, which is the one thing
+ * this product does not do. It says the true thing: all day, or how far it runs.
+ */
+function eventMeta(event: KnowledgeEventDTO): string {
+  return event.endDate && event.endDate !== event.eventDate
+    ? `Through ${dayStamp(event.endDate)}`
+    : 'All day';
 }
 
 /** The event editor takes the Communications copy helper, which is identity. */

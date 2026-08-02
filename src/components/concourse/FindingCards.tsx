@@ -56,8 +56,9 @@ import {
   SessionEndedError,
 } from '@/lib/api-fetch';
 import { readEnvelope } from '@/lib/api-envelope';
-import { buildOneList, type ListRow } from '@/lib/feed/one-list';
+import { buildOneList, partitionTimeline, type ListRow } from '@/lib/feed/one-list';
 import type { LogEntryDTO } from '@/lib/comms/types';
+import type { KnowledgeEventDTO } from '@/lib/knowledge/types';
 import type { WorklistItem } from '@/lib/worklist/types';
 
 import { CxIcon } from './icons';
@@ -127,6 +128,16 @@ export const S = {
   cancel: { en: 'Cancel', },
   seeNumbers: { en: 'See the numbers', },
   hideNumbers: { en: 'Hide the numbers', },
+  // ── the ink card (2026-08-01 redesign) ──
+  // Everything Staxis says is dark; everything you owe is light. The badge is
+  // what makes the card's voice explicit rather than implied by its colour.
+  foundBadge: { en: 'Staxis found', },
+  theNumbers: { en: 'The numbers', },
+  // The ink card opens its provenance line with this, where the light card had
+  // it mid-sentence after the price. Same claim, sentence case.
+  basedOnLead: { en: 'Based on', },
+  moreActions: { en: 'More ways to put this down', },
+  earlier: { en: 'Earlier today', },
   tapToSee: { en: 'Tap to see them.', },
   basedOn: { en: 'based on', },
   updated: { en: 'UPDATED', },
@@ -281,17 +292,20 @@ function humanKey(key: string): string {
  * it can be called directly and its element tree walked — which is the only
  * way to prove the fallback line below actually reaches a Spanish reader.
  */
-export function Receipt({ finding, lang }: { finding: QueueFinding; lang: Lang }) {
+export function Receipt({ finding, lang, ink = false }: { finding: QueueFinding; lang: Lang; ink?: boolean }) {
   const es = false;
   const entries = [
     ...Object.entries(finding.evidence.values ?? {}),
     ...Object.entries(finding.evidence.params ?? {}),
   ];
   const asOf = formatShortDate(finding.asOf, lang);
+  const c = ink
+    ? { box: 'fx-inkbox', row: 'fx-inkrow', k: 'fx-inkk', v: 'fx-inkv', foot: 'fx-inkfoot' }
+    : { box: 'fd-rcpt', row: 'fd-rrow', k: 'fd-rk', v: 'fd-rv', foot: 'fd-rfoot' };
   return (
-    <div className="fd-rcpt">
+    <div className={c.box}>
       {entries.length === 0 ? (
-        <div className="fd-rv" style={{ textAlign: 'left', fontSize: 12, color: '#8A9187' }}>
+        <div className={c.v} style={{ textAlign: 'left', fontSize: 12, color: ink ? '#B9C0B8' : '#8A9187' }}>
           {/* The same basis line the card above shows, through the same
               language pick. Reading `evidence.basis` straight — which this
               branch used to do — printed English into a Spanish receipt for
@@ -300,13 +314,13 @@ export function Receipt({ finding, lang }: { finding: QueueFinding; lang: Lang }
         </div>
       ) : (
         entries.map(([k, v]) => (
-          <div className="fd-rrow" key={k}>
-            <span className="fd-rk">{humanKey(k)}</span>
-            <span className="fd-rv">{renderValue(v, lang)}</span>
+          <div className={c.row} key={k}>
+            <span className={c.k}>{humanKey(k)}</span>
+            <span className={c.v}>{renderValue(v, lang)}</span>
           </div>
         ))
       )}
-      <div className="fd-rfoot">
+      <div className={c.foot}>
         {(S.receiptQuery.en)}: {finding.evidence.queryId || (S.noValue.en)}
         {asOf ? ` · ${S.asOf.en} ${asOf}` : ''}
       </div>
@@ -446,6 +460,296 @@ function toneClass(tone: ClosureButton['tone']): string {
   return 'fd-act';
 }
 
+/** "9:12 AM", or empty when the stamp is unusable. */
+function clockStamp(iso: string | null | undefined): string {
+  if (!iso) return '';
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return '';
+  return d.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
+}
+
+/**
+ * The ink card — a finding as it appears on the /feed timeline.
+ *
+ * HOOK-FREE AND FULLY CONTROLLED, like the row views next door: every piece of
+ * state it draws is passed in from `FindingCard`, so the whole card can be
+ * walked in a test that cannot mount a component.
+ *
+ * ─── one primary action, and only one ──────────────────────────────────────
+ * The old card put every verb the finding supported in a row of same-weight
+ * pills: `Handled it`, `Seen`, `Not doing this`, `See the numbers`, plus the
+ * approve button when there was one. Five things of equal loudness is not a
+ * choice, it is a wall. The founder's ruling is one solid primary; the rest
+ * move behind `···`. Nothing is removed: every verdict `closureButtons`
+ * returns is still reachable, and the confirm step still belongs to the button
+ * that asked for it.
+ */
+function InkCard({
+  cardRef, finding, lang, busy, focused, readOnly, note, href, hrefLabel,
+  price, seen, priceBasis, evidenceBasis, age, closures, pending,
+  showReceipt, menuOpen, onToggleMenu, onStartConfirm, onToggleReceipt, onVerdict, onAction,
+}: {
+  cardRef: React.RefObject<HTMLDivElement | null>;
+  finding: QueueFinding;
+  lang: Lang;
+  busy: boolean;
+  focused: boolean;
+  readOnly: boolean;
+  note: string | null;
+  href: string | null;
+  hrefLabel?: string;
+  price: string | null;
+  seen: string | null;
+  priceBasis: string | null;
+  evidenceBasis: string | null;
+  age: string | null;
+  closures: ClosureButton[];
+  pending: ClosureButton | null;
+  showReceipt: boolean;
+  menuOpen: boolean;
+  onToggleMenu: (open: boolean) => void;
+  onStartConfirm: (verdict: ClosureVerdict | null) => void;
+  onToggleReceipt: () => void;
+  onVerdict: (findingId: string, verdict: Verdict) => void;
+  onAction?: (actionId: string, intent: 'execute' | 'undo') => void;
+}) {
+  const L = <K extends keyof typeof S>(k: K) => (S[k].en);
+  const action = finding.action ?? null;
+  const locked = !!action && isSignOffLocked(finding) && action.state === 'proposed';
+  const approvable = !!action && offersApproval(finding) && !locked;
+  const undoable = !!action && offersUndo(finding);
+
+  // The offer sentence renders in FULL even when the button is taken away, so
+  // a reader always sees exactly what Staxis would do and exactly who has to
+  // say yes. Hiding it would teach a GM that Staxis withholds things.
+  const suggestion = action && (approvable || locked || action.state === 'proposed') ? action.offerEn : null;
+
+  // Which verbs are on the face, and which are behind the `···`.
+  const primaryClosure = approvable || undoable ? null : (closures[0] ?? null);
+  const faceClosures = approvable || undoable ? closures.slice(0, 1) : closures.slice(1, 2);
+  const menuClosures = approvable || undoable ? closures.slice(1) : closures.slice(2);
+  const stamp = clockStamp(finding.lastSeenAt || finding.firstSeenAt);
+  const tail = [price ? seen : null, age].filter(Boolean).join(' · ');
+  // Two claims, two lines, tight together. They are the SAME sentence on most
+  // cards ("your last 4 HVAC invoices" both prices the fix and is the
+  // evidence), so the duplicate is dropped rather than printed twice — a card
+  // that says the same thing twice reads as a card that is padding. They are
+  // kept on separate lines rather than joined, because `evidence.basis` is
+  // sometimes a phrase and sometimes a sentence, and gluing a phrase onto the
+  // end of a sentence produces a line no writer would have written.
+  const provenance = [
+    priceBasis ? `${L('basedOnLead')} ${priceBasis}.` : null,
+    evidenceBasis && evidenceBasis !== priceBasis ? evidenceBasis : null,
+  ].filter((line): line is string => !!line);
+
+  return (
+    <div
+      ref={cardRef}
+      data-finding-id={finding.id}
+      className={`fx-ink-card${focused ? ' fx-focused' : ''}`}
+    >
+      <span className="fx-scan" aria-hidden />
+
+      <div className="fx-inkhead">
+        <span className="fx-badge">
+          <CxIcon name="staxis" size={11} strokeWidth={2.2} />
+          {L('foundBadge')}
+        </span>
+        <span className="fx-cat">
+          {cardEyebrowLabel(finding, lang)}
+          {finding.status === 'updated' ? ` · ${L('updated')}` : ''}
+        </span>
+        {stamp && <span className="fx-stamp">{stamp}</span>}
+        {price
+          ? <span className="fx-money">{price}</span>
+          : seen ? <span className="fx-tally">{seen}</span> : null}
+      </div>
+
+      {/* Only ever set on a screen showing more than one hotel. */}
+      {finding.hotel && <div className="fx-cat" style={{ marginTop: 9 }}>{finding.hotel.name}</div>}
+
+      <div className="fx-headline">{cardPhrasing(finding, lang)}</div>
+
+      {note && <div className="fx-prov">{note}</div>}
+
+      {/* Where the number came from. A price is a RANGE with its basis
+          attached, or it is not mentioned at all.
+          The two bases are the SAME sentence on most cards ("your last 4 HVAC
+          invoices" prices the fix and is also the evidence), so printing both
+          produced "Based on your last 4 HVAC invoices. your last 4 HVAC
+          invoices". The dedupe is not cosmetic: a card that says the same thing
+          twice reads as a card that is padding. */}
+      {provenance.map((line, index) => (
+        <div className="fx-prov" key={line} style={index > 0 ? { marginTop: 2 } : undefined}>
+          {line}
+          {/* The hint rides the LAST line, so it always sits at the end of the
+              block whichever of the two bases the card actually has. */}
+          {evidenceBasis && index === provenance.length - 1
+            ? <span className="fx-hintw"> {L('tapToSee')}</span>
+            : null}
+        </div>
+      ))}
+
+      {tail && <div className="fx-prov"><span className="fx-hintw">{tail}</span></div>}
+
+      {suggestion && (
+        <div className="fx-sugg">
+          <span className="fx-suggi" aria-hidden><CxIcon name="staxis" size={14} strokeWidth={1.9} /></span>
+          <span className="fx-suggt">{suggestion}</span>
+        </div>
+      )}
+
+      {locked && (
+        <div className="fx-inknote fx-hold">{signOffNotice(finding.signOff!, lang)}</div>
+      )}
+      {readOnly && (approvable || closures.length > 0) && (
+        <div className="fx-inknote fx-hold">{L('readOnly')}</div>
+      )}
+
+      {/* What became of the fix. Never optimistic: the tap may honestly come
+          back "I did not do that, and here is why". */}
+      {undoable && <div className="fx-inknote fx-ok">{action!.receiptEn ?? ''}</div>}
+      {action?.state === 'undone' && <div className="fx-inknote fx-ok">{L('undone')}</div>}
+      {action?.state === 'declined_changed' && (
+        <div className="fx-inknote fx-hold">{declinedExplanation(action, lang)}</div>
+      )}
+      {action?.state === 'failed' && <div className="fx-inknote fx-bad">{L('actionFailed')}</div>}
+
+      {showReceipt && <Receipt finding={finding} lang={lang} ink />}
+
+      <div className="fx-inkacts">
+        {pending ? (
+          <>
+            <span className="fx-sure">{pending.confirm!.prompt}</span>
+            <button
+              type="button"
+              className="fx-ib fx-warn"
+              disabled={busy}
+              onClick={() => { onStartConfirm(null); onVerdict(finding.id, pending.verdict); }}
+            >
+              {pending.confirm!.yes}
+            </button>
+            <button type="button" className="fx-ib" onClick={() => onStartConfirm(null)}>
+              {L('cancel')}
+            </button>
+          </>
+        ) : (
+          <>
+            {!readOnly && approvable && (
+              <button
+                type="button"
+                className="fx-ib fx-go"
+                disabled={busy}
+                onClick={() => onAction?.(action!.id, 'execute')}
+              >
+                <CxIcon name="check" size={14} strokeWidth={2.4} />
+                {busy ? L('working') : action!.labelEn}
+              </button>
+            )}
+            {!readOnly && undoable && (
+              <button
+                type="button"
+                className="fx-ib fx-go"
+                disabled={busy}
+                onClick={() => onAction?.(action!.id, 'undo')}
+              >
+                {busy ? L('undoing') : L('undo')}
+              </button>
+            )}
+            {!readOnly && primaryClosure && (
+              <button
+                type="button"
+                className="fx-ib fx-go"
+                disabled={busy}
+                title={primaryClosure.hint ?? undefined}
+                onClick={() =>
+                  primaryClosure.confirm ? onStartConfirm(primaryClosure.verdict) : onVerdict(finding.id, primaryClosure.verdict)
+                }
+              >
+                {primaryClosure.label}
+              </button>
+            )}
+            {!readOnly && faceClosures.map((b) => (
+              <button
+                key={b.verdict}
+                type="button"
+                className="fx-ib"
+                disabled={busy}
+                title={b.hint ?? undefined}
+                onClick={() => (b.confirm ? onStartConfirm(b.verdict) : onVerdict(finding.id, b.verdict))}
+              >
+                {b.label}
+              </button>
+            ))}
+
+            {/* Reading is the whole point of a read-only card, so this one
+                control never goes away. */}
+            <button
+              type="button"
+              className="fx-ib fx-link"
+              onClick={onToggleReceipt}
+              aria-expanded={showReceipt}
+            >
+              <CxIcon name="chart" size={14} strokeWidth={1.9} />
+              {showReceipt ? L('hideNumbers') : L('theNumbers')}
+            </button>
+
+            {href && (
+              <a className="fx-ib fx-link" href={href}>{hrefLabel ?? 'Open in this hotel'}</a>
+            )}
+
+            {!readOnly && menuClosures.length > 0 && (
+              <>
+                <button
+                  type="button"
+                  className="fx-ib fx-more"
+                  aria-haspopup="menu"
+                  aria-expanded={menuOpen}
+                  aria-label={L('moreActions')}
+                  onClick={() => onToggleMenu(!menuOpen)}
+                >
+                  <span aria-hidden>···</span>
+                </button>
+                {menuOpen && (
+                  <>
+                    {/* Click anywhere else and the menu goes away. A menu with
+                        no way out that is not one of its own items is a trap. */}
+                    <button
+                      type="button"
+                      aria-label={L('cancel')}
+                      onClick={() => onToggleMenu(false)}
+                      style={{ position: 'fixed', inset: 0, zIndex: 19, background: 'transparent', border: 'none', cursor: 'default' }}
+                    />
+                    <div className="fx-menu" role="menu">
+                      {menuClosures.map((b) => (
+                        <button
+                          key={b.verdict}
+                          type="button"
+                          role="menuitem"
+                          className={b.tone === 'danger' ? 'fx-danger' : undefined}
+                          disabled={busy}
+                          title={b.hint ?? undefined}
+                          onClick={() => {
+                            onToggleMenu(false);
+                            if (b.confirm) onStartConfirm(b.verdict);
+                            else onVerdict(finding.id, b.verdict);
+                          }}
+                        >
+                          {b.label}
+                        </button>
+                      ))}
+                    </div>
+                  </>
+                )}
+              </>
+            )}
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
 interface CardProps {
   finding: QueueFinding;
   lang: Lang;
@@ -491,6 +795,16 @@ interface CardProps {
    * twice in a sentence that invites the wrong reading.
    */
   hideOccurrence?: boolean;
+  /**
+   * Draw the card in INK — the /feed timeline's voice for everything Staxis
+   * says, against the white rows of everything a person owes.
+   *
+   * Off by default, so the portfolio queue and the maintenance-patterns popup
+   * render exactly what they rendered before this existed. Those screens have
+   * their own chrome and their own question; the ink/paper split is an answer
+   * to "which of these two lists am I looking at", which only the one list has.
+   */
+  ink?: boolean;
 }
 
 function FindingCard({
@@ -506,6 +820,7 @@ function FindingCard({
   href = null,
   hrefLabel,
   hideOccurrence = false,
+  ink = false,
 }: CardProps) {
   const es = false;
   const L = <K extends keyof typeof S>(k: K) => (S[k].en);
@@ -516,6 +831,9 @@ function FindingCard({
   // for it — "Not doing this" and "Mute" are the same verdict wearing different
   // words, and a shared boolean would put one button's prompt under the other.
   const [confirming, setConfirming] = React.useState<ClosureVerdict | null>(null);
+  // The ink card's `···`. One primary action per card was the founder's ruling;
+  // the remaining verbs live in here rather than as four more look-alike pills.
+  const [menuOpen, setMenuOpen] = React.useState(false);
   // Once per card, not once per toggle. Opening and closing the receipt three
   // times is one manager reading it, and counting three would be inventing
   // engagement out of a fidget.
@@ -565,6 +883,44 @@ function FindingCard({
     const retry = setTimeout(bring, 150);
     return () => clearTimeout(retry);
   }, [focused]);
+
+  if (ink) {
+    return (
+      <InkCard
+        cardRef={ref}
+        finding={finding}
+        lang={lang}
+        busy={busy}
+        focused={focused}
+        readOnly={readOnly}
+        note={note}
+        href={href}
+        hrefLabel={hrefLabel}
+        price={price}
+        seen={seen}
+        priceBasis={priceBasis}
+        evidenceBasis={evidenceBasis}
+        age={age}
+        closures={closures}
+        pending={pending}
+        showReceipt={showReceipt}
+        menuOpen={menuOpen}
+        onToggleMenu={setMenuOpen}
+        onStartConfirm={setConfirming}
+        onToggleReceipt={() => {
+          setShowReceipt((v) => {
+            if (!v && !engaged.current) {
+              engaged.current = true;
+              onEngage?.(finding.id);
+            }
+            return !v;
+          });
+        }}
+        onVerdict={onVerdict}
+        onAction={onAction}
+      />
+    );
+  }
 
   return (
     <div
@@ -785,11 +1141,29 @@ export interface FindingCardsViewProps {
   interleave?: {
     items: readonly WorklistItem[];
     logEntries?: readonly LogEntryDTO[];
+    /** The hotel's own dated things on the day being shown. */
+    events?: readonly KnowledgeEventDTO[];
     renderItem: (item: WorklistItem) => React.ReactNode;
     renderLog?: (entry: LogEntryDTO) => React.ReactNode;
+    renderEvent?: (event: KnowledgeEventDTO) => React.ReactNode;
   };
   /** The inline "+" composer row, pinned directly under the heading. */
   composer?: React.ReactNode;
+  /**
+   * Draw the list as the /feed TIMELINE: one vertical spine, a marker per
+   * entry, findings in ink, and the day split into what is still owed (top)
+   * and what has already happened (under an "Earlier today" rule).
+   *
+   * Off by default. The portfolio queue and the maintenance-patterns popup pass
+   * nothing and get the plain stacked cards they always got — the split only
+   * makes sense on a screen that is one hotel's ONE DAY.
+   */
+  spine?: boolean;
+  /**
+   * The last thing on the spine. The morning brief goes here: it is generated
+   * once and then stays pinned at the bottom as the day's historical record.
+   */
+  tail?: React.ReactNode;
 }
 
 /**
@@ -860,6 +1234,8 @@ export function FindingCardsView({
   bottomHeadroom = false,
   interleave,
   composer,
+  spine = false,
+  tail,
 }: FindingCardsViewProps) {
   const es = false;
   const L = <K extends keyof typeof S>(k: K) => (S[k].en);
@@ -880,12 +1256,14 @@ export function FindingCardsView({
         findings: visible,
         items: interleave.items,
         logEntries: interleave.logEntries,
+        events: interleave.events,
         findingCap: visible.length,
       })
     : null;
   const rows: ListRow[] = merged
     ? merged.rows
     : visible.map((f) => ({ kind: 'finding', key: `finding:${f.id}`, finding: f }));
+  const split = spine ? partitionTimeline(rows) : null;
 
   const liveness = livenessLine(run, distinctDetectors(all), lang);
   const skipped = skippedNote(run, lang);
@@ -905,6 +1283,120 @@ export function FindingCardsView({
       <>
         <style dangerouslySetInnerHTML={{ __html: FD_CSS }} />
         <div className="fd-empty">{blank.note}</div>
+      </>
+    );
+  }
+
+  /** One row, drawn. Shared by the plain list and the spine. */
+  const drawRow = (row: ListRow): React.ReactNode => {
+    if (row.kind === 'item') return interleave?.renderItem(row.item);
+    if (row.kind === 'log') return interleave?.renderLog?.(row.entry);
+    if (row.kind === 'event') return interleave?.renderEvent?.(row.event);
+    const f = row.finding;
+    return (
+      <FindingCard
+        finding={f}
+        lang={lang}
+        busy={busyId === f.id}
+        focused={focusId === f.id}
+        readOnly={readOnly || readOnlyFor?.(f) === true}
+        onVerdict={onVerdict}
+        onEngage={onEngage}
+        onAction={onAction}
+        note={noteFor ? noteFor(f) : null}
+        href={hrefFor ? hrefFor(f) : null}
+        hrefLabel={hrefLabel}
+        hideOccurrence={hideOccurrence}
+        ink={spine}
+      />
+    );
+  };
+
+  /** The marker that sits on the spine beside a row. Three shapes, total. */
+  const drawEntry = (row: ListRow) => (
+    <div className={`fx-entry${row.kind === 'finding' ? ' fx-ink' : ''}`} key={row.key}>
+      <div className="fx-mark" aria-hidden>
+        {row.kind === 'finding' && <span className="fx-m-diamond" />}
+        {row.kind === 'item' && <span className={`fx-m-open${row.item.overdue ? ' fx-late' : ''}`} />}
+        {row.kind === 'event' && <span className="fx-m-event" />}
+        {row.kind === 'log' && <span className="fx-m-tick" />}
+      </div>
+      <div className="fx-slot">{drawRow(row)}</div>
+    </div>
+  );
+
+  const fold = showFoldToggle ? (
+    <div className={spine ? 'fx-entry' : 'fd-fold'}>
+      {spine && <div className="fx-mark" aria-hidden><span className="fx-m-tick" /></div>}
+      <div className={spine ? 'fx-slot' : undefined}>
+        <button
+          type="button"
+          className={spine ? 'fx-btn' : 'fd-act'}
+          onClick={() => setShowAll((v) => !v)}
+        >
+          {showAll ? L('showFewer') : `${L('showAll')} (${ranked.length})`}
+        </button>
+      </div>
+    </div>
+  ) : null;
+
+  if (spine) {
+    const owed = split?.owed ?? [];
+    const past = split?.past ?? [];
+    return (
+      <>
+        <style dangerouslySetInnerHTML={{ __html: FD_CSS }} />
+        <div className="fx-lane">
+          <span className="fx-spine" aria-hidden />
+
+          {readFailed && <div className="fd-err">{L('loadFailed')}</div>}
+          {saveFailed && <div className="fd-err">{L('saveFailed')}</div>}
+
+          {owed.map(drawEntry)}
+
+          {/* The composer sits at the bottom of what is still owed, because
+              that is what adding something does: it joins the owed cluster. */}
+          {composer && (
+            <div className="fx-entry" style={{ marginTop: owed.length > 0 ? 14 : 0 }}>
+              <div className="fx-mark" aria-hidden><span className="fx-m-add">+</span></div>
+              <div className="fx-slot">{composer}</div>
+            </div>
+          )}
+
+          {split?.showDivider && (
+            <div className="fx-entry fx-divider">
+              <div className="fx-mark" aria-hidden><span className="fx-m-tick" /></div>
+              <div className="fx-slot fx-div">
+                <span className="fx-divl">{L('earlier')}</span>
+                <span className="fx-divr" aria-hidden />
+              </div>
+            </div>
+          )}
+
+          {past.map(drawEntry)}
+
+          {fold}
+
+          {/* The morning brief: generated once, then the bottom of the day. */}
+          {tail && (
+            <div className="fx-entry fx-ink">
+              <div className="fx-mark" aria-hidden><span className="fx-m-diamond" /></div>
+              <div className="fx-slot">{tail}</div>
+            </div>
+          )}
+
+          {/* The liveness line closes the spine rather than opening it: it is
+              the proof the watcher ran, and proof belongs after the evidence. */}
+          {liveness.text && !hideLiveness && (
+            <div className={`fd-live${liveness.kind === 'stale' ? ' fd-stale' : ''}`} style={{ marginLeft: 46 }}>
+              <span className="fd-livedot" />
+              <span>{liveness.text}</span>
+            </div>
+          )}
+          {liveness.text && skipped && <div className="fd-skipped" style={{ marginLeft: 46 }}>{skipped}</div>}
+
+          {bottomHeadroom && rows.length > 0 && <div className="fd-headroom" aria-hidden />}
+        </div>
       </>
     );
   }
@@ -933,36 +1425,9 @@ export function FindingCardsView({
 
       {saveFailed && <div className="fd-err">{L('saveFailed')}</div>}
 
-      {rows.map((row) => {
-        if (row.kind === 'item') return <React.Fragment key={row.key}>{interleave?.renderItem(row.item)}</React.Fragment>;
-        if (row.kind === 'log') return <React.Fragment key={row.key}>{interleave?.renderLog?.(row.entry)}</React.Fragment>;
-        const f = row.finding;
-        return (
-          <FindingCard
-            key={row.key}
-            finding={f}
-            lang={lang}
-            busy={busyId === f.id}
-            focused={focusId === f.id}
-            readOnly={readOnly || readOnlyFor?.(f) === true}
-            onVerdict={onVerdict}
-            onEngage={onEngage}
-            onAction={onAction}
-            note={noteFor ? noteFor(f) : null}
-            href={hrefFor ? hrefFor(f) : null}
-            hrefLabel={hrefLabel}
-            hideOccurrence={hideOccurrence}
-          />
-        );
-      })}
+      {rows.map((row) => <React.Fragment key={row.key}>{drawRow(row)}</React.Fragment>)}
 
-      {showFoldToggle && (
-        <div className="fd-fold">
-          <button type="button" className="fd-act" onClick={() => setShowAll((v) => !v)}>
-            {showAll ? L('showFewer') : `${L('showAll')} (${ranked.length})`}
-          </button>
-        </div>
-      )}
+      {fold}
 
       {/* Room for the floating ask-composer to sit over nothing.
           The dock is `position: fixed` at the bottom of the viewport and it does
@@ -993,6 +1458,9 @@ export function FindingCards({
   composer,
   emptyNote,
   heading,
+  spine = false,
+  tail,
+  showFindings = true,
 }: {
   lang: Lang;
   focusId?: string | null;
@@ -1025,6 +1493,21 @@ export function FindingCards({
    * cannot be shown them must not be given a heading that announces them.
    */
   heading?: string;
+  /** Draw the /feed timeline. See FindingCardsViewProps.spine. */
+  spine?: boolean;
+  /** The last entry on the spine. See FindingCardsViewProps.tail. */
+  tail?: React.ReactNode;
+  /**
+   * Keep the cards off the screen without giving up the read.
+   *
+   * Set by the day timeline when it is anchored on a day that is NOT today.
+   * A finding is what Staxis believes about the hotel RIGHT NOW, stamped with
+   * the moment it noticed — putting this morning's 9:12 card under "Earlier
+   * today" on next Saturday's page would be filing it on a day it did not
+   * happen. The fetch is deliberately still made, so stepping back to today is
+   * instant rather than a fresh wait.
+   */
+  showFindings?: boolean;
 }) {
   const { user } = useAuth();
   const { activePropertyId } = useProperty();
@@ -1184,8 +1667,8 @@ export function FindingCards({
 
   return (
     <FindingCardsView
-      findings={(data?.findings ?? []).filter((f) => !settled.has(f.id))}
-      run={data?.run ?? null}
+      findings={showFindings ? (data?.findings ?? []).filter((f) => !settled.has(f.id)) : []}
+      run={showFindings ? (data?.run ?? null) : null}
       cap={data?.cap ?? DAILY_CARD_CAP}
       lang={lang}
       readFailed={!!error}
@@ -1204,6 +1687,8 @@ export function FindingCards({
       onAction={onAction}
       interleave={interleave}
       composer={composer}
+      spine={spine}
+      tail={tail}
     />
   );
 }

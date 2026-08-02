@@ -1,21 +1,29 @@
 'use client';
 
 // ════════════════════════════════════════════════════════════════════
-// Staxis — the section the pill-bar badge points at. Two views behind
-// one toggle:
+// Staxis — the section the pill-bar badge points at, and the page a GM
+// lands on to run the hotel.
 //
-//   Queue  what Staxis has NOTICED at this hotel — findings, each with
-//          the numbers behind it, and where Staxis has a fix it can
-//          perform, an offer the manager approves. (It was once an "AI
-//          approval queue" and only that; calling it one now describes
-//          a minority of what is on the screen, and reads as though
-//          nothing appears here unless a robot wants permission.)
-//   Knows  everything the copilot believes about this hotel, where it
-//          learned each thing, and Confirm / Edit / Remove for each.
+// ONE PAGE, NO TABS.
 //
-// Deliberately NOT a new top-level nav tab — Knows belongs beside the
-// queue because they are two halves of the same relationship with the
-// copilot: what it has seen, and what it thinks it knows.
+// It used to be two views behind a `Queue` / `Knows` toggle sitting at
+// the top of the screen. The 2026-08-01 redesign deleted that pair
+// outright, and the reason is worth keeping: the toggle put "what
+// Staxis has NOTICED" and "what Staxis BELIEVES" at identical weight,
+// so half the time a manager arrived on the one they had not come for,
+// and both halves read as dev buttons rather than product.
+//
+// What replaced it:
+//   • the page IS the queue. There is no queue affordance, because
+//     there is nothing else it could be.
+//   • Knows is one button in the right rail that opens a slide-over
+//     panel over this page. The page stays mounted behind it, so it is
+//     never somewhere you have to navigate back from. Every capability
+//     it had is untouched; only the way in changed.
+//
+// `?tab=knows` still works — the old Communications Knowledge and
+// Contacts screens redirect here — and now opens that panel. It is read
+// in StaxisList, which owns the panel's open state.
 //
 // (The pre-Concourse editorial feed and its /demo/feed showcase were
 // deleted 2026-07-13 as retired design.)
@@ -23,62 +31,14 @@
 
 export const dynamic = 'force-dynamic';
 
-import React, { useState } from 'react';
+import React from 'react';
 import { AppLayout } from '@/components/layout/AppLayout';
 import { QueueView } from '@/components/concourse/QueueView';
-import { KnowsView } from '@/components/concourse/KnowsView';
-import { CxStyle } from '@/components/concourse/concourse-css';
 import { useLang } from '@/contexts/LanguageContext';
-
-type FeedTab = 'queue' | 'knows';
 
 function FeedInner() {
   const { lang } = useLang();
-  const es = false;
-  const [tab, setTab] = useState<FeedTab>('queue');
-
-  // ?tab=knows opens straight on Knows. Added because the old Communications
-  // Knowledge and Contacts screens now redirect here — landing a redirect on
-  // the Queue tab would be a link that visibly goes to the wrong place.
-  //
-  // Read in an effect rather than during render: useSearchParams would force a
-  // Suspense boundary, and reading window during render is a hydration
-  // mismatch (React #418). Same mount-gated pattern CommsApp uses for ?view=.
-  React.useEffect(() => {
-    try {
-      if (new URLSearchParams(window.location.search).get('tab') === 'knows') setTab('knows');
-    } catch { /* no search params available — keep the default */ }
-  }, []);
-
-  const tabs: Array<{ key: FeedTab; label: string }> = [
-    { key: 'queue', label: 'Queue' },
-    { key: 'knows', label: 'Knows' },
-  ];
-
-  return (
-    <>
-      <CxStyle />
-      {/* Same max-width as the page bodies below so the toggle lines up with
-          their titles instead of floating against the viewport edge. */}
-      <div className="cx-page" style={{ paddingTop: 22, paddingBottom: 0 }}>
-        <div className="cx-seg" style={{ width: 'fit-content' }} role="tablist">
-          {tabs.map((t) => (
-            <button
-              key={t.key}
-              type="button"
-              role="tab"
-              aria-selected={tab === t.key}
-              className={tab === t.key ? 'cx-on' : ''}
-              onClick={() => setTab(t.key)}
-            >
-              {t.label}
-            </button>
-          ))}
-        </div>
-      </div>
-      {tab === 'queue' ? <QueueView lang={lang} /> : <KnowsView lang={lang} />}
-    </>
-  );
+  return <QueueView lang={lang} />;
 }
 
 export default function FeedPage() {

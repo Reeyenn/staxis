@@ -43,7 +43,14 @@ import {
   stalenessLine,
   WEEKDAYS,
 } from '@/lib/feed/one-list-copy';
-import { dayOf, monthCells } from '@/components/concourse/list-calendar';
+import {
+  dayOf,
+  dayStamp,
+  dayTitle,
+  monthCells,
+  weekCells,
+  weekRangeLabel,
+} from '@/components/concourse/list-calendar';
 import type { AssignedByMeItem, WorklistItem, WorklistSourceType } from '@/lib/worklist/types';
 import { WORKLIST_SOURCE_TYPES } from '@/lib/worklist/types';
 import { WORKLIST_DEEPLINK } from '@/lib/worklist/core';
@@ -434,5 +441,93 @@ describe('the calendar view', () => {
     } as Parameters<typeof monthCells>[3][number]]);
     const covered = cells.filter((c) => c.events.length > 0).map((c) => c.iso);
     assert.deepEqual(covered, ['2026-08-10', '2026-08-11', '2026-08-12']);
+  });
+});
+
+// ── the week strip ──────────────────────────────────────────────────────────
+//
+// The `List` / `Calendar` toggle is gone (2026-08-01): seven days are now
+// permanent chrome in the day header, so the shape of the week is something a
+// manager always has rather than something they swap the page to see.
+//
+// These are the cases the dots are FOR. Getting them wrong is silent: a strip
+// with the right numbers and the wrong dots reads as a calm week.
+
+describe('the week strip', () => {
+  const TODAY = '2026-07-30'; // a Thursday
+
+  test('the seven cells run Sunday to Saturday around the anchored day', () => {
+    const cells = weekCells(TODAY, TODAY, [], []);
+    assert.equal(cells.length, 7);
+    assert.deepEqual(cells.map((c) => c.label), ['SUN', 'MON', 'TUE', 'WED', 'THU', 'FRI', 'SAT']);
+    assert.equal(cells[0].iso, '2026-07-26');
+    assert.equal(cells[6].iso, '2026-08-01');
+  });
+
+  // Mutation: anchor the week on TODAY rather than on the day being shown. The
+  // strip would then stop moving when somebody steps to another week, and the
+  // prev/next arrows would do nothing visible.
+  test('the strip follows the anchored day, not today', () => {
+    const cells = weekCells('2026-08-08', TODAY, [], []);
+    assert.equal(cells[0].iso, '2026-08-02');
+    assert.equal(cells.some((c) => c.today), false, 'today is not in that week');
+  });
+
+  test('exactly one cell is marked today, and only when today is in the week', () => {
+    const thisWeek = weekCells(TODAY, TODAY, [], []);
+    assert.equal(thisWeek.filter((c) => c.today).length, 1);
+    assert.equal(thisWeek.find((c) => c.today)?.iso, TODAY);
+  });
+
+  // Mutation: colour every dot the same. Late is the one state the strip exists
+  // to make visible from across the header.
+  test('a late to-do puts a rust dot on its day, a normal one does not', () => {
+    const late = weekCells(TODAY, TODAY, [
+      item({ id: 'late', dueDate: '2026-07-31T12:00:00.000Z', overdue: true }),
+    ], []);
+    assert.deepEqual(late.find((c) => c.iso === '2026-07-31')?.dots, ['late']);
+
+    const plain = weekCells(TODAY, TODAY, [
+      item({ id: 'plain', dueDate: '2026-07-31T12:00:00.000Z' }),
+    ], []);
+    assert.deepEqual(plain.find((c) => c.iso === '2026-07-31')?.dots, ['todo']);
+  });
+
+  // Mutation: keep live colours on days that are over. What matters about
+  // Monday on Thursday is that it is finished, not that it was busy.
+  test('a day that is already gone shows grey dots whatever was on it', () => {
+    const cells = weekCells(TODAY, TODAY, [
+      item({ id: 'gone', dueDate: '2026-07-27T12:00:00.000Z', overdue: true }),
+    ], []);
+    assert.deepEqual(cells.find((c) => c.iso === '2026-07-27')?.dots, ['past']);
+  });
+
+  test('an event puts a teal dot on every day it covers, and marks it notable', () => {
+    const cells = weekCells(TODAY, TODAY, [], [{
+      id: 'e1', title: 'Brand audit', eventDate: '2026-07-31', endDate: '2026-08-01',
+    } as Parameters<typeof weekCells>[3][number]]);
+    assert.deepEqual(cells.find((c) => c.iso === '2026-07-31')?.dots, ['event']);
+    assert.deepEqual(cells.find((c) => c.iso === '2026-08-01')?.dots, ['event']);
+    assert.equal(cells.find((c) => c.iso === '2026-07-31')?.notable, true);
+    assert.equal(cells.find((c) => c.iso === '2026-07-29')?.notable, false);
+  });
+
+  // Mutation: drop the cap. A day with eleven to-dos would blow the fixed
+  // 5px dot row out and make the whole strip jump.
+  test('a busy day never draws more than three dots', () => {
+    const many = Array.from({ length: 9 }, (_, i) => item({ id: `t${i}`, dueDate: '2026-07-31T12:00:00.000Z' }));
+    assert.equal(weekCells(TODAY, TODAY, many, []).find((c) => c.iso === '2026-07-31')?.dots.length, 3);
+  });
+
+  test('the range label names both months only when the week spans two', () => {
+    assert.equal(weekRangeLabel(weekCells(TODAY, TODAY, [], [])), 'Jul 26 – Aug 1');
+    assert.equal(weekRangeLabel(weekCells('2026-08-12', TODAY, [], [])), 'Aug 9 – 15');
+  });
+
+  test('the day title and stamp name the anchored day', () => {
+    assert.equal(dayTitle('2026-07-30'), 'Thursday');
+    assert.equal(dayStamp('2026-07-30'), 'July 30');
+    // A date-only string must not slide a day backwards through UTC.
+    assert.equal(dayTitle('2026-08-01'), 'Saturday');
   });
 });
