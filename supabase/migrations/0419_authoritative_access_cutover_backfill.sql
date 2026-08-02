@@ -37,6 +37,12 @@ alter table public.account_access_cutover_status
 revoke all on public.account_access_cutover_status from public, anon, authenticated, service_role;
 alter table public.account_access_cutover_status enable row level security;
 
+drop policy if exists account_access_cutover_status_deny_browser
+  on public.account_access_cutover_status;
+create policy account_access_cutover_status_deny_browser
+  on public.account_access_cutover_status
+  for all to anon, authenticated using (false) with check (false);
+
 create table if not exists public.account_access_cutover_backfill_runs (
   id              uuid primary key default gen_random_uuid(),
   -- This is the immediate same-transaction pre-backfill run, not the
@@ -73,6 +79,18 @@ revoke all on public.account_access_cutover_backfill_runs from public, anon, aut
 alter table public.account_access_cutover_backfill_runs enable row level security;
 revoke all on public.account_access_cutover_legacy_snapshots from public, anon, authenticated, service_role;
 alter table public.account_access_cutover_legacy_snapshots enable row level security;
+
+drop policy if exists account_access_cutover_backfill_runs_deny_browser
+  on public.account_access_cutover_backfill_runs;
+create policy account_access_cutover_backfill_runs_deny_browser
+  on public.account_access_cutover_backfill_runs
+  for all to anon, authenticated using (false) with check (false);
+
+drop policy if exists account_access_cutover_legacy_snapshots_deny_browser
+  on public.account_access_cutover_legacy_snapshots;
+create policy account_access_cutover_legacy_snapshots_deny_browser
+  on public.account_access_cutover_legacy_snapshots
+  for all to anon, authenticated using (false) with check (false);
 
 comment on table public.account_access_cutover_status is
   'Stage A/B/C control record. Stage A leaves enforcement disabled and preserves legacy authority.';

@@ -2,9 +2,12 @@
 --
 -- Stage A compatibility bridge for the still-live legacy hotel writer.
 -- `accounts.property_access` remains the current application's authority. A
--- successful, unambiguous write is copied to the topology-bound bridge; an
--- ambiguous, inactive, cross-company, stale, or unlinked write aborts the
--- transaction. No array is rewritten, cleared, or used as a fallback here.
+-- successful, unambiguous write is copied to the topology-bound bridge. While
+-- Stage A enforcement is disabled, an ambiguous, inactive, cross-company,
+-- stale, or unlinked write remains a valid legacy application write: the
+-- translator records the failed attempt and lets the array change commit. A
+-- later enforcement stage may reject the same unsafe write. No array is
+-- rewritten, cleared, or used as a fallback here.
 
 begin;
 
@@ -40,8 +43,46 @@ alter table public.account_access_cutover_legacy_write_events enable row level s
 revoke all on public.account_access_cutover_legacy_write_events
   from public, anon, authenticated, service_role;
 
+drop policy if exists account_access_cutover_legacy_write_events_deny_browser
+  on public.account_access_cutover_legacy_write_events;
+create policy account_access_cutover_legacy_write_events_deny_browser
+  on public.account_access_cutover_legacy_write_events
+  for all to anon, authenticated using (false) with check (false);
+
 comment on table public.account_access_cutover_legacy_write_events is
-  'Stage A service-only audit of successful legacy property_access writes. The event is transactional and records compatibility translation without becoming authorization authority.';
+  'Stage A service-only audit of legacy property_access writes. Successful translations and non-enforcing skipped translations are retained as transactional evidence without becoming authorization authority.';
+
+-- The pre-Stage-A reconciliation trigger rejects a missing property UUID while
+-- it protects ordinary account writes. During Stage A, let the translator be
+-- the final observer for that malformed legacy row when enforcement is off so
+-- the old write can commit and its reason can be recorded. Enforcement=true
+-- keeps the original reconciliation rejection fail-closed.
+create or replace function public._staxis_stage_a_should_run_legacy_reconciliation(
+  p_property_ids uuid[]
+)
+returns boolean
+language sql
+stable
+security definer
+set search_path = pg_catalog, public
+as $$
+  select coalesce((
+    select status.enforcement_enabled
+    from public.account_access_cutover_status status
+    where status.id is true
+  ), true)
+  or not exists (
+    select 1
+    from unnest(coalesce(p_property_ids, '{}'::uuid[])) ids(property_id)
+    where ids.property_id is not null
+      and not exists (
+        select 1 from public.properties property where property.id = ids.property_id
+      )
+  );
+$$;
+
+revoke all on function public._staxis_stage_a_should_run_legacy_reconciliation(uuid[])
+  from public, anon, authenticated, service_role;
 
 create or replace function public.staxis_translate_legacy_property_access(
   p_account_id uuid,
@@ -108,16 +149,6 @@ begin
     ) normalized
   );
   v_previous_property_ids := p_previous_property_ids;
-
-  if array_position(coalesce(v_account.property_access, '{}'::uuid[]), null) is not null then
-    raise exception 'legacy property_access translation rejects null property ids'
-      using errcode = '23514';
-  end if;
-  if cardinality(coalesce(v_account.property_access, '{}'::uuid[]))
-       <> cardinality(coalesce(v_new_property_ids, '{}'::uuid[])) then
-    raise exception 'legacy property_access translation rejects duplicate property ids'
-      using errcode = '23514';
-  end if;
 
   v_next_scope_hash := encode(sha256(convert_to(coalesce((
     select string_agg(property_id::text, ',' order by property_id::text)
@@ -190,6 +221,19 @@ begin
       'authorityMode', v_state.authority_mode,
       'canonicalAuthorityChanged', false
     );
+  end if;
+
+  -- Compatibility early returns above intentionally preserve normalized and
+  -- platform-admin writers exactly as before. Only legacy/shadow translation
+  -- validates malformed IDs and duplicate rows.
+  if array_position(coalesce(v_account.property_access, '{}'::uuid[]), null) is not null then
+    raise exception 'legacy property_access translation rejects null property ids'
+      using errcode = '23514';
+  end if;
+  if cardinality(coalesce(v_account.property_access, '{}'::uuid[]))
+       <> cardinality(coalesce(v_new_property_ids, '{}'::uuid[])) then
+    raise exception 'legacy property_access translation rejects duplicate property ids'
+      using errcode = '23514';
   end if;
 
   -- Empty access is a safe lifecycle state and is intentionally allowed for
@@ -409,12 +453,68 @@ language plpgsql
 security definer
 set search_path = pg_catalog, public
 as $$
+declare
+  v_enforcement_enabled boolean;
+  v_sqlstate text;
+  v_message text;
+  v_previous_property_ids uuid[];
+  v_next_property_ids uuid[] := coalesce(new.property_access, '{}'::uuid[]);
 begin
-  perform public.staxis_translate_legacy_property_access(
-    new.id,
-    case when tg_op = 'UPDATE' then old.property_access else null end,
-    'accounts.property_access compatibility translation'
-  );
+  v_previous_property_ids := case
+    when tg_op = 'UPDATE' then old.property_access
+    else null
+  end;
+
+  begin
+    perform public.staxis_translate_legacy_property_access(
+      new.id,
+      v_previous_property_ids,
+      'accounts.property_access compatibility translation'
+    );
+  exception when others then
+    get stacked diagnostics
+      v_sqlstate = returned_sqlstate,
+      v_message = message_text;
+
+    select status.enforcement_enabled
+      into v_enforcement_enabled
+    from public.account_access_cutover_status status
+    where status.id is true;
+
+    -- A retired topology-bound bridge is an irreversible authorization
+    -- boundary, not a transient Stage A translation failure. Preserve the
+    -- rollback/retirement closure even while ordinary legacy writers remain
+    -- compatible with enforcement disabled.
+    if coalesce(v_enforcement_enabled, true)
+       or v_message like 'legacy property_access translation rejects permanently retired bridge:%' then
+      raise;
+    end if;
+
+    insert into public.account_access_cutover_legacy_write_events (
+      account_id, operation, previous_property_ids, next_property_ids,
+      previous_scope_hash, next_scope_hash, bridged_count,
+      retired_bridge_count, reason
+    ) values (
+      new.id,
+      case when tg_op = 'UPDATE' then 'UPDATE' else 'INSERT' end,
+      v_previous_property_ids,
+      v_next_property_ids,
+      case when v_previous_property_ids is null then null else encode(sha256(convert_to(coalesce((
+        select string_agg(property_id::text, ',' order by property_id::text)
+        from unnest(v_previous_property_ids) property_id
+      ), ''), 'UTF8')), 'hex') end,
+      encode(sha256(convert_to(coalesce((
+        select string_agg(property_id::text, ',' order by property_id::text)
+        from unnest(v_next_property_ids) property_id
+      ), ''), 'UTF8')), 'hex'),
+      0,
+      0,
+      left(format(
+        'non-enforcing translation skipped [%s]: %s',
+        coalesce(v_sqlstate, 'unknown'), coalesce(v_message, 'unknown error')
+      ), 500)
+    );
+  end;
   return new;
 end;
 $$;
@@ -423,18 +523,29 @@ revoke all on function public._staxis_translate_legacy_property_access_trigger()
   from public, anon, authenticated, service_role;
 
 -- PostgreSQL orders same-event triggers by name. `authorization_refresh` runs
--- first and creates/locks the state; this translator then validates the exact
--- row before the older organization projection trigger runs.
+-- first and creates/locks the state; the existing reconciliation trigger then
+-- self-heals hidden single-hotel topology; this translator runs last and
+-- observes that result before it validates the exact row.
+drop trigger if exists trg_accounts_reconcile_legacy_organization_access
+  on public.accounts;
+create trigger trg_accounts_reconcile_legacy_organization_access
+  after insert or update of property_access, staff_id, role, active on public.accounts
+  for each row
+  when (public._staxis_stage_a_should_run_legacy_reconciliation(new.property_access))
+  execute function public._staxis_reconcile_account_trigger();
+
 drop trigger if exists trg_accounts_authorization_translate_legacy_property_access
   on public.accounts;
-create trigger trg_accounts_authorization_translate_legacy_property_access
+drop trigger if exists trg_accounts_zz_authorization_translate_legacy_property_access
+  on public.accounts;
+create trigger trg_accounts_zz_authorization_translate_legacy_property_access
   after insert or update of property_access on public.accounts
   for each row execute function public._staxis_translate_legacy_property_access_trigger();
 
 insert into public.applied_migrations (version, description)
 values (
   '0420',
-  'Stage A transactional legacy property_access translation into topology-bound shadow bridges; ambiguous writes fail closed and arrays remain authoritative.'
+  'Stage A transactional legacy property_access translation into topology-bound shadow bridges; non-enforcing unsafe writes remain compatible with durable evidence, while retired topology stays closed and arrays remain authoritative.'
 )
 on conflict (version) do nothing;
 

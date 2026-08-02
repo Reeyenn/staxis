@@ -253,7 +253,7 @@ async function seedBeforeInvariant(pg: PGlite): Promise<void> {
   // intact and make the authorization-state facts explicit for 0423.
   await pg.query(
     `alter table public.accounts
-       disable trigger trg_accounts_authorization_translate_legacy_property_access`,
+       disable trigger trg_accounts_zz_authorization_translate_legacy_property_access`,
   );
   try {
     await pg.query(
@@ -265,7 +265,7 @@ async function seedBeforeInvariant(pg: PGlite): Promise<void> {
   } finally {
     await pg.query(
       `alter table public.accounts
-         enable trigger trg_accounts_authorization_translate_legacy_property_access`,
+         enable trigger trg_accounts_zz_authorization_translate_legacy_property_access`,
     );
   }
   await pg.query(
@@ -291,14 +291,32 @@ async function countBridges(pg: PGlite, accountId: string, propertyId: string): 
 }
 
 test('0419 backfill skips account-level issues and applies the consistent company boundary', async () => {
+  let observedIndependent0418Baseline = false;
   const migrated = await applyMigrationsToPgliteWithHook(async ({ pg, file }) => {
     if (file === PREFLIGHT_MIGRATION) await seedBeforePreflight(pg);
-    if (file === BACKFILL_MIGRATION) await seedBeforeBackfill(pg);
+    if (file === BACKFILL_MIGRATION) {
+      const baseline = await pg.query<{ id: string; created_by: string }>(
+        `select id, created_by
+           from public.account_access_cutover_preflight_runs
+          where created_by = '0418'
+          order by started_at desc
+          limit 1`,
+      );
+      assert.equal(baseline.rows.length, 1);
+      assert.equal(baseline.rows[0]?.created_by, '0418');
+      observedIndependent0418Baseline = true;
+      await seedBeforeBackfill(pg);
+    }
     if (file === INVARIANT_MIGRATION) await seedBeforeInvariant(pg);
   });
 
   try {
     assert.ok(migrated.report.applied.includes(PREFLIGHT_MIGRATION));
+    assert.equal(
+      observedIndependent0418Baseline,
+      true,
+      '0418 must commit an inspectable baseline before 0419 starts',
+    );
     assert.ok(
       migrated.report.applied.includes(BACKFILL_MIGRATION),
       JSON.stringify(migrated.report.failedAtRuntime),

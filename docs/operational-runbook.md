@@ -23,6 +23,25 @@ prod state.
 6. Hooks/CI/process changes belong in code, not here. This log is for
    the irreversible-from-git ops.
 
+## Access Stage A release contract (pending approval)
+
+Migrations `0418` through `0423` are intentionally not applied by this branch.
+When this train is approved for production, apply it in this order with the
+single-migration runner:
+
+1. Apply `0418_authoritative_access_cutover_preflight.sql`.
+2. Inspect `account_access_cutover_preflight_runs` and its issue rows. Confirm
+   the committed baseline run has `created_by = '0418'`; unresolved rows remain
+   reported and skipped.
+3. Apply `0419_authoritative_access_cutover_backfill.sql`, then apply `0420`,
+   `0421`, `0422`, and `0423` sequentially.
+4. Verify the `applied_migrations` rows and Stage A invariant evidence, then
+   rerun the migration checker before merge.
+
+Do not use the bulk pending-migration runner for this train. Stop after the
+0418 inspection if the preflight evidence is unexpected. Production apply,
+merge, and deploy still require parent authorization and both safety reviews.
+
 ---
 
 ## 2026-08-01 — My Hotel / My Company People invitations

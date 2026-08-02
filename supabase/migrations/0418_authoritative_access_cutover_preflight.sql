@@ -47,6 +47,18 @@ alter table public.account_access_cutover_preflight_issues enable row level secu
 revoke all on public.account_access_cutover_preflight_runs from public, anon, authenticated, service_role;
 revoke all on public.account_access_cutover_preflight_issues from public, anon, authenticated, service_role;
 
+drop policy if exists account_access_cutover_preflight_runs_deny_browser
+  on public.account_access_cutover_preflight_runs;
+create policy account_access_cutover_preflight_runs_deny_browser
+  on public.account_access_cutover_preflight_runs
+  for all to anon, authenticated using (false) with check (false);
+
+drop policy if exists account_access_cutover_preflight_issues_deny_browser
+  on public.account_access_cutover_preflight_issues;
+create policy account_access_cutover_preflight_issues_deny_browser
+  on public.account_access_cutover_preflight_issues
+  for all to anon, authenticated using (false) with check (false);
+
 comment on table public.account_access_cutover_preflight_runs is
   'Stage A service-only evidence for additive account authorization translation. A failed row is retained for review; legacy authority remains active until a later approved stage.';
 comment on table public.account_access_cutover_preflight_issues is

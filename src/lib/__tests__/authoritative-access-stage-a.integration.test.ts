@@ -18,6 +18,11 @@ const INVITE_AUTH_USER = 'a4200000-0000-4000-8000-000000000003';
 const INVITE_CLAIM = 'a4200000-0000-4000-8000-000000000004';
 const INVITE_TOKEN_HASH = 'a'.repeat(64);
 const MISSING_PROPERTY = 'a4200000-0000-4000-8000-000000000005';
+const SELF_HEAL_ACCOUNT = 'a4200000-0000-4000-8000-000000000006';
+const SELF_HEAL_USER = 'a4200000-0000-4000-8000-000000000007';
+const DELETE_CLASS_ACCOUNT = 'a4200000-0000-4000-8000-000000000008';
+const DELETE_CLASS_USER = 'a4200000-0000-4000-8000-000000000009';
+const DELETE_CLASS_PROPERTY = 'a4200000-0000-4000-8000-00000000000a';
 
 function asObject(value: unknown): Record<string, unknown> {
   const parsed = typeof value === 'string' ? JSON.parse(value) : value;
@@ -62,16 +67,25 @@ describe('Stage A authoritative access compatibility — real SQL', () => {
   test('platform-admin customer-context arrays remain operational without customer bridges', async () => {
     await pg.query(
       `update public.accounts
-          set property_access = array[$1]::uuid[]
+          set property_access = array[$1,$1,NULL::uuid]::uuid[]
         where id = $2`,
       [PID_L1, ACCOUNT_ADMIN],
     );
 
-    const raw = await pg.query<{ property_access: string[] }>(
-      `select property_access from public.accounts where id = $1`,
+    const raw = await pg.query<{
+      property_access_text: string;
+      property_count: number;
+      null_position: number | null;
+    }>(
+      `select property_access::text as property_access_text,
+              cardinality(property_access)::integer as property_count,
+              array_position(property_access, null::uuid)::integer as null_position
+         from public.accounts where id = $1`,
       [ACCOUNT_ADMIN],
     );
-    assert.deepEqual(raw.rows[0].property_access, [PID_L1]);
+    assert.equal(raw.rows[0].property_access_text, `{${PID_L1},${PID_L1},NULL}`);
+    assert.equal(raw.rows[0].property_count, 3);
+    assert.equal(raw.rows[0].null_position, 3);
 
     const bridge = await pg.query<{ count: number }>(
       `select count(*)::integer as count
@@ -146,7 +160,44 @@ describe('Stage A authoritative access compatibility — real SQL', () => {
     assert.deepEqual(shadow.activeShadowBridgePropertyIds, [PID_L1]);
   });
 
-  test('ambiguous or inactive legacy writes abort without changing the array or bridge evidence', async () => {
+  test('all Stage A evidence tables deny browser roles explicitly', async () => {
+    const tables = [
+      'account_access_cutover_preflight_runs',
+      'account_access_cutover_preflight_issues',
+      'account_access_cutover_status',
+      'account_access_cutover_backfill_runs',
+      'account_access_cutover_legacy_snapshots',
+      'account_access_cutover_legacy_write_events',
+      'account_access_cutover_invariant_runs',
+      'account_access_cutover_invariant_issues',
+    ];
+    const policies = await pg.query<{
+      tablename: string;
+      policyname: string;
+      roles: string;
+      qual: string | null;
+      with_check: string | null;
+    }>(
+      `select tablename, policyname, roles::text, qual::text, with_check::text
+         from pg_policies
+        where schemaname = 'public'
+          and tablename = any($1::text[])
+        order by tablename`,
+      [tables],
+    );
+    assert.equal(policies.rows.length, tables.length);
+    for (const table of tables) {
+      const policy = policies.rows.find((row) => row.tablename === table);
+      assert.ok(policy, `${table} must have an explicit deny policy`);
+      assert.equal(policy.policyname, `${table}_deny_browser`);
+      assert.match(policy.roles, /anon/);
+      assert.match(policy.roles, /authenticated/);
+      assert.match(policy.qual ?? '', /false/i);
+      assert.match(policy.with_check ?? '', /false/i);
+    }
+  });
+
+  test('Stage A preserves legacy writers while recording unsafe translations, then enforces rejection when enabled', async () => {
     const before = await pg.query<{ property_access: string[]; events: number }>(
       `select account.property_access,
               (select count(*)::integer
@@ -157,16 +208,118 @@ describe('Stage A authoritative access compatibility — real SQL', () => {
       [ACCOUNT_WANDA],
     );
 
-    await sqlState(
-      pg.query(
-        `update public.accounts
-            set property_access = array[$1,$2]::uuid[]
-          where id = $3`,
-        [PID_L1, MISSING_PROPERTY, ACCOUNT_WANDA],
-      ),
-      '42501',
+    await pg.query(
+      `update public.accounts
+          set property_access = array[$1,$2]::uuid[]
+        where id = $3`,
+      [PID_L1, MISSING_PROPERTY, ACCOUNT_WANDA],
     );
-    const afterMissing = await pg.query<{ property_access: string[]; events: number }>(
+    const afterMissing = await pg.query<{
+      property_access: string[];
+      events: number;
+      next_property_ids: string[];
+      reason: string;
+    }>(
+      `select account.property_access,
+              (select count(*)::integer
+                 from public.account_access_cutover_legacy_write_events event
+                where event.account_id = account.id) as events,
+              (select event.next_property_ids
+                 from public.account_access_cutover_legacy_write_events event
+                where event.account_id = account.id
+                order by event.created_at desc, event.id desc
+                limit 1) as next_property_ids,
+              (select event.reason
+                 from public.account_access_cutover_legacy_write_events event
+                where event.account_id = account.id
+                order by event.created_at desc, event.id desc
+                limit 1) as reason
+         from public.accounts account
+        where account.id = $1`,
+      [ACCOUNT_WANDA],
+    );
+    assert.deepEqual(afterMissing.rows[0].property_access, [PID_L1, MISSING_PROPERTY]);
+    assert.equal(Number(afterMissing.rows[0].events), Number(before.rows[0].events) + 1);
+    assert.deepEqual(afterMissing.rows[0].next_property_ids, [PID_L1, MISSING_PROPERTY]);
+    assert.match(afterMissing.rows[0].reason, /non-enforcing translation skipped/);
+
+    // Restore the pre-existing valid scope so subsequent invariant checks stay
+    // clean, proving the compatibility path did not rewrite the legacy array.
+    await pg.query(
+      `update public.accounts set property_access = array[$1]::uuid[] where id = $2`,
+      [PID_L1, ACCOUNT_WANDA],
+    );
+
+    const beforeDuplicate = await pg.query<{ events: number }>(
+      `select count(*)::integer as events
+         from public.account_access_cutover_legacy_write_events
+        where account_id = $1`,
+      [ACCOUNT_HANK],
+    );
+    await pg.query(
+      `update public.accounts
+          set property_access = array[$1,$1]::uuid[]
+        where id = $2`,
+      [PID_L1, ACCOUNT_HANK],
+    );
+    const duplicate = await pg.query<{ property_access: string[]; events: number; reason: string }>(
+      `select account.property_access,
+              (select count(*)::integer
+                 from public.account_access_cutover_legacy_write_events event
+                where event.account_id = account.id) as events,
+              (select event.reason
+                 from public.account_access_cutover_legacy_write_events event
+                where event.account_id = account.id
+                order by event.created_at desc, event.id desc
+                limit 1) as reason
+         from public.accounts account
+        where account.id = $1`,
+      [ACCOUNT_HANK],
+    );
+    assert.deepEqual(duplicate.rows[0].property_access, [PID_L1, PID_L1]);
+    assert.equal(Number(duplicate.rows[0].events), Number(beforeDuplicate.rows[0].events) + 1);
+    assert.match(duplicate.rows[0].reason, /non-enforcing translation skipped/);
+    await pg.query(
+      `update public.accounts set property_access = array[$1]::uuid[] where id = $2`,
+      [PID_L1, ACCOUNT_HANK],
+    );
+
+    await pg.query(
+      `update public.accounts set active = false where id = $1`,
+      [ACCOUNT_HANK],
+    );
+    await pg.query(
+      `update public.accounts
+          set property_access = array[$1,$2]::uuid[]
+        where id = $3`,
+      [PID_L1, PID_B1, ACCOUNT_HANK],
+    );
+    const inactive = await pg.query<{ property_access: string[]; reason: string }>(
+      `select account.property_access,
+              (select event.reason
+                 from public.account_access_cutover_legacy_write_events event
+                where event.account_id = account.id
+                order by event.created_at desc, event.id desc
+                limit 1) as reason
+         from public.accounts account
+        where account.id = $1`,
+      [ACCOUNT_HANK],
+    );
+    assert.deepEqual(inactive.rows[0].property_access, [PID_L1, PID_B1]);
+    assert.match(inactive.rows[0].reason, /inactive account/);
+    await pg.query(
+      `update public.accounts
+          set property_access = array[$1]::uuid[], active = true
+        where id = $2`,
+      [PID_L1, ACCOUNT_HANK],
+    );
+
+    await pg.query(
+      `update public.account_access_cutover_status
+          set enforcement_enabled = true
+        where id is true`,
+    );
+    const enforcementBefore = await pg.query<{ property_access: string[]; events: number }>(
       `select account.property_access,
               (select count(*)::integer
                  from public.account_access_cutover_legacy_write_events event
@@ -175,40 +328,29 @@ describe('Stage A authoritative access compatibility — real SQL', () => {
         where account.id = $1`,
       [ACCOUNT_WANDA],
     );
-    assert.deepEqual(afterMissing.rows[0].property_access, before.rows[0].property_access);
-    assert.equal(Number(afterMissing.rows[0].events), Number(before.rows[0].events));
-
     await sqlState(
       pg.query(
         `update public.accounts
-            set property_access = array[$1,$1]::uuid[]
-          where id = $2`,
-        [PID_L1, ACCOUNT_HANK],
+            set property_access = array[$1,$2]::uuid[]
+          where id = $3`,
+        [PID_L1, MISSING_PROPERTY, ACCOUNT_WANDA],
       ),
-      '23514',
+      '23503',
     );
-
+    const enforcementAfter = await pg.query<{ property_access: string[]; events: number }>(
+      `select account.property_access,
+              (select count(*)::integer
+                 from public.account_access_cutover_legacy_write_events event
+                where event.account_id = account.id) as events
+         from public.accounts account
+        where account.id = $1`,
+      [ACCOUNT_WANDA],
+    );
+    assert.deepEqual(enforcementAfter.rows[0], enforcementBefore.rows[0]);
     await pg.query(
-      `update public.accounts set active = false where id = $1`,
-      [ACCOUNT_HANK],
-    );
-    await sqlState(
-      pg.query(
-        `update public.accounts
-            set property_access = array[$1]::uuid[]
-          where id = $2`,
-        [PID_L1, ACCOUNT_HANK],
-      ),
-      '42501',
-    );
-    const inactive = await pg.query<{ property_access: string[] }>(
-      `select property_access from public.accounts where id = $1`,
-      [ACCOUNT_HANK],
-    );
-    assert.deepEqual(inactive.rows[0].property_access, [PID_L1]);
-    await pg.query(
-      `update public.accounts set active = true where id = $1`,
-      [ACCOUNT_HANK],
+      `update public.account_access_cutover_status
+          set enforcement_enabled = false
+        where id is true`,
     );
   });
 
@@ -240,6 +382,41 @@ describe('Stage A authoritative access compatibility — real SQL', () => {
       (afterProjection.propertyIds as string[]).includes(PID_B1),
       false,
       'a normalized account array write must not widen canonical access',
+    );
+    await pg.query(
+      `update public.accounts
+          set property_access = array[$1,$1,NULL::uuid]::uuid[]
+        where id = $2`,
+      [PID_B1, ACCOUNT_MARIA],
+    );
+    const normalizedRaw = await pg.query<{
+      property_access_text: string;
+      property_count: number;
+      null_position: number | null;
+    }>(
+      `select property_access::text as property_access_text,
+              cardinality(property_access)::integer as property_count,
+              array_position(property_access, null::uuid)::integer as null_position
+         from public.accounts where id = $1`,
+      [ACCOUNT_MARIA],
+    );
+    assert.equal(
+      normalizedRaw.rows[0].property_access_text,
+      `{${PID_B1},${PID_B1},NULL}`,
+    );
+    assert.equal(normalizedRaw.rows[0].property_count, 3);
+    assert.equal(normalizedRaw.rows[0].null_position, 3);
+    const normalizedEvent = await pg.query<{ reason: string }>(
+      `select reason
+         from public.account_access_cutover_legacy_write_events
+        where account_id = $1
+        order by created_at desc, id desc
+        limit 1`,
+      [ACCOUNT_MARIA],
+    );
+    assert.equal(
+      normalizedEvent.rows[0].reason,
+      'normalized account compatibility array write: canonical authority unchanged',
     );
     await pg.query(
       `update public.accounts set property_access = '{}'::uuid[] where id = $1`,
@@ -341,6 +518,126 @@ describe('Stage A authoritative access compatibility — real SQL', () => {
       property_access: [PID_L1],
       enforcement_enabled: false,
     });
+  });
+
+  test('account reconciliation self-heals an ended primary grouping before translation', async () => {
+    await pg.query(
+      `insert into auth.users(id, email) values ($1, 'stage-a-self-heal@example.test')`,
+      [SELF_HEAL_USER],
+    );
+    await pg.query(
+      `insert into public.accounts(
+         id, username, password_hash, display_name, role, property_access, data_user_id
+       ) values ($1, 'stage-a-self-heal', 'x', 'Stage A Self Heal', 'front_desk', '{}', $2)`,
+      [SELF_HEAL_ACCOUNT, SELF_HEAL_USER],
+    );
+
+    await pg.query(
+      `update public.organization_property_relationships
+          set ends_at = clock_timestamp()
+        where property_id = $1
+          and is_primary_grouping is true
+          and ends_at is null`,
+      [PID_L1],
+    );
+    await pg.query(
+      `update public.accounts
+          set property_access = array[$1]::uuid[]
+        where id = $2`,
+      [PID_L1, SELF_HEAL_ACCOUNT],
+    );
+
+    const topology = await pg.query<{
+      organization_type: string;
+      status: string;
+      relationship_count: number;
+    }>(
+      `select organization.organization_type, organization.status,
+              count(*)::integer as relationship_count
+         from public.organization_property_relationships relationship
+         join public.organizations organization
+           on organization.id = relationship.organization_id
+        where relationship.property_id = $1
+          and relationship.is_primary_grouping is true
+          and relationship.starts_at <= now()
+          and (relationship.ends_at is null or relationship.ends_at > now())
+        group by organization.organization_type, organization.status`,
+      [PID_L1],
+    );
+    assert.deepEqual(topology.rows, [{
+      organization_type: 'single_hotel',
+      status: 'active',
+      relationship_count: 1,
+    }]);
+
+    const bridge = await pg.query<{ count: number }>(
+      `select count(*)::integer as count
+         from public.account_property_authorization_bridges
+        where account_id = $1 and property_id = $2 and status = 'active'`,
+      [SELF_HEAL_ACCOUNT, PID_L1],
+    );
+    assert.equal(Number(bridge.rows[0].count), 1);
+    const event = await pg.query<{ reason: string }>(
+      `select reason
+         from public.account_access_cutover_legacy_write_events
+        where account_id = $1
+        order by created_at desc, id desc
+        limit 1`,
+      [SELF_HEAL_ACCOUNT],
+    );
+    assert.doesNotMatch(event.rows[0].reason, /non-enforcing translation skipped/);
+  });
+
+  test('property deletion prunes an inactive multi-hotel legacy writer without aborting', async () => {
+    await pg.query(
+      `insert into auth.users(id, email) values ($1, 'stage-a-delete-class@example.test')`,
+      [DELETE_CLASS_USER],
+    );
+    await pg.query(
+      `insert into public.properties(id, name, owner_id, total_rooms, timezone)
+       values ($1, 'Stage A Delete Class Hotel', $2, 20, 'America/Chicago')`,
+      [DELETE_CLASS_PROPERTY, UID_WANDA],
+    );
+    await pg.query(
+      `insert into public.accounts(
+         id, username, password_hash, display_name, role, property_access, active, data_user_id
+       ) values ($1, 'stage-a-delete-class', 'x', 'Stage A Delete Class', 'front_desk',
+         array[$2,$3]::uuid[], false, $4)`,
+      [DELETE_CLASS_ACCOUNT, DELETE_CLASS_PROPERTY, PID_L1, DELETE_CLASS_USER],
+    );
+
+    const deleted = await pg.query<{ value: unknown }>(
+      `select public.staxis_delete_property_and_legacy_accounts(
+         $1, $2, 'Stage A Delete Class Hotel'
+       ) as value`,
+      [ACCOUNT_ADMIN, DELETE_CLASS_PROPERTY],
+    );
+    const deletedValue = asObject(deleted.rows[0].value);
+    assert.equal(deletedValue.accountsPruned, 1, JSON.stringify(deletedValue));
+
+    const state = await pg.query<{ property_access: string[]; active: boolean }>(
+      `select property_access, active
+         from public.accounts
+        where id = $1`,
+      [DELETE_CLASS_ACCOUNT],
+    );
+    assert.deepEqual(state.rows[0], { property_access: [PID_L1], active: false });
+    const event = await pg.query<{ reason: string; next_property_ids: string[] }>(
+      `select reason, next_property_ids
+         from public.account_access_cutover_legacy_write_events
+        where account_id = $1
+        order by created_at desc, id desc
+        limit 1`,
+      [DELETE_CLASS_ACCOUNT],
+    );
+    assert.deepEqual(event.rows[0].next_property_ids, [PID_L1]);
+    assert.match(event.rows[0].reason, /non-enforcing translation skipped/);
+    assert.match(event.rows[0].reason, /inactive account/);
+    const property = await pg.query<{ count: number }>(
+      `select count(*)::integer as count from public.properties where id = $1`,
+      [DELETE_CLASS_PROPERTY],
+    );
+    assert.equal(Number(property.rows[0].count), 0);
   });
 
   test('a retired bridge cannot be resurrected by retrying the same legacy write', async () => {

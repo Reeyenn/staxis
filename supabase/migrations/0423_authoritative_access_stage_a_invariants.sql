@@ -47,6 +47,18 @@ revoke all on public.account_access_cutover_invariant_runs
 revoke all on public.account_access_cutover_invariant_issues
   from public, anon, authenticated, service_role;
 
+drop policy if exists account_access_cutover_invariant_runs_deny_browser
+  on public.account_access_cutover_invariant_runs;
+create policy account_access_cutover_invariant_runs_deny_browser
+  on public.account_access_cutover_invariant_runs
+  for all to anon, authenticated using (false) with check (false);
+
+drop policy if exists account_access_cutover_invariant_issues_deny_browser
+  on public.account_access_cutover_invariant_issues;
+create policy account_access_cutover_invariant_issues_deny_browser
+  on public.account_access_cutover_invariant_issues
+  for all to anon, authenticated using (false) with check (false);
+
 comment on table public.account_access_cutover_invariant_issues is
   'Stage A service-only invariant evidence. Issues are reported for remediation or a later approved stage; no row is guessed, dropped, or broadened.';
 
