@@ -13,13 +13,19 @@ const LEGACY_TASK = 'a4000000-0000-4000-8000-000000000001';
 const LEGACY_ASSIGNMENT = 'a5000000-0000-4000-8000-000000000001';
 const NEW_TASK = 'a4000000-0000-4000-8000-000000000002';
 const NEW_ASSIGNMENT = 'a5000000-0000-4000-8000-000000000002';
+const WINDOW_TASK = 'a4000000-0000-4000-8000-000000000006';
+const WINDOW_ASSIGNMENT = 'a5000000-0000-4000-8000-000000000006';
+const CACHE_ONLY_TASK = 'a4000000-0000-4000-8000-000000000007';
 const DUPLICATE_TASK_ONE = 'a4000000-0000-4000-8000-000000000004';
 const DUPLICATE_TASK_TWO = 'a4000000-0000-4000-8000-000000000005';
 const PASS_INSPECTION = 'a6000000-0000-4000-8000-000000000001';
 const FAIL_TASK = 'a4000000-0000-4000-8000-000000000003';
 const FAIL_INSPECTION = 'a6000000-0000-4000-8000-000000000002';
 const WRONG_PROPERTY_INSPECTION = 'a6000000-0000-4000-8000-000000000003';
+const LEGACY_FAIL_TASK = 'a4000000-0000-4000-8000-000000000008';
+const LEGACY_FAIL_INSPECTION = 'a6000000-0000-4000-8000-000000000004';
 const BUSINESS_DATE = '2026-08-02';
+const LOCK_DATE = '2026-08-03';
 
 let pg: PGlite;
 
@@ -49,7 +55,24 @@ async function failsWith(sql: string, params: unknown[] = []): Promise<string> {
 describe('housekeeping canonical plan expand stage', () => {
   before(async () => {
     const migrated = await applyMigrationsToPgliteWithHook(async ({ pg: db, file }) => {
-      if (file !== '0434_housekeeping_plan_reconciliation.sql') return;
+      if (
+        file !== '0434_housekeeping_plan_reconciliation.sql'
+        && file !== '0435_housekeeping_canonical_operations.sql'
+      ) return;
+
+      if (file === '0435_housekeeping_canonical_operations.sql') {
+        // This write occurs after 0434 commits and before 0435 begins. The
+        // bridge installed by 0434 must preserve it without waiting for 0435.
+        await db.query(
+          "insert into public.cleaning_tasks(id, property_id, room_number, business_date, dedupe_key, cleaning_type, priority, estimated_minutes, requires_inspection, extras, rules_fired, status, source_property_timezone, scheduled_at, last_evaluated_at) values ($1, $2, '601', $3, '601::2026-08-02', 'stayover', 'normal', 20, false, '[]'::jsonb, '[]'::jsonb, 'scheduled', 'America/Chicago', $4::timestamptz, $4::timestamptz)",
+          [WINDOW_TASK, PROPERTY, BUSINESS_DATE, '2026-08-02T12:04:00Z'],
+        );
+        await db.query(
+          "insert into public.hk_assignments(id, property_id, cleaning_task_id, housekeeper_id, queue_order, is_active, assigned_at, assigned_by, reason, score) values ($1, $2, $3, $4, 5, true, $5::timestamptz, 'auto', 'between migration writes', 3.5)",
+          [WINDOW_ASSIGNMENT, PROPERTY, WINDOW_TASK, HOUSEKEEPER, '2026-08-02T12:05:00Z'],
+        );
+        return;
+      }
 
       await db.query(
         "insert into auth.users(id, email) values ($1, 'phase5@example.test') on conflict (id) do nothing",
@@ -125,6 +148,97 @@ describe('housekeeping canonical plan expand stage', () => {
       history_count: 1,
     }]);
 
+    assert.deepEqual(
+      await rows<{
+        legacy_task_id: string;
+        assigned_staff_id: string;
+        queue_order: number;
+        history_id: string;
+        history_event: string;
+      }>(
+        "select legacy_task_id, assigned_staff_id, assignment_queue_order as queue_order, assignment_history->-1->>'id' as history_id, assignment_history->-1->>'event' as history_event from public.room_work where legacy_task_id = $1",
+        [WINDOW_TASK],
+      ),
+      [{
+        legacy_task_id: WINDOW_TASK,
+        assigned_staff_id: HOUSEKEEPER,
+        queue_order: 5,
+        history_id: WINDOW_ASSIGNMENT,
+        history_event: 'assigned',
+      }],
+      '0434 bridge must capture old-app writes made before 0435 begins',
+    );
+
+    await pg.query(
+      "insert into public.pms_ingest_runs(id, property_id, source_kind, parser_name, parser_version, source_captured_at, status) values ('a9000000-0000-4000-8000-000000000001', $1, 'legacy', 'phase5-test', '1', $2::timestamptz, 'succeeded') on conflict (id) do nothing",
+      [PROPERTY, '2026-08-02T12:00:00Z'],
+    );
+    await pg.query(
+      "insert into public.pms_housekeeping_assignments(id, property_id, date, room_number, housekeeper_name, cleaning_type, notes, ingest_run_id) values ('a7000000-0000-4000-8000-000000000001', $1, $2, '701', 'PMS Name', 'stayover', 'PMS-only plan row', 'a9000000-0000-4000-8000-000000000001')",
+      [PROPERTY, BUSINESS_DATE],
+    );
+    assert.deepEqual(
+      await rows<{
+        room_work_id: string;
+        room_number: string;
+        business_date: string;
+        cleaning_type: string;
+        status: string;
+        pms_housekeeper_name: string;
+      }>(
+        "select room_work_id::text, room_number, business_date::text, cleaning_type, status, pms_housekeeper_name from public.room_work_plan_v1 where property_id = $1 and business_date = $2 and room_number = '701'",
+        [PROPERTY, BUSINESS_DATE],
+      ),
+      [{
+        room_work_id: await scalar<string>(
+          "select public.housekeeping_plan_id($1, $2, '701')::text",
+          [PROPERTY, BUSINESS_DATE],
+        ),
+        room_number: '701',
+        business_date: BUSINESS_DATE,
+        cleaning_type: 'stayover',
+        status: 'scheduled',
+        pms_housekeeper_name: 'PMS Name',
+      }],
+    );
+
+    const privileges = await rows<{
+      function_name: string;
+      service_role_execute: boolean;
+      anon_execute: boolean;
+      authenticated_execute: boolean;
+    }>(
+      `select function_name,
+              has_function_privilege('service_role', function_name, 'execute') as service_role_execute,
+              has_function_privilege('anon', function_name, 'execute') as anon_execute,
+              has_function_privilege('authenticated', function_name, 'execute') as authenticated_execute
+         from (values
+           ('public.housekeeping_plan_id(uuid,date,text)'::text),
+           ('public._room_work_fill_identity()'::text),
+           ('public._legacy_cleaning_task_to_room_work()'::text),
+           ('public._legacy_hk_assignment_to_room_work()'::text),
+           ('public._room_work_complete_components()'::text),
+           ('public._activity_log_on_room_work_change()'::text)
+         ) functions(function_name)
+        order by function_name`,
+    );
+    assert.deepEqual(
+      privileges,
+      [
+        'public._activity_log_on_room_work_change()',
+        'public._legacy_cleaning_task_to_room_work()',
+        'public._legacy_hk_assignment_to_room_work()',
+        'public._room_work_complete_components()',
+        'public._room_work_fill_identity()',
+        'public.housekeeping_plan_id(uuid,date,text)',
+      ].map((function_name) => ({
+        function_name,
+        service_role_execute: true,
+        anon_execute: false,
+        authenticated_execute: false,
+      })),
+    );
+
     const triggerNames = await rows<{ tgname: string }>(
       "select tgname from pg_trigger where tgrelid in ('public.cleaning_tasks'::regclass, 'public.hk_assignments'::regclass) and not tgisinternal order by tgname",
     );
@@ -175,6 +289,32 @@ describe('housekeeping canonical plan expand stage', () => {
       1,
     );
 
+    const stableRoomId = await scalar<string>(
+      "select public.housekeeping_plan_id($1, $2, '302')::text",
+      [PROPERTY, BUSINESS_DATE],
+    );
+    await pg.query(
+      "insert into public.room_work(id, property_id, date, room_number, status) values ($1, $2, $3, '302', 'not_started')",
+      [stableRoomId, PROPERTY, BUSINESS_DATE],
+    );
+    const wrongSuppliedId = await failsWith(
+      "insert into public.room_work(id, property_id, date, room_number, status) values ('a8000000-0000-4000-8000-000000000001', $1, $2, '303', 'not_started')",
+      [PROPERTY, BUSINESS_DATE],
+    );
+    assert.match(wrongSuppliedId, /ROOM_WORK_IDENTITY_MISMATCH/i);
+    const wrongUpdatedId = await failsWith(
+      "update public.room_work set id = 'a8000000-0000-4000-8000-000000000002' where property_id = $1 and date = $2 and room_number = '302'",
+      [PROPERTY, BUSINESS_DATE],
+    );
+    assert.match(wrongUpdatedId, /ROOM_WORK_IDENTITY_MISMATCH/i);
+    assert.equal(
+      await scalar<string>(
+        "select id::text from public.room_work where property_id = $1 and date = $2 and room_number = '302'",
+        [PROPERTY, BUSINESS_DATE],
+      ),
+      stableRoomId,
+    );
+
     await pg.query(
       "update public.cleaning_tasks set priority = 'high', status = 'ready_now' where id = $1 and property_id = $2",
       [NEW_TASK, PROPERTY],
@@ -214,6 +354,129 @@ describe('housekeeping canonical plan expand stage', () => {
     assert.equal(
       await scalar<string | null>("select assigned_staff_id from public.room_work where legacy_task_id = $1", [NEW_TASK]),
       null,
+    );
+
+    const initialAssignmentHistoryCount = await scalar<number>(
+      "select jsonb_array_length(assignment_history)::int from public.room_work where legacy_task_id = $1",
+      [LEGACY_TASK],
+    );
+    await pg.query(
+      "update public.hk_assignments set queue_order = 3, reason = 'metadata update', score = 6.25 where id = $1",
+      [LEGACY_ASSIGNMENT],
+    );
+    const metadataUpdate = await rows<{
+      snapshot: Record<string, unknown>;
+      assigned_staff_id: string | null;
+      assignment_queue_order: number;
+      assignment_reason: string | null;
+    }>(
+      "select assignment_history->-1 as snapshot, assigned_staff_id, assignment_queue_order, assignment_reason from public.room_work where legacy_task_id = $1",
+      [LEGACY_TASK],
+    );
+    assert.equal(metadataUpdate[0].snapshot.id, LEGACY_ASSIGNMENT);
+    assert.equal(metadataUpdate[0].snapshot.property_id, PROPERTY);
+    assert.equal(metadataUpdate[0].snapshot.cleaning_task_id, LEGACY_TASK);
+    assert.equal(metadataUpdate[0].snapshot.housekeeper_id, HOUSEKEEPER);
+    assert.equal(metadataUpdate[0].snapshot.queue_order, 3);
+    assert.equal(metadataUpdate[0].snapshot.is_active, true);
+    assert.equal(metadataUpdate[0].snapshot.assigned_by, 'auto');
+    assert.equal(metadataUpdate[0].snapshot.reason, 'metadata update');
+    assert.equal(metadataUpdate[0].snapshot.score, 6.25);
+    assert.equal(metadataUpdate[0].assigned_staff_id, HOUSEKEEPER);
+    assert.equal(metadataUpdate[0].assignment_queue_order, 3);
+    assert.equal(metadataUpdate[0].assignment_reason, 'metadata update');
+    assert.equal(
+      await scalar<number>(
+        "select jsonb_array_length(assignment_history)::int from public.room_work where legacy_task_id = $1",
+        [LEGACY_TASK],
+      ),
+      initialAssignmentHistoryCount + 1,
+    );
+
+    await pg.query(
+      "update public.hk_assignments set is_active = false where id = $1",
+      [LEGACY_ASSIGNMENT],
+    );
+    const inactiveAssignment = await rows<{
+      snapshot: Record<string, unknown>;
+      assigned_staff_id: string | null;
+      assigned_source: string | null;
+      assignment_queue_order: number;
+      assignment_reason: string | null;
+    }>(
+      "select assignment_history->-1 as snapshot, assigned_staff_id, assigned_source, assignment_queue_order, assignment_reason from public.room_work where legacy_task_id = $1",
+      [LEGACY_TASK],
+    );
+    assert.equal(inactiveAssignment[0].snapshot.id, LEGACY_ASSIGNMENT);
+    assert.equal(inactiveAssignment[0].snapshot.property_id, PROPERTY);
+    assert.equal(inactiveAssignment[0].snapshot.cleaning_task_id, LEGACY_TASK);
+    assert.equal(inactiveAssignment[0].snapshot.housekeeper_id, HOUSEKEEPER);
+    assert.equal(inactiveAssignment[0].snapshot.queue_order, 3);
+    assert.equal(inactiveAssignment[0].snapshot.is_active, false);
+    assert.equal(inactiveAssignment[0].snapshot.event, 'deactivated');
+    assert.equal(inactiveAssignment[0].assigned_staff_id, null);
+    assert.equal(inactiveAssignment[0].assigned_source, null);
+    assert.equal(inactiveAssignment[0].assignment_queue_order, 0);
+    assert.equal(inactiveAssignment[0].assignment_reason, null);
+    assert.equal(
+      await scalar<number>(
+        "select jsonb_array_length(assignment_history)::int from public.room_work where legacy_task_id = $1",
+        [LEGACY_TASK],
+      ),
+      initialAssignmentHistoryCount + 2,
+    );
+
+    const reactivationAssignedAt = '2026-08-02T12:06:00Z';
+    await pg.query(
+      "update public.hk_assignments set is_active = true, queue_order = 4, assigned_at = $1::timestamptz, assigned_by = 'manual', assigned_by_user_id = $2, reason = 'reactivated', score = 7.75 where id = $3",
+      [reactivationAssignedAt, OWNER, LEGACY_ASSIGNMENT],
+    );
+    const reactivatedAssignment = await rows<{
+      snapshot: Record<string, unknown>;
+      assigned_staff_id: string | null;
+      assignment_queue_order: number;
+      assignment_assigned_by: string | null;
+      assignment_assigned_by_user_id: string | null;
+      assignment_reason: string | null;
+      assignment_score: number | null;
+    }>(
+      "select assignment_history->-1 as snapshot, assigned_staff_id, assignment_queue_order, assignment_assigned_by, assignment_assigned_by_user_id, assignment_reason, assignment_score from public.room_work where legacy_task_id = $1",
+      [LEGACY_TASK],
+    );
+    assert.equal(reactivatedAssignment[0].snapshot.id, LEGACY_ASSIGNMENT);
+    assert.equal(reactivatedAssignment[0].snapshot.property_id, PROPERTY);
+    assert.equal(reactivatedAssignment[0].snapshot.cleaning_task_id, LEGACY_TASK);
+    assert.equal(reactivatedAssignment[0].snapshot.housekeeper_id, HOUSEKEEPER);
+    assert.equal(reactivatedAssignment[0].snapshot.queue_order, 4);
+    assert.equal(reactivatedAssignment[0].snapshot.is_active, true);
+    assert.equal(reactivatedAssignment[0].snapshot.event, 'reactivated');
+    assert.equal(reactivatedAssignment[0].snapshot.assigned_by, 'manual');
+    assert.equal(reactivatedAssignment[0].snapshot.assigned_by_user_id, OWNER);
+    assert.equal(reactivatedAssignment[0].snapshot.reason, 'reactivated');
+    assert.equal(reactivatedAssignment[0].snapshot.score, 7.75);
+    assert.equal(reactivatedAssignment[0].assigned_staff_id, HOUSEKEEPER);
+    assert.equal(reactivatedAssignment[0].assignment_queue_order, 4);
+    assert.equal(reactivatedAssignment[0].assignment_assigned_by, 'manual');
+    assert.equal(reactivatedAssignment[0].assignment_assigned_by_user_id, OWNER);
+    assert.equal(reactivatedAssignment[0].assignment_reason, 'reactivated');
+    assert.equal(reactivatedAssignment[0].assignment_score, '7.75');
+    const historyAfterReactivation = await scalar<number>(
+      "select jsonb_array_length(assignment_history)::int from public.room_work where legacy_task_id = $1",
+      [LEGACY_TASK],
+    );
+    assert.equal(historyAfterReactivation, initialAssignmentHistoryCount + 3);
+
+    await pg.query(
+      "update public.hk_assignments set is_active = true, queue_order = 4, assigned_at = $1::timestamptz, assigned_by = 'manual', assigned_by_user_id = $2, reason = 'reactivated', score = 7.75 where id = $3",
+      [reactivationAssignedAt, OWNER, LEGACY_ASSIGNMENT],
+    );
+    assert.equal(
+      await scalar<number>(
+        "select jsonb_array_length(assignment_history)::int from public.room_work where legacy_task_id = $1",
+        [LEGACY_TASK],
+      ),
+      historyAfterReactivation,
+      'an exact retry compares against the latest full snapshot, not historical-ever activity',
     );
 
     const baselineAssignment = await rows<{
@@ -294,6 +557,97 @@ describe('housekeeping canonical plan expand stage', () => {
     );
   });
 
+  test('serializes reverse-order canonical batches and resets without partial assignment state', async () => {
+    const reverseOrderBatch = JSON.stringify([
+      {
+        property_id: PROPERTY,
+        room_number: '802',
+        business_date: LOCK_DATE,
+        dedupe_key: '802::2026-08-03',
+        cleaning_type: 'stayover',
+        priority: 'normal',
+        status: 'scheduled',
+      },
+      {
+        property_id: PROPERTY,
+        room_number: '801',
+        business_date: LOCK_DATE,
+        dedupe_key: '801::2026-08-03',
+        cleaning_type: 'stayover',
+        priority: 'normal',
+        status: 'scheduled',
+      },
+    ]);
+    const forwardOrderBatch = JSON.stringify([
+      {
+        property_id: PROPERTY,
+        room_number: '801',
+        business_date: LOCK_DATE,
+        dedupe_key: '801::2026-08-03',
+        cleaning_type: 'stayover',
+        priority: 'normal',
+        status: 'scheduled',
+      },
+      {
+        property_id: PROPERTY,
+        room_number: '802',
+        business_date: LOCK_DATE,
+        dedupe_key: '802::2026-08-03',
+        cleaning_type: 'stayover',
+        priority: 'normal',
+        status: 'scheduled',
+      },
+    ]);
+    const planRuns = await Promise.all([
+      pg.query("select * from public.upsert_room_work_plan($1, $2::jsonb)", [PROPERTY, reverseOrderBatch]),
+      pg.query("select * from public.upsert_room_work_plan($1, $2::jsonb)", [PROPERTY, forwardOrderBatch]),
+    ]);
+    assert.equal(planRuns.length, 2);
+    assert.deepEqual(
+      await rows<{ room_number: string; plan_status: string }>(
+        "select room_number, plan_status from public.room_work where property_id = $1 and date = $2 and room_number in ('801','802') order by room_number",
+        [PROPERTY, LOCK_DATE],
+      ),
+      [
+        { room_number: '801', plan_status: 'scheduled' },
+        { room_number: '802', plan_status: 'scheduled' },
+      ],
+    );
+
+    await pg.query(
+      "select * from public.assign_room_work_atomic($1, public.housekeeping_plan_id($1, $2, '801'), $3, $4, 'reverse-order test', 1, 1.0, false, 'manual')",
+      [PROPERTY, LOCK_DATE, HOUSEKEEPER, OWNER],
+    );
+    await pg.query(
+      "select * from public.assign_room_work_atomic($1, public.housekeeping_plan_id($1, $2, '802'), $3, $4, 'reverse-order test', 2, 1.0, false, 'manual')",
+      [PROPERTY, LOCK_DATE, SECOND_HOUSEKEEPER, OWNER],
+    );
+    const resetRuns = await Promise.all([
+      pg.query("select public.reset_room_work_assignments($1, $2, null)", [PROPERTY, LOCK_DATE]),
+      pg.query("select public.reset_room_work_assignments($1, $2, null)", [PROPERTY, LOCK_DATE]),
+    ]);
+    assert.deepEqual(
+      resetRuns
+        .map((result) => Number((result.rows[0] as Record<string, unknown>).reset_room_work_assignments))
+        .sort((a, b) => a - b),
+      [0, 2],
+    );
+    const resetRows = await rows<{
+      room_number: string;
+      assigned_staff_id: string | null;
+      event: string;
+      snapshot_id: string | null;
+    }>(
+      "select room_number, assigned_staff_id, assignment_history->-1->>'event' as event, assignment_history->-1->>'id' as snapshot_id from public.room_work where property_id = $1 and date = $2 and room_number in ('801','802') order by room_number",
+      [PROPERTY, LOCK_DATE],
+    );
+    assert.deepEqual(resetRows.map(({ room_number, assigned_staff_id, event }) => ({ room_number, assigned_staff_id, event })), [
+      { room_number: '801', assigned_staff_id: null, event: 'unassigned' },
+      { room_number: '802', assigned_staff_id: null, event: 'unassigned' },
+    ]);
+    for (const row of resetRows) assert.match(row.snapshot_id ?? '', /^[0-9a-f-]{36}$/i);
+  });
+
   test('completes the exact component set atomically, retries safely, and rolls back on a child failure', async () => {
     await pg.query(
       "insert into public.room_work(property_id, date, room_number, status) values ($1, $2, '101', 'not_started'), ($1, $2, '102', 'not_started'), ($1, $2, '104', 'not_started') on conflict (property_id, date, room_number) do update set status = 'not_started', completed_at = null, is_paused = false",
@@ -318,17 +672,22 @@ describe('housekeeping canonical plan expand stage', () => {
       target_id: string;
       metadata: { component_only?: boolean };
     }>(
-      "select event_type, target_id, metadata from public.activity_log where property_id = $1 and target_id = public.housekeeping_plan_id($1, $2, '103')::text and event_type = 'cleaning_task_completed'",
-      [PROPERTY, BUSINESS_DATE],
+      "select event_type, target_id, metadata from public.activity_log where property_id = $1::uuid and metadata->>'room_number' = '103' and event_type = 'cleaning_task_completed'",
+      [PROPERTY],
     );
     assert.deepEqual(componentAudit, [{
       event_type: 'cleaning_task_completed',
-      target_id: await scalar<string>(
-        "select public.housekeeping_plan_id($1, $2, '103')::text",
-        [PROPERTY, BUSINESS_DATE],
-      ),
+      target_id: componentAudit[0].target_id,
       metadata: { component_only: true, room_number: '103', business_date: BUSINESS_DATE, status: 'completed' },
     }]);
+    assert.deepEqual(
+      await rows<{ event_type: string }>(
+        "select event_type from public.activity_log where property_id = $1 and target_id = $2 and event_type in ('cleaning_task_completed', 'cleaning_task_scheduled') order by event_type",
+        [PROPERTY, LEGACY_TASK],
+      ),
+      [{ event_type: 'cleaning_task_completed' }],
+      'a planned parent completing must emit completed, not its old scheduled plan label',
+    );
 
     await pg.query(
       "update public.room_work set status = 'not_started', completed_at = null, is_paused = false where property_id = $1 and date = $2 and room_number in ('101','102','103')",
@@ -388,11 +747,47 @@ describe('housekeeping canonical plan expand stage', () => {
       await scalar<string>("select plan_status from public.room_work where legacy_task_id = $1", [NEW_TASK]),
       'inspected_pass',
     );
+    assert.deepEqual(
+      await rows<{ event_type: string }>(
+        "select event_type from public.activity_log where property_id = $1 and target_id = $2 and event_type in ('cleaning_task_inspected_pass', 'cleaning_task_scheduled', 'cleaning_task_completed') order by event_type",
+        [PROPERTY, NEW_TASK],
+      ),
+      [{ event_type: 'cleaning_task_inspected_pass' }],
+      'the preserved old pass RPC must not add a duplicate canonical parent event',
+    );
     const retry = await failsWith(
       "select * from public.complete_inspection_atomic($1, $2, 'pass', '[]'::jsonb, '[]'::jsonb, null, false, null, null, null)",
       [PASS_INSPECTION, PROPERTY],
     );
     assert.match(retry, /already/i);
+
+    await pg.query(
+      "insert into public.cleaning_tasks(id, property_id, room_number, business_date, dedupe_key, cleaning_type, priority, estimated_minutes, requires_inspection, extras, rules_fired, status, source_property_timezone, scheduled_at, last_evaluated_at) values ($1, $2, '203', $3, '203::2026-08-02', 'stayover', 'normal', 20, false, '[]'::jsonb, '[]'::jsonb, 'scheduled', 'America/Chicago', $4::timestamptz, $4::timestamptz)",
+      [LEGACY_FAIL_TASK, PROPERTY, BUSINESS_DATE, '2026-08-02T13:15:00Z'],
+    );
+    await pg.query(
+      "insert into public.inspections(id, property_id, room_number, cleaning_task_id, result, started_at) values ($1, $2, '203', $3, 'in_progress', $4::timestamptz)",
+      [LEGACY_FAIL_INSPECTION, PROPERTY, LEGACY_FAIL_TASK, '2026-08-02T13:30:00Z'],
+    );
+    await pg.query(
+      "select * from public.complete_inspection_atomic($1, $2, 'fail', '[{\"item_id\":\"mirror\"}]'::jsonb, '[]'::jsonb, null, false, null, null, 'mirror streaks')",
+      [LEGACY_FAIL_INSPECTION, PROPERTY],
+    );
+    assert.deepEqual(
+      await rows<{ status: string; plan_status: string; plan_priority: string; plan_notes: string }>(
+        "select t.status, w.plan_status, w.plan_priority, w.plan_notes from public.cleaning_tasks t join public.room_work w on w.legacy_task_id = t.id where t.id = $1",
+        [LEGACY_FAIL_TASK],
+      ),
+      [{ status: 'correction_pending', plan_status: 'correction_pending', plan_priority: 'high', plan_notes: 'mirror streaks' }],
+    );
+    assert.deepEqual(
+      await rows<{ event_type: string }>(
+        "select event_type from public.activity_log where property_id = $1 and target_id = $2 and event_type in ('cleaning_task_correction_pending', 'cleaning_task_scheduled', 'cleaning_task_completed') order by event_type",
+        [PROPERTY, LEGACY_FAIL_TASK],
+      ),
+      [{ event_type: 'cleaning_task_correction_pending' }],
+      'the preserved old fail RPC must retain one correction event without a spurious parent status event',
+    );
 
     await pg.query(
       "insert into public.cleaning_tasks(id, property_id, room_number, business_date, dedupe_key, cleaning_type, priority, estimated_minutes, requires_inspection, extras, rules_fired, status, source_property_timezone, scheduled_at, last_evaluated_at) values ($1, $2, '202', $3, '202::2026-08-02', 'stayover', 'normal', 20, false, '[]'::jsonb, '[]'::jsonb, 'scheduled', 'America/Chicago', $4::timestamptz, $4::timestamptz)",
@@ -515,6 +910,125 @@ describe('housekeeping canonical plan expand stage', () => {
       ]);
     } finally {
       await duplicate.pg.close();
+    }
+  });
+
+  test('0434 preserves valid cache-only and room-work-only assignment sources', async () => {
+    const reconciled = await applyMigrationsToPgliteWithHook(async ({ pg: db, file }) => {
+      if (file !== '0434_housekeeping_plan_reconciliation.sql') return;
+
+      await db.query(
+        "insert into auth.users(id, email) values ($1, 'phase5-sources@example.test') on conflict (id) do nothing",
+        [OWNER],
+      );
+      await db.query(
+        "insert into public.properties(id, owner_id, name, total_rooms, timezone) values ($1, $2, 'Phase Five Inn', 60, 'America/Chicago') on conflict (id) do nothing",
+        [PROPERTY, OWNER],
+      );
+      await db.query(
+        "insert into public.staff(id, property_id, name, department, is_active) values ($1, $3, 'Cache Housekeeper', 'housekeeping', true), ($2, $3, 'Room Work Housekeeper', 'housekeeping', true) on conflict (id) do nothing",
+        [HOUSEKEEPER, SECOND_HOUSEKEEPER, PROPERTY],
+      );
+      await db.query(
+        "insert into public.cleaning_tasks(id, property_id, room_number, business_date, dedupe_key, cleaning_type, priority, estimated_minutes, requires_inspection, extras, rules_fired, status, assignee_id, source_engine_run_id, source_property_timezone, scheduled_at, last_evaluated_at) values ($1, $2, '604', $3, '604::2026-08-02', 'stayover', 'normal', 20, false, '[]'::jsonb, '[]'::jsonb, 'scheduled', $4, $5, 'America/Chicago', $6::timestamptz, $6::timestamptz)",
+        [CACHE_ONLY_TASK, PROPERTY, BUSINESS_DATE, HOUSEKEEPER, 'b4000000-0000-4000-8000-000000000007', '2026-08-02T12:00:00Z'],
+      );
+      await db.query(
+        "insert into public.room_work(property_id, date, room_number, assigned_staff_id, assigned_source, status) values ($1, $2, '605', $3, 'manager', 'not_started')",
+        [PROPERTY, BUSINESS_DATE, SECOND_HOUSEKEEPER],
+      );
+    });
+
+    try {
+      assert.ok(reconciled.report.applied.includes('0434_housekeeping_plan_reconciliation.sql'));
+      assert.ok(reconciled.report.applied.includes('0435_housekeeping_canonical_operations.sql'));
+      const cacheSource = await reconciled.pg.query<{
+        assigned_staff_id: string;
+        assigned_source: string;
+        snapshot: Record<string, unknown>;
+      }>(
+        "select assigned_staff_id, assigned_source, assignment_history->-1 as snapshot from public.room_work where legacy_task_id = $1",
+        [CACHE_ONLY_TASK],
+      );
+      assert.equal(cacheSource.rows[0].assigned_staff_id, HOUSEKEEPER);
+      assert.equal(cacheSource.rows[0].assigned_source, 'pms_import');
+      assert.equal(cacheSource.rows[0].snapshot.property_id, PROPERTY);
+      assert.equal(cacheSource.rows[0].snapshot.cleaning_task_id, CACHE_ONLY_TASK);
+      assert.equal(cacheSource.rows[0].snapshot.housekeeper_id, HOUSEKEEPER);
+      assert.equal(cacheSource.rows[0].snapshot.is_active, true);
+      assert.equal(cacheSource.rows[0].snapshot.event, 'reconciled_task_cache');
+
+      const roomSource = await reconciled.pg.query<{
+        assigned_staff_id: string;
+        assigned_source: string;
+        snapshot: Record<string, unknown>;
+        canonical_id: string;
+      }>(
+        "select assigned_staff_id, assigned_source, assignment_history->-1 as snapshot, id::text as canonical_id from public.room_work where property_id = $1 and date = $2 and room_number = '605'",
+        [PROPERTY, BUSINESS_DATE],
+      );
+      assert.equal(roomSource.rows[0].assigned_staff_id, SECOND_HOUSEKEEPER);
+      assert.equal(roomSource.rows[0].assigned_source, 'manager');
+      assert.equal(roomSource.rows[0].snapshot.property_id, PROPERTY);
+      assert.equal(roomSource.rows[0].snapshot.cleaning_task_id, roomSource.rows[0].canonical_id);
+      assert.equal(roomSource.rows[0].snapshot.housekeeper_id, SECOND_HOUSEKEEPER);
+      assert.equal(roomSource.rows[0].snapshot.is_active, true);
+      assert.equal(roomSource.rows[0].snapshot.event, 'reconciled_room_work');
+    } finally {
+      await reconciled.pg.close();
+    }
+  });
+
+  test('0434 rejects conflicting assignment sources before reconciliation', async () => {
+    const conflicting = await applyMigrationsToPgliteWithHook(async ({ pg: db, file }) => {
+      if (file !== '0434_housekeeping_plan_reconciliation.sql') return;
+
+      await db.query(
+        "insert into auth.users(id, email) values ($1, 'phase5-conflict@example.test') on conflict (id) do nothing",
+        [OWNER],
+      );
+      await db.query(
+        "insert into public.properties(id, owner_id, name, total_rooms, timezone) values ($1, $2, 'Phase Five Inn', 60, 'America/Chicago') on conflict (id) do nothing",
+        [PROPERTY, OWNER],
+      );
+      await db.query(
+        "insert into public.staff(id, property_id, name, department, is_active) values ($1, $3, 'Cache Housekeeper', 'housekeeping', true), ($2, $3, 'Active Housekeeper', 'housekeeping', true) on conflict (id) do nothing",
+        [HOUSEKEEPER, SECOND_HOUSEKEEPER, PROPERTY],
+      );
+      await db.query(
+        "insert into public.cleaning_tasks(id, property_id, room_number, business_date, dedupe_key, cleaning_type, priority, estimated_minutes, requires_inspection, extras, rules_fired, status, assignee_id, source_engine_run_id, source_property_timezone, scheduled_at, last_evaluated_at) values ($1, $2, '606', $3, '606::2026-08-02', 'stayover', 'normal', 20, false, '[]'::jsonb, '[]'::jsonb, 'scheduled', $4, $5, 'America/Chicago', $6::timestamptz, $6::timestamptz)",
+        [CACHE_ONLY_TASK, PROPERTY, BUSINESS_DATE, HOUSEKEEPER, 'b4000000-0000-4000-8000-000000000008', '2026-08-02T12:00:00Z'],
+      );
+      await db.query(
+        "insert into public.hk_assignments(id, property_id, cleaning_task_id, housekeeper_id, is_active, assigned_by) values ($1, $2, $3, $4, true, 'auto')",
+        [NEW_ASSIGNMENT, PROPERTY, CACHE_ONLY_TASK, SECOND_HOUSEKEEPER],
+      );
+    });
+
+    try {
+      const failure = conflicting.report.failedAtRuntime.find(
+        (entry) => entry.file === '0434_housekeeping_plan_reconciliation.sql',
+      );
+      assert.ok(failure, JSON.stringify(conflicting.report.failedAtRuntime.filter((entry) => entry.file.startsWith('043'))));
+      assert.match(failure.error, /assignment source group/i);
+      assert.equal(conflicting.report.applied.includes('0434_housekeeping_plan_reconciliation.sql'), false);
+      await conflicting.pg.exec('rollback;').catch(() => undefined);
+      assert.deepEqual(
+        (await conflicting.pg.query<{ assignee_id: string }>(
+          "select assignee_id from public.cleaning_tasks where id = $1",
+          [CACHE_ONLY_TASK],
+        )).rows,
+        [{ assignee_id: HOUSEKEEPER }],
+      );
+      assert.deepEqual(
+        (await conflicting.pg.query<{ housekeeper_id: string }>(
+          "select housekeeper_id from public.hk_assignments where id = $1",
+          [NEW_ASSIGNMENT],
+        )).rows,
+        [{ housekeeper_id: SECOND_HOUSEKEEPER }],
+      );
+    } finally {
+      await conflicting.pg.close();
     }
   });
 });

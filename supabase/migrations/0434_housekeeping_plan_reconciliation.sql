@@ -27,6 +27,9 @@ $$;
 comment on function public.housekeeping_plan_id(uuid, date, text) is
   'Stable canonical room-work identifier for a property/date/room plan key.';
 
+revoke all on function public.housekeeping_plan_id(uuid, date, text) from public, anon, authenticated;
+grant execute on function public.housekeeping_plan_id(uuid, date, text) to service_role;
+
 alter table public.room_work add column if not exists id uuid;
 alter table public.room_work add column if not exists legacy_task_id uuid;
 
@@ -109,9 +112,16 @@ language plpgsql
 security definer
 set search_path = public, pg_temp
 as $$
+declare
+  v_expected_id uuid;
 begin
+  v_expected_id := public.housekeeping_plan_id(new.property_id, new.date, new.room_number);
   if new.id is null then
-    new.id := public.housekeeping_plan_id(new.property_id, new.date, new.room_number);
+    new.id := v_expected_id;
+  elsif new.id is distinct from v_expected_id then
+    raise exception
+      'E_ROOM_WORK_IDENTITY_MISMATCH: room_work.id must equal housekeeping_plan_id(property, date, room)'
+      using errcode = 'integrity_constraint_violation';
   end if;
   if new.plan_dedupe_key is null then
     new.plan_dedupe_key := new.room_number || '::' || new.date::text;
@@ -122,8 +132,29 @@ $$;
 
 drop trigger if exists room_work_fill_identity on public.room_work;
 create trigger room_work_fill_identity
-  before insert on public.room_work
+  before insert or update on public.room_work
   for each row execute function public._room_work_fill_identity();
+
+revoke all on function public._room_work_fill_identity() from public, anon, authenticated;
+grant execute on function public._room_work_fill_identity() to service_role;
+
+do $$
+declare
+  invalid_ids bigint;
+begin
+  select count(*)
+    into invalid_ids
+    from public.room_work w
+   where w.id is not null
+     and w.id is distinct from public.housekeeping_plan_id(w.property_id, w.date, w.room_number);
+
+  if invalid_ids > 0 then
+    raise exception
+      '0434 preflight: % room_work row(s) have an id that does not match property/date/room; refusing to reconcile',
+      invalid_ids;
+  end if;
+end;
+$$;
 
 do $$
 declare
@@ -190,6 +221,667 @@ begin
   end if;
 end;
 $$;
+
+do $$
+declare
+  invalid_cache bigint;
+  invalid_work bigint;
+  invalid_legacy_links bigint;
+  invalid_history bigint;
+  ambiguous_sources bigint;
+begin
+  select count(*)
+    into invalid_cache
+    from public.cleaning_tasks t
+    left join public.staff s on s.id = t.assignee_id
+   where t.assignee_id is not null
+     and (s.id is null or s.property_id is distinct from t.property_id);
+  if invalid_cache > 0 then
+    raise exception
+      '0434 preflight: % cleaning_tasks assignee cache row(s) cross a staff/property boundary or reference a missing staff row; refusing to reconcile',
+      invalid_cache;
+  end if;
+
+  select count(*)
+    into invalid_work
+    from public.room_work w
+    left join public.staff s on s.id = w.assigned_staff_id
+   where w.assigned_staff_id is not null
+     and (s.id is null or s.property_id is distinct from w.property_id);
+  if invalid_work > 0 then
+    raise exception
+      '0434 preflight: % room_work assignment row(s) cross a staff/property boundary or reference a missing staff row; refusing to reconcile',
+      invalid_work;
+  end if;
+
+  select count(*)
+    into invalid_legacy_links
+    from public.room_work w
+    left join public.cleaning_tasks t on t.id = w.legacy_task_id
+   where w.legacy_task_id is not null
+     and (
+       t.id is null
+       or t.property_id is distinct from w.property_id
+       or t.business_date is distinct from w.date
+       or t.room_number is distinct from w.room_number
+     );
+  if invalid_legacy_links > 0 then
+    raise exception
+      '0434 preflight: % room_work legacy task link(s) are ambiguous or cross property/date/room; refusing to reconcile',
+      invalid_legacy_links;
+  end if;
+
+  select count(*)
+    into invalid_history
+    from public.room_work w
+   where jsonb_typeof(w.assignment_history) is distinct from 'array';
+  if invalid_history > 0 then
+    raise exception
+      '0434 preflight: % existing room_work assignment history value(s) are not arrays; refusing to reconcile',
+      invalid_history;
+  end if;
+
+  select count(*)
+    into invalid_history
+   from public.room_work w
+    cross join lateral jsonb_array_elements(w.assignment_history) h
+    left join public.staff s on s.id::text = h->>'housekeeper_id'
+    left join public.cleaning_tasks t on t.id::text = h->>'cleaning_task_id'
+   where (
+        jsonb_typeof(h) is distinct from 'object'
+      )
+      or (
+        h->>'property_id' is not null
+        and h->>'property_id' is distinct from w.property_id::text
+      )
+      or (
+        h->>'housekeeper_id' is not null
+        and (s.id is null or s.property_id is distinct from w.property_id)
+      )
+      or (
+        h->>'cleaning_task_id' is not null
+        and (
+          (t.id is null and h->>'cleaning_task_id' is distinct from w.id::text)
+          or (t.id is not null and t.property_id is distinct from w.property_id)
+        )
+      );
+  if invalid_history > 0 then
+    raise exception
+      '0434 preflight: % existing room_work assignment history snapshot(s) are malformed or cross property; refusing to reconcile',
+      invalid_history;
+  end if;
+
+  with source_staff as (
+    select t.property_id, t.business_date, t.room_number, t.assignee_id as staff_id
+      from public.cleaning_tasks t
+     where t.assignee_id is not null
+    union all
+    select t.property_id, t.business_date, t.room_number, a.housekeeper_id
+      from public.cleaning_tasks t
+      join public.hk_assignments a on a.cleaning_task_id = t.id
+     where a.is_active
+    union all
+    select w.property_id, w.date, w.room_number, w.assigned_staff_id
+      from public.room_work w
+     where w.assigned_staff_id is not null
+    union all
+    select w.property_id, w.date, w.room_number, s.id
+      from public.room_work w
+      cross join lateral jsonb_array_elements(coalesce(w.assignment_history, '[]'::jsonb)) h
+      join public.staff s on s.id::text = h->>'housekeeper_id'
+     where coalesce((h->>'is_active')::boolean, false)
+  ), conflicts as (
+    select property_id, business_date, room_number
+      from source_staff
+     group by property_id, business_date, room_number
+    having count(distinct staff_id) > 1
+  )
+  select count(*) into ambiguous_sources from conflicts;
+
+  if ambiguous_sources > 0 then
+    raise exception
+      '0434 preflight: % property/date/room assignment source group(s) disagree across hk_assignments, cleaning_tasks, and room_work; refusing to reconcile',
+      ambiguous_sources;
+  end if;
+end;
+$$;
+
+-- Install the old-write bridge before the reconciliation so the old
+-- application cannot commit a task or assignment into the gap between 0434
+-- and 0435. The bridge remains installed through the compatibility window;
+-- the later contract stage removes it after the canonical app is live.
+create or replace function public._legacy_cleaning_task_to_room_work()
+returns trigger
+language plpgsql
+security definer
+set search_path = public, pg_temp
+as $function$
+declare
+  v_work public.room_work;
+  v_owner public.room_work;
+  v_current jsonb;
+  v_cache_snapshot jsonb;
+  v_active_staff uuid;
+  v_workflow_status text;
+  v_cache_now timestamptz;
+  v_has_work boolean;
+  v_assignee_changed boolean;
+begin
+  if tg_op = 'UPDATE'
+     and (
+       old.id is distinct from new.id
+       or old.property_id is distinct from new.property_id
+       or old.business_date is distinct from new.business_date
+       or old.room_number is distinct from new.room_number
+     ) then
+    raise exception
+      'E_LEGACY_IDENTITY_MUTATION: cleaning task identity cannot change during canonical cutover'
+      using errcode = 'integrity_constraint_violation';
+  end if;
+
+  if new.property_id is null
+     or new.business_date is null
+     or new.room_number is null
+     or new.id is null then
+    raise exception
+      'E_LEGACY_PLAN_AMBIGUOUS: property, date, room, and task id are required'
+      using errcode = 'not_null_violation';
+  end if;
+
+  select * into v_owner
+    from public.room_work w
+   where w.legacy_task_id = new.id
+   for update;
+  if found and (
+    v_owner.property_id is distinct from new.property_id
+    or v_owner.date is distinct from new.business_date
+    or v_owner.room_number is distinct from new.room_number
+  ) then
+    raise exception
+      'E_LEGACY_PLAN_AMBIGUOUS: task id % maps to another property/date/room',
+      new.id using errcode = 'integrity_constraint_violation';
+  end if;
+
+  select * into v_work
+    from public.room_work w
+   where w.property_id = new.property_id
+     and w.date = new.business_date
+     and w.room_number = new.room_number
+   for update;
+  v_has_work := found;
+
+  if v_has_work and v_work.legacy_task_id is not null
+     and v_work.legacy_task_id is distinct from new.id then
+    raise exception
+      'E_LEGACY_PLAN_AMBIGUOUS: property/date/room already belongs to task %',
+      v_work.legacy_task_id using errcode = 'integrity_constraint_violation';
+  end if;
+
+  if exists (
+    select 1 from public.room_work w
+     where w.property_id = new.property_id
+       and w.plan_dedupe_key = new.dedupe_key
+       and (w.date, w.room_number) is distinct from (new.business_date, new.room_number)
+  ) then
+    raise exception
+      'E_LEGACY_PLAN_AMBIGUOUS: duplicate dedupe key % in property %',
+      new.dedupe_key, new.property_id using errcode = 'unique_violation';
+  end if;
+
+  v_workflow_status := case
+    when v_has_work and v_work.status in ('in_progress', 'completed', 'refused', 'skipped')
+      then v_work.status
+    when new.status in ('in_progress', 'paused') then 'in_progress'
+    when new.status = 'completed' then 'completed'
+    when new.status in ('skipped', 'cancelled', 'superseded') then 'skipped'
+    else coalesce(v_work.status, 'not_started')
+  end;
+
+  perform set_config('staxis.housekeeping_legacy_bridge', 'on', true);
+  if not v_has_work then
+    insert into public.room_work (
+      id, legacy_task_id, property_id, date, room_number,
+      plan_dedupe_key, plan_cleaning_type, plan_priority,
+      plan_due_by, plan_estimated_minutes, plan_requires_inspection,
+      plan_extras, plan_notes, plan_rules_fired, plan_rule_inputs,
+      plan_status, plan_source_pms_reservation_id, plan_source_engine_run_id,
+      plan_source_property_timezone, plan_scheduled_at, plan_last_evaluated_at,
+      started_at, paused_at, completed_at, inspected_at, is_paused, status,
+      created_at
+    ) values (
+      public.housekeeping_plan_id(new.property_id, new.business_date, new.room_number),
+      new.id, new.property_id, new.business_date, new.room_number,
+      new.dedupe_key, new.cleaning_type, new.priority,
+      new.due_by, new.estimated_minutes, new.requires_inspection,
+      new.extras, new.notes, new.rules_fired, new.rule_inputs,
+      new.status, new.source_pms_reservation_id, new.source_engine_run_id,
+      new.source_property_timezone, new.scheduled_at, new.last_evaluated_at,
+      case when new.status in ('in_progress', 'paused') then new.started_at end,
+      case when new.status = 'paused' then new.paused_at end,
+      case when new.status = 'completed' then new.completed_at end,
+      case when new.status in ('inspected_pass', 'inspected_fail') then new.inspected_at end,
+      new.status = 'paused', v_workflow_status, new.created_at
+    ) returning * into v_work;
+  else
+    update public.room_work
+       set legacy_task_id = new.id,
+           plan_dedupe_key = new.dedupe_key,
+           plan_cleaning_type = new.cleaning_type,
+           plan_priority = new.priority,
+           plan_due_by = new.due_by,
+           plan_estimated_minutes = new.estimated_minutes,
+           plan_requires_inspection = new.requires_inspection,
+           plan_extras = new.extras,
+           plan_notes = new.notes,
+           plan_rules_fired = new.rules_fired,
+           plan_rule_inputs = new.rule_inputs,
+           plan_status = new.status,
+           plan_source_pms_reservation_id = new.source_pms_reservation_id,
+           plan_source_engine_run_id = new.source_engine_run_id,
+           plan_source_property_timezone = new.source_property_timezone,
+           plan_scheduled_at = new.scheduled_at,
+           plan_last_evaluated_at = new.last_evaluated_at,
+           started_at = coalesce(v_work.started_at, new.started_at),
+           paused_at = case when new.status = 'paused' then coalesce(new.paused_at, v_work.paused_at) else v_work.paused_at end,
+           completed_at = coalesce(v_work.completed_at, new.completed_at),
+           inspected_at = coalesce(v_work.inspected_at, new.inspected_at),
+           is_paused = case
+             when v_work.status in ('completed', 'refused', 'skipped') then v_work.is_paused
+             when new.status = 'paused' then true
+             when new.status in ('in_progress', 'completed', 'skipped', 'cancelled', 'superseded') then false
+             else v_work.is_paused
+           end,
+           status = v_workflow_status
+     where property_id = new.property_id
+       and date = new.business_date
+       and room_number = new.room_number
+    returning * into v_work;
+  end if;
+  perform set_config('staxis.housekeeping_legacy_bridge', 'off', true);
+
+  if tg_op = 'INSERT' then
+    v_assignee_changed := true;
+  else
+    v_assignee_changed := old.assignee_id is distinct from new.assignee_id;
+  end if;
+
+  select a.housekeeper_id into v_active_staff
+    from public.hk_assignments a
+   where a.property_id = new.property_id
+     and a.cleaning_task_id = new.id
+     and a.is_active
+   order by a.assigned_at desc, a.created_at desc, a.id desc
+   limit 1;
+
+  if new.assignee_id is not null
+     and v_active_staff is not null
+     and v_active_staff is distinct from new.assignee_id then
+    raise exception
+      'E_LEGACY_ASSIGNMENT_MISMATCH: task cache does not match active assignment'
+      using errcode = 'integrity_constraint_violation';
+  end if;
+
+  select e.snapshot
+    into v_current
+    from jsonb_array_elements(coalesce(v_work.assignment_history, '[]'::jsonb)) with ordinality e(snapshot, position)
+   where e.snapshot->>'id' is not null
+     and e.snapshot->>'property_id' = v_work.property_id::text
+     and e.snapshot->>'cleaning_task_id' = coalesce(v_work.legacy_task_id, v_work.id)::text
+     and e.snapshot->>'housekeeper_id' = v_work.assigned_staff_id::text
+     and e.snapshot ? 'queue_order'
+     and e.snapshot ? 'assigned_at'
+     and e.snapshot ? 'assigned_by'
+     and e.snapshot ? 'assigned_by_user_id'
+     and e.snapshot ? 'reason'
+     and e.snapshot ? 'score'
+     and e.snapshot ? 'created_at'
+     and e.snapshot ? 'updated_at'
+     and coalesce((e.snapshot->>'is_active')::boolean, false)
+   order by e.position desc
+   limit 1;
+
+  if not v_assignee_changed then
+    return new;
+  end if;
+
+  -- A cache-only old write may create an assignment when no active legacy row
+  -- exists. If canonical state already names another person, fail closed
+  -- rather than overwriting a canonical manager decision with stale cache data.
+  if new.assignee_id is not null and v_active_staff is null then
+    if v_work.assigned_staff_id is not null
+       and v_work.assigned_staff_id is distinct from new.assignee_id
+       and not (
+         tg_op = 'UPDATE'
+         and old.assignee_id is not null
+         and old.assignee_id = v_work.assigned_staff_id
+       ) then
+      raise exception
+        'E_LEGACY_ASSIGNMENT_MISMATCH: task cache does not match canonical assignment'
+        using errcode = 'integrity_constraint_violation';
+    end if;
+
+    if v_work.assigned_staff_id is null
+       or v_work.assigned_staff_id is distinct from new.assignee_id then
+      v_cache_now := now();
+      v_cache_snapshot := jsonb_build_object(
+        'id', gen_random_uuid(),
+        'property_id', new.property_id,
+        'cleaning_task_id', new.id,
+        'housekeeper_id', new.assignee_id,
+        'queue_order', coalesce(v_work.assignment_queue_order, 0),
+        'is_active', true,
+        'assigned_at', v_cache_now,
+        'assigned_by', 'pms_import',
+        'assigned_by_user_id', null,
+        'reason', 'legacy cache',
+        'score', null,
+        'created_at', v_cache_now,
+        'updated_at', v_cache_now,
+        'event', 'legacy_cache_assigned',
+        'changed_at', v_cache_now
+      );
+      perform set_config('staxis.housekeeping_legacy_bridge', 'on', true);
+      update public.room_work
+         set assignment_history = case
+           when assigned_staff_id is null then assignment_history
+           else assignment_history || jsonb_build_array(
+             coalesce(v_current, jsonb_build_object(
+               'id', gen_random_uuid(),
+               'property_id', property_id,
+               'cleaning_task_id', coalesce(legacy_task_id, id),
+               'housekeeper_id', assigned_staff_id,
+               'queue_order', assignment_queue_order,
+               'is_active', true,
+               'assigned_at', assignment_assigned_at,
+               'assigned_by', assignment_assigned_by,
+               'assigned_by_user_id', assignment_assigned_by_user_id,
+               'reason', assignment_reason,
+               'score', assignment_score,
+               'created_at', coalesce(created_at, v_cache_now),
+               'updated_at', coalesce(updated_at, v_cache_now)
+             )) || jsonb_build_object(
+               'is_active', false,
+               'event', 'superseded',
+               'changed_at', v_cache_now,
+               'updated_at', v_cache_now
+             )
+           )
+         end || jsonb_build_array(v_cache_snapshot),
+             assigned_staff_id = new.assignee_id,
+             assigned_source = 'pms_import',
+             assignment_queue_order = coalesce(assignment_queue_order, 0),
+             assignment_assigned_at = v_cache_now,
+             assignment_assigned_by = null,
+             assignment_assigned_by_user_id = null,
+             assignment_reason = null,
+             assignment_score = null
+       where property_id = new.property_id
+         and date = new.business_date
+         and room_number = new.room_number;
+      perform set_config('staxis.housekeeping_legacy_bridge', 'off', true);
+    end if;
+  elsif new.assignee_id is null
+        and v_active_staff is null
+        and v_work.assigned_staff_id is not null then
+    -- An INSERT with a null cache carries no unassignment transition. Keep
+    -- any already-canonical room-work assignment intact.
+    if tg_op <> 'UPDATE' or old.assignee_id is null then
+      return new;
+    end if;
+    if old.assignee_id is distinct from v_work.assigned_staff_id then
+      raise exception
+        'E_LEGACY_ASSIGNMENT_MISMATCH: null task cache does not match canonical assignment'
+        using errcode = 'integrity_constraint_violation';
+    end if;
+
+    perform set_config('staxis.housekeeping_legacy_bridge', 'on', true);
+    update public.room_work
+       set assignment_history = assignment_history || jsonb_build_array(
+         coalesce(v_current, jsonb_build_object(
+           'id', gen_random_uuid(),
+           'property_id', new.property_id,
+           'cleaning_task_id', new.id,
+           'housekeeper_id', assigned_staff_id,
+           'queue_order', assignment_queue_order,
+           'is_active', true,
+           'assigned_at', assignment_assigned_at,
+           'assigned_by', assignment_assigned_by,
+           'assigned_by_user_id', assignment_assigned_by_user_id,
+           'reason', assignment_reason,
+           'score', assignment_score,
+           'created_at', now(),
+           'updated_at', now()
+         )) || jsonb_build_object(
+           'is_active', false,
+           'event', 'legacy_cache_unassigned',
+           'changed_at', now(),
+           'updated_at', now()
+         )
+       ),
+           assigned_staff_id = null,
+           assigned_source = null,
+           assignment_queue_order = 0,
+           assignment_assigned_at = null,
+           assignment_assigned_by = null,
+           assignment_assigned_by_user_id = null,
+           assignment_reason = null,
+           assignment_score = null
+     where property_id = new.property_id
+       and date = new.business_date
+       and room_number = new.room_number;
+    perform set_config('staxis.housekeeping_legacy_bridge', 'off', true);
+  end if;
+
+  return new;
+end;
+$function$;
+
+create or replace function public._legacy_hk_assignment_to_room_work()
+returns trigger
+language plpgsql
+security definer
+set search_path = public, pg_temp
+as $function$
+declare
+  v_task record;
+  v_staff record;
+  v_work public.room_work;
+  v_latest jsonb;
+  v_current jsonb;
+  v_snapshot jsonb;
+  v_same_payload boolean;
+  v_clear boolean;
+begin
+  if tg_op = 'UPDATE'
+     and (
+       old.id is distinct from new.id
+       or old.property_id is distinct from new.property_id
+       or old.cleaning_task_id is distinct from new.cleaning_task_id
+       or old.housekeeper_id is distinct from new.housekeeper_id
+     ) then
+    raise exception
+      'E_LEGACY_ASSIGNMENT_IDENTITY_MUTATION: assignment id, property, task, and housekeeper identity cannot change in place'
+      using errcode = 'integrity_constraint_violation';
+  end if;
+
+  select t.property_id, t.business_date, t.room_number into v_task
+    from public.cleaning_tasks t where t.id = new.cleaning_task_id;
+  if not found then
+    raise exception 'E_LEGACY_ASSIGNMENT_ORPHAN: cleaning task % does not exist', new.cleaning_task_id
+      using errcode = 'foreign_key_violation';
+  end if;
+  if v_task.property_id is distinct from new.property_id then
+    raise exception 'E_LEGACY_ASSIGNMENT_CROSS_PROPERTY: assignment and task properties differ'
+      using errcode = 'foreign_key_violation';
+  end if;
+
+  select s.property_id, s.department, coalesce(s.is_active, true) as is_active into v_staff
+    from public.staff s where s.id = new.housekeeper_id;
+  if not found or v_staff.property_id is distinct from new.property_id then
+    raise exception 'E_LEGACY_ASSIGNMENT_CROSS_PROPERTY: housekeeper is not at the task property'
+      using errcode = 'foreign_key_violation';
+  end if;
+  if new.is_active and (v_staff.department is distinct from 'housekeeping' or v_staff.is_active = false) then
+    raise exception 'E_LEGACY_ASSIGNMENT_INVALID_TARGET: active assignment target is not an active housekeeper'
+      using errcode = 'check_violation';
+  end if;
+
+  select * into v_work
+    from public.room_work w
+   where w.property_id = new.property_id
+     and w.date = v_task.business_date
+     and w.room_number = v_task.room_number
+   for update;
+  if not found or (v_work.legacy_task_id is not null and v_work.legacy_task_id is distinct from new.cleaning_task_id) then
+    raise exception 'E_LEGACY_ASSIGNMENT_AMBIGUOUS: canonical room-work row is missing or belongs to another task'
+      using errcode = 'integrity_constraint_violation';
+  end if;
+
+  select e.snapshot into v_latest
+    from jsonb_array_elements(coalesce(v_work.assignment_history, '[]'::jsonb)) with ordinality e(snapshot, position)
+   where e.snapshot->>'id' = new.id::text
+   order by e.position desc
+   limit 1;
+    select e.snapshot into v_current
+      from jsonb_array_elements(coalesce(v_work.assignment_history, '[]'::jsonb)) with ordinality e(snapshot, position)
+     where e.snapshot->>'id' is not null
+       and e.snapshot->>'property_id' = v_work.property_id::text
+       and e.snapshot->>'cleaning_task_id' = coalesce(v_work.legacy_task_id, v_work.id)::text
+       and e.snapshot->>'housekeeper_id' = v_work.assigned_staff_id::text
+       and e.snapshot ? 'queue_order'
+       and e.snapshot ? 'assigned_at'
+       and e.snapshot ? 'assigned_by'
+       and e.snapshot ? 'assigned_by_user_id'
+       and e.snapshot ? 'reason'
+       and e.snapshot ? 'score'
+       and e.snapshot ? 'created_at'
+       and e.snapshot ? 'updated_at'
+       and coalesce((e.snapshot->>'is_active')::boolean, false)
+   order by e.position desc
+   limit 1;
+
+  v_snapshot := jsonb_build_object(
+    'id', new.id,
+    'property_id', new.property_id,
+    'cleaning_task_id', new.cleaning_task_id,
+    'housekeeper_id', new.housekeeper_id,
+    'queue_order', new.queue_order,
+    'is_active', new.is_active,
+    'assigned_at', new.assigned_at,
+    'assigned_by', new.assigned_by,
+    'assigned_by_user_id', new.assigned_by_user_id,
+    'reason', new.reason,
+    'score', new.score,
+    'created_at', new.created_at,
+    'updated_at', new.updated_at,
+    'event', case
+      when not new.is_active then 'deactivated'
+      when v_latest is null then 'assigned'
+      when coalesce((v_latest->>'is_active')::boolean, false) then 'updated'
+      else 'reactivated'
+    end,
+    'changed_at', now()
+  );
+  v_same_payload := v_latest is not null
+    and (v_latest - 'event' - 'changed_at' - 'updated_at')
+      = (v_snapshot - 'event' - 'changed_at' - 'updated_at');
+  v_clear := not new.is_active
+    and v_work.assigned_staff_id = new.housekeeper_id
+    and (v_latest is null or coalesce((v_latest->>'is_active')::boolean, false));
+
+  perform set_config('staxis.housekeeping_legacy_bridge', 'on', true);
+  if new.is_active then
+    update public.room_work
+       set assignment_history = case
+         when v_work.assigned_staff_id is not null
+              and (
+                v_work.assigned_staff_id is distinct from new.housekeeper_id
+                or v_current is null
+                or v_current->>'id' is distinct from new.id::text
+              )
+           then assignment_history || jsonb_build_array(
+             coalesce(v_current, jsonb_build_object(
+               'id', gen_random_uuid(),
+               'property_id', new.property_id,
+               'cleaning_task_id', new.cleaning_task_id,
+               'housekeeper_id', assigned_staff_id,
+               'queue_order', assignment_queue_order,
+               'is_active', true,
+               'assigned_at', assignment_assigned_at,
+               'assigned_by', assignment_assigned_by,
+               'assigned_by_user_id', assignment_assigned_by_user_id,
+               'reason', assignment_reason,
+               'score', assignment_score,
+               'created_at', now(),
+               'updated_at', now()
+             )) || jsonb_build_object(
+               'is_active', false,
+               'event', 'superseded',
+               'changed_at', now(),
+               'updated_at', now()
+             )
+           )
+         else assignment_history
+       end || case when not v_same_payload then jsonb_build_array(v_snapshot) else '[]'::jsonb end,
+           assigned_staff_id = new.housekeeper_id,
+           assigned_source = case when new.assigned_by = 'auto' then 'auto' else 'manager' end,
+           assignment_queue_order = new.queue_order,
+           assignment_assigned_at = new.assigned_at,
+           assignment_assigned_by = new.assigned_by,
+           assignment_assigned_by_user_id = new.assigned_by_user_id,
+           assignment_reason = new.reason,
+           assignment_score = new.score
+     where property_id = new.property_id
+       and date = v_task.business_date
+       and room_number = v_task.room_number;
+  elsif not v_same_payload then
+    update public.room_work
+       set assignment_history = assignment_history || jsonb_build_array(v_snapshot),
+           assigned_staff_id = case when v_clear then null else assigned_staff_id end,
+           assigned_source = case when v_clear then null else assigned_source end,
+           assignment_queue_order = case when v_clear then 0 else assignment_queue_order end,
+           assignment_assigned_at = case when v_clear then null else assignment_assigned_at end,
+           assignment_assigned_by = case when v_clear then null else assignment_assigned_by end,
+           assignment_assigned_by_user_id = case when v_clear then null else assignment_assigned_by_user_id end,
+           assignment_reason = case when v_clear then null else assignment_reason end,
+           assignment_score = case when v_clear then null else assignment_score end
+     where property_id = new.property_id
+       and date = v_task.business_date
+       and room_number = v_task.room_number;
+  elsif v_clear then
+    update public.room_work
+       set assigned_staff_id = null,
+           assigned_source = null,
+           assignment_queue_order = 0,
+           assignment_assigned_at = null,
+           assignment_assigned_by = null,
+           assignment_assigned_by_user_id = null,
+           assignment_reason = null,
+           assignment_score = null
+     where property_id = new.property_id
+       and date = v_task.business_date
+       and room_number = v_task.room_number;
+  end if;
+  perform set_config('staxis.housekeeping_legacy_bridge', 'off', true);
+
+  return new;
+end;
+$function$;
+
+revoke all on function public._legacy_cleaning_task_to_room_work() from public, anon, authenticated;
+revoke all on function public._legacy_hk_assignment_to_room_work() from public, anon, authenticated;
+grant execute on function public._legacy_cleaning_task_to_room_work() to service_role;
+grant execute on function public._legacy_hk_assignment_to_room_work() to service_role;
+
+drop trigger if exists trg_legacy_cleaning_task_to_room_work on public.cleaning_tasks;
+create trigger trg_legacy_cleaning_task_to_room_work
+  after insert or update on public.cleaning_tasks
+  for each row execute function public._legacy_cleaning_task_to_room_work();
+
+drop trigger if exists trg_legacy_hk_assignment_to_room_work on public.hk_assignments;
+create trigger trg_legacy_hk_assignment_to_room_work
+  after insert or update on public.hk_assignments
+  for each row execute function public._legacy_hk_assignment_to_room_work();
 
 -- Every legacy task gets a canonical row. Existing room-work state wins for
 -- workflow fields; the task row supplies only the manager plan metadata and
@@ -337,139 +1029,172 @@ begin
 end;
 $$;
 
--- Preserve the complete assignment history in canonical JSON. The current
--- active snapshot is duplicated into dedicated columns so manager reads do
--- not need to unpack history. Invalid cross-property rows were rejected by
--- the preflight above, and every history row is retained for audit.
+-- Preserve every pre-existing room_work snapshot and merge the full legacy
+-- assignment history into it. A matching assignment id/payload is retained
+-- only once, while a metadata/status change is appended as a new receipt.
 update public.room_work w
-   set assignment_history = coalesce((
-         select jsonb_agg(
-           jsonb_build_object(
-             'id', a.id,
-             'property_id', a.property_id,
-             'cleaning_task_id', a.cleaning_task_id,
-             'housekeeper_id', a.housekeeper_id,
-             'queue_order', a.queue_order,
-             'is_active', a.is_active,
-             'assigned_at', a.assigned_at,
-             'assigned_by', a.assigned_by,
-             'assigned_by_user_id', a.assigned_by_user_id,
-             'reason', a.reason,
-             'score', a.score,
-             'created_at', a.created_at,
-             'updated_at', a.updated_at
-           ) order by a.created_at, a.id
-         )
-           from public.hk_assignments a
-          where a.property_id = w.property_id
-            and a.cleaning_task_id = w.legacy_task_id
-       ), '[]'::jsonb),
-       assigned_staff_id = coalesce(
-         (
-           select a.housekeeper_id
-             from public.hk_assignments a
-            where a.property_id = w.property_id
-              and a.cleaning_task_id = w.legacy_task_id
-              and a.is_active
-            order by a.assigned_at desc, a.created_at desc, a.id desc
-            limit 1
-         ),
-         w.assigned_staff_id
-       ),
-       assigned_source = case
-         when exists (
-           select 1
-             from public.hk_assignments a
-            where a.property_id = w.property_id
-              and a.cleaning_task_id = w.legacy_task_id
-              and a.is_active
-         ) then case
-           when (
-             select a.assigned_by
+   set assignment_history = w.assignment_history || coalesce((
+         select jsonb_agg(snapshot order by sort_created, sort_id)
+           from (
+             select jsonb_build_object(
+               'id', a.id,
+               'property_id', a.property_id,
+               'cleaning_task_id', a.cleaning_task_id,
+               'housekeeper_id', a.housekeeper_id,
+               'queue_order', a.queue_order,
+               'is_active', a.is_active,
+               'assigned_at', a.assigned_at,
+               'assigned_by', a.assigned_by,
+               'assigned_by_user_id', a.assigned_by_user_id,
+               'reason', a.reason,
+               'score', a.score,
+               'created_at', a.created_at,
+               'updated_at', a.updated_at,
+               'event', 'reconciled_hk_assignment'
+             ) as snapshot,
+             a.created_at as sort_created,
+             a.id as sort_id
                from public.hk_assignments a
               where a.property_id = w.property_id
                 and a.cleaning_task_id = w.legacy_task_id
-                and a.is_active
-              order by a.assigned_at desc, a.created_at desc, a.id desc
-              limit 1
-           ) = 'auto' then 'auto'
-           else 'manager'
-         end
+                and not exists (
+                  select 1
+                    from jsonb_array_elements(w.assignment_history) h
+                   where h->>'id' = a.id::text
+                     and h->>'property_id' = a.property_id::text
+                     and h->>'cleaning_task_id' = a.cleaning_task_id::text
+                     and h->>'housekeeper_id' = a.housekeeper_id::text
+                     and h->>'queue_order' = a.queue_order::text
+                     and h->>'is_active' = a.is_active::text
+                     and h->>'assigned_by' is not distinct from a.assigned_by
+                     and h->>'reason' is not distinct from a.reason
+                     and h->>'score' is not distinct from a.score::text
+                )
+           ) snapshots
+       ), '[]'::jsonb)
+ where w.legacy_task_id is not null;
+
+-- Reconcile the current assignment from all three proven sources. The
+-- preflight above guarantees that every non-null candidate agrees, so source
+-- priority is deterministic rather than a hidden conflict resolver.
+update public.room_work w
+   set assigned_staff_id = coalesce(s.active_staff_id, s.cache_staff_id, w.assigned_staff_id),
+       assigned_source = case
+         when s.active_staff_id is not null then case when s.active_assigned_by = 'auto' then 'auto' else 'manager' end
+         when s.cache_staff_id is not null then coalesce(w.assigned_source, 'pms_import')
          else w.assigned_source
        end,
-       assignment_queue_order = coalesce(
-         (
-           select a.queue_order
-             from public.hk_assignments a
-            where a.property_id = w.property_id
-              and a.cleaning_task_id = w.legacy_task_id
-              and a.is_active
-            order by a.assigned_at desc, a.created_at desc, a.id desc
-            limit 1
-         ),
-         w.assignment_queue_order
-       ),
-       assignment_assigned_at = coalesce(
-         (
-           select a.assigned_at
-             from public.hk_assignments a
-            where a.property_id = w.property_id
-              and a.cleaning_task_id = w.legacy_task_id
-              and a.is_active
-            order by a.assigned_at desc, a.created_at desc, a.id desc
-            limit 1
-         ),
-         w.assignment_assigned_at
-       ),
-       assignment_assigned_by = coalesce(
-         (
-           select a.assigned_by
-             from public.hk_assignments a
-            where a.property_id = w.property_id
-              and a.cleaning_task_id = w.legacy_task_id
-              and a.is_active
-            order by a.assigned_at desc, a.created_at desc, a.id desc
-            limit 1
-         ),
-         w.assignment_assigned_by
-       ),
-       assignment_assigned_by_user_id = coalesce(
-         (
-           select a.assigned_by_user_id
-             from public.hk_assignments a
-            where a.property_id = w.property_id
-              and a.cleaning_task_id = w.legacy_task_id
-              and a.is_active
-            order by a.assigned_at desc, a.created_at desc, a.id desc
-            limit 1
-         ),
-         w.assignment_assigned_by_user_id
-       ),
-       assignment_reason = coalesce(
-         (
-           select a.reason
-             from public.hk_assignments a
-            where a.property_id = w.property_id
-              and a.cleaning_task_id = w.legacy_task_id
-              and a.is_active
-            order by a.assigned_at desc, a.created_at desc, a.id desc
-            limit 1
-         ),
-         w.assignment_reason
-       ),
-       assignment_score = coalesce(
-         (
-           select a.score
-             from public.hk_assignments a
-            where a.property_id = w.property_id
-              and a.cleaning_task_id = w.legacy_task_id
-              and a.is_active
-            order by a.assigned_at desc, a.created_at desc, a.id desc
-            limit 1
-         ),
-         w.assignment_score
-       )
- where w.legacy_task_id is not null;
+       assignment_queue_order = coalesce(s.active_queue_order, w.assignment_queue_order),
+       assignment_assigned_at = coalesce(s.active_assigned_at, w.assignment_assigned_at),
+       assignment_assigned_by = coalesce(s.active_assigned_by, w.assignment_assigned_by),
+       assignment_assigned_by_user_id = coalesce(s.active_assigned_by_user_id, w.assignment_assigned_by_user_id),
+       assignment_reason = coalesce(s.active_reason, w.assignment_reason),
+       assignment_score = coalesce(s.active_score, w.assignment_score)
+  from (
+    select w0.id,
+           t.assignee_id as cache_staff_id,
+           a.housekeeper_id as active_staff_id,
+           a.queue_order as active_queue_order,
+           a.assigned_at as active_assigned_at,
+           a.assigned_by as active_assigned_by,
+           a.assigned_by_user_id as active_assigned_by_user_id,
+           a.reason as active_reason,
+           a.score as active_score
+      from public.room_work w0
+      left join public.cleaning_tasks t on t.id = w0.legacy_task_id
+      left join lateral (
+        select a.housekeeper_id, a.queue_order, a.assigned_at, a.assigned_by,
+               a.assigned_by_user_id, a.reason, a.score
+          from public.hk_assignments a
+         where a.property_id = w0.property_id
+           and a.cleaning_task_id = w0.legacy_task_id
+           and a.is_active
+         order by a.assigned_at desc, a.created_at desc, a.id desc
+         limit 1
+      ) a on true
+  ) s
+ where w.id = s.id;
+
+-- A valid cache-only or room_work-only assignment has no hk_assignments row
+-- to supply a receipt. Materialize one complete current snapshot instead of
+-- leaving the assignment without an auditable history entry.
+update public.room_work w
+   set assignment_history = w.assignment_history || jsonb_build_array(
+     jsonb_build_object(
+       'id', gen_random_uuid(),
+       'property_id', w.property_id,
+       'cleaning_task_id', coalesce(w.legacy_task_id, w.id),
+       'housekeeper_id', w.assigned_staff_id,
+       'queue_order', w.assignment_queue_order,
+       'is_active', true,
+       'assigned_at', w.assignment_assigned_at,
+       'assigned_by', coalesce(w.assignment_assigned_by, case when t.assignee_id is not null then 'pms_import' else 'room_work' end),
+       'assigned_by_user_id', w.assignment_assigned_by_user_id,
+       'reason', w.assignment_reason,
+       'score', w.assignment_score,
+       'created_at', now(),
+       'updated_at', now(),
+       'event', case when t.assignee_id is not null then 'reconciled_task_cache' else 'reconciled_room_work' end
+     )
+   )
+  from public.cleaning_tasks t
+ where t.id = w.legacy_task_id
+   and w.assigned_staff_id is not null
+   and not exists (
+     select 1
+       from jsonb_array_elements(w.assignment_history) h
+      where coalesce((h->>'is_active')::boolean, false)
+        and h->>'id' is not null
+        and h->>'property_id' = w.property_id::text
+        and h->>'cleaning_task_id' = coalesce(w.legacy_task_id, w.id)::text
+        and h->>'housekeeper_id' = w.assigned_staff_id::text
+        and h ? 'queue_order'
+        and h ? 'assigned_at'
+        and h ? 'assigned_by'
+        and h ? 'assigned_by_user_id'
+        and h ? 'reason'
+        and h ? 'score'
+        and h ? 'created_at'
+        and h ? 'updated_at'
+   );
+
+update public.room_work w
+   set assignment_history = w.assignment_history || jsonb_build_array(
+     jsonb_build_object(
+       'id', gen_random_uuid(),
+       'property_id', w.property_id,
+       'cleaning_task_id', coalesce(w.legacy_task_id, w.id),
+       'housekeeper_id', w.assigned_staff_id,
+       'queue_order', w.assignment_queue_order,
+       'is_active', true,
+       'assigned_at', w.assignment_assigned_at,
+       'assigned_by', coalesce(w.assignment_assigned_by, 'room_work'),
+       'assigned_by_user_id', w.assignment_assigned_by_user_id,
+       'reason', w.assignment_reason,
+       'score', w.assignment_score,
+       'created_at', now(),
+       'updated_at', now(),
+       'event', 'reconciled_room_work'
+     )
+   )
+ where w.assigned_staff_id is not null
+   and not exists (
+     select 1
+       from jsonb_array_elements(w.assignment_history) h
+      where coalesce((h->>'is_active')::boolean, false)
+        and h->>'id' is not null
+        and h->>'property_id' = w.property_id::text
+        and h->>'cleaning_task_id' = coalesce(w.legacy_task_id, w.id)::text
+        and h->>'housekeeper_id' = w.assigned_staff_id::text
+        and h ? 'queue_order'
+        and h ? 'assigned_at'
+        and h ? 'assigned_by'
+        and h ? 'assigned_by_user_id'
+        and h ? 'reason'
+        and h ? 'score'
+        and h ? 'created_at'
+        and h ? 'updated_at'
+   );
 
 do $$
 begin
