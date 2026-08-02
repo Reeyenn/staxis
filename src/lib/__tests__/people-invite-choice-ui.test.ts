@@ -197,6 +197,7 @@ describe('People invite entry choice', () => {
     assert.match(normalDialogArea, /<LazyInviteDialog[\s\S]*returnFocusRef=\{inviteEntryReturnFocusRef\}/);
     assert.match(normalDialogArea, /<LazyInviteDialog[\s\S]*fallbackFocusRef=\{peopleHeadingRef\}/);
     assert.match(normalDialogArea, /<DialogLoading[\s\S]*returnFocusRef=\{needsFirstPerson \? undefined : inviteEntryReturnFocusRef\}/);
+    assert.match(normalDialogArea, /<DialogLoading[\s\S]*fallbackFocusRef=\{peopleHeadingRef\}/);
     assert.match(earlyBranch, /<DialogLoading[\s\S]*returnFocusRef=\{inviteEntryReturnFocusRef\}/);
     assert.match(focusUtility, /isConnected[\s\S]*!element\.matches\(':disabled'\)[\s\S]*aria-disabled/);
     assert.match(
@@ -213,7 +214,8 @@ describe('People invite entry choice', () => {
       ') : inviteDialogOpen && !inviteActionDisabled ? (',
       'first-person invite handoff',
     );
-    assert.doesNotMatch(firstPersonHandoff, /returnFocusRef|fallbackFocusRef/);
+    assert.doesNotMatch(firstPersonHandoff, /returnFocusRef=/);
+    assert.match(firstPersonHandoff, /fallbackFocusRef=\{peopleHeadingRef\}/);
   });
 
   test('loading states match their destination and close the correct state', () => {

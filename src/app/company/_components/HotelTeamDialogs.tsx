@@ -1302,11 +1302,13 @@ export function FirstPersonInviteDialog({
   onClose,
   onChanged,
   onInvited,
+  fallbackFocusRef,
 }: {
   hotelId: string;
   hotelName: string;
   onClose: () => void;
   onChanged?: () => void | Promise<void>;
+  fallbackFocusRef?: React.RefObject<HTMLElement | null>;
   /**
    * Fired once with the server's receipt when an invitation actually exists.
    * Additive: the People panel ignores it and keeps using onChanged to refetch.
@@ -1382,6 +1384,7 @@ export function FirstPersonInviteDialog({
       icon={<UserCheck size={21} aria-hidden="true" />}
       onClose={onClose}
       busy={busy}
+      fallbackFocusRef={fallbackFocusRef}
     >
       {result ? (
         <div className={styles.dialogForm}>

@@ -1554,7 +1554,7 @@ export function HotelTeamPanel({
           variant={loadingDialogVariant}
           choiceCount={Number(canAddStaff && !locked) + Number(canInviteToStaxis)}
           returnFocusRef={needsFirstPerson ? undefined : inviteEntryReturnFocusRef}
-          fallbackFocusRef={needsFirstPerson ? undefined : peopleHeadingRef}
+          fallbackFocusRef={peopleHeadingRef}
           onClose={closeLoadingDialog}
         />
       )}>
@@ -1618,6 +1618,7 @@ export function HotelTeamPanel({
           <LazyFirstPersonInviteDialog
             hotelId={hotelId}
             hotelName={hotelName}
+            fallbackFocusRef={peopleHeadingRef}
             onClose={() => onInviteDialogOpenChange(false)}
             onChanged={() => changedRef.current?.()}
           />
