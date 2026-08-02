@@ -27,10 +27,8 @@ import { createPortal } from 'react-dom';
 import {
   AlertCircle,
   AlertTriangle,
-  CalendarPlus,
   Clock3,
   KeyRound,
-  LogIn,
   Pencil,
   RefreshCw,
   ShieldCheck,
@@ -207,6 +205,11 @@ const LazyRemoveDialog = React.lazy(async () => {
 const LazyInviteDialog = React.lazy(async () => {
   const dialogs = await import('./HotelTeamDialogs');
   return { default: dialogs.HotelInviteDialog };
+});
+
+const LazyPeopleInviteChooserDialog = React.lazy(async () => {
+  const dialogs = await import('./HotelTeamDialogs');
+  return { default: dialogs.PeopleInviteChooserDialog };
 });
 
 const LazyFirstPersonInviteDialog = React.lazy(async () => {
@@ -493,7 +496,7 @@ function canEditEmployment(
   return false;
 }
 
-type DialogLoadingVariant = 'invite' | 'member' | 'remove' | 'decision';
+type DialogLoadingVariant = 'invite' | 'invite-choice' | 'member' | 'remove' | 'decision';
 
 function DialogLoading({
   lang,
@@ -512,8 +515,8 @@ function DialogLoading({
   onCloseRef.current = onClose;
   const titleId = React.useId();
   const loadingLabel = 'Opening dialog…';
-  const title = variant === 'invite'
-    ? 'Invite hotel staff'
+  const title = variant === 'invite' || variant === 'invite-choice'
+    ? 'Invite people'
     : variant === 'member'
       ? 'Person details'
       : variant === 'remove'
@@ -692,6 +695,7 @@ export function HotelTeamPanel({
   const [editKey, setEditKey] = React.useState<string | null>(null);
   const [removeMember, setRemoveMember] = React.useState<HotelTeamMember | null>(null);
   const [addDepartment, setAddDepartment] = React.useState<StaffDepartment | null>(null);
+  const [inviteChoiceOpen, setInviteChoiceOpen] = React.useState(false);
   const [pendingAddAttempt, setPendingAddAttempt] = React.useState<AddStaffAttempt | null>(null);
   const [optimisticStaff, setOptimisticStaff] = React.useState<StaffMember[]>([]);
   // Phone numbers and wages never travel over the browser roster projection —
@@ -723,6 +727,28 @@ export function HotelTeamPanel({
   const locked = readOnly;
   const inviteActionDisabled = locked
     || (adminPreview && (teamLoading || Boolean(teamError)));
+  // A hotel manager can use the shared link, QR, and code invite even when the
+  // account-invite capability is not granted. Keep this derived from the same
+  // guarded surfaces as the existing Invite dialog instead of widening access.
+  const canInviteToStaxis = canManageTeam || canInviteAccounts;
+  const inviteEntryAvailable = canAddStaff || canInviteToStaxis;
+
+  const openPeopleInviteChooser = React.useCallback(() => {
+    if (inviteActionDisabled || !inviteEntryAvailable) return;
+    setInviteChoiceOpen(true);
+  }, [inviteActionDisabled, inviteEntryAvailable]);
+
+  const chooseAddStaff = React.useCallback(() => {
+    if (!canAddStaff || locked) return;
+    setInviteChoiceOpen(false);
+    setAddDepartment('housekeeping');
+  }, [canAddStaff, locked]);
+
+  const chooseInviteToStaxis = React.useCallback(() => {
+    if (!canInviteToStaxis || inviteActionDisabled) return;
+    setInviteChoiceOpen(false);
+    onInviteDialogOpenChange(true);
+  }, [canInviteToStaxis, inviteActionDisabled, onInviteDialogOpenChange]);
 
   // A definitive fresh authorization refresh can revoke hotel-operational
   // standing while this tab is open. Drop every private roster projection as
@@ -743,6 +769,7 @@ export function HotelTeamPanel({
     setEditKey(null);
     setRemoveMember(null);
     setAddDepartment(null);
+    setInviteChoiceOpen(false);
     setDecision(null);
   }, [canManageTeam]);
 
@@ -1107,7 +1134,9 @@ export function HotelTeamPanel({
       ? 'remove'
       : inviteDialogOpen
         ? 'invite'
-        : 'decision';
+        : inviteChoiceOpen
+          ? 'invite-choice'
+          : 'decision';
   const closeLoadingDialog = React.useCallback(() => {
     if (editKey) {
       setEditKey(null);
@@ -1121,8 +1150,12 @@ export function HotelTeamPanel({
       onInviteDialogOpenChange(false);
       return;
     }
+    if (inviteChoiceOpen) {
+      setInviteChoiceOpen(false);
+      return;
+    }
     setDecision(null);
-  }, [editKey, inviteDialogOpen, onInviteDialogOpenChange, removeMember]);
+  }, [editKey, inviteChoiceOpen, inviteDialogOpen, onInviteDialogOpenChange, removeMember]);
 
   if (!hotelId) {
     return (
@@ -1235,38 +1268,21 @@ export function HotelTeamPanel({
           ) : null}
         </div>
 
-        {!needsFirstPerson ? (
+        {!needsFirstPerson && inviteEntryAvailable ? (
           <div className={styles.peopleActions} aria-label="Ways to add people">
-            {canAddStaff ? (
-              <button
-                type="button"
-                className={styles.peopleAction}
-                onClick={() => setAddDepartment('housekeeping')}
-                disabled={locked}
-                aria-haspopup="dialog"
-              >
-                <span className={styles.peopleActionIcon} aria-hidden="true">
-                  <CalendarPlus size={19} />
-                </span>
-                <span className={styles.peopleActionCopy}>
-                  <strong>{'Add staff member'}</strong>
-                  <small>{'Roster and schedule only · no Staxis login'}</small>
-                </span>
-              </button>
-            ) : null}
             <button
               type="button"
               className={`${styles.peopleAction} ${styles.peopleActionPrimary}`}
-              onClick={() => onInviteDialogOpenChange(true)}
+              onClick={openPeopleInviteChooser}
               disabled={inviteActionDisabled}
               aria-haspopup="dialog"
             >
               <span className={styles.peopleActionIcon} aria-hidden="true">
-                <LogIn size={19} />
+                <UserPlus size={19} />
               </span>
               <span className={styles.peopleActionCopy}>
                 <strong>{'Invite people'}</strong>
-                <small>{'Creates login access · share an invite or send email'}</small>
+                <small>{'Add someone to the schedule, or invite them to create a Staxis account.'}</small>
               </span>
             </button>
           </div>
@@ -1485,6 +1501,16 @@ export function HotelTeamPanel({
               setRemoveMember(null);
               await refreshAfterChange();
             }}
+          />
+        ) : null}
+        {inviteChoiceOpen ? (
+          <LazyPeopleInviteChooserDialog
+            canAddStaff={canAddStaff && !locked}
+            canInviteToStaxis={canInviteToStaxis}
+            canSendEmailInvite={canInviteAccounts}
+            onAddStaff={chooseAddStaff}
+            onInviteToStaxis={chooseInviteToStaxis}
+            onClose={() => setInviteChoiceOpen(false)}
           />
         ) : null}
         {inviteDialogOpen && needsFirstPerson ? (

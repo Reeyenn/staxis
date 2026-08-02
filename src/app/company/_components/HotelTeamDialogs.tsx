@@ -5,11 +5,14 @@ import { createPortal } from 'react-dom';
 import QRCode from 'qrcode';
 import {
   AlertCircle,
+  CalendarPlus,
   Check,
   CheckCircle2,
   Copy,
+  ChevronRight,
   KeyRound,
   Link2,
+  LogIn,
   Mail,
   QrCode,
   RefreshCw,
@@ -1439,6 +1442,83 @@ export function FirstPersonInviteDialog({
           </div>
         </form>
       )}
+    </DialogShell>
+  );
+}
+
+export function PeopleInviteChooserDialog({
+  canAddStaff,
+  canInviteToStaxis,
+  canSendEmailInvite,
+  onAddStaff,
+  onInviteToStaxis,
+  onClose,
+}: {
+  canAddStaff: boolean;
+  canInviteToStaxis: boolean;
+  canSendEmailInvite: boolean;
+  onAddStaff: () => void;
+  onInviteToStaxis: () => void;
+  onClose: () => void;
+}) {
+  const addStaffDescriptionId = React.useId();
+  const inviteDescriptionId = React.useId();
+  const inviteDescription = canSendEmailInvite
+    ? 'Send an email invite or share a link, QR code, or invite code.'
+    : 'Share a link, QR code, or invite code.';
+
+  if (!canAddStaff && !canInviteToStaxis) return null;
+
+  return (
+    <DialogShell
+      title={'Invite people'}
+      eyebrow={'People'}
+      description={'Does this person need a Staxis login?'}
+      lang={'en'}
+      icon={<UserRoundCog size={21} aria-hidden="true" />}
+      onClose={onClose}
+    >
+      <div className={styles.peopleInviteChoices} role="group" aria-label="Choose whether this person needs a Staxis login">
+        {canAddStaff ? (
+          <button
+            type="button"
+            className={styles.peopleInviteChoice}
+            onClick={onAddStaff}
+            aria-describedby={addStaffDescriptionId}
+          >
+            <span className={styles.peopleInviteChoiceIcon} aria-hidden="true">
+              <CalendarPlus size={19} />
+            </span>
+            <span className={styles.peopleInviteChoiceCopy}>
+              <strong>{'Add staff member'}</strong>
+              <small id={addStaffDescriptionId}>{"Add them to this hotel's roster and schedule. No Staxis account."}</small>
+            </span>
+            <ChevronRight size={18} aria-hidden="true" />
+          </button>
+        ) : null}
+        {canInviteToStaxis ? (
+          <button
+            type="button"
+            className={styles.peopleInviteChoice}
+            onClick={onInviteToStaxis}
+            aria-describedby={inviteDescriptionId}
+          >
+            <span className={styles.peopleInviteChoiceIcon} aria-hidden="true">
+              <LogIn size={19} />
+            </span>
+            <span className={styles.peopleInviteChoiceCopy}>
+              <strong>{'Invite to Staxis'}</strong>
+              <small id={inviteDescriptionId}>{inviteDescription}</small>
+            </span>
+            <ChevronRight size={18} aria-hidden="true" />
+          </button>
+        ) : null}
+      </div>
+      <div className={styles.dialogFooter}>
+        <button type="button" className={styles.secondaryButton} onClick={onClose}>
+          {'Cancel'}
+        </button>
+      </div>
     </DialogShell>
   );
 }
