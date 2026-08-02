@@ -9,10 +9,8 @@ import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 
 import {
-  ALWAYS_VISIBLE_GROUPS,
   buildHotelRoster,
   groupForPerson,
-  rosterCounts,
   type RosterAccountLike,
   type RosterStaffLike,
 } from '@/app/company/_components/people-roster';
@@ -30,7 +28,6 @@ function staff(overrides: Partial<RosterStaffLike> & { id: string }): RosterStaf
   return {
     name: 'Staff Person',
     department: 'housekeeping',
-    scheduledToday: false,
     isActive: true,
     ...overrides,
   };
@@ -40,7 +37,7 @@ function flatten(groups: ReturnType<typeof buildHotelRoster>) {
   return groups.flatMap((group) => group.people);
 }
 
-describe('buildHotelRoster — one human, one card', () => {
+describe('buildHotelRoster — one human, one row', () => {
   test('a linked person appears exactly once, carrying both records', () => {
     const groups = buildHotelRoster(
       [account({ accountId: 'acc-1', displayName: 'M. Lopez', role: 'housekeeping', staffId: 'staff-1' })],
@@ -136,39 +133,13 @@ describe('buildHotelRoster — grouping and order', () => {
     assert.equal(groupForPerson(null, staff({ id: 's', department: 'laundry' })), 'housekeeping');
   });
 
-  test('whoever is on shift sorts first, then alphabetically', () => {
+  test('sorts alphabetically without depending on operational schedule data', () => {
     const groups = buildHotelRoster([], [
-      staff({ id: 's1', name: 'Zoe', scheduledToday: true }),
-      staff({ id: 's2', name: 'Ana', scheduledToday: false }),
-      staff({ id: 's3', name: 'Bea', scheduledToday: true }),
+      staff({ id: 's1', name: 'Zoe' }),
+      staff({ id: 's2', name: 'Ana' }),
+      staff({ id: 's3', name: 'Bea' }),
     ]);
     const housekeeping = groups.find((group) => group.key === 'housekeeping')!;
-    assert.deepEqual(housekeeping.people.map((person) => person.name), ['Bea', 'Zoe', 'Ana']);
-  });
-
-  test('the three real departments always get a card, management and other do not', () => {
-    assert.ok(ALWAYS_VISIBLE_GROUPS.has('housekeeping'));
-    assert.ok(ALWAYS_VISIBLE_GROUPS.has('front_desk'));
-    assert.ok(ALWAYS_VISIBLE_GROUPS.has('maintenance'));
-    assert.ok(!ALWAYS_VISIBLE_GROUPS.has('management'));
-    assert.ok(!ALWAYS_VISIBLE_GROUPS.has('other'));
-  });
-});
-
-describe('rosterCounts', () => {
-  test('counts the books, today, and who is close to their cap', () => {
-    const counts = rosterCounts([
-      { scheduledToday: true, weeklyHours: 38, maxWeeklyHours: 40 },
-      { scheduledToday: false, weeklyHours: 12, maxWeeklyHours: 40 },
-      { scheduledToday: true, weeklyHours: 20, maxWeeklyHours: 24 },
-    ]);
-    assert.equal(counts.roster, 3);
-    assert.equal(counts.onShift, 2);
-    // 38 >= 36 and 20 >= 20; 12 < 36.
-    assert.equal(counts.nearOvertime, 2);
-  });
-
-  test('a missing cap falls back to 40 rather than reporting everyone as near overtime', () => {
-    assert.equal(rosterCounts([{ weeklyHours: 10 }]).nearOvertime, 0);
+    assert.deepEqual(housekeeping.people.map((person) => person.name), ['Ana', 'Bea', 'Zoe']);
   });
 });
