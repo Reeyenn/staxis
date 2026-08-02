@@ -19,6 +19,21 @@ const CACHE_ONLY_TASK = 'a4000000-0000-4000-8000-000000000007';
 const HISTORY_ONLY_TASK = 'a4000000-0000-4000-8000-000000000009';
 const HISTORY_ONLY_ASSIGNMENT = 'a5000000-0000-4000-8000-000000000007';
 const INELIGIBLE_TASK = 'a4000000-0000-4000-8000-000000000010';
+const HISTORY_WRONG_ROOM_TASK = 'a4000000-0000-4000-8000-000000000011';
+const HISTORY_LINKED_TASK = 'a4000000-0000-4000-8000-000000000012';
+const HISTORY_LIFECYCLE_TASK_ONE = 'a4000000-0000-4000-8000-000000000013';
+const HISTORY_LIFECYCLE_TASK_TWO = 'a4000000-0000-4000-8000-000000000014';
+const HISTORY_LIFECYCLE_TASK_THREE = 'a4000000-0000-4000-8000-000000000015';
+const HISTORY_LIFECYCLE_ASSIGNMENT_ONE = 'a5000000-0000-4000-8000-000000000008';
+const HISTORY_LIFECYCLE_ASSIGNMENT_TWO = 'a5000000-0000-4000-8000-000000000009';
+const HISTORY_LIFECYCLE_ASSIGNMENT_THREE = 'a5000000-0000-4000-8000-000000000010';
+const HISTORY_LIFECYCLE_ASSIGNMENT_FOUR = 'a5000000-0000-4000-8000-000000000011';
+const HISTORY_MISSING_ID_TASK = 'a4000000-0000-4000-8000-000000000016';
+const HISTORY_STALE_TASK = 'a4000000-0000-4000-8000-000000000017';
+const HISTORY_STALE_ASSIGNMENT = 'a5000000-0000-4000-8000-000000000012';
+const HISTORY_STALE_ROOM_ASSIGNMENT = 'a5000000-0000-4000-8000-000000000013';
+const LOCK_BRIDGE_TASK = 'a4000000-0000-4000-8000-000000000018';
+const LOCK_BRIDGE_ASSIGNMENT = 'a5000000-0000-4000-8000-000000000014';
 const INACTIVE_STAFF = 'a3000000-0000-4000-8000-000000000004';
 const NON_HOUSEKEEPING_STAFF = 'a3000000-0000-4000-8000-000000000005';
 const DUPLICATE_TASK_ONE = 'a4000000-0000-4000-8000-000000000004';
@@ -55,6 +70,21 @@ async function failsWith(sql: string, params: unknown[] = []): Promise<string> {
     return error instanceof Error ? error.message : String(error);
   }
   assert.fail('expected database statement to fail');
+}
+
+async function seedHistoryProperty(db: PGlite, email: string): Promise<void> {
+  await db.query(
+    "insert into auth.users(id, email) values ($1, $2) on conflict (id) do nothing",
+    [OWNER, email],
+  );
+  await db.query(
+    "insert into public.properties(id, owner_id, name, total_rooms, timezone) values ($1, $2, 'Phase Five Inn', 80, 'America/Chicago') on conflict (id) do nothing",
+    [PROPERTY, OWNER],
+  );
+  await db.query(
+    "insert into public.staff(id, property_id, name, department, is_active) values ($1, $2, 'History Housekeeper', 'housekeeping', true) on conflict (id) do nothing",
+    [HOUSEKEEPER, PROPERTY],
+  );
 }
 
 describe('housekeeping canonical plan expand stage', () => {
@@ -113,10 +143,6 @@ describe('housekeeping canonical plan expand stage', () => {
       await db.query(
         "insert into public.room_work(property_id, date, room_number, status, assigned_staff_id, assigned_source, assignment_history) values ($1, $2, '607', 'not_started', null, null, jsonb_build_array(jsonb_build_object('id', $3::uuid, 'property_id', $1::uuid, 'cleaning_task_id', $4::uuid, 'housekeeper_id', $5::uuid, 'queue_order', 8, 'is_active', true, 'assigned_at', $6::timestamptz, 'assigned_by', 'auto', 'assigned_by_user_id', $7::uuid, 'reason', 'history source', 'score', 8.5, 'created_at', $6::timestamptz, 'updated_at', $6::timestamptz, 'event', 'preexisting')))",
         [PROPERTY, BUSINESS_DATE, HISTORY_ONLY_ASSIGNMENT, HISTORY_ONLY_TASK, HOUSEKEEPER, '2026-07-31T12:01:00Z', OWNER],
-      );
-      await db.query(
-        "insert into public.hk_assignments(id, property_id, cleaning_task_id, housekeeper_id, queue_order, is_active, assigned_at, assigned_by, assigned_by_user_id, reason, score, created_at, updated_at) values ($1, $2, $3, $4, 8, true, $5::timestamptz, 'auto', null, 'history source', 8.5, $5::timestamptz, $5::timestamptz)",
-        [HISTORY_ONLY_ASSIGNMENT, PROPERTY, HISTORY_ONLY_TASK, HOUSEKEEPER, '2026-07-31T12:01:00Z'],
       );
     });
     pg = migrated.pg;
@@ -189,27 +215,67 @@ describe('housekeeping canonical plan expand stage', () => {
       '0434 bridge must capture old-app writes made before 0435 begins',
     );
 
+    assert.equal(
+      await scalar<number>(
+        "select count(*)::int from public.hk_assignments where property_id = $1 and cleaning_task_id = $2 and is_active",
+        [PROPERTY, HISTORY_ONLY_TASK],
+      ),
+      0,
+      'history-only restoration must not have an active legacy assignment source',
+    );
+    assert.equal(
+      await scalar<string | null>(
+        "select assignee_id from public.cleaning_tasks where id = $1",
+        [HISTORY_ONLY_TASK],
+      ),
+      null,
+      'history-only restoration must not have a task cache source',
+    );
     const historyOnly = await rows<{
       assigned_staff_id: string;
       assigned_source: string;
       queue_order: number;
+      assigned_at: string | null;
+      assigned_at_matches: boolean;
+      assigned_by: string | null;
       assigned_by_user_id: string | null;
-      history_count: number;
-      first_history_user: string | null;
-      last_history_user: string | null;
+      reason: string | null;
+      score: string | null;
+      history: Record<string, unknown>;
     }>(
-      "select assigned_staff_id, assigned_source, assignment_queue_order as queue_order, assignment_assigned_by_user_id as assigned_by_user_id, jsonb_array_length(assignment_history) as history_count, assignment_history->0->>'assigned_by_user_id' as first_history_user, assignment_history->-1->>'assigned_by_user_id' as last_history_user from public.room_work where property_id = $1 and date = $2 and room_number = '607'",
+      "select assigned_staff_id, assigned_source, assignment_queue_order as queue_order, assignment_assigned_at::text as assigned_at, assignment_assigned_at = (assignment_history->0->>'assigned_at')::timestamptz as assigned_at_matches, assignment_assigned_by as assigned_by, assignment_assigned_by_user_id as assigned_by_user_id, assignment_reason as reason, assignment_score::text as score, assignment_history->0 as history from public.room_work where property_id = $1 and date = $2 and room_number = '607'",
       [PROPERTY, BUSINESS_DATE],
     );
-    assert.deepEqual(historyOnly, [{
-      assigned_staff_id: HOUSEKEEPER,
-      assigned_source: 'auto',
-      queue_order: 8,
-      assigned_by_user_id: null,
-      history_count: 2,
-      first_history_user: OWNER,
-      last_history_user: null,
-    }], 'history-only current state must restore from the latest complete receipt while preserving the distinct prior snapshot');
+    assert.equal(historyOnly.length, 1);
+    assert.equal(historyOnly[0].assigned_staff_id, HOUSEKEEPER);
+    assert.equal(historyOnly[0].assigned_source, 'auto');
+    assert.equal(historyOnly[0].queue_order, 8);
+    assert.ok(historyOnly[0].assigned_at);
+    assert.equal(historyOnly[0].assigned_at_matches, true);
+    assert.equal(historyOnly[0].assigned_by, 'auto');
+    assert.equal(historyOnly[0].assigned_by_user_id, OWNER);
+    assert.equal(historyOnly[0].reason, 'history source');
+    assert.equal(historyOnly[0].score, '8.5');
+    assert.equal(historyOnly[0].history.id, HISTORY_ONLY_ASSIGNMENT);
+    assert.equal(historyOnly[0].history.property_id, PROPERTY);
+    assert.equal(historyOnly[0].history.cleaning_task_id, HISTORY_ONLY_TASK);
+    assert.equal(historyOnly[0].history.housekeeper_id, HOUSEKEEPER);
+    assert.equal(historyOnly[0].history.queue_order, 8);
+    assert.equal(historyOnly[0].history.is_active, true);
+    assert.equal(Date.parse(String(historyOnly[0].history.assigned_at)), Date.parse('2026-07-31T12:01:00Z'));
+    assert.equal(historyOnly[0].history.assigned_by, 'auto');
+    assert.equal(historyOnly[0].history.assigned_by_user_id, OWNER);
+    assert.equal(historyOnly[0].history.reason, 'history source');
+    assert.equal(historyOnly[0].history.score, 8.5);
+    assert.equal(historyOnly[0].history.event, 'preexisting');
+    assert.equal(
+      await scalar<number>(
+        "select jsonb_array_length(assignment_history)::int from public.room_work where property_id = $1 and date = $2 and room_number = '607'",
+        [PROPERTY, BUSINESS_DATE],
+      ),
+      1,
+      'history-only restoration must preserve the one valid receipt without synthesizing a duplicate',
+    );
 
     await pg.query(
       "insert into public.pms_ingest_runs(id, property_id, source_kind, parser_name, parser_version, source_captured_at, status) values ('a9000000-0000-4000-8000-000000000001', $1, 'legacy', 'phase5-test', '1', $2::timestamptz, 'succeeded') on conflict (id) do nothing",
@@ -751,6 +817,29 @@ describe('housekeeping canonical plan expand stage', () => {
       assert.match(source.prosrc, /_lock_room_work_component_set/);
     }
 
+    const bridgeSources = await rows<{ proname: string; prosrc: string }>(
+      "select p.proname, p.prosrc from pg_proc p join pg_namespace n on n.oid = p.pronamespace where n.nspname = 'public' and p.proname in ('_legacy_cleaning_task_to_room_work', '_legacy_hk_assignment_to_room_work') order by p.proname",
+    );
+    assert.deepEqual(bridgeSources.map((row) => row.proname), [
+      '_legacy_cleaning_task_to_room_work',
+      '_legacy_hk_assignment_to_room_work',
+    ]);
+    for (const source of bridgeSources) {
+      const helperPosition = source.prosrc.indexOf('_lock_room_work_component_set');
+      const firstParentLock = source.prosrc.indexOf('for update');
+      assert.ok(helperPosition >= 0, `${source.proname} must call the shared component lock helper`);
+      assert.ok(firstParentLock >= 0, `${source.proname} must lock its canonical parent`);
+      assert.ok(
+        helperPosition < firstParentLock,
+        `${source.proname} must acquire child-before-parent locks`,
+      );
+      if (source.proname === '_legacy_cleaning_task_to_room_work') {
+        assert.match(source.prosrc, /array\[new\.room_number\]::text\[\]/i);
+      } else {
+        assert.match(source.prosrc, /array\[v_task\.room_number\]::text\[\]/i);
+      }
+    }
+
     await pg.query(
       "select public._lock_room_work_component_set($1, $2, array['900']::text[])",
       [PROPERTY, LOCK_DATE],
@@ -787,6 +876,26 @@ describe('housekeeping canonical plan expand stage', () => {
         { room_number: '100', plan_status: 'scheduled' },
         { room_number: '900', plan_status: 'scheduled' },
       ],
+    );
+
+    await pg.query(
+      "insert into public.cleaning_tasks(id, property_id, room_number, business_date, dedupe_key, cleaning_type, priority, estimated_minutes, requires_inspection, extras, rules_fired, status, source_property_timezone, scheduled_at, last_evaluated_at) values ($1, $2, '900', $3, '900::bridge::2026-08-03', 'stayover', 'normal', 20, false, '[]'::jsonb, '[]'::jsonb, 'scheduled', 'America/Chicago', $4::timestamptz, $4::timestamptz)",
+      [LOCK_BRIDGE_TASK, PROPERTY, LOCK_DATE, '2026-08-03T12:00:00Z'],
+    );
+    await pg.query(
+      "insert into public.hk_assignments(id, property_id, cleaning_task_id, housekeeper_id, queue_order, is_active, assigned_at, assigned_by, reason, score) values ($1, $2, $3, $4, 1, true, $5::timestamptz, 'auto', 'lock bridge', 1.0)",
+      [LOCK_BRIDGE_ASSIGNMENT, PROPERTY, LOCK_BRIDGE_TASK, HOUSEKEEPER, '2026-08-03T12:01:00Z'],
+    );
+    assert.deepEqual(
+      await rows<{ room_number: string; assigned_staff_id: string | null }>(
+        "select room_number, assigned_staff_id from public.room_work where property_id = $1 and date = $2 and room_number in ('100', '900') order by room_number",
+        [PROPERTY, LOCK_DATE],
+      ),
+      [
+        { room_number: '100', assigned_staff_id: null },
+        { room_number: '900', assigned_staff_id: HOUSEKEEPER },
+      ],
+      'both old bridges must execute through the 900 -> 100 component lock set',
     );
   });
 
@@ -1052,6 +1161,202 @@ describe('housekeeping canonical plan expand stage', () => {
       ]);
     } finally {
       await duplicate.pg.close();
+    }
+  });
+
+  test('0434 rejects history task natural-key and legacy-link mismatches before reconciliation', async () => {
+    const invalid = await applyMigrationsToPgliteWithHook(async ({ pg: db, file }) => {
+      if (file !== '0434_housekeeping_plan_reconciliation.sql') return;
+
+      await seedHistoryProperty(db, 'phase5-history-task-identity@example.test');
+      await db.query(
+        "insert into public.cleaning_tasks(id, property_id, room_number, business_date, dedupe_key, cleaning_type, priority, estimated_minutes, requires_inspection, extras, rules_fired, status, source_property_timezone, scheduled_at, last_evaluated_at) values ($1, $3, '612', $4, '612::2026-08-02', 'stayover', 'normal', 20, false, '[]'::jsonb, '[]'::jsonb, 'scheduled', 'America/Chicago', $5::timestamptz, $5::timestamptz), ($2, $3, '615', $4, '615::2026-08-02', 'stayover', 'normal', 20, false, '[]'::jsonb, '[]'::jsonb, 'scheduled', 'America/Chicago', $5::timestamptz, $5::timestamptz)",
+        [HISTORY_WRONG_ROOM_TASK, HISTORY_LINKED_TASK, PROPERTY, BUSINESS_DATE, '2026-08-02T12:00:00Z'],
+      );
+      await db.query("alter table public.room_work add column if not exists assignment_history jsonb");
+      await db.query("alter table public.room_work add column if not exists legacy_task_id uuid");
+      await db.query(
+        "insert into public.room_work(property_id, date, room_number, legacy_task_id, status, assigned_staff_id, assigned_source, assignment_history) values ($1, $2, '613', null, 'not_started', null, null, jsonb_build_array(jsonb_build_object('id', $3::uuid, 'property_id', $1::uuid, 'cleaning_task_id', $4::uuid, 'housekeeper_id', $5::uuid, 'queue_order', 1, 'is_active', true, 'assigned_at', $6::timestamptz, 'assigned_by', 'auto', 'assigned_by_user_id', null, 'reason', 'wrong room', 'score', 1.0, 'created_at', $6::timestamptz, 'updated_at', $6::timestamptz))), ($1, $2, '615', $7::uuid, 'not_started', null, null, jsonb_build_array(jsonb_build_object('id', $8::uuid, 'property_id', $1::uuid, 'cleaning_task_id', $4::uuid, 'housekeeper_id', $5::uuid, 'queue_order', 2, 'is_active', true, 'assigned_at', $6::timestamptz, 'assigned_by', 'auto', 'assigned_by_user_id', null, 'reason', 'wrong linked task', 'score', 2.0, 'created_at', $6::timestamptz, 'updated_at', $6::timestamptz)))",
+        [PROPERTY, BUSINESS_DATE, HISTORY_LIFECYCLE_ASSIGNMENT_ONE, HISTORY_WRONG_ROOM_TASK, HOUSEKEEPER, '2026-07-31T12:01:00Z', HISTORY_LINKED_TASK, HISTORY_LIFECYCLE_ASSIGNMENT_TWO],
+      );
+    });
+
+    try {
+      const failure = invalid.report.failedAtRuntime.find(
+        (entry) => entry.file === '0434_housekeeping_plan_reconciliation.sql',
+      );
+      assert.ok(failure, JSON.stringify(invalid.report.failedAtRuntime.filter((entry) => entry.file.startsWith('043'))));
+      assert.match(failure.error, /assignment history/i);
+      assert.equal(invalid.report.applied.includes('0434_housekeeping_plan_reconciliation.sql'), false);
+      await invalid.pg.exec('rollback;').catch(() => undefined);
+      assert.deepEqual(
+        (await invalid.pg.query<{ room_number: string; legacy_task_id: string | null; history_task_id: string }>(
+          "select room_number, legacy_task_id, assignment_history->0->>'cleaning_task_id' as history_task_id from public.room_work where property_id = $1 and date = $2 and room_number in ('613', '615') order by room_number",
+          [PROPERTY, BUSINESS_DATE],
+        )).rows,
+        [
+          { room_number: '613', legacy_task_id: null, history_task_id: HISTORY_WRONG_ROOM_TASK },
+          { room_number: '615', legacy_task_id: HISTORY_LINKED_TASK, history_task_id: HISTORY_WRONG_ROOM_TASK },
+        ],
+      );
+    } finally {
+      await invalid.pg.close();
+    }
+  });
+
+  test('0434 rejects a latest active history receipt with a missing assignment id', async () => {
+    const invalid = await applyMigrationsToPgliteWithHook(async ({ pg: db, file }) => {
+      if (file !== '0434_housekeeping_plan_reconciliation.sql') return;
+
+      await seedHistoryProperty(db, 'phase5-history-missing-id@example.test');
+      await db.query(
+        "insert into public.cleaning_tasks(id, property_id, room_number, business_date, dedupe_key, cleaning_type, priority, estimated_minutes, requires_inspection, extras, rules_fired, status, source_property_timezone, scheduled_at, last_evaluated_at) values ($1, $2, '616', $3, '616::2026-08-02', 'stayover', 'normal', 20, false, '[]'::jsonb, '[]'::jsonb, 'scheduled', 'America/Chicago', $4::timestamptz, $4::timestamptz)",
+        [HISTORY_MISSING_ID_TASK, PROPERTY, BUSINESS_DATE, '2026-08-02T12:00:00Z'],
+      );
+      await db.query(
+        "insert into public.cleaning_tasks(id, property_id, room_number, business_date, dedupe_key, cleaning_type, priority, estimated_minutes, requires_inspection, extras, rules_fired, status, source_property_timezone, scheduled_at, last_evaluated_at) values ($1, $2, '617', $3, '617::2026-08-02', 'stayover', 'normal', 20, false, '[]'::jsonb, '[]'::jsonb, 'scheduled', 'America/Chicago', $4::timestamptz, $4::timestamptz)",
+        [HISTORY_WRONG_ROOM_TASK, PROPERTY, BUSINESS_DATE, '2026-08-02T12:00:00Z'],
+      );
+      await db.query("alter table public.room_work add column if not exists assignment_history jsonb");
+      await db.query(
+        "insert into public.room_work(property_id, date, room_number, status, assigned_staff_id, assigned_source, assignment_history) values ($1, $2, '616', 'not_started', null, null, jsonb_build_array(jsonb_build_object('property_id', $1::uuid, 'cleaning_task_id', $3::uuid, 'housekeeper_id', $4::uuid, 'queue_order', 1, 'is_active', true, 'assigned_at', $5::timestamptz, 'assigned_by', 'auto', 'assigned_by_user_id', null, 'reason', 'missing id', 'score', 1.0, 'created_at', $5::timestamptz, 'updated_at', $5::timestamptz)))",
+        [PROPERTY, BUSINESS_DATE, HISTORY_MISSING_ID_TASK, HOUSEKEEPER, '2026-07-31T12:01:00Z'],
+      );
+      await db.query(
+        "insert into public.room_work(property_id, date, room_number, status, assigned_staff_id, assigned_source, assignment_history) values ($1, $2, '617', 'not_started', null, null, jsonb_build_array(jsonb_build_object('id', 'not-a-uuid', 'property_id', $1::uuid, 'cleaning_task_id', $3::uuid, 'housekeeper_id', $4::uuid, 'queue_order', 1, 'is_active', true, 'assigned_at', $5::timestamptz, 'assigned_by', 'auto', 'assigned_by_user_id', null, 'reason', 'invalid id', 'score', 1.0, 'created_at', $5::timestamptz, 'updated_at', $5::timestamptz)))",
+        [PROPERTY, BUSINESS_DATE, HISTORY_WRONG_ROOM_TASK, HOUSEKEEPER, '2026-07-31T12:01:00Z'],
+      );
+    });
+
+    try {
+      const failure = invalid.report.failedAtRuntime.find(
+        (entry) => entry.file === '0434_housekeeping_plan_reconciliation.sql',
+      );
+      assert.ok(failure, JSON.stringify(invalid.report.failedAtRuntime.filter((entry) => entry.file.startsWith('043'))));
+      assert.match(failure.error, /active room_work assignment history/i);
+      assert.equal(invalid.report.applied.includes('0434_housekeeping_plan_reconciliation.sql'), false);
+      await invalid.pg.exec('rollback;').catch(() => undefined);
+      assert.deepEqual(
+        (await invalid.pg.query<{ room_number: string; assigned_staff_id: string | null; history_id: string | null }>(
+          "select room_number, assigned_staff_id, assignment_history->0->>'id' as history_id from public.room_work where property_id = $1 and date = $2 and room_number in ('616', '617') order by room_number",
+          [PROPERTY, BUSINESS_DATE],
+        )).rows,
+        [
+          { room_number: '616', assigned_staff_id: null, history_id: null },
+          { room_number: '617', assigned_staff_id: null, history_id: 'not-a-uuid' },
+        ],
+      );
+    } finally {
+      await invalid.pg.close();
+    }
+  });
+
+  test('0434 normalizes latest history lifecycle state before restoring current assignment', async () => {
+    const reconciled = await applyMigrationsToPgliteWithHook(async ({ pg: db, file }) => {
+      if (file !== '0434_housekeeping_plan_reconciliation.sql') return;
+
+      await seedHistoryProperty(db, 'phase5-history-lifecycle@example.test');
+      await db.query(
+        "insert into public.cleaning_tasks(id, property_id, room_number, business_date, dedupe_key, cleaning_type, priority, estimated_minutes, requires_inspection, extras, rules_fired, status, source_property_timezone, scheduled_at, last_evaluated_at) values ($1, $4, '620', $5, '620::2026-08-02', 'stayover', 'normal', 20, false, '[]'::jsonb, '[]'::jsonb, 'scheduled', 'America/Chicago', $6::timestamptz, $6::timestamptz), ($2, $4, '621', $5, '621::2026-08-02', 'stayover', 'normal', 20, false, '[]'::jsonb, '[]'::jsonb, 'scheduled', 'America/Chicago', $6::timestamptz, $6::timestamptz), ($3, $4, '622', $5, '622::2026-08-02', 'stayover', 'normal', 20, false, '[]'::jsonb, '[]'::jsonb, 'scheduled', 'America/Chicago', $6::timestamptz, $6::timestamptz)",
+        [HISTORY_LIFECYCLE_TASK_ONE, HISTORY_LIFECYCLE_TASK_TWO, HISTORY_LIFECYCLE_TASK_THREE, PROPERTY, BUSINESS_DATE, '2026-08-02T12:00:00Z'],
+      );
+      await db.query("alter table public.room_work add column if not exists assignment_history jsonb");
+      await db.query(
+        "insert into public.room_work(property_id, date, room_number, status, assigned_staff_id, assigned_source, assignment_history) values ($1, $2, '620', 'not_started', null, null, jsonb_build_array(jsonb_build_object('id', $3::uuid, 'property_id', $1::uuid, 'cleaning_task_id', $4::uuid, 'housekeeper_id', $5::uuid, 'queue_order', 1, 'is_active', true, 'assigned_at', $6::timestamptz, 'assigned_by', 'auto', 'assigned_by_user_id', null, 'reason', 'first active', 'score', 1.0, 'created_at', $6::timestamptz, 'updated_at', $6::timestamptz), jsonb_build_object('id', $3::uuid, 'property_id', $1::uuid, 'cleaning_task_id', $4::uuid, 'housekeeper_id', $5::uuid, 'queue_order', 1, 'is_active', false, 'assigned_at', $6::timestamptz, 'assigned_by', 'auto', 'assigned_by_user_id', null, 'reason', 'later inactive', 'score', 1.0, 'created_at', $6::timestamptz, 'updated_at', $7::timestamptz, 'event', 'deactivated'))), ($1, $2, '621', 'not_started', null, null, jsonb_build_array(jsonb_build_object('id', $8::uuid, 'property_id', $1::uuid, 'cleaning_task_id', $9::uuid, 'housekeeper_id', $5::uuid, 'queue_order', 2, 'is_active', true, 'assigned_at', $6::timestamptz, 'assigned_by', 'auto', 'assigned_by_user_id', null, 'reason', 'older one', 'score', 2.0, 'created_at', $6::timestamptz, 'updated_at', $6::timestamptz), jsonb_build_object('id', $10::uuid, 'property_id', $1::uuid, 'cleaning_task_id', $9::uuid, 'housekeeper_id', $5::uuid, 'queue_order', 3, 'is_active', true, 'assigned_at', $6::timestamptz, 'assigned_by', 'auto', 'assigned_by_user_id', null, 'reason', 'older two', 'score', 3.0, 'created_at', $6::timestamptz, 'updated_at', $6::timestamptz), jsonb_build_object('id', $8::uuid, 'property_id', $1::uuid, 'cleaning_task_id', $9::uuid, 'housekeeper_id', $5::uuid, 'queue_order', 2, 'is_active', false, 'assigned_at', $6::timestamptz, 'assigned_by', 'auto', 'assigned_by_user_id', null, 'reason', 'first inactive', 'score', 2.0, 'created_at', $6::timestamptz, 'updated_at', $7::timestamptz, 'event', 'deactivated'), jsonb_build_object('id', $10::uuid, 'property_id', $1::uuid, 'cleaning_task_id', $9::uuid, 'housekeeper_id', $5::uuid, 'queue_order', 3, 'is_active', false, 'assigned_at', $6::timestamptz, 'assigned_by', 'auto', 'assigned_by_user_id', null, 'reason', 'second inactive', 'score', 3.0, 'created_at', $6::timestamptz, 'updated_at', $7::timestamptz, 'event', 'deactivated'))), ($1, $2, '622', 'not_started', null, null, jsonb_build_array(jsonb_build_object('id', $11::uuid, 'property_id', $1::uuid, 'cleaning_task_id', $12::uuid, 'housekeeper_id', $5::uuid, 'queue_order', 7, 'is_active', true, 'assigned_at', $13::timestamptz, 'assigned_by', 'pms_import', 'assigned_source', 'pms_import', 'assigned_by_user_id', null, 'reason', 'PMS named staff', 'score', 7.2, 'created_at', $13::timestamptz, 'updated_at', $13::timestamptz, 'event', 'preexisting')))",
+        [PROPERTY, BUSINESS_DATE, HISTORY_LIFECYCLE_ASSIGNMENT_ONE, HISTORY_LIFECYCLE_TASK_ONE, HOUSEKEEPER, '2026-07-31T12:01:00Z', '2026-07-31T12:02:00Z', HISTORY_LIFECYCLE_ASSIGNMENT_TWO, HISTORY_LIFECYCLE_TASK_TWO, HISTORY_LIFECYCLE_ASSIGNMENT_THREE, HISTORY_LIFECYCLE_ASSIGNMENT_FOUR, HISTORY_LIFECYCLE_TASK_THREE, '2026-07-31T12:03:00Z'],
+      );
+    });
+
+    try {
+      assert.ok(
+        reconciled.report.applied.includes('0434_housekeeping_plan_reconciliation.sql'),
+        JSON.stringify(reconciled.report.failedAtRuntime.filter((entry) => entry.file.startsWith('043'))),
+      );
+      assert.ok(
+        reconciled.report.applied.includes('0435_housekeeping_canonical_operations.sql'),
+        JSON.stringify(reconciled.report.failedAtRuntime.filter((entry) => entry.file.startsWith('043'))),
+      );
+      assert.deepEqual(
+        (await reconciled.pg.query<{
+          room_number: string;
+          assigned_staff_id: string | null;
+          assigned_source: string | null;
+          queue_order: number;
+          assigned_by: string | null;
+          reason: string | null;
+          score: string | null;
+          history_count: number;
+          last_id: string | null;
+          last_active: boolean | null;
+        }>(
+          "select room_number, assigned_staff_id, assigned_source, assignment_queue_order as queue_order, assignment_assigned_by as assigned_by, assignment_reason as reason, assignment_score::text as score, jsonb_array_length(assignment_history)::int as history_count, assignment_history->-1->>'id' as last_id, (assignment_history->-1->>'is_active')::boolean as last_active from public.room_work where property_id = $1 and date = $2 and room_number in ('620', '621', '622') order by room_number",
+          [PROPERTY, BUSINESS_DATE],
+        )).rows,
+        [
+          { room_number: '620', assigned_staff_id: null, assigned_source: null, queue_order: 0, assigned_by: null, reason: null, score: null, history_count: 2, last_id: HISTORY_LIFECYCLE_ASSIGNMENT_ONE, last_active: false },
+          { room_number: '621', assigned_staff_id: null, assigned_source: null, queue_order: 0, assigned_by: null, reason: null, score: null, history_count: 4, last_id: HISTORY_LIFECYCLE_ASSIGNMENT_THREE, last_active: false },
+          { room_number: '622', assigned_staff_id: HOUSEKEEPER, assigned_source: 'pms_import', queue_order: 7, assigned_by: null, reason: 'PMS named staff', score: '7.2', history_count: 1, last_id: HISTORY_LIFECYCLE_ASSIGNMENT_FOUR, last_active: true },
+        ],
+      );
+    } finally {
+      await reconciled.pg.close();
+    }
+  });
+
+  test('0434 appends a full current receipt for stale active history and preserves source semantics', async () => {
+    const reconciled = await applyMigrationsToPgliteWithHook(async ({ pg: db, file }) => {
+      if (file !== '0434_housekeeping_plan_reconciliation.sql') return;
+
+      await seedHistoryProperty(db, 'phase5-history-stale@example.test');
+      await db.query(
+        "insert into public.cleaning_tasks(id, property_id, room_number, business_date, dedupe_key, cleaning_type, priority, estimated_minutes, requires_inspection, extras, rules_fired, status, assignee_id, source_property_timezone, scheduled_at, last_evaluated_at) values ($1, $2, '624', $3, '624::2026-08-02', 'stayover', 'normal', 20, false, '[]'::jsonb, '[]'::jsonb, 'scheduled', $4, 'America/Chicago', $5::timestamptz, $5::timestamptz)",
+        [HISTORY_STALE_TASK, PROPERTY, BUSINESS_DATE, HOUSEKEEPER, '2026-08-02T12:00:00Z'],
+      );
+      await db.query("alter table public.room_work add column if not exists assignment_history jsonb");
+      await db.query("alter table public.room_work add column if not exists id uuid");
+      await db.query(
+        "insert into public.room_work(id, property_id, date, room_number, status, assigned_staff_id, assigned_source, assignment_history) values (md5($1::text || ':' || $2::text || ':625')::uuid, $1::uuid, $2::date, '625', 'not_started', $3::uuid, 'alias_first_name', jsonb_build_array(jsonb_build_object('id', $4::uuid, 'property_id', $1::uuid, 'cleaning_task_id', md5($1::text || ':' || $2::text || ':625')::uuid, 'housekeeper_id', $3::uuid, 'queue_order', 5, 'is_active', true, 'assigned_at', $5::timestamptz, 'assigned_by', 'room_work', 'assigned_source', 'alias_first_name', 'assigned_by_user_id', null, 'reason', 'stale room receipt', 'score', 5.0, 'created_at', $5::timestamptz, 'updated_at', $5::timestamptz, 'event', 'preexisting'))), (md5($1::text || ':' || $2::text || ':624')::uuid, $1::uuid, $2::date, '624', 'not_started', $3::uuid, 'pms_import', jsonb_build_array(jsonb_build_object('id', $6::uuid, 'property_id', $1::uuid, 'cleaning_task_id', $7::uuid, 'housekeeper_id', $3::uuid, 'queue_order', 9, 'is_active', true, 'assigned_at', $5::timestamptz, 'assigned_by', 'auto', 'assigned_source', 'auto', 'assigned_by_user_id', null, 'reason', 'stale task receipt', 'score', 9.0, 'created_at', $5::timestamptz, 'updated_at', $5::timestamptz, 'event', 'preexisting')))",
+        [PROPERTY, BUSINESS_DATE, HOUSEKEEPER, HISTORY_STALE_ROOM_ASSIGNMENT, '2026-07-31T12:04:00Z', HISTORY_STALE_ASSIGNMENT, HISTORY_STALE_TASK],
+      );
+    });
+
+    try {
+      assert.ok(
+        reconciled.report.applied.includes('0434_housekeeping_plan_reconciliation.sql'),
+        JSON.stringify(reconciled.report.failedAtRuntime.filter((entry) => entry.file.startsWith('043'))),
+      );
+      const rowsAfter = (await reconciled.pg.query<{
+        room_number: string;
+        assigned_staff_id: string;
+        assigned_source: string;
+        history_count: number;
+        snapshot: Record<string, unknown>;
+      }>(
+        "select room_number, assigned_staff_id, assigned_source, jsonb_array_length(assignment_history)::int as history_count, assignment_history->-1 as snapshot from public.room_work where property_id = $1 and date = $2 and room_number in ('624', '625') order by room_number",
+        [PROPERTY, BUSINESS_DATE],
+      )).rows;
+      assert.equal(rowsAfter.length, 2);
+      assert.equal(rowsAfter[0].room_number, '624');
+      assert.equal(rowsAfter[0].assigned_staff_id, HOUSEKEEPER);
+      assert.equal(rowsAfter[0].assigned_source, 'pms_import');
+      assert.equal(rowsAfter[0].history_count, 2);
+      assert.equal(rowsAfter[0].snapshot.queue_order, 0);
+      assert.equal(rowsAfter[0].snapshot.assigned_at, null);
+      assert.equal(rowsAfter[0].snapshot.assigned_by, 'pms_import');
+      assert.equal(rowsAfter[0].snapshot.assigned_source, 'pms_import');
+      assert.equal(rowsAfter[0].snapshot.reason, null);
+      assert.equal(rowsAfter[0].snapshot.score, null);
+      assert.equal(rowsAfter[1].room_number, '625');
+      assert.equal(rowsAfter[1].assigned_staff_id, HOUSEKEEPER);
+      assert.equal(rowsAfter[1].assigned_source, 'alias_first_name');
+      assert.equal(rowsAfter[1].history_count, 2);
+      assert.equal(rowsAfter[1].snapshot.queue_order, 0);
+      assert.equal(rowsAfter[1].snapshot.assigned_by, 'room_work');
+      assert.equal(rowsAfter[1].snapshot.assigned_source, 'alias_first_name');
+      assert.equal(rowsAfter[1].snapshot.reason, null);
+      assert.equal(rowsAfter[1].snapshot.score, null);
+    } finally {
+      await reconciled.pg.close();
     }
   });
 
