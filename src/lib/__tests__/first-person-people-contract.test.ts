@@ -39,8 +39,8 @@ describe('hotel-scoped first-person People flow', () => {
     assert.doesNotMatch(hotelTeam, /const needsFirstPerson = adminPreview[\s\S]*team\.length === 0/);
     assert.match(hotelTeam, /['"]Add first person['"]/);
     assert.match(hotelTeam, /['"]Invite people['"]/);
-    assert.match(hotelTeam, /inviteDialogOpen && !inviteActionDisabled && needsFirstPerson[\s\S]*LazyFirstPersonInviteDialog/);
-    assert.match(hotelTeam, /: inviteDialogOpen && !inviteActionDisabled \? \([\s\S]*<LazyInviteDialog/);
+    assert.match(hotelTeam, /inviteDialogVisible && needsFirstPerson[\s\S]*LazyFirstPersonInviteDialog/);
+    assert.match(hotelTeam, /: inviteDialogVisible \? \([\s\S]*<LazyInviteDialog/);
   });
 
   test('requires the inviter to assign Owner or General Manager', () => {

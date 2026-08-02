@@ -24,7 +24,7 @@ const css = source('src', 'app', 'company', '_components', 'HotelTeamPanel.modul
 
 const normalActionArea = section(
   panel,
-  '{!needsFirstPerson && !locked && inviteEntryAvailable ? (',
+  '{!needsFirstPerson && !locked && inviteCapabilitiesStable && inviteEntryAvailable ? (',
   '<div className={styles.kpiStrip}>',
   'authorized People action area',
 );
@@ -40,7 +40,10 @@ const earlyActionArea = section(
   '</section>',
   'invite-only People action area',
 );
-const normalActionEnd = panel.indexOf('<div className={styles.kpiStrip}>', panel.indexOf('{!needsFirstPerson && !locked && inviteEntryAvailable ? ('));
+const normalActionEnd = panel.indexOf(
+  '<div className={styles.kpiStrip}>',
+  panel.indexOf('{!needsFirstPerson && !locked && inviteCapabilitiesStable && inviteEntryAvailable ? ('),
+);
 const normalDialogStart = panel.indexOf('<React.Suspense fallback={(', normalActionEnd);
 const normalDialogEnd = panel.indexOf('</React.Suspense>', normalDialogStart);
 assert.ok(normalDialogStart > normalActionEnd, 'authorized dialog handoffs should follow the People action area');
@@ -82,7 +85,7 @@ const chooser = section(
 );
 const pagePeoplePanel = section(
   companyPage,
-  'function PeoplePanel(',
+  'export function PeoplePanel(',
   'function AccessPanel(',
   'People page panel',
 );
@@ -110,12 +113,12 @@ describe('People invite entry choice', () => {
     assert.doesNotMatch(earlyActionArea, /Add someone to the schedule/);
     assert.doesNotMatch(earlyActionArea, /Add staff member|CalendarPlus|staffProfiles|rosterStaff/);
 
-    assert.match(earlyBranch, /inviteChoiceOpen && canInviteAccounts && !locked && !inviteActionDisabled/);
+    assert.match(earlyBranch, /inviteChoiceVisible && canInviteAccounts && !locked/);
     assert.match(earlyBranch, /canAddStaff=\{false\}/);
-    assert.match(earlyBranch, /canInviteToStaxis=\{!inviteActionDisabled\}/);
-    assert.match(earlyBranch, /canSendEmailInvite=\{canInviteAccounts && !inviteActionDisabled\}/);
+    assert.match(earlyBranch, /canInviteToStaxis=\{inviteCapabilitiesStable\}/);
+    assert.match(earlyBranch, /canSendEmailInvite=\{canInviteAccounts && inviteCapabilitiesStable\}/);
     assert.match(earlyBranch, /canShareHotelInvite=\{false\}/);
-    assert.match(earlyBranch, /inviteDialogOpen && canInviteAccounts && !locked && !inviteActionDisabled/);
+    assert.match(earlyBranch, /inviteDialogVisible && canInviteAccounts && !locked/);
     assert.match(earlyBranch, /canInviteManager\s+canManageHotelRoster=\{false\}/);
     assert.match(earlyBranch, /returnFocusRef=\{inviteEntryReturnFocusRef\}/);
     assert.match(earlyBranch, /fallbackFocusRef=\{peopleHeadingRef\}/);
@@ -134,16 +137,19 @@ describe('People invite entry choice', () => {
   });
 
   test('the chooser exposes only the permissions passed to it', () => {
-    assert.match(chooser, /description=\{'Does this person need a Staxis login\?'\}/);
-    assert.match(chooser, /role="group" aria-label="Choose whether this person needs a Staxis login"/);
-    assert.match(chooser, /canAddStaff \? \([\s\S]*?\{'Add staff member'\}/);
-    assert.match(chooser, /Add them to this hotel's roster and schedule\. No Staxis account\./);
-    assert.match(chooser, /canInviteToStaxis \? \([\s\S]*?\{'Invite to Staxis'\}/);
-    assert.match(chooser, /const inviteDescription = canShareHotelInvite[\s\S]*canSendEmailInvite[\s\S]*Share a link, QR code, or invite code\./);
-    assert.match(normalDialogArea, /canAddStaff=\{canAddStaff && !locked && !inviteActionDisabled\}/);
-    assert.match(normalDialogArea, /canInviteToStaxis=\{canInviteToStaxis && !inviteActionDisabled\}/);
-    assert.match(normalDialogArea, /canSendEmailInvite=\{canInviteAccounts && !inviteActionDisabled\}/);
-    assert.match(normalDialogArea, /canShareHotelInvite=\{canManageTeam && !inviteActionDisabled\}/);
+    assert.match(chooser, /description=\{'What does this person need\?'\}/);
+    assert.match(chooser, /role="group" aria-label="Choose what this person needs"/);
+    assert.match(chooser, /peopleInviteChoiceBadgeNoLogin[\s\S]*?\{'NO LOGIN'\}/);
+    assert.match(chooser, /canAddStaff \? \([\s\S]*?\{'Add to schedule only'\}/);
+    assert.match(chooser, /Add them to the hotel roster and schedule\. They cannot sign in to Staxis\./);
+    assert.match(chooser, /peopleInviteChoiceBadge[\s\S]*?\{'STAXIS LOGIN'\}/);
+    assert.match(chooser, /canInviteToStaxis \? \([\s\S]*?\{'Invite to create an account'\}/);
+    assert.match(chooser, /They create a login and can sign in to Staxis\./);
+    assert.match(chooser, /const inviteDescription = 'They create a login and can sign in to Staxis\.'/);
+    assert.match(normalDialogArea, /canAddStaff=\{canAddStaff && !locked && inviteCapabilitiesStable\}/);
+    assert.match(normalDialogArea, /canInviteToStaxis=\{canInviteToStaxis && inviteCapabilitiesStable\}/);
+    assert.match(normalDialogArea, /canSendEmailInvite=\{canInviteAccounts && inviteCapabilitiesStable\}/);
+    assert.match(normalDialogArea, /canShareHotelInvite=\{canManageTeam && inviteCapabilitiesStable\}/);
     assert.match(chooser, /canShareHotelInvite ?/);
   });
 
@@ -152,23 +158,25 @@ describe('People invite entry choice', () => {
     assert.match(normalDialogArea, /canManageHotelRoster/);
     assert.match(normalDialogArea, /unlinkedRosterProfiles=\{unlinkedRosterProfiles\}/);
     assert.match(earlyBranch, /canInviteManager\s+canManageHotelRoster=\{false\}/);
-    assert.match(chooser, /Share a link, QR code, or invite code\./);
-    assert.match(chooser, /: 'Send an email invite\.'/);
+    assert.doesNotMatch(dialogs, /Share one hotel invitation as a link, QR code, or signup code\./);
+    assert.doesNotMatch(dialogs, /Send a private invitation, then choose the job and exact company or hotel access\./);
     assert.match(dialogs, /QRCode\.toDataURL\(signupLinkFor\(code\.code\)/);
     assert.match(dialogs, /\{'Link'\}/);
     assert.match(dialogs, /\{'QR code'\}/);
     assert.match(dialogs, /\{'Signup code'\}/);
-    assert.match(dialogs, /canInviteManager && inviteMode === 'email'/);
+    assert.match(dialogs, /\{canManageHotelRoster \? \([\s\S]*?\{'Hotel invite'\}/);
+    assert.match(dialogs, /\{canInviteManager \? \([\s\S]*?\{'Email one person'\}/);
+    assert.doesNotMatch(dialogs, /inviteMode|hasInviteModeChoice|role="tablist"|role="tabpanel"/);
   });
 
   test('permission and read-only gates keep the entry closed', () => {
     assert.match(panel, /const inviteEntryAvailable = canAddStaff \|\| canInviteToStaxis/);
-    assert.match(panel, /if \(inviteActionDisabled \|\| !inviteEntryAvailable\) return;/);
-    assert.match(normalActionArea, /\{!needsFirstPerson && !locked && inviteEntryAvailable \?/);
-    assert.match(normalActionArea, /disabled=\{inviteActionDisabled\}/);
+    assert.match(panel, /if \(inviteActionDisabled \|\| !inviteCapabilitiesStable \|\| !inviteEntryAvailable\) return;/);
+    assert.match(normalActionArea, /\{!needsFirstPerson && !locked && inviteCapabilitiesStable && inviteEntryAvailable \?/);
+    assert.match(normalActionArea, /disabled=\{inviteActionDisabled \|\| !inviteCapabilitiesStable\}/);
     assert.match(earlyBranch, /\{canInviteAccounts && !locked \?/);
-    assert.match(panel, /if \(!canAddStaff \|\| locked \|\| inviteActionDisabled\) return;/);
-    assert.match(panel, /if \(!canInviteToStaxis \|\| inviteActionDisabled\) return;/);
+    assert.match(panel, /if \(!canAddStaff \|\| locked \|\| inviteActionDisabled \|\| !inviteCapabilitiesStable\) return;/);
+    assert.match(panel, /if \(!canInviteToStaxis \|\| inviteActionDisabled \|\| !inviteCapabilitiesStable\) return;/);
   });
 
   test('an open chooser fails closed during read-only and admin-preview loading transitions', () => {
@@ -180,6 +188,10 @@ describe('People invite entry choice', () => {
       panel,
       /React\.useEffect\(\(\) => \{\s*if \(!inviteActionDisabled\) return;\s*setInviteChoiceOpen\(false\);\s*setAddDepartment\(null\);\s*if \(inviteDialogOpen\) onInviteDialogOpenChange\(false\);\s*\}, \[inviteActionDisabled, inviteDialogOpen, onInviteDialogOpenChange\]\)/,
     );
+    assert.match(panel, /const inviteCapabilityKey = \[[\s\S]*adminPreview \? 'admin-preview' : 'customer'/);
+    assert.match(panel, /const \[, setInviteCapabilityRevision\] = React\.useState\(0\)/);
+    assert.match(panel, /const inviteCapabilitiesStable = inviteCapabilityRef\.current === inviteCapabilityKey/);
+    assert.match(panel, /setInviteCapabilityRevision\(\(current\) => current \+ 1\);[\s\S]*setInviteChoiceOpen\(false\);[\s\S]*setAddDepartment\(null\);[\s\S]*if \(inviteDialogOpen\) onInviteDialogOpenChange\(false\);[\s\S]*\}, \[inviteCapabilityKey, inviteDialogOpen, onInviteDialogOpenChange\]\)/);
 
     const addStaffCallback = section(
       panel,
@@ -187,16 +199,16 @@ describe('People invite entry choice', () => {
       'const chooseInviteToStaxis = React.useCallback',
       'Add staff chooser callback',
     );
-    assert.match(addStaffCallback, /if \(!canAddStaff \|\| locked \|\| inviteActionDisabled\) return;/);
-    assert.match(addStaffCallback, /\[canAddStaff, inviteActionDisabled, locked\]/);
+    assert.match(addStaffCallback, /if \(!canAddStaff \|\| locked \|\| inviteActionDisabled \|\| !inviteCapabilitiesStable\) return;/);
+    assert.match(addStaffCallback, /\[canAddStaff, inviteActionDisabled, inviteCapabilitiesStable, locked\]/);
 
-    assert.match(normalDialogArea, /inviteChoiceOpen && !inviteActionDisabled/);
-    assert.match(normalDialogArea, /canAddStaff=\{canAddStaff && !locked && !inviteActionDisabled\}/);
-    assert.match(normalDialogArea, /canInviteToStaxis=\{canInviteToStaxis && !inviteActionDisabled\}/);
-    assert.match(earlyBranch, /inviteChoiceOpen && canInviteAccounts && !locked && !inviteActionDisabled/);
-    assert.match(earlyBranch, /canInviteToStaxis=\{!inviteActionDisabled\}/);
-    assert.match(earlyBranch, /canSendEmailInvite=\{canInviteAccounts && !inviteActionDisabled\}/);
-    assert.match(normalDialogArea, /addDepartment && !inviteActionDisabled/);
+    assert.match(normalDialogArea, /inviteChoiceVisible/);
+    assert.match(normalDialogArea, /canAddStaff=\{canAddStaff && !locked && inviteCapabilitiesStable\}/);
+    assert.match(normalDialogArea, /canInviteToStaxis=\{canInviteToStaxis && inviteCapabilitiesStable\}/);
+    assert.match(earlyBranch, /inviteChoiceVisible && canInviteAccounts && !locked/);
+    assert.match(earlyBranch, /canInviteToStaxis=\{inviteCapabilitiesStable\}/);
+    assert.match(earlyBranch, /canSendEmailInvite=\{canInviteAccounts && inviteCapabilitiesStable\}/);
+    assert.match(normalDialogArea, /addDepartmentVisible/);
     assert.match(earlyBranch, /fallbackFocusRef=\{peopleHeadingRef\}/);
     assert.match(panel, /returnFocusRef=\{inviteEntryReturnFocusRef\}/);
   });
@@ -204,7 +216,8 @@ describe('People invite entry choice', () => {
   test('both handoffs restore to the enabled trigger or the People heading fallback', () => {
     assert.match(panel, /const inviteEntryRef = React\.useRef<HTMLButtonElement \| null>\(null\)/);
     assert.match(panel, /const inviteEntryReturnFocusRef = React\.useRef<HTMLElement \| null>\(null\)/);
-    assert.match(panel, /const peopleHeadingRef = React\.useRef<HTMLHeadingElement \| null>\(null\)/);
+    assert.match(panel, /const localPeopleHeadingRef = React\.useRef<HTMLHeadingElement \| null>\(null\)/);
+    assert.match(panel, /const peopleHeadingRef = providedPeopleHeadingRef \?\? localPeopleHeadingRef/);
     assert.match(panel, /inviteEntryReturnFocusRef\.current = inviteEntryRef\.current/);
     assert.match(earlyBranch, /<h3 ref=\{peopleHeadingRef\} id="hotel-team-title" tabIndex=\{-1\}/);
     assert.match(panel, /<h2 ref=\{peopleHeadingRef\} id="team-members-title" tabIndex=\{-1\}/);
@@ -228,12 +241,34 @@ describe('People invite entry choice', () => {
 
     const firstPersonHandoff = section(
       normalDialogArea,
-      '{inviteDialogOpen && !inviteActionDisabled && needsFirstPerson ? (',
-      ') : inviteDialogOpen && !inviteActionDisabled ? (',
+      '{inviteDialogVisible && needsFirstPerson ? (',
+      ') : inviteDialogVisible ? (',
       'first-person invite handoff',
     );
     assert.doesNotMatch(firstPersonHandoff, /returnFocusRef=/);
     assert.match(firstPersonHandoff, /fallbackFocusRef=\{peopleHeadingRef\}/);
+    assert.match(pagePeoplePanel, /const peopleHeadingRef = React\.useRef<HTMLHeadingElement \| null>\(null\)/);
+    assert.match(pagePeoplePanel, /const restorePeopleHeadingFocusRef = React\.useRef\(false\)/);
+    assert.match(pagePeoplePanel, /restorePeopleHeadingFocusRef\.current = true/);
+    assert.match(pagePeoplePanel, /window\.requestAnimationFrame\(focusHeading\)/);
+    assert.match(pagePeoplePanel, /peopleHeadingRef=\{peopleHeadingRef\}/);
+    assert.match(
+      pagePeoplePanel,
+      /key=\{`\$\{activeProperty\.id\}:\$\{adminPreview \? 'admin' : 'customer'\}:\$\{canManageTeam \? 'hotel-authorized' : 'invite-only'\}`\}/,
+    );
+  });
+
+  test('the first-person loading fallback is distinct from the compact destination', () => {
+    assert.match(
+      panel,
+      /inviteDialogVisible && needsFirstPerson\s*\n\s*\? 'first-person-invite'\s*\n\s*: inviteDialogVisible\s*\n\s*\? 'invite'/,
+    );
+    assert.match(panel, /normalLoadingReturnFocusRef = needsFirstPerson && loadingDialogVariant === 'first-person-invite'/);
+    assert.match(loadingComponent, /variant === 'first-person-invite'[\s\S]*\? 'Add first person'/);
+    assert.match(loadingComponent, /variant === 'first-person-invite'[\s\S]*styles\.dialogLoadingAddStaff/);
+    assert.match(loadingBody, /variant === 'first-person-invite' \|\| variant === 'add-staff'[\s\S]*DialogLoadingFields rows=\{4\}/);
+    assert.match(loadingComponent, /variant === 'invite' \? null[\s\S]*dialogFooter/);
+    assert.match(normalLoadingFallback, /inviteSections=\{canInviteAccounts \? \['hotel', 'email'\] : \['hotel'\]\}/);
   });
 
   test('Add staff restoration uses the chooser or department origin without stale Invite refs', () => {
@@ -256,20 +291,30 @@ describe('People invite entry choice', () => {
 
     assert.match(
       loadingFocusSelection,
-      /loadingDialogVariant === 'invite-choice'[\s\S]*inviteEntryReturnFocusRef[\s\S]*loadingDialogVariant === 'invite'[\s\S]*inviteEntryReturnFocusRef[\s\S]*loadingDialogVariant === 'add-staff'[\s\S]*addStaffReturnFocusRef[\s\S]*: undefined/,
+      /loadingDialogVariant === 'invite-choice'[\s\S]*inviteEntryReturnFocusRef[\s\S]*loadingDialogVariant === 'invite'[\s\S]*inviteEntryReturnFocusRef[\s\S]*loadingDialogVariant === 'first-person-invite'[\s\S]*undefined[\s\S]*loadingDialogVariant === 'add-staff'[\s\S]*addStaffReturnFocusRef[\s\S]*: undefined/,
     );
+    assert.match(earlyBranch, /inviteSections=\{\['email'\]\}/);
+    assert.match(normalLoadingFallback, /inviteSections=\{canInviteAccounts \? \['hotel', 'email'\] : \['hotel'\]\}/);
     assert.match(
       loadingFocusSelection,
-      /const normalLoadingReturnFocusRef = needsFirstPerson && loadingDialogVariant === 'invite'\s*\n\s*\? undefined/,
+      /const normalLoadingReturnFocusRef = needsFirstPerson && loadingDialogVariant === 'first-person-invite'\s*\n\s*\? undefined/,
     );
   });
 
   test('loading states match their destination and close the correct state', () => {
-    assert.match(loadingComponent, /'invite' \| 'invite-choice' \| 'add-staff' \| 'member'/);
+    assert.match(loadingComponent, /'invite' \| 'first-person-invite' \| 'invite-choice' \| 'add-staff' \| 'member'/);
     assert.match(loadingComponent, /variant === 'invite-choice'[\s\S]*\? 'Invite people'/);
     assert.match(loadingComponent, /variant === 'add-staff'[\s\S]*\? 'Add staff member'/);
+    assert.match(loadingComponent, /variant === 'first-person-invite'[\s\S]*\? 'Add first person'/);
     assert.match(loadingComponent, /variant === 'invite-choice'[\s\S]*<DialogLoadingChoices count=\{choiceCount\}/);
     assert.match(loadingComponent, /variant === 'add-staff'[\s\S]*<DialogLoadingFields rows=\{4\}/);
+    assert.match(loadingComponent, /inviteSections\?: readonly InviteLoadingSection\[\]/);
+    assert.match(loadingComponent, /const visibleInviteSections = inviteSections\.length > 0 \? inviteSections : \['email' as const\]/);
+    assert.match(loadingBody, /visibleInviteSections\.map\(\(section, index\) => section === 'hotel'/);
+    assert.match(loadingBody, /DialogLoadingSection key=\{`\$\{section\}-\$\{index\}`\} rows=\{4\} tall/);
+    assert.match(loadingBody, /DialogLoadingFields key=\{`\$\{section\}-\$\{index\}`\} rows=\{4\}/);
+    assert.match(loadingComponent, /variant === 'invite' \? null/);
+    assert.match(loadingComponent, /variant === 'invite' \? null[\s\S]*dialogFooter/);
     assert.match(loadingComponent, /styles\.dialogLoadingInviteChoice/);
     assert.match(loadingComponent, /styles\.dialogLoadingAddStaff/);
     assert.match(panel, /inviteChoiceOpen[\s\S]*'invite-choice'[\s\S]*addDepartment[\s\S]*'add-staff'[\s\S]*'decision'/);
@@ -277,7 +322,7 @@ describe('People invite entry choice', () => {
     assert.match(earlyBranch, /variant=\{loadingDialogVariant\}[\s\S]*onClose=\{closeLoadingDialog\}/);
     assert.match(
       loadingBody,
-      /variant === 'invite-choice'[\s\S]*DialogLoadingChoices count=\{choiceCount\}[\s\S]*variant === 'add-staff'[\s\S]*DialogLoadingFields rows=\{4\}/,
+      /variant === 'invite-choice'[\s\S]*DialogLoadingChoices count=\{choiceCount\}[\s\S]*variant === 'first-person-invite' \|\| variant === 'add-staff'[\s\S]*DialogLoadingFields rows=\{4\}/,
     );
     const choiceAndAddBranches = loadingBody.slice(
       loadingBody.indexOf("variant === 'invite-choice'"),
@@ -288,11 +333,15 @@ describe('People invite entry choice', () => {
 
   test('chooser focus, keyboard targets, and mobile loading shapes remain accessible', () => {
     assert.match(css, /\.peopleInviteChoice:focus-visible[\s\S]*outline: 2px solid var\(--team-sage\)/);
-    assert.match(css, /\.peopleInviteChoice \{[\s\S]*min-height: 76px;/);
+    assert.match(css, /\.peopleInviteChoice \{[\s\S]*min-height: 104px;/);
     assert.match(css, /\.dialogLoadingInviteChoice\s*\{[\s\S]*height:/);
     assert.match(css, /\.dialogLoadingAddStaff\s*\{[\s\S]*height:/);
     assert.match(css, /\.dialogLoadingChoices\s*\{[\s\S]*gap: 12px/);
+    assert.match(css, /\.peopleInviteChoiceBadge\s*\{[\s\S]*border-radius: 999px;/);
+    assert.match(css, /\.dialogLoadingChoiceBadge\s*\{[\s\S]*border-radius: 999px;/);
     assert.match(css, /@media \(max-width: 560px\)[\s\S]*\.dialogLayer \{/);
+    assert.match(css, /\.inviteBody \{[\s\S]*padding-bottom: max\(17px, env\(safe-area-inset-bottom, 0px\)\)/);
+    assert.match(css, /\.dialogLoadingInvite \.dialogLoadingBody \{[\s\S]*padding-bottom: max\(17px, env\(safe-area-inset-bottom, 0px\)\)/);
     assert.match(css, /@media \(prefers-reduced-motion: reduce\)[\s\S]*\.peopleInviteChoice/);
   });
 });

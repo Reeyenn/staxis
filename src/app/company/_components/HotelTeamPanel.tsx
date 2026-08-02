@@ -155,6 +155,8 @@ export interface HotelTeamPanelProps {
   canViewWages?: boolean;
   readOnly?: boolean;
   adminPreview?: boolean;
+  /** A page-owned heading ref that survives the keyed permission panel remount. */
+  peopleHeadingRef?: React.RefObject<HTMLHeadingElement | null>;
   inviteDialogOpen: boolean;
   onInviteDialogOpenChange: (open: boolean) => void;
   /** The employment roster for this hotel, from PropertyContext. */
@@ -497,7 +499,10 @@ function canEditEmployment(
   return false;
 }
 
-type DialogLoadingVariant = 'invite' | 'invite-choice' | 'add-staff' | 'member' | 'remove' | 'decision';
+type DialogLoadingVariant = 'invite' | 'first-person-invite' | 'invite-choice' | 'add-staff' | 'member' | 'remove' | 'decision';
+type InviteLoadingSection = 'hotel' | 'email';
+// Loading must fail closed when a caller has not projected its exact sections.
+const DEFAULT_INVITE_LOADING_SECTIONS: readonly InviteLoadingSection[] = ['email'];
 
 function DialogLoading({
   lang,
@@ -507,6 +512,7 @@ function DialogLoading({
   returnFocusRef,
   fallbackFocusRef,
   choiceCount = 2,
+  inviteSections = DEFAULT_INVITE_LOADING_SECTIONS,
 }: {
   lang: HotelTeamLang;
   hotelName: string;
@@ -515,6 +521,7 @@ function DialogLoading({
   returnFocusRef?: React.RefObject<HTMLElement | null>;
   fallbackFocusRef?: React.RefObject<HTMLElement | null>;
   choiceCount?: number;
+  inviteSections?: readonly InviteLoadingSection[];
 }) {
   const closeRef = React.useRef<HTMLButtonElement | null>(null);
   const dialogRef = React.useRef<HTMLDivElement | null>(null);
@@ -524,6 +531,8 @@ function DialogLoading({
   const loadingLabel = 'Opening dialog…';
   const title = variant === 'invite' || variant === 'invite-choice'
     ? 'Invite people'
+    : variant === 'first-person-invite'
+      ? 'Add first person'
     : variant === 'add-staff'
       ? 'Add staff member'
     : variant === 'member'
@@ -533,6 +542,8 @@ function DialogLoading({
         : 'Review join request';
   const shellClass = variant === 'invite'
     ? `${styles.dialogWide} ${styles.dialogLoadingInvite}`
+    : variant === 'first-person-invite'
+      ? styles.dialogLoadingAddStaff
     : variant === 'invite-choice'
       ? styles.dialogLoadingInviteChoice
     : variant === 'add-staff'
@@ -540,6 +551,7 @@ function DialogLoading({
     : variant === 'member'
       ? styles.dialogLoadingMember
       : styles.dialogLoadingConfirmation;
+  const visibleInviteSections = inviteSections.length > 0 ? inviteSections : ['email' as const];
 
   React.useEffect(() => {
     const previousFocusElement = document.activeElement instanceof HTMLElement
@@ -610,20 +622,23 @@ function DialogLoading({
           </button>
         </div>
 
-        <div className={styles.dialogLoadingIntro} aria-hidden="true">
-          <span />
-        </div>
+        {variant === 'invite' ? null : (
+          <div className={styles.dialogLoadingIntro} aria-hidden="true">
+            <span />
+          </div>
+        )}
 
         <div className={styles.dialogLoadingBody} role="status" aria-live="polite">
           <span className={styles.visuallyHidden}>{loadingLabel}</span>
           {variant === 'invite' ? (
-            <>
-              <DialogLoadingSection rows={4} tall />
-              <DialogLoadingSection rows={3} />
-            </>
+            visibleInviteSections.map((section, index) => section === 'hotel' ? (
+              <DialogLoadingSection key={`${section}-${index}`} rows={4} tall />
+            ) : (
+              <DialogLoadingFields key={`${section}-${index}`} rows={4} />
+            ))
           ) : variant === 'invite-choice' ? (
             <DialogLoadingChoices count={choiceCount} />
-          ) : variant === 'add-staff' ? (
+          ) : variant === 'first-person-invite' || variant === 'add-staff' ? (
             <DialogLoadingFields rows={4} />
           ) : variant === 'member' ? (
             <DialogLoadingFields rows={5} />
@@ -632,9 +647,11 @@ function DialogLoading({
           )}
         </div>
 
-        <div className={styles.dialogFooter} aria-hidden="true">
-          <span className={styles.dialogLoadingButton} />
-        </div>
+        {variant === 'invite' ? null : (
+          <div className={styles.dialogFooter} aria-hidden="true">
+            <span className={styles.dialogLoadingButton} />
+          </div>
+        )}
       </div>
     </div>,
     document.body,
@@ -669,6 +686,7 @@ function DialogLoadingChoices({ count }: { count: number }) {
         <span key={index} className={styles.dialogLoadingChoice}>
           <span className={styles.dialogLoadingChoiceIcon} />
           <span className={styles.dialogLoadingChoiceCopy}>
+            <span className={styles.dialogLoadingChoiceBadge} />
             <span className={styles.dialogLoadingChoiceTitle} />
             <span className={styles.dialogLoadingChoiceDescription} />
           </span>
@@ -712,6 +730,7 @@ export function HotelTeamPanel({
   canViewWages = false,
   readOnly = false,
   adminPreview = false,
+  peopleHeadingRef: providedPeopleHeadingRef,
   inviteDialogOpen,
   onInviteDialogOpenChange,
   staffProfiles = [],
@@ -758,7 +777,8 @@ export function HotelTeamPanel({
   const inviteEntryRef = React.useRef<HTMLButtonElement | null>(null);
   const inviteEntryReturnFocusRef = React.useRef<HTMLElement | null>(null);
   const addStaffReturnFocusRef = React.useRef<HTMLElement | null>(null);
-  const peopleHeadingRef = React.useRef<HTMLHeadingElement | null>(null);
+  const localPeopleHeadingRef = React.useRef<HTMLHeadingElement | null>(null);
+  const peopleHeadingRef = providedPeopleHeadingRef ?? localPeopleHeadingRef;
   const changedRef = React.useRef(onChanged);
   changedRef.current = onChanged;
 
@@ -770,25 +790,50 @@ export function HotelTeamPanel({
   // guarded surfaces as the existing Invite dialog instead of widening access.
   const canInviteToStaxis = canManageTeam || canInviteAccounts;
   const inviteEntryAvailable = canAddStaff || canInviteToStaxis;
+  const inviteCapabilityKey = [
+    canAddStaff ? 'schedule' : 'no-schedule',
+    canManageTeam ? 'hotel-manager' : 'invite-only',
+    canInviteAccounts ? 'account-invite' : 'no-account-invite',
+    locked ? 'read-only' : 'interactive',
+    adminPreview ? 'admin-preview' : 'customer',
+  ].join(':');
+  const inviteCapabilityRef = React.useRef(inviteCapabilityKey);
+  const [, setInviteCapabilityRevision] = React.useState(0);
+  const inviteCapabilitiesStable = inviteCapabilityRef.current === inviteCapabilityKey;
+  const inviteDialogVisible = inviteDialogOpen && inviteCapabilitiesStable && !inviteActionDisabled;
+  const inviteChoiceVisible = inviteChoiceOpen && inviteCapabilitiesStable && !inviteActionDisabled;
+  const addDepartmentVisible = inviteCapabilitiesStable && !inviteActionDisabled
+    ? addDepartment
+    : null;
 
   const openPeopleInviteChooser = React.useCallback(() => {
-    if (inviteActionDisabled || !inviteEntryAvailable) return;
+    if (inviteActionDisabled || !inviteCapabilitiesStable || !inviteEntryAvailable) return;
     inviteEntryReturnFocusRef.current = inviteEntryRef.current;
     setInviteChoiceOpen(true);
-  }, [inviteActionDisabled, inviteEntryAvailable]);
+  }, [inviteActionDisabled, inviteCapabilitiesStable, inviteEntryAvailable]);
 
   const chooseAddStaff = React.useCallback(() => {
-    if (!canAddStaff || locked || inviteActionDisabled) return;
+    if (!canAddStaff || locked || inviteActionDisabled || !inviteCapabilitiesStable) return;
     addStaffReturnFocusRef.current = inviteEntryReturnFocusRef.current;
     setInviteChoiceOpen(false);
     setAddDepartment('housekeeping');
-  }, [canAddStaff, inviteActionDisabled, locked]);
+  }, [canAddStaff, inviteActionDisabled, inviteCapabilitiesStable, locked]);
 
   const chooseInviteToStaxis = React.useCallback(() => {
-    if (!canInviteToStaxis || inviteActionDisabled) return;
+    if (!canInviteToStaxis || inviteActionDisabled || !inviteCapabilitiesStable) return;
     setInviteChoiceOpen(false);
     onInviteDialogOpenChange(true);
-  }, [canInviteToStaxis, inviteActionDisabled, onInviteDialogOpenChange]);
+  }, [canInviteToStaxis, inviteActionDisabled, inviteCapabilitiesStable, onInviteDialogOpenChange]);
+
+  React.useEffect(() => {
+    if (inviteCapabilityRef.current === inviteCapabilityKey) return;
+    inviteCapabilityRef.current = inviteCapabilityKey;
+    setInviteCapabilityRevision((current) => current + 1);
+    setInviteChoiceOpen(false);
+    setAddDepartment(null);
+    setPendingAddAttempt(null);
+    if (inviteDialogOpen) onInviteDialogOpenChange(false);
+  }, [inviteCapabilityKey, inviteDialogOpen, onInviteDialogOpenChange]);
 
   React.useEffect(() => {
     if (!inviteActionDisabled) return;
@@ -1179,11 +1224,13 @@ export function HotelTeamPanel({
     ? 'member'
     : removeMember
       ? 'remove'
-      : inviteDialogOpen
-        ? 'invite'
-        : inviteChoiceOpen
+      : inviteDialogVisible && needsFirstPerson
+        ? 'first-person-invite'
+        : inviteDialogVisible
+          ? 'invite'
+        : inviteChoiceVisible
           ? 'invite-choice'
-          : addDepartment
+          : addDepartmentVisible
             ? 'add-staff'
           : 'decision';
   const closeLoadingDialog = React.useCallback(() => {
@@ -1214,10 +1261,12 @@ export function HotelTeamPanel({
     ? inviteEntryReturnFocusRef
     : loadingDialogVariant === 'invite'
       ? inviteEntryReturnFocusRef
+      : loadingDialogVariant === 'first-person-invite'
+        ? undefined
       : loadingDialogVariant === 'add-staff'
         ? addStaffReturnFocusRef
         : undefined;
-  const normalLoadingReturnFocusRef = needsFirstPerson && loadingDialogVariant === 'invite'
+  const normalLoadingReturnFocusRef = needsFirstPerson && loadingDialogVariant === 'first-person-invite'
     ? undefined
     : loadingReturnFocusRef;
 
@@ -1251,7 +1300,7 @@ export function HotelTeamPanel({
                 type="button"
                 className={`${styles.peopleAction} ${styles.peopleActionPrimary}`}
                 onClick={openPeopleInviteChooser}
-                disabled={inviteActionDisabled}
+                disabled={inviteActionDisabled || !inviteCapabilitiesStable}
                 aria-haspopup="dialog"
               >
                 <span className={styles.peopleActionIcon} aria-hidden="true">
@@ -1271,16 +1320,17 @@ export function HotelTeamPanel({
             hotelName={hotelName}
             variant={loadingDialogVariant}
             choiceCount={1}
+            inviteSections={['email']}
             returnFocusRef={loadingReturnFocusRef}
             fallbackFocusRef={peopleHeadingRef}
             onClose={closeLoadingDialog}
           />
         )}>
-          {inviteChoiceOpen && canInviteAccounts && !locked && !inviteActionDisabled ? (
+          {inviteChoiceVisible && canInviteAccounts && !locked ? (
             <LazyPeopleInviteChooserDialog
               canAddStaff={false}
-              canInviteToStaxis={!inviteActionDisabled}
-              canSendEmailInvite={canInviteAccounts && !inviteActionDisabled}
+              canInviteToStaxis={inviteCapabilitiesStable}
+              canSendEmailInvite={canInviteAccounts && inviteCapabilitiesStable}
               canShareHotelInvite={false}
               returnFocusRef={inviteEntryReturnFocusRef}
               fallbackFocusRef={peopleHeadingRef}
@@ -1289,7 +1339,7 @@ export function HotelTeamPanel({
               onClose={() => setInviteChoiceOpen(false)}
             />
           ) : null}
-          {inviteDialogOpen && canInviteAccounts && !locked && !inviteActionDisabled ? (
+          {inviteDialogVisible && canInviteAccounts && !locked ? (
             <LazyInviteDialog
               hotelId={hotelId}
               hotelName={hotelName}
@@ -1375,14 +1425,14 @@ export function HotelTeamPanel({
           ) : null}
         </div>
 
-        {!needsFirstPerson && !locked && inviteEntryAvailable ? (
+        {!needsFirstPerson && !locked && inviteCapabilitiesStable && inviteEntryAvailable ? (
           <div className={styles.peopleActions} aria-label="Ways to add people">
             <button
               ref={inviteEntryRef}
               type="button"
               className={`${styles.peopleAction} ${styles.peopleActionPrimary}`}
               onClick={openPeopleInviteChooser}
-              disabled={inviteActionDisabled}
+              disabled={inviteActionDisabled || !inviteCapabilitiesStable}
               aria-haspopup="dialog"
             >
               <span className={styles.peopleActionIcon} aria-hidden="true">
@@ -1569,6 +1619,7 @@ export function HotelTeamPanel({
           hotelName={hotelName}
           variant={loadingDialogVariant}
           choiceCount={Number(canAddStaff && !locked) + Number(canInviteToStaxis)}
+          inviteSections={canInviteAccounts ? ['hotel', 'email'] : ['hotel']}
           returnFocusRef={normalLoadingReturnFocusRef}
           fallbackFocusRef={peopleHeadingRef}
           onClose={closeLoadingDialog}
@@ -1617,12 +1668,12 @@ export function HotelTeamPanel({
             }}
           />
         ) : null}
-        {inviteChoiceOpen && !inviteActionDisabled ? (
+        {inviteChoiceVisible ? (
           <LazyPeopleInviteChooserDialog
-            canAddStaff={canAddStaff && !locked && !inviteActionDisabled}
-            canInviteToStaxis={canInviteToStaxis && !inviteActionDisabled}
-            canSendEmailInvite={canInviteAccounts && !inviteActionDisabled}
-            canShareHotelInvite={canManageTeam && !inviteActionDisabled}
+            canAddStaff={canAddStaff && !locked && inviteCapabilitiesStable}
+            canInviteToStaxis={canInviteToStaxis && inviteCapabilitiesStable}
+            canSendEmailInvite={canInviteAccounts && inviteCapabilitiesStable}
+            canShareHotelInvite={canManageTeam && inviteCapabilitiesStable}
             returnFocusRef={inviteEntryReturnFocusRef}
             fallbackFocusRef={peopleHeadingRef}
             onAddStaff={chooseAddStaff}
@@ -1630,7 +1681,7 @@ export function HotelTeamPanel({
             onClose={() => setInviteChoiceOpen(false)}
           />
         ) : null}
-        {inviteDialogOpen && !inviteActionDisabled && needsFirstPerson ? (
+        {inviteDialogVisible && needsFirstPerson ? (
           <LazyFirstPersonInviteDialog
             hotelId={hotelId}
             hotelName={hotelName}
@@ -1638,7 +1689,7 @@ export function HotelTeamPanel({
             onClose={() => onInviteDialogOpenChange(false)}
             onChanged={() => changedRef.current?.()}
           />
-        ) : inviteDialogOpen && !inviteActionDisabled ? (
+        ) : inviteDialogVisible ? (
           <LazyInviteDialog
             hotelId={hotelId}
             hotelName={hotelName}
@@ -1666,12 +1717,12 @@ export function HotelTeamPanel({
             }}
           />
         ) : null}
-        {addDepartment && !inviteActionDisabled ? (
+        {addDepartmentVisible ? (
           <LazyAddStaffDialog
             hotelId={hotelId}
             hotelName={hotelName}
             lang={lang}
-            initialDepartment={addDepartment}
+            initialDepartment={addDepartmentVisible}
             returnFocusRef={addStaffReturnFocusRef}
             fallbackFocusRef={peopleHeadingRef}
             onClose={() => setAddDepartment(null)}
