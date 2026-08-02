@@ -279,7 +279,6 @@ const CX_CSS = `
   .cx-management-link{min-height:48px;padding:7px 10px;gap:9px;}
   .cx-management-icon{width:32px;height:32px;}
   .cx-page{padding:18px 16px 130px;}
-  .staxis-feedback-slot,.staxis-ai-activity-slot{display:none;}
 }
 
 /* Reduced motion: drop the looping decorative animations, keep one-shot entrances. */

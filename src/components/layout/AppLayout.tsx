@@ -5,8 +5,6 @@ import { usePathname } from 'next/navigation';
 import dynamic from 'next/dynamic';
 import { ConcourseBar } from '@/components/concourse/ConcourseBar';
 import { ActivityTracker } from './ActivityTracker';
-import { FeedbackButton } from './FeedbackButton';
-import { AiActivityButton } from '@/components/agent/AiActivityButton';
 import { useProperty } from '@/contexts/PropertyContext';
 import { useLang } from '@/contexts/LanguageContext';
 import { useSyncContext } from '@/contexts/SyncContext';
@@ -22,37 +20,28 @@ import {
 import { useNavigationReady } from '@/lib/hooks/use-reliable-navigation';
 import { useOptionalHotelActingContext } from '@/contexts/HotelActingContext';
 
-// The "Ask Staxis" command bar (~900 lines + react-markdown) sits on every
-// authenticated page but starts collapsed and empty. Load it lazily so it stays
-// out of each page's initial JS bundle; it pops in post-hydration with no layout
-// shift (fixed-position pill). ssr:false — nothing to server-render at rest.
-const AskStaxisBar = dynamic(
-  () => import('@/components/agent/AskStaxisBar').then((m) => m.AskStaxisBar),
-  { ssr: false, loading: () => null },
-);
-
-// The companion bubble. Same treatment as the Ask bar: lazy, ssr:false, nothing
-// to server-render at rest, and it pops in post-hydration with no layout shift
-// because it is fixed-position.
+// The one AI object in the corner: the Obsidian mark, its peek and its panel,
+// plus the companion brain behind them and the overflow menu that now holds
+// feedback and AI activity. Load it lazily so it stays out of each page's
+// initial JS bundle; it pops in post-hydration with no layout shift because it
+// is fixed-position. ssr:false — nothing to server-render at rest.
 //
 // MOUNTED HERE, which is why housekeeper and laundry screens never see it: they
 // do not import AppLayout. That is a fact about today's file layout though, so
-// the component ALSO refuses on those paths itself (companionMounts in
-// src/lib/companion/mount.ts). Two independent gates, on purpose.
-const CompanionBubble = dynamic(
-  () => import('@/components/companion/CompanionBubble').then((m) => m.CompanionBubble),
+// the companion ALSO refuses on those paths itself (companionMounts in
+// src/lib/companion/mount.ts) and the bar refuses a housekeeping hat through
+// chatIsMountedForRole. Independent gates, on purpose.
+const AskStaxisBar = dynamic(
+  () => import('@/components/agent/AskStaxisBar').then((m) => m.AskStaxisBar),
   { ssr: false, loading: () => null },
 );
 
 export function AppLayout({
   children,
   hideGlobalAsk = false,
-  hideCompanion = false,
 }: {
   children: React.ReactNode;
   hideGlobalAsk?: boolean;
-  /** Opt out on a surface that owns its own assistant chrome, like hideGlobalAsk. */
-  hideCompanion?: boolean;
 }) {
   useNavigationReady();
   const acting = useOptionalHotelActingContext();
@@ -207,10 +196,10 @@ export function AppLayout({
           children
         )}
       </main>
-      <div className="staxis-feedback-slot"><FeedbackButton /></div>
-      <div className="staxis-ai-activity-slot"><AiActivityButton /></div>
+      {/* ONE object in the bottom-right corner. Feedback and AI activity used
+          to sit here as their own floating buttons; they are rows in the
+          panel's overflow menu now. */}
       {!hideGlobalAsk ? <AskStaxisBar /> : null}
-      {!hideCompanion ? <CompanionBubble /> : null}
     </div>
   );
 }

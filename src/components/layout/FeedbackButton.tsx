@@ -1,12 +1,16 @@
 'use client';
 
 /**
- * Floating feedback button. Lives at the bottom-right of every page so
- * GMs/staff can dash off "this is broken" / "I want X" without leaving
- * what they're doing.
+ * Feedback. "This is broken" / "I want X", straight to Reeyen, without leaving
+ * what you are doing.
  *
- * Hidden for admin users — Reeyen has the inbox in /admin, no need for
- * the floating button to clutter his view.
+ * NO LONGER A FLOATING BUTTON. The bottom-right corner belongs to the one AI
+ * object (the Obsidian mark), and three things stacked in one corner is what
+ * the redesign existed to end. This now renders as a row in that panel's
+ * overflow menu, with its open state controlled from there. The `floating`
+ * variant is kept for any surface that still wants a standalone trigger.
+ *
+ * Hidden for admin users — Reeyen has the inbox in /admin.
  */
 
 import React, { useState } from 'react';
@@ -25,14 +29,36 @@ const CATEGORIES: { value: Category; label: string; emoji: string }[] = [
   { value: 'love',            label: 'Love note',         emoji: '❤️' },
 ];
 
-export function FeedbackButton() {
+export interface FeedbackButtonProps {
+  /** `menu` renders one row inside the companion panel's overflow menu. */
+  variant?: 'floating' | 'menu';
+  menuClassName?: string;
+  menuLabel?: string;
+  /** Controlled open state. Required by the menu variant. */
+  open?: boolean;
+  onOpenChange?: (open: boolean) => void;
+}
+
+export function FeedbackButton({
+  variant = 'floating',
+  menuClassName,
+  menuLabel = 'Send feedback',
+  open: controlledOpen,
+  onOpenChange,
+}: FeedbackButtonProps = {}) {
   const { user } = useAuth();
   const { activeProperty } = useProperty();
-  const [open, setOpen] = useState(false);
+  const [uncontrolledOpen, setUncontrolledOpen] = useState(false);
   const [category, setCategory] = useState<Category>('general');
   const [message, setMessage] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [submitted, setSubmitted] = useState(false);
+
+  const open = controlledOpen ?? uncontrolledOpen;
+  const setOpen = (next: boolean) => {
+    setUncontrolledOpen(next);
+    onOpenChange?.(next);
+  };
 
   // Don't show for unauth users or admins.
   if (!user || user.role === 'admin') return null;
@@ -65,9 +91,20 @@ export function FeedbackButton() {
     }
   };
 
+  const inMenu = variant === 'menu';
+
   return (
     <>
-      {!open && (
+      {inMenu ? (
+        <button
+          type="button"
+          role="menuitem"
+          className={menuClassName}
+          onClick={() => setOpen(true)}
+        >
+          {menuLabel}
+        </button>
+      ) : !open ? (
         <button
           onClick={() => setOpen(true)}
           aria-label={'Send feedback'}
@@ -91,20 +128,23 @@ export function FeedbackButton() {
         >
           <MessageSquare size={20} />
         </button>
-      )}
+      ) : null}
 
       {open && (
         <div style={{
           position: 'fixed',
-          bottom: '20px',
-          right: '20px',
+          // In the menu the corner is taken by the mark, and the mark can be
+          // dragged anywhere, so this centres rather than chasing it.
+          ...(inMenu
+            ? { left: '50%', top: '50%', transform: 'translate(-50%, -50%)' }
+            : { bottom: '20px', right: '20px' }),
           width: '320px',
           maxWidth: 'calc(100vw - 40px)',
           background: '#ffffff',
           border: '1px solid var(--border)',
           borderRadius: '14px',
           boxShadow: '0 8px 24px rgba(0,0,0,0.15)',
-          zIndex: 100,
+          zIndex: 9000,
           overflow: 'hidden',
         }}>
           <div style={{

@@ -184,6 +184,19 @@ function capTopics(topics: Record<string, CompanionTopicMemory>): Record<string,
 
 export type CompanionSensitivity = 'operational' | 'people';
 
+/**
+ * How loud the thing is, for the severity dot on the peek and the mark's Wrong
+ * state. Mirrors the three levels findings already carry (critical, attention,
+ * info) rather than inventing a fourth scale.
+ *
+ * Optional because it is presentation, not a decision input: nothing in
+ * decideCompanionSpeech branches on it, and a candidate built before this field
+ * existed must still be offerable. Missing reads as `watch`, the middle.
+ */
+export type CompanionSeverity = 'ok' | 'watch' | 'urgent';
+
+export const DEFAULT_COMPANION_SEVERITY: CompanionSeverity = 'watch';
+
 export interface CompanionCandidate {
   /**
    * Stable across days and across wordings. This is the handle a No attaches
@@ -207,6 +220,8 @@ export interface CompanionCandidate {
   covers: readonly string[];
   /** Where "yes" would take them, if anywhere. */
   destination: CompanionPageKey | null;
+  /** Presentation only. See CompanionSeverity. */
+  severity?: CompanionSeverity;
 }
 
 // ─── Decision ───────────────────────────────────────────────────────────────
@@ -238,6 +253,7 @@ export type CompanionSpeech =
       topic: string;
       sentence: string;
       destination: CompanionPageKey | null;
+      severity: CompanionSeverity;
     };
 
 export interface MannersInput {
@@ -341,6 +357,7 @@ export function decideCompanionSpeech(input: MannersInput): CompanionSpeech {
         multiHotel: input.multiHotel,
       }),
       destination: candidate.destination,
+      severity: candidate.severity ?? DEFAULT_COMPANION_SEVERITY,
     };
   }
 
