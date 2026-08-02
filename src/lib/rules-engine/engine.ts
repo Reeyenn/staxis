@@ -78,6 +78,20 @@ export interface EngineOptions {
   verbose?: boolean;
 }
 
+export type CanonicalPlanOutcome =
+  | 'upserted'
+  | 'skipped_in_progress'
+  | 'unchanged'
+  | 'ignored';
+
+/** Map the canonical RPC contract to the engine's user-facing counters. */
+export function classifyCanonicalPlanOutcome(outcome: string): CanonicalPlanOutcome {
+  if (outcome === 'inserted' || outcome === 'updated') return 'upserted';
+  if (outcome === 'skipped_non_mutable') return 'skipped_in_progress';
+  if (outcome === 'unchanged') return 'unchanged';
+  return 'ignored';
+}
+
 export async function runRulesEngineForProperty(
   propertyId: string,
   opts: EngineOptions = {},
@@ -217,13 +231,14 @@ export async function runRulesEngineForProperty(
         for (const result of persistedRows) {
           const row = submittedByKey.get(result.dedupe_key);
           if (!row) continue;
-          if (result.outcome === 'inserted' || result.outcome === 'updated') {
+          const canonicalOutcome = classifyCanonicalPlanOutcome(result.outcome);
+          if (canonicalOutcome === 'upserted') {
             upserted++;
             if (verbose) {
               const planned = pendingUpdateOutcomes.get(row.dedupe_key);
               if (planned) outcomes.push(planned);
             }
-          } else if (rowsToUpdate.some((candidate) => candidate.dedupe_key === row.dedupe_key)) {
+          } else if (canonicalOutcome === 'skipped_in_progress') {
             // A mutable row can become non-mutable while the RPC waits for
             // its row lock. Preserve the old race outcome without touching
             // the human's workflow state.

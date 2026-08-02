@@ -161,6 +161,7 @@ describe('housekeeping canonical plan Stage B cutover', () => {
       ['src/lib/auto-assign-runner.ts', /['"]assign_room_work_atomic['"]/],
       ['src/lib/rules-engine/engine.ts', /['"]upsert_room_work_plan['"]|['"]touch_room_work_plan['"]/],
       ['src/lib/inspections/correction-loop.ts', /['"]complete_inspection_atomic_canonical['"]/],
+      ['src/lib/inspections/start-core.ts', /from\(['"]room_work_plan_v1['"]\)/],
     ] as const;
     for (const [relativePath, contract] of sourceContracts) {
       assert.match(readFileSync(resolve(repo, relativePath), 'utf8'), contract, relativePath);
@@ -180,6 +181,7 @@ describe('housekeeping canonical plan Stage B cutover', () => {
       'src/lib/auto-assign-runner.ts',
       'src/lib/rules-engine/engine.ts',
       'src/lib/inspections/correction-loop.ts',
+      'src/lib/inspections/start-core.ts',
     ]) {
       assert.doesNotMatch(
         readFileSync(resolve(repo, relativePath), 'utf8'),
@@ -187,6 +189,86 @@ describe('housekeeping canonical plan Stage B cutover', () => {
         `${relativePath} must not have a Stage B runtime fallback to a legacy writer`,
       );
     }
+  });
+
+  test('rules-engine outcomes distinguish an unchanged mutable plan from a non-mutable race', async () => {
+    const plan = {
+      property_id: PROPERTY,
+      room_number: '310',
+      business_date: '2026-08-04',
+      dedupe_key: '310::stage-b-outcomes',
+      cleaning_type: 'stayover',
+      priority: 'normal',
+      status: 'scheduled',
+    };
+
+    assert.deepEqual(
+      await rows<{ outcome: string }>(
+        'select outcome from public.upsert_room_work_plan($1, $2::jsonb)',
+        [PROPERTY, JSON.stringify([plan])],
+      ),
+      [{ outcome: 'inserted' }],
+    );
+    assert.deepEqual(
+      await rows<{ outcome: string }>(
+        'select outcome from public.upsert_room_work_plan($1, $2::jsonb)',
+        [PROPERTY, JSON.stringify([plan])],
+      ),
+      [{ outcome: 'unchanged' }],
+      'an exact retry of a mutable row is a harmless no-op, not in-progress work',
+    );
+
+    assert.deepEqual(
+      await rows<{ outcome: string }>(
+        'select outcome from public.upsert_room_work_plan($1, $2::jsonb)',
+        [PROPERTY, JSON.stringify([{ ...plan, priority: 'high' }])],
+      ),
+      [{ outcome: 'updated' }],
+    );
+
+    await pg.query(
+      "update public.room_work set status = 'in_progress' where property_id = $1 and date = $2 and room_number = '310'",
+      [PROPERTY, '2026-08-04'],
+    );
+    assert.deepEqual(
+      await rows<{ outcome: string }>(
+        'select outcome from public.upsert_room_work_plan($1, $2::jsonb)',
+        [PROPERTY, JSON.stringify([plan])],
+      ),
+      [{ outcome: 'skipped_non_mutable' }],
+      'a plan that became non-mutable while the RPC waited keeps the old skipped-in-progress meaning',
+    );
+
+    const engineSource = readFileSync(resolve(repo, 'src/lib/rules-engine/engine.ts'), 'utf8');
+    assert.match(engineSource, /classifyCanonicalPlanOutcome/);
+    assert.doesNotMatch(engineSource, /rowsToUpdate\.some\(\(candidate\) => candidate\.dedupe_key/);
+  });
+
+  test('canonical inspection failure remains visible as correction_pending while the room is in progress', async () => {
+    const planId = await scalar<string>(
+      "select public.housekeeping_plan_id($1, $2, '311')::text",
+      [PROPERTY, BUSINESS_DATE],
+    );
+    await pg.query(
+      "insert into public.room_work(id, property_id, date, room_number, status, plan_dedupe_key, plan_cleaning_type, plan_priority, plan_status) values ($1, $2, $3, '311', 'in_progress', '311::stage-b-fail', 'stayover', 'normal', 'scheduled')",
+      [planId, PROPERTY, BUSINESS_DATE],
+    );
+    await pg.query(
+      "insert into public.inspections(id, property_id, room_number, cleaning_task_id, result, started_at) values ('b5000000-0000-4000-8000-000000000004', $1, '311', $2, 'in_progress', $3::timestamptz)",
+      [PROPERTY, planId, `${BUSINESS_DATE}T16:00:00Z`],
+    );
+
+    await pg.query(
+      "select * from public.complete_inspection_atomic_canonical('b5000000-0000-4000-8000-000000000004', $1, 'fail', '[{\"itemId\":\"bathroom\",\"label\":\"Bathroom\",\"severity\":\"major\",\"photoUrl\":null,\"note\":\"mirror\"}]'::jsonb, '[]'::jsonb, 'mirror', false, null, null, 'mirror')",
+      [PROPERTY],
+    );
+    assert.deepEqual(
+      await rows<{ status: string; priority: string; notes: string }>(
+        "select status, priority, notes from public.room_work_plan_v1 where property_id = $1 and business_date = $2 and room_number = '311'",
+        [PROPERTY, BUSINESS_DATE],
+      ),
+      [{ status: 'correction_pending', priority: 'high', notes: 'mirror' }],
+    );
   });
 
   test('canonical inspection locks both dates in deterministic order and preserves atomic/retry behavior', async () => {
@@ -344,5 +426,39 @@ describe('housekeeping canonical plan Stage B cutover', () => {
       assert.equal(privilege.anon_execute, false, privilege.function_name);
       assert.equal(privilege.authenticated_execute, false, privilege.function_name);
     }
+
+    assert.deepEqual(
+      await rows<{
+        function_name: string;
+        service_role_execute: boolean;
+        anon_execute: boolean;
+        authenticated_execute: boolean;
+      }>(
+        `select function_name,
+                has_function_privilege('service_role', function_name, 'execute') as service_role_execute,
+                has_function_privilege('anon', function_name, 'execute') as anon_execute,
+                has_function_privilege('authenticated', function_name, 'execute') as authenticated_execute
+           from (values
+             ('public.upsert_room_work_plan(uuid,jsonb)'::text),
+             ('public._upsert_room_work_plan_stage_a(uuid,jsonb)'::text)
+           ) functions(function_name)
+          order by function_name`,
+      ),
+      [
+        {
+          function_name: 'public._upsert_room_work_plan_stage_a(uuid,jsonb)',
+          service_role_execute: false,
+          anon_execute: false,
+          authenticated_execute: false,
+        },
+        {
+          function_name: 'public.upsert_room_work_plan(uuid,jsonb)',
+          service_role_execute: true,
+          anon_execute: false,
+          authenticated_execute: false,
+        },
+      ],
+      'only the Stage B canonical outcome contract is callable by service_role',
+    );
   });
 });

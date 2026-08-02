@@ -69,6 +69,13 @@ export async function finalizeInspection(
   const before = await getInspectionById(input.inspectionId);
   if (!before) throw new Error(`inspection ${input.inspectionId} not found`);
   if (before.result !== 'in_progress') {
+    if (before.result === input.result) {
+      return {
+        inspection: before,
+        correctionNoticeSent: input.result === 'fail',
+        escalated: before.escalated,
+      };
+    }
     throw new Error(`inspection ${input.inspectionId} already finalized as ${before.result}`);
   }
 
@@ -170,12 +177,14 @@ type AtomicOutcome =
 
 /**
  * Wrap the RPC call. Distinguishes between:
- *  - already-finalized / not-found / bad-result / property-mismatch
+ *  - not-found / bad-result / property-mismatch
  *    → re-throws (caller's bug or data-integrity issue)
  *  - any other failure → returns ok=false so the caller can surface a
  *    retryable canonical failure
  *
- * The RPC raises with specific message prefixes:
+ * The RPC raises with specific message prefixes. E_ALREADY_FINALIZED is
+ * intentionally returned as a retryable outcome so the caller can refetch
+ * and accept a matching committed result.
  *   E_NOT_FOUND, E_ALREADY_FINALIZED, E_BAD_RESULT,
  *   E_ROOM_PROPERTY_MISMATCH, E_TASK_PROPERTY_MISMATCH
  *
@@ -185,7 +194,6 @@ type AtomicOutcome =
  */
 const CALLER_BUG_PREFIXES = [
   'E_NOT_FOUND',
-  'E_ALREADY_FINALIZED',
   'E_BAD_RESULT',
   // E_ROOM_PROPERTY_MISMATCH removed: 0271 repointed the room side-effect to
   // pms_housekeeping_assignments scoped by (property_id, room_number) and

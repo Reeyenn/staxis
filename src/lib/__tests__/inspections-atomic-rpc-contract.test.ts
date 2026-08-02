@@ -61,10 +61,11 @@ describe('correction-loop ↔ canonical inspection RPC wiring', () => {
     assert.doesNotMatch(loopSrc, /from\(['"]cleaning_tasks['"]\)/);
   });
 
-  it('re-throws caller-bug errors (E_NOT_FOUND / E_ALREADY_FINALIZED / E_BAD_RESULT) instead of falling back', () => {
+  it('keeps terminal duplicates retryable while re-throwing other caller-bug errors', () => {
     assert.match(loopSrc, /E_NOT_FOUND/);
     assert.match(loopSrc, /E_ALREADY_FINALIZED/);
     assert.match(loopSrc, /E_BAD_RESULT/);
+    assert.doesNotMatch(loopSrc, /CALLER_BUG_PREFIXES\s*=\s*\[[^\]]*E_ALREADY_FINALIZED/);
   });
 });
 

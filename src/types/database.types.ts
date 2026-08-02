@@ -20595,10 +20595,6 @@ export type Database = {
         Args: { p_account_id: string }
         Returns: Json
       }
-      staxis_list_account_authorization_admin: {
-        Args: { p_account_id: string }
-        Returns: Json
-      }
       staxis_list_authoritative_hotel_accounts: {
         Args: { p_include_platform_admins?: boolean; p_property_id: string }
         Returns: Json
@@ -21357,20 +21353,6 @@ export type Database = {
         }
         Returns: Json
       }
-      staxis_remove_property_access_authoritative: {
-        Args: {
-          p_account_id: string
-          p_actor_account_id: string
-          p_actor_auth_user_id: string
-          p_actor_email: string
-          p_expected_authority_version: number
-          p_expected_role: string
-          p_expected_updated_at: string
-          p_hotel_id: string
-          p_request_id: string
-        }
-        Returns: Json
-      }
       staxis_replace_finding_action: {
         Args: {
           p_action_kind: string
@@ -21760,18 +21742,6 @@ export type Database = {
           p_property_id: string
           p_reason: string
           p_request_id: string
-        }
-        Returns: Json
-      }
-      staxis_set_account_authorization_scope: {
-        Args: {
-          p_account_id: string
-          p_actor_account_id: string
-          p_expected_authority_version: number
-          p_expected_role: string
-          p_new_role: string
-          p_property_ids: string[]
-          p_reason: string
         }
         Returns: Json
       }
