@@ -155,6 +155,8 @@ export interface HotelTeamPanelProps {
   canViewWages?: boolean;
   readOnly?: boolean;
   adminPreview?: boolean;
+  /** A page-owned heading ref that survives the keyed permission panel remount. */
+  peopleHeadingRef?: React.RefObject<HTMLHeadingElement | null>;
   inviteDialogOpen: boolean;
   onInviteDialogOpenChange: (open: boolean) => void;
   /** The employment roster for this hotel, from PropertyContext. */
@@ -497,7 +499,7 @@ function canEditEmployment(
   return false;
 }
 
-type DialogLoadingVariant = 'invite' | 'invite-choice' | 'add-staff' | 'member' | 'remove' | 'decision';
+type DialogLoadingVariant = 'invite' | 'first-person-invite' | 'invite-choice' | 'add-staff' | 'member' | 'remove' | 'decision';
 type InviteLoadingSection = 'hotel' | 'email';
 // Loading must fail closed when a caller has not projected its exact sections.
 const DEFAULT_INVITE_LOADING_SECTIONS: readonly InviteLoadingSection[] = ['email'];
@@ -529,6 +531,8 @@ function DialogLoading({
   const loadingLabel = 'Opening dialog…';
   const title = variant === 'invite' || variant === 'invite-choice'
     ? 'Invite people'
+    : variant === 'first-person-invite'
+      ? 'Add first person'
     : variant === 'add-staff'
       ? 'Add staff member'
     : variant === 'member'
@@ -538,6 +542,8 @@ function DialogLoading({
         : 'Review join request';
   const shellClass = variant === 'invite'
     ? `${styles.dialogWide} ${styles.dialogLoadingInvite}`
+    : variant === 'first-person-invite'
+      ? styles.dialogLoadingAddStaff
     : variant === 'invite-choice'
       ? styles.dialogLoadingInviteChoice
     : variant === 'add-staff'
@@ -632,7 +638,7 @@ function DialogLoading({
             ))
           ) : variant === 'invite-choice' ? (
             <DialogLoadingChoices count={choiceCount} />
-          ) : variant === 'add-staff' ? (
+          ) : variant === 'first-person-invite' || variant === 'add-staff' ? (
             <DialogLoadingFields rows={4} />
           ) : variant === 'member' ? (
             <DialogLoadingFields rows={5} />
@@ -724,6 +730,7 @@ export function HotelTeamPanel({
   canViewWages = false,
   readOnly = false,
   adminPreview = false,
+  peopleHeadingRef: providedPeopleHeadingRef,
   inviteDialogOpen,
   onInviteDialogOpenChange,
   staffProfiles = [],
@@ -770,7 +777,8 @@ export function HotelTeamPanel({
   const inviteEntryRef = React.useRef<HTMLButtonElement | null>(null);
   const inviteEntryReturnFocusRef = React.useRef<HTMLElement | null>(null);
   const addStaffReturnFocusRef = React.useRef<HTMLElement | null>(null);
-  const peopleHeadingRef = React.useRef<HTMLHeadingElement | null>(null);
+  const localPeopleHeadingRef = React.useRef<HTMLHeadingElement | null>(null);
+  const peopleHeadingRef = providedPeopleHeadingRef ?? localPeopleHeadingRef;
   const changedRef = React.useRef(onChanged);
   changedRef.current = onChanged;
 
@@ -1216,8 +1224,10 @@ export function HotelTeamPanel({
     ? 'member'
     : removeMember
       ? 'remove'
-      : inviteDialogVisible
-        ? 'invite'
+      : inviteDialogVisible && needsFirstPerson
+        ? 'first-person-invite'
+        : inviteDialogVisible
+          ? 'invite'
         : inviteChoiceVisible
           ? 'invite-choice'
           : addDepartmentVisible
@@ -1251,10 +1261,12 @@ export function HotelTeamPanel({
     ? inviteEntryReturnFocusRef
     : loadingDialogVariant === 'invite'
       ? inviteEntryReturnFocusRef
+      : loadingDialogVariant === 'first-person-invite'
+        ? undefined
       : loadingDialogVariant === 'add-staff'
         ? addStaffReturnFocusRef
         : undefined;
-  const normalLoadingReturnFocusRef = needsFirstPerson && loadingDialogVariant === 'invite'
+  const normalLoadingReturnFocusRef = needsFirstPerson && loadingDialogVariant === 'first-person-invite'
     ? undefined
     : loadingReturnFocusRef;
 

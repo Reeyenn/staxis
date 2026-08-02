@@ -10,6 +10,8 @@ import type { AppUser } from '@/contexts/AuthContext';
 import type { StaffMember } from '@/types';
 
 type HotelTeamPanelModule = typeof import('@/app/company/_components/HotelTeamPanel');
+type CompanyPageModule = typeof import('@/app/company/page');
+type PeoplePanelProps = Parameters<CompanyPageModule['PeoplePanel']>[0];
 
 const DOM_GLOBALS = [
   'window',
@@ -148,6 +150,14 @@ function loadPanelModule(): Promise<HotelTeamPanelModule> {
     () => import('@/app/company/_components/HotelTeamPanel'),
   );
   return panelModulePromise;
+}
+
+let companyPageModulePromise: Promise<CompanyPageModule> | null = null;
+function loadCompanyPageModule(): Promise<CompanyPageModule> {
+  companyPageModulePromise ??= loadWithCssShim(
+    () => import('@/app/company/page'),
+  );
+  return companyPageModulePromise;
 }
 
 let dialogsModulePromise: Promise<unknown> | null = null;
@@ -417,6 +427,145 @@ async function mountInviteFlow(
   };
 }
 
+interface PeoplePanelHarness {
+  text: () => string;
+  dialog: () => HTMLElement | null;
+  click: (label: string) => Promise<void>;
+  setCapabilities: (next: CapabilityState) => Promise<void>;
+  flushWithFrame: () => Promise<void>;
+}
+
+async function mountPeoplePanel(
+  context: TestContext,
+  initialCapabilities: CapabilityState,
+  options: { adminPreview?: boolean; inviteDialogOpen?: boolean } = {},
+): Promise<PeoplePanelHarness> {
+  const restoreBrowser = installBrowser();
+  const { PeoplePanel } = await loadCompanyPageModule();
+  await loadDialogsModule();
+  const { supabase } = await import('@/lib/supabase');
+  supabase.auth.stopAutoRefresh();
+  const { createRoot } = await import('react-dom/client');
+
+  const controls = {
+    setCapabilities: (_next: CapabilityState): void => undefined,
+  };
+  const originalFetch = globalThis.fetch;
+  Object.defineProperty(globalThis, 'fetch', {
+    configurable: true,
+    writable: true,
+    value: async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+      const url = String(input);
+      const method = (init?.method ?? 'GET').toUpperCase();
+      if (url.startsWith('/api/auth/team?')) {
+        return jsonResponse({ ok: true, data: { team: [], hatsByAccountId: {} } });
+      }
+      if (url.startsWith('/api/staff/join-requests?')) {
+        return jsonResponse({ ok: true, data: { requests: [] } });
+      }
+      if (url.startsWith('/api/staff/contacts?')) {
+        return jsonResponse({ ok: true, data: { contacts: {} } });
+      }
+      if (url.startsWith('/api/auth/join-codes?') && method === 'GET') {
+        return jsonResponse({ ok: true, data: { codes: [VALID_CODE] } });
+      }
+      if (url.startsWith('/api/auth/invites?') && method === 'GET') {
+        return jsonResponse({ ok: true, data: { invites: [], options: VALID_OPTIONS } });
+      }
+      return jsonResponse({ ok: false, error: `Unexpected request ${method} ${url}` }, 500);
+    },
+  });
+
+  function TestPeoplePanel() {
+    const [capabilities, setCapabilities] = useState(initialCapabilities);
+    const [inviteOpen, setInviteOpen] = useState(Boolean(options.inviteDialogOpen));
+    controls.setCapabilities = setCapabilities;
+    const data = {
+      permissions: { viewPeople: true, manageInvitations: false },
+      memberships: [],
+      invitations: [],
+      organizations: [],
+      viewerContext: {
+        kind: options.adminPreview ? 'staxis_admin_preview' : 'customer',
+        readOnly: false,
+      },
+    } as unknown as PeoplePanelProps['data'];
+    return (
+      <PeoplePanel
+        data={data}
+        staff={[STAFF]}
+        hotelRosterUnavailable={false}
+        lang={'en'}
+        currentUser={USER}
+        currentAccountId={USER.accountId}
+        activeProperty={{ id: HOTEL_ID, name: 'Harbor Inn' } as PeoplePanelProps['activeProperty']}
+        canManageTeam={capabilities.canManageTeam}
+        canInviteAccounts={capabilities.canInviteAccounts}
+        canViewWages={false}
+        canAddOperationalStaff={false}
+        inviteDialogOpen={inviteOpen}
+        onInviteDialogOpenChange={setInviteOpen}
+        onChanged={() => undefined}
+        onLifecycleAction={() => undefined}
+      />
+    );
+  }
+
+  const container = document.createElement('div');
+  document.body.append(container);
+  const root: Root = createRoot(container);
+  await act(async () => { root.render(<TestPeoplePanel />); });
+  await flushReact();
+
+  const findButton = (label: string): HTMLButtonElement | null => (
+    Array.from(document.querySelectorAll<HTMLButtonElement>('button')).find((button) => (
+      !button.disabled && (button.textContent ?? '').includes(label)
+    )) ?? null
+  );
+  const click = async (label: string): Promise<void> => {
+    const button = findButton(label);
+    assert.ok(button, `button "${label}" must be available`);
+    await act(async () => {
+      button.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      for (let index = 0; index < 10; index += 1) await Promise.resolve();
+    });
+    await flushReact();
+  };
+  const flushWithFrame = async (): Promise<void> => {
+    await flushReact();
+    await act(async () => {
+      await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+    });
+    await flushReact();
+  };
+
+  context.after(async () => {
+    supabase.auth.stopAutoRefresh();
+    await act(async () => { root.unmount(); });
+    container.remove();
+    Object.defineProperty(globalThis, 'fetch', {
+      configurable: true,
+      writable: true,
+      value: originalFetch,
+    });
+    restoreBrowser();
+  });
+
+  return {
+    text: () => document.body.textContent ?? '',
+    dialog: () => document.querySelector<HTMLElement>('[role="dialog"]'),
+    click,
+    async setCapabilities(next) {
+      await act(async () => {
+        controls.setCapabilities(next);
+        for (let index = 0; index < 8; index += 1) await Promise.resolve();
+      });
+      await flushWithFrame();
+    },
+    flushWithFrame,
+  };
+}
+
 describe('mounted hotel invite flow', { concurrency: false }, () => {
   test('manager reaches the compact destination, replaces a shared code, and sends a roster-linked email invite', async (context) => {
     const ui = await mountInviteFlow(context, {
@@ -587,5 +736,45 @@ describe('mounted hotel invite flow', { concurrency: false }, () => {
     const accountOnlyEmail = ui.dialog()?.querySelector<HTMLInputElement>('input[type="email"]');
     assert.ok(accountOnlyEmail, 'reopened account-only invite form must render');
     assert.equal(accountOnlyEmail.value, '');
+  });
+
+  test('the page-level PeoplePanel remount restores focus to the newly mounted heading', async (context) => {
+    const ui = await mountPeoplePanel(context, {
+      canManageTeam: true,
+      canInviteAccounts: true,
+      readOnly: false,
+      adminPreview: false,
+    });
+
+    await ui.click('Invite people');
+    await ui.click('STAXIS LOGIN');
+    assert.match(ui.text(), /Hotel invite/);
+    assert.match(ui.text(), /Email one person/);
+
+    await ui.setCapabilities({
+      canManageTeam: false,
+      canInviteAccounts: true,
+      readOnly: false,
+      adminPreview: false,
+    });
+    assert.equal(ui.dialog(), null);
+    assert.equal(document.activeElement?.id, 'hotel-team-title');
+  });
+
+  test('the first-person route keeps its form loading shape separate from compact Invite people', async (context) => {
+    const ui = await mountPeoplePanel(context, {
+      canManageTeam: true,
+      canInviteAccounts: true,
+      readOnly: false,
+      adminPreview: true,
+    }, { adminPreview: true, inviteDialogOpen: true });
+
+    await ui.flushWithFrame();
+    await ui.click('Add first person');
+    await ui.flushWithFrame();
+    assert.match(ui.text(), /Add first person/);
+    assert.match(ui.text(), /Assign the role before sending the invitation/);
+    assert.match(ui.text(), /Send invitation/);
+    assert.doesNotMatch(ui.text(), /Hotel invite|Email one person/);
   });
 });

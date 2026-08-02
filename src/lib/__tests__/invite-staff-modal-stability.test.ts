@@ -63,7 +63,7 @@ describe('Invite Staff popup layout stability', () => {
   });
 
   test('Company Suspense fallback uses the destination dialog shape instead of a tiny spinner', () => {
-    assert.match(hotelTeam, /type DialogLoadingVariant = 'invite' \| 'invite-choice' \| 'add-staff' \| 'member' \| 'remove' \| 'decision'/);
+    assert.match(hotelTeam, /type DialogLoadingVariant = 'invite' \| 'first-person-invite' \| 'invite-choice' \| 'add-staff' \| 'member' \| 'remove' \| 'decision'/);
     assert.match(hotelTeam, /type InviteLoadingSection = 'hotel' \| 'email'/);
     assert.match(hotelTeam, /inviteSections=\{\['email'\]\}/);
     assert.match(hotelTeam, /inviteSections=\{canInviteAccounts \? \['hotel', 'email'\] : \['hotel'\]\}/);
@@ -73,6 +73,9 @@ describe('Invite Staff popup layout stability', () => {
     assert.match(hotelTeam, /section === 'hotel'[\s\S]*?DialogLoadingSection key=\{`\$\{section\}-\$\{index\}`\} rows=\{4\} tall/);
     assert.match(hotelTeam, /section === 'hotel'[\s\S]*?: \([\s\S]*?DialogLoadingFields key=\{`\$\{section\}-\$\{index\}`\} rows=\{4\}/);
     assert.match(hotelTeam, /variant === 'invite' \? null[\s\S]*?dialogFooter/);
+    assert.match(hotelTeam, /variant === 'first-person-invite'[\s\S]*?\? 'Add first person'/);
+    assert.match(hotelTeam, /variant === 'first-person-invite' \|\| variant === 'add-staff'[\s\S]*?DialogLoadingFields rows=\{4\}/);
+    assert.match(hotelTeam, /inviteDialogVisible && needsFirstPerson[\s\S]*?'first-person-invite'/);
     assert.match(hotelTeam, /<React\.Suspense fallback=\{\([\s\S]*?<DialogLoading[\s\S]*?variant=\{loadingDialogVariant\}/);
     assert.doesNotMatch(hotelTeam, /className=\{styles\.dialogLoading\} role="status"/);
     assert.match(hotelTeamCss, /\.dialogLoadingInvite\s*\{[\s\S]*?height:\s*auto;/);

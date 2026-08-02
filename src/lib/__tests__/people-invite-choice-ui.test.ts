@@ -85,7 +85,7 @@ const chooser = section(
 );
 const pagePeoplePanel = section(
   companyPage,
-  'function PeoplePanel(',
+  'export function PeoplePanel(',
   'function AccessPanel(',
   'People page panel',
 );
@@ -216,7 +216,8 @@ describe('People invite entry choice', () => {
   test('both handoffs restore to the enabled trigger or the People heading fallback', () => {
     assert.match(panel, /const inviteEntryRef = React\.useRef<HTMLButtonElement \| null>\(null\)/);
     assert.match(panel, /const inviteEntryReturnFocusRef = React\.useRef<HTMLElement \| null>\(null\)/);
-    assert.match(panel, /const peopleHeadingRef = React\.useRef<HTMLHeadingElement \| null>\(null\)/);
+    assert.match(panel, /const localPeopleHeadingRef = React\.useRef<HTMLHeadingElement \| null>\(null\)/);
+    assert.match(panel, /const peopleHeadingRef = providedPeopleHeadingRef \?\? localPeopleHeadingRef/);
     assert.match(panel, /inviteEntryReturnFocusRef\.current = inviteEntryRef\.current/);
     assert.match(earlyBranch, /<h3 ref=\{peopleHeadingRef\} id="hotel-team-title" tabIndex=\{-1\}/);
     assert.match(panel, /<h2 ref=\{peopleHeadingRef\} id="team-members-title" tabIndex=\{-1\}/);
@@ -246,6 +247,28 @@ describe('People invite entry choice', () => {
     );
     assert.doesNotMatch(firstPersonHandoff, /returnFocusRef=/);
     assert.match(firstPersonHandoff, /fallbackFocusRef=\{peopleHeadingRef\}/);
+    assert.match(pagePeoplePanel, /const peopleHeadingRef = React\.useRef<HTMLHeadingElement \| null>\(null\)/);
+    assert.match(pagePeoplePanel, /const restorePeopleHeadingFocusRef = React\.useRef\(false\)/);
+    assert.match(pagePeoplePanel, /restorePeopleHeadingFocusRef\.current = true/);
+    assert.match(pagePeoplePanel, /window\.requestAnimationFrame\(focusHeading\)/);
+    assert.match(pagePeoplePanel, /peopleHeadingRef=\{peopleHeadingRef\}/);
+    assert.match(
+      pagePeoplePanel,
+      /key=\{`\$\{activeProperty\.id\}:\$\{adminPreview \? 'admin' : 'customer'\}:\$\{canManageTeam \? 'hotel-authorized' : 'invite-only'\}`\}/,
+    );
+  });
+
+  test('the first-person loading fallback is distinct from the compact destination', () => {
+    assert.match(
+      panel,
+      /inviteDialogVisible && needsFirstPerson\s*\n\s*\? 'first-person-invite'\s*\n\s*: inviteDialogVisible\s*\n\s*\? 'invite'/,
+    );
+    assert.match(panel, /normalLoadingReturnFocusRef = needsFirstPerson && loadingDialogVariant === 'first-person-invite'/);
+    assert.match(loadingComponent, /variant === 'first-person-invite'[\s\S]*\? 'Add first person'/);
+    assert.match(loadingComponent, /variant === 'first-person-invite'[\s\S]*styles\.dialogLoadingAddStaff/);
+    assert.match(loadingBody, /variant === 'first-person-invite' \|\| variant === 'add-staff'[\s\S]*DialogLoadingFields rows=\{4\}/);
+    assert.match(loadingComponent, /variant === 'invite' \? null[\s\S]*dialogFooter/);
+    assert.match(normalLoadingFallback, /inviteSections=\{canInviteAccounts \? \['hotel', 'email'\] : \['hotel'\]\}/);
   });
 
   test('Add staff restoration uses the chooser or department origin without stale Invite refs', () => {
@@ -268,20 +291,21 @@ describe('People invite entry choice', () => {
 
     assert.match(
       loadingFocusSelection,
-      /loadingDialogVariant === 'invite-choice'[\s\S]*inviteEntryReturnFocusRef[\s\S]*loadingDialogVariant === 'invite'[\s\S]*inviteEntryReturnFocusRef[\s\S]*loadingDialogVariant === 'add-staff'[\s\S]*addStaffReturnFocusRef[\s\S]*: undefined/,
+      /loadingDialogVariant === 'invite-choice'[\s\S]*inviteEntryReturnFocusRef[\s\S]*loadingDialogVariant === 'invite'[\s\S]*inviteEntryReturnFocusRef[\s\S]*loadingDialogVariant === 'first-person-invite'[\s\S]*undefined[\s\S]*loadingDialogVariant === 'add-staff'[\s\S]*addStaffReturnFocusRef[\s\S]*: undefined/,
     );
     assert.match(earlyBranch, /inviteSections=\{\['email'\]\}/);
     assert.match(normalLoadingFallback, /inviteSections=\{canInviteAccounts \? \['hotel', 'email'\] : \['hotel'\]\}/);
     assert.match(
       loadingFocusSelection,
-      /const normalLoadingReturnFocusRef = needsFirstPerson && loadingDialogVariant === 'invite'\s*\n\s*\? undefined/,
+      /const normalLoadingReturnFocusRef = needsFirstPerson && loadingDialogVariant === 'first-person-invite'\s*\n\s*\? undefined/,
     );
   });
 
   test('loading states match their destination and close the correct state', () => {
-    assert.match(loadingComponent, /'invite' \| 'invite-choice' \| 'add-staff' \| 'member'/);
+    assert.match(loadingComponent, /'invite' \| 'first-person-invite' \| 'invite-choice' \| 'add-staff' \| 'member'/);
     assert.match(loadingComponent, /variant === 'invite-choice'[\s\S]*\? 'Invite people'/);
     assert.match(loadingComponent, /variant === 'add-staff'[\s\S]*\? 'Add staff member'/);
+    assert.match(loadingComponent, /variant === 'first-person-invite'[\s\S]*\? 'Add first person'/);
     assert.match(loadingComponent, /variant === 'invite-choice'[\s\S]*<DialogLoadingChoices count=\{choiceCount\}/);
     assert.match(loadingComponent, /variant === 'add-staff'[\s\S]*<DialogLoadingFields rows=\{4\}/);
     assert.match(loadingComponent, /inviteSections\?: readonly InviteLoadingSection\[\]/);
@@ -298,7 +322,7 @@ describe('People invite entry choice', () => {
     assert.match(earlyBranch, /variant=\{loadingDialogVariant\}[\s\S]*onClose=\{closeLoadingDialog\}/);
     assert.match(
       loadingBody,
-      /variant === 'invite-choice'[\s\S]*DialogLoadingChoices count=\{choiceCount\}[\s\S]*variant === 'add-staff'[\s\S]*DialogLoadingFields rows=\{4\}/,
+      /variant === 'invite-choice'[\s\S]*DialogLoadingChoices count=\{choiceCount\}[\s\S]*variant === 'first-person-invite' \|\| variant === 'add-staff'[\s\S]*DialogLoadingFields rows=\{4\}/,
     );
     const choiceAndAddBranches = loadingBody.slice(
       loadingBody.indexOf("variant === 'invite-choice'"),

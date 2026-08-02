@@ -1073,7 +1073,7 @@ function HotelsPanel({ data, structure, structureError, structureLoading, lang, 
  * could appear in both with nothing on screen explaining why. HotelTeamPanel
  * now merges them.
  */
-function PeoplePanel({ data, staff, hotelRosterUnavailable, lang, currentUser, currentAccountId, activeProperty, canManageTeam, canInviteAccounts, canViewWages, canAddOperationalStaff, inviteDialogOpen, onInviteDialogOpenChange, onChanged, onLifecycleAction }: {
+export function PeoplePanel({ data, staff, hotelRosterUnavailable, lang, currentUser, currentAccountId, activeProperty, canManageTeam, canInviteAccounts, canViewWages, canAddOperationalStaff, inviteDialogOpen, onInviteDialogOpenChange, onChanged, onLifecycleAction }: {
   data: CompanyAccessData;
   staff: StaffMember[];
   hotelRosterUnavailable: boolean;
@@ -1100,12 +1100,30 @@ function PeoplePanel({ data, staff, hotelRosterUnavailable, lang, currentUser, c
   const inviteCapabilityRef = React.useRef(inviteCapabilityKey);
   const [, setInviteCapabilityRevision] = React.useState(0);
   const inviteCapabilitiesStable = inviteCapabilityRef.current === inviteCapabilityKey;
+  const peopleHeadingRef = React.useRef<HTMLHeadingElement | null>(null);
+  const restorePeopleHeadingFocusRef = React.useRef(false);
   React.useEffect(() => {
     if (inviteCapabilityRef.current === inviteCapabilityKey) return;
     inviteCapabilityRef.current = inviteCapabilityKey;
     setInviteCapabilityRevision((current) => current + 1);
-    if (inviteDialogOpen) onInviteDialogOpenChange(false);
+    if (inviteDialogOpen) {
+      restorePeopleHeadingFocusRef.current = true;
+      onInviteDialogOpenChange(false);
+    }
   }, [inviteCapabilityKey, inviteDialogOpen, onInviteDialogOpenChange]);
+  React.useEffect(() => {
+    if (!restorePeopleHeadingFocusRef.current || inviteDialogOpen) return;
+    restorePeopleHeadingFocusRef.current = false;
+    const focusHeading = () => {
+      peopleHeadingRef.current?.focus({ preventScroll: true });
+    };
+    if (typeof window === 'undefined' || typeof window.requestAnimationFrame !== 'function') {
+      focusHeading();
+      return;
+    }
+    const frame = window.requestAnimationFrame(focusHeading);
+    return () => window.cancelAnimationFrame(frame);
+  }, [inviteCapabilitiesStable, inviteDialogOpen]);
   const visibleMemberships = data.permissions.viewPeople
     ? data.memberships
     : data.memberships.filter((membership) => (
@@ -1172,6 +1190,7 @@ function PeoplePanel({ data, staff, hotelRosterUnavailable, lang, currentUser, c
           canViewWages={canViewWages}
           readOnly={Boolean(data.viewerContext?.readOnly) && !adminPreview}
           adminPreview={adminPreview}
+          peopleHeadingRef={peopleHeadingRef}
           inviteDialogOpen={inviteDialogOpen && inviteCapabilitiesStable}
           onInviteDialogOpenChange={onInviteDialogOpenChange}
           staffProfiles={staff}
