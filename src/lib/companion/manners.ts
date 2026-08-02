@@ -464,6 +464,110 @@ export function decideDailyHello(input: HelloInput): HelloDecision {
   };
 }
 
+// ═══════════════════════════════════════════════════════════════════════════
+// The panel ask — the one thing that may only be said to somebody who opened
+// the panel themselves.
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// A THIRD, NARROWER MOUTH, and the narrowest of the three. Like the teach line
+// it does not spend the daily speech budget, for the same reason: the moment
+// belongs to the person, who reached for the companion rather than being
+// reached for. Unlike the teach line it carries real content, so every topic
+// rule still applies in full — a No is still a No, twice is still forever, and
+// a topic offered today is not offered again today.
+//
+// ─── WHY IT EXISTS: THE SHOULDER-SAFE RULE, MADE STRUCTURAL ────────────────
+//
+// `decideCompanionSpeech` skips every candidate whose sensitivity is not
+// `operational`, which is what stops the companion volunteering something about
+// a named person on a screen somebody else can see. That rule is right and is
+// not being loosened here.
+//
+// But the class of thing it excludes is not the class of thing that should
+// never be said. A repeated absence on one weekday is a real pattern, found in
+// the hotel's own records, and a manager is entitled to know about it. What is
+// wrong is the VENUE: a pill in the corner of a screen, or a line drawn on a
+// board, in a back office where anybody walks past.
+//
+// So the venue is the whole rule. This decision cannot produce a peek, cannot
+// produce anything drawn on a page, and cannot fire at all unless the panel is
+// already open and empty of conversation. The sensitive sentence exists in
+// exactly one place: inside a surface the person deliberately opened.
+//
+// It is a separate function rather than a flag on decideCompanionSpeech
+// because the two answer different questions ("may I interrupt" versus "they
+// are here, what is worth saying"), and folding them together would put the
+// sensitive branch one boolean away from the unprompted path.
+
+export type PanelAskRefusal =
+  | 'ai_asleep'
+  | 'quiet_this_session'
+  | 'user_is_busy'
+  | 'panel_not_open'
+  | 'conversation_in_progress'
+  | 'nothing_to_say';
+
+export type PanelAskDecision =
+  | { ask: false; refusal: PanelAskRefusal }
+  | {
+      ask: true;
+      topic: string;
+      sentence: string;
+      destination: CompanionPageKey | null;
+      severity: CompanionSeverity;
+    };
+
+export interface PanelAskInput {
+  /** The hotel's own calendar day, YYYY-MM-DD. Never the browser's. */
+  today: string;
+  memory: CompanionMemory;
+  /** Already role-filtered, ranked best first. Any sensitivity. */
+  candidates: readonly CompanionCandidate[];
+  /** True only while the panel is actually open. The whole venue rule. */
+  panelOpen: boolean;
+  /**
+   * True when the thread has no messages yet.
+   *
+   * An ask that appeared above somebody's fourth question would be the
+   * companion changing the subject in the middle of a conversation it is
+   * having. It gets one moment, at the top, or it waits.
+   */
+  threadEmpty: boolean;
+  /** Something else is already being said. One thing, never two. */
+  otherSpeechShowing: boolean;
+  userIsBusy: boolean;
+  quietThisSession: boolean;
+  aiAwake: boolean;
+}
+
+export function decidePanelAsk(input: PanelAskInput): PanelAskDecision {
+  if (!input.aiAwake) return { ask: false, refusal: 'ai_asleep' };
+  if (input.quietThisSession) return { ask: false, refusal: 'quiet_this_session' };
+  if (input.userIsBusy) return { ask: false, refusal: 'user_is_busy' };
+  if (!input.panelOpen) return { ask: false, refusal: 'panel_not_open' };
+  if (!input.threadEmpty || input.otherSpeechShowing) {
+    return { ask: false, refusal: 'conversation_in_progress' };
+  }
+
+  for (const candidate of input.candidates) {
+    if (!candidate.text.trim()) continue;
+    const seen = input.memory.topics[candidate.topic];
+    if (seen?.dropped) continue;
+    if (seen && seen.lastOfferedDay === input.today) continue;
+    return {
+      ask: true,
+      topic: candidate.topic,
+      // No hotel prefix. The person is looking at a panel whose own header says
+      // which hotel they are on, and `offerSentence`'s "At the Comfort Suites,"
+      // is there for a sentence that arrives out of nowhere in a corner.
+      sentence: candidate.text.trim(),
+      destination: candidate.destination,
+      severity: candidate.severity ?? DEFAULT_COMPANION_SEVERITY,
+    };
+  }
+  return { ask: false, refusal: 'nothing_to_say' };
+}
+
 export type TeachRefusal =
   | 'ai_asleep'
   | 'quiet_this_session'
