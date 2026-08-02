@@ -449,6 +449,22 @@ function resolveActions(
   };
 }
 
+function floorOffRosterActions(
+  actions: ResolvedActions,
+  offRoster: boolean,
+): ResolvedActions {
+  if (!offRoster) return actions;
+  return {
+    ...actions,
+    canEdit: false,
+    canChangeRole: false,
+    canResetPassword: false,
+    canDeactivate: false,
+    canReactivate: false,
+    canRemove: false,
+  };
+}
+
 /**
  * Who may change a person's EMPLOYMENT record (hours, pay, department, active
  * flag, auto-assign rank, linked login).
@@ -1275,13 +1291,16 @@ export function HotelTeamPanel({
 
   const editAccount = editPerson?.account ?? null;
   const editActions = editAccount
-    ? resolveActions(
-        editAccount,
-        currentUser,
-        currentAccountId,
-        locked
-          || Boolean(pendingLifecycleByAccount[editAccount.accountId])
-          || editAccount.lifecyclePending === true,
+    ? floorOffRosterActions(
+        resolveActions(
+          editAccount,
+          currentUser,
+          currentAccountId,
+          locked
+            || Boolean(pendingLifecycleByAccount[editAccount.accountId])
+            || editAccount.lifecyclePending === true,
+        ),
+        editPerson?.staff?.isActive === false,
       )
     : null;
 
@@ -1499,6 +1518,7 @@ export function HotelTeamPanel({
             currentAccountId={currentAccountId}
             lang={lang}
             actions={editActions}
+            readOnly={editPerson.staff?.isActive === false}
             employmentSlot={employmentSlot}
             onLifecyclePending={reconcilePendingLifecycle}
             onClose={() => setEditKey(null)}
@@ -1726,7 +1746,7 @@ export function PersonRow({
         ) : null}
       </div>
 
-      {canOpen || availableActions?.canRemove ? (
+      {canOpen || (!offRoster && availableActions?.canRemove) ? (
         <div className={styles.rowActions}>
           {canOpen ? (
             <button
@@ -1742,7 +1762,7 @@ export function PersonRow({
               <span>{editable ? 'Edit' : 'View'}</span>
             </button>
           ) : null}
-          {account && availableActions?.canRemove ? (
+          {account && !offRoster && availableActions?.canRemove ? (
             <button
               type="button"
               className={styles.removeButton}

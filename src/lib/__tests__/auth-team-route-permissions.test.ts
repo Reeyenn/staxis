@@ -1312,6 +1312,21 @@ describe('GET /api/auth/team action contract', () => {
     assert.equal(body.data, undefined);
   });
 
+  test('withholds the roster when historical staff-link identity changes before egress', async () => {
+    state.beforeFinalCallerAuthorityRead = () => {
+      state.staffLinks.push({
+        account_id: LOCAL_ID,
+        property_id: HOTEL_A,
+        staff_id: '44444444-4444-4444-8444-444444444444',
+        is_active: false,
+      });
+    };
+    const response = await GET(request('GET', `/api/auth/team?hotelId=${HOTEL_A}`));
+    assert.equal(response.status, 403);
+    const body = await response.json();
+    assert.equal(body.data, undefined);
+  });
+
   test('marks last-sign-in data unknown when Auth listing fails or omits the user', async () => {
     state.authListOmittedUserIds.add(account(LOCAL_ID).data_user_id);
     let response = await GET(request('GET', `/api/auth/team?hotelId=${HOTEL_A}`));
