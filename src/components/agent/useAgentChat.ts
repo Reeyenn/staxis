@@ -178,7 +178,7 @@ interface SsePayload {
 const UUID_RX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /**
- * The portfolio stream used to enforce these limits in PortfolioAsk. Keep
+ * The replaced portfolio stream enforced these limits locally. Keep
  * them here so the shared client retains the same terminal safety contract
  * without changing the property chat stream.
  */
