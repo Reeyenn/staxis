@@ -16,10 +16,8 @@
  * setTwoFactorEnabled. Default/fail-safe is ON everywhere it's read.
  */
 
-import type { NextRequest } from 'next/server';
-import { requireAdmin } from '@/lib/admin-auth';
-import { ok, err, ApiErrorCode } from '@/lib/api-response';
-import { getOrMintRequestId } from '@/lib/log';
+import { defineRoute, adminGate } from '@/lib/api-route';
+import { ApiErrorCode } from '@/lib/api-response';
 import { readTwoFactorEnabledFresh, setTwoFactorEnabled } from '@/lib/two-factor';
 
 export const runtime = 'nodejs';
@@ -27,37 +25,35 @@ export const dynamic = 'force-dynamic';
 
 interface Body { twoFactorEnabled?: unknown }
 
-export async function GET(req: NextRequest): Promise<Response> {
-  const requestId = getOrMintRequestId(req);
-
-  const auth = await requireAdmin(req);
-  if (!auth.ok) return auth.response;
+export const GET = defineRoute({
+  resolve: (req) => adminGate(req),
+  handler: async (ctx) => {
 
   const twoFactorEnabled = await readTwoFactorEnabledFresh();
-  return ok({ twoFactorEnabled }, { requestId });
-}
+  return ctx.ok({ twoFactorEnabled });
+  },
+});
 
-export async function POST(req: NextRequest): Promise<Response> {
-  const requestId = getOrMintRequestId(req);
-
-  const auth = await requireAdmin(req);
-  if (!auth.ok) return auth.response;
+export const POST = defineRoute({
+  resolve: (req) => adminGate(req),
+  handler: async (ctx) => {
 
   let body: Body;
-  try { body = (await req.json()) as Body; } catch { body = {}; }
+  try { body = (await ctx.req.json()) as Body; } catch { body = {}; }
 
   if (typeof body.twoFactorEnabled !== 'boolean') {
-    return err('twoFactorEnabled must be a boolean', {
-      requestId, status: 400, code: ApiErrorCode.ValidationFailed,
+    return ctx.err('twoFactorEnabled must be a boolean', {
+      status: 400, code: ApiErrorCode.ValidationFailed,
     });
   }
 
-  const result = await setTwoFactorEnabled(body.twoFactorEnabled, auth.userId);
+  const result = await setTwoFactorEnabled(body.twoFactorEnabled, ctx.userId);
   if (!result.ok) {
-    return err(`could not save setting: ${result.error}`, {
-      requestId, status: 500, code: ApiErrorCode.UpstreamFailure,
+    return ctx.err(`could not save setting: ${result.error}`, {
+      status: 500, code: ApiErrorCode.UpstreamFailure,
     });
   }
 
-  return ok({ twoFactorEnabled: body.twoFactorEnabled }, { requestId });
-}
+  return ctx.ok({ twoFactorEnabled: body.twoFactorEnabled });
+  },
+});
