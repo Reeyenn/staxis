@@ -522,7 +522,7 @@ export function KnowsPanel({ open, lang, hotelName, onClose, onStats }: {
   return (
     <>
       <button type="button" className="fx-scrim" aria-label="Close what Staxis knows" onClick={onClose} />
-      <aside className="fx-drawer" role="dialog" aria-modal="true" aria-label={S.title.en}>
+      <div className="fx-drawer" role="dialog" aria-modal="true" aria-label={S.title.en}>
         <div className="fx-drawerhead">
           <span className="fx-draweri" aria-hidden><CxIcon name="staxis" size={16} /></span>
           <div style={{ minWidth: 0 }}>
@@ -536,7 +536,7 @@ export function KnowsPanel({ open, lang, hotelName, onClose, onStats }: {
         <div className="fx-drawerbody">
           <KnowsView lang={lang} onStats={report} />
         </div>
-      </aside>
+      </div>
     </>
   );
 }

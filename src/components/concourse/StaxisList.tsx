@@ -30,6 +30,7 @@
 // ═══════════════════════════════════════════════════════════════════════════
 
 import React from 'react';
+import dynamic from 'next/dynamic';
 
 import { useAuth } from '@/contexts/AuthContext';
 import { useApiResource } from '@/lib/hooks/use-api-resource';
@@ -45,7 +46,17 @@ import type { KnowledgeEventDTO } from '@/lib/knowledge/types';
 
 import { FindingCards, type QueueReadState } from './FindingCards';
 import { KnowsPanel } from './KnowsView';
-import { LogbookPopup } from './LogbookPopup';
+
+// Loaded on first open, not on every /feed load. The popup's pane pulls in the
+// Communications design layer AND three next/font families (13 faces), and Next
+// emits a preload link for every one of them on any route in whose module graph
+// they appear. On /feed those fonts are never used and the popup is rarely
+// opened, so all of it was being paid for by everybody, on every visit, for
+// nothing. Same shape as the inventory overlays.
+const LogbookPopup = dynamic(
+  () => import('./LogbookPopup').then((m) => m.LogbookPopup),
+  { ssr: false, loading: () => null },
+);
 import {
   CalendarView,
   WeekStrip,
@@ -345,6 +356,9 @@ export function StaxisList({
     })();
   }, [propertyId, reloadEvents]);
 
+  const closeLogbook = React.useCallback(() => setLogbookOpen(false), []);
+  const openLogbook = React.useCallback(() => setLogbookOpen(true), []);
+
   const toggleMerge = React.useCallback((next: boolean) => {
     void (async () => {
       setMergeBusy(true);
@@ -553,7 +567,7 @@ export function StaxisList({
               logEntries: isToday ? logEntries : [],
               events: dayEvents,
               renderItem,
-              renderLog: (entry) => <LogRowView entry={entry} onOpen={() => setLogbookOpen(true)} />,
+              renderLog: (entry) => <LogRowView entry={entry} onOpen={openLogbook} />,
               renderEvent: (event) => (
                 <EventRowView
                   event={event}
@@ -588,7 +602,7 @@ export function StaxisList({
             mergeBusy={mergeBusy}
             mergeError={mergeError}
             onToggleMerge={toggleMerge}
-            onOpen={() => setLogbookOpen(true)}
+            onOpen={openLogbook}
           />
         </div>
       </div>
@@ -603,7 +617,7 @@ export function StaxisList({
 
       <LogbookPopup
         open={logbookOpen}
-        onClose={() => setLogbookOpen(false)}
+        onClose={closeLogbook}
         propertyId={propertyId}
         meName={meName}
         merged={logbookInList}
