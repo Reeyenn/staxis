@@ -528,12 +528,8 @@ describe('authenticated shell and property-switch isolation', () => {
     );
   });
 
-  test('Dashboard snapshots synchronously mask every previous-hotel data source', () => {
-    for (const [name, rowType] of [
-      ['rooms', 'Room'],
-      ['workOrders', 'WorkOrder'],
-      ['complaints', 'ComplaintDashboardSummary'],
-    ] as const) {
+  test('Dashboard room and counts snapshots synchronously mask previous-hotel data', () => {
+    for (const [name, rowType] of [['rooms', 'Room']] as const) {
       const title = `${name[0].toUpperCase()}${name.slice(1)}`;
       assert.match(
         dashboardPage,
@@ -587,23 +583,11 @@ describe('authenticated shell and property-switch isolation', () => {
     assert.doesNotMatch(dashboardPage, /\|\| hasLastGood/);
     assert.match(
       dashboardPage,
-      /const operationalFeedsCurrent = roomsFeed\.hasSnapshot[\s\S]*?workOrdersFeed\.hasSnapshot[\s\S]*?complaintsFeed\.hasSnapshot/,
+      /const roomsFeedCurrent = roomsFeed\.hasSnapshot && !roomsFeed\.error/,
     );
     assert.match(
       dashboardPage,
-      /role=\{operationalFeedsFailed \? 'alert' : 'status'\}[\s\S]*?Loading live operational details…[\s\S]*?setOperationalRetryKey\(\(key\) => key \+ 1\)/,
-    );
-    assert.match(
-      dashboardPage,
-      /const housekeepingValue:[\s\S]*?!roomsFeed\.hasSnapshot[\s\S]*?const housekeepingSub = roomsFeed\.error/,
-    );
-    assert.match(
-      dashboardPage,
-      /const attentionBadge = operationalFeedsCurrent[\s\S]*?\? `\$\{attnTotal\}\+`[\s\S]*?: '—'/,
-    );
-    assert.match(
-      dashboardPage,
-      /\{operationalFeedsCurrent\s*\? \('All clear\. Nothing needs you right now\.'\)/,
+      /role=\{roomsFeedFailed \? 'alert' : 'status'\}[\s\S]*?Loading live operational details…[\s\S]*?setOperationalRetryKey\(\(key\) => key \+ 1\)/,
     );
     assert.doesNotMatch(dashboardPage, /const \[rooms, setRooms\]|const \[workOrders, setWorkOrders\]|const \[complaints, setComplaints\]/);
   });

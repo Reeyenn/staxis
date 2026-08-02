@@ -9,16 +9,14 @@
 // each lit by its live status; hover a room to read its number + status.
 // Beside it, a metric chart with a Play-through animation and a
 // 30D / 6M / 1Y / All range toggle; a clickable KPI strip re-charts any
-// headline; "Right now" ops tiles + a "Needs attention" card; a
-// month-to-date footer.
+// headline; a month-to-date footer.
 //
 // Restyled for the Concourse shell: transparent root over the app-wide
 // radial wash, Geist display type (no serif/italic), Concourse ink/sage/
 // amber/rust palette. Kept from the live app: the global nav (AppLayout).
-// The ring + "Right now" + "Needs
-// attention" are wired to live Supabase data. The chart series is the
-// same deterministic seam as before (see today-series.ts) — every range
-// + Play works today and turns fully real once daily history is stored.
+// The ring is wired to live Supabase data. The chart series is the same
+// deterministic seam as before (see today-series.ts) — every range + Play
+// works today and turns fully real once daily history is stored.
 // ════════════════════════════════════════════════════════════════════
 
 export const dynamic = 'force-dynamic';
@@ -26,12 +24,10 @@ export const dynamic = 'force-dynamic';
 import React, { useEffect, useState, useRef, useMemo, useCallback } from 'react';
 import { useAuth } from '@/contexts/AuthContext';
 import { useProperty } from '@/contexts/PropertyContext';
-import { useLang } from '@/contexts/LanguageContext';
 import { useSectionEnabled } from '@/lib/sections/useSectionEnabled';
 import { shouldResumeOnboarding, RESUME_GUARD_KEY } from '@/lib/onboarding/state';
 import { AppLayout } from '@/components/layout/AppLayout';
-import { C, SANS, MONO, LABEL, RING, STATUS_EN, STATUS_ES, type RingKey } from './_components/palette';
-import { attentionText } from './_components/attention-text';
+import { C, SANS, MONO, LABEL, RING, STATUS_EN, type RingKey } from './_components/palette';
 import { holdLastGoodCounts } from './_components/counts-hold';
 import {
   beginScopedFeed,
@@ -45,24 +41,15 @@ import { buildRoomRingTicks } from './_components/room-ring-model';
 import { MetricChart } from './_components/MetricChart';
 import { Sparkline } from './_components/Sparkline';
 import { MemoryRecapCard } from './_components/MemoryRecapCard';
-import { WorklistCard } from './_components/WorklistCard';
-import { WhatStaxisKnowsCard } from './_components/WhatStaxisKnowsCard';
 import { LogBookCard } from './_components/LogBookCard';
 import { CalendarCard } from './_components/CalendarCard';
-import {
-  subscribeToRooms,
-  subscribeToWorkOrders,
-  subscribeToComplaintSummary,
-} from '@/lib/db';
-import type { ComplaintDashboardSummary } from '@/lib/complaints-summary';
+import { subscribeToRooms } from '@/lib/db';
 import { fetchTodayPropertyCounts, type TodayPropertyCounts } from '@/lib/db/today-room-work';
 import { useTodayStr } from '@/lib/use-today-str';
 import { useFeedStatus } from '@/lib/use-feed-status';
 import { useAsOfLabel } from '@/lib/use-as-of-label';
 import { FeedAsOfLabel } from '@/components/FeedAsOfLabel';
-import type { AsOfLabel } from '@/lib/pms/as-of-label';
-import type { FeedKey } from '@/lib/pms/feed-status';
-import type { Room, WorkOrder } from '@/types';
+import type { Room } from '@/types';
 import { RouteErrorState, RouteLoadingState } from '@/components/layout/RouteResourceState';
 import { useReliableNavigation } from '@/lib/hooks/use-reliable-navigation';
 import {
@@ -134,22 +121,6 @@ function Delta({ v, size = 12 }: { v: number; size?: number }) {
   );
 }
 
-// ─── ops tile ─────────────────────────────────────────────────────────
-// `asOf` is the data-age stamp: when a hotel's PMS report runs late the tile
-// keeps its last real number and says WHEN it was taken, instead of blanking.
-// Null for tiles Staxis computes itself (turnover) and for manual hotels,
-// where the app is the system of record and the numbers really are live.
-function OpsTile({ label, value, sub, tone, asOf }: { label: string; value: React.ReactNode; sub: string; tone?: string; asOf?: AsOfLabel | null }) {
-  return (
-    <div style={{ flex: 1, minWidth: 0 }}>
-      <div style={{ ...LABEL, marginBottom: 8 }}>{label}</div>
-      <div style={{ fontFamily: SANS, fontWeight: 600, fontSize: 34, lineHeight: 1, letterSpacing: '-0.02em', color: tone || C.ink, fontVariantNumeric: 'tabular-nums' }}>{value}</div>
-      <div style={{ fontSize: 12, color: C.ink3, marginTop: 4 }}>{sub}</div>
-      {asOf && <div style={{ marginTop: 3 }}><FeedAsOfLabel label={asOf} /></div>}
-    </div>
-  );
-}
-
 // ─── page ─────────────────────────────────────────────────────────────
 export default function DashboardPage() {
   const { activePropertyId } = useProperty();
@@ -162,20 +133,10 @@ export default function DashboardPage() {
 function DashboardWorkspace() {
   const { user, loading: authLoading } = useAuth();
   const { activeProperty, activePropertyId, loading: propLoading } = useProperty();
-  const { lang } = useLang();
   const { push, replace } = useReliableNavigation();
   const today = useTodayStr();
 
-  // Per-hotel section gates (default-ON while the property loads). Each embed
-  // below is owned by another section — when that section is off for the hotel
-  // it stops both rendering AND subscribing:
-  //   • communications → complaints / callbacks / lost-items
-  //   • maintenance    → work orders
-  //   • housekeeping   → dirty-room count
-  //   • financials     → the synthetic KPI / chart / month-to-date showcase
-  const communicationsEnabled = useSectionEnabled('communications');
-  const maintenanceEnabled = useSectionEnabled('maintenance');
-  const housekeepingEnabled = useSectionEnabled('housekeeping');
+  // Per-hotel section gates default ON while the property loads.
   const financialsEnabled = useSectionEnabled('financials');
 
   useEffect(() => {
@@ -210,8 +171,6 @@ function DashboardWorkspace() {
   countsSnapshotRef.current = countsSnapshot;
   const [countsRetryKey, setCountsRetryKey] = useState(0);
   const [operationalRetryKey, setOperationalRetryKey] = useState(0);
-  const [workOrdersSnapshot, setWorkOrdersSnapshot] = useState(() => emptyScopedFeed<WorkOrder>());
-  const [complaintsSnapshot, setComplaintsSnapshot] = useState(() => emptyScopedFeed<ComplaintDashboardSummary>());
   // Mask the previous hotel/day synchronously in render; effect cleanup alone
   // is one paint too late and can flash Hotel A or yesterday's numbers beneath
   // the current hotel/date. The ref also lets subscription callbacks reject an
@@ -229,16 +188,6 @@ function DashboardWorkspace() {
   const countsError = countsErrorSnapshot.propertyId === activePropertyId && countsErrorSnapshot.date === today
     ? countsErrorSnapshot.message
     : null;
-  const workOrdersFeed = useMemo(
-    () => scopedFeedView(workOrdersSnapshot, activePropertyId, today),
-    [workOrdersSnapshot, activePropertyId, today],
-  );
-  const workOrders = workOrdersFeed.rows;
-  const complaintsFeed = useMemo(
-    () => scopedFeedView(complaintsSnapshot, activePropertyId, today),
-    [complaintsSnapshot, activePropertyId, today],
-  );
-  const complaintSummary = complaintsFeed.rows[0] ?? null;
 
   // The configured room count is the property's true inventory; the PMS
   // snapshot's total_rooms can be a partial sample, so don't let it shrink
@@ -267,8 +216,7 @@ function DashboardWorkspace() {
     };
   }, [user, activePropertyId, operationalRetryKey, today]);
   // Property-level room breakdown (sums to total_rooms) — drives the full
-  // ring + real occupancy. Polled; the housekeeping feed only carries the
-  // cleaning list, not occupied rooms.
+  // ring + real occupancy. Polled independently from the room feed.
   useEffect(() => {
     if (!activePropertyId) return;
     let alive = true;
@@ -330,154 +278,27 @@ function DashboardWorkspace() {
       clearInterval(iv);
     };
   }, [activePropertyId, countsRetryKey, today]);
-  useEffect(() => {
-    if (!user || !activePropertyId || !maintenanceEnabled) return;
-    const propertyId = activePropertyId;
-    const date = today;
-    let alive = true;
-    setWorkOrdersSnapshot((previous) => beginScopedFeed(previous, propertyId, date));
-    const unsubscribe = subscribeToWorkOrders(user.uid, propertyId, (rows) => {
-      const currentScope = dashboardScopeRef.current;
-      if (!alive || currentScope.propertyId !== propertyId || currentScope.date !== date) return;
-      setWorkOrdersSnapshot(publishScopedFeed(propertyId, date, rows));
-    }, (error) => {
-      const currentScope = dashboardScopeRef.current;
-      if (!alive || currentScope.propertyId !== propertyId || currentScope.date !== date) return;
-      console.warn('Dashboard: work orders feed unavailable', error);
-      setWorkOrdersSnapshot((previous) => failScopedFeed(previous, propertyId, date));
-    });
-    return () => {
-      alive = false;
-      unsubscribe();
-    };
-  }, [user, activePropertyId, maintenanceEnabled, operationalRetryKey, today]);
-  useEffect(() => {
-    if (!user || !activePropertyId || !communicationsEnabled) return;
-    const propertyId = activePropertyId;
-    const date = today;
-    let alive = true;
-    setComplaintsSnapshot((previous) => beginScopedFeed(previous, propertyId, date));
-    const unsubscribe = subscribeToComplaintSummary(user.uid, propertyId, (rows) => {
-      const currentScope = dashboardScopeRef.current;
-      if (!alive || currentScope.propertyId !== propertyId || currentScope.date !== date) return;
-      setComplaintsSnapshot(publishScopedFeed(propertyId, date, rows));
-    }, (error) => {
-      const currentScope = dashboardScopeRef.current;
-      if (!alive || currentScope.propertyId !== propertyId || currentScope.date !== date) return;
-      console.warn('Dashboard: complaints feed unavailable', error);
-      setComplaintsSnapshot((previous) => failScopedFeed(previous, propertyId, date));
-    });
-    return () => {
-      alive = false;
-      unsubscribe();
-    };
-  }, [user, activePropertyId, communicationsEnabled, operationalRetryKey, today]);
   // ── derived live values ──────────────────────────────────────────────
-  const openOrders = useMemo(() => workOrders.filter(o => o.status === 'open'), [workOrders]);
-  const urgentOrders = useMemo(() => openOrders.filter(o => o.priority === 'urgent'), [openOrders]);
-  const operationalFeedsFailed = roomsFeed.error
-    || (maintenanceEnabled && workOrdersFeed.error)
-    || (communicationsEnabled && complaintsFeed.error);
-  const operationalFeedsCurrent = roomsFeed.hasSnapshot
-    && !roomsFeed.error
-    && (!maintenanceEnabled || (workOrdersFeed.hasSnapshot && !workOrdersFeed.error))
-    && (!communicationsEnabled || (complaintsFeed.hasSnapshot && !complaintsFeed.error));
+  const roomsFeedFailed = roomsFeed.error;
+  const roomsFeedCurrent = roomsFeed.hasSnapshot && !roomsFeed.error;
 
-  // Per-feed PMS trust. A report may contain only SOME expected data; a tile
-  // whose source data is missing must show an unknown state, never a confident
-  // 0. When feed status is unknown
-  // (manual hotel / onboarding / hook not yet loaded) every value below
-  // keeps its exact pre-existing behavior.
+  // Room-status feed trust. A report may contain only SOME expected data;
+  // default room statuses remain neutral until a real room-status feed lands.
   const feedStatus = useFeedStatus(activePropertyId);
   const fsLive = feedStatus?.mode === 'live';
-  // Review pass (Codex #2 / senior #9): a 'pending' connection means this
-  // property has NEVER successfully read — every pms_* table is empty, so
-  // every PMS-derived number below is a fake zero regardless of per-feed
-  // states. ('paused' is deliberately not masked: real-but-stale data;
-  // staleness is the doctor/freshness domain.)
+  // A pending connection means the property has never successfully read PMS
+  // data, so the room-status feed is still learning regardless of its label.
   const connPending = fsLive && feedStatus.connection === 'pending';
   const roomStatusLearning = fsLive && (feedStatus.feeds.roomStatus === 'learning' || connPending);
-  // 'ok' = at least one source feed is live → render the number (genuine
-  // zeros included). 'learning' = the latest data is incomplete.
-  // 'unavailable' = the current PMS data doesn't provide it.
-  // 'connecting' = the first PMS dataset hasn't arrived yet.
-  const tileState = (keys: FeedKey[]): 'ok' | 'learning' | 'unavailable' | 'connecting' => {
-    if (!fsLive) return 'ok';
-    if (connPending) return 'connecting';
-    if (keys.some(k => feedStatus.feeds[k] === 'live')) return 'ok';
-    if (keys.some(k => feedStatus.feeds[k] === 'learning')) return 'learning';
-    return 'unavailable';
-  };
-  const inHouseState = tileState(['dashboardCounts']);
-  const arrivalsState = tileState(['dashboardCounts', 'arrivals']);
-  const departuresState = tileState(['departures', 'dashboardCounts']);
   // Pending and failed are both unknown, never zero. A returned all-zero
   // snapshot remains a legitimate terminal value because `counts` is present.
   const countsUnavailable = !counts;
 
   // ── data-age stamps ─────────────────────────────────────────────────
-  // PMS numbers now arrive as scheduled report emails, not a 30s poll, so a
-  // tile can be showing a genuinely useful figure that was taken hours ago.
-  // Rather than blank it, each PMS-sourced tile carries WHEN its number was
-  // taken ("42 · as of 6:40 AM"). The hook returns null — no chip at all —
-  // for a manual hotel (Staxis IS its record) and for a connection that has
-  // never delivered (the tile already says "connecting…"), so nothing changes
-  // for hotels without a PMS. Turnover and the housekeeping count are
-  // computed by Staxis from its own tables, so they carry no PMS stamp.
   const propertyTz = activeProperty?.timezone ?? null;
-  const inHouseAsOf = useAsOfLabel({ status: feedStatus, feeds: ['dashboardCounts'], timezone: propertyTz });
-  const arrivalsAsOf = useAsOfLabel({ status: feedStatus, feeds: ['dashboardCounts', 'arrivals'], timezone: propertyTz });
-  const departuresAsOf = useAsOfLabel({ status: feedStatus, feeds: ['departures', 'dashboardCounts'], timezone: propertyTz });
   // The occupancy ring is the headline number on this page; it reads the same
-  // snapshot the counts tiles do, so it gets the same stamp.
+  // snapshot as the room summary, so it gets the same stamp.
   const occupancyAsOf = useAsOfLabel({ status: feedStatus, feeds: ['dashboardCounts', 'roomStatus'], timezone: propertyTz });
-
-  // A room whose status came from the catch-all default is NOT a real dirty
-  // while the room-status feed is still learning — counting it would turn a
-  // missing feed into a fake "84 rooms to clean". App-originated statuses
-  // (assignments, tap-set) always count.
-  const dirtyRooms = useMemo(
-    () => rooms.filter(r =>
-      r.status === 'dirty' && !(roomStatusLearning && r.statusSource === 'default'),
-    ).length,
-    [rooms, roomStatusLearning],
-  );
-  const housekeepingValue: React.ReactNode = !roomsFeed.hasSnapshot || roomStatusLearning
-    ? '—'
-    : dirtyRooms;
-  const housekeepingSub = roomsFeed.error
-    ? (roomsFeed.hasSnapshot
-        ? ("last update couldn't refresh")
-        : ('room data unavailable'))
-    : !roomsFeed.hasSnapshot
-      ? ('loading current rooms…')
-      : connPending
-        ? ('waiting for PMS data…')
-        : roomStatusLearning
-          ? ('latest PMS data is incomplete')
-          : ('rooms to clean');
-
-  // Tile values. With live feed status the numbers come from the
-  // server-derived block (pms_* is deny-all-browser).
-  const inHouse: React.ReactNode = !fsLive
-    ? (countsUnavailable ? '—' : (counts?.in_house ?? 0))
-    : inHouseState === 'ok'
-      ? (feedStatus.derived?.snapshotInHouse ?? counts?.in_house ?? '—')
-      : '—';
-  const arrivals: React.ReactNode = !fsLive
-    ? (countsUnavailable ? '—' : 0)
-    : arrivalsState !== 'ok'
-      ? '—'
-      : feedStatus.feeds.dashboardCounts === 'live'
-        ? (feedStatus.derived?.snapshotArrivalsRemaining ?? '—')
-        : (feedStatus.derived?.arrivalsToday ?? '—');
-  const departures: React.ReactNode = !fsLive
-    ? (countsUnavailable ? '—' : (counts?.checkouts ?? 0))
-    : departuresState !== 'ok'
-      ? '—'
-      : feedStatus.feeds.departures === 'live'
-        ? (counts?.checkouts ?? '—')
-        : (feedStatus.derived?.snapshotDeparturesRemaining ?? '—');
 
   // Real occupancy signal (occupied rooms / inventory). Null when the PMS
   // snapshot carries no occupancy yet; real hotels then show an unknown center
@@ -537,60 +358,6 @@ function DashboardWorkspace() {
     ringRooms.forEach(r => { c[r.status] = (c[r.status] || 0) + 1; });
     return c;
   }, [ringRooms]);
-
-  const avgTurnover = useMemo(() => {
-    const toMs = (v: unknown): number | null => {
-      if (!v) return null;
-      const obj = v as { toDate?: () => Date };
-      if (typeof obj.toDate === 'function') return obj.toDate().getTime();
-      const d = new Date(v as string | number | Date);
-      return isNaN(d.getTime()) ? null : d.getTime();
-    };
-    const timed = rooms
-      .filter(r => r.startedAt && r.completedAt)
-      .map(r => { const s = toMs(r.startedAt); const e = toMs(r.completedAt); return s && e ? (e - s) / 60000 : 0; })
-      .filter(mins => mins > 0 && mins < 480);
-    return timed.length ? Math.round(timed.reduce((a, b) => a + b, 0) / timed.length) : null;
-  }, [rooms]);
-
-  // ── needs attention (live alerts) ────────────────────────────────────
-  const overdueComplaints = complaintSummary?.visible ? complaintSummary.overdue : 0;
-  const callbacksDueCount = complaintSummary?.visible ? complaintSummary.callbacksDue : 0;
-  const attention = useMemo(() => {
-    const out: { n: number; text: string }[] = [];
-    // Each line is filtered by the section that owns it — an off section
-    // contributes nothing (and its feed above never subscribed).
-    if (maintenanceEnabled && urgentOrders.length) out.push({ n: urgentOrders.length, text: attentionText('urgentOrders', urgentOrders.length) });
-    if (communicationsEnabled && overdueComplaints > 0) out.push({ n: overdueComplaints, text: attentionText('complaintsOverdue', overdueComplaints) });
-    if (communicationsEnabled && callbacksDueCount > 0) out.push({ n: callbacksDueCount, text: attentionText('callbacksDue', callbacksDueCount) });
-    if (housekeepingEnabled && dirtyRooms > 0) out.push({ n: dirtyRooms, text: attentionText('roomsToClean', dirtyRooms) });
-    return out.slice(0, 5);
-  }, [urgentOrders.length, overdueComplaints, callbacksDueCount, dirtyRooms, maintenanceEnabled, communicationsEnabled, housekeepingEnabled]);
-  const attnTotal = attention.reduce((a, x) => a + x.n, 0);
-  const attentionIncomplete = !operationalFeedsCurrent;
-  const attentionTone = attention.length
-    ? C.rust
-    : attentionIncomplete
-      ? C.gold
-      : C.green;
-  const attentionInk = attention.length
-    ? C.rustD
-    : attentionIncomplete
-      ? '#8C6A33'
-      : C.green;
-  const attentionBackground = attention.length
-    ? C.rustBg
-    : attentionIncomplete
-      ? 'rgba(201,150,68,.12)'
-      : 'rgba(158,183,166,.16)';
-  // While any source is unsettled, a known count is only a lower bound and
-  // zero is unknowable. Never render a confident "0 / all clear" verdict
-  // from arrays that merely defaulted empty after a failed first read.
-  const attentionBadge = operationalFeedsCurrent
-    ? String(attnTotal)
-    : attention.length
-      ? `${attnTotal}+`
-      : '—';
 
   // ── chart series ─────────────────────────────────────────────────────
   const [metric, setMetric] = useState<TodayMetricKey>('occ');
@@ -714,16 +481,12 @@ function DashboardWorkspace() {
         <style>{`
           .stx-today .stx-hero { display:grid; grid-template-columns:320px 1fr; gap:48px; align-items:center; }
           .stx-today .stx-kpis { display:grid; grid-template-columns:repeat(5,1fr); border-top:1px solid ${C.line}; border-bottom:1px solid ${C.line}; }
-          .stx-today .stx-now { display:grid; grid-template-columns:1.3fr 1fr; gap:40px; align-items:start; }
-          .stx-today .stx-ops { display:flex; }
           .stx-today .stx-mtd { display:flex; }
           @media (max-width: 980px) {
             .stx-today .stx-hero { grid-template-columns:1fr; gap:24px; justify-items:center; }
-            .stx-today .stx-now { grid-template-columns:1fr; gap:24px; }
           }
           @media (max-width: 720px) {
             .stx-today .stx-kpis { grid-template-columns:repeat(2,1fr); }
-            .stx-today .stx-ops { flex-wrap:wrap; gap:18px 0; }
             .stx-today .stx-mtd { flex-wrap:wrap; gap:18px 0; }
           }
           @media (prefers-reduced-motion: reduce) { .stx-today * { animation-duration:.001ms !important; } }
@@ -787,11 +550,11 @@ function DashboardWorkspace() {
             </div>
           )}
 
-          {!operationalFeedsCurrent && (
+          {!roomsFeedCurrent && (
             <div
-              role={operationalFeedsFailed ? 'alert' : 'status'}
+              role={roomsFeedFailed ? 'alert' : 'status'}
               aria-live="polite"
-              aria-busy={!operationalFeedsFailed}
+              aria-busy={!roomsFeedFailed}
               style={{
                 minHeight: 48,
                 display: 'flex',
@@ -801,19 +564,19 @@ function DashboardWorkspace() {
                 flexWrap: 'wrap',
                 padding: '11px 14px',
                 borderRadius: 12,
-                border: `1px solid ${operationalFeedsFailed ? 'rgba(184,92,61,.28)' : C.line2}`,
-                background: operationalFeedsFailed ? 'rgba(184,92,61,.07)' : 'rgba(255,255,255,.48)',
-                color: operationalFeedsFailed ? C.rust : C.ink2,
+                border: `1px solid ${roomsFeedFailed ? 'rgba(184,92,61,.28)' : C.line2}`,
+                background: roomsFeedFailed ? 'rgba(184,92,61,.07)' : 'rgba(255,255,255,.48)',
+                color: roomsFeedFailed ? C.rust : C.ink2,
                 fontSize: 13,
                 lineHeight: 1.45,
               }}
             >
               <span>
-                {operationalFeedsFailed
+                {roomsFeedFailed
                   ? ('Some live operational details are unavailable. Last-known values may be incomplete.')
                   : ('Loading live operational details…')}
               </span>
-              {operationalFeedsFailed && (
+              {roomsFeedFailed && (
                 <button
                   type="button"
                   onClick={() => setOperationalRetryKey((key) => key + 1)}
@@ -868,9 +631,9 @@ function DashboardWorkspace() {
                 </>
               ) : (
                 // Honest "no data yet" state — no fabricated trend line. The
-                // occupancy ring + "Right now" tiles above still show today's
-                // real numbers; only the multi-month financial trend (which has
-                // no real source yet) waits for history.
+                // occupancy ring above still shows today's real numbers;
+                // only the multi-month financial trend (which has no real
+                // source yet) waits for history.
                 <div style={{
                   height: 236, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
                   textAlign: 'center', gap: 10, border: `1px dashed ${C.line2}`, borderRadius: 16, padding: '24px',
@@ -931,73 +694,6 @@ function DashboardWorkspace() {
           </section>
           )}
 
-          {/* right now + needs attention */}
-          <section className="stx-now">
-            <div>
-              <div style={{ ...LABEL, marginBottom: 18 }}>{'Right now'}</div>
-              <div className="stx-ops">
-                {([
-                  // feat/cua-partial-promotion — when a tile's source feed
-                  // isn't trustworthy the value is '—' and the sub says WHY.
-                  // A complete dataset
-                  // renders exactly as before, genuine zeros included.
-                  ['Guests', inHouse,
-                    inHouseState === 'connecting' ? ('waiting for PMS data…')
-                      : inHouseState === 'learning' ? ('latest PMS data is incomplete')
-                      : inHouseState === 'unavailable' ? ('not in latest PMS data')
-                      : ('in-house'), C.green, typeof inHouse === 'number' ? inHouseAsOf : null],
-                  ['Arrivals', arrivals,
-                    arrivalsState === 'connecting' ? ('waiting for PMS data…')
-                      : arrivalsState === 'learning' ? ('latest PMS data is incomplete')
-                      : arrivalsState === 'unavailable' ? ('not in latest PMS data')
-                      : ('expected'), C.greenL, typeof arrivals === 'number' ? arrivalsAsOf : null],
-                  ['Departures', departures,
-                    departuresState === 'connecting' ? ('waiting for PMS data…')
-                      : departuresState === 'learning' ? ('latest PMS data is incomplete')
-                      : departuresState === 'unavailable' ? ('not in latest PMS data')
-                      : ('checking out'), C.gold, typeof departures === 'number' ? departuresAsOf : null],
-                  // Housekeeping tile is owned by the housekeeping section —
-                  // dropped entirely when that section is off for the hotel.
-                  ...(housekeepingEnabled ? [['Housekeeping', housekeepingValue,
-                    housekeepingSub, C.rust, null]] : []),
-                  ['Turnover', avgTurnover ?? '—', 'min / room', C.ink, null],
-                ] as [string, React.ReactNode, string, string, AsOfLabel | null][]).map((o, i) => (
-                  <div key={o[0]} style={{ flex: 1, minWidth: 90, paddingLeft: i ? 22 : 0, borderLeft: i ? `1px solid ${C.line}` : 'none' }}>
-                    <OpsTile label={o[0]} value={o[1]} sub={o[2]} tone={o[3]} asOf={o[4]} />
-                  </div>
-                ))}
-              </div>
-            </div>
-
-            <div style={{ background: attentionBackground, borderRadius: 16, padding: 22 }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14 }}>
-                <span style={{ ...LABEL, color: attentionInk }}>{'Needs attention'}</span>
-                <span style={{ background: attentionTone, color: '#fff', borderRadius: 999, minWidth: 24, height: 24, padding: '0 7px', display: 'grid', placeItems: 'center', fontSize: 13, fontWeight: 700 }}>{attentionBadge}</span>
-              </div>
-              {attention.length ? attention.map((a, i) => (
-                <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '7px 0', borderTop: i ? '1px solid rgba(184,92,61,.2)' : 'none' }}>
-                  <span style={{ fontFamily: SANS, fontWeight: 600, fontSize: 22, letterSpacing: '-0.02em', color: C.rust, minWidth: 22 }}>{a.n}</span>
-                  <span style={{ fontSize: 13, color: C.rustD }}>{a.text}</span>
-                </div>
-              )) : (
-                <div style={{ fontSize: 14, color: attentionInk, paddingTop: 2 }}>
-                  {operationalFeedsCurrent
-                    ? ('All clear. Nothing needs you right now.')
-                    : operationalFeedsFailed
-                      ? ("Some alerts couldn't be checked.")
-                      : ('Checking current operations…')}
-                </div>
-              )}
-              {attention.length > 0 && attentionIncomplete && (
-                <div style={{ borderTop: '1px solid rgba(184,92,61,.2)', marginTop: 8, paddingTop: 10, fontSize: 12, lineHeight: 1.4, color: C.rustD }}>
-                  {operationalFeedsFailed
-                    ? ("Some live sources couldn't refresh.")
-                    : ('Some live sources are still loading.')}
-                </div>
-              )}
-            </div>
-          </section>
-
           {/* month to date — synthetic totals; demo property only (no fabricated totals) */}
           {showFinancials && mtd && (
             <section className="stx-mtd" style={{ borderTop: `1px solid ${C.line}`, paddingTop: 22 }}>
@@ -1020,8 +716,6 @@ function DashboardWorkspace() {
             </section>
           )}
 
-          {/* Open items — unified worklist window; renders only when there's open work */}
-          <WorklistCard />
           {/* Shift Log Book — latest recaps; renders only once there's at least one */}
           <LogBookCard />
 
@@ -1030,9 +724,6 @@ function DashboardWorkspace() {
 
           {/* What Staxis learned — self-learning Move #2; renders only once populated */}
           <MemoryRecapCard />
-
-          {/* What Staxis knows about your hotel + impact — management view */}
-          <WhatStaxisKnowsCard />
 
         </div>
       </div>

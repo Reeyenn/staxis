@@ -1,9 +1,8 @@
 'use client';
 
-// Card shell shared by every additive dashboard card (Worklist, Log Book,
-// Calendar, MemoryRecap, WhatStaxisKnows). Concourse surface: white card,
-// hairline ink border, soft drop shadow. Radius / padding / maxWidth vary
-// only on the compact "What Staxis knows" box.
+// Card shell shared by every additive dashboard card (Log Book, Calendar,
+// MemoryRecap). Concourse surface: white card, hairline ink border, soft drop
+// shadow. Radius / padding / maxWidth are available for compact variants.
 
 import React from 'react';
 
