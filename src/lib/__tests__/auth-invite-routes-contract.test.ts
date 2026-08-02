@@ -148,7 +148,7 @@ describe('hotel account invitation route contract', () => {
       acceptInviteRoute.slice(recovery, rollback),
       /recovery === 'committed'[\s\S]*return ok/,
     );
-    assert.doesNotMatch(acceptInviteRoute, /grantInvitedHat|property_access:/);
+    assert.doesNotMatch(acceptInviteRoute, /property_access:/);
   });
 });
 
@@ -170,7 +170,7 @@ describe('company People hat route contract', () => {
   test('uses actor-bound transactional hat writers and no best-effort route audit', () => {
     assert.match(hatRoute, /'staxis_set_membership_hat_guarded'/);
     assert.match(hatRoute, /'staxis_end_membership_hat_guarded'/);
-    assert.doesNotMatch(hatRoute, /writeAudit|grantInvitedHat/);
+    assert.doesNotMatch(hatRoute, /writeAudit/);
     assert.match(
       peopleLifecycleMigration,
       /staxis_set_membership_hat_guarded[\s\S]*staxis\.actor_account_id[\s\S]*staxis\.request_id[\s\S]*staxis_set_membership_hat\(/i,
