@@ -12,16 +12,19 @@ const dialogs = source('src', 'app', 'company', '_components', 'HotelTeamDialogs
 const css = source('src', 'app', 'company', '_components', 'HotelTeamPanel.module.css');
 
 describe('My Hotel account status UI', () => {
-  test('renders server-projected account state and sign-in history on each account row', () => {
+  test('renders a compact login badge on each account row and keeps detail history in the dialog', () => {
     assert.match(panel, /active: boolean;/);
     assert.match(panel, /lastSignInKnown: boolean;/);
     assert.match(panel, /lastSignInAt: string \| null;/);
     assert.match(panel, /updatedAt: string;/);
     assert.match(panel, /ownerProtected: boolean;/);
-    assert.match(panel, /Login disabled/);
-    assert.match(panel, /No sign-ins yet/);
-    assert.match(panel, /if \(!known\) return 'Last sign-in unavailable'/);
-    assert.match(panel, /lastSignInLabel\(account\.lastSignInKnown, account\.lastSignInAt, lang\)/);
+    assert.match(panel, /\{'STAXIS LOGIN'\}/);
+    assert.match(panel, /\{'NO LOGIN'\}/);
+    assert.match(panel, /\{'Inactive'\}/);
+    assert.doesNotMatch(panel, /lastSignInLabel\(account\.lastSignInKnown, account\.lastSignInAt, lang\)/);
+    assert.match(dialogs, /Login disabled/);
+    assert.match(dialogs, /No sign-ins yet/);
+    assert.match(dialogs, /lastSignInLabel\(member\.lastSignInKnown, member\.lastSignInAt, lang\)/);
   });
 
   test('sends the exact dialog-open snapshot with ordinary role changes', () => {
