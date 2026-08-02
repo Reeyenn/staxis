@@ -46,6 +46,24 @@ const normalDialogEnd = panel.indexOf('</React.Suspense>', normalDialogStart);
 assert.ok(normalDialogStart > normalActionEnd, 'authorized dialog handoffs should follow the People action area');
 assert.ok(normalDialogEnd > normalDialogStart, 'authorized dialog handoffs should close');
 const normalDialogArea = panel.slice(normalDialogStart, normalDialogEnd);
+const normalLoadingFallback = section(
+  normalDialogArea,
+  '<DialogLoading',
+  'onClose={closeLoadingDialog}',
+  'normal dialog loading fallback',
+);
+const departmentAddArea = section(
+  panel,
+  "{canAddStaff && !locked && group.key !== 'management' ? (",
+  '</section>',
+  'department Add staff origin',
+);
+const loadingFocusSelection = section(
+  panel,
+  'const loadingReturnFocusRef =',
+  'if (!hotelId) {',
+  'dialog loading focus selection',
+);
 const loadingComponent = section(
   panel,
   'type DialogLoadingVariant =',
@@ -192,19 +210,19 @@ describe('People invite entry choice', () => {
     assert.match(panel, /<h2 ref=\{peopleHeadingRef\} id="team-members-title" tabIndex=\{-1\}/);
     assert.match(normalDialogArea, /returnFocusRef=\{inviteEntryReturnFocusRef\}/);
     assert.match(normalDialogArea, /fallbackFocusRef=\{peopleHeadingRef\}/);
-    assert.match(normalDialogArea, /<LazyAddStaffDialog[\s\S]*returnFocusRef=\{inviteEntryReturnFocusRef\}/);
+    assert.match(normalDialogArea, /<LazyAddStaffDialog[\s\S]*returnFocusRef=\{addStaffReturnFocusRef\}/);
     assert.match(normalDialogArea, /<LazyAddStaffDialog[\s\S]*fallbackFocusRef=\{peopleHeadingRef\}/);
     assert.match(normalDialogArea, /<LazyInviteDialog[\s\S]*returnFocusRef=\{inviteEntryReturnFocusRef\}/);
     assert.match(normalDialogArea, /<LazyInviteDialog[\s\S]*fallbackFocusRef=\{peopleHeadingRef\}/);
-    assert.match(normalDialogArea, /<DialogLoading[\s\S]*returnFocusRef=\{needsFirstPerson \? undefined : inviteEntryReturnFocusRef\}/);
+    assert.match(normalDialogArea, /<DialogLoading[\s\S]*returnFocusRef=\{normalLoadingReturnFocusRef\}/);
     assert.match(normalDialogArea, /<DialogLoading[\s\S]*fallbackFocusRef=\{peopleHeadingRef\}/);
-    assert.match(earlyBranch, /<DialogLoading[\s\S]*returnFocusRef=\{inviteEntryReturnFocusRef\}/);
+    assert.match(earlyBranch, /<DialogLoading[\s\S]*returnFocusRef=\{loadingReturnFocusRef\}/);
     assert.match(focusUtility, /isConnected[\s\S]*!element\.matches\(':disabled'\)[\s\S]*aria-disabled/);
     assert.match(
       focusUtility,
-      /isUsableFocusTarget\(returnFocusElement\)[\s\S]*\? returnFocusElement[\s\S]*isUsableFocusTarget\(fallbackFocusElement\)[\s\S]*\? fallbackFocusElement/,
+      /isUsableFocusTarget\(returnFocusElement\)[\s\S]*\? returnFocusElement[\s\S]*isUsableFocusTarget\(previousFocusElement\)[\s\S]*\? previousFocusElement[\s\S]*isUsableFocusTarget\(fallbackFocusElement\)[\s\S]*\? fallbackFocusElement/,
     );
-    assert.match(focusUtility, /!returnFocusRef && !fallbackFocusRef && isUsableFocusTarget\(previousFocusElement\)/);
+    assert.doesNotMatch(focusUtility, /!returnFocusRef && !fallbackFocusRef/);
     assert.match(dialogs, /restoreDialogFocus\(returnFocusRef, fallbackFocusRef, previousFocusElement\)/);
     assert.match(addStaff, /restoreDialogFocus\(returnFocusRef, fallbackFocusRef, previousFocusElement\)/);
 
@@ -216,6 +234,34 @@ describe('People invite entry choice', () => {
     );
     assert.doesNotMatch(firstPersonHandoff, /returnFocusRef=/);
     assert.match(firstPersonHandoff, /fallbackFocusRef=\{peopleHeadingRef\}/);
+  });
+
+  test('Add staff restoration uses the chooser or department origin without stale Invite refs', () => {
+    assert.match(panel, /const addStaffReturnFocusRef = React\.useRef<HTMLElement \| null>\(null\)/);
+
+    const chooserAddCallback = section(
+      panel,
+      'const chooseAddStaff = React.useCallback',
+      'const chooseInviteToStaxis = React.useCallback',
+      'chooser Add staff origin callback',
+    );
+    assert.match(chooserAddCallback, /addStaffReturnFocusRef\.current = inviteEntryReturnFocusRef\.current/);
+    assert.match(
+      departmentAddArea,
+      /onClick=\{\(event\) => \{\s*addStaffReturnFocusRef\.current = event\.currentTarget;\s*setAddDepartment\(group\.key as StaffDepartment\);/,
+    );
+    assert.match(normalDialogArea, /<LazyAddStaffDialog[\s\S]*returnFocusRef=\{addStaffReturnFocusRef\}/);
+    assert.match(normalLoadingFallback, /returnFocusRef=\{normalLoadingReturnFocusRef\}/);
+    assert.doesNotMatch(normalLoadingFallback, /returnFocusRef=\{inviteEntryReturnFocusRef\}/);
+
+    assert.match(
+      loadingFocusSelection,
+      /loadingDialogVariant === 'invite-choice'[\s\S]*inviteEntryReturnFocusRef[\s\S]*loadingDialogVariant === 'invite'[\s\S]*inviteEntryReturnFocusRef[\s\S]*loadingDialogVariant === 'add-staff'[\s\S]*addStaffReturnFocusRef[\s\S]*: undefined/,
+    );
+    assert.match(
+      loadingFocusSelection,
+      /const normalLoadingReturnFocusRef = needsFirstPerson && loadingDialogVariant === 'invite'\s*\n\s*\? undefined/,
+    );
   });
 
   test('loading states match their destination and close the correct state', () => {

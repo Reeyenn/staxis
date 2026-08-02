@@ -21,10 +21,10 @@ export function restoreDialogFocus(
   const fallbackFocusElement = fallbackFocusRef?.current ?? null;
   const target = isUsableFocusTarget(returnFocusElement)
     ? returnFocusElement
-    : isUsableFocusTarget(fallbackFocusElement)
-      ? fallbackFocusElement
-      : !returnFocusRef && !fallbackFocusRef && isUsableFocusTarget(previousFocusElement)
-        ? previousFocusElement
+    : isUsableFocusTarget(previousFocusElement)
+      ? previousFocusElement
+      : isUsableFocusTarget(fallbackFocusElement)
+        ? fallbackFocusElement
         : null;
 
   target?.focus({ preventScroll: true });

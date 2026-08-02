@@ -208,7 +208,7 @@ describe('My Hotel account and team integration', () => {
     assert.doesNotMatch(hotelTeam, /Manage only the accounts connected|Administra solo las cuentas conectadas/);
     assert.doesNotMatch(hotelTeamCss, /\.headingRow|\.headingCopy/);
     assert.match(hotelTeam, /<div className=\{styles\.root\}>\s*<section className=\{styles\.subsection\} aria-labelledby="team-members-title">/);
-    assert.match(hotelTeam, /<h2 id="team-members-title">/);
+    assert.match(hotelTeam, /<h2 ref=\{peopleHeadingRef\} id="team-members-title" tabIndex=\{-1\}>/);
   });
 
   test('keeps three connected tabs and moves the team count and invite action into the roster header', () => {
@@ -363,7 +363,7 @@ describe('My Hotel account and team integration', () => {
     assert.match(hotelTeam, /LazyRemoveDialog/);
     assert.match(hotelTeam, /LazyFirstPersonInviteDialog/);
     assert.match(hotelTeam, /LazyInviteDialog/);
-    assert.match(hotelTeam, /\{inviteDialogOpen && needsFirstPerson \? \([\s\S]*: inviteDialogOpen \? \(/);
+    assert.match(hotelTeam, /\{inviteDialogOpen && !inviteActionDisabled && needsFirstPerson \? \([\s\S]*: inviteDialogOpen && !inviteActionDisabled \? \(/);
     assert.match(hotelTeam, /onClose=\{\(\) => onInviteDialogOpenChange\(false\)\}/);
     assert.match(hotelTeamDialogs, /PeopleInviteChooserDialog/);
     assert.match(hotelTeamDialogs, /Add staff member/);

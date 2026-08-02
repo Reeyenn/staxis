@@ -757,6 +757,7 @@ export function HotelTeamPanel({
   const requestSequenceRef = React.useRef(0);
   const inviteEntryRef = React.useRef<HTMLButtonElement | null>(null);
   const inviteEntryReturnFocusRef = React.useRef<HTMLElement | null>(null);
+  const addStaffReturnFocusRef = React.useRef<HTMLElement | null>(null);
   const peopleHeadingRef = React.useRef<HTMLHeadingElement | null>(null);
   const changedRef = React.useRef(onChanged);
   changedRef.current = onChanged;
@@ -778,6 +779,7 @@ export function HotelTeamPanel({
 
   const chooseAddStaff = React.useCallback(() => {
     if (!canAddStaff || locked || inviteActionDisabled) return;
+    addStaffReturnFocusRef.current = inviteEntryReturnFocusRef.current;
     setInviteChoiceOpen(false);
     setAddDepartment('housekeeping');
   }, [canAddStaff, inviteActionDisabled, locked]);
@@ -1208,6 +1210,17 @@ export function HotelTeamPanel({
     setDecision(null);
   }, [addDepartment, editKey, inviteChoiceOpen, inviteDialogOpen, onInviteDialogOpenChange, removeMember]);
 
+  const loadingReturnFocusRef = loadingDialogVariant === 'invite-choice'
+    ? inviteEntryReturnFocusRef
+    : loadingDialogVariant === 'invite'
+      ? inviteEntryReturnFocusRef
+      : loadingDialogVariant === 'add-staff'
+        ? addStaffReturnFocusRef
+        : undefined;
+  const normalLoadingReturnFocusRef = needsFirstPerson && loadingDialogVariant === 'invite'
+    ? undefined
+    : loadingReturnFocusRef;
+
   if (!hotelId) {
     return (
       <section className={styles.root} aria-labelledby="hotel-team-title">
@@ -1258,7 +1271,7 @@ export function HotelTeamPanel({
             hotelName={hotelName}
             variant={loadingDialogVariant}
             choiceCount={1}
-            returnFocusRef={inviteEntryReturnFocusRef}
+            returnFocusRef={loadingReturnFocusRef}
             fallbackFocusRef={peopleHeadingRef}
             onClose={closeLoadingDialog}
           />
@@ -1534,7 +1547,10 @@ export function HotelTeamPanel({
                   <button
                     type="button"
                     className={styles.departmentAdd}
-                    onClick={() => setAddDepartment(group.key as StaffDepartment)}
+                    onClick={(event) => {
+                      addStaffReturnFocusRef.current = event.currentTarget;
+                      setAddDepartment(group.key as StaffDepartment);
+                    }}
                     aria-haspopup="dialog"
                   >
                     <UserPlus size={15} aria-hidden="true" />
@@ -1553,7 +1569,7 @@ export function HotelTeamPanel({
           hotelName={hotelName}
           variant={loadingDialogVariant}
           choiceCount={Number(canAddStaff && !locked) + Number(canInviteToStaxis)}
-          returnFocusRef={needsFirstPerson ? undefined : inviteEntryReturnFocusRef}
+          returnFocusRef={normalLoadingReturnFocusRef}
           fallbackFocusRef={peopleHeadingRef}
           onClose={closeLoadingDialog}
         />
@@ -1656,7 +1672,7 @@ export function HotelTeamPanel({
             hotelName={hotelName}
             lang={lang}
             initialDepartment={addDepartment}
-            returnFocusRef={inviteEntryReturnFocusRef}
+            returnFocusRef={addStaffReturnFocusRef}
             fallbackFocusRef={peopleHeadingRef}
             onClose={() => setAddDepartment(null)}
             onAdded={(member) => setOptimisticStaff((current) => (
