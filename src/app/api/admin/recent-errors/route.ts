@@ -25,11 +25,8 @@
  *   ?limit=<n>     default: 50, max 200
  */
 
-import { NextRequest } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase-admin';
-import { requireAdmin } from '@/lib/admin-auth';
-import { ok, err } from '@/lib/api-response';
-import { getOrMintRequestId } from '@/lib/log';
+import { defineRoute, adminGate } from '@/lib/api-route';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -56,13 +53,11 @@ interface NormalizedError {
   ts: string;
 }
 
-export async function GET(req: NextRequest) {
-  const requestId = getOrMintRequestId(req);
+export const GET = defineRoute({
+  resolve: (req) => adminGate(req),
+  handler: async (ctx) => {
 
-  const auth = await requireAdmin(req);
-  if (!auth.ok) return auth.response;
-
-  const url = new URL(req.url);
+  const url = new URL(ctx.req.url);
   const sinceParam = url.searchParams.get('since');
   const limit = Math.min(parseInt(url.searchParams.get('limit') ?? '50', 10) || 50, 200);
 
@@ -76,7 +71,7 @@ export async function GET(req: NextRequest) {
     .limit(2000);
 
   if (logsRes.error) {
-    return err(`recent-errors query failed: ${logsRes.error.message}`, { requestId, status: 500 });
+    return ctx.err(`recent-errors query failed: ${logsRes.error.message}`, { status: 500 });
   }
 
   // Normalize every source into a common shape so the grouping pass
@@ -126,10 +121,11 @@ export async function GET(req: NextRequest) {
     .sort((a, b) => Date.parse(b.lastSeen) - Date.parse(a.lastSeen))
     .slice(0, limit);
 
-  return ok({
+  return ctx.ok({
     since,
     totalCount: all.length,
     groupCount: grouped.length,
     groups: grouped,
-  }, { requestId });
-}
+  });
+  },
+});

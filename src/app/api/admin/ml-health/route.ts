@@ -18,11 +18,9 @@
  * src/training/_cold_start.py:install_cold_start.
  */
 
-import { NextRequest } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase-admin';
-import { requireAdmin } from '@/lib/admin-auth';
-import { ok, err, ApiErrorCode } from '@/lib/api-response';
-import { getOrMintRequestId } from '@/lib/log';
+import { defineRoute, adminGate } from '@/lib/api-route';
+import { ApiErrorCode } from '@/lib/api-response';
 import { validateUuid } from '@/lib/api-validate';
 
 export const runtime = 'nodejs';
@@ -123,14 +121,12 @@ async function fetchPredictionStats(
   };
 }
 
-export async function GET(req: NextRequest) {
-  const requestId = getOrMintRequestId(req);
+export const GET = defineRoute({
+  resolve: (req) => adminGate(req),
+  handler: async (ctx) => {
 
-  const auth = await requireAdmin(req);
-  if (!auth.ok) return auth.response;
-
-  const idV = validateUuid(new URL(req.url).searchParams.get('propertyId'), 'propertyId');
-  if (idV.error) return err(idV.error, { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
+  const idV = validateUuid(new URL(ctx.req.url).searchParams.get('propertyId'), 'propertyId');
+  if (idV.error) return ctx.err(idV.error, { status: 400, code: ApiErrorCode.ValidationFailed });
   const pid = idV.value!;
 
   const { data: prop } = await supabaseAdmin
@@ -139,7 +135,7 @@ export async function GET(req: NextRequest) {
     .eq('id', pid)
     .maybeSingle();
 
-  if (!prop) return err('Property not found', { requestId, status: 404, code: ApiErrorCode.NotFound });
+  if (!prop) return ctx.err('Property not found', { status: 404, code: ApiErrorCode.NotFound });
 
   // All four layers live in model_runs (migration 0062 broadened the
   // layer check to include 'inventory_rate'). Inventory and demand+supply
@@ -198,12 +194,13 @@ export async function GET(req: NextRequest) {
     },
   ];
 
-  return ok({
+  return ctx.ok({
     cohort: {
       brand: prop.brand as string | null,
       region: prop.region as string | null,
       sizeTier: prop.size_tier as string | null,
     },
     layers,
-  }, { requestId });
-}
+  });
+  },
+});

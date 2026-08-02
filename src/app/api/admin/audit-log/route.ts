@@ -7,23 +7,20 @@
  * Sort: newest first. Default limit 100, ?limit=N up to 500.
  */
 
-import { NextRequest } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase-admin';
-import { requireAdmin } from '@/lib/admin-auth';
-import { ok, err, ApiErrorCode } from '@/lib/api-response';
+import { defineRoute, adminGate } from '@/lib/api-route';
+import { ApiErrorCode } from '@/lib/api-response';
 import { validateUuid } from '@/lib/api-validate';
-import { getOrMintRequestId } from '@/lib/log';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 export const maxDuration = 10;
 
-export async function GET(req: NextRequest) {
-  const requestId = getOrMintRequestId(req);
-  const auth = await requireAdmin(req);
-  if (!auth.ok) return auth.response;
+export const GET = defineRoute({
+  resolve: (req) => adminGate(req),
+  handler: async (ctx) => {
 
-  const url = new URL(req.url);
+  const url = new URL(ctx.req.url);
   const limit = Math.min(parseInt(url.searchParams.get('limit') ?? '100', 10) || 100, 500);
   // Optional ?propertyId=... — filters to events tagged with metadata.hotel_id
   // matching the property OR target_id matching the property. Used by
@@ -39,7 +36,7 @@ export async function GET(req: NextRequest) {
   if (propertyIdRaw) {
     const v = validateUuid(propertyIdRaw, 'propertyId');
     if (v.error) {
-      return err(v.error, { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
+      return ctx.err(v.error, { status: 400, code: ApiErrorCode.ValidationFailed });
     }
     propertyId = v.value!;
   }
@@ -54,7 +51,8 @@ export async function GET(req: NextRequest) {
   }
 
   const { data, error } = await query;
-  if (error) return err(`audit-log query failed: ${error.message}`, { requestId, status: 500 });
+  if (error) return ctx.err(`audit-log query failed: ${error.message}`, { status: 500 });
 
-  return ok({ entries: data ?? [] }, { requestId });
-}
+  return ctx.ok({ entries: data ?? [] });
+  },
+});

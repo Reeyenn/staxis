@@ -22,11 +22,8 @@
  * the chips refresh without the user clicking Refresh.
  */
 
-import { NextRequest } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase-admin';
-import { requireAdmin } from '@/lib/admin-auth';
-import { ok, err } from '@/lib/api-response';
-import { getOrMintRequestId } from '@/lib/log';
+import { defineRoute, adminGate } from '@/lib/api-route';
 import { countNeedingAttention, isMissingRelationError } from '@/lib/promotion-queue';
 import { PMS_ROBOT_ENABLED } from '@/lib/pms/robot-status';
 
@@ -34,11 +31,9 @@ export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 export const maxDuration = 15;
 
-export async function GET(req: NextRequest) {
-  const requestId = getOrMintRequestId(req);
-
-  const auth = await requireAdmin(req);
-  if (!auth.ok) return auth.response;
+export const GET = defineRoute({
+  resolve: (req) => adminGate(req),
+  handler: async (ctx) => {
 
   const now = Date.now();
   const dayAgoIso = new Date(now - 24 * 60 * 60 * 1000).toISOString();
@@ -69,7 +64,7 @@ export async function GET(req: NextRequest) {
   // surface the error rather than silently zero the count.
   for (const r of [propsRes, errorsRes]) {
     if (r.error) {
-      return err(`Stats query failed: ${r.error.message}`, { requestId, status: 500 });
+      return ctx.err(`Stats query failed: ${r.error.message}`, { status: 500 });
     }
   }
 
@@ -82,7 +77,7 @@ export async function GET(req: NextRequest) {
       new Date(now),
     );
   } else if (!isMissingRelationError(promotionsRes.error)) {
-    return err(`Stats query failed: ${promotionsRes.error.message}`, { requestId, status: 500 });
+    return ctx.err(`Stats query failed: ${promotionsRes.error.message}`, { status: 500 });
   }
 
   let aliveIds = new Set<string>();
@@ -101,7 +96,7 @@ export async function GET(req: NextRequest) {
     ]);
     for (const r of [aliveSessionsRes, mapperJobsRes]) {
       if (r.error) {
-        return err(`Stats query failed: ${r.error.message}`, { requestId, status: 500 });
+        return ctx.err(`Stats query failed: ${r.error.message}`, { status: 500 });
       }
     }
     aliveIds = new Set(
@@ -112,7 +107,7 @@ export async function GET(req: NextRequest) {
   const props = (propsRes.data ?? []) as { id: string; onboarding_completed_at: string | null }[];
   const liveHotels = props.filter((p) => p.onboarding_completed_at !== null || aliveIds.has(p.id)).length;
 
-  return ok({
+  return ctx.ok({
     liveHotels,
     onboarding: props.length - liveHotels,
     errorsToday: errorsRes.count ?? 0,
@@ -122,5 +117,6 @@ export async function GET(req: NextRequest) {
     // sum from active subscriptions in Stripe (or computed from properties).
     mrrCents: null,
     pilotMode: true,
-  }, { requestId });
-}
+  });
+  },
+});
