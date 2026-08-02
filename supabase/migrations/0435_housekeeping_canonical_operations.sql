@@ -1374,7 +1374,33 @@ begin
   -- the legacy parent event remains emitted by the old table triggers.
   perform set_config('staxis.housekeeping_legacy_inspection', 'on', true);
 
-  -- 2) Work side-effect → room_work. Target the latest work or plan date ON
+  -- 2) cleaning_tasks side-effect (unchanged). This must precede every
+  --    room_work side-effect: the deployed reassignment RPC locks the task,
+  --    then its hk_assignments bridge locks room_work.
+  if v_row.cleaning_task_id is not null then
+    if p_result = 'pass' then
+      update public.cleaning_tasks
+         set status        = 'inspected_pass',
+             inspected_at  = now()
+       where id          = v_row.cleaning_task_id
+         and property_id = p_property_id;
+    else  -- fail
+      update public.cleaning_tasks
+         set status   = 'correction_pending',
+             priority = 'high',
+             notes    = p_correction_note
+       where id          = v_row.cleaning_task_id
+         and property_id = p_property_id;
+    end if;
+    get diagnostics v_count = row_count;
+    if v_count <> 1 then
+      raise exception 'E_TASK_PROPERTY_MISMATCH: cleaning_task % does not belong to property % (rows affected: %)',
+        v_row.cleaning_task_id, p_property_id, v_count
+        using errcode = 'no_data_found';
+    end if;
+  end if;
+
+  -- 3) Work side-effect → room_work. Target the latest work or plan date ON
   --    OR BEFORE the inspection's own date, so a pre-loaded FUTURE plan can
   --    never be mutated by today's inspection.
   if v_row.room_number is not null then
@@ -1405,30 +1431,6 @@ begin
             completed_at = null,
             inspected_at = null,
             issue_note   = p_correction_note;
-    end if;
-  end if;
-
-  -- 3) cleaning_tasks side-effect (unchanged).
-  if v_row.cleaning_task_id is not null then
-    if p_result = 'pass' then
-      update public.cleaning_tasks
-         set status        = 'inspected_pass',
-             inspected_at  = now()
-       where id          = v_row.cleaning_task_id
-         and property_id = p_property_id;
-    else  -- fail
-      update public.cleaning_tasks
-         set status   = 'correction_pending',
-             priority = 'high',
-             notes    = p_correction_note
-       where id          = v_row.cleaning_task_id
-         and property_id = p_property_id;
-    end if;
-    get diagnostics v_count = row_count;
-    if v_count <> 1 then
-      raise exception 'E_TASK_PROPERTY_MISMATCH: cleaning_task % does not belong to property % (rows affected: %)',
-        v_row.cleaning_task_id, p_property_id, v_count
-        using errcode = 'no_data_found';
     end if;
   end if;
 

@@ -1049,6 +1049,24 @@ describe('housekeeping canonical plan expand stage', () => {
     for (const source of inspectionSources) {
       assert.match(source.prosrc, /order by id\s+limit 1\s+for update/i);
     }
+    const legacyInspectionSource = inspectionSources.find((row) => row.proname === 'complete_inspection_atomic');
+    assert.ok(legacyInspectionSource);
+    // The repository has no real-Postgres two-session test harness. These
+    // source/behavior assertions prove the bounded order contract without
+    // pretending one PGlite backend proves PostgreSQL deadlock scheduling.
+    assert.ok(
+      legacyInspectionSource.prosrc.indexOf('2) cleaning_tasks side-effect')
+        < legacyInspectionSource.prosrc.indexOf('3) Work side-effect'),
+      'the preserved inspection RPC must update cleaning_tasks before room_work',
+    );
+    const reassignSource = await scalar<string>(
+      "select p.prosrc from pg_proc p where p.oid = 'public.reassign_cleaning_task(uuid,uuid,uuid,uuid,text)'::regprocedure",
+    );
+    assert.match(
+      reassignSource,
+      /from public\.cleaning_tasks[\s\S]*insert into public\.hk_assignments[\s\S]*update public\.cleaning_tasks/i,
+      'reassignment must keep its cleaning_tasks -> hk_assignments -> room_work bridge order',
+    );
 
     const sideEffectTask = await scalar<string>(
       "select public.housekeeping_plan_id($1, $2, '204')::text",
@@ -1800,6 +1818,138 @@ describe('housekeeping canonical plan expand stage', () => {
       );
     } finally {
       await invalid.pg.close();
+    }
+  });
+
+  test('0434 preserves unchanged room-work timestamps while reconciling changed payloads', async () => {
+    let unchangedUpdatedAt = '';
+    let changedUpdatedAt = '';
+    const reconciled = await applyMigrationsToPgliteWithHook(async ({ pg: db, file }) => {
+      if (file !== '0434_housekeeping_plan_reconciliation.sql') return;
+
+      await db.query(
+        "insert into auth.users(id, email) values ($1, 'phase5-timestamp@example.test') on conflict (id) do nothing",
+        [OWNER],
+      );
+      await db.query(
+        "insert into public.properties(id, owner_id, name, total_rooms, timezone) values ($1, $2, 'Phase Five Inn', 80, 'America/Chicago') on conflict (id) do nothing",
+        [PROPERTY, OWNER],
+      );
+      await db.query(
+        "insert into public.staff(id, property_id, name, department, is_active) values ($1, $2, 'Timestamp Housekeeper', 'housekeeping', true) on conflict (id) do nothing",
+        [HOUSEKEEPER, PROPERTY],
+      );
+      await db.query(
+        `alter table public.room_work
+           add column if not exists id uuid,
+           add column if not exists legacy_task_id uuid,
+           add column if not exists plan_dedupe_key text,
+           add column if not exists plan_cleaning_type text,
+           add column if not exists plan_priority text,
+           add column if not exists plan_due_by timestamptz,
+           add column if not exists plan_estimated_minutes integer,
+           add column if not exists plan_requires_inspection boolean,
+           add column if not exists plan_extras jsonb,
+           add column if not exists plan_notes text,
+           add column if not exists plan_rules_fired jsonb,
+           add column if not exists plan_rule_inputs jsonb,
+           add column if not exists plan_status text,
+           add column if not exists plan_source_pms_reservation_id text,
+           add column if not exists plan_source_engine_run_id uuid,
+           add column if not exists plan_source_property_timezone text,
+           add column if not exists plan_scheduled_at timestamptz,
+           add column if not exists plan_last_evaluated_at timestamptz,
+           add column if not exists assignment_queue_order integer,
+           add column if not exists assignment_assigned_at timestamptz,
+           add column if not exists assignment_assigned_by text,
+           add column if not exists assignment_assigned_by_user_id uuid,
+           add column if not exists assignment_reason text,
+           add column if not exists assignment_score numeric,
+           add column if not exists assignment_history jsonb`,
+      );
+
+      const unchanged = await db.query<{ updated_at: string }>(
+        `insert into public.room_work(
+           property_id, date, room_number, id, legacy_task_id,
+           plan_dedupe_key, plan_requires_inspection, plan_extras, plan_rules_fired,
+           assigned_staff_id, assigned_source, assignment_queue_order,
+           assignment_assigned_at, assignment_assigned_by, assignment_assigned_by_user_id,
+           assignment_reason, assignment_score, assignment_history, status, updated_at
+         ) values (
+           $1::uuid, $2::date, '712', md5($1::uuid::text || ':' || $2::date::text || ':712')::uuid, null,
+           '712::2026-08-02', false, '[]'::jsonb, '[]'::jsonb,
+           $3::uuid, 'manager', 0, $4::timestamptz, 'manual', null::uuid,
+           null::text, null::numeric,
+           jsonb_build_array(jsonb_build_object(
+             'id', $5::uuid,
+             'property_id', $1::uuid,
+             'cleaning_task_id', md5($1::uuid::text || ':' || $2::date::text || ':712')::uuid,
+             'housekeeper_id', $3::uuid,
+             'queue_order', 0,
+             'is_active', true,
+             'assigned_at', $4::timestamptz,
+             'assigned_by', 'manual',
+             'assigned_source', 'manager',
+             'assigned_by_user_id', null::uuid,
+             'reason', null::text,
+             'score', null::numeric,
+             'created_at', $4::timestamptz,
+             'updated_at', $4::timestamptz
+           )),
+           'not_started', $6::timestamptz
+         ) returning updated_at::text`,
+        [PROPERTY, BUSINESS_DATE, HOUSEKEEPER, '2026-07-30T11:00:00Z', HISTORY_ONLY_ASSIGNMENT, '2026-07-30T10:00:00Z'],
+      );
+      unchangedUpdatedAt = unchanged.rows[0]?.updated_at ?? '';
+
+      await db.query(
+        "insert into public.cleaning_tasks(id, property_id, room_number, business_date, dedupe_key, cleaning_type, priority, estimated_minutes, requires_inspection, extras, rules_fired, status, assignee_id, source_property_timezone, scheduled_at, last_evaluated_at) values ($1::uuid, $2::uuid, '713', $3::date, '713::2026-08-02', 'stayover', 'normal', 20, false, '[]'::jsonb, '[]'::jsonb, 'scheduled', $4::uuid, 'America/Chicago', $5::timestamptz, $5::timestamptz)",
+        [NEW_TASK, PROPERTY, BUSINESS_DATE, HOUSEKEEPER, '2026-08-02T12:00:00Z'],
+      );
+      const changed = await db.query<{ updated_at: string }>(
+        "insert into public.room_work(property_id, date, room_number, status, updated_at) values ($1::uuid, $2::date, '713', 'not_started', $3::timestamptz) returning updated_at::text",
+        [PROPERTY, BUSINESS_DATE, '2026-07-30T10:00:00Z'],
+      );
+      changedUpdatedAt = changed.rows[0]?.updated_at ?? '';
+    });
+
+    try {
+      if (!reconciled.report.applied.includes('0434_housekeeping_plan_reconciliation.sql')) {
+        assert.fail(JSON.stringify(reconciled.report.failedAtRuntime.filter((entry) => entry.file.startsWith('043'))));
+      }
+      assert.ok(unchangedUpdatedAt);
+      assert.ok(changedUpdatedAt);
+      const finalRows = await reconciled.pg.query<{
+        room_number: string;
+        updated_at: string;
+        assigned_staff_id: string | null;
+        assigned_source: string | null;
+        plan_cleaning_type: string | null;
+        history_count: number;
+      }>(
+        `select room_number, updated_at::text, assigned_staff_id::text, assigned_source,
+                plan_cleaning_type, jsonb_array_length(assignment_history)::int as history_count
+           from public.room_work
+          where property_id = $1 and date = $2 and room_number in ('712', '713')
+          order by room_number`,
+        [PROPERTY, BUSINESS_DATE],
+      );
+      assert.equal(finalRows.rows.length, 2, JSON.stringify(finalRows.rows));
+      assert.deepEqual(finalRows.rows[0], {
+        room_number: '712',
+        updated_at: unchangedUpdatedAt,
+        assigned_staff_id: HOUSEKEEPER,
+        assigned_source: 'manager',
+        plan_cleaning_type: null,
+        history_count: 1,
+      });
+      assert.equal(finalRows.rows[1]?.room_number, '713');
+      assert.notEqual(finalRows.rows[1]?.updated_at, changedUpdatedAt);
+      assert.equal(finalRows.rows[1]?.assigned_staff_id, HOUSEKEEPER);
+      assert.equal(finalRows.rows[1]?.assigned_source, 'pms_import');
+      assert.equal(finalRows.rows[1]?.plan_cleaning_type, 'stayover');
+    } finally {
+      await reconciled.pg.close();
     }
   });
 });

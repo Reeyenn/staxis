@@ -1321,8 +1321,9 @@ $$;
 -- Preserve every pre-existing room_work snapshot and merge the full legacy
 -- assignment history into it. A matching assignment id/payload is retained
 -- only once, while a metadata/status change is appended as a new receipt.
-update public.room_work w
-   set assignment_history = w.assignment_history || coalesce((
+with assignment_merges as (
+  select w.id,
+         coalesce((
          select jsonb_agg(snapshot order by sort_created, sort_id)
            from (
              select jsonb_build_object(
@@ -1349,7 +1350,7 @@ update public.room_work w
                 and a.cleaning_task_id = w.legacy_task_id
                 and not exists (
                   select 1
-                    from jsonb_array_elements(w.assignment_history) h
+                    from jsonb_array_elements(coalesce(w.assignment_history, '[]'::jsonb)) h
                    where h->>'id' = a.id::text
                      and h ? 'property_id'
                      and h ? 'cleaning_task_id'
@@ -1403,15 +1404,25 @@ update public.room_work w
                      )
                 )
            ) snapshots
-       ), '[]'::jsonb)
- where w.legacy_task_id is not null;
+       ), '[]'::jsonb) as appended_history
+    from public.room_work w
+   where w.legacy_task_id is not null
+)
+update public.room_work w
+   set assignment_history = coalesce(w.assignment_history, '[]'::jsonb) || m.appended_history
+  from assignment_merges m
+ where w.id = m.id
+   and coalesce(w.assignment_history, '[]'::jsonb) is distinct from
+       coalesce(w.assignment_history, '[]'::jsonb) || m.appended_history;
 
 -- Reconcile the current assignment from all four proven sources. The
 -- preflight above guarantees that every non-null candidate agrees, so source
 -- priority is deterministic rather than a hidden conflict resolver. A
 -- complete active history snapshot is last: it restores current state only
 -- when hk_assignments, the task cache, and room_work current columns are all
--- absent, while preserving every history receipt.
+-- absent, while preserving every history receipt. The null-safe full-payload
+-- guard below is important: an unchanged reconciliation must not fire
+-- room_work's set_updated_at trigger.
 update public.room_work w
    set assigned_staff_id = coalesce(s.active_staff_id, s.cache_staff_id, w.assigned_staff_id, s.history_staff_id),
        assigned_source = case
@@ -1474,6 +1485,14 @@ update public.room_work w
        end
   from (
     select w0.id,
+           w0.assigned_staff_id as current_assigned_staff_id,
+           w0.assigned_source as current_assigned_source,
+           w0.assignment_queue_order as current_assignment_queue_order,
+           w0.assignment_assigned_at as current_assignment_assigned_at,
+           w0.assignment_assigned_by as current_assignment_assigned_by,
+           w0.assignment_assigned_by_user_id as current_assignment_assigned_by_user_id,
+           w0.assignment_reason as current_assignment_reason,
+           w0.assignment_score as current_assignment_score,
            t.assignee_id as cache_staff_id,
            a.housekeeper_id as active_staff_id,
            a.queue_order as active_queue_order,
@@ -1523,7 +1542,84 @@ update public.room_work w
          limit 1
       ) history on true
   ) s
- where w.id = s.id;
+  cross join lateral (
+    select
+      coalesce(s.active_staff_id, s.cache_staff_id, s.current_assigned_staff_id, s.history_staff_id) as next_assigned_staff_id,
+      case
+        when s.active_staff_id is not null then case
+          when s.active_assigned_by = 'auto' then 'auto'
+          else 'manager'
+        end
+        when s.cache_staff_id is not null then coalesce(s.current_assigned_source, 'pms_import')
+        when s.current_assigned_staff_id is not null then s.current_assigned_source
+        when s.history_staff_id is not null then coalesce(
+          s.history_assigned_source,
+          case
+            when s.history_assigned_by = 'auto' then 'auto'
+            when s.history_assigned_by in ('manual', 'rebalance', 'manager') then 'manager'
+            when s.history_assigned_by in ('pms_import', 'alias_exact', 'alias_first_name') then s.history_assigned_by
+            else coalesce(s.current_assigned_source, 'manager')
+          end
+        )
+        else s.current_assigned_source
+      end as next_assigned_source,
+      case
+        when s.active_staff_id is not null then s.active_queue_order
+        when s.cache_staff_id is not null or s.current_assigned_staff_id is not null then s.current_assignment_queue_order
+        when s.history_staff_id is not null then s.history_queue_order
+        else s.current_assignment_queue_order
+      end as next_assignment_queue_order,
+      case
+        when s.active_staff_id is not null then s.active_assigned_at
+        when s.cache_staff_id is not null or s.current_assigned_staff_id is not null then s.current_assignment_assigned_at
+        when s.history_staff_id is not null then s.history_assigned_at
+        else s.current_assignment_assigned_at
+      end as next_assignment_assigned_at,
+      case
+        when s.active_staff_id is not null then s.active_assigned_by
+        when s.cache_staff_id is not null or s.current_assigned_staff_id is not null then s.current_assignment_assigned_by
+        when s.history_staff_id is not null then case
+          when s.history_assigned_by in ('auto', 'manual', 'rebalance') then s.history_assigned_by
+          else null
+        end
+        else s.current_assignment_assigned_by
+      end as next_assignment_assigned_by,
+      case
+        when s.active_staff_id is not null then s.active_assigned_by_user_id
+        when s.cache_staff_id is not null or s.current_assigned_staff_id is not null then s.current_assignment_assigned_by_user_id
+        when s.history_staff_id is not null then s.history_assigned_by_user_id
+        else s.current_assignment_assigned_by_user_id
+      end as next_assignment_assigned_by_user_id,
+      case
+        when s.active_staff_id is not null then s.active_reason
+        when s.cache_staff_id is not null or s.current_assigned_staff_id is not null then s.current_assignment_reason
+        when s.history_staff_id is not null then s.history_reason
+        else s.current_assignment_reason
+      end as next_assignment_reason,
+      case
+        when s.active_staff_id is not null then s.active_score
+        when s.cache_staff_id is not null or s.current_assigned_staff_id is not null then s.current_assignment_score
+        when s.history_staff_id is not null then s.history_score
+        else s.current_assignment_score
+      end as next_assignment_score
+  ) d
+ where w.id = s.id
+   and (w.assigned_staff_id,
+        w.assigned_source,
+        w.assignment_queue_order,
+        w.assignment_assigned_at,
+        w.assignment_assigned_by,
+        w.assignment_assigned_by_user_id,
+        w.assignment_reason,
+        w.assignment_score) is distinct from
+       (d.next_assigned_staff_id,
+        d.next_assigned_source,
+        d.next_assignment_queue_order,
+        d.next_assignment_assigned_at,
+        d.next_assignment_assigned_by,
+        d.next_assignment_assigned_by_user_id,
+        d.next_assignment_reason,
+        d.next_assignment_score);
 
 -- A valid cache-only or room_work-only assignment has no hk_assignments row
 -- to supply a receipt. Materialize one complete current snapshot instead of
