@@ -505,8 +505,8 @@ test('model discovery is bounded beneath the admin refresh route ceiling', () =>
   );
   assert.match(route, /REFRESH_EXECUTION_BUDGET_MS = 25_000/);
   assert.match(route, /const refreshDeadlineAt = Date\.now\(\) \+ REFRESH_EXECUTION_BUDGET_MS/);
-  assert.match(route, /deadlineAt:\s*refreshDeadlineAt/);
-  assert.match(route, /abortSignal:\s*req\.signal/);
+  assert.match(route, /deadlineAt:\s*ctx\.refreshDeadlineAt/);
+  assert.match(route, /abortSignal:\s*ctx\.req\.signal/);
 });
 
 test('0313 migration pins service-role RLS, immutable history, and atomic audited activation', () => {
