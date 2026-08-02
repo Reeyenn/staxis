@@ -11,10 +11,10 @@ import './room-actions';
 import './queries';
 import './management';
 // './reports' is GONE (2026-07-27 catalog rebuild). All five of its tools were
-// stubs or duplicates: get_revenue / get_financial_report / compare_properties
+// stubs or duplicates: get_revenue / get_financial_report
 // returned fixed "not integrated" notes, get_inventory duplicated get_low_stock
 // against the wrong threshold column, and get_occupancy read the same counts RPC
-// as get_today_summary. Their wire-names live on in TOOL_ALIASES.
+// as get_today_summary. Surviving retired wire-names live on in TOOL_ALIASES.
 import './walkthrough';
 import './complaints';
 import './lost-found';
@@ -46,11 +46,6 @@ import './ordering';
 // standing rule in plain language. Same two-call confirmInChat shape as the
 // setup tools; the read-back is verbatim rather than structured, on purpose.
 import './companion';
-// Cross-hotel chat. Every tool in here declares `surfaces: ['portfolio']`, so
-// importing it does NOT widen the chat/voice/walkthrough catalogs — the surface
-// filter in getToolsForRole keeps the two sets disjoint by construction.
-import './portfolio';
-
 // Future cross-feature tool modules (registered from other branches/chats)
 // can be added by importing from agent/index.ts at the top level — this
 // file is the canonical place for THIS chat's built-in catalog.

@@ -185,7 +185,9 @@ const NO_DB_TOOLS = new Map<string, string>();
  * including the same statement-level leak audit this file performs.
  *
  * The split is asserted below, so a per-hotel tool cannot be hidden from this
- * suite by tagging it `portfolio`.
+ * suite by tagging it `portfolio`. The current portfolio route is
+ * deterministic and mounts no generic tools, so an empty excluded set is
+ * expected until a future company-scope tool receives its own proof.
  */
 function perHotelTools(): ReturnType<typeof listAllTools> {
   return listAllTools().filter((t) => !(t.surfaces ?? ['chat']).includes('portfolio'));
@@ -423,7 +425,9 @@ describe('every agent tool is confined to one hotel, proven against a real datab
     assert.ok(tools.length >= 40, `expected the full catalog, walked ${tools.length}`);
     assert.equal(runs.size, tools.length);
 
-    // The excluded set is EXACTLY the portfolio catalog, and it is non-empty.
+    // The excluded set is exactly the portfolio-surface catalog. A future
+    // portfolio tool must get its own company-scope isolation coverage before
+    // it is mounted here.
     const walked = new Set(tools.map((t) => t.name));
     const excluded = listAllTools()
       .filter((t) => !walked.has(t.name))
@@ -434,7 +438,6 @@ describe('every agent tool is confined to one hotel, proven against a real datab
       .map((t) => t.name)
       .sort();
     assert.deepEqual(excluded, portfolio);
-    assert.ok(portfolio.length > 0, 'the portfolio catalog vanished — is it still registered?');
   });
 
   test('no tool is refused before its handler runs', () => {

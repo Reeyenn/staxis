@@ -38,7 +38,7 @@ describe('shared portfolio chat lifecycle contract', () => {
     const resetEnd = hook.indexOf('useEffect(() => {', resetStart);
     const reset = hook.slice(resetStart, resetEnd);
     assert.match(reset, /generationRef\.current \+= 1/);
-    assert.match(reset, /activeRequestRef\.current\?\.abort\(\)/);
+    assert.match(reset, /activeRequestRef\.current\?\.cancel\(\)/);
     assert.match(reset, /conversationId: null/);
     assert.match(reset, /setConversations\(\[\]\)/);
     assert.match(reset, /setMessages\(\[\]\)/);
@@ -84,7 +84,8 @@ describe('visible active-scope disclosure contract', () => {
     assert.match(hook, /total !== selectedHotelCount/);
     assert.match(hook, /reported \+ omitted !== total/);
     assert.match(hook, /parsed\.organizationId !== expectedOrganizationId/);
-    assert.match(hook, /let portfolioScopeVerified = portfolioTurn === null/);
+    assert.match(hook, /const isPortfolio = portfolioTurn !== null/);
+    assert.match(hook, /let portfolioScopeVerified = !isPortfolio/);
     assert.match(
       hook,
       /payload\.type === 'text_delta'[\s\S]*?if \(!portfolioScopeVerified\)[\s\S]*?could not verify the scope used for that answer/,

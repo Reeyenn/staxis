@@ -172,8 +172,6 @@ const MANAGER_SURFACES_FOR_DESK = [
   'remove_from_shift', 'get_time_off_requests', 'decide_time_off', 'assign_room',
   // housekeeping planning + hotel-wide broadcast
   'get_deep_clean_queue', 'post_announcement',
-  // the company
-  'portfolio_open_items', 'portfolio_compare', 'company_rulebook', 'list_my_hotels',
 ];
 
 /** What the wrench must never reach: money, staffing, company, sign-offs. */
@@ -183,7 +181,6 @@ const MANAGER_SURFACES_FOR_WRENCH = [
   'get_outstanding_balances', 'get_future_bookings', 'get_lost_reservations',
   'get_staff_performance', 'get_room_assignments', 'get_schedule', 'assign_shift',
   'remove_from_shift', 'get_time_off_requests', 'decide_time_off', 'assign_room',
-  'portfolio_open_items', 'portfolio_compare', 'company_rulebook', 'list_my_hotels',
 ];
 
 describe('what a lens keeps out', () => {

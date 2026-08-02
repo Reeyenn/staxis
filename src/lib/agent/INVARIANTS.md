@@ -1460,91 +1460,67 @@ for".
 ## Cross-hotel chat (no migration — 2026-07-26)
 
 The portfolio surface lets a company-scope person (owner / VP / finance) ask the
-copilot about every hotel their management company operates. It is the first
-place in the product where ONE answer legitimately spans several hotels, so the
-invariants below are about the SET being right rather than about a single
-`property_id` filter being present.
+copilot about the exact hotel set authorized for that turn. The route resolves
+that set into a receipt, runs bounded deterministic readers, and gives the model
+only the resulting evidence package for final wording.
 
-- **INV-PORTFOLIO-1 — a portfolio read is a LOOP over `scopedDb(pid)`, never a
-  cross-property query.** The set of hotels is decided ONCE, by the spine
-  (`resolvePortfolioAccess`), and every read inside a portfolio tool is bounded
-  by one member of that set.
-- **Enforced by:** structure plus the build. `src/lib/agent/tools/portfolio.ts`
-  and `src/lib/agent/portfolio/**` import no service-role client, and
-  `scripts/audit-service-role-imports.mjs` + the eslint
-  `no-restricted-imports` rule refuse one anywhere under `src/lib/agent/**` —
-  so an `.in('property_id', […])` is not expressible there without a visible,
-  counted `unscopedBecause` escape hatch. Every hotel-scoped read goes through
-  `forEachHotel` (`portfolio/hotels.ts`), whose only database handle is
-  `scopedDb(pid)`. **NOT DB-enforceable:** Postgres cannot see which client a
-  statement came from; the guarantee is that the wrong shape does not compile
-  past the audit.
-- **Consequence, stated because it is the point:** a bug in a portfolio tool can
-  return the wrong SUBSET of the caller's own hotels. It cannot reach anybody
-  else's, because the ids never came from the request.
-- **Tested by:** `portfolio-chat-leak.integration.test.ts` — "every portfolio
-  tool runs, returns company A's data, and leaks nothing", which asserts per
-  statement that (a) it carried the hotel filter and (b) the value of that
-  filter was one of company A's two hotels. Verified by mutation: replacing the
-  loop with a single unfiltered read turns the suite red at the statement audit
-  before any assertion about the payload runs.
-- **History:** cross-hotel chat, 2026-07-26.
+- **INV-PORTFOLIO-1 — deterministic portfolio evidence is bounded by one exact
+  authorization receipt.** Selected hotels must be a subset of the receipt's
+  authorized hotels, and every mounted metric reader receives only the selected
+  hotel candidates.
+- **Enforced by:** `runPortfolioIntelligence` in
+  `src/lib/agent/portfolio-intelligence/engine.ts`, which checks the selector
+  against the receipt before reading. The booked-room and operational adapters
+  use `scopedDb(propertyId)` for each selected hotel, and the route asserts the
+  receipt before and after each mounted reader. **NOT DB-enforceable:** the
+  receipt and the application scope are not visible to Postgres.
+- **Consequence, stated because it is the point:** a source may be unavailable
+  for one selected hotel and produce conservative coverage, but a deterministic
+  reader cannot reach a hotel outside the exact authorized set.
+- **Tested by:** `portfolio-chat-leak.integration.test.ts`, including
+  "company A's VP is let in, with exactly company A's hotels", the
+  cross-company refusal cases, and the deterministic aggregate and drill-down
+  route cases.
+- **History:** cross-hotel chat, 2026-07-26; deterministic evidence route,
+  2026-07-30.
 
-- **INV-PORTFOLIO-2 — the tools do not trust the context they were handed.**
-  Every portfolio tool re-resolves the caller's company job AND the company's
-  `cross_hotel_ai_chat` setting through the spine before reading anything, and
-  intersects that fresh answer with the context's list. Both must contain a
-  hotel for it to be read.
-- **Enforced by:** one shared gate — `reachFor()` in `tools/portfolio.ts` — that
-  every handler's first line calls. **NOT DB-enforceable** (it is a code path,
-  not a data fact), and deliberately NOT collapsed into "the route checked it":
-  the route checks once per turn, and a company that switches the feature off
-  mid-conversation must close the door on the next tool call, not at the next
-  login. The 15-second cache in `resolvePortfolioAccess` is what makes the
-  re-check affordable, and its TTL is shorter than one model turn for exactly
-  this reason.
-- **Tested by:** "the tool re-checks the company switch, not just the context it
-  was handed" — the setting is flipped off with a context that still says yes,
-  and the tool must refuse on its own. Verified by mutation: reading
-  `ctx.portfolio.propertyIds` directly instead of re-resolving turns that case
-  red and leaves every other case green.
-- **History:** cross-hotel chat, 2026-07-26.
+- **INV-PORTFOLIO-2 — the route does not trust browser-supplied scope.** The
+  current request resolves authorization and the company switch server-side,
+  then reasserts the receipt while deterministic reads are running. A stale
+  browser organization or selector cannot expand the answer.
+- **Enforced by:** `/api/agent/portfolio` through
+  `resolvePortfolioAccessUncached`, the scope receipt helpers, and
+  `runPortfolioIntelligence`'s pre-reader and post-reader receipt assertions.
+  The route also checks the receipt before releasing synthesized output.
+- **Tested by:** the route admission, switch, cross-company, availability,
+  mid-load revocation, and final-release tests in
+  `portfolio-chat-leak.integration.test.ts`.
+- **History:** cross-hotel chat, 2026-07-26; deterministic evidence route,
+  2026-07-30.
 
-- **INV-PORTFOLIO-3 — a hotel a caller does not cover is refused BY THE TOOL,
-  and refused whole.** A `hotelIds` argument naming any hotel outside the fresh
-  covered set fails the entire call. The bad id is never silently dropped and
-  the remaining ids are never answered.
-- **Enforced by:** `reachFor()`. **NOT DB-enforceable.** Filtering instead of
-  refusing is the tempting version and it is worse: it answers the question and
-  hides that somebody asked for something they may not have. The refusal also
-  does not confirm or deny that the id names a real hotel anywhere — "not one of
-  yours" is the whole answer a caller is owed.
-- **Tested by:** "the other company's hotel is refused INSIDE the tool" (across
-  four tools, asserting additionally that no statement returned a company-B row
-  on the way to saying no) and "a hotel id smuggled in alongside a legitimate
-  one is refused, not filtered".
-- **History:** cross-hotel chat, 2026-07-26.
+- **INV-PORTFOLIO-3 — a plan cannot select outside the exact receipt.** The
+  planner's selected scope must match the freshly resolved receipt, and the
+  engine rejects a selector/receipt mismatch or a selected hotel absent from
+  the authorized set. It never silently widens or substitutes another hotel.
+- **Enforced by:** `expectedIds` and the exact-scope checks in
+  `src/lib/agent/portfolio-intelligence/engine.ts`, followed by the route's
+  final receipt assertion.
+- **Tested by:** the naming-the-other-company refusal, stale-scope refusal, and
+  unsupported-measure cases in `portfolio-chat-leak.integration.test.ts`.
+- **History:** deterministic evidence route, 2026-07-30.
 
-- **INV-PORTFOLIO-4 — no portfolio tool mutates, and no per-hotel tool is
-  reachable at portfolio scope.** The two catalogs are disjoint in both
-  directions.
-- **Enforced by:** the surface mechanism that already existed. Every per-hotel
-  tool declares no `surfaces` and is therefore chat-only, so
-  `getToolsForRole(role, 'portfolio')` cannot offer one; and `executeTool`'s
-  surface gate refuses one even if a stale tool list leaked it. In the other
-  direction, `executeTool` refuses any tool declaring the portfolio surface when
-  `ctx.portfolio` is absent — which is the shape EVERY other execution path
-  builds (per-hotel chat, approval-resolve, the eval harness). The no-mutation
-  half is a test, not a type: the portfolio route runs with no approval gate, so
-  a mutating tool there would execute with no card.
-- **Why company-wide actions are absent on purpose:** the approval card was
-  designed around one hotel's manager approving one hotel's change, and the
-  blast radius of a wrong action multiplies by the size of the portfolio. This
-  is a deliberate deferral (founder, 2026-07-26), not an oversight.
-- **Tested by:** the whole "the two catalogs are disjoint" suite, including "not
-  one portfolio tool mutates", which fails on `mutates` OR `approval` being set.
-- **History:** cross-hotel chat, 2026-07-26.
-
+- **INV-PORTFOLIO-4 — portfolio synthesis mounts no agent tools.** The
+  portfolio route passes `tools: []` to the synthesis runtime and rejects any
+  nonzero tool-call count. The generic per-hotel tool registry has no
+  portfolio-surface registration, so the replaced tool-chat path cannot be
+  reached through the command runtime.
+- **Enforced by:** `/api/agent/portfolio/route.ts`, the empty synthesis tool
+  list, and its `validateAssistantResponse` guard. The route's deterministic
+  readers run before synthesis and provide the only factual input.
+- **Tested by:** the portfolio route's no-tool synthesis fixtures and the
+  catalog/registry tests that assert only live tools are registered.
+- **History:** cross-hotel chat, 2026-07-26; deterministic evidence route,
+  2026-07-30.
 - **INV-PORTFOLIO-5 — an individual hotel's private facts never enter a
   portfolio prompt.** The portfolio prompt carries hotel NAMES and ROOM COUNTS
   and no other hotel-supplied fact: no hotel-identity tier, no PMS-family tier,

@@ -40,8 +40,8 @@ export type VoiceMode = 'general' | 'housekeeper_issue' | 'compliance';
 
 /**
  * The company a portfolio turn is answering for, and the hotels the spine said
- * it covers. Carried on ToolContext, resolved at the route boundary, and
- * re-verified inside every portfolio tool.
+ * it covers. Carried on ToolContext after the portfolio route's authorization
+ * receipt has been resolved.
  */
 export interface PortfolioToolScope {
   organizationId: string;
@@ -139,10 +139,9 @@ export interface ToolContext {
    * went through the company gate — including the per-hotel chat route's
    * context, the approval-resolve route's, and the eval harness's.
    *
-   * The tools do NOT trust it. Each one re-resolves the caller's coverage
-   * through the spine before reading anything (see tools/portfolio.ts): this
-   * field decides WHICH company is being asked about, not what the answer is
-   * allowed to include.
+   * The portfolio route resolves the coverage through the spine before the
+   * model request: this field decides WHICH company is being asked about, not
+   * what the answer is allowed to include.
    */
   portfolio?: PortfolioToolScope;
   /** When true, mutation tools should run their pre-write validation
@@ -355,6 +354,35 @@ export function registerTool<TArgs>(tool: ToolDefinition<TArgs>): void {
   registry.set(tool.name, tool as ToolDefinition<unknown>);
 }
 
+/**
+ * Compatibility surface for persisted `compare_properties` calls. It is
+ * deliberately not registered, so it cannot enter a live model catalog or
+ * reach any hotel data. History and replay callers still receive a useful
+ * refusal instead of a misleading "Tool not found" result.
+ */
+const retiredPortfolioComparisonRefusal = (): ToolResult => ({
+  ok: false,
+  error: 'This comparison moved to My Portfolio. Ask there to compare multiple hotels. Nothing was read or changed.',
+});
+
+const RETIRED_PORTFOLIO_COMPARISON: ToolDefinition = {
+  name: 'compare_properties',
+  description:
+    'Compatibility refusal for a retired cross-hotel comparison request. Use when: replaying historical portfolio tool calls. ' +
+    'Args: any historical comparison payload. Returns: a redirect to My Portfolio. Refuses: all data reads and writes.',
+  inputSchema: {
+    type: 'object',
+    properties: {},
+  },
+  allowedRoles: ['admin', 'owner', 'general_manager', 'front_desk', 'housekeeping', 'maintenance'],
+  surfaces: ['chat'],
+  handler: async (): Promise<ToolResult> => retiredPortfolioComparisonRefusal(),
+};
+
+function isRetiredPortfolioComparison(name: string): boolean {
+  return name === 'compare_properties';
+}
+
 // ─── Retired names (aliases) ────────────────────────────────────────────────
 // The 2026-07-27 catalog rebuild merged overlapping tools and deleted dead
 // stubs. Those wire-names did not simply vanish: they are recorded in three
@@ -363,17 +391,24 @@ export function registerTool<TArgs>(tool: ToolDefinition<TArgs>): void {
 // turns all of that history into "Tool not found", which is how a merge
 // quietly destroys the record of what the assistant used to do.
 //
-// So a retired name stays CALLABLE, mapped to whichever surviving tool now
-// answers that question. Aliases are deliberately NOT in `registry`, so:
+// So a retired name can stay callable, mapped to whichever surviving tool now
+// answers that question. Route replacements are retained for prompt-health
+// diagnostics and resolve to a tiny compatibility refusal, never to a
+// data-reading tool. Aliases are
+// deliberately NOT in `registry`, so:
 //   • `listAllTools()` returns only live tools — the tenant-isolation sweep
 //     walks the real catalog, not a doubled one;
 //   • `toAnthropicTools()` never offers a retired name to the model, so the
 //     catalog the model reads keeps shrinking even though history keeps
 //     resolving.
 //
-// Every entry states what it was and why it went. `agent-tool-catalog-audit`
-// fails the build if an alias points at a name that is not registered, or
-// collides with a live tool.
+// Every entry states what it was and why it went. The one route replacement is
+// the old cross-hotel comparison name: the deterministic portfolio route now
+// owns that question. Its compatibility target is intentionally absent from
+// the live registry, so history can be answered safely without presenting a
+// generic tool to the model. The catalog audit treats that marker as
+// intentionally non-callable and still catches every ordinary alias that
+// points at a name that is not registered or collides with a live tool.
 export const TOOL_ALIASES: ReadonlyMap<string, string> = new Map([
   // ── Dead stubs: no data source ever existed behind them ──
   // Both returned a fixed "not yet integrated" note and no figures. The
@@ -381,12 +416,11 @@ export const TOOL_ALIASES: ReadonlyMap<string, string> = new Map([
   // when it exposes it) plus expenses, profit and budgets.
   ['get_revenue', 'get_finance_summary'],
   ['get_financial_report', 'get_finance_summary'],
-  // Returned "multi-property comparison is not enabled". It IS enabled now —
-  // on the portfolio surface. Pointing here makes a per-hotel call fail with
-  // the portfolio refusal ("ask this from the company view"), which is the
-  // true answer rather than the stale one.
-  ['compare_properties', 'portfolio_compare'],
-
+  // Route replacement: multi-hotel comparison now belongs to the deterministic
+  // /api/agent/portfolio route, not the generic per-hotel tool registry. Keep
+  // the retired name so prompt-health checks can report stale rows without
+  // presenting a non-existent tool to the model.
+  ['compare_properties', 'portfolio_route'],
   // ── Merged: two tools that read the same rows and answered the same question ──
   // Read `inventory` with `reorder_at` as the threshold; the Inventory tab and
   // get_low_stock both classify against `par_level`. Same table, one correct.
@@ -434,6 +468,7 @@ export function listAllTools(): ToolDefinition[] {
 
 /** Look up a registered tool by name, following a retired name (or undefined). */
 export function getTool(name: string): ToolDefinition | undefined {
+  if (isRetiredPortfolioComparison(name)) return RETIRED_PORTFOLIO_COMPARISON;
   return registry.get(resolveToolName(name));
 }
 
@@ -673,6 +708,7 @@ export async function executeTool(
   args: unknown,
   ctx: ToolContext,
 ): Promise<ToolResult> {
+  if (isRetiredPortfolioComparison(name)) return retiredPortfolioComparisonRefusal();
   // A retired wire-name resolves to whichever tool answers that question now,
   // so a replayed history row / pinned eval case still executes. Everything
   // below gates on the SURVIVING tool's own declarations — an alias grants no
