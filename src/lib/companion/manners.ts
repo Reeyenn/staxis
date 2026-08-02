@@ -45,7 +45,10 @@ import {
   COMPANION_MEMORY_TOPIC_CAP,
   COMPANION_MIN_GAP_MINUTES,
 } from './charter';
-import { offerSentence, teachLine, tourQuestion, welcomeGreeting, type TeachFlow } from './copy';
+import {
+  dailyHelloLine, offerSentence, teachLine, todayFact, tourQuestion, welcomeGreeting,
+  type TeachFlow,
+} from './copy';
 import type { CompanionPageKey } from './pages';
 
 export type { TeachFlow } from './copy';
@@ -87,6 +90,14 @@ export interface CompanionMemory {
   /** Hotel-local day `spokenCount` belongs to. A new day resets the count. */
   spokenDay: string | null;
   spokenCount: number;
+  /**
+   * Hotel-local day the once-a-day hello was said, or null.
+   *
+   * The whole of the "exactly once a day" guarantee. Stored rather than kept in
+   * the tab because somebody who opens four screens before lunch is one person
+   * having one day, not four page loads each owed a greeting.
+   */
+  greetedDay: string | null;
   topics: Record<string, CompanionTopicMemory>;
 }
 
@@ -98,6 +109,7 @@ export const EMPTY_COMPANION_MEMORY: CompanionMemory = {
   lastSpokeAt: null,
   spokenDay: null,
   spokenCount: 0,
+  greetedDay: null,
   topics: {},
 };
 
@@ -152,6 +164,7 @@ export function parseCompanionMemory(raw: unknown): CompanionMemory {
     lastSpokeAt: isIsoString(o.lastSpokeAt) ? o.lastSpokeAt : null,
     spokenDay: isDayString(o.spokenDay) ? o.spokenDay : null,
     spokenCount: Number.isFinite(spokenCount) && spokenCount > 0 ? Math.min(Math.floor(spokenCount), 99) : 0,
+    greetedDay: isDayString(o.greetedDay) ? o.greetedDay : null,
     topics: capTopics(topics),
   };
 }
@@ -380,6 +393,77 @@ function sameDay(iso: string, day: string): boolean {
 // a tip that appears while somebody is still filling in a form is a tip that
 // arrives as an obstacle.
 
+// ═══════════════════════════════════════════════════════════════════════════
+// One hello a day
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// Once per hotel-local day per person, on the first screen they land on that
+// has a companion, whether or not anything is wrong. It is the one thing the
+// companion is allowed to say for no reason other than that a new day started.
+//
+// WHY THE DAY IS THE HOTEL'S. `today` is `propertyLocalToday(now, timezone)`,
+// resolved on the server from `properties.timezone`, never from the browser
+// clock. A night auditor at 1am and a GM at 9am are on different days by the
+// hotel's calendar, and the hotel's calendar is the one the whole product
+// already counts by (see src/lib/schedule/local-date.ts).
+//
+// It does NOT spend the daily speech budget. The budget exists to stop the
+// companion volunteering findings all day; a hello is not a finding, it is the
+// thing saying good morning once. It is still subject to every floor that
+// matters: asleep, quiet-for-now, and never while somebody is typing.
+//
+// And it never stacks on the welcome. On day one the welcome IS the hello.
+
+export type HelloRefusal =
+  | 'ai_asleep'
+  | 'quiet_this_session'
+  | 'user_is_busy'
+  | 'welcome_owns_today'
+  | 'already_said_today';
+
+export type HelloDecision =
+  | { hello: false; refusal: HelloRefusal }
+  | { hello: true; line: string };
+
+export interface HelloInput {
+  /** The hotel's own calendar day, YYYY-MM-DD. Never the browser's. */
+  today: string;
+  person: { firstName: string | null; sharedLogin: boolean };
+  memory: CompanionMemory;
+  /** The hour on the wall at the hotel, or null when we do not know it. */
+  hour: number | null;
+  /**
+   * How many things the companion has found worth raising.
+   *
+   * Counted from the candidates the bootstrap already returned, so the hello
+   * costs no read of its own. Zero produces "All quiet so far", which is a
+   * claim this only makes because the count really was zero.
+   */
+  waiting: number;
+  userIsBusy: boolean;
+  quietThisSession: boolean;
+  aiAwake: boolean;
+}
+
+export function decideDailyHello(input: HelloInput): HelloDecision {
+  if (!input.aiAwake) return { hello: false, refusal: 'ai_asleep' };
+  if (input.quietThisSession) return { hello: false, refusal: 'quiet_this_session' };
+  if (input.userIsBusy) return { hello: false, refusal: 'user_is_busy' };
+  // Day one belongs to the welcome. Two greetings in one morning is the thing
+  // the whole of this file exists to stop.
+  if (!input.memory.welcomedAt) return { hello: false, refusal: 'welcome_owns_today' };
+  if (input.memory.greetedDay === input.today) return { hello: false, refusal: 'already_said_today' };
+  return {
+    hello: true,
+    line: dailyHelloLine({
+      firstName: input.person.firstName,
+      sharedLogin: input.person.sharedLogin,
+      hour: input.hour,
+      fact: todayFact({ waiting: input.waiting }),
+    }),
+  };
+}
+
 export type TeachRefusal =
   | 'ai_asleep'
   | 'quiet_this_session'
@@ -445,6 +529,12 @@ export function rememberTaught(memory: CompanionMemory, flow: TeachFlow): Compan
 export function rememberWelcomed(memory: CompanionMemory, now: Date): CompanionMemory {
   if (memory.welcomedAt) return memory;
   return { ...memory, welcomedAt: now.toISOString() };
+}
+
+/** Stamp the hello. Idempotent within a day, and a day is the hotel's own. */
+export function rememberGreeted(memory: CompanionMemory, today: string): CompanionMemory {
+  if (memory.greetedDay === today) return memory;
+  return { ...memory, greetedDay: today };
 }
 
 export function rememberTourDeclined(memory: CompanionMemory): CompanionMemory {

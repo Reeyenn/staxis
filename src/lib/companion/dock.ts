@@ -1,10 +1,17 @@
 // ═══════════════════════════════════════════════════════════════════════════
-// Where the one object sits, and where its panel and peek can fit around it.
+// Where the one object sits, how it opens and closes, and where its panel and
+// peek can fit around it.
 //
 // PURE. No React, no window, no storage of its own. Everything arrives as an
 // argument, including the viewport and the storage object, which is what makes
 // "the panel never renders off screen" a thing a test can assert rather than a
 // thing somebody eyeballs on one monitor.
+//
+// The same reason is why the HOVER-INTENT timing, the PANEL EXIT duration and
+// the WHEEL CONTAINMENT arithmetic live here too rather than inline in the
+// component. None of them is geometry, but all three are decisions with a
+// consequence, and the suite runs under --conditions=react-server and cannot
+// mount a component to check one.
 //
 // The mark defaults to the bottom-right corner at a 26px inset, and a person
 // may drag it anywhere. That is device ergonomics, not a profile setting: the
@@ -249,6 +256,201 @@ export function placePeek(mark: Vec, viewport: Viewport): PeekPlacement {
  */
 export function peekFits(placement: PeekPlacement): boolean {
   return placement.maxWidth >= 140;
+}
+
+// ─── Hover intent ───────────────────────────────────────────────────────────
+
+/**
+ * How long the pointer must rest on the mark before the panel opens itself.
+ *
+ * Short enough to feel like the object answering, long enough that a cursor
+ * crossing the corner on its way somewhere else never flickers the panel open.
+ */
+export const HOVER_OPEN_MS = 250;
+
+/**
+ * Grace after the pointer leaves the mark AND the panel before it closes again.
+ *
+ * Longer than the open delay on purpose: the gap between the mark and the panel
+ * is 12px of bare page, and a pointer travelling from one to the other passes
+ * over it. Closing on that would make the panel impossible to reach.
+ */
+export const HOVER_CLOSE_MS = 400;
+
+/**
+ * Does hover own the panel on this device?
+ *
+ * Only true for a real pointer. On touch the tap is the whole interaction and a
+ * hover-open would fire on the same tap that toggles, opening and closing in
+ * one gesture. `(hover: hover) and (pointer: fine)` is the question, asked by
+ * the caller and answered here so the rule is one place.
+ */
+export function hoverOwnsPanel(input: { finePointer: boolean }): boolean {
+  return input.finePointer === true;
+}
+
+/** Should entering the mark arm the open timer? */
+export function hoverCanOpen(input: {
+  finePointer: boolean;
+  dragging: boolean;
+  open: boolean;
+}): boolean {
+  return hoverOwnsPanel(input) && !input.dragging && !input.open;
+}
+
+/**
+ * Should leaving the mark-plus-panel region arm the close timer?
+ *
+ * `busy` is the whole reason this is a function rather than a boolean at the
+ * call site. A panel the person is TYPING into, dictating into, or waiting on an
+ * answer from must not vanish because their hand drifted off the trackpad. The
+ * pointer leaving is a hint, not an instruction; only Escape, the close button
+ * and a click outside are instructions.
+ */
+export function hoverCanClose(input: {
+  finePointer: boolean;
+  open: boolean;
+  busy: boolean;
+}): boolean {
+  return hoverOwnsPanel(input) && input.open && !input.busy;
+}
+
+// ─── Auto peek ──────────────────────────────────────────────────────────────
+
+/**
+ * How long the peek stays out when it came on its own rather than on hover.
+ *
+ * Long enough to read one clause without hurrying, short enough that it is
+ * gone before it becomes furniture. It retreats by itself; there is nothing to
+ * dismiss, because a thing that demands dismissal is not a peek.
+ */
+export const AUTO_PEEK_MS = 6000;
+
+/**
+ * Should this sentence show itself, unasked?
+ *
+ * ONCE PER CANDIDATE PER SESSION. `shown` is the set of sentence keys already
+ * volunteered on this page load; a candidate that has had its moment waits to
+ * be hovered like everything else.
+ *
+ * The manners are NOT re-litigated here. A sentence only reaches this function
+ * because decideCompanionSpeech already let it through the daily cap, the
+ * minimum gap, the declined-twice drop, the one-thing-at-a-time rule and the
+ * never-while-typing floor. What is left to check is whether the corner is
+ * free: nothing volunteers itself over an open panel, a drag, or a person who
+ * is mid-sentence at the keyboard.
+ */
+export function shouldAutoPeek(input: {
+  key: string | null;
+  shown: ReadonlySet<string>;
+  open: boolean;
+  dragging: boolean;
+  busy: boolean;
+}): boolean {
+  if (!input.key) return false;
+  if (input.shown.has(input.key)) return false;
+  return !input.open && !input.dragging && !input.busy;
+}
+
+// ─── Open and close motion ──────────────────────────────────────────────────
+
+/** A1 · Rise. The panel coming up out of the mark. */
+export const PANEL_ENTER_MS = 280;
+
+/** B1 · Sink. Always faster than the rise; closing should not be savoured. */
+export const PANEL_EXIT_MS = 200;
+
+/** What both become when the person has asked for less motion. */
+export const REDUCED_MOTION_MS = 120;
+
+/**
+ * How long the panel must stay mounted after it is logically closed.
+ *
+ * The exit only exists if something renders it, and an unmount on the same tick
+ * as the state change renders nothing at all — which is exactly what was
+ * happening: B1 was specified, written into the CSS, and never once seen.
+ */
+export function panelExitMs(reducedMotion: boolean): number {
+  return reducedMotion ? REDUCED_MOTION_MS : PANEL_EXIT_MS;
+}
+
+/**
+ * Is the panel in the tree, and what is it wearing?
+ *
+ * The contract the exit animation depends on, in one place a test can hold: a
+ * panel that is logically CLOSED but still `closing` is STILL MOUNTED. Before
+ * this, `{open && <panel/>}` unmounted on the same commit that closed it, so
+ * B1 · Sink was specified, written into the CSS, and never rendered a frame.
+ */
+export function panelRenderState(input: { open: boolean; closing: boolean }): {
+  mounted: boolean;
+  className: string;
+} {
+  const mounted = input.open || input.closing;
+  return {
+    mounted,
+    className: input.closing ? 'asx-panel asx-closing' : 'asx-panel',
+  };
+}
+
+// ─── Wheel containment ──────────────────────────────────────────────────────
+
+/**
+ * A wheel notch in `deltaMode: DOM_DELTA_LINE`, in pixels.
+ *
+ * Firefox reports lines rather than pixels. 16 is one line at the panel's own
+ * 13-14px type; the exact value matters far less than not treating "3" as three
+ * pixels, which is what ignoring deltaMode does.
+ */
+export const WHEEL_LINE_PX = 16;
+
+/** Anything shaped like a scrolling element. */
+export interface ScrollBox {
+  scrollTop: number;
+  scrollHeight: number;
+  clientHeight: number;
+}
+
+/** Normalise a wheel delta to pixels, whatever units the browser used. */
+export function wheelDeltaPx(deltaY: number, deltaMode: number, pageHeight: number): number {
+  if (!Number.isFinite(deltaY)) return 0;
+  if (deltaMode === 1) return deltaY * WHEEL_LINE_PX;
+  if (deltaMode === 2) return deltaY * Math.max(1, pageHeight);
+  return deltaY;
+}
+
+/**
+ * Where a scroller lands after a wheel delta, clamped to its own ends.
+ *
+ * THE POINT IS THE CLAMP, NOT THE ARITHMETIC. The panel's thread is
+ * `overflow-y: auto` inside a fixed-position slab, and the browser's default is
+ * to hand the wheel to the page in two separate cases:
+ *
+ *   1. the thread has no overflow yet, so it is not a scroll target at all —
+ *      which is every freshly-opened panel, whose thread holds one placeholder
+ *      line. The first gesture therefore scrolls the PAGE, and only once a
+ *      conversation has made the thread taller does the panel start scrolling.
+ *      That is the "it only does it once" the founder saw.
+ *   2. the thread is at an end, and the wheel chains outward.
+ *
+ * `overscroll-behavior: contain` fixes (2) and cannot fix (1): an element with
+ * no overflow never receives the gesture to contain. So the panel takes the
+ * wheel itself and routes it here.
+ */
+export function containScroll(box: ScrollBox, deltaPx: number): number {
+  const max = Math.max(0, box.scrollHeight - box.clientHeight);
+  return clamp(box.scrollTop + deltaPx, 0, max);
+}
+
+/**
+ * Can this box take any of that delta, or is it already against that end?
+ *
+ * Not used to decide whether to swallow the wheel — the panel swallows it
+ * either way, which is the rule — but it is the honest answer to "did anything
+ * move", and the test asserts on it.
+ */
+export function scrollAbsorbs(box: ScrollBox, deltaPx: number): boolean {
+  return containScroll(box, deltaPx) !== box.scrollTop;
 }
 
 // ─── helpers ────────────────────────────────────────────────────────────────

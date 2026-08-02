@@ -46,9 +46,12 @@ import {
   type CompanionPageKey,
 } from '@/lib/companion/pages';
 import {
+  QUIET_TODAY,
   arrivalLine,
   cleanName,
   companionLabels,
+  dailyHelloLine,
+  greetingLine,
   looksSharedLogin,
   offerQuestion,
   offerSentence,
@@ -58,6 +61,7 @@ import {
   ruleSavedLine,
   sleepLine,
   teachLine,
+  todayFact,
   tourQuestion,
   welcomeGreeting,
   type SleepReason,
@@ -66,6 +70,7 @@ import {
 import {
   EMPTY_COMPANION_MEMORY,
   decideCompanionSpeech,
+  decideDailyHello,
   decideTeachMoment,
   type MannersInput,
 } from '@/lib/companion/manners';
@@ -135,6 +140,36 @@ function everyCompanionString(): Array<[string, string]> {
   }
   collect(offerQuestion(null), 'offerQuestion(none)', out);
   for (const page of COMPANION_PAGES) collect(offerQuestion(page), `offerQuestion(${page.key})`, out);
+
+  // Saying hello: the panel's opening line and the once-a-day greeting, over
+  // every hour bucket, both name shapes, and with and without a true fact.
+  for (const hour of [null, 0, 7, 12, 14, 18, 21, 23]) {
+    for (const sharedLogin of [false, true]) {
+      for (const waiting of [0, 1, 4]) {
+        const shape = { firstName: 'Maria', sharedLogin, hour, fact: todayFact({ waiting }) };
+        collect(greetingLine(shape), `greeting(${hour},${sharedLogin},${waiting})`, out);
+        collect(dailyHelloLine(shape), `hello(${hour},${sharedLogin},${waiting})`, out);
+      }
+    }
+  }
+  collect(QUIET_TODAY, 'quietToday', out);
+  for (const waiting of [1, 2, 40]) collect(todayFact({ waiting }) ?? '', `todayFact(${waiting})`, out);
+  for (const hour of [null, 9, 20]) {
+    collect(
+      decideDailyHello({
+        today: '2026-08-01',
+        person: { firstName: 'Maria', sharedLogin: false },
+        memory: { ...EMPTY_COMPANION_MEMORY, welcomedAt: '2026-07-01T12:00:00.000Z' },
+        hour,
+        waiting: 2,
+        userIsBusy: false,
+        quietThisSession: false,
+        aiAwake: true,
+      }),
+      `helloDecision(${hour})`,
+      out,
+    );
+  }
 
   // Sleep, in every reason it can have.
   for (const reason of SLEEP_REASONS) collect(sleepLine(reason), `sleep(${reason})`, out);
@@ -627,5 +662,72 @@ describe('the fixed labels', () => {
     // A rule can only be created by telling the companion, so an empty state
     // that just says "no rules yet" would be a dead end.
     assert.match(companionLabels().rulesEmpty, /tell/i);
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// The greeting says only what it was told
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// Staxis speaks first when somebody opens an empty panel, and again once a day
+// unprompted. Both lines are templates over three values: the hour on the wall
+// AT THE HOTEL, this person's first name, and a count the browser was already
+// given. There is no model call on either path.
+//
+// The failure this guards against is the obvious one for a greeting: reaching
+// for a plausible number because a sentence reads better with one in it. A
+// wrong occupancy figure in the corner of the screen is worse than no greeting
+// at all, because it is indistinguishable from a right one.
+
+describe('charter: the greeting invents nothing', () => {
+  const shapes = { firstName: 'Maria', sharedLogin: false };
+
+  test('with nothing to report, the opening line carries no number', () => {
+    for (const hour of [null, 0, 6, 11, 12, 17, 18, 23]) {
+      const line = greetingLine({ ...shapes, hour, fact: todayFact({ waiting: 0 }) });
+      assert.doesNotMatch(line, /\d/, `a count appeared from nowhere: ${line}`);
+    }
+  });
+
+  test('the only number it may print is the one it was handed', () => {
+    for (const waiting of [1, 2, 3, 7, 15]) {
+      const line = greetingLine({ ...shapes, hour: 9, fact: todayFact({ waiting }) });
+      const digits = line.match(/\d+/g) ?? [];
+      assert.deepEqual(digits, [String(waiting)], `stray numbers in: ${line}`);
+    }
+  });
+
+  test('an unknown hour produces no claim about the time of day', () => {
+    const line = greetingLine({ ...shapes, hour: null, fact: null });
+    assert.equal(line, 'Hello, Maria.');
+    for (const word of ['morning', 'afternoon', 'evening', 'night']) {
+      assert.doesNotMatch(line.toLowerCase(), new RegExp(word));
+    }
+  });
+
+  test('the daily hello is honest about a quiet hotel rather than padding it', () => {
+    const quiet = dailyHelloLine({ ...shapes, hour: 9, fact: todayFact({ waiting: 0 }) });
+    assert.ok(quiet.endsWith(QUIET_TODAY), quiet);
+    assert.doesNotMatch(quiet, /\d/);
+  });
+
+  test('a name is only ever said when there is a real one to say', () => {
+    for (const [firstName, sharedLogin] of [['Front', true], [null, false], ['front@hotel.com', false]] as const) {
+      const line = greetingLine({ firstName, sharedLogin, hour: 9, fact: null });
+      assert.ok(/^(Hello|Good (morning|afternoon|evening))\.$/.test(line), line);
+    }
+  });
+
+  test('every greeting is one glanceable line, in the companion voice', () => {
+    for (const hour of [null, 9, 14, 20]) {
+      for (const waiting of [0, 1, 5]) {
+        const shape = { ...shapes, hour, fact: todayFact({ waiting }) };
+        for (const line of [greetingLine(shape), dailyHelloLine(shape)]) {
+          assert.ok(line.length <= 90, `too long to glance at: ${line}`);
+          assert.ok(!line.includes(EM_DASH), line);
+          assert.ok(!line.includes('\n'), line);
+        }
+      }
+    }
   });
 });
