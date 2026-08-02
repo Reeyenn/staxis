@@ -26,9 +26,9 @@ const rpcSql = readFileSync(
   'utf8',
 );
 
-describe('correction-loop ↔ complete_inspection_atomic RPC wiring', () => {
+describe('correction-loop ↔ canonical inspection RPC wiring', () => {
   it('finalizeInspection calls the RPC by name', () => {
-    assert.match(loopSrc, /supabaseAdmin\.rpc\(\s*['"]complete_inspection_atomic['"]/);
+    assert.match(loopSrc, /supabaseAdmin\.rpc\(\s*['"]complete_inspection_atomic_canonical['"]/);
   });
 
   it('passes every required parameter to the RPC', () => {
@@ -49,18 +49,16 @@ describe('correction-loop ↔ complete_inspection_atomic RPC wiring', () => {
     for (const param of required) {
       assert.ok(
         loopSrc.includes(param),
-        `correction-loop.ts must pass ${param} to complete_inspection_atomic`,
+        `correction-loop.ts must pass ${param} to complete_inspection_atomic_canonical`,
       );
     }
   });
 
-  it('falls back to the legacy non-atomic path on transient RPC failure', () => {
-    // The fallback path must call completeInspection + apply{Pass,Fail}SideEffects.
-    assert.match(loopSrc, /completeInspection\(\{/);
-    assert.match(loopSrc, /applyPassSideEffects\(/);
-    assert.match(loopSrc, /applyFailSideEffects\(/);
-    // And it must log a warning so the rollout/regression is visible.
-    assert.match(loopSrc, /atomic RPC unavailable/);
+  it('surfaces a canonical failure for retry without falling back to legacy writers', () => {
+    assert.match(loopSrc, /canonical inspection finalize failed/);
+    assert.match(loopSrc, /RPC committed but response lost/);
+    assert.doesNotMatch(loopSrc, /completeInspection\(\{/);
+    assert.doesNotMatch(loopSrc, /from\(['"]cleaning_tasks['"]\)/);
   });
 
   it('re-throws caller-bug errors (E_NOT_FOUND / E_ALREADY_FINALIZED / E_BAD_RESULT) instead of falling back', () => {

@@ -5,17 +5,16 @@
  * active assignment for the property + date so the manager can rebalance
  * from scratch (typically Reset → Auto-assign).
  *
- * Safety: only touches cleaning_tasks still in a reassignable status
+ * Safety: only touches canonical plan rows still in a reassignable status
  * (scheduled / ready_now / deferred). Work that has already STARTED
  * (in_progress) or finished (completed / cancelled / inspection_*) keeps
  * its assignment — you can't un-assign a room a housekeeper is mid-clean
  * on. This mirrors the status window the reassign RPC enforces.
  *
- * Not a single transaction (no RPC), but the order is safe: deactivate
- * the hk_assignments rows first, then null the cleaning_tasks.assignee_id
- * cache. A crash between the two leaves the cache pointing at a now-
- * inactive assignment, which the board read (which joins active rows)
- * already tolerates — and the next auto-assign/reassign re-syncs it.
+ * The canonical reset operation runs in one transaction and appends the
+ * inactive assignment snapshot before clearing room_work's current fields.
+ * Legacy tables remain physical for the rollback window, but the manager
+ * board and future canonical callers read the room_work result.
  *
  * Auth: requireSession (manager-facing) + property-access gate.
  *
@@ -38,10 +37,6 @@ import { validateUuid, validateDateStr } from '@/lib/api-validate';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
-
-// Kept in sync with auto-assign-runner.AUTO_ASSIGNABLE_STATUSES and the
-// reassign RPC's status window.
-const RESETTABLE_STATUSES = ['scheduled', 'ready_now', 'deferred'] as const;
 
 interface Body {
   propertyId?: unknown;
@@ -89,49 +84,22 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     return err('forbidden: assigning work is restricted for your role at this property', { requestId, status: 403, code: 'forbidden' });
   }
   try {
-    // 1. Which tasks are eligible to reset (still reassignable). When a
-    //    single taskId is given, narrow to it (still status + tenant gated).
-    let taskQuery = supabaseAdmin
-      .from('cleaning_tasks')
-      .select('id')
-      .eq('property_id', propertyId)
-      .eq('business_date', businessDate)
-      .in('status', RESETTABLE_STATUSES);
-    if (singleTaskId) taskQuery = taskQuery.eq('id', singleTaskId);
-    const { data: taskRows, error: taskErr } = await taskQuery;
-    if (taskErr) {
-      log.error('reset-assignments: load tasks failed', { requestId, msg: taskErr.message });
+    const { data: rpcData, error: rpcErr } = await supabaseAdmin.rpc(
+      'reset_room_work_assignments',
+      {
+        p_property_id: propertyId,
+        p_date: businessDate,
+        p_task_id: singleTaskId,
+      },
+    );
+    if (rpcErr) {
+      log.error('reset-assignments: canonical reset failed', { requestId, msg: rpcErr.message });
       return err('reset failed', { requestId, status: 500, code: 'upstream_failure' });
     }
-    const taskIds = (taskRows ?? []).map(t => t.id as string);
-    if (taskIds.length === 0) {
-      return ok({ cleared: 0 }, { requestId });
-    }
-
-    // 2. Deactivate the active assignments for those tasks.
-    const { data: deactivated, error: deErr } = await supabaseAdmin
-      .from('hk_assignments')
-      .update({ is_active: false })
-      .eq('property_id', propertyId)
-      .eq('is_active', true)
-      .in('cleaning_task_id', taskIds)
-      .select('id');
-    if (deErr) {
-      log.error('reset-assignments: deactivate failed', { requestId, msg: deErr.message });
+    const cleared = typeof rpcData === 'number' ? rpcData : Number(rpcData ?? 0);
+    if (!Number.isFinite(cleared)) {
+      log.error('reset-assignments: canonical reset returned an invalid count', { requestId });
       return err('reset failed', { requestId, status: 500, code: 'upstream_failure' });
-    }
-    const cleared = deactivated?.length ?? 0;
-
-    // 3. Null the assignee_id cache on those tasks.
-    const { error: cacheErr } = await supabaseAdmin
-      .from('cleaning_tasks')
-      .update({ assignee_id: null })
-      .eq('property_id', propertyId)
-      .in('id', taskIds);
-    if (cacheErr) {
-      // Non-fatal: hk_assignments is the source of truth; the board joins
-      // active rows. Warn and report success on the deactivation.
-      log.warn('reset-assignments: cache clear failed', { requestId, msg: cacheErr.message });
     }
 
     log.info('reset-assignments: ok', { requestId, propertyId, businessDate, cleared });

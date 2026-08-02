@@ -15,8 +15,8 @@
  * (shared helper in src/lib/schedule/active-crew.ts), so the engine can
  * only place work onto crew the manager can actually see on the board.
  *
- * Non-destructive + idempotent: only places cleaning_tasks that have no
- * active hk_assignments row. That means it is a NO-OP once the day is
+ * Non-destructive + idempotent: only places canonical plan rows that have no
+ * current room_work assignee. That means it is a NO-OP once the day is
  * planned — which is why the board's "Re-plan day" button calls
  * POST /api/housekeeping/reset-assignments (no taskId → clear the day)
  * and then this route. Keep the two separate: a manager filling in the

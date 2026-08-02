@@ -18121,6 +18121,49 @@ export type Database = {
           },
         ]
       }
+      room_work_plan_v1: {
+        Row: {
+          assigned_at: string | null
+          assigned_by: string | null
+          assigned_by_user_id: string | null
+          assignment_reason: string | null
+          assignment_score: number | null
+          business_date: string
+          cleaning_type: string
+          created_at: string | null
+          dedupe_key: string
+          due_by: string | null
+          estimated_minutes: number | null
+          extras: Json
+          id: string
+          inspected_at: string | null
+          last_evaluated_at: string | null
+          legacy_task_id: string | null
+          notes: string | null
+          paused_at: string | null
+          pms_cleaning_type: string | null
+          pms_dnd_active: boolean | null
+          pms_housekeeper_name: string | null
+          pms_ingest_run_id: string | null
+          pms_notes: string | null
+          pms_raw: Json | null
+          priority: string
+          property_id: string
+          queue_order: number | null
+          requires_inspection: boolean
+          room_number: string
+          room_work_id: string
+          rule_inputs: Json | null
+          rules_fired: Json
+          scheduled_at: string | null
+          source_engine_run_id: string | null
+          source_pms_reservation_id: string | null
+          source_property_timezone: string | null
+          started_at: string | null
+          status: string
+          updated_at: string | null
+        }
+      }
       headcount_actuals_view: {
         Row: {
           actual_headcount: number | null
@@ -19319,6 +19362,33 @@ export type Database = {
           run_id: string
         }[]
       }
+      apply_inspection_cleaning_plan_side_effect: {
+        Args: {
+          p_correction_note: string
+          p_property_id: string
+          p_result: string
+          p_task_id: string
+        }
+        Returns: undefined
+      }
+      assign_room_work_atomic: {
+        Args: {
+          p_assigned_by?: string
+          p_assigned_by_user: string
+          p_only_if_unassigned?: boolean
+          p_property_id: string
+          p_queue_order?: number
+          p_reason: string
+          p_score?: number | null
+          p_task_id: string
+          p_to_housekeeper_id: string
+        }
+        Returns: {
+          assignee_id: string
+          noop: boolean
+          task_id: string
+        }[]
+      }
       claim_pms_auth_code: {
         Args: {
           p_max_age_seconds?: number
@@ -19332,6 +19402,49 @@ export type Database = {
       }
       cleanup_idempotency_log: { Args: never; Returns: number }
       complete_inspection_atomic: {
+        Args: {
+          p_correction_note: string
+          p_correction_notice_sent_at: string
+          p_escalated: boolean
+          p_escalation_reason: string
+          p_failed_items: Json
+          p_inspection_id: string
+          p_notes: string
+          p_passed_items: Json
+          p_property_id: string
+          p_result: string
+        }
+        Returns: {
+          checklist_id: string | null
+          cleaning_task_id: string | null
+          completed_at: string | null
+          correction_notice_sent_at: string | null
+          created_at: string
+          escalated: boolean
+          escalation_reason: string | null
+          failed_items: Json
+          housekeeper_staff_id: string | null
+          id: string
+          inspector_staff_id: string | null
+          notes: string | null
+          parent_inspection_id: string | null
+          passed_items: Json
+          property_id: string
+          recheck_inspection_id: string | null
+          result: string
+          room_id: string | null
+          room_number: string
+          started_at: string
+          updated_at: string
+        }
+        SetofOptions: {
+          from: "*"
+          to: "inspections"
+          isOneToOne: true
+          isSetofReturn: false
+        }
+      }
+      complete_inspection_atomic_canonical: {
         Args: {
           p_correction_note: string
           p_correction_notice_sent_at: string
@@ -19562,6 +19675,14 @@ export type Database = {
           noop: boolean
           task_id: string
         }[]
+      }
+      reset_room_work_assignments: {
+        Args: {
+          p_date: string
+          p_property_id: string
+          p_task_id?: string | null
+        }
+        Returns: number
       }
       replace_labor_wage_settings: {
         Args: { p_property_id: string; p_rows: Json; p_updated_by: string }
@@ -20474,6 +20595,10 @@ export type Database = {
         Args: { p_account_id: string }
         Returns: Json
       }
+      staxis_list_account_authorization_admin: {
+        Args: { p_account_id: string }
+        Returns: Json
+      }
       staxis_list_authoritative_hotel_accounts: {
         Args: { p_include_platform_admins?: boolean; p_property_id: string }
         Returns: Json
@@ -21232,6 +21357,20 @@ export type Database = {
         }
         Returns: Json
       }
+      staxis_remove_property_access_authoritative: {
+        Args: {
+          p_account_id: string
+          p_actor_account_id: string
+          p_actor_auth_user_id: string
+          p_actor_email: string
+          p_expected_authority_version: number
+          p_expected_role: string
+          p_expected_updated_at: string
+          p_hotel_id: string
+          p_request_id: string
+        }
+        Returns: Json
+      }
       staxis_replace_finding_action: {
         Args: {
           p_action_kind: string
@@ -21624,6 +21763,18 @@ export type Database = {
         }
         Returns: Json
       }
+      staxis_set_account_authorization_scope: {
+        Args: {
+          p_account_id: string
+          p_actor_account_id: string
+          p_expected_authority_version: number
+          p_expected_role: string
+          p_new_role: string
+          p_property_ids: string[]
+          p_reason: string
+        }
+        Returns: Json
+      }
       staxis_undo_finding_action: {
         Args: {
           p_account_id: string
@@ -21774,6 +21925,22 @@ export type Database = {
         }
         Returns: Json
       }
+      touch_room_work_plan: {
+        Args: {
+          p_date: string
+          p_dedupe_keys: string[]
+          p_property_id: string
+        }
+        Returns: number
+      }
+      upsert_room_work_plan: {
+        Args: { p_property_id: string; p_rows: Json }
+        Returns: {
+          dedupe_key: string
+          outcome: string
+          task_id: string
+        }[]
+      }
       today_property_counts_v1: {
         Args: { p_date: string; p_property_id: string }
         Returns: {
@@ -21797,6 +21964,17 @@ export type Database = {
         }[]
       }
       user_manages_property: { Args: { p_id: string }; Returns: boolean }
+      write_room_work_atomic: {
+        Args: {
+          p_check_expected_status?: boolean
+          p_date: string
+          p_expected_status?: string | null
+          p_patch: Json
+          p_property_id: string
+          p_room_number: string
+        }
+        Returns: boolean
+      }
       user_owns_property: { Args: { p_id: string }; Returns: boolean }
     }
     Enums: {

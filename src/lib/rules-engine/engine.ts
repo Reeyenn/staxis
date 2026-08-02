@@ -10,20 +10,16 @@
  *      a PMS HK plan entry for today.
  *   3. Evaluate every rule against each context (pure functions).
  *   4. Merge the fires into a MergedTaskSpec.
- *   5. Partition into three write buckets:
- *        - insert : no existing row (bulk INSERT with ON CONFLICT DO NOTHING)
- *        - update : existing row whose status is engine-mutable (per-row
- *                   UPDATE with a `status IN (mutable)` filter — atomic)
- *        - bump   : existing row whose status is not mutable (bulk UPDATE
- *                   of only last_evaluated_at)
- *      The per-row UPDATE in the `update` bucket closes the TOCTOU race
- *      that bulk upsert had: a housekeeper marking a task in_progress
- *      between the SELECT and the write can no longer be clobbered, because
- *      the WHERE clause filters them out at the row-lock level.
+ *   5. Partition into canonical plan write buckets:
+ *        - insert/update : one property-scoped RPC batch, with a status
+ *                          guard that never overwrites started workflow
+ *        - bump          : canonical heartbeat for non-mutable plans
+ *      The RPC locks the complete affected component set before mutation,
+ *      closing the TOCTOU race that direct legacy-table writes carried.
  *
- * Idempotency: identical inputs produce identical rows (same dedupe_key,
- * same cleaning_type, same rules_fired). Re-running on stable PMS state
- * is a no-op from the data perspective (only last_evaluated_at moves).
+ * Idempotency: identical inputs produce identical canonical rows (same
+ * dedupe_key, same cleaning_type, same rules_fired). Re-running on stable
+ * PMS state is a no-op from the data perspective (only the heartbeat moves).
  */
 
 import { supabaseAdmin } from '@/lib/supabase-admin';
@@ -193,119 +189,69 @@ export async function runRulesEngineForProperty(
 
   let upserted = 0;
   if (!dryRun) {
-    // ─── Bucket 1: INSERT new rows ─────────────────────────────────────
-    // ON CONFLICT DO NOTHING (`ignoreDuplicates: true`) handles the race
-    // where another process inserted a row in the window between our
-    // SELECT and our INSERT.
-    if (rowsToInsert.length > 0) {
-      const { data: inserted, error: insertErr } = await supabaseAdmin
-        .from('cleaning_tasks')
-        .upsert(rowsToInsert, {
-          onConflict: 'property_id,dedupe_key',
-          ignoreDuplicates: true,
-        })
-        .select('dedupe_key');
-      if (insertErr) {
-        log.error('[rules-engine] insert failed', {
+    // The canonical batch below handles inserts and mutable updates together.
+
+    const planRows = [...rowsToInsert, ...rowsToUpdate];
+    if (planRows.length > 0) {
+      const { data: persisted, error: persistErr } = await supabaseAdmin.rpc(
+        'upsert_room_work_plan',
+        { p_property_id: propertyId, p_rows: planRows },
+      );
+      if (persistErr) {
+        log.error('[rules-engine] canonical plan upsert failed', {
           propertyId,
           engineRunId,
-          error: insertErr.message,
-          rowCount: rowsToInsert.length,
+          error: persistErr.message,
+          rowCount: planRows.length,
         });
         errors.push({
           room_number: '*',
-          error: `cleaning_tasks insert failed: ${insertErr.message}`,
+          error: `room_work plan upsert failed: ${persistErr.message}`,
         });
       } else {
-        const insertedKeys = new Set(
-          ((inserted ?? []) as Array<{ dedupe_key: string }>).map((r) => r.dedupe_key),
-        );
-        upserted += insertedKeys.size;
-        if (verbose) {
-          for (const row of rowsToInsert) {
-            const planned = pendingUpdateOutcomes.get(row.dedupe_key);
-            if (planned) outcomes.push(planned);
+        const persistedRows = (persisted ?? []) as Array<{
+          dedupe_key: string;
+          outcome: string;
+        }>;
+        const submittedByKey = new Map(planRows.map((row) => [row.dedupe_key, row]));
+        for (const result of persistedRows) {
+          const row = submittedByKey.get(result.dedupe_key);
+          if (!row) continue;
+          if (result.outcome === 'inserted' || result.outcome === 'updated') {
+            upserted++;
+            if (verbose) {
+              const planned = pendingUpdateOutcomes.get(row.dedupe_key);
+              if (planned) outcomes.push(planned);
+            }
+          } else if (rowsToUpdate.some((candidate) => candidate.dedupe_key === row.dedupe_key)) {
+            // A mutable row can become non-mutable while the RPC waits for
+            // its row lock. Preserve the old race outcome without touching
+            // the human's workflow state.
+            skippedInProgress++;
+            if (verbose) {
+              outcomes.push({
+                room_number: row.room_number,
+                outcome: 'skipped_in_progress',
+                cleaning_type: row.cleaning_type,
+              });
+            }
           }
         }
       }
     }
 
-    // ─── Bucket 2: per-row UPDATE with status filter ───────────────────
-    // Atomic at the row-lock level. If a housekeeper marked the task
-    // `in_progress` between our SELECT and this UPDATE, the WHERE clause
-    // excludes the row and 0 rows are updated — we then fall through to
-    // bumping last_evaluated_at, never overwriting their progress.
-    const mutableStatuses: string[] = [...ENGINE_MUTABLE_STATUSES];
-    for (const row of rowsToUpdate) {
-      const updateFields = {
-        cleaning_type: row.cleaning_type,
-        priority: row.priority,
-        due_by: row.due_by,
-        estimated_minutes: row.estimated_minutes,
-        requires_inspection: row.requires_inspection,
-        extras: row.extras,
-        notes: row.notes,
-        rules_fired: row.rules_fired,
-        rule_inputs: row.rule_inputs,
-        status: row.status,
-        source_pms_reservation_id: row.source_pms_reservation_id,
-        source_engine_run_id: row.source_engine_run_id,
-        source_property_timezone: row.source_property_timezone,
-        scheduled_at: row.scheduled_at,
-        last_evaluated_at: row.last_evaluated_at,
-      };
-      const { data: updatedRows, error: updateErr } = await supabaseAdmin
-        .from('cleaning_tasks')
-        .update(updateFields)
-        .eq('property_id', row.property_id)
-        .eq('dedupe_key', row.dedupe_key)
-        .in('status', mutableStatuses)
-        .select('id');
-      if (updateErr) {
-        log.error('[rules-engine] update failed', {
-          propertyId,
-          engineRunId,
-          dedupe_key: row.dedupe_key,
-          error: updateErr.message,
-        });
-        errors.push({
-          room_number: row.room_number,
-          error: `cleaning_tasks update failed: ${updateErr.message}`,
-        });
-        continue;
-      }
-      if (!updatedRows || updatedRows.length === 0) {
-        // Race: status changed to non-mutable between SELECT and UPDATE.
-        // Fall through to bump-only path so the human's progress is
-        // preserved AND the task still appears "evaluated this run".
-        skippedInProgress++;
-        keysToBump.push(row.dedupe_key);
-        if (verbose) {
-          outcomes.push({
-            room_number: row.room_number,
-            outcome: 'skipped_in_progress',
-            cleaning_type: row.cleaning_type,
-          });
-        }
-        continue;
-      }
-      upserted++;
-      if (verbose) {
-        const planned = pendingUpdateOutcomes.get(row.dedupe_key);
-        if (planned) outcomes.push(planned);
-      }
-    }
-
-    // ─── Bucket 3: bump last_evaluated_at only ─────────────────────────
+    // ─── Existing-work heartbeat ────────────────────────────────────────
     if (keysToBump.length > 0) {
-      const nowIso = now.toISOString();
-      const { error: bumpErr } = await supabaseAdmin
-        .from('cleaning_tasks')
-        .update({ last_evaluated_at: nowIso })
-        .eq('property_id', propertyId)
-        .in('dedupe_key', keysToBump);
+      const { error: bumpErr } = await supabaseAdmin.rpc(
+        'touch_room_work_plan',
+        {
+          p_property_id: propertyId,
+          p_date: prop.business_date,
+          p_dedupe_keys: keysToBump,
+        },
+      );
       if (bumpErr) {
-        log.warn('[rules-engine] last_evaluated_at bump failed', {
+        log.warn('[rules-engine] canonical plan heartbeat failed', {
           propertyId,
           engineRunId,
           error: bumpErr.message,
@@ -347,7 +293,7 @@ async function fetchExistingTaskStatuses(
   if (dedupeKeys.length === 0) return map;
 
   const { data, error } = await supabaseAdmin
-    .from('cleaning_tasks')
+    .from('room_work_plan_v1')
     .select('id, dedupe_key, status')
     .eq('property_id', propertyId)
     .in('dedupe_key', dedupeKeys);
