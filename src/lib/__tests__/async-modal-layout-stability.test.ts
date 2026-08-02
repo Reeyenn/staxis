@@ -29,7 +29,7 @@ describe('app-wide async modal layout stability', () => {
     assert.match(hotelInvites, /className=\{styles\.inviteBody\} aria-busy=\{\(canManageHotelRoster && codeLoading\) \|\| invitesLoading\}/);
     assert.equal((hotelInvites.match(/<InviteSectionSkeleton/g) ?? []).length, 2);
     assert.match(hotelInvites, /className=\{styles\.inviteSkeletonVisual\} aria-hidden="true"/);
-    assert.match(hotelTeamCss, /\.inviteBody\s*\{[\s\S]*?min-height:\s*min\(610px, calc\(100dvh - 190px\)\)/);
+    assert.match(hotelTeamCss, /\.inviteBody\s*\{[\s\S]*?min-height:\s*0;/);
     assert.match(hotelTeamCss, /@media \(prefers-reduced-motion: reduce\)[\s\S]*?\.inviteSkeletonLine::after[\s\S]*?animation:\s*none/);
   });
 });

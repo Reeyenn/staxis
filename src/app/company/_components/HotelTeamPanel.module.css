@@ -133,7 +133,6 @@
 .successNotice button:focus-visible,
 .peopleAction:focus-visible,
 .peopleInviteChoice:focus-visible,
-.inviteModeButton:focus-visible,
 .dialogScrim:focus-visible {
   outline: 2px solid var(--team-sage);
   outline-offset: 2px;
@@ -1460,59 +1459,11 @@
 
 .inviteBody {
   display: flex;
-  min-height: min(610px, calc(100dvh - 190px));
+  min-height: 0;
   flex-direction: column;
-  gap: 16px;
+  gap: 14px;
   padding: 17px 18px 0;
 }
-
-.inviteModePicker {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 9px;
-}
-
-.inviteModeButton {
-  display: flex;
-  min-width: 0;
-  min-height: 72px;
-  align-items: center;
-  gap: 10px;
-  padding: 11px 12px;
-  border: 1px solid var(--team-rule);
-  border-radius: 12px;
-  color: var(--team-ink-2);
-  background: var(--team-paper);
-  cursor: pointer;
-  font-family: inherit;
-  text-align: left;
-  transition: background-color 150ms ease-out, border-color 150ms ease-out, transform 100ms ease-out;
-}
-
-.inviteModeButton > span:first-child {
-  display: grid;
-  width: 38px;
-  height: 38px;
-  flex: none;
-  place-items: center;
-  border-radius: 11px;
-  color: var(--team-muted);
-  background: var(--team-wash);
-}
-
-.inviteModeButton > span:last-child {
-  display: flex;
-  min-width: 0;
-  flex-direction: column;
-  gap: 2px;
-}
-
-.inviteModeButton strong { color: var(--team-ink); font-size: 12.5px; font-weight: 650; line-height: 18px; }
-.inviteModeButton small { color: var(--team-muted); font-size: 10.5px; line-height: 15px; }
-.inviteModeButton:hover { border-color: rgba(92, 122, 96, 0.3); background: var(--team-wash); }
-.inviteModeButton[aria-selected='true'] { border-color: rgba(92, 122, 96, 0.38); color: var(--team-sage); background: var(--team-sage-dim); }
-.inviteModeButton[aria-selected='true'] > span:first-child { color: #ffffff; background: var(--team-sage); }
-.inviteModeButton:active { transform: scale(0.99); }
 
 .inviteSkeleton,
 .inviteSkeletonVisual {
@@ -1620,70 +1571,8 @@
   line-height: 19px;
 }
 
-.inviteSectionHeading p {
-  margin: 2px 0 0;
-  color: var(--team-ink-2);
-  font-size: 11px;
-  line-height: 16px;
-}
-
-.sharedInviteExplanation,
-.emailInviteExplanation {
-  display: flex;
-  align-items: flex-start;
-  gap: 11px;
-  padding: 12px;
-  border: 1px solid rgba(92, 122, 96, 0.18);
-  border-radius: 11px;
-  color: var(--team-sage);
-  background: var(--team-sage-dim);
-}
-
-.sharedInviteExplanation { flex-direction: column; }
-
-.sharedInviteExplanation > div:first-child,
-.emailInviteExplanation > div {
-  display: flex;
-  min-width: 0;
-  flex: 1;
-  flex-direction: column;
-  gap: 2px;
-}
-
-.sharedInviteExplanation strong,
-.emailInviteExplanation strong { color: var(--team-ink); font-size: 11.5px; font-weight: 650; line-height: 17px; }
-
-.sharedInviteExplanation span,
-.emailInviteExplanation span { color: var(--team-ink-2); font-size: 11px; line-height: 16px; }
-
-.emailInviteExplanation > svg { flex: none; margin-top: 1px; }
-
-.sharedInviteMethods {
-  display: grid;
-  width: 100%;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 7px;
-}
-
-.sharedInviteMethods > span {
-  display: flex;
-  min-height: 38px;
-  align-items: center;
-  justify-content: center;
-  gap: 6px;
-  padding: 6px 8px;
-  border: 1px solid rgba(92, 122, 96, 0.18);
-  border-radius: 9px;
-  color: var(--team-sage);
-  background: rgba(255, 255, 255, 0.64);
-  font-size: 10.5px;
-  font-weight: 650;
-  line-height: 15px;
-}
-
 .sectionLoading,
-.sectionError,
-.noCodeState {
+.sectionError {
   display: flex;
   min-height: 72px;
   align-items: center;
@@ -1707,33 +1596,6 @@
 .sectionError > span {
   flex: 1;
   min-width: 0;
-}
-
-.noCodeState {
-  justify-content: flex-start;
-}
-
-.noCodeState > svg {
-  flex: none;
-  color: var(--team-sage);
-}
-
-.noCodeState > div {
-  display: flex;
-  min-width: 0;
-  flex: 1;
-  flex-direction: column;
-  gap: 2px;
-}
-
-.noCodeState strong {
-  color: var(--team-ink);
-  font-size: 12px;
-}
-
-.noCodeState span {
-  color: var(--team-ink-2);
-  font-size: 11.5px;
 }
 
 .codeLayout {
@@ -1957,6 +1819,13 @@
   padding-top: 3px;
 }
 
+.pendingInviteLoading,
+.pendingInviteSection {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
 .inviteList {
   overflow: hidden;
   border: 1px solid var(--team-rule);
@@ -2103,10 +1972,6 @@
   }
 
   .peopleActions,
-  .inviteModePicker {
-    grid-template-columns: 1fr;
-  }
-
   .teamRow,
   .approvalRow {
     min-height: 76px;
@@ -2227,10 +2092,6 @@
     grid-column: auto;
   }
 
-  .inviteBody {
-    min-height: min(560px, calc(100dvh - 180px));
-  }
-
   .dialogForm > .dialogFooter {
     margin-right: -14px;
     margin-left: -14px;
@@ -2271,29 +2132,12 @@
     padding: 12px;
   }
 
-  .sharedInviteMethods {
-    grid-template-columns: 1fr;
-  }
-
   .copyField > div {
     align-items: stretch;
     flex-direction: column;
   }
 
   .copyField button {
-    width: 100%;
-  }
-
-  .noCodeState {
-    align-items: flex-start;
-    flex-wrap: wrap;
-  }
-
-  .noCodeState > div {
-    width: calc(100% - 34px);
-  }
-
-  .noCodeState > button {
     width: 100%;
   }
 
@@ -2379,8 +2223,7 @@
   .denyButton,
   .editButton,
   .peopleAction,
-  .peopleInviteChoice,
-  .inviteModeButton {
+  .peopleInviteChoice {
     transition: none;
   }
 
@@ -2391,8 +2234,7 @@
   .denyButton:active:not(:disabled),
   .editButton:active:not(:disabled),
   .peopleAction:active:not(:disabled),
-  .peopleInviteChoice:active,
-  .inviteModeButton:active {
+  .peopleInviteChoice:active {
     transform: none;
   }
 }

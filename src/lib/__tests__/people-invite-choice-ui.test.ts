@@ -155,13 +155,15 @@ describe('People invite entry choice', () => {
     assert.match(normalDialogArea, /canManageHotelRoster/);
     assert.match(normalDialogArea, /unlinkedRosterProfiles=\{unlinkedRosterProfiles\}/);
     assert.match(earlyBranch, /canInviteManager\s+canManageHotelRoster=\{false\}/);
-    assert.match(dialogs, /'Share one hotel invitation as a link, QR code, or signup code\.'/);
-    assert.match(dialogs, /'Send a private invitation, then choose the job and exact company or hotel access\.'/);
+    assert.doesNotMatch(dialogs, /Share one hotel invitation as a link, QR code, or signup code\./);
+    assert.doesNotMatch(dialogs, /Send a private invitation, then choose the job and exact company or hotel access\./);
     assert.match(dialogs, /QRCode\.toDataURL\(signupLinkFor\(code\.code\)/);
     assert.match(dialogs, /\{'Link'\}/);
     assert.match(dialogs, /\{'QR code'\}/);
     assert.match(dialogs, /\{'Signup code'\}/);
-    assert.match(dialogs, /canInviteManager && inviteMode === 'email'/);
+    assert.match(dialogs, /\{canManageHotelRoster \? \([\s\S]*?\{'Hotel invite'\}/);
+    assert.match(dialogs, /\{canInviteManager \? \([\s\S]*?\{'Email one person'\}/);
+    assert.doesNotMatch(dialogs, /inviteMode|hasInviteModeChoice|role="tablist"|role="tabpanel"/);
   });
 
   test('permission and read-only gates keep the entry closed', () => {
