@@ -14,7 +14,6 @@ import {
   Link2,
   LogIn,
   Mail,
-  QrCode,
   RefreshCw,
   ShieldCheck,
   Trash2,
@@ -96,7 +95,6 @@ interface InvitePostData {
   profileLinked?: boolean;
 }
 
-type InviteMode = 'shared' | 'email';
 type OperationalInviteJob = 'housekeeping' | 'front_desk' | 'maintenance';
 
 const OPERATIONAL_INVITE_JOBS = new Set<OperationalInviteJob>([
@@ -409,7 +407,7 @@ function DialogShell({
         role="dialog"
         aria-modal="true"
         aria-labelledby={titleId}
-        aria-describedby={descriptionId}
+        aria-describedby={description ? descriptionId : undefined}
         aria-busy={busy}
       >
         <div className={styles.dialogHeader}>
@@ -429,7 +427,7 @@ function DialogShell({
             <X size={18} aria-hidden="true" />
           </button>
         </div>
-        <p id={descriptionId} className={styles.dialogIntro}>{description}</p>
+        {description ? <p id={descriptionId} className={styles.dialogIntro}>{description}</p> : null}
         {children}
       </div>
     </div>,
@@ -1572,9 +1570,6 @@ export function HotelInviteDialog({
   returnFocusRef?: React.RefObject<HTMLElement | null>;
   fallbackFocusRef?: React.RefObject<HTMLElement | null>;
 }) {
-  const [inviteMode, setInviteMode] = React.useState<InviteMode>(
-    canManageHotelRoster ? 'shared' : 'email',
-  );
   const [code, setCode] = React.useState<JoinCode | null>(null);
   const [codeLoading, setCodeLoading] = React.useState(canManageHotelRoster);
   const [codeError, setCodeError] = React.useState('');
@@ -1613,12 +1608,6 @@ export function HotelInviteDialog({
   const [revokeInviteId, setRevokeInviteId] = React.useState<string | null>(null);
   const [revokingInviteId, setRevokingInviteId] = React.useState<string | null>(null);
 
-  const sharedTabRef = React.useRef<HTMLButtonElement | null>(null);
-  const emailTabRef = React.useRef<HTMLButtonElement | null>(null);
-  const sharedTabId = React.useId();
-  const emailTabId = React.useId();
-  const sharedPanelId = React.useId();
-  const emailPanelId = React.useId();
   const rosterProfileHelpId = React.useId();
 
   const codeAbortRef = React.useRef<AbortController | null>(null);
@@ -1645,8 +1634,6 @@ export function HotelInviteDialog({
         )
       : []
   ), [currentHotelCoveredByInvite, selectedOperationalJob, unlinkedRosterProfiles]);
-  const hasInviteModeChoice = canManageHotelRoster && canInviteManager;
-
   React.useEffect(() => {
     // Roster refreshes and concurrent links can invalidate a still-open form.
     // Never retain an id that is no longer one of the visible exact matches.
@@ -1656,22 +1643,6 @@ export function HotelInviteDialog({
         : current
     ));
   }, [linkableRosterProfiles]);
-
-  const chooseInviteMode = (nextMode: InviteMode, focusTab = false) => {
-    setInviteMode(nextMode);
-    if (focusTab) {
-      (nextMode === 'shared' ? sharedTabRef.current : emailTabRef.current)?.focus();
-    }
-  };
-
-  const onInviteModeKeyDown = (event: React.KeyboardEvent<HTMLButtonElement>) => {
-    let nextMode: InviteMode | null = null;
-    if (event.key === 'ArrowLeft' || event.key === 'Home') nextMode = 'shared';
-    if (event.key === 'ArrowRight' || event.key === 'End') nextMode = 'email';
-    if (!nextMode) return;
-    event.preventDefault();
-    chooseInviteMode(nextMode, true);
-  };
 
   const loadCode = React.useCallback(async () => {
     if (!canManageHotelRoster) {
@@ -1981,13 +1952,9 @@ export function HotelInviteDialog({
 
   return (
     <DialogShell
-      title={'Invite people to Staxis'}
+      title={'Invite people'}
       eyebrow={hotelName}
-      description={!canManageHotelRoster
-          ? 'Email one person who needs to log in, then choose their job and exact company or hotel access.'
-          : canInviteManager
-          ? 'Invite someone who needs to log in. Choose a shared hotel invitation or email one person.'
-          : 'Share one hotel invitation as a link, QR code, or signup code.'}
+      description={''}
       lang={lang}
       icon={<UserCheck size={21} aria-hidden="true" />}
       onClose={onClose}
@@ -1997,67 +1964,12 @@ export function HotelInviteDialog({
       fallbackFocusRef={fallbackFocusRef}
     >
       <div className={styles.inviteBody} aria-busy={(canManageHotelRoster && codeLoading) || invitesLoading}>
-        {hasInviteModeChoice ? (
-          <div className={styles.inviteModePicker} role="tablist" aria-label="Invitation method">
-            <button
-              ref={sharedTabRef}
-              id={sharedTabId}
-              type="button"
-              role="tab"
-              aria-selected={inviteMode === 'shared'}
-              aria-controls={sharedPanelId}
-              tabIndex={inviteMode === 'shared' ? 0 : -1}
-              className={styles.inviteModeButton}
-              onClick={() => chooseInviteMode('shared')}
-              onKeyDown={onInviteModeKeyDown}
-            >
-              <span aria-hidden="true"><Link2 size={18} /></span>
-              <span><strong>{'Shared hotel invite'}</strong><small>{'Link, QR, or code · staff request approval'}</small></span>
-            </button>
-            <button
-              ref={emailTabRef}
-              id={emailTabId}
-              type="button"
-              role="tab"
-              aria-selected={inviteMode === 'email'}
-              aria-controls={emailPanelId}
-              tabIndex={inviteMode === 'email' ? 0 : -1}
-              className={styles.inviteModeButton}
-              onClick={() => chooseInviteMode('email')}
-              onKeyDown={onInviteModeKeyDown}
-            >
-              <span aria-hidden="true"><Mail size={18} /></span>
-              <span><strong>{'Email one person'}</strong><small>{'Assign their job and company or hotel access'}</small></span>
-            </button>
-          </div>
-        ) : null}
-
-        {canManageHotelRoster && inviteMode === 'shared' ? (
-        <section
-          id={sharedPanelId}
-          className={styles.inviteSection}
-          role={hasInviteModeChoice ? 'tabpanel' : undefined}
-          aria-labelledby={hasInviteModeChoice ? sharedTabId : 'staff-invite-heading'}
-          tabIndex={hasInviteModeChoice ? 0 : undefined}
-        >
+        {canManageHotelRoster ? (
+        <section className={styles.inviteSection} aria-labelledby="hotel-invite-heading">
           <div className={styles.inviteSectionHeading}>
             <span className={styles.sectionIcon}><Link2 size={18} aria-hidden="true" /></span>
             <div>
-              <h3 id="staff-invite-heading">{'Shared hotel invite'}</h3>
-              <p>{'Staff create their own account, choose their department, then wait for your approval.'}</p>
-            </div>
-          </div>
-
-          <div className={styles.sharedInviteExplanation}>
-            <div>
-              <strong>{'One invitation, three ways to share it'}</strong>
-              <span>{`Every option opens the same Staxis signup for ${hotelName}.`}</span>
-              <span>{'When you approve someone, Staxis reuses one clear matching roster profile or creates a new one.'}</span>
-            </div>
-            <div className={styles.sharedInviteMethods} aria-label="Ways to share this invitation">
-              <span><Link2 size={15} aria-hidden="true" />{'Link'}</span>
-              <span><QrCode size={15} aria-hidden="true" />{'QR code'}</span>
-              <span><KeyRound size={15} aria-hidden="true" />{'Signup code'}</span>
+              <h3 id="hotel-invite-heading">{'Hotel invite'}</h3>
             </div>
           </div>
 
@@ -2072,9 +1984,9 @@ export function HotelInviteDialog({
             <div className={styles.codeLayout}>
               <div className={styles.codeDetails}>
                 <label className={styles.copyField}>
-                  <span>{'Shareable link'}</span>
+                  <span>{'Link'}</span>
                   <div>
-                    <input value={activeLink} readOnly aria-label={'Staff invite link'} />
+                    <input value={activeLink} readOnly aria-label={'Hotel invite link'} />
                     <button type="button" onClick={() => void announceCopy(activeLink, 'link')}>
                       {copied === 'link' ? <Check size={16} aria-hidden="true" /> : <Copy size={16} aria-hidden="true" />}
                       {copied === 'link' ? 'Copied' : 'Copy'}
@@ -2083,7 +1995,7 @@ export function HotelInviteDialog({
                 </label>
 
                 <div className={styles.codeBlock}>
-                  <span>{'Shareable signup code'}</span>
+                  <span>{'Signup code'}</span>
                   <div>
                     <strong>{code.code}</strong>
                     <button type="button" onClick={() => void announceCopy(code.code, 'code')} aria-label={'Copy signup code'}>
@@ -2115,45 +2027,24 @@ export function HotelInviteDialog({
                   // eslint-disable-next-line @next/next/no-img-element
                   <img src={qrDataUrl} width={168} height={168} alt={`QR code to join ${hotelName}`} />
                 ) : <span className={styles.qrPlaceholder}>{'QR unavailable'}</span>}
-                <span>{'Scan to sign up'}</span>
+                <span>{'QR code'}</span>
               </div>
             </div>
           ) : (
-            <div className={styles.noCodeState}>
-              <Link2 size={22} aria-hidden="true" />
-              <div><strong>{'No active shared invitation'}</strong><span>{'Create one to get its link, QR code, and signup code.'}</span></div>
-              <button type="button" className={styles.primaryButton} onClick={() => void createCode(false)} disabled={codeBusy}>
-                {codeBusy ? <BusyLabel en="Creating…" /> : 'Create shared invite'}
-              </button>
-            </div>
+            <button type="button" className={styles.primaryButton} onClick={() => void createCode(false)} disabled={codeBusy}>
+              {codeBusy ? <BusyLabel en="Creating…" /> : <><Link2 size={15} aria-hidden="true" />{'Create hotel invite'}</>}
+            </button>
           )}
           {codeError && code ? <ErrorBanner message={codeError} /> : null}
         </section>
         ) : null}
 
-        {canInviteManager && inviteMode === 'email' ? (
-        <section
-          id={emailPanelId}
-          className={styles.inviteSection}
-          role={hasInviteModeChoice ? 'tabpanel' : undefined}
-          aria-labelledby={hasInviteModeChoice ? emailTabId : 'manager-invite-heading'}
-          tabIndex={hasInviteModeChoice ? 0 : undefined}
-        >
+        {canInviteManager ? (
+        <section className={styles.inviteSection} aria-labelledby="email-invite-heading">
           <div className={styles.inviteSectionHeading}>
             <span className={styles.sectionIcon}><Mail size={18} aria-hidden="true" /></span>
             <div>
-              <h3 id="manager-invite-heading">{'Email one person'}</h3>
-              <p>{canManageHotelRoster
-                  ? 'Send a private invitation, then choose the job and exact company or hotel access.'
-                  : 'Choose the job and exact company or hotel access shown below.'}</p>
-            </div>
-          </div>
-
-          <div className={styles.emailInviteExplanation}>
-            <Mail size={17} aria-hidden="true" />
-            <div>
-              <strong>{'For one person who needs login access'}</strong>
-              <span>{'If they already use Staxis, access is added now. Otherwise, Staxis emails an invitation.'}</span>
+              <h3 id="email-invite-heading">{'Email one person'}</h3>
             </div>
           </div>
 
@@ -2170,9 +2061,6 @@ export function HotelInviteDialog({
               />
             </label>
 
-            {/* Question two: what job. The first current server-authorized job
-                is selected after every options refresh; there is no privileged
-                client-side fallback. */}
             {inviteOptions.jobs.length > 0 ? (
               <label className={styles.field}>
                 <span>{'What job'}</span>
@@ -2197,8 +2085,6 @@ export function HotelInviteDialog({
               </label>
             ) : null}
 
-            {/* Question three: which hotels. Only somebody who runs a company is
-                ever asked — a General Manager's hotel is implied. */}
             {inviteOptions.choosesHotels
               && allowedInviteHotels.length > 0
               && selectedInviteJob?.scope === 'property'
@@ -2274,7 +2160,7 @@ export function HotelInviteDialog({
             >
               {inviteBusy
                 ? <BusyLabel en="Creating…" />
-                : <><Mail size={15} aria-hidden="true" />{'Send email invitation'}</>}
+                : <><Mail size={15} aria-hidden="true" />{'Send invite'}</>}
             </button>
           </form>
           {!invitesLoading && inviteOptions.jobs.length === 0 && !invitesError ? (
@@ -2294,7 +2180,7 @@ export function HotelInviteDialog({
                 : <AlertCircle size={18} aria-hidden="true" />}
               <div>
                 <strong>{lastInvite.kind === 'access'
-                  ? 'Access granted — no email sent'
+                  ? 'Access granted, no email sent'
                   : lastInvite.emailSent
                     ? 'Invitation email sent'
                     : 'Invitation created, delivery not confirmed'}</strong>
@@ -2318,67 +2204,66 @@ export function HotelInviteDialog({
             </div>
           ) : null}
 
-          <div className={styles.inviteListHeading}>
-            <h4>{'Pending email invitations'}</h4>
-            {!invitesLoading && !invitesError ? <span>{invites.length}</span> : null}
-          </div>
           {invitesLoading ? (
-            <InviteSectionSkeleton label={'Loading invitations…'} rows={3} />
+            <div className={styles.pendingInviteLoading}>
+              <div className={styles.inviteListHeading}>
+                <h4>{'Pending email invitations'}</h4>
+              </div>
+              <InviteSectionSkeleton label={'Loading invitations…'} rows={3} />
+            </div>
           ) : invitesError ? (
             <div className={styles.sectionError} role="alert">
               <AlertCircle size={17} aria-hidden="true" /><span>{invitesError}</span>
               <button type="button" onClick={() => void loadInvites()}>{'Retry'}</button>
             </div>
           ) : invites.length > 0 ? (
-            <div className={styles.inviteList} role="list">
-              {invites.map((invite) => {
-                const expired = new Date(invite.expires_at).getTime() <= Date.now();
-                const confirming = invite.canRevoke && revokeInviteId === invite.id;
-                return (
-                  <div key={invite.id} className={styles.inviteRow} role="listitem">
-                    <span className={expired ? styles.expiredInviteIcon : styles.pendingInviteIcon}><Mail size={15} aria-hidden="true" /></span>
-                    <div>
-                      <strong>{invite.email}</strong>
-                      <span>{pendingInviteScopeLabel(invite, lang)}</span>
-                      <span>{expired
-                        ? `Expired ${formatDate(invite.expires_at, lang)}`
-                        : `Pending · expires ${formatDate(invite.expires_at, lang)}`}</span>
-                    </div>
-                    {confirming ? (
-                      <div className={styles.revokeConfirm}>
-                        <span>{'Revoke?'}</span>
-                        <button type="button" onClick={() => setRevokeInviteId(null)} disabled={Boolean(revokingInviteId)}>{'No'}</button>
-                        <button type="button" onClick={() => void revokeInvite(invite)} disabled={Boolean(revokingInviteId)}>
-                          {revokingInviteId === invite.id ? <span className={styles.buttonSpinner} aria-hidden="true" /> : 'Yes'}
-                        </button>
+            <div className={styles.pendingInviteSection}>
+              <div className={styles.inviteListHeading}>
+                <h4>{'Pending email invitations'}</h4>
+                <span>{invites.length}</span>
+              </div>
+              <div className={styles.inviteList} role="list">
+                {invites.map((invite) => {
+                  const expired = new Date(invite.expires_at).getTime() <= Date.now();
+                  const confirming = invite.canRevoke && revokeInviteId === invite.id;
+                  return (
+                    <div key={invite.id} className={styles.inviteRow} role="listitem">
+                      <span className={expired ? styles.expiredInviteIcon : styles.pendingInviteIcon}><Mail size={15} aria-hidden="true" /></span>
+                      <div>
+                        <strong>{invite.email}</strong>
+                        <span>{pendingInviteScopeLabel(invite, lang)}</span>
+                        <span>{expired
+                          ? `Expired ${formatDate(invite.expires_at, lang)}`
+                          : `Pending · expires ${formatDate(invite.expires_at, lang)}`}</span>
                       </div>
-                    ) : invite.canRevoke ? (
-                      <button
-                        type="button"
-                        className={styles.revokeButton}
-                        onClick={() => setRevokeInviteId(invite.id)}
-                        disabled={Boolean(revokingInviteId)}
-                        aria-label={`Revoke ${pendingInviteScopeLabel(invite, lang)} invitation for ${invite.email}`}
-                      >
-                        <Trash2 size={15} aria-hidden="true" />
-                      </button>
-                    ) : null}
-                  </div>
-                );
-              })}
+                      {confirming ? (
+                        <div className={styles.revokeConfirm}>
+                          <span>{'Revoke?'}</span>
+                          <button type="button" onClick={() => setRevokeInviteId(null)} disabled={Boolean(revokingInviteId)}>{'No'}</button>
+                          <button type="button" onClick={() => void revokeInvite(invite)} disabled={Boolean(revokingInviteId)}>
+                            {revokingInviteId === invite.id ? <span className={styles.buttonSpinner} aria-hidden="true" /> : 'Yes'}
+                          </button>
+                        </div>
+                      ) : invite.canRevoke ? (
+                        <button
+                          type="button"
+                          className={styles.revokeButton}
+                          onClick={() => setRevokeInviteId(invite.id)}
+                          disabled={Boolean(revokingInviteId)}
+                          aria-label={`Revoke ${pendingInviteScopeLabel(invite, lang)} invitation for ${invite.email}`}
+                        >
+                          <Trash2 size={15} aria-hidden="true" />
+                        </button>
+                      ) : null}
+                    </div>
+                  );
+                })}
+              </div>
             </div>
-          ) : (
-            <div className={styles.allCaughtUp}><CheckCircle2 size={18} aria-hidden="true" /><span>{'No pending or expired email invitations.'}</span></div>
-          )}
+          ) : null}
         </section>
         ) : null}
         {copyError ? <p className={styles.copyError} role="alert">{copyError}</p> : null}
-      </div>
-
-      <div className={styles.dialogFooter}>
-        <button type="button" className={styles.primaryButton} onClick={onClose} disabled={busy}>
-          {'Done'}
-        </button>
       </div>
     </DialogShell>
   );

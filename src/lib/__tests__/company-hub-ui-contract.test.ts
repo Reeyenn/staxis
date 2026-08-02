@@ -310,7 +310,8 @@ describe('My Hotel account and team integration', () => {
     assert.doesNotMatch(company, /<InvitePersonDialog/);
     assert.match(hotelTeam, /inviteDialogOpen && canInviteAccounts[\s\S]*canManageHotelRoster=\{false\}/);
     assert.match(hotelTeamDialogs, /if \(!canManageHotelRoster\)[\s\S]*setCodeLoading\(false\)/);
-    assert.match(hotelTeamDialogs, /\{canManageHotelRoster && inviteMode === 'shared' \? \([\s\S]*staff-invite-heading/);
+    assert.match(hotelTeamDialogs, /\{canManageHotelRoster \? \([\s\S]*hotel-invite-heading/);
+    assert.match(hotelTeamDialogs, /\{canInviteManager \? \([\s\S]*email-invite-heading/);
     assert.match(hotelTeamDialogs, /fetchWithAuth\(`\/api\/auth\/invites\?hotelId=/);
   });
 
@@ -376,11 +377,9 @@ describe('My Hotel account and team integration', () => {
     assert.match(hotelTeamDialogs, /Invite to create an account/);
     assert.match(hotelTeamDialogs, /They create a login and can sign in to Staxis\./);
     assert.match(hotelTeam, /Use Invite people when they need Staxis login access/);
-    assert.match(hotelTeamDialogs, /Shared hotel invite/);
+    assert.match(hotelTeamDialogs, /Hotel invite/);
     assert.match(hotelTeamDialogs, /Email one person/);
-    assert.match(hotelTeamDialogs, /role="tablist"/);
-    assert.match(hotelTeamDialogs, /role="tab"/);
-    assert.match(hotelTeamDialogs, /role=\{hasInviteModeChoice \? 'tabpanel' : undefined\}/);
+    assert.doesNotMatch(hotelTeamDialogs, /inviteMode|hasInviteModeChoice|role="tablist"|role="tab"|role="tabpanel"/);
     assert.match(hotelTeamDialogs, /deliveryStatus === ['"]sent['"]/);
     assert.match(hotelTeamDialogs, /Copy and send the link directly/);
     assert.match(hotelTeam, /member\.isActive !== false && !linkedStaffIds\.has\(member\.id\)/);
@@ -395,9 +394,9 @@ describe('My Hotel account and team integration', () => {
     assert.match(hotelTeamDialogs, /Link to roster profile/);
     assert.match(hotelTeamDialogs, /staffId: selectedRosterProfile\.id/);
     assert.match(hotelTeamDialogs, /data\.accessGranted === true/);
-    assert.match(hotelTeamDialogs, /Access granted — no email sent/);
+    assert.match(hotelTeamDialogs, /Access granted, no email sent/);
     assert.match(hotelTeamDialogs, /Their login is now linked to/);
-    assert.match(hotelTeamDialogs, /reuses one clear matching roster profile or creates a new one/);
+    assert.doesNotMatch(hotelTeamDialogs, /reuses one clear matching roster profile or creates a new one/);
     assert.match(hotelTeamCss, /\.rosterLinkField \{[\s\S]*grid-column: 1 \/ -1;/);
   });
 
