@@ -436,6 +436,13 @@ export async function POST(req: NextRequest): Promise<Response> {
 
   let action: StepAction | null = null;
   let finalUsage: UsageReport | null = null;
+  // The step is taken from the EXACT provider text the validator accepted, not
+  // from `run.text`. They are normally the same string, but `runAgent` appends
+  // a human-readable truncation marker to `run.text` on a `max_tokens` stop —
+  // which would turn a response that validated cleanly into unparseable JSON.
+  // Vanishingly rare with a grammar this small; it costs one variable to make
+  // it impossible rather than merely unlikely.
+  let validated: StepAction | null = null;
 
   try {
     try {
@@ -455,9 +462,11 @@ export async function POST(req: NextRequest): Promise<Response> {
         // Its spend is still retained by the ledger either way.
         validateAssistantResponse: ({ text, toolCallCount }) => {
           if (toolCallCount !== 0) throw new Error('walkthrough returned an unmounted tool call');
-          if (!parseStepAction(text, body.snapshot.elements)) {
-            throw new Error('AI returned an invalid walkthrough action');
-          }
+          const parsed = parseStepAction(text, body.snapshot.elements);
+          if (!parsed) throw new Error('AI returned an invalid walkthrough action');
+          // A throwing attempt never gets here, so after runAgent resolves this
+          // holds the winning attempt's step.
+          validated = parsed;
         },
         // Fires exactly once when runAgent exits, including when both attempts
         // fail — so a failed step still reconciles to what it actually cost.
@@ -482,7 +491,7 @@ export async function POST(req: NextRequest): Promise<Response> {
         },
       });
       finalUsage = run.usage;
-      action = parseStepAction(run.text, body.snapshot.elements);
+      action = validated;
       if (!action) throw new Error('AI returned an invalid walkthrough action');
     } catch (err) {
       log.error('[walkthrough/step] model call failed', { requestId, err });
