@@ -160,12 +160,17 @@ describe('My Hotel account lifecycle dialog', () => {
     assert.match(loadingDialog, /document\.activeElement === last/);
     assert.match(loadingDialog, /restoreDialogFocus\(returnFocusRef, fallbackFocusRef, previousFocusElement\)/);
     assert.match(loadingDialog, /ref=\{dialogRef\}/);
+    assert.match(loadingDialog, /variant === 'invite' \? null/);
+    assert.match(loadingDialog, /variant === 'invite' \? null[\s\S]*dialogFooter/);
+    assert.match(loadingDialog, /visibleInviteSections\.map/);
   });
 
   test('keeps lifecycle targets touch-sized, mobile-safe, and reduced-motion-safe', () => {
     assert.match(css, /\.primaryButton,[\s\S]*min-height: 44px;/);
     const mobile = css.slice(css.indexOf('@media (max-width: 560px)'));
     assert.match(mobile, /\.lifecycleConfirmationActions > button[\s\S]*width: 100%/);
+    assert.match(mobile, /\.inviteBody\s*\{[\s\S]*padding-bottom: max\(17px, env\(safe-area-inset-bottom, 0px\)\)/);
+    assert.match(css, /\.dialogLoadingInvite \.dialogLoadingBody\s*\{[\s\S]*padding-bottom: max\(17px, env\(safe-area-inset-bottom, 0px\)\)/);
     const reducedMotion = css.slice(css.indexOf('@media (prefers-reduced-motion: reduce)'));
     assert.match(reducedMotion, /\.dangerButton[\s\S]*transition: none/);
   });
@@ -180,5 +185,14 @@ describe('My Hotel account lifecycle dialog', () => {
     assert.match(dialogs, /Revoke \$\{pendingInviteScopeLabel\(invite, lang\)\} invitation/);
     assert.match(dialogs, /invite\.canRevoke \?/);
     assert.match(dialogs, /if \(!canInviteManager \|\| !invite\.canRevoke\) return/);
+  });
+
+  test('shapes invite loading only from the effective authorized sections', () => {
+    assert.match(panel, /inviteSections=\{\['email'\]\}/);
+    assert.match(panel, /inviteSections=\{canInviteAccounts \? \['hotel', 'email'\] : \['hotel'\]\}/);
+    assert.match(panel, /const DEFAULT_INVITE_LOADING_SECTIONS: readonly InviteLoadingSection\[\] = \['email'\]/);
+    assert.match(panel, /const visibleInviteSections = inviteSections\.length > 0 \? inviteSections : \['email' as const\]/);
+    assert.match(panel, /section === 'hotel'[\s\S]*DialogLoadingSection key=\{`\$\{section\}-\$\{index\}`\}/);
+    assert.match(panel, /section === 'hotel'[\s\S]*?: \([\s\S]*DialogLoadingFields key=\{`\$\{section\}-\$\{index\}`\}/);
   });
 });

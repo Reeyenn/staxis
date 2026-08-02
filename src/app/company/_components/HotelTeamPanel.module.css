@@ -921,7 +921,14 @@
 }
 
 .dialogLoadingInvite {
-  height: min(800px, calc(100dvh - 40px));
+  height: auto;
+  overflow-y: auto;
+}
+
+.dialogLoadingInvite .dialogLoadingBody {
+  flex: none;
+  overflow: visible;
+  padding-bottom: max(17px, env(safe-area-inset-bottom, 0px));
 }
 
 .dialogLoadingInviteChoice {
@@ -2043,7 +2050,8 @@
   }
 
   .dialogLoadingInvite {
-    height: calc(100dvh - 24px);
+    height: auto;
+    max-height: calc(100dvh - 24px);
   }
 
   .dialogLoadingInviteChoice {
@@ -2077,6 +2085,10 @@
   .dialogLoadingIntro {
     padding-right: 14px;
     padding-left: 14px;
+  }
+
+  .inviteBody {
+    padding-bottom: max(17px, env(safe-area-inset-bottom, 0px));
   }
 
   .dialogLoadingSection {

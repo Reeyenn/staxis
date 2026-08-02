@@ -1091,6 +1091,21 @@ function PeoplePanel({ data, staff, hotelRosterUnavailable, lang, currentUser, c
   onLifecycleAction: (action: CompanyLifecycleAction) => void;
 }) {
   const adminPreview = data.viewerContext?.kind === 'staxis_admin_preview';
+  const inviteCapabilityKey = [
+    canManageTeam ? 'hotel-manager' : 'invite-only',
+    canInviteAccounts ? 'account-invite' : 'no-account-invite',
+    adminPreview ? 'admin-preview' : 'customer',
+    data.viewerContext?.readOnly ? 'read-only' : 'interactive',
+  ].join(':');
+  const inviteCapabilityRef = React.useRef(inviteCapabilityKey);
+  const [, setInviteCapabilityRevision] = React.useState(0);
+  const inviteCapabilitiesStable = inviteCapabilityRef.current === inviteCapabilityKey;
+  React.useEffect(() => {
+    if (inviteCapabilityRef.current === inviteCapabilityKey) return;
+    inviteCapabilityRef.current = inviteCapabilityKey;
+    setInviteCapabilityRevision((current) => current + 1);
+    if (inviteDialogOpen) onInviteDialogOpenChange(false);
+  }, [inviteCapabilityKey, inviteDialogOpen, onInviteDialogOpenChange]);
   const visibleMemberships = data.permissions.viewPeople
     ? data.memberships
     : data.memberships.filter((membership) => (
@@ -1157,7 +1172,7 @@ function PeoplePanel({ data, staff, hotelRosterUnavailable, lang, currentUser, c
           canViewWages={canViewWages}
           readOnly={Boolean(data.viewerContext?.readOnly) && !adminPreview}
           adminPreview={adminPreview}
-          inviteDialogOpen={inviteDialogOpen}
+          inviteDialogOpen={inviteDialogOpen && inviteCapabilitiesStable}
           onInviteDialogOpenChange={onInviteDialogOpenChange}
           staffProfiles={staff}
           rosterUnavailable={hotelRosterUnavailable}

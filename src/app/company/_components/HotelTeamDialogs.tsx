@@ -132,6 +132,81 @@ const NO_INVITE_OPTIONS: InviteOptions = {
   choosesHotels: false, organizationId: null, jobs: [], hotels: [],
 };
 
+function recordOf(value: unknown): Record<string, unknown> | null {
+  return value !== null && typeof value === 'object' && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : null;
+}
+
+function stringArray(value: unknown): value is string[] {
+  return Array.isArray(value) && value.every((item) => typeof item === 'string');
+}
+
+function isJoinCode(value: unknown): value is JoinCode {
+  const record = recordOf(value);
+  return Boolean(
+    record
+      && typeof record.id === 'string'
+      && typeof record.code === 'string'
+      && record.role === null
+      && typeof record.expires_at === 'string'
+      && Number.isFinite(Date.parse(record.expires_at))
+      && Number.isInteger(record.max_uses)
+      && (record.max_uses as number) > 0
+      && Number.isInteger(record.used_count)
+      && (record.used_count as number) >= 0
+      && (record.used_count as number) <= (record.max_uses as number)
+      && (record.created_at === undefined || typeof record.created_at === 'string')
+  );
+}
+
+function isManagerInvite(value: unknown): value is ManagerInvite {
+  const record = recordOf(value);
+  return Boolean(
+    record
+      && typeof record.id === 'string'
+      && typeof record.email === 'string'
+      && typeof record.role === 'string'
+      && typeof record.expires_at === 'string'
+      && Number.isFinite(Date.parse(record.expires_at))
+      && (record.created_at === undefined || typeof record.created_at === 'string')
+      && (typeof record.organizationId === 'string' || record.organizationId === null)
+      && (record.scope === 'hotel' || record.scope === 'company' || record.scope === 'property')
+      && stringArray(record.propertyIds)
+      && stringArray(record.propertyNames)
+      && typeof record.canRevoke === 'boolean'
+  );
+}
+
+function isInviteOptions(value: unknown): value is InviteOptions {
+  const record = recordOf(value);
+  if (!record
+      || typeof record.choosesHotels !== 'boolean'
+      || (typeof record.organizationId !== 'string' && record.organizationId !== null)
+      || !Array.isArray(record.jobs)
+      || !Array.isArray(record.hotels)) {
+    return false;
+  }
+  const jobsValid = record.jobs.every((value) => {
+    const job = recordOf(value);
+    const label = job ? recordOf(job.label) : null;
+    return Boolean(
+      job
+        && typeof job.value === 'string'
+        && (job.scope === 'company' || job.scope === 'property')
+        && label
+        && typeof label.en === 'string'
+        && (label.es === undefined || typeof label.es === 'string')
+        && stringArray(job.allowedPropertyIds)
+    );
+  });
+  const hotelsValid = record.hotels.every((value) => {
+    const hotel = recordOf(value);
+    return Boolean(hotel && typeof hotel.id === 'string' && typeof hotel.name === 'string');
+  });
+  return jobsValid && hotelsValid;
+}
+
 function pendingInviteScopeLabel(invite: ManagerInvite, lang: HotelTeamLang): string {
   const role = isHatRole(invite.role)
     ? HAT_ROLE_LABELS[invite.role]['en']
@@ -1614,6 +1689,7 @@ export function HotelInviteDialog({
   const invitesAbortRef = React.useRef<AbortController | null>(null);
   const codeSequenceRef = React.useRef(0);
   const invitesSequenceRef = React.useRef(0);
+  const inviteCapabilityRef = React.useRef({ canInviteManager, canManageHotelRoster });
   const selectedInviteJob = inviteOptions.jobs.find((job) => job.value === inviteJob) ?? null;
   const allowedInviteHotelIds = new Set(selectedInviteJob?.allowedPropertyIds ?? []);
   const allowedInviteHotels = inviteOptions.hotels.filter(
@@ -1644,6 +1720,48 @@ export function HotelInviteDialog({
     ));
   }, [linkableRosterProfiles]);
 
+  React.useEffect(() => {
+    const previous = inviteCapabilityRef.current;
+    const next = { canInviteManager, canManageHotelRoster };
+    inviteCapabilityRef.current = next;
+    if (previous.canInviteManager === next.canInviteManager
+        && previous.canManageHotelRoster === next.canManageHotelRoster) {
+      return;
+    }
+
+    if (!canInviteManager) {
+      invitesAbortRef.current?.abort();
+      invitesSequenceRef.current += 1;
+      setInvites([]);
+      setInviteOptions(NO_INVITE_OPTIONS);
+      setInviteJob('');
+      setInviteHotelIds([]);
+      setInviteAllHotels(true);
+      setInviteStaffId('');
+      setInviteEmail('');
+      setInviteBusy(false);
+      setInviteError('');
+      setLastInvite(null);
+      setInvitesLoading(false);
+      setInvitesError('');
+      setRevokeInviteId(null);
+      setRevokingInviteId(null);
+    }
+    if (!canManageHotelRoster) {
+      codeAbortRef.current?.abort();
+      codeSequenceRef.current += 1;
+      setCode(null);
+      setCodeLoading(false);
+      setCodeError('');
+      setCodeBusy(false);
+      setConfirmReplace(false);
+      setQrDataUrl('');
+    }
+    setCopied(null);
+    setCopyError('');
+    onClose();
+  }, [canInviteManager, canManageHotelRoster, onClose]);
+
   const loadCode = React.useCallback(async () => {
     if (!canManageHotelRoster) {
       codeAbortRef.current?.abort();
@@ -1663,11 +1781,15 @@ export function HotelInviteDialog({
         signal: controller.signal,
       });
       const body = await response.json().catch(() => ({})) as Envelope<{ codes?: JoinCode[] }>;
-      if (!response.ok || !body.ok) {
+      if (!response.ok
+          || !body.ok
+          || !body.data
+          || !Array.isArray(body.data.codes)
+          || !body.data.codes.every(isJoinCode)) {
         throw new Error(responseError(body, "Couldn't load the staff invite link."));
       }
       if (controller.signal.aborted || sequence !== codeSequenceRef.current) return;
-      setCode((body.data?.codes ?? []).find(isUsable) ?? null);
+      setCode(body.data.codes.find(isUsable) ?? null);
     } catch (loadError) {
       if (controller.signal.aborted || sequence !== codeSequenceRef.current) return;
       console.error('[HotelInviteDialog] join-code load failed', loadError);
@@ -1705,12 +1827,17 @@ export function HotelInviteDialog({
       const body = await response.json().catch(() => ({})) as Envelope<{
         invites?: ManagerInvite[]; options?: InviteOptions;
       }>;
-      if (!response.ok || !body.ok) {
+      if (!response.ok
+          || !body.ok
+          || !body.data
+          || !Array.isArray(body.data.invites)
+          || !body.data.invites.every(isManagerInvite)
+          || !isInviteOptions(body.data.options)) {
         throw new Error(responseError(body, "Couldn't load manager invitations."));
       }
       if (controller.signal.aborted || sequence !== invitesSequenceRef.current) return;
-      setInvites(body.data?.invites ?? []);
-      const nextOptions = body.data?.options ?? NO_INVITE_OPTIONS;
+      setInvites(body.data.invites);
+      const nextOptions = body.data.options;
       setInviteOptions(nextOptions);
       setInviteJob((current) => (
         nextOptions.jobs.some((job) => job.value === current)

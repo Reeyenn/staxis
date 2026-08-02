@@ -308,7 +308,11 @@ describe('My Hotel account and team integration', () => {
     assert.match(company, /canInviteAccounts=\{canInviteAccounts\}/);
     assert.match(company, /!adminPreview && !activeProperty && !canManageTeam && canInviteAccounts/);
     assert.doesNotMatch(company, /<InvitePersonDialog/);
-    assert.match(hotelTeam, /inviteDialogOpen && canInviteAccounts[\s\S]*canManageHotelRoster=\{false\}/);
+    assert.match(hotelTeam, /inviteDialogVisible && canInviteAccounts && !locked[\s\S]*canManageHotelRoster=\{false\}/);
+    assert.match(company, /const inviteCapabilityKey = \[[\s\S]*data\.viewerContext\?\.readOnly \? 'read-only' : 'interactive'/);
+    assert.match(company, /const \[, setInviteCapabilityRevision\] = React\.useState\(0\)/);
+    assert.match(company, /const inviteCapabilitiesStable = inviteCapabilityRef\.current === inviteCapabilityKey/);
+    assert.match(company, /setInviteCapabilityRevision\(\(current\) => current \+ 1\);[\s\S]*if \(inviteDialogOpen\) onInviteDialogOpenChange\(false\)/);
     assert.match(hotelTeamDialogs, /if \(!canManageHotelRoster\)[\s\S]*setCodeLoading\(false\)/);
     assert.match(hotelTeamDialogs, /\{canManageHotelRoster \? \([\s\S]*hotel-invite-heading/);
     assert.match(hotelTeamDialogs, /\{canInviteManager \? \([\s\S]*email-invite-heading/);
@@ -364,7 +368,8 @@ describe('My Hotel account and team integration', () => {
     assert.match(hotelTeam, /LazyRemoveDialog/);
     assert.match(hotelTeam, /LazyFirstPersonInviteDialog/);
     assert.match(hotelTeam, /LazyInviteDialog/);
-    assert.match(hotelTeam, /\{inviteDialogOpen && !inviteActionDisabled && needsFirstPerson \? \([\s\S]*: inviteDialogOpen && !inviteActionDisabled \? \(/);
+    assert.match(hotelTeam, /\{inviteDialogVisible && needsFirstPerson \? \([\s\S]*: inviteDialogVisible \? \(/);
+    assert.match(hotelTeam, /setInviteChoiceOpen\(false\)[\s\S]*setPendingAddAttempt\(null\)[\s\S]*if \(inviteDialogOpen\) onInviteDialogOpenChange\(false\)/);
     assert.match(hotelTeam, /onClose=\{\(\) => onInviteDialogOpenChange\(false\)\}/);
     assert.match(hotelTeamDialogs, /PeopleInviteChooserDialog/);
     assert.match(hotelTeamDialogs, /What does this person need\?/);

@@ -64,15 +64,44 @@ describe('Invite Staff popup layout stability', () => {
 
   test('Company Suspense fallback uses the destination dialog shape instead of a tiny spinner', () => {
     assert.match(hotelTeam, /type DialogLoadingVariant = 'invite' \| 'invite-choice' \| 'add-staff' \| 'member' \| 'remove' \| 'decision'/);
+    assert.match(hotelTeam, /type InviteLoadingSection = 'hotel' \| 'email'/);
+    assert.match(hotelTeam, /inviteSections=\{\['email'\]\}/);
+    assert.match(hotelTeam, /inviteSections=\{canInviteAccounts \? \['hotel', 'email'\] : \['hotel'\]\}/);
     assert.match(hotelTeam, /className=\{`\$\{styles\.dialog\} \$\{styles\.dialogLoadingShell\} \$\{shellClass\}`\}/);
     assert.match(hotelTeam, /role="dialog"[\s\S]*?aria-modal="true"[\s\S]*?aria-busy="true"/);
-    assert.match(hotelTeam, /variant === 'invite'[\s\S]*?<DialogLoadingSection rows=\{4\} tall \/>/);
+    assert.match(hotelTeam, /variant === 'invite'[\s\S]*?visibleInviteSections\.map/);
+    assert.match(hotelTeam, /section === 'hotel'[\s\S]*?DialogLoadingSection key=\{`\$\{section\}-\$\{index\}`\} rows=\{4\} tall/);
+    assert.match(hotelTeam, /section === 'hotel'[\s\S]*?: \([\s\S]*?DialogLoadingFields key=\{`\$\{section\}-\$\{index\}`\} rows=\{4\}/);
+    assert.match(hotelTeam, /variant === 'invite' \? null[\s\S]*?dialogFooter/);
     assert.match(hotelTeam, /<React\.Suspense fallback=\{\([\s\S]*?<DialogLoading[\s\S]*?variant=\{loadingDialogVariant\}/);
     assert.doesNotMatch(hotelTeam, /className=\{styles\.dialogLoading\} role="status"/);
-    assert.match(hotelTeamCss, /\.dialogLoadingInvite\s*\{[\s\S]*?height:\s*min\(800px, calc\(100dvh - 40px\)\)/);
+    assert.match(hotelTeamCss, /\.dialogLoadingInvite\s*\{[\s\S]*?height:\s*auto;/);
+    assert.match(hotelTeamCss, /\.dialogLoadingInvite \.dialogLoadingBody\s*\{[\s\S]*?padding-bottom: max\(17px, env\(safe-area-inset-bottom, 0px\)\)/);
     assert.match(hotelTeamCss, /\.dialogLoadingMember\s*\{[\s\S]*?height:\s*min\(680px, calc\(100dvh - 40px\)\)/);
     assert.match(hotelTeamCss, /\.dialogLoadingConfirmation\s*\{[\s\S]*?height:\s*min\(420px, calc\(100dvh - 40px\)\)/);
-    assert.match(hotelTeamCss, /@media \(max-width: 560px\)[\s\S]*?\.dialogLoadingInvite\s*\{[\s\S]*?height:\s*calc\(100dvh - 24px\)/);
+    assert.match(hotelTeamCss, /@media \(max-width: 560px\)[\s\S]*?\.dialogLoadingInvite\s*\{[\s\S]*?height:\s*auto;[\s\S]*?max-height:\s*calc\(100dvh - 24px\)/);
+    assert.match(hotelTeamCss, /@media \(max-width: 560px\)[\s\S]*?\.inviteBody\s*\{[\s\S]*?padding-bottom: max\(17px, env\(safe-area-inset-bottom, 0px\)\)/);
     assert.match(hotelTeamCss, /@media \(prefers-reduced-motion: reduce\)[\s\S]*?\.dialogLoadingIcon::after[\s\S]*?animation:\s*none/);
+  });
+
+  test('malformed successful invite data stays in the bounded error states', () => {
+    assert.match(hotelTeamDialogs, /function recordOf\(value: unknown\)/);
+    assert.match(hotelTeamDialogs, /function isJoinCode\(value: unknown\): value is JoinCode/);
+    assert.match(hotelTeamDialogs, /function isManagerInvite\(value: unknown\): value is ManagerInvite/);
+    assert.match(hotelTeamDialogs, /function isInviteOptions\(value: unknown\): value is InviteOptions/);
+    assert.match(hotelTeamDialogs, /!Array\.isArray\(body\.data\.codes\)/);
+    assert.match(hotelTeamDialogs, /body\.data\.codes\.every\(isJoinCode\)/);
+    assert.match(hotelTeamDialogs, /!Array\.isArray\(body\.data\.invites\)/);
+    assert.match(hotelTeamDialogs, /body\.data\.invites\.every\(isManagerInvite\)/);
+    assert.match(hotelTeamDialogs, /!isInviteOptions\(body\.data\.options\)/);
+    assert.match(hotelInviteDialog, /invites\.length > 0/);
+    assert.match(hotelTeamDialogs, /Couldn't load manager invitations\./);
+  });
+
+  test('clears dialog-local invite state when either effective capability is revoked', () => {
+    assert.match(hotelInviteDialog, /const inviteCapabilityRef = React\.useRef\(\{ canInviteManager, canManageHotelRoster \}\)/);
+    assert.match(hotelInviteDialog, /if \(!canInviteManager\)[\s\S]*setInviteEmail\(''\)[\s\S]*setLastInvite\(null\)[\s\S]*setInvitesError\(''\)/);
+    assert.match(hotelInviteDialog, /if \(!canManageHotelRoster\)[\s\S]*setCode\(null\)[\s\S]*setConfirmReplace\(false\)[\s\S]*setQrDataUrl\(''\)/);
+    assert.match(hotelInviteDialog, /onClose\(\);[\s\S]*\}, \[canInviteManager, canManageHotelRoster, onClose\]\)/);
   });
 });
