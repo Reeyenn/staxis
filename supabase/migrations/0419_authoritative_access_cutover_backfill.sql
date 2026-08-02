@@ -9,9 +9,11 @@ begin;
 do $$
 begin
   if to_regprocedure('public.staxis_preflight_authorization_cutover()') is null
+     or to_regprocedure('public.staxis_preflight_authorization_cutover_labeled(text)') is null
      or to_regclass('public.account_access_cutover_preflight_runs') is null
      or to_regclass('public.account_property_authorization_bridges') is null
      or to_regprocedure('public._staxis_cutover_real_account_organizations()') is null
+     or to_regprocedure('public._staxis_cutover_valid_current_primary_property_relationships()') is null
   then
     raise exception '0419 requires the 0418 Stage A preflight and 0378 bridge table';
   end if;
@@ -23,16 +25,25 @@ create table if not exists public.account_access_cutover_status (
   stage              text not null default 'A' check (stage in ('A', 'B', 'C')),
   enforcement_enabled boolean not null default false,
   last_preflight_run_id uuid references public.account_access_cutover_preflight_runs(id),
+  baseline_preflight_run_id uuid references public.account_access_cutover_preflight_runs(id),
   last_backfill_at   timestamptz,
   details            jsonb not null default '{}'::jsonb
 );
+
+alter table public.account_access_cutover_status
+  add column if not exists baseline_preflight_run_id
+    uuid references public.account_access_cutover_preflight_runs(id);
 
 revoke all on public.account_access_cutover_status from public, anon, authenticated, service_role;
 alter table public.account_access_cutover_status enable row level security;
 
 create table if not exists public.account_access_cutover_backfill_runs (
   id              uuid primary key default gen_random_uuid(),
+  -- This is the immediate same-transaction pre-backfill run, not the
+  -- migration-0418 baseline. Both are retained so the evidence cannot make a
+  -- later run look like a stale snapshot.
   preflight_run_id uuid references public.account_access_cutover_preflight_runs(id),
+  baseline_preflight_run_id uuid references public.account_access_cutover_preflight_runs(id),
   status          text not null check (status in ('completed', 'completed_with_skips', 'failed')),
   bridged_count   integer not null default 0 check (bridged_count >= 0),
   skipped_count   integer not null default 0 check (skipped_count >= 0),
@@ -40,6 +51,10 @@ create table if not exists public.account_access_cutover_backfill_runs (
   completed_at    timestamptz,
   details         jsonb not null default '{}'::jsonb
 );
+
+alter table public.account_access_cutover_backfill_runs
+  add column if not exists baseline_preflight_run_id
+    uuid references public.account_access_cutover_preflight_runs(id);
 
 -- Keep a read-only migration baseline so a later stage can prove that the
 -- compatibility train did not silently rewrite or clear the legacy scope.
@@ -68,6 +83,7 @@ do $$
 declare
   v_preflight jsonb;
   v_preflight_run_id uuid;
+  v_baseline_preflight_run_id uuid;
   v_backfill_run_id uuid := gen_random_uuid();
   v_started_at timestamptz := clock_timestamp();
   v_now timestamptz := clock_timestamp();
@@ -83,7 +99,44 @@ declare
   v_reason text;
   v_preflight_issue_code text;
   v_preflight_issue_details jsonb;
+  v_existing_stage text;
+  v_existing_enforcement boolean;
 begin
+  -- Stage A backfill is additive, but it must never overwrite a later stage's
+  -- control record or quietly disable enforcement on a rerun. Lock the
+  -- singleton before creating any new evidence so a C/enforced deployment
+  -- fails loudly with an actionable remediation rather than downgrading.
+  select status.stage, status.enforcement_enabled
+    into v_existing_stage, v_existing_enforcement
+  from public.account_access_cutover_status status
+  where status.id is true
+  for update;
+  if found and (v_existing_stage <> 'A' or v_existing_enforcement is true) then
+    raise exception
+      '0419 cannot rerun additive backfill while cutover status is stage % with enforcement_enabled=%; preserve the later stage and run the approved remediation or Stage C procedure',
+      v_existing_stage, v_existing_enforcement
+      using errcode = '55000';
+  end if;
+
+  select run.id
+    into v_baseline_preflight_run_id
+  from public.account_access_cutover_preflight_runs run
+  where run.created_by = '0418'
+  order by run.started_at, run.id
+  limit 1;
+  if v_baseline_preflight_run_id is null then
+    raise exception '0419 requires the durable migration-0418 baseline preflight run'
+      using errcode = '55000';
+  end if;
+
+  -- Keep this immediate run: it catches rows written after the 0418 baseline
+  -- and is the only issue set allowed to poison the rows below.
+  v_preflight := public.staxis_preflight_authorization_cutover_labeled('0419');
+  v_preflight_run_id := nullif(v_preflight->>'runId', '')::uuid;
+  if v_preflight_run_id is null then
+    raise exception '0419 did not receive an exact same-transaction pre-backfill preflight run id';
+  end if;
+
   insert into public.account_access_cutover_legacy_snapshots (
     account_id, property_ids, property_count, property_scope_hash
   )
@@ -97,16 +150,11 @@ begin
   from public.accounts account
   on conflict (account_id) do nothing;
 
-  v_preflight := public.staxis_preflight_authorization_cutover();
-  v_preflight_run_id := nullif(v_preflight->>'runId', '')::uuid;
-  if v_preflight_run_id is null then
-    raise exception '0419 did not receive an exact 0418 preflight run id';
-  end if;
-
   insert into public.account_access_cutover_backfill_runs (
-    id, preflight_run_id, status, started_at
+    id, preflight_run_id, baseline_preflight_run_id, status, started_at
   ) values (
-    v_backfill_run_id, v_preflight_run_id, 'completed', v_started_at
+    v_backfill_run_id, v_preflight_run_id, v_baseline_preflight_run_id,
+    'completed', v_started_at
   );
 
   -- The legacy row remains the current authority. A bridge is copied only
@@ -182,10 +230,9 @@ begin
              max(organization.organization_type)
         into v_relationship_count, v_relationship_id, v_organization_id,
              v_organization_type
-      from public._staxis_current_primary_property_relationships() relationship
+      from public._staxis_cutover_valid_current_primary_property_relationships() relationship
       join public.organizations organization
         on organization.id = relationship.organization_id
-       and organization.status = 'active'
       where relationship.property_id = v_property_id
         and relationship.active_primary_count = 1;
 
@@ -230,6 +277,9 @@ begin
           'backfillRunId', v_backfill_run_id,
           'reason', v_reason,
           'preflightRunId', v_preflight_run_id,
+          'preflightRunLabel', '0419_same_transaction_pre_backfill',
+          'baselinePreflightRunId', v_baseline_preflight_run_id,
+          'baselinePreflightRunLabel', '0418_baseline',
           'preflightIssueCode', v_preflight_issue_code,
           'preflightIssueDetails', v_preflight_issue_details
         )
@@ -261,27 +311,36 @@ begin
            'stage', 'A',
            'legacyArraysPreserved', true,
            'legacyProjectionsPreserved', true,
-           'preflight', v_preflight
+           'preflight', v_preflight,
+           'preflightRunId', v_preflight_run_id,
+           'preflightRunLabel', '0419_same_transaction_pre_backfill',
+           'baselinePreflightRunId', v_baseline_preflight_run_id,
+           'baselinePreflightRunLabel', '0418_baseline'
          )
    where id = v_backfill_run_id;
 
   insert into public.account_access_cutover_status (
     id, stage, enforcement_enabled, last_preflight_run_id,
+    baseline_preflight_run_id,
     last_backfill_at, details
   ) values (
-    true, 'A', false, v_preflight_run_id, clock_timestamp(),
+    true, coalesce(v_existing_stage, 'A'), coalesce(v_existing_enforcement, false),
+    v_preflight_run_id, v_baseline_preflight_run_id, clock_timestamp(),
     jsonb_build_object('backfillRunId', v_backfill_run_id,
                        'bridgedCount', v_bridged_count,
                        'skippedCount', v_skipped_count,
+                       'preflightRunId', v_preflight_run_id,
+                       'preflightRunLabel', '0419_same_transaction_pre_backfill',
+                       'baselinePreflightRunId', v_baseline_preflight_run_id,
+                       'baselinePreflightRunLabel', '0418_baseline',
                        'arraysPreserved', true,
                        'legacySnapshotCount', (
                          select count(*) from public.account_access_cutover_legacy_snapshots
                        ))
   )
   on conflict (id) do update
-    set stage = 'A',
-        enforcement_enabled = false,
-        last_preflight_run_id = excluded.last_preflight_run_id,
+    set last_preflight_run_id = excluded.last_preflight_run_id,
+        baseline_preflight_run_id = excluded.baseline_preflight_run_id,
         last_backfill_at = excluded.last_backfill_at,
         details = excluded.details;
 end

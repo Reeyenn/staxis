@@ -12,6 +12,7 @@ begin
      or to_regclass('public.account_access_cutover_preflight_issues') is null
      or to_regclass('public.account_access_cutover_legacy_write_events') is null
      or to_regprocedure('public.staxis_invite_access_shadow(uuid)') is null
+     or to_regprocedure('public._staxis_cutover_valid_current_primary_property_relationships()') is null
   then
     raise exception '0423 requires all Stage A preflight, translation, People, and invite foundations';
   end if;
@@ -152,7 +153,7 @@ begin
         bridge.cutover_relationship_id is null
         and exists (
           select 1
-          from public._staxis_current_primary_property_relationships() current_relationship
+          from public._staxis_cutover_valid_current_primary_property_relationships() current_relationship
           where current_relationship.property_id = bridge.property_id
         )
       )
@@ -160,7 +161,7 @@ begin
         bridge.cutover_relationship_id is not null
         and not exists (
           select 1
-          from public._staxis_current_primary_property_relationships() current_relationship
+          from public._staxis_cutover_valid_current_primary_property_relationships() current_relationship
           where current_relationship.id = bridge.cutover_relationship_id
             and current_relationship.organization_id = bridge.cutover_organization_id
             and current_relationship.property_id = bridge.property_id
@@ -187,14 +188,14 @@ begin
            ), '[]'::jsonb)
          )
   from public.account_property_authorization_bridges bridge
+  join public._staxis_cutover_valid_current_primary_property_relationships() current_relationship
+    on current_relationship.id = bridge.cutover_relationship_id
+   and current_relationship.organization_id = bridge.cutover_organization_id
+   and current_relationship.property_id = bridge.property_id
+   and current_relationship.active_primary_count = 1
   where bridge.status = 'active'
     and bridge.cutover_organization_id is not null
-    and exists (
-      select 1
-      from public.organizations organization
-      where organization.id = bridge.cutover_organization_id
-        and organization.organization_type <> 'single_hotel'
-    )
+    and current_relationship.organization_type in ('management_company', 'ownership_group')
     and exists (
       select 1 from real_account_organizations real_org
       where real_org.account_id = bridge.account_id
@@ -225,7 +226,9 @@ begin
   select v_run_id, account.id, legacy.property_id,
          'legacy_row_without_shadow_translation',
          jsonb_build_object(
+           'authorizationStatePresent', state.account_id is not null,
            'authorityMode', state.authority_mode,
+           'legacyPropertyId', legacy.property_id,
            'preflightIssues', coalesce((
              select jsonb_agg(jsonb_build_object(
                'runId', issue.run_id,
@@ -234,13 +237,12 @@ begin
              ) order by issue.created_at, issue.id)
              from public.account_access_cutover_preflight_issues issue
              where issue.account_id = account.id
-               and issue.property_id = legacy.property_id
+               and (issue.property_id is null or issue.property_id = legacy.property_id)
            ), '[]'::jsonb)
          )
   from public.accounts account
-  join public.account_authorization_state state
+  left join public.account_authorization_state state
     on state.account_id = account.id
-   and state.authority_mode in ('legacy', 'shadow')
   cross join lateral unnest(coalesce(account.property_access, '{}'::uuid[])) legacy(property_id)
   where not exists (
     select 1
@@ -253,17 +255,93 @@ begin
   insert into public.account_access_cutover_invariant_issues (
     run_id, account_id, property_id, issue_code, details
   )
-  select v_run_id, invitation.accepted_by, invitation.hotel_id,
-         'accepted_invite_account_unavailable',
-         jsonb_build_object('inviteId', invitation.id, 'acceptedAt', invitation.accepted_at)
-  from public.account_invites invitation
-  left join public.accounts account on account.id = invitation.accepted_by
-  where invitation.accepted_at is not null
-    and (
-      invitation.accepted_by is null
-      or account.id is null
-      or account.active is not true
-    );
+  with accepted_invites as (
+    select invitation.id as invite_id,
+           invitation.accepted_by,
+           invitation.hotel_id,
+           invitation.accepted_at,
+           assertion.value as assertion
+    from public.account_invites invitation
+    cross join lateral (
+      select public.staxis_invite_access_shadow(invitation.id) as value
+    ) assertion
+    where invitation.accepted_at is not null
+  ),
+  invite_issues as (
+    select accepted.accepted_by, accepted.hotel_id,
+           'accepted_invite_account_unavailable'::text as issue_code,
+           jsonb_build_object(
+             'inviteId', accepted.invite_id,
+             'acceptedAt', accepted.accepted_at,
+             'assertion', accepted.assertion
+           ) as details
+    from accepted_invites accepted
+    where coalesce((accepted.assertion->>'accountAvailable')::boolean, false) is not true
+
+    union all
+
+    select accepted.accepted_by, accepted.hotel_id,
+           'accepted_invite_auth_identity_missing',
+           jsonb_build_object(
+             'inviteId', accepted.invite_id,
+             'acceptedAt', accepted.accepted_at,
+             'assertion', accepted.assertion
+           )
+    from accepted_invites accepted
+    where coalesce((accepted.assertion->>'authIdentityLinked')::boolean, false) is not true
+
+    union all
+
+    select accepted.accepted_by, accepted.hotel_id,
+           'accepted_invite_current_access_missing',
+           jsonb_build_object(
+             'inviteId', accepted.invite_id,
+             'acceptedAt', accepted.accepted_at,
+             'assertion', accepted.assertion
+           )
+    from accepted_invites accepted
+    where coalesce((accepted.assertion->>'currentAccessValid')::boolean, false) is not true
+
+    union all
+
+    select accepted.accepted_by, accepted.hotel_id,
+           'accepted_invite_promised_coverage_missing',
+           jsonb_build_object(
+             'inviteId', accepted.invite_id,
+             'acceptedAt', accepted.accepted_at,
+             'assertion', accepted.assertion
+           )
+    from accepted_invites accepted
+    where coalesce((accepted.assertion->>'promisedCoverageComplete')::boolean, false) is not true
+
+    union all
+
+    select accepted.accepted_by, accepted.hotel_id,
+           'accepted_invite_roster_binding_missing',
+           jsonb_build_object(
+             'inviteId', accepted.invite_id,
+             'acceptedAt', accepted.accepted_at,
+             'assertion', accepted.assertion
+           )
+    from accepted_invites accepted
+    where coalesce((accepted.assertion->>'rosterPromised')::boolean, false) is true
+      and coalesce((accepted.assertion->>'rosterBound')::boolean, false) is not true
+
+    union all
+
+    select accepted.accepted_by, accepted.hotel_id,
+           'accepted_invite_topology_invalid',
+           jsonb_build_object(
+             'inviteId', accepted.invite_id,
+             'acceptedAt', accepted.accepted_at,
+             'assertion', accepted.assertion
+           )
+    from accepted_invites accepted
+    where coalesce((accepted.assertion->>'topologyValid')::boolean, false) is not true
+  )
+  select v_run_id, issue.accepted_by, issue.hotel_id,
+         issue.issue_code, issue.details
+  from invite_issues issue;
 
   v_issue_count := (
     select count(*)::integer

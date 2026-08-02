@@ -97,7 +97,49 @@ $$;
 revoke all on function public._staxis_cutover_real_account_organizations()
   from public, anon, authenticated, service_role;
 
-create or replace function public.staxis_preflight_authorization_cutover()
+-- A governing relationship is usable for Stage A only when it is the exact
+-- current primary relationship and its organization is active and of a type
+-- that can govern property access. Keep this definition separate from the
+-- older topology helper: the latter intentionally exposes raw current
+-- relationships for lifecycle/audit code, while Stage A authorization must
+-- fail closed for suspended or non-governing organizations.
+create or replace function public._staxis_cutover_valid_current_primary_property_relationships()
+returns table (
+  id uuid,
+  organization_id uuid,
+  property_id uuid,
+  relationship_type text,
+  active_primary_count bigint,
+  organization_status text,
+  organization_type text
+)
+language sql
+stable
+security definer
+set search_path = pg_catalog, public
+as $$
+  select relationship.id,
+         relationship.organization_id,
+         relationship.property_id,
+         relationship.relationship_type,
+         relationship.active_primary_count,
+         organization.status,
+         organization.organization_type
+  from public._staxis_current_primary_property_relationships() relationship
+  join public.organizations organization
+    on organization.id = relationship.organization_id
+  where organization.status = 'active'
+    and organization.organization_type in (
+      'single_hotel', 'management_company', 'ownership_group'
+    );
+$$;
+
+revoke all on function public._staxis_cutover_valid_current_primary_property_relationships()
+  from public, anon, authenticated, service_role;
+
+create or replace function public.staxis_preflight_authorization_cutover_labeled(
+  p_created_by text
+)
 returns jsonb
 language plpgsql
 security definer
@@ -108,8 +150,13 @@ declare
   v_issue_count integer := 0;
   v_sample jsonb := '[]'::jsonb;
 begin
+  if nullif(btrim(p_created_by), '') is null then
+    raise exception 'Stage A preflight requires a durable creator label'
+      using errcode = '22023';
+  end if;
+
   insert into public.account_access_cutover_preflight_runs (id, status, created_by)
-  values (v_run_id, 'running', '0418');
+  values (v_run_id, 'running', left(p_created_by, 100));
 
   with legacy_rows as (
     select account.id as account_id, legacy.property_id
@@ -123,10 +170,13 @@ begin
            count(*)::integer as governing_count,
            (array_agg(relationship.organization_id order by relationship.id))[1]
              as governing_organization_id,
-           count(*) filter (
-             where organization.id is null
+             count(*) filter (
+               where organization.id is null
                 or organization.status <> 'active'
-           )::integer as invalid_organization_count
+                or organization.organization_type not in (
+                  'single_hotel', 'management_company', 'ownership_group'
+                )
+             )::integer as invalid_organization_count
     from public._staxis_current_primary_property_relationships() relationship
     left join public.organizations organization
       on organization.id = relationship.organization_id
@@ -297,6 +347,22 @@ begin
 end;
 $$;
 
+-- Preserve the existing service hook and test/API call while making the
+-- migration-0419 immediate run independently identifiable from the initial
+-- migration-0418 baseline.
+create or replace function public.staxis_preflight_authorization_cutover()
+returns jsonb
+language sql
+security definer
+set search_path = pg_catalog, public
+as $$
+  select public.staxis_preflight_authorization_cutover_labeled('0418');
+$$;
+
+revoke all on function public.staxis_preflight_authorization_cutover_labeled(text)
+  from public, anon, authenticated, service_role;
+grant execute on function public.staxis_preflight_authorization_cutover_labeled(text)
+  to service_role;
 revoke all on function public.staxis_preflight_authorization_cutover()
   from public, anon, authenticated;
 grant execute on function public.staxis_preflight_authorization_cutover()

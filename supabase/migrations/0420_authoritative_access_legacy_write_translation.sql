@@ -14,6 +14,7 @@ begin
      or to_regclass('public.account_property_authorization_bridges') is null
      or to_regclass('public.account_access_cutover_legacy_snapshots') is null
      or to_regprocedure('public._staxis_current_primary_property_relationships()') is null
+     or to_regprocedure('public._staxis_cutover_valid_current_primary_property_relationships()') is null
   then
     raise exception '0420 requires the Stage A status, snapshot, topology, and bridge migrations';
   end if;
@@ -65,6 +66,9 @@ declare
   v_relationship_id uuid;
   v_organization_id uuid;
   v_organization_type text;
+  v_retired_bridge_id uuid;
+  v_retired_at timestamptz;
+  v_retirement_reason text;
   v_bridged_count integer := 0;
   v_retired_bridge_count integer := 0;
   v_reason text := left(coalesce(nullif(btrim(p_reason), ''), 'legacy property_access write'), 500);
@@ -219,6 +223,47 @@ begin
   -- caller's array write, which is the required fail-closed behavior.
   foreach v_property_id in array coalesce(v_new_property_ids, '{}'::uuid[])
   loop
+    -- A topology retirement is permanent. Do not let a retry of the same
+    -- legacy array recreate an active bridge after the governing relationship
+    -- has changed. The retirement evidence is included in the exception so a
+    -- caller/tooling can distinguish this from a missing or ambiguous hotel.
+    select bridge.id, bridge.retired_at, bridge.retirement_reason
+      into v_retired_bridge_id, v_retired_at, v_retirement_reason
+    from public.account_property_authorization_bridges bridge
+    where bridge.account_id = p_account_id
+      and bridge.property_id = v_property_id
+      and bridge.status = 'retired'
+      and not exists (
+        select 1
+        from public.account_property_authorization_bridges active_bridge
+        where active_bridge.account_id = p_account_id
+          and active_bridge.property_id = v_property_id
+          and active_bridge.status = 'active'
+      )
+    order by bridge.retired_at desc, bridge.id desc
+    limit 1;
+    -- A bridge retired by an explicit legacy-scope removal is a new-grant
+    -- boundary: the source array no longer contained this property, so a
+    -- later explicit add is not a retry of the retired authorization. Keep
+    -- that existing Stage A lifecycle working while treating every topology
+    -- or other permanent retirement as non-revivable. A retry that still had
+    -- the property in its previous array is rejected even if its evidence was
+    -- produced by the legacy-removal path.
+    if found and (
+      position(': legacy property_access removal' in coalesce(v_retirement_reason, '')) = 0
+      or v_property_id = any(coalesce(v_previous_property_ids, '{}'::uuid[]))
+    ) then
+      raise exception 'legacy property_access translation rejects permanently retired bridge: %', v_property_id
+        using errcode = '42501',
+              detail = jsonb_build_object(
+                'accountId', p_account_id,
+                'propertyId', v_property_id,
+                'retiredBridgeId', v_retired_bridge_id,
+                'retiredAt', v_retired_at,
+                'retirementReason', v_retirement_reason
+              )::text;
+    end if;
+
     if not exists (
       select 1 from public.properties property where property.id = v_property_id
     ) then
@@ -227,7 +272,7 @@ begin
     end if;
 
     select count(*)::integer into v_current_relationship_count
-    from public._staxis_current_primary_property_relationships() relationship
+    from public._staxis_cutover_valid_current_primary_property_relationships() relationship
     where relationship.property_id = v_property_id;
     if v_current_relationship_count = 0 then
       raise exception 'legacy property_access translation property topology is missing: %', v_property_id
@@ -244,10 +289,9 @@ begin
            (array_agg(organization.organization_type order by relationship.id))[1]
       into v_relationship_count, v_relationship_id, v_organization_id,
            v_organization_type
-    from public._staxis_current_primary_property_relationships() relationship
+    from public._staxis_cutover_valid_current_primary_property_relationships() relationship
     join public.organizations organization
       on organization.id = relationship.organization_id
-     and organization.status = 'active'
     where relationship.property_id = v_property_id
       and relationship.active_primary_count = 1;
     if v_relationship_count <> 1 or v_organization_type is null then
@@ -293,9 +337,12 @@ begin
   -- the current app's access; it prevents a future normalized stage from
   -- mistaking the removed legacy row for a live grant.
   update public.account_property_authorization_bridges bridge
-     set status = 'retired',
-         retired_at = clock_timestamp(),
-         retirement_reason = left(v_reason || ': legacy property_access removal', 500)
+   set status = 'retired',
+       retired_at = clock_timestamp(),
+         retirement_reason = left(
+           v_reason,
+           500 - char_length(': legacy property_access removal')
+         ) || ': legacy property_access removal'
    where bridge.account_id = p_account_id
      and bridge.status = 'active'
      and not (bridge.property_id = any(coalesce(v_new_property_ids, '{}'::uuid[])));
@@ -305,7 +352,7 @@ begin
   loop
     select relationship.id, relationship.organization_id
       into v_relationship_id, v_organization_id
-    from public._staxis_current_primary_property_relationships() relationship
+    from public._staxis_cutover_valid_current_primary_property_relationships() relationship
     where relationship.property_id = v_property_id
       and relationship.active_primary_count = 1;
 

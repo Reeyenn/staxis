@@ -342,4 +342,76 @@ describe('Stage A authoritative access compatibility — real SQL', () => {
       enforcement_enabled: false,
     });
   });
+
+  test('a retired bridge cannot be resurrected by retrying the same legacy write', async () => {
+    const beforeRetry = await pg.query<{ events: number }>(
+      `select count(*)::integer as events
+         from public.account_access_cutover_legacy_write_events
+        where account_id = $1`,
+      [ACCOUNT_WANDA],
+    );
+
+    // The real relationship-retirement trigger records the topology change
+    // and retires the bridge before the legacy writer can run again.
+    await pg.query(
+      `update public.organization_property_relationships
+          set ends_at = clock_timestamp()
+        where property_id = $1
+          and is_primary_grouping is true
+          and ends_at is null`,
+      [PID_L1],
+    );
+
+    const retired = await pg.query<{
+      status: string;
+      retired_at: string | null;
+      retirement_reason: string | null;
+    }>(
+      `select status, retired_at, retirement_reason
+         from public.account_property_authorization_bridges
+        where account_id = $1 and property_id = $2
+        order by created_at desc
+        limit 1`,
+      [ACCOUNT_WANDA, PID_L1],
+    );
+    assert.equal(retired.rows[0]?.status, 'retired');
+    assert.ok(retired.rows[0]?.retired_at);
+    assert.ok(retired.rows[0]?.retirement_reason);
+
+    await assert.rejects(
+      pg.query(
+        `update public.accounts
+            set property_access = array[$1]::uuid[]
+          where id = $2`,
+        [PID_L1, ACCOUNT_WANDA],
+      ),
+      (caught: unknown) => (
+        Boolean(caught && typeof caught === 'object'
+          && (caught as { code?: string }).code === '42501'
+          && String((caught as { detail?: string }).detail ?? '').includes('retirementReason'))
+      ),
+    );
+
+    const afterRetry = await pg.query<{
+      property_access: string[];
+      active_bridges: number;
+      events: number;
+    }>(
+      `select account.property_access,
+              (select count(*)::integer
+                 from public.account_property_authorization_bridges bridge
+                where bridge.account_id = account.id
+                  and bridge.property_id = $2
+                  and bridge.status = 'active') as active_bridges,
+              (select count(*)::integer
+                 from public.account_access_cutover_legacy_write_events event
+                where event.account_id = account.id) as events
+         from public.accounts account
+        where account.id = $1`,
+      [ACCOUNT_WANDA, PID_L1],
+    );
+    assert.deepEqual(afterRetry.rows[0]?.property_access, [PID_L1]);
+    assert.equal(Number(afterRetry.rows[0]?.active_bridges), 0);
+    assert.equal(Number(afterRetry.rows[0]?.events), Number(beforeRetry.rows[0]?.events));
+  });
 });

@@ -6,6 +6,7 @@ import { applyMigrationsToPgliteWithHook } from '../../../tests/fixtures/pglite-
 
 const PREFLIGHT_MIGRATION = '0418_authoritative_access_cutover_preflight.sql';
 const BACKFILL_MIGRATION = '0419_authoritative_access_cutover_backfill.sql';
+const INVARIANT_MIGRATION = '0423_authoritative_access_stage_a_invariants.sql';
 
 const PROPERTY_GOVERNED = 'a4190000-0000-4000-8000-000000000101';
 const PROPERTY_OTHER_COMPANY = 'a4190000-0000-4000-8000-000000000102';
@@ -16,11 +17,15 @@ const ACCOUNT_INVALID_ROLE = 'a4192000-0000-4000-8000-000000000101';
 const ACCOUNT_MISSING_IDENTITY = 'a4192000-0000-4000-8000-000000000102';
 const ACCOUNT_SHADOW = 'a4192000-0000-4000-8000-000000000103';
 const ACCOUNT_ORPHAN_PROPERTY = 'a4192000-0000-4000-8000-000000000104';
+const ACCOUNT_NORMALIZED_RESIDUE = 'a4192000-0000-4000-8000-000000000105';
+const ACCOUNT_MISSING_STATE = 'a4192000-0000-4000-8000-000000000106';
 
 const UID_INVALID_ROLE = 'a4193000-0000-4000-8000-000000000101';
 const UID_SHADOW = 'a4193000-0000-4000-8000-000000000103';
 const UID_MISSING_IDENTITY = 'a4193000-0000-4000-8000-000000000199';
 const UID_ORPHAN_PROPERTY = 'a4193000-0000-4000-8000-000000000104';
+const UID_NORMALIZED_RESIDUE = 'a4193000-0000-4000-8000-000000000105';
+const UID_MISSING_STATE = 'a4193000-0000-4000-8000-000000000106';
 const ORPHAN_PROPERTY = 'a4194000-0000-4000-8000-000000000404';
 
 function asObject(value: unknown): Record<string, unknown> {
@@ -219,6 +224,62 @@ async function seedBeforeBackfill(pg: PGlite): Promise<void> {
   }
 }
 
+async function seedBeforeInvariant(pg: PGlite): Promise<void> {
+  await pg.query(
+    `insert into auth.users (id, email)
+     values ($1, 'stage-a-normalized-residue@example.test'),
+            ($2, 'stage-a-missing-state@example.test')`,
+    [UID_NORMALIZED_RESIDUE, UID_MISSING_STATE],
+  );
+  await insertAccount(
+    pg,
+    ACCOUNT_NORMALIZED_RESIDUE,
+    'stage-a-normalized-residue',
+    'front_desk',
+    [],
+    UID_NORMALIZED_RESIDUE,
+  );
+  await insertAccount(
+    pg,
+    ACCOUNT_MISSING_STATE,
+    'stage-a-missing-state',
+    'front_desk',
+    [],
+    UID_MISSING_STATE,
+  );
+
+  // These are deliberate post-backfill residues. Disable only the Stage A
+  // compatibility translator while planting the array, then leave the array
+  // intact and make the authorization-state facts explicit for 0423.
+  await pg.query(
+    `alter table public.accounts
+       disable trigger trg_accounts_authorization_translate_legacy_property_access`,
+  );
+  try {
+    await pg.query(
+      `update public.accounts
+          set property_access = $1::uuid[]
+        where id in ($2::uuid, $3::uuid)`,
+      [`{${PROPERTY_GOVERNED}}`, ACCOUNT_NORMALIZED_RESIDUE, ACCOUNT_MISSING_STATE],
+    );
+  } finally {
+    await pg.query(
+      `alter table public.accounts
+         enable trigger trg_accounts_authorization_translate_legacy_property_access`,
+    );
+  }
+  await pg.query(
+    `update public.account_authorization_state
+        set authority_mode = 'normalized', cutover_at = clock_timestamp()
+      where account_id = $1`,
+    [ACCOUNT_NORMALIZED_RESIDUE],
+  );
+  await pg.query(
+    `delete from public.account_authorization_state where account_id = $1`,
+    [ACCOUNT_MISSING_STATE],
+  );
+}
+
 async function countBridges(pg: PGlite, accountId: string, propertyId: string): Promise<number> {
   const result = await pg.query<{ count: number }>(
     `select count(*)::integer as count
@@ -233,6 +294,7 @@ test('0419 backfill skips account-level issues and applies the consistent compan
   const migrated = await applyMigrationsToPgliteWithHook(async ({ pg, file }) => {
     if (file === PREFLIGHT_MIGRATION) await seedBeforePreflight(pg);
     if (file === BACKFILL_MIGRATION) await seedBeforeBackfill(pg);
+    if (file === INVARIANT_MIGRATION) await seedBeforeInvariant(pg);
   });
 
   try {
@@ -242,25 +304,56 @@ test('0419 backfill skips account-level issues and applies the consistent compan
       JSON.stringify(migrated.report.failedAtRuntime),
     );
 
-    const status = await migrated.pg.query<{ last_preflight_run_id: string }>(
-      `select last_preflight_run_id
+    const status = await migrated.pg.query<{
+      last_preflight_run_id: string;
+      baseline_preflight_run_id: string;
+    }>(
+      `select last_preflight_run_id, baseline_preflight_run_id
          from public.account_access_cutover_status
         where id is true`,
     );
     const preflightRunId = status.rows[0]?.last_preflight_run_id;
+    const baselinePreflightRunId = status.rows[0]?.baseline_preflight_run_id;
     assert.ok(preflightRunId);
+    assert.ok(baselinePreflightRunId);
+    assert.notEqual(
+      preflightRunId,
+      baselinePreflightRunId,
+      '0419 must retain a distinct immediate run rather than relabeling the 0418 baseline',
+    );
+
+    const preflightRuns = await migrated.pg.query<{
+      id: string;
+      created_by: string;
+      status: string;
+    }>(
+      `select id, created_by, status
+         from public.account_access_cutover_preflight_runs
+        where id in ($1::uuid, $2::uuid)
+        order by created_by`,
+      [baselinePreflightRunId, preflightRunId],
+    );
+    assert.deepEqual(
+      preflightRuns.rows.map((row) => [row.id, row.created_by]),
+      [
+        [baselinePreflightRunId, '0418'],
+        [preflightRunId, '0419'],
+      ],
+    );
 
     const backfillRun = await migrated.pg.query<{
       id: string;
       preflight_run_id: string;
+      baseline_preflight_run_id: string;
       skipped_count: number;
     }>(
-      `select preflight_run_id, skipped_count
+      `select preflight_run_id, baseline_preflight_run_id, skipped_count
          from public.account_access_cutover_backfill_runs
         order by started_at desc
         limit 1`,
     );
     assert.equal(backfillRun.rows[0]?.preflight_run_id, preflightRunId);
+    assert.equal(backfillRun.rows[0]?.baseline_preflight_run_id, baselinePreflightRunId);
     assert.ok(Number(backfillRun.rows[0]?.skipped_count) >= 4);
 
     const orphanArray = await migrated.pg.query<{ property_access: string[] }>(
@@ -422,6 +515,109 @@ test('0419 backfill skips account-level issues and applies the consistent compan
     assert.ok(
       invariantPreflightIssues.some((issue) => asObject(issue).code === 'property_missing'),
       `the invariant must retain the matching preflight context: ${JSON.stringify(orphanInvariant?.details)}`,
+    );
+
+    const residueIssues = await migrated.pg.query<{
+      account_id: string;
+      property_id: string;
+      issue_code: string;
+      details: Record<string, unknown>;
+    }>(
+      `select account_id, property_id, issue_code, details
+         from public.account_access_cutover_invariant_issues
+        where run_id = $1
+          and account_id in ($2::uuid, $3::uuid)
+          and property_id = $4
+          and issue_code = 'legacy_row_without_shadow_translation'
+        order by account_id`,
+      [invariant.runId, ACCOUNT_NORMALIZED_RESIDUE, ACCOUNT_MISSING_STATE, PROPERTY_GOVERNED],
+    );
+    assert.equal(residueIssues.rows.length, 2);
+    const normalizedResidue = residueIssues.rows.find(
+      (row) => row.account_id === ACCOUNT_NORMALIZED_RESIDUE,
+    );
+    const missingStateResidue = residueIssues.rows.find(
+      (row) => row.account_id === ACCOUNT_MISSING_STATE,
+    );
+    assert.equal(normalizedResidue?.details.authorizationStatePresent, true);
+    assert.equal(normalizedResidue?.details.authorityMode, 'normalized');
+    assert.equal(missingStateResidue?.details.authorizationStatePresent, false);
+    assert.equal(missingStateResidue?.details.authorityMode, null);
+
+    const invalidRoleInvariant = await migrated.pg.query<{
+      details: Record<string, unknown>;
+    }>(
+      `select details
+         from public.account_access_cutover_invariant_issues
+        where run_id = $1
+          and account_id = $2
+          and property_id = $3
+          and issue_code = 'legacy_row_without_shadow_translation'`,
+      [invariant.runId, ACCOUNT_INVALID_ROLE, PROPERTY_GOVERNED],
+    );
+    const invalidRoleDetails = invalidRoleInvariant.rows[0]?.details;
+    const invalidRolePreflight = invalidRoleDetails?.preflightIssues;
+    assert.ok(Array.isArray(invalidRolePreflight));
+    assert.ok(
+      invalidRolePreflight.some((issue) => asObject(issue).code === 'invalid_account_role'),
+      JSON.stringify(invalidRoleDetails),
+    );
+  } finally {
+    await migrated.pg.close();
+  }
+});
+
+test('0419 rerun preserves Stage C enforcement and fails with explicit remediation', async () => {
+  const migrated = await applyMigrationsToPgliteWithHook(async ({ pg, file }) => {
+    if (file !== BACKFILL_MIGRATION) return;
+
+    // Seed the already-live control record immediately before the migration.
+    // 0419 must lock and reject it, not overwrite it or create a new backfill.
+    await pg.exec(`
+      create table public.account_access_cutover_status (
+        id boolean primary key default true check (id is true),
+        stage text not null default 'A' check (stage in ('A', 'B', 'C')),
+        enforcement_enabled boolean not null default false,
+        last_preflight_run_id uuid references public.account_access_cutover_preflight_runs(id),
+        last_backfill_at timestamptz,
+        details jsonb not null default '{}'::jsonb
+      );
+      insert into public.account_access_cutover_status (id, stage, enforcement_enabled)
+      values (true, 'C', true);
+    `);
+  });
+
+  try {
+    assert.equal(
+      migrated.report.applied.includes(BACKFILL_MIGRATION),
+      false,
+      'a Stage C control record must make the additive 0419 migration fail loudly',
+    );
+    const failure = migrated.report.failedAtRuntime.find(
+      (entry) => entry.file === BACKFILL_MIGRATION,
+    );
+    assert.ok(failure);
+    assert.match(failure.error, /0419 cannot rerun additive backfill/);
+    assert.match(failure.error, /stage C/);
+
+    // The generic migration hook intentionally keeps applying later files
+    // after a runtime failure; clear the failed transaction before inspecting
+    // the durable pre-seeded control row.
+    await migrated.pg.exec('rollback');
+
+    const status = await migrated.pg.query<{ stage: string; enforcement_enabled: boolean }>(
+      `select stage, enforcement_enabled
+         from public.account_access_cutover_status
+        where id is true`,
+    );
+    assert.deepEqual(status.rows[0], { stage: 'C', enforcement_enabled: true });
+    const backfillTable = await migrated.pg.query<{ table_name: string | null }>(
+      `select to_regclass('public.account_access_cutover_backfill_runs') as table_name`,
+    );
+    assert.equal(
+      backfillTable.rows[0]?.table_name,
+      null,
+      'the failed rerun must not leave a partially-created backfill evidence table',
     );
   } finally {
     await migrated.pg.close();
