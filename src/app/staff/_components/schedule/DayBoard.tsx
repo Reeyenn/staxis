@@ -15,9 +15,10 @@
 import React, { useEffect, useRef, useState } from 'react';
 import type { ShiftPreset, StaffDepartment } from '@/types';
 import {
-  boardRange, boardTicks, fmtMin, fmtMinRange, presetBoundaries, snapMin, shortName,
+  boardRange, boardTicks, fmtMin, fmtMinRange, isScheduledNow, presetBoundaries, snapMin, shortName,
   type BoardShift,
 } from '@/lib/schedule-board';
+import { propertyLocalClockMinutes } from '@/lib/schedule/local-date';
 import { T, fonts, deptMeta, Caps, type DeptKey } from '../_tokens';
 import { Avatar } from '../_people';
 
@@ -39,20 +40,16 @@ export function useReducedMotion(): boolean {
   return reduced;
 }
 
-function nowMinutes(): number {
-  const d = new Date();
-  return d.getHours() * 60 + d.getMinutes();
-}
-
 export function DayBoard({
   shifts, presets, isToday, lang, nameOf, otTitles,
-  readOnlyStaffIds, onUpdate, onGestureStart, onGestureEnd, onRemove, onTapShift,
+  timezone, readOnlyStaffIds, onUpdate, onGestureStart, onGestureEnd, onRemove, onTapShift,
 }: {
   shifts: BoardShift[];
   presets: ShiftPreset[];
   isToday: boolean;
   lang: 'en' | 'es';
   nameOf: (staffId: string) => string;
+  timezone: string | null;
   /** staffId → tooltip for staff projected over their weekly-hours cap. */
   otTitles: Map<string, string>;
   /** Archived historical assignments remain visible but cannot be mutated. */
@@ -74,12 +71,14 @@ export function DayBoard({
   const span = rangeEnd - rangeStart;
   const ticks = boardTicks(rangeStart, rangeEnd);
 
-  const [nowMin, setNowMin] = useState(nowMinutes);
+  const [nowMin, setNowMin] = useState(() => propertyLocalClockMinutes(new Date(), timezone));
   useEffect(() => {
     if (!isToday) return;
-    const t = setInterval(() => setNowMin(nowMinutes()), 60_000);
+    const refreshNow = () => setNowMin(propertyLocalClockMinutes(new Date(), timezone));
+    refreshNow();
+    const t = setInterval(refreshNow, 60_000);
     return () => clearInterval(t);
-  }, [isToday]);
+  }, [isToday, timezone]);
 
   const lanes: DeptKey[] = ['housekeeping', 'front_desk', 'maintenance'];
   if (shifts.some(s => s.dept === 'other')) lanes.push('other');
@@ -131,6 +130,7 @@ export function DayBoard({
                 presets={presets} nameOf={nameOf}
                 reducedMotion={reducedMotion}
                 otTitle={otTitles.get(sh.staffId)}
+                scheduledNow={isToday && isScheduledNow(sh, nowMin)}
                 readOnly={readOnlyStaffIds?.has(sh.staffId) === true}
                 onUpdate={onUpdate}
                 onGestureStart={onGestureStart}
@@ -159,7 +159,7 @@ export function DayBoard({
 // ── One staff row with a draggable / resizable shift block ────────────────
 function ShiftRow({
   sh, tone, dim, rangeStart, rangeEnd, span, ticks, nowMin,
-  presets, nameOf, reducedMotion, otTitle, readOnly,
+  presets, nameOf, reducedMotion, otTitle, scheduledNow, readOnly,
   onUpdate, onGestureStart, onGestureEnd, onHoverLane, onRemove, onTapShift,
 }: {
   sh: BoardShift;
@@ -174,6 +174,7 @@ function ShiftRow({
   nameOf: (staffId: string) => string;
   reducedMotion: boolean;
   otTitle?: string;
+  scheduledNow: boolean;
   readOnly: boolean;
   onUpdate: (id: string, patch: Partial<BoardShift>) => void;
   onGestureStart: () => void;
@@ -358,9 +359,22 @@ function ShiftRow({
             }}/>
           )}
           <span style={{
-            marginLeft: 'auto', fontFamily: fonts.mono, fontSize: 9.5,
-            color: tone, whiteSpace: 'nowrap',
-          }}>{fmtMinRange(sh.startMin, sh.endMin)}</span>
+            marginLeft: 'auto', display: 'inline-flex', alignItems: 'center', gap: 5,
+            whiteSpace: 'nowrap',
+          }}>
+            {scheduledNow && (
+              <span
+                title="Scheduled now"
+                style={{
+                  fontFamily: fonts.mono, fontSize: 7.5, fontWeight: 700,
+                  color: T.sageDeep, letterSpacing: '0.03em',
+                }}
+              >{'Scheduled now'}</span>
+            )}
+            <span style={{
+              fontFamily: fonts.mono, fontSize: 9.5, color: tone,
+            }}>{fmtMinRange(sh.startMin, sh.endMin)}</span>
+          </span>
           {/* resize handle */}
           {!readOnly ? (
             <span

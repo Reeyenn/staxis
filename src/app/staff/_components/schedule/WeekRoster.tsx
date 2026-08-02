@@ -8,14 +8,12 @@
 import React, { useEffect, useRef } from 'react';
 import type { StaffMember } from '@/types';
 import {
-  fmtHours, fmtMinRange, shortName, weekMinutesByStaff,
+  fmtMinRange, fmtScheduledHours, shortName, weekMinutesByStaff, weeklyCapMinutes, weeklyLimitStatus,
   type BoardShift, type DayInfo,
 } from '@/lib/schedule-board';
 import { staffVisibleInWeekRoster } from '@/lib/schedule/week-roster-staff';
 import { T, fonts, deptMeta, asDeptKey, Caps, type DeptKey } from '../_tokens';
 import { Avatar } from '../_people';
-
-const DEFAULT_WEEKLY_CAP = 40;
 
 export function WeekRoster({
   days, getDay, staff, lang, onPickDay, animNonce, reducedMotion,
@@ -67,7 +65,7 @@ export function WeekRoster({
   // Projected weekly hours per person — the overtime flag's whole value is
   // catching an over-cap week while the manager is still building it.
   const weekMin = weekMinutesByStaff(shiftsByDay);
-  const capMinOf = (s: StaffMember) => (s.maxWeeklyHours || DEFAULT_WEEKLY_CAP) * 60;
+  const capMinOf = (s: StaffMember) => weeklyCapMinutes(s.maxWeeklyHours);
 
   return (
     <div ref={rootRef} style={{
@@ -115,7 +113,9 @@ export function WeekRoster({
             </div>
             {list.map(s => {
               const min = weekMin.get(s.id) ?? 0;
-              const over = min > capMinOf(s);
+              const capMin = capMinOf(s);
+              const limitStatus = weeklyLimitStatus(min, s.maxWeeklyHours);
+              const limitLabel = limitStatus === 'over' ? 'Over limit' : limitStatus === 'near' ? 'Near limit' : null;
               return (
               <div key={s.id} style={{ display: 'grid', gridTemplateColumns: cols, borderBottom: `1px solid ${T.ruleSoft}` }}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 7, padding: '5px 14px' }}>
@@ -133,23 +133,19 @@ export function WeekRoster({
                       letterSpacing: '0.05em',
                     }}>{'Archived'}</span>
                   ) : null}
-                  {min > 0 && (
-                    <span
-                      title={over
-                        ? (`${fmtHours(min)} this week, over the ${fmtHours(capMinOf(s))} cap`)
-                        : undefined}
-                      style={{
-                        fontFamily: fonts.mono, fontSize: 8.5, flexShrink: 0,
-                        fontWeight: over ? 700 : 500,
-                        color: over ? T.red : T.ink3,
-                        ...(over ? {
-                          background: 'rgba(184,92,61,0.10)',
-                          border: '1px solid rgba(184,92,61,0.35)',
-                          padding: '0 4px', borderRadius: 999,
-                        } : {}),
-                      }}
-                    >{fmtHours(min)}{over ? ' OT' : ''}</span>
-                  )}
+                  <span
+                    style={{
+                      fontFamily: fonts.mono, fontSize: 8.5, flexShrink: 0,
+                      fontWeight: limitStatus ? 700 : 500,
+                      color: limitStatus === 'over' ? T.red : limitStatus === 'near' ? T.caramelDeep : T.ink3,
+                      ...(limitStatus ? {
+                        background: limitStatus === 'over' ? 'rgba(184,92,61,0.10)' : 'rgba(201,150,68,0.10)',
+                        border: `1px solid ${limitStatus === 'over' ? 'rgba(184,92,61,0.35)' : 'rgba(201,150,68,0.35)'}`,
+                        padding: '0 4px', borderRadius: 999,
+                      } : {}),
+                      whiteSpace: 'nowrap',
+                    }}
+                  >{fmtScheduledHours(min, capMin)}{limitLabel ? ` · ${limitLabel}` : ''}</span>
                 </div>
                 {days.map(d => {
                   const sh = shiftFor.get(`${s.id}:${d.date}`);

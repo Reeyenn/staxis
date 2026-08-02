@@ -17,7 +17,7 @@ import { useLang } from '@/contexts/LanguageContext';
 import type { StaffMember } from '@/types';
 import {
   addDaysYmd, sundayOf, dayInfo, buildWeeks, deptDefaultTimes,
-  weekMinutesByStaff, fmtHours, fmtMinRange,
+  weekMinutesByStaff, fmtHours, fmtMinRange, weeklyCapMinutes,
   type BoardShift, type DayInfo, type WeekInfo,
 } from '@/lib/schedule-board';
 import { T, fonts, deptMeta, asDeptKey, Caps, Btn, Card, type DeptKey } from '../_tokens';
@@ -31,8 +31,6 @@ import { FillModal } from './FillModal';
 import { AddStaffModal } from './AddStaffModal';
 import { TimeOffSection, TimeOffHistoryModal } from './TimeOffModal';
 import { ShiftEditorModal } from './ShiftEditorModal';
-
-const DEFAULT_WEEKLY_CAP = 40;
 
 const HL_SHADOW = `inset 0 0 0 1px ${T.brand}`;
 
@@ -79,6 +77,7 @@ export function UnifiedSchedule({ onOpenPeople }: { onOpenPeople?: () => void })
       staff={staff}
       lang={lang}
       data={data}
+      timezone={activeProperty?.timezone ?? null}
       propertyName={activeProperty?.name}
       onOpenPeople={onOpenPeople}
     />
@@ -87,10 +86,11 @@ export function UnifiedSchedule({ onOpenPeople }: { onOpenPeople?: () => void })
 
 // ScheduleView — the full schedule surface, decoupled from where its data
 // comes from: the real tab feeds it useScheduleData (Supabase-backed).
-export function ScheduleView({ staff, lang, data, propertyName, onOpenPeople }: {
+export function ScheduleView({ staff, lang, data, timezone, propertyName, onOpenPeople }: {
   staff: StaffMember[];
   lang: 'en' | 'es';
   data: ScheduleData;
+  timezone: string | null;
   propertyName?: string;
   onOpenPeople?: () => void;
 }) {
@@ -138,7 +138,7 @@ export function ScheduleView({ staff, lang, data, propertyName, onOpenPeople }: 
   );
   const capMinById = useMemo(() => {
     const m = new Map<string, number>();
-    for (const s of staff) m.set(s.id, (s.maxWeeklyHours || DEFAULT_WEEKLY_CAP) * 60);
+    for (const s of staff) m.set(s.id, weeklyCapMinutes(s.maxWeeklyHours));
     return m;
   }, [staff]);
 
@@ -152,7 +152,7 @@ export function ScheduleView({ staff, lang, data, propertyName, onOpenPeople }: 
   const otTitles = useMemo(() => {
     const m = new Map<string, string>();
     for (const [staffId, min] of dayWeekMinutes) {
-      const cap = capMinById.get(staffId) ?? DEFAULT_WEEKLY_CAP * 60;
+      const cap = capMinById.get(staffId) ?? weeklyCapMinutes(undefined);
       if (min > cap) {
         m.set(staffId, `${fmtHours(min)} this week, over the ${fmtHours(cap)} cap`);
       }
@@ -665,6 +665,7 @@ export function ScheduleView({ staff, lang, data, propertyName, onOpenPeople }: 
               shifts={dayShifts}
               presets={data.presets}
               isToday={day.today}
+              timezone={timezone}
               lang={lang}
               nameOf={data.nameOf}
               otTitles={otTitles}
@@ -856,7 +857,7 @@ function printableWeekHtml({
     rows.push(`<tr class="dept"><td colspan="9">${esc(deptMeta[dep].label)}</td></tr>`);
     for (const s of list) {
       const min = weekMin.get(s.id) ?? 0;
-      const over = min > (capMinById.get(s.id) ?? DEFAULT_WEEKLY_CAP * 60);
+      const over = min > (capMinById.get(s.id) ?? weeklyCapMinutes(undefined));
       const cells = week.days.map(d => {
         const sh = shiftFor.get(`${s.id}:${d.date}`);
         if (!sh) return '<td></td>';
