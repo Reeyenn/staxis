@@ -101,11 +101,12 @@ async function acceptInvite(
 
 describe('Stage A invitation promise and invariant assertions — real SQL', () => {
   let pg: PGlite;
+  let companies: Awaited<ReturnType<typeof seedTwoCompanies>>;
 
   before(async () => {
     const migrated = await applyMigrationsToPglite();
     pg = migrated.pg;
-    await seedTwoCompanies(pg);
+    companies = await seedTwoCompanies(pg);
 
     await pg.query(
       `insert into auth.users (id, email)
@@ -385,5 +386,153 @@ describe('Stage A invitation promise and invariant assertions — real SQL', () 
         && asObject(row.details.assertion).inviteId === missingAccessInvite,
     );
     assert.ok(missingAccessInvariant, JSON.stringify(issues.rows));
+  });
+
+  test('legacy anchor transfers and roster drift invalidate the persisted invite promise', async () => {
+    // Restore the governing organization after the prior lifecycle fixture so
+    // this test can prove a clean accepted state before each drift.
+    await pg.query(
+      `update public.organizations set status = 'active' where id = $1`,
+      [ORG_A],
+    );
+
+    const rosterDriftInvite = await createInvite(
+      pg, ACCOUNT_ANA, UID_ANA, PID_A1, 'front_desk', ORG_A, 'property', [PID_A1],
+    );
+    await pg.query(
+      `update public.account_invites
+          set target_staff_id = $2
+        where id = $1`,
+      [rosterDriftInvite, STAFF_TARGET],
+    );
+    await acceptInvite(pg, rosterDriftInvite, ACCOUNT_FRANK);
+
+    // Represent the durable post-acceptance binding produced by the existing
+    // People acceptance path. The assertion must still verify every live fact
+    // rather than trusting the accepted invite or the link row.
+    await pg.query(
+      `update public.accounts
+          set staff_id = $2
+        where id = $1`,
+      [ACCOUNT_FRANK, STAFF_TARGET],
+    );
+    await pg.query(
+      `insert into public.account_property_staff_links (
+         account_id, property_id, staff_id, is_active, source,
+         linked_by_account_id, linked_at, deactivated_at,
+         deactivated_by_account_id, updated_at
+       ) values ($1, $2, $3, true, 'invitation', $4,
+                 clock_timestamp(), null, null, clock_timestamp())`,
+      [ACCOUNT_FRANK, PID_A1, STAFF_TARGET, ACCOUNT_ANA],
+    );
+
+    const bound = asObject((await pg.query<{ value: unknown }>(
+      `select public.staxis_invite_access_shadow($1::uuid) as value`,
+      [rosterDriftInvite],
+    )).rows[0]?.value);
+    assert.equal(bound.rosterBound, true);
+    assert.equal(bound.accountStaffLinkActive, true);
+    assert.equal(bound.targetStaffExists, true);
+    assert.equal(bound.targetStaffActive, true);
+    assert.equal(bound.targetStaffDepartment, 'front_desk');
+    assert.equal(bound.rosterRoleMatches, true);
+    assert.equal(asObject(bound.rosterBinding).roleMatchesDepartment, true);
+
+    await pg.query(
+      `update public.staff set department = 'maintenance' where id = $1`,
+      [STAFF_TARGET],
+    );
+    const departmentDrift = asObject((await pg.query<{ value: unknown }>(
+      `select public.staxis_invite_access_shadow($1::uuid) as value`,
+      [rosterDriftInvite],
+    )).rows[0]?.value);
+    assert.equal(departmentDrift.rosterBound, false);
+    assert.equal(departmentDrift.targetStaffExists, true);
+    assert.equal(departmentDrift.targetStaffActive, true);
+    assert.equal(departmentDrift.targetStaffDepartment, 'maintenance');
+    assert.equal(departmentDrift.rosterRoleMatches, false);
+    assert.equal(departmentDrift.accountStaffLinkActive, true);
+    assert.equal(departmentDrift.rosterLinkExists, true);
+
+    await pg.query(
+      `update public.staff
+          set department = 'front_desk', is_active = false
+        where id = $1`,
+      [STAFF_TARGET],
+    );
+    const inactiveStaff = asObject((await pg.query<{ value: unknown }>(
+      `select public.staxis_invite_access_shadow($1::uuid) as value`,
+      [rosterDriftInvite],
+    )).rows[0]?.value);
+    assert.equal(inactiveStaff.rosterBound, false);
+    assert.equal(inactiveStaff.targetStaffExists, true);
+    assert.equal(inactiveStaff.targetStaffActive, false);
+    assert.equal(inactiveStaff.targetStaffDepartment, 'front_desk');
+    assert.equal(inactiveStaff.rosterRoleMatches, true);
+    assert.equal(inactiveStaff.accountStaffLinkActive, true);
+
+    // Leave the shared fixture at its original roster state before testing the
+    // independent legacy-anchor topology transition.
+    await pg.query(
+      `update public.staff set is_active = true where id = $1`,
+      [STAFF_TARGET],
+    );
+    await pg.query(
+      `delete from public.account_property_staff_links
+        where account_id = $1 and property_id = $2`,
+      [ACCOUNT_FRANK, PID_A1],
+    );
+    await pg.query(
+      `update public.accounts set staff_id = null where id = $1`,
+      [ACCOUNT_FRANK],
+    );
+
+    const legacyAnchorInvite = await createInvite(
+      pg, ACCOUNT_WANDA, UID_WANDA, PID_L1, 'owner', null, null, null,
+    );
+    await acceptInvite(pg, legacyAnchorInvite, ACCOUNT_WANDA);
+    const independent = asObject((await pg.query<{ value: unknown }>(
+      `select public.staxis_invite_access_shadow($1::uuid) as value`,
+      [legacyAnchorInvite],
+    )).rows[0]?.value);
+    assert.equal(independent.topologyValid, true);
+    assert.equal(independent.currentAccessValid, true);
+    assert.equal(independent.promisedCoverageComplete, true);
+    assert.equal(independent.ok, true);
+    assert.equal(independent.currentOrganizationType, 'single_hotel');
+
+    await companies.attachPropertyToOrganization(pg, ORG_A, PID_L1, 'Waco Inn Managed');
+    const transferred = asObject((await pg.query<{ value: unknown }>(
+      `select public.staxis_invite_access_shadow($1::uuid) as value`,
+      [legacyAnchorInvite],
+    )).rows[0]?.value);
+    assert.equal(transferred.topologyValid, false);
+    assert.equal(transferred.currentAccessValid, false);
+    assert.equal(transferred.promisedCoverageComplete, false);
+    assert.equal(transferred.ok, false);
+    assert.equal(transferred.currentOrganizationId, ORG_A);
+    assert.equal(transferred.currentOrganizationType, 'management_company');
+
+    const invariantResult = asObject((await pg.query<{ value: unknown }>(
+      `select public.staxis_assert_stage_a_access_invariants() as value`,
+    )).rows[0]?.value);
+    const issues = await pg.query<{
+      issue_code: string;
+      details: Record<string, unknown>;
+    }>(
+      `select issue_code, details
+         from public.account_access_cutover_invariant_issues
+        where run_id = $1`,
+      [invariantResult.runId],
+    );
+    const legacyIssueCodes = new Set(
+      issues.rows
+        .filter((row) => row.details.assertion !== undefined
+          && asObject(row.details.assertion).inviteId === legacyAnchorInvite)
+        .map((row) => row.issue_code),
+    );
+    assert.ok(legacyIssueCodes.has('accepted_invite_topology_invalid'));
+    assert.ok(legacyIssueCodes.has('accepted_invite_current_access_missing'));
+    assert.ok(legacyIssueCodes.has('accepted_invite_promised_coverage_missing'));
   });
 });

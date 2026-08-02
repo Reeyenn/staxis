@@ -41,6 +41,10 @@ declare
   v_roster_bound boolean := true;
   v_roster_promised boolean := false;
   v_roster_link_exists boolean := false;
+  v_account_staff_link_active boolean := false;
+  v_target_staff_exists boolean := false;
+  v_target_staff_active boolean := false;
+  v_roster_role_matches boolean := false;
   v_roster_target_valid boolean := false;
   v_reason text := 'pending_acceptance';
   v_topology_reason text := 'pending_acceptance';
@@ -58,6 +62,7 @@ declare
   v_current_organization_type text;
   v_current_organization_status text;
   v_target_staff_property_id uuid;
+  v_target_staff_department text;
 begin
   if p_invite_id is null then
     return jsonb_build_object('ok', false, 'reason', 'invalid_request');
@@ -98,7 +103,12 @@ begin
     from public._staxis_cutover_valid_current_primary_property_relationships() relationship
     where relationship.property_id = v_invite.hotel_id
       and relationship.active_primary_count = 1;
-    v_topology_valid := cardinality(v_current_topology_property_ids) = 1;
+    -- A legacy NULL-scope invite promises the independent hotel's anchor
+    -- only while that exact current primary relationship is still an active
+    -- single_hotel organization. A later transfer to a company topology is
+    -- a different promise and must invalidate the accepted invite.
+    v_topology_valid := cardinality(v_current_topology_property_ids) = 1
+      and v_current_organization_type is not distinct from 'single_hotel';
     v_topology_reason := case when v_topology_valid then 'valid'
       else 'legacy_anchor_topology_invalid' end;
   elsif v_invite.membership_scope = 'company' then
@@ -188,14 +198,29 @@ begin
 
   if v_invite.target_staff_id is not null then
     v_roster_promised := true;
-    select staff.property_id
-      into v_target_staff_property_id
+    -- Keep this assertion in lockstep with _staxis_lock_invite_target_staff:
+    -- the effective department is coalesce(department, 'housekeeping'), and
+    -- only the three operational invite roles can bind a roster identity.
+    select staff.property_id,
+           coalesce(staff.is_active, false),
+           coalesce(staff.department, 'housekeeping')
+      into v_target_staff_property_id,
+           v_target_staff_active,
+           v_target_staff_department
     from public.staff staff
     where staff.id = v_invite.target_staff_id;
+    v_target_staff_exists := found;
+    if not v_target_staff_exists then
+      v_target_staff_active := false;
+    end if;
     v_roster_target_valid := coalesce(
-      v_target_staff_property_id = v_invite.hotel_id,
+      v_target_staff_exists
+        and v_target_staff_property_id = v_invite.hotel_id,
       false
     );
+    v_roster_role_matches := coalesce(v_target_staff_exists
+      and v_invite.role in ('front_desk', 'housekeeping', 'maintenance')
+      and v_target_staff_department = v_invite.role, false);
   end if;
 
   -- A pending claim has no account fact to inspect. It still receives the
@@ -217,6 +242,13 @@ begin
       'rosterPromised', v_roster_promised,
       'rosterBound', false,
       'rosterLinkExists', false,
+      'accountStaffLinkActive', false,
+      'targetStaffExists', v_target_staff_exists,
+      'targetStaffActive', v_target_staff_active,
+      'targetStaffDepartment', v_target_staff_department,
+      'rosterRoleMatches', v_roster_role_matches,
+      'targetStaffPropertyId', v_target_staff_property_id,
+      'targetStaffMatchesAnchor', v_roster_target_valid,
       'topologyValid', v_topology_valid,
       'topologyReason', v_topology_reason,
       'promisedPropertyIds', to_jsonb(v_promised_property_ids),
@@ -239,6 +271,11 @@ begin
         'promised', v_roster_promised,
         'bound', false,
         'targetStaffId', v_invite.target_staff_id,
+        'exists', v_target_staff_exists,
+        'active', v_target_staff_active,
+        'department', v_target_staff_department,
+        'roleMatchesDepartment', v_roster_role_matches,
+        'accountStaffLinkActive', false,
         'targetStaffPropertyId', v_target_staff_property_id,
         'targetStaffMatchesAnchor', v_roster_target_valid
       ),
@@ -263,6 +300,13 @@ begin
       'rosterPromised', v_roster_promised,
       'rosterBound', false,
       'rosterLinkExists', false,
+      'accountStaffLinkActive', false,
+      'targetStaffExists', v_target_staff_exists,
+      'targetStaffActive', v_target_staff_active,
+      'targetStaffDepartment', v_target_staff_department,
+      'rosterRoleMatches', v_roster_role_matches,
+      'targetStaffPropertyId', v_target_staff_property_id,
+      'targetStaffMatchesAnchor', v_roster_target_valid,
       'topologyValid', v_topology_valid,
       'topologyReason', v_topology_reason,
       'promisedPropertyIds', to_jsonb(v_promised_property_ids),
@@ -285,6 +329,11 @@ begin
         'promised', v_roster_promised,
         'bound', false,
         'targetStaffId', v_invite.target_staff_id,
+        'exists', v_target_staff_exists,
+        'active', v_target_staff_active,
+        'department', v_target_staff_department,
+        'roleMatchesDepartment', v_roster_role_matches,
+        'accountStaffLinkActive', false,
         'targetStaffPropertyId', v_target_staff_property_id,
         'targetStaffMatchesAnchor', v_roster_target_valid
       ),
@@ -309,6 +358,13 @@ begin
       'rosterPromised', v_roster_promised,
       'rosterBound', false,
       'rosterLinkExists', false,
+      'accountStaffLinkActive', false,
+      'targetStaffExists', v_target_staff_exists,
+      'targetStaffActive', v_target_staff_active,
+      'targetStaffDepartment', v_target_staff_department,
+      'rosterRoleMatches', v_roster_role_matches,
+      'targetStaffPropertyId', v_target_staff_property_id,
+      'targetStaffMatchesAnchor', v_roster_target_valid,
       'topologyValid', v_topology_valid,
       'topologyReason', v_topology_reason,
       'promisedPropertyIds', to_jsonb(v_promised_property_ids),
@@ -331,6 +387,11 @@ begin
         'promised', v_roster_promised,
         'bound', false,
         'targetStaffId', v_invite.target_staff_id,
+        'exists', v_target_staff_exists,
+        'active', v_target_staff_active,
+        'department', v_target_staff_department,
+        'roleMatchesDepartment', v_roster_role_matches,
+        'accountStaffLinkActive', false,
         'targetStaffPropertyId', v_target_staff_property_id,
         'targetStaffMatchesAnchor', v_roster_target_valid
       ),
@@ -420,20 +481,24 @@ begin
     and v_promised_coverage_complete;
 
   if v_roster_promised then
+    v_account_staff_link_active := exists (
+      select 1
+      from public.account_property_staff_links link
+      where link.account_id = v_account.id
+        and link.property_id = v_invite.hotel_id
+        and link.staff_id = v_invite.target_staff_id
+        and link.is_active is true
+    );
     v_roster_link_exists := coalesce(
       v_account.staff_id = v_invite.target_staff_id,
       false
-    )
+    ) and v_account_staff_link_active;
+    v_roster_bound := coalesce(v_account.active is true
+      and v_target_staff_exists
+      and v_target_staff_active
       and v_roster_target_valid
-      and exists (
-        select 1
-        from public.account_property_staff_links link
-        where link.account_id = v_account.id
-          and link.property_id = v_invite.hotel_id
-          and link.staff_id = v_invite.target_staff_id
-          and link.is_active is true
-      );
-    v_roster_bound := coalesce(v_roster_link_exists, false);
+      and v_roster_role_matches
+      and v_roster_link_exists, false);
   end if;
 
   if v_account.active is not true then
@@ -462,6 +527,13 @@ begin
     'rosterBound', v_roster_bound,
     'rosterPromised', v_roster_promised,
     'rosterLinkExists', v_roster_link_exists,
+    'accountStaffLinkActive', v_account_staff_link_active,
+    'targetStaffExists', v_target_staff_exists,
+    'targetStaffActive', v_target_staff_active,
+    'targetStaffDepartment', v_target_staff_department,
+    'rosterRoleMatches', v_roster_role_matches,
+    'targetStaffPropertyId', v_target_staff_property_id,
+    'targetStaffMatchesAnchor', v_roster_target_valid,
     'accountId', v_account.id,
     'accountAvailable', v_account_available,
     'accountActive', v_account.active,
@@ -491,6 +563,11 @@ begin
       'linkExists', v_roster_link_exists,
       'targetStaffId', v_invite.target_staff_id,
       'accountStaffId', v_account.staff_id,
+      'exists', v_target_staff_exists,
+      'active', v_target_staff_active,
+      'department', v_target_staff_department,
+      'roleMatchesDepartment', v_roster_role_matches,
+      'accountStaffLinkActive', v_account_staff_link_active,
       'targetStaffPropertyId', v_target_staff_property_id,
       'targetStaffMatchesAnchor', v_roster_target_valid
     ),
