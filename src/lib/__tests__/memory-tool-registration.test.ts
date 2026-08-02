@@ -1,5 +1,5 @@
 /**
- * remember / forget tool registration, surface+voice-mode gating, and handler
+ * remember / forget tool registration, surface gating, and handler
  * authorization guards. The guard tests exercise REJECTION paths only — they
  * return before any DB write, so this needs no database. The success/DB paths
  * are covered by agent-memory.integration.test.ts.
@@ -31,7 +31,7 @@ before(() => {
 
 after(() => restoreAuthority?.());
 
-function ctx(role: AppRole, surface: 'chat' | 'voice' = 'chat'): ToolContext {
+function ctx(role: AppRole): ToolContext {
   const identity = agentToolAuthorityIdentity(role);
   return {
     user: {
@@ -47,7 +47,7 @@ function ctx(role: AppRole, surface: 'chat' | 'voice' = 'chat'): ToolContext {
     propertyId: PID,
     staffId: null,
     requestId: 'r',
-    surface,
+    surface: 'chat',
     enabledSections: null,
   };
 }
@@ -57,8 +57,7 @@ describe('memory tools — registration shape', () => {
     const t = listAllTools().find((x) => x.name === 'remember');
     assert.ok(t, 'remember should be registered');
     assert.equal(t!.mutates, true);
-    assert.deepEqual([...(t!.surfaces ?? [])].sort(), ['chat', 'voice']);
-    assert.deepEqual([...(t!.voiceModes ?? [])], ['general']);
+    assert.deepEqual([...(t!.surfaces ?? [])], ['chat']);
     for (const req of ['scope', 'topic', 'content']) {
       assert.ok(t!.inputSchema.required?.includes(req), `remember must require ${req}`);
     }
@@ -68,31 +67,17 @@ describe('memory tools — registration shape', () => {
     const t = listAllTools().find((x) => x.name === 'forget');
     assert.ok(t, 'forget should be registered');
     assert.equal(t!.mutates, true);
-    assert.deepEqual([...(t!.voiceModes ?? [])], ['general']);
   });
 });
 
-describe('memory tools — surface + voice-mode gating', () => {
+describe('memory tools — surface gating', () => {
   test('reachable on chat for every hat that has a chat', () => {
     // Housekeeping dropped off this list on 2026-07-27 (WHO LENSES): that hat
-    // has no chat surface at all now. The VOICE cases below deliberately keep
-    // using it — the lens narrows the CHAT mount only, and proving voice is
-    // untouched is the point of leaving them alone.
+    // has no chat surface at all now.
     for (const role of ['maintenance', 'front_desk', 'general_manager', 'owner', 'admin'] as const) {
       const names = getToolsForRole(role, 'chat').map((t) => t.name);
       assert.ok(names.includes('remember') && names.includes('forget'), `chat/${role} should see memory tools`);
     }
-  });
-
-  test('reachable in GENERAL voice mode', () => {
-    const names = getToolsForRole('housekeeping', 'voice', 'general').map((t) => t.name);
-    assert.ok(names.includes('remember') && names.includes('forget'));
-  });
-
-  test('NOT reachable in the locked housekeeper_issue voice mode (no leak)', () => {
-    const names = getToolsForRole('housekeeping', 'voice', 'housekeeper_issue').map((t) => t.name);
-    assert.equal(names.includes('remember'), false);
-    assert.equal(names.includes('forget'), false);
   });
 });
 

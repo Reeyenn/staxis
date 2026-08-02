@@ -443,14 +443,13 @@ function synthesizeArgs(name: string, schema: ToolDefinition['inputSchema']): Re
 }
 
 // ─── Pre-handler refusals ───────────────────────────────────────────────────
-// executeTool refuses on surface / voice mode / role / property access /
+// executeTool refuses on surface / role / property access /
 // section / capability BEFORE the handler runs. A fixture that trips one of
 // those never exercises the tool, so it must be reported as its own failure —
 // never quietly absorbed into "this tool makes no database calls".
 
 const PRE_HANDLER_REFUSALS: Array<{ rx: RegExp; gate: string }> = [
   { rx: /is not available on the .* surface/, gate: 'surface' },
-  { rx: /is not available in this voice mode/, gate: 'voice mode' },
   { rx: /is not allowed to use /, gate: 'role' },
   { rx: /Property access for this conversation/, gate: 'property access' },
   { rx: /section is turned off for this hotel/, gate: 'section' },
@@ -502,8 +501,6 @@ function contextFor(tool: ToolDefinition): ToolContext {
     staffId: STAFF_A,
     requestId: 'tenant-isolation-test',
     surface,
-    voiceMode: surface === 'voice' ? (tool.voiceModes?.[0] ?? 'general') : undefined,
-    currentRoomNumber: '101',
     // A successful DB-null section read means the hotel's default-on policy.
     // Undefined is deliberately reserved for an unavailable route proof.
     enabledSections: null,

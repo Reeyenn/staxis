@@ -422,115 +422,6 @@ function esc(s: string | number | null | undefined): string {
     .replace(/>/g, '&gt;');
 }
 
-// ─── Voice context (Whisper prompt hint) ─────────────────────────────────
-// Whisper accepts an optional `prompt` string that biases the transcriber
-// toward the vocabulary it'll hear. Hotel-specific words and proper nouns
-// (room numbers, staff names) are the most common source of transcription
-// errors — passing them as a hint dramatically improves accuracy.
-//
-// We pull room-number range + active-staff names per property. Cached for
-// 60s because rooms and staff don't change much within a voice session, and
-// a user might fire 10 utterances in a minute.
-//
-// Whisper's prompt limit is 244 tokens, so this is intentionally compact.
-// Property name + room range + a comma-list of first names of active staff
-// fits comfortably even with a 100-room property and 30 active staff.
-
-interface VoiceContext {
-  propertyName: string | null;
-  roomNumberRange: string;   // "101–350" or "" if no rooms
-  activeStaffNames: string[];
-}
-
-const voiceContextCache = new Map<string, { ctx: VoiceContext; expiresAt: number }>();
-const VOICE_CONTEXT_TTL_MS = 60_000;
-
-async function loadVoiceContext(propertyId: string): Promise<VoiceContext> {
-  const cached = voiceContextCache.get(propertyId);
-  if (cached && cached.expiresAt > Date.now()) return cached.ctx;
-
-  let propertyName: string | null = null;
-  let timezone: string | null = null;
-  try {
-    const { data } = await supabaseAdmin
-      .from('properties')
-      .select('name, timezone')
-      .eq('id', propertyId)
-      .maybeSingle();
-    if (data) {
-      propertyName = (data.name as string) ?? null;
-      timezone = (data.timezone as string) ?? null;
-    }
-  } catch { /* non-fatal */ }
-
-  // Room number range — min/max as integers. Some properties have
-  // non-numeric room numbers ("L1-201", "Suite-A"); skip those when
-  // computing the range to avoid garbage hints.
-  //
-  // Plan v4: room numbers come from the live pms_* feed via
-  // mergePmsRoomsForDate (today, property-local) rather than the dropped
-  // `rooms` table. The full room set is inventory-backed, so the min/max
-  // range is stable regardless of today's occupancy.
-  let roomNumberRange = '';
-  try {
-    const today = propertyLocalToday(new Date(), timezone);
-    const merged = await mergePmsRoomsForDate(propertyId, today);
-    if (merged.length > 0) {
-      const nums: number[] = [];
-      for (const r of merged) {
-        const n = parseInt(r.number ?? '', 10);
-        if (Number.isFinite(n)) nums.push(n);
-      }
-      if (nums.length > 0) {
-        const min = Math.min(...nums);
-        const max = Math.max(...nums);
-        roomNumberRange = min === max ? String(min) : `${min}–${max}`;
-      }
-    }
-  } catch { /* non-fatal */ }
-
-  let activeStaffNames: string[] = [];
-  try {
-    const { data } = await supabaseAdmin
-      .from('staff')
-      .select('name')
-      .eq('property_id', propertyId)
-      .eq('is_active', true);
-    if (data) {
-      activeStaffNames = data
-        .map(s => (s.name as string)?.trim())
-        .filter((n): n is string => !!n)
-        .slice(0, 30);  // cap to fit Whisper's 244-token prompt budget
-    }
-  } catch { /* non-fatal */ }
-
-  const ctx: VoiceContext = { propertyName, roomNumberRange, activeStaffNames };
-  voiceContextCache.set(propertyId, { ctx, expiresAt: Date.now() + VOICE_CONTEXT_TTL_MS });
-  return ctx;
-}
-
-/**
- * Build the Whisper `prompt` string for a given property. Pass to the
- * OpenAI Whisper API to bias transcription toward hotel-specific
- * vocabulary. Result is a single line under ~200 tokens.
- *
- * Empty string is a valid return if the property has no rooms/staff yet;
- * Whisper accepts an empty hint without changing behaviour.
- */
-export async function getVoiceContextHint(propertyId: string): Promise<string> {
-  const ctx = await loadVoiceContext(propertyId);
-
-  const parts: string[] = [];
-  if (ctx.propertyName) parts.push(`Hotel: ${ctx.propertyName}.`);
-  if (ctx.roomNumberRange) parts.push(`Rooms ${ctx.roomNumberRange}.`);
-  if (ctx.activeStaffNames.length > 0) {
-    parts.push(`Staff: ${ctx.activeStaffNames.join(', ')}.`);
-  }
-  parts.push('Common phrases: dirty, clean, in progress, DND, deep clean, occupancy, maintenance, mark, room, hotel.');
-
-  return parts.join(' ');
-}
-
 /**
  * A2 — the single data-age line, or null when this hotel must not get one.
  *
@@ -628,7 +519,7 @@ export function formatSnapshotForPrompt(snap: HotelSnapshot, now: Date = new Dat
   } else {
     if (snap.pmsLearningFeeds?.length) {
       // feat/cua-partial-promotion — the single most important honesty rule
-      // for the voice/chat copilot: a zero that comes from a missing feed is
+      // for the chat copilot: a zero that comes from a missing feed is
       // not a fact about the hotel. Name the feeds and forbid zero-claims.
       const names: Record<string, string> = {
         roomStatus: 'room statuses',

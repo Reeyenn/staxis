@@ -446,7 +446,6 @@ describe('role resolution', () => {
       finance.user.role,
       'chat',
       undefined,
-      undefined,
       {
         seesFinancials: true,
         hotelMutationAllowed: false,

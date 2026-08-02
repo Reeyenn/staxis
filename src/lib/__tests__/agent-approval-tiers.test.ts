@@ -37,11 +37,9 @@ import {
   listAllTools,
   approvalTierFor,
   confirmsInChat,
-  getToolsForRole,
   getTool,
   isMutationTool,
 } from '@/lib/agent/tools';
-import type { AppRole } from '@/lib/roles';
 import '@/lib/agent/tools/index'; // register everything
 import { buildActionSummary } from '@/lib/agent/approval';
 import { partitionGatedCalls } from '@/lib/agent/llm';
@@ -161,43 +159,6 @@ describe('approval tier completeness', () => {
     }
   });
 
-  // ── Voice-surface safety (regression, item i) ──────────────────────────────
-  // The approval gate ONLY runs on the chat surface (streamAgent with
-  // approvalMode). The voice surface runs streamAgent WITHOUT approvalMode, so a
-  // tiered mutation reachable from voice fires UN-GATED — no card.
-  //
-  // The 4 comms tools this feature adds (send_message / create_todo /
-  // add_logbook_entry / post_announcement) are card-tier mutations that MUST NOT
-  // leak onto voice, or they'd send messages / post announcements with no
-  // confirmation. They declare no `surfaces` → default chat-only; this pins that
-  // so a future edit can't accidentally add 'voice' and bypass the gate.
-  //
-  // NOTE: the voice-side gap this note used to describe is now CLOSED by the
-  // voice approval gate (feature/voice-approval): card-tier voice mutations
-  // (createMaintenanceWorkOrder, log_complaint) are HELD by streamAgent's
-  // voiceApprovalMode and read back for a spoken "yes" before running; quick-
-  // tier voice mutations still run inline. See the confirm/cancel control-tool
-  // assertions below and agent-voice-approval-gate.test.ts.
-  test('the new comms mutation tools are NOT exposed on the voice surface (un-gated bypass)', () => {
-    const roles: AppRole[] = ['admin', 'owner', 'general_manager', 'front_desk', 'housekeeping', 'maintenance', 'staff'];
-    const NEW_COMMS = new Set(['send_message', 'create_todo', 'add_logbook_entry', 'post_announcement']);
-    const leaked = new Set<string>();
-    for (const role of roles) {
-      for (const t of getToolsForRole(role, 'voice')) {
-        if (NEW_COMMS.has(t.name)) leaked.add(t.name);
-      }
-    }
-    assert.deepEqual(
-      [...leaked],
-      [],
-      `these new card-tier comms tools are reachable UN-GATED on the voice surface: ${[...leaked].join(', ')}`,
-    );
-    // Belt-and-braces: they carry a tier AND are chat-only in the registry.
-    for (const name of NEW_COMMS) {
-      assert.equal(approvalTierFor(name), 'card', `${name} must be card-tier`);
-    }
-  });
-
   // ── New feature tools (schedules / inventory / reminders / recurring) ───────
   test('the new schedule + inventory + reminder + recurring mutation tools carry the expected tiers', () => {
     const byName = new Map(listAllTools().map((t) => [t.name, t]));
@@ -251,23 +212,4 @@ describe('approval tier completeness', () => {
     }
   });
 
-  // The new card/quick MUTATION tools must not leak onto the voice surface (the
-  // approval gate only runs on chat) — same class of bug the comms guard covers.
-  test('the new mutation tools are NOT exposed on the voice surface (un-gated bypass)', () => {
-    const roles: AppRole[] = ['admin', 'owner', 'general_manager', 'front_desk', 'housekeeping', 'maintenance', 'staff'];
-    const NEW_MUTATIONS = new Set([
-      'remove_from_shift', 'assign_shift', 'adjust_stock',
-      'create_reminder', 'cancel_reminder', 'create_recurring_todo', 'stop_recurring_todo',
-    ]);
-    const leaked = new Set<string>();
-    for (const role of roles) {
-      for (const t of getToolsForRole(role, 'voice')) {
-        if (NEW_MUTATIONS.has(t.name)) leaked.add(t.name);
-      }
-    }
-    assert.deepEqual(
-      [...leaked], [],
-      `these new mutation tools are reachable UN-GATED on the voice surface: ${[...leaked].join(', ')}`,
-    );
-  });
 });

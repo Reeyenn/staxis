@@ -264,7 +264,6 @@ function synthesizeArgs(
 
 const PRE_HANDLER_REFUSALS: Array<{ rx: RegExp; gate: string }> = [
   { rx: /is not available on the .* surface/, gate: 'surface' },
-  { rx: /is not available in this voice mode/, gate: 'voice mode' },
   { rx: /is not allowed to use /, gate: 'role' },
   { rx: /Property access for this conversation/, gate: 'property access' },
   { rx: /section is turned off for this hotel/, gate: 'section' },
@@ -332,8 +331,6 @@ function contextFor(tool: ToolDefinition): ToolContext {
     staffId: seed.ids.get('staff:A') ?? null,
     requestId: 'pglite-tenant-isolation',
     surface,
-    voiceMode: surface === 'voice' ? (tool.voiceModes?.[0] ?? 'general') : undefined,
-    currentRoomNumber: '101',
     enabledSections: null,
   };
 }

@@ -10,7 +10,7 @@
  *   - post_announcement is role-gated (a housekeeper is refused by executeTool).
  *
  * Strategy: monkey-patch supabaseAdmin.from with per-table stubs, matching the
- * idiom used by voice-issue-tool.test.ts.
+ * idiom used by the other agent-tool tests.
  */
 
 process.env.NEXT_PUBLIC_SUPABASE_URL ??= 'https://placeholder.supabase.co';

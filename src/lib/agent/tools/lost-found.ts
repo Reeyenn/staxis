@@ -1,6 +1,6 @@
 // ─── Lost & Found tool ─────────────────────────────────────────────────────
-// log_found_item — hands-free found-item logging for text + voice.
-// "Hey Staxis, found a pair of glasses in 214" → a row in the L&F register.
+// log_found_item — found-item logging for chat.
+// "Found a pair of glasses in 214" → a row in the L&F register.
 //
 // Writes via the shared store (supabaseAdmin); role + property access are
 // already enforced by executeTool before the handler runs.
@@ -39,10 +39,7 @@ registerTool<{ itemDescription: string; roomOrLocation?: string; category?: stri
     required: ['itemDescription'],
   },
   allowedRoles: ['admin', 'owner', 'general_manager', 'front_desk', 'housekeeping', 'maintenance'],
-  surfaces: ['chat', 'voice'],
-  // Hands-free logging lives in the GENERAL "Hey Staxis" voice assistant, not
-  // the narrow housekeeper_issue maintenance flow.
-  voiceModes: ['general'],
+  surfaces: ['chat'],
   mutates: true,
   approval: 'quick',
   handler: async ({ itemDescription, roomOrLocation, category }, ctx): Promise<ToolResult> => {
@@ -50,8 +47,7 @@ registerTool<{ itemDescription: string; roomOrLocation?: string; category?: stri
     if (!desc) return { ok: false, error: 'I need a short description of the item to log it.' };
 
     // Resolve a room number to a real room when possible; otherwise treat the
-    // hint as a free-text location. Falls back to the voice session's current
-    // room when the speaker doesn't restate it.
+    // hint as a free-text location.
     let roomNumber: string | null = null;
     let location: string | null = null;
     const loc = roomOrLocation ? String(roomOrLocation).trim().slice(0, 200) : '';
@@ -67,9 +63,6 @@ registerTool<{ itemDescription: string; roomOrLocation?: string; category?: stri
       } else {
         location = loc;
       }
-    } else if (ctx.currentRoomNumber) {
-      roomNumber = ctx.currentRoomNumber;
-      location = `Room ${ctx.currentRoomNumber}`;
     }
 
     const cat =
@@ -90,7 +83,7 @@ registerTool<{ itemDescription: string; roomOrLocation?: string; category?: stri
       location,
       foundBy: ctx.user.displayName,
       foundByStaffId: ctx.staffId,
-      source: ctx.surface === 'voice' ? 'voice' : 'staff',
+      source: 'staff',
       createdByAccountId: ctx.user.accountId,
     });
     if (!res.ok) return { ok: false, error: 'Could not log the found item. Please try again.' };
@@ -145,8 +138,7 @@ registerTool<SearchLostFoundArgs>({
     },
   },
   allowedRoles: ['admin', 'owner', 'general_manager', 'front_desk', 'housekeeping', 'maintenance'],
-  // Chat-only (default) — the whole new ability set is scoped to the chat surface.
-  // (log_found_item above stays voice-enabled; this READ tool does not.)
+  // Chat-only (default) — this read tool is scoped to the chat surface.
   handler: async ({ query, from, to, type, limit }, ctx: ToolHandlerContext): Promise<ToolResult> => {
     const q = String(query ?? '').trim().toLowerCase();
     const typeFilter = type === 'lost' ? 'lost' : type === 'all' ? 'all' : 'found';

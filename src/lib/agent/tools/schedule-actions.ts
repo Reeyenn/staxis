@@ -4,7 +4,7 @@
 // `scheduled_shifts` — the single source of truth for "who's working"):
 //
 //   get_schedule    — READ: who is working on a given date (defaults to today),
-//                     with approved time-off excluded. Chat + general voice.
+//                     with approved time-off excluded. Chat only.
 //   remove_from_shift — MUTATION (card, manager-gated): give someone a day off
 //                     by deleting their assigned shift for that date.
 //   assign_shift    — MUTATION (card, manager-gated): add/assign a shift for a
@@ -101,8 +101,8 @@ registerTool<GetScheduleArgs>({
     },
   },
   allowedRoles: ['admin', 'owner', 'general_manager'],
-  // Chat-only (default). Kept off voice so the whole new ability set lands on one
-  // reviewed surface; a spoken "who's working?" read can be added later.
+  // Chat-only (default). The whole new ability set lands on one reviewed
+  // surface.
   handler: async ({ date, department }, ctx: ToolHandlerContext): Promise<ToolResult> => {
     const resolvedDate = await resolveScheduleDate(date, ctx);
     if ('error' in resolvedDate) return { ok: false, error: resolvedDate.error };

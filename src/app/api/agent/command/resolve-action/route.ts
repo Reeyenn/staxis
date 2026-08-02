@@ -121,7 +121,6 @@ async function reauthorizeAgentScope(input: {
       ? getToolsForRole(
         fresh.userCtx.role,
         'chat',
-        undefined,
         freshSections,
         fresh.userCtx,
       )
@@ -714,7 +713,6 @@ export async function POST(req: NextRequest): Promise<Response> {
         const tools = getToolsForRole(
           userCtx.role,
           'chat',
-          undefined,
           enabledSections,
           userCtx,
         );
