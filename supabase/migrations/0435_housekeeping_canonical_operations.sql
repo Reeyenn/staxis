@@ -21,7 +21,19 @@ select
   coalesce(w.date, a.date) as business_date,
   coalesce(w.room_number, a.room_number) as room_number,
   coalesce(w.plan_dedupe_key, coalesce(w.room_number, a.room_number) || '::' || coalesce(w.date, a.date)::text) as dedupe_key,
-  coalesce(w.plan_cleaning_type, a.cleaning_type, 'no_clean') as cleaning_type,
+  case coalesce(w.plan_cleaning_type, a.cleaning_type, 'no_clean')
+    when 'departure' then 'departure'
+    when 'departure_deep' then 'departure_deep'
+    when 'stayover' then 'stayover'
+    when 'refresh' then 'refresh'
+    when 'deep' then 'deep'
+    when 'room_check' then 'room_check'
+    when 'inspection_only' then 'inspection_only'
+    when 'no_clean' then 'no_clean'
+    when 'inspection' then 'inspection_only'
+    when 'arrival' then 'no_clean'
+    else 'no_clean'
+  end as cleaning_type,
   coalesce(w.plan_priority, 'normal') as priority,
   w.plan_due_by as due_by,
   w.plan_estimated_minutes as estimated_minutes,
@@ -79,12 +91,12 @@ where w.plan_cleaning_type is not null
 revoke all on public.room_work_plan_v1 from public, anon, authenticated;
 grant select on public.room_work_plan_v1 to service_role;
 
--- Every canonical room-work mutation takes the same lock set: the natural
--- parent key plus its exact direct component children, all in one sorted
--- room-number order. Advisory locks cover rows that have not been
--- materialized yet; row locks cover existing rows. The BEFORE trigger below
--- makes the protected old-app room_work upsert obey the same order before its
--- parent row can be changed.
+-- Every canonical room-work mutation takes the same lock set: one bounded
+-- property/date advisory lock followed by the natural parent key plus its
+-- exact direct component children, all in one sorted room-number order. The
+-- coarse advisory lock prevents an unbounded per-room advisory-lock footprint
+-- for rules-engine batches; the sorted row locks cover existing rows. Callers
+-- must invoke this helper before their room_work INSERT/UPDATE statement.
 create or replace function public._lock_room_work_component_set(
   p_property_id uuid,
   p_date date,
@@ -98,6 +110,11 @@ as $function$
 declare
   v_room_number text;
 begin
+  perform pg_advisory_xact_lock(hashtextextended(
+    format('staxis.housekeeping-plan-batch:%s:%s', p_property_id, p_date),
+    0
+  ));
+
   for v_room_number in
     select lock_keys.room_number
       from (
@@ -117,10 +134,6 @@ begin
       ) lock_keys
      order by lock_keys.room_number
   loop
-    perform pg_advisory_xact_lock(hashtextextended(
-      format('staxis.housekeeping-plan:%s:%s:%s', p_property_id, p_date, v_room_number),
-      0
-    ));
     perform 1
       from public.room_work w
      where w.property_id = p_property_id
@@ -131,28 +144,229 @@ begin
 end;
 $function$;
 
-create or replace function public._room_work_lock_component_set()
-returns trigger
+-- PostgreSQL takes the target tuple lock before a BEFORE row trigger runs.
+-- Therefore there is intentionally no room_work lock trigger here: every
+-- canonical writer must call _lock_room_work_component_set before its first
+-- room_work INSERT/UPDATE statement. The legacy-table bridges intentionally
+-- retain their old single-row behavior during Stage A; only the dormant
+-- canonical RPCs below use this component-set seam.
+drop trigger if exists room_work_lock_component_set on public.room_work;
+drop function if exists public._room_work_lock_component_set();
+
+-- Dormant canonical writer seam for the post-expand housekeeper and room-action
+-- callers. The service-role RPC acquires the complete component set before
+-- the first room_work statement, then applies only the explicitly supplied
+-- workflow fields. A completed parent fans out to its exact direct children
+-- here, in the same transaction; no room_work row trigger is required.
+-- Identity columns are deliberately not accepted here.
+-- p_check_expected_status preserves the existing optimistic status race
+-- behavior used by applyRoomUpdate; a false result means no row was changed.
+create or replace function public.write_room_work_atomic(
+  p_property_id uuid,
+  p_date date,
+  p_room_number text,
+  p_patch jsonb,
+  p_expected_status text default null,
+  p_check_expected_status boolean default false
+)
+returns boolean
 language plpgsql
 security definer
 set search_path = public, pg_temp
 as $function$
+declare
+  v_patch public.room_work;
+  v_work public.room_work;
+  v_patch_keys text[];
+  v_children jsonb;
+  v_child text;
 begin
-  if new.property_id is not null and new.date is not null and new.room_number is not null then
-    perform public._lock_room_work_component_set(
-      new.property_id,
-      new.date,
-      array[new.room_number]::text[]
-    );
+  if p_property_id is null or p_date is null or p_room_number is null or btrim(p_room_number) = '' then
+    raise exception 'E_BAD_ROOM_WORK_KEY: property, date, and room number are required'
+      using errcode = 'not_null_violation';
   end if;
-  return new;
+  if jsonb_typeof(coalesce(p_patch, '{}'::jsonb)) <> 'object' then
+    raise exception 'E_BAD_ROOM_WORK_PATCH: patch must be a JSON object'
+      using errcode = 'check_violation';
+  end if;
+
+  select array_agg(key order by key)
+    into v_patch_keys
+    from jsonb_object_keys(coalesce(p_patch, '{}'::jsonb)) as keys(key)
+   where key not in (
+     'assigned_staff_id', 'assigned_source',
+     'status', 'started_at', 'completed_at', 'time_spent_minutes',
+     'is_paused', 'paused_at', 'total_paused_seconds',
+     'checklist_template_id', 'checklist_progress',
+     'exception_type', 'exception_note', 'exception_at',
+     'dnd_active', 'dnd_note',
+     'manager_notes', 'manager_notes_at', 'manager_notes_by_account_id',
+     'housekeeper_note', 'housekeeper_note_at',
+     'is_rush', 'rush_due_by', 'rush_set_at', 'rush_set_by',
+     'rush_requested_by_account_id', 'rush_duration_label',
+     'marked_for_inspection_at', 'inspected_by', 'inspected_at',
+     'issue_note', 'help_requested'
+   );
+  if v_patch_keys is not null then
+    raise exception 'E_BAD_ROOM_WORK_PATCH: unsupported fields: %', array_to_string(v_patch_keys, ', ')
+      using errcode = 'invalid_parameter_value';
+  end if;
+
+  -- This is intentionally the first room_work access in the function.
+  -- PostgreSQL takes a tuple lock before a BEFORE row trigger, so lock
+  -- acquisition cannot be delegated to a row trigger.
+  perform public._lock_room_work_component_set(
+    p_property_id,
+    p_date,
+    array[p_room_number]::text[]
+  );
+
+  if p_check_expected_status then
+    select * into v_work
+      from public.room_work w
+     where w.property_id = p_property_id
+       and w.date = p_date
+       and w.room_number = p_room_number
+     for update;
+    if not found or v_work.status is distinct from p_expected_status then
+      return false;
+    end if;
+  else
+    insert into public.room_work(property_id, date, room_number)
+    values (p_property_id, p_date, p_room_number)
+    on conflict (property_id, date, room_number) do nothing;
+
+    select * into v_work
+      from public.room_work w
+     where w.property_id = p_property_id
+       and w.date = p_date
+       and w.room_number = p_room_number
+     for update;
+  end if;
+
+  v_patch := jsonb_populate_record(null::public.room_work, coalesce(p_patch, '{}'::jsonb));
+
+  if p_patch is not null and p_patch <> '{}'::jsonb then
+    update public.room_work w
+       set assigned_staff_id = case when p_patch ? 'assigned_staff_id' then v_patch.assigned_staff_id else w.assigned_staff_id end,
+           assigned_source = case when p_patch ? 'assigned_source' then v_patch.assigned_source else w.assigned_source end,
+           status = case when p_patch ? 'status' then v_patch.status else w.status end,
+           started_at = case when p_patch ? 'started_at' then v_patch.started_at else w.started_at end,
+           completed_at = case when p_patch ? 'completed_at' then v_patch.completed_at else w.completed_at end,
+           time_spent_minutes = case when p_patch ? 'time_spent_minutes' then v_patch.time_spent_minutes else w.time_spent_minutes end,
+           is_paused = case when p_patch ? 'is_paused' then v_patch.is_paused else w.is_paused end,
+           paused_at = case when p_patch ? 'paused_at' then v_patch.paused_at else w.paused_at end,
+           total_paused_seconds = case when p_patch ? 'total_paused_seconds' then v_patch.total_paused_seconds else w.total_paused_seconds end,
+           checklist_template_id = case when p_patch ? 'checklist_template_id' then v_patch.checklist_template_id else w.checklist_template_id end,
+           checklist_progress = case when p_patch ? 'checklist_progress' then v_patch.checklist_progress else w.checklist_progress end,
+           exception_type = case when p_patch ? 'exception_type' then v_patch.exception_type else w.exception_type end,
+           exception_note = case when p_patch ? 'exception_note' then v_patch.exception_note else w.exception_note end,
+           exception_at = case when p_patch ? 'exception_at' then v_patch.exception_at else w.exception_at end,
+           dnd_active = case when p_patch ? 'dnd_active' then v_patch.dnd_active else w.dnd_active end,
+           dnd_note = case when p_patch ? 'dnd_note' then v_patch.dnd_note else w.dnd_note end,
+           manager_notes = case when p_patch ? 'manager_notes' then v_patch.manager_notes else w.manager_notes end,
+           manager_notes_at = case when p_patch ? 'manager_notes_at' then v_patch.manager_notes_at else w.manager_notes_at end,
+           manager_notes_by_account_id = case when p_patch ? 'manager_notes_by_account_id' then v_patch.manager_notes_by_account_id else w.manager_notes_by_account_id end,
+           housekeeper_note = case when p_patch ? 'housekeeper_note' then v_patch.housekeeper_note else w.housekeeper_note end,
+           housekeeper_note_at = case when p_patch ? 'housekeeper_note_at' then v_patch.housekeeper_note_at else w.housekeeper_note_at end,
+           is_rush = case when p_patch ? 'is_rush' then v_patch.is_rush else w.is_rush end,
+           rush_due_by = case when p_patch ? 'rush_due_by' then v_patch.rush_due_by else w.rush_due_by end,
+           rush_set_at = case when p_patch ? 'rush_set_at' then v_patch.rush_set_at else w.rush_set_at end,
+           rush_set_by = case when p_patch ? 'rush_set_by' then v_patch.rush_set_by else w.rush_set_by end,
+           rush_requested_by_account_id = case when p_patch ? 'rush_requested_by_account_id' then v_patch.rush_requested_by_account_id else w.rush_requested_by_account_id end,
+           rush_duration_label = case when p_patch ? 'rush_duration_label' then v_patch.rush_duration_label else w.rush_duration_label end,
+           marked_for_inspection_at = case when p_patch ? 'marked_for_inspection_at' then v_patch.marked_for_inspection_at else w.marked_for_inspection_at end,
+           inspected_by = case when p_patch ? 'inspected_by' then v_patch.inspected_by else w.inspected_by end,
+           inspected_at = case when p_patch ? 'inspected_at' then v_patch.inspected_at else w.inspected_at end,
+           issue_note = case when p_patch ? 'issue_note' then v_patch.issue_note else w.issue_note end,
+           help_requested = case when p_patch ? 'help_requested' then v_patch.help_requested else w.help_requested end
+     where w.property_id = p_property_id
+       and w.date = p_date
+       and w.room_number = p_room_number
+       and (
+         (p_patch ? 'assigned_staff_id' and w.assigned_staff_id is distinct from v_patch.assigned_staff_id)
+         or (p_patch ? 'assigned_source' and w.assigned_source is distinct from v_patch.assigned_source)
+         or (p_patch ? 'status' and w.status is distinct from v_patch.status)
+         or (p_patch ? 'started_at' and w.started_at is distinct from v_patch.started_at)
+         or (p_patch ? 'completed_at' and w.completed_at is distinct from v_patch.completed_at)
+         or (p_patch ? 'time_spent_minutes' and w.time_spent_minutes is distinct from v_patch.time_spent_minutes)
+         or (p_patch ? 'is_paused' and w.is_paused is distinct from v_patch.is_paused)
+         or (p_patch ? 'paused_at' and w.paused_at is distinct from v_patch.paused_at)
+         or (p_patch ? 'total_paused_seconds' and w.total_paused_seconds is distinct from v_patch.total_paused_seconds)
+         or (p_patch ? 'checklist_template_id' and w.checklist_template_id is distinct from v_patch.checklist_template_id)
+         or (p_patch ? 'checklist_progress' and w.checklist_progress is distinct from v_patch.checklist_progress)
+         or (p_patch ? 'exception_type' and w.exception_type is distinct from v_patch.exception_type)
+         or (p_patch ? 'exception_note' and w.exception_note is distinct from v_patch.exception_note)
+         or (p_patch ? 'exception_at' and w.exception_at is distinct from v_patch.exception_at)
+         or (p_patch ? 'dnd_active' and w.dnd_active is distinct from v_patch.dnd_active)
+         or (p_patch ? 'dnd_note' and w.dnd_note is distinct from v_patch.dnd_note)
+         or (p_patch ? 'manager_notes' and w.manager_notes is distinct from v_patch.manager_notes)
+         or (p_patch ? 'manager_notes_at' and w.manager_notes_at is distinct from v_patch.manager_notes_at)
+         or (p_patch ? 'manager_notes_by_account_id' and w.manager_notes_by_account_id is distinct from v_patch.manager_notes_by_account_id)
+         or (p_patch ? 'housekeeper_note' and w.housekeeper_note is distinct from v_patch.housekeeper_note)
+         or (p_patch ? 'housekeeper_note_at' and w.housekeeper_note_at is distinct from v_patch.housekeeper_note_at)
+         or (p_patch ? 'is_rush' and w.is_rush is distinct from v_patch.is_rush)
+         or (p_patch ? 'rush_due_by' and w.rush_due_by is distinct from v_patch.rush_due_by)
+         or (p_patch ? 'rush_set_at' and w.rush_set_at is distinct from v_patch.rush_set_at)
+         or (p_patch ? 'rush_set_by' and w.rush_set_by is distinct from v_patch.rush_set_by)
+         or (p_patch ? 'rush_requested_by_account_id' and w.rush_requested_by_account_id is distinct from v_patch.rush_requested_by_account_id)
+         or (p_patch ? 'rush_duration_label' and w.rush_duration_label is distinct from v_patch.rush_duration_label)
+         or (p_patch ? 'marked_for_inspection_at' and w.marked_for_inspection_at is distinct from v_patch.marked_for_inspection_at)
+         or (p_patch ? 'inspected_by' and w.inspected_by is distinct from v_patch.inspected_by)
+         or (p_patch ? 'inspected_at' and w.inspected_at is distinct from v_patch.inspected_at)
+         or (p_patch ? 'issue_note' and w.issue_note is distinct from v_patch.issue_note)
+         or (p_patch ? 'help_requested' and w.help_requested is distinct from v_patch.help_requested)
+       );
+  end if;
+
+  if p_patch ? 'status'
+     and v_patch.status = 'completed'
+     and coalesce(current_setting('staxis.housekeeping_legacy_inspection', true), 'off') <> 'on' then
+    select c.child_room_numbers
+      into v_children
+      from public.component_rooms c
+     where c.property_id = p_property_id
+       and c.parent_room_number = p_room_number;
+
+    if v_children is not null and jsonb_typeof(v_children) = 'array' then
+      for v_child in
+        select distinct value
+          from jsonb_array_elements_text(v_children)
+         where value is not null and btrim(value) <> ''
+         order by value
+      loop
+        update public.room_work w
+           set status = 'completed',
+               started_at = coalesce(w.started_at, v_patch.started_at, v_work.started_at),
+               completed_at = coalesce(w.completed_at, v_patch.completed_at, now()),
+               is_paused = false,
+               paused_at = null
+         where w.property_id = p_property_id
+           and w.date = p_date
+           and w.room_number = v_child
+           and (w.status is null or w.status in ('not_started', 'in_progress'));
+
+        if not found then
+          insert into public.room_work (
+            property_id, date, room_number, status,
+            started_at, completed_at, is_paused, paused_at
+          ) values (
+            p_property_id, p_date, v_child, 'completed',
+            coalesce(v_patch.started_at, v_work.started_at),
+            coalesce(v_patch.completed_at, now()), false, null
+          )
+          on conflict (property_id, date, room_number) do nothing;
+        end if;
+      end loop;
+    end if;
+  end if;
+
+  return true;
 end;
 $function$;
 
-drop trigger if exists room_work_lock_component_set on public.room_work;
-create trigger room_work_lock_component_set
-  before insert or update on public.room_work
-  for each row execute function public._room_work_lock_component_set();
+revoke all on function public.write_room_work_atomic(uuid, date, text, jsonb, text, boolean) from public, anon, authenticated;
+grant execute on function public.write_room_work_atomic(uuid, date, text, jsonb, text, boolean) to service_role;
 
 -- Rules-engine persistence. The caller submits a property-scoped batch; the
 -- function locks each natural row and refuses to overwrite workflow that has
@@ -178,6 +392,7 @@ declare
   v_work public.room_work;
   v_task_id uuid;
   v_outcome text;
+  v_update_count integer;
 begin
   if jsonb_typeof(v_rows) <> 'array' then
     raise exception 'E_BAD_PLAN_ROWS: p_rows must be a JSON array' using errcode = 'check_violation';
@@ -326,7 +541,7 @@ begin
       and coalesce(v_work.plan_status, 'scheduled') = any (array[
         'scheduled', 'ready_now', 'deferred', 'skipped', 'superseded'
       ]) then
-      update public.room_work
+      update public.room_work w
          set plan_dedupe_key = coalesce(v_row.dedupe_key, v_row.room_number || '::' || v_row.business_date::text),
              plan_cleaning_type = v_row.cleaning_type,
              plan_priority = v_row.priority,
@@ -342,19 +557,59 @@ begin
              plan_source_engine_run_id = v_row.source_engine_run_id,
              plan_source_property_timezone = v_row.source_property_timezone,
              plan_scheduled_at = v_row.scheduled_at,
-             plan_last_evaluated_at = coalesce(v_row.last_evaluated_at, now())
-       where property_id = p_property_id
-         and date = v_row.business_date
-         and room_number = v_row.room_number
-       returning * into v_work;
-      v_outcome := 'updated';
+             plan_last_evaluated_at = case
+               when v_row.last_evaluated_at is not null then v_row.last_evaluated_at
+               else w.plan_last_evaluated_at
+             end
+       where w.property_id = p_property_id
+         and w.date = v_row.business_date
+         and w.room_number = v_row.room_number
+         and (
+           w.plan_dedupe_key is distinct from coalesce(v_row.dedupe_key, v_row.room_number || '::' || v_row.business_date::text)
+           or w.plan_cleaning_type is distinct from v_row.cleaning_type
+           or w.plan_priority is distinct from v_row.priority
+           or w.plan_due_by is distinct from v_row.due_by
+           or w.plan_estimated_minutes is distinct from v_row.estimated_minutes
+           or w.plan_requires_inspection is distinct from coalesce(v_row.requires_inspection, false)
+           or w.plan_extras is distinct from coalesce(v_row.extras, '[]'::jsonb)
+           or w.plan_notes is distinct from v_row.notes
+           or w.plan_rules_fired is distinct from coalesce(v_row.rules_fired, '[]'::jsonb)
+           or w.plan_rule_inputs is distinct from v_row.rule_inputs
+           or w.plan_status is distinct from v_row.status
+           or w.plan_source_pms_reservation_id is distinct from v_row.source_pms_reservation_id
+           or w.plan_source_engine_run_id is distinct from v_row.source_engine_run_id
+           or w.plan_source_property_timezone is distinct from v_row.source_property_timezone
+           or w.plan_scheduled_at is distinct from v_row.scheduled_at
+           or (
+             v_row.last_evaluated_at is not null
+             and w.plan_last_evaluated_at is distinct from v_row.last_evaluated_at
+           )
+         );
+      get diagnostics v_update_count = row_count;
+      if v_update_count > 0 then
+        select * into v_work
+          from public.room_work w
+         where w.property_id = p_property_id
+           and w.date = v_row.business_date
+           and w.room_number = v_row.room_number;
+        v_outcome := 'updated';
+      else
+        v_outcome := 'skipped';
+      end if;
     else
-      update public.room_work
-         set plan_last_evaluated_at = coalesce(v_row.last_evaluated_at, now())
-       where property_id = p_property_id
-         and date = v_row.business_date
-         and room_number = v_row.room_number
-       returning * into v_work;
+      if v_row.last_evaluated_at is not null
+         and v_work.plan_last_evaluated_at is distinct from v_row.last_evaluated_at then
+        update public.room_work
+           set plan_last_evaluated_at = v_row.last_evaluated_at
+         where property_id = p_property_id
+           and date = v_row.business_date
+           and room_number = v_row.room_number;
+        select * into v_work
+          from public.room_work w
+         where w.property_id = p_property_id
+           and w.date = v_row.business_date
+           and w.room_number = v_row.room_number;
+      end if;
       v_outcome := 'skipped';
     end if;
 
@@ -385,7 +640,21 @@ set search_path = public, pg_temp
 as $function$
 declare
   v_count integer;
+  v_room_numbers text[];
 begin
+  select array_agg(w.room_number order by w.room_number)
+    into v_room_numbers
+    from public.room_work w
+   where w.property_id = p_property_id
+     and w.date = p_date
+     and w.plan_dedupe_key = any(coalesce(p_dedupe_keys, array[]::text[]));
+
+  if v_room_numbers is null then
+    return 0;
+  end if;
+
+  perform public._lock_room_work_component_set(p_property_id, p_date, v_room_numbers);
+
   update public.room_work
      set plan_last_evaluated_at = now()
    where property_id = p_property_id
@@ -816,9 +1085,10 @@ $function$;
 revoke all on function public.apply_inspection_cleaning_plan_side_effect(uuid, uuid, text, text) from public, anon, authenticated;
 grant execute on function public.apply_inspection_cleaning_plan_side_effect(uuid, uuid, text, text) to service_role;
 
--- The protected complete-clean route still upserts room_work directly. This
--- AFTER trigger makes its parent completion and every exact component child
--- update one database transaction without changing that route.
+-- Dormant canonical component completion for Stage B. The function body keeps
+-- parent and exact direct-child updates in one transaction when invoked by the
+-- explicit canonical writer; Stage A deliberately installs no room_work row
+-- trigger.
 create or replace function public._room_work_complete_components()
 returns trigger
 language plpgsql
@@ -829,7 +1099,9 @@ declare
   v_children jsonb;
   v_child text;
 begin
-  if pg_trigger_depth() > 1 or new.status is distinct from 'completed' then
+  if pg_trigger_depth() > 1
+     or new.status is distinct from 'completed'
+     or current_setting('staxis.housekeeping_legacy_inspection', true) = 'on' then
     return new;
   end if;
 
@@ -842,16 +1114,6 @@ begin
   if v_children is null or jsonb_typeof(v_children) <> 'array' then
     return new;
   end if;
-
-  -- The BEFORE room_work trigger already locked the parent plus every direct
-  -- child in the shared global order. Re-entering the helper is harmless and
-  -- documents that this fanout uses the same lock contract if invoked by a
-  -- future trigger seam.
-  perform public._lock_room_work_component_set(
-    new.property_id,
-    new.date,
-    array[new.room_number]::text[]
-  );
 
   for v_child in
     select distinct value
@@ -907,13 +1169,10 @@ end;
 $function$;
 
 drop trigger if exists room_work_complete_components on public.room_work;
-create trigger room_work_complete_components
-  after insert or update of status on public.room_work
-  for each row execute function public._room_work_complete_components();
 
--- Canonical audit capture replaces the two old-table trigger sources. The
--- existing activity_log rows remain intact, and future plan/status/assignment
--- changes are recorded against the canonical room_work identity.
+-- Dormant canonical audit capture for Stage B. The existing legacy activity
+-- triggers remain authoritative during Stage A, so applying 0434-0435 does not
+-- change visible audit counts or labels before the app cutover.
 create or replace function public._activity_log_on_room_work_change()
 returns trigger
 language plpgsql
@@ -924,10 +1183,9 @@ declare
   v_target uuid := coalesce(new.legacy_task_id, new.id);
   v_status text;
 begin
-  -- Legacy table activity triggers already record the old-app write. Skip the
-  -- duplicate parent event created by the one-way bridge or the preserved
-  -- inspection RPC, while still allowing component-only room_work rows to be
-  -- audited.
+  -- When Stage B installs this dormant function, legacy table activity triggers
+  -- already record old-app writes. Skip duplicate parent events while allowing
+  -- component-only room_work rows to be audited.
   if (
        current_setting('staxis.housekeeping_legacy_bridge', true) = 'on'
        or current_setting('staxis.housekeeping_legacy_inspection', true) = 'on'
@@ -1038,18 +1296,13 @@ end;
 $function$;
 
 drop trigger if exists trg_activity_log_room_work_change on public.room_work;
-create trigger trg_activity_log_room_work_change
-  after insert or update of status, plan_status, assigned_staff_id on public.room_work
-  for each row execute function public._activity_log_on_room_work_change();
 
 revoke all on function public._room_work_complete_components() from public, anon, authenticated;
 revoke all on function public._activity_log_on_room_work_change() from public, anon, authenticated;
 revoke all on function public._lock_room_work_component_set(uuid, date, text[]) from public, anon, authenticated;
-revoke all on function public._room_work_lock_component_set() from public, anon, authenticated;
 grant execute on function public._room_work_complete_components() to service_role;
 grant execute on function public._activity_log_on_room_work_change() to service_role;
 grant execute on function public._lock_room_work_component_set(uuid, date, text[]) to service_role;
-grant execute on function public._room_work_lock_component_set() to service_role;
 
 -- Preserve the deployed inspection RPC signature and response behavior during
 -- the expand window. Its room_work and cleaning_tasks side-effects are marked
@@ -1084,6 +1337,8 @@ begin
   select * into v_row
     from public.inspections
     where id = p_inspection_id
+    order by id
+    limit 1
     for update;
 
   if not found then
@@ -1114,9 +1369,9 @@ begin
    where id = p_inspection_id
    returning * into v_row;
 
-  -- Mark both room_work and cleaning_tasks side-effects as the preserved old inspection path.
-  -- Canonical component-only events remain visible, but the legacy parent event is
-  -- already emitted by the old table triggers and must not be duplicated.
+  -- Mark both room_work and cleaning_tasks side-effects as the preserved old
+  -- inspection path. Stage A has no canonical room_work audit trigger, while
+  -- the legacy parent event remains emitted by the old table triggers.
   perform set_config('staxis.housekeeping_legacy_inspection', 'on', true);
 
   -- 2) Work side-effect → room_work. Target the latest work or plan date ON
@@ -1231,8 +1486,10 @@ begin
   end if;
 
   select * into v_row
-    from public.inspections
+   from public.inspections
    where id = p_inspection_id
+   order by id
+   limit 1
    for update;
   if not found then
     raise exception 'E_NOT_FOUND: inspection % not found', p_inspection_id
@@ -1271,9 +1528,15 @@ begin
           from public.pms_housekeeping_assignments a
          where a.property_id = p_property_id
            and a.room_number = v_row.room_number
-      ) candidates
+    ) candidates
      where candidate_date <= coalesce(v_row.started_at::date, current_date);
     v_date := coalesce(v_date, v_row.started_at::date, current_date);
+
+    perform public._lock_room_work_component_set(
+      p_property_id,
+      v_date,
+      array[v_row.room_number]::text[]
+    );
 
     if p_result = 'pass' then
       insert into public.room_work (

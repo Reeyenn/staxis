@@ -6,6 +6,11 @@
 -- existing cleaning_tasks and hk_assignments row while the old application
 -- remains in service. The physical legacy tables stay writable through this
 -- compatibility window; their retirement belongs to a later contract stage.
+--
+-- Release gate: Access Stage A (0418-0433) must be applied and verified Live
+-- in production before Cleaning Stage A (0434-0435) is applied, merged, or
+-- deployed. This is an ordered release gate, not a database dependency; the
+-- parent release owner and Claude safety review must also approve this lane.
 
 begin;
 
@@ -468,10 +473,10 @@ begin
 end;
 $$;
 
--- Keep the old-write compatibility bridge on the same component-set lock
--- protocol as the canonical operations installed by 0435. This helper is
--- deliberately created before either bridge or the reconciliation begins so
--- an old application write cannot take a parent lock before its children.
+-- Keep the old-write compatibility bridge on the legacy single-row
+-- serialization protocol during the expand window. The old application may
+-- already hold a room_work row lock before it writes a legacy table, so this
+-- bridge must not introduce the dormant canonical component-set lock order.
 create or replace function public._lock_room_work_component_set(
   p_property_id uuid,
   p_date date,
@@ -485,6 +490,11 @@ as $function$
 declare
   v_room_number text;
 begin
+  perform pg_advisory_xact_lock(hashtextextended(
+    format('staxis.housekeeping-plan-batch:%s:%s', p_property_id, p_date),
+    0
+  ));
+
   for v_room_number in
     select lock_keys.room_number
       from (
@@ -504,10 +514,6 @@ begin
       ) lock_keys
      order by lock_keys.room_number
   loop
-    perform pg_advisory_xact_lock(hashtextextended(
-      format('staxis.housekeeping-plan:%s:%s:%s', p_property_id, p_date, v_room_number),
-      0
-    ));
     perform 1
       from public.room_work w
      where w.property_id = p_property_id
@@ -579,14 +585,6 @@ begin
         using errcode = 'check_violation';
     end if;
   end if;
-
-  -- The bridge must enter the same child-before-parent lock order as 0435
-  -- before it re-reads or locks either canonical parent row.
-  perform public._lock_room_work_component_set(
-    new.property_id,
-    new.business_date,
-    array[new.room_number]::text[]
-  );
 
   select * into v_owner
     from public.room_work w
@@ -929,14 +927,6 @@ begin
       using errcode = 'check_violation';
   end if;
 
-  -- The bridge must enter the same child-before-parent lock order as 0435
-  -- before it re-reads or locks the canonical parent row.
-  perform public._lock_room_work_component_set(
-    new.property_id,
-    v_task.business_date,
-    array[v_task.room_number]::text[]
-  );
-
   select * into v_work
     from public.room_work w
    where w.property_id = new.property_id
@@ -1222,7 +1212,7 @@ select
   case
     when t.status in ('in_progress', 'paused') then 'in_progress'
     when t.status = 'completed' then 'completed'
-    when t.status in ('skipped', 'cancelled') then 'skipped'
+    when t.status in ('skipped', 'cancelled', 'superseded') then 'skipped'
     else 'not_started'
   end,
   t.created_at
@@ -1259,7 +1249,31 @@ update public.room_work w
   from public.cleaning_tasks t
  where w.property_id = t.property_id
    and w.date = t.business_date
-   and w.room_number = t.room_number;
+   and w.room_number = t.room_number
+   and (
+     w.legacy_task_id is distinct from t.id
+     or w.plan_dedupe_key is distinct from t.dedupe_key
+     or w.plan_cleaning_type is distinct from t.cleaning_type
+     or w.plan_priority is distinct from t.priority
+     or w.plan_due_by is distinct from t.due_by
+     or w.plan_estimated_minutes is distinct from t.estimated_minutes
+     or w.plan_requires_inspection is distinct from t.requires_inspection
+     or w.plan_extras is distinct from t.extras
+     or w.plan_notes is distinct from t.notes
+     or w.plan_rules_fired is distinct from t.rules_fired
+     or w.plan_rule_inputs is distinct from t.rule_inputs
+     or w.plan_status is distinct from t.status
+     or w.plan_source_pms_reservation_id is distinct from t.source_pms_reservation_id
+     or w.plan_source_engine_run_id is distinct from t.source_engine_run_id
+     or w.plan_source_property_timezone is distinct from t.source_property_timezone
+     or w.plan_scheduled_at is distinct from t.scheduled_at
+     or w.plan_last_evaluated_at is distinct from t.last_evaluated_at
+     or (w.started_at is null and t.started_at is not null)
+     or (w.paused_at is null and t.paused_at is not null)
+     or (w.completed_at is null and t.completed_at is not null)
+     or (w.inspected_at is null and t.inspected_at is not null)
+     or (t.status = 'paused' and w.is_paused is distinct from true)
+   );
 
 do $$
 declare

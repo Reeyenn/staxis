@@ -312,6 +312,19 @@ describe('housekeeping canonical plan expand stage', () => {
       }],
     );
 
+    await pg.query(
+      "insert into public.pms_housekeeping_assignments(id, property_id, date, room_number, housekeeper_name, cleaning_type, notes, ingest_run_id) values ('a7000000-0000-4000-8000-000000000002', $1, $2, '704', 'PMS Arrival', 'arrival', 'arrival plan', 'a9000000-0000-4000-8000-000000000001')",
+      [PROPERTY, BUSINESS_DATE],
+    );
+    assert.equal(
+      await scalar<string>(
+        "select cleaning_type from public.room_work_plan_v1 where property_id = $1 and business_date = $2 and room_number = '704'",
+        [PROPERTY, BUSINESS_DATE],
+      ),
+      'no_clean',
+      'the canonical read model must expose only the valid cleaning-type vocabulary',
+    );
+
     const privileges = await rows<{
       function_name: string;
       service_role_execute: boolean;
@@ -329,8 +342,8 @@ describe('housekeeping canonical plan expand stage', () => {
            ('public._legacy_hk_assignment_to_room_work()'::text),
            ('public._lock_room_work_component_set(uuid,date,text[])'::text),
            ('public._room_work_complete_components()'::text),
-           ('public._room_work_lock_component_set()'::text),
-           ('public._activity_log_on_room_work_change()'::text)
+           ('public._activity_log_on_room_work_change()'::text),
+           ('public.write_room_work_atomic(uuid,date,text,jsonb,text,boolean)'::text)
          ) functions(function_name)
         order by function_name`,
     );
@@ -343,8 +356,8 @@ describe('housekeeping canonical plan expand stage', () => {
         'public._lock_room_work_component_set(uuid,date,text[])',
         'public._room_work_complete_components()',
         'public._room_work_fill_identity()',
-        'public._room_work_lock_component_set()',
         'public.housekeeping_plan_id(uuid,date,text)',
+        'public.write_room_work_atomic(uuid,date,text,jsonb,text,boolean)',
       ].map((function_name) => ({
         function_name,
         service_role_execute: true,
@@ -416,6 +429,10 @@ describe('housekeeping canonical plan expand stage', () => {
       status: 'scheduled',
     }]);
     await pg.query("select * from public.upsert_room_work_plan($1, $2::jsonb)", [PROPERTY, repeatedPlan]);
+    const repeatedPlanUpdatedAt = await scalar<string>(
+      "select updated_at::text from public.room_work where property_id = $1 and date = $2 and room_number = '301'",
+      [PROPERTY, BUSINESS_DATE],
+    );
     await pg.query("select * from public.upsert_room_work_plan($1, $2::jsonb)", [PROPERTY, repeatedPlan]);
     assert.equal(
       await scalar<number>(
@@ -423,6 +440,14 @@ describe('housekeeping canonical plan expand stage', () => {
         [PROPERTY, BUSINESS_DATE],
       ),
       1,
+    );
+    assert.equal(
+      await scalar<string>(
+        "select updated_at::text from public.room_work where property_id = $1 and date = $2 and room_number = '301'",
+        [PROPERTY, BUSINESS_DATE],
+      ),
+      repeatedPlanUpdatedAt,
+      'an exact rules-engine retry must not churn updated_at',
     );
 
     const stableRoomId = await scalar<string>(
@@ -784,7 +809,7 @@ describe('housekeeping canonical plan expand stage', () => {
     for (const row of resetRows) assert.match(row.snapshot_id ?? '', /^[0-9a-f-]{36}$/i);
   });
 
-  test('exposes one sorted parent/component lock contract for every canonical path', async () => {
+  test('exposes one sorted lock contract for dormant canonical paths', async () => {
     // PGlite gives this fixture one backend session. Promise.all on this
     // handle would serialize, not exercise PostgreSQL's two-session lock
     // scheduler, so this test makes the production lock contract executable:
@@ -798,13 +823,22 @@ describe('housekeeping canonical plan expand stage', () => {
     assert.equal(helper.length, 1);
     assert.match(helper[0].prosrc, /order by lock_keys\.room_number/i);
     assert.match(helper[0].prosrc, /pg_advisory_xact_lock/i);
+    assert.match(helper[0].prosrc, /staxis\.housekeeping-plan-batch/i);
+    assert.doesNotMatch(helper[0].prosrc, /staxis\.housekeeping-plan:%s:%s:%s/i);
     assert.match(helper[0].prosrc, /for update/i);
 
     const trigger = await rows<{ definition: string }>(
       "select pg_get_triggerdef(oid) as definition from pg_trigger where tgrelid = 'public.room_work'::regclass and tgname = 'room_work_lock_component_set'",
     );
-    assert.equal(trigger.length, 1);
-    assert.match(trigger[0].definition, /before insert or update/i);
+    assert.deepEqual(trigger, [], 'row-lock trigger must stay absent because PostgreSQL locks before BEFORE triggers');
+    const completionTrigger = await rows<{ tgname: string }>(
+      "select tgname from pg_trigger where tgrelid = 'public.room_work'::regclass and tgname = 'room_work_complete_components'",
+    );
+    const auditTrigger = await rows<{ tgname: string }>(
+      "select tgname from pg_trigger where tgrelid = 'public.room_work'::regclass and tgname = 'trg_activity_log_room_work_change'",
+    );
+    assert.deepEqual(completionTrigger, [], 'component completion remains dormant until Stage B');
+    assert.deepEqual(auditTrigger, [], 'canonical activity capture remains invisible until Stage B');
 
     const operationSources = await rows<{ proname: string; prosrc: string }>(
       "select p.proname, p.prosrc from pg_proc p join pg_namespace n on n.oid = p.pronamespace where n.nspname = 'public' and p.proname in ('upsert_room_work_plan', 'assign_room_work_atomic', 'reset_room_work_assignments', '_room_work_complete_components') order by p.proname",
@@ -815,56 +849,32 @@ describe('housekeeping canonical plan expand stage', () => {
       'reset_room_work_assignments',
       'upsert_room_work_plan',
     ]);
-    for (const source of operationSources) {
+    assert.deepEqual(
+      operationSources.filter((source) => source.proname !== '_room_work_complete_components')
+        .map((source) => source.proname),
+      ['assign_room_work_atomic', 'reset_room_work_assignments', 'upsert_room_work_plan'],
+    );
+    for (const source of operationSources.filter((row) => row.proname !== '_room_work_complete_components')) {
       assert.match(source.prosrc, /_lock_room_work_component_set/);
     }
 
-    const bridgeSources = await rows<{ proname: string; prosrc: string }>(
-      "select p.proname, p.prosrc from pg_proc p join pg_namespace n on n.oid = p.pronamespace where n.nspname = 'public' and p.proname in ('_legacy_cleaning_task_to_room_work', '_legacy_hk_assignment_to_room_work') order by p.proname",
+    const writerSources = await rows<{ proname: string; prosrc: string }>(
+      "select p.proname, p.prosrc from pg_proc p join pg_namespace n on n.oid = p.pronamespace where n.nspname = 'public' and p.proname in ('_legacy_cleaning_task_to_room_work', '_legacy_hk_assignment_to_room_work', 'apply_inspection_cleaning_plan_side_effect', 'complete_inspection_atomic', 'complete_inspection_atomic_canonical', 'touch_room_work_plan', 'write_room_work_atomic') order by p.proname",
     );
-    assert.deepEqual(bridgeSources.map((row) => row.proname), [
+    assert.deepEqual(writerSources.map((row) => row.proname), [
       '_legacy_cleaning_task_to_room_work',
       '_legacy_hk_assignment_to_room_work',
-    ]);
-    for (const source of bridgeSources) {
-      const helperPosition = source.prosrc.indexOf('_lock_room_work_component_set');
-      const firstParentLock = source.prosrc.indexOf('for update');
-      assert.ok(helperPosition >= 0, `${source.proname} must call the shared component lock helper`);
-      assert.ok(firstParentLock >= 0, `${source.proname} must lock its canonical parent`);
-      assert.ok(
-        helperPosition < firstParentLock,
-        `${source.proname} must acquire child-before-parent locks`,
-      );
-      if (source.proname === '_legacy_cleaning_task_to_room_work') {
-        assert.match(source.prosrc, /array\[new\.room_number\]::text\[\]/i);
-      } else {
-        assert.match(source.prosrc, /array\[v_task\.room_number\]::text\[\]/i);
-      }
-    }
-
-    const inspectionSources = await rows<{ proname: string; prosrc: string }>(
-      "select p.proname, p.prosrc from pg_proc p join pg_namespace n on n.oid = p.pronamespace where n.nspname = 'public' and p.proname in ('apply_inspection_cleaning_plan_side_effect', 'complete_inspection_atomic_canonical') order by p.proname",
-    );
-    assert.deepEqual(inspectionSources.map((row) => row.proname), [
       'apply_inspection_cleaning_plan_side_effect',
+      'complete_inspection_atomic',
       'complete_inspection_atomic_canonical',
+      'touch_room_work_plan',
+      'write_room_work_atomic',
     ]);
-    for (const source of inspectionSources) {
-      const sourceText = source.prosrc.toLowerCase();
-      const helperPosition = sourceText.indexOf('_lock_room_work_component_set');
-      const firstUnlockedRead = sourceText.indexOf(
-        source.proname === 'apply_inspection_cleaning_plan_side_effect'
-          ? 'select * into v_work'
-          : 'select * into v_plan_work',
-      );
-      const firstCanonicalLock = sourceText.indexOf('for update', firstUnlockedRead);
-      assert.ok(helperPosition >= 0, `${source.proname} must call the shared component lock helper`);
-      assert.ok(firstUnlockedRead >= 0, `${source.proname} must resolve a room_work row before locking it`);
-      assert.ok(firstCanonicalLock >= 0, `${source.proname} must re-read its canonical row for update`);
-      assert.ok(
-        helperPosition < firstCanonicalLock,
-        `${source.proname} must enter the shared lock helper before its first canonical room lock`,
-      );
+    for (const source of writerSources.filter((row) => row.proname.startsWith('_legacy_') || row.proname === 'complete_inspection_atomic')) {
+      assert.doesNotMatch(source.prosrc, /_lock_room_work_component_set/);
+    }
+    for (const source of writerSources.filter((row) => !row.proname.startsWith('_legacy_') && row.proname !== 'complete_inspection_atomic')) {
+      assert.match(source.prosrc, /_lock_room_work_component_set/);
     }
 
     await pg.query(
@@ -905,6 +915,40 @@ describe('housekeeping canonical plan expand stage', () => {
       ],
     );
 
+    // This exercises the dormant canonical writer seam. PGlite uses one
+    // backend session, so it proves the complete component set and rollback
+    // behavior below, not PostgreSQL's independent two-session scheduler.
+    await pg.query(
+      "select public.write_room_work_atomic($1, $2, '900', '{\"status\":\"completed\",\"completed_at\":\"2026-08-03T12:00:00Z\",\"is_paused\":false}'::jsonb)",
+      [PROPERTY, LOCK_DATE],
+    );
+    const atomicCompletionUpdatedAt = await scalar<string>(
+      "select updated_at::text from public.room_work where property_id = $1 and date = $2 and room_number = '900'",
+      [PROPERTY, LOCK_DATE],
+    );
+    await pg.query(
+      "select public.write_room_work_atomic($1, $2, '900', '{\"status\":\"completed\",\"completed_at\":\"2026-08-03T12:00:00Z\",\"is_paused\":false}'::jsonb)",
+      [PROPERTY, LOCK_DATE],
+    );
+    assert.equal(
+      await scalar<string>(
+        "select updated_at::text from public.room_work where property_id = $1 and date = $2 and room_number = '900'",
+        [PROPERTY, LOCK_DATE],
+      ),
+      atomicCompletionUpdatedAt,
+      'an exact backend writer retry must not churn updated_at',
+    );
+    assert.deepEqual(
+      await rows<{ room_number: string; status: string }>(
+        "select room_number, status from public.room_work where property_id = $1 and date = $2 and room_number in ('100', '900') order by room_number",
+        [PROPERTY, LOCK_DATE],
+      ),
+      [
+        { room_number: '100', status: 'completed' },
+        { room_number: '900', status: 'completed' },
+      ],
+    );
+
     await pg.query(
       "insert into public.cleaning_tasks(id, property_id, room_number, business_date, dedupe_key, cleaning_type, priority, estimated_minutes, requires_inspection, extras, rules_fired, status, source_property_timezone, scheduled_at, last_evaluated_at) values ($1, $2, '900', $3, '900::bridge::2026-08-03', 'stayover', 'normal', 20, false, '[]'::jsonb, '[]'::jsonb, 'scheduled', 'America/Chicago', $4::timestamptz, $4::timestamptz)",
       [LOCK_BRIDGE_TASK, PROPERTY, LOCK_DATE, '2026-08-03T12:00:00Z'],
@@ -922,14 +966,21 @@ describe('housekeeping canonical plan expand stage', () => {
         { room_number: '100', assigned_staff_id: null },
         { room_number: '900', assigned_staff_id: HOUSEKEEPER },
       ],
-      'both old bridges must execute through the 900 -> 100 component lock set',
+      'old legacy bridges retain single-row compatibility while canonical locks remain dormant',
     );
   });
 
-  test('completes the exact component set atomically, retries safely, and rolls back on a child failure', async () => {
+  test('keeps old direct completion single-room while the canonical component RPC remains dormant', async () => {
     await pg.query(
-      "insert into public.room_work(property_id, date, room_number, status) values ($1, $2, '101', 'not_started'), ($1, $2, '102', 'not_started'), ($1, $2, '104', 'not_started') on conflict (property_id, date, room_number) do update set status = 'not_started', completed_at = null, is_paused = false",
+      "insert into public.room_work(property_id, date, room_number, status) values ($1, $2, '101', 'not_started'), ($1, $2, '102', 'not_started'), ($1, $2, '103', 'not_started'), ($1, $2, '104', 'not_started') on conflict (property_id, date, room_number) do update set status = 'not_started', completed_at = null, is_paused = false",
       [PROPERTY, BUSINESS_DATE],
+    );
+    assert.deepEqual(
+      await rows<{ tgname: string }>(
+        "select tgname from pg_trigger where tgrelid = 'public.room_work'::regclass and tgname = 'room_work_complete_components'",
+      ),
+      [],
+      'Stage A must not install the component fanout trigger',
     );
     await pg.query(
       "update public.room_work set status = 'completed', completed_at = now() where property_id = $1 and date = $2 and room_number = '101'",
@@ -941,31 +992,10 @@ describe('housekeeping canonical plan expand stage', () => {
     );
     assert.deepEqual(completed, [
       { room_number: '101', status: 'completed' },
-      { room_number: '102', status: 'completed' },
-      { room_number: '103', status: 'completed' },
+      { room_number: '102', status: 'not_started' },
+      { room_number: '103', status: 'not_started' },
       { room_number: '104', status: 'not_started' },
     ]);
-    const componentAudit = await rows<{
-      event_type: string;
-      target_id: string;
-      metadata: { component_only?: boolean };
-    }>(
-      "select event_type, target_id, metadata from public.activity_log where property_id = $1::uuid and metadata->>'room_number' = '103' and event_type = 'cleaning_task_completed'",
-      [PROPERTY],
-    );
-    assert.deepEqual(componentAudit, [{
-      event_type: 'cleaning_task_completed',
-      target_id: componentAudit[0].target_id,
-      metadata: { component_only: true, room_number: '103', business_date: BUSINESS_DATE, status: 'completed' },
-    }]);
-    assert.deepEqual(
-      await rows<{ event_type: string }>(
-        "select event_type from public.activity_log where property_id = $1 and target_id = $2 and event_type in ('cleaning_task_completed', 'cleaning_task_scheduled') order by event_type",
-        [PROPERTY, LEGACY_TASK],
-      ),
-      [{ event_type: 'cleaning_task_completed' }],
-      'a planned parent completing must emit completed, not its old scheduled plan label',
-    );
 
     await pg.query(
       "update public.room_work set status = 'not_started', completed_at = null, is_paused = false where property_id = $1 and date = $2 and room_number in ('101','102','103')",
@@ -974,7 +1004,7 @@ describe('housekeeping canonical plan expand stage', () => {
     await pg.exec("create or replace function public.phase5_fail_component() returns trigger language plpgsql as $$ begin raise exception 'phase5 child failure'; end; $$");
     await pg.exec("create trigger phase5_fail_component before update of status on public.room_work for each row when (new.room_number = '103') execute function public.phase5_fail_component()");
     const failure = await failsWith(
-      "update public.room_work set status = 'completed' where property_id = $1 and date = $2 and room_number = '101'",
+      "select public.write_room_work_atomic($1, $2, '101', '{\"status\":\"completed\"}'::jsonb)",
       [PROPERTY, BUSINESS_DATE],
     );
     assert.match(failure, /phase5 child failure/i);
@@ -992,7 +1022,7 @@ describe('housekeeping canonical plan expand stage', () => {
     await pg.exec("drop trigger phase5_fail_component on public.room_work; drop function public.phase5_fail_component()");
 
     await pg.query(
-      "update public.room_work set status = 'completed' where property_id = $1 and date = $2 and room_number = '101'",
+      "select public.write_room_work_atomic($1, $2, '101', '{\"status\":\"completed\"}'::jsonb)",
       [PROPERTY, BUSINESS_DATE],
     );
     assert.deepEqual(
@@ -1009,6 +1039,17 @@ describe('housekeeping canonical plan expand stage', () => {
   });
 
   test('keeps old inspection finalization behavior while reconciling its canonical plan status', async () => {
+    const inspectionSources = await rows<{ proname: string; prosrc: string }>(
+      "select p.proname, p.prosrc from pg_proc p join pg_namespace n on n.oid = p.pronamespace where n.nspname = 'public' and p.proname in ('complete_inspection_atomic', 'complete_inspection_atomic_canonical') order by p.proname",
+    );
+    assert.deepEqual(inspectionSources.map((row) => row.proname), [
+      'complete_inspection_atomic',
+      'complete_inspection_atomic_canonical',
+    ]);
+    for (const source of inspectionSources) {
+      assert.match(source.prosrc, /order by id\s+limit 1\s+for update/i);
+    }
+
     const sideEffectTask = await scalar<string>(
       "select public.housekeeping_plan_id($1, $2, '204')::text",
       [PROPERTY, BUSINESS_DATE],
@@ -1157,6 +1198,31 @@ describe('housekeeping canonical plan expand stage', () => {
     );
 
     await pg.query(
+      "update public.room_work set status = 'not_started', completed_at = null, inspected_at = null where property_id = $1 and date = $2 and room_number in ('101', '102', '103')",
+      [PROPERTY, BUSINESS_DATE],
+    );
+    await pg.query(
+      "insert into public.inspections(id, property_id, room_number, cleaning_task_id, result, started_at) values ('a6000000-0000-4000-8000-000000000007', $1, '101', $2, 'in_progress', $3::timestamptz)",
+      [PROPERTY, LEGACY_TASK, '2026-08-02T15:30:00Z'],
+    );
+    await pg.query(
+      "select * from public.complete_inspection_atomic('a6000000-0000-4000-8000-000000000007', $1, 'pass', '[]'::jsonb, '[]'::jsonb, null, false, null, null, null)",
+      [PROPERTY],
+    );
+    assert.deepEqual(
+      await rows<{ room_number: string; status: string }>(
+        "select room_number, status from public.room_work where property_id = $1 and date = $2 and room_number in ('101', '102', '103') order by room_number",
+        [PROPERTY, BUSINESS_DATE],
+      ),
+      [
+        { room_number: '101', status: 'completed' },
+        { room_number: '102', status: 'not_started' },
+        { room_number: '103', status: 'not_started' },
+      ],
+      'the old inspection RPC must not fan out to component children during expand',
+    );
+
+    await pg.query(
       "insert into public.inspections(id, property_id, room_number, cleaning_task_id, result, started_at) values ($1, $2, '201', $3, 'in_progress', $4::timestamptz)",
       [WRONG_PROPERTY_INSPECTION, PROPERTY, NEW_TASK, '2026-08-02T14:00:00Z'],
     );
@@ -1169,6 +1235,37 @@ describe('housekeeping canonical plan expand stage', () => {
       await scalar<string>("select result from public.inspections where id = $1", [WRONG_PROPERTY_INSPECTION]),
       'in_progress',
     );
+  });
+
+  test('0434 preserves superseded plan semantics during backfill', async () => {
+    const reconciled = await applyMigrationsToPgliteWithHook(async ({ pg: db, file }) => {
+      if (file !== '0434_housekeeping_plan_reconciliation.sql') return;
+      await db.query(
+        "insert into auth.users(id, email) values ($1, 'phase5-superseded@example.test') on conflict (id) do nothing",
+        [OWNER],
+      );
+      await db.query(
+        "insert into public.properties(id, owner_id, name, total_rooms, timezone) values ($1, $2, 'Phase Five Inn', 60, 'America/Chicago') on conflict (id) do nothing",
+        [PROPERTY, OWNER],
+      );
+      await db.query(
+        "insert into public.cleaning_tasks(id, property_id, room_number, business_date, dedupe_key, cleaning_type, priority, estimated_minutes, requires_inspection, extras, rules_fired, status, source_engine_run_id, source_property_timezone, scheduled_at, last_evaluated_at) values ($1, $2, '711', $3, '711::2026-08-02', 'stayover', 'normal', 20, false, '[]'::jsonb, '[]'::jsonb, 'superseded', $4, 'America/Chicago', $5::timestamptz, $5::timestamptz)",
+        [NEW_TASK, PROPERTY, BUSINESS_DATE, 'b4000000-0000-4000-8000-000000000021', '2026-08-02T12:00:00Z'],
+      );
+    });
+
+    try {
+      assert.ok(reconciled.report.applied.includes('0434_housekeeping_plan_reconciliation.sql'));
+      assert.deepEqual(
+        (await reconciled.pg.query<{ status: string; plan_status: string }>(
+          "select status, plan_status from public.room_work where property_id = $1 and date = $2 and room_number = '711'",
+          [PROPERTY, BUSINESS_DATE],
+        )).rows,
+        [{ status: 'skipped', plan_status: 'superseded' }],
+      );
+    } finally {
+      await reconciled.pg.close();
+    }
   });
 
   test('0434 blocks inactive cross-property assignment history instead of dropping it', async () => {
