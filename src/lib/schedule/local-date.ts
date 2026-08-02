@@ -44,6 +44,31 @@ export function propertyLocalToday(now: Date, timezone: string | null): string {
   }
 }
 
+/**
+ * The hour of the clock on the wall AT THE HOTEL, 0 to 23.
+ *
+ * Null when the hotel has no usable timezone, which is a real state and not a
+ * reason to guess: the only caller greets somebody by time of day, and wishing
+ * a night auditor good morning because the server is in another zone is worse
+ * than not naming the time at all.
+ */
+export function propertyLocalHour(now: Date, timezone: string | null): number | null {
+  if (!timezone) return null;
+  try {
+    const hour = new Intl.DateTimeFormat('en-GB', {
+      timeZone: timezone,
+      hour: '2-digit',
+      hour12: false,
+    }).format(now);
+    const parsed = Number.parseInt(hour, 10);
+    // en-GB renders midnight as "24" in some ICU versions.
+    if (!Number.isFinite(parsed) || parsed < 0 || parsed > 24) return null;
+    return parsed === 24 ? 0 : parsed;
+  } catch {
+    return null;
+  }
+}
+
 /** Add (or subtract) calendar days from a YYYY-MM-DD string, returning
  *  another YYYY-MM-DD string. Pure calendar arithmetic — does NOT touch
  *  timezones, so this is safe for any local date that was already

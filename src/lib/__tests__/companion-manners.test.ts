@@ -37,10 +37,14 @@ import {
   rememberTourDeclined,
   rememberTourTaken,
   rememberWelcomed,
+  decideDailyHello,
+  rememberGreeted,
   type CompanionCandidate,
   type CompanionMemory,
+  type HelloInput,
   type MannersInput,
 } from '@/lib/companion/manners';
+import { todayFact } from '@/lib/companion/copy';
 
 // ─── Fixtures ───────────────────────────────────────────────────────────────
 
@@ -634,5 +638,143 @@ describe('parseCompanionMemory', () => {
     memory = rememberDeclined(memory, 'topic', TODAY);
     memory = rememberTaught(memory, 'create_task');
     assert.deepEqual(parseCompanionMemory(JSON.parse(JSON.stringify(memory))), memory);
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// One hello a day
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// The companion says hello once per hotel-local day, on the first screen with a
+// companion on it, whether or not anything is wrong. Everything that can go
+// wrong with that is a repeat: four screens before lunch is one person having
+// one day, not four page loads each owed a greeting.
+//
+// THE DAY IS THE HOTEL'S. `today` arrives from propertyLocalToday(now, the
+// hotel's timezone) and never from the browser clock, so a night auditor at 1am
+// and a GM at 9am are correctly on different days by the calendar the rest of
+// the product already counts by.
+//
+// And the greeting may contain a number ONLY when it was handed one. There is
+// no model call anywhere in this path; it is a template over three values.
+
+function hello(over: Partial<HelloInput> = {}): HelloInput {
+  return {
+    today: TODAY,
+    person: { firstName: 'Maria', sharedLogin: false },
+    memory: { ...EMPTY_COMPANION_MEMORY, welcomedAt: '2026-07-01T12:00:00.000Z' },
+    hour: 9,
+    waiting: 0,
+    userIsBusy: false,
+    quietThisSession: false,
+    aiAwake: true,
+    ...over,
+  };
+}
+
+describe('one hello a day', () => {
+  test('says hello on the first screen of the day, even when nothing is wrong', () => {
+    const d = decideDailyHello(hello());
+    assert.equal(d.hello, true);
+    assert.equal(d.hello && d.line, 'Good morning, Maria. All quiet so far.');
+  });
+
+  test('the second screen of the same day gets nothing', () => {
+    const first = decideDailyHello(hello());
+    assert.equal(first.hello, true);
+    const after = rememberGreeted(hello().memory, TODAY);
+    assert.equal(decideDailyHello(hello({ memory: after })).hello, false);
+    // ...and every later load that day, however many.
+    for (let i = 0; i < 5; i += 1) {
+      assert.equal(decideDailyHello(hello({ memory: after })).hello, false);
+    }
+  });
+
+  test('tomorrow gets its own hello', () => {
+    const after = rememberGreeted(hello().memory, TODAY);
+    const tomorrow = decideDailyHello(hello({ memory: after, today: '2026-08-02' }));
+    assert.equal(tomorrow.hello, true);
+  });
+
+  test('the day that counts is the hotel\'s, not the browser\'s', () => {
+    // 1:00am at the hotel is still yesterday's stamp if the hotel says so. The
+    // guard compares the string the server resolved from properties.timezone;
+    // nothing here may reach for a Date.
+    const stamped = rememberGreeted(EMPTY_COMPANION_MEMORY, '2026-08-01');
+    assert.equal(stamped.greetedDay, '2026-08-01');
+    assert.equal(decideDailyHello(hello({
+      memory: { ...stamped, welcomedAt: '2026-07-01T12:00:00.000Z' },
+      today: '2026-08-01',
+    })).hello, false);
+    assert.equal(decideDailyHello(hello({
+      memory: { ...stamped, welcomedAt: '2026-07-01T12:00:00.000Z' },
+      today: '2026-07-31',
+    })).hello, true, 'a different hotel-day is a different day, in either direction');
+  });
+
+  test('greets by the hotel\'s clock, not by a guess', () => {
+    assert.match((decideDailyHello(hello({ hour: 7 })) as { line: string }).line, /^Good morning/);
+    assert.match((decideDailyHello(hello({ hour: 14 })) as { line: string }).line, /^Good afternoon/);
+    assert.match((decideDailyHello(hello({ hour: 21 })) as { line: string }).line, /^Good evening/);
+    // No timezone means no claim about the time of day.
+    assert.match((decideDailyHello(hello({ hour: null })) as { line: string }).line, /^Hello/);
+  });
+
+  test('says a number only when it was given one, and never invents it', () => {
+    const quiet = decideDailyHello(hello({ waiting: 0 })) as { line: string };
+    assert.doesNotMatch(quiet.line, /\d/, `no count may appear: ${quiet.line}`);
+    assert.match(quiet.line, /All quiet so far\./);
+
+    assert.match((decideDailyHello(hello({ waiting: 1 })) as { line: string }).line, /1 thing is waiting on you\./);
+    assert.match((decideDailyHello(hello({ waiting: 4 })) as { line: string }).line, /4 things are waiting on you\./);
+    // The count is the one it was handed, never a rounded or decorated version.
+    assert.equal(todayFact({ waiting: 12 }), '12 things are waiting on you.');
+    assert.equal(todayFact({ waiting: 0 }), null);
+  });
+
+  test('a shared login is greeted without somebody else\'s name', () => {
+    const d = decideDailyHello(hello({ person: { firstName: 'Front', sharedLogin: true } })) as { line: string };
+    assert.doesNotMatch(d.line, /Front/);
+    assert.match(d.line, /^Good morning\./);
+  });
+
+  test('never while somebody is typing, never after a quiet, never while asleep', () => {
+    assert.deepEqual(decideDailyHello(hello({ userIsBusy: true })), { hello: false, refusal: 'user_is_busy' });
+    assert.deepEqual(decideDailyHello(hello({ quietThisSession: true })), { hello: false, refusal: 'quiet_this_session' });
+    assert.deepEqual(decideDailyHello(hello({ aiAwake: false })), { hello: false, refusal: 'ai_asleep' });
+  });
+
+  test('day one belongs to the welcome: no hello stacked on a first hello', () => {
+    const brandNew = decideDailyHello(hello({ memory: EMPTY_COMPANION_MEMORY }));
+    assert.deepEqual(brandNew, { hello: false, refusal: 'welcome_owns_today' });
+  });
+
+  test('the hello does not spend the day\'s speech budget', () => {
+    // The cap exists to stop the companion volunteering findings all day. A
+    // greeting is not a finding, and burning a slot on it would silence the
+    // thing that actually mattered at 4pm.
+    const greeted = rememberGreeted(
+      { ...EMPTY_COMPANION_MEMORY, welcomedAt: '2026-07-01T12:00:00.000Z', tourDeclined: true },
+      TODAY,
+    );
+    assert.equal(greeted.spokenCount, 0);
+    assert.equal(greeted.lastSpokeAt, null);
+    const speech = decideCompanionSpeech(input({ memory: greeted }));
+    assert.equal(speech.kind, 'offer', 'the day\'s real message must still be available');
+  });
+
+  test('the stamp is idempotent, and survives a round trip through the blob', () => {
+    const once = rememberGreeted(EMPTY_COMPANION_MEMORY, TODAY);
+    assert.equal(rememberGreeted(once, TODAY), once, 'same day must not churn the memory');
+    assert.equal(parseCompanionMemory(JSON.parse(JSON.stringify(once))).greetedDay, TODAY);
+  });
+
+  test('a forged day string is refused rather than stored as a day', () => {
+    assert.equal(parseCompanionMemory({ greetedDay: 'tomorrow' }).greetedDay, null);
+    assert.equal(parseCompanionMemory({ greetedDay: 99 }).greetedDay, null);
+    // ...and a memory with no stamp at all still greets.
+    assert.equal(decideDailyHello(hello({
+      memory: { ...EMPTY_COMPANION_MEMORY, welcomedAt: '2026-07-01T12:00:00.000Z', greetedDay: null },
+    })).hello, true);
   });
 });

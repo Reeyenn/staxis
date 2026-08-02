@@ -65,6 +65,74 @@ export function welcomeGreeting(input: GreetingInput): string {
   return `${hello} I am Staxis. ${roleBlurb(input.role)}`;
 }
 
+// ─── Saying hello ───────────────────────────────────────────────────────────
+//
+// TWO SENTENCES, BUILT THE SAME WAY, USED IN TWO PLACES:
+//
+//   greetingLine   the panel's first line when somebody opens it on an empty
+//                  thread. Staxis speaks first, as prose with no bubble.
+//   dailyHelloLine the one unprompted hello per hotel-local day.
+//
+// NOTHING HERE MAY INVENT A NUMBER. `fact` arrives already true or already
+// null, counted from what the browser was actually given. When it is null the
+// greeting simply has no second half; the daily hello says the hotel is quiet,
+// which is the honest thing to say when nothing is pending and is itself a
+// claim only made when the count really was zero.
+//
+// Zero model calls. This is a template over three values.
+
+/** What the daily hello says when there is genuinely nothing to report. */
+export const QUIET_TODAY = 'All quiet so far.';
+
+export interface GreetingLineInput {
+  firstName: string | null;
+  sharedLogin: boolean;
+  /** The hour on the wall AT THE HOTEL, 0 to 23, or null if unknown. */
+  hour: number | null;
+  /** One true sentence about today, or null when there is none to make. */
+  fact: string | null;
+}
+
+/**
+ * "Good morning" only when it IS morning where the hotel is.
+ *
+ * A null hour means the hotel has no timezone we trust, and the plain "Hello"
+ * is correct rather than a coin flip between three greetings.
+ */
+function timeOfDay(hour: number | null): string {
+  if (hour === null || !Number.isFinite(hour)) return 'Hello';
+  if (hour < 12) return 'Good morning';
+  if (hour < 18) return 'Good afternoon';
+  return 'Good evening';
+}
+
+/** The panel's opening line. No filler when there is no fact. */
+export function greetingLine(input: GreetingLineInput): string {
+  const name = input.sharedLogin ? null : cleanName(input.firstName);
+  const opener = name ? `${timeOfDay(input.hour)}, ${name}.` : `${timeOfDay(input.hour)}.`;
+  const fact = typeof input.fact === 'string' ? input.fact.trim() : '';
+  return fact ? `${opener} ${fact}` : opener;
+}
+
+/** The once-a-day hello. Always has something to say, even on a quiet day. */
+export function dailyHelloLine(input: GreetingLineInput): string {
+  return greetingLine({ ...input, fact: input.fact?.trim() || QUIET_TODAY });
+}
+
+/**
+ * The one true thing about today, from what the browser already holds.
+ *
+ * `waiting` is the number of things the companion found worth raising, which
+ * arrived with the bootstrap and cost nothing extra to count. Zero is not a
+ * fact worth stating on its own, so it returns null and the caller decides
+ * whether to say the hotel is quiet or to say nothing at all.
+ */
+export function todayFact(input: { waiting: number }): string | null {
+  const n = Number.isFinite(input.waiting) ? Math.max(0, Math.floor(input.waiting)) : 0;
+  if (n === 0) return null;
+  return n === 1 ? '1 thing is waiting on you.' : `${n} things are waiting on you.`;
+}
+
 /** The offer that rides with the greeting. Yes/No, and No means never again. */
 export function tourQuestion(role: AppRole): string {
   return canManageTeam(role)

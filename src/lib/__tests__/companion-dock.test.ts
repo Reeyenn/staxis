@@ -26,14 +26,29 @@ import {
   DOCK_STORAGE_KEY,
   MARK_SIZE,
   PANEL_WIDTH,
+  AUTO_PEEK_MS,
+  HOVER_CLOSE_MS,
+  HOVER_OPEN_MS,
+  PANEL_ENTER_MS,
+  PANEL_EXIT_MS,
+  REDUCED_MOTION_MS,
+  WHEEL_LINE_PX,
   clampDockPosition,
+  containScroll,
   defaultDockPosition,
+  hoverCanClose,
+  hoverCanOpen,
   isDragGesture,
+  panelExitMs,
+  panelRenderState,
   panelWidthFor,
   peekFits,
   placePanel,
   placePeek,
   readStoredDock,
+  scrollAbsorbs,
+  shouldAutoPeek,
+  wheelDeltaPx,
   writeStoredDock,
   type DockStorage,
   type Vec,
@@ -428,5 +443,190 @@ describe('the peek says a candidate sentence, or says nothing', () => {
       onScreen: ['finding:1'],
     }));
     assert.equal(speech.kind, 'silent');
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Hover opens it, and letting go closes it
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// The founder asked for the panel to open by itself when the cursor rests on
+// the mark. Three ways that goes wrong, all of them worse than not having it:
+//
+//   1. it fires on touch, where the tap that toggles is the same gesture, so
+//      the panel opens and closes in one poke
+//   2. it fires while the mark is being dragged
+//   3. it CLOSES on somebody who is mid-sentence in the composer because their
+//      hand drifted off the trackpad
+//
+// The timing lives here as constants for the same reason the geometry does:
+// the component cannot be mounted in this suite.
+
+describe('hover intent', () => {
+  test('a real pointer opens it, a touch screen does not', () => {
+    assert.equal(hoverCanOpen({ finePointer: true, dragging: false, open: false }), true);
+    assert.equal(hoverCanOpen({ finePointer: false, dragging: false, open: false }), false);
+  });
+
+  test('a mark being dragged never opens its own panel', () => {
+    assert.equal(hoverCanOpen({ finePointer: true, dragging: true, open: false }), false);
+  });
+
+  test('hovering an already open panel arms nothing', () => {
+    assert.equal(hoverCanOpen({ finePointer: true, dragging: false, open: true }), false);
+  });
+
+  test('the pointer leaving closes it, once it is actually open', () => {
+    assert.equal(hoverCanClose({ finePointer: true, open: true, busy: false }), true);
+    assert.equal(hoverCanClose({ finePointer: true, open: false, busy: false }), false);
+  });
+
+  test('a panel somebody is busy in stays open, however far the cursor went', () => {
+    assert.equal(hoverCanClose({ finePointer: true, open: true, busy: true }), false);
+  });
+
+  test('touch never closes on hover either, so a tapped panel stays put', () => {
+    assert.equal(hoverCanClose({ finePointer: false, open: true, busy: false }), false);
+  });
+
+  test('the grace on the way out is longer than the intent on the way in', () => {
+    // There are 12px of bare page between the mark and the panel. A pointer
+    // travelling from one to the other crosses it, and a close grace shorter
+    // than the open delay would make the panel unreachable by hover.
+    assert.ok(HOVER_CLOSE_MS > HOVER_OPEN_MS, `${HOVER_CLOSE_MS} should exceed ${HOVER_OPEN_MS}`);
+    assert.ok(HOVER_OPEN_MS >= 150 && HOVER_OPEN_MS <= 400);
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// The close animation actually gets to happen
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// B1 · Sink was in the handoff, was written into ASX_CSS, and had never once
+// been seen: the panel was `{open && <div className="asx-panel">}`, so the
+// state change that closed it took its DOM away on the same commit and there
+// was nothing left to animate. The fix is a `closing` phase that keeps the
+// slab mounted for exactly the length of the exit.
+
+describe('closing plays before unmounting', () => {
+  test('a closing panel is still in the tree, and says so in its class', () => {
+    const closing = panelRenderState({ open: false, closing: true });
+    assert.equal(closing.mounted, true, 'unmounting on close is the bug');
+    assert.match(closing.className, /\basx-closing\b/);
+  });
+
+  test('an open panel is mounted and is not wearing the exit', () => {
+    const open = panelRenderState({ open: true, closing: false });
+    assert.equal(open.mounted, true);
+    assert.doesNotMatch(open.className, /asx-closing/);
+  });
+
+  test('once the exit has run, nothing is left behind', () => {
+    assert.equal(panelRenderState({ open: false, closing: false }).mounted, false);
+  });
+
+  test('closing is faster than opening, and reduced motion is faster than both', () => {
+    assert.ok(PANEL_EXIT_MS < PANEL_ENTER_MS, 'closing should never be savoured');
+    assert.equal(panelExitMs(false), PANEL_EXIT_MS);
+    assert.equal(panelExitMs(true), REDUCED_MOTION_MS);
+    assert.ok(REDUCED_MOTION_MS < PANEL_EXIT_MS);
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// The panel keeps its own wheel
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// THE BUG, EXACTLY: with the panel open, the first scroll over it scrolled the
+// PAGE, and only afterwards did the panel start scrolling. Two separate causes,
+// and only one of them is the one everybody reaches for:
+//
+//   1. A FRESHLY OPENED THREAD HAS NO OVERFLOW. It holds one line. An element
+//      with nothing to scroll is not a scroll target at all, so the browser
+//      hands the gesture to the page. Once a conversation has made the thread
+//      taller it becomes a target and starts working, which is precisely the
+//      "it only does it the first time" that was reported.
+//      `overscroll-behavior: contain` CANNOT fix this one: an element that
+//      never receives the gesture has nothing to contain.
+//   2. AT EITHER END the wheel chains outward to the page.
+//
+// So the slab takes the wheel itself and routes it here. The rule under test is
+// "cursor over the panel scrolls the panel and nothing else", including when the
+// panel cannot move at all.
+
+describe('wheel containment', () => {
+  const short = { scrollTop: 0, scrollHeight: 120, clientHeight: 480 };
+  const tall = { scrollTop: 0, scrollHeight: 1400, clientHeight: 480 };
+
+  test('a thread with room scrolls by the delta it was given', () => {
+    assert.equal(containScroll(tall, 300), 300);
+  });
+
+  test('a thread with NOTHING to scroll stays at nothing, rather than passing it on', () => {
+    // The freshly-opened panel. Before the fix this gesture reached the page.
+    assert.equal(containScroll(short, 300), 0);
+    assert.equal(scrollAbsorbs(short, 300), false);
+  });
+
+  test('neither end chains: the page never moves under an open panel', () => {
+    assert.equal(containScroll({ ...tall, scrollTop: 900 }, 5000), 920);
+    assert.equal(containScroll({ ...tall, scrollTop: 0 }, -5000), 0);
+    assert.equal(scrollAbsorbs({ ...tall, scrollTop: 920 }, 300), false);
+    assert.equal(scrollAbsorbs({ ...tall, scrollTop: 0 }, -300), false);
+  });
+
+  test('a wheel reporting lines, not pixels, still moves a sensible distance', () => {
+    // Firefox reports deltaMode 1. Treating "3" as three pixels is a thread
+    // that visibly does not respond.
+    assert.equal(wheelDeltaPx(3, 0, 480), 3);
+    assert.equal(wheelDeltaPx(3, 1, 480), 3 * WHEEL_LINE_PX);
+    assert.equal(wheelDeltaPx(1, 2, 480), 480);
+  });
+
+  test('a nonsense delta moves nothing rather than becoming NaN', () => {
+    assert.equal(wheelDeltaPx(Number.NaN, 0, 480), 0);
+    assert.equal(containScroll(tall, wheelDeltaPx(Number.NaN, 0, 480)), 0);
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// The peek shows itself, once
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// Every manner is already spent by the time a sentence gets here: the daily
+// cap, the minimum gap, the declined-twice drop, one-thing-at-a-time and the
+// never-while-typing floor all live in decideCompanionSpeech. What is left is
+// whether the corner is free, and whether this sentence has already had its
+// unprompted moment on this page load.
+
+describe('the peek volunteering itself', () => {
+  const none = new Set<string>();
+
+  test('a new sentence gets one unprompted moment', () => {
+    assert.equal(shouldAutoPeek({ key: 'a', shown: none, open: false, dragging: false, busy: false }), true);
+  });
+
+  test('the same sentence does not come back a second time this session', () => {
+    const shown = new Set(['a']);
+    assert.equal(shouldAutoPeek({ key: 'a', shown, open: false, dragging: false, busy: false }), false);
+    // A different one still may.
+    assert.equal(shouldAutoPeek({ key: 'b', shown, open: false, dragging: false, busy: false }), true);
+  });
+
+  test('nothing volunteers itself over an open panel or a drag', () => {
+    assert.equal(shouldAutoPeek({ key: 'a', shown: none, open: true, dragging: false, busy: false }), false);
+    assert.equal(shouldAutoPeek({ key: 'a', shown: none, open: false, dragging: true, busy: false }), false);
+  });
+
+  test('it defers to somebody with their hands on the keys', () => {
+    assert.equal(shouldAutoPeek({ key: 'a', shown: none, open: false, dragging: false, busy: true }), false);
+  });
+
+  test('no sentence means no pill, which is hover doing nothing', () => {
+    assert.equal(shouldAutoPeek({ key: null, shown: none, open: false, dragging: false, busy: false }), false);
+  });
+
+  test('it retreats on its own, in a window somebody can actually read', () => {
+    assert.ok(AUTO_PEEK_MS >= 4000 && AUTO_PEEK_MS <= 9000, `${AUTO_PEEK_MS}ms`);
   });
 });
