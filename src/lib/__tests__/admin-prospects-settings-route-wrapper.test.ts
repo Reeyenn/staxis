@@ -97,6 +97,9 @@ describe('static admin prospects/settings wrapper batch', () => {
       assert.doesNotMatch(source, /getOrMintRequestId/);
       assert.match(source, /export const runtime = ['"]nodejs['"]/);
       assert.match(source, /export const dynamic = ['"]force-dynamic['"]/);
+      if (path.endsWith('/prospects/route.ts')) {
+        assert.match(source, /export const maxDuration = 15/);
+      }
     }
   });
 
