@@ -14,6 +14,7 @@ import {
   type RosterAccountLike,
   type RosterStaffLike,
 } from '@/app/company/_components/people-roster';
+import { projectHotelStaffLinks } from '@/lib/authorization/hotel-staff-link-projection';
 
 function account(overrides: Partial<RosterAccountLike> & { accountId: string }): RosterAccountLike {
   return {
@@ -56,6 +57,22 @@ describe('buildHotelRoster — one human, one row', () => {
     assert.equal(people.length, 1);
     assert.equal(people[0].account, null);
     assert.equal(people[0].staff?.id, 'staff-9');
+  });
+
+  test('an archived account identity merges with the inactive staff row exactly once', () => {
+    const people = flatten(buildHotelRoster(
+      [account({
+        accountId: 'acc-archived',
+        displayName: 'Maria Login',
+        historicalStaffId: 'staff-archived',
+      })],
+      [staff({ id: 'staff-archived', name: 'Maria Archived', isActive: false })],
+    ));
+    assert.equal(people.length, 1);
+    assert.equal(people[0].account?.accountId, 'acc-archived');
+    assert.equal(people[0].staff?.id, 'staff-archived');
+    assert.equal(people[0].staff?.isActive, false);
+    assert.equal(people[0].name, 'Maria Archived');
   });
 
   test('a login with no employment record is not dropped', () => {
@@ -110,6 +127,26 @@ describe('buildHotelRoster — one human, one row', () => {
     const people = flatten(groups);
     assert.equal(people.length, 3);
     assert.equal(new Set(people.map((person) => person.key)).size, 3);
+  });
+});
+
+describe('hotel staff-link identity projection', () => {
+  test('keeps inactive links as selected-property identity hints, never authority', () => {
+    const projection = projectHotelStaffLinks([
+      { accountId: 'acc-archived', staffId: 'staff-archived', isActive: false },
+      { accountId: 'other-hotel', staffId: 'staff-other', isActive: false },
+    ], new Set(['acc-archived']));
+    assert.ok(projection);
+    assert.equal(projection.activeStaffIds.get('acc-archived'), undefined);
+    assert.equal(projection.historicalStaffIds.get('acc-archived'), 'staff-archived');
+    assert.equal(projection.historicalStaffIds.has('other-hotel'), false);
+  });
+
+  test('fails closed when one account has conflicting active and historical identities', () => {
+    assert.equal(projectHotelStaffLinks([
+      { accountId: 'acc-ambiguous', staffId: 'staff-active', isActive: true },
+      { accountId: 'acc-ambiguous', staffId: 'staff-archived', isActive: false },
+    ], new Set(['acc-ambiguous'])), null);
   });
 });
 

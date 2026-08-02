@@ -181,10 +181,18 @@ describe('truthful Company Hub filters', () => {
     assert.match(company, /const showHotelPeople = Boolean\(activeProperty && !portfolioMode\)/);
     assert.match(company, /!showHotelPeople && \(visibleMemberships\.length/);
     assert.match(company, /portfolioMode=\{portfolioMode\}/);
+    assert.match(hotelTeam, /propertyAccess: member\.propertyAccess/);
+    assert.match(hotelTeam, /managementSurface: member\.managementSurface/);
+    assert.match(hotelTeam, /staffLinkAllowed: member\.staffLinkAllowed/);
     assert.match(hotelTeam, /LazyPeopleInviteChooserDialog/);
     assert.match(hotelTeamDialogs, /What does this person need\?/);
     assert.match(hotelTeamDialogs, /Hotel invite/);
     assert.match(hotelTeamDialogs, /Email one person/);
+  });
+
+  test('points login-only employment recovery at the approved People chooser flow', () => {
+    assert.match(employmentForm, /Use Invite people, then choose NO LOGIN \/ Add to schedule only/);
+    assert.doesNotMatch(employmentForm, /Add button on a department/);
   });
 
   test('admin previews merge the exact hotel roster without crossing viewer contexts', () => {

@@ -95,6 +95,11 @@ export interface HotelTeamMember {
   isPlatformAdmin?: boolean;
   hotelAccessCount?: number | null;
   hasOtherHotelAccess?: boolean;
+  /** Read-only identity hint from an inactive link at this exact hotel. It
+   * never grants or preserves account authority. */
+  historicalStaffId: string | null;
+  /** Server-computed eligibility for a new staff link at this hotel. */
+  staffLinkAllowed: boolean;
   /** Authoritative account-access surface returned by /api/auth/team. Company
    * access can make an organization member visible here without creating the
    * hotel's direct first-person/setup account. */
@@ -1123,6 +1128,11 @@ export function HotelTeamPanel({
       username: member.username,
       role: member.role,
       staffId: member.staffId,
+      historicalStaffId: member.historicalStaffId,
+      propertyAccess: member.propertyAccess,
+      managementSurface: member.managementSurface,
+      staffLinkAllowed: member.staffLinkAllowed,
+      lifecyclePending: member.lifecyclePending === true,
     })),
     [team],
   );
@@ -1284,7 +1294,8 @@ export function HotelTeamPanel({
       lang={lang}
       staff={editPerson.staff}
       accounts={linkAccounts}
-      canEdit={canEditEmployment(editPerson.account, currentUser, currentAccountId, locked)}
+      canEdit={editPerson.staff?.isActive !== false
+        && canEditEmployment(editPerson.account, currentUser, currentAccountId, locked)}
       canViewWages={canViewWages}
       wages={wages}
       contacts={contacts}
@@ -1592,18 +1603,7 @@ export function HotelTeamPanel({
   );
 }
 
-function PersonRow({
-  person,
-  lang,
-  currentUser,
-  currentAccountId,
-  locked,
-  jobsByAccountId,
-  pendingLifecycle,
-  serverLifecyclePollingPaused,
-  onOpen,
-  onRemoveAccess,
-}: {
+export interface PersonRowProps {
   person: RosterPerson<HotelTeamMember, StaffMember>;
   lang: HotelTeamLang;
   currentUser: AppUser;
@@ -1614,7 +1614,20 @@ function PersonRow({
   serverLifecyclePollingPaused: boolean;
   onOpen: () => void;
   onRemoveAccess: (member: HotelTeamMember) => void;
-}) {
+}
+
+export function PersonRow({
+  person,
+  lang,
+  currentUser,
+  currentAccountId,
+  locked,
+  jobsByAccountId,
+  pendingLifecycle,
+  serverLifecyclePollingPaused,
+  onOpen,
+  onRemoveAccess,
+}: PersonRowProps) {
   const account = person.account;
   const staff = person.staff;
   const self = account?.accountId === currentAccountId;
@@ -1631,11 +1644,14 @@ function PersonRow({
     || availableActions.canDeactivate
     || availableActions.canReactivate
   ));
-  const employmentEditable = canEditEmployment(account, currentUser, currentAccountId, locked);
+  const offRoster = staff?.isActive === false;
+  const employmentEditable = !offRoster
+    && canEditEmployment(account, currentUser, currentAccountId, locked);
   // Somebody with a login you may not touch and no schedule profile has nothing
   // behind the button — don't offer one.
   const canOpen = canOpenAccountEditor || Boolean(staff);
-  const editable = canOpenAccountEditor || (Boolean(staff) && employmentEditable);
+  const editable = !offRoster
+    && (canOpenAccountEditor || (Boolean(staff) && employmentEditable));
   const dimmed = staff?.isActive === false || (account ? !account.active : false);
   const jobLines = account ? jobsByAccountId[account.accountId] ?? [] : [];
   const jobLabel = personJobLabel(person, lang);
