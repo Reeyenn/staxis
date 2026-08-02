@@ -134,12 +134,15 @@ describe('People invite entry choice', () => {
   });
 
   test('the chooser exposes only the permissions passed to it', () => {
-    assert.match(chooser, /description=\{'Does this person need a Staxis login\?'\}/);
-    assert.match(chooser, /role="group" aria-label="Choose whether this person needs a Staxis login"/);
-    assert.match(chooser, /canAddStaff \? \([\s\S]*?\{'Add staff member'\}/);
-    assert.match(chooser, /Add them to this hotel's roster and schedule\. No Staxis account\./);
-    assert.match(chooser, /canInviteToStaxis \? \([\s\S]*?\{'Invite to Staxis'\}/);
-    assert.match(chooser, /const inviteDescription = canShareHotelInvite[\s\S]*canSendEmailInvite[\s\S]*Share a link, QR code, or invite code\./);
+    assert.match(chooser, /description=\{'What does this person need\?'\}/);
+    assert.match(chooser, /role="group" aria-label="Choose what this person needs"/);
+    assert.match(chooser, /peopleInviteChoiceBadgeNoLogin[\s\S]*?\{'NO LOGIN'\}/);
+    assert.match(chooser, /canAddStaff \? \([\s\S]*?\{'Add to schedule only'\}/);
+    assert.match(chooser, /Add them to the hotel roster and schedule\. They cannot sign in to Staxis\./);
+    assert.match(chooser, /peopleInviteChoiceBadge[\s\S]*?\{'STAXIS LOGIN'\}/);
+    assert.match(chooser, /canInviteToStaxis \? \([\s\S]*?\{'Invite to create an account'\}/);
+    assert.match(chooser, /They create a login and can sign in to Staxis\./);
+    assert.match(chooser, /const inviteDescription = 'They create a login and can sign in to Staxis\.'/);
     assert.match(normalDialogArea, /canAddStaff=\{canAddStaff && !locked && !inviteActionDisabled\}/);
     assert.match(normalDialogArea, /canInviteToStaxis=\{canInviteToStaxis && !inviteActionDisabled\}/);
     assert.match(normalDialogArea, /canSendEmailInvite=\{canInviteAccounts && !inviteActionDisabled\}/);
@@ -152,8 +155,8 @@ describe('People invite entry choice', () => {
     assert.match(normalDialogArea, /canManageHotelRoster/);
     assert.match(normalDialogArea, /unlinkedRosterProfiles=\{unlinkedRosterProfiles\}/);
     assert.match(earlyBranch, /canInviteManager\s+canManageHotelRoster=\{false\}/);
-    assert.match(chooser, /Share a link, QR code, or invite code\./);
-    assert.match(chooser, /: 'Send an email invite\.'/);
+    assert.match(dialogs, /'Share one hotel invitation as a link, QR code, or signup code\.'/);
+    assert.match(dialogs, /'Send a private invitation, then choose the job and exact company or hotel access\.'/);
     assert.match(dialogs, /QRCode\.toDataURL\(signupLinkFor\(code\.code\)/);
     assert.match(dialogs, /\{'Link'\}/);
     assert.match(dialogs, /\{'QR code'\}/);
@@ -288,10 +291,12 @@ describe('People invite entry choice', () => {
 
   test('chooser focus, keyboard targets, and mobile loading shapes remain accessible', () => {
     assert.match(css, /\.peopleInviteChoice:focus-visible[\s\S]*outline: 2px solid var\(--team-sage\)/);
-    assert.match(css, /\.peopleInviteChoice \{[\s\S]*min-height: 76px;/);
+    assert.match(css, /\.peopleInviteChoice \{[\s\S]*min-height: 104px;/);
     assert.match(css, /\.dialogLoadingInviteChoice\s*\{[\s\S]*height:/);
     assert.match(css, /\.dialogLoadingAddStaff\s*\{[\s\S]*height:/);
     assert.match(css, /\.dialogLoadingChoices\s*\{[\s\S]*gap: 12px/);
+    assert.match(css, /\.peopleInviteChoiceBadge\s*\{[\s\S]*border-radius: 999px;/);
+    assert.match(css, /\.dialogLoadingChoiceBadge\s*\{[\s\S]*border-radius: 999px;/);
     assert.match(css, /@media \(max-width: 560px\)[\s\S]*\.dialogLayer \{/);
     assert.match(css, /@media \(prefers-reduced-motion: reduce\)[\s\S]*\.peopleInviteChoice/);
   });
