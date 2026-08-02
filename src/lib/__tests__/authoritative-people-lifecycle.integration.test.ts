@@ -24,6 +24,8 @@ import {
 
 const LEGACY_TARGET = 'f1000000-0000-4000-8000-000000000001';
 const LEGACY_TARGET_USER = 'f1000000-0000-4000-8000-000000000002';
+const INACTIVE_LEGACY_TARGET = 'f1000000-0000-4000-8000-000000000009';
+const INACTIVE_LEGACY_TARGET_USER = 'f1000000-0000-4000-8000-00000000000a';
 const NORMALIZED_TARGET = 'f2000000-0000-4000-8000-000000000001';
 const NORMALIZED_TARGET_USER = 'f2000000-0000-4000-8000-000000000002';
 const NORMALIZED_MEMBERSHIP = 'f2000000-0000-4000-8000-000000000003';
@@ -163,6 +165,14 @@ describe('authoritative People lifecycle and acquired-hotel mutations — real S
        ) values ($1,'legacy-target','Legacy Target','front_desk',
          array[$2,$3]::uuid[],$4)`,
       [LEGACY_TARGET, PID_A1, PID_A2, LEGACY_TARGET_USER],
+    );
+    await pg.query(`insert into auth.users(id,email) values ($1,'inactive-legacy-target@example.test')`, [INACTIVE_LEGACY_TARGET_USER]);
+    await pg.query(
+      `insert into accounts(
+         id,username,display_name,role,property_access,active,data_user_id
+       ) values ($1,'inactive-legacy-target','Inactive Legacy Target','front_desk',
+         array[$2,$3]::uuid[],false,$4)`,
+      [INACTIVE_LEGACY_TARGET, PID_A1, PID_A2, INACTIVE_LEGACY_TARGET_USER],
     );
     await pg.query(
       `insert into auth.users(id,email) values ($1,'local-target@example.test')`,
@@ -315,6 +325,44 @@ describe('authoritative People lifecycle and acquired-hotel mutations — real S
     );
     assert.equal(detached.rows[0].value.status, 'ok');
     assert.equal(detached.rows[0].value.remaining_hotels, 0);
+  });
+
+  test('inactive multi-hotel team detach remains a successful legacy writer in Stage A', async () => {
+    const target = await pg.query<{ updated_at: string }>(
+      `select updated_at::text as updated_at
+         from accounts
+        where id = $1`,
+      [INACTIVE_LEGACY_TARGET],
+    );
+    const detached = await pg.query<JsonRow>(
+      `select public.staxis_remove_property_access_guarded_v2(
+         $1,$2,'ana@example.test',$3,$4,'front_desk',$5::timestamptz,
+         'inactive-team-detach'
+       ) as value`,
+      [
+        ACCOUNT_ANA, UID_ANA, INACTIVE_LEGACY_TARGET, PID_A1,
+        target.rows[0].updated_at,
+      ],
+    );
+    assert.equal(detached.rows[0].value.status, 'ok');
+    assert.equal(detached.rows[0].value.remaining_hotels, 1);
+
+    const state = await pg.query<{ property_access: string[]; active: boolean }>(
+      `select property_access, active from accounts where id = $1`,
+      [INACTIVE_LEGACY_TARGET],
+    );
+    assert.deepEqual(state.rows[0], { property_access: [PID_A2], active: false });
+    const event = await pg.query<{ reason: string; next_property_ids: string[] }>(
+      `select reason, next_property_ids
+         from account_access_cutover_legacy_write_events
+        where account_id = $1
+        order by created_at desc, id desc
+        limit 1`,
+      [INACTIVE_LEGACY_TARGET],
+    );
+    assert.deepEqual(event.rows[0].next_property_ids, [PID_A2]);
+    assert.match(event.rows[0].reason, /non-enforcing translation skipped/);
+    assert.match(event.rows[0].reason, /inactive account/);
   });
 
   test('VP revocation after registration takes effect at commit', async () => {
