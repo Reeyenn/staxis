@@ -87,6 +87,8 @@ describe('People invite entry choice', () => {
     assert.equal((earlyActionArea.match(/<button/g) ?? []).length, 1);
     assert.match(earlyActionArea, /ref=\{inviteEntryRef\}/);
     assert.match(earlyActionArea, /<strong>\{'Invite people'\}<\/strong>/);
+    assert.match(earlyActionArea, /Send an email invite so they can create a Staxis account\./);
+    assert.doesNotMatch(earlyActionArea, /Add someone to the schedule/);
     assert.doesNotMatch(earlyActionArea, /Add staff member|CalendarPlus|staffProfiles|rosterStaff/);
 
     assert.match(earlyBranch, /inviteChoiceOpen && canInviteAccounts && !locked/);

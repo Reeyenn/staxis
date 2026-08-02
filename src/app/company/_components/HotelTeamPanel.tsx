@@ -1234,7 +1234,7 @@ export function HotelTeamPanel({
                 </span>
                 <span className={styles.peopleActionCopy}>
                   <strong>{'Invite people'}</strong>
-                  <small>{'Add someone to the schedule, or invite them to create a Staxis account.'}</small>
+                  <small>{'Send an email invite so they can create a Staxis account.'}</small>
                 </span>
               </button>
             </div>
