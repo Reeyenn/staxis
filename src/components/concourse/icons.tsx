@@ -25,14 +25,29 @@ export const CX_ICON_PATHS: Record<string, string> = {
   // Admin isn't in the handoff (it has no tile/pill there) — shield keeps it
   // visually consistent with the set.
   admin: 'M12 3l7 3v5c0 4.4-3 7.5-7 9-4-1.5-7-4.6-7-9V6l7-3z',
+  // ── the /feed timeline set (design handoff "Staxis Master") ──
+  check: 'M20 6L9 17l-5-5',
+  chart: 'M3 17l5-6 4 4 4-7 5 9',
+  calendar: 'M4 6a2 2 0 0 1 2-2h12a2 2 0 0 1 2 2v13a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2zM4 9h16M9 3v3M15 3v3',
+  plus: 'M12 5v14M5 12h14',
+  close: 'M18 6L6 18M6 6l12 12',
+  book: 'M4 19.5A2.5 2.5 0 0 1 6.5 17H20M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z',
+  chevronDown: 'M6 9l6 6 6-6',
+  arrowUpRight: 'M7 17L17 7M8 7h9v9',
+  forward: 'M5 12h14M12 5l7 7-7 7',
 };
 
-export function CxIcon({ name, size = 16 }: { name: AppSection | keyof typeof CX_ICON_PATHS; size?: number }) {
+export function CxIcon({ name, size = 16, strokeWidth = 1.8 }: {
+  name: AppSection | keyof typeof CX_ICON_PATHS;
+  size?: number;
+  /** 1.8–2.4 per the handoff. A check on a solid button carries more weight. */
+  strokeWidth?: number;
+}) {
   const d = CX_ICON_PATHS[name as string];
   if (!d) return null;
   return (
     <svg width={size} height={size} viewBox="0 0 24 24" style={{ flexShrink: 0 }} aria-hidden="true">
-      <path d={d} stroke="currentColor" strokeWidth={1.8} fill="none" strokeLinecap="round" strokeLinejoin="round" />
+      <path d={d} stroke="currentColor" strokeWidth={strokeWidth} fill="none" strokeLinecap="round" strokeLinejoin="round" />
     </svg>
   );
 }

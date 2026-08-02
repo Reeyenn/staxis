@@ -228,7 +228,17 @@ describe('theme and motion accessibility', () => {
       concourseCss,
       /@media \(max-width:760px\)\{[\s\S]{0,180}?\.staxis-app-shell\{[^}]*#FFFFFF 0%,#F0F3EF 100%/,
     );
-    assert.equal((concourseCss.match(/--staxis-app-background:radial-gradient/g) ?? []).length, 2);
+    // Every shell wash in the file, and the thing that actually matters about
+    // each one: it starts at WHITE. The count is pinned so a stray fourth
+    // declaration has to be looked at, but the loop is the real guard — a dark
+    // shell would slip past a count and never past this.
+    //
+    // Three since 2026-08-01: the base, the mobile override, and the /feed
+    // page's own slightly wider wash (`.staxis-app-shell:has(.fx-page)`), which
+    // is scoped so no other section's background moves with it.
+    const shellWashes = concourseCss.match(/--staxis-app-background:radial-gradient\([^;]*/g) ?? [];
+    assert.equal(shellWashes.length, 3, shellWashes.join(' | '));
+    for (const wash of shellWashes) assert.match(wash, /#FFFFFF 0%/, wash);
     assert.doesNotMatch(portfolioCss, /data-theme|prefers-color-scheme:\s*dark|color-scheme:\s*dark/);
     assert.match(portfolioCss, /color-scheme:\s*light/);
     assert.match(portfolioCss, /@media \(prefers-reduced-motion: reduce\)/);

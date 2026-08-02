@@ -37,6 +37,7 @@ import React, { useCallback, useMemo, useRef, useState } from 'react';
 import { useAuth, type AppUser } from '@/contexts/AuthContext';
 import { useProperty } from '@/contexts/PropertyContext';
 import { useApiResource } from '@/lib/hooks/use-api-resource';
+import { useReportedValue } from '@/lib/hooks/use-reported-value';
 import {
   fetchWithAuth,
   INTERACTIVE_ACTION_TIMEOUT_MS,
@@ -452,7 +453,12 @@ const KN_CSS = `
 
 // ─── Component ──────────────────────────────────────────────────────────────
 
-export function KnowsView({ lang }: { lang: 'en' | 'es' }) {
+export function KnowsView({ lang, onStats }: {
+  lang: 'en' | 'es';
+  /** Told how many facts the read returned, so a caller can label its own
+   *  entry point without asking the server a second time. */
+  onStats?: (totalKnown: number) => void;
+}) {
   const { user } = useAuth();
   const { activePropertyId } = useProperty();
   const scopeKey = `${user?.uid ?? 'signed-out'}:${activePropertyId ?? 'no-property'}`;
@@ -467,7 +473,71 @@ export function KnowsView({ lang }: { lang: 'en' | 'es' }) {
       user={user}
       propertyId={activePropertyId}
       scopeKey={scopeKey}
+      onStats={onStats}
     />
+  );
+}
+
+/**
+ * Knows as a right-hand SLIDE-OVER, which is how /feed reaches it.
+ *
+ * ─── why this is an overlay and not a tab or a route ───────────────────────
+ * It used to be half of a `Queue` / `Knows` toggle at the top of the page. That
+ * pair was rejected outright in the 2026-08-01 design: it put "what Staxis has
+ * noticed" and "what Staxis believes" at the same weight, so half the time the
+ * screen a manager came for was the one they were not looking at. There is now
+ * one button, in the rail, and the page stays mounted underneath — Knows is
+ * never somewhere you have to navigate back from.
+ *
+ * Escape and a click on the scrim both close it, because a panel with only one
+ * exit is a panel people stop opening.
+ */
+export function KnowsPanel({ open, lang, hotelName, onClose, onStats }: {
+  open: boolean;
+  lang: 'en' | 'es';
+  hotelName?: string | null;
+  onClose: () => void;
+  onStats?: (totalKnown: number) => void;
+}) {
+  const [factCount, setFactCount] = useState<number | null>(null);
+  const report = useCallback((total: number) => {
+    setFactCount(total);
+    onStats?.(total);
+  }, [onStats]);
+
+  React.useEffect(() => {
+    if (!open) return;
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [open, onClose]);
+
+  if (!open) return null;
+
+  const sub = [
+    factCount === null ? null : factCount === 1 ? '1 fact' : `${factCount.toLocaleString('en-US')} facts`,
+    hotelName,
+  ].filter(Boolean).join(' · ');
+
+  return (
+    <>
+      <button type="button" className="fx-scrim" aria-label="Close what Staxis knows" onClick={onClose} />
+      <aside className="fx-drawer" role="dialog" aria-modal="true" aria-label={S.title.en}>
+        <div className="fx-drawerhead">
+          <span className="fx-draweri" aria-hidden><CxIcon name="staxis" size={16} /></span>
+          <div style={{ minWidth: 0 }}>
+            <div className="fx-drawert">{S.title.en}</div>
+            {sub && <div className="fx-drawers">{sub}</div>}
+          </div>
+          <button type="button" className="fx-drawerx" aria-label="Close" onClick={onClose}>
+            <CxIcon name="close" size={14} />
+          </button>
+        </div>
+        <div className="fx-drawerbody">
+          <KnowsView lang={lang} onStats={report} />
+        </div>
+      </aside>
+    </>
   );
 }
 
@@ -476,11 +546,13 @@ function KnowsPropertyView({
   user,
   propertyId,
   scopeKey,
+  onStats,
 }: {
   lang: 'en' | 'es';
   user: AppUser | null;
   propertyId: string | null;
   scopeKey: string;
+  onStats?: (totalKnown: number) => void;
 }) {
   const es = false;
   const L = <K extends keyof typeof S>(k: K) => S[k]['en'];
@@ -499,6 +571,14 @@ function KnowsPropertyView({
     `/api/memory/knows?propertyId=${propertyId}`,
     { enabled: canSee && !!propertyId, keepDataOnError: true },
   );
+
+  // Reported through the ref hook rather than a bare effect: a caller passing
+  // an inline arrow would otherwise turn this into a render loop. Same edge,
+  // same fix, as FindingCards' readState. `null` until the read lands, so
+  // nobody can label a button with a count nothing has answered yet.
+  useReportedValue(data ? data.stats.totalKnown : null, (total) => {
+    if (total !== null) onStats?.(total);
+  });
 
   // Open box
   const [note, setNote] = useState('');

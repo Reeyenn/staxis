@@ -34,6 +34,7 @@ import {
   buildOneList,
   compareStanding,
   effectiveSeverity,
+  partitionTimeline,
   rankWorkItems,
   standingOf,
   type ListRow,
@@ -43,6 +44,7 @@ import { assignerNotices, taskVisibleToViewer, viewerDepartment, worklistSeesApp
 import { isTemplateDueOn, normalizeCadence } from '@/lib/recurring-tasks/store';
 import { rankFindings, type QueueFinding } from '@/components/concourse/finding-cards';
 import type { LogEntryDTO } from '@/lib/comms/types';
+import type { KnowledgeEventDTO } from '@/lib/knowledge/types';
 import type { AssignedByMeItem, WorklistItem, WorklistViewer } from '@/lib/worklist/types';
 import { ALL_ROLES, type AppRole } from '@/lib/roles';
 
@@ -592,5 +594,104 @@ describe('what comes back to the person who asked', () => {
   test('closing your own to-do is not news to yourself', () => {
     const selfClosed = item({ state: 'done', settledByStaffId: 'gm', settledByName: 'Marcus' });
     assert.equal(keepForAssigner(selfClosed, 'gm'), false);
+  });
+});
+
+// ── 8. the day timeline ─────────────────────────────────────────────────────
+//
+// The 2026-08-01 redesign put the clock back on the screen: the top of the
+// spine is what is STILL OWED, and everything that has already happened
+// unwinds under an "Earlier today" rule, ending with the morning brief.
+//
+// The split is a second pass on purpose. `buildOneList`'s ranking is untouched
+// by it, and the cases below are what would go wrong if somebody folded a
+// clock term into the comparator instead.
+
+function logEntry(id: string, createdAt: string): LogEntryDTO {
+  return {
+    id, title: 'a note', body: '', category: 'front_desk',
+    authorStaffId: 's', authorName: 'Sam', replyCount: 0,
+    createdAt, updatedAt: createdAt,
+  };
+}
+
+function hotelEvent(over: Partial<KnowledgeEventDTO> & { id: string }): KnowledgeEventDTO {
+  return {
+    title: 'Ecolab vendor visit',
+    eventDate: '2026-07-30',
+    endDate: null,
+    notes: null,
+    createdByName: null,
+    createdAt: '2026-07-20T00:00:00.000Z',
+    ...over,
+  };
+}
+
+describe('the day splits into what is still owed and what already happened', () => {
+  // Mutation: partition on a timestamp comparison instead of the row kind. A
+  // finding stamped five minutes ago would then climb into the owed cluster and
+  // sit above a to-do that is two days late.
+  test('work and events are owed; findings and notes have already happened', () => {
+    const built = buildOneList({
+      findings: [finding({ id: 'f1' })],
+      items: [item({ id: 't1', overdue: true, dueDate: '2026-07-27T00:00:00.000Z' })],
+      events: [hotelEvent({ id: 'e1' })],
+      logEntries: [logEntry('l1', '2026-07-30T07:00:00.000Z')],
+      findingCap: 5,
+    });
+
+    const split = partitionTimeline(built.rows);
+    assert.deepEqual(split.owed.map((r) => r.kind), ['item', 'event']);
+    assert.deepEqual(split.past.map((r) => r.kind), ['finding', 'log']);
+    assert.equal(split.showDivider, true);
+  });
+
+  // Mutation: draw the divider unconditionally. A morning with nothing owed
+  // would then grow an "Earlier today" heading with empty space above it.
+  test('the divider is only drawn when there is something on both sides', () => {
+    const findingsOnly = partitionTimeline(
+      buildOneList({ findings: [finding({ id: 'f1' })], items: [], findingCap: 5 }).rows,
+    );
+    assert.equal(findingsOnly.showDivider, false);
+    assert.equal(findingsOnly.owed.length, 0);
+
+    const workOnly = partitionTimeline(
+      buildOneList({ findings: [], items: [item({ id: 't1' })], findingCap: 5 }).rows,
+    );
+    assert.equal(workOnly.showDivider, false);
+    assert.equal(workOnly.past.length, 0);
+  });
+
+  // Mutation: re-sort inside the partition. Each side must keep the exact
+  // relative order the house rule already gave it, or the expensive card stops
+  // being the top card for reasons no commit explains.
+  test('each side keeps the order the ranking already gave it', () => {
+    const cheap = finding({ id: 'cheap', price: { currency: 'USD', lowCents: 10_000, highCents: 20_000 } as QueueFinding['price'] });
+    const dear = finding({ id: 'dear', price: { currency: 'USD', lowCents: 90_000, highCents: 99_000 } as QueueFinding['price'] });
+    const built = buildOneList({ findings: [cheap, dear], items: [], findingCap: 5 });
+    const rankedIds = built.rows.map((r) => (r.kind === 'finding' ? r.finding.id : r.key));
+
+    const split = partitionTimeline(built.rows);
+    assert.deepEqual(split.past.map((r) => (r.kind === 'finding' ? r.finding.id : r.key)), rankedIds);
+    assert.equal(rankedIds[0], 'dear', 'the ranking itself moved, which this test cannot mask');
+  });
+
+  // Mutation: give an event a severity or a price so it outranks real work. A
+  // vendor visit is on the clock, not on the ladder.
+  test('a hotel event never outranks a late to-do', () => {
+    const built = buildOneList({
+      findings: [],
+      items: [item({ id: 't1', overdue: true, dueDate: '2026-07-27T00:00:00.000Z' })],
+      events: [hotelEvent({ id: 'e1', eventDate: '2026-07-20' })],
+      findingCap: 0,
+    });
+    assert.deepEqual(built.rows.map((r) => r.kind), ['item', 'event']);
+  });
+
+  // Mutation: always build event rows. Every caller that is not the day
+  // timeline passes no events, and their rows must be what they always were.
+  test('a caller that passes no events gets no event rows', () => {
+    const built = buildOneList({ findings: [], items: [item({ id: 't1' })], findingCap: 0 });
+    assert.deepEqual(built.rows.map((r) => r.kind), ['item']);
   });
 });

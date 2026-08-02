@@ -42,12 +42,14 @@
 
 import { rankFindings, sortValueCents, type QueueFinding } from '@/components/concourse/finding-cards';
 import type { LogEntryDTO } from '@/lib/comms/types';
+import type { KnowledgeEventDTO } from '@/lib/knowledge/types';
 import type { WorklistItem } from '@/lib/worklist/types';
 
 /** One row of the list. The kinds render differently; they rank together. */
 export type ListRow =
   | { kind: 'finding'; key: string; finding: QueueFinding }
   | { kind: 'item'; key: string; item: WorklistItem }
+  | { kind: 'event'; key: string; event: KnowledgeEventDTO }
   | { kind: 'log'; key: string; entry: LogEntryDTO };
 
 /** 3 = drop-everything, 0 = whenever. */
@@ -109,6 +111,19 @@ export function standingOf(row: ListRow): RowStanding {
       // What it is waiting ON: its due date if it has one, otherwise the day it
       // was created. A dated thing waits from its date.
       waitingSinceMs: parseMs(row.item.dueDate ?? row.item.createdAt),
+      informational: false,
+    };
+  }
+  if (row.kind === 'event') {
+    // A vendor visit is on the clock, not on the ladder: it carries no money,
+    // no priority and no due date to be late for. It sits with the ordinary
+    // to-dos and sorts by when it starts, so the 2pm visit lands after the
+    // thing due this morning.
+    return {
+      pricedCents: null,
+      severity: 1,
+      overdue: false,
+      waitingSinceMs: parseMs(`${row.event.eventDate}T12:00:00`),
       informational: false,
     };
   }
@@ -182,6 +197,12 @@ export interface OneListInput {
   /** Empty unless this person switched "Include log book in Staxis" on. */
   logEntries?: readonly LogEntryDTO[];
   /**
+   * The hotel's own dated things on the day being shown. Absent on every
+   * caller that is not the day timeline, so their rows are byte-for-byte what
+   * they were.
+   */
+  events?: readonly KnowledgeEventDTO[];
+  /**
    * How many FINDINGS render full-size before the rest fold behind "show all".
    * The cap is a findings cap and stays one: it exists to stop the AI filling a
    * screen, and a person's own to-dos are not the AI's noise. Work items are
@@ -217,11 +238,14 @@ export function buildOneList(input: OneListInput): OneList {
   const logRows: ListRow[] = [...(input.logEntries ?? [])]
     .sort((a, b) => (a.createdAt < b.createdAt ? 1 : a.createdAt > b.createdAt ? -1 : 0))
     .map((e) => ({ kind: 'log', key: `log:${e.id}`, entry: e }));
+  const eventRows: ListRow[] = [...(input.events ?? [])]
+    .sort((a, b) => (a.eventDate < b.eventDate ? -1 : a.eventDate > b.eventDate ? 1 : (a.id < b.id ? -1 : 1)))
+    .map((e) => ({ kind: 'event', key: `event:${e.id}`, event: e }));
 
-  const lanes = [findingRows, itemRows, logRows];
-  const cursors = [0, 0, 0];
+  const lanes = [findingRows, itemRows, eventRows, logRows];
+  const cursors = [0, 0, 0, 0];
   const rows: ListRow[] = [];
-  const total = findingRows.length + itemRows.length + logRows.length;
+  const total = findingRows.length + itemRows.length + eventRows.length + logRows.length;
 
   for (let n = 0; n < total; n++) {
     let bestLane = -1;
@@ -241,4 +265,54 @@ export function buildOneList(input: OneListInput): OneList {
   }
 
   return { rows, foldedFindings };
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// The timeline split — "right now at the top, the day unwinds underneath"
+// ═══════════════════════════════════════════════════════════════════════════
+
+/**
+ * The one list, cut in two for the spine.
+ *
+ * The 2026-08-01 design put the CLOCK back on this screen: the top of the page
+ * is what is still owed today, and everything that has already happened unwinds
+ * downwards under an "Earlier today" rule, ending with the morning brief.
+ *
+ * ─── why this is a second pass and not a change to buildOneList ────────────
+ * `buildOneList`'s ordering is load-bearing and separately tested (dollars
+ * first, then severity, with overdue climbing). Re-deriving it with a clock
+ * term folded in would move cards on a manager's screen for reasons no commit
+ * explains. So the ranking is untouched: this only PARTITIONS the ranked rows,
+ * and each side keeps the exact relative order it already had.
+ *
+ * The cut itself is a fact about the row kind rather than a timestamp
+ * comparison, which is what makes it honest:
+ *
+ *   owed  — work items and hotel events. Open work is by definition still
+ *           owed; /api/worklist does not return settled rows.
+ *   past  — findings and log entries. A finding is Staxis reporting something
+ *           it noticed at a moment that has already gone by, and a shift note
+ *           is a record of something that happened.
+ *
+ * A day with nothing on either side still renders correctly: the divider is
+ * only drawn when BOTH sides have rows, so an all-findings morning does not
+ * grow an "Earlier today" heading with nothing above it.
+ */
+export interface TimelineSplit {
+  /** Still owed. Renders first, at the top of the spine. */
+  owed: ListRow[];
+  /** Already happened. Renders under the divider. */
+  past: ListRow[];
+  /** True only when both sides have rows, i.e. the divider earns its space. */
+  showDivider: boolean;
+}
+
+export function partitionTimeline(rows: readonly ListRow[]): TimelineSplit {
+  const owed: ListRow[] = [];
+  const past: ListRow[] = [];
+  for (const row of rows) {
+    if (row.kind === 'item' || row.kind === 'event') owed.push(row);
+    else past.push(row);
+  }
+  return { owed, past, showDivider: owed.length > 0 && past.length > 0 };
 }

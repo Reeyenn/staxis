@@ -23,6 +23,7 @@
 import React from 'react';
 
 import type { LogEntryDTO } from '@/lib/comms/types';
+import type { KnowledgeEventDTO } from '@/lib/knowledge/types';
 import type { AssignedByMeItem, WorklistItem } from '@/lib/worklist/types';
 import {
   assignedStateLine,
@@ -37,64 +38,26 @@ import {
 
 import { CxIcon } from './icons';
 
+/**
+ * What is left of the old list stylesheet, plus the few bits the timeline rows
+ * need that are too local to belong in FEED_CSS.
+ *
+ * The row/panel/composer geometry itself now lives in `FEED_CSS`
+ * (concourse-css.tsx) under `fx-*`, because it is the /feed design language
+ * rather than this file's private business. `sl-err` stays here because
+ * StaxisList renders it directly.
+ */
 export const LIST_CSS = `
-.sl-row{margin-top:12px;}
-.sl-from{font-size:11.5px;color:#8A9187;margin-bottom:2px;}
-.sl-reason{margin-top:9px;display:flex;gap:7px;flex-wrap:wrap;align-items:center;}
-.sl-input{flex:1;min-width:200px;height:34px;padding:0 11px;border-radius:10px;font-size:13px;
-  border:1px solid rgba(31,35,28,.16);background:#fff;color:#1F231C;
-  font-family:var(--font-geist),-apple-system,BlinkMacSystemFont,sans-serif;}
-.sl-input:focus{outline:2px solid #3E5C48;outline-offset:1px;}
-.sl-hint{font-size:11.5px;color:#8A9187;margin-top:6px;line-height:1.5;}
-.sl-add{display:flex;align-items:center;gap:9px;margin-top:14px;padding:11px 14px;width:100%;
-  border-radius:14px;border:1px dashed rgba(31,35,28,.18);background:#FAFBF9;cursor:pointer;
-  font-size:13.5px;color:#5C625C;text-align:left;
-  font-family:var(--font-geist),-apple-system,BlinkMacSystemFont,sans-serif;}
-.sl-add:hover{background:#F4F6F2;border-color:rgba(62,92,72,.34);color:#3E5C48;}
-.sl-add:focus-visible{outline:2px solid #3E5C48;outline-offset:2px;}
-.sl-comp{margin-top:14px;border-radius:16px;border:1px solid rgba(62,92,72,.28);background:#fff;
-  padding:13px 14px;}
-.sl-title{width:100%;border:none;background:transparent;font-size:14.5px;font-weight:600;color:#1F231C;
-  font-family:var(--font-geist),-apple-system,BlinkMacSystemFont,sans-serif;padding:2px 0;}
-.sl-title:focus{outline:none;}
-.sl-title::placeholder{color:#A6ABA6;font-weight:500;}
-.sl-chips{display:flex;gap:7px;margin-top:11px;flex-wrap:wrap;align-items:center;}
-.sl-chip{display:inline-flex;align-items:center;gap:5px;height:30px;padding:0 10px;border-radius:999px;
-  border:1px solid rgba(31,35,28,.14);background:#fff;font-size:12px;color:#5C625C;cursor:pointer;
-  font-family:var(--font-geist),-apple-system,BlinkMacSystemFont,sans-serif;}
-.sl-chip:focus-visible{outline:2px solid #3E5C48;outline-offset:2px;}
-.sl-chipk{font-family:var(--font-geist-mono),ui-monospace,monospace;font-size:9.5px;color:#A6ABA6;
-  text-transform:uppercase;letter-spacing:.07em;}
-.sl-chip select,.sl-chip input{border:none;background:transparent;font-size:12px;color:#1F231C;
-  font-family:var(--font-geist),-apple-system,BlinkMacSystemFont,sans-serif;cursor:pointer;}
-.sl-chip select:focus,.sl-chip input:focus{outline:none;}
 .sl-err{margin-top:9px;border-radius:10px;padding:8px 11px;font-size:12.5px;line-height:1.5;
   background:rgba(184,92,61,.10);color:#8E432B;}
-.sl-drawer{margin-top:12px;border-radius:16px;border:1px solid rgba(31,35,28,.09);background:#fff;
-  padding:14px 15px;}
-.sl-dr{padding:10px 0;border-bottom:1px solid rgba(31,35,28,.06);}
-.sl-dr:last-child{border-bottom:none;}
-.sl-drt{font-size:13.5px;font-weight:600;color:#1F231C;line-height:1.4;}
-.sl-drs{font-size:12px;color:#5C625C;margin-top:3px;line-height:1.5;}
-.sl-drq{font-size:12.5px;color:#8E432B;margin-top:4px;line-height:1.5;}
-.sl-stale{font-size:11.5px;color:#8C6A33;margin-top:3px;}
-.sl-note{margin-top:10px;border-radius:12px;border:1px solid rgba(31,35,28,.08);background:#FAFBF9;
-  padding:11px 13px;font-size:12.5px;line-height:1.6;color:#5C625C;}
-.sl-sw{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:11px 0;}
-.sl-swl{font-size:13.5px;color:#1F231C;}
-.sl-back{margin-top:12px;border-radius:14px;border:1px solid rgba(92,122,96,.28);background:rgba(158,183,166,.14);
-  padding:11px 14px;}
-.sl-backl{font-size:13px;color:#3E5C48;line-height:1.55;}
-.sl-backl + .sl-backl{margin-top:3px;}
+.fx-rowb{min-width:0;flex:1;}
+.fx-rowsub{font-size:11.5px;color:#8A9187;margin-top:2px;line-height:1.4;}
+.fx-drrow{padding:10px 0;border-bottom:1px solid rgba(31,35,28,.06);}
+.fx-drrow:last-child{border-bottom:none;}
+.fx-drt{font-size:13.5px;font-weight:600;color:#1F231C;line-height:1.4;}
+.fx-drs{font-size:12.5px;color:#5C625C;margin-top:3px;line-height:1.5;}
+.fx-stale{font-size:11.5px;color:#8C6A33;margin-top:3px;}
 `;
-
-/** Which chip colour a row wears. Matches the finding cards' severity chips so
- *  the list reads as one thing rather than two systems sharing a page. */
-function rowChipClass(item: WorklistItem): string {
-  if (item.overdue) return 'cx-rust';
-  if (item.priority === 'urgent' || item.priority === 'high') return 'cx-caramel';
-  return 'cx-sage';
-}
 
 export interface WorkRowViewProps {
   item: WorklistItem;
@@ -128,83 +91,123 @@ export function WorkRowView({
   const canRefuse = item.sourceType === 'task';
   const reasonReady = reasonDraft.trim().length > 0;
 
+  // "2 days late · Dana" — the mono line the design puts beside the title. The
+  // clock half comes first because it is the half that decides whether this row
+  // is the next thing anybody does.
+  //
+  // The KIND is prefixed only when it is not an ordinary to-do: "To do" over a
+  // row somebody typed into the composer on this very page is a label that
+  // tells them nothing, while "Work order" or "Inspection" is the difference
+  // between a note and a ticket.
+  const kind = item.sourceType === 'task' ? null : rowKindLabel(item.sourceType);
+  const meta = [kind, due, item.assigneeName].filter(Boolean).join(' · ');
+  // Everything the one-line row cannot hold: who handed it over, and where.
+  const sub = [from, item.location].filter(Boolean).join(' · ');
+
   return (
-    <div className="cx-dec sl-row" data-row-kind={item.sourceType} data-row-id={item.id}>
-      <div className={`cx-dchip ${rowChipClass(item)}`}>
-        <CxIcon name="staxis" size={17} />
+    <div
+      className={`fx-row${item.overdue ? ' fx-late' : ''}${askingReason ? ' fx-open' : ''}`}
+      data-row-kind={item.sourceType}
+      data-row-id={item.id}
+    >
+      <div className="fx-rowb">
+        <div className="fx-rowt">{item.title}</div>
+        {sub && <div className="fx-rowsub">{sub}</div>}
       </div>
-      <div style={{ flex: 1, minWidth: 0 }}>
-        <div className="cx-dec-eyebrow">{rowKindLabel(item.sourceType)}</div>
-        {from && <div className="sl-from">{from}</div>}
-        <div className="cx-dec-t">{item.title}</div>
-        {item.location && <div className="cx-dec-s">{item.location}</div>}
 
-        <div className="fd-meta">
-          {due && <span className={`fd-metai${item.overdue ? ' fd-age' : ''}`}>{due}</span>}
-          {item.assigneeName && <span className="fd-metai">{item.assigneeName}</span>}
-        </div>
+      {meta && <span className={`fx-rowm${item.overdue ? ' fx-late' : ''}`}>{meta}</span>}
 
-        {askingReason ? (
-          <div className="sl-reason">
-            <input
-              className="sl-input"
-              type="text"
-              value={reasonDraft}
-              placeholder="Why not? One line is enough."
-              aria-label="Why you could not do it"
-              onChange={(e) => onReasonChange?.(e.target.value)}
-            />
-            <button
-              type="button"
-              className="fd-act fd-yes"
-              disabled={busy || !reasonReady}
-              onClick={() => onCantSubmit?.(item)}
-            >
-              Send
-            </button>
-            <button type="button" className="fd-act" disabled={busy} onClick={() => onCancelReason?.()}>
-              Cancel
-            </button>
-          </div>
-        ) : (
-          <div className="fd-acts">
-            {item.canComplete && (
-              <button type="button" className="fd-act fd-yes" disabled={busy} onClick={() => onDone?.(item)}>
-                Done
-              </button>
-            )}
-            {canRefuse && (
-              <button type="button" className="fd-act fd-danger" disabled={busy} onClick={() => onAskReason?.(item)}>
-                Can&apos;t do this
-              </button>
-            )}
-            {!item.canComplete && (
-              <a className="fd-act" href={item.deepLink} style={{ display: 'inline-flex', alignItems: 'center', textDecoration: 'none' }}>
-                Open
-              </a>
-            )}
-          </div>
+      <div className="fx-rowa">
+        {item.canComplete && (
+          <button type="button" className="fx-btn fx-primary" disabled={busy || askingReason} onClick={() => onDone?.(item)}>
+            Done
+          </button>
+        )}
+        {canRefuse && !askingReason && (
+          <button type="button" className="fx-btn" disabled={busy} onClick={() => onAskReason?.(item)}>
+            Can&apos;t do this
+          </button>
+        )}
+        {!item.canComplete && (
+          <a className="fx-btn" href={item.deepLink}>Open</a>
         )}
       </div>
+
+      {/* The reason is not optional: the assigner otherwise learns only that
+          nothing happened and has to go and ask. */}
+      {askingReason && (
+        <div className="fx-reason">
+          <input
+            className="fx-input"
+            type="text"
+            value={reasonDraft}
+            placeholder="Why not? One line is enough."
+            aria-label="Why you could not do it"
+            onChange={(e) => onReasonChange?.(e.target.value)}
+          />
+          <button
+            type="button"
+            className="fx-btn fx-primary"
+            disabled={busy || !reasonReady}
+            onClick={() => onCantSubmit?.(item)}
+          >
+            Send
+          </button>
+          <button type="button" className="fx-btn" disabled={busy} onClick={() => onCancelReason?.()}>
+            Cancel
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/**
+ * A thing on the hotel's own calendar: a vendor visit, a training day, a brand
+ * audit. Teal, because it is neither Staxis talking nor work anybody owes.
+ *
+ * It reached the timeline in the 2026-08-01 redesign. Before that these existed
+ * only on the month grid, so a 2pm vendor visit was invisible on the screen a
+ * manager actually watches all day.
+ */
+export function EventRowView({ event, meta, canManage = false, onRemove }: {
+  event: KnowledgeEventDTO;
+  /** "2:00 PM · in 79 minutes", already composed by the caller's clock. */
+  meta?: string | null;
+  canManage?: boolean;
+  onRemove?: (event: KnowledgeEventDTO) => void;
+}) {
+  return (
+    <div className="fx-row fx-event" data-row-kind="event" data-row-id={event.id}>
+      <div className="fx-rowb">
+        <div className="fx-rowt">{event.title}</div>
+      </div>
+      {meta && <span className="fx-rowm">{meta}</span>}
+      {canManage && onRemove && (
+        <div className="fx-rowa">
+          <button type="button" className="fx-btn fx-quiet" onClick={() => onRemove(event)}>Remove</button>
+        </div>
+      )}
     </div>
   );
 }
 
 /** A shift note, when this person switched the log book into their list. */
 export function LogRowView({ entry, onOpen }: { entry: LogEntryDTO; onOpen?: () => void }) {
+  const sub = entry.authorName ? `${entry.authorName} wrote` : null;
   return (
-    <div className="cx-dec sl-row" data-row-kind="log" data-row-id={entry.id}>
-      <div className="cx-dchip cx-sage">
-        <CxIcon name="staxis" size={17} />
+    <div className="fx-row" data-row-kind="log" data-row-id={entry.id}>
+      <div className="fx-rowb">
+        <div className="fx-rowt">{entry.title}</div>
+        {(sub || entry.body) && (
+          <div className="fx-rowsub">
+            {[sub, entry.body ? entry.body.slice(0, 140) : null].filter(Boolean).join(' · ')}
+          </div>
+        )}
       </div>
-      <div style={{ flex: 1, minWidth: 0 }}>
-        <div className="cx-dec-eyebrow">Log book</div>
-        {entry.authorName && <div className="sl-from">{entry.authorName} wrote</div>}
-        <div className="cx-dec-t">{entry.title}</div>
-        {entry.body && <div className="cx-dec-s">{entry.body.slice(0, 180)}</div>}
-        <div className="fd-acts">
-          <button type="button" className="fd-act" onClick={() => onOpen?.()}>Open the log book</button>
-        </div>
+      <span className="fx-rowm">Log book</span>
+      <div className="fx-rowa">
+        <button type="button" className="fx-btn fx-quiet" onClick={() => onOpen?.()}>Open the log book</button>
       </div>
     </div>
   );
@@ -322,22 +325,34 @@ export interface ComposerViewProps {
 export function ComposerView({
   open, state, people, busy = false, error = null, onOpen, onCancel, onChange, onSubmit,
 }: ComposerViewProps) {
+  const set = (patch: Partial<ComposerState>) => onChange({ ...state, ...patch });
+  const canSend = state.title.trim().length > 0 && !busy;
+
+  // The closed state already SHOWS its answers. The two chips are not controls
+  // you have to go and find: they are the sentence "you, once", sitting where
+  // they will still be sitting after the row opens.
   if (!open) {
+    const whoLabel = state.who === 'me'
+      ? 'You'
+      : people.find((p) => p.staffId === state.who)?.name
+        ?? COMPOSER_ROLES.find((r) => r.value === state.who)?.label
+        ?? 'You';
+    const repeatWord = REPEAT_CHOICES.find((r) => r.value === state.repeat)?.label ?? 'Once';
     return (
-      <button type="button" className="sl-add" onClick={onOpen} data-testid="composer-open">
-        <span aria-hidden style={{ fontSize: 17, lineHeight: 1, color: '#5C7A60' }}>+</span>
-        <span>Add something</span>
+      <button type="button" className="fx-comp" onClick={onOpen} data-testid="composer-open">
+        <span className="fx-compp">Add something to today</span>
+        <span className="fx-chips" aria-hidden>
+          <span className="fx-chip"><span className="fx-chipk">Who</span>{whoLabel}</span>
+          <span className="fx-chip"><span className="fx-chipk">Repeat</span>{repeatWord}</span>
+        </span>
       </button>
     );
   }
 
-  const set = (patch: Partial<ComposerState>) => onChange({ ...state, ...patch });
-  const canSend = state.title.trim().length > 0 && !busy;
-
   return (
-    <div className="sl-comp" data-testid="composer-open-row">
+    <div className="fx-compopen" data-testid="composer-open-row">
       <input
-        className="sl-title"
+        className="fx-comptitle"
         type="text"
         autoFocus
         value={state.title}
@@ -350,9 +365,9 @@ export function ComposerView({
         }}
       />
 
-      <div className="sl-chips">
-        <label className="sl-chip">
-          <span className="sl-chipk">Who</span>
+      <div className="fx-compchips">
+        <label className="fx-chip">
+          <span className="fx-chipk">Who</span>
           <select value={state.who} onChange={(e) => set({ who: e.target.value })} aria-label="Who">
             <option value="me">You</option>
             {people.map((p) => <option key={p.staffId} value={p.staffId}>{p.name}</option>)}
@@ -361,14 +376,14 @@ export function ComposerView({
         </label>
 
         {state.repeat === 'once' && (
-          <label className="sl-chip">
-            <span className="sl-chipk">When</span>
+          <label className="fx-chip">
+            <span className="fx-chipk">When</span>
             <input type="date" value={state.when} onChange={(e) => set({ when: e.target.value })} aria-label="When" />
           </label>
         )}
 
-        <label className="sl-chip">
-          <span className="sl-chipk">Repeat</span>
+        <label className="fx-chip">
+          <span className="fx-chipk">Repeat</span>
           <select
             value={state.repeat}
             onChange={(e) => set({ repeat: e.target.value as RepeatChoice })}
@@ -379,8 +394,8 @@ export function ComposerView({
         </label>
 
         {(state.repeat === 'weekly' || state.repeat === 'biweekly') && (
-          <label className="sl-chip">
-            <span className="sl-chipk">Day</span>
+          <label className="fx-chip">
+            <span className="fx-chipk">Day</span>
             <select
               value={String(state.weekday)}
               onChange={(e) => set({ weekday: Number(e.target.value) })}
@@ -392,8 +407,8 @@ export function ComposerView({
         )}
 
         {state.repeat === 'monthly' && (
-          <label className="sl-chip">
-            <span className="sl-chipk">Day</span>
+          <label className="fx-chip">
+            <span className="fx-chipk">Day</span>
             <select
               value={String(state.dayOfMonth)}
               onChange={(e) => set({ dayOfMonth: Number(e.target.value) })}
@@ -408,20 +423,20 @@ export function ComposerView({
       </div>
 
       {state.repeat !== 'once' && (
-        <div className="sl-hint">
+        <div className="fx-hint">
           {repeatLabel(state.repeat, { weekday: state.weekday, dayOfMonth: state.dayOfMonth })}
           . It comes back on its own.
         </div>
       )}
-      <div className="sl-hint">{HOUSEKEEPER_NOTE}</div>
+      <div className="fx-hint">{HOUSEKEEPER_NOTE}</div>
 
       {error && <div className="sl-err">{error}</div>}
 
-      <div className="fd-acts">
-        <button type="button" className="fd-act fd-yes" disabled={!canSend} onClick={onSubmit}>
+      <div className="fx-acts">
+        <button type="button" className="fx-btn fx-primary" disabled={!canSend} onClick={onSubmit}>
           {busy ? 'Adding…' : 'Add'}
         </button>
-        <button type="button" className="fd-act" disabled={busy} onClick={onCancel}>Cancel</button>
+        <button type="button" className="fx-btn" disabled={busy} onClick={onCancel}>Cancel</button>
       </div>
     </div>
   );
@@ -443,15 +458,166 @@ export function AssignerNoticesView({ notices, onOpenDrawer }: {
 }) {
   if (notices.length === 0) return null;
   return (
-    <div className="sl-back" data-testid="assigner-notices">
+    <div data-testid="assigner-notices">
       {notices.map((n) => (
-        <div className="sl-backl" key={n.taskId}>{completionNotice(n)}</div>
+        <div className="fx-report" key={n.taskId}>{completionNotice(n)}</div>
       ))}
-      <div className="fd-acts">
-        <button type="button" className="fd-act" onClick={() => onOpenDrawer?.()}>See what you assigned</button>
+      <button type="button" className="fx-more-link" onClick={() => onOpenDrawer?.()}>
+        See what you assigned <span aria-hidden>→</span>
+      </button>
+    </div>
+  );
+}
+
+/**
+ * The rail's "Assigned by me" panel.
+ *
+ * A PANEL with its content showing, not a button that hides a view. That was
+ * the core complaint the 2026-08-01 redesign answers: the old screen put
+ * `Assigned by me` and `Log book` in a row of same-weight buttons, so what you
+ * handed out was one click away from being invisible, and nobody clicked.
+ *
+ * What came back since you last looked sits on the face of it. The full list is
+ * one link further in, and opening it is what marks the notices as seen.
+ */
+export function AssignedRailPanel({
+  notices, entries, now, open, loading = false, readFailed = false, onOpen, onClose,
+}: {
+  notices: readonly AssignedByMeItem[];
+  entries: readonly AssignedByMeItem[];
+  now: Date;
+  open: boolean;
+  loading?: boolean;
+  readFailed?: boolean;
+  onOpen: () => void;
+  onClose: () => void;
+}) {
+  return (
+    <div className="fx-panel">
+      <div className="fx-ptop">
+        <span className="fx-pt">Assigned by me</span>
+        {notices.length > 0 && (
+          <span className="fx-count">{notices.length} back</span>
+        )}
+      </div>
+
+      {open ? (
+        <>
+          <AssignedByMeView entries={entries} now={now} loading={loading} readFailed={readFailed} />
+          <button type="button" className="fx-more-link" onClick={onClose}>Show less</button>
+        </>
+      ) : notices.length > 0 ? (
+        <AssignerNoticesView notices={notices} onOpenDrawer={onOpen} />
+      ) : (
+        <>
+          <div className="fx-plain">Nothing has come back since you last looked.</div>
+          <button type="button" className="fx-more-link" onClick={onOpen}>
+            See what you assigned <span aria-hidden>→</span>
+          </button>
+        </>
+      )}
+    </div>
+  );
+}
+
+/**
+ * The rail's log book panel: today's notes, and the switch that decides whether
+ * they also appear as rows on the timeline.
+ *
+ * The switch is the same stored preference the log-book popup owns
+ * (`feed_prefs.logbookInList`); it is surfaced here as well because this is
+ * where a manager is looking when they wonder why the diary is or is not in
+ * their day.
+ */
+export function LogbookRailPanel({
+  entries, mergeOn, mergeReady, mergeBusy, mergeError, onToggleMerge, onOpen,
+}: {
+  entries: readonly LogEntryDTO[];
+  mergeOn: boolean;
+  mergeReady: boolean;
+  mergeBusy?: boolean;
+  mergeError?: string | null;
+  onToggleMerge: (next: boolean) => void;
+  onOpen: () => void;
+}) {
+  return (
+    <div className="fx-panel">
+      <div className="fx-ptop">
+        <span className="fx-pt">Log book</span>
+        <span className="fx-tally-r">{entries.length === 1 ? '1 today' : `${entries.length} today`}</span>
+      </div>
+
+      {entries.length === 0 ? (
+        <div className="fx-plain">Nothing written down today.</div>
+      ) : (
+        entries.slice(0, 3).map((e) => (
+          <div className="fx-log" key={e.id}>
+            <span className="fx-logt">{shortClock(e.createdAt)}</span>
+            <span className="fx-logb">{e.title}</span>
+          </div>
+        ))
+      )}
+
+      <button type="button" className="fx-more-link" onClick={onOpen}>
+        Open the log book <span aria-hidden>→</span>
+      </button>
+
+      {mergeError && <div className="sl-err">{mergeError}</div>}
+
+      <div className="fx-foot">
+        <span className="fx-footl" id="fx-logsw-label">Show notes on the timeline</span>
+        <button
+          type="button"
+          className="fx-sw"
+          role="switch"
+          aria-checked={mergeOn}
+          aria-labelledby="fx-logsw-label"
+          disabled={!mergeReady || mergeBusy === true}
+          onClick={() => onToggleMerge(!mergeOn)}
+        />
       </div>
     </div>
   );
+}
+
+/**
+ * The rail's one door into everything Staxis believes about this hotel.
+ *
+ * It REPLACES the old `Queue` / `Knows` tab pair outright. There is no queue
+ * affordance any more, because the page IS the queue, and Knows opens over it
+ * rather than navigating away from it.
+ */
+export function KnowsRailButton({ factCount, onOpen }: {
+  /** Null while the count has not been read. The subtitle then says nothing
+   *  about how much is known rather than claiming a number. */
+  factCount: number | null;
+  onOpen: () => void;
+}) {
+  return (
+    <button type="button" className="fx-knows" onClick={onOpen}>
+      <span className="fx-knowsi"><CxIcon name="staxis" size={17} /></span>
+      <span style={{ minWidth: 0 }}>
+        <span className="fx-pt" style={{ display: 'block' }}>What Staxis knows</span>
+        {factCount !== null && (
+          <span className="fx-ps" style={{ display: 'block' }}>
+            {factCount === 1 ? '1 fact about this hotel' : `${factCount.toLocaleString('en-US')} facts about this hotel`}
+          </span>
+        )}
+      </span>
+      <span className="fx-knowsgo" aria-hidden><CxIcon name="arrowUpRight" size={15} /></span>
+    </button>
+  );
+}
+
+/** "7:12a" — the log book's own timestamp form. Empty on an unusable value. */
+export function shortClock(iso: string | null | undefined): string {
+  if (!iso) return '';
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return '';
+  const h = d.getHours();
+  const m = `${d.getMinutes()}`.padStart(2, '0');
+  const hour12 = h % 12 === 0 ? 12 : h % 12;
+  return `${hour12}:${m}${h < 12 ? 'a' : 'p'}`;
 }
 
 // ─── Assigned by me ─────────────────────────────────────────────────────────
@@ -476,7 +642,7 @@ export interface AssignedByMeViewProps {
 export function AssignedByMeView({ entries, now, loading = false, readFailed = false }: AssignedByMeViewProps) {
   if (readFailed) {
     return (
-      <div className="sl-drawer" data-testid="assigned-drawer">
+      <div data-testid="assigned-drawer">
         <div className="sl-err">
           Staxis could not read this just now. Do not read it as &quot;nothing outstanding&quot;.
         </div>
@@ -485,28 +651,28 @@ export function AssignedByMeView({ entries, now, loading = false, readFailed = f
   }
   if (loading) {
     return (
-      <div className="sl-drawer" data-testid="assigned-drawer">
-        <div className="sl-drs" role="status" aria-live="polite">One moment…</div>
+      <div data-testid="assigned-drawer">
+        <div className="fx-plain" role="status" aria-live="polite">One moment…</div>
       </div>
     );
   }
   if (entries.length === 0) {
     return (
-      <div className="sl-drawer" data-testid="assigned-drawer">
-        <div className="sl-drs">You have not handed anything to anyone yet.</div>
+      <div data-testid="assigned-drawer">
+        <div className="fx-plain">You have not handed anything to anyone yet.</div>
       </div>
     );
   }
   return (
-    <div className="sl-drawer" data-testid="assigned-drawer">
+    <div data-testid="assigned-drawer">
       {entries.map((e) => {
         const stale = stalenessLine(e);
         return (
-          <div className="sl-dr" key={e.taskId} data-assigned-state={e.state}>
-            <div className="sl-drt">{e.title}</div>
-            <div className="sl-drs">{assignedStateLine(e, now)}</div>
-            {e.reason && <div className="sl-drq">&ldquo;{e.reason}&rdquo;</div>}
-            {stale && <div className="sl-stale">{stale}</div>}
+          <div className="fx-drrow" key={e.taskId} data-assigned-state={e.state}>
+            <div className="fx-drt">{e.title}</div>
+            <div className="fx-drs">{assignedStateLine(e, now)}</div>
+            {e.reason && <div className="fx-quote">&ldquo;{e.reason}&rdquo;</div>}
+            {stale && <div className="fx-stale">{stale}</div>}
           </div>
         );
       })}
