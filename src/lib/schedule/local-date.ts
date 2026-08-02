@@ -69,6 +69,38 @@ export function propertyLocalHour(now: Date, timezone: string | null): number | 
   }
 }
 
+/**
+ * The current wall-clock minute at the hotel, 0 through 1439.
+ *
+ * A missing or invalid timezone follows propertyLocalToday's UTC fallback so
+ * schedule state stays deterministic instead of inheriting the manager's
+ * browser timezone.
+ */
+export function propertyLocalClockMinutes(now: Date, timezone: string | null): number {
+  const utcFallback = Number.isFinite(now.getTime())
+    ? now.getUTCHours() * 60 + now.getUTCMinutes()
+    : 0;
+  if (!Number.isFinite(now.getTime())) return utcFallback;
+  try {
+    const parts = new Intl.DateTimeFormat('en-GB', {
+      timeZone: timezone?.trim() || 'UTC',
+      hour: '2-digit',
+      minute: '2-digit',
+      hour12: false,
+    }).formatToParts(now);
+    const hour = Number(parts.find((part) => part.type === 'hour')?.value ?? '');
+    const minute = Number(parts.find((part) => part.type === 'minute')?.value ?? '');
+    const normalizedHour = hour === 24 ? 0 : hour;
+    if (Number.isInteger(normalizedHour) && normalizedHour >= 0 && normalizedHour <= 23
+      && Number.isInteger(minute) && minute >= 0 && minute <= 59) {
+      return normalizedHour * 60 + minute;
+    }
+  } catch {
+    // Invalid IANA timezone: preserve the deterministic UTC fallback.
+  }
+  return utcFallback;
+}
+
 /** Add (or subtract) calendar days from a YYYY-MM-DD string, returning
  *  another YYYY-MM-DD string. Pure calendar arithmetic — does NOT touch
  *  timezones, so this is safe for any local date that was already

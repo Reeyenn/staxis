@@ -41,6 +41,17 @@ export function fmtMinRange(s: number, e: number): string {
   return `${fmtMin(s)}–${fmtMin(e)}`;
 }
 
+/** A schedule block is current only during its scheduled interval. */
+export function isScheduledNow(
+  shift: Pick<BoardShift, 'startMin' | 'endMin'>,
+  nowMin: number,
+): boolean {
+  if (!Number.isFinite(nowMin)) return false;
+  const start = Math.max(0, shift.startMin);
+  const end = Math.min(24 * 60, Math.max(start, shift.endMin));
+  return nowMin >= start && nowMin < end;
+}
+
 /** 'HH:MM' → 8a / 8:30a (string-time flavor, used by My Shifts). */
 export function fmtTime(t: string): string {
   return fmtMin(toMin(t));
@@ -263,6 +274,41 @@ export function weekMinutesByStaff(days: BoardShift[][]): Map<string, number> {
     }
   }
   return m;
+}
+
+export const DEFAULT_WEEKLY_CAP_HOURS = 40;
+const NEAR_WEEKLY_LIMIT_MINUTES = 4 * 60;
+
+/** Resolve a staff member's weekly cap using the schedule's existing fallback. */
+export function weeklyCapMinutes(maxWeeklyHours: number | null | undefined): number {
+  return typeof maxWeeklyHours === 'number'
+    && Number.isFinite(maxWeeklyHours)
+    && maxWeeklyHours > 0
+    ? maxWeeklyHours * 60
+    : DEFAULT_WEEKLY_CAP_HOURS * 60;
+}
+
+export type WeeklyLimitStatus = 'near' | 'over';
+
+/**
+ * Classify scheduled time against the weekly cap. Exact-cap time is near the
+ * limit; only positive scheduled time can be near, so an empty short-cap row
+ * does not look like a warning.
+ */
+export function weeklyLimitStatus(
+  scheduledMinutes: number,
+  maxWeeklyHours: number | null | undefined,
+): WeeklyLimitStatus | null {
+  const scheduled = Number.isFinite(scheduledMinutes) ? Math.max(0, scheduledMinutes) : 0;
+  const cap = weeklyCapMinutes(maxWeeklyHours);
+  if (scheduled > cap) return 'over';
+  if (scheduled > 0 && cap - scheduled <= NEAR_WEEKLY_LIMIT_MINUTES) return 'near';
+  return null;
+}
+
+/** Compact, truthful label for projected schedule time. */
+export function fmtScheduledHours(scheduledMinutes: number, capMinutes: number): string {
+  return `Scheduled ${fmtHours(scheduledMinutes).slice(0, -1)}/${fmtHours(capMinutes)}`;
 }
 
 /** 2280 → '38h' · 2310 → '38.5h' (quarter-hours rounded to one decimal). */
