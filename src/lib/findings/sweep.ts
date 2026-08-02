@@ -50,7 +50,7 @@ import {
   type UsageReport,
 } from '@/lib/agent/llm';
 import { recordNonRequestCost } from '@/lib/agent/cost-controls';
-import { findAuthoritativeRepresentativeAccount } from '@/lib/authorization/server';
+import { findAuthoritativeManagerAccount } from '@/lib/authorization/server';
 
 import {
   cancelFindingsSpend,
@@ -858,7 +858,7 @@ export async function recordSweepRun(result: SweepRunResult, now: Date): Promise
 /** A representative manager, so background spend lands in the same books every
  *  other background caller writes to (agent_costs.user_id is NOT NULL). */
 async function representativeAccountId(propertyId: string): Promise<string | null> {
-  return findAuthoritativeRepresentativeAccount(propertyId);
+  return findAuthoritativeManagerAccount(propertyId);
 }
 
 export function defaultSweepDeps(): SweepDeps {

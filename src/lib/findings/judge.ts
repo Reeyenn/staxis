@@ -97,7 +97,7 @@ import {
 import { recordNonRequestCost } from '@/lib/agent/cost-controls';
 import { getActiveMemoryForTurn } from '@/lib/db/agent-memory';
 import { formatMemoryForPrompt } from '@/lib/agent/memory-context';
-import { findAuthoritativeRepresentativeAccount } from '@/lib/authorization/server';
+import { findAuthoritativeManagerAccount } from '@/lib/authorization/server';
 
 import { clampJudgedDisposition } from '@/components/concourse/finding-cards';
 
@@ -1023,7 +1023,7 @@ export async function persistJudgments(
  *  `agent_costs` (whose user_id is NOT NULL). Null when the hotel has no
  *  account at all — the spend gate still held, only the books are thinner. */
 async function representativeAccountId(propertyId: string): Promise<string | null> {
-  return findAuthoritativeRepresentativeAccount(propertyId);
+  return findAuthoritativeManagerAccount(propertyId);
 }
 
 export function defaultJudgeDeps(): JudgeDeps {

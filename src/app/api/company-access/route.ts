@@ -598,6 +598,148 @@ function legacyPermissions(role: AppRole, propertyIds: string[]): CompanyAccessP
   };
 }
 
+/**
+ * Project a normalized account whose only canonical authority is a bounded set
+ * of property bridges. There is intentionally no membership/grant synthesis:
+ * each property is checked against exactly one current active governing
+ * relationship and the payload carries only those bridge-covered hotels.
+ *
+ * This is a property-scoped Company Hub presentation, not a fallback authority
+ * path. A missing, suspended, stale, or ambiguous topology returns null so the
+ * caller receives the normal empty fail-closed projection.
+ */
+async function bridgeOnlyProjection(
+  account: AccountRow,
+  authority: { propertyIds: string[]; all: boolean },
+): Promise<CompanyAccessData | null> {
+  if (authority.all || authority.propertyIds.length === 0) return null;
+
+  const memberships = await readCompleteCompanyPages<MembershipRow>((from, to) => (
+    supabaseAdmin.from('organization_memberships')
+      .select('id, organization_id, account_id, job_category, job_title, status, starts_at, ended_at, membership_scope, staxis_role, covered_property_ids', { count: 'exact' })
+      .eq('account_id', account.id)
+      .order('id')
+      .range(from, to) as unknown as PromiseLike<CompanyProjectionPage<MembershipRow>>
+  ));
+  // Revoked/ended memberships still count as membership history. Do not
+  // silently reinterpret a damaged member's bridges as a company projection.
+  if (memberships.length > 0) return null;
+
+  const propertyIds = [...new Set(authority.propertyIds)].sort();
+  const relationshipRows = await readCompleteCompanyIdChunks<RelationshipRow>(
+    propertyIds,
+    (chunk, from, to) => supabaseAdmin.from('organization_property_relationships')
+      .select('id, organization_id, property_id, relationship_type, is_primary_grouping, starts_at, ends_at', { count: 'exact' })
+      .in('property_id', [...chunk])
+      .order('id')
+      .range(from, to) as unknown as PromiseLike<CompanyProjectionPage<RelationshipRow>>,
+  );
+  const nowMs = Date.now();
+  const currentByProperty = new Map<string, RelationshipRow>();
+  for (const propertyId of propertyIds) {
+    const current = relationshipRows.filter((relationship) => (
+      relationship.property_id === propertyId
+      && relationship.is_primary_grouping === true
+      && (relationship.relationship_type === 'operator' || relationship.relationship_type === 'owner')
+      && activeWindow(relationship.starts_at, relationship.ends_at, nowMs)
+    ));
+    if (current.length !== 1) return null;
+    currentByProperty.set(propertyId, current[0]!);
+  }
+
+  const organizationIds = [...new Set([...currentByProperty.values()].map((row) => row.organization_id))];
+  const organizationRows = await readCompleteCompanyIdChunks<OrganizationRow>(
+    organizationIds,
+    (chunk, from, to) => supabaseAdmin.from('organizations')
+      .select('id, name, organization_type, status, legacy_property_id', { count: 'exact' })
+      .in('id', [...chunk])
+      .order('id')
+      .range(from, to) as unknown as PromiseLike<CompanyProjectionPage<OrganizationRow>>,
+  );
+  const organizationsById = new Map(organizationRows.map((organization) => [organization.id, organization]));
+  for (const relationship of currentByProperty.values()) {
+    const organization = organizationsById.get(relationship.organization_id);
+    if (!organization
+      || organization.status !== 'active'
+      || !['single_hotel', 'management_company', 'ownership_group'].includes(organization.organization_type)) {
+      return null;
+    }
+  }
+
+  const propertyRows = await readCompleteCompanyIdChunks<PropertyRow>(
+    propertyIds,
+    (chunk, from, to) => supabaseAdmin.from('properties')
+      .select('id, name', { count: 'exact' })
+      .in('id', [...chunk])
+      .order('id')
+      .range(from, to) as unknown as PromiseLike<CompanyProjectionPage<PropertyRow>>,
+  );
+  if (propertyRows.length !== propertyIds.length) return null;
+  const propertyById = new Map(propertyRows.map((property) => [property.id, property]));
+  const displayOrganizationId = (propertyId: string, organization: OrganizationRow): string => (
+    organization.organization_type === 'single_hotel'
+      ? `bridge-independent-${propertyId}`
+      : organization.id
+  );
+  const displayOrganizationById = new Map<string, CompanyOrganization>();
+  const companyProperties: CompanyProperty[] = [];
+  const profile = legacyAccessProfile(account.role);
+  for (const propertyId of propertyIds) {
+    const relationship = currentByProperty.get(propertyId)!;
+    const organization = organizationsById.get(relationship.organization_id)!;
+    const property = propertyById.get(propertyId)!;
+    const organizationId = displayOrganizationId(propertyId, organization);
+    if (!displayOrganizationById.has(organizationId)) {
+      displayOrganizationById.set(organizationId, {
+        id: organizationId,
+        name: organization.organization_type === 'single_hotel'
+          ? (property.name ?? organization.name ?? 'Hotel')
+          : organization.name,
+        type: organization.organization_type,
+        status: organization.status,
+        relationshipType: organization.organization_type === 'single_hotel'
+          ? 'independent hotel'
+          : relationship.relationship_type,
+        legacyPropertyId: organization.organization_type === 'single_hotel' ? propertyId : null,
+      });
+    }
+    companyProperties.push({
+      nodeId: `${organizationId}:${propertyId}`,
+      id: propertyId,
+      name: property.name ?? 'Hotel',
+      organizationId,
+      portfolioIds: [],
+      relationshipType: relationship.relationship_type,
+      relationshipId: relationship.id,
+      status: 'active',
+    });
+  }
+
+  return {
+    organizations: [...displayOrganizationById.values()].sort((a, b) => a.id.localeCompare(b.id)),
+    portfolios: [],
+    properties: companyProperties,
+    memberships: [],
+    effectiveAccess: companyProperties.map((property) => ({
+      id: `canonical-bridge-${property.id}`,
+      organizationId: property.organizationId,
+      accessProfile: profile,
+      scopeType: 'property',
+      scopeId: property.relationshipId,
+      scopeLabel: property.name,
+      propertyIds: [property.id],
+      source: 'canonical_bridge',
+      reason: 'Canonical property authorization bridge',
+      status: 'active',
+    })),
+    invitations: [],
+    requests: [],
+    activity: [],
+    permissions: legacyPermissions(account.role, propertyIds),
+    legacyFallback: false,
+  };
+}
+
 async function normalizedProjection(actorAccountId: string): Promise<CompanyAccessData | null> {
   const ownMembershipRows = await readCompleteCompanyPages<MembershipRow>((from, to) => (
     supabaseAdmin.from('organization_memberships')
@@ -1457,6 +1599,9 @@ export async function GET(req: NextRequest) {
       }
     }
     if (normalized) return ok(normalized, { requestId });
+
+    const bridgeProjection = await bridgeOnlyProjection(account, authority);
+    if (bridgeProjection) return ok(bridgeProjection, { requestId });
 
     // The normalized projection deliberately ignores inactive memberships.
     // Re-check the account after the multi-query projection before returning

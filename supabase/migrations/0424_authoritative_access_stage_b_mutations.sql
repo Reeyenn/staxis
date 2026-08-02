@@ -22,6 +22,182 @@ begin
 end
 $$;
 
+-- Validate a legacy/shadow snapshot without changing any authorization row.
+-- Mutation RPCs call this before the first import in a transaction, so a
+-- rejected scope, detach, or ownership request cannot leave an earlier
+-- account partially normalized.  Keep the topology and real-company
+-- predicate byte-for-byte aligned with the Stage A cutover helpers.
+create or replace function public._staxis_stage_b_validate_legacy_scope(
+  p_account_id uuid
+)
+returns jsonb
+language plpgsql
+security definer
+set search_path = public, pg_temp
+as $$
+declare
+  v_account public.accounts%rowtype;
+  v_state public.account_authorization_state%rowtype;
+  v_property_id uuid;
+  v_property_ids uuid[] := '{}'::uuid[];
+  v_raw_relationship_count integer;
+  v_valid_relationship_count integer;
+  v_relationship_id uuid;
+  v_organization_id uuid;
+  v_organization_type text;
+begin
+  if p_account_id is null then
+    return jsonb_build_object('ok', false, 'reason', 'invalid_request');
+  end if;
+
+  select account.* into v_account
+  from public.accounts account
+  where account.id = p_account_id;
+  if not found then
+    return jsonb_build_object('ok', false, 'reason', 'account_not_found');
+  end if;
+  if v_account.active is not true then
+    return jsonb_build_object('ok', false, 'reason', 'account_inactive');
+  end if;
+
+  select state.* into v_state
+  from public.account_authorization_state state
+  where state.account_id = p_account_id;
+  if not found then
+    return jsonb_build_object('ok', false, 'reason', 'authorization_state_missing');
+  end if;
+  if v_state.authority_mode = 'normalized' then
+    return jsonb_build_object(
+      'ok', true,
+      'status', 'already_normalized',
+      'accountId', p_account_id,
+      'propertyIds', to_jsonb(public._staxis_structural_account_property_ids(p_account_id))
+    );
+  end if;
+  if v_state.authority_mode not in ('legacy', 'shadow') then
+    return jsonb_build_object('ok', false, 'reason', 'invalid_authority_mode');
+  end if;
+
+  if v_account.data_user_id is null
+     or not exists (
+       select 1 from auth.users auth_user where auth_user.id = v_account.data_user_id
+     )
+  then
+    return jsonb_build_object('ok', false, 'reason', 'auth_identity_missing');
+  end if;
+  if v_account.role is null
+     or v_account.role not in (
+       'admin', 'owner', 'general_manager', 'front_desk',
+       'housekeeping', 'maintenance', 'staff'
+     )
+  then
+    return jsonb_build_object('ok', false, 'reason', 'invalid_account_role');
+  end if;
+  if v_account.role = 'admin'
+     and cardinality(coalesce(v_account.property_access, '{}'::uuid[])) > 0
+  then
+    return jsonb_build_object('ok', false, 'reason', 'admin_legacy_access');
+  end if;
+  if array_position(coalesce(v_account.property_access, '{}'::uuid[]), null) is not null
+     or cardinality(coalesce(v_account.property_access, '{}'::uuid[]))
+          <> cardinality(array(
+            select distinct id
+            from unnest(coalesce(v_account.property_access, '{}'::uuid[])) ids(id)
+          ))
+  then
+    return jsonb_build_object('ok', false, 'reason', 'legacy_scope_invalid');
+  end if;
+
+  select coalesce(array_agg(id order by id), '{}'::uuid[])
+    into v_property_ids
+  from (
+    select distinct id
+    from unnest(coalesce(v_account.property_access, '{}'::uuid[])) ids(id)
+  ) sorted_ids;
+
+  foreach v_property_id in array v_property_ids
+  loop
+    if not exists (
+      select 1 from public.properties property where property.id = v_property_id
+    ) then
+      return jsonb_build_object(
+        'ok', false, 'reason', 'property_missing', 'propertyId', v_property_id
+      );
+    end if;
+
+    select count(*)::integer
+      into v_raw_relationship_count
+    from public._staxis_current_primary_property_relationships() relationship
+    where relationship.property_id = v_property_id;
+    if v_raw_relationship_count = 0 then
+      return jsonb_build_object(
+        'ok', false, 'reason', 'governing_topology_missing', 'propertyId', v_property_id
+      );
+    end if;
+    if v_raw_relationship_count <> 1 then
+      return jsonb_build_object(
+        'ok', false, 'reason', 'ambiguous_governing_topology', 'propertyId', v_property_id
+      );
+    end if;
+
+    select count(*)::integer,
+           (array_agg(relationship.id order by relationship.id))[1],
+           (array_agg(relationship.organization_id order by relationship.id))[1],
+           (array_agg(relationship.organization_type order by relationship.id))[1]
+      into v_valid_relationship_count, v_relationship_id,
+           v_organization_id, v_organization_type
+    from public._staxis_cutover_valid_current_primary_property_relationships() relationship
+    where relationship.property_id = v_property_id
+      and relationship.active_primary_count = 1;
+    if v_valid_relationship_count <> 1 then
+      return jsonb_build_object(
+        'ok', false, 'reason', 'invalid_governing_organization', 'propertyId', v_property_id
+      );
+    end if;
+
+    if v_organization_type <> 'single_hotel'
+       and exists (
+         select 1
+         from public._staxis_cutover_real_account_organizations() real_org
+         where real_org.account_id = p_account_id
+       )
+       and not exists (
+         select 1
+         from public._staxis_cutover_real_account_organizations() real_org
+         where real_org.account_id = p_account_id
+           and real_org.organization_id = v_organization_id
+       )
+    then
+      return jsonb_build_object(
+        'ok', false, 'reason', 'cross_company_legacy_access', 'propertyId', v_property_id
+      );
+    end if;
+
+    if exists (
+      select 1
+      from public.account_property_authorization_bridges bridge
+      where bridge.account_id = p_account_id
+        and bridge.property_id = v_property_id
+        and bridge.status = 'retired'
+    ) then
+      return jsonb_build_object(
+        'ok', false, 'reason', 'retired_bridge', 'propertyId', v_property_id
+      );
+    end if;
+  end loop;
+
+  return jsonb_build_object(
+    'ok', true,
+    'status', 'validated',
+    'accountId', p_account_id,
+    'propertyIds', to_jsonb(v_property_ids)
+  );
+end;
+$$;
+
+revoke all on function public._staxis_stage_b_validate_legacy_scope(uuid)
+  from public, anon, authenticated, service_role;
+
 -- Import the still-present legacy snapshot only inside the canonical mutation
 -- boundary.  This is not an application reader: it is the one-way rollback
 -- compatibility receipt that makes a legacy/shadow account normalized before
@@ -48,6 +224,7 @@ declare
   v_relationship_id uuid;
   v_organization_id uuid;
   v_organization_type text;
+  v_validation jsonb;
   v_reason text := left(coalesce(nullif(btrim(p_reason), ''), 'Stage B canonical mutation'), 500);
 begin
   if p_account_id is null then
@@ -60,6 +237,9 @@ begin
   for update;
   if not found then
     return jsonb_build_object('ok', false, 'reason', 'account_not_found');
+  end if;
+  if v_account.active is not true then
+    return jsonb_build_object('ok', false, 'reason', 'account_inactive');
   end if;
 
   select state.* into v_state
@@ -80,6 +260,11 @@ begin
   end if;
   if v_state.authority_mode not in ('legacy', 'shadow') then
     return jsonb_build_object('ok', false, 'reason', 'invalid_authority_mode');
+  end if;
+
+  v_validation := public._staxis_stage_b_validate_legacy_scope(p_account_id);
+  if coalesce((v_validation->>'ok')::boolean, false) is not true then
+    return v_validation;
   end if;
 
   if v_account.data_user_id is null
@@ -237,6 +422,107 @@ $$;
 
 revoke all on function public._staxis_stage_b_import_legacy_scope(uuid, text)
   from public, anon, authenticated, service_role;
+
+-- 0395's profile RPC accepts both a rollback-era raw-array CAS receipt and a
+-- canonical target-property CAS receipt. The Stage B route deliberately sends
+-- canonical IDs in both fields, so preserve the old raw-array comparison only
+-- for legacy/shadow accounts and make normalized self-edits compare the
+-- canonical IDs while ignoring the stale rollback snapshot.
+do $$
+begin
+  if to_regprocedure(
+       'public.staxis_update_hotel_team_profile_guarded(uuid,uuid,text,uuid,uuid,boolean,text,boolean,uuid,boolean,text,uuid,uuid[],uuid[],text,uuid,timestamptz,bigint,text)'
+     ) is not null
+     and to_regprocedure(
+       'public._staxis_update_hotel_team_profile_guarded_legacy_cas(uuid,uuid,text,uuid,uuid,boolean,text,boolean,uuid,boolean,text,uuid,uuid[],uuid[],text,uuid,timestamptz,bigint,text)'
+     ) is null
+  then
+    alter function public.staxis_update_hotel_team_profile_guarded(
+      uuid,uuid,text,uuid,uuid,boolean,text,boolean,uuid,boolean,text,uuid,
+      uuid[],uuid[],text,uuid,timestamptz,bigint,text
+    ) rename to _staxis_update_hotel_team_profile_guarded_legacy_cas;
+  end if;
+end
+$$;
+
+create or replace function public.staxis_update_hotel_team_profile_guarded(
+  p_actor_account_id uuid,
+  p_actor_auth_user_id uuid,
+  p_actor_email text,
+  p_hotel_id uuid,
+  p_target_account_id uuid,
+  p_change_display_name boolean,
+  p_new_display_name text,
+  p_change_staff_link boolean,
+  p_new_staff_id uuid,
+  p_expected_active boolean,
+  p_expected_role text,
+  p_expected_auth_user_id uuid,
+  p_expected_property_access uuid[],
+  p_expected_target_property_ids uuid[],
+  p_expected_display_name text,
+  p_expected_staff_id uuid,
+  p_expected_updated_at timestamptz,
+  p_expected_intent_version bigint,
+  p_request_id text
+)
+returns jsonb
+language plpgsql
+security definer
+set search_path = public, pg_temp
+as $$
+declare
+  v_authority_mode text;
+  v_raw_property_access uuid[];
+begin
+  select state.authority_mode, account.property_access
+    into v_authority_mode, v_raw_property_access
+  from public.account_authorization_state state
+  join public.accounts account on account.id = state.account_id
+  where state.account_id = p_target_account_id;
+
+  if v_authority_mode = 'normalized' then
+    -- The canonical target IDs remain the authoritative CAS. The raw array is
+    -- rollback material and may legitimately differ or be empty.
+    p_expected_property_access := coalesce(v_raw_property_access, '{}'::uuid[]);
+  end if;
+
+  return public._staxis_update_hotel_team_profile_guarded_legacy_cas(
+    p_actor_account_id,
+    p_actor_auth_user_id,
+    p_actor_email,
+    p_hotel_id,
+    p_target_account_id,
+    p_change_display_name,
+    p_new_display_name,
+    p_change_staff_link,
+    p_new_staff_id,
+    p_expected_active,
+    p_expected_role,
+    p_expected_auth_user_id,
+    p_expected_property_access,
+    p_expected_target_property_ids,
+    p_expected_display_name,
+    p_expected_staff_id,
+    p_expected_updated_at,
+    p_expected_intent_version,
+    p_request_id
+  );
+end;
+$$;
+
+revoke all on function public._staxis_update_hotel_team_profile_guarded_legacy_cas(
+  uuid,uuid,text,uuid,uuid,boolean,text,boolean,uuid,boolean,text,uuid,
+  uuid[],uuid[],text,uuid,timestamptz,bigint,text
+) from public, anon, authenticated, service_role;
+revoke all on function public.staxis_update_hotel_team_profile_guarded(
+  uuid,uuid,text,uuid,uuid,boolean,text,boolean,uuid,boolean,text,uuid,
+  uuid[],uuid[],text,uuid,timestamptz,bigint,text
+) from public, anon, authenticated;
+grant execute on function public.staxis_update_hotel_team_profile_guarded(
+  uuid,uuid,text,uuid,uuid,boolean,text,boolean,uuid,boolean,text,uuid,
+  uuid[],uuid[],text,uuid,timestamptz,bigint,text
+) to service_role;
 
 -- Administrative resolver for account CRUD.  Unlike the operational resolver,
 -- this reports structural canonical scope for an inactive account so an admin
@@ -396,18 +682,6 @@ begin
       return jsonb_build_object('ok', false, 'status', 'retry');
   end;
 
-  if v_state.authority_mode in ('legacy', 'shadow') then
-    v_import := public._staxis_stage_b_import_legacy_scope(
-      p_account_id, 'Stage B account scope mutation import'
-    );
-    if coalesce((v_import->>'ok')::boolean, false) is not true then
-      return v_import || jsonb_build_object('status', 'conflict');
-    end if;
-    select * into v_state from public.account_authorization_state
-      where account_id = p_account_id
-      for update;
-  end if;
-
   begin
     for v_property_id in
       select requested.id
@@ -482,6 +756,20 @@ begin
       );
     end if;
   end loop;
+
+  -- Complete all rejectable request checks before importing a legacy/shadow
+  -- snapshot. A failed request must leave bridges, state, and audit unchanged.
+  if v_state.authority_mode in ('legacy', 'shadow') then
+    v_import := public._staxis_stage_b_import_legacy_scope(
+      p_account_id, 'Stage B account scope mutation import'
+    );
+    if coalesce((v_import->>'ok')::boolean, false) is not true then
+      return v_import || jsonb_build_object('status', 'conflict');
+    end if;
+    select * into v_state from public.account_authorization_state
+      where account_id = p_account_id
+      for update;
+  end if;
 
   if v_account.role is distinct from p_new_role then
     update public.accounts
@@ -667,18 +955,6 @@ begin
     return jsonb_build_object('status', 'conflict');
   end if;
 
-  if v_target_state.authority_mode in ('legacy', 'shadow') then
-    v_import := public._staxis_stage_b_import_legacy_scope(
-      p_account_id, 'Stage B canonical hotel detach import'
-    );
-    if coalesce((v_import->>'ok')::boolean, false) is not true then
-      return v_import || jsonb_build_object('status', 'conflict');
-    end if;
-    select * into v_target_state from public.account_authorization_state
-      where account_id = p_account_id
-      for update;
-  end if;
-
   if not public._staxis_account_can_manage_users_at_property(
     p_actor_account_id, p_hotel_id
   ) then
@@ -706,12 +982,32 @@ begin
   if not (p_hotel_id = any(v_target_ids)) then
     return jsonb_build_object('status', 'not_attached');
   end if;
+
+  -- Capability, hierarchy, CAS, and target-scope checks are all complete
+  -- before the legacy snapshot is translated. The validator is read-only on
+  -- failure, so a rejected detach cannot leave a bridge or state mutation.
+  if v_target_state.authority_mode in ('legacy', 'shadow') then
+    v_import := public._staxis_stage_b_import_legacy_scope(
+      p_account_id, 'Stage B canonical hotel detach import'
+    );
+    if coalesce((v_import->>'ok')::boolean, false) is not true then
+      return v_import || jsonb_build_object('status', 'conflict');
+    end if;
+    select * into v_target_state from public.account_authorization_state
+      where account_id = p_account_id
+      for update;
+  end if;
+
   if not exists (
     select 1 from public.account_property_authorization_bridges bridge
     where bridge.account_id = p_account_id
       and bridge.property_id = p_hotel_id
       and bridge.status = 'active'
   ) then
+    if v_import is not null then
+      raise exception 'Stage B detach import completed without an active bridge'
+        using errcode = 'P0001';
+    end if;
     return jsonb_build_object('status', 'forbidden', 'reason', 'normalized_authority');
   end if;
 
@@ -758,6 +1054,139 @@ revoke all on function public.staxis_remove_property_access_authoritative(
 grant execute on function public.staxis_remove_property_access_authoritative(
   uuid, uuid, text, uuid, uuid, text, bigint, timestamptz, text
 ) to service_role;
+
+-- The hotel ownership workflow is also the correct path for a normalized
+-- independent property owner. A canonical bridge is eligible only when the
+-- complete current scope is bridge-only and every property has exactly one
+-- current primary relationship to an active single_hotel organization. A
+-- company membership/grant, suspended organization, missing relationship, or
+-- ambiguous topology keeps the account on the company path (or fails closed).
+create or replace function public._staxis_stage_b_is_independent_single_hotel_scope(
+  p_account_id uuid
+)
+returns boolean
+language sql
+stable
+security definer
+set search_path = pg_catalog, public
+as $$
+  select exists (
+    select 1
+    from public.account_authorization_state state
+    join public.accounts account on account.id = state.account_id
+    where state.account_id = p_account_id
+      and state.authority_mode = 'normalized'
+      and account.role <> 'admin'
+      and cardinality(public._staxis_structural_account_property_ids(p_account_id)) > 0
+      and not exists (
+        select 1
+        from public._staxis_nonlegacy_property_authorizations(p_account_id)
+      )
+      and not exists (
+        select 1
+        from unnest(public._staxis_structural_account_property_ids(p_account_id)) scope(property_id)
+        where (
+          select count(*)::integer
+          from public._staxis_current_primary_property_relationships() relationship
+          where relationship.property_id = scope.property_id
+        ) <> 1
+        or (
+          select count(*)::integer
+          from public._staxis_cutover_valid_current_primary_property_relationships() relationship
+          where relationship.property_id = scope.property_id
+            and relationship.active_primary_count = 1
+            and relationship.organization_type = 'single_hotel'
+            and relationship.organization_status = 'active'
+        ) <> 1
+      )
+  );
+$$;
+
+revoke all on function public._staxis_stage_b_is_independent_single_hotel_scope(uuid)
+  from public, anon, authenticated, service_role;
+
+-- Route a normalized bridge-only independent owner through the existing hotel
+-- People/ownership surface. This is a projection choice only: authority still
+-- comes from the canonical resolver and the guarded ownership RPC rechecks the
+-- exact single_hotel topology, role, capability, and CAS.
+create or replace function public.staxis_list_authoritative_hotel_accounts(
+  p_property_id uuid,
+  p_include_platform_admins boolean default false
+)
+returns jsonb
+language plpgsql
+stable
+security definer
+set search_path = public, pg_temp
+as $$
+declare
+  v_count integer;
+  v_accounts jsonb;
+begin
+  if p_property_id is null or not exists (
+    select 1 from public.properties property where property.id = p_property_id
+  ) then
+    return jsonb_build_object('ok', false, 'reason', 'property_not_found');
+  end if;
+
+  with roster as (
+    select account.id, account.username, account.display_name, account.role,
+           account.active, account.data_user_id, account.staff_id,
+           account.created_at, account.updated_at, state.authority_mode,
+           state.authority_version, structural.property_ids
+    from public.accounts account
+    join public.account_authorization_state state on state.account_id = account.id
+    cross join lateral (
+      select public._staxis_structural_account_property_ids(account.id) as property_ids
+    ) structural
+    where (account.role = 'admin' and account.active is true
+           and p_include_platform_admins is true)
+       or (account.role <> 'admin'
+           and p_property_id = any(structural.property_ids))
+  )
+  select count(*)::integer,
+         coalesce(jsonb_agg(jsonb_build_object(
+           'accountId', roster.id,
+           'username', roster.username,
+           'displayName', roster.display_name,
+           'role', roster.role,
+           'active', roster.active,
+           'dataUserId', roster.data_user_id,
+           'staffId', roster.staff_id,
+           'createdAt', roster.created_at,
+           'updatedAt', roster.updated_at,
+           'authorityMode', roster.authority_mode,
+           'authorityVersion', roster.authority_version,
+           'propertyIds', case when roster.role = 'admin' then '[]'::jsonb
+             else to_jsonb(roster.property_ids) end,
+           'managementSurface', case
+             when roster.authority_mode = 'normalized'
+                  and public._staxis_stage_b_is_independent_single_hotel_scope(roster.id)
+               then 'legacy_hotel'
+             when roster.authority_mode = 'normalized' then 'company_access'
+             else 'legacy_hotel'
+           end
+         ) order by roster.created_at, roster.id), '[]'::jsonb)
+    into v_count, v_accounts
+  from roster;
+
+  if v_count > 5000 then
+    return jsonb_build_object('ok', false, 'reason', 'roster_too_large');
+  end if;
+  return jsonb_build_object(
+    'ok', true,
+    'schemaVersion', 'authoritative-hotel-roster-v1',
+    'propertyId', p_property_id,
+    'generatedAt', clock_timestamp(),
+    'accounts', v_accounts
+  );
+end;
+$$;
+
+revoke all on function public.staxis_list_authoritative_hotel_accounts(uuid,boolean)
+  from public, anon, authenticated;
+grant execute on function public.staxis_list_authoritative_hotel_accounts(uuid,boolean)
+  to service_role;
 
 -- The guarded ownership function retains its established signature and
 -- idempotency contract, but its access snapshots are now canonical resolver
@@ -921,11 +1350,11 @@ begin
       return jsonb_build_object('status', 'retry');
   end;
 
-  -- This RPC remains the legacy-hotel ownership workflow. A normalized
-  -- company subject must use the company ownership flow, while a legacy or
-  -- shadow subject may be translated into the canonical bridge below. Check
-  -- the durable mode before translation so a topology error cannot be hidden
-  -- behind a retired-bridge import result.
+  -- This RPC remains the hotel ownership workflow. A normalized subject may
+  -- use it only for an exact active independent single-hotel scope; a
+  -- normalized company subject must use the company ownership flow. Legacy or
+  -- shadow subjects are translated only after every rejection check below has
+  -- completed, so a failed request cannot partially normalize its peers.
   if exists (
     select 1
     from unnest(array[
@@ -937,7 +1366,10 @@ begin
     where (account.role <> 'admin' or subject.account_id <> p_actor_account_id)
       and (
         state.account_id is null
-        or state.authority_mode not in ('legacy', 'shadow')
+        or (
+          state.authority_mode not in ('legacy', 'shadow')
+          and not public._staxis_stage_b_is_independent_single_hotel_scope(subject.account_id)
+        )
       )
   ) then
     return jsonb_build_object('status', 'forbidden', 'reason', 'normalized_authority');
@@ -988,44 +1420,6 @@ begin
   ) then
     return jsonb_build_object('status', 'forbidden', 'reason', 'company_owned_hotel');
   end if;
-
-  -- Legacy/shadow rows are translated exactly once inside this mutation
-  -- boundary. An unresolved Stage A row aborts the operation; it is never
-  -- guessed into canonical access by an ownership request.
-  v_import := public._staxis_stage_b_import_legacy_scope(
-    p_actor_account_id, 'Stage B ownership transfer import'
-  );
-  if coalesce((v_import->>'ok')::boolean, false) is not true then
-    return v_import || jsonb_build_object('status', 'conflict');
-  end if;
-  v_import := public._staxis_stage_b_import_legacy_scope(
-    p_old_owner_account_id, 'Stage B ownership transfer import'
-  );
-  if coalesce((v_import->>'ok')::boolean, false) is not true then
-    return v_import || jsonb_build_object('status', 'conflict');
-  end if;
-  v_import := public._staxis_stage_b_import_legacy_scope(
-    p_new_owner_account_id, 'Stage B ownership transfer import'
-  );
-  if coalesce((v_import->>'ok')::boolean, false) is not true then
-    return v_import || jsonb_build_object('status', 'conflict');
-  end if;
-
-  v_actor_access := public.staxis_list_account_authorized_properties(v_actor.id);
-  v_old_access := public.staxis_list_account_authorized_properties(v_old.id);
-  v_new_access := public.staxis_list_account_authorized_properties(v_new.id);
-  if coalesce((v_actor_access->>'ok')::boolean, false) is not true
-     or coalesce((v_old_access->>'ok')::boolean, false) is not true
-     or coalesce((v_new_access->>'ok')::boolean, false) is not true
-  then
-    return jsonb_build_object('status', 'forbidden', 'reason', 'authority_unavailable');
-  end if;
-  select coalesce(array_agg(value::text::uuid order by value::text), '{}'::uuid[])
-    into v_actor_ids from jsonb_array_elements_text(coalesce(v_actor_access->'propertyIds', '[]'::jsonb)) value;
-  select coalesce(array_agg(value::text::uuid order by value::text), '{}'::uuid[])
-    into v_old_ids from jsonb_array_elements_text(coalesce(v_old_access->'propertyIds', '[]'::jsonb)) value;
-  select coalesce(array_agg(value::text::uuid order by value::text), '{}'::uuid[])
-    into v_new_ids from jsonb_array_elements_text(coalesce(v_new_access->'propertyIds', '[]'::jsonb)) value;
 
   begin
     for v_property_id in
@@ -1135,6 +1529,46 @@ begin
   ) then
     return jsonb_build_object('status', 'forbidden', 'reason', 'normalized_organization_owner');
   end if;
+
+  -- Preflight every legacy/shadow subject before importing any one of them.
+  -- This keeps a missing identity, inactive account, retired bridge, or other
+  -- unresolved peer from leaving a partially normalized ownership transfer.
+  for v_property_id in
+    select distinct subject.account_id
+    from unnest(array[
+      p_actor_account_id, p_old_owner_account_id, p_new_owner_account_id
+    ]) subject(account_id)
+    join public.account_authorization_state state
+      on state.account_id = subject.account_id
+     and state.authority_mode in ('legacy', 'shadow')
+  loop
+    v_import := public._staxis_stage_b_validate_legacy_scope(v_property_id);
+    if coalesce((v_import->>'ok')::boolean, false) is not true then
+      return v_import || jsonb_build_object('status', 'conflict');
+    end if;
+  end loop;
+
+  -- All rejection paths are now behind us. The import helper is expected to
+  -- succeed for each prevalidated row; an impossible post-lock discrepancy
+  -- raises so PostgreSQL rolls the whole guarded mutation back.
+  for v_property_id in
+    select distinct subject.account_id
+    from unnest(array[
+      p_actor_account_id, p_old_owner_account_id, p_new_owner_account_id
+    ]) subject(account_id)
+    join public.account_authorization_state state
+      on state.account_id = subject.account_id
+     and state.authority_mode in ('legacy', 'shadow')
+  loop
+    v_import := public._staxis_stage_b_import_legacy_scope(
+      v_property_id, 'Stage B ownership transfer import'
+    );
+    if coalesce((v_import->>'ok')::boolean, false) is not true then
+      raise exception 'Stage B ownership import failed after preflight for %', v_property_id
+        using errcode = 'P0001', detail = v_import::text;
+    end if;
+  end loop;
+
   perform set_config('staxis.actor_account_id', v_actor.id::text, true);
   perform set_config('staxis.request_id', btrim(p_request_id), true);
   update public.accounts set role = 'owner' where id = v_new.id;
