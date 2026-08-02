@@ -8,6 +8,7 @@ import {
   groupAccessMemberships,
   isAccessHistoryStatus,
   isDirectAccessGrant,
+  shouldRenderAccessEmptyState,
   splitAccessMemberships,
 } from '@/lib/company-access/access-people';
 
@@ -64,6 +65,23 @@ describe('Access person grouping', () => {
     assert.equal(isDirectAccessGrant({ scopeType: 'portfolio' }), false);
     assert.equal(isDirectAccessGrant({ scopeType: 'organization' }), false);
   });
+
+  test('hides the empty state when History reveals a history-only request', () => {
+    const base = {
+      adminPreview: false,
+      renderedPeopleCount: 0,
+      currentRequestCount: 0,
+      historyRequestCount: 1,
+    };
+
+    assert.equal(shouldRenderAccessEmptyState({ ...base, showHistory: false }), true);
+    assert.equal(shouldRenderAccessEmptyState({ ...base, showHistory: true }), false);
+    assert.equal(
+      shouldRenderAccessEmptyState({ ...base, historyRequestCount: 0, showHistory: true }),
+      true,
+    );
+    assert.equal(shouldRenderAccessEmptyState({ ...base, adminPreview: true, showHistory: true }), false);
+  });
 });
 
 describe('Access tab placement contract', () => {
@@ -73,6 +91,7 @@ describe('Access tab placement contract', () => {
     assert.doesNotMatch(page, /Customer grants|Roles and scopes by person/);
     assert.match(page, /groupAccessMemberships\(visibleMemberships\)/);
     assert.match(page, /const renderedPeople = showHistory/);
+    assert.match(page, /shouldRenderAccessEmptyState\(/);
     assert.match(page, /showDirectAccess=\{adminPreview\}/);
     assert.match(page, /isDirectAccessGrant\(grant\)/);
     assert.match(page, /onEditAccess=\{setEditingMembershipId\}/);

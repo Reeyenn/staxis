@@ -61,3 +61,17 @@ export function splitAccessMemberships(memberships: readonly CompanyMembership[]
 export function isDirectAccessGrant(grant: Pick<CompanyManagedGrant, 'scopeType'>): boolean {
   return grant.scopeType === 'property';
 }
+
+export function shouldRenderAccessEmptyState(input: {
+  adminPreview: boolean;
+  renderedPeopleCount: number;
+  currentRequestCount: number;
+  showHistory: boolean;
+  historyRequestCount: number;
+}): boolean {
+  const hasVisibleHistoryRequest = input.showHistory && input.historyRequestCount > 0;
+  return !input.adminPreview
+    && input.renderedPeopleCount === 0
+    && input.currentRequestCount === 0
+    && !hasVisibleHistoryRequest;
+}
