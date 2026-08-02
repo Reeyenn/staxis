@@ -158,7 +158,7 @@ describe('My Hotel account lifecycle dialog', () => {
     assert.match(loadingDialog, /event\.key !== 'Tab'/);
     assert.match(loadingDialog, /document\.activeElement === first/);
     assert.match(loadingDialog, /document\.activeElement === last/);
-    assert.match(loadingDialog, /returnFocusElement\?\.isConnected/);
+    assert.match(loadingDialog, /restoreDialogFocus\(returnFocusRef, fallbackFocusRef, previousFocusElement\)/);
     assert.match(loadingDialog, /ref=\{dialogRef\}/);
   });
 

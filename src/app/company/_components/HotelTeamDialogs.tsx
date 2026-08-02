@@ -5,11 +5,14 @@ import { createPortal } from 'react-dom';
 import QRCode from 'qrcode';
 import {
   AlertCircle,
+  CalendarPlus,
   Check,
   CheckCircle2,
   Copy,
+  ChevronRight,
   KeyRound,
   Link2,
+  LogIn,
   Mail,
   QrCode,
   RefreshCw,
@@ -26,6 +29,7 @@ import { copyToClipboard } from '@/lib/copy-to-clipboard';
 import { HAT_ROLE_LABELS, isHatRole } from '@/lib/company/roles';
 import { ASSIGNABLE_ROLES, type AppRole, type AssignableRole } from '@/lib/roles';
 
+import { restoreDialogFocus } from './dialog-focus';
 import type {
   HotelInviteRosterProfile,
   HotelJoinRequest,
@@ -304,7 +308,12 @@ function signupLinkFor(code: string): string {
   return `https://getstaxis.com/signup?code=${encodeURIComponent(code)}`;
 }
 
-function useDialogBehavior(onClose: () => void, busy: boolean) {
+function useDialogBehavior(
+  onClose: () => void,
+  busy: boolean,
+  returnFocusRef?: React.RefObject<HTMLElement | null>,
+  fallbackFocusRef?: React.RefObject<HTMLElement | null>,
+) {
   const closeRef = React.useRef<HTMLButtonElement | null>(null);
   const dialogRef = React.useRef<HTMLDivElement | null>(null);
   const onCloseRef = React.useRef(onClose);
@@ -313,7 +322,7 @@ function useDialogBehavior(onClose: () => void, busy: boolean) {
   busyRef.current = busy;
 
   React.useEffect(() => {
-    const returnFocusElement = document.activeElement instanceof HTMLElement
+    const previousFocusElement = document.activeElement instanceof HTMLElement
       ? document.activeElement
       : null;
     const previousOverflow = document.body.style.overflow;
@@ -346,9 +355,9 @@ function useDialogBehavior(onClose: () => void, busy: boolean) {
     return () => {
       document.body.style.overflow = previousOverflow;
       document.removeEventListener('keydown', onKeyDown);
-      if (returnFocusElement?.isConnected) returnFocusElement.focus({ preventScroll: true });
+      restoreDialogFocus(returnFocusRef, fallbackFocusRef, previousFocusElement);
     };
-  }, []);
+  }, [fallbackFocusRef, returnFocusRef]);
 
   return { closeRef, dialogRef };
 }
@@ -362,6 +371,8 @@ function DialogShell({
   onClose,
   busy = false,
   wide = false,
+  returnFocusRef,
+  fallbackFocusRef,
   children,
 }: {
   title: string;
@@ -372,9 +383,16 @@ function DialogShell({
   onClose: () => void;
   busy?: boolean;
   wide?: boolean;
+  returnFocusRef?: React.RefObject<HTMLElement | null>;
+  fallbackFocusRef?: React.RefObject<HTMLElement | null>;
   children: React.ReactNode;
 }) {
-  const { closeRef, dialogRef } = useDialogBehavior(onClose, busy);
+  const { closeRef, dialogRef } = useDialogBehavior(
+    onClose,
+    busy,
+    returnFocusRef,
+    fallbackFocusRef,
+  );
   const titleId = React.useId();
   const descriptionId = React.useId();
   return createPortal(
@@ -1284,11 +1302,13 @@ export function FirstPersonInviteDialog({
   onClose,
   onChanged,
   onInvited,
+  fallbackFocusRef,
 }: {
   hotelId: string;
   hotelName: string;
   onClose: () => void;
   onChanged?: () => void | Promise<void>;
+  fallbackFocusRef?: React.RefObject<HTMLElement | null>;
   /**
    * Fired once with the server's receipt when an invitation actually exists.
    * Additive: the People panel ignores it and keeps using onChanged to refetch.
@@ -1364,6 +1384,7 @@ export function FirstPersonInviteDialog({
       icon={<UserCheck size={21} aria-hidden="true" />}
       onClose={onClose}
       busy={busy}
+      fallbackFocusRef={fallbackFocusRef}
     >
       {result ? (
         <div className={styles.dialogForm}>
@@ -1443,6 +1464,93 @@ export function FirstPersonInviteDialog({
   );
 }
 
+export function PeopleInviteChooserDialog({
+  canAddStaff,
+  canInviteToStaxis,
+  canSendEmailInvite,
+  canShareHotelInvite,
+  onAddStaff,
+  onInviteToStaxis,
+  onClose,
+  returnFocusRef,
+  fallbackFocusRef,
+}: {
+  canAddStaff: boolean;
+  canInviteToStaxis: boolean;
+  canSendEmailInvite: boolean;
+  canShareHotelInvite: boolean;
+  onAddStaff: () => void;
+  onInviteToStaxis: () => void;
+  onClose: () => void;
+  returnFocusRef?: React.RefObject<HTMLElement | null>;
+  fallbackFocusRef?: React.RefObject<HTMLElement | null>;
+}) {
+  const addStaffDescriptionId = React.useId();
+  const inviteDescriptionId = React.useId();
+  const inviteDescription = canShareHotelInvite
+    ? canSendEmailInvite
+      ? 'Send an email invite or share a link, QR code, or invite code.'
+      : 'Share a link, QR code, or invite code.'
+    : 'Send an email invite.';
+
+  if (!canAddStaff && !canInviteToStaxis) return null;
+
+  return (
+    <DialogShell
+      title={'Invite people'}
+      eyebrow={'People'}
+      description={'Does this person need a Staxis login?'}
+      lang={'en'}
+      icon={<UserRoundCog size={21} aria-hidden="true" />}
+      onClose={onClose}
+      returnFocusRef={returnFocusRef}
+      fallbackFocusRef={fallbackFocusRef}
+    >
+      <div className={styles.peopleInviteChoices} role="group" aria-label="Choose whether this person needs a Staxis login">
+        {canAddStaff ? (
+          <button
+            type="button"
+            className={styles.peopleInviteChoice}
+            onClick={onAddStaff}
+            aria-describedby={addStaffDescriptionId}
+          >
+            <span className={styles.peopleInviteChoiceIcon} aria-hidden="true">
+              <CalendarPlus size={19} />
+            </span>
+            <span className={styles.peopleInviteChoiceCopy}>
+              <strong>{'Add staff member'}</strong>
+              <small id={addStaffDescriptionId}>{"Add them to this hotel's roster and schedule. No Staxis account."}</small>
+            </span>
+            <ChevronRight size={18} aria-hidden="true" />
+          </button>
+        ) : null}
+        {canInviteToStaxis ? (
+          <button
+            type="button"
+            className={styles.peopleInviteChoice}
+            onClick={onInviteToStaxis}
+            aria-describedby={inviteDescriptionId}
+          >
+            <span className={styles.peopleInviteChoiceIcon} aria-hidden="true">
+              <LogIn size={19} />
+            </span>
+            <span className={styles.peopleInviteChoiceCopy}>
+              <strong>{'Invite to Staxis'}</strong>
+              <small id={inviteDescriptionId}>{inviteDescription}</small>
+            </span>
+            <ChevronRight size={18} aria-hidden="true" />
+          </button>
+        ) : null}
+      </div>
+      <div className={styles.dialogFooter}>
+        <button type="button" className={styles.secondaryButton} onClick={onClose}>
+          {'Cancel'}
+        </button>
+      </div>
+    </DialogShell>
+  );
+}
+
 export function HotelInviteDialog({
   hotelId,
   hotelName,
@@ -1452,6 +1560,8 @@ export function HotelInviteDialog({
   unlinkedRosterProfiles = NO_UNLINKED_ROSTER_PROFILES,
   onClose,
   onChanged,
+  returnFocusRef,
+  fallbackFocusRef,
 }: {
   hotelId: string;
   hotelName: string;
@@ -1461,6 +1571,8 @@ export function HotelInviteDialog({
   unlinkedRosterProfiles?: readonly HotelInviteRosterProfile[];
   onClose: () => void;
   onChanged?: () => void | Promise<void>;
+  returnFocusRef?: React.RefObject<HTMLElement | null>;
+  fallbackFocusRef?: React.RefObject<HTMLElement | null>;
 }) {
   const [inviteMode, setInviteMode] = React.useState<InviteMode>(
     canManageHotelRoster ? 'shared' : 'email',
@@ -1883,6 +1995,8 @@ export function HotelInviteDialog({
       onClose={onClose}
       busy={busy}
       wide
+      returnFocusRef={returnFocusRef}
+      fallbackFocusRef={fallbackFocusRef}
     >
       <div className={styles.inviteBody} aria-busy={(canManageHotelRoster && codeLoading) || invitesLoading}>
         {hasInviteModeChoice ? (

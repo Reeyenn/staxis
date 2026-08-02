@@ -208,7 +208,7 @@ describe('My Hotel account and team integration', () => {
     assert.doesNotMatch(hotelTeam, /Manage only the accounts connected|Administra solo las cuentas conectadas/);
     assert.doesNotMatch(hotelTeamCss, /\.headingRow|\.headingCopy/);
     assert.match(hotelTeam, /<div className=\{styles\.root\}>\s*<section className=\{styles\.subsection\} aria-labelledby="team-members-title">/);
-    assert.match(hotelTeam, /<h2 id="team-members-title">/);
+    assert.match(hotelTeam, /<h2 ref=\{peopleHeadingRef\} id="team-members-title" tabIndex=\{-1\}>/);
   });
 
   test('keeps three connected tabs and moves the team count and invite action into the roster header', () => {
@@ -306,7 +306,7 @@ describe('My Hotel account and team integration', () => {
     assert.match(company, /resolved\.permissions\.accountInvitePropertyIds\?\.includes\(activeProperty\.id\)/);
     assert.match(company, /canInviteAccounts=\{Boolean\([\s\S]*adminActionsAvailable[\s\S]*accountInvitePropertyIds/);
     assert.match(company, /canInviteAccounts=\{canInviteAccounts\}/);
-    assert.match(company, /!adminPreview && !canManageTeam && canInviteAccounts/);
+    assert.match(company, /!adminPreview && !activeProperty && !canManageTeam && canInviteAccounts/);
     assert.doesNotMatch(company, /<InvitePersonDialog/);
     assert.match(hotelTeam, /inviteDialogOpen && canInviteAccounts[\s\S]*canManageHotelRoster=\{false\}/);
     assert.match(hotelTeamDialogs, /if \(!canManageHotelRoster\)[\s\S]*setCodeLoading\(false\)/);
@@ -363,12 +363,15 @@ describe('My Hotel account and team integration', () => {
     assert.match(hotelTeam, /LazyRemoveDialog/);
     assert.match(hotelTeam, /LazyFirstPersonInviteDialog/);
     assert.match(hotelTeam, /LazyInviteDialog/);
-    assert.match(hotelTeam, /\{inviteDialogOpen && needsFirstPerson \? \([\s\S]*: inviteDialogOpen \? \(/);
+    assert.match(hotelTeam, /\{inviteDialogOpen && !inviteActionDisabled && needsFirstPerson \? \([\s\S]*: inviteDialogOpen && !inviteActionDisabled \? \(/);
     assert.match(hotelTeam, /onClose=\{\(\) => onInviteDialogOpenChange\(false\)\}/);
-    assert.match(hotelTeam, /Add staff member/);
-    assert.match(hotelTeam, /Roster and schedule only · no Staxis login/);
+    assert.match(hotelTeamDialogs, /PeopleInviteChooserDialog/);
+    assert.match(hotelTeamDialogs, /Add staff member/);
+    assert.match(hotelTeamDialogs, /Add them to this hotel's roster and schedule\. No Staxis account\./);
     assert.match(hotelTeam, /Invite people/);
-    assert.match(hotelTeam, /Creates login access · share an invite or send email/);
+    assert.match(hotelTeam, /Add someone to the schedule, or invite them to create a Staxis account\./);
+    assert.match(hotelTeamDialogs, /Invite to Staxis/);
+    assert.match(hotelTeamDialogs, /Send an email invite or share a link, QR code, or invite code\./);
     assert.match(hotelTeam, /Use Invite people when they need Staxis login access/);
     assert.match(hotelTeamDialogs, /Shared hotel invite/);
     assert.match(hotelTeamDialogs, /Email one person/);
