@@ -6,6 +6,7 @@ import { JSDOM } from 'jsdom';
 import React, { act } from 'react';
 import type { Root } from 'react-dom/client';
 
+import { __setPortfolioStreamLimitsForTesting } from '@/components/agent/useAgentChat';
 import { supabase } from '@/lib/supabase';
 
 const ORGANIZATION_A = '11111111-1111-4111-8111-111111111111';
@@ -23,7 +24,9 @@ type MountedChat = {
   container: HTMLDivElement;
   root: Root;
   ask(question: string): Promise<void>;
-  rerender(organizationId: string): Promise<void>;
+  rerender(organizationId: string, available?: boolean): Promise<void>;
+  setAvailable(available: boolean): Promise<void>;
+  unmount(): Promise<void>;
 };
 
 const DOM_GLOBALS = [
@@ -103,15 +106,27 @@ async function flushMicrotasks(rounds = 12): Promise<void> {
   for (let index = 0; index < rounds; index += 1) await Promise.resolve();
 }
 
-async function waitFor(predicate: () => boolean, message: string): Promise<void> {
+async function waitFor(
+  predicate: () => boolean,
+  message: string,
+  delayMs = 0,
+): Promise<void> {
   for (let attempt = 0; attempt < 30; attempt += 1) {
     if (predicate()) return;
     await act(async () => {
       await flushMicrotasks();
-      await new Promise<void>((resolve) => { setImmediate(resolve); });
+      if (delayMs > 0) await new Promise<void>((resolve) => { setTimeout(resolve, delayMs); });
+      else await new Promise<void>((resolve) => { setImmediate(resolve); });
     });
   }
   assert.fail(message);
+}
+
+async function waitMs(durationMs: number): Promise<void> {
+  await act(async () => {
+    await new Promise<void>((resolve) => { setTimeout(resolve, durationMs); });
+    await flushMicrotasks();
+  });
 }
 
 function jsonResponse(body: unknown, status = 200): Response {
@@ -122,8 +137,47 @@ function jsonResponse(body: unknown, status = 200): Response {
 }
 
 function streamResponse(events: readonly Record<string, unknown>[]): Response {
-  const body = events.map((event) => `data: ${JSON.stringify(event)}\n\n`).join('');
+  return rawStreamResponse(events.map((event) => `data: ${JSON.stringify(event)}\n\n`).join(''));
+}
+
+function rawStreamResponse(body: string): Response {
   return new Response(new TextEncoder().encode(body), {
+    status: 200,
+    headers: { 'Content-Type': 'text/event-stream' },
+  });
+}
+
+function stalledBodyResponse(onCancel: () => void): Response {
+  return new Response(new ReadableStream<Uint8Array>({
+    cancel() {
+      onCancel();
+    },
+  }), {
+    status: 200,
+    headers: { 'Content-Type': 'text/event-stream' },
+  });
+}
+
+function delayedStreamResponse(
+  events: readonly Record<string, unknown>[],
+  delayMs: number,
+): Response {
+  const chunks = events.map((event) => new TextEncoder().encode(
+    `data: ${JSON.stringify(event)}\n\n`,
+  ));
+  return new Response(new ReadableStream<Uint8Array>({
+    async start(controller) {
+      try {
+        for (const chunk of chunks) {
+          await new Promise<void>((resolve) => { setTimeout(resolve, delayMs); });
+          controller.enqueue(chunk);
+        }
+        controller.close();
+      } catch {
+        // The test intentionally exercises reader cancellation mid-stream.
+      }
+    },
+  }), {
     status: 200,
     headers: { 'Content-Type': 'text/event-stream' },
   });
@@ -170,6 +224,25 @@ function installFetchPlans(
   return calls;
 }
 
+function shortPortfolioLimits(
+  context: TestContext,
+  overrides: Partial<{
+    inactivityMs: number;
+    absoluteMs: number;
+    maxFrameChars: number;
+    maxAnswerChars: number;
+  }> = {},
+): void {
+  __setPortfolioStreamLimitsForTesting({
+    inactivityMs: 25,
+    absoluteMs: 150,
+    maxFrameChars: 4096,
+    maxAnswerChars: 64,
+    ...overrides,
+  });
+  context.after(() => { __setPortfolioStreamLimitsForTesting(); });
+}
+
 async function mountChat(
   context: TestContext,
   organizationId = ORGANIZATION_A,
@@ -180,13 +253,18 @@ async function mountChat(
   const container = document.createElement('div');
   document.body.append(container);
   const root = createRoot(container);
+  let currentAvailable = true;
+  let currentOrganizationId = organizationId;
+  let cleaned = false;
 
-  const render = (nextOrganizationId: string) => {
+  const render = (nextOrganizationId: string, available = currentAvailable) => {
+    currentOrganizationId = nextOrganizationId;
+    currentAvailable = available;
     root.render(
       <PortfolioChat
         organizationId={nextOrganizationId}
         organizationName={nextOrganizationId === ORGANIZATION_A ? 'Company A' : 'Company B'}
-        available
+        available={currentAvailable}
       />,
     );
   };
@@ -195,11 +273,14 @@ async function mountChat(
     await flushMicrotasks();
   });
 
-  context.after(async () => {
+  const cleanup = async () => {
+    if (cleaned) return;
+    cleaned = true;
     await act(async () => { root.unmount(); });
     container.remove();
     browser.restore();
-  });
+  };
+  context.after(cleanup);
 
   return {
     container,
@@ -231,12 +312,19 @@ async function mountChat(
         await flushMicrotasks();
       });
     },
-    async rerender(nextOrganizationId) {
+    async rerender(nextOrganizationId, available = currentAvailable) {
       await act(async () => {
-        render(nextOrganizationId);
+        render(nextOrganizationId, available);
         await flushMicrotasks();
       });
     },
+    async setAvailable(available) {
+      await act(async () => {
+        render(currentOrganizationId, available);
+        await flushMicrotasks();
+      });
+    },
+    unmount: cleanup,
   };
 }
 
@@ -282,7 +370,6 @@ describe('shared portfolio chat behavior', { concurrency: false }, () => {
     assert.equal(postCalls.length, 1);
     assert.equal(postCalls[0].url, '/api/agent/portfolio');
     assert.deepEqual(postCalls[0].body, {
-      conversationId: null,
       organizationId: ORGANIZATION_A,
       message: 'How are my hotels doing?',
     });
@@ -302,7 +389,7 @@ describe('shared portfolio chat behavior', { concurrency: false }, () => {
   test('shows a retryable error and retries the failed question in a fresh conversation', async (context) => {
     const calls = installFetchPlans(context, [
       () => jsonResponse({ data: { conversations: [] } }),
-      () => jsonResponse({ error: 'Saved portfolio chats could not be loaded.' }, 503),
+      () => jsonResponse({ error: 'database password and provider stack: do not render' }, 503),
       () => streamResponse([
         { type: 'conversation_id', id: CONVERSATION_ID },
         { type: 'active_scope', scope: activeScope(ORGANIZATION_A) },
@@ -315,9 +402,13 @@ describe('shared portfolio chat behavior', { concurrency: false }, () => {
     await waitFor(() => calls.length === 1, 'saved conversation probe did not complete');
     await app.ask('Try this again');
     await waitFor(
-      () => (app.container.textContent ?? '').includes('Saved portfolio chats could not be loaded.'),
+      () => (app.container.textContent ?? '').includes(
+        'Staxis could not answer just now. Nothing about your hotels changed.',
+      ),
       'portfolio error did not render',
     );
+    assert.doesNotMatch(app.container.textContent ?? '', /database password|provider stack/);
+    assert.doesNotMatch(app.container.textContent ?? '', /Try this again/);
     const retry = app.container.querySelector<HTMLButtonElement>('[role="alert"] button');
     assert.ok(retry, 'portfolio error must expose a retry action');
     await act(async () => {
@@ -330,7 +421,7 @@ describe('shared portfolio chat behavior', { concurrency: false }, () => {
     );
     const postCalls = calls.filter((call) => call.method === 'POST');
     assert.equal(postCalls.length, 2);
-    assert.equal(postCalls[1].body?.conversationId, null);
+    assert.equal(Object.hasOwn(postCalls[1].body ?? {}, 'conversationId'), false);
     assert.equal(postCalls[1].body?.message, 'Try this again');
   });
 
@@ -347,5 +438,316 @@ describe('shared portfolio chat behavior', { concurrency: false }, () => {
     await app.rerender(ORGANIZATION_B);
     await waitFor(() => calls[1].signal?.aborted === true, 'company switch did not abort the active turn');
     assert.doesNotMatch(app.container.textContent ?? '', /Keep this answer private to Company A/);
+  });
+
+  test('fails stalled response headers with a bounded retryable error', async (context) => {
+    shortPortfolioLimits(context, { inactivityMs: 20, absoluteMs: 70 });
+    const calls = installFetchPlans(context, [
+      () => jsonResponse({ data: { conversations: [] } }),
+      () => new Promise<Response>(() => {}),
+    ]);
+    const app = await mountChat(context);
+    await waitFor(() => calls.length === 1, 'saved conversation probe did not complete');
+    await app.ask('Stall before headers');
+    await waitFor(() => calls.length === 2, 'portfolio request did not start');
+    await waitFor(
+      () => (app.container.textContent ?? '').includes('Staxis could not answer just now.'),
+      'stalled headers did not become retryable',
+      5,
+    );
+    assert.equal(calls[1].signal?.aborted, true);
+    assert.doesNotMatch(app.container.textContent ?? '', /provider|database|stack/i);
+  });
+
+  test('cancels a stalled response body and clears its partial state', async (context) => {
+    shortPortfolioLimits(context, { inactivityMs: 20, absoluteMs: 100 });
+    let readerCancelled = false;
+    const calls = installFetchPlans(context, [
+      () => jsonResponse({ data: { conversations: [] } }),
+      () => stalledBodyResponse(() => { readerCancelled = true; }),
+    ]);
+    const app = await mountChat(context);
+    await waitFor(() => calls.length === 1, 'saved conversation probe did not complete');
+    await app.ask('Stall after headers');
+    await waitFor(() => calls.length === 2, 'portfolio request did not start');
+    await waitFor(
+      () => readerCancelled && (app.container.textContent ?? '').includes('Staxis could not answer just now.'),
+      'stalled body was not cancelled and failed',
+      5,
+    );
+    assert.doesNotMatch(app.container.textContent ?? '', /Reading your hotels…/);
+  });
+
+  test('resets inactivity only on valid progress and cleans the guard after done', async (context) => {
+    shortPortfolioLimits(context, { inactivityMs: 70, absoluteMs: 250 });
+    const calls = installFetchPlans(context, [
+      () => jsonResponse({ data: { conversations: [] } }),
+      () => delayedStreamResponse([
+        { type: 'active_scope', scope: activeScope(ORGANIZATION_A) },
+        { type: 'text_delta', delta: 'Progress stays alive.' },
+        { type: 'done', finalText: 'Progress stays alive.' },
+      ], 30),
+    ]);
+    const app = await mountChat(context);
+    await waitFor(() => calls.length === 1, 'saved conversation probe did not complete');
+    await app.ask('Keep reading');
+    await waitFor(
+      () => (app.container.textContent ?? '').includes('Progress stays alive.'),
+      'valid progress did not reset inactivity',
+      5,
+    );
+    await waitMs(120);
+    assert.equal(calls[1].signal?.aborted, false);
+    assert.doesNotMatch(app.container.textContent ?? '', /Staxis could not answer just now/);
+  });
+
+  test('enforces the absolute deadline even while valid progress arrives', async (context) => {
+    shortPortfolioLimits(context, { inactivityMs: 100, absoluteMs: 45 });
+    const calls = installFetchPlans(context, [
+      () => jsonResponse({ data: { conversations: [] } }),
+      () => delayedStreamResponse([
+        { type: 'active_scope', scope: activeScope(ORGANIZATION_A) },
+        { type: 'text_delta', delta: 'Still reading.' },
+        { type: 'done', finalText: 'Still reading.' },
+      ], 20),
+    ]);
+    const app = await mountChat(context);
+    await waitFor(() => calls.length === 1, 'saved conversation probe did not complete');
+    await app.ask('Do not run forever');
+    await waitFor(
+      () => (app.container.textContent ?? '').includes('Staxis could not answer just now.'),
+      'absolute deadline did not fail the turn',
+      5,
+    );
+    assert.equal(calls[1].signal?.aborted, true);
+    assert.doesNotMatch(app.container.textContent ?? '', /Still reading\./);
+  });
+
+  test('rejects oversized frames and multi-frame answers before exposure', async (context) => {
+    shortPortfolioLimits(context, { maxFrameChars: 40, maxAnswerChars: 5 });
+    const calls = installFetchPlans(context, [
+      () => jsonResponse({ data: { conversations: [] } }),
+      () => rawStreamResponse(`data: ${'x'.repeat(80)}\n\n`),
+    ]);
+    const app = await mountChat(context);
+    await waitFor(() => calls.length === 1, 'saved conversation probe did not complete');
+    await app.ask('Oversized frame');
+    await waitFor(
+      () => (app.container.textContent ?? '').includes('Staxis could not answer just now.'),
+      'oversized frame did not fail',
+    );
+    assert.doesNotMatch(app.container.textContent ?? '', /xxxxxxxx/);
+  });
+
+  test('rejects a multi-frame answer that exceeds the total answer cap', async (context) => {
+    shortPortfolioLimits(context, { maxAnswerChars: 5 });
+    const calls = installFetchPlans(context, [
+      () => jsonResponse({ data: { conversations: [] } }),
+      () => streamResponse([
+        { type: 'active_scope', scope: activeScope(ORGANIZATION_A) },
+        { type: 'text_delta', delta: 'abc' },
+        { type: 'text_delta', delta: 'de' },
+        { type: 'text_delta', delta: 'f' },
+        { type: 'done', finalText: 'abcdef' },
+      ]),
+    ]);
+    const app = await mountChat(context);
+    await waitFor(() => calls.length === 1, 'saved conversation probe did not complete');
+    await app.ask('Oversized answer');
+    await waitFor(
+      () => (app.container.textContent ?? '').includes('Staxis could not answer just now.'),
+      'multi-frame answer cap did not fail',
+    );
+    assert.doesNotMatch(app.container.textContent ?? '', /abcdef/);
+  });
+
+  test('requires scope and an explicit done at EOF', async (context) => {
+    const calls = installFetchPlans(context, [
+      () => jsonResponse({ data: { conversations: [] } }),
+      () => streamResponse([
+        { type: 'active_scope', scope: activeScope(ORGANIZATION_A) },
+        { type: 'text_delta', delta: 'Partial answer.' },
+      ]),
+    ]);
+    const app = await mountChat(context);
+    await waitFor(() => calls.length === 1, 'saved conversation probe did not complete');
+    await app.ask('Missing terminal');
+    await waitFor(
+      () => (app.container.textContent ?? '').includes('Staxis could not answer just now.'),
+      'EOF without done did not fail',
+    );
+    assert.doesNotMatch(app.container.textContent ?? '', /Partial answer\./);
+    assert.equal(app.container.querySelector('[data-active-scope="true"]'), null);
+  });
+
+  test('rejects a missing scope or empty terminal answer', async (context) => {
+    const calls = installFetchPlans(context, [
+      () => jsonResponse({ data: { conversations: [] } }),
+      () => streamResponse([{ type: 'done', finalText: '' }]),
+    ]);
+    const app = await mountChat(context);
+    await waitFor(() => calls.length === 1, 'saved conversation probe did not complete');
+    await app.ask('Empty terminal');
+    await waitFor(
+      () => (app.container.textContent ?? '').includes('Staxis could not answer just now.'),
+      'empty terminal did not fail',
+    );
+    assert.equal(app.container.querySelector('[data-active-scope="true"]'), null);
+  });
+
+  test('rejects duplicate terminal events instead of presenting a completed answer', async (context) => {
+    const calls = installFetchPlans(context, [
+      () => jsonResponse({ data: { conversations: [] } }),
+      () => streamResponse([
+        { type: 'active_scope', scope: activeScope(ORGANIZATION_A) },
+        { type: 'done', finalText: 'Only once.' },
+        { type: 'done', finalText: 'Twice is invalid.' },
+      ]),
+    ]);
+    const app = await mountChat(context);
+    await waitFor(() => calls.length === 1, 'saved conversation probe did not complete');
+    await app.ask('Duplicate terminal');
+    await waitFor(
+      () => (app.container.textContent ?? '').includes('Staxis could not answer just now.'),
+      'duplicate terminal did not fail',
+    );
+    assert.doesNotMatch(app.container.textContent ?? '', /Only once\.|Twice is invalid\./);
+  });
+
+  test('rejects text that arrives before the verified scope', async (context) => {
+    const calls = installFetchPlans(context, [
+      () => jsonResponse({ data: { conversations: [] } }),
+      () => streamResponse([
+        { type: 'text_delta', delta: 'Before scope' },
+        { type: 'active_scope', scope: activeScope(ORGANIZATION_A) },
+        { type: 'done', finalText: 'Before scope' },
+      ]),
+    ]);
+    const app = await mountChat(context);
+    await waitFor(() => calls.length === 1, 'saved conversation probe did not complete');
+    await app.ask('Text before scope');
+    await waitFor(
+      () => (app.container.textContent ?? '').includes('Staxis could not answer just now.'),
+      'text before scope did not fail',
+    );
+    assert.doesNotMatch(app.container.textContent ?? '', /Before scope/);
+  });
+
+  test('rejects malformed frames without exposing their payload', async (context) => {
+    const calls = installFetchPlans(context, [
+      () => jsonResponse({ data: { conversations: [] } }),
+      () => rawStreamResponse('data: {not valid json}\n\n'),
+    ]);
+    const app = await mountChat(context);
+    await waitFor(() => calls.length === 1, 'saved conversation probe did not complete');
+    await app.ask('Malformed frame');
+    await waitFor(
+      () => (app.container.textContent ?? '').includes('Staxis could not answer just now.'),
+      'malformed frame did not fail',
+    );
+  });
+
+  test('rejects unknown frames without exposing their payload', async (context) => {
+    const calls = installFetchPlans(context, [
+      () => jsonResponse({ data: { conversations: [] } }),
+      () => streamResponse([
+        { type: 'active_scope', scope: activeScope(ORGANIZATION_A) },
+        { type: 'provider_stack_dump', message: 'secret database payload' },
+      ]),
+    ]);
+    const app = await mountChat(context);
+    await waitFor(() => calls.length === 1, 'saved conversation probe did not complete');
+    await app.ask('Unknown frame');
+    await waitFor(
+      () => (app.container.textContent ?? '').includes('Staxis could not answer just now.'),
+      'unknown frame did not fail',
+    );
+    assert.doesNotMatch(app.container.textContent ?? '', /secret database payload|provider_stack_dump/);
+  });
+
+  test('sanitizes an SSE server error and offers a fresh retry', async (context) => {
+    const calls = installFetchPlans(context, [
+      () => jsonResponse({ data: { conversations: [] } }),
+      () => streamResponse([
+        { type: 'active_scope', scope: activeScope(ORGANIZATION_A) },
+        { type: 'error', message: 'postgres://secret stack trace' },
+      ]),
+      () => streamResponse([
+        { type: 'active_scope', scope: activeScope(ORGANIZATION_A) },
+        { type: 'done', finalText: 'Fresh retry succeeded.' },
+      ]),
+    ]);
+    const app = await mountChat(context);
+    await waitFor(() => calls.length === 1, 'saved conversation probe did not complete');
+    await app.ask('Retry after server error');
+    await waitFor(
+      () => (app.container.textContent ?? '').includes('Staxis could not answer just now.'),
+      'SSE error did not become bounded',
+    );
+    assert.doesNotMatch(app.container.textContent ?? '', /postgres|stack trace/);
+    const retry = app.container.querySelector<HTMLButtonElement>('[role="alert"] button');
+    assert.ok(retry);
+    await act(async () => {
+      retry.click();
+      await flushMicrotasks();
+    });
+    await waitFor(
+      () => (app.container.textContent ?? '').includes('Fresh retry succeeded.'),
+      'fresh retry did not complete',
+    );
+    const posts = calls.filter(call => call.method === 'POST');
+    assert.equal(Object.hasOwn(posts[1].body ?? {}, 'conversationId'), false);
+  });
+
+  test('sanitizes a thrown provider or network error in portfolio mode', async (context) => {
+    const calls = installFetchPlans(context, [
+      () => jsonResponse({ data: { conversations: [] } }),
+      () => Promise.reject(new Error('provider stack and database details')),
+    ]);
+    const app = await mountChat(context);
+    await waitFor(() => calls.length === 1, 'saved conversation probe did not complete');
+    await app.ask('Thrown error');
+    await waitFor(
+      () => (app.container.textContent ?? '').includes('Staxis could not answer just now.'),
+      'thrown error did not become bounded',
+    );
+    assert.doesNotMatch(app.container.textContent ?? '', /provider stack|database details/);
+  });
+
+  test('availability off cancels and clears the turn, then reloads cleanly on', async (context) => {
+    shortPortfolioLimits(context, { inactivityMs: 100, absoluteMs: 200 });
+    let readerCancelled = false;
+    const calls = installFetchPlans(context, [
+      () => jsonResponse({ data: { conversations: [] } }),
+      () => stalledBodyResponse(() => { readerCancelled = true; }),
+      () => jsonResponse({ data: { conversations: [] } }),
+    ]);
+    const app = await mountChat(context);
+    await waitFor(() => calls.length === 1, 'saved conversation probe did not complete');
+    await app.ask('Only Company A can see this');
+    await waitFor(() => calls.length === 2, 'portfolio turn did not start');
+    await app.setAvailable(false);
+    await waitFor(() => readerCancelled && calls[1].signal?.aborted === true, 'availability off did not cancel');
+    assert.match(app.container.textContent ?? '', /not available for Company A/i);
+    assert.doesNotMatch(app.container.textContent ?? '', /Only Company A can see this/);
+    await app.setAvailable(true);
+    await waitFor(() => calls.length === 3, 'availability on did not reload saved chats');
+    assert.doesNotMatch(app.container.textContent ?? '', /Only Company A can see this|Staxis could not answer just now/);
+  });
+
+  test('unmount cancels the active portfolio reader and cleans its timers', async (context) => {
+    shortPortfolioLimits(context, { inactivityMs: 20, absoluteMs: 80 });
+    let readerCancelled = false;
+    const calls = installFetchPlans(context, [
+      () => jsonResponse({ data: { conversations: [] } }),
+      () => stalledBodyResponse(() => { readerCancelled = true; }),
+    ]);
+    const app = await mountChat(context);
+    await waitFor(() => calls.length === 1, 'saved conversation probe did not complete');
+    await app.ask('Unmount this turn');
+    await waitFor(() => calls.length === 2, 'portfolio turn did not start');
+    await app.unmount();
+    assert.equal(calls[1].signal?.aborted, true);
+    assert.equal(readerCancelled, true);
   });
 });

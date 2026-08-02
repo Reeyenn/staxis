@@ -99,6 +99,7 @@ export function PortfolioChat({
     loadingConversation,
     streaming,
     error,
+    portfolioRetryMessage,
     sendMessage,
     startNew,
     loadConversation,
@@ -128,8 +129,8 @@ export function PortfolioChat({
   }, [question, sendMessage, streaming]);
 
   const lastTurn = turns[turns.length - 1];
-  const retryMessage = error && !streaming && lastTurn?.user && !lastTurn.assistant
-    ? lastTurn.user
+  const retryMessage = error && !streaming && portfolioRetryMessage
+    ? portfolioRetryMessage
     : null;
   const retry = () => {
     if (retryMessage) {

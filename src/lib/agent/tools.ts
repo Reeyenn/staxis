@@ -354,6 +354,35 @@ export function registerTool<TArgs>(tool: ToolDefinition<TArgs>): void {
   registry.set(tool.name, tool as ToolDefinition<unknown>);
 }
 
+/**
+ * Compatibility surface for persisted `compare_properties` calls. It is
+ * deliberately not registered, so it cannot enter a live model catalog or
+ * reach any hotel data. History and replay callers still receive a useful
+ * refusal instead of a misleading "Tool not found" result.
+ */
+const retiredPortfolioComparisonRefusal = (): ToolResult => ({
+  ok: false,
+  error: 'This comparison moved to My Portfolio. Ask there to compare multiple hotels. Nothing was read or changed.',
+});
+
+const RETIRED_PORTFOLIO_COMPARISON: ToolDefinition = {
+  name: 'compare_properties',
+  description:
+    'Compatibility refusal for a retired cross-hotel comparison request. Use when: replaying historical portfolio tool calls. ' +
+    'Args: any historical comparison payload. Returns: a redirect to My Portfolio. Refuses: all data reads and writes.',
+  inputSchema: {
+    type: 'object',
+    properties: {},
+  },
+  allowedRoles: ['admin', 'owner', 'general_manager', 'front_desk', 'housekeeping', 'maintenance'],
+  surfaces: ['chat'],
+  handler: async (): Promise<ToolResult> => retiredPortfolioComparisonRefusal(),
+};
+
+function isRetiredPortfolioComparison(name: string): boolean {
+  return name === 'compare_properties';
+}
+
 // ─── Retired names (aliases) ────────────────────────────────────────────────
 // The 2026-07-27 catalog rebuild merged overlapping tools and deleted dead
 // stubs. Those wire-names did not simply vanish: they are recorded in three
@@ -364,7 +393,8 @@ export function registerTool<TArgs>(tool: ToolDefinition<TArgs>): void {
 //
 // So a retired name can stay callable, mapped to whichever surviving tool now
 // answers that question. Route replacements are retained for prompt-health
-// diagnostics but are deliberately not executable aliases. Aliases are
+// diagnostics and resolve to a tiny compatibility refusal, never to a
+// data-reading tool. Aliases are
 // deliberately NOT in `registry`, so:
 //   • `listAllTools()` returns only live tools — the tenant-isolation sweep
 //     walks the real catalog, not a doubled one;
@@ -374,10 +404,11 @@ export function registerTool<TArgs>(tool: ToolDefinition<TArgs>): void {
 //
 // Every entry states what it was and why it went. The one route replacement is
 // the old cross-hotel comparison name: the deterministic portfolio route now
-// owns that question, so it has no generic tool target. The catalog audit
-// treats that marker as intentionally non-callable and still catches every
-// ordinary alias that points at a name that is not registered or collides with
-// a live tool.
+// owns that question. Its compatibility target is intentionally absent from
+// the live registry, so history can be answered safely without presenting a
+// generic tool to the model. The catalog audit treats that marker as
+// intentionally non-callable and still catches every ordinary alias that
+// points at a name that is not registered or collides with a live tool.
 export const TOOL_ALIASES: ReadonlyMap<string, string> = new Map([
   // ── Dead stubs: no data source ever existed behind them ──
   // Both returned a fixed "not yet integrated" note and no figures. The
@@ -437,6 +468,7 @@ export function listAllTools(): ToolDefinition[] {
 
 /** Look up a registered tool by name, following a retired name (or undefined). */
 export function getTool(name: string): ToolDefinition | undefined {
+  if (isRetiredPortfolioComparison(name)) return RETIRED_PORTFOLIO_COMPARISON;
   return registry.get(resolveToolName(name));
 }
 
@@ -676,6 +708,7 @@ export async function executeTool(
   args: unknown,
   ctx: ToolContext,
 ): Promise<ToolResult> {
+  if (isRetiredPortfolioComparison(name)) return retiredPortfolioComparisonRefusal();
   // A retired wire-name resolves to whichever tool answers that question now,
   // so a replayed history row / pinned eval case still executes. Everything
   // below gates on the SURVIVING tool's own declarations — an alias grants no

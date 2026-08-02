@@ -156,7 +156,9 @@ describe('tool catalog — retired names', () => {
     // and approval all come from the surviving tool's own declarations.
     for (const [from, to] of TOOL_ALIASES) {
       if (ROUTE_REPLACEMENT_TARGETS.has(to)) {
-        assert.equal(getTool(from), undefined);
+        assert.equal(getTool(from)?.name, from);
+        assert.equal(isMutationTool(from), false);
+        assert.equal(approvalTierFor(from), null);
         continue;
       }
       const target = listAllTools().find((t) => t.name === to);

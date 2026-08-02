@@ -78,6 +78,8 @@ export interface UseAgentChatReturn {
   loadingConversation: boolean;
   streaming: boolean;
   error: string | null;
+  /** The failed portfolio question retained only for the fresh retry action. */
+  portfolioRetryMessage: string | null;
   /**
    * `opts.origin` marks which surface the turn came from. It travels only to
    * the request body, where it selects the AI Control Center slot that governs
@@ -174,6 +176,116 @@ interface SsePayload {
 }
 
 const UUID_RX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
+ * The portfolio stream used to enforce these limits in PortfolioAsk. Keep
+ * them here so the shared client retains the same terminal safety contract
+ * without changing the property chat stream.
+ */
+export const PORTFOLIO_ASK_STREAM_INACTIVITY_MS = 30_000;
+export const PORTFOLIO_ASK_ABSOLUTE_MS = 60_000;
+export const PORTFOLIO_ASK_MAX_FRAME_CHARS = 128 * 1024;
+export const PORTFOLIO_ASK_MAX_ANSWER_CHARS = 64 * 1024;
+
+const PORTFOLIO_CHAT_FAILURE =
+  'Staxis could not answer just now. Nothing about your hotels changed.';
+
+interface PortfolioStreamLimits {
+  inactivityMs: number;
+  absoluteMs: number;
+  maxFrameChars: number;
+  maxAnswerChars: number;
+}
+
+const DEFAULT_PORTFOLIO_STREAM_LIMITS: Readonly<PortfolioStreamLimits> = {
+  inactivityMs: PORTFOLIO_ASK_STREAM_INACTIVITY_MS,
+  absoluteMs: PORTFOLIO_ASK_ABSOLUTE_MS,
+  maxFrameChars: PORTFOLIO_ASK_MAX_FRAME_CHARS,
+  maxAnswerChars: PORTFOLIO_ASK_MAX_ANSWER_CHARS,
+};
+
+let portfolioStreamLimits: Readonly<PortfolioStreamLimits> = DEFAULT_PORTFOLIO_STREAM_LIMITS;
+
+/** Test-only deadline/size injection; production callers must use defaults. */
+export function __setPortfolioStreamLimitsForTesting(
+  overrides?: Partial<PortfolioStreamLimits>,
+): void {
+  if (!overrides) {
+    portfolioStreamLimits = DEFAULT_PORTFOLIO_STREAM_LIMITS;
+    return;
+  }
+  const next = { ...DEFAULT_PORTFOLIO_STREAM_LIMITS, ...overrides };
+  if (Object.values(next).some(value => !Number.isFinite(value) || value <= 0)) {
+    throw new Error('Portfolio stream test limits must be positive finite numbers.');
+  }
+  portfolioStreamLimits = next;
+}
+
+interface ActiveChatRequest {
+  controller: AbortController;
+  cancel: () => void;
+}
+
+interface PortfolioStreamGuard {
+  resetInactivity: () => void;
+  attachReader: (reader: ReadableStreamDefaultReader<Uint8Array>) => void;
+  cancel: () => void;
+  dispose: () => void;
+  timedOut: () => boolean;
+}
+
+function createPortfolioStreamGuard(
+  controller: AbortController,
+  limits: Readonly<PortfolioStreamLimits>,
+): PortfolioStreamGuard {
+  let reader: ReadableStreamDefaultReader<Uint8Array> | null = null;
+  let inactivityTimer: ReturnType<typeof setTimeout> | null = null;
+  let absoluteTimer: ReturnType<typeof setTimeout> | null = null;
+  let disposed = false;
+  let timedOut = false;
+
+  const cancelReader = () => {
+    if (!reader) return;
+    void reader.cancel().catch(() => undefined);
+  };
+
+  const abortForTimeout = () => {
+    if (disposed || timedOut) return;
+    timedOut = true;
+    controller.abort();
+    cancelReader();
+  };
+
+  const resetInactivity = () => {
+    if (disposed || timedOut) return;
+    if (inactivityTimer) clearTimeout(inactivityTimer);
+    inactivityTimer = setTimeout(abortForTimeout, limits.inactivityMs);
+  };
+
+  absoluteTimer = setTimeout(abortForTimeout, limits.absoluteMs);
+  resetInactivity();
+
+  return {
+    resetInactivity,
+    attachReader: nextReader => {
+      reader = nextReader;
+      if (controller.signal.aborted) cancelReader();
+    },
+    cancel: () => {
+      if (!controller.signal.aborted) controller.abort();
+      cancelReader();
+    },
+    dispose: () => {
+      disposed = true;
+      if (inactivityTimer) clearTimeout(inactivityTimer);
+      if (absoluteTimer) clearTimeout(absoluteTimer);
+      inactivityTimer = null;
+      absoluteTimer = null;
+      reader = null;
+    },
+    timedOut: () => timedOut,
+  };
+}
 
 function finiteCount(value: unknown): number | null {
   return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0
@@ -346,6 +458,7 @@ export function useAgentChat({
   const [loadingConversation, setLoadingConversation] = useState(false);
   const [streaming, setStreaming] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [portfolioRetryMessage, setPortfolioRetryMessage] = useState<string | null>(null);
   const [pendingActions, setPendingActions] = useState<PendingAction[]>([]);
   const [resultCard, setResultCard] = useState<ResultCard | null>(null);
   const [actionErrors, setActionErrors] = useState<Record<string, string>>({});
@@ -357,12 +470,13 @@ export function useAgentChat({
   const scopeKeyRef = useRef(scopeKey);
   scopeKeyRef.current = scopeKey;
   const generationRef = useRef(0);
-  const activeRequestRef = useRef<AbortController | null>(null);
+  const activeRequestRef = useRef<ActiveChatRequest | null>(null);
   const conversationCursorRef = useRef<ScopedConversationCursor>({
     scopeKey,
     conversationId: null,
   });
   const portfolioTurnRef = useRef(0);
+  const portfolioMessageRef = useRef<string | null>(null);
 
   // Language in a ref so the SSE closure resolves bilingual payloads with the
   // current language without re-creating sendMessage on every language change.
@@ -459,10 +573,11 @@ export function useAgentChat({
 
   const resetVisibleConversation = useCallback((nextScopeKey: string) => {
     generationRef.current += 1;
-    activeRequestRef.current?.abort();
+    activeRequestRef.current?.cancel();
     activeRequestRef.current = null;
     clearDeltaBuffer();
     clearResultTimer();
+    portfolioMessageRef.current = null;
     conversationCursorRef.current = {
       ...scopeConversationCursor(conversationCursorRef.current, nextScopeKey),
       conversationId: null,
@@ -478,6 +593,7 @@ export function useAgentChat({
     setLoadingConversation(false);
     setStreaming(false);
     setError(null);
+    setPortfolioRetryMessage(null);
     setPendingActions([]);
     setResultCard(null);
     setActionErrors({});
@@ -489,9 +605,13 @@ export function useAgentChat({
     resetVisibleConversation(scopeKey);
   }, [scopeKey, stateScopeKey, resetVisibleConversation]);
 
+  useEffect(() => {
+    if (mode === 'portfolio' && !active) resetVisibleConversation(scopeKey);
+  }, [active, mode, resetVisibleConversation, scopeKey]);
+
   useEffect(() => () => {
     generationRef.current += 1;
-    activeRequestRef.current?.abort();
+    activeRequestRef.current?.cancel();
   }, []);
 
   const reloadConversations = useCallback(async () => {
@@ -592,8 +712,10 @@ export function useAgentChat({
       const res = await fetchWithAuth(endpoint);
       if (generation !== generationRef.current || scopeKeyRef.current !== scopeKey) return;
       if (!res.ok) {
-        setError(mode === 'portfolio' && res.status === 409
-          ? 'Your hotel access changed. Start a new portfolio chat.'
+        setError(mode === 'portfolio'
+          ? res.status === 409
+            ? 'Your hotel access changed. Start a new portfolio chat.'
+            : 'Saved portfolio chats could not be loaded.'
           : `Failed to load conversation: ${res.status}`);
         return;
       }
@@ -686,7 +808,9 @@ export function useAgentChat({
       setConversationId(id);
     } catch (e) {
       if (e instanceof SessionEndedError) return;  // redirect in progress
-      setError(e instanceof Error ? e.message : String(e));
+      setError(mode === 'portfolio'
+        ? 'Saved portfolio chats could not be loaded.'
+        : e instanceof Error ? e.message : String(e));
     } finally {
       if (generation === generationRef.current && scopeKeyRef.current === scopeKey) {
         setLoadingConversation(false);
@@ -696,10 +820,11 @@ export function useAgentChat({
 
   const startNew = useCallback(() => {
     generationRef.current += 1;
-    activeRequestRef.current?.abort();
+    activeRequestRef.current?.cancel();
     activeRequestRef.current = null;
     clearDeltaBuffer();
     clearResultTimer();
+    portfolioMessageRef.current = null;
     conversationCursorRef.current = { scopeKey, conversationId: null };
     portfolioTurnRef.current = 0;
     assistantIndexRef.current = -1;
@@ -710,10 +835,39 @@ export function useAgentChat({
     setLoadingConversation(false);
     setStreaming(false);
     setError(null);
+    setPortfolioRetryMessage(null);
     setPendingActions([]);
     setResultCard(null);
     setActionErrors({});
   }, [clearDeltaBuffer, clearResultTimer, scopeKey]);
+
+  const failPortfolioTurn = useCallback((
+    requestScopeKey: string,
+    requestGeneration: number,
+    portfolioTurn: number,
+  ) => {
+    if (scopeKeyRef.current !== requestScopeKey || generationRef.current !== requestGeneration) return;
+    clearDeltaBuffer();
+    assistantIndexRef.current = -1;
+    // Remove the failed user/assistant turn from the visible history. The
+    // question itself lives in portfolioMessageRef only long enough for the
+    // bounded Try again action to start a genuinely fresh conversation.
+    setMessages(prev => {
+      let lastUserIndex = -1;
+      for (let index = prev.length - 1; index >= 0; index -= 1) {
+        if (prev[index]?.role === 'user') {
+          lastUserIndex = index;
+          break;
+        }
+      }
+      return lastUserIndex >= 0 ? prev.slice(0, lastUserIndex) : [];
+    });
+    setConversationId(null);
+    conversationCursorRef.current = { scopeKey: requestScopeKey, conversationId: null };
+    setScopeDisclosures(prev => prev.filter(item => item.turn !== portfolioTurn));
+    setPortfolioRetryMessage(portfolioMessageRef.current);
+    setError(PORTFOLIO_CHAT_FAILURE);
+  }, [clearDeltaBuffer]);
 
   // ── Shared SSE consumer ────────────────────────────────────────────────
   // Reads an SSE Response from either /api/agent/command (a fresh turn) or
@@ -724,14 +878,35 @@ export function useAgentChat({
     requestScopeKey: string,
     requestGeneration: number,
     portfolioTurn: number | null = null,
+    portfolioGuard: PortfolioStreamGuard | null = null,
   ): Promise<void> => {
     const current = () =>
       scopeKeyRef.current === requestScopeKey
       && generationRef.current === requestGeneration;
+    const isPortfolio = portfolioTurn !== null;
+    let reader: ReadableStreamDefaultReader<Uint8Array> | null = null;
+    let terminal: 'open' | 'done' | 'failed' = 'open';
+    let portfolioScopeVerified = !isPortfolio;
+    let answerChars = 0;
+    let sawText = false;
+
+    const dispatchSideChannel = (payload: SsePayload) => {
+      if (typeof window !== 'undefined' && payload.type !== 'active_scope') {
+        window.dispatchEvent(
+          new CustomEvent(`agent:${payload.type.replace(/_/g, '-')}`, {
+            detail: payload,
+          }),
+        );
+      }
+    };
 
     // The 429 cap-hit / rate-limit / validation responses are JSON, not SSE.
     const ct = res.headers.get('content-type') ?? '';
     if (!res.ok || !ct.includes('text/event-stream') || !res.body) {
+      if (isPortfolio) {
+        failPortfolioTurn(requestScopeKey, requestGeneration, portfolioTurn!);
+        return;
+      }
       const errBody = await res.json().catch(() => null);
       if (!current()) return;
       const friendly = errBody?.code === 'auth_unavailable'
@@ -741,190 +916,323 @@ export function useAgentChat({
       return;
     }
 
-    const reader = res.body.getReader();
-    const decoder = new TextDecoder();
-    let buf = '';
-    let portfolioScopeVerified = portfolioTurn === null;
+    try {
+      reader = res.body.getReader();
+      portfolioGuard?.attachReader(reader);
+      const decoder = new TextDecoder();
+      let buf = '';
 
-    while (true) {
-      const { value, done } = await reader.read();
-      if (done) break;
-      if (!current()) {
-        await reader.cancel().catch(() => undefined);
-        clearDeltaBuffer();
-        return;
-      }
-      buf += decoder.decode(value, { stream: true });
+      const failPortfolioFrame = () => {
+        terminal = 'failed';
+        failPortfolioTurn(requestScopeKey, requestGeneration, portfolioTurn!);
+        portfolioGuard?.cancel();
+      };
 
-      const events = buf.split('\n\n');
-      buf = events.pop() ?? '';
-      for (const ev of events) {
-        const line = ev.split('\n').find(l => l.startsWith('data:'));
-        if (!line) continue;
-        let payload: SsePayload;
-        try {
-          payload = JSON.parse(line.slice(5).trim());
-        } catch {
-          continue;
-        }
+      streamLoop: while (terminal === 'open') {
+        const { value, done: readDone } = await reader.read();
+        if (readDone) break;
         if (!current()) {
           await reader.cancel().catch(() => undefined);
           clearDeltaBuffer();
           return;
         }
-
-        // Side channel for non-chat observers (walkthrough overlay, voice TTS).
-        // Each SSE event is mirrored as a window CustomEvent so components
-        // mounted outside the hook can listen without forking the stream.
-        // NOTE: mutation tools no longer emit tool_call_started inline (they go
-        // through the approval flow), so the walkthrough overlay's
-        // agent:tool-call-started listener only ever fires for read-only tools
-        // like walk_user_through — exactly what it wants.
-        if (typeof window !== 'undefined'
-          && payload.type
-          && payload.type !== 'active_scope'
-        ) {
-          window.dispatchEvent(
-            new CustomEvent(`agent:${payload.type.replace(/_/g, '-')}`, {
-              detail: payload,
-            }),
-          );
+        const decoded = decoder.decode(value, { stream: true });
+        buf += decoded;
+        if (isPortfolio && buf.length > portfolioStreamLimits.maxFrameChars) {
+          failPortfolioFrame();
+          break;
         }
 
-        // Any event OTHER than a text delta reads or resets the message list /
-        // assistant-bubble index, so flush buffered deltas first — otherwise
-        // tokens could land in the wrong bubble (or after an index reset).
-        if (payload.type !== 'text_delta') flushDeltaBuffer();
-
-        if (payload.type === 'conversation_id' && typeof payload.id === 'string') {
-          const nextCursor = recordScopedConversationId(
-            conversationCursorRef.current,
-            requestScopeKey,
-            payload.id,
-          );
-          if (nextCursor.conversationId !== payload.id) {
-            await reader.cancel().catch(() => undefined);
-            clearDeltaBuffer();
-            setError('Staxis could not verify that conversation.');
-            return;
+        const events = buf.split(/\r?\n\r?\n/);
+        buf = events.pop() ?? '';
+        for (const ev of events) {
+          if (!ev) continue;
+          if (isPortfolio && terminal === 'done') {
+            failPortfolioFrame();
+            break streamLoop;
           }
-          conversationCursorRef.current = nextCursor;
-          setConversationId(nextCursor.conversationId);
-          void reloadConversations();
-        } else if (payload.type === 'active_scope') {
-          // Portfolio scope comes from the current-turn authoritative resolver.
-          // It must name the same company as this request; a mismatch is
-          // treated as a security-domain failure and no answer text is shown.
-          const parsed = parsePortfolioActiveScope(payload.scope);
-          const expectedOrganizationId = requestScopeKey.startsWith('portfolio:')
-            ? requestScopeKey.slice('portfolio:'.length)
-            : null;
-          if (portfolioTurn === null
-            || !parsed
-            || parsed.organizationId !== expectedOrganizationId
+          if (isPortfolio && ev.length > portfolioStreamLimits.maxFrameChars) {
+            failPortfolioFrame();
+            break streamLoop;
+          }
+          const dataLines = ev
+            .split(/\r?\n/)
+            .filter(line => line.startsWith('data:'))
+            .map(line => line.slice(5).trim());
+          if (dataLines.length === 0) {
+            if (isPortfolio) failPortfolioFrame();
+            continue;
+          }
+          let parsedPayload: unknown;
+          try {
+            parsedPayload = JSON.parse(dataLines.join('\n'));
+          } catch {
+            if (isPortfolio) failPortfolioFrame();
+            continue;
+          }
+          if (!parsedPayload
+            || typeof parsedPayload !== 'object'
+            || Array.isArray(parsedPayload)
+            || typeof (parsedPayload as { type?: unknown }).type !== 'string'
           ) {
+            if (isPortfolio) failPortfolioFrame();
+            continue;
+          }
+          const payload = parsedPayload as SsePayload;
+          if (!current()) {
             await reader.cancel().catch(() => undefined);
             clearDeltaBuffer();
-            setError('Staxis could not verify the scope used for that answer.');
             return;
           }
-          setScopeDisclosures(prev => {
-            const withoutCurrentTurn = prev.filter(item => item.turn !== portfolioTurn);
-            return [...withoutCurrentTurn, { turn: portfolioTurn, scope: parsed }]
-              .sort((a, b) => a.turn - b.turn);
-          });
-          portfolioScopeVerified = true;
-        } else if (payload.type === 'text_delta' && typeof payload.delta === 'string') {
-          if (!portfolioScopeVerified) {
-            await reader.cancel().catch(() => undefined);
-            clearDeltaBuffer();
-            setError('Staxis could not verify the scope used for that answer.');
-            return;
+
+          if (isPortfolio) {
+            // Portfolio streams are deliberately fail-closed. The route emits
+            // one verified scope, optional text deltas, and one terminal done.
+            if (payload.type !== 'text_delta') flushDeltaBuffer();
+            if (payload.type === 'conversation_id') {
+              if (typeof payload.id !== 'string' || !UUID_RX.test(payload.id)) {
+                failPortfolioFrame();
+                break streamLoop;
+              }
+              const nextCursor = recordScopedConversationId(
+                conversationCursorRef.current,
+                requestScopeKey,
+                payload.id,
+              );
+              if (nextCursor.conversationId !== payload.id) {
+                failPortfolioFrame();
+                break streamLoop;
+              }
+              conversationCursorRef.current = nextCursor;
+              setConversationId(nextCursor.conversationId);
+              void reloadConversations();
+              portfolioGuard?.resetInactivity();
+              dispatchSideChannel(payload);
+            } else if (payload.type === 'active_scope') {
+              const parsed = parsePortfolioActiveScope(payload.scope);
+              const expectedOrganizationId = requestScopeKey.startsWith('portfolio:')
+                ? requestScopeKey.slice('portfolio:'.length)
+                : null;
+              if (!parsed || parsed.organizationId !== expectedOrganizationId) {
+                failPortfolioFrame();
+                break streamLoop;
+              }
+              setScopeDisclosures(prev => {
+                const withoutCurrentTurn = prev.filter(item => item.turn !== portfolioTurn);
+                return [...withoutCurrentTurn, { turn: portfolioTurn, scope: parsed }]
+                  .sort((a, b) => a.turn - b.turn);
+              });
+              portfolioScopeVerified = true;
+              portfolioGuard?.resetInactivity();
+            } else if (payload.type === 'text_delta') {
+              if (!portfolioScopeVerified
+                || typeof payload.delta !== 'string'
+                || payload.delta.length === 0
+                || answerChars + payload.delta.length > portfolioStreamLimits.maxAnswerChars
+              ) {
+                failPortfolioFrame();
+                break streamLoop;
+              }
+              answerChars += payload.delta.length;
+              sawText = true;
+              enqueueDelta(payload.delta, requestGeneration);
+              portfolioGuard?.resetInactivity();
+              dispatchSideChannel(payload);
+            } else if (payload.type === 'done') {
+              if (!portfolioScopeVerified
+                || typeof payload.finalText !== 'string'
+                || !payload.finalText.trim()
+                || payload.finalText.length > portfolioStreamLimits.maxAnswerChars
+              ) {
+                failPortfolioFrame();
+                break streamLoop;
+              }
+              // finalText is required even when the stream already delivered
+              // deltas. Only enqueue it when no deltas were sent, so the answer
+              // is never duplicated in the visible bubble.
+              if (!sawText) {
+                answerChars = payload.finalText.length;
+                enqueueDelta(payload.finalText, requestGeneration);
+              }
+              terminal = 'done';
+              portfolioGuard?.resetInactivity();
+              dispatchSideChannel(payload);
+            } else {
+              // Errors, unknown events, and traffic after the known contract
+              // are not safe to present as a completed portfolio answer.
+              failPortfolioFrame();
+              break streamLoop;
+            }
+            continue;
           }
-          // Buffered — coalesced into ~one setMessages per animation frame.
-          enqueueDelta(payload.delta, requestGeneration);
-        } else if (payload.type === 'done'
-          && typeof payload.finalText === 'string'
-          && payload.finalText
-          && assistantIndexRef.current < 0
-        ) {
-          if (!portfolioScopeVerified) {
-            await reader.cancel().catch(() => undefined);
-            clearDeltaBuffer();
-            setError('Staxis could not verify the scope used for that answer.');
-            return;
+
+          // Side channel for non-chat observers (walkthrough overlay, voice TTS).
+          // Each SSE event is mirrored as a window CustomEvent so components
+          // mounted outside the hook can listen without forking the stream.
+          // NOTE: mutation tools no longer emit tool_call_started inline (they go
+          // through the approval flow), so the walkthrough overlay's
+          // agent:tool-call-started listener only ever fires for read-only tools
+          // like walk_user_through — exactly what it wants.
+          dispatchSideChannel(payload);
+
+          // Any event OTHER than a text delta reads or resets the message list /
+          // assistant-bubble index, so flush buffered deltas first — otherwise
+          // tokens could land in the wrong bubble (or after an index reset).
+          if (payload.type !== 'text_delta') flushDeltaBuffer();
+
+          if (payload.type === 'conversation_id' && typeof payload.id === 'string') {
+            const nextCursor = recordScopedConversationId(
+              conversationCursorRef.current,
+              requestScopeKey,
+              payload.id,
+            );
+            if (nextCursor.conversationId !== payload.id) {
+              await reader.cancel().catch(() => undefined);
+              clearDeltaBuffer();
+              setError('Staxis could not verify that conversation.');
+              return;
+            }
+            conversationCursorRef.current = nextCursor;
+            setConversationId(nextCursor.conversationId);
+            void reloadConversations();
+          } else if (payload.type === 'active_scope') {
+            // Portfolio scope comes from the current-turn authoritative resolver.
+            // It must name the same company as this request; a mismatch is
+            // treated as a security-domain failure and no answer text is shown.
+            const parsed = parsePortfolioActiveScope(payload.scope);
+            const expectedOrganizationId = requestScopeKey.startsWith('portfolio:')
+              ? requestScopeKey.slice('portfolio:'.length)
+              : null;
+            if (portfolioTurn === null
+              || !parsed
+              || parsed.organizationId !== expectedOrganizationId
+            ) {
+              await reader.cancel().catch(() => undefined);
+              clearDeltaBuffer();
+              setError('Staxis could not verify the scope used for that answer.');
+              return;
+            }
+            setScopeDisclosures(prev => {
+              const withoutCurrentTurn = prev.filter(item => item.turn !== portfolioTurn);
+              return [...withoutCurrentTurn, { turn: portfolioTurn, scope: parsed }]
+                .sort((a, b) => a.turn - b.turn);
+            });
+            portfolioScopeVerified = true;
+          } else if (payload.type === 'text_delta' && typeof payload.delta === 'string') {
+            if (!portfolioScopeVerified) {
+              await reader.cancel().catch(() => undefined);
+              clearDeltaBuffer();
+              setError('Staxis could not verify the scope used for that answer.');
+              return;
+            }
+            // Buffered — coalesced into ~one setMessages per animation frame.
+            enqueueDelta(payload.delta, requestGeneration);
+          } else if (payload.type === 'done'
+            && typeof payload.finalText === 'string'
+            && payload.finalText
+            && assistantIndexRef.current < 0
+          ) {
+            if (!portfolioScopeVerified) {
+              await reader.cancel().catch(() => undefined);
+              clearDeltaBuffer();
+              setError('Staxis could not verify the scope used for that answer.');
+              return;
+            }
+            // Clarifications and deterministic refusals may complete without
+            // model token deltas. Render their final text exactly once.
+            enqueueDelta(payload.finalText, requestGeneration);
+          } else if (payload.type === 'tool_call_started' && payload.call) {
+            const call = payload.call;
+            setMessages(prev => [
+              ...prev,
+              { role: 'assistant', text: '', toolName: call.name, toolArgs: call.args },
+            ]);
+            assistantIndexRef.current = -1;
+          } else if (payload.type === 'tool_call_finished') {
+            setMessages(prev => [
+              ...prev,
+              { role: 'tool', text: '', toolResult: payload.result, isError: Boolean(payload.isError) },
+            ]);
+            assistantIndexRef.current = -1;
+          } else if (payload.type === 'tool_call_pending_approval' && payload.pendingActionId) {
+            // A proposed mutation — queue an approval card.
+            const addonList = payload.addons ? (payload.addons.en) : [];
+            const card: PendingAction = {
+              pendingActionId: payload.pendingActionId,
+              toolCallId: payload.toolCallId ?? '',
+              toolName: payload.toolName ?? '',
+              args: payload.args ?? {},
+              tier: payload.tier === 'quick' ? 'quick' : 'card',
+              summary: payload.summary ?? { en: '', },
+              addons: addonList ?? [],
+            };
+            setPendingActions(prev => (prev.some(p => p.pendingActionId === card.pendingActionId) ? prev : [...prev, card]));
+            assistantIndexRef.current = -1;
+          } else if (payload.type === 'pending_actions_superseded') {
+            // A new user message abandoned earlier proposals — the server expired
+            // them. Drop any still-displayed cards for them so the user can't
+            // approve a stale action.
+            const dropped = new Set(payload.pendingActionIds ?? []);
+            if (dropped.size > 0) {
+              setPendingActions(prev => prev.filter(p => !dropped.has(p.pendingActionId)));
+            }
+          } else if (payload.type === 'action_result' && payload.pendingActionId) {
+            // A decision resolved — show the result confirmation card.
+            const denied = payload.denied === true;
+            const okResult = payload.ok === true;
+            const card: ResultCard = {
+              pendingActionId: payload.pendingActionId,
+              toolName: payload.toolName ?? '',
+              ok: okResult,
+              denied,
+              summary: pick(payload.resultSummary),
+              error: payload.error ? pick({ en: payload.error.en ?? '', }) : null,
+              addonNotes: payload.addonNotes ?? [],
+            };
+            clearResultTimer();
+            setResultCard(card);
+            // Success (and denials) auto-dismiss; failures stay until dismissed.
+            if (okResult) {
+              resultTimerRef.current = setTimeout(() => setResultCard(null), 2500);
+            }
+            assistantIndexRef.current = -1;
+          } else if (payload.type === 'error' && typeof payload.message === 'string') {
+            setError(payload.message);
           }
-          // Clarifications and deterministic refusals may complete without
-          // model token deltas. Render their final text exactly once.
-          enqueueDelta(payload.finalText, requestGeneration);
-        } else if (payload.type === 'tool_call_started' && payload.call) {
-          const call = payload.call;
-          setMessages(prev => [
-            ...prev,
-            { role: 'assistant', text: '', toolName: call.name, toolArgs: call.args },
-          ]);
-          assistantIndexRef.current = -1;
-        } else if (payload.type === 'tool_call_finished') {
-          setMessages(prev => [
-            ...prev,
-            { role: 'tool', text: '', toolResult: payload.result, isError: Boolean(payload.isError) },
-          ]);
-          assistantIndexRef.current = -1;
-        } else if (payload.type === 'tool_call_pending_approval' && payload.pendingActionId) {
-          // A proposed mutation — queue an approval card.
-          const addonList = payload.addons ? (payload.addons.en) : [];
-          const card: PendingAction = {
-            pendingActionId: payload.pendingActionId,
-            toolCallId: payload.toolCallId ?? '',
-            toolName: payload.toolName ?? '',
-            args: payload.args ?? {},
-            tier: payload.tier === 'quick' ? 'quick' : 'card',
-            summary: payload.summary ?? { en: '', },
-            addons: addonList ?? [],
-          };
-          setPendingActions(prev => (prev.some(p => p.pendingActionId === card.pendingActionId) ? prev : [...prev, card]));
-          assistantIndexRef.current = -1;
-        } else if (payload.type === 'pending_actions_superseded') {
-          // A new user message abandoned earlier proposals — the server expired
-          // them. Drop any still-displayed cards for them so the user can't
-          // approve a stale action.
-          const dropped = new Set(payload.pendingActionIds ?? []);
-          if (dropped.size > 0) {
-            setPendingActions(prev => prev.filter(p => !dropped.has(p.pendingActionId)));
-          }
-        } else if (payload.type === 'action_result' && payload.pendingActionId) {
-          // A decision resolved — show the result confirmation card.
-          const denied = payload.denied === true;
-          const okResult = payload.ok === true;
-          const card: ResultCard = {
-            pendingActionId: payload.pendingActionId,
-            toolName: payload.toolName ?? '',
-            ok: okResult,
-            denied,
-            summary: pick(payload.resultSummary),
-            error: payload.error ? pick({ en: payload.error.en ?? '', }) : null,
-            addonNotes: payload.addonNotes ?? [],
-          };
-          clearResultTimer();
-          setResultCard(card);
-          // Success (and denials) auto-dismiss; failures stay until dismissed.
-          if (okResult) {
-            resultTimerRef.current = setTimeout(() => setResultCard(null), 2500);
-          }
-          assistantIndexRef.current = -1;
-        } else if (payload.type === 'error' && typeof payload.message === 'string') {
-          setError(payload.message);
         }
+        if (terminal !== 'open') break streamLoop;
       }
-    }
-    // Flush any tokens still buffered when the stream ends.
-    if (current()) {
-      flushDeltaBuffer();
-      if (portfolioTurn !== null && !portfolioScopeVerified) {
-        setError('Staxis could not verify the scope used for that answer.');
+
+      if (current()) {
+        if (isPortfolio) {
+          if (terminal === 'done') {
+            portfolioMessageRef.current = null;
+            setPortfolioRetryMessage(null);
+            flushDeltaBuffer();
+          } else if (terminal === 'open') {
+            failPortfolioTurn(requestScopeKey, requestGeneration, portfolioTurn!);
+          }
+        } else {
+          flushDeltaBuffer();
+        }
+      } else {
+        clearDeltaBuffer();
       }
-    } else {
-      clearDeltaBuffer();
+    } catch (error) {
+      if (!current()) {
+        clearDeltaBuffer();
+        return;
+      }
+      if (isPortfolio) {
+        failPortfolioTurn(requestScopeKey, requestGeneration, portfolioTurn!);
+        return;
+      }
+      throw error;
+    } finally {
+      if (reader) {
+        await reader.cancel().catch(() => undefined);
+        reader.releaseLock();
+      }
     }
   }, [
     reloadConversations,
@@ -933,6 +1241,7 @@ export function useAgentChat({
     enqueueDelta,
     flushDeltaBuffer,
     clearDeltaBuffer,
+    failPortfolioTurn,
   ]);
 
   const sendMessage = useCallback(async (text: string, opts?: { origin?: AskOrigin }) => {
@@ -940,14 +1249,35 @@ export function useAgentChat({
     const hasRequiredScope = mode === 'portfolio'
       ? Boolean(organizationId)
       : Boolean(propertyId);
-    if (!message || streaming || !hasRequiredScope || stateScopeKey !== scopeKey) return;
+    if (!message
+      || streaming
+      || !hasRequiredScope
+      || stateScopeKey !== scopeKey
+      || (mode === 'portfolio' && !active)
+    ) return;
 
     const requestGeneration = generationRef.current;
     const requestScopeKey = scopeKey;
     const portfolioTurn = mode === 'portfolio' ? portfolioTurnRef.current++ : null;
+    portfolioMessageRef.current = mode === 'portfolio' ? message : null;
+    if (mode === 'portfolio') setPortfolioRetryMessage(null);
     const controller = new AbortController();
-    activeRequestRef.current?.abort();
-    activeRequestRef.current = controller;
+    const portfolioGuard = mode === 'portfolio'
+      ? createPortfolioStreamGuard(controller, portfolioStreamLimits)
+      : null;
+    const scopedConversationId = conversationIdForScope(
+      conversationCursorRef.current,
+      requestScopeKey,
+    );
+    const request: ActiveChatRequest = {
+      controller,
+      cancel: () => {
+        portfolioGuard?.cancel();
+        if (!controller.signal.aborted) controller.abort();
+      },
+    };
+    activeRequestRef.current?.cancel();
+    activeRequestRef.current = request;
     setError(null);
     setStreaming(true);
     assistantIndexRef.current = -1;
@@ -961,21 +1291,16 @@ export function useAgentChat({
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           signal: controller.signal,
+          ...(mode === 'portfolio' ? { timeoutMs: null } : {}),
           body: JSON.stringify(
             mode === 'portfolio'
               ? {
-                  conversationId: conversationIdForScope(
-                    conversationCursorRef.current,
-                    requestScopeKey,
-                  ),
+                  ...(scopedConversationId ? { conversationId: scopedConversationId } : {}),
                   organizationId,
                   message,
                 }
               : {
-                  conversationId: conversationIdForScope(
-                    conversationCursorRef.current,
-                    requestScopeKey,
-                  ),
+                  conversationId: scopedConversationId,
                   propertyId,
                   message,
                   // Read off the ref, never a closed-over value. This keeps the
@@ -991,8 +1316,17 @@ export function useAgentChat({
         requestScopeKey,
         requestGeneration,
         portfolioTurn,
+        portfolioGuard,
       );
     } catch (e) {
+      if (mode === 'portfolio'
+        && portfolioGuard?.timedOut()
+        && requestGeneration === generationRef.current
+        && requestScopeKey === scopeKeyRef.current
+      ) {
+        failPortfolioTurn(requestScopeKey, requestGeneration, portfolioTurn!);
+        return;
+      }
       if (controller.signal.aborted
         || requestGeneration !== generationRef.current
         || requestScopeKey !== scopeKeyRef.current
@@ -1000,9 +1334,14 @@ export function useAgentChat({
         return;
       }
       if (e instanceof SessionEndedError) return;  // redirect in progress; suppress error pill
+      if (mode === 'portfolio') {
+        failPortfolioTurn(requestScopeKey, requestGeneration, portfolioTurn!);
+        return;
+      }
       setError(e instanceof Error ? e.message : String(e));
     } finally {
-      if (activeRequestRef.current === controller) activeRequestRef.current = null;
+      portfolioGuard?.dispose();
+      if (activeRequestRef.current === request) activeRequestRef.current = null;
       if (requestGeneration === generationRef.current
         && requestScopeKey === scopeKeyRef.current
       ) {
@@ -1013,10 +1352,12 @@ export function useAgentChat({
     mode,
     organizationId,
     propertyId,
+    active,
     streaming,
     stateScopeKey,
     scopeKey,
     consumeStream,
+    failPortfolioTurn,
   ]);
 
   // ── Approve / deny a pending action ────────────────────────────────────
@@ -1030,8 +1371,12 @@ export function useAgentChat({
     const requestGeneration = generationRef.current;
     const requestScopeKey = scopeKey;
     const controller = new AbortController();
-    activeRequestRef.current?.abort();
-    activeRequestRef.current = controller;
+    const request: ActiveChatRequest = {
+      controller,
+      cancel: () => controller.abort(),
+    };
+    activeRequestRef.current?.cancel();
+    activeRequestRef.current = request;
     setError(null);
     setStreaming(true);
     assistantIndexRef.current = -1;
@@ -1084,7 +1429,7 @@ export function useAgentChat({
       if (e instanceof SessionEndedError) return;
       setError(e instanceof Error ? e.message : String(e));
     } finally {
-      if (activeRequestRef.current === controller) activeRequestRef.current = null;
+      if (activeRequestRef.current === request) activeRequestRef.current = null;
       if (requestGeneration === generationRef.current
         && requestScopeKey === scopeKeyRef.current
       ) {
@@ -1104,6 +1449,7 @@ export function useAgentChat({
     loadingConversation: visibleScopeMatches ? loadingConversation : false,
     streaming: visibleScopeMatches ? streaming : false,
     error: visibleScopeMatches ? error : null,
+    portfolioRetryMessage: visibleScopeMatches ? portfolioRetryMessage : null,
     sendMessage,
     startNew,
     loadConversation,
