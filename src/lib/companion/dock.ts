@@ -266,7 +266,7 @@ export function peekFits(placement: PeekPlacement): boolean {
  * Short enough to feel like the object answering, long enough that a cursor
  * crossing the corner on its way somewhere else never flickers the panel open.
  */
-export const HOVER_OPEN_MS = 250;
+export const HOVER_OPEN_MS = 80;
 
 /**
  * Grace after the pointer leaves the mark AND the panel before it closes again.

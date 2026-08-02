@@ -494,7 +494,7 @@ describe('hover intent', () => {
     // travelling from one to the other crosses it, and a close grace shorter
     // than the open delay would make the panel unreachable by hover.
     assert.ok(HOVER_CLOSE_MS > HOVER_OPEN_MS, `${HOVER_CLOSE_MS} should exceed ${HOVER_OPEN_MS}`);
-    assert.ok(HOVER_OPEN_MS >= 150 && HOVER_OPEN_MS <= 400);
+    assert.ok(HOVER_OPEN_MS >= 50 && HOVER_OPEN_MS <= 400); // founder ruled 250ms felt delayed (2026-08-02); 80ms = still a real intent guard
   });
 });
 
