@@ -35,7 +35,20 @@ import { listFindings } from '@/lib/findings/store';
 import { toQueueFinding } from '@/lib/findings/queue-projection';
 import { cardPhrasing, isCardRenderable, rankFindings } from '@/components/concourse/finding-cards';
 import { listShowsFindings, listStandingFor } from '@/lib/feed/list-access';
-import type { CompanionCandidate } from './manners';
+import type { CompanionCandidate, CompanionSeverity } from './manners';
+
+/**
+ * The three levels findings already carry, in the companion's own words.
+ *
+ * Straight mapping, no re-judging: the severity a finding was stored with is
+ * the severity the peek's dot shows. Inventing a second opinion here would mean
+ * the same fact reading as urgent in the corner and as routine on the list.
+ */
+const SEVERITY_FROM_FINDING: Record<string, CompanionSeverity> = {
+  critical: 'urgent',
+  attention: 'watch',
+  info: 'ok',
+};
 
 /** How deep to look. The ranker only ever hands back a first place. */
 const SCAN_LIMIT = 25;
@@ -93,6 +106,7 @@ export async function buildCompanionCandidates(input: {
       sensitivity: 'operational' as const,
       covers: [`finding:${f.id}`],
       destination: 'staxis' as const,
+      severity: SEVERITY_FROM_FINDING[f.severity] ?? ('watch' as const),
     }))
     .filter((c) => c.text.trim().length > 0);
 }
