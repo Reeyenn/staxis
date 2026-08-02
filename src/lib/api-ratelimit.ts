@@ -346,6 +346,8 @@ export type RateLimitEndpoint =
   // companies can never share a bucket.
   | 'companion-read'
   | 'companion-write'
+  | 'companion-trace'
+  | 'companion-trace-act'
   | 'company-queue'
   // The hotel picker / command centre bootstrap. Read-only and model-free, but
   // for a company-scope caller it reads one findings ledger per covered hotel,
@@ -604,6 +606,12 @@ const HOURLY_CAPS: Record<RateLimitEndpoint, number> = {
   // is small: it moves only when the companion actually speaks or is answered.
   'companion-read':             1200,
   'companion-write':            300,
+  // One read per screen somebody lands on, so it tracks navigation rather than
+  // time. A manager working a full shift moves between six screens all morning.
+  'companion-trace':            1200,
+  // A trace only ever offers to put one job on the board, and a person only
+  // ever taps that a handful of times a day.
+  'companion-trace-act':        60,
   'company-queue':              120,
   // The picker is hit on sign-in, on every "switch hotel", and on a tab
   // refocus. A person doing that all morning never approaches 240; a loop
