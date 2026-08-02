@@ -580,6 +580,30 @@ describe('shared portfolio chat behavior', { concurrency: false }, () => {
     assert.equal(app.container.querySelector('[data-active-scope="true"]'), null);
   });
 
+  test('accepts a valid terminal frame at EOF without a final delimiter', async (context) => {
+    const scopeFrame = `data: ${JSON.stringify({
+      type: 'active_scope',
+      scope: activeScope(ORGANIZATION_A),
+    })}\n\n`;
+    const doneFrame = `data: ${JSON.stringify({
+      type: 'done',
+      finalText: 'Complete at EOF.',
+    })}`;
+    const calls = installFetchPlans(context, [
+      () => jsonResponse({ data: { conversations: [] } }),
+      () => rawStreamResponse(scopeFrame + doneFrame),
+    ]);
+    const app = await mountChat(context);
+    await waitFor(() => calls.length === 1, 'saved conversation probe did not complete');
+    await app.ask('Terminal without delimiter');
+    await waitFor(
+      () => (app.container.textContent ?? '').includes('Complete at EOF.'),
+      'valid EOF terminal frame did not complete',
+    );
+    assert.ok(app.container.querySelector('[data-active-scope="true"]'));
+    assert.doesNotMatch(app.container.textContent ?? '', /Staxis could not answer just now\./);
+  });
+
   test('rejects a missing scope or empty terminal answer', async (context) => {
     const calls = installFetchPlans(context, [
       () => jsonResponse({ data: { conversations: [] } }),

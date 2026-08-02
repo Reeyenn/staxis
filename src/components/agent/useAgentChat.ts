@@ -936,21 +936,28 @@ export function useAgentChat({
 
       streamLoop: while (terminal === 'open') {
         const { value, done: readDone } = await reader.read();
-        if (readDone) break;
-        if (!current()) {
-          await reader.cancel().catch(() => undefined);
-          clearDeltaBuffer();
-          return;
+        if (readDone) {
+          if (!isPortfolio) break;
+          buf += decoder.decode();
+        } else {
+          if (!current()) {
+            await reader.cancel().catch(() => undefined);
+            clearDeltaBuffer();
+            return;
+          }
+          const decoded = decoder.decode(value, { stream: true });
+          buf += decoded;
         }
-        const decoded = decoder.decode(value, { stream: true });
-        buf += decoded;
         if (isPortfolio && buf.length > portfolioStreamLimits.maxFrameChars) {
           failPortfolioFrame();
           break;
         }
 
-        const events = buf.split(/\r?\n\r?\n/);
-        buf = events.pop() ?? '';
+        const events = readDone
+          ? (buf.trim() ? [buf] : [])
+          : buf.split(/\r?\n\r?\n/);
+        if (readDone) buf = '';
+        else buf = events.pop() ?? '';
         for (const ev of events) {
           if (!ev) continue;
           if (isPortfolio && terminal === 'done') {
@@ -1206,7 +1213,7 @@ export function useAgentChat({
             setError(payload.message);
           }
         }
-        if (terminal !== 'open') break streamLoop;
+        if (readDone || terminal !== 'open') break streamLoop;
       }
 
       if (current()) {
