@@ -78,7 +78,7 @@ describe('portfolio presentational component contract', () => {
     assert.equal((home.match(/\{ask\}/g) ?? []).length, 1);
     assert.match(home, /\{ask \? \([\s\S]*className=\{styles\.askRegion\}[\s\S]*\) : null\}/);
     assert.match(client, /ask=\{null\}/);
-    assert.match(client, /ask=\{\([\s\S]*<PortfolioAsk/);
+    assert.match(client, /ask=\{\([\s\S]*<PortfolioChat/);
     assert.match(home, /PortfolioStatusCard/);
     assert.match(home, /PortfolioHotelCard/);
     assert.match(home, /portfolioAction\?: PortfolioAction/);

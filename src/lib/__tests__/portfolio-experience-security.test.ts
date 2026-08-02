@@ -530,23 +530,14 @@ describe('connected portfolio source-code ratchets', () => {
       assert.doesNotMatch(text, /streamAgent|generateText|\/api\/agent\/portfolio|@\/lib\/agent\//, path);
     }
 
-    const ask = source('src/components/agent/PortfolioAsk.tsx');
-    const resetEffect = ask.slice(ask.indexOf('React.useEffect'), ask.indexOf('const send'));
-    assert.doesNotMatch(resetEffect, /fetchWithAuth|\/api\/agent\/portfolio|\bsend\s*\(/);
-    assert.match(resetEffect, /controller\.abort\(\)/);
-    assert.match(ask, /fetchWithAuth\('\/api\/agent\/portfolio',[\s\S]{0,100}?method: 'POST'/);
-    assert.match(ask, /signal: controller\.signal/);
-    assert.match(ask, /if \(!isCurrent\(\)\) return 'continue';[\s\S]{0,500}?setConversationId/);
-    assert.match(ask, /\}, \[available, organizationId\]\);/);
-    assert.match(ask, /PORTFOLIO_ASK_ABSOLUTE_MS = 60_000/);
-    assert.match(ask, /PORTFOLIO_ASK_MAX_ANSWER_CHARS = 64 \* 1024/);
-    assert.match(ask, /if \(terminal !== 'done' && !sawDone\) failCurrentRequest\(\)/);
-    const failRequest = ask.slice(
-      ask.indexOf('const failCurrentRequest = () => {'),
-      ask.indexOf('const resetInactivityDeadline', ask.indexOf('const failCurrentRequest = () => {')),
-    );
-    assert.match(failRequest, /setConversationId\(null\)/);
-    assert.match(failRequest, /setState\('failed'\)/);
+    const ask = source('src/components/agent/PortfolioChat.tsx');
+    assert.match(ask, /useAgentChat\(\{[\s\S]{0,160}?mode: 'portfolio',[\s\S]{0,100}?organizationId/);
+    assert.match(ask, /sendMessage\(text\)/);
+    assert.match(ask, /startNew\(\);[\s\S]{0,80}?sendMessage\(retryMessage\)/);
+    assert.match(ask, /reloadConversations/);
+    assert.match(ask, /role="log"/);
+    assert.match(ask, /aria-busy=\{busy\}/);
+    assert.match(ask, /aria-live="polite"/);
 
     const portfolioRoute = source('src/app/api/agent/portfolio/route.ts');
     const synthesis = portfolioRoute.indexOf('run = await dependencies.runSynthesis({');
@@ -847,74 +838,6 @@ describe('connected portfolio source-code ratchets', () => {
     );
     assert.match(resolver, /if \(resolved\.access\.companyRole === 'owner'\) restrictingRoles\.add\('owner'\)/);
 
-    const tools = source('src/lib/agent/tools/portfolio.ts');
-    const reach = tools.slice(
-      tools.indexOf('async function reachFor('),
-      tools.indexOf('/** Every portfolio payload carries the same honesty envelope.'),
-    );
-    assert.match(reach, /const policy = await resolvePortfolioQueuePolicy\(/);
-    const openItems = tools.slice(
-      tools.indexOf("name: 'portfolio_open_items'"),
-      tools.indexOf("name: 'portfolio_work_orders'"),
-    );
-    assert.match(openItems, /const findingHotelIds = idsEnabledFor\(reach, 'staxis'\)/);
-    assert.match(
-      openItems,
-      /readPortfolioToolFindings\([\s\S]{0,80}?reach\.organizationId,[\s\S]{0,80}?findingHotelIds/,
-      'the finding batch must carry both the authoritative company and the policy-readable hotel intersection',
-    );
-    const bulkMigration = source('supabase/migrations/0408_portfolio_queue_bulk_reads.sql');
-    const findingRpc = bulkMigration.slice(
-      bulkMigration.indexOf('function public.staxis_portfolio_tool_findings'),
-      bulkMigration.indexOf('function public.staxis_portfolio_tool_work_orders'),
-    );
-    assert.match(
-      findingRpc,
-      /candidate\.detector_id[\s\S]{0,120}?candidate\.summary[\s\S]{0,120}?candidate\.judged_summary_en[\s\S]{0,120}?candidate\.judged_summary_es[\s\S]{0,120}?candidate\.evidence[\s\S]{0,260}?candidate\.price_low_cents[\s\S]{0,120}?candidate\.price_high_cents[\s\S]{0,120}?candidate\.price_currency[\s\S]{0,120}?candidate\.price_basis/,
-      'the gate must read enough provenance to reject a whole persisted row before its summary or count is projected',
-    );
-    assert.match(openItems, /policyFilteredFindingRows\(/);
-    assert.match(openItems, /estimatedDollarsLow:[\s\S]{0,180}?estimatedDollarsHigh:/);
-
-    const workOrders = tools.slice(
-      tools.indexOf("name: 'portfolio_work_orders'"),
-      tools.indexOf("name: 'portfolio_supply_spend'"),
-    );
-    assert.match(workOrders, /const maintenanceHotelIds = idsEnabledFor\(reach, 'maintenance'\)/);
-    assert.match(
-      workOrders,
-      /readPortfolioToolWorkOrders\([\s\S]{0,80}?reach\.organizationId,[\s\S]{0,80}?maintenanceHotelIds,[\s\S]{0,100}?idsWithFinancialRead\(reach, maintenanceHotelIds\)/,
-    );
-    const workOrderRpc = bulkMigration.slice(
-      bulkMigration.indexOf('function public.staxis_portfolio_tool_work_orders'),
-      bulkMigration.indexOf('function public.staxis_portfolio_tool_work_order_counts'),
-    );
-    assert.match(
-      workOrderRpc,
-      /case[\s\S]{0,180}?authorized\.property_id = any\(coalesce\(p_financial_property_ids[\s\S]{0,220}?sum\(candidate\.repair_cost\)[\s\S]{0,80}?else null/,
-      'the database must redact repair cost outside the independently-authorized financial subset',
-    );
-    assert.match(workOrders, /recordedRepairSpendDollars: summary\.recordedRepairSpend === null/);
-
-    const spend = tools.slice(
-      tools.indexOf("name: 'portfolio_supply_spend'"),
-      tools.indexOf("name: 'portfolio_inventory_health'"),
-    );
-    assert.match(spend, /const inventoryHotelIds = idsEnabledFor\(reach, 'inventory'\)/);
-    assert.match(spend, /const spendHotelIds = idsWithFinancialRead\(reach, inventoryHotelIds\)/);
-    assert.match(
-      spend,
-      /readPortfolioToolInventoryOrders\([\s\S]{0,80}?reach\.organizationId,[\s\S]{0,80}?spendHotelIds/,
-    );
-
-    const compare = tools.slice(
-      tools.indexOf("name: 'portfolio_compare'"),
-      tools.indexOf("name: 'company_rulebook'"),
-    );
-    assert.match(compare, /metric === 'supply_spend'[\s\S]{0,100}?idsWithFinancialRead\(reach, idsEnabledFor\(reach, 'inventory'\)\)/);
-    assert.match(compare, /readPortfolioToolInventoryOrders\([\s\S]{0,120}?readableIds/);
-    assert.doesNotMatch(compare, /forEachHotel\(|scopedDb\(/);
-    assert.match(tools, /const unavailable = new Set\(loaded\.unavailablePropertyIds\)/);
   });
 
   test('portfolio aggregates enforce each hotel section policy before domain reads', () => {
@@ -931,157 +854,6 @@ describe('connected portfolio source-code ratchets', () => {
       'malformed policy must be unavailable, never default-enabled',
     );
 
-    const tools = source('src/lib/agent/tools/portfolio.ts');
-    const slice = (start: string, end: string) => tools.slice(tools.indexOf(start), tools.indexOf(end));
-    const reach = tools.slice(
-      tools.indexOf('async function reachFor('),
-      tools.indexOf('/** Every portfolio payload carries the same honesty envelope.'),
-    );
-    assert.match(reach, /const policy = await resolvePortfolioQueuePolicy\(/);
-    const openItems = slice("name: 'portfolio_open_items'", "name: 'portfolio_work_orders'");
-    assert.match(openItems, /idsEnabledFor\(reach, 'staxis'\)/);
-    assert.match(openItems, /policyFilteredFindingRows\(/);
-
-    const workOrders = slice("name: 'portfolio_work_orders'", "name: 'portfolio_supply_spend'");
-    assert.match(workOrders, /idsEnabledFor\(reach, 'maintenance'\)/);
-    assert.match(workOrders, /readPortfolioToolWorkOrders\(/);
-
-    const spend = slice("name: 'portfolio_supply_spend'", "name: 'portfolio_inventory_health'");
-    assert.match(spend, /idsEnabledFor\(reach, 'inventory'\)/);
-    assert.match(spend, /idsWithFinancialRead\(reach, inventoryHotelIds\)/);
-
-    const inventory = slice("name: 'portfolio_inventory_health'", "name: 'portfolio_compare'");
-    assert.match(inventory, /idsEnabledFor\(reach, 'inventory'\)/);
-
-    const compare = slice("name: 'portfolio_compare'", "name: 'company_rulebook'");
-    assert.match(compare, /metric === 'work_orders'[\s\S]{0,180}?idsEnabledFor\(reach, 'maintenance'\)/);
-    assert.match(compare, /metric === 'supply_spend'[\s\S]{0,180}?idsEnabledFor\(reach, 'inventory'\)/);
-    assert.match(compare, /idsEnabledFor\(reach, 'staxis'\)/);
-    assert.match(compare, /readPortfolioToolWorkOrderCounts\([\s\S]{0,120}?readableIds/);
-    assert.match(compare, /readPortfolioToolFindings\([\s\S]{0,120}?readableIds/);
-    assert.doesNotMatch(compare, /forEachHotel\(|scopedDb\(/);
-    assert.match(compare, /policyFilteredFindingRows\([\s\S]{0,200}?reach/);
-  });
-
-  test('batched portfolio agent reads re-intersect company scope and fail closed per hotel', () => {
-    const helper = source('src/lib/company/portfolio-tool-reads.ts');
-    assert.match(
-      helper,
-      /\^\[0-9a-f\]\{8\}-\[0-9a-f\]\{4\}-\[0-9a-f\]\{4\}-\[0-9a-f\]\{4\}-\[0-9a-f\]\{12\}\$/,
-      'the helper must accept canonical UUIDs instead of turning every hotel into unavailable data',
-    );
-    assert.match(helper, /MAX_PORTFOLIO_TOOL_HOTELS = 50/);
-    assert.match(helper, /p_organization_id: organizationId,[\s\S]{0,80}?p_property_ids: ids/);
-    assert.match(helper, /!propertyId \|\| !allowed\.has\(propertyId\)/);
-    assert.match(helper, /seenBuckets\.has\(propertyId\)[\s\S]{0,100}?duplicate property buckets/);
-    assert.match(helper, /row\.property_id !== propertyId[\s\S]{0,100}?outside its property bucket/);
-    assert.match(helper, /unavailablePropertyIds: ids\.filter\(\(id\) => !rowsByPropertyId\.has\(id\)\)/);
-
-    const tools = source('src/lib/agent/tools/portfolio.ts');
-    const bulkRead = tools.slice(
-      tools.indexOf('async function readRowsPerHotel'),
-      tools.indexOf('function rowLimitNote'),
-    );
-    assert.match(bulkRead, /loaded\.rowsByPropertyId\.get\(propertyId\)/);
-    assert.match(
-      bulkRead,
-      /catch \(error\)[\s\S]{0,260}?ids\.map\(\(propertyId\) => \(\{[\s\S]{0,80}?propertyId,[\s\S]{0,80}?value: null/,
-      'a malformed/cross-tenant batch must make every requested hotel unread, never zero',
-    );
-    assert.match(bulkRead, /rows\.length > MAX_ROWS/);
-
-    const migration = source('supabase/migrations/0408_portfolio_queue_bulk_reads.sql');
-    const toolRpcs = migration.slice(migration.indexOf('Portfolio Ask Staxis read model'));
-    const scopedRpcCount = [
-      ...toolRpcs.matchAll(
-        /create or replace function public\.staxis_portfolio_(?:tool_[a-z_]+|feed_pulses)\(/g,
-      ),
-    ].length;
-    assert.ok(scopedRpcCount >= 7, 'the portfolio read model must include every bounded bulk read');
-    assert.equal(
-      [...toolRpcs.matchAll(/relationship\.organization_id = p_organization_id/g)].length,
-      scopedRpcCount,
-      'every tool RPC must independently bind requested hotels to the requested company',
-    );
-    assert.equal([...toolRpcs.matchAll(/relationship\.is_primary_grouping/g)].length, scopedRpcCount);
-    assert.equal(
-      [...toolRpcs.matchAll(/relationship\.relationship_type in \('operator', 'owner'\)/g)].length,
-      scopedRpcCount,
-    );
-    assert.equal(
-      [...toolRpcs.matchAll(/relationship\.starts_at <= statement_timestamp\(\)/g)].length,
-      scopedRpcCount,
-    );
-    assert.equal(
-      [...toolRpcs.matchAll(/relationship\.ends_at is null or relationship\.ends_at > statement_timestamp\(\)/g)].length,
-      scopedRpcCount,
-    );
-    assert.equal(
-      [
-        ...toolRpcs.matchAll(
-          /revoke all on function public\.staxis_portfolio_(?:tool_[a-z_]+|feed_pulses)/g,
-        ),
-      ].length,
-      scopedRpcCount,
-      'the read-model RPCs must remain unavailable to browser roles',
-    );
-    assert.match(toolRpcs, /from public, anon, authenticated/);
-    assert.equal(
-      [...toolRpcs.matchAll(/p_limit_per_property > 51/g)].length,
-      3,
-      'every row-bucket tool RPC must enforce the 50 + sentinel ceiling',
-    );
-    assert.equal(
-      [...toolRpcs.matchAll(/octet_length\(candidate_bucket\.rows_json::text\) <= 65536/g)].length,
-      6,
-      'every row-returning RPC must gate both payload and availability on 64 KiB',
-    );
-    assert.equal(
-      [...toolRpcs.matchAll(/bucket_available boolean/g)].length,
-      3,
-      'oversized buckets need an explicit per-hotel unavailable marker',
-    );
-    const workOrderSummary = toolRpcs.slice(
-      toolRpcs.indexOf('function public.staxis_portfolio_tool_work_orders'),
-      toolRpcs.indexOf('function public.staxis_portfolio_tool_work_order_counts'),
-    );
-    assert.match(workOrderSummary, /opened_count bigint/);
-    assert.match(workOrderSummary, /still_open_count bigint/);
-    assert.match(workOrderSummary, /group by authorized\.property_id/);
-  });
-
-  test('every portfolio tool rechecks the human\'s uncached authority before domain reads', () => {
-    const tools = source('src/lib/agent/tools/portfolio.ts');
-    assert.match(
-      tools,
-      /import \{[\s\S]{0,160}?resolvePortfolioAccessUncached,[\s\S]{0,80}?\} from '@\/lib\/company\/portfolio'/,
-    );
-
-    const reach = tools.slice(
-      tools.indexOf('async function reachFor('),
-      tools.indexOf('/** Every portfolio payload carries the same honesty envelope.'),
-    );
-    const freshGate = reach.indexOf('resolvePortfolioAccessUncached(');
-    const firstDomainRead = reach.indexOf('readPortfolioToolHotels(');
-    assert.ok(freshGate >= 0 && firstDomainRead > freshGate);
-    assert.doesNotMatch(
-      reach,
-      /\bresolvePortfolioAccess\(/,
-      'a module-global allow cache would survive a revocation between two tools in one turn',
-    );
-    assert.match(
-      reach,
-      /resolvePortfolioAccessUncached\([\s\S]{0,120}?\.catch\(\(\) => \(\{ ok: false as const, reason: 'authorization_unavailable'/,
-      'an unreadable fresh authority store must refuse explicitly before hotel metadata or domain data is read',
-    );
-    assert.match(
-      reach,
-      /const routeAllowed = new Set\(scope\.propertyIds\)[\s\S]{0,180}?fresh\.access\.propertyIds\.filter\(\(id\) => routeAllowed\.has\(id\)\)/,
-      'fresh authority must still intersect the route-scoped hotel set instead of replacing it',
-    );
-    assert.match(reach, /const policy = await resolvePortfolioQueuePolicy\(/);
-    assert.match(reach, /const receipt = fresh\.access\.authorizationReceipt/);
-    assert.match(tools, /await assertReachStillCurrent\(ctx, reach\)/);
   });
 
   test('a conversation whose old anchor left the company cannot charge that former hotel', () => {

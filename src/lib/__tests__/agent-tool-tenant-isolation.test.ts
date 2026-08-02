@@ -123,21 +123,10 @@ const NO_DB_TOOLS = new Map<string, string>([
 /**
  * The PER-HOTEL catalog — everything this suite is about.
  *
- * Cross-hotel chat (2026-07-26) added a second, disjoint catalog: tools that
- * declare `surfaces: ['portfolio']` and answer for a whole management company.
- * They are deliberately NOT walked here, and the reason is that this fixture
- * cannot say anything true about them: it builds a ONE-HOTEL context with no
- * `portfolio` scope, which `executeTool` refuses before the handler — so every
- * one of them would land in this file as a pre-handler refusal, and "silence"
- * it into NO_DB_TOOLS would be recording a lie (they query plenty).
- *
- * Their wall is proved instead in `portfolio-chat-leak.integration.test.ts`,
- * against a real Postgres holding TWO COMPANIES, where the question is not
- * "did this query carry a hotel filter" but "was the SET of hotels right".
- *
- * The split is asserted below rather than assumed: the excluded set must be
- * exactly the portfolio-surface tools and must be non-empty, so a per-hotel
- * tool cannot be hidden from this suite by tagging it `portfolio`.
+ * The portfolio route is deterministic and does not mount agent tools. The
+ * filter remains explicit so a future portfolio-surface tool cannot silently
+ * disappear from this per-hotel isolation sweep without a deliberate test
+ * change.
  */
 function perHotelTools(): ReturnType<typeof listAllTools> {
   return listAllTools().filter((t) => !(t.surfaces ?? ['chat']).includes('portfolio'));
@@ -594,9 +583,9 @@ describe('every agent tool is confined to one hotel (INV-29)', () => {
     assert.ok(tools.length >= 40, `expected the full catalog, walked ${tools.length}`);
     assert.equal(runs.size, tools.length);
 
-    // The excluded set is EXACTLY the portfolio catalog, and it is non-empty.
-    // Without this, tagging a per-hotel tool as portfolio-surface would quietly
-    // remove it from the only suite that proves its hotel filter.
+    // The excluded set is exactly the portfolio-surface catalog. A future
+    // portfolio tool must get its own company-scope isolation coverage before
+    // it is mounted here.
     const walked = new Set(tools.map((t) => t.name));
     const excluded = listAllTools()
       .filter((t) => !walked.has(t.name))
@@ -607,7 +596,6 @@ describe('every agent tool is confined to one hotel (INV-29)', () => {
       .map((t) => t.name)
       .sort();
     assert.deepEqual(excluded, portfolio);
-    assert.ok(portfolio.length > 0, 'the portfolio catalog vanished — is it still registered?');
   });
 
   test('no tool is refused before its handler runs (the fixture satisfies every gate)', () => {

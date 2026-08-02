@@ -58,6 +58,9 @@ import {
 import '@/lib/agent/tools/index'; // register everything
 
 const TOOLS_DIR = join(process.cwd(), 'src/lib/agent/tools');
+// A removed cross-hotel wire-name remains in TOOL_ALIASES only so prompt-health
+// checks can identify stale rows. It has no generic executable target.
+const ROUTE_REPLACEMENT_TARGETS = new Set(['portfolio_route']);
 
 /** Every tool answering for ONE hotel — the catalog this audit governs. */
 function perHotelTools(): ToolDefinition[] {
@@ -118,9 +121,11 @@ describe('tool catalog — wire-names are unique', () => {
 // ─── 2. Retired names ───────────────────────────────────────────────────────
 
 describe('tool catalog — retired names', () => {
-  it('every alias points at a tool that exists', () => {
+  it('every executable alias points at a tool that exists', () => {
     const broken = [...TOOL_ALIASES.entries()]
-      .filter(([, target]) => !listAllTools().some((t) => t.name === target))
+      .filter(([, target]) => (
+        !ROUTE_REPLACEMENT_TARGETS.has(target) && !listAllTools().some((t) => t.name === target)
+      ))
       .map(([from, to]) => `${from} → ${to} (target is not registered)`);
     assert.deepEqual(broken, []);
   });
@@ -145,11 +150,15 @@ describe('tool catalog — retired names', () => {
     }
   });
 
-  it('an alias grants nothing its target does not already carry', () => {
+  it('an executable alias grants nothing its target does not already carry', () => {
     // The whole safety argument for keeping retired names callable is that they
     // are a NAME redirect and nothing else: role, surface, section, capability
     // and approval all come from the surviving tool's own declarations.
     for (const [from, to] of TOOL_ALIASES) {
+      if (ROUTE_REPLACEMENT_TARGETS.has(to)) {
+        assert.equal(getTool(from), undefined);
+        continue;
+      }
       const target = listAllTools().find((t) => t.name === to);
       assert.ok(target, `${to} missing`);
       assert.equal(getTool(from)?.name, to);
@@ -170,25 +179,11 @@ describe('tool catalog — retired names', () => {
 
 // ─── 3. Description quality ─────────────────────────────────────────────────
 
-/**
- * The portfolio catalog is exempt, and the exemption is asserted to be EXACTLY
- * the portfolio-surface set below — so a per-hotel tool cannot escape the bar
- * by being listed here. Those tools are owned by the cross-hotel workstream and
- * were written to a different (older) shape; folding them in is that
- * workstream's call, not a silent edit from this one.
- */
-const DESCRIPTION_AUDIT_EXEMPT = new Set([
-  'list_my_hotels',
-  'portfolio_open_items',
-  'portfolio_work_orders',
-  'portfolio_supply_spend',
-  'portfolio_inventory_health',
-  'portfolio_compare',
-  'company_rulebook',
-]);
+/** The deterministic portfolio route is not part of this tool catalog. */
+const DESCRIPTION_AUDIT_EXEMPT = new Set<string>();
 
 describe('tool catalog — description quality', () => {
-  it('the exemption list is exactly the portfolio catalog', () => {
+  it('no portfolio-surface tool is mounted in the generic catalog', () => {
     assert.deepEqual(
       [...DESCRIPTION_AUDIT_EXEMPT].sort(),
       portfolioTools().map((t) => t.name).sort(),

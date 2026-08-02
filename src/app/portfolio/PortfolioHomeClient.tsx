@@ -3,7 +3,7 @@
 import React from 'react';
 import { usePathname, useRouter, useSearchParams } from 'next/navigation';
 
-import { PortfolioAsk } from '@/components/agent/PortfolioAsk';
+import { PortfolioChat } from '@/components/agent/PortfolioChat';
 import { AppLayout } from '@/components/layout/AppLayout';
 import {
   PortfolioHomeView,
@@ -365,7 +365,7 @@ export function PortfolioHomeClient() {
         greeting={greeting(firstName(user?.displayName), today.getHours())}
         dateline={`${dateLabel} · Portfolio · ${company.organizationName ?? 'Company'}`}
         ask={(
-          <PortfolioAsk
+          <PortfolioChat
             key={company.organizationId}
             organizationId={company.organizationId}
             organizationName={company.organizationName ?? 'this company'}

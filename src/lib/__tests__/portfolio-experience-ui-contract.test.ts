@@ -100,12 +100,12 @@ describe('portfolio role entry and acting context', () => {
 
 describe('portfolio Ask ownership', () => {
   test('renders one company Ask, suppresses the global Ask, and gives hotel cards no chat', () => {
-    assert.equal((portfolioHome.match(/<PortfolioAsk\b/g) ?? []).length, 1);
+    assert.equal((portfolioHome.match(/<PortfolioChat\b/g) ?? []).length, 1);
     assert.match(portfolioHome, /<AppLayout hideGlobalAsk>/);
     assert.match(appLayout, /!hideGlobalAsk \? <AskStaxisBar \/> : null/);
     assert.doesNotMatch(
       hotelCard,
-      /PortfolioAsk|AskStaxisBar|AskHero|MessageSquare|MessageCircle|useAgentChat/,
+      /PortfolioChat|AskStaxisBar|AskHero|MessageSquare|MessageCircle|useAgentChat/,
     );
     assert.doesNotMatch(hotelCard, /score\s*[=:]/i);
   });
