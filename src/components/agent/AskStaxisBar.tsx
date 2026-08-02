@@ -52,15 +52,28 @@ import { useCompanion } from '@/components/companion/useCompanion';
 import { companionLabels, panelEyebrow, pastChatsHeading, sleepLine } from '@/lib/companion/copy';
 import {
   clampDockPosition,
+  containScroll,
   defaultDockPosition,
+  hoverCanClose,
+  hoverCanOpen,
   isDragGesture,
+  panelExitMs,
+  panelRenderState,
   peekFits,
   placePanel,
   placePeek,
   panelWidthFor,
   readStoredDock,
+  shouldAutoPeek,
+  wheelDeltaPx,
   writeStoredDock,
+  AUTO_PEEK_MS,
+  HOVER_CLOSE_MS,
+  HOVER_OPEN_MS,
   MARK_SIZE,
+  PANEL_ENTER_MS,
+  PANEL_EXIT_MS,
+  REDUCED_MOTION_MS,
   type Vec,
   type Viewport,
 } from '@/lib/companion/dock';
@@ -140,6 +153,10 @@ export function AskStaxisBar() {
 
   const [input, setInput] = useState('');
   const [open, setOpen] = useState(false);
+  // B1 · Sink needs the slab to still be in the tree while it plays. `open` is
+  // the logical state (and what aria-expanded reports); `closing` is the extra
+  // 200ms of render that gives the exit somewhere to happen.
+  const [closing, setClosing] = useState(false);
   const [view, setView] = useState<PanelView>('thread');
   const [leaving, setLeaving] = useState<PanelView | null>(null);
   const [swapBack, setSwapBack] = useState(false);
@@ -164,6 +181,7 @@ export function AskStaxisBar() {
   const threadRef = useRef<HTMLDivElement>(null);
   const cornerRef = useRef<HTMLDivElement>(null);
   const panelRef = useRef<HTMLDivElement>(null);
+  const markRef = useRef<HTMLButtonElement>(null);
   const mobileInputRef = useRef<HTMLInputElement>(null);
   const mobileThreadRef = useRef<HTMLDivElement>(null);
   const mobileSheetRef = useRef<HTMLElement>(null);
@@ -172,6 +190,16 @@ export function AskStaxisBar() {
   const swapTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const dragRef = useRef<{ pointerId: number; startX: number; startY: number; origin: Vec } | null>(null);
   const suppressClickRef = useRef(false);
+  const sinkTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const hoverOpenTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const hoverCloseTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Set when a click closed the panel while the pointer was still on the mark.
+  // Without it, hover intent would re-open on the spot and the close would read
+  // as the click having done nothing.
+  const hoverSuppressedRef = useRef(false);
+  // The live value of `open`, for the timers and callbacks that fire long after
+  // the render that armed them.
+  const openRef = useRef(false);
 
   const {
     messages,
@@ -201,12 +229,24 @@ export function AskStaxisBar() {
   // A ref so the hook can be created before `submit` exists without either one
   // reaching into the other's closure.
   const submitRef = useRef<(text: string, origin?: AskOrigin) => void>(() => {});
+
+  /** Anything that opens the panel also cancels a Sink already in flight. */
+  const cancelSink = useCallback(() => {
+    if (sinkTimerRef.current) {
+      clearTimeout(sinkTimerRef.current);
+      sinkTimerRef.current = null;
+    }
+    setClosing(false);
+  }, []);
+
   const seed = useCallback((text?: string) => {
+    cancelSink();
+    openRef.current = true;
     setOpen(true);
     setView('thread');
     setLeaving(null);
     if (text) submitRef.current(text, 'companion');
-  }, []);
+  }, [cancelSink]);
   const companion = useCompanion(seed);
 
   const scrollBottomSoon = useCallback(() => {
@@ -234,6 +274,8 @@ export function AskStaxisBar() {
     const text = raw.trim();
     if (!text || streaming) return;
     if (recognitionRef.current) stopDictation();
+    cancelSink();
+    openRef.current = true;
     setOpen(true);
     setView('thread');
     setLeaving(null);
@@ -241,21 +283,147 @@ export function AskStaxisBar() {
     if (window.matchMedia('(max-width: 760px)').matches) setMobileOpen(true);
     setInput('');
     void sendMessage(text, origin ? { origin } : undefined);
-  }, [streaming, sendMessage, stopDictation]);
+  }, [streaming, sendMessage, stopDictation, cancelSink]);
 
   useEffect(() => { submitRef.current = submit; }, [submit]);
 
   const wake = useCallback(() => {
+    cancelSink();
+    openRef.current = true;
     setOpen(true);
     setView('thread');
     setLeaving(null);
     if (window.matchMedia('(max-width: 760px)').matches) setMobileOpen(true);
+  }, [cancelSink]);
+
+  /**
+   * Close with B1 · Sink actually playing.
+   *
+   * The panel used to be `{open && <div className="asx-panel">}`, so `setOpen`
+   * took its DOM away on the same commit and the exit animation had nothing to
+   * animate. Now `open` goes false immediately (aria-expanded is honest at once,
+   * and nothing inside is reachable), the slab stays mounted for the length of
+   * the Sink, and then unmounts.
+   */
+  const closePanel = useCallback(() => {
+    setMenuOpen(false);
+    // Focus goes back to the mark before the slab starts leaving, so nothing is
+    // ever focused inside a panel that is on its way out and the mark can be
+    // re-opened straight from the keyboard.
+    const slab = panelRef.current;
+    if (slab && document.activeElement && slab.contains(document.activeElement)) {
+      markRef.current?.focus({ preventScroll: true });
+    }
+    // Guarded on the ref rather than inside a state updater: a second call in
+    // the same tick (Escape landing on top of an outside pointerdown) must not
+    // restart the Sink, and an updater is not the place for a timer.
+    if (!openRef.current) return;
+    openRef.current = false;
+    setOpen(false);
+    if (sinkTimerRef.current) clearTimeout(sinkTimerRef.current);
+    setClosing(true);
+    const reduced = typeof window !== 'undefined'
+      && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    sinkTimerRef.current = setTimeout(() => {
+      sinkTimerRef.current = null;
+      setClosing(false);
+    }, panelExitMs(reduced));
   }, []);
 
-  const closePanel = useCallback(() => {
-    setOpen(false);
-    setMenuOpen(false);
+  useEffect(() => { openRef.current = open; }, [open]);
+
+  useEffect(() => () => {
+    if (sinkTimerRef.current) clearTimeout(sinkTimerRef.current);
+    if (hoverOpenTimerRef.current) clearTimeout(hoverOpenTimerRef.current);
+    if (hoverCloseTimerRef.current) clearTimeout(hoverCloseTimerRef.current);
   }, []);
+
+  // ── Hover opens it ───────────────────────────────────────────────────────
+  // On a machine with a real pointer, resting on the mark opens the panel by
+  // itself. On touch nothing changes: a tap is the whole interaction there, and
+  // a hover-open would fire on the same tap that toggles.
+  const [finePointer, setFinePointer] = useState(false);
+  useEffect(() => {
+    const media = window.matchMedia('(hover: hover) and (pointer: fine)');
+    const sync = () => setFinePointer(media.matches);
+    sync();
+    media.addEventListener('change', sync);
+    return () => media.removeEventListener('change', sync);
+  }, []);
+
+  const panelBusy = streaming || dictating || menuOpen || input.trim().length > 0;
+  const busyRef = useRef(false);
+  busyRef.current = panelBusy;
+
+  const cancelHoverOpen = useCallback(() => {
+    if (hoverOpenTimerRef.current) {
+      clearTimeout(hoverOpenTimerRef.current);
+      hoverOpenTimerRef.current = null;
+    }
+  }, []);
+
+  const cancelHoverClose = useCallback(() => {
+    if (hoverCloseTimerRef.current) {
+      clearTimeout(hoverCloseTimerRef.current);
+      hoverCloseTimerRef.current = null;
+    }
+  }, []);
+
+  const armHoverOpen = useCallback(() => {
+    cancelHoverClose();
+    if (hoverSuppressedRef.current) return;
+    if (!hoverCanOpen({ finePointer, dragging, open: openRef.current })) return;
+    if (hoverOpenTimerRef.current) return;
+    hoverOpenTimerRef.current = setTimeout(() => {
+      hoverOpenTimerRef.current = null;
+      if (hoverSuppressedRef.current || dragRef.current) return;
+      wake();
+    }, HOVER_OPEN_MS);
+  }, [cancelHoverClose, finePointer, dragging, wake]);
+
+  /**
+   * The pointer left the mark and the panel. Not an instruction to close.
+   *
+   * A grace long enough to cross the 12px of bare page between the two, and a
+   * `busy` check at the moment it fires rather than the moment it was armed:
+   * somebody who started typing during the grace keeps their panel.
+   */
+  const armHoverClose = useCallback(() => {
+    cancelHoverOpen();
+    if (hoverCloseTimerRef.current) return;
+    hoverCloseTimerRef.current = setTimeout(() => {
+      hoverCloseTimerRef.current = null;
+      const focusInside = panelRef.current?.contains(document.activeElement) === true;
+      if (!hoverCanClose({ finePointer, open: openRef.current, busy: busyRef.current || focusInside })) return;
+      closePanel();
+    }, HOVER_CLOSE_MS);
+  }, [cancelHoverOpen, finePointer, closePanel]);
+
+  // ── The peek shows itself ────────────────────────────────────────────────
+  // A sentence that survived every manner in decideCompanionSpeech has earned
+  // one unprompted moment. It gets AUTO_PEEK_MS and then retreats, once per
+  // candidate per page load. Hover still summons it any time after that.
+  const [autoPeek, setAutoPeek] = useState(false);
+  const autoPeekShownRef = useRef<Set<string>>(new Set());
+  const peekKey = companion.peek?.text ?? null;
+
+  useEffect(() => {
+    if (!shouldAutoPeek({
+      key: peekKey,
+      shown: autoPeekShownRef.current,
+      open,
+      dragging,
+      busy: panelBusy,
+    })) return;
+    autoPeekShownRef.current.add(peekKey as string);
+    setAutoPeek(true);
+    const timer = setTimeout(() => setAutoPeek(false), AUTO_PEEK_MS);
+    return () => clearTimeout(timer);
+  }, [peekKey, open, dragging, panelBusy]);
+
+  // Opening the panel or picking the mark up retires it at once: the sentence
+  // is the panel's first line anyway, so leaving the pill out would say it twice.
+  useEffect(() => { if (open || dragging) setAutoPeek(false); }, [open, dragging]);
 
   // C1 · the list replaces the thread inside the same slab. The outgoing view
   // stays mounted for the length of the slide so both halves move together.
@@ -363,15 +531,46 @@ export function AskStaxisBar() {
     };
   }, [open, menuOpen, mobileOpen, closeMobile, closePanel]);
 
-  // A walkthrough (Clicky-style cursor demo) takes over the screen.
+  // A walkthrough (Clicky-style cursor demo) takes over the screen, and a route
+  // change replaces the page under it. Both close the panel OUTRIGHT rather
+  // than through the Sink: an exit animation belongs to a person dismissing
+  // something, not to the screen being taken away from them.
   useEffect(() => {
-    const handler = () => { setOpen(false); setMenuOpen(false); };
+    const handler = () => { setOpen(false); setClosing(false); setMenuOpen(false); };
     window.addEventListener('walkthrough:start', handler);
     return () => window.removeEventListener('walkthrough:start', handler);
   }, []);
 
   // Route change closes the panel. The conversation itself persists.
-  useEffect(() => { setOpen(false); setMenuOpen(false); setPeeking(false); }, [pathname]);
+  useEffect(() => {
+    setOpen(false);
+    setClosing(false);
+    setMenuOpen(false);
+    setPeeking(false);
+    hoverSuppressedRef.current = false;
+  }, [pathname]);
+
+  // ── The panel keeps its own wheel ────────────────────────────────────────
+  // Non-passive, and on the whole slab rather than on the scroller: React
+  // registers wheel listeners passively at the root, so an onWheel prop cannot
+  // preventDefault, and a scroller with no overflow yet is not a wheel target
+  // at all. See containScroll for the two ways the page used to steal it.
+  useEffect(() => {
+    const slab = panelRef.current;
+    if (!slab || (!open && !closing)) return;
+    const onWheel = (e: WheelEvent) => {
+      const box = scrollerFor(e.target, slab);
+      if (box) {
+        const px = wheelDeltaPx(e.deltaY, e.deltaMode, box.clientHeight);
+        box.scrollTop = containScroll(box, px);
+      }
+      // Swallowed whether or not anything moved. "Cursor over the panel" is the
+      // rule, not "cursor over something the panel can still scroll".
+      e.preventDefault();
+    };
+    slab.addEventListener('wheel', onWheel, { passive: false });
+    return () => slab.removeEventListener('wheel', onWheel);
+  }, [open, closing, view]);
 
   useEffect(() => () => { try { recognitionRef.current?.stop(); } catch { /* noop */ } }, []);
 
@@ -448,11 +647,23 @@ export function AskStaxisBar() {
   const onMarkClick = useCallback(() => {
     // A real drag never opens the panel; a clean click always does.
     if (suppressClickRef.current) { suppressClickRef.current = false; return; }
+    cancelHoverOpen();
+    cancelHoverClose();
+    if (openRef.current) {
+      // Closing by hand while the pointer is still on the mark. Hover intent
+      // has to stand down until the pointer leaves, or the panel reopens 250ms
+      // later and the click reads as broken.
+      hoverSuppressedRef.current = true;
+      closePanel();
+      return;
+    }
     setMenuOpen(false);
-    setOpen((wasOpen) => !wasOpen);
+    cancelSink();
+    openRef.current = true;
+    setOpen(true);
     setView('thread');
     setLeaving(null);
-  }, []);
+  }, [cancelHoverOpen, cancelHoverClose, closePanel, cancelSink]);
 
   // One way back, for somebody who dragged it somewhere they regret.
   const resetDock = useCallback(() => {
@@ -493,9 +704,10 @@ export function AskStaxisBar() {
       ? 'wrong'
       : 'calm';
 
+  const panelChrome = panelRenderState({ open, closing });
   const showing = companion.showing;
   const peek = companion.peek;
-  const peekVisible = !open && !dragging && peeking && peek !== null && peekFits(peekAt);
+  const peekVisible = !open && !dragging && (peeking || autoPeek) && peek !== null && peekFits(peekAt);
 
   const filtered = query.trim()
     ? conversations.filter((c) => (c.title ?? '').toLowerCase().includes(query.trim().toLowerCase()))
@@ -601,7 +813,7 @@ export function AskStaxisBar() {
         </div>
       )}
 
-      <div className="asx-thread" ref={threadRef} aria-live="polite">
+      <div className="asx-thread" data-asx-scroll ref={threadRef} aria-live="polite">
         {companion.asleep ? (
           // The honest sleep state. Never a spinner: a spinner is a lie told
           // slowly, and the reason is knowable, so it gets said.
@@ -647,8 +859,14 @@ export function AskStaxisBar() {
                 onNo={companion.dismiss}
               />
             )}
+            {/* Staxis speaks first. Prose, no bubble: its voice is the panel
+                talking. Built from the hotel's own clock, this person's name
+                and a count the browser already holds, with zero model calls
+                and no number it was not given. When the bootstrap has said
+                nothing yet, the old invitation stands rather than a greeting
+                about a hotel nothing has been read from. */}
             {messages.length === 0 && showing.kind === 'none' && (
-              <p className="asx-turn-s">{labels.askPlaceholder}</p>
+              <p className="asx-turn-s">{companion.opening ?? labels.askPlaceholder}</p>
             )}
             {messages.map((m, i) => (
               <Turn key={i} message={m} reveal={i === messages.length - 1} />
@@ -697,7 +915,7 @@ export function AskStaxisBar() {
         </button>
       </div>
 
-      <div className="asx-hlist">
+      <div className="asx-hlist" data-asx-scroll>
         {days.length === 0 ? (
           <div className="asx-hempty">{labels.noPastChats}</div>
         ) : days.map((day) => (
@@ -833,14 +1051,19 @@ export function AskStaxisBar() {
         {mobileOpen ? <CloseX /> : <span aria-hidden>✦</span>}
       </button>
 
-      {/* ── The panel ── anchored to the mark wherever the mark ended up. */}
-      {open && (
+      {/* ── The panel ── anchored to the mark wherever the mark ended up.
+          Rendered while `closing` too, which is the whole of B1 · Sink: the
+          slab has to still exist for its exit to play. */}
+      {panelChrome.mounted && (
         <div
           ref={panelRef}
           id="staxis-panel"
-          className="asx-panel"
+          className={panelChrome.className}
           role="dialog"
           aria-label="Staxis"
+          aria-hidden={closing || undefined}
+          onPointerEnter={cancelHoverClose}
+          onPointerLeave={armHoverClose}
           style={{
             left: `${panel.left}px`,
             width: `${panelWidth}px`,
@@ -879,6 +1102,7 @@ export function AskStaxisBar() {
         style={{ left: `${markPos.x}px`, top: `${markPos.y}px` }}
       >
         <button
+          ref={markRef}
           type="button"
           className={`asx-mark asx-${markState}${dragging ? ' asx-dragging' : ''}`}
           aria-label="Ask Staxis"
@@ -890,8 +1114,15 @@ export function AskStaxisBar() {
           onPointerCancel={endDrag}
           onClick={onMarkClick}
           onDoubleClick={resetDock}
-          onPointerEnter={() => setPeeking(true)}
-          onPointerLeave={() => setPeeking(false)}
+          onPointerEnter={() => { setPeeking(true); armHoverOpen(); }}
+          onPointerLeave={() => {
+            setPeeking(false);
+            hoverSuppressedRef.current = false;
+            cancelHoverOpen();
+            armHoverClose();
+          }}
+          // Keyboard focus shows the peek but does NOT open: arriving on a
+          // control by tabbing is not the same as choosing to stand on it.
           onFocus={() => setPeeking(true)}
           onBlur={() => setPeeking(false)}
         >
@@ -902,6 +1133,27 @@ export function AskStaxisBar() {
       </div>
     </>
   );
+}
+
+/**
+ * The scroller a wheel over `target` should drive, inside the panel.
+ *
+ * Walks up from whatever the pointer is genuinely over, then falls back to the
+ * panel's own scroller so a wheel over the top strip, the composer or the gap
+ * between turns still moves the conversation rather than the page behind it.
+ *
+ * Marked scrollers only (`data-asx-scroll`), rather than sniffing computed
+ * overflow on every wheel event: there are exactly two of them, they are both
+ * in this file, and a getComputedStyle per wheel tick is a real cost for an
+ * answer that never changes.
+ */
+function scrollerFor(target: EventTarget | null, slab: HTMLElement): HTMLElement | null {
+  let node: Node | null = target instanceof Node ? target : null;
+  while (node && node !== slab) {
+    if (node instanceof HTMLElement && node.dataset.asxScroll !== undefined) return node;
+    node = node.parentNode;
+  }
+  return slab.querySelector<HTMLElement>('[data-asx-scroll]');
 }
 
 // ── The companion's one thing, inside the panel ───────────────────────────
@@ -1121,8 +1373,13 @@ const ASX_CSS = `
 .asx-panel{position:fixed;z-index:60;border-radius:24px;overflow:hidden;
   background:radial-gradient(ellipse 300px 180px at 50% 112%,rgba(92,122,96,.30) 0%,rgba(92,122,96,0) 60%),var(--asx-ink);
   box-shadow:inset 0 1px 0 rgba(158,183,166,.14),0 30px 64px -24px rgba(31,42,32,.72);
-  animation:asxRise .28s var(--asx-spring) both;}
+  animation:asxRise ${PANEL_ENTER_MS}ms var(--asx-spring) both;}
 @keyframes asxRise{from{opacity:0;transform:translateY(14px);}to{opacity:1;transform:none;}}
+/* B1 · Sink. Specified from the start and never once seen, because the panel
+   used to leave the tree on the same commit that closed it. It now stays
+   mounted for exactly this long. Closing is always faster than opening. */
+@keyframes asxSink{from{opacity:1;transform:none;}to{opacity:0;transform:translateY(14px);}}
+.asx-panel.asx-closing{animation:asxSink ${PANEL_EXIT_MS}ms cubic-bezier(.4,0,.7,.2) both;pointer-events:none;}
 .asx-view{position:absolute;inset:0;display:flex;flex-direction:column;min-height:0;}
 @keyframes asxExitFwd{from{opacity:1;transform:none;}to{opacity:0;transform:translateX(-18px);}}
 @keyframes asxEnterFwd{from{opacity:0;transform:translateX(18px);}to{opacity:1;transform:none;}}
@@ -1155,7 +1412,7 @@ const ASX_CSS = `
 .asx-menurow:hover{background:rgba(158,183,166,.14);}
 .asx-menurow:focus-visible{outline:2px solid var(--asx-brand);outline-offset:-2px;}
 
-.asx-thread{flex:1;min-height:0;overflow-y:auto;scrollbar-width:none;
+.asx-thread{flex:1;min-height:0;overflow-y:auto;overscroll-behavior:contain;scrollbar-width:none;
   display:flex;flex-direction:column;gap:15px;padding:6px 16px 0;}
 .asx-thread::-webkit-scrollbar{display:none;}
 .asx-turn-u{align-self:flex-end;max-width:78%;padding:8px 13px;font-size:13px;line-height:1.4;
@@ -1227,7 +1484,7 @@ const ASX_CSS = `
 .asx-hsearch{flex:1;min-width:0;border:none;outline:none;background:transparent;
   font:inherit;font-size:13px;color:var(--asx-white);}
 .asx-hsearch::placeholder{color:rgba(158,183,166,.6);}
-.asx-hlist{flex:1;min-height:0;overflow-y:auto;scrollbar-width:none;display:flex;flex-direction:column;padding:8px 8px 4px;}
+.asx-hlist{flex:1;min-height:0;overflow-y:auto;overscroll-behavior:contain;scrollbar-width:none;display:flex;flex-direction:column;padding:8px 8px 4px;}
 .asx-hlist::-webkit-scrollbar{display:none;}
 .asx-hday{font-family:var(--font-geist-mono),ui-monospace,monospace;font-size:9px;letter-spacing:.16em;
   text-transform:uppercase;color:var(--asx-sage-l);padding:7px 10px 8px;}
@@ -1302,7 +1559,7 @@ const ASX_CSS = `
   .asx-mobile-close svg{width:13px;height:13px;}
   .asx-mobile-close:focus-visible{outline:2px solid #3E5C48;outline-offset:-4px;}
 
-  .asx-mobile-thread{flex:1;min-height:0;overflow-y:auto;padding:14px;display:flex;flex-direction:column;gap:11px;
+  .asx-mobile-thread{flex:1;min-height:0;overflow-y:auto;overscroll-behavior:contain;padding:14px;display:flex;flex-direction:column;gap:11px;
     background:#FCFDFB;scrollbar-width:none;-webkit-overflow-scrolling:touch;}
   .asx-mobile-thread::-webkit-scrollbar{display:none;}
   .asx-mobile-thread .asx-msg{padding:10px 13px;font-size:13px;line-height:1.5;animation:asx-msgin .34s cubic-bezier(.22,1,.36,1);}
@@ -1346,7 +1603,8 @@ const ASX_CSS = `
 @media (prefers-reduced-motion: reduce){
   .asx-sheen{animation:none!important;}
   .asx-thinking i,.asx-typing i{animation:none;}
-  .asx-panel{animation:asxFade .12s linear both;}
+  .asx-panel{animation:asxFade ${REDUCED_MOTION_MS}ms linear both;}
+  .asx-panel.asx-closing{animation:asxFadeOut ${REDUCED_MOTION_MS}ms linear both;}
   .asx-enter-fwd,.asx-enter-back{animation:asxFade .12s linear both;}
   .asx-exit-fwd,.asx-exit-back{animation:none;opacity:0;}
   .asx-peek-left,.asx-peek-right{animation:asxFade .12s linear both;}
@@ -1354,4 +1612,5 @@ const ASX_CSS = `
   .asx-mobile-sheet,.asx-mobile-thread .asx-msg{animation:none;}
 }
 @keyframes asxFade{from{opacity:0;}to{opacity:1;}}
+@keyframes asxFadeOut{from{opacity:1;}to{opacity:0;}}
 `;

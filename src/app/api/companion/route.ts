@@ -46,7 +46,7 @@ import {
 } from '@/lib/api-ratelimit';
 import { readFeedPrefs, writeFeedPrefs } from '@/lib/feed/prefs';
 import { supabaseAdmin } from '@/lib/supabase-admin';
-import { propertyLocalToday } from '@/lib/schedule/local-date';
+import { propertyLocalHour, propertyLocalToday } from '@/lib/schedule/local-date';
 import { isSectionEnabled, normalizeSectionFlags } from '@/lib/sections/registry';
 import { chatIsMountedForRole } from '@/lib/agent/lenses';
 import { isValidRole, type AppRole } from '@/lib/roles';
@@ -59,6 +59,7 @@ import {
   rememberAccepted,
   rememberDeclined,
   rememberSpoke,
+  rememberGreeted,
   rememberTaught,
   rememberTourDeclined,
   rememberTourTaken,
@@ -127,7 +128,12 @@ export async function GET(req: NextRequest): Promise<Response> {
   }
 
   const memory = parseCompanionMemory(prefs.companionMemory);
-  const today = propertyLocalToday(new Date(), facts?.timezone ?? null);
+  const now = new Date();
+  const today = propertyLocalToday(now, facts?.timezone ?? null);
+  // The hour on the wall AT THE HOTEL, for the greeting. Null when the hotel
+  // has no timezone set, in which case the greeting says "Hello" rather than
+  // guessing which third of the day somebody is in.
+  const hour = propertyLocalHour(now, facts?.timezone ?? null);
 
   // Candidates only when the companion could actually act on them. A hotel with
   // Staxis switched off gets no findings shipped to its browser, whatever the
@@ -152,6 +158,7 @@ export async function GET(req: NextRequest): Promise<Response> {
         id: ctx.pid,
         name: facts?.name ?? null,
         today,
+        hour,
       },
       memory,
       // The one-time setup wizard's own guard. When it has already run for this
@@ -174,10 +181,11 @@ type CompanionEvent =
   | 'spoke'
   | 'declined'
   | 'accepted'
-  | 'taught';
+  | 'taught'
+  | 'greeted';
 
 const EVENTS: readonly CompanionEvent[] = [
-  'welcomed', 'tour_declined', 'tour_taken', 'spoke', 'declined', 'accepted', 'taught',
+  'welcomed', 'tour_declined', 'tour_taken', 'spoke', 'declined', 'accepted', 'taught', 'greeted',
 ];
 
 function isEvent(x: unknown): x is CompanionEvent {
@@ -250,6 +258,9 @@ export async function POST(req: NextRequest): Promise<Response> {
       case 'declined':      next = rememberDeclined(current, topic, today); break;
       case 'accepted':      next = rememberAccepted(current, topic, today); break;
       case 'taught':        next = rememberTaught(current, body.flow as TeachFlow); break;
+      // Stamped with the HOTEL's day, so a person working past midnight is
+      // greeted when the hotel's morning starts and not when UTC's does.
+      case 'greeted':       next = rememberGreeted(current, today); break;
       default:              next = current;
     }
 

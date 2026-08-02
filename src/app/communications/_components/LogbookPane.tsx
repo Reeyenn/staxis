@@ -41,18 +41,41 @@ function catLabel(category: string | null | undefined, L: L): string {
 // ─────────────────────────────────────────────────────────────────────────────
 // LOG BOOK mode (self-fetching: list ⇄ detail)
 // ─────────────────────────────────────────────────────────────────────────────
-export function LogbookMode({ pid, meName, L }: { pid: string; meName: string; L: L }) {
+export function LogbookMode({ pid, meName, L, embedded = false, onCount }: {
+  pid: string;
+  meName: string;
+  L: L;
+  /** Suppress this pane's own title block. The surface around it has a header
+   *  already, and two titles in one box is one title too many. */
+  embedded?: boolean;
+  /** How many entries the read actually returned, so the surface around this
+   *  pane can show a count without opening a second read of the same endpoint. */
+  onCount?: (count: number) => void;
+}) {
   const [selectedId, setSelectedId] = React.useState<string | null>(null);
   const [adding, setAdding] = React.useState(false);
 
+  // 30s, not 8s. This is a place you GO, not a feed you watch, and every tick
+  // rebuilt the whole list. At 200 rows that was the lag on open: the tree was
+  // re-rendered from scratch seven times a minute for a page nobody was
+  // watching change. The rows below are memoised for the same reason.
   const { data, loading, error: loadError, reload: load } = useCommsResource<{ entries: LogEntryDTO[] }>(
     `/api/comms/logbook?pid=${encodeURIComponent(pid)}`,
-    { pollMs: 8000, keepDataOnError: true },
+    { pollMs: 30000, keepDataOnError: true },
   );
   const entries = React.useMemo(() => data?.entries ?? [], [data]);
   const loaded = data !== null;
 
-  const selected = selectedId ? entries.find((e) => e.id === selectedId) ?? null : null;
+  React.useEffect(() => { if (loaded) onCount?.(entries.length); }, [loaded, entries.length, onCount]);
+
+  const selected = React.useMemo(
+    () => (selectedId ? entries.find((e) => e.id === selectedId) ?? null : null),
+    [selectedId, entries],
+  );
+  // Was rebuilt inline in the JSX, so every poll re-parsed a Date per entry and
+  // re-grouped all of them before React had even begun diffing.
+  const days = React.useMemo(() => groupByDay(entries), [entries]);
+  const openEntry = React.useCallback((id: string) => setSelectedId(id), []);
 
   // If the open recap drops out of the polled list (deleted / fell past the
   // window), drop back to the list cleanly instead of snapping back into a stale
@@ -67,12 +90,14 @@ export function LogbookMode({ pid, meName, L }: { pid: string; meName: string; L
 
   return (
     <div style={{ flex: 1, overflowY: 'auto', background: T.bg }}>
-      <div style={{ maxWidth: 720, margin: '0 auto', padding: '26px 28px 60px' }}>
-        <div style={{ display: 'flex', alignItems: 'flex-end', justifyContent: 'space-between', gap: 16 }}>
-          <div>
-            <div style={{ marginBottom: 7 }}><MonoLabel>{data ? `${entries.length} recaps` : (loading ? 'Loading recaps' : 'Log unavailable')}</MonoLabel></div>
-            <div style={{ fontFamily: SERIF, fontSize: 34, fontStyle: 'italic', lineHeight: 1, color: T.ink }}>{'Log book'}</div>
-          </div>
+      <div style={{ maxWidth: 720, margin: '0 auto', padding: embedded ? '16px 20px 28px' : '26px 28px 60px', width: '100%' }}>
+        <div style={{ display: 'flex', alignItems: 'flex-end', justifyContent: embedded ? 'flex-end' : 'space-between', gap: 16 }}>
+          {!embedded && (
+            <div>
+              <div style={{ marginBottom: 7 }}><MonoLabel>{data ? `${entries.length} recaps` : (loading ? 'Loading recaps' : 'Log unavailable')}</MonoLabel></div>
+              <div style={{ fontFamily: SERIF, fontSize: 34, fontStyle: 'italic', lineHeight: 1, color: T.ink }}>{'Log book'}</div>
+            </div>
+          )}
           <button onClick={() => setAdding((v) => !v)} style={{ minHeight: 44, display: 'flex', alignItems: 'center', gap: 7, padding: '9px 14px', borderRadius: 10, cursor: 'pointer', flexShrink: 0, border: `1px solid ${adding ? T.hair : tint(T.forest, .4)}`, background: adding ? T.bg : tint(T.forest, .12), color: adding ? T.dim : deptColorDark(T.forest), fontFamily: SANS, fontSize: 13.5, fontWeight: 600 }}>
             {adding ? <><X size={15} /> {'Cancel'}</> : <><Plus size={16} /> {'New entry'}</>}
           </button>
@@ -88,10 +113,10 @@ export function LogbookMode({ pid, meName, L }: { pid: string; meName: string; L
               {'No recaps yet. Post a shift handoff to get started.'}
             </div>
           )}
-          {groupByDay(entries).map((grp) => (
+          {days.map((grp) => (
             <React.Fragment key={grp.key}>
               <div style={{ padding: '12px 2px 4px' }}><MonoLabel>{fmtDayLabel(grp.entries[0].createdAt, 'Today', 'Yesterday')}</MonoLabel></div>
-              {grp.entries.map((e) => <LogEntryRow key={e.id} e={e} L={L} onOpen={() => setSelectedId(e.id)} />)}
+              {grp.entries.map((e) => <LogEntryRow key={e.id} e={e} L={L} onOpen={openEntry} />)}
             </React.Fragment>
           ))}
         </div>
@@ -111,10 +136,10 @@ function groupByDay(entries: LogEntryDTO[]): { key: string; entries: LogEntryDTO
   return out;
 }
 
-function LogEntryRow({ e, L, onOpen }: { e: LogEntryDTO; L: L; onOpen: () => void }) {
+const LogEntryRow = React.memo(function LogEntryRow({ e, L, onOpen }: { e: LogEntryDTO; L: L; onOpen: (id: string) => void }) {
   const dept = catDept(e.category);
   return (
-    <button onClick={onOpen} style={{ textAlign: 'left', border: `1px solid ${T.hair}`, borderRadius: 12, background: T.bg, cursor: 'pointer', padding: '13px 16px', display: 'block', width: '100%' }}
+    <button onClick={() => onOpen(e.id)} style={{ textAlign: 'left', border: `1px solid ${T.hair}`, borderRadius: 12, background: T.bg, cursor: 'pointer', padding: '13px 16px', display: 'block', width: '100%' }}
       onMouseEnter={(ev) => (ev.currentTarget.style.borderColor = tint(deptColor(dept), .45))} onMouseLeave={(ev) => (ev.currentTarget.style.borderColor = T.hair)}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
         <DeptDot dept={dept} size={7} />
@@ -135,7 +160,7 @@ function LogEntryRow({ e, L, onOpen }: { e: LogEntryDTO; L: L; onOpen: () => voi
       </div>
     </button>
   );
-}
+});
 
 // ─────────────────────────────────────────────────────────────────────────────
 // NEW RECAP composer

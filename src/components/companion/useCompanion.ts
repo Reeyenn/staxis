@@ -39,6 +39,7 @@ import type { AppRole } from '@/lib/roles';
 import { companionMounts } from '@/lib/companion/mount';
 import {
   decideCompanionSpeech,
+  decideDailyHello,
   decideTeachMoment,
   parseCompanionMemory,
   DEFAULT_COMPANION_SEVERITY,
@@ -48,7 +49,7 @@ import {
   type CompanionSpeech,
   type TeachFlow,
 } from '@/lib/companion/manners';
-import { arrivalLine, offerQuestion, type SleepReason } from '@/lib/companion/copy';
+import { arrivalLine, greetingLine, offerQuestion, todayFact, type SleepReason } from '@/lib/companion/copy';
 import {
   resolveDestination,
   tourFor,
@@ -61,9 +62,12 @@ import {
   subscribeToCompanionFlow,
 } from './companion-events';
 
+/** How long the once-a-day hello stays in the corner before retreating. */
+const HELLO_VISIBLE_MS = 6000;
+
 interface Bootstrap {
   person: { firstName: string | null; role: AppRole; sharedLogin: boolean; isManager: boolean };
-  hotel: { id: string; name: string | null; today: string };
+  hotel: { id: string; name: string | null; today: string; hour: number | null };
   memory: CompanionMemory;
   wizardAlreadyRan: boolean;
   candidates: CompanionCandidate[];
@@ -104,6 +108,17 @@ export interface CompanionApi {
   sleepReason: SleepReason | null;
   showing: CompanionShowing;
   peek: CompanionPeek | null;
+  /**
+   * The line the panel opens with when there is no conversation yet.
+   *
+   * Null until the bootstrap has landed. NEVER a guess: it is a template over
+   * the hotel's own clock, this person's name and a count the browser was
+   * already given, so an empty bootstrap produces no greeting rather than a
+   * cheerful sentence about a hotel nothing has been read from.
+   */
+  opening: string | null;
+  /** The once-a-day hello, while it is being said. Null the rest of the time. */
+  hello: string | null;
   /** The screen the person is standing on, for the panel's eyebrow. */
   page: CompanionPage | null;
   /** The role-sized tour, or empty when there is nothing worth touring. */
@@ -418,6 +433,56 @@ export function useCompanion(onSeed: (text?: string) => void): CompanionApi {
     setQuiet(true);
   }, []);
 
+  // ── One hello a day ──────────────────────────────────────────────────────
+  //
+  // Fired on the first companion-bearing screen of the hotel's day, whether or
+  // not anything is wrong. The manners engine owns the guard; this only asks
+  // and then stamps. `helloFired` stops the effect asking twice within a page
+  // load while the optimistic write is still in flight.
+  const [hello, setHello] = useState<string | null>(null);
+  const helloFired = useRef(false);
+
+  useEffect(() => {
+    if (!boot || !gate.mounts || helloFired.current) return;
+    const decision = decideDailyHello({
+      today: boot.hotel.today,
+      person: { firstName: boot.person.firstName, sharedLogin: boot.person.sharedLogin },
+      memory: boot.memory,
+      hour: boot.hotel.hour,
+      waiting: boot.candidates.length,
+      userIsBusy: busy,
+      quietThisSession,
+      aiAwake: boot.availability.awake,
+    });
+    if (!decision.hello) return;
+    helloFired.current = true;
+    setHello(decision.line);
+    void remember('greeted', {}, (m) => ({ ...m, greetedDay: boot.hotel.today }));
+  }, [boot, gate.mounts, busy, quietThisSession, remember]);
+
+  // It retreats on its own. The corner is not a place to leave a sentence.
+  useEffect(() => {
+    if (hello === null) return;
+    const timer = setTimeout(() => setHello(null), HELLO_VISIBLE_MS);
+    return () => clearTimeout(timer);
+  }, [hello]);
+
+  // ── The panel's opening line ─────────────────────────────────────────────
+  //
+  // What Staxis says first when somebody opens an empty thread. Same three
+  // values as the hello, minus the "All quiet so far" floor: a greeting with
+  // nothing true to add is just a greeting, and padding it would be the one
+  // thing this whole layer exists to avoid.
+  const opening = useMemo<string | null>(() => {
+    if (!boot || !boot.availability.awake) return null;
+    return greetingLine({
+      firstName: boot.person.firstName,
+      sharedLogin: boot.person.sharedLogin,
+      hour: boot.hotel.hour,
+      fact: todayFact({ waiting: boot.candidates.length }),
+    });
+  }, [boot]);
+
   // ── The peek ─────────────────────────────────────────────────────────────
   //
   // Only an OFFER becomes a peek. A welcome is a conversation to have with the
@@ -425,12 +490,15 @@ export function useCompanion(onSeed: (text?: string) => void): CompanionApi {
   // about a screen the person is already looking at. When there is no offer the
   // peek is null and hover does nothing, which is the whole point.
   const peek = useMemo<CompanionPeek | null>(() => {
-    if (showing.kind !== 'speech') return null;
-    if (showing.speech.kind !== 'offer') return null;
-    const text = showing.speech.sentence.trim();
-    if (!text) return null;
-    return { text, severity: showing.severity };
-  }, [showing]);
+    if (showing.kind === 'speech' && showing.speech.kind === 'offer') {
+      const text = showing.speech.sentence.trim();
+      if (text) return { text, severity: showing.severity };
+    }
+    // The daily hello rides the same pill. It never outranks an offer: a
+    // hotel with something wrong in it gets told about the thing, not greeted.
+    if (hello) return { text: hello, severity: 'ok' };
+    return null;
+  }, [showing, hello]);
 
   return {
     mounts: gate.mounts,
@@ -438,6 +506,8 @@ export function useCompanion(onSeed: (text?: string) => void): CompanionApi {
     sleepReason: boot?.availability.reason ?? null,
     showing,
     peek,
+    opening,
+    hello,
     page,
     tour,
     tourStep,
