@@ -1,12 +1,12 @@
 /**
- * GET /api/comms/messages?pid=...&conversationId=...
+ * GET /api/comms/messages?pid=...&conversationId=...&before=<ISO timestamp>
  * Returns the messages in a conversation, each translated into the reader's
  * chosen language (cache-first), with read-receipts on the reader's own
  * messages. Opening a thread marks it read. Authenticated. NO SMS.
  */
 import type { NextRequest } from 'next/server';
 import { ok, err, ApiErrorCode } from '@/lib/api-response';
-import { validateUuid } from '@/lib/api-validate';
+import { validateIsoTimestamp, validateUuid } from '@/lib/api-validate';
 import { checkAndIncrementRateLimit, rateLimitedResponse, hashToRateLimitKey } from '@/lib/api-ratelimit';
 import { commsContext } from '@/lib/comms/route-helpers';
 import { getConversation, canAccessConversation, getMessages, markConversationRead } from '@/lib/comms/core';
@@ -25,6 +25,11 @@ export async function GET(req: NextRequest): Promise<Response> {
   if (convV.error) {
     return err(convV.error, { requestId: ctx.requestId, status: 400, code: ApiErrorCode.ValidationFailed, headers: ctx.headers });
   }
+  const beforeRaw = searchParams.get('before');
+  const beforeV = beforeRaw === null ? { value: undefined } : validateIsoTimestamp(beforeRaw, 'before');
+  if (beforeV.error) {
+    return err(beforeV.error, { requestId: ctx.requestId, status: 400, code: ApiErrorCode.ValidationFailed, headers: ctx.headers });
+  }
 
   const rl = await checkAndIncrementRateLimit('comms-read', hashToRateLimitKey(`${ctx.pid}:${ctx.userId}`));
   if (!rl.allowed) return rateLimitedResponse(rl.current, rl.cap, rl.retryAfterSec);
@@ -40,6 +45,7 @@ export async function GET(req: NextRequest): Promise<Response> {
 
   const messages = await getMessages(ctx.pid, convo.id, ctx.staffId, ctx.lang, {
     withReceipts: true,
+    before: beforeV.value,
     ai: {
       deadlineAt,
       abortSignal: req.signal,

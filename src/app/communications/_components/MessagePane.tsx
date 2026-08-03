@@ -30,6 +30,11 @@ export interface MessagePaneProps {
   messagesLoading: boolean;
   messagesError: string | null;
   onRetryMessages: () => void;
+  messagesHasOlder: boolean;
+  messagesOlderKnown: boolean;
+  messagesOlderLoading: boolean;
+  messagesOlderError: string | null;
+  onLoadOlder: () => void;
   online: Set<string>;
   memberCount: number | null;
   L: L;
@@ -90,6 +95,26 @@ export function MessagePane(props: MessagePaneProps) {
 
       {/* Messages */}
       <div ref={props.scrollRef} style={{ flex: 1, overflowY: 'auto', padding: '14px 0' }}>
+        {props.messagesOlderKnown && messages.length > 0 && (
+          <div style={{ display: 'flex', justifyContent: 'center', padding: '0 16px 10px' }}>
+            {props.messagesOlderError ? (
+              <div role="alert" style={{ display: 'flex', alignItems: 'center', gap: 8, maxWidth: 420, width: '100%', padding: '9px 11px', borderRadius: 9, border: `1px solid rgba(184,92,61,.24)`, background: 'rgba(184,92,61,.08)', color: T.terracotta, fontFamily: SANS, fontSize: 12.5 }}>
+                <AlertCircle size={15} aria-hidden="true" />
+                <span style={{ flex: 1 }}>{'Older messages could not load.'}</span>
+                <button onClick={props.onLoadOlder} disabled={props.messagesOlderLoading} aria-label={'Retry loading older messages'} style={{ minWidth: 44, minHeight: 44, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', borderRadius: 8, border: `1px solid rgba(184,92,61,.28)`, background: T.bg, color: T.terracotta, cursor: props.messagesOlderLoading ? 'wait' : 'pointer' }}>
+                  <RefreshCw size={14} aria-hidden="true" />
+                </button>
+              </div>
+            ) : props.messagesHasOlder ? (
+              <button onClick={props.onLoadOlder} disabled={props.messagesOlderLoading} aria-busy={props.messagesOlderLoading} style={{ minHeight: 44, padding: '0 14px', display: 'inline-flex', alignItems: 'center', gap: 7, borderRadius: 9, border: `1px solid ${T.hair}`, background: T.paper, color: deptColorDark(T.forest), cursor: props.messagesOlderLoading ? 'wait' : 'pointer', fontFamily: SANS, fontSize: 12.5, fontWeight: 700 }}>
+                {props.messagesOlderLoading ? <Loader2 size={14} className="comms-spin" aria-hidden="true" /> : null}
+                <span>{props.messagesOlderLoading ? 'Loading older messages…' : 'Load older messages'}</span>
+              </button>
+            ) : (
+              <div role="status" aria-live="polite" style={{ color: T.dim, fontFamily: SANS, fontSize: 12 }}>{'No older messages.'}</div>
+            )}
+          </div>
+        )}
         {props.messagesLoading && messages.length === 0 && (
           <div role="status" aria-live="polite" style={{ color: T.dim, fontFamily: SANS, fontSize: 13.5, textAlign: 'center', marginTop: 48, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8 }}>
             <Loader2 size={16} className="comms-spin" aria-hidden="true" /> {'Loading messages…'}

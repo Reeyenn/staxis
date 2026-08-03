@@ -11,12 +11,16 @@ import {
   ChevronRight,
   Send,
   Pin,
+  Loader2,
+  RefreshCw,
+  AlertCircle,
 } from 'lucide-react';
 import { fmtTimeOrDate as fmtTime } from '@/lib/format-date';
 import { initialsOf } from '@/app/_components/ui/Avatar';
 import type { HousekeeperLocale } from '@/lib/translations';
 import { t } from '@/lib/translations';
 import type { ConversationDTO, MessageDTO, StaffLite } from '@/lib/comms/types';
+import { MESSAGE_PAGE_SIZE } from '@/lib/comms/message-pagination';
 import { TOK } from './tokens';
 
 /**
@@ -42,6 +46,8 @@ interface Conv {
   color?: string;
 }
 interface Msg {
+  id: string;
+  createdAt: string;
   from: string;
   text: string;
   time: string;
@@ -72,11 +78,22 @@ async function hkPost<T>(url: string, body: unknown): Promise<T | null> {
 
 function mapMessages(messages: MessageDTO[]): Msg[] {
   return messages.map((m) => ({
+    id: m.id,
+    createdAt: m.createdAt,
     from: m.senderName,
     text: m.body,
     time: fmtTime(m.createdAt),
     mine: m.mine,
   }));
+}
+
+function mergeMessages(existing: Msg[], incoming: Msg[]): Msg[] {
+  const byId = new Map(existing.map((message) => [message.id, message]));
+  for (const message of incoming) byId.set(message.id, message);
+  return [...byId.values()].sort((a, b) => {
+    const timeOrder = new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime();
+    return timeOrder || a.id.localeCompare(b.id);
+  });
 }
 
 function mapConv(c: ConversationDTO): Conv {
@@ -119,14 +136,49 @@ export function MessagesTab({
   const [activeId, setActiveId] = React.useState<string | null>(null);
   const [messages, setMessages] = React.useState<Msg[]>([]);
   const [loading, setLoading] = React.useState(true);
+  const [messagesLoading, setMessagesLoading] = React.useState(false);
+  const [messagesError, setMessagesError] = React.useState<string | null>(null);
+  const [messagesHasOlder, setMessagesHasOlder] = React.useState(false);
+  const [messagesOlderKnown, setMessagesOlderKnown] = React.useState(false);
+  const [messagesOlderLoading, setMessagesOlderLoading] = React.useState(false);
+  const [messagesOlderError, setMessagesOlderError] = React.useState<string | null>(null);
+  const messagesRef = React.useRef<Msg[]>([]);
+  const messagesHasOlderRef = React.useRef(false);
+  const olderHistoryRef = React.useRef(false);
+  const threadRequestRef = React.useRef(0);
+  const olderLoadRef = React.useRef<{ scope: string; cursor: string; promise: Promise<void> } | null>(null);
+  const olderScrollAnchorRef = React.useRef<{ requestId: number; top: number; height: number } | null>(null);
+  const scrollRef = React.useRef<HTMLDivElement | null>(null);
+  const inboxRequestRef = React.useRef(0);
+  messagesRef.current = messages;
+  messagesHasOlderRef.current = messagesHasOlder;
 
   const loadInbox = React.useCallback(async () => {
+    const requestId = ++inboxRequestRef.current;
     const r = await hkPost<Inbox>('/api/housekeeper/messages', { pid, staffId });
+    if (requestId !== inboxRequestRef.current) return;
     if (r) setInbox(r);
     setLoading(false);
   }, [pid, staffId]);
 
   React.useEffect(() => {
+    threadRequestRef.current += 1;
+    setInbox(null);
+    setView('inbox');
+    setActiveId(null);
+    setMessages([]);
+    setMessagesLoading(false);
+    setMessagesError(null);
+    setMessagesHasOlder(false);
+    setMessagesOlderKnown(false);
+    setMessagesOlderLoading(false);
+    setMessagesOlderError(null);
+    messagesRef.current = [];
+    messagesHasOlderRef.current = false;
+    olderHistoryRef.current = false;
+    olderLoadRef.current = null;
+    olderScrollAnchorRef.current = null;
+    setLoading(true);
     void loadInbox();
   }, [loadInbox]);
 
@@ -146,16 +198,39 @@ export function MessagesTab({
 
   const openThread = React.useCallback(
     async (id: string) => {
+      const requestId = ++threadRequestRef.current;
       setActiveId(id);
       setView('thread');
       setMessages([]);
-      const data = await hkPost<{ messages: MessageDTO[] }>(
-        '/api/housekeeper/messages/thread',
-        { pid, staffId, conversationId: id },
-      );
-      if (data?.messages) {
-        setMessages(mapMessages(data.messages));
+      setMessagesLoading(true);
+      setMessagesError(null);
+      setMessagesHasOlder(false);
+      setMessagesOlderKnown(false);
+      setMessagesOlderLoading(false);
+      setMessagesOlderError(null);
+      messagesRef.current = [];
+      messagesHasOlderRef.current = false;
+      olderHistoryRef.current = false;
+      olderLoadRef.current = null;
+      olderScrollAnchorRef.current = null;
+      try {
+        const data = await hkPost<{ messages: MessageDTO[] }>(
+          '/api/housekeeper/messages/thread',
+          { pid, staffId, conversationId: id },
+        );
+        if (requestId !== threadRequestRef.current) return;
+        if (data?.messages) {
+          const page = mapMessages(data.messages);
+          setMessages(page);
+          setMessagesHasOlder(page.length >= MESSAGE_PAGE_SIZE);
+          setMessagesOlderKnown(true);
+        } else {
+          setMessagesError('Messages could not load. Check your connection and try again.');
+        }
+      } finally {
+        if (requestId === threadRequestRef.current) setMessagesLoading(false);
       }
+      if (requestId !== threadRequestRef.current) return;
       // Clear unread locally + on the server.
       setInbox((prev) =>
         prev
@@ -172,9 +247,67 @@ export function MessagesTab({
     [pid, staffId],
   );
 
+  const loadOlderMessages = React.useCallback((): Promise<void> => {
+    if (!activeId || !messagesHasOlderRef.current) return Promise.resolve();
+    const scope = `${pid}\u0000${staffId}\u0000${activeId}`;
+    const cursor = messagesRef.current[0]?.createdAt;
+    if (!cursor) {
+      setMessagesHasOlder(false);
+      setMessagesOlderKnown(true);
+      return Promise.resolve();
+    }
+    const activeRequest = olderLoadRef.current;
+    if (activeRequest?.scope === scope) return activeRequest.promise;
+    const requestId = threadRequestRef.current;
+    const scrollHeight = scrollRef.current?.scrollHeight ?? 0;
+    const scrollTop = scrollRef.current?.scrollTop ?? 0;
+    olderHistoryRef.current = true;
+    setMessagesOlderLoading(true);
+    setMessagesOlderError(null);
+
+    let pending!: Promise<void>;
+    pending = (async () => {
+      try {
+        const data = await hkPost<{ messages: MessageDTO[] }>(
+          '/api/housekeeper/messages/thread',
+          { pid, staffId, conversationId: activeId, before: cursor },
+        );
+        if (requestId !== threadRequestRef.current) return;
+        if (!data?.messages) {
+          setMessagesOlderError('Older messages could not load.');
+          return;
+        }
+        const page = mapMessages(data.messages);
+        if (page.length > 0) {
+          olderScrollAnchorRef.current = { requestId, top: scrollTop, height: scrollHeight };
+          setMessages((current) => mergeMessages(current, page));
+        }
+        setMessagesHasOlder(page.length >= MESSAGE_PAGE_SIZE);
+        setMessagesOlderKnown(true);
+      } catch {
+        if (requestId === threadRequestRef.current) setMessagesOlderError('Older messages could not load.');
+      } finally {
+        if (requestId === threadRequestRef.current) setMessagesOlderLoading(false);
+        if (olderLoadRef.current?.promise === pending) olderLoadRef.current = null;
+      }
+    })();
+    olderLoadRef.current = { scope, cursor, promise: pending };
+    return pending;
+  }, [activeId, pid, staffId]);
+
+  React.useLayoutEffect(() => {
+    const anchor = olderScrollAnchorRef.current;
+    if (!anchor) return;
+    olderScrollAnchorRef.current = null;
+    if (anchor.requestId !== threadRequestRef.current) return;
+    const element = scrollRef.current;
+    if (element) element.scrollTop = anchor.top + (element.scrollHeight - anchor.height);
+  }, [messages]);
+
   const send = React.useCallback(
     async (text: string) => {
       if (!activeId || !text.trim()) return;
+      const requestId = threadRequestRef.current;
       const ok = await hkPost('/api/housekeeper/messages/send', {
         pid,
         staffId,
@@ -187,8 +320,14 @@ export function MessagesTab({
           '/api/housekeeper/messages/thread',
           { pid, staffId, conversationId: activeId },
         );
-        if (data?.messages) {
-          setMessages(mapMessages(data.messages));
+        if (data?.messages && requestId === threadRequestRef.current) {
+          const page = mapMessages(data.messages);
+          if (olderHistoryRef.current) setMessages((current) => mergeMessages(current, page));
+          else {
+            setMessages(page);
+            setMessagesHasOlder(page.length >= MESSAGE_PAGE_SIZE);
+            setMessagesOlderKnown(true);
+          }
         }
       }
     },
@@ -214,6 +353,15 @@ export function MessagesTab({
         messages={messages}
         accent={active.kind === 'announcement' ? '#B0712F' : TOK.teal}
         lang={lang}
+        scrollRef={scrollRef}
+        messagesLoading={messagesLoading}
+        messagesError={messagesError}
+        messagesHasOlder={messagesHasOlder}
+        messagesOlderKnown={messagesOlderKnown}
+        messagesOlderLoading={messagesOlderLoading}
+        messagesOlderError={messagesOlderError}
+        onLoadOlder={() => void loadOlderMessages()}
+        onRetryMessages={() => { if (activeId) void openThread(activeId); }}
         onBack={() => setView('inbox')}
         onSend={send}
       />
@@ -387,6 +535,15 @@ function Thread({
   messages,
   accent,
   lang,
+  scrollRef,
+  messagesLoading,
+  messagesError,
+  messagesHasOlder,
+  messagesOlderKnown,
+  messagesOlderLoading,
+  messagesOlderError,
+  onLoadOlder,
+  onRetryMessages,
   onBack,
   onSend,
 }: {
@@ -394,15 +551,28 @@ function Thread({
   messages: Msg[];
   accent: string;
   lang: HousekeeperLocale;
+  scrollRef: React.RefObject<HTMLDivElement | null>;
+  messagesLoading: boolean;
+  messagesError: string | null;
+  messagesHasOlder: boolean;
+  messagesOlderKnown: boolean;
+  messagesOlderLoading: boolean;
+  messagesOlderError: string | null;
+  onLoadOlder: () => void;
+  onRetryMessages: () => void;
   onBack: () => void;
   onSend: (text: string) => void;
 }) {
   const [text, setText] = React.useState('');
-  const scrollRef = React.useRef<HTMLDivElement | null>(null);
   const readOnly = conv.kind === 'announcement';
+  const newestMessageRef = React.useRef<string | null>(null);
   React.useEffect(() => {
-    if (scrollRef.current) scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
-  }, [messages.length]);
+    const newestMessageId = messages[messages.length - 1]?.id ?? null;
+    if (newestMessageId !== newestMessageRef.current && !messagesOlderLoading && scrollRef.current) {
+      scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+    }
+    newestMessageRef.current = newestMessageId;
+  }, [messages, messagesOlderLoading, scrollRef]);
   const submit = () => {
     if (!text.trim()) return;
     onSend(text);
@@ -450,17 +620,54 @@ function Thread({
       </div>
 
       <div ref={scrollRef} style={{ flex: 1, overflowY: 'auto', padding: '16px 14px', display: 'flex', flexDirection: 'column', gap: 4 }}>
+        {messagesLoading && messages.length === 0 && (
+          <div role="status" aria-live="polite" style={{ alignSelf: 'center', display: 'inline-flex', alignItems: 'center', gap: 7, color: TOK.ink3, fontSize: 13, padding: 18 }}>
+            <Loader2 size={15} className="comms-spin" aria-hidden="true" /> {'Loading messages…'}
+          </div>
+        )}
+        {messagesError && (
+          <div role="alert" style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '10px 11px', borderRadius: 9, border: '1px solid rgba(184,92,61,.24)', background: 'rgba(184,92,61,.08)', color: '#A84F37', fontSize: 12.5 }}>
+            <AlertCircle size={15} aria-hidden="true" />
+            <span style={{ flex: 1 }}>{'Messages could not load. Check your connection and try again.'}</span>
+            <button onClick={onRetryMessages} disabled={messagesLoading} aria-label={'Retry loading messages'} style={{ minWidth: 44, minHeight: 44, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', borderRadius: 8, border: '1px solid rgba(184,92,61,.28)', background: '#fff', color: '#A84F37', cursor: messagesLoading ? 'wait' : 'pointer' }}>
+              <RefreshCw size={14} aria-hidden="true" />
+            </button>
+          </div>
+        )}
+        {messagesOlderKnown && messages.length > 0 && (
+          <div style={{ display: 'flex', justifyContent: 'center', paddingBottom: 10 }}>
+            {messagesOlderError ? (
+              <div role="alert" style={{ display: 'flex', alignItems: 'center', gap: 8, width: '100%', padding: '9px 11px', borderRadius: 9, border: '1px solid rgba(184,92,61,.24)', background: 'rgba(184,92,61,.08)', color: '#A84F37', fontSize: 12.5 }}>
+                <AlertCircle size={15} aria-hidden="true" />
+                <span style={{ flex: 1 }}>{'Older messages could not load.'}</span>
+                <button onClick={onLoadOlder} disabled={messagesOlderLoading} aria-label={'Retry loading older messages'} style={{ minWidth: 44, minHeight: 44, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', borderRadius: 8, border: '1px solid rgba(184,92,61,.28)', background: '#fff', color: '#A84F37', cursor: messagesOlderLoading ? 'wait' : 'pointer' }}>
+                  <RefreshCw size={14} aria-hidden="true" />
+                </button>
+              </div>
+            ) : messagesHasOlder ? (
+              <button onClick={onLoadOlder} disabled={messagesOlderLoading} aria-busy={messagesOlderLoading} style={{ minHeight: 44, padding: '0 14px', display: 'inline-flex', alignItems: 'center', gap: 7, borderRadius: 9, border: '1px solid #DDE0E6', background: '#fff', color: TOK.teal, cursor: messagesOlderLoading ? 'wait' : 'pointer', fontSize: 12.5, fontWeight: 700 }}>
+                {messagesOlderLoading ? <Loader2 size={14} className="comms-spin" aria-hidden="true" /> : null}
+                <span>{messagesOlderLoading ? 'Loading older messages…' : 'Load older messages'}</span>
+              </button>
+            ) : (
+              <div role="status" aria-live="polite" style={{ color: TOK.ink3, fontSize: 12 }}>{'No older messages.'}</div>
+            )}
+          </div>
+        )}
         {conv.kind === 'announcement' && (
           <div style={{ alignSelf: 'center', fontSize: 11.5, fontWeight: 600, color: TOK.ink3, background: '#E4E7EC', padding: '5px 12px', borderRadius: 99, marginBottom: 8 }}>
             📣 {t('hkAnnouncementsFromMgmt', lang)}
           </div>
+        )}
+        {!messagesLoading && !messagesError && messages.length === 0 && (
+          <div role="status" style={{ alignSelf: 'center', color: TOK.ink3, fontSize: 13, padding: 24 }}>{'No messages yet.'}</div>
         )}
         {messages.map((m, i) => {
           const mine = m.mine;
           const showName = !mine && conv.kind !== 'dm' && (i === 0 || messages[i - 1].from !== m.from);
           return (
             <div
-              key={i}
+              key={m.id}
               style={{
                 display: 'flex',
                 flexDirection: 'column',

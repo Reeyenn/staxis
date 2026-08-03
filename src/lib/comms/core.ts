@@ -70,14 +70,15 @@ function channelDept(channelKey: ChannelKey | 'announcements' | null): CommsDept
 }
 
 /**
- * Membership (display only — access is still gated by canAccessConversation):
- * managers (the 'management' bucket) are in every channel; dept staff are in
- * their own channel + all-staff; everyone is in all-staff + announcements.
+ * Membership is display-only; access is still gated by canAccessConversation.
+ * Keep this as the same predicate as channel visibility so a roster cannot
+ * drift from the channels a person is actually allowed to reach.
  */
-function staffInChannel(channelKey: ChannelKey, dept: CommsDept): boolean {
-  if (channelKey === 'all_staff') return true;
-  if (dept === 'management') return true;
-  return channelKey === (dept as unknown as ChannelKey);
+export function staffInChannel(
+  channelKey: ChannelKey,
+  opts: { department: string | null; isManager: boolean },
+): boolean {
+  return channelsVisibleTo({ dept: opts.department, isManager: opts.isManager }).includes(channelKey);
 }
 
 /** Online if the activity heartbeat landed within this window. */
@@ -146,6 +147,53 @@ async function staffDeptMap(pid: string, ids: string[]): Promise<Map<string, str
     .eq('property_id', pid)
     .in('id', unique);
   return new Map(((data ?? []) as { id: string; department: string | null }[]).map((r) => [r.id, r.department]));
+}
+
+/**
+ * Resolve the staff identities that belong to manager accounts at a property.
+ * Department alone cannot distinguish a manager's `other`/null staff row from
+ * a non-manager with no department, so the account-to-staff link is the source
+ * of truth for the manager half of the channel-membership predicate.
+ */
+async function managerStaffIdsForProperty(pid: string, staffIds: string[]): Promise<Set<string>> {
+  const unique = Array.from(new Set(staffIds.filter(Boolean)));
+  if (unique.length === 0) return new Set();
+
+  const { data: links } = await supabaseAdmin
+    .from('account_property_staff_links')
+    .select('account_id, staff_id')
+    .eq('property_id', pid)
+    .eq('is_active', true)
+    .in('staff_id', unique);
+  const linkedRows = (links ?? []) as { account_id: string; staff_id: string }[];
+  const accountIds = Array.from(new Set(linkedRows.map((row) => row.account_id).filter(Boolean)));
+
+  const managerIds = new Set<string>();
+  if (accountIds.length > 0) {
+    const { data: accounts } = await supabaseAdmin
+      .from('accounts')
+      .select('id, role, active')
+      .in('id', accountIds);
+    const managerAccountIds = new Set(
+      ((accounts ?? []) as { id: string; role: string | null; active: boolean | null }[])
+        .filter((account) => account.active !== false && isManagerRole(account.role))
+        .map((account) => account.id),
+    );
+    for (const row of linkedRows) {
+      if (managerAccountIds.has(row.account_id)) managerIds.add(row.staff_id);
+    }
+  }
+
+  // Keep pre-link accounts visible as managers while the legacy pointer is
+  // still the only identity relation available for that account.
+  const { data: legacyAccounts } = await supabaseAdmin
+    .from('accounts')
+    .select('staff_id, role, active')
+    .in('staff_id', unique);
+  for (const account of (legacyAccounts ?? []) as { staff_id: string | null; role: string | null; active: boolean | null }[]) {
+    if (account.active !== false && account.staff_id && isManagerRole(account.role)) managerIds.add(account.staff_id);
+  }
+  return managerIds;
 }
 
 /** Resolve an authenticated account → its staff identity + role for messaging. */
@@ -789,17 +837,18 @@ export async function getMessages(
   conversationId: string,
   readerStaffId: string,
   readerLang: CommsLang,
-  opts: { limit?: number; withReceipts?: boolean; ai?: AiCallOptions } = {},
+  opts: { limit?: number; before?: string; withReceipts?: boolean; ai?: AiCallOptions } = {},
 ): Promise<MessageDTO[]> {
-  const limit = Math.min(opts.limit ?? 80, 200);
-  const { data } = await supabaseAdmin
+  const limit = Math.min(opts.limit ?? 80, 80);
+  let query = supabaseAdmin
     .from('comms_messages')
     .select(MESSAGE_COLUMNS)
     .eq('conversation_id', conversationId)
     .eq('property_id', pid)
     .is('parent_message_id', null) // top-level only; replies live in the thread panel
-    .order('created_at', { ascending: false })
-    .limit(limit);
+    .order('created_at', { ascending: false });
+  if (opts.before) query = query.lt('created_at', opts.before);
+  const { data } = await query.limit(limit);
   const rows = ((data ?? []) as unknown as MessageRow[]).reverse(); // chronological
   if (rows.length === 0) return [];
 
@@ -810,7 +859,7 @@ export async function getMessages(
   // understand" button is always rendered (never a stuck, un-clearable badge).
   const windowIds = new Set(rows.map((r) => r.id));
   let ackedByReader = new Set<string>();
-  if (rows.length >= limit) {
+  if (!opts.before && rows.length >= limit) {
     // Possibly-truncated window → scan the whole conversation for required msgs.
     const { data: reqRows } = await supabaseAdmin
       .from('comms_messages')
@@ -1808,8 +1857,12 @@ export async function listMembers(
       .from('staff').select('id, name, department, is_active')
       .eq('property_id', pid).order('name', { ascending: true });
     staffRows = ((data ?? []) as typeof staffRows).filter((s) => s.is_active !== false);
-    if (convo.kind === 'channel' && convo.channel_key) {
-      staffRows = staffRows.filter((s) => staffInChannel(convo.channel_key as ChannelKey, commsDeptOf(s.department)));
+    if (convo.kind === 'channel' && convo.channel_key && convo.channel_key !== 'all_staff') {
+      const managerIds = await managerStaffIdsForProperty(pid, staffRows.map((s) => s.id));
+      staffRows = staffRows.filter((s) => staffInChannel(convo.channel_key as ChannelKey, {
+        department: s.department,
+        isManager: managerIds.has(s.id),
+      }));
     }
     // announcement → the whole active roster (everyone receives announcements)
   }
@@ -1844,7 +1897,7 @@ export async function searchComms(
     if (!ql || c.title.toLowerCase().includes(ql)) {
       hits.push({
         kind: 'channel', conversationId: c.id, staffId: null,
-        title: c.title, subtitle: c.memberCount != null ? `${c.memberCount} members` : null,
+        title: c.title, subtitle: null,
         snippet: null, dept: c.dept ?? 'management',
       });
     }
