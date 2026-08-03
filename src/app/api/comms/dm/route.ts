@@ -31,9 +31,9 @@ export async function POST(req: NextRequest): Promise<Response> {
   const rl = await checkAndIncrementRateLimit('comms-send', hashToRateLimitKey(`${ctx.pid}:${ctx.userId}`));
   if (!rl.allowed) return rateLimitedResponse(rl.current, rl.cap, rl.retryAfterSec);
 
-  // The other staff must belong to this property (capability check).
+  // The other staff must belong to this property and remain active.
   const other = await getStaffRow(ctx.pid, otherV.value!);
-  if (!other) {
+  if (!other || other.is_active === false) {
     return err('Not found', { requestId: ctx.requestId, status: 404, code: ApiErrorCode.NotFound, headers: ctx.headers });
   }
 

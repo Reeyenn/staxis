@@ -15,7 +15,13 @@ import { requireSession, userHasPropertyAccess } from '@/lib/api-auth';
 import { requirePropertySectionEnabled } from '@/lib/sections/server';
 import type { AppSection } from '@/lib/sections/registry';
 import { supabaseAdmin } from '@/lib/supabase-admin';
-import { resolveAccount, resolveStaffIdForAccount, getStaffRow, isManagerRole } from './core';
+import {
+  ARCHIVED_AT_PROPERTY,
+  resolveAccount,
+  resolveStaffIdForAccount,
+  getStaffRow,
+  isManagerRole,
+} from './core';
 import type { CommsLang } from './types';
 import {
   authoritativeStandingForProperty,
@@ -222,10 +228,18 @@ export async function commsContext(
   // read-only grants as non-mutating; require the explicit local operational
   // standing before resolving (and potentially creating) a staff identity.
   const hotelAccount = standing ? { ...account, role: standing.operationalRole } : null;
-  const staffId = await resolvePrivateHotelCommsStaffId(
-    standing,
-    async () => resolveStaffIdForAccount(pid, hotelAccount!),
-  );
+  let staffId: string | null;
+  try {
+    staffId = await resolvePrivateHotelCommsStaffId(
+      standing,
+      async () => resolveStaffIdForAccount(pid, hotelAccount!),
+    );
+  } catch (error) {
+    if (error instanceof Error && error.message === ARCHIVED_AT_PROPERTY) {
+      return { ok: false, response: err('property access denied', { requestId, status: 403, code: ApiErrorCode.Forbidden, headers }) };
+    }
+    throw error;
+  }
   if (!standing || !hotelAccount || !staffId) {
     return { ok: false, response: err('property access denied', { requestId, status: 403, code: ApiErrorCode.Forbidden, headers }) };
   }
