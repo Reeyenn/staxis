@@ -49,6 +49,10 @@ import {
   type RosterGroupKey,
   type RosterPerson,
 } from './people-roster';
+import {
+  usePeopleController,
+  type PeopleControllerState,
+} from './usePeopleController';
 import styles from './HotelTeamPanel.module.css';
 
 export type HotelTeamLang = 'en' | 'es';
@@ -167,6 +171,10 @@ export interface HotelTeamPanelProps {
   rosterUnavailable?: boolean;
   /** May this viewer add somebody to the schedule? */
   canAddStaff?: boolean;
+  /** The page-owned People controller. Standalone panel consumers may omit it;
+   * in that case the panel uses the same account projection hook without
+   * opening a second staff subscription. */
+  peopleController?: PeopleControllerState;
   onChanged?: () => void | Promise<void>;
 }
 
@@ -281,7 +289,7 @@ function waitForLifecycleReconciliation(delayMs: number, signal: AbortSignal): P
  * hold several — "GM — Beaumont" and "Oversees — Lufkin, Tyler" — and each one
  * is a separate row in the database, editable and removable on its own.
  */
-interface CompanyJobLine {
+export interface CompanyJobLine {
   membershipId: string;
   scope: 'company' | 'property';
   role: string;
@@ -394,13 +402,10 @@ function resolveActions(
   const viewerIsGm = currentUser.role === 'general_manager';
   const targetAboveGm = member.role === 'owner' || member.role === 'general_manager';
   const hierarchyAllows = viewerIsAdmin || viewerIsOwner || (viewerIsGm && !targetAboveGm);
-  const hotelIds = member.propertyAccess.filter((id) => id !== '*');
-  const targetHasAllHotels = member.propertyAccess.includes('*');
-  const roleIsSharedAcrossHotels = member.hasOtherHotelAccess ?? hotelIds.length > 1;
-  const viewerHotels = new Set(currentUser.propertyAccess);
-  const viewerControlsEveryHotel = viewerIsAdmin
-    || viewerHotels.has('*')
-    || (!targetHasAllHotels && hotelIds.length > 0 && hotelIds.every((id) => viewerHotels.has(id)));
+  // Cross-hotel authority is projected by GET /api/auth/team. Do not infer it
+  // from the legacy account.propertyAccess arrays: those fields are display
+  // data and may be stale or incomplete for company-scope access.
+  const roleIsSharedAcrossHotels = Boolean(member.hasOtherHotelAccess);
 
   // These floors are deliberately stricter than presentation flags. A stale
   // or over-permissive API flag must never expose admin, self-removal, or
@@ -427,8 +432,7 @@ function resolveActions(
     && !self
     && !adminTarget
     && !member.ownerProtected
-    && hierarchyAllows
-    && viewerControlsEveryHotel;
+    && hierarchyAllows;
   const canDeactivate = lifecycleFloor
     && member.active
     && actionFlag(member, ['canDeactivate'], 'canDeactivate', false);
@@ -716,12 +720,9 @@ export function HotelTeamPanel({
   staffProfiles = [],
   rosterUnavailable = false,
   canAddStaff = false,
+  peopleController,
   onChanged,
 }: HotelTeamPanelProps) {
-  const [team, setTeam] = React.useState<HotelTeamMember[]>([]);
-  const [jobsByAccountId, setJobsByAccountId] = React.useState<Record<string, CompanyJobLine[]>>({});
-  const [teamLoading, setTeamLoading] = React.useState(false);
-  const [teamError, setTeamError] = React.useState('');
   const [requests, setRequests] = React.useState<HotelJoinRequest[]>([]);
   const [requestsLoading, setRequestsLoading] = React.useState(false);
   const [requestsError, setRequestsError] = React.useState('');
@@ -750,9 +751,7 @@ export function HotelTeamPanel({
     request: HotelJoinRequest;
     decision: 'approve' | 'deny';
   } | null>(null);
-  const teamAbortRef = React.useRef<AbortController | null>(null);
   const requestAbortRef = React.useRef<AbortController | null>(null);
-  const teamSequenceRef = React.useRef(0);
   const requestSequenceRef = React.useRef(0);
   const inviteEntryRef = React.useRef<HTMLButtonElement | null>(null);
   const inviteEntryReturnFocusRef = React.useRef<HTMLElement | null>(null);
@@ -761,6 +760,39 @@ export function HotelTeamPanel({
   const peopleHeadingRef = providedPeopleHeadingRef ?? localPeopleHeadingRef;
   const changedRef = React.useRef(onChanged);
   changedRef.current = onChanged;
+
+  // The page passes the controller that joins the canonical account
+  // projection with PropertyContext's viewer-stamped staff snapshot. The
+  // fallback exists for direct/standalone panel consumers and still owns only
+  // the account request — never a second staff subscription.
+  const fallbackPeopleViewerKey = `${currentUser.uid}:${currentAccountId}:${hotelId}:standalone`;
+  const fallbackPeopleController = usePeopleController({
+    hotelId,
+    viewerKey: fallbackPeopleViewerKey,
+    enabled: !peopleController && canManageTeam,
+    adminPreview,
+    readOnly,
+    staff: staffProfiles,
+    staffViewerKey: fallbackPeopleViewerKey,
+    staffExpectedViewerKey: fallbackPeopleViewerKey,
+    staffLoaded: !rosterUnavailable,
+    staffLoadFailed: rosterUnavailable,
+    refreshStaff: async () => {},
+  });
+  const peopleState = peopleController ?? fallbackPeopleController;
+  const {
+    team,
+    jobsByAccountId,
+    teamLoading,
+    teamError,
+    staff: controllerStaff,
+    rosterUnavailable: controllerRosterUnavailable,
+    refreshTeam,
+  } = peopleState;
+  const rosterUnavailableForPeople = peopleController
+    ? controllerRosterUnavailable
+    : rosterUnavailable || controllerRosterUnavailable;
+  const rosterStaffProfiles = peopleController ? controllerStaff : staffProfiles;
 
   const locked = readOnly;
   const inviteActionDisabled = locked
@@ -829,10 +861,7 @@ export function HotelTeamPanel({
   // an old team's data for even one render while the fresh fetch is pending.
   React.useEffect(() => {
     if (canManageTeam) return;
-    teamAbortRef.current?.abort();
     requestAbortRef.current?.abort();
-    setTeam([]);
-    setJobsByAccountId({});
     setRequests([]);
     setContactSnapshot(null);
     setWageSnapshot(null);
@@ -854,57 +883,6 @@ export function HotelTeamPanel({
     () => (wageSnapshot?.hotelId === hotelId ? wageSnapshot.wages : {}),
     [wageSnapshot, hotelId],
   );
-
-  const loadTeam = React.useCallback(async (clearFirst = false) => {
-    teamAbortRef.current?.abort();
-    const controller = new AbortController();
-    teamAbortRef.current = controller;
-    const sequence = ++teamSequenceRef.current;
-
-    if (!hotelId || !canManageTeam) {
-      setTeam([]);
-      setTeamLoading(false);
-      setTeamError('');
-      return;
-    }
-
-    if (clearFirst) {
-      setTeam([]);
-    }
-    setTeamLoading(true);
-    setTeamError('');
-    try {
-      const response = await fetchWithAuth(`/api/auth/team?hotelId=${encodeURIComponent(hotelId)}`, {
-        signal: controller.signal,
-      });
-      const body = await response.json().catch(() => ({})) as Envelope<{
-        team?: HotelTeamMember[];
-        hatsByAccountId?: Record<string, CompanyJobLine[]>;
-      }>;
-      if (!response.ok || !body.ok) {
-        throw new Error(responseError(
-          body,
-          "Couldn't load the people at this hotel.",
-        ));
-      }
-      if (controller.signal.aborted || sequence !== teamSequenceRef.current) return;
-      const responseTeam = body.data?.team ?? [];
-      const nextTeam = (adminPreview || readOnly)
-        ? responseTeam.filter((member) => !member.isPlatformAdmin && member.role !== 'admin')
-        : responseTeam;
-      setTeam(nextTeam);
-      setJobsByAccountId(body.data?.hatsByAccountId ?? {});
-    } catch (error) {
-      if (controller.signal.aborted || sequence !== teamSequenceRef.current) return;
-      console.error('[HotelTeamPanel] team load failed', error);
-      setTeam([]);
-      setTeamError(error instanceof Error && error.message
-        ? error.message
-        : "Couldn't load the people at this hotel. Check your connection and try again.");
-    } finally {
-      if (!controller.signal.aborted && sequence === teamSequenceRef.current) setTeamLoading(false);
-    }
-  }, [adminPreview, canManageTeam, hotelId, readOnly]);
 
   const loadRequests = React.useCallback(async (clearFirst = false) => {
     requestAbortRef.current?.abort();
@@ -990,11 +968,6 @@ export function HotelTeamPanel({
   }, [canManageTeam, canViewWages, hotelId]);
 
   React.useEffect(() => {
-    void loadTeam(true);
-    return () => teamAbortRef.current?.abort();
-  }, [loadTeam]);
-
-  React.useEffect(() => {
     void loadRequests(true);
     return () => requestAbortRef.current?.abort();
   }, [loadRequests]);
@@ -1014,12 +987,12 @@ export function HotelTeamPanel({
 
   // Drop an optimistic add as soon as the real roster carries it.
   React.useEffect(() => {
-    const loadedIds = new Set(staffProfiles.map((member) => member.id));
+    const loadedIds = new Set(rosterStaffProfiles.map((member) => member.id));
     setOptimisticStaff((current) => {
       const pending = current.filter((member) => !loadedIds.has(member.id));
       return pending.length === current.length ? current : pending;
     });
-  }, [staffProfiles]);
+  }, [rosterStaffProfiles]);
 
   const hasServerLifecyclePending = team.some((member) => member.lifecyclePending === true);
 
@@ -1032,19 +1005,19 @@ export function HotelTeamPanel({
       for (const delayMs of LIFECYCLE_SERVER_REFRESH_DELAYS_MS) {
         const shouldContinue = await waitForLifecycleReconciliation(delayMs, controller.signal);
         if (!shouldContinue) return;
-        await loadTeam();
+        await refreshTeam();
         if (controller.signal.aborted) return;
       }
       setServerLifecyclePollingPaused(true);
     })();
 
     return () => controller.abort();
-  }, [hasServerLifecyclePending, hotelId, loadTeam]);
+  }, [hasServerLifecyclePending, hotelId, refreshTeam]);
 
   const refreshAfterChange = React.useCallback(async () => {
-    await Promise.all([loadTeam(), loadRequests(), loadContacts(), loadWages()]);
+    await Promise.all([refreshTeam(), loadRequests(), loadContacts(), loadWages()]);
     await changedRef.current?.();
-  }, [loadContacts, loadRequests, loadTeam, loadWages]);
+  }, [loadContacts, loadRequests, loadWages, refreshTeam]);
 
   const reconcilePendingLifecycle = React.useCallback((operation: HotelTeamPendingLifecycleOperation) => {
     setPendingLifecycleByAccount((current) => {
@@ -1137,17 +1110,17 @@ export function HotelTeamPanel({
 
   // ── The merged roster ────────────────────────────────────────────────────
   const rosterStaff = React.useMemo(() => {
-    const loadedIds = new Set(staffProfiles.map((member) => member.id));
+    const loadedIds = new Set(rosterStaffProfiles.map((member) => member.id));
     return [
-      ...staffProfiles,
+      ...rosterStaffProfiles,
       ...optimisticStaff.filter((member) => !loadedIds.has(member.id)),
     ];
-  }, [optimisticStaff, staffProfiles]);
+  }, [optimisticStaff, rosterStaffProfiles]);
 
   const unlinkedRosterProfiles = React.useMemo<HotelInviteRosterProfile[]>(() => {
     // Do not offer a possibly stale profile while either half of the merged
     // roster is unavailable. The POST rechecks the chosen id server-side too.
-    if (teamLoading || teamError || rosterUnavailable) return [];
+    if (teamLoading || teamError || rosterUnavailableForPeople) return [];
     const linkedStaffIds = new Set(
       team.flatMap((member) => member.staffId ? [member.staffId] : []),
     );
@@ -1159,7 +1132,7 @@ export function HotelTeamPanel({
         department: member.department ?? 'housekeeping',
       }))
       .sort((left, right) => left.name.localeCompare(right.name));
-  }, [rosterStaff, rosterUnavailable, team, teamError, teamLoading]);
+  }, [rosterStaff, rosterUnavailableForPeople, team, teamError, teamLoading]);
 
   const groups = React.useMemo(
     () => buildHotelRoster(team, rosterStaff),
@@ -1431,7 +1404,7 @@ export function HotelTeamPanel({
           </div>
         ) : null}
 
-        {rosterUnavailable ? (
+        {rosterUnavailableForPeople ? (
           <div className={styles.warningNotice} role="alert">
             <AlertTriangle size={17} aria-hidden="true" />
             <span>{'The schedule roster is temporarily unavailable, so some people may be missing. It will reconnect automatically.'}</span>
@@ -1499,7 +1472,7 @@ export function HotelTeamPanel({
           <div className={styles.errorState} role="alert">
             <AlertCircle size={18} aria-hidden="true" />
             <div><strong>{'The hotel roster did not load'}</strong><span>{teamError}</span></div>
-            <button type="button" onClick={() => void loadTeam()}>
+            <button type="button" onClick={() => void refreshTeam()}>
               <RefreshCw size={15} aria-hidden="true" />{'Retry'}
             </button>
           </div>

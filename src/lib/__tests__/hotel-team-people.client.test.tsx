@@ -14,6 +14,7 @@ import type { StaffMember } from '@/types';
 
 type HotelTeamModule = typeof import('@/app/company/_components/HotelTeamPanel');
 type EmploymentModule = typeof import('@/app/company/_components/PersonEmploymentForm');
+type PeopleControllerModule = typeof import('@/app/company/_components/usePeopleController');
 
 const HOTEL_ID = '11111111-1111-4111-8111-111111111111';
 const OTHER_HOTEL_ID = '22222222-2222-4222-8222-222222222222';
@@ -71,6 +72,14 @@ function loadEmployment(): Promise<EmploymentModule> {
     () => import('@/app/company/_components/PersonEmploymentForm'),
   );
   return employmentPromise;
+}
+
+let peopleControllerPromise: Promise<PeopleControllerModule> | null = null;
+function loadPeopleController(): Promise<PeopleControllerModule> {
+  peopleControllerPromise ??= loadWithCssShim(
+    () => import('@/app/company/_components/usePeopleController'),
+  );
+  return peopleControllerPromise;
 }
 
 let dialogsPromise: Promise<unknown> | null = null;
@@ -212,6 +221,103 @@ function restoreAfter(context: TestContext, restoreBrowser: () => void, root: Ro
 }
 
 describe('My Hotel People mounted identity and actions', { concurrency: false }, () => {
+  test('uses one identity-keyed team request and masks stale hotel/staff snapshots', async (context) => {
+    const restoreBrowser = installBrowser();
+    const { usePeopleController } = await loadPeopleController();
+    const { supabase } = await import('@/lib/supabase');
+    supabase.auth.stopAutoRefresh();
+    const { createRoot } = await import('react-dom/client');
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+    const originalFetch = globalThis.fetch;
+    const pending = new Map<string, (response: Response) => void>();
+    let requestCount = 0;
+    Object.defineProperty(globalThis, 'fetch', {
+      configurable: true,
+      writable: true,
+      value: (input: RequestInfo | URL) => {
+        const url = new URL(String(input), 'http://localhost');
+        const requestedHotelId = url.searchParams.get('hotelId') ?? '';
+        requestCount += 1;
+        return new Promise<Response>((resolve) => {
+          pending.set(requestedHotelId, resolve);
+        });
+      },
+    });
+
+    function ControllerProbe({ hotelId, viewerKey }: { hotelId: string; viewerKey: string }) {
+      const state = usePeopleController({
+        hotelId,
+        viewerKey,
+        enabled: true,
+        adminPreview: false,
+        readOnly: false,
+        staff: [staff({ id: `${hotelId}-staff`, name: `${hotelId} staff`, isActive: true })],
+        staffViewerKey: `${viewerKey}:staff`,
+        staffExpectedViewerKey: `${viewerKey}:expected`,
+        staffLoaded: true,
+        staffLoadFailed: false,
+        refreshStaff: async () => {},
+      });
+      return (
+        <div
+          data-team={state.team.map((member) => member.accountId).join(',')}
+          data-team-loading={String(state.teamLoading)}
+          data-staff-count={String(state.staff.length)}
+          data-roster-unavailable={String(state.rosterUnavailable)}
+        />
+      );
+    }
+
+    const renderProbe = async (hotelId: string, viewerKey: string) => {
+      await act(async () => {
+        root.render(<ControllerProbe hotelId={hotelId} viewerKey={viewerKey} />);
+      });
+      await flush();
+    };
+
+    context.after(async () => {
+      Object.defineProperty(globalThis, 'fetch', {
+        configurable: true,
+        writable: true,
+        value: originalFetch,
+      });
+      await act(async () => { root.unmount(); });
+      container.remove();
+      restoreBrowser();
+    });
+
+    await renderProbe(HOTEL_ID, 'viewer-a');
+    assert.equal(requestCount, 1);
+    assert.equal(container.firstElementChild?.getAttribute('data-team-loading'), 'true');
+    assert.equal(container.firstElementChild?.getAttribute('data-staff-count'), '0');
+
+    await renderProbe(HOTEL_ID, 'viewer-a');
+    assert.equal(requestCount, 1, 'same identity rerenders must not fan out another team request');
+
+    await renderProbe(OTHER_HOTEL_ID, 'viewer-b');
+    assert.equal(requestCount, 2);
+    assert.equal(container.firstElementChild?.getAttribute('data-team'), '');
+    assert.equal(container.firstElementChild?.getAttribute('data-team-loading'), 'true');
+
+    pending.get(HOTEL_ID)?.(jsonResponse({
+      ok: true,
+      data: { team: [account({ accountId: 'stale-hotel-a' })], hatsByAccountId: {} },
+    }));
+    await flush();
+    assert.equal(container.firstElementChild?.getAttribute('data-team'), '', 'stale hotel response must not paint');
+
+    pending.get(OTHER_HOTEL_ID)?.(jsonResponse({
+      ok: true,
+      data: { team: [account({ accountId: 'current-hotel-b' })], hatsByAccountId: {} },
+    }));
+    await flush();
+    assert.equal(container.firstElementChild?.getAttribute('data-team'), 'current-hotel-b');
+    assert.equal(container.firstElementChild?.getAttribute('data-team-loading'), 'false');
+    assert.equal(container.firstElementChild?.getAttribute('data-roster-unavailable'), 'false');
+  });
+
   test('renders an archived linked identity once with a View-only off-roster action', async (context) => {
     const restoreBrowser = installBrowser();
     const { HotelTeamPanel } = await loadHotelTeam();

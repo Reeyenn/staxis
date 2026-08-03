@@ -80,6 +80,10 @@ import { HotelTeamPanel } from './_components/HotelTeamPanel';
 import { HotelSwitcher } from './_components/HotelSwitcher';
 import { LegacyOwnershipTransferPanel } from './_components/LegacyOwnershipTransferPanel';
 import { CompanyStructureManager } from './_components/CompanyStructureManager';
+import {
+  usePeopleController,
+  type PeopleControllerState,
+} from './_components/usePeopleController';
 
 type TabId = 'hotels' | 'people' | 'access';
 type HotelStatusFilter = 'all' | 'active' | 'not_active';
@@ -580,6 +584,31 @@ function CompanyAccessContent() {
   const currentLoadError =
     adminTargetIsCurrent && loadErrorViewerKey === currentViewerKey ? loadError : null;
   const resolved = currentData ?? EMPTY_COMPANY_ACCESS;
+  const peopleControllerViewerKey = activePropertyViewerKey
+    ? `${activePropertyViewerKey}:people:${authorizationFingerprint ?? 'unverified'}`
+    : null;
+  const peopleController = usePeopleController({
+    hotelId: activePropertyId,
+    viewerKey: peopleControllerViewerKey,
+    enabled: Boolean(
+      tab === 'people'
+      && !portfolioMode
+      && currentData
+      && activePropertyId
+      && canManageTeam
+      && staffBelongsToCurrentViewer
+      && hotelCapabilitiesReady
+      && authorizationChecked,
+    ),
+    adminPreview,
+    readOnly: Boolean(resolved.viewerContext?.readOnly) && !adminPreview,
+    staff: currentStaff,
+    staffViewerKey,
+    staffExpectedViewerKey: activePropertyViewerKey,
+    staffLoaded,
+    staffLoadFailed,
+    refreshStaff,
+  });
   const customerStructureViewerKey = accountId && userRole && userRole !== 'admin'
     ? `${accountId}:${userRole}:company-structure:${authorizationFingerprint ?? 'unverified'}`
     : null;
@@ -929,6 +958,7 @@ function CompanyAccessContent() {
                   )}
                   canViewWages={canViewWages}
                   canAddOperationalStaff={!hotelTeamLocked && canManageTeam}
+                  peopleController={peopleController}
                   inviteDialogOpen={teamInviteHotelId === activeProperty?.id}
                   onInviteDialogOpenChange={(open) => setTeamInviteHotelId(open ? activeProperty?.id ?? null : null)}
                   onChanged={refreshStaff}
@@ -1070,7 +1100,7 @@ function HotelsPanel({ data, structure, structureError, structureLoading, lang, 
  * could appear in both with nothing on screen explaining why. HotelTeamPanel
  * now merges them.
  */
-export function PeoplePanel({ data, staff, hotelRosterUnavailable, lang, currentUser, currentAccountId, activeProperty, portfolioMode, canManageTeam, canInviteAccounts, canViewWages, canAddOperationalStaff, inviteDialogOpen, onInviteDialogOpenChange, onChanged, onLifecycleAction }: {
+export function PeoplePanel({ data, staff, hotelRosterUnavailable, lang, currentUser, currentAccountId, activeProperty, portfolioMode = false, canManageTeam, canInviteAccounts, canViewWages, canAddOperationalStaff, peopleController, inviteDialogOpen, onInviteDialogOpenChange, onChanged, onLifecycleAction }: {
   data: CompanyAccessData;
   staff: StaffMember[];
   hotelRosterUnavailable: boolean;
@@ -1078,11 +1108,12 @@ export function PeoplePanel({ data, staff, hotelRosterUnavailable, lang, current
   currentUser: AppUser;
   currentAccountId: string;
   activeProperty: Property | null;
-  portfolioMode: boolean;
+  portfolioMode?: boolean;
   canManageTeam: boolean;
   canInviteAccounts: boolean;
   canViewWages: boolean;
   canAddOperationalStaff: boolean;
+  peopleController?: PeopleControllerState;
   inviteDialogOpen: boolean;
   onInviteDialogOpenChange: (open: boolean) => void;
   onChanged: () => void | Promise<void>;
@@ -1195,6 +1226,7 @@ export function PeoplePanel({ data, staff, hotelRosterUnavailable, lang, current
           staffProfiles={staff}
           rosterUnavailable={hotelRosterUnavailable}
           canAddStaff={canAddOperationalStaff}
+          peopleController={peopleController}
           onChanged={onChanged}
         />
       ) : !portfolioMode ? (
