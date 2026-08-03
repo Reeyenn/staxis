@@ -26,7 +26,7 @@ export async function POST(req: NextRequest): Promise<Response> {
   if (otherV.value === gate.staffId) return err('cannot message yourself', { requestId: gate.requestId, status: 400, code: ApiErrorCode.ValidationFailed, headers: gate.headers });
 
   const other = await getStaffRow(gate.pid, otherV.value!);
-  if (!other) return err('Not found', { requestId: gate.requestId, status: 404, code: ApiErrorCode.NotFound, headers: gate.headers });
+  if (!other || other.is_active === false) return err('Not found', { requestId: gate.requestId, status: 404, code: ApiErrorCode.NotFound, headers: gate.headers });
 
   const conversationId = await ensureDmConversation(gate.pid, gate.staffId, otherV.value!);
   return ok({ conversationId }, { requestId: gate.requestId, headers: gate.headers });

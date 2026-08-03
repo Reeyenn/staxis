@@ -98,6 +98,8 @@ export function channelsVisibleTo(opts: { dept: string | null; isManager: boolea
 
 export interface StaffRow { id: string; name: string; department: string | null; is_active: boolean | null; language: string | null }
 
+export const ARCHIVED_AT_PROPERTY = 'archived_at_property';
+
 export async function getStaffRow(pid: string, staffId: string): Promise<StaffRow | null> {
   const { data } = await supabaseAdmin
     .from('staff')
@@ -303,6 +305,18 @@ export async function resolveStaffIdForAccount(
 
   const deterministicId = commsStaffIdentityId(pid, account.accountId);
 
+  const deterministic = await supabaseAdmin
+    .from('staff')
+    .select('id, property_id, auth_user_id, is_active')
+    .eq('id', deterministicId)
+    .eq('property_id', pid)
+    .maybeSingle();
+  if (deterministic.error) throw deterministic.error;
+  if (deterministic.data?.id) {
+    if (deterministic.data.is_active === false) throw new Error(ARCHIVED_AT_PROPERTY);
+    return deterministic.data.id as string;
+  }
+
   const created = await supabaseAdmin
     .from('staff')
     .insert({
@@ -323,7 +337,11 @@ export async function resolveStaffIdForAccount(
     .from('staff')
     .select('id, property_id, auth_user_id, is_active')
     .eq('id', deterministicId)
+    .eq('property_id', pid)
     .maybeSingle();
+  if (!afterConflict.error && afterConflict.data?.id && afterConflict.data.is_active === false) {
+    throw new Error(ARCHIVED_AT_PROPERTY);
+  }
   if (
     !afterConflict.error
     && afterConflict.data?.id
