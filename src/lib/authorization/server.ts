@@ -481,10 +481,11 @@ function currentStructuralWindow(startsAt: string, endsAt: string | null, nowMs:
 export async function listAuthoritativeStructuralHotelDirectness(
   accountIds: readonly string[],
   propertyId: string,
-): Promise<Map<string, boolean> | null> {
+): Promise<Map<string, boolean | null>> {
   const ids = [...new Set(accountIds)];
-  if (!isUuid(propertyId)) return null;
-  if (ids.some((accountId) => !isUuid(accountId))) return null;
+  const unresolved = (): Map<string, boolean | null> => new Map(ids.map((accountId) => [accountId, null]));
+  if (!isUuid(propertyId)) return unresolved();
+  if (ids.some((accountId) => !isUuid(accountId))) return unresolved();
   if (ids.length === 0) return new Map();
 
   try {
@@ -522,22 +523,14 @@ export async function listAuthoritativeStructuralHotelDirectness(
       || authorizationStateResult.error
       || membershipResult.error
       || bridgeResult.error
-      || relationshipResult.error) return null;
+      || relationshipResult.error) return unresolved();
 
     const accounts = (accountResult.data ?? []) as StructuralAccountRow[];
     const authorizationStates = (authorizationStateResult.data ?? []) as StructuralAuthorizationStateRow[];
-    if (accounts.length !== ids.length || authorizationStates.length !== ids.length) return null;
     const accountById = new Map(accounts.map((account) => [account.id, account]));
     const authorizationStateByAccountId = new Map(
       authorizationStates.map((state) => [state.account_id, state]),
     );
-    if (ids.some((accountId) => (
-      !accountById.has(accountId)
-      || !authorizationStateByAccountId.has(accountId)
-      || !['legacy', 'shadow', 'normalized'].includes(
-        authorizationStateByAccountId.get(accountId)?.authority_mode ?? '',
-      )
-    ))) return null;
 
     const memberships = (membershipResult.data ?? []) as StructuralMembershipRow[];
     const bridges = (bridgeResult.data ?? []) as StructuralBridgeRow[];
@@ -561,7 +554,7 @@ export async function listAuthoritativeStructuralHotelDirectness(
           .in('id', organizationIds)
         : Promise.resolve({ data: [], error: null }),
     ]);
-    if (grantResult.error || organizationResult.error) return null;
+    if (grantResult.error || organizationResult.error) return unresolved();
 
     const nowMs = Date.now();
     const liveOrganizations = new Set(
@@ -589,10 +582,17 @@ export async function listAuthoritativeStructuralHotelDirectness(
       : null;
     const grants = (grantResult.data ?? []) as StructuralGrantRow[];
 
-    const direct = new Map<string, boolean>(ids.map((accountId) => [accountId, false]));
+    const direct = unresolved();
     for (const accountId of ids) {
-      const account = accountById.get(accountId)!;
-      const authorityMode = authorizationStateByAccountId.get(accountId)!.authority_mode;
+      const account = accountById.get(accountId);
+      const authorityMode = authorizationStateByAccountId.get(accountId)?.authority_mode;
+      if (!account || !['legacy', 'shadow', 'normalized'].includes(authorityMode ?? '')) continue;
+      direct.set(accountId, false);
+    }
+    for (const accountId of ids) {
+      const account = accountById.get(accountId);
+      if (!account) continue;
+      const authorityMode = authorizationStateByAccountId.get(accountId)?.authority_mode;
       if (account.role !== 'admin'
         && (authorityMode === 'legacy' || authorityMode === 'shadow')
         && Array.isArray(account.property_access)
@@ -616,6 +616,8 @@ export async function listAuthoritativeStructuralHotelDirectness(
         || !membership.covered_property_ids?.includes(propertyId)
         || !primaryRelationship
         || primaryRelationship.organization_id !== membership.organization_id) continue;
+      const current = direct.get(membership.account_id);
+      if (current !== false && current !== true) continue;
       direct.set(membership.account_id, true);
     }
     for (const grant of grants) {
@@ -629,6 +631,8 @@ export async function listAuthoritativeStructuralHotelDirectness(
         || grant.status !== 'active'
         || grant.source === 'legacy_backfill'
         || !currentStructuralWindow(grant.starts_at, grant.expires_at, nowMs)) continue;
+      const current = direct.get(membership.account_id);
+      if (current !== false && current !== true) continue;
       direct.set(membership.account_id, true);
     }
     for (const bridge of bridges) {
@@ -638,11 +642,12 @@ export async function listAuthoritativeStructuralHotelDirectness(
         : currentPrimaryRelationships.length === 1
           && currentPrimaryRelationships[0]?.id === bridge.cutover_relationship_id
           && currentPrimaryRelationships[0]?.organization_id === bridge.cutover_organization_id;
-      if (valid) direct.set(bridge.account_id, true);
+      const current = direct.get(bridge.account_id);
+      if (valid && (current === false || current === true)) direct.set(bridge.account_id, true);
     }
     return direct;
   } catch {
-    return null;
+    return unresolved();
   }
 }
 

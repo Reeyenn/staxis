@@ -699,28 +699,31 @@ export async function GET(req: NextRequest) {
     nonAdminTeamRows.map((row) => row.accountId),
     hotelId,
   );
-  if (structuralDirectness === null) {
-    log.error('[team:GET] direct hotel account projection unavailable', { requestId, hotelId });
-    return teamProtectionUnavailableResponse(requestId);
-  }
   const activeDirectness = await Promise.all(team
     .filter((row) => row.active && row.role !== 'admin')
     .map(async (row) => {
+      const structural = structuralDirectness.get(row.accountId) ?? null;
       const access = await listAuthoritativePropertyAccess(row.accountId);
-      if (!access) return null;
+      if (!access) {
+        return {
+          accountId: row.accountId,
+          // A direct structural claim remains safe to expose even if the
+          // separate standing DTO is temporarily unavailable. An unresolved
+          // non-direct claim must stay indeterminate so People cannot show a
+          // setup action from incomplete access data.
+          directHotelAccount: structural === true ? true : null,
+          hotelLeadershipRole: null,
+        };
+      }
       const standing = authoritativeStandingForProperty(access, hotelId);
       return {
         accountId: row.accountId,
-        directHotelAccount: structuralDirectness.get(row.accountId) ?? null,
+        directHotelAccount: structural,
         hotelLeadershipRole: authoritativeHotelLeadershipRole(standing, row.role),
       };
     }));
-  if (activeDirectness.some((entry) => entry === null)) {
-    log.error('[team:GET] direct hotel account projection unavailable', { requestId, hotelId });
-    return teamProtectionUnavailableResponse(requestId);
-  }
   for (const entry of activeDirectness) {
-    if (entry) directnessByAccountId.set(entry.accountId, entry);
+    directnessByAccountId.set(entry.accountId, entry);
   }
   for (const row of team) {
     if (directnessByAccountId.has(row.accountId)) continue;
