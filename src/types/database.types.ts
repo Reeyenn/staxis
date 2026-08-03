@@ -197,7 +197,7 @@ export type Database = {
         Insert: {
           access_b_merge_sha: string
           attested_at: string
-          authorization_hash?: string
+          authorization_hash: string
           consumed_at?: string | null
           consumed_preflight_run_id?: string | null
           consumed_session_id?: string | null

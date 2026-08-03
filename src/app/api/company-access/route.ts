@@ -39,7 +39,7 @@ import { supabaseAdmin } from '@/lib/supabase-admin';
 import { getOrMintRequestId, log } from '@/lib/log';
 import { errToString } from '@/lib/utils';
 import {
-  legacyAccessProfile,
+  legacyAccessProfile as accessProfileForAccountRole,
   EMPTY_COMPANY_ACCESS,
   type CompanyAccessData,
   type CompanyAccessPermissions,
@@ -485,97 +485,7 @@ async function operatingCompanyNames(
   }
 }
 
-async function legacyProjection(
-  account: AccountRow,
-  authority: { propertyIds: string[]; all: boolean },
-): Promise<CompanyAccessData> {
-  const access = authority.all ? [] : authority.propertyIds;
-  if (account.role !== 'admin' && !access.includes('*')) {
-    if (access.length === 0) {
-      return {
-        organizations: [], portfolios: [], properties: [], invitations: [], requests: [], activity: [],
-        memberships: [], effectiveAccess: [], legacyFallback: true,
-        permissions: legacyPermissions(account.role, []),
-      };
-    }
-  }
-  const properties = account.role !== 'admin' && !access.includes('*')
-    ? await readCompleteCompanyIdChunks<PropertyRow>(access, (chunk, from, to) => (
-        supabaseAdmin.from('properties')
-          .select('id, name', { count: 'exact' })
-          .in('id', [...chunk])
-          .order('id')
-          .range(from, to) as unknown as PromiseLike<CompanyProjectionPage<PropertyRow>>
-      ))
-    : await readCompleteCompanyPages<PropertyRow>((from, to) => (
-        supabaseAdmin.from('properties')
-          .select('id, name', { count: 'exact' })
-          .order('id')
-          .range(from, to) as unknown as PromiseLike<CompanyProjectionPage<PropertyRow>>
-      ));
-  const organizations: CompanyOrganization[] = properties.map((property) => ({
-    id: `legacy-${property.id}`,
-    name: property.name ?? 'Hotel',
-    type: 'single_hotel',
-    status: 'active',
-    relationshipType: 'independent hotel',
-    legacyPropertyId: property.id,
-  }));
-  // Same correction as the normalized path: a hotel under a real operator is
-  // not "not grouped under a management company", whatever this projection's
-  // synthetic `legacy-<id>` organizations look like.
-  const legacyOperators = await operatingCompanyNames(
-    properties.map((property) => property.id),
-    Date.now(),
-  );
-  const companyProperties: CompanyProperty[] = properties.map((property) => ({
-    nodeId: `legacy-${property.id}:${property.id}`,
-    id: property.id,
-    name: property.name ?? 'Hotel',
-    organizationId: `legacy-${property.id}`,
-    portfolioIds: [],
-    relationshipType: 'property access',
-    status: 'active',
-    operatingCompanyName: legacyOperators.get(property.id) ?? null,
-  }));
-  const profile = legacyAccessProfile(account.role);
-  return {
-    organizations,
-    portfolios: [],
-    properties: companyProperties,
-    memberships: properties.map((property) => ({
-      id: `legacy-membership-${property.id}`,
-      organizationId: `legacy-${property.id}`,
-      accountId: account.id,
-      displayName: account.display_name ?? 'User',
-      accessProfile: profile,
-      status: 'active',
-      propertyIds: [property.id],
-      isCurrentUser: true,
-      grants: [],
-      canSuspend: false,
-      canResume: false,
-      canRemove: false,
-    })),
-    effectiveAccess: properties.length > 0 ? [{
-      id: 'legacy-effective-access',
-      organizationId: properties.length === 1 ? `legacy-${properties[0].id}` : null,
-      accessProfile: profile,
-      scopeType: 'property',
-      scopeLabel: properties.length === 1 ? (properties[0].name ?? 'Hotel') : `${properties.length} assigned hotels`,
-      propertyIds: properties.map((property) => property.id),
-      source: 'legacy_backfill',
-      status: 'active',
-    }] : [],
-    invitations: [],
-    requests: [],
-    activity: [],
-    permissions: legacyPermissions(account.role, properties.map((property) => property.id)),
-    legacyFallback: true,
-  };
-}
-
-function legacyPermissions(role: AppRole, propertyIds: string[]): CompanyAccessPermissions {
+function canonicalBridgePermissions(role: AppRole, propertyIds: string[]): CompanyAccessPermissions {
   const manager = role === 'owner' || role === 'general_manager' || role === 'admin';
   return {
     viewHotels: true,
@@ -683,7 +593,7 @@ async function bridgeOnlyProjection(
   );
   const displayOrganizationById = new Map<string, CompanyOrganization>();
   const companyProperties: CompanyProperty[] = [];
-  const profile = legacyAccessProfile(account.role);
+  const profile = accessProfileForAccountRole(account.role);
   for (const propertyId of propertyIds) {
     const relationship = currentByProperty.get(propertyId)!;
     const organization = organizationsById.get(relationship.organization_id)!;
@@ -735,7 +645,7 @@ async function bridgeOnlyProjection(
     invitations: [],
     requests: [],
     activity: [],
-    permissions: legacyPermissions(account.role, propertyIds),
+    permissions: canonicalBridgePermissions(account.role, propertyIds),
     legacyFallback: false,
   };
 }
@@ -1568,23 +1478,8 @@ export async function GET(req: NextRequest) {
 
     const authority = await listAuthoritativePropertyAccess(actor.accountId);
     if (!authority) throw new Error('Authoritative account access was unavailable');
-    const authorityMode = authority.authorityMode;
-
-    // Legacy and shadow are deliberately legacy-only authority modes. In
-    // particular, a shadow account may already have normalized rows for drift
-    // comparison, but those rows are not yet allowed to drive this surface.
-    if (authorityMode === 'legacy' || authorityMode === 'shadow') {
-      const projection = await legacyProjection(account, authority);
-      const { data: endingAccount, error: endingAccountError } = await supabaseAdmin
-        .from('accounts')
-        .select('active')
-        .eq('id', account.id)
-        .maybeSingle();
-      if (endingAccountError) throw endingAccountError;
-      if (endingAccount?.active !== true) {
-        return err('Account not found', { requestId, status: 404, code: ApiErrorCode.NotFound });
-      }
-      return ok(projection, { requestId });
+    if (authority.authorityMode !== 'normalized') {
+      throw new Error('Final account authority was not normalized');
     }
 
     let normalized: CompanyAccessData | null = null;
