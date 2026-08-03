@@ -21,7 +21,7 @@
  *   staxis         — agent_nudges (status='pending', scoped to the
  *                    caller's accounts.id — nudges are per-user)
  *   dashboard      — today_property_counts_v1 RPC (in_house / total_rooms)
- *   housekeeping   — cleaning_tasks for today's business_date
+ *   housekeeping   — room_work_plan_v1 for today's business_date
  *   communications — complaints with status open / in_progress
  *   maintenance    — work_orders not yet 'resolved' (legacy enum:
  *                    submitted/assigned/in_progress all mean open;
@@ -322,10 +322,10 @@ async function dashboardTile(pid: string, today: string): Promise<TileLine> {
   return { en: `${pct}% occupied`, es: `${pct}% occupied`, tone: 'ok' };
 }
 
-/** housekeeping — rooms still to clean today (cleaning_tasks not finished). */
+/** housekeeping — rooms still to clean today (canonical plan not finished). */
 async function housekeepingTile(pid: string, today: string, localHour: number): Promise<TileLine> {
   const { count, error } = await supabaseAdmin
-    .from('cleaning_tasks')
+    .from('room_work_plan_v1')
     .select('id', { count: 'exact', head: true })
     .eq('property_id', pid)
     .eq('business_date', today)

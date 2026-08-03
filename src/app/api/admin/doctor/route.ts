@@ -818,6 +818,9 @@ export const EXPECTED_MIGRATIONS_STATIC: ReadonlyArray<string> = [
   '0424',
   // Stage A cleaning compatibility and evidence migrations.
   '0434', '0435',
+  // Cleaning Stage A compatibility plus the non-destructive Stage B
+  // canonical inspection lock patch.
+  '0436',
 ];
 
 /**

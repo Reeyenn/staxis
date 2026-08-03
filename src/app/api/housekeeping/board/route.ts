@@ -11,9 +11,10 @@
  * scoped endpoint.
  *
  * Behaviour:
- *   - Loads cleaning_tasks for the given property + business_date.
+ *   - Loads the canonical room_work_plan_v1 projection for the given
+ *     property + business_date. The projection carries the current
+ *     assignment snapshot from room_work.
  *   - Loads the property's housekeeping staff.
- *   - Loads the current is_active=true hk_assignments rows.
  *   - Computes per-HK workload totals using each task's
  *     estimated_minutes (falling back to the engine's base map).
  *
@@ -72,14 +73,10 @@ interface CleaningTaskRow {
   requires_inspection: boolean | null;
   extras: unknown;
   status: string;
-}
-
-interface AssignmentRow {
-  cleaning_task_id: string;
-  housekeeper_id: string;
-  queue_order: number;
-  reason: string | null;
-  assigned_by: string;
+  assignee_id: string | null;
+  queue_order: number | null;
+  assignment_reason: string | null;
+  assigned_by: string | null;
 }
 
 interface StaffRow {
@@ -116,7 +113,7 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
 
     // Tenant-scope gate: the session caller must have access to this
     // property. Without it any signed-in user could enumerate another
-    // hotel's cleaning_tasks + staff roster by spraying property UUIDs
+    // hotel's canonical housekeeping plan + staff roster by spraying property UUIDs
     // (matches the pattern in /api/housekeeping/rooms).
     const hasAccess = await userHasPropertyAccess(auth.userId, propertyId);
     if (!hasAccess) {
@@ -133,20 +130,16 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
     if (!sectionGate.ok) return sectionGate.response;
 
     // 1. Tasks for today (any status — the UI surfaces in-progress and
-    //    completed too so the manager has the full picture).
-    //
-    // If cleaning_tasks doesn't exist yet (migration 0210 not applied),
-    // the board collapses to a "no auto-assigned work yet" empty state.
-    // Comfort Suites Beaumont is live on the legacy plan_snapshot path —
-    // a 500 here would break the whole Schedule tab, which is too high
-    // a blast radius for a feature that's still in shadow mode.
+    //    completed too so the manager has the full picture). The canonical
+    //    projection includes PMS-only plans and carries the current
+    //    assignment snapshot, so no second assignment read is needed.
     const { data: taskRows, error: taskErr } = await supabaseAdmin
-      .from('cleaning_tasks')
-      .select('id, property_id, room_number, cleaning_type, priority, due_by, estimated_minutes, requires_inspection, extras, status')
+      .from('room_work_plan_v1')
+      .select('id, property_id, room_number, cleaning_type, priority, due_by, estimated_minutes, requires_inspection, extras, status, assignee_id, queue_order, assignment_reason, assigned_by')
       .eq('property_id', propertyId)
       .eq('business_date', businessDate);
     if (taskErr) {
-      log.warn('board: cleaning_tasks load failed; returning empty board', {
+      log.warn('board: canonical plan load failed; returning empty board', {
         requestId, msg: taskErr.message,
       });
       return ok(
@@ -161,32 +154,6 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
       );
     }
     const tasks = (taskRows ?? []) as CleaningTaskRow[];
-
-    // 2. Active assignments for these tasks. Inactive history rows are
-    //    intentionally excluded — the manager view shows "who has this
-    //    task right now", not the full audit log.
-    const taskIds = tasks.map(t => t.id);
-    let assignments: AssignmentRow[] = [];
-    if (taskIds.length > 0) {
-      const { data: assignmentRows, error: assignErr } = await supabaseAdmin
-        .from('hk_assignments')
-        .select('cleaning_task_id, housekeeper_id, queue_order, reason, assigned_by')
-        .eq('property_id', propertyId)
-        .eq('is_active', true)
-        .in('cleaning_task_id', taskIds);
-      if (assignErr) {
-        // Same reasoning as above: if hk_assignments (0211) isn't applied
-        // yet, the board renders tasks without assignees rather than
-        // 500ing the whole Schedule tab.
-        log.warn('board: hk_assignments load failed; rendering unassigned', {
-          requestId, msg: assignErr.message,
-        });
-      } else {
-        assignments = (assignmentRows ?? []) as AssignmentRow[];
-      }
-    }
-    const assignmentByTask = new Map<string, AssignmentRow>();
-    for (const a of assignments) assignmentByTask.set(a.cleaning_task_id, a);
 
     // 3. Housekeeping staff + the property's default shift length (used
     //    as each crew member's capacity when no shift times are on file).
@@ -221,7 +188,7 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
       (propRes.data?.shift_minutes as number | null | undefined) ?? DEFAULT_CREW_SHIFT_MINUTES;
 
     // 3b. Who is actually working this date, per the Staff schedule.
-    //     Anyone who already holds an active assignment is force-included
+    //     Anyone who already holds a canonical assignment is force-included
     //     even if unscheduled ("called in") — otherwise their rooms would
     //     drop into the Unassigned lane and read as unplanned work.
     const crew = await resolveHousekeepingCrewForDate({
@@ -229,7 +196,9 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
       date: businessDate,
       roster: staff.map(s => ({ id: s.id, isActive: s.is_active })),
       defaultShiftMinutes,
-      alwaysIncludeStaffIds: new Set(assignments.map(a => a.housekeeper_id)),
+      alwaysIncludeStaffIds: new Set(
+        tasks.flatMap(t => t.assignee_id ? [t.assignee_id] : []),
+      ),
     });
     if (crew.degraded) {
       log.warn('board: schedule read failed; showing full roster', {
@@ -254,7 +223,6 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
     const tasksOut = tasks.map(t => {
       const shadow = toShadowAssignmentTask(t);
       const minutes = resolveDurationMinutes(shadow, cfg);
-      const assignment = assignmentByTask.get(t.id);
       return {
         id: t.id,
         room_number: t.room_number,
@@ -265,10 +233,10 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
         estimated_minutes_resolved: minutes,
         requires_inspection: shadow.requires_inspection,
         extras: shadow.extras,
-        assignee_id: assignment?.housekeeper_id ?? null,
-        queue_order: assignment?.queue_order ?? 0,
-        assignment_reason: assignment?.reason ?? null,
-        assigned_by: assignment?.assigned_by ?? null,
+        assignee_id: t.assignee_id,
+        queue_order: t.queue_order ?? 0,
+        assignment_reason: t.assignment_reason,
+        assigned_by: t.assigned_by,
       };
     });
 

@@ -18,9 +18,8 @@
  *   - Both routes are read-only manager views — keeping them separate
  *     means timeline changes can't accidentally break the board.
  *
- * Auth: requireSession (manager-facing). Service-role reads via
- * supabaseAdmin because cleaning_tasks + hk_assignments are RLS-locked
- * to service-role only (see 0210, 0211).
+ * Auth: requireSession (manager-facing). The canonical plan projection and
+ * its underlying room_work/PMS sources are service-role reads.
  *
  * Response shape:
  *   {
@@ -44,9 +43,8 @@
  *     unassigned: number,
  *   }
  *
- * On schema-missing degradation: if cleaning_tasks (0210) or
- * hk_assignments (0211) isn't applied yet, the route returns an empty
- * timeline rather than 500'ing. Same posture as /api/housekeeping/board.
+ * On projection failure the route returns an empty timeline rather than
+ * 500'ing, preserving the board's existing degradation posture.
  */
 
 import { NextRequest, NextResponse } from 'next/server';
@@ -88,12 +86,8 @@ interface CleaningTaskRow {
   status: string;
   started_at: string | null;
   completed_at: string | null;
-}
-
-interface AssignmentRow {
-  cleaning_task_id: string;
-  housekeeper_id: string;
-  queue_order: number;
+  assignee_id: string | null;
+  queue_order: number | null;
 }
 
 interface StaffRow {
@@ -169,14 +163,13 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
     }
     const endIso = new Date(new Date(startIso).getTime() + shiftMinutes * 60_000).toISOString();
 
-    // 2. Cleaning tasks for the day. Mirrors /api/housekeeping/board
-    //    but pulls lifecycle timestamps too. Same degradation posture:
-    //    missing table → empty list, not a 500.
+    // 2. Canonical plan rows for the day. Mirrors /api/housekeeping/board
+    //    but pulls lifecycle timestamps too.
     const { data: taskRows, error: taskErr } = await supabaseAdmin
-      .from('cleaning_tasks')
+      .from('room_work_plan_v1')
       .select(
         'id, property_id, room_number, cleaning_type, priority, due_by, ' +
-        'estimated_minutes, requires_inspection, extras, status, started_at, completed_at',
+        'estimated_minutes, requires_inspection, extras, status, started_at, completed_at, assignee_id, queue_order',
       )
       .eq('property_id', propertyId)
       .eq('business_date', businessDate)
@@ -190,7 +183,7 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
       // the column list above) as the only place reality is asserted.
       .returns<CleaningTaskRow[]>();
     if (taskErr) {
-      log.warn('timeline: cleaning_tasks load failed; returning empty timeline', {
+      log.warn('timeline: canonical plan load failed; returning empty timeline', {
         requestId, msg: taskErr.message,
       });
       return ok(
@@ -207,33 +200,7 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
     // Wide select string outruns supabase-js inference; cast through unknown.
     const tasks = (taskRows ?? []) as unknown as CleaningTaskRow[];
 
-    // 3. Active assignments — same posture as the board route.
-    const taskIds = tasks.map(t => t.id);
-    let assignments: AssignmentRow[] = [];
-    if (taskIds.length > 0) {
-      const { data: assignmentRows, error: assignErr } = await supabaseAdmin
-        .from('hk_assignments')
-        .select('cleaning_task_id, housekeeper_id, queue_order')
-        .eq('property_id', propertyId)
-        .eq('is_active', true)
-        .in('cleaning_task_id', taskIds)
-        // Deterministic ordering: queue_order first, then cleaning_task_id
-        // as a stable tiebreaker so two tasks with the same queue_order
-        // always appear in the same order across refreshes.
-        .order('queue_order', { ascending: true })
-        .order('cleaning_task_id', { ascending: true });
-      if (assignErr) {
-        log.warn('timeline: hk_assignments load failed; rendering unassigned', {
-          requestId, msg: assignErr.message,
-        });
-      } else {
-        assignments = (assignmentRows ?? []) as AssignmentRow[];
-      }
-    }
-    const assignmentByTask = new Map<string, AssignmentRow>();
-    for (const a of assignments) assignmentByTask.set(a.cleaning_task_id, a);
-
-    // 4. Housekeeping staff for this property.
+    // 3. Housekeeping staff for this property.
     const { data: staffRows, error: staffErr } = await supabaseAdmin
       .from('staff')
       .select('id, name, language, is_senior, is_active, department')
@@ -245,7 +212,7 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
     }
     const staff = (staffRows ?? []) as StaffRow[];
 
-    // 4b. Who is actually working this date, per the Staff schedule
+    // 3b. Who is actually working this date, per the Staff schedule
     //     (scheduled_shifts) — the same shared resolver the board route
     //     and the auto-assign runner use, so all three agree. Anyone
     //     already holding an assignment is force-included so their strip
@@ -255,7 +222,9 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
       date: businessDate,
       roster: staff.map(s => ({ id: s.id, isActive: s.is_active })),
       defaultShiftMinutes: shiftMinutes,
-      alwaysIncludeStaffIds: new Set(assignments.map(a => a.housekeeper_id)),
+      alwaysIncludeStaffIds: new Set(
+        tasks.flatMap(t => t.assignee_id ? [t.assignee_id] : []),
+      ),
     });
     if (crew.degraded) {
       log.warn('timeline: schedule read failed; showing full roster', {
@@ -263,7 +232,7 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
       });
     }
 
-    // 5. Resolve per-task minutes — reuse the engine's duration resolver
+    // 4. Resolve per-task minutes — reuse the engine's duration resolver
     //    so the timeline card widths match the assignment-board minutes.
     //    baseDurations overlays the property's manager-set Clean Times
     //    (migration 0244) on the static defaults so the fallback (used only
@@ -274,7 +243,6 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
     const tasksOut = tasks.map(t => {
       const shadow = toShadowAssignmentTask(t);
       const minutes = resolveDurationMinutes(shadow, cfg);
-      const assignment = assignmentByTask.get(t.id);
       return {
         id: t.id,
         room_number: t.room_number,
@@ -285,8 +253,8 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
         estimated_minutes_resolved: minutes,
         requires_inspection: shadow.requires_inspection,
         extras: shadow.extras,
-        assignee_id: assignment?.housekeeper_id ?? null,
-        queue_order: assignment?.queue_order ?? 0,
+        assignee_id: t.assignee_id,
+        queue_order: t.queue_order ?? 0,
         started_at: t.started_at,
         completed_at: t.completed_at,
       };

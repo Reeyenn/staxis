@@ -41,7 +41,8 @@ export async function startInspectionCore(
 ): Promise<StartInspectionResult> {
   const { propertyId, roomNumber, roomId } = input;
 
-  // 1. Look up the linked cleaning task and housekeeper (best-effort).
+  // 1. Look up the canonical plan and housekeeper (best-effort only for the
+  // existing PMS staff enrichment; canonical plan lookup is fail-closed).
   const linked = await lookupLinkedTaskAndHousekeeper(propertyId, roomNumber, roomId);
 
   // 2. Pick a checklist.
@@ -113,25 +114,9 @@ async function lookupLinkedTaskAndHousekeeper(
   housekeeperStaffId: string | null;
   cleaningType: string | null;
 }> {
-  let cleaningTaskId: string | null = null;
-  let cleaningType: string | null = null;
-  try {
-    const { data } = await supabaseAdmin
-      .from('cleaning_tasks')
-      .select('id, cleaning_type, assignee_id')
-      .eq('property_id', pid)
-      .eq('room_number', roomNumber)
-      .order('business_date', { ascending: false })
-      .limit(1)
-      .maybeSingle();
-    if (data) {
-      const row = data as { id: string; cleaning_type: string | null; assignee_id: string | null };
-      cleaningTaskId = row.id;
-      cleaningType = row.cleaning_type;
-    }
-  } catch {
-    // Non-fatal — cleaning_tasks may not yet exist for this room.
-  }
+  const plan = await lookupCanonicalPlan(pid, roomNumber, roomId);
+  const cleaningTaskId = plan?.id ?? null;
+  const cleaningType = plan?.cleaning_type ?? null;
 
   let housekeeperStaffId: string | null = null;
   if (roomId) {
@@ -148,4 +133,73 @@ async function lookupLinkedTaskAndHousekeeper(
   }
 
   return { cleaningTaskId, housekeeperStaffId, cleaningType };
+}
+
+interface CanonicalPlanRow {
+  id: string;
+  property_id: string;
+  room_number: string;
+  business_date: string;
+  cleaning_type: string | null;
+}
+
+/**
+ * Resolve the inspection's plan identity from the canonical read model.
+ *
+ * Housekeeper links carry an exact YYYY-MM-DD:room composite identifier. A
+ * manager start has no date in its input, so it preserves the former
+ * cleaning-task rule of choosing the latest applicable plan, while rejecting
+ * an ambiguous latest date instead of guessing. The property and room are
+ * always part of the lookup, so a different property's plan cannot link.
+ */
+async function lookupCanonicalPlan(
+  pid: string,
+  roomNumber: string,
+  roomId: string | null,
+): Promise<CanonicalPlanRow | null> {
+  const parsed = roomId ? parseRoomId(roomId) : null;
+  const uuidRoomId = roomId ? /^[0-9a-f-]{36}$/i.test(roomId) : false;
+  if (roomId && !parsed && !uuidRoomId) {
+    throw new Error('invalid composite room identifier');
+  }
+  if (parsed && parsed.roomNumber !== roomNumber) {
+    throw new Error('room identifier does not match room number');
+  }
+
+  let query = supabaseAdmin
+    .from('room_work_plan_v1')
+    .select('id, property_id, room_number, business_date, cleaning_type')
+    .eq('property_id', pid)
+    .eq('room_number', roomNumber);
+
+  if (parsed) {
+    query = query
+      .eq('business_date', parsed.date)
+      .order('id', { ascending: true })
+      .limit(2);
+  } else {
+    query = query
+      .order('business_date', { ascending: false })
+      .order('id', { ascending: false })
+      .limit(2);
+  }
+
+  const { data, error } = await query;
+  if (error) throw error;
+  const rows = (data ?? []) as CanonicalPlanRow[];
+  if (rows.length === 0) return null;
+
+  if (parsed) {
+    if (rows.length > 1) {
+      throw new Error(`ambiguous canonical cleaning plan for ${pid}/${parsed.date}/${roomNumber}`);
+    }
+    return rows[0];
+  }
+
+  const latestDate = rows[0].business_date;
+  const latestRows = rows.filter((row) => row.business_date === latestDate);
+  if (latestRows.length > 1) {
+    throw new Error(`ambiguous canonical cleaning plan for ${pid}/${latestDate}/${roomNumber}`);
+  }
+  return latestRows[0];
 }

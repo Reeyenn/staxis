@@ -13,17 +13,10 @@
  *   reason?: string,          // optional manager note
  * }
  *
- * Behaviour (atomic): delegates to the public.reassign_cleaning_task
- * RPC (migration 0219). The RPC runs in a single transaction:
- *   1. SELECT … FOR UPDATE on the cleaning_tasks row (serializes
- *      concurrent reassigns of the same task).
- *   2. Verify the task belongs to the property and is in a
- *      reassignable status (scheduled, ready_now, deferred).
- *   3. Verify the destination HK belongs to the property + housekeeping
- *      + is active.
- *   4. Flip is_active=false on the current active hk_assignments row.
- *   5. Insert the new is_active=true row.
- *   6. Update cleaning_tasks.assignee_id cache.
+ * Behaviour (atomic): delegates to the canonical assign_room_work_atomic
+ * RPC (0435). The RPC locks the canonical parent/component set, verifies the
+ * property/status/staff boundary, appends assignment history, and updates
+ * the current room_work assignment snapshot in one transaction.
  *
  * Idempotent: if the task is already assigned to toHousekeeperId, the
  * RPC returns noop=true without writing — the UI can drop a tile back
@@ -43,7 +36,7 @@ import { validateUuid, validateString } from '@/lib/api-validate';
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
-// Reassignable statuses are enforced inside the RPC (migration 0219).
+// Reassignable statuses are enforced inside the canonical RPC (0435).
 // Kept in sync there: scheduled, ready_now, deferred.
 
 interface ReassignBody {
@@ -102,21 +95,19 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
   }
 
   try {
-    // Atomic reassignment via the SECURITY DEFINER RPC added in
-    // migration 0219. The RPC locks the cleaning_tasks row (FOR UPDATE),
-    // verifies tenant + HK eligibility, deactivates the prior active
-    // hk_assignments row, inserts the new one, and updates the task
-    // cache — all in one transaction. Replaces the previous three
-    // separate statements which could leave the task with no active
-    // assignment OR a stale assignee_id cache if any step failed.
+    // Atomic reassignment through the canonical SECURITY DEFINER operation.
+    // It is the only manager-side assignment writer after the Stage B
+    // cutover; legacy tables remain available to old rollback clients and
+    // continue to flow one-way into room_work through the Stage A bridge.
     const { data: rpcRows, error: rpcErr } = await supabaseAdmin.rpc(
-      'reassign_cleaning_task',
+      'assign_room_work_atomic',
       {
         p_property_id: propertyId,
         p_task_id: taskId,
         p_to_housekeeper_id: toHkId,
         p_assigned_by_user: auth.userId,
         p_reason: reason ?? 'manager reassigned',
+        p_assigned_by: 'manual',
       },
     );
 

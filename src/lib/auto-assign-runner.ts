@@ -30,8 +30,8 @@
  * both fall back to the full roster when the hotel has no shifts on file
  * for that date (never silently assign nothing).
  *
- * Idempotent: only assigns cleaning_tasks WITHOUT an active
- * hk_assignments row, so manual reassignments + prior runs stick.
+ * Idempotent: only assigns canonical plan rows WITHOUT a current
+ * room_work assignee, so manual reassignments + prior runs stick.
  */
 
 import { supabaseAdmin } from '@/lib/supabase-admin';
@@ -94,6 +94,7 @@ type CleaningTaskRow = {
   extras: unknown;
   rule_inputs: Record<string, unknown> | null;
   status: string;
+  assignee_id: string | null;
 };
 
 function staffRowToHk(s: StaffRow, weeklyHours: number): AssignmentHousekeeper {
@@ -116,7 +117,7 @@ function staffRowToHk(s: StaffRow, weeklyHours: number): AssignmentHousekeeper {
 }
 
 function taskRowToAssignmentTask(t: CleaningTaskRow): AssignmentTask {
-  // Priority must match the AssignmentTaskPriority union. The cleaning_tasks
+  // Priority must match the AssignmentTaskPriority union. The canonical plan
   // CHECK constraint already restricts the column to these values, but we
   // defensively narrow here so a future loosening of that constraint
   // doesn't crash the engine — unknown priorities fall back to 'normal'.
@@ -170,9 +171,9 @@ export interface AutoAssignRunOptions {
    *  Manager button: true (honor the "Never auto-assign" setting on the
    *  staff member's card in Staff). */
   respectPriority?: boolean;
-  /** Stored on hk_assignments.assigned_by. Defaults to 'auto'. */
+  /** Stored in room_work assignment history. Defaults to 'auto'. */
   assignedBy?: 'auto' | 'manual';
-  /** Stored on hk_assignments.assigned_by_user_id when a manager triggered it. */
+  /** Stored in room_work assignment history when a manager triggered it. */
   assignedByUserId?: string | null;
 }
 
@@ -214,10 +215,10 @@ export async function runAutoAssignForProperty(
 
   const todayDate = opts.businessDate ?? todayInTz(tz);
 
-  // 1. Load today's cleaning tasks in auto-assignable statuses.
+  // 1. Load today's canonical plan rows in auto-assignable statuses.
   const { data: taskRows, error: taskErr } = await supabaseAdmin
-    .from('cleaning_tasks')
-    .select('id, property_id, room_number, cleaning_type, priority, due_by, estimated_minutes, requires_inspection, extras, rule_inputs, status')
+    .from('room_work_plan_v1')
+    .select('id, property_id, room_number, cleaning_type, priority, due_by, estimated_minutes, requires_inspection, extras, rule_inputs, status, assignee_id')
     .eq('property_id', propertyId)
     .eq('business_date', todayDate)
     .in('status', AUTO_ASSIGNABLE_STATUSES);
@@ -228,16 +229,11 @@ export async function runAutoAssignForProperty(
     return { propertyId, assigned: 0, unassigned: 0, skippedAlreadyAssigned: 0, reason: 'no tasks today' };
   }
 
-  // 2. Filter to tasks WITHOUT an active hk_assignment. Idempotency.
-  const { data: assignmentRows, error: existingErr } = await supabaseAdmin
-    .from('hk_assignments')
-    .select('cleaning_task_id')
-    .eq('property_id', propertyId)
-    .eq('is_active', true)
-    .in('cleaning_task_id', allTasks.map(t => t.id));
-  if (existingErr) throw new Error(`load existing assignments: ${existingErr.message}`);
-  const alreadyAssigned = new Set((assignmentRows ?? []).map(r => r.cleaning_task_id as string));
-  const tasksToPlace = allTasks.filter(t => !alreadyAssigned.has(t.id));
+  // 2. Filter to tasks WITHOUT a current canonical assignee. Idempotency.
+  const alreadyAssigned = new Set(
+    allTasks.filter((task) => task.assignee_id).map((task) => task.id),
+  );
+  const tasksToPlace = allTasks.filter(t => !t.assignee_id);
 
   if (tasksToPlace.length === 0) {
     return {
@@ -299,63 +295,58 @@ export async function runAutoAssignForProperty(
   const assignmentTasks = tasksToPlace.map(taskRowToAssignmentTask);
   const result = assignTasks(assignmentTasks, workingHks, cfg);
 
-  // 5. Persist decisions. Insert hk_assignments rows then update the
-  // cleaning_tasks.assignee_id cache. Concurrent runs are possible (the
-  // 15-min cron + a manager click overlapping), so we insert one row at a
-  // time and treat a 23505 unique-violation as "another runner placed
-  // this task already" — keeps the path idempotent under contention.
+  // 5. Persist decisions through the canonical assignment operation. It
+  // rechecks the current assignee after taking the component-set lock, so a
+  // manager reassignment that wins the race is a safe no-op rather than a
+  // stale cache overwrite.
   let conflictNoops = 0;
   let insertFailures = 0;
   let placedCount = 0;
   if (result.decisions.length > 0) {
     for (const d of result.decisions) {
-      const { error: insErr } = await supabaseAdmin.from('hk_assignments').insert({
-        property_id: propertyId,
-        cleaning_task_id: d.taskId,
-        housekeeper_id: d.housekeeperId,
-        queue_order: d.queueOrder,
-        is_active: true,
-        assigned_at: new Date().toISOString(),
-        assigned_by: assignedBy,
-        assigned_by_user_id: assignedByUserId,
-        reason: d.reason,
-        score: d.score,
-      });
-      if (insErr) {
-        // 23505 unique_violation = the partial unique index on
-        // (cleaning_task_id) where is_active=true fired. Another runner
-        // placed this task between our existing-assignment check and this
-        // insert. Treat as a successful no-op.
-        const code = (insErr as { code?: string }).code ?? '';
-        if (code === '23505') {
+      const { data: assignmentRows, error: assignErr } = await supabaseAdmin.rpc(
+        'assign_room_work_atomic',
+        {
+          p_property_id: propertyId,
+          p_task_id: d.taskId,
+          p_to_housekeeper_id: d.housekeeperId,
+          p_assigned_by_user: assignedByUserId,
+          p_reason: d.reason,
+          p_queue_order: d.queueOrder,
+          p_score: d.score,
+          p_only_if_unassigned: true,
+          p_assigned_by: assignedBy,
+        },
+      );
+      if (assignErr) {
+        const code = (assignErr as { code?: string }).code ?? '';
+        if (code === '23505' || (code === 'P0001' && assignErr.message.includes('task not reassignable'))) {
           conflictNoops += 1;
           continue;
         }
-        // Any OTHER insert error: log + count + continue so a single bad
-        // task doesn't take the whole run down. The next pass retries the
-        // unplaced ones because they still have no active row.
-        log.warn('auto-assign-runner: insert failed (will retry next run)', {
-          propertyId, taskId: d.taskId, msg: insErr.message, code,
+        // Any other canonical error is retried by the next run; one bad
+        // task must not prevent the rest of the property's batch from being
+        // considered.
+        log.warn('auto-assign-runner: canonical assignment failed (will retry next run)', {
+          propertyId, taskId: d.taskId, msg: assignErr.message, code,
         });
         insertFailures += 1;
         continue;
       }
-      placedCount += 1;
-
-      // Cache the assignee on cleaning_tasks. The assignee_id guard (null
-      // OR already-us) prevents clobbering a manager reassignment that
-      // raced between our insert and this update — see run-auto-assign for
-      // the full race analysis.
-      const { error: updErr } = await supabaseAdmin
-        .from('cleaning_tasks')
-        .update({ assignee_id: d.housekeeperId })
-        .eq('id', d.taskId)
-        .eq('property_id', propertyId)
-        .or(`assignee_id.is.null,assignee_id.eq.${d.housekeeperId}`);
-      if (updErr) {
-        log.warn('auto-assign-runner: failed to cache assignee_id', {
-          propertyId, taskId: d.taskId, msg: updErr.message,
+      const rpcRow = (Array.isArray(assignmentRows) ? assignmentRows[0] : assignmentRows) as {
+        noop?: boolean;
+      } | null;
+      if (!rpcRow) {
+        insertFailures += 1;
+        log.warn('auto-assign-runner: canonical assignment returned no row', {
+          propertyId, taskId: d.taskId,
         });
+        continue;
+      }
+      if (rpcRow.noop) {
+        conflictNoops += 1;
+      } else {
+        placedCount += 1;
       }
     }
     if (conflictNoops > 0) {

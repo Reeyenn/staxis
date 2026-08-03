@@ -19,8 +19,6 @@ export type { DetectedMimeType } from './image-magic-bytes';
 
 export {
   finalizeInspection,
-  applyPassSideEffects,
-  applyFailSideEffects,
   buildCorrectionNote,
   filterReadyForRecheck,
 } from './correction-loop';

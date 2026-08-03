@@ -26,33 +26,15 @@
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { log } from '@/lib/log';
 import {
-  completeInspection,
   countConsecutiveFails,
   fromInspectionRow,
   getInspectionById,
-  linkRecheck,
 } from '@/lib/db/inspections';
 import type {
   Inspection,
   InspectionFailedItem,
 } from '@/types/inspections';
 import { ESCALATION_THRESHOLD } from '@/types/inspections';
-import { applyRoomUpdate } from '@/lib/pms-rooms-writes';
-import { parseRoomId, composeRoomId } from '@/lib/pms-rooms-server';
-
-/**
- * Resolve the pms_* composite room id ("${date}:${roomNumber}") for an
- * inspection's room. roomId may already be the composite (housekeeper
- * redesign) — use it when it parses; otherwise rebuild from roomNumber +
- * the inspection's completion/start date. Returns null when neither yields
- * a valid (date, roomNumber) pair.
- */
-function inspectionRoomRid(inspection: Inspection): string | null {
-  if (inspection.roomId && parseRoomId(inspection.roomId)) return inspection.roomId;
-  const date = (inspection.completedAt ?? inspection.startedAt ?? '').slice(0, 10);
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || !inspection.roomNumber) return null;
-  return composeRoomId(date, inspection.roomNumber);
-}
 
 export interface CompleteInspectionInput {
   inspectionId: string;
@@ -87,6 +69,13 @@ export async function finalizeInspection(
   const before = await getInspectionById(input.inspectionId);
   if (!before) throw new Error(`inspection ${input.inspectionId} not found`);
   if (before.result !== 'in_progress') {
+    if (before.result === input.result) {
+      return {
+        inspection: before,
+        correctionNoticeSent: input.result === 'fail',
+        escalated: before.escalated,
+      };
+    }
     throw new Error(`inspection ${input.inspectionId} already finalized as ${before.result}`);
   }
 
@@ -111,12 +100,10 @@ export async function finalizeInspection(
     }
   }
 
-  // 1. Atomic finalize via RPC. complete_inspection_atomic (migration
-  //    0225) wraps the inspections row update + rooms + cleaning_tasks
-  //    + parent-link in one transaction. If the RPC succeeds, every
-  //    side-effect lands atomically. If it fails (DB error, migration
-  //    not applied yet, etc.) we fall back to the non-atomic legacy
-  //    path so the workflow stays online during a rollout.
+  // 1. Atomic finalize via the canonical room_work operation. The Stage B
+  //    RPC wraps the inspection row, room_work plan side effects, and
+  //    parent-link in one transaction. A canonical failure is surfaced for
+  //    retry; this new-app path never switches to the legacy writer.
   const correctionNoticeSentAt: string | null =
     input.result === 'fail' ? new Date().toISOString() : null;
   const correctionNote: string | null =
@@ -143,14 +130,10 @@ export async function finalizeInspection(
     };
   }
 
-  // Codex M6 follow-up — before running the legacy path, re-fetch the
-  // row. If the RPC actually committed but the HTTP response was lost
-  // (network blip / gateway timeout), the inspection is already in its
-  // final state. Running completeInspection now would fail the
-  // result='in_progress' guard and surface a spurious error to the UI;
-  // the housekeeper retries and the retry fails the same way. Instead,
-  // detect the "already-finalized to the requested result" case and
-  // return as if the RPC succeeded.
+  // Re-fetch the row so a response-loss after a committed canonical
+  // transaction remains idempotent. A retry that observes the requested
+  // terminal result can return the committed row; an in-progress row keeps
+  // the canonical error retryable and never switches writers.
   const refetched = await getInspectionById(input.inspectionId);
   if (refetched && refetched.result === input.result) {
     log.info('[inspections.finalize] RPC committed but response lost — returning existing finalized row', {
@@ -172,44 +155,7 @@ export async function finalizeInspection(
     );
   }
 
-  // Legacy non-atomic path. Only reached when the RPC genuinely failed
-  // AND the row is still in_progress. Visible logging on every
-  // side-effect failure is preserved from the earlier C1 fix.
-  log.warn('[inspections.finalize] atomic RPC unavailable, falling back to legacy path', {
-    inspectionId: input.inspectionId,
-    err: atomic.err,
-  });
-
-  const finalized = await completeInspection({
-    id: input.inspectionId,
-    result: input.result,
-    failedItems: input.failedItems,
-    passedItems: input.passedItems,
-    notes: input.notes,
-    escalated,
-    escalationReason,
-    correctionNoticeSentAt,
-  });
-
-  if (before.parentInspectionId) {
-    try {
-      await linkRecheck(before.parentInspectionId, finalized.id);
-    } catch {
-      // Non-fatal — chain reconstructible via parent_inspection_id.
-    }
-  }
-
-  if (input.result === 'pass') {
-    await applyPassSideEffects(finalized);
-  } else {
-    await applyFailSideEffects(finalized);
-  }
-
-  return {
-    inspection: finalized,
-    correctionNoticeSent: input.result === 'fail',
-    escalated,
-  };
+  throw new Error(`canonical inspection finalize failed: ${atomic.err}`);
 }
 
 interface TryAtomicArgs {
@@ -231,11 +177,14 @@ type AtomicOutcome =
 
 /**
  * Wrap the RPC call. Distinguishes between:
- *  - already-finalized / not-found / bad-result / property-mismatch
+ *  - not-found / bad-result / property-mismatch
  *    → re-throws (caller's bug or data-integrity issue)
- *  - any other failure → returns ok=false so caller can fall back
+ *  - any other failure → returns ok=false so the caller can surface a
+ *    retryable canonical failure
  *
- * The RPC raises with specific message prefixes:
+ * The RPC raises with specific message prefixes. E_ALREADY_FINALIZED is
+ * intentionally returned as a retryable outcome so the caller can refetch
+ * and accept a matching committed result.
  *   E_NOT_FOUND, E_ALREADY_FINALIZED, E_BAD_RESULT,
  *   E_ROOM_PROPERTY_MISMATCH, E_TASK_PROPERTY_MISMATCH
  *
@@ -245,7 +194,6 @@ type AtomicOutcome =
  */
 const CALLER_BUG_PREFIXES = [
   'E_NOT_FOUND',
-  'E_ALREADY_FINALIZED',
   'E_BAD_RESULT',
   // E_ROOM_PROPERTY_MISMATCH removed: 0271 repointed the room side-effect to
   // pms_housekeeping_assignments scoped by (property_id, room_number) and
@@ -259,7 +207,7 @@ function isCallerBugError(msg: string): boolean {
 
 async function tryAtomicFinalize(args: TryAtomicArgs): Promise<AtomicOutcome> {
   try {
-    const { data, error } = await supabaseAdmin.rpc('complete_inspection_atomic', {
+    const { data, error } = await supabaseAdmin.rpc('complete_inspection_atomic_canonical', {
       p_inspection_id: args.inspectionId,
       p_property_id: args.propertyId,
       p_result: args.result,
@@ -287,78 +235,6 @@ async function tryAtomicFinalize(args: TryAtomicArgs): Promise<AtomicOutcome> {
     const msg = err instanceof Error ? err.message : String(err);
     if (isCallerBugError(msg)) throw err;
     return { ok: false, err: msg };
-  }
-}
-
-// ─── Side effects ─────────────────────────────────────────────────────────
-
-/**
- * On pass: mark the room "inspected" if it still has a rows-table entry
- * (legacy compat). If a cleaning_task is linked, flip its status to
- * inspected_pass. Errors are swallowed individually so a missing rooms
- * row doesn't block the cleaning_task flip and vice versa.
- */
-export async function applyPassSideEffects(inspection: Inspection): Promise<void> {
-  const rid = inspectionRoomRid(inspection);
-  if (rid) {
-    await applyRoomUpdate(inspection.propertyId, rid, {
-      status: 'inspected',
-      inspectedAt: new Date(),
-    }).then(
-      () => undefined,
-      () => undefined,
-    );
-  }
-
-  if (inspection.cleaningTaskId) {
-    await supabaseAdmin
-      .from('cleaning_tasks')
-      .update({
-        status: 'inspected_pass',
-        inspected_at: new Date().toISOString(),
-      })
-      .eq('id', inspection.cleaningTaskId)
-      .then(
-        () => undefined,
-        () => undefined,
-      );
-  }
-}
-
-/**
- * On fail: write the correction notice. Sets the linked room's status
- * back to dirty with an issue_note describing what failed — the
- * housekeeper sees this surface naturally in her existing queue (the
- * RoomCard component already renders issue_note as a red banner).
- * Also flips the cleaning_task status to correction_pending.
- */
-export async function applyFailSideEffects(inspection: Inspection): Promise<void> {
-  const note = buildCorrectionNote(inspection.failedItems);
-
-  const rid = inspectionRoomRid(inspection);
-  if (rid) {
-    await applyRoomUpdate(inspection.propertyId, rid, {
-      status: 'dirty',
-      issueNote: note,
-    }).then(
-      () => undefined,
-      () => undefined,
-    );
-  }
-
-  if (inspection.cleaningTaskId) {
-    await supabaseAdmin
-      .from('cleaning_tasks')
-      .update({
-        status: 'correction_pending',
-        priority: 'high',
-        notes: note,
-      })
-      .eq('id', inspection.cleaningTaskId)
-      .then(
-        () => undefined,
-        () => undefined,
-      );
   }
 }
 
