@@ -20,11 +20,11 @@ const notifications = source(
   'src', 'app', 'settings', 'notifications', '_components', 'NotificationsPanel.tsx',
 );
 const myShifts = source('src', 'app', 'staff', '_components', 'MyShifts.tsx');
-const staffPage = source('src', 'app', 'staff', 'page.tsx');
+const staffPage = source('src', 'app', '(hotel)', 'staff', 'page.tsx');
 const queue = source('src', 'components', 'concourse', 'QueueView.tsx');
 const dripQuestion = source('src', 'components', 'concourse', 'DripQuestionCard.tsx');
 const staxisList = source('src', 'components', 'concourse', 'StaxisList.tsx');
-const financialsPage = source('src', 'app', 'financials', 'page.tsx');
+const financialsPage = source('src', 'app', '(hotel)', 'financials', 'page.tsx');
 const checkbook = source('src', 'app', 'financials', '_components', 'CheckbookTab.tsx');
 const budget = source('src', 'app', 'financials', '_components', 'BudgetTab.tsx');
 const capex = source('src', 'app', 'financials', '_components', 'CapexTab.tsx');

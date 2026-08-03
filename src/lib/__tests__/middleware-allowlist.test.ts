@@ -4,7 +4,7 @@
  * The middleware is a presence-only gate on the Supabase auth cookie
  * (intentional — see middleware.ts docstring). The actual security
  * decisions are made downstream: API routes via requireSession /
- * requireAdmin, admin pages via the new src/app/admin/layout.tsx server
+ * requireAdmin, admin pages via the new src/app/(admin)/layout.tsx server
  * guard, public pages via capability checks on URL params.
  *
  * But the allowlist itself is a sharp tool — adding a path to it

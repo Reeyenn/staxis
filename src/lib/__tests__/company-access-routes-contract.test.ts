@@ -18,7 +18,7 @@ const adminPreviewRoute = source('src/app/api/admin/company-access-preview/route
 const adminPreviewHelpers = source('src/lib/company-access/admin-preview.ts');
 const dialog = source('src/app/company/_components/AccessWorkflowDialogs.tsx');
 const page = source('src/app/company/page.tsx');
-const signIn = source('src/app/signin/page.tsx');
+const signIn = source('src/app/(public)/signin/page.tsx');
 const signInNavigationPolicy = source('src/lib/auth/signin-navigation-policy.ts');
 
 describe('company access read/delegation boundary', () => {

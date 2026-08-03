@@ -8,12 +8,12 @@ function source(...parts: string[]): string {
 }
 
 const concourse = source('src', 'components', 'concourse', 'ConcourseBar.tsx');
-const home = source('src', 'app', 'home', 'page.tsx');
+const home = source('src', 'app', '(hotel)', 'home', 'page.tsx');
 const homeHub = source('src', 'components', 'concourse', 'HomeHubView.tsx');
 const homeSummary = source('src', 'app', 'api', 'home', 'summary', 'route.ts');
 const concourseCss = source('src', 'components', 'concourse', 'concourse-css.tsx');
 const liveSurface = source('src', 'app', 'admin', '_components', 'studio', 'surfaces', 'LiveSurface.tsx');
-const invitation = source('src', 'app', 'company-invite', '[token]', 'page.tsx');
+const invitation = source('src', 'app', '(public)', 'company-invite', '[token]', 'page.tsx');
 const authShell = source('src', 'components', 'AuthShell.tsx');
 const company = source('src', 'app', 'company', 'page.tsx');
 const companyCss = source('src', 'app', 'company', 'CompanyAccess.module.css');
@@ -27,9 +27,9 @@ const addStaffDialog = source('src', 'app', 'company', '_components', 'AddStaffD
 const employmentForm = source('src', 'app', 'company', '_components', 'PersonEmploymentForm.tsx');
 const operationalStaffRoute = source('src', 'app', 'api', 'staff', 'operational', 'route.ts');
 const staffWriteGate = source('supabase', 'migrations', '0330_staff_management_write_gate.sql');
-const settings = source('src', 'app', 'settings', 'page.tsx');
-const legacyAccounts = source('src', 'app', 'settings', 'accounts', 'page.tsx');
-const legacyUsers = source('src', 'app', 'settings', 'users', 'page.tsx');
+const settings = source('src', 'app', '(hotel)', 'settings', 'page.tsx');
+const legacyAccounts = source('src', 'app', '(hotel)', 'settings', 'accounts', 'page.tsx');
+const legacyUsers = source('src', 'app', '(hotel)', 'settings', 'users', 'page.tsx');
 const propertyContext = source('src', 'contexts', 'PropertyContext.tsx');
 
 describe('company-only shell routing', () => {

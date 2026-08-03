@@ -15,7 +15,7 @@ describe('retired PMS robot customer UI', () => {
   });
 
   test('the active onboarding wizard has no PMS robot calls or mapping steps', () => {
-    const onboarding = source('src', 'app', 'onboard', 'page.tsx');
+    const onboarding = source('src', 'app', '(public)', 'onboard', 'page.tsx');
 
     assert.doesNotMatch(onboarding, /\/api\/pms\//);
     assert.doesNotMatch(onboarding, /mapping-status|save-credentials|job-status/);
@@ -27,7 +27,7 @@ describe('retired PMS robot customer UI', () => {
 
   test('the marketing preview cannot run the retired ticking robot experience', () => {
     const marketing = source('src', 'app', '_components', 'MarketingLanding.tsx');
-    const landing = source('src', 'app', 'page.tsx');
+    const landing = source('src', 'app', '(public)', 'page.tsx');
 
     assert.match(marketing, /if \(!PMS_ROBOT_ENABLED \|\| reduced\) return;/);
     assert.match(marketing, /PMS_ROBOT_ENABLED \? 'LATEST PMS PULL ⚙' : 'LATEST PMS DATA'/);
@@ -38,11 +38,11 @@ describe('retired PMS robot customer UI', () => {
 
   test('operational surfaces use report-neutral data availability copy', () => {
     const operationalCopy = [
-      source('src', 'app', 'dashboard', 'page.tsx'),
+      source('src', 'app', '(hotel)', 'dashboard', 'page.tsx'),
       source('src', 'app', 'housekeeping', '_components', 'ScheduleTab.tsx'),
       source('src', 'app', 'housekeeping', '_components', 'QualityTab.tsx'),
-      source('src', 'app', 'housekeeper', '[id]', 'page.tsx'),
-      source('src', 'app', 'laundry', '[id]', 'page.tsx'),
+      source('src', 'app', '(staff-link)', 'housekeeper', '[id]', 'page.tsx'),
+      source('src', 'app', '(staff-link)', 'laundry', '[id]', 'page.tsx'),
     ].join('\n');
 
     assert.doesNotMatch(

@@ -12,7 +12,7 @@ const createRoute = readFileSync(
   'utf8',
 );
 const phonePage = readFileSync(
-  join(process.cwd(), 'src/app/phone-signin/page.tsx'),
+  join(process.cwd(), 'src/app/(public)/phone-signin/page.tsx'),
   'utf8',
 );
 

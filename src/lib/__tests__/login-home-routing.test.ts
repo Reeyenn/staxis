@@ -20,11 +20,11 @@ function source(...parts: string[]): string {
   return readFileSync(join(process.cwd(), ...parts), 'utf8');
 }
 
-const signin = source('src', 'app', 'signin', 'page.tsx');
-const verify = source('src', 'app', 'signin', 'verify', 'page.tsx');
-const selector = source('src', 'app', 'property-selector', 'page.tsx');
-const home = source('src', 'app', 'home', 'page.tsx');
-const onboard = source('src', 'app', 'onboard', 'page.tsx');
+const signin = source('src', 'app', '(public)', 'signin', 'page.tsx');
+const verify = source('src', 'app', '(public)', 'signin', 'verify', 'page.tsx');
+const selector = source('src', 'app', '(hotel)', 'property-selector', 'page.tsx');
+const home = source('src', 'app', '(hotel)', 'home', 'page.tsx');
+const onboard = source('src', 'app', '(public)', 'onboard', 'page.tsx');
 const authContext = source('src', 'contexts', 'AuthContext.tsx');
 const rootLayout = source('src', 'app', 'layout.tsx');
 const reliableNavigation = source('src', 'lib', 'hooks', 'use-reliable-navigation.ts');

@@ -19,7 +19,7 @@ const routeSource = readFileSync(
 );
 
 const pageSource = readFileSync(
-  join(process.cwd(), 'src', 'app', 'admin', 'properties', '[id]', 'page.tsx'),
+  join(process.cwd(), 'src', 'app', '(admin)', 'admin', 'properties', '[id]', 'page.tsx'),
   'utf8',
 );
 

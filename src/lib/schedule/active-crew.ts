@@ -5,7 +5,7 @@
  * Why this file exists (Round 18):
  *
  * Three callers used to implement this filter independently:
- *   - src/app/staff/page.tsx       `isEligible()` — canonical, with all
+ *   - src/app/(hotel)/staff/page.tsx       `isEligible()` — canonical, with all
  *                                   the rules (vacation, weekly hours,
  *                                   weekly days, phone, isActive)
  *   - src/app/api/cron/schedule-auto-fill/route.ts — partial filter that

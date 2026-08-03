@@ -9,7 +9,7 @@ const liveSurface = read(
   'src', 'app', 'admin', '_components', 'studio', 'surfaces', 'LiveSurface.tsx',
 );
 const link = read('src', 'app', 'admin', '_components', 'DataAtlasLink.tsx');
-const page = read('src', 'app', 'admin', 'data-atlas', 'page.tsx');
+const page = read('src', 'app', '(admin)', 'admin', 'data-atlas', 'page.tsx');
 const css = read('src', 'app', 'admin', 'data-atlas', 'DataAtlas.module.css');
 
 describe('Database Atlas entry point', () => {

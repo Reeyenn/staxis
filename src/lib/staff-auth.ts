@@ -267,7 +267,7 @@ function generateMagicCode(): string {
  *
  * The OLD ?token={hashed_token} URL pattern keeps working for the transition
  * window (in-flight SMSes from before this deploy). See
- * src/app/housekeeper/[id]/page.tsx for the dual-format handler.
+ * src/app/(staff-link)/housekeeper/[id]/page.tsx for the dual-format handler.
  *
  * Returned URL shape:
  *   https://getstaxis.com/{pathPrefix}/{staffId}?pid={pid}&code={short_code}&tok={link_token}

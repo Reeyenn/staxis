@@ -21,12 +21,25 @@ const AUTHENTICATED_PATH_PREFIXES = [
   '/portfolio',
 ] as const;
 
+// Bearer-token staff links intentionally stay outside this policy. They are
+// shell-free mobile surfaces and authenticate through their own route flow.
+const SHELL_FREE_STAFF_LINK_PREFIXES = ['/housekeeper', '/laundry'] as const;
+
+function isRoutePrefix(pathname: string, prefix: string): boolean {
+  return pathname === prefix || pathname.startsWith(`${prefix}/`);
+}
+
+export function isAuthenticatedRoutePath(pathname: string): boolean {
+  if (SHELL_FREE_STAFF_LINK_PREFIXES.some((prefix) => isRoutePrefix(pathname, prefix))) {
+    return false;
+  }
+  return AUTHENTICATED_PATH_PREFIXES.some((prefix) => isRoutePrefix(pathname, prefix));
+}
+
 export function AuthenticatedRuntimeBoundary({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
   const { user, loading, sessionError, sessionErrorKind, retrySession } = useAuth();
-  const protectedRoute = AUTHENTICATED_PATH_PREFIXES.some((prefix) => (
-    pathname === prefix || pathname.startsWith(`${prefix}/`)
-  ));
+  const protectedRoute = isAuthenticatedRoutePath(pathname);
 
   if (protectedRoute && sessionError) {
     return (

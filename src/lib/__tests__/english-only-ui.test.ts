@@ -25,10 +25,10 @@ describe('English-only application UI', () => {
       'src/components/concourse/ConcourseBar.tsx',
       'src/components/concourse/MobileConcourseNav.tsx',
       'src/components/layout/AppLayout.tsx',
-      'src/app/housekeeper/page.tsx',
-      'src/app/housekeeper/[id]/page.tsx',
-      'src/app/laundry/page.tsx',
-      'src/app/laundry/[id]/page.tsx',
+      'src/app/(staff-link)/housekeeper/page.tsx',
+      'src/app/(staff-link)/housekeeper/[id]/page.tsx',
+      'src/app/(staff-link)/laundry/page.tsx',
+      'src/app/(staff-link)/laundry/[id]/page.tsx',
     ]) {
       assert.doesNotMatch(source(path), /LanguageSwitcher|GlobalAutoTranslate|Change language/);
     }

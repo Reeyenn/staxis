@@ -95,7 +95,7 @@ test('no /api/admin/* route uses requireCronSecret alone (Pattern C regression g
 
 test('the shared admin session gate rejects deactivated admin accounts', () => {
   const source = readFileSync(join(process.cwd(), 'src', 'lib', 'admin-auth.ts'), 'utf8');
-  const layout = readFileSync(join(process.cwd(), 'src', 'app', 'admin', 'layout.tsx'), 'utf8');
+  const layout = readFileSync(join(process.cwd(), 'src', 'app', '(admin)', 'layout.tsx'), 'utf8');
   assert.match(source, /select\(['"]id, role, active['"]\)/);
   assert.match(source, /account\.active !== true/);
   assert.match(layout, /select\(['"]id, role, active['"]\)/);

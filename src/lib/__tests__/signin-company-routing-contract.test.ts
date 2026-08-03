@@ -3,9 +3,9 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, test } from 'node:test';
 
-const signIn = readFileSync(join(process.cwd(), 'src/app/signin/page.tsx'), 'utf8');
-const verify = readFileSync(join(process.cwd(), 'src/app/signin/verify/page.tsx'), 'utf8');
-const propertySelector = readFileSync(join(process.cwd(), 'src/app/property-selector/page.tsx'), 'utf8');
+const signIn = readFileSync(join(process.cwd(), 'src/app/(public)/signin/page.tsx'), 'utf8');
+const verify = readFileSync(join(process.cwd(), 'src/app/(public)/signin/verify/page.tsx'), 'utf8');
+const propertySelector = readFileSync(join(process.cwd(), 'src/app/(hotel)/property-selector/page.tsx'), 'utf8');
 const signInNavigationPolicy = readFileSync(
   join(process.cwd(), 'src/lib/auth/signin-navigation-policy.ts'),
   'utf8',
