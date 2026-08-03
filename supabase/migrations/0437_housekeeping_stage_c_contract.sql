@@ -779,7 +779,8 @@ select
   case
     when latest.assignment_id is not null
      and latest.is_active is false
-     and w.status not in ('in_progress', 'completed', 'refused', 'skipped') then 'legacy_reset'
+     and w.status not in ('in_progress', 'completed', 'refused', 'skipped')
+     and (c.snapshot is null or latest.changed_at > c.changed_at) then 'legacy_reset'
     when l.assignment_id is null then 'canonical_room_work'
     when w.status in ('in_progress', 'completed', 'refused', 'skipped') then 'canonical_room_work'
     when l.changed_at > coalesce(c.changed_at, '-infinity'::timestamptz)
@@ -1202,6 +1203,181 @@ begin
 end;
 $$;
 
+-- The pre-Stage-C activity writer intentionally swallows insert failures so
+-- unrelated legacy operations can continue. Cutover reconciliation and the
+-- canonical audit triggers need a bounded fail-closed seam: call the existing
+-- writer, then prove that the exact property/type/source receipt exists before
+-- allowing the source transaction to continue.
+create or replace function public._activity_log_write_stage_c_strict(
+  p_property_id       uuid,
+  p_occurred_at       timestamptz,
+  p_event_category    text,
+  p_event_type        text,
+  p_actor_staff_id    uuid,
+  p_actor_user_id     uuid,
+  p_target_type       text,
+  p_target_id         text,
+  p_target_label      text,
+  p_description       text,
+  p_source            text,
+  p_source_event_id   uuid,
+  p_metadata          jsonb
+) returns void
+language plpgsql
+security definer
+set search_path = public, pg_temp
+as $function$
+declare
+  v_occurred_at timestamptz := coalesce(p_occurred_at, now());
+begin
+  if p_property_id is null or p_source_event_id is null then
+    raise exception
+      '0437 audit continuity failure: property and source event identity are required';
+  end if;
+
+  perform public._activity_log_write(
+    p_property_id,
+    v_occurred_at,
+    p_event_category,
+    p_event_type,
+    p_actor_staff_id,
+    p_actor_user_id,
+    p_target_type,
+    p_target_id,
+    p_target_label,
+    p_description,
+    p_source,
+    p_source_event_id,
+    p_metadata
+  );
+
+  if not exists (
+    select 1
+      from public.activity_log l
+     where l.property_id = p_property_id
+       and l.occurred_at = v_occurred_at
+       and l.event_type = p_event_type
+       and l.source_event_id = p_source_event_id
+  ) then
+    raise exception
+      '0437 audit continuity failure: expected % receipt for source event % is missing',
+      p_event_type,
+      p_source_event_id;
+  end if;
+end;
+$function$;
+
+revoke all on function public._activity_log_write_stage_c_strict(
+  uuid, timestamptz, text, text, uuid, uuid, text, text, text, text, text, uuid, jsonb
+) from public, anon, authenticated;
+grant execute on function public._activity_log_write_stage_c_strict(
+  uuid, timestamptz, text, text, uuid, uuid, text, text, text, text, text, uuid, jsonb
+) to service_role;
+
+-- Rebind the existing inspection audit triggers to the strict seam at the
+-- final activation boundary. This preserves their established event shape
+-- while making canonical correction/recheck transitions fail closed.
+create or replace function public._activity_log_on_inspection_insert()
+returns trigger
+language plpgsql
+security definer
+set search_path = public, pg_temp
+as $function$
+begin
+  perform public._activity_log_write_stage_c_strict(
+    new.property_id,
+    new.started_at,
+    'housekeeping',
+    'inspection_started',
+    new.inspector_staff_id,
+    null,
+    'room',
+    new.room_number,
+    'Room ' || new.room_number,
+    format('Inspection started on room %s', new.room_number),
+    'manager_dashboard',
+    new.id,
+    jsonb_build_object(
+      'room_number', new.room_number,
+      'cleaning_task_id', new.cleaning_task_id,
+      'inspector_staff_id', new.inspector_staff_id,
+      'housekeeper_staff_id', new.housekeeper_staff_id,
+      'checklist_id', new.checklist_id
+    )
+  );
+  return new;
+end;
+$function$;
+
+create or replace function public._activity_log_on_inspection_update()
+returns trigger
+language plpgsql
+security definer
+set search_path = public, pg_temp
+as $function$
+declare
+  v_desc       text;
+  v_type       text;
+  v_fail_count integer;
+begin
+  if old.result is not distinct from new.result then
+    return new;
+  end if;
+  if new.result = 'in_progress' then
+    return new;
+  end if;
+
+  v_type := 'inspection_' || new.result;
+  if new.result = 'fail' then
+    v_fail_count := jsonb_array_length(coalesce(new.failed_items, '[]'::jsonb));
+    v_desc := format(
+      'Room %s failed inspection, %s issue%s flagged',
+      new.room_number,
+      v_fail_count,
+      case when v_fail_count = 1 then '' else 's' end
+    );
+    if new.escalated then
+      v_desc := v_desc || ' (escalated)';
+    end if;
+  elsif new.result = 'pass' then
+    v_desc := format('Room %s passed inspection', new.room_number);
+  else
+    v_desc := format('Inspection on room %s was cancelled', new.room_number);
+  end if;
+
+  perform public._activity_log_write_stage_c_strict(
+    new.property_id,
+    coalesce(new.completed_at, new.updated_at),
+    'housekeeping',
+    v_type,
+    new.inspector_staff_id,
+    null,
+    'room',
+    new.room_number,
+    'Room ' || new.room_number,
+    v_desc,
+    'manager_dashboard',
+    new.id,
+    jsonb_build_object(
+      'room_number', new.room_number,
+      'cleaning_task_id', new.cleaning_task_id,
+      'inspector_staff_id', new.inspector_staff_id,
+      'housekeeper_staff_id', new.housekeeper_staff_id,
+      'old_result', old.result,
+      'new_result', new.result,
+      'failed_items', new.failed_items,
+      'escalated', new.escalated
+    )
+  );
+  return new;
+end;
+$function$;
+
+revoke all on function public._activity_log_on_inspection_insert() from public, anon, authenticated;
+revoke all on function public._activity_log_on_inspection_update() from public, anon, authenticated;
+grant execute on function public._activity_log_on_inspection_insert() to service_role;
+grant execute on function public._activity_log_on_inspection_update() to service_role;
+
 -- Backfill the canonical audit seam for rows created by Stage B while its
 -- room_work trigger was intentionally dormant. Existing legacy events dedupe
 -- by source id, so old-window activity is preserved without duplication.
@@ -1228,7 +1404,7 @@ begin
        )
   loop
     v_target := coalesce(v_row.legacy_task_id, v_row.id);
-    perform public._activity_log_write(
+    perform public._activity_log_write_stage_c_strict(
       v_row.property_id,
       v_row.created_at,
       'housekeeping',
@@ -1291,7 +1467,7 @@ begin
          and l.event_type = v_event_type
          and l.source_event_id = v_target
     ) then
-      perform public._activity_log_write(
+      perform public._activity_log_write_stage_c_strict(
         v_row.property_id,
         coalesce(v_row.completed_at, v_row.inspected_at, v_row.updated_at, v_row.created_at),
         'housekeeping',
@@ -1322,31 +1498,42 @@ begin
   end loop;
 
   for v_snapshot in
-    select
-      w.property_id,
-      w.room_number,
-      h.snapshot,
-      case
-        when coalesce((h.snapshot->>'is_active')::boolean, false) then 'assignment_created'
-        else 'assignment_deactivated'
-      end as event_type,
-      case
-        when coalesce((h.snapshot->>'is_active')::boolean, false)
-          then coalesce((h.snapshot->>'assigned_at')::timestamptz, (h.snapshot->>'updated_at')::timestamptz, w.updated_at)
-        else coalesce((h.snapshot->>'updated_at')::timestamptz, (h.snapshot->>'changed_at')::timestamptz, w.updated_at)
-      end as occurred_at
-    from public.room_work w
-    cross join lateral jsonb_array_elements(coalesce(w.assignment_history, '[]'::jsonb)) h(snapshot)
-   where h.snapshot->>'id' ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
-     and not exists (
+    with history_events as (
+      select
+        w.property_id,
+        w.room_number,
+        h.position,
+        h.snapshot,
+        case
+          when coalesce((h.snapshot->>'is_active')::boolean, false) then 'assignment_created'
+          else 'assignment_deactivated'
+        end as event_type,
+        case
+          when coalesce((h.snapshot->>'is_active')::boolean, false)
+            then coalesce((h.snapshot->>'assigned_at')::timestamptz, (h.snapshot->>'updated_at')::timestamptz, w.updated_at)
+          else coalesce((h.snapshot->>'updated_at')::timestamptz, (h.snapshot->>'changed_at')::timestamptz, w.updated_at)
+        end as occurred_at
+      from public.room_work w
+      cross join lateral jsonb_array_elements(coalesce(w.assignment_history, '[]'::jsonb)) with ordinality h(snapshot, position)
+     where h.snapshot->>'id' ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+    ), deduplicated_history_events as (
+      select distinct on (property_id, snapshot->>'id', event_type)
+        property_id,
+        room_number,
+        snapshot,
+        event_type,
+        occurred_at
+      from history_events
+      order by property_id, snapshot->>'id', event_type, occurred_at desc nulls last, position desc
+    )
+    select d.property_id, d.room_number, d.snapshot, d.event_type, d.occurred_at
+      from deduplicated_history_events d
+     where not exists (
        select 1
          from public.activity_log l
-        where l.property_id = w.property_id
-          and l.event_type = case
-            when coalesce((h.snapshot->>'is_active')::boolean, false) then 'assignment_created'
-            else 'assignment_deactivated'
-          end
-          and l.source_event_id = (h.snapshot->>'id')::uuid
+        where l.property_id = d.property_id
+          and l.event_type = d.event_type
+          and l.source_event_id = (d.snapshot->>'id')::uuid
      )
   loop
     v_event_type := v_snapshot.event_type;
@@ -1356,7 +1543,7 @@ begin
       when v_snapshot.snapshot->>'assigned_by' = 'pms_import' then 'pms_sync'
       else 'manager_dashboard'
     end;
-    perform public._activity_log_write(
+    perform public._activity_log_write_stage_c_strict(
       v_snapshot.property_id,
       v_occurred_at,
       'housekeeping',
@@ -1416,7 +1603,7 @@ begin
 
   if tg_op = 'INSERT' then
     if new.plan_cleaning_type is not null then
-      perform public._activity_log_write(
+      perform public._activity_log_write_stage_c_strict(
         new.property_id, new.created_at, 'housekeeping', 'cleaning_task_created',
         null, null, 'cleaning_task', v_target::text,
         'Room ' || new.room_number,
@@ -1434,7 +1621,7 @@ begin
         )
       );
     elsif new.status = 'completed' then
-      perform public._activity_log_write(
+      perform public._activity_log_write_stage_c_strict(
         new.property_id, coalesce(new.completed_at, new.updated_at, new.created_at),
         'housekeeping', 'cleaning_task_completed',
         new.assigned_staff_id, new.assignment_assigned_by_user_id,
@@ -1462,7 +1649,7 @@ begin
         when new.status = 'completed' then 'completed'
         else coalesce(new.plan_status, new.status, 'scheduled')
       end;
-      perform public._activity_log_write(
+      perform public._activity_log_write_stage_c_strict(
         new.property_id, coalesce(new.completed_at, new.inspected_at, new.updated_at),
         'housekeeping', 'cleaning_task_' || v_status,
         new.assigned_staff_id, new.assignment_assigned_by_user_id,
@@ -1481,7 +1668,7 @@ begin
         )
       );
     elsif old.assigned_staff_id is distinct from new.assigned_staff_id then
-      perform public._activity_log_write(
+      perform public._activity_log_write_stage_c_strict(
         new.property_id, coalesce(new.assignment_assigned_at, new.updated_at),
         'housekeeping', case when new.assigned_staff_id is null then 'assignment_deactivated' else 'assignment_created' end,
         new.assigned_staff_id, new.assignment_assigned_by_user_id,
