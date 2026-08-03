@@ -273,13 +273,17 @@ async function composeCompanyKnowledge(turn: KnowledgeTurn): Promise<RenderedKno
   if (!turn.companyPolicyVisible) return null;
   // Organization first: the portfolio surface HAS the company id and no single
   // hotel, so going through a hotel would mean picking an arbitrary one to ask
-  // "which company runs you" about, for an answer already in hand.
-  const rulebook = turn.organizationId
-    ? await deriveCompanyRulebookByOrganization(turn.organizationId)
-    : await (async () => {
-        const hotelId = exactHotelScope(turn.hotelIds);
-        return hotelId ? deriveCompanyRulebook(hotelId) : null;
-      })();
+  // "which company runs you" about, for an answer already in hand. Falling back
+  // to the hotel path goes through `companyForProperty`, the ONE place a hotel
+  // becomes a company — there is no query here that takes an organization id
+  // from anywhere but the caller's own authorization.
+  let rulebook = null;
+  if (turn.organizationId) {
+    rulebook = await deriveCompanyRulebookByOrganization(turn.organizationId);
+  } else {
+    const hotelId = exactHotelScope(turn.hotelIds);
+    if (hotelId) rulebook = await deriveCompanyRulebook(hotelId);
+  }
   const block = formatCompanyRulebookForPrompt(rulebook);
   return block ? { storeId: 'company_knowledge', block, version: COMPANY_RULEBOOK_VERSION } : null;
 }
@@ -309,13 +313,13 @@ const COMPOSERS: Readonly<Partial<Record<KnowledgeStoreId, KnowledgeComposer>>> 
 /**
  * Can this store be composed by name, or does its caller still load it?
  *
- * Two registered stores are `through_the_door` without being composable, and
- * both for the same honest reason: their input is not the turn's SCOPE. The
- * hotel snapshot is built by the caller before the prompt exists, and
- * situational awareness needs the actor's account id, auth uid and current
- * screen — none of which belong in a description of whose knowledge this turn
- * may see. Those two take their envelope and version from the door and keep
- * their loader.
+ * `situational_awareness` is the one store that is `through_the_door` without
+ * being composable, and the reason is honest rather than unfinished: its input
+ * is not the turn's SCOPE. It needs the actor's account id, their auth uid and
+ * the screen they are on, none of which belong in a description of whose
+ * knowledge this turn may see. It takes its envelope and version from the door
+ * and keeps its loader; widening `KnowledgeTurn` to carry an actor would make
+ * the scope description mean two things at once.
  */
 export function isComposableByName(id: KnowledgeStoreId): boolean {
   return COMPOSERS[id] !== undefined;
