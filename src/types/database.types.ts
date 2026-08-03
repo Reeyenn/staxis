@@ -20375,6 +20375,15 @@ export type Database = {
         Args: { p_account_id: string; p_receipt_id: string }
         Returns: Json
       }
+      staxis_bootstrap_canonical_admin_authority: {
+        Args: {
+          p_account_id: string
+          p_expected_authority_version: number
+          p_property_ids: string[]
+          p_reason: string
+        }
+        Returns: Json
+      }
       staxis_bootstrap_organization_leader_invitation: {
         Args: {
           p_access_profile: string
