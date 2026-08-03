@@ -8,6 +8,7 @@ function source(...parts: string[]): string {
 }
 
 const panel = source('src', 'app', 'company', '_components', 'HotelTeamPanel.tsx');
+const peopleController = source('src', 'app', 'company', '_components', 'usePeopleController.ts');
 const dialogs = source('src', 'app', 'company', '_components', 'HotelTeamDialogs.tsx');
 const css = source('src', 'app', 'company', '_components', 'HotelTeamPanel.module.css');
 
@@ -57,7 +58,8 @@ describe('My Hotel account status UI', () => {
     );
     assert.match(editorGate, /availableActions\.canEdit\s*\|\| availableActions\.canChangeRole/);
     assert.match(dialogs, /const canChangeLifecycle = member\.active \? actions\.canDeactivate : actions\.canReactivate/);
-    assert.match(panel, /!targetHasAllHotels && hotelIds\.length > 0 && hotelIds\.every\(\(id\) => viewerHotels\.has\(id\)\)/);
+    assert.match(panel, /const roleIsSharedAcrossHotels = Boolean\(member\.hasOtherHotelAccess\)/);
+    assert.doesNotMatch(panel, /new Set\(currentUser\.propertyAccess\)/);
   });
 });
 
@@ -152,7 +154,8 @@ describe('My Hotel account lifecycle dialog', () => {
     assert.match(panel, /disabled=\{lifecycleIsPending\}/);
     assert.match(panel, /Verification paused\. Reload to check the final status\./);
     assert.match(panel, /LIFECYCLE_SERVER_REFRESH_DELAYS_MS/);
-    assert.match(panel, /await loadTeam\(\)/);
+    assert.match(panel, /await refreshTeam\(\)/);
+    assert.match(peopleController, /const refreshTeam = useCallback\(async/);
   });
 
   test('the lazy dialog fallback traps focus and restores its trigger', () => {
