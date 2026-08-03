@@ -171,6 +171,66 @@ export interface AuthoritativePropertyStanding {
   entitlements: AuthoritativePropertyEntitlement[];
 }
 
+const DIRECT_PROPERTY_HAT_ROLES = new Set<HatRole>([
+  'general_manager',
+  'front_desk',
+  'housekeeping',
+  'maintenance',
+]);
+
+export type AuthoritativeHotelLeadershipRole = 'owner' | 'general_manager';
+
+/**
+ * Mirrors the direct-account contract in 0411 from the already-normalized
+ * standing DTO. This deliberately does not inspect managementSurface: 0424
+ * projects normalized property hats, grants, and valid bridges as
+ * company_access for the access-management routes.
+ */
+export function authoritativeStandingHasDirectHotelAccount(
+  standing: AuthoritativePropertyStanding | null,
+): boolean {
+  return Boolean(standing?.entitlements.some((entitlement) => {
+    if (entitlement.kind === 'legacy' || entitlement.kind === 'legacy_bridge') return true;
+    if (entitlement.kind === 'membership_hat') {
+      return entitlement.scopeType === 'property'
+        && entitlement.staxisRole !== null
+        && DIRECT_PROPERTY_HAT_ROLES.has(entitlement.staxisRole);
+    }
+    return entitlement.kind === 'access_grant' && entitlement.scopeType === 'property';
+  }));
+}
+
+/** Resolve only an active, hotel-specific Owner/GM standing for UI copy. */
+export function authoritativeHotelLeadershipRole(
+  standing: AuthoritativePropertyStanding | null,
+  accountRole: AppRole,
+): AuthoritativeHotelLeadershipRole | null {
+  if (!authoritativeStandingHasDirectHotelAccount(standing)) return null;
+  if (standing?.entitlements.some((entitlement) => (
+    entitlement.kind === 'membership_hat'
+    && entitlement.scopeType === 'property'
+    && entitlement.staxisRole === 'general_manager'
+  ))) return 'general_manager';
+  if (standing?.entitlements.some((entitlement) => (
+    entitlement.kind === 'access_grant'
+    && entitlement.scopeType === 'property'
+    && entitlement.accessProfile === 'property_manager'
+  ))) return 'general_manager';
+  if (standing?.entitlements.some((entitlement) => (
+    entitlement.kind === 'access_grant'
+    && entitlement.scopeType === 'property'
+    && entitlement.accessProfile === 'organization_owner'
+  ))) return 'owner';
+  if (standing?.entitlements.some((entitlement) => (
+    entitlement.kind === 'legacy' || entitlement.kind === 'legacy_bridge'
+  ))) {
+    return accountRole === 'owner' || accountRole === 'general_manager'
+      ? accountRole
+      : null;
+  }
+  return null;
+}
+
 function sortedUniqueUuidArray(value: unknown): string[] | null {
   if (!Array.isArray(value) || !value.every(isUuid)) return null;
   if (new Set(value).size !== value.length) return null;
@@ -336,6 +396,251 @@ export async function listAuthoritativePropertyAccess(
       membershipPropertyIds,
       propertyStandings,
     };
+  } catch {
+    return null;
+  }
+}
+
+interface StructuralMembershipRow {
+  id: string;
+  organization_id: string;
+  account_id: string;
+  membership_scope: string | null;
+  staxis_role: string | null;
+  covered_property_ids: string[] | null;
+  status: string;
+  starts_at: string;
+  ended_at: string | null;
+}
+
+interface StructuralAccountRow {
+  id: string;
+  role: string;
+  property_access: string[] | null;
+}
+
+interface StructuralAuthorizationStateRow {
+  account_id: string;
+  authority_mode: string;
+}
+
+interface StructuralGrantRow {
+  organization_id: string;
+  membership_id: string;
+  scope_type: string;
+  property_id: string | null;
+  property_relationship_id: string | null;
+  source: string;
+  status: string;
+  starts_at: string;
+  expires_at: string | null;
+}
+
+interface StructuralBridgeRow {
+  account_id: string;
+  property_id: string;
+  cutover_organization_id: string | null;
+  cutover_relationship_id: string | null;
+  status: string;
+}
+
+interface StructuralOrganizationRow {
+  id: string;
+  status: string;
+  organization_type: string;
+}
+
+interface StructuralRelationshipRow {
+  id: string;
+  organization_id: string;
+  property_id: string;
+  relationship_type: string;
+  is_primary_grouping: boolean;
+  starts_at: string;
+  ends_at: string | null;
+}
+
+function currentStructuralWindow(startsAt: string, endsAt: string | null, nowMs: number): boolean {
+  const startsMs = Date.parse(startsAt);
+  const endsMs = endsAt === null ? null : Date.parse(endsAt);
+  return Number.isFinite(startsMs)
+    && startsMs <= nowMs
+    && (endsMs === null || (Number.isFinite(endsMs) && endsMs > nowMs));
+}
+
+/**
+ * The operational access RPC intentionally resolves one winning authority
+ * class and excludes inactive accounts. The first-person guard in 0411 is a
+ * different OR contract: legacy/shadow property_access, any normalized
+ * property-scope hat or grant, or a valid bridge claims the hotel, even when a
+ * separate company-scope entitlement wins the effective standing and even
+ * when the account itself is inactive. Reuse those canonical tables for this
+ * bounded admin People projection so the UI can fail closed without changing
+ * access authority or managementSurface.
+ */
+export async function listAuthoritativeStructuralHotelDirectness(
+  accountIds: readonly string[],
+  propertyId: string,
+): Promise<Map<string, boolean> | null> {
+  const ids = [...new Set(accountIds)];
+  if (!isUuid(propertyId)) return null;
+  if (ids.some((accountId) => !isUuid(accountId))) return null;
+  if (ids.length === 0) return new Map();
+
+  try {
+    const [
+      accountResult,
+      authorizationStateResult,
+      membershipResult,
+      bridgeResult,
+      relationshipResult,
+    ] = await Promise.all([
+      supabaseAdmin
+        .from('accounts')
+        .select('id, role, property_access')
+        .in('id', ids),
+      supabaseAdmin
+        .from('account_authorization_state')
+        .select('account_id, authority_mode')
+        .in('account_id', ids),
+      supabaseAdmin
+        .from('organization_memberships')
+        .select('id, organization_id, account_id, membership_scope, staxis_role, covered_property_ids, status, starts_at, ended_at')
+        .in('account_id', ids),
+      supabaseAdmin
+        .from('account_property_authorization_bridges')
+        .select('account_id, property_id, cutover_organization_id, cutover_relationship_id, status')
+        .in('account_id', ids)
+        .eq('property_id', propertyId)
+        .eq('status', 'active'),
+      supabaseAdmin
+        .from('organization_property_relationships')
+        .select('id, organization_id, property_id, relationship_type, is_primary_grouping, starts_at, ends_at')
+        .eq('property_id', propertyId),
+    ]);
+    if (accountResult.error
+      || authorizationStateResult.error
+      || membershipResult.error
+      || bridgeResult.error
+      || relationshipResult.error) return null;
+
+    const accounts = (accountResult.data ?? []) as StructuralAccountRow[];
+    const authorizationStates = (authorizationStateResult.data ?? []) as StructuralAuthorizationStateRow[];
+    if (accounts.length !== ids.length || authorizationStates.length !== ids.length) return null;
+    const accountById = new Map(accounts.map((account) => [account.id, account]));
+    const authorizationStateByAccountId = new Map(
+      authorizationStates.map((state) => [state.account_id, state]),
+    );
+    if (ids.some((accountId) => (
+      !accountById.has(accountId)
+      || !authorizationStateByAccountId.has(accountId)
+      || !['legacy', 'shadow', 'normalized'].includes(
+        authorizationStateByAccountId.get(accountId)?.authority_mode ?? '',
+      )
+    ))) return null;
+
+    const memberships = (membershipResult.data ?? []) as StructuralMembershipRow[];
+    const bridges = (bridgeResult.data ?? []) as StructuralBridgeRow[];
+    const relationships = (relationshipResult.data ?? []) as StructuralRelationshipRow[];
+    const membershipIds = [...new Set(memberships.map((membership) => membership.id))];
+    const organizationIds = [...new Set(memberships.map((membership) => membership.organization_id))];
+
+    const [grantResult, organizationResult] = await Promise.all([
+      membershipIds.length > 0
+        ? supabaseAdmin
+          .from('organization_access_grants')
+          .select('organization_id, membership_id, scope_type, property_id, property_relationship_id, source, status, starts_at, expires_at')
+          .in('membership_id', membershipIds)
+          .eq('scope_type', 'property')
+          .eq('property_id', propertyId)
+        : Promise.resolve({ data: [], error: null }),
+      organizationIds.length > 0
+        ? supabaseAdmin
+          .from('organizations')
+          .select('id, status, organization_type')
+          .in('id', organizationIds)
+        : Promise.resolve({ data: [], error: null }),
+    ]);
+    if (grantResult.error || organizationResult.error) return null;
+
+    const nowMs = Date.now();
+    const liveOrganizations = new Set(
+      ((organizationResult.data ?? []) as StructuralOrganizationRow[])
+        .filter((organization) => (
+          organization.status === 'active'
+          && organization.organization_type !== 'single_hotel'
+        ))
+        .map((organization) => organization.id),
+    );
+    const activeMemberships = memberships.filter((membership) => (
+      membership.status === 'active'
+      && membership.ended_at === null
+      && currentStructuralWindow(membership.starts_at, membership.ended_at, nowMs)
+      && liveOrganizations.has(membership.organization_id)
+    ));
+    const membershipById = new Map(activeMemberships.map((membership) => [membership.id, membership]));
+    const currentPrimaryRelationships = relationships.filter((relationship) => (
+      relationship.is_primary_grouping
+      && (relationship.relationship_type === 'operator' || relationship.relationship_type === 'owner')
+      && currentStructuralWindow(relationship.starts_at, relationship.ends_at, nowMs)
+    ));
+    const primaryRelationship = currentPrimaryRelationships.length === 1
+      ? currentPrimaryRelationships[0]
+      : null;
+    const grants = (grantResult.data ?? []) as StructuralGrantRow[];
+
+    const direct = new Map<string, boolean>(ids.map((accountId) => [accountId, false]));
+    for (const accountId of ids) {
+      const account = accountById.get(accountId)!;
+      const authorityMode = authorizationStateByAccountId.get(accountId)!.authority_mode;
+      if (account.role !== 'admin'
+        && (authorityMode === 'legacy' || authorityMode === 'shadow')
+        && Array.isArray(account.property_access)
+        && account.property_access.includes(propertyId)) {
+        // 0411 intentionally treats this legacy/shadow fact as direct even
+        // when the current company topology is absent or ambiguous.
+        direct.set(accountId, true);
+      }
+    }
+    const normalizedAccountIds = new Set(
+      ids.filter((accountId) => (
+        authorizationStateByAccountId.get(accountId)?.authority_mode === 'normalized'
+      )),
+    );
+    for (const membership of activeMemberships) {
+      if (!normalizedAccountIds.has(membership.account_id)) continue;
+      if (membership.membership_scope !== 'property'
+        || !['general_manager', 'front_desk', 'housekeeping', 'maintenance'].includes(
+          membership.staxis_role ?? '',
+        )
+        || !membership.covered_property_ids?.includes(propertyId)
+        || !primaryRelationship
+        || primaryRelationship.organization_id !== membership.organization_id) continue;
+      direct.set(membership.account_id, true);
+    }
+    for (const grant of grants) {
+      const membership = membershipById.get(grant.membership_id);
+      if (!membership
+        || !normalizedAccountIds.has(membership.account_id)
+        || grant.organization_id !== membership.organization_id
+        || grant.scope_type !== 'property'
+        || grant.property_id !== propertyId
+        || grant.property_relationship_id !== primaryRelationship?.id
+        || grant.status !== 'active'
+        || grant.source === 'legacy_backfill'
+        || !currentStructuralWindow(grant.starts_at, grant.expires_at, nowMs)) continue;
+      direct.set(membership.account_id, true);
+    }
+    for (const bridge of bridges) {
+      if (!normalizedAccountIds.has(bridge.account_id)) continue;
+      const valid = bridge.cutover_relationship_id === null
+        ? currentPrimaryRelationships.length === 0
+        : currentPrimaryRelationships.length === 1
+          && currentPrimaryRelationships[0]?.id === bridge.cutover_relationship_id
+          && currentPrimaryRelationships[0]?.organization_id === bridge.cutover_organization_id;
+      if (valid) direct.set(bridge.account_id, true);
+    }
+    return direct;
   } catch {
     return null;
   }

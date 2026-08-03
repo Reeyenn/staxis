@@ -908,6 +908,7 @@ function CompanyAccessContent() {
                   data={resolved}
                   staff={currentStaff}
                   hotelRosterUnavailable={currentStaffUnavailable}
+                  rosterSettled={currentStaffSettled}
                   lang={lang}
                   currentUser={user}
                   currentAccountId={user.accountId}
@@ -1061,10 +1062,11 @@ export function HotelsPanel({ data, structure, structureError, structureLoading,
  * could appear in both with nothing on screen explaining why. HotelTeamPanel
  * now merges them.
  */
-export function PeoplePanel({ data, staff, hotelRosterUnavailable, lang, currentUser, currentAccountId, activeProperty, canManageTeam, canInviteAccounts, canViewWages, canAddOperationalStaff, inviteDialogOpen, onInviteDialogOpenChange, onChanged, onLifecycleAction }: {
+export function PeoplePanel({ data, staff, hotelRosterUnavailable, rosterSettled = true, lang, currentUser, currentAccountId, activeProperty, canManageTeam, canInviteAccounts, canViewWages, canAddOperationalStaff, inviteDialogOpen, onInviteDialogOpenChange, onChanged, onLifecycleAction }: {
   data: CompanyAccessData;
   staff: StaffMember[];
   hotelRosterUnavailable: boolean;
+  rosterSettled?: boolean;
   lang: string;
   currentUser: AppUser;
   currentAccountId: string;
@@ -1183,6 +1185,7 @@ export function PeoplePanel({ data, staff, hotelRosterUnavailable, lang, current
           onInviteDialogOpenChange={onInviteDialogOpenChange}
           staffProfiles={staff}
           rosterUnavailable={hotelRosterUnavailable}
+          rosterSettled={rosterSettled}
           canAddStaff={canAddOperationalStaff}
           onChanged={onChanged}
         />
