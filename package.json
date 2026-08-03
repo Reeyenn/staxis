@@ -17,10 +17,11 @@
     "agent:summarizer-evals": "tsx --conditions=react-server scripts/run-summarizer-evals.ts",
     "agent:invariant-evals": "tsx --conditions=react-server scripts/run-agent-invariant-evals.ts",
     "typecheck": "tsc --noEmit",
-    "test": "npm run typecheck && npm run test:pii-logs && NEXT_PUBLIC_SUPABASE_URL=https://placeholder.supabase.co SUPABASE_SERVICE_ROLE_KEY=placeholder-service-role-key-min-20-chars NEXT_PUBLIC_SUPABASE_ANON_KEY=placeholder-anon-key-min-20-chars CRON_SECRET=placeholder-cron-secret-min-16 OPENAI_API_KEY=sk-placeholder-test-key-min-20-chars npx tsx --conditions=react-server --test src/lib/__tests__/*.test.ts && npm run test:client",
+    "test": "npm run typecheck && npm run test:pii-logs && npm run test:server && npm run test:client",
+    "test:server": "NEXT_PUBLIC_SUPABASE_URL=https://placeholder.supabase.co SUPABASE_SERVICE_ROLE_KEY=placeholder-service-role-key-min-20-chars NEXT_PUBLIC_SUPABASE_ANON_KEY=placeholder-anon-key-min-20-chars CRON_SECRET=placeholder-cron-secret-min-16 OPENAI_API_KEY=sk-placeholder-test-key-min-20-chars npx tsx --conditions=react-server --test $(find src/lib/__tests__ -maxdepth 1 -type f -name '*.test.ts' ! -name '*.integration.test.ts' -print) && npm run test:integration",
     "test:client": "NEXT_PUBLIC_SUPABASE_URL=https://placeholder.supabase.co NEXT_PUBLIC_SUPABASE_ANON_KEY=placeholder-anon-key-min-20-chars tsx --test --test-concurrency=1 src/lib/__tests__/*.client.test.tsx",
     "test:pii-logs": "bash scripts/check-no-pii-logs.sh",
-    "test:integration": "NEXT_PUBLIC_SUPABASE_URL=https://placeholder.supabase.co SUPABASE_SERVICE_ROLE_KEY=placeholder-service-role-key-min-20-chars NEXT_PUBLIC_SUPABASE_ANON_KEY=placeholder-anon-key-min-20-chars CRON_SECRET=placeholder-cron-secret-min-16 OPENAI_API_KEY=sk-placeholder-test-key-min-20-chars npx tsx --conditions=react-server --test src/lib/__tests__/*.integration.test.ts"
+    "test:integration": "NEXT_PUBLIC_SUPABASE_URL=https://placeholder.supabase.co SUPABASE_SERVICE_ROLE_KEY=placeholder-service-role-key-min-20-chars NEXT_PUBLIC_SUPABASE_ANON_KEY=placeholder-anon-key-min-20-chars CRON_SECRET=placeholder-cron-secret-min-16 OPENAI_API_KEY=sk-placeholder-test-key-min-20-chars npx tsx --conditions=react-server --test --test-concurrency=1 src/lib/__tests__/*.integration.test.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.96.0",
