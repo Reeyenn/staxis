@@ -434,7 +434,7 @@ export type Database = {
           password_hash: string | null
           phone: string | null
           preferred_language: string | null
-          property_access: string[]
+          property_access: string[] | null
           role: string
           skip_2fa: boolean
           staff_id: string | null
@@ -455,7 +455,7 @@ export type Database = {
           password_hash?: string | null
           phone?: string | null
           preferred_language?: string | null
-          property_access?: string[]
+          property_access?: string[] | null
           role?: string
           skip_2fa?: boolean
           staff_id?: string | null
@@ -476,7 +476,7 @@ export type Database = {
           password_hash?: string | null
           phone?: string | null
           preferred_language?: string | null
-          property_access?: string[]
+          property_access?: string[] | null
           role?: string
           skip_2fa?: boolean
           staff_id?: string | null
