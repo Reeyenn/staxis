@@ -113,7 +113,8 @@ describe('platform Admin destination and default in-place hotel Admin tools', ()
     assert.doesNotMatch(company, /allowAdminActions|onRequestAdminActions|setAdminToolsEnabled/);
     assert.match(company, /const hotelTeamLocked = Boolean\([\s\S]*?\(resolved\.viewerContext\?\.readOnly === true && !adminActionsAvailable\)/);
     assert.match(hotelTeam, /const locked = readOnly;/);
-    assert.match(hotelTeam, /styles\.headingInviteButton[\s\S]*?onClick=\{\(\) => onInviteDialogOpenChange\(true\)\}[\s\S]*?disabled=\{inviteActionDisabled\}/);
+    assert.match(hotelTeam, /const openFirstPersonDialog = React\.useCallback\(\(\) => \{[\s\S]*?if \(!setupMode \|\| inviteActionDisabled \|\| locked\) return;[\s\S]*?setFirstPersonInviteSnapshot\(\{ hotelId, mode: setupMode \}\);[\s\S]*?onInviteDialogOpenChange\(true\);/);
+    assert.match(hotelTeam, /styles\.headingInviteButton[\s\S]*?onClick=\{openFirstPersonDialog\}[\s\S]*?disabled=\{inviteActionDisabled\}/);
     assert.match(company, /inviteDialogOpen=\{teamInviteHotelId === activeProperty\?\.id\}/);
     assert.match(hotelTeam, /const nextTeam = \(adminPreview \|\| readOnly\)[\s\S]*?!member\.isPlatformAdmin/);
   });
