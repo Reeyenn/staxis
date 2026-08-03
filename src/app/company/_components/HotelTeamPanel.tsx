@@ -1607,7 +1607,7 @@ export function HotelTeamPanel({
             returnFocusRef={inviteEntryReturnFocusRef}
             fallbackFocusRef={peopleHeadingRef}
             onClose={() => onInviteDialogOpenChange(false)}
-            onChanged={() => changedRef.current?.()}
+            onChanged={refreshAfterChange}
           />
         ) : null}
         {decision ? (
