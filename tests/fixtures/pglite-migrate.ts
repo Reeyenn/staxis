@@ -334,6 +334,7 @@ export async function applyMigrationsToPgliteWithHook(
     report: MigrationReport;
   }) => Promise<void>,
   options: {
+    dataDir?: string;
     afterAccessStageCPreparation?: (args: {
       pg: PGlite;
       file: string;
@@ -343,7 +344,9 @@ export async function applyMigrationsToPgliteWithHook(
     stopAfterVersion?: string;
   } = {},
 ): Promise<PgliteMigratedFixture> {
-  const pg = new PGlite({ extensions: { pgcrypto, pg_trgm, vector } });
+  const pg = options.dataDir
+    ? new PGlite(options.dataDir, { extensions: { pgcrypto, pg_trgm, vector } })
+    : new PGlite({ extensions: { pgcrypto, pg_trgm, vector } });
   await applyStubs(pg);
   const files = readdirSync(MIGRATIONS)
     .filter((file) => file.endsWith('.sql'))

@@ -1,10 +1,11 @@
 import { createHash } from 'node:crypto';
-import { readFileSync, readdirSync, statSync } from 'node:fs';
+import { mkdtempSync, readFileSync, readdirSync, rmSync, statSync } from 'node:fs';
 import { join } from 'node:path';
+import { tmpdir } from 'node:os';
 
 import assert from 'node:assert/strict';
 import { after, before, describe, test } from 'node:test';
-import type { PGlite } from '@electric-sql/pglite';
+import { PGlite } from '@electric-sql/pglite';
 
 import {
   applyMigrationsToPgliteWithHook,
@@ -58,6 +59,7 @@ const TRANSFER_OPERATION = 'c4265000-0000-4000-8000-000000000009';
 const DIRTY_JOIN_REQUEST = 'c4266000-0000-4000-8000-000000000001';
 const DIRTY_ACCESS_REQUEST = 'c4266000-0000-4000-8000-000000000002';
 const DIRTY_INVITATION = 'c4266000-0000-4000-8000-000000000003';
+const POST_CHECK_JOIN_REQUEST = 'c4266000-0000-4000-8000-000000000004';
 
 interface JsonRow {
   value: Record<string, unknown>;
@@ -329,6 +331,7 @@ async function recordRepairDisposition(
     accountId: string;
     propertyId: string;
     issueCodes: string[];
+    issueIds?: string[];
     decision: string;
     operatorLabel?: string;
     accessBMergeSha?: string;
@@ -343,20 +346,85 @@ async function recordRepairDisposition(
     reason: string;
   },
 ): Promise<Record<string, unknown>> {
+  const manifestCount = (await rows<{ count: number }>(
+    pg,
+    `select count(*)::integer as count
+       from public.account_access_cutover_repair_manifests
+      where preflight_run_id=$1`,
+    [values.preflightRunId],
+  ))[0]?.count ?? 0;
+  if (manifestCount === 0) {
+    const issueRows = await rows<{
+      id: string;
+      issue_code: string;
+      account_id: string | null;
+      property_id: string | null;
+      details: Record<string, unknown>;
+    }>(
+      pg,
+      `select id,issue_code,account_id,property_id,details
+         from public.account_access_cutover_preflight_issues
+        where run_id=$1 order by id`,
+      [values.preflightRunId],
+    );
+    for (const issue of issueRows) {
+      const propertyIds = Array.isArray(issue.details.propertyIds)
+        ? issue.details.propertyIds.filter((value): value is string => typeof value === 'string')
+        : [];
+      const manifestPropertyId = issue.property_id ?? (propertyIds.length === 1 ? propertyIds[0] : null);
+      await pg.query(
+        `insert into public.account_access_cutover_repair_manifests(
+           issue_id,preflight_run_id,source,issue_code,account_id,property_id,
+           raw_property_ids,raw_scope_hash,stage_a_mapping,details
+         ) values (
+           $1,$2,'test-fixture',$3,$4,$5,$6::uuid[],
+           public._staxis_stage_c_scope_hash($6::uuid[]),
+           case when $3='stage_a_invariant_failure'
+             then coalesce($7::jsonb #> '{stageAInvariant,sample}','[]'::jsonb)
+             else '{}'::jsonb end,
+           $7::jsonb
+         ) on conflict (issue_id) do nothing`,
+        [
+          issue.id,
+          values.preflightRunId,
+          issue.issue_code,
+          issue.account_id,
+          manifestPropertyId,
+          propertyIds,
+          issue.details,
+        ],
+      );
+    }
+  }
   const operatorLabel = values.operatorLabel ?? 'production-residue-operator';
   const accessBMergeSha = values.accessBMergeSha ?? ACCESS_B_LIVE_SHA;
   const deployedDescendantSha = values.deployedDescendantSha ?? CURRENT_LIVE_DESCENDANT_SHA;
+  const issueIds = values.issueIds ?? (await rows<{ issue_id: string; issue_code: string }>(
+    pg,
+    `select issue_id,issue_code
+       from public.account_access_cutover_repair_manifests
+      where preflight_run_id=$1
+        and (
+          issue_code='stage_a_invariant_failure'
+          or (account_id=$2 and (property_id=$3 or property_id is null)
+              and issue_code = any($4::text[]))
+        )
+      order by issue_code,issue_id`,
+    [values.preflightRunId, values.accountId, values.propertyId, values.issueCodes],
+    )).filter((row) => values.decision === 'admin_global' || row.issue_code !== 'stage_a_invariant_failure')
+      .map((row) => row.issue_id);
   return jsonRpc(
     pg,
     `select public.staxis_access_stage_c_record_repair_disposition(
-       $1,$2,$3,$4::text[],$5,$6,$7,$8,$9::uuid[],$10,$11,$12,
-       $13::uuid[],$14,$15,$16,clock_timestamp(),$17
+       $1,$2,$3,$4::text[],$5::uuid[],$6,$7,$8,$9,$10::uuid[],$11,$12,
+       $13,$14::uuid[],$15,$16,$17,clock_timestamp(),$18
      ) as value`,
     [
       values.preflightRunId,
       values.accountId,
       values.propertyId,
       values.issueCodes,
+      issueIds,
       values.decision,
       operatorLabel,
       accessBMergeSha,
@@ -377,14 +445,17 @@ async function recordRepairDisposition(
 describe('Access Stage C final contract — real migration boundary', () => {
   describe('clean cutover and canonical runtime operations', () => {
     let pg: PGlite;
+    let sharedDataDir: string;
     let report: { applied: string[]; failedAtRuntime: Array<{ file: string; error: string }> };
 
     before(async () => {
+      sharedDataDir = mkdtempSync(join(tmpdir(), 'staxis-access-stage-c-'));
       const migrated = await applyMigrationsToPgliteWithHook(
         async ({ pg: hookPg, file }) => {
           if (file === MIGRATION) await seedStageCFixture(hookPg);
         },
         {
+          dataDir: sharedDataDir,
           afterAccessStageCPreparation: async ({ pg: hookPg, file }) => {
             if (file === MIGRATION) await authorizeAccessStageCRelease(hookPg);
           },
@@ -404,6 +475,7 @@ describe('Access Stage C final contract — real migration boundary', () => {
 
     after(async () => {
       await pg?.close();
+      if (sharedDataDir) rmSync(sharedDataDir, { recursive: true, force: true });
     });
 
     test('proves the external 0425 prerequisite, final inventory, receipts, ACLs, RLS, and raw-writer retirement', async () => {
@@ -544,6 +616,53 @@ describe('Access Stage C final contract — real migration boundary', () => {
            from public.accounts`,
       );
       assert.deepEqual(raw[0], { non_empty: 0, null_count: 0 });
+      const finalEvidence = (await rows<{ details: Record<string, unknown> }>(
+        pg,
+        `select details from public.account_access_cutover_final_receipts
+          order by account_id limit 1`,
+      ))[0]?.details;
+      assert.ok(finalEvidence?.evidenceBefore, 'final receipt must retain before identity/topology evidence');
+      assert.ok(finalEvidence?.evidenceAfter, 'final receipt must retain after identity/topology evidence');
+      assert.match(String(finalEvidence?.evidenceBeforeHash), /^[0-9a-f]{64}$/);
+      assert.match(String(finalEvidence?.evidenceAfterHash), /^[0-9a-f]{64}$/);
+
+      const producerFenceTables = await rows<{ table_name: string; trigger_name: string }>(
+        pg,
+        `select trigger_relation.relname as table_name, trigger_row.tgname as trigger_name
+           from pg_trigger trigger_row
+           join pg_class trigger_relation on trigger_relation.oid=trigger_row.tgrelid
+           join pg_namespace trigger_schema on trigger_schema.oid=trigger_relation.relnamespace
+          where trigger_schema.nspname='public'
+            and not trigger_row.tgisinternal
+            and trigger_row.tgname like '%000_stage_c_producer%'
+          order by table_name`,
+      );
+      assert.deepEqual(
+        producerFenceTables.map((row) => row.table_name),
+        [
+          'account_access_cutover_legacy_write_events',
+          'account_invites',
+          'account_lifecycle_intents',
+          'accounts',
+          'join_requests',
+          'organization_access_requests',
+          'organization_invitations',
+        ],
+        'every pending-operation and legacy-evidence producer must share the cutover fence',
+      );
+      const rawColumnPrivilege = (await rows<{ service_update: boolean; service_username_update: boolean }>(
+        pg,
+        `select has_column_privilege('service_role','public.accounts','property_access','UPDATE') as service_update,
+                has_column_privilege('service_role','public.accounts','username','UPDATE') as service_username_update`,
+      ))[0];
+      assert.deepEqual(rawColumnPrivilege, { service_update: false, service_username_update: false });
+      await assert.rejects(
+        pg.exec(`begin; set local role service_role;
+          select set_config('staxis.access_stage_c_repair_disposition_id','00000000-0000-0000-0000-000000000001',true);
+          update public.accounts set property_access='{}'::uuid[] where id='${ACCOUNT_ADMIN}';`),
+        /permission denied|final access contract rejects|property_access/i,
+      );
+      await pg.exec('rollback;').catch(() => undefined);
 
       for (const signature of [
         'public.staxis_grant_property_access(uuid,uuid)',
@@ -797,7 +916,7 @@ describe('Access Stage C final contract — real migration boundary', () => {
         (await rows<{ present: string | null }>(
           pg,
           `select to_regprocedure($1) as present`,
-          ['public.staxis_access_stage_c_record_repair_disposition(uuid,uuid,uuid,text[],text,text,text,text,uuid[],text,text,bigint,uuid[],text,bigint,text,timestamptz,uuid)'],
+          ['public.staxis_access_stage_c_record_repair_disposition(uuid,uuid,uuid,text[],uuid[],text,text,text,text,uuid[],text,text,bigint,uuid[],text,bigint,text,timestamptz,uuid)'],
         ))[0].present,
         null,
         'the operator disposition writer must retire after the final suffix',
@@ -936,6 +1055,51 @@ describe('Access Stage C final contract — real migration boundary', () => {
       ]) {
         assert.match(source, new RegExp(`\\b${canonical}\\b`));
       }
+    });
+
+    test('publishes the shared-producer and exclusive-cutover fence contract', async () => {
+      const producerFunction = (await rows<{ definition: string }>(
+        pg,
+        `select pg_get_functiondef('public._staxis_stage_c_producer_lock()'::regprocedure) as definition`,
+      ))[0].definition;
+      assert.match(producerFunction, /pg_advisory_xact_lock_shared/i);
+      assert.doesNotMatch(producerFunction, /pg_try_advisory_xact_lock/i);
+      assert.match(producerFunction, /staxis\.access\.stage_c\.cutover/);
+      const producerAcl = (await rows<{
+        service_execute: boolean;
+        anon_execute: boolean;
+        authenticated_execute: boolean;
+        search_path: string[] | null;
+      }>(
+        pg,
+        `select has_function_privilege('service_role',routine.oid,'execute') as service_execute,
+                has_function_privilege('anon',routine.oid,'execute') as anon_execute,
+                has_function_privilege('authenticated',routine.oid,'execute') as authenticated_execute,
+                routine.proconfig as search_path
+           from pg_proc routine
+          where routine.oid='public._staxis_stage_c_producer_lock()'::regprocedure`,
+      ))[0];
+      assert.equal(producerAcl.service_execute, false);
+      assert.equal(producerAcl.anon_execute, false);
+      assert.equal(producerAcl.authenticated_execute, false);
+      assert.ok(producerAcl.search_path?.some((setting) => setting.replace(/\s+/g, '') === 'search_path=pg_catalog,public'));
+      const migrationSource = readFileSync(
+        join(process.cwd(), 'supabase', 'migrations', MIGRATION),
+        'utf8',
+      );
+      assert.match(
+        migrationSource,
+        /begin;[\s\S]*?pg_catalog\.pg_advisory_xact_lock\([\s\S]*?staxis\.access\.stage_c\.cutover/,
+        'the suffix must take the exclusive half of the producer protocol',
+      );
+      const cutoverLockKey = (await rows<{ locked: boolean }>(
+        pg,
+        `select pg_try_advisory_xact_lock(
+           pg_catalog.hashtextextended('staxis.access.stage_c.cutover', 0)
+         ) as locked`,
+      ))[0].locked;
+      assert.equal(cutoverLockKey, true, 'the finalizer must be able to take the producer lock in its own session');
+      await pg.exec('commit;').catch(() => undefined);
     });
 
     test('requires a fresh consumed release receipt and rolls back missing, stale, reused, wrong-token, and wrong-SHA gates', async () => {
@@ -1566,6 +1730,24 @@ describe('Access Stage C final contract — real migration boundary', () => {
           repairDispositionCount: 3,
         },
       );
+      const productionManifest = await rows<{
+        issue_id: string;
+        source: string;
+        issue_code: string;
+        raw_scope_hash: string;
+        status: string;
+      }>(
+        migrated.pg,
+        `select issue_id,source,issue_code,raw_scope_hash,status
+           from public.account_access_cutover_repair_manifests
+          where preflight_run_id=$1 order by issue_id`,
+        [sourcePreflightRunId],
+      );
+      assert.equal(productionManifest.length, 5, 'the fixture has four direct residue rows plus the Stage-A wrapper');
+      assert.equal(new Set(productionManifest.map((row) => row.issue_id)).size, 5);
+      assert.ok(productionManifest.every((row) => row.source === 'test-fixture' || row.source === 'production-2f31759a-2cd9-48ee-a458-c0ddea0e7d93'));
+      assert.ok(productionManifest.every((row) => /^[0-9a-f]{64}$/.test(row.raw_scope_hash)));
+      assert.ok(productionManifest.every((row) => row.status === 'consumed'));
       const alreadyFinalized = await jsonRpc(
         migrated.pg,
         `select public.staxis_preflight_authorization_cutover_stage_c() as value`,
@@ -1587,6 +1769,10 @@ describe('Access Stage C final contract — real migration boundary', () => {
           authority_version_after: number;
           legacy_write_event_count_before: number;
           legacy_write_event_count_after: number;
+          evidence_before: Record<string, unknown>;
+          evidence_after: Record<string, unknown>;
+          evidence_before_hash: string;
+          evidence_after_hash: string;
           operator_label: string;
           access_b_merge_sha: string;
           deployed_descendant_sha: string;
@@ -1599,6 +1785,7 @@ describe('Access Stage C final contract — real migration boundary', () => {
                 authority_mode_before,authority_mode_after,
                 authority_version_before,authority_version_after,
                 legacy_write_event_count_before,legacy_write_event_count_after,
+                evidence_before,evidence_after,evidence_before_hash,evidence_after_hash,
                 operator_label,access_b_merge_sha,deployed_descendant_sha,repaired_at
            from public.account_access_cutover_repair_receipts
           where preflight_run_id=$1 order by account_id`,
@@ -1614,6 +1801,14 @@ describe('Access Stage C final contract — real migration boundary', () => {
         assert.equal(receipt.access_b_merge_sha, ACCESS_B_LIVE_SHA);
         assert.equal(receipt.deployed_descendant_sha, CURRENT_LIVE_DESCENDANT_SHA);
         assert.ok(receipt.repaired_at instanceof Date || /^\d{4}-\d{2}-\d{2}T/.test(receipt.repaired_at));
+        assert.ok(receipt.evidence_before.account);
+        assert.ok(receipt.evidence_before.topology);
+        assert.ok(receipt.evidence_before.staffLinks);
+        assert.ok(receipt.evidence_before.bridges);
+        assert.ok(receipt.evidence_before.grants);
+        assert.ok(receipt.evidence_after.authIdentity);
+        assert.match(receipt.evidence_before_hash, /^[0-9a-f]{64}$/);
+        assert.match(receipt.evidence_after_hash, /^[0-9a-f]{64}$/);
       }
       assert.deepEqual(
         repairReceipts.map((receipt) => ({
@@ -1838,7 +2033,7 @@ describe('Access Stage C final contract — real migration boundary', () => {
               propertyId: PID_A2,
               reason: 'canonical_duplicate_residue',
             }),
-            /active is_test property topology|evidence no longer matches|exact issue rows/i,
+            /active is_test property topology|evidence no longer matches|exact issue rows|immutable manifest issue UUIDs|incomplete or malformed/i,
           );
           await hookPg.query(`update public.properties set is_test=false where id=$1`, [PID_A1]);
           await assert.rejects(
@@ -1989,7 +2184,7 @@ describe('Access Stage C final contract — real migration boundary', () => {
     }
   });
 
-  test('rolls back the repair transaction when a pending queue or legacy write appears after release approval', async () => {
+    test('rolls back the repair transaction when a pending queue or legacy write appears after release approval', async () => {
     const migrated = await applyMigrationsToPgliteWithHook(
       async ({ pg: hookPg, file }) => {
         if (file === MIGRATION) await seedProductionResidueFixture(hookPg);
@@ -2067,6 +2262,98 @@ describe('Access Stage C final contract — real migration boundary', () => {
           `select count(*)::integer as count from public.join_requests where status='pending'`,
         ))[0].count),
         1,
+      );
+    } finally {
+      await migrated.pg.close();
+    }
+  });
+
+  test('aborts when a producer is injected after the fresh preflight records zero', async () => {
+    const migrated = await applyMigrationsToPgliteWithHook(
+      async ({ pg: hookPg, file }) => {
+        if (file === MIGRATION) await seedProductionResidueFixture(hookPg);
+      },
+      {
+        afterAccessStageCPreparation: async ({ pg: hookPg, file }) => {
+          if (file !== MIGRATION) return;
+          await recordAllProductionResidueDispositions(hookPg);
+          await authorizeAccessStageCRelease(hookPg);
+          // This test-only trigger runs after the fresh preflight has already
+          // written issue_count=0.  The finalizer's second queue check must
+          // therefore reject the transaction instead of committing a zero-
+          // issue cutover alongside a newly pending canonical operation.
+          await hookPg.exec(`
+            create or replace function public.stage_c_test_post_check_inject()
+            returns trigger
+            language plpgsql
+            as $$
+            begin
+              insert into public.join_requests(
+                id,property_id,account_id,name,phone,language,department,status
+              ) values (
+                '${POST_CHECK_JOIN_REQUEST}', '${PID_A1}', '${ACCOUNT_HANK}',
+                'Stage C post-check race','512-555-2202','en','housekeeping','pending'
+              );
+              return new;
+            end;
+            $$;
+            drop trigger if exists stage_c_test_post_check_inject
+              on public.account_access_cutover_preflight_runs;
+            create trigger stage_c_test_post_check_inject
+              after update of status,issue_count
+              on public.account_access_cutover_preflight_runs
+              for each row
+              when (new.status = 'passed' and new.issue_count = 0)
+              execute function public.stage_c_test_post_check_inject();
+          `);
+        },
+      },
+    );
+    try {
+      assert.equal(migrated.report.applied.includes(MIGRATION), false);
+      assert.match(
+        migrated.report.failedAtRuntime.find((entry) => entry.file === MIGRATION)?.error ?? '',
+        /new in-flight operation after clear/i,
+      );
+      assert.deepEqual(
+        await rows<{ id: string; property_access: string[] }>(
+          migrated.pg,
+          `select id,property_access from public.accounts
+            where id in ($1,$2,$3) order by id`,
+          [ACCOUNT_ADMIN, ACCOUNT_FRANK, ACCOUNT_MARIA],
+        ),
+        [
+          { id: ACCOUNT_ADMIN, property_access: [PID_A1] },
+          { id: ACCOUNT_MARIA, property_access: [PID_A1] },
+          { id: ACCOUNT_FRANK, property_access: [PID_A1] },
+        ],
+      );
+      assert.equal(
+        Number((await rows<{ count: number }>(
+          migrated.pg,
+          `select count(*)::integer as count
+             from public.account_access_cutover_repair_receipts`,
+        ))[0].count),
+        0,
+      );
+      assert.equal(
+        Number((await rows<{ count: number }>(
+          migrated.pg,
+          `select count(*)::integer as count
+             from public.join_requests
+            where id=$1`,
+          [POST_CHECK_JOIN_REQUEST],
+        ))[0].count),
+        0,
+        'the aborted suffix must not strand the injected pending operation',
+      );
+      assert.deepEqual(
+        (await rows<{ status: string; consumed_at: string | null }>(
+          migrated.pg,
+          `select status,consumed_at
+             from public.account_access_cutover_release_receipts`,
+        ))[0],
+        { status: 'unconsumed', consumed_at: null },
       );
     } finally {
       await migrated.pg.close();

@@ -61,6 +61,86 @@ export type Database = {
           },
         ]
       }
+      account_access_cutover_repair_capabilities: {
+        Row: {
+          account_id: string
+          capability_nonce: string
+          created_at: string
+          disposition_id: string
+          txid: number
+        }
+        Insert: {
+          account_id: string
+          capability_nonce?: string
+          created_at?: string
+          disposition_id: string
+          txid: number
+        }
+        Update: {
+          account_id?: string
+          capability_nonce?: string
+          created_at?: string
+          disposition_id?: string
+          txid?: number
+        }
+        Relationships: []
+      }
+      account_access_cutover_repair_manifests: {
+        Row: {
+          account_id: string | null
+          consumed_at: string | null
+          created_at: string
+          details: Json
+          issue_code: string
+          issue_id: string
+          preflight_run_id: string
+          property_id: string | null
+          raw_property_ids: string[]
+          raw_scope_hash: string
+          source: string
+          stage_a_mapping: Json
+          status: string
+        }
+        Insert: {
+          account_id?: string | null
+          consumed_at?: string | null
+          created_at?: string
+          details?: Json
+          issue_code: string
+          issue_id: string
+          preflight_run_id: string
+          property_id?: string | null
+          raw_property_ids?: string[]
+          raw_scope_hash: string
+          source: string
+          stage_a_mapping?: Json
+          status?: string
+        }
+        Update: {
+          account_id?: string | null
+          consumed_at?: string | null
+          created_at?: string
+          details?: Json
+          issue_code?: string
+          issue_id?: string
+          preflight_run_id?: string
+          property_id?: string | null
+          raw_property_ids?: string[]
+          raw_scope_hash?: string
+          source?: string
+          stage_a_mapping?: Json
+          status?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "account_access_cutover_repair_manifests_preflight_run_id_fkey"
+            columns: ["preflight_run_id"]
+            isOneToOne: false
+            referencedRelation: "account_access_cutover_preflight_runs"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       account_access_cutover_repair_dispositions: {
         Row: {
           access_b_merge_sha: string
@@ -75,8 +155,10 @@ export type Database = {
           decision: string
           deployed_descendant_sha: string
           details: Json
+          evidence_hash: string
           id: string
           issue_codes: string[]
+          issue_ids: string[]
           legacy_write_event_count: number
           operator_label: string
           preflight_run_id: string
@@ -100,8 +182,10 @@ export type Database = {
           decision: string
           deployed_descendant_sha: string
           details?: Json
+          evidence_hash?: string
           id?: string
           issue_codes: string[]
+          issue_ids?: string[]
           legacy_write_event_count: number
           operator_label: string
           preflight_run_id: string
@@ -125,8 +209,10 @@ export type Database = {
           decision?: string
           deployed_descendant_sha?: string
           details?: Json
+          evidence_hash?: string
           id?: string
           issue_codes?: string[]
+          issue_ids?: string[]
           legacy_write_event_count?: number
           operator_label?: string
           preflight_run_id?: string
@@ -163,6 +249,10 @@ export type Database = {
           deployed_descendant_sha: string
           details: Json
           disposition_id: string
+          evidence_after: Json
+          evidence_after_hash: string
+          evidence_before: Json
+          evidence_before_hash: string
           id: string
           legacy_write_event_count_after: number
           legacy_write_event_count_before: number
@@ -188,6 +278,10 @@ export type Database = {
           deployed_descendant_sha: string
           details?: Json
           disposition_id: string
+          evidence_after?: Json
+          evidence_after_hash?: string
+          evidence_before?: Json
+          evidence_before_hash?: string
           id?: string
           legacy_write_event_count_after: number
           legacy_write_event_count_before: number
@@ -213,6 +307,10 @@ export type Database = {
           deployed_descendant_sha?: string
           details?: Json
           disposition_id?: string
+          evidence_after?: Json
+          evidence_after_hash?: string
+          evidence_before?: Json
+          evidence_before_hash?: string
           id?: string
           legacy_write_event_count_after?: number
           legacy_write_event_count_before?: number
