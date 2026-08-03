@@ -61,6 +61,33 @@ const STAFF: StaffMember = {
   weeklyHours: 0,
   maxWeeklyHours: 40,
 };
+const INHERITED_TEAM_MEMBER = {
+  accountId: 'company-account-1',
+  username: 'company-owner',
+  displayName: 'Company Owner',
+  email: 'company-owner@example.com',
+  role: 'owner' as const,
+  active: true,
+  updatedAt: '2026-08-01T00:00:00.000Z',
+  ownerProtected: false,
+  lastSignInKnown: true,
+  lastSignInAt: null,
+  propertyAccess: [HOTEL_ID],
+  staffId: null,
+  managementSurface: 'company_access' as const,
+  directHotelAccount: false,
+  hotelLeadershipRole: null,
+};
+const DIRECT_TEAM_MEMBER = {
+  ...INHERITED_TEAM_MEMBER,
+  accountId: 'direct-account-1',
+  username: 'direct-gm',
+  displayName: 'Direct GM',
+  email: 'direct-gm@example.com',
+  role: 'general_manager' as const,
+  directHotelAccount: true,
+  hotelLeadershipRole: 'general_manager' as const,
+};
 
 const VALID_OPTIONS = {
   choosesHotels: false,
@@ -431,14 +458,28 @@ interface PeoplePanelHarness {
   text: () => string;
   dialog: () => HTMLElement | null;
   click: (label: string) => Promise<void>;
+  setInput: (selector: string, value: string) => Promise<void>;
+  setSelect: (selector: string, value: string) => Promise<void>;
+  submit: () => Promise<void>;
   setCapabilities: (next: CapabilityState) => Promise<void>;
   flushWithFrame: () => Promise<void>;
+}
+
+interface PeoplePanelOptions {
+  adminPreview?: boolean;
+  inviteDialogOpen?: boolean;
+  staffProfiles?: StaffMember[];
+  rosterUnavailable?: boolean;
+  rosterSettled?: boolean;
+  teamResponses?: ResponseSpec[];
+  joinRequestResponses?: ResponseSpec[];
+  firstPersonResponses?: ResponseSpec[];
 }
 
 async function mountPeoplePanel(
   context: TestContext,
   initialCapabilities: CapabilityState,
-  options: { adminPreview?: boolean; inviteDialogOpen?: boolean } = {},
+  options: PeoplePanelOptions = {},
 ): Promise<PeoplePanelHarness> {
   const restoreBrowser = installBrowser();
   const { PeoplePanel } = await loadCompanyPageModule();
@@ -450,6 +491,12 @@ async function mountPeoplePanel(
   const controls = {
     setCapabilities: (_next: CapabilityState): void => undefined,
   };
+  const teamResponses = [...(options.teamResponses ?? [])];
+  const joinRequestResponses = [...(options.joinRequestResponses ?? [])];
+  const firstPersonResponses = [...(options.firstPersonResponses ?? [])];
+  const nextResponse = (responses: ResponseSpec[], fallback: ResponseSpec): Response => (
+    responseFor(responses.shift() ?? fallback)
+  );
   const originalFetch = globalThis.fetch;
   Object.defineProperty(globalThis, 'fetch', {
     configurable: true,
@@ -458,10 +505,21 @@ async function mountPeoplePanel(
       const url = String(input);
       const method = (init?.method ?? 'GET').toUpperCase();
       if (url.startsWith('/api/auth/team?')) {
-        return jsonResponse({ ok: true, data: { team: [], hatsByAccountId: {} } });
+        return nextResponse(teamResponses, {
+          body: {
+            ok: true,
+            data: {
+              team: [],
+              hatsByAccountId: {},
+              firstPersonOnboarding: { status: 'none', invitedEmail: null, accountId: null },
+            },
+          },
+        });
       }
       if (url.startsWith('/api/staff/join-requests?')) {
-        return jsonResponse({ ok: true, data: { requests: [] } });
+        return nextResponse(joinRequestResponses, {
+          body: { ok: true, data: { requests: [] } },
+        });
       }
       if (url.startsWith('/api/staff/contacts?')) {
         return jsonResponse({ ok: true, data: { contacts: {} } });
@@ -471,6 +529,12 @@ async function mountPeoplePanel(
       }
       if (url.startsWith('/api/auth/invites?') && method === 'GET') {
         return jsonResponse({ ok: true, data: { invites: [], options: VALID_OPTIONS } });
+      }
+      if (url === '/api/admin/properties/invite-first-person' && method === 'POST') {
+        return nextResponse(firstPersonResponses, {
+          body: { ok: false, error: 'first-person response not configured' },
+          status: 500,
+        });
       }
       return jsonResponse({ ok: false, error: `Unexpected request ${method} ${url}` }, 500);
     },
@@ -493,8 +557,9 @@ async function mountPeoplePanel(
     return (
       <PeoplePanel
         data={data}
-        staff={[STAFF]}
-        hotelRosterUnavailable={false}
+        staff={options.staffProfiles ?? [STAFF]}
+        hotelRosterUnavailable={options.rosterUnavailable ?? false}
+        rosterSettled={options.rosterSettled ?? true}
         lang={'en'}
         currentUser={USER}
         currentAccountId={USER.accountId}
@@ -531,6 +596,38 @@ async function mountPeoplePanel(
     });
     await flushReact();
   };
+  const setValue = async (element: HTMLInputElement | HTMLSelectElement, value: string): Promise<void> => {
+    const prototype = element instanceof HTMLSelectElement
+      ? window.HTMLSelectElement.prototype
+      : window.HTMLInputElement.prototype;
+    const valueSetter = Object.getOwnPropertyDescriptor(prototype, 'value')?.set;
+    assert.ok(valueSetter, 'JSDOM value setter must exist');
+    await act(async () => {
+      valueSetter.call(element, value);
+      element.dispatchEvent(new Event('input', { bubbles: true }));
+      element.dispatchEvent(new Event('change', { bubbles: true }));
+      for (let index = 0; index < 6; index += 1) await Promise.resolve();
+    });
+  };
+  const setInput = async (selector: string, value: string): Promise<void> => {
+    const input = document.querySelector<HTMLInputElement>(selector);
+    assert.ok(input, `input "${selector}" must be available`);
+    await setValue(input, value);
+  };
+  const setSelect = async (selector: string, value: string): Promise<void> => {
+    const select = document.querySelector<HTMLSelectElement>(selector);
+    assert.ok(select, `select "${selector}" must be available`);
+    await setValue(select, value);
+  };
+  const submit = async (): Promise<void> => {
+    const form = document.querySelector<HTMLFormElement>('[role="dialog"] form');
+    assert.ok(form, 'first-person form must be available');
+    await act(async () => {
+      form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
+      for (let index = 0; index < 16; index += 1) await Promise.resolve();
+    });
+    await flushReact();
+  };
   const flushWithFrame = async (): Promise<void> => {
     await flushReact();
     await act(async () => {
@@ -555,6 +652,9 @@ async function mountPeoplePanel(
     text: () => document.body.textContent ?? '',
     dialog: () => document.querySelector<HTMLElement>('[role="dialog"]'),
     click,
+    setInput,
+    setSelect,
+    submit,
     async setCapabilities(next) {
       await act(async () => {
         controls.setCapabilities(next);
@@ -767,7 +867,7 @@ describe('mounted hotel invite flow', { concurrency: false }, () => {
       canInviteAccounts: true,
       readOnly: false,
       adminPreview: true,
-    }, { adminPreview: true, inviteDialogOpen: true });
+    }, { adminPreview: true, staffProfiles: [] });
 
     await ui.flushWithFrame();
     await ui.click('Add first person');
@@ -776,5 +876,208 @@ describe('mounted hotel invite flow', { concurrency: false }, () => {
     assert.match(ui.text(), /Assign the role before sending the invitation/);
     assert.match(ui.text(), /Send invitation/);
     assert.doesNotMatch(ui.text(), /Hotel invite|Email one person/);
+  });
+
+  test('first-person success keeps the result while pending and blocks duplicate submission', async (context) => {
+    const onboardingNone = { status: 'none', invitedEmail: null, accountId: null };
+    const onboardingPending = {
+      status: 'pending',
+      invitedEmail: 'owner@example.com',
+      accountId: null,
+    };
+    const invitation = {
+      hotelId: HOTEL_ID,
+      invitedEmail: 'owner@example.com',
+      assignedRole: 'owner',
+      signupUrl: 'https://staxis.test/onboarding/owner',
+      expiresAt: new Date(Date.now() + 86_400_000).toISOString(),
+      emailSent: true,
+      emailError: null,
+    };
+    const ui = await mountPeoplePanel(context, {
+      canManageTeam: true,
+      canInviteAccounts: true,
+      readOnly: false,
+      adminPreview: true,
+    }, {
+      adminPreview: true,
+      staffProfiles: [],
+      teamResponses: [
+        { body: { ok: true, data: { team: [], hatsByAccountId: {}, firstPersonOnboarding: onboardingNone } } },
+        { body: { ok: true, data: { team: [], hatsByAccountId: {}, firstPersonOnboarding: onboardingPending } } },
+      ],
+      firstPersonResponses: [
+        { body: { ok: false, error: 'A first-person invitation already exists with a different assigned role' }, status: 409 },
+        { body: { ok: true, data: invitation } },
+      ],
+    });
+
+    await ui.flushWithFrame();
+    await ui.click('Add first person');
+    await ui.setInput('input[type="email"]', 'owner@example.com');
+    await ui.setSelect('form select', 'owner');
+    await ui.submit();
+    assert.match(ui.text(), /different assigned role/);
+    assert.ok(ui.dialog()?.querySelector('form'), 'a conflict must leave the form available for correction');
+
+    await ui.setSelect('form select', 'general_manager');
+    await ui.submit();
+    assert.match(ui.text(), /Invitation sent/);
+    assert.match(ui.text(), /First-person invitation pending/);
+    assert.equal(ui.dialog()?.querySelector('form'), null, 'the success result must not expose a repeat-submit form');
+    assert.doesNotMatch(ui.text(), /Send invitation/);
+    await ui.click('Done');
+    await ui.click('Invite people');
+    assert.match(ui.text(), /What does this person need\?/);
+    assert.doesNotMatch(ui.text(), /Assign the role before sending the invitation/);
+  });
+
+  test('signup-created marker closes the result into the normal People invite path', async (context) => {
+    const invitation = {
+      hotelId: HOTEL_ID,
+      invitedEmail: 'gm@example.com',
+      assignedRole: 'general_manager',
+      signupUrl: 'https://staxis.test/onboarding/gm',
+      expiresAt: new Date(Date.now() + 86_400_000).toISOString(),
+      emailSent: true,
+      emailError: null,
+    };
+    const ui = await mountPeoplePanel(context, {
+      canManageTeam: true,
+      canInviteAccounts: true,
+      readOnly: false,
+      adminPreview: true,
+    }, {
+      adminPreview: true,
+      staffProfiles: [],
+      teamResponses: [
+        { body: { ok: true, data: { team: [], hatsByAccountId: {}, firstPersonOnboarding: { status: 'none', invitedEmail: null, accountId: null } } } },
+        { body: { ok: true, data: { team: [], hatsByAccountId: {}, firstPersonOnboarding: { status: 'created', invitedEmail: 'gm@example.com', accountId: null } } } },
+      ],
+      firstPersonResponses: [{ body: { ok: true, data: invitation } }],
+    });
+
+    await ui.flushWithFrame();
+    await ui.click('Add first person');
+    await ui.setInput('input[type="email"]', 'gm@example.com');
+    await ui.setSelect('form select', 'general_manager');
+    await ui.submit();
+    await ui.flushWithFrame();
+    assert.equal(ui.dialog(), null, 'account creation must close the first-person result without a hotel switch');
+    assert.match(ui.text(), /Invite people/);
+    assert.doesNotMatch(ui.text(), /Add first person/);
+  });
+
+  test('a visible staff-only roster uses contextual hotel Owner or GM setup wording', async (context) => {
+    const ui = await mountPeoplePanel(context, {
+      canManageTeam: true,
+      canInviteAccounts: true,
+      readOnly: false,
+      adminPreview: true,
+    }, { adminPreview: true });
+
+    await ui.flushWithFrame();
+    await ui.click('Add hotel owner or GM');
+    await ui.flushWithFrame();
+    assert.match(ui.text(), /Add hotel owner or GM/);
+    assert.match(ui.text(), /Add a hotel Owner or General Manager while keeping the existing People roster unchanged/);
+    assert.match(ui.text(), /Send invitation/);
+    assert.doesNotMatch(ui.text(), /Add first person/);
+  });
+
+  test('visible inherited company access uses contextual setup wording and dialog routing', async (context) => {
+    const ui = await mountPeoplePanel(context, {
+      canManageTeam: true,
+      canInviteAccounts: true,
+      readOnly: false,
+      adminPreview: true,
+    }, {
+      adminPreview: true,
+      staffProfiles: [],
+      teamResponses: [{
+        body: {
+          ok: true,
+          data: {
+            team: [INHERITED_TEAM_MEMBER],
+            hatsByAccountId: {},
+            firstPersonOnboarding: { status: 'none', invitedEmail: null, accountId: null },
+          },
+        },
+      }],
+    });
+
+    await ui.flushWithFrame();
+    assert.match(ui.text(), /Add hotel owner or GM/);
+    await ui.click('Add hotel owner or GM');
+    await ui.flushWithFrame();
+    assert.match(ui.text(), /Add hotel owner or GM/);
+    assert.doesNotMatch(ui.text(), /Add first person/);
+  });
+
+  test('a direct normalized hotel account keeps the normal Invite people path', async (context) => {
+    const ui = await mountPeoplePanel(context, {
+      canManageTeam: true,
+      canInviteAccounts: true,
+      readOnly: false,
+      adminPreview: true,
+    }, {
+      adminPreview: true,
+      staffProfiles: [],
+      teamResponses: [{
+        body: {
+          ok: true,
+          data: {
+            team: [DIRECT_TEAM_MEMBER],
+            hatsByAccountId: {},
+            firstPersonOnboarding: { status: 'none', invitedEmail: null, accountId: null },
+          },
+        },
+      }],
+    });
+
+    await ui.flushWithFrame();
+    assert.doesNotMatch(ui.text(), /Add first person|Add hotel owner or GM/);
+    await ui.click('Invite people');
+    assert.match(ui.text(), /What does this person need\?/);
+    assert.doesNotMatch(ui.text(), /Assign the role before sending the invitation/);
+  });
+
+  test('an unavailable roster suppresses definitive empty/setup claims', async (context) => {
+    const unavailable = await mountPeoplePanel(context, {
+      canManageTeam: true,
+      canInviteAccounts: true,
+      readOnly: false,
+      adminPreview: true,
+    }, {
+      adminPreview: true,
+      staffProfiles: [],
+      rosterUnavailable: true,
+    });
+
+    await unavailable.flushWithFrame();
+    assert.match(unavailable.text(), /People state unavailable/);
+    assert.match(unavailable.text(), /Retry/);
+    assert.doesNotMatch(unavailable.text(), /Add first person|Nobody here yet/);
+  });
+
+  test('approval errors suppress definitive empty/setup claims', async (context) => {
+    const approvalError = await mountPeoplePanel(context, {
+      canManageTeam: true,
+      canInviteAccounts: true,
+      readOnly: false,
+      adminPreview: true,
+    }, {
+      adminPreview: true,
+      staffProfiles: [],
+      joinRequestResponses: [{
+        body: { ok: false, error: 'Pending approvals unavailable' },
+        status: 503,
+      }],
+    });
+
+    await approvalError.flushWithFrame();
+    assert.match(approvalError.text(), /Pending approvals did not load/);
+    assert.match(approvalError.text(), /People state unavailable/);
+    assert.doesNotMatch(approvalError.text(), /Add first person|Nobody here yet/);
   });
 });

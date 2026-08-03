@@ -8,6 +8,7 @@ const read = (...parts: string[]) => readFileSync(join(process.cwd(), ...parts),
 const companyPage = read('src', 'app', 'company', 'page.tsx');
 const hotelTeam = read('src', 'app', 'company', '_components', 'HotelTeamPanel.tsx');
 const dialogs = read('src', 'app', 'company', '_components', 'HotelTeamDialogs.tsx');
+const setupCopy = read('src', 'app', 'company', '_components', 'hotel-team-setup.ts');
 const route = read(
   'src', 'app', 'api', 'admin', 'properties', 'invite-first-person', 'route.ts',
 );
@@ -28,18 +29,14 @@ describe('hotel-scoped first-person People flow', () => {
 
   test('ignores organization-inherited reach when deciding whether a direct first person exists', () => {
     assert.match(hotelTeam, /managementSurface: ['"]legacy_hotel['"] \| ['"]company_access['"]/);
-    assert.match(
-      hotelTeam,
-      /const hasDirectHotelAccount = team\.some\([\s\S]*member\.managementSurface === ['"]legacy_hotel['"][\s\S]*\);/,
-    );
-    assert.match(
-      hotelTeam,
-      /const needsFirstPerson = adminPreview[\s\S]*&& !hasDirectHotelAccount/,
-    );
-    assert.doesNotMatch(hotelTeam, /const needsFirstPerson = adminPreview[\s\S]*team\.length === 0/);
-    assert.match(hotelTeam, /['"]Add first person['"]/);
+    assert.match(hotelTeam, /directHotelAccount\?: boolean \| null/);
+    assert.match(hotelTeam, /deriveHotelTeamSetupState\(/);
+    assert.doesNotMatch(hotelTeam, /managementSurface === ['"]legacy_hotel['"]/);
+    assert.match(hotelTeam, /const setupMode = setupState\.setupMode/);
+    assert.match(setupCopy, /['"]Add first person['"]/);
+    assert.match(setupCopy, /['"]Add hotel owner or GM['"]/);
     assert.match(hotelTeam, /['"]Invite people['"]/);
-    assert.match(hotelTeam, /inviteDialogVisible && needsFirstPerson[\s\S]*LazyFirstPersonInviteDialog/);
+    assert.match(hotelTeam, /firstPersonDialogVisible[\s\S]*LazyFirstPersonInviteDialog/);
     assert.match(hotelTeam, /: inviteDialogVisible \? \([\s\S]*<LazyInviteDialog/);
   });
 
@@ -47,7 +44,7 @@ describe('hotel-scoped first-person People flow', () => {
     assert.match(dialogs, /<option value="owner">\{'Owner'\}<\/option>/);
     assert.match(dialogs, /<option value="general_manager">\{'General Manager'\}<\/option>/);
     assert.match(dialogs, /body: JSON\.stringify\(\{ hotelId, email: normalizedEmail, role \}\)/);
-    assert.match(dialogs, /The invitee cannot change it during signup/);
+    assert.match(setupCopy, /The invitee cannot change it during signup/);
     assert.doesNotMatch(firstPersonDialog, /front_desk|housekeeping|maintenance/);
   });
 

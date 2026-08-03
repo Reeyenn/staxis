@@ -73,9 +73,9 @@ describe('Invite Staff popup layout stability', () => {
     assert.match(hotelTeam, /section === 'hotel'[\s\S]*?DialogLoadingSection key=\{`\$\{section\}-\$\{index\}`\} rows=\{4\} tall/);
     assert.match(hotelTeam, /section === 'hotel'[\s\S]*?: \([\s\S]*?DialogLoadingFields key=\{`\$\{section\}-\$\{index\}`\} rows=\{4\}/);
     assert.match(hotelTeam, /variant === 'invite' \? null[\s\S]*?dialogFooter/);
-    assert.match(hotelTeam, /variant === 'first-person-invite'[\s\S]*?\? 'Add first person'/);
+    assert.match(hotelTeam, /variant === 'first-person-invite'[\s\S]*?hotelTeamSetupDialogTitle\(setupMode\)/);
     assert.match(hotelTeam, /variant === 'first-person-invite' \|\| variant === 'add-staff'[\s\S]*?DialogLoadingFields rows=\{4\}/);
-    assert.match(hotelTeam, /inviteDialogVisible && needsFirstPerson[\s\S]*?'first-person-invite'/);
+    assert.match(hotelTeam, /firstPersonDialogVisible[\s\S]*?'first-person-invite'/);
     assert.match(hotelTeam, /<React\.Suspense fallback=\{\([\s\S]*?<DialogLoading[\s\S]*?variant=\{loadingDialogVariant\}/);
     assert.doesNotMatch(hotelTeam, /className=\{styles\.dialogLoading\} role="status"/);
     assert.match(hotelTeamCss, /\.dialogLoadingInvite\s*\{[\s\S]*?height:\s*auto;/);

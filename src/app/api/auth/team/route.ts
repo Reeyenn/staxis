@@ -48,6 +48,17 @@ import {
   type AuthoritativeHotelRoster,
 } from '@/lib/authorization/hotel-account-roster';
 import {
+  authoritativeHotelLeadershipRole,
+  authoritativeStandingForProperty,
+  authoritativeStandingHasDirectHotelAccount,
+  listAuthoritativePropertyAccess,
+  listAuthoritativeStructuralHotelDirectness,
+} from '@/lib/authorization/server';
+import {
+  projectFirstPersonOnboardingState,
+  type FirstPersonOnboardingSnapshot,
+} from '@/lib/first-person-onboarding-state';
+import {
   readCompleteCompanyIdChunks,
   type CompanyProjectionPage,
 } from '@/lib/company-access/projection-query';
@@ -295,6 +306,35 @@ export async function GET(req: NextRequest) {
     : new Set(caller.accessiblePropertyIds ?? []);
   if (callerReach !== null && !callerReach.has(hotelId)) {
     return err('Forbidden', { requestId, status: 403, code: ApiErrorCode.Unauthorized });
+  }
+
+  // The first-person marker is an admin-preview-only lifecycle hint. It is
+  // intentionally read from the existing property onboarding state rather
+  // than changing the account/access projection or introducing a new table.
+  let firstPersonOnboarding: FirstPersonOnboardingSnapshot = {
+    status: 'none',
+    invitedEmail: null,
+    accountId: null,
+  };
+  if (caller.isAdmin) {
+    const { data: propertyLifecycle, error: propertyLifecycleError } = await supabaseAdmin
+      .from('properties')
+      .select('onboarding_state, onboarding_completed_at')
+      .eq('id', hotelId)
+      .maybeSingle();
+    if (propertyLifecycleError || !propertyLifecycle) {
+      log.error('[team:GET] onboarding lifecycle projection failed', {
+        requestId,
+        msg: propertyLifecycleError
+          ? errToString(propertyLifecycleError)
+          : 'property not found',
+      });
+      return teamProtectionUnavailableResponse(requestId);
+    }
+    firstPersonOnboarding = projectFirstPersonOnboardingState(
+      propertyLifecycle.onboarding_state,
+      propertyLifecycle.onboarding_completed_at,
+    );
   }
   let roster;
   try {
@@ -641,7 +681,80 @@ export async function GET(req: NextRequest) {
     }
   }
 
-  return ok({ team, hatsByAccountId }, { requestId });
+  // Only the read-only platform-admin People preview needs the first-person
+  // directness signal. Keep ordinary customer team responses and their
+  // existing permission/failure behavior unchanged.
+  if (!caller.isAdmin) {
+    return ok({ team, hatsByAccountId }, { requestId });
+  }
+
+  // The roster RPC intentionally keeps managementSurface for PUT/DELETE
+  // routing. Direct first-person eligibility is a different canonical
+  // contract, so project it separately from the authoritative standing DTO.
+  const directnessByAccountId = new Map<string, {
+    directHotelAccount: boolean | null;
+    hotelLeadershipRole: 'owner' | 'general_manager' | null;
+  }>();
+  const activeDirectness = await Promise.all(team
+    .filter((row) => row.active && row.role !== 'admin')
+    .map(async (row) => {
+      const access = await listAuthoritativePropertyAccess(row.accountId);
+      if (!access) return null;
+      const standing = authoritativeStandingForProperty(access, hotelId);
+      return {
+        accountId: row.accountId,
+        directHotelAccount: authoritativeStandingHasDirectHotelAccount(standing),
+        hotelLeadershipRole: authoritativeHotelLeadershipRole(standing, row.role),
+      };
+    }));
+  if (activeDirectness.some((entry) => entry === null)) {
+    log.error('[team:GET] direct hotel account projection unavailable', { requestId, hotelId });
+    return teamProtectionUnavailableResponse(requestId);
+  }
+  for (const entry of activeDirectness) {
+    if (entry) directnessByAccountId.set(entry.accountId, entry);
+  }
+  const inactiveNormalizedRows = team.filter((row) => (
+    !row.active
+      && row.role !== 'admin'
+      && row.authorityMode === 'normalized'
+  ));
+  const inactiveNormalizedDirectness = await listAuthoritativeStructuralHotelDirectness(
+    inactiveNormalizedRows.map((row) => row.accountId),
+    hotelId,
+  );
+  if (inactiveNormalizedDirectness === null) {
+    log.error('[team:GET] inactive structural directness projection unavailable', {
+      requestId, hotelId,
+    });
+    return teamProtectionUnavailableResponse(requestId);
+  }
+  for (const row of team) {
+    if (directnessByAccountId.has(row.accountId)) continue;
+    // 0411 treats legacy/shadow property access as direct even when the
+    // account is inactive. Do not use managementSurface as a proxy here.
+    const inactiveLegacyDirect = !row.active
+      && row.authorityMode !== 'normalized'
+      && row.propertyAccess.includes(hotelId);
+    const inactiveNormalizedDirect = !row.active && row.authorityMode === 'normalized'
+      ? inactiveNormalizedDirectness.get(row.accountId) ?? null
+      : null;
+    directnessByAccountId.set(row.accountId, {
+      directHotelAccount: inactiveLegacyDirect ? true : inactiveNormalizedDirect,
+      hotelLeadershipRole: null,
+    });
+  }
+  const teamWithDirectness = team.map((row) => ({
+    ...row,
+    directHotelAccount: directnessByAccountId.get(row.accountId)?.directHotelAccount ?? null,
+    hotelLeadershipRole: directnessByAccountId.get(row.accountId)?.hotelLeadershipRole ?? null,
+  }));
+
+  return ok({
+    team: teamWithDirectness,
+    hatsByAccountId,
+    firstPersonOnboarding,
+  }, { requestId });
 }
 
 export async function PUT(req: NextRequest) {

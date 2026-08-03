@@ -30,6 +30,8 @@ const OWNER_ID = 'dddddddd-dddd-dddd-dddd-dddddddddddd';
 const PEER_GM_ID = 'eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee';
 const CALLER_USER_ID = '10000000-0000-0000-0000-000000000001';
 const ORGANIZATION_ID = '66666666-6666-4666-8666-666666666666';
+const RELATIONSHIP_A = '44444444-4444-4444-8444-444444444441';
+const RELATIONSHIP_B = '44444444-4444-4444-8444-444444444442';
 
 type TestRole = 'admin' | 'owner' | 'general_manager' | 'front_desk' | 'housekeeping' | 'maintenance' | 'staff';
 
@@ -88,6 +90,8 @@ interface TestState {
   callerAuthorityReads: number;
   beforeFinalCallerAuthorityRead: (() => void) | null;
   organizationId: string | null;
+  onboardingState: unknown;
+  onboardingCompletedAt: string | null;
   membershipHats: Array<{
     id: string;
     organization_id: string;
@@ -96,9 +100,27 @@ interface TestState {
     staxis_role: 'owner' | 'vp' | 'finance' | 'general_manager' | 'front_desk' | 'housekeeping' | 'maintenance';
     job_title: string | null;
     covered_property_ids: string[] | null;
-    status: 'active';
+    status: 'active' | 'revoked' | 'suspended';
     starts_at: string | null;
     ended_at: string | null;
+  }>;
+  structuralGrants: Array<{
+    organization_id: string;
+    membership_id: string;
+    scope_type: 'property' | 'organization' | 'portfolio';
+    property_id: string | null;
+    property_relationship_id: string | null;
+    source: string;
+    status: 'active' | 'revoked';
+    starts_at: string;
+    expires_at: string | null;
+  }>;
+  structuralBridges: Array<{
+    account_id: string;
+    property_id: string;
+    cutover_organization_id: string | null;
+    cutover_relationship_id: string | null;
+    status: 'active' | 'revoked';
   }>;
 }
 
@@ -191,7 +213,11 @@ function resetState(): void {
     callerAuthorityReads: 0,
     beforeFinalCallerAuthorityRead: null,
     organizationId: null,
+    onboardingState: null,
+    onboardingCompletedAt: null,
     membershipHats: [],
+    structuralGrants: [],
+    structuralBridges: [],
   };
 }
 
@@ -749,6 +775,7 @@ function installSupabaseStub(): void {
         then: (resolve: (value: unknown) => unknown) => {
           const rows = state.organizationId ? [HOTEL_A, HOTEL_B]
             .map((propertyId) => ({
+              id: propertyId === HOTEL_A ? RELATIONSHIP_A : RELATIONSHIP_B,
               organization_id: state.organizationId!,
               property_id: propertyId,
               relationship_type: 'operator',
@@ -786,16 +813,78 @@ function installSupabaseStub(): void {
 
     if (table === 'organization_memberships') {
       const equals = new Map<string, unknown>();
+      let accountIds: string[] | null = null;
       const builder: Record<string, unknown> = {
         select: () => builder,
         eq: (column: string, value: unknown) => {
           equals.set(column, value);
           return builder;
         },
-        is: () => builder,
+        is: (column: string, value: unknown) => {
+          equals.set(column, value);
+          return builder;
+        },
+        in: (column: string, values: unknown[]) => {
+          if (column === 'account_id') {
+            accountIds = values.filter((value): value is string => typeof value === 'string');
+          }
+          return builder;
+        },
         then: (resolve: (value: unknown) => unknown) => resolve({
-          data: state.membershipHats.filter((hat) => [...equals].every(
-            ([column, value]) => (hat as unknown as Record<string, unknown>)[column] === value,
+          data: state.membershipHats.filter((hat) => (
+            (accountIds === null || accountIds.includes(hat.account_id))
+            && [...equals].every(([column, value]) => (
+              (hat as unknown as Record<string, unknown>)[column] === value
+            ))
+          )),
+          error: null,
+        }),
+      };
+      return builder;
+    }
+
+    if (table === 'account_property_authorization_bridges') {
+      const accountIds: string[] = [];
+      const equals = new Map<string, unknown>();
+      const builder: Record<string, unknown> = {
+        select: () => builder,
+        in: (column: string, values: unknown[]) => {
+          if (column === 'account_id') {
+            accountIds.push(...values.filter((value): value is string => typeof value === 'string'));
+          }
+          return builder;
+        },
+        eq: (column: string, value: unknown) => {
+          equals.set(column, value);
+          return builder;
+        },
+        then: (resolve: (value: unknown) => unknown) => resolve({
+          data: state.structuralBridges.filter((row) => (
+            (accountIds.length === 0 || accountIds.includes(row.account_id))
+            && [...equals].every(([column, value]) => (
+              (row as unknown as Record<string, unknown>)[column] === value
+            ))
+          )),
+          error: null,
+        }),
+      };
+      return builder;
+    }
+
+    if (table === 'organization_access_grants') {
+      let membershipIds: string[] | null = null;
+      const builder: Record<string, unknown> = {
+        select: () => builder,
+        in: (column: string, values: unknown[]) => {
+          if (column === 'membership_id') {
+            membershipIds = values.filter((value): value is string => typeof value === 'string');
+          }
+          return builder;
+        },
+        eq: () => builder,
+        then: (resolve: (value: unknown) => unknown) => resolve({
+          data: state.structuralGrants.filter((row) => (
+            membershipIds === null || membershipIds.includes(row.membership_id)
           )),
           error: null,
         }),
@@ -805,11 +894,16 @@ function installSupabaseStub(): void {
 
     if (table === 'properties') {
       let propertyIds: unknown[] = [];
+      let selectedPropertyId: string | null = null;
       let from = 0;
       let to = Number.MAX_SAFE_INTEGER;
       const names = new Map([[HOTEL_A, 'Hotel A'], [HOTEL_B, 'Hotel B'], [HOTEL_C, 'Hotel C']]);
       const builder: Record<string, unknown> = {
         select: () => builder,
+        eq: (column: string, value: unknown) => {
+          if (column === 'id' && typeof value === 'string') selectedPropertyId = value;
+          return builder;
+        },
         in: (_column: string, values: unknown[]) => {
           propertyIds = values;
           return builder;
@@ -820,6 +914,16 @@ function installSupabaseStub(): void {
           to = nextTo;
           return builder;
         },
+        maybeSingle: async () => ({
+          data: selectedPropertyId
+            ? {
+              id: selectedPropertyId,
+              onboarding_state: state.onboardingState,
+              onboarding_completed_at: state.onboardingCompletedAt,
+            }
+            : null,
+          error: null,
+        }),
         then: (resolve: (value: unknown) => unknown) => {
           const all = propertyIds.flatMap((id) => {
             const name = typeof id === 'string' ? names.get(id) : null;
@@ -1038,6 +1142,46 @@ describe('authoritative hotel roster response contract', () => {
 });
 
 describe('GET /api/auth/team action contract', () => {
+  test('returns the existing onboarding marker so People can show pending and created states', async () => {
+    account(CALLER_ID).role = 'admin';
+    state.onboardingState = { invitedEmail: 'Pending.Owner@Example.com' };
+
+    const pendingResponse = await GET(request('GET', `/api/auth/team?hotelId=${HOTEL_A}`));
+    assert.equal(pendingResponse.status, 200);
+    const pendingBody = await pendingResponse.json();
+    assert.deepEqual(pendingBody.data.firstPersonOnboarding, {
+      status: 'pending',
+      invitedEmail: 'pending.owner@example.com',
+      accountId: null,
+    });
+
+    state.onboardingState = {
+      invitedEmail: 'Pending.Owner@Example.com',
+      accountCreatedAt: '2026-08-03T00:00:00.000Z',
+    };
+    const createdResponse = await GET(request('GET', `/api/auth/team?hotelId=${HOTEL_A}`));
+    assert.equal(createdResponse.status, 200);
+    const createdBody = await createdResponse.json();
+    assert.deepEqual(createdBody.data.firstPersonOnboarding, {
+      status: 'created',
+      invitedEmail: 'pending.owner@example.com',
+      accountId: null,
+    });
+  });
+
+  test('projects active normalized hotel directness without changing managementSurface', async () => {
+    account(CALLER_ID).role = 'admin';
+    account(LOCAL_ID).authority_mode = 'normalized';
+
+    const response = await GET(request('GET', `/api/auth/team?hotelId=${HOTEL_A}`));
+    assert.equal(response.status, 200);
+    const body = await response.json();
+    const local = body.data.team.find((row: { accountId: string }) => row.accountId === LOCAL_ID);
+    assert.ok(local);
+    assert.equal(local.managementSurface, 'company_access');
+    assert.equal(local.directHotelAccount, true);
+  });
+
   test('returns truthful actions while redacting target reach outside the caller scope', async () => {
     const hotelAStaff = '44444444-4444-4444-4444-444444444444';
     const hotelBStaff = '55555555-5555-5555-5555-555555555555';
@@ -1069,6 +1213,7 @@ describe('GET /api/auth/team action contract', () => {
     assert.equal(self.active, true);
     assert.equal(self.lastSignInAt, '2026-07-20T10:30:00.000Z');
     assert.equal(self.lastSignInKnown, true);
+    assert.equal('directHotelAccount' in self, false, 'ordinary customer responses keep the existing team contract');
 
     const local = byId.get(LOCAL_ID)!;
     assert.deepEqual(local.actions, {
@@ -1226,6 +1371,137 @@ describe('GET /api/auth/team action contract', () => {
       canDeactivate: false,
       canReactivate: true,
     });
+  });
+
+  test('projects inactive normalized direct membership, grant, and bridge claims separately from managementSurface', async () => {
+    account(CALLER_ID).role = 'admin';
+    for (const accountId of [LOCAL_ID, OWNER_ID, PEER_GM_ID]) {
+      account(accountId).active = false;
+      account(accountId).authority_mode = 'normalized';
+    }
+    state.organizationId = ORGANIZATION_ID;
+    state.membershipHats.push({
+      id: '77777777-7777-4777-8777-777777777781',
+      organization_id: ORGANIZATION_ID,
+      account_id: LOCAL_ID,
+      membership_scope: 'property',
+      staxis_role: 'general_manager',
+      job_title: null,
+      covered_property_ids: [HOTEL_A],
+      status: 'active',
+      starts_at: '2026-01-01T00:00:00.000Z',
+      ended_at: null,
+    }, {
+      id: '77777777-7777-4777-8777-777777777782',
+      organization_id: ORGANIZATION_ID,
+      account_id: OWNER_ID,
+      membership_scope: 'company',
+      staxis_role: 'finance',
+      job_title: null,
+      covered_property_ids: null,
+      status: 'active',
+      starts_at: '2026-01-01T00:00:00.000Z',
+      ended_at: null,
+    });
+    state.structuralGrants.push({
+      organization_id: ORGANIZATION_ID,
+      membership_id: '77777777-7777-4777-8777-777777777782',
+      scope_type: 'property',
+      property_id: HOTEL_A,
+      property_relationship_id: RELATIONSHIP_A,
+      source: 'manual',
+      status: 'active',
+      starts_at: '2026-01-01T00:00:00.000Z',
+      expires_at: null,
+    });
+    state.structuralBridges.push({
+      account_id: PEER_GM_ID,
+      property_id: HOTEL_A,
+      cutover_organization_id: ORGANIZATION_ID,
+      cutover_relationship_id: RELATIONSHIP_A,
+      status: 'active',
+    });
+
+    const response = await GET(request('GET', `/api/auth/team?hotelId=${HOTEL_A}`));
+    assert.equal(response.status, 200);
+    const body = await response.json();
+    for (const accountId of [LOCAL_ID, OWNER_ID, PEER_GM_ID]) {
+      const row = body.data.team.find((candidate: { accountId: string }) => candidate.accountId === accountId);
+      assert.ok(row);
+      assert.equal(row.managementSurface, 'company_access');
+      assert.equal(row.directHotelAccount, true, accountId);
+    }
+  });
+
+  test('does not treat revoked, ended, or future normalized structural reach as a direct claim', async () => {
+    account(CALLER_ID).role = 'admin';
+    for (const accountId of [LOCAL_ID, OWNER_ID, PEER_GM_ID]) {
+      account(accountId).active = false;
+      account(accountId).authority_mode = 'normalized';
+    }
+    state.organizationId = ORGANIZATION_ID;
+    state.membershipHats.push({
+      id: '77777777-7777-4777-8777-777777777791',
+      organization_id: ORGANIZATION_ID,
+      account_id: LOCAL_ID,
+      membership_scope: 'property',
+      staxis_role: 'general_manager',
+      job_title: null,
+      covered_property_ids: [HOTEL_A],
+      status: 'revoked',
+      starts_at: '2026-01-01T00:00:00.000Z',
+      ended_at: null,
+    }, {
+      id: '77777777-7777-4777-8777-777777777792',
+      organization_id: ORGANIZATION_ID,
+      account_id: OWNER_ID,
+      membership_scope: 'company',
+      staxis_role: 'finance',
+      job_title: null,
+      covered_property_ids: null,
+      status: 'active',
+      starts_at: '2026-01-01T00:00:00.000Z',
+      ended_at: null,
+    }, {
+      id: '77777777-7777-4777-8777-777777777793',
+      organization_id: ORGANIZATION_ID,
+      account_id: PEER_GM_ID,
+      membership_scope: 'property',
+      staxis_role: 'front_desk',
+      job_title: null,
+      covered_property_ids: [HOTEL_A],
+      status: 'active',
+      starts_at: '2099-01-01T00:00:00.000Z',
+      ended_at: null,
+    });
+    state.membershipHats[1]!.ended_at = '2026-01-01T00:00:00.000Z';
+    state.structuralGrants.push({
+      organization_id: ORGANIZATION_ID,
+      membership_id: '77777777-7777-4777-8777-777777777792',
+      scope_type: 'property',
+      property_id: HOTEL_A,
+      property_relationship_id: RELATIONSHIP_A,
+      source: 'manual',
+      status: 'active',
+      starts_at: '2099-01-01T00:00:00.000Z',
+      expires_at: null,
+    });
+    state.structuralBridges.push({
+      account_id: PEER_GM_ID,
+      property_id: HOTEL_A,
+      cutover_organization_id: ORGANIZATION_ID,
+      cutover_relationship_id: RELATIONSHIP_A,
+      status: 'revoked',
+    });
+
+    const response = await GET(request('GET', `/api/auth/team?hotelId=${HOTEL_A}`));
+    assert.equal(response.status, 200);
+    const body = await response.json();
+    for (const accountId of [LOCAL_ID, OWNER_ID, PEER_GM_ID]) {
+      const row = body.data.team.find((candidate: { accountId: string }) => candidate.accountId === accountId);
+      assert.ok(row);
+      assert.equal(row.directHotelAccount, false, accountId);
+    }
   });
 
   test('projects a pending lifecycle change and disables every conflicting action', async () => {

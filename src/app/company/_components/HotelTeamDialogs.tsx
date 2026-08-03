@@ -29,6 +29,14 @@ import { HAT_ROLE_LABELS, isHatRole } from '@/lib/company/roles';
 import { ASSIGNABLE_ROLES, type AppRole, type AssignableRole } from '@/lib/roles';
 
 import { restoreDialogFocus } from './dialog-focus';
+import {
+  hotelTeamSetupDescription,
+  hotelTeamSetupDialogTitle,
+  hotelTeamSetupInvitationError,
+  hotelTeamSetupLinkLabel,
+  hotelTeamSetupScopeLabel,
+  type HotelTeamSetupMode,
+} from './hotel-team-setup';
 import type {
   HotelInviteRosterProfile,
   HotelJoinRequest,
@@ -1372,6 +1380,7 @@ export interface FirstPersonInviteData {
 export function FirstPersonInviteDialog({
   hotelId,
   hotelName,
+  setupMode = 'first-person',
   onClose,
   onChanged,
   onInvited,
@@ -1379,6 +1388,7 @@ export function FirstPersonInviteDialog({
 }: {
   hotelId: string;
   hotelName: string;
+  setupMode?: HotelTeamSetupMode;
   onClose: () => void;
   onChanged?: () => void | Promise<void>;
   fallbackFocusRef?: React.RefObject<HTMLElement | null>;
@@ -1397,6 +1407,7 @@ export function FirstPersonInviteDialog({
   const [result, setResult] = React.useState<FirstPersonInviteData | null>(null);
   const [copied, setCopied] = React.useState(false);
   const [copyError, setCopyError] = React.useState('');
+  const dialogTitle = hotelTeamSetupDialogTitle(setupMode);
 
   const submit = async (event: React.FormEvent) => {
     event.preventDefault();
@@ -1423,7 +1434,7 @@ export function FirstPersonInviteDialog({
       });
       const body = await response.json().catch(() => ({})) as Envelope<FirstPersonInviteData>;
       if (!response.ok || !body.ok || !body.data) {
-        setError(responseError(body, "Couldn't create the first-person invitation."));
+        setError(responseError(body, hotelTeamSetupInvitationError(setupMode)));
         return;
       }
       setResult(body.data);
@@ -1431,7 +1442,7 @@ export function FirstPersonInviteDialog({
       await onChanged?.();
     } catch (sendError) {
       console.error('[FirstPersonInviteDialog] invitation failed', sendError);
-      setError("Couldn't create the invitation. Check your connection and try again.");
+      setError(`${hotelTeamSetupInvitationError(setupMode)} Check your connection and try again.`);
     } finally {
       setBusy(false);
     }
@@ -1450,9 +1461,9 @@ export function FirstPersonInviteDialog({
 
   return (
     <DialogShell
-      title="Add first person"
+      title={dialogTitle}
       eyebrow={hotelName}
-      description="Assign the role before sending the invitation. The invitee cannot change it during signup."
+      description={hotelTeamSetupDescription(setupMode)}
       lang="en"
       icon={<UserCheck size={21} aria-hidden="true" />}
       onClose={onClose}
@@ -1472,9 +1483,9 @@ export function FirstPersonInviteDialog({
             </div>
           </div>
           <label className={styles.copyField}>
-            <span>{'First-person onboarding link'}</span>
+            <span>{hotelTeamSetupLinkLabel(setupMode)}</span>
             <div>
-              <input value={result.signupUrl} readOnly aria-label="First-person onboarding link" />
+              <input value={result.signupUrl} readOnly aria-label={hotelTeamSetupLinkLabel(setupMode)} />
               <button type="button" onClick={() => void copyLink()}>
                 {copied ? <Check size={15} aria-hidden="true" /> : <Copy size={15} aria-hidden="true" />}
                 {copied ? 'Copied' : 'Copy'}
@@ -1520,7 +1531,7 @@ export function FirstPersonInviteDialog({
           </label>
           <div className={styles.mutationPreview} aria-label="Invitation scope">
             <div><span>{'Hotel'}</span><strong>{hotelName}</strong></div>
-            <div><span>{'Setup'}</span><strong>{'First person'}</strong></div>
+            <div><span>{'Setup'}</span><strong>{hotelTeamSetupScopeLabel(setupMode)}</strong></div>
           </div>
           {error ? <ErrorBanner message={error} /> : null}
           <div className={styles.dialogFooter}>

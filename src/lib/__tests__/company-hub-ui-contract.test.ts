@@ -159,7 +159,7 @@ describe('truthful Company Hub filters', () => {
     // The second stacked list is gone: one person is one card now.
     assert.doesNotMatch(company, /OperationalStaffSection/);
     assert.match(company, /<PeoplePanel\s+key=\{activeProperty\?\.id \?\? ['"]no-hotel['"]\}/);
-    assert.match(hotelTeam, /buildHotelRoster\(team, rosterStaff\)/);
+    assert.match(hotelTeam, /buildHotelRoster\(teamForHotel, rosterStaff\)/);
     assert.match(hotelTeam, /const rosterStaff = React\.useMemo/);
     assert.match(company, /staffProfiles=\{staff\}/);
     assert.doesNotMatch(company, /statusFilter === ['"]invited['"]/);
@@ -233,7 +233,7 @@ describe('My Hotel account and team integration', () => {
     assert.ok(subheadingIndex >= 0 && titleRowIndex > subheadingIndex && countIndex > titleRowIndex && inviteIndex > countIndex && teamListIndex > inviteIndex);
     assert.match(company.slice(switcherIndex, heroEnd), /label=\{['"]Choose hotel to manage['"]\}/);
     assert.doesNotMatch(company, /styles\.teamInviteRow|styles\.teamInviteButton/);
-    assert.match(hotelTeam, /onClick=\{\(\) => onInviteDialogOpenChange\(true\)\}/);
+    assert.match(hotelTeam, /onClick=\{openFirstPersonDialog\}/);
     assert.match(hotelTeam, /disabled=\{inviteActionDisabled\}/);
     assert.match(hotelTeam, /aria-haspopup="dialog"/);
     assert.match(company, /inviteDialogOpen=\{teamInviteHotelId === activeProperty\?\.id\}/);
@@ -368,7 +368,7 @@ describe('My Hotel account and team integration', () => {
     assert.match(hotelTeam, /LazyRemoveDialog/);
     assert.match(hotelTeam, /LazyFirstPersonInviteDialog/);
     assert.match(hotelTeam, /LazyInviteDialog/);
-    assert.match(hotelTeam, /\{inviteDialogVisible && needsFirstPerson \? \([\s\S]*: inviteDialogVisible \? \(/);
+    assert.match(hotelTeam, /\{firstPersonDialogVisible \? \([\s\S]*: inviteDialogVisible \? \(/);
     assert.match(hotelTeam, /setInviteChoiceOpen\(false\)[\s\S]*setPendingAddAttempt\(null\)[\s\S]*if \(inviteDialogOpen\) onInviteDialogOpenChange\(false\)/);
     assert.match(hotelTeam, /onClose=\{\(\) => onInviteDialogOpenChange\(false\)\}/);
     assert.match(hotelTeamDialogs, /PeopleInviteChooserDialog/);

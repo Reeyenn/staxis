@@ -43,6 +43,7 @@ import type { AppUser } from '@/contexts/AuthContext';
 import { fetchWithAuth } from '@/lib/api-fetch';
 import type { AppRole } from '@/lib/roles';
 import type { StaffDepartment, StaffMember } from '@/types';
+import type { FirstPersonOnboardingSnapshot } from '@/lib/first-person-onboarding-state';
 
 import type { AddStaffAttempt } from './AddStaffDialog';
 import { restoreDialogFocus } from './dialog-focus';
@@ -53,6 +54,12 @@ import {
   type RosterGroupKey,
   type RosterPerson,
 } from './people-roster';
+import {
+  deriveHotelTeamSetupState,
+  hotelTeamSetupDialogTitle,
+  hotelTeamSetupLabel,
+  type HotelTeamSetupMode,
+} from './hotel-team-setup';
 import styles from './HotelTeamPanel.module.css';
 
 export type HotelTeamLang = 'en' | 'es';
@@ -103,6 +110,11 @@ export interface HotelTeamMember {
    * access can make an organization member visible here without creating the
    * hotel's direct first-person/setup account. */
   managementSurface: 'legacy_hotel' | 'company_access';
+  /** Canonical direct-account standing for this exact selected hotel. This is
+   * intentionally separate from managementSurface because normalized direct
+   * accounts are projected as company_access. */
+  directHotelAccount?: boolean | null;
+  hotelLeadershipRole?: 'owner' | 'general_manager' | null;
   globalImpact?: {
     displayNameAffectsAllHotels: boolean;
     roleAffectsAllHotels: boolean;
@@ -164,6 +176,8 @@ export interface HotelTeamPanelProps {
   /** The roster subscription failed — say so instead of implying nobody works
    *  here. */
   rosterUnavailable?: boolean;
+  /** The employment roster has finished loading (success or failure). */
+  rosterSettled?: boolean;
   /** May this viewer add somebody to the schedule? */
   canAddStaff?: boolean;
   onChanged?: () => void | Promise<void>;
@@ -513,6 +527,7 @@ function DialogLoading({
   fallbackFocusRef,
   choiceCount = 2,
   inviteSections = DEFAULT_INVITE_LOADING_SECTIONS,
+  setupMode = 'first-person',
 }: {
   lang: HotelTeamLang;
   hotelName: string;
@@ -522,24 +537,25 @@ function DialogLoading({
   fallbackFocusRef?: React.RefObject<HTMLElement | null>;
   choiceCount?: number;
   inviteSections?: readonly InviteLoadingSection[];
+  setupMode?: HotelTeamSetupMode;
 }) {
   const closeRef = React.useRef<HTMLButtonElement | null>(null);
   const dialogRef = React.useRef<HTMLDivElement | null>(null);
   const onCloseRef = React.useRef(onClose);
   onCloseRef.current = onClose;
   const titleId = React.useId();
-  const loadingLabel = 'Opening dialog…';
   const title = variant === 'invite' || variant === 'invite-choice'
     ? 'Invite people'
     : variant === 'first-person-invite'
-      ? 'Add first person'
-    : variant === 'add-staff'
-      ? 'Add staff member'
-    : variant === 'member'
-      ? 'Person details'
-      : variant === 'remove'
-        ? 'Remove hotel access'
-        : 'Review join request';
+      ? hotelTeamSetupDialogTitle(setupMode)
+      : variant === 'add-staff'
+        ? 'Add staff member'
+        : variant === 'member'
+          ? 'Person details'
+          : variant === 'remove'
+            ? 'Remove hotel access'
+            : 'Review join request';
+  const loadingLabel = `Opening ${title} dialog…`;
   const shellClass = variant === 'invite'
     ? `${styles.dialogWide} ${styles.dialogLoadingInvite}`
     : variant === 'first-person-invite'
@@ -735,11 +751,21 @@ export function HotelTeamPanel({
   onInviteDialogOpenChange,
   staffProfiles = [],
   rosterUnavailable = false,
+  rosterSettled = true,
   canAddStaff = false,
   onChanged,
 }: HotelTeamPanelProps) {
   const [team, setTeam] = React.useState<HotelTeamMember[]>([]);
   const [jobsByAccountId, setJobsByAccountId] = React.useState<Record<string, CompanyJobLine[]>>({});
+  const [teamSnapshotHotelId, setTeamSnapshotHotelId] = React.useState<string | null>(null);
+  const [firstPersonOnboardingSnapshot, setFirstPersonOnboardingSnapshot] = React.useState<{
+    hotelId: string;
+    state: FirstPersonOnboardingSnapshot;
+  } | null>(null);
+  const [firstPersonInviteSnapshot, setFirstPersonInviteSnapshot] = React.useState<{
+    hotelId: string;
+    mode: HotelTeamSetupMode;
+  } | null>(null);
   const [teamLoading, setTeamLoading] = React.useState(false);
   const [teamError, setTeamError] = React.useState('');
   const [requests, setRequests] = React.useState<HotelJoinRequest[]>([]);
@@ -782,9 +808,27 @@ export function HotelTeamPanel({
   const changedRef = React.useRef(onChanged);
   changedRef.current = onChanged;
 
+  const teamSnapshotCurrent = teamSnapshotHotelId === hotelId;
+  const teamForHotel = React.useMemo(
+    () => (teamSnapshotCurrent ? team : []),
+    [team, teamSnapshotCurrent],
+  );
+  const jobsForHotel = React.useMemo(
+    () => (teamSnapshotCurrent ? jobsByAccountId : {}),
+    [jobsByAccountId, teamSnapshotCurrent],
+  );
+  const firstPersonOnboarding = firstPersonOnboardingSnapshot?.hotelId === hotelId
+    ? firstPersonOnboardingSnapshot.state
+    : null;
+  const removeMemberForHotel = teamSnapshotCurrent ? removeMember : null;
+  const decisionForHotel = teamSnapshotCurrent ? decision : null;
+  const teamLoadingForHotel = Boolean(hotelId) && (!teamSnapshotCurrent || teamLoading);
+  const teamErrorForHotel = teamSnapshotCurrent ? teamError : '';
+
   const locked = readOnly;
   const inviteActionDisabled = locked
-    || (adminPreview && (teamLoading || Boolean(teamError)));
+    || (canManageTeam && !teamSnapshotCurrent)
+    || (adminPreview && (teamLoadingForHotel || Boolean(teamErrorForHotel)));
   // A hotel manager can use the shared link, QR, and code invite even when the
   // account-invite capability is not granted. Keep this derived from the same
   // guarded surfaces as the existing Invite dialog instead of widening access.
@@ -801,6 +845,9 @@ export function HotelTeamPanel({
   const [, setInviteCapabilityRevision] = React.useState(0);
   const inviteCapabilitiesStable = inviteCapabilityRef.current === inviteCapabilityKey;
   const inviteDialogVisible = inviteDialogOpen && inviteCapabilitiesStable && !inviteActionDisabled;
+  const firstPersonDialogModeSnapshot = firstPersonInviteSnapshot?.hotelId === hotelId
+    ? firstPersonInviteSnapshot.mode
+    : null;
   const inviteChoiceVisible = inviteChoiceOpen && inviteCapabilitiesStable && !inviteActionDisabled;
   const addDepartmentVisible = inviteCapabilitiesStable && !inviteActionDisabled
     ? addDepartment
@@ -832,15 +879,11 @@ export function HotelTeamPanel({
     setInviteChoiceOpen(false);
     setAddDepartment(null);
     setPendingAddAttempt(null);
-    if (inviteDialogOpen) onInviteDialogOpenChange(false);
+    if (inviteDialogOpen) {
+      setFirstPersonInviteSnapshot(null);
+      onInviteDialogOpenChange(false);
+    }
   }, [inviteCapabilityKey, inviteDialogOpen, onInviteDialogOpenChange]);
-
-  React.useEffect(() => {
-    if (!inviteActionDisabled) return;
-    setInviteChoiceOpen(false);
-    setAddDepartment(null);
-    if (inviteDialogOpen) onInviteDialogOpenChange(false);
-  }, [inviteActionDisabled, inviteDialogOpen, onInviteDialogOpenChange]);
 
   // A definitive fresh authorization refresh can revoke hotel-operational
   // standing while this tab is open. Drop every private roster projection as
@@ -853,6 +896,9 @@ export function HotelTeamPanel({
     requestAbortRef.current?.abort();
     setTeam([]);
     setJobsByAccountId({});
+    setTeamSnapshotHotelId(null);
+    setFirstPersonOnboardingSnapshot(null);
+    setFirstPersonInviteSnapshot(null);
     setRequests([]);
     setContactSnapshot(null);
     setWageSnapshot(null);
@@ -883,6 +929,10 @@ export function HotelTeamPanel({
 
     if (!hotelId || !canManageTeam) {
       setTeam([]);
+      setJobsByAccountId({});
+      setTeamSnapshotHotelId(null);
+      setFirstPersonOnboardingSnapshot(null);
+      setFirstPersonInviteSnapshot(null);
       setTeamLoading(false);
       setTeamError('');
       return;
@@ -890,6 +940,10 @@ export function HotelTeamPanel({
 
     if (clearFirst) {
       setTeam([]);
+      setJobsByAccountId({});
+      setTeamSnapshotHotelId(null);
+      setFirstPersonOnboardingSnapshot(null);
+      setFirstPersonInviteSnapshot(null);
     }
     setTeamLoading(true);
     setTeamError('');
@@ -900,6 +954,7 @@ export function HotelTeamPanel({
       const body = await response.json().catch(() => ({})) as Envelope<{
         team?: HotelTeamMember[];
         hatsByAccountId?: Record<string, CompanyJobLine[]>;
+        firstPersonOnboarding?: FirstPersonOnboardingSnapshot;
       }>;
       if (!response.ok || !body.ok) {
         throw new Error(responseError(
@@ -909,15 +964,32 @@ export function HotelTeamPanel({
       }
       if (controller.signal.aborted || sequence !== teamSequenceRef.current) return;
       const responseTeam = body.data?.team ?? [];
+      const responseOnboarding = body.data?.firstPersonOnboarding;
       const nextTeam = (adminPreview || readOnly)
         ? responseTeam.filter((member) => !member.isPlatformAdmin && member.role !== 'admin')
         : responseTeam;
       setTeam(nextTeam);
       setJobsByAccountId(body.data?.hatsByAccountId ?? {});
+      setTeamSnapshotHotelId(hotelId);
+      setFirstPersonOnboardingSnapshot(
+        adminPreview && !responseOnboarding
+          ? null
+          : {
+              hotelId,
+              state: responseOnboarding ?? {
+                status: 'none',
+                invitedEmail: null,
+                accountId: null,
+              },
+            },
+      );
     } catch (error) {
       if (controller.signal.aborted || sequence !== teamSequenceRef.current) return;
       console.error('[HotelTeamPanel] team load failed', error);
       setTeam([]);
+      setJobsByAccountId({});
+      setTeamSnapshotHotelId(hotelId);
+      setFirstPersonOnboardingSnapshot(null);
       setTeamError(error instanceof Error && error.message
         ? error.message
         : "Couldn't load the people at this hotel. Check your connection and try again.");
@@ -1041,7 +1113,7 @@ export function HotelTeamPanel({
     });
   }, [staffProfiles]);
 
-  const hasServerLifecyclePending = team.some((member) => member.lifecyclePending === true);
+  const hasServerLifecyclePending = teamForHotel.some((member) => member.lifecyclePending === true);
 
   React.useEffect(() => {
     setServerLifecyclePollingPaused(false);
@@ -1167,9 +1239,9 @@ export function HotelTeamPanel({
   const unlinkedRosterProfiles = React.useMemo<HotelInviteRosterProfile[]>(() => {
     // Do not offer a possibly stale profile while either half of the merged
     // roster is unavailable. The POST rechecks the chosen id server-side too.
-    if (teamLoading || teamError || rosterUnavailable) return [];
+    if (teamLoadingForHotel || teamErrorForHotel || rosterUnavailable || !rosterSettled) return [];
     const linkedStaffIds = new Set(
-      team.flatMap((member) => member.staffId ? [member.staffId] : []),
+      teamForHotel.flatMap((member) => member.staffId ? [member.staffId] : []),
     );
     return rosterStaff
       .filter((member) => member.isActive !== false && !linkedStaffIds.has(member.id))
@@ -1179,11 +1251,11 @@ export function HotelTeamPanel({
         department: member.department ?? 'housekeeping',
       }))
       .sort((left, right) => left.name.localeCompare(right.name));
-  }, [rosterStaff, rosterUnavailable, team, teamError, teamLoading]);
+  }, [rosterSettled, rosterStaff, rosterUnavailable, teamErrorForHotel, teamForHotel, teamLoadingForHotel]);
 
   const groups = React.useMemo(
-    () => buildHotelRoster(team, rosterStaff),
-    [rosterStaff, team],
+    () => buildHotelRoster(teamForHotel, rosterStaff),
+    [rosterStaff, teamForHotel],
   );
   const visibleGroups = React.useMemo(
     () => groups.filter((group) => group.people.length > 0 || ALWAYS_VISIBLE_GROUPS.has(group.key)),
@@ -1193,27 +1265,42 @@ export function HotelTeamPanel({
     () => groups.reduce((total, group) => total + group.people.length, 0),
     [groups],
   );
-  // The first-person lifecycle is about a direct hotel account, not every
-  // account that can reach the hotel. Organization-scope company access makes
-  // inherited members appear in this authoritative roster, but those members
-  // do not replace the hotel's first Owner/GM setup account.
-  const hasDirectHotelAccount = team.some(
-    (member) => member.managementSurface === 'legacy_hotel',
-  );
-  const needsFirstPerson = adminPreview
-    && !teamLoading
-    && !teamError
-    && !hasDirectHotelAccount;
+  const setupState = deriveHotelTeamSetupState({
+    adminPreview,
+    teamLoading: teamLoadingForHotel,
+    teamError: Boolean(teamErrorForHotel),
+    peopleCount,
+    team: teamForHotel,
+    rosterUnavailable: !rosterSettled || rosterUnavailable || firstPersonOnboarding === null,
+    approvalSettled: !requestsLoading && !requestsError,
+    onboardingStatus: firstPersonOnboarding?.status,
+  });
+  const { needsHotelOwnerOrGm } = setupState;
+  const setupMode = setupState.setupMode;
+  const firstPersonPending = firstPersonOnboarding?.status === 'pending';
+  const pendingSetupMode: HotelTeamSetupMode = peopleCount > 0
+    ? 'hotel-owner-or-gm'
+    : 'first-person';
+  // Keep the successful first-person result mounted while the refreshed team
+  // snapshot moves setupMode to null/pending. Otherwise React would replace
+  // the result dialog with the ordinary Invite dialog before the user can
+  // copy the active signup link or close it.
+  const firstPersonDialogMode = setupMode ?? firstPersonDialogModeSnapshot;
+  const firstPersonDialogVisible = inviteDialogOpen
+    && inviteCapabilitiesStable
+    && !locked
+    && firstPersonDialogMode !== null;
+  const rosterIndeterminate = !rosterSettled || rosterUnavailable;
   const counts = React.useMemo(() => rosterCounts(rosterStaff), [rosterStaff]);
   const linkAccounts = React.useMemo(
-    () => team.map((member) => ({
+    () => teamForHotel.map((member) => ({
       accountId: member.accountId,
       displayName: member.displayName,
       username: member.username,
       role: member.role,
       staffId: member.staffId,
     })),
-    [team],
+    [teamForHotel],
   );
   const editPerson = React.useMemo(
     () => groups.flatMap((group) => group.people).find((person) => person.key === editKey) ?? null,
@@ -1222,9 +1309,9 @@ export function HotelTeamPanel({
 
   const loadingDialogVariant: DialogLoadingVariant = editPerson
     ? 'member'
-    : removeMember
+    : removeMemberForHotel
       ? 'remove'
-      : inviteDialogVisible && needsFirstPerson
+      : firstPersonDialogVisible
         ? 'first-person-invite'
         : inviteDialogVisible
           ? 'invite'
@@ -1238,11 +1325,12 @@ export function HotelTeamPanel({
       setEditKey(null);
       return;
     }
-    if (removeMember) {
+    if (removeMemberForHotel) {
       setRemoveMember(null);
       return;
     }
     if (inviteDialogOpen) {
+      setFirstPersonInviteSnapshot(null);
       onInviteDialogOpenChange(false);
       return;
     }
@@ -1255,7 +1343,7 @@ export function HotelTeamPanel({
       return;
     }
     setDecision(null);
-  }, [addDepartment, editKey, inviteChoiceOpen, inviteDialogOpen, onInviteDialogOpenChange, removeMember]);
+  }, [addDepartment, editKey, inviteChoiceOpen, inviteDialogOpen, onInviteDialogOpenChange, removeMemberForHotel]);
 
   const loadingReturnFocusRef = loadingDialogVariant === 'invite-choice'
     ? inviteEntryReturnFocusRef
@@ -1266,9 +1354,51 @@ export function HotelTeamPanel({
       : loadingDialogVariant === 'add-staff'
         ? addStaffReturnFocusRef
         : undefined;
-  const normalLoadingReturnFocusRef = needsFirstPerson && loadingDialogVariant === 'first-person-invite'
+  const normalLoadingReturnFocusRef = firstPersonDialogVisible && loadingDialogVariant === 'first-person-invite'
     ? undefined
     : loadingReturnFocusRef;
+
+  const handleFirstPersonInvited = React.useCallback(() => {
+    if (!firstPersonDialogMode) return;
+    setFirstPersonInviteSnapshot({ hotelId, mode: firstPersonDialogMode });
+  }, [firstPersonDialogMode, hotelId]);
+
+  const openFirstPersonDialog = React.useCallback(() => {
+    if (!setupMode || inviteActionDisabled || locked) return;
+    setFirstPersonInviteSnapshot({ hotelId, mode: setupMode });
+    onInviteDialogOpenChange(true);
+  }, [hotelId, inviteActionDisabled, locked, onInviteDialogOpenChange, setupMode]);
+
+  const closeFirstPersonDialog = React.useCallback(() => {
+    setFirstPersonInviteSnapshot(null);
+    onInviteDialogOpenChange(false);
+  }, [onInviteDialogOpenChange]);
+
+  React.useEffect(() => {
+    if (!firstPersonInviteSnapshot || firstPersonInviteSnapshot.hotelId !== hotelId) return;
+    const onboarding = firstPersonOnboarding;
+    if (onboarding?.status !== 'created'
+      && !(onboarding?.status === 'none' && onboarding.invitedEmail)) return;
+    setFirstPersonInviteSnapshot(null);
+    if (inviteDialogOpen) onInviteDialogOpenChange(false);
+  }, [firstPersonInviteSnapshot, firstPersonOnboarding, hotelId, inviteDialogOpen, onInviteDialogOpenChange]);
+
+  React.useEffect(() => {
+    if (!inviteActionDisabled) return;
+    const keepFirstPersonDialog = inviteDialogOpen && firstPersonDialogMode !== null;
+    if (keepFirstPersonDialog) return;
+    setInviteChoiceOpen(false);
+    setAddDepartment(null);
+    if (inviteDialogOpen) onInviteDialogOpenChange(false);
+  }, [firstPersonDialogMode, inviteActionDisabled, inviteDialogOpen, onInviteDialogOpenChange]);
+
+  React.useEffect(() => {
+    if (!firstPersonPending || !canManageTeam || !teamSnapshotCurrent) return;
+    const interval = window.setInterval(() => {
+      void loadTeam();
+    }, 5_000);
+    return () => window.clearInterval(interval);
+  }, [canManageTeam, firstPersonPending, loadTeam, teamSnapshotCurrent]);
 
   if (!hotelId) {
     return (
@@ -1323,6 +1453,7 @@ export function HotelTeamPanel({
             inviteSections={['email']}
             returnFocusRef={loadingReturnFocusRef}
             fallbackFocusRef={peopleHeadingRef}
+            setupMode={setupMode ?? 'first-person'}
             onClose={closeLoadingDialog}
           />
         )}>
@@ -1404,28 +1535,48 @@ export function HotelTeamPanel({
           <div className={styles.subheadingCopy}>
             <div className={styles.subheadingTitleRow}>
               <h2 ref={peopleHeadingRef} id="team-members-title" tabIndex={-1}>{'Everyone at this hotel'}</h2>
-              {!teamLoading && !teamError ? (
+              {!teamLoadingForHotel && !teamErrorForHotel ? (
                 <strong aria-label={`${peopleCount} people at this hotel`}>
                   {peopleCount}
                 </strong>
               ) : null}
             </div>
           </div>
-          {needsFirstPerson ? (
+          {setupMode ? (
             <button
               type="button"
               className={`${styles.primaryButton} ${styles.headingInviteButton}`}
-              onClick={() => onInviteDialogOpenChange(true)}
+              onClick={openFirstPersonDialog}
               disabled={inviteActionDisabled}
               aria-haspopup="dialog"
             >
               <UserPlus size={16} aria-hidden="true" />
-              {'Add first person'}
+              {hotelTeamSetupLabel(setupMode)}
             </button>
           ) : null}
         </div>
 
-        {!needsFirstPerson && !locked && inviteCapabilitiesStable && inviteEntryAvailable ? (
+        {needsHotelOwnerOrGm ? (
+          <div className={styles.infoNotice} role="status">
+            <ShieldCheck size={17} aria-hidden="true" />
+            <span>{'People are already listed at this hotel. Add a hotel Owner or General Manager to complete hotel setup.'}</span>
+          </div>
+        ) : null}
+
+        {firstPersonPending ? (
+          <div className={styles.warningNotice} role="status">
+            <Clock3 size={17} aria-hidden="true" />
+            <span>
+              {pendingSetupMode === 'hotel-owner-or-gm'
+                ? 'Hotel Owner or GM invitation pending'
+                : 'First-person invitation pending'}
+              {firstPersonOnboarding?.invitedEmail ? ` for ${firstPersonOnboarding.invitedEmail}.` : '.'}
+              {' Wait for signup before sending another invitation.'}
+            </span>
+          </div>
+        ) : null}
+
+        {!setupMode && !locked && inviteCapabilitiesStable && inviteEntryAvailable ? (
           <div className={styles.peopleActions} aria-label="Ways to add people">
             <button
               ref={inviteEntryRef}
@@ -1524,34 +1675,92 @@ export function HotelTeamPanel({
           </div>
         ) : null}
 
-        {teamLoading ? (
+        {teamLoadingForHotel ? (
           <div className={styles.skeletonList} role="status" aria-label={'Loading the hotel roster'}>
             {[0, 1, 2].map((item) => <span key={item} />)}
           </div>
-        ) : teamError ? (
+        ) : teamErrorForHotel ? (
           <div className={styles.errorState} role="alert">
             <AlertCircle size={18} aria-hidden="true" />
-            <div><strong>{'The hotel roster did not load'}</strong><span>{teamError}</span></div>
+            <div><strong>{'The hotel roster did not load'}</strong><span>{teamErrorForHotel}</span></div>
             <button type="button" onClick={() => void loadTeam()}>
               <RefreshCw size={15} aria-hidden="true" />{'Retry'}
             </button>
           </div>
+        ) : rosterIndeterminate && peopleCount === 0 ? (
+          rosterUnavailable ? (
+            <div className={styles.errorState} role="status">
+              <AlertTriangle size={18} aria-hidden="true" />
+              <div>
+                <strong>{'People state unavailable'}</strong>
+                <span>{'The schedule roster is unavailable, so this hotel may have people who are not shown. Retry before using an empty-state action.'}</span>
+              </div>
+              <button type="button" onClick={() => void changedRef.current?.()}>
+                <RefreshCw size={15} aria-hidden="true" />{'Retry'}
+              </button>
+            </div>
+          ) : (
+            <div className={styles.emptyState} role="status">
+              <span><RefreshCw size={22} aria-hidden="true" /></span>
+              <h3>{'Checking the hotel roster'}</h3>
+              <p>{'People state will appear after the schedule roster finishes loading.'}</p>
+            </div>
+          )
+        ) : !rosterIndeterminate && peopleCount === 0 && requestsLoading ? (
+          <div className={styles.emptyState} role="status">
+            <span><RefreshCw size={22} aria-hidden="true" /></span>
+            <h3>{'Checking pending approvals'}</h3>
+            <p>{'The hotel empty state will appear after pending approvals finish loading.'}</p>
+          </div>
+        ) : !rosterIndeterminate && peopleCount === 0 && requestsError ? (
+          <div className={styles.errorState} role="status">
+            <AlertCircle size={18} aria-hidden="true" />
+            <div>
+              <strong>{'People state unavailable'}</strong>
+              <span>{'Pending approvals could not be checked, so the hotel cannot be confirmed empty.'}</span>
+            </div>
+            <button type="button" onClick={() => void loadRequests()}>
+              <RefreshCw size={15} aria-hidden="true" />{'Retry'}
+            </button>
+          </div>
+        ) : !rosterIndeterminate && peopleCount === 0 && requests.length > 0 ? (
+          <div className={styles.emptyState}>
+            <span><Users size={22} aria-hidden="true" /></span>
+            <h3>{'No approved people yet'}</h3>
+            <p>{'Pending join requests are waiting for approval. Review them above or add the hotel owner or General Manager.'}</p>
+          </div>
+        ) : !rosterIndeterminate && peopleCount === 0 && firstPersonPending ? (
+          <div className={styles.emptyState}>
+            <span><Clock3 size={22} aria-hidden="true" /></span>
+            <h3>{pendingSetupMode === 'hotel-owner-or-gm'
+              ? 'Hotel Owner or GM invitation pending'
+              : 'First-person invitation pending'}</h3>
+            <p>{firstPersonOnboarding?.invitedEmail
+              ? (pendingSetupMode === 'hotel-owner-or-gm'
+                ? 'The hotel Owner or GM invitation sent to ' + firstPersonOnboarding.invitedEmail + ' is waiting for signup.'
+                : 'The invitation sent to ' + firstPersonOnboarding.invitedEmail + ' is waiting for signup.')
+              : pendingSetupMode === 'hotel-owner-or-gm'
+                ? 'The hotel Owner or GM invitation is waiting for signup.'
+                : 'The invitation is waiting for signup.'}</p>
+          </div>
         ) : peopleCount === 0 ? (
           <div className={styles.emptyState}>
             <span><Users size={22} aria-hidden="true" /></span>
-            <h3>{needsFirstPerson ? 'Add first person' : 'Nobody here yet'}</h3>
-            <p>{needsFirstPerson
+            <h3>{hotelTeamSetupLabel(setupMode) ?? 'Nobody here yet'}</h3>
+            <p>{setupMode === 'first-person'
               ? 'Invite this hotel’s first Owner or General Manager. Their assigned role is locked into signup.'
-              : 'Use Add staff member for someone who only needs the roster and schedule. Use Invite people when they need Staxis login access.'}</p>
-            {!locked && needsFirstPerson ? (
+              : setupMode === 'hotel-owner-or-gm'
+                ? 'Add a hotel Owner or General Manager to complete hotel setup.'
+                : 'Use Add staff member for someone who only needs the roster and schedule. Use Invite people when they need Staxis login access.'}</p>
+            {!locked && setupMode ? (
               <div className={styles.emptyStateActions}>
                 <button
                   type="button"
                   className={styles.primaryButton}
-                  onClick={() => onInviteDialogOpenChange(true)}
+                  onClick={openFirstPersonDialog}
                 >
                   <UserPlus size={16} aria-hidden="true" />
-                  {'Add first person'}
+                  {hotelTeamSetupLabel(setupMode)}
                 </button>
               </div>
             ) : null}
@@ -1567,7 +1776,9 @@ export function HotelTeamPanel({
                 </div>
                 {group.people.length === 0 ? (
                   <p className={styles.departmentEmpty}>
-                    {'Nobody in this department yet.'}
+                    {rosterIndeterminate
+                      ? 'The department roster is temporarily unavailable.'
+                      : 'Nobody in this department yet.'}
                   </p>
                 ) : (
                 <div className={styles.personList} role="list">
@@ -1579,7 +1790,7 @@ export function HotelTeamPanel({
                       currentUser={currentUser}
                       currentAccountId={currentAccountId}
                       locked={locked}
-                      jobsByAccountId={jobsByAccountId}
+                      jobsByAccountId={jobsForHotel}
                       phone={person.staff ? contacts[person.staff.id] ?? null : null}
                       contactsReady={contactsReady}
                       contactsUnavailable={contactsError}
@@ -1622,6 +1833,7 @@ export function HotelTeamPanel({
           inviteSections={canInviteAccounts ? ['hotel', 'email'] : ['hotel']}
           returnFocusRef={normalLoadingReturnFocusRef}
           fallbackFocusRef={peopleHeadingRef}
+          setupMode={firstPersonDialogMode ?? 'first-person'}
           onClose={closeLoadingDialog}
         />
       )}>
@@ -1655,11 +1867,11 @@ export function HotelTeamPanel({
             {employmentSlot}
           </LazyStaffPersonDialog>
         ) : null}
-        {removeMember ? (
+        {removeMemberForHotel ? (
           <LazyRemoveDialog
             hotelId={hotelId}
             hotelName={hotelName}
-            member={removeMember}
+            member={removeMemberForHotel}
             lang={lang}
             onClose={() => setRemoveMember(null)}
             onRemoved={async () => {
@@ -1681,13 +1893,15 @@ export function HotelTeamPanel({
             onClose={() => setInviteChoiceOpen(false)}
           />
         ) : null}
-        {inviteDialogVisible && needsFirstPerson ? (
+        {firstPersonDialogVisible ? (
           <LazyFirstPersonInviteDialog
             hotelId={hotelId}
             hotelName={hotelName}
+            setupMode={firstPersonDialogMode}
             fallbackFocusRef={peopleHeadingRef}
-            onClose={() => onInviteDialogOpenChange(false)}
-            onChanged={() => changedRef.current?.()}
+            onClose={closeFirstPersonDialog}
+            onInvited={handleFirstPersonInvited}
+            onChanged={refreshAfterChange}
           />
         ) : inviteDialogVisible ? (
           <LazyInviteDialog
@@ -1703,12 +1917,12 @@ export function HotelTeamPanel({
             onChanged={() => changedRef.current?.()}
           />
         ) : null}
-        {decision ? (
+        {decisionForHotel ? (
           <LazyDecisionDialog
             hotelId={hotelId}
             hotelName={hotelName}
-            request={decision.request}
-            decision={decision.decision}
+            request={decisionForHotel.request}
+            decision={decisionForHotel.decision}
             lang={lang}
             onClose={() => setDecision(null)}
             onCompleted={async () => {
