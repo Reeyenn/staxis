@@ -22,7 +22,7 @@ const hoverTool: React.CSSProperties = { width: 28, height: 28, borderRadius: 6,
 
 function firstName(n: string): string { return (n ?? '').trim().split(/\s+/)[0] ?? ''; }
 
-export function MessageRow({ m, grouped, me, pid, L, conversation, onOpenThread, onReactToggle, onPinToggle, onTurnIntoTask, onReloadThread, onReloadBoot, activeThreadId }: MessagePaneProps & { m: MessageDTO; grouped: boolean }) {
+export function MessageRow({ m, grouped, dataMessageId, me, pid, L, conversation, onOpenThread, onReactToggle, onPinToggle, onTurnIntoTask, onReloadThread, onReloadBoot, activeThreadId }: MessagePaneProps & { m: MessageDTO; grouped: boolean; dataMessageId?: string }) {
   const [hover, setHover] = React.useState(false);
   const [showOriginal, setShowOriginal] = React.useState(false);
   const isStaxis = m.senderKind === 'staxis';
@@ -32,7 +32,7 @@ export function MessageRow({ m, grouped, me, pid, L, conversation, onOpenThread,
 
   if (isSystem) {
     return (
-      <div style={{ display: 'flex', justifyContent: 'center', padding: '4px 20px' }}>
+      <div data-message-id={dataMessageId} style={{ display: 'flex', justifyContent: 'center', padding: '4px 20px' }}>
         <span style={{ fontFamily: MONO, fontSize: 10.5, letterSpacing: '.04em', color: T.dim, background: T.paper, border: `1px solid ${T.hair}`, borderRadius: 6, padding: '3px 10px' }}>{m.body}</span>
       </div>
     );
@@ -43,7 +43,7 @@ export function MessageRow({ m, grouped, me, pid, L, conversation, onOpenThread,
   const text = showOriginal ? m.originalBody : m.body;
 
   return (
-    <div onMouseEnter={() => setHover(true)} onMouseLeave={() => setHover(false)}
+    <div data-message-id={dataMessageId} onMouseEnter={() => setHover(true)} onMouseLeave={() => setHover(false)}
       style={{ position: 'relative', display: 'flex', gap: 10, padding: grouped ? '1px 20px' : '5px 20px', background: hover ? T.paper : (active ? tint(T.forest, .05) : 'transparent') }}>
       <div style={{ width: 36, flexShrink: 0, display: 'flex', justifyContent: 'center' }}>
         {grouped

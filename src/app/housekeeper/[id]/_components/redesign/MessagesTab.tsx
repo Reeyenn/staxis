@@ -20,7 +20,13 @@ import { initialsOf } from '@/app/_components/ui/Avatar';
 import type { HousekeeperLocale } from '@/lib/translations';
 import { t } from '@/lib/translations';
 import type { ConversationDTO, MessageDTO, StaffLite } from '@/lib/comms/types';
-import { MESSAGE_PAGE_SIZE } from '@/lib/comms/message-pagination';
+import {
+  captureMessageScrollAnchor,
+  restoreMessageScrollAnchor,
+  type MessageCursor,
+  type MessageScrollAnchor,
+  type MessagesPageDTO,
+} from '@/lib/comms/message-pagination';
 import { TOK } from './tokens';
 
 /**
@@ -142,15 +148,14 @@ export function MessagesTab({
   const [messagesOlderKnown, setMessagesOlderKnown] = React.useState(false);
   const [messagesOlderLoading, setMessagesOlderLoading] = React.useState(false);
   const [messagesOlderError, setMessagesOlderError] = React.useState<string | null>(null);
-  const messagesRef = React.useRef<Msg[]>([]);
   const messagesHasOlderRef = React.useRef(false);
   const olderHistoryRef = React.useRef(false);
   const threadRequestRef = React.useRef(0);
-  const olderLoadRef = React.useRef<{ scope: string; cursor: string; promise: Promise<void> } | null>(null);
-  const olderScrollAnchorRef = React.useRef<{ requestId: number; top: number; height: number } | null>(null);
+  const olderLoadRef = React.useRef<{ scope: string; cursor: MessageCursor; promise: Promise<void> } | null>(null);
+  const olderScrollAnchorRef = React.useRef<{ requestId: number; anchor: MessageScrollAnchor } | null>(null);
+  const messagesCursorRef = React.useRef<MessageCursor | null>(null);
   const scrollRef = React.useRef<HTMLDivElement | null>(null);
   const inboxRequestRef = React.useRef(0);
-  messagesRef.current = messages;
   messagesHasOlderRef.current = messagesHasOlder;
 
   const loadInbox = React.useCallback(async () => {
@@ -173,11 +178,11 @@ export function MessagesTab({
     setMessagesOlderKnown(false);
     setMessagesOlderLoading(false);
     setMessagesOlderError(null);
-    messagesRef.current = [];
     messagesHasOlderRef.current = false;
     olderHistoryRef.current = false;
     olderLoadRef.current = null;
     olderScrollAnchorRef.current = null;
+    messagesCursorRef.current = null;
     setLoading(true);
     void loadInbox();
   }, [loadInbox]);
@@ -208,13 +213,13 @@ export function MessagesTab({
       setMessagesOlderKnown(false);
       setMessagesOlderLoading(false);
       setMessagesOlderError(null);
-      messagesRef.current = [];
       messagesHasOlderRef.current = false;
       olderHistoryRef.current = false;
       olderLoadRef.current = null;
       olderScrollAnchorRef.current = null;
+      messagesCursorRef.current = null;
       try {
-        const data = await hkPost<{ messages: MessageDTO[] }>(
+        const data = await hkPost<MessagesPageDTO>(
           '/api/housekeeper/messages/thread',
           { pid, staffId, conversationId: id },
         );
@@ -222,7 +227,8 @@ export function MessagesTab({
         if (data?.messages) {
           const page = mapMessages(data.messages);
           setMessages(page);
-          setMessagesHasOlder(page.length >= MESSAGE_PAGE_SIZE);
+          messagesCursorRef.current = data.pagination.nextCursor;
+          setMessagesHasOlder(data.pagination.hasOlder);
           setMessagesOlderKnown(true);
         } else {
           setMessagesError('Messages could not load. Check your connection and try again.');
@@ -250,7 +256,7 @@ export function MessagesTab({
   const loadOlderMessages = React.useCallback((): Promise<void> => {
     if (!activeId || !messagesHasOlderRef.current) return Promise.resolve();
     const scope = `${pid}\u0000${staffId}\u0000${activeId}`;
-    const cursor = messagesRef.current[0]?.createdAt;
+    const cursor = messagesCursorRef.current;
     if (!cursor) {
       setMessagesHasOlder(false);
       setMessagesOlderKnown(true);
@@ -259,8 +265,7 @@ export function MessagesTab({
     const activeRequest = olderLoadRef.current;
     if (activeRequest?.scope === scope) return activeRequest.promise;
     const requestId = threadRequestRef.current;
-    const scrollHeight = scrollRef.current?.scrollHeight ?? 0;
-    const scrollTop = scrollRef.current?.scrollTop ?? 0;
+    const scrollAnchor = scrollRef.current ? captureMessageScrollAnchor(scrollRef.current) : null;
     olderHistoryRef.current = true;
     setMessagesOlderLoading(true);
     setMessagesOlderError(null);
@@ -268,9 +273,9 @@ export function MessagesTab({
     let pending!: Promise<void>;
     pending = (async () => {
       try {
-        const data = await hkPost<{ messages: MessageDTO[] }>(
+        const data = await hkPost<MessagesPageDTO>(
           '/api/housekeeper/messages/thread',
-          { pid, staffId, conversationId: activeId, before: cursor },
+          { pid, staffId, conversationId: activeId, before: cursor.before, beforeId: cursor.beforeId },
         );
         if (requestId !== threadRequestRef.current) return;
         if (!data?.messages) {
@@ -278,11 +283,14 @@ export function MessagesTab({
           return;
         }
         const page = mapMessages(data.messages);
+        if (page.length > 0 && scrollAnchor) {
+          olderScrollAnchorRef.current = { requestId, anchor: scrollAnchor };
+        }
         if (page.length > 0) {
-          olderScrollAnchorRef.current = { requestId, top: scrollTop, height: scrollHeight };
           setMessages((current) => mergeMessages(current, page));
         }
-        setMessagesHasOlder(page.length >= MESSAGE_PAGE_SIZE);
+        messagesCursorRef.current = data.pagination.nextCursor;
+        setMessagesHasOlder(data.pagination.hasOlder);
         setMessagesOlderKnown(true);
       } catch {
         if (requestId === threadRequestRef.current) setMessagesOlderError('Older messages could not load.');
@@ -301,7 +309,7 @@ export function MessagesTab({
     olderScrollAnchorRef.current = null;
     if (anchor.requestId !== threadRequestRef.current) return;
     const element = scrollRef.current;
-    if (element) element.scrollTop = anchor.top + (element.scrollHeight - anchor.height);
+    if (element) restoreMessageScrollAnchor(element, anchor.anchor);
   }, [messages]);
 
   const send = React.useCallback(
@@ -316,7 +324,7 @@ export function MessagesTab({
         msgType: 'text',
       });
       if (ok !== null) {
-        const data = await hkPost<{ messages: MessageDTO[] }>(
+        const data = await hkPost<MessagesPageDTO>(
           '/api/housekeeper/messages/thread',
           { pid, staffId, conversationId: activeId },
         );
@@ -325,7 +333,8 @@ export function MessagesTab({
           if (olderHistoryRef.current) setMessages((current) => mergeMessages(current, page));
           else {
             setMessages(page);
-            setMessagesHasOlder(page.length >= MESSAGE_PAGE_SIZE);
+            messagesCursorRef.current = data.pagination.nextCursor;
+            setMessagesHasOlder(data.pagination.hasOlder);
             setMessagesOlderKnown(true);
           }
         }
@@ -668,6 +677,7 @@ function Thread({
           return (
             <div
               key={m.id}
+              data-message-id={m.id}
               style={{
                 display: 'flex',
                 flexDirection: 'column',

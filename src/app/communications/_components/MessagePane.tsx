@@ -145,7 +145,7 @@ export function MessagePane(props: MessagePaneProps) {
           return (
             <React.Fragment key={m.id}>
               {showDay && <DayDivider label={fmtDayLabel(m.createdAt, 'Today', 'Yesterday')} />}
-              <MessageRow {...props} m={m} grouped={grouped} />
+              <MessageRow {...props} m={m} grouped={grouped} dataMessageId={m.id} />
             </React.Fragment>
           );
         })}

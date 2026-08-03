@@ -31,7 +31,14 @@ import type { BootstrapData, ViewMode, RightPanel, L as LType } from './comms-ty
 import { T, SANS, MONO, deptColorDark, Avatar, Presence } from './comms-ui';
 import { MessagePane, ThreadPanel, PinnedPanel, MembersPanel } from './MessagePane';
 import { SearchPalette, NewMessageModal } from './CommsOverlays';
-import { MESSAGE_PAGE_SIZE, mergeMessagesChronologically } from '@/lib/comms/message-pagination';
+import {
+  captureMessageScrollAnchor,
+  mergeMessagesChronologically,
+  restoreMessageScrollAnchor,
+  type MessageCursor,
+  type MessageScrollAnchor,
+  type MessagesPageDTO,
+} from '@/lib/comms/message-pagination';
 
 /**
  * Coalesce concurrent attempts to run the same read into one request. The
@@ -131,18 +138,17 @@ function CommsPropertyApp({ pid }: { pid: string | null }) {
     token: object;
     run: (ensureFresh?: boolean) => Promise<void>;
   } | null>(null);
-  const messagesRef = React.useRef<MessageDTO[]>([]);
   const messagesHasOlderRef = React.useRef(false);
   const olderLoadRef = React.useRef<{
     scope: string;
-    cursor: string;
+    cursor: MessageCursor;
     promise: Promise<void>;
   } | null>(null);
   const olderScrollAnchorRef = React.useRef<{
     token: object;
-    top: number;
-    height: number;
+    anchor: MessageScrollAnchor;
   } | null>(null);
+  const messagesCursorRef = React.useRef<MessageCursor | null>(null);
   const olderHistoryRef = React.useRef(false);
   // `pid` comes from a client-only context (reads localStorage), so it's null
   // during SSR but already set on the first client render. Branching the render
@@ -187,7 +193,6 @@ function CommsPropertyApp({ pid }: { pid: string | null }) {
   );
   const selConvo = boot?.conversations.find((c) => c.id === selId) ?? null;
   const online = React.useMemo(() => new Set(boot?.onlineStaffIds ?? []), [boot?.onlineStaffIds]);
-  messagesRef.current = messages;
   messagesHasOlderRef.current = messagesHasOlder;
 
   // Messages stay hand-rolled: switching conversations must BLANK the pane
@@ -212,7 +217,7 @@ function CommsPropertyApp({ pid }: { pid: string | null }) {
           // Increment only when a transport actually starts. Poll ticks that
           // join this promise do not supersede its response.
           const requestId = ++threadRequestRef.current;
-          const r = await apiGet<{ messages: MessageDTO[] }>(url);
+          const r = await apiGet<MessagesPageDTO>(url);
           if (threadLoadRef.current?.token !== token || requestId !== threadRequestRef.current) return;
           if (r.ok && r.data) {
             const page = r.data.messages;
@@ -220,7 +225,8 @@ function CommsPropertyApp({ pid }: { pid: string | null }) {
               setMessages((current) => mergeMessagesChronologically(current, page));
             } else {
               setMessages(page);
-              setMessagesHasOlder(page.length >= MESSAGE_PAGE_SIZE);
+              messagesCursorRef.current = r.data.pagination.nextCursor;
+              setMessagesHasOlder(r.data.pagination.hasOlder);
               setMessagesOlderKnown(true);
             }
             setMessagesError(null);
@@ -258,7 +264,7 @@ function CommsPropertyApp({ pid }: { pid: string | null }) {
   const loadOlderMessages = React.useCallback((): Promise<void> => {
     if (!pid || !selId || !messagesHasOlderRef.current) return Promise.resolve();
     const scope = `${pid}\u0000${selId}`;
-    const cursor = messagesRef.current[0]?.createdAt;
+    const cursor = messagesCursorRef.current;
     if (!cursor) {
       setMessagesHasOlder(false);
       setMessagesOlderKnown(true);
@@ -269,8 +275,7 @@ function CommsPropertyApp({ pid }: { pid: string | null }) {
     const loader = threadLoadRef.current;
     if (!loader || loader.scope !== scope) return Promise.resolve();
     const token = loader.token;
-    const scrollHeight = scrollRef.current?.scrollHeight ?? 0;
-    const scrollTop = scrollRef.current?.scrollTop ?? 0;
+    const scrollAnchor = scrollRef.current ? captureMessageScrollAnchor(scrollRef.current) : null;
     olderHistoryRef.current = true;
     setMessagesOlderLoading(true);
     setMessagesOlderError(null);
@@ -278,19 +283,22 @@ function CommsPropertyApp({ pid }: { pid: string | null }) {
     let pending!: Promise<void>;
     pending = (async () => {
       try {
-        const url = `/api/comms/messages?pid=${encodeURIComponent(pid)}&conversationId=${encodeURIComponent(selId)}&before=${encodeURIComponent(cursor)}`;
-        const r = await apiGet<{ messages: MessageDTO[] }>(url);
+        const url = `/api/comms/messages?pid=${encodeURIComponent(pid)}&conversationId=${encodeURIComponent(selId)}&before=${encodeURIComponent(cursor.before)}&beforeId=${encodeURIComponent(cursor.beforeId)}`;
+        const r = await apiGet<MessagesPageDTO>(url);
         if (threadLoadRef.current?.token !== token || threadLoadRef.current?.scope !== scope) return;
         if (!r.ok || !r.data) {
           setMessagesOlderError(r.error || 'Older messages could not load.');
           return;
         }
         const page = r.data.messages;
+        if (page.length > 0 && scrollAnchor) {
+          olderScrollAnchorRef.current = { token, anchor: scrollAnchor };
+        }
         if (page.length > 0) {
-          olderScrollAnchorRef.current = { token, top: scrollTop, height: scrollHeight };
           setMessages((current) => mergeMessagesChronologically(current, page));
         }
-        setMessagesHasOlder(page.length >= MESSAGE_PAGE_SIZE);
+        messagesCursorRef.current = r.data.pagination.nextCursor;
+        setMessagesHasOlder(r.data.pagination.hasOlder);
         setMessagesOlderKnown(true);
       } catch {
         if (threadLoadRef.current?.token === token && threadLoadRef.current?.scope === scope) {
@@ -313,7 +321,7 @@ function CommsPropertyApp({ pid }: { pid: string | null }) {
     olderScrollAnchorRef.current = null;
     if (threadLoadRef.current?.token !== anchor.token) return;
     const element = scrollRef.current;
-    if (element) element.scrollTop = anchor.top + (element.scrollHeight - anchor.height);
+    if (element) restoreMessageScrollAnchor(element, anchor.anchor);
   }, [messages]);
 
   React.useEffect(() => {
@@ -324,8 +332,8 @@ function CommsPropertyApp({ pid }: { pid: string | null }) {
     setMessagesOlderKnown(false);
     setMessagesOlderLoading(false);
     setMessagesOlderError(null);
-    messagesRef.current = [];
     messagesHasOlderRef.current = false;
+    messagesCursorRef.current = null;
     olderLoadRef.current = null;
     olderScrollAnchorRef.current = null;
     olderHistoryRef.current = false;

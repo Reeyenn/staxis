@@ -1,5 +1,7 @@
 import assert from 'node:assert/strict';
 import { describe, test, type TestContext } from 'node:test';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 
 import { JSDOM } from 'jsdom';
 import React, { act } from 'react';
@@ -8,6 +10,10 @@ import { createRoot, type Root } from 'react-dom/client';
 import { MessagePane } from '@/app/communications/_components/MessagePane';
 import type { Me } from '@/app/communications/_components/comms-types-fe';
 import type { ConversationDTO, MessageDTO } from '@/lib/comms/types';
+import {
+  captureMessageScrollAnchor,
+  restoreMessageScrollAnchor,
+} from '@/lib/comms/message-pagination';
 
 const DOM_GLOBALS = [
   'window', 'document', 'navigator', 'Element', 'HTMLElement', 'Node', 'Event',
@@ -181,5 +187,57 @@ describe('communications older-message affordance', { concurrency: false }, () =
       root.render(<MessagePane {...paneProps({ onLoadOlder, messagesHasOlder: false })} />);
     });
     assert.equal(container.querySelector('[role="status"]')?.textContent, 'No older messages.');
+  });
+
+  test('anchors older-page insertion to a stable message when newer content is appended', (context) => {
+    const restore = installBrowser();
+    const { container } = mount(context, restore);
+    const scrollBox = document.createElement('div');
+    const current = document.createElement('div');
+    const newer = document.createElement('div');
+    current.dataset.messageId = 'current-message';
+    newer.dataset.messageId = 'newer-message';
+    scrollBox.append(current, newer);
+    container.append(scrollBox);
+
+    let currentRelativeTop = 40;
+    Object.defineProperty(scrollBox, 'getBoundingClientRect', {
+      configurable: true,
+      value: () => ({ top: 100, bottom: 500, left: 0, right: 400, width: 400, height: 400 }),
+    });
+    Object.defineProperty(current, 'getBoundingClientRect', {
+      configurable: true,
+      value: () => ({ top: 100 + currentRelativeTop, bottom: 180 + currentRelativeTop, left: 0, right: 300, width: 300, height: 80 }),
+    });
+    Object.defineProperty(newer, 'getBoundingClientRect', {
+      configurable: true,
+      value: () => ({ top: 420, bottom: 500, left: 0, right: 300, width: 300, height: 80 }),
+    });
+
+    scrollBox.scrollTop = 100;
+    const anchor = captureMessageScrollAnchor(scrollBox);
+    assert.deepEqual(anchor, { messageId: 'current-message', relativeTop: 40 });
+
+    // Older rows move the current identity down; a poll/send append at the
+    // bottom is present but does not participate in the adjustment.
+    currentRelativeTop = 220;
+    assert.equal(restoreMessageScrollAnchor(scrollBox, anchor!), true);
+    assert.equal(scrollBox.scrollTop, 280);
+  });
+
+  test('desktop and housekeeper message lists use identity anchoring', () => {
+    const desktop = readFileSync(join(
+      process.cwd(),
+      'src/app/communications/_components/CommsApp.tsx',
+    ), 'utf8');
+    const housekeeper = readFileSync(join(
+      process.cwd(),
+      'src/app/housekeeper/[id]/_components/redesign/MessagesTab.tsx',
+    ), 'utf8');
+    for (const source of [desktop, housekeeper]) {
+      assert.match(source, /captureMessageScrollAnchor/);
+      assert.match(source, /restoreMessageScrollAnchor/);
+      assert.match(source, /beforeId/);
+    }
   });
 });

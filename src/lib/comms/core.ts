@@ -14,6 +14,11 @@ import { mergePmsRoomsForDate } from '@/lib/pms-rooms-server';
 import { translateMessagesForReader } from './translate';
 import { attachmentBelongsToConversation } from './attachments';
 import { commsStaffIdentityId } from './identity';
+import {
+  mergeMessageRowsChronologically,
+  messagePaginationForBaseRows,
+  type MessagesPageDTO,
+} from './message-pagination';
 import type { AiCallOptions } from '@/lib/ai/usage';
 import type {
   ChannelKey, CommsLang, CommsDept, ConversationDTO, MessageDTO, TaskDTO, StaffLite,
@@ -26,6 +31,7 @@ import {
   normalizeDept,
 } from '@/lib/capabilities/dept-scope';
 import {
+  authoritativeStandingForProperty,
   listAuthoritativePropertyAccess,
   type AuthoritativePropertyAccess,
 } from '@/lib/authorization/server';
@@ -155,45 +161,123 @@ async function staffDeptMap(pid: string, ids: string[]): Promise<Map<string, str
  * a non-manager with no department, so the account-to-staff link is the source
  * of truth for the manager half of the channel-membership predicate.
  */
+export interface ManagerStaffResolutionInput {
+  pid: string;
+  linkedRows: {
+    accountId: string;
+    staffId: string;
+    propertyId: string;
+    isActive: boolean;
+  }[];
+  legacyRows: { accountId: string; staffId: string | null }[];
+  accounts: { id: string; role: string | null; active: boolean | null }[];
+  authorityByAccount: ReadonlyMap<string, { propertyId: string; operationalRole: string }>;
+}
+
+/**
+ * Resolve manager staff ids from both normalized links and the compatibility
+ * pointer. A legacy pointer is usable only when the authoritative property
+ * standing currently grants that account manager capacity at this property.
+ */
+export function managerStaffIdsFromAuthority(input: ManagerStaffResolutionInput): Set<string> {
+  const accountsById = new Map(input.accounts.map((account) => [account.id, account]));
+  const managerAtProperty = (accountId: string): boolean => {
+    const standing = input.authorityByAccount.get(accountId);
+    return standing?.propertyId === input.pid && isManagerRole(standing.operationalRole);
+  };
+  const managerIds = new Set<string>();
+
+  for (const row of input.linkedRows) {
+    const account = accountsById.get(row.accountId);
+    if (
+      row.propertyId === input.pid
+      && row.isActive
+      && !!account
+      && account.active !== false
+      && (isManagerRole(account?.role) || managerAtProperty(row.accountId))
+    ) {
+      managerIds.add(row.staffId);
+    }
+  }
+
+  // The global staff pointer is a compatibility identity only. It must not
+  // turn a manager account into a member of every property's roster.
+  for (const row of input.legacyRows) {
+    const account = accountsById.get(row.accountId);
+    if (row.staffId && account && account.active !== false && managerAtProperty(row.accountId)) {
+      managerIds.add(row.staffId);
+    }
+  }
+  return managerIds;
+}
+
 async function managerStaffIdsForProperty(pid: string, staffIds: string[]): Promise<Set<string>> {
   const unique = Array.from(new Set(staffIds.filter(Boolean)));
   if (unique.length === 0) return new Set();
 
   const { data: links } = await supabaseAdmin
     .from('account_property_staff_links')
-    .select('account_id, staff_id')
+    .select('account_id, staff_id, property_id, is_active')
     .eq('property_id', pid)
     .eq('is_active', true)
     .in('staff_id', unique);
-  const linkedRows = (links ?? []) as { account_id: string; staff_id: string }[];
-  const accountIds = Array.from(new Set(linkedRows.map((row) => row.account_id).filter(Boolean)));
-
-  const managerIds = new Set<string>();
-  if (accountIds.length > 0) {
-    const { data: accounts } = await supabaseAdmin
-      .from('accounts')
-      .select('id, role, active')
-      .in('id', accountIds);
-    const managerAccountIds = new Set(
-      ((accounts ?? []) as { id: string; role: string | null; active: boolean | null }[])
-        .filter((account) => account.active !== false && isManagerRole(account.role))
-        .map((account) => account.id),
-    );
-    for (const row of linkedRows) {
-      if (managerAccountIds.has(row.account_id)) managerIds.add(row.staff_id);
-    }
-  }
-
-  // Keep pre-link accounts visible as managers while the legacy pointer is
-  // still the only identity relation available for that account.
   const { data: legacyAccounts } = await supabaseAdmin
     .from('accounts')
-    .select('staff_id, role, active')
+    .select('id, staff_id')
     .in('staff_id', unique);
-  for (const account of (legacyAccounts ?? []) as { staff_id: string | null; role: string | null; active: boolean | null }[]) {
-    if (account.active !== false && account.staff_id && isManagerRole(account.role)) managerIds.add(account.staff_id);
+  const linkedRows = ((links ?? []) as {
+    account_id: string;
+    staff_id: string;
+    property_id: string;
+    is_active: boolean;
+  }[]);
+  const legacyRows = ((legacyAccounts ?? []) as { id: string; staff_id: string | null }[])
+    .map((account) => ({ accountId: account.id, staffId: account.staff_id }));
+  const accountIds = Array.from(new Set([
+    ...linkedRows.map((row) => row.account_id),
+    ...legacyRows.map((row) => row.accountId),
+  ].filter(Boolean)));
+  if (accountIds.length === 0) return new Set();
+
+  const { data: accounts } = await supabaseAdmin
+    .from('accounts')
+    .select('id, role, active')
+    .in('id', accountIds);
+  const accountRows = ((accounts ?? []) as { id: string; role: string | null; active: boolean | null }[]);
+
+  const legacyAccountIds = new Set(legacyRows.map((row) => row.accountId));
+  const linkedAccountIds = new Set(linkedRows.map((row) => row.account_id));
+  // Check authority for every legacy pointer, plus normalized links whose
+  // property standing may supply manager capacity. Global manager roles on an
+  // active property link retain their existing normalized behavior.
+  const authorityEntries = await Promise.all(accountRows
+    .filter((account) => account.active !== false
+      && (legacyAccountIds.has(account.id)
+        || (linkedAccountIds.has(account.id) && !isManagerRole(account.role))))
+    .map(async (account) => {
+      const access = await listAuthoritativePropertyAccess(account.id);
+      const standing = access ? authoritativeStandingForProperty(access, pid) : null;
+      return standing
+        ? [account.id, { propertyId: standing.propertyId, operationalRole: standing.operationalRole }] as const
+        : null;
+    }));
+  const authorityByAccount = new Map<string, { propertyId: string; operationalRole: string }>();
+  for (const entry of authorityEntries) {
+    if (entry) authorityByAccount.set(entry[0], entry[1]);
   }
-  return managerIds;
+
+  return managerStaffIdsFromAuthority({
+    pid,
+    linkedRows: linkedRows.map((row) => ({
+      accountId: row.account_id,
+      staffId: row.staff_id,
+      propertyId: row.property_id,
+      isActive: row.is_active,
+    })),
+    legacyRows,
+    accounts: accountRows,
+    authorityByAccount,
+  });
 }
 
 /** Resolve an authenticated account → its staff identity + role for messaging. */
@@ -837,8 +921,8 @@ export async function getMessages(
   conversationId: string,
   readerStaffId: string,
   readerLang: CommsLang,
-  opts: { limit?: number; before?: string; withReceipts?: boolean; ai?: AiCallOptions } = {},
-): Promise<MessageDTO[]> {
+  opts: { limit?: number; before?: string; beforeId?: string; withReceipts?: boolean; ai?: AiCallOptions } = {},
+): Promise<MessagesPageDTO> {
   const limit = Math.min(opts.limit ?? 80, 80);
   let query = supabaseAdmin
     .from('comms_messages')
@@ -846,11 +930,21 @@ export async function getMessages(
     .eq('conversation_id', conversationId)
     .eq('property_id', pid)
     .is('parent_message_id', null) // top-level only; replies live in the thread panel
-    .order('created_at', { ascending: false });
-  if (opts.before) query = query.lt('created_at', opts.before);
+    .order('created_at', { ascending: false })
+    .order('id', { ascending: false });
+  if (opts.before && opts.beforeId) {
+    // Deterministic keyset boundary: (created_at, id) < (before, beforeId).
+    query = query.or(`created_at.lt.${opts.before},and(created_at.eq.${opts.before},id.lt.${opts.beforeId})`);
+  } else if (opts.before) {
+    // Preserve compatibility for timestamp-only callers. New clients always
+    // use the composite metadata cursor returned below.
+    query = query.lt('created_at', opts.before);
+  }
   const { data } = await query.limit(limit);
-  const rows = ((data ?? []) as unknown as MessageRow[]).reverse(); // chronological
-  if (rows.length === 0) return [];
+  const baseRows = (data ?? []) as unknown as MessageRow[];
+  const pagination = messagePaginationForBaseRows(baseRows, limit);
+  if (baseRows.length === 0) return { messages: [], pagination };
+  let rows = mergeMessageRowsChronologically(baseRows, []);
 
   // ── Require-ack reachability + the reader's own ack state ───────────────────
   // The badge counts unacked required announcements across the whole feed, but
@@ -883,8 +977,7 @@ export async function getMessages(
           .from('comms_messages')
           .select(MESSAGE_COLUMNS)
           .in('id', missingIds);
-        rows.push(...((extra ?? []) as unknown as MessageRow[]));
-        rows.sort((a, b) => a.created_at.localeCompare(b.created_at)); // chronological
+        rows = mergeMessageRowsChronologically(baseRows, (extra ?? []) as unknown as MessageRow[]);
       }
     }
   } else {
@@ -955,50 +1048,53 @@ export async function getMessages(
   const replyRollup = await replyRollupsFor(ids);
   const reactionRollup = await reactionsFor(ids, readerStaffId);
 
-  return rows.map((r) => {
-    const original = r.body;
-    const body = translated.get(r.id) ?? r.body;
-    const mine = r.sender_staff_id === readerStaffId;
-    const dto: MessageDTO = {
-      id: r.id,
-      conversationId: r.conversation_id,
-      senderStaffId: r.sender_staff_id,
-      senderKind: r.sender_kind as MessageDTO['senderKind'],
-      senderName: r.sender_kind === 'staxis' ? 'Staxis' : (r.sender_staff_id ? (nameMap.get(r.sender_staff_id) ?? 'Teammate') : 'System'),
-      body,
-      originalBody: original,
-      sourceLang: r.source_lang,
-      wasTranslated: body !== original,
-      msgType: r.msg_type as MessageDTO['msgType'],
-      attachmentKind: (r.attachment_kind as 'photo' | 'voice' | null) ?? null,
-      attachmentUrl: r.attachment_path ? (urlByPath.get(r.attachment_path) ?? null) : null,
-      voiceDurationMs: r.voice_duration_ms,
-      handoffShift: r.handoff_shift,
-      handoffOutstanding: r.handoff_outstanding,
-      meta: r.meta ?? {},
-      createdAt: r.created_at,
-      mine,
-      requiresAck: !!r.requires_ack,
-      // The reader owes it iff it's required, not their own post, and it was
-      // posted at/after they joined (matches the tracker's recipient rule).
-      mustAck: !!r.requires_ack && !mine && (!readerCreatedAt || readerCreatedAt <= r.created_at),
-      acked: r.requires_ack ? ackedByReader.has(r.id) : false,
-      ackCampaignId: (r.ack_campaign_id as string | null) ?? null,
-      parentMessageId: null,
-      replyCount: replyRollup.get(r.id)?.count ?? 0,
-      lastReplyAt: replyRollup.get(r.id)?.lastAt ?? null,
-      replyAuthorIds: replyRollup.get(r.id)?.authorIds ?? [],
-      pinned: !!r.pinned_at,
-      ackCount: reactionRollup.get(r.id)?.count ?? 0,
-      ackedByMe: reactionRollup.get(r.id)?.mine ?? false,
-    };
-    if (opts.withReceipts && mine) {
-      dto.seenBy = receiptsByTime
-        .filter((m) => m.lastReadAt >= r.created_at)
-        .map((m) => ({ staffId: m.staffId, name: m.name }));
-    }
-    return dto;
-  });
+  return {
+    messages: rows.map((r) => {
+      const original = r.body;
+      const body = translated.get(r.id) ?? r.body;
+      const mine = r.sender_staff_id === readerStaffId;
+      const dto: MessageDTO = {
+        id: r.id,
+        conversationId: r.conversation_id,
+        senderStaffId: r.sender_staff_id,
+        senderKind: r.sender_kind as MessageDTO['senderKind'],
+        senderName: r.sender_kind === 'staxis' ? 'Staxis' : (r.sender_staff_id ? (nameMap.get(r.sender_staff_id) ?? 'Teammate') : 'System'),
+        body,
+        originalBody: original,
+        sourceLang: r.source_lang,
+        wasTranslated: body !== original,
+        msgType: r.msg_type as MessageDTO['msgType'],
+        attachmentKind: (r.attachment_kind as 'photo' | 'voice' | null) ?? null,
+        attachmentUrl: r.attachment_path ? (urlByPath.get(r.attachment_path) ?? null) : null,
+        voiceDurationMs: r.voice_duration_ms,
+        handoffShift: r.handoff_shift,
+        handoffOutstanding: r.handoff_outstanding,
+        meta: r.meta ?? {},
+        createdAt: r.created_at,
+        mine,
+        requiresAck: !!r.requires_ack,
+        // The reader owes it iff it's required, not their own post, and it was
+        // posted at/after they joined (matches the tracker's recipient rule).
+        mustAck: !!r.requires_ack && !mine && (!readerCreatedAt || readerCreatedAt <= r.created_at),
+        acked: r.requires_ack ? ackedByReader.has(r.id) : false,
+        ackCampaignId: (r.ack_campaign_id as string | null) ?? null,
+        parentMessageId: null,
+        replyCount: replyRollup.get(r.id)?.count ?? 0,
+        lastReplyAt: replyRollup.get(r.id)?.lastAt ?? null,
+        replyAuthorIds: replyRollup.get(r.id)?.authorIds ?? [],
+        pinned: !!r.pinned_at,
+        ackCount: reactionRollup.get(r.id)?.count ?? 0,
+        ackedByMe: reactionRollup.get(r.id)?.mine ?? false,
+      };
+      if (opts.withReceipts && mine) {
+        dto.seenBy = receiptsByTime
+          .filter((m) => m.lastReadAt >= r.created_at)
+          .map((m) => ({ staffId: m.staffId, name: m.name }));
+      }
+      return dto;
+    }),
+    pagination,
+  };
 }
 
 /** Recent messages (original text + sender name) as context for @Staxis. */
