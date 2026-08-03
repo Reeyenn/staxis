@@ -37,14 +37,188 @@ const ACCESS_B_LIVE_SHA = 'ec83bca6dab74a52dfb251d04be11d5c7427703f';
 const CURRENT_LIVE_DESCENDANT_SHA = '442fb98d632521ea33346d5c8a97014248a31fa0';
 const APPROVED_SOURCE_RUN_ID = '85981f5e-a387-4af3-ae10-b9bc1e1e9567';
 const APPROVED_SOURCE_ISSUES = {
-  adminAccess: 'c4267000-0000-4000-8000-000000000001',
-  adminAccount: 'c4267000-0000-4000-8000-000000000002',
-  maria: 'c4267000-0000-4000-8000-000000000003',
-  frank: 'c4267000-0000-4000-8000-000000000004',
-  ana: 'c4267000-0000-4000-8000-000000000005',
-  wrapper: 'c4267000-0000-4000-8000-000000000006',
+  adminAccess: '0e04070e-deed-41fd-bc9d-5754f86da796',
+  adminAccount: 'f5f0e14d-6990-4b71-92e5-d3eeefa4c271',
+  gus: 'ef7fe3f4-3812-4d7c-8449-855dc02a32eb',
+  greta: 'cc009280-dc0b-4315-82d2-d51de0c582dc',
+  dolores: '1965177c-1ff9-490c-9032-4530a866addd',
+  wrapper: '1e23f10e-3b3e-4704-b081-f942ee4d2d9d',
 } as const;
-const APPROVED_SOURCE_STAGE_A_RUN_ID = 'c4268000-0000-4000-8000-000000000001';
+const APPROVED_SOURCE_STAGE_A_RUN_ID = 'ed3a20c5-1914-4bb6-8f23-4fab520fb385';
+const APPROVED_SOURCE_ACCOUNTS = {
+  admin: '8428bc8f-4093-44e6-8370-8cbaf62759d6',
+  gus: 'c0000001-0000-4000-8000-000000000004',
+  greta: 'c0000001-0000-4000-8000-000000000005',
+  dolores: 'c0000001-0000-4000-8000-000000000006',
+} as const;
+const APPROVED_SOURCE_PROPERTIES = {
+  admin: 'c7ec4be3-ba00-4ff0-bc69-c7e09d8e4f8f',
+  testing: '96a26a7f-7129-47db-8855-b7b34407b843',
+  portArthur: 'cc000003-0000-4000-8000-000000000003',
+} as const;
+
+const APPROVED_SOURCE_WRAPPER_RUNS = {
+  baseline: '3f8f61d9-ca62-4c09-8bcf-ece54992b53f',
+  preflight: '9754d166-09f8-44a7-8bce-7d13718cf35e',
+  backfill: 'a396e956-63b8-4581-aef0-2d1ddaf47a6e',
+  stageA: APPROVED_SOURCE_STAGE_A_RUN_ID,
+  prior: '2f31759a-2cd9-48ee-a458-c0ddea0e7d93',
+} as const;
+
+const APPROVED_SOURCE_ADMIN_WRAPPER_DETAILS = {
+  authorityMode: 'legacy',
+  preflightIssues: [
+    {
+      code: 'admin_legacy_access',
+      runId: APPROVED_SOURCE_WRAPPER_RUNS.baseline,
+      details: { role: 'admin', propertyIds: [APPROVED_SOURCE_PROPERTIES.admin] },
+    },
+    {
+      code: 'admin_legacy_access',
+      runId: APPROVED_SOURCE_WRAPPER_RUNS.preflight,
+      details: { role: 'admin', propertyIds: [APPROVED_SOURCE_PROPERTIES.admin] },
+    },
+    {
+      code: 'backfill_skipped_preflight_admin_legacy_access',
+      runId: APPROVED_SOURCE_WRAPPER_RUNS.preflight,
+      details: {
+        reason: 'preflight_admin_legacy_access',
+        backfillRunId: APPROVED_SOURCE_WRAPPER_RUNS.backfill,
+        preflightRunId: APPROVED_SOURCE_WRAPPER_RUNS.preflight,
+        preflightRunLabel: '0419_same_transaction_pre_backfill',
+        preflightIssueCode: 'admin_legacy_access',
+        preflightIssueDetails: {
+          role: 'admin',
+          propertyIds: [APPROVED_SOURCE_PROPERTIES.admin],
+        },
+        baselinePreflightRunId: APPROVED_SOURCE_WRAPPER_RUNS.baseline,
+        baselinePreflightRunLabel: '0418_baseline',
+      },
+    },
+    {
+      code: 'admin_legacy_access',
+      runId: APPROVED_SOURCE_WRAPPER_RUNS.prior,
+      details: { propertyIds: [APPROVED_SOURCE_PROPERTIES.admin] },
+    },
+    {
+      code: 'admin_legacy_account',
+      runId: APPROVED_SOURCE_WRAPPER_RUNS.prior,
+      details: {
+        propertyIds: [APPROVED_SOURCE_PROPERTIES.admin],
+        authorityMode: 'legacy',
+      },
+    },
+    {
+      code: 'admin_legacy_access',
+      runId: APPROVED_SOURCE_RUN_ID,
+      details: { propertyIds: [APPROVED_SOURCE_PROPERTIES.admin] },
+    },
+    {
+      code: 'admin_legacy_account',
+      runId: APPROVED_SOURCE_RUN_ID,
+      details: {
+        propertyIds: [APPROVED_SOURCE_PROPERTIES.admin],
+        authorityMode: 'legacy',
+      },
+    },
+  ],
+  legacyPropertyId: APPROVED_SOURCE_PROPERTIES.admin,
+  authorizationStatePresent: true,
+};
+
+function approvedSourceNormalizedWrapperDetails(propertyId: string) {
+  return {
+    authorityMode: 'normalized',
+    preflightIssues: [
+      {
+        code: 'normalized_legacy_residue',
+        runId: APPROVED_SOURCE_WRAPPER_RUNS.baseline,
+        details: { authorityMode: 'normalized' },
+      },
+      {
+        code: 'normalized_legacy_residue',
+        runId: APPROVED_SOURCE_WRAPPER_RUNS.preflight,
+        details: { authorityMode: 'normalized' },
+      },
+      {
+        code: 'backfill_skipped_preflight_normalized_legacy_residue',
+        runId: APPROVED_SOURCE_WRAPPER_RUNS.preflight,
+        details: {
+          reason: 'preflight_normalized_legacy_residue',
+          backfillRunId: APPROVED_SOURCE_WRAPPER_RUNS.backfill,
+          preflightRunId: APPROVED_SOURCE_WRAPPER_RUNS.preflight,
+          preflightRunLabel: '0419_same_transaction_pre_backfill',
+          preflightIssueCode: 'normalized_legacy_residue',
+          preflightIssueDetails: { authorityMode: 'normalized' },
+          baselinePreflightRunId: APPROVED_SOURCE_WRAPPER_RUNS.baseline,
+          baselinePreflightRunLabel: '0418_baseline',
+        },
+      },
+      {
+        code: 'normalized_legacy_residue',
+        runId: APPROVED_SOURCE_WRAPPER_RUNS.prior,
+        details: { propertyIds: [propertyId] },
+      },
+      {
+        code: 'normalized_legacy_residue',
+        runId: APPROVED_SOURCE_RUN_ID,
+        details: { propertyIds: [propertyId] },
+      },
+    ],
+    legacyPropertyId: propertyId,
+    authorizationStatePresent: true,
+  };
+}
+
+const APPROVED_SOURCE_WRAPPER_DETAILS = {
+  stageAInvariantRunId: APPROVED_SOURCE_STAGE_A_RUN_ID,
+  stageAInvariantIssueCount: 5,
+  stageAInvariant: {
+    ok: false,
+    runId: APPROVED_SOURCE_STAGE_A_RUN_ID,
+    stage: 'A',
+    sample: [
+      {
+        code: 'invalid_legacy_account_identity',
+        details: {
+          role: 'admin',
+          active: true,
+          dataUserId: 'ee473197-d8f2-4a2d-86d6-314b3b6e126d',
+        },
+        accountId: APPROVED_SOURCE_ACCOUNTS.admin,
+        propertyId: null,
+      },
+      {
+        code: 'legacy_row_without_shadow_translation',
+        details: APPROVED_SOURCE_ADMIN_WRAPPER_DETAILS,
+        accountId: APPROVED_SOURCE_ACCOUNTS.admin,
+        propertyId: APPROVED_SOURCE_PROPERTIES.admin,
+      },
+      {
+        code: 'legacy_row_without_shadow_translation',
+        details: approvedSourceNormalizedWrapperDetails(APPROVED_SOURCE_PROPERTIES.testing),
+        accountId: APPROVED_SOURCE_ACCOUNTS.gus,
+        propertyId: APPROVED_SOURCE_PROPERTIES.testing,
+      },
+      {
+        code: 'legacy_row_without_shadow_translation',
+        details: approvedSourceNormalizedWrapperDetails(APPROVED_SOURCE_PROPERTIES.testing),
+        accountId: APPROVED_SOURCE_ACCOUNTS.dolores,
+        propertyId: APPROVED_SOURCE_PROPERTIES.testing,
+      },
+      {
+        code: 'legacy_row_without_shadow_translation',
+        details: approvedSourceNormalizedWrapperDetails(APPROVED_SOURCE_PROPERTIES.portArthur),
+        accountId: APPROVED_SOURCE_ACCOUNTS.greta,
+        propertyId: APPROVED_SOURCE_PROPERTIES.portArthur,
+      },
+    ],
+    issueCount: 5,
+    legacySnapshotCount: 17,
+    legacyArraysPreserved: true,
+    legacyWriteEventCount: 0,
+  },
+};
 const BOOTSTRAP_ACCOUNT = 'c4269000-0000-4000-8000-000000000001';
 const BOOTSTRAP_USER = 'c426a000-0000-4000-8000-000000000001';
 
@@ -229,54 +403,125 @@ async function seedWrapperMappingFixture(pg: PGlite): Promise<void> {
   await pg.query(`delete from public.account_access_cutover_legacy_write_events`);
 }
 
+async function seedApprovedSourceTopologyFixture(pg: PGlite): Promise<void> {
+  const users = [
+    ['ee473197-d8f2-4a2d-86d6-314b3b6e126d', 'approved-admin@example.test'],
+    ['c426b000-0000-4000-8000-000000000004', 'gus@example.test'],
+    ['c426b000-0000-4000-8000-000000000005', 'greta@example.test'],
+    ['c426b000-0000-4000-8000-000000000006', 'dolores@example.test'],
+  ] as const;
+  for (const [id, email] of users) {
+    await pg.query(
+      `insert into auth.users(id,email) values ($1,$2) on conflict (id) do nothing`,
+      [id, email],
+    );
+  }
+
+  const properties = [
+    [APPROVED_SOURCE_PROPERTIES.admin, 'Approved Admin Hotel', 50],
+    [APPROVED_SOURCE_PROPERTIES.testing, 'Approved Testing Hotel', 62],
+    [APPROVED_SOURCE_PROPERTIES.portArthur, 'Approved Port Arthur Hotel', 74],
+  ] as const;
+  for (const [id, name, totalRooms] of properties) {
+    await pg.query(
+      `insert into public.properties(id,name,owner_id,total_rooms,timezone)
+       values ($1,$2,$3,$4,'America/Chicago') on conflict (id) do nothing`,
+      [id, name, 'ee473197-d8f2-4a2d-86d6-314b3b6e126d', totalRooms],
+    );
+    await pg.query(`update public.properties set is_test=true where id=$1`, [id]);
+    await pg.query(
+      `update public.organization_property_relationships
+          set is_primary_grouping=false
+        where property_id=$1 and ends_at is null and is_primary_grouping=true`,
+      [id],
+    );
+    await pg.query(
+      `insert into public.organization_property_relationships(
+         organization_id,property_id,relationship_type,is_primary_grouping
+       ) values ($1,$2,'operator',true) on conflict do nothing`,
+      [ORG_A, id],
+    );
+  }
+
+  const accounts = [
+    [APPROVED_SOURCE_ACCOUNTS.admin, 'approved-admin', 'Approved Admin', 'admin', [APPROVED_SOURCE_PROPERTIES.admin], 'ee473197-d8f2-4a2d-86d6-314b3b6e126d'],
+    [APPROVED_SOURCE_ACCOUNTS.gus, 'gus', 'Gus', 'general_manager', [APPROVED_SOURCE_PROPERTIES.testing], 'c426b000-0000-4000-8000-000000000004'],
+    [APPROVED_SOURCE_ACCOUNTS.greta, 'greta', 'Greta', 'general_manager', [APPROVED_SOURCE_PROPERTIES.portArthur], 'c426b000-0000-4000-8000-000000000005'],
+    [APPROVED_SOURCE_ACCOUNTS.dolores, 'dolores', 'Dolores', 'front_desk', [APPROVED_SOURCE_PROPERTIES.testing], 'c426b000-0000-4000-8000-000000000006'],
+  ] as const;
+  for (const [id, username, displayName, role, propertyAccess, dataUserId] of accounts) {
+    await pg.query(
+      `insert into public.accounts(
+         id,username,password_hash,display_name,role,property_access,data_user_id
+       ) values ($1,$2,'x',$3,$4,$5::uuid[],$6) on conflict (id) do nothing`,
+      [id, username, displayName, role, propertyAccess, dataUserId],
+    );
+  }
+
+  await pg.query(
+    `select public.staxis_set_membership_hat(
+       $1,$2,$3,'property','general_manager',$4,$5
+     )`,
+    [ACCOUNT_ADMIN, ORG_A, APPROVED_SOURCE_ACCOUNTS.gus, JSON.stringify([APPROVED_SOURCE_PROPERTIES.testing]), 'General Manager'],
+  );
+  await pg.query(
+    `select public.staxis_set_membership_hat(
+       $1,$2,$3,'property','general_manager',$4,$5
+     )`,
+    [ACCOUNT_ADMIN, ORG_A, APPROVED_SOURCE_ACCOUNTS.greta, JSON.stringify([APPROVED_SOURCE_PROPERTIES.portArthur]), 'General Manager'],
+  );
+  await pg.query(
+    `select public.staxis_set_membership_hat(
+       $1,$2,$3,'property','front_desk',$4,$5
+     )`,
+    [ACCOUNT_ADMIN, ORG_A, APPROVED_SOURCE_ACCOUNTS.dolores, JSON.stringify([APPROVED_SOURCE_PROPERTIES.testing]), 'Front Desk'],
+  );
+  await pg.query(
+    `update public.organization_memberships
+        set status='revoked', ended_at=coalesce(ended_at,now()), updated_at=now()
+      where account_id=$1 and membership_scope='property'
+        and $2::uuid = any(coalesce(covered_property_ids,'{}'::uuid[]))
+        and status='active'`,
+    [APPROVED_SOURCE_ACCOUNTS.dolores, APPROVED_SOURCE_PROPERTIES.testing],
+  );
+  await pg.query(
+    `update public.account_authorization_state
+        set authority_mode='legacy',cutover_at=null,
+            cutover_reason='Approved 85981 source admin residue'
+      where account_id=$1`,
+    [APPROVED_SOURCE_ACCOUNTS.admin],
+  );
+  await pg.query(
+    `update public.account_authorization_state
+        set authority_mode='normalized',cutover_at=coalesce(cutover_at,now()),
+            cutover_reason='Approved 85981 source normalized residue'
+      where account_id = any($1::uuid[])`,
+    [[APPROVED_SOURCE_ACCOUNTS.gus, APPROVED_SOURCE_ACCOUNTS.greta, APPROVED_SOURCE_ACCOUNTS.dolores]],
+  );
+}
+
 async function seedApprovedProductionSourceFixture(pg: PGlite): Promise<void> {
   await seedWrapperMappingFixture(pg);
-  const samples = [
-    {
-      accountId: ACCOUNT_ADMIN,
-      propertyId: null,
-      code: 'invalid_legacy_account_identity',
-      details: {},
-    },
-    {
-      accountId: ACCOUNT_ADMIN,
-      propertyId: PID_A1,
-      code: 'legacy_row_without_shadow_translation',
-      details: {},
-    },
-    {
-      accountId: ACCOUNT_MARIA,
-      propertyId: PID_A1,
-      code: 'legacy_row_without_shadow_translation',
-      details: {},
-    },
-    {
-      accountId: ACCOUNT_FRANK,
-      propertyId: PID_A1,
-      code: 'legacy_row_without_shadow_translation',
-      details: {},
-    },
-    {
-      accountId: ACCOUNT_ANA,
-      propertyId: PID_A2,
-      code: 'legacy_row_without_shadow_translation',
-      details: {},
-    },
-  ];
-  const wrapperDetails = {
-    stageAInvariantRunId: APPROVED_SOURCE_STAGE_A_RUN_ID,
-    stageAInvariantIssueCount: samples.length,
-    stageAInvariant: {
-      runId: APPROVED_SOURCE_STAGE_A_RUN_ID,
-      issueCount: samples.length,
-      sample: samples.map((sample) => ({
-        accountId: sample.accountId,
-        propertyId: sample.propertyId,
-        code: sample.code,
-        details: sample.details,
-      })),
-    },
-  };
+  // The shared two-company seed supplies the canonical topology used by the
+  // real migration tests.  Its synthetic residue is irrelevant to the
+  // production incident, so normalize and empty those controls before the
+  // exact 85981 source run is installed.  The source fixture itself remains
+  // the four real account/property tuples below.
+  await pg.query(
+    `update public.accounts
+        set property_access='{}'::uuid[]
+      where id = any($1::uuid[])`,
+    [[ACCOUNT_ADMIN, ACCOUNT_MARIA, ACCOUNT_FRANK, ACCOUNT_ANA]],
+  );
+  await pg.query(
+    `update public.account_authorization_state
+        set authority_mode='normalized',cutover_at=coalesce(cutover_at,now()),
+            cutover_reason='Approved source synthetic control cleanup'
+      where account_id = any($1::uuid[])`,
+    [[ACCOUNT_ADMIN, ACCOUNT_MARIA, ACCOUNT_FRANK, ACCOUNT_ANA]],
+  );
+  await seedApprovedSourceTopologyFixture(pg);
+  const wrapperDetails = APPROVED_SOURCE_WRAPPER_DETAILS;
   await pg.query(
     `insert into public.account_access_cutover_preflight_runs(
        id,status,issue_count,created_by,completed_at,details
@@ -284,11 +529,11 @@ async function seedApprovedProductionSourceFixture(pg: PGlite): Promise<void> {
     [APPROVED_SOURCE_RUN_ID, JSON.stringify({ stage: 'A', approvedReadOnly: true })],
   );
   const issues = [
-    [APPROVED_SOURCE_ISSUES.adminAccess, ACCOUNT_ADMIN, 'admin_legacy_access', { propertyIds: [PID_A1] }],
-    [APPROVED_SOURCE_ISSUES.adminAccount, ACCOUNT_ADMIN, 'admin_legacy_account', { propertyIds: [PID_A1] }],
-    [APPROVED_SOURCE_ISSUES.maria, ACCOUNT_MARIA, 'normalized_legacy_residue', { propertyIds: [PID_A1] }],
-    [APPROVED_SOURCE_ISSUES.frank, ACCOUNT_FRANK, 'normalized_legacy_residue', { propertyIds: [PID_A1] }],
-    [APPROVED_SOURCE_ISSUES.ana, ACCOUNT_ANA, 'normalized_legacy_residue', { propertyIds: [PID_A2] }],
+    [APPROVED_SOURCE_ISSUES.adminAccess, APPROVED_SOURCE_ACCOUNTS.admin, 'admin_legacy_access', { propertyIds: [APPROVED_SOURCE_PROPERTIES.admin] }],
+    [APPROVED_SOURCE_ISSUES.adminAccount, APPROVED_SOURCE_ACCOUNTS.admin, 'admin_legacy_account', { propertyIds: [APPROVED_SOURCE_PROPERTIES.admin], authorityMode: 'legacy' }],
+    [APPROVED_SOURCE_ISSUES.gus, APPROVED_SOURCE_ACCOUNTS.gus, 'normalized_legacy_residue', { propertyIds: [APPROVED_SOURCE_PROPERTIES.testing] }],
+    [APPROVED_SOURCE_ISSUES.greta, APPROVED_SOURCE_ACCOUNTS.greta, 'normalized_legacy_residue', { propertyIds: [APPROVED_SOURCE_PROPERTIES.portArthur] }],
+    [APPROVED_SOURCE_ISSUES.dolores, APPROVED_SOURCE_ACCOUNTS.dolores, 'normalized_legacy_residue', { propertyIds: [APPROVED_SOURCE_PROPERTIES.testing] }],
     [APPROVED_SOURCE_ISSUES.wrapper, null, 'stage_a_invariant_failure', wrapperDetails],
   ] as const;
   for (const [issueId, accountId, issueCode, details] of issues) {
@@ -306,6 +551,58 @@ async function seedApprovedProductionSourceFixture(pg: PGlite): Promise<void> {
     [APPROVED_SOURCE_RUN_ID],
   );
   await pg.query(`delete from public.account_access_cutover_legacy_write_events`);
+}
+
+async function seedLegacyRepairManifestPrefix(pg: PGlite): Promise<void> {
+  await pg.query(
+    `insert into public.account_access_cutover_preflight_runs(
+       id,status,issue_count,created_by,completed_at,details
+     ) values (
+       '2f31759a-2cd9-48ee-a458-c0ddea0e7d93','failed',1,
+       'legacy-0426-prefix',clock_timestamp(),'{}'::jsonb
+     ) on conflict (id) do nothing`,
+  );
+  await pg.exec(`
+    create table public.account_access_cutover_repair_manifests (
+      issue_id uuid primary key,
+      preflight_run_id uuid not null
+        references public.account_access_cutover_preflight_runs(id),
+      source text not null
+        check (source in (
+          'production-2f31759a-2cd9-48ee-a458-c0ddea0e7d93',
+          'test-fixture'
+        )),
+      issue_code text not null,
+      account_id uuid,
+      property_id uuid,
+      raw_property_ids uuid[] not null default '{}'::uuid[],
+      raw_scope_hash text not null check (raw_scope_hash ~ '^[0-9a-f]{64}$'),
+      stage_a_mapping jsonb not null default '{}'::jsonb,
+      status text not null default 'unconsumed'
+        check (status in ('unconsumed','consumed')),
+      consumed_at timestamptz,
+      created_at timestamptz not null default clock_timestamp(),
+      details jsonb not null default '{}'::jsonb,
+      check (
+        (source='production-2f31759a-2cd9-48ee-a458-c0ddea0e7d93'
+          and preflight_run_id='2f31759a-2cd9-48ee-a458-c0ddea0e7d93'::uuid)
+        or source='test-fixture'
+      )
+    )
+  `);
+  await pg.query(
+    `insert into public.account_access_cutover_repair_manifests(
+       issue_id,preflight_run_id,source,issue_code,raw_property_ids,
+       raw_scope_hash,details
+     ) values ($1,$2,$3,'historical_legacy_prefix','{}'::uuid[],$4,$5::jsonb)`,
+    [
+      'c426e000-0000-4000-8000-000000000001',
+      '2f31759a-2cd9-48ee-a458-c0ddea0e7d93',
+      'production-2f31759a-2cd9-48ee-a458-c0ddea0e7d93',
+      sha256(''),
+      JSON.stringify({ historical: true, sourceRunId: '2f31759a-2cd9-48ee-a458-c0ddea0e7d93' }),
+    ],
+  );
 }
 
 async function seedUnsupportedResidueFixture(pg: PGlite): Promise<void> {
@@ -2421,6 +2718,53 @@ describe('Access Stage C final contract — real migration boundary', () => {
           assert.ok(Array.isArray(wrapperManifest.stage_a_mapping));
           assert.equal((wrapperManifest.stage_a_mapping as unknown[]).length, 5);
 
+          await assert.rejects(
+            hookPg.query(
+              `select public._staxis_materialize_stage_c_production_manifest($1)`,
+              ['2f31759a-2cd9-48ee-a458-c0ddea0e7d93'],
+            ),
+            /rejects non-authoritative source run/i,
+            'the superseded 2f source must never substitute for 85981',
+          );
+          for (const mutation of [
+            `update public.account_access_cutover_preflight_issues
+                set details=jsonb_build_object('propertyIds', $2::uuid[], 'tampered', true)
+              where id=$1`,
+            `update public.account_access_cutover_preflight_issues
+                set account_id=$2,
+                    details=jsonb_build_object('propertyIds', $3::uuid[])
+              where id=$1`,
+          ]) {
+            await hookPg.exec('begin;');
+            try {
+              const parameters = mutation.includes('account_id')
+                ? [APPROVED_SOURCE_ISSUES.gus, ACCOUNT_ANA, [PID_A2]]
+                : [APPROVED_SOURCE_ISSUES.gus, [APPROVED_SOURCE_PROPERTIES.testing]];
+              await hookPg.query(mutation, parameters);
+              await assert.rejects(
+                hookPg.query(
+                  `select public._staxis_materialize_stage_c_production_manifest($1)`,
+                  [APPROVED_SOURCE_RUN_ID],
+                ),
+                /approved 85981|allowlist|altered|mismatched/i,
+                'altered direct source details or an unlisted valid tuple must fail closed',
+              );
+            } finally {
+              await hookPg.exec('rollback;');
+            }
+          }
+          assert.equal(
+            Number((await rows<{ count: number }>(
+              hookPg,
+              `select count(*)::integer as count
+                 from public.account_access_cutover_repair_manifests
+                where preflight_run_id=$1`,
+              [APPROVED_SOURCE_RUN_ID],
+            ))[0].count),
+            6,
+            'negative source checks must preserve the original six manifests',
+          );
+
           const sourceStates = await rows<{
             account_id: string;
             authority_mode: string;
@@ -2431,7 +2775,12 @@ describe('Access Stage C final contract — real migration boundary', () => {
                from public.account_authorization_state
               where account_id in ($1,$2,$3,$4)
               order by account_id`,
-            [ACCOUNT_ADMIN, ACCOUNT_MARIA, ACCOUNT_FRANK, ACCOUNT_ANA],
+            [
+              APPROVED_SOURCE_ACCOUNTS.admin,
+              APPROVED_SOURCE_ACCOUNTS.gus,
+              APPROVED_SOURCE_ACCOUNTS.dolores,
+              APPROVED_SOURCE_ACCOUNTS.greta,
+            ],
           );
           const byAccount = new Map(sourceStates.map((state) => [state.account_id, state]));
           const canonicalIds = async (accountId: string): Promise<string[]> => (await rows<{ property_id: string }>(
@@ -2444,9 +2793,28 @@ describe('Access Stage C final contract — real migration boundary', () => {
 
           await assert.rejects(
             recordRepairDisposition(hookPg, {
+              preflightRunId: APPROVED_SOURCE_RUN_ID,
+              accountId: APPROVED_SOURCE_ACCOUNTS.admin,
+              propertyId: APPROVED_SOURCE_PROPERTIES.admin,
+              issueCodes: ['admin_legacy_access', 'admin_legacy_account', 'stage_a_invariant_failure'],
+              issueIds: [APPROVED_SOURCE_ISSUES.adminAccess, APPROVED_SOURCE_ISSUES.adminAccount, APPROVED_SOURCE_ISSUES.wrapper],
+              decision: 'admin_global',
+              rawPropertyIds: [APPROVED_SOURCE_PROPERTIES.admin],
+              rawScopeHash: '0'.repeat(64),
+              canonicalPropertyIds: [],
+              authorityMode: byAccount.get(APPROVED_SOURCE_ACCOUNTS.admin)?.authority_mode ?? '',
+              authorityVersion: byAccount.get(APPROVED_SOURCE_ACCOUNTS.admin)?.authority_version ?? 0,
+              reason: 'admin_global_role_residue',
+            }),
+            /immutable manifest issue UUIDs|evidence no longer matches/i,
+            'a caller-supplied raw scope hash cannot replace the approved source hash',
+          );
+
+          await assert.rejects(
+            recordRepairDisposition(hookPg, {
               preflightRunId: 'c4267000-0000-4000-8000-000000000010',
-              accountId: ACCOUNT_ADMIN,
-              propertyId: PID_A1,
+              accountId: APPROVED_SOURCE_ACCOUNTS.admin,
+              propertyId: APPROVED_SOURCE_PROPERTIES.admin,
               issueCodes: ['admin_legacy_access', 'admin_legacy_account', 'stage_a_invariant_failure'],
               issueIds: [
                 APPROVED_SOURCE_ISSUES.adminAccess,
@@ -2454,10 +2822,10 @@ describe('Access Stage C final contract — real migration boundary', () => {
                 APPROVED_SOURCE_ISSUES.wrapper,
               ],
               decision: 'admin_global',
-              rawPropertyIds: [PID_A1],
+              rawPropertyIds: [APPROVED_SOURCE_PROPERTIES.admin],
               canonicalPropertyIds: [],
-              authorityMode: byAccount.get(ACCOUNT_ADMIN)?.authority_mode ?? '',
-              authorityVersion: byAccount.get(ACCOUNT_ADMIN)?.authority_version ?? 0,
+              authorityMode: byAccount.get(APPROVED_SOURCE_ACCOUNTS.admin)?.authority_mode ?? '',
+              authorityVersion: byAccount.get(APPROVED_SOURCE_ACCOUNTS.admin)?.authority_version ?? 0,
               reason: 'admin_global_role_residue',
             }),
             /immutable manifest issue UUIDs|exact issue rows/i,
@@ -2466,54 +2834,54 @@ describe('Access Stage C final contract — real migration boundary', () => {
 
           await recordRepairDisposition(hookPg, {
             preflightRunId: APPROVED_SOURCE_RUN_ID,
-            accountId: ACCOUNT_ADMIN,
-            propertyId: PID_A1,
+            accountId: APPROVED_SOURCE_ACCOUNTS.admin,
+            propertyId: APPROVED_SOURCE_PROPERTIES.admin,
             issueCodes: ['admin_legacy_access', 'admin_legacy_account', 'stage_a_invariant_failure'],
             issueIds: [APPROVED_SOURCE_ISSUES.adminAccess, APPROVED_SOURCE_ISSUES.adminAccount, APPROVED_SOURCE_ISSUES.wrapper],
             decision: 'admin_global',
-            rawPropertyIds: [PID_A1],
+            rawPropertyIds: [APPROVED_SOURCE_PROPERTIES.admin],
             canonicalPropertyIds: [],
-            authorityMode: byAccount.get(ACCOUNT_ADMIN)?.authority_mode ?? '',
-            authorityVersion: byAccount.get(ACCOUNT_ADMIN)?.authority_version ?? 0,
+            authorityMode: byAccount.get(APPROVED_SOURCE_ACCOUNTS.admin)?.authority_mode ?? '',
+            authorityVersion: byAccount.get(APPROVED_SOURCE_ACCOUNTS.admin)?.authority_version ?? 0,
             reason: 'admin_global_role_residue',
           });
           await recordRepairDisposition(hookPg, {
             preflightRunId: APPROVED_SOURCE_RUN_ID,
-            accountId: ACCOUNT_MARIA,
-            propertyId: PID_A1,
+            accountId: APPROVED_SOURCE_ACCOUNTS.gus,
+            propertyId: APPROVED_SOURCE_PROPERTIES.testing,
             issueCodes: ['normalized_legacy_residue', 'stage_a_invariant_failure'],
-            issueIds: [APPROVED_SOURCE_ISSUES.maria, APPROVED_SOURCE_ISSUES.wrapper],
+            issueIds: [APPROVED_SOURCE_ISSUES.gus, APPROVED_SOURCE_ISSUES.wrapper],
             decision: 'canonical_duplicate',
-            rawPropertyIds: [PID_A1],
-            canonicalPropertyIds: await canonicalIds(ACCOUNT_MARIA),
-            authorityMode: byAccount.get(ACCOUNT_MARIA)?.authority_mode ?? '',
-            authorityVersion: byAccount.get(ACCOUNT_MARIA)?.authority_version ?? 0,
+            rawPropertyIds: [APPROVED_SOURCE_PROPERTIES.testing],
+            canonicalPropertyIds: await canonicalIds(APPROVED_SOURCE_ACCOUNTS.gus),
+            authorityMode: byAccount.get(APPROVED_SOURCE_ACCOUNTS.gus)?.authority_mode ?? '',
+            authorityVersion: byAccount.get(APPROVED_SOURCE_ACCOUNTS.gus)?.authority_version ?? 0,
             reason: 'canonical_duplicate_residue',
           });
           await recordRepairDisposition(hookPg, {
             preflightRunId: APPROVED_SOURCE_RUN_ID,
-            accountId: ACCOUNT_FRANK,
-            propertyId: PID_A1,
+            accountId: APPROVED_SOURCE_ACCOUNTS.dolores,
+            propertyId: APPROVED_SOURCE_PROPERTIES.testing,
             issueCodes: ['normalized_legacy_residue', 'stage_a_invariant_failure'],
-            issueIds: [APPROVED_SOURCE_ISSUES.frank, APPROVED_SOURCE_ISSUES.wrapper],
+            issueIds: [APPROVED_SOURCE_ISSUES.dolores, APPROVED_SOURCE_ISSUES.wrapper],
             decision: 'revoked_canonical_empty',
-            rawPropertyIds: [PID_A1],
-            canonicalPropertyIds: await canonicalIds(ACCOUNT_FRANK),
-            authorityMode: byAccount.get(ACCOUNT_FRANK)?.authority_mode ?? '',
-            authorityVersion: byAccount.get(ACCOUNT_FRANK)?.authority_version ?? 0,
+            rawPropertyIds: [APPROVED_SOURCE_PROPERTIES.testing],
+            canonicalPropertyIds: await canonicalIds(APPROVED_SOURCE_ACCOUNTS.dolores),
+            authorityMode: byAccount.get(APPROVED_SOURCE_ACCOUNTS.dolores)?.authority_mode ?? '',
+            authorityVersion: byAccount.get(APPROVED_SOURCE_ACCOUNTS.dolores)?.authority_version ?? 0,
             reason: 'revoked_canonical_empty_residue',
           });
           await recordRepairDisposition(hookPg, {
             preflightRunId: APPROVED_SOURCE_RUN_ID,
-            accountId: ACCOUNT_ANA,
-            propertyId: PID_A2,
+            accountId: APPROVED_SOURCE_ACCOUNTS.greta,
+            propertyId: APPROVED_SOURCE_PROPERTIES.portArthur,
             issueCodes: ['normalized_legacy_residue', 'stage_a_invariant_failure'],
-            issueIds: [APPROVED_SOURCE_ISSUES.ana, APPROVED_SOURCE_ISSUES.wrapper],
+            issueIds: [APPROVED_SOURCE_ISSUES.greta, APPROVED_SOURCE_ISSUES.wrapper],
             decision: 'canonical_duplicate',
-            rawPropertyIds: [PID_A2],
-            canonicalPropertyIds: await canonicalIds(ACCOUNT_ANA),
-            authorityMode: byAccount.get(ACCOUNT_ANA)?.authority_mode ?? '',
-            authorityVersion: byAccount.get(ACCOUNT_ANA)?.authority_version ?? 0,
+            rawPropertyIds: [APPROVED_SOURCE_PROPERTIES.portArthur],
+            canonicalPropertyIds: await canonicalIds(APPROVED_SOURCE_ACCOUNTS.greta),
+            authorityMode: byAccount.get(APPROVED_SOURCE_ACCOUNTS.greta)?.authority_mode ?? '',
+            authorityVersion: byAccount.get(APPROVED_SOURCE_ACCOUNTS.greta)?.authority_version ?? 0,
             reason: 'canonical_duplicate_residue',
           });
           assert.equal(
@@ -2601,6 +2969,188 @@ describe('Access Stage C final contract — real migration boundary', () => {
           [APPROVED_SOURCE_RUN_ID, 'production-85981f5e-a387-4af3-ae10-b9bc1e1e9567'],
         ))[0].count),
         6,
+      );
+    } finally {
+      await migrated.pg.close();
+    }
+  });
+
+  test('upgrades a partial 0426 prefix without replacing historical 2f evidence or current 85981 state', async () => {
+    const migrated = await applyMigrationsToPgliteWithHook(
+      async ({ pg: hookPg, file }) => {
+        if (file !== MIGRATION) return;
+        await seedLegacyRepairManifestPrefix(hookPg);
+        await seedApprovedProductionSourceFixture(hookPg);
+      },
+      {
+        afterAccessStageCPreparation: async ({ pg: hookPg, file }) => {
+          if (file !== MIGRATION) return;
+          const constraints = await rows<{
+            conname: string;
+            convalidated: boolean;
+            definition: string;
+          }>(
+            hookPg,
+            `select conname,convalidated,pg_get_constraintdef(oid) as definition
+               from pg_catalog.pg_constraint
+              where conrelid='public.account_access_cutover_repair_manifests'::regclass
+                and contype='c'
+              order by conname`,
+          );
+          const sourceConstraint = constraints.find(
+            (constraint) => constraint.conname === 'account_access_cutover_repair_manifests_source_run_exact_check',
+          );
+          assert.ok(sourceConstraint);
+          assert.equal(sourceConstraint.convalidated, false);
+          assert.match(sourceConstraint.definition, /production-85981f5e-a387-4af3-ae10-b9bc1e1e9567/);
+          assert.doesNotMatch(sourceConstraint.definition, /production-2f31759a-2cd9-48ee-a458-c0ddea0e7d93/);
+
+          const historicalBefore = await rows<{
+            issue_id: string;
+            preflight_run_id: string;
+            source: string;
+            details: Record<string, unknown>;
+          }>(
+            hookPg,
+            `select issue_id,preflight_run_id,source,details
+               from public.account_access_cutover_repair_manifests
+              where preflight_run_id=$1`,
+            ['2f31759a-2cd9-48ee-a458-c0ddea0e7d93'],
+          );
+          assert.deepEqual(historicalBefore, [{
+            issue_id: 'c426e000-0000-4000-8000-000000000001',
+            preflight_run_id: '2f31759a-2cd9-48ee-a458-c0ddea0e7d93',
+            source: 'production-2f31759a-2cd9-48ee-a458-c0ddea0e7d93',
+            details: { historical: true, sourceRunId: '2f31759a-2cd9-48ee-a458-c0ddea0e7d93' },
+          }]);
+
+          await assert.rejects(
+            hookPg.query(
+              `insert into public.account_access_cutover_repair_manifests(
+                 issue_id,preflight_run_id,source,issue_code,raw_property_ids,
+                 raw_scope_hash
+               ) values ($1,$2,$3,'stale_source','{}'::uuid[],$4)`,
+              [
+                'c426e000-0000-4000-8000-000000000002',
+                '2f31759a-2cd9-48ee-a458-c0ddea0e7d93',
+                'production-2f31759a-2cd9-48ee-a458-c0ddea0e7d93',
+                sha256(''),
+              ],
+            ),
+            /source_run_exact_check|check constraint/i,
+            'new 2f artifacts must be rejected after the upgrade',
+          );
+          await assert.rejects(
+            hookPg.query(
+              `insert into public.account_access_cutover_repair_manifests(
+                 issue_id,preflight_run_id,source,issue_code,raw_property_ids,
+                 raw_scope_hash
+               ) values ($1,$2,$3,'wrong_run','{}'::uuid[],$4)`,
+              [
+                'c426e000-0000-4000-8000-000000000003',
+                '2f31759a-2cd9-48ee-a458-c0ddea0e7d93',
+                'production-85981f5e-a387-4af3-ae10-b9bc1e1e9567',
+                sha256(''),
+              ],
+            ),
+            /source_run_exact_check|check constraint/i,
+            'the approved source label cannot be paired with a stale run',
+          );
+
+          const reused = await jsonRpc(
+            hookPg,
+            `select public.staxis_preflight_authorization_cutover_stage_c() as value`,
+          );
+          assert.deepEqual(reused, {
+            ok: false,
+            runId: APPROVED_SOURCE_RUN_ID,
+            issueCount: 6,
+            stage: 'C',
+            reusedExisting: true,
+          });
+          assert.deepEqual(
+            await jsonRpc(
+              hookPg,
+              `select jsonb_build_object(
+                 'manifestCount', public._staxis_materialize_stage_c_production_manifest($1),
+                 'currentCount', (
+                   select count(*) from public.account_access_cutover_repair_manifests
+                    where preflight_run_id=$1
+                 )
+               ) as value`,
+              [APPROVED_SOURCE_RUN_ID],
+            ),
+            { manifestCount: 6, currentCount: 6 },
+            'replaying the prefix must reuse the exact 85981 manifests',
+          );
+          assert.deepEqual(
+            await rows<{
+              issue_id: string;
+              preflight_run_id: string;
+              source: string;
+              details: Record<string, unknown>;
+            }>(
+              hookPg,
+              `select issue_id,preflight_run_id,source,details
+                 from public.account_access_cutover_repair_manifests
+                where preflight_run_id=$1`,
+              ['2f31759a-2cd9-48ee-a458-c0ddea0e7d93'],
+            ),
+            historicalBefore,
+            'replay must preserve the old historical row byte-for-byte at the JSON value level',
+          );
+          assert.equal(
+            Number((await rows<{ count: number }>(
+              hookPg,
+              `select count(*)::integer as count
+                 from public.account_access_cutover_repair_dispositions
+                where preflight_run_id=$1`,
+              [APPROVED_SOURCE_RUN_ID],
+            ))[0].count),
+            0,
+          );
+          const statusAfterReplay = (await rows<{
+            stage: string;
+            enforcement_enabled: boolean;
+            final_preflight_run_id: string;
+          }>(
+            hookPg,
+            `select stage,enforcement_enabled,final_preflight_run_id
+               from public.account_access_cutover_status
+              where id is true`,
+          ))[0];
+          assert.deepEqual(statusAfterReplay, {
+            stage: 'A',
+            enforcement_enabled: false,
+            final_preflight_run_id: APPROVED_SOURCE_RUN_ID,
+          });
+          assert.equal(
+            Number((await rows<{ count: number }>(
+              hookPg,
+              `select count(*)::integer as count
+                 from public.account_access_cutover_preflight_runs
+                where id=$1`,
+              [APPROVED_SOURCE_RUN_ID],
+            ))[0].count),
+            1,
+            'prefix replay must not replace the approved failed source snapshot',
+          );
+          assert.equal(
+            Number((await rows<{ count: number }>(
+              hookPg,
+              `select count(*)::integer as count
+                 from public.account_access_cutover_repair_receipts`,
+            ))[0].count),
+            0,
+          );
+        },
+      },
+    );
+    try {
+      assert.equal(migrated.report.applied.includes(MIGRATION), false);
+      assert.match(
+        migrated.report.failedAtRuntime.find((entry) => entry.file === MIGRATION)?.error ?? '',
+        /release gate requires a same-session receipt|repair phase requires a same-session release receipt|preflight rejected finalization/i,
       );
     } finally {
       await migrated.pg.close();

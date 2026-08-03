@@ -251,6 +251,60 @@ create table if not exists public.account_access_cutover_repair_manifests (
   )
 );
 
+-- A report-only 0426 prefix may already have created this table with the
+-- superseded 2f31759a source check.  CREATE TABLE IF NOT EXISTS cannot change
+-- that constraint.  Upgrade only the old source check in place, leave every
+-- historical row untouched, and add a NOT VALID check whose expression is
+-- enforced for all new rows.  The NOT VALID form is intentional: old 2f
+-- artifacts remain auditable historical metadata, while they can never be
+-- inserted again or selected as the current production source.
+do $upgrade_repair_manifest_source_check$
+declare
+  v_constraint record;
+begin
+  for v_constraint in
+    select constraint_row.conname
+    from pg_catalog.pg_constraint constraint_row
+    where constraint_row.conrelid = 'public.account_access_cutover_repair_manifests'::regclass
+      and constraint_row.contype = 'c'
+      and pg_catalog.pg_get_constraintdef(constraint_row.oid) like '%production-2f31759a-2cd9-48ee-a458-c0ddea0e7d93%'
+  loop
+    execute format(
+      'alter table public.account_access_cutover_repair_manifests drop constraint %I',
+      v_constraint.conname
+    );
+  end loop;
+
+  if not exists (
+    select 1
+    from pg_catalog.pg_constraint constraint_row
+    where constraint_row.conrelid = 'public.account_access_cutover_repair_manifests'::regclass
+      and constraint_row.conname = 'account_access_cutover_repair_manifests_source_run_exact_check'
+  ) then
+    alter table public.account_access_cutover_repair_manifests
+      add constraint account_access_cutover_repair_manifests_source_run_exact_check
+      check (
+        (source = 'production-85981f5e-a387-4af3-ae10-b9bc1e1e9567'
+          and preflight_run_id = '85981f5e-a387-4af3-ae10-b9bc1e1e9567'::uuid)
+        or source = 'test-fixture'
+      ) not valid;
+  end if;
+
+  if not exists (
+    select 1
+    from public.account_access_cutover_repair_manifests manifest
+    where not (
+      (manifest.source = 'production-85981f5e-a387-4af3-ae10-b9bc1e1e9567'
+        and manifest.preflight_run_id = '85981f5e-a387-4af3-ae10-b9bc1e1e9567'::uuid)
+      or manifest.source = 'test-fixture'
+    )
+  ) then
+    alter table public.account_access_cutover_repair_manifests
+      validate constraint account_access_cutover_repair_manifests_source_run_exact_check;
+  end if;
+end
+$upgrade_repair_manifest_source_check$;
+
 alter table public.account_access_cutover_repair_manifests enable row level security;
 revoke all on public.account_access_cutover_repair_manifests
   from public, anon, authenticated, service_role;
@@ -2812,6 +2866,24 @@ as $$
 declare
   v_target_run_id constant uuid := '85981f5e-a387-4af3-ae10-b9bc1e1e9567';
   v_source_label constant text := 'production-85981f5e-a387-4af3-ae10-b9bc1e1e9567';
+  v_expected_admin constant uuid := '8428bc8f-4093-44e6-8370-8cbaf62759d6';
+  v_expected_gus constant uuid := 'c0000001-0000-4000-8000-000000000004';
+  v_expected_greta constant uuid := 'c0000001-0000-4000-8000-000000000005';
+  v_expected_dolores constant uuid := 'c0000001-0000-4000-8000-000000000006';
+  v_expected_admin_property constant uuid := 'c7ec4be3-ba00-4ff0-bc69-c7e09d8e4f8f';
+  v_expected_testing_property constant uuid := '96a26a7f-7129-47db-8855-b7b34407b843';
+  v_expected_port_arthur_property constant uuid := 'cc000003-0000-4000-8000-000000000003';
+  v_expected_admin_access_issue constant uuid := '0e04070e-deed-41fd-bc9d-5754f86da796';
+  v_expected_admin_account_issue constant uuid := 'f5f0e14d-6990-4b71-92e5-d3eeefa4c271';
+  v_expected_dolores_issue constant uuid := '1965177c-1ff9-490c-9032-4530a866addd';
+  v_expected_greta_issue constant uuid := 'cc009280-dc0b-4315-82d2-d51de0c582dc';
+  v_expected_gus_issue constant uuid := 'ef7fe3f4-3812-4d7c-8449-855dc02a32eb';
+  v_expected_wrapper_issue constant uuid := '1e23f10e-3b3e-4704-b081-f942ee4d2d9d';
+  v_expected_stage_a_run_id constant uuid := 'ed3a20c5-1914-4bb6-8f23-4fab520fb385';
+  v_expected_admin_raw_scope_hash constant text := 'd8b2f89331c1ba838aa4e29bdf46674e274baad1aa0d5f5641fdacd54e189d13';
+  v_expected_testing_raw_scope_hash constant text := 'a18b5012c0dc4d2363065dc1ca79338fd4ef812bc5466e06de57cddafde4203c';
+  v_expected_port_arthur_raw_scope_hash constant text := '47341741a4098fb96d298bdf37fd1549afc5a8724479724ce40f593c9c4e9e17';
+  v_expected_wrapper_details_hash constant text := '4692930334b81954f46f17b857896005f63385efc6d1547c3bcf3e55037e0e36';
   v_run record;
   v_issue record;
   v_sample record;
@@ -2830,6 +2902,11 @@ declare
   v_sample_account uuid;
   v_sample_property uuid;
   v_sample_key text;
+  v_expected_sample_account uuid;
+  v_expected_sample_property uuid;
+  v_expected_sample_code text;
+  v_expected_sample_details_hash text;
+  v_expected_normalized_raw_scope_hash text;
   v_samples jsonb;
   v_mapping jsonb := '[]'::jsonb;
   v_manifest_count integer;
@@ -2844,7 +2921,8 @@ begin
     pg_catalog.hashtextextended('staxis.access.stage_c.cutover', 0)
   );
   if p_preflight_run_id is distinct from v_target_run_id then
-    return 0;
+    raise exception '0426 production repair manifest rejects non-authoritative source run %', p_preflight_run_id
+      using errcode = '55000';
   end if;
 
   select run.status, run.issue_count
@@ -2884,29 +2962,80 @@ begin
       using errcode = '55000';
   end if;
 
-  select issue.account_id, issue.id,
-         coalesce(array(
-           select value::uuid
-           from jsonb_array_elements_text(issue.details->'propertyIds') values(value)
-         ), '{}'::uuid[])
-    into v_admin, v_admin_access_issue, v_admin_property_ids
-  from public.account_access_cutover_preflight_issues issue
-  where issue.run_id = v_target_run_id
-    and issue.issue_code = 'admin_legacy_access'
-  ;
-  if v_admin is null or cardinality(v_admin_property_ids) <> 1 then
-    raise exception '0426 production repair manifest has an invalid platform-admin residue row'
+  -- The source run is a frozen incident manifest, not a shape-based search.
+  -- Every UUID and tuple is pinned to the read-only 85981 evidence verified by
+  -- the release owner.  A valid-looking is_test row, altered detail, or
+  -- another report run must fail before any manifest row is written.
+  if exists (
+    select 1
+    from public.account_access_cutover_preflight_issues issue
+    where issue.run_id = v_target_run_id
+      and issue.id <> all (array[
+        v_expected_admin_access_issue,
+        v_expected_admin_account_issue,
+        v_expected_gus_issue,
+        v_expected_greta_issue,
+        v_expected_dolores_issue,
+        v_expected_wrapper_issue
+      ]::uuid[])
+  ) or exists (
+    select 1
+    from unnest(array[
+      v_expected_admin_access_issue,
+      v_expected_admin_account_issue,
+      v_expected_gus_issue,
+      v_expected_greta_issue,
+      v_expected_dolores_issue,
+      v_expected_wrapper_issue
+    ]::uuid[]) expected(issue_id)
+    where not exists (
+      select 1
+      from public.account_access_cutover_preflight_issues issue
+      where issue.run_id = v_target_run_id
+        and issue.id = expected.issue_id
+    )
+  ) then
+    raise exception '0426 production repair manifest is not bound to the approved 85981 issue UUID set'
       using errcode = '55000';
   end if;
-  v_admin_property := v_admin_property_ids[1];
 
-  select issue.id into v_admin_account_issue
-  from public.account_access_cutover_preflight_issues issue
-  where issue.run_id = v_target_run_id
-    and issue.account_id = v_admin
-    and issue.issue_code = 'admin_legacy_account'
-    and issue.property_id is null
-    and issue.details->'propertyIds' = to_jsonb(v_admin_property_ids);
+  v_admin := v_expected_admin;
+  v_admin_access_issue := v_expected_admin_access_issue;
+  v_admin_account_issue := v_expected_admin_account_issue;
+  v_admin_property := v_expected_admin_property;
+  v_admin_property_ids := array[v_expected_admin_property]::uuid[];
+  if not exists (
+    select 1
+    from public.account_access_cutover_preflight_issues issue
+    where issue.id = v_expected_admin_access_issue
+      and issue.run_id = v_target_run_id
+      and issue.issue_code = 'admin_legacy_access'
+      and issue.account_id = v_expected_admin
+      and issue.property_id is null
+      and issue.details is not distinct from jsonb_build_object(
+        'propertyIds', jsonb_build_array(v_expected_admin_property)
+      )
+  ) or not exists (
+    select 1
+    from public.account_access_cutover_preflight_issues issue
+    where issue.id = v_expected_admin_account_issue
+      and issue.run_id = v_target_run_id
+      and issue.issue_code = 'admin_legacy_account'
+      and issue.account_id = v_expected_admin
+      and issue.property_id is null
+      and issue.details is not distinct from jsonb_build_object(
+        'propertyIds', jsonb_build_array(v_expected_admin_property),
+        'authorityMode', 'legacy'
+      )
+  ) then
+    raise exception '0426 production repair manifest has altered or mismatched platform-admin source details'
+      using errcode = '55000';
+  end if;
+  if public._staxis_stage_c_scope_hash(v_admin_property_ids)
+       <> v_expected_admin_raw_scope_hash then
+    raise exception '0426 production platform-admin raw scope hash is not the approved 85981 hash'
+      using errcode = '55000';
+  end if;
   if v_admin_account_issue is null
      or exists (
        select 1
@@ -2959,6 +3088,30 @@ begin
       and issue.issue_code = 'normalized_legacy_residue'
     order by issue.id
   loop
+    if v_issue.id = v_expected_gus_issue then
+      v_expected_sample_account := v_expected_gus;
+      v_expected_sample_property := v_expected_testing_property;
+      v_expected_normalized_raw_scope_hash := v_expected_testing_raw_scope_hash;
+    elsif v_issue.id = v_expected_greta_issue then
+      v_expected_sample_account := v_expected_greta;
+      v_expected_sample_property := v_expected_port_arthur_property;
+      v_expected_normalized_raw_scope_hash := v_expected_port_arthur_raw_scope_hash;
+    elsif v_issue.id = v_expected_dolores_issue then
+      v_expected_sample_account := v_expected_dolores;
+      v_expected_sample_property := v_expected_testing_property;
+      v_expected_normalized_raw_scope_hash := v_expected_testing_raw_scope_hash;
+    else
+      raise exception '0426 production repair manifest contains an unlisted normalized issue UUID'
+        using errcode = '55000';
+    end if;
+    if v_issue.account_id is distinct from v_expected_sample_account
+       or v_issue.property_id is not null
+       or v_issue.details is distinct from jsonb_build_object(
+         'propertyIds', jsonb_build_array(v_expected_sample_property)
+       ) then
+      raise exception '0426 production normalized residue tuple or details do not match the approved 85981 allowlist'
+        using errcode = '55000';
+    end if;
     if v_issue.account_id is null
        or v_issue.property_id is not null
        or jsonb_typeof(v_issue.details->'propertyIds') <> 'array'
@@ -2969,6 +3122,12 @@ begin
     select coalesce(array_agg(value::uuid order by value::text), '{}'::uuid[])
       into v_issue_property_ids
     from jsonb_array_elements_text(v_issue.details->'propertyIds') values(value);
+    if v_issue_property_ids is distinct from array[v_expected_sample_property]::uuid[]
+       or public._staxis_stage_c_scope_hash(v_issue_property_ids)
+            <> v_expected_normalized_raw_scope_hash then
+      raise exception '0426 production normalized residue raw scope hash is not the approved 85981 hash'
+        using errcode = '55000';
+    end if;
     v_sample_key := v_issue.account_id::text || ':' || v_issue_property_ids[1]::text;
     if array_position(v_seen_sample_keys, v_sample_key) is not null then
       raise exception '0426 production repair manifest has duplicate normalized account/property evidence'
@@ -3006,11 +3165,22 @@ begin
   from public.account_access_cutover_preflight_issues issue
   where issue.run_id = v_target_run_id
     and issue.issue_code = 'stage_a_invariant_failure';
-  if v_wrapper_issue is null
+  if v_wrapper_issue is distinct from v_expected_wrapper_issue
      or (select issue.account_id from public.account_access_cutover_preflight_issues issue
          where issue.id = v_wrapper_issue) is not null
      or (select issue.property_id from public.account_access_cutover_preflight_issues issue
          where issue.id = v_wrapper_issue) is not null
+     or (select encode(
+           pg_catalog.sha256(convert_to(issue.details::text, 'UTF8')), 'hex'
+         )
+         from public.account_access_cutover_preflight_issues issue
+         where issue.id = v_wrapper_issue) <> v_expected_wrapper_details_hash
+     or (select issue.details->>'stageAInvariantRunId'
+         from public.account_access_cutover_preflight_issues issue
+         where issue.id = v_wrapper_issue) <> v_expected_stage_a_run_id::text
+     or (select issue.details->>'stageAInvariantIssueCount'
+         from public.account_access_cutover_preflight_issues issue
+         where issue.id = v_wrapper_issue) <> '5'
      or jsonb_typeof(v_samples) <> 'array'
      or jsonb_array_length(v_samples) <> 5
      or exists (
@@ -3029,6 +3199,45 @@ begin
   loop
     v_sample_account := nullif(v_sample.value->>'accountId', '')::uuid;
     v_sample_property := nullif(v_sample.value->>'propertyId', '')::uuid;
+    if v_sample.ordinality = 1 then
+      v_expected_sample_code := 'invalid_legacy_account_identity';
+      v_expected_sample_account := v_expected_admin;
+      v_expected_sample_property := null;
+      v_expected_sample_details_hash := 'ee61e5106a2742dd928e1110801ae7366fe06b0816ca40133ff100e0631d12b8';
+    elsif v_sample.ordinality = 2 then
+      v_expected_sample_code := 'legacy_row_without_shadow_translation';
+      v_expected_sample_account := v_expected_admin;
+      v_expected_sample_property := v_expected_admin_property;
+      v_expected_sample_details_hash := 'ae1cd909ba2eaa535cc7c75e6b8507694dfaae4c80902b7294244d7281632e83';
+    elsif v_sample.ordinality = 3 then
+      v_expected_sample_code := 'legacy_row_without_shadow_translation';
+      v_expected_sample_account := v_expected_gus;
+      v_expected_sample_property := v_expected_testing_property;
+      v_expected_sample_details_hash := '30c95c7e6bf239e4fad20258e749ddaa93cf0b9bea0b8c5aed0cdbce03bdd7de';
+    elsif v_sample.ordinality = 4 then
+      v_expected_sample_code := 'legacy_row_without_shadow_translation';
+      v_expected_sample_account := v_expected_dolores;
+      v_expected_sample_property := v_expected_testing_property;
+      v_expected_sample_details_hash := '30c95c7e6bf239e4fad20258e749ddaa93cf0b9bea0b8c5aed0cdbce03bdd7de';
+    elsif v_sample.ordinality = 5 then
+      v_expected_sample_code := 'legacy_row_without_shadow_translation';
+      v_expected_sample_account := v_expected_greta;
+      v_expected_sample_property := v_expected_port_arthur_property;
+      v_expected_sample_details_hash := '03b50b20caa56329abf718d4e182b95d0131e0c9db7d0fbe9bba1859f0025509';
+    else
+      raise exception '0426 production Stage-A wrapper contains an unexpected sample ordinal'
+        using errcode = '55000';
+    end if;
+    if v_sample.value->>'code' is distinct from v_expected_sample_code
+       or v_sample_account is distinct from v_expected_sample_account
+       or v_sample_property is distinct from v_expected_sample_property
+       or encode(
+            pg_catalog.sha256(convert_to((v_sample.value->'details')::text, 'UTF8')),
+            'hex'
+          ) <> v_expected_sample_details_hash then
+      raise exception '0426 production Stage-A wrapper sample does not match the approved 85981 evidence'
+        using errcode = '55000';
+    end if;
     if v_sample.value->>'code' = 'invalid_legacy_account_identity' then
       if v_sample_account is distinct from v_admin or v_sample_property is not null then
         raise exception '0426 production Stage-A wrapper contains an unrelated invalid-identity sample'
@@ -3145,6 +3354,15 @@ begin
           or manifest.raw_scope_hash <> public._staxis_stage_c_scope_hash(manifest.raw_property_ids)
           or manifest.stage_a_mapping is distinct from case
             when issue.id = v_wrapper_issue then v_mapping else '{}'::jsonb end
+          or manifest.details is distinct from jsonb_build_object(
+            'incidentRunId', v_target_run_id,
+            'wrapperIssueId', v_wrapper_issue,
+            'sourceIssueDetails', issue.details,
+            'sourceIssueDetailsHash', encode(
+              pg_catalog.sha256(convert_to(issue.details::text, 'UTF8')), 'hex'
+            ),
+            'sourceRawScopeHash', public._staxis_stage_c_scope_hash(manifest.raw_property_ids)
+          )
         )
     ) or exists (
       select 1
@@ -3185,7 +3403,20 @@ begin
            from jsonb_array_elements_text(issue.details->'propertyIds') values(value)
          ), '{}'::uuid[])),
          case when issue.id = v_wrapper_issue then v_mapping else '{}'::jsonb end,
-         jsonb_build_object('incidentRunId', v_target_run_id, 'wrapperIssueId', v_wrapper_issue)
+         jsonb_build_object(
+           'incidentRunId', v_target_run_id,
+           'wrapperIssueId', v_wrapper_issue,
+           'sourceIssueDetails', issue.details,
+           'sourceIssueDetailsHash', encode(
+             pg_catalog.sha256(convert_to(issue.details::text, 'UTF8')), 'hex'
+           ),
+           'sourceRawScopeHash', public._staxis_stage_c_scope_hash(
+             coalesce(array(
+               select value::uuid
+               from jsonb_array_elements_text(issue.details->'propertyIds') values(value)
+             ), '{}'::uuid[])
+           )
+         )
   from public.account_access_cutover_preflight_issues issue
   where issue.run_id = v_target_run_id
     and issue.id = any(v_expected_issue_ids);
