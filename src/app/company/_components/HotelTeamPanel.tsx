@@ -8,14 +8,12 @@
 // (logins) and then, underneath, the `staff` rows that had no login. Nothing on
 // screen explained why a housekeeper appeared in two places, or why her manager
 // appeared in one. This panel merges both tables into a single roster keyed by
-// person and grouped by department — the way a hotel manager actually thinks
-// about their people — so one human is one card.
+// person — the way a hotel manager needs to see their people — so one human is
+// one row.
 //
 // What each half still contributes:
-//   • employment (`staff`) — department, on-shift ring, hours-vs-cap bar,
-//     SENIOR tag, dimming when inactive, and the Roster / On shift / Near OT
-//     counts.
-//   • login (`accounts`)   — role, email, last sign-in, disabled state, the
+//   • employment (`staff`) — department, SENIOR tag, and dimming when inactive.
+//   • login (`accounts`)   — role, disabled state, the
 //     owner-protected and shared-across-hotels notices, and the linked marker.
 //
 // The join is `account_property_staff_links`, surfaced as `staffId` on each row
@@ -47,12 +45,14 @@ import type { StaffDepartment, StaffMember } from '@/types';
 import type { AddStaffAttempt } from './AddStaffDialog';
 import { restoreDialogFocus } from './dialog-focus';
 import {
-  ALWAYS_VISIBLE_GROUPS,
   buildHotelRoster,
-  rosterCounts,
   type RosterGroupKey,
   type RosterPerson,
 } from './people-roster';
+import {
+  usePeopleController,
+  type PeopleControllerState,
+} from './usePeopleController';
 import styles from './HotelTeamPanel.module.css';
 
 export type HotelTeamLang = 'en' | 'es';
@@ -99,6 +99,11 @@ export interface HotelTeamMember {
   isPlatformAdmin?: boolean;
   hotelAccessCount?: number | null;
   hasOtherHotelAccess?: boolean;
+  /** Read-only identity hint from an inactive link at this exact hotel. It
+   * never grants or preserves account authority. */
+  historicalStaffId: string | null;
+  /** Server-computed eligibility for a new staff link at this hotel. */
+  staffLinkAllowed: boolean;
   /** Authoritative account-access surface returned by /api/auth/team. Company
    * access can make an organization member visible here without creating the
    * hotel's direct first-person/setup account. */
@@ -166,6 +171,10 @@ export interface HotelTeamPanelProps {
   rosterUnavailable?: boolean;
   /** May this viewer add somebody to the schedule? */
   canAddStaff?: boolean;
+  /** The page-owned People controller. Standalone panel consumers may omit it;
+   * in that case the panel uses the same account projection hook without
+   * opening a second staff subscription. */
+  peopleController?: PeopleControllerState;
   onChanged?: () => void | Promise<void>;
 }
 
@@ -280,7 +289,7 @@ function waitForLifecycleReconciliation(delayMs: number, signal: AbortSignal): P
  * hold several — "GM — Beaumont" and "Oversees — Lufkin, Tyler" — and each one
  * is a separate row in the database, editable and removable on its own.
  */
-interface CompanyJobLine {
+export interface CompanyJobLine {
   membershipId: string;
   scope: 'company' | 'property';
   role: string;
@@ -339,19 +348,19 @@ function groupLabel(group: RosterGroupKey, lang: HotelTeamLang): string {
   return GROUP_LABELS[group];
 }
 
+function personJobLabel(
+  person: RosterPerson<HotelTeamMember, StaffMember>,
+  lang: HotelTeamLang,
+): string {
+  if (person.staff) return departmentLabel(person.staff.department ?? 'housekeeping', lang);
+  if (person.account) return roleLabel(person.account.role, lang);
+  return groupLabel(person.group, lang);
+}
+
 function initials(name: string): string {
   const parts = name.trim().split(/\s+/).filter(Boolean);
   if (parts.length === 0) return '?';
   return `${parts[0]?.[0] ?? ''}${parts.length > 1 ? parts.at(-1)?.[0] ?? '' : ''}`.toUpperCase();
-}
-
-function formatPhone(value: string): string {
-  const digits = value.replace(/\D/g, '');
-  if (digits.length === 10) return `(${digits.slice(0, 3)}) ${digits.slice(3, 6)}-${digits.slice(6)}`;
-  if (digits.length === 11 && digits.startsWith('1')) {
-    return `(${digits.slice(1, 4)}) ${digits.slice(4, 7)}-${digits.slice(7)}`;
-  }
-  return value;
 }
 
 function timeAgo(value: string, lang: HotelTeamLang): string {
@@ -364,21 +373,6 @@ function timeAgo(value: string, lang: HotelTeamLang): string {
   if (hours < 24) return `${hours}h ago`;
   const days = Math.floor(hours / 24);
   return `${days}d ago`;
-}
-
-function lastSignInLabel(known: boolean, value: string | null, lang: HotelTeamLang): string {
-  if (!known) return 'Last sign-in unavailable';
-  if (!value) return 'No sign-ins yet';
-  const parsed = new Date(value);
-  if (Number.isNaN(parsed.getTime())) {
-    return 'Last sign-in unavailable';
-  }
-  const formatted = new Intl.DateTimeFormat('en-US', {
-    month: 'short',
-    day: 'numeric',
-    year: 'numeric',
-  }).format(parsed);
-  return `Last signed in ${formatted}`;
 }
 
 function actionFlag(
@@ -408,13 +402,10 @@ function resolveActions(
   const viewerIsGm = currentUser.role === 'general_manager';
   const targetAboveGm = member.role === 'owner' || member.role === 'general_manager';
   const hierarchyAllows = viewerIsAdmin || viewerIsOwner || (viewerIsGm && !targetAboveGm);
-  const hotelIds = member.propertyAccess.filter((id) => id !== '*');
-  const targetHasAllHotels = member.propertyAccess.includes('*');
-  const roleIsSharedAcrossHotels = member.hasOtherHotelAccess ?? hotelIds.length > 1;
-  const viewerHotels = new Set(currentUser.propertyAccess);
-  const viewerControlsEveryHotel = viewerIsAdmin
-    || viewerHotels.has('*')
-    || (!targetHasAllHotels && hotelIds.length > 0 && hotelIds.every((id) => viewerHotels.has(id)));
+  // Cross-hotel authority is projected by GET /api/auth/team. Do not infer it
+  // from the legacy account.propertyAccess arrays: those fields are display
+  // data and may be stale or incomplete for company-scope access.
+  const roleIsSharedAcrossHotels = Boolean(member.hasOtherHotelAccess);
 
   // These floors are deliberately stricter than presentation flags. A stale
   // or over-permissive API flag must never expose admin, self-removal, or
@@ -441,8 +432,7 @@ function resolveActions(
     && !self
     && !adminTarget
     && !member.ownerProtected
-    && hierarchyAllows
-    && viewerControlsEveryHotel;
+    && hierarchyAllows;
   const canDeactivate = lifecycleFloor
     && member.active
     && actionFlag(member, ['canDeactivate'], 'canDeactivate', false);
@@ -462,6 +452,22 @@ function resolveActions(
     canReactivate,
     canRemove,
     roleIsSharedAcrossHotels,
+  };
+}
+
+function floorOffRosterActions(
+  actions: ResolvedActions,
+  offRoster: boolean,
+): ResolvedActions {
+  if (!offRoster) return actions;
+  return {
+    ...actions,
+    canEdit: false,
+    canChangeRole: false,
+    canResetPassword: false,
+    canDeactivate: false,
+    canReactivate: false,
+    canRemove: false,
   };
 }
 
@@ -697,28 +703,6 @@ function DialogLoadingChoices({ count }: { count: number }) {
   );
 }
 
-/** Hours worked against this person's weekly cap. Turns rust within 4 hours of
- *  the cap — the same threshold the Near OT count uses. */
-function HoursMeter({ hours, max, lang }: { hours: number; max: number; lang: HotelTeamLang }) {
-  const safeMax = max > 0 ? max : 40;
-  const ratio = Math.min(1, hours / safeMax);
-  const near = hours >= safeMax - 4;
-  return (
-    <span
-      className={`${styles.hoursMeter}${near ? ` ${styles.hoursMeterNear}` : ''}`}
-      title={`${hours} of ${safeMax} hours this week`}
-    >
-      <span className={styles.hoursTrack} aria-hidden="true">
-        <span className={styles.hoursFill} style={{ width: `${ratio * 100}%` }} />
-      </span>
-      <span className={styles.hoursText}>
-        {hours}
-        <small>/{safeMax}h</small>
-      </span>
-    </span>
-  );
-}
-
 export function HotelTeamPanel({
   hotelId,
   hotelName,
@@ -736,12 +720,9 @@ export function HotelTeamPanel({
   staffProfiles = [],
   rosterUnavailable = false,
   canAddStaff = false,
+  peopleController,
   onChanged,
 }: HotelTeamPanelProps) {
-  const [team, setTeam] = React.useState<HotelTeamMember[]>([]);
-  const [jobsByAccountId, setJobsByAccountId] = React.useState<Record<string, CompanyJobLine[]>>({});
-  const [teamLoading, setTeamLoading] = React.useState(false);
-  const [teamError, setTeamError] = React.useState('');
   const [requests, setRequests] = React.useState<HotelJoinRequest[]>([]);
   const [requestsLoading, setRequestsLoading] = React.useState(false);
   const [requestsError, setRequestsError] = React.useState('');
@@ -770,9 +751,7 @@ export function HotelTeamPanel({
     request: HotelJoinRequest;
     decision: 'approve' | 'deny';
   } | null>(null);
-  const teamAbortRef = React.useRef<AbortController | null>(null);
   const requestAbortRef = React.useRef<AbortController | null>(null);
-  const teamSequenceRef = React.useRef(0);
   const requestSequenceRef = React.useRef(0);
   const inviteEntryRef = React.useRef<HTMLButtonElement | null>(null);
   const inviteEntryReturnFocusRef = React.useRef<HTMLElement | null>(null);
@@ -781,6 +760,39 @@ export function HotelTeamPanel({
   const peopleHeadingRef = providedPeopleHeadingRef ?? localPeopleHeadingRef;
   const changedRef = React.useRef(onChanged);
   changedRef.current = onChanged;
+
+  // The page passes the controller that joins the canonical account
+  // projection with PropertyContext's viewer-stamped staff snapshot. The
+  // fallback exists for direct/standalone panel consumers and still owns only
+  // the account request — never a second staff subscription.
+  const fallbackPeopleViewerKey = `${currentUser.uid}:${currentAccountId}:${hotelId}:standalone`;
+  const fallbackPeopleController = usePeopleController({
+    hotelId,
+    viewerKey: fallbackPeopleViewerKey,
+    enabled: !peopleController && canManageTeam,
+    adminPreview,
+    readOnly,
+    staff: staffProfiles,
+    staffViewerKey: fallbackPeopleViewerKey,
+    staffExpectedViewerKey: fallbackPeopleViewerKey,
+    staffLoaded: !rosterUnavailable,
+    staffLoadFailed: rosterUnavailable,
+    refreshStaff: async () => {},
+  });
+  const peopleState = peopleController ?? fallbackPeopleController;
+  const {
+    team,
+    jobsByAccountId,
+    teamLoading,
+    teamError,
+    staff: controllerStaff,
+    rosterUnavailable: controllerRosterUnavailable,
+    refreshTeam,
+  } = peopleState;
+  const rosterUnavailableForPeople = peopleController
+    ? controllerRosterUnavailable
+    : rosterUnavailable || controllerRosterUnavailable;
+  const rosterStaffProfiles = peopleController ? controllerStaff : staffProfiles;
 
   const locked = readOnly;
   const inviteActionDisabled = locked
@@ -849,10 +861,7 @@ export function HotelTeamPanel({
   // an old team's data for even one render while the fresh fetch is pending.
   React.useEffect(() => {
     if (canManageTeam) return;
-    teamAbortRef.current?.abort();
     requestAbortRef.current?.abort();
-    setTeam([]);
-    setJobsByAccountId({});
     setRequests([]);
     setContactSnapshot(null);
     setWageSnapshot(null);
@@ -874,57 +883,6 @@ export function HotelTeamPanel({
     () => (wageSnapshot?.hotelId === hotelId ? wageSnapshot.wages : {}),
     [wageSnapshot, hotelId],
   );
-
-  const loadTeam = React.useCallback(async (clearFirst = false) => {
-    teamAbortRef.current?.abort();
-    const controller = new AbortController();
-    teamAbortRef.current = controller;
-    const sequence = ++teamSequenceRef.current;
-
-    if (!hotelId || !canManageTeam) {
-      setTeam([]);
-      setTeamLoading(false);
-      setTeamError('');
-      return;
-    }
-
-    if (clearFirst) {
-      setTeam([]);
-    }
-    setTeamLoading(true);
-    setTeamError('');
-    try {
-      const response = await fetchWithAuth(`/api/auth/team?hotelId=${encodeURIComponent(hotelId)}`, {
-        signal: controller.signal,
-      });
-      const body = await response.json().catch(() => ({})) as Envelope<{
-        team?: HotelTeamMember[];
-        hatsByAccountId?: Record<string, CompanyJobLine[]>;
-      }>;
-      if (!response.ok || !body.ok) {
-        throw new Error(responseError(
-          body,
-          "Couldn't load the people at this hotel.",
-        ));
-      }
-      if (controller.signal.aborted || sequence !== teamSequenceRef.current) return;
-      const responseTeam = body.data?.team ?? [];
-      const nextTeam = (adminPreview || readOnly)
-        ? responseTeam.filter((member) => !member.isPlatformAdmin && member.role !== 'admin')
-        : responseTeam;
-      setTeam(nextTeam);
-      setJobsByAccountId(body.data?.hatsByAccountId ?? {});
-    } catch (error) {
-      if (controller.signal.aborted || sequence !== teamSequenceRef.current) return;
-      console.error('[HotelTeamPanel] team load failed', error);
-      setTeam([]);
-      setTeamError(error instanceof Error && error.message
-        ? error.message
-        : "Couldn't load the people at this hotel. Check your connection and try again.");
-    } finally {
-      if (!controller.signal.aborted && sequence === teamSequenceRef.current) setTeamLoading(false);
-    }
-  }, [adminPreview, canManageTeam, hotelId, readOnly]);
 
   const loadRequests = React.useCallback(async (clearFirst = false) => {
     requestAbortRef.current?.abort();
@@ -1010,11 +968,6 @@ export function HotelTeamPanel({
   }, [canManageTeam, canViewWages, hotelId]);
 
   React.useEffect(() => {
-    void loadTeam(true);
-    return () => teamAbortRef.current?.abort();
-  }, [loadTeam]);
-
-  React.useEffect(() => {
     void loadRequests(true);
     return () => requestAbortRef.current?.abort();
   }, [loadRequests]);
@@ -1034,12 +987,12 @@ export function HotelTeamPanel({
 
   // Drop an optimistic add as soon as the real roster carries it.
   React.useEffect(() => {
-    const loadedIds = new Set(staffProfiles.map((member) => member.id));
+    const loadedIds = new Set(rosterStaffProfiles.map((member) => member.id));
     setOptimisticStaff((current) => {
       const pending = current.filter((member) => !loadedIds.has(member.id));
       return pending.length === current.length ? current : pending;
     });
-  }, [staffProfiles]);
+  }, [rosterStaffProfiles]);
 
   const hasServerLifecyclePending = team.some((member) => member.lifecyclePending === true);
 
@@ -1052,19 +1005,19 @@ export function HotelTeamPanel({
       for (const delayMs of LIFECYCLE_SERVER_REFRESH_DELAYS_MS) {
         const shouldContinue = await waitForLifecycleReconciliation(delayMs, controller.signal);
         if (!shouldContinue) return;
-        await loadTeam();
+        await refreshTeam();
         if (controller.signal.aborted) return;
       }
       setServerLifecyclePollingPaused(true);
     })();
 
     return () => controller.abort();
-  }, [hasServerLifecyclePending, hotelId, loadTeam]);
+  }, [hasServerLifecyclePending, hotelId, refreshTeam]);
 
   const refreshAfterChange = React.useCallback(async () => {
-    await Promise.all([loadTeam(), loadRequests(), loadContacts(), loadWages()]);
+    await Promise.all([refreshTeam(), loadRequests(), loadContacts(), loadWages()]);
     await changedRef.current?.();
-  }, [loadContacts, loadRequests, loadTeam, loadWages]);
+  }, [loadContacts, loadRequests, loadWages, refreshTeam]);
 
   const reconcilePendingLifecycle = React.useCallback((operation: HotelTeamPendingLifecycleOperation) => {
     setPendingLifecycleByAccount((current) => {
@@ -1157,17 +1110,17 @@ export function HotelTeamPanel({
 
   // ── The merged roster ────────────────────────────────────────────────────
   const rosterStaff = React.useMemo(() => {
-    const loadedIds = new Set(staffProfiles.map((member) => member.id));
+    const loadedIds = new Set(rosterStaffProfiles.map((member) => member.id));
     return [
-      ...staffProfiles,
+      ...rosterStaffProfiles,
       ...optimisticStaff.filter((member) => !loadedIds.has(member.id)),
     ];
-  }, [optimisticStaff, staffProfiles]);
+  }, [optimisticStaff, rosterStaffProfiles]);
 
   const unlinkedRosterProfiles = React.useMemo<HotelInviteRosterProfile[]>(() => {
     // Do not offer a possibly stale profile while either half of the merged
     // roster is unavailable. The POST rechecks the chosen id server-side too.
-    if (teamLoading || teamError || rosterUnavailable) return [];
+    if (teamLoading || teamError || rosterUnavailableForPeople) return [];
     const linkedStaffIds = new Set(
       team.flatMap((member) => member.staffId ? [member.staffId] : []),
     );
@@ -1179,20 +1132,17 @@ export function HotelTeamPanel({
         department: member.department ?? 'housekeeping',
       }))
       .sort((left, right) => left.name.localeCompare(right.name));
-  }, [rosterStaff, rosterUnavailable, team, teamError, teamLoading]);
+  }, [rosterStaff, rosterUnavailableForPeople, team, teamError, teamLoading]);
 
   const groups = React.useMemo(
     () => buildHotelRoster(team, rosterStaff),
     [rosterStaff, team],
   );
-  const visibleGroups = React.useMemo(
-    () => groups.filter((group) => group.people.length > 0 || ALWAYS_VISIBLE_GROUPS.has(group.key)),
+  const people = React.useMemo(
+    () => groups.flatMap((group) => group.people),
     [groups],
   );
-  const peopleCount = React.useMemo(
-    () => groups.reduce((total, group) => total + group.people.length, 0),
-    [groups],
-  );
+  const peopleCount = people.length;
   // The first-person lifecycle is about a direct hotel account, not every
   // account that can reach the hotel. Organization-scope company access makes
   // inherited members appear in this authoritative roster, but those members
@@ -1204,7 +1154,6 @@ export function HotelTeamPanel({
     && !teamLoading
     && !teamError
     && !hasDirectHotelAccount;
-  const counts = React.useMemo(() => rosterCounts(rosterStaff), [rosterStaff]);
   const linkAccounts = React.useMemo(
     () => team.map((member) => ({
       accountId: member.accountId,
@@ -1212,12 +1161,17 @@ export function HotelTeamPanel({
       username: member.username,
       role: member.role,
       staffId: member.staffId,
+      historicalStaffId: member.historicalStaffId,
+      propertyAccess: member.propertyAccess,
+      managementSurface: member.managementSurface,
+      staffLinkAllowed: member.staffLinkAllowed,
+      lifecyclePending: member.lifecyclePending === true,
     })),
     [team],
   );
   const editPerson = React.useMemo(
-    () => groups.flatMap((group) => group.people).find((person) => person.key === editKey) ?? null,
-    [editKey, groups],
+    () => people.find((person) => person.key === editKey) ?? null,
+    [editKey, people],
   );
 
   const loadingDialogVariant: DialogLoadingVariant = editPerson
@@ -1359,13 +1313,16 @@ export function HotelTeamPanel({
 
   const editAccount = editPerson?.account ?? null;
   const editActions = editAccount
-    ? resolveActions(
-        editAccount,
-        currentUser,
-        currentAccountId,
-        locked
-          || Boolean(pendingLifecycleByAccount[editAccount.accountId])
-          || editAccount.lifecyclePending === true,
+    ? floorOffRosterActions(
+        resolveActions(
+          editAccount,
+          currentUser,
+          currentAccountId,
+          locked
+            || Boolean(pendingLifecycleByAccount[editAccount.accountId])
+            || editAccount.lifecyclePending === true,
+        ),
+        editPerson?.staff?.isActive === false,
       )
     : null;
 
@@ -1378,7 +1335,8 @@ export function HotelTeamPanel({
       lang={lang}
       staff={editPerson.staff}
       accounts={linkAccounts}
-      canEdit={canEditEmployment(editPerson.account, currentUser, currentAccountId, locked)}
+      canEdit={editPerson.staff?.isActive !== false
+        && canEditEmployment(editPerson.account, currentUser, currentAccountId, locked)}
       canViewWages={canViewWages}
       wages={wages}
       contacts={contacts}
@@ -1446,25 +1404,7 @@ export function HotelTeamPanel({
           </div>
         ) : null}
 
-        <div className={styles.kpiStrip}>
-          <div className={styles.kpiCard}>
-            <span className={styles.kpiLabel}>{'Roster'}</span>
-            <strong>{counts.roster}</strong>
-            <small>{'people on the books'}</small>
-          </div>
-          <div className={styles.kpiCard}>
-            <span className={styles.kpiLabel}>{'On shift'}</span>
-            <strong>{counts.onShift}</strong>
-            <small>{'working right now'}</small>
-          </div>
-          <div className={`${styles.kpiCard}${counts.nearOvertime > 0 ? ` ${styles.kpiCardAlert}` : ''}`}>
-            <span className={styles.kpiLabel}>{'Near overtime'}</span>
-            <strong>{counts.nearOvertime}</strong>
-            <small>{'within 4h of their weekly cap'}</small>
-          </div>
-        </div>
-
-        {rosterUnavailable ? (
+        {rosterUnavailableForPeople ? (
           <div className={styles.warningNotice} role="alert">
             <AlertTriangle size={17} aria-hidden="true" />
             <span>{'The schedule roster is temporarily unavailable, so some people may be missing. It will reconnect automatically.'}</span>
@@ -1532,7 +1472,7 @@ export function HotelTeamPanel({
           <div className={styles.errorState} role="alert">
             <AlertCircle size={18} aria-hidden="true" />
             <div><strong>{'The hotel roster did not load'}</strong><span>{teamError}</span></div>
-            <button type="button" onClick={() => void loadTeam()}>
+            <button type="button" onClick={() => void refreshTeam()}>
               <RefreshCw size={15} aria-hidden="true" />{'Retry'}
             </button>
           </div>
@@ -1542,7 +1482,7 @@ export function HotelTeamPanel({
             <h3>{needsFirstPerson ? 'Add first person' : 'Nobody here yet'}</h3>
             <p>{needsFirstPerson
               ? 'Invite this hotel’s first Owner or General Manager. Their assigned role is locked into signup.'
-              : 'Use Add staff member for someone who only needs the roster and schedule. Use Invite people when they need Staxis login access.'}</p>
+              : 'Use Invite people to add someone to the schedule only, or invite them to create a Staxis login.'}</p>
             {!locked && needsFirstPerson ? (
               <div className={styles.emptyStateActions}>
                 <button
@@ -1557,57 +1497,23 @@ export function HotelTeamPanel({
             ) : null}
           </div>
         ) : (
-          <div className={styles.departmentGrid}>
-            {visibleGroups.map((group) => (
-              <section key={group.key} className={styles.departmentCard} aria-label={groupLabel(group.key, lang)}>
-                <div className={styles.departmentHeader}>
-                  <span className={`${styles.departmentDot} ${styles[`dept_${group.key}`] ?? ''}`} aria-hidden="true" />
-                  <h3>{groupLabel(group.key, lang)}</h3>
-                  <span className={styles.departmentCount}>{group.people.length}</span>
-                </div>
-                {group.people.length === 0 ? (
-                  <p className={styles.departmentEmpty}>
-                    {'Nobody in this department yet.'}
-                  </p>
-                ) : (
-                <div className={styles.personList} role="list">
-                  {group.people.map((person) => (
-                    <PersonRow
-                      key={person.key}
-                      person={person}
-                      lang={lang}
-                      currentUser={currentUser}
-                      currentAccountId={currentAccountId}
-                      locked={locked}
-                      jobsByAccountId={jobsByAccountId}
-                      phone={person.staff ? contacts[person.staff.id] ?? null : null}
-                      contactsReady={contactsReady}
-                      contactsUnavailable={contactsError}
-                      pendingLifecycle={person.account
-                        ? pendingLifecycleByAccount[person.account.accountId]
-                        : undefined}
-                      serverLifecyclePollingPaused={serverLifecyclePollingPaused}
-                      onOpen={() => setEditKey(person.key)}
-                      onRemoveAccess={(member) => setRemoveMember(member)}
-                    />
-                  ))}
-                </div>
-                )}
-                {canAddStaff && !locked && group.key !== 'management' ? (
-                  <button
-                    type="button"
-                    className={styles.departmentAdd}
-                    onClick={(event) => {
-                      addStaffReturnFocusRef.current = event.currentTarget;
-                      setAddDepartment(group.key as StaffDepartment);
-                    }}
-                    aria-haspopup="dialog"
-                  >
-                    <UserPlus size={15} aria-hidden="true" />
-                    {`Add to ${groupLabel(group.key, 'en')}`}
-                  </button>
-                ) : null}
-              </section>
+          <div className={styles.rosterList} role="list" aria-label={'People at this hotel'}>
+            {people.map((person) => (
+              <PersonRow
+                key={person.key}
+                person={person}
+                lang={lang}
+                currentUser={currentUser}
+                currentAccountId={currentAccountId}
+                locked={locked}
+                jobsByAccountId={jobsByAccountId}
+                pendingLifecycle={person.account
+                  ? pendingLifecycleByAccount[person.account.accountId]
+                  : undefined}
+                serverLifecyclePollingPaused={serverLifecyclePollingPaused}
+                onOpen={() => setEditKey(person.key)}
+                onRemoveAccess={(member) => setRemoveMember(member)}
+              />
             ))}
           </div>
         )}
@@ -1635,6 +1541,7 @@ export function HotelTeamPanel({
             currentAccountId={currentAccountId}
             lang={lang}
             actions={editActions}
+            readOnly={editPerson.staff?.isActive === false}
             employmentSlot={employmentSlot}
             onLifecyclePending={reconcilePendingLifecycle}
             onClose={() => setEditKey(null)}
@@ -1700,7 +1607,7 @@ export function HotelTeamPanel({
             returnFocusRef={inviteEntryReturnFocusRef}
             fallbackFocusRef={peopleHeadingRef}
             onClose={() => onInviteDialogOpenChange(false)}
-            onChanged={() => changedRef.current?.()}
+            onChanged={refreshAfterChange}
           />
         ) : null}
         {decision ? (
@@ -1739,35 +1646,31 @@ export function HotelTeamPanel({
   );
 }
 
-function PersonRow({
-  person,
-  lang,
-  currentUser,
-  currentAccountId,
-  locked,
-  jobsByAccountId,
-  phone,
-  contactsReady,
-  contactsUnavailable,
-  pendingLifecycle,
-  serverLifecyclePollingPaused,
-  onOpen,
-  onRemoveAccess,
-}: {
+export interface PersonRowProps {
   person: RosterPerson<HotelTeamMember, StaffMember>;
   lang: HotelTeamLang;
   currentUser: AppUser;
   currentAccountId: string;
   locked: boolean;
   jobsByAccountId: Record<string, CompanyJobLine[]>;
-  phone: string | null;
-  contactsReady: boolean;
-  contactsUnavailable: boolean;
   pendingLifecycle: PendingLifecycleReconciliation | undefined;
   serverLifecyclePollingPaused: boolean;
   onOpen: () => void;
   onRemoveAccess: (member: HotelTeamMember) => void;
-}) {
+}
+
+export function PersonRow({
+  person,
+  lang,
+  currentUser,
+  currentAccountId,
+  locked,
+  jobsByAccountId,
+  pendingLifecycle,
+  serverLifecyclePollingPaused,
+  onOpen,
+  onRemoveAccess,
+}: PersonRowProps) {
   const account = person.account;
   const staff = person.staff;
   const self = account?.accountId === currentAccountId;
@@ -1784,42 +1687,24 @@ function PersonRow({
     || availableActions.canDeactivate
     || availableActions.canReactivate
   ));
-  const employmentEditable = canEditEmployment(account, currentUser, currentAccountId, locked);
+  const offRoster = staff?.isActive === false;
+  const employmentEditable = !offRoster
+    && canEditEmployment(account, currentUser, currentAccountId, locked);
   // Somebody with a login you may not touch and no schedule profile has nothing
   // behind the button — don't offer one.
   const canOpen = canOpenAccountEditor || Boolean(staff);
-  const editable = canOpenAccountEditor || (Boolean(staff) && employmentEditable);
-  const onShift = staff?.scheduledToday === true;
+  const editable = !offRoster
+    && (canOpenAccountEditor || (Boolean(staff) && employmentEditable));
   const dimmed = staff?.isActive === false || (account ? !account.active : false);
   const jobLines = account ? jobsByAccountId[account.accountId] ?? [] : [];
-
-  const identityLine = [
-    account ? `@${account.username}` : null,
-    account ? roleLabel(account.role, lang) : 'Schedule only, no login',
-  ].filter(Boolean).join(' · ');
-
-  const contactLine = staff
-    ? (contactsUnavailable
-        ? 'Phone unavailable'
-        : !contactsReady
-          ? 'Loading…'
-          : phone
-            ? formatPhone(phone)
-            : 'No phone')
-    : null;
-  const emailLine = account
-    ? account.email || 'Email unavailable'
-    : null;
+  const jobLabel = personJobLabel(person, lang);
 
   return (
     <div
       className={`${styles.teamRow}${self ? ` ${styles.selfRow}` : ''}${dimmed ? ` ${styles.dimmedRow}` : ''}`}
       role="listitem"
     >
-      <span
-        className={`${styles.avatar}${onShift ? ` ${styles.avatarOnShift}` : ''}`}
-        aria-hidden="true"
-      >
+      <span className={styles.avatar} aria-hidden="true">
         {initials(person.name)}
       </span>
       <div className={styles.rowBody}>
@@ -1832,7 +1717,7 @@ function PersonRow({
             </small>
           ) : null}
         </strong>
-        <span>{identityLine}</span>
+        <span className={styles.personJob}>{jobLabel}</span>
         {jobLines.length > 0 ? (
           <span className={styles.companyJobLines}>
             {jobLines.map((job) => (
@@ -1844,13 +1729,6 @@ function PersonRow({
                 }`}
               </em>
             ))}
-          </span>
-        ) : null}
-        {contactLine ? <span>{contactLine}</span> : null}
-        {emailLine ? <span>{emailLine}</span> : null}
-        {account ? (
-          <span className={styles.signInMetadata}>
-            {lastSignInLabel(account.lastSignInKnown, account.lastSignInAt, lang)}
           </span>
         ) : null}
         {lifecycleIsPending ? (
@@ -1868,41 +1746,30 @@ function PersonRow({
         ) : null}
       </div>
 
-      {staff ? (
-        <HoursMeter
-          hours={staff.weeklyHours ?? 0}
-          max={staff.maxWeeklyHours ?? 40}
-          lang={lang}
-        />
-      ) : null}
-
       <div className={styles.rowBadges}>
         {account ? (
-          <span
-            className={`${styles.accountStatusBadge}${
-              lifecycleIsPending
-                ? ` ${styles.accountStatusPending}`
-                : account.active ? '' : ` ${styles.accountStatusDisabled}`
-            }`}
-            role={lifecycleIsPending ? 'status' : undefined}
-          >
-            {lifecycleIsPending
-              ? 'Status change pending'
-              : account.active
-                ? 'Login active'
-                : 'Login disabled'}
-          </span>
+          <span className={styles.accountStatusBadge}>{'STAXIS LOGIN'}</span>
         ) : (
-          <span className={styles.linkedBadge}>{'No login'}</span>
+          <span className={styles.linkedBadge}>{'NO LOGIN'}</span>
         )}
+        {lifecycleIsPending ? (
+          <span className={`${styles.accountStatusBadge} ${styles.accountStatusPending}`} role="status">
+            {'Status change pending'}
+          </span>
+        ) : null}
+        {account && !account.active ? (
+          <span className={`${styles.accountStatusBadge} ${styles.accountStatusDisabled}`}>
+            {'Inactive'}
+          </span>
+        ) : null}
         {staff?.isActive === false ? (
           <span className={`${styles.accountStatusBadge} ${styles.accountStatusDisabled}`}>
-            {'Off the roster'}
+            {'Off roster'}
           </span>
         ) : null}
       </div>
 
-      {canOpen || availableActions?.canRemove ? (
+      {canOpen || (!offRoster && availableActions?.canRemove) ? (
         <div className={styles.rowActions}>
           {canOpen ? (
             <button
@@ -1918,7 +1785,7 @@ function PersonRow({
               <span>{editable ? 'Edit' : 'View'}</span>
             </button>
           ) : null}
-          {account && availableActions?.canRemove ? (
+          {account && !offRoster && availableActions?.canRemove ? (
             <button
               type="button"
               className={styles.removeButton}

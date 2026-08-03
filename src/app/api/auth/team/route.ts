@@ -48,6 +48,11 @@ import {
   type AuthoritativeHotelRoster,
 } from '@/lib/authorization/hotel-account-roster';
 import {
+  hotelStaffLinkProjectionSignature,
+  projectHotelStaffLinks,
+  type HotelStaffLinkProjection,
+} from '@/lib/authorization/hotel-staff-link-projection';
+import {
   readCompleteCompanyIdChunks,
   type CompanyProjectionPage,
 } from '@/lib/company-access/projection-query';
@@ -274,6 +279,38 @@ function topologyUnchanged(
         && first.organizationId === current.organizationId));
 }
 
+/**
+ * Read the selected property's staff-link history as identity data only.
+ * Active links remain the authority-bearing `staffId`; inactive links are
+ * retained solely so People can merge an archived staff row with its login.
+ * Any malformed or conflicting row fails closed before it reaches the client.
+ */
+async function loadHotelStaffLinkProjection(
+  hotelId: string,
+  accountIds: ReadonlySet<string>,
+): Promise<HotelStaffLinkProjection> {
+  const { data, error } = await supabaseAdmin
+    .from('account_property_staff_links')
+    .select('account_id, staff_id, is_active')
+    .eq('property_id', hotelId);
+  if (error) throw new Error(`property staff-link query failed: ${errToString(error)}`);
+  if (!Array.isArray(data)) throw new Error('property staff-link projection was malformed');
+
+  const projection = projectHotelStaffLinks(
+    data.map((row) => {
+      const value = row as Record<string, unknown>;
+      return {
+        accountId: value.account_id,
+        staffId: value.staff_id,
+        isActive: value.is_active,
+      };
+    }),
+    accountIds,
+  );
+  if (!projection) throw new Error('property staff-link projection was ambiguous');
+  return projection;
+}
+
 export async function GET(req: NextRequest) {
   const requestId = getOrMintRequestId(req);
   const caller = await verifyTeamManager(req, { capability: 'manage_team' });
@@ -362,28 +399,15 @@ export async function GET(req: NextRequest) {
       lifecycleByAccountId.set(lifecycle.account_id, lifecycle.desired_active === true);
     }
   }
-  const staffIdByAccountId = new Map<string, string>();
-  const { data: staffLinks, error: staffLinksErr } = await supabaseAdmin
-    .from('account_property_staff_links')
-    .select('account_id, staff_id')
-    .eq('property_id', hotelId)
-    .eq('is_active', true);
-  if (staffLinksErr) {
+  let initialStaffLinkProjection: HotelStaffLinkProjection;
+  try {
+    initialStaffLinkProjection = await loadHotelStaffLinkProjection(hotelId, teamAccountIds);
+  } catch (staffLinksError) {
     log.error('[team:GET] property staff-link query failed', {
       requestId,
-      msg: errToString(staffLinksErr),
+      msg: errToString(staffLinksError),
     });
-    return err('Failed to load hotel staff links', {
-      requestId,
-      status: 500,
-      code: ApiErrorCode.InternalError,
-    });
-  } else {
-    for (const link of staffLinks ?? []) {
-      if (teamAccountIds.has(link.account_id)) {
-        staffIdByAccountId.set(link.account_id, link.staff_id);
-      }
-    }
+    return teamProtectionUnavailableResponse(requestId);
   }
 
   const emailByUserId = new Map<string, string>();
@@ -420,6 +444,15 @@ export async function GET(req: NextRequest) {
     const lifecyclePending = lifecycleByAccountId.has(r.id);
     const lifecycleDesiredActive = lifecycleByAccountId.get(r.id) ?? null;
     const ownerProtected = ownerProtectedAccountIds.has(r.id);
+    const staffId = initialStaffLinkProjection.activeStaffIds.get(r.id) ?? null;
+    const historicalStaffId = initialStaffLinkProjection.historicalStaffIds.get(r.id) ?? null;
+    const staffLinkAllowed = active
+      && !lifecyclePending
+      && historicalStaffId === null
+      && targetRole !== 'admin'
+      && r.management_surface === 'legacy_hotel'
+      && targetAccess.length === 1
+      && targetAccess[0] === hotelId;
 
     // Self name/password edits remain self-service even if the caller has a
     // per-hotel manage_team restriction elsewhere. Other-person account-wide
@@ -483,7 +516,9 @@ export async function GET(req: NextRequest) {
         lastSignInKnown: observedAuthUserIds.has(r.data_user_id),
         role: targetRole,
         propertyAccess: disclosedTargetAccess,
-        staffId: staffIdByAccountId.get(r.id) ?? null,
+        staffId,
+        historicalStaffId,
+        staffLinkAllowed,
         createdAt: r.created_at,
         updatedAt: r.updated_at,
         isSelf,
@@ -618,6 +653,21 @@ export async function GET(req: NextRequest) {
     return teamProtectionUnavailableResponse(requestId);
   }
   if (rosterSignature(roster) !== rosterSignature(finalRoster)) {
+    return err('Forbidden', { requestId, status: 403, code: ApiErrorCode.Unauthorized });
+  }
+
+  let finalStaffLinkProjection: HotelStaffLinkProjection;
+  try {
+    finalStaffLinkProjection = await loadHotelStaffLinkProjection(hotelId, teamAccountIds);
+  } catch (staffLinksError) {
+    log.error('[team:GET] final property staff-link query failed', {
+      requestId,
+      msg: errToString(staffLinksError),
+    });
+    return teamProtectionUnavailableResponse(requestId);
+  }
+  if (hotelStaffLinkProjectionSignature(initialStaffLinkProjection)
+      !== hotelStaffLinkProjectionSignature(finalStaffLinkProjection)) {
     return err('Forbidden', { requestId, status: 403, code: ApiErrorCode.Unauthorized });
   }
 

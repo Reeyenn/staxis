@@ -49,7 +49,10 @@ describe('staff phone privacy', () => {
     assert.match(form, /if \(!existingId \|\| phoneTouched\) \{/);
     assert.doesNotMatch(form, /phone:\s*staff\.phone/);
     assert.doesNotMatch(panel, /member\.phone|staff\.phone/);
-    assert.match(panel, /contactsUnavailable[\s\S]*Phone unavailable/);
+    assert.match(panel, /contacts=\{contacts\}/);
+    assert.match(panel, /contactsReady=\{contactsReady\}/);
+    assert.match(panel, /contactsUnavailable=\{contactsError\}/);
+    assert.doesNotMatch(panel, /Phone unavailable/);
   });
 
   test('same-property operational surfaces expose phone presence, never the raw number', () => {

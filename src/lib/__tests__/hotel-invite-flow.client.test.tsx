@@ -7,6 +7,8 @@ import React, { act, useState } from 'react';
 import type { Root } from 'react-dom/client';
 
 import type { AppUser } from '@/contexts/AuthContext';
+import type { HotelTeamMember } from '@/app/company/_components/HotelTeamPanel';
+import type { PeopleControllerState } from '@/app/company/_components/usePeopleController';
 import type { StaffMember } from '@/types';
 
 type HotelTeamPanelModule = typeof import('@/app/company/_components/HotelTeamPanel');
@@ -60,6 +62,25 @@ const STAFF: StaffMember = {
   scheduledToday: false,
   weeklyHours: 0,
   maxWeeklyHours: 40,
+};
+const REFRESHED_ACCOUNT: HotelTeamMember = {
+  accountId: 'existing-account',
+  username: 'existing.login',
+  displayName: 'Existing Login',
+  email: 'existing@example.com',
+  role: 'housekeeping',
+  active: true,
+  updatedAt: '2026-08-02T12:00:00.000Z',
+  ownerProtected: false,
+  lastSignInKnown: true,
+  lastSignInAt: '2026-08-01T12:00:00.000Z',
+  lifecyclePending: false,
+  lifecycleDesiredActive: null,
+  propertyAccess: [HOTEL_ID],
+  staffId: STAFF.id,
+  historicalStaffId: null,
+  staffLinkAllowed: false,
+  managementSurface: 'legacy_hotel',
 };
 
 const VALID_OPTIONS = {
@@ -118,6 +139,7 @@ interface InviteFlowHarness {
   calls: RecordedCall[];
   dialog: () => HTMLElement | null;
   text: () => string;
+  controllerTeam: () => string;
   click: (label: string) => Promise<void>;
   setInput: (selector: string, value: string) => Promise<void>;
   setSelect: (selector: string, value: string) => Promise<void>;
@@ -128,6 +150,11 @@ interface InviteFlowHarness {
   holdNextInviteLoad: () => void;
   releaseHeldInvite: (response: ResponseSpec) => void;
   flush: () => Promise<void>;
+}
+
+interface InviteFlowOptions {
+  managerInviteResponse?: ResponseSpec;
+  peopleControllerProbe?: { events: string[] };
 }
 
 function loadWithCssShim<T>(specifier: () => Promise<T>): Promise<T> {
@@ -227,6 +254,7 @@ async function mountInviteFlow(
   initialInviteResponse: ResponseSpec = {
     body: { ok: true, data: { invites: [VALID_INVITE], options: VALID_OPTIONS } },
   },
+  options: InviteFlowOptions = {},
 ): Promise<InviteFlowHarness> {
   const restoreBrowser = installBrowser();
   const { HotelTeamPanel } = await loadPanelModule();
@@ -243,6 +271,7 @@ async function mountInviteFlow(
   const controls = {
     setCapabilities: (_next: CapabilityState): void => undefined,
     inviteOpen: false,
+    controllerTeam: (): string => '',
   };
 
   const nextResponse = (responses: ResponseSpec[], fallback: ResponseSpec): Response => (
@@ -281,14 +310,16 @@ async function mountInviteFlow(
       });
     }
     if (url === '/api/auth/invites' && method === 'POST') {
-      return jsonResponse({
-        ok: true,
-        data: {
-          emailSent: true,
-          deliveryStatus: 'sent',
-          inviteLink: 'https://staxis.test/company-invite/new',
-          accessGranted: false,
-          profileLinked: true,
+      return responseFor(options.managerInviteResponse ?? {
+        body: {
+          ok: true,
+          data: {
+            emailSent: true,
+            deliveryStatus: 'sent',
+            inviteLink: 'https://staxis.test/company-invite/new',
+            accessGranted: false,
+            profileLinked: true,
+          },
         },
       });
     }
@@ -308,8 +339,31 @@ async function mountInviteFlow(
   function TestPanel() {
     const [capabilities, setCapabilities] = useState(initialCapabilities);
     const [inviteOpen, setInviteOpen] = useState(false);
+    const [controllerTeam, setControllerTeam] = useState<HotelTeamMember[]>([]);
     controls.setCapabilities = setCapabilities;
     controls.inviteOpen = inviteOpen;
+    controls.controllerTeam = () => controllerTeam.map((member) => member.accountId).join(',');
+    const controllerEvents = options.peopleControllerProbe?.events;
+    const peopleController: PeopleControllerState | undefined = controllerEvents ? {
+      team: controllerTeam,
+      jobsByAccountId: {},
+      teamLoading: false,
+      teamError: '',
+      teamSettled: true,
+      staff: [STAFF],
+      staffLoaded: true,
+      rosterUnavailable: false,
+      staffViewerKey: 'controller-staff-stamp',
+      refreshTeam: async () => {
+        controllerEvents.push('controller-refresh-start');
+        await Promise.resolve();
+        setControllerTeam([REFRESHED_ACCOUNT]);
+        controllerEvents.push('controller-refresh-complete');
+      },
+      refresh: async () => {
+        controllerEvents.push('controller-refresh-all');
+      },
+    } : undefined;
     return (
       <HotelTeamPanel
         hotelId={HOTEL_ID}
@@ -326,7 +380,10 @@ async function mountInviteFlow(
         staffProfiles={[STAFF]}
         rosterUnavailable={false}
         canAddStaff={capabilities.canManageTeam}
-        onChanged={() => undefined}
+        peopleController={peopleController}
+        onChanged={controllerEvents
+          ? async () => { controllerEvents.push('staff-refresh'); }
+          : () => undefined}
       />
     );
   }
@@ -388,6 +445,7 @@ async function mountInviteFlow(
     calls,
     dialog,
     text: () => document.body.textContent ?? '',
+    controllerTeam: () => controls.controllerTeam(),
     click,
     async setInput(selector, value) {
       const input = document.querySelector<HTMLInputElement>(selector);
@@ -614,6 +672,36 @@ describe('mounted hotel invite flow', { concurrency: false }, () => {
       staffId: 'staff-1',
     });
     assert.doesNotMatch(ui.text(), /Pending email invitations/);
+  });
+
+  test('selected-hotel existing-account access refreshes the controller before the staff handoff', async (context) => {
+    const events: string[] = [];
+    const ui = await mountInviteFlow(context, {
+      canManageTeam: true,
+      canInviteAccounts: true,
+      readOnly: false,
+      adminPreview: false,
+    }, undefined, {
+      managerInviteResponse: {
+        body: { ok: true, data: { accessGranted: true, profileLinked: true } },
+      },
+      peopleControllerProbe: { events },
+    });
+
+    await ui.click('Invite people');
+    await ui.click('STAXIS LOGIN');
+    await ui.setInput('input[type="email"]', 'existing@example.com');
+    await ui.setSelect('form select', 'housekeeping');
+    await ui.setSelect('select[aria-describedby]', 'staff-1');
+    await ui.submit();
+
+    assert.deepEqual(events, [
+      'controller-refresh-start',
+      'controller-refresh-complete',
+      'staff-refresh',
+    ]);
+    assert.equal(ui.controllerTeam(), 'existing-account');
+    assert.match(ui.text(), /Access granted, no email sent/);
   });
 
   test('account-invite-only viewers see email loading, bounded errors, and a true zero-pending state', async (context) => {
