@@ -1245,7 +1245,7 @@ describe('GET /api/auth/team action contract', () => {
     assert.equal(local.directHotelAccount, true);
   });
 
-  test('ORs raw property grants and valid bridges when company access wins the standing', async () => {
+  test('ORs canonical property grants and valid bridges when company access wins the standing', async () => {
     account(CALLER_ID).role = 'admin';
     account(LOCAL_ID).authority_mode = 'normalized';
     account(OWNER_ID).authority_mode = 'normalized';
@@ -1317,18 +1317,21 @@ describe('GET /api/auth/team action contract', () => {
     const response = await GET(request('GET', `/api/auth/team?hotelId=${HOTEL_A}`));
     assert.equal(response.status, 200);
     const body = await response.json();
-    for (const accountId of [LOCAL_ID, OWNER_ID, PEER_GM_ID]) {
+    for (const accountId of [LOCAL_ID, OWNER_ID]) {
       const row = body.data.team.find((candidate: { accountId: string }) => candidate.accountId === accountId);
       assert.ok(row);
       assert.equal(row.directHotelAccount, true, accountId);
     }
+    const rawOnly = body.data.team.find((candidate: { accountId: string }) => candidate.accountId === PEER_GM_ID);
+    assert.ok(rawOnly);
+    assert.equal(rawOnly.directHotelAccount, false, 'raw legacy residue must not establish directness');
     assert.equal(
       body.data.team.find((candidate: { accountId: string }) => candidate.accountId === LOCAL_ID).managementSurface,
       'company_access',
     );
   });
 
-  test('keeps legacy property_access directness when no current company topology exists', async () => {
+  test('fails closed when only raw legacy residue remains without canonical topology', async () => {
     account(CALLER_ID).role = 'admin';
     state.suppressLegacyAccessProjection.add(LOCAL_ID);
 
@@ -1337,7 +1340,7 @@ describe('GET /api/auth/team action contract', () => {
     const body = await response.json();
     const local = body.data.team.find((row: { accountId: string }) => row.accountId === LOCAL_ID);
     assert.ok(local);
-    assert.equal(local.directHotelAccount, true);
+    assert.equal(local.directHotelAccount, false);
   });
 
   test('keeps the People roster available when one directness row is indeterminate', async () => {
@@ -1356,6 +1359,20 @@ describe('GET /api/auth/team action contract', () => {
 
   test('keeps a direct roster row visible when its standing DTO is unavailable', async () => {
     account(CALLER_ID).role = 'admin';
+    account(LOCAL_ID).authority_mode = 'normalized';
+    state.organizationId = ORGANIZATION_ID;
+    state.membershipHats.push({
+      id: '77777777-7777-4777-8777-777777777721',
+      organization_id: ORGANIZATION_ID,
+      account_id: LOCAL_ID,
+      membership_scope: 'property',
+      staxis_role: 'front_desk',
+      job_title: null,
+      covered_property_ids: [HOTEL_A],
+      status: 'active',
+      starts_at: '2026-01-01T00:00:00.000Z',
+      ended_at: null,
+    });
     state.unavailableAccessAccountIds.add(LOCAL_ID);
 
     const response = await GET(request('GET', `/api/auth/team?hotelId=${HOTEL_A}`));

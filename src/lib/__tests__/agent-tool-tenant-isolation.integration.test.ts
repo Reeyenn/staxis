@@ -108,6 +108,7 @@ function leaksIn(value: unknown): string[] {
  */
 const UNSEEDABLE_TABLES = new Set([
   'account_access_cutover_repair_dispositions', // service-only cutover evidence, never seeded as hotel data
+  'account_access_cutover_repair_manifests', // service-only exact-incident evidence, never seeded as hotel data
   'account_access_cutover_repair_receipts', // service-only cutover evidence, never seeded as hotel data
   'admin_hotel_relationship_mutation_requests', // actor/relationship lifecycle request shape
   'company_structure_mutation_requests', // actor/company structure request shape
