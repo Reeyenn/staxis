@@ -54,20 +54,20 @@ describe('company access read/delegation boundary', () => {
     assert.match(adminPreviewHelpers, /canReview: false/);
   });
 
-  test('fails closed when the account is inactive, including immediately before legacy fallback', () => {
+  test('fails closed when the account is inactive, including before the empty projection', () => {
     assert.match(getRoute, /const account = accountData as AccountRow;[\s\S]*account\.active !== true[\s\S]*Account not found/);
     const fallbackCheck = getRoute.indexOf(".select('active')", getRoute.indexOf('fallbackAccount'));
-    const legacyProjection = getRoute.lastIndexOf('legacyProjection(account, authority)');
-    assert.ok(fallbackCheck >= 0 && legacyProjection < fallbackCheck, 'canonical projection must not be preceded by a legacy array fallback');
+    assert.ok(fallbackCheck >= 0, 'canonical projection must re-check account state before empty output');
     assert.match(getRoute, /fallbackAccount\?\.active !== true[\s\S]*Account not found/);
   });
 
-  test('uses the durable authority mode and never resurrects normalized access from the legacy array', () => {
+  test('finalized Company Hub projection is canonical-only', () => {
     assert.match(getRoute, /listAuthoritativePropertyAccess\(actor\.accountId\)/);
-    assert.match(getRoute, /authorityMode === ['"]legacy['"] \|\| authorityMode === ['"]shadow['"]/);
-    assert.match(getRoute, /if \(authorityMode === ['"]legacy['"] \|\| authorityMode === ['"]shadow['"]\)[\s\S]*legacyProjection\(account, authority\)/);
+    assert.match(getRoute, /authority\.authorityMode !== ['"]normalized['"][\s\S]*Final account authority was not normalized/);
+    assert.doesNotMatch(getRoute, /legacyProjection|legacyPermissions|authorityMode\s*===\s*['"](?:legacy|shadow)['"]|property_access/);
+    assert.match(getRoute, /source: ['"]canonical_bridge['"]/);
+    assert.match(getRoute, /legacyFallback: false/);
     assert.match(getRoute, /if \(fallbackAccount\?\.active !== true\)[\s\S]*Account not found/);
-    assert.doesNotMatch(getRoute, /schema_absent|property_access/);
   });
 
   test('invite dialog consumes server policies rather than globally combining receipts', () => {

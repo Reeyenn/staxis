@@ -873,28 +873,19 @@ describe('the Company Hub reads the spine', () => {
     }
   });
 
-  // The MEDIUM finding's second half. Mutation: drop operatingCompanyNames and
-  // Dolores is told, on her own hub page, that nobody runs her hotel.
-  test('a legacy account at a company hotel is told who runs it', async () => {
+  // This suite deliberately stops at the explicit pre-0426 boundary. The
+  // final Company Hub route must not project a legacy/shadow account from that
+  // boundary, even though the old deployment would have rendered it.
+  test('a pre-0426 legacy account is rejected by the final Company Hub route', async () => {
     const hub = await hubFor(UID_DOLORES);
-    assert.equal(hub.status, 200);
-    const beaumont = (hub.data?.properties ?? []).find((p) => p.id === PID_A1);
-    assert.ok(beaumont, 'her own hotel was missing from her hub');
-    assert.equal(
-      beaumont?.operatingCompanyName, 'Gulf Coast Hotels',
-      'her hotel was filed under "not grouped under a management company"',
-    );
-    // And the wall: naming the operator hands her nothing else of theirs.
-    assert.deepEqual(
-      (hub.data?.properties ?? []).map((p) => p.id), [PID_A1],
-      "naming the operator leaked the operator's other hotels",
-    );
-    assert.equal(hub.data?.permissions.viewPeople, false);
+    assert.equal(hub.status, 500);
+    assert.equal(hub.data, null);
   });
 
-  // Zero regression: an independent hotel has no operator to name, and saying
-  // one would be the same lie in the other direction.
-  test('an independent hotel is still independent', async () => {
+  // The final canonical bridge behavior for independent accounts is exercised
+  // below by accounts created through the current route. This pre-0426 legacy
+  // control must remain fail-closed here rather than resurrecting its array.
+  test('a pre-0426 independent legacy owner is rejected by the final route', async () => {
     await pg.query(
       `insert into public.organization_property_relationships
          (organization_id, property_id, relationship_type, is_primary_grouping)
@@ -903,14 +894,8 @@ describe('the Company Hub reads the spine', () => {
     );
     try {
       const hub = await hubFor(UID_WANDA);
-      assert.equal(hub.status, 200);
-      const waco = (hub.data?.properties ?? []).find((p) => p.id === PID_L1);
-      assert.ok(waco, 'the legacy owner lost her own hotel');
-      assert.equal(
-        waco?.operatingCompanyName ?? null,
-        null,
-        'a brand or stood-down operator was presented as the hotel manager',
-      );
+      assert.equal(hub.status, 500);
+      assert.equal(hub.data, null);
     } finally {
       await pg.query(
         `delete from public.organization_property_relationships
