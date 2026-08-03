@@ -318,6 +318,7 @@ export async function applyMigrationsToPgliteWithHook(
     file: string;
     report: MigrationReport;
   }) => Promise<void>,
+  options: { stopAfter?: string } = {},
 ): Promise<PgliteMigratedFixture> {
   const pg = new PGlite({ extensions: { pgcrypto, pg_trgm, vector } });
   await applyStubs(pg);
@@ -343,6 +344,7 @@ export async function applyMigrationsToPgliteWithHook(
       await beforeMigration({ pg, file, report });
       await pg.exec(preprocess(sql));
       report.applied.push(file);
+      if (options.stopAfter === file) break;
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       report.failedAtRuntime.push({ file, error: message.split('\n')[0] });

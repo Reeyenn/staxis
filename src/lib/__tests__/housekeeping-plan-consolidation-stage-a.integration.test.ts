@@ -51,6 +51,12 @@ const ROOM_ONLY_INSPECTION = 'a6000000-0000-4000-8000-000000000006';
 const BUSINESS_DATE = '2026-08-02';
 const LOCK_DATE = '2026-08-03';
 
+const applyStageAMigrations = (
+  beforeMigration: Parameters<typeof applyMigrationsToPgliteWithHook>[0],
+) => applyMigrationsToPgliteWithHook(beforeMigration, {
+  stopAfter: '0435_housekeeping_canonical_operations.sql',
+});
+
 let pg: PGlite;
 
 async function scalar<T>(sql: string, params: unknown[] = []): Promise<T> {
@@ -93,7 +99,7 @@ async function seedHistoryProperty(db: PGlite, email: string): Promise<void> {
 
 describe('housekeeping canonical plan expand stage', () => {
   before(async () => {
-    const migrated = await applyMigrationsToPgliteWithHook(async ({ pg: db, file }) => {
+    const migrated = await applyStageAMigrations(async ({ pg: db, file }) => {
       if (
         file !== '0434_housekeeping_plan_reconciliation.sql'
         && file !== '0435_housekeeping_canonical_operations.sql'
@@ -1258,7 +1264,7 @@ describe('housekeeping canonical plan expand stage', () => {
   });
 
   test('0434 preserves superseded plan semantics during backfill', async () => {
-    const reconciled = await applyMigrationsToPgliteWithHook(async ({ pg: db, file }) => {
+    const reconciled = await applyStageAMigrations(async ({ pg: db, file }) => {
       if (file !== '0434_housekeeping_plan_reconciliation.sql') return;
       await db.query(
         "insert into auth.users(id, email) values ($1, 'phase5-superseded@example.test') on conflict (id) do nothing",
@@ -1289,7 +1295,7 @@ describe('housekeeping canonical plan expand stage', () => {
   });
 
   test('0434 blocks inactive cross-property assignment history instead of dropping it', async () => {
-    const invalid = await applyMigrationsToPgliteWithHook(async ({ pg: db, file }) => {
+    const invalid = await applyStageAMigrations(async ({ pg: db, file }) => {
       if (file !== '0434_housekeeping_plan_reconciliation.sql') return;
 
       await db.query(
@@ -1336,7 +1342,7 @@ describe('housekeeping canonical plan expand stage', () => {
   });
 
   test('0434 refuses duplicate legacy natural keys without dropping either task', async () => {
-    const duplicate = await applyMigrationsToPgliteWithHook(async ({ pg: db, file }) => {
+    const duplicate = await applyStageAMigrations(async ({ pg: db, file }) => {
       if (file !== '0434_housekeeping_plan_reconciliation.sql') return;
 
       await db.query(
@@ -1378,7 +1384,7 @@ describe('housekeeping canonical plan expand stage', () => {
   });
 
   test('0434 rejects history task natural-key and legacy-link mismatches before reconciliation', async () => {
-    const invalid = await applyMigrationsToPgliteWithHook(async ({ pg: db, file }) => {
+    const invalid = await applyStageAMigrations(async ({ pg: db, file }) => {
       if (file !== '0434_housekeeping_plan_reconciliation.sql') return;
 
       await seedHistoryProperty(db, 'phase5-history-task-identity@example.test');
@@ -1418,7 +1424,7 @@ describe('housekeeping canonical plan expand stage', () => {
   });
 
   test('0434 rejects a latest active history receipt with a missing assignment id', async () => {
-    const invalid = await applyMigrationsToPgliteWithHook(async ({ pg: db, file }) => {
+    const invalid = await applyStageAMigrations(async ({ pg: db, file }) => {
       if (file !== '0434_housekeeping_plan_reconciliation.sql') return;
 
       await seedHistoryProperty(db, 'phase5-history-missing-id@example.test');
@@ -1465,7 +1471,7 @@ describe('housekeeping canonical plan expand stage', () => {
   });
 
   test('0434 normalizes latest history lifecycle state before restoring current assignment', async () => {
-    const reconciled = await applyMigrationsToPgliteWithHook(async ({ pg: db, file }) => {
+    const reconciled = await applyStageAMigrations(async ({ pg: db, file }) => {
       if (file !== '0434_housekeeping_plan_reconciliation.sql') return;
 
       await seedHistoryProperty(db, 'phase5-history-lifecycle@example.test');
@@ -1517,7 +1523,7 @@ describe('housekeeping canonical plan expand stage', () => {
   });
 
   test('0434 appends a full current receipt for stale active history and preserves source semantics', async () => {
-    const reconciled = await applyMigrationsToPgliteWithHook(async ({ pg: db, file }) => {
+    const reconciled = await applyStageAMigrations(async ({ pg: db, file }) => {
       if (file !== '0434_housekeeping_plan_reconciliation.sql') return;
 
       await seedHistoryProperty(db, 'phase5-history-stale@example.test');
@@ -1574,7 +1580,7 @@ describe('housekeeping canonical plan expand stage', () => {
   });
 
   test('0434 preserves valid cache-only and room-work-only assignment sources', async () => {
-    const reconciled = await applyMigrationsToPgliteWithHook(async ({ pg: db, file }) => {
+    const reconciled = await applyStageAMigrations(async ({ pg: db, file }) => {
       if (file !== '0434_housekeeping_plan_reconciliation.sql') return;
 
       await db.query(
@@ -1640,7 +1646,7 @@ describe('housekeeping canonical plan expand stage', () => {
   });
 
   test('0434 rejects conflicting assignment sources before reconciliation', async () => {
-    const conflicting = await applyMigrationsToPgliteWithHook(async ({ pg: db, file }) => {
+    const conflicting = await applyStageAMigrations(async ({ pg: db, file }) => {
       if (file !== '0434_housekeeping_plan_reconciliation.sql') return;
 
       await db.query(
@@ -1693,7 +1699,7 @@ describe('housekeeping canonical plan expand stage', () => {
   });
 
   test('0434 rejects an inactive same-property cache assignee before reconciliation', async () => {
-    const invalid = await applyMigrationsToPgliteWithHook(async ({ pg: db, file }) => {
+    const invalid = await applyStageAMigrations(async ({ pg: db, file }) => {
       if (file !== '0434_housekeeping_plan_reconciliation.sql') return;
 
       await db.query(
@@ -1735,7 +1741,7 @@ describe('housekeeping canonical plan expand stage', () => {
   });
 
   test('0434 rejects a same-property non-housekeeping room_work assignee before reconciliation', async () => {
-    const invalid = await applyMigrationsToPgliteWithHook(async ({ pg: db, file }) => {
+    const invalid = await applyStageAMigrations(async ({ pg: db, file }) => {
       if (file !== '0434_housekeeping_plan_reconciliation.sql') return;
 
       await db.query(
@@ -1777,7 +1783,7 @@ describe('housekeeping canonical plan expand stage', () => {
   });
 
   test('0434 rejects an active room-work history source targeting inactive staff', async () => {
-    const invalid = await applyMigrationsToPgliteWithHook(async ({ pg: db, file }) => {
+    const invalid = await applyStageAMigrations(async ({ pg: db, file }) => {
       if (file !== '0434_housekeeping_plan_reconciliation.sql') return;
 
       await db.query(
@@ -1826,7 +1832,7 @@ describe('housekeeping canonical plan expand stage', () => {
   test('0434 preserves unchanged room-work timestamps while reconciling changed payloads', async () => {
     let unchangedUpdatedAt = '';
     let changedUpdatedAt = '';
-    const reconciled = await applyMigrationsToPgliteWithHook(async ({ pg: db, file }) => {
+    const reconciled = await applyStageAMigrations(async ({ pg: db, file }) => {
       if (file !== '0434_housekeeping_plan_reconciliation.sql') return;
 
       await db.query(
@@ -1956,7 +1962,7 @@ describe('housekeeping canonical plan expand stage', () => {
   });
 
   test('old task and assignment metadata writes tolerate an archived unchanged assignee', async () => {
-    const migrated = await applyMigrationsToPgliteWithHook(async ({ pg: db, file }) => {
+    const migrated = await applyStageAMigrations(async ({ pg: db, file }) => {
       if (file !== '0434_housekeeping_plan_reconciliation.sql') return;
 
       await db.query(

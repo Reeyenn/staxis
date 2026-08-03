@@ -432,7 +432,7 @@ describe('connected portfolio source-code ratchets', () => {
     for (const table of [
       'finding_runs',
       'findings',
-      'cleaning_tasks',
+      'room_work_plan_v1',
       'complaints',
       'work_orders',
       'inventory',
