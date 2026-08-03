@@ -338,28 +338,22 @@ function die(step, err) {
       log('account', `created (id=${accountId})`);
     }
 
-    // Admin authority is canonical and intentionally property-wide. Use the
-    // approved service-only scope boundary so this seeder remains valid after
-    // the final Access contract makes the historical receipt column inert.
-    const { data: state, error: stateErr } = await supa
-      .from('account_authorization_state')
-      .select('authority_version')
-      .eq('account_id', accountId)
-      .single();
-    if (stateErr || !state) die('account', stateErr ?? new Error('missing canonical authority state'));
+    // An admin's property-wide canonical authority is established by the
+    // account insert/role-update trigger. Confirm that read-only contract
+    // through the service boundary; do not self-target the admin scope-edit
+    // RPC, which intentionally rejects actor === target.
     const { data: scope, error: scopeErr } = await supa.rpc(
-      'staxis_set_account_authorization_scope',
-      {
-        p_actor_account_id: accountId,
-        p_account_id: accountId,
-        p_property_ids: [],
-        p_expected_authority_version: state.authority_version,
-        p_expected_role: 'admin',
-        p_new_role: 'admin',
-        p_reason: 'seed-supabase canonical admin bootstrap',
-      },
+      'staxis_list_account_authorized_properties',
+      { p_account_id: accountId },
     );
-    if (scopeErr || !scope?.ok) {
+    if (
+      scopeErr
+      || !scope?.ok
+      || scope.authorityMode !== 'normalized'
+      || scope.all !== true
+      || !Array.isArray(scope.propertyIds)
+      || scope.propertyIds.length !== 0
+    ) {
       die('account', scopeErr ?? new Error(`canonical admin authority was not accepted: ${JSON.stringify(scope)}`));
     }
     log('account', 'canonical admin authority confirmed');

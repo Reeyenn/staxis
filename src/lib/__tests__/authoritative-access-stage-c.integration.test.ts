@@ -56,6 +56,8 @@ const DETACH_OPERATION = 'c4265000-0000-4000-8000-000000000002';
 const TRANSFER_ACCOUNT = 'c4260000-0000-4000-8000-000000000009';
 const TRANSFER_USER = 'c4261000-0000-4000-8000-000000000009';
 const TRANSFER_OPERATION = 'c4265000-0000-4000-8000-000000000009';
+const SEEDER_BOOTSTRAP_ACCOUNT = 'c4260000-0000-4000-8000-000000000010';
+const SEEDER_BOOTSTRAP_USER = 'c4261000-0000-4000-8000-000000000010';
 
 const DIRTY_JOIN_REQUEST = 'c4266000-0000-4000-8000-000000000001';
 const DIRTY_ACCESS_REQUEST = 'c4266000-0000-4000-8000-000000000002';
@@ -497,6 +499,96 @@ describe('Access Stage C final contract — real migration boundary', () => {
     after(async () => {
       await pg?.close();
       if (sharedDataDir) rmSync(sharedDataDir, { recursive: true, force: true });
+    });
+
+    test('canonical support seeding uses trigger-backed admin authority while self-scope edits stay forbidden', async () => {
+      const sourceRoot = join(__dirname, '..', '..', '..');
+      const seederSource = readFileSync(join(sourceRoot, 'scripts', 'seed-supabase.js'), 'utf8');
+      assert.match(seederSource, /staxis_list_account_authorized_properties/);
+      assert.doesNotMatch(
+        seederSource,
+        /staxis_set_account_authorization_scope|p_actor_account_id\s*:\s*accountId/,
+        'support seeding must not self-target the canonical scope-edit RPC',
+      );
+
+      await pg.exec('begin;');
+      try {
+        await pg.query(
+          `insert into auth.users(id, email) values ($1, 'seed-admin-bootstrap@example.test')`,
+          [SEEDER_BOOTSTRAP_USER],
+        );
+        await pg.query(
+          `insert into public.accounts(
+             id, username, password_hash, display_name, role, data_user_id
+           ) values ($1, 'seed-admin-bootstrap', 'x', 'Seed Admin Bootstrap', 'admin', $2)`,
+          [SEEDER_BOOTSTRAP_ACCOUNT, SEEDER_BOOTSTRAP_USER],
+        );
+
+        const before = (await rows<{
+          role: string;
+          property_access: string[] | null;
+          authority_mode: string;
+          authority_version: number;
+        }>(
+          pg,
+          `select account.role,account.property_access,state.authority_mode,state.authority_version
+             from public.accounts account
+             join public.account_authorization_state state on state.account_id=account.id
+            where account.id=$1`,
+          [SEEDER_BOOTSTRAP_ACCOUNT],
+        ))[0];
+        assert.deepEqual(before?.role, 'admin');
+        assert.deepEqual(before?.authority_mode, 'normalized');
+
+        const authority = await jsonRpc(
+          pg,
+          `select public.staxis_list_account_authorized_properties($1) as value`,
+          [SEEDER_BOOTSTRAP_ACCOUNT],
+        );
+        assert.equal(authority.ok, true);
+        assert.equal(authority.all, true);
+        assert.equal(authority.authorityMode, 'normalized');
+        assert.deepEqual(authority.propertyIds, []);
+
+        const selfScope = await jsonRpc(
+          pg,
+          `select public.staxis_set_account_authorization_scope(
+             $1,$1,'{}'::uuid[],$2,'admin','admin','seed self-target regression'
+           ) as value`,
+          [SEEDER_BOOTSTRAP_ACCOUNT, before?.authority_version],
+        );
+        assert.deepEqual(selfScope, { ok: false, status: 'forbidden', reason: 'self' });
+        assert.equal(
+          Number((await rows<{ count: number }>(
+            pg,
+            `select count(*)::integer as count
+               from public.account_property_authorization_bridges
+              where account_id=$1`,
+            [SEEDER_BOOTSTRAP_ACCOUNT],
+          ))[0].count),
+          0,
+          'admin bootstrap must not create customer bridges',
+        );
+        assert.deepEqual(
+          (await rows<{
+            role: string;
+            property_access: string[] | null;
+            authority_mode: string;
+            authority_version: number;
+          }>(
+            pg,
+            `select account.role,account.property_access,state.authority_mode,state.authority_version
+               from public.accounts account
+               join public.account_authorization_state state on state.account_id=account.id
+              where account.id=$1`,
+            [SEEDER_BOOTSTRAP_ACCOUNT],
+          ))[0],
+          before,
+          'rejected self-scope mutation must not broaden or otherwise change authority',
+        );
+      } finally {
+        await pg.exec('rollback;');
+      }
     });
 
     test('rejects every self-target scope mutation before state, bridges, or audit can change', async () => {
