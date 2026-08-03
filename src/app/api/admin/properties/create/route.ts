@@ -33,6 +33,7 @@ import { writeAudit } from '@/lib/audit';
 import { triggerMlTraining } from '@/lib/ml-invoke';
 import {
   validateBody,
+  usesAtomicTestRoster,
   type CreateBody,
 } from '@/lib/admin-property-create-validation';
 
@@ -53,6 +54,29 @@ function apiCodeForStatus(status: number): string {
   if (status === 409) return ApiErrorCode.IdempotencyConflict;
   if (status === 503) return ApiErrorCode.UpstreamFailure;
   return ApiErrorCode.InternalError;
+}
+
+function statusForRosterError(error: { code?: string }): number {
+  if (error.code === 'PGRST202' || error.code === 'PGRST205' || error.code === '42P01') return 503;
+  if (error.code === '23514' || error.code === 'P0001') return 409;
+  return 500;
+}
+
+type CreatedProperty = {
+  id: string;
+  name: string | null;
+  created_at: string | null;
+};
+
+function parseCreatedProperty(data: unknown): CreatedProperty | null {
+  if (data === null || typeof data !== 'object') return null;
+  const row = data as Record<string, unknown>;
+  if (typeof row.id !== 'string') return null;
+  return {
+    id: row.id,
+    name: typeof row.name === 'string' ? row.name : null,
+    created_at: typeof row.created_at === 'string' ? row.created_at : null,
+  };
 }
 
 async function rollbackNewHotel(
@@ -125,40 +149,77 @@ export async function POST(req: NextRequest) {
     targetOrganizationName = target.name;
   }
 
-  // owner_id remains a NOT NULL legacy storage column. The platform admin's
-  // auth id is a compatibility placeholder, not a customer owner membership.
-  // This route deliberately creates no account, membership, invite, or code,
-  // so the authoritative hotel roster starts empty.
-  const { data: created, error: insErr } = await supabaseAdmin
-    .from('properties')
-    .insert({
-      owner_id: auth.userId,
-      name: v.name,
-      total_rooms: v.totalRooms,
-      timezone: v.timezone,
-      pms_type: v.pmsType,
-      brand: v.brand,
-      property_kind: v.propertyKind,
-      is_test: v.isTest,
-      onboarding_source: 'admin',
-      onboarding_state: { step: 1 },
-      // Round 15 follow-up: when the admin provided a room list, write it
-      // here so phantom-seed can run from day 1. Migration 0125's trigger
-      // re-derives total_rooms from this if non-empty (defense against
-      // a typed totalRooms ≠ list-length mismatch); the API validation
-      // above already enforces equality, so the trigger normally no-ops.
-      // Empty array means "capture later" (e.g., via PMS sync).
-      ...(v.roomNumbers.length > 0 ? { room_inventory: v.roomNumbers } : {}),
-    })
-    .select('id, name, created_at')
-    .single();
-
-  if (insErr || !created) {
-    log.error('[admin/properties/create] insert failed', { requestId, msg: insErr?.message ?? String(insErr) });
-    return err(
-      `Failed to create property: ${insErr?.message ?? 'unknown error'}`,
-      { requestId, status: 500, code: ApiErrorCode.InternalError },
+  let created: CreatedProperty | null = null;
+  if (usesAtomicTestRoster(v)) {
+    // The shell and its canonical roster are one database transaction. The
+    // service-only function either returns a fully consistent test property
+    // or raises before any shell can remain.
+    const { data: atomicData, error: atomicError } = await supabaseAdmin.rpc(
+      'staxis_create_test_property_with_roster',
+      {
+        p_owner_id: auth.userId,
+        p_name: v.name,
+        p_total_rooms: v.totalRooms,
+        p_timezone: v.timezone,
+        p_pms_type: v.pmsType,
+        p_brand: v.brand,
+        p_property_kind: v.propertyKind,
+        p_room_numbers: v.roomNumbers,
+      },
     );
+    created = parseCreatedProperty(atomicData);
+    if (atomicError || !created) {
+      const status = atomicError ? statusForRosterError(atomicError) : 500;
+      log.error('[admin/properties/create] atomic test property creation failed', {
+        requestId,
+        msg: atomicError?.message ?? 'atomic function returned no property',
+      });
+      return err(
+        status === 503
+          ? 'Test hotel creation is not ready yet'
+          : 'Could not create the test hotel and its roster atomically.',
+        {
+          requestId,
+          status,
+          code: apiCodeForStatus(status),
+        },
+      );
+    }
+  } else {
+    // owner_id remains a NOT NULL legacy storage column. The platform admin's
+    // auth id is a compatibility placeholder, not a customer owner membership.
+    // This route deliberately creates no account, membership, invite, or code.
+    // Real properties and test shells without an explicit roster retain the
+    // existing empty-canonical-roster behavior.
+    const { data: inserted, error: insErr } = await supabaseAdmin
+      .from('properties')
+      .insert({
+        owner_id: auth.userId,
+        name: v.name,
+        total_rooms: v.totalRooms,
+        timezone: v.timezone,
+        pms_type: v.pmsType,
+        brand: v.brand,
+        property_kind: v.propertyKind,
+        is_test: v.isTest,
+        onboarding_source: 'admin',
+        onboarding_state: { step: 1 },
+        // Empty array means "capture later" (e.g., via PMS sync). An explicit
+        // room list on a real property remains operator-supplied mirror data;
+        // generated canonical rows are reserved for the test branch above.
+        ...(v.roomNumbers.length > 0 ? { room_inventory: v.roomNumbers } : {}),
+      })
+      .select('id, name, created_at')
+      .single();
+
+    if (insErr || !inserted) {
+      log.error('[admin/properties/create] insert failed', { requestId, msg: insErr?.message ?? String(insErr) });
+      return err(
+        `Failed to create property: ${insErr?.message ?? 'unknown error'}`,
+        { requestId, status: 500, code: ApiErrorCode.InternalError },
+      );
+    }
+    created = inserted;
   }
 
   let relationshipId: string | null = null;

@@ -27,6 +27,10 @@ interface ValidationResult {
   };
 }
 
+export function usesAtomicTestRoster(values: { isTest: boolean; roomNumbers: string[] }): boolean {
+  return values.isTest && values.roomNumbers.length > 0;
+}
+
 const DEFAULT_HOTEL_NAME = 'New hotel';
 const KNOWN_PMS_TYPES = new Set(['choice_advantage', 'manual_csv']);
 const KNOWN_PROPERTY_KINDS = new Set([

@@ -34,6 +34,8 @@
  * server.
  */
 
+import { buildStandardTestRoomNumbers } from '../src/lib/test-room-roster';
+
 interface CreateResponse {
   ok?: boolean;
   data?: {
@@ -91,7 +93,11 @@ async function createOne(
       'authorization': `Bearer ${token}`,
       'content-type': 'application/json',
     },
-    body: JSON.stringify({ ...archetype, isTest: true }),
+    body: JSON.stringify({
+      ...archetype,
+      isTest: true,
+      roomNumbers: buildStandardTestRoomNumbers(archetype.totalRooms),
+    }),
   });
   return res.json() as Promise<CreateResponse>;
 }

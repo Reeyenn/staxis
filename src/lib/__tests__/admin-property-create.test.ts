@@ -19,7 +19,8 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { validateBody } from '@/lib/admin-property-create-validation';
+import { validateBody, usesAtomicTestRoster } from '@/lib/admin-property-create-validation';
+import { buildStandardTestRoomNumbers } from '@/lib/test-room-roster';
 
 const ORGANIZATION_ID = '11111111-1111-4111-8111-111111111111';
 
@@ -63,6 +64,52 @@ describe('validateBody — happy path', () => {
       assert.equal(result.values.propertyKind, 'full_service');
       assert.equal(result.values.isTest, true);
       assert.equal(result.values.organizationId, ORGANIZATION_ID);
+    }
+  });
+
+  test('accepts the deterministic roster emitted by the test-property seed path', () => {
+    const roomNumbers = buildStandardTestRoomNumbers(50);
+    const result = validateBody({
+      name: 'Seeded Test Hotel',
+      totalRooms: 50,
+      timezone: 'America/Chicago',
+      isTest: true,
+      roomNumbers,
+    });
+
+    assert.equal(result.ok, true);
+    if (result.ok) assert.deepEqual(result.values.roomNumbers, roomNumbers);
+  });
+
+  test('only an explicit is_test roster enters the atomic canonical creation path', () => {
+    const testProperty = validateBody({
+      name: 'Seeded Test Hotel',
+      totalRooms: 50,
+      timezone: 'America/Chicago',
+      isTest: true,
+      roomNumbers: buildStandardTestRoomNumbers(50),
+    });
+    const realProperty = validateBody({
+      name: 'Real Customer Hotel',
+      totalRooms: 50,
+      timezone: 'America/Chicago',
+      isTest: false,
+    });
+    const realPropertyWithOperatorList = validateBody({
+      name: 'Real Customer Hotel With List',
+      totalRooms: 2,
+      timezone: 'America/Chicago',
+      isTest: false,
+      roomNumbers: ['101', '102'],
+    });
+
+    assert.equal(testProperty.ok, true);
+    assert.equal(realProperty.ok, true);
+    assert.equal(realPropertyWithOperatorList.ok, true);
+    if (testProperty.ok) assert.equal(usesAtomicTestRoster(testProperty.values), true);
+    if (realProperty.ok) assert.equal(usesAtomicTestRoster(realProperty.values), false);
+    if (realPropertyWithOperatorList.ok) {
+      assert.equal(usesAtomicTestRoster(realPropertyWithOperatorList.values), false);
     }
   });
 
