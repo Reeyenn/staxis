@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
+import { createClient } from '@supabase/supabase-js';
 
 import { validateIsoTimestamp } from '@/lib/api-validate';
 import {
@@ -9,11 +10,13 @@ import {
 } from '@/lib/comms/core';
 import {
   MESSAGE_PAGE_SIZE,
+  compositeMessageCursorFilter,
   mergeMessageRowsChronologically,
   mergeMessagesChronologically,
   messagePaginationForBaseRows,
   paginateMessageRows,
 } from '@/lib/comms/message-pagination';
+import type { MessageCursor } from '@/lib/comms/message-pagination';
 import type { MessageDTO } from '@/lib/comms/types';
 
 function message(id: string, createdAt: string, body = id): MessageDTO {
@@ -39,6 +42,129 @@ function message(id: string, createdAt: string, body = id): MessageDTO {
   };
 }
 
+interface ParsedPostgrestFilter {
+  column: string;
+  operator: string;
+  value: string;
+}
+
+/** Split PostgREST's comma-separated filter grammar without splitting quotes. */
+function splitPostgrestFilterList(input: string): string[] {
+  const body = input.startsWith('(') && input.endsWith(')')
+    ? input.slice(1, -1)
+    : input;
+  const parts: string[] = [];
+  let start = 0;
+  let depth = 0;
+  let quoted = false;
+  let escaped = false;
+
+  for (let index = 0; index < body.length; index += 1) {
+    const character = body[index];
+    if (quoted) {
+      if (escaped) escaped = false;
+      else if (character === '\\') escaped = true;
+      else if (character === '"') quoted = false;
+      continue;
+    }
+    if (character === '"') quoted = true;
+    else if (character === '(') depth += 1;
+    else if (character === ')') depth -= 1;
+    else if (character === ',' && depth === 0) {
+      parts.push(body.slice(start, index));
+      start = index + 1;
+    }
+  }
+
+  assert.equal(quoted, false, 'decoded PostgREST filter must close quoted values');
+  assert.equal(depth, 0, 'decoded PostgREST filter must balance parentheses');
+  parts.push(body.slice(start));
+  return parts;
+}
+
+function splitPostgrestFilterPath(input: string): string[] {
+  const parts: string[] = [];
+  let start = 0;
+  let quoted = false;
+  let escaped = false;
+  for (let index = 0; index < input.length; index += 1) {
+    const character = input[index];
+    if (quoted) {
+      if (escaped) escaped = false;
+      else if (character === '\\') escaped = true;
+      else if (character === '"') quoted = false;
+    } else if (character === '"') {
+      quoted = true;
+    } else if (character === '.') {
+      parts.push(input.slice(start, index));
+      start = index + 1;
+    }
+  }
+  parts.push(input.slice(start));
+  return parts;
+}
+
+function parsePostgrestFilter(input: string, requireQuotedValue = false): ParsedPostgrestFilter {
+  const path = splitPostgrestFilterPath(input);
+  const [column, operator, rawValue] = path;
+  assert.ok(column && operator && rawValue, `invalid filter arm: ${input}`);
+  assert.equal(path.length, 3);
+  const isQuoted = rawValue.startsWith('"') && rawValue.endsWith('"');
+  if (requireQuotedValue) assert.ok(isQuoted, 'timestamp value must be quoted');
+  return {
+    column,
+    operator,
+    value: isQuoted ? rawValue.slice(1, -1).replace(/\\(["\\])/g, '$1') : rawValue,
+  };
+}
+
+function parseCompositePostgrestFilter(input: string): {
+  older: ParsedPostgrestFilter;
+  sameTime: ParsedPostgrestFilter;
+  id: ParsedPostgrestFilter;
+} {
+  const [olderArm, tiedArm] = splitPostgrestFilterList(input);
+  assert.ok(olderArm && tiedArm);
+  assert.match(tiedArm, /^and\(.+\)$/);
+  const [sameTimeArm, idArm] = splitPostgrestFilterList(tiedArm.slice(4, -1));
+  assert.ok(sameTimeArm && idArm);
+  return {
+    older: parsePostgrestFilter(olderArm, true),
+    sameTime: parsePostgrestFilter(sameTimeArm, true),
+    id: parsePostgrestFilter(idArm),
+  };
+}
+
+async function decodedCompositeFilterFromQuery(cursor: MessageCursor): Promise<string> {
+  const requests: Request[] = [];
+  const fetcher = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+    requests.push(new Request(input, init));
+    return new Response('[]', {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  };
+  const client = createClient('https://placeholder.supabase.co', 'test-anon-key', {
+    global: { fetch: fetcher },
+  });
+
+  const { error } = await client
+    .from('comms_messages')
+    .select('id,created_at')
+    .or(compositeMessageCursorFilter(cursor))
+    .order('created_at', { ascending: false })
+    .order('id', { ascending: false })
+    .limit(MESSAGE_PAGE_SIZE);
+  assert.equal(error, null);
+  assert.equal(requests.length, 1);
+  const request = requests[0];
+  assert.ok(request);
+  assert.equal(new URL(request.url).pathname, '/rest/v1/comms_messages');
+  const decodedFilter = new URL(request.url).searchParams.get('or');
+  assert.ok(decodedFilter);
+  return decodedFilter;
+}
+
 describe('communications message pagination contracts', () => {
   test('accepts ISO cursors and rejects ambiguous or invalid timestamps', () => {
     assert.deepEqual(
@@ -49,6 +175,52 @@ describe('communications message pagination contracts', () => {
     assert.match(validateIsoTimestamp('2026-02-30T00:00:00.000Z', 'before').error ?? '', /real date/);
     assert.match(validateIsoTimestamp('not-a-date', 'before').error ?? '', /ISO timestamp/);
     assert.match(validateIsoTimestamp(null, 'before').error ?? '', /must be a string/);
+  });
+
+  test('quotes timestamp operands in the actual Supabase request and crosses tied boundaries', async () => {
+    const beforeId = '00000000-0000-0000-0000-000000000080';
+    const tiedOlderId = '00000000-0000-0000-0000-00000000007f';
+    const tiedNewestId = '00000000-0000-0000-0000-000000000081';
+    const cases = [
+      '2026-08-02T12:34:56.123Z',
+      '2026-08-02T12:34:56.123-05:00',
+      '2026-08-02T12:34:56.123+05:30',
+    ];
+
+    for (const before of cases) {
+      const cursor = { before, beforeId };
+      const decodedFilter = await decodedCompositeFilterFromQuery(cursor);
+      const parsed = parseCompositePostgrestFilter(decodedFilter);
+
+      assert.deepEqual(parsed, {
+        older: { column: 'created_at', operator: 'lt', value: before },
+        sameTime: { column: 'created_at', operator: 'eq', value: before },
+        id: { column: 'id', operator: 'lt', value: beforeId },
+      });
+
+      // Apply the decoded adapter grammar to rows around the boundary. The
+      // two rows at the cursor timestamp prove the id arm is traversable;
+      // the timestamp arm proves older timestamps still pass the same filter.
+      const cursorTime = Date.parse(parsed.sameTime.value);
+      const rows = [
+        { id: tiedOlderId, created_at: before },
+        { id: beforeId, created_at: before },
+        { id: tiedNewestId, created_at: before },
+        { id: '00000000-0000-0000-0000-000000000001', created_at: before },
+        { id: '00000000-0000-0000-0000-000000000090', created_at: new Date(cursorTime + 1_000).toISOString() },
+        { id: '00000000-0000-0000-0000-000000000002', created_at: new Date(cursorTime - 1_000).toISOString() },
+      ];
+      const matchingRows = rows.filter((row) => {
+        const rowTime = Date.parse(row.created_at);
+        return rowTime < cursorTime || (rowTime === cursorTime && row.id < parsed.id.value);
+      });
+
+      assert.deepEqual(matchingRows.map((row) => row.id), [
+        tiedOlderId,
+        '00000000-0000-0000-0000-000000000001',
+        '00000000-0000-0000-0000-000000000002',
+      ]);
+    }
   });
 
   test('merges an older page with a poll page in chronological order without duplicates', () => {

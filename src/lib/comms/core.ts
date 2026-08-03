@@ -15,6 +15,7 @@ import { translateMessagesForReader } from './translate';
 import { attachmentBelongsToConversation } from './attachments';
 import { commsStaffIdentityId } from './identity';
 import {
+  compositeMessageCursorFilter,
   mergeMessageRowsChronologically,
   messagePaginationForBaseRows,
   type MessagesPageDTO,
@@ -934,7 +935,7 @@ export async function getMessages(
     .order('id', { ascending: false });
   if (opts.before && opts.beforeId) {
     // Deterministic keyset boundary: (created_at, id) < (before, beforeId).
-    query = query.or(`created_at.lt.${opts.before},and(created_at.eq.${opts.before},id.lt.${opts.beforeId})`);
+    query = query.or(compositeMessageCursorFilter({ before: opts.before, beforeId: opts.beforeId }));
   } else if (opts.before) {
     // Preserve compatibility for timestamp-only callers. New clients always
     // use the composite metadata cursor returned below.

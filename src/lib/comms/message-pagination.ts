@@ -7,6 +7,21 @@ export interface MessageCursor {
   beforeId: string;
 }
 
+/**
+ * Quote a PostgREST filter value. The `.or()` builder receives filter grammar,
+ * so ISO timestamps must be quoted before URLSearchParams encodes the request:
+ * both `.` and `:` are meaningful to the filter grammar.
+ */
+function quotePostgrestFilterValue(value: string): string {
+  return `"${value.replace(/(["\\])/g, '\\$1')}"`;
+}
+
+/** Build the tie-safe PostgREST boundary used by both message clients. */
+export function compositeMessageCursorFilter(cursor: MessageCursor): string {
+  const before = quotePostgrestFilterValue(cursor.before);
+  return `created_at.lt.${before},and(created_at.eq.${before},id.lt.${cursor.beforeId})`;
+}
+
 export interface MessagePaginationDTO {
   hasOlder: boolean;
   nextCursor: MessageCursor | null;
