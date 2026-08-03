@@ -166,7 +166,7 @@ describe('existing Access-tab management surface contract', () => {
     assert.match(bridgeMigration, /staxis_commit_company_access_edit_v2/);
     assert.match(bridgeMigration, /_staxis_preview_company_access_hat_conversion/);
     assert.match(bridgeMigration, /company-access-editor-v2/);
-    assert.match(dialog, /This replaces the current [\s\S]* role with one normalized role and exact scope/);
+    assert.match(dialog, /This replaces the current [\s\S]* role with one role and exact scope/);
   });
 
   test('keeps all opaque-id and authorization decisions server-side and converts hats atomically', () => {

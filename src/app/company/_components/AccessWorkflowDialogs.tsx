@@ -84,8 +84,16 @@ function profileLabel(profile: string, lang: string): string {
     contributor: 'Contributor',
     viewer: 'Viewer',
     external_collaborator: 'External Collaborator',
+    owner: 'Owner',
+    vp: 'Portfolio Manager',
+    finance: 'Contributor',
+    controller: 'Contributor',
+    general_manager: 'Hotel Manager',
+    front_desk: 'Viewer',
+    housekeeping: 'Viewer',
+    maintenance: 'Viewer',
   };
-  return labels[profile] ?? titleCaseAccessValue(profile);
+  return labels[profile] ?? 'Team member';
 }
 
 function useDialogBehavior(onClose: () => void, busy = false) {
@@ -508,7 +516,7 @@ export function InvitePersonDialog({ data, lang, onClose, onCompleted }: {
     <WorkflowDialog
       title={'Invite a person'}
       eyebrow={'New company access'}
-      description={'A job title never grants access. Choose the profile and exact scope separately.'}
+      description={'A job title does not set permissions. Choose the profile and exact hotel scope separately.'}
       lang={lang}
       onClose={onClose}
       busy={submitting}
@@ -569,7 +577,7 @@ export function InvitePersonDialog({ data, lang, onClose, onCompleted }: {
           >
             {profiles.map((option) => <option key={option} value={option}>{profileLabel(option, lang)}</option>)}
           </select>
-          <em>{'Only profiles you are allowed to grant are listed.'}</em>
+          <em>{'Only profiles you are allowed to assign are listed.'}</em>
         </label>
 
         <ScopeFields data={data} organizationId={organizationId} profile={profile} scope={scope} onScopeChange={setScope} lang={lang} mode="grant" />
@@ -681,7 +689,7 @@ export function RequestAccessDialog({ data, lang, onClose, onCompleted }: {
           <p>{profileLabel(profile, lang)}</p>
         </div>
         <div className={styles.dialogFooter}>
-          <span><KeyRound size={14} aria-hidden="true" />{'No access has been granted yet'}</span>
+          <span><KeyRound size={14} aria-hidden="true" />{'Access is not active yet'}</span>
           <button type="button" className={styles.primaryButton} onClick={finish}>{'Done'}</button>
         </div>
       </WorkflowDialog>
@@ -824,7 +832,7 @@ export function ReviewAccessRequestDialog({ request, lang, onClose, onCompleted 
         </label>
         {error ? <div className={styles.formError} role="alert">{error}</div> : null}
         <div className={styles.dialogFooter}>
-          <span><KeyRound size={14} aria-hidden="true" />{decision === 'approved' ? 'Approval grants access immediately' : 'Denial grants no access'}</span>
+          <span><KeyRound size={14} aria-hidden="true" />{decision === 'approved' ? 'Approval makes access active immediately' : 'A denial does not add access'}</span>
           <div className={styles.dialogActions}>
             <button type="button" className={styles.secondaryButton} onClick={onClose} disabled={submitting}>{'Cancel'}</button>
             <button type="submit" className={styles.primaryButton} disabled={!formValid || submitting}>
@@ -850,10 +858,10 @@ export function CompanyLifecycleDialog({ action, lang, onClose, onCompleted }: {
   const reasonValid = reason.trim().length >= 8 && reason.trim().length <= 500;
   const copyByKind = {
     revoke_grant: {
-      title: 'Revoke access grant',
+      title: 'Remove hotel access',
       eyebrow: 'Access change',
-      description: 'This removes only the selected Company Hub grant. Other grants and hotel-operation roles stay unchanged.',
-      confirm: 'Revoke grant',
+      description: 'This removes access for the selected hotel only. Other hotel access and hotel-operation roles stay unchanged.',
+      confirm: 'Remove hotel access',
       endpoint: '/api/company-access/grants/revoke',
       body: { grantId: action.id },
     },
@@ -868,24 +876,24 @@ export function CompanyLifecycleDialog({ action, lang, onClose, onCompleted }: {
     suspend_membership: {
       title: 'Suspend company member',
       eyebrow: 'Temporary access hold',
-      description: 'Company Hub access stops immediately. The membership and its grants remain on record for a future reactivation workflow.',
-      confirm: 'Suspend member',
+      description: 'Company access stops immediately. The person and their current settings remain available for reactivation later.',
+      confirm: 'Suspend access',
       endpoint: '/api/company-access/memberships/status',
       body: { membershipId: action.id, action: 'suspend' },
     },
     resume_membership: {
       title: 'Resume company member',
-      eyebrow: 'Restore Company Hub access',
-      description: 'Any still-valid Company Hub grants become effective again. Cancelled requests stay cancelled, and hotel-operation roles remain unchanged.',
-      confirm: 'Resume member',
+      eyebrow: 'Restore company access',
+      description: 'Any still-valid company access becomes active again. Cancelled requests stay cancelled, and hotel-operation roles remain unchanged.',
+      confirm: 'Reactivate access',
       endpoint: '/api/company-access/memberships/status',
       body: { membershipId: action.id, action: 'resume' },
     },
     remove_membership: {
-      title: 'Remove company member',
+      title: 'Remove company access',
       eyebrow: 'Permanent removal',
-      description: 'The membership is closed, all of its Company Hub grants are revoked, and pending access requests are cancelled.',
-      confirm: 'Remove member',
+      description: 'The company access is closed, current access is removed, and pending access requests are cancelled. This does not delete the person from People.',
+      confirm: 'Remove company access',
       endpoint: '/api/company-access/memberships/status',
       body: { membershipId: action.id, action: 'remove' },
     },
