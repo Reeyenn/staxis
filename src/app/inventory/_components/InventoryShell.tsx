@@ -4,6 +4,7 @@ import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import dynamic from 'next/dynamic';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { useAuth } from '@/contexts/AuthContext';
+import { InventoryPointer } from './InventoryPointer';
 import { useProperty } from '@/contexts/PropertyContext';
 import { useLang } from '@/contexts/LanguageContext';
 import {
@@ -132,6 +133,7 @@ const MonthClosePanel = dynamic(() => import('./overlays/MonthClosePanel').then(
 const StockLossSheet = dynamic(() => import('./overlays/StockLossSheet').then((m) => m.StockLossSheet), { ssr: false });
 const DeliveryCorrectionSheet = dynamic(() => import('./overlays/DeliveryCorrectionSheet').then((m) => m.DeliveryCorrectionSheet), { ssr: false });
 const OrderingPanel = dynamic(() => import('./overlays/OrderingPanel').then((m) => m.OrderingPanel), { ssr: false });
+const ImportSheet = dynamic(() => import('./overlays/ImportSheet'), { ssr: false });
 
 // The inventory tab is 100% manual — no ML numbers, no AI pre-fill. The "AI
 // Helper" rail button opens the AI report as a large overlay (`ai`) right on
@@ -150,6 +152,7 @@ type OverlayKey =
   | 'add'
   | 'stock-loss'
   | 'delivery-correction'
+  | 'import'
   | null;
 
 type QueryAction = Exclude<OverlayKey, null> | 'scan';
@@ -1914,6 +1917,13 @@ export function InventoryShell() {
           onAction={openOverlay}
         />
         <div>
+          {canManage && canViewFinancials ? (
+            <InventoryPointer
+              pid={activePropertyId}
+              role={hotelStanding.role}
+              onShow={(key) => setOverlay(key === 'inventory_import' ? 'import' : 'delivery')}
+            />
+          ) : null}
           <div data-rise style={{ marginBottom: 16 }}>
             <FilterBar
               lang={L}
@@ -1931,6 +1941,7 @@ export function InventoryShell() {
               onAddCategory={(name) => void addCustomCategory(name)}
               view={view}
               onView={setView}
+              onImport={canManage && canViewFinancials ? () => setOverlay('import') : undefined}
               onAdd={canManage ? () => { setEditItem(null); setOverlay('add'); } : undefined}
             />
           </div>
@@ -2108,6 +2119,16 @@ export function InventoryShell() {
         tabLayout={tabLayout}
         canViewFinancials={canViewFinancials}
         canScanInvoices={canScanInvoices}
+      />
+      )}
+
+      {loadedOverlays.has('import') && activePropertyId && (
+      <ImportSheet
+        lang={L}
+        pid={activePropertyId}
+        open={overlay === 'import' && canManage && canViewFinancials}
+        onClose={() => { closeOverlay(); void refreshData(); }}
+        onImported={() => { void refreshData(); }}
       />
       )}
 

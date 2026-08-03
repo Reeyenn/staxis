@@ -1,0 +1,98 @@
+// ═══════════════════════════════════════════════════════════════════════════
+// Money parsing for imported sheets — text a person typed into Excel, in.
+// Integer cents, out.
+//
+// The dollars-vs-cents confusion has bitten this codebase before (the budgets
+// rebuild), and an import is where it bites hardest: nobody re-reads 200 rows
+// to notice that "$4.50" became $450. So the rule here is one-directional and
+// blunt — EVERY price this feature stores is an integer count of cents in a
+// *_cents column (DINV-6), and the only place dollars exist is (a) the text we
+// read out of the sheet, and (b) the legacy `inventory.unit_cost` numeric
+// column, which predates that rule and is written through centsToDollars().
+// ═══════════════════════════════════════════════════════════════════════════
+
+/** Largest per-unit price we will accept from a sheet: $100,000. Anything
+ *  above it is a total, a phone number, or an OCR artifact, never a unit
+ *  cost for a case of towels. */
+export const MAX_UNIT_COST_CENTS = 10_000_000;
+
+/**
+ * Parse a money-ish cell into integer cents. Accepts numbers and the shapes
+ * people actually type: "$4.50", "4,50" is NOT treated as European decimal
+ * (ambiguous with thousands) — only "1,234.56" grouping is understood.
+ * Parenthesised negatives ("(4.50)") and leading minus both read as negative
+ * and are rejected, since a negative unit price is always a parse mistake.
+ *
+ * Returns null for anything it cannot read confidently. Null is a fine answer:
+ * the confirm screen shows a blank price the manager can fill in, which is
+ * honest. A wrong number is not.
+ */
+export function parseMoneyToCents(raw: unknown): number | null {
+  if (raw === null || raw === undefined) return null;
+  if (typeof raw === 'number') return finiteDollarsToCents(raw);
+  if (typeof raw !== 'string') return null;
+
+  let s = raw.trim();
+  if (!s) return null;
+
+  let negative = false;
+  if (/^\(.*\)$/.test(s)) { negative = true; s = s.slice(1, -1).trim(); }
+
+  // Strip currency symbols and codes, and any trailing per-unit annotation
+  // ("$4.50/ea", "4.50 each") which is описание, not part of the number.
+  s = s.replace(/[$€£¥]/g, '')
+    .replace(/\b(usd|eur|gbp|cad|mxn)\b/gi, '')
+    .replace(/\/\s*(ea|each|case|cs|pack|pk|box|unit|roll|bottle|can)\b.*$/i, '')
+    .replace(/\s+(ea|each|per\s+\w+)\s*$/i, '')
+    .trim();
+
+  if (s.startsWith('-')) { negative = true; s = s.slice(1).trim(); }
+  if (s.startsWith('+')) s = s.slice(1).trim();
+
+  // Thousands grouping only: 1,234 / 1,234.56 / 12,345,678.90
+  if (/^\d{1,3}(,\d{3})+(\.\d+)?$/.test(s)) s = s.split(',').join('');
+  if (!/^\d*\.?\d+$/.test(s) && !/^\d+\.$/.test(s)) return null;
+
+  const n = Number(s);
+  if (!Number.isFinite(n)) return null;
+  const cents = finiteDollarsToCents(n);
+  if (cents === null) return null;
+  return negative ? -cents : cents;
+}
+
+function finiteDollarsToCents(dollars: number): number | null {
+  if (!Number.isFinite(dollars)) return null;
+  return dollarsToCents(dollars);
+}
+
+/**
+ * Dollars → integer cents. Rounds half away from zero on the SCALED value so
+ * 4.455 → 446 and float artifacts (1.005 * 100 === 100.49999999999999) don't
+ * silently round down a cent.
+ */
+export function dollarsToCents(dollars: number): number {
+  if (!Number.isFinite(dollars)) return 0;
+  const scaled = dollars * 100;
+  // Nudge by an epsilon proportional to the magnitude before rounding, which
+  // fixes the binary-representation shortfall without moving a genuine .xx5.
+  const nudged = scaled + Math.sign(scaled) * Math.abs(scaled) * Number.EPSILON * 4;
+  return Math.round(nudged);
+}
+
+/** Integer cents → the dollars number the legacy numeric columns hold. */
+export function centsToDollars(cents: number): number {
+  if (!Number.isFinite(cents)) return 0;
+  return Math.round(cents) / 100;
+}
+
+/** Is this a per-unit price we are willing to carry into the draft? */
+export function isPlausibleUnitCostCents(cents: number | null): cents is number {
+  return cents !== null && Number.isInteger(cents) && cents > 0 && cents <= MAX_UNIT_COST_CENTS;
+}
+
+/** "$12.34" for a confirm screen. Never used as an input value. */
+export function formatCents(cents: number): string {
+  const sign = cents < 0 ? '-' : '';
+  const abs = Math.abs(Math.round(cents));
+  return `${sign}$${Math.floor(abs / 100).toLocaleString('en-US')}.${String(abs % 100).padStart(2, '0')}`;
+}

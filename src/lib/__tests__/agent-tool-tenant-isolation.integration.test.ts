@@ -115,6 +115,11 @@ const UNSEEDABLE_TABLES = new Set([
   // companion-rules-tier.test.ts.
   'hotel_standing_rules',
   'inventory_delivery_reentries',  // NOT NULL key onto a replacement-request row
+  // 0452. A CHECK requires either a percentage or a rooms-sold count, and a
+  // second requires month_start to be the first of its month. A generated row
+  // satisfies neither. The scope-filter check below still covers the table, and
+  // its own tenancy is proven in inventory-import-occupancy.test.ts.
+  'inventory_import_occupancy_months',
   'management_pattern_candidate_local_instances', // immutable candidate/run lineage
   'management_pattern_candidate_properties', // immutable candidate/run lineage
   'management_pattern_cohort_members', // immutable cohort/run lineage

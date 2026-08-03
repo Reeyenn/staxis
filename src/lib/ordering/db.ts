@@ -440,6 +440,37 @@ export async function buildVendorSuggestions(
     if (r.item_id) entry.itemIds.add(String(r.item_id));
   }
 
+  // ── Source 2b: supplier names read off imported sheets ──
+  // A hotel's own spreadsheet names its suppliers in a column, and that is the
+  // same evidence a scanned invoice gives us: paperwork said so, nobody typed
+  // it into Staxis. It folds into the invoice pool rather than growing a third
+  // suggestion source, so an import cannot produce a duplicate chip for a
+  // supplier the scanner already found. Nothing new is asked of anybody: the
+  // name simply appears in the confirm list next time they look.
+  const { data: importedBatches, error: importErr } = await supabaseAdmin
+    .from('inventory_import_batches')
+    .select('vendor_names')
+    .eq('property_id', pid)
+    .eq('kind', 'inventory')
+    .is('undone_at', null)
+    .order('imported_at', { ascending: false })
+    .limit(100);
+  if (importErr) {
+    log.error('[ordering] suggestion imports read failed', { pid, err: importErr.message });
+  }
+  for (const raw of importedBatches ?? []) {
+    const names = (raw as Record<string, unknown>).vendor_names;
+    if (!Array.isArray(names)) continue;
+    for (const value of names) {
+      const name = String(value ?? '').trim();
+      if (!name) continue;
+      const key = normalizeVendorName(name);
+      const entry = byName.get(key);
+      if (entry) entry.count += 1;
+      else byName.set(key, { name, count: 1, itemIds: new Set() });
+    }
+  }
+
   // Bucket hints need each item's category, so resolve the union in one read.
   const hintItemIds = [...new Set([...byName.values()].flatMap((e) => [...e.itemIds]))];
   const bucketByItem = new Map<string, BucketKey>();

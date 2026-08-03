@@ -50,6 +50,13 @@ export type RateLimitEndpoint =
   // Originally shipped without a cap; Codex audit (pass-6) flagged it
   // as the largest unbounded-spend exposure in the inventory surface.
   | 'photo-count'
+  // Reading a whole inventory or occupancy sheet. One call per file, and a
+  // file is bigger than an invoice, so each read costs more than a scan does.
+  // Setting a hotel up is a handful of files in an afternoon; 30/hr covers
+  // that with room to re-try a mis-read one, and stops a scripted loop from
+  // re-reading the same workbook forever. Billing-impacting, so it fails
+  // closed.
+  | 'inventory-import'
   // Public signup — keyed on a per-IP UUID (sha256(ip) → UUID shape).
   // No auth gate, creates auth.users + properties + Stripe customer +
   // bcrypt CPU work, so trivially abusable without a rate cap. (Pass-3
@@ -375,6 +382,10 @@ const HOURLY_CAPS: Record<RateLimitEndpoint, number> = {
   // A staff member doing inventory rounds might fire 20-30 photos in a
   // session; 50/hr per property covers that with headroom.
   'photo-count':                50,
+  // A whole sheet per call, so each one costs several invoice scans. A hotel
+  // being set up imports a handful of files; nobody legitimately imports 30
+  // workbooks in an hour.
+  'inventory-import':           30,
   // Maria might re-send shift confirmations 2-3 times if she tweaks the
   // schedule. 10/hour gives plenty of room without unlimited resend abuse.
   // ENGLISH/ESPAÑOL replies look like loops if abused.
@@ -726,6 +737,10 @@ const BILLING_IMPACTING_ENDPOINTS: ReadonlySet<RateLimitEndpoint> = new Set<Rate
   // Claude Vision calls.
   'scan-invoice',
   'photo-count',
+  // Reading a whole inventory or occupancy sheet. Same Claude spend shape as
+  // the scanners and a bigger payload per call, so a limiter outage declines
+  // rather than letting a retry loop read the same workbook all afternoon.
+  'inventory-import',
   // The morning brief's wording pass — one Haiku call on the first load of a
   // hotel's local day. Cheap, but uncapped-cheap is still uncapped.
   'findings-brief',

@@ -272,6 +272,56 @@ export function teachLine(flow: TeachFlow): TeachLine {
   }
 }
 
+// ─── Pointing at something already on the screen ────────────────────────────
+//
+// A teach line comes AFTER somebody did a thing by hand. A pointer comes
+// BEFORE they know a thing exists: the first time a manager opens a screen,
+// the companion names one thing on it that would save them an afternoon.
+//
+// It is a separate producer from teachLine because the promise is different.
+// A teach line says "you could have asked me" about a tool the companion owns.
+// A pointer says "that button does this" about a thing the PERSON does. So the
+// hard rule here is the mirror of the teach rule: every pointer names a control
+// that is actually on the screen it fires on, and it says what the control does
+// in the words of the job, not the words of the feature.
+//
+// ONE PER VISIT. The list is ordered, the caller shows the first one that has
+// not been answered, and the second one waits for the next visit. Two pointers
+// on one screen is a tour, and nobody asked for a tour.
+
+export type CompanionPointerKey = 'inventory_invoices' | 'inventory_import';
+
+export interface PointerLine {
+  key: CompanionPointerKey;
+  /** What the thing is, in one sentence. */
+  text: string;
+  /** The offer to act, so it reads as an ask and not an announcement. */
+  question: string;
+}
+
+/** Ordered. Earlier pointers are shown first and only one is shown per visit. */
+export const INVENTORY_POINTER_ORDER: readonly CompanionPointerKey[] = [
+  'inventory_invoices',
+  'inventory_import',
+];
+
+export function pointerLine(key: CompanionPointerKey): PointerLine {
+  switch (key) {
+    case 'inventory_invoices':
+      return {
+        key,
+        text: 'When a delivery arrives, photograph the invoice here and I will read the items and prices off it, so nobody types a delivery in again.',
+        question: 'Want me to show you where that is?',
+      };
+    case 'inventory_import':
+      return {
+        key,
+        text: 'If you already keep your inventory in a spreadsheet, you can bring the whole file in at once instead of adding items one at a time.',
+        question: 'Want me to show you where that is?',
+      };
+  }
+}
+
 // ─── Sleep ──────────────────────────────────────────────────────────────────
 
 export type SleepReason =

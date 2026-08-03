@@ -35,6 +35,11 @@ import { listFindings } from '@/lib/findings/store';
 import { toQueueFinding } from '@/lib/findings/queue-projection';
 import { cardPhrasing, isCardRenderable, rankFindings } from '@/components/concourse/finding-cards';
 import { listShowsFindings, listStandingFor } from '@/lib/feed/list-access';
+import {
+  findLopsidedHistory,
+  lopsidedTopic,
+  LOPSIDED_MIN_MONTHS,
+} from '@/lib/inventory-import/lopsided';
 import type { CompanionCandidate, CompanionSeverity } from './manners';
 
 /**
@@ -89,7 +94,15 @@ export async function buildCompanionCandidates(input: {
     .map((f) => toQueueFinding(f))
     .filter((f) => isCardRenderable(f));
 
-  return rankFindings(cards)
+  const lopsided = await lopsidedCandidate(input.propertyId);
+
+  return [
+    // Lopsided history leads when it exists. It is rarer than a finding and it
+    // is about the AI's own ability to learn: a hotel that fixes it gets every
+    // future stock answer improved, and a hotel that never hears about it
+    // wonders why the numbers never got smarter.
+    ...(lopsided ? [lopsided] : []),
+    ...rankFindings(cards)
     .slice(0, MAX_CANDIDATES)
     .map((f) => ({
       // The DEDUPE KEY, not the row id. The same problem re-detected tomorrow
@@ -107,6 +120,40 @@ export async function buildCompanionCandidates(input: {
       covers: [`finding:${f.id}`],
       destination: 'staxis' as const,
       severity: SEVERITY_FROM_FINDING[f.severity] ?? ('watch' as const),
-    }))
-    .filter((c) => c.text.trim().length > 0);
+    })),
+  ].filter((c) => c.text.trim().length > 0).slice(0, MAX_CANDIDATES);
+}
+
+/**
+ * "I have your inventory from March to June, but no occupancy for those
+ * months." One extra read, and only for hotels that have imported something.
+ *
+ * The first query is a single indexed count against a table that is empty for
+ * every hotel that has never used the importer, which is what keeps this off
+ * the critical path for everybody else. Fails soft to silence: a companion that
+ * cannot check its own history says nothing about it.
+ */
+async function lopsidedCandidate(propertyId: string): Promise<CompanionCandidate | null> {
+  try {
+    const { importedInventoryMonths, occupancyMonthsHeld } = await import('@/lib/db/inventory-imports');
+    const inventoryMonths = await importedInventoryMonths(propertyId);
+    if (inventoryMonths.length < LOPSIDED_MIN_MONTHS) return null;
+
+    const occupancyMonths = await occupancyMonthsHeld(propertyId, inventoryMonths[0]);
+    const lopsided = findLopsidedHistory({ inventoryMonths, occupancyMonths });
+    if (!lopsided) return null;
+
+    return {
+      topic: lopsidedTopic(lopsided.side),
+      text: lopsided.text,
+      sensitivity: 'operational',
+      // Nothing on any screen is this fact, so there is nothing to stay quiet
+      // about. An empty `covers` is the honest answer, not an oversight.
+      covers: [],
+      destination: 'inventory',
+      severity: 'ok',
+    };
+  } catch {
+    return null;
+  }
 }
