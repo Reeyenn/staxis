@@ -102,3 +102,20 @@ Concretely, for anything new that answers "what does the AI know about this hote
 The consolidation target, stated as one sentence: **every injected store should be reachable through the tier registry in `src/lib/agent/rule-tiers.ts` or through a single named loader that all pipelines share, so that adding knowledge is one edit and adding a pipeline is zero.** The rule registry already has that property and is tested for it in `src/lib/__tests__/agent-shared-rule-tiers.test.ts`; the fact stores do not have it yet, and `company_knowledge` is the one to fix first because it is the only store whose two renderings can disagree about what the model is allowed to do with the text.
 
 Two smaller items worth closing while nearby: give the awareness block a version constant so its rendering is auditable from a persisted stamp like every other tier, and decide deliberately whether hotel identity should be fenced like its three neighbours or stay on per-value sanitization.
+
+## Stage 1, landed 2026-08-02
+
+The door exists: `src/lib/agent/knowledge-door.ts`. Every store above is registered there with its scope, its authority, its envelope, its version constant, its cache policy and the modules that render it. A pipeline composes a store **by name** through `composeKnowledgeTier(id, turn)` and never learns which loader ran.
+
+`src/lib/__tests__/agent-knowledge-door.test.ts` is the forcing function. It scans `src/` for emitted `<staxis-…>` envelopes and requires the found set to equal the registry's modules plus a short list of declared non-stores, each with its reason. A thirteenth store cannot arrive the way the twelfth did.
+
+Migrated through the door:
+
+- **`company_knowledge`** — the fix this document called for first. One loader (`loadCompanyKnowledgeFacts`, single-flight, no TTL) replaces three; the two renderings are registered as **presentations of one store** whose authority is `fact`, and each must carry the clause it claims in the ceiling the model actually reads, checked at module load. Which presentation renders is arbitrated by `resolveCompanyKnowledgePresentation` rather than by a flag comparison inside the portfolio assembler. The purity invariant (rulebook text never reaches a hotel line-role prompt) is now one gate, `companyPolicyVisible`, stated by every caller.
+- **`hotel_standing_rules`** — registration moved behind the door; the scope gate is unchanged.
+- **`hotel_identity`** — the asymmetry above is closed: it is fenced in `<staxis-hotel-identity trust="untrusted">` under a code-owned ceiling, **in addition to** the per-value sanitization, which stays. Version bumped to `hotel-identity-v2`.
+- **`situational_awareness`** — envelope and version through the door; `AWARENESS_VERSION` now lands in the persisted receipt (never the printed stamp, which would rewrite the cached prefix every turn). Its loader stays with its caller, which is the only layer holding the actor identity its nine feeds need.
+
+Everything else is registered as `legacy`: named, placed on both axes, pinned by the test, still loaded by its own caller. Stage 2 moves them.
+
+Prompt bytes are unchanged by the migration itself, proved against a golden captured before the change (`src/lib/__tests__/fixtures/knowledge-door-golden.json`). The single intentional difference is the hotel-identity envelope, asserted in the test to be exactly the envelope and the version bump.

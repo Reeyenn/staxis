@@ -15,23 +15,13 @@ import { createHash } from 'node:crypto';
 
 import { canViewFinancials, type AppRole } from '@/lib/roles';
 import { captureException } from '@/lib/sentry';
+import { AWARENESS_VERSION } from './awareness';
 import type { HotelSnapshot } from './context';
 import { formatSnapshotForPrompt } from './context';
-import {
-  deriveHotelIdentity,
-  formatHotelIdentityForPrompt,
-  HOTEL_IDENTITY_VERSION,
-} from './hotel-identity';
-import {
-  COMPANY_RULEBOOK_VERSION,
-  deriveCompanyRulebook,
-  formatCompanyRulebookForPrompt,
-} from './company-tier';
+import { composeKnowledgeTier, type KnowledgeTurn } from './knowledge-door';
 import {
   codeOwnedRuleTierLines,
   codeOwnedRuleTierVersions,
-  exactHotelScope,
-  hotelScopedRuleTier,
 } from './rule-tiers';
 import { escapeTrustMarkerContent } from './loop-core';
 import { lensFor } from './lenses';
@@ -736,57 +726,34 @@ export async function buildSystemPrompt(
   const familyToRender: ResolvedFamilyPrompt | null =
     family && familyContentIsSafe(family.content) ? family : null;
 
-  // Day-zero identity: what this hotel IS, assembled from what it already told
-  // us at signup and setup. STABLE tier on purpose — every value in it is
-  // structural (room mix, housekeeping configuration, roster shape), so it is
+  // ─── The knowledge tiers, composed BY NAME through the door ──────────────
+  //
+  // Three stores, one turn description, no loader named here. Everything that
+  // used to sit in this function — which cache policy, which scope resolver,
+  // which role gate, which formatter, which version constant — belongs to the
+  // store's registration in `knowledge-door.ts` now, so the portfolio surface
+  // and the walkthrough ask the same questions of the same registry and cannot
+  // answer them differently.
+  //
+  // `companyPolicyVisible` is the purity invariant, stated once: company books
+  // hold portfolio, money, people and vendor policy, so a hotel line-role
+  // prompt must not receive the block. The narrow finance lens is the one
+  // non-manager role with an explicit exact-hotel entitlement to that content.
+  const turn: KnowledgeTurn = {
+    hotelIds: [snapshot.property.id],
+    companyPolicyVisible: hasInventoryAccountingAccess,
+  };
+  // STABLE tiers, all three: every value in them is structural or verbatim
+  // stored text, ordered deterministically at the database, so each block is
   // byte-identical turn to turn and the cached prefix survives. Anything that
   // varies with the clock belongs in the snapshot, not here.
   //
-  // `deriveHotelIdentity` is memoized per hotel and never throws; null means
-  // "nothing durable to say", which renders no section at all rather than a
-  // section full of zeros.
-  const identityBlock = formatHotelIdentityForPrompt(
-    await deriveHotelIdentity(snapshot.property.id),
-  );
-
-  // 0365 — the rulebook of the management company that operates this hotel, if
-  // there is one. STABLE tier: the facts are confirmed company policy, ordered
-  // by (category, topic) at the database, so the block is byte-identical turn
-  // to turn and only a real edit to the rulebook moves it.
-  //
-  // `deriveCompanyRulebook` goes through `companyForProperty`, the single place
-  // a hotel becomes a company, and never throws — an independent hotel and an
-  // unreachable store both render no section at all. Company books contain
-  // portfolio, money, people and vendor policy, so a hotel line-role prompt
-  // must not receive the block. The narrow finance lens is the one non-manager
-  // role with an explicit exact-hotel entitlement to that content.
-  const companyBlock = formatCompanyRulebookForPrompt(
-    hasInventoryAccountingAccess
-      ? await deriveCompanyRulebook(snapshot.property.id)
-      : null,
-  );
-
-  // 0417 — the plain-language standing rules a manager at THIS hotel gave the
-  // companion. STABLE tier: the rows are ordered by created_at at the database
-  // and their text never varies, so the block is byte-identical turn to turn and
-  // only a real edit moves it.
-  //
-  // NOT gated on money-visibility, unlike the company block above. The reasoning
-  // is written out in hotel-rules-tier.ts: a standing rule is an instruction
-  // about how to behave at this hotel, the person who most needs it is the one
-  // on shift, and a rule cannot carry hotel data because it is stored verbatim
-  // and read by nothing. `deriveStandingRules` never throws — an unreachable
-  // store renders no section at all.
-  //
-  // Reached through the shared registry's scope resolver rather than by calling
-  // the loader directly. A hotel chat turn is about exactly one hotel, so the
-  // resolver always answers with an id here — the point of routing through it
-  // is that the portfolio surface asks the SAME function and gets null when its
-  // turn spans several hotels, so "whose house rules are these" has one answer
-  // in one place instead of one per pipeline.
-  const standingRules = await hotelScopedRuleTier(
-    exactHotelScope([snapshot.property.id]),
-  );
+  // A null is "nothing durable to say" and renders NO SECTION — never a header
+  // with zeros under it, which the model repeats to a manager as a finding
+  // about their hotel rather than a fact about our database.
+  const identity = await composeKnowledgeTier('hotel_identity', turn);
+  const company = await composeKnowledgeTier('company_knowledge', turn);
+  const standingRules = await composeKnowledgeTier('hotel_standing_rules', turn);
 
   if (family && !familyToRender) {
     captureException(
@@ -822,8 +789,8 @@ export async function buildSystemPrompt(
   // Only when a block was actually rendered: a day-zero hotel gets no section,
   // and stamping one would claim the model saw something it didn't. Same rule
   // for the company tier — an independent hotel's stamp must not claim one.
-  if (companyBlock) stampParts.push(COMPANY_RULEBOOK_VERSION);
-  if (identityBlock) stampParts.push(HOTEL_IDENTITY_VERSION);
+  if (company) stampParts.push(company.version);
+  if (identity) stampParts.push(identity.version);
   if (standingRules) stampParts.push(standingRules.version);
   const stableStamp = stampParts.join('+');
 
@@ -833,6 +800,16 @@ export async function buildSystemPrompt(
   // block would change the cached prefix for the live hotel today, for no
   // benefit to the model.
   if (!familyToRender && pmsFamily) receiptParts.push(`fam:${pmsFamily}.none`);
+  // The awareness block's version, stamped in the PERSISTED receipt only.
+  //
+  // It was the one envelope-wrapped store with no version constant, so "which
+  // awareness rendering ran on this turn" was the single question
+  // agent_messages.prompt_version could not answer. It cannot go in
+  // `stableStamp`: awareness is per-turn, and anything about it printed into
+  // the cached half would rewrite the cached prefix on every single turn.
+  if (awarenessBlock && awarenessBlock.trim().length > 0) {
+    receiptParts.push(AWARENESS_VERSION);
+  }
   receiptParts.push(memorySegment(memoryBlock));
   const persistedVersionLabel = receiptParts.join('+');
 
@@ -887,15 +864,18 @@ export async function buildSystemPrompt(
       ],
     });
   }
-  if (companyBlock) {
+  if (company) {
     // The header, the ceiling and BOTH marker tags are supplied by
     // company-tier.ts, never by a row — the same envelope discipline the family
     // tier gets, and for the same reason: a rulebook line can only ever appear
     // on the INSIDE of the envelope.
-    stable.push({ tier: 'company', lines: ['', companyBlock] });
+    stable.push({ tier: 'company', lines: ['', company.block] });
   }
-  if (identityBlock) {
-    stable.push({ tier: 'hotel_identity', lines: ['', identityBlock] });
+  if (identity) {
+    // Fenced since 2026-08-02, like its three neighbours: the labels inside are
+    // typed by managers, and per-value sanitization alone left them
+    // typographically identical to text Staxis printed itself.
+    stable.push({ tier: 'hotel_identity', lines: ['', identity.block] });
   }
   if (standingRules) {
     // Header, ceiling and both marker tags come from hotel-rules-tier.ts via the

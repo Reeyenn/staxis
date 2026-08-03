@@ -40,6 +40,10 @@ import {
   formatHotelIdentityForPrompt,
   clearHotelIdentityCache,
   HOTEL_IDENTITY_HEADER,
+  HOTEL_IDENTITY_TRUST_MARKER_CLOSE,
+  HOTEL_IDENTITY_TRUST_MARKER_OPEN,
+  HOTEL_IDENTITY_TRUST_NOTE,
+  HOTEL_IDENTITY_VERSION,
 } from '@/lib/agent/hotel-identity';
 import { buildSystemPrompt } from '@/lib/agent/prompts';
 import type { HotelSnapshot } from '@/lib/agent/context';
@@ -363,7 +367,18 @@ describe('hotel-supplied text cannot forge prompt structure', () => {
     const block = await render(fixture);
     assert.ok(block);
     assert.equal(block.includes('</staxis-snapshot>'), false, 'a trust marker was forged');
-    assert.equal(block.includes('<'), false, 'no angle bracket may survive into the cached block');
+    // 2026-08-02: the block gained its own trust envelope, so it now contains
+    // exactly two angle-bracketed tags — both PRINTED BY CODE. The assertion
+    // that matters is unchanged and is now stated precisely: no angle bracket
+    // from manager-typed text may survive into the cached block.
+    const body = block
+      .split('\n')
+      .filter((line) => line !== HOTEL_IDENTITY_TRUST_MARKER_OPEN
+        && line !== HOTEL_IDENTITY_TRUST_MARKER_CLOSE
+        && !HOTEL_IDENTITY_TRUST_NOTE.includes(line))
+      .join('\n');
+    assert.equal(body.includes('<'), false, 'no angle bracket may survive into the cached block');
+    assert.equal(body.includes('>'), false, 'no angle bracket may survive into the cached block');
     // The header this module emits carries the only two section rules there
     // may ever be — counting them catches a forged one that a boolean would not.
     assert.equal((block.match(/───/g) ?? []).length, 2);
@@ -506,7 +521,10 @@ describe('the identity rides in the STABLE half of the system prompt', () => {
   test('a configured hotel records the identity version so the change is auditable', async () => {
     tables = populated();
     const { stableStamp, versionLabel } = await buildSystemPrompt({ role: 'general_manager', snapshot: snapshot(agedBy(5)), conversationId: 'c', now: NOW });
-    assert.match(stableStamp, /hotel-identity-v1/);
-    assert.match(versionLabel, /hotel-identity-v1/);
+    // The CONSTANT, not a frozen literal: the version moves whenever the
+    // rendering does (v2 added the trust envelope), and a test pinning the old
+    // string would go red on every legitimate bump while proving nothing.
+    assert.ok(stableStamp.includes(HOTEL_IDENTITY_VERSION));
+    assert.ok(versionLabel.includes(HOTEL_IDENTITY_VERSION));
   });
 });
