@@ -8,7 +8,7 @@ const propertyContext = readFileSync(
   'utf8',
 );
 const propertySelector = readFileSync(
-  join(process.cwd(), 'src', 'app', 'property-selector', 'page.tsx'),
+  join(process.cwd(), 'src', 'app', '(hotel)', 'property-selector', 'page.tsx'),
   'utf8',
 );
 const apiResourceHook = readFileSync(
@@ -24,7 +24,7 @@ const companyPage = readFileSync(
   'utf8',
 );
 const companyInvitationPage = readFileSync(
-  join(process.cwd(), 'src', 'app', 'company-invite', '[token]', 'page.tsx'),
+  join(process.cwd(), 'src', 'app', '(public)', 'company-invite', '[token]', 'page.tsx'),
   'utf8',
 );
 

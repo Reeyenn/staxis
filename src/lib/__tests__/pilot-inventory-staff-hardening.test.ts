@@ -20,7 +20,7 @@ describe('Inventory and Staff pilot hardening', () => {
   });
 
   test('manager Staff gates only the schedule while exact property capabilities load', () => {
-    const page = source('src/app/staff/page.tsx');
+    const page = source('src/app/(hotel)/staff/page.tsx');
     assert.match(page, /capabilityOverridesPropertyId === activePropertyId/);
     assert.match(page, /capabilityOverridesViewerKey === capabilityViewerKey/);
     assert.doesNotMatch(page, /if \(!hotelStanding\.ready\) \{[\s\S]*?<ManagerScheduleStatus/);

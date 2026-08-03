@@ -7,8 +7,8 @@ function source(...parts: string[]): string {
   return readFileSync(join(process.cwd(), ...parts), 'utf8');
 }
 
-const settings = source('src', 'app', 'settings', 'page.tsx');
-const compatibilityPage = source('src', 'app', 'settings', 'users', 'page.tsx');
+const settings = source('src', 'app', '(hotel)', 'settings', 'page.tsx');
+const compatibilityPage = source('src', 'app', '(hotel)', 'settings', 'users', 'page.tsx');
 const company = source('src', 'app', 'company', 'page.tsx');
 const transferPanel = source(
   'src', 'app', 'company', '_components', 'LegacyOwnershipTransferPanel.tsx',

@@ -12,7 +12,7 @@ const between = (source: string, start: string, end: string) => {
   return source.slice(startAt, endAt);
 };
 
-const customerPage = read('src', 'app', 'onboard', 'page.tsx');
+const customerPage = read('src', 'app', '(public)', 'onboard', 'page.tsx');
 const adminJourney = read(
   'src', 'app', 'admin', '_components', 'studio', 'surfaces', 'OnboardingSurface.tsx',
 );

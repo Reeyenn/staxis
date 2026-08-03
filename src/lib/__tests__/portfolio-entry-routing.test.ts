@@ -129,12 +129,12 @@ describe('portfolio bootstrap entry routing', () => {
 
   test('provider and Home wire the decisions directly to the request and wait boundaries', () => {
     const provider = source('src', 'contexts', 'PortfolioContext.tsx');
-    const home = source('src', 'app', 'home', 'page.tsx');
+    const home = source('src', 'app', '(hotel)', 'home', 'page.tsx');
     assert.match(provider, /const enabled = shouldLoadPortfolioBootstrap\(\{/);
     assert.match(provider, /useApiResource<PortfolioUiBootstrapV1>[\s\S]{0,300}?enabled: enabled && !malformedSelection/);
     assert.match(home, /portfolioEntryPending = shouldWaitForPortfolioEntry\(\{[\s\S]{0,120}?portfolioLoading: portfolio\.loading/);
     assert.doesNotMatch(home, /!portfolio\.data && Boolean\(user\)/);
-    const selector = source('src', 'app', 'property-selector', 'page.tsx');
+    const selector = source('src', 'app', '(hotel)', 'property-selector', 'page.tsx');
     assert.match(selector, /shouldWaitForPortfolioBootstrapResult\(\{/);
     assert.match(selector, /enabled: portfolio\.enabled/);
   });

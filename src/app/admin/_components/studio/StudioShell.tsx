@@ -9,7 +9,7 @@
    (AppLayout) so the site's global nav (Dashboard · Housekeeping · … · Admin)
    stays on top — this is one section of the website, not a separate page.
    The sub-header sits just below that 64px global nav. Admin is gated
-   server-side in src/app/admin/layout.tsx, with a client spinner during
+   server-side in src/app/(admin)/layout.tsx, with a client spinner during
    auth load.
 
    Five surfaces (Mission Control replaced System & Agent 2026-07-17; Access is a

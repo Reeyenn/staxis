@@ -3,7 +3,6 @@
 import React from 'react';
 import { usePathname, useRouter, useSearchParams } from 'next/navigation';
 
-import { AppLayout } from '@/components/layout/AppLayout';
 import { PortfolioQueueView, type PortfolioScope } from '@/components/concourse/PortfolioQueueView';
 import {
   ContextBanner,
@@ -369,7 +368,7 @@ function StaxisPortfolio({ organizationId, organizationName }: { organizationId:
   const { user, authorizationFingerprint } = useAuth();
   const [scope, setScope] = React.useState<PortfolioScope | null | undefined>(undefined);
   return (
-    <AppLayout hideGlobalAsk>
+    <>
       <div style={{ width: 'min(100% - 32px, 1180px)', margin: '18px auto 0' }}>
         <ContextBanner
           kind="portfolio"
@@ -391,7 +390,7 @@ function StaxisPortfolio({ organizationId, organizationName }: { organizationId:
         ])}
         onScope={setScope}
       />
-    </AppLayout>
+    </>
   );
 }
 
@@ -458,12 +457,12 @@ export function PortfolioSectionClient({ section }: { section: PortfolioModuleId
   }, [pathname, searchParams]);
 
   if (portfolio.loading || (!portfolio.data && !portfolio.error)) {
-    return <AppLayout hideGlobalAsk><PortfolioSectionSkeleton label={COPY[section].title} /></AppLayout>;
+    return <PortfolioSectionSkeleton label={COPY[section].title} />;
   }
 
   if (portfolio.error) {
     return (
-      <AppLayout hideGlobalAsk>
+
         <PortfolioSectionView
           module={section}
           context={{ kind: 'portfolio', contextLabel: 'Portfolio', scopeName: 'Unavailable' }}
@@ -481,16 +480,16 @@ export function PortfolioSectionClient({ section }: { section: PortfolioModuleId
             action: { label: 'Try again', onActivate: () => void portfolio.reload() },
           }}
         />
-      </AppLayout>
+
     );
   }
 
   if (!company) {
     if (portfolio.data?.selection.state === 'needs_selection') {
-      return <AppLayout hideGlobalAsk><PortfolioSectionSkeleton label="Opening context chooser" /></AppLayout>;
+      return <PortfolioSectionSkeleton label="Opening context chooser" />;
     }
     return (
-      <AppLayout hideGlobalAsk>
+
         <PortfolioSectionView
           module={section}
           context={{ kind: 'portfolio', contextLabel: 'Portfolio', scopeName: 'Unavailable' }}
@@ -507,14 +506,14 @@ export function PortfolioSectionClient({ section }: { section: PortfolioModuleId
             action: { label: 'Choose context', href: '/portfolio/choose' },
           }}
         />
-      </AppLayout>
+
     );
   }
 
   if (section === 'staxis') {
     if (!company.queueAvailable) {
       return (
-        <AppLayout hideGlobalAsk>
+
           <PortfolioSectionView
             module="staxis"
             context={{
@@ -535,7 +534,7 @@ export function PortfolioSectionClient({ section }: { section: PortfolioModuleId
               action: { label: 'Choose context', href: '/portfolio/choose' },
             }}
           />
-        </AppLayout>
+
       );
     }
     return <StaxisPortfolio organizationId={company.organizationId} organizationName={company.organizationName ?? 'Your company'} />;
@@ -673,7 +672,7 @@ export function PortfolioSectionClient({ section }: { section: PortfolioModuleId
   const noFilterMatches = Boolean(data && data.hotels.length > 0 && filtered.length === 0);
 
   return (
-    <AppLayout hideGlobalAsk>
+    <>
       <PortfolioSectionView
         module={section}
         context={{
@@ -743,6 +742,6 @@ export function PortfolioSectionClient({ section }: { section: PortfolioModuleId
       >
         {pageAnnouncement}
       </span>
-    </AppLayout>
+    </>
   );
 }

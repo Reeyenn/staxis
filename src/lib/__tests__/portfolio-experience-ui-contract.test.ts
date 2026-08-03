@@ -12,6 +12,7 @@ const portfolioServer = source('src', 'lib', 'portfolio-ui', 'server.ts');
 const portfolioTypes = source('src', 'components', 'portfolio', 'types.ts');
 const portfolioCss = source('src', 'components', 'portfolio', 'PortfolioUI.module.css');
 const portfolioHome = source('src', 'app', 'portfolio', 'PortfolioHomeClient.tsx');
+const portfolioLayout = source('src', 'app', '(portfolio)', 'layout.tsx');
 const portfolioHomeView = source(
   'src',
   'components',
@@ -60,8 +61,8 @@ const portfolioQueue = source(
   'concourse',
   'PortfolioQueueView.tsx',
 );
-const home = source('src', 'app', 'home', 'page.tsx');
-const propertySelector = source('src', 'app', 'property-selector', 'page.tsx');
+const home = source('src', 'app', '(hotel)', 'home', 'page.tsx');
+const propertySelector = source('src', 'app', '(hotel)', 'property-selector', 'page.tsx');
 const company = source('src', 'app', 'company', 'page.tsx');
 const companyRulebook = source('src', 'components', 'concourse', 'CompanyRulebookPanel.tsx');
 const globals = source('src', 'app', 'globals.css');
@@ -101,7 +102,9 @@ describe('portfolio role entry and acting context', () => {
 describe('portfolio Ask ownership', () => {
   test('renders one company Ask, suppresses the global Ask, and gives hotel cards no chat', () => {
     assert.equal((portfolioHome.match(/<PortfolioChat\b/g) ?? []).length, 1);
-    assert.match(portfolioHome, /<AppLayout hideGlobalAsk>/);
+    assert.match(portfolioLayout, /<AppLayout hideGlobalAsk>\{children\}<\/AppLayout>/);
+    assert.match(portfolioLayout, /pathname === '\/portfolio\/choose'/);
+    assert.doesNotMatch(portfolioHome, /<AppLayout\b|from ['"]@\/components\/layout\/AppLayout['"]/);
     assert.match(appLayout, /!hideGlobalAsk \? <AskStaxisBar \/> : null/);
     assert.doesNotMatch(
       hotelCard,

@@ -65,7 +65,7 @@ test('My Hotel tabs support the complete keyboard tab pattern', () => {
 });
 
 test('Staff renders the schedule directly, with no leftover Directory tab', () => {
-  const page = source('src/app/staff/page.tsx');
+  const page = source('src/app/(hotel)/staff/page.tsx');
   assert.doesNotMatch(page, /SubTabBar|ManagerDirectory|staxis-staff-tab/);
   assert.doesNotMatch(page, /staff-tab-directory|staff-panel-directory/);
   assert.match(page, /<UnifiedSchedule/);

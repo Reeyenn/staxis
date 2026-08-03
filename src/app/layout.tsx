@@ -154,7 +154,7 @@ export default function RootLayout({
                             <AuthenticatedRuntimeBoundary>
                               {children}
                               {/* Mounted at the root so the loop survives page navigations
-                                  (AppLayout is per-page and unmounts when the URL changes,
+                                  (the route-family shell can unmount when the URL changes,
                                   which would kill an in-flight multi-step walkthrough). */}
                               <WalkthroughOverlay />
                             </AuthenticatedRuntimeBoundary>

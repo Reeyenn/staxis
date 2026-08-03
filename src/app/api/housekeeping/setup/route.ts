@@ -34,7 +34,7 @@
  *     earned-hours-vs-paid-hours calculation rests on.
  *   • The role check alone would ignore an admin who deliberately restricted
  *     clean-time editing for a role at one hotel.
- * The page gate (src/app/housekeeping/page.tsx) applies the SAME pair, so the
+ * The page gate (src/app/(hotel)/housekeeping/page.tsx) applies the SAME pair, so the
  * questionnaire is never shown to someone whose save would then 403.
  *
  * The answers are not left inert: `checkoutMinutes` / `stayoverMinutes` are
