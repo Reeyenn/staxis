@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { after, before, describe, test } from 'node:test';
 import type { PGlite } from '@electric-sql/pglite';
 
-import { applyMigrationsToPglite } from '../../../tests/fixtures/pglite-migrate';
+import { applyMigrationsToPgliteThrough } from '../../../tests/fixtures/pglite-migrate';
 import {
   ACCOUNT_ANA,
   ACCOUNT_FRANK,
@@ -104,7 +104,7 @@ describe('Stage A invitation promise and invariant assertions — real SQL', () 
   let companies: Awaited<ReturnType<typeof seedTwoCompanies>>;
 
   before(async () => {
-    const migrated = await applyMigrationsToPglite();
+    const migrated = await applyMigrationsToPgliteThrough('0425');
     pg = migrated.pg;
     companies = await seedTwoCompanies(pg);
 

@@ -57,6 +57,7 @@ import type { AiEmployee } from '@/lib/ai/employee-registry';
 import type { AiCostFeature } from '@/lib/ai/types';
 
 import { setupRlsFixture } from '../../../tests/fixtures/pglite-bootstrap';
+import { seedCanonicalTestAuthority } from '../../../tests/fixtures/pglite-migrate';
 import {
   createPglitePostgrest,
   loadCatalog,
@@ -222,14 +223,16 @@ describe('agent_costs.feature — the ledger learns which job spent the money', 
       await pg.query('insert into auth.users (id, email) values ($1,$2) on conflict do nothing', [uid, email]);
     }
     const inserted = await pg.query<{ id: string }>(
-      `insert into public.accounts (username, display_name, role, property_access, data_user_id, password_hash, active)
-       values ('cost.admin','Reeyen','admin',array[$1::uuid,$2::uuid],$3,'x',true),
-              ('cost.gm','Maria (GM)','general_manager',array[$2::uuid],$4,'x',true)
+      `insert into public.accounts (username, display_name, role, data_user_id, password_hash, active)
+       values ('cost.admin','Reeyen','admin',$1,'x',true),
+              ('cost.gm','Maria (GM)','general_manager',$2,'x',true)
        returning id`,
-      [PID_A, PID_B, ADMIN_UID, GM_UID],
+      [ADMIN_UID, GM_UID],
     );
     accountA = inserted.rows[0].id;
     accountB = inserted.rows[1].id;
+    await seedCanonicalTestAuthority(pg, { username: 'cost.admin', propertyIds: [] });
+    await seedCanonicalTestAuthority(pg, { username: 'cost.gm', propertyIds: [PID_B] });
   });
 
   after(async () => {

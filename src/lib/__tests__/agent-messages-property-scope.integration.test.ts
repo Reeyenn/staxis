@@ -17,6 +17,7 @@
 import { test, describe, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { setupRlsFixture, type PgliteFixture } from '../../../tests/fixtures/pglite-bootstrap';
+import { seedCanonicalTestAuthority } from '../../../tests/fixtures/pglite-migrate';
 
 const UID = 'b0000000-0000-0000-0000-0000000000c3';
 const PID_A = 'b0000000-0000-0000-0000-0000000000a1';
@@ -33,10 +34,11 @@ describe('agent_messages.property_id is derived from its conversation (0336)', (
     await fx.pg.exec(`insert into properties (id, name, owner_id, total_rooms) values
       ('${PID_A}', 'Hotel A', '${UID}', 50), ('${PID_B}', 'Hotel B', '${UID}', 50) on conflict do nothing;`);
     await fx.pg.query(
-      `insert into accounts (id, username, password_hash, display_name, data_user_id, role, property_access)
-       values ($1, 'am', 'x', 'AM', $2, 'general_manager', $3) on conflict do nothing`,
-      [UID, UID, [PID_A, PID_B]],
+      `insert into accounts (id, username, password_hash, display_name, data_user_id, role)
+       values ($1, 'am', 'x', 'AM', $2, 'general_manager') on conflict do nothing`,
+      [UID, UID],
     );
+    await seedCanonicalTestAuthority(fx.pg, { username: 'am', propertyIds: [PID_A, PID_B] });
     await fx.pg.query(
       `insert into agent_conversations (id, user_id, property_id, role)
        values ($1, $2, $3, 'general_manager') on conflict do nothing`,

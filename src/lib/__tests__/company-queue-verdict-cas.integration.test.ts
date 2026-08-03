@@ -112,8 +112,8 @@ async function addAccount(
   );
   await pg.query(
     `insert into public.accounts
-       (id, username, password_hash, display_name, role, property_access, data_user_id)
-     values ($1, $2, 'x', $3, $4, '{}', $5)`,
+       (id, username, password_hash, display_name, role, data_user_id)
+     values ($1, $2, 'x', $3, $4, $5)`,
     [accountId, name.toLowerCase(), name, role, userId],
   );
 }

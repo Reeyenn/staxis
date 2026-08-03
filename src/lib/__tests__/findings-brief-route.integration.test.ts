@@ -42,7 +42,7 @@ import { GET } from '@/app/api/findings/brief/route';
 import { getMorningBrief, briefCacheKey } from '@/lib/findings/brief-server';
 import type { MorningBrief } from '@/lib/findings/brief';
 
-import { applyMigrationsToPglite } from '../../../tests/fixtures/pglite-migrate';
+import { applyMigrationsToPglite, seedCanonicalTestAuthority } from '../../../tests/fixtures/pglite-migrate';
 import {
   createPglitePostgrest,
   loadCatalog,
@@ -294,12 +294,15 @@ describe('/api/findings/brief — the morning brief', () => {
       await pg.query('insert into auth.users (id, email) values ($1,$2) on conflict do nothing', [uid, email]);
     }
     await pg.query(
-      `insert into public.accounts (username, display_name, role, property_access, data_user_id, password_hash)
-       values ('brief.gm.a','Maria (GM)','general_manager',array[$1::uuid],$2,'x'),
-              ('brief.gm.b','Bea (GM)','general_manager',array[$3::uuid],$4,'x'),
-              ('brief.hk.a','Ana','housekeeping',array[$1::uuid],$5,'x')`,
-      [PID_A, GM_A_UID, PID_B, GM_B_UID, HOUSEKEEPER_UID],
+      `insert into public.accounts (username, display_name, role, data_user_id, password_hash)
+       values ('brief.gm.a','Maria (GM)','general_manager',$1,'x'),
+              ('brief.gm.b','Bea (GM)','general_manager',$2,'x'),
+              ('brief.hk.a','Ana','housekeeping',$3,'x')`,
+      [GM_A_UID, GM_B_UID, HOUSEKEEPER_UID],
     );
+    await seedCanonicalTestAuthority(pg, { username: 'brief.gm.a', propertyIds: [PID_A] });
+    await seedCanonicalTestAuthority(pg, { username: 'brief.gm.b', propertyIds: [PID_B] });
+    await seedCanonicalTestAuthority(pg, { username: 'brief.hk.a', propertyIds: [PID_A] });
   });
 
   after(async () => {

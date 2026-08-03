@@ -65,7 +65,7 @@ import {
   POST as portfolioPost,
 } from '@/app/api/company/queue/route';
 
-import { applyMigrationsToPglite } from '../../../tests/fixtures/pglite-migrate';
+import { applyMigrationsToPgliteThrough } from '../../../tests/fixtures/pglite-migrate';
 import { createPglitePostgrest, loadCatalog, type PglitePostgrest } from '../../../tests/fixtures/postgrest-pglite';
 import {
   ACCOUNT_ADMIN,
@@ -418,7 +418,7 @@ let CHEAP_FINDING = '';
 let CHEAP_ACTION = '';
 
 before(async () => {
-  const migrated = await applyMigrationsToPglite();
+  const migrated = await applyMigrationsToPgliteThrough('0425');
   pg = migrated.pg;
   const catalog = await loadCatalog(pg);
   shim = createPglitePostgrest(pg, catalog);

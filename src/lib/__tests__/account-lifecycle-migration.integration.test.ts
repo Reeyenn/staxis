@@ -3,7 +3,7 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { after, before, describe, test } from 'node:test';
 import type { PGlite } from '@electric-sql/pglite';
-import { applyMigrationsToPglite } from '../../../tests/fixtures/pglite-migrate';
+import { applyMigrationsToPgliteThrough } from '../../../tests/fixtures/pglite-migrate';
 
 const PROPERTY_A = 'a1000000-0000-4000-8000-000000000001';
 const PROPERTY_B = 'a1000000-0000-4000-8000-000000000002';
@@ -340,7 +340,7 @@ function guardedTransfer(args: {
 
 describe('account lifecycle migration 0335 — real SQL via PGlite', () => {
   before(async () => {
-    const migrated = await applyMigrationsToPglite();
+    const migrated = await applyMigrationsToPgliteThrough('0425');
     pg = migrated.pg;
     assert.ok(
       migrated.report.applied.includes('0335_account_lifecycle_intents.sql'),

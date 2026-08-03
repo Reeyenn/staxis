@@ -54,7 +54,7 @@ import { createTask } from '@/lib/comms/core';
 import { createTemplate, spawnDueRecurringTodos } from '@/lib/recurring-tasks/store';
 import { dayOf } from '@/components/concourse/list-calendar';
 
-import { applyMigrationsToPglite } from '../../../tests/fixtures/pglite-migrate';
+import { applyMigrationsToPgliteThrough } from '../../../tests/fixtures/pglite-migrate';
 import {
   createPglitePostgrest,
   loadCatalog,
@@ -119,7 +119,7 @@ function postReq(url: string, body: Record<string, unknown>): NextRequest {
 interface Envelope { ok: boolean; error?: string; data?: Record<string, unknown> }
 
 before(async () => {
-  const migrated = await applyMigrationsToPglite();
+  const migrated = await applyMigrationsToPgliteThrough('0425');
   pg = migrated.pg;
   const catalog = await loadCatalog(pg);
   shim = createPglitePostgrest(pg, catalog);

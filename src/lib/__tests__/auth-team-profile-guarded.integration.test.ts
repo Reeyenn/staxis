@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { after, before, describe, test } from 'node:test';
 import type { PGlite } from '@electric-sql/pglite';
 
-import { applyMigrationsToPglite } from '../../../tests/fixtures/pglite-migrate';
+import { applyMigrationsToPgliteThrough } from '../../../tests/fixtures/pglite-migrate';
 import {
   ACCOUNT_MARIA,
   PID_A1,
@@ -91,7 +91,7 @@ describe('guarded My Hotel profile/staff commit boundary — real SQL', () => {
   let pg: PGlite;
 
   before(async () => {
-    const migrated = await applyMigrationsToPglite();
+    const migrated = await applyMigrationsToPgliteThrough('0425');
     pg = migrated.pg;
     await seedTwoCompanies(pg);
     await pg.query(

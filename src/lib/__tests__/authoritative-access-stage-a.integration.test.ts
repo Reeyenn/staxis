@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { after, before, describe, test } from 'node:test';
 import type { PGlite } from '@electric-sql/pglite';
 
-import { applyMigrationsToPglite } from '../../../tests/fixtures/pglite-migrate';
+import { applyMigrationsToPgliteThrough } from '../../../tests/fixtures/pglite-migrate';
 import {
   ACCOUNT_ADMIN,
   ACCOUNT_HANK,
@@ -41,7 +41,7 @@ describe('Stage A authoritative access compatibility — real SQL', () => {
   let pg: PGlite;
 
   before(async () => {
-    const migrated = await applyMigrationsToPglite();
+    const migrated = await applyMigrationsToPgliteThrough('0425');
     const expected = [
       '0418_authoritative_access_cutover_preflight.sql',
       '0419_authoritative_access_cutover_backfill.sql',

@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { after, before, describe, test } from 'node:test';
 import type { PGlite } from '@electric-sql/pglite';
 
-import { applyMigrationsToPglite } from '../../../tests/fixtures/pglite-migrate';
+import { applyMigrationsToPgliteThrough } from '../../../tests/fixtures/pglite-migrate';
 import {
   ACCOUNT_ADMIN,
   ACCOUNT_ANA,
@@ -127,7 +127,7 @@ describe('hotel shell to first-person onboarding — real SQL vertical slice', (
   let ownerAccountId: string;
 
   before(async () => {
-    const migrated = await applyMigrationsToPglite();
+    const migrated = await applyMigrationsToPgliteThrough('0425');
     assert.ok(
       migrated.report.applied.includes('0411_first_person_onboarding.sql'),
       `0411 must apply to PGlite; failures: ${JSON.stringify(migrated.report.failedAtRuntime)}`,

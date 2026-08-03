@@ -49,7 +49,7 @@ import {
   removeMemoryFact,
 } from '@/lib/db/agent-memory';
 
-import { applyMigrationsToPglite } from '../../../tests/fixtures/pglite-migrate';
+import { applyMigrationsToPglite, seedCanonicalTestAuthority } from '../../../tests/fixtures/pglite-migrate';
 import {
   createPglitePostgrest,
   loadCatalog,
@@ -386,12 +386,13 @@ describe('agent_memory categories + review state, against a real database', () =
       await pg.query(`insert into auth.users (id, email) values ($1, 'gm@knows.test')
                       on conflict do nothing`, [AUTH_UID]);
       const r = await pg.query<{ id: string }>(
-        `insert into public.accounts (username, display_name, role, property_access, data_user_id, password_hash)
-         values ('knows.gm', 'Maria (GM)', 'general_manager', array[$1::uuid], $2, 'x')
+        `insert into public.accounts (username, display_name, role, data_user_id, password_hash)
+         values ('knows.gm', 'Maria (GM)', 'general_manager', $1, 'x')
          returning id`,
-        [PID_A, AUTH_UID],
+        [AUTH_UID],
       );
       accountId = r.rows[0].id;
+      await seedCanonicalTestAuthority(pg, { username: 'knows.gm', propertyIds: [PID_A] });
     });
 
     test('finds the manager behind the session and reports who they are', async () => {

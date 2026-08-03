@@ -86,7 +86,7 @@ describe('section-aware browser RLS migration 0334', () => {
           grant select, insert, update, delete on public.inventory_custom_categories to authenticated;
         `);
       }
-    });
+    }, { stopAfterVersion: '0425' });
     pg = migrated.pg;
     assert.ok(
       migrated.report.applied.includes('0334_section_aware_browser_rls.sql'),

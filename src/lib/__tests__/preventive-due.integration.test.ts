@@ -41,7 +41,7 @@ import { GET as TARGET_GET } from '@/app/api/findings/for-target/route';
 import { runFindingsForProperty } from '@/lib/findings/runner';
 import { FOLLOW_UP_DAYS } from '@/lib/findings/detectors/preventive-due';
 
-import { applyMigrationsToPglite } from '../../../tests/fixtures/pglite-migrate';
+import { applyMigrationsToPglite, seedCanonicalTestAuthority } from '../../../tests/fixtures/pglite-migrate';
 import {
   createPglitePostgrest,
   loadCatalog,
@@ -270,11 +270,13 @@ describe('preventive maintenance, proven against a real database', () => {
       ]);
     }
     await pg.query(
-      `insert into public.accounts (username, display_name, role, property_access, data_user_id, password_hash)
-       values ('pm.gm.a','Maria (GM)','general_manager',array[$1::uuid],$2,'x'),
-              ('pm.gm.b','Bea (GM)','general_manager',array[$3::uuid],$4,'x')`,
-      [PID_A, GM_A_UID, PID_B, GM_B_UID],
+      `insert into public.accounts (username, display_name, role, data_user_id, password_hash)
+       values ('pm.gm.a','Maria (GM)','general_manager',$1,'x'),
+              ('pm.gm.b','Bea (GM)','general_manager',$2,'x')`,
+      [GM_A_UID, GM_B_UID],
     );
+    await seedCanonicalTestAuthority(pg, { username: 'pm.gm.a', propertyIds: [PID_A] });
+    await seedCanonicalTestAuthority(pg, { username: 'pm.gm.b', propertyIds: [PID_B] });
   });
 
   after(async () => {

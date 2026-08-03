@@ -63,7 +63,7 @@ import { executeTool, getToolsForRole, type ToolContext, type ToolResult } from 
 import { loadAgentUserCtx } from '@/app/api/agent/command/_stream-runner';
 import { POST as commandPost } from '@/app/api/agent/command/route';
 
-import { applyMigrationsToPglite } from '../../../tests/fixtures/pglite-migrate';
+import { applyMigrationsToPgliteThrough } from '../../../tests/fixtures/pglite-migrate';
 import { createPglitePostgrest, loadCatalog, type PglitePostgrest } from '../../../tests/fixtures/postgrest-pglite';
 import {
   ACCOUNT_ADMIN,
@@ -140,7 +140,7 @@ async function factRow(propertyId: string, topic: string) {
 // ─── Fixture ────────────────────────────────────────────────────────────────
 
 before(async () => {
-  const migrated = await applyMigrationsToPglite();
+  const migrated = await applyMigrationsToPgliteThrough('0425');
   pg = migrated.pg;
   const catalog = await loadCatalog(pg);
   shim = createPglitePostgrest(pg, catalog);
