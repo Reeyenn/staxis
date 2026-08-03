@@ -20,6 +20,7 @@ const companyCss = source('src', 'app', 'company', 'CompanyAccess.module.css');
 const hotelSwitcher = source('src', 'app', 'company', '_components', 'HotelSwitcher.tsx');
 const hotelSwitcherCss = source('src', 'app', 'company', '_components', 'HotelSwitcher.module.css');
 const hotelTeam = source('src', 'app', 'company', '_components', 'HotelTeamPanel.tsx');
+const peopleController = source('src', 'app', 'company', '_components', 'usePeopleController.ts');
 const hotelTeamDialogs = source('src', 'app', 'company', '_components', 'HotelTeamDialogs.tsx');
 const hotelTeamCss = source('src', 'app', 'company', '_components', 'HotelTeamPanel.module.css');
 const addStaffDialog = source('src', 'app', 'company', '_components', 'AddStaffDialog.tsx');
@@ -207,7 +208,7 @@ describe('truthful Company Hub filters', () => {
     assert.match(company, /data\.viewerContext\?\.kind === ['"]staxis_admin_preview['"]/);
     assert.doesNotMatch(company, /allowAdminActions|onRequestAdminActions|adminToolsEnabled|adminToolsActive/);
     assert.match(company, /statusLabel\(membership\.status, lang\)/);
-    assert.match(hotelTeam, /responseTeam\.filter\(\(member\) => !member\.isPlatformAdmin && member\.role !== ['"]admin['"]\)/);
+    assert.match(peopleController, /parsedTeam\.filter\(\(member\) => !member\.isPlatformAdmin && member\.role !== ['"]admin['"]\)/);
   });
 });
 
@@ -327,7 +328,9 @@ describe('My Hotel account and team integration', () => {
     assert.match(company, /tab === ['"]people['"] && hotelCapabilitiesLoading/);
     assert.match(company, /canManageTeam=\{canManageTeam\}/);
     assert.match(hotelTeam, /if \(!canManageTeam\) \{[\s\S]*Hotel account settings are private/);
-    assert.match(hotelTeam, /if \(canManageTeam\) return;[\s\S]*setTeam\(\[\]\);[\s\S]*setContactSnapshot\(null\);[\s\S]*setWageSnapshot\(null\)/);
+    assert.match(company, /enabled: Boolean\([\s\S]*canManageTeam[\s\S]*staffBelongsToCurrentViewer/);
+    assert.match(peopleController, /if \(!key\) \{[\s\S]*setSnapshot\(null\)/);
+    assert.match(hotelTeam, /if \(canManageTeam\) return;[\s\S]*setContactSnapshot\(null\);[\s\S]*setWageSnapshot\(null\)/);
   });
 
   test('keeps company invitations in People while private hotel roster access stays explicit', () => {
@@ -378,7 +381,7 @@ describe('My Hotel account and team integration', () => {
   });
 
   test('includes member editing, removal, staff approvals, and both invitation paths', () => {
-    assert.match(hotelTeam, /\/api\/auth\/team\?hotelId=/);
+    assert.match(peopleController, /\/api\/auth\/team\?hotelId=/);
     assert.match(hotelTeam, /\/api\/staff\/join-requests\?hotelId=/);
     const approvalList = hotelTeam.indexOf('className={styles.teamList}');
     const approvalRows = hotelTeam.indexOf('requests.map((request)', approvalList);
