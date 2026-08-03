@@ -95,6 +95,10 @@ import {
   PORTFOLIO_KNOWLEDGE_PROMPT_VERSION,
   PORTFOLIO_KNOWLEDGE_TRUST_NOTE,
 } from './portfolio-intelligence/knowledge';
+import {
+  PORTFOLIO_IDENTITY_VERSION,
+  PORTFOLIO_TRUST_MARKER_OPEN,
+} from './portfolio/identity';
 import { exactHotelScope, hotelScopedRuleTier } from './rule-tiers';
 
 // ─── The axes ──────────────────────────────────────────────────────────────
@@ -172,9 +176,16 @@ export interface KnowledgePresentation {
   /** Opening trust marker, or null for a store rendered without an envelope.
    *  A null here is a DECLARED absence, reviewed on its own merits. */
   markerOpen: string | null;
-  /** Stamped whenever this rendering is present, so "which rendering ran on
-   *  this turn" is answerable from a persisted stamp alone. */
-  version: string;
+  /**
+   * Stamped whenever this rendering is present, so "which rendering ran on
+   * this turn" is answerable from a persisted stamp alone.
+   *
+   * `null` records a store that HAS NO version constant, which is a gap and is
+   * registered as one rather than papered over with an invented string. Three
+   * legacy drawers are in that state; every store through the door has a real
+   * one, and the enforcement test holds that line.
+   */
+  version: string | null;
   /** The code-owned ceiling above the fence, or null when there is no fence. */
   trustNote: string | null;
   /**
@@ -415,8 +426,8 @@ export const KNOWLEDGE_STORES: readonly KnowledgeStoreRegistration[] = Object.fr
         id: 'portfolio_identity_tier',
         module: 'src/lib/agent/portfolio/identity.ts',
         placement: 'stable' as const,
-        markerOpen: '<staxis-portfolio trust="system">',
-        version: 'portfolio-identity-v1',
+        markerOpen: PORTFOLIO_TRUST_MARKER_OPEN,
+        version: PORTFOLIO_IDENTITY_VERSION,
         trustNote: null,
         authorityClause: null,
       }),
@@ -488,7 +499,8 @@ export const KNOWLEDGE_STORES: readonly KnowledgeStoreRegistration[] = Object.fr
         module: 'src/lib/agent/context.ts',
         placement: 'dynamic' as const,
         markerOpen: '<staxis-snapshot trust="system">',
-        version: 'hotel-snapshot-legacy',
+        // No version constant exists. Registered as the gap it is.
+        version: null,
         trustNote: null,
         authorityClause: null,
       }),
@@ -512,7 +524,9 @@ export const KNOWLEDGE_STORES: readonly KnowledgeStoreRegistration[] = Object.fr
         module: 'src/lib/agent/memory-context.ts',
         placement: 'dynamic' as const,
         markerOpen: '<staxis-memory-block trust="system-derived-from-untrusted">',
-        version: 'memory-block-legacy',
+        // No version constant. The per-turn receipt carries a CONTENT digest
+        // (`mem:3/a1b2c3d4`) instead, which answers a different question.
+        version: null,
         trustNote: null,
         authorityClause: null,
       }),
@@ -550,7 +564,9 @@ export const KNOWLEDGE_STORES: readonly KnowledgeStoreRegistration[] = Object.fr
         module: 'src/lib/agent/portfolio/snapshot.ts',
         placement: 'dynamic' as const,
         markerOpen: '<staxis-portfolio-snapshot trust="system">',
-        version: 'portfolio-snapshot-legacy',
+        // No version constant. Unused on the live path, so Stage 2 may delete
+        // the store rather than give it one.
+        version: null,
         trustNote: null,
         authorityClause: null,
       }),

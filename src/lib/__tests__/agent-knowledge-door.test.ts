@@ -236,20 +236,47 @@ describe('no knowledge reaches the model from outside the door', () => {
     );
   });
 
-  test('every declared marker really is printed by the module that claims it', () => {
+  test('every declared marker and version really is in the module that claims it', () => {
     // The other half of the pin, and what makes it safe for the registry itself
-    // to be excused above. The door NAMES a marker for each store; this checks
-    // the named string is actually in the module that prints it, so a renamed
-    // envelope cannot leave the inventory describing a fence nobody emits.
+    // to be excused above. The door NAMES a marker and a version for each
+    // store; this checks the named strings are actually in the module that
+    // prints them, so a renamed envelope or a bumped version cannot leave the
+    // inventory describing a fence nobody emits or a stamp nobody writes.
     for (const store of KNOWLEDGE_STORES) {
       for (const presentation of store.presentations) {
-        if (!presentation.markerOpen) continue;
         const source = readFileSync(presentation.module, 'utf8');
+        if (presentation.markerOpen) {
+          assert.ok(
+            source.includes(presentation.markerOpen),
+            `${presentation.id} registers ${presentation.markerOpen}, which ${presentation.module} `
+            + 'does not contain. Either the envelope was renamed and the registry is stale, or '
+            + 'the rendering moved to another module.',
+          );
+        }
+        if (presentation.version) {
+          assert.ok(
+            source.includes(presentation.version),
+            `${presentation.id} registers version "${presentation.version}", which `
+            + `${presentation.module} does not contain.`,
+          );
+        }
+      }
+    }
+  });
+
+  test('a store through the door has a real version; a gap is registered as null', () => {
+    // The doc's hygiene finding, held open: awareness was the one
+    // envelope-wrapped store whose rendering could not be identified from a
+    // persisted stamp. Inventing a placeholder string for the three legacy
+    // drawers that still have no constant would have hidden the same gap in
+    // the file built to expose it.
+    for (const store of KNOWLEDGE_STORES) {
+      if (store.status !== 'through_the_door') continue;
+      for (const presentation of store.presentations) {
         assert.ok(
-          source.includes(presentation.markerOpen),
-          `${presentation.id} registers ${presentation.markerOpen}, which ${presentation.module} `
-          + 'does not contain. Either the envelope was renamed and the registry is stale, or '
-          + 'the rendering moved to another module.',
+          presentation.version,
+          `${presentation.id} is through the door with no version constant. "Which rendering `
+          + 'ran on this turn" must be answerable from agent_messages.prompt_version alone.',
         );
       }
     }
