@@ -35,6 +35,18 @@ const LIVE_0425_DESCRIPTION =
   'Restore missing canonical room identities for is_test properties through the lineage-complete service roster path';
 const ACCESS_B_LIVE_SHA = 'ec83bca6dab74a52dfb251d04be11d5c7427703f';
 const CURRENT_LIVE_DESCENDANT_SHA = '442fb98d632521ea33346d5c8a97014248a31fa0';
+const APPROVED_SOURCE_RUN_ID = '85981f5e-a387-4af3-ae10-b9bc1e1e9567';
+const APPROVED_SOURCE_ISSUES = {
+  adminAccess: 'c4267000-0000-4000-8000-000000000001',
+  adminAccount: 'c4267000-0000-4000-8000-000000000002',
+  maria: 'c4267000-0000-4000-8000-000000000003',
+  frank: 'c4267000-0000-4000-8000-000000000004',
+  ana: 'c4267000-0000-4000-8000-000000000005',
+  wrapper: 'c4267000-0000-4000-8000-000000000006',
+} as const;
+const APPROVED_SOURCE_STAGE_A_RUN_ID = 'c4268000-0000-4000-8000-000000000001';
+const BOOTSTRAP_ACCOUNT = 'c4269000-0000-4000-8000-000000000001';
+const BOOTSTRAP_USER = 'c426a000-0000-4000-8000-000000000001';
 
 const INVITE_USER = 'c4261000-0000-4000-8000-000000000001';
 const INVITE_STAFF = 'c4262000-0000-4000-8000-000000000001';
@@ -213,6 +225,85 @@ async function seedWrapperMappingFixture(pg: PGlite): Promise<void> {
             cutover_reason='Stage C wrapper mapping fixture'
       where account_id=$1`,
     [ACCOUNT_ANA],
+  );
+  await pg.query(`delete from public.account_access_cutover_legacy_write_events`);
+}
+
+async function seedApprovedProductionSourceFixture(pg: PGlite): Promise<void> {
+  await seedWrapperMappingFixture(pg);
+  const samples = [
+    {
+      accountId: ACCOUNT_ADMIN,
+      propertyId: null,
+      code: 'invalid_legacy_account_identity',
+      details: {},
+    },
+    {
+      accountId: ACCOUNT_ADMIN,
+      propertyId: PID_A1,
+      code: 'legacy_row_without_shadow_translation',
+      details: {},
+    },
+    {
+      accountId: ACCOUNT_MARIA,
+      propertyId: PID_A1,
+      code: 'legacy_row_without_shadow_translation',
+      details: {},
+    },
+    {
+      accountId: ACCOUNT_FRANK,
+      propertyId: PID_A1,
+      code: 'legacy_row_without_shadow_translation',
+      details: {},
+    },
+    {
+      accountId: ACCOUNT_ANA,
+      propertyId: PID_A2,
+      code: 'legacy_row_without_shadow_translation',
+      details: {},
+    },
+  ];
+  const wrapperDetails = {
+    stageAInvariantRunId: APPROVED_SOURCE_STAGE_A_RUN_ID,
+    stageAInvariantIssueCount: samples.length,
+    stageAInvariant: {
+      runId: APPROVED_SOURCE_STAGE_A_RUN_ID,
+      issueCount: samples.length,
+      sample: samples.map((sample) => ({
+        accountId: sample.accountId,
+        propertyId: sample.propertyId,
+        code: sample.code,
+        details: sample.details,
+      })),
+    },
+  };
+  await pg.query(
+    `insert into public.account_access_cutover_preflight_runs(
+       id,status,issue_count,created_by,completed_at,details
+     ) values ($1,'failed',6,'approved-read-only-production-source',clock_timestamp(),$2::jsonb)`,
+    [APPROVED_SOURCE_RUN_ID, JSON.stringify({ stage: 'A', approvedReadOnly: true })],
+  );
+  const issues = [
+    [APPROVED_SOURCE_ISSUES.adminAccess, ACCOUNT_ADMIN, 'admin_legacy_access', { propertyIds: [PID_A1] }],
+    [APPROVED_SOURCE_ISSUES.adminAccount, ACCOUNT_ADMIN, 'admin_legacy_account', { propertyIds: [PID_A1] }],
+    [APPROVED_SOURCE_ISSUES.maria, ACCOUNT_MARIA, 'normalized_legacy_residue', { propertyIds: [PID_A1] }],
+    [APPROVED_SOURCE_ISSUES.frank, ACCOUNT_FRANK, 'normalized_legacy_residue', { propertyIds: [PID_A1] }],
+    [APPROVED_SOURCE_ISSUES.ana, ACCOUNT_ANA, 'normalized_legacy_residue', { propertyIds: [PID_A2] }],
+    [APPROVED_SOURCE_ISSUES.wrapper, null, 'stage_a_invariant_failure', wrapperDetails],
+  ] as const;
+  for (const [issueId, accountId, issueCode, details] of issues) {
+    await pg.query(
+      `insert into public.account_access_cutover_preflight_issues(
+         id,run_id,account_id,property_id,issue_code,details
+       ) values ($1,$2,$3,null,$4,$5::jsonb)`,
+      [issueId, APPROVED_SOURCE_RUN_ID, accountId, issueCode, JSON.stringify(details)],
+    );
+  }
+  await pg.query(
+    `update public.account_access_cutover_status
+        set last_preflight_run_id=$1
+      where id is true`,
+    [APPROVED_SOURCE_RUN_ID],
   );
   await pg.query(`delete from public.account_access_cutover_legacy_write_events`);
 }
@@ -432,8 +523,7 @@ async function recordRepairDisposition(
         )
       order by issue_code,issue_id`,
     [values.preflightRunId, values.accountId, values.propertyId, values.issueCodes],
-    )).filter((row) => values.decision === 'admin_global' || row.issue_code !== 'stage_a_invariant_failure')
-      .map((row) => row.issue_id);
+    )).map((row) => row.issue_id);
   return jsonRpc(
     pg,
     `select public.staxis_access_stage_c_record_repair_disposition(
@@ -887,6 +977,7 @@ describe('Access Stage C final contract — real migration boundary', () => {
         rawReaders.map((row) => `${row.proname}(${row.identity})`).sort(),
         [
           '_staxis_reject_final_legacy_property_access_write()',
+          'staxis_bootstrap_canonical_admin_authority(p_account_id uuid, p_property_ids uuid[], p_expected_authority_version bigint, p_reason text)',
           'staxis_preflight_authorization_cutover_stage_c()',
         ],
         'only the final fence and report-only preflight may inspect the retired column',
@@ -1767,6 +1858,178 @@ describe('Access Stage C final contract — real migration boundary', () => {
     });
   });
 
+  test('bootstraps a fresh canonical admin through the service-only seam and is idempotent', async () => {
+    const migrated = await applyMigrationsToPgliteWithHook(
+      async ({ pg: hookPg, file }) => {
+        if (file !== MIGRATION) return;
+        await seedStageCFixture(hookPg);
+      },
+      {
+        afterAccessStageCPreparation: async ({ pg: hookPg, file }) => {
+          if (file !== MIGRATION) return;
+          await authorizeAccessStageCRelease(hookPg);
+        },
+      },
+    );
+    try {
+      assert.ok(migrated.report.applied.includes(MIGRATION), JSON.stringify(migrated.report.failedAtRuntime));
+      const pg = migrated.pg;
+      await pg.query(`drop trigger if exists trg_accounts_authorization_refresh on public.accounts`);
+      await pg.query(
+        `insert into auth.users(id,email) values($1,'stage-c-bootstrap@example.test')`,
+        [BOOTSTRAP_USER],
+      );
+      await pg.query(
+        `insert into public.accounts(
+           id,username,password_hash,display_name,role,data_user_id
+         ) values($1,'stage-c-bootstrap','x','Stage C Bootstrap','admin',$2)`,
+        [BOOTSTRAP_ACCOUNT, BOOTSTRAP_USER],
+      );
+      await pg.query(
+        `insert into public.account_authorization_state(
+           account_id,authority_mode,authority_version,legacy_scope_hash,normalized_scope_hash
+         ) values($1,'legacy',1,$2,$2)`,
+        [BOOTSTRAP_ACCOUNT, sha256('')],
+      );
+      await pg.query(
+        `create trigger trg_accounts_authorization_refresh
+           after insert or update of active,role on public.accounts
+           for each row execute function public._staxis_refresh_account_authorization_from_account()`,
+      );
+
+      const firstBootstrap = await jsonRpc(
+        pg,
+        `select public.staxis_bootstrap_canonical_admin_authority(
+           $1::uuid,'{}'::uuid[],$2::bigint,'seed-supabase canonical admin bootstrap'::text
+         ) as value`,
+        [BOOTSTRAP_ACCOUNT, 1],
+      );
+      assert.equal(firstBootstrap.ok, true);
+      assert.equal(firstBootstrap.status, 'bootstrapped');
+      const bootstrappedState = (await rows<{ authority_version: number }>(
+        pg,
+        `select authority_version from public.account_authorization_state where account_id=$1`,
+        [BOOTSTRAP_ACCOUNT],
+      ))[0];
+      const auditBeforeReplay = Number((await rows<{ count: number }>(
+        pg,
+        `select count(*)::integer as count
+           from public.admin_audit_log
+          where action='account.canonical_bootstrap' and target_id=$1`,
+        [BOOTSTRAP_ACCOUNT],
+      ))[0].count);
+      const secondBootstrap = await jsonRpc(
+        pg,
+        `select public.staxis_bootstrap_canonical_admin_authority(
+           $1::uuid,'{}'::uuid[],$2::bigint,'seed-supabase canonical admin bootstrap'::text
+         ) as value`,
+        [BOOTSTRAP_ACCOUNT, bootstrappedState.authority_version],
+      );
+      assert.equal(secondBootstrap.ok, true);
+      assert.equal(secondBootstrap.status, 'already_canonical');
+      assert.equal(
+        Number((await rows<{ count: number }>(
+          pg,
+          `select count(*)::integer as count
+             from public.admin_audit_log
+            where action='account.canonical_bootstrap' and target_id=$1`,
+          [BOOTSTRAP_ACCOUNT],
+        ))[0].count),
+        auditBeforeReplay,
+      );
+
+      const beforeMalformed = (await rows<{
+        authority_mode: string;
+        authority_version: number;
+        property_access: string[];
+      }>(
+        pg,
+        `select state.authority_mode,state.authority_version,account.property_access
+           from public.account_authorization_state state
+           join public.accounts account on account.id=state.account_id
+          where state.account_id=$1`,
+        [BOOTSTRAP_ACCOUNT],
+      ))[0];
+      const bridgesBeforeMalformed = Number((await rows<{ count: number }>(
+        pg,
+        `select count(*)::integer as count
+           from public.account_property_authorization_bridges where account_id=$1`,
+        [BOOTSTRAP_ACCOUNT],
+      ))[0].count);
+      const auditBeforeMalformed = Number((await rows<{ count: number }>(
+        pg,
+        `select count(*)::integer as count
+           from public.admin_audit_log where target_id=$1`,
+        [BOOTSTRAP_ACCOUNT],
+      ))[0].count);
+      const malformedBootstrap = await jsonRpc(
+        pg,
+        `select public.staxis_bootstrap_canonical_admin_authority(
+           $1::uuid,$2::uuid[],$3::bigint,'seed-supabase canonical admin bootstrap'::text
+         ) as value`,
+        [BOOTSTRAP_ACCOUNT, [PID_A1], beforeMalformed.authority_version],
+      );
+      assert.deepEqual(malformedBootstrap, {
+        ok: false,
+        status: 'invalid',
+        reason: 'bootstrap_request',
+      });
+      assert.deepEqual(
+        (await rows<{
+          authority_mode: string;
+          authority_version: number;
+          property_access: string[];
+        }>(
+          pg,
+          `select state.authority_mode,state.authority_version,account.property_access
+             from public.account_authorization_state state
+             join public.accounts account on account.id=state.account_id
+            where state.account_id=$1`,
+          [BOOTSTRAP_ACCOUNT],
+        ))[0],
+        beforeMalformed,
+      );
+      assert.equal(
+        Number((await rows<{ count: number }>(
+          pg,
+          `select count(*)::integer as count
+             from public.account_property_authorization_bridges where account_id=$1`,
+          [BOOTSTRAP_ACCOUNT],
+        ))[0].count),
+        bridgesBeforeMalformed,
+      );
+      assert.equal(
+        Number((await rows<{ count: number }>(
+          pg,
+          `select count(*)::integer as count
+             from public.admin_audit_log where target_id=$1`,
+          [BOOTSTRAP_ACCOUNT],
+        ))[0].count),
+        auditBeforeMalformed,
+      );
+      await assert.rejects(
+        (async () => {
+          await pg.query(`begin`);
+          await pg.query(`set local role authenticated`);
+          await pg.query(
+            `select public.staxis_bootstrap_canonical_admin_authority(
+               $1::uuid,'{}'::uuid[],$2::bigint,'seed-supabase canonical admin bootstrap'::text
+             )`,
+            [BOOTSTRAP_ACCOUNT, bootstrappedState.authority_version],
+          );
+        })(),
+        /permission denied/i,
+        'ordinary authenticated clients cannot execute the seed bootstrap',
+      );
+      await pg.query(`rollback`).catch(() => undefined);
+      assert.equal(firstBootstrap.status, 'bootstrapped');
+      assert.equal(secondBootstrap.status, 'already_canonical');
+      assert.equal(malformedBootstrap.reason, 'bootstrap_request');
+    } finally {
+      await migrated.pg.close();
+    }
+  });
+
   test('repairs exact production-shaped admin, duplicate, and revoked-empty residues before consuming the release gate', async () => {
     let sourcePreflightRunId = '';
     let mariaCanonicalIds: string[] = [];
@@ -1892,7 +2155,7 @@ describe('Access Stage C final contract — real migration boundary', () => {
       );
       assert.equal(productionManifest.length, 5, 'the fixture has four direct residue rows plus the Stage-A wrapper');
       assert.equal(new Set(productionManifest.map((row) => row.issue_id)).size, 5);
-      assert.ok(productionManifest.every((row) => row.source === 'test-fixture' || row.source === 'production-2f31759a-2cd9-48ee-a458-c0ddea0e7d93'));
+      assert.ok(productionManifest.every((row) => row.source === 'test-fixture' || row.source === 'production-85981f5e-a387-4af3-ae10-b9bc1e1e9567'));
       assert.ok(productionManifest.every((row) => /^[0-9a-f]{64}$/.test(row.raw_scope_hash)));
       assert.ok(productionManifest.every((row) => row.status === 'consumed'));
       const alreadyFinalized = await jsonRpc(
@@ -2087,6 +2350,257 @@ describe('Access Stage C final contract — real migration boundary', () => {
           `delete from public.account_access_cutover_repair_dispositions`,
         ),
         /repair dispositions are durable|immutable/i,
+      );
+    } finally {
+      await migrated.pg.close();
+    }
+  });
+
+  test('binds the approved 85981 source manifest, preserves exact issue hashes, and creates a fresh suffix run', async () => {
+    let sourcePreflightRunId = '';
+    let freshPreflightRunId = '';
+    const migrated = await applyMigrationsToPgliteWithHook(
+      async ({ pg: hookPg, file }) => {
+        if (file === MIGRATION) await seedApprovedProductionSourceFixture(hookPg);
+      },
+      {
+        afterAccessStageCPreparation: async ({ pg: hookPg, file }) => {
+          if (file !== MIGRATION) return;
+          sourcePreflightRunId = (await rows<{ final_preflight_run_id: string }>(
+            hookPg,
+            `select final_preflight_run_id from public.account_access_cutover_status where id is true`,
+          ))[0].final_preflight_run_id;
+          assert.equal(sourcePreflightRunId, APPROVED_SOURCE_RUN_ID);
+          const reused = await jsonRpc(
+            hookPg,
+            `select public.staxis_preflight_authorization_cutover_stage_c() as value`,
+          );
+          assert.deepEqual(reused, {
+            ok: false,
+            runId: APPROVED_SOURCE_RUN_ID,
+            issueCount: 6,
+            stage: 'C',
+            reusedExisting: true,
+          });
+          assert.equal(
+            Number((await rows<{ count: number }>(
+              hookPg,
+              `select count(*)::integer as count
+                 from public.account_access_cutover_preflight_runs
+                where id=$1`,
+              [APPROVED_SOURCE_RUN_ID],
+            ))[0].count),
+            1,
+            'prefix replay must not create a replacement source snapshot',
+          );
+
+          const manifests = await rows<{
+            issue_id: string;
+            source: string;
+            raw_property_ids: string[];
+            raw_scope_hash: string;
+            stage_a_mapping: unknown;
+          }>(
+            hookPg,
+            `select issue_id,source,raw_property_ids,raw_scope_hash,stage_a_mapping
+               from public.account_access_cutover_repair_manifests
+              where preflight_run_id=$1 order by issue_id`,
+            [APPROVED_SOURCE_RUN_ID],
+          );
+          assert.equal(manifests.length, 6);
+          assert.deepEqual(
+            manifests.map((row) => row.issue_id),
+            Object.values(APPROVED_SOURCE_ISSUES).sort(),
+          );
+          assert.ok(manifests.every((row) => row.source === 'production-85981f5e-a387-4af3-ae10-b9bc1e1e9567'));
+          for (const manifest of manifests) {
+            assert.equal(manifest.raw_scope_hash, sha256(manifest.raw_property_ids.join(',')));
+          }
+          const wrapperManifest = manifests.find((row) => row.issue_id === APPROVED_SOURCE_ISSUES.wrapper);
+          assert.ok(wrapperManifest);
+          assert.ok(Array.isArray(wrapperManifest.stage_a_mapping));
+          assert.equal((wrapperManifest.stage_a_mapping as unknown[]).length, 5);
+
+          const sourceStates = await rows<{
+            account_id: string;
+            authority_mode: string;
+            authority_version: number;
+          }>(
+            hookPg,
+            `select account_id,authority_mode,authority_version
+               from public.account_authorization_state
+              where account_id in ($1,$2,$3,$4)
+              order by account_id`,
+            [ACCOUNT_ADMIN, ACCOUNT_MARIA, ACCOUNT_FRANK, ACCOUNT_ANA],
+          );
+          const byAccount = new Map(sourceStates.map((state) => [state.account_id, state]));
+          const canonicalIds = async (accountId: string): Promise<string[]> => (await rows<{ property_id: string }>(
+            hookPg,
+            `select distinct property_id
+               from public._staxis_account_property_authorizations($1)
+              order by property_id`,
+            [accountId],
+          )).map((row) => row.property_id);
+
+          await assert.rejects(
+            recordRepairDisposition(hookPg, {
+              preflightRunId: 'c4267000-0000-4000-8000-000000000010',
+              accountId: ACCOUNT_ADMIN,
+              propertyId: PID_A1,
+              issueCodes: ['admin_legacy_access', 'admin_legacy_account', 'stage_a_invariant_failure'],
+              issueIds: [
+                APPROVED_SOURCE_ISSUES.adminAccess,
+                APPROVED_SOURCE_ISSUES.adminAccount,
+                APPROVED_SOURCE_ISSUES.wrapper,
+              ],
+              decision: 'admin_global',
+              rawPropertyIds: [PID_A1],
+              canonicalPropertyIds: [],
+              authorityMode: byAccount.get(ACCOUNT_ADMIN)?.authority_mode ?? '',
+              authorityVersion: byAccount.get(ACCOUNT_ADMIN)?.authority_version ?? 0,
+              reason: 'admin_global_role_residue',
+            }),
+            /immutable manifest issue UUIDs|exact issue rows/i,
+            'a stale source run cannot borrow the approved issue IDs',
+          );
+
+          await recordRepairDisposition(hookPg, {
+            preflightRunId: APPROVED_SOURCE_RUN_ID,
+            accountId: ACCOUNT_ADMIN,
+            propertyId: PID_A1,
+            issueCodes: ['admin_legacy_access', 'admin_legacy_account', 'stage_a_invariant_failure'],
+            issueIds: [APPROVED_SOURCE_ISSUES.adminAccess, APPROVED_SOURCE_ISSUES.adminAccount, APPROVED_SOURCE_ISSUES.wrapper],
+            decision: 'admin_global',
+            rawPropertyIds: [PID_A1],
+            canonicalPropertyIds: [],
+            authorityMode: byAccount.get(ACCOUNT_ADMIN)?.authority_mode ?? '',
+            authorityVersion: byAccount.get(ACCOUNT_ADMIN)?.authority_version ?? 0,
+            reason: 'admin_global_role_residue',
+          });
+          await recordRepairDisposition(hookPg, {
+            preflightRunId: APPROVED_SOURCE_RUN_ID,
+            accountId: ACCOUNT_MARIA,
+            propertyId: PID_A1,
+            issueCodes: ['normalized_legacy_residue', 'stage_a_invariant_failure'],
+            issueIds: [APPROVED_SOURCE_ISSUES.maria, APPROVED_SOURCE_ISSUES.wrapper],
+            decision: 'canonical_duplicate',
+            rawPropertyIds: [PID_A1],
+            canonicalPropertyIds: await canonicalIds(ACCOUNT_MARIA),
+            authorityMode: byAccount.get(ACCOUNT_MARIA)?.authority_mode ?? '',
+            authorityVersion: byAccount.get(ACCOUNT_MARIA)?.authority_version ?? 0,
+            reason: 'canonical_duplicate_residue',
+          });
+          await recordRepairDisposition(hookPg, {
+            preflightRunId: APPROVED_SOURCE_RUN_ID,
+            accountId: ACCOUNT_FRANK,
+            propertyId: PID_A1,
+            issueCodes: ['normalized_legacy_residue', 'stage_a_invariant_failure'],
+            issueIds: [APPROVED_SOURCE_ISSUES.frank, APPROVED_SOURCE_ISSUES.wrapper],
+            decision: 'revoked_canonical_empty',
+            rawPropertyIds: [PID_A1],
+            canonicalPropertyIds: await canonicalIds(ACCOUNT_FRANK),
+            authorityMode: byAccount.get(ACCOUNT_FRANK)?.authority_mode ?? '',
+            authorityVersion: byAccount.get(ACCOUNT_FRANK)?.authority_version ?? 0,
+            reason: 'revoked_canonical_empty_residue',
+          });
+          await recordRepairDisposition(hookPg, {
+            preflightRunId: APPROVED_SOURCE_RUN_ID,
+            accountId: ACCOUNT_ANA,
+            propertyId: PID_A2,
+            issueCodes: ['normalized_legacy_residue', 'stage_a_invariant_failure'],
+            issueIds: [APPROVED_SOURCE_ISSUES.ana, APPROVED_SOURCE_ISSUES.wrapper],
+            decision: 'canonical_duplicate',
+            rawPropertyIds: [PID_A2],
+            canonicalPropertyIds: await canonicalIds(ACCOUNT_ANA),
+            authorityMode: byAccount.get(ACCOUNT_ANA)?.authority_mode ?? '',
+            authorityVersion: byAccount.get(ACCOUNT_ANA)?.authority_version ?? 0,
+            reason: 'canonical_duplicate_residue',
+          });
+          assert.equal(
+            Number((await rows<{ count: number }>(
+              hookPg,
+              `select count(*)::integer as count
+                 from public.account_access_cutover_repair_dispositions
+                where preflight_run_id=$1`,
+              [APPROVED_SOURCE_RUN_ID],
+            ))[0].count),
+            4,
+          );
+          await authorizeAccessStageCRelease(hookPg);
+        },
+      },
+    );
+    try {
+      assert.ok(migrated.report.applied.includes(MIGRATION), JSON.stringify(migrated.report.failedAtRuntime));
+      assert.deepEqual(migrated.report.failedAtRuntime.filter((entry) => entry.file === MIGRATION), []);
+      const status = (await rows<{
+        stage: string;
+        enforcement_enabled: boolean;
+        final_preflight_run_id: string;
+        details: Record<string, unknown>;
+      }>(
+        migrated.pg,
+        `select stage,enforcement_enabled,final_preflight_run_id,details
+           from public.account_access_cutover_status where id is true`,
+      ))[0];
+      freshPreflightRunId = String(status.details.repairPreflightRunId);
+      assert.equal(status.stage, 'C');
+      assert.equal(status.enforcement_enabled, true);
+      assert.equal(status.final_preflight_run_id, freshPreflightRunId);
+      assert.equal(status.details.repairSourcePreflightRunId, APPROVED_SOURCE_RUN_ID);
+      assert.notEqual(freshPreflightRunId, APPROVED_SOURCE_RUN_ID);
+
+      assert.deepEqual(
+        await rows<{ id: string; status: string; issue_count: number }>(
+          migrated.pg,
+          `select id,status,issue_count
+             from public.account_access_cutover_preflight_runs
+            where id in ($1,$2) order by id`,
+          [APPROVED_SOURCE_RUN_ID, freshPreflightRunId],
+        ),
+        [
+          { id: APPROVED_SOURCE_RUN_ID, status: 'failed', issue_count: 6 },
+          { id: freshPreflightRunId, status: 'passed', issue_count: 0 },
+        ].sort((left, right) => left.id.localeCompare(right.id)),
+      );
+      assert.equal(
+        Number((await rows<{ count: number }>(
+          migrated.pg,
+          `select count(*)::integer as count
+             from public.account_access_cutover_repair_receipts
+            where preflight_run_id=$1`,
+          [APPROVED_SOURCE_RUN_ID],
+        ))[0].count),
+        4,
+      );
+      assert.equal(
+        Number((await rows<{ count: number }>(
+          migrated.pg,
+          `select count(*)::integer as count
+             from public.account_access_cutover_repair_dispositions
+            where preflight_run_id=$1 and status='consumed'
+              and consumed_preflight_run_id=$2`,
+          [APPROVED_SOURCE_RUN_ID, freshPreflightRunId],
+        ))[0].count),
+        4,
+      );
+      const consumedIssueIds = await rows<{ issue_ids: string[] }>(
+        migrated.pg,
+        `select issue_ids
+           from public.account_access_cutover_repair_dispositions
+          where preflight_run_id=$1 and status='consumed'`,
+        [APPROVED_SOURCE_RUN_ID],
+      );
+      assert.ok(consumedIssueIds.every((row) => row.issue_ids.includes(APPROVED_SOURCE_ISSUES.wrapper)));
+      assert.equal(
+        Number((await rows<{ count: number }>(
+          migrated.pg,
+          `select count(*)::integer as count
+             from public.account_access_cutover_repair_manifests
+            where preflight_run_id=$1 and source=$2 and status='consumed'`,
+          [APPROVED_SOURCE_RUN_ID, 'production-85981f5e-a387-4af3-ae10-b9bc1e1e9567'],
+        ))[0].count),
+        6,
       );
     } finally {
       await migrated.pg.close();

@@ -339,8 +339,8 @@ function die(step, err) {
     }
 
     // Admin authority is canonical and intentionally property-wide. Use the
-    // approved service-only scope boundary so this seeder remains valid after
-    // the final Access contract makes the historical receipt column inert.
+    // fixed-purpose service-only bootstrap because the ordinary scope RPC
+    // correctly rejects every actor==target mutation.
     const { data: state, error: stateErr } = await supa
       .from('account_authorization_state')
       .select('authority_version')
@@ -348,14 +348,11 @@ function die(step, err) {
       .single();
     if (stateErr || !state) die('account', stateErr ?? new Error('missing canonical authority state'));
     const { data: scope, error: scopeErr } = await supa.rpc(
-      'staxis_set_account_authorization_scope',
+      'staxis_bootstrap_canonical_admin_authority',
       {
-        p_actor_account_id: accountId,
         p_account_id: accountId,
         p_property_ids: [],
         p_expected_authority_version: state.authority_version,
-        p_expected_role: 'admin',
-        p_new_role: 'admin',
         p_reason: 'seed-supabase canonical admin bootstrap',
       },
     );

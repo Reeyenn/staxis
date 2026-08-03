@@ -33,6 +33,38 @@ alter table public.account_access_cutover_status
     references public.account_access_cutover_preflight_runs(id),
   add column if not exists finalized_at timestamptz;
 
+-- The approved report-only source predates this final-stage column on a fresh
+-- deployment. Carry forward only that exact failed run from the durable Stage
+-- A last-preflight pointer. An absent or different source is never guessed into
+-- the repair manifest and will be rejected by the strict repair seam.
+update public.account_access_cutover_status status
+   set final_preflight_run_id = status.last_preflight_run_id
+ where status.id is true
+   and status.final_preflight_run_id is null
+   and status.last_preflight_run_id = '85981f5e-a387-4af3-ae10-b9bc1e1e9567'::uuid
+   and exists (
+     select 1
+     from public.account_access_cutover_preflight_runs run
+     where run.id = status.last_preflight_run_id
+       and run.status = 'failed'
+       and run.issue_count = 6
+   );
+
+do $source_guard$
+begin
+  if exists (
+    select 1
+    from public.account_access_cutover_status status
+    where status.id is true
+      and status.final_preflight_run_id is not null
+      and status.final_preflight_run_id <> '85981f5e-a387-4af3-ae10-b9bc1e1e9567'::uuid
+      and not (status.stage = 'C' and status.enforcement_enabled is true)
+  ) then
+    raise exception '0426 requires the approved production source run 85981f5e-a387-4af3-ae10-b9bc1e1e9567; stale or unrelated final preflight evidence is not accepted';
+  end if;
+end
+$source_guard$;
+
 -- The release receipt is a durable service-only control, not a report-only
 -- preflight result.  The deployment/fencing owner supplies the values after
 -- proving that the old deployment, jobs, and raw writers are frozen.  This
@@ -197,7 +229,7 @@ create table if not exists public.account_access_cutover_repair_manifests (
     references public.account_access_cutover_preflight_runs(id),
   source               text not null
     check (source in (
-      'production-2f31759a-2cd9-48ee-a458-c0ddea0e7d93',
+      'production-85981f5e-a387-4af3-ae10-b9bc1e1e9567',
       'test-fixture'
     )),
   issue_code           text not null,
@@ -213,8 +245,8 @@ create table if not exists public.account_access_cutover_repair_manifests (
   created_at           timestamptz not null default clock_timestamp(),
   details              jsonb not null default '{}'::jsonb,
   check (
-    (source = 'production-2f31759a-2cd9-48ee-a458-c0ddea0e7d93'
-      and preflight_run_id = '2f31759a-2cd9-48ee-a458-c0ddea0e7d93'::uuid)
+    (source = 'production-85981f5e-a387-4af3-ae10-b9bc1e1e9567'
+      and preflight_run_id = '85981f5e-a387-4af3-ae10-b9bc1e1e9567'::uuid)
     or source = 'test-fixture'
   )
 );
@@ -701,7 +733,13 @@ begin
      and manifest.issue_id = any(disposition.issue_ids)
     where manifest.preflight_run_id = p_preflight_run_id
     group by manifest.issue_id
-    having count(disposition.id) <> 1
+    having (
+      manifest.issue_code = 'stage_a_invariant_failure'
+      and count(disposition.id) < 1
+    ) or (
+      manifest.issue_code <> 'stage_a_invariant_failure'
+      and count(disposition.id) <> 1
+    )
   ) or exists (
     select 1
     from public.account_access_cutover_repair_manifests manifest
@@ -1797,7 +1835,10 @@ begin
 
   v_fresh_preflight := public.staxis_preflight_authorization_cutover_stage_c();
   if coalesce((v_fresh_preflight->>'ok')::boolean, false) is not true
-     or coalesce((v_fresh_preflight->>'issueCount')::integer, 1) <> 0 then
+     or coalesce((v_fresh_preflight->>'issueCount')::integer, 1) <> 0
+     or coalesce((v_fresh_preflight->>'reusedExisting')::boolean, false) is true
+     or (v_fresh_preflight->>'runId') is null
+     or (v_fresh_preflight->>'runId')::uuid = v_source_run_id then
     raise exception '0426 repair phase fresh preflight remained dirty: %', v_fresh_preflight
       using errcode = '55000';
   end if;
@@ -2228,18 +2269,54 @@ begin
   end if;
 
   -- The release owner already executed the report-only prefix for the known
-  -- production incident.  Re-running the revised prefix must reuse that
-  -- exact durable failed run rather than creating a second, weaker snapshot.
+  -- production incident. Re-running the revised prefix may reuse that exact
+  -- durable failed run only while the source evidence is still pre-repair.
+  -- The fixed run identity and unchanged raw arrays are the handoff boundary.
   select status.final_preflight_run_id
     into v_existing_run_id
   from public.account_access_cutover_status status
   where status.id is true;
-  if v_existing_run_id = '2f31759a-2cd9-48ee-a458-c0ddea0e7d93'::uuid then
+  if v_existing_run_id = '85981f5e-a387-4af3-ae10-b9bc1e1e9567'::uuid then
     select run.status, run.issue_count, run.completed_at
       into v_existing_run
     from public.account_access_cutover_preflight_runs run
     where run.id = v_existing_run_id;
-    if found and v_existing_run.status = 'failed' then
+    if found
+       and v_existing_run.status = 'failed'
+       and coalesce(v_existing_run.issue_count, 0) = 6
+       and not exists (
+         select 1
+         from public.account_access_cutover_repair_dispositions disposition
+         where disposition.preflight_run_id = v_existing_run_id
+           and disposition.status = 'consumed'
+       )
+       and not exists (
+         select 1
+         from public.account_access_cutover_repair_receipts receipt
+         where receipt.preflight_run_id = v_existing_run_id
+       )
+       and not exists (
+         select 1
+         from public.account_access_cutover_repair_manifests manifest
+         where manifest.preflight_run_id = v_existing_run_id
+           and manifest.status = 'consumed'
+       )
+       and not exists (
+         select 1
+         from public.account_access_cutover_preflight_issues issue
+         join public.accounts account on account.id = issue.account_id
+         where issue.run_id = v_existing_run_id
+           and issue.issue_code in (
+             'admin_legacy_access', 'admin_legacy_account',
+             'normalized_legacy_residue'
+           )
+           and account.property_access is distinct from public._staxis_stage_c_normalize_ids(
+             coalesce(array(
+               select value::uuid
+               from jsonb_array_elements_text(issue.details->'propertyIds') values(value)
+             ), '{}'::uuid[])
+           )
+       ) then
       return jsonb_build_object(
         'ok', false,
         'runId', v_existing_run_id,
@@ -2721,9 +2798,9 @@ revoke all on function public.staxis_preflight_authorization_cutover_stage_c()
   from public, anon, authenticated, service_role;
 
 -- Materialize the one approved production incident manifest from the durable
--- failed run.  The issue UUIDs are discovered from that run and then frozen;
--- the account/property shape is deliberately exact so another is_test row can
--- never be smuggled through the same service seam.
+-- failed run. The source identity is fixed to the approved report-only run,
+-- while account and property identities are read from that run's exact issue
+-- rows. No fixture account, property, or latest-run lookup is accepted here.
 create or replace function public._staxis_materialize_stage_c_production_manifest(
   p_preflight_run_id uuid
 )
@@ -2733,25 +2810,35 @@ security definer
 set search_path = public, pg_temp
 as $$
 declare
-  v_target_run_id constant uuid := '2f31759a-2cd9-48ee-a458-c0ddea0e7d93';
-  v_gus constant uuid := 'c0000001-0000-4000-8000-000000000004';
-  v_greta constant uuid := 'c0000001-0000-4000-8000-000000000005';
-  v_dolores constant uuid := 'c0000001-0000-4000-8000-000000000006';
-  v_admin_property constant uuid := 'c7ec4be3-ba00-4ff0-bc69-c7e09d8e4f8f';
-  v_testing_property constant uuid := '96a26a7f-7129-47db-8855-b7b34407b843';
-  v_port_arthur_property constant uuid := 'cc000003-0000-4000-8000-000000000003';
+  v_target_run_id constant uuid := '85981f5e-a387-4af3-ae10-b9bc1e1e9567';
+  v_source_label constant text := 'production-85981f5e-a387-4af3-ae10-b9bc1e1e9567';
+  v_run record;
+  v_issue record;
+  v_sample record;
   v_admin uuid;
   v_admin_access_issue uuid;
   v_admin_account_issue uuid;
-  v_gus_issue uuid;
-  v_greta_issue uuid;
-  v_dolores_issue uuid;
   v_wrapper_issue uuid;
+  v_admin_property uuid;
+  v_admin_property_ids uuid[];
+  v_normalized_issue_ids uuid[] := '{}'::uuid[];
+  v_expected_issue_ids uuid[] := '{}'::uuid[];
+  v_seen_normalized_issue_ids uuid[] := '{}'::uuid[];
+  v_seen_sample_keys text[] := '{}'::text[];
+  v_issue_property_ids uuid[];
+  v_normalized_issue_id uuid;
+  v_sample_account uuid;
+  v_sample_property uuid;
+  v_sample_key text;
   v_samples jsonb;
-  v_mapping jsonb;
+  v_mapping jsonb := '[]'::jsonb;
   v_manifest_count integer;
-  v_direct_count integer;
+  v_admin_access_count integer;
+  v_admin_account_count integer;
+  v_normalized_count integer;
   v_wrapper_count integer;
+  v_admin_sample_count integer := 0;
+  v_normalized_sample_count integer := 0;
 begin
   perform pg_catalog.pg_advisory_xact_lock_shared(
     pg_catalog.hashtextextended('staxis.access.stage_c.cutover', 0)
@@ -2760,17 +2847,29 @@ begin
     return 0;
   end if;
 
-  select count(*)::integer,
-         count(*) filter (where issue.issue_code in (
-           'admin_legacy_access', 'admin_legacy_account',
-           'normalized_legacy_residue'))::integer,
+  select run.status, run.issue_count
+    into v_run
+  from public.account_access_cutover_preflight_runs run
+  where run.id = v_target_run_id;
+  if not found or v_run.status <> 'failed' or v_run.issue_count <> 6 then
+    raise exception '0426 approved production source run is missing or changed'
+      using errcode = '55000';
+  end if;
+
+  select count(*) filter (where issue.issue_code = 'admin_legacy_access')::integer,
+         count(*) filter (where issue.issue_code = 'admin_legacy_account')::integer,
+         count(*) filter (where issue.issue_code = 'normalized_legacy_residue')::integer,
          count(*) filter (where issue.issue_code = 'stage_a_invariant_failure')::integer
-    into v_manifest_count, v_direct_count, v_wrapper_count
+    into v_admin_access_count, v_admin_account_count,
+         v_normalized_count, v_wrapper_count
   from public.account_access_cutover_preflight_issues issue
   where issue.run_id = v_target_run_id;
-  if v_manifest_count <> 6 or v_direct_count <> 5 or v_wrapper_count <> 1 then
-    raise exception '0426 production repair manifest requires exactly six incident issue rows (found %, direct %)',
-      v_manifest_count, v_direct_count using errcode = '55000';
+  if v_admin_access_count <> 1
+     or v_admin_account_count <> 1
+     or v_normalized_count <> 3
+     or v_wrapper_count <> 1 then
+    raise exception '0426 production repair manifest requires the approved six-row incident shape'
+      using errcode = '55000';
   end if;
   if exists (
     select 1
@@ -2785,96 +2884,135 @@ begin
       using errcode = '55000';
   end if;
 
-  select issue.account_id, issue.id
-    into v_admin, v_admin_access_issue
+  select issue.account_id, issue.id,
+         coalesce(array(
+           select value::uuid
+           from jsonb_array_elements_text(issue.details->'propertyIds') values(value)
+         ), '{}'::uuid[])
+    into v_admin, v_admin_access_issue, v_admin_property_ids
   from public.account_access_cutover_preflight_issues issue
-  join public.accounts account on account.id = issue.account_id
-  join public.properties property on property.id = v_admin_property
   where issue.run_id = v_target_run_id
     and issue.issue_code = 'admin_legacy_access'
-    and issue.account_id is not null
-    and issue.details->'propertyIds' = to_jsonb(array[v_admin_property]::uuid[])
-    and account.role = 'admin'
-    and account.active is true
-    and property.is_test is true;
-  if v_admin is null then
-    raise exception '0426 production repair manifest is missing the exact platform-admin residue row'
+  ;
+  if v_admin is null or cardinality(v_admin_property_ids) <> 1 then
+    raise exception '0426 production repair manifest has an invalid platform-admin residue row'
       using errcode = '55000';
   end if;
+  v_admin_property := v_admin_property_ids[1];
+
   select issue.id into v_admin_account_issue
   from public.account_access_cutover_preflight_issues issue
   where issue.run_id = v_target_run_id
     and issue.account_id = v_admin
     and issue.issue_code = 'admin_legacy_account'
-    and issue.details->'propertyIds' = to_jsonb(array[v_admin_property]::uuid[]);
+    and issue.property_id is null
+    and issue.details->'propertyIds' = to_jsonb(v_admin_property_ids);
   if v_admin_account_issue is null
-     or (select count(*) from public.account_access_cutover_preflight_issues issue
-         where issue.run_id = v_target_run_id
-           and issue.issue_code = 'admin_legacy_access') <> 1
-     or (select count(*) from public.account_access_cutover_preflight_issues issue
-         where issue.run_id = v_target_run_id
-           and issue.issue_code = 'admin_legacy_account') <> 1 then
+     or exists (
+       select 1
+       from public.account_access_cutover_preflight_issues issue
+       where issue.run_id = v_target_run_id
+         and issue.issue_code in ('admin_legacy_access', 'admin_legacy_account')
+         and (
+           issue.account_id is distinct from v_admin
+           or issue.property_id is not null
+           or issue.details->'propertyIds' is distinct from to_jsonb(v_admin_property_ids)
+         )
+     )
+     or not exists (
+       select 1
+       from public.accounts account
+       join public.account_authorization_state state on state.account_id = account.id
+       join auth.users auth_user on auth_user.id = account.data_user_id
+       where account.id = v_admin
+         and account.active is true
+         and account.role = 'admin'
+         and state.authority_mode in ('legacy', 'shadow')
+         and not exists (
+           select 1
+           from public.account_property_authorization_bridges bridge
+           where bridge.account_id = account.id and bridge.status = 'active'
+         )
+     )
+     or not exists (
+       select 1 from public.properties property
+       where property.id = v_admin_property and property.is_test is true
+     )
+     or (select count(*) from public._staxis_current_primary_property_relationships() relationship
+         where relationship.property_id = v_admin_property) <> 1
+     or (select count(*) from public._staxis_cutover_valid_current_primary_property_relationships() relationship
+         where relationship.property_id = v_admin_property
+           and relationship.active_primary_count = 1) <> 1 then
     raise exception '0426 production repair manifest has an ambiguous platform-admin tuple'
       using errcode = '55000';
   end if;
-  if not exists (
-    select 1 from auth.users auth_user
-    join public.accounts account on account.data_user_id = auth_user.id
-    where account.id = v_admin
-  ) then
-    raise exception '0426 production admin-global repair requires an existing auth identity'
-      using errcode = '55000';
-  end if;
 
-  select issue.id into v_gus_issue
+  select coalesce(array_agg(issue.id order by issue.id), '{}'::uuid[])
+    into v_normalized_issue_ids
   from public.account_access_cutover_preflight_issues issue
-  where issue.run_id = v_target_run_id and issue.account_id = v_gus
-    and issue.property_id is null
-    and issue.issue_code = 'normalized_legacy_residue'
-    and issue.details->'propertyIds' = to_jsonb(array[v_testing_property]::uuid[]);
-  select issue.id into v_greta_issue
-  from public.account_access_cutover_preflight_issues issue
-  where issue.run_id = v_target_run_id and issue.account_id = v_greta
-    and issue.property_id is null
-    and issue.issue_code = 'normalized_legacy_residue'
-    and issue.details->'propertyIds' = to_jsonb(array[v_port_arthur_property]::uuid[]);
-  select issue.id into v_dolores_issue
-  from public.account_access_cutover_preflight_issues issue
-  where issue.run_id = v_target_run_id and issue.account_id = v_dolores
-    and issue.property_id is null
-    and issue.issue_code = 'normalized_legacy_residue'
-    and issue.details->'propertyIds' = to_jsonb(array[v_testing_property]::uuid[]);
-  if v_gus_issue is null or v_greta_issue is null or v_dolores_issue is null then
-    raise exception '0426 production repair manifest is missing one of the exact normalized residue tuples'
-      using errcode = '55000';
-  end if;
-  if exists (
-    select 1
+  where issue.run_id = v_target_run_id
+    and issue.issue_code = 'normalized_legacy_residue';
+  for v_issue in
+    select issue.*
     from public.account_access_cutover_preflight_issues issue
     where issue.run_id = v_target_run_id
       and issue.issue_code = 'normalized_legacy_residue'
-      and not (
-        (issue.id = v_gus_issue and issue.account_id = v_gus and issue.details->'propertyIds' = to_jsonb(array[v_testing_property]::uuid[]))
-        or (issue.id = v_greta_issue and issue.account_id = v_greta and issue.details->'propertyIds' = to_jsonb(array[v_port_arthur_property]::uuid[]))
-        or (issue.id = v_dolores_issue and issue.account_id = v_dolores and issue.details->'propertyIds' = to_jsonb(array[v_testing_property]::uuid[]))
-      )
-  ) then
-    raise exception '0426 production repair manifest contains an unlisted normalized is_test residue row'
+    order by issue.id
+  loop
+    if v_issue.account_id is null
+       or v_issue.property_id is not null
+       or jsonb_typeof(v_issue.details->'propertyIds') <> 'array'
+       or jsonb_array_length(v_issue.details->'propertyIds') <> 1 then
+      raise exception '0426 production repair manifest has an invalid normalized residue row'
+        using errcode = '55000';
+    end if;
+    select coalesce(array_agg(value::uuid order by value::text), '{}'::uuid[])
+      into v_issue_property_ids
+    from jsonb_array_elements_text(v_issue.details->'propertyIds') values(value);
+    v_sample_key := v_issue.account_id::text || ':' || v_issue_property_ids[1]::text;
+    if array_position(v_seen_sample_keys, v_sample_key) is not null then
+      raise exception '0426 production repair manifest has duplicate normalized account/property evidence'
+        using errcode = '55000';
+    end if;
+    v_seen_sample_keys := array_append(v_seen_sample_keys, v_sample_key);
+    if not exists (
+      select 1
+      from public.accounts account
+      join public.account_authorization_state state on state.account_id = account.id
+      join auth.users auth_user on auth_user.id = account.data_user_id
+      where account.id = v_issue.account_id
+        and account.active is true
+        and account.role <> 'admin'
+        and state.authority_mode = 'normalized'
+        and account.property_access is not distinct from public._staxis_stage_c_normalize_ids(v_issue_property_ids)
+    )
+       or not exists (
+         select 1 from public.properties property
+         where property.id = v_issue_property_ids[1] and property.is_test is true
+       )
+       or (select count(*) from public._staxis_current_primary_property_relationships() relationship
+           where relationship.property_id = v_issue_property_ids[1]) <> 1
+       or (select count(*) from public._staxis_cutover_valid_current_primary_property_relationships() relationship
+           where relationship.property_id = v_issue_property_ids[1]
+             and relationship.active_primary_count = 1) <> 1 then
+      raise exception '0426 production repair manifest has invalid normalized account/property topology'
       using errcode = '55000';
-  end if;
+    end if;
+  end loop;
 
+  v_seen_sample_keys := '{}'::text[];
   select issue.id, issue.details #> '{stageAInvariant,sample}'
     into v_wrapper_issue, v_samples
   from public.account_access_cutover_preflight_issues issue
   where issue.run_id = v_target_run_id
     and issue.issue_code = 'stage_a_invariant_failure';
   if v_wrapper_issue is null
+     or (select issue.account_id from public.account_access_cutover_preflight_issues issue
+         where issue.id = v_wrapper_issue) is not null
+     or (select issue.property_id from public.account_access_cutover_preflight_issues issue
+         where issue.id = v_wrapper_issue) is not null
      or jsonb_typeof(v_samples) <> 'array'
      or jsonb_array_length(v_samples) <> 5
-     or (select count(*) from jsonb_array_elements(v_samples) sample
-         where sample->>'code' = 'invalid_legacy_account_identity') <> 1
-     or (select count(*) from jsonb_array_elements(v_samples) sample
-         where sample->>'code' = 'legacy_row_without_shadow_translation') <> 4
      or exists (
        select 1 from jsonb_array_elements(v_samples) sample
        where sample->>'code' not in (
@@ -2884,25 +3022,96 @@ begin
     raise exception '0426 production Stage-A wrapper does not match the six-row incident manifest'
       using errcode = '55000';
   end if;
-  if exists (
-    select 1 from jsonb_array_elements(v_samples) sample
-    where (sample->>'code' = 'invalid_legacy_account_identity'
-           and (sample->>'accountId')::uuid <> v_admin)
-       or (sample->>'code' = 'legacy_row_without_shadow_translation'
-           and not (
-             ((sample->>'accountId')::uuid = v_admin and (sample->>'propertyId')::uuid = v_admin_property)
-             or ((sample->>'accountId')::uuid = v_gus and (sample->>'propertyId')::uuid = v_testing_property)
-             or ((sample->>'accountId')::uuid = v_greta and (sample->>'propertyId')::uuid = v_port_arthur_property)
-             or ((sample->>'accountId')::uuid = v_dolores and (sample->>'propertyId')::uuid = v_testing_property)
-           ))) then
-    raise exception '0426 production Stage-A wrapper contains an unlisted account/property tuple'
+  for v_sample in
+    select value, ordinality
+    from jsonb_array_elements(v_samples) with ordinality sample(value, ordinality)
+    order by ordinality
+  loop
+    v_sample_account := nullif(v_sample.value->>'accountId', '')::uuid;
+    v_sample_property := nullif(v_sample.value->>'propertyId', '')::uuid;
+    if v_sample.value->>'code' = 'invalid_legacy_account_identity' then
+      if v_sample_account is distinct from v_admin or v_sample_property is not null then
+        raise exception '0426 production Stage-A wrapper contains an unrelated invalid-identity sample'
+          using errcode = '55000';
+      end if;
+      v_mapping := v_mapping || jsonb_build_array(jsonb_build_object(
+        'sampleIndex', v_sample.ordinality - 1,
+        'code', v_sample.value->>'code',
+        'accountId', v_sample.value->>'accountId',
+        'propertyId', v_sample.value->>'propertyId',
+        'issueIds', jsonb_build_array(v_admin_access_issue, v_admin_account_issue)
+      ));
+    elsif v_sample.value->>'code' = 'legacy_row_without_shadow_translation' then
+      if v_sample_account is null or v_sample_property is null then
+        raise exception '0426 production Stage-A wrapper contains an incomplete legacy sample'
+          using errcode = '55000';
+      end if;
+      v_sample_key := v_sample_account::text || ':' || v_sample_property::text;
+      if array_position(v_seen_sample_keys, v_sample_key) is not null then
+        raise exception '0426 production Stage-A wrapper contains duplicate account/property samples'
+          using errcode = '55000';
+      end if;
+      v_seen_sample_keys := array_append(v_seen_sample_keys, v_sample_key);
+      if v_sample_account = v_admin then
+        if v_sample_property <> v_admin_property then
+          raise exception '0426 production Stage-A wrapper contains an unrelated admin property sample'
+            using errcode = '55000';
+        end if;
+        v_admin_sample_count := v_admin_sample_count + 1;
+        v_mapping := v_mapping || jsonb_build_array(jsonb_build_object(
+          'sampleIndex', v_sample.ordinality - 1,
+          'code', v_sample.value->>'code',
+          'accountId', v_sample.value->>'accountId',
+          'propertyId', v_sample.value->>'propertyId',
+          'issueIds', jsonb_build_array(v_admin_access_issue, v_admin_account_issue)
+        ));
+      else
+        select issue.id
+          into v_normalized_issue_id
+        from public.account_access_cutover_preflight_issues issue
+        where issue.run_id = v_target_run_id
+          and issue.issue_code = 'normalized_legacy_residue'
+          and issue.account_id = v_sample_account
+          and issue.details->'propertyIds' ? v_sample_property::text;
+        if v_normalized_issue_id is null then
+          raise exception '0426 production Stage-A wrapper contains an unlisted normalized sample'
+            using errcode = '55000';
+        end if;
+        v_normalized_sample_count := v_normalized_sample_count + 1;
+        v_seen_normalized_issue_ids := array_append(
+          v_seen_normalized_issue_ids, v_normalized_issue_id
+        );
+        v_mapping := v_mapping || jsonb_build_array(jsonb_build_object(
+          'sampleIndex', v_sample.ordinality - 1,
+          'code', v_sample.value->>'code',
+          'accountId', v_sample.value->>'accountId',
+          'propertyId', v_sample.value->>'propertyId',
+          'issueIds', jsonb_build_array(v_normalized_issue_id)
+        ));
+      end if;
+    else
+      raise exception '0426 production Stage-A wrapper contains an unsupported sample'
+        using errcode = '55000';
+    end if;
+  end loop;
+  if v_admin_sample_count <> 1
+     or v_normalized_sample_count <> 3
+     or public._staxis_stage_c_normalize_ids(v_seen_normalized_issue_ids)
+          is distinct from public._staxis_stage_c_normalize_ids(v_normalized_issue_ids) then
+    raise exception '0426 production Stage-A wrapper does not cover the exact normalized issue rows'
       using errcode = '55000';
   end if;
+
+  v_expected_issue_ids := public._staxis_stage_c_normalize_ids(array[
+    v_admin_access_issue, v_admin_account_issue,
+    v_normalized_issue_ids[1], v_normalized_issue_ids[2], v_normalized_issue_ids[3],
+    v_wrapper_issue
+  ]);
 
   if exists (
     select 1 from public.account_access_cutover_repair_manifests manifest
     where manifest.preflight_run_id = v_target_run_id
-      and manifest.source <> 'production-2f31759a-2cd9-48ee-a458-c0ddea0e7d93'
+      and manifest.source <> v_source_label
   ) then
     raise exception '0426 production repair manifest has an invalid source'
       using errcode = '55000';
@@ -2911,45 +3120,62 @@ begin
   from public.account_access_cutover_repair_manifests manifest
   where manifest.preflight_run_id = v_target_run_id;
   if v_manifest_count = 6 then
+    if exists (
+      select 1
+      from public.account_access_cutover_repair_manifests manifest
+      left join public.account_access_cutover_preflight_issues issue
+        on issue.id = manifest.issue_id
+       and issue.run_id = v_target_run_id
+      where manifest.preflight_run_id = v_target_run_id
+        and (
+          manifest.status <> 'unconsumed'
+          or not (manifest.issue_id = any(v_expected_issue_ids))
+          or issue.id is null
+          or manifest.issue_code is distinct from issue.issue_code
+          or manifest.account_id is distinct from issue.account_id
+          or manifest.property_id is distinct from case
+            when issue.id = v_wrapper_issue then null::uuid
+            else (select (array_agg(value::uuid order by value::text))[1]
+                  from jsonb_array_elements_text(issue.details->'propertyIds') values(value))
+          end
+          or manifest.raw_property_ids is distinct from coalesce(array(
+            select value::uuid
+            from jsonb_array_elements_text(issue.details->'propertyIds') values(value)
+          ), '{}'::uuid[])
+          or manifest.raw_scope_hash <> public._staxis_stage_c_scope_hash(manifest.raw_property_ids)
+          or manifest.stage_a_mapping is distinct from case
+            when issue.id = v_wrapper_issue then v_mapping else '{}'::jsonb end
+        )
+    ) or exists (
+      select 1
+      from unnest(v_expected_issue_ids) expected(issue_id)
+      where not exists (
+        select 1
+        from public.account_access_cutover_repair_manifests manifest
+        where manifest.preflight_run_id = v_target_run_id
+          and manifest.issue_id = expected.issue_id
+      )
+    ) then
+      raise exception '0426 production repair manifest is inconsistent with the approved source evidence'
+        using errcode = '55000';
+    end if;
     return v_manifest_count;
   elsif v_manifest_count <> 0 then
     raise exception '0426 production repair manifest is partially materialized'
       using errcode = '55000';
   end if;
 
-  select jsonb_agg(jsonb_build_object(
-           'sampleIndex', sample.ordinality - 1,
-           'code', sample.value->>'code',
-           'accountId', sample.value->>'accountId',
-           'propertyId', sample.value->>'propertyId',
-           'issueIds', case
-             when sample.value->>'code' = 'invalid_legacy_account_identity'
-               then jsonb_build_array(v_admin_access_issue, v_admin_account_issue)
-             when (sample.value->>'accountId')::uuid = v_admin
-               then jsonb_build_array(v_admin_access_issue, v_admin_account_issue)
-             when (sample.value->>'accountId')::uuid = v_gus
-               then jsonb_build_array(v_gus_issue)
-             when (sample.value->>'accountId')::uuid = v_greta
-               then jsonb_build_array(v_greta_issue)
-             else jsonb_build_array(v_dolores_issue)
-           end
-         ) order by sample.ordinality)
-    into v_mapping
-  from jsonb_array_elements(v_samples) with ordinality sample(value, ordinality);
-
   insert into public.account_access_cutover_repair_manifests (
     issue_id, preflight_run_id, source, issue_code, account_id, property_id,
     raw_property_ids, raw_scope_hash, stage_a_mapping, details
   )
   select issue.id, v_target_run_id,
-         'production-2f31759a-2cd9-48ee-a458-c0ddea0e7d93',
+         v_source_label,
          issue.issue_code, issue.account_id,
-         case when issue.issue_code = 'admin_legacy_access' then v_admin_property
-              when issue.issue_code = 'admin_legacy_account' then v_admin_property
-              when issue.account_id = v_gus then v_testing_property
-              when issue.account_id = v_greta then v_port_arthur_property
-              when issue.account_id = v_dolores then v_testing_property
-              else null end,
+         case when issue.id = v_wrapper_issue then null::uuid
+              else (select (array_agg(value::uuid order by value::text))[1]
+                    from jsonb_array_elements_text(issue.details->'propertyIds') values(value))
+         end,
          coalesce(array(
            select value::uuid
            from jsonb_array_elements_text(issue.details->'propertyIds') values(value)
@@ -2962,10 +3188,7 @@ begin
          jsonb_build_object('incidentRunId', v_target_run_id, 'wrapperIssueId', v_wrapper_issue)
   from public.account_access_cutover_preflight_issues issue
   where issue.run_id = v_target_run_id
-    and issue.id in (
-      v_admin_access_issue, v_admin_account_issue,
-      v_gus_issue, v_greta_issue, v_dolores_issue, v_wrapper_issue
-    );
+    and issue.id = any(v_expected_issue_ids);
 
   select count(*)::integer into v_manifest_count
   from public.account_access_cutover_repair_manifests manifest
@@ -3092,7 +3315,7 @@ begin
     into v_run_id
   from public.account_access_cutover_status status
   where status.id is true;
-  if v_run_id = '2f31759a-2cd9-48ee-a458-c0ddea0e7d93'::uuid then
+  if v_run_id = '85981f5e-a387-4af3-ae10-b9bc1e1e9567'::uuid then
     perform public._staxis_materialize_stage_c_production_manifest(v_run_id);
   end if;
 end
@@ -3470,6 +3693,161 @@ revoke all on function public._staxis_refresh_account_authorization(uuid, text)
   from public, anon, authenticated;
 grant execute on function public._staxis_refresh_account_authorization(uuid, text)
   to service_role;
+
+-- The deployment seeder creates the canonical platform administrator after
+-- this final contract is installed. It cannot call the ordinary account-scope
+-- mutation with actor = target, because that self-target wall is intentional.
+-- This is a fixed-purpose service bootstrap, not a second authorization path:
+-- it accepts only the canonical admin's empty property scope, proves the Auth
+-- identity and current version, performs the same one-way state transition,
+-- and is inaccessible to browser roles and authenticated application routes.
+create or replace function public.staxis_bootstrap_canonical_admin_authority(
+  p_account_id uuid,
+  p_property_ids uuid[],
+  p_expected_authority_version bigint,
+  p_reason text
+)
+returns jsonb
+language plpgsql
+security definer
+set search_path = pg_catalog, public
+as $$
+declare
+  v_account public.accounts%rowtype;
+  v_state public.account_authorization_state%rowtype;
+  v_access jsonb;
+  v_hash text;
+  v_reason constant text := 'seed-supabase canonical admin bootstrap';
+begin
+  if p_account_id is null
+     or p_property_ids is null
+     or array_position(p_property_ids, null::uuid) is not null
+     or cardinality(coalesce(p_property_ids, '{}'::uuid[])) <> 0
+     or p_expected_authority_version is null
+     or p_reason is distinct from v_reason then
+    return jsonb_build_object('ok', false, 'status', 'invalid', 'reason', 'bootstrap_request');
+  end if;
+
+  perform pg_catalog.pg_advisory_xact_lock(
+    pg_catalog.hashtextextended('staxis.canonical.admin.bootstrap:' || p_account_id::text, 0)
+  );
+  select account.* into v_account
+  from public.accounts account
+  where account.id = p_account_id
+  for update;
+  select state.* into v_state
+  from public.account_authorization_state state
+  where state.account_id = p_account_id
+  for update;
+  if v_account.id is null or v_state.account_id is null then
+    return jsonb_build_object('ok', false, 'status', 'not_found');
+  end if;
+  if v_account.active is not true
+     or v_account.role <> 'admin'
+     or v_account.data_user_id is null
+     or not exists (
+       select 1 from auth.users auth_user where auth_user.id = v_account.data_user_id
+     ) then
+    return jsonb_build_object('ok', false, 'status', 'forbidden', 'reason', 'canonical_admin');
+  end if;
+  if v_state.authority_version is distinct from p_expected_authority_version then
+    return jsonb_build_object(
+      'ok', false, 'status', 'conflict',
+      'authorityVersion', v_state.authority_version
+    );
+  end if;
+  if cardinality(coalesce(v_account.property_access, '{}'::uuid[])) <> 0
+     or exists (
+       select 1
+       from public.account_property_authorization_bridges bridge
+       where bridge.account_id = p_account_id and bridge.status = 'active'
+     )
+     or exists (
+       select 1
+       from public.organization_memberships membership
+       where membership.account_id = p_account_id
+         and membership.status = 'active'
+         and membership.ended_at is null
+     )
+     or exists (
+       select 1
+       from public.organization_access_grants grant_row
+       join public.organization_memberships membership
+         on membership.id = grant_row.membership_id
+       where membership.account_id = p_account_id
+         and grant_row.status = 'active'
+         and grant_row.source <> 'legacy_backfill'
+         and (grant_row.expires_at is null or grant_row.expires_at > clock_timestamp())
+     ) then
+    return jsonb_build_object('ok', false, 'status', 'conflict', 'reason', 'property_scope');
+  end if;
+
+  if v_state.authority_mode = 'normalized' then
+    select encode(sha256(convert_to(coalesce(string_agg(
+      concat_ws(':', authz.organization_id::text,
+                      authz.property_id::text,
+                      authz.entitlement_kind,
+                      authz.entitlement_id::text,
+                      coalesce(authz.scope_type, ''),
+                      coalesce(authz.portfolio_id::text, ''),
+                      authz.can_portfolio_intelligence::text),
+      ',' order by authz.organization_id::text nulls first,
+                   authz.property_id::text,
+                   authz.entitlement_kind,
+                   authz.entitlement_id::text
+    ), ''), 'UTF8')), 'hex')
+      into v_hash
+    from public._staxis_account_property_authorizations(p_account_id) authz;
+    if v_state.normalized_scope_hash is distinct from v_hash then
+      return jsonb_build_object('ok', false, 'status', 'conflict', 'reason', 'canonical_hash');
+    end if;
+    v_access := public.staxis_list_account_authorized_properties(p_account_id);
+    return jsonb_build_object(
+      'ok', true, 'status', 'already_canonical', 'accountId', p_account_id,
+      'authorityVersion', v_state.authority_version, 'access', v_access,
+      'auditWritten', false
+    );
+  end if;
+  if v_state.authority_mode not in ('legacy', 'shadow') then
+    return jsonb_build_object('ok', false, 'status', 'conflict', 'reason', 'authority_mode');
+  end if;
+
+  update public.account_authorization_state state
+     set authority_mode = 'normalized',
+         cutover_at = coalesce(state.cutover_at, clock_timestamp()),
+         cutover_reason = coalesce(state.cutover_reason, v_reason),
+         updated_at = clock_timestamp()
+   where state.account_id = p_account_id;
+  perform public._staxis_refresh_account_authorization(p_account_id, v_reason);
+  select state.* into v_state
+  from public.account_authorization_state state
+  where state.account_id = p_account_id;
+  v_access := public.staxis_list_account_authorized_properties(p_account_id);
+  insert into public.admin_audit_log (
+    actor_user_id, actor_email, action, target_type, target_id, metadata
+  ) values (
+    null, 'seed-supabase', 'account.canonical_bootstrap', 'account', p_account_id::text,
+    jsonb_build_object(
+      'authority_mode', 'normalized',
+      'property_ids', '[]'::jsonb,
+      'authority_version', v_state.authority_version,
+      'reason', v_reason
+    )
+  );
+  return jsonb_build_object(
+    'ok', true, 'status', 'bootstrapped', 'accountId', p_account_id,
+    'authorityVersion', v_state.authority_version, 'access', v_access,
+    'auditWritten', true
+  );
+end;
+$$;
+
+revoke all on function public.staxis_bootstrap_canonical_admin_authority(
+  uuid, uuid[], bigint, text
+) from public, anon, authenticated, service_role;
+grant execute on function public.staxis_bootstrap_canonical_admin_authority(
+  uuid, uuid[], bigint, text
+) to service_role;
 
 create or replace function public._staxis_refresh_account_authorization_from_account()
 returns trigger
