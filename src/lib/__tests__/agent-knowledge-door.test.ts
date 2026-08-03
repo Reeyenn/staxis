@@ -143,6 +143,19 @@ describe('the door knows every drawer', () => {
     }
   });
 
+  test('a store\'s primary placement is one a presentation actually renders in', () => {
+    // Store-level placement is a summary; the presentations are the truth. This
+    // stops the summary drifting into a claim no rendering supports.
+    for (const store of KNOWLEDGE_STORES) {
+      if (store.presentations.length === 0) continue;
+      assert.ok(
+        store.presentations.some((p) => p.placement === store.placement),
+        `${store.id} claims to be a ${store.placement} store, but none of its renderings `
+        + 'land in that half of the prompt.',
+      );
+    }
+  });
+
   test('the sharpest line in the system still runs where the doc says it does', () => {
     // Two stores that sit next to each other in the same prompt, in the same
     // kind of envelope, with OPPOSITE authority. A VP's policy document and a

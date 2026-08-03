@@ -205,6 +205,13 @@ export interface KnowledgeStoreRegistration {
   label: string;
   scope: KnowledgeScope;
   authority: KnowledgeAuthority;
+  /**
+   * Where this store PRIMARILY lands. Each presentation carries its own
+   * placement and that one is authoritative for what actually renders:
+   * `company_knowledge` is a stable-block tier on the hotel surface and a
+   * dynamic-block overlay on the portfolio one, which is exactly the split this
+   * module exists to make visible rather than hide behind a single value.
+   */
   placement: KnowledgePlacement;
   cache: KnowledgeCachePolicy;
   status: KnowledgeDoorStatus;
