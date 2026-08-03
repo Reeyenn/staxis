@@ -27,7 +27,6 @@ import {
 import {
   activeGrantsForActor,
   activeMembershipsForActor,
-  isOrganizationSchemaMissing,
   loadOrganizationActor,
 } from '@/lib/organization-access/server';
 import {
@@ -56,6 +55,7 @@ import {
 } from '@/lib/company-access/dto';
 import type { AppRole } from '@/lib/roles';
 import { resolveHatCoverage } from '@/lib/company/access';
+import { listAuthoritativePropertyAccess } from '@/lib/authorization/server';
 import {
   accessProfileForHat,
   isHatRole,
@@ -73,7 +73,6 @@ interface AccountRow {
   id: string;
   display_name: string | null;
   role: AppRole;
-  property_access: string[] | null;
   active: boolean;
 }
 
@@ -279,51 +278,6 @@ function activeWindow(startsAt: string, endsAt: string | null | undefined, nowMs
   return Number.isFinite(startMs) && startMs <= nowMs && (endMs === null || (Number.isFinite(endMs) && endMs > nowMs));
 }
 
-function missingSchemaError(error: unknown): boolean {
-  if (isOrganizationSchemaMissing(error)) return true;
-  if (!error || typeof error !== 'object') return false;
-  const record = error as { code?: string; message?: string };
-  return record.code === '42P01'
-    || record.code === '42883'
-    || record.code === 'PGRST202'
-    || record.code === 'PGRST205'
-    || /relation .* does not exist|function .* does not exist|schema cache/i.test(record.message ?? '');
-}
-
-type CompanyAuthorityMode = 'legacy' | 'shadow' | 'normalized' | 'schema_absent';
-
-/**
- * Decide which authority is allowed to feed the Company Hub before reading a
- * projection. A normalized account must never fall through to the legacy
- * `accounts.property_access` array merely because its last membership was
- * revoked (or moved) between requests.
- *
- * The authoritative resolver is intentionally queried through its
- * SECURITY DEFINER DTO rather than by reading account_authorization_state:
- * direct table reads are revoked even from service_role. A malformed or
- * unavailable resolver fails closed; only a genuinely absent schema permits
- * the pre-0378 compatibility path.
- */
-async function companyAuthorityMode(accountId: string): Promise<CompanyAuthorityMode> {
-  const { data, error } = await supabaseAdmin.rpc(
-    'staxis_list_account_authorized_properties',
-    { p_account_id: accountId },
-  );
-  if (error) {
-    if (missingSchemaError(error)) return 'schema_absent';
-    throw error;
-  }
-  if (!data || typeof data !== 'object' || Array.isArray(data)) {
-    throw new Error('Authoritative account access response was malformed');
-  }
-  const record = data as Record<string, unknown>;
-  if (record.ok !== true
-      || !['legacy', 'shadow', 'normalized'].includes(String(record.authorityMode))) {
-    throw new Error(`Authoritative account access was unavailable: ${String(record.reason ?? 'invalid_response')}`);
-  }
-  return record.authorityMode as Exclude<CompanyAuthorityMode, 'schema_absent'>;
-}
-
 class StaleCompanyProjectionError extends Error {
   constructor() {
     super('Organization access changed while the Company Hub projection was loading');
@@ -452,7 +406,7 @@ function eventSummary(eventType: string): string {
  *
  * Asked only about hotels the caller sees WITHOUT a real company behind them:
  * through the hidden single-hotel anchor from migration 0325, or through the
- * legacy `accounts.property_access` array. Every one of those was filed under
+ * canonical legacy/shadow resolver projection. Every one of those was filed under
  * "Hotels not grouped under a management company", and for a front-desk person
  * at a hotel run by a real operator that is false in the most confusing
  * possible direction — they were told nobody runs their hotel.
@@ -531,8 +485,11 @@ async function operatingCompanyNames(
   }
 }
 
-async function legacyProjection(account: AccountRow): Promise<CompanyAccessData> {
-  const access = account.property_access ?? [];
+async function legacyProjection(
+  account: AccountRow,
+  authority: { propertyIds: string[]; all: boolean },
+): Promise<CompanyAccessData> {
+  const access = authority.all ? [] : authority.propertyIds;
   if (account.role !== 'admin' && !access.includes('*')) {
     if (access.length === 0) {
       return {
@@ -638,6 +595,148 @@ function legacyPermissions(role: AppRole, propertyIds: string[]): CompanyAccessP
           ? ['department_lead', 'contributor', 'viewer', 'external_collaborator']
           : [],
     delegationPolicies: [],
+  };
+}
+
+/**
+ * Project a normalized account whose only canonical authority is a bounded set
+ * of property bridges. There is intentionally no membership/grant synthesis:
+ * each property is checked against exactly one current active governing
+ * relationship and the payload carries only those bridge-covered hotels.
+ *
+ * This is a property-scoped Company Hub presentation, not a fallback authority
+ * path. A missing, suspended, stale, or ambiguous topology returns null so the
+ * caller receives the normal empty fail-closed projection.
+ */
+async function bridgeOnlyProjection(
+  account: AccountRow,
+  authority: { propertyIds: string[]; all: boolean },
+): Promise<CompanyAccessData | null> {
+  if (authority.all || authority.propertyIds.length === 0) return null;
+
+  const memberships = await readCompleteCompanyPages<MembershipRow>((from, to) => (
+    supabaseAdmin.from('organization_memberships')
+      .select('id, organization_id, account_id, job_category, job_title, status, starts_at, ended_at, membership_scope, staxis_role, covered_property_ids', { count: 'exact' })
+      .eq('account_id', account.id)
+      .order('id')
+      .range(from, to) as unknown as PromiseLike<CompanyProjectionPage<MembershipRow>>
+  ));
+  // Revoked/ended memberships still count as membership history. Do not
+  // silently reinterpret a damaged member's bridges as a company projection.
+  if (memberships.length > 0) return null;
+
+  const propertyIds = [...new Set(authority.propertyIds)].sort();
+  const relationshipRows = await readCompleteCompanyIdChunks<RelationshipRow>(
+    propertyIds,
+    (chunk, from, to) => supabaseAdmin.from('organization_property_relationships')
+      .select('id, organization_id, property_id, relationship_type, is_primary_grouping, starts_at, ends_at', { count: 'exact' })
+      .in('property_id', [...chunk])
+      .order('id')
+      .range(from, to) as unknown as PromiseLike<CompanyProjectionPage<RelationshipRow>>,
+  );
+  const nowMs = Date.now();
+  const currentByProperty = new Map<string, RelationshipRow>();
+  for (const propertyId of propertyIds) {
+    const current = relationshipRows.filter((relationship) => (
+      relationship.property_id === propertyId
+      && relationship.is_primary_grouping === true
+      && (relationship.relationship_type === 'operator' || relationship.relationship_type === 'owner')
+      && activeWindow(relationship.starts_at, relationship.ends_at, nowMs)
+    ));
+    if (current.length !== 1) return null;
+    currentByProperty.set(propertyId, current[0]!);
+  }
+
+  const organizationIds = [...new Set([...currentByProperty.values()].map((row) => row.organization_id))];
+  const organizationRows = await readCompleteCompanyIdChunks<OrganizationRow>(
+    organizationIds,
+    (chunk, from, to) => supabaseAdmin.from('organizations')
+      .select('id, name, organization_type, status, legacy_property_id', { count: 'exact' })
+      .in('id', [...chunk])
+      .order('id')
+      .range(from, to) as unknown as PromiseLike<CompanyProjectionPage<OrganizationRow>>,
+  );
+  const organizationsById = new Map(organizationRows.map((organization) => [organization.id, organization]));
+  for (const relationship of currentByProperty.values()) {
+    const organization = organizationsById.get(relationship.organization_id);
+    if (!organization
+      || organization.status !== 'active'
+      || !['single_hotel', 'management_company', 'ownership_group'].includes(organization.organization_type)) {
+      return null;
+    }
+  }
+
+  const propertyRows = await readCompleteCompanyIdChunks<PropertyRow>(
+    propertyIds,
+    (chunk, from, to) => supabaseAdmin.from('properties')
+      .select('id, name', { count: 'exact' })
+      .in('id', [...chunk])
+      .order('id')
+      .range(from, to) as unknown as PromiseLike<CompanyProjectionPage<PropertyRow>>,
+  );
+  if (propertyRows.length !== propertyIds.length) return null;
+  const propertyById = new Map(propertyRows.map((property) => [property.id, property]));
+  const displayOrganizationId = (propertyId: string, organization: OrganizationRow): string => (
+    organization.organization_type === 'single_hotel'
+      ? `bridge-independent-${propertyId}`
+      : organization.id
+  );
+  const displayOrganizationById = new Map<string, CompanyOrganization>();
+  const companyProperties: CompanyProperty[] = [];
+  const profile = legacyAccessProfile(account.role);
+  for (const propertyId of propertyIds) {
+    const relationship = currentByProperty.get(propertyId)!;
+    const organization = organizationsById.get(relationship.organization_id)!;
+    const property = propertyById.get(propertyId)!;
+    const organizationId = displayOrganizationId(propertyId, organization);
+    if (!displayOrganizationById.has(organizationId)) {
+      displayOrganizationById.set(organizationId, {
+        id: organizationId,
+        name: organization.organization_type === 'single_hotel'
+          ? (property.name ?? organization.name ?? 'Hotel')
+          : organization.name,
+        type: organization.organization_type,
+        status: organization.status,
+        relationshipType: organization.organization_type === 'single_hotel'
+          ? 'independent hotel'
+          : relationship.relationship_type,
+        legacyPropertyId: organization.organization_type === 'single_hotel' ? propertyId : null,
+      });
+    }
+    companyProperties.push({
+      nodeId: `${organizationId}:${propertyId}`,
+      id: propertyId,
+      name: property.name ?? 'Hotel',
+      organizationId,
+      portfolioIds: [],
+      relationshipType: relationship.relationship_type,
+      relationshipId: relationship.id,
+      status: 'active',
+    });
+  }
+
+  return {
+    organizations: [...displayOrganizationById.values()].sort((a, b) => a.id.localeCompare(b.id)),
+    portfolios: [],
+    properties: companyProperties,
+    memberships: [],
+    effectiveAccess: companyProperties.map((property) => ({
+      id: `canonical-bridge-${property.id}`,
+      organizationId: property.organizationId,
+      accessProfile: profile,
+      scopeType: 'property',
+      scopeId: property.relationshipId,
+      scopeLabel: property.name,
+      propertyIds: [property.id],
+      source: 'canonical_bridge',
+      reason: 'Canonical property authorization bridge',
+      status: 'active',
+    })),
+    invitations: [],
+    requests: [],
+    activity: [],
+    permissions: legacyPermissions(account.role, propertyIds),
+    legacyFallback: false,
   };
 }
 
@@ -1452,7 +1551,7 @@ export async function GET(req: NextRequest) {
     const actor = await loadOrganizationActor(session.userId, session.email);
     if (!actor) return err('Account not found', { requestId, status: 404, code: ApiErrorCode.NotFound });
     const { data: accountData, error: accountError } = await supabaseAdmin.from('accounts')
-      .select('id, display_name, role, property_access, active')
+      .select('id, display_name, role, active')
       .eq('id', actor.accountId)
       .maybeSingle();
     if (accountError) throw accountError;
@@ -1467,13 +1566,15 @@ export async function GET(req: NextRequest) {
       });
     }
 
-    const authorityMode = await companyAuthorityMode(actor.accountId);
+    const authority = await listAuthoritativePropertyAccess(actor.accountId);
+    if (!authority) throw new Error('Authoritative account access was unavailable');
+    const authorityMode = authority.authorityMode;
 
     // Legacy and shadow are deliberately legacy-only authority modes. In
     // particular, a shadow account may already have normalized rows for drift
     // comparison, but those rows are not yet allowed to drive this surface.
     if (authorityMode === 'legacy' || authorityMode === 'shadow') {
-      const projection = await legacyProjection(account);
+      const projection = await legacyProjection(account, authority);
       const { data: endingAccount, error: endingAccountError } = await supabaseAdmin
         .from('accounts')
         .select('active')
@@ -1486,38 +1587,25 @@ export async function GET(req: NextRequest) {
       return ok(projection, { requestId });
     }
 
-    try {
-      for (let attempt = 0; attempt < 2; attempt += 1) {
-        try {
-          const normalized = await normalizedProjection(actor.accountId);
-          if (normalized) return ok(normalized, { requestId });
-
-          // Normalized is a one-way cutover. No active company membership is
-          // an empty/denied company projection, never permission to resurrect
-          // stale accounts.property_access from before revocation or transfer.
-          if (authorityMode === 'normalized') {
-            return ok(EMPTY_COMPANY_ACCESS, { requestId });
-          }
-          break;
-        } catch (normalizedError) {
-          if ((normalizedError instanceof StaleCompanyProjectionError
-            || normalizedError instanceof IncompleteCompanyProjectionError) && attempt === 0) continue;
-          throw normalizedError;
-        }
-      }
-    } catch (normalizedError) {
-      // The compatibility fallback exists only when the organization schema
-      // itself is absent. Once the authoritative mode RPC exists, any
-      // normalized projection failure is an error, not a legacy grant.
-      if (authorityMode !== 'schema_absent' || !missingSchemaError(normalizedError)) {
+    let normalized: CompanyAccessData | null = null;
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      try {
+        normalized = await normalizedProjection(actor.accountId);
+        break;
+      } catch (normalizedError) {
+        if ((normalizedError instanceof StaleCompanyProjectionError
+          || normalizedError instanceof IncompleteCompanyProjectionError) && attempt === 0) continue;
         throw normalizedError;
       }
     }
+    if (normalized) return ok(normalized, { requestId });
+
+    const bridgeProjection = await bridgeOnlyProjection(account, authority);
+    if (bridgeProjection) return ok(bridgeProjection, { requestId });
 
     // The normalized projection deliberately ignores inactive memberships.
-    // Re-check the account after the multi-query projection before falling
-    // back to legacy property_access so a concurrent deactivation cannot turn
-    // an authorization failure into a legacy read.
+    // Re-check the account after the multi-query projection before returning
+    // an empty, fail-closed company projection.
     const { data: fallbackAccount, error: fallbackAccountError } = await supabaseAdmin
       .from('accounts')
       .select('active')
@@ -1528,10 +1616,7 @@ export async function GET(req: NextRequest) {
       return err('Account not found', { requestId, status: 404, code: ApiErrorCode.NotFound });
     }
 
-    if (authorityMode !== 'schema_absent') {
-      throw new Error('Authoritative company access could not be projected');
-    }
-    return ok(await legacyProjection(account), { requestId });
+    return ok(EMPTY_COMPANY_ACCESS, { requestId });
   } catch (caught) {
     log.error('[company-access:GET] projection failed', { requestId, error: errToString(caught) });
     return err('Could not load company access', { requestId, status: 500, code: ApiErrorCode.InternalError });

@@ -65,6 +65,7 @@ import { GET as bootstrapGet } from '@/app/api/property-selector/bootstrap/route
 import { GET as portfolioGet, POST as portfolioPost } from '@/app/api/company/queue/route';
 import { GET as rulebookGet, POST as rulebookPost } from '@/app/api/company/rulebook/route';
 import { GET as companyAccessGet } from '@/app/api/company-access/route';
+import { POST as accountsPost } from '@/app/api/auth/accounts/route';
 
 import { applyMigrationsToPglite } from '../../../tests/fixtures/pglite-migrate';
 import { createPglitePostgrest, loadCatalog, type PglitePostgrest } from '../../../tests/fixtures/postgrest-pglite';
@@ -103,6 +104,8 @@ let seed: TwoCompanySeed;
 const originalFrom = supabaseAdmin.from.bind(supabaseAdmin);
 const originalRpc = supabaseAdmin.rpc.bind(supabaseAdmin);
 const originalGetUser = supabaseAdmin.auth.getUser.bind(supabaseAdmin.auth);
+type CreateUserFn = typeof supabaseAdmin.auth.admin.createUser;
+const originalCreateUser: CreateUserFn = supabaseAdmin.auth.admin.createUser.bind(supabaseAdmin.auth.admin);
 
 let signedInAs: string | null = null;
 
@@ -115,6 +118,8 @@ let signedInAs: string | null = null;
  */
 const ACCOUNT_DOLORES = 'aaaa1111-0000-4000-8000-0000000000d1';
 const UID_DOLORES = 'aaaa2222-0000-4000-8000-0000000000d1';
+const UID_POST_INDEPENDENT = 'aaaa2222-0000-4000-8000-0000000000d2';
+const UID_POST_COMPANY = 'aaaa2222-0000-4000-8000-0000000000d3';
 
 // ─── Request helpers ────────────────────────────────────────────────────────
 
@@ -237,6 +242,7 @@ interface HubWire {
       profiles: Array<{ accessProfile: string; portfolioIds: string[]; propertyIds: string[] }>;
     }>;
   };
+  legacyFallback?: boolean;
 }
 
 async function hubFor(authUserId: string): Promise<{ status: number; data: HubWire | null }> {
@@ -244,6 +250,58 @@ async function hubFor(authUserId: string): Promise<{ status: number; data: HubWi
   const res = await companyAccessGet(req('https://staxis.test/api/company-access'));
   const parsed = await res.json().catch(() => ({})) as { data?: HubWire };
   return { status: res.status, data: parsed.data ?? null };
+}
+
+async function createAccountViaPost(args: {
+  authUserId: string;
+  username: string;
+  email: string;
+  propertyAccess: string[];
+}): Promise<string> {
+  // The route uses Supabase Auth for the first half of creation. This shim
+  // persists the real auth identity into the same PGlite database, then the
+  // route's own canonical scope RPC handles the accounts row and bridges.
+  supabaseAdmin.auth.admin.createUser = (async (input: { email: string }) => {
+    await pg.query(
+      `insert into auth.users (id, email) values ($1, $2)`,
+      [args.authUserId, input.email],
+    );
+    return {
+      data: {
+        user: {
+          id: args.authUserId,
+          email: input.email,
+          created_at: new Date().toISOString(),
+        },
+      },
+      error: null,
+    };
+  }) as CreateUserFn;
+  try {
+    signedInAs = UID_ADMIN;
+    const response = await accountsPost(new NextRequest('https://staxis.test/api/auth/accounts', {
+      method: 'POST',
+      headers: {
+        authorization: 'Bearer hat-access-test-token',
+        'content-type': 'application/json',
+        'x-account-id': ACCOUNT_ADMIN,
+      },
+      body: JSON.stringify({
+        username: args.username,
+        email: args.email,
+        password: 'stage-b-password-123',
+        displayName: args.username,
+        role: 'owner',
+        propertyAccess: args.propertyAccess,
+      }),
+    }));
+    const body = await response.json() as { data?: { accountId?: string }; error?: unknown };
+    assert.equal(response.status, 200, JSON.stringify(body));
+    assert.ok(body.data?.accountId, JSON.stringify(body));
+    return body.data.accountId;
+  } finally {
+    supabaseAdmin.auth.admin.createUser = originalCreateUser;
+  }
 }
 
 async function legacyAccessOf(accountId: string): Promise<string[]> {
@@ -860,6 +918,78 @@ describe('the Company Hub reads the spine', () => {
         [ORG_B, PID_L1],
       );
     }
+  });
+
+  test('account creation projects exact bridge-only independent and multi-hotel Hub scope', async () => {
+    const independentAccountId = await createAccountViaPost({
+      authUserId: UID_POST_INDEPENDENT,
+      username: 'stage-b-independent-owner',
+      email: 'stage-b-independent-owner@example.test',
+      propertyAccess: [PID_L1],
+    });
+    const companyAccountId = await createAccountViaPost({
+      authUserId: UID_POST_COMPANY,
+      username: 'stage-b-company-owner',
+      email: 'stage-b-company-owner@example.test',
+      propertyAccess: [PID_A1, PID_A2],
+    });
+
+    assert.deepEqual(await legacyAccessOf(independentAccountId), []);
+    assert.deepEqual(await legacyAccessOf(companyAccountId), []);
+    const membershipRows = await pg.query<{ account_id: string }>(
+      `select account_id from public.organization_memberships
+        where account_id = any($1::uuid[])`,
+      [[independentAccountId, companyAccountId]],
+    );
+    const grantRows = await pg.query<{ membership_id: string }>(
+      `select membership_id from public.organization_access_grants
+        where membership_id in (
+          select id from public.organization_memberships
+           where account_id = any($1::uuid[])
+        )`,
+      [[independentAccountId, companyAccountId]],
+    );
+    assert.deepEqual(membershipRows.rows, []);
+    assert.deepEqual(grantRows.rows, []);
+
+    const independentHub = await hubFor(UID_POST_INDEPENDENT);
+    assert.equal(independentHub.status, 200);
+    assert.deepEqual(independentHub.data?.properties.map((property) => property.id), [PID_L1]);
+    assert.equal(independentHub.data?.memberships.length, 0);
+    assert.deepEqual(independentHub.data?.effectiveAccess[0]?.propertyIds, [PID_L1]);
+    assert.deepEqual(independentHub.data?.permissions.accountInvitePropertyIds, [PID_L1]);
+    assert.equal(independentHub.data?.legacyFallback, false);
+
+    const companyHub = await hubFor(UID_POST_COMPANY);
+    assert.equal(companyHub.status, 200);
+    assert.deepEqual(
+      companyHub.data?.properties.map((property) => property.id).sort(),
+      [PID_A1, PID_A2].sort(),
+    );
+    assert.deepEqual(companyHub.data?.organizations.map((organization) => organization.id), [ORG_A]);
+    assert.equal(companyHub.data?.memberships.length, 0);
+    assert.deepEqual(
+      companyHub.data?.effectiveAccess.flatMap((receipt) => receipt.propertyIds).sort(),
+      [PID_A1, PID_A2].sort(),
+    );
+    assert.deepEqual(companyHub.data?.permissions.accountInvitePropertyIds, [PID_A1, PID_A2].sort());
+    assert.equal(companyHub.data?.legacyFallback, false);
+
+    await pg.query(`update public.organizations set status = 'inactive' where id = $1`, [ORG_A]);
+    try {
+      const suspendedCompanyHub = await hubFor(UID_POST_COMPANY);
+      assert.equal(suspendedCompanyHub.status, 200);
+      assert.deepEqual(
+        suspendedCompanyHub.data?.properties.map((property) => property.id),
+        [],
+        'a bridge-only account retained Company Hub properties under a suspended topology',
+      );
+    } finally {
+      await pg.query(`update public.organizations set status = 'active' where id = $1`, [ORG_A]);
+    }
+
+    assert.deepEqual((await propertiesFor(UID_POST_COMPANY, PID_B1)).ids, []);
+    assert.deepEqual((await propertiesFor(UID_POST_INDEPENDENT, PID_A1)).ids, []);
   });
 });
 

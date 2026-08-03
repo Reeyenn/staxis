@@ -1173,7 +1173,7 @@ describe('account lifecycle migration 0335 — real SQL via PGlite', () => {
     );
     assert.deepEqual(normalizedRejected, {
       status: 'forbidden',
-      reason: 'normalized_authority',
+      reason: 'normalized_organization_owner',
     });
     await assert.rejects(
       asRole<string>(
@@ -1264,9 +1264,14 @@ describe('account lifecycle migration 0335 — real SQL via PGlite', () => {
         SHADOW_DENY_OLD_AUTH,
         SHADOW_DENY_PROPERTY,
       ),
-      { status: 'forbidden', reason: 'normalized_authority' },
+      {
+        status: 'ok',
+        operation_id: SHADOW_DENY_OPERATION,
+        old_owner_account_id: SHADOW_DENY_OLD,
+        new_owner_account_id: SHADOW_DENY_NEW,
+      },
     );
-    const deniedState = await pg.query<{
+    const normalizationFirstState = await pg.query<{
       old_role: string;
       new_role: string;
       role_rows: string;
@@ -1286,11 +1291,11 @@ describe('account lifecycle migration 0335 — real SQL via PGlite', () => {
       [SHADOW_DENY_OLD, SHADOW_DENY_NEW,
         [SHADOW_DENY_OLD, SHADOW_DENY_NEW], SHADOW_DENY_OPERATION],
     );
-    assert.deepEqual(deniedState.rows[0], {
-      old_role: 'owner',
-      new_role: 'front_desk',
-      role_rows: '0',
-      audit_rows: '0',
+    assert.deepEqual(normalizationFirstState.rows[0], {
+      old_role: 'general_manager',
+      new_role: 'owner',
+      role_rows: '2',
+      audit_rows: '1',
       authority_mode: 'normalized',
     });
 
@@ -1316,7 +1321,7 @@ describe('account lifecycle migration 0335 — real SQL via PGlite', () => {
       `select public.staxis_promote_shadow_authorization($1,$2)`,
       [SHADOW_TRANSFER_NEW, 'ownership wins before normalization'],
     );
-    assert.equal(normalizationAfter.status, 'promoted');
+    assert.equal(normalizationAfter.status, 'already_normalized');
     const replayAfterNormalization = await guardedTransferCurrentSnapshots(
       SHADOW_TRANSFER_OPERATION,
       SHADOW_TRANSFER_OLD,

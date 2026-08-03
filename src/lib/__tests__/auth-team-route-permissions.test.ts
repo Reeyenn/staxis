@@ -52,6 +52,7 @@ interface AccountFixture {
 
 interface TestState {
   accounts: AccountFixture[];
+  canonicalPropertyAccess: Map<string, string[]>;
   accountUpdates: Array<{ accountId: string; values: Record<string, unknown> }>;
   passwordUpdates: Array<{ userId: string; password: string }>;
   authBanUpdates: Array<{ userId: string; banDuration: string }>;
@@ -143,14 +144,18 @@ function fixture(
 }
 
 function resetState(): void {
+  const accounts = [
+    fixture(CALLER_ID, 'general_manager', [HOTEL_A], 'Alex Manager', CALLER_USER_ID),
+    fixture(MULTI_ID, 'housekeeping', [HOTEL_A, HOTEL_B], 'Morgan Multi'),
+    fixture(LOCAL_ID, 'housekeeping', [HOTEL_A], 'Leslie Local'),
+    fixture(OWNER_ID, 'owner', [HOTEL_A], 'Olivia Owner'),
+    fixture(PEER_GM_ID, 'general_manager', [HOTEL_A], 'Gina Manager'),
+  ];
   state = {
-    accounts: [
-      fixture(CALLER_ID, 'general_manager', [HOTEL_A], 'Alex Manager', CALLER_USER_ID),
-      fixture(MULTI_ID, 'housekeeping', [HOTEL_A, HOTEL_B], 'Morgan Multi'),
-      fixture(LOCAL_ID, 'housekeeping', [HOTEL_A], 'Leslie Local'),
-      fixture(OWNER_ID, 'owner', [HOTEL_A], 'Olivia Owner'),
-      fixture(PEER_GM_ID, 'general_manager', [HOTEL_A], 'Gina Manager'),
-    ],
+    accounts,
+    canonicalPropertyAccess: new Map(
+      accounts.map((accountRow) => [accountRow.id, [...accountRow.property_access]]),
+    ),
     accountUpdates: [],
     passwordUpdates: [],
     authBanUpdates: [],
@@ -204,7 +209,9 @@ function authoritativeAccess(accountRow: AccountFixture): Record<string, unknown
       propertyStandings: [],
     };
   }
-  const propertyIds = [...new Set(accountRow.property_access)].sort();
+  const propertyIds = [...new Set(
+    state.canonicalPropertyAccess.get(accountRow.id) ?? accountRow.property_access,
+  )].sort();
   const normalized = accountRow.authority_mode === 'normalized';
   return {
     ok: true,
@@ -252,7 +259,9 @@ function authoritativeRoster(
   const accounts = state.accounts
     .filter((accountRow) => (
       (accountRow.role === 'admin' && accountRow.active && includePlatformAdmins)
-      || (accountRow.role !== 'admin' && accountRow.property_access.includes(propertyId))
+      || (accountRow.role !== 'admin'
+        && (state.canonicalPropertyAccess.get(accountRow.id) ?? accountRow.property_access)
+          .includes(propertyId))
     ))
     .map((accountRow) => ({
       accountId: accountRow.id,
@@ -268,7 +277,9 @@ function authoritativeRoster(
       authorityVersion: accountRow.authority_version,
       propertyIds: accountRow.role === 'admin'
         ? []
-        : [...new Set(accountRow.property_access)].sort(),
+        : [...new Set(
+          state.canonicalPropertyAccess.get(accountRow.id) ?? accountRow.property_access,
+        )].sort(),
       managementSurface: accountRow.authority_mode === 'normalized'
         ? 'company_access'
         : 'legacy_hotel',
@@ -580,7 +591,7 @@ function installSupabaseStub(): void {
         error: null,
       };
     }
-    if (fn === 'staxis_remove_property_access_guarded_v2') {
+    if (fn === 'staxis_remove_property_access_authoritative') {
       const target = state.accounts.find((account) => account.id === safeArgs.p_account_id);
       if (!target) return { data: { status: 'not_found' }, error: null };
       const configuredError = state.removalErrors.get(target.id);
@@ -590,11 +601,18 @@ function installSupabaseStub(): void {
       if (state.removalConflicts.has(target.id)) {
         return { data: { status: 'conflict' }, error: null };
       }
-      if (target.role !== safeArgs.p_expected_role || target.updated_at !== safeArgs.p_expected_updated_at) {
+      const canonical = state.canonicalPropertyAccess.get(target.id) ?? [];
+      if (target.role !== safeArgs.p_expected_role
+          || target.authority_version !== safeArgs.p_expected_authority_version
+          || target.updated_at !== safeArgs.p_expected_updated_at
+          || !canonical.includes(String(safeArgs.p_hotel_id))) {
         return { data: { status: 'conflict' }, error: null };
       }
-      target.property_access = target.property_access.filter((hotelId) => hotelId !== safeArgs.p_hotel_id);
-      target.updated_at = '2026-07-01T12:00:01.000Z';
+      state.canonicalPropertyAccess.set(
+        target.id,
+        canonical.filter((hotelId) => hotelId !== safeArgs.p_hotel_id),
+      );
+      target.authority_version += 1;
       state.auditRows.push({
         action: 'account.team_detach',
         target_id: target.id,
@@ -604,7 +622,7 @@ function installSupabaseStub(): void {
       return {
         data: {
           status: 'ok',
-          remaining_hotels: target.property_access.length,
+          remaining_hotels: (state.canonicalPropertyAccess.get(target.id) ?? []).length,
           audit_written: true,
         },
         error: null,
@@ -938,6 +956,12 @@ function account(accountId: string): AccountFixture {
   return found;
 }
 
+function setAccess(accountId: string, propertyIds: string[]): void {
+  const target = account(accountId);
+  target.property_access = [...propertyIds];
+  state.canonicalPropertyAccess.set(accountId, [...propertyIds]);
+}
+
 function expectedRoleSnapshot(accountId: string): Record<string, unknown> {
   const target = account(accountId);
   return {
@@ -1158,7 +1182,7 @@ describe('GET /api/auth/team action contract', () => {
 
   test('allows a freshly verified platform admin to retain full target reach', async () => {
     account(CALLER_ID).role = 'admin';
-    account(CALLER_ID).property_access = [];
+    setAccess(CALLER_ID, []);
     const response = await GET(request('GET', `/api/auth/team?hotelId=${HOTEL_A}`));
     assert.equal(response.status, 200);
     const body = await response.json();
@@ -1264,7 +1288,7 @@ describe('GET /api/auth/team action contract', () => {
 
   test('withholds the roster when selected-hotel authority is revoked before egress', async () => {
     state.beforeFinalCallerAuthorityRead = () => {
-      account(CALLER_ID).property_access = [];
+      setAccess(CALLER_ID, []);
       account(CALLER_ID).authority_version += 1;
     };
     const response = await GET(request('GET', `/api/auth/team?hotelId=${HOTEL_A}`));
@@ -1509,7 +1533,7 @@ describe('PUT /api/auth/team cross-hotel account safety', () => {
   });
 
   test('a manager of every target hotel may change profile fields but not set another password', async () => {
-    account(CALLER_ID).property_access = [HOTEL_A, HOTEL_B];
+    setAccess(CALLER_ID, [HOTEL_A, HOTEL_B]);
     const profileResponse = await PUT(request('PUT', '/api/auth/team', {
       hotelId: HOTEL_A,
       accountId: MULTI_ID,
@@ -1541,7 +1565,7 @@ describe('PUT /api/auth/team cross-hotel account safety', () => {
   });
 
   test('rejects password combined with a name, role, or staff link before either store changes', async () => {
-    account(CALLER_ID).property_access = [HOTEL_A, HOTEL_B];
+    setAccess(CALLER_ID, [HOTEL_A, HOTEL_B]);
     const profileMutations = [
       { displayName: 'Must Not Partially Save' },
       { role: 'maintenance' },
@@ -1568,8 +1592,8 @@ describe('PUT /api/auth/team cross-hotel account safety', () => {
   });
 
   test('hotel access alone is insufficient when manage_team is restricted at another hotel', async () => {
-    account(CALLER_ID).property_access = [HOTEL_A, HOTEL_C];
-    account(MULTI_ID).property_access = [HOTEL_A, HOTEL_C];
+    setAccess(CALLER_ID, [HOTEL_A, HOTEL_C]);
+    setAccess(MULTI_ID, [HOTEL_A, HOTEL_C]);
     state.capabilityOverrides.push({
       property_id: HOTEL_C,
       capability: 'manage_team',
@@ -1588,7 +1612,7 @@ describe('PUT /api/auth/team cross-hotel account safety', () => {
   });
 
   test('self-service name and password edits remain allowed', async () => {
-    account(CALLER_ID).property_access = [HOTEL_A, HOTEL_B];
+    setAccess(CALLER_ID, [HOTEL_A, HOTEL_B]);
     const profileResponse = await PUT(request('PUT', '/api/auth/team', {
       hotelId: HOTEL_A,
       accountId: CALLER_ID,
@@ -1610,7 +1634,7 @@ describe('PUT /api/auth/team cross-hotel account safety', () => {
 
   test('platform admin may update a multi-hotel non-admin account', async () => {
     account(CALLER_ID).role = 'admin';
-    account(CALLER_ID).property_access = ['*'];
+    setAccess(CALLER_ID, ['*']);
     const response = await PUT(request('PUT', '/api/auth/team', {
       hotelId: HOTEL_A,
       accountId: MULTI_ID,
@@ -1713,7 +1737,7 @@ describe('PUT /api/auth/team cross-hotel account safety', () => {
 
   test('hotel transfer in the authorization/write gap conflicts without a profile write or audit', async () => {
     state.beforeProfileCommit = () => {
-      account(LOCAL_ID).property_access = [HOTEL_B];
+      setAccess(LOCAL_ID, [HOTEL_B]);
       account(LOCAL_ID).authority_version += 1;
     };
 
@@ -1783,8 +1807,9 @@ describe('DELETE /api/auth/team remains selected-hotel scoped', () => {
       `/api/auth/team?hotelId=${HOTEL_A}&accountId=${MULTI_ID}`,
     ));
     assert.equal(response.status, 200);
-    assert.deepEqual(account(MULTI_ID).property_access, [HOTEL_B]);
-    assert.equal(state.rpcCalls.at(-1)?.fn, 'staxis_remove_property_access_guarded_v2');
+    assert.deepEqual(account(MULTI_ID).property_access, [HOTEL_A, HOTEL_B]);
+    assert.deepEqual(state.canonicalPropertyAccess.get(MULTI_ID), [HOTEL_B]);
+    assert.equal(state.rpcCalls.at(-1)?.fn, 'staxis_remove_property_access_authoritative');
     assert.equal(state.auditRows.length, 1);
   });
 
@@ -1809,7 +1834,7 @@ describe('DELETE /api/auth/team remains selected-hotel scoped', () => {
     assert.equal(response.status, 409);
     assert.match((await response.json()).error, /pending account status change/i);
     assert.deepEqual(account(MULTI_ID).property_access, [HOTEL_A, HOTEL_B]);
-    assert.equal(state.rpcCalls.some((call) => call.fn === 'staxis_remove_property_access_guarded_v2'), false);
+    assert.equal(state.rpcCalls.some((call) => call.fn === 'staxis_remove_property_access_authoritative'), false);
     assert.equal(state.auditRows.length, 0);
   });
 
@@ -1843,7 +1868,7 @@ describe('DELETE /api/auth/team remains selected-hotel scoped', () => {
     assert.equal(response.status, 403);
     assert.deepEqual(account(LOCAL_ID).property_access, [HOTEL_A]);
     assert.equal(
-      state.rpcCalls.some((call) => call.fn === 'staxis_remove_property_access_guarded_v2'),
+      state.rpcCalls.some((call) => call.fn === 'staxis_remove_property_access_authoritative'),
       false,
     );
   });
@@ -1871,7 +1896,7 @@ describe('DELETE /api/auth/team remains selected-hotel scoped', () => {
     assert.match((await response.json()).error, /organization-owner access is protected/i);
     assert.deepEqual(account(LOCAL_ID).property_access, [HOTEL_A]);
     assert.equal(
-      state.rpcCalls.some((call) => call.fn === 'staxis_remove_property_access_guarded_v2'),
+      state.rpcCalls.some((call) => call.fn === 'staxis_remove_property_access_authoritative'),
       false,
     );
   });

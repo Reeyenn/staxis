@@ -11,7 +11,7 @@
  *             newOwnerAccountId }
  *     The normalized company access editor owns company authority. This route
  *     keeps only the atomic legacy-hotel ownership transfer required while an
- *     independent hotel still uses accounts.role/property_access authority.
+ *     independent hotel still uses the legacy-hotel authority mode.
  *
  * Ownership transfer writes a row to role_changes (the structured audit) AND
  * a parallel admin_audit_log entry (the generic audit). The structured
@@ -37,6 +37,7 @@ import type { AppRole } from '@/lib/roles';
 import { capabilityDecisionForProperty } from '@/lib/capabilities/server';
 import { capabilityUnavailableResponse } from '@/lib/capabilities/api-gate';
 import { loadAuthoritativeHotelRoster } from '@/lib/authorization/hotel-account-roster';
+import { listAuthoritativePropertyAccess } from '@/lib/authorization/server';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -54,17 +55,19 @@ interface CallerContext {
 async function loadCaller(authUserId: string, authEmail: string | null): Promise<CallerContext | null> {
   const { data, error } = await supabaseAdmin
     .from('accounts')
-    .select('id, role, property_access, active, lifecycle_intent_version')
+    .select('id, role, active, lifecycle_intent_version')
     .eq('data_user_id', authUserId)
     .maybeSingle();
   if (error || !data || data.active !== true
       || typeof data.lifecycle_intent_version !== 'number') return null;
+  const authority = await listAuthoritativePropertyAccess(data.id);
+  if (!authority) return null;
   return {
     authUserId,
     authEmail,
     accountId: data.id,
     role: data.role as AppRole,
-    propertyAccess: Array.isArray(data.property_access) ? data.property_access : [],
+    propertyAccess: authority.all ? ['*'] : authority.propertyIds,
     active: data.active === true,
     lifecycleIntentVersion: data.lifecycle_intent_version,
   };
@@ -307,19 +310,18 @@ export async function PUT(req: NextRequest) {
     });
   }
 
-  // This direct read is now tenant-bounded by the authoritative roster above
-  // and remains only an optimistic snapshot. The guarded RPC locks and rechecks
-  // both accounts, exact hotel sets, authority mode, topology, capability, and
+  // This direct read supplies identity/lifecycle fields only. The roster above
+  // is the canonical access snapshot; the guarded RPC locks and rechecks both
+  // accounts, exact hotel sets, authority mode, topology, capability, and
   // pending lifecycle state in the mutating transaction.
   const { data: newOwner, error: noErr } = await supabaseAdmin
     .from('accounts')
-    .select('id, role, active, data_user_id, property_access, lifecycle_intent_version')
+    .select('id, role, active, data_user_id, lifecycle_intent_version')
     .eq('id', newOwnerId)
     .maybeSingle();
   if (noErr || !newOwner) return err('Proposed new owner not found', { requestId, status: 404, code: ApiErrorCode.NotFound });
   if (typeof newOwner.data_user_id !== 'string'
-      || typeof newOwner.lifecycle_intent_version !== 'number'
-      || !Array.isArray(newOwner.property_access)) {
+      || typeof newOwner.lifecycle_intent_version !== 'number') {
     return err('Ownership transfer is temporarily unavailable. It is safe to try again.', {
       requestId,
       status: 503,
@@ -327,7 +329,7 @@ export async function PUT(req: NextRequest) {
       headers: { 'Retry-After': '5' },
     });
   }
-  if (!newOwner.property_access.includes(propertyId)) {
+  if (!targetRoster.propertyIds.includes(propertyId)) {
     return err('Proposed new owner does not have access to this hotel', { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
   }
 
@@ -352,7 +354,7 @@ export async function PUT(req: NextRequest) {
         p_expected_new_active: newOwner.active !== false,
         p_expected_new_role: newOwner.role,
         p_expected_new_auth_user_id: newOwner.data_user_id,
-        p_expected_new_property_access: newOwner.property_access,
+        p_expected_new_property_access: targetRoster.propertyIds,
         p_expected_new_intent_version: newOwner.lifecycle_intent_version,
         p_reason: reason,
         p_request_id: requestId,

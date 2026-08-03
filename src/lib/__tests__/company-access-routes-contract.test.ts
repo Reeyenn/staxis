@@ -57,17 +57,17 @@ describe('company access read/delegation boundary', () => {
   test('fails closed when the account is inactive, including immediately before legacy fallback', () => {
     assert.match(getRoute, /const account = accountData as AccountRow;[\s\S]*account\.active !== true[\s\S]*Account not found/);
     const fallbackCheck = getRoute.indexOf(".select('active')", getRoute.indexOf('fallbackAccount'));
-    const legacyProjection = getRoute.lastIndexOf('legacyProjection(account)');
-    assert.ok(fallbackCheck >= 0 && legacyProjection > fallbackCheck, 'active account must be re-checked before legacy fallback');
+    const legacyProjection = getRoute.lastIndexOf('legacyProjection(account, authority)');
+    assert.ok(fallbackCheck >= 0 && legacyProjection < fallbackCheck, 'canonical projection must not be preceded by a legacy array fallback');
     assert.match(getRoute, /fallbackAccount\?\.active !== true[\s\S]*Account not found/);
   });
 
   test('uses the durable authority mode and never resurrects normalized access from the legacy array', () => {
-    assert.match(getRoute, /staxis_list_account_authorized_properties/);
+    assert.match(getRoute, /listAuthoritativePropertyAccess\(actor\.accountId\)/);
     assert.match(getRoute, /authorityMode === ['"]legacy['"] \|\| authorityMode === ['"]shadow['"]/);
-    assert.match(getRoute, /if \(authorityMode === ['"]normalized['"]\)[\s\S]*EMPTY_COMPANY_ACCESS/);
-    assert.match(getRoute, /authorityMode !== ['"]schema_absent['"][\s\S]*throw normalizedError/);
-    assert.match(getRoute, /if \(authorityMode !== ['"]schema_absent['"]\)[\s\S]*Authoritative company access could not be projected/);
+    assert.match(getRoute, /if \(authorityMode === ['"]legacy['"] \|\| authorityMode === ['"]shadow['"]\)[\s\S]*legacyProjection\(account, authority\)/);
+    assert.match(getRoute, /if \(fallbackAccount\?\.active !== true\)[\s\S]*Account not found/);
+    assert.doesNotMatch(getRoute, /schema_absent|property_access/);
   });
 
   test('invite dialog consumes server policies rather than globally combining receipts', () => {
@@ -180,7 +180,7 @@ describe('organization invitation acceptance', () => {
     assert.ok(claim >= 0 && create > claim, 'atomic token-derived claim must precede auth creation');
     assert.match(registerRoute, /claimKey = `orginvite_\$\{tokenHash\}`/);
     assert.match(registerRoute, /role: ['"]staff['"]/);
-    assert.match(registerRoute, /property_access: \[\]/);
+    assert.doesNotMatch(registerRoute, /property_access\s*:\s*\[\]/);
     assert.match(registerRoute, /allowOrphanReclaim: false/);
     assert.match(registerRoute, /if \(authResult\.unlinkedIdentity\)[\s\S]*status: 503/);
     assert.match(registerRoute, /accountId = randomUUID\(\)[\s\S]*id: accountId/);

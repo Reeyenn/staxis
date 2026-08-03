@@ -3,8 +3,10 @@
 // ─── Auth model ────────────────────────────────────────────────────────────
 // Supabase Auth owns passwords. Each account is ONE auth.users row, identified
 // by a synthetic email: `${username}@staxis.local`. The `accounts` table adds
-// role + displayName + property_access metadata keyed by `data_user_id` which
-// equals the auth.users.id.
+// role + displayName metadata keyed by `data_user_id` which equals the
+// auth.users.id. Per-property authority is hydrated only from the server's
+// canonical authorization snapshot below; the browser account projection is
+// intentionally not an access source.
 //
 // Login flow (100% client-side — no /api/auth/login round-trip):
 //   1. User types username + password
@@ -276,7 +278,11 @@ function isTerminalSessionHydrationError(error: unknown): boolean {
     || status === 400 || status === 401 || status === 403 || status === 404;
 }
 
-// Fetch the accounts row for the current auth user and translate to AppUser.
+// Fetch the identity/profile row for the current auth user and translate to
+// AppUser. This intentionally does not select accounts.property_access. A
+// password session is not yet a trusted application session at this point, so
+// the initial non-admin projection has no property authority until the
+// server-backed session-authorization revalidation completes.
 //
 // Return-value contract — load-bearing, callers depend on the distinction:
 //   • AppUser  → row found.
@@ -294,7 +300,7 @@ function isTerminalSessionHydrationError(error: unknown): boolean {
 async function loadAppUserUncached(authUid: string): Promise<AppUser | null> {
   const fetchRow = () => supabase
     .from('accounts')
-    .select('id, username, display_name, role, property_access, data_user_id, staff_id, skip_2fa')
+    .select('id, username, display_name, role, data_user_id, staff_id, skip_2fa')
     .eq('data_user_id', authUid)
     .maybeSingle();
 
@@ -315,14 +321,15 @@ async function loadAppUserUncached(authUid: string): Promise<AppUser | null> {
   }
   if (!data) return null;
 
-  const role = (data.role ?? 'staff') as AppUser['role'];
+  const role = data.role as AppUser['role'];
+  if (!isValidRole(role)) return null;
   // Admins conceptually have access to every property. The database stores
-  // an empty array for admins (since '*' isn't a valid UUID), so we translate
-  // it to ['*'] in the client model to preserve the legacy propertyAccess
-  // semantics used throughout the UI.
+  // an empty array for admins (since '*' isn't a valid UUID), so preserve the
+  // established client convention. Non-admin authority is filled only by the
+  // canonical session snapshot after trust/2FA ordering has completed.
   const propertyAccess: string[] = role === 'admin'
     ? ['*']
-    : (data.property_access ?? []);
+    : [];
 
   return {
     uid: data.data_user_id,

@@ -12,6 +12,9 @@ const lifecycleMigration = source('supabase/migrations/0335_account_lifecycle_in
 const peopleLifecycleMigration = source(
   'supabase/migrations/0395_authoritative_people_lifecycle.sql',
 );
+const stageBMutationMigration = source(
+  'supabase/migrations/0424_authoritative_access_stage_b_mutations.sql',
+);
 
 describe('hotel team mutation concurrency guards', () => {
   test('profile writes compare the account version and return a conflict when stale', () => {
@@ -37,16 +40,18 @@ describe('hotel team mutation concurrency guards', () => {
   });
 
   test('hotel removal locks and compares the target snapshot in PostgreSQL', () => {
-    assert.match(route, /staxis_remove_property_access_guarded/);
+    assert.match(route, /staxis_remove_property_access_authoritative/);
     assert.match(route, /p_expected_role: target\.role/);
+    assert.match(route, /p_expected_authority_version: targetAuthorityVersion/);
     assert.match(route, /p_expected_updated_at: target\.updated_at/);
-    assert.match(migration, /for update;/i);
-    assert.match(migration, /v_role is distinct from p_expected_role/i);
-    assert.match(migration, /v_updated_at is distinct from p_expected_updated_at/i);
-    assert.match(migration, /return jsonb_build_object\('status', 'conflict'\)/i);
-    assert.match(migration, /return jsonb_build_object\('status', 'not_attached'\)/i);
-    assert.match(migration, /revoke all on function[\s\S]*from public, anon, authenticated/i);
-    assert.match(migration, /grant execute on function[\s\S]*to service_role/i);
+    assert.match(stageBMutationMigration, /create or replace function public\.staxis_remove_property_access_authoritative/i);
+    assert.match(stageBMutationMigration, /for update;/i);
+    assert.match(stageBMutationMigration, /v_target\.role is distinct from p_expected_role/i);
+    assert.match(stageBMutationMigration, /v_target\.updated_at is distinct from p_expected_updated_at/i);
+    assert.match(stageBMutationMigration, /return jsonb_build_object\('status', 'conflict'\)/i);
+    assert.match(stageBMutationMigration, /return jsonb_build_object\('status', 'not_attached'\)/i);
+    assert.match(stageBMutationMigration, /revoke all on function[\s\S]*from public, anon, authenticated/i);
+    assert.match(stageBMutationMigration, /grant execute on function[\s\S]*to service_role/i);
   });
 
   test('ordinary role changes compare the dialog-open row instead of a fresh route read', () => {

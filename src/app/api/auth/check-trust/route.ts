@@ -20,6 +20,7 @@ import { log, getOrMintRequestId } from '@/lib/log';
 import { env } from '@/lib/env';
 import { logSecurityEvent } from '@/lib/audit';
 import { isTwoFactorEnabled } from '@/lib/two-factor';
+import { listAuthoritativePropertyAccess } from '@/lib/authorization/server';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -39,7 +40,7 @@ export async function POST(req: NextRequest) {
 
   const { data: account, error: acctErr } = await supabaseAdmin
     .from('accounts')
-    .select('id, skip_2fa, role, property_access')
+    .select('id, skip_2fa, role')
     .eq('data_user_id', userData.user.id)
     .maybeSingle();
   if (acctErr || !account) {
@@ -65,8 +66,8 @@ export async function POST(req: NextRequest) {
   //   2. account.data_user_id must appear in env.SKIP_2FA_USER_IDS
   //      (comma-separated).
   //
-  //   3. account.role MUST NOT be 'admin', AND property_access MUST NOT
-  //      include '*'. The demo accounts are general_manager + scoped to a
+  //   3. account.role MUST NOT be 'admin', AND canonical authority MUST NOT
+  //      resolve to all properties. The demo accounts are general_manager + scoped to a
   //      single property. If config drift ever flips skip_2fa=true on an
   //      admin row AND that admin's UUID lands in the env allowlist, the
   //      bypass is REFUSED at this layer regardless. A DB CHECK constraint
@@ -84,8 +85,11 @@ export async function POST(req: NextRequest) {
       .filter(Boolean);
     const onAllowlist = allowlist.includes(userData.user.id);
     const role = (account.role as string) ?? '';
-    const access = (account.property_access ?? []) as string[];
-    const hadWildcardAccess = access.includes('*');
+    const authority = await listAuthoritativePropertyAccess(account.id);
+    // A resolver failure cannot prove that the demo account is scoped. Keep
+    // the normal cookie-trust path, which fails closed when no trusted device
+    // is present, and never bypass 2FA on an unavailable authority snapshot.
+    const hadWildcardAccess = authority?.all === true;
     const isPrivileged = role === 'admin' || hadWildcardAccess;
 
     // Privileged refusal runs BEFORE the env-gate / allowlist checks.
@@ -105,6 +109,13 @@ export async function POST(req: NextRequest) {
         },
       });
       // Fall through to normal cookie-trust path below.
+    } else if (!authority) {
+      await logSecurityEvent({
+        action: 'auth.skip_2fa_blocked_authority_unavailable',
+        userId: userData.user.id,
+        requestId,
+        metadata: { accountId: account.id },
+      });
     } else if (envOn && onAllowlist) {
       await logSecurityEvent({
         action: 'auth.skip_2fa_used',

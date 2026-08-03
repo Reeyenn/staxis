@@ -13,7 +13,7 @@
 //
 //   DELETE  ?hotelId=…&accountId=…
 //     Remove a team member's access to that hotel (detach — the account
-//     itself stays alive, just loses property_access for this hotel).
+//     itself stays alive, just loses canonical access for this hotel).
 //     Targets cannot be admins. Caller cannot remove themselves.
 //
 // Admins still have access via /api/auth/accounts (full system view); this
@@ -312,7 +312,7 @@ export async function GET(req: NextRequest) {
     display_name: account.displayName,
     role: account.role,
     active: account.active,
-    property_access: account.propertyIds,
+    propertyIds: account.propertyIds,
     created_at: account.createdAt,
     updated_at: account.updatedAt,
     data_user_id: account.dataUserId,
@@ -404,7 +404,7 @@ export async function GET(req: NextRequest) {
   const teamWithDecisions = await Promise.all(teamRows.map(async (r) => {
     const targetRole = r.role as AppRole;
     const isSelf = r.id === caller.accountId;
-    const targetAccess = targetRole === 'admin' ? ['*'] : normalizedHotelAccess(r.property_access);
+    const targetAccess = targetRole === 'admin' ? ['*'] : normalizedHotelAccess(r.propertyIds);
     const disclosedTargetAccess = callerReach === null
       ? targetAccess
       : targetAccess.filter((propertyId) => propertyId !== '*' && callerReach.has(propertyId));
@@ -745,7 +745,7 @@ export async function PUT(req: NextRequest) {
   // Load target.
   const { data: target, error: tErr } = await supabaseAdmin
     .from('accounts')
-    .select('id, role, active, data_user_id, property_access, display_name, staff_id, updated_at, lifecycle_intent_version')
+    .select('id, role, active, data_user_id, display_name, staff_id, updated_at, lifecycle_intent_version')
     .eq('id', accountId)
     .maybeSingle();
   if (tErr || !target) {
@@ -892,7 +892,7 @@ export async function PUT(req: NextRequest) {
         p_expected_active: target.active !== false,
         p_expected_role: body.expectedRole,
         p_expected_auth_user_id: target.data_user_id,
-        p_expected_property_access: target.property_access,
+        p_expected_property_access: targetAccess,
         p_expected_display_name: body.expectedDisplayName,
         p_expected_updated_at: body.expectedUpdatedAt,
         p_expected_intent_version: target.lifecycle_intent_version,
@@ -1009,7 +1009,7 @@ export async function PUT(req: NextRequest) {
         p_expected_active: target.active !== false,
         p_expected_role: target.role,
         p_expected_auth_user_id: target.data_user_id,
-        p_expected_property_access: target.property_access,
+        p_expected_property_access: targetAccess,
         p_expected_target_property_ids: targetAccess,
         p_expected_display_name: target.display_name,
         p_expected_staff_id: (target as { staff_id?: string | null }).staff_id ?? null,
@@ -1114,6 +1114,7 @@ export async function DELETE(req: NextRequest) {
     });
   }
 
+  let targetAuthorityVersion: number | null = null;
   try {
     const roster = await loadAuthoritativeHotelRoster(hotelId, caller.isAdmin);
     const authoritativeTarget = roster.accounts.find((account) => account.accountId === accountId);
@@ -1130,6 +1131,7 @@ export async function DELETE(req: NextRequest) {
         details: { href: '/company?tab=access' },
       });
     }
+    targetAuthorityVersion = authoritativeTarget.authorityVersion;
   } catch (rosterError) {
     log.error('[team:DELETE] authoritative roster unavailable', {
       requestId,
@@ -1192,7 +1194,7 @@ export async function DELETE(req: NextRequest) {
   // each compute a stale `next` array and clobber each other, silently re-
   // granting a hotel one of them had just removed.
   const { data: removalResult, error: rpcErr } = await supabaseAdmin.rpc(
-    'staxis_remove_property_access_guarded_v2',
+    'staxis_remove_property_access_authoritative',
     {
       p_actor_account_id: caller.accountId,
       p_actor_auth_user_id: caller.authUserId,
@@ -1200,6 +1202,7 @@ export async function DELETE(req: NextRequest) {
       p_account_id: accountId,
       p_hotel_id: hotelId,
       p_expected_role: target.role,
+      p_expected_authority_version: targetAuthorityVersion,
       p_expected_updated_at: target.updated_at,
       p_request_id: requestId,
     },
