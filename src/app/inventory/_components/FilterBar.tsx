@@ -27,6 +27,10 @@ interface FilterBarProps {
   onAddCategory: (name: string) => void;
   view: InventoryView;
   onView: (v: InventoryView) => void;
+  /** Bring in a whole file. Sits LEFT of Add item on purpose: for a hotel
+   *  arriving with a spreadsheet, importing it is the first thing they should
+   *  see, and adding items one at a time is what they do afterwards. */
+  onImport?: () => void;
   onAdd?: () => void;
 }
 
@@ -46,6 +50,7 @@ export function FilterBar({
   onAddCategory,
   view,
   onView,
+  onImport,
   onAdd,
 }: FilterBarProps) {
   const tx = t(lang);
@@ -100,6 +105,11 @@ export function FilterBar({
           );
         })}
       </div>
+      {onImport ? (
+        <Btn variant="ghost" size="md" onClick={onImport} data-testid="inventory-import-button">
+          {tx.importFile}
+        </Btn>
+      ) : null}
       {onAdd ? <Btn variant="ghost" size="md" onClick={onAdd}>{tx.addItem}</Btn> : null}
     </div>
   );

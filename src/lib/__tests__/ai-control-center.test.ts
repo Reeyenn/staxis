@@ -69,8 +69,11 @@ describe('AI Control Center feature registry', () => {
   // 2026-08-01: the companion bubble got its own conversation slot so its
   // model can be chosen without moving the main chat bar (25→26 controllable,
   // 32→33 keys). Display-only count is unchanged.
-  test('covers 26 controllable hosted features and 7 display-only features', () => {
-    assert.equal(AI_FEATURE_KEYS.length, 33);
+  // 2026-08-03: inventory sheet import got its own slot so the one-off setup
+  // reader can be moved or switched off without touching the weekly invoice
+  // scanner (26→27 controllable, 33→34 keys). Display-only count unchanged.
+  test('covers 27 controllable hosted features and 7 display-only features', () => {
+    assert.equal(AI_FEATURE_KEYS.length, 34);
     assert.equal(new Set(AI_FEATURE_KEYS).size, AI_FEATURE_KEYS.length);
     assert.deepEqual(Object.keys(AI_FEATURE_REGISTRY).sort(), [...AI_FEATURE_KEYS].sort());
 
@@ -101,6 +104,7 @@ describe('AI Control Center feature registry', () => {
       'walkthrough.step_generation',
       'inventory.photo_count',
       'inventory.invoice_scan',
+      'inventory.sheet_import',
       'financials.invoice_scan',
       'financials.quote_scan',
       'communications.staxis_assistant',

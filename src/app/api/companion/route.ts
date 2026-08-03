@@ -67,6 +67,7 @@ import {
   type CompanionMemory,
   type TeachFlow,
 } from '@/lib/companion/manners';
+import { rememberDroppedTopic } from '@/lib/companion/pointers';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -182,10 +183,15 @@ type CompanionEvent =
   | 'declined'
   | 'accepted'
   | 'taught'
-  | 'greeted';
+  | 'greeted'
+  // "Do not show this again", said once and meant. The ordinary `declined`
+  // event needs two Nos before a topic drops, which is right for something the
+  // companion noticed and wrong for a button somebody has read about and
+  // decided against. See src/lib/companion/pointers.ts.
+  | 'dropped';
 
 const EVENTS: readonly CompanionEvent[] = [
-  'welcomed', 'tour_declined', 'tour_taken', 'spoke', 'declined', 'accepted', 'taught', 'greeted',
+  'welcomed', 'tour_declined', 'tour_taken', 'spoke', 'declined', 'accepted', 'taught', 'greeted', 'dropped',
 ];
 
 function isEvent(x: unknown): x is CompanionEvent {
@@ -225,7 +231,7 @@ export async function POST(req: NextRequest): Promise<Response> {
   // a key in a stored blob. `parseCompanionMemory` would drop an over-long key
   // on the way back out, which is a silent way for a No to stop working.
   let topic = '';
-  if (body.event === 'spoke' || body.event === 'declined' || body.event === 'accepted') {
+  if (body.event === 'spoke' || body.event === 'declined' || body.event === 'accepted' || body.event === 'dropped') {
     const v = validateString(body.topic, { max: 200, min: 1, label: 'topic' });
     if (v.error) {
       return err(v.error, {
@@ -257,6 +263,7 @@ export async function POST(req: NextRequest): Promise<Response> {
       case 'spoke':         next = rememberSpoke(current, topic, now, today); break;
       case 'declined':      next = rememberDeclined(current, topic, today); break;
       case 'accepted':      next = rememberAccepted(current, topic, today); break;
+      case 'dropped':       next = rememberDroppedTopic(current, topic, today); break;
       case 'taught':        next = rememberTaught(current, body.flow as TeachFlow); break;
       // Stamped with the HOTEL's day, so a person working past midnight is
       // greeted when the hotel's morning starts and not when UTC's does.

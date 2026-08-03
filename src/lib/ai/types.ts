@@ -30,6 +30,7 @@ export const AI_FEATURE_KEYS = [
   'walkthrough.step_generation',
   'inventory.photo_count',
   'inventory.invoice_scan',
+  'inventory.sheet_import',
   'financials.invoice_scan',
   'financials.quote_scan',
   'communications.staxis_assistant',

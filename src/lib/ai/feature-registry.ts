@@ -636,6 +636,17 @@ export const AI_FEATURE_REGISTRY: Readonly<Record<AiFeatureKey, AiFeatureDefinit
     'Reads a delivery invoice photo/PDF and pulls out the items that arrived.',
     ['text', 'image_input', 'pdf_input'], SONNET,
   ),
+  // Reading a hotel's own spreadsheet is a different job from reading a
+  // supplier's invoice, and it gets its own knob for one practical reason: a
+  // new hotel fires this a handful of times during setup and then never again,
+  // while the invoice scanner fires every week forever. Reeyen must be able to
+  // move the setup reader to a cheaper model, or switch it off after onboarding
+  // finishes, without touching the scanner Maria uses on Mondays.
+  'inventory.sheet_import': defineFeature(
+    'inventory.sheet_import', 'Inventory', 'Inventory sheet reading',
+    'Reads an inventory or occupancy spreadsheet, PDF or photo the hotel already keeps and turns it into a list to approve. It never saves anything on its own.',
+    ['text', 'image_input', 'pdf_input'], SONNET,
+  ),
   'financials.invoice_scan': defineFeature(
     'financials.invoice_scan', 'Financials', 'Financial invoice scanning',
     'Reads a vendor invoice photo and pre-fills the expense: who, how much, what for.',
