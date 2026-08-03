@@ -68,7 +68,6 @@ import {
   type CompanyLifecycleAction,
 } from './_components/AccessWorkflowDialogs';
 import { AccessEditorDialog } from './_components/AccessEditorDialog';
-import { AdminHotelRelationshipManager } from './_components/AdminHotelRelationshipManager';
 import { HotelTeamPanel } from './_components/HotelTeamPanel';
 import { HotelSwitcher } from './_components/HotelSwitcher';
 import { LegacyOwnershipTransferPanel } from './_components/LegacyOwnershipTransferPanel';
@@ -896,7 +895,6 @@ function CompanyAccessContent() {
                   structureError={structureError}
                   structureLoading={structureLoading}
                   lang={lang}
-                  activeProperty={activeProperty}
                   query={query}
                   onQueryChange={setQuery}
                   statusFilter={hotelStatusFilter}
@@ -984,13 +982,12 @@ function CompanyAccessContent() {
   );
 }
 
-function HotelsPanel({ data, structure, structureError, structureLoading, lang, activeProperty, query, onQueryChange, statusFilter, onStatusFilterChange, onStructureRetry, onStructureChanged }: {
+export function HotelsPanel({ data, structure, structureError, structureLoading, lang, query, onQueryChange, statusFilter, onStatusFilterChange, onStructureRetry, onStructureChanged }: {
   data: CompanyAccessData;
   structure: CompanyStructureProjection | null;
   structureError: string | null;
   structureLoading: boolean;
   lang: string;
-  activeProperty: Property | null;
   query: string;
   onQueryChange: (value: string) => void;
   statusFilter: HotelStatusFilter;
@@ -1046,15 +1043,6 @@ function HotelsPanel({ data, structure, structureError, structureLoading, lang, 
             {'Retry'}
           </button>
         </div>
-      ) : null}
-      {data.viewerContext?.kind === 'staxis_admin_preview' && activeProperty ? (
-        <AdminHotelRelationshipManager
-          key={activeProperty.id}
-          propertyId={activeProperty.id}
-          propertyName={activeProperty.name}
-          lang={lang}
-          onChanged={onStructureChanged}
-        />
       ) : null}
       {!data.viewerContext && structure && structure.organizations.length > 0 ? (
         <CompanyStructureManager
