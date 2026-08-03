@@ -26,7 +26,7 @@ export const POST = defineRoute({
       return ctx.err(idV.error, { status: 400, code: ApiErrorCode.ValidationFailed });
     }
 
-    const rl = await checkAndIncrementRateLimit('comms-acknowledge', hashToRateLimitKey(`${ctx.pid}:${ctx.staffId}`));
+    const rl = await checkAndIncrementRateLimit('comms-acknowledge', hashToRateLimitKey(`${ctx.pid}:${ctx.userId}`));
     if (!rl.allowed) return rateLimitedResponse(rl.current, rl.cap, rl.retryAfterSec);
 
     const msg = await getAckMessage(ctx.pid, idV.value!);
