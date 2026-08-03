@@ -5,39 +5,28 @@
 // the JSX close to the design source).
 
 import React from 'react';
+import {
+  CONCOURSE_COLORS,
+  CONCOURSE_FONTS,
+  UI_FOCUS,
+  UI_RADII,
+  UI_SHADOWS,
+} from '@/app/_components/ui/tokens';
+import { UiButton, type UiButtonTheme } from '@/app/_components/ui/Button';
+import { SurfaceCard } from '@/app/_components/ui/SurfaceCard';
 
 export const T = {
-  bg:        '#FFFFFF',
-  paper:     '#FFFFFF',
-  ink:       '#1F231C',
-  inkSoft:   '#3A3F38',
-  ink2:      '#5C625C',
-  ink3:      '#A6ABA6',
-  rule:      'rgba(31,35,28,0.08)',
-  ruleSoft:  'rgba(31,35,28,0.05)',
+  ...CONCOURSE_COLORS,
   brand:     '#3E5C48',
-  sage:      '#9EB7A6',
-  sageDeep:  '#5C7A60',
-  sageDim:   'rgba(92,122,96,0.14)',
-  okDeep:    '#356B4C',
-  okDim:     'rgba(53,107,76,0.10)',
-  caramel:   '#C99644',
-  caramelDeep:'#8C6A33',
-  warm:      '#B85C3D',
-  warmDim:   'rgba(184,92,61,0.10)',
   red:       '#B85C3D',
   redDim:    'rgba(184,92,61,0.10)',
-  purple:    '#5C625C',
-  purpleDim: 'rgba(31,35,28,0.06)',
-  cardShadow: '0 6px 16px -14px rgba(31,42,32,0.35)',
+  cardShadow: UI_SHADOWS.card,
 } as const;
 
 export const fonts = {
-  sans:  'var(--font-geist), -apple-system, BlinkMacSystemFont, sans-serif',
-  mono:  'var(--font-geist-mono), ui-monospace, monospace',
+  ...CONCOURSE_FONTS,
   // Concourse drops serif display type — kept as a Geist alias so the many
   // settings/staff callers of fonts.serif restyle in place without a sweep.
-  serif: 'var(--font-geist), -apple-system, BlinkMacSystemFont, sans-serif',
 } as const;
 
 // Department visual tokens. Shared by Avatar rings, DeptChip, dept-grouped rows.
@@ -110,6 +99,26 @@ export function Pill({
 export type BtnVariant = 'primary' | 'ghost' | 'sage' | 'paper';
 export type BtnSize = 'sm' | 'md' | 'lg';
 
+const STAFF_BUTTON_THEME: UiButtonTheme = {
+  sizes: {
+    sm: { height: 28, padding: '0 12px', fontSize: 12 },
+    md: { height: 36, padding: '0 16px', fontSize: 12.5 },
+    lg: { height: 44, padding: '0 22px', fontSize: 14 },
+  },
+  variants: {
+    primary: { background: T.brand, color: '#FFFFFF', border: 'transparent', fontWeight: 600 },
+    ghost: { background: 'transparent', color: T.ink2, border: 'rgba(31,35,28,0.14)', fontWeight: 500 },
+    sage: { background: T.sageDim, color: T.sageDeep, border: 'rgba(92,122,96,0.3)', fontWeight: 600 },
+    paper: { background: T.paper, color: T.ink, border: T.rule, fontWeight: 500 },
+  },
+  fontFamily: fonts.sans,
+  disabledOpacity: 0.55,
+  gap: 6,
+  borderRadius: UI_RADII.pill,
+  flexShrink: 0,
+  focusRing: UI_FOCUS.ring,
+};
+
 export function Btn({
   variant = 'ghost', size = 'md', children, onClick, disabled, title, style = {},
 }: {
@@ -121,33 +130,19 @@ export function Btn({
   title?: string;
   style?: React.CSSProperties;
 }) {
-  const sizes = {
-    sm: { h: 28, px: 12, fs: 12 },
-    md: { h: 36, px: 16, fs: 12.5 },
-    lg: { h: 44, px: 22, fs: 14 },
-  }[size];
-  const variants = {
-    primary: { bg: T.brand, fg: '#FFFFFF', br: 'transparent', fw: 600 },
-    ghost:   { bg: 'transparent', fg: T.ink2, br: 'rgba(31,35,28,0.14)', fw: 500 },
-    sage:    { bg: T.sageDim, fg: T.sageDeep, br: 'rgba(92,122,96,0.3)', fw: 600 },
-    paper:   { bg: T.paper, fg: T.ink, br: T.rule, fw: 500 },
-  }[variant];
   return (
-    <button
+    <UiButton
+      theme={STAFF_BUTTON_THEME}
+      variant={variant}
+      size={size}
       onClick={onClick}
       disabled={disabled}
       title={title}
+      type="button"
       style={{
-        height: sizes.h, padding: `0 ${sizes.px}px`, borderRadius: 999,
-        background: variants.bg, color: variants.fg,
-        border: `1px solid ${variants.br}`,
-        fontFamily: fonts.sans, fontSize: sizes.fs, fontWeight: variants.fw,
-        cursor: disabled ? 'not-allowed' : 'pointer',
-        opacity: disabled ? 0.55 : 1,
-        display: 'inline-flex', alignItems: 'center', gap: 6,
-        whiteSpace: 'nowrap', flexShrink: 0, ...style,
+        ...style,
       }}
-    >{children}</button>
+    >{children}</UiButton>
   );
 }
 
@@ -158,11 +153,12 @@ export function Card({
   children: React.ReactNode;
   style?: React.CSSProperties;
 }) {
-  return (
-    <div style={{
-      background: T.paper, border: `1px solid ${T.rule}`, borderRadius: 18,
-      boxShadow: T.cardShadow,
-      padding: '20px 22px', ...style,
-    }}>{children}</div>
-  );
+  return <SurfaceCard
+    surface={T.paper}
+    border={`1px solid ${T.rule}`}
+    radius={UI_RADII.card}
+    shadow={T.cardShadow}
+    padding="20px 22px"
+    style={style}
+  >{children}</SurfaceCard>;
 }

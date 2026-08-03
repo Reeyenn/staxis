@@ -5,6 +5,11 @@
 import React from 'react';
 import { T, fonts, deptMeta, asDeptKey, Caps } from './_tokens';
 import type { StaffMember } from '@/types';
+import {
+  Avatar as SharedAvatar,
+  hashString31,
+  initialsOf,
+} from '@/app/_components/ui/Avatar';
 
 // ── Avatar tones ───────────────────────────────────────────────────────────
 // Each staff member gets a stable accent color derived from their id. We
@@ -15,21 +20,12 @@ const AVATAR_TONES = [
   '#3E5C48', '#356B4C', '#1F231C', '#C99644', '#B85C3D', '#5C7A60',
 ] as const;
 
-function hashStr(s: string): number {
-  let h = 0;
-  for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) | 0;
-  return Math.abs(h);
-}
-
 export function staffTone(staffId: string): string {
-  return AVATAR_TONES[hashStr(staffId) % AVATAR_TONES.length];
+  return AVATAR_TONES[hashString31(staffId) % AVATAR_TONES.length];
 }
 
 export function staffInitials(name: string): string {
-  const parts = name.trim().split(/\s+/).filter(Boolean);
-  if (parts.length === 0) return '??';
-  if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase();
-  return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
+  return initialsOf(name, '??');
 }
 
 // ── Avatar — circular initials puck with optional ring ─────────────────────
@@ -43,17 +39,26 @@ export function Avatar({
   style?: React.CSSProperties;
 }) {
   return (
-    <span style={{
-      width: size, height: size, borderRadius: '50%',
-      background: staffTone(staffId), color: '#fff',
-      fontFamily: fonts.sans, fontSize: Math.round(size * 0.36), fontWeight: 600,
-      display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
-      flexShrink: 0, letterSpacing: '-0.01em',
-      boxShadow: ring
-        ? `0 0 0 2px ${T.paper}, 0 0 0 ${size > 36 ? 3.5 : 3}px ${ring}`
-        : 'none',
-      ...style,
-    }}>{staffInitials(name)}</span>
+    <SharedAvatar
+      name={name}
+      palette={AVATAR_TONES}
+      hashFn={hashString31}
+      hashKey={staffId}
+      size={size}
+      color="#fff"
+      fontFamily={fonts.sans}
+      fontSize={Math.round(size * 0.36)}
+      fallbackInitials="??"
+      style={{
+        // The old staff puck did not set user-select; retain the browser's
+        // default while reusing the shared initials/tone implementation.
+        userSelect: 'auto',
+        boxShadow: ring
+          ? `0 0 0 2px ${T.paper}, 0 0 0 ${size > 36 ? 3.5 : 3}px ${ring}`
+          : 'none',
+        ...style,
+      }}
+    />
   );
 }
 
