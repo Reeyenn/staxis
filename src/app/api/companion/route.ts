@@ -52,6 +52,20 @@ import { chatIsMountedForRole } from '@/lib/agent/lenses';
 import { isValidRole, type AppRole } from '@/lib/roles';
 import { validateString } from '@/lib/api-validate';
 import { buildCompanionCandidates } from '@/lib/companion/candidates';
+import {
+  appendCompanionOffer,
+  ensureCompanionConversation,
+  stampCompanionOffer,
+} from '@/lib/agent/memory';
+import {
+  COMPANION_OFFER_KINDS,
+  OFFER_ACTIONS_MAX,
+  OFFER_TEXT_MAX,
+  type CompanionOffer,
+  type CompanionOfferAction,
+  type CompanionOfferAnswer,
+  type CompanionOfferKind,
+} from '@/lib/companion/offers';
 import { cleanName, looksSharedLogin, type SleepReason } from '@/lib/companion/copy';
 import {
   EMPTY_COMPANION_MEMORY,
@@ -188,6 +202,73 @@ const EVENTS: readonly CompanionEvent[] = [
   'welcomed', 'tour_declined', 'tour_taken', 'spoke', 'declined', 'accepted', 'taught', 'greeted',
 ];
 
+// ─── The offer half ─────────────────────────────────────────────────────────
+//
+// EVERY SENTENCE THE COMPANION SAYS FIRST BECOMES A MESSAGE IN THE THREAD, and
+// it is written by THIS handler, on the same event that moves the manners
+// ledger. That is the whole design of it: `declined` still counts a decline in
+// `companion_memory.topics` through `rememberDeclined` and nowhere else, and
+// the message's `state` is a rendering of the same event in the same request.
+// There is no second ledger to drift, and no way to stamp a message state
+// without the manners engine hearing about it — because the message state is
+// not an event, it is a side effect of one.
+//
+// The reverse also holds and matters: `offerCountsAsDecline` is the only thing
+// that decides which answers reach the ledger, so a dismissal counts once, a
+// yes forgives, and an expiry counts for nothing.
+
+/** `spoke` may carry a sentence to write down. Everything here is optional. */
+interface OfferSpeech {
+  kind: CompanionOfferKind;
+  text: string;
+  page: string | null;
+  actions: CompanionOfferAction[];
+  conversationId: string | null;
+}
+
+const OFFER_ACTION_KINDS: readonly CompanionOfferAction['kind'][] = ['show', 'walk', 'seed', 'no'];
+
+/**
+ * Read the offer half of a POST body, or null when there is none.
+ *
+ * Returns null rather than erroring on a malformed shape: the memory event is
+ * the load-bearing half of this request and must not fail because a browser
+ * sent a button label that was too long. A sentence we cannot store is a
+ * sentence that stays ephemeral, which is exactly what it was before.
+ */
+function readOfferSpeech(body: Record<string, unknown>): OfferSpeech | null {
+  const text = typeof body.text === 'string' ? body.text.replace(/\s+/g, ' ').trim() : '';
+  if (!text || text.length > OFFER_TEXT_MAX) return null;
+  const kind = COMPANION_OFFER_KINDS.includes(body.kind as CompanionOfferKind)
+    ? (body.kind as CompanionOfferKind)
+    : null;
+  if (!kind) return null;
+  const actions: CompanionOfferAction[] = [];
+  if (Array.isArray(body.actions)) {
+    for (const raw of body.actions.slice(0, OFFER_ACTIONS_MAX)) {
+      if (!raw || typeof raw !== 'object' || Array.isArray(raw)) continue;
+      const entry = raw as Record<string, unknown>;
+      const label = typeof entry.label === 'string' ? entry.label.trim().slice(0, 40) : '';
+      const actionKind = OFFER_ACTION_KINDS.includes(entry.kind as CompanionOfferAction['kind'])
+        ? (entry.kind as CompanionOfferAction['kind'])
+        : null;
+      if (!label || !actionKind) continue;
+      actions.push({ label, kind: actionKind });
+    }
+  }
+  const page = typeof body.page === 'string' && body.page.length > 0 && body.page.length <= 40
+    ? body.page
+    : null;
+  const conversationId = typeof body.conversationId === 'string' ? body.conversationId : null;
+  return { kind, text, page, actions, conversationId };
+}
+
+function readAnswer(value: unknown): CompanionOfferAnswer | null {
+  return value === 'accepted' || value === 'declined' || value === 'dismissed' || value === 'expired'
+    ? value
+    : null;
+}
+
 function isEvent(x: unknown): x is CompanionEvent {
   return typeof x === 'string' && (EVENTS as readonly string[]).includes(x);
 }
@@ -199,7 +280,12 @@ function isTeachFlow(x: unknown): x is TeachFlow {
 }
 
 export async function POST(req: NextRequest): Promise<Response> {
-  let body: { pid?: string; event?: unknown; topic?: unknown; flow?: unknown };
+  let body: {
+    pid?: string; event?: unknown; topic?: unknown; flow?: unknown;
+    // The offer half. See the OfferSpeech block above.
+    text?: unknown; kind?: unknown; page?: unknown; actions?: unknown;
+    conversationId?: unknown; offerId?: unknown; offerState?: unknown;
+  };
   try {
     body = await req.json();
   } catch {
@@ -265,7 +351,73 @@ export async function POST(req: NextRequest): Promise<Response> {
     }
 
     await writeFeedPrefs(ctx.accountId, ctx.pid, { companionMemory: next });
-    return ok({ memory: next }, { requestId: ctx.requestId, headers: ctx.headers });
+
+    // ── The same event, written down ──────────────────────────────────────
+    //
+    // Runs AFTER the memory write and never blocks it. The ledger is what makes
+    // a No permanent; the message is what makes it visible. If the thread write
+    // fails, the person has still been heard — they just do not get to re-read
+    // the sentence, which is the behaviour this whole feature replaced and is a
+    // safe place to land.
+    let offer: CompanionOffer | null = null;
+    let spokenInto: string | null = null;
+    try {
+      // Every event on which the companion actually SAYS something. `spoke` is
+      // an offer, `greeted` is the once-a-day hello, `welcomed` is day one.
+      // Anything else (a tour taken, a tip shown) moves the ledger without
+      // putting a sentence in front of anybody, so there is nothing to write.
+      if (body.event === 'spoke' || body.event === 'greeted' || body.event === 'welcomed') {
+        const speech = readOfferSpeech(body as Record<string, unknown>);
+        if (speech) {
+          const conversationId = await ensureCompanionConversation({
+            userAccountId: ctx.accountId,
+            propertyId: ctx.pid,
+            role: isValidRole(ctx.role) ? ctx.role : 'staff',
+            preferredId: speech.conversationId,
+            title: speech.text.slice(0, 80),
+          });
+          if (conversationId) {
+            spokenInto = conversationId;
+            offer = await appendCompanionOffer({
+              conversationId,
+              text: speech.text,
+              kind: speech.kind,
+              topic: topic || null,
+              page: speech.page,
+              actions: speech.actions,
+              now,
+            });
+          }
+        }
+      } else if (body.event === 'declined' || body.event === 'accepted') {
+        // The answer the ledger just recorded, stamped onto the sentence it was
+        // about. `offerState` only chooses BETWEEN declined and dismissed —
+        // both of which the ledger already counted identically — so it can
+        // never disagree with the count.
+        const requested = readAnswer(body.offerState);
+        const answer: CompanionOfferAnswer = body.event === 'accepted'
+          ? 'accepted'
+          : requested === 'dismissed' || requested === 'expired' ? requested : 'declined';
+        if (typeof body.offerId === 'string') {
+          offer = await stampCompanionOffer({
+            offerId: body.offerId,
+            userAccountId: ctx.accountId,
+            propertyId: ctx.pid,
+            answer,
+            now,
+          });
+        }
+      }
+    } catch (e) {
+      log.error('[companion] offer write failed', {
+        requestId: ctx.requestId, pid: ctx.pid, err: errToString(e),
+      });
+    }
+
+    return ok(
+      { memory: next, offer, conversationId: spokenInto },
+      { requestId: ctx.requestId, headers: ctx.headers },
+    );
   } catch (e) {
     log.error('[companion] POST failed', {
       requestId: ctx.requestId, pid: ctx.pid, err: errToString(e),

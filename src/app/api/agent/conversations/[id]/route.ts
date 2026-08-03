@@ -13,7 +13,9 @@ import {
   loadConversation,
   loadConversationScope,
   deleteConversation,
+  listCompanionOffers,
 } from '@/lib/agent/memory';
+import type { CompanionOffer } from '@/lib/companion/offers';
 import { getLivePendingActions } from '@/lib/agent/pending-actions';
 import { buildActionSummary, addonDescriptorsForCard } from '@/lib/agent/approval';
 // Side-effect import — registers all tools so buildActionSummary/addons resolve.
@@ -101,7 +103,19 @@ export async function GET(
     } catch (pe) {
       log.error('[agent/conversations/get] failed to load pending actions', { requestId, id, pe });
     }
-    return ok({ conversation: convo, pendingActions }, { requestId });
+    // The companion's own turns in this thread. They ride alongside `messages`
+    // rather than inside it because they are `role='system'` rows, which
+    // `decodeStoredHistory` drops on purpose so the model replay never sees a
+    // sentence nobody typed. The PERSON should still see them, and reopening a
+    // past chat is exactly when "an offer is a message, not a notification"
+    // has to still be true. Non-fatal, same as the cards above.
+    let companionOffers: CompanionOffer[] = [];
+    try {
+      companionOffers = await listCompanionOffers(id);
+    } catch (oe) {
+      log.error('[agent/conversations/get] failed to load companion offers', { requestId, id, oe });
+    }
+    return ok({ conversation: convo, pendingActions, companionOffers }, { requestId });
   } catch (e) {
     // Log the detail server-side; don't echo the raw error to the client.
     log.error('[agent/conversations/get] failed to load', { requestId, id, e });

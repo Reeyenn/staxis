@@ -167,6 +167,12 @@ const ROW_KEYED_FOLLOWUPS = new Map<string, { keys: string[]; why: string }>([
  * DB-free: immediate revocation must stop it before any result is returned.
  * Keep the exact-set assertion below so a future zero-read path fails loudly.
  */
+// Deliberately empty, and it is not the same list as the unit twin's. There,
+// the fake records only the queries a HANDLER makes, so a handler that reads
+// nothing (walk_user_through, staxis_show_pattern) has to declare itself. Here
+// the database is real and every tool reaches it through the re-authorization
+// preamble before its handler runs, so "declared DB-free" would be false of
+// everything.
 const NO_DB_TOOLS = new Map<string, string>();
 
 /**

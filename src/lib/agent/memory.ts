@@ -28,6 +28,18 @@ import {
   decodePortfolioHistoryWindow,
   type PortfolioHistoryWindowV1,
 } from './portfolio-intelligence/history-window';
+import {
+  answerOffer,
+  encodeOfferPayload,
+  parseOfferRow,
+  sortOffers,
+  OFFER_TEXT_MAX,
+  type CompanionOffer,
+  type CompanionOfferAction,
+  type CompanionOfferAnswer,
+  type CompanionOfferKind,
+  type CompanionOfferReceipt,
+} from '@/lib/companion/offers';
 
 // ─── Public types ──────────────────────────────────────────────────────────
 
@@ -934,6 +946,203 @@ export async function appendMessage(opts: SaveMessageOpts): Promise<void> {
 /** Helper: write a user turn. Convenience wrapper. */
 export function recordUserTurn(conversationId: string, content: string): Promise<void> {
   return appendMessage({ conversationId, role: 'user', content });
+}
+
+// ─── Companion offers ─────────────────────────────────────────────────────
+//
+// The companion's own turns — the daily hello, an offer, the receipt after a
+// yes — stored as `role = 'system'` rows in the SAME conversation the panel
+// shows. They live here rather than in a module of their own for one reason:
+// this file is the only thing in the codebase that inserts into
+// `agent_messages`, and that is worth more than the tidiness of a separate
+// file. Everything else about them (the shape, the state machine, the codec)
+// is pure and lives in src/lib/companion/offers.ts.
+//
+// WHY 'system' AND NOT 'assistant': the Messages API requires the first message
+// in a conversation to be `user`, and the companion speaks before anybody has
+// typed. `decodeStoredHistory` above has no branch for 'system', so these rows
+// are invisible to the model replay by construction — not by a filter someone
+// has to maintain. See the offers.ts header.
+
+/**
+ * The conversation the companion should speak into, creating one if needed.
+ *
+ * Prefers the conversation the panel already has open, so an offer lands in the
+ * thread the person is looking at rather than starting a second one beside it.
+ * `preferredId` is only honoured when it really belongs to this person at this
+ * hotel — it arrives from a browser, so it is a request, not a fact.
+ */
+export async function ensureCompanionConversation(opts: {
+  userAccountId: string;
+  propertyId: string;
+  role: AppRole;
+  preferredId?: string | null;
+  title?: string;
+}): Promise<string | null> {
+  if (opts.preferredId && UUID_RX.test(opts.preferredId)) {
+    const { data } = await supabaseAdmin
+      .from('agent_conversations')
+      .select('id, user_id, property_id, conversation_kind')
+      .eq('id', opts.preferredId)
+      .maybeSingle();
+    if (data
+      && data.user_id === opts.userAccountId
+      && data.property_id === opts.propertyId
+      && data.conversation_kind === 'property') {
+      return data.id as string;
+    }
+    // A conversation that is not theirs is not an error worth surfacing: the
+    // companion simply opens its own rather than writing into somebody else's.
+  }
+  try {
+    return await createConversation({
+      userAccountId: opts.userAccountId,
+      propertyId: opts.propertyId,
+      role: opts.role,
+      title: opts.title,
+    });
+  } catch {
+    // An offer is a greeting, not a dependency. Failing to open a thread means
+    // the sentence is not written down; it does not mean the companion breaks.
+    return null;
+  }
+}
+
+const OFFER_ROW_COLUMNS = 'id, content, tool_args, created_at';
+
+/**
+ * Write one companion turn into a conversation.
+ *
+ * `tool_name` is deliberately left NULL — the AI metrics route counts every row
+ * with a non-null tool_name as a tool call, and these are sentences, not calls.
+ */
+export async function appendCompanionOffer(opts: {
+  conversationId: string;
+  text: string;
+  kind: CompanionOfferKind;
+  topic: string | null;
+  page: string | null;
+  actions: readonly CompanionOfferAction[];
+  receipt?: CompanionOfferReceipt | null;
+  now: Date;
+}): Promise<CompanionOffer | null> {
+  const spokenAt = opts.now.toISOString();
+  const payload = encodeOfferPayload({
+    kind: opts.kind,
+    topic: opts.topic,
+    page: opts.page,
+    actions: opts.actions,
+    // A receipt is a statement, not a question, so it is born resolved.
+    state: opts.kind === 'receipt' ? 'accepted' : 'pending',
+    spokenAt,
+    answeredAt: opts.kind === 'receipt' ? spokenAt : null,
+    receipt: opts.receipt ?? null,
+  });
+  const { data, error } = await supabaseAdmin
+    .from('agent_messages')
+    .insert({
+      conversation_id: opts.conversationId,
+      role: 'system',
+      content: opts.text.slice(0, OFFER_TEXT_MAX),
+      tool_name: null,
+      tool_args: payload,
+    })
+    .select(OFFER_ROW_COLUMNS)
+    .single();
+  if (error) throw error;
+  return parseOfferRow(data as Record<string, unknown>);
+}
+
+/** Every companion turn in a conversation, oldest first. */
+export async function listCompanionOffers(conversationId: string): Promise<CompanionOffer[]> {
+  const { data, error } = await supabaseAdmin
+    .from('agent_messages')
+    .select(OFFER_ROW_COLUMNS)
+    .eq('conversation_id', conversationId)
+    .eq('role', 'system')
+    // Deliberately NOT filtered on `is_summarized`. The summarizer folds old
+    // rows away from the model; an offer is for the PERSON, and "revisitable
+    // forever" has to survive a conversation getting long.
+    .order('created_at', { ascending: true })
+    .limit(200);
+  if (error) throw error;
+  return sortOffers(
+    (data ?? [])
+      .map((row) => parseOfferRow(row as Record<string, unknown>))
+      .filter((o): o is CompanionOffer => o !== null),
+  );
+}
+
+/**
+ * Stamp an answer onto one offer, or refuse.
+ *
+ * Returns null when the row is not this person's, is not an offer, or has
+ * already been answered. The caller treats null as "do not touch the manners
+ * ledger either", which is what makes a double-tap cost exactly one decline.
+ */
+export async function stampCompanionOffer(opts: {
+  offerId: string;
+  userAccountId: string;
+  propertyId: string;
+  answer: CompanionOfferAnswer;
+  now: Date;
+  receipt?: CompanionOfferReceipt | null;
+}): Promise<CompanionOffer | null> {
+  if (!UUID_RX.test(opts.offerId)) return null;
+  const { data: row } = await supabaseAdmin
+    .from('agent_messages')
+    .select(`${OFFER_ROW_COLUMNS}, role, conversation_id, agent_conversations!inner(user_id, property_id)`)
+    .eq('id', opts.offerId)
+    .maybeSingle();
+  if (!row || row.role !== 'system') return null;
+
+  // The join is the ownership check: an offer id from a browser is only ever
+  // stamped when the conversation under it belongs to this person at this hotel.
+  const parent = row.agent_conversations as unknown as
+    { user_id?: string; property_id?: string } | { user_id?: string; property_id?: string }[] | null;
+  const owner = Array.isArray(parent) ? parent[0] : parent;
+  if (!owner || owner.user_id !== opts.userAccountId || owner.property_id !== opts.propertyId) {
+    return null;
+  }
+
+  const current = parseOfferRow(row as Record<string, unknown>);
+  if (!current) return null;
+  const next = answerOffer(current, opts.answer, opts.now.toISOString());
+  if (!next) return null;
+
+  const withReceipt: CompanionOffer = opts.receipt
+    ? { ...next, receipt: opts.receipt }
+    : next;
+
+  const { error } = await supabaseAdmin
+    .from('agent_messages')
+    .update({
+      tool_args: encodeOfferPayload({
+        kind: withReceipt.kind,
+        topic: withReceipt.topic,
+        page: withReceipt.page,
+        actions: withReceipt.actions,
+        state: withReceipt.state,
+        spokenAt: withReceipt.spokenAt,
+        answeredAt: withReceipt.answeredAt,
+        receipt: withReceipt.receipt,
+      }),
+    })
+    .eq('id', opts.offerId)
+    .eq('role', 'system')
+    // The pending check again, in the WHERE clause this time.
+    //
+    // `answerOffer` above already refused a resolved offer, but that is a
+    // read-then-write: two tabs, or a tap and its own retry, can both read
+    // 'pending' and both proceed. Repeating the condition here moves the race
+    // into Postgres, where exactly one UPDATE matches. Without it a single No
+    // could be counted twice against a topic — and two is the number that
+    // drops a topic for good, so the cost of losing this is a subject the
+    // companion silently never raises again.
+    .filter('tool_args->>state', 'eq', 'pending')
+    .select('id');
+  if (error) throw error;
+  return withReceipt;
 }
 
 /** Helper: write an assistant turn (text + optional tool calls) atomically.

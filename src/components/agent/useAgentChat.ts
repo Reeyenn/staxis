@@ -12,6 +12,12 @@ import { fetchWithAuth, SessionEndedError } from '@/lib/api-fetch';
 import type { DisplayMessage } from './MessageList';
 import type { BiText, PendingAction, PendingAddon, ResultCard } from './approval-types';
 import type { AskOrigin } from './ask-command-bridge';
+import {
+  parseOfferWire,
+  sortOffers,
+  upsertOffer as upsertOfferInList,
+  type CompanionOffer,
+} from '@/lib/companion/offers';
 
 export interface ConversationListItem {
   id: string;
@@ -105,6 +111,25 @@ export interface UseAgentChatReturn {
    *  Adjust edit fails server validation — the card stays up so the user can
    *  fix it. */
   actionErrors: Record<string, string>;
+  /**
+   * The companion's own turns in the visible conversation, oldest first.
+   *
+   * Owned here for the same reason `pendingActions` is: this hook is what knows
+   * which conversation is on screen, and restoring these on load is the same
+   * job as rehydrating an approval card. They are NOT in `messages` because
+   * they are `role='system'` rows that the model replay deliberately never
+   * sees; the panel merges the two lists at render time.
+   */
+  companionOffers: CompanionOffer[];
+  /** Record one companion turn (or its new state) against the visible thread. */
+  upsertCompanionOffer: (offer: CompanionOffer) => void;
+  /**
+   * Adopt a conversation the companion opened by speaking into it.
+   *
+   * Only ever fills an EMPTY slot. If the person already has a conversation on
+   * screen, an offer joined it rather than creating one, and nothing moves.
+   */
+  adoptConversationId: (id: string) => void;
 }
 
 interface ServerMessage {
@@ -468,6 +493,7 @@ export function useAgentChat({
   const [pendingActions, setPendingActions] = useState<PendingAction[]>([]);
   const [resultCard, setResultCard] = useState<ResultCard | null>(null);
   const [actionErrors, setActionErrors] = useState<Record<string, string>>({});
+  const [companionOffers, setCompanionOffers] = useState<CompanionOffer[]>([]);
   // Mask old state synchronously when React renders a different hotel/company.
   // The effect below clears it after commit, but this key prevents even one
   // paint of company A's conversation under company B's heading.
@@ -603,8 +629,32 @@ export function useAgentChat({
     setPendingActions([]);
     setResultCard(null);
     setActionErrors({});
+    // A different hotel's companion never speaks under this one's heading.
+    setCompanionOffers([]);
     setStateScopeKey(nextScopeKey);
   }, [clearDeltaBuffer, clearResultTimer]);
+
+  const upsertCompanionOffer = useCallback((offer: CompanionOffer) => {
+    setCompanionOffers((prior) => upsertOfferInList(prior, offer));
+  }, []);
+
+  const adoptConversationId = useCallback((id: string) => {
+    if (!UUID_RX.test(id)) return;
+    setConversationId((current) => {
+      // Never steals a thread. An offer only opens one when there was none, so
+      // a non-null cursor here means the offer joined the open conversation and
+      // there is nothing to adopt.
+      if (current !== null) return current;
+      const next = recordScopedConversationId(
+        conversationCursorRef.current,
+        scopeKeyRef.current,
+        id,
+      );
+      if (next.conversationId !== id) return current;
+      conversationCursorRef.current = next;
+      return id;
+    });
+  }, []);
 
   useEffect(() => {
     if (stateScopeKey === scopeKey) return;
@@ -796,6 +846,19 @@ export function useAgentChat({
         addons: (p.addons ? (p.addons.en) : []) ?? [],
       }));
       setPendingActions(rehydrated);
+      // The companion's turns in this thread, restored the same way. A past
+      // chat that carried an offer still carries it, with whatever answer it
+      // got — that is the whole of "offers are revisitable forever".
+      const rawOffers: unknown = body.data?.companionOffers;
+      setCompanionOffers(
+        Array.isArray(rawOffers)
+          ? sortOffers(
+            rawOffers
+              .map((row) => parseOfferWire(row))
+              .filter((o): o is CompanionOffer => o !== null),
+          )
+          : [],
+      );
       const nextCursor = recordScopedConversationId(
         conversationCursorRef.current,
         scopeKey,
@@ -845,6 +908,9 @@ export function useAgentChat({
     setPendingActions([]);
     setResultCard(null);
     setActionErrors({});
+    // A new chat is a new thread, so the companion's turns in the old one stay
+    // in the old one. They are not lost — Past chats still has them.
+    setCompanionOffers([]);
   }, [clearDeltaBuffer, clearResultTimer, scopeKey]);
 
   const failPortfolioTurn = useCallback((
@@ -1473,5 +1539,8 @@ export function useAgentChat({
     resolveAction,
     dismissResultCard,
     actionErrors: visibleScopeMatches ? actionErrors : {},
+    companionOffers: visibleScopeMatches ? companionOffers : [],
+    upsertCompanionOffer,
+    adoptConversationId,
   };
 }

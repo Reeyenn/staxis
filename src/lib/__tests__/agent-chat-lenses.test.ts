@@ -117,6 +117,12 @@ const MAINTENANCE_MOUNT = [
   'query_room_status', 'remember', 'request_help', 'search_knowledge', 'search_lost_found',
   'send_message', 'staxis_checked_last_night', 'staxis_equipment', 'staxis_explain_finding',
   'staxis_findings', 'staxis_preventive',
+  // Added deliberately (offers-as-chat, 2026-08): the maintenance board is the
+  // screen a trace is drawn on, so the wrench is the hat most likely to ask to
+  // see one again. It reads nothing, writes nothing and can only re-draw a
+  // pattern this browser was already handed by /api/companion/trace — which
+  // applied the role and section gates before it sent anything.
+  'staxis_show_pattern',
 ].sort();
 
 describe('the mount table', () => {
