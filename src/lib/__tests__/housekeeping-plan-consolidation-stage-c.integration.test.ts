@@ -19,6 +19,7 @@ const PMS_INGEST_RUN = 'c7000000-0000-4000-8000-000000000001';
 const INSPECTION = 'c8000000-0000-4000-8000-000000000001';
 const RECHECK_INSPECTION = 'c8000000-0000-4000-8000-000000000002';
 const CANONICAL_TASK = 'c9000000-0000-4000-8000-000000000001';
+const OTHER_HOUSEKEEPER = 'c3000000-0000-4000-8000-000000000003';
 const BUSINESS_DATE = '2026-08-02';
 
 let pg: PGlite;
@@ -44,6 +45,57 @@ async function failsWith(sql: string, params: unknown[] = []): Promise<string> {
     return error instanceof Error ? error.message : String(error);
   }
   assert.fail('expected database statement to fail');
+}
+
+async function seedStageCPreflightWindow(db: PGlite, operator = 'stage-c-preflight-operator'): Promise<void> {
+  await db.query("select set_config('staxis.housekeeping_stage_c_freeze', 'approved', false)");
+  await db.query("select set_config('staxis.housekeeping_stage_c_operator', $1, false)", [operator]);
+  await db.query(
+    "insert into auth.users(id, email) values ($1, 'stage-c-preflight@example.test') on conflict (id) do nothing",
+    [OWNER],
+  );
+  await db.query(
+    "insert into public.properties(id, owner_id, name, total_rooms, timezone) values ($1, $3, 'Stage C Preflight Inn', 80, 'America/Chicago'), ($2, $3, 'Other Stage C Preflight Inn', 20, 'America/Chicago') on conflict (id) do nothing",
+    [PROPERTY, OTHER_PROPERTY, OWNER],
+  );
+  await db.query(
+    "insert into public.staff(id, property_id, name, department, is_active) values ($1, $3, 'Stage C Preflight Housekeeper', 'housekeeping', true), ($2, $3, 'Stage C Preflight Other', 'housekeeping', true), ($4, $5, 'Stage C Preflight Foreign Housekeeper', 'housekeeping', true) on conflict (id) do nothing",
+    [HOUSEKEEPER, SECOND_HOUSEKEEPER, PROPERTY, OTHER_HOUSEKEEPER, OTHER_PROPERTY],
+  );
+  await db.query(
+    "insert into public.cleaning_tasks(id, property_id, room_number, business_date, dedupe_key, cleaning_type, priority, estimated_minutes, requires_inspection, extras, notes, rules_fired, rule_inputs, status, source_property_timezone, scheduled_at, last_evaluated_at) values ($1, $2, '101', $3, '101::2026-08-02', 'departure', 'normal', 30, false, '[]'::jsonb, 'preflight task', '[]'::jsonb, '{}'::jsonb, 'scheduled', 'America/Chicago', $4::timestamptz, $4::timestamptz)",
+    [LEGACY_TASK, PROPERTY, BUSINESS_DATE, '2026-08-02T12:00:00Z'],
+  );
+  await db.query(
+    "insert into public.hk_assignments(id, property_id, cleaning_task_id, housekeeper_id, queue_order, is_active, assigned_at, assigned_by, reason, score) values ($1, $2, $3, $4, 1, true, $5::timestamptz, 'auto', 'preflight assignment', 1.0)",
+    [LEGACY_ASSIGNMENT, PROPERTY, LEGACY_TASK, HOUSEKEEPER, '2026-08-02T12:01:00Z'],
+  );
+}
+
+async function assertStageCFailurePreservesLegacy(
+  migrated: Awaited<ReturnType<typeof applyMigrationsToPgliteWithHook>>,
+  message: RegExp,
+  expectedTaskCount = 1,
+  expectedAssignmentCount = 1,
+): Promise<void> {
+  const failure = migrated.report.failedAtRuntime.find((entry) => entry.file === '0437_housekeeping_stage_c_contract.sql');
+  assert.ok(failure, '0437 must fail in the focused preflight case');
+  assert.match(failure.error, message);
+  await migrated.pg.exec('rollback;').catch(() => undefined);
+  assert.equal(await migrated.pg.query<{ relkind: string }>(
+    "select relkind from pg_class where oid = 'public.cleaning_tasks'::regclass",
+  ).then((result) => result.rows[0]?.relkind), 'r');
+  assert.equal(await migrated.pg.query<{ relkind: string }>(
+    "select relkind from pg_class where oid = 'public.hk_assignments'::regclass",
+  ).then((result) => result.rows[0]?.relkind), 'r');
+  const counts = await migrated.pg.query<{ task_count: number; assignment_count: number }>(
+    "select (select count(*)::int from public.cleaning_tasks) as task_count, (select count(*)::int from public.hk_assignments) as assignment_count",
+  );
+  assert.equal(counts.rows[0]?.task_count, expectedTaskCount);
+  assert.equal(counts.rows[0]?.assignment_count, expectedAssignmentCount);
+  assert.equal(await migrated.pg.query<{ evidence: string | null }>(
+    "select to_regclass('public.housekeeping_stage_c_cutover_evidence') as evidence",
+  ).then((result) => result.rows[0]?.evidence), null);
 }
 
 function executableSourceFiles(root: string): string[] {
@@ -126,7 +178,9 @@ describe('housekeeping canonical plan Stage C contract', () => {
         );
       } else if (file === '0436_housekeeping_stage_b_inspection_lock.sql') {
         // Canonical assignment wins for started work even though the frozen
-        // old assignment remains active in the compatibility table.
+        // old assignment remains in the frozen legacy table. The first legacy
+        // assignment is then reset in the old window; Stage C must not revive
+        // its earlier active state.
         await db.query(
           "select * from public.assign_room_work_atomic($1, $2, $3, $4, 'canonical started-work assignment', 3, 8.5, false, 'manual')",
           [PROPERTY, WINDOW_TASK, SECOND_HOUSEKEEPER, OWNER],
@@ -134,6 +188,10 @@ describe('housekeeping canonical plan Stage C contract', () => {
         await db.query(
           "select public.write_room_work_atomic($1, $2, '102', '{\"status\":\"in_progress\",\"started_at\":\"2026-08-02T14:05:00Z\"}'::jsonb)",
           [PROPERTY, BUSINESS_DATE],
+        );
+        await db.query(
+          "update public.hk_assignments set is_active = false, updated_at = $2::timestamptz, reason = 'old-window reset' where id = $1",
+          [LEGACY_ASSIGNMENT, '2026-08-02T14:10:00Z'],
         );
       }
     });
@@ -159,7 +217,6 @@ describe('housekeeping canonical plan Stage C contract', () => {
       "select relname, relkind from pg_class where relnamespace = 'public'::regnamespace and relname in ('cleaning_tasks', 'hk_assignments', 'room_work_plan_v1', 'housekeeping_stage_c_cutover_evidence') order by relname",
     );
     assert.deepEqual(relations, [
-      { relname: 'cleaning_tasks', relkind: 'v' },
       { relname: 'housekeeping_stage_c_cutover_evidence', relkind: 'r' },
       { relname: 'room_work_plan_v1', relkind: 'v' },
     ]);
@@ -179,8 +236,27 @@ describe('housekeeping canonical plan Stage C contract', () => {
     assert.ok(history.some((entry) => entry.id === WINDOW_ASSIGNMENT && entry.is_active === false));
     assert.ok(history.some((entry) => entry.housekeeper_id === SECOND_HOUSEKEEPER && entry.is_active === true));
 
+    const resetWork = await rows<{ assigned_staff_id: string | null; assignment_history: unknown }>(
+      "select assigned_staff_id, assignment_history from public.room_work where legacy_task_id = $1",
+      [LEGACY_TASK],
+    );
+    assert.equal(resetWork[0].assigned_staff_id, null, 'a newer inactive legacy row cannot resurrect an assignment');
+    const resetHistory = resetWork[0].assignment_history as Array<Record<string, unknown>>;
+    assert.ok(resetHistory.some((entry) => entry.id === LEGACY_ASSIGNMENT && entry.is_active === true));
+    assert.ok(resetHistory.some((entry) => entry.id === LEGACY_ASSIGNMENT && entry.is_active === false));
+
+    const oldWindowAudit = await rows<{ event_type: string; source: string }>(
+      "select event_type, source from public.activity_log where source_event_id = $1 and event_type in ('assignment_created', 'assignment_deactivated') order by event_type",
+      [LEGACY_ASSIGNMENT],
+    );
+    assert.deepEqual(oldWindowAudit.map((entry) => entry.event_type), ['assignment_created', 'assignment_deactivated']);
+    assert.equal(await scalar<number>(
+      "select count(*) from public.activity_log where source_event_id = $1 and event_type = 'cleaning_task_in_progress'",
+      [WINDOW_TASK],
+    ), 1, 'old-window canonical status has one backfilled audit event');
+
     const evidence = await rows<Record<string, unknown>>(
-      "select operator_name, legacy_cleaning_tasks_count, legacy_cleaning_tasks_hash, legacy_hk_assignments_count, legacy_hk_assignments_hash, room_work_count_before, room_work_count_after, room_work_hash_before, room_work_hash_after, pms_assignments_count_before, pms_assignments_count_after, pms_assignments_hash_before, pms_assignments_hash_after, inspections_count_before, inspections_count_after, inspections_hash_before, inspections_hash_after, activity_log_count_before, activity_log_count_after, activity_log_hash_before, activity_log_hash_after, physical_legacy_tables_dropped, compatibility_projection, rollback_policy, remediation_procedure from public.housekeeping_stage_c_cutover_evidence",
+      "select operator_name, legacy_cleaning_tasks_count, legacy_cleaning_tasks_hash, legacy_hk_assignments_count, legacy_hk_assignments_hash, room_work_count_before, room_work_count_after, room_work_hash_before, room_work_hash_after, pms_assignments_count_before, pms_assignments_count_after, pms_assignments_hash_before, pms_assignments_hash_after, inspections_count_before, inspections_count_after, inspections_hash_before, inspections_hash_after, activity_log_count_before, activity_log_count_after, activity_log_hash_before, activity_log_hash_after, physical_legacy_tables_dropped, rollback_policy, remediation_procedure from public.housekeeping_stage_c_cutover_evidence",
     );
     assert.equal(evidence.length, 1);
     assert.equal(evidence[0].operator_name, 'stage-c-test-operator');
@@ -205,7 +281,6 @@ describe('housekeeping canonical plan Stage C contract', () => {
     assert.equal(evidence[0].inspections_count_before, evidence[0].inspections_count_after);
     assert.equal(Number(evidence[0].activity_log_count_before) <= Number(evidence[0].activity_log_count_after), true);
     assert.equal(evidence[0].physical_legacy_tables_dropped, true);
-    assert.match(String(evidence[0].compatibility_projection), /SELECT-only/);
     assert.match(String(evidence[0].rollback_policy), /OLD-APP-ROLLBACK-INVALID/);
     assert.match(String(evidence[0].remediation_procedure), /CLEANING_STAGE_C_FREEZE_AND_FORWARD_REMEDIATE_V1/);
 
@@ -222,26 +297,34 @@ describe('housekeeping canonical plan Stage C contract', () => {
       ),
     }]);
 
-    const projected = await rows<{ id: string; property_id: string; status: string; priority: string }>(
-      "select id, property_id, status, priority from public.cleaning_tasks where id = $1",
-      [LEGACY_TASK],
+    assert.equal(await scalar<string | null>(
+      "select to_regclass('public.cleaning_tasks')::text",
+    ), null);
+    assert.equal(await scalar<string | null>(
+      "select to_regclass('public.hk_assignments')::text",
+    ), null);
+
+    const repo = resolve(new URL('.', import.meta.url).pathname, '..', '..', '..');
+    const receiptBefore = await rows<{ run_id: string; cutover_at: string }>(
+      'select run_id, cutover_at from public.housekeeping_stage_c_cutover_evidence',
     );
-    assert.deepEqual(projected, [{ id: LEGACY_TASK, property_id: PROPERTY, status: 'scheduled', priority: 'normal' }]);
-    assert.match(await failsWith(
-      "insert into public.cleaning_tasks(id, property_id, room_number, business_date, dedupe_key, cleaning_type) values (gen_random_uuid(), $1, '999', $2, '999::2026-08-02', 'stayover')",
-      [PROPERTY, BUSINESS_DATE],
-    ), /not.*updatable|cannot insert/i);
-    assert.match(await failsWith(
-      "update public.cleaning_tasks set priority = 'high' where id = $1",
-      [LEGACY_TASK],
-    ), /not.*updatable|cannot update/i);
-    assert.match(await failsWith(
-      "delete from public.cleaning_tasks where id = $1",
-      [LEGACY_TASK],
-    ), /not.*updatable|cannot delete/i);
+    let rerunError = '';
+    try {
+      await pg.exec(readFileSync(join(repo, 'supabase', 'migrations', '0437_housekeeping_stage_c_contract.sql'), 'utf8'));
+    } catch (error) {
+      rerunError = error instanceof Error ? error.message : String(error);
+    }
+    assert.match(rerunError, /expected physical cleaning_tasks\/hk_assignments tables/i);
+    await pg.exec('rollback;').catch(() => undefined);
+    assert.deepEqual(await rows<{ run_id: string; cutover_at: string }>(
+      'select run_id, cutover_at from public.housekeeping_stage_c_cutover_evidence',
+    ), receiptBefore, 'a deterministic post-success rerun cannot replace the immutable receipt');
   });
 
   test('keeps canonical assign/reset/reassign and started-work protections active', async () => {
+    const evidenceBefore = await rows<{ run_id: string; legacy_cleaning_tasks_hash: string }>(
+      'select run_id, legacy_cleaning_tasks_hash from public.housekeeping_stage_c_cutover_evidence',
+    );
     await pg.query(
       "select * from public.upsert_room_work_plan($1, $2::jsonb)",
       [PROPERTY, JSON.stringify([{
@@ -295,6 +378,22 @@ describe('housekeeping canonical plan Stage C contract', () => {
       { room_number: '901', status: 'completed' },
       { room_number: '902', status: 'completed' },
     ]);
+
+    const canonical300 = await scalar<string>(
+      "select public.housekeeping_plan_id($1, $2, '300')::text",
+      [PROPERTY, BUSINESS_DATE],
+    );
+    const futureAudit = await rows<{ event_type: string; source: string }>(
+      "select event_type, source from public.activity_log where target_id = $1 order by occurred_at, id",
+      [canonical300],
+    );
+    for (const eventType of ['cleaning_task_created', 'assignment_created', 'assignment_deactivated', 'cleaning_task_in_progress']) {
+      assert.equal(futureAudit.filter((entry) => entry.event_type === eventType).length >= 1, true, `future canonical ${eventType} audit is present`);
+    }
+    assert.equal(futureAudit.some((entry) => entry.source === 'manager_dashboard'), true);
+    assert.deepEqual(await rows<{ run_id: string; legacy_cleaning_tasks_hash: string }>(
+      'select run_id, legacy_cleaning_tasks_hash from public.housekeeping_stage_c_cutover_evidence',
+    ), evidenceBefore, 'future canonical cleanup cannot mutate durable Stage C evidence');
   });
 
   test('keeps inspection failure/recheck evidence atomic and idempotent', async () => {
@@ -304,6 +403,10 @@ describe('housekeeping canonical plan Stage C contract', () => {
     );
     assert.equal(failed[0].result, 'fail');
     assert.match(JSON.stringify(failed[0].failed_items), /inspection-photos\/stage-c\.jpg/);
+    assert.equal(await scalar<number>(
+      "select count(*) from public.activity_log where event_type = 'inspection_fail' and source_event_id = $1",
+      [INSPECTION],
+    ), 1, 'inspection correction transition remains auditable');
     const correction = await rows<{ plan_status: string; issue_note: string }>(
       "select plan_status, issue_note from public.room_work where legacy_task_id = $1",
       [LEGACY_TASK],
@@ -331,10 +434,35 @@ describe('housekeeping canonical plan Stage C contract', () => {
   });
 
   test('enforces service-only ACL/search_path and removes executable legacy seams', async () => {
-    const acl = await rows<{ anon_select: boolean; service_select: boolean; pms_anon_insert: boolean; evidence_rls: boolean }>(
-      "select has_table_privilege('anon', 'public.cleaning_tasks', 'select') as anon_select, has_table_privilege('service_role', 'public.cleaning_tasks', 'select') as service_select, has_table_privilege('anon', 'public.pms_housekeeping_assignments', 'insert') as pms_anon_insert, (select relrowsecurity from pg_class where oid = 'public.housekeeping_stage_c_cutover_evidence'::regclass) as evidence_rls",
+    const acl = await rows<{ cleaning_tasks: string | null; hk_assignments: string | null; evidence_rls: boolean; anon_select: boolean; service_select: boolean; service_insert: boolean; service_update: boolean; service_delete: boolean; pms_anon_insert: boolean }>(
+      "select to_regclass('public.cleaning_tasks')::text as cleaning_tasks, to_regclass('public.hk_assignments')::text as hk_assignments, has_table_privilege('anon', 'public.housekeeping_stage_c_cutover_evidence', 'select') as anon_select, has_table_privilege('service_role', 'public.housekeeping_stage_c_cutover_evidence', 'select') as service_select, has_table_privilege('service_role', 'public.housekeeping_stage_c_cutover_evidence', 'insert') as service_insert, has_table_privilege('service_role', 'public.housekeeping_stage_c_cutover_evidence', 'update') as service_update, has_table_privilege('service_role', 'public.housekeeping_stage_c_cutover_evidence', 'delete') as service_delete, has_table_privilege('anon', 'public.pms_housekeeping_assignments', 'insert') as pms_anon_insert, (select relrowsecurity from pg_class where oid = 'public.housekeeping_stage_c_cutover_evidence'::regclass) as evidence_rls",
     );
-    assert.deepEqual(acl, [{ anon_select: false, service_select: true, pms_anon_insert: false, evidence_rls: true }]);
+    assert.deepEqual(acl, [{ cleaning_tasks: null, hk_assignments: null, anon_select: false, service_select: true, service_insert: false, service_update: false, service_delete: false, pms_anon_insert: false, evidence_rls: true }]);
+
+    assert.match(await failsWith(
+      "update public.housekeeping_stage_c_cutover_evidence set operator_name = 'tampered'",
+    ), /immutable|permission|not.*update/i);
+    assert.match(await failsWith(
+      "delete from public.housekeeping_stage_c_cutover_evidence",
+    ), /immutable|permission|not.*delete/i);
+    assert.equal(await scalar<number>(
+      "select count(*) from pg_trigger where tgrelid = 'public.housekeeping_stage_c_cutover_evidence'::regclass and tgname = 'housekeeping_stage_c_cutover_evidence_immutable'",
+    ), 1, 'cutover evidence has a cataloged immutable trigger');
+    assert.deepEqual(await rows<{ function_name: string }>(
+      "select p.oid::regprocedure::text as function_name from pg_proc p join pg_namespace n on n.oid = p.pronamespace where n.nspname = 'public' and p.proname = '_record_housekeeping_stage_c_cutover_evidence' and has_function_privilege('anon', p.oid, 'execute')",
+    ), [], 'browser roles cannot invoke the narrow receipt writer');
+    assert.equal(await scalar<boolean>(
+      "select has_function_privilege('service_role', 'public._record_housekeeping_stage_c_cutover_evidence()', 'execute')",
+    ), true, 'service remediation role can invoke the one-time receipt writer');
+    await pg.exec("begin; set local role service_role; select count(*) from public.housekeeping_stage_c_cutover_evidence; rollback;");
+    let browserReadError = '';
+    try {
+      await pg.exec("begin; set local role anon; select * from public.housekeeping_stage_c_cutover_evidence;");
+    } catch (error) {
+      browserReadError = error instanceof Error ? error.message : String(error);
+    }
+    await pg.exec('rollback;').catch(() => undefined);
+    assert.match(browserReadError, /permission|policy|denied/i, 'browser roles cannot read cutover evidence');
 
     const functions = await rows<{ proconfig: string[] | null; anon_exec: boolean; service_exec: boolean }>(
       "select proconfig, has_function_privilege('anon', 'public.assign_room_work_atomic(uuid,uuid,uuid,uuid,text,integer,numeric,boolean,text)', 'execute') as anon_exec, has_function_privilege('service_role', 'public.assign_room_work_atomic(uuid,uuid,uuid,uuid,text,integer,numeric,boolean,text)', 'execute') as service_exec from pg_proc where oid = 'public.assign_room_work_atomic(uuid,uuid,uuid,uuid,text,integer,numeric,boolean,text)'::regprocedure",
@@ -345,11 +473,11 @@ describe('housekeeping canonical plan Stage C contract', () => {
     assert.equal(functions[0].service_exec, true);
 
     assert.equal(await scalar<number>(
-      "select count(*) from pg_trigger where tgrelid = 'public.cleaning_tasks'::regclass and not tgisinternal",
-    ), 0, 'read-only projection has no redirect trigger');
-    assert.equal(await scalar<number>(
       "select count(*) from pg_trigger where tgrelid = 'public.room_work'::regclass and not tgisinternal and tgname in ('trg_legacy_cleaning_task_to_room_work', 'trg_legacy_hk_assignment_to_room_work')",
     ), 0, 'canonical room_work has no reverse bridge');
+    assert.equal(await scalar<number>(
+      "select count(*) from pg_trigger t join pg_class c on c.oid = t.tgrelid join pg_namespace n on n.oid = c.relnamespace where n.nspname = 'public' and c.relname in ('cleaning_tasks', 'hk_assignments') and not t.tgisinternal",
+    ), 0, 'no trigger remains attached to a retired legacy relation');
     assert.equal(await scalar<boolean>(
       "select to_regprocedure('public.reassign_cleaning_task(uuid,uuid,uuid,uuid,text)') is null and to_regprocedure('public.complete_inspection_atomic(uuid,uuid,text,jsonb,jsonb,text,boolean,text,timestamptz,text)') is null",
     ), true);
@@ -359,12 +487,14 @@ describe('housekeeping canonical plan Stage C contract', () => {
 
     const repo = resolve(new URL('.', import.meta.url).pathname, '..', '..', '..');
     const legacyCall = /\.from\(\s*['\"](?:cleaning_tasks|hk_assignments)['\"]\s*\)|\.rpc\(\s*['\"](?:complete_inspection_atomic|reassign_cleaning_task)['\"]\s*\)/;
+    const legacyRelationName = /\b(?:cleaning_tasks|hk_assignments)\b/;
     for (const root of [join(repo, 'src'), join(repo, 'cua-service'), join(repo, 'scripts')]) {
       for (const file of executableSourceFiles(root)) {
         const executableSource = readFileSync(file, 'utf8')
           .replace(/\/\*[\s\S]*?\*\//g, '')
           .replace(/^\s*\/\/.*$/gm, '');
         assert.doesNotMatch(executableSource, legacyCall, `legacy executable seam remains in ${file}`);
+        assert.doesNotMatch(executableSource, legacyRelationName, `retired housekeeping relation name remains in ${file}`);
       }
     }
   });
@@ -422,5 +552,131 @@ test('0437 preflight fences an in-flight old deployment when the freeze gate is 
   assert.equal(await migrated.pg.query<{ relkind: string }>(
     "select relkind from pg_class where oid = 'public.cleaning_tasks'::regclass",
   ).then((result) => result.rows[0]?.relkind), 'r');
+  await migrated.pg.close();
+});
+
+test('0437 preflight requires a named operator independently of the freeze gate', async () => {
+  const migrated = await applyMigrationsToPgliteWithHook(async ({ pg: db, file }) => {
+    if (file !== '0434_housekeeping_plan_reconciliation.sql') return;
+    await db.query("select set_config('staxis.housekeeping_stage_c_freeze', 'approved', false)");
+  });
+  await assertStageCFailurePreservesLegacy(migrated, /operator evidence is missing/i, 0, 0);
+  await migrated.pg.close();
+});
+
+test('0437 rejects duplicate natural keys before dropping either legacy table', async () => {
+  const duplicateTask = 'd4000000-0000-4000-8000-000000000001';
+  const migrated = await applyMigrationsToPgliteWithHook(async ({ pg: db, file }) => {
+    if (file === '0434_housekeeping_plan_reconciliation.sql') {
+      await seedStageCPreflightWindow(db);
+    } else if (file === '0437_housekeeping_stage_c_contract.sql') {
+      await db.query('alter table public.cleaning_tasks drop constraint cleaning_tasks_dedupe_unique');
+      await db.query('drop index if exists public.room_work_plan_dedupe_unique');
+      await db.query('drop trigger if exists trg_legacy_cleaning_task_to_room_work on public.cleaning_tasks');
+      await db.query(
+        "insert into public.cleaning_tasks(id, property_id, room_number, business_date, dedupe_key, cleaning_type, priority, estimated_minutes, requires_inspection, extras, notes, rules_fired, rule_inputs, status, source_property_timezone, scheduled_at, last_evaluated_at) values ($1, $2, '103', $3, '101::2026-08-02', 'stayover', 'normal', 20, false, '[]'::jsonb, 'ambiguous task', '[]'::jsonb, '{}'::jsonb, 'scheduled', 'America/Chicago', $4::timestamptz, $4::timestamptz)",
+        [duplicateTask, PROPERTY, BUSINESS_DATE, '2026-08-02T12:05:00Z'],
+      );
+      await db.query(
+        "insert into public.room_work(id, legacy_task_id, property_id, date, room_number, plan_dedupe_key, plan_cleaning_type, status) values (public.housekeeping_plan_id($1, $2, '103'), $3, $1, $2, '103', '103::2026-08-02', 'stayover', 'not_started')",
+        [PROPERTY, BUSINESS_DATE, duplicateTask],
+      );
+    }
+  });
+  await assertStageCFailurePreservesLegacy(migrated, /dedupe group\(s\) are ambiguous/i, 2, 1);
+  await migrated.pg.close();
+});
+
+test('0437 rejects a cross-property legacy assignment before destructive DDL', async () => {
+  const foreignAssignment = 'd5000000-0000-4000-8000-000000000001';
+  const migrated = await applyMigrationsToPgliteWithHook(async ({ pg: db, file }) => {
+    if (file === '0434_housekeeping_plan_reconciliation.sql') {
+      await seedStageCPreflightWindow(db);
+    } else if (file === '0435_housekeeping_canonical_operations.sql') {
+      await db.query('drop trigger if exists trg_legacy_hk_assignment_to_room_work on public.hk_assignments');
+      await db.query(
+        "insert into public.hk_assignments(id, property_id, cleaning_task_id, housekeeper_id, queue_order, is_active, assigned_at, assigned_by, reason, score) values ($1, $2, $3, $4, 2, false, $5::timestamptz, 'manual', 'cross-property test', 2.0)",
+        [foreignAssignment, OTHER_PROPERTY, LEGACY_TASK, OTHER_HOUSEKEEPER, '2026-08-02T12:06:00Z'],
+      );
+    }
+  });
+  await assertStageCFailurePreservesLegacy(migrated, /hk_assignments row\(s\).*same-property/i, 1, 2);
+  await migrated.pg.close();
+});
+
+test('0437 rejects an inactive or wrong-department current staff target before destructive DDL', async () => {
+  for (const [, statement] of [
+    ['inactive', "update public.staff set is_active = false where id = $1"],
+    ['wrong department', "update public.staff set department = 'front_desk' where id = $1"],
+  ] as const) {
+    const migrated = await applyMigrationsToPgliteWithHook(async ({ pg: db, file }) => {
+      if (file === '0434_housekeeping_plan_reconciliation.sql') {
+        await seedStageCPreflightWindow(db);
+      } else if (file === '0435_housekeeping_canonical_operations.sql') {
+        await db.query(statement, [HOUSEKEEPER]);
+      }
+    });
+    await assertStageCFailurePreservesLegacy(migrated, /current assignment row\(s\).*property or department boundary/i);
+    await migrated.pg.close();
+  }
+});
+
+test('0437 rejects missing and wrong-type history is_active values before destructive DDL', async () => {
+  for (const [, history] of [
+    ['missing', `'[{"id":"c5000000-0000-4000-8000-000000000001"}]'::jsonb`],
+    ['wrong type', "'[{\"id\":\"c5000000-0000-4000-8000-000000000001\",\"is_active\":\"true\"}]'::jsonb"],
+  ] as const) {
+    const migrated = await applyMigrationsToPgliteWithHook(async ({ pg: db, file }) => {
+      if (file === '0434_housekeeping_plan_reconciliation.sql') {
+        await seedStageCPreflightWindow(db);
+      } else if (file === '0435_housekeeping_canonical_operations.sql') {
+        await db.query(
+          `update public.room_work set assignment_history = ${history} where legacy_task_id = $1`,
+          [LEGACY_TASK],
+        );
+      }
+    });
+    await assertStageCFailurePreservesLegacy(migrated, /missing a boolean is_active key/i);
+    await migrated.pg.close();
+  }
+});
+
+test('0437 aborts on a PMS count/hash anomaly caused during reconciliation', async () => {
+  const pmsAssignment = 'd6000000-0000-4000-8000-000000000001';
+  const ingestRun = 'd7000000-0000-4000-8000-000000000001';
+  const migrated = await applyMigrationsToPgliteWithHook(async ({ pg: db, file }) => {
+    if (file === '0434_housekeeping_plan_reconciliation.sql') {
+      await seedStageCPreflightWindow(db);
+      await db.query(
+        "insert into public.pms_ingest_runs(id, property_id, source_kind, mode, parser_name, parser_version, source_captured_at, started_at, finished_at, status) values ($1, $2, 'cua', 'live', 'stage-c-test', '1', $3::timestamptz, $3::timestamptz, $3::timestamptz, 'succeeded')",
+        [ingestRun, PROPERTY, '2026-08-02T11:00:00Z'],
+      );
+      await db.query(
+        "insert into public.pms_housekeeping_assignments(id, property_id, date, room_number, housekeeper_name, cleaning_type, scheduled_time, dnd_active, notes, raw, ingest_run_id) values ($1, $2, $3, '101', 'PMS Housekeeper', 'departure', $4::timestamptz, false, 'PMS parity', '{}'::jsonb, $5)",
+        [pmsAssignment, PROPERTY, BUSINESS_DATE, '2026-08-02T12:00:00Z', ingestRun],
+      );
+    } else if (file === '0437_housekeeping_stage_c_contract.sql') {
+      await db.query(`
+        create or replace function public.stage_c_test_mutate_pms()
+        returns trigger language plpgsql as $function$
+        begin
+          if current_setting('staxis.stage_c_test_pms_mutation', true) = 'armed' then
+            update public.pms_housekeeping_assignments set notes = coalesce(notes, '') || ' mutated' where id = '${pmsAssignment}'::uuid;
+            perform set_config('staxis.stage_c_test_pms_mutation', 'spent', true);
+          end if;
+          return new;
+        end;
+        $function$;
+      `);
+      await db.query(
+        'create trigger stage_c_test_mutate_pms after update on public.room_work for each row execute function public.stage_c_test_mutate_pms()',
+      );
+      await db.query("select set_config('staxis.stage_c_test_pms_mutation', 'armed', false)");
+    }
+  });
+  const failure = migrated.report.failedAtRuntime.find((entry) => entry.file === '0437_housekeeping_stage_c_contract.sql');
+  assert.ok(failure);
+  assert.match(failure.error, /before destructive DDL/i, 'the parity anomaly must abort before the drop statements');
+  await assertStageCFailurePreservesLegacy(migrated, /pms_housekeeping_assignments count\/hash changed/i);
   await migrated.pg.close();
 });

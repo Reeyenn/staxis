@@ -13,10 +13,8 @@
 -- physical cleaning_tasks and hk_assignments tables. No reverse sync, trigger
 -- redirect, writable view, or second writable source is installed.
 --
--- The cleaning_tasks name is retained only for one repository consumer that
--- still performs a read-only portfolio summary. Its UNION ALL shape is an
--- intentional PostgreSQL non-updatable-view barrier. hk_assignments has no
--- retained runtime consumer and is removed without a compatibility relation.
+-- No legacy relation name is retained after this boundary. Runtime readers use
+-- room_work_plan_v1 or the canonical room_work operations before retirement.
 --
 -- Rollback/remediation: this migration is not reversible by SQL rollback after
 -- commit. Before production apply, take the approved database backup/snapshot
@@ -25,7 +23,7 @@
 -- final snapshot), keep Stage C unapplied, and forward-remediate the exact
 -- failing property/task/history rows before retrying 0437. Reapplying 0434-
 -- 0436 after a restored snapshot reinstalls the compatibility window; do not
--- recreate a writable view or manually add reverse-sync triggers.
+-- recreate either retired relation or manually add reverse-sync triggers.
 
 begin;
 
@@ -113,7 +111,7 @@ $$;
 create table if not exists public.housekeeping_stage_c_cutover_evidence (
   id                                  uuid primary key default gen_random_uuid(),
   run_id                              uuid not null unique,
-  migration_version                   text not null default '0437',
+  migration_version                   text not null default '0437' unique,
   started_at                          timestamptz not null,
   cutover_at                          timestamptz not null,
   operator_name                       text not null,
@@ -141,7 +139,6 @@ create table if not exists public.housekeeping_stage_c_cutover_evidence (
   activity_log_hash_before            text not null,
   activity_log_hash_after             text not null,
   physical_legacy_tables_dropped      boolean not null,
-  compatibility_projection            text not null,
   rollback_policy                     text not null,
   remediation_procedure               text not null
 );
@@ -154,7 +151,27 @@ create policy housekeeping_stage_c_cutover_evidence_deny_all
   on public.housekeeping_stage_c_cutover_evidence
   for all to anon, authenticated using (false) with check (false);
 comment on table public.housekeeping_stage_c_cutover_evidence is
-  'Durable Cleaning Stage C cutover evidence. One row records the frozen legacy snapshots, canonical/PMS/inspection counts and hashes, operator evidence, destructive inventory, and the named freeze-and-forward remediation procedure. Service-role-only.';
+  'Durable immutable Cleaning Stage C cutover evidence. One row records the frozen legacy snapshots, canonical/PMS/inspection counts and hashes, operator evidence, destructive inventory, and the named freeze-and-forward remediation procedure. Service-role read-only.';
+
+create or replace function public._reject_housekeeping_stage_c_cutover_evidence_mutation()
+returns trigger
+language plpgsql
+security definer
+set search_path = public, pg_temp
+as $function$
+begin
+  raise exception
+    '0437 evidence is immutable: only the one-time cutover receipt writer may insert the final receipt'
+    using errcode = '42501';
+end;
+$function$;
+
+revoke all on function public._reject_housekeeping_stage_c_cutover_evidence_mutation() from public, anon, authenticated;
+grant execute on function public._reject_housekeeping_stage_c_cutover_evidence_mutation() to service_role;
+drop trigger if exists housekeeping_stage_c_cutover_evidence_immutable on public.housekeeping_stage_c_cutover_evidence;
+create trigger housekeeping_stage_c_cutover_evidence_immutable
+  before update or delete on public.housekeeping_stage_c_cutover_evidence
+  for each row execute function public._reject_housekeeping_stage_c_cutover_evidence_mutation();
 
 create temporary table phase5_stage_c_baseline_evidence
 on commit drop
@@ -365,6 +382,28 @@ begin
   if v_count > 0 then
     raise exception
       '0437 preflight: % PMS assignment row(s) are missing property/date/room identity; PMS truth cannot be preserved safely',
+      v_count;
+  end if;
+end;
+$$;
+
+-- The final contract treats assignment_history as an append-only typed event
+-- stream. Missing or non-boolean is_active values are not safe to coerce: a
+-- malformed receipt could make a reset look active during reconciliation.
+do $$
+declare
+  v_count bigint;
+begin
+  select count(*)
+    into v_count
+    from public.room_work w
+    cross join lateral jsonb_array_elements(coalesce(w.assignment_history, '[]'::jsonb)) h
+   where jsonb_typeof(h) is distinct from 'object'
+      or not (h ? 'is_active')
+      or jsonb_typeof(h->'is_active') is distinct from 'boolean';
+  if v_count > 0 then
+    raise exception
+      '0437 preflight: % assignment history receipt(s) are missing a boolean is_active key; no destructive work was attempted',
       v_count;
   end if;
 end;
@@ -650,7 +689,10 @@ update public.room_work w
         and latest.snapshot->>'housekeeper_id' = w.assigned_staff_id::text
    );
 
-create temporary table phase5_stage_c_active_legacy_assignments
+-- Choose the last legacy row first, including inactive/reset rows. Only an
+-- active last row may become a current assignment; an older active row must
+-- never resurrect after a newer reset/deactivation.
+create temporary table phase5_stage_c_latest_legacy_assignments
 on commit drop
 as
 select distinct on (a.cleaning_task_id)
@@ -658,6 +700,7 @@ select distinct on (a.cleaning_task_id)
   a.property_id,
   a.housekeeper_id,
   a.id as assignment_id,
+  a.is_active,
   greatest(a.updated_at, a.assigned_at) as changed_at,
   jsonb_build_object(
     'id', a.id,
@@ -665,7 +708,7 @@ select distinct on (a.cleaning_task_id)
     'cleaning_task_id', a.cleaning_task_id,
     'housekeeper_id', a.housekeeper_id,
     'queue_order', a.queue_order,
-    'is_active', true,
+    'is_active', a.is_active,
     'assigned_at', a.assigned_at,
     'assigned_by', a.assigned_by,
     'assigned_source', case when a.assigned_by = 'auto' then 'auto' else 'manager' end,
@@ -674,10 +717,17 @@ select distinct on (a.cleaning_task_id)
     'score', a.score,
     'created_at', a.created_at,
     'updated_at', a.updated_at,
-    'event', 'stage_c_reconciled_active_hk_assignment'
+    'event', case when a.is_active then 'stage_c_reconciled_active_hk_assignment' else 'stage_c_reconciled_inactive_hk_assignment' end
   ) as snapshot
 from phase5_stage_c_hk_assignments a
 order by a.cleaning_task_id, greatest(a.updated_at, a.assigned_at) desc, a.created_at desc, a.id desc;
+
+create temporary table phase5_stage_c_active_legacy_assignments
+on commit drop
+as
+select *
+  from phase5_stage_c_latest_legacy_assignments
+ where is_active is true;
 
 create temporary table phase5_stage_c_assignment_reconciliation
 on commit drop
@@ -723,10 +773,14 @@ select
   l.assignment_id as legacy_assignment_id,
   l.housekeeper_id as legacy_staff_id,
   l.snapshot as legacy_snapshot,
+  latest.assignment_id as latest_legacy_assignment_id,
+  latest.is_active as latest_legacy_is_active,
   l.changed_at as legacy_changed_at,
   case
+    when latest.assignment_id is not null
+     and latest.is_active is false
+     and w.status not in ('in_progress', 'completed', 'refused', 'skipped') then 'legacy_reset'
     when l.assignment_id is null then 'canonical_room_work'
-    when w.assigned_staff_id is null then 'legacy_compatibility'
     when w.status in ('in_progress', 'completed', 'refused', 'skipped') then 'canonical_room_work'
     when l.changed_at > coalesce(c.changed_at, '-infinity'::timestamptz)
       then 'legacy_compatibility'
@@ -736,6 +790,9 @@ from public.room_work w
 left join phase5_stage_c_active_legacy_assignments l
   on l.cleaning_task_id = w.legacy_task_id
  and l.property_id = w.property_id
+left join phase5_stage_c_latest_legacy_assignments latest
+  on latest.cleaning_task_id = w.legacy_task_id
+ and latest.property_id = w.property_id
 left join canonical_receipts c on c.work_id = w.id
 where w.legacy_task_id is not null;
 
@@ -745,6 +802,16 @@ where w.legacy_task_id is not null;
 update public.room_work w
    set assignment_history =
          case
+           when r.winner = 'legacy_reset'
+            and r.canonical_snapshot is not null
+             then w.assignment_history || jsonb_build_array(
+               r.canonical_snapshot || jsonb_build_object(
+                 'is_active', false,
+                 'event', 'stage_c_legacy_reset',
+                 'changed_at', now(),
+                 'updated_at', now()
+               )
+             )
            when r.winner = 'legacy_compatibility'
             and r.canonical_snapshot is not null
             and r.canonical_snapshot->>'id' is distinct from r.legacy_assignment_id::text
@@ -787,20 +854,85 @@ update public.room_work w
              )
            else '[]'::jsonb
          end,
-       assigned_staff_id = case when r.winner = 'legacy_compatibility' then r.legacy_staff_id else w.assigned_staff_id end,
+       assigned_staff_id = case
+         when r.winner = 'legacy_reset' then null
+         when r.winner = 'legacy_compatibility' then r.legacy_staff_id
+         else w.assigned_staff_id
+       end,
        assigned_source = case
+         when r.winner = 'legacy_reset' then null
          when r.winner = 'legacy_compatibility' then
            case when r.legacy_snapshot->>'assigned_by' = 'auto' then 'auto' else 'manager' end
          else w.assigned_source
        end,
-       assignment_queue_order = case when r.winner = 'legacy_compatibility' then (r.legacy_snapshot->>'queue_order')::integer else w.assignment_queue_order end,
-       assignment_assigned_at = case when r.winner = 'legacy_compatibility' then (r.legacy_snapshot->>'assigned_at')::timestamptz else w.assignment_assigned_at end,
-       assignment_assigned_by = case when r.winner = 'legacy_compatibility' then r.legacy_snapshot->>'assigned_by' else w.assignment_assigned_by end,
-       assignment_assigned_by_user_id = case when r.winner = 'legacy_compatibility' then (r.legacy_snapshot->>'assigned_by_user_id')::uuid else w.assignment_assigned_by_user_id end,
-       assignment_reason = case when r.winner = 'legacy_compatibility' then r.legacy_snapshot->>'reason' else w.assignment_reason end,
-       assignment_score = case when r.winner = 'legacy_compatibility' then (r.legacy_snapshot->>'score')::numeric else w.assignment_score end
-  from phase5_stage_c_assignment_reconciliation r
+       assignment_queue_order = case when r.winner = 'legacy_reset' then 0 when r.winner = 'legacy_compatibility' then (r.legacy_snapshot->>'queue_order')::integer else w.assignment_queue_order end,
+       assignment_assigned_at = case when r.winner = 'legacy_reset' then null when r.winner = 'legacy_compatibility' then (r.legacy_snapshot->>'assigned_at')::timestamptz else w.assignment_assigned_at end,
+       assignment_assigned_by = case when r.winner = 'legacy_reset' then null when r.winner = 'legacy_compatibility' then r.legacy_snapshot->>'assigned_by' else w.assignment_assigned_by end,
+       assignment_assigned_by_user_id = case when r.winner = 'legacy_reset' then null when r.winner = 'legacy_compatibility' then (r.legacy_snapshot->>'assigned_by_user_id')::uuid else w.assignment_assigned_by_user_id end,
+       assignment_reason = case when r.winner = 'legacy_reset' then null when r.winner = 'legacy_compatibility' then r.legacy_snapshot->>'reason' else w.assignment_reason end,
+       assignment_score = case when r.winner = 'legacy_reset' then null when r.winner = 'legacy_compatibility' then (r.legacy_snapshot->>'score')::numeric else w.assignment_score end
+ from phase5_stage_c_assignment_reconciliation r
  where w.id = r.work_id;
+
+-- Normalize the final append-only history view to one active receipt per
+-- canonical current assignment. This also closes the reset case where a
+-- legacy row was deactivated after an earlier active row: every older active
+-- receipt is retained and gets an explicit immutable deactivation event.
+create temporary table phase5_stage_c_history_deactivation
+on commit drop
+as
+select
+  w.id as work_id,
+  jsonb_agg(
+    h.snapshot || jsonb_build_object(
+      'is_active', false,
+      'event', 'stage_c_superseded_by_final_reconciliation',
+      'changed_at', now(),
+      'updated_at', now()
+    )
+    order by h.position
+  ) as appended
+from public.room_work w
+cross join lateral (
+  select h0.snapshot,
+         h0.position,
+         row_number() over (
+           partition by h0.snapshot->>'id'
+           order by h0.position desc
+         ) as latest_position
+    from jsonb_array_elements(coalesce(w.assignment_history, '[]'::jsonb))
+      with ordinality h0(snapshot, position)
+) h
+left join lateral (
+  select current_receipt.snapshot->>'id' as keep_id
+    from (
+      select h1.snapshot,
+             h1.position,
+             row_number() over (
+               partition by h1.snapshot->>'id'
+               order by h1.position desc
+             ) as latest_position
+        from jsonb_array_elements(coalesce(w.assignment_history, '[]'::jsonb))
+          with ordinality h1(snapshot, position)
+    ) current_receipt
+   where current_receipt.latest_position = 1
+     and coalesce((current_receipt.snapshot->>'is_active')::boolean, false)
+     and current_receipt.snapshot->>'property_id' = w.property_id::text
+     and current_receipt.snapshot->>'cleaning_task_id' = coalesce(w.legacy_task_id, w.id)::text
+     and current_receipt.snapshot->>'housekeeper_id' = w.assigned_staff_id::text
+   order by current_receipt.position desc
+   limit 1
+) keep on true
+where h.latest_position = 1
+  and coalesce((h.snapshot->>'is_active')::boolean, false)
+  and h.snapshot->>'id' is distinct from keep.keep_id
+group by w.id;
+
+update public.room_work w
+   set assignment_history = w.assignment_history || d.appended
+  from phase5_stage_c_history_deactivation d
+ where w.id = d.work_id
+   and d.appended <> '[]'::jsonb;
 
 -- Final invariant gate. It runs before the destructive DROP statements and
 -- therefore aborts the entire transaction without changing production when a
@@ -874,6 +1006,8 @@ begin
        or (h->>'property_id' is null)
        or (h->>'cleaning_task_id' is null)
        or (h->>'housekeeper_id' is null)
+       or not (h ? 'is_active')
+       or jsonb_typeof(h->'is_active') is distinct from 'boolean'
        or not (h ? 'queue_order')
        or not (h ? 'assigned_at')
        or not (h ? 'assigned_by')
@@ -936,6 +1070,28 @@ begin
   select count(*)
     into v_count
     from public.room_work w
+   where w.assigned_staff_id is null
+     and exists (
+       select 1
+         from (
+           select h.snapshot,
+                  row_number() over (
+                    partition by h.snapshot->>'id'
+                    order by h.position desc
+                  ) as latest_position
+             from jsonb_array_elements(coalesce(w.assignment_history, '[]'::jsonb))
+               with ordinality h(snapshot, position)
+         ) latest
+        where latest.latest_position = 1
+          and (latest.snapshot->>'is_active')::boolean
+     );
+  if v_count > 0 then
+    raise exception '0437 invariant failure: % unassigned room_work row(s) retain an active assignment receipt', v_count;
+  end if;
+
+  select count(*)
+    into v_count
+    from public.room_work w
    where w.assigned_staff_id is not null
      and not exists (
        select 1
@@ -961,8 +1117,55 @@ begin
 end;
 $$;
 
+-- Re-check protected PMS and inspection/photo/result parity immediately before
+-- destructive DDL. These sources are not locked by this contract, so a late
+-- feed or inspection mutation must abort while both legacy physical tables and
+-- their data are still present; the post-drop check below remains a second
+-- proof at the receipt boundary.
+do $$
+declare
+  v_baseline record;
+  v_pms_count bigint;
+  v_pms_hash text;
+  v_inspection_count bigint;
+  v_inspection_hash text;
+begin
+  select * into v_baseline from phase5_stage_c_baseline_evidence limit 1;
+
+  select count(*), md5(coalesce(string_agg(to_jsonb(a)::text, '|' order by a.property_id, a.date, a.room_number), ''))
+    into v_pms_count, v_pms_hash
+    from public.pms_housekeeping_assignments a;
+  if v_pms_count is distinct from v_baseline.pms_assignments_count_before
+     or v_pms_hash is distinct from v_baseline.pms_assignments_hash_before then
+    raise exception
+      '0437 preflight: pms_housekeeping_assignments count/hash changed before destructive DDL; preserve the legacy pair and forward-remediate the feed before retrying Stage C';
+  end if;
+
+  select count(*), md5(coalesce(string_agg(to_jsonb(i)::text, '|' order by i.property_id, i.started_at, i.id), ''))
+    into v_inspection_count, v_inspection_hash
+    from public.inspections i;
+  if v_inspection_count is distinct from v_baseline.inspections_count_before
+     or v_inspection_hash is distinct from v_baseline.inspections_hash_before then
+    raise exception
+      '0437 preflight: inspections/photo/result count/hash changed before destructive DDL; preserve the legacy pair and forward-remediate the inspection stream before retrying Stage C';
+  end if;
+end;
+$$;
+
 -- Remove every physical legacy writer and its audit triggers before dropping
--- the relations. Canonical RPCs below remain the sole write surface.
+-- the relations. Revoke the old table/RPC capabilities first so a service
+-- session cannot start another legacy write while the teardown statements
+-- are executing. Canonical RPCs below remain the sole write surface.
+revoke all on table public.cleaning_tasks, public.hk_assignments from public, anon, authenticated, service_role;
+revoke all on function public._legacy_cleaning_task_to_room_work() from public, anon, authenticated, service_role;
+revoke all on function public._legacy_hk_assignment_to_room_work() from public, anon, authenticated, service_role;
+revoke all on function public._activity_log_on_cleaning_task_insert() from public, anon, authenticated, service_role;
+revoke all on function public._activity_log_on_cleaning_task_status_update() from public, anon, authenticated, service_role;
+revoke all on function public._activity_log_on_hk_assignment_insert() from public, anon, authenticated, service_role;
+revoke all on function public._activity_log_on_hk_assignment_update() from public, anon, authenticated, service_role;
+revoke all on function public.reassign_cleaning_task(uuid, uuid, uuid, uuid, text) from public, anon, authenticated, service_role;
+revoke all on function public.complete_inspection_atomic(uuid, uuid, text, jsonb, jsonb, text, boolean, text, timestamptz, text) from public, anon, authenticated, service_role;
+
 drop trigger if exists trg_legacy_cleaning_task_to_room_work on public.cleaning_tasks;
 drop trigger if exists trg_legacy_hk_assignment_to_room_work on public.hk_assignments;
 drop trigger if exists trg_activity_log_cleaning_task_ins on public.cleaning_tasks;
@@ -990,7 +1193,7 @@ begin
     raise exception '0437 teardown failure: physical hk_assignments still exists';
   end if;
   if to_regclass('public.cleaning_tasks') is not null then
-    raise exception '0437 teardown failure: physical cleaning_tasks still exists before projection install';
+    raise exception '0437 teardown failure: physical cleaning_tasks still exists';
   end if;
   if to_regprocedure('public.reassign_cleaning_task(uuid,uuid,uuid,uuid,text)') is not null
      or to_regprocedure('public.complete_inspection_atomic(uuid,uuid,text,jsonb,jsonb,text,boolean,text,timestamptz,text)') is not null then
@@ -998,103 +1201,6 @@ begin
   end if;
 end;
 $$;
-
--- One retained read-only compatibility name for portfolio-ui/server.ts. The
--- UNION ALL (with an empty arm) makes PostgreSQL reject INSERT/UPDATE/DELETE
--- rather than auto-updating room_work. No INSTEAD OF trigger is installed.
-create view public.cleaning_tasks as
-select
-  coalesce(w.legacy_task_id, w.id) as id,
-  w.property_id,
-  w.room_number,
-  w.date as business_date,
-  w.plan_dedupe_key as dedupe_key,
-  w.plan_cleaning_type as cleaning_type,
-  coalesce(w.plan_priority, 'normal') as priority,
-  w.plan_due_by as due_by,
-  w.plan_estimated_minutes as estimated_minutes,
-  coalesce(w.plan_requires_inspection, false) as requires_inspection,
-  coalesce(w.plan_extras, '[]'::jsonb) as extras,
-  w.plan_notes as notes,
-  coalesce(w.plan_rules_fired, '[]'::jsonb) as rules_fired,
-  w.plan_rule_inputs as rule_inputs,
-  case
-    when w.status = 'in_progress' and w.is_paused then 'paused'
-    when w.status = 'in_progress' then 'in_progress'
-    when w.status = 'completed' and w.plan_status in (
-      'inspection_pending', 'inspected_pass', 'inspected_fail',
-      'correction_pending', 'correction_complete', 'check_pending',
-      'check_complete'
-    ) then w.plan_status
-    when w.status = 'completed' then 'completed'
-    when w.status = 'skipped' and w.plan_status in ('cancelled', 'superseded') then w.plan_status
-    when w.status = 'skipped' then 'skipped'
-    when w.status = 'refused' then coalesce(w.plan_status, 'deferred')
-    else coalesce(w.plan_status, 'scheduled')
-  end as status,
-  w.assigned_staff_id as assignee_id,
-  w.plan_source_pms_reservation_id as source_pms_reservation_id,
-  w.plan_source_engine_run_id as source_engine_run_id,
-  w.plan_source_property_timezone as source_property_timezone,
-  w.plan_scheduled_at as scheduled_at,
-  w.started_at,
-  w.paused_at,
-  w.completed_at,
-  w.inspected_at,
-  coalesce(w.plan_last_evaluated_at, w.updated_at) as last_evaluated_at,
-  coalesce(w.created_at, w.updated_at) as created_at,
-  w.updated_at
-from public.room_work w
-where w.plan_cleaning_type is not null
-union all
-select
-  coalesce(w.legacy_task_id, w.id) as id,
-  w.property_id,
-  w.room_number,
-  w.date as business_date,
-  w.plan_dedupe_key as dedupe_key,
-  w.plan_cleaning_type as cleaning_type,
-  coalesce(w.plan_priority, 'normal') as priority,
-  w.plan_due_by as due_by,
-  w.plan_estimated_minutes as estimated_minutes,
-  coalesce(w.plan_requires_inspection, false) as requires_inspection,
-  coalesce(w.plan_extras, '[]'::jsonb) as extras,
-  w.plan_notes as notes,
-  coalesce(w.plan_rules_fired, '[]'::jsonb) as rules_fired,
-  w.plan_rule_inputs as rule_inputs,
-  case
-    when w.status = 'in_progress' and w.is_paused then 'paused'
-    when w.status = 'in_progress' then 'in_progress'
-    when w.status = 'completed' and w.plan_status in (
-      'inspection_pending', 'inspected_pass', 'inspected_fail',
-      'correction_pending', 'correction_complete', 'check_pending',
-      'check_complete'
-    ) then w.plan_status
-    when w.status = 'completed' then 'completed'
-    when w.status = 'skipped' and w.plan_status in ('cancelled', 'superseded') then w.plan_status
-    when w.status = 'skipped' then 'skipped'
-    when w.status = 'refused' then coalesce(w.plan_status, 'deferred')
-    else coalesce(w.plan_status, 'scheduled')
-  end as status,
-  w.assigned_staff_id as assignee_id,
-  w.plan_source_pms_reservation_id as source_pms_reservation_id,
-  w.plan_source_engine_run_id as source_engine_run_id,
-  w.plan_source_property_timezone as source_property_timezone,
-  w.plan_scheduled_at as scheduled_at,
-  w.started_at,
-  w.paused_at,
-  w.completed_at,
-  w.inspected_at,
-  coalesce(w.plan_last_evaluated_at, w.updated_at) as last_evaluated_at,
-  coalesce(w.created_at, w.updated_at) as created_at,
-  w.updated_at
-from public.room_work w
-where false;
-
-comment on view public.cleaning_tasks is
-  'Read-only Stage C compatibility projection for the retained portfolio housekeeping summary. Canonical source is room_work; this UNION ALL view intentionally has no writable path.';
-revoke all on public.cleaning_tasks from public, anon, authenticated;
-grant select on public.cleaning_tasks to service_role;
 
 -- Backfill the canonical audit seam for rows created by Stage B while its
 -- room_work trigger was intentionally dormant. Existing legacy events dedupe
@@ -1107,6 +1213,7 @@ declare
   v_event_type text;
   v_occurred_at timestamptz;
   v_source text;
+  v_status text;
 begin
   for v_row in
     select w.*
@@ -1132,7 +1239,11 @@ begin
       v_target::text,
       'Room ' || v_row.room_number,
       format('Cleaning task created for room %s (%s, priority %s)', v_row.room_number, v_row.plan_cleaning_type, coalesce(v_row.plan_priority, 'normal')),
-      'rules_engine',
+      case
+        when v_row.plan_source_pms_reservation_id is not null then 'pms_sync'
+        when v_row.plan_source_engine_run_id is not null then 'rules_engine'
+        else 'manager_dashboard'
+      end,
       v_target,
       jsonb_build_object(
         'room_number', v_row.room_number,
@@ -1146,6 +1257,68 @@ begin
         'stage_c_backfill', true
       )
     );
+  end loop;
+
+  -- Stage B canonical status writes occurred while this trigger was dormant.
+  -- Backfill one deduplicated state event for the final old-window status so
+  -- the timeline does not lose a started/completed/correction transition.
+  for v_row in
+    select w.*
+      from public.room_work w
+     where w.plan_cleaning_type is not null
+       and w.status is not null
+  loop
+    v_status := case
+      when v_row.status = 'in_progress' and v_row.is_paused then 'paused'
+      when v_row.status = 'in_progress' then 'in_progress'
+      when v_row.status = 'completed' and v_row.plan_status in (
+        'inspection_pending', 'inspected_pass', 'inspected_fail',
+        'correction_pending', 'correction_complete', 'check_pending',
+        'check_complete'
+      ) then v_row.plan_status
+      when v_row.status = 'completed' then 'completed'
+      when v_row.status = 'skipped' and v_row.plan_status in ('cancelled', 'superseded') then v_row.plan_status
+      when v_row.status = 'skipped' then 'skipped'
+      when v_row.status = 'refused' then coalesce(v_row.plan_status, 'deferred')
+      else coalesce(v_row.plan_status, v_row.status, 'scheduled')
+    end;
+    v_event_type := 'cleaning_task_' || v_status;
+    v_target := coalesce(v_row.legacy_task_id, v_row.id);
+    if not exists (
+      select 1
+        from public.activity_log l
+       where l.property_id = v_row.property_id
+         and l.event_type = v_event_type
+         and l.source_event_id = v_target
+    ) then
+      perform public._activity_log_write(
+        v_row.property_id,
+        coalesce(v_row.completed_at, v_row.inspected_at, v_row.updated_at, v_row.created_at),
+        'housekeeping',
+        v_event_type,
+        v_row.assigned_staff_id,
+        v_row.assignment_assigned_by_user_id,
+        'cleaning_task',
+        v_target::text,
+        'Room ' || v_row.room_number,
+        format('Cleaning task for room %s is %s', v_row.room_number, v_status),
+        case
+          when v_row.plan_source_pms_reservation_id is not null then 'pms_sync'
+          when v_row.plan_source_engine_run_id is not null then 'rules_engine'
+          when v_row.assigned_staff_id is not null then 'housekeeper_app'
+          else 'manager_dashboard'
+        end,
+        v_target,
+        jsonb_build_object(
+          'room_number', v_row.room_number,
+          'business_date', v_row.date,
+          'old_status', null,
+          'new_status', v_row.status,
+          'new_plan_status', v_row.plan_status,
+          'stage_c_backfill', true
+        )
+      );
+    end if;
   end loop;
 
   for v_snapshot in
@@ -1180,6 +1353,7 @@ begin
     v_occurred_at := v_snapshot.occurred_at;
     v_source := case
       when v_snapshot.snapshot->>'assigned_by' in ('auto', 'rebalance') then 'rules_engine'
+      when v_snapshot.snapshot->>'assigned_by' = 'pms_import' then 'pms_sync'
       else 'manager_dashboard'
     end;
     perform public._activity_log_write(
@@ -1203,6 +1377,140 @@ begin
   end loop;
 end;
 $$;
+
+-- Rebind the existing canonical audit seam at the final activation boundary.
+-- The event shape and dedupe helper remain unchanged; source labels follow
+-- actual row evidence instead of treating every canonical task as a rules
+-- engine event.
+create or replace function public._activity_log_on_room_work_change()
+returns trigger
+language plpgsql
+security definer
+set search_path = public, pg_temp
+as $function$
+declare
+  v_target uuid := coalesce(new.legacy_task_id, new.id);
+  v_status text;
+  v_source text;
+begin
+  if (
+       current_setting('staxis.housekeeping_legacy_bridge', true) = 'on'
+       or current_setting('staxis.housekeeping_legacy_inspection', true) = 'on'
+     )
+     and (
+       new.legacy_task_id is not null
+       or (
+         current_setting('staxis.housekeeping_legacy_inspection', true) = 'on'
+         and pg_trigger_depth() = 1
+       )
+     ) then
+    return new;
+  end if;
+
+  v_source := case
+    when new.plan_source_pms_reservation_id is not null then 'pms_sync'
+    when new.plan_source_engine_run_id is not null then 'rules_engine'
+    when new.assigned_staff_id is not null then 'housekeeper_app'
+    else 'manager_dashboard'
+  end;
+
+  if tg_op = 'INSERT' then
+    if new.plan_cleaning_type is not null then
+      perform public._activity_log_write(
+        new.property_id, new.created_at, 'housekeeping', 'cleaning_task_created',
+        null, null, 'cleaning_task', v_target::text,
+        'Room ' || new.room_number,
+        format('Cleaning task created for room %s (%s, priority %s)', new.room_number, new.plan_cleaning_type, coalesce(new.plan_priority, 'normal')),
+        v_source, v_target,
+        jsonb_build_object(
+          'room_number', new.room_number,
+          'business_date', new.date,
+          'cleaning_type', new.plan_cleaning_type,
+          'priority', new.plan_priority,
+          'estimated_minutes', new.plan_estimated_minutes,
+          'requires_inspection', new.plan_requires_inspection,
+          'status', new.plan_status,
+          'rules_fired', new.plan_rules_fired
+        )
+      );
+    elsif new.status = 'completed' then
+      perform public._activity_log_write(
+        new.property_id, coalesce(new.completed_at, new.updated_at, new.created_at),
+        'housekeeping', 'cleaning_task_completed',
+        new.assigned_staff_id, new.assignment_assigned_by_user_id,
+        'cleaning_task', v_target::text, 'Room ' || new.room_number,
+        format('Component room %s completed', new.room_number),
+        'housekeeper_app', v_target,
+        jsonb_build_object(
+          'room_number', new.room_number,
+          'business_date', new.date,
+          'status', new.status,
+          'component_only', true
+        )
+      );
+    end if;
+  elsif tg_op = 'UPDATE' then
+    if old.status is distinct from new.status or old.plan_status is distinct from new.plan_status then
+      v_status := case
+        when new.status = 'in_progress' and new.is_paused then 'paused'
+        when new.status = 'in_progress' then 'in_progress'
+        when new.status = 'completed' and new.plan_status in (
+          'inspection_pending', 'inspected_pass', 'inspected_fail',
+          'correction_pending', 'correction_complete', 'check_pending',
+          'check_complete'
+        ) then new.plan_status
+        when new.status = 'completed' then 'completed'
+        else coalesce(new.plan_status, new.status, 'scheduled')
+      end;
+      perform public._activity_log_write(
+        new.property_id, coalesce(new.completed_at, new.inspected_at, new.updated_at),
+        'housekeeping', 'cleaning_task_' || v_status,
+        new.assigned_staff_id, new.assignment_assigned_by_user_id,
+        'cleaning_task', v_target::text, 'Room ' || new.room_number,
+        format('Cleaning task for room %s changed status to %s', new.room_number, v_status),
+        v_source, v_target,
+        jsonb_build_object(
+          'room_number', new.room_number,
+          'business_date', new.date,
+          'cleaning_type', new.plan_cleaning_type,
+          'old_status', old.status,
+          'new_status', new.status,
+          'old_plan_status', old.plan_status,
+          'new_plan_status', new.plan_status,
+          'assignee_id', new.assigned_staff_id
+        )
+      );
+    elsif old.assigned_staff_id is distinct from new.assigned_staff_id then
+      perform public._activity_log_write(
+        new.property_id, coalesce(new.assignment_assigned_at, new.updated_at),
+        'housekeeping', case when new.assigned_staff_id is null then 'assignment_deactivated' else 'assignment_created' end,
+        new.assigned_staff_id, new.assignment_assigned_by_user_id,
+        'cleaning_task', v_target::text, 'Room ' || new.room_number,
+        case when new.assigned_staff_id is null then 'Unassigned room ' || new.room_number else 'Assigned room ' || new.room_number end,
+        case
+          when new.assignment_assigned_by in ('auto', 'rebalance') then 'rules_engine'
+          when new.assignment_assigned_by = 'pms_import' then 'pms_sync'
+          else 'manager_dashboard'
+        end,
+        v_target,
+        jsonb_build_object(
+          'room_number', new.room_number,
+          'cleaning_task_id', v_target,
+          'housekeeper_id', new.assigned_staff_id,
+          'assigned_by', new.assignment_assigned_by,
+          'queue_order', new.assignment_queue_order,
+          'reason', new.assignment_reason,
+          'score', new.assignment_score
+        )
+      );
+    end if;
+  end if;
+  return new;
+end;
+$function$;
+
+revoke all on function public._activity_log_on_room_work_change() from public, anon, authenticated;
+grant execute on function public._activity_log_on_room_work_change() to service_role;
 
 -- The canonical component and audit functions were deliberately installed
 -- dormant in 0435-0436. Stage C is the approved activation boundary.
@@ -1258,79 +1566,114 @@ begin
 end;
 $$;
 
-insert into public.housekeeping_stage_c_cutover_evidence (
-  run_id,
-  started_at,
-  cutover_at,
-  operator_name,
-  session_user_name,
-  legacy_cleaning_tasks_count,
-  legacy_cleaning_tasks_hash,
-  legacy_hk_assignments_count,
-  legacy_hk_assignments_hash,
-  room_work_count_before,
-  room_work_count_after,
-  room_work_hash_before,
-  room_work_hash_after,
-  pms_assignments_count_before,
-  pms_assignments_count_after,
-  pms_assignments_hash_before,
-  pms_assignments_hash_after,
-  inspections_count_before,
-  inspections_count_after,
-  inspections_hash_before,
-  inspections_hash_after,
-  assignment_history_receipts_after,
-  active_assignment_receipts_after,
-  activity_log_count_before,
-  activity_log_count_after,
-  activity_log_hash_before,
-  activity_log_hash_after,
-  physical_legacy_tables_dropped,
-  compatibility_projection,
-  rollback_policy,
-  remediation_procedure
-)
-select
-  b.run_id,
-  b.started_at,
-  clock_timestamp(),
-  b.operator_name,
-  b.session_user_name,
-  (select count(*) from phase5_stage_c_cleaning_tasks),
-  md5(coalesce((select string_agg(to_jsonb(t)::text, '|' order by t.id)
-                  from phase5_stage_c_cleaning_tasks t), '')),
-  (select count(*) from phase5_stage_c_hk_assignments),
-  md5(coalesce((select string_agg(to_jsonb(a)::text, '|' order by a.id)
-                  from phase5_stage_c_hk_assignments a), '')),
-  b.room_work_count_before,
-  (select count(*) from public.room_work),
-  b.room_work_hash_before,
-  md5(coalesce((select string_agg(to_jsonb(w)::text, '|' order by w.property_id, w.date, w.room_number)
-                  from public.room_work w), '')),
-  b.pms_assignments_count_before,
-  (select count(*) from public.pms_housekeeping_assignments),
-  b.pms_assignments_hash_before,
-  md5(coalesce((select string_agg(to_jsonb(a)::text, '|' order by a.property_id, a.date, a.room_number)
-                  from public.pms_housekeeping_assignments a), '')),
-  b.inspections_count_before,
-  (select count(*) from public.inspections),
-  b.inspections_hash_before,
-  md5(coalesce((select string_agg(to_jsonb(i)::text, '|' order by i.property_id, i.started_at, i.id)
-                  from public.inspections i), '')),
-  (select coalesce(sum(jsonb_array_length(coalesce(w.assignment_history, '[]'::jsonb))), 0)
-     from public.room_work w),
-  (select count(*) from public.room_work where assigned_staff_id is not null),
-  b.activity_log_count_before,
-  (select count(*) from public.activity_log),
-  b.activity_log_hash_before,
-  md5(coalesce((select string_agg(to_jsonb(l)::text, '|' order by l.property_id, l.occurred_at, l.id)
-                  from public.activity_log l), '')),
-  true,
-  'cleaning_tasks: SELECT-only UNION ALL compatibility projection; hk_assignments: no retained relation',
-  'OLD-APP-ROLLBACK-INVALID-AFTER-RETIREMENT: do not restore or run a pre-0437 app against the retired pair. Recovery requires the approved pre-0437 database snapshot or final export, followed by forward remediation.',
-  'CLEANING_STAGE_C_FREEZE_AND_FORWARD_REMEDIATE_V1: freeze all old deployments and legacy writes; restore the approved pre-0437 snapshot or final export if needed; remediate exact property/date/room/task/history rows; replay canonical room_work and assignment_history; verify task/assignment/history/property/PMS/inspection invariants; rerun 0437. Never add reverse-sync triggers or a writable legacy view.'
-from phase5_stage_c_baseline_evidence b;
+-- The only evidence writer is a narrow, argument-free SECURITY DEFINER
+-- function. It can insert exactly the final receipt assembled from the
+-- transaction-local snapshots, but cannot be used to inject arbitrary counts,
+-- hashes, operator names, or a second run.
+create or replace function public._record_housekeeping_stage_c_cutover_evidence()
+returns void
+language plpgsql
+security definer
+set search_path = public, pg_temp
+as $function$
+declare
+  v_baseline record;
+begin
+  if current_setting('staxis.housekeeping_stage_c_freeze', true) is distinct from 'approved'
+     or nullif(btrim(current_setting('staxis.housekeeping_stage_c_operator', true)), '') is null then
+    raise exception '0437 evidence writer: freeze and named operator evidence are required';
+  end if;
+
+  if exists (
+    select 1
+      from public.housekeeping_stage_c_cutover_evidence
+     where migration_version = '0437'
+  ) then
+    raise exception '0437 evidence writer: the immutable final receipt already exists';
+  end if;
+
+  select * into v_baseline from phase5_stage_c_baseline_evidence limit 1;
+  if not found then
+    raise exception '0437 evidence writer: transaction-local baseline evidence is missing';
+  end if;
+
+  insert into public.housekeeping_stage_c_cutover_evidence (
+    run_id,
+    started_at,
+    cutover_at,
+    operator_name,
+    session_user_name,
+    legacy_cleaning_tasks_count,
+    legacy_cleaning_tasks_hash,
+    legacy_hk_assignments_count,
+    legacy_hk_assignments_hash,
+    room_work_count_before,
+    room_work_count_after,
+    room_work_hash_before,
+    room_work_hash_after,
+    pms_assignments_count_before,
+    pms_assignments_count_after,
+    pms_assignments_hash_before,
+    pms_assignments_hash_after,
+    inspections_count_before,
+    inspections_count_after,
+    inspections_hash_before,
+    inspections_hash_after,
+    assignment_history_receipts_after,
+    active_assignment_receipts_after,
+    activity_log_count_before,
+    activity_log_count_after,
+    activity_log_hash_before,
+    activity_log_hash_after,
+    physical_legacy_tables_dropped,
+    rollback_policy,
+    remediation_procedure
+  )
+  select
+    b.run_id,
+    b.started_at,
+    clock_timestamp(),
+    b.operator_name,
+    b.session_user_name,
+    (select count(*) from phase5_stage_c_cleaning_tasks),
+    md5(coalesce((select string_agg(to_jsonb(t)::text, '|' order by t.id)
+                    from phase5_stage_c_cleaning_tasks t), '')),
+    (select count(*) from phase5_stage_c_hk_assignments),
+    md5(coalesce((select string_agg(to_jsonb(a)::text, '|' order by a.id)
+                    from phase5_stage_c_hk_assignments a), '')),
+    b.room_work_count_before,
+    (select count(*) from public.room_work),
+    b.room_work_hash_before,
+    md5(coalesce((select string_agg(to_jsonb(w)::text, '|' order by w.property_id, w.date, w.room_number)
+                    from public.room_work w), '')),
+    b.pms_assignments_count_before,
+    (select count(*) from public.pms_housekeeping_assignments),
+    b.pms_assignments_hash_before,
+    md5(coalesce((select string_agg(to_jsonb(a)::text, '|' order by a.property_id, a.date, a.room_number)
+                    from public.pms_housekeeping_assignments a), '')),
+    b.inspections_count_before,
+    (select count(*) from public.inspections),
+    b.inspections_hash_before,
+    md5(coalesce((select string_agg(to_jsonb(i)::text, '|' order by i.property_id, i.started_at, i.id)
+                    from public.inspections i), '')),
+    (select coalesce(sum(jsonb_array_length(coalesce(w.assignment_history, '[]'::jsonb))), 0)
+       from public.room_work w),
+    (select count(*) from public.room_work where assigned_staff_id is not null),
+    b.activity_log_count_before,
+    (select count(*) from public.activity_log),
+    b.activity_log_hash_before,
+    md5(coalesce((select string_agg(to_jsonb(l)::text, '|' order by l.property_id, l.occurred_at, l.id)
+                    from public.activity_log l), '')),
+    true,
+    'OLD-APP-ROLLBACK-INVALID-AFTER-RETIREMENT: do not restore or run a pre-0437 app against the retired pair. Recovery requires the approved pre-0437 database snapshot or final export, followed by forward remediation.',
+    'CLEANING_STAGE_C_FREEZE_AND_FORWARD_REMEDIATE_V1: freeze all old deployments and legacy writes; restore the approved pre-0437 snapshot or final export if needed; remediate exact property/date/room/task/history rows; replay canonical room_work and assignment_history; verify task/assignment/history/property/PMS/inspection invariants; rerun 0437. Never recreate a retired relation, add reverse-sync triggers, or introduce a writable legacy source.'
+  from phase5_stage_c_baseline_evidence b;
+end;
+$function$;
+
+revoke all on function public._record_housekeeping_stage_c_cutover_evidence() from public, anon, authenticated;
+grant execute on function public._record_housekeeping_stage_c_cutover_evidence() to service_role;
+select public._record_housekeeping_stage_c_cutover_evidence();
 
 do $$
 declare
@@ -1357,10 +1700,13 @@ begin
 end;
 $$;
 
+comment on column public.room_work.legacy_task_id is
+  'Historical cleaning_tasks.id retained for inspection references and final Stage C reconciliation.';
+
 insert into public.applied_migrations (version, description)
 values (
   '0437',
-  'Cleaning Stage C contract: freeze-gated deterministic compatibility-window reconciliation, durable counts/hashes/operator evidence, canonical component/audit activation, physical cleaning_tasks and hk_assignments retirement, and a service-only non-updatable cleaning_tasks read projection. Old-app rollback is invalid after retirement; the named CLEANING_STAGE_C_FREEZE_AND_FORWARD_REMEDIATE_V1 procedure is required for recovery.'
+  'Cleaning Stage C contract: freeze-gated deterministic final reconciliation, durable immutable counts/hashes/operator evidence, canonical component/audit activation, and physical retirement of the legacy housekeeping pair. No legacy relation is retained. Old-app rollback is invalid after retirement; the named CLEANING_STAGE_C_FREEZE_AND_FORWARD_REMEDIATE_V1 procedure is required for recovery.'
 )
 on conflict (version) do nothing;
 

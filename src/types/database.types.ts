@@ -3117,104 +3117,6 @@ export type Database = {
           },
         ]
       }
-      cleaning_tasks: {
-        Row: {
-          assignee_id: string | null
-          business_date: string
-          cleaning_type: string
-          completed_at: string | null
-          created_at: string
-          dedupe_key: string
-          due_by: string | null
-          estimated_minutes: number | null
-          extras: Json
-          id: string
-          inspected_at: string | null
-          last_evaluated_at: string
-          notes: string | null
-          paused_at: string | null
-          priority: string
-          property_id: string
-          requires_inspection: boolean
-          room_number: string
-          rule_inputs: Json | null
-          rules_fired: Json
-          scheduled_at: string | null
-          source_engine_run_id: string | null
-          source_pms_reservation_id: string | null
-          source_property_timezone: string | null
-          started_at: string | null
-          status: string
-          updated_at: string
-        }
-        Insert: {
-          assignee_id?: string | null
-          business_date: string
-          cleaning_type: string
-          completed_at?: string | null
-          created_at?: string
-          dedupe_key: string
-          due_by?: string | null
-          estimated_minutes?: number | null
-          extras?: Json
-          id?: string
-          inspected_at?: string | null
-          last_evaluated_at?: string
-          notes?: string | null
-          paused_at?: string | null
-          priority?: string
-          property_id: string
-          requires_inspection?: boolean
-          room_number: string
-          rule_inputs?: Json | null
-          rules_fired?: Json
-          scheduled_at?: string | null
-          source_engine_run_id?: string | null
-          source_pms_reservation_id?: string | null
-          source_property_timezone?: string | null
-          started_at?: string | null
-          status?: string
-          updated_at?: string
-        }
-        Update: {
-          assignee_id?: string | null
-          business_date?: string
-          cleaning_type?: string
-          completed_at?: string | null
-          created_at?: string
-          dedupe_key?: string
-          due_by?: string | null
-          estimated_minutes?: number | null
-          extras?: Json
-          id?: string
-          inspected_at?: string | null
-          last_evaluated_at?: string
-          notes?: string | null
-          paused_at?: string | null
-          priority?: string
-          property_id?: string
-          requires_inspection?: boolean
-          room_number?: string
-          rule_inputs?: Json | null
-          rules_fired?: Json
-          scheduled_at?: string | null
-          source_engine_run_id?: string | null
-          source_pms_reservation_id?: string | null
-          source_property_timezone?: string | null
-          started_at?: string | null
-          status?: string
-          updated_at?: string
-        }
-        Relationships: [
-          {
-            foreignKeyName: "cleaning_tasks_property_id_fkey"
-            columns: ["property_id"]
-            isOneToOne: false
-            referencedRelation: "properties"
-            referencedColumns: ["id"]
-          },
-        ]
-      }
       comms_ack_campaigns: {
         Row: {
           created_at: string
@@ -6022,76 +5924,6 @@ export type Database = {
           },
         ]
       }
-      hk_assignments: {
-        Row: {
-          assigned_at: string
-          assigned_by: string
-          assigned_by_user_id: string | null
-          cleaning_task_id: string
-          created_at: string
-          housekeeper_id: string
-          id: string
-          is_active: boolean
-          property_id: string
-          queue_order: number
-          reason: string | null
-          score: number | null
-          updated_at: string
-        }
-        Insert: {
-          assigned_at?: string
-          assigned_by?: string
-          assigned_by_user_id?: string | null
-          cleaning_task_id: string
-          created_at?: string
-          housekeeper_id: string
-          id?: string
-          is_active?: boolean
-          property_id: string
-          queue_order?: number
-          reason?: string | null
-          score?: number | null
-          updated_at?: string
-        }
-        Update: {
-          assigned_at?: string
-          assigned_by?: string
-          assigned_by_user_id?: string | null
-          cleaning_task_id?: string
-          created_at?: string
-          housekeeper_id?: string
-          id?: string
-          is_active?: boolean
-          property_id?: string
-          queue_order?: number
-          reason?: string | null
-          score?: number | null
-          updated_at?: string
-        }
-        Relationships: [
-          {
-            foreignKeyName: "hk_assignments_cleaning_task_id_fkey"
-            columns: ["cleaning_task_id"]
-            isOneToOne: false
-            referencedRelation: "cleaning_tasks"
-            referencedColumns: ["id"]
-          },
-          {
-            foreignKeyName: "hk_assignments_housekeeper_id_fkey"
-            columns: ["housekeeper_id"]
-            isOneToOne: false
-            referencedRelation: "staff"
-            referencedColumns: ["id"]
-          },
-          {
-            foreignKeyName: "hk_assignments_property_id_fkey"
-            columns: ["property_id"]
-            isOneToOne: false
-            referencedRelation: "properties"
-            referencedColumns: ["id"]
-          },
-        ]
-      }
       hk_clean_time_standards: {
         Row: {
           base_minutes: number
@@ -6279,6 +6111,45 @@ export type Database = {
             referencedColumns: ["id"]
           },
         ]
+      }
+      housekeeping_stage_c_cutover_evidence: {
+        Row: {
+          active_assignment_receipts_after: number
+          activity_log_count_after: number
+          activity_log_count_before: number
+          activity_log_hash_after: string
+          activity_log_hash_before: string
+          assignment_history_receipts_after: number
+          cutover_at: string
+          id: string
+          inspections_count_after: number
+          inspections_count_before: number
+          inspections_hash_after: string
+          inspections_hash_before: string
+          legacy_cleaning_tasks_count: number
+          legacy_cleaning_tasks_hash: string
+          legacy_hk_assignments_count: number
+          legacy_hk_assignments_hash: string
+          migration_version: string
+          operator_name: string
+          physical_legacy_tables_dropped: boolean
+          pms_assignments_count_after: number
+          pms_assignments_count_before: number
+          pms_assignments_hash_after: string
+          pms_assignments_hash_before: string
+          remediation_procedure: string
+          rollback_policy: string
+          room_work_count_after: number
+          room_work_count_before: number
+          room_work_hash_after: string
+          room_work_hash_before: string
+          run_id: string
+          session_user_name: string
+          started_at: string
+        }
+        Insert: never
+        Update: never
+        Relationships: []
       }
       housekeeping_notices: {
         Row: {
@@ -19401,49 +19272,6 @@ export type Database = {
         }[]
       }
       cleanup_idempotency_log: { Args: never; Returns: number }
-      complete_inspection_atomic: {
-        Args: {
-          p_correction_note: string
-          p_correction_notice_sent_at: string
-          p_escalated: boolean
-          p_escalation_reason: string
-          p_failed_items: Json
-          p_inspection_id: string
-          p_notes: string
-          p_passed_items: Json
-          p_property_id: string
-          p_result: string
-        }
-        Returns: {
-          checklist_id: string | null
-          cleaning_task_id: string | null
-          completed_at: string | null
-          correction_notice_sent_at: string | null
-          created_at: string
-          escalated: boolean
-          escalation_reason: string | null
-          failed_items: Json
-          housekeeper_staff_id: string | null
-          id: string
-          inspector_staff_id: string | null
-          notes: string | null
-          parent_inspection_id: string | null
-          passed_items: Json
-          property_id: string
-          recheck_inspection_id: string | null
-          result: string
-          room_id: string | null
-          room_number: string
-          started_at: string
-          updated_at: string
-        }
-        SetofOptions: {
-          from: "*"
-          to: "inspections"
-          isOneToOne: true
-          isSetofReturn: false
-        }
-      }
       complete_inspection_atomic_canonical: {
         Args: {
           p_correction_note: string
@@ -19661,20 +19489,6 @@ export type Database = {
       promote_shadow_model_run: {
         Args: { p_active_id: string; p_shadow_id: string }
         Returns: undefined
-      }
-      reassign_cleaning_task: {
-        Args: {
-          p_assigned_by_user: string
-          p_property_id: string
-          p_reason: string
-          p_task_id: string
-          p_to_housekeeper_id: string
-        }
-        Returns: {
-          assignee_id: string
-          noop: boolean
-          task_id: string
-        }[]
       }
       reset_room_work_assignments: {
         Args: {

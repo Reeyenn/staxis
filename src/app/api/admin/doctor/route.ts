@@ -821,6 +821,9 @@ export const EXPECTED_MIGRATIONS_STATIC: ReadonlyArray<string> = [
   // Cleaning Stage A compatibility plus the non-destructive Stage B
   // canonical inspection lock patch.
   '0436',
+  // Cleaning Stage C final reconciliation, immutable receipt, and legacy
+  // relation retirement.
+  '0437',
 ];
 
 /**

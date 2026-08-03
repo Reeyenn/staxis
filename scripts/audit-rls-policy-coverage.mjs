@@ -215,7 +215,8 @@ const SERVICE_ROLE_ONLY = new Set([
   'work_orders',
   'plan_snapshots',
   // ─── Migration 0214 — housekeeper mobile rebuild piece A. ────────────
-  // Same deny-all-browser policy pattern as cleaning_tasks (0210).
+  // Same deny-all-browser policy pattern used by the retired housekeeping
+  // relations (0210).
   // Service-role only — /api/housekeeper/* mediates all reads/writes via
   // supabaseAdmin with capability checks (pid + staffId).
   'room_pause_events',
