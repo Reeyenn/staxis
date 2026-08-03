@@ -143,6 +143,7 @@ interface HotelsHarness {
   text: () => string;
   click: (label: string) => Promise<void>;
   input: () => HTMLInputElement;
+  setQuery: (value: string) => Promise<void>;
 }
 
 async function mountHotelsPanel(context: TestContext): Promise<HotelsHarness> {
@@ -181,6 +182,7 @@ async function mountHotelsPanel(context: TestContext): Promise<HotelsHarness> {
   const findButton = (label: string): HTMLButtonElement | null => (
     Array.from(document.querySelectorAll<HTMLButtonElement>('button')).find((button) => (
       (button.textContent ?? '').trim() === label
+      || button.getAttribute('aria-label') === label
     )) ?? null
   );
   const click = async (label: string): Promise<void> => {
@@ -188,6 +190,19 @@ async function mountHotelsPanel(context: TestContext): Promise<HotelsHarness> {
     assert.ok(button, `button "${label}" must render`);
     await act(async () => {
       button.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      for (let index = 0; index < 8; index += 1) await Promise.resolve();
+    });
+    await flushReact();
+  };
+  const setQuery = async (value: string): Promise<void> => {
+    const input = document.querySelector<HTMLInputElement>('input[type="search"]');
+    assert.ok(input, 'Hotels search must render');
+    const valueSetter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')?.set;
+    assert.ok(valueSetter, 'JSDOM input value setter must exist');
+    await act(async () => {
+      valueSetter.call(input, value);
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+      input.dispatchEvent(new Event('change', { bubbles: true }));
       for (let index = 0; index < 8; index += 1) await Promise.resolve();
     });
     await flushReact();
@@ -203,6 +218,7 @@ async function mountHotelsPanel(context: TestContext): Promise<HotelsHarness> {
   return {
     text: () => document.body.textContent ?? '',
     click,
+    setQuery,
     input: () => {
       const input = document.querySelector<HTMLInputElement>('input[type="search"]');
       assert.ok(input, 'Hotels search must render');
@@ -226,6 +242,18 @@ describe('Company Hub admin-preview Hotels panel', () => {
 
   test('keeps admin-preview Hotels filtering usable after the entry point is removed', async (context) => {
     const ui = await mountHotelsPanel(context);
+
+    await ui.setQuery('Northstar');
+    assert.match(ui.text(), /Northstar Management/);
+    assert.match(ui.text(), /Harbor Inn/);
+    assert.ok(document.querySelector('details'), 'matching company hierarchy must remain visible');
+
+    await ui.setQuery('No matching hotel');
+    assert.match(ui.text(), /No hotels match/);
+    assert.doesNotMatch(ui.text(), /Harbor Inn/);
+
+    await ui.click('Clear search');
+    assert.match(ui.text(), /Harbor Inn/);
 
     await ui.click('Not active');
     assert.match(ui.text(), /No hotels match/);
