@@ -92,6 +92,8 @@ interface TestState {
   organizationId: string | null;
   effectiveStandingEntitlements: Map<string, Array<Record<string, unknown>>>;
   suppressLegacyAccessProjection: Set<string>;
+  authorizationStateOmittedAccountIds: Set<string>;
+  unavailableAccessAccountIds: Set<string>;
   onboardingState: unknown;
   onboardingCompletedAt: string | null;
   membershipHats: Array<{
@@ -217,6 +219,8 @@ function resetState(): void {
     organizationId: null,
     effectiveStandingEntitlements: new Map(),
     suppressLegacyAccessProjection: new Set(),
+    authorizationStateOmittedAccountIds: new Set(),
+    unavailableAccessAccountIds: new Set(),
     onboardingState: null,
     onboardingCompletedAt: null,
     membershipHats: [],
@@ -406,6 +410,10 @@ function installSupabaseStub(): void {
       };
     }
     if (fn === 'staxis_list_account_authorized_properties') {
+      if (typeof safeArgs.p_account_id === 'string'
+          && state.unavailableAccessAccountIds.has(safeArgs.p_account_id)) {
+        return { data: null, error: { message: 'simulated standing projection outage' } };
+      }
       const accountRow = state.accounts.find((row) => row.id === safeArgs.p_account_id);
       if (safeArgs.p_account_id === CALLER_ID) {
         state.callerAuthorityReads += 1;
@@ -680,7 +688,10 @@ function installSupabaseStub(): void {
         },
         then: (resolve: (value: unknown) => unknown) => resolve({
           data: state.accounts
-            .filter((accountRow) => accountIds === null || accountIds.includes(accountRow.id))
+            .filter((accountRow) => (
+              (accountIds === null || accountIds.includes(accountRow.id))
+              && !state.authorizationStateOmittedAccountIds.has(accountRow.id)
+            ))
             .map((accountRow) => ({
               account_id: accountRow.id,
               authority_mode: accountRow.authority_mode,
@@ -1327,6 +1338,33 @@ describe('GET /api/auth/team action contract', () => {
     const local = body.data.team.find((row: { accountId: string }) => row.accountId === LOCAL_ID);
     assert.ok(local);
     assert.equal(local.directHotelAccount, true);
+  });
+
+  test('keeps the People roster available when one directness row is indeterminate', async () => {
+    account(CALLER_ID).role = 'admin';
+    state.authorizationStateOmittedAccountIds.add(LOCAL_ID);
+
+    const response = await GET(request('GET', `/api/auth/team?hotelId=${HOTEL_A}`));
+    assert.equal(response.status, 200);
+    const body = await response.json();
+    const local = body.data.team.find((row: { accountId: string }) => row.accountId === LOCAL_ID);
+    assert.ok(local);
+    assert.equal(local.directHotelAccount, null);
+    assert.equal(local.hotelLeadershipRole, null);
+    assert.equal(body.data.team.length, state.accounts.length);
+  });
+
+  test('keeps a direct roster row visible when its standing DTO is unavailable', async () => {
+    account(CALLER_ID).role = 'admin';
+    state.unavailableAccessAccountIds.add(LOCAL_ID);
+
+    const response = await GET(request('GET', `/api/auth/team?hotelId=${HOTEL_A}`));
+    assert.equal(response.status, 200);
+    const body = await response.json();
+    const local = body.data.team.find((row: { accountId: string }) => row.accountId === LOCAL_ID);
+    assert.ok(local);
+    assert.equal(local.directHotelAccount, true);
+    assert.equal(local.hotelLeadershipRole, null);
   });
 
   test('returns truthful actions while redacting target reach outside the caller scope', async () => {
