@@ -12,6 +12,7 @@ import {
   authorizeAccessStageCRelease,
 } from '../../../tests/fixtures/pglite-migrate';
 import {
+  ACCOUNT_ANA,
   ACCOUNT_ADMIN,
   ACCOUNT_FRANK,
   ACCOUNT_HANK,
@@ -198,12 +199,20 @@ async function seedProductionResidueFixture(pg: PGlite): Promise<void> {
 
 async function seedWrapperMappingFixture(pg: PGlite): Promise<void> {
   await seedProductionResidueFixture(pg);
-  // Add a second normalized duplicate on the same account so the wrapper
-  // attribution is exercised once per matching account/property disposition.
+  // Add a fourth normalized residue on a distinct account so each wrapper
+  // sample maps to one immutable direct issue UUID and one disposition.
   await pg.query(`update public.properties set is_test=true where id=$1`, [PID_A2]);
   await pg.query(
-    `update public.accounts set property_access=array[$2::uuid,$3::uuid] where id=$1`,
-    [ACCOUNT_MARIA, PID_A1, PID_A2],
+    `update public.accounts set property_access=array[$2::uuid] where id=$1`,
+    [ACCOUNT_ANA, PID_A2],
+  );
+  await pg.query(
+    `update public.account_authorization_state
+        set authority_mode='normalized',
+            cutover_at=coalesce(cutover_at, now()),
+            cutover_reason='Stage C wrapper mapping fixture'
+      where account_id=$1`,
+    [ACCOUNT_ANA],
   );
   await pg.query(`delete from public.account_access_cutover_legacy_write_events`);
 }
@@ -2105,9 +2114,9 @@ describe('Access Stage C final contract — real migration boundary', () => {
             hookPg,
             `select account_id,authority_mode,authority_version
                from public.account_authorization_state
-              where account_id in ($1,$2,$3)
+              where account_id in ($1,$2,$3,$4)
               order by account_id`,
-            [ACCOUNT_ADMIN, ACCOUNT_MARIA, ACCOUNT_FRANK],
+            [ACCOUNT_ADMIN, ACCOUNT_MARIA, ACCOUNT_FRANK, ACCOUNT_ANA],
           );
           const byAccount = new Map(states.map((state) => [state.account_id, state]));
           const mariaCanonicalIds = (await rows<{ property_id: string }>(
@@ -2119,6 +2128,11 @@ describe('Access Stage C final contract — real migration boundary', () => {
             hookPg,
             `select distinct property_id from public._staxis_account_property_authorizations($1) order by property_id`,
             [ACCOUNT_FRANK],
+          )).map((row) => row.property_id);
+          const anaCanonicalIds = (await rows<{ property_id: string }>(
+            hookPg,
+            `select distinct property_id from public._staxis_account_property_authorizations($1) order by property_id`,
+            [ACCOUNT_ANA],
           )).map((row) => row.property_id);
           const wrapperIssue = (await rows<{ details: Record<string, unknown> }>(
             hookPg,
@@ -2147,7 +2161,7 @@ describe('Access Stage C final contract — real migration boundary', () => {
             propertyId: PID_A1,
             issueCodes: ['normalized_legacy_residue', 'stage_a_invariant_failure'],
             decision: 'canonical_duplicate',
-            rawPropertyIds: [PID_A1, PID_A2],
+            rawPropertyIds: [PID_A1],
             canonicalPropertyIds: mariaCanonicalIds,
             authorityMode: byAccount.get(ACCOUNT_MARIA)?.authority_mode ?? '',
             authorityVersion: byAccount.get(ACCOUNT_MARIA)?.authority_version ?? 0,
@@ -2164,6 +2178,18 @@ describe('Access Stage C final contract — real migration boundary', () => {
             authorityMode: byAccount.get(ACCOUNT_FRANK)?.authority_mode ?? '',
             authorityVersion: byAccount.get(ACCOUNT_FRANK)?.authority_version ?? 0,
             reason: 'revoked_canonical_empty_residue',
+          };
+          const anaDisposition = {
+            preflightRunId: sourcePreflightRunId,
+            accountId: ACCOUNT_ANA,
+            propertyId: PID_A2,
+            issueCodes: ['normalized_legacy_residue', 'stage_a_invariant_failure'],
+            decision: 'canonical_duplicate',
+            rawPropertyIds: [PID_A2],
+            canonicalPropertyIds: anaCanonicalIds,
+            authorityMode: byAccount.get(ACCOUNT_ANA)?.authority_mode ?? '',
+            authorityVersion: byAccount.get(ACCOUNT_ANA)?.authority_version ?? 0,
+            reason: 'canonical_duplicate_residue',
           };
 
           await assert.rejects(
@@ -2196,7 +2222,7 @@ describe('Access Stage C final contract — real migration boundary', () => {
           );
           await assert.rejects(
             recordRepairDisposition(hookPg, mariaDisposition),
-            /exact issue rows/i,
+            /exact issue rows|immutable manifest issue UUIDs/i,
             'a wrapper sample for another account must not be attributed to this disposition',
           );
           await hookPg.query(
@@ -2212,7 +2238,7 @@ describe('Access Stage C final contract — real migration boundary', () => {
           );
           await assert.rejects(
             recordRepairDisposition(hookPg, mariaDisposition),
-            /exact issue rows/i,
+            /exact issue rows|immutable manifest issue UUIDs/i,
             'a wrapper sample for another property must not be attributed to this disposition',
           );
           await hookPg.query(
@@ -2224,8 +2250,8 @@ describe('Access Stage C final contract — real migration boundary', () => {
 
           await recordRepairDisposition(hookPg, adminDisposition);
           await recordRepairDisposition(hookPg, mariaDisposition);
-          await recordRepairDisposition(hookPg, { ...mariaDisposition, propertyId: PID_A2 });
           await recordRepairDisposition(hookPg, frankDisposition);
+          await recordRepairDisposition(hookPg, anaDisposition);
           const replay = await recordRepairDisposition(hookPg, mariaDisposition);
           assert.equal(replay.idempotentReplay, true);
           const repairable = (await rows<{ value: boolean }>(
@@ -2274,12 +2300,13 @@ describe('Access Stage C final contract — real migration boundary', () => {
         await rows<{ id: string; property_access: string[] }>(
           migrated.pg,
           `select id,property_access from public.accounts
-            where id in ($1,$2,$3) order by id`,
-          [ACCOUNT_ADMIN, ACCOUNT_MARIA, ACCOUNT_FRANK],
+            where id in ($1,$2,$3,$4) order by id`,
+          [ACCOUNT_ADMIN, ACCOUNT_MARIA, ACCOUNT_FRANK, ACCOUNT_ANA],
         ),
         [
           { id: ACCOUNT_ADMIN, property_access: [PID_A1] },
-          { id: ACCOUNT_MARIA, property_access: [PID_A1, PID_A2] },
+          { id: ACCOUNT_ANA, property_access: [PID_A2] },
+          { id: ACCOUNT_MARIA, property_access: [PID_A1] },
           { id: ACCOUNT_FRANK, property_access: [PID_A1] },
         ],
       );
