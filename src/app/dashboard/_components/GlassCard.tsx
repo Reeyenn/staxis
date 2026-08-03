@@ -5,6 +5,8 @@
 // shadow. Radius / padding / maxWidth are available for compact variants.
 
 import React from 'react';
+import { SurfaceCard } from '@/app/_components/ui/SurfaceCard';
+import { CONCOURSE_COLORS, UI_SHADOWS } from '@/app/_components/ui/tokens';
 
 export function GlassCard({
   radius = 16,
@@ -17,18 +19,12 @@ export function GlassCard({
   maxWidth?: number;
   children: React.ReactNode;
 }) {
-  return (
-    <div
-      style={{
-        background: '#FFFFFF',
-        border: '1px solid rgba(31,35,28,0.08)',
-        borderRadius: radius,
-        boxShadow: '0 6px 16px -14px rgba(31,42,32,0.35)',
-        padding,
-        ...(maxWidth !== undefined ? { maxWidth } : {}),
-      }}
-    >
-      {children}
-    </div>
-  );
+  return <SurfaceCard
+    surface={CONCOURSE_COLORS.paper}
+    border={`1px solid ${CONCOURSE_COLORS.rule}`}
+    radius={radius}
+    shadow={UI_SHADOWS.card}
+    padding={padding}
+    maxWidth={maxWidth}
+  >{children}</SurfaceCard>;
 }

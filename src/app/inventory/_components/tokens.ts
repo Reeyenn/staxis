@@ -10,19 +10,17 @@
 //   good → sage   low → amber   critical → rust
 //   AI accent (teal/purple) → sage primary   delete/shrinkage (warm) → rust
 
+import { CONCOURSE_COLORS, CONCOURSE_FONTS } from '@/app/_components/ui/tokens';
+
 export const T = {
   // ── Concourse palette (non-negotiable brand values) ────────────────────
-  bg:        '#FFFFFF',
-  paper:     '#FFFFFF',
-  ink:       '#1F231C',
-  ink2:      '#5C625C',
+  ...CONCOURSE_COLORS,
   // Small inventory labels are operational text, not decoration. Keep every
   // secondary alias at the AA-safe ink so tabs, placeholders, table headers,
   // and helper copy remain readable in bright hotel back-office lighting.
   ink3:      '#5C625C',
   dim:       '#5C625C',
   faint:     '#5C625C',
-  rule:      'rgba(31,35,28,0.08)',
   ruleSoft:  'rgba(31,35,28,0.06)',
   ruleFaint: 'rgba(31,35,28,0.05)',
   // Interactive boundaries need 3:1 contrast against the white surface.
@@ -57,11 +55,9 @@ export const T = {
 } as const;
 
 export const fonts = {
-  sans:  'var(--font-geist), -apple-system, BlinkMacSystemFont, sans-serif',
-  mono:  'var(--font-geist-mono), ui-monospace, monospace',
+  ...CONCOURSE_FONTS,
   // Legacy alias — the old serif display type is now Geist (weight handled by
   // the components; Serif.tsx renders 600).
-  serif: 'var(--font-geist), -apple-system, BlinkMacSystemFont, sans-serif',
 } as const;
 
 // Stock status — derived from estimated/par ratio (see inv-page rules):
