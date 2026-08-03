@@ -3,7 +3,7 @@ import { describe, test, type TestContext } from 'node:test';
 
 import { JSDOM } from 'jsdom';
 
-import { restoreDialogFocus } from '@/app/company/_components/dialog-focus';
+import { restoreDialogFocus } from '@/app/(hotel)/company/_components/dialog-focus';
 
 const DOM_GLOBALS = [
   'window',

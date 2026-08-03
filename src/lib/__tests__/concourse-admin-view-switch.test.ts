@@ -16,10 +16,11 @@ const authContext = source('src', 'contexts', 'AuthContext.tsx');
 const authorizationRoute = source('src', 'app', 'api', 'auth', 'session-authorization', 'route.ts');
 const authorizationInvalidation = source('src', 'lib', 'auth', 'session-authorization-invalidation.ts');
 const authorizationNotificationMigration = source('supabase', 'migrations', '0387_account_authorization_notifications.sql');
-const company = source('src', 'app', 'company', 'page.tsx');
-const companyCss = source('src', 'app', 'company', 'CompanyAccess.module.css');
-const hotelTeam = source('src', 'app', 'company', '_components', 'HotelTeamPanel.tsx');
-const hotelTeamCss = source('src', 'app', 'company', '_components', 'HotelTeamPanel.module.css');
+const company = source('src', 'app', '(hotel)', 'company', 'page.tsx');
+const companyCss = source('src', 'app', '(hotel)', 'company', 'CompanyAccess.module.css');
+const hotelTeam = source('src', 'app', '(hotel)', 'company', '_components', 'HotelTeamPanel.tsx');
+const peopleController = source('src', 'app', '(hotel)', 'company', '_components', 'usePeopleController.ts');
+const hotelTeamCss = source('src', 'app', '(hotel)', 'company', '_components', 'HotelTeamPanel.module.css');
 
 /**
  * Regression cause: 057f0f67 correctly moved hotel-level Admin tools into the
@@ -115,7 +116,7 @@ describe('platform Admin destination and default in-place hotel Admin tools', ()
     assert.match(hotelTeam, /const locked = readOnly;/);
     assert.match(hotelTeam, /styles\.headingInviteButton[\s\S]*?onClick=\{\(\) => onInviteDialogOpenChange\(true\)\}[\s\S]*?disabled=\{inviteActionDisabled\}/);
     assert.match(company, /inviteDialogOpen=\{teamInviteHotelId === activeProperty\?\.id\}/);
-    assert.match(hotelTeam, /const nextTeam = \(adminPreview \|\| readOnly\)[\s\S]*?!member\.isPlatformAdmin/);
+    assert.match(peopleController, /const nextTeam = \(currentInput\.adminPreview \|\| currentInput\.readOnly\)[\s\S]*?!member\.isPlatformAdmin/);
   });
 
   test('removes the obsolete admin-only toggle copy without weakening customer read-only mode', () => {

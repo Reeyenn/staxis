@@ -552,7 +552,7 @@ LOW (selected)
    browser QA — a rushed version risks clearing staff phone numbers on save.
    *(2026-07-27: the editor named here was `ManagerDirectory.tsx`, deleted when
    Staff → Directory was folded into My Hotel → People. The surviving editor is
-   `src/app/company/_components/PersonEmploymentForm.tsx`; re-check this item
+   `src/app/(hotel)/company/_components/PersonEmploymentForm.tsx`; re-check this item
    against that file rather than the old path.)*
 3. **MEDIUM — pms-feeds money tools still allow `front_desk`** for guest-balance/
    future-booking aggregates. `get_payments_summary` is now gated; decide per-tool

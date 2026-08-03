@@ -85,7 +85,7 @@ describe('Access person grouping', () => {
 });
 
 describe('Access tab placement contract', () => {
-  const page = source('src', 'app', 'company', 'page.tsx');
+  const page = source('src', 'app', '(hotel)', 'company', 'page.tsx');
 
   test('removes redundant grant headings and keeps action/privacy gates explicit', () => {
     assert.doesNotMatch(page, /Customer grants|Roles and scopes by person/);

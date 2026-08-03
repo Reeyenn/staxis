@@ -7,9 +7,9 @@ function source(...parts: string[]): string {
   return readFileSync(join(process.cwd(), ...parts), 'utf8');
 }
 
-const hotelTeam = source('src', 'app', 'company', '_components', 'HotelTeamPanel.tsx');
-const hotelTeamCss = source('src', 'app', 'company', '_components', 'HotelTeamPanel.module.css');
-const hotelTeamDialogs = source('src', 'app', 'company', '_components', 'HotelTeamDialogs.tsx');
+const hotelTeam = source('src', 'app', '(hotel)', 'company', '_components', 'HotelTeamPanel.tsx');
+const hotelTeamCss = source('src', 'app', '(hotel)', 'company', '_components', 'HotelTeamPanel.module.css');
+const hotelTeamDialogs = source('src', 'app', '(hotel)', 'company', '_components', 'HotelTeamDialogs.tsx');
 const hotelInviteDialog = hotelTeamDialogs.slice(hotelTeamDialogs.indexOf('export function HotelInviteDialog'));
 
 // There is exactly one invite surface now. Invite staff can reach a join code,

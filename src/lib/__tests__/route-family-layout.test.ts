@@ -47,6 +47,7 @@ const routeFiles = {
     'settings/users/page.tsx',
     'settings/wages/page.tsx',
     'staff/page.tsx',
+    'company/page.tsx',
   ],
   portfolio: [
     'portfolio/page.tsx',
@@ -92,8 +93,9 @@ describe('route-family filesystem architecture', () => {
     }
 
     // Route groups are filesystem-only. The mixed acting-context Company Hub
-    // remains at its original leaf for the People-lane integration handoff.
-    assert.equal(existsSync(join(process.cwd(), 'src', 'app', 'company', 'page.tsx')), true);
+    // owns the hotel route group while preserving its /company URL.
+    assert.equal(existsSync(join(process.cwd(), 'src', 'app', '(hotel)', 'company', 'page.tsx')), true);
+    assert.equal(existsSync(join(process.cwd(), 'src', 'app', 'company', 'page.tsx')), false);
     assert.equal(existsSync(join(process.cwd(), 'src', 'app', 'home', 'page.tsx')), false);
     assert.equal(existsSync(join(process.cwd(), 'src', 'app', 'portfolio', 'page.tsx')), false);
     assert.equal(existsSync(join(process.cwd(), 'src', 'app', 'admin', 'page.tsx')), false);

@@ -7,12 +7,12 @@ import React, { act, useState } from 'react';
 import type { Root } from 'react-dom/client';
 
 import type { AppUser } from '@/contexts/AuthContext';
-import type { HotelTeamMember } from '@/app/company/_components/HotelTeamPanel';
-import type { PeopleControllerState } from '@/app/company/_components/usePeopleController';
+import type { HotelTeamMember } from '@/app/(hotel)/company/_components/HotelTeamPanel';
+import type { PeopleControllerState } from '@/app/(hotel)/company/_components/usePeopleController';
 import type { StaffMember } from '@/types';
 
-type HotelTeamPanelModule = typeof import('@/app/company/_components/HotelTeamPanel');
-type CompanyPageModule = typeof import('@/app/company/page');
+type HotelTeamPanelModule = typeof import('@/app/(hotel)/company/_components/HotelTeamPanel');
+type CompanyPageModule = typeof import('@/app/(hotel)/company/page');
 type PeoplePanelProps = Parameters<CompanyPageModule['PeoplePanel']>[0];
 
 const DOM_GLOBALS = [
@@ -174,7 +174,7 @@ function loadWithCssShim<T>(specifier: () => Promise<T>): Promise<T> {
 let panelModulePromise: Promise<HotelTeamPanelModule> | null = null;
 function loadPanelModule(): Promise<HotelTeamPanelModule> {
   panelModulePromise ??= loadWithCssShim(
-    () => import('@/app/company/_components/HotelTeamPanel'),
+    () => import('@/app/(hotel)/company/_components/HotelTeamPanel'),
   );
   return panelModulePromise;
 }
@@ -182,7 +182,7 @@ function loadPanelModule(): Promise<HotelTeamPanelModule> {
 let companyPageModulePromise: Promise<CompanyPageModule> | null = null;
 function loadCompanyPageModule(): Promise<CompanyPageModule> {
   companyPageModulePromise ??= loadWithCssShim(
-    () => import('@/app/company/page'),
+    () => import('@/app/(hotel)/company/page'),
   );
   return companyPageModulePromise;
 }
@@ -190,7 +190,7 @@ function loadCompanyPageModule(): Promise<CompanyPageModule> {
 let dialogsModulePromise: Promise<unknown> | null = null;
 function loadDialogsModule(): Promise<unknown> {
   dialogsModulePromise ??= loadWithCssShim(
-    () => import('@/app/company/_components/HotelTeamDialogs'),
+    () => import('@/app/(hotel)/company/_components/HotelTeamDialogs'),
   );
   return dialogsModulePromise;
 }

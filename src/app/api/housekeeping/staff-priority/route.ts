@@ -8,7 +8,7 @@
  *   - 'excluded'  → never auto-placed (POST /auto-assign skips them)
  *
  * Caller: the "Automatic room assignment" picker on the person's card in
- * My Hotel → People (src/app/company/_components/PersonEmploymentForm.tsx).
+ * My Hotel → People (src/app/(hotel)/company/_components/PersonEmploymentForm.tsx).
  * It used to be the Schedule board's "★ Priority" modal, removed 2026-07-24
  * when that board became a view of today rather than a config surface; it then
  * lived in Staff → Directory until that screen was folded into My Hotel on

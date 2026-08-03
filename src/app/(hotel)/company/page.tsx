@@ -26,7 +26,6 @@ import {
   X,
 } from 'lucide-react';
 
-import { AppLayout } from '@/components/layout/AppLayout';
 import { useAuth, type AppUser } from '@/contexts/AuthContext';
 import { useLang } from '@/contexts/LanguageContext';
 import { usePortfolio } from '@/contexts/PortfolioContext';
@@ -272,11 +271,9 @@ export default function CompanyAccessPage() {
 
 function CompanyPageFallback() {
   return (
-    <AppLayout>
-      <div className={styles.page} aria-busy="true" aria-label="Loading My Hotel">
-        <CompanyHubSkeleton />
-      </div>
-    </AppLayout>
+    <div className={styles.page} aria-busy="true" aria-label="Loading My Hotel">
+      <CompanyHubSkeleton />
+    </div>
   );
 }
 
@@ -785,7 +782,7 @@ function CompanyAccessContent() {
   }, [adminViewerContext, adminPreviewFailed, showLoading]);
 
   return (
-    <AppLayout>
+    <>
       <div className={styles.page}>
         <header className={styles.hero}>
           <div className={styles.heroIdentity}>
@@ -1017,7 +1014,7 @@ function CompanyAccessContent() {
           onCompleted={completeAccessMutation}
         />
       ) : null}
-    </AppLayout>
+    </>
   );
 }
 

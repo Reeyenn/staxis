@@ -41,8 +41,8 @@ describe('staff phone privacy', () => {
     // logic, was deleted the same day). Same discipline: the number never rides
     // the browser roster projection, and an untouched blank field never
     // overwrites a stored one.
-    const panel = source('src/app/company/_components/HotelTeamPanel.tsx');
-    const form = source('src/app/company/_components/PersonEmploymentForm.tsx');
+    const panel = source('src/app/(hotel)/company/_components/HotelTeamPanel.tsx');
+    const form = source('src/app/(hotel)/company/_components/PersonEmploymentForm.tsx');
     assert.match(panel, /\/api\/staff\/contacts\?propertyId=\$\{encodeURIComponent\(hotelId\)\}/);
     assert.match(form, /fetchWithAuth\('\/api\/staff\/contacts', \{/);
     assert.match(form, /phoneTouched/);
@@ -83,7 +83,7 @@ describe('staff phone privacy', () => {
     // phone, then the wage, then the auto-assign rank. If any later one fails,
     // pressing Save again must REUSE the row the first attempt created —
     // otherwise the hotel ends up with two of the same housekeeper.
-    const ui = source('src/app/company/_components/PersonEmploymentForm.tsx');
+    const ui = source('src/app/(hotel)/company/_components/PersonEmploymentForm.tsx');
     assert.match(ui, /const existingId = staffId \?\? createdIdRef\.current/);
     assert.match(ui, /createdIdRef\.current = newId/);
     assert.match(ui, /existingId\s*\?\s*updateStaffMember[\s\S]*?:\s*addStaffMember/);

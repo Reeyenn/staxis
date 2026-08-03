@@ -32,7 +32,7 @@
 
 import React, { useRef, useState } from 'react';
 import { fetchWithAuth } from '@/lib/api-fetch';
-import type { FirstPersonInviteData } from '@/app/company/_components/HotelTeamDialogs';
+import type { FirstPersonInviteData } from '@/app/(hotel)/company/_components/HotelTeamDialogs';
 import { Backdrop, MODAL_CARD } from './surface-kit';
 import { Btn, Caps, FONT_SERIF, FONT_SANS, useRiseIn } from './kit';
 
@@ -43,7 +43,7 @@ import { Btn, Caps, FONT_SERIF, FONT_SANS, useRiseIn } from './kit';
  * sessions never open.
  */
 const LazyFirstPersonInviteDialog = React.lazy(async () => {
-  const dialogs = await import('@/app/company/_components/HotelTeamDialogs');
+  const dialogs = await import('@/app/(hotel)/company/_components/HotelTeamDialogs');
   return { default: dialogs.FirstPersonInviteDialog };
 });
 

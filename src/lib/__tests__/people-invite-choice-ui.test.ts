@@ -15,12 +15,12 @@ function section(sourceText: string, startMarker: string, endMarker: string, lab
   return sourceText.slice(start, end);
 }
 
-const panel = source('src', 'app', 'company', '_components', 'HotelTeamPanel.tsx');
-const dialogs = source('src', 'app', 'company', '_components', 'HotelTeamDialogs.tsx');
-const addStaff = source('src', 'app', 'company', '_components', 'AddStaffDialog.tsx');
-const focusUtility = source('src', 'app', 'company', '_components', 'dialog-focus.ts');
-const companyPage = source('src', 'app', 'company', 'page.tsx');
-const css = source('src', 'app', 'company', '_components', 'HotelTeamPanel.module.css');
+const panel = source('src', 'app', '(hotel)', 'company', '_components', 'HotelTeamPanel.tsx');
+const dialogs = source('src', 'app', '(hotel)', 'company', '_components', 'HotelTeamDialogs.tsx');
+const addStaff = source('src', 'app', '(hotel)', 'company', '_components', 'AddStaffDialog.tsx');
+const focusUtility = source('src', 'app', '(hotel)', 'company', '_components', 'dialog-focus.ts');
+const companyPage = source('src', 'app', '(hotel)', 'company', 'page.tsx');
+const css = source('src', 'app', '(hotel)', 'company', '_components', 'HotelTeamPanel.module.css');
 
 const normalActionArea = section(
   panel,

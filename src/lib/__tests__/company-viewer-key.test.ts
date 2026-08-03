@@ -53,7 +53,7 @@ describe('company access viewer identity', () => {
   });
 
   test('stamps request results and masks the prior authorization identity synchronously', () => {
-    const page = readFileSync(join(process.cwd(), 'src/app/company/page.tsx'), 'utf8');
+    const page = readFileSync(join(process.cwd(), 'src/app/(hotel)/company/page.tsx'), 'utf8');
 
     assert.match(
       page,

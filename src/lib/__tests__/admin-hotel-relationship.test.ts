@@ -97,8 +97,8 @@ describe('admin hotel relationship request contracts', () => {
 });
 
 describe('existing /company Hotels-tab lifecycle surface', () => {
-  const page = source('src', 'app', 'company', 'page.tsx');
-  const component = source('src', 'app', 'company', '_components', 'AdminHotelRelationshipManager.tsx');
+  const page = source('src', 'app', '(hotel)', 'company', 'page.tsx');
+  const component = source('src', 'app', '(hotel)', 'company', '_components', 'AdminHotelRelationshipManager.tsx');
   const migration = source('supabase', 'migrations', '0384_admin_hotel_relationship_lifecycle.sql');
   const readRoute = source('src', 'app', 'api', 'admin', 'company-relationship', 'route.ts');
   const previewRoute = source('src', 'app', 'api', 'admin', 'company-relationship', 'preview', 'route.ts');

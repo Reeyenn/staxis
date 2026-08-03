@@ -16,8 +16,8 @@ const cancelInvitationRoute = source('src/app/api/company-access/invitations/can
 const membershipStatusRoute = source('src/app/api/company-access/memberships/status/route.ts');
 const adminPreviewRoute = source('src/app/api/admin/company-access-preview/route.ts');
 const adminPreviewHelpers = source('src/lib/company-access/admin-preview.ts');
-const dialog = source('src/app/company/_components/AccessWorkflowDialogs.tsx');
-const page = source('src/app/company/page.tsx');
+const dialog = source('src/app/(hotel)/company/_components/AccessWorkflowDialogs.tsx');
+const page = source('src/app/(hotel)/company/page.tsx');
 const signIn = source('src/app/(public)/signin/page.tsx');
 const signInNavigationPolicy = source('src/lib/auth/signin-navigation-policy.ts');
 

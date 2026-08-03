@@ -7,14 +7,14 @@ import React, { act } from 'react';
 import type { Root } from 'react-dom/client';
 
 import type { AppUser } from '@/contexts/AuthContext';
-import type { HotelTeamMember } from '@/app/company/_components/HotelTeamPanel';
-import type { EmploymentLinkAccount } from '@/app/company/_components/PersonEmploymentForm';
-import { buildHotelRoster } from '@/app/company/_components/people-roster';
+import type { HotelTeamMember } from '@/app/(hotel)/company/_components/HotelTeamPanel';
+import type { EmploymentLinkAccount } from '@/app/(hotel)/company/_components/PersonEmploymentForm';
+import { buildHotelRoster } from '@/app/(hotel)/company/_components/people-roster';
 import type { StaffMember } from '@/types';
 
-type HotelTeamModule = typeof import('@/app/company/_components/HotelTeamPanel');
-type EmploymentModule = typeof import('@/app/company/_components/PersonEmploymentForm');
-type PeopleControllerModule = typeof import('@/app/company/_components/usePeopleController');
+type HotelTeamModule = typeof import('@/app/(hotel)/company/_components/HotelTeamPanel');
+type EmploymentModule = typeof import('@/app/(hotel)/company/_components/PersonEmploymentForm');
+type PeopleControllerModule = typeof import('@/app/(hotel)/company/_components/usePeopleController');
 
 const HOTEL_ID = '11111111-1111-4111-8111-111111111111';
 const OTHER_HOTEL_ID = '22222222-2222-4222-8222-222222222222';
@@ -61,7 +61,7 @@ function loadWithCssShim<T>(specifier: () => Promise<T>): Promise<T> {
 let hotelTeamPromise: Promise<HotelTeamModule> | null = null;
 function loadHotelTeam(): Promise<HotelTeamModule> {
   hotelTeamPromise ??= loadWithCssShim(
-    () => import('@/app/company/_components/HotelTeamPanel'),
+    () => import('@/app/(hotel)/company/_components/HotelTeamPanel'),
   );
   return hotelTeamPromise;
 }
@@ -69,7 +69,7 @@ function loadHotelTeam(): Promise<HotelTeamModule> {
 let employmentPromise: Promise<EmploymentModule> | null = null;
 function loadEmployment(): Promise<EmploymentModule> {
   employmentPromise ??= loadWithCssShim(
-    () => import('@/app/company/_components/PersonEmploymentForm'),
+    () => import('@/app/(hotel)/company/_components/PersonEmploymentForm'),
   );
   return employmentPromise;
 }
@@ -77,7 +77,7 @@ function loadEmployment(): Promise<EmploymentModule> {
 let peopleControllerPromise: Promise<PeopleControllerModule> | null = null;
 function loadPeopleController(): Promise<PeopleControllerModule> {
   peopleControllerPromise ??= loadWithCssShim(
-    () => import('@/app/company/_components/usePeopleController'),
+    () => import('@/app/(hotel)/company/_components/usePeopleController'),
   );
   return peopleControllerPromise;
 }
@@ -85,7 +85,7 @@ function loadPeopleController(): Promise<PeopleControllerModule> {
 let dialogsPromise: Promise<unknown> | null = null;
 function loadDialogs(): Promise<unknown> {
   dialogsPromise ??= loadWithCssShim(
-    () => import('@/app/company/_components/HotelTeamDialogs'),
+    () => import('@/app/(hotel)/company/_components/HotelTeamDialogs'),
   );
   return dialogsPromise;
 }

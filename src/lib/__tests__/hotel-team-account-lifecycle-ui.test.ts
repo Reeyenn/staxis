@@ -7,10 +7,10 @@ function source(...parts: string[]): string {
   return readFileSync(join(process.cwd(), ...parts), 'utf8');
 }
 
-const panel = source('src', 'app', 'company', '_components', 'HotelTeamPanel.tsx');
-const peopleController = source('src', 'app', 'company', '_components', 'usePeopleController.ts');
-const dialogs = source('src', 'app', 'company', '_components', 'HotelTeamDialogs.tsx');
-const css = source('src', 'app', 'company', '_components', 'HotelTeamPanel.module.css');
+const panel = source('src', 'app', '(hotel)', 'company', '_components', 'HotelTeamPanel.tsx');
+const peopleController = source('src', 'app', '(hotel)', 'company', '_components', 'usePeopleController.ts');
+const dialogs = source('src', 'app', '(hotel)', 'company', '_components', 'HotelTeamDialogs.tsx');
+const css = source('src', 'app', '(hotel)', 'company', '_components', 'HotelTeamPanel.module.css');
 
 describe('My Hotel account status UI', () => {
   test('renders a compact login badge on each account row and keeps detail history in the dialog', () => {

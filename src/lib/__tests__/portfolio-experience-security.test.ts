@@ -603,7 +603,7 @@ describe('connected portfolio source-code ratchets', () => {
       assert.match(text, /clearDataOnFocusRevalidate: true/);
     }
 
-    const company = source('src/app/company/page.tsx');
+    const company = source('src/app/(hotel)/company/page.tsx');
     assert.match(company, /const portfolio = usePortfolio\(\)/);
     assert.match(company, /portfolioMode[\s\S]{0,240}?portfolio\.data/);
     assert.match(company, /onRetry=\{\(\) => void portfolio\.reload\(\)\}/);

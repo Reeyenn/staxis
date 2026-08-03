@@ -13,7 +13,7 @@ import {
   groupForPerson,
   type RosterAccountLike,
   type RosterStaffLike,
-} from '@/app/company/_components/people-roster';
+} from '@/app/(hotel)/company/_components/people-roster';
 import { projectHotelStaffLinks } from '@/lib/authorization/hotel-staff-link-projection';
 
 function account(overrides: Partial<RosterAccountLike> & { accountId: string }): RosterAccountLike {

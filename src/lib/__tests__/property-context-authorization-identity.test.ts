@@ -20,7 +20,7 @@ const authorizationRefreshHook = readFileSync(
   'utf8',
 );
 const companyPage = readFileSync(
-  join(process.cwd(), 'src', 'app', 'company', 'page.tsx'),
+  join(process.cwd(), 'src', 'app', '(hotel)', 'company', 'page.tsx'),
   'utf8',
 );
 const companyInvitationPage = readFileSync(

@@ -63,7 +63,7 @@ const portfolioQueue = source(
 );
 const home = source('src', 'app', '(hotel)', 'home', 'page.tsx');
 const propertySelector = source('src', 'app', '(hotel)', 'property-selector', 'page.tsx');
-const company = source('src', 'app', 'company', 'page.tsx');
+const company = source('src', 'app', '(hotel)', 'company', 'page.tsx');
 const companyRulebook = source('src', 'components', 'concourse', 'CompanyRulebookPanel.tsx');
 const globals = source('src', 'app', 'globals.css');
 
