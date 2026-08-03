@@ -160,6 +160,7 @@ function installDatabase(): DatabaseState {
     const ilikeFilters: Array<{ column: string; value: string }> = [];
     const orFilters: string[] = [];
     const orders: Array<{ column: string; ascending: boolean }> = [];
+    let selectedColumns: string[] | null = null;
     let limit: number | null = null;
     let head = false;
 
@@ -193,11 +194,15 @@ function installDatabase(): DatabaseState {
       }
       const count = rows.length;
       if (limit != null) rows = rows.slice(0, limit);
+      if (selectedColumns) {
+        rows = rows.map((row) => Object.fromEntries(selectedColumns!.map((column) => [column, row[column]])));
+      }
       return { data: rows, count, error: null };
     };
 
     const builder: Record<string, unknown> = {};
-    builder.select = (_columns?: string, options?: { head?: boolean }) => {
+    builder.select = (columns?: string, options?: { head?: boolean }) => {
+      selectedColumns = columns?.split(',').map((column) => column.trim()).filter(Boolean) ?? null;
       head = options?.head === true;
       return builder;
     };
@@ -313,6 +318,7 @@ describe('communications conversation access boundaries', () => {
     });
 
     assert.equal(conversations.some((conversation) => conversation.id === INVISIBLE_CHANNEL_ID), false);
+    assert.equal(conversations.some((conversation) => conversation.id === HOUSEKEEPING_ID), true);
     assert.equal(conversations.some((conversation) => conversation.id === DM_ID), true);
     assert.equal(
       state.messageQueries.some((query) => query.filters.some((filter) => filter.value === INVISIBLE_CHANNEL_ID)),

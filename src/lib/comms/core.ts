@@ -627,7 +627,7 @@ export async function listConversationsForStaff(
   if (allIds.length === 0) return out;
   const { data: convoRows } = await supabaseAdmin
     .from('comms_conversations')
-    .select('id, kind, channel_key, dm_key, title, last_message_at')
+    .select('id, property_id, kind, channel_key, dm_key, title, last_message_at')
     .eq('property_id', pid)
     .in('id', allIds);
   for (const c of (convoRows ?? []) as ConversationRow[]) {
