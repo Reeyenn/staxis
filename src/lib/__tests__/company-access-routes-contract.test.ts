@@ -220,9 +220,7 @@ describe('normalized-only operational-link safety', () => {
     assert.doesNotMatch(propertyRow, /<Link|href=|router\.push/);
   });
 
-  test('read-only and workflow dialogs restore focus to their opener', () => {
-    assert.match(page, /const returnFocusElement = document\.activeElement instanceof HTMLElement/);
-    assert.match(page, /returnFocusElement\.focus\(\{ preventScroll: true \}\)/);
+  test('workflow dialogs restore focus to their opener', () => {
     assert.match(dialog, /const returnFocusElement = document\.activeElement instanceof HTMLElement/);
     assert.match(dialog, /returnFocusElement\.focus\(\{ preventScroll: true \}\)/);
     assert.match(dialog, /if \(!busyRef\.current\) onCloseRef\.current\(\)/);

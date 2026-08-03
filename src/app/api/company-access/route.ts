@@ -42,6 +42,7 @@ import {
   legacyAccessProfile,
   EMPTY_COMPANY_ACCESS,
   type CompanyAccessData,
+  type CompanyAccessHistoryEntry,
   type CompanyAccessPermissions,
   type CompanyActivityEvent,
   type CompanyDelegationPolicy,
@@ -51,6 +52,8 @@ import {
   type CompanyOrganization,
   type CompanyPortfolio,
   type CompanyProperty,
+  type CompanyAccessRecordStatus,
+  type CompanyAccessSource,
   type EffectiveAccessReceipt,
 } from '@/lib/company-access/dto';
 import type { AppRole } from '@/lib/roles';
@@ -168,8 +171,7 @@ function hatFactsFor(
   const out: MembershipHatFact[] = [];
   for (const row of memberships) {
     if (!isMembershipScope(row.membership_scope) || !isHatRole(row.staxis_role)) continue;
-    if (row.status !== 'active' || row.ended_at !== null) continue;
-    if (row.starts_at && new Date(row.starts_at).getTime() > nowMs) continue;
+    if (row.status !== 'active' || !activeWindow(row.starts_at, row.ended_at, nowMs)) continue;
     const scope = row.membership_scope;
     const role = row.staxis_role;
     out.push({
@@ -377,6 +379,64 @@ function scopeLabel(
   if (grant.scope_type === 'organization') return organizationNames.get(grant.organization_id) ?? 'Organization';
   if (grant.scope_type === 'portfolio') return portfolioNames.get(grant.portfolio_id ?? '') ?? 'Portfolio';
   return propertyNames.get(grant.property_id ?? '') ?? 'Hotel';
+}
+
+function accessSourceForScope(scopeType: EffectiveAccessReceipt['scopeType']): CompanyAccessSource {
+  return scopeType === 'property' ? 'direct' : 'company';
+}
+
+function accessReasonForScope(scopeType: EffectiveAccessReceipt['scopeType']): string {
+  return scopeType === 'property'
+    ? 'Given directly for this hotel'
+    : 'Inherited through company access';
+}
+
+function historicalGrantPropertyIds(
+  grant: AccessGrantFact,
+  item: NormalizedOrganizationData,
+  nowMs: number,
+): string[] {
+  // Reuse the canonical coverage resolver while temporarily removing only the
+  // row's time/status gates. This keeps historical display bound to current
+  // governing hotels and active portfolio descendants without presenting an
+  // expired row as effective access.
+  const facts = {
+    ...item.facts,
+    memberships: item.facts.memberships.map((membership) => (
+      membership.id === grant.membershipId
+        ? { ...membership, status: 'active', accountActive: true, startsAt: new Date(0).toISOString(), endedAt: null }
+        : membership
+    )),
+    grants: item.facts.grants.map((candidate) => (
+      candidate.id === grant.id
+        ? { ...candidate, status: 'active', startsAt: new Date(0).toISOString(), expiresAt: null }
+        : candidate
+    )),
+  } satisfies AccessFacts;
+  return propertyIdsForAccessGrant(
+    { ...grant, status: 'active', startsAt: new Date(0).toISOString(), expiresAt: null },
+    facts,
+    new Date(nowMs),
+  );
+}
+
+function historicalStatus(
+  raw: Pick<GrantRow, 'status' | 'starts_at' | 'expires_at'>,
+  membership: Pick<MembershipRow, 'status' | 'starts_at' | 'ended_at'>,
+  accountActive: boolean,
+  nowMs: number,
+): CompanyAccessRecordStatus {
+  if (membership.status === 'revoked' || (membership.ended_at && Date.parse(membership.ended_at) <= nowMs)) return 'revoked';
+  if (membership.status === 'inactive') return 'inactive';
+  if (!accountActive) return 'inactive';
+  if (membership.status === 'suspended') return 'suspended';
+  if (membership.starts_at && Date.parse(membership.starts_at) > nowMs) return 'pending';
+  if (raw.status === 'revoked') return 'revoked';
+  if (raw.status === 'denied') return 'denied';
+  if (raw.status === 'cancelled') return 'cancelled';
+  if (raw.status === 'pending' || (raw.starts_at && Date.parse(raw.starts_at) > nowMs)) return 'pending';
+  if (raw.expires_at && Date.parse(raw.expires_at) <= nowMs) return 'expired';
+  return 'revoked';
 }
 
 function eventSummary(eventType: string): string {
@@ -948,6 +1008,22 @@ async function normalizedProjection(actorAccountId: string): Promise<CompanyAcce
     && activeWindow(relationship.starts_at, relationship.ends_at, nowMs)
     && item.actorPropertyIds.has(relationship.property_id)
   )));
+  const activeTopologyCounts = new Map<string, number>();
+  for (const item of membershipOrganizationsData) {
+    if (item.organization.status !== 'active' || item.organization.organization_type === 'single_hotel') continue;
+    for (const relationship of item.relationships) {
+      if (relationship.is_primary_grouping !== true
+          || (relationship.relationship_type !== 'operator' && relationship.relationship_type !== 'owner')
+          || !activeWindow(relationship.starts_at, relationship.ends_at, nowMs)) continue;
+      activeTopologyCounts.set(
+        relationship.property_id,
+        (activeTopologyCounts.get(relationship.property_id) ?? 0) + 1,
+      );
+    }
+  }
+  if ([...activeTopologyCounts.values()].some((count) => count > 1)) {
+    throw new IncompleteCompanyProjectionError('Current hotel company topology is ambiguous');
+  }
   const chosenRelationshipByOrganizationProperty = new Map<string, RelationshipRow>();
   for (const relationship of activeRelationshipRows) {
     const key = `${relationship.organization_id}:${relationship.property_id}`;
@@ -1071,6 +1147,8 @@ async function normalizedProjection(actorAccountId: string): Promise<CompanyAcce
 
   const visibleMembershipRows: MembershipRow[] = [];
   const visiblePropertyIdsByMembership = new Map<string, string[]>();
+  const historicalMembershipRows = new Map<string, MembershipRow>();
+  const historicalPropertyIdsByMembership = new Map<string, string[]>();
   for (const item of organizationsData) {
     const viewPeopleGrants = item.actorGrants.filter((grant) => (
       ACCESS_PROFILE_CAPABILITIES[grant.accessProfile].includes('view_people')
@@ -1097,6 +1175,9 @@ async function normalizedProjection(actorAccountId: string): Promise<CompanyAcce
         grant.membershipId === membership.id
         && grant.status === 'active'
         && activeWindow(String(grant.startsAt), grant.expiresAt ? String(grant.expiresAt) : null, nowMs)
+        && membership.status === 'active'
+        && activeWindow(membership.starts_at, membership.ended_at, nowMs)
+        && membershipAccountActive.get(membership.account_id) === true
       ));
       // The TARGET's hotels, from their grant AND from their own hat. Without
       // the second half a company colleague had no hotels at all here, so no
@@ -1108,7 +1189,37 @@ async function normalizedProjection(actorAccountId: string): Promise<CompanyAcce
         ...membershipGrantFacts.flatMap((grant) => grantPropertyIds(grant, item.facts, nowMs)),
         ...(membershipHat?.propertyIds ?? []),
       ])];
+      const historicalPropertyIds = [...new Set([
+        ...item.facts.grants
+          .filter((grant) => grant.membershipId === membership.id)
+          .flatMap((grant) => historicalGrantPropertyIds(grant, item, nowMs)),
+        ...(isMembershipScope(membership.membership_scope) && isHatRole(membership.staxis_role)
+          ? resolveHatCoverage(
+              membership.membership_scope,
+              Array.isArray(membership.covered_property_ids) ? membership.covered_property_ids : [],
+              new Set(item.relationships
+                .filter((relationship) => (
+                  relationship.is_primary_grouping === true
+                  && (relationship.relationship_type === 'operator' || relationship.relationship_type === 'owner')
+                  && activeWindow(relationship.starts_at, relationship.ends_at, nowMs)
+                ))
+                .map((relationship) => relationship.property_id)),
+            )
+          : []),
+      ])];
       const overlapsScope = targetPropertyIds.some((propertyId) => viewPeoplePropertyIds.has(propertyId));
+      const overlapsHistoryScope = historicalPropertyIds.some((propertyId) => viewPeoplePropertyIds.has(propertyId));
+      if (isSelf || actorHasOrganizationPeopleScope || overlapsScope || overlapsHistoryScope) {
+        if (historicalPropertyIds.length > 0) {
+          historicalMembershipRows.set(membership.id, membership);
+          historicalPropertyIdsByMembership.set(
+            membership.id,
+            historicalPropertyIds.filter((propertyId) => isSelf || actorHasOrganizationPeopleScope
+              ? true
+              : viewPeoplePropertyIds.has(propertyId)),
+          );
+        }
+      }
       if (isSelf || actorHasOrganizationPeopleScope || overlapsScope) {
         visibleMembershipRows.push(membership);
         visiblePropertyIdsByMembership.set(
@@ -1121,7 +1232,10 @@ async function normalizedProjection(actorAccountId: string): Promise<CompanyAcce
     }
   }
 
-  const accountIds = new Set<string>(visibleMembershipRows.map((membership) => membership.account_id));
+  const accountIds = new Set<string>([
+    ...visibleMembershipRows.map((membership) => membership.account_id),
+    ...[...historicalMembershipRows.values()].map((membership) => membership.account_id),
+  ]);
   organizationsData.forEach((item) => item.grants.forEach((grant) => {
     if (grant.granted_by_account_id) accountIds.add(grant.granted_by_account_id);
   }));
@@ -1152,6 +1266,12 @@ async function normalizedProjection(actorAccountId: string): Promise<CompanyAcce
     const item = organizationsData.find((candidate) => candidate.organization.id === membership.organization_id)!;
     const isSelf = membership.account_id === actorAccountId;
     const memberAccountActive = accountStates.get(membership.account_id) === true;
+    const membershipStartsInFuture = membership.starts_at
+      ? Date.parse(membership.starts_at) > nowMs
+      : false;
+    const membershipCurrentlyActive = membership.status === 'active'
+      && activeWindow(membership.starts_at, membership.ended_at, nowMs)
+      && memberAccountActive;
     const viewAccessGrants = item.actorGrants.filter((grant) => (
       ACCESS_PROFILE_CAPABILITIES[grant.accessProfile].includes('view_access')
     ));
@@ -1159,7 +1279,7 @@ async function normalizedProjection(actorAccountId: string): Promise<CompanyAcce
       grant.membershipId === membership.id
       && grant.status === 'active'
       && activeWindow(String(grant.startsAt), grant.expiresAt ? String(grant.expiresAt) : null, nowMs)
-      && memberAccountActive
+      && membershipCurrentlyActive
       && (isSelf || capabilityScopeContainsGrant(viewAccessGrants, grant, item.facts, nowMs))
     ));
     const membershipHatFact = item.hatFacts.find((hat) => hat.membershipId === membership.id) ?? null;
@@ -1176,6 +1296,7 @@ async function normalizedProjection(actorAccountId: string): Promise<CompanyAcce
       grant.membershipId === membership.id
       && grant.status === 'active'
       && activeWindow(String(grant.startsAt), grant.expiresAt ? String(grant.expiresAt) : null, nowMs)
+      && membershipCurrentlyActive
       && grant.scopeType === 'organization'
       && (grant.accessProfile === 'organization_owner' || grant.accessProfile === 'organization_admin')
     ));
@@ -1185,6 +1306,9 @@ async function normalizedProjection(actorAccountId: string): Promise<CompanyAcce
       && (actorIsOwner || (actorIsOrganizationAdmin && !targetHasOrganizationLeadership));
     const grants: CompanyManagedGrant[] = visibleGrantFacts.map((grant) => {
       const raw = item.grants.find((row) => row.id === grant.id)!;
+      const expiresSoon = raw.expires_at
+        ? new Date(raw.expires_at).getTime() - nowMs < 14 * 86_400_000
+        : false;
       return {
         id: raw.id,
         accessProfile: raw.access_profile,
@@ -1200,8 +1324,34 @@ async function normalizedProjection(actorAccountId: string): Promise<CompanyAcce
           requestedPortfolioId: raw.portfolio_id,
           requestedPropertyId: raw.property_id,
         }, item.facts).allowed,
+        source: accessSourceForScope(raw.scope_type),
+        status: expiresSoon ? 'expiring' : 'active',
+        startsAt: raw.starts_at,
+        grantedBy: raw.granted_by_account_id ? accountNames.get(raw.granted_by_account_id) ?? null : null,
+        reason: accessReasonForScope(raw.scope_type),
       };
     });
+    if (membershipHatFact && membershipHatFact.propertyIds.length > 0 && memberAccountActive) {
+      grants.push({
+        id: `membership-hat:${membership.id}`,
+        accessProfile: membershipHatFact.accessProfile,
+        scopeType: membershipHatFact.scope === 'company' ? 'organization' : 'property',
+        scopeLabel: membershipHatFact.scope === 'company'
+          ? organizationNames.get(item.organization.id) ?? 'Company'
+          : membershipHatFact.propertyIds.map((propertyId) => propertyNames.get(propertyId) ?? 'Hotel').join(', '),
+        propertyIds: membershipHatFact.propertyIds,
+        expiresAt: null,
+        canRevoke: false,
+        source: membershipHatFact.scope === 'company' ? 'company' : 'direct',
+        status: 'active',
+        startsAt: membership.starts_at,
+        grantedBy: null,
+        reason: membershipHatFact.scope === 'company'
+          ? 'Inherited through company job'
+          : 'Given directly through hotel job',
+        isMembershipAccess: true,
+      });
+    }
     return {
       id: membership.id,
       organizationId: membership.organization_id,
@@ -1212,9 +1362,17 @@ async function normalizedProjection(actorAccountId: string): Promise<CompanyAcce
       // Grants rank first when a person has both; a hat-only colleague showed a
       // BLANK profile before, which reads as "no access" for somebody who has it.
       accessProfile: profiles[0] ?? membershipHatFact?.accessProfile ?? null,
+      accessSource: membershipHatFact
+        ? membershipHatFact.scope === 'company' ? 'company' : 'direct'
+        : undefined,
+      accessScopeType: membershipHatFact
+        ? membershipHatFact.scope === 'company' ? 'organization' : 'property'
+        : undefined,
       status: membership.status === 'revoked'
         ? 'revoked'
-        : !memberAccountActive || membership.status === 'suspended' ? 'suspended' : 'active',
+        : membership.status === 'inactive' || !memberAccountActive ? 'inactive'
+          : membership.status === 'suspended' ? 'suspended'
+            : membershipStartsInFuture ? 'pending' : 'active',
       propertyIds: visiblePropertyIdsByMembership.get(membership.id) ?? [],
       isCurrentUser: isSelf,
       grants,
@@ -1223,6 +1381,102 @@ async function normalizedProjection(actorAccountId: string): Promise<CompanyAcce
       canRemove: canManageMembership && (membership.status === 'active' || membership.status === 'suspended'),
     };
   });
+
+  const accessHistory: CompanyAccessHistoryEntry[] = [];
+  for (const membership of historicalMembershipRows.values()) {
+    const item = organizationsData.find((candidate) => candidate.organization.id === membership.organization_id);
+    if (!item) continue;
+    const memberAccountActive = accountStates.get(membership.account_id) === true;
+    const allowedPropertyIds = new Set(historicalPropertyIdsByMembership.get(membership.id) ?? []);
+    const grantFactsById = new Map(item.facts.grants
+      .filter((grant) => grant.membershipId === membership.id)
+      .map((grant) => [grant.id, grant]));
+    for (const raw of item.grants.filter((candidate) => candidate.membership_id === membership.id)) {
+      const fact = grantFactsById.get(raw.id);
+      if (!fact) continue;
+      const propertyIds = historicalGrantPropertyIds(fact, item, nowMs)
+        .filter((propertyId) => allowedPropertyIds.has(propertyId));
+      if (propertyIds.length === 0) continue;
+      const currentlyEffective = raw.status === 'active'
+        && activeWindow(raw.starts_at, raw.expires_at, nowMs)
+        && membership.status === 'active'
+        && activeWindow(membership.starts_at, membership.ended_at, nowMs)
+        && memberAccountActive;
+      if (currentlyEffective) continue;
+      accessHistory.push({
+        id: `history:${raw.id}`,
+        organizationId: raw.organization_id,
+        membershipId: membership.id,
+        accountId: membership.account_id,
+        displayName: accountNames.get(membership.account_id) ?? 'User',
+        jobTitle: membership.job_title,
+        record: {
+          id: raw.id,
+          accessProfile: raw.access_profile,
+          scopeType: raw.scope_type,
+          scopeLabel: scopeLabel(raw, organizationNames, portfolioNames, propertyNames),
+          propertyIds,
+          expiresAt: raw.expires_at,
+          canRevoke: false,
+          source: accessSourceForScope(raw.scope_type),
+          status: historicalStatus(raw, membership, memberAccountActive, nowMs),
+          startsAt: raw.starts_at,
+          grantedBy: raw.granted_by_account_id ? accountNames.get(raw.granted_by_account_id) ?? null : null,
+          reason: accessReasonForScope(raw.scope_type),
+        },
+      });
+    }
+
+    if (isMembershipScope(membership.membership_scope) && isHatRole(membership.staxis_role)) {
+      const operatedPropertyIds = new Set(item.relationships
+        .filter((relationship) => (
+          relationship.is_primary_grouping === true
+          && (relationship.relationship_type === 'operator' || relationship.relationship_type === 'owner')
+          && activeWindow(relationship.starts_at, relationship.ends_at, nowMs)
+        ))
+        .map((relationship) => relationship.property_id));
+      const propertyIds = resolveHatCoverage(
+        membership.membership_scope,
+        Array.isArray(membership.covered_property_ids) ? membership.covered_property_ids : [],
+        operatedPropertyIds,
+      ).filter((propertyId) => allowedPropertyIds.has(propertyId));
+      const currentlyEffective = membership.status === 'active'
+        && activeWindow(membership.starts_at, membership.ended_at, nowMs)
+        && memberAccountActive;
+      if (propertyIds.length > 0 && !currentlyEffective) {
+        const scopeType = membership.membership_scope === 'company' ? 'organization' : 'property';
+        accessHistory.push({
+          id: `history:membership-hat:${membership.id}`,
+          organizationId: membership.organization_id,
+          membershipId: membership.id,
+          accountId: membership.account_id,
+          displayName: accountNames.get(membership.account_id) ?? 'User',
+          jobTitle: membership.job_title,
+          record: {
+            id: `membership-hat:${membership.id}`,
+            accessProfile: accessProfileForHat(membership.membership_scope, membership.staxis_role),
+            scopeType,
+            scopeLabel: scopeType === 'organization'
+              ? organizationNames.get(membership.organization_id) ?? 'Company'
+              : propertyIds.map((propertyId) => propertyNames.get(propertyId) ?? 'Hotel').join(', '),
+            propertyIds,
+            expiresAt: null,
+            canRevoke: false,
+            source: membership.membership_scope === 'company' ? 'company' : 'direct',
+            status: historicalStatus({
+              status: membership.starts_at && Date.parse(membership.starts_at) > nowMs ? 'pending' : membership.status,
+              starts_at: membership.starts_at,
+              expires_at: null,
+            }, membership, memberAccountActive, nowMs),
+            startsAt: membership.starts_at,
+            grantedBy: null,
+            reason: accessReasonForScope(scopeType),
+            isMembershipAccess: true,
+          },
+        });
+      }
+    }
+  }
 
   const receipts: EffectiveAccessReceipt[] = organizationsData.flatMap((item) => item.actorGrants.map((grant) => {
     const raw = item.grants.find((row) => row.id === grant.id)!;
@@ -1431,6 +1685,8 @@ async function normalizedProjection(actorAccountId: string): Promise<CompanyAcce
     return {
       id: request.id,
       organizationId: request.organization_id,
+      requesterAccountId: membership?.account_id ?? null,
+      scopeType: request.scope_type,
       requesterName: membership ? accountNames.get(membership.account_id) ?? 'User' : 'User',
       requestedProfile: request.requested_access_profile,
       scopeLabel: scopeLabel({
@@ -1529,6 +1785,7 @@ async function normalizedProjection(actorAccountId: string): Promise<CompanyAcce
     properties: companyProperties,
     memberships: companyMemberships,
     effectiveAccess: receipts,
+    accessHistory,
     invitations,
     requests,
     activity,

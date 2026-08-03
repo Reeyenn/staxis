@@ -11,6 +11,8 @@ export type OrganizationKind =
 export type OrganizationStatus = 'active' | 'pending' | 'suspended' | 'inactive';
 export type CompanyItemStatus = 'active' | 'pending' | 'expiring' | 'expired' | 'revoked' | 'inactive' | 'suspended';
 export type AccessScopeType = 'organization' | 'portfolio' | 'property';
+export type CompanyAccessSource = 'direct' | 'company';
+export type CompanyAccessRecordStatus = CompanyItemStatus | 'approved' | 'denied' | 'cancelled';
 
 export interface CompanyOrganization {
   id: string;
@@ -66,6 +68,14 @@ export interface CompanyManagedGrant {
   propertyIds: string[];
   expiresAt?: string | null;
   canRevoke: boolean;
+  /** Presentation provenance for the one effective-access answer. */
+  source?: CompanyAccessSource;
+  status?: CompanyAccessRecordStatus;
+  startsAt?: string | null;
+  grantedBy?: string | null;
+  reason?: string | null;
+  /** True when the row is derived from the person's current company job. */
+  isMembershipAccess?: boolean;
 }
 
 export interface CompanyMembership {
@@ -76,6 +86,8 @@ export interface CompanyMembership {
   jobCategory?: string | null;
   jobTitle?: string | null;
   accessProfile?: string | null;
+  accessSource?: CompanyAccessSource;
+  accessScopeType?: AccessScopeType;
   status: CompanyItemStatus;
   propertyIds: string[];
   isCurrentUser?: boolean;
@@ -102,6 +114,19 @@ export interface EffectiveAccessReceipt {
   status: CompanyItemStatus;
 }
 
+/** Historical effective-access provenance for the selected company scope. It
+ * is additive display data only; authorization still comes from the existing
+ * normalized rows and guarded mutation contracts. */
+export interface CompanyAccessHistoryEntry {
+  id: string;
+  organizationId: string;
+  membershipId: string;
+  accountId: string;
+  displayName: string;
+  jobTitle?: string | null;
+  record: CompanyManagedGrant;
+}
+
 export interface CompanyInvitation {
   id: string;
   organizationId?: string | null;
@@ -119,6 +144,8 @@ export interface CompanyInvitation {
 export interface CompanyAccessRequest {
   id: string;
   organizationId?: string | null;
+  requesterAccountId?: string | null;
+  scopeType?: AccessScopeType;
   requesterName: string;
   requestedProfile: string;
   scopeLabel: string;
@@ -191,6 +218,8 @@ export interface CompanyAccessData {
   properties: CompanyProperty[];
   memberships: CompanyMembership[];
   effectiveAccess: EffectiveAccessReceipt[];
+  /** Current-scope history from the same authoritative access rows/feed. */
+  accessHistory?: CompanyAccessHistoryEntry[];
   invitations: CompanyInvitation[];
   requests: CompanyAccessRequest[];
   activity: CompanyActivityEvent[];

@@ -163,7 +163,7 @@ describe('truthful Company Hub filters', () => {
     assert.match(hotelTeam, /const rosterStaff = React\.useMemo/);
     assert.match(company, /staffProfiles=\{staff\}/);
     assert.doesNotMatch(company, /statusFilter === ['"]invited['"]/);
-    assert.match(company, /Roles and scopes by person/);
+    assert.match(company, /People with hotel access/);
     assert.match(company, /data\.invitations\.map/);
   });
 
@@ -263,7 +263,13 @@ describe('My Hotel account and team integration', () => {
     assert.match(company, /<FilterBar[\s\S]*<OrganizationHierarchy/);
     assert.match(company, /data\.viewerContext\?\.kind === ['"]staxis_admin_preview['"][\s\S]*<AdminHotelRelationshipManager/);
     assert.match(company, /title=\{['"]Memberships and invitations['"]\}/);
-    assert.match(company, /title=\{adminPreview[\s\S]*['"]Customer grants['"][\s\S]*['"]Access grants['"]/);
+    assert.match(company, /title=\{['"]People with hotel access['"]\}/);
+    assert.match(company, /resolveCompanyAccessContext\(/);
+    assert.match(company, /buildAccessPeople\(/);
+    assert.match(company, /['"]No hotel access yet['"]/);
+    assert.match(company, /The authoritative access view is temporarily unavailable/);
+    assert.match(company, /['"]Read-only preview['"]/);
+    assert.doesNotMatch(company, /Customer grants|Access grants|grant records/);
     assert.doesNotMatch(hotelTeam, /<span>\{'Hotel roster'\}<\/span>/);
   });
 

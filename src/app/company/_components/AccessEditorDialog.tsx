@@ -21,7 +21,7 @@ import {
   type CompanyAccessEditorMembership,
   type CompanyAccessEditorOrganization,
 } from '@/lib/company-access/access-editor';
-import { titleCaseAccessValue, type CompanyMembership } from '@/lib/company-access/dto';
+import type { CompanyMembership } from '@/lib/company-access/dto';
 import type { AccessProfile } from '@/lib/organization-access/domain';
 
 import styles from '../CompanyAccess.module.css';
@@ -52,8 +52,16 @@ function profileLabel(profile: string, lang: string): string {
     contributor: 'Contributor',
     viewer: 'Viewer',
     external_collaborator: 'External Collaborator',
+    owner: 'Owner',
+    vp: 'Portfolio Manager',
+    finance: 'Contributor',
+    controller: 'Contributor',
+    general_manager: 'Hotel Manager',
+    front_desk: 'Viewer',
+    housekeeping: 'Viewer',
+    maintenance: 'Viewer',
   };
-  return labels[profile] ?? titleCaseAccessValue(profile);
+  return labels[profile] ?? 'Team member';
 }
 
 function initialScope(
@@ -370,13 +378,13 @@ export function AccessEditorDialog({
           </button>
         </div>
         <p id={descriptionId} className={styles.dialogIntro}>
-          {'Choose one profile and an exact whole-company, portfolio/region, or selected-hotel scope. Nothing changes until you preview and confirm.'}
+          {'Choose one profile and an exact all-company-hotels, portfolio, or selected-hotels scope. Nothing changes until you preview and confirm.'}
         </p>
 
         {editorMembership.sourceKind === 'membership_hat' ? (
           <div className={styles.formNotice} role="note">
             <AlertTriangle size={16} aria-hidden="true" />
-            <span>{`This replaces the current ${titleCaseAccessValue(editorMembership.sourceRole ?? 'company role')} ${editorMembership.sourceScope === 'company' ? 'company-wide' : 'hotel-scoped'} role with one normalized role and exact scope. Other roles this person holds are unchanged.`}</span>
+            <span>{`This replaces the current ${profileLabel(editorMembership.sourceRole ?? 'company role', lang)} ${editorMembership.sourceScope === 'company' ? 'company-wide' : 'hotel-scoped'} role with one role and exact scope. Other roles this person holds are unchanged.`}</span>
           </div>
         ) : null}
 
@@ -407,7 +415,7 @@ export function AccessEditorDialog({
                   />
                   <span>
                     <strong>{'Replace current access'}</strong>
-                    <small>{'Remove grants outside the new exact scope.'}</small>
+                    <small>{'Remove access outside the new exact scope.'}</small>
                   </span>
                 </label>
               ) : null}
@@ -422,7 +430,7 @@ export function AccessEditorDialog({
                   />
                   <span>
                     <strong>{'Add another scope'}</strong>
-                    <small>{'Keep current grants and add this exact scope.'}</small>
+                    <small>{'Keep current access and add this exact scope.'}</small>
                   </span>
                 </label>
               ) : null}
@@ -570,7 +578,7 @@ export function AccessEditorDialog({
                 </div>
                 <dl>
                   <div><dt>{'Current access entries'}</dt><dd>{preview.currentGrantCount}</dd></div>
-                  <div><dt>{'Revoked'}</dt><dd>{preview.revokedGrantCount}</dd></div>
+                  <div><dt>{'Access removed'}</dt><dd>{preview.revokedGrantCount}</dd></div>
                   <div><dt>{'Ensured'}</dt><dd>{preview.upsertedGrantCount}</dd></div>
                   <div><dt>{'Hotels before'}</dt><dd>{preview.beforePropertyIds.length}</dd></div>
                   <div><dt>{'Hotels after'}</dt><dd>{preview.afterPropertyIds.length}</dd></div>

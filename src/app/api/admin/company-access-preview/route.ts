@@ -37,6 +37,9 @@ import {
 import type {
   AccessScopeType,
   CompanyAccessData,
+  CompanyAccessHistoryEntry,
+  CompanyAccessRecordStatus,
+  CompanyAccessSource,
   CompanyAccessRequest,
   CompanyActivityEvent,
   CompanyInvitation,
@@ -51,6 +54,8 @@ import type {
 import { getOrMintRequestId, log } from '@/lib/log';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { errToString } from '@/lib/utils';
+import { accessProfileForHat, isHatRole, isMembershipScope } from '@/lib/company/roles';
+import { resolveHatCoverage } from '@/lib/company/access';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -110,6 +115,9 @@ interface MembershipRow {
   status: string;
   starts_at: string | null;
   ended_at: string | null;
+  membership_scope: string | null;
+  staxis_role: string | null;
+  covered_property_ids: string[] | null;
 }
 
 interface GrantRow {
@@ -324,6 +332,35 @@ function scopeLabel(
   return propertyNames.get(row.property_id ?? '') ?? 'Hotel';
 }
 
+function accessSourceForScope(scopeType: AccessScopeType): CompanyAccessSource {
+  return scopeType === 'property' ? 'direct' : 'company';
+}
+
+function accessReasonForScope(scopeType: AccessScopeType): string {
+  return scopeType === 'property'
+    ? 'Given directly for this hotel'
+    : 'Inherited through company access';
+}
+
+function historicalStatus(
+  raw: Pick<GrantRow, 'status' | 'starts_at' | 'expires_at'>,
+  membership: Pick<MembershipRow, 'status' | 'starts_at' | 'ended_at'>,
+  accountActive: boolean,
+  nowMs: number,
+): CompanyAccessRecordStatus {
+  if (membership.status === 'revoked' || (membership.ended_at && Date.parse(membership.ended_at) <= nowMs)) return 'revoked';
+  if (membership.status === 'inactive') return 'inactive';
+  if (!accountActive) return 'inactive';
+  if (membership.status === 'suspended') return 'suspended';
+  if (membership.starts_at && Date.parse(membership.starts_at) > nowMs) return 'pending';
+  if (raw.status === 'revoked') return 'revoked';
+  if (raw.status === 'denied') return 'denied';
+  if (raw.status === 'cancelled') return 'cancelled';
+  if (raw.status === 'pending' || (raw.starts_at && Date.parse(raw.starts_at) > nowMs)) return 'pending';
+  if (raw.expires_at && Date.parse(raw.expires_at) <= nowMs) return 'expired';
+  return 'revoked';
+}
+
 function eventSummary(eventType: string): string {
   const labels: Record<string, string> = {
     'organization_memberships.insert': 'A company membership was added',
@@ -414,7 +451,7 @@ async function buildScopedProjection(
       : Promise.resolve([] as PortfolioPropertyRow[]),
     readCompleteCompanyPages<MembershipRow>((from, to) => (
       supabaseAdmin.from('organization_memberships')
-        .select('id, organization_id, account_id, job_category, job_title, status, starts_at, ended_at', { count: 'exact' })
+        .select('id, organization_id, account_id, job_category, job_title, status, starts_at, ended_at, membership_scope, staxis_role, covered_property_ids', { count: 'exact' })
         .eq('organization_id', organizationId)
         .order('id')
         .range(from, to) as unknown as PromiseLike<CompanyProjectionPage<MembershipRow>>
@@ -438,8 +475,22 @@ async function buildScopedProjection(
     });
   }
   const activeRelationships = relationshipRows.filter((row) => (
-    adminPreviewWindowIsActive(row.starts_at, row.ends_at, now)
+    row.is_primary_grouping === true
+      && (row.relationship_type === 'operator' || row.relationship_type === 'owner')
+      && adminPreviewWindowIsActive(row.starts_at, row.ends_at, now)
   ));
+  const activeTopologyCounts = new Map<string, number>();
+  for (const relationship of activeRelationships) {
+    activeTopologyCounts.set(
+      relationship.property_id,
+      (activeTopologyCounts.get(relationship.property_id) ?? 0) + 1,
+    );
+  }
+  if ([...activeTopologyCounts.values()].some((count) => count > 1)) {
+    throw new UnavailableAdminCompanyPreviewTargetError(
+      'The company has more than one current governing relationship for a hotel',
+    );
+  }
   const chosenRelationshipByProperty = new Map<string, RelationshipRow>();
   for (const relationship of activeRelationships) {
     const existing = chosenRelationshipByProperty.get(relationship.property_id);
@@ -449,7 +500,7 @@ async function buildScopedProjection(
   }
   const chosenRelationships = [...chosenRelationshipByProperty.values()];
   const activeRelationshipIds = new Set(activeRelationships.map((row) => row.id));
-  const propertyIds = [...new Set(chosenRelationships.map((row) => row.property_id))];
+  const propertyIds = [...new Set(chosenRelationships.map((row) => row.property_id))].sort();
   if (target.scope === 'organization' && !propertyIds.includes(target.property.id)) {
     throw new StaleAdminCompanyPreviewError();
   }
@@ -494,7 +545,9 @@ async function buildScopedProjection(
     propertyIdsByPortfolio.set(assignment.portfolio_id, portfolioProperties);
   }
 
-  const companyProperties: CompanyProperty[] = chosenRelationships.map((relationship) => ({
+  const companyProperties: CompanyProperty[] = [...chosenRelationships]
+    .sort((left, right) => left.property_id.localeCompare(right.property_id))
+    .map((relationship) => ({
     nodeId: `${organizationId}:${relationship.property_id}`,
     id: relationship.property_id,
     name: propertyNames.get(relationship.property_id) ?? 'Hotel',
@@ -503,13 +556,13 @@ async function buildScopedProjection(
     relationshipType: relationship.relationship_type,
     relationshipId: relationship.id,
     status: 'active',
-  }));
+    }));
   const companyPortfolios: CompanyPortfolio[] = activePortfolios.map((portfolio) => ({
     id: portfolio.id,
     organizationId,
     name: portfolio.name,
     parentId: portfolio.parent_id,
-    propertyIds: [...(propertyIdsByPortfolio.get(portfolio.id) ?? [])],
+    propertyIds: [...(propertyIdsByPortfolio.get(portfolio.id) ?? [])].sort(),
   }));
 
   const activeGrantRows = grantRows.filter((row) => (
@@ -534,6 +587,25 @@ async function buildScopedProjection(
     }
     if (!grant.portfolio_id || !activePortfolioIds.has(grant.portfolio_id)) return [];
     return [...(propertyIdsByPortfolio.get(grant.portfolio_id) ?? [])];
+  };
+
+  const hatPropertyIds = (membership: MembershipRow): string[] => {
+    if (!isMembershipScope(membership.membership_scope) || !isHatRole(membership.staxis_role)) return [];
+    return resolveHatCoverage(
+      membership.membership_scope,
+      Array.isArray(membership.covered_property_ids) ? membership.covered_property_ids : [],
+      new Set(propertyIds),
+    );
+  };
+  const currentHatFor = (membership: MembershipRow) => {
+    const propertyIdsForHat = hatPropertyIds(membership);
+    if (propertyIdsForHat.length === 0
+        || membership.status !== 'active'
+        || !adminPreviewWindowIsActive(membership.starts_at, membership.ended_at, now)
+        || accountById.get(membership.account_id)?.active !== true
+        || !isMembershipScope(membership.membership_scope)
+        || !isHatRole(membership.staxis_role)) return null;
+    return { propertyIds: propertyIdsForHat, scope: membership.membership_scope, role: membership.staxis_role };
   };
 
   const [invitationResult, requestResult, eventResult] = await Promise.all([
@@ -601,8 +673,36 @@ async function buildScopedProjection(
           propertyIds: scopedPropertyIds,
           expiresAt: grant.expires_at,
           canRevoke: false,
+          source: accessSourceForScope(grant.scope_type),
+          status: grant.expires_at && Date.parse(grant.expires_at) - nowMs < 14 * 86_400_000
+            ? 'expiring'
+            : 'active',
+          startsAt: grant.starts_at,
+          grantedBy: accountName(grant.granted_by_account_id),
+          reason: accessReasonForScope(grant.scope_type),
         }] : [];
       });
+    const membershipHat = currentHatFor(membership);
+    if (membershipHat) {
+      const scopeType = membershipHat.scope === 'company' ? 'organization' : 'property';
+      grants.push({
+        id: `membership-hat:${membership.id}`,
+        accessProfile: accessProfileForHat(membershipHat.scope, membershipHat.role),
+        scopeType,
+        scopeLabel: scopeType === 'organization'
+          ? organization.name
+          : membershipHat.propertyIds.map((propertyId) => propertyNames.get(propertyId) ?? 'Hotel').join(', '),
+        propertyIds: membershipHat.propertyIds,
+        expiresAt: null,
+        canRevoke: false,
+        source: membershipHat.scope === 'company' ? 'company' : 'direct',
+        status: 'active',
+        startsAt: membership.starts_at,
+        grantedBy: null,
+        reason: accessReasonForScope(scopeType),
+        isMembershipAccess: true,
+      });
+    }
     const profiles = grants.map((grant) => grant.accessProfile)
       .sort((a, b) => profileRank(a) - profileRank(b));
     const startsInFuture = membership.starts_at
@@ -615,9 +715,11 @@ async function buildScopedProjection(
       ? 'revoked' as const
       : startsInFuture
         ? 'pending' as const
-        : membership.status === 'suspended' || account?.active !== true
-          ? 'suspended' as const
-          : 'active' as const;
+        : membership.status === 'inactive' || account?.active !== true
+          ? 'inactive' as const
+          : membership.status === 'suspended'
+            ? 'suspended' as const
+            : 'active' as const;
     return {
       id: membership.id,
       organizationId,
@@ -625,7 +727,14 @@ async function buildScopedProjection(
       displayName: accountName(membership.account_id) ?? 'User',
       jobCategory: membership.job_category,
       jobTitle: membership.job_title,
-      accessProfile: profiles[0] ?? null,
+      accessProfile: profiles[0]
+        ?? (membershipHat ? accessProfileForHat(membershipHat.scope, membershipHat.role) : null),
+      accessSource: membershipHat
+        ? membershipHat.scope === 'company' ? 'company' : 'direct'
+        : undefined,
+      accessScopeType: membershipHat
+        ? membershipHat.scope === 'company' ? 'organization' : 'property'
+        : undefined,
       status,
       propertyIds: [...new Set(grants.flatMap((grant) => grant.propertyIds))],
       isCurrentUser: false,
@@ -635,6 +744,87 @@ async function buildScopedProjection(
       canRemove: false,
     };
   });
+  const accessHistory: CompanyAccessHistoryEntry[] = [];
+  const allGrantsByMembership = new Map<string, GrantRow[]>();
+  for (const grant of grantRows) {
+    const rows = allGrantsByMembership.get(grant.membership_id) ?? [];
+    rows.push(grant);
+    allGrantsByMembership.set(grant.membership_id, rows);
+  }
+  for (const membership of visibleMembershipRows) {
+    const account = accountById.get(membership.account_id);
+    const accountActive = account?.active === true;
+    for (const grant of allGrantsByMembership.get(membership.id) ?? []) {
+      const propertyIdsForGrant = grantPropertyIds(grant);
+      const currentlyEffective = grant.status === 'active'
+        && adminPreviewWindowIsActive(grant.starts_at, grant.expires_at, now)
+        && membership.status === 'active'
+        && adminPreviewWindowIsActive(membership.starts_at, membership.ended_at, now)
+        && accountActive;
+      if (propertyIdsForGrant.length === 0 || currentlyEffective) continue;
+      accessHistory.push({
+        id: `history:${grant.id}`,
+        organizationId,
+        membershipId: membership.id,
+        accountId: membership.account_id,
+        displayName: accountName(membership.account_id) ?? 'User',
+        jobTitle: membership.job_title,
+        record: {
+          id: grant.id,
+          accessProfile: grant.access_profile,
+          scopeType: grant.scope_type,
+          scopeLabel: scopeLabel(grant, organization.name, portfolioNames, propertyNames),
+          propertyIds: propertyIdsForGrant,
+          expiresAt: grant.expires_at,
+          canRevoke: false,
+          source: accessSourceForScope(grant.scope_type),
+          status: historicalStatus(grant, membership, accountActive, nowMs),
+          startsAt: grant.starts_at,
+          grantedBy: accountName(grant.granted_by_account_id),
+          reason: accessReasonForScope(grant.scope_type),
+        },
+      });
+    }
+    const membershipHat = currentHatFor(membership);
+    const hatPropertyIdsForHistory = hatPropertyIds(membership);
+    const hatStartsInFuture = membership.starts_at ? Date.parse(membership.starts_at) > nowMs : false;
+    const hatCurrentlyEffective = Boolean(membershipHat);
+    if (!hatCurrentlyEffective
+        && hatPropertyIdsForHistory.length > 0
+        && isMembershipScope(membership.membership_scope)
+        && isHatRole(membership.staxis_role)) {
+      const scopeType = membership.membership_scope === 'company' ? 'organization' : 'property';
+      accessHistory.push({
+        id: `history:membership-hat:${membership.id}`,
+        organizationId,
+        membershipId: membership.id,
+        accountId: membership.account_id,
+        displayName: accountName(membership.account_id) ?? 'User',
+        jobTitle: membership.job_title,
+        record: {
+          id: `membership-hat:${membership.id}`,
+          accessProfile: accessProfileForHat(membership.membership_scope, membership.staxis_role),
+          scopeType,
+          scopeLabel: scopeType === 'organization'
+            ? organization.name
+            : hatPropertyIdsForHistory.map((propertyId) => propertyNames.get(propertyId) ?? 'Hotel').join(', '),
+          propertyIds: hatPropertyIdsForHistory,
+          expiresAt: null,
+          canRevoke: false,
+          source: membership.membership_scope === 'company' ? 'company' : 'direct',
+          status: historicalStatus({
+            status: hatStartsInFuture ? 'pending' : membership.status,
+            starts_at: membership.starts_at,
+            expires_at: null,
+          }, membership, accountActive, nowMs),
+          startsAt: membership.starts_at,
+          grantedBy: null,
+          reason: accessReasonForScope(scopeType),
+          isMembershipAccess: true,
+        },
+      });
+    }
+  }
   const membershipById = new Map(visibleMembershipRows.map((row) => [row.id, row]));
   const portfolioById = new Map(companyPortfolios.map((portfolio) => [portfolio.id, portfolio]));
 
@@ -676,6 +866,8 @@ async function buildScopedProjection(
     return [{
       id: row.id,
       organizationId,
+      requesterAccountId: membership.account_id,
+      scopeType: row.scope_type,
       requesterName: accountName(membership.account_id) ?? 'User',
       requestedProfile: row.requested_access_profile,
       scopeLabel: scopeLabel({
@@ -727,6 +919,7 @@ async function buildScopedProjection(
     properties: companyProperties,
     memberships: companyMemberships,
     effectiveAccess: [],
+    accessHistory,
     invitations,
     requests,
     activity,
