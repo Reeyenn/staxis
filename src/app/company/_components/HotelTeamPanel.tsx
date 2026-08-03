@@ -1272,7 +1272,7 @@ export function HotelTeamPanel({
     peopleCount,
     team: teamForHotel,
     rosterUnavailable: !rosterSettled || rosterUnavailable || firstPersonOnboarding === null,
-    approvalSettled: !requestsLoading && !requestsError,
+    approvalSettled: !requestsLoading && !requestsError && requests.length === 0,
     onboardingStatus: firstPersonOnboarding?.status,
   });
   const { needsHotelOwnerOrGm } = setupState;
@@ -1291,6 +1291,7 @@ export function HotelTeamPanel({
     && !locked
     && firstPersonDialogMode !== null;
   const rosterIndeterminate = !rosterSettled || rosterUnavailable;
+  const approvalIndeterminate = requestsLoading || Boolean(requestsError) || requests.length > 0;
   const counts = React.useMemo(() => rosterCounts(rosterStaff), [rosterStaff]);
   const linkAccounts = React.useMemo(
     () => teamForHotel.map((member) => ({
@@ -1727,7 +1728,7 @@ export function HotelTeamPanel({
           <div className={styles.emptyState}>
             <span><Users size={22} aria-hidden="true" /></span>
             <h3>{'No approved people yet'}</h3>
-            <p>{'Pending join requests are waiting for approval. Review them above or add the hotel owner or General Manager.'}</p>
+            <p>{'Pending join requests are waiting for approval. Review them above before adding anyone else.'}</p>
           </div>
         ) : !rosterIndeterminate && peopleCount === 0 && firstPersonPending ? (
           <div className={styles.emptyState}>
@@ -1778,7 +1779,13 @@ export function HotelTeamPanel({
                   <p className={styles.departmentEmpty}>
                     {rosterIndeterminate
                       ? 'The department roster is temporarily unavailable.'
-                      : 'Nobody in this department yet.'}
+                      : approvalIndeterminate
+                        ? requestsLoading
+                          ? 'Checking pending approvals before confirming this department is empty.'
+                          : requestsError
+                            ? 'Pending approvals could not be checked, so this department may have people waiting for approval.'
+                            : 'Pending approvals may add people to this department.'
+                        : 'Nobody in this department yet.'}
                   </p>
                 ) : (
                 <div className={styles.personList} role="list">

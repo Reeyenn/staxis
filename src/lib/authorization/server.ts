@@ -413,6 +413,17 @@ interface StructuralMembershipRow {
   ended_at: string | null;
 }
 
+interface StructuralAccountRow {
+  id: string;
+  role: string;
+  property_access: string[] | null;
+}
+
+interface StructuralAuthorizationStateRow {
+  account_id: string;
+  authority_mode: string;
+}
+
 interface StructuralGrantRow {
   organization_id: string;
   membership_id: string;
@@ -458,26 +469,40 @@ function currentStructuralWindow(startsAt: string, endsAt: string | null, nowMs:
 }
 
 /**
- * The operational access RPC intentionally excludes inactive accounts. The
- * first-person guard in 0411 deliberately does not: an inactive structural
- * membership, grant, or valid cutover bridge still means the hotel is claimed.
- * Reuse those canonical tables for that narrow admin People projection so the
- * UI can fail closed without changing access authority or managementSurface.
+ * The operational access RPC intentionally resolves one winning authority
+ * class and excludes inactive accounts. The first-person guard in 0411 is a
+ * different OR contract: legacy/shadow property_access, any normalized
+ * property-scope hat or grant, or a valid bridge claims the hotel, even when a
+ * separate company-scope entitlement wins the effective standing and even
+ * when the account itself is inactive. Reuse those canonical tables for this
+ * bounded admin People projection so the UI can fail closed without changing
+ * access authority or managementSurface.
  */
 export async function listAuthoritativeStructuralHotelDirectness(
   accountIds: readonly string[],
   propertyId: string,
 ): Promise<Map<string, boolean> | null> {
-  const ids = [...new Set(accountIds.filter((accountId) => isUuid(accountId)))];
+  const ids = [...new Set(accountIds)];
   if (!isUuid(propertyId)) return null;
+  if (ids.some((accountId) => !isUuid(accountId))) return null;
   if (ids.length === 0) return new Map();
 
   try {
     const [
+      accountResult,
+      authorizationStateResult,
       membershipResult,
       bridgeResult,
       relationshipResult,
     ] = await Promise.all([
+      supabaseAdmin
+        .from('accounts')
+        .select('id, role, property_access')
+        .in('id', ids),
+      supabaseAdmin
+        .from('account_authorization_state')
+        .select('account_id, authority_mode')
+        .in('account_id', ids),
       supabaseAdmin
         .from('organization_memberships')
         .select('id, organization_id, account_id, membership_scope, staxis_role, covered_property_ids, status, starts_at, ended_at')
@@ -493,7 +518,26 @@ export async function listAuthoritativeStructuralHotelDirectness(
         .select('id, organization_id, property_id, relationship_type, is_primary_grouping, starts_at, ends_at')
         .eq('property_id', propertyId),
     ]);
-    if (membershipResult.error || bridgeResult.error || relationshipResult.error) return null;
+    if (accountResult.error
+      || authorizationStateResult.error
+      || membershipResult.error
+      || bridgeResult.error
+      || relationshipResult.error) return null;
+
+    const accounts = (accountResult.data ?? []) as StructuralAccountRow[];
+    const authorizationStates = (authorizationStateResult.data ?? []) as StructuralAuthorizationStateRow[];
+    if (accounts.length !== ids.length || authorizationStates.length !== ids.length) return null;
+    const accountById = new Map(accounts.map((account) => [account.id, account]));
+    const authorizationStateByAccountId = new Map(
+      authorizationStates.map((state) => [state.account_id, state]),
+    );
+    if (ids.some((accountId) => (
+      !accountById.has(accountId)
+      || !authorizationStateByAccountId.has(accountId)
+      || !['legacy', 'shadow', 'normalized'].includes(
+        authorizationStateByAccountId.get(accountId)?.authority_mode ?? '',
+      )
+    ))) return null;
 
     const memberships = (membershipResult.data ?? []) as StructuralMembershipRow[];
     const bridges = (bridgeResult.data ?? []) as StructuralBridgeRow[];
@@ -507,6 +551,8 @@ export async function listAuthoritativeStructuralHotelDirectness(
           .from('organization_access_grants')
           .select('organization_id, membership_id, scope_type, property_id, property_relationship_id, source, status, starts_at, expires_at')
           .in('membership_id', membershipIds)
+          .eq('scope_type', 'property')
+          .eq('property_id', propertyId)
         : Promise.resolve({ data: [], error: null }),
       organizationIds.length > 0
         ? supabaseAdmin
@@ -544,7 +590,25 @@ export async function listAuthoritativeStructuralHotelDirectness(
     const grants = (grantResult.data ?? []) as StructuralGrantRow[];
 
     const direct = new Map<string, boolean>(ids.map((accountId) => [accountId, false]));
+    for (const accountId of ids) {
+      const account = accountById.get(accountId)!;
+      const authorityMode = authorizationStateByAccountId.get(accountId)!.authority_mode;
+      if (account.role !== 'admin'
+        && (authorityMode === 'legacy' || authorityMode === 'shadow')
+        && Array.isArray(account.property_access)
+        && account.property_access.includes(propertyId)) {
+        // 0411 intentionally treats this legacy/shadow fact as direct even
+        // when the current company topology is absent or ambiguous.
+        direct.set(accountId, true);
+      }
+    }
+    const normalizedAccountIds = new Set(
+      ids.filter((accountId) => (
+        authorizationStateByAccountId.get(accountId)?.authority_mode === 'normalized'
+      )),
+    );
     for (const membership of activeMemberships) {
+      if (!normalizedAccountIds.has(membership.account_id)) continue;
       if (membership.membership_scope !== 'property'
         || !['general_manager', 'front_desk', 'housekeeping', 'maintenance'].includes(
           membership.staxis_role ?? '',
@@ -557,6 +621,7 @@ export async function listAuthoritativeStructuralHotelDirectness(
     for (const grant of grants) {
       const membership = membershipById.get(grant.membership_id);
       if (!membership
+        || !normalizedAccountIds.has(membership.account_id)
         || grant.organization_id !== membership.organization_id
         || grant.scope_type !== 'property'
         || grant.property_id !== propertyId
@@ -567,6 +632,7 @@ export async function listAuthoritativeStructuralHotelDirectness(
       direct.set(membership.account_id, true);
     }
     for (const bridge of bridges) {
+      if (!normalizedAccountIds.has(bridge.account_id)) continue;
       const valid = bridge.cutover_relationship_id === null
         ? currentPrimaryRelationships.length === 0
         : currentPrimaryRelationships.length === 1

@@ -50,7 +50,6 @@ import {
 import {
   authoritativeHotelLeadershipRole,
   authoritativeStandingForProperty,
-  authoritativeStandingHasDirectHotelAccount,
   listAuthoritativePropertyAccess,
   listAuthoritativeStructuralHotelDirectness,
 } from '@/lib/authorization/server';
@@ -695,6 +694,15 @@ export async function GET(req: NextRequest) {
     directHotelAccount: boolean | null;
     hotelLeadershipRole: 'owner' | 'general_manager' | null;
   }>();
+  const nonAdminTeamRows = team.filter((row) => row.role !== 'admin');
+  const structuralDirectness = await listAuthoritativeStructuralHotelDirectness(
+    nonAdminTeamRows.map((row) => row.accountId),
+    hotelId,
+  );
+  if (structuralDirectness === null) {
+    log.error('[team:GET] direct hotel account projection unavailable', { requestId, hotelId });
+    return teamProtectionUnavailableResponse(requestId);
+  }
   const activeDirectness = await Promise.all(team
     .filter((row) => row.active && row.role !== 'admin')
     .map(async (row) => {
@@ -703,7 +711,7 @@ export async function GET(req: NextRequest) {
       const standing = authoritativeStandingForProperty(access, hotelId);
       return {
         accountId: row.accountId,
-        directHotelAccount: authoritativeStandingHasDirectHotelAccount(standing),
+        directHotelAccount: structuralDirectness.get(row.accountId) ?? null,
         hotelLeadershipRole: authoritativeHotelLeadershipRole(standing, row.role),
       };
     }));
@@ -714,33 +722,10 @@ export async function GET(req: NextRequest) {
   for (const entry of activeDirectness) {
     if (entry) directnessByAccountId.set(entry.accountId, entry);
   }
-  const inactiveNormalizedRows = team.filter((row) => (
-    !row.active
-      && row.role !== 'admin'
-      && row.authorityMode === 'normalized'
-  ));
-  const inactiveNormalizedDirectness = await listAuthoritativeStructuralHotelDirectness(
-    inactiveNormalizedRows.map((row) => row.accountId),
-    hotelId,
-  );
-  if (inactiveNormalizedDirectness === null) {
-    log.error('[team:GET] inactive structural directness projection unavailable', {
-      requestId, hotelId,
-    });
-    return teamProtectionUnavailableResponse(requestId);
-  }
   for (const row of team) {
     if (directnessByAccountId.has(row.accountId)) continue;
-    // 0411 treats legacy/shadow property access as direct even when the
-    // account is inactive. Do not use managementSurface as a proxy here.
-    const inactiveLegacyDirect = !row.active
-      && row.authorityMode !== 'normalized'
-      && row.propertyAccess.includes(hotelId);
-    const inactiveNormalizedDirect = !row.active && row.authorityMode === 'normalized'
-      ? inactiveNormalizedDirectness.get(row.accountId) ?? null
-      : null;
     directnessByAccountId.set(row.accountId, {
-      directHotelAccount: inactiveLegacyDirect ? true : inactiveNormalizedDirect,
+      directHotelAccount: structuralDirectness.get(row.accountId) ?? null,
       hotelLeadershipRole: null,
     });
   }

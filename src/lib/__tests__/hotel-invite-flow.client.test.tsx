@@ -462,6 +462,7 @@ interface PeoplePanelHarness {
   setSelect: (selector: string, value: string) => Promise<void>;
   submit: () => Promise<void>;
   setCapabilities: (next: CapabilityState) => Promise<void>;
+  releaseHeldJoinRequest: (response: ResponseSpec) => void;
   flushWithFrame: () => Promise<void>;
 }
 
@@ -471,6 +472,7 @@ interface PeoplePanelOptions {
   staffProfiles?: StaffMember[];
   rosterUnavailable?: boolean;
   rosterSettled?: boolean;
+  holdJoinRequest?: boolean;
   teamResponses?: ResponseSpec[];
   joinRequestResponses?: ResponseSpec[];
   firstPersonResponses?: ResponseSpec[];
@@ -494,6 +496,8 @@ async function mountPeoplePanel(
   const teamResponses = [...(options.teamResponses ?? [])];
   const joinRequestResponses = [...(options.joinRequestResponses ?? [])];
   const firstPersonResponses = [...(options.firstPersonResponses ?? [])];
+  let holdNextJoinRequest = Boolean(options.holdJoinRequest);
+  let heldJoinRequestResolver: ((response: Response) => void) | null = null;
   const nextResponse = (responses: ResponseSpec[], fallback: ResponseSpec): Response => (
     responseFor(responses.shift() ?? fallback)
   );
@@ -517,6 +521,10 @@ async function mountPeoplePanel(
         });
       }
       if (url.startsWith('/api/staff/join-requests?')) {
+        if (holdNextJoinRequest) {
+          holdNextJoinRequest = false;
+          return new Promise<Response>((resolve) => { heldJoinRequestResolver = resolve; });
+        }
         return nextResponse(joinRequestResponses, {
           body: { ok: true, data: { requests: [] } },
         });
@@ -637,6 +645,12 @@ async function mountPeoplePanel(
   };
 
   context.after(async () => {
+    if (heldJoinRequestResolver) {
+      heldJoinRequestResolver(responseFor({
+        body: { ok: true, data: { requests: [] } },
+      }));
+      heldJoinRequestResolver = null;
+    }
     supabase.auth.stopAutoRefresh();
     await act(async () => { root.unmount(); });
     container.remove();
@@ -661,6 +675,11 @@ async function mountPeoplePanel(
         for (let index = 0; index < 8; index += 1) await Promise.resolve();
       });
       await flushWithFrame();
+    },
+    releaseHeldJoinRequest(response) {
+      assert.ok(heldJoinRequestResolver, 'a join-request load must be held before release');
+      heldJoinRequestResolver(responseFor(response));
+      heldJoinRequestResolver = null;
     },
     flushWithFrame,
   };
@@ -1079,5 +1098,101 @@ describe('mounted hotel invite flow', { concurrency: false }, () => {
     assert.match(approvalError.text(), /Pending approvals did not load/);
     assert.match(approvalError.text(), /People state unavailable/);
     assert.doesNotMatch(approvalError.text(), /Add first person|Nobody here yet/);
+  });
+
+  test('a pending approval suppresses setup actions for an empty hotel', async (context) => {
+    const pending = {
+      id: 'request-1',
+      name: 'Pending Housekeeper',
+      phone: null,
+      language: 'en' as const,
+      department: 'housekeeping',
+      created_at: '2026-08-03T00:00:00.000Z',
+    };
+    const ui = await mountPeoplePanel(context, {
+      canManageTeam: true,
+      canInviteAccounts: true,
+      readOnly: false,
+      adminPreview: true,
+    }, {
+      adminPreview: true,
+      staffProfiles: [],
+      joinRequestResponses: [{ body: { ok: true, data: { requests: [pending] } } }],
+    });
+
+    await ui.flushWithFrame();
+    assert.match(ui.text(), /No approved people yet/);
+    assert.doesNotMatch(ui.text(), /Add first person|Add hotel owner or GM|Nobody here yet|Nobody in this department yet/);
+  });
+
+  test('pending approvals suppress contextual setup for visible inherited people', async (context) => {
+    const pending = {
+      id: 'request-2',
+      name: 'Pending Front Desk',
+      phone: null,
+      language: 'en' as const,
+      department: 'front_desk',
+      created_at: '2026-08-03T00:00:00.000Z',
+    };
+    const ui = await mountPeoplePanel(context, {
+      canManageTeam: true,
+      canInviteAccounts: true,
+      readOnly: false,
+      adminPreview: true,
+    }, {
+      adminPreview: true,
+      staffProfiles: [],
+      teamResponses: [{
+        body: {
+          ok: true,
+          data: {
+            team: [INHERITED_TEAM_MEMBER],
+            hatsByAccountId: {},
+            firstPersonOnboarding: { status: 'none', invitedEmail: null, accountId: null },
+          },
+        },
+      }],
+      joinRequestResponses: [{ body: { ok: true, data: { requests: [pending] } } }],
+    });
+
+    await ui.flushWithFrame();
+    assert.match(ui.text(), /Pending approval/);
+    assert.doesNotMatch(ui.text(), /Add first person|Add hotel owner or GM|Nobody in this department yet/);
+  });
+
+  test('approval loading does not claim a visible empty department', async (context) => {
+    const loading = await mountPeoplePanel(context, {
+      canManageTeam: true,
+      canInviteAccounts: true,
+      readOnly: false,
+      adminPreview: true,
+    }, {
+      adminPreview: true,
+      holdJoinRequest: true,
+    });
+
+    await loading.flushWithFrame();
+    assert.match(loading.text(), /Checking pending approvals/);
+    assert.doesNotMatch(loading.text(), /Add first person|Add hotel owner or GM|Nobody in this department yet/);
+    loading.releaseHeldJoinRequest({ body: { ok: true, data: { requests: [] } } });
+  });
+
+  test('approval errors do not claim a visible empty department', async (context) => {
+    const error = await mountPeoplePanel(context, {
+      canManageTeam: true,
+      canInviteAccounts: true,
+      readOnly: false,
+      adminPreview: true,
+    }, {
+      adminPreview: true,
+      joinRequestResponses: [{
+        body: { ok: false, error: 'Pending approvals unavailable' },
+        status: 503,
+      }],
+    });
+
+    await error.flushWithFrame();
+    assert.match(error.text(), /Pending approvals did not load/);
+    assert.doesNotMatch(error.text(), /Add first person|Add hotel owner or GM|Nobody in this department yet/);
   });
 });
