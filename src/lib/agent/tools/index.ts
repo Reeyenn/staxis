@@ -16,6 +16,7 @@ import './management';
 // against the wrong threshold column, and get_occupancy read the same counts RPC
 // as get_today_summary. Surviving retired wire-names live on in TOOL_ALIASES.
 import './walkthrough';
+import './staxis-show-pattern';
 import './complaints';
 import './lost-found';
 import './financials';

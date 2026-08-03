@@ -52,6 +52,12 @@ import { useCompanion } from '@/components/companion/useCompanion';
 import { TraceLayer } from '@/components/companion/TraceLayer';
 import { companionLabels, panelEyebrow, pastChatsHeading, sleepLine } from '@/lib/companion/copy';
 import {
+  offerIsReplayable,
+  offerStateNote,
+  sortOffers,
+  type CompanionOffer,
+} from '@/lib/companion/offers';
+import {
   clampDockPosition,
   containScroll,
   defaultDockPosition,
@@ -61,6 +67,7 @@ import {
   panelExitMs,
   panelRenderState,
   peekFits,
+  peekPersists,
   placePanel,
   placePeek,
   panelWidthFor,
@@ -216,6 +223,9 @@ export function AskStaxisBar() {
     resolveAction,
     dismissResultCard,
     actionErrors,
+    companionOffers,
+    upsertCompanionOffer,
+    adoptConversationId,
   } = useAgentChat({
     propertyId: activePropertyId,
     // Warm the conversation list once the person engages, so Past chats is
@@ -253,7 +263,14 @@ export function AskStaxisBar() {
   // venue has to be something the companion can see. See `decidePanelAsk`.
   const companion = useCompanion(seed, {
     open: open || mobileOpen,
+    // Deliberately the MESSAGE list, not the merged thread. This is the panel
+    // ask's venue rule ("is a conversation already in progress"), and the
+    // companion's own turns are not a conversation somebody started.
     threadEmpty: messages.length === 0,
+    conversationId,
+    offers: companionOffers,
+    onOffer: upsertCompanionOffer,
+    onConversation: adoptConversationId,
   });
 
   const scrollBottomSoon = useCallback(() => {
@@ -414,6 +431,13 @@ export function AskStaxisBar() {
   const autoPeekShownRef = useRef<Set<string>>(new Set());
   const peekKey = companion.peek?.text ?? null;
 
+  const liveOffer = companion.liveOffer;
+  const offerActions = liveOffer?.actions ?? [];
+  // A pill carrying buttons is a question, and a question that withdraws itself
+  // while you are reading it has answered itself No on your behalf. See
+  // peekPersists for the whole argument.
+  const peekStays = peekPersists({ hasActions: offerActions.length > 0 });
+
   useEffect(() => {
     if (!shouldAutoPeek({
       key: peekKey,
@@ -424,9 +448,12 @@ export function AskStaxisBar() {
     })) return;
     autoPeekShownRef.current.add(peekKey as string);
     setAutoPeek(true);
+    // Statements retreat. Questions wait — for an answer, a dismissal, or a
+    // change of screen, all of which clear it explicitly elsewhere.
+    if (peekStays) return;
     const timer = setTimeout(() => setAutoPeek(false), AUTO_PEEK_MS);
     return () => clearTimeout(timer);
-  }, [peekKey, open, dragging, panelBusy]);
+  }, [peekKey, open, dragging, panelBusy, peekStays]);
 
   // Opening the panel or picking the mark up retires it at once: the sentence
   // is the panel's first line anyway, so leaving the pill out would say it twice.
@@ -554,6 +581,10 @@ export function AskStaxisBar() {
     setClosing(false);
     setMenuOpen(false);
     setPeeking(false);
+    // A question that followed somebody to another screen would be the pill
+    // becoming furniture. It stands down here; the offer itself is still in the
+    // thread, and the mark keeps its ring until somebody answers it.
+    setAutoPeek(false);
     hoverSuppressedRef.current = false;
   }, [pathname]);
 
@@ -580,6 +611,33 @@ export function AskStaxisBar() {
   }, [open, closing, view]);
 
   useEffect(() => () => { try { recognitionRef.current?.stop(); } catch { /* noop */ } }, []);
+
+  // ── "actually, show me that AC thing" ────────────────────────────────────
+  //
+  // The chat's way back into an offer. `staxis_show_pattern` is an
+  // acknowledgement on the server — like walk_user_through, the real work can
+  // only happen here, because only the browser knows which screen is under the
+  // conversation and where the rows sit on it.
+  //
+  // Read-only tools are the only ones that reach this event at all (mutations
+  // go through the approval card instead), which is why the tool writes
+  // nothing: it is a reveal, not an action.
+  //
+  // NO DEAD BUTTON. `showPatternByHint` either draws, walks, or sets the honest
+  // stale line — there is no path where the model says "here it is" and the
+  // screen does nothing. The panel closes only when something was actually
+  // drawn, so the person is looking at the page it was drawn on.
+  useEffect(() => {
+    const onToolCall = (e: Event) => {
+      const detail = (e as CustomEvent<{ call?: { name?: string; args?: Record<string, unknown> } }>).detail;
+      if (detail?.call?.name !== 'staxis_show_pattern') return;
+      const hint = typeof detail.call.args?.hint === 'string' ? detail.call.args.hint : '';
+      if (!hint) return;
+      if (companion.showPatternByHint(hint)) closePanel();
+    };
+    window.addEventListener('agent:tool-call-started', onToolCall);
+    return () => window.removeEventListener('agent:tool-call-started', onToolCall);
+  }, [companion, closePanel]);
 
   // The Concourse hub's hero Ask bar hands its input here through a durable
   // event bridge, so there is exactly ONE conversation brain no matter which
@@ -710,11 +768,20 @@ export function AskStaxisBar() {
     : companion.peek?.severity === 'urgent'
       ? 'wrong'
       : 'calm';
+  // A question nobody has answered leaves a mark on the mark. The pill retreats
+  // on navigation, but the offer has not gone anywhere — it is in the thread —
+  // so the object has to keep saying it has something rather than going quiet
+  // and hoping somebody hovers. Colour is untouched; this is a ring.
+  const markWaiting = !open && companion.liveOffer !== null;
 
   const panelChrome = panelRenderState({ open, closing });
   const showing = companion.showing;
   const peek = companion.peek;
   const peekVisible = !open && !dragging && (peeking || autoPeek) && peek !== null && peekFits(peekAt);
+
+  // The live one is rendered by CompanionBlock with its own buttons, so it is
+  // held out here rather than appearing twice.
+  const threadOffers = sortOffers(companionOffers).filter((o) => o.id !== liveOffer?.id);
 
   const filtered = query.trim()
     ? conversations.filter((c) => (c.title ?? '').toLowerCase().includes(query.trim().toLowerCase()))
@@ -889,6 +956,21 @@ export function AskStaxisBar() {
             {messages.length === 0 && showing.kind === 'none' && !companion.trace.panelAsk && (
               <p className="asx-turn-s">{companion.opening ?? labels.askPlaceholder}</p>
             )}
+            {/* Everything the companion has said in this thread, oldest first.
+                They sit above the typed conversation because that is the order
+                they happened in: the companion speaks first, then somebody
+                answers. Tapping a trace offer runs it again — including one
+                that was turned down, because a No was permission to stop
+                RAISING it, not an instruction to hide it when asked. */}
+            {threadOffers.map((offer) => (
+              <OfferTurn
+                key={offer.id}
+                offer={offer}
+                onReplay={() => {
+                  if (companion.replayOffer(offer)) closePanel();
+                }}
+              />
+            ))}
             {messages.map((m, i) => (
               <Turn key={i} message={m} reveal={i === messages.length - 1} />
             ))}
@@ -1115,8 +1197,14 @@ export function AskStaxisBar() {
           is the panel's first line, so a screen reader meets it there. */}
       {peekVisible && peek && (
         <div
-          className={`asx-peek asx-peek-${peekAt.side}`}
-          aria-hidden
+          className={`asx-peek asx-peek-${peekAt.side}${peekStays ? ' asx-peek-live' : ''}`}
+          // A pill with no buttons is the panel's own first line said twice, so
+          // it stays out of the reading order. A pill WITH buttons is the only
+          // place that question is asked, and has to be reachable.
+          aria-hidden={peekStays ? undefined : true}
+          role={peekStays ? 'group' : undefined}
+          aria-label={peekStays ? 'Staxis has something to ask' : undefined}
+          onPointerEnter={cancelHoverClose}
           style={{
             top: `${peekAt.centerY}px`,
             maxWidth: `${peekAt.maxWidth}px`,
@@ -1124,8 +1212,57 @@ export function AskStaxisBar() {
             ...(peekAt.left !== null ? { left: `${peekAt.left}px` } : {}),
           }}
         >
-          <span className={`asx-peek-dot asx-sev-${peek.severity}`} />
-          <span className="asx-peek-text">{peek.text}</span>
+          <span className="asx-peek-head">
+            <span className={`asx-peek-dot asx-sev-${peek.severity}`} />
+            {/* The WHOLE sentence. It used to be one nowrap line with an
+                ellipsis on it, which meant a longer offer was cut off exactly
+                where the reason lived. It wraps now, and a genuinely long one
+                shows its first lines and opens the panel on tap rather than
+                growing a pill nobody can read. */}
+            {peekStays ? (
+              <button
+                type="button"
+                className="asx-peek-text asx-peek-open"
+                onClick={wake}
+              >
+                {peek.text}
+              </button>
+            ) : (
+              <span className="asx-peek-text">{peek.text}</span>
+            )}
+          </span>
+          {peekStays && liveOffer && (
+            <span className="asx-peek-acts">
+              {offerActions.map((action, i) => (
+                <button
+                  key={`${action.kind}-${i}`}
+                  type="button"
+                  className={`asx-peek-btn${action.kind === 'no' ? '' : ' asx-peek-btn-yes'}`}
+                  onClick={() => {
+                    if (action.kind === 'no') companion.answerNo();
+                    else companion.answerYes();
+                  }}
+                >
+                  {action.label}
+                </button>
+              ))}
+              {/* Waved away rather than answered. Counted by the manners ledger
+                  exactly as a No is, and the thread says "(dismissed)" rather
+                  than putting a No in their mouth. */}
+              <button
+                type="button"
+                className="asx-peek-x"
+                aria-label={labels.dismiss}
+                onClick={() => {
+                  setAutoPeek(false);
+                  setPeeking(false);
+                  companion.dismissOffer(liveOffer);
+                }}
+              >
+                <CloseX />
+              </button>
+            </span>
+          )}
         </div>
       )}
 
@@ -1138,7 +1275,8 @@ export function AskStaxisBar() {
         <button
           ref={markRef}
           type="button"
-          className={`asx-mark asx-${markState}${dragging ? ' asx-dragging' : ''}`}
+          className={`asx-mark asx-${markState}${dragging ? ' asx-dragging' : ''}`
+            + `${markWaiting ? ' asx-waiting' : ''}`}
           aria-label="Ask Staxis"
           aria-expanded={open}
           aria-controls="staxis-panel"
@@ -1218,6 +1356,35 @@ function CompanionBlock({
           <button type="button" className="asx-quiet" onClick={onQuiet}>{quietLabel}</button>
         )}
       </div>
+    </div>
+  );
+}
+
+// ── One thing the companion said, still there ─────────────────────────────
+//
+// Prose, like everything else Staxis says — no bubble, because its voice is the
+// panel talking. What is added is the state it ended in and, for a trace, the
+// fact that it can be run again.
+function OfferTurn({ offer, onReplay }: { offer: CompanionOffer; onReplay: () => void }) {
+  const note = offerStateNote(offer.state);
+  const replayable = offerIsReplayable(offer);
+  return (
+    <div className="asx-offer-past">
+      {replayable ? (
+        <button type="button" className="asx-turn-s asx-offer-again" onClick={onReplay}>
+          {offer.text}
+        </button>
+      ) : (
+        <p className="asx-turn-s">{offer.text}</p>
+      )}
+      {offer.receipt && (
+        <p className="asx-offer-receipt">
+          {offer.receipt.where
+            ? `${offer.receipt.label} · ${offer.receipt.where}`
+            : offer.receipt.label}
+        </p>
+      )}
+      {note && <span className="asx-offer-note">{note}</span>}
     </div>
   );
 }
@@ -1352,6 +1519,13 @@ const ASX_CSS = `
   transition:background .42s ease,box-shadow .42s ease;
 }
 .asx-mark.asx-dragging{cursor:grabbing;}
+/* Something was asked and not answered. Not a colour change — colour is the
+   three states — a quiet ring that sits under whichever state is showing. */
+.asx-mark.asx-waiting{box-shadow:
+  inset -1px -2px 3px rgba(158,183,166,.16),
+  inset 1px 2px 3px rgba(0,0,0,.80),
+  0 0 0 3px rgba(158,183,166,.24),
+  0 18px 38px -16px rgba(31,42,32,.78);}
 .asx-mark:focus-visible{outline:2px solid var(--asx-brand);outline-offset:3px;}
 .asx-sheen{position:absolute;inset:0;border-radius:50%;pointer-events:none;
   background:radial-gradient(ellipse 70px 34px at 46% 96%,rgba(158,183,166,.16),rgba(158,183,166,0) 70%);
@@ -1393,6 +1567,29 @@ const ASX_CSS = `
 .asx-peek{position:fixed;z-index:59;display:flex;align-items:center;gap:10px;
   transform:translateY(-50%);padding:11px 16px;border-radius:14px;background:var(--asx-ink);
   box-shadow:0 20px 44px -24px rgba(31,42,32,.75);pointer-events:none;}
+/* A pill that asks something is a control, not a caption: it stacks its
+   sentence over its buttons and accepts a pointer. */
+.asx-peek-live{flex-direction:column;align-items:stretch;gap:9px;padding:13px 15px 11px;
+  pointer-events:auto;}
+.asx-peek-head{display:flex;align-items:flex-start;gap:10px;min-width:0;}
+.asx-peek-live .asx-peek-dot{margin-top:6px;}
+.asx-peek-acts{display:flex;align-items:center;gap:7px;flex-wrap:wrap;}
+.asx-peek-btn{height:30px;padding:0 12px;border-radius:999px;cursor:pointer;white-space:nowrap;
+  border:1px solid rgba(158,183,166,.3);background:transparent;color:var(--asx-white);
+  font:inherit;font-size:12.5px;transition:background .18s;}
+.asx-peek-btn:hover{background:rgba(158,183,166,.14);}
+.asx-peek-btn-yes{background:var(--asx-sage-l);border-color:var(--asx-sage-l);color:var(--asx-ink);
+  font-weight:600;}
+.asx-peek-btn-yes:hover{background:#B0C6B7;}
+.asx-peek-btn:focus-visible,.asx-peek-x:focus-visible,.asx-peek-open:focus-visible{
+  outline:2px solid var(--asx-sage-l);outline-offset:2px;}
+.asx-peek-x{margin-left:auto;width:26px;height:26px;flex:none;border-radius:50%;border:none;padding:0;
+  cursor:pointer;background:transparent;color:var(--asx-sage-l);display:grid;place-items:center;
+  transition:background .18s,color .18s;}
+.asx-peek-x:hover{background:rgba(158,183,166,.16);color:var(--asx-white);}
+.asx-peek-x svg{width:11px;height:11px;}
+.asx-peek-open{border:none;background:transparent;padding:0;margin:0;text-align:left;cursor:pointer;
+  font:inherit;}
 .asx-peek-left{animation:asxPeekL .22s var(--asx-spring) both;}
 .asx-peek-right{animation:asxPeekR .22s var(--asx-spring) both;}
 @keyframes asxPeekL{from{opacity:0;transform:translate(8px,-50%);}to{opacity:1;transform:translate(0,-50%);}}
@@ -1401,7 +1598,13 @@ const ASX_CSS = `
 .asx-sev-ok{background:var(--asx-sage);}
 .asx-sev-watch{background:var(--asx-amber);}
 .asx-sev-urgent{background:var(--asx-rust);}
-.asx-peek-text{font-size:13px;line-height:1.45;color:#FFFFFF;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+/* THE WHOLE SENTENCE. This was one nowrap line with an ellipsis on it, which
+   cut a longer offer off precisely where its reason was. It wraps now; a
+   genuinely long one shows its first four lines and opens the panel on tap,
+   because a pill you have to scroll is not a pill. */
+.asx-peek-text{font-size:13px;line-height:1.5;color:#FFFFFF;min-width:0;
+  display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:4;line-clamp:4;
+  overflow:hidden;overflow-wrap:anywhere;}
 
 /* ── The panel ───────────────────────────────────────────────────────────── */
 .asx-panel{position:fixed;z-index:60;border-radius:24px;overflow:hidden;
@@ -1471,6 +1674,15 @@ const ASX_CSS = `
   animation:asxReveal 1.1s linear both;}
 
 .asx-offer{display:flex;flex-direction:column;gap:8px;}
+.asx-offer-past{display:flex;flex-direction:column;gap:4px;align-items:flex-start;}
+.asx-offer-again{border:none;background:transparent;padding:0;margin:0;cursor:pointer;
+  text-align:left;font:inherit;text-decoration:underline;text-decoration-style:dotted;
+  text-decoration-color:rgba(158,183,166,.5);text-underline-offset:3px;}
+.asx-offer-again:hover{text-decoration-color:var(--asx-sage-l);}
+.asx-offer-again:focus-visible{outline:2px solid var(--asx-brand);outline-offset:3px;border-radius:6px;}
+.asx-offer-note{font-family:var(--font-geist-mono),ui-monospace,monospace;font-size:9.5px;
+  letter-spacing:.1em;text-transform:uppercase;color:var(--asx-sage-l);}
+.asx-offer-receipt{margin:0;font-size:12.5px;line-height:1.5;color:var(--asx-sage-l);}
 .asx-eg{margin:0;padding:8px 10px;border-radius:10px;font-size:13px;line-height:1.5;
   color:var(--asx-white);background:rgba(158,183,166,.12);}
 .asx-acts{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:2px;}

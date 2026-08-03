@@ -352,6 +352,31 @@ export function shouldAutoPeek(input: {
   return !input.open && !input.dragging && !input.busy;
 }
 
+/**
+ * Does this peek stay out until somebody deals with it?
+ *
+ * THE ANSWER DEPENDS ENTIRELY ON WHETHER IT ASKED A QUESTION.
+ *
+ * A hello and the "this got handled already" note are statements. They have
+ * nothing to answer, so they say their piece and retreat on AUTO_PEEK_MS, which
+ * is what the pill was designed for and what it should keep doing.
+ *
+ * An OFFER is a question with buttons on it, and retreating after six seconds
+ * made the buttons a trap: the pill asked "mind if I show you?", the person
+ * looked away, and the question was gone with no record that it was ever asked.
+ * The offer now lives in the thread either way, so nothing is lost when the
+ * pill goes — but a question that withdraws itself while you are reading it is
+ * the app deciding your answer is No. So it stays, and the only things that
+ * take it away are an answer, a dismissal, or leaving the page.
+ *
+ * The manners are untouched by this. `shouldAutoPeek` still decides whether the
+ * pill may appear at all, and every never-while-typing / one-at-a-time / a-No-is
+ * -a-No rule ran before that. This only governs how long it lingers once shown.
+ */
+export function peekPersists(input: { hasActions: boolean }): boolean {
+  return input.hasActions === true;
+}
+
 // ─── Open and close motion ──────────────────────────────────────────────────
 
 /** A1 · Rise. The panel coming up out of the mark. */

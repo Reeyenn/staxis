@@ -201,6 +201,11 @@ const MAINTENANCE_TOOLS = [
   'staxis_findings',
   'staxis_explain_finding',
   'staxis_checked_last_night',
+  // Seeing one again. The maintenance board is the screen the hero pattern is
+  // drawn on, so the hat standing in front of it is the one most likely to say
+  // "show me that AC thing again". It reads nothing and writes nothing — it
+  // re-draws a pattern this browser was already given.
+  'staxis_show_pattern',
   // How it's done here
   'search_knowledge',
   'fetch_document_section',
