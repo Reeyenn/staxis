@@ -739,20 +739,45 @@ begin
     order by issue.id
   loop
     if v_issue.issue_code = 'stage_a_invariant_failure' then
+      if coalesce(jsonb_typeof(v_issue.details #> '{stageAInvariant,sample}'), 'null') <> 'array'
+         or jsonb_array_length(
+              case
+                when jsonb_typeof(v_issue.details #> '{stageAInvariant,sample}') = 'array'
+                  then v_issue.details #> '{stageAInvariant,sample}'
+                else '[]'::jsonb
+              end
+            ) = 0 then
+        return false;
+      end if;
       for v_sample in
         select value
         from jsonb_array_elements(coalesce(
-          v_issue.details #> '{stageAInvariant,sample}', '[]'::jsonb
+          case
+            when jsonb_typeof(v_issue.details #> '{stageAInvariant,sample}') = 'array'
+              then v_issue.details #> '{stageAInvariant,sample}'
+            else '[]'::jsonb
+          end,
+          '[]'::jsonb
         )) values(value)
       loop
         if v_sample->>'code' = 'invalid_legacy_account_identity' then
-          if not exists (
+          if nullif(v_sample->>'propertyId', '') is not null
+             or not exists (
             select 1
             from public.account_access_cutover_repair_dispositions disposition
             where disposition.preflight_run_id = p_preflight_run_id
-              and disposition.account_id = (v_sample->>'accountId')::uuid
+              and disposition.account_id::text = v_sample->>'accountId'
               and disposition.decision = 'admin_global'
+              and 'stage_a_invariant_failure' = any(disposition.issue_codes)
               and disposition.status = 'unconsumed'
+              and exists (
+                select 1
+                from public.account_access_cutover_preflight_issues direct_issue
+                where direct_issue.run_id = p_preflight_run_id
+                  and direct_issue.account_id = disposition.account_id
+                  and direct_issue.issue_code in ('admin_legacy_access', 'admin_legacy_account')
+                  and direct_issue.details->'propertyIds' ? disposition.property_id::text
+              )
           ) then
             return false;
           end if;
@@ -763,9 +788,23 @@ begin
                select 1
                from public.account_access_cutover_repair_dispositions disposition
                where disposition.preflight_run_id = p_preflight_run_id
-                 and disposition.account_id = (v_sample->>'accountId')::uuid
-                 and disposition.property_id = (v_sample->>'propertyId')::uuid
+                 and disposition.account_id::text = v_sample->>'accountId'
+                 and disposition.property_id::text = v_sample->>'propertyId'
+                 and 'stage_a_invariant_failure' = any(disposition.issue_codes)
                  and disposition.status = 'unconsumed'
+                 and exists (
+                   select 1
+                   from public.account_access_cutover_preflight_issues direct_issue
+                   where direct_issue.run_id = p_preflight_run_id
+                     and direct_issue.account_id = disposition.account_id
+                     and direct_issue.issue_code = any(disposition.issue_codes)
+                     and direct_issue.issue_code in (
+                       'admin_legacy_access',
+                       'admin_legacy_account',
+                       'normalized_legacy_residue'
+                     )
+                     and direct_issue.details->'propertyIds' ? disposition.property_id::text
+                 )
            ) then
             return false;
           end if;
@@ -1051,21 +1090,113 @@ begin
       using errcode = '55000';
   end if;
 
+  -- Stage A emits one wrapper row for all invariant samples, with no direct
+  -- account/property columns. A disposition may enumerate that wrapper only
+  -- when an allowed sample proves the same account/property residue as the
+  -- direct Stage C issue row. Reject unsupported wrapper samples here so an
+  -- unavailable or unrelated invariant can never be bypassed by omitting the
+  -- wrapper code from a disposition.
+  if exists (
+    select 1
+    from public.account_access_cutover_preflight_issues unavailable_issue
+    where unavailable_issue.run_id = p_preflight_run_id
+      and unavailable_issue.issue_code = 'stage_a_invariant_unavailable'
+  ) then
+    raise exception '0426 repair disposition requires available Stage A invariant evidence'
+      using errcode = '55000';
+  end if;
+
+  if exists (
+    select 1
+    from public.account_access_cutover_preflight_issues wrapper_issue
+    where wrapper_issue.run_id = p_preflight_run_id
+      and wrapper_issue.issue_code = 'stage_a_invariant_failure'
+      and (
+        coalesce(jsonb_typeof(wrapper_issue.details #> '{stageAInvariant,sample}'), 'null') <> 'array'
+        or (
+          jsonb_typeof(wrapper_issue.details #> '{stageAInvariant,sample}') = 'array'
+          and jsonb_array_length(wrapper_issue.details #> '{stageAInvariant,sample}') = 0
+        )
+        or exists (
+          select 1
+          from jsonb_array_elements(
+            case
+              when jsonb_typeof(wrapper_issue.details #> '{stageAInvariant,sample}') = 'array'
+                then wrapper_issue.details #> '{stageAInvariant,sample}'
+              else '[]'::jsonb
+            end
+          ) sample(value)
+          where coalesce(sample.value->>'code', '') not in (
+            'invalid_legacy_account_identity',
+            'legacy_row_without_shadow_translation'
+          )
+        )
+      )
+  ) then
+    raise exception '0426 repair disposition requires supported Stage A invariant wrapper evidence'
+      using errcode = '55000';
+  end if;
+
   select coalesce(array_agg(issue_code order by issue_code), '{}'::text[])
     into v_issue_codes
   from (
     select distinct issue.issue_code
     from public.account_access_cutover_preflight_issues issue
     where issue.run_id = p_preflight_run_id
-      and issue.account_id = p_account_id
       and (
-        issue.issue_code in ('admin_legacy_access', 'admin_legacy_account', 'normalized_legacy_residue')
-        or issue.issue_code = 'stage_a_invariant_failure'
-      )
-      and (
-        issue.property_id = p_property_id
-        or issue.property_id is null
-        or issue.details->'propertyIds' ? p_property_id::text
+        (
+          issue.account_id = p_account_id
+          and
+          issue.issue_code in ('admin_legacy_access', 'admin_legacy_account', 'normalized_legacy_residue')
+          and (
+            issue.property_id = p_property_id
+            or issue.property_id is null
+            or issue.details->'propertyIds' ? p_property_id::text
+          )
+        )
+        or (
+          issue.issue_code = 'stage_a_invariant_failure'
+          and exists (
+            select 1
+            from jsonb_array_elements(
+              case
+                when jsonb_typeof(issue.details #> '{stageAInvariant,sample}') = 'array'
+                  then issue.details #> '{stageAInvariant,sample}'
+                else '[]'::jsonb
+              end
+            ) sample(value)
+            where (
+              sample.value->>'code' = 'legacy_row_without_shadow_translation'
+              and sample.value->>'accountId' = p_account_id::text
+              and sample.value->>'propertyId' = p_property_id::text
+              and exists (
+                select 1
+                from public.account_access_cutover_preflight_issues direct_issue
+                where direct_issue.run_id = issue.run_id
+                  and direct_issue.account_id = p_account_id
+                  and direct_issue.issue_code in (
+                    'admin_legacy_access',
+                    'admin_legacy_account',
+                    'normalized_legacy_residue'
+                  )
+                  and direct_issue.issue_code = any(p_issue_codes)
+                  and direct_issue.details->'propertyIds' ? p_property_id::text
+              )
+            ) or (
+              sample.value->>'code' = 'invalid_legacy_account_identity'
+              and sample.value->>'accountId' = p_account_id::text
+              and nullif(sample.value->>'propertyId', '') is null
+              and exists (
+                select 1
+                from public.account_access_cutover_preflight_issues direct_issue
+                where direct_issue.run_id = issue.run_id
+                  and direct_issue.account_id = p_account_id
+                  and direct_issue.issue_code in ('admin_legacy_access', 'admin_legacy_account')
+                  and direct_issue.details->'propertyIds' ? p_property_id::text
+              )
+            )
+          )
+        )
       )
   ) issue_codes;
   select coalesce(array_agg(code order by code), '{}'::text[])
@@ -3783,6 +3914,9 @@ begin
      or p_expected_role is null
   then
     return jsonb_build_object('ok', false, 'status', 'invalid', 'reason', 'request');
+  end if;
+  if p_actor_account_id = p_account_id then
+    return jsonb_build_object('ok', false, 'status', 'forbidden', 'reason', 'self');
   end if;
   if array_position(p_property_ids, null) is not null
      or cardinality(p_property_ids) > 5000

@@ -416,6 +416,11 @@ export async function PUT(req: NextRequest) {
   if (!isUuid(accountId)) {
     return err('accountId must be a valid UUID', { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
   }
+  if (accountId.toLowerCase() === caller.id.toLowerCase()) {
+    return err('Cannot change your own account access', {
+      requestId, status: 400, code: ApiErrorCode.ValidationFailed,
+    });
+  }
   if (role !== undefined && (typeof role !== 'string' || !isValidRole(role))) {
     return err(`role must be one of: ${ALL_ROLES.join(', ')}`, {
       requestId, status: 400, code: ApiErrorCode.ValidationFailed,

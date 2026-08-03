@@ -65,7 +65,7 @@ import { GET as bootstrapGet } from '@/app/api/property-selector/bootstrap/route
 import { GET as portfolioGet, POST as portfolioPost } from '@/app/api/company/queue/route';
 import { GET as rulebookGet, POST as rulebookPost } from '@/app/api/company/rulebook/route';
 import { GET as companyAccessGet } from '@/app/api/company-access/route';
-import { POST as accountsPost } from '@/app/api/auth/accounts/route';
+import { POST as accountsPost, PUT as accountsPut } from '@/app/api/auth/accounts/route';
 
 import { applyMigrationsToPgliteThrough } from '../../../tests/fixtures/pglite-migrate';
 import { createPglitePostgrest, loadCatalog, type PglitePostgrest } from '../../../tests/fixtures/postgrest-pglite';
@@ -903,6 +903,80 @@ describe('the Company Hub reads the spine', () => {
         [ORG_B, PID_L1],
       );
     }
+  });
+
+  test('the account admin route rejects every self-target mutation before persistence or audit', async () => {
+    signedInAs = UID_ADMIN;
+    const before = (await pg.query<{
+      role: string;
+      property_access: string[];
+      authority_version: number;
+      updated_at: string;
+    }>(
+      `select account.role,account.property_access,state.authority_version,account.updated_at
+         from public.accounts account
+         join public.account_authorization_state state on state.account_id=account.id
+        where account.id=$1`,
+      [ACCOUNT_ADMIN],
+    )).rows[0];
+    const bridgeCountBefore = Number((await pg.query<{ count: number }>(
+      `select count(*)::integer as count
+         from public.account_property_authorization_bridges where account_id=$1`,
+      [ACCOUNT_ADMIN],
+    )).rows[0].count);
+    const auditCountBefore = Number((await pg.query<{ count: number }>(
+      `select count(*)::integer as count
+         from public.admin_audit_log
+        where target_type='account' and target_id=$1`,
+      [ACCOUNT_ADMIN],
+    )).rows[0].count);
+    const mutations = [
+      { accountId: ACCOUNT_ADMIN, role: 'staff', propertyAccess: [] },
+      { accountId: ACCOUNT_ADMIN, propertyAccess: [] },
+      { accountId: ACCOUNT_ADMIN, role: 'admin', propertyAccess: ['*'] },
+      { accountId: ACCOUNT_ADMIN.toUpperCase(), role: 'staff', propertyAccess: [] },
+    ];
+    for (const body of mutations) {
+      const response = await accountsPut(new NextRequest('https://staxis.test/api/auth/accounts', {
+        method: 'PUT',
+        headers: {
+          authorization: 'Bearer hat-access-test-token',
+          'content-type': 'application/json',
+          'x-account-id': ACCOUNT_ADMIN,
+        },
+        body: JSON.stringify(body),
+      }));
+      assert.equal(response.status, 400);
+      const payload = await response.json() as { error?: string };
+      assert.match(payload.error ?? '', /cannot change your own account access/i);
+    }
+    assert.deepEqual(
+      (await pg.query(
+        `select account.role,account.property_access,state.authority_version,account.updated_at
+           from public.accounts account
+           join public.account_authorization_state state on state.account_id=account.id
+          where account.id=$1`,
+        [ACCOUNT_ADMIN],
+      )).rows[0],
+      before,
+    );
+    assert.equal(
+      Number((await pg.query<{ count: number }>(
+        `select count(*)::integer as count
+           from public.account_property_authorization_bridges where account_id=$1`,
+        [ACCOUNT_ADMIN],
+      )).rows[0].count),
+      bridgeCountBefore,
+    );
+    assert.equal(
+      Number((await pg.query<{ count: number }>(
+        `select count(*)::integer as count
+           from public.admin_audit_log
+          where target_type='account' and target_id=$1`,
+        [ACCOUNT_ADMIN],
+      )).rows[0].count),
+      auditCountBefore,
+    );
   });
 
   test('account creation projects exact bridge-only independent and multi-hotel Hub scope', async () => {
