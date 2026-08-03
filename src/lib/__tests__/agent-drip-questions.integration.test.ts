@@ -34,7 +34,7 @@ import type { PGlite } from '@electric-sql/pglite';
 import { getDripQuestion, answerDripQuestion } from '@/lib/agent/drip-questions';
 import { loadManagerCaller, managerManagesHotel } from '@/lib/team-auth';
 import { supabaseAdmin } from '@/lib/supabase-admin';
-import { applyMigrationsToPglite } from '../../../tests/fixtures/pglite-migrate';
+import { applyMigrationsToPglite, seedCanonicalTestAuthority } from '../../../tests/fixtures/pglite-migrate';
 import { createPglitePostgrest, loadCatalog, type PglitePostgrest } from '../../../tests/fixtures/postgrest-pglite';
 
 const UID = 'aaaaaaaa-0000-4000-8000-0000000000f1';
@@ -117,10 +117,14 @@ describe('drip questions — the whole loop against a real two-hotel database', 
       );
     }
     await pg.query(
-      `insert into accounts (id, username, password_hash, display_name, role, property_access, data_user_id)
-       values ($1, 'gm', 'x', 'Dana the GM', 'general_manager', $2, $3) on conflict (id) do nothing`,
-      [ACCOUNT, `{${PID_A},${PID_B},${PID_C},${PID_D}}`, UID],
+      `insert into accounts (id, username, password_hash, display_name, role, data_user_id)
+       values ($1, 'gm', 'x', 'Dana the GM', 'general_manager', $2) on conflict (id) do nothing`,
+      [ACCOUNT, UID],
     );
+    await seedCanonicalTestAuthority(pg, {
+      username: 'gm',
+      propertyIds: [PID_A, PID_B, PID_C, PID_D],
+    });
 
     // Hotel B is LOUDER than hotel A on purpose — see the header.
     await seedComplaints(PID_A, ROOM_A, 3);
@@ -173,10 +177,11 @@ describe('drip questions — the whole loop against a real two-hotel database', 
     const hkUid = 'aaaaaaaa-0000-4000-8000-0000000000f3';
     await pg.query(`insert into auth.users (id, email) values ($1, 'hk@test') on conflict (id) do nothing`, [hkUid]);
     await pg.query(
-      `insert into accounts (id, username, password_hash, display_name, role, property_access, data_user_id)
-       values (gen_random_uuid(), 'maria', 'x', 'Maria', 'housekeeping', $1, $2)`,
-      [`{${PID_A}}`, hkUid],
+      `insert into accounts (id, username, password_hash, display_name, role, data_user_id)
+       values (gen_random_uuid(), 'maria', 'x', 'Maria', 'housekeeping', $1)`,
+      [hkUid],
     );
+    await seedCanonicalTestAuthority(pg, { username: 'maria', propertyIds: [PID_A] });
     assert.equal(await loadManagerCaller(hkUid), null, 'this card is not for the floor');
     assert.equal(
       await loadManagerCaller('aaaaaaaa-0000-4000-8000-00000000ffff'),

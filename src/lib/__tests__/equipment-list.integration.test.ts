@@ -56,7 +56,7 @@ import {
 } from '@/app/api/memory/question/route';
 import { MIN_WORK_ORDERS_MENTIONING } from '@/lib/equipment/suggest';
 
-import { applyMigrationsToPglite } from '../../../tests/fixtures/pglite-migrate';
+import { applyMigrationsToPglite, seedCanonicalTestAuthority } from '../../../tests/fixtures/pglite-migrate';
 import { createPglitePostgrest, loadCatalog } from '../../../tests/fixtures/postgrest-pglite';
 
 // ─── Two hotels, four people ────────────────────────────────────────────────
@@ -240,12 +240,15 @@ describe('the equipment list', () => {
       );
     }
     await pg.query(
-      `insert into accounts (username, password_hash, display_name, role, property_access, data_user_id)
-       values ('eq.gm.a','x','Maria (GM)','general_manager',array[$1::uuid],$2),
-              ('eq.gm.b','x','Bea (GM)','general_manager',array[$3::uuid],$4),
-              ('eq.hk.a','x','Ana','housekeeping',array[$1::uuid],$5)`,
-      [PID_A, GM_A_UID, PID_B, GM_B_UID, HOUSEKEEPER_UID],
+      `insert into accounts (username, password_hash, display_name, role, data_user_id)
+       values ('eq.gm.a','x','Maria (GM)','general_manager',$1),
+              ('eq.gm.b','x','Bea (GM)','general_manager',$2),
+              ('eq.hk.a','x','Ana','housekeeping',$3)`,
+      [GM_A_UID, GM_B_UID, HOUSEKEEPER_UID],
     );
+    await seedCanonicalTestAuthority(pg, { username: 'eq.gm.a', propertyIds: [PID_A] });
+    await seedCanonicalTestAuthority(pg, { username: 'eq.gm.b', propertyIds: [PID_B] });
+    await seedCanonicalTestAuthority(pg, { username: 'eq.hk.a', propertyIds: [PID_A] });
   });
 
   after(async () => {

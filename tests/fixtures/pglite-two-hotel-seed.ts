@@ -256,6 +256,27 @@ export async function seedTwoHotels(pg: PGlite, catalog: Catalog): Promise<SeedR
   const seeded: string[] = [];
   const unseeded: Array<{ table: string; error: string }> = [];
 
+  // The final contract intentionally leaves accounts.property_access as a
+  // nullable historical receipt.  Keep this derived fixture useful at both
+  // boundaries: pre-C suites still receive the legacy seed, while final
+  // suites omit the fenced column and provision the equivalent canonical
+  // bridge after the catalog rows exist.
+  const hasStageCStatus = Boolean((await pg.query<{ present: boolean }>(
+    `select to_regclass('public.account_access_cutover_status') is not null as present`,
+  )).rows[0]?.present);
+  const finalAccessContract = hasStageCStatus && Boolean((await pg.query<{ present: boolean }>(`
+    select exists (
+      select 1
+        from public.account_access_cutover_status
+       where id is true
+         and stage = 'C'
+         and enforcement_enabled
+    )
+    and to_regprocedure(
+      'public.staxis_set_account_authorization_scope(uuid,uuid,uuid[],bigint,text,text,text)'
+    ) is not null as present
+  `)).rows[0]?.present);
+
   const uniqueCols = await globallyUniqueColumns(pg);
   const baseTables = [...catalog.tables.values()].filter((t) => t.kind === 'r');
   const ordered = orderByDependency(baseTables, catalog);
@@ -321,7 +342,9 @@ export async function seedTwoHotels(pg: PGlite, catalog: Catalog): Promise<SeedR
 
     if (table.name === 'properties' && column.name === 'id') return side === 'A' ? PID_A : PID_B;
     if (column.name === 'property_id') return side === 'A' ? PID_A : PID_B;
-    if (column.name === 'property_access') return [side === 'A' ? PID_A : PID_B];
+    if (column.name === 'property_access') {
+      return finalAccessContract ? undefined : [side === 'A' ? PID_A : PID_B];
+    }
 
     // Tier 2 keeps only what the database demands, tier 3 also drops anything
     // with a default. A row rejected by a CHECK on some decorative column can
@@ -475,6 +498,63 @@ export async function seedTwoHotels(pg: PGlite, catalog: Catalog): Promise<SeedR
 
     if (ok) seeded.push(table.name);
     else unseeded.push({ table: table.name, error: lastError });
+  }
+
+  if (finalAccessContract) {
+    const actorAccountId = 'f4260000-0000-4000-8000-000000000002';
+    const actorAuthId = 'f4261000-0000-4000-8000-000000000002';
+    await pg.query(
+      `insert into auth.users(id, email) values ($1, 'canonical-seeder@example.test')
+       on conflict (id) do nothing`,
+      [actorAuthId],
+    );
+    await pg.query(
+      `insert into public.accounts(id, username, password_hash, display_name, role, data_user_id)
+       values ($1, 'canonical-seeder', 'x', 'Canonical Seeder', 'admin', $2)
+       on conflict (id) do nothing`,
+      [actorAccountId, actorAuthId],
+    );
+
+    const seededAccounts = await pg.query<{
+      id: string;
+      role: string;
+      authority_version: number;
+    }>(
+      `select account.id, account.role, state.authority_version
+         from public.accounts account
+         join public.account_authorization_state state on state.account_id = account.id
+        where account.id = any($1::uuid[])
+        order by account.id`,
+      [[ids.get('accounts:A'), ids.get('accounts:B')].filter(Boolean)],
+    );
+    for (const account of seededAccounts.rows) {
+      const propertyId = account.id === ids.get('accounts:B') ? PID_B : PID_A;
+      await pg.exec('begin; set local role service_role;');
+      try {
+        const result = await pg.query<{ value: { ok?: boolean; reason?: string } }>(
+          `select public.staxis_set_account_authorization_scope(
+             $1, $2, $3::uuid[], $4, $5, $6, $7
+           ) as value`,
+          [
+            actorAccountId,
+            account.id,
+            account.role === 'admin' ? [] : [propertyId],
+            account.authority_version,
+            account.role,
+            account.role,
+            'canonical two-hotel tenant-isolation fixture authority',
+          ],
+        );
+        const value = result.rows[0]?.value;
+        if (value?.ok !== true) {
+          throw new Error(`canonical seeder rejected ${account.id}: ${JSON.stringify(value)}`);
+        }
+        await pg.exec('commit;');
+      } catch (error) {
+        await pg.exec('rollback;').catch(() => undefined);
+        throw error;
+      }
+    }
   }
 
   return { ids, seeded, unseeded };

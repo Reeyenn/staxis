@@ -67,7 +67,7 @@ import { GET as rulebookGet, POST as rulebookPost } from '@/app/api/company/rule
 import { GET as companyAccessGet } from '@/app/api/company-access/route';
 import { POST as accountsPost } from '@/app/api/auth/accounts/route';
 
-import { applyMigrationsToPglite } from '../../../tests/fixtures/pglite-migrate';
+import { applyMigrationsToPgliteThrough } from '../../../tests/fixtures/pglite-migrate';
 import { createPglitePostgrest, loadCatalog, type PglitePostgrest } from '../../../tests/fixtures/postgrest-pglite';
 import {
   ACCOUNT_ADMIN,
@@ -411,7 +411,7 @@ async function plantCompanyFinding(organizationId: string): Promise<string> {
 let PORTFOLIO_FINDING = '';
 
 before(async () => {
-  const migrated = await applyMigrationsToPglite();
+  const migrated = await applyMigrationsToPgliteThrough('0425');
   pg = migrated.pg;
   const catalog = await loadCatalog(pg);
   shim = createPglitePostgrest(pg, catalog);

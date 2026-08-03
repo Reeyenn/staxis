@@ -30,6 +30,7 @@ import { PGlite } from '@electric-sql/pglite';
 import { pgcrypto } from '@electric-sql/pglite/contrib/pgcrypto';
 import { pg_trgm } from '@electric-sql/pglite/contrib/pg_trgm';
 import { vector } from '@electric-sql/pglite/vector';
+import { createHash } from 'node:crypto';
 import { readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
@@ -46,6 +47,10 @@ export type PgliteMigratedFixture = {
   pg: PGlite;
   report: MigrationReport;
 };
+
+const ACCESS_STAGE_C_RELEASE_GATE_MARKER = '-- @access-stage-c-release-gate';
+const ACCESS_B_LIVE_SHA = 'ec83bca6dab74a52dfb251d04be11d5c7427703f';
+const CURRENT_LIVE_DESCENDANT_SHA = '442fb98d632521ea33346d5c8a97014248a31fa0';
 
 // Patterns that mark a migration as Class C (skip — needs stubs we don't
 // have). These are conservative — false positives mean we skip migrations
@@ -282,7 +287,17 @@ export function applyMigrationsToPglite(): Promise<PgliteMigratedFixture> {
       // transaction is open.
       await pg.exec('rollback;').catch(() => undefined);
       try {
-        await pg.exec(preprocess(sql));
+        const preparedSql = preprocess(sql);
+        const markerIndex = preparedSql.indexOf(ACCESS_STAGE_C_RELEASE_GATE_MARKER);
+        if (markerIndex >= 0) {
+          await pg.exec(preparedSql.slice(0, markerIndex));
+          await authorizeAccessStageCRelease(pg);
+          await pg.exec(
+            preparedSql.slice(markerIndex + ACCESS_STAGE_C_RELEASE_GATE_MARKER.length),
+          );
+        } else {
+          await pg.exec(preparedSql);
+        }
         report.applied.push(f);
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e);
@@ -318,6 +333,15 @@ export async function applyMigrationsToPgliteWithHook(
     file: string;
     report: MigrationReport;
   }) => Promise<void>,
+  options: {
+    afterAccessStageCPreparation?: (args: {
+      pg: PGlite;
+      file: string;
+      report: MigrationReport;
+    }) => Promise<void>;
+    authorizeAccessStageCRelease?: boolean;
+    stopAfterVersion?: string;
+  } = {},
 ): Promise<PgliteMigratedFixture> {
   const pg = new PGlite({ extensions: { pgcrypto, pg_trgm, vector } });
   await applyStubs(pg);
@@ -341,14 +365,179 @@ export async function applyMigrationsToPgliteWithHook(
     await pg.exec('rollback;').catch(() => undefined);
     try {
       await beforeMigration({ pg, file, report });
-      await pg.exec(preprocess(sql));
+      const preparedSql = preprocess(sql);
+      const markerIndex = preparedSql.indexOf(ACCESS_STAGE_C_RELEASE_GATE_MARKER);
+      if (markerIndex >= 0 && options.afterAccessStageCPreparation) {
+        await pg.exec(preparedSql.slice(0, markerIndex));
+        await options.afterAccessStageCPreparation({ pg, file, report });
+        await pg.exec(
+          preparedSql.slice(markerIndex + ACCESS_STAGE_C_RELEASE_GATE_MARKER.length),
+        );
+      } else if (markerIndex >= 0 && options.authorizeAccessStageCRelease !== false) {
+        await pg.exec(preparedSql.slice(0, markerIndex));
+        await authorizeAccessStageCRelease(pg);
+        await pg.exec(
+          preparedSql.slice(markerIndex + ACCESS_STAGE_C_RELEASE_GATE_MARKER.length),
+        );
+      } else {
+        await pg.exec(preparedSql);
+      }
       report.applied.push(file);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       report.failedAtRuntime.push({ file, error: message.split('\n')[0] });
     }
+    if (options.stopAfterVersion && file.startsWith(`${options.stopAfterVersion}_`)) {
+      break;
+    }
   }
   return { pg, report };
+}
+
+/**
+ * Apply the real schema through an explicit historical boundary.  This is
+ * intentionally opt-in: the normal fixture remains all-migrations, while
+ * Stage A/B compatibility tests can model the exact pre-0426 deployment that
+ * legitimately still had the legacy receipt column.
+ */
+export function applyMigrationsToPgliteThrough(
+  version: string,
+): Promise<PgliteMigratedFixture> {
+  if (!/^\d{4}$/.test(version)) {
+    throw new Error(`invalid migration boundary: ${version}`);
+  }
+  return applyMigrationsToPgliteWithHook(
+    async () => undefined,
+    { stopAfterVersion: version },
+  );
+}
+
+/**
+ * Provision the external release attestation on the same PGlite session that
+ * will execute the destructive suffix of 0426.  Production callers perform
+ * the equivalent service-only RPC and session settings in their deployment
+ * transaction; this helper keeps the integration fixture honest about that
+ * boundary instead of weakening the migration gate.
+ */
+export async function authorizeAccessStageCRelease(
+  pg: PGlite,
+  options: { token?: string; nonce?: string } = {},
+): Promise<string> {
+  const token = options.token ?? 'pglite-access-stage-c-release-token';
+  const nonce = options.nonce ?? 'pglite-access-stage-c-fence-nonce';
+  const fenceEvidence = JSON.stringify({
+    deploymentJob: 'pglite-access-stage-c-test',
+    oldDeploymentStopped: true,
+    legacyWriterFenceConfirmed: true,
+    nonce,
+  });
+  const fenceHash = createHash('sha256').update(fenceEvidence).digest('hex');
+  const runResult = await pg.query<{ final_preflight_run_id: string }>(`
+    select final_preflight_run_id
+      from public.account_access_cutover_status
+     where id is true
+  `);
+  const preflightRunId = runResult.rows[0]?.final_preflight_run_id;
+  if (!preflightRunId) throw new Error('0426 release gate needs a preflight run');
+
+  await pg.exec('begin; set local role service_role;');
+  try {
+    const receiptResult = await pg.query<{ value: { receiptId: string } }>(
+      `select public.staxis_access_stage_c_record_release_receipt(
+         $1, $2, $3, clock_timestamp(), $4, $5, $6, $7, $8, $9
+       ) as value`,
+      [
+        'pglite-stage-c-operator',
+        ACCESS_B_LIVE_SHA,
+        CURRENT_LIVE_DESCENDANT_SHA,
+        preflightRunId,
+        'pglite-access-stage-c-test',
+        fenceEvidence,
+        fenceHash,
+        nonce,
+        token,
+      ],
+    );
+    await pg.exec('commit;');
+    const receiptId = receiptResult.rows[0]?.value?.receiptId;
+    if (!receiptId) throw new Error('0426 release gate did not return a receipt id');
+    await pg.query(
+      `select
+         set_config('staxis.access_stage_c_release_id', $1, false),
+         set_config('staxis.access_stage_c_release_token', $2, false),
+         set_config('staxis.access_stage_c_release_nonce', $3, false)`,
+      [receiptId, token, nonce],
+    );
+    return receiptId;
+  } catch (error) {
+    await pg.exec('rollback;').catch(() => undefined);
+    throw error;
+  }
+}
+
+const CANONICAL_TEST_ACTOR_ACCOUNT = 'f4260000-0000-4000-8000-000000000001';
+const CANONICAL_TEST_ACTOR_AUTH = 'f4261000-0000-4000-8000-000000000001';
+
+/**
+ * Give an account inserted by a post-0426 domain fixture an explicit
+ * canonical bridge.  This keeps unrelated inventory/agent route tests from
+ * using the retired receipt array merely as setup data while leaving their
+ * production migration boundary at 0426.
+ */
+export async function seedCanonicalTestAuthority(
+  pg: PGlite,
+  options: { username: string; propertyIds: string[] },
+): Promise<void> {
+  await pg.query(
+    `insert into auth.users(id, email) values ($1, 'canonical-test-actor@example.test')
+     on conflict (id) do nothing`,
+    [CANONICAL_TEST_ACTOR_AUTH],
+  );
+  await pg.query(
+    `insert into public.accounts(id, username, password_hash, display_name, role, data_user_id)
+     values ($1, 'canonical-test-actor', 'x', 'Canonical Test Actor', 'admin', $2)
+     on conflict (id) do nothing`,
+    [CANONICAL_TEST_ACTOR_ACCOUNT, CANONICAL_TEST_ACTOR_AUTH],
+  );
+  const account = await pg.query<{
+    id: string;
+    role: string;
+    authority_version: number;
+  }>(
+    `select account.id, account.role, state.authority_version
+       from public.accounts account
+       join public.account_authorization_state state on state.account_id = account.id
+      where account.username = $1`,
+    [options.username],
+  );
+  const target = account.rows[0];
+  if (!target) throw new Error(`missing canonical test account ${options.username}`);
+
+  await pg.exec('begin; set local role service_role;');
+  try {
+    const result = await pg.query<{ value: Record<string, unknown> }>(
+      `select public.staxis_set_account_authorization_scope(
+         $1, $2, $3::uuid[], $4, $5, $6, $7
+       ) as value`,
+      [
+        CANONICAL_TEST_ACTOR_ACCOUNT,
+        target.id,
+        options.propertyIds,
+        target.authority_version,
+        target.role,
+        target.role,
+        'canonical post-0426 integration fixture authority',
+      ],
+    );
+    await pg.exec('commit;');
+    const value = result.rows[0]?.value;
+    if (!value || value.ok !== true) {
+      throw new Error(`canonical test authority was rejected for ${options.username}: ${JSON.stringify(value)}`);
+    }
+  } catch (error) {
+    await pg.exec('rollback;').catch(() => undefined);
+    throw error;
+  }
 }
 
 /**

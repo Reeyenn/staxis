@@ -10,7 +10,7 @@
 import assert from 'node:assert/strict';
 import { after, before, describe, test } from 'node:test';
 import type { PGlite } from '@electric-sql/pglite';
-import { applyMigrationsToPglite } from '../../../tests/fixtures/pglite-migrate';
+import { applyMigrationsToPglite, seedCanonicalTestAuthority } from '../../../tests/fixtures/pglite-migrate';
 
 const USER_A = '51000000-0000-4000-8000-000000000001';
 const USER_B = '51000000-0000-4000-8000-000000000002';
@@ -67,11 +67,12 @@ describe('inventory migration 0312 executable integrity', () => {
       [PROP_A, USER_A, PROP_B, USER_B],
     );
     await pg.query(
-      `insert into public.accounts(username, display_name, role, property_access, data_user_id)
-       values ('integrity-owner', 'Integrity Owner', 'owner', array[$1]::uuid[], $2)
+      `insert into public.accounts(username, display_name, role, data_user_id)
+       values ('integrity-owner', 'Integrity Owner', 'owner', $1)
        on conflict (username) do nothing`,
-      [PROP_A, USER_A],
+      [USER_A],
     );
+    await seedCanonicalTestAuthority(pg, { username: 'integrity-owner', propertyIds: [PROP_A] });
     await pg.query(
       `insert into public.inventory(id, property_id, name, category, current_stock, par_level, unit, unit_cost)
        values ($1, $2, 'Bath Towels', 'housekeeping', 5, 20, 'each', 2.50),

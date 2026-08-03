@@ -219,10 +219,9 @@ function die(step, err) {
     if (listErr) die('reset', listErr);
     const existing = existingUsers.users.find(u => u.email === ADMIN.email);
     if (existing) {
-      // The accounts row has data_user_id → auth.users.id (on delete cascade)
-      // and property_access[] that, via the FK on properties.owner_id, cascades
-      // to properties and everything under them. Deleting the auth user takes
-      // everything with it.
+      // The accounts row has data_user_id → auth.users.id. Deleting the auth
+      // user removes the seeded customer graph through its established owner
+      // relationships; durable Access cutover receipts are independent.
       log('reset', `deleting auth user ${existing.id} (cascades to account + property + staff + ...)`);
       const { error: delErr } = await supa.auth.admin.deleteUser(existing.id);
       if (delErr) die('reset', delErr);
@@ -297,7 +296,7 @@ function die(step, err) {
     }
   }
 
-  // ── Step 3: accounts row (admin, with property_access) ──────────────────
+  // ── Step 3: canonical admin account and authority ───────────────────────
   log('account', 'ensuring accounts row for admin…');
   let accountId;
   {
@@ -317,7 +316,6 @@ function die(step, err) {
           display_name: ADMIN.displayName,
           role: 'admin',
           data_user_id: adminUserId,
-          property_access: [propertyId],
           updated_at: new Date().toISOString(),
         })
         .eq('id', accountId);
@@ -331,7 +329,6 @@ function die(step, err) {
           display_name: ADMIN.displayName,
           role: 'admin',
           data_user_id: adminUserId,
-          property_access: [propertyId],
           // password_hash left null — Supabase Auth is source of truth.
         })
         .select('id')
@@ -340,6 +337,32 @@ function die(step, err) {
       accountId = data.id;
       log('account', `created (id=${accountId})`);
     }
+
+    // Admin authority is canonical and intentionally property-wide. Use the
+    // approved service-only scope boundary so this seeder remains valid after
+    // the final Access contract makes the historical receipt column inert.
+    const { data: state, error: stateErr } = await supa
+      .from('account_authorization_state')
+      .select('authority_version')
+      .eq('account_id', accountId)
+      .single();
+    if (stateErr || !state) die('account', stateErr ?? new Error('missing canonical authority state'));
+    const { data: scope, error: scopeErr } = await supa.rpc(
+      'staxis_set_account_authorization_scope',
+      {
+        p_actor_account_id: accountId,
+        p_account_id: accountId,
+        p_property_ids: [],
+        p_expected_authority_version: state.authority_version,
+        p_expected_role: 'admin',
+        p_new_role: 'admin',
+        p_reason: 'seed-supabase canonical admin bootstrap',
+      },
+    );
+    if (scopeErr || !scope?.ok) {
+      die('account', scopeErr ?? new Error(`canonical admin authority was not accepted: ${JSON.stringify(scope)}`));
+    }
+    log('account', 'canonical admin authority confirmed');
   }
 
   // ── Step 4: staff roster ────────────────────────────────────────────────

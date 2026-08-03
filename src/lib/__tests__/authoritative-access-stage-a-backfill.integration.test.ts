@@ -308,7 +308,7 @@ test('0419 backfill skips account-level issues and applies the consistent compan
       await seedBeforeBackfill(pg);
     }
     if (file === INVARIANT_MIGRATION) await seedBeforeInvariant(pg);
-  });
+  }, { stopAfterVersion: '0425' });
 
   try {
     assert.ok(migrated.report.applied.includes(PREFLIGHT_MIGRATION));
@@ -603,7 +603,7 @@ test('0419 rerun preserves Stage C enforcement and fails with explicit remediati
       insert into public.account_access_cutover_status (id, stage, enforcement_enabled)
       values (true, 'C', true);
     `);
-  });
+  }, { stopAfterVersion: '0425' });
 
   try {
     assert.equal(

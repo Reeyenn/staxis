@@ -2,7 +2,10 @@ import assert from 'node:assert/strict';
 import { after, before, describe, test } from 'node:test';
 
 import type { PGlite } from '@electric-sql/pglite';
-import { applyMigrationsToPgliteWithHook } from '../../../tests/fixtures/pglite-migrate';
+import {
+  applyMigrationsToPgliteWithHook,
+  authorizeAccessStageCRelease,
+} from '../../../tests/fixtures/pglite-migrate';
 import { buildStandardTestRoomNumbers } from '@/lib/test-room-roster';
 
 const OWNER = 'b1000000-0000-4000-8000-000000000001';
@@ -38,8 +41,9 @@ async function scalar<T>(sql: string, params: unknown[] = []): Promise<T> {
 
 describe('0425 test-property canonical roster restoration', () => {
   before(async () => {
-    const migrated = await applyMigrationsToPgliteWithHook(async ({ pg: db, file }) => {
-      if (file !== '0425_test_property_room_roster_backfill.sql') return;
+    const migrated = await applyMigrationsToPgliteWithHook(
+      async ({ pg: db, file }) => {
+        if (file !== '0425_test_property_room_roster_backfill.sql') return;
 
       await db.query(
         "insert into auth.users(id, email) values ($1, 'room-roster-owner@example.test') on conflict (id) do nothing",
@@ -122,7 +126,15 @@ describe('0425 test-property canonical roster restoration', () => {
         [PARTIAL_TEST],
       );
       partialStatusBefore = statusBefore.rows.map(({ row }) => row);
-    });
+      },
+      {
+        afterAccessStageCPreparation: async ({ pg: db, file }) => {
+          if (file === '0426_authoritative_access_stage_c_final_contract.sql') {
+            await authorizeAccessStageCRelease(db);
+          }
+        },
+      },
+    );
     pg = migrated.pg;
     assert.ok(
       migrated.report.applied.includes('0425_test_property_room_roster_backfill.sql'),

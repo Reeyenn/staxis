@@ -45,7 +45,7 @@ import { getPortfolioBrief } from '@/lib/company/vp-brief-server';
 import { invalidateEmployeeSwitchCache } from '@/lib/ai/employee-switches';
 import { MORNING_BRIEFER_ID } from '@/lib/ai/employee-ids';
 
-import { applyMigrationsToPglite } from '../../../tests/fixtures/pglite-migrate';
+import { applyMigrationsToPglite, seedCanonicalTestAuthority } from '../../../tests/fixtures/pglite-migrate';
 import {
   createPglitePostgrest,
   loadCatalog,
@@ -189,13 +189,15 @@ describe('AI Staff — the kill switch actually stops the Morning Briefer', () =
       await pg.query('insert into auth.users (id, email) values ($1,$2) on conflict do nothing', [uid, email]);
     }
     const inserted = await pg.query<{ id: string }>(
-      `insert into public.accounts (username, display_name, role, property_access, data_user_id, password_hash, active)
-       values ('staff.admin','Reeyen','admin',array[$1::uuid],$2,'x',true),
-              ('staff.gm','Maria (GM)','general_manager',array[$1::uuid],$3,'x',true)
+      `insert into public.accounts (username, display_name, role, data_user_id, password_hash, active)
+       values ('staff.admin','Reeyen','admin',$1,'x',true),
+              ('staff.gm','Maria (GM)','general_manager',$2,'x',true)
        returning id`,
-      [PID_A, ADMIN_UID, GM_UID],
+      [ADMIN_UID, GM_UID],
     );
     adminAccountId = inserted.rows[0].id;
+    await seedCanonicalTestAuthority(pg, { username: 'staff.admin', propertyIds: [] });
+    await seedCanonicalTestAuthority(pg, { username: 'staff.gm', propertyIds: [PID_A] });
 
     // One overnight run + one open finding on hotel A: enough that a brief
     // genuinely exists, so "no brief" later can only be the switch.

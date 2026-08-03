@@ -40,7 +40,7 @@ import { answerDripQuestion, getDripQuestion } from '@/lib/agent/drip-questions'
 import { findingQuestionTopic } from '@/lib/findings/ask-drip';
 import type { Detector, DetectorParams, FindingDraft } from '@/lib/findings/types';
 
-import { applyMigrationsToPglite } from '../../../tests/fixtures/pglite-migrate';
+import { applyMigrationsToPglite, seedCanonicalTestAuthority } from '../../../tests/fixtures/pglite-migrate';
 import {
   createPglitePostgrest,
   loadCatalog,
@@ -277,10 +277,11 @@ describe('the findings learning loop, against a real database', () => {
       'gm.a@loop.test',
     ]);
     await pg.query(
-      `insert into public.accounts (username, display_name, role, property_access, data_user_id, password_hash)
-       values ('loop.gm.a','Maria (GM)','general_manager',array[$1::uuid,$2::uuid],$3,'x')`,
-      [PID_A, PID_B, GM_A_UID],
+      `insert into public.accounts (username, display_name, role, data_user_id, password_hash)
+       values ('loop.gm.a','Maria (GM)','general_manager',$1,'x')`,
+      [GM_A_UID],
     );
+    await seedCanonicalTestAuthority(pg, { username: 'loop.gm.a', propertyIds: [PID_A, PID_B] });
 
     registerDetector(probe);
   });

@@ -65,7 +65,7 @@ describe('staff sensitive-column privileges migration 0332', () => {
           grant select, insert, update, delete on public.staff to service_role;
         `);
       }
-    });
+    }, { stopAfterVersion: '0425' });
     pg = migrated.pg;
     assert.ok(
       migrated.report.applied.includes('0332_staff_sensitive_column_privileges.sql'),

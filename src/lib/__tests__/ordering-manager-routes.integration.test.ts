@@ -69,7 +69,7 @@ import {
 import { resolveVendorForItem, buildCandidate, groupByVendor, rankCandidates } from '@/lib/ordering/resolve';
 import type { BucketKey } from '@/lib/ordering/types';
 
-import { applyMigrationsToPglite } from '../../../tests/fixtures/pglite-migrate';
+import { applyMigrationsToPgliteThrough } from '../../../tests/fixtures/pglite-migrate';
 import {
   createPglitePostgrest,
   loadCatalog,
@@ -187,7 +187,7 @@ async function linesOf(orderId: string) {
 }
 
 before(async () => {
-  const migrated = await applyMigrationsToPglite();
+  const migrated = await applyMigrationsToPgliteThrough('0425');
   pg = migrated.pg;
   const catalog = await loadCatalog(pg);
   shim = createPglitePostgrest(pg, catalog);

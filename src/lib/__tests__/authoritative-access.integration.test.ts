@@ -9,7 +9,7 @@ import { after, before, describe, test } from 'node:test';
 import { setTimeout as delay } from 'node:timers/promises';
 import type { PGlite } from '@electric-sql/pglite';
 
-import { applyMigrationsToPglite } from '../../../tests/fixtures/pglite-migrate';
+import { applyMigrationsToPgliteThrough } from '../../../tests/fixtures/pglite-migrate';
 import {
   ACCOUNT_ADMIN,
   ACCOUNT_ANA,
@@ -86,7 +86,7 @@ async function listAccess(accountId: string): Promise<Record<string, unknown>> {
 }
 
 before(async () => {
-  const migrated = await applyMigrationsToPglite();
+  const migrated = await applyMigrationsToPgliteThrough('0425');
   assert.equal(
     migrated.report.failedAtRuntime.some((failure) => failure.file.startsWith('0376_')),
     false,

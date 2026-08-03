@@ -18,7 +18,10 @@
 import { test, describe, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { setupRlsFixture, type PgliteFixture } from '../../../tests/fixtures/pglite-bootstrap';
-import { discoverPerPropertyTables } from '../../../tests/fixtures/pglite-migrate';
+import {
+  discoverPerPropertyTables,
+  seedCanonicalTestAuthority,
+} from '../../../tests/fixtures/pglite-migrate';
 
 const UID_A = '11111111-1111-1111-1111-111111111111';
 const UID_B = '22222222-2222-2222-2222-222222222222';
@@ -90,7 +93,8 @@ describe('RLS tenant isolation — real Postgres via pglite (real migrations)', 
     // We also need a property row to exist for each PID (per-property tables
     // FK to properties(id) on delete cascade), so we seed both. Owner_id is
     // the account that owns the property — set to UID_A for both since the
-    // RLS test only cares about access via accounts.property_access.
+    // The final contract test cares about access via canonical entitlement and
+    // bridge rows, not the retired receipt array.
     await fx.pg.exec(`
       insert into properties (id, name, owner_id, total_rooms) values
         ('${PID_A}', 'A Hotel', '${UID_A}', 100),
@@ -98,12 +102,15 @@ describe('RLS tenant isolation — real Postgres via pglite (real migrations)', 
       on conflict do nothing;
     `);
     await fx.pg.query(
-      `insert into accounts (username, password_hash, display_name, data_user_id, role, property_access) values
-         ('a',     'x', 'A',     $1, 'general_manager', $2),
-         ('b',     'x', 'B',     $3, 'general_manager', $4),
-         ('admin', 'x', 'Admin', $5, 'admin',           $6)`,
-      [UID_A, [PID_A], UID_B, [PID_B], UID_ADMIN, []],
+      `insert into accounts (username, password_hash, display_name, data_user_id, role) values
+         ('a',     'x', 'A',     $1, 'general_manager'),
+         ('b',     'x', 'B',     $2, 'general_manager'),
+         ('admin', 'x', 'Admin', $3, 'admin')`,
+      [UID_A, UID_B, UID_ADMIN],
     );
+    await seedCanonicalTestAuthority(fx.pg, { username: 'a', propertyIds: [PID_A] });
+    await seedCanonicalTestAuthority(fx.pg, { username: 'b', propertyIds: [PID_B] });
+    await seedCanonicalTestAuthority(fx.pg, { username: 'admin', propertyIds: [] });
 
     perPropertyTables = await discoverPerPropertyTables(fx.pg);
     assert.ok(

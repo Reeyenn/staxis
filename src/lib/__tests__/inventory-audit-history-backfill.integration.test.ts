@@ -165,7 +165,7 @@ describe('inventory audit day-one backfill', () => {
            '2026-06-01T00:00:00Z',$5,'Backfill Owner','2026-07-02T10:00:00Z',$5,'Backfill Owner',$6,$7)`,
         [CLOSE, PROPERTY, OPENING_SNAPSHOT, ENDING_SNAPSHOT, USER, START_REQUEST, CLOSE_REQUEST],
       );
-    });
+    }, { stopAfterVersion: '0425' });
     pg = migrated.pg;
     assert.ok(migrated.report.applied.includes('0326_inventory_audit_history.sql'));
   });

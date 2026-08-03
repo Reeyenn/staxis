@@ -6,7 +6,10 @@ import assert from 'node:assert/strict';
 import { after, before, describe, test } from 'node:test';
 import type { PGlite } from '@electric-sql/pglite';
 
-import { applyMigrationsToPgliteWithHook } from '../../../tests/fixtures/pglite-migrate';
+import {
+  applyMigrationsToPgliteWithHook,
+  authorizeAccessStageCRelease,
+} from '../../../tests/fixtures/pglite-migrate';
 import {
   ACCOUNT_ADMIN,
   ACCOUNT_HANK,
@@ -88,7 +91,7 @@ function sha256(value: string): string {
   return createHash('sha256').update(value).digest('hex');
 }
 
-function activeSourceText(root: string): string {
+function activeSourceText(...roots: string[]): string {
   const files: string[] = [];
   const visit = (directory: string): void => {
     for (const entry of readdirSync(directory)) {
@@ -98,13 +101,24 @@ function activeSourceText(root: string): string {
         if (entry !== '__tests__' && entry !== 'node_modules') visit(path);
         continue;
       }
-      if (/\.(?:ts|tsx)$/.test(entry) && !/\.(?:test|spec)\.(?:ts|tsx)$/.test(entry)) {
+      if (/(?:\.ts|\.tsx|\.js|\.mjs|\.cjs)$/.test(entry) && !/\.(?:test|spec)\.(?:ts|tsx|js|mjs|cjs)$/.test(entry)) {
         files.push(path);
       }
     }
   };
-  visit(root);
-  return files.sort().map((path) => readFileSync(path, 'utf8')).join('\n');
+  for (const root of roots) {
+    try {
+      if (statSync(root).isDirectory()) visit(root);
+    } catch {
+      // Optional support roots (workers/cron/support) are absent in some
+      // deployments; the inventory remains deterministic for those that exist.
+    }
+  }
+  return files.sort()
+    .map((path) => readFileSync(path, 'utf8'))
+    .join('\n')
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .replace(/\/\/[^\n]*/g, '');
 }
 
 async function seedStageCFixture(pg: PGlite): Promise<void> {
@@ -173,9 +187,16 @@ describe('Access Stage C final contract — real migration boundary', () => {
     let report: { applied: string[]; failedAtRuntime: Array<{ file: string; error: string }> };
 
     before(async () => {
-      const migrated = await applyMigrationsToPgliteWithHook(async ({ pg: hookPg, file }) => {
-        if (file === MIGRATION) await seedStageCFixture(hookPg);
-      });
+      const migrated = await applyMigrationsToPgliteWithHook(
+        async ({ pg: hookPg, file }) => {
+          if (file === MIGRATION) await seedStageCFixture(hookPg);
+        },
+        {
+          afterAccessStageCPreparation: async ({ pg: hookPg, file }) => {
+            if (file === MIGRATION) await authorizeAccessStageCRelease(hookPg);
+          },
+        },
+      );
       pg = migrated.pg;
       report = migrated.report;
       assert.ok(
@@ -231,6 +252,88 @@ describe('Access Stage C final contract — real migration boundary', () => {
         0,
       );
 
+      const releaseReceipts = await rows<{
+        id: string;
+        operator_label: string;
+        access_b_merge_sha: string;
+        deployed_descendant_sha: string;
+        attested_at: string;
+        preflight_run_id: string;
+        old_deployment_job: string;
+        old_deployment_fence_evidence: string;
+        old_deployment_fence_hash: string;
+        old_deployment_fence_nonce: string;
+        authorization_hash: string;
+        status: string;
+        consumed_at: string | null;
+        consumed_session_id: string | null;
+        consumed_preflight_run_id: string | null;
+      }>(
+        pg,
+        `select id,operator_label,access_b_merge_sha,deployed_descendant_sha,
+                attested_at,preflight_run_id,old_deployment_job,
+                old_deployment_fence_evidence,old_deployment_fence_hash,
+                old_deployment_fence_nonce,authorization_hash,status,consumed_at,
+                consumed_session_id,consumed_preflight_run_id
+           from public.account_access_cutover_release_receipts
+          order by created_at`,
+      );
+      assert.equal(releaseReceipts.length, 1);
+      const releaseReceipt = releaseReceipts[0];
+      assert.equal(releaseReceipt.operator_label, 'pglite-stage-c-operator');
+      assert.equal(releaseReceipt.access_b_merge_sha, 'ec83bca6dab74a52dfb251d04be11d5c7427703f');
+      assert.equal(releaseReceipt.deployed_descendant_sha, '442fb98d632521ea33346d5c8a97014248a31fa0');
+      assert.ok(releaseReceipt.attested_at);
+      assert.equal(releaseReceipt.preflight_run_id, status.details.preflightRunId);
+      assert.equal(releaseReceipt.old_deployment_job, 'pglite-access-stage-c-test');
+      assert.equal(releaseReceipt.old_deployment_fence_hash, sha256(releaseReceipt.old_deployment_fence_evidence));
+      assert.equal(releaseReceipt.authorization_hash, sha256('pglite-access-stage-c-release-token'));
+      assert.equal(releaseReceipt.status, 'consumed');
+      assert.ok(releaseReceipt.consumed_at);
+      assert.ok(releaseReceipt.consumed_session_id);
+      assert.equal(releaseReceipt.consumed_preflight_run_id, releaseReceipt.preflight_run_id);
+
+      const finalReceiptRows = await rows<{
+        account_id: string;
+        source_property_ids: string[];
+        source_property_count: number;
+        source_scope_hash: string;
+        canonical_property_ids: string[];
+        canonical_property_count: number;
+        bridge_count: number;
+      }>(
+        pg,
+        `select account_id,source_property_ids,source_property_count,source_scope_hash,
+                canonical_property_ids,canonical_property_count,bridge_count
+           from public.account_access_cutover_final_receipts
+          order by account_id`,
+      );
+      assert.ok(finalReceiptRows.length > 0);
+      for (const finalReceipt of finalReceiptRows) {
+        assert.equal(finalReceipt.source_property_count, finalReceipt.source_property_ids.length);
+        assert.equal(finalReceipt.canonical_property_count, finalReceipt.canonical_property_ids.length);
+        assert.match(finalReceipt.source_scope_hash, /^[0-9a-f]{64}$/);
+        assert.equal(finalReceipt.source_scope_hash, sha256(finalReceipt.source_property_ids.join(',')));
+        assert.ok(finalReceipt.bridge_count >= 0);
+      }
+      const finalReceiptDigest = sha256(
+        finalReceiptRows
+          .map((receipt) => `${receipt.account_id}:${receipt.source_scope_hash}`)
+          .join('|'),
+      );
+      assert.equal(
+        sha256(
+          (await rows<{ account_id: string; source_scope_hash: string }>(
+            pg,
+            `select account_id,source_scope_hash
+               from public.account_access_cutover_final_receipts
+              order by account_id`,
+          )).map((receipt) => `${receipt.account_id}:${receipt.source_scope_hash}`).join('|'),
+        ),
+        finalReceiptDigest,
+      );
+      assert.equal(Number(status.details.finalReceipts), finalReceiptRows.length);
+
       const raw = await rows<{ non_empty: number; null_count: number }>(
         pg,
         `select count(*) filter (where cardinality(coalesce(property_access,'{}'::uuid[])) > 0)::integer as non_empty,
@@ -261,6 +364,11 @@ describe('Access Stage C final contract — real migration boundary', () => {
           `${signature} must be retired after final enforcement`,
         );
       }
+      await assert.rejects(
+        pg.query(`select public.staxis_grant_property_access($1,$2)`, [ACCOUNT_ADMIN, PID_L1]),
+        /function public\.staxis_grant_property_access\(.*does not exist/i,
+        'a direct obsolete grant RPC must fail closed after the final cutover',
+      );
       for (const signature of [
         'public.staxis_accept_account_invite(text,uuid,uuid,text,text)',
         'public.staxis_grant_existing_account_invite_guarded(uuid,uuid,uuid,uuid,text,text,uuid,text,uuid[],uuid,text)',
@@ -371,6 +479,73 @@ describe('Access Stage C final contract — real migration boundary', () => {
       assert.equal(receiptAcl.anon_execute, false);
       assert.ok(receiptAcl.search_path?.some((setting) => setting.replace(/\s+/g, '') === 'search_path=pg_catalog,public'));
 
+      const releaseShape = (await rows<{
+        rls: boolean;
+        policy_qual: string;
+        anon_select: boolean;
+        authenticated_select: boolean;
+        service_select: boolean;
+      }>(
+        pg,
+        `select relation.relrowsecurity as rls,
+                coalesce(policy.qual::text,'') as policy_qual,
+                has_table_privilege('anon','public.account_access_cutover_release_receipts','select') as anon_select,
+                has_table_privilege('authenticated','public.account_access_cutover_release_receipts','select') as authenticated_select,
+                has_table_privilege('service_role','public.account_access_cutover_release_receipts','select') as service_select
+           from pg_class relation
+           left join pg_policies policy
+             on policy.schemaname='public'
+            and policy.tablename='account_access_cutover_release_receipts'
+          where relation.oid='public.account_access_cutover_release_receipts'::regclass`,
+      ))[0];
+      assert.deepEqual(releaseShape, {
+        rls: true,
+        policy_qual: 'false',
+        anon_select: false,
+        authenticated_select: false,
+        service_select: true,
+      });
+      const releaseAcl = await rows<{
+        identity: string;
+        service_execute: boolean;
+        anon_execute: boolean;
+        search_path: string[] | null;
+      }>(
+        pg,
+        `select pg_get_function_identity_arguments(routine.oid) as identity,
+                has_function_privilege('service_role',routine.oid,'execute') as service_execute,
+                has_function_privilege('anon',routine.oid,'execute') as anon_execute,
+                routine.proconfig as search_path
+           from pg_proc routine
+          where routine.oid = any(array[
+            'public.staxis_access_stage_c_record_release_receipt(text,text,text,timestamptz,uuid,text,text,text,text,text,uuid)'::regprocedure,
+            'public.staxis_access_stage_c_release_receipt(uuid)'::regprocedure,
+            'public.staxis_access_stage_c_consume_release()'::regprocedure
+          ])
+          order by routine.oid`,
+      );
+      assert.equal(releaseAcl.length, 3);
+      for (const acl of releaseAcl) {
+        assert.equal(acl.service_execute, true, acl.identity);
+        assert.equal(acl.anon_execute, false, acl.identity);
+        assert.ok(acl.search_path?.some((setting) => setting.replace(/\s+/g, '') === 'search_path=pg_catalog,public'));
+      }
+      const releaseRead = await jsonRpc(
+        pg,
+        `select public.staxis_access_stage_c_release_receipt($1) as value`,
+        [releaseReceipt.id],
+      );
+      assert.equal(releaseRead.id, releaseReceipt.id);
+      assert.equal(releaseRead.status, 'consumed');
+      await assert.rejects(
+        pg.query(
+          `update public.account_access_cutover_release_receipts
+              set operator_label='tampered' where id=$1`,
+          [releaseReceipt.id],
+        ),
+        /immutable after consumption/i,
+      );
+
       const recoveryAcl = (await rows<{ service_execute: boolean; anon_execute: boolean; service_select: boolean; anon_select: boolean }>(
         pg,
         `select has_function_privilege('service_role','public.staxis_access_stage_c_freeze_and_forward(text,text,uuid)','execute') as service_execute,
@@ -423,21 +598,25 @@ describe('Access Stage C final contract — real migration boundary', () => {
         );
       }
 
-      const source = `${activeSourceText(join(__dirname, '..', '..', 'app'))}\n${activeSourceText(join(__dirname, '..', '..', 'lib'))}`;
-      const nonCommentSourceLines = source.split('\n').filter((line) => {
-        const trimmed = line.trim();
-        return !trimmed.startsWith('//')
-          && !trimmed.startsWith('/*')
-          && !trimmed.startsWith('*')
-          && !trimmed.startsWith('*/');
-      });
+      const sourceRoot = join(__dirname, '..', '..', '..');
+      const source = activeSourceText(
+        join(sourceRoot, 'src', 'app'),
+        join(sourceRoot, 'src', 'lib'),
+        join(sourceRoot, 'scripts'),
+        join(sourceRoot, 'workers'),
+        join(sourceRoot, 'cron'),
+        join(sourceRoot, 'support'),
+        join(sourceRoot, 'src', 'workers'),
+        join(sourceRoot, 'src', 'cron'),
+        join(sourceRoot, 'src', 'support'),
+      );
       assert.deepEqual(
-        nonCommentSourceLines.filter((line) =>
+        source.split('\n').filter((line) =>
           !/p_expected(?:_old|_new)?_property_access\s*:/.test(line)
           && (/(?:accounts\.)?property_access\b/.test(line) || /['"]property_access['"]/.test(line)),
         ),
         [],
-        'active app runtime source must not read or write the raw property_access column',
+        'active app, script, worker, cron, and support runtime source must not read or write the raw property_access column',
       );
       const customerGates = (await rows<{
         maria_a: boolean;
@@ -474,7 +653,7 @@ describe('Access Stage C final contract — real migration boundary', () => {
         '_staxis_reconcile_legacy_organization_access',
         'staxis_reconcile_legacy_organization_access',
       ]) {
-        assert.doesNotMatch(source, new RegExp(`\\b${obsolete}\\b`), `active app source still names ${obsolete}`);
+        assert.doesNotMatch(source, new RegExp(`\\b${obsolete}\\b`), `active runtime source still names ${obsolete}`);
       }
       for (const canonical of [
         'staxis_delete_property_and_legacy_accounts',
@@ -485,6 +664,123 @@ describe('Access Stage C final contract — real migration boundary', () => {
       ]) {
         assert.match(source, new RegExp(`\\b${canonical}\\b`));
       }
+    });
+
+    test('requires a fresh consumed release receipt and rolls back missing, stale, reused, wrong-token, and wrong-SHA gates', async () => {
+      const before = (await rows<{ stage: string; enforcement_enabled: boolean; final_receipts: number }>(
+        pg,
+        `select status.stage, status.enforcement_enabled,
+                (select count(*)::integer from public.account_access_cutover_final_receipts) as final_receipts
+           from public.account_access_cutover_status status
+          where status.id is true`,
+      ))[0];
+      const release = (await rows<{ id: string; preflight_run_id: string }>(
+        pg,
+        `select id,preflight_run_id from public.account_access_cutover_release_receipts
+          where status='consumed' order by created_at limit 1`,
+      ))[0];
+      assert.ok(release);
+
+      await pg.query(`select set_config('staxis.access_stage_c_release_id','',false)`);
+      await pg.query(`select set_config('staxis.access_stage_c_release_token','',false)`);
+      await pg.query(`select set_config('staxis.access_stage_c_release_nonce','',false)`);
+      await assert.rejects(
+        pg.query(`select public.staxis_access_stage_c_consume_release()`),
+        /requires a same-session receipt id, authorization token, nonce/i,
+      );
+
+      const preflightRunId = release.preflight_run_id;
+      const wrongShaCount = Number((await rows<{ count: number }>(
+        pg,
+        `select count(*)::integer as count from public.account_access_cutover_release_receipts`,
+      ))[0].count);
+      await assert.rejects(
+        jsonRpc(
+          pg,
+          `select public.staxis_access_stage_c_record_release_receipt(
+             'wrong-sha-operator','0000000000000000000000000000000000000000',
+             '442fb98d632521ea33346d5c8a97014248a31fa0',clock_timestamp(),$1,
+             'wrong-sha-job','wrong-sha-evidence',$2,'wrong-sha-nonce-123456','wrong-sha-token-123456'
+           ) as value`,
+          [preflightRunId, sha256('wrong-sha-evidence')],
+        ),
+        /wrong Access B SHA/i,
+      );
+      assert.equal(
+        Number((await rows<{ count: number }>(
+          pg,
+          `select count(*)::integer as count from public.account_access_cutover_release_receipts`,
+        ))[0].count),
+        wrongShaCount,
+      );
+
+      const staleToken = 'stale-release-token-123456';
+      const staleNonce = 'stale-release-nonce-123456';
+      const staleEvidence = 'stale external deployment fence evidence';
+      const stale = await jsonRpc(
+        pg,
+        `select public.staxis_access_stage_c_record_release_receipt(
+           'stale-operator','ec83bca6dab74a52dfb251d04be11d5c7427703f',
+           '442fb98d632521ea33346d5c8a97014248a31fa0',$1,$2,
+           'stale-job',$3,$4,$5,$6
+         ) as value`,
+        [new Date(Date.now() - 24 * 60 * 60_000).toISOString(), preflightRunId, staleEvidence, sha256(staleEvidence), staleNonce, staleToken],
+      );
+      await pg.query(
+        `select set_config('staxis.access_stage_c_release_id',$1,false),
+                set_config('staxis.access_stage_c_release_token',$2,false),
+                set_config('staxis.access_stage_c_release_nonce',$3,false)`,
+        [String(stale.receiptId), staleToken, staleNonce],
+      );
+      await assert.rejects(
+        pg.query(`select public.staxis_access_stage_c_consume_release()`),
+        /stale, fenced for another session, or has the wrong deployment evidence/i,
+      );
+
+      const freshToken = 'fresh-release-token-123456';
+      const freshNonce = 'fresh-release-nonce-123456';
+      const freshEvidence = 'fresh external deployment fence evidence';
+      const fresh = await jsonRpc(
+        pg,
+        `select public.staxis_access_stage_c_record_release_receipt(
+           'fresh-operator','ec83bca6dab74a52dfb251d04be11d5c7427703f',
+           '442fb98d632521ea33346d5c8a97014248a31fa0',clock_timestamp(),$1,
+           'fresh-job',$2,$3,$4,$5
+         ) as value`,
+        [preflightRunId, freshEvidence, sha256(freshEvidence), freshNonce, freshToken],
+      );
+      await pg.query(
+        `select set_config('staxis.access_stage_c_release_id',$1,false),
+                set_config('staxis.access_stage_c_release_token',$2,false),
+                set_config('staxis.access_stage_c_release_nonce',$3,false)`,
+        [String(fresh.receiptId), 'wrong-fresh-token-123456', freshNonce],
+      );
+      await assert.rejects(
+        pg.query(`select public.staxis_access_stage_c_consume_release()`),
+        /authorization token does not match/i,
+      );
+      await pg.query(`select set_config('staxis.access_stage_c_release_token',$1,false)`, [freshToken]);
+      const consumedFresh = await jsonRpc(
+        pg,
+        `select public.staxis_access_stage_c_consume_release() as value`,
+      );
+      assert.equal(consumedFresh.status, 'consumed');
+      await assert.rejects(
+        pg.query(`select public.staxis_access_stage_c_consume_release()`),
+        /already consumed/i,
+      );
+
+      assert.deepEqual(
+        (await rows<{ stage: string; enforcement_enabled: boolean; final_receipts: number }>(
+          pg,
+          `select status.stage, status.enforcement_enabled,
+                  (select count(*)::integer from public.account_access_cutover_final_receipts) as final_receipts
+             from public.account_access_cutover_status status
+            where status.id is true`,
+        ))[0],
+        before,
+        'every rejected release gate must leave final authority unchanged',
+      );
     });
 
     test('rejects empty and update writes while preserving immutable receipts and named recovery evidence', async () => {
@@ -509,6 +805,11 @@ describe('Access Stage C final contract — real migration boundary', () => {
       await assert.rejects(
         pg.query(`update public.accounts set property_access = '{}'::uuid[] where id = $1`, [ACCOUNT_WANDA]),
         /final access contract rejects all accounts\.property_access writes/i,
+      );
+      await assert.rejects(
+        pg.query(`select public.staxis_remove_property_access($1,$2)`, [ACCOUNT_ADMIN, PID_L1]),
+        /function public\.staxis_remove_property_access\(.*does not exist/i,
+        'a direct obsolete revoke RPC must fail closed after the final cutover',
       );
 
       const receipt = await jsonRpc(
@@ -883,6 +1184,43 @@ describe('Access Stage C final contract — real migration boundary', () => {
     });
   });
 
+  test('fails closed before destructive DDL when the external release receipt is missing', async () => {
+    const migrated = await applyMigrationsToPgliteWithHook(async ({ pg: hookPg, file }) => {
+      if (file === MIGRATION) await seedStageCFixture(hookPg);
+    }, { authorizeAccessStageCRelease: false });
+    try {
+      assert.equal(migrated.report.applied.includes(MIGRATION), false);
+      assert.match(
+        migrated.report.failedAtRuntime.find((entry) => entry.file === MIGRATION)?.error ?? '',
+        /release gate requires a same-session receipt/i,
+      );
+      assert.deepEqual(
+        await rows<{ property_access: string[] }>(
+          migrated.pg,
+          `select property_access from public.accounts where id=$1`,
+          [ACCOUNT_WANDA],
+        ),
+        [{ property_access: [PID_L1] }],
+      );
+      assert.equal(
+        (await rows<{ relation: string | null }>(
+          migrated.pg,
+          `select to_regclass('public.account_access_cutover_final_receipts') as relation`,
+        ))[0].relation,
+        null,
+      );
+      assert.deepEqual(
+        (await rows<{ stage: string; enforcement_enabled: boolean }>(
+          migrated.pg,
+          `select stage,enforcement_enabled from public.account_access_cutover_status where id is true`,
+        ))[0],
+        { stage: 'A', enforcement_enabled: false },
+      );
+    } finally {
+      await migrated.pg.close();
+    }
+  });
+
   test('fails closed before finalization for pending queues and leaves raw authority untouched', async () => {
     const migrated = await applyMigrationsToPgliteWithHook(async ({ pg: hookPg, file }) => {
       if (file !== MIGRATION) return;
@@ -921,7 +1259,7 @@ describe('Access Stage C final contract — real migration boundary', () => {
          ) values ($1,$2,'stage-c-pending@example.test',$3,'viewer','property',$4,$5,now()+interval '1 day',$6,'pending')`,
         [DIRTY_INVITATION, ORG_A, sha256('stage-c-pending'), relationship.id, PID_A1, ACCOUNT_MARIA],
       );
-    });
+    }, { authorizeAccessStageCRelease: false });
 
     try {
       assert.equal(migrated.report.applied.includes(MIGRATION), false);

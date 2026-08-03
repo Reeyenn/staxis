@@ -1,10 +1,11 @@
 -- 0426_authoritative_access_stage_c_final_contract.sql
 --
 -- Final Access contract.  The preflight transaction commits first.  A second
--- transaction then installs canonical-only resolvers, normalizes proven legacy
--- receipts, clears the physical rollback arrays, retires the translators, and
--- enables the final write fence.  Any error in that second transaction rolls
--- back every authority mutation.
+-- transaction consumes an externally attested release receipt, then installs
+-- canonical-only resolvers, normalizes proven legacy receipts, clears the
+-- physical rollback arrays, retires the translators, and enables the final
+-- write fence.  Any error in that second transaction rolls back the receipt
+-- consumption and every authority mutation together.
 
 do $requirements$
 begin
@@ -31,6 +32,325 @@ alter table public.account_access_cutover_status
   add column if not exists final_preflight_run_id uuid
     references public.account_access_cutover_preflight_runs(id),
   add column if not exists finalized_at timestamptz;
+
+-- The release receipt is a durable service-only control, not a report-only
+-- preflight result.  The deployment/fencing owner supplies the values after
+-- proving that the old deployment, jobs, and raw writers are frozen.  This
+-- migration records that attestation and later consumes the exact receipt in
+-- the same transaction as the destructive cutover; it does not infer or
+-- invent external deployment state from a git SHA.
+-- @rls: service-role-only — release controls are never browser-readable.
+create table if not exists public.account_access_cutover_release_receipts (
+  id                              uuid primary key default gen_random_uuid(),
+  operator_label                  text not null
+    check (char_length(btrim(operator_label)) between 1 and 200),
+  access_b_merge_sha               text not null
+    check (access_b_merge_sha = 'ec83bca6dab74a52dfb251d04be11d5c7427703f'),
+  deployed_descendant_sha          text not null
+    check (deployed_descendant_sha ~ '^[0-9a-f]{40}$'),
+  attested_at                     timestamptz not null,
+  preflight_run_id                uuid not null
+    references public.account_access_cutover_preflight_runs(id),
+  old_deployment_job              text not null
+    check (char_length(btrim(old_deployment_job)) between 1 and 500),
+  old_deployment_fence_evidence   text not null
+    check (char_length(btrim(old_deployment_fence_evidence)) between 1 and 10000),
+  old_deployment_fence_hash       text not null
+    check (old_deployment_fence_hash ~ '^[0-9a-f]{64}$'),
+  old_deployment_fence_nonce      text not null
+    check (char_length(btrim(old_deployment_fence_nonce)) between 16 and 500),
+  authorization_hash              text not null unique
+    check (authorization_hash ~ '^[0-9a-f]{64}$'),
+  status                          text not null default 'unconsumed'
+    check (status in ('unconsumed', 'consumed')),
+  consumed_at                     timestamptz,
+  consumed_session_id             text,
+  consumed_preflight_run_id       uuid,
+  created_at                      timestamptz not null default clock_timestamp(),
+  details                         jsonb not null default '{}'::jsonb
+);
+
+alter table public.account_access_cutover_release_receipts enable row level security;
+revoke all on public.account_access_cutover_release_receipts
+  from public, anon, authenticated, service_role;
+drop policy if exists account_access_cutover_release_receipts_deny_browser
+  on public.account_access_cutover_release_receipts;
+create policy account_access_cutover_release_receipts_deny_browser
+  on public.account_access_cutover_release_receipts
+  for all to anon, authenticated using (false) with check (false);
+grant select on public.account_access_cutover_release_receipts to service_role;
+
+create or replace function public._staxis_reject_release_receipt_mutation()
+returns trigger
+language plpgsql
+security definer
+set search_path = pg_catalog, public
+as $$
+begin
+  if tg_op = 'DELETE' then
+    raise exception 'Access Stage C release receipts are durable and cannot be deleted'
+      using errcode = '42501';
+  end if;
+  if old.status = 'consumed' then
+    raise exception 'Access Stage C release receipts are immutable after consumption'
+      using errcode = '42501';
+  end if;
+  if old.status <> 'unconsumed'
+     or new.status <> 'consumed'
+     or row(old.id, old.operator_label, old.access_b_merge_sha,
+            old.deployed_descendant_sha, old.attested_at, old.preflight_run_id,
+            old.old_deployment_job, old.old_deployment_fence_evidence,
+            old.old_deployment_fence_hash, old.old_deployment_fence_nonce,
+            old.authorization_hash, old.created_at, old.details)
+        is distinct from
+        row(new.id, new.operator_label, new.access_b_merge_sha,
+            new.deployed_descendant_sha, new.attested_at, new.preflight_run_id,
+            new.old_deployment_job, new.old_deployment_fence_evidence,
+            new.old_deployment_fence_hash, new.old_deployment_fence_nonce,
+            new.authorization_hash, new.created_at, new.details)
+     or new.consumed_at is null
+     or nullif(btrim(new.consumed_session_id), '') is null
+     or new.consumed_preflight_run_id is null then
+    raise exception 'Access Stage C release receipt has an invalid mutation'
+      using errcode = '42501';
+  end if;
+  return new;
+end;
+$$;
+
+revoke all on function public._staxis_reject_release_receipt_mutation()
+  from public, anon, authenticated, service_role;
+drop trigger if exists account_access_cutover_release_receipts_immutable
+  on public.account_access_cutover_release_receipts;
+create trigger account_access_cutover_release_receipts_immutable
+  before update or delete on public.account_access_cutover_release_receipts
+  for each row execute function public._staxis_reject_release_receipt_mutation();
+
+create or replace function public.staxis_access_stage_c_record_release_receipt(
+  p_operator_label text,
+  p_access_b_merge_sha text,
+  p_deployed_descendant_sha text,
+  p_attested_at timestamptz,
+  p_preflight_run_id uuid,
+  p_old_deployment_job text,
+  p_old_deployment_fence_evidence text,
+  p_old_deployment_fence_hash text,
+  p_old_deployment_fence_nonce text,
+  p_authorization_value text,
+  p_receipt_id uuid default null
+)
+returns jsonb
+language plpgsql
+security definer
+set search_path = pg_catalog, public
+as $$
+declare
+  v_id uuid := coalesce(p_receipt_id, gen_random_uuid());
+  v_authorization_hash text;
+  v_preflight record;
+  v_existing public.account_access_cutover_release_receipts%rowtype;
+begin
+  if nullif(btrim(p_operator_label), '') is null
+     or char_length(btrim(p_operator_label)) > 200
+     or lower(coalesce(p_access_b_merge_sha, '')) <> 'ec83bca6dab74a52dfb251d04be11d5c7427703f'
+     or p_deployed_descendant_sha !~ '^[0-9a-f]{40}$'
+     or p_attested_at is null
+     or p_preflight_run_id is null
+     or nullif(btrim(p_old_deployment_job), '') is null
+     or char_length(btrim(p_old_deployment_job)) > 500
+     or nullif(btrim(p_old_deployment_fence_evidence), '') is null
+     or char_length(btrim(p_old_deployment_fence_evidence)) > 10000
+     or nullif(btrim(p_old_deployment_fence_nonce), '') is null
+     or char_length(btrim(p_old_deployment_fence_nonce)) < 16
+     or char_length(btrim(p_old_deployment_fence_nonce)) > 500
+     or nullif(p_authorization_value, '') is null
+     or char_length(p_authorization_value) < 16
+     or char_length(p_authorization_value) > 1000 then
+    raise exception '0426 release receipt attestation is incomplete or has the wrong Access B SHA'
+      using errcode = '22023';
+  end if;
+  select run.status, run.issue_count
+    into v_preflight
+  from public.account_access_cutover_preflight_runs run
+  where run.id = p_preflight_run_id;
+  if not found then
+    raise exception '0426 release receipt references an unknown preflight run %', p_preflight_run_id
+      using errcode = '22023';
+  end if;
+  if v_preflight.status <> 'passed' or coalesce(v_preflight.issue_count, 1) <> 0 then
+    raise exception '0426 release receipt requires a passed preflight run (%, status %, issues %)',
+      p_preflight_run_id, v_preflight.status, coalesce(v_preflight.issue_count, 1)
+      using errcode = '22023';
+  end if;
+
+  v_authorization_hash := encode(
+    pg_catalog.sha256(convert_to(p_authorization_value, 'UTF8')), 'hex'
+  );
+  if lower(p_old_deployment_fence_hash) <> encode(
+       pg_catalog.sha256(convert_to(p_old_deployment_fence_evidence, 'UTF8')), 'hex'
+     ) then
+    raise exception '0426 release receipt fence hash does not match its evidence'
+      using errcode = '22023';
+  end if;
+
+  select receipt.* into v_existing
+  from public.account_access_cutover_release_receipts receipt
+  where receipt.authorization_hash = v_authorization_hash
+  for update;
+  if found then
+    if v_existing.status <> 'unconsumed'
+       or v_existing.id <> v_id
+       or v_existing.preflight_run_id <> p_preflight_run_id then
+      raise exception '0426 release authorization has already been consumed or belongs to another run'
+        using errcode = '55000';
+    end if;
+    return jsonb_build_object(
+      'ok', true, 'receiptId', v_existing.id, 'status', v_existing.status,
+      'idempotentReplay', true
+    );
+  end if;
+
+  insert into public.account_access_cutover_release_receipts (
+    id, operator_label, access_b_merge_sha, deployed_descendant_sha,
+    attested_at, preflight_run_id, old_deployment_job,
+    old_deployment_fence_evidence, old_deployment_fence_hash,
+    old_deployment_fence_nonce, authorization_hash, details
+  ) values (
+    v_id, btrim(p_operator_label), lower(p_access_b_merge_sha),
+    lower(p_deployed_descendant_sha), p_attested_at, p_preflight_run_id,
+    btrim(p_old_deployment_job), btrim(p_old_deployment_fence_evidence),
+    lower(p_old_deployment_fence_hash), btrim(p_old_deployment_fence_nonce),
+    v_authorization_hash,
+    jsonb_build_object(
+      'attestationSource', 'external-deployment-owner',
+      'accessBMergeSha', lower(p_access_b_merge_sha),
+      'deployedDescendantSha', lower(p_deployed_descendant_sha),
+      'writerFenceHash', lower(p_old_deployment_fence_hash)
+    )
+  );
+  return jsonb_build_object(
+    'ok', true, 'receiptId', v_id, 'status', 'unconsumed',
+    'authorizationHash', v_authorization_hash
+  );
+end;
+$$;
+
+revoke all on function public.staxis_access_stage_c_record_release_receipt(
+  text, text, text, timestamptz, uuid, text, text, text, text, text, uuid
+) from public, anon, authenticated, service_role;
+grant execute on function public.staxis_access_stage_c_record_release_receipt(
+  text, text, text, timestamptz, uuid, text, text, text, text, text, uuid
+) to service_role;
+
+create or replace function public.staxis_access_stage_c_release_receipt(
+  p_receipt_id uuid
+)
+returns jsonb
+language sql
+stable
+security definer
+set search_path = pg_catalog, public
+as $$
+  select coalesce(to_jsonb(receipt), '{}'::jsonb)
+  from public.account_access_cutover_release_receipts receipt
+  where receipt.id = p_receipt_id;
+$$;
+
+revoke all on function public.staxis_access_stage_c_release_receipt(uuid)
+  from public, anon, authenticated;
+grant execute on function public.staxis_access_stage_c_release_receipt(uuid)
+  to service_role;
+
+create or replace function public.staxis_access_stage_c_consume_release()
+returns jsonb
+language plpgsql
+security definer
+set search_path = pg_catalog, public
+as $$
+declare
+  v_receipt_id uuid;
+  v_token text;
+  v_nonce text;
+  v_run_id uuid;
+  v_auth_hash text;
+  v_receipt public.account_access_cutover_release_receipts%rowtype;
+  v_preflight record;
+  v_consumed_at timestamptz := clock_timestamp();
+begin
+  v_receipt_id := nullif(current_setting('staxis.access_stage_c_release_id', true), '')::uuid;
+  v_token := nullif(current_setting('staxis.access_stage_c_release_token', true), '');
+  v_nonce := nullif(current_setting('staxis.access_stage_c_release_nonce', true), '');
+  select status.final_preflight_run_id into v_run_id
+  from public.account_access_cutover_status status
+  where status.id is true
+  for update;
+  if v_receipt_id is null or v_token is null or v_nonce is null or v_run_id is null then
+    raise exception '0426 release gate requires a same-session receipt id, authorization token, nonce, and preflight run'
+      using errcode = '55000';
+  end if;
+
+  select receipt.* into v_receipt
+  from public.account_access_cutover_release_receipts receipt
+  where receipt.id = v_receipt_id
+  for update;
+  if not found then
+    raise exception '0426 release gate receipt % is missing', v_receipt_id
+      using errcode = '55000';
+  end if;
+  if v_receipt.status <> 'unconsumed' then
+    raise exception '0426 release gate receipt % was already consumed', v_receipt_id
+      using errcode = '55000';
+  end if;
+  if v_receipt.preflight_run_id <> v_run_id then
+    raise exception '0426 release gate receipt % does not match preflight run %', v_receipt_id, v_run_id
+      using errcode = '55000';
+  end if;
+  select run.status, run.issue_count
+    into v_preflight
+  from public.account_access_cutover_preflight_runs run
+  where run.id = v_run_id;
+  if not found or v_preflight.status <> 'passed' or coalesce(v_preflight.issue_count, 1) <> 0 then
+    raise exception '0426 release gate preflight run % is no longer clean', v_run_id
+      using errcode = '55000';
+  end if;
+  if v_receipt.access_b_merge_sha <> 'ec83bca6dab74a52dfb251d04be11d5c7427703f'
+     or v_receipt.deployed_descendant_sha !~ '^[0-9a-f]{40}$'
+     or v_receipt.old_deployment_fence_nonce <> v_nonce
+     or v_receipt.attested_at < v_consumed_at - interval '15 minutes'
+     or v_receipt.attested_at > v_consumed_at + interval '5 minutes' then
+    raise exception '0426 release gate receipt % is stale, fenced for another session, or has the wrong deployment evidence', v_receipt_id
+      using errcode = '55000';
+  end if;
+  v_auth_hash := encode(pg_catalog.sha256(convert_to(v_token, 'UTF8')), 'hex');
+  if v_auth_hash <> v_receipt.authorization_hash then
+    raise exception '0426 release gate authorization token does not match receipt %', v_receipt_id
+      using errcode = '55000';
+  end if;
+
+  update public.account_access_cutover_release_receipts receipt
+     set status = 'consumed',
+         consumed_at = v_consumed_at,
+         consumed_session_id = pg_backend_pid()::text,
+         consumed_preflight_run_id = v_run_id
+   where receipt.id = v_receipt_id
+     and receipt.status = 'unconsumed'
+  returning receipt.* into v_receipt;
+  if not found then
+    raise exception '0426 release gate receipt % was consumed concurrently', v_receipt_id
+      using errcode = '55000';
+  end if;
+  return jsonb_build_object(
+    'ok', true, 'receiptId', v_receipt.id, 'status', v_receipt.status,
+    'preflightRunId', v_receipt.preflight_run_id, 'consumedAt', v_receipt.consumed_at,
+    'consumedSessionId', v_receipt.consumed_session_id
+  );
+end;
+$$;
+
+revoke all on function public.staxis_access_stage_c_consume_release()
+  from public, anon, authenticated, service_role;
+grant execute on function public.staxis_access_stage_c_consume_release()
+  to service_role;
 
 -- 0425 is a separately shipped test-property roster migration.  Stage C
 -- owns this preflight in 0426 so it never collides with that production
@@ -647,6 +967,15 @@ begin;
 select public.staxis_preflight_authorization_cutover_stage_c();
 commit;
 
+-- Deployment procedure: apply the prefix through this marker, have the
+-- deployment owner record the externally supplied service attestation with
+-- staxis_access_stage_c_record_release_receipt(...) and set the three
+-- staxis.access_stage_c_release_* session values, then execute the suffix in
+-- that same service session.  The PGlite fixture pauses at this exact boundary
+-- to exercise the same consumed receipt.  The migration never invents the
+-- old-deployment/job/writer-fence evidence from a git SHA.
+-- @access-stage-c-release-gate
+begin;
 do $strict_gate$
 declare
   v_stage text;
@@ -670,10 +999,9 @@ begin
       v_run_id, coalesce(v_issue_count, 1)
       using errcode = '55000';
   end if;
+  perform public.staxis_access_stage_c_consume_release();
 end
 $strict_gate$;
-
-begin;
 
 do $requirements$
 begin

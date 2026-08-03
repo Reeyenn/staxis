@@ -33,6 +33,7 @@ import { after, before, beforeEach, describe, test } from 'node:test';
 import type { PGlite } from '@electric-sql/pglite';
 
 import { setupRlsFixture } from '../../../tests/fixtures/pglite-bootstrap';
+import { seedCanonicalTestAuthority } from '../../../tests/fixtures/pglite-migrate';
 import { loadCatalog, type Catalog } from '../../../tests/fixtures/postgrest-pglite';
 import { seedTwoHotels, PID_A } from '../../../tests/fixtures/pglite-two-hotel-seed';
 
@@ -91,12 +92,13 @@ describe('staxis_rollup_agent_costs_month — the interlock, against a real Post
     await seedTwoHotels(pg, catalog);
     await pg.query('insert into auth.users (id, email) values ($1,$2) on conflict do nothing', [USER_UID, 'rollup@staff.test']);
     const inserted = await pg.query<{ id: string }>(
-      `insert into public.accounts (username, display_name, role, property_access, data_user_id, password_hash, active)
-       values ('rollup.admin','Rollup','admin',array[$1::uuid],$2,'x',true)
+      `insert into public.accounts (username, display_name, role, data_user_id, password_hash, active)
+       values ('rollup.admin','Rollup','admin',$1,'x',true)
        returning id`,
-      [PID_A, USER_UID],
+      [USER_UID],
     );
     accountId = inserted.rows[0].id;
+    await seedCanonicalTestAuthority(pg, { username: 'rollup.admin', propertyIds: [] });
   });
 
   after(async () => { await pg?.close(); });

@@ -60,7 +60,7 @@ import { PROMPT_VERSION } from '@/lib/agent/prompts';
 import { isAwaitingConfirmation } from '@/lib/agent/llm';
 import { proposeAction } from '@/lib/findings/actions/store';
 
-import { applyMigrationsToPglite } from '../../../tests/fixtures/pglite-migrate';
+import { applyMigrationsToPgliteThrough } from '../../../tests/fixtures/pglite-migrate';
 import {
   createPglitePostgrest,
   loadCatalog,
@@ -187,7 +187,7 @@ async function count(sql: string, params: unknown[] = []): Promise<number> {
 }
 
 before(async () => {
-  const migrated = await applyMigrationsToPglite();
+  const migrated = await applyMigrationsToPgliteThrough('0425');
   pg = migrated.pg;
   const catalog = await loadCatalog(pg);
   shim = createPglitePostgrest(pg, catalog);

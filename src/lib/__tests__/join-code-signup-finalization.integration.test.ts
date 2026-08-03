@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { after, before, describe, test } from 'node:test';
 import type { PGlite } from '@electric-sql/pglite';
 
-import { applyMigrationsToPglite } from '../../../tests/fixtures/pglite-migrate';
+import { applyMigrationsToPgliteThrough } from '../../../tests/fixtures/pglite-migrate';
 import {
   ACCOUNT_ADMIN,
   ORG_A,
@@ -130,7 +130,7 @@ describe('join-code signup finalization — real transactional boundary', () => 
   let pg: PGlite;
 
   before(async () => {
-    const migrated = await applyMigrationsToPglite();
+    const migrated = await applyMigrationsToPgliteThrough('0425');
     assert.ok(migrated.report.applied.includes('0398_privileged_onboarding_join_codes.sql'));
     pg = migrated.pg;
     await seedTwoCompanies(pg);

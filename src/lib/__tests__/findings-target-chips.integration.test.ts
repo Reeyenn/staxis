@@ -40,7 +40,7 @@ import { supabaseAdmin } from '@/lib/supabase-admin';
 import { GET } from '@/app/api/findings/for-target/route';
 import { chipFor } from '@/components/concourse/target-chip';
 
-import { applyMigrationsToPglite } from '../../../tests/fixtures/pglite-migrate';
+import { applyMigrationsToPglite, seedCanonicalTestAuthority } from '../../../tests/fixtures/pglite-migrate';
 import {
   createPglitePostgrest,
   loadCatalog,
@@ -182,12 +182,15 @@ describe('/api/findings/for-target — the chip’s one question', () => {
       await pg.query('insert into auth.users (id, email) values ($1,$2) on conflict do nothing', [uid, email]);
     }
     await pg.query(
-      `insert into public.accounts (username, display_name, role, property_access, data_user_id, password_hash)
-       values ('chips.gm.a','Maria (GM)','general_manager',array[$1::uuid],$2,'x'),
-              ('chips.gm.b','Bea (GM)','general_manager',array[$3::uuid],$4,'x'),
-              ('chips.hk.a','Ana','housekeeping',array[$1::uuid],$5,'x')`,
-      [PID_A, GM_A_UID, PID_B, GM_B_UID, HOUSEKEEPER_UID],
+      `insert into public.accounts (username, display_name, role, data_user_id, password_hash)
+       values ('chips.gm.a','Maria (GM)','general_manager',$1,'x'),
+              ('chips.gm.b','Bea (GM)','general_manager',$2,'x'),
+              ('chips.hk.a','Ana','housekeeping',$3,'x')`,
+      [GM_A_UID, GM_B_UID, HOUSEKEEPER_UID],
     );
+    await seedCanonicalTestAuthority(pg, { username: 'chips.gm.a', propertyIds: [PID_A] });
+    await seedCanonicalTestAuthority(pg, { username: 'chips.gm.b', propertyIds: [PID_B] });
+    await seedCanonicalTestAuthority(pg, { username: 'chips.hk.a', propertyIds: [PID_A] });
   });
 
   after(async () => {
