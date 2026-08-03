@@ -126,6 +126,1164 @@ create trigger account_access_cutover_release_receipts_immutable
   before update or delete on public.account_access_cutover_release_receipts
   for each row execute function public._staxis_reject_release_receipt_mutation();
 
+-- A failed report-only preflight can contain a small, explicitly approved
+-- residue set.  The operator records the decision against the exact failed
+-- run before the destructive suffix starts.  These tables deliberately do
+-- not reference accounts or properties: the evidence must survive cleanup of
+-- either object and remain available to the service-only remediation seam.
+-- @rls: service-role-only — dispositions and repair receipts contain
+-- cross-tenant authority evidence and are never browser-readable.
+create table if not exists public.account_access_cutover_repair_dispositions (
+  id                         uuid primary key default gen_random_uuid(),
+  preflight_run_id           uuid not null
+    references public.account_access_cutover_preflight_runs(id),
+  account_id                 uuid not null,
+  property_id                uuid not null,
+  issue_codes                text[] not null,
+  decision                   text not null
+    check (decision in ('admin_global', 'canonical_duplicate', 'revoked_canonical_empty')),
+  operator_label             text not null
+    check (char_length(btrim(operator_label)) between 1 and 200),
+  access_b_merge_sha         text not null
+    check (access_b_merge_sha = 'ec83bca6dab74a52dfb251d04be11d5c7427703f'),
+  deployed_descendant_sha    text not null
+    check (deployed_descendant_sha ~ '^[0-9a-f]{40}$'),
+  raw_property_ids           uuid[] not null,
+  raw_scope_hash             text not null
+    check (raw_scope_hash ~ '^[0-9a-f]{64}$'),
+  authority_mode             text not null
+    check (authority_mode in ('legacy', 'shadow', 'normalized')),
+  authority_version          bigint not null,
+  canonical_property_ids     uuid[] not null,
+  canonical_scope_hash       text not null
+    check (canonical_scope_hash ~ '^[0-9a-f]{64}$'),
+  legacy_write_event_count   bigint not null check (legacy_write_event_count >= 0),
+  reason                    text not null
+    check (reason in (
+      'admin_global_role_residue',
+      'canonical_duplicate_residue',
+      'revoked_canonical_empty_residue'
+    )),
+  recorded_at                timestamptz not null default clock_timestamp(),
+  status                     text not null default 'unconsumed'
+    check (status in ('unconsumed', 'consumed')),
+  consumed_at                timestamptz,
+  consumed_session_id        text,
+  consumed_preflight_run_id  uuid,
+  details                    jsonb not null default '{}'::jsonb,
+  unique (preflight_run_id, account_id, property_id),
+  check (array_position(issue_codes, null::text) is null),
+  check (cardinality(issue_codes) > 0)
+);
+
+-- @rls: service-role-only — immutable repair receipts contain cross-tenant
+-- evidence and are intentionally never browser-readable.
+create table if not exists public.account_access_cutover_repair_receipts (
+  id                         uuid primary key default gen_random_uuid(),
+  disposition_id             uuid not null
+    references public.account_access_cutover_repair_dispositions(id),
+  preflight_run_id           uuid not null
+    references public.account_access_cutover_preflight_runs(id),
+  account_id                 uuid not null,
+  property_id                uuid not null,
+  decision                   text not null
+    check (decision in ('admin_global', 'canonical_duplicate', 'revoked_canonical_empty')),
+  operator_label             text not null,
+  access_b_merge_sha         text not null
+    check (access_b_merge_sha = 'ec83bca6dab74a52dfb251d04be11d5c7427703f'),
+  deployed_descendant_sha    text not null
+    check (deployed_descendant_sha ~ '^[0-9a-f]{40}$'),
+  source_property_ids        uuid[] not null,
+  source_scope_hash          text not null
+    check (source_scope_hash ~ '^[0-9a-f]{64}$'),
+  canonical_property_ids_before uuid[] not null,
+  canonical_scope_hash_before text not null
+    check (canonical_scope_hash_before ~ '^[0-9a-f]{64}$'),
+  canonical_property_ids_after uuid[] not null,
+  canonical_scope_hash_after text not null
+    check (canonical_scope_hash_after ~ '^[0-9a-f]{64}$'),
+  authority_mode_before     text not null,
+  authority_mode_after      text not null,
+  authority_version_before  bigint not null,
+  authority_version_after   bigint not null,
+  legacy_write_event_count_before bigint not null check (legacy_write_event_count_before >= 0),
+  legacy_write_event_count_after bigint not null check (legacy_write_event_count_after >= 0),
+  repaired_at                timestamptz not null default clock_timestamp(),
+  details                    jsonb not null default '{}'::jsonb,
+  unique (disposition_id)
+);
+
+alter table public.account_access_cutover_repair_dispositions enable row level security;
+alter table public.account_access_cutover_repair_receipts enable row level security;
+revoke all on public.account_access_cutover_repair_dispositions
+  from public, anon, authenticated, service_role;
+revoke all on public.account_access_cutover_repair_receipts
+  from public, anon, authenticated, service_role;
+drop policy if exists account_access_cutover_repair_dispositions_deny_browser
+  on public.account_access_cutover_repair_dispositions;
+create policy account_access_cutover_repair_dispositions_deny_browser
+  on public.account_access_cutover_repair_dispositions
+  for all to anon, authenticated using (false) with check (false);
+drop policy if exists account_access_cutover_repair_receipts_deny_browser
+  on public.account_access_cutover_repair_receipts;
+create policy account_access_cutover_repair_receipts_deny_browser
+  on public.account_access_cutover_repair_receipts
+  for all to anon, authenticated using (false) with check (false);
+grant select on public.account_access_cutover_repair_dispositions to service_role;
+grant select on public.account_access_cutover_repair_receipts to service_role;
+
+create or replace function public._staxis_stage_c_normalize_ids(p_ids uuid[])
+returns uuid[]
+language sql
+immutable
+security definer
+set search_path = pg_catalog, public
+as $$
+  select coalesce(array_agg(ids.id order by ids.id), '{}'::uuid[])
+  from (
+    select distinct id
+    from unnest(coalesce(p_ids, '{}'::uuid[])) values(id)
+    where id is not null
+  ) ids;
+$$;
+
+revoke all on function public._staxis_stage_c_normalize_ids(uuid[])
+  from public, anon, authenticated, service_role;
+
+create or replace function public._staxis_stage_c_scope_hash(p_ids uuid[])
+returns text
+language sql
+immutable
+security definer
+set search_path = pg_catalog, public
+as $$
+  select encode(
+    sha256(convert_to(coalesce(array_to_string(
+      public._staxis_stage_c_normalize_ids(p_ids), ','
+    ), ''), 'UTF8')),
+    'hex'
+  );
+$$;
+
+revoke all on function public._staxis_stage_c_scope_hash(uuid[])
+  from public, anon, authenticated, service_role;
+
+create or replace function public._staxis_reject_repair_disposition_mutation()
+returns trigger
+language plpgsql
+security definer
+set search_path = pg_catalog, public
+as $$
+begin
+  if tg_op = 'DELETE' then
+    raise exception 'Access Stage C repair dispositions are durable and cannot be deleted'
+      using errcode = '42501';
+  end if;
+  if old.status = 'consumed' then
+    raise exception 'Access Stage C repair dispositions are immutable after consumption'
+      using errcode = '42501';
+  end if;
+  if old.status <> 'unconsumed'
+     or new.status <> 'consumed'
+     or row(old.id, old.preflight_run_id, old.account_id, old.property_id,
+            old.issue_codes, old.decision, old.operator_label,
+            old.access_b_merge_sha, old.deployed_descendant_sha,
+            old.raw_property_ids, old.raw_scope_hash, old.authority_mode,
+            old.authority_version, old.canonical_property_ids,
+            old.canonical_scope_hash, old.legacy_write_event_count,
+            old.reason, old.recorded_at, old.details)
+        is distinct from
+        row(new.id, new.preflight_run_id, new.account_id, new.property_id,
+            new.issue_codes, new.decision, new.operator_label,
+            new.access_b_merge_sha, new.deployed_descendant_sha,
+            new.raw_property_ids, new.raw_scope_hash, new.authority_mode,
+            new.authority_version, new.canonical_property_ids,
+            new.canonical_scope_hash, new.legacy_write_event_count,
+            new.reason, new.recorded_at, new.details)
+     or new.consumed_at is null
+     or nullif(btrim(new.consumed_session_id), '') is null
+     or new.consumed_preflight_run_id is null then
+    raise exception 'Access Stage C repair disposition has an invalid mutation'
+      using errcode = '42501';
+  end if;
+  return new;
+end;
+$$;
+
+revoke all on function public._staxis_reject_repair_disposition_mutation()
+  from public, anon, authenticated, service_role;
+drop trigger if exists account_access_cutover_repair_dispositions_immutable
+  on public.account_access_cutover_repair_dispositions;
+create trigger account_access_cutover_repair_dispositions_immutable
+  before update or delete on public.account_access_cutover_repair_dispositions
+  for each row execute function public._staxis_reject_repair_disposition_mutation();
+
+create or replace function public._staxis_reject_repair_receipt_mutation()
+returns trigger
+language plpgsql
+security definer
+set search_path = pg_catalog, public
+as $$
+begin
+  raise exception 'Access Stage C repair receipts are immutable'
+    using errcode = '42501';
+end;
+$$;
+
+revoke all on function public._staxis_reject_repair_receipt_mutation()
+  from public, anon, authenticated, service_role;
+drop trigger if exists account_access_cutover_repair_receipts_immutable
+  on public.account_access_cutover_repair_receipts;
+create trigger account_access_cutover_repair_receipts_immutable
+  before update or delete on public.account_access_cutover_repair_receipts
+  for each row execute function public._staxis_reject_repair_receipt_mutation();
+
+-- Every issue row produced by the report-only run must be one of the bounded
+-- repair classes, and every property listed by that issue must have a matching
+-- disposition.  Stage-A's wrapper issue is accepted only when its sample is
+-- made entirely of those same two underlying residue classes.
+create or replace function public._staxis_stage_c_preflight_repairable(
+  p_preflight_run_id uuid
+)
+returns boolean
+language plpgsql
+security definer
+set search_path = pg_catalog, public
+as $$
+declare
+  v_run record;
+  v_issue record;
+  v_sample jsonb;
+  v_property_id uuid;
+begin
+  select run.status, run.issue_count
+    into v_run
+  from public.account_access_cutover_preflight_runs run
+  where run.id = p_preflight_run_id;
+  if not found or v_run.status <> 'failed' or coalesce(v_run.issue_count, 0) = 0 then
+    return false;
+  end if;
+
+  if exists (
+    select 1
+    from public.account_lifecycle_intents intent
+    where intent.status in ('pending', 'processing')
+  ) or exists (
+    select 1
+    from public.account_invites invitation
+    where invitation.acceptance_claim_token is not null
+      and invitation.accepted_at is null
+  ) or exists (
+    select 1 from public.join_requests request_row
+    where request_row.status = 'pending'
+  ) or exists (
+    select 1 from public.organization_access_requests request_row
+    where request_row.status = 'pending'
+  ) or exists (
+    select 1 from public.organization_invitations invitation
+    where invitation.status = 'pending'
+  ) or exists (
+    select 1 from public.account_access_cutover_legacy_write_events
+  ) then
+    return false;
+  end if;
+
+  for v_issue in
+    select issue.*
+    from public.account_access_cutover_preflight_issues issue
+    where issue.run_id = p_preflight_run_id
+    order by issue.id
+  loop
+    if v_issue.issue_code = 'stage_a_invariant_failure' then
+      for v_sample in
+        select value
+        from jsonb_array_elements(coalesce(
+          v_issue.details #> '{stageAInvariant,sample}', '[]'::jsonb
+        )) values(value)
+      loop
+        if v_sample->>'code' = 'invalid_legacy_account_identity' then
+          if not exists (
+            select 1
+            from public.account_access_cutover_repair_dispositions disposition
+            where disposition.preflight_run_id = p_preflight_run_id
+              and disposition.account_id = (v_sample->>'accountId')::uuid
+              and disposition.decision = 'admin_global'
+              and disposition.status = 'unconsumed'
+          ) then
+            return false;
+          end if;
+        elsif v_sample->>'code' = 'legacy_row_without_shadow_translation' then
+          if (v_sample->>'accountId') is null
+             or (v_sample->>'propertyId') is null
+             or not exists (
+               select 1
+               from public.account_access_cutover_repair_dispositions disposition
+               where disposition.preflight_run_id = p_preflight_run_id
+                 and disposition.account_id = (v_sample->>'accountId')::uuid
+                 and disposition.property_id = (v_sample->>'propertyId')::uuid
+                 and disposition.status = 'unconsumed'
+           ) then
+            return false;
+          end if;
+        else
+          return false;
+        end if;
+      end loop;
+    elsif v_issue.issue_code in (
+      'admin_legacy_access', 'admin_legacy_account', 'normalized_legacy_residue'
+    ) then
+      if v_issue.account_id is null
+         or jsonb_typeof(v_issue.details->'propertyIds') <> 'array' then
+        return false;
+      end if;
+      for v_property_id in
+        select value::uuid
+        from jsonb_array_elements_text(v_issue.details->'propertyIds') values(value)
+      loop
+        if not exists (
+          select 1
+          from public.account_access_cutover_repair_dispositions disposition
+          where disposition.preflight_run_id = p_preflight_run_id
+            and disposition.account_id = v_issue.account_id
+            and disposition.property_id = v_property_id
+            and v_issue.issue_code = any(disposition.issue_codes)
+            and disposition.status = 'unconsumed'
+        ) then
+          return false;
+        end if;
+      end loop;
+    else
+      return false;
+    end if;
+  end loop;
+  return true;
+end;
+$$;
+
+revoke all on function public._staxis_stage_c_preflight_repairable(uuid)
+  from public, anon, authenticated, service_role;
+
+create or replace function public.staxis_access_stage_c_record_repair_disposition(
+  p_preflight_run_id uuid,
+  p_account_id uuid,
+  p_property_id uuid,
+  p_issue_codes text[],
+  p_decision text,
+  p_operator_label text,
+  p_access_b_merge_sha text,
+  p_deployed_descendant_sha text,
+  p_raw_property_ids uuid[],
+  p_raw_scope_hash text,
+  p_authority_mode text,
+  p_authority_version bigint,
+  p_canonical_property_ids uuid[],
+  p_canonical_scope_hash text,
+  p_legacy_write_event_count bigint,
+  p_reason text,
+  p_recorded_at timestamptz default null,
+  p_disposition_id uuid default null
+)
+returns jsonb
+language plpgsql
+security definer
+set search_path = pg_catalog, public
+as $$
+declare
+  v_id uuid := coalesce(p_disposition_id, gen_random_uuid());
+  v_run record;
+  v_account public.accounts%rowtype;
+  v_state public.account_authorization_state%rowtype;
+  v_existing public.account_access_cutover_repair_dispositions%rowtype;
+  v_current_raw uuid[];
+  v_current_canonical uuid[];
+  v_issue_codes text[];
+  v_requested_issue_codes text[];
+  v_write_count bigint;
+  v_property_exists boolean;
+  v_topology_exists boolean;
+begin
+  if p_preflight_run_id is null
+     or p_account_id is null
+     or p_property_id is null
+     or p_issue_codes is null
+     or p_decision is null
+     or nullif(btrim(p_operator_label), '') is null
+     or lower(coalesce(p_access_b_merge_sha, '')) <> 'ec83bca6dab74a52dfb251d04be11d5c7427703f'
+     or p_deployed_descendant_sha !~ '^[0-9a-f]{40}$'
+     or p_authority_mode not in ('legacy', 'shadow', 'normalized')
+     or p_authority_version is null
+     or p_raw_property_ids is null
+     or p_canonical_property_ids is null
+     or p_legacy_write_event_count is null
+     or p_legacy_write_event_count <> 0
+     or p_reason is null
+     or p_reason not in (
+       'admin_global_role_residue',
+       'canonical_duplicate_residue',
+       'revoked_canonical_empty_residue'
+     ) then
+    raise exception '0426 repair disposition evidence is incomplete or malformed'
+      using errcode = '22023';
+  end if;
+  if p_decision not in ('admin_global', 'canonical_duplicate', 'revoked_canonical_empty') then
+    raise exception '0426 repair disposition decision is unsupported'
+      using errcode = '22023';
+  end if;
+
+  select run.status, run.issue_count
+    into v_run
+  from public.account_access_cutover_preflight_runs run
+  join public.account_access_cutover_status status
+    on status.id is true
+   and status.final_preflight_run_id = run.id
+  where run.id = p_preflight_run_id
+  for update;
+  if not found or v_run.status <> 'failed' or coalesce(v_run.issue_count, 0) = 0 then
+    raise exception '0426 repair disposition must bind to the exact failed current preflight run %', p_preflight_run_id
+      using errcode = '55000';
+  end if;
+
+  select account.* into v_account
+  from public.accounts account
+  where account.id = p_account_id
+  for update;
+  select state.* into v_state
+  from public.account_authorization_state state
+  where state.account_id = p_account_id
+  for update;
+  if v_account.id is null or v_state.account_id is null or v_account.active is not true then
+    raise exception '0426 repair disposition requires an active account with authorization state'
+      using errcode = '55000';
+  end if;
+
+  select exists (
+    select 1 from public.properties property
+    where property.id = p_property_id and property.is_test is true
+  ) into v_property_exists;
+  select exists (
+    select 1
+    from public._staxis_current_primary_property_relationships() relationship
+    where relationship.property_id = p_property_id
+      and relationship.active_primary_count = 1
+  ) into v_topology_exists;
+  if not v_property_exists or not v_topology_exists then
+    raise exception '0426 repair disposition requires an active is_test property topology'
+      using errcode = '55000';
+  end if;
+
+  v_current_raw := public._staxis_stage_c_normalize_ids(v_account.property_access);
+  v_current_canonical := public._staxis_stage_c_normalize_ids(array(
+    select authz.property_id
+    from public._staxis_account_property_authorizations(p_account_id) authz
+  ));
+  if v_current_raw is distinct from public._staxis_stage_c_normalize_ids(p_raw_property_ids)
+     or public._staxis_stage_c_scope_hash(v_current_raw) <> p_raw_scope_hash
+     or v_current_canonical is distinct from public._staxis_stage_c_normalize_ids(p_canonical_property_ids)
+     or public._staxis_stage_c_scope_hash(v_current_canonical) <> p_canonical_scope_hash
+     or v_state.authority_mode is distinct from p_authority_mode
+     or v_state.authority_version is distinct from p_authority_version
+     or not (p_property_id = any(v_current_raw)) then
+    raise exception '0426 repair disposition evidence no longer matches account %, property %: %',
+      p_account_id, p_property_id, jsonb_build_object(
+              'currentRaw', v_current_raw,
+              'expectedRaw', public._staxis_stage_c_normalize_ids(p_raw_property_ids),
+              'currentRawHash', public._staxis_stage_c_scope_hash(v_current_raw),
+              'expectedRawHash', p_raw_scope_hash,
+              'currentCanonical', v_current_canonical,
+              'expectedCanonical', public._staxis_stage_c_normalize_ids(p_canonical_property_ids),
+              'currentCanonicalHash', public._staxis_stage_c_scope_hash(v_current_canonical),
+              'expectedCanonicalHash', p_canonical_scope_hash,
+              'currentMode', v_state.authority_mode,
+              'expectedMode', p_authority_mode,
+              'currentVersion', v_state.authority_version,
+              'expectedVersion', p_authority_version
+            )::text
+      using errcode = '55000';
+  end if;
+
+  select count(*)::bigint into v_write_count
+  from public.account_access_cutover_legacy_write_events;
+  if v_write_count <> 0 or v_write_count <> p_legacy_write_event_count then
+    raise exception '0426 repair disposition requires zero unchanged legacy writer events'
+      using errcode = '55000';
+  end if;
+  if exists (
+    select 1 from public.account_lifecycle_intents intent
+    where intent.status in ('pending', 'processing')
+  ) or exists (
+    select 1 from public.account_invites invitation
+    where invitation.acceptance_claim_token is not null
+      and invitation.accepted_at is null
+  ) or exists (
+    select 1 from public.join_requests request_row
+    where request_row.status = 'pending'
+  ) or exists (
+    select 1 from public.organization_access_requests request_row
+    where request_row.status = 'pending'
+  ) or exists (
+    select 1 from public.organization_invitations invitation
+    where invitation.status = 'pending'
+  ) then
+    raise exception '0426 repair disposition requires all lifecycle and access queues to be drained'
+      using errcode = '55000';
+  end if;
+
+  select coalesce(array_agg(issue_code order by issue_code), '{}'::text[])
+    into v_issue_codes
+  from (
+    select distinct issue.issue_code
+    from public.account_access_cutover_preflight_issues issue
+    where issue.run_id = p_preflight_run_id
+      and issue.account_id = p_account_id
+      and (
+        issue.issue_code in ('admin_legacy_access', 'admin_legacy_account', 'normalized_legacy_residue')
+        or issue.issue_code = 'stage_a_invariant_failure'
+      )
+      and (
+        issue.property_id = p_property_id
+        or issue.property_id is null
+        or issue.details->'propertyIds' ? p_property_id::text
+      )
+  ) issue_codes;
+  select coalesce(array_agg(code order by code), '{}'::text[])
+    into v_requested_issue_codes
+  from (select distinct code from unnest(p_issue_codes) values(code)) requested;
+  if v_issue_codes is distinct from v_requested_issue_codes then
+    raise exception '0426 repair disposition must enumerate the exact issue rows for account %, property %', p_account_id, p_property_id
+      using errcode = '55000';
+  end if;
+
+  if p_decision = 'admin_global' then
+    if v_account.role <> 'admin'
+       or v_state.authority_mode not in ('legacy', 'shadow')
+       or cardinality(v_current_canonical) <> 0
+       or exists (
+         select 1 from public.account_property_authorization_bridges bridge
+         where bridge.account_id = p_account_id and bridge.status = 'active'
+       ) then
+      raise exception '0426 admin-global repair disposition is not valid for account %', p_account_id
+        using errcode = '55000';
+    end if;
+  elsif p_decision = 'canonical_duplicate' then
+    if v_account.role = 'admin'
+       or v_state.authority_mode <> 'normalized'
+       or not (p_property_id = any(v_current_canonical)) then
+      raise exception '0426 canonical-duplicate disposition does not prove canonical coverage for account %', p_account_id
+        using errcode = '55000';
+    end if;
+  elsif p_decision = 'revoked_canonical_empty' then
+    if v_account.role = 'admin'
+       or v_state.authority_mode <> 'normalized'
+       or cardinality(v_current_canonical) <> 0
+       or exists (
+         select 1
+         from public.organization_memberships membership
+         where membership.account_id = p_account_id
+           and membership.status = 'active'
+           and membership.ended_at is null
+           and p_property_id = any(coalesce(membership.covered_property_ids, '{}'::uuid[]))
+       )
+       or not exists (
+         select 1
+         from public.organization_memberships membership
+         where membership.account_id = p_account_id
+           and membership.status = 'revoked'
+           and membership.ended_at is not null
+           and p_property_id = any(coalesce(membership.covered_property_ids, '{}'::uuid[]))
+       ) then
+      raise exception '0426 revoked-empty disposition does not prove an explicit ended canonical membership for account %', p_account_id
+        using errcode = '55000';
+    end if;
+  end if;
+
+  select disposition.* into v_existing
+  from public.account_access_cutover_repair_dispositions disposition
+  where disposition.preflight_run_id = p_preflight_run_id
+    and disposition.account_id = p_account_id
+    and disposition.property_id = p_property_id
+  for update;
+  if found then
+    if v_existing.status <> 'unconsumed'
+       or (p_disposition_id is not null and v_existing.id <> p_disposition_id)
+       or row(v_existing.issue_codes, v_existing.decision, v_existing.operator_label,
+              v_existing.access_b_merge_sha, v_existing.deployed_descendant_sha,
+              v_existing.raw_property_ids, v_existing.raw_scope_hash,
+              v_existing.authority_mode, v_existing.authority_version,
+              v_existing.canonical_property_ids, v_existing.canonical_scope_hash,
+              v_existing.legacy_write_event_count, v_existing.reason)
+          is distinct from
+          row(v_requested_issue_codes, p_decision, btrim(p_operator_label),
+              lower(p_access_b_merge_sha), lower(p_deployed_descendant_sha),
+              public._staxis_stage_c_normalize_ids(p_raw_property_ids), p_raw_scope_hash,
+              p_authority_mode, p_authority_version,
+              public._staxis_stage_c_normalize_ids(p_canonical_property_ids),
+              p_canonical_scope_hash, p_legacy_write_event_count, btrim(p_reason)) then
+      raise exception '0426 repair disposition already exists with different evidence'
+        using errcode = '55000';
+    end if;
+    return jsonb_build_object(
+      'ok', true, 'dispositionId', v_existing.id, 'status', v_existing.status,
+      'idempotentReplay', true
+    );
+  end if;
+
+  insert into public.account_access_cutover_repair_dispositions (
+    id, preflight_run_id, account_id, property_id, issue_codes, decision,
+    operator_label, access_b_merge_sha, deployed_descendant_sha,
+    raw_property_ids, raw_scope_hash, authority_mode, authority_version,
+    canonical_property_ids, canonical_scope_hash, legacy_write_event_count,
+    reason, recorded_at, details
+  ) values (
+    v_id, p_preflight_run_id, p_account_id, p_property_id,
+    v_requested_issue_codes, p_decision, btrim(p_operator_label),
+    lower(p_access_b_merge_sha), lower(p_deployed_descendant_sha),
+    public._staxis_stage_c_normalize_ids(p_raw_property_ids), p_raw_scope_hash,
+    p_authority_mode, p_authority_version,
+    public._staxis_stage_c_normalize_ids(p_canonical_property_ids),
+    p_canonical_scope_hash, p_legacy_write_event_count, btrim(p_reason),
+    coalesce(p_recorded_at, clock_timestamp()),
+    jsonb_build_object(
+      'source', '0426-stage-c-operator',
+      'activeIsTestProperty', true,
+      'canonicalAuthorityOnly', true
+    )
+  );
+  return jsonb_build_object(
+    'ok', true, 'dispositionId', v_id, 'status', 'unconsumed',
+    'idempotentReplay', false
+  );
+end;
+$$;
+
+revoke all on function public.staxis_access_stage_c_record_repair_disposition(
+  uuid, uuid, uuid, text[], text, text, text, text, uuid[], text, text,
+  bigint, uuid[], text, bigint, text, timestamptz, uuid
+) from public, anon, authenticated, service_role;
+grant execute on function public.staxis_access_stage_c_record_repair_disposition(
+  uuid, uuid, uuid, text[], text, text, text, text, uuid[], text, text,
+  bigint, uuid[], text, bigint, text, timestamptz, uuid
+) to service_role;
+
+create or replace function public.staxis_access_stage_c_repair_evidence(
+  p_preflight_run_id uuid default null
+)
+returns jsonb
+language sql
+stable
+security definer
+set search_path = pg_catalog, public
+as $$
+  select jsonb_build_object(
+    'dispositions', coalesce((
+      select jsonb_agg(to_jsonb(disposition) order by disposition.recorded_at, disposition.id)
+      from public.account_access_cutover_repair_dispositions disposition
+      where p_preflight_run_id is null
+         or disposition.preflight_run_id = p_preflight_run_id
+    ), '[]'::jsonb),
+    'receipts', coalesce((
+      select jsonb_agg(to_jsonb(receipt) order by receipt.repaired_at, receipt.id)
+      from public.account_access_cutover_repair_receipts receipt
+      where p_preflight_run_id is null
+         or receipt.preflight_run_id = p_preflight_run_id
+    ), '[]'::jsonb)
+  );
+$$;
+
+revoke all on function public.staxis_access_stage_c_repair_evidence(uuid)
+  from public, anon, authenticated;
+grant execute on function public.staxis_access_stage_c_repair_evidence(uuid)
+  to service_role;
+
+-- During the repair phase the legacy observers are retired under the same
+-- transaction that clears the approved rows.  This narrow temporary fence
+-- prevents any other property_access mutation from slipping through the
+-- trigger retirement window.  The final fence replaces it before commit.
+create or replace function public._staxis_reject_stage_c_repair_property_access_write()
+returns trigger
+language plpgsql
+security definer
+set search_path = pg_catalog, public
+as $$
+begin
+  if tg_op = 'INSERT' and new.property_access is null then
+    return new;
+  end if;
+  if tg_op = 'UPDATE'
+     and nullif(current_setting('staxis.access_stage_c_repair_disposition_id', true), '') is not null
+     and exists (
+       select 1
+       from public.account_access_cutover_repair_dispositions disposition
+       where disposition.id = nullif(current_setting('staxis.access_stage_c_repair_disposition_id', true), '')::uuid
+         and disposition.account_id = new.id
+         and disposition.status = 'unconsumed'
+     )
+     and new.property_access is not null
+     and cardinality(new.property_access) = 0
+     and cardinality(coalesce(old.property_access, '{}'::uuid[])) > 0 then
+    return new;
+  end if;
+  raise exception '0426 repair phase rejects unapproved accounts.property_access writes'
+    using errcode = '42501';
+end;
+$$;
+
+revoke all on function public._staxis_reject_stage_c_repair_property_access_write()
+  from public, anon, authenticated, service_role;
+
+-- Apply only the disposition-backed rows from the exact failed preflight.
+-- This function intentionally runs before release-gate consumption.  It
+-- performs no work for a clean run, while a dirty run must prove every issue,
+-- every hash/version, every canonical condition, and every external gate
+-- session value before any trigger or authority state changes are attempted.
+create or replace function public._staxis_stage_c_apply_approved_repairs()
+returns uuid
+language plpgsql
+security definer
+set search_path = public, pg_temp
+as $$
+declare
+  v_status public.account_access_cutover_status%rowtype;
+  v_source_run record;
+  v_source_run_id uuid;
+  v_fresh_preflight jsonb;
+  v_fresh_run_id uuid;
+  v_release_id uuid;
+  v_token text;
+  v_nonce text;
+  v_release public.account_access_cutover_release_receipts%rowtype;
+  v_disposition public.account_access_cutover_repair_dispositions%rowtype;
+  v_account public.accounts%rowtype;
+  v_state public.account_authorization_state%rowtype;
+  v_raw_ids uuid[];
+  v_canonical_ids uuid[];
+  v_after_canonical_ids uuid[];
+  v_issue_codes text[];
+  v_cleared_accounts uuid[] := '{}'::uuid[];
+  v_write_count bigint;
+  v_receipt_count integer := 0;
+  v_repair_disposition_id uuid;
+begin
+  select status.* into v_status
+  from public.account_access_cutover_status status
+  where status.id is true
+  for update;
+  if not found then
+    raise exception '0426 repair phase requires cutover status';
+  end if;
+  v_source_run_id := v_status.final_preflight_run_id;
+  if v_source_run_id is null then
+    raise exception '0426 repair phase requires a report-only preflight run';
+  end if;
+
+  select run.status, run.issue_count
+    into v_source_run
+  from public.account_access_cutover_preflight_runs run
+  where run.id = v_source_run_id;
+  if not found then
+    raise exception '0426 repair phase references missing preflight run %', v_source_run_id;
+  end if;
+
+  if v_source_run.status = 'passed' and coalesce(v_source_run.issue_count, 0) = 0 then
+    if exists (
+      select 1
+      from public.account_access_cutover_repair_dispositions disposition
+      where disposition.preflight_run_id = v_source_run_id
+    ) then
+      raise exception '0426 repair dispositions cannot be attached to a clean preflight run'
+        using errcode = '55000';
+    end if;
+    return v_source_run_id;
+  end if;
+  if not public._staxis_stage_c_preflight_repairable(v_source_run_id) then
+    raise exception '0426 Stage C preflight rejected finalization (run %, repair disposition not eligible)', v_source_run_id
+      using errcode = '55000';
+  end if;
+
+  v_release_id := nullif(current_setting('staxis.access_stage_c_release_id', true), '')::uuid;
+  v_token := nullif(current_setting('staxis.access_stage_c_release_token', true), '');
+  v_nonce := nullif(current_setting('staxis.access_stage_c_release_nonce', true), '');
+  if v_release_id is null or v_token is null or v_nonce is null then
+    raise exception '0426 repair phase requires a same-session release receipt, authorization token, and nonce'
+      using errcode = '55000';
+  end if;
+  select receipt.* into v_release
+  from public.account_access_cutover_release_receipts receipt
+  where receipt.id = v_release_id
+  for update;
+  if not found or v_release.status <> 'unconsumed'
+     or v_release.preflight_run_id <> v_source_run_id
+     or v_release.access_b_merge_sha <> 'ec83bca6dab74a52dfb251d04be11d5c7427703f'
+     or v_release.old_deployment_fence_nonce <> v_nonce
+     or encode(pg_catalog.sha256(convert_to(v_token, 'UTF8')), 'hex') <> v_release.authorization_hash then
+    raise exception '0426 repair phase release receipt is missing, reused, stale, or bound to another failed run'
+      using errcode = '55000';
+  end if;
+
+  select count(*)::bigint into v_write_count
+  from public.account_access_cutover_legacy_write_events;
+  if v_write_count <> 0 then
+    raise exception '0426 repair phase found new ordinary legacy writer events'
+      using errcode = '55000';
+  end if;
+  if exists (
+    select 1 from public.account_lifecycle_intents intent
+    where intent.status in ('pending', 'processing')
+  ) or exists (
+    select 1 from public.account_invites invitation
+    where invitation.acceptance_claim_token is not null
+      and invitation.accepted_at is null
+  ) or exists (
+    select 1 from public.join_requests request_row
+    where request_row.status = 'pending'
+  ) or exists (
+    select 1 from public.organization_access_requests request_row
+    where request_row.status = 'pending'
+  ) or exists (
+    select 1 from public.organization_invitations invitation
+    where invitation.status = 'pending'
+  ) then
+    raise exception '0426 repair phase found an in-flight lifecycle or access operation'
+      using errcode = '55000';
+  end if;
+
+  -- Lock exact issue rows, accounts, authorization state, topology, and all
+  -- canonical entitlement rows before validating any disposition.
+  for v_disposition in
+    select disposition.*
+    from public.account_access_cutover_repair_dispositions disposition
+    where disposition.preflight_run_id = v_source_run_id
+      and disposition.status = 'unconsumed'
+    order by disposition.account_id, disposition.property_id, disposition.id
+  loop
+    perform 1
+    from public.account_access_cutover_preflight_issues issue
+    where issue.run_id = v_source_run_id
+      and issue.account_id = v_disposition.account_id
+      and (
+        issue.details->'propertyIds' ? v_disposition.property_id::text
+        or issue.property_id = v_disposition.property_id
+        or issue.issue_code = 'stage_a_invariant_failure'
+      )
+    for update;
+    perform 1 from public.accounts account
+      where account.id = v_disposition.account_id for update;
+    perform 1 from public.account_authorization_state state
+      where state.account_id = v_disposition.account_id for update;
+    perform 1 from public.properties property
+      where property.id = v_disposition.property_id for update;
+    perform 1 from public.organization_property_relationships relationship
+      where relationship.property_id = v_disposition.property_id for update;
+    perform 1 from public.organization_memberships membership
+      where membership.account_id = v_disposition.account_id for update;
+    perform 1
+    from public.organization_access_grants grant_row
+    join public.organization_memberships membership
+      on membership.id = grant_row.membership_id
+    where membership.account_id = v_disposition.account_id
+      and (grant_row.property_id = v_disposition.property_id
+           or grant_row.property_id is null)
+    for update;
+    perform 1
+    from public.account_property_authorization_bridges bridge
+    where bridge.account_id = v_disposition.account_id
+      and bridge.property_id = v_disposition.property_id
+    for update;
+
+    select account.* into v_account
+    from public.accounts account
+    where account.id = v_disposition.account_id;
+    select state.* into v_state
+    from public.account_authorization_state state
+    where state.account_id = v_disposition.account_id;
+    if v_account.id is null or v_state.account_id is null
+       or v_account.active is not true
+       or v_disposition.deployed_descendant_sha <> v_release.deployed_descendant_sha then
+      raise exception '0426 repair disposition no longer matches active account or release evidence for account %', v_disposition.account_id
+        using errcode = '55000';
+    end if;
+    if not exists (
+      select 1 from public.properties property
+      where property.id = v_disposition.property_id and property.is_test is true
+    ) or not exists (
+      select 1
+      from public._staxis_current_primary_property_relationships() relationship
+      where relationship.property_id = v_disposition.property_id
+        and relationship.active_primary_count = 1
+    ) then
+      raise exception '0426 repair disposition property topology changed'
+        using errcode = '55000';
+    end if;
+
+    v_raw_ids := public._staxis_stage_c_normalize_ids(v_account.property_access);
+    v_canonical_ids := public._staxis_stage_c_normalize_ids(array(
+      select authz.property_id
+      from public._staxis_account_property_authorizations(v_disposition.account_id) authz
+    ));
+    if v_raw_ids is distinct from v_disposition.raw_property_ids
+       or public._staxis_stage_c_scope_hash(v_raw_ids) <> v_disposition.raw_scope_hash
+       or v_canonical_ids is distinct from v_disposition.canonical_property_ids
+       or public._staxis_stage_c_scope_hash(v_canonical_ids) <> v_disposition.canonical_scope_hash
+       or v_state.authority_mode is distinct from v_disposition.authority_mode
+       or v_state.authority_version is distinct from v_disposition.authority_version
+       or not (v_disposition.property_id = any(v_raw_ids)) then
+      raise exception '0426 repair disposition hash/version/property evidence changed for account %', v_disposition.account_id
+        using errcode = '55000';
+    end if;
+
+    if v_disposition.decision = 'admin_global' then
+      if v_account.role <> 'admin'
+         or v_state.authority_mode not in ('legacy', 'shadow')
+         or cardinality(v_canonical_ids) <> 0
+         or exists (
+           select 1 from public.account_property_authorization_bridges bridge
+           where bridge.account_id = v_disposition.account_id and bridge.status = 'active'
+         ) or exists (
+           select 1
+           from public.organization_access_grants grant_row
+           join public.organization_memberships membership
+             on membership.id = grant_row.membership_id
+           where membership.account_id = v_disposition.account_id
+             and grant_row.status = 'active'
+             and membership.status = 'active'
+             and membership.ended_at is null
+             and grant_row.source <> 'legacy_backfill'
+             and grant_row.starts_at <= clock_timestamp()
+             and (grant_row.expires_at is null or grant_row.expires_at > clock_timestamp())
+         ) then
+        raise exception '0426 admin-global repair condition changed for account %', v_disposition.account_id
+          using errcode = '55000';
+      end if;
+    elsif v_disposition.decision = 'canonical_duplicate' then
+      if v_account.role = 'admin'
+         or v_state.authority_mode <> 'normalized'
+         or not (v_disposition.property_id = any(v_canonical_ids)) then
+        raise exception '0426 canonical-duplicate coverage changed for account %', v_disposition.account_id
+          using errcode = '55000';
+      end if;
+    elsif v_disposition.decision = 'revoked_canonical_empty' then
+      if v_account.role = 'admin'
+         or v_state.authority_mode <> 'normalized'
+         or cardinality(v_canonical_ids) <> 0
+         or exists (
+           select 1 from public.organization_memberships membership
+           where membership.account_id = v_disposition.account_id
+             and membership.status = 'active'
+             and membership.ended_at is null
+             and v_disposition.property_id = any(coalesce(membership.covered_property_ids, '{}'::uuid[]))
+         ) or exists (
+           select 1
+           from public.account_property_authorization_bridges bridge
+           where bridge.account_id = v_disposition.account_id
+             and bridge.property_id = v_disposition.property_id
+             and bridge.status = 'active'
+         ) or exists (
+           select 1
+           from public.organization_access_grants grant_row
+           join public.organization_memberships membership
+             on membership.id = grant_row.membership_id
+           where membership.account_id = v_disposition.account_id
+             and grant_row.status = 'active'
+             and membership.status = 'active'
+             and membership.ended_at is null
+             and grant_row.source <> 'legacy_backfill'
+             and grant_row.starts_at <= clock_timestamp()
+             and (grant_row.expires_at is null or grant_row.expires_at > clock_timestamp())
+             and (grant_row.property_id = v_disposition.property_id or grant_row.property_id is null)
+         )
+         or not exists (
+           select 1 from public.organization_memberships membership
+           where membership.account_id = v_disposition.account_id
+             and membership.status = 'revoked'
+             and membership.ended_at is not null
+             and v_disposition.property_id = any(coalesce(membership.covered_property_ids, '{}'::uuid[]))
+         ) then
+        raise exception '0426 revoked-empty coverage changed for account %', v_disposition.account_id
+          using errcode = '55000';
+      end if;
+    end if;
+
+  end loop;
+
+  -- Apply each account's receipt-backed clear once after every one of its
+  -- account/property dispositions has been validated.  This keeps a raw
+  -- account array containing multiple approved residue properties atomic and
+  -- prevents the first clear from invalidating later evidence checks.
+  for v_account in
+    select account.*
+    from public.accounts account
+    where exists (
+      select 1
+      from public.account_access_cutover_repair_dispositions disposition
+      where disposition.preflight_run_id = v_source_run_id
+        and disposition.status = 'unconsumed'
+        and disposition.account_id = account.id
+    )
+    order by account.id
+  loop
+    select disposition.id
+      into v_repair_disposition_id
+    from public.account_access_cutover_repair_dispositions disposition
+    where disposition.preflight_run_id = v_source_run_id
+      and disposition.status = 'unconsumed'
+      and disposition.account_id = v_account.id
+    order by disposition.id
+    limit 1;
+
+    if exists (
+      select 1
+      from public.account_access_cutover_repair_dispositions disposition
+      where disposition.preflight_run_id = v_source_run_id
+        and disposition.status = 'unconsumed'
+        and disposition.account_id = v_account.id
+        and disposition.decision = 'admin_global'
+    ) then
+      update public.account_authorization_state state
+         set authority_mode = 'normalized',
+             cutover_at = coalesce(state.cutover_at, clock_timestamp()),
+             cutover_reason = coalesce(state.cutover_reason, 'Access Stage C approved platform-admin residue repair'),
+             updated_at = clock_timestamp()
+       where state.account_id = v_account.id
+         and state.authority_mode <> 'normalized';
+      perform public._staxis_refresh_account_authorization(
+        v_account.id,
+        'Access Stage C approved platform-admin residue repair'
+      );
+    end if;
+
+    perform set_config(
+      'staxis.access_stage_c_repair_disposition_id',
+      v_repair_disposition_id::text,
+      true
+    );
+    drop trigger if exists trg_accounts_reconcile_legacy_organization_access
+      on public.accounts;
+    drop trigger if exists trg_accounts_authorization_translate_legacy_property_access
+      on public.accounts;
+    drop trigger if exists trg_accounts_zz_authorization_translate_legacy_property_access
+      on public.accounts;
+    drop trigger if exists trg_properties_reconcile_legacy_organization_access
+      on public.properties;
+    drop trigger if exists trg_accounts_stage_c_repair_property_access_fence
+      on public.accounts;
+    create trigger trg_accounts_stage_c_repair_property_access_fence
+      before insert or update of property_access on public.accounts
+      for each row execute function public._staxis_reject_stage_c_repair_property_access_write();
+    update public.accounts account
+       set property_access = '{}'::uuid[]
+     where account.id = v_account.id;
+    v_cleared_accounts := array_append(v_cleared_accounts, v_account.id);
+    perform set_config('staxis.access_stage_c_repair_disposition_id', '', true);
+  end loop;
+
+  if cardinality(v_cleared_accounts) = 0 then
+    raise exception '0426 repair phase found no receipt-backed residue rows'
+      using errcode = '55000';
+  end if;
+
+  v_fresh_preflight := public.staxis_preflight_authorization_cutover_stage_c();
+  if coalesce((v_fresh_preflight->>'ok')::boolean, false) is not true
+     or coalesce((v_fresh_preflight->>'issueCount')::integer, 1) <> 0 then
+    raise exception '0426 repair phase fresh preflight remained dirty: %', v_fresh_preflight
+      using errcode = '55000';
+  end if;
+  v_fresh_run_id := (v_fresh_preflight->>'runId')::uuid;
+
+  select count(*)::bigint into v_write_count
+  from public.account_access_cutover_legacy_write_events;
+  if v_write_count <> 0 then
+    raise exception '0426 repair phase generated ordinary legacy writer events'
+      using errcode = '55000';
+  end if;
+  if exists (
+    select 1 from public.account_lifecycle_intents intent
+    where intent.status in ('pending', 'processing')
+  ) or exists (
+    select 1 from public.account_invites invitation
+    where invitation.acceptance_claim_token is not null
+      and invitation.accepted_at is null
+  ) or exists (
+    select 1 from public.join_requests request_row
+    where request_row.status = 'pending'
+  ) or exists (
+    select 1 from public.organization_access_requests request_row
+    where request_row.status = 'pending'
+  ) or exists (
+    select 1 from public.organization_invitations invitation
+    where invitation.status = 'pending'
+  ) then
+    raise exception '0426 repair phase found a new in-flight operation after clear'
+      using errcode = '55000';
+  end if;
+
+  for v_disposition in
+    select disposition.*
+    from public.account_access_cutover_repair_dispositions disposition
+    where disposition.preflight_run_id = v_source_run_id
+      and disposition.status = 'unconsumed'
+    order by disposition.account_id, disposition.property_id, disposition.id
+  loop
+    select state.* into v_state
+    from public.account_authorization_state state
+    where state.account_id = v_disposition.account_id;
+    v_after_canonical_ids := public._staxis_stage_c_normalize_ids(array(
+      select authz.property_id
+      from public._staxis_account_property_authorizations(v_disposition.account_id) authz
+    ));
+    insert into public.account_access_cutover_repair_receipts (
+      disposition_id, preflight_run_id, account_id, property_id, decision,
+      operator_label, access_b_merge_sha, deployed_descendant_sha,
+      source_property_ids, source_scope_hash,
+      canonical_property_ids_before, canonical_scope_hash_before,
+      canonical_property_ids_after, canonical_scope_hash_after,
+      authority_mode_before, authority_mode_after,
+      authority_version_before, authority_version_after,
+      legacy_write_event_count_before, legacy_write_event_count_after,
+      details
+    ) values (
+      v_disposition.id, v_source_run_id, v_disposition.account_id,
+      v_disposition.property_id, v_disposition.decision,
+      v_disposition.operator_label, v_disposition.access_b_merge_sha,
+      v_disposition.deployed_descendant_sha, v_disposition.raw_property_ids,
+      v_disposition.raw_scope_hash, v_disposition.canonical_property_ids,
+      v_disposition.canonical_scope_hash, v_after_canonical_ids,
+      public._staxis_stage_c_scope_hash(v_after_canonical_ids),
+      v_disposition.authority_mode, v_state.authority_mode,
+      v_disposition.authority_version, v_state.authority_version,
+      v_disposition.legacy_write_event_count, v_write_count,
+      jsonb_build_object(
+        'repairPreflightRunId', v_fresh_run_id,
+        'canonicalAuthorityChanged', false,
+        'propertyAccessCleared', true,
+        'accountPropertyCleanupIndependent', true
+      )
+    ) on conflict (disposition_id) do nothing;
+    v_receipt_count := v_receipt_count + 1;
+  end loop;
+
+  update public.account_access_cutover_repair_dispositions disposition
+     set status = 'consumed',
+         consumed_at = clock_timestamp(),
+         consumed_session_id = pg_backend_pid()::text,
+         consumed_preflight_run_id = v_fresh_run_id
+   where disposition.preflight_run_id = v_source_run_id
+     and disposition.status = 'unconsumed';
+
+  update public.account_access_cutover_status status
+     set details = coalesce(status.details, '{}'::jsonb) || jsonb_build_object(
+       'repairSourcePreflightRunId', v_source_run_id,
+       'repairPreflightRunId', v_fresh_run_id,
+       'repairDispositionCount', v_receipt_count,
+       'repairReceiptsWritten', v_receipt_count,
+       'repairAuthorityChanged', false
+     )
+   where status.id is true;
+  return v_fresh_run_id;
+end;
+$$;
+
+revoke all on function public._staxis_stage_c_apply_approved_repairs()
+  from public, anon, authenticated, service_role;
+
 create or replace function public.staxis_access_stage_c_record_release_receipt(
   p_operator_label text,
   p_access_b_merge_sha text,
@@ -148,6 +1306,8 @@ declare
   v_id uuid := coalesce(p_receipt_id, gen_random_uuid());
   v_authorization_hash text;
   v_preflight record;
+  v_status_final_preflight_run_id uuid;
+  v_repair_attested boolean := false;
   v_existing public.account_access_cutover_release_receipts%rowtype;
 begin
   if nullif(btrim(p_operator_label), '') is null
@@ -177,10 +1337,23 @@ begin
     raise exception '0426 release receipt references an unknown preflight run %', p_preflight_run_id
       using errcode = '22023';
   end if;
+  select status.final_preflight_run_id
+    into v_status_final_preflight_run_id
+  from public.account_access_cutover_status status
+  where status.id is true;
+  if v_status_final_preflight_run_id is distinct from p_preflight_run_id then
+    raise exception '0426 release receipt must bind to the current preflight run %',
+      p_preflight_run_id using errcode = '22023';
+  end if;
   if v_preflight.status <> 'passed' or coalesce(v_preflight.issue_count, 1) <> 0 then
-    raise exception '0426 release receipt requires a passed preflight run (%, status %, issues %)',
-      p_preflight_run_id, v_preflight.status, coalesce(v_preflight.issue_count, 1)
-      using errcode = '22023';
+    if v_preflight.status = 'failed'
+       and public._staxis_stage_c_preflight_repairable(p_preflight_run_id) then
+      v_repair_attested := true;
+    else
+      raise exception '0426 release receipt requires a passed preflight or a fully dispositioned repairable run (%, status %, issues %)',
+        p_preflight_run_id, v_preflight.status, coalesce(v_preflight.issue_count, 1)
+        using errcode = '22023';
+    end if;
   end if;
 
   v_authorization_hash := encode(
@@ -225,7 +1398,9 @@ begin
       'attestationSource', 'external-deployment-owner',
       'accessBMergeSha', lower(p_access_b_merge_sha),
       'deployedDescendantSha', lower(p_deployed_descendant_sha),
-      'writerFenceHash', lower(p_old_deployment_fence_hash)
+      'writerFenceHash', lower(p_old_deployment_fence_hash),
+      'repairEligible', v_repair_attested,
+      'repairSourcePreflightRunId', case when v_repair_attested then p_preflight_run_id else null end
     )
   );
   return jsonb_build_object(
@@ -275,12 +1450,14 @@ declare
   v_auth_hash text;
   v_receipt public.account_access_cutover_release_receipts%rowtype;
   v_preflight record;
+  v_status_details jsonb;
   v_consumed_at timestamptz := clock_timestamp();
 begin
   v_receipt_id := nullif(current_setting('staxis.access_stage_c_release_id', true), '')::uuid;
   v_token := nullif(current_setting('staxis.access_stage_c_release_token', true), '');
   v_nonce := nullif(current_setting('staxis.access_stage_c_release_nonce', true), '');
-  select status.final_preflight_run_id into v_run_id
+  select status.final_preflight_run_id, status.details
+    into v_run_id, v_status_details
   from public.account_access_cutover_status status
   where status.id is true
   for update;
@@ -301,7 +1478,12 @@ begin
     raise exception '0426 release gate receipt % was already consumed', v_receipt_id
       using errcode = '55000';
   end if;
-  if v_receipt.preflight_run_id <> v_run_id then
+  if v_receipt.preflight_run_id <> v_run_id
+     and not (
+       v_receipt.details->>'repairEligible' = 'true'
+       and (v_status_details->>'repairSourcePreflightRunId')::uuid = v_receipt.preflight_run_id
+       and (v_status_details->>'repairPreflightRunId')::uuid = v_run_id
+     ) then
     raise exception '0426 release gate receipt % does not match preflight run %', v_receipt_id, v_run_id
       using errcode = '55000';
   end if;
@@ -976,6 +2158,10 @@ commit;
 -- old-deployment/job/writer-fence evidence from a git SHA.
 -- @access-stage-c-release-gate
 begin;
+-- A dirty report-only run must be repaired and freshly re-preflighted before
+-- the release receipt is consumed.  The helper is a no-op for a clean run.
+select public._staxis_stage_c_apply_approved_repairs();
+
 do $strict_gate$
 declare
   v_stage text;
@@ -4649,6 +5835,7 @@ declare
   v_canonical_ids uuid[];
   v_hash text;
   v_import jsonb;
+  v_repair_source_ids uuid[];
 begin
   select status.* into v_status
   from public.account_access_cutover_status status
@@ -4672,7 +5859,14 @@ begin
     order by account.id
     for update
   loop
-    v_raw_ids := coalesce(v_account.property_access, '{}'::uuid[]);
+    select repair_receipt.source_property_ids
+      into v_repair_source_ids
+    from public.account_access_cutover_repair_receipts repair_receipt
+    where repair_receipt.account_id = v_account.id
+    order by repair_receipt.repaired_at desc, repair_receipt.id desc
+    limit 1;
+    v_raw_ids := coalesce(v_repair_source_ids, v_account.property_access, '{}'::uuid[]);
+    v_repair_source_ids := null;
     select coalesce(array_agg(distinct id order by id), '{}'::uuid[])
       into v_raw_ids
     from unnest(v_raw_ids) ids(id);
@@ -4717,7 +5911,16 @@ begin
       (select count(*)::integer
        from public.account_property_authorization_bridges bridge
        where bridge.account_id = v_account.id and bridge.status = 'active'),
-      jsonb_build_object('role', v_account.role, 'authUserId', v_account.data_user_id)
+      jsonb_build_object(
+        'role', v_account.role,
+        'authUserId', v_account.data_user_id,
+        'repairReceiptIds', coalesce((
+          select jsonb_agg(repair_receipt.id order by repair_receipt.id)
+          from public.account_access_cutover_repair_receipts repair_receipt
+          where repair_receipt.account_id = v_account.id
+            and repair_receipt.details->>'repairPreflightRunId' = v_run_id::text
+        ), '[]'::jsonb)
+      )
     )
     on conflict (account_id) do nothing;
   end loop;
@@ -4728,6 +5931,8 @@ begin
   drop trigger if exists trg_accounts_zz_authorization_translate_legacy_property_access
     on public.accounts;
   drop trigger if exists trg_accounts_authorization_translate_legacy_property_access
+    on public.accounts;
+  drop trigger if exists trg_accounts_stage_c_repair_property_access_fence
     on public.accounts;
   drop trigger if exists trg_accounts_reconcile_legacy_organization_access
     on public.accounts;
@@ -4771,6 +5976,15 @@ $finalize$;
 -- evidence, while the trigger above makes the column inert and fail-closed.
 drop function if exists public.staxis_translate_legacy_property_access(uuid, uuid[], text);
 drop function if exists public._staxis_translate_legacy_property_access_trigger();
+drop function if exists public._staxis_stage_c_apply_approved_repairs();
+drop function if exists public._staxis_stage_c_preflight_repairable(uuid);
+drop function if exists public._staxis_reject_stage_c_repair_property_access_write();
+drop function if exists public._staxis_stage_c_normalize_ids(uuid[]);
+drop function if exists public._staxis_stage_c_scope_hash(uuid[]);
+drop function if exists public.staxis_access_stage_c_record_repair_disposition(
+  uuid, uuid, uuid, text[], text, text, text, text, uuid[], text, text,
+  bigint, uuid[], text, bigint, text, timestamptz, uuid
+);
 drop function if exists public._staxis_stage_a_should_run_legacy_reconciliation(uuid[]);
 drop function if exists public._staxis_reconcile_property_trigger();
 drop function if exists public._staxis_reconcile_account_trigger();

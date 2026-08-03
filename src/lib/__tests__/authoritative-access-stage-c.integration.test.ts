@@ -12,11 +12,13 @@ import {
 } from '../../../tests/fixtures/pglite-migrate';
 import {
   ACCOUNT_ADMIN,
+  ACCOUNT_FRANK,
   ACCOUNT_HANK,
   ACCOUNT_MARIA,
   ACCOUNT_WANDA,
   ORG_A,
   PID_A1,
+  PID_A2,
   PID_B1,
   PID_L1,
   UID_ADMIN,
@@ -29,6 +31,8 @@ import {
 const MIGRATION = '0426_authoritative_access_stage_c_final_contract.sql';
 const LIVE_0425_DESCRIPTION =
   'Restore missing canonical room identities for is_test properties through the lineage-complete service roster path';
+const ACCESS_B_LIVE_SHA = 'ec83bca6dab74a52dfb251d04be11d5c7427703f';
+const CURRENT_LIVE_DESCENDANT_SHA = '442fb98d632521ea33346d5c8a97014248a31fa0';
 
 const INVITE_USER = 'c4261000-0000-4000-8000-000000000001';
 const INVITE_STAFF = 'c4262000-0000-4000-8000-000000000001';
@@ -136,6 +140,143 @@ async function seedStageCFixture(pg: PGlite): Promise<void> {
   );
 }
 
+async function seedProductionResidueFixture(pg: PGlite): Promise<void> {
+  // Keep the seeded platform admin in its original legacy mode. The clean
+  // Stage C fixture intentionally normalizes that row, but this production
+  // incident is specifically the preflight admin residue.
+  await seedTwoCompanies(pg);
+  // Reuse the real company topology but mark the A1 hotel as the explicit
+  // is_test production fixture. The seed's unrelated legacy controls are
+  // normalized/emptied so the only failed-run residues are the three
+  // approved decision classes below.
+  await pg.query(`update public.properties set is_test=true where id=$1`, [PID_A1]);
+  await pg.query(
+    `update public.accounts set property_access='{}'::uuid[]
+      where id in ($1,$2)`,
+    [ACCOUNT_WANDA, ACCOUNT_HANK],
+  );
+  await pg.query(
+    `update public.account_authorization_state
+        set authority_mode='normalized',
+            cutover_at=coalesce(cutover_at, now()),
+            cutover_reason=coalesce(cutover_reason, 'Stage C residue fixture cleanup')
+      where account_id in ($1,$2)`,
+    [ACCOUNT_WANDA, ACCOUNT_HANK],
+  );
+
+  // Admin: global role authority, raw A1 residue, no canonical grant.
+  await pg.query(
+    `update public.account_authorization_state
+        set authority_mode='legacy', cutover_at=null,
+            cutover_reason='Stage C production-shaped admin residue'
+      where account_id=$1`,
+    [ACCOUNT_ADMIN],
+  );
+  await pg.query(`update public.accounts set property_access=array[$2::uuid] where id=$1`, [ACCOUNT_ADMIN, PID_A1]);
+
+  // Duplicate: Maria's canonical hats cover A1/A2; raw A1 is redundant.
+  await pg.query(`update public.accounts set property_access=array[$2::uuid] where id=$1`, [ACCOUNT_MARIA, PID_A1]);
+
+  // Revoked-empty: Frank's only A1 membership is explicitly ended/revoked.
+  await pg.query(`update public.accounts set property_access=array[$2::uuid] where id=$1`, [ACCOUNT_FRANK, PID_A1]);
+  await pg.query(
+    `update public.organization_memberships
+        set status='revoked', ended_at=coalesce(ended_at, now()), updated_at=now()
+      where account_id=$1 and organization_id=$2
+        and membership_scope='property' and $3::uuid = any(coalesce(covered_property_ids,'{}'::uuid[]))
+        and status='active'`,
+    [ACCOUNT_FRANK, ORG_A, PID_A1],
+  );
+
+  // The Stage A translator observed the fixture setup writes. Production
+  // evidence for this incident is zero, so reset only this test setup audit
+  // before the report-only prefix runs.
+  await pg.query(`delete from public.account_access_cutover_legacy_write_events`);
+}
+
+async function seedUnsupportedResidueFixture(pg: PGlite): Promise<void> {
+  await seedProductionResidueFixture(pg);
+  await pg.query(`update public.properties set is_test=true where id=$1`, [PID_L1]);
+  await pg.query(`update public.accounts set property_access=array[$2::uuid] where id=$1`, [ACCOUNT_HANK, PID_L1]);
+  await pg.query(`delete from public.account_access_cutover_legacy_write_events`);
+}
+
+async function recordAllProductionResidueDispositions(
+  pg: PGlite,
+  options: { deployedDescendantSha?: string; accessBMergeSha?: string } = {},
+): Promise<string> {
+  const runId = (await rows<{ final_preflight_run_id: string }>(
+    pg,
+    `select final_preflight_run_id from public.account_access_cutover_status where id is true`,
+  ))[0].final_preflight_run_id;
+  const states = await rows<{
+    account_id: string;
+    authority_mode: string;
+    authority_version: number;
+  }>(
+    pg,
+    `select account_id,authority_mode,authority_version
+       from public.account_authorization_state
+      where account_id in ($1,$2,$3)
+      order by account_id`,
+    [ACCOUNT_ADMIN, ACCOUNT_MARIA, ACCOUNT_FRANK],
+  );
+  const byAccount = new Map(states.map((state) => [state.account_id, state]));
+  const mariaCanonicalIds = (await rows<{ property_id: string }>(
+    pg,
+    `select distinct property_id from public._staxis_account_property_authorizations($1) order by property_id`,
+    [ACCOUNT_MARIA],
+  )).map((row) => row.property_id);
+  const frankCanonicalIds = (await rows<{ property_id: string }>(
+    pg,
+    `select distinct property_id from public._staxis_account_property_authorizations($1) order by property_id`,
+    [ACCOUNT_FRANK],
+  )).map((row) => row.property_id);
+  await recordRepairDisposition(pg, {
+    preflightRunId: runId,
+    accountId: ACCOUNT_ADMIN,
+    propertyId: PID_A1,
+    issueCodes: ['admin_legacy_access', 'admin_legacy_account'],
+    decision: 'admin_global',
+    deployedDescendantSha: options.deployedDescendantSha,
+    accessBMergeSha: options.accessBMergeSha,
+    rawPropertyIds: [PID_A1],
+    canonicalPropertyIds: [],
+    authorityMode: byAccount.get(ACCOUNT_ADMIN)?.authority_mode ?? '',
+    authorityVersion: byAccount.get(ACCOUNT_ADMIN)?.authority_version ?? 0,
+    reason: 'admin_global_role_residue',
+  });
+  await recordRepairDisposition(pg, {
+    preflightRunId: runId,
+    accountId: ACCOUNT_MARIA,
+    propertyId: PID_A1,
+    issueCodes: ['normalized_legacy_residue'],
+    decision: 'canonical_duplicate',
+    deployedDescendantSha: options.deployedDescendantSha,
+    accessBMergeSha: options.accessBMergeSha,
+    rawPropertyIds: [PID_A1],
+    canonicalPropertyIds: mariaCanonicalIds,
+    authorityMode: byAccount.get(ACCOUNT_MARIA)?.authority_mode ?? '',
+    authorityVersion: byAccount.get(ACCOUNT_MARIA)?.authority_version ?? 0,
+    reason: 'canonical_duplicate_residue',
+  });
+  await recordRepairDisposition(pg, {
+    preflightRunId: runId,
+    accountId: ACCOUNT_FRANK,
+    propertyId: PID_A1,
+    issueCodes: ['normalized_legacy_residue'],
+    decision: 'revoked_canonical_empty',
+    deployedDescendantSha: options.deployedDescendantSha,
+    accessBMergeSha: options.accessBMergeSha,
+    rawPropertyIds: [PID_A1],
+    canonicalPropertyIds: frankCanonicalIds,
+    authorityMode: byAccount.get(ACCOUNT_FRANK)?.authority_mode ?? '',
+    authorityVersion: byAccount.get(ACCOUNT_FRANK)?.authority_version ?? 0,
+    reason: 'revoked_canonical_empty_residue',
+  });
+  return runId;
+}
+
 async function insertCanonicalAccount(
   pg: PGlite,
   accountId: string,
@@ -179,6 +320,58 @@ async function propertyIds(pg: PGlite, accountId: string): Promise<string[]> {
     [accountId],
   );
   return (result.propertyIds as string[] | undefined) ?? [];
+}
+
+async function recordRepairDisposition(
+  pg: PGlite,
+  values: {
+    preflightRunId: string;
+    accountId: string;
+    propertyId: string;
+    issueCodes: string[];
+    decision: string;
+    operatorLabel?: string;
+    accessBMergeSha?: string;
+    deployedDescendantSha?: string;
+    dispositionId?: string;
+    rawPropertyIds: string[];
+    rawScopeHash?: string;
+    canonicalPropertyIds: string[];
+    canonicalScopeHash?: string;
+    authorityMode: string;
+    authorityVersion: number;
+    reason: string;
+  },
+): Promise<Record<string, unknown>> {
+  const operatorLabel = values.operatorLabel ?? 'production-residue-operator';
+  const accessBMergeSha = values.accessBMergeSha ?? ACCESS_B_LIVE_SHA;
+  const deployedDescendantSha = values.deployedDescendantSha ?? CURRENT_LIVE_DESCENDANT_SHA;
+  return jsonRpc(
+    pg,
+    `select public.staxis_access_stage_c_record_repair_disposition(
+       $1,$2,$3,$4::text[],$5,$6,$7,$8,$9::uuid[],$10,$11,$12,
+       $13::uuid[],$14,$15,$16,clock_timestamp(),$17
+     ) as value`,
+    [
+      values.preflightRunId,
+      values.accountId,
+      values.propertyId,
+      values.issueCodes,
+      values.decision,
+      operatorLabel,
+      accessBMergeSha,
+      deployedDescendantSha,
+      values.rawPropertyIds,
+      values.rawScopeHash ?? sha256(values.rawPropertyIds.slice().sort().join(',')),
+      values.authorityMode,
+      values.authorityVersion,
+      values.canonicalPropertyIds,
+      values.canonicalScopeHash ?? sha256(values.canonicalPropertyIds.slice().sort().join(',')),
+      0,
+      values.reason,
+      values.dispositionId ?? null,
+    ],
+  );
 }
 
 describe('Access Stage C final contract — real migration boundary', () => {
@@ -333,6 +526,16 @@ describe('Access Stage C final contract — real migration boundary', () => {
         finalReceiptDigest,
       );
       assert.equal(Number(status.details.finalReceipts), finalReceiptRows.length);
+      assert.deepEqual(
+        (await rows<{ dispositions: number; repairs: number }>(
+          pg,
+          `select
+             (select count(*)::integer from public.account_access_cutover_repair_dispositions) as dispositions,
+             (select count(*)::integer from public.account_access_cutover_repair_receipts) as repairs`,
+        ))[0],
+        { dispositions: 0, repairs: 0 },
+        'clean preflight must not create repair dispositions or repair receipts',
+      );
 
       const raw = await rows<{ non_empty: number; null_count: number }>(
         pg,
@@ -530,6 +733,75 @@ describe('Access Stage C final contract — real migration boundary', () => {
         assert.equal(acl.anon_execute, false, acl.identity);
         assert.ok(acl.search_path?.some((setting) => setting.replace(/\s+/g, '') === 'search_path=pg_catalog,public'));
       }
+      const repairAcl = await rows<{
+        table_name: string;
+        rls: boolean;
+        policy_qual: string;
+        anon_select: boolean;
+        service_select: boolean;
+        service_insert: boolean;
+      }>(
+        pg,
+        `select relation.relname as table_name,
+                relation.relrowsecurity as rls,
+                coalesce(policy.qual::text,'') as policy_qual,
+                has_table_privilege('anon',relation.oid,'select') as anon_select,
+                has_table_privilege('service_role',relation.oid,'select') as service_select,
+                has_table_privilege('service_role',relation.oid,'insert') as service_insert
+           from pg_class relation
+           left join pg_policies policy
+             on policy.schemaname='public'
+            and policy.tablename=relation.relname
+          where relation.oid in (
+            'public.account_access_cutover_repair_dispositions'::regclass,
+            'public.account_access_cutover_repair_receipts'::regclass
+          )
+          order by relation.relname`,
+      );
+      assert.deepEqual(repairAcl, [
+        {
+          table_name: 'account_access_cutover_repair_dispositions',
+          rls: true,
+          policy_qual: 'false',
+          anon_select: false,
+          service_select: true,
+          service_insert: false,
+        },
+        {
+          table_name: 'account_access_cutover_repair_receipts',
+          rls: true,
+          policy_qual: 'false',
+          anon_select: false,
+          service_select: true,
+          service_insert: false,
+        },
+      ]);
+      const repairEvidenceAcl = (await rows<{
+        service_execute: boolean;
+        anon_execute: boolean;
+        search_path: string[] | null;
+      }>(
+        pg,
+        `select has_function_privilege('service_role','public.staxis_access_stage_c_repair_evidence(uuid)','execute') as service_execute,
+                has_function_privilege('anon','public.staxis_access_stage_c_repair_evidence(uuid)','execute') as anon_execute,
+                routine.proconfig as search_path
+           from pg_proc routine
+          where routine.oid='public.staxis_access_stage_c_repair_evidence(uuid)'::regprocedure`,
+      ))[0];
+      assert.deepEqual({
+        service_execute: repairEvidenceAcl.service_execute,
+        anon_execute: repairEvidenceAcl.anon_execute,
+      }, { service_execute: true, anon_execute: false });
+      assert.ok(repairEvidenceAcl.search_path?.some((setting) => setting.replace(/\s+/g, '') === 'search_path=pg_catalog,public'));
+      assert.equal(
+        (await rows<{ present: string | null }>(
+          pg,
+          `select to_regprocedure($1) as present`,
+          ['public.staxis_access_stage_c_record_repair_disposition(uuid,uuid,uuid,text[],text,text,text,text,uuid[],text,text,bigint,uuid[],text,bigint,text,timestamptz,uuid)'],
+        ))[0].present,
+        null,
+        'the operator disposition writer must retire after the final suffix',
+      );
       const releaseRead = await jsonRpc(
         pg,
         `select public.staxis_access_stage_c_release_receipt($1) as value`,
@@ -1182,6 +1454,623 @@ describe('Access Stage C final contract — real migration boundary', () => {
       );
       assert.deepEqual(receipt.source_property_ids, [PID_L1]);
     });
+  });
+
+  test('repairs exact production-shaped admin, duplicate, and revoked-empty residues before consuming the release gate', async () => {
+    let sourcePreflightRunId = '';
+    let mariaCanonicalIds: string[] = [];
+    let frankCanonicalIds: string[] = [];
+    const migrated = await applyMigrationsToPgliteWithHook(
+      async ({ pg: hookPg, file }) => {
+        if (file === MIGRATION) await seedProductionResidueFixture(hookPg);
+      },
+      {
+        afterAccessStageCPreparation: async ({ pg: hookPg, file }) => {
+          if (file !== MIGRATION) return;
+          sourcePreflightRunId = (await rows<{ final_preflight_run_id: string }>(
+            hookPg,
+            `select final_preflight_run_id from public.account_access_cutover_status where id is true`,
+          ))[0].final_preflight_run_id;
+          const states = await rows<{
+            account_id: string;
+            authority_mode: string;
+            authority_version: number;
+          }>(
+            hookPg,
+            `select account_id,authority_mode,authority_version
+               from public.account_authorization_state
+              where account_id in ($1,$2,$3)
+              order by account_id`,
+            [ACCOUNT_ADMIN, ACCOUNT_MARIA, ACCOUNT_FRANK],
+          );
+          const byAccount = new Map(states.map((state) => [state.account_id, state]));
+          mariaCanonicalIds = (await rows<{ property_id: string }>(
+            hookPg,
+            `select distinct property_id from public._staxis_account_property_authorizations($1) order by property_id`,
+            [ACCOUNT_MARIA],
+          )).map((row) => row.property_id);
+          frankCanonicalIds = (await rows<{ property_id: string }>(
+            hookPg,
+            `select distinct property_id from public._staxis_account_property_authorizations($1) order by property_id`,
+            [ACCOUNT_FRANK],
+          )).map((row) => row.property_id);
+          await recordRepairDisposition(hookPg, {
+            preflightRunId: sourcePreflightRunId,
+            accountId: ACCOUNT_ADMIN,
+            propertyId: PID_A1,
+            issueCodes: ['admin_legacy_access', 'admin_legacy_account'],
+            decision: 'admin_global',
+            rawPropertyIds: [PID_A1],
+            canonicalPropertyIds: [],
+            authorityMode: byAccount.get(ACCOUNT_ADMIN)?.authority_mode ?? '',
+            authorityVersion: byAccount.get(ACCOUNT_ADMIN)?.authority_version ?? 0,
+            reason: 'admin_global_role_residue',
+          });
+          await recordRepairDisposition(hookPg, {
+            preflightRunId: sourcePreflightRunId,
+            accountId: ACCOUNT_MARIA,
+            propertyId: PID_A1,
+            issueCodes: ['normalized_legacy_residue'],
+            decision: 'canonical_duplicate',
+            rawPropertyIds: [PID_A1],
+            canonicalPropertyIds: mariaCanonicalIds,
+            authorityMode: byAccount.get(ACCOUNT_MARIA)?.authority_mode ?? '',
+            authorityVersion: byAccount.get(ACCOUNT_MARIA)?.authority_version ?? 0,
+            reason: 'canonical_duplicate_residue',
+          });
+          await recordRepairDisposition(hookPg, {
+            preflightRunId: sourcePreflightRunId,
+            accountId: ACCOUNT_FRANK,
+            propertyId: PID_A1,
+            issueCodes: ['normalized_legacy_residue'],
+            decision: 'revoked_canonical_empty',
+            rawPropertyIds: [PID_A1],
+            canonicalPropertyIds: frankCanonicalIds,
+            authorityMode: byAccount.get(ACCOUNT_FRANK)?.authority_mode ?? '',
+            authorityVersion: byAccount.get(ACCOUNT_FRANK)?.authority_version ?? 0,
+            reason: 'revoked_canonical_empty_residue',
+          });
+          await authorizeAccessStageCRelease(hookPg);
+        },
+      },
+    );
+    try {
+      assert.ok(
+        migrated.report.applied.includes(MIGRATION),
+        JSON.stringify(migrated.report.failedAtRuntime.filter((entry) => entry.file === MIGRATION)),
+      );
+      assert.deepEqual(
+        migrated.report.failedAtRuntime.filter((entry) => entry.file === MIGRATION),
+        [],
+      );
+      const status = (await rows<{
+        stage: string;
+        enforcement_enabled: boolean;
+        details: Record<string, unknown>;
+      }>(
+        migrated.pg,
+        `select stage,enforcement_enabled,details
+           from public.account_access_cutover_status where id is true`,
+      ))[0];
+      assert.deepEqual(
+        {
+          stage: status.stage,
+          enforcement_enabled: status.enforcement_enabled,
+          repairSourcePreflightRunId: status.details.repairSourcePreflightRunId,
+          repairDispositionCount: status.details.repairDispositionCount,
+        },
+        {
+          stage: 'C',
+          enforcement_enabled: true,
+          repairSourcePreflightRunId: sourcePreflightRunId,
+          repairDispositionCount: 3,
+        },
+      );
+      const alreadyFinalized = await jsonRpc(
+        migrated.pg,
+        `select public.staxis_preflight_authorization_cutover_stage_c() as value`,
+      );
+      assert.deepEqual(alreadyFinalized, { ok: true, alreadyFinalized: true, stage: 'C' });
+      const repairReceipts = await rows<{
+        account_id: string;
+        property_id: string;
+        decision: string;
+          source_property_ids: string[];
+          source_scope_hash: string;
+          canonical_property_ids_before: string[];
+          canonical_scope_hash_before: string;
+          canonical_property_ids_after: string[];
+          canonical_scope_hash_after: string;
+          authority_mode_before: string;
+          authority_mode_after: string;
+          authority_version_before: number;
+          authority_version_after: number;
+          legacy_write_event_count_before: number;
+          legacy_write_event_count_after: number;
+          operator_label: string;
+          access_b_merge_sha: string;
+          deployed_descendant_sha: string;
+          repaired_at: string | Date;
+      }>(
+        migrated.pg,
+        `select account_id,property_id,decision,source_property_ids,source_scope_hash,
+                canonical_property_ids_before,canonical_scope_hash_before,
+                canonical_property_ids_after,canonical_scope_hash_after,
+                authority_mode_before,authority_mode_after,
+                authority_version_before,authority_version_after,
+                legacy_write_event_count_before,legacy_write_event_count_after,
+                operator_label,access_b_merge_sha,deployed_descendant_sha,repaired_at
+           from public.account_access_cutover_repair_receipts
+          where preflight_run_id=$1 order by account_id`,
+        [sourcePreflightRunId],
+      );
+      for (const receipt of repairReceipts) {
+        assert.equal(receipt.source_scope_hash, sha256(receipt.source_property_ids.join(',')));
+        assert.equal(receipt.canonical_scope_hash_before, sha256(receipt.canonical_property_ids_before.join(',')));
+        assert.equal(receipt.canonical_scope_hash_after, sha256(receipt.canonical_property_ids_after.join(',')));
+        assert.equal(receipt.legacy_write_event_count_before, 0);
+        assert.equal(receipt.legacy_write_event_count_after, 0);
+        assert.equal(receipt.operator_label, 'production-residue-operator');
+        assert.equal(receipt.access_b_merge_sha, ACCESS_B_LIVE_SHA);
+        assert.equal(receipt.deployed_descendant_sha, CURRENT_LIVE_DESCENDANT_SHA);
+        assert.ok(receipt.repaired_at instanceof Date || /^\d{4}-\d{2}-\d{2}T/.test(receipt.repaired_at));
+      }
+      assert.deepEqual(
+        repairReceipts.map((receipt) => ({
+          account_id: receipt.account_id,
+          property_id: receipt.property_id,
+          decision: receipt.decision,
+          source_property_ids: receipt.source_property_ids,
+          canonical_property_ids_before: receipt.canonical_property_ids_before,
+          canonical_property_ids_after: receipt.canonical_property_ids_after,
+          authority_mode_before: receipt.authority_mode_before,
+          authority_mode_after: receipt.authority_mode_after,
+        })),
+        [
+          {
+            account_id: ACCOUNT_ADMIN,
+            property_id: PID_A1,
+            decision: 'admin_global',
+            source_property_ids: [PID_A1],
+            canonical_property_ids_before: [],
+            canonical_property_ids_after: [],
+            authority_mode_before: 'legacy',
+            authority_mode_after: 'normalized',
+          },
+          {
+            account_id: ACCOUNT_MARIA,
+            property_id: PID_A1,
+            decision: 'canonical_duplicate',
+            source_property_ids: [PID_A1],
+            canonical_property_ids_before: mariaCanonicalIds,
+            canonical_property_ids_after: mariaCanonicalIds,
+            authority_mode_before: 'normalized',
+            authority_mode_after: 'normalized',
+          },
+          {
+            account_id: ACCOUNT_FRANK,
+            property_id: PID_A1,
+            decision: 'revoked_canonical_empty',
+            source_property_ids: [PID_A1],
+            canonical_property_ids_before: [],
+            canonical_property_ids_after: [],
+            authority_mode_before: 'normalized',
+            authority_mode_after: 'normalized',
+          },
+        ],
+      );
+      const repairRuns = await rows<{ id: string; status: string; issue_count: number }>(
+        migrated.pg,
+        `select id,status,issue_count
+           from public.account_access_cutover_preflight_runs
+          where id in ($1,$2)
+          order by id`,
+        [sourcePreflightRunId, status.details.repairPreflightRunId],
+      );
+      assert.deepEqual(
+        repairRuns.map((run) => ({ id: run.id, status: run.status, issue_count: Number(run.issue_count) })),
+        [
+          { id: sourcePreflightRunId, status: 'failed', issue_count: repairRuns.find((run) => run.id === sourcePreflightRunId)?.issue_count ?? 0 },
+          { id: String(status.details.repairPreflightRunId), status: 'passed', issue_count: 0 },
+        ].sort((left, right) => left.id.localeCompare(right.id)),
+      );
+      assert.deepEqual(
+        await rows<{ account_id: string; property_access: string[] | null }>(
+          migrated.pg,
+          `select id as account_id,property_access from accounts
+            where id in ($1,$2,$3) order by account_id`,
+          [ACCOUNT_ADMIN, ACCOUNT_FRANK, ACCOUNT_MARIA],
+        ),
+        [
+          { account_id: ACCOUNT_ADMIN, property_access: [] },
+          { account_id: ACCOUNT_MARIA, property_access: [] },
+          { account_id: ACCOUNT_FRANK, property_access: [] },
+        ],
+      );
+      assert.deepEqual(await propertyIds(migrated.pg, ACCOUNT_MARIA), mariaCanonicalIds);
+      assert.deepEqual(await propertyIds(migrated.pg, ACCOUNT_FRANK), frankCanonicalIds);
+      assert.equal(
+        (await jsonRpc(
+          migrated.pg,
+          `select public.staxis_list_account_authorized_properties($1) as value`,
+          [ACCOUNT_ADMIN],
+        )).all,
+        true,
+      );
+      assert.equal(
+        Number((await rows<{ count: number }>(
+          migrated.pg,
+          `select count(*)::integer as count from public.account_access_cutover_legacy_write_events`,
+        ))[0].count),
+        0,
+      );
+      assert.equal(
+        Number((await rows<{ count: number }>(
+          migrated.pg,
+          `select count(*)::integer as count from public.account_access_cutover_repair_dispositions
+            where status='consumed' and consumed_preflight_run_id <> preflight_run_id`,
+        ))[0].count),
+        3,
+      );
+      const release = (await rows<{
+        preflight_run_id: string;
+        consumed_preflight_run_id: string;
+        status: string;
+        details: Record<string, unknown>;
+      }>(
+        migrated.pg,
+        `select preflight_run_id,consumed_preflight_run_id,status,details
+           from public.account_access_cutover_release_receipts`,
+      ))[0];
+      assert.equal(release.preflight_run_id, sourcePreflightRunId);
+      assert.notEqual(release.consumed_preflight_run_id, sourcePreflightRunId);
+      assert.equal(release.status, 'consumed');
+      assert.equal(release.details.repairEligible, true);
+      const evidence = await jsonRpc(
+        migrated.pg,
+        `select public.staxis_access_stage_c_repair_evidence($1) as value`,
+        [sourcePreflightRunId],
+      );
+      assert.equal((evidence.dispositions as unknown[]).length, 3);
+      assert.equal((evidence.receipts as unknown[]).length, 3);
+      await assert.rejects(
+        migrated.pg.query(
+          `update public.account_access_cutover_repair_receipts
+              set operator_label='tampered'`,
+        ),
+        /repair receipts are immutable/i,
+      );
+      await assert.rejects(
+        migrated.pg.query(
+          `delete from public.account_access_cutover_repair_dispositions`,
+        ),
+        /repair dispositions are durable|immutable/i,
+      );
+    } finally {
+      await migrated.pg.close();
+    }
+  });
+
+  test('rejects unsupported or stale repair dispositions without mutating the failed preflight state', async () => {
+    const migrated = await applyMigrationsToPgliteWithHook(
+      async ({ pg: hookPg, file }) => {
+        if (file === MIGRATION) await seedUnsupportedResidueFixture(hookPg);
+      },
+      {
+        afterAccessStageCPreparation: async ({ pg: hookPg, file }) => {
+          if (file !== MIGRATION) return;
+          const runId = (await rows<{ final_preflight_run_id: string }>(
+            hookPg,
+            `select final_preflight_run_id from public.account_access_cutover_status where id is true`,
+          ))[0].final_preflight_run_id;
+          const mariaState = (await rows<{ authority_mode: string; authority_version: number }>(
+            hookPg,
+            `select authority_mode,authority_version from public.account_authorization_state where account_id=$1`,
+            [ACCOUNT_MARIA],
+          ))[0];
+          const mariaCanonicalIds = (await rows<{ property_id: string }>(
+            hookPg,
+            `select distinct property_id from public._staxis_account_property_authorizations($1) order by property_id`,
+            [ACCOUNT_MARIA],
+          )).map((row) => row.property_id);
+          const validMaria = {
+            preflightRunId: runId,
+            accountId: ACCOUNT_MARIA,
+            propertyId: PID_A1,
+            issueCodes: ['normalized_legacy_residue'],
+            decision: 'canonical_duplicate',
+            rawPropertyIds: [PID_A1],
+            canonicalPropertyIds: mariaCanonicalIds,
+            authorityMode: mariaState.authority_mode,
+            authorityVersion: mariaState.authority_version,
+            reason: 'canonical_duplicate_residue',
+          };
+          await recordRepairDisposition(hookPg, validMaria);
+          const replay = await recordRepairDisposition(hookPg, validMaria);
+          assert.equal(replay.idempotentReplay, true);
+          await assert.rejects(
+            recordRepairDisposition(hookPg, {
+              ...validMaria,
+              reason: 'operator prose is not an approved repair reason',
+            }),
+            /incomplete or malformed/i,
+          );
+
+          const hankState = (await rows<{ authority_mode: string; authority_version: number }>(
+            hookPg,
+            `select authority_mode,authority_version from public.account_authorization_state where account_id=$1`,
+            [ACCOUNT_HANK],
+          ))[0];
+          await assert.rejects(
+            recordRepairDisposition(hookPg, {
+              preflightRunId: runId,
+              accountId: ACCOUNT_HANK,
+              propertyId: PID_L1,
+              issueCodes: ['normalized_legacy_residue'],
+              decision: 'revoked_canonical_empty',
+              rawPropertyIds: [PID_L1],
+              canonicalPropertyIds: [],
+              authorityMode: hankState.authority_mode,
+              authorityVersion: hankState.authority_version,
+              reason: 'revoked_canonical_empty_residue',
+            }),
+            /ended canonical membership/i,
+          );
+          await assert.rejects(
+            recordRepairDisposition(hookPg, {
+              ...validMaria,
+              rawScopeHash: '0'.repeat(64),
+              reason: 'canonical_duplicate_residue',
+            }),
+            /evidence no longer matches/i,
+          );
+          await assert.rejects(
+            recordRepairDisposition(hookPg, {
+              ...validMaria,
+              authorityVersion: mariaState.authority_version - 1,
+              reason: 'canonical_duplicate_residue',
+            }),
+            /evidence no longer matches/i,
+          );
+          await assert.rejects(
+            recordRepairDisposition(hookPg, {
+              ...validMaria,
+              propertyId: PID_A2,
+              reason: 'canonical_duplicate_residue',
+            }),
+            /active is_test property topology|evidence no longer matches|exact issue rows/i,
+          );
+          await hookPg.query(`update public.properties set is_test=false where id=$1`, [PID_A1]);
+          await assert.rejects(
+            recordRepairDisposition(hookPg, {
+              ...validMaria,
+              reason: 'canonical_duplicate_residue',
+            }),
+            /active is_test property topology/i,
+          );
+          await hookPg.query(`update public.properties set is_test=true where id=$1`, [PID_A1]);
+          await assert.rejects(
+            recordRepairDisposition(hookPg, {
+              ...validMaria,
+              operatorLabel: '',
+              reason: 'canonical_duplicate_residue',
+            }),
+            /incomplete or malformed/i,
+          );
+          await assert.rejects(
+            recordRepairDisposition(hookPg, {
+              ...validMaria,
+              accessBMergeSha: '0'.repeat(40),
+              reason: 'canonical_duplicate_residue',
+            }),
+            /incomplete or malformed/i,
+          );
+        },
+      },
+    );
+    try {
+      assert.equal(migrated.report.applied.includes(MIGRATION), false);
+      assert.match(
+        migrated.report.failedAtRuntime.find((entry) => entry.file === MIGRATION)?.error ?? '',
+        /0426 Stage C preflight rejected finalization/i,
+      );
+      assert.deepEqual(
+        await rows<{ id: string; property_access: string[] }>(
+          migrated.pg,
+          `select id,property_access from public.accounts
+            where id in ($1,$2) order by id`,
+          [ACCOUNT_HANK, ACCOUNT_MARIA],
+        ),
+        [
+          { id: ACCOUNT_HANK, property_access: [PID_L1] },
+          { id: ACCOUNT_MARIA, property_access: [PID_A1] },
+        ],
+      );
+      assert.equal(
+        (await rows<{ stage: string; enforcement_enabled: boolean }>(
+          migrated.pg,
+          `select stage,enforcement_enabled from public.account_access_cutover_status where id is true`,
+        ))[0].stage,
+        'A',
+      );
+      assert.equal(
+        (await rows<{ relation: string | null }>(
+          migrated.pg,
+          `select to_regclass('public.account_access_cutover_repair_receipts') as relation`,
+        ))[0].relation,
+        'account_access_cutover_repair_receipts',
+      );
+      assert.equal(
+        Number((await rows<{ count: number }>(
+          migrated.pg,
+          `select count(*)::integer as count from public.account_access_cutover_repair_receipts`,
+        ))[0].count),
+        0,
+      );
+    } finally {
+      await migrated.pg.close();
+    }
+  });
+
+  test('rolls back every repair mutation when the release descendant SHA is stale', async () => {
+    const migrated = await applyMigrationsToPgliteWithHook(
+      async ({ pg: hookPg, file }) => {
+        if (file === MIGRATION) await seedProductionResidueFixture(hookPg);
+      },
+      {
+        afterAccessStageCPreparation: async ({ pg: hookPg, file }) => {
+          if (file !== MIGRATION) return;
+          await recordAllProductionResidueDispositions(hookPg, {
+            deployedDescendantSha: '0'.repeat(40),
+          });
+          await authorizeAccessStageCRelease(hookPg);
+        },
+      },
+    );
+    try {
+      assert.equal(migrated.report.applied.includes(MIGRATION), false);
+      assert.match(
+        migrated.report.failedAtRuntime.find((entry) => entry.file === MIGRATION)?.error ?? '',
+        /active account or release evidence|0426 Stage C preflight rejected finalization/i,
+      );
+      assert.deepEqual(
+        await rows<{ id: string; property_access: string[] }>(
+          migrated.pg,
+          `select id,property_access from public.accounts
+            where id in ($1,$2,$3) order by id`,
+          [ACCOUNT_ADMIN, ACCOUNT_FRANK, ACCOUNT_MARIA],
+        ),
+        [
+          { id: ACCOUNT_ADMIN, property_access: [PID_A1] },
+          { id: ACCOUNT_MARIA, property_access: [PID_A1] },
+          { id: ACCOUNT_FRANK, property_access: [PID_A1] },
+        ],
+      );
+      assert.equal(
+        (await rows<{ authority_mode: string }>(
+          migrated.pg,
+          `select authority_mode from public.account_authorization_state where account_id=$1`,
+          [ACCOUNT_ADMIN],
+        ))[0].authority_mode,
+        'legacy',
+      );
+      assert.equal(
+        Number((await rows<{ count: number }>(
+          migrated.pg,
+          `select count(*)::integer as count from public.account_access_cutover_repair_receipts`,
+        ))[0].count),
+        0,
+      );
+      assert.equal(
+        (await rows<{ relation: string | null }>(
+          migrated.pg,
+          `select to_regclass('public.account_access_cutover_final_receipts') as relation`,
+        ))[0].relation,
+        null,
+      );
+      assert.deepEqual(
+        (await rows<{ status: string; consumed_at: string | null }>(
+          migrated.pg,
+          `select status,consumed_at from public.account_access_cutover_release_receipts`,
+        ))[0],
+        { status: 'unconsumed', consumed_at: null },
+      );
+      assert.equal(
+        Number((await rows<{ count: number }>(
+          migrated.pg,
+          `select count(*)::integer as count
+             from public.account_access_cutover_repair_dispositions
+            where status='unconsumed'`,
+        ))[0].count),
+        3,
+      );
+    } finally {
+      await migrated.pg.close();
+    }
+  });
+
+  test('rolls back the repair transaction when a pending queue or legacy write appears after release approval', async () => {
+    const migrated = await applyMigrationsToPgliteWithHook(
+      async ({ pg: hookPg, file }) => {
+        if (file === MIGRATION) await seedProductionResidueFixture(hookPg);
+      },
+      {
+        afterAccessStageCPreparation: async ({ pg: hookPg, file }) => {
+          if (file !== MIGRATION) return;
+          await recordAllProductionResidueDispositions(hookPg);
+          await authorizeAccessStageCRelease(hookPg);
+          await hookPg.query(
+            `insert into public.join_requests(
+               id,property_id,account_id,name,phone,language,department,status
+             ) values ($1,$2,$3,'Stage C race','512-555-2201','en','housekeeping','pending')`,
+            [DIRTY_JOIN_REQUEST, PID_A1, ACCOUNT_HANK],
+          );
+          await hookPg.query(
+            `insert into public.account_access_cutover_legacy_write_events(
+               account_id,operation,previous_property_ids,next_property_ids,
+               previous_scope_hash,next_scope_hash,reason
+             ) values ($1,'UPDATE',$2::uuid[],$3::uuid[],$4,$5,'Stage C race evidence')`,
+            [
+              ACCOUNT_MARIA,
+              [PID_A1],
+              [],
+              sha256(PID_A1),
+              sha256(''),
+            ],
+          );
+        },
+      },
+    );
+    try {
+      assert.equal(migrated.report.applied.includes(MIGRATION), false);
+      assert.match(
+        migrated.report.failedAtRuntime.find((entry) => entry.file === MIGRATION)?.error ?? '',
+        /in-flight lifecycle or access operation|ordinary legacy writer events|Stage C preflight rejected finalization/i,
+      );
+      assert.deepEqual(
+        await rows<{ id: string; property_access: string[] }>(
+          migrated.pg,
+          `select id,property_access from public.accounts
+            where id in ($1,$2,$3) order by id`,
+          [ACCOUNT_ADMIN, ACCOUNT_FRANK, ACCOUNT_MARIA],
+        ),
+        [
+          { id: ACCOUNT_ADMIN, property_access: [PID_A1] },
+          { id: ACCOUNT_MARIA, property_access: [PID_A1] },
+          { id: ACCOUNT_FRANK, property_access: [PID_A1] },
+        ],
+      );
+      assert.equal(
+        Number((await rows<{ count: number }>(
+          migrated.pg,
+          `select count(*)::integer as count from public.account_access_cutover_repair_receipts`,
+        ))[0].count),
+        0,
+      );
+      assert.deepEqual(
+        (await rows<{ status: string; consumed_at: string | null }>(
+          migrated.pg,
+          `select status,consumed_at from public.account_access_cutover_release_receipts`,
+        ))[0],
+        { status: 'unconsumed', consumed_at: null },
+      );
+      assert.equal(
+        Number((await rows<{ count: number }>(
+          migrated.pg,
+          `select count(*)::integer as count from public.account_access_cutover_legacy_write_events`,
+        ))[0].count),
+        1,
+      );
+      assert.equal(
+        Number((await rows<{ count: number }>(
+          migrated.pg,
+          `select count(*)::integer as count from public.join_requests where status='pending'`,
+        ))[0].count),
+        1,
+      );
+    } finally {
+      await migrated.pg.close();
+    }
   });
 
   test('fails closed before destructive DDL when the external release receipt is missing', async () => {
