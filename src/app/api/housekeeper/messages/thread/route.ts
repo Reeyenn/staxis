@@ -31,7 +31,7 @@ export async function POST(req: NextRequest): Promise<Response> {
 
   const convo = await getConversation(gate.pid, convV.value!);
   if (!convo) return err('Not found', { requestId: gate.requestId, status: 404, code: ApiErrorCode.NotFound, headers: gate.headers });
-  const allowed = await canAccessConversation(gate.pid, gate.staffId, convo, { isManager: false, dept });
+  const allowed = await canAccessConversation(gate.pid, gate.staffId, convo, { isManager: false, dept, floorMode: true });
   if (!allowed) return err('Forbidden', { requestId: gate.requestId, status: 403, code: ApiErrorCode.Forbidden, headers: gate.headers });
 
   const messages = await getMessages(gate.pid, convo.id, gate.staffId, lang, { withReceipts: false });
