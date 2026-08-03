@@ -169,6 +169,16 @@ export function codeOwnedRuleTierVersions(): string[] {
 }
 
 // ─── Hotel-scoped rules ────────────────────────────────────────────────────
+//
+// `exactHotelScope` and `hotelScopedRuleTier` below are the scope machinery the
+// KNOWLEDGE DOOR (`knowledge-door.ts`) is built on: it registers all twelve
+// knowledge stores on the same two axes this file's header describes, and its
+// composers reach the standing-rules tier through the function underneath.
+//
+// This file deliberately does NOT import the door — the door imports this one,
+// and closing that loop would put a cycle between the registry of code-owned
+// RULES and the registry of knowledge STORES. If you are adding a store rather
+// than a rule, `knowledge-door.ts` is the file you want.
 
 /**
  * The one hotel this turn is about, or null when the turn is not about exactly

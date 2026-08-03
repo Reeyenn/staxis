@@ -44,17 +44,18 @@ import 'server-only';
 
 import { createHash } from 'node:crypto';
 
-import { formatCompanyRulebookForPrompt } from '@/lib/agent/company-tier';
-import { deriveCompanyRulebookByOrganization } from '@/lib/agent/company-tier';
+import {
+  composeKnowledgeTier,
+  resolveCompanyKnowledgePresentation,
+  type CompanyKnowledgeMode,
+  type KnowledgeTurn,
+} from '@/lib/agent/knowledge-door';
 import type { SystemPromptBlocks } from '@/lib/agent/prompts';
 import {
   codeOwnedRuleTierLines,
   codeOwnedRuleTierVersions,
-  exactHotelScope,
-  hotelScopedRuleTier,
 } from '@/lib/agent/rule-tiers';
 import { resolvePrompts } from '@/lib/agent/prompts-store';
-import { COMPANY_RULEBOOK_VERSION } from '@/lib/agent/company-tier';
 import type { CompanyScopeRole } from '@/lib/company/roles';
 
 import {
@@ -197,8 +198,10 @@ export interface PortfolioPromptInput {
    * fan-out before every question. */
   snapshot?: PortfolioSnapshot;
   /** Portfolio Intelligence supplies one bounded, provenance-recorded overlay
-   * and disables this legacy second rulebook read to avoid duplicate facts. */
-  companyKnowledgeMode?: 'legacy_rulebook' | 'external_overlay';
+   * and disables this legacy second rulebook read to avoid duplicate facts.
+   * Arbitrated by `resolveCompanyKnowledgePresentation` in the knowledge door,
+   * where both renderings of `company_knowledge` are registered. */
+  companyKnowledgeMode?: CompanyKnowledgeMode;
   conversationId: string;
   /** Injectable clock, so a test's assertions do not drift with real time. */
   now?: Date;
@@ -225,34 +228,42 @@ export async function buildPortfolioSystemPrompt(
   const now = input.now ?? new Date();
   const { base, role, versionLabel } = await resolvePrompts('owner', input.conversationId, null);
 
-  const companyBlock = input.companyKnowledgeMode === 'external_overlay'
-    ? ''
-    : formatCompanyRulebookForPrompt(
-        await deriveCompanyRulebookByOrganization(input.identity.organizationId),
-      );
-  const identityBlock = formatPortfolioIdentityForPrompt(input.identity);
+  // ─── The knowledge tiers, composed BY NAME through the door ──────────────
+  //
+  // `hotelIds` is the turn's SELECTED SET, built by the route from the
+  // authorization receipt's `propertyIds`. The door gates the hotel-scoped
+  // stores on it through `exactHotelScope`, so a multi-hotel turn renders no
+  // standing-rule section at all: a standing rule belongs to exactly ONE hotel,
+  // and putting the first hotel's manager's instructions in front of a question
+  // about twenty others is the same leak the company tier is gated against,
+  // arrived at from the other direction.
+  //
+  // `companyPolicyVisible: true` because every hat that reaches this surface is
+  // a company-scope hat (owner, VP, finance) — the hotel surface's line-role
+  // gate has no analogue here, and stating it rather than defaulting it is what
+  // keeps the two surfaces' answers comparable.
+  const turn: KnowledgeTurn = {
+    hotelIds: input.identity.hotels.map((hotel) => hotel.id),
+    organizationId: input.identity.organizationId,
+    companyPolicyVisible: true,
+  };
 
-  // ─── The hotel's own standing rules, and the scope test that gates them ───
-  //
-  // A standing rule belongs to exactly ONE hotel. This surface usually answers
-  // over several, and on such a turn there is no hotel whose house rules are
-  // the right ones to state — rendering the first hotel's would put its
-  // manager's instructions in front of a question about twenty others, which is
-  // the same leak the company tier is gated against, arrived at from the other
-  // direction (see hotel-rules-tier.ts).
-  //
-  // `exactHotelScope` is the shared decision: an id when the turn's selected set
-  // is one hotel, null otherwise. `identity.hotels` IS that selected set — the
-  // route builds it from the authorization receipt's `propertyIds` — so a null
-  // here is a scope fact, not a missing lookup, and it renders no section.
-  const standingRules = await hotelScopedRuleTier(
-    exactHotelScope(input.identity.hotels.map((hotel) => hotel.id)),
-  );
+  // Exactly one presentation of `company_knowledge` may render on a turn. When
+  // Portfolio Intelligence supplies its bounded overlay in the dynamic half,
+  // this stable-block rulebook stands down: the same facts twice, under two
+  // envelopes and two versions, would be duplicate cost and a conflict the
+  // model has to resolve. The door owns that arbitration because the door is
+  // where both renderings are registered.
+  const company = resolveCompanyKnowledgePresentation(input.companyKnowledgeMode) === 'company_rulebook_tier'
+    ? await composeKnowledgeTier('company_knowledge', turn)
+    : null;
+  const identityBlock = formatPortfolioIdentityForPrompt(input.identity);
+  const standingRules = await composeKnowledgeTier('hotel_standing_rules', turn);
 
   const stampParts = [
     versionLabel, PORTFOLIO_MODE_VERSION, ...codeOwnedRuleTierVersions(),
   ];
-  if (companyBlock) stampParts.push(COMPANY_RULEBOOK_VERSION);
+  if (company) stampParts.push(company.version);
   if (identityBlock) stampParts.push(PORTFOLIO_IDENTITY_VERSION);
   if (standingRules) stampParts.push(standingRules.version);
   const stableStamp = stampParts.join('+');
@@ -284,7 +295,7 @@ export async function buildPortfolioSystemPrompt(
     },
     { tier: 'code_rules', lines: codeOwnedRuleTierLines() },
   ];
-  if (companyBlock) stable.push({ tier: 'company', lines: ['', companyBlock] });
+  if (company) stable.push({ tier: 'company', lines: ['', company.block] });
   if (identityBlock) stable.push({ tier: 'portfolio_identity', lines: ['', identityBlock] });
   if (standingRules) stable.push({ tier: 'hotel_rules', lines: ['', standingRules.block] });
   stable.push({ tier: 'version_line', lines: ['', `Prompt version: ${stableStamp}`] });

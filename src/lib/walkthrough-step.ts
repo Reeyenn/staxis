@@ -3,11 +3,10 @@ import type Anthropic from '@anthropic-ai/sdk';
 import type { SnapshotElement } from '@/components/walkthrough/snapshotDom';
 import { escapeTrustMarkerContent } from '@/lib/agent/llm';
 import type { SystemPromptBlocks } from '@/lib/agent/prompts';
+import { composeKnowledgeTier } from '@/lib/agent/knowledge-door';
 import {
   codeOwnedRuleTierLines,
   codeOwnedRuleTierVersions,
-  exactHotelScope,
-  hotelScopedRuleTier,
 } from '@/lib/agent/rule-tiers';
 import type { AppRole } from '@/lib/roles';
 
@@ -104,10 +103,18 @@ export async function buildSystemPrompt(input: {
   hotelContext: string | null;
 }): Promise<SystemPromptBlocks> {
   // A walkthrough always runs at exactly one hotel, so this always resolves.
-  // Routed through the shared resolver anyway: "whose standing rules are these"
-  // is one decision with one implementation, and the portfolio surface asks the
-  // same question and legitimately gets null.
-  const standingRules = await hotelScopedRuleTier(exactHotelScope([input.propertyId]));
+  // Composed BY NAME through the knowledge door anyway: "whose standing rules
+  // are these" is one decision with one implementation, and the portfolio
+  // surface names the same store and legitimately gets null.
+  //
+  // `companyPolicyVisible: false` is not a shrug. The walkthrough drives a
+  // manager around their own screen; it has no company block, and stating that
+  // here means a future company tier on this surface is a deliberate edit
+  // rather than something that arrives because the field defaulted open.
+  const standingRules = await composeKnowledgeTier('hotel_standing_rules', {
+    hotelIds: [input.propertyId],
+    companyPolicyVisible: false,
+  });
 
   const stampParts = [WALKTHROUGH_PROMPT_VERSION, ...codeOwnedRuleTierVersions()];
   if (standingRules) stampParts.push(standingRules.version);

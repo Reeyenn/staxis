@@ -1014,6 +1014,34 @@ async function loadFeedsUncached(
 export const AWARENESS_HEADER = '─── Right now ───';
 
 /**
+ * The envelope, as constants rather than inline literals.
+ *
+ * Registered in `knowledge-door.ts` like every other store's envelope, so the
+ * inventory that polices "which modules inject knowledge" is reading the same
+ * strings this formatter prints instead of a copy of them.
+ *
+ * `trust="system"` and no ceiling above it, deliberately. The ceilings belong
+ * to the tiers that carry text SOMEBODY ELSE WROTE — the PMS family row, the
+ * company rulebook, the hotel's standing rules, the hotel's own setup labels.
+ * This block is assembled here, in code, from nine of our own reads; there is
+ * no third party whose prose needs fencing off.
+ */
+export const AWARENESS_TRUST_MARKER_OPEN = '<staxis-awareness trust="system">';
+export const AWARENESS_TRUST_MARKER_CLOSE = '</staxis-awareness>';
+
+/**
+ * Version stamp for this block, folded into the PERSISTED receipt only.
+ *
+ * Every other envelope-wrapped store had one and this one did not, so "which
+ * awareness rendering ran on this turn" was the one question
+ * `agent_messages.prompt_version` could not answer. It goes in `versionLabel`
+ * and NOT in the printed `stableStamp`: the block is per-turn, so printing
+ * anything about it into the cached half would rewrite the cached prefix every
+ * single turn. Bump on a rendering change.
+ */
+export const AWARENESS_VERSION = 'awareness-v1';
+
+/**
  * The hard ceiling on the whole block, in characters.
  *
  * ~4 chars per token puts this at roughly 300 tokens of content plus the
@@ -1052,8 +1080,8 @@ export function formatAwarenessForPrompt(awareness: Awareness): string {
 
   return [
     AWARENESS_HEADER,
-    '<staxis-awareness trust="system">',
+    AWARENESS_TRUST_MARKER_OPEN,
     body,
-    '</staxis-awareness>',
+    AWARENESS_TRUST_MARKER_CLOSE,
   ].join('\n');
 }
