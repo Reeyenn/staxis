@@ -96,34 +96,11 @@ describe('admin hotel relationship request contracts', () => {
   });
 });
 
-describe('existing /company Hotels-tab lifecycle surface', () => {
-  const page = source('src', 'app', 'company', 'page.tsx');
-  const component = source('src', 'app', 'company', '_components', 'AdminHotelRelationshipManager.tsx');
+describe('admin hotel relationship backend lifecycle contracts', () => {
   const migration = source('supabase', 'migrations', '0384_admin_hotel_relationship_lifecycle.sql');
   const readRoute = source('src', 'app', 'api', 'admin', 'company-relationship', 'route.ts');
   const previewRoute = source('src', 'app', 'api', 'admin', 'company-relationship', 'preview', 'route.ts');
   const commitRoute = source('src', 'app', 'api', 'admin', 'company-relationship', 'commit', 'route.ts');
-
-  test('keeps exactly Hotels, People, Access and renders lifecycle controls only in verified admin preview', () => {
-    const tabBlock = page.slice(
-      page.indexOf('const tabs = React.useMemo'),
-      page.indexOf('React.useEffect(() => {', page.indexOf('const tabs = React.useMemo')),
-    );
-    assert.deepEqual(
-      [...tabBlock.matchAll(/id: '([^']+)'/g)].map((match) => match[1]),
-      ['hotels', 'people', 'access'],
-    );
-    assert.match(page, /data\.viewerContext\?\.kind === 'staxis_admin_preview'/);
-    assert.match(page, /AdminHotelRelationshipManager/);
-    assert.doesNotMatch(component, /adminToolsEnabled|Admin view is ON|Turn on Admin view/);
-    assert.doesNotMatch(component, /Staxis platform administration/);
-    assert.match(component, /Every lifecycle change starts with a fresh impact preview and explicit confirmation/);
-    assert.match(component, /disabled=\{loading \|\| !projection\}/);
-    assert.match(component, /Acquire and link hotel/);
-    assert.match(component, /Deactivate company relationship/);
-    assert.match(component, /Transfer hotel/);
-    assert.match(component, /Change relationship type/);
-  });
 
   test('independently gates every server route and every database operation as platform-admin-only', () => {
     for (const route of [readRoute, previewRoute, commitRoute]) {
@@ -133,14 +110,9 @@ describe('existing /company Hotels-tab lifecycle surface', () => {
     assert.match(migration, /actor\.role = 'admin'/);
     assert.match(migration, /actor\.active is true/);
     assert.match(migration, /check intentionally precedes idempotency replay/);
-    assert.doesNotMatch(component, /accounts\.role|supabaseAdmin/);
   });
 
   test('requires a fresh preview, exact revision, confirmation, lock ordering, idempotency, and audit', () => {
-    assert.match(component, /\/api\/admin\/company-relationship\/preview/);
-    assert.match(component, /previewFingerprint: preview\.previewFingerprint/);
-    assert.match(component, /confirmed: true/);
-    assert.match(component, /Idempotency-Key/);
     assert.match(migration, /_staxis_admin_hotel_relationship_revision/);
     assert.match(migration, /p_expected_relationship_revision/);
     assert.match(migration, /p_preview_fingerprint/);
@@ -154,7 +126,6 @@ describe('existing /company Hotels-tab lifecycle surface', () => {
   test('uses bounded company search and does not expose customer identity data', () => {
     assert.match(migration, /ordinal <= 100/);
     assert.match(migration, /organizationResultsTruncated/);
-    assert.match(component, /Narrow the search/);
     assert.doesNotMatch(migration.slice(
       migration.indexOf('staxis_admin_hotel_relationship_projection'),
       migration.indexOf('create or replace function public._staxis_preview_admin_hotel_relationship'),

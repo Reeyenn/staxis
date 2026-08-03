@@ -499,84 +499,6 @@
   gap: 20px;
 }
 
-.adminRelationshipCard {
-  display: flex;
-  align-items: center;
-  gap: 14px;
-  padding: 15px 16px;
-  border: 1px solid rgba(184, 92, 61, 0.2);
-  border-radius: 14px;
-  background: linear-gradient(135deg, rgba(184, 92, 61, 0.075), rgba(255, 255, 255, 0.9));
-  box-shadow: 0 10px 25px -23px rgba(91, 46, 31, 0.55);
-}
-
-.adminRelationshipIcon {
-  display: grid;
-  flex: none;
-  place-items: center;
-  width: 42px;
-  height: 42px;
-  border: 1px solid rgba(184, 92, 61, 0.18);
-  border-radius: 12px;
-  color: var(--company-rust);
-  background: rgba(255, 255, 255, 0.7);
-}
-
-.adminRelationshipBody {
-  flex: 1;
-  min-width: 0;
-}
-
-.adminRelationshipBody h3 {
-  margin: 2px 0 0;
-  color: var(--company-ink);
-  font-size: 14px;
-  font-weight: 660;
-  line-height: 19px;
-}
-
-.adminRelationshipBody p {
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 7px;
-  margin: 6px 0 0;
-  color: var(--company-ink-2);
-  font-size: 11px;
-  line-height: 16px;
-}
-
-.adminRelationshipBody p strong {
-  color: var(--company-ink);
-  font-weight: 620;
-}
-
-.adminRelationshipBody small {
-  display: block;
-  margin-top: 5px;
-  color: var(--company-ink-3);
-  font-size: 10px;
-  line-height: 15px;
-}
-
-.adminRelationshipBody p.adminRelationshipError {
-  color: var(--company-rust);
-  font-weight: 560;
-}
-
-.adminRelationshipActions {
-  display: flex;
-  flex: none;
-  align-items: center;
-}
-
-.adminRelationshipCard .primaryButton:disabled {
-  color: var(--company-ink-3);
-  border-color: rgba(31, 35, 28, 0.12);
-  background: rgba(31, 35, 28, 0.06);
-  opacity: 1;
-}
-
 .headingActions,
 .dialogActions {
   display: flex;
@@ -1634,24 +1556,6 @@
   margin-left: -18px;
 }
 
-.adminCompanySearch {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  align-items: end;
-  gap: 9px;
-}
-
-.adminCompanySearch .secondaryButton {
-  min-height: 44px;
-}
-
-.adminDirectoryNotice {
-  margin: -7px 0 0;
-  color: var(--company-caramel);
-  font-size: 10px;
-  line-height: 15px;
-}
-
 .srOnly {
   position: absolute;
   width: 1px;
@@ -2433,29 +2337,6 @@
 
   .stack {
     gap: 20px;
-  }
-
-  .adminRelationshipCard {
-    align-items: flex-start;
-    padding: 14px;
-    flex-wrap: wrap;
-  }
-
-  .adminRelationshipBody {
-    flex-basis: calc(100% - 58px);
-  }
-
-  .adminRelationshipActions {
-    width: 100%;
-  }
-
-  .adminRelationshipActions .primaryButton,
-  .adminRelationshipActions .secondaryButton {
-    width: 100%;
-  }
-
-  .adminCompanySearch {
-    grid-template-columns: 1fr;
   }
 
   .sectionHeading h2 {

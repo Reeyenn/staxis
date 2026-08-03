@@ -261,7 +261,7 @@ describe('My Hotel account and team integration', () => {
     assert.doesNotMatch(company, /Property scope|Hotels you can access|Grouped by organization, portfolio, or region\./);
     assert.doesNotMatch(company, /Company people|Effective access|Access records|Access is managed/);
     assert.match(company, /<FilterBar[\s\S]*<OrganizationHierarchy/);
-    assert.match(company, /data\.viewerContext\?\.kind === ['"]staxis_admin_preview['"][\s\S]*<AdminHotelRelationshipManager/);
+    assert.doesNotMatch(company, /Company relationship and status|Manage relationship/);
     assert.match(company, /title=\{['"]Memberships and invitations['"]\}/);
     assert.match(company, /title=\{adminPreview[\s\S]*['"]Customer grants['"][\s\S]*['"]Access grants['"]/);
     assert.doesNotMatch(hotelTeam, /<span>\{'Hotel roster'\}<\/span>/);

@@ -27,6 +27,7 @@ export const LIMITS = {
 
 const UUID_RX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const DATE_RX = /^\d{4}-\d{2}-\d{2}$/;
+const ISO_TIMESTAMP_RX = /^(\d{4})-(\d{2})-(\d{2})T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?(?:Z|[+-]\d{2}:\d{2})$/;
 const PHONE_RX_LOOSE = /^[+()\d\s.\-]{7,20}$/;
 
 // Comms-voice audit follow-up (2026-05-22): pragmatic email regex.
@@ -62,6 +63,29 @@ export function isValidEmail(s: unknown): s is string {
 export function validateUuid(v: unknown, label = 'id'): { error?: string; value?: string } {
   if (typeof v !== 'string') return { error: `${label} must be a string` };
   if (!UUID_RX.test(v)) return { error: `${label} is not a valid UUID` };
+  return { value: v };
+}
+
+/**
+ * Validate an ISO-8601 timestamp used as a stable API cursor.
+ *
+ * Unlike Date.parse alone, this refuses ambiguous date-only and locale-shaped
+ * values. The original string is returned so database timestamp precision is
+ * preserved when the cursor is used in a comparison.
+ */
+export function validateIsoTimestamp(v: unknown, label = 'timestamp'): { error?: string; value?: string } {
+  if (typeof v !== 'string') return { error: `${label} must be a string` };
+  const match = ISO_TIMESTAMP_RX.exec(v);
+  if (!match) return { error: `${label} must be an ISO timestamp` };
+  const calendar = new Date(Date.UTC(2000, 0, 1));
+  calendar.setUTCFullYear(Number(match[1]), Number(match[2]) - 1, Number(match[3]));
+  if (
+    calendar.getUTCFullYear() !== Number(match[1])
+    || calendar.getUTCMonth() !== Number(match[2]) - 1
+    || calendar.getUTCDate() !== Number(match[3])
+  ) return { error: `${label} is not a real date` };
+  const ms = Date.parse(v);
+  if (!Number.isFinite(ms)) return { error: `${label} is not a valid ISO timestamp` };
   return { value: v };
 }
 
