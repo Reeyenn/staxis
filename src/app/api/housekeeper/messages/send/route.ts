@@ -56,7 +56,7 @@ export async function POST(req: NextRequest): Promise<Response> {
   if (convo.kind === 'announcement') return err('floor staff cannot post announcements', { requestId: gate.requestId, status: 403, code: ApiErrorCode.Forbidden, headers: gate.headers });
 
   const staff = await getStaffRow(gate.pid, gate.staffId);
-  const allowed = await canAccessConversation(gate.pid, gate.staffId, convo, { isManager: false, dept: staff?.department ?? null });
+  const allowed = await canAccessConversation(gate.pid, gate.staffId, convo, { isManager: false, dept: staff?.department ?? null, floorMode: true });
   if (!allowed) return err('Forbidden', { requestId: gate.requestId, status: 403, code: ApiErrorCode.Forbidden, headers: gate.headers });
 
   const msgType: MessageType = b.msgType && ALLOWED.has(b.msgType) ? b.msgType : 'text';

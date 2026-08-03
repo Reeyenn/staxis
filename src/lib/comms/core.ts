@@ -450,11 +450,12 @@ export async function canAccessConversation(
   pid: string,
   staffId: string,
   convo: ConversationRow,
-  ctx: { isManager: boolean; dept: string | null },
+  ctx: { isManager: boolean; dept: string | null; floorMode?: boolean },
 ): Promise<boolean> {
   if (convo.property_id !== pid) return false;
   if (convo.kind === 'announcement') return true; // everyone can read announcements
   if (convo.kind === 'channel') {
+    if (ctx.floorMode) return false;
     const visible = channelsVisibleTo({ dept: ctx.dept, isManager: ctx.isManager });
     return visible.includes(convo.channel_key as ChannelKey);
   }
@@ -630,6 +631,7 @@ export async function listConversationsForStaff(
     .eq('property_id', pid)
     .in('id', allIds);
   for (const c of (convoRows ?? []) as ConversationRow[]) {
+    if (!(await canAccessConversation(pid, staffId, c, ctx))) continue;
     convoIds.push({ id: c.id, kind: c.kind, channelKey: c.channel_key, dmKey: c.dm_key, title: c.title, lastAt: c.last_message_at });
   }
 
@@ -1850,6 +1852,7 @@ export async function searchComms(
       const { data } = await supabaseAdmin
         .from('comms_messages')
         .select('id, conversation_id, sender_staff_id, body, created_at')
+        .eq('property_id', pid)
         .in('conversation_id', convoIds)
         .is('parent_message_id', null)
         .ilike('body', `%${escapeLike(ql)}%`)
