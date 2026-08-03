@@ -107,6 +107,8 @@ function leaksIn(value: unknown): string[] {
  * lost, shrinking means an entry is stale.
  */
 const UNSEEDABLE_TABLES = new Set([
+  'account_access_cutover_repair_dispositions', // service-only cutover evidence, never seeded as hotel data
+  'account_access_cutover_repair_receipts', // service-only cutover evidence, never seeded as hotel data
   'admin_hotel_relationship_mutation_requests', // actor/relationship lifecycle request shape
   'company_structure_mutation_requests', // actor/company structure request shape
   // 0417. rule_text carries a CHECK requiring 8 to 400 characters and no trust

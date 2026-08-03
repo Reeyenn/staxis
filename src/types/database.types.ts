@@ -61,6 +61,185 @@ export type Database = {
           },
         ]
       }
+      account_access_cutover_repair_dispositions: {
+        Row: {
+          access_b_merge_sha: string
+          account_id: string
+          authority_mode: string
+          authority_version: number
+          canonical_property_ids: string[]
+          canonical_scope_hash: string
+          consumed_at: string | null
+          consumed_preflight_run_id: string | null
+          consumed_session_id: string | null
+          decision: string
+          deployed_descendant_sha: string
+          details: Json
+          id: string
+          issue_codes: string[]
+          legacy_write_event_count: number
+          operator_label: string
+          preflight_run_id: string
+          property_id: string
+          raw_property_ids: string[]
+          raw_scope_hash: string
+          reason: string
+          recorded_at: string
+          status: string
+        }
+        Insert: {
+          access_b_merge_sha: string
+          account_id: string
+          authority_mode: string
+          authority_version: number
+          canonical_property_ids: string[]
+          canonical_scope_hash: string
+          consumed_at?: string | null
+          consumed_preflight_run_id?: string | null
+          consumed_session_id?: string | null
+          decision: string
+          deployed_descendant_sha: string
+          details?: Json
+          id?: string
+          issue_codes: string[]
+          legacy_write_event_count: number
+          operator_label: string
+          preflight_run_id: string
+          property_id: string
+          raw_property_ids: string[]
+          raw_scope_hash: string
+          reason: string
+          recorded_at?: string
+          status?: string
+        }
+        Update: {
+          access_b_merge_sha?: string
+          account_id?: string
+          authority_mode?: string
+          authority_version?: number
+          canonical_property_ids?: string[]
+          canonical_scope_hash?: string
+          consumed_at?: string | null
+          consumed_preflight_run_id?: string | null
+          consumed_session_id?: string | null
+          decision?: string
+          deployed_descendant_sha?: string
+          details?: Json
+          id?: string
+          issue_codes?: string[]
+          legacy_write_event_count?: number
+          operator_label?: string
+          preflight_run_id?: string
+          property_id?: string
+          raw_property_ids?: string[]
+          raw_scope_hash?: string
+          reason?: string
+          recorded_at?: string
+          status?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "account_access_cutover_repair_dispositions_preflight_run_id_fkey"
+            columns: ["preflight_run_id"]
+            isOneToOne: false
+            referencedRelation: "account_access_cutover_preflight_runs"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      account_access_cutover_repair_receipts: {
+        Row: {
+          access_b_merge_sha: string
+          account_id: string
+          authority_mode_after: string
+          authority_mode_before: string
+          authority_version_after: number
+          authority_version_before: number
+          canonical_property_ids_after: string[]
+          canonical_property_ids_before: string[]
+          canonical_scope_hash_after: string
+          canonical_scope_hash_before: string
+          decision: string
+          deployed_descendant_sha: string
+          details: Json
+          disposition_id: string
+          id: string
+          legacy_write_event_count_after: number
+          legacy_write_event_count_before: number
+          operator_label: string
+          preflight_run_id: string
+          property_id: string
+          repaired_at: string
+          source_property_ids: string[]
+          source_scope_hash: string
+        }
+        Insert: {
+          access_b_merge_sha: string
+          account_id: string
+          authority_mode_after: string
+          authority_mode_before: string
+          authority_version_after: number
+          authority_version_before: number
+          canonical_property_ids_after: string[]
+          canonical_property_ids_before: string[]
+          canonical_scope_hash_after: string
+          canonical_scope_hash_before: string
+          decision: string
+          deployed_descendant_sha: string
+          details?: Json
+          disposition_id: string
+          id?: string
+          legacy_write_event_count_after: number
+          legacy_write_event_count_before: number
+          operator_label: string
+          preflight_run_id: string
+          property_id: string
+          repaired_at?: string
+          source_property_ids: string[]
+          source_scope_hash: string
+        }
+        Update: {
+          access_b_merge_sha?: string
+          account_id?: string
+          authority_mode_after?: string
+          authority_mode_before?: string
+          authority_version_after?: number
+          authority_version_before?: number
+          canonical_property_ids_after?: string[]
+          canonical_property_ids_before?: string[]
+          canonical_scope_hash_after?: string
+          canonical_scope_hash_before?: string
+          decision?: string
+          deployed_descendant_sha?: string
+          details?: Json
+          disposition_id?: string
+          id?: string
+          legacy_write_event_count_after?: number
+          legacy_write_event_count_before?: number
+          operator_label?: string
+          preflight_run_id?: string
+          property_id?: string
+          repaired_at?: string
+          source_property_ids?: string[]
+          source_scope_hash?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "account_access_cutover_repair_receipts_disposition_id_fkey"
+            columns: ["disposition_id"]
+            isOneToOne: false
+            referencedRelation: "account_access_cutover_repair_dispositions"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "account_access_cutover_repair_receipts_preflight_run_id_fkey"
+            columns: ["preflight_run_id"]
+            isOneToOne: false
+            referencedRelation: "account_access_cutover_preflight_runs"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       account_access_cutover_preflight_issues: {
         Row: {
           account_id: string | null
@@ -19918,6 +20097,10 @@ export type Database = {
       }
       staxis_access_stage_c_freeze_and_forward: {
         Args: { p_operator_label: string; p_preflight_run_id?: string; p_reason: string }
+        Returns: Json
+      }
+      staxis_access_stage_c_repair_evidence: {
+        Args: { p_preflight_run_id?: string }
         Returns: Json
       }
       staxis_access_stage_c_record_release_receipt: {
