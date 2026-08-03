@@ -1153,56 +1153,6 @@ begin
 end;
 $$;
 
--- Remove every physical legacy writer and its audit triggers before dropping
--- the relations. Revoke the old table/RPC capabilities first so a service
--- session cannot start another legacy write while the teardown statements
--- are executing. Canonical RPCs below remain the sole write surface.
-revoke all on table public.cleaning_tasks, public.hk_assignments from public, anon, authenticated, service_role;
-revoke all on function public._legacy_cleaning_task_to_room_work() from public, anon, authenticated, service_role;
-revoke all on function public._legacy_hk_assignment_to_room_work() from public, anon, authenticated, service_role;
-revoke all on function public._activity_log_on_cleaning_task_insert() from public, anon, authenticated, service_role;
-revoke all on function public._activity_log_on_cleaning_task_status_update() from public, anon, authenticated, service_role;
-revoke all on function public._activity_log_on_hk_assignment_insert() from public, anon, authenticated, service_role;
-revoke all on function public._activity_log_on_hk_assignment_update() from public, anon, authenticated, service_role;
-revoke all on function public.reassign_cleaning_task(uuid, uuid, uuid, uuid, text) from public, anon, authenticated, service_role;
-revoke all on function public.complete_inspection_atomic(uuid, uuid, text, jsonb, jsonb, text, boolean, text, timestamptz, text) from public, anon, authenticated, service_role;
-
-drop trigger if exists trg_legacy_cleaning_task_to_room_work on public.cleaning_tasks;
-drop trigger if exists trg_legacy_hk_assignment_to_room_work on public.hk_assignments;
-drop trigger if exists trg_activity_log_cleaning_task_ins on public.cleaning_tasks;
-drop trigger if exists trg_activity_log_cleaning_task_upd on public.cleaning_tasks;
-drop trigger if exists trg_activity_log_hk_assignment_ins on public.hk_assignments;
-drop trigger if exists trg_activity_log_hk_assignment_upd on public.hk_assignments;
-drop trigger if exists set_updated_at on public.cleaning_tasks;
-drop trigger if exists set_updated_at on public.hk_assignments;
-
-drop function if exists public._legacy_cleaning_task_to_room_work();
-drop function if exists public._legacy_hk_assignment_to_room_work();
-drop function if exists public._activity_log_on_cleaning_task_insert();
-drop function if exists public._activity_log_on_cleaning_task_status_update();
-drop function if exists public._activity_log_on_hk_assignment_insert();
-drop function if exists public._activity_log_on_hk_assignment_update();
-drop function if exists public.reassign_cleaning_task(uuid, uuid, uuid, uuid, text);
-drop function if exists public.complete_inspection_atomic(uuid, uuid, text, jsonb, jsonb, text, boolean, text, timestamptz, text);
-
-drop table public.hk_assignments;
-drop table public.cleaning_tasks;
-
-do $$
-begin
-  if to_regclass('public.hk_assignments') is not null then
-    raise exception '0437 teardown failure: physical hk_assignments still exists';
-  end if;
-  if to_regclass('public.cleaning_tasks') is not null then
-    raise exception '0437 teardown failure: physical cleaning_tasks still exists';
-  end if;
-  if to_regprocedure('public.reassign_cleaning_task(uuid,uuid,uuid,uuid,text)') is not null
-     or to_regprocedure('public.complete_inspection_atomic(uuid,uuid,text,jsonb,jsonb,text,boolean,text,timestamptz,text)') is not null then
-    raise exception '0437 teardown failure: an old cleaning RPC remains executable after legacy table drop';
-  end if;
-end;
-$$;
-
 -- The pre-Stage-C activity writer intentionally swallows insert failures so
 -- unrelated legacy operations can continue. Cutover reconciliation and the
 -- canonical audit triggers need a bounded fail-closed seam: call the existing
@@ -1377,6 +1327,66 @@ revoke all on function public._activity_log_on_inspection_insert() from public, 
 revoke all on function public._activity_log_on_inspection_update() from public, anon, authenticated;
 grant execute on function public._activity_log_on_inspection_insert() to service_role;
 grant execute on function public._activity_log_on_inspection_update() to service_role;
+
+-- Build the exact old-window audit receipt set before any legacy capability is
+-- retired. The final gate below requires one and only one activity row for
+-- every required task/status/assignment/inspection event.
+create temporary table phase5_stage_c_expected_audit_events (
+  property_id     uuid not null,
+  event_type      text not null,
+  source_event_id uuid not null,
+  primary key (property_id, event_type, source_event_id)
+)
+on commit drop;
+
+insert into phase5_stage_c_expected_audit_events (property_id, event_type, source_event_id)
+select w.property_id, 'cleaning_task_created', coalesce(w.legacy_task_id, w.id)
+  from public.room_work w
+ where w.plan_cleaning_type is not null
+on conflict do nothing;
+
+insert into phase5_stage_c_expected_audit_events (property_id, event_type, source_event_id)
+select w.property_id,
+       'cleaning_task_' || case
+         when w.status = 'in_progress' and w.is_paused then 'paused'
+         when w.status = 'in_progress' then 'in_progress'
+         when w.status = 'completed' and w.plan_status in (
+           'inspection_pending', 'inspected_pass', 'inspected_fail',
+           'correction_pending', 'correction_complete', 'check_pending',
+           'check_complete'
+         ) then w.plan_status
+         when w.status = 'completed' then 'completed'
+         when w.status = 'skipped' and w.plan_status in ('cancelled', 'superseded') then w.plan_status
+         when w.status = 'skipped' then 'skipped'
+         when w.status = 'refused' then coalesce(w.plan_status, 'deferred')
+         else coalesce(w.plan_status, w.status, 'scheduled')
+       end,
+       coalesce(w.legacy_task_id, w.id)
+  from public.room_work w
+ where w.plan_cleaning_type is not null
+   and w.status is not null
+on conflict do nothing;
+
+insert into phase5_stage_c_expected_audit_events (property_id, event_type, source_event_id)
+select distinct
+       w.property_id,
+       case when (h.snapshot->>'is_active')::boolean then 'assignment_created' else 'assignment_deactivated' end,
+       (h.snapshot->>'id')::uuid
+  from public.room_work w
+ cross join lateral jsonb_array_elements(coalesce(w.assignment_history, '[]'::jsonb)) h(snapshot)
+ where h.snapshot->>'id' ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+on conflict do nothing;
+
+insert into phase5_stage_c_expected_audit_events (property_id, event_type, source_event_id)
+select i.property_id, 'inspection_started', i.id
+  from public.inspections i
+on conflict do nothing;
+
+insert into phase5_stage_c_expected_audit_events (property_id, event_type, source_event_id)
+select i.property_id, 'inspection_' || i.result, i.id
+  from public.inspections i
+ where i.result <> 'in_progress'
+on conflict do nothing;
 
 -- Backfill the canonical audit seam for rows created by Stage B while its
 -- room_work trigger was intentionally dormant. Existing legacy events dedupe
@@ -1562,6 +1572,182 @@ begin
       v_snapshot.snapshot || jsonb_build_object('stage_c_backfill', true)
     );
   end loop;
+end;
+$$;
+
+-- Inspection rows predate the canonical trigger activation in some restored
+-- snapshots. Backfill their established start/final events through the same
+-- strict seam so the completeness gate covers the protected inspection truth.
+do $$
+declare
+  v_row        record;
+  v_event_type text;
+  v_desc       text;
+  v_occurred_at timestamptz;
+  v_fail_count integer;
+begin
+  for v_row in select i.* from public.inspections i loop
+    if not exists (
+      select 1
+        from public.activity_log l
+       where l.property_id = v_row.property_id
+         and l.event_type = 'inspection_started'
+         and l.source_event_id = v_row.id
+    ) then
+      perform public._activity_log_write_stage_c_strict(
+        v_row.property_id,
+        v_row.started_at,
+        'housekeeping',
+        'inspection_started',
+        v_row.inspector_staff_id,
+        null,
+        'room',
+        v_row.room_number,
+        'Room ' || v_row.room_number,
+        format('Inspection started on room %s', v_row.room_number),
+        'manager_dashboard',
+        v_row.id,
+        jsonb_build_object(
+          'room_number', v_row.room_number,
+          'cleaning_task_id', v_row.cleaning_task_id,
+          'inspector_staff_id', v_row.inspector_staff_id,
+          'housekeeper_staff_id', v_row.housekeeper_staff_id,
+          'checklist_id', v_row.checklist_id,
+          'stage_c_backfill', true
+        )
+      );
+    end if;
+
+    if v_row.result <> 'in_progress' then
+      v_event_type := 'inspection_' || v_row.result;
+      v_occurred_at := coalesce(v_row.completed_at, v_row.updated_at);
+      if v_row.result = 'fail' then
+        v_fail_count := jsonb_array_length(coalesce(v_row.failed_items, '[]'::jsonb));
+        v_desc := format(
+          'Room %s failed inspection, %s issue%s flagged',
+          v_row.room_number,
+          v_fail_count,
+          case when v_fail_count = 1 then '' else 's' end
+        );
+        if v_row.escalated then
+          v_desc := v_desc || ' (escalated)';
+        end if;
+      elsif v_row.result = 'pass' then
+        v_desc := format('Room %s passed inspection', v_row.room_number);
+      else
+        v_desc := format('Inspection on room %s was cancelled', v_row.room_number);
+      end if;
+
+      if not exists (
+        select 1
+          from public.activity_log l
+         where l.property_id = v_row.property_id
+           and l.event_type = v_event_type
+           and l.source_event_id = v_row.id
+      ) then
+        perform public._activity_log_write_stage_c_strict(
+          v_row.property_id,
+          v_occurred_at,
+          'housekeeping',
+          v_event_type,
+          v_row.inspector_staff_id,
+          null,
+          'room',
+          v_row.room_number,
+          'Room ' || v_row.room_number,
+          v_desc,
+          'manager_dashboard',
+          v_row.id,
+          jsonb_build_object(
+            'room_number', v_row.room_number,
+            'cleaning_task_id', v_row.cleaning_task_id,
+            'inspector_staff_id', v_row.inspector_staff_id,
+            'housekeeper_staff_id', v_row.housekeeper_staff_id,
+            'old_result', null,
+            'new_result', v_row.result,
+            'failed_items', v_row.failed_items,
+            'escalated', v_row.escalated,
+            'stage_c_backfill', true
+          )
+        );
+      end if;
+    end if;
+  end loop;
+end;
+$$;
+
+-- Fail closed on both missing and duplicated activity receipts while the
+-- legacy pair is still present. This is the audit cutover gate: no retirement
+-- revoke/drop can execute until every expected event has exactly one row.
+do $$
+declare
+  v_count bigint;
+begin
+  select count(*)
+    into v_count
+    from phase5_stage_c_expected_audit_events e
+   where (
+     select count(*)
+       from public.activity_log l
+      where l.property_id = e.property_id
+        and l.event_type = e.event_type
+        and l.source_event_id = e.source_event_id
+   ) <> 1;
+
+  if v_count > 0 then
+    raise exception
+      '0437 audit continuity failure: % required task/status/assignment/inspection receipt(s) are missing or duplicated before legacy retirement',
+      v_count;
+  end if;
+end;
+$$;
+
+-- Remove every physical legacy writer and its audit triggers before dropping
+-- the relations. Revoke the old table/RPC capabilities only after the strict
+-- audit gate above has succeeded; canonical RPCs remain the sole write surface.
+revoke all on table public.cleaning_tasks, public.hk_assignments from public, anon, authenticated, service_role;
+revoke all on function public._legacy_cleaning_task_to_room_work() from public, anon, authenticated, service_role;
+revoke all on function public._legacy_hk_assignment_to_room_work() from public, anon, authenticated, service_role;
+revoke all on function public._activity_log_on_cleaning_task_insert() from public, anon, authenticated, service_role;
+revoke all on function public._activity_log_on_cleaning_task_status_update() from public, anon, authenticated, service_role;
+revoke all on function public._activity_log_on_hk_assignment_insert() from public, anon, authenticated, service_role;
+revoke all on function public._activity_log_on_hk_assignment_update() from public, anon, authenticated, service_role;
+revoke all on function public.reassign_cleaning_task(uuid, uuid, uuid, uuid, text) from public, anon, authenticated, service_role;
+revoke all on function public.complete_inspection_atomic(uuid, uuid, text, jsonb, jsonb, text, boolean, text, timestamptz, text) from public, anon, authenticated, service_role;
+
+drop trigger if exists trg_legacy_cleaning_task_to_room_work on public.cleaning_tasks;
+drop trigger if exists trg_legacy_hk_assignment_to_room_work on public.hk_assignments;
+drop trigger if exists trg_activity_log_cleaning_task_ins on public.cleaning_tasks;
+drop trigger if exists trg_activity_log_cleaning_task_upd on public.cleaning_tasks;
+drop trigger if exists trg_activity_log_hk_assignment_ins on public.hk_assignments;
+drop trigger if exists trg_activity_log_hk_assignment_upd on public.hk_assignments;
+drop trigger if exists set_updated_at on public.cleaning_tasks;
+drop trigger if exists set_updated_at on public.hk_assignments;
+
+drop function if exists public._legacy_cleaning_task_to_room_work();
+drop function if exists public._legacy_hk_assignment_to_room_work();
+drop function if exists public._activity_log_on_cleaning_task_insert();
+drop function if exists public._activity_log_on_cleaning_task_status_update();
+drop function if exists public._activity_log_on_hk_assignment_insert();
+drop function if exists public._activity_log_on_hk_assignment_update();
+drop function if exists public.reassign_cleaning_task(uuid, uuid, uuid, uuid, text);
+drop function if exists public.complete_inspection_atomic(uuid, uuid, text, jsonb, jsonb, text, boolean, text, timestamptz, text);
+
+drop table public.hk_assignments;
+drop table public.cleaning_tasks;
+
+do $$
+begin
+  if to_regclass('public.hk_assignments') is not null then
+    raise exception '0437 teardown failure: physical hk_assignments still exists';
+  end if;
+  if to_regclass('public.cleaning_tasks') is not null then
+    raise exception '0437 teardown failure: physical cleaning_tasks still exists';
+  end if;
+  if to_regprocedure('public.reassign_cleaning_task(uuid,uuid,uuid,uuid,text)') is not null
+     or to_regprocedure('public.complete_inspection_atomic(uuid,uuid,text,jsonb,jsonb,text,boolean,text,timestamptz,text)') is not null then
+    raise exception '0437 teardown failure: an old cleaning RPC remains executable after legacy table drop';
+  end if;
 end;
 $$;
 

@@ -290,6 +290,11 @@ export function applyMigrationsToPglite(): Promise<PgliteMigratedFixture> {
       }
     }
 
+    // The current migration is the last file in the fixture. If it fails
+    // intentionally at a preflight gate, clear the aborted transaction before
+    // handing the shared database to tests that exercise the prior schema.
+    await pg.exec('rollback;').catch(() => undefined);
+
     // Surface the report once — useful when CI fails so the failure is
     // explainable without re-running with verbose flags.
     const total = files.length;
@@ -350,6 +355,10 @@ export async function applyMigrationsToPgliteWithHook(
       report.failedAtRuntime.push({ file, error: message.split('\n')[0] });
     }
   }
+  // A hook may deliberately make the final applied migration fail in order
+  // to inspect its rollback boundary. Return a usable session to the caller
+  // instead of leaking that aborted transaction into the next assertion.
+  await pg.exec('rollback;').catch(() => undefined);
   return { pg, report };
 }
 

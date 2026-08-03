@@ -796,17 +796,47 @@ test('0437 durable cutover receipt survives property cleanup by design', async (
   await migrated.pg.close();
 });
 
-test('0437 fails closed and rolls back the legacy drop when an audit receipt is suppressed', async () => {
+test('0437 fails at the pre-DROP audit gate before any legacy retirement statement', async () => {
   const migrated = await applyMigrationsToPgliteWithHook(async ({ pg: db, file }) => {
     if (file === '0434_housekeeping_plan_reconciliation.sql') {
       await seedStageCPreflightWindow(db);
     } else if (file === '0437_housekeeping_stage_c_contract.sql') {
+      await db.query('create sequence public.stage_c_test_audit_probe_seq');
+      await db.query('create sequence public.stage_c_test_retirement_probe_seq');
+      await db.query(`
+        create or replace function public.stage_c_test_probe_legacy_retirement()
+        returns event_trigger
+        language plpgsql
+        as $function$
+        declare
+          legacy_task_name text := 'cleaning_' || 'tasks';
+          legacy_assignment_name text := 'hk_' || 'assignments';
+        begin
+          if exists (
+            select 1
+              from pg_event_trigger_dropped_objects()
+             where object_identity ilike ('%' || legacy_task_name || '%')
+                or object_identity ilike ('%' || legacy_assignment_name || '%')
+                or object_identity ilike '%reassign_cleaning_task%'
+                or object_identity ilike '%complete_inspection_atomic%'
+          ) then
+            perform nextval('public.stage_c_test_retirement_probe_seq');
+          end if;
+        end;
+        $function$;
+      `);
+      await db.query(`
+        create event trigger stage_c_test_probe_legacy_retirement
+          on sql_drop
+          execute function public.stage_c_test_probe_legacy_retirement()
+      `);
       await db.query(`
         create or replace function public.stage_c_test_suppress_activity()
         returns trigger
         language plpgsql
         as $function$
         begin
+          perform nextval('public.stage_c_test_audit_probe_seq');
           return null;
         end;
         $function$;
@@ -819,6 +849,29 @@ test('0437 fails closed and rolls back the legacy drop when an audit receipt is 
     }
   });
   await assertStageCFailurePreservesLegacy(migrated, /audit continuity failure/i, 1, 1);
+  assert.equal(
+    await migrated.pg.query<{ probe: string }>(
+      "select last_value::text as probe from public.stage_c_test_audit_probe_seq",
+    ).then((result) => Number(result.rows[0]?.probe ?? '0') > 0),
+    true,
+    'the audit gate probe must fire before legacy retirement statements are reached',
+  );
+  assert.equal(
+    await migrated.pg.query<{ dropped: boolean }>(
+      "select is_called as dropped from public.stage_c_test_retirement_probe_seq",
+    ).then((result) => result.rows[0]?.dropped),
+    false,
+    'no legacy drop statement may be reached after the audit gate failure',
+  );
+  assert.equal(
+    await migrated.pg.query<{ old_rpcs_present: boolean }>(
+      `select to_regprocedure('public.reassign_cleaning_task(uuid,uuid,uuid,uuid,text)') is not null
+          and to_regprocedure('public.complete_inspection_atomic(uuid,uuid,text,jsonb,jsonb,text,boolean,text,timestamptz,text)') is not null
+          as old_rpcs_present`,
+    ).then((result) => result.rows[0]?.old_rpcs_present),
+    true,
+    'audit gate failure must precede retirement of the old RPCs',
+  );
   await migrated.pg.close();
 });
 
