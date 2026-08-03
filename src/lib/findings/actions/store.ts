@@ -346,10 +346,8 @@ function outranks(candidate: FindingAction, current: FindingAction): boolean {
   const b = Date.parse(current.proposedAt);
   if (Number.isFinite(a) && Number.isFinite(b) && a !== b) return a > b;
   // Same instant (or an unreadable timestamp): a settled row is the more
-  // informative of the two, exactly as it always was. A re-armed proposal is
-  // the exception: it must outrank the failed row it replaced even when the
-  // database clock gives both rows the same timestamp.
-  return candidate.state === 'proposed' && current.state !== 'proposed';
+  // informative of the two, exactly as it always was.
+  return current.state === 'proposed' && candidate.state !== 'proposed';
 }
 
 /** One action, scoped to this hotel. Null when it belongs to another one. */
