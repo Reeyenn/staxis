@@ -36,6 +36,8 @@ const LIVE_0425_DESCRIPTION =
 const ACCESS_B_LIVE_SHA = 'ec83bca6dab74a52dfb251d04be11d5c7427703f';
 const CURRENT_LIVE_DESCENDANT_SHA = '442fb98d632521ea33346d5c8a97014248a31fa0';
 const APPROVED_SOURCE_RUN_ID = '85981f5e-a387-4af3-ae10-b9bc1e1e9567';
+const NORMAL_LEGACY_MANIFEST_HASH =
+  '322975861288c85da8191dd08f7d1805ccd7e7086375b04660b49f9dd77a34d9';
 const APPROVED_SOURCE_ISSUES = {
   adminAccess: '0e04070e-deed-41fd-bc9d-5754f86da796',
   adminAccount: 'f5f0e14d-6990-4b71-92e5-d3eeefa4c271',
@@ -56,6 +58,299 @@ const APPROVED_SOURCE_PROPERTIES = {
   testing: '96a26a7f-7129-47db-8855-b7b34407b843',
   portArthur: 'cc000003-0000-4000-8000-000000000003',
 } as const;
+
+const UNLISTED_LEGACY_ROWS = [
+  {
+    accountId: '0237e48f-5fe2-487c-8ae8-ab61df14da88',
+    userId: '64713578-6211-4362-83f1-34f443c6433f',
+    username: 'tara-alvarez',
+    displayName: 'Tara Alvarez',
+    role: 'owner',
+    propertyId: 'b19f5a42-3bea-4232-8c28-00ce9a069fd2',
+    authorityVersion: 1,
+  },
+  {
+    accountId: '378b9d50-6559-4471-843e-6a9fd711eee1',
+    userId: '3167d440-3bcf-406f-ab35-1832be043c3f',
+    username: 'banana',
+    displayName: 'Banana',
+    role: 'housekeeping',
+    propertyId: 'b93142b5-0964-42f1-9ada-f3c50c8765a9',
+    authorityVersion: 1,
+  },
+  {
+    accountId: '57132438-477a-418c-ae05-fef93e1dd64b',
+    userId: '8b615141-d0fd-4cb2-8c23-00a3714af5bd',
+    username: 'test-hk',
+    displayName: 'Test HK',
+    role: 'housekeeping',
+    propertyId: 'c7ec4be3-ba00-4ff0-bc69-c7e09d8e4f8f',
+    authorityVersion: 1,
+  },
+  {
+    accountId: '6eb64466-ebff-4096-84a4-6675808c70ae',
+    userId: '19434b74-ea8e-47d1-848a-d8197e65e42a',
+    username: 'test-fd',
+    displayName: 'Test FD',
+    role: 'front_desk',
+    propertyId: 'c7ec4be3-ba00-4ff0-bc69-c7e09d8e4f8f',
+    authorityVersion: 1,
+  },
+  {
+    accountId: '884bae95-7013-4a47-94a6-960a759c6909',
+    userId: '0da2359e-ffa7-4b86-9948-cb3d73d9e163',
+    username: 'reeyentest',
+    displayName: 'Reyeen Test',
+    role: 'housekeeping',
+    propertyId: 'c7ec4be3-ba00-4ff0-bc69-c7e09d8e4f8f',
+    authorityVersion: 1,
+  },
+  {
+    accountId: '8d2add09-0d2a-4aa3-b1fe-be425507d702',
+    userId: '23b39caf-e9f2-41ad-9029-dfd0c1a24b65',
+    username: 'binajayesh',
+    displayName: 'Binajayesh',
+    role: 'owner',
+    propertyId: 'c7ec4be3-ba00-4ff0-bc69-c7e09d8e4f8f',
+    authorityVersion: 1,
+  },
+  {
+    accountId: '98d6b43a-b85d-44eb-9634-c30395953236',
+    userId: 'd6f95bbb-76aa-4eef-9051-b0cd64ea5646',
+    username: 'dwa',
+    displayName: 'Dwa',
+    role: 'owner',
+    propertyId: 'd50f810b-53f8-4294-9fae-44a817f677df',
+    authorityVersion: 4,
+  },
+  {
+    accountId: 'e9796543-4680-458b-a80b-ae7f3163b07a',
+    userId: '8b1ca426-fa48-43c9-90e4-eb69fed168b6',
+    username: 'test-gm',
+    displayName: 'Test GM',
+    role: 'general_manager',
+    propertyId: 'c7ec4be3-ba00-4ff0-bc69-c7e09d8e4f8f',
+    authorityVersion: 1,
+  },
+  {
+    accountId: 'f64f7d03-bc84-4173-b1e2-63552b1447c7',
+    userId: 'd6aa3bb7-cffa-4ae2-a9eb-5cbd84ff2750',
+    username: 'jaypatel4004',
+    displayName: 'Jay Patel',
+    role: 'owner',
+    propertyId: 'b93142b5-0964-42f1-9ada-f3c50c8765a9',
+    authorityVersion: 1,
+  },
+  {
+    accountId: 'fd7dca12-bc39-416c-aedb-58c9819504e5',
+    userId: '53da263b-2d4e-4b29-832e-a2ec93413875',
+    username: 'gotita7991',
+    displayName: 'Gotita',
+    role: 'housekeeping',
+    propertyId: 'c7ec4be3-ba00-4ff0-bc69-c7e09d8e4f8f',
+    authorityVersion: 1,
+  },
+] as const;
+
+const UNLISTED_LEGACY_PROPERTIES = [
+  ['b19f5a42-3bea-4232-8c28-00ce9a069fd2', 'Home2'],
+  ['b93142b5-0964-42f1-9ada-f3c50c8765a9', 'Comfort Suites'],
+  ['c7ec4be3-ba00-4ff0-bc69-c7e09d8e4f8f', 'Test Hotel'],
+  ['d50f810b-53f8-4294-9fae-44a817f677df', 'dawdwa'],
+] as const;
+
+const NORMAL_LEGACY_RAW_HASHES: Record<string, string> = {
+  'b19f5a42-3bea-4232-8c28-00ce9a069fd2': '840d7dba15ed1c65814527ea23d789a45c486b676c1950ff462872ae8240e907',
+  'b93142b5-0964-42f1-9ada-f3c50c8765a9': 'a095af95464a3339afbe9a2094823c8abdaf521529ec98ca46514e6c8d8bf368',
+  'c7ec4be3-ba00-4ff0-bc69-c7e09d8e4f8f': 'd8b2f89331c1ba838aa4e29bdf46674e274baad1aa0d5f5641fdacd54e189d13',
+  'd50f810b-53f8-4294-9fae-44a817f677df': '39a488aa9c88309f865c2832651c36567854bebf796e7d222df8a6d075a94036',
+};
+
+function rawHashesForTest(propertyId: string): string {
+  const hash = NORMAL_LEGACY_RAW_HASHES[propertyId];
+  assert.ok(hash, `missing raw hash for ${propertyId}`);
+  return hash;
+}
+
+type NormalLegacyFact = {
+  bridgeId: string;
+  relationshipId: string;
+  organizationId: string;
+  membershipIds: string[];
+  grantIds: string[];
+  staffIds: string[];
+  accountStaffId: string | null;
+  compatibilityOrganizationId: string;
+  compatibilityRelationshipId: string | null;
+  grantProfile: string;
+  grantScopeType: 'organization' | 'property';
+  grantPropertyId: string | null;
+  grantRelationshipId: string | null;
+  revokedMembership?: {
+    id: string;
+    organizationId: string;
+  };
+};
+
+const NORMAL_LEGACY_FACTS: Record<string, NormalLegacyFact> = {
+  '0237e48f-5fe2-487c-8ae8-ab61df14da88': {
+    bridgeId: 'a40a7aed-616a-4b1d-ba82-8984c930b2f9',
+    relationshipId: '17f4b3eb-94fb-4e23-84ba-32398f243332',
+    organizationId: '2ae10b42-d73f-4d31-a537-2f88cc05604e',
+    membershipIds: ['58c14e77-46a7-46ac-aa81-73f134b7a343'],
+    grantIds: ['0e74c68f-8a0e-4cac-b638-e35c2c7578ad'],
+    staffIds: [],
+    accountStaffId: null,
+    compatibilityOrganizationId: '2ae10b42-d73f-4d31-a537-2f88cc05604e',
+    compatibilityRelationshipId: null,
+    grantProfile: 'organization_owner',
+    grantScopeType: 'organization',
+    grantPropertyId: null,
+    grantRelationshipId: null,
+  },
+  '378b9d50-6559-4471-843e-6a9fd711eee1': {
+    bridgeId: '1c1ceaaf-d309-48ae-9cc1-004ca269759a',
+    relationshipId: '7642f7da-2939-4b8d-add5-391147b4b1ea',
+    organizationId: '95a093a6-fe52-4826-947a-5c4706cae010',
+    membershipIds: ['3107a4af-c2be-49ff-93cf-fcd45a9f57aa'],
+    grantIds: ['7a147214-bb54-42a7-b63a-9787bc794390'],
+    staffIds: ['eb065978-4dd6-4662-af57-2e939f84a2cb'],
+    accountStaffId: 'eb065978-4dd6-4662-af57-2e939f84a2cb',
+    compatibilityOrganizationId: '95a093a6-fe52-4826-947a-5c4706cae010',
+    compatibilityRelationshipId: '7642f7da-2939-4b8d-add5-391147b4b1ea',
+    grantProfile: 'contributor',
+    grantScopeType: 'property',
+    grantPropertyId: 'b93142b5-0964-42f1-9ada-f3c50c8765a9',
+    grantRelationshipId: '7642f7da-2939-4b8d-add5-391147b4b1ea',
+  },
+  '57132438-477a-418c-ae05-fef93e1dd64b': {
+    bridgeId: '13fa0123-ec94-45e1-aa11-c4acb2d91734',
+    relationshipId: 'ae8c748e-e203-45b1-a4b4-9b18f2295a4f',
+    organizationId: '11110000-0000-4000-8000-0000000000a1',
+    membershipIds: ['698598fa-e213-475e-bc27-5e9bd39b1864'],
+    grantIds: ['e145f9fa-0b6e-4628-9b0c-9e8de1984594'],
+    staffIds: [],
+    accountStaffId: null,
+    compatibilityOrganizationId: 'd4a443ce-959e-4d2e-8c26-7d103165c6ba',
+    compatibilityRelationshipId: '63b96d8c-3534-407b-b623-98bf1756f007',
+    grantProfile: 'contributor',
+    grantScopeType: 'property',
+    grantPropertyId: 'c7ec4be3-ba00-4ff0-bc69-c7e09d8e4f8f',
+    grantRelationshipId: '63b96d8c-3534-407b-b623-98bf1756f007',
+  },
+  '6eb64466-ebff-4096-84a4-6675808c70ae': {
+    bridgeId: '6afed1ee-2fd7-44c0-b20a-6732c45ea44a',
+    relationshipId: 'ae8c748e-e203-45b1-a4b4-9b18f2295a4f',
+    organizationId: '11110000-0000-4000-8000-0000000000a1',
+    membershipIds: ['58217584-b7d6-462f-a95b-971bee7e9bfa'],
+    grantIds: ['2988b9ab-aea6-4be4-a8ae-21e8cdd60e2d'],
+    staffIds: [],
+    accountStaffId: null,
+    compatibilityOrganizationId: 'd4a443ce-959e-4d2e-8c26-7d103165c6ba',
+    compatibilityRelationshipId: '63b96d8c-3534-407b-b623-98bf1756f007',
+    grantProfile: 'contributor',
+    grantScopeType: 'property',
+    grantPropertyId: 'c7ec4be3-ba00-4ff0-bc69-c7e09d8e4f8f',
+    grantRelationshipId: '63b96d8c-3534-407b-b623-98bf1756f007',
+  },
+  '884bae95-7013-4a47-94a6-960a759c6909': {
+    bridgeId: '4b4fb7e2-e166-4d1c-8836-7985e676b604',
+    relationshipId: 'ae8c748e-e203-45b1-a4b4-9b18f2295a4f',
+    organizationId: '11110000-0000-4000-8000-0000000000a1',
+    membershipIds: ['bfc81cf5-77b5-4d9b-8462-b1da5dfbff02'],
+    grantIds: ['9950058a-efd3-4dad-bcca-007576f78954'],
+    staffIds: [],
+    accountStaffId: null,
+    compatibilityOrganizationId: 'd4a443ce-959e-4d2e-8c26-7d103165c6ba',
+    compatibilityRelationshipId: '63b96d8c-3534-407b-b623-98bf1756f007',
+    grantProfile: 'contributor',
+    grantScopeType: 'property',
+    grantPropertyId: 'c7ec4be3-ba00-4ff0-bc69-c7e09d8e4f8f',
+    grantRelationshipId: '63b96d8c-3534-407b-b623-98bf1756f007',
+  },
+  '8d2add09-0d2a-4aa3-b1fe-be425507d702': {
+    bridgeId: '528adab1-8728-4ee4-8b8a-99bb1dc91e98',
+    relationshipId: 'ae8c748e-e203-45b1-a4b4-9b18f2295a4f',
+    organizationId: '11110000-0000-4000-8000-0000000000a1',
+    membershipIds: [
+      '3b112ba7-2494-48e0-8be6-78b48a5f61f4',
+      'a6500631-c240-41ef-874b-8d00beff5c24',
+    ],
+    grantIds: ['685b8a29-381f-4321-af85-22b65c9ce2b4'],
+    staffIds: [],
+    accountStaffId: null,
+    compatibilityOrganizationId: 'd4a443ce-959e-4d2e-8c26-7d103165c6ba',
+    compatibilityRelationshipId: null,
+    grantProfile: 'organization_owner',
+    grantScopeType: 'organization',
+    grantPropertyId: null,
+    grantRelationshipId: null,
+    revokedMembership: {
+      id: '3b112ba7-2494-48e0-8be6-78b48a5f61f4',
+      organizationId: '11110000-0000-4000-8000-0000000000a1',
+    },
+  },
+  '98d6b43a-b85d-44eb-9634-c30395953236': {
+    bridgeId: '02df6f9e-bba8-4f19-8586-115f1ca6a93c',
+    relationshipId: '07d0c0d7-f983-4116-8612-c00da016b44d',
+    organizationId: '12ad3f78-75e7-4aa5-b47a-9a0fa4edeb8c',
+    membershipIds: ['66471207-2a8b-4287-821c-5c66cb30c521'],
+    grantIds: ['be69f144-890f-4016-bde6-345bcc8429e0'],
+    staffIds: [],
+    accountStaffId: null,
+    compatibilityOrganizationId: '12ad3f78-75e7-4aa5-b47a-9a0fa4edeb8c',
+    compatibilityRelationshipId: null,
+    grantProfile: 'organization_owner',
+    grantScopeType: 'organization',
+    grantPropertyId: null,
+    grantRelationshipId: null,
+  },
+  'e9796543-4680-458b-a80b-ae7f3163b07a': {
+    bridgeId: '43c0dd2a-a2c3-4d3f-aca8-d34c90b546c8',
+    relationshipId: 'ae8c748e-e203-45b1-a4b4-9b18f2295a4f',
+    organizationId: '11110000-0000-4000-8000-0000000000a1',
+    membershipIds: ['ce386157-6b91-42d7-9d8e-b9ab6d615037'],
+    grantIds: ['ebb20a3f-7379-4a39-88b0-315e387edc61'],
+    staffIds: [],
+    accountStaffId: null,
+    compatibilityOrganizationId: 'd4a443ce-959e-4d2e-8c26-7d103165c6ba',
+    compatibilityRelationshipId: '63b96d8c-3534-407b-b623-98bf1756f007',
+    grantProfile: 'property_manager',
+    grantScopeType: 'property',
+    grantPropertyId: 'c7ec4be3-ba00-4ff0-bc69-c7e09d8e4f8f',
+    grantRelationshipId: '63b96d8c-3534-407b-b623-98bf1756f007',
+  },
+  'f64f7d03-bc84-4173-b1e2-63552b1447c7': {
+    bridgeId: '6521d3fd-634e-4cb9-aa00-46e771bfc25b',
+    relationshipId: '7642f7da-2939-4b8d-add5-391147b4b1ea',
+    organizationId: '95a093a6-fe52-4826-947a-5c4706cae010',
+    membershipIds: ['3194a56a-4298-45af-8cdc-d63711957600'],
+    grantIds: ['71ace9d6-a489-490e-88e6-3a7d56f82140'],
+    staffIds: [],
+    accountStaffId: null,
+    compatibilityOrganizationId: '95a093a6-fe52-4826-947a-5c4706cae010',
+    compatibilityRelationshipId: null,
+    grantProfile: 'organization_owner',
+    grantScopeType: 'organization',
+    grantPropertyId: null,
+    grantRelationshipId: null,
+  },
+  'fd7dca12-bc39-416c-aedb-58c9819504e5': {
+    bridgeId: '9211738b-7a14-4c55-8436-d23fcc3a60cd',
+    relationshipId: 'ae8c748e-e203-45b1-a4b4-9b18f2295a4f',
+    organizationId: '11110000-0000-4000-8000-0000000000a1',
+    membershipIds: ['cdd53ca0-2ff8-41df-a705-748d83e268d3'],
+    grantIds: ['0ee6b389-dc6a-4068-a60a-30470ae3e769'],
+    staffIds: [],
+    accountStaffId: null,
+    compatibilityOrganizationId: 'd4a443ce-959e-4d2e-8c26-7d103165c6ba',
+    compatibilityRelationshipId: '63b96d8c-3534-407b-b623-98bf1756f007',
+    grantProfile: 'contributor',
+    grantScopeType: 'property',
+    grantPropertyId: 'c7ec4be3-ba00-4ff0-bc69-c7e09d8e4f8f',
+    grantRelationshipId: '63b96d8c-3534-407b-b623-98bf1756f007',
+  },
+};
 
 const APPROVED_SOURCE_WRAPPER_RUNS = {
   baseline: '3f8f61d9-ca62-4c09-8bcf-ece54992b53f',
@@ -316,6 +611,39 @@ function activeSourceText(...roots: string[]): string {
 
 async function seedStageCFixture(pg: PGlite): Promise<void> {
   await seedTwoCompanies(pg);
+  // The clean final-contract fixture must not rely on the suffix's former
+  // broad raw-array clear. Convert the two legacy Waco control accounts
+  // through the ordinary Stage B scope seam, then remove only the fixture
+  // setup snapshot. Their effective access remains canonical and the final
+  // migration therefore starts with no unapproved raw scopes.
+  for (const [accountId, propertyId, role] of [
+    [ACCOUNT_WANDA, PID_L1, 'owner'],
+    [ACCOUNT_HANK, PID_L1, 'housekeeping'],
+  ] as const) {
+    const state = (await rows<{ authority_version: number }>(
+      pg,
+      `select authority_version
+         from public.account_authorization_state
+        where account_id=$1`,
+      [accountId],
+    ))[0];
+    const result = await jsonRpc(
+      pg,
+      `select public.staxis_set_account_authorization_scope(
+         $1,$2,$3::uuid[],$4,$5,$6,'Stage C clean canonical fixture'
+       ) as value`,
+      [ACCOUNT_ADMIN, accountId, [propertyId], state.authority_version, role, role],
+    );
+    assert.equal(result.ok, true, JSON.stringify(result));
+  }
+  await pg.query(
+    `update public.accounts
+        set property_access='{}'::uuid[]
+      where id in ($1,$2)`,
+    [ACCOUNT_WANDA, ACCOUNT_HANK],
+  );
+  await pg.query(`delete from public.account_access_cutover_legacy_write_events`);
+
   // The fixture deliberately plants the admin's historical row through the
   // pre-C seed. Its canonical platform-admin role is already established, so
   // mark that state as the operator would before a production cutover.
@@ -381,6 +709,332 @@ async function seedProductionResidueFixture(pg: PGlite): Promise<void> {
   // evidence for this incident is zero, so reset only this test setup audit
   // before the report-only prefix runs.
   await pg.query(`delete from public.account_access_cutover_legacy_write_events`);
+}
+
+async function seedUnlistedLegacyRowsFixture(pg: PGlite): Promise<void> {
+  const primaryOrganizations: Record<string, { id: string; name: string; type: string; legacyPropertyId: string | null }> = {
+    'b19f5a42-3bea-4232-8c28-00ce9a069fd2': { id: '2ae10b42-d73f-4d31-a537-2f88cc05604e', name: 'Home2', type: 'single_hotel', legacyPropertyId: 'b19f5a42-3bea-4232-8c28-00ce9a069fd2' },
+    'b93142b5-0964-42f1-9ada-f3c50c8765a9': { id: '95a093a6-fe52-4826-947a-5c4706cae010', name: 'Comfort Suites', type: 'single_hotel', legacyPropertyId: 'b93142b5-0964-42f1-9ada-f3c50c8765a9' },
+    'c7ec4be3-ba00-4ff0-bc69-c7e09d8e4f8f': { id: '11110000-0000-4000-8000-0000000000a1', name: 'Test Hotel', type: 'management_company', legacyPropertyId: null },
+    'd50f810b-53f8-4294-9fae-44a817f677df': { id: '12ad3f78-75e7-4aa5-b47a-9a0fa4edeb8c', name: 'dawdwa', type: 'single_hotel', legacyPropertyId: 'd50f810b-53f8-4294-9fae-44a817f677df' },
+  };
+  const primaryRelationships: Record<string, string> = {
+    'b19f5a42-3bea-4232-8c28-00ce9a069fd2': '17f4b3eb-94fb-4e23-84ba-32398f243332',
+    'b93142b5-0964-42f1-9ada-f3c50c8765a9': '7642f7da-2939-4b8d-add5-391147b4b1ea',
+    'c7ec4be3-ba00-4ff0-bc69-c7e09d8e4f8f': 'ae8c748e-e203-45b1-a4b4-9b18f2295a4f',
+    'd50f810b-53f8-4294-9fae-44a817f677df': '07d0c0d7-f983-4116-8612-c00da016b44d',
+  };
+  const rawHashes = NORMAL_LEGACY_RAW_HASHES;
+
+  for (const [propertyId, name] of UNLISTED_LEGACY_PROPERTIES) {
+    await pg.query(
+      `insert into public.properties(id,name,owner_id,total_rooms,timezone,is_test)
+       values ($1,$2,$3,60,'America/Chicago',$4)
+       on conflict (id) do nothing`,
+      [propertyId, name, UID_ADMIN, propertyId === 'c7ec4be3-ba00-4ff0-bc69-c7e09d8e4f8f'],
+    );
+    await pg.query(
+      `update public.organization_property_relationships
+          set is_primary_grouping=false
+        where property_id=$1 and ends_at is null and is_primary_grouping=true`,
+      [propertyId],
+    );
+    await pg.query(`delete from public.organizations where legacy_property_id=$1`, [propertyId]);
+    const organization = primaryOrganizations[propertyId];
+    await pg.query(
+      `insert into public.organizations(id,name,organization_type,status,legacy_property_id)
+       values ($1,$2,$3,'active',$4)`,
+      [organization.id, organization.name, organization.type, organization.legacyPropertyId],
+    );
+    await pg.query(
+      `insert into public.organization_property_relationships(
+         id,organization_id,property_id,relationship_type,is_primary_grouping,starts_at
+       ) values ($1,$2,$3,'operator',true,clock_timestamp() - interval '1 day')`,
+      [primaryRelationships[propertyId], organization.id, propertyId],
+    );
+  }
+  await pg.query(
+    `insert into public.organizations(id,name,organization_type,status)
+     values ('d4a443ce-959e-4d2e-8c26-7d103165c6ba','Legacy Compatibility Company',
+             'management_company','active') on conflict (id) do nothing`,
+  );
+  await pg.query(
+    `insert into public.organization_property_relationships(
+       id,organization_id,property_id,relationship_type,is_primary_grouping,starts_at
+     ) values ('63b96d8c-3534-407b-b623-98bf1756f007',
+       'd4a443ce-959e-4d2e-8c26-7d103165c6ba',
+       'c7ec4be3-ba00-4ff0-bc69-c7e09d8e4f8f','operator',false,
+       clock_timestamp() - interval '1 day') on conflict (id) do nothing`,
+  );
+  await insertStaff(pg, 'eb065978-4dd6-4662-af57-2e939f84a2cb',
+    'b93142b5-0964-42f1-9ada-f3c50c8765a9', 'Banana Staff', 'housekeeping', '555-0101');
+
+  for (const row of UNLISTED_LEGACY_ROWS) {
+    await insertCanonicalAccount(pg, row.accountId, row.userId, row.username,
+      row.displayName, row.role, `${row.username}@example.test`);
+    const fact = NORMAL_LEGACY_FACTS[row.accountId];
+    assert.ok(fact, `missing normal-legacy fixture fact for ${row.accountId}`);
+    if (fact.accountStaffId) {
+      await pg.query(`update public.accounts set staff_id=$2 where id=$1`, [row.accountId, fact.accountStaffId]);
+    }
+    await pg.query(
+      `insert into public.account_property_authorization_bridges(
+         id,account_id,property_id,cutover_organization_id,cutover_relationship_id,
+         status,source_legacy_scope_hash,cutover_reason
+       ) values ($1,$2,$3,$4,$5,'active',$6,'authoritative normal-legacy fixture')`,
+      [fact.bridgeId, row.accountId, row.propertyId, fact.organizationId,
+        fact.relationshipId, rawHashes[row.propertyId]],
+    );
+    const compatibilityMembershipIds = fact.membershipIds;
+    for (const membershipId of compatibilityMembershipIds) {
+      const revoked = fact.revokedMembership?.id === membershipId;
+      await pg.query(
+        `insert into public.organization_memberships(
+           id,organization_id,account_id,job_category,status,starts_at,ended_at,
+           membership_scope,staxis_role,covered_property_ids
+         ) values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
+        [
+          membershipId,
+          revoked ? fact.revokedMembership?.organizationId : fact.compatibilityOrganizationId,
+          row.accountId,
+          row.role === 'owner' ? 'owner_principal' : row.role === 'general_manager' ? 'general_manager' : 'hotel_employee',
+          revoked ? 'revoked' : 'active',
+          revoked ? '2026-07-26T09:00:19.192312Z' : '2026-07-20T14:37:28.765078Z',
+          revoked ? '2026-07-26T13:17:59.320767Z' : null,
+          revoked ? 'company' : null,
+          revoked ? 'vp' : null,
+          null,
+        ],
+      );
+    }
+    await pg.query(
+      `insert into public.organization_access_grants(
+         id,organization_id,membership_id,access_profile,scope_type,
+         property_relationship_id,property_id,status,source,version
+       ) values ($1,$2,$3,$4,$5,$6,$7,'active','legacy_backfill',1)`,
+      [fact.grantIds[0], fact.compatibilityOrganizationId, fact.membershipIds.at(-1),
+        fact.grantProfile, fact.grantScopeType, fact.grantRelationshipId, fact.grantPropertyId],
+    );
+    if (fact.accountStaffId) {
+      await pg.query(
+        `insert into public.account_property_staff_links(
+           account_id,property_id,staff_id,is_active,source,linked_at
+         ) values ($1,$2,$3,true,'legacy_backfill',clock_timestamp() - interval '1 day')`,
+        [row.accountId, row.propertyId, fact.accountStaffId],
+      );
+    }
+  }
+
+  // Populate every raw scope before cleaning the trigger-created compatibility
+  // rows. Shared-property reconciliation can revisit earlier accounts while
+  // this batch is being populated, so state is reset only after the batch.
+  for (const row of UNLISTED_LEGACY_ROWS) {
+    await pg.query(`update public.accounts set property_access=array[$2::uuid] where id=$1`,
+      [row.accountId, row.propertyId]);
+  }
+
+  for (const row of UNLISTED_LEGACY_ROWS) {
+    const fact = NORMAL_LEGACY_FACTS[row.accountId];
+    await pg.query(
+      `delete from public.organization_access_grants grant_row
+        where grant_row.membership_id in (
+          select membership.id from public.organization_memberships membership where membership.account_id=$1
+        ) and not (grant_row.id = any($2::uuid[]))`,
+      [row.accountId, fact.grantIds],
+    );
+    await pg.query(
+      `delete from public.organization_memberships membership
+        where membership.account_id=$1 and not (membership.id = any($2::uuid[]))`,
+      [row.accountId, fact.membershipIds],
+    );
+    await pg.query(
+      `delete from public.account_property_staff_links
+        where account_id=$1 and not (staff_id = any($2::uuid[]))`,
+      [row.accountId, fact.staffIds],
+    );
+    await pg.query(
+      `delete from public.account_property_authorization_bridges
+        where account_id=$1 and id <> $2`,
+      [row.accountId, fact.bridgeId],
+    );
+  }
+  // The c7 test property has an authoritative management-company primary
+  // organization. Legacy reconciliation can create a temporary single-hotel
+  // anchor while seeding arrays; remove only that generated anchor, never the
+  // manifest-bound management company or its relationship.
+  await pg.query(
+    `delete from public.organizations where legacy_property_id=$1`,
+    ['c7ec4be3-ba00-4ff0-bc69-c7e09d8e4f8f'],
+  );
+  for (const row of UNLISTED_LEGACY_ROWS) {
+    await pg.query(`delete from public.account_authorization_state where account_id=$1`, [row.accountId]);
+    await pg.query(
+      `insert into public.account_authorization_state(
+         account_id,authority_mode,authority_version,legacy_scope_hash,
+         normalized_scope_hash,cutover_at,cutover_reason
+       ) values ($1,'legacy',$2,$3,encode(sha256(convert_to('', 'UTF8')),'hex'),null,
+                 'Unlisted production-shaped legacy scope fixture')`,
+      [row.accountId, row.authorityVersion, rawHashes[row.propertyId]],
+    );
+  }
+  await pg.query(`delete from public.account_access_cutover_legacy_write_events`);
+}
+
+async function seedPreconvertedNormalLegacyReplayRow(
+  pg: PGlite,
+  row: (typeof UNLISTED_LEGACY_ROWS)[number],
+): Promise<void> {
+  const fact = NORMAL_LEGACY_FACTS[row.accountId];
+  assert.ok(fact, `missing replay fixture fact for ${row.accountId}`);
+  const beforeEvidence = (await rows<{ evidence: unknown }>(
+    pg,
+    `select public._staxis_stage_c_account_evidence($1,$2) as evidence`,
+    [row.accountId, row.propertyId],
+  ))[0]?.evidence;
+  assert.ok(beforeEvidence, `missing replay before evidence for ${row.accountId}`);
+  const imported = await jsonRpc(
+    pg,
+    `select public._staxis_stage_b_import_legacy_scope(
+       $1,'Access Stage C deterministic replay fixture'
+     ) as value`,
+    [row.accountId],
+  );
+  assert.equal(imported.ok, true, JSON.stringify(imported));
+  assert.equal(imported.status, 'imported', JSON.stringify(imported));
+  await pg.exec(`
+    drop trigger if exists trg_accounts_authorization_refresh on public.accounts;
+    drop trigger if exists trg_accounts_reconcile_legacy_organization_access on public.accounts;
+    drop trigger if exists trg_accounts_authorization_translate_legacy_property_access on public.accounts;
+    drop trigger if exists trg_accounts_zz_authorization_translate_legacy_property_access on public.accounts;
+  `);
+  await pg.query(
+    `update public.accounts set property_access='{}'::uuid[] where id=$1`,
+    [row.accountId],
+  );
+  await pg.query(`delete from public.account_authorization_state where account_id=$1`, [row.accountId]);
+  await pg.query(
+    `insert into public.account_authorization_state(
+       account_id,authority_mode,authority_version,legacy_scope_hash,
+       normalized_scope_hash,cutover_at,cutover_reason
+     ) values ($1,'normalized',$2,$3,$3,clock_timestamp(),
+               'Access Stage C deterministic replay fixture')`,
+    [row.accountId, row.authorityVersion + 1, rawHashesForTest(row.propertyId)],
+  );
+  await pg.query(`delete from public.account_access_cutover_legacy_write_events`);
+  const afterEvidence = (await rows<{ evidence: unknown }>(
+    pg,
+    `select public._staxis_stage_c_account_evidence($1,$2) as evidence`,
+    [row.accountId, row.propertyId],
+  ))[0]?.evidence;
+  assert.ok(afterEvidence, `missing replay after evidence for ${row.accountId}`);
+  const compatibility = (await rows<{ compatibility: unknown }>(
+    pg,
+    `select jsonb_build_object(
+       'memberships', coalesce((select jsonb_agg(jsonb_build_object(
+         'id', membership.id, 'organizationId', membership.organization_id,
+         'status', membership.status, 'endedAtPresent', membership.ended_at is not null,
+         'membershipScope', membership.membership_scope, 'staxisRole', membership.staxis_role,
+         'coveredPropertyIds', membership.covered_property_ids
+       ) order by membership.id) from public.organization_memberships membership
+        where membership.account_id=account.id), '[]'::jsonb),
+       'grants', coalesce((select jsonb_agg(jsonb_build_object(
+         'id', grant_row.id, 'organizationId', grant_row.organization_id,
+         'accessProfile', grant_row.access_profile, 'scopeType', grant_row.scope_type,
+         'propertyId', grant_row.property_id, 'propertyRelationshipId', grant_row.property_relationship_id,
+         'status', grant_row.status, 'source', grant_row.source,
+         'expiresAtPresent', grant_row.expires_at is not null,
+         'revokedAtPresent', grant_row.revoked_at is not null, 'version', grant_row.version
+       ) order by grant_row.id)
+        from public.organization_access_grants grant_row
+        join public.organization_memberships membership on membership.id=grant_row.membership_id
+       where membership.account_id=account.id and grant_row.status='active'), '[]'::jsonb),
+       'staffLinks', coalesce((select jsonb_agg(jsonb_build_object(
+         'accountId', staff_link.account_id, 'propertyId', staff_link.property_id,
+         'staffId', staff_link.staff_id, 'isActive', staff_link.is_active,
+         'source', staff_link.source, 'deactivatedAtPresent', staff_link.deactivated_at is not null
+       ) order by staff_link.property_id, staff_link.staff_id)
+        from public.account_property_staff_links staff_link
+       where staff_link.account_id=account.id and staff_link.is_active), '[]'::jsonb),
+       'accountStaffId', account.staff_id) as compatibility
+      from public.accounts account where account.id=$1`,
+    [row.accountId],
+  ))[0]?.compatibility;
+  assert.ok(compatibility, `missing replay compatibility for ${row.accountId}`);
+  const state = (await rows<{ authority_version: number }>(
+    pg,
+    `select authority_version from public.account_authorization_state where account_id=$1`,
+    [row.accountId],
+  ))[0];
+  assert.equal(state.authority_version, row.authorityVersion + 1);
+  await pg.query(
+    `insert into public.account_access_cutover_normal_legacy_manifests(
+       account_id,source_preflight_run_id,property_id,expected_role,
+       expected_authority_mode,expected_authority_version,expected_raw_property_ids,
+       expected_raw_scope_hash,expected_canonical_ids,expected_canonical_hash,
+       aggregate_manifest_hash,expected_auth_user_id,expected_account_staff_id,
+       expected_active,expected_relationship_id,expected_organization_id,
+       expected_organization_type,expected_bridge_id,expected_membership_ids,
+       expected_grant_ids,expected_staff_ids,expected_compatibility,
+       expected_compatibility_hash,status,conversion_txid,auth_user_id_snapshot,
+       active_snapshot,relationship_id_snapshot,organization_id_snapshot,
+       organization_type_snapshot,evidence_before,evidence_before_hash,
+       evidence_after,evidence_after_hash,observed_compatibility,
+       observed_compatibility_hash,canonical_ids_after,canonical_hash_after,
+       authority_version_after,bridge_id_after,converted_at,details
+     ) values (
+       $1::uuid,$2::uuid,$3::uuid,$4::text,'legacy',$5::bigint,
+       array[$3::uuid]::uuid[],$6::text,'{}'::uuid[],$7::text,$8::text,
+       $9::uuid,$10::uuid,
+       true,$11::uuid,$12::uuid,$13::text,$14::uuid,$15::uuid[],$16::uuid[],$17::uuid[],$18::jsonb,
+       encode(sha256(convert_to($18::jsonb::text,'UTF8')),'hex'),
+       'converted',null,$9::uuid,true,$11::uuid,$12::uuid,$13::text,$19::jsonb,
+       encode(sha256(convert_to($19::jsonb::text,'UTF8')),'hex'),$20::jsonb,
+       encode(sha256(convert_to($20::jsonb::text,'UTF8')),'hex'),
+       $18::jsonb,
+       encode(sha256(convert_to($18::jsonb::text,'UTF8')),'hex'),
+       array[$3::uuid]::uuid[],$6::text,$5::bigint + 1::bigint,$14::uuid,clock_timestamp(),
+       jsonb_build_object(
+         'source','0426-normal-legacy-production-manifest',
+         'aggregateManifestHash',$8::text,
+         'compatibilityBefore',$18::jsonb,
+         'compatibilityBeforeHash',encode(sha256(convert_to($18::jsonb::text,'UTF8')),'hex'),
+         'evidenceBefore',$19::jsonb,
+         'evidenceBeforeHash',encode(sha256(convert_to($19::jsonb::text,'UTF8')),'hex'),
+         'compatibilityAfter',$18::jsonb,
+         'compatibilityAfterHash',encode(sha256(convert_to($18::jsonb::text,'UTF8')),'hex'),
+         'accountStaffIdBefore',$10,
+         'accountStaffIdAfter',$10,
+         'evidenceAfter',$20::jsonb,
+         'evidenceAfterHash',encode(sha256(convert_to($20::jsonb::text,'UTF8')),'hex'),
+         'canonicalIdsAfter',array[$3]::uuid[],
+         'canonicalHashAfter',$6,
+         'authorityVersionAfter',$5::bigint + 1::bigint,
+         'bridgeIdAfter',$14
+       )
+     )`,
+    [
+      row.accountId,
+      APPROVED_SOURCE_RUN_ID,
+      row.propertyId,
+      row.role,
+      row.authorityVersion,
+      rawHashesForTest(row.propertyId),
+      sha256(''),
+      NORMAL_LEGACY_MANIFEST_HASH,
+      row.userId,
+      fact.accountStaffId,
+      fact.relationshipId,
+      fact.organizationId,
+      row.propertyId === 'c7ec4be3-ba00-4ff0-bc69-c7e09d8e4f8f' ? 'management_company' : 'single_hotel',
+      fact.bridgeId,
+      fact.membershipIds,
+      fact.grantIds,
+      fact.staffIds,
+      compatibility,
+      beforeEvidence,
+      afterEvidence,
+    ],
+  );
 }
 
 async function seedWrapperMappingFixture(pg: PGlite): Promise<void> {
@@ -688,6 +1342,89 @@ async function recordAllProductionResidueDispositions(
   return runId;
 }
 
+async function recordApprovedSourceDispositions(pg: PGlite): Promise<string> {
+  const runId = (await rows<{ final_preflight_run_id: string }>(
+    pg,
+    `select final_preflight_run_id from public.account_access_cutover_status where id is true`,
+  ))[0].final_preflight_run_id;
+  assert.equal(runId, APPROVED_SOURCE_RUN_ID);
+  const states = await rows<{
+    account_id: string;
+    authority_mode: string;
+    authority_version: number;
+  }>(
+    pg,
+    `select account_id,authority_mode,authority_version
+       from public.account_authorization_state
+      where account_id = any($1::uuid[])
+      order by account_id`,
+    [[
+      APPROVED_SOURCE_ACCOUNTS.admin,
+      APPROVED_SOURCE_ACCOUNTS.gus,
+      APPROVED_SOURCE_ACCOUNTS.greta,
+      APPROVED_SOURCE_ACCOUNTS.dolores,
+    ]],
+  );
+  const byAccount = new Map(states.map((state) => [state.account_id, state]));
+  const canonicalIds = async (accountId: string): Promise<string[]> => (await rows<{ property_id: string }>(
+    pg,
+    `select distinct property_id
+       from public._staxis_account_property_authorizations($1)
+      order by property_id`,
+    [accountId],
+  )).map((row) => row.property_id);
+  const dispositions = [
+    {
+      accountId: APPROVED_SOURCE_ACCOUNTS.admin,
+      propertyId: APPROVED_SOURCE_PROPERTIES.admin,
+      issueCodes: ['admin_legacy_access', 'admin_legacy_account', 'stage_a_invariant_failure'],
+      issueIds: [APPROVED_SOURCE_ISSUES.adminAccess, APPROVED_SOURCE_ISSUES.adminAccount, APPROVED_SOURCE_ISSUES.wrapper],
+      decision: 'admin_global',
+      canonicalPropertyIds: [] as string[],
+      reason: 'admin_global_role_residue',
+    },
+    {
+      accountId: APPROVED_SOURCE_ACCOUNTS.gus,
+      propertyId: APPROVED_SOURCE_PROPERTIES.testing,
+      issueCodes: ['normalized_legacy_residue', 'stage_a_invariant_failure'],
+      issueIds: [APPROVED_SOURCE_ISSUES.gus, APPROVED_SOURCE_ISSUES.wrapper],
+      decision: 'canonical_duplicate',
+      canonicalPropertyIds: await canonicalIds(APPROVED_SOURCE_ACCOUNTS.gus),
+      reason: 'canonical_duplicate_residue',
+    },
+    {
+      accountId: APPROVED_SOURCE_ACCOUNTS.greta,
+      propertyId: APPROVED_SOURCE_PROPERTIES.portArthur,
+      issueCodes: ['normalized_legacy_residue', 'stage_a_invariant_failure'],
+      issueIds: [APPROVED_SOURCE_ISSUES.greta, APPROVED_SOURCE_ISSUES.wrapper],
+      decision: 'canonical_duplicate',
+      canonicalPropertyIds: await canonicalIds(APPROVED_SOURCE_ACCOUNTS.greta),
+      reason: 'canonical_duplicate_residue',
+    },
+    {
+      accountId: APPROVED_SOURCE_ACCOUNTS.dolores,
+      propertyId: APPROVED_SOURCE_PROPERTIES.testing,
+      issueCodes: ['normalized_legacy_residue', 'stage_a_invariant_failure'],
+      issueIds: [APPROVED_SOURCE_ISSUES.dolores, APPROVED_SOURCE_ISSUES.wrapper],
+      decision: 'revoked_canonical_empty',
+      canonicalPropertyIds: await canonicalIds(APPROVED_SOURCE_ACCOUNTS.dolores),
+      reason: 'revoked_canonical_empty_residue',
+    },
+  ] as const;
+  for (const disposition of dispositions) {
+    const state = byAccount.get(disposition.accountId);
+    assert.ok(state, `missing source state for ${disposition.accountId}`);
+    await recordRepairDisposition(pg, {
+      preflightRunId: runId,
+      ...disposition,
+      authorityMode: state.authority_mode,
+      authorityVersion: state.authority_version,
+      rawPropertyIds: [disposition.propertyId],
+    });
+  }
+  return runId;
+}
+
 async function insertCanonicalAccount(
   pg: PGlite,
   accountId: string,
@@ -739,8 +1476,8 @@ async function recordRepairDisposition(
     preflightRunId: string;
     accountId: string;
     propertyId: string;
-    issueCodes: string[];
-    issueIds?: string[];
+    issueCodes: readonly string[];
+    issueIds?: readonly string[];
     decision: string;
     operatorLabel?: string;
     accessBMergeSha?: string;
@@ -1789,7 +2526,7 @@ describe('Access Stage C final contract — real migration boundary', () => {
         [ACCOUNT_WANDA],
       );
       assert.equal(receipt.account_id, ACCOUNT_WANDA);
-      assert.deepEqual(receipt.source_property_ids, [PID_L1]);
+      assert.deepEqual(receipt.source_property_ids, []);
       await assert.rejects(
         pg.query(`update public.account_access_cutover_final_receipts set details = '{}' where account_id = $1`, [ACCOUNT_WANDA]),
         /final receipts are immutable/i,
@@ -2151,7 +2888,7 @@ describe('Access Stage C final contract — real migration boundary', () => {
         `select public.staxis_access_stage_c_final_receipt($1) as value`,
         [ACCOUNT_WANDA],
       );
-      assert.deepEqual(receipt.source_property_ids, [PID_L1]);
+      assert.deepEqual(receipt.source_property_ids, []);
     });
   });
 
@@ -2647,6 +3384,717 @@ describe('Access Stage C final contract — real migration boundary', () => {
           `delete from public.account_access_cutover_repair_dispositions`,
         ),
         /repair dispositions are durable|immutable/i,
+      );
+    } finally {
+      await migrated.pg.close();
+    }
+  });
+
+  test('normalizes all ten production-shaped legacy rows with exact bridge parity', async () => {
+    const migrated = await applyMigrationsToPgliteWithHook(
+      async ({ pg: hookPg, file }) => {
+        if (file === MIGRATION) await seedApprovedProductionSourceFixture(hookPg);
+      },
+      {
+        afterAccessStageCPreparation: async ({ pg: hookPg, file }) => {
+          if (file !== MIGRATION) return;
+          await seedUnlistedLegacyRowsFixture(hookPg);
+          await recordApprovedSourceDispositions(hookPg);
+          await authorizeAccessStageCRelease(hookPg, {
+            conversionManifestHash: NORMAL_LEGACY_MANIFEST_HASH,
+          });
+        },
+      },
+    );
+    try {
+      assert.equal(
+        migrated.report.applied.includes(MIGRATION),
+        true,
+        JSON.stringify(migrated.report.failedAtRuntime.filter((entry) => entry.file === MIGRATION)),
+      );
+      assert.equal(
+        Number((await rows<{ count: number }>(migrated.pg,
+          `select count(*)::integer as count
+             from public.account_access_cutover_normal_legacy_manifests
+            where status='converted'`))[0].count),
+        10,
+      );
+      const converted = await rows<{
+        account_id: string;
+        authority_mode: string;
+        authority_version: number;
+        property_access: string[];
+        bridge_id: string;
+        bridge_source_hash: string;
+        bridge_relationship_id: string;
+        bridge_organization_id: string;
+        membership_count: number;
+        grant_count: number;
+        staff_count: number;
+      }>(migrated.pg, `
+               select account.id as account_id, state.authority_mode, state.authority_version,
+               account.property_access, bridge.id as bridge_id,
+               bridge.source_legacy_scope_hash as bridge_source_hash,
+               bridge.cutover_relationship_id as bridge_relationship_id,
+               bridge.cutover_organization_id as bridge_organization_id,
+               (select count(*)::integer from public.organization_memberships membership
+                 where membership.account_id=account.id) as membership_count,
+               (select count(*)::integer from public.organization_access_grants grant_row
+                 join public.organization_memberships membership on membership.id=grant_row.membership_id
+                where membership.account_id=account.id and grant_row.status='active') as grant_count,
+               (select count(*)::integer from public.account_property_staff_links staff_link
+                where staff_link.account_id=account.id and staff_link.is_active) as staff_count
+          from public.accounts account
+          join public.account_authorization_state state on state.account_id=account.id
+          join public.account_property_authorization_bridges bridge on bridge.account_id=account.id
+         where account.id = any($1::uuid[])
+         order by account.id`,
+        [UNLISTED_LEGACY_ROWS.map((row) => row.accountId)],
+      );
+      assert.equal(converted.length, 10);
+      for (const row of UNLISTED_LEGACY_ROWS) {
+        const fact = NORMAL_LEGACY_FACTS[row.accountId];
+        const actual = converted.find((candidate) => candidate.account_id === row.accountId);
+        assert.ok(actual, JSON.stringify({ expected: row.accountId, converted }));
+        assert.equal(actual.authority_mode, 'normalized');
+        assert.equal(actual.authority_version, row.authorityVersion + 1);
+        assert.deepEqual(actual.property_access, []);
+        assert.equal(actual.bridge_id, fact.bridgeId);
+        assert.equal(actual.bridge_source_hash, rawHashesForTest(row.propertyId));
+        assert.equal(actual.bridge_relationship_id, fact.relationshipId);
+        assert.equal(actual.bridge_organization_id, fact.organizationId);
+        assert.equal(actual.membership_count, fact.membershipIds.length);
+        assert.equal(actual.grant_count, fact.grantIds.length);
+        assert.equal(actual.staff_count, fact.staffIds.length);
+        assert.deepEqual(await propertyIds(migrated.pg, row.accountId), [row.propertyId]);
+      }
+      assert.equal(
+        Number((await rows<{ count: number }>(migrated.pg,
+          `select count(*)::integer as count
+             from public.account_access_cutover_legacy_write_events`))[0].count),
+        0,
+      );
+      const nonSourceIssues = await rows(migrated.pg,
+        `select issue.run_id, issue.account_id, issue.property_id, issue.issue_code, issue.details
+           from public.account_access_cutover_preflight_issues issue
+          where issue.run_id <> $1
+          order by issue.run_id, issue.issue_code, issue.account_id`,
+        [APPROVED_SOURCE_RUN_ID]);
+      assert.equal(nonSourceIssues.length, 0, JSON.stringify(nonSourceIssues));
+      assert.equal(
+        Number((await rows<{ count: number }>(migrated.pg,
+          `select count(*)::integer as count
+             from public.account_access_cutover_repair_receipts`))[0].count),
+        4,
+      );
+    } finally {
+      await migrated.pg.close();
+    }
+  });
+
+  test('replays one preconverted normal-legacy row without reimport, version bump, or bridge duplication', async () => {
+    const replayRow = UNLISTED_LEGACY_ROWS[0];
+    const migrated = await applyMigrationsToPgliteWithHook(
+      async ({ pg: hookPg, file }) => {
+        if (file === MIGRATION) await seedApprovedProductionSourceFixture(hookPg);
+      },
+      {
+        afterAccessStageCPreparation: async ({ pg: hookPg, file }) => {
+          if (file !== MIGRATION) return;
+          await seedUnlistedLegacyRowsFixture(hookPg);
+          await seedPreconvertedNormalLegacyReplayRow(hookPg, replayRow);
+          await recordApprovedSourceDispositions(hookPg);
+          await authorizeAccessStageCRelease(hookPg, {
+            conversionManifestHash: NORMAL_LEGACY_MANIFEST_HASH,
+          });
+        },
+      },
+    );
+    try {
+      assert.equal(
+        migrated.report.applied.includes(MIGRATION),
+        true,
+        JSON.stringify(migrated.report.failedAtRuntime.filter((entry) => entry.file === MIGRATION)),
+      );
+      const replayState = (await rows<{
+        authority_mode: string;
+        authority_version: number;
+        property_access: string[];
+      }>(
+        migrated.pg,
+        `select state.authority_mode,state.authority_version,account.property_access
+           from public.account_authorization_state state
+           join public.accounts account on account.id=state.account_id
+          where state.account_id=$1`,
+        [replayRow.accountId],
+      ))[0];
+      assert.deepEqual(replayState, {
+        authority_mode: 'normalized',
+        authority_version: replayRow.authorityVersion + 1,
+        property_access: [],
+      });
+      assert.equal(
+        Number((await rows<{ count: number }>(
+          migrated.pg,
+          `select count(*)::integer as count
+             from public.account_property_authorization_bridges
+            where account_id=$1`,
+          [replayRow.accountId],
+        ))[0].count),
+        1,
+      );
+      const manifest = (await rows<{
+        status: string;
+        authority_version_after: number;
+        evidence_after_hash: string;
+        observed_compatibility_hash: string;
+      }>(
+        migrated.pg,
+        `select status,authority_version_after,evidence_after_hash,observed_compatibility_hash
+           from public.account_access_cutover_normal_legacy_manifests
+          where account_id=$1`,
+        [replayRow.accountId],
+      ))[0];
+      assert.equal(manifest.status, 'converted');
+      assert.equal(manifest.authority_version_after, replayRow.authorityVersion + 1);
+      assert.match(manifest.evidence_after_hash, /^[0-9a-f]{64}$/);
+      assert.match(manifest.observed_compatibility_hash, /^[0-9a-f]{64}$/);
+    } finally {
+      await migrated.pg.close();
+    }
+  });
+
+  test('rejects a normalized replay when the persisted bridge fact drifts', async () => {
+    const replayRow = UNLISTED_LEGACY_ROWS[0];
+    const migrated = await applyMigrationsToPgliteWithHook(
+      async ({ pg: hookPg, file }) => {
+        if (file === MIGRATION) await seedApprovedProductionSourceFixture(hookPg);
+      },
+      {
+        afterAccessStageCPreparation: async ({ pg: hookPg, file }) => {
+          if (file !== MIGRATION) return;
+          await seedUnlistedLegacyRowsFixture(hookPg);
+          await seedPreconvertedNormalLegacyReplayRow(hookPg, replayRow);
+          await hookPg.query(
+            `update public.account_property_authorization_bridges
+                set source_legacy_scope_hash=repeat('0',64)
+              where id=$1`,
+            [NORMAL_LEGACY_FACTS[replayRow.accountId].bridgeId],
+          );
+          await hookPg.query(`delete from public.account_access_cutover_legacy_write_events`);
+          await recordApprovedSourceDispositions(hookPg);
+          await authorizeAccessStageCRelease(hookPg, {
+            conversionManifestHash: NORMAL_LEGACY_MANIFEST_HASH,
+          });
+        },
+      },
+    );
+    try {
+      assert.equal(migrated.report.applied.includes(MIGRATION), false);
+      assert.match(
+        migrated.report.failedAtRuntime.find((entry) => entry.file === MIGRATION)?.error ?? '',
+        /normal-legacy normalized replay bridge drift/i,
+      );
+      assert.deepEqual(
+        (await rows<{ authority_mode: string; authority_version: number; property_access: string[] }>(
+          migrated.pg,
+          `select state.authority_mode,state.authority_version,account.property_access
+             from public.account_authorization_state state
+             join public.accounts account on account.id=state.account_id
+            where account.id=$1`,
+          [replayRow.accountId],
+        ))[0],
+        {
+          authority_mode: 'normalized',
+          authority_version: replayRow.authorityVersion + 1,
+          property_access: [],
+        },
+      );
+      assert.equal(
+        Number((await rows<{ count: number }>(
+          migrated.pg,
+          `select count(*)::integer as count
+             from public.account_access_cutover_normal_legacy_manifests
+            where status='converted'`,
+        ))[0].count),
+        1,
+      );
+      assert.equal(
+        Number((await rows<{ count: number }>(
+          migrated.pg,
+          `select count(*)::integer as count
+             from public.account_access_cutover_repair_receipts`,
+        ))[0].count),
+        0,
+      );
+    } finally {
+      await migrated.pg.close();
+    }
+  });
+
+  test('reuses exact existing bridges and legacy compatibility facts without duplicate authority rows', async () => {
+    const migrated = await applyMigrationsToPgliteWithHook(
+      async ({ pg: hookPg, file }) => {
+        if (file === MIGRATION) await seedApprovedProductionSourceFixture(hookPg);
+      },
+      {
+        afterAccessStageCPreparation: async ({ pg: hookPg, file }) => {
+          if (file !== MIGRATION) return;
+          await seedUnlistedLegacyRowsFixture(hookPg);
+          await recordApprovedSourceDispositions(hookPg);
+          await authorizeAccessStageCRelease(hookPg, {
+            conversionManifestHash: NORMAL_LEGACY_MANIFEST_HASH,
+          });
+        },
+      },
+    );
+    try {
+      assert.equal(
+        migrated.report.applied.includes(MIGRATION),
+        true,
+        JSON.stringify(migrated.report.failedAtRuntime.filter((entry) => entry.file === MIGRATION)),
+      );
+      for (const row of UNLISTED_LEGACY_ROWS) {
+        const fact = NORMAL_LEGACY_FACTS[row.accountId];
+        const bridge = (await rows<{
+          id: string;
+          source_legacy_scope_hash: string;
+          cutover_relationship_id: string;
+          cutover_organization_id: string;
+          status: string;
+          retired_at: string | null;
+        }>(
+          migrated.pg,
+          `select id,source_legacy_scope_hash,cutover_relationship_id,
+                  cutover_organization_id,status,retired_at
+             from public.account_property_authorization_bridges
+            where account_id=$1`,
+          [row.accountId],
+        ))[0];
+        assert.deepEqual(bridge, {
+          id: fact.bridgeId,
+          source_legacy_scope_hash: rawHashesForTest(row.propertyId),
+          cutover_relationship_id: fact.relationshipId,
+          cutover_organization_id: fact.organizationId,
+          status: 'active',
+          retired_at: null,
+        });
+        const memberships = await rows<{
+          id: string;
+          organization_id: string;
+          status: string;
+          ended_at: string | null;
+          membership_scope: string | null;
+          staxis_role: string | null;
+        }>(
+          migrated.pg,
+          `select id,organization_id,status,ended_at,membership_scope,staxis_role
+             from public.organization_memberships
+            where account_id=$1 order by id`,
+          [row.accountId],
+        );
+        assert.deepEqual(memberships.map((membership) => membership.id), [...fact.membershipIds].sort());
+        for (const membership of memberships) {
+          if (fact.revokedMembership?.id === membership.id) {
+            assert.equal(membership.status, 'revoked');
+            assert.ok(membership.ended_at);
+            assert.equal(membership.membership_scope, 'company');
+            assert.equal(membership.staxis_role, 'vp');
+          } else {
+            assert.equal(membership.organization_id, fact.compatibilityOrganizationId);
+            assert.equal(membership.status, 'active');
+            assert.equal(membership.ended_at, null);
+            assert.equal(membership.membership_scope, null);
+            assert.equal(membership.staxis_role, null);
+          }
+        }
+        const grants = await rows<{
+          id: string;
+          organization_id: string;
+          access_profile: string;
+          scope_type: string;
+          property_id: string | null;
+          property_relationship_id: string | null;
+          status: string;
+          source: string;
+          version: number;
+        }>(
+          migrated.pg,
+          `select grant_row.id,grant_row.organization_id,grant_row.access_profile,
+                  grant_row.scope_type,grant_row.property_id,
+                  grant_row.property_relationship_id,grant_row.status,
+                  grant_row.source,grant_row.version
+             from public.organization_access_grants grant_row
+             join public.organization_memberships membership
+               on membership.id=grant_row.membership_id
+            where membership.account_id=$1 and grant_row.status='active'
+            order by grant_row.id`,
+          [row.accountId],
+        );
+        assert.deepEqual(grants.map((grant) => grant.id), [...fact.grantIds].sort());
+        assert.deepEqual(grants.map((grant) => ({
+          organization_id: grant.organization_id,
+          access_profile: grant.access_profile,
+          scope_type: grant.scope_type,
+          property_id: grant.property_id,
+          property_relationship_id: grant.property_relationship_id,
+          status: grant.status,
+          source: grant.source,
+          version: grant.version,
+        })), [{
+          organization_id: fact.compatibilityOrganizationId,
+          access_profile: fact.grantProfile,
+          scope_type: fact.grantScopeType,
+          property_id: fact.grantPropertyId,
+          property_relationship_id: fact.grantRelationshipId,
+          status: 'active',
+          source: 'legacy_backfill',
+          version: 1,
+        }]);
+        const staff = await rows<{ staff_id: string }>(
+          migrated.pg,
+          `select staff_id from public.account_property_staff_links
+            where account_id=$1 and is_active order by staff_id`,
+          [row.accountId],
+        );
+        assert.deepEqual(staff.map((link) => link.staff_id), [...fact.staffIds].sort());
+        assert.deepEqual(
+          (await rows<{ staff_id: string | null }>(
+            migrated.pg,
+            `select staff_id from public.accounts where id=$1`,
+            [row.accountId],
+          ))[0].staff_id,
+          fact.accountStaffId,
+        );
+        assert.equal(
+          Number((await rows<{ count: number }>(
+            migrated.pg,
+            `select count(*)::integer as count
+               from public.organization_access_grants grant_row
+               join public.organization_memberships membership
+                 on membership.id=grant_row.membership_id
+              where membership.account_id=$1
+                and grant_row.source <> 'legacy_backfill'`,
+            [row.accountId],
+          ))[0].count),
+          0,
+        );
+        assert.deepEqual(await propertyIds(migrated.pg, row.accountId), [row.propertyId]);
+      }
+    } finally {
+      await migrated.pg.close();
+    }
+  });
+
+  test('rolls back the ten-row conversion when an existing bridge fact mismatches the manifest', async () => {
+    const mismatchedRow = UNLISTED_LEGACY_ROWS[0];
+    const migrated = await applyMigrationsToPgliteWithHook(
+      async ({ pg: hookPg, file }) => {
+        if (file === MIGRATION) await seedApprovedProductionSourceFixture(hookPg);
+      },
+      {
+        afterAccessStageCPreparation: async ({ pg: hookPg, file }) => {
+          if (file !== MIGRATION) return;
+          await seedUnlistedLegacyRowsFixture(hookPg);
+          await hookPg.query(
+            `update public.account_property_authorization_bridges
+                set source_legacy_scope_hash=repeat('0',64)
+              where id=$1`,
+            [NORMAL_LEGACY_FACTS[mismatchedRow.accountId].bridgeId],
+          );
+          await hookPg.query(`delete from public.account_access_cutover_legacy_write_events`);
+          await recordApprovedSourceDispositions(hookPg);
+          await authorizeAccessStageCRelease(hookPg, {
+            conversionManifestHash: NORMAL_LEGACY_MANIFEST_HASH,
+          });
+        },
+      },
+    );
+    try {
+      assert.equal(migrated.report.applied.includes(MIGRATION), false);
+      assert.match(
+        migrated.report.failedAtRuntime.find((entry) => entry.file === MIGRATION)?.error ?? '',
+        /normal-legacy bridge identity\/topology\/state mismatch|normal-legacy manifest fact drift/i,
+      );
+      assert.equal(
+        Number((await rows<{ count: number }>(
+          migrated.pg,
+          `select count(*)::integer as count from public.accounts
+            where id = any($1::uuid[]) and cardinality(property_access)>0`,
+          [UNLISTED_LEGACY_ROWS.map((row) => row.accountId)],
+        ))[0].count),
+        10,
+      );
+      assert.equal(
+        Number((await rows<{ count: number }>(
+          migrated.pg,
+          `select count(*)::integer as count from public.accounts account
+             join public.account_authorization_state state on state.account_id=account.id
+            where account.id = any($1::uuid[]) and state.authority_mode='normalized'`,
+          [UNLISTED_LEGACY_ROWS.map((row) => row.accountId)],
+        ))[0].count),
+        0,
+      );
+      assert.equal(
+        Number((await rows<{ count: number }>(
+          migrated.pg,
+          `select count(*)::integer as count
+             from public.account_access_cutover_normal_legacy_manifests`,
+        ))[0].count),
+        0,
+      );
+      assert.equal(
+        Number((await rows<{ count: number }>(
+          migrated.pg,
+          `select count(*)::integer as count
+             from public.account_access_cutover_repair_receipts`,
+        ))[0].count),
+        0,
+      );
+    } finally {
+      await migrated.pg.close();
+    }
+  });
+
+  test('fails closed before conversion when the bound normal-legacy manifest hash mismatches', async () => {
+    const migrated = await applyMigrationsToPgliteWithHook(
+      async ({ pg: hookPg, file }) => {
+        if (file === MIGRATION) await seedApprovedProductionSourceFixture(hookPg);
+      },
+      {
+        afterAccessStageCPreparation: async ({ pg: hookPg, file }) => {
+          if (file !== MIGRATION) return;
+          await seedUnlistedLegacyRowsFixture(hookPg);
+          await recordApprovedSourceDispositions(hookPg);
+          await authorizeAccessStageCRelease(hookPg, {
+            conversionManifestHash: '0'.repeat(64),
+          });
+        },
+      },
+    );
+    try {
+      assert.equal(migrated.report.applied.includes(MIGRATION), false);
+      assert.match(
+        migrated.report.failedAtRuntime.find((entry) => entry.file === MIGRATION)?.error ?? '',
+        /normal-legacy conversion requires the exact manifest hash/i,
+      );
+      assert.equal(
+        Number((await rows<{ count: number }>(
+          migrated.pg,
+          `select count(*)::integer as count from public.accounts
+            where id = any($1::uuid[]) and cardinality(property_access)>0`,
+          [UNLISTED_LEGACY_ROWS.map((row) => row.accountId)],
+        ))[0].count),
+        10,
+      );
+      assert.equal(
+        Number((await rows<{ count: number }>(
+          migrated.pg,
+          `select count(*)::integer as count
+             from public.account_access_cutover_normal_legacy_manifests`,
+        ))[0].count),
+        0,
+      );
+      assert.equal(
+        Number((await rows<{ count: number }>(
+          migrated.pg,
+          `select count(*)::integer as count
+             from public.account_access_cutover_repair_receipts`,
+        ))[0].count),
+        0,
+      );
+    } finally {
+      await migrated.pg.close();
+    }
+  });
+
+  test('rolls back all ten rows when the guarded normal-legacy CAS clear races', async () => {
+    const migrated = await applyMigrationsToPgliteWithHook(
+      async ({ pg: hookPg, file }) => {
+        if (file === MIGRATION) await seedApprovedProductionSourceFixture(hookPg);
+      },
+      {
+        afterAccessStageCPreparation: async ({ pg: hookPg, file }) => {
+          if (file !== MIGRATION) return;
+          await seedUnlistedLegacyRowsFixture(hookPg);
+          await recordApprovedSourceDispositions(hookPg);
+          await authorizeAccessStageCRelease(hookPg, {
+            conversionManifestHash: NORMAL_LEGACY_MANIFEST_HASH,
+          });
+          await hookPg.exec(`
+            create or replace function public.stage_c_test_normal_legacy_cas_race()
+            returns trigger
+            language plpgsql
+            as $$
+            begin
+              if old.id = '0237e48f-5fe2-487c-8ae8-ab61df14da88'::uuid
+                 and cardinality(coalesce(old.property_access,'{}'::uuid[])) > 0
+                 and cardinality(coalesce(new.property_access,'{}'::uuid[])) = 0 then
+                raise exception 'stage-c test normal-legacy CAS race';
+              end if;
+              return new;
+            end;
+            $$;
+            drop trigger if exists stage_c_test_normal_legacy_cas_race on public.accounts;
+            create trigger stage_c_test_normal_legacy_cas_race
+              before update of property_access on public.accounts
+              for each row execute function public.stage_c_test_normal_legacy_cas_race();
+          `);
+        },
+      },
+    );
+    try {
+      assert.equal(migrated.report.applied.includes(MIGRATION), false);
+      assert.match(
+        migrated.report.failedAtRuntime.find((entry) => entry.file === MIGRATION)?.error ?? '',
+        /stage-c test normal-legacy CAS race|normal-legacy raw-array CAS failed/i,
+      );
+      assert.equal(
+        Number((await rows<{ count: number }>(
+          migrated.pg,
+          `select count(*)::integer as count from public.accounts
+            where id = any($1::uuid[]) and cardinality(property_access)>0`,
+          [UNLISTED_LEGACY_ROWS.map((row) => row.accountId)],
+        ))[0].count),
+        10,
+      );
+      assert.equal(
+        Number((await rows<{ count: number }>(
+          migrated.pg,
+          `select count(*)::integer as count from public.accounts account
+             join public.account_authorization_state state on state.account_id=account.id
+            where account.id = any($1::uuid[]) and state.authority_mode='normalized'`,
+          [UNLISTED_LEGACY_ROWS.map((row) => row.accountId)],
+        ))[0].count),
+        0,
+      );
+      assert.equal(
+        Number((await rows<{ count: number }>(
+          migrated.pg,
+          `select count(*)::integer as count
+             from public.account_access_cutover_normal_legacy_manifests`,
+        ))[0].count),
+        0,
+      );
+      assert.equal(
+        Number((await rows<{ count: number }>(
+          migrated.pg,
+          `select count(*)::integer as count
+             from public.account_access_cutover_repair_receipts`,
+        ))[0].count),
+        0,
+      );
+    } finally {
+      await migrated.pg.close();
+    }
+  });
+
+  test('fails closed on an unexpected eleventh legacy raw scope without broad-clearing it', async () => {
+    const migrated = await applyMigrationsToPgliteWithHook(
+      async ({ pg: hookPg, file }) => {
+        if (file === MIGRATION) await seedProductionResidueFixture(hookPg);
+      },
+      {
+        afterAccessStageCPreparation: async ({ pg: hookPg, file }) => {
+          if (file !== MIGRATION) return;
+          await seedUnlistedLegacyRowsFixture(hookPg);
+          await insertCanonicalAccount(
+            hookPg,
+            'f4269000-0000-4000-8000-000000000011',
+            'f4269100-0000-4000-8000-000000000011',
+            'eleven',
+            'Unexpected Eleventh',
+            'housekeeping',
+            'eleven@example.test',
+          );
+          await hookPg.query(
+            `update public.accounts set property_access=array[$2::uuid] where id=$1`,
+            ['f4269000-0000-4000-8000-000000000011', PID_L1],
+          );
+          await hookPg.query(
+            `delete from public.account_authorization_state where account_id=$1`,
+            ['f4269000-0000-4000-8000-000000000011'],
+          );
+          await hookPg.query(
+            `insert into public.account_authorization_state(
+               account_id,authority_mode,authority_version,legacy_scope_hash,
+               normalized_scope_hash,cutover_at,cutover_reason
+             ) values ($1,'legacy',1,encode(sha256(convert_to($2::text,'UTF8')),'hex'),
+                       encode(sha256(convert_to('', 'UTF8')),'hex'),null,
+                       'Unexpected eleventh raw scope')`,
+            ['f4269000-0000-4000-8000-000000000011', PID_L1],
+          );
+          await hookPg.query(`delete from public.account_access_cutover_legacy_write_events`);
+
+          await recordAllProductionResidueDispositions(hookPg);
+          await authorizeAccessStageCRelease(hookPg, {
+            conversionManifestHash: NORMAL_LEGACY_MANIFEST_HASH,
+          });
+        },
+      },
+    );
+    try {
+      assert.equal(migrated.report.applied.includes(MIGRATION), false);
+      assert.match(
+        migrated.report.failedAtRuntime.find((entry) => entry.file === MIGRATION)?.error ?? '',
+        /normal-legacy manifest requires exactly ten nonempty rows/i,
+      );
+      assert.deepEqual(
+        await rows<{ id: string; property_access: string[] }>(
+          migrated.pg,
+          `select id,property_access
+             from public.accounts
+            where id in ($1,$2,$3,$4)
+            order by id`,
+          [ACCOUNT_ADMIN, ACCOUNT_FRANK, ACCOUNT_HANK, ACCOUNT_MARIA],
+        ),
+        [
+          { id: ACCOUNT_ADMIN, property_access: [PID_A1] },
+          { id: ACCOUNT_HANK, property_access: [] },
+          { id: ACCOUNT_MARIA, property_access: [PID_A1] },
+          { id: ACCOUNT_FRANK, property_access: [PID_A1] },
+        ],
+      );
+      assert.deepEqual(
+        (await rows<{ stage: string; enforcement_enabled: boolean }>(
+          migrated.pg,
+          `select stage,enforcement_enabled
+             from public.account_access_cutover_status
+            where id is true`,
+        ))[0],
+        { stage: 'A', enforcement_enabled: false },
+      );
+      assert.equal(
+        Number((await rows<{ count: number }>(
+          migrated.pg,
+          `select count(*)::integer as count
+             from public.account_access_cutover_repair_dispositions
+            where status='unconsumed'`,
+        ))[0].count),
+        3,
+      );
+      assert.equal(
+        Number((await rows<{ count: number }>(
+          migrated.pg,
+          `select count(*)::integer as count
+             from public.account_access_cutover_repair_receipts`,
+        ))[0].count),
+        0,
+      );
+      assert.deepEqual(
+        (await rows<{ status: string; consumed_at: string | null }>(
+          migrated.pg,
+          `select status,consumed_at
+             from public.account_access_cutover_release_receipts`,
+        ))[0],
+        { status: 'unconsumed', consumed_at: null },
+      );
+      assert.equal(
+        (await rows<{ relation: string | null }>(
+          migrated.pg,
+          `select to_regclass('public.account_access_cutover_final_receipts') as relation`,
+        ))[0].relation,
+        null,
       );
     } finally {
       await migrated.pg.close();
@@ -3917,7 +5365,23 @@ describe('Access Stage C final contract — real migration boundary', () => {
 
   test('fails closed before destructive DDL when the external release receipt is missing', async () => {
     const migrated = await applyMigrationsToPgliteWithHook(async ({ pg: hookPg, file }) => {
-      if (file === MIGRATION) await seedStageCFixture(hookPg);
+      if (file !== MIGRATION) return;
+      await seedStageCFixture(hookPg);
+      await hookPg.query(
+        `update public.accounts set property_access=array[$2::uuid] where id=$1`,
+        [ACCOUNT_WANDA, PID_L1],
+      );
+      await hookPg.query(`delete from public.account_authorization_state where account_id=$1`, [ACCOUNT_WANDA]);
+      await hookPg.query(
+        `insert into public.account_authorization_state(
+           account_id,authority_mode,authority_version,legacy_scope_hash,
+           normalized_scope_hash,cutover_at,cutover_reason
+         ) values ($1,'legacy',1,encode(sha256(convert_to($2::text,'UTF8')),'hex'),
+                   encode(sha256(convert_to('', 'UTF8')),'hex'),null,
+                   'receipt-gate raw-array preservation fixture')`,
+        [ACCOUNT_WANDA, PID_L1],
+      );
+      await hookPg.query(`delete from public.account_access_cutover_legacy_write_events`);
     }, { authorizeAccessStageCRelease: false });
     try {
       assert.equal(migrated.report.applied.includes(MIGRATION), false);
@@ -3956,6 +5420,21 @@ describe('Access Stage C final contract — real migration boundary', () => {
     const migrated = await applyMigrationsToPgliteWithHook(async ({ pg: hookPg, file }) => {
       if (file !== MIGRATION) return;
       await seedStageCFixture(hookPg);
+      await hookPg.query(
+        `update public.accounts set property_access=array[$2::uuid] where id=$1`,
+        [ACCOUNT_HANK, PID_L1],
+      );
+      await hookPg.query(`delete from public.account_authorization_state where account_id=$1`, [ACCOUNT_HANK]);
+      await hookPg.query(
+        `insert into public.account_authorization_state(
+           account_id,authority_mode,authority_version,legacy_scope_hash,
+           normalized_scope_hash,cutover_at,cutover_reason
+         ) values ($1,'legacy',1,encode(sha256(convert_to($2::text,'UTF8')),'hex'),
+                   encode(sha256(convert_to('', 'UTF8')),'hex'),null,
+                   'queue-gate raw-array preservation fixture')`,
+        [ACCOUNT_HANK, PID_L1],
+      );
+      await hookPg.query(`delete from public.account_access_cutover_legacy_write_events`);
       await hookPg.query(`update public.accounts set active=false where id=$1`, [ACCOUNT_HANK]);
       await hookPg.query(
         `insert into public.join_requests(id,property_id,account_id,name,phone,language,department,status)

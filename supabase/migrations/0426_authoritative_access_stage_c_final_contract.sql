@@ -365,6 +365,167 @@ create table if not exists public.account_access_cutover_repair_capabilities (
   primary key (txid, account_id, disposition_id)
 );
 
+-- The approved 85981 source run contains only the four special repair
+-- dispositions.  These ten known, active legacy-only rows are a separate
+-- deterministic normal-legacy conversion set.  This manifest is written only
+-- by the same service-only suffix transaction after the exact row, topology,
+-- and canonical evidence has been rechecked.  It is not a disposition and
+-- cannot be supplied by a browser or by a generic account-scope RPC.
+-- @rls: service-role-only — transaction-bound normal-legacy conversion evidence; never browser-readable.
+create table if not exists public.account_access_cutover_normal_legacy_manifests (
+  account_id                  uuid primary key,
+  source_preflight_run_id     uuid not null
+    references public.account_access_cutover_preflight_runs(id),
+  property_id                 uuid not null,
+  expected_role               text not null,
+  expected_authority_mode     text not null check (expected_authority_mode = 'legacy'),
+  expected_authority_version  bigint not null,
+  expected_raw_property_ids   uuid[] not null,
+  expected_raw_scope_hash     text not null check (expected_raw_scope_hash ~ '^[0-9a-f]{64}$'),
+  expected_canonical_ids      uuid[] not null default '{}'::uuid[],
+  expected_canonical_hash     text not null check (expected_canonical_hash ~ '^[0-9a-f]{64}$'),
+  aggregate_manifest_hash     text not null check (aggregate_manifest_hash ~ '^[0-9a-f]{64}$'),
+  expected_auth_user_id       uuid not null,
+  expected_account_staff_id  uuid,
+  expected_active             boolean not null default true,
+  expected_relationship_id    uuid not null,
+  expected_organization_id    uuid not null,
+  expected_organization_type  text not null,
+  expected_bridge_id          uuid not null,
+  expected_membership_ids     uuid[] not null default '{}'::uuid[],
+  expected_grant_ids          uuid[] not null default '{}'::uuid[],
+  expected_staff_ids          uuid[] not null default '{}'::uuid[],
+  expected_compatibility      jsonb not null default '{}'::jsonb,
+  expected_compatibility_hash text not null default repeat('0', 64)
+    check (expected_compatibility_hash ~ '^[0-9a-f]{64}$'),
+  status                      text not null default 'converting'
+    check (status in ('converting', 'converted')),
+  conversion_txid             bigint,
+  auth_user_id_snapshot       uuid,
+  active_snapshot             boolean,
+  relationship_id_snapshot    uuid,
+  organization_id_snapshot    uuid,
+  organization_type_snapshot  text,
+  evidence_before             jsonb not null default '{}'::jsonb,
+  evidence_before_hash        text not null default repeat('0', 64)
+    check (evidence_before_hash ~ '^[0-9a-f]{64}$'),
+  evidence_after              jsonb not null default '{}'::jsonb,
+  evidence_after_hash         text not null default repeat('0', 64)
+    check (evidence_after_hash ~ '^[0-9a-f]{64}$'),
+  observed_compatibility      jsonb not null default '{}'::jsonb,
+  observed_compatibility_hash text not null default repeat('0', 64)
+    check (observed_compatibility_hash ~ '^[0-9a-f]{64}$'),
+  canonical_ids_after         uuid[] not null default '{}'::uuid[],
+  canonical_hash_after        text not null default repeat('0', 64)
+    check (canonical_hash_after ~ '^[0-9a-f]{64}$'),
+  authority_version_after     bigint,
+  bridge_id_after             uuid,
+  converted_at                timestamptz,
+  details                     jsonb not null default '{}'::jsonb
+);
+
+alter table public.account_access_cutover_normal_legacy_manifests
+  add column if not exists expected_compatibility jsonb not null default '{}'::jsonb;
+alter table public.account_access_cutover_normal_legacy_manifests
+  add column if not exists expected_compatibility_hash text not null default repeat('0', 64);
+alter table public.account_access_cutover_normal_legacy_manifests
+  add column if not exists expected_account_staff_id uuid;
+alter table public.account_access_cutover_normal_legacy_manifests
+  add column if not exists expected_organization_type text;
+alter table public.account_access_cutover_normal_legacy_manifests
+  add column if not exists observed_compatibility jsonb not null default '{}'::jsonb;
+alter table public.account_access_cutover_normal_legacy_manifests
+  add column if not exists observed_compatibility_hash text not null default repeat('0', 64);
+
+alter table public.account_access_cutover_normal_legacy_manifests enable row level security;
+revoke all on public.account_access_cutover_normal_legacy_manifests
+  from public, anon, authenticated, service_role;
+drop policy if exists account_access_cutover_normal_legacy_manifests_deny_browser
+  on public.account_access_cutover_normal_legacy_manifests;
+create policy account_access_cutover_normal_legacy_manifests_deny_browser
+  on public.account_access_cutover_normal_legacy_manifests
+  for all to anon, authenticated using (false) with check (false);
+grant select on public.account_access_cutover_normal_legacy_manifests to service_role;
+
+-- The conversion transaction is the only writer allowed to advance a manifest.
+-- A service session cannot forge this transition through SET_CONFIG or by
+-- updating the internal table directly; the exact expected fields remain
+-- immutable and the conversion transaction id is one-shot.
+create or replace function public._staxis_reject_normal_legacy_manifest_mutation()
+returns trigger
+language plpgsql
+security definer
+set search_path = pg_catalog, public
+as $$
+begin
+  if tg_op = 'UPDATE'
+     and old.status = 'converting'
+     and old.conversion_txid = txid_current()
+     and new.status = 'converted'
+     and new.account_id = old.account_id
+     and new.source_preflight_run_id = old.source_preflight_run_id
+     and new.property_id = old.property_id
+     and new.expected_role = old.expected_role
+     and new.expected_authority_mode = old.expected_authority_mode
+     and new.expected_authority_version = old.expected_authority_version
+     and new.expected_raw_property_ids is not distinct from old.expected_raw_property_ids
+     and new.expected_raw_scope_hash = old.expected_raw_scope_hash
+     and new.expected_canonical_ids is not distinct from old.expected_canonical_ids
+     and new.expected_canonical_hash = old.expected_canonical_hash
+     and new.aggregate_manifest_hash = old.aggregate_manifest_hash
+     and new.expected_auth_user_id = old.expected_auth_user_id
+     and new.expected_account_staff_id is not distinct from old.expected_account_staff_id
+     and new.expected_active = old.expected_active
+     and new.expected_relationship_id = old.expected_relationship_id
+     and new.expected_organization_id = old.expected_organization_id
+     and new.expected_organization_type = old.expected_organization_type
+     and new.expected_bridge_id = old.expected_bridge_id
+     and new.expected_membership_ids is not distinct from old.expected_membership_ids
+     and new.expected_grant_ids is not distinct from old.expected_grant_ids
+     and new.expected_staff_ids is not distinct from old.expected_staff_ids
+     and new.expected_compatibility is not distinct from old.expected_compatibility
+     and new.expected_compatibility_hash = old.expected_compatibility_hash
+     and new.conversion_txid is null
+  then
+    return new;
+  end if;
+  raise exception '0426 normal-legacy manifest is immutable and transaction-bound'
+    using errcode = '42501';
+end;
+$$;
+
+revoke all on function public._staxis_reject_normal_legacy_manifest_mutation()
+  from public, anon, authenticated, service_role;
+drop trigger if exists account_access_cutover_normal_legacy_manifests_immutable
+  on public.account_access_cutover_normal_legacy_manifests;
+create trigger account_access_cutover_normal_legacy_manifests_immutable
+  before update or delete on public.account_access_cutover_normal_legacy_manifests
+  for each row execute function public._staxis_reject_normal_legacy_manifest_mutation();
+
+-- A separate transaction capability binds the only raw-array clear to the
+-- exact manifest hash, raw CAS, and before-evidence hash.  It is created and
+-- consumed inside _staxis_stage_c_apply_approved_repairs and cannot be
+-- supplied by an operator or browser principal.
+-- @rls: service-role-only — one-transaction normal-legacy raw-clear capability; never browser-readable.
+create table if not exists public.account_access_cutover_normal_legacy_capabilities (
+  txid                    bigint not null,
+  account_id              uuid not null,
+  expected_raw_property_ids uuid[] not null,
+  expected_raw_scope_hash text not null check (expected_raw_scope_hash ~ '^[0-9a-f]{64}$'),
+  evidence_before_hash    text not null check (evidence_before_hash ~ '^[0-9a-f]{64}$'),
+  aggregate_manifest_hash text not null check (aggregate_manifest_hash ~ '^[0-9a-f]{64}$'),
+  created_at              timestamptz not null default clock_timestamp(),
+  primary key (txid, account_id)
+);
+alter table public.account_access_cutover_normal_legacy_capabilities enable row level security;
+revoke all on public.account_access_cutover_normal_legacy_capabilities
+  from public, anon, authenticated, service_role;
+drop policy if exists account_access_cutover_normal_legacy_capabilities_deny_browser
+  on public.account_access_cutover_normal_legacy_capabilities;
+create policy account_access_cutover_normal_legacy_capabilities_deny_browser
+  on public.account_access_cutover_normal_legacy_capabilities
+  for all to anon, authenticated using (false) with check (false);
+
 -- This table is an internal transaction capability, not an operator input.
 -- In particular, callers cannot forge it with SET_CONFIG and cannot insert a
 -- row through service_role privileges.
@@ -1474,6 +1635,33 @@ begin
      and cardinality(coalesce(old.property_access, '{}'::uuid[])) > 0 then
     return new;
   end if;
+  if tg_op = 'UPDATE'
+     and exists (
+       select 1
+       from public.account_access_cutover_normal_legacy_manifests manifest
+       where manifest.account_id = new.id
+         and manifest.status = 'converting'
+         and manifest.conversion_txid = txid_current()
+         and old.property_access is not distinct from manifest.expected_raw_property_ids
+         and public._staxis_stage_c_scope_hash(
+               public._staxis_stage_c_normalize_ids(old.property_access)
+             ) = manifest.expected_raw_scope_hash
+         and exists (
+           select 1
+           from public.account_access_cutover_normal_legacy_capabilities capability
+           where capability.txid = txid_current()
+             and capability.account_id = new.id
+             and capability.expected_raw_property_ids is not distinct from manifest.expected_raw_property_ids
+             and capability.expected_raw_scope_hash = manifest.expected_raw_scope_hash
+             and capability.evidence_before_hash = manifest.evidence_before_hash
+             and capability.aggregate_manifest_hash = manifest.aggregate_manifest_hash
+         )
+     )
+     and new.property_access is not null
+     and cardinality(new.property_access) = 0
+     and cardinality(coalesce(old.property_access, '{}'::uuid[])) > 0 then
+    return new;
+  end if;
   raise exception '0426 repair phase rejects unapproved accounts.property_access writes'
     using errcode = '42501';
 end;
@@ -1516,6 +1704,68 @@ declare
   v_repair_disposition_id uuid;
   v_evidence_before jsonb;
   v_evidence_after jsonb;
+  v_normal_legacy record;
+  v_normal_manifest public.account_access_cutover_normal_legacy_manifests%rowtype;
+  v_normal_raw_ids uuid[];
+  v_normal_canonical_before uuid[];
+  v_normal_canonical_after uuid[];
+  v_normal_evidence_before jsonb;
+  v_normal_evidence_after jsonb;
+  v_normal_before_hash text;
+  v_normal_after_hash text;
+  v_normal_relationship_id uuid;
+  v_normal_organization_id uuid;
+  v_normal_organization_type text;
+  v_normal_relationship_count integer;
+  v_normal_valid_relationship_count integer;
+  v_normal_bridge_count integer;
+  v_normal_bridge_id uuid;
+  v_normal_bridge_source_hash text;
+  v_normal_bridge_relationship_id uuid;
+  v_normal_bridge_organization_id uuid;
+  v_normal_membership_ids uuid[];
+  v_normal_grant_ids uuid[];
+  v_normal_staff_ids uuid[];
+  v_normal_expected_raw_hash text;
+  v_normal_expected_role text;
+  v_normal_expected_version bigint;
+  v_normal_before_role text;
+  v_normal_before_version bigint;
+  v_normal_has_rows boolean;
+  v_normal_expected_compatibility jsonb;
+  v_normal_observed_compatibility jsonb;
+  v_normal_expected_compatibility_hash text;
+  v_normal_observed_compatibility_hash text;
+  v_normal_canonical_hash text;
+  v_normal_membership_org_ids uuid[];
+  v_normal_grant_org_ids uuid[];
+  v_normal_grant_scope_types text[];
+  v_normal_grant_profiles text[];
+  v_normal_grant_property_ids uuid[];
+  v_normal_grant_relationship_ids uuid[];
+  v_normal_staff_sources text[];
+  v_normal_missing_count integer;
+  v_normal_nonempty_count integer;
+  v_normal_converted_count integer;
+  v_normal_expected_account_staff_id uuid;
+  v_normal_expected_organization_type text;
+  v_import jsonb;
+  v_normal_manifest_hash constant text := '322975861288c85da8191dd08f7d1805ccd7e7086375b04660b49f9dd77a34d9';
+  v_normal_global_manifest constant text :=
+    'source=85981f5e-a387-4af3-ae10-b9bc1e1e9567|globalGates=legacyWriteEvents:0,lifecyclePending:0,lifecycleProcessing:0,inviteClaimedUnaccepted:0,inviteUnaccepted:0,organizationAccessPending:0,organizationInvitationsPending:0,joinPending:0';
+  v_normal_manifest_serialized constant text := concat_ws(E'\n',
+    'source=85981f5e-a387-4af3-ae10-b9bc1e1e9567|globalGates=legacyWriteEvents:0,lifecyclePending:0,lifecycleProcessing:0,inviteClaimedUnaccepted:0,inviteUnaccepted:0,organizationAccessPending:0,organizationInvitationsPending:0,joinPending:0',
+    'account=0237e48f-5fe2-487c-8ae8-ab61df14da88|property=b19f5a42-3bea-4232-8c28-00ce9a069fd2|role=owner|authority=legacy/1|rawHash=840d7dba15ed1c65814527ea23d789a45c486b676c1950ff462872ae8240e907|authUser=64713578-6211-4362-83f1-34f443c6433f|accountStaff=|primaryRelationship=17f4b3eb-94fb-4e23-84ba-32398f243332|primaryOrganization=2ae10b42-d73f-4d31-a537-2f88cc05604e|organizationType=single_hotel|bridge=a40a7aed-616a-4b1d-ba82-8984c930b2f9:active:840d7dba15ed1c65814527ea23d789a45c486b676c1950ff462872ae8240e907:17f4b3eb-94fb-4e23-84ba-32398f243332:2ae10b42-d73f-4d31-a537-2f88cc05604e:retired=false|memberships=58c14e77-46a7-46ac-aa81-73f134b7a343:2ae10b42-d73f-4d31-a537-2f88cc05604e:active:ended=false:scope=:role=:covered=|grants=0e74c68f-8a0e-4cac-b638-e35c2c7578ad:2ae10b42-d73f-4d31-a537-2f88cc05604e:organization_owner:organization:property=:relationship=:active:legacy_backfill:version=1|staffLinks=|canonicalBefore=:canonicalHash=e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855',
+    'account=378b9d50-6559-4471-843e-6a9fd711eee1|property=b93142b5-0964-42f1-9ada-f3c50c8765a9|role=housekeeping|authority=legacy/1|rawHash=a095af95464a3339afbe9a2094823c8abdaf521529ec98ca46514e6c8d8bf368|authUser=3167d440-3bcf-406f-ab35-1832be043c3f|accountStaff=eb065978-4dd6-4662-af57-2e939f84a2cb|primaryRelationship=7642f7da-2939-4b8d-add5-391147b4b1ea|primaryOrganization=95a093a6-fe52-4826-947a-5c4706cae010|organizationType=single_hotel|bridge=1c1ceaaf-d309-48ae-9cc1-004ca269759a:active:a095af95464a3339afbe9a2094823c8abdaf521529ec98ca46514e6c8d8bf368:7642f7da-2939-4b8d-add5-391147b4b1ea:95a093a6-fe52-4826-947a-5c4706cae010:retired=false|memberships=3107a4af-c2be-49ff-93cf-fcd45a9f57aa:95a093a6-fe52-4826-947a-5c4706cae010:active:ended=false:scope=:role=:covered=|grants=7a147214-bb54-42a7-b63a-9787bc794390:95a093a6-fe52-4826-947a-5c4706cae010:contributor:property:b93142b5-0964-42f1-9ada-f3c50c8765a9:relationship=7642f7da-2939-4b8d-add5-391147b4b1ea:active:legacy_backfill:version=1|staffLinks=378b9d50-6559-4471-843e-6a9fd711eee1:b93142b5-0964-42f1-9ada-f3c50c8765a9:eb065978-4dd6-4662-af57-2e939f84a2cb:active:legacy_backfill|canonicalBefore=:canonicalHash=e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855',
+    'account=57132438-477a-418c-ae05-fef93e1dd64b|property=c7ec4be3-ba00-4ff0-bc69-c7e09d8e4f8f|role=housekeeping|authority=legacy/1|rawHash=d8b2f89331c1ba838aa4e29bdf46674e274baad1aa0d5f5641fdacd54e189d13|authUser=8b615141-d0fd-4cb2-8c23-00a3714af5bd|accountStaff=|primaryRelationship=ae8c748e-e203-45b1-a4b4-9b18f2295a4f|primaryOrganization=11110000-0000-4000-8000-0000000000a1|organizationType=management_company|bridge=13fa0123-ec94-45e1-aa11-c4acb2d91734:active:d8b2f89331c1ba838aa4e29bdf46674e274baad1aa0d5f5641fdacd54e189d13:ae8c748e-e203-45b1-a4b4-9b18f2295a4f:11110000-0000-4000-8000-0000000000a1:retired=false|memberships=698598fa-e213-475e-bc27-5e9bd39b1864:d4a443ce-959e-4d2e-8c26-7d103165c6ba:active:ended=false:scope=:role=:covered=|grants=e145f9fa-0b6e-4628-9b0c-9e8de1984594:d4a443ce-959e-4d2e-8c26-7d103165c6ba:contributor:property:c7ec4be3-ba00-4ff0-bc69-c7e09d8e4f8f:relationship=63b96d8c-3534-407b-b623-98bf1756f007:active:legacy_backfill:version=1|staffLinks=|canonicalBefore=:canonicalHash=e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855',
+    'account=6eb64466-ebff-4096-84a4-6675808c70ae|property=c7ec4be3-ba00-4ff0-bc69-c7e09d8e4f8f|role=front_desk|authority=legacy/1|rawHash=d8b2f89331c1ba838aa4e29bdf46674e274baad1aa0d5f5641fdacd54e189d13|authUser=19434b74-ea8e-47d1-848a-d8197e65e42a|accountStaff=|primaryRelationship=ae8c748e-e203-45b1-a4b4-9b18f2295a4f|primaryOrganization=11110000-0000-4000-8000-0000000000a1|organizationType=management_company|bridge=6afed1ee-2fd7-44c0-b20a-6732c45ea44a:active:d8b2f89331c1ba838aa4e29bdf46674e274baad1aa0d5f5641fdacd54e189d13:ae8c748e-e203-45b1-a4b4-9b18f2295a4f:11110000-0000-4000-8000-0000000000a1:retired=false|memberships=58217584-b7d6-462f-a95b-971bee7e9bfa:d4a443ce-959e-4d2e-8c26-7d103165c6ba:active:ended=false:scope=:role=:covered=|grants=2988b9ab-aea6-4be4-a8ae-21e8cdd60e2d:d4a443ce-959e-4d2e-8c26-7d103165c6ba:contributor:property:c7ec4be3-ba00-4ff0-bc69-c7e09d8e4f8f:relationship=63b96d8c-3534-407b-b623-98bf1756f007:active:legacy_backfill:version=1|staffLinks=|canonicalBefore=:canonicalHash=e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855',
+    'account=884bae95-7013-4a47-94a6-960a759c6909|property=c7ec4be3-ba00-4ff0-bc69-c7e09d8e4f8f|role=housekeeping|authority=legacy/1|rawHash=d8b2f89331c1ba838aa4e29bdf46674e274baad1aa0d5f5641fdacd54e189d13|authUser=0da2359e-ffa7-4b86-9948-cb3d73d9e163|accountStaff=|primaryRelationship=ae8c748e-e203-45b1-a4b4-9b18f2295a4f|primaryOrganization=11110000-0000-4000-8000-0000000000a1|organizationType=management_company|bridge=4b4fb7e2-e166-4d1c-8836-7985e676b604:active:d8b2f89331c1ba838aa4e29bdf46674e274baad1aa0d5f5641fdacd54e189d13:ae8c748e-e203-45b1-a4b4-9b18f2295a4f:11110000-0000-4000-8000-0000000000a1:retired=false|memberships=bfc81cf5-77b5-4d9b-8462-b1da5dfbff02:d4a443ce-959e-4d2e-8c26-7d103165c6ba:active:ended=false:scope=:role=:covered=|grants=9950058a-efd3-4dad-bcca-007576f78954:d4a443ce-959e-4d2e-8c26-7d103165c6ba:contributor:property:c7ec4be3-ba00-4ff0-bc69-c7e09d8e4f8f:relationship=63b96d8c-3534-407b-b623-98bf1756f007:active:legacy_backfill:version=1|staffLinks=|canonicalBefore=:canonicalHash=e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855',
+    'account=8d2add09-0d2a-4aa3-b1fe-be425507d702|property=c7ec4be3-ba00-4ff0-bc69-c7e09d8e4f8f|role=owner|authority=legacy/1|rawHash=d8b2f89331c1ba838aa4e29bdf46674e274baad1aa0d5f5641fdacd54e189d13|authUser=23b39caf-e9f2-41ad-9029-dfd0c1a24b65|accountStaff=|primaryRelationship=ae8c748e-e203-45b1-a4b4-9b18f2295a4f|primaryOrganization=11110000-0000-4000-8000-0000000000a1|organizationType=management_company|bridge=528adab1-8728-4ee4-8b8a-99bb1dc91e98:active:d8b2f89331c1ba838aa4e29bdf46674e274baad1aa0d5f5641fdacd54e189d13:ae8c748e-e203-45b1-a4b4-9b18f2295a4f:11110000-0000-4000-8000-0000000000a1:retired=false|memberships=3b112ba7-2494-48e0-8be6-78b48a5f61f4:11110000-0000-4000-8000-0000000000a1:revoked:ended=true:scope=company:role=vp:covered=;a6500631-c240-41ef-874b-8d00beff5c24:d4a443ce-959e-4d2e-8c26-7d103165c6ba:active:ended=false:scope=:role=:covered=|grants=685b8a29-381f-4321-af85-22b65c9ce2b4:d4a443ce-959e-4d2e-8c26-7d103165c6ba:organization_owner:organization:property=:relationship=:active:legacy_backfill:version=1|staffLinks=|canonicalBefore=:canonicalHash=e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855',
+    'account=98d6b43a-b85d-44eb-9634-c30395953236|property=d50f810b-53f8-4294-9fae-44a817f677df|role=owner|authority=legacy/4|rawHash=39a488aa9c88309f865c2832651c36567854bebf796e7d222df8a6d075a94036|authUser=d6f95bbb-76aa-4eef-9051-b0cd64ea5646|accountStaff=|primaryRelationship=07d0c0d7-f983-4116-8612-c00da016b44d|primaryOrganization=12ad3f78-75e7-4aa5-b47a-9a0fa4edeb8c|organizationType=single_hotel|bridge=02df6f9e-bba8-4f19-8586-115f1ca6a93c:active:39a488aa9c88309f865c2832651c36567854bebf796e7d222df8a6d075a94036:07d0c0d7-f983-4116-8612-c00da016b44d:12ad3f78-75e7-4aa5-b47a-9a0fa4edeb8c:retired=false|memberships=66471207-2a8b-4287-821c-5c66cb30c521:12ad3f78-75e7-4aa5-b47a-9a0fa4edeb8c:active:ended=false:scope=:role=:covered=|grants=be69f144-890f-4016-bde6-345bcc8429e0:12ad3f78-75e7-4aa5-b47a-9a0fa4edeb8c:organization_owner:organization:property=:relationship=:active:legacy_backfill:version=1|staffLinks=|canonicalBefore=:canonicalHash=e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855',
+    'account=e9796543-4680-458b-a80b-ae7f3163b07a|property=c7ec4be3-ba00-4ff0-bc69-c7e09d8e4f8f|role=general_manager|authority=legacy/1|rawHash=d8b2f89331c1ba838aa4e29bdf46674e274baad1aa0d5f5641fdacd54e189d13|authUser=8b1ca426-fa48-43c9-90e4-eb69fed168b6|accountStaff=|primaryRelationship=ae8c748e-e203-45b1-a4b4-9b18f2295a4f|primaryOrganization=11110000-0000-4000-8000-0000000000a1|organizationType=management_company|bridge=43c0dd2a-a2c3-4d3f-aca8-d34c90b546c8:active:d8b2f89331c1ba838aa4e29bdf46674e274baad1aa0d5f5641fdacd54e189d13:ae8c748e-e203-45b1-a4b4-9b18f2295a4f:11110000-0000-4000-8000-0000000000a1:retired=false|memberships=ce386157-6b91-42d7-9d8e-b9ab6d615037:d4a443ce-959e-4d2e-8c26-7d103165c6ba:active:ended=false:scope=:role=:covered=|grants=ebb20a3f-7379-4a39-88b0-315e387edc61:d4a443ce-959e-4d2e-8c26-7d103165c6ba:property_manager:property:c7ec4be3-ba00-4ff0-bc69-c7e09d8e4f8f:relationship=63b96d8c-3534-407b-b623-98bf1756f007:active:legacy_backfill:version=1|staffLinks=|canonicalBefore=:canonicalHash=e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855',
+    'account=f64f7d03-bc84-4173-b1e2-63552b1447c7|property=b93142b5-0964-42f1-9ada-f3c50c8765a9|role=owner|authority=legacy/1|rawHash=a095af95464a3339afbe9a2094823c8abdaf521529ec98ca46514e6c8d8bf368|authUser=d6aa3bb7-cffa-4ae2-a9eb-5cbd84ff2750|accountStaff=|primaryRelationship=7642f7da-2939-4b8d-add5-391147b4b1ea|primaryOrganization=95a093a6-fe52-4826-947a-5c4706cae010|organizationType=single_hotel|bridge=6521d3fd-634e-4cb9-aa00-46e771bfc25b:active:a095af95464a3339afbe9a2094823c8abdaf521529ec98ca46514e6c8d8bf368:7642f7da-2939-4b8d-add5-391147b4b1ea:95a093a6-fe52-4826-947a-5c4706cae010:retired=false|memberships=3194a56a-4298-45af-8cdc-d63711957600:95a093a6-fe52-4826-947a-5c4706cae010:active:ended=false:scope=:role=:covered=|grants=71ace9d6-a489-490e-88e6-3a7d56f82140:95a093a6-fe52-4826-947a-5c4706cae010:organization_owner:organization:property=:relationship=:active:legacy_backfill:version=1|staffLinks=|canonicalBefore=:canonicalHash=e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855',
+    'account=fd7dca12-bc39-416c-aedb-58c9819504e5|property=c7ec4be3-ba00-4ff0-bc69-c7e09d8e4f8f|role=housekeeping|authority=legacy/1|rawHash=d8b2f89331c1ba838aa4e29bdf46674e274baad1aa0d5f5641fdacd54e189d13|authUser=53da263b-2d4e-4b29-832e-a2ec93413875|accountStaff=|primaryRelationship=ae8c748e-e203-45b1-a4b4-9b18f2295a4f|primaryOrganization=11110000-0000-4000-8000-0000000000a1|organizationType=management_company|bridge=9211738b-7a14-4c55-8436-d23fcc3a60cd:active:d8b2f89331c1ba838aa4e29bdf46674e274baad1aa0d5f5641fdacd54e189d13:ae8c748e-e203-45b1-a4b4-9b18f2295a4f:11110000-0000-4000-8000-0000000000a1:retired=false|memberships=cdd53ca0-2ff8-41df-a705-748d83e268d3:d4a443ce-959e-4d2e-8c26-7d103165c6ba:active:ended=false:scope=:role=:covered=|grants=0ee6b389-dc6a-4068-a60a-30470ae3e769:d4a443ce-959e-4d2e-8c26-7d103165c6ba:contributor:property:c7ec4be3-ba00-4ff0-bc69-c7e09d8e4f8f:relationship=63b96d8c-3534-407b-b623-98bf1756f007:active:legacy_backfill:version=1|staffLinks=|canonicalBefore=:canonicalHash=e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855');
+  v_empty_scope_hash constant text := 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855';
 begin
   -- Keep this helper safe when a guarded service retry invokes it outside the
   -- outer suffix block.  The normal suffix path already owns this lock, and
@@ -1523,6 +1773,15 @@ begin
   perform pg_catalog.pg_advisory_xact_lock(
     pg_catalog.hashtextextended('staxis.access.stage_c.cutover', 0)
   );
+  -- The pre-0426 account trigger also observes property_access and would
+  -- increment authority_version a second time when the receipt-backed CAS
+  -- clear runs.  The final contract reinstalls the narrower active/role
+  -- trigger below; remove the legacy property observer for this transaction
+  -- so each normal-legacy conversion has exactly one version transition.
+  drop trigger if exists trg_accounts_authorization_refresh on public.accounts;
+  drop trigger if exists trg_accounts_reconcile_legacy_organization_access on public.accounts;
+  drop trigger if exists trg_accounts_authorization_translate_legacy_property_access on public.accounts;
+  drop trigger if exists trg_accounts_zz_authorization_translate_legacy_property_access on public.accounts;
   select status.* into v_status
   from public.account_access_cutover_status status
   where status.id is true
@@ -1882,6 +2141,915 @@ begin
       and capability.account_id = v_account.id;
   end loop;
 
+  -- The ten active legacy rows outside 85981 are a separate, deterministic
+  -- normal-legacy conversion set.  They are not repair dispositions.  Their
+  -- existing bridge and legacy_backfill compatibility facts are part of the
+  -- manifest and must be proven before the Stage B importer is allowed to
+  -- take its conflict-do-nothing path.
+  select encode(
+           pg_catalog.sha256(convert_to(string_agg(
+             concat_ws('|', allowlist.account_id::text,
+                              allowlist.property_id::text,
+                              allowlist.expected_role,
+                              'legacy',
+                              allowlist.expected_version::text,
+                              allowlist.expected_raw_hash,
+                              allowlist.expected_auth_user_id::text,
+                              coalesce(allowlist.expected_account_staff_id::text, ''),
+                              allowlist.expected_relationship_id::text,
+                              allowlist.expected_organization_id::text,
+                              allowlist.expected_organization_type,
+                              allowlist.expected_bridge_id::text,
+                              array_to_string(allowlist.expected_membership_ids, ','),
+                              array_to_string(allowlist.expected_grant_ids, ','),
+                              array_to_string(allowlist.expected_staff_ids, ','),
+                              allowlist.expected_compatibility::text),
+             E'\n' order by allowlist.account_id
+           ) || E'\n' || v_normal_global_manifest, 'UTF8')),
+           'hex'
+         )
+    into v_normal_after_hash
+  from (values
+    ('0237e48f-5fe2-487c-8ae8-ab61df14da88'::uuid, 'b19f5a42-3bea-4232-8c28-00ce9a069fd2'::uuid, 'owner', 1::bigint, '840d7dba15ed1c65814527ea23d789a45c486b676c1950ff462872ae8240e907', '64713578-6211-4362-83f1-34f443c6433f'::uuid, null::uuid, '17f4b3eb-94fb-4e23-84ba-32398f243332'::uuid, '2ae10b42-d73f-4d31-a537-2f88cc05604e'::uuid, 'single_hotel', 'a40a7aed-616a-4b1d-ba82-8984c930b2f9'::uuid, '{}'::uuid[], '{}'::uuid[], '{}'::uuid[], '{}'::jsonb),
+    ('378b9d50-6559-4471-843e-6a9fd711eee1'::uuid, 'b93142b5-0964-42f1-9ada-f3c50c8765a9'::uuid, 'housekeeping', 1::bigint, 'a095af95464a3339afbe9a2094823c8abdaf521529ec98ca46514e6c8d8bf368', '3167d440-3bcf-406f-ab35-1832be043c3f'::uuid, 'eb065978-4dd6-4662-af57-2e939f84a2cb'::uuid, '7642f7da-2939-4b8d-add5-391147b4b1ea'::uuid, '95a093a6-fe52-4826-947a-5c4706cae010'::uuid, 'single_hotel', '1c1ceaaf-d309-48ae-9cc1-004ca269759a'::uuid, '{}'::uuid[], '{}'::uuid[], array['eb065978-4dd6-4662-af57-2e939f84a2cb'::uuid], '{}'::jsonb),
+    ('57132438-477a-418c-ae05-fef93e1dd64b'::uuid, 'c7ec4be3-ba00-4ff0-bc69-c7e09d8e4f8f'::uuid, 'housekeeping', 1::bigint, 'd8b2f89331c1ba838aa4e29bdf46674e274baad1aa0d5f5641fdacd54e189d13', '8b615141-d0fd-4cb2-8c23-00a3714af5bd'::uuid, null::uuid, 'ae8c748e-e203-45b1-a4b4-9b18f2295a4f'::uuid, '11110000-0000-4000-8000-0000000000a1'::uuid, 'management_company', '13fa0123-ec94-45e1-aa11-c4acb2d91734'::uuid, '{}'::uuid[], '{}'::uuid[], '{}'::uuid[], '{}'::jsonb),
+    ('6eb64466-ebff-4096-84a4-6675808c70ae'::uuid, 'c7ec4be3-ba00-4ff0-bc69-c7e09d8e4f8f'::uuid, 'front_desk', 1::bigint, 'd8b2f89331c1ba838aa4e29bdf46674e274baad1aa0d5f5641fdacd54e189d13', '19434b74-ea8e-47d1-848a-d8197e65e42a'::uuid, null::uuid, 'ae8c748e-e203-45b1-a4b4-9b18f2295a4f'::uuid, '11110000-0000-4000-8000-0000000000a1'::uuid, 'management_company', '6afed1ee-2fd7-44c0-b20a-6732c45ea44a'::uuid, '{}'::uuid[], '{}'::uuid[], '{}'::uuid[], '{}'::jsonb),
+    ('884bae95-7013-4a47-94a6-960a759c6909'::uuid, 'c7ec4be3-ba00-4ff0-bc69-c7e09d8e4f8f'::uuid, 'housekeeping', 1::bigint, 'd8b2f89331c1ba838aa4e29bdf46674e274baad1aa0d5f5641fdacd54e189d13', '0da2359e-ffa7-4b86-9948-cb3d73d9e163'::uuid, null::uuid, 'ae8c748e-e203-45b1-a4b4-9b18f2295a4f'::uuid, '11110000-0000-4000-8000-0000000000a1'::uuid, 'management_company', '4b4fb7e2-e166-4d1c-8836-7985e676b604'::uuid, '{}'::uuid[], '{}'::uuid[], '{}'::uuid[], '{}'::jsonb),
+    ('8d2add09-0d2a-4aa3-b1fe-be425507d702'::uuid, 'c7ec4be3-ba00-4ff0-bc69-c7e09d8e4f8f'::uuid, 'owner', 1::bigint, 'd8b2f89331c1ba838aa4e29bdf46674e274baad1aa0d5f5641fdacd54e189d13', '23b39caf-e9f2-41ad-9029-dfd0c1a24b65'::uuid, null::uuid, 'ae8c748e-e203-45b1-a4b4-9b18f2295a4f'::uuid, '11110000-0000-4000-8000-0000000000a1'::uuid, 'management_company', '528adab1-8728-4ee4-8b8a-99bb1dc91e98'::uuid, '{}'::uuid[], '{}'::uuid[], '{}'::uuid[], '{}'::jsonb),
+    ('98d6b43a-b85d-44eb-9634-c30395953236'::uuid, 'd50f810b-53f8-4294-9fae-44a817f677df'::uuid, 'owner', 4::bigint, '39a488aa9c88309f865c2832651c36567854bebf796e7d222df8a6d075a94036', 'd6f95bbb-76aa-4eef-9051-b0cd64ea5646'::uuid, null::uuid, '07d0c0d7-f983-4116-8612-c00da016b44d'::uuid, '12ad3f78-75e7-4aa5-b47a-9a0fa4edeb8c'::uuid, 'single_hotel', '02df6f9e-bba8-4f19-8586-115f1ca6a93c'::uuid, '{}'::uuid[], '{}'::uuid[], '{}'::uuid[], '{}'::jsonb),
+    ('e9796543-4680-458b-a80b-ae7f3163b07a'::uuid, 'c7ec4be3-ba00-4ff0-bc69-c7e09d8e4f8f'::uuid, 'general_manager', 1::bigint, 'd8b2f89331c1ba838aa4e29bdf46674e274baad1aa0d5f5641fdacd54e189d13', '8b1ca426-fa48-43c9-90e4-eb69fed168b6'::uuid, null::uuid, 'ae8c748e-e203-45b1-a4b4-9b18f2295a4f'::uuid, '11110000-0000-4000-8000-0000000000a1'::uuid, 'management_company', '43c0dd2a-a2c3-4d3f-aca8-d34c90b546c8'::uuid, '{}'::uuid[], '{}'::uuid[], '{}'::uuid[], '{}'::jsonb),
+    ('f64f7d03-bc84-4173-b1e2-63552b1447c7'::uuid, 'b93142b5-0964-42f1-9ada-f3c50c8765a9'::uuid, 'owner', 1::bigint, 'a095af95464a3339afbe9a2094823c8abdaf521529ec98ca46514e6c8d8bf368', 'd6aa3bb7-cffa-4ae2-a9eb-5cbd84ff2750'::uuid, null::uuid, '7642f7da-2939-4b8d-add5-391147b4b1ea'::uuid, '95a093a6-fe52-4826-947a-5c4706cae010'::uuid, 'single_hotel', '6521d3fd-634e-4cb9-aa00-46e771bfc25b'::uuid, '{}'::uuid[], '{}'::uuid[], '{}'::uuid[], '{}'::jsonb),
+    ('fd7dca12-bc39-416c-aedb-58c9819504e5'::uuid, 'c7ec4be3-ba00-4ff0-bc69-c7e09d8e4f8f'::uuid, 'housekeeping', 1::bigint, 'd8b2f89331c1ba838aa4e29bdf46674e274baad1aa0d5f5641fdacd54e189d13', '53da263b-2d4e-4b29-832e-a2ec93413875'::uuid, null::uuid, 'ae8c748e-e203-45b1-a4b4-9b18f2295a4f'::uuid, '11110000-0000-4000-8000-0000000000a1'::uuid, 'management_company', '9211738b-7a14-4c55-8436-d23fcc3a60cd'::uuid, '{}'::uuid[], '{}'::uuid[], '{}'::uuid[], '{}'::jsonb)
+  ) allowlist(account_id, property_id, expected_role, expected_version, expected_raw_hash, expected_auth_user_id, expected_account_staff_id, expected_relationship_id, expected_organization_id, expected_organization_type, expected_bridge_id, expected_membership_ids, expected_grant_ids, expected_staff_ids, expected_compatibility);
+  -- The row projection above is retained as a SQL shape check.  The packet
+  -- binding uses the canonical UTF-8 manifest below, which includes every
+  -- auth/topology/bridge/compatibility fact rather than only the raw scope.
+  v_normal_after_hash := encode(
+    pg_catalog.sha256(convert_to(v_normal_manifest_serialized, 'UTF8')), 'hex'
+  );
+  if v_normal_after_hash <> v_normal_manifest_hash then
+    raise exception '0426 normal-legacy manifest literal does not match its deterministic UTF-8 hash'
+      using errcode = '55000';
+  end if;
+
+  select exists (
+    select 1
+    from public.accounts account
+    where account.id = any(array[
+      '0237e48f-5fe2-487c-8ae8-ab61df14da88'::uuid,
+      '378b9d50-6559-4471-843e-6a9fd711eee1'::uuid,
+      '57132438-477a-418c-ae05-fef93e1dd64b'::uuid,
+      '6eb64466-ebff-4096-84a4-6675808c70ae'::uuid,
+      '884bae95-7013-4a47-94a6-960a759c6909'::uuid,
+      '8d2add09-0d2a-4aa3-b1fe-be425507d702'::uuid,
+      '98d6b43a-b85d-44eb-9634-c30395953236'::uuid,
+      'e9796543-4680-458b-a80b-ae7f3163b07a'::uuid,
+      'f64f7d03-bc84-4173-b1e2-63552b1447c7'::uuid,
+      'fd7dca12-bc39-416c-aedb-58c9819504e5'::uuid
+    ]::uuid[])
+      and cardinality(coalesce(account.property_access, '{}'::uuid[])) > 0
+  ) into v_normal_has_rows;
+
+  if v_normal_has_rows then
+    if position('normalLegacyManifestHash=' || v_normal_manifest_hash
+                in coalesce(v_release.old_deployment_fence_evidence, '')) = 0 then
+      raise exception '0426 normal-legacy conversion requires the exact manifest hash in release fence evidence'
+        using errcode = '55000';
+    end if;
+    select count(*)::integer
+      into v_normal_missing_count
+    from public.accounts account
+    where account.id = any(array[
+      '0237e48f-5fe2-487c-8ae8-ab61df14da88'::uuid,
+      '378b9d50-6559-4471-843e-6a9fd711eee1'::uuid,
+      '57132438-477a-418c-ae05-fef93e1dd64b'::uuid,
+      '6eb64466-ebff-4096-84a4-6675808c70ae'::uuid,
+      '884bae95-7013-4a47-94a6-960a759c6909'::uuid,
+      '8d2add09-0d2a-4aa3-b1fe-be425507d702'::uuid,
+      '98d6b43a-b85d-44eb-9634-c30395953236'::uuid,
+      'e9796543-4680-458b-a80b-ae7f3163b07a'::uuid,
+      'f64f7d03-bc84-4173-b1e2-63552b1447c7'::uuid,
+      'fd7dca12-bc39-416c-aedb-58c9819504e5'::uuid
+    ]::uuid[])
+      and cardinality(coalesce(account.property_access, '{}'::uuid[])) > 0;
+    select count(*)::integer
+      into v_normal_converted_count
+    from public.accounts account
+    join public.account_authorization_state state on state.account_id = account.id
+    where account.id = any(array[
+      '0237e48f-5fe2-487c-8ae8-ab61df14da88'::uuid,
+      '378b9d50-6559-4471-843e-6a9fd711eee1'::uuid,
+      '57132438-477a-418c-ae05-fef93e1dd64b'::uuid,
+      '6eb64466-ebff-4096-84a4-6675808c70ae'::uuid,
+      '884bae95-7013-4a47-94a6-960a759c6909'::uuid,
+      '8d2add09-0d2a-4aa3-b1fe-be425507d702'::uuid,
+      '98d6b43a-b85d-44eb-9634-c30395953236'::uuid,
+      'e9796543-4680-458b-a80b-ae7f3163b07a'::uuid,
+      'f64f7d03-bc84-4173-b1e2-63552b1447c7'::uuid,
+      'fd7dca12-bc39-416c-aedb-58c9819504e5'::uuid
+    ]::uuid[])
+      and state.authority_mode = 'normalized'
+      and cardinality(coalesce(account.property_access, '{}'::uuid[])) = 0;
+    if v_normal_missing_count + v_normal_converted_count <> 10 then
+      raise exception '0426 normal-legacy manifest requires exactly ten nonempty rows, found %',
+        v_normal_missing_count + v_normal_converted_count using errcode = '55000';
+    end if;
+    select count(*)::integer
+      into v_normal_nonempty_count
+    from public.accounts account
+    where cardinality(coalesce(account.property_access, '{}'::uuid[])) > 0;
+    if v_normal_nonempty_count + v_normal_converted_count <> 10 then
+      raise exception '0426 normal-legacy manifest requires exactly ten nonempty rows, found %',
+        v_normal_nonempty_count + v_normal_converted_count using errcode = '55000';
+    end if;
+  end if;
+
+  for v_normal_legacy in
+    select allowlist.account_id, allowlist.property_id, allowlist.expected_role,
+           allowlist.expected_version, allowlist.expected_raw_hash,
+           allowlist.expected_auth_user_id,
+           allowlist.expected_account_staff_id,
+           allowlist.expected_relationship_id, allowlist.expected_organization_id,
+           allowlist.expected_organization_type,
+           allowlist.expected_bridge_id, allowlist.expected_membership_ids,
+           allowlist.expected_grant_ids, allowlist.expected_staff_ids,
+           allowlist.expected_compatibility
+    from (values
+      ('0237e48f-5fe2-487c-8ae8-ab61df14da88'::uuid, 'b19f5a42-3bea-4232-8c28-00ce9a069fd2'::uuid, 'owner', 1::bigint, '840d7dba15ed1c65814527ea23d789a45c486b676c1950ff462872ae8240e907', '64713578-6211-4362-83f1-34f443c6433f'::uuid, null::uuid, '17f4b3eb-94fb-4e23-84ba-32398f243332'::uuid, '2ae10b42-d73f-4d31-a537-2f88cc05604e'::uuid, 'single_hotel', 'a40a7aed-616a-4b1d-ba82-8984c930b2f9'::uuid, array['58c14e77-46a7-46ac-aa81-73f134b7a343'::uuid], array['0e74c68f-8a0e-4cac-b638-e35c2c7578ad'::uuid], '{}'::uuid[], jsonb_build_object('memberships',jsonb_build_array(jsonb_build_object('id','58c14e77-46a7-46ac-aa81-73f134b7a343','organizationId','2ae10b42-d73f-4d31-a537-2f88cc05604e','status','active','endedAtPresent',false,'membershipScope',null::text,'staxisRole',null::text,'coveredPropertyIds',null::uuid[])),'grants',jsonb_build_array(jsonb_build_object('id','0e74c68f-8a0e-4cac-b638-e35c2c7578ad','organizationId','2ae10b42-d73f-4d31-a537-2f88cc05604e','accessProfile','organization_owner','scopeType','organization','propertyId',null::uuid,'propertyRelationshipId',null::uuid,'status','active','source','legacy_backfill','expiresAtPresent',false,'revokedAtPresent',false,'version',1)),'staffLinks',jsonb_build_array())),
+      ('378b9d50-6559-4471-843e-6a9fd711eee1'::uuid, 'b93142b5-0964-42f1-9ada-f3c50c8765a9'::uuid, 'housekeeping', 1::bigint, 'a095af95464a3339afbe9a2094823c8abdaf521529ec98ca46514e6c8d8bf368', '3167d440-3bcf-406f-ab35-1832be043c3f'::uuid, 'eb065978-4dd6-4662-af57-2e939f84a2cb'::uuid, '7642f7da-2939-4b8d-add5-391147b4b1ea'::uuid, '95a093a6-fe52-4826-947a-5c4706cae010'::uuid, 'single_hotel', '1c1ceaaf-d309-48ae-9cc1-004ca269759a'::uuid, array['3107a4af-c2be-49ff-93cf-fcd45a9f57aa'::uuid], array['7a147214-bb54-42a7-b63a-9787bc794390'::uuid], array['eb065978-4dd6-4662-af57-2e939f84a2cb'::uuid], jsonb_build_object('memberships',jsonb_build_array(jsonb_build_object('id','3107a4af-c2be-49ff-93cf-fcd45a9f57aa','organizationId','95a093a6-fe52-4826-947a-5c4706cae010','status','active','endedAtPresent',false,'membershipScope',null::text,'staxisRole',null::text,'coveredPropertyIds',null::uuid[])),'grants',jsonb_build_array(jsonb_build_object('id','7a147214-bb54-42a7-b63a-9787bc794390','organizationId','95a093a6-fe52-4826-947a-5c4706cae010','accessProfile','contributor','scopeType','property','propertyId','b93142b5-0964-42f1-9ada-f3c50c8765a9','propertyRelationshipId','7642f7da-2939-4b8d-add5-391147b4b1ea','status','active','source','legacy_backfill','expiresAtPresent',false,'revokedAtPresent',false,'version',1)),'staffLinks',jsonb_build_array(jsonb_build_object('accountId','378b9d50-6559-4471-843e-6a9fd711eee1','propertyId','b93142b5-0964-42f1-9ada-f3c50c8765a9','staffId','eb065978-4dd6-4662-af57-2e939f84a2cb','isActive',true,'source','legacy_backfill','deactivatedAtPresent',false)))),
+      ('57132438-477a-418c-ae05-fef93e1dd64b'::uuid, 'c7ec4be3-ba00-4ff0-bc69-c7e09d8e4f8f'::uuid, 'housekeeping', 1::bigint, 'd8b2f89331c1ba838aa4e29bdf46674e274baad1aa0d5f5641fdacd54e189d13', '8b615141-d0fd-4cb2-8c23-00a3714af5bd'::uuid, null::uuid, 'ae8c748e-e203-45b1-a4b4-9b18f2295a4f'::uuid, '11110000-0000-4000-8000-0000000000a1'::uuid, 'management_company', '13fa0123-ec94-45e1-aa11-c4acb2d91734'::uuid, array['698598fa-e213-475e-bc27-5e9bd39b1864'::uuid], array['e145f9fa-0b6e-4628-9b0c-9e8de1984594'::uuid], '{}'::uuid[], jsonb_build_object('memberships',jsonb_build_array(jsonb_build_object('id','698598fa-e213-475e-bc27-5e9bd39b1864','organizationId','d4a443ce-959e-4d2e-8c26-7d103165c6ba','status','active','endedAtPresent',false,'membershipScope',null::text,'staxisRole',null::text,'coveredPropertyIds',null::uuid[])),'grants',jsonb_build_array(jsonb_build_object('id','e145f9fa-0b6e-4628-9b0c-9e8de1984594','organizationId','d4a443ce-959e-4d2e-8c26-7d103165c6ba','accessProfile','contributor','scopeType','property','propertyId','c7ec4be3-ba00-4ff0-bc69-c7e09d8e4f8f','propertyRelationshipId','63b96d8c-3534-407b-b623-98bf1756f007','status','active','source','legacy_backfill','expiresAtPresent',false,'revokedAtPresent',false,'version',1)),'staffLinks',jsonb_build_array())),
+      ('6eb64466-ebff-4096-84a4-6675808c70ae'::uuid, 'c7ec4be3-ba00-4ff0-bc69-c7e09d8e4f8f'::uuid, 'front_desk', 1::bigint, 'd8b2f89331c1ba838aa4e29bdf46674e274baad1aa0d5f5641fdacd54e189d13', '19434b74-ea8e-47d1-848a-d8197e65e42a'::uuid, null::uuid, 'ae8c748e-e203-45b1-a4b4-9b18f2295a4f'::uuid, '11110000-0000-4000-8000-0000000000a1'::uuid, 'management_company', '6afed1ee-2fd7-44c0-b20a-6732c45ea44a'::uuid, array['58217584-b7d6-462f-a95b-971bee7e9bfa'::uuid], array['2988b9ab-aea6-4be4-a8ae-21e8cdd60e2d'::uuid], '{}'::uuid[], jsonb_build_object('memberships',jsonb_build_array(jsonb_build_object('id','58217584-b7d6-462f-a95b-971bee7e9bfa','organizationId','d4a443ce-959e-4d2e-8c26-7d103165c6ba','status','active','endedAtPresent',false,'membershipScope',null::text,'staxisRole',null::text,'coveredPropertyIds',null::uuid[])),'grants',jsonb_build_array(jsonb_build_object('id','2988b9ab-aea6-4be4-a8ae-21e8cdd60e2d','organizationId','d4a443ce-959e-4d2e-8c26-7d103165c6ba','accessProfile','contributor','scopeType','property','propertyId','c7ec4be3-ba00-4ff0-bc69-c7e09d8e4f8f','propertyRelationshipId','63b96d8c-3534-407b-b623-98bf1756f007','status','active','source','legacy_backfill','expiresAtPresent',false,'revokedAtPresent',false,'version',1)),'staffLinks',jsonb_build_array())),
+      ('884bae95-7013-4a47-94a6-960a759c6909'::uuid, 'c7ec4be3-ba00-4ff0-bc69-c7e09d8e4f8f'::uuid, 'housekeeping', 1::bigint, 'd8b2f89331c1ba838aa4e29bdf46674e274baad1aa0d5f5641fdacd54e189d13', '0da2359e-ffa7-4b86-9948-cb3d73d9e163'::uuid, null::uuid, 'ae8c748e-e203-45b1-a4b4-9b18f2295a4f'::uuid, '11110000-0000-4000-8000-0000000000a1'::uuid, 'management_company', '4b4fb7e2-e166-4d1c-8836-7985e676b604'::uuid, array['bfc81cf5-77b5-4d9b-8462-b1da5dfbff02'::uuid], array['9950058a-efd3-4dad-bcca-007576f78954'::uuid], '{}'::uuid[], jsonb_build_object('memberships',jsonb_build_array(jsonb_build_object('id','bfc81cf5-77b5-4d9b-8462-b1da5dfbff02','organizationId','d4a443ce-959e-4d2e-8c26-7d103165c6ba','status','active','endedAtPresent',false,'membershipScope',null::text,'staxisRole',null::text,'coveredPropertyIds',null::uuid[])),'grants',jsonb_build_array(jsonb_build_object('id','9950058a-efd3-4dad-bcca-007576f78954','organizationId','d4a443ce-959e-4d2e-8c26-7d103165c6ba','accessProfile','contributor','scopeType','property','propertyId','c7ec4be3-ba00-4ff0-bc69-c7e09d8e4f8f','propertyRelationshipId','63b96d8c-3534-407b-b623-98bf1756f007','status','active','source','legacy_backfill','expiresAtPresent',false,'revokedAtPresent',false,'version',1)),'staffLinks',jsonb_build_array())),
+      ('8d2add09-0d2a-4aa3-b1fe-be425507d702'::uuid, 'c7ec4be3-ba00-4ff0-bc69-c7e09d8e4f8f'::uuid, 'owner', 1::bigint, 'd8b2f89331c1ba838aa4e29bdf46674e274baad1aa0d5f5641fdacd54e189d13', '23b39caf-e9f2-41ad-9029-dfd0c1a24b65'::uuid, null::uuid, 'ae8c748e-e203-45b1-a4b4-9b18f2295a4f'::uuid, '11110000-0000-4000-8000-0000000000a1'::uuid, 'management_company', '528adab1-8728-4ee4-8b8a-99bb1dc91e98'::uuid, array['3b112ba7-2494-48e0-8be6-78b48a5f61f4'::uuid,'a6500631-c240-41ef-874b-8d00beff5c24'::uuid], array['685b8a29-381f-4321-af85-22b65c9ce2b4'::uuid], '{}'::uuid[], jsonb_build_object('memberships',jsonb_build_array(jsonb_build_object('id','3b112ba7-2494-48e0-8be6-78b48a5f61f4','organizationId','11110000-0000-4000-8000-0000000000a1','status','revoked','endedAtPresent',true,'membershipScope','company','staxisRole','vp','coveredPropertyIds',null::uuid[]),jsonb_build_object('id','a6500631-c240-41ef-874b-8d00beff5c24','organizationId','d4a443ce-959e-4d2e-8c26-7d103165c6ba','status','active','endedAtPresent',false,'membershipScope',null::text,'staxisRole',null::text,'coveredPropertyIds',null::uuid[])),'grants',jsonb_build_array(jsonb_build_object('id','685b8a29-381f-4321-af85-22b65c9ce2b4','organizationId','d4a443ce-959e-4d2e-8c26-7d103165c6ba','accessProfile','organization_owner','scopeType','organization','propertyId',null::uuid,'propertyRelationshipId',null::uuid,'status','active','source','legacy_backfill','expiresAtPresent',false,'revokedAtPresent',false,'version',1)),'staffLinks',jsonb_build_array())),
+      ('98d6b43a-b85d-44eb-9634-c30395953236'::uuid, 'd50f810b-53f8-4294-9fae-44a817f677df'::uuid, 'owner', 4::bigint, '39a488aa9c88309f865c2832651c36567854bebf796e7d222df8a6d075a94036', 'd6f95bbb-76aa-4eef-9051-b0cd64ea5646'::uuid, null::uuid, '07d0c0d7-f983-4116-8612-c00da016b44d'::uuid, '12ad3f78-75e7-4aa5-b47a-9a0fa4edeb8c'::uuid, 'single_hotel', '02df6f9e-bba8-4f19-8586-115f1ca6a93c'::uuid, array['66471207-2a8b-4287-821c-5c66cb30c521'::uuid], array['be69f144-890f-4016-bde6-345bcc8429e0'::uuid], '{}'::uuid[], jsonb_build_object('memberships',jsonb_build_array(jsonb_build_object('id','66471207-2a8b-4287-821c-5c66cb30c521','organizationId','12ad3f78-75e7-4aa5-b47a-9a0fa4edeb8c','status','active','endedAtPresent',false,'membershipScope',null::text,'staxisRole',null::text,'coveredPropertyIds',null::uuid[])),'grants',jsonb_build_array(jsonb_build_object('id','be69f144-890f-4016-bde6-345bcc8429e0','organizationId','12ad3f78-75e7-4aa5-b47a-9a0fa4edeb8c','accessProfile','organization_owner','scopeType','organization','propertyId',null::uuid,'propertyRelationshipId',null::uuid,'status','active','source','legacy_backfill','expiresAtPresent',false,'revokedAtPresent',false,'version',1)),'staffLinks',jsonb_build_array())),
+      ('e9796543-4680-458b-a80b-ae7f3163b07a'::uuid, 'c7ec4be3-ba00-4ff0-bc69-c7e09d8e4f8f'::uuid, 'general_manager', 1::bigint, 'd8b2f89331c1ba838aa4e29bdf46674e274baad1aa0d5f5641fdacd54e189d13', '8b1ca426-fa48-43c9-90e4-eb69fed168b6'::uuid, null::uuid, 'ae8c748e-e203-45b1-a4b4-9b18f2295a4f'::uuid, '11110000-0000-4000-8000-0000000000a1'::uuid, 'management_company', '43c0dd2a-a2c3-4d3f-aca8-d34c90b546c8'::uuid, array['ce386157-6b91-42d7-9d8e-b9ab6d615037'::uuid], array['ebb20a3f-7379-4a39-88b0-315e387edc61'::uuid], '{}'::uuid[], jsonb_build_object('memberships',jsonb_build_array(jsonb_build_object('id','ce386157-6b91-42d7-9d8e-b9ab6d615037','organizationId','d4a443ce-959e-4d2e-8c26-7d103165c6ba','status','active','endedAtPresent',false,'membershipScope',null::text,'staxisRole',null::text,'coveredPropertyIds',null::uuid[])),'grants',jsonb_build_array(jsonb_build_object('id','ebb20a3f-7379-4a39-88b0-315e387edc61','organizationId','d4a443ce-959e-4d2e-8c26-7d103165c6ba','accessProfile','property_manager','scopeType','property','propertyId','c7ec4be3-ba00-4ff0-bc69-c7e09d8e4f8f','propertyRelationshipId','63b96d8c-3534-407b-b623-98bf1756f007','status','active','source','legacy_backfill','expiresAtPresent',false,'revokedAtPresent',false,'version',1)),'staffLinks',jsonb_build_array())),
+      ('f64f7d03-bc84-4173-b1e2-63552b1447c7'::uuid, 'b93142b5-0964-42f1-9ada-f3c50c8765a9'::uuid, 'owner', 1::bigint, 'a095af95464a3339afbe9a2094823c8abdaf521529ec98ca46514e6c8d8bf368', 'd6aa3bb7-cffa-4ae2-a9eb-5cbd84ff2750'::uuid, null::uuid, '7642f7da-2939-4b8d-add5-391147b4b1ea'::uuid, '95a093a6-fe52-4826-947a-5c4706cae010'::uuid, 'single_hotel', '6521d3fd-634e-4cb9-aa00-46e771bfc25b'::uuid, array['3194a56a-4298-45af-8cdc-d63711957600'::uuid], array['71ace9d6-a489-490e-88e6-3a7d56f82140'::uuid], '{}'::uuid[], jsonb_build_object('memberships',jsonb_build_array(jsonb_build_object('id','3194a56a-4298-45af-8cdc-d63711957600','organizationId','95a093a6-fe52-4826-947a-5c4706cae010','status','active','endedAtPresent',false,'membershipScope',null::text,'staxisRole',null::text,'coveredPropertyIds',null::uuid[])),'grants',jsonb_build_array(jsonb_build_object('id','71ace9d6-a489-490e-88e6-3a7d56f82140','organizationId','95a093a6-fe52-4826-947a-5c4706cae010','accessProfile','organization_owner','scopeType','organization','propertyId',null::uuid,'propertyRelationshipId',null::uuid,'status','active','source','legacy_backfill','expiresAtPresent',false,'revokedAtPresent',false,'version',1)),'staffLinks',jsonb_build_array())),
+      ('fd7dca12-bc39-416c-aedb-58c9819504e5'::uuid, 'c7ec4be3-ba00-4ff0-bc69-c7e09d8e4f8f'::uuid, 'housekeeping', 1::bigint, 'd8b2f89331c1ba838aa4e29bdf46674e274baad1aa0d5f5641fdacd54e189d13', '53da263b-2d4e-4b29-832e-a2ec93413875'::uuid, null::uuid, 'ae8c748e-e203-45b1-a4b4-9b18f2295a4f'::uuid, '11110000-0000-4000-8000-0000000000a1'::uuid, 'management_company', '9211738b-7a14-4c55-8436-d23fcc3a60cd'::uuid, array['cdd53ca0-2ff8-41df-a705-748d83e268d3'::uuid], array['0ee6b389-dc6a-4068-a60a-30470ae3e769'::uuid], '{}'::uuid[], jsonb_build_object('memberships',jsonb_build_array(jsonb_build_object('id','cdd53ca0-2ff8-41df-a705-748d83e268d3','organizationId','d4a443ce-959e-4d2e-8c26-7d103165c6ba','status','active','endedAtPresent',false,'membershipScope',null::text,'staxisRole',null::text,'coveredPropertyIds',null::uuid[])),'grants',jsonb_build_array(jsonb_build_object('id','0ee6b389-dc6a-4068-a60a-30470ae3e769','organizationId','d4a443ce-959e-4d2e-8c26-7d103165c6ba','accessProfile','contributor','scopeType','property','propertyId','c7ec4be3-ba00-4ff0-bc69-c7e09d8e4f8f','propertyRelationshipId','63b96d8c-3534-407b-b623-98bf1756f007','status','active','source','legacy_backfill','expiresAtPresent',false,'revokedAtPresent',false,'version',1)),'staffLinks',jsonb_build_array()))
+    ) allowlist(account_id, property_id, expected_role, expected_version, expected_raw_hash, expected_auth_user_id, expected_account_staff_id, expected_relationship_id, expected_organization_id, expected_organization_type, expected_bridge_id, expected_membership_ids, expected_grant_ids, expected_staff_ids, expected_compatibility)
+    order by account_id
+  loop
+    select account.* into v_account
+    from public.accounts account
+    where account.id = v_normal_legacy.account_id
+    for update;
+    if not found then
+      if v_normal_has_rows then
+        raise exception '0426 normal-legacy manifest account % is missing', v_normal_legacy.account_id using errcode = '55000';
+      end if;
+      continue;
+    end if;
+
+    select state.* into v_state
+    from public.account_authorization_state state
+    where state.account_id = v_normal_legacy.account_id
+    for update;
+    if not found then
+      raise exception '0426 normal-legacy account % has no authority state', v_normal_legacy.account_id using errcode = '55000';
+    end if;
+
+    if v_state.authority_mode = 'normalized'
+       and cardinality(coalesce(v_account.property_access, '{}'::uuid[])) = 0 then
+      select manifest.* into v_normal_manifest
+      from public.account_access_cutover_normal_legacy_manifests manifest
+      where manifest.account_id = v_normal_legacy.account_id
+        and manifest.source_preflight_run_id = v_source_run_id
+      for update;
+      if not found or v_normal_manifest.status <> 'converted'
+         or v_normal_manifest.authority_version_after is distinct from v_normal_legacy.expected_version + 1
+         or v_normal_manifest.canonical_ids_after is distinct from array[v_normal_legacy.property_id]::uuid[]
+         or v_normal_manifest.canonical_hash_after <> v_normal_legacy.expected_raw_hash then
+        raise exception '0426 normal-legacy normalized replay lacks exact manifest evidence for account %', v_normal_legacy.account_id
+          using errcode = '55000';
+      end if;
+      if v_state.authority_version <> v_normal_manifest.authority_version_after
+         or public._staxis_structural_account_property_ids(v_normal_legacy.account_id) is distinct from array[v_normal_legacy.property_id]::uuid[]
+      then
+        raise exception '0426 normal-legacy normalized replay changed effective access for account %', v_normal_legacy.account_id
+          using errcode = '55000';
+      end if;
+      if v_normal_manifest.aggregate_manifest_hash <> v_normal_manifest_hash
+         or v_normal_manifest.expected_auth_user_id is distinct from v_normal_legacy.expected_auth_user_id
+         or v_normal_manifest.expected_account_staff_id is distinct from v_normal_legacy.expected_account_staff_id
+         or v_normal_manifest.expected_active is not true
+         or v_normal_manifest.expected_role is distinct from v_normal_legacy.expected_role
+         or v_normal_manifest.expected_authority_mode <> 'legacy'
+         or v_normal_manifest.expected_authority_version is distinct from v_normal_legacy.expected_version
+         or v_normal_manifest.expected_raw_property_ids is distinct from array[v_normal_legacy.property_id]::uuid[]
+         or v_normal_manifest.expected_raw_scope_hash <> v_normal_legacy.expected_raw_hash
+         or v_normal_manifest.expected_canonical_ids is distinct from '{}'::uuid[]
+         or v_normal_manifest.expected_canonical_hash <> v_empty_scope_hash
+         or v_normal_manifest.expected_relationship_id is distinct from v_normal_legacy.expected_relationship_id
+         or v_normal_manifest.expected_organization_id is distinct from v_normal_legacy.expected_organization_id
+         or v_normal_manifest.expected_organization_type is distinct from v_normal_legacy.expected_organization_type
+         or v_normal_manifest.expected_bridge_id is distinct from v_normal_legacy.expected_bridge_id
+         or v_normal_manifest.expected_membership_ids is distinct from v_normal_legacy.expected_membership_ids
+         or v_normal_manifest.expected_grant_ids is distinct from v_normal_legacy.expected_grant_ids
+         or v_normal_manifest.expected_staff_ids is distinct from v_normal_legacy.expected_staff_ids
+         or v_normal_manifest.expected_compatibility is distinct from (
+           v_normal_legacy.expected_compatibility
+           || jsonb_build_object('accountStaffId', v_normal_legacy.expected_account_staff_id)
+         )
+         or v_normal_manifest.expected_compatibility_hash <> encode(
+           pg_catalog.sha256(convert_to((
+             v_normal_legacy.expected_compatibility
+             || jsonb_build_object('accountStaffId', v_normal_legacy.expected_account_staff_id)
+           )::text, 'UTF8')), 'hex'
+         )
+         or v_normal_manifest.evidence_before is null
+         or v_normal_manifest.evidence_before_hash <> encode(pg_catalog.sha256(convert_to(v_normal_manifest.evidence_before::text, 'UTF8')), 'hex')
+         or v_normal_manifest.evidence_after is null
+         or v_normal_manifest.evidence_after_hash <> encode(pg_catalog.sha256(convert_to(v_normal_manifest.evidence_after::text, 'UTF8')), 'hex')
+         or v_normal_manifest.details->>'evidenceBeforeHash' <> v_normal_manifest.evidence_before_hash
+         or v_normal_manifest.details->>'aggregateManifestHash' <> v_normal_manifest_hash
+         or v_normal_manifest.details->>'evidenceAfterHash' <> v_normal_manifest.evidence_after_hash then
+        raise exception '0426 normal-legacy normalized replay manifest fact drift for account %', v_normal_legacy.account_id
+          using errcode = '55000';
+      end if;
+      select account.* into v_account
+      from public.accounts account
+      where account.id = v_normal_legacy.account_id
+      for update;
+      if not found
+         or v_account.active is not true
+         or v_account.data_user_id is distinct from v_normal_legacy.expected_auth_user_id
+         or v_account.staff_id is distinct from v_normal_legacy.expected_account_staff_id
+         or v_account.role is distinct from v_normal_legacy.expected_role then
+        raise exception '0426 normal-legacy normalized replay account fact drift for account %', v_normal_legacy.account_id
+          using errcode = '55000';
+      end if;
+      perform 1 from auth.users auth_user
+        where auth_user.id = v_normal_legacy.expected_auth_user_id for update;
+      if not found then
+        raise exception '0426 normal-legacy normalized replay auth identity missing for account %', v_normal_legacy.account_id
+          using errcode = '55000';
+      end if;
+      select count(*)::integer, (array_agg(relationship.id order by relationship.id))[1], (array_agg(relationship.organization_id order by relationship.id))[1], (array_agg(relationship.organization_type order by relationship.id))[1]
+        into v_normal_valid_relationship_count, v_normal_relationship_id,
+             v_normal_organization_id, v_normal_organization_type
+      from public._staxis_cutover_valid_current_primary_property_relationships() relationship
+      where relationship.property_id = v_normal_legacy.property_id
+        and relationship.active_primary_count = 1;
+      if v_normal_valid_relationship_count <> 1
+         or v_normal_relationship_id is distinct from v_normal_legacy.expected_relationship_id
+         or v_normal_organization_id is distinct from v_normal_legacy.expected_organization_id
+         or v_normal_organization_type is distinct from v_normal_legacy.expected_organization_type then
+        raise exception '0426 normal-legacy normalized replay topology drift for account %', v_normal_legacy.account_id
+          using errcode = '55000';
+      end if;
+      perform 1 from public.organizations organization
+        where organization.id = v_normal_legacy.expected_organization_id
+          and organization.organization_type = v_normal_legacy.expected_organization_type
+          and organization.status = 'active' for update;
+      if not found then
+        raise exception '0426 normal-legacy normalized replay organization drift for account %', v_normal_legacy.account_id
+          using errcode = '55000';
+      end if;
+      select count(*)::integer into v_normal_bridge_count
+      from public.account_property_authorization_bridges bridge
+      where bridge.account_id = v_normal_legacy.account_id;
+      if v_normal_bridge_count <> 1
+         or not exists (
+           select 1 from public.account_property_authorization_bridges bridge
+           where bridge.id = v_normal_legacy.expected_bridge_id
+             and bridge.account_id = v_normal_legacy.account_id
+             and bridge.property_id = v_normal_legacy.property_id
+             and bridge.status = 'active'
+             and bridge.retired_at is null
+             and bridge.source_legacy_scope_hash = v_normal_legacy.expected_raw_hash
+             and bridge.cutover_relationship_id = v_normal_legacy.expected_relationship_id
+             and bridge.cutover_organization_id = v_normal_legacy.expected_organization_id
+         )
+         or exists (
+           select 1 from public.account_property_authorization_bridges bridge
+           where bridge.account_id = v_normal_legacy.account_id
+             and (bridge.status <> 'active' or bridge.retired_at is not null)
+         ) then
+        raise exception '0426 normal-legacy normalized replay bridge drift for account %', v_normal_legacy.account_id
+          using errcode = '55000';
+      end if;
+      select coalesce(array_agg(membership.id order by membership.id), '{}'::uuid[])
+        into v_normal_membership_ids
+      from public.organization_memberships membership
+      where membership.account_id = v_normal_legacy.account_id;
+      if v_normal_membership_ids is distinct from v_normal_legacy.expected_membership_ids
+         or exists (
+           select 1 from public.organization_memberships membership
+           where membership.account_id = v_normal_legacy.account_id
+             and membership.status = 'active'
+             and membership.ended_at is null
+             and (membership.membership_scope is not null or membership.staxis_role is not null
+                  or membership.covered_property_ids is not null)
+         ) then
+        raise exception '0426 normal-legacy normalized replay membership drift for account %', v_normal_legacy.account_id
+          using errcode = '55000';
+      end if;
+      select coalesce(array_agg(grant_row.id order by grant_row.id), '{}'::uuid[])
+        into v_normal_grant_ids
+      from public.organization_access_grants grant_row
+      join public.organization_memberships membership on membership.id = grant_row.membership_id
+      where membership.account_id = v_normal_legacy.account_id
+        and grant_row.status = 'active';
+      if v_normal_grant_ids is distinct from v_normal_legacy.expected_grant_ids
+         or exists (
+           select 1
+           from public.organization_access_grants grant_row
+           join public.organization_memberships membership on membership.id = grant_row.membership_id
+           where membership.account_id = v_normal_legacy.account_id
+             and grant_row.status = 'active'
+             and grant_row.source <> 'legacy_backfill'
+         ) then
+        raise exception '0426 normal-legacy normalized replay grant drift for account %', v_normal_legacy.account_id
+          using errcode = '55000';
+      end if;
+      select coalesce(array_agg(staff_link.staff_id order by staff_link.staff_id), '{}'::uuid[])
+        into v_normal_staff_ids
+      from public.account_property_staff_links staff_link
+      where staff_link.account_id = v_normal_legacy.account_id
+        and staff_link.is_active;
+      if v_normal_staff_ids is distinct from v_normal_legacy.expected_staff_ids
+         or exists (
+           select 1 from public.account_property_staff_links staff_link
+           where staff_link.account_id = v_normal_legacy.account_id
+             and staff_link.is_active
+             and staff_link.source <> 'legacy_backfill'
+         ) then
+        raise exception '0426 normal-legacy normalized replay staff drift for account %', v_normal_legacy.account_id
+          using errcode = '55000';
+      end if;
+      v_normal_expected_compatibility := v_normal_legacy.expected_compatibility
+        || jsonb_build_object('accountStaffId', v_normal_legacy.expected_account_staff_id);
+      v_normal_expected_compatibility_hash := encode(
+        pg_catalog.sha256(convert_to(v_normal_expected_compatibility::text, 'UTF8')), 'hex'
+      );
+      v_normal_observed_compatibility := jsonb_build_object(
+        'memberships', coalesce((select jsonb_agg(jsonb_build_object(
+          'id', membership.id, 'organizationId', membership.organization_id,
+          'status', membership.status, 'endedAtPresent', membership.ended_at is not null,
+          'membershipScope', membership.membership_scope, 'staxisRole', membership.staxis_role,
+          'coveredPropertyIds', membership.covered_property_ids
+        ) order by membership.id) from public.organization_memberships membership
+         where membership.account_id = v_normal_legacy.account_id), '[]'::jsonb),
+        'grants', coalesce((select jsonb_agg(jsonb_build_object(
+          'id', grant_row.id, 'organizationId', grant_row.organization_id,
+          'accessProfile', grant_row.access_profile, 'scopeType', grant_row.scope_type,
+          'propertyId', grant_row.property_id, 'propertyRelationshipId', grant_row.property_relationship_id,
+          'status', grant_row.status, 'source', grant_row.source,
+          'expiresAtPresent', grant_row.expires_at is not null,
+          'revokedAtPresent', grant_row.revoked_at is not null, 'version', grant_row.version
+        ) order by grant_row.id)
+         from public.organization_access_grants grant_row
+         join public.organization_memberships membership on membership.id = grant_row.membership_id
+         where membership.account_id = v_normal_legacy.account_id
+           and grant_row.status = 'active'), '[]'::jsonb),
+        'staffLinks', coalesce((select jsonb_agg(jsonb_build_object(
+          'accountId', staff_link.account_id, 'propertyId', staff_link.property_id,
+          'staffId', staff_link.staff_id, 'isActive', staff_link.is_active,
+          'source', staff_link.source, 'deactivatedAtPresent', staff_link.deactivated_at is not null
+        ) order by staff_link.property_id, staff_link.staff_id)
+         from public.account_property_staff_links staff_link
+         where staff_link.account_id = v_normal_legacy.account_id
+           and staff_link.is_active), '[]'::jsonb),
+        'accountStaffId', v_account.staff_id
+      );
+      v_normal_observed_compatibility_hash := encode(
+        pg_catalog.sha256(convert_to(v_normal_observed_compatibility::text, 'UTF8')), 'hex'
+      );
+      if v_normal_observed_compatibility is distinct from v_normal_expected_compatibility
+         or v_normal_observed_compatibility_hash <> v_normal_expected_compatibility_hash
+         or v_normal_manifest.observed_compatibility is distinct from v_normal_observed_compatibility
+         or v_normal_manifest.observed_compatibility_hash <> v_normal_observed_compatibility_hash
+         or v_normal_manifest.details->'compatibilityAfter' is distinct from v_normal_observed_compatibility
+         or v_normal_manifest.details->>'compatibilityAfterHash' <> v_normal_observed_compatibility_hash then
+        raise exception '0426 normal-legacy normalized replay compatibility evidence drift for account %', v_normal_legacy.account_id
+          using errcode = '55000';
+      end if;
+      v_normal_evidence_after := public._staxis_stage_c_account_evidence(
+        v_normal_legacy.account_id, v_normal_legacy.property_id
+      );
+      if v_normal_evidence_after is distinct from v_normal_manifest.evidence_after
+         or encode(pg_catalog.sha256(convert_to(v_normal_evidence_after::text, 'UTF8')), 'hex')
+              <> v_normal_manifest.evidence_after_hash then
+        raise exception '0426 normal-legacy normalized replay current evidence drift for account %', v_normal_legacy.account_id
+          using errcode = '55000';
+      end if;
+      v_cleared_accounts := array_append(v_cleared_accounts, v_normal_legacy.account_id);
+      continue;
+    end if;
+
+    if v_state.authority_mode is distinct from 'legacy'
+       or v_state.authority_version is distinct from v_normal_legacy.expected_version
+       or v_account.active is not true
+       or v_account.data_user_id is distinct from v_normal_legacy.expected_auth_user_id
+       or v_account.staff_id is distinct from v_normal_legacy.expected_account_staff_id
+       or v_account.role is distinct from v_normal_legacy.expected_role
+       or public._staxis_stage_c_normalize_ids(v_account.property_access)
+            is distinct from array[v_normal_legacy.property_id]::uuid[]
+       or public._staxis_stage_c_scope_hash(v_account.property_access)
+            <> v_normal_legacy.expected_raw_hash
+    then
+      raise exception '0426 normal-legacy account/hash/role/state drift for account %', v_normal_legacy.account_id
+        using errcode = '55000';
+    end if;
+    perform 1 from auth.users auth_user
+      where auth_user.id = v_account.data_user_id for update;
+    if not found then
+      raise exception '0426 normal-legacy auth identity missing for account %', v_normal_legacy.account_id
+        using errcode = '55000';
+    end if;
+
+    select count(*)::integer into v_normal_relationship_count
+    from public._staxis_current_primary_property_relationships() relationship
+    where relationship.property_id = v_normal_legacy.property_id;
+    select count(*)::integer, (array_agg(relationship.id order by relationship.id))[1], (array_agg(relationship.organization_id order by relationship.id))[1], (array_agg(relationship.organization_type order by relationship.id))[1]
+      into v_normal_valid_relationship_count, v_normal_relationship_id,
+           v_normal_organization_id, v_normal_organization_type
+    from public._staxis_cutover_valid_current_primary_property_relationships() relationship
+    where relationship.property_id = v_normal_legacy.property_id
+      and relationship.active_primary_count = 1;
+    if v_normal_relationship_count <> 1
+       or v_normal_valid_relationship_count <> 1
+       or v_normal_relationship_id is distinct from v_normal_legacy.expected_relationship_id
+       or v_normal_organization_id is distinct from v_normal_legacy.expected_organization_id
+       or v_normal_organization_type is distinct from v_normal_legacy.expected_organization_type then
+      raise exception '0426 normal-legacy topology drift for account %', v_normal_legacy.account_id
+        using errcode = '55000';
+    end if;
+    perform 1 from public.properties property
+      where property.id = v_normal_legacy.property_id for update;
+    perform 1 from public.organization_property_relationships relationship
+      where relationship.id = v_normal_legacy.expected_relationship_id
+        and relationship.property_id = v_normal_legacy.property_id
+        and relationship.organization_id = v_normal_legacy.expected_organization_id
+        and relationship.is_primary_grouping
+        and relationship.ends_at is null for update;
+    if not found then
+      raise exception '0426 normal-legacy current-primary relationship changed for account %', v_normal_legacy.account_id
+        using errcode = '55000';
+    end if;
+    perform 1 from public.organizations organization
+      where organization.id = v_normal_legacy.expected_organization_id
+        and organization.organization_type = v_normal_legacy.expected_organization_type
+        and organization.status = 'active' for update;
+
+    v_normal_canonical_before := public._staxis_stage_c_normalize_ids(array(
+      select authz.property_id
+      from public._staxis_account_property_authorizations(v_normal_legacy.account_id) authz
+    ));
+    if v_normal_canonical_before is distinct from '{}'::uuid[]
+       or public._staxis_stage_c_scope_hash(v_normal_canonical_before) <> v_empty_scope_hash then
+      raise exception '0426 normal-legacy canonical-before residue for account %', v_normal_legacy.account_id
+        using errcode = '55000';
+    end if;
+
+    perform 1 from public.account_property_authorization_bridges bridge
+      where bridge.account_id = v_normal_legacy.account_id for update;
+    select count(*)::integer into v_normal_bridge_count
+    from public.account_property_authorization_bridges bridge
+    where bridge.account_id = v_normal_legacy.account_id;
+    select bridge.id, bridge.source_legacy_scope_hash,
+           bridge.cutover_relationship_id, bridge.cutover_organization_id
+      into v_normal_bridge_id, v_normal_bridge_source_hash,
+           v_normal_bridge_relationship_id, v_normal_bridge_organization_id
+    from public.account_property_authorization_bridges bridge
+    where bridge.account_id = v_normal_legacy.account_id
+      and bridge.id = v_normal_legacy.expected_bridge_id
+      and bridge.property_id = v_normal_legacy.property_id;
+    if v_normal_bridge_count <> 1
+       or not found
+       or v_normal_bridge_id is distinct from v_normal_legacy.expected_bridge_id
+       or v_normal_bridge_source_hash <> v_normal_legacy.expected_raw_hash
+       or v_normal_bridge_relationship_id is distinct from v_normal_legacy.expected_relationship_id
+       or v_normal_bridge_organization_id is distinct from v_normal_legacy.expected_organization_id
+       or exists (
+         select 1 from public.account_property_authorization_bridges bridge
+         where bridge.account_id = v_normal_legacy.account_id
+           and (bridge.status <> 'active' or bridge.retired_at is not null)
+       ) then
+      raise exception '0426 normal-legacy bridge identity/topology/state mismatch for account %', v_normal_legacy.account_id
+        using errcode = '55000';
+    end if;
+
+    perform 1 from public.organization_memberships membership
+      where membership.account_id = v_normal_legacy.account_id for update;
+    select coalesce(array_agg(membership.id order by membership.id), '{}'::uuid[])
+      into v_normal_membership_ids
+    from public.organization_memberships membership
+    where membership.account_id = v_normal_legacy.account_id;
+    if v_normal_membership_ids is distinct from v_normal_legacy.expected_membership_ids
+       or exists (
+         select 1 from public.organization_memberships membership
+         where membership.account_id = v_normal_legacy.account_id
+           and membership.status = 'active'
+           and membership.ended_at is null
+           and (membership.membership_scope is not null or membership.staxis_role is not null
+                or membership.covered_property_ids is not null)
+       ) then
+      raise exception '0426 normal-legacy membership/hat facts mismatch for account %', v_normal_legacy.account_id
+        using errcode = '55000';
+    end if;
+
+    perform 1 from public.organization_access_grants grant_row
+      join public.organization_memberships membership on membership.id = grant_row.membership_id
+      where membership.account_id = v_normal_legacy.account_id for update;
+    select coalesce(array_agg(grant_row.id order by grant_row.id), '{}'::uuid[])
+      into v_normal_grant_ids
+    from public.organization_access_grants grant_row
+    join public.organization_memberships membership on membership.id = grant_row.membership_id
+    where membership.account_id = v_normal_legacy.account_id
+      and grant_row.status = 'active';
+    if v_normal_grant_ids is distinct from v_normal_legacy.expected_grant_ids
+       or exists (
+         select 1
+         from public.organization_access_grants grant_row
+         join public.organization_memberships membership on membership.id = grant_row.membership_id
+         where membership.account_id = v_normal_legacy.account_id
+           and grant_row.status = 'active'
+           and grant_row.source <> 'legacy_backfill'
+       ) then
+      raise exception '0426 normal-legacy grant/entitlement facts mismatch for account %', v_normal_legacy.account_id
+        using errcode = '55000';
+    end if;
+
+    perform 1 from public.account_property_staff_links staff_link
+      where staff_link.account_id = v_normal_legacy.account_id for update;
+    select coalesce(array_agg(staff_link.staff_id order by staff_link.staff_id), '{}'::uuid[])
+      into v_normal_staff_ids
+    from public.account_property_staff_links staff_link
+    where staff_link.account_id = v_normal_legacy.account_id
+      and staff_link.is_active;
+    if v_normal_staff_ids is distinct from v_normal_legacy.expected_staff_ids
+       or exists (
+         select 1 from public.account_property_staff_links staff_link
+         where staff_link.account_id = v_normal_legacy.account_id
+           and staff_link.is_active
+           and staff_link.source <> 'legacy_backfill'
+       ) then
+      raise exception '0426 normal-legacy staff compatibility facts mismatch for account %', v_normal_legacy.account_id
+        using errcode = '55000';
+    end if;
+
+    v_normal_expected_compatibility := v_normal_legacy.expected_compatibility
+      || jsonb_build_object('accountStaffId', v_normal_legacy.expected_account_staff_id);
+    v_normal_expected_compatibility_hash := encode(
+      pg_catalog.sha256(convert_to(v_normal_expected_compatibility::text, 'UTF8')), 'hex'
+    );
+    v_normal_observed_compatibility := jsonb_build_object(
+      'memberships', coalesce((select jsonb_agg(jsonb_build_object(
+        'id', membership.id, 'organizationId', membership.organization_id,
+        'status', membership.status, 'endedAtPresent', membership.ended_at is not null,
+        'membershipScope', membership.membership_scope, 'staxisRole', membership.staxis_role,
+        'coveredPropertyIds', membership.covered_property_ids
+      ) order by membership.id) from public.organization_memberships membership
+       where membership.account_id = v_normal_legacy.account_id), '[]'::jsonb),
+      'grants', coalesce((select jsonb_agg(jsonb_build_object(
+        'id', grant_row.id, 'organizationId', grant_row.organization_id,
+        'accessProfile', grant_row.access_profile, 'scopeType', grant_row.scope_type,
+        'propertyId', grant_row.property_id, 'propertyRelationshipId', grant_row.property_relationship_id,
+        'status', grant_row.status, 'source', grant_row.source,
+        'expiresAtPresent', grant_row.expires_at is not null,
+        'revokedAtPresent', grant_row.revoked_at is not null, 'version', grant_row.version
+      ) order by grant_row.id)
+       from public.organization_access_grants grant_row
+       join public.organization_memberships membership on membership.id = grant_row.membership_id
+       where membership.account_id = v_normal_legacy.account_id
+         and grant_row.status = 'active'), '[]'::jsonb),
+      'staffLinks', coalesce((select jsonb_agg(jsonb_build_object(
+        'accountId', staff_link.account_id, 'propertyId', staff_link.property_id,
+        'staffId', staff_link.staff_id, 'isActive', staff_link.is_active,
+        'source', staff_link.source, 'deactivatedAtPresent', staff_link.deactivated_at is not null
+      ) order by staff_link.property_id, staff_link.staff_id)
+       from public.account_property_staff_links staff_link
+       where staff_link.account_id = v_normal_legacy.account_id
+         and staff_link.is_active), '[]'::jsonb),
+      'accountStaffId', v_account.staff_id
+    );
+    v_normal_observed_compatibility_hash := encode(
+      pg_catalog.sha256(convert_to(v_normal_observed_compatibility::text, 'UTF8')), 'hex'
+    );
+    if v_normal_observed_compatibility is distinct from v_normal_expected_compatibility then
+      raise exception '0426 normal-legacy compatibility evidence mismatch for account %', v_normal_legacy.account_id
+        using errcode = '55000';
+    end if;
+    v_normal_evidence_before := public._staxis_stage_c_account_evidence(
+      v_normal_legacy.account_id, v_normal_legacy.property_id
+    );
+    v_normal_before_hash := encode(
+      pg_catalog.sha256(convert_to(v_normal_evidence_before::text, 'UTF8')), 'hex'
+    );
+
+    select manifest.* into v_normal_manifest
+    from public.account_access_cutover_normal_legacy_manifests manifest
+    where manifest.account_id = v_normal_legacy.account_id
+      and manifest.source_preflight_run_id = v_source_run_id
+    for update;
+    if found then
+      if v_normal_manifest.status <> 'converting'
+         or v_normal_manifest.aggregate_manifest_hash <> v_normal_manifest_hash
+         or v_normal_manifest.expected_bridge_id <> v_normal_legacy.expected_bridge_id
+         or v_normal_manifest.expected_compatibility is distinct from v_normal_expected_compatibility then
+        raise exception '0426 normal-legacy manifest replay/evidence mismatch for account %', v_normal_legacy.account_id
+          using errcode = '55000';
+      end if;
+    else
+      insert into public.account_access_cutover_normal_legacy_manifests (
+        account_id, source_preflight_run_id, property_id, expected_role,
+        expected_authority_mode, expected_authority_version,
+        expected_raw_property_ids, expected_raw_scope_hash,
+        expected_canonical_ids, expected_canonical_hash, aggregate_manifest_hash,
+        expected_auth_user_id, expected_account_staff_id, expected_active,
+        expected_relationship_id, expected_organization_id, expected_organization_type,
+        expected_bridge_id, expected_membership_ids,
+        expected_grant_ids, expected_staff_ids, expected_compatibility,
+        expected_compatibility_hash, status, conversion_txid,
+        auth_user_id_snapshot, active_snapshot, relationship_id_snapshot,
+        organization_id_snapshot, organization_type_snapshot,
+        evidence_before, evidence_before_hash, details
+      ) values (
+        v_normal_legacy.account_id, v_source_run_id, v_normal_legacy.property_id,
+        v_normal_legacy.expected_role, 'legacy', v_normal_legacy.expected_version,
+        array[v_normal_legacy.property_id]::uuid[], v_normal_legacy.expected_raw_hash,
+        '{}'::uuid[], v_empty_scope_hash, v_normal_manifest_hash,
+        v_normal_legacy.expected_auth_user_id, v_normal_legacy.expected_account_staff_id, true,
+        v_normal_legacy.expected_relationship_id, v_normal_legacy.expected_organization_id,
+        v_normal_legacy.expected_organization_type,
+        v_normal_legacy.expected_bridge_id, v_normal_legacy.expected_membership_ids,
+        v_normal_legacy.expected_grant_ids, v_normal_legacy.expected_staff_ids,
+        v_normal_expected_compatibility, v_normal_expected_compatibility_hash,
+        'converting', txid_current(), v_account.data_user_id, v_account.active,
+        v_normal_relationship_id, v_normal_organization_id, v_normal_organization_type,
+        v_normal_evidence_before, v_normal_before_hash,
+        jsonb_build_object(
+          'source', '0426-normal-legacy-production-manifest',
+          'aggregateManifestHash', v_normal_manifest_hash,
+          'compatibilityBefore', v_normal_expected_compatibility,
+          'compatibilityBeforeHash', v_normal_expected_compatibility_hash,
+          'evidenceBefore', v_normal_evidence_before,
+          'evidenceBeforeHash', v_normal_before_hash,
+          'accountStaffIdBefore', v_account.staff_id,
+          'topology', jsonb_build_object(
+            'relationshipId', v_normal_relationship_id,
+            'organizationId', v_normal_organization_id,
+            'organizationType', v_normal_organization_type
+          )
+        )
+      );
+    end if;
+
+    v_import := public._staxis_stage_b_import_legacy_scope(
+      v_normal_legacy.account_id,
+      'Access Stage C deterministic normal legacy conversion'
+    );
+    if coalesce((v_import->>'ok')::boolean, false) is not true
+       or (v_import->>'status') <> 'imported' then
+      raise exception '0426 normal-legacy importer rejected account %: %', v_normal_legacy.account_id, v_import
+        using errcode = '55000';
+    end if;
+
+    -- Re-read every manifest-bound compatibility and topology fact after the
+    -- importer.  The importer is expected to touch only authority state and
+    -- its conflict-idempotent bridge path; do not infer that compatibility
+    -- remained unchanged from the before snapshot.
+    select account.* into v_account
+    from public.accounts account
+    where account.id = v_normal_legacy.account_id
+    for update;
+    if not found
+       or v_account.active is not true
+       or v_account.data_user_id is distinct from v_normal_legacy.expected_auth_user_id
+       or v_account.staff_id is distinct from v_normal_legacy.expected_account_staff_id
+       or v_account.role is distinct from v_normal_legacy.expected_role then
+      raise exception '0426 normal-legacy post-import account identity drift for account %', v_normal_legacy.account_id
+        using errcode = '55000';
+    end if;
+    perform 1 from auth.users auth_user
+      where auth_user.id = v_normal_legacy.expected_auth_user_id for update;
+    if not found then
+      raise exception '0426 normal-legacy post-import auth identity missing for account %', v_normal_legacy.account_id
+        using errcode = '55000';
+    end if;
+    select count(*)::integer, (array_agg(relationship.id order by relationship.id))[1], (array_agg(relationship.organization_id order by relationship.id))[1], (array_agg(relationship.organization_type order by relationship.id))[1]
+      into v_normal_valid_relationship_count, v_normal_relationship_id,
+           v_normal_organization_id, v_normal_organization_type
+    from public._staxis_cutover_valid_current_primary_property_relationships() relationship
+    where relationship.property_id = v_normal_legacy.property_id
+      and relationship.active_primary_count = 1;
+    if v_normal_valid_relationship_count <> 1
+       or v_normal_relationship_id is distinct from v_normal_legacy.expected_relationship_id
+       or v_normal_organization_id is distinct from v_normal_legacy.expected_organization_id
+       or v_normal_organization_type is distinct from v_normal_legacy.expected_organization_type then
+      raise exception '0426 normal-legacy post-import topology drift for account %', v_normal_legacy.account_id
+        using errcode = '55000';
+    end if;
+    perform 1 from public.organizations organization
+      where organization.id = v_normal_legacy.expected_organization_id
+        and organization.organization_type = v_normal_legacy.expected_organization_type
+        and organization.status = 'active' for update;
+    if not found then
+      raise exception '0426 normal-legacy post-import organization drift for account %', v_normal_legacy.account_id
+        using errcode = '55000';
+    end if;
+    select coalesce(array_agg(membership.id order by membership.id), '{}'::uuid[])
+      into v_normal_membership_ids
+    from public.organization_memberships membership
+    where membership.account_id = v_normal_legacy.account_id;
+    if v_normal_membership_ids is distinct from v_normal_legacy.expected_membership_ids
+       or exists (
+         select 1 from public.organization_memberships membership
+         where membership.account_id = v_normal_legacy.account_id
+           and membership.status = 'active'
+           and membership.ended_at is null
+           and (membership.membership_scope is not null or membership.staxis_role is not null
+                or membership.covered_property_ids is not null)
+       ) then
+      raise exception '0426 normal-legacy post-import membership drift for account %', v_normal_legacy.account_id
+        using errcode = '55000';
+    end if;
+    select coalesce(array_agg(grant_row.id order by grant_row.id), '{}'::uuid[])
+      into v_normal_grant_ids
+    from public.organization_access_grants grant_row
+    join public.organization_memberships membership on membership.id = grant_row.membership_id
+    where membership.account_id = v_normal_legacy.account_id
+      and grant_row.status = 'active';
+    if v_normal_grant_ids is distinct from v_normal_legacy.expected_grant_ids
+       or exists (
+         select 1
+         from public.organization_access_grants grant_row
+         join public.organization_memberships membership on membership.id = grant_row.membership_id
+         where membership.account_id = v_normal_legacy.account_id
+           and grant_row.status = 'active'
+           and grant_row.source <> 'legacy_backfill'
+       ) then
+      raise exception '0426 normal-legacy post-import grant drift for account %', v_normal_legacy.account_id
+        using errcode = '55000';
+    end if;
+    select coalesce(array_agg(staff_link.staff_id order by staff_link.staff_id), '{}'::uuid[])
+      into v_normal_staff_ids
+    from public.account_property_staff_links staff_link
+    where staff_link.account_id = v_normal_legacy.account_id
+      and staff_link.is_active;
+    if v_normal_staff_ids is distinct from v_normal_legacy.expected_staff_ids
+       or exists (
+         select 1 from public.account_property_staff_links staff_link
+         where staff_link.account_id = v_normal_legacy.account_id
+           and staff_link.is_active
+           and staff_link.source <> 'legacy_backfill'
+       ) then
+      raise exception '0426 normal-legacy post-import staff drift for account %', v_normal_legacy.account_id
+        using errcode = '55000';
+    end if;
+    v_normal_observed_compatibility := jsonb_build_object(
+      'memberships', coalesce((select jsonb_agg(jsonb_build_object(
+        'id', membership.id, 'organizationId', membership.organization_id,
+        'status', membership.status, 'endedAtPresent', membership.ended_at is not null,
+        'membershipScope', membership.membership_scope, 'staxisRole', membership.staxis_role,
+        'coveredPropertyIds', membership.covered_property_ids
+      ) order by membership.id) from public.organization_memberships membership
+       where membership.account_id = v_normal_legacy.account_id), '[]'::jsonb),
+      'grants', coalesce((select jsonb_agg(jsonb_build_object(
+        'id', grant_row.id, 'organizationId', grant_row.organization_id,
+        'accessProfile', grant_row.access_profile, 'scopeType', grant_row.scope_type,
+        'propertyId', grant_row.property_id, 'propertyRelationshipId', grant_row.property_relationship_id,
+        'status', grant_row.status, 'source', grant_row.source,
+        'expiresAtPresent', grant_row.expires_at is not null,
+        'revokedAtPresent', grant_row.revoked_at is not null, 'version', grant_row.version
+      ) order by grant_row.id)
+       from public.organization_access_grants grant_row
+       join public.organization_memberships membership on membership.id = grant_row.membership_id
+       where membership.account_id = v_normal_legacy.account_id
+         and grant_row.status = 'active'), '[]'::jsonb),
+      'staffLinks', coalesce((select jsonb_agg(jsonb_build_object(
+        'accountId', staff_link.account_id, 'propertyId', staff_link.property_id,
+        'staffId', staff_link.staff_id, 'isActive', staff_link.is_active,
+        'source', staff_link.source, 'deactivatedAtPresent', staff_link.deactivated_at is not null
+      ) order by staff_link.property_id, staff_link.staff_id)
+       from public.account_property_staff_links staff_link
+       where staff_link.account_id = v_normal_legacy.account_id
+         and staff_link.is_active), '[]'::jsonb),
+      'accountStaffId', v_account.staff_id
+    );
+    v_normal_observed_compatibility_hash := encode(
+      pg_catalog.sha256(convert_to(v_normal_observed_compatibility::text, 'UTF8')), 'hex'
+    );
+    if v_normal_observed_compatibility is distinct from v_normal_expected_compatibility
+       or v_normal_observed_compatibility_hash <> v_normal_expected_compatibility_hash then
+      raise exception '0426 normal-legacy post-import compatibility drift for account %', v_normal_legacy.account_id
+        using errcode = '55000';
+    end if;
+
+    select state.* into v_state
+    from public.account_authorization_state state
+    where state.account_id = v_normal_legacy.account_id
+    for update;
+    v_normal_canonical_after := public._staxis_stage_c_normalize_ids(array(
+      select authz.property_id
+      from public._staxis_account_property_authorizations(v_normal_legacy.account_id) authz
+    ));
+    v_normal_canonical_hash := public._staxis_stage_c_scope_hash(v_normal_canonical_after);
+    if v_state.authority_mode <> 'normalized'
+       or v_state.authority_version <> v_normal_legacy.expected_version + 1
+       or v_normal_canonical_after is distinct from array[v_normal_legacy.property_id]::uuid[]
+       or v_normal_canonical_hash <> v_normal_legacy.expected_raw_hash
+       or v_account.role is distinct from v_normal_legacy.expected_role
+       or v_account.data_user_id is distinct from v_normal_legacy.expected_auth_user_id
+       or v_account.staff_id is distinct from v_normal_legacy.expected_account_staff_id
+       or v_normal_organization_type is distinct from v_normal_legacy.expected_organization_type
+       or public._staxis_structural_account_property_ids(v_normal_legacy.account_id)
+            is distinct from array[v_normal_legacy.property_id]::uuid[] then
+      raise exception '0426 normal-legacy canonical parity failed for account %', v_normal_legacy.account_id
+        using errcode = '55000';
+    end if;
+    select count(*)::integer into v_normal_bridge_count
+    from public.account_property_authorization_bridges bridge
+    where bridge.account_id = v_normal_legacy.account_id;
+    if v_normal_bridge_count <> 1
+       or not exists (
+         select 1 from public.account_property_authorization_bridges bridge
+         where bridge.id = v_normal_legacy.expected_bridge_id
+           and bridge.account_id = v_normal_legacy.account_id
+           and bridge.property_id = v_normal_legacy.property_id
+           and bridge.status = 'active'
+           and bridge.retired_at is null
+           and bridge.source_legacy_scope_hash = v_normal_legacy.expected_raw_hash
+           and bridge.cutover_relationship_id = v_normal_legacy.expected_relationship_id
+           and bridge.cutover_organization_id = v_normal_legacy.expected_organization_id
+       ) then
+      raise exception '0426 normal-legacy bridge parity failed for account %', v_normal_legacy.account_id
+        using errcode = '55000';
+    end if;
+    v_normal_evidence_after := public._staxis_stage_c_account_evidence(
+      v_normal_legacy.account_id, v_normal_legacy.property_id
+    );
+
+    insert into public.account_access_cutover_normal_legacy_capabilities (
+      txid, account_id, expected_raw_property_ids, expected_raw_scope_hash,
+      evidence_before_hash, aggregate_manifest_hash
+    ) values (
+      txid_current(), v_normal_legacy.account_id,
+      array[v_normal_legacy.property_id]::uuid[], v_normal_legacy.expected_raw_hash,
+      v_normal_before_hash, v_normal_manifest_hash
+    ) on conflict (txid, account_id) do nothing;
+    update public.accounts account
+       set property_access = '{}'::uuid[]
+     where account.id = v_normal_legacy.account_id
+       and account.property_access is not distinct from array[v_normal_legacy.property_id]::uuid[]
+       and public._staxis_stage_c_scope_hash(account.property_access) = v_normal_legacy.expected_raw_hash;
+    get diagnostics v_write_count = row_count;
+    if v_write_count <> 1 then
+      raise exception '0426 normal-legacy raw-array CAS failed for account %', v_normal_legacy.account_id
+        using errcode = '55000';
+    end if;
+
+    v_normal_evidence_after := public._staxis_stage_c_account_evidence(
+      v_normal_legacy.account_id, v_normal_legacy.property_id
+    );
+    update public.account_access_cutover_normal_legacy_manifests manifest
+       set status = 'converted', conversion_txid = null,
+           auth_user_id_snapshot = v_normal_legacy.expected_auth_user_id,
+           active_snapshot = v_account.active,
+           relationship_id_snapshot = v_normal_relationship_id,
+           organization_id_snapshot = v_normal_organization_id,
+           organization_type_snapshot = v_normal_organization_type,
+           evidence_after = v_normal_evidence_after,
+           evidence_after_hash = encode(pg_catalog.sha256(convert_to(v_normal_evidence_after::text, 'UTF8')), 'hex'),
+           observed_compatibility = v_normal_observed_compatibility,
+           observed_compatibility_hash = v_normal_observed_compatibility_hash,
+           canonical_ids_after = v_normal_canonical_after,
+           canonical_hash_after = v_normal_canonical_hash,
+           authority_version_after = v_state.authority_version,
+           bridge_id_after = v_normal_legacy.expected_bridge_id,
+           converted_at = clock_timestamp(),
+           details = manifest.details || jsonb_build_object(
+             'compatibilityAfter', v_normal_observed_compatibility,
+             'compatibilityAfterHash', v_normal_observed_compatibility_hash,
+             'accountStaffIdBefore', v_normal_legacy.expected_account_staff_id,
+             'accountStaffIdAfter', v_account.staff_id,
+             'evidenceAfter', v_normal_evidence_after,
+             'evidenceAfterHash', encode(pg_catalog.sha256(convert_to(v_normal_evidence_after::text, 'UTF8')), 'hex'),
+             'canonicalIdsAfter', v_normal_canonical_after,
+             'canonicalHashAfter', v_normal_canonical_hash,
+             'authorityVersionAfter', v_state.authority_version,
+             'bridgeIdAfter', v_normal_legacy.expected_bridge_id,
+             'propertyAccessCleared', true
+           )
+     where manifest.account_id = v_normal_legacy.account_id
+       and manifest.source_preflight_run_id = v_source_run_id;
+    delete from public.account_access_cutover_normal_legacy_capabilities capability
+    where capability.txid = txid_current()
+      and capability.account_id = v_normal_legacy.account_id;
+    v_cleared_accounts := array_append(v_cleared_accounts, v_normal_legacy.account_id);
+  end loop;
+
+  -- This is deliberately after the exact ten conversions and before fresh
+  -- preflight/final receipts.  An eleventh or otherwise unlisted raw row
+  -- aborts the transaction and rolls back all four repairs and ten bridges.
+  if exists (
+    select 1 from public.accounts account
+    where cardinality(coalesce(account.property_access, '{}'::uuid[])) > 0
+  ) then
+    raise exception '0426 normal-legacy conversion left an unlisted accounts.property_access row'
+      using errcode = '55000';
+  end if;
+
   if cardinality(v_cleared_accounts) = 0 then
     raise exception '0426 repair phase found no receipt-backed residue rows'
       using errcode = '55000';
@@ -2010,6 +3178,9 @@ begin
        'repairAuthorityChanged', false
      )
    where status.id is true;
+  create trigger trg_accounts_authorization_refresh
+    after insert or update of active, role on public.accounts
+    for each row execute function public._staxis_refresh_account_authorization_from_account();
   return v_fresh_run_id;
 end;
 $$;
@@ -7411,6 +8582,7 @@ declare
   v_repair_source_ids uuid[];
   v_evidence_before jsonb;
   v_evidence_after jsonb;
+  v_nonempty_legacy_count integer;
 begin
   select status.* into v_status
   from public.account_access_cutover_status status
@@ -7425,6 +8597,23 @@ begin
   v_run_id := v_status.final_preflight_run_id;
   if v_run_id is null then
     raise exception 'Stage C finalization has no preflight evidence';
+  end if;
+
+  -- The repair helper is the only bounded writer allowed to clear the legacy
+  -- array, and it clears only accounts covered by the exact consumed
+  -- dispositions.  A valid legacy row outside that allowlist is still an
+  -- operator decision, not an implicit finalization input.  Fail before any
+  -- canonical import, receipt, or status mutation instead of broad-clearing
+  -- it here.
+  select count(*)::integer
+    into v_nonempty_legacy_count
+  from public.accounts account
+  where cardinality(coalesce(account.property_access, '{}'::uuid[])) > 0;
+  if v_nonempty_legacy_count > 0 then
+    raise exception
+      '0426 finalization refuses % unapproved accounts.property_access rows; disposition-backed repair must clear every approved row first',
+      v_nonempty_legacy_count
+      using errcode = '55000';
   end if;
 
   -- Preserve each account's exact source list before the one-way clear.
@@ -7469,7 +8658,7 @@ begin
       if coalesce((v_import->>'ok')::boolean, false) is not true then
         raise exception 'Stage C could not import account %: %', v_account.id, v_import;
       end if;
-    else
+    elsif v_state.authority_mode <> 'normalized' then
       update public.account_authorization_state state
          set authority_mode = 'normalized',
              cutover_at = coalesce(state.cutover_at, clock_timestamp()),
@@ -7530,9 +8719,9 @@ begin
     after insert on public.properties
     for each row execute function public._staxis_ensure_canonical_property_topology();
 
-  update public.accounts account
-     set property_access = '{}'::uuid[]
-   where cardinality(coalesce(account.property_access, '{}'::uuid[])) > 0;
+  -- All legacy arrays were already cleared by the exact disposition-backed
+  -- repair helper, and the precondition above rejects any unapproved residue.
+  -- Never broad-clear accounts here.
 
   drop trigger if exists trg_accounts_final_legacy_property_access_fence
     on public.accounts;

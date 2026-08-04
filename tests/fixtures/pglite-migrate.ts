@@ -424,7 +424,7 @@ export function applyMigrationsToPgliteThrough(
  */
 export async function authorizeAccessStageCRelease(
   pg: PGlite,
-  options: { token?: string; nonce?: string } = {},
+  options: { token?: string; nonce?: string; conversionManifestHash?: string } = {},
 ): Promise<string> {
   const token = options.token ?? 'pglite-access-stage-c-release-token';
   const nonce = options.nonce ?? 'pglite-access-stage-c-fence-nonce';
@@ -432,6 +432,13 @@ export async function authorizeAccessStageCRelease(
     deploymentJob: 'pglite-access-stage-c-test',
     oldDeploymentStopped: true,
     legacyWriterFenceConfirmed: true,
+    ...(options.conversionManifestHash
+      ? {
+          normalLegacyManifestHash: options.conversionManifestHash,
+          normalLegacyManifestEncoding: 'canonical-utf8-concat-ws-newline',
+          normalLegacyManifestBinding: `normalLegacyManifestHash=${options.conversionManifestHash}`,
+        }
+      : {}),
     nonce,
   });
   const fenceHash = createHash('sha256').update(fenceEvidence).digest('hex');
