@@ -51,6 +51,8 @@ export type PgliteMigratedFixture = {
 const ACCESS_STAGE_C_RELEASE_GATE_MARKER = '-- @access-stage-c-release-gate';
 const ACCESS_B_LIVE_SHA = 'ec83bca6dab74a52dfb251d04be11d5c7427703f';
 const CURRENT_LIVE_DESCENDANT_SHA = '442fb98d632521ea33346d5c8a97014248a31fa0';
+export const ACCESS_STAGE_C_ACTIVE_RELEVANT_QUERIES_CONTRACT =
+  "pid <> pg_backend_pid() AND state <> 'idle' AND (query ILIKE '%property_access%' OR query ILIKE '%account_access%' OR query ILIKE '%account_lifecycle%' OR query ILIKE '%account_invites%' OR query ILIKE '%join_requests%' OR query ILIKE '%organization_access%' OR query ILIKE '%organization_invitations%')";
 
 // Patterns that mark a migration as Class C (skip — needs stubs we don't
 // have). These are conservative — false positives mean we skip migrations
@@ -424,10 +426,20 @@ export function applyMigrationsToPgliteThrough(
  */
 export async function authorizeAccessStageCRelease(
   pg: PGlite,
-  options: { token?: string; nonce?: string; conversionManifestHash?: string } = {},
+  options: {
+    token?: string;
+    nonce?: string;
+    conversionManifestHash?: string;
+    activeRelevantQueriesExcludingCurrent?: number;
+    activeRelevantQueriesContract?: string;
+  } = {},
 ): Promise<string> {
   const token = options.token ?? 'pglite-access-stage-c-release-token';
   const nonce = options.nonce ?? 'pglite-access-stage-c-fence-nonce';
+  const activeRelevantQueriesExcludingCurrent =
+    options.activeRelevantQueriesExcludingCurrent ?? 0;
+  const activeRelevantQueriesContract =
+    options.activeRelevantQueriesContract ?? ACCESS_STAGE_C_ACTIVE_RELEVANT_QUERIES_CONTRACT;
   const fenceEvidence = JSON.stringify({
     deploymentJob: 'pglite-access-stage-c-test',
     oldDeploymentStopped: true,
@@ -437,6 +449,10 @@ export async function authorizeAccessStageCRelease(
           normalLegacyManifestHash: options.conversionManifestHash,
           normalLegacyManifestEncoding: 'canonical-utf8-concat-ws-newline',
           normalLegacyManifestBinding: `normalLegacyManifestHash=${options.conversionManifestHash}`,
+          activeRelevantQueriesExcludingCurrent,
+          activeRelevantQueriesContract,
+          activeRelevantQueriesBinding:
+            `activeRelevantQueriesExcludingCurrent=${activeRelevantQueriesExcludingCurrent}|activeRelevantQueriesContract=${activeRelevantQueriesContract}`,
         }
       : {}),
     nonce,

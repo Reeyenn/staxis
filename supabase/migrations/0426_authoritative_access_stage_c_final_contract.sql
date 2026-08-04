@@ -707,6 +707,51 @@ $$;
 revoke all on function public._staxis_stage_c_scope_hash(uuid[])
   from public, anon, authenticated, service_role;
 
+-- Only the service-side cutover transaction may inspect live activity.  The
+-- allowlist deliberately covers the logical access/lifecycle producers while
+-- excluding the current session and unrelated infrastructure replication.
+create or replace function public._staxis_stage_c_active_relevant_queries_contract()
+returns text
+language sql
+immutable
+security definer
+set search_path = pg_catalog, public
+as $$
+  select 'pid <> pg_backend_pid() AND state <> ''idle'' AND (query ILIKE ''%property_access%'' OR query ILIKE ''%account_access%'' OR query ILIKE ''%account_lifecycle%'' OR query ILIKE ''%account_invites%'' OR query ILIKE ''%join_requests%'' OR query ILIKE ''%organization_access%'' OR query ILIKE ''%organization_invitations%'')'::text;
+$$;
+
+revoke all on function public._staxis_stage_c_active_relevant_queries_contract()
+  from public, anon, authenticated, service_role;
+grant execute on function public._staxis_stage_c_active_relevant_queries_contract()
+  to service_role;
+
+create or replace function public._staxis_stage_c_active_relevant_queries_excluding_current()
+returns bigint
+language sql
+stable
+security definer
+set search_path = pg_catalog, public
+as $$
+  select count(*)::bigint
+  from pg_catalog.pg_stat_activity activity
+  where activity.pid <> pg_catalog.pg_backend_pid()
+    and activity.state <> 'idle'
+    and (
+      activity.query ilike '%property_access%'
+      or activity.query ilike '%account_access%'
+      or activity.query ilike '%account_lifecycle%'
+      or activity.query ilike '%account_invites%'
+      or activity.query ilike '%join_requests%'
+      or activity.query ilike '%organization_access%'
+      or activity.query ilike '%organization_invitations%'
+    );
+$$;
+
+revoke all on function public._staxis_stage_c_active_relevant_queries_excluding_current()
+  from public, anon, authenticated, service_role;
+grant execute on function public._staxis_stage_c_active_relevant_queries_excluding_current()
+  to service_role;
+
 -- Capture the governing identity/topology and every canonical scope relation
 -- at the repair boundary.  The JSONB is intentionally self-contained so the
 -- receipt remains useful after account/property cleanup.
@@ -919,8 +964,7 @@ begin
   ) or exists (
     select 1
     from public.account_invites invitation
-    where invitation.acceptance_claim_token is not null
-      and invitation.accepted_at is null
+    where invitation.accepted_at is null
   ) or exists (
     select 1 from public.join_requests request_row
     where request_row.status = 'pending'
@@ -932,7 +976,7 @@ begin
     where invitation.status = 'pending'
   ) or exists (
     select 1 from public.account_access_cutover_legacy_write_events
-  ) then
+  ) or public._staxis_stage_c_active_relevant_queries_excluding_current() <> 0 then
     return false;
   end if;
 
@@ -1327,8 +1371,7 @@ begin
     where intent.status in ('pending', 'processing')
   ) or exists (
     select 1 from public.account_invites invitation
-    where invitation.acceptance_claim_token is not null
-      and invitation.accepted_at is null
+    where invitation.accepted_at is null
   ) or exists (
     select 1 from public.join_requests request_row
     where request_row.status = 'pending'
@@ -1338,7 +1381,7 @@ begin
   ) or exists (
     select 1 from public.organization_invitations invitation
     where invitation.status = 'pending'
-  ) then
+  ) or public._staxis_stage_c_active_relevant_queries_excluding_current() <> 0 then
     raise exception '0426 repair disposition requires all lifecycle and access queues to be drained'
       using errcode = '55000';
   end if;
@@ -1750,11 +1793,11 @@ declare
   v_normal_expected_account_staff_id uuid;
   v_normal_expected_organization_type text;
   v_import jsonb;
-  v_normal_manifest_hash constant text := '322975861288c85da8191dd08f7d1805ccd7e7086375b04660b49f9dd77a34d9';
+  v_normal_manifest_hash constant text := '275e5e103004de6f31308b8888b231354cb486495c7872807495679f6bf8b00f';
   v_normal_global_manifest constant text :=
-    'source=85981f5e-a387-4af3-ae10-b9bc1e1e9567|globalGates=legacyWriteEvents:0,lifecyclePending:0,lifecycleProcessing:0,inviteClaimedUnaccepted:0,inviteUnaccepted:0,organizationAccessPending:0,organizationInvitationsPending:0,joinPending:0';
+    'source=85981f5e-a387-4af3-ae10-b9bc1e1e9567|globalGates=legacyWriteEvents:0,lifecyclePending:0,lifecycleProcessing:0,inviteClaimedUnaccepted:0,inviteUnaccepted:0,organizationAccessPending:0,organizationInvitationsPending:0,joinPending:0|activeRelevantQueriesExcludingCurrent:0|activeRelevantQueriesContract=pid <> pg_backend_pid() AND state <> ''idle'' AND (query ILIKE ''%property_access%'' OR query ILIKE ''%account_access%'' OR query ILIKE ''%account_lifecycle%'' OR query ILIKE ''%account_invites%'' OR query ILIKE ''%join_requests%'' OR query ILIKE ''%organization_access%'' OR query ILIKE ''%organization_invitations%'')';
   v_normal_manifest_serialized constant text := concat_ws(E'\n',
-    'source=85981f5e-a387-4af3-ae10-b9bc1e1e9567|globalGates=legacyWriteEvents:0,lifecyclePending:0,lifecycleProcessing:0,inviteClaimedUnaccepted:0,inviteUnaccepted:0,organizationAccessPending:0,organizationInvitationsPending:0,joinPending:0',
+    'source=85981f5e-a387-4af3-ae10-b9bc1e1e9567|globalGates=legacyWriteEvents:0,lifecyclePending:0,lifecycleProcessing:0,inviteClaimedUnaccepted:0,inviteUnaccepted:0,organizationAccessPending:0,organizationInvitationsPending:0,joinPending:0|activeRelevantQueriesExcludingCurrent:0|activeRelevantQueriesContract=pid <> pg_backend_pid() AND state <> ''idle'' AND (query ILIKE ''%property_access%'' OR query ILIKE ''%account_access%'' OR query ILIKE ''%account_lifecycle%'' OR query ILIKE ''%account_invites%'' OR query ILIKE ''%join_requests%'' OR query ILIKE ''%organization_access%'' OR query ILIKE ''%organization_invitations%'')',
     'account=0237e48f-5fe2-487c-8ae8-ab61df14da88|property=b19f5a42-3bea-4232-8c28-00ce9a069fd2|role=owner|authority=legacy/1|rawHash=840d7dba15ed1c65814527ea23d789a45c486b676c1950ff462872ae8240e907|authUser=64713578-6211-4362-83f1-34f443c6433f|accountStaff=|primaryRelationship=17f4b3eb-94fb-4e23-84ba-32398f243332|primaryOrganization=2ae10b42-d73f-4d31-a537-2f88cc05604e|organizationType=single_hotel|bridge=a40a7aed-616a-4b1d-ba82-8984c930b2f9:active:840d7dba15ed1c65814527ea23d789a45c486b676c1950ff462872ae8240e907:17f4b3eb-94fb-4e23-84ba-32398f243332:2ae10b42-d73f-4d31-a537-2f88cc05604e:retired=false|memberships=58c14e77-46a7-46ac-aa81-73f134b7a343:2ae10b42-d73f-4d31-a537-2f88cc05604e:active:ended=false:scope=:role=:covered=|grants=0e74c68f-8a0e-4cac-b638-e35c2c7578ad:2ae10b42-d73f-4d31-a537-2f88cc05604e:organization_owner:organization:property=:relationship=:active:legacy_backfill:version=1|staffLinks=|canonicalBefore=:canonicalHash=e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855',
     'account=378b9d50-6559-4471-843e-6a9fd711eee1|property=b93142b5-0964-42f1-9ada-f3c50c8765a9|role=housekeeping|authority=legacy/1|rawHash=a095af95464a3339afbe9a2094823c8abdaf521529ec98ca46514e6c8d8bf368|authUser=3167d440-3bcf-406f-ab35-1832be043c3f|accountStaff=eb065978-4dd6-4662-af57-2e939f84a2cb|primaryRelationship=7642f7da-2939-4b8d-add5-391147b4b1ea|primaryOrganization=95a093a6-fe52-4826-947a-5c4706cae010|organizationType=single_hotel|bridge=1c1ceaaf-d309-48ae-9cc1-004ca269759a:active:a095af95464a3339afbe9a2094823c8abdaf521529ec98ca46514e6c8d8bf368:7642f7da-2939-4b8d-add5-391147b4b1ea:95a093a6-fe52-4826-947a-5c4706cae010:retired=false|memberships=3107a4af-c2be-49ff-93cf-fcd45a9f57aa:95a093a6-fe52-4826-947a-5c4706cae010:active:ended=false:scope=:role=:covered=|grants=7a147214-bb54-42a7-b63a-9787bc794390:95a093a6-fe52-4826-947a-5c4706cae010:contributor:property:b93142b5-0964-42f1-9ada-f3c50c8765a9:relationship=7642f7da-2939-4b8d-add5-391147b4b1ea:active:legacy_backfill:version=1|staffLinks=378b9d50-6559-4471-843e-6a9fd711eee1:b93142b5-0964-42f1-9ada-f3c50c8765a9:eb065978-4dd6-4662-af57-2e939f84a2cb:active:legacy_backfill|canonicalBefore=:canonicalHash=e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855',
     'account=57132438-477a-418c-ae05-fef93e1dd64b|property=c7ec4be3-ba00-4ff0-bc69-c7e09d8e4f8f|role=housekeeping|authority=legacy/1|rawHash=d8b2f89331c1ba838aa4e29bdf46674e274baad1aa0d5f5641fdacd54e189d13|authUser=8b615141-d0fd-4cb2-8c23-00a3714af5bd|accountStaff=|primaryRelationship=ae8c748e-e203-45b1-a4b4-9b18f2295a4f|primaryOrganization=11110000-0000-4000-8000-0000000000a1|organizationType=management_company|bridge=13fa0123-ec94-45e1-aa11-c4acb2d91734:active:d8b2f89331c1ba838aa4e29bdf46674e274baad1aa0d5f5641fdacd54e189d13:ae8c748e-e203-45b1-a4b4-9b18f2295a4f:11110000-0000-4000-8000-0000000000a1:retired=false|memberships=698598fa-e213-475e-bc27-5e9bd39b1864:d4a443ce-959e-4d2e-8c26-7d103165c6ba:active:ended=false:scope=:role=:covered=|grants=e145f9fa-0b6e-4628-9b0c-9e8de1984594:d4a443ce-959e-4d2e-8c26-7d103165c6ba:contributor:property:c7ec4be3-ba00-4ff0-bc69-c7e09d8e4f8f:relationship=63b96d8c-3534-407b-b623-98bf1756f007:active:legacy_backfill:version=1|staffLinks=|canonicalBefore=:canonicalHash=e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855',
@@ -1849,8 +1892,7 @@ begin
     where intent.status in ('pending', 'processing')
   ) or exists (
     select 1 from public.account_invites invitation
-    where invitation.acceptance_claim_token is not null
-      and invitation.accepted_at is null
+    where invitation.accepted_at is null
   ) or exists (
     select 1 from public.join_requests request_row
     where request_row.status = 'pending'
@@ -1860,7 +1902,7 @@ begin
   ) or exists (
     select 1 from public.organization_invitations invitation
     where invitation.status = 'pending'
-  ) then
+  ) or public._staxis_stage_c_active_relevant_queries_excluding_current() <> 0 then
     raise exception '0426 repair phase found an in-flight lifecycle or access operation'
       using errcode = '55000';
   end if;
@@ -2216,6 +2258,14 @@ begin
       raise exception '0426 normal-legacy conversion requires the exact manifest hash in release fence evidence'
         using errcode = '55000';
     end if;
+    if position(
+         'activeRelevantQueriesExcludingCurrent=0|activeRelevantQueriesContract='
+           || public._staxis_stage_c_active_relevant_queries_contract()
+         in coalesce(v_release.old_deployment_fence_evidence, '')
+       ) = 0 then
+      raise exception '0426 normal-legacy conversion requires the exact active relevant query count and contract in release fence evidence'
+        using errcode = '55000';
+    end if;
     select count(*)::integer
       into v_normal_missing_count
     from public.accounts account
@@ -2404,6 +2454,45 @@ begin
         raise exception '0426 normal-legacy normalized replay organization drift for account %', v_normal_legacy.account_id
           using errcode = '55000';
       end if;
+      -- Lock the exact pre-existing bridge and legacy_backfill compatibility
+      -- facts before comparing them.  The outer Stage C advisory lock fences
+      -- producers, while these row locks make the replay evidence itself
+      -- transactionally stable.
+      perform 1
+      from public.account_property_authorization_bridges bridge
+      where bridge.id = v_normal_legacy.expected_bridge_id
+        and bridge.account_id = v_normal_legacy.account_id
+        and bridge.property_id = v_normal_legacy.property_id
+        and bridge.status = 'active'
+        and bridge.retired_at is null
+        and bridge.source_legacy_scope_hash = v_normal_legacy.expected_raw_hash
+        and bridge.cutover_relationship_id = v_normal_legacy.expected_relationship_id
+        and bridge.cutover_organization_id = v_normal_legacy.expected_organization_id
+      for update;
+      if not found then
+        raise exception '0426 normal-legacy normalized replay bridge drift for account %', v_normal_legacy.account_id
+          using errcode = '55000';
+      end if;
+      perform 1
+      from public.organization_memberships membership
+      where membership.account_id = v_normal_legacy.account_id
+        and membership.id = any(v_normal_legacy.expected_membership_ids)
+      for update;
+      perform 1
+      from public.organization_access_grants grant_row
+      join public.organization_memberships membership
+        on membership.id = grant_row.membership_id
+       and membership.account_id = v_normal_legacy.account_id
+      where grant_row.id = any(v_normal_legacy.expected_grant_ids)
+        and grant_row.source = 'legacy_backfill'
+      for update;
+      perform 1
+      from public.account_property_staff_links staff_link
+      where staff_link.account_id = v_normal_legacy.account_id
+        and staff_link.staff_id = any(v_normal_legacy.expected_staff_ids)
+        and staff_link.is_active
+        and staff_link.source = 'legacy_backfill'
+      for update;
       select count(*)::integer into v_normal_bridge_count
       from public.account_property_authorization_bridges bridge
       where bridge.account_id = v_normal_legacy.account_id;
@@ -3064,6 +3153,10 @@ begin
     raise exception '0426 repair phase fresh preflight remained dirty: %', v_fresh_preflight
       using errcode = '55000';
   end if;
+  if public._staxis_stage_c_active_relevant_queries_excluding_current() <> 0 then
+    raise exception '0426 repair phase fresh preflight found an active relevant query'
+      using errcode = '55000';
+  end if;
   v_fresh_run_id := (v_fresh_preflight->>'runId')::uuid;
 
   select count(*)::bigint into v_write_count
@@ -3077,8 +3170,7 @@ begin
     where intent.status in ('pending', 'processing')
   ) or exists (
     select 1 from public.account_invites invitation
-    where invitation.acceptance_claim_token is not null
-      and invitation.accepted_at is null
+    where invitation.accepted_at is null
   ) or exists (
     select 1 from public.join_requests request_row
     where request_row.status = 'pending'
@@ -3088,7 +3180,7 @@ begin
   ) or exists (
     select 1 from public.organization_invitations invitation
     where invitation.status = 'pending'
-  ) then
+  ) or public._staxis_stage_c_active_relevant_queries_excluding_current() <> 0 then
     raise exception '0426 repair phase found a new in-flight operation after clear'
       using errcode = '55000';
   end if;
@@ -3475,6 +3567,7 @@ declare
   v_expected_ids uuid[];
   v_stage_a_invariant jsonb;
   v_stage_a_invariant_issue_count integer := 0;
+  v_active_relevant_queries bigint := 0;
 begin
   -- Reports may coexist with ordinary shared producers, but never overlap
   -- the exclusive finalization window.
@@ -3557,6 +3650,19 @@ begin
   ) values (
     v_run_id, 'running', '0426-stage-c', jsonb_build_object('stage', 'C')
   );
+
+  v_active_relevant_queries := public._staxis_stage_c_active_relevant_queries_excluding_current();
+  if v_active_relevant_queries <> 0 then
+    insert into public.account_access_cutover_preflight_issues (
+      run_id, issue_code, details
+    ) values (
+      v_run_id, 'active_relevant_queries_in_flight',
+      jsonb_build_object(
+        'count', v_active_relevant_queries,
+        'contract', public._staxis_stage_c_active_relevant_queries_contract()
+      )
+    );
+  end if;
 
   if not exists (
     select 1 from public.applied_migrations where version = '0424'
@@ -3847,8 +3953,7 @@ begin
 
   for v_invite in
     select invitation.* from public.account_invites invitation
-    where invitation.acceptance_claim_token is not null
-      and invitation.accepted_at is null
+    where invitation.accepted_at is null
     order by invitation.id
   loop
     insert into public.account_access_cutover_preflight_issues (

@@ -8,6 +8,7 @@ import { after, before, describe, test } from 'node:test';
 import { PGlite } from '@electric-sql/pglite';
 
 import {
+  ACCESS_STAGE_C_ACTIVE_RELEVANT_QUERIES_CONTRACT,
   applyMigrationsToPgliteWithHook,
   authorizeAccessStageCRelease,
 } from '../../../tests/fixtures/pglite-migrate';
@@ -37,7 +38,7 @@ const ACCESS_B_LIVE_SHA = 'ec83bca6dab74a52dfb251d04be11d5c7427703f';
 const CURRENT_LIVE_DESCENDANT_SHA = '442fb98d632521ea33346d5c8a97014248a31fa0';
 const APPROVED_SOURCE_RUN_ID = '85981f5e-a387-4af3-ae10-b9bc1e1e9567';
 const NORMAL_LEGACY_MANIFEST_HASH =
-  '322975861288c85da8191dd08f7d1805ccd7e7086375b04660b49f9dd77a34d9';
+  '275e5e103004de6f31308b8888b231354cb486495c7872807495679f6bf8b00f';
 const APPROVED_SOURCE_ISSUES = {
   adminAccess: '0e04070e-deed-41fd-bc9d-5754f86da796',
   adminAccount: 'f5f0e14d-6990-4b71-92e5-d3eeefa4c271',
@@ -542,6 +543,7 @@ const DIRTY_JOIN_REQUEST = 'c4266000-0000-4000-8000-000000000001';
 const DIRTY_ACCESS_REQUEST = 'c4266000-0000-4000-8000-000000000002';
 const DIRTY_INVITATION = 'c4266000-0000-4000-8000-000000000003';
 const POST_CHECK_JOIN_REQUEST = 'c4266000-0000-4000-8000-000000000004';
+const ORDINARY_UNACCEPTED_INVITE = 'c4266000-0000-4000-8000-000000000005';
 
 interface JsonRow {
   value: Record<string, unknown>;
@@ -3487,13 +3489,28 @@ describe('Access Stage C final contract — real migration boundary', () => {
              from public.account_access_cutover_repair_receipts`))[0].count),
         4,
       );
+      assert.equal(
+        Number((await rows<{ count: number }>(migrated.pg,
+          `select public._staxis_stage_c_active_relevant_queries_excluding_current()::integer as count`))[0].count),
+        0,
+      );
+      const releaseEvidence = JSON.parse((await rows<{ old_deployment_fence_evidence: string }>(
+        migrated.pg,
+        `select old_deployment_fence_evidence
+           from public.account_access_cutover_release_receipts`,
+      ))[0].old_deployment_fence_evidence) as Record<string, unknown>;
+      assert.equal(releaseEvidence.activeRelevantQueriesExcludingCurrent, 0);
+      assert.equal(releaseEvidence.activeRelevantQueriesContract, ACCESS_STAGE_C_ACTIVE_RELEVANT_QUERIES_CONTRACT);
+      assert.equal(
+        releaseEvidence.activeRelevantQueriesBinding,
+        `activeRelevantQueriesExcludingCurrent=0|activeRelevantQueriesContract=${ACCESS_STAGE_C_ACTIVE_RELEVANT_QUERIES_CONTRACT}`,
+      );
     } finally {
       await migrated.pg.close();
     }
   });
 
-  test('replays one preconverted normal-legacy row without reimport, version bump, or bridge duplication', async () => {
-    const replayRow = UNLISTED_LEGACY_ROWS[0];
+  test('replays all ten preconverted normal-legacy rows without reimport, version bump, or duplication', async () => {
     const migrated = await applyMigrationsToPgliteWithHook(
       async ({ pg: hookPg, file }) => {
         if (file === MIGRATION) await seedApprovedProductionSourceFixture(hookPg);
@@ -3502,7 +3519,9 @@ describe('Access Stage C final contract — real migration boundary', () => {
         afterAccessStageCPreparation: async ({ pg: hookPg, file }) => {
           if (file !== MIGRATION) return;
           await seedUnlistedLegacyRowsFixture(hookPg);
-          await seedPreconvertedNormalLegacyReplayRow(hookPg, replayRow);
+          for (const replayRow of UNLISTED_LEGACY_ROWS) {
+            await seedPreconvertedNormalLegacyReplayRow(hookPg, replayRow);
+          }
           await recordApprovedSourceDispositions(hookPg);
           await authorizeAccessStageCRelease(hookPg, {
             conversionManifestHash: NORMAL_LEGACY_MANIFEST_HASH,
@@ -3516,49 +3535,182 @@ describe('Access Stage C final contract — real migration boundary', () => {
         true,
         JSON.stringify(migrated.report.failedAtRuntime.filter((entry) => entry.file === MIGRATION)),
       );
-      const replayState = (await rows<{
+      const replayStates = await rows<{
+        account_id: string;
         authority_mode: string;
         authority_version: number;
         property_access: string[];
       }>(
         migrated.pg,
         `select state.authority_mode,state.authority_version,account.property_access
+                ,state.account_id
            from public.account_authorization_state state
            join public.accounts account on account.id=state.account_id
-          where state.account_id=$1`,
-        [replayRow.accountId],
-      ))[0];
-      assert.deepEqual(replayState, {
-        authority_mode: 'normalized',
-        authority_version: replayRow.authorityVersion + 1,
-        property_access: [],
-      });
+          where state.account_id = any($1::uuid[])
+          order by state.account_id`,
+        [UNLISTED_LEGACY_ROWS.map((row) => row.accountId)],
+      );
+      assert.equal(replayStates.length, UNLISTED_LEGACY_ROWS.length);
+      const replayStateByAccount = new Map(replayStates.map((state) => [state.account_id, state]));
+      const bridgeCounts = await rows<{ account_id: string; count: number }>(
+        migrated.pg,
+        `select account_id,count(*)::integer as count
+           from public.account_property_authorization_bridges
+          where account_id = any($1::uuid[])
+          group by account_id`,
+        [UNLISTED_LEGACY_ROWS.map((row) => row.accountId)],
+      );
+      assert.equal(bridgeCounts.length, UNLISTED_LEGACY_ROWS.length);
+      assert.ok(bridgeCounts.every((row) => Number(row.count) === 1));
       assert.equal(
         Number((await rows<{ count: number }>(
           migrated.pg,
           `select count(*)::integer as count
+             from public.account_access_cutover_normal_legacy_manifests
+            where status='converted'`,
+        ))[0].count),
+        UNLISTED_LEGACY_ROWS.length,
+      );
+      assert.equal(
+        Number((await rows<{ count: number }>(
+          migrated.pg,
+          `select count(*)::integer as count
+             from public.account_access_cutover_repair_receipts
+            where account_id = any($1::uuid[])`,
+          [UNLISTED_LEGACY_ROWS.map((row) => row.accountId)],
+        ))[0].count),
+        0,
+      );
+      assert.equal(
+        Number((await rows<{ count: number }>(
+          migrated.pg,
+          `select count(*)::integer as count
+             from public.account_access_cutover_repair_receipts`,
+        ))[0].count),
+        4,
+      );
+
+      for (const replayRow of UNLISTED_LEGACY_ROWS) {
+        const fact = NORMAL_LEGACY_FACTS[replayRow.accountId];
+        const replayState = replayStateByAccount.get(replayRow.accountId);
+        assert.ok(replayState, `missing replay state for ${replayRow.accountId}`);
+        assert.equal(replayState.authority_mode, 'normalized');
+        assert.equal(replayState.authority_version, replayRow.authorityVersion + 1);
+        assert.deepEqual(replayState.property_access, []);
+        assert.deepEqual(await propertyIds(migrated.pg, replayRow.accountId), [replayRow.propertyId]);
+
+        const bridge = (await rows<{
+          id: string;
+          status: string;
+          source_legacy_scope_hash: string;
+          cutover_relationship_id: string;
+          cutover_organization_id: string;
+          retired_at: string | null;
+        }>(
+          migrated.pg,
+          `select id,status,source_legacy_scope_hash,cutover_relationship_id,
+                  cutover_organization_id,retired_at
              from public.account_property_authorization_bridges
             where account_id=$1`,
           [replayRow.accountId],
-        ))[0].count),
-        1,
-      );
-      const manifest = (await rows<{
-        status: string;
-        authority_version_after: number;
-        evidence_after_hash: string;
-        observed_compatibility_hash: string;
-      }>(
-        migrated.pg,
-        `select status,authority_version_after,evidence_after_hash,observed_compatibility_hash
-           from public.account_access_cutover_normal_legacy_manifests
-          where account_id=$1`,
-        [replayRow.accountId],
-      ))[0];
-      assert.equal(manifest.status, 'converted');
-      assert.equal(manifest.authority_version_after, replayRow.authorityVersion + 1);
-      assert.match(manifest.evidence_after_hash, /^[0-9a-f]{64}$/);
-      assert.match(manifest.observed_compatibility_hash, /^[0-9a-f]{64}$/);
+        ))[0];
+        assert.deepEqual(bridge, {
+          id: fact.bridgeId,
+          status: 'active',
+          source_legacy_scope_hash: rawHashesForTest(replayRow.propertyId),
+          cutover_relationship_id: fact.relationshipId,
+          cutover_organization_id: fact.organizationId,
+          retired_at: null,
+        });
+
+        const memberships = await rows<{
+          id: string;
+          organization_id: string;
+          status: string;
+          ended_at: string | null;
+        }>(
+          migrated.pg,
+          `select id,organization_id,status,ended_at
+             from public.organization_memberships
+            where account_id=$1 order by id`,
+          [replayRow.accountId],
+        );
+        assert.deepEqual(memberships.map((membership) => membership.id), fact.membershipIds);
+        assert.equal(memberships.filter((membership) => membership.status === 'active').length, 1);
+        const revokedMembership = fact.revokedMembership;
+        if (revokedMembership) {
+          const revoked = memberships.find((membership) => membership.id === revokedMembership.id);
+          assert.deepEqual(revoked, {
+            id: revokedMembership.id,
+            organization_id: revokedMembership.organizationId,
+            status: 'revoked',
+            ended_at: revoked?.ended_at,
+          });
+          assert.ok(revoked?.ended_at);
+        }
+
+        const grants = await rows<{
+          id: string;
+          organization_id: string;
+          membership_id: string;
+          access_profile: string;
+          scope_type: string;
+          property_relationship_id: string | null;
+          property_id: string | null;
+          status: string;
+          source: string;
+          version: number;
+        }>(
+          migrated.pg,
+          `select grant_row.id,grant_row.organization_id,grant_row.membership_id,
+                  grant_row.access_profile,grant_row.scope_type,
+                  grant_row.property_relationship_id,grant_row.property_id,
+                  grant_row.status,grant_row.source,grant_row.version
+             from public.organization_access_grants grant_row
+             join public.organization_memberships membership on membership.id=grant_row.membership_id
+            where membership.account_id=$1 and grant_row.status='active'
+            order by grant_row.id`,
+          [replayRow.accountId],
+        );
+        assert.equal(grants.length, fact.grantIds.length);
+        assert.equal(grants[0]?.id, fact.grantIds[0]);
+        assert.deepEqual(grants[0], {
+          id: fact.grantIds[0],
+          organization_id: fact.compatibilityOrganizationId,
+          membership_id: fact.membershipIds.at(-1),
+          access_profile: fact.grantProfile,
+          scope_type: fact.grantScopeType,
+          property_relationship_id: fact.grantRelationshipId,
+          property_id: fact.grantPropertyId,
+          status: 'active',
+          source: 'legacy_backfill',
+          version: 1,
+        });
+
+        const staffLinks = await rows<{
+          staff_id: string;
+          property_id: string;
+          is_active: boolean;
+          source: string;
+        }>(
+          migrated.pg,
+          `select staff_id,property_id,is_active,source
+             from public.account_property_staff_links
+            where account_id=$1 and is_active order by staff_id`,
+          [replayRow.accountId],
+        );
+        assert.deepEqual(staffLinks.map((link) => link.staff_id), fact.staffIds);
+        assert.ok(staffLinks.every((link) =>
+          link.property_id === replayRow.propertyId && link.is_active && link.source === 'legacy_backfill'));
+        assert.equal(
+          (await rows<{ staff_id: string | null }>(
+            migrated.pg,
+            `select staff_id from public.accounts where id=$1`,
+            [replayRow.accountId],
+          ))[0].staff_id,
+          fact.accountStaffId,
+        );
+      }
     } finally {
       await migrated.pg.close();
     }
@@ -3877,6 +4029,59 @@ describe('Access Stage C final contract — real migration boundary', () => {
       assert.match(
         migrated.report.failedAtRuntime.find((entry) => entry.file === MIGRATION)?.error ?? '',
         /normal-legacy conversion requires the exact manifest hash/i,
+      );
+      assert.equal(
+        Number((await rows<{ count: number }>(
+          migrated.pg,
+          `select count(*)::integer as count from public.accounts
+            where id = any($1::uuid[]) and cardinality(property_access)>0`,
+          [UNLISTED_LEGACY_ROWS.map((row) => row.accountId)],
+        ))[0].count),
+        10,
+      );
+      assert.equal(
+        Number((await rows<{ count: number }>(
+          migrated.pg,
+          `select count(*)::integer as count
+             from public.account_access_cutover_normal_legacy_manifests`,
+        ))[0].count),
+        0,
+      );
+      assert.equal(
+        Number((await rows<{ count: number }>(
+          migrated.pg,
+          `select count(*)::integer as count
+             from public.account_access_cutover_repair_receipts`,
+        ))[0].count),
+        0,
+      );
+    } finally {
+      await migrated.pg.close();
+    }
+  });
+
+  test('fails closed when active relevant query evidence binding drifts', async () => {
+    const migrated = await applyMigrationsToPgliteWithHook(
+      async ({ pg: hookPg, file }) => {
+        if (file === MIGRATION) await seedApprovedProductionSourceFixture(hookPg);
+      },
+      {
+        afterAccessStageCPreparation: async ({ pg: hookPg, file }) => {
+          if (file !== MIGRATION) return;
+          await seedUnlistedLegacyRowsFixture(hookPg);
+          await recordApprovedSourceDispositions(hookPg);
+          await authorizeAccessStageCRelease(hookPg, {
+            conversionManifestHash: NORMAL_LEGACY_MANIFEST_HASH,
+            activeRelevantQueriesExcludingCurrent: 1,
+          });
+        },
+      },
+    );
+    try {
+      assert.equal(migrated.report.applied.includes(MIGRATION), false);
+      assert.match(
+        migrated.report.failedAtRuntime.find((entry) => entry.file === MIGRATION)?.error ?? '',
+        /exact active relevant query count and contract in release fence evidence/i,
       );
       assert.equal(
         Number((await rows<{ count: number }>(
@@ -5536,6 +5741,86 @@ describe('Access Stage C final contract — real migration boundary', () => {
         `select public.staxis_access_stage_c_recovery_evidence(null) as value`,
       );
       assert.equal((evidence as unknown as unknown[]).length, 1);
+    } finally {
+      await migrated.pg.close();
+    }
+  });
+
+  test('fails closed for an ordinary unclaimed unaccepted invite without changing raw authority', async () => {
+    const migrated = await applyMigrationsToPgliteWithHook(async ({ pg: hookPg, file }) => {
+      if (file !== MIGRATION) return;
+      await seedStageCFixture(hookPg);
+      await hookPg.query(
+        `update public.accounts set property_access=array[$2::uuid] where id=$1`,
+        [ACCOUNT_HANK, PID_L1],
+      );
+      await hookPg.query(`delete from public.account_authorization_state where account_id=$1`, [ACCOUNT_HANK]);
+      await hookPg.query(
+        `insert into public.account_authorization_state(
+           account_id,authority_mode,authority_version,legacy_scope_hash,
+           normalized_scope_hash,cutover_at,cutover_reason
+         ) values ($1,'legacy',1,encode(sha256(convert_to($2::text,'UTF8')),'hex'),
+                   encode(sha256(convert_to('', 'UTF8')),'hex'),null,
+                   'ordinary unaccepted invite raw-array preservation fixture')`,
+        [ACCOUNT_HANK, PID_L1],
+      );
+      await hookPg.query(`delete from public.account_access_cutover_legacy_write_events`);
+      await hookPg.query(
+        `insert into public.account_invites(
+           id,hotel_id,email,role,token_hash,expires_at,invited_by,target_staff_id
+         ) values ($1,$2,'ordinary-unaccepted@example.test','housekeeping',$3,
+                   now()+interval '1 day',$4,null)`,
+        [ORDINARY_UNACCEPTED_INVITE, PID_L1, sha256('ordinary-unaccepted'), ACCOUNT_WANDA],
+      );
+    }, { authorizeAccessStageCRelease: false });
+
+    try {
+      assert.equal(migrated.report.applied.includes(MIGRATION), false);
+      assert.match(
+        migrated.report.failedAtRuntime.find((entry) => entry.file === MIGRATION)?.error ?? '',
+        /0426 Stage C preflight rejected finalization/i,
+      );
+      assert.deepEqual(
+        (await rows<{ property_access: string[]; authority_mode: string; authority_version: number }>(
+          migrated.pg,
+          `select account.property_access,state.authority_mode,state.authority_version
+             from public.accounts account
+             join public.account_authorization_state state on state.account_id=account.id
+            where account.id=$1`,
+          [ACCOUNT_HANK],
+        ))[0],
+        { property_access: [PID_L1], authority_mode: 'legacy', authority_version: 1 },
+      );
+      assert.deepEqual(
+        (await rows<{ accepted_at: string | null; acceptance_claim_token: string | null }>(
+          migrated.pg,
+          `select accepted_at,acceptance_claim_token
+             from public.account_invites where id=$1`,
+          [ORDINARY_UNACCEPTED_INVITE],
+        ))[0],
+        { accepted_at: null, acceptance_claim_token: null },
+      );
+      assert.ok(
+        (await rows<{ issue_code: string }>(
+          migrated.pg,
+          `select issue_code from public.account_access_cutover_preflight_issues
+            where run_id=(select final_preflight_run_id from public.account_access_cutover_status where id is true)`,
+        )).some((issue) => issue.issue_code === 'invite_acceptance_in_flight'),
+      );
+      assert.equal(
+        (await rows<{ relation: string | null }>(
+          migrated.pg,
+          `select to_regclass('public.account_access_cutover_final_receipts') as relation`,
+        ))[0].relation,
+        null,
+      );
+      assert.deepEqual(
+        (await rows<{ stage: string; enforcement_enabled: boolean }>(
+          migrated.pg,
+          `select stage,enforcement_enabled from public.account_access_cutover_status where id is true`,
+        ))[0],
+        { stage: 'A', enforcement_enabled: false },
+      );
     } finally {
       await migrated.pg.close();
     }
