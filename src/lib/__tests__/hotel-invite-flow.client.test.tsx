@@ -96,6 +96,83 @@ const VALID_INVITE = {
   canRevoke: true,
 };
 
+const PREVIEW_TEAM = [
+  {
+    accountId: 'account-owner-2',
+    username: 'owner.two',
+    displayName: 'Owner Two',
+    email: 'owner.two@example.com',
+    role: 'owner',
+    active: true,
+    updatedAt: '2026-07-01T12:00:00.000Z',
+    ownerProtected: true,
+    lastSignInKnown: true,
+    lastSignInAt: '2026-07-15T12:00:00.000Z',
+    propertyAccess: [HOTEL_ID],
+    staffId: null,
+    managementSurface: 'legacy_hotel',
+    actions: {
+      canEditProfile: true,
+      canChangeRole: true,
+      canDeactivate: true,
+      canReactivate: true,
+      canRemove: true,
+    },
+  },
+  {
+    accountId: 'account-gm',
+    username: 'general.manager',
+    displayName: 'General Manager Login',
+    email: 'gm@example.com',
+    role: 'general_manager',
+    active: true,
+    updatedAt: '2026-07-01T12:00:00.000Z',
+    ownerProtected: false,
+    lastSignInKnown: true,
+    lastSignInAt: '2026-07-15T12:00:00.000Z',
+    propertyAccess: [HOTEL_ID],
+    staffId: 'staff-1',
+    managementSurface: 'legacy_hotel',
+    actions: {
+      canEditProfile: true,
+      canChangeRole: true,
+      canDeactivate: true,
+      canReactivate: true,
+      canRemove: true,
+    },
+  },
+  {
+    accountId: 'account-disabled',
+    username: 'front.desk',
+    displayName: 'Disabled Front Desk',
+    email: 'frontdesk@example.com',
+    role: 'front_desk',
+    active: false,
+    updatedAt: '2026-07-01T12:00:00.000Z',
+    ownerProtected: false,
+    lastSignInKnown: true,
+    lastSignInAt: null,
+    propertyAccess: [HOTEL_ID],
+    staffId: null,
+    managementSurface: 'legacy_hotel',
+    actions: {
+      canEditProfile: false,
+      canChangeRole: false,
+      canDeactivate: false,
+      canReactivate: true,
+      canRemove: true,
+    },
+  },
+];
+const PREVIEW_REQUEST = {
+  id: 'request-1',
+  name: 'Pending Applicant',
+  phone: null,
+  language: 'en',
+  department: 'housekeeping',
+  created_at: '2026-07-15T12:00:00.000Z',
+};
+
 interface CapabilityState {
   canManageTeam: boolean;
   canInviteAccounts: boolean;
@@ -118,7 +195,9 @@ interface InviteFlowHarness {
   calls: RecordedCall[];
   dialog: () => HTMLElement | null;
   text: () => string;
+  buttonLabels: () => string[];
   click: (label: string) => Promise<void>;
+  clickNth: (label: string, index: number) => Promise<void>;
   setInput: (selector: string, value: string) => Promise<void>;
   setSelect: (selector: string, value: string) => Promise<void>;
   submit: () => Promise<void>;
@@ -128,6 +207,13 @@ interface InviteFlowHarness {
   holdNextInviteLoad: () => void;
   releaseHeldInvite: (response: ResponseSpec) => void;
   flush: () => Promise<void>;
+}
+
+interface RosterFixtureOptions {
+  team?: unknown[];
+  requests?: unknown[];
+  canAddStaff?: boolean;
+  canViewTeam?: boolean;
 }
 
 function loadWithCssShim<T>(specifier: () => Promise<T>): Promise<T> {
@@ -227,6 +313,7 @@ async function mountInviteFlow(
   initialInviteResponse: ResponseSpec = {
     body: { ok: true, data: { invites: [VALID_INVITE], options: VALID_OPTIONS } },
   },
+  roster: RosterFixtureOptions = {},
 ): Promise<InviteFlowHarness> {
   const restoreBrowser = installBrowser();
   const { HotelTeamPanel } = await loadPanelModule();
@@ -254,10 +341,10 @@ async function mountInviteFlow(
     calls.push({ method, url, body: parseRequestBody(init) });
 
     if (url.startsWith('/api/auth/team?')) {
-      return jsonResponse({ ok: true, data: { team: [], hatsByAccountId: {} } });
+      return jsonResponse({ ok: true, data: { team: roster.team ?? [], hatsByAccountId: {} } });
     }
     if (url.startsWith('/api/staff/join-requests?')) {
-      return jsonResponse({ ok: true, data: { requests: [] } });
+      return jsonResponse({ ok: true, data: { requests: roster.requests ?? [] } });
     }
     if (url.startsWith('/api/staff/contacts?')) {
       return jsonResponse({ ok: true, data: { contacts: {} } });
@@ -325,7 +412,7 @@ async function mountInviteFlow(
         onInviteDialogOpenChange={setInviteOpen}
         staffProfiles={[STAFF]}
         rosterUnavailable={false}
-        canAddStaff={capabilities.canManageTeam}
+        canAddStaff={roster.canAddStaff ?? capabilities.canManageTeam}
         onChanged={() => undefined}
       />
     );
@@ -337,20 +424,19 @@ async function mountInviteFlow(
   await act(async () => { root.render(<TestPanel />); });
   await flushReact();
 
-  const findButton = (label: string): HTMLButtonElement | null => (
-    Array.from(document.querySelectorAll<HTMLButtonElement>('button')).find((button) => (
+  const clickNth = async (label: string, index: number): Promise<void> => {
+    const buttons = Array.from(document.querySelectorAll<HTMLButtonElement>('button')).filter((button) => (
       !button.disabled && (button.textContent ?? '').includes(label)
-    )) ?? null
-  );
-  const click = async (label: string): Promise<void> => {
-    const button = findButton(label);
-    assert.ok(button, `button "${label}" must be available`);
+    ));
+    const button = buttons[index] ?? null;
+    assert.ok(button, `button "${label}" at index ${index} must be available`);
     await act(async () => {
       button.dispatchEvent(new MouseEvent('click', { bubbles: true }));
       for (let index = 0; index < 10; index += 1) await Promise.resolve();
     });
     await flushReact();
   };
+  const click = (label: string): Promise<void> => clickNth(label, 0);
   const setValue = async (element: HTMLInputElement | HTMLSelectElement, value: string): Promise<void> => {
     const prototype = element instanceof HTMLSelectElement
       ? window.HTMLSelectElement.prototype
@@ -388,7 +474,10 @@ async function mountInviteFlow(
     calls,
     dialog,
     text: () => document.body.textContent ?? '',
+    buttonLabels: () => Array.from(document.querySelectorAll<HTMLButtonElement>('button'))
+      .map((button) => (button.textContent ?? '').replace(/\s+/g, ' ').trim()),
     click,
+    clickNth,
     async setInput(selector, value) {
       const input = document.querySelector<HTMLInputElement>(selector);
       assert.ok(input, `input "${selector}" must be available`);
@@ -428,7 +517,9 @@ async function mountInviteFlow(
 }
 
 interface PeoplePanelHarness {
+  calls: RecordedCall[];
   text: () => string;
+  buttonLabels: () => string[];
   dialog: () => HTMLElement | null;
   click: (label: string) => Promise<void>;
   setCapabilities: (next: CapabilityState) => Promise<void>;
@@ -438,7 +529,7 @@ interface PeoplePanelHarness {
 async function mountPeoplePanel(
   context: TestContext,
   initialCapabilities: CapabilityState,
-  options: { adminPreview?: boolean; inviteDialogOpen?: boolean } = {},
+  options: RosterFixtureOptions & { adminPreview?: boolean; inviteDialogOpen?: boolean } = {},
 ): Promise<PeoplePanelHarness> {
   const restoreBrowser = installBrowser();
   const { PeoplePanel } = await loadCompanyPageModule();
@@ -450,6 +541,7 @@ async function mountPeoplePanel(
   const controls = {
     setCapabilities: (_next: CapabilityState): void => undefined,
   };
+  const calls: RecordedCall[] = [];
   const originalFetch = globalThis.fetch;
   Object.defineProperty(globalThis, 'fetch', {
     configurable: true,
@@ -457,11 +549,12 @@ async function mountPeoplePanel(
     value: async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
       const url = String(input);
       const method = (init?.method ?? 'GET').toUpperCase();
+      calls.push({ method, url, body: parseRequestBody(init) });
       if (url.startsWith('/api/auth/team?')) {
-        return jsonResponse({ ok: true, data: { team: [], hatsByAccountId: {} } });
+        return jsonResponse({ ok: true, data: { team: options.team ?? [], hatsByAccountId: {} } });
       }
       if (url.startsWith('/api/staff/join-requests?')) {
-        return jsonResponse({ ok: true, data: { requests: [] } });
+        return jsonResponse({ ok: true, data: { requests: options.requests ?? [] } });
       }
       if (url.startsWith('/api/staff/contacts?')) {
         return jsonResponse({ ok: true, data: { contacts: {} } });
@@ -487,7 +580,7 @@ async function mountPeoplePanel(
       organizations: [],
       viewerContext: {
         kind: options.adminPreview ? 'staxis_admin_preview' : 'customer',
-        readOnly: false,
+        readOnly: Boolean(options.adminPreview),
       },
     } as unknown as PeoplePanelProps['data'];
     return (
@@ -500,9 +593,10 @@ async function mountPeoplePanel(
         currentAccountId={USER.accountId}
         activeProperty={{ id: HOTEL_ID, name: 'Harbor Inn' } as PeoplePanelProps['activeProperty']}
         canManageTeam={capabilities.canManageTeam}
+        canViewTeam={options.canViewTeam ?? (capabilities.canManageTeam || Boolean(options.adminPreview))}
         canInviteAccounts={capabilities.canInviteAccounts}
         canViewWages={false}
-        canAddOperationalStaff={false}
+        canAddOperationalStaff={options.canAddStaff ?? false}
         inviteDialogOpen={inviteOpen}
         onInviteDialogOpenChange={setInviteOpen}
         onChanged={() => undefined}
@@ -552,7 +646,10 @@ async function mountPeoplePanel(
   });
 
   return {
+    calls,
     text: () => document.body.textContent ?? '',
+    buttonLabels: () => Array.from(document.querySelectorAll<HTMLButtonElement>('button'))
+      .map((button) => (button.textContent ?? '').replace(/\s+/g, ' ').trim()),
     dialog: () => document.querySelector<HTMLElement>('[role="dialog"]'),
     click,
     async setCapabilities(next) {
@@ -761,20 +858,67 @@ describe('mounted hotel invite flow', { concurrency: false }, () => {
     assert.equal(document.activeElement?.id, 'hotel-team-title');
   });
 
-  test('the first-person route keeps its form loading shape separate from compact Invite people', async (context) => {
+  test('admin preview shows the roster but exposes no first-person or roster mutations', async (context) => {
     const ui = await mountPeoplePanel(context, {
-      canManageTeam: true,
+      canManageTeam: false,
       canInviteAccounts: true,
       readOnly: false,
       adminPreview: true,
-    }, { adminPreview: true, inviteDialogOpen: true });
+    }, {
+      adminPreview: true,
+      inviteDialogOpen: true,
+      team: PREVIEW_TEAM,
+      requests: [PREVIEW_REQUEST],
+      canAddStaff: true,
+      canViewTeam: true,
+    });
 
     await ui.flushWithFrame();
-    await ui.click('Add first person');
-    await ui.flushWithFrame();
-    assert.match(ui.text(), /Add first person/);
-    assert.match(ui.text(), /Assign the role before sending the invitation/);
-    assert.match(ui.text(), /Send invitation/);
-    assert.doesNotMatch(ui.text(), /Hotel invite|Email one person/);
+    assert.match(ui.text(), /Owner Two/);
+    assert.match(ui.text(), /Riley Housekeeper/);
+    assert.match(ui.text(), /Pending Applicant/);
+    assert.equal(ui.dialog(), null);
+
+    const buttons = ui.buttonLabels().join(' | ');
+    assert.match(buttons, /View/);
+    assert.doesNotMatch(
+      buttons,
+      /Add first person|Invite people|Add to|Edit|Remove|Approve|Deny|Disable|Reactivate/,
+    );
+    await ui.click('View');
+    assert.ok(ui.dialog(), 'preview may open a read-only person view');
+    const mutationButtons = Array.from(document.querySelectorAll<HTMLButtonElement>('button'))
+      .filter((button) => /Save changes|Disable login everywhere|Reactivate login|Remove/.test(button.textContent ?? ''));
+    assert.ok(mutationButtons.length > 0, 'the person view must expose its disabled mutation affordances truthfully');
+    assert.ok(mutationButtons.every((button) => button.disabled), 'preview person view must keep every mutation disabled');
+    assert.ok(ui.calls.length > 0, 'preview should load the selected hotel roster data');
+    assert.ok(ui.calls.every((call) => call.method === 'GET'), 'preview must not reach any write endpoint');
+  });
+
+  test('an authorized customer manager keeps invite, approval, edit, lifecycle, and remove actions', async (context) => {
+    const ui = await mountInviteFlow(context, {
+      canManageTeam: true,
+      canInviteAccounts: true,
+      readOnly: false,
+      adminPreview: false,
+    }, undefined, {
+      team: PREVIEW_TEAM,
+      requests: [PREVIEW_REQUEST],
+      canAddStaff: true,
+    });
+
+    await ui.flush();
+    const buttons = ui.buttonLabels().join(' | ');
+    assert.match(buttons, /Invite people/);
+    assert.match(buttons, /Add to Housekeeping/);
+    assert.match(buttons, /Edit/);
+    assert.match(buttons, /Remove/);
+    assert.match(buttons, /Approve/);
+    assert.match(buttons, /Deny/);
+
+    await ui.clickNth('Edit', 1);
+    await ui.flush();
+    assert.match(ui.text(), /Disable login everywhere/);
+    assert.ok(ui.dialog(), 'an authorized manager may open the member editor');
   });
 });

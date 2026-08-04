@@ -409,9 +409,15 @@ function CompanyAccessContent() {
   const hotelPresentationRole = platformAdmin
     ? 'admin'
     : activePropertyStanding?.operationalRole ?? null;
-  const hotelMutationAuthorized = authorizationChecked && Boolean(
-    platformAdmin || activePropertyStanding?.hotelMutationAllowed === true,
+  const hotelMutationAuthorized = authorizationChecked && !adminPreview && Boolean(
+    activePropertyStanding?.hotelMutationAllowed === true,
   );
+  // A verified platform-admin preview may inspect the selected hotel's roster,
+  // but it is never a customer hotel manager. Keep read access separate from
+  // the mutation capability so the preview cannot inherit customer actions.
+  const canViewHotelTeam = hotelCapabilitiesReady
+    && authorizationChecked
+    && (adminPreview || hotelMutationAuthorized);
   // A hotel switch clears readiness synchronously. Never reuse the previous
   // hotel's optimistic capability result while the next snapshot is loading.
   const canManageTeam = hotelCapabilitiesReady
@@ -442,12 +448,12 @@ function CompanyAccessContent() {
     );
   const staffBelongsToCurrentViewer = Boolean(activePropertyViewerKey
     && staffViewerKey === activePropertyViewerKey);
-  const currentStaff = canManageTeam && staffBelongsToCurrentViewer
+  const currentStaff = canViewHotelTeam && staffBelongsToCurrentViewer
     ? staff
     : [];
-  const currentStaffSettled = canManageTeam && staffBelongsToCurrentViewer
+  const currentStaffSettled = canViewHotelTeam && staffBelongsToCurrentViewer
     && (staffLoaded || staffLoadFailed);
-  const currentStaffUnavailable = canManageTeam && staffBelongsToCurrentViewer && staffLoadFailed;
+  const currentStaffUnavailable = canViewHotelTeam && staffBelongsToCurrentViewer && staffLoadFailed;
 
   // Read language via a ref so the company-access load effect below does not
   // depend on `lang` — otherwise toggling EN/ES tears down the request, flashes
@@ -722,6 +728,7 @@ function CompanyAccessContent() {
   const hotelTeamLocked = Boolean(
     showLoading
     || !currentData
+    || adminPreview
     || (resolved.viewerContext?.readOnly === true && !adminActionsAvailable),
   );
   const workspaceTitle = adminPreview
@@ -926,13 +933,14 @@ function CompanyAccessContent() {
                   currentAccountId={user.accountId}
                   activeProperty={activeProperty}
                   canManageTeam={canManageTeam}
+                  canViewTeam={canViewHotelTeam}
                   canInviteAccounts={Boolean(
-                    adminActionsAvailable
+                    !adminPreview && (adminActionsAvailable
                     || (activeProperty
-                      && resolved.permissions.accountInvitePropertyIds?.includes(activeProperty.id))
+                      && resolved.permissions.accountInvitePropertyIds?.includes(activeProperty.id)))
                   )}
                   canViewWages={canViewWages}
-                  canAddOperationalStaff={!hotelTeamLocked && canManageTeam}
+                  canAddOperationalStaff={!adminPreview && !hotelTeamLocked && canManageTeam}
                   inviteDialogOpen={teamInviteHotelId === activeProperty?.id}
                   onInviteDialogOpenChange={(open) => setTeamInviteHotelId(open ? activeProperty?.id ?? null : null)}
                   onChanged={refreshStaff}
@@ -1065,7 +1073,7 @@ export function HotelsPanel({ data, structure, structureError, structureLoading,
  * could appear in both with nothing on screen explaining why. HotelTeamPanel
  * now merges them.
  */
-export function PeoplePanel({ data, staff, hotelRosterUnavailable, lang, currentUser, currentAccountId, activeProperty, canManageTeam, canInviteAccounts, canViewWages, canAddOperationalStaff, inviteDialogOpen, onInviteDialogOpenChange, onChanged, onLifecycleAction }: {
+export function PeoplePanel({ data, staff, hotelRosterUnavailable, lang, currentUser, currentAccountId, activeProperty, canManageTeam, canViewTeam, canInviteAccounts, canViewWages, canAddOperationalStaff, inviteDialogOpen, onInviteDialogOpenChange, onChanged, onLifecycleAction }: {
   data: CompanyAccessData;
   staff: StaffMember[];
   hotelRosterUnavailable: boolean;
@@ -1074,6 +1082,7 @@ export function PeoplePanel({ data, staff, hotelRosterUnavailable, lang, current
   currentAccountId: string;
   activeProperty: Property | null;
   canManageTeam: boolean;
+  canViewTeam?: boolean;
   canInviteAccounts: boolean;
   canViewWages: boolean;
   canAddOperationalStaff: boolean;
@@ -1083,6 +1092,7 @@ export function PeoplePanel({ data, staff, hotelRosterUnavailable, lang, current
   onLifecycleAction: (action: CompanyLifecycleAction) => void;
 }) {
   const adminPreview = data.viewerContext?.kind === 'staxis_admin_preview';
+  const hotelTeamVisible = canViewTeam ?? canManageTeam;
   const inviteCapabilityKey = [
     canManageTeam ? 'hotel-manager' : 'invite-only',
     canInviteAccounts ? 'account-invite' : 'no-account-invite',
@@ -1171,23 +1181,24 @@ export function PeoplePanel({ data, staff, hotelRosterUnavailable, lang, current
       ) : null}
       {activeProperty ? (
         <HotelTeamPanel
-          key={`${activeProperty.id}:${adminPreview ? 'admin' : 'customer'}:${canManageTeam ? 'hotel-authorized' : 'invite-only'}`}
+          key={`${activeProperty.id}:${adminPreview ? 'admin' : 'customer'}:${canManageTeam ? 'hotel-authorized' : 'invite-only'}:${hotelTeamVisible ? 'team-visible' : 'team-hidden'}`}
           hotelId={activeProperty.id}
           hotelName={activeProperty.name}
           currentUser={currentUser}
           currentAccountId={currentAccountId}
           lang={'en'}
           canManageTeam={canManageTeam}
-          canInviteAccounts={canInviteAccounts}
+          canViewTeam={hotelTeamVisible}
+          canInviteAccounts={adminPreview ? false : canInviteAccounts}
           canViewWages={canViewWages}
-          readOnly={Boolean(data.viewerContext?.readOnly) && !adminPreview}
+          readOnly={Boolean(data.viewerContext?.readOnly) || adminPreview}
           adminPreview={adminPreview}
           peopleHeadingRef={peopleHeadingRef}
           inviteDialogOpen={inviteDialogOpen && inviteCapabilitiesStable}
           onInviteDialogOpenChange={onInviteDialogOpenChange}
           staffProfiles={staff}
           rosterUnavailable={hotelRosterUnavailable}
-          canAddStaff={canAddOperationalStaff}
+          canAddStaff={adminPreview ? false : canAddOperationalStaff}
           onChanged={onChanged}
         />
       ) : (

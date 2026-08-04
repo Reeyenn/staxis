@@ -145,6 +145,8 @@ export interface HotelTeamPanelProps {
   currentAccountId?: string;
   lang: HotelTeamLang;
   canManageTeam: boolean;
+  /** Read-only roster visibility is separate from customer mutation authority. */
+  canViewTeam?: boolean;
   /** Exact receipt-derived permission to use the guarded account invitation
    * workflow at this hotel. It never grants private roster access. */
   canInviteAccounts?: boolean;
@@ -726,6 +728,7 @@ export function HotelTeamPanel({
   currentAccountId = currentUser.accountId,
   lang,
   canManageTeam,
+  canViewTeam = canManageTeam,
   canInviteAccounts = false,
   canViewWages = false,
   readOnly = false,
@@ -782,16 +785,17 @@ export function HotelTeamPanel({
   const changedRef = React.useRef(onChanged);
   changedRef.current = onChanged;
 
-  const locked = readOnly;
+  const locked = readOnly || adminPreview;
   const inviteActionDisabled = locked
     || (adminPreview && (teamLoading || Boolean(teamError)));
   // A hotel manager can use the shared link, QR, and code invite even when the
   // account-invite capability is not granted. Keep this derived from the same
   // guarded surfaces as the existing Invite dialog instead of widening access.
-  const canInviteToStaxis = canManageTeam || canInviteAccounts;
-  const inviteEntryAvailable = canAddStaff || canInviteToStaxis;
+  const canInviteToStaxis = !adminPreview && (canManageTeam || canInviteAccounts);
+  const canAddStaffAction = canManageTeam && !adminPreview && canAddStaff;
+  const inviteEntryAvailable = canAddStaffAction || canInviteToStaxis;
   const inviteCapabilityKey = [
-    canAddStaff ? 'schedule' : 'no-schedule',
+    canAddStaffAction ? 'schedule' : 'no-schedule',
     canManageTeam ? 'hotel-manager' : 'invite-only',
     canInviteAccounts ? 'account-invite' : 'no-account-invite',
     locked ? 'read-only' : 'interactive',
@@ -813,11 +817,11 @@ export function HotelTeamPanel({
   }, [inviteActionDisabled, inviteCapabilitiesStable, inviteEntryAvailable]);
 
   const chooseAddStaff = React.useCallback(() => {
-    if (!canAddStaff || locked || inviteActionDisabled || !inviteCapabilitiesStable) return;
+    if (!canAddStaffAction || locked || inviteActionDisabled || !inviteCapabilitiesStable) return;
     addStaffReturnFocusRef.current = inviteEntryReturnFocusRef.current;
     setInviteChoiceOpen(false);
     setAddDepartment('housekeeping');
-  }, [canAddStaff, inviteActionDisabled, inviteCapabilitiesStable, locked]);
+  }, [canAddStaffAction, inviteActionDisabled, inviteCapabilitiesStable, locked]);
 
   const chooseInviteToStaxis = React.useCallback(() => {
     if (!canInviteToStaxis || inviteActionDisabled || !inviteCapabilitiesStable) return;
@@ -848,7 +852,7 @@ export function HotelTeamPanel({
   // the hotel-authorized/invite-only boundary, so a later re-grant cannot paint
   // an old team's data for even one render while the fresh fetch is pending.
   React.useEffect(() => {
-    if (canManageTeam) return;
+    if (canViewTeam) return;
     teamAbortRef.current?.abort();
     requestAbortRef.current?.abort();
     setTeam([]);
@@ -863,7 +867,7 @@ export function HotelTeamPanel({
     setAddDepartment(null);
     setInviteChoiceOpen(false);
     setDecision(null);
-  }, [canManageTeam]);
+  }, [canViewTeam]);
 
   const contacts = React.useMemo(
     () => (contactSnapshot?.hotelId === hotelId ? contactSnapshot.contacts : {}),
@@ -881,7 +885,7 @@ export function HotelTeamPanel({
     teamAbortRef.current = controller;
     const sequence = ++teamSequenceRef.current;
 
-    if (!hotelId || !canManageTeam) {
+    if (!hotelId || !canViewTeam) {
       setTeam([]);
       setTeamLoading(false);
       setTeamError('');
@@ -924,7 +928,7 @@ export function HotelTeamPanel({
     } finally {
       if (!controller.signal.aborted && sequence === teamSequenceRef.current) setTeamLoading(false);
     }
-  }, [adminPreview, canManageTeam, hotelId, readOnly]);
+  }, [adminPreview, canViewTeam, hotelId, readOnly]);
 
   const loadRequests = React.useCallback(async (clearFirst = false) => {
     requestAbortRef.current?.abort();
@@ -932,7 +936,7 @@ export function HotelTeamPanel({
     requestAbortRef.current = controller;
     const sequence = ++requestSequenceRef.current;
 
-    if (!hotelId || !canManageTeam) {
+    if (!hotelId || !canViewTeam) {
       setRequests([]);
       setRequestsLoading(false);
       setRequestsError('');
@@ -965,10 +969,10 @@ export function HotelTeamPanel({
     } finally {
       if (!controller.signal.aborted && sequence === requestSequenceRef.current) setRequestsLoading(false);
     }
-  }, [canManageTeam, hotelId]);
+  }, [canViewTeam, hotelId]);
 
   const loadContacts = React.useCallback(async (signal?: AbortSignal) => {
-    if (!hotelId || !canManageTeam) return;
+    if (!hotelId || !canViewTeam) return;
     try {
       const response = await fetchWithAuth(
         `/api/staff/contacts?propertyId=${encodeURIComponent(hotelId)}`,
@@ -986,12 +990,12 @@ export function HotelTeamPanel({
       console.error('[HotelTeamPanel] contacts load failed', error);
       setContactsError(true);
     }
-  }, [canManageTeam, hotelId]);
+  }, [canViewTeam, hotelId]);
 
   const loadWages = React.useCallback(async (signal?: AbortSignal) => {
     // Pay is fetched ONLY when this viewer holds view_wages at this hotel. The
     // route re-checks it; this just avoids asking for data we may not show.
-    if (!hotelId || !canManageTeam || !canViewWages) return;
+    if (!hotelId || !canViewTeam || !canViewWages) return;
     try {
       const response = await fetchWithAuth(
         `/api/staff/wages?propertyId=${encodeURIComponent(hotelId)}`,
@@ -1007,7 +1011,7 @@ export function HotelTeamPanel({
       if (signal?.aborted) return;
       console.error('[HotelTeamPanel] wages load failed', error);
     }
-  }, [canManageTeam, canViewWages, hotelId]);
+  }, [canViewTeam, canViewWages, hotelId]);
 
   React.useEffect(() => {
     void loadTeam(true);
@@ -1045,7 +1049,7 @@ export function HotelTeamPanel({
 
   React.useEffect(() => {
     setServerLifecyclePollingPaused(false);
-    if (!hasServerLifecyclePending) return;
+    if (locked || !canManageTeam || !hasServerLifecyclePending) return;
     const controller = new AbortController();
 
     void (async () => {
@@ -1059,7 +1063,7 @@ export function HotelTeamPanel({
     })();
 
     return () => controller.abort();
-  }, [hasServerLifecyclePending, hotelId, loadTeam]);
+  }, [canManageTeam, hasServerLifecyclePending, hotelId, loadTeam, locked]);
 
   const refreshAfterChange = React.useCallback(async () => {
     await Promise.all([loadTeam(), loadRequests(), loadContacts(), loadWages()]);
@@ -1201,6 +1205,7 @@ export function HotelTeamPanel({
     (member) => member.managementSurface === 'legacy_hotel',
   );
   const needsFirstPerson = adminPreview
+    && !locked
     && !teamLoading
     && !teamError
     && !hasDirectHotelAccount;
@@ -1282,7 +1287,7 @@ export function HotelTeamPanel({
     );
   }
 
-  if (!canManageTeam) {
+  if (!canViewTeam) {
     return (
       <>
         <section className={styles.root} aria-labelledby="hotel-team-title">
@@ -1499,26 +1504,26 @@ export function HotelTeamPanel({
                   </span>
                 </div>
                 <span className={styles.pendingBadge}>{'Pending approval'}</span>
-                <div className={styles.approvalActions}>
-                  <button
-                    type="button"
-                    className={styles.approveButton}
-                    onClick={() => setDecision({ request, decision: 'approve' })}
-                    disabled={locked}
-                    aria-label={`Approve ${request.name}`}
-                  >
-                    <UserCheck size={15} aria-hidden="true" />{'Approve'}
-                  </button>
-                  <button
-                    type="button"
-                    className={styles.denyButton}
-                    onClick={() => setDecision({ request, decision: 'deny' })}
-                    disabled={locked}
-                    aria-label={`Deny ${request.name}`}
-                  >
-                    {'Deny'}
-                  </button>
-                </div>
+                {!locked ? (
+                  <div className={styles.approvalActions}>
+                    <button
+                      type="button"
+                      className={styles.approveButton}
+                      onClick={() => setDecision({ request, decision: 'approve' })}
+                      aria-label={`Approve ${request.name}`}
+                    >
+                      <UserCheck size={15} aria-hidden="true" />{'Approve'}
+                    </button>
+                    <button
+                      type="button"
+                      className={styles.denyButton}
+                      onClick={() => setDecision({ request, decision: 'deny' })}
+                      aria-label={`Deny ${request.name}`}
+                    >
+                      {'Deny'}
+                    </button>
+                  </div>
+                ) : null}
               </div>
             ))}
           </div>
@@ -1593,7 +1598,7 @@ export function HotelTeamPanel({
                   ))}
                 </div>
                 )}
-                {canAddStaff && !locked && group.key !== 'management' ? (
+                {canAddStaffAction && !locked && group.key !== 'management' ? (
                   <button
                     type="button"
                     className={styles.departmentAdd}
@@ -1618,7 +1623,7 @@ export function HotelTeamPanel({
           lang={lang}
           hotelName={hotelName}
           variant={loadingDialogVariant}
-          choiceCount={Number(canAddStaff && !locked) + Number(canInviteToStaxis)}
+          choiceCount={Number(canAddStaffAction && !locked) + Number(canInviteToStaxis)}
           inviteSections={canInviteAccounts ? ['hotel', 'email'] : ['hotel']}
           returnFocusRef={normalLoadingReturnFocusRef}
           fallbackFocusRef={peopleHeadingRef}
@@ -1670,7 +1675,7 @@ export function HotelTeamPanel({
         ) : null}
         {inviteChoiceVisible ? (
           <LazyPeopleInviteChooserDialog
-            canAddStaff={canAddStaff && !locked && inviteCapabilitiesStable}
+            canAddStaff={canAddStaffAction && !locked && inviteCapabilitiesStable}
             canInviteToStaxis={canInviteToStaxis && inviteCapabilitiesStable}
             canSendEmailInvite={canInviteAccounts && inviteCapabilitiesStable}
             canShareHotelInvite={canManageTeam && inviteCapabilitiesStable}
