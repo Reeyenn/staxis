@@ -743,8 +743,14 @@ export function HotelTeamPanel({
 }: HotelTeamPanelProps) {
   const [team, setTeam] = React.useState<HotelTeamMember[]>([]);
   const [jobsByAccountId, setJobsByAccountId] = React.useState<Record<string, CompanyJobLine[]>>({});
-  const [teamLoading, setTeamLoading] = React.useState(false);
+  // Admin preview must settle the exact account roster before it paints any
+    // staff rows. Otherwise a platform-admin account linked to a staff record
+    // could briefly appear as a login-less employee from PropertyContext.
+  const [teamLoading, setTeamLoading] = React.useState(adminPreview);
   const [teamError, setTeamError] = React.useState('');
+  const [previewHiddenStaffIds, setPreviewHiddenStaffIds] = React.useState<ReadonlySet<string>>(
+    () => new Set(),
+  );
   const [requests, setRequests] = React.useState<HotelJoinRequest[]>([]);
   const [requestsLoading, setRequestsLoading] = React.useState(false);
   const [requestsError, setRequestsError] = React.useState('');
@@ -857,6 +863,7 @@ export function HotelTeamPanel({
     requestAbortRef.current?.abort();
     setTeam([]);
     setJobsByAccountId({});
+    setPreviewHiddenStaffIds(new Set());
     setRequests([]);
     setContactSnapshot(null);
     setWageSnapshot(null);
@@ -889,11 +896,13 @@ export function HotelTeamPanel({
       setTeam([]);
       setTeamLoading(false);
       setTeamError('');
+      setPreviewHiddenStaffIds(new Set());
       return;
     }
 
     if (clearFirst) {
       setTeam([]);
+      if (adminPreview || readOnly) setPreviewHiddenStaffIds(new Set());
     }
     setTeamLoading(true);
     setTeamError('');
@@ -913,9 +922,17 @@ export function HotelTeamPanel({
       }
       if (controller.signal.aborted || sequence !== teamSequenceRef.current) return;
       const responseTeam = body.data?.team ?? [];
+      const hiddenStaffIds = (adminPreview || readOnly)
+        ? new Set(
+          responseTeam
+            .filter((member) => member.isPlatformAdmin === true || member.role === 'admin')
+            .flatMap((member) => member.staffId ? [member.staffId] : []),
+        )
+        : new Set<string>();
       const nextTeam = (adminPreview || readOnly)
         ? responseTeam.filter((member) => !member.isPlatformAdmin && member.role !== 'admin')
         : responseTeam;
+      setPreviewHiddenStaffIds(hiddenStaffIds);
       setTeam(nextTeam);
       setJobsByAccountId(body.data?.hatsByAccountId ?? {});
     } catch (error) {
@@ -1161,12 +1178,23 @@ export function HotelTeamPanel({
 
   // ── The merged roster ────────────────────────────────────────────────────
   const rosterStaff = React.useMemo(() => {
-    const loadedIds = new Set(staffProfiles.map((member) => member.id));
+    // During admin preview, fail closed until the exact account roster has
+    // settled. Then remove only staff rows linked to filtered admin accounts;
+    // ordinary employment records remain visible in the preview.
+    const hideStaffUntilPreviewSettles = adminPreview && (teamLoading || Boolean(teamError));
+    const hiddenStaffIds = adminPreview || readOnly ? previewHiddenStaffIds : null;
+    const visibleStaffProfiles = hideStaffUntilPreviewSettles
+      ? []
+      : staffProfiles.filter((member) => !hiddenStaffIds?.has(member.id));
+    const visibleOptimisticStaff = hideStaffUntilPreviewSettles
+      ? []
+      : optimisticStaff.filter((member) => !hiddenStaffIds?.has(member.id));
+    const loadedIds = new Set(visibleStaffProfiles.map((member) => member.id));
     return [
-      ...staffProfiles,
-      ...optimisticStaff.filter((member) => !loadedIds.has(member.id)),
+      ...visibleStaffProfiles,
+      ...visibleOptimisticStaff.filter((member) => !loadedIds.has(member.id)),
     ];
-  }, [optimisticStaff, staffProfiles]);
+  }, [adminPreview, optimisticStaff, previewHiddenStaffIds, staffProfiles, teamError, teamLoading]);
 
   const unlinkedRosterProfiles = React.useMemo<HotelInviteRosterProfile[]>(() => {
     // Do not offer a possibly stale profile while either half of the merged

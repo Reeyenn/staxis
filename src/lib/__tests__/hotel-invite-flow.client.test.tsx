@@ -61,6 +61,16 @@ const STAFF: StaffMember = {
   weeklyHours: 0,
   maxWeeklyHours: 40,
 };
+const ADMIN_PREVIEW_STAFF: StaffMember = {
+  id: 'admin-staff',
+  name: 'Hidden Admin Schedule',
+  language: 'en',
+  isSenior: false,
+  department: 'housekeeping',
+  scheduledToday: false,
+  weeklyHours: 0,
+  maxWeeklyHours: 40,
+};
 
 const VALID_OPTIONS = {
   choosesHotels: false,
@@ -97,6 +107,29 @@ const VALID_INVITE = {
 };
 
 const PREVIEW_TEAM = [
+  {
+    accountId: 'platform-admin',
+    username: 'staxis.admin',
+    displayName: 'Staxis Platform Admin',
+    email: 'admin@example.com',
+    role: 'admin',
+    active: true,
+    updatedAt: '2026-07-01T12:00:00.000Z',
+    ownerProtected: false,
+    lastSignInKnown: true,
+    lastSignInAt: '2026-07-15T12:00:00.000Z',
+    propertyAccess: [HOTEL_ID],
+    staffId: 'admin-staff',
+    isPlatformAdmin: true,
+    managementSurface: 'legacy_hotel',
+    actions: {
+      canEditProfile: true,
+      canChangeRole: true,
+      canDeactivate: true,
+      canReactivate: true,
+      canRemove: true,
+    },
+  },
   {
     accountId: 'account-owner-2',
     username: 'owner.two',
@@ -210,6 +243,7 @@ interface InviteFlowHarness {
 }
 
 interface RosterFixtureOptions {
+  staff?: StaffMember[];
   team?: unknown[];
   requests?: unknown[];
   canAddStaff?: boolean;
@@ -586,7 +620,7 @@ async function mountPeoplePanel(
     return (
       <PeoplePanel
         data={data}
-        staff={[STAFF]}
+        staff={options.staff ?? [STAFF]}
         hotelRosterUnavailable={false}
         lang={'en'}
         currentUser={USER}
@@ -869,6 +903,7 @@ describe('mounted hotel invite flow', { concurrency: false }, () => {
       inviteDialogOpen: true,
       team: PREVIEW_TEAM,
       requests: [PREVIEW_REQUEST],
+      staff: [STAFF, ADMIN_PREVIEW_STAFF],
       canAddStaff: true,
       canViewTeam: true,
     });
@@ -877,6 +912,7 @@ describe('mounted hotel invite flow', { concurrency: false }, () => {
     assert.match(ui.text(), /Owner Two/);
     assert.match(ui.text(), /Riley Housekeeper/);
     assert.match(ui.text(), /Pending Applicant/);
+    assert.doesNotMatch(ui.text(), /Staxis Platform Admin|Hidden Admin Schedule/);
     assert.equal(ui.dialog(), null);
 
     const buttons = ui.buttonLabels().join(' | ');
