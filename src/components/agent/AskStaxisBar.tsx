@@ -1731,14 +1731,14 @@ const Chevron = () => (
 
 // ── Scoped styles (everything prefixed asx-) ──────────────────────────────
 const ASX_CSS = `
-.asx-corner,.asx-panel,.asx-peek,.asx-mobile-sheet,.asx-mobile-fab{
+.asx-corner,.asx-panel,.asx-peek,.asx-notices,.asx-mobile-sheet,.asx-mobile-fab{
   --asx-ink:#1F231C;--asx-sage:#5C7A60;--asx-sage-l:#9EB7A6;--asx-brand:#3E5C48;
   --asx-amber:#C99644;--asx-amber-l:#FBE3B8;--asx-rust:#B85C3D;--asx-white:#FCFDFB;
   --asx-rule:rgba(158,183,166,.14);--asx-spring:cubic-bezier(.22,1,.36,1);
   --asx-accent:#3E5C48;--asx-ink2:var(--snow-ink2,#5C625C);--asx-ink3:var(--snow-ink3,#A6ABA6);
   font-family:var(--font-geist),-apple-system,BlinkMacSystemFont,sans-serif;
 }
-.asx-corner *,.asx-panel *,.asx-peek *{box-sizing:border-box;}
+.asx-corner *,.asx-panel *,.asx-peek *,.asx-notices *{box-sizing:border-box;}
 
 /* ── The mark ────────────────────────────────────────────────────────────── */
 .asx-corner{position:fixed;z-index:60;width:${MARK_SIZE}px;height:${MARK_SIZE}px;}
@@ -2041,7 +2041,13 @@ button.asx-notice-row:focus-visible{outline:2px solid var(--asx-brand);outline-o
 @keyframes asx-td{0%,60%,100%{opacity:.3;transform:translateY(0)}30%{opacity:1;transform:translateY(-4px)}}
 
 @media (max-width:760px){
-  .asx-corner,.asx-panel,.asx-peek{display:none!important;}
+  /* The notices list belongs to the desktop panel and goes wherever it goes.
+     A phone gets the mobile sheet, which is a different surface with its own
+     header, and a floating list anchored to a hidden slab would be a box in
+     the middle of nowhere. Notices on the phone surface are their own piece of
+     work; leaving a broken half of one here would be worse than not having it
+     yet. */
+  .asx-corner,.asx-panel,.asx-peek,.asx-notices{display:none!important;}
 
   .asx-mobile-fab{position:fixed;right:18px;bottom:max(30px,calc(env(safe-area-inset-bottom,0px) + 14px));z-index:72;display:grid;
     width:56px;height:56px;border-radius:18px;border:1px solid rgba(92,122,96,.4);
