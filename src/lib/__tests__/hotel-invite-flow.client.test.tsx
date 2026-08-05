@@ -63,12 +63,15 @@ const STAFF: StaffMember = {
   weeklyHours: 0,
   maxWeeklyHours: 40,
 };
-const INHERITED_TEAM_MEMBER = {
+// Typed against the real contract so this double cannot drift from what
+// /api/auth/team actually returns: the People controller validates every row
+// and drops the whole snapshot if a required field is missing.
+const INHERITED_TEAM_MEMBER: HotelTeamMember = {
   accountId: 'company-account-1',
   username: 'company-owner',
   displayName: 'Company Owner',
   email: 'company-owner@example.com',
-  role: 'owner' as const,
+  role: 'owner',
   active: true,
   updatedAt: '2026-08-01T00:00:00.000Z',
   ownerProtected: false,
@@ -76,19 +79,21 @@ const INHERITED_TEAM_MEMBER = {
   lastSignInAt: null,
   propertyAccess: [HOTEL_ID],
   staffId: null,
-  managementSurface: 'company_access' as const,
+  historicalStaffId: null,
+  staffLinkAllowed: false,
+  managementSurface: 'company_access',
   directHotelAccount: false,
   hotelLeadershipRole: null,
 };
-const DIRECT_TEAM_MEMBER = {
+const DIRECT_TEAM_MEMBER: HotelTeamMember = {
   ...INHERITED_TEAM_MEMBER,
   accountId: 'direct-account-1',
   username: 'direct-gm',
   displayName: 'Direct GM',
   email: 'direct-gm@example.com',
-  role: 'general_manager' as const,
+  role: 'general_manager',
   directHotelAccount: true,
-  hotelLeadershipRole: 'general_manager' as const,
+  hotelLeadershipRole: 'general_manager',
 };
 const REFRESHED_ACCOUNT: HotelTeamMember = {
   accountId: 'existing-account',
