@@ -5826,3 +5826,145 @@ describe('Access Stage C final contract — real migration boundary', () => {
     }
   });
 });
+
+/**
+ * Everything above 0426's release-gate marker runs in autocommit, so an
+ * abandoned cutover window can commit that prefix and stop at the gate. That
+ * happened once against production with an earlier draft of the file, leaving
+ * four evidence tables at the older draft's column set and one older overload
+ * of the disposition RPC. `create table if not exists` will not reshape a
+ * table and `create or replace function` will not reshape an argument list,
+ * so 0426 carries a residue-reconciliation block. These tests hold that block
+ * to its two promises: it repairs an empty abandoned prefix, and it refuses
+ * rather than destroying a table that still holds evidence.
+ */
+describe('Access Stage C reconciles an abandoned prefix', () => {
+  // The pre-0426 shape of the two tables the final contract widened.
+  async function installAbandonedPrefixResidue(pg: PGlite): Promise<void> {
+    await pg.exec(`
+      create table public.account_access_cutover_release_receipts (
+        id uuid primary key default gen_random_uuid(),
+        operator_label text not null
+      );
+      create table public.account_access_cutover_repair_dispositions (
+        id uuid primary key default gen_random_uuid(),
+        account_id uuid,
+        decision text
+      );
+      create table public.account_access_cutover_repair_receipts (
+        id uuid primary key default gen_random_uuid(),
+        disposition_id uuid
+          references public.account_access_cutover_repair_dispositions(id),
+        account_id uuid
+      );
+      create table public.account_access_cutover_recovery_actions (
+        id uuid primary key default gen_random_uuid(),
+        action text
+      );
+    `);
+    await pg.exec(`
+      create or replace function public.staxis_access_stage_c_record_repair_disposition(
+        p_a uuid, p_b uuid, p_c uuid, p_d text[], p_e text, p_f text, p_g text,
+        p_h text, p_i uuid[], p_j text, p_k text, p_l bigint, p_m uuid[],
+        p_n text, p_o bigint, p_p text, p_q timestamptz, p_r uuid
+      ) returns jsonb language sql immutable
+      set search_path = pg_catalog, public
+      as $stale$ select '{"stale":true}'::jsonb $stale$;
+    `);
+  }
+
+  test('drops the empty older-draft relations so the final shape is installed', async () => {
+    const migrated = await applyMigrationsToPgliteWithHook(
+      async ({ pg: hookPg, file }) => {
+        if (file !== MIGRATION) return;
+        await seedStageCFixture(hookPg);
+        await installAbandonedPrefixResidue(hookPg);
+      },
+      {
+        afterAccessStageCPreparation: async ({ pg: hookPg, file }) => {
+          if (file !== MIGRATION) return;
+          await authorizeAccessStageCRelease(hookPg);
+        },
+      },
+    );
+    try {
+      const pg = migrated.pg;
+      assert.ok(
+        migrated.report.applied.includes(MIGRATION),
+        `0426 did not apply over the residue: ${JSON.stringify(migrated.report.failedAtRuntime)}`,
+      );
+
+      // The widened columns only exist if the stale tables were really dropped
+      // and rebuilt, because `create table if not exists` would have kept the
+      // narrow shape installed above.
+      const widened = await rows<{ column_name: string }>(
+        pg,
+        `select column_name from information_schema.columns
+          where table_schema='public'
+            and ((table_name='account_access_cutover_repair_dispositions'
+                  and column_name in ('evidence_hash','issue_ids'))
+              or (table_name='account_access_cutover_repair_receipts'
+                  and column_name in ('evidence_before','evidence_after',
+                                      'evidence_before_hash','evidence_after_hash')))
+          order by column_name`,
+      );
+      assert.deepEqual(
+        widened.map((row) => row.column_name),
+        ['evidence_after', 'evidence_after_hash', 'evidence_before',
+         'evidence_before_hash', 'evidence_hash', 'issue_ids'],
+      );
+
+      // The completed contract retires the whole repair seam, so NO overload
+      // of the disposition RPC may survive. The migration drops the stale
+      // 18-argument shape by identity early and the 19-argument final shape at
+      // the end; if either drop stopped matching, a service-role callable
+      // repair seam would be left behind here.
+      const overloads = await rows<{ args: string }>(
+        pg,
+        `select pg_get_function_identity_arguments(p.oid) as args
+           from pg_proc p
+          where p.pronamespace='public'::regnamespace
+            and p.proname='staxis_access_stage_c_record_repair_disposition'`,
+      );
+      assert.deepEqual(overloads.map((row) => row.args), []);
+    } finally {
+      await migrated.pg.close();
+    }
+  });
+
+  test('refuses to drop a residue relation that still holds evidence', async () => {
+    const migrated = await applyMigrationsToPgliteWithHook(
+      async ({ pg: hookPg, file }) => {
+        if (file !== MIGRATION) return;
+        await seedStageCFixture(hookPg);
+        await installAbandonedPrefixResidue(hookPg);
+        await hookPg.query(
+          `insert into public.account_access_cutover_recovery_actions(action)
+           values ('an operator recorded this before the window was abandoned')`,
+        );
+      },
+      {
+        afterAccessStageCPreparation: async ({ pg: hookPg, file }) => {
+          if (file !== MIGRATION) return;
+          await authorizeAccessStageCRelease(hookPg);
+        },
+      },
+    );
+    try {
+      const failure = migrated.report.failedAtRuntime.find((entry) => entry.file === MIGRATION);
+      assert.ok(failure, '0426 should have refused the non-empty residue relation');
+      assert.match(failure.error, /account_access_cutover_recovery_actions/);
+      assert.match(failure.error, /1 row\(s\) of cutover evidence/);
+
+      // The operator's row is still there to be read.
+      const kept = await rows<{ count: number }>(
+        migrated.pg,
+        `select count(*)::integer as count
+           from public.account_access_cutover_recovery_actions`,
+      );
+      assert.equal(Number(kept[0].count), 1);
+    } finally {
+      await migrated.pg.close();
+    }
+  });
+});

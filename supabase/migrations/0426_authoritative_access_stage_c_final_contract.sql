@@ -28,6 +28,70 @@ begin
 end
 $requirements$;
 
+-- ---------------------------------------------------------------------------
+-- Abandoned-prefix residue reconciliation.  Idempotent; a no-op on a fresh
+-- database.
+--
+-- Everything above the @access-stage-c-release-gate marker runs in autocommit,
+-- statement by statement, on purpose: a failed final gate must leave the
+-- preflight issue rows readable by the operator.  The consequence is that an
+-- abandoned cutover window can commit the prefix and stop at the gate, which
+-- is exactly what happened once against production with an EARLIER draft of
+-- this file.  Four evidence tables, their immutability triggers, and one
+-- older overload of the disposition RPC were left behind at that draft's
+-- shape.
+--
+-- The stale RPC overload is already handled further down by an explicit
+-- `drop function ... (18 args)`.  The tables are not: `create table if not
+-- exists` will not reshape a relation that already exists, so without this
+-- block a re-run keeps the older draft's narrow column set and then fails
+-- inside the destructive suffix when a canonical writer references
+-- `issue_ids`, `evidence_hash`, or the `evidence_before`/`evidence_after`
+-- pair.
+--
+-- A stopped prefix always leaves these tables EMPTY, and that is the only
+-- condition under which this block acts.  A row in any of them means the
+-- table holds real cutover evidence rather than residue, so the migration
+-- refuses instead of destroying it.  Once 0426 is recorded as applied the
+-- block never runs again.
+-- ---------------------------------------------------------------------------
+do $residue$
+declare
+  v_relation text;
+  v_rows bigint;
+  -- Child before parent: repair_receipts.disposition_id references
+  -- repair_dispositions.
+  v_residue text[] := array[
+    'account_access_cutover_repair_receipts',
+    'account_access_cutover_repair_dispositions',
+    'account_access_cutover_release_receipts',
+    'account_access_cutover_recovery_actions'
+  ];
+begin
+  if exists (
+    select 1 from public.applied_migrations where version = '0426'
+  ) then
+    return;
+  end if;
+
+  foreach v_relation in array v_residue loop
+    if to_regclass('public.' || v_relation) is not null then
+      execute format('select count(*) from public.%I', v_relation) into v_rows;
+      if v_rows > 0 then
+        raise exception
+          '0426 will not drop %: it holds % row(s) of cutover evidence, not abandoned-prefix residue',
+          v_relation, v_rows
+          using errcode = '55000';
+      end if;
+    end if;
+  end loop;
+
+  foreach v_relation in array v_residue loop
+    execute format('drop table if exists public.%I cascade', v_relation);
+  end loop;
+end
+$residue$;
+
 alter table public.account_access_cutover_status
   add column if not exists final_preflight_run_id uuid
     references public.account_access_cutover_preflight_runs(id),

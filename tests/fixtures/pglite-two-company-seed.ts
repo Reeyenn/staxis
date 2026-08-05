@@ -638,8 +638,8 @@ export async function seedLargeCompany(
     [UID_CARL],
   );
   await pg.query(
-    `insert into accounts (id, username, password_hash, display_name, role, property_access, data_user_id)
-     values ($1, 'carl', 'x', 'Carl', 'general_manager', '{}', $2)
+    `insert into accounts (id, username, password_hash, display_name, role, data_user_id)
+     values ($1, 'carl', 'x', 'Carl', 'general_manager', $2)
      on conflict (id) do nothing`,
     [ACCOUNT_CARL, UID_CARL],
   );

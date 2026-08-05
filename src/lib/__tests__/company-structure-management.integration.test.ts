@@ -7,7 +7,7 @@ import assert from 'node:assert/strict';
 import { after, before, describe, test } from 'node:test';
 import type { PGlite } from '@electric-sql/pglite';
 
-import { applyMigrationsToPgliteThrough } from '../../../tests/fixtures/pglite-migrate';
+import { applyMigrationsToPglite } from '../../../tests/fixtures/pglite-migrate';
 import {
   ACCOUNT_ANA,
   ACCOUNT_ADMIN,
@@ -72,7 +72,7 @@ describe('company structure management — real SQL tenant and lifecycle boundar
   let seed: Awaited<ReturnType<typeof seedTwoCompanies>>;
 
   before(async () => {
-    const migrated = await applyMigrationsToPgliteThrough('0425');
+    const migrated = await applyMigrationsToPglite();
     pg = migrated.pg;
     seed = await seedTwoCompanies(pg);
 
@@ -115,8 +115,8 @@ describe('company structure management — real SQL tenant and lifecycle boundar
     );
     await pg.query(
       `insert into accounts (
-         id, username, password_hash, display_name, role, property_access, data_user_id
-       ) values ($1, 'mixed-structure', 'x', 'Mixed Structure Actor', 'front_desk', '{}', $2)`,
+         id, username, password_hash, display_name, role, data_user_id
+       ) values ($1, 'mixed-structure', 'x', 'Mixed Structure Actor', 'front_desk', $2)`,
       [MIXED_ACCOUNT, MIXED_UID],
     );
     const mixedMembership = await pg.query<{ id: string }>(

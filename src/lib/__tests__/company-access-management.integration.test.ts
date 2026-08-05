@@ -7,7 +7,7 @@ import assert from 'node:assert/strict';
 import { after, before, describe, test } from 'node:test';
 import type { PGlite } from '@electric-sql/pglite';
 
-import { applyMigrationsToPgliteThrough } from '../../../tests/fixtures/pglite-migrate';
+import { applyMigrationsToPglite } from '../../../tests/fixtures/pglite-migrate';
 import {
   ACCOUNT_ANA,
   ACCOUNT_FIONA,
@@ -68,8 +68,8 @@ async function createPlainMembership(
   await pg.query(`insert into auth.users (id, email) values ($1, $2)`, [userId, `${username}@example.test`]);
   await pg.query(
     `insert into accounts (
-       id, username, password_hash, display_name, role, property_access, data_user_id
-     ) values ($1, $2, 'x', $3, 'front_desk', '{}', $4)`,
+       id, username, password_hash, display_name, role, data_user_id
+     ) values ($1, $2, 'x', $3, 'front_desk', $4)`,
     [accountId, username, `${username} Person`, userId],
   );
   const result = await pg.query<{ id: string }>(
@@ -153,7 +153,7 @@ describe('company access management — real SQL lifecycle and tenant boundaries
   let recursiveTargetMembership: string;
 
   before(async () => {
-    const migrated = await applyMigrationsToPgliteThrough('0425');
+    const migrated = await applyMigrationsToPglite();
     pg = migrated.pg;
     await seedTwoCompanies(pg);
     await pg.query(

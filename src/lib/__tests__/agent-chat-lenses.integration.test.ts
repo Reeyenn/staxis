@@ -63,7 +63,7 @@ import { executeTool, getToolsForRole, type ToolContext, type ToolResult } from 
 import { loadAgentUserCtx } from '@/app/api/agent/command/_stream-runner';
 import { POST as commandPost } from '@/app/api/agent/command/route';
 
-import { applyMigrationsToPgliteThrough } from '../../../tests/fixtures/pglite-migrate';
+import { applyMigrationsToPglite } from '../../../tests/fixtures/pglite-migrate';
 import { createPglitePostgrest, loadCatalog, type PglitePostgrest } from '../../../tests/fixtures/postgrest-pglite';
 import {
   ACCOUNT_ADMIN,
@@ -140,7 +140,7 @@ async function factRow(propertyId: string, topic: string) {
 // ─── Fixture ────────────────────────────────────────────────────────────────
 
 before(async () => {
-  const migrated = await applyMigrationsToPgliteThrough('0425');
+  const migrated = await applyMigrationsToPglite();
   pg = migrated.pg;
   const catalog = await loadCatalog(pg);
   shim = createPglitePostgrest(pg, catalog);
@@ -158,8 +158,8 @@ before(async () => {
   // the reason the chat cannot read a single global role word.
   await pg.query("insert into auth.users (id, email) values ($1, 'dale@example.test') on conflict (id) do nothing", [UID_DALE]);
   await pg.query(
-    `insert into accounts (id, username, password_hash, display_name, role, property_access, data_user_id)
-     values ($1, 'dale', 'x', 'Dale', 'general_manager', '{}', $2) on conflict (id) do nothing`,
+    `insert into accounts (id, username, password_hash, display_name, role, data_user_id)
+     values ($1, 'dale', 'x', 'Dale', 'general_manager', $2) on conflict (id) do nothing`,
     [ACCOUNT_DALE, UID_DALE],
   );
   await pg.query(
@@ -168,8 +168,8 @@ before(async () => {
   );
   await pg.query("insert into auth.users (id, email) values ($1, 'wrench@example.test') on conflict (id) do nothing", [UID_WRENCH]);
   await pg.query(
-    `insert into accounts (id, username, password_hash, display_name, role, property_access, data_user_id)
-     values ($1, 'wrench', 'x', 'Wrench', 'maintenance', '{}', $2) on conflict (id) do nothing`,
+    `insert into accounts (id, username, password_hash, display_name, role, data_user_id)
+     values ($1, 'wrench', 'x', 'Wrench', 'maintenance', $2) on conflict (id) do nothing`,
     [ACCOUNT_WRENCH, UID_WRENCH],
   );
   await pg.query(

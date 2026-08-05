@@ -9,7 +9,7 @@ import assert from 'node:assert/strict';
 import { after, before, describe, test } from 'node:test';
 import type { PGlite } from '@electric-sql/pglite';
 
-import { applyMigrationsToPgliteThrough } from '../../../tests/fixtures/pglite-migrate';
+import { applyMigrationsToPglite } from '../../../tests/fixtures/pglite-migrate';
 import {
   ACCOUNT_ADMIN,
   ACCOUNT_ANA,
@@ -77,7 +77,7 @@ async function visibleNudgeCount(authUserId: string): Promise<number> {
 }
 
 before(async () => {
-  const migrated = await applyMigrationsToPgliteThrough('0425');
+  const migrated = await applyMigrationsToPglite();
   assert.ok(
     migrated.report.applied.some((file) => file.startsWith('0395_')),
     'the property-scoped recipient migration must be active',

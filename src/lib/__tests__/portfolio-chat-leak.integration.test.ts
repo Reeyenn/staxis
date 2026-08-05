@@ -86,7 +86,7 @@ import type {
 } from '@/lib/company/management-patterns/portfolio-findings';
 import { stableFingerprint } from '@/lib/company/management-patterns/canonical';
 
-import { applyMigrationsToPgliteThrough } from '../../../tests/fixtures/pglite-migrate';
+import { applyMigrationsToPglite } from '../../../tests/fixtures/pglite-migrate';
 import {
   createPglitePostgrest,
   loadCatalog,
@@ -462,7 +462,7 @@ const activeFindingLoader: PortfolioPostDependencies['loadPortfolioFindings'] = 
 };
 
 before(async () => {
-  const migrated = await applyMigrationsToPgliteThrough('0425');
+  const migrated = await applyMigrationsToPglite();
   pg = migrated.pg;
   const catalog = await loadCatalog(pg);
   shim = createPglitePostgrest(pg, catalog);

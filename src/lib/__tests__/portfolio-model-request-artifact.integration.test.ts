@@ -14,7 +14,7 @@ import {
   type PortfolioFindingReceiptV1,
 } from '@/lib/agent/portfolio-intelligence/pattern-contract';
 
-import { applyMigrationsToPgliteThrough } from '../../../tests/fixtures/pglite-migrate';
+import { applyMigrationsToPglite } from '../../../tests/fixtures/pglite-migrate';
 import {
   ACCOUNT_MARIA,
   ORG_A,
@@ -268,7 +268,7 @@ describe('0399 exact portfolio model request artifacts', () => {
   };
 
   before(async () => {
-  const migrated = await applyMigrationsToPgliteThrough('0425');
+  const migrated = await applyMigrationsToPglite();
     pg = migrated.pg;
     const failure = migrated.report.failedAtRuntime.find(
       (entry) => entry.file === '0399_portfolio_model_request_artifacts.sql',

@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { after, before, describe, test } from 'node:test';
 import type { PGlite } from '@electric-sql/pglite';
 
-import { applyMigrationsToPgliteThrough } from '../../../tests/fixtures/pglite-migrate';
+import { applyMigrationsToPglite } from '../../../tests/fixtures/pglite-migrate';
 import {
   PID_A1,
   PID_B1,
@@ -84,7 +84,7 @@ async function seedPmsProperty(propertyId: string, roomNumber: string, housekeep
 }
 
 before(async () => {
-  const migrated = await applyMigrationsToPgliteThrough('0425');
+  const migrated = await applyMigrationsToPglite();
   assert.equal(
     migrated.report.failedAtRuntime.some((failure) => failure.file.startsWith('0398_')),
     false,
