@@ -69,6 +69,13 @@ import {
   type SleepReason,
 } from '@/lib/companion/copy';
 import {
+  decideNoticeAnnouncement,
+  newestNoticeAt,
+  sortNotices,
+  unreadNotices,
+  type AssignmentNotice,
+} from '@/lib/companion/notices';
+import {
   resolveDestination,
   tourFor,
   pageForPath,
@@ -90,6 +97,9 @@ interface Bootstrap {
   memory: CompanionMemory;
   wizardAlreadyRan: boolean;
   candidates: CompanionCandidate[];
+  /** Assignment notices for this person at this hotel. Empty for a hat with
+   *  no chat, because the route ships none. See notices-server.ts. */
+  notices?: AssignmentNotice[];
   availability: { awake: boolean; reason: SleepReason | null };
 }
 
@@ -104,7 +114,14 @@ export type CompanionShowing =
       severity: CompanionSeverity;
     }
   | { kind: 'teach'; flow: TeachFlow; text: string; example: string; severity: CompanionSeverity }
-  | { kind: 'arrived'; line: string; severity: CompanionSeverity };
+  | { kind: 'arrived'; line: string; severity: CompanionSeverity }
+  /**
+   * The batched notices line. One utterance about however many things landed,
+   * with two answers: show me the list, or close it. See notices.ts for why
+   * this class of speech is exempt from the daily caps and what it is still
+   * bound by.
+   */
+  | { kind: 'notices'; line: string; through: string };
 
 /**
  * The one clause the peek shows on hover.
@@ -177,8 +194,17 @@ export interface CompanionApi {
   opening: string | null;
   /** The once-a-day hello, while it is being said. Null the rest of the time. */
   hello: string | null;
-  /** The screen the person is standing on, for the panel's eyebrow. */
+  /** The screen the person is standing on. */
   page: CompanionPage | null;
+  /**
+   * The HOTEL's own calendar day, YYYY-MM-DD, or null before the bootstrap.
+   *
+   * Exposed so a surface that groups by day (the notices list) uses the same
+   * day boundary the manners engine does. A night auditor at 1am and a GM at
+   * 9am are on the same day by the browser's clock and different ones by the
+   * hotel's, and the hotel's is the one the whole product counts by.
+   */
+  today: string | null;
   /** The role-sized tour, or empty when there is nothing worth touring. */
   tour: readonly CompanionPage[];
   tourStep: number | null;
@@ -211,6 +237,18 @@ export interface CompanionApi {
    * would arrive through the back door of persistence.
    */
   liveOffer: CompanionOffer | null;
+  /** Every assignment notice in the window, newest first. See notices.ts. */
+  notices: readonly AssignmentNotice[];
+  /** How many of them this person has not opened the list on. */
+  unreadNoticeCount: number;
+  /** When they last opened the list, ISO, or null for never. */
+  noticesSeenAt: string | null;
+  /**
+   * They opened the list. Advances the read cursor on the server and locally,
+   * so the count clears without a second read. Safe to call repeatedly: the
+   * reducer is monotonic and the effect is idempotent within a moment.
+   */
+  markNoticesRead: () => void;
   /** The Trace. See CompanionTraceApi. */
   trace: CompanionTraceApi;
 }
@@ -234,6 +272,13 @@ export interface CompanionPanelLink {
   onOffer: (offer: CompanionOffer) => void;
   /** The companion opened a thread by speaking; the panel should adopt it. */
   onConversation: (conversationId: string) => void;
+  /**
+   * Somebody said yes to the notices line. The panel owns the list surface, so
+   * the hook asks for it rather than rendering one: the same seam as `onSeed`,
+   * and for the same reason. A companion with no panel attached simply has
+   * nowhere to show it, which is the honest degradation.
+   */
+  onShowNotices: () => void;
 }
 
 /**
@@ -251,6 +296,7 @@ const DETACHED_PANEL: CompanionPanelLink = {
   offers: [],
   onOffer: () => {},
   onConversation: () => {},
+  onShowNotices: () => {},
 };
 
 /** Screens a trace can be about. Anything else asks for nothing. */
@@ -404,7 +450,7 @@ export function useCompanion(
   const [liveOffer, setLiveOffer] = useState<CompanionOffer | null>(null);
 
   const say = useCallback(async (
-    event: 'spoke' | 'greeted' | 'welcomed',
+    event: 'spoke' | 'greeted' | 'welcomed' | 'notices_announced',
     speech: {
       text: string;
       kind: CompanionOfferKind;
@@ -413,9 +459,12 @@ export function useCompanion(
       actions?: readonly CompanionOfferAction[];
     },
     optimistic: (m: CompanionMemory) => CompanionMemory,
+    /** Fields the event itself needs, beyond the sentence. */
+    extra: Record<string, unknown> = {},
   ) => {
     const offer = await remember(event, {
       ...(speech.topic ? { topic: speech.topic } : {}),
+      ...extra,
       text: speech.text,
       kind: speech.kind,
       page: speech.page ?? null,
@@ -449,6 +498,51 @@ export function useCompanion(
     setLiveOffer(null);
     return { offerId: live.id, offerState: state };
   }, []);
+
+  /**
+   * Take the pill and the mark's ring down without recording an answer.
+   *
+   * For the notices line, which is a MESSAGE rather than a question: it carries
+   * a button because there is somewhere useful to go, not because the companion
+   * is asking permission for anything. It stays in the thread exactly as it was
+   * said, in the same unanswered state the once-a-day hello sits in, and no
+   * ledger hears about it either way. See the no-topic note where it is spoken.
+   */
+  const retireLiveOffer = useCallback(() => {
+    liveOfferRef.current = null;
+    setLiveOffer(null);
+  }, []);
+
+  // ── Notices ──────────────────────────────────────────────────────────────
+  //
+  // Derived on the server and shipped with the bootstrap, so the list costs no
+  // read of its own and the count on the strip is true the moment the panel
+  // mounts. Everything below is presentation over that one array.
+  const notices = useMemo(
+    () => sortNotices(boot?.notices ?? []),
+    [boot],
+  );
+  const unreadNoticeCount = useMemo(
+    () => unreadNotices(notices, boot?.memory.noticesSeenAt ?? null).length,
+    [notices, boot],
+  );
+
+  /**
+   * They opened the list.
+   *
+   * Optimistic locally and monotonic on the server, so the count clears at once
+   * and a second call (a re-open, a second tab) changes nothing. The cursor is
+   * the SERVER's clock; the optimistic value here is only so the badge does not
+   * hang around for the length of a round trip.
+   */
+  const markNoticesRead = useCallback(() => {
+    const newest = newestNoticeAt(notices);
+    if (!newest) return;
+    if (boot?.memory.noticesSeenAt && Date.parse(boot.memory.noticesSeenAt) >= Date.parse(newest)) {
+      return;
+    }
+    void remember('notices_seen', {}, (m) => ({ ...m, noticesSeenAt: new Date().toISOString() }));
+  }, [notices, boot, remember]);
 
   // ── The Trace ────────────────────────────────────────────────────────────
   //
@@ -540,6 +634,50 @@ export function useCompanion(
     if (speech.kind === 'silent') {
       if (speech.markWelcomed && boot.memory.welcomedAt === null) {
         void remember('welcomed', {}, (m) => ({ ...m, welcomedAt: new Date().toISOString() }));
+      }
+      // ── The fourth mouth ────────────────────────────────────────────────
+      //
+      // Reached only when the engine above had nothing operational to raise,
+      // which is what keeps "one thing, never two" true: a hotel with a real
+      // problem in it gets told about the problem, and the notices line waits
+      // for the next screen. What it does NOT wait for is a cap — every
+      // silence reason above, including `daily_cap_reached` and the hello
+      // having already gone out, lands here and the announcement still fires.
+      // That is the founder's exemption, made structural by position.
+      //
+      // Nothing is announced on day one either: a welcome is not a silence, so
+      // this branch is not reached until somebody has actually been welcomed.
+      if (boot.memory.welcomedAt) {
+        const decision = decideNoticeAnnouncement({
+          notices: boot.notices ?? [],
+          announcedThrough: boot.memory.noticesAnnouncedThrough,
+          today: boot.hotel.today,
+          userIsBusy: busy,
+          quietThisSession,
+          aiAwake: boot.availability.awake,
+        });
+        if (decision.announce) {
+          const key = `notices:${decision.through}`;
+          if (spokenFor.current === key) return;
+          spokenFor.current = key;
+          setShowing({ kind: 'notices', line: decision.line, through: decision.through });
+          void say('notices_announced', {
+            kind: 'offer',
+            // No topic. The never-nag ledger counts declines per TOPIC and
+            // drops one for good after two, which is right for something the
+            // companion noticed and catastrophic for a message a colleague
+            // sent: waving away "Sarah gave you 3 things" twice must not
+            // switch off assignment notices forever. What stops this line
+            // repeating is the batch stamp, not a decline count.
+            text: decision.line,
+            actions: [
+              { label: labels.showNotices, kind: 'show' },
+              { label: labels.dismiss, kind: 'no' },
+            ],
+          }, (m) => ({ ...m, noticesAnnouncedThrough: decision.through }), {
+            through: decision.through,
+          });
+        }
       }
       return;
     }
@@ -669,6 +807,14 @@ export function useCompanion(
     const current = showing;
     setShowing({ kind: 'none' });
     setTourStep(null);
+    // A No to the notices line is "not now", and it is recorded nowhere. The
+    // batch stamp already stopped it repeating, and counting it as a decline
+    // would put it two dismissals away from switching off the only way this
+    // person hears that a colleague handed them work.
+    if (current.kind === 'notices') {
+      retireLiveOffer();
+      return;
+    }
     if (current.kind === 'speech' && current.speech.kind === 'offer') {
       const topic = current.speech.topic;
       // ONE call. `declined` is what counts the No in companion_memory; the
@@ -689,7 +835,7 @@ export function useCompanion(
       void remember('tour_declined', { ...stampLive(null, 'declined') },
         (m) => ({ ...m, tourDeclined: true }));
     }
-  }, [showing, remember, stampLive]);
+  }, [showing, remember, stampLive, retireLiveOffer]);
 
   const answerYes = useCallback(() => {
     const current = showing;
@@ -735,10 +881,21 @@ export function useCompanion(
       onSeed(example);
       return;
     }
+    // "Show me" on the notices line. Opening the list IS reading it, so the
+    // cursor moves here rather than waiting for somebody to scroll: the count
+    // is a promise that there is something in there they have not seen, and it
+    // stops being true the moment the list is in front of them.
+    if (current.kind === 'notices') {
+      setShowing({ kind: 'none' });
+      retireLiveOffer();
+      panelRef.current.onShowNotices();
+      markNoticesRead();
+      return;
+    }
     setShowing({ kind: 'none' });
   }, [
     showing, startTour, role, activeProperty?.enabledSections, goTo, remember, onSeed,
-    traces.patterns, tracePage, stampLive,
+    traces.patterns, tracePage, stampLive, markNoticesRead, retireLiveOffer,
   ]);
 
   const dismiss = useCallback(() => {
@@ -819,6 +976,14 @@ export function useCompanion(
     if (showing.kind === 'speech' && showing.speech.kind === 'offer') {
       const text = showing.speech.sentence.trim();
       if (text) return { text, severity: showing.severity };
+    }
+    // Work that landed on this person, or came back to them. It rides the same
+    // pill as everything else the companion says first, and it outranks the
+    // hello for the obvious reason: a colleague addressed this to them, and a
+    // good morning did not.
+    if (showing.kind === 'notices') {
+      const text = showing.line.trim();
+      if (text) return { text, severity: 'ok' };
     }
     // The honest end of a walk that arrived too late. It rides the same pill
     // because it is the same kind of thing: one clause, true and current. A
@@ -1190,6 +1355,7 @@ export function useCompanion(
     opening,
     hello,
     page,
+    today: boot?.hotel.today ?? null,
     tour,
     tourStep,
     answerYes,
@@ -1203,6 +1369,10 @@ export function useCompanion(
     showPatternByHint,
     dismissOffer,
     liveOffer,
+    notices,
+    unreadNoticeCount,
+    noticesSeenAt: boot?.memory.noticesSeenAt ?? null,
+    markNoticesRead,
     trace: {
       showing: traceShowing,
       stale: traceStale,

@@ -95,6 +95,7 @@ describe('the door knows every drawer', () => {
    * spells that out rather than leaving the arithmetic to a reader.
    */
   const KNOWN_STORES = [
+    'assignment_history',
     'company_knowledge',
     'hotel_identity',
     'hotel_snapshot',
@@ -117,9 +118,16 @@ describe('the door knows every drawer', () => {
     );
   });
 
-  test('the doc\'s twelve are covered by eleven registrations plus one shared store', () => {
+  test('the doc\'s thirteen are covered by twelve registrations plus one shared store', () => {
+    // Twelve registrations now. `assignment_history` (2026-08-05) is the
+    // thirteenth item in the doc and the twelfth registration: an on-demand,
+    // person-scoped store read by the companion's notices list and by the
+    // staxis_assignments tool from one query. It is registered even though it
+    // is never injected, because "not in a prompt" is not the same as "not
+    // knowledge", and the scope of a store that answers what one person was
+    // asked to do is exactly what this file exists to make somebody review.
     const companyPresentations = knowledgeStore('company_knowledge').presentations;
-    assert.equal(KNOWN_STORES.length, 11);
+    assert.equal(KNOWN_STORES.length, 12);
     assert.equal(
       companyPresentations.length, 2,
       'company_knowledge is the store the doc counts twice, because it has two renderings. '

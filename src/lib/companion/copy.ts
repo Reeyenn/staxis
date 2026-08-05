@@ -433,25 +433,16 @@ export function companionLabels(): Record<string, string> {
     backToCorner: 'Back to the corner',
     noPastChats: 'No past chats yet',
     undo: 'Undo',
+    // ─── Notices ───────────────────────────────────────────────────────────
+    // "Notices", everywhere, and never "notifications" or "alerts". A notice is
+    // something a colleague put in front of you; a notification is something an
+    // app decided you should look at, and the word carries every habit this
+    // product is trying not to have.
+    notices: 'Notices',
+    showNotices: 'Show me',
+    openNotices: 'Open notices',
+    closeNotices: 'Close notices',
   };
-}
-
-// ─── The panel's eyebrow ────────────────────────────────────────────────────
-
-/**
- * The one line of status at the top of the open panel.
- *
- * Says where the person is standing, because a companion that answers about
- * the screen in front of you should be able to name it. Falls back to what it
- * is doing rather than to nothing: an empty eyebrow reads as a broken header.
- */
-export function panelEyebrow(input: {
-  page: CompanionPage | null;
-  streaming: boolean;
-}): string {
-  if (input.streaming) return 'Staxis · thinking…';
-  if (input.page) return `Staxis · on ${input.page.label.toLowerCase()}`;
-  return 'Staxis · thinking with you';
 }
 
 /** The counted heading over the past-chats list. */

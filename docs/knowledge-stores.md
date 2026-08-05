@@ -1,8 +1,8 @@
 # What the AI knows about a hotel
 
-Twelve different stores can answer some version of "what does Staxis know about this hotel". Each one has its own loader, its own cache policy, its own place in the prompt, and its own trust vocabulary. None of that is accidental — every one of them was built for a real reason — but the collection has never been described in one place, and the cost of that showed up in August 2026 when a review found that the code-owned safety rules governed one of the three model pipelines and not the other two.
+Thirteen different stores can answer some version of "what does Staxis know about this hotel". Each one has its own loader, its own cache policy, its own place in the prompt, and its own trust vocabulary. None of that is accidental — every one of them was built for a real reason — but the collection has never been described in one place, and the cost of that showed up in August 2026 when a review found that the code-owned safety rules governed one of the three model pipelines and not the other two.
 
-This document is the map. It is a decision doc, not executable metadata: the authority for what actually gets injected is the assembler in `src/lib/agent/prompts.ts`, its portfolio twin in `src/lib/agent/portfolio/prompt.ts`, and the walkthrough's in `src/lib/walkthrough-step.ts`. Read this before adding a thirteenth store.
+This document is the map. It is a decision doc, not executable metadata: the authority for what actually gets injected is the assembler in `src/lib/agent/prompts.ts`, its portfolio twin in `src/lib/agent/portfolio/prompt.ts`, and the walkthrough's in `src/lib/walkthrough-step.ts`. Read this before adding a fourteenth store.
 
 ## The three pipelines
 
@@ -71,11 +71,13 @@ Ordered by scope, then authority.
 
 **10. Lenses.** `src/lib/agent/lenses.ts`. Instruction. Pure code, no table, no cache. Stable block, and it **replaces** the `agent_prompts` role row rather than layering on it — `prompts-store` maps `front_desk` to the general manager's row, so layering would leave the model holding two job descriptions and picking. Hotel chat only.
 
-**11. Situational awareness.** `src/lib/agent/awareness.ts`, over nine tables. Fact: the clock, the screen, what this person did today, what is waiting on them. `<staxis-awareness trust="system">`. Dynamic block. 20-second TTL on the DB-backed feeds only; the clock is rendered fresh every turn. Hotel chat only. **The one envelope-wrapped store with no version constant**, so "which awareness rendering ran on this turn" is not answerable from `agent_messages.prompt_version` the way every other tier is.
+**11. Assignment history.** `src/lib/companion/notices-server.ts` over `comms_tasks` (and `gatherAssignedByMe` in `src/lib/worklist/core.ts`). Fact: who asked whom to do what, when, and whether it was done or refused with the reason. **Not injected at all** — like the knowledge hub it arrives mid-conversation, as a tool result from `staxis_assignments`. No cache, no envelope, no version constant, no prompt formatter. Person scope rather than hotel scope even though the rows belong to a hotel: the loader filters on the asking person's own `staff.id` in the query, so it can only ever return work they handed out or work they were handed, and there is no argument that widens it. The companion's notices list reads the same function, which is why the answer in the chat and the list in the panel cannot disagree. Added 2026-08-05.
+
+**12. Situational awareness.** `src/lib/agent/awareness.ts`, over nine tables. Fact: the clock, the screen, what this person did today, what is waiting on them. `<staxis-awareness trust="system">`. Dynamic block. 20-second TTL on the DB-backed feeds only; the clock is rendered fresh every turn. Hotel chat only. **The one envelope-wrapped store with no version constant**, so "which awareness rendering ran on this turn" is not answerable from `agent_messages.prompt_version` the way every other tier is.
 
 ### Deployment scope
 
-**12. Prompt rows.** `agent_prompts` via `src/lib/agent/prompts-store.ts`: the base prompt, the role prompts, and the PMS family addendum. Instruction. The family rows alone are fenced, in `<staxis-pms-family trust="untrusted">`. Stable block. 30-second TTL over the whole table, not keyed by hotel. Hotel chat and portfolio chat; the walkthrough does not read them, which is correct — it is not a hotel conversation and has its own job description.
+**13. Prompt rows.** `agent_prompts` via `src/lib/agent/prompts-store.ts`: the base prompt, the role prompts, and the PMS family addendum. Instruction. The family rows alone are fenced, in `<staxis-pms-family trust="untrusted">`. Stable block. 30-second TTL over the whole table, not keyed by hotel. Hotel chat and portfolio chat; the walkthrough does not read them, which is correct — it is not a hotel conversation and has its own job description.
 
 ## The duplication
 
