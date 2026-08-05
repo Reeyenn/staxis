@@ -72,8 +72,13 @@ describe('AI Control Center feature registry', () => {
   // 2026-08-03: inventory sheet import got its own slot so the one-off setup
   // reader can be moved or switched off without touching the weekly invoice
   // scanner (26→27 controllable, 33→34 keys). Display-only count unchanged.
-  test('covers 27 controllable hosted features and 7 display-only features', () => {
-    assert.equal(AI_FEATURE_KEYS.length, 34);
+  // 2026-08-05: the Staxis list's to-do row got an optional second reading of a
+  // typed sentence, on its own slot so it can be moved or switched off without
+  // touching anything else (27→28 controllable, 34→35 keys). It is the one
+  // feature whose switch being OFF is a supported, invisible outcome: the plain
+  // code path already read the sentence. Display-only count unchanged.
+  test('covers 28 controllable hosted features and 7 display-only features', () => {
+    assert.equal(AI_FEATURE_KEYS.length, 35);
     assert.equal(new Set(AI_FEATURE_KEYS).size, AI_FEATURE_KEYS.length);
     assert.deepEqual(Object.keys(AI_FEATURE_REGISTRY).sort(), [...AI_FEATURE_KEYS].sort());
 
@@ -112,6 +117,7 @@ describe('AI Control Center feature registry', () => {
     const haiku = [
       'agent.conversation_summary',
       'communications.action_detection',
+      'feed.todo_reading',
       'communications.announcement_polish',
       'communications.message_translation',
       'housekeeping.notice_translation',

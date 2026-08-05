@@ -28,6 +28,7 @@ export const AI_FEATURE_KEYS = [
   'findings.sweep',
   'findings.brief',
   'walkthrough.step_generation',
+  'feed.todo_reading',
   'inventory.photo_count',
   'inventory.invoice_scan',
   'inventory.sheet_import',

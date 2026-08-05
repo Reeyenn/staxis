@@ -19,6 +19,10 @@
 // ═══════════════════════════════════════════════════════════════════════════
 
 import type { AssignedByMeItem, WorklistItem } from '@/lib/worklist/types';
+// Type-only, so nothing at runtime travels back the other way: parse-todo.ts
+// imports WEEKDAYS and whichDayQuestion FROM here, and a value import in this
+// direction would close the loop.
+import type { ComposerPerson, ParseQuestion } from './parse-todo';
 
 /**
  * The front half of a row: who this is from, or nothing.
@@ -137,6 +141,144 @@ export function emptyListNote(opts: { canSeeFindings: boolean }): string {
   return opts.canSeeFindings
     ? 'Nothing is waiting on you right now. Anything Staxis notices will land here.'
     : 'Nothing is waiting on you right now.';
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// The "add a to-do" row
+//
+// Three words on the right of the row read back what the row is about to do:
+// `for you · today · once`. They are the whole readback AND the whole
+// direct-choice affordance, so every one of them is always answered and none of
+// them is ever blank. The producers below are the only place those words are
+// written, which is what keeps the readback and the buttons from drifting.
+// ═══════════════════════════════════════════════════════════════════════════
+
+/**
+ * The role targets a to-do can be handed to.
+ *
+ * HOUSEKEEPING IS NOT HERE, and neither are housekeepers in the people list —
+ * see HOUSEKEEPER_NOTE. Offering a target whose work would land on a screen
+ * they never open would be worse than not offering it.
+ */
+export const COMPOSER_ROLES: readonly { value: string; label: string }[] = [
+  { value: 'dept:front_desk', label: "Whoever's on front desk" },
+  { value: 'dept:maintenance', label: 'Maintenance' },
+  { value: 'dept:all_staff', label: 'Everyone' },
+];
+
+export const HOUSEKEEPER_NOTE =
+  'Housekeepers work from the housekeeping board, so they are not on this list.';
+
+/** Every fixed sentence the composer says. No em dashes, English only. */
+export const COMPOSER_COPY = {
+  /** The idle prompt, before anybody has touched the row. */
+  prompt: 'Add something.',
+  /** The prompt once somebody has opened the buttons without typing. */
+  promptChoosing: 'What needs doing?',
+  /** Under the row while the mic is held. */
+  speaking: 'Let go when you are done. The words go in the same place.',
+  /** Under the row when the to-do repeats. */
+  repeating: 'It comes back on its own.',
+  /** The mono hint where an Add button would have been. There is no Add button. */
+  enter: 'Enter',
+  enterToAdd: 'Enter to add',
+  adding: 'Adding',
+  /** Shown once, ever, after somebody's first plain-sentence to-do. */
+  repeatTeach: 'You can also write when it repeats, like every Friday.',
+  /** Accessible names for the three words. */
+  whoLabel: 'Who',
+  whenLabel: 'When',
+  repeatLabel: 'Repeat',
+  startsLabel: 'Starts',
+} as const;
+
+/** "for you" | "for Marcus" | "for whoever's on front desk". */
+export function whoWord(who: string, people: readonly ComposerPerson[]): string {
+  if (!who || who === 'me') return 'for you';
+  const role = COMPOSER_ROLES.find((r) => r.value === who);
+  // Lowercased because it is mid-sentence: "for whoever's on front desk".
+  if (role) return `for ${role.label.charAt(0).toLowerCase()}${role.label.slice(1)}`;
+  const person = people.find((p) => p.staffId === who);
+  // A person keeps their capital, and only their first name: the row is a
+  // sentence, and nobody says "for Marcus Webb" out loud.
+  if (person?.name) return `for ${person.name.trim().split(/\s+/)[0]}`;
+  return 'for you';
+}
+
+/**
+ * "today" | "tomorrow" | "Friday" | "Aug 22".
+ *
+ * A repeating item has no single due date, so its word says where the run
+ * starts instead: "from today", "from Monday".
+ */
+export function whenWord(iso: string | null, now: Date, opts: { repeating?: boolean } = {}): string {
+  const plain = plainDay(iso, now);
+  return opts.repeating ? `from ${plain}` : plain;
+}
+
+function plainDay(iso: string | null, now: Date): string {
+  if (!iso) return 'today';
+  const d = new Date(`${iso}T12:00:00`);
+  if (Number.isNaN(d.getTime())) return 'today';
+  const days = Math.floor((startOfDay(d) - startOfDay(now)) / 86_400_000);
+  if (days === 0) return 'today';
+  if (days === 1) return 'tomorrow';
+  // Inside the coming week a weekday name is what a person would say. Beyond
+  // it, "Friday" stops being a date and starts being a guess.
+  if (days > 1 && days < 7) return WEEKDAYS[d.getDay()];
+  return shortDate(d);
+}
+
+/**
+ * "once" | "every day" | "every other Friday" | "every month on the 3rd".
+ *
+ * `repeatLabel` with its first letter dropped to lower case, and NOT
+ * `.toLowerCase()`: that would turn "Every other Friday" into a day of the week
+ * nobody writes. The switch itself is not duplicated.
+ */
+export function repeatWord(
+  repeat: string,
+  opts: { weekday?: number | null; dayOfMonth?: number | null } = {},
+): string {
+  const label = repeatLabel(repeat, opts);
+  return label.charAt(0).toLowerCase() + label.slice(1);
+}
+
+/**
+ * The one question this control is allowed to ask, and the only shape a
+ * question may take: a short line and two answers, both of which are correct.
+ *
+ * It is never an error. Nothing is red, the row is not blocked, and Enter still
+ * works and takes the FIRST answer.
+ */
+export function whichDayQuestion(dayName: string, iso: string, weekday: number): ParseQuestion {
+  return {
+    prompt: `Which ${dayName}?`,
+    choices: [
+      { label: `This ${dayName}`, patch: { when: iso, repeat: 'once', weekday } },
+      { label: `Every ${dayName}`, patch: { when: null, repeat: 'weekly', weekday } },
+    ],
+  };
+}
+
+/** "Enter takes this Friday." Says what pressing Enter right now would do. */
+export function enterTakesNote(firstChoiceLabel: string): string {
+  const phrase = firstChoiceLabel.charAt(0).toLowerCase() + firstChoiceLabel.slice(1);
+  return `Enter takes ${phrase}.`;
+}
+
+/**
+ * The receipt promise, when a to-do is going to somebody else.
+ *
+ * "their" rather than a guessed pronoun: the roster carries a name and nothing
+ * else, and a screen that guesses somebody's gender from their first name will
+ * be wrong about a real member of staff on a real morning.
+ */
+export function assignedNote(name: string): string {
+  const first = (name ?? '').trim().split(/\s+/)[0];
+  return first
+    ? `${first} sees it on their list today. You will see it come back.`
+    : 'They see it on their list today. You will see it come back.';
 }
 
 // ── helpers ────────────────────────────────────────────────────────────────

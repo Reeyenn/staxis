@@ -26,15 +26,23 @@ import type { LogEntryDTO } from '@/lib/comms/types';
 import type { KnowledgeEventDTO } from '@/lib/knowledge/types';
 import type { AssignedByMeItem, WorklistItem } from '@/lib/worklist/types';
 import {
+  assignedNote,
   assignedStateLine,
   completionNotice,
+  COMPOSER_COPY,
+  COMPOSER_ROLES,
   dueLine,
-  repeatLabel,
+  enterTakesNote,
+  HOUSEKEEPER_NOTE,
+  repeatWord,
   rowFrom,
   rowKindLabel,
   stalenessLine,
   WEEKDAYS,
+  whenWord,
+  whoWord,
 } from '@/lib/feed/one-list-copy';
+import type { ComposerPerson, ParseQuestion, ParseResult, RepeatChoice } from '@/lib/feed/parse-todo';
 
 import { CxIcon } from './icons';
 
@@ -215,32 +223,32 @@ export function LogRowView({ entry, onOpen }: { entry: LogEntryDTO; onOpen?: () 
 
 // ─── The inline composer ────────────────────────────────────────────────────
 
-/** What the Who chip can say. A department option is "whoever is on shift". */
-export interface ComposerPerson { staffId: string; name: string }
-
-export type RepeatChoice = 'once' | 'daily' | 'weekdays' | 'weekly' | 'biweekly' | 'monthly';
-
-export const REPEAT_CHOICES: readonly { value: RepeatChoice; label: string }[] = [
-  { value: 'once', label: 'Once' },
-  { value: 'daily', label: 'Daily' },
-  { value: 'weekly', label: 'Weekly' },
-  { value: 'biweekly', label: 'Biweekly' },
-  { value: 'monthly', label: 'Monthly' },
-];
+/** What the Who word can say. A department option is "whoever is on shift". */
+export type { ComposerPerson, RepeatChoice } from '@/lib/feed/parse-todo';
+export { COMPOSER_ROLES, HOUSEKEEPER_NOTE } from '@/lib/feed/one-list-copy';
 
 /**
- * The role targets. HOUSEKEEPING IS NOT HERE, AND NEITHER ARE HOUSEKEEPERS in
- * the people list — see HOUSEKEEPER_NOTE. Offering a target whose work would
- * land on a screen they never open would be worse than not offering it.
+ * The cadences the REPEAT row offers.
+ *
+ * `weekdays` is deliberately absent: it exists in the write path for templates
+ * created elsewhere, and offering "every weekday" beside "every day" on a row
+ * somebody is skimming is one distinction too many. The labels are the design's
+ * own words, so the button and the word above it are recognisably the same
+ * thing said twice.
  */
-export const COMPOSER_ROLES: readonly { value: string; label: string }[] = [
-  { value: 'dept:front_desk', label: "Whoever's on front desk" },
-  { value: 'dept:maintenance', label: 'Maintenance' },
-  { value: 'dept:all_staff', label: 'Everyone' },
+export const REPEAT_CHOICES: readonly { value: RepeatChoice; label: string }[] = [
+  { value: 'once', label: 'Once' },
+  { value: 'daily', label: 'Every day' },
+  { value: 'weekly', label: 'Every week' },
+  { value: 'biweekly', label: 'Every 2 weeks' },
+  { value: 'monthly', label: 'Every month' },
 ];
 
-export const HOUSEKEEPER_NOTE =
-  'Housekeepers work from the housekeeping board, so they are not on this list.';
+/** Which button row is open, if any. 'all' is the nothing-typed path. */
+export type ComposerRow = 'who' | 'when' | 'repeat' | 'all';
+
+/** How the value in a field was reached. Drives caramel against sage. */
+export type ComposerSource = 'default' | 'parsed' | 'chosen';
 
 export interface ComposerState {
   title: string;
@@ -251,11 +259,112 @@ export interface ComposerState {
   repeat: RepeatChoice;
   weekday: number;
   dayOfMonth: number;
+  /** Which button row is open, if any. */
+  openRow: ComposerRow | null;
+  /** Per field, how the current value was reached. */
+  source: { who: ComposerSource; when: ComposerSource; repeat: ComposerSource };
 }
 
 /** Type-and-enter means you, today, once. Nothing else to decide. */
 export function composerDefaults(todayIso: string, todayWeekday: number): ComposerState {
-  return { title: '', who: 'me', when: todayIso, repeat: 'once', weekday: todayWeekday, dayOfMonth: 1 };
+  return {
+    title: '',
+    who: 'me',
+    when: todayIso,
+    repeat: 'once',
+    weekday: todayWeekday,
+    dayOfMonth: 1,
+    openRow: null,
+    source: { who: 'default', when: 'default', repeat: 'default' },
+  };
+}
+
+function weekdayOfIso(iso: string, fallback: number): number {
+  const d = new Date(`${iso}T12:00:00`);
+  return Number.isNaN(d.getTime()) ? fallback : d.getDay();
+}
+
+/**
+ * Fold what the sentence said into the row.
+ *
+ * TWO RULES, and they are the whole of it.
+ *
+ * 1. A field somebody has TAPPED is never moved by typing. Once a person has
+ *    answered a question with their thumb, the sentence does not get to argue.
+ *
+ * 2. A field the parser already claimed is never quietly reverted. The lift is
+ *    destructive — "check the boiler every Friday" leaves "Check the boiler" in
+ *    the field, so the words that produced the cadence are GONE by the time the
+ *    next keystroke arrives. Re-deriving from the cleaned title would drop the
+ *    cadence on the very next letter typed. A parsed value therefore stands
+ *    until another parse claims the same field, or a button is tapped, or the
+ *    row is emptied (which resets everything, in `composerDefaults`).
+ */
+export function withParse(
+  state: ComposerState,
+  result: ParseResult,
+  todayWeekday: number,
+  opts: { whoAs?: ComposerSource } = {},
+): ComposerState {
+  const source = { ...state.source };
+  let { who, when, repeat, weekday, dayOfMonth } = state;
+
+  if (source.who !== 'chosen' && result.who) {
+    who = result.who;
+    // A NAME IN A SENTENCE IS SAGE, not caramel. Writing "have Marcus check the
+    // pool" is not something that was understood about the sentence; it is a
+    // person deciding, out loud, who the work is for. A day and a cadence are
+    // different: those are readings, and they wear caramel so a person can see
+    // that something was worked out rather than said. The optional model
+    // reading passes 'parsed' here, because a name it proposes IS a reading.
+    source.who = opts.whoAs ?? 'chosen';
+  }
+  if (source.repeat !== 'chosen' && result.repeat) {
+    repeat = result.repeat;
+    source.repeat = 'parsed';
+  }
+  if (source.when !== 'chosen' && result.when) {
+    when = result.when;
+    source.when = 'parsed';
+  }
+  if (typeof result.weekday === 'number') weekday = result.weekday;
+  else if (result.when) weekday = weekdayOfIso(result.when, todayWeekday);
+  if (typeof result.dayOfMonth === 'number') dayOfMonth = result.dayOfMonth;
+
+  return { ...state, title: result.title, who, when, repeat, weekday, dayOfMonth, source };
+}
+
+/**
+ * Apply an answer somebody tapped: the question's own patch, or a button.
+ *
+ * Everything it touches becomes 'chosen', which is what turns the word sage and
+ * what makes rule 1 above bite from then on.
+ */
+export function withChoice(
+  state: ComposerState,
+  patch: Partial<ParseResult>,
+  todayIso: string,
+  todayWeekday: number,
+): ComposerState {
+  const source = { ...state.source };
+  let { who, when, repeat, weekday, dayOfMonth } = state;
+  if ('who' in patch) { who = patch.who ?? 'me'; source.who = 'chosen'; }
+  if ('repeat' in patch) { repeat = patch.repeat ?? 'once'; source.repeat = 'chosen'; }
+  if ('when' in patch) {
+    // A repeating item has no single due date, so a null `when` in a patch is
+    // "start today", not "no day at all".
+    when = patch.when ?? todayIso;
+    source.when = 'chosen';
+  }
+  if (typeof patch.weekday === 'number') weekday = patch.weekday;
+  else if ('when' in patch && patch.when) weekday = weekdayOfIso(patch.when, todayWeekday);
+  // Turning a one-off into a weekly one has to pick a day, and the only honest
+  // answer is the day it was already going to happen on.
+  else if ('repeat' in patch && (patch.repeat === 'weekly' || patch.repeat === 'biweekly')) {
+    weekday = weekdayOfIso(when, todayWeekday);
+  }
+  if (typeof patch.dayOfMonth === 'number') dayOfMonth = patch.dayOfMonth;
+  return { ...state, who, when, repeat, weekday, dayOfMonth, source };
 }
 
 /** What the composer sends. Pure, so the defaults are provable without a fetch. */
@@ -303,143 +412,360 @@ export function composerPayload(state: ComposerState, meStaffId: string | null):
 }
 
 export interface ComposerViewProps {
+  /** True while the field has focus. Only drives the row's border. */
   open: boolean;
   state: ComposerState;
   people: readonly ComposerPerson[];
+  /** The page's clock, so the WHEN buttons and the words agree with the list. */
+  now: Date;
+  /** At most one, and only for genuinely two-sided input. Never an error. */
+  question?: ParseQuestion | null;
   busy?: boolean;
   error?: string | null;
+  /** True while the mic is held. Speech is an input method, not a mode. */
+  recording?: boolean;
+  /** False where the browser has no speech input: the mic is then not offered. */
+  micAvailable?: boolean;
+  /** Shown once ever, under the row, after somebody's first plain-sentence add. */
+  teachLine?: string | null;
   onOpen: () => void;
   onCancel: () => void;
   onChange: (next: ComposerState) => void;
   onSubmit: () => void;
+  onMicPress?: () => void;
+  onMicRelease?: () => void;
 }
 
 /**
- * The "+" row. Tapping it opens an INLINE row in the list, never a pop-up
- * window: a modal takes over the screen to capture one sentence, and the whole
- * point is that adding a to-do costs about as much as thinking of one.
+ * The three WHEN buttons: today, tomorrow, and a named day after that.
  *
- * Type and press Enter and you are done. The three chips are already answered
- * (you, today, once) and only get touched when the answer is something else.
+ * The third one is the day AFTER tomorrow, named. Offering "Thursday" on a
+ * Wednesday would be a third button for a day two of them already cover.
+ */
+export function whenChoices(now: Date): Array<{ label: string; iso: string }> {
+  const at = (days: number) => new Date(now.getFullYear(), now.getMonth(), now.getDate() + days);
+  const named = at(2);
+  return [
+    { label: 'Today', iso: isoOfDay(at(0)) },
+    { label: 'Tomorrow', iso: isoOfDay(at(1)) },
+    { label: WEEKDAYS[named.getDay()], iso: isoOfDay(named) },
+  ];
+}
+
+/**
+ * Open the browser's own day picker from the "Pick a day" button.
+ *
+ * The native input is the only thing that can offer a real calendar, and it
+ * cannot be made to look like the rest of the row. So the button is what a
+ * person sees and the input sits behind it, off-screen, opened from here.
+ * `showPicker` is the supported way in; focus is the fallback where it is not.
+ */
+function openDayPicker(button: HTMLElement): void {
+  const input = button.parentElement?.querySelector('input[type="date"]') as HTMLInputElement | null;
+  if (!input) return;
+  try {
+    const withPicker = input as HTMLInputElement & { showPicker?: () => void };
+    if (typeof withPicker.showPicker === 'function') withPicker.showPicker();
+    else input.focus();
+  } catch {
+    input.focus();
+  }
+}
+
+/**
+ * The "add a to-do" row.
+ *
+ * ONE ROW on the timeline spine that takes a plain sentence. The only required
+ * input is the words: it belongs to the person adding it, it is due today, and
+ * it happens once. Three things are optional (who, when, repeat) and there are
+ * two ways to reach each of them, side by side and equal:
+ *
+ *   1. Writing it. "check the boiler room every Friday" just works, and the
+ *      person never has to know that was clever.
+ *   2. Tapping the word that says it. Each of the three words on the right is
+ *      both the readback AND the button, so there is nothing to go and find.
+ *
+ * Tapping a word opens ONE row of buttons inside this same row. Not a dropdown,
+ * not a popover, not all three at once. Tapping a word with nothing typed opens
+ * all three, because at that point the person is choosing rather than reading.
+ *
+ * Hook-free and fully controlled, like everything in this file.
  */
 export function ComposerView({
-  open, state, people, busy = false, error = null, onOpen, onCancel, onChange, onSubmit,
+  open, state, people, now, question = null, busy = false, error = null,
+  recording = false, micAvailable = true, teachLine = null,
+  onOpen, onCancel, onChange, onSubmit, onMicPress, onMicRelease,
 }: ComposerViewProps) {
   const set = (patch: Partial<ComposerState>) => onChange({ ...state, ...patch });
-  const canSend = state.title.trim().length > 0 && !busy;
+  const typed = state.title.trim().length > 0;
+  const canSend = typed && !busy;
+  const openRow = state.openRow;
+  const repeating = state.repeat !== 'once';
+  const todayIso = isoOfDay(now);
+  const todayWeekday = now.getDay();
+  const days = whenChoices(now);
 
-  // The closed state already SHOWS its answers. The two chips are not controls
-  // you have to go and find: they are the sentence "you, once", sitting where
-  // they will still be sitting after the row opens.
-  if (!open) {
-    const whoLabel = state.who === 'me'
-      ? 'You'
-      : people.find((p) => p.staffId === state.who)?.name
-        ?? COMPOSER_ROLES.find((r) => r.value === state.who)?.label
-        ?? 'You';
-    const repeatWord = REPEAT_CHOICES.find((r) => r.value === state.repeat)?.label ?? 'Once';
-    return (
-      <button type="button" className="fx-comp" onClick={onOpen} data-testid="composer-open">
-        <span className="fx-compp">Add something to today</span>
-        <span className="fx-chips" aria-hidden>
-          <span className="fx-chip"><span className="fx-chipk">Who</span>{whoLabel}</span>
-          <span className="fx-chip"><span className="fx-chipk">Repeat</span>{repeatWord}</span>
-        </span>
-      </button>
-    );
-  }
+  // Tapping a word with NOTHING typed opens all three rows, and all three words
+  // read as chosen: the person is looking at their own answers rather than at
+  // something that was understood. The moment there is text, the colours go
+  // back to telling the truth about where each value came from.
+  const asChosen = openRow === 'all' && !typed;
+  const wordClass = (field: 'who' | 'when' | 'repeat') => {
+    const source = asChosen ? 'chosen' : state.source[field];
+    if (source === 'parsed') return 'fx-compword fx-lift';
+    if (source === 'chosen') return 'fx-compword fx-pick';
+    return 'fx-compword';
+  };
+
+  const tapWord = (field: 'who' | 'when' | 'repeat') => {
+    if (!typed) { set({ openRow: openRow === 'all' ? null : 'all' }); return; }
+    set({ openRow: openRow === field ? null : field });
+  };
+
+  const showRow = (field: 'who' | 'when' | 'repeat') => openRow === field || openRow === 'all';
+  // The housekeeping line belongs to the WHO row, and to the all-three view. It
+  // is never on the idle row: a line explaining who is missing, over a row
+  // nobody has asked anything of yet, is noise.
+  const foot = showRow('who');
+  const trailing = openRow === null;
+
+  const whoText = whoWord(state.who, people);
+  const whenText = whenWord(state.when, now, { repeating });
+  const repeatText = repeatWord(state.repeat, { weekday: state.weekday, dayOfMonth: state.dayOfMonth });
+  const keyHint = busy ? COMPOSER_COPY.adding : (foot ? COMPOSER_COPY.enterToAdd : COMPOSER_COPY.enter);
+  const tail: 'mic' | 'key' | null = recording
+    ? 'mic'
+    : (typed || busy ? 'key' : (micAvailable ? 'mic' : null));
 
   return (
-    <div className="fx-compopen" data-testid="composer-open-row">
-      <input
-        className="fx-comptitle"
-        type="text"
-        autoFocus
-        value={state.title}
-        placeholder="What needs doing?"
-        aria-label="What needs doing"
-        onChange={(e) => set({ title: e.target.value })}
-        onKeyDown={(e) => {
-          if (e.key === 'Enter' && canSend) { e.preventDefault(); onSubmit(); }
-          if (e.key === 'Escape') onCancel();
-        }}
-      />
+    <div data-testid="composer">
+      <div className={`fx-comp${open || typed || openRow !== null ? ' fx-on' : ''}`}>
+        <div className="fx-compline">
+          {recording && (
+            <span className="fx-compmeter" aria-hidden>
+              <span className="fx-compbar" /><span className="fx-compbar" /><span className="fx-compbar" />
+              <span className="fx-compbar" /><span className="fx-compbar" />
+            </span>
+          )}
 
-      <div className="fx-compchips">
-        <label className="fx-chip">
-          <span className="fx-chipk">Who</span>
-          <select value={state.who} onChange={(e) => set({ who: e.target.value })} aria-label="Who">
-            <option value="me">You</option>
-            {people.map((p) => <option key={p.staffId} value={p.staffId}>{p.name}</option>)}
-            {COMPOSER_ROLES.map((r) => <option key={r.value} value={r.value}>{r.label}</option>)}
-          </select>
-        </label>
+          <input
+            className={`fx-comptitle${recording ? ' fx-live' : ''}`}
+            type="text"
+            value={state.title}
+            disabled={busy}
+            placeholder={openRow === 'all' ? COMPOSER_COPY.promptChoosing : COMPOSER_COPY.prompt}
+            aria-label="What needs doing"
+            onFocus={onOpen}
+            onChange={(e) => set({ title: e.target.value })}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' && canSend) { e.preventDefault(); onSubmit(); return; }
+              // Escape closes the buttons first, and only then gives up the row.
+              if (e.key === 'Escape') {
+                if (openRow !== null) { e.preventDefault(); set({ openRow: null }); return; }
+                onCancel();
+              }
+            }}
+          />
 
-        {state.repeat === 'once' && (
-          <label className="fx-chip">
-            <span className="fx-chipk">When</span>
-            <input type="date" value={state.when} onChange={(e) => set({ when: e.target.value })} aria-label="When" />
-          </label>
+          <span className="fx-compw">
+            <button
+              type="button"
+              className={wordClass('who')}
+              aria-expanded={showRow('who')}
+              aria-label={`${COMPOSER_COPY.whoLabel}: ${whoText}`}
+              onClick={() => tapWord('who')}
+            >
+              {whoText}
+            </button>
+            <span className="fx-compdot" aria-hidden>·</span>
+            <button
+              type="button"
+              className={wordClass('when')}
+              aria-expanded={showRow('when')}
+              aria-label={`${repeating ? COMPOSER_COPY.startsLabel : COMPOSER_COPY.whenLabel}: ${whenText}`}
+              onClick={() => tapWord('when')}
+            >
+              {whenText}
+            </button>
+            <span className="fx-compdot" aria-hidden>·</span>
+            <button
+              type="button"
+              className={wordClass('repeat')}
+              aria-expanded={showRow('repeat')}
+              aria-label={`${COMPOSER_COPY.repeatLabel}: ${repeatText}`}
+              onClick={() => tapWord('repeat')}
+            >
+              {repeating && <CxIcon name="repeat" size={12} strokeWidth={1.9} />}
+              {repeatText}
+            </button>
+          </span>
+
+          {/* One thing at the end of the row, and only when the buttons are
+              shut. The mic while there is nothing to send, the mono hint once
+              there is. Nothing at all where the browser has no microphone and
+              nothing has been typed: a hairline with nothing after it is a
+              divider between one thing and no things. */}
+          {trailing && tail !== null && <span className="fx-comprule" aria-hidden />}
+          {trailing && tail === 'mic' && (
+            <button
+              type="button"
+              className={`fx-compmic${recording ? ' fx-rec' : ''}`}
+              aria-label="Speak instead of typing"
+              aria-pressed={recording}
+              onPointerDown={() => onMicPress?.()}
+              onPointerUp={() => onMicRelease?.()}
+              onPointerLeave={() => { if (recording) onMicRelease?.(); }}
+              onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onMicPress?.(); } }}
+              onKeyUp={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onMicRelease?.(); } }}
+            >
+              <CxIcon name="mic" size={15} />
+            </button>
+          )}
+          {trailing && tail === 'key' && <span className="fx-compkey">{keyHint}</span>}
+        </div>
+
+        {/* THE QUESTION. Not an error: nothing is red, the row is not blocked,
+            and Enter still works and takes the first answer. */}
+        {question && (
+          <div className="fx-compask" role="status" aria-live="polite">
+            <span className="fx-compaskt">{question.prompt}</span>
+            {question.choices.map((choice) => (
+              <button
+                key={choice.label}
+                type="button"
+                className="fx-compaskb"
+                disabled={busy}
+                onClick={() => onChange(withChoice(state, choice.patch, todayIso, todayWeekday))}
+              >
+                {choice.label}
+              </button>
+            ))}
+            <span className="fx-compaskn">{enterTakesNote(question.choices[0]?.label ?? '')}</span>
+          </div>
         )}
 
-        <label className="fx-chip">
-          <span className="fx-chipk">Repeat</span>
-          <select
-            value={state.repeat}
-            onChange={(e) => set({ repeat: e.target.value as RepeatChoice })}
-            aria-label="Repeat"
-          >
-            {REPEAT_CHOICES.map((r) => <option key={r.value} value={r.value}>{r.label}</option>)}
-          </select>
-        </label>
+        {openRow !== null && (
+          <div className="fx-compopen">
+            {showRow('who') && (
+              <div className="fx-comprow">
+                <span className="fx-complab" id="fx-lab-who">{COMPOSER_COPY.whoLabel}</span>
+                <span className="fx-compopts" role="radiogroup" aria-labelledby="fx-lab-who">
+                  {[{ value: 'me', label: 'You' },
+                    ...people.map((p) => ({ value: p.staffId, label: p.name })),
+                    ...COMPOSER_ROLES].map((option) => (
+                      <button
+                        key={option.value}
+                        type="button"
+                        role="radio"
+                        aria-checked={state.who === option.value}
+                        disabled={busy}
+                        className={`fx-compb${state.who === option.value ? ' fx-sel' : ''}`}
+                        onClick={() => onChange(withChoice(state, { who: option.value === 'me' ? null : option.value }, todayIso, todayWeekday))}
+                      >
+                        {option.label}
+                      </button>
+                    ))}
+                </span>
+              </div>
+            )}
 
-        {(state.repeat === 'weekly' || state.repeat === 'biweekly') && (
-          <label className="fx-chip">
-            <span className="fx-chipk">Day</span>
-            <select
-              value={String(state.weekday)}
-              onChange={(e) => set({ weekday: Number(e.target.value) })}
-              aria-label="Day of the week"
-            >
-              {WEEKDAYS.map((d, i) => <option key={d} value={String(i)}>{d}</option>)}
-            </select>
-          </label>
+            {showRow('when') && (
+              <div className="fx-comprow">
+                <span className="fx-complab" id="fx-lab-when">
+                  {repeating ? COMPOSER_COPY.startsLabel : COMPOSER_COPY.whenLabel}
+                </span>
+                <span className="fx-compopts" role="radiogroup" aria-labelledby="fx-lab-when">
+                  {/* A repeating item starts on a day; it does not fall due on
+                      one. So the third named weekday goes away and the row is
+                      Today, Tomorrow, or a day you pick. */}
+                  {days.slice(0, repeating ? 2 : 3).map((choice) => (
+                    <button
+                      key={choice.label}
+                      type="button"
+                      role="radio"
+                      aria-checked={state.when === choice.iso}
+                      disabled={busy}
+                      className={`fx-compb${state.when === choice.iso ? ' fx-sel' : ''}`}
+                      onClick={() => onChange(withChoice(state, { when: choice.iso }, todayIso, todayWeekday))}
+                    >
+                      {choice.label}
+                    </button>
+                  ))}
+                  <span className="fx-compdaywrap">
+                    <button
+                      type="button"
+                      role="radio"
+                      aria-checked={!days.some((c) => c.iso === state.when)}
+                      disabled={busy}
+                      className={`fx-compb${days.some((c) => c.iso === state.when) ? '' : ' fx-sel'}`}
+                      onClick={(e) => openDayPicker(e.currentTarget)}
+                    >
+                      <CxIcon name="calendar" size={13} />
+                      Pick a day
+                    </button>
+                    <input
+                      className="fx-compday"
+                      type="date"
+                      tabIndex={-1}
+                      aria-label="Pick a day"
+                      value={state.when}
+                      onChange={(e) => {
+                        if (e.target.value) onChange(withChoice(state, { when: e.target.value }, todayIso, todayWeekday));
+                      }}
+                    />
+                  </span>
+                </span>
+              </div>
+            )}
+
+            {showRow('repeat') && (
+              <div className="fx-comprow">
+                <span className="fx-complab" id="fx-lab-repeat">{COMPOSER_COPY.repeatLabel}</span>
+                <span className="fx-compopts" role="radiogroup" aria-labelledby="fx-lab-repeat">
+                  {REPEAT_CHOICES.map((choice) => (
+                    <button
+                      key={choice.value}
+                      type="button"
+                      role="radio"
+                      aria-checked={state.repeat === choice.value}
+                      disabled={busy}
+                      className={`fx-compb${state.repeat === choice.value ? ' fx-sel' : ''}`}
+                      onClick={() => onChange(withChoice(state, { repeat: choice.value }, todayIso, todayWeekday))}
+                    >
+                      {choice.label}
+                    </button>
+                  ))}
+                </span>
+              </div>
+            )}
+          </div>
         )}
 
-        {state.repeat === 'monthly' && (
-          <label className="fx-chip">
-            <span className="fx-chipk">Day</span>
-            <select
-              value={String(state.dayOfMonth)}
-              onChange={(e) => set({ dayOfMonth: Number(e.target.value) })}
-              aria-label="Day of the month"
-            >
-              {Array.from({ length: 28 }, (_, i) => i + 1).map((d) => (
-                <option key={d} value={String(d)}>{d}</option>
-              ))}
-            </select>
-          </label>
+        {foot && (
+          <div className="fx-compfoot">
+            <span className="fx-compfootl">{HOUSEKEEPER_NOTE}</span>
+            <span className="fx-compkey">{keyHint}</span>
+          </div>
         )}
       </div>
 
-      {state.repeat !== 'once' && (
-        <div className="fx-hint">
-          {repeatLabel(state.repeat, { weekday: state.weekday, dayOfMonth: state.dayOfMonth })}
-          . It comes back on its own.
-        </div>
+      {/* Under the row, never inside it. These are about what just happened. */}
+      {recording && <div className="fx-compnote">{COMPOSER_COPY.speaking}</div>}
+      {!recording && state.source.who !== 'default' && state.who !== 'me' && !state.who.startsWith('dept:') && (
+        <div className="fx-compnote">{assignedNote(people.find((p) => p.staffId === state.who)?.name ?? '')}</div>
       )}
-      <div className="fx-hint">{HOUSEKEEPER_NOTE}</div>
+      {!recording && repeating && <div className="fx-compnote fx-warm">{COMPOSER_COPY.repeating}</div>}
+      {!recording && teachLine && <div className="fx-compnote">{teachLine}</div>}
 
       {error && <div className="sl-err">{error}</div>}
-
-      <div className="fx-acts">
-        <button type="button" className="fx-btn fx-primary" disabled={!canSend} onClick={onSubmit}>
-          {busy ? 'Adding…' : 'Add'}
-        </button>
-        <button type="button" className="fx-btn" disabled={busy} onClick={onCancel}>Cancel</button>
-      </div>
     </div>
   );
+}
+
+/** Today in the browser's own calendar, as YYYY-MM-DD. */
+function isoOfDay(d: Date): string {
+  const m = `${d.getMonth() + 1}`.padStart(2, '0');
+  return `${d.getFullYear()}-${m}-${`${d.getDate()}`.padStart(2, '0')}`;
 }
 
 /**

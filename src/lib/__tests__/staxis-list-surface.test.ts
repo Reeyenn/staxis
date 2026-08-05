@@ -33,15 +33,22 @@ import Module from 'node:module';
 import type React from 'react';
 
 import {
+  assignedNote,
   assignedStateLine,
   completionNotice,
+  COMPOSER_COPY,
   dueLine,
   emptyListNote,
+  enterTakesNote,
   repeatLabel,
+  repeatWord,
   rowFrom,
   rowKindLabel,
   stalenessLine,
   WEEKDAYS,
+  whenWord,
+  whichDayQuestion,
+  whoWord,
 } from '@/lib/feed/one-list-copy';
 import {
   dayOf,
@@ -262,6 +269,29 @@ describe('the copy rules', () => {
     for (const r of rows.REPEAT_CHOICES) out.push(r.label);
     for (const r of rows.COMPOSER_ROLES) out.push(r.label);
     for (const d of WEEKDAYS) out.push(d);
+
+    // The "add a to-do" row: its three words, its one question, and every fixed
+    // sentence it can say. Walked HERE and not only in the composer's own file
+    // because this is the guard that already exists for this screen's copy, and
+    // a second one would be a second thing to remember to extend.
+    const people = [{ staffId: 'p1', name: 'Marcus Webb' }];
+    out.push(...Object.values(COMPOSER_COPY));
+    for (const who of ['me', 'p1', 'dept:front_desk', 'dept:maintenance', 'dept:all_staff', 'gone']) {
+      out.push(whoWord(who, people));
+    }
+    for (const iso of ['2026-07-30', '2026-07-31', '2026-08-01', '2026-09-30', null]) {
+      out.push(whenWord(iso, NOW));
+      out.push(whenWord(iso, NOW, { repeating: true }));
+    }
+    for (const repeat of ['once', 'daily', 'weekdays', 'weekly', 'biweekly', 'monthly']) {
+      for (const weekday of [null, 0, 5]) {
+        for (const dayOfMonth of [null, 3, 11]) out.push(repeatWord(repeat, { weekday, dayOfMonth }));
+      }
+    }
+    const question = whichDayQuestion('Friday', '2026-07-31', 5);
+    out.push(question.prompt, ...question.choices.map((c) => c.label));
+    out.push(enterTakesNote(question.choices[0].label));
+    out.push(assignedNote('Marcus Webb'), assignedNote(''));
 
     return out;
   }

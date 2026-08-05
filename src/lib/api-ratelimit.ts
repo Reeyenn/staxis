@@ -238,6 +238,14 @@ export type RateLimitEndpoint =
   // manager 429 their colleagues out of their own settings. Costs nothing and
   // is not billing-impacting, so it fails OPEN.
   | 'feed-prefs-write'
+  // The optional second reading of a to-do sentence, when the plain code path
+  // found no person, day or repeat in it. One short model call, so it IS
+  // billing-impacting and fails CLOSED — and failing closed costs nothing a
+  // person would notice: the composer already behaves correctly without it.
+  // Keyed on the HASHED (property, user) composite, because the debounce that
+  // bounds it is per-typist and one person on a long sentence must not be able
+  // to exhaust the hotel's whole budget.
+  | 'feed-interpret-todo'
   // ── Inventory vendors (2026-05-31) — keyed on the RAW property id (a real
   // properties.id) — api_limits.property_id has an FK to properties(id)
   // (migration 0142), so a hashToRateLimitKey pseudo-UUID would FK-violate.
@@ -550,6 +558,10 @@ const HOURLY_CAPS: Record<RateLimitEndpoint, number> = {
   // A human flipping one switch. 120/hr per person is two per minute for an
   // hour, which is well past deliberate and well short of a runaway tab.
   'feed-prefs-write':           120,
+  // One reading per sentence somebody pauses on, per person. A manager adding
+  // twenty to-dos in an hour trips it at most twenty times; 60 leaves room for
+  // a person who writes slowly in bursts and still bounds a runaway tab.
+  'feed-interpret-todo':         60,
   // Inventory Ordering — per-property (raw pid). order-create/approve/receive
   // are deliberate manager actions; order-send fires email (billing); reads are
   // panel polls. Tuned to "a manager working through orders" with headroom.
@@ -744,6 +756,11 @@ const BILLING_IMPACTING_ENDPOINTS: ReadonlySet<RateLimitEndpoint> = new Set<Rate
   // The morning brief's wording pass — one Haiku call on the first load of a
   // hotel's local day. Cheap, but uncapped-cheap is still uncapped.
   'findings-brief',
+  // The optional second reading of a to-do sentence. One Haiku call per
+  // sentence somebody pauses on, fired from a keystroke handler, so a runaway
+  // tab is the exact shape of abuse this guards. Failing closed costs the
+  // person nothing: the composer's behaviour without a reading IS the design.
+  'feed-interpret-todo',
   // First-time Housekeeping setup board photo — Claude Vision. Fail CLOSED so a
   // Supabase blip can't uncap Anthropic spend. The route treats a denied read as
   // "we couldn't read the photo", which is already a supported outcome there.

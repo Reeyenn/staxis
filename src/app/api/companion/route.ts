@@ -78,8 +78,9 @@ import {
   rememberTourDeclined,
   rememberTourTaken,
   rememberWelcomed,
+  COMPOSER_TAUGHT_TODO_REPEAT,
   type CompanionMemory,
-  type TeachFlow,
+  type TaughtKey,
 } from '@/lib/companion/manners';
 import { rememberDroppedTopic } from '@/lib/companion/pointers';
 
@@ -279,10 +280,20 @@ function isEvent(x: unknown): x is CompanionEvent {
   return typeof x === 'string' && (EVENTS as readonly string[]).includes(x);
 }
 
-const TEACH_FLOWS: readonly TeachFlow[] = ['create_task', 'log_book_entry', 'announcement'];
+/**
+ * Everything the `taught` ledger may be keyed by, in one closed list.
+ *
+ * The three companion flows, plus the Staxis list's own once-ever line. The
+ * list is closed on purpose: `taught` keys are stored in a jsonb blob a request
+ * body can reach, and an open key space would let a caller write junk into
+ * somebody's permanent memory. See COMPOSER_TAUGHT_TODO_REPEAT.
+ */
+const TAUGHT_KEYS: readonly TaughtKey[] = [
+  'create_task', 'log_book_entry', 'announcement', COMPOSER_TAUGHT_TODO_REPEAT,
+];
 
-function isTeachFlow(x: unknown): x is TeachFlow {
-  return typeof x === 'string' && (TEACH_FLOWS as readonly string[]).includes(x);
+function isTaughtKey(x: unknown): x is TaughtKey {
+  return typeof x === 'string' && (TAUGHT_KEYS as readonly string[]).includes(x);
 }
 
 export async function POST(req: NextRequest): Promise<Response> {
@@ -326,7 +337,7 @@ export async function POST(req: NextRequest): Promise<Response> {
     }
     topic = v.value!;
   }
-  if (body.event === 'taught' && !isTeachFlow(body.flow)) {
+  if (body.event === 'taught' && !isTaughtKey(body.flow)) {
     return err('unknown flow', {
       requestId: ctx.requestId, status: 400, code: ApiErrorCode.ValidationFailed, headers: ctx.headers,
     });
@@ -350,7 +361,7 @@ export async function POST(req: NextRequest): Promise<Response> {
       case 'declined':      next = rememberDeclined(current, topic, today); break;
       case 'accepted':      next = rememberAccepted(current, topic, today); break;
       case 'dropped':       next = rememberDroppedTopic(current, topic, today); break;
-      case 'taught':        next = rememberTaught(current, body.flow as TeachFlow); break;
+      case 'taught':        next = rememberTaught(current, body.flow as TaughtKey); break;
       // Stamped with the HOTEL's day, so a person working past midnight is
       // greeted when the hotel's morning starts and not when UTC's does.
       case 'greeted':       next = rememberGreeted(current, today); break;

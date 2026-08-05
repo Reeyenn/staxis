@@ -53,6 +53,22 @@ import type { CompanionPageKey } from './pages';
 
 export type { TeachFlow } from './copy';
 
+/**
+ * The Staxis list's own entry in this ledger.
+ *
+ * The `taught` map is a per-person "said once, ever" record and it is the right
+ * home for the one line the to-do composer shows after somebody's first plain
+ * sentence. It is NOT a `TeachFlow`: a teach flow is something the companion
+ * says out loud, gated on whether the companion is awake and whether the person
+ * is busy, and this line is neither of those things — it is one grey sentence
+ * under a row that has just succeeded. Sharing the ledger and not the machinery
+ * is the whole point: two "once ever" stores would be one too many.
+ */
+export const COMPOSER_TAUGHT_TODO_REPEAT = 'todo_repeat_hint';
+
+/** Everything the taught ledger may be keyed by. */
+export type TaughtKey = TeachFlow | typeof COMPOSER_TAUGHT_TODO_REPEAT;
+
 // ─── Memory ─────────────────────────────────────────────────────────────────
 //
 // Persisted per person per hotel as one jsonb column on staxis_user_prefs (see
@@ -621,7 +637,7 @@ export function decideTeachMoment(input: TeachInput): TeachDecision {
 }
 
 /** Spent the moment it is shown, so a dismissal counts the same as a read. */
-export function rememberTaught(memory: CompanionMemory, flow: TeachFlow): CompanionMemory {
+export function rememberTaught(memory: CompanionMemory, flow: TaughtKey): CompanionMemory {
   if (memory.taught[flow] === true) return memory;
   return { ...memory, taught: { ...memory.taught, [flow]: true } };
 }

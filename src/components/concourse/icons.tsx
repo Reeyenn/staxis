@@ -33,6 +33,8 @@ export const CX_ICON_PATHS: Record<string, string> = {
   close: 'M18 6L6 18M6 6l12 12',
   book: 'M4 19.5A2.5 2.5 0 0 1 6.5 17H20M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z',
   chevronDown: 'M6 9l6 6 6-6',
+  // The composer's cadence glyph, in front of "every day" / "every Friday".
+  repeat: 'M17 2l4 4-4 4M3 11V9a4 4 0 0 1 4-4h14M7 22l-4-4 4-4M21 13v2a4 4 0 0 1-4 4H3',
   arrowUpRight: 'M7 17L17 7M8 7h9v9',
   forward: 'M5 12h14M12 5l7 7-7 7',
 };

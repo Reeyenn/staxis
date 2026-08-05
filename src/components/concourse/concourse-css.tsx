@@ -445,32 +445,110 @@ const FEED_CSS = `
 .fx-row.fx-event .fx-rowt{font-weight:500;}
 .fx-row.fx-event .fx-rowm{color:#4B8C9E;}
 
-/* Entry C — the composer */
-.fx-comp{border:1px dashed rgba(31,35,28,.18);border-radius:13px;padding:12px 18px;
-  background:rgba(250,251,249,.7);display:flex;align-items:center;gap:14px;width:100%;text-align:left;
-  cursor:pointer;font-family:inherit;transition:border-color .16s ease,background .16s ease;}
-.fx-comp:hover{border-color:rgba(62,92,72,.34);background:#F4F6F2;}
-.fx-comp:focus-visible{outline:2px solid #3E5C48;outline-offset:2px;}
-.fx-compp{font-size:14px;color:#8A9187;}
-.fx-chips{margin-left:auto;display:flex;gap:6px;flex-wrap:wrap;align-items:center;}
-.fx-chip{display:inline-flex;align-items:center;gap:5px;height:27px;padding:0 10px;border-radius:8px;
-  border:1px solid rgba(31,35,28,.12);background:#fff;font-size:11.5px;color:#5C625C;cursor:pointer;
-  font-family:inherit;}
-.fx-chip:focus-within{outline:2px solid #3E5C48;outline-offset:2px;}
-.fx-chipk{font-family:var(--font-geist-mono),ui-monospace,monospace;font-size:9px;letter-spacing:.07em;
-  text-transform:uppercase;color:#A6ABA6;}
-.fx-chip select,.fx-chip input{border:none;background:transparent;font-size:11.5px;color:#1F231C;
-  font-family:inherit;cursor:pointer;padding:0;max-width:130px;}
-.fx-chip select:focus,.fx-chip input:focus{outline:none;}
-/* Open composer: the same dashed frame, grown into a form. */
-.fx-compopen{border:1px dashed rgba(62,92,72,.34);border-radius:13px;padding:13px 18px;background:#fff;}
-.fx-comptitle{width:100%;border:none;background:transparent;font-size:14.5px;font-weight:600;color:#1F231C;
-  font-family:inherit;padding:2px 0;}
+/* ── Entry C — the composer ──────────────────────────────────────────────
+   ONE ROW that accepts a plain sentence. It is the same object as a to-do row
+   and reuses .fx-row's geometry, because what you are adding and what you have
+   added should not be two different species. It never becomes a modal and never
+   becomes a card inside a card: when it needs buttons, this same row grows
+   downward.
+
+   THERE IS NO ADD BUTTON. Enter is the only commit, in every state, and the
+   mono hint sits where the button would have been. (Design handoff
+   "Add a to-do", direction 2a. An earlier direction put an Add button at the
+   foot of a panel; it made the row read as a form with a submit step, and it
+   sat below the fold of the row itself.)
+
+   CARAMEL means lifted out of the sentence, SAGE means chosen by tapping. That
+   split is the only place this control distinguishes "understood" from
+   "chosen", and it is never explained in words. Somebody who does not notice it
+   loses nothing. */
+.fx-comp{background:#fff;border:1px solid rgba(31,35,28,.09);border-radius:13px;padding:12px 18px;
+  box-shadow:0 10px 24px -24px rgba(31,42,32,.9);width:100%;
+  transition:border-color .16s ease,box-shadow .16s ease;}
+/* Focused, or holding text, or holding an open button row. */
+.fx-comp.fx-on{border-color:rgba(92,122,96,.4);}
+.fx-compline{display:flex;align-items:center;gap:14px;min-width:0;}
+.fx-comptitle{flex:1;min-width:0;border:none;background:transparent;font-size:14.5px;font-weight:600;
+  color:#1F231C;font-family:inherit;padding:0;}
 .fx-comptitle:focus{outline:none;}
-.fx-comptitle::placeholder{color:#A6ABA6;font-weight:500;}
-.fx-compchips{display:flex;gap:6px;margin-top:11px;flex-wrap:wrap;align-items:center;}
-.fx-hint{font-size:11.5px;color:#8A9187;margin-top:7px;line-height:1.5;}
-.fx-acts{display:flex;gap:7px;margin-top:11px;flex-wrap:wrap;align-items:center;}
+.fx-comptitle::placeholder{color:#A6ABA6;font-size:14px;font-weight:400;}
+/* Speech is an input method, not a mode: the words land in the same field, so
+   the field simply reads as speech while it is being spoken into. */
+.fx-comptitle.fx-live{font-size:14px;font-weight:400;color:#5C625C;}
+
+/* The three words. Always present, always answered. */
+.fx-compw{margin-left:auto;display:flex;align-items:center;gap:7px;font-size:12.5px;flex-wrap:wrap;}
+.fx-compdot{color:#C9CFC8;}
+.fx-compword{border:none;background:transparent;padding:0 0 1px;font-family:inherit;font-size:12.5px;
+  color:#A6ABA6;cursor:pointer;border-bottom:1px dotted rgba(31,35,28,.25);white-space:nowrap;
+  display:inline-flex;align-items:center;gap:5px;transition:background .16s ease,border-color .16s ease;}
+.fx-compword:focus-visible{outline:2px solid #3E5C48;outline-offset:2px;}
+.fx-compword.fx-lift{color:#1F231C;font-weight:600;background:rgba(201,150,68,.18);
+  border-bottom:1.5px solid rgba(201,150,68,.7);border-radius:4px;padding:2px 6px;}
+.fx-compword.fx-pick{color:#1F231C;font-weight:600;background:rgba(158,183,166,.28);
+  border-bottom:1.5px solid rgba(92,122,96,.55);border-radius:4px;padding:2px 6px;}
+
+.fx-comprule{width:1px;height:18px;background:rgba(31,35,28,.1);flex-shrink:0;}
+.fx-compkey{font-family:var(--font-geist-mono),ui-monospace,monospace;font-size:9.5px;letter-spacing:.14em;
+  text-transform:uppercase;color:#A6ABA6;white-space:nowrap;}
+.fx-compmic{display:grid;place-items:center;width:26px;height:26px;border-radius:8px;border:none;
+  background:transparent;color:#8A9187;cursor:pointer;padding:0;flex-shrink:0;
+  transition:background .16s ease,color .16s ease;}
+.fx-compmic:focus-visible{outline:2px solid #3E5C48;outline-offset:2px;}
+.fx-compmic.fx-rec{width:30px;height:30px;border-radius:50%;background:#3E5C48;color:#fff;
+  box-shadow:0 0 0 4px rgba(92,122,96,.18);}
+.fx-compmeter{display:flex;align-items:flex-end;gap:2.5px;height:16px;flex-shrink:0;}
+.fx-compbar{width:2.5px;border-radius:2px;background:#5C7A60;animation:fx-level 900ms ease-in-out infinite;}
+.fx-compbar:nth-child(1){height:6px;animation-delay:0ms;}
+.fx-compbar:nth-child(2){height:14px;animation-delay:110ms;}
+.fx-compbar:nth-child(3){height:9px;animation-delay:220ms;}
+.fx-compbar:nth-child(4){height:16px;animation-delay:330ms;}
+.fx-compbar:nth-child(5){height:7px;background:#9EB7A6;animation-delay:440ms;}
+@keyframes fx-level{0%,100%{transform:scaleY(.55);}50%{transform:scaleY(1);}}
+
+/* One row of buttons, opened by tapping one word. Only that word's row. */
+.fx-compopen{margin-top:13px;padding-top:13px;border-top:1px solid rgba(31,35,28,.07);
+  display:flex;flex-direction:column;gap:10px;}
+.fx-comprow{display:flex;align-items:flex-start;gap:14px;}
+.fx-complab{width:52px;flex:0 0 52px;padding-top:8px;font-family:var(--font-geist-mono),ui-monospace,monospace;
+  font-size:9px;letter-spacing:.1em;text-transform:uppercase;color:#A6ABA6;}
+.fx-compopts{display:flex;gap:6px;flex-wrap:wrap;min-width:0;}
+.fx-compb{display:inline-flex;align-items:center;gap:6px;height:30px;padding:0 12px;border-radius:9px;
+  border:1px solid rgba(31,35,28,.12);background:#fff;color:#5C625C;font-size:12.5px;font-family:inherit;
+  cursor:pointer;white-space:nowrap;transition:background .16s ease,border-color .16s ease;}
+.fx-compb:hover:not(:disabled){background:#F4F6F2;border-color:rgba(31,35,28,.2);}
+.fx-compb:focus-visible{outline:2px solid #3E5C48;outline-offset:2px;}
+.fx-compb:disabled{opacity:.5;cursor:default;}
+.fx-compb.fx-sel{background:#3E5C48;border-color:#3E5C48;color:#fff;font-weight:600;}
+.fx-compb.fx-sel:hover:not(:disabled){background:#3E5C48;border-color:#3E5C48;}
+/* "Pick a day" carries the native date input, which cannot be styled to match
+   the row and does not need to be: the button is the control a person sees. */
+.fx-compday{position:absolute;width:1px;height:1px;opacity:0;pointer-events:none;}
+.fx-compdaywrap{position:relative;display:inline-flex;}
+
+/* The question. A short line and two answers, both of which are correct. */
+.fx-compask{display:flex;align-items:center;gap:10px;margin-top:12px;padding-top:12px;
+  border-top:1px solid rgba(31,35,28,.07);flex-wrap:wrap;}
+.fx-compaskt{font-size:12.5px;color:#8C6A33;}
+.fx-compaskb{display:inline-flex;align-items:center;height:30px;padding:0 12px;border-radius:9px;
+  border:1px solid rgba(201,150,68,.6);background:#fff;color:#1F231C;font-size:12.5px;font-weight:500;
+  font-family:inherit;cursor:pointer;white-space:nowrap;box-shadow:0 0 0 3px rgba(201,150,68,.14);
+  transition:background .16s ease;}
+.fx-compaskb:hover:not(:disabled){background:#FDF7EC;}
+.fx-compaskb:focus-visible{outline:2px solid #3E5C48;outline-offset:2px;}
+.fx-compaskn{margin-left:auto;font-size:11.5px;color:#8A9187;}
+
+/* The foot: the housekeeping line, and the mono hint where Add would have been.
+   Only when the WHO row is open, or when all three are. */
+.fx-compfoot{display:flex;align-items:center;gap:14px;margin-top:13px;padding-top:12px;
+  border-top:1px solid rgba(31,35,28,.07);flex-wrap:wrap;}
+.fx-compfootl{font-size:11.5px;color:#8A9187;line-height:1.5;}
+.fx-compfoot .fx-compkey{margin-left:auto;}
+
+/* The quiet lines under the row. Never inside it: they are about what just
+   happened, not about what is being typed. */
+.fx-compnote{font-size:11.5px;color:#8A9187;line-height:1.5;margin-top:8px;margin-left:18px;}
+.fx-compnote.fx-warm{color:#8C6A33;}
 .fx-err{margin-top:9px;border-radius:10px;padding:8px 11px;font-size:12.5px;line-height:1.5;
   background:rgba(184,92,61,.10);color:#8E432B;}
 .fx-reason{margin-top:9px;display:flex;gap:7px;flex-wrap:wrap;align-items:center;width:100%;}
@@ -667,8 +745,11 @@ button.fx-bchip:focus-visible{outline:2px solid #9EB7A6;outline-offset:2px;}
   .fx-week::-webkit-scrollbar{display:none;}
   .fx-wd{width:56px;flex-shrink:0;}
   .fx-monthpop{right:auto;left:0;width:min(360px,calc(100vw - 32px));}
-  .fx-row,.fx-comp{flex-wrap:wrap;}
-  .fx-rowa,.fx-chips{margin-left:0;}
+  .fx-row{flex-wrap:wrap;}
+  .fx-compline{flex-wrap:wrap;}
+  .fx-rowa,.fx-compw{margin-left:0;}
+  .fx-complab{width:100%;flex:0 0 auto;padding-top:0;}
+  .fx-comprow{flex-direction:column;gap:6px;}
 }
 
 @media (prefers-reduced-motion: reduce){
@@ -676,5 +757,9 @@ button.fx-bchip:focus-visible{outline:2px solid #9EB7A6;outline-offset:2px;}
   .fx-scrim,.fx-drawer,.fx-monthpop{animation:none;}
   .fx-row,.fx-ink-card,.fx-knows,.fx-wd{transition:none;}
   .fx-row:hover,.fx-ink-card:hover,.fx-knows:hover,.fx-wd:hover{transform:none;}
+  /* The level meter freezes at rest rather than stopping mid-bounce, and
+     nothing in the composer transitions. */
+  .fx-compbar{animation:none;transform:none;}
+  .fx-comp,.fx-compword,.fx-compb,.fx-compmic,.fx-compaskb{transition:none;}
 }
 `;

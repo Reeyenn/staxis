@@ -40,7 +40,10 @@ import { readEnvelope } from '@/lib/api-envelope';
 import type { LogEntryDTO } from '@/lib/comms/types';
 import type { AssignedByMeItem, WorklistItem } from '@/lib/worklist/types';
 import type { FeedPrefs } from '@/lib/feed/prefs';
-import { emptyListNote } from '@/lib/feed/one-list-copy';
+import { COMPOSER_COPY, emptyListNote } from '@/lib/feed/one-list-copy';
+import { emptyParse, parseTodo, type ParseResult } from '@/lib/feed/parse-todo';
+import { INTERPRET_DEBOUNCE_MS, INTERPRET_TIMEOUT_MS, shouldInterpret } from '@/lib/feed/interpret-todo';
+import { COMPOSER_TAUGHT_TODO_REPEAT, parseCompanionMemory } from '@/lib/companion/manners';
 
 import type { KnowledgeEventDTO } from '@/lib/knowledge/types';
 
@@ -81,6 +84,7 @@ import {
   WorkRowView,
   composerDefaults,
   composerPayload,
+  withParse,
   type ComposerPerson,
   type ComposerState,
 } from './list-rows';
@@ -174,6 +178,13 @@ export function StaxisList({
   const [composer, setComposer] = React.useState<ComposerState>(() => composerDefaults(todayIso, now.getDay()));
   const [composerBusy, setComposerBusy] = React.useState(false);
   const [composerError, setComposerError] = React.useState<string | null>(null);
+  // What the last sentence said. Held rather than re-derived, because lifting a
+  // phrase REMOVES it from the field: by the next keystroke the words that
+  // produced the question are already gone. See withParse.
+  const [parsed, setParsed] = React.useState<ParseResult>(() => emptyParse());
+  const [recording, setRecording] = React.useState(false);
+  const [micAvailable, setMicAvailable] = React.useState(false);
+  const [teachLine, setTeachLine] = React.useState<string | null>(null);
 
   // ── which day the timeline is showing ────────────────────────────────────
   // The `List` / `Calendar` toggle is gone (2026-08-01). The week strip in the
@@ -280,9 +291,128 @@ export function StaxisList({
     [propertyId, reloadWorklist, reloadAssigned, drawerOpen],
   );
 
+  // ── the composer ─────────────────────────────────────────────────────────
+  //
+  // The parser is PURE CODE and is the only thing on the typing path: it runs
+  // synchronously on every keystroke against a string under 200 characters, and
+  // it cannot fail. Everything below it is optional and cancellable.
+
+  /**
+   * The optional second reading, and its two cancels.
+   *
+   * `timer` is the debounce; `abort` is the request. Both are torn down by
+   * `cancelInterpret`, which runs on the next keystroke, on submit, and on
+   * unmount. An answer that outlives the sentence it was asked about is dropped
+   * on arrival as well, against the title the composer actually holds.
+   */
+  const interpretRef = React.useRef<{
+    timer: ReturnType<typeof setTimeout> | null;
+    abort: AbortController | null;
+  }>({ timer: null, abort: null });
+
+  const cancelInterpret = React.useCallback(() => {
+    const live = interpretRef.current;
+    if (live.timer) { clearTimeout(live.timer); live.timer = null; }
+    if (live.abort) { live.abort.abort(); live.abort = null; }
+  }, []);
+
+  React.useEffect(() => cancelInterpret, [cancelInterpret]);
+
+  /** Whether this person has already been shown the repeat tip, ever. */
+  const taught = React.useMemo(
+    () => parseCompanionMemory(prefsData?.prefs.companionMemory ?? null).taught,
+    [prefsData],
+  );
+
+  /** Spend the tip. Fire and forget: a lost stamp costs one repeated line. */
+  const markTaught = React.useCallback(() => {
+    void (async () => {
+      try {
+        await fetchWithAuth('/api/companion', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ pid: propertyId, event: 'taught', flow: COMPOSER_TAUGHT_TODO_REPEAT }),
+          timeoutMs: INTERACTIVE_ACTION_TIMEOUT_MS,
+        });
+        await reloadPrefs();
+      } catch { /* the line is already on the screen; the stamp can wait */ }
+    })();
+  }, [propertyId, reloadPrefs]);
+
+  const changeComposer = React.useCallback((next: ComposerState) => {
+    // A tap, not typing: the buttons already produced the state they wanted.
+    if (next.title === composer.title) { setComposer(next); return; }
+    // Anything typed invalidates a reading that was already in flight, and
+    // clears a tip that was about the to-do before this one.
+    cancelInterpret();
+    setTeachLine(null);
+    // Emptying the row is the one thing that resets the answers. Without it a
+    // day lifted from a sentence would outlive the sentence itself.
+    if (!next.title.trim()) {
+      setComposer({ ...composerDefaults(todayIso, now.getDay()), openRow: next.openRow });
+      setParsed(emptyParse());
+      return;
+    }
+    const result = parseTodo(next.title, people, now);
+    setParsed(result);
+    setComposer(withParse(next, result, now.getDay()));
+  }, [composer.title, people, now, todayIso, cancelInterpret]);
+
+  // A question is only live while nobody has answered it with their thumb.
+  const composerQuestion = composer.source.when === 'chosen' || composer.source.repeat === 'chosen'
+    ? null
+    : parsed.question;
+
+  // ── the optional second reading ──────────────────────────────────────────
+  //
+  // Fires only when the code above lifted NOTHING out of a sentence long enough
+  // to have something in it. Debounced, deadlined, cancelled by the next
+  // keystroke and by submit, and silent on every failure. It cannot block
+  // Enter, it never shows a spinner, and it has no error state: if it returns
+  // nothing, is slow, errors, is switched off in the Control Center, or the
+  // browser is offline, this composer behaves exactly as it does without it.
+  React.useEffect(() => {
+    cancelInterpret();
+    const text = composer.title.trim();
+    if (!shouldInterpret(text, parsed)) return undefined;
+    const live = interpretRef.current;
+    live.timer = setTimeout(() => {
+      const controller = new AbortController();
+      live.abort = controller;
+      void (async () => {
+        try {
+          const res = await fetchWithAuth('/api/feed/interpret-todo', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ pid: propertyId, text }),
+            timeoutMs: INTERPRET_TIMEOUT_MS,
+            signal: controller.signal,
+          });
+          const envelope = await readEnvelope<{ read: ParseResult | null }>(res);
+          const read = envelope.error === undefined ? envelope.data?.read ?? null : null;
+          if (!read || controller.signal.aborted) return;
+          setComposer((prev) => {
+            // The sentence moved on while this was in the air. An answer to a
+            // question nobody is asking any more is dropped, not applied.
+            if (prev.title.trim() !== text) return prev;
+            // It arrives as a parse and is applied as one: caramel, never sage,
+            // including the name. A person the code found is somebody who was
+            // written down; a person a model proposes is a reading.
+            return withParse(prev, read, now.getDay(), { whoAs: 'parsed' });
+          });
+        } catch {
+          // Deliberately total. There is no failure of this call that a person
+          // is allowed to see.
+        }
+      })();
+    }, INTERPRET_DEBOUNCE_MS);
+    return cancelInterpret;
+  }, [composer.title, parsed, propertyId, now, cancelInterpret]);
+
   const submitComposer = React.useCallback(() => {
     const payload = composerPayload(composer, meStaffId);
     if (!payload) return;
+    cancelInterpret();
     void (async () => {
       setComposerBusy(true);
       setComposerError(null);
@@ -298,8 +428,20 @@ export function StaxisList({
           setComposerError(envelope.error || 'That did not save. Try again in a moment.');
           return;
         }
+        // Nothing was tapped and nothing repeated: this person types plain
+        // sentences and has not been told the rest is writable too. One line,
+        // once ever, and only after the add already worked.
+        const plain = composer.openRow === null
+          && composer.source.when !== 'chosen'
+          && composer.source.repeat !== 'chosen'
+          && composer.repeat === 'once';
+        const owed = plain && taught[COMPOSER_TAUGHT_TODO_REPEAT] !== true;
+
         setComposer(composerDefaults(todayIso, now.getDay()));
+        setParsed(emptyParse());
         setComposerOpen(false);
+        setTeachLine(owed ? COMPOSER_COPY.repeatTeach : null);
+        if (owed) markTaught();
         // Somebody just wrote a task by hand that they could have asked for in
         // a sentence. Fired AFTER the composer closes and only on success, so
         // the tip never lands as an obstacle and never follows a failed save.
@@ -314,7 +456,74 @@ export function StaxisList({
         setComposerBusy(false);
       }
     })();
-  }, [composer, propertyId, reloadWorklist, meStaffId, todayIso, now]);
+  }, [composer, propertyId, reloadWorklist, meStaffId, todayIso, now, taught, markTaught, cancelInterpret]);
+
+  // ── speaking instead of typing ───────────────────────────────────────────
+  //
+  // Speech is an INPUT METHOD, not a mode. The words land in the same field the
+  // keyboard fills, the same parser runs over them, and there is nothing to
+  // confirm afterwards. Hold the mic and talk; let go and it is typed.
+  //
+  // The recogniser only exists in some browsers, so the mic is not offered at
+  // all where it does not: an affordance that does nothing is worse than none.
+  const speechRef = React.useRef<{ rec: SpeechRecognitionLike | null; pressedAt: number }>(
+    { rec: null, pressedAt: 0 },
+  );
+
+  React.useEffect(() => {
+    setMicAvailable(speechConstructor() !== null);
+    const live = speechRef.current;
+    // The recogniser holds the microphone. Leaving one running past unmount
+    // leaves the browser's recording indicator on over a page that is gone.
+    return () => { try { live.rec?.stop(); } catch { /* already gone */ } };
+  }, []);
+
+  const stopSpeech = React.useCallback(() => {
+    const live = speechRef.current;
+    try { live.rec?.stop(); } catch { /* already gone */ }
+    live.rec = null;
+    setRecording(false);
+  }, []);
+
+  const startSpeech = React.useCallback(() => {
+    const Ctor = speechConstructor();
+    if (!Ctor) return;
+    const base = composer.title.trim() ? `${composer.title.trim()} ` : '';
+    try {
+      const rec = new Ctor();
+      rec.lang = 'en-US';
+      rec.interimResults = true;
+      rec.continuous = true;
+      rec.onresult = (e) => {
+        let said = '';
+        for (let i = e.resultIndex; i < e.results.length; i += 1) said += e.results[i][0]?.transcript ?? '';
+        // Straight into the field, through the same change path a keystroke
+        // takes, so the parser reads speech exactly as it reads typing.
+        changeComposer({ ...composer, title: (base + said).replace(/\s+/g, ' ').trimStart() });
+      };
+      rec.onend = () => { speechRef.current.rec = null; setRecording(false); };
+      rec.onerror = () => { speechRef.current.rec = null; setRecording(false); };
+      speechRef.current.rec = rec;
+      rec.start();
+      setRecording(true);
+    } catch {
+      speechRef.current.rec = null;
+      setRecording(false);
+    }
+  }, [composer, changeComposer]);
+
+  /** Press to start. A HOLD stops on release; a TAP latches until tapped again. */
+  const micPress = React.useCallback(() => {
+    if (speechRef.current.rec) { stopSpeech(); return; }
+    speechRef.current.pressedAt = Date.now();
+    startSpeech();
+  }, [startSpeech, stopSpeech]);
+
+  const micRelease = React.useCallback(() => {
+    if (!speechRef.current.rec) return;
+    if (Date.now() - speechRef.current.pressedAt < 300) return;  // a tap, not a hold
+    stopSpeech();
+  }, [stopSpeech]);
 
   /** Opening the drawer IS having seen it. Stamp, then let the poll clear the
    *  strip. Fire and forget: a failed stamp costs one repeated line, and
@@ -559,12 +768,25 @@ export function StaxisList({
                 open={composerOpen}
                 state={composer}
                 people={people}
+                now={now}
+                question={composerQuestion}
                 busy={composerBusy}
                 error={composerError}
+                recording={recording}
+                micAvailable={micAvailable}
+                teachLine={teachLine}
                 onOpen={() => setComposerOpen(true)}
-                onCancel={() => { setComposerOpen(false); setComposerError(null); }}
-                onChange={setComposer}
+                onCancel={() => {
+                  setComposerOpen(false);
+                  setComposerError(null);
+                  setComposer(composerDefaults(todayIso, now.getDay()));
+                  setParsed(emptyParse());
+                  cancelInterpret();
+                }}
+                onChange={changeComposer}
                 onSubmit={submitComposer}
+                onMicPress={micPress}
+                onMicRelease={micRelease}
               />
             )}
             interleave={{
@@ -654,6 +876,29 @@ function eventMeta(event: KnowledgeEventDTO): string {
 
 /** The event editor takes the Communications copy helper, which is identity. */
 const IDENTITY_COPY = (english: string) => english;
+
+// The slice of the Web Speech API this touches. It is not in the standard DOM
+// lib types and is `webkit`-prefixed in Chrome and Safari. Same shape the ask
+// bar's dictation uses (AskStaxisBar.tsx).
+interface SpeechRecognitionLike {
+  lang: string;
+  interimResults: boolean;
+  continuous: boolean;
+  start: () => void;
+  stop: () => void;
+  onresult: ((e: { resultIndex: number; results: ArrayLike<ArrayLike<{ transcript: string }>> }) => void) | null;
+  onend: (() => void) | null;
+  onerror: (() => void) | null;
+}
+
+function speechConstructor(): (new () => SpeechRecognitionLike) | null {
+  if (typeof window === 'undefined') return null;
+  const w = window as unknown as {
+    SpeechRecognition?: new () => SpeechRecognitionLike;
+    webkitSpeechRecognition?: new () => SpeechRecognitionLike;
+  };
+  return w.SpeechRecognition ?? w.webkitSpeechRecognition ?? null;
+}
 
 /** Today, in the browser's own timezone, as YYYY-MM-DD. */
 function localIso(d: Date): string {

@@ -626,6 +626,19 @@ export const AI_FEATURE_REGISTRY: Readonly<Record<AiFeatureKey, AiFeatureDefinit
     'Powers the step-by-step guided tours that walk someone through using the app.',
     ['text', 'tool_use'], SONNET,
   ),
+  // The second reading of a to-do somebody typed. Plain code already reads
+  // "check the boiler room every Friday" and everything like it, and that code
+  // is the only thing that runs while a person is typing. This slot is asked
+  // ONLY when the code found nothing at all in a long sentence, it is given
+  // two and a half seconds, and every failure is silence: the row behaves
+  // exactly as it does with the switch off. Cheapest tier on purpose, because
+  // reading a short sentence for a day and a name is not reasoning, and a
+  // smarter model would be allowed to author exactly as little.
+  'feed.todo_reading': defineFeature(
+    'feed.todo_reading', 'Front desk', 'To-do sentence reading',
+    'A second look at a to-do somebody typed, only when the plain reading found no person, day or repeat in it. It can never invent a person, never write the to-do itself, and never hold anybody up: if it is slow, off, or wrong, the to-do is added exactly as typed.',
+    ['text'], HAIKU,
+  ),
   'inventory.photo_count': defineFeature(
     'inventory.photo_count', 'Inventory', 'Shelf photo counting',
     'Counts what is on a shelf from a photo during inventory counts.',
