@@ -157,6 +157,7 @@ export type KnowledgeStoreId =
   | 'portfolio_snapshot'
   | 'lenses'
   | 'situational_awareness'
+  | 'assignment_history'
   | 'prompt_rows';
 
 // ─── Presentations ─────────────────────────────────────────────────────────
@@ -627,6 +628,32 @@ export const KNOWLEDGE_STORES: readonly KnowledgeStoreRegistration[] = Object.fr
     why: 'The clock, the screen, what this person did today, what is waiting on them. '
       + 'Envelope and version come from the door; the LOADER still belongs to the caller, '
       + 'which is the only layer holding the actor identity its nine feeds need.',
+  }),
+  Object.freeze({
+    id: 'assignment_history' as const,
+    label: 'Assignment history',
+    scope: 'person' as const,
+    authority: 'fact' as const,
+    placement: 'on_demand' as const,
+    cache: 'none' as const,
+    // `legacy` in the same sense knowledge_hub is: registered, pinned, and
+    // loaded by its own caller. It is NOT `through_the_door` because there is
+    // nothing to compose — an on-demand store is never injected into a prompt,
+    // so it has no envelope, no version stamp and no place in either half. It
+    // is registered anyway, which is the whole point of the door: a store that
+    // can answer "what does Staxis know about this hotel" and is not in this
+    // file is a store nobody reviewed the scope of.
+    status: 'legacy' as const,
+    loaderModule: 'src/lib/companion/notices-server.ts',
+    presentations: Object.freeze([]),
+    why: 'Who assigned what to whom, when, and whether it was done or refused and why, from '
+      + 'comms_tasks. PERSON scope and not hotel scope even though the rows live at a hotel: '
+      + 'the loader filters on the asking person\'s own staff id in the query, so it can only '
+      + 'ever return work they handed out or work they were handed. There is no argument that '
+      + 'widens it and no name to pass, which is what stops the chat tool over it becoming a '
+      + 'way to read the hotel\'s whole task board. Read on demand by staxis_assignments and '
+      + 'by the companion\'s notices list, from the ONE query, so the answer in the chat and '
+      + 'the list in the panel cannot disagree.',
   }),
 
   // ── Deployment scope ─────────────────────────────────────────────────────
