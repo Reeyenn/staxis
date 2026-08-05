@@ -32,7 +32,7 @@ $requirements$;
 -- Abandoned-prefix residue reconciliation.  Idempotent; a no-op on a fresh
 -- database.
 --
--- Everything above the @access-stage-c-release-gate marker runs in autocommit,
+-- Everything above the release-gate marker line below runs in autocommit,
 -- statement by statement, on purpose: a failed final gate must leave the
 -- preflight issue rows readable by the operator.  The consequence is that an
 -- abandoned cutover window can commit the prefix and stop at the gate, which

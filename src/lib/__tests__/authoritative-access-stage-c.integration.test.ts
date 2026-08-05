@@ -6031,3 +6031,67 @@ describe('Access Stage C leaves an already-final prefix alone', () => {
     }
   });
 });
+
+/**
+ * 0426 is deployed in two halves split on a marker line, and the halves are
+ * cut by operator tooling rather than by this file. A split that silently
+ * yields the wrong half is the worst failure mode available here: the
+ * "suffix" runs clean, reports success, and performs none of the irreversible
+ * work, which is exactly what happened once against production.
+ *
+ * These are deliberately source assertions. The split is a real no-runtime
+ * invariant of the file's shape, and nothing exercised at runtime can prove
+ * it, because the runtime only ever sees whichever half the tooling produced.
+ */
+describe('Access Stage C release-gate split', () => {
+  const MARKER_LINE = '-- @access-stage-c-release-gate';
+  const source = readFileSync(
+    join(process.cwd(), 'supabase/migrations', MIGRATION),
+    'utf8',
+  );
+  const lines = source.split('\n');
+
+  test('exactly one line is the marker, so a split point is unambiguous', () => {
+    const markerLines = lines
+      .map((line, index) => ({ line: line.trim(), index }))
+      .filter((entry) => entry.line === MARKER_LINE);
+    assert.equal(
+      markerLines.length,
+      1,
+      `expected one marker line, found ${markerLines.length}`,
+    );
+  });
+
+  test('the halves are disjoint and each carries its own work', () => {
+    const at = lines.findIndex((line) => line.trim() === MARKER_LINE);
+    assert.ok(at > 0, 'marker line not found');
+    const prefix = lines.slice(0, at).join('\n');
+    const suffix = lines.slice(at + 1).join('\n');
+
+    assert.notEqual(prefix, suffix);
+    assert.ok(prefix.length > 0 && suffix.length > 0);
+
+    // Preparation belongs to the prefix and must not be repeated after the gate.
+    assert.match(prefix, /create table if not exists public\.account_access_cutover_repair_manifests/);
+    assert.doesNotMatch(suffix, /create table if not exists public\.account_access_cutover_repair_manifests/);
+
+    // The irreversible work belongs to the suffix and must never sit in the
+    // prefix, which runs in autocommit before any release receipt exists.
+    assert.match(suffix, /create table if not exists public\.account_access_cutover_final_receipts/);
+    assert.doesNotMatch(prefix, /create table if not exists public\.account_access_cutover_final_receipts/);
+
+    // The completion record is the operator's proof the suffix actually ran.
+    assert.match(suffix, /insert into public\.applied_migrations/);
+    assert.doesNotMatch(prefix, /insert into public\.applied_migrations/);
+  });
+
+  test('the suffix opens its own transaction so a failure rolls the work back', () => {
+    const at = lines.findIndex((line) => line.trim() === MARKER_LINE);
+    const suffix = lines.slice(at + 1);
+    const firstStatement = suffix.find((line) => {
+      const trimmed = line.trim();
+      return trimmed.length > 0 && !trimmed.startsWith('--');
+    });
+    assert.equal(firstStatement?.trim(), 'begin;');
+  });
+});
