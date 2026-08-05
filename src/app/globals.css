@@ -251,6 +251,14 @@ layer(base);
 
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
+/* Shared UI primitive focus contract. The ring color is supplied by each
+   light-surface button theme; the fallback keeps the primitive legible when
+   a caller omits one. */
+.stx-ui-button:focus-visible {
+  outline: 2px solid var(--stx-ui-focus-ring, #5C7A60);
+  outline-offset: 2px;
+}
+
 html {
   -webkit-text-size-adjust: 100%;
   -webkit-tap-highlight-color: transparent;

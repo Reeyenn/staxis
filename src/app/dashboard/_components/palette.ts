@@ -15,24 +15,25 @@
 // global design tokens.
 
 import type React from 'react';
+import { CONCOURSE_COLORS, CONCOURSE_FONTS } from '@/app/_components/ui/tokens';
 
 // ─── hero palette (Concourse tokens, on the app-wide radial wash) ──────
 export const C = {
-  paper:  '#FFFFFF',   // white — chart marker fills / card surfaces
+  paper:  CONCOURSE_COLORS.paper,   // white — chart marker fills / card surfaces
   paper2: 'rgba(158,183,166,.16)', // sage wash fill for the active KPI cell
-  card:   '#FFFFFF',
-  ink:    '#1F231C',
-  ink2:   '#5C625C',
+  card:   CONCOURSE_COLORS.paper,
+  ink:    CONCOURSE_COLORS.ink,
+  ink2:   CONCOURSE_COLORS.ink2,
   ink3:   '#8A9187',
-  ink4:   '#A6ABA6',
-  green:  '#356B4C',
-  greenL: '#5C7A60',
-  sage:   '#9EB7A6',
-  rust:   '#B85C3D',
-  rustD:  '#B85C3D',
+  ink4:   CONCOURSE_COLORS.ink3,
+  green:  CONCOURSE_COLORS.okDeep,
+  greenL: CONCOURSE_COLORS.sageDeep,
+  sage:   CONCOURSE_COLORS.sage,
+  rust:   CONCOURSE_COLORS.warm,
+  rustD:  CONCOURSE_COLORS.warm,
   rustBg: 'rgba(184,92,61,.10)',
-  gold:   '#C99644',
-  line:   'rgba(31,35,28,0.08)',
+  gold:   CONCOURSE_COLORS.caramel,
+  line:   CONCOURSE_COLORS.rule,
   line2:  'rgba(31,35,28,0.14)',
 } as const;
 
@@ -61,17 +62,17 @@ export const LABEL: React.CSSProperties = {
 
 // ─── card palette (the additive cards below the hero) ──────────────────
 export const CARD = {
-  ink: '#1F231C',
-  ink2: '#5C625C',
-  ink3: '#A6ABA6',
+  ink: CONCOURSE_COLORS.ink,
+  ink2: CONCOURSE_COLORS.ink2,
+  ink3: CONCOURSE_COLORS.ink3,
   rule: 'rgba(31,35,28,0.06)',
-  green: '#356B4C',       // LogBook / Calendar deep-link accent
-  terracotta: '#B85C3D',  // Worklist overdue accent
-  attn: '#8C6A33',        // amber-ink for "noticed" attention insights
+  green: CONCOURSE_COLORS.okDeep,       // LogBook / Calendar deep-link accent
+  terracotta: CONCOURSE_COLORS.warm,  // Worklist overdue accent
+  attn: CONCOURSE_COLORS.caramelDeep,        // amber-ink for "noticed" attention insights
   attnRule: 'rgba(201,150,68,0.25)',
 } as const;
 
-export const CARD_MONO = 'var(--font-geist-mono), ui-monospace, monospace';
+export const CARD_MONO = CONCOURSE_FONTS.mono;
 
 export const CARD_LABEL: React.CSSProperties = {
   fontFamily: CARD_MONO,
