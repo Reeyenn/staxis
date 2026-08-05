@@ -137,7 +137,7 @@ describe('pms reshape — migrations 0354 / 0355 / 0356', () => {
       if (file.startsWith('0225_')) await db.exec(INSPECTIONS_STUB);
       if (file.startsWith('0341_')) await db.exec(INGEST_STUB);
       if (file.startsWith('0343_')) await db.exec(APPEND_UNIQUE_STUB);
-    });
+    }, { stopAfter: '0356_canonical_dimensions.sql' });
     pg = migrated.pg;
 
     for (const version of [

@@ -214,14 +214,9 @@ const SERVICE_ROLE_ONLY = new Set([
   'rooms',
   'work_orders',
   'plan_snapshots',
-  // ─── Migration 0210 — Staxis-side cleaning tasks. ────────────────────
-  // RLS enabled + REVOKE + explicit `cleaning_tasks_deny_all_browser`
-  // policy. Rules engine writes via service-role; the future
-  // housekeeping UI reads via /api/* with supabaseAdmin. The UI branch
-  // will add per-role read policies in a follow-up migration.
-  'cleaning_tasks',
   // ─── Migration 0214 — housekeeper mobile rebuild piece A. ────────────
-  // Same deny-all-browser policy pattern as cleaning_tasks (0210).
+  // Same deny-all-browser policy pattern used by the retired housekeeping
+  // relations (0210).
   // Service-role only — /api/housekeeper/* mediates all reads/writes via
   // supabaseAdmin with capability checks (pid + staffId).
   'room_pause_events',

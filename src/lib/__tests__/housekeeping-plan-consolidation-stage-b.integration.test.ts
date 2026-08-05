@@ -22,6 +22,12 @@ const TASK_DATE = '2026-08-03';
 const here = dirname(fileURLToPath(import.meta.url));
 const repo = resolve(here, '..', '..', '..');
 
+const applyStageBMigrations = (
+  beforeMigration: Parameters<typeof applyMigrationsToPgliteWithHook>[0],
+) => applyMigrationsToPgliteWithHook(beforeMigration, {
+  stopAfter: '0436_housekeeping_stage_b_inspection_lock.sql',
+});
+
 let pg: PGlite;
 
 async function rows<T = Record<string, unknown>>(
@@ -49,7 +55,7 @@ async function failsWith(sql: string, params: unknown[] = []): Promise<string> {
 
 describe('housekeeping canonical plan Stage B cutover', () => {
   before(async () => {
-    const migrated = await applyMigrationsToPgliteWithHook(async ({ pg: db, file }) => {
+    const migrated = await applyStageBMigrations(async ({ pg: db, file }) => {
       if (file !== '0434_housekeeping_plan_reconciliation.sql') return;
 
       await db.query(

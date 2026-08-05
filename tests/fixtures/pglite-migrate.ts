@@ -307,6 +307,11 @@ export function applyMigrationsToPglite(): Promise<PgliteMigratedFixture> {
       }
     }
 
+    // The current migration is the last file in the fixture. If it fails
+    // intentionally at a preflight gate, clear the aborted transaction before
+    // handing the shared database to tests that exercise the prior schema.
+    await pg.exec('rollback;').catch(() => undefined);
+
     // Surface the report once — useful when CI fails so the failure is
     // explainable without re-running with verbose flags.
     const total = files.length;
@@ -343,6 +348,9 @@ export async function applyMigrationsToPgliteWithHook(
       report: MigrationReport;
     }) => Promise<void>;
     authorizeAccessStageCRelease?: boolean;
+    /** Stop after this exact migration FILE applied successfully. */
+    stopAfter?: string;
+    /** Stop after this 4-digit migration VERSION, applied or not. */
     stopAfterVersion?: string;
   } = {},
 ): Promise<PgliteMigratedFixture> {
@@ -388,6 +396,7 @@ export async function applyMigrationsToPgliteWithHook(
         await pg.exec(preparedSql);
       }
       report.applied.push(file);
+      if (options.stopAfter === file) break;
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       report.failedAtRuntime.push({ file, error: message.split('\n')[0] });
@@ -396,6 +405,10 @@ export async function applyMigrationsToPgliteWithHook(
       break;
     }
   }
+  // A hook may deliberately make the final applied migration fail in order
+  // to inspect its rollback boundary. Return a usable session to the caller
+  // instead of leaking that aborted transaction into the next assertion.
+  await pg.exec('rollback;').catch(() => undefined);
   return { pg, report };
 }
 

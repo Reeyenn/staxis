@@ -424,7 +424,7 @@ export const portfolioUiDataSource: PortfolioUiDataSource = {
       const shiftLimit = partLimit(0.3);
       const [taskRead, shiftRead] = await Promise.all([
         supabaseAdmin
-          .from('cleaning_tasks')
+          .from('room_work_plan_v1')
           .select('id, property_id, business_date, status, priority, updated_at', { count: 'exact' })
           .in('property_id', [...propertyIds])
           .gte('business_date', nearbyStart)
