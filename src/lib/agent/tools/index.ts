@@ -47,6 +47,11 @@ import './ordering';
 // standing rule in plain language. Same two-call confirmInChat shape as the
 // setup tools; the read-back is verbatim rather than structured, on purpose.
 import './companion';
+// Assignment history (2026-08-05): what this person handed out and was handed,
+// read from the SAME query the companion's notices list reads, so the answer in
+// the conversation and the list in the panel cannot disagree. Registered
+// through the knowledge door as `assignment_history`.
+import './assignments';
 // Future cross-feature tool modules (registered from other branches/chats)
 // can be added by importing from agent/index.ts at the top level — this
 // file is the canonical place for THIS chat's built-in catalog.

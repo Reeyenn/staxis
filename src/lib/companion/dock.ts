@@ -258,6 +258,115 @@ export function peekFits(placement: PeekPlacement): boolean {
   return placement.maxWidth >= 140;
 }
 
+// ─── Notices popup placement ────────────────────────────────────────────────
+//
+// THE ONE RULE: it never covers the conversation. The notices list is opened
+// from the panel's own top strip, and a list that dropped down over the thread
+// would hide the thing the person came to the panel for — and, worse, would
+// look like the chat had been replaced rather than temporarily overlaid.
+//
+// So it is anchored to the PANEL's rect rather than to the mark, and it takes
+// the space outside it: above when there is room, below when there is not. The
+// panel is itself already anchored to wherever the mark was dragged (see
+// placePanel), so re-anchoring off the panel inherits that decision instead of
+// making a second, possibly different one.
+//
+// Horizontal alignment follows the panel's right edge, and is clamped to the
+// viewport by the same EDGE_MARGIN everything else here uses.
+
+export interface Rect { left: number; top: number; width: number; height: number }
+
+export interface NoticesPlacement {
+  left: number;
+  width: number;
+  /** Set when the popup hangs below the panel. */
+  top: number | null;
+  /** Set when the popup rises above it, which is the resting case. */
+  bottom: number | null;
+  maxHeight: number;
+  side: 'above' | 'below';
+}
+
+/** Gap between the panel edge and the notices popup. */
+export const NOTICES_GAP = 10;
+
+/** Ceiling on the popup's height before the viewport gets a say. */
+export const NOTICES_MAX_HEIGHT = 360;
+
+/** Below this there is not enough room to show a list worth opening. */
+export const NOTICES_MIN_HEIGHT = 96;
+
+/**
+ * Where the notices list goes, given the panel it belongs to.
+ *
+ * `bottom` is expressed from the viewport's bottom edge (the CSS `bottom`
+ * property) exactly as placePanel does, so the popup grows upward from a fixed
+ * seam at the panel's top edge instead of drifting as rows load.
+ *
+ * The returned box is guaranteed not to intersect `panel`, which is the
+ * property the test holds: when it sits above, its bottom edge is at or above
+ * the panel's top; when below, its top edge is at or below the panel's bottom.
+ */
+export function placeNoticesPopup(panel: Rect, viewport: Viewport): NoticesPlacement {
+  const roomAbove = panel.top - NOTICES_GAP - EDGE_MARGIN;
+  const roomBelow = viewport.height - (panel.top + panel.height) - NOTICES_GAP - EDGE_MARGIN;
+  // Prefer above, which is the design at the resting bottom-right corner. Flip
+  // only when below genuinely has more room to offer.
+  const above = roomAbove >= NOTICES_MAX_HEIGHT || roomAbove >= roomBelow;
+  const room = Math.max(0, above ? roomAbove : roomBelow);
+
+  const width = Math.min(
+    Math.max(panel.width, 240),
+    Math.max(200, viewport.width - EDGE_MARGIN * 2),
+  );
+  const preferredLeft = panel.left + panel.width - width;
+  const maxLeft = Math.max(EDGE_MARGIN, viewport.width - width - EDGE_MARGIN);
+
+  return {
+    left: clamp(round(preferredLeft), Math.min(EDGE_MARGIN, maxLeft), maxLeft),
+    width: round(width),
+    top: above ? null : round(panel.top + panel.height + NOTICES_GAP),
+    bottom: above ? round(viewport.height - panel.top + NOTICES_GAP) : null,
+    maxHeight: round(Math.min(NOTICES_MAX_HEIGHT, room)),
+    side: above ? 'above' : 'below',
+  };
+}
+
+/** Is there enough room to open the list at all? A 40px sliver is not a list. */
+export function noticesFits(placement: NoticesPlacement): boolean {
+  return placement.maxHeight >= NOTICES_MIN_HEIGHT;
+}
+
+/**
+ * The popup's own rect in viewport coordinates, for the overlap assertion.
+ *
+ * Exported because "never covers the thread" is the whole point of this
+ * placement and a test has to be able to state it in the same coordinates the
+ * panel is in, rather than re-deriving CSS `bottom` arithmetic and possibly
+ * re-deriving it wrong.
+ */
+export function noticesRect(placement: NoticesPlacement, viewport: Viewport): Rect {
+  const top = placement.top !== null
+    ? placement.top
+    : viewport.height - (placement.bottom ?? 0) - placement.maxHeight;
+  return { left: placement.left, top, width: placement.width, height: placement.maxHeight };
+}
+
+/**
+ * A1 · Rise, for the notices list. Slower than the panel's own open because it
+ * is a second surface arriving on top of one that is already there, and a fast
+ * one reads as a flicker rather than as something unfolding.
+ */
+export const NOTICES_ENTER_MS = 240;
+
+/** The Obsidian easing. Same curve the rest of the object moves on. */
+export const NOTICES_EASING = 'cubic-bezier(.22,1,.36,1)';
+
+/** What the motion becomes when the person has asked for less of it. */
+export function noticesEnterMs(reducedMotion: boolean): number {
+  return reducedMotion ? REDUCED_MOTION_MS : NOTICES_ENTER_MS;
+}
+
 // ─── Hover intent ───────────────────────────────────────────────────────────
 
 /**

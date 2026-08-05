@@ -67,6 +67,8 @@ import {
   type CompanionOfferKind,
 } from '@/lib/companion/offers';
 import { cleanName, looksSharedLogin, type SleepReason } from '@/lib/companion/copy';
+import { loadAssignmentNotices } from '@/lib/companion/notices-server';
+import type { AssignmentNotice } from '@/lib/companion/notices';
 import {
   EMPTY_COMPANION_MEMORY,
   parseCompanionMemory,
@@ -74,6 +76,8 @@ import {
   rememberDeclined,
   rememberSpoke,
   rememberGreeted,
+  rememberNoticesAnnounced,
+  rememberNoticesSeen,
   rememberTaught,
   rememberTourDeclined,
   rememberTourTaken,
@@ -161,6 +165,26 @@ export async function GET(req: NextRequest): Promise<Response> {
       })
     : [];
 
+  // ── Notices ────────────────────────────────────────────────────────────
+  //
+  // The same `awake` gate, which is also the HOUSEKEEPER GATE: `roleHasChat`
+  // is false for the housekeeping hat, so this route ships that hat no notices
+  // at all rather than relying on the browser to decline to render them. The
+  // mount gate in the browser is the second, independent refusal.
+  //
+  // Fails soft to an empty list for the same reason the candidates do: the
+  // companion is a greeter, not a dependency.
+  let notices: AssignmentNotice[] = [];
+  if (awake && ctx.staffId) {
+    try {
+      notices = await loadAssignmentNotices({ propertyId: ctx.pid, staffId: ctx.staffId, now });
+    } catch (e) {
+      log.warn('[companion] notices read failed; the panel opens without them', {
+        requestId: ctx.requestId, pid: ctx.pid, err: errToString(e),
+      });
+    }
+  }
+
   return ok(
     {
       person: {
@@ -181,6 +205,7 @@ export async function GET(req: NextRequest): Promise<Response> {
       // second greeting on top of the first. See decideCompanionSpeech.
       wizardAlreadyRan: Boolean(facts?.onboarding_prompt_shown_at),
       candidates,
+      notices,
       availability: { awake, reason: sleepReason },
     },
     { requestId: ctx.requestId, headers: ctx.headers },
@@ -202,11 +227,25 @@ type CompanionEvent =
   // event needs two Nos before a topic drops, which is right for something the
   // companion noticed and wrong for a button somebody has read about and
   // decided against. See src/lib/companion/pointers.ts.
-  | 'dropped';
+  | 'dropped'
+  // The fourth mouth. `notices_announced` stamps the batch that was just said
+  // out loud (and writes the sentence into the thread like every other thing
+  // the companion says first); `notices_seen` moves the read cursor when the
+  // list is opened. Two events because being told and having looked are two
+  // acts — see notices.ts.
+  | 'notices_announced'
+  | 'notices_seen';
 
 const EVENTS: readonly CompanionEvent[] = [
   'welcomed', 'tour_declined', 'tour_taken', 'spoke', 'declined', 'accepted', 'taught', 'greeted', 'dropped',
+  'notices_announced', 'notices_seen',
 ];
+
+/** An ISO instant off a request body, or null. Never trusted as a Date. */
+function readInstant(value: unknown): string | null {
+  if (typeof value !== 'string' || value.length < 10 || value.length > 40) return null;
+  return Number.isNaN(Date.parse(value)) ? null : value;
+}
 
 // ─── The offer half ─────────────────────────────────────────────────────────
 //
@@ -291,6 +330,10 @@ export async function POST(req: NextRequest): Promise<Response> {
     // The offer half. See the OfferSpeech block above.
     text?: unknown; kind?: unknown; page?: unknown; actions?: unknown;
     conversationId?: unknown; offerId?: unknown; offerState?: unknown;
+    // The notices half. `through` is the newest notice in the batch that was
+    // announced. There is deliberately no "when did I open the list" field:
+    // that instant is the server's own clock.
+    through?: unknown;
   };
   try {
     body = await req.json();
@@ -354,6 +397,23 @@ export async function POST(req: NextRequest): Promise<Response> {
       // Stamped with the HOTEL's day, so a person working past midnight is
       // greeted when the hotel's morning starts and not when UTC's does.
       case 'greeted':       next = rememberGreeted(current, today); break;
+      // Both stamps are MONOTONIC inside their reducers, so a stale tab
+      // replaying an older batch cannot drag either cursor backwards and make
+      // the companion repeat itself or mark read work unread. A missing or
+      // unparseable instant leaves the memory exactly as it was: the safe
+      // direction here is "not stamped", which costs at most one repeat.
+      case 'notices_announced': {
+        const through = readInstant(body.through);
+        next = through ? rememberNoticesAnnounced(current, through) : current;
+        break;
+      }
+      case 'notices_seen': {
+        // The server's own clock, not the browser's. "When did you last look"
+        // is a fact about this request, and a tab with a skewed clock could
+        // otherwise mark tomorrow's notices read today.
+        next = rememberNoticesSeen(current, now.toISOString());
+        break;
+      }
       default:              next = current;
     }
 
@@ -370,10 +430,14 @@ export async function POST(req: NextRequest): Promise<Response> {
     let spokenInto: string | null = null;
     try {
       // Every event on which the companion actually SAYS something. `spoke` is
-      // an offer, `greeted` is the once-a-day hello, `welcomed` is day one.
-      // Anything else (a tour taken, a tip shown) moves the ledger without
+      // an offer, `greeted` is the once-a-day hello, `welcomed` is day one, and
+      // `notices_announced` is the batched line about work. Anything else (a
+      // tour taken, a tip shown, a list opened) moves the ledger without
       // putting a sentence in front of anybody, so there is nothing to write.
-      if (body.event === 'spoke' || body.event === 'greeted' || body.event === 'welcomed') {
+      if (
+        body.event === 'spoke' || body.event === 'greeted' || body.event === 'welcomed'
+        || body.event === 'notices_announced'
+      ) {
         const speech = readOfferSpeech(body as Record<string, unknown>);
         if (speech) {
           const conversationId = await ensureCompanionConversation({

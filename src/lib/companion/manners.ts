@@ -98,6 +98,23 @@ export interface CompanionMemory {
    * having one day, not four page loads each owed a greeting.
    */
   greetedDay: string | null;
+  /**
+   * The newest notice this person has already been TOLD about out loud, ISO.
+   *
+   * The whole of "never twice for the same batch". See notices.ts: the
+   * announcement is a fourth mouth, exempt from the caps above by founder
+   * ruling, so this stamp is the only thing that stops it repeating on every
+   * page load. Null means nothing has ever been announced.
+   */
+  noticesAnnouncedThrough: string | null;
+  /**
+   * When this person last OPENED the notices list, ISO.
+   *
+   * Separate from the stamp above because being told and having looked are
+   * separate acts. This one drives the unread count and the unread row; that
+   * one drives whether the companion opens its mouth.
+   */
+  noticesSeenAt: string | null;
   topics: Record<string, CompanionTopicMemory>;
 }
 
@@ -110,6 +127,8 @@ export const EMPTY_COMPANION_MEMORY: CompanionMemory = {
   spokenDay: null,
   spokenCount: 0,
   greetedDay: null,
+  noticesAnnouncedThrough: null,
+  noticesSeenAt: null,
   topics: {},
 };
 
@@ -165,6 +184,13 @@ export function parseCompanionMemory(raw: unknown): CompanionMemory {
     spokenDay: isDayString(o.spokenDay) ? o.spokenDay : null,
     spokenCount: Number.isFinite(spokenCount) && spokenCount > 0 ? Math.min(Math.floor(spokenCount), 99) : 0,
     greetedDay: isDayString(o.greetedDay) ? o.greetedDay : null,
+    // Both degrade to null, which means "tell them again" rather than "assume
+    // they were told". For a stamp whose only job is suppressing speech, the
+    // safe direction on unreadable input is to speak: one repeated line costs a
+    // person nothing, and a forged stamp that silenced the list would cost them
+    // the message a colleague sent.
+    noticesAnnouncedThrough: isIsoString(o.noticesAnnouncedThrough) ? o.noticesAnnouncedThrough : null,
+    noticesSeenAt: isIsoString(o.noticesSeenAt) ? o.noticesSeenAt : null,
     topics: capTopics(topics),
   };
 }
@@ -639,6 +665,37 @@ export function rememberWelcomed(memory: CompanionMemory, now: Date): CompanionM
 export function rememberGreeted(memory: CompanionMemory, today: string): CompanionMemory {
   if (memory.greetedDay === today) return memory;
   return { ...memory, greetedDay: today };
+}
+
+/**
+ * A batch of notices was said out loud. See notices.ts.
+ *
+ * MONOTONIC. A stamp only ever moves forward, so a stale tab replaying an older
+ * batch cannot un-announce the newer one and make the companion repeat itself.
+ * An unparseable `through` is ignored rather than written.
+ */
+export function rememberNoticesAnnounced(
+  memory: CompanionMemory,
+  through: string,
+): CompanionMemory {
+  const next = Date.parse(through);
+  if (!Number.isFinite(next)) return memory;
+  const prior = memory.noticesAnnouncedThrough ? Date.parse(memory.noticesAnnouncedThrough) : NaN;
+  if (Number.isFinite(prior) && prior >= next) return memory;
+  return { ...memory, noticesAnnouncedThrough: through };
+}
+
+/**
+ * They opened the list. Monotonic for the same reason as above: a second tab
+ * opened an hour ago must not drag the read cursor backwards and make yesterday
+ * unread again.
+ */
+export function rememberNoticesSeen(memory: CompanionMemory, at: string): CompanionMemory {
+  const next = Date.parse(at);
+  if (!Number.isFinite(next)) return memory;
+  const prior = memory.noticesSeenAt ? Date.parse(memory.noticesSeenAt) : NaN;
+  if (Number.isFinite(prior) && prior >= next) return memory;
+  return { ...memory, noticesSeenAt: at };
 }
 
 export function rememberTourDeclined(memory: CompanionMemory): CompanionMemory {

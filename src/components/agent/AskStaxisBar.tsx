@@ -50,13 +50,22 @@ import { AiActivityButton } from './AiActivityButton';
 import { FeedbackButton } from '@/components/layout/FeedbackButton';
 import { useCompanion } from '@/components/companion/useCompanion';
 import { TraceLayer } from '@/components/companion/TraceLayer';
-import { companionLabels, panelEyebrow, pastChatsHeading, sleepLine } from '@/lib/companion/copy';
+import { companionLabels, pastChatsHeading, sleepLine } from '@/lib/companion/copy';
 import {
   offerIsReplayable,
   offerStateNote,
   sortOffers,
   type CompanionOffer,
 } from '@/lib/companion/offers';
+import {
+  groupNoticesByDay,
+  noticeIsUnread,
+  noticeTimeLabel,
+  noticesCountLabel,
+  NOTICES_EMPTY_LINE,
+  type AssignmentNotice,
+} from '@/lib/companion/notices';
+import { resolveDestination, type CompanionPage } from '@/lib/companion/pages';
 import {
   clampDockPosition,
   containScroll,
@@ -66,8 +75,10 @@ import {
   isDragGesture,
   panelExitMs,
   panelRenderState,
+  noticesFits,
   peekFits,
   peekPersists,
+  placeNoticesPopup,
   placePanel,
   placePeek,
   panelWidthFor,
@@ -79,6 +90,8 @@ import {
   HOVER_CLOSE_MS,
   HOVER_OPEN_MS,
   MARK_SIZE,
+  NOTICES_EASING,
+  NOTICES_ENTER_MS,
   PANEL_ENTER_MS,
   PANEL_EXIT_MS,
   REDUCED_MOTION_MS,
@@ -153,7 +166,7 @@ function readViewport(): Viewport {
 
 export function AskStaxisBar() {
   const { user } = useAuth();
-  const { activePropertyId } = useProperty();
+  const { activePropertyId, activeProperty } = useProperty();
   const pathname = usePathname();
   const onInventory = pathname === '/inventory' || pathname.startsWith('/inventory/');
   const roleMobile = user?.role ? MOBILE_BY_ROLE[user.role] : undefined;
@@ -208,6 +221,8 @@ export function AskStaxisBar() {
   // The live value of `open`, for the timers and callbacks that fire long after
   // the render that armed them.
   const openRef = useRef(false);
+  const noticesButtonRef = useRef<HTMLButtonElement | null>(null);
+  const noticesRef = useRef<HTMLDivElement | null>(null);
 
   const {
     messages,
@@ -258,6 +273,22 @@ export function AskStaxisBar() {
     setLeaving(null);
     if (text) submitRef.current(text, 'companion');
   }, [cancelSink]);
+
+  // ── The notices list ─────────────────────────────────────────────────────
+  // A surface the panel owns, opened from its own top strip or from a yes to
+  // the companion's batched line. It is a POPUP over the panel rather than a
+  // view inside it: swapping the thread out for a list would be the chat
+  // disappearing to show you a list, and the whole point is that you glance and
+  // come back.
+  const [noticesOpen, setNoticesOpen] = useState(false);
+  const showNotices = useCallback(() => {
+    cancelSink();
+    openRef.current = true;
+    setOpen(true);
+    setView('thread');
+    setLeaving(null);
+    setNoticesOpen(true);
+  }, [cancelSink]);
   // The panel's own state is an input to exactly one decision: a pattern about
   // a named person may only be said to somebody who opened the panel, so the
   // venue has to be something the companion can see. See `decidePanelAsk`.
@@ -271,6 +302,7 @@ export function AskStaxisBar() {
     offers: companionOffers,
     onOffer: upsertCompanionOffer,
     onConversation: adoptConversationId,
+    onShowNotices: showNotices,
   });
 
   const scrollBottomSoon = useCallback(() => {
@@ -417,7 +449,12 @@ export function AskStaxisBar() {
     if (hoverCloseTimerRef.current) return;
     hoverCloseTimerRef.current = setTimeout(() => {
       hoverCloseTimerRef.current = null;
-      const focusInside = panelRef.current?.contains(document.activeElement) === true;
+      // The notices list is a sibling of the panel in the DOM, not a child, so
+      // "is anything focused inside" has to ask both. Without this, tabbing
+      // into the list and then moving the mouse away closes the panel out from
+      // under the keyboard.
+      const focusInside = panelRef.current?.contains(document.activeElement) === true
+        || noticesRef.current?.contains(document.activeElement) === true;
       if (!hoverCanClose({ finePointer, open: openRef.current, busy: busyRef.current || focusInside })) return;
       closePanel();
     }, HOVER_CLOSE_MS);
@@ -546,6 +583,10 @@ export function AskStaxisBar() {
     const onKey = (e: KeyboardEvent) => {
       if (e.key !== 'Escape') return;
       if (menuOpen) { setMenuOpen(false); return; }
+      // The list is the newest thing on screen, so it is the first thing
+      // Escape takes away. Closing the whole panel because somebody wanted the
+      // list gone would be one keystroke doing two things.
+      if (noticesOpen) { setNoticesOpen(false); return; }
       if (mobileOpen) { closeMobile(); return; }
       if (open) closePanel();
     };
@@ -554,7 +595,15 @@ export function AskStaxisBar() {
       if (mobileOpen && mobileSheetRef.current?.contains(target)) return;
       if (mobileOpen) return;
       if (cornerRef.current?.contains(target)) return;
-      if (panelRef.current?.contains(target)) return;
+      if (noticesRef.current?.contains(target)) return;
+      if (panelRef.current?.contains(target)) {
+        // Inside the panel but outside the list: the list is what gets closed,
+        // and only when the click did not land on the control that opens it.
+        if (noticesOpen && noticesButtonRef.current?.contains(target) !== true) {
+          setNoticesOpen(false);
+        }
+        return;
+      }
       if (open) closePanel();
     };
     window.addEventListener('keydown', onKey);
@@ -563,7 +612,7 @@ export function AskStaxisBar() {
       window.removeEventListener('keydown', onKey);
       window.removeEventListener('pointerdown', onPointerDown);
     };
-  }, [open, menuOpen, mobileOpen, closeMobile, closePanel]);
+  }, [open, menuOpen, mobileOpen, noticesOpen, closeMobile, closePanel]);
 
   // A walkthrough (Clicky-style cursor demo) takes over the screen, and a route
   // change replaces the page under it. Both close the panel OUTRIGHT rather
@@ -744,6 +793,73 @@ export function AskStaxisBar() {
   const peekAt = useMemo(() => placePeek(markPos, viewport), [markPos, viewport]);
   const panelWidth = useMemo(() => panelWidthFor(viewport), [viewport]);
 
+  // ── Where the notices list goes ──────────────────────────────────────────
+  //
+  // Derived from the panel's OWN placement rather than measured off the DOM.
+  // The slab is rendered at exactly `panel.maxHeight` and `panelWidth`, so its
+  // rect is already known here, and deriving it means the popup is positioned
+  // on the same frame the panel is rather than one frame later. It also means
+  // the "never covers the thread" rule is a property of two pure functions and
+  // can be asserted without a browser.
+  const panelRect = useMemo(() => ({
+    left: panel.left,
+    width: panelWidth,
+    height: panel.maxHeight,
+    top: panel.top !== null
+      ? panel.top
+      : viewport.height - (panel.bottom ?? 0) - panel.maxHeight,
+  }), [panel, panelWidth, viewport]);
+  const noticesAt = useMemo(
+    () => placeNoticesPopup(panelRect, viewport),
+    [panelRect, viewport],
+  );
+
+  // Where a notice row goes. A to-do lives on the Staxis list and nowhere else,
+  // and this is the SAME allowlist every other companion navigation goes
+  // through: a key, resolved to a constant href, refused when the hat may not
+  // go there or the hotel has the section switched off. Null means the rows are
+  // readable and not tappable, which is the honest outcome for somebody who
+  // cannot reach the screen the work is on.
+  const noticeDestination = useMemo(
+    () => resolveDestination('staxis', {
+      role: (user?.role ?? null) as AppRole | null,
+      enabledSections: activeProperty?.enabledSections,
+    }),
+    [user?.role, activeProperty?.enabledSections],
+  );
+
+  const noticesCount = noticesCountLabel(companion.unreadNoticeCount);
+  const noticeDays = useMemo(
+    () => groupNoticesByDay(companion.notices, companion.today ?? new Date().toISOString().slice(0, 10)),
+    [companion.notices, companion.today],
+  );
+
+  // ── Which rows read as new, while the list is open ───────────────────────
+  //
+  // Opening the list IS reading it: the count is a promise that something in
+  // there has not been seen, and it stops being true the moment the list is in
+  // front of somebody, not when they scroll to the bottom of it. So the cursor
+  // moves on open — and the row styling uses the cursor as it was JUST BEFORE
+  // that, held for as long as the list is up. Otherwise the unread marks would
+  // vanish on the same frame they appeared, which is the one thing a person
+  // opening a list of new things must not see.
+  const priorSeenRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!noticesOpen) priorSeenRef.current = companion.noticesSeenAt;
+  }, [noticesOpen, companion.noticesSeenAt]);
+  const [noticeCursor, setNoticeCursor] = useState<string | null>(null);
+  const markNoticesRead = companion.markNoticesRead;
+  useEffect(() => {
+    if (!noticesOpen) return;
+    setNoticeCursor(priorSeenRef.current);
+    markNoticesRead();
+  }, [noticesOpen, markNoticesRead]);
+
+  // The list belongs to an open panel. Anything that takes the panel away takes
+  // the list with it rather than leaving a floating box anchored to nothing.
+  useEffect(() => { if (!open) setNoticesOpen(false); }, [open]);
+  useEffect(() => { setNoticesOpen(false); }, [pathname]);
+
   if (!user || !activePropertyId) return null;
   // WHO LENSES: a hat with no chat does not get an object in the corner.
   // Housekeeping is the only one, and it is a product rule, not a capability
@@ -826,7 +942,25 @@ export function AskStaxisBar() {
   const threadView = (
     <div className={viewClass('thread', view, leaving, swapBack)}>
       <div className="asx-strip">
-        <span className="asx-lab">{panelEyebrow({ page: companion.page, streaming })}</span>
+        {/* The strip used to carry an eyebrow naming the screen underneath
+            ("STAXIS · ON MAINTENANCE"), which read as a status nobody had asked
+            for. It carries the way into the notices list instead: the one thing
+            in this panel that is genuinely waiting on the person. Hover opens
+            it on a real pointer; click opens it everywhere, because touch has
+            no hover. */}
+        <button
+          ref={noticesButtonRef}
+          type="button"
+          className={`asx-lab asx-notices-btn${noticesOpen ? ' asx-notices-btn-on' : ''}`}
+          aria-expanded={noticesOpen}
+          aria-controls="staxis-notices"
+          aria-label={noticesOpen ? labels.closeNotices : labels.openNotices}
+          onClick={() => setNoticesOpen((v) => !v)}
+          onPointerEnter={() => { if (finePointer) setNoticesOpen(true); }}
+        >
+          {labels.notices}
+          {noticesCount && <span className="asx-notices-count">{noticesCount}</span>}
+        </button>
         <button
           type="button"
           className="asx-lab asx-striplink"
@@ -918,6 +1052,19 @@ export function AskStaxisBar() {
                 onNo={companion.dismiss}
                 onQuiet={companion.quiet}
                 quietLabel={labels.quietForNow}
+              />
+            )}
+            {/* The batched notices line. One utterance about however many
+                things landed, with somewhere to go and a way to close it. It
+                is a message rather than a question, so a No records nothing:
+                see the no-topic note in useCompanion. */}
+            {showing.kind === 'notices' && (
+              <CompanionBlock
+                lines={[showing.line]}
+                yesLabel={labels.showNotices}
+                noLabel={labels.dismiss}
+                onYes={companion.answerYes}
+                onNo={companion.answerNo}
               />
             )}
             {showing.kind === 'arrived' && (
@@ -1180,6 +1327,64 @@ export function AskStaxisBar() {
         </div>
       )}
 
+      {/* ── Notices ── the list, over the panel and never on top of the
+          conversation. Its box is derived from the panel's own placement (see
+          placeNoticesPopup), so a mark dragged to the top of the screen gets a
+          list that drops below rather than one that runs off the edge. */}
+      {open && noticesOpen && noticesFits(noticesAt) && (
+        <div
+          ref={noticesRef}
+          id="staxis-notices"
+          className={`asx-notices asx-notices-${noticesAt.side}`}
+          role="dialog"
+          aria-label={labels.notices}
+          onPointerEnter={cancelHoverClose}
+          onPointerLeave={armHoverClose}
+          style={{
+            left: `${noticesAt.left}px`,
+            width: `${noticesAt.width}px`,
+            maxHeight: `${noticesAt.maxHeight}px`,
+            ...(noticesAt.top !== null ? { top: `${noticesAt.top}px` } : {}),
+            ...(noticesAt.bottom !== null ? { bottom: `${noticesAt.bottom}px` } : {}),
+          }}
+        >
+          <div className="asx-notices-head">
+            <span className="asx-lab">{labels.notices}</span>
+            <button
+              type="button"
+              className="asx-icobtn"
+              onClick={() => setNoticesOpen(false)}
+              aria-label={labels.closeNotices}
+            >
+              <CloseX />
+            </button>
+          </div>
+          <div className="asx-notices-list" data-asx-scroll>
+            {noticeDays.length === 0 ? (
+              <p className="asx-notices-empty">{NOTICES_EMPTY_LINE}</p>
+            ) : noticeDays.map((day) => (
+              <div key={day.label}>
+                <div className="asx-hday">{day.label}</div>
+                {day.items.map((notice) => (
+                  <NoticeRow
+                    key={notice.id}
+                    notice={notice}
+                    unread={noticeIsUnread(notice, noticeCursor)}
+                    onOpen={noticeDestination
+                      ? () => {
+                        setNoticesOpen(false);
+                        closePanel();
+                        companion.goTo(noticeDestination);
+                      }
+                      : null}
+                  />
+                ))}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
       {/* ── The Trace ── the companion reaching into the page. It renders
           only after a yes, is drawn in the page's own empty space, and clears
           on Escape, on a No and on navigation. It is rendered from here, and
@@ -1389,6 +1594,36 @@ function OfferTurn({ offer, onReplay }: { offer: CompanionOffer; onReplay: () =>
   );
 }
 
+// ── One notice ────────────────────────────────────────────────────────────
+//
+// One plain sentence and the time it happened. No icon vocabulary to learn, no
+// severity colour, no badge: the sentence already says who did what, and a row
+// that needs a legend is a row that has stopped being readable top to bottom.
+//
+// A row with nowhere to go renders as text rather than as a button that does
+// nothing. A control that silently does nothing is the bug this whole corner of
+// the product keeps being rebuilt to stop shipping.
+function NoticeRow({ notice, unread, onOpen }: {
+  notice: AssignmentNotice;
+  unread: boolean;
+  onOpen: (() => void) | null;
+}) {
+  const body = (
+    <>
+      <span className="asx-notice-dot" aria-hidden />
+      <span className="asx-notice-body">{notice.sentence}</span>
+      <span className="asx-notice-time">{noticeTimeLabel(notice.at)}</span>
+    </>
+  );
+  const className = `asx-notice-row${unread ? ' asx-notice-new' : ''}`;
+  if (!onOpen) return <div className={className}>{body}</div>;
+  return (
+    <button type="button" className={className} onClick={onOpen}>
+      {body}
+    </button>
+  );
+}
+
 // ── One turn in the panel ─────────────────────────────────────────────────
 // Staxis answers with NO bubble: its voice is the panel talking, not a second
 // participant in it.
@@ -1496,14 +1731,14 @@ const Chevron = () => (
 
 // ── Scoped styles (everything prefixed asx-) ──────────────────────────────
 const ASX_CSS = `
-.asx-corner,.asx-panel,.asx-peek,.asx-mobile-sheet,.asx-mobile-fab{
+.asx-corner,.asx-panel,.asx-peek,.asx-notices,.asx-mobile-sheet,.asx-mobile-fab{
   --asx-ink:#1F231C;--asx-sage:#5C7A60;--asx-sage-l:#9EB7A6;--asx-brand:#3E5C48;
   --asx-amber:#C99644;--asx-amber-l:#FBE3B8;--asx-rust:#B85C3D;--asx-white:#FCFDFB;
   --asx-rule:rgba(158,183,166,.14);--asx-spring:cubic-bezier(.22,1,.36,1);
   --asx-accent:#3E5C48;--asx-ink2:var(--snow-ink2,#5C625C);--asx-ink3:var(--snow-ink3,#A6ABA6);
   font-family:var(--font-geist),-apple-system,BlinkMacSystemFont,sans-serif;
 }
-.asx-corner *,.asx-panel *,.asx-peek *{box-sizing:border-box;}
+.asx-corner *,.asx-panel *,.asx-peek *,.asx-notices *{box-sizing:border-box;}
 
 /* ── The mark ────────────────────────────────────────────────────────────── */
 .asx-corner{position:fixed;z-index:60;width:${MARK_SIZE}px;height:${MARK_SIZE}px;}
@@ -1641,6 +1876,51 @@ const ASX_CSS = `
 .asx-icobtn:focus-visible{outline:2px solid var(--asx-brand);outline-offset:2px;}
 .asx-icobtn svg{width:12px;height:12px;}
 
+/* ── Notices ─────────────────────────────────────────────────────────────
+   The strip's left-hand control, and the list it opens. The list is a second
+   ink surface over the first: same stone, one step lighter, so it reads as
+   lifted off the panel rather than cut into it. */
+.asx-notices-btn{display:inline-flex;align-items:center;gap:6px;background:transparent;border:none;
+  cursor:pointer;padding:6px 2px;font-family:var(--font-geist-mono),ui-monospace,monospace;
+  transition:color .18s;}
+.asx-notices-btn:hover,.asx-notices-btn-on{color:var(--asx-white);}
+.asx-notices-btn:focus-visible{outline:2px solid var(--asx-brand);outline-offset:2px;border-radius:6px;}
+.asx-notices-count{display:inline-grid;place-items:center;min-width:16px;height:16px;padding:0 4px;
+  border-radius:8px;background:var(--asx-sage);color:var(--asx-ink);font-size:9px;letter-spacing:0;
+  font-weight:600;line-height:1;}
+.asx-notices{position:fixed;z-index:61;display:flex;flex-direction:column;border-radius:18px;
+  overflow:hidden;
+  background:radial-gradient(ellipse 280px 160px at 50% 116%,rgba(92,122,96,.26) 0%,rgba(92,122,96,0) 62%),#252A22;
+  border:1px solid var(--asx-rule);
+  box-shadow:inset 0 1px 0 rgba(158,183,166,.12),0 26px 56px -22px rgba(31,42,32,.78);
+  animation:asxNoticesUp ${NOTICES_ENTER_MS}ms ${NOTICES_EASING} both;}
+.asx-notices-below{animation-name:asxNoticesDown;}
+@keyframes asxNoticesUp{from{opacity:0;transform:translateY(10px) scale(.985);}to{opacity:1;transform:none;}}
+@keyframes asxNoticesDown{from{opacity:0;transform:translateY(-10px) scale(.985);}to{opacity:1;transform:none;}}
+.asx-notices-head{display:flex;align-items:center;gap:10px;padding:12px 14px 8px;flex:none;}
+.asx-notices-head .asx-lab{margin-right:auto;}
+.asx-notices-list{flex:1;min-height:0;overflow-y:auto;overscroll-behavior:contain;scrollbar-width:none;
+  display:flex;flex-direction:column;padding:0 8px 8px;}
+.asx-notices-list::-webkit-scrollbar{display:none;}
+.asx-notices-empty{margin:6px 8px 10px;font-size:12.5px;line-height:1.5;color:var(--asx-sage-l);}
+.asx-notice-row{display:flex;align-items:flex-start;gap:9px;width:100%;padding:9px 10px;border-radius:11px;
+  min-height:44px;border:none;background:transparent;color:var(--asx-sage-l);font:inherit;font-size:12.5px;
+  line-height:1.45;text-align:left;transition:background .16s,color .16s;}
+button.asx-notice-row{cursor:pointer;}
+button.asx-notice-row:hover{background:rgba(158,183,166,.10);color:var(--asx-white);}
+button.asx-notice-row:focus-visible{outline:2px solid var(--asx-brand);outline-offset:-2px;}
+.asx-notice-new{color:var(--asx-white);}
+.asx-notice-dot{width:5px;height:5px;flex:none;margin-top:7px;border-radius:50%;background:transparent;}
+.asx-notice-new .asx-notice-dot{background:var(--asx-sage);}
+.asx-notice-body{flex:1;min-width:0;}
+.asx-notice-time{flex:none;font-family:var(--font-geist-mono),ui-monospace,monospace;font-size:9.5px;
+  letter-spacing:.06em;color:var(--asx-ink3);margin-top:3px;}
+@media (prefers-reduced-motion: reduce){
+  .asx-notices{animation-name:asxNoticesFade;animation-duration:${REDUCED_MOTION_MS}ms;animation-timing-function:linear;}
+  .asx-notices-below{animation-name:asxNoticesFade;}
+}
+@keyframes asxNoticesFade{from{opacity:0;}to{opacity:1;}}
+
 .asx-menu{margin:0 12px 4px;padding:4px;border-radius:12px;flex:none;
   background:rgba(158,183,166,.10);border:1px solid var(--asx-rule);}
 .asx-menurow{display:flex;align-items:center;width:100%;min-height:44px;padding:0 12px;border-radius:9px;
@@ -1761,7 +2041,13 @@ const ASX_CSS = `
 @keyframes asx-td{0%,60%,100%{opacity:.3;transform:translateY(0)}30%{opacity:1;transform:translateY(-4px)}}
 
 @media (max-width:760px){
-  .asx-corner,.asx-panel,.asx-peek{display:none!important;}
+  /* The notices list belongs to the desktop panel and goes wherever it goes.
+     A phone gets the mobile sheet, which is a different surface with its own
+     header, and a floating list anchored to a hidden slab would be a box in
+     the middle of nowhere. Notices on the phone surface are their own piece of
+     work; leaving a broken half of one here would be worse than not having it
+     yet. */
+  .asx-corner,.asx-panel,.asx-peek,.asx-notices{display:none!important;}
 
   .asx-mobile-fab{position:fixed;right:18px;bottom:max(30px,calc(env(safe-area-inset-bottom,0px) + 14px));z-index:72;display:grid;
     width:56px;height:56px;border-radius:18px;border:1px solid rgba(92,122,96,.4);
