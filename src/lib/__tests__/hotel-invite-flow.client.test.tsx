@@ -85,6 +85,30 @@ const INHERITED_TEAM_MEMBER: HotelTeamMember = {
   directHotelAccount: false,
   hotelLeadershipRole: null,
 };
+// A Staxis platform admin who also carries an employment record at the hotel.
+// Both halves must disappear from a read-only preview: the account row AND the
+// staff row it links to.
+const PLATFORM_ADMIN_MEMBER: HotelTeamMember = {
+  ...INHERITED_TEAM_MEMBER,
+  accountId: 'platform-admin-1',
+  username: 'staxis.admin',
+  displayName: 'Staxis Platform Admin',
+  email: 'admin@example.com',
+  role: 'admin',
+  staffId: 'admin-staff',
+  managementSurface: 'legacy_hotel',
+  isPlatformAdmin: true,
+};
+const ADMIN_LINKED_STAFF: StaffMember = {
+  id: 'admin-staff',
+  name: 'Hidden Admin Schedule',
+  language: 'en',
+  isSenior: false,
+  department: 'housekeeping',
+  scheduledToday: false,
+  weeklyHours: 0,
+  maxWeeklyHours: 40,
+};
 const DIRECT_TEAM_MEMBER: HotelTeamMember = {
   ...INHERITED_TEAM_MEMBER,
   accountId: 'direct-account-1',
@@ -388,6 +412,7 @@ async function mountInviteFlow(
       staffLoaded: true,
       rosterUnavailable: false,
       staffViewerKey: 'controller-staff-stamp',
+      previewHiddenStaffIds: new Set<string>(),
       refreshTeam: async () => {
         controllerEvents.push('controller-refresh-start');
         await Promise.resolve();
@@ -992,6 +1017,37 @@ describe('mounted hotel invite flow', { concurrency: false }, () => {
     assert.doesNotMatch(ui.text(), /Hotel invite|Email one person/);
   });
 
+  test('a read-only preview hides a platform admin and the staff row linked to it', async (context) => {
+    const onboarding = { status: 'created', invitedEmail: null, accountId: 'direct-account-1' };
+    const ui = await mountPeoplePanel(context, {
+      canManageTeam: true,
+      canInviteAccounts: true,
+      readOnly: false,
+      adminPreview: true,
+    }, {
+      adminPreview: true,
+      staffProfiles: [STAFF, ADMIN_LINKED_STAFF],
+      teamResponses: [{
+        body: {
+          ok: true,
+          data: {
+            team: [PLATFORM_ADMIN_MEMBER, DIRECT_TEAM_MEMBER],
+            hatsByAccountId: {},
+            firstPersonOnboarding: onboarding,
+          },
+        },
+      }],
+    });
+
+    await ui.flushWithFrame();
+    // The ordinary hotel person and the ordinary employment record still show.
+    assert.match(ui.text(), /Direct GM/);
+    assert.match(ui.text(), /Riley Housekeeper/);
+    // Neither half of the platform admin does.
+    assert.doesNotMatch(ui.text(), /Staxis Platform Admin/);
+    assert.doesNotMatch(ui.text(), /Hidden Admin Schedule/);
+  });
+
   test('first-person success keeps the result while pending and blocks duplicate submission', async (context) => {
     const onboardingNone = { status: 'none', invitedEmail: null, accountId: null };
     const onboardingPending = {
@@ -1041,8 +1097,9 @@ describe('mounted hotel invite flow', { concurrency: false }, () => {
     assert.equal(ui.dialog()?.querySelector('form'), null, 'the success result must not expose a repeat-submit form');
     assert.doesNotMatch(ui.text(), /Send invitation/);
     await ui.click('Done');
-    await ui.click('Invite people');
-    assert.match(ui.text(), /What does this person need\?/);
+    // Setup is the ONLY action a read-only preview may take. Once it is done
+    // the preview offers no ordinary invite entry.
+    assert.doesNotMatch(ui.text(), /Invite people/);
     assert.doesNotMatch(ui.text(), /Assign the role before sending the invitation/);
   });
 
@@ -1128,7 +1185,7 @@ describe('mounted hotel invite flow', { concurrency: false }, () => {
     assert.doesNotMatch(ui.text(), /Add first person/);
   });
 
-  test('a direct normalized hotel account keeps the normal Invite people path', async (context) => {
+  test('a direct normalized hotel account leaves a preview with no setup and no invite entry', async (context) => {
     const ui = await mountPeoplePanel(context, {
       canManageTeam: true,
       canInviteAccounts: true,
@@ -1151,9 +1208,10 @@ describe('mounted hotel invite flow', { concurrency: false }, () => {
 
     await ui.flushWithFrame();
     assert.doesNotMatch(ui.text(), /Add first person|Add hotel owner or GM/);
-    await ui.click('Invite people');
-    assert.match(ui.text(), /What does this person need\?/);
-    assert.doesNotMatch(ui.text(), /Assign the role before sending the invitation/);
+    // The hotel already has its own account, so the preview has nothing left to
+    // do here: no setup prompt, and no customer invite entry either.
+    assert.doesNotMatch(ui.text(), /Invite people/);
+    assert.match(ui.text(), /Direct GM/);
   });
 
   test('an unavailable roster suppresses definitive empty/setup claims', async (context) => {

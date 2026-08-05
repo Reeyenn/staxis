@@ -50,7 +50,7 @@ describe('platform Admin destination and default in-place hotel Admin tools', ()
     assert.doesNotMatch(concourse, /user\?\.role === ['"]admin['"] \? \{[\s\S]*?\/admin\/properties#live/);
   });
 
-  test('enables verified platform-admin actions by default without a local toggle', () => {
+  test('keeps verified platform-admin preview data visible without customer mutations or a local toggle', () => {
     const heroIndex = company.indexOf('<header className={styles.hero}>');
     const heroEnd = company.indexOf('</header>', heroIndex);
     const heroMarkup = company.slice(heroIndex, heroEnd);
@@ -60,6 +60,10 @@ describe('platform Admin destination and default in-place hotel Admin tools', ()
     assert.match(company, /if \(!user \|\| authLoading \|\| propertyLoading \|\| !authorizationChecked\) return/);
     assert.doesNotMatch(company, /const adminPreview = userRole === ['"]admin['"]/);
     assert.match(company, /const adminActionsAvailable = Boolean\(\s*adminPreview[\s\S]*?adminViewerContext[\s\S]*?adminDataMatchesSelection/);
+    assert.match(company, /const hotelMutationAuthorized = authorizationChecked && !adminPreview && Boolean\([\s\S]*activePropertyStanding\?\.hotelMutationAllowed/);
+    // Read is separate from mutation, but it is still floored by the capability
+    // GET /api/auth/team enforces. The preview is the only extra reader.
+    assert.match(company, /const canViewHotelTeam = hotelCapabilitiesReady[\s\S]*adminPreview \|\| canManageTeam/);
     assert.match(company, /readOnly=\{Boolean\(data\.viewerContext\?\.readOnly\) && !adminPreview\}/);
     assert.doesNotMatch(heroMarkup, /adminViewSwitch|type="checkbox"|role="switch"|Admin view|setAdminToolsEnabled/);
     assert.doesNotMatch(company, /adminToolsEnabled|adminToolsActive|setAdminToolsEnabled/);
@@ -109,15 +113,28 @@ describe('platform Admin destination and default in-place hotel Admin tools', ()
     assert.match(company, /\/api\/admin\/company-access-preview\?pid=/);
     assert.match(company, /normalized\.viewerContext\?\.kind !== ['"]staxis_admin_preview['"]/);
     assert.match(company, /normalized\.viewerContext\.readOnly !== true/);
-    assert.match(company, /key=\{`\$\{activeProperty\.id\}:\$\{adminPreview \? ['"]admin['"] : ['"]customer['"]\}:\$\{canManageTeam \? ['"]hotel-authorized['"] : ['"]invite-only['"]\}`\}/);
+    assert.match(company, /key=\{`\$\{activeProperty\.id\}:\$\{adminPreview \? ['"]admin['"] : ['"]customer['"]\}:\$\{canManageTeam \? ['"]hotel-authorized['"] : ['"]invite-only['"]\}:\$\{hotelTeamVisible \? ['"]team-visible['"] : ['"]team-hidden['"]\}`\}/);
+    assert.match(company, /canViewTeam=\{canViewHotelTeam\}/);
     assert.match(company, /readOnly=\{Boolean\(data\.viewerContext\?\.readOnly\) && !adminPreview\}/);
+    assert.match(company, /canInviteAccounts=\{adminPreview \? false : canInviteAccounts\}/);
+    assert.match(company, /canAddStaff=\{adminPreview \? false : canAddOperationalStaff\}/);
     assert.doesNotMatch(company, /allowAdminActions|onRequestAdminActions|setAdminToolsEnabled/);
-    assert.match(company, /const hotelTeamLocked = Boolean\([\s\S]*?\(resolved\.viewerContext\?\.readOnly === true && !adminActionsAvailable\)/);
+    assert.match(company, /const hotelTeamLocked = Boolean\([\s\S]*?adminPreview[\s\S]*?resolved\.viewerContext\?\.readOnly === true && !adminActionsAvailable/);
     assert.match(hotelTeam, /const locked = readOnly;/);
+    assert.match(hotelTeam, /const actionsLocked = locked \|\| adminPreview;/);
+    assert.match(hotelTeam, /resolveActions\(\s*editAccount,[\s\S]*?actionsLocked/);
+    assert.match(hotelTeam, /locked=\{actionsLocked\}/);
+    assert.match(hotelTeam, /\{!actionsLocked && canManageTeam \? \([\s\S]*?styles\.approvalActions/);
+    assert.match(hotelTeam, /const canAddStaffAction = canManageTeam && !adminPreview && canAddStaff;/);
+    assert.match(hotelTeam, /const canInviteToStaxis = !adminPreview && \(canManageTeam \|\| canInviteAccounts\)/);
     assert.match(hotelTeam, /const openFirstPersonDialog = React\.useCallback\(\(\) => \{[\s\S]*?if \(!setupMode \|\| inviteActionDisabled \|\| locked\) return;[\s\S]*?setFirstPersonInviteSnapshot\(\{ hotelId, mode: setupMode \}\);[\s\S]*?onInviteDialogOpenChange\(true\);/);
     assert.match(hotelTeam, /styles\.headingInviteButton[\s\S]*?onClick=\{openFirstPersonDialog\}[\s\S]*?disabled=\{inviteActionDisabled\}/);
     assert.match(company, /inviteDialogOpen=\{teamInviteHotelId === activeProperty\?\.id\}/);
-    assert.match(peopleController, /const nextTeam = \(currentInput\.adminPreview \|\| currentInput\.readOnly\)[\s\S]*?!member\.isPlatformAdmin/);
+    assert.match(peopleController, /const observational = currentInput\.adminPreview \|\| currentInput\.readOnly;[\s\S]*?const nextTeam = observational[\s\S]*?!member\.isPlatformAdmin/);
+    // The linked employment row has to go too, or the same admin reappears in
+    // the preview as a login-less employee. Behavior covered by the mounted
+    // preview test in hotel-invite-flow.client.test.tsx.
+    assert.match(peopleController, /previewHiddenStaffIds[\s\S]*?member\.isPlatformAdmin === true \|\| member\.role === 'admin'[\s\S]*?member\.staffId/);
   });
 
   test('removes the obsolete admin-only toggle copy without weakening customer read-only mode', () => {
@@ -130,6 +147,12 @@ describe('platform Admin destination and default in-place hotel Admin tools', ()
     assert.doesNotMatch(hotelTeam, /allowAdminActions|onRequestAdminActions|Turn on Admin view/);
     assert.match(company, /readOnly=\{Boolean\(data\.viewerContext\?\.readOnly\) && !adminPreview\}/);
     assert.match(hotelTeam, /const locked = readOnly;/);
+    assert.match(hotelTeam, /const actionsLocked = locked \|\| adminPreview;/);
+    assert.match(hotelTeam, /resolveActions\(\s*editAccount,[\s\S]*?actionsLocked/);
+    assert.match(hotelTeam, /locked=\{actionsLocked\}/);
+    assert.match(hotelTeam, /\{!actionsLocked && canManageTeam \? \([\s\S]*?styles\.approvalActions/);
+    assert.match(hotelTeam, /const canAddStaffAction = canManageTeam && !adminPreview && canAddStaff;/);
+    assert.match(hotelTeam, /const canInviteToStaxis = !adminPreview && \(canManageTeam \|\| canInviteAccounts\)/);
   });
 
   test('removes the obsolete switch styling while keeping the responsive hero layout', () => {

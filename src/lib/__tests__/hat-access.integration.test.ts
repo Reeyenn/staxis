@@ -230,8 +230,24 @@ interface HubWire {
   organizations: Array<{ id: string; name: string; type: string }>;
   portfolios: Array<{ id: string; propertyIds: string[] }>;
   properties: Array<{ id: string; name: string; organizationId?: string | null; operatingCompanyName?: string | null }>;
-  memberships: Array<{ accountId: string; status: string; accessProfile: string | null }>;
+  memberships: Array<{
+    accountId: string;
+    status: string;
+    accessProfile: string | null;
+    grants?: Array<{
+      accessProfile: string;
+      scopeType: string;
+      propertyIds: string[];
+      source?: string;
+      status?: string;
+      isMembershipAccess?: boolean;
+    }>;
+  }>;
   effectiveAccess: Array<{ id: string; accessProfile: string; scopeType: string; propertyIds: string[] }>;
+  accessHistory?: Array<{
+    accountId: string;
+    record: { status?: string; propertyIds: string[]; source?: string };
+  }>;
   permissions: {
     viewHotels: boolean;
     viewPeople: boolean;
@@ -759,6 +775,21 @@ describe('the Company Hub reads the spine', () => {
     assert.ok(
       (hub.data?.effectiveAccess ?? []).some((r) => r.accessProfile === 'portfolio_manager'),
       "the VP's hat produced no receipt",
+    );
+    const mariaGrants = (hub.data?.memberships ?? [])
+      .filter((membership) => membership.accountId === ACCOUNT_MARIA)
+      .flatMap((membership) => membership.grants ?? []);
+    assert.ok(
+      mariaGrants.some((grant) => grant.source === 'direct' && grant.scopeType === 'property'),
+      "Maria's hotel role lost its direct source",
+    );
+    assert.ok(
+      mariaGrants.some((grant) => grant.source === 'company' && grant.accessProfile === 'portfolio_manager'),
+      "Maria's company role lost its inherited source",
+    );
+    assert.ok(
+      mariaGrants.every((grant) => grant.propertyIds.every((propertyId) => ids.includes(propertyId))),
+      'an access row named a hotel outside the selected company topology',
     );
   });
 

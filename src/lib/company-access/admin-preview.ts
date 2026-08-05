@@ -248,6 +248,10 @@ export function makeAdminCompanyAccessReadOnly(input: {
           canRevoke: false,
         })),
       })),
+    accessHistory: (input.projection.accessHistory ?? []).map((entry) => ({
+      ...entry,
+      record: { ...entry.record, canRevoke: false },
+    })),
     effectiveAccess: [],
     invitations: input.projection.invitations.map((invitation) => ({
       ...invitation,

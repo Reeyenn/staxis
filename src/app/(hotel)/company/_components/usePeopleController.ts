@@ -22,6 +22,10 @@ interface TeamSnapshot {
   key: string;
   team: HotelTeamMember[];
   jobsByAccountId: Record<string, CompanyJobLine[]>;
+  /** Staff ids belonging to the platform-admin accounts this snapshot filtered
+   *  out. The roster hides these employment rows too, so a linked admin cannot
+   *  reappear in a read-only preview as a login-less employee. */
+  previewHiddenStaffIds: ReadonlySet<string>;
   /** `null` means the hotel's first-person state could not be established. The
    *  setup gating treats that as indeterminate and stays closed. */
   firstPersonOnboarding: FirstPersonOnboardingSnapshot | null;
@@ -65,9 +69,15 @@ export interface PeopleControllerState {
   staffLoaded: boolean;
   rosterUnavailable: boolean;
   staffViewerKey: string | null;
+  /** Staff ids linked to the platform-admin accounts filtered out of `team`.
+   *  Empty for ordinary customer viewers. */
+  previewHiddenStaffIds: ReadonlySet<string>;
   refreshTeam: () => Promise<void>;
   refresh: () => Promise<void>;
 }
+
+/** Stable empty set so the returned state does not change identity every render. */
+const EMPTY_HIDDEN_STAFF_IDS: ReadonlySet<string> = new Set<string>();
 
 function errorMessage(value: unknown, fallback: string): string {
   if (typeof value === 'string') return value;
@@ -217,9 +227,21 @@ export function usePeopleController(input: PeopleControllerInput): PeopleControl
       ) return;
       const currentInput = inputRef.current;
       const parsedTeam = responseTeam as HotelTeamMember[];
-      const nextTeam = (currentInput.adminPreview || currentInput.readOnly)
+      const observational = currentInput.adminPreview || currentInput.readOnly;
+      const nextTeam = observational
         ? parsedTeam.filter((member) => !member.isPlatformAdmin && member.role !== 'admin')
         : parsedTeam;
+      // Filtering the admin ACCOUNT is not enough. If that account is linked to
+      // a staff record, PropertyContext still carries the employment row, and
+      // the merged roster would paint the same admin as a login-less employee.
+      // Carry the linked staff ids so the roster can drop those rows too.
+      const previewHiddenStaffIds: ReadonlySet<string> = observational
+        ? new Set(
+          parsedTeam
+            .filter((member) => member.isPlatformAdmin === true || member.role === 'admin')
+            .flatMap((member) => (member.staffId ? [member.staffId] : [])),
+        )
+        : new Set<string>();
       // An admin preview with no onboarding marker is indeterminate, not
       // "nothing set up yet" — the setup action must stay closed. Every other
       // viewer defaults to the explicit `none` state.
@@ -231,6 +253,7 @@ export function usePeopleController(input: PeopleControllerInput): PeopleControl
         key: requestKey,
         team: nextTeam,
         jobsByAccountId: (responseJobs ?? {}) as Record<string, CompanyJobLine[]>,
+        previewHiddenStaffIds,
         firstPersonOnboarding,
         status: 'ready',
         error: '',
@@ -247,6 +270,7 @@ export function usePeopleController(input: PeopleControllerInput): PeopleControl
         key: requestKey,
         team: [],
         jobsByAccountId: {},
+        previewHiddenStaffIds: new Set<string>(),
         firstPersonOnboarding: null,
         status: 'error',
         error: errorMessage(
@@ -268,6 +292,9 @@ export function usePeopleController(input: PeopleControllerInput): PeopleControl
         key: requestKey,
         team: clearFirst ? [] : previous?.team ?? [],
         jobsByAccountId: clearFirst ? {} : previous?.jobsByAccountId ?? {},
+        previewHiddenStaffIds: clearFirst
+          ? new Set<string>()
+          : previous?.previewHiddenStaffIds ?? new Set<string>(),
         firstPersonOnboarding: clearFirst ? null : previous?.firstPersonOnboarding ?? null,
         status: 'loading',
         error: '',
@@ -324,6 +351,7 @@ export function usePeopleController(input: PeopleControllerInput): PeopleControl
     staffLoaded: exactStaffSnapshot && staffLoaded,
     rosterUnavailable: exactStaffSnapshot && staffLoadFailed,
     staffViewerKey: exactStaffSnapshot ? staffViewerKey : null,
+    previewHiddenStaffIds: matchingSnapshot?.previewHiddenStaffIds ?? EMPTY_HIDDEN_STAFF_IDS,
     refreshTeam,
     refresh,
   }), [

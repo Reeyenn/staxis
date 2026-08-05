@@ -165,6 +165,7 @@ describe('truthful Company Hub filters', () => {
     assert.match(company, /staffProfiles=\{staff\}/);
     assert.doesNotMatch(company, /statusFilter === ['"]invited['"]/);
     assert.doesNotMatch(company, /Roles and scopes by person/);
+    assert.match(company, /People with hotel access/);
     assert.match(company, /data\.invitations\.map/);
   });
 
@@ -205,6 +206,9 @@ describe('truthful Company Hub filters', () => {
     assert.match(hotelTeam, /schedule roster is temporarily unavailable/);
     assert.match(company, /hotelId=\{activeProperty\.id\}/);
     assert.match(company, /readOnly=\{Boolean\(data\.viewerContext\?\.readOnly\) && !adminPreview\}/);
+    // `readOnly` stays off in the preview so first-person hotel setup works.
+    // Actions on a person are closed by `actionsLocked` instead.
+    assert.match(hotelTeam, /const actionsLocked = locked \|\| adminPreview;/);
     assert.match(company, /data\.viewerContext\?\.kind === ['"]staxis_admin_preview['"]/);
     assert.doesNotMatch(company, /allowAdminActions|onRequestAdminActions|adminToolsEnabled|adminToolsActive/);
     assert.match(company, /statusLabel\(membership\.status, lang\)/);
@@ -293,7 +297,13 @@ describe('My Hotel account and team integration', () => {
     assert.doesNotMatch(company, /Company relationship and status|Manage relationship/);
     assert.doesNotMatch(company, /AdminHotelRelationshipManager/);
     assert.match(company, /title=\{['"]Memberships and invitations['"]\}/);
-    assert.doesNotMatch(company, /Customer grants|Roles and scopes by person/);
+    assert.match(company, /title=\{['"]People with hotel access['"]\}/);
+    assert.match(company, /resolveCompanyAccessContext\(/);
+    assert.match(company, /buildAccessPeople\(/);
+    assert.match(company, /['"]No hotel access yet['"]/);
+    assert.match(company, /The authoritative access view is temporarily unavailable/);
+    assert.match(company, /['"]Read-only preview['"]/);
+    assert.doesNotMatch(company, /Customer grants|Access grants|grant records|Roles and scopes by person/);
     assert.doesNotMatch(hotelTeam, /<span>\{'Hotel roster'\}<\/span>/);
   });
 
@@ -328,16 +338,21 @@ describe('My Hotel account and team integration', () => {
     assert.match(company, /hotel-authorized['"] : ['"]invite-only/);
     assert.match(company, /tab === ['"]people['"] && hotelCapabilitiesLoading/);
     assert.match(company, /canManageTeam=\{canManageTeam\}/);
-    assert.match(hotelTeam, /if \(!canManageTeam\) \{[\s\S]*Hotel account settings are private/);
-    assert.match(company, /enabled: Boolean\([\s\S]*canManageTeam[\s\S]*staffBelongsToCurrentViewer/);
+    assert.match(company, /canViewTeam=\{canViewHotelTeam\}/);
+    assert.match(hotelTeam, /if \(!canViewTeam\) \{[\s\S]*Hotel account settings are private/);
+    assert.match(company, /enabled: Boolean\([\s\S]*canViewHotelTeam[\s\S]*staffBelongsToCurrentViewer/);
     assert.match(peopleController, /if \(!key\) \{[\s\S]*setSnapshot\(null\)/);
-    assert.match(hotelTeam, /if \(canManageTeam\) return;[\s\S]*setContactSnapshot\(null\);[\s\S]*setWageSnapshot\(null\)/);
+    // The team snapshot itself now lives in the controller, which drops it when
+    // the identity key clears. The panel still drops its own private caches.
+    assert.match(hotelTeam, /if \(canViewTeam\) return;[\s\S]*setContactSnapshot\(null\);[\s\S]*setWageSnapshot\(null\)/);
+    assert.match(hotelTeam, /if \(locked \|\| !canManageTeam \|\| !hasServerLifecyclePending\) return;/);
   });
 
   test('keeps company invitations in People while private hotel roster access stays explicit', () => {
     assert.match(company, /resolved\.permissions\.accountInvitePropertyIds\?\.includes\(activeProperty\.id\)/);
     assert.match(company, /canInviteAccounts=\{Boolean\([\s\S]*adminActionsAvailable[\s\S]*accountInvitePropertyIds/);
-    assert.match(company, /canInviteAccounts=\{canInviteAccounts\}/);
+    assert.match(company, /canInviteAccounts=\{adminPreview \? false : canInviteAccounts\}/);
+    assert.match(company, /canAddStaff=\{adminPreview \? false : canAddOperationalStaff\}/);
     assert.match(company, /!adminPreview && !activeProperty && !canManageTeam && canInviteAccounts/);
     assert.doesNotMatch(company, /<InvitePersonDialog/);
     assert.match(hotelTeam, /inviteDialogVisible && canInviteAccounts && !locked[\s\S]*canManageHotelRoster=\{false\}/);
@@ -504,7 +519,7 @@ describe('My Hotel account and team integration', () => {
     assert.match(company, /activePropertyStanding\?\.seesFinancials === true/);
     assert.match(company, /canForStanding\([\s\S]*hotelPresentationRole[\s\S]*['"]view_wages['"][\s\S]*capabilityOverrides/);
     assert.match(company, /canViewWages=\{canViewWages\}/);
-    assert.match(hotelTeam, /if \(!hotelId \|\| !canManageTeam \|\| !canViewWages\) return;/);
+    assert.match(hotelTeam, /if \(!hotelId \|\| !canViewTeam \|\| !canViewWages\) return;/);
     assert.match(employmentForm, /\{canViewWages \? \(/);
     assert.match(employmentForm, /if \(canViewWages && wageTouched\) \{/);
   });

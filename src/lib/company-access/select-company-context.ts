@@ -63,6 +63,9 @@ export function selectCompanyAccessContext(
     memberships: data.memberships.filter(
       (membership) => membership.organizationId === organizationId,
     ),
+    accessHistory: (data.accessHistory ?? []).filter(
+      (entry) => entry.organizationId === organizationId,
+    ),
     effectiveAccess: data.effectiveAccess.filter(
       (receipt) => receipt.organizationId === organizationId,
     ),

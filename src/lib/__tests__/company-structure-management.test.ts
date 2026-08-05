@@ -120,10 +120,11 @@ describe('My Hotel structure surface contract', () => {
     assert.match(page, /Memberships and invitations/);
     assert.match(page, /Invite company member/);
     assert.match(page, /AccessPersonRow/);
-    assert.match(page, /groupAccessMemberships/);
+    assert.match(page, /People with hotel access/);
+    assert.match(page, /buildAccessPeople\(/);
     assert.doesNotMatch(page, /Customer grants|Roles and scopes by person/);
     assert.match(page, /showGrantActions=\{false\}/);
-    assert.match(page, /const revocableGrants = adminPreview \? \[\] :/);
+    assert.match(page, /showMembershipActions=\{!adminPreview\}/);
     assert.doesNotMatch(page, /Company people/);
     assert.doesNotMatch(page, /Revocation is immediate and audited/);
   });

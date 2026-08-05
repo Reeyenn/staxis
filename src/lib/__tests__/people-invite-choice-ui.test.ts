@@ -30,7 +30,9 @@ const normalActionArea = section(
 );
 const earlyBranch = section(
   panel,
-  'if (!canManageTeam) {',
+  // The private-roster branch is gated on the READ capability now. A read-only
+  // admin preview may see this hotel's people; only `canManageTeam` may act.
+  'if (!canViewTeam) {',
   'const editAccount =',
   'invite-only HotelTeamPanel branch',
 );
@@ -95,8 +97,9 @@ describe('People invite entry choice', () => {
       /Add someone to the schedule, or invite them to create a Staxis account\./,
     );
     assert.doesNotMatch(normalActionArea, /Add staff member|CalendarPlus|LogIn/);
-    assert.match(panel, /const inviteEntryAvailable = canAddStaff \|\| canInviteToStaxis/);
-    assert.match(panel, /const canInviteToStaxis = canManageTeam \|\| canInviteAccounts/);
+    assert.match(panel, /const canAddStaffAction = canManageTeam && !adminPreview && canAddStaff;/);
+    assert.match(panel, /const inviteEntryAvailable = canAddStaffAction \|\| canInviteToStaxis/);
+    assert.match(panel, /const canInviteToStaxis = !adminPreview && \(canManageTeam \|\| canInviteAccounts\)/);
   });
 
   test('account-invite-only authority gets one unified entry and no roster path', () => {
@@ -126,7 +129,7 @@ describe('People invite entry choice', () => {
     );
     assert.match(
       pagePeoplePanel,
-      /<HotelTeamPanel[\s\S]*canInviteAccounts=\{canInviteAccounts\}/,
+      /<HotelTeamPanel[\s\S]*canInviteAccounts=\{adminPreview \? false : canInviteAccounts\}/,
     );
   });
 
@@ -140,7 +143,7 @@ describe('People invite entry choice', () => {
     assert.match(chooser, /canInviteToStaxis \? \([\s\S]*?\{'Invite to create an account'\}/);
     assert.match(chooser, /They create a login and can sign in to Staxis\./);
     assert.match(chooser, /const inviteDescription = 'They create a login and can sign in to Staxis\.'/);
-    assert.match(normalDialogArea, /canAddStaff=\{canAddStaff && !locked && inviteCapabilitiesStable\}/);
+    assert.match(normalDialogArea, /canAddStaff=\{canAddStaffAction && !locked && inviteCapabilitiesStable\}/);
     assert.match(normalDialogArea, /canInviteToStaxis=\{canInviteToStaxis && inviteCapabilitiesStable\}/);
     assert.match(normalDialogArea, /canSendEmailInvite=\{canInviteAccounts && inviteCapabilitiesStable\}/);
     assert.match(normalDialogArea, /canShareHotelInvite=\{canManageTeam && inviteCapabilitiesStable\}/);
@@ -164,12 +167,13 @@ describe('People invite entry choice', () => {
   });
 
   test('permission and read-only gates keep the entry closed', () => {
-    assert.match(panel, /const inviteEntryAvailable = canAddStaff \|\| canInviteToStaxis/);
+    assert.match(panel, /const canAddStaffAction = canManageTeam && !adminPreview && canAddStaff;/);
+    assert.match(panel, /const inviteEntryAvailable = canAddStaffAction \|\| canInviteToStaxis/);
     assert.match(panel, /if \(inviteActionDisabled \|\| !inviteCapabilitiesStable \|\| !inviteEntryAvailable\) return;/);
     assert.match(normalActionArea, /\{!setupMode && !locked && inviteCapabilitiesStable && inviteEntryAvailable \?/);
     assert.match(normalActionArea, /disabled=\{inviteActionDisabled \|\| !inviteCapabilitiesStable\}/);
     assert.match(earlyBranch, /\{canInviteAccounts && !locked \?/);
-    assert.match(panel, /if \(!canAddStaff \|\| locked \|\| inviteActionDisabled \|\| !inviteCapabilitiesStable\) return;/);
+    assert.match(panel, /if \(!canAddStaffAction \|\| locked \|\| inviteActionDisabled \|\| !inviteCapabilitiesStable\) return;/);
     assert.match(panel, /if \(!canInviteToStaxis \|\| inviteActionDisabled \|\| !inviteCapabilitiesStable\) return;/);
   });
 
@@ -193,11 +197,11 @@ describe('People invite entry choice', () => {
       'const chooseInviteToStaxis = React.useCallback',
       'Add staff chooser callback',
     );
-    assert.match(addStaffCallback, /if \(!canAddStaff \|\| locked \|\| inviteActionDisabled \|\| !inviteCapabilitiesStable\) return;/);
-    assert.match(addStaffCallback, /\[canAddStaff, inviteActionDisabled, inviteCapabilitiesStable, locked\]/);
+    assert.match(addStaffCallback, /if \(!canAddStaffAction \|\| locked \|\| inviteActionDisabled \|\| !inviteCapabilitiesStable\) return;/);
+    assert.match(addStaffCallback, /\[canAddStaffAction, inviteActionDisabled, inviteCapabilitiesStable, locked\]/);
 
     assert.match(normalDialogArea, /inviteChoiceVisible/);
-    assert.match(normalDialogArea, /canAddStaff=\{canAddStaff && !locked && inviteCapabilitiesStable\}/);
+    assert.match(normalDialogArea, /canAddStaff=\{canAddStaffAction && !locked && inviteCapabilitiesStable\}/);
     assert.match(normalDialogArea, /canInviteToStaxis=\{canInviteToStaxis && inviteCapabilitiesStable\}/);
     assert.match(earlyBranch, /inviteChoiceVisible && canInviteAccounts && !locked/);
     assert.match(earlyBranch, /canInviteToStaxis=\{inviteCapabilitiesStable\}/);
@@ -248,7 +252,7 @@ describe('People invite entry choice', () => {
     assert.match(pagePeoplePanel, /peopleHeadingRef=\{peopleHeadingRef\}/);
     assert.match(
       pagePeoplePanel,
-      /key=\{`\$\{activeProperty\.id\}:\$\{adminPreview \? 'admin' : 'customer'\}:\$\{canManageTeam \? 'hotel-authorized' : 'invite-only'\}`\}/,
+      /key=\{`\$\{activeProperty\.id\}:\$\{adminPreview \? 'admin' : 'customer'\}:\$\{canManageTeam \? 'hotel-authorized' : 'invite-only'\}:\$\{hotelTeamVisible \? 'team-visible' : 'team-hidden'\}`\}/,
     );
   });
 
