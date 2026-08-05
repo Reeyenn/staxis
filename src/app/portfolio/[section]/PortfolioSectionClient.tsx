@@ -462,25 +462,23 @@ export function PortfolioSectionClient({ section }: { section: PortfolioModuleId
 
   if (portfolio.error) {
     return (
-
-        <PortfolioSectionView
-          module={section}
-          context={{ kind: 'portfolio', contextLabel: 'Portfolio', scopeName: 'Unavailable' }}
-          eyebrow="Portfolio"
-          title={COPY[section].title}
-          description={COPY[section].description}
-          itemSectionTitle={COPY[section].listTitle}
-          itemSectionDescription={COPY[section].listDescription}
-          items={[]}
-          state="error"
-          stateContent={{
-            title: 'Your portfolio context could not be loaded',
-            description: portfolio.error,
-            guidance: 'No hotel data has been substituted or shown.',
-            action: { label: 'Try again', onActivate: () => void portfolio.reload() },
-          }}
-        />
-
+      <PortfolioSectionView
+        module={section}
+        context={{ kind: 'portfolio', contextLabel: 'Portfolio', scopeName: 'Unavailable' }}
+        eyebrow="Portfolio"
+        title={COPY[section].title}
+        description={COPY[section].description}
+        itemSectionTitle={COPY[section].listTitle}
+        itemSectionDescription={COPY[section].listDescription}
+        items={[]}
+        state="error"
+        stateContent={{
+          title: 'Your portfolio context could not be loaded',
+          description: portfolio.error,
+          guidance: 'No hotel data has been substituted or shown.',
+          action: { label: 'Try again', onActivate: () => void portfolio.reload() },
+        }}
+      />
     );
   }
 
@@ -489,52 +487,48 @@ export function PortfolioSectionClient({ section }: { section: PortfolioModuleId
       return <PortfolioSectionSkeleton label="Opening context chooser" />;
     }
     return (
-
-        <PortfolioSectionView
-          module={section}
-          context={{ kind: 'portfolio', contextLabel: 'Portfolio', scopeName: 'Unavailable' }}
-          eyebrow="Portfolio"
-          title={COPY[section].title}
-          description={COPY[section].description}
-          itemSectionTitle={COPY[section].listTitle}
-          items={[]}
-          state="unauthorized"
-          stateContent={{
-            title: 'No authorized company context',
-            description: 'Your access may have changed since this link was opened.',
-            guidance: 'Choose another acting context or ask a company owner to review access.',
-            action: { label: 'Choose context', href: '/portfolio/choose' },
-          }}
-        />
-
+      <PortfolioSectionView
+        module={section}
+        context={{ kind: 'portfolio', contextLabel: 'Portfolio', scopeName: 'Unavailable' }}
+        eyebrow="Portfolio"
+        title={COPY[section].title}
+        description={COPY[section].description}
+        itemSectionTitle={COPY[section].listTitle}
+        items={[]}
+        state="unauthorized"
+        stateContent={{
+          title: 'No authorized company context',
+          description: 'Your access may have changed since this link was opened.',
+          guidance: 'Choose another acting context or ask a company owner to review access.',
+          action: { label: 'Choose context', href: '/portfolio/choose' },
+        }}
+      />
     );
   }
 
   if (section === 'staxis') {
     if (!company.queueAvailable) {
       return (
-
-          <PortfolioSectionView
-            module="staxis"
-            context={{
-              kind: 'portfolio',
-              contextLabel: 'Portfolio',
-              scopeName: company.organizationName ?? 'Your company',
-            }}
-            eyebrow="Portfolio"
-            title={COPY.staxis.title}
-            description={COPY.staxis.description}
-            itemSectionTitle={COPY.staxis.listTitle}
-            items={[]}
-            state="unauthorized"
-            stateContent={{
-              title: 'The company queue is not available in this scope',
-              description: 'Your current receipt does not cover the whole selected company.',
-              guidance: 'Choose another acting context. Direct queue requests remain authorization-checked.',
-              action: { label: 'Choose context', href: '/portfolio/choose' },
-            }}
-          />
-
+        <PortfolioSectionView
+          module="staxis"
+          context={{
+            kind: 'portfolio',
+            contextLabel: 'Portfolio',
+            scopeName: company.organizationName ?? 'Your company',
+          }}
+          eyebrow="Portfolio"
+          title={COPY.staxis.title}
+          description={COPY.staxis.description}
+          itemSectionTitle={COPY.staxis.listTitle}
+          items={[]}
+          state="unauthorized"
+          stateContent={{
+            title: 'The company queue is not available in this scope',
+            description: 'Your current receipt does not cover the whole selected company.',
+            guidance: 'Choose another acting context. Direct queue requests remain authorization-checked.',
+            action: { label: 'Choose context', href: '/portfolio/choose' },
+          }}
+        />
       );
     }
     return <StaxisPortfolio organizationId={company.organizationId} organizationName={company.organizationName ?? 'Your company'} />;

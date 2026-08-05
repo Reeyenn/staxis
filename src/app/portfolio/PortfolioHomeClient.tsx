@@ -245,23 +245,21 @@ export function PortfolioHomeClient() {
 
   if (portfolio.error || !data || !company) {
     return (
-
-        <PortfolioHomeView
-          context={{ kind: 'portfolio', contextLabel: 'Portfolio', scopeName: 'Unavailable' }}
-          greeting="Your portfolio could not be opened"
-          dateline="No hotel data is being shown"
-          ask={null}
-          hotelSectionTitle="Your hotels"
-          hotels={[]}
-          state="error"
-          stateContent={{
-            title: 'Portfolio data is unavailable',
-            description: portfolio.error ?? 'Your acting company could not be verified.',
-            guidance: 'Do not read this as an empty portfolio.',
-            action: { label: 'Try again', onActivate: () => void portfolio.reload() },
-          }}
-        />
-
+      <PortfolioHomeView
+        context={{ kind: 'portfolio', contextLabel: 'Portfolio', scopeName: 'Unavailable' }}
+        greeting="Your portfolio could not be opened"
+        dateline="No hotel data is being shown"
+        ask={null}
+        hotelSectionTitle="Your hotels"
+        hotels={[]}
+        state="error"
+        stateContent={{
+          title: 'Portfolio data is unavailable',
+          description: portfolio.error ?? 'Your acting company could not be verified.',
+          guidance: 'Do not read this as an empty portfolio.',
+          action: { label: 'Try again', onActivate: () => void portfolio.reload() },
+        }}
+      />
     );
   }
 
