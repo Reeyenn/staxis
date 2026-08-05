@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { after, before, describe, test } from 'node:test';
 import type { PGlite } from '@electric-sql/pglite';
-import { applyMigrationsToPglite } from '../../../tests/fixtures/pglite-migrate';
+import { applyMigrationsToPglite, seedCanonicalTestAuthority } from '../../../tests/fixtures/pglite-migrate';
 
 const OWNER = '81000000-0000-4000-8000-000000000001';
 const GM = '81000000-0000-4000-8000-000000000002';
@@ -93,15 +93,19 @@ describe('inventory financial permissions migration 0331', () => {
       [PROPERTY, FOREIGN_PROPERTY, OWNER],
     );
     await pg.query(
-      `insert into public.accounts(username,display_name,role,property_access,data_user_id)
+      `insert into public.accounts(username,display_name,role,data_user_id)
        values
-         ('budget-owner','Budget Owner','owner',array[$1]::uuid[],$2),
-         ('budget-gm','Budget GM','general_manager',array[$1]::uuid[],$3),
-         ('budget-staff','Budget Staff','housekeeping',array[$1]::uuid[],$4),
-         ('budget-admin','Budget Admin','admin','{}'::uuid[],$5)
+         ('budget-owner','Budget Owner','owner',$1),
+         ('budget-gm','Budget GM','general_manager',$2),
+         ('budget-staff','Budget Staff','housekeeping',$3),
+         ('budget-admin','Budget Admin','admin',$4)
        on conflict (username) do nothing`,
-      [PROPERTY, OWNER, GM, STAFF, ADMIN],
+      [OWNER, GM, STAFF, ADMIN],
     );
+    await seedCanonicalTestAuthority(pg, { username: 'budget-owner', propertyIds: [PROPERTY] });
+    await seedCanonicalTestAuthority(pg, { username: 'budget-gm', propertyIds: [PROPERTY] });
+    await seedCanonicalTestAuthority(pg, { username: 'budget-staff', propertyIds: [PROPERTY] });
+    await seedCanonicalTestAuthority(pg, { username: 'budget-admin', propertyIds: [] });
     await pg.query(
       `insert into public.inventory_budgets(
          property_id,category,month_start,budget_cents,basis

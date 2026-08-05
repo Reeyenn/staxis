@@ -82,7 +82,7 @@ import {
   rulebookRequestScopeStillCurrent,
 } from '@/lib/company/rulebook-request-scope';
 
-import { applyMigrationsToPglite } from '../../../tests/fixtures/pglite-migrate';
+import { applyMigrationsToPgliteThrough } from '../../../tests/fixtures/pglite-migrate';
 import { createPglitePostgrest, loadCatalog, type PglitePostgrest } from '../../../tests/fixtures/postgrest-pglite';
 import {
   ACCOUNT_ANA,
@@ -259,7 +259,7 @@ async function writeConfirmedFact(
 }
 
 before(async () => {
-  const migrated = await applyMigrationsToPglite();
+  const migrated = await applyMigrationsToPgliteThrough('0425');
   pg = migrated.pg;
   const catalog = await loadCatalog(pg);
   shim = createPglitePostgrest(pg, catalog);

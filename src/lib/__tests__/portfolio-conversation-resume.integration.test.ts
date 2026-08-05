@@ -27,7 +27,7 @@ import { stampPortfolioPolicy } from '@/lib/agent/portfolio/conversation';
 import { clearPortfolioHotelCache } from '@/lib/agent/portfolio/hotels';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 
-import { applyMigrationsToPglite } from '../../../tests/fixtures/pglite-migrate';
+import { applyMigrationsToPgliteThrough } from '../../../tests/fixtures/pglite-migrate';
 import {
   createPglitePostgrest,
   loadCatalog,
@@ -276,7 +276,7 @@ async function createTwoTurnConversation(): Promise<string> {
 }
 
 before(async () => {
-  const migrated = await applyMigrationsToPglite();
+  const migrated = await applyMigrationsToPgliteThrough('0425');
   pg = migrated.pg;
   const catalog = await loadCatalog(pg);
   shim = createPglitePostgrest(pg, catalog);

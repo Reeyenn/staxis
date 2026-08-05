@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { after, before, describe, test } from 'node:test';
 import type { PGlite } from '@electric-sql/pglite';
 
-import { applyMigrationsToPglite } from '../../../tests/fixtures/pglite-migrate';
+import { applyMigrationsToPgliteThrough } from '../../../tests/fixtures/pglite-migrate';
 import {
   ACCOUNT_MARIA,
   ACCOUNT_WANDA,
@@ -158,7 +158,7 @@ describe('People invite identity linking migration — real SQL', () => {
   let pg: PGlite;
 
   before(async () => {
-    const migrated = await applyMigrationsToPglite();
+    const migrated = await applyMigrationsToPgliteThrough('0425');
     assert.ok(
       migrated.report.applied.some((file) => file.startsWith('0416_')),
       'People invite identity migration must be active in this integration test',

@@ -167,6 +167,26 @@ async function attachProperty(
  * twice against the same database.
  */
 export async function seedTwoCompanies(pg: PGlite): Promise<TwoCompanySeed> {
+  // Stage B already exposes the canonical scope RPC, so presence of that
+  // function is not enough to distinguish the final boundary. Only the
+  // consumed Stage C status permits this fixture to omit the historical
+  // receipt array and provision canonical bridges below.
+  const hasStageCStatus = Boolean((await pg.query<{ present: boolean }>(
+    `select to_regclass('public.account_access_cutover_status') is not null as present`,
+  )).rows[0]?.present);
+  const finalAccessContract = hasStageCStatus && Boolean((await pg.query<{ present: boolean }>(`
+    select exists (
+      select 1
+        from public.account_access_cutover_status
+       where id is true
+         and stage = 'C'
+         and enforcement_enabled
+    )
+    and to_regprocedure(
+      'public.staxis_set_account_authorization_scope(uuid,uuid,uuid[],bigint,text,text,text)'
+    ) is not null as present
+  `)).rows[0]?.present);
+
   // ── Logins ───────────────────────────────────────────────────────────────
   await pg.query(
     `insert into auth.users (id, email) values ($1, 'staxis-admin@example.test')
@@ -188,27 +208,44 @@ export async function seedTwoCompanies(pg: PGlite): Promise<TwoCompanySeed> {
   // ── The Staxis administrator who bootstraps both companies ───────────────
   // Deliberately NOT a member of either. Migration 0325 refuses to let a Staxis
   // admin hold a customer membership; they are only ever the actor.
-  await pg.query(
-    `insert into accounts (id, username, password_hash, display_name, role, property_access, data_user_id)
-     values ($1, 'staxis', 'x', 'Staxis Admin', 'admin', '{}', $2)
-     on conflict (id) do nothing`,
-    [ACCOUNT_ADMIN, UID_ADMIN],
-  );
+  if (finalAccessContract) {
+    await pg.query(
+      `insert into accounts (id, username, password_hash, display_name, role, data_user_id)
+       values ($1, 'staxis', 'x', 'Staxis Admin', 'admin', $2)
+       on conflict (id) do nothing`,
+      [ACCOUNT_ADMIN, UID_ADMIN],
+    );
+  } else {
+    await pg.query(
+      `insert into accounts (id, username, password_hash, display_name, role, property_access, data_user_id)
+       values ($1, 'staxis', 'x', 'Staxis Admin', 'admin', '{}', $2)
+       on conflict (id) do nothing`,
+      [ACCOUNT_ADMIN, UID_ADMIN],
+    );
+  }
 
   // ── People ───────────────────────────────────────────────────────────────
   for (const person of PEOPLE) {
-    await pg.query(
-      `insert into accounts (id, username, password_hash, display_name, role, property_access, data_user_id)
-       values ($1, $2, 'x', $3, $4, $5, $6) on conflict (id) do nothing`,
-      [
-        person.accountId,
-        person.username,
-        person.displayName,
-        person.legacyRole,
-        `{${person.propertyAccess.join(',')}}`,
-        person.authUserId,
-      ],
-    );
+    if (finalAccessContract) {
+      await pg.query(
+        `insert into accounts (id, username, password_hash, display_name, role, data_user_id)
+         values ($1, $2, 'x', $3, $4, $5) on conflict (id) do nothing`,
+        [person.accountId, person.username, person.displayName, person.legacyRole, person.authUserId],
+      );
+    } else {
+      await pg.query(
+        `insert into accounts (id, username, password_hash, display_name, role, property_access, data_user_id)
+         values ($1, $2, 'x', $3, $4, $5, $6) on conflict (id) do nothing`,
+        [
+          person.accountId,
+          person.username,
+          person.displayName,
+          person.legacyRole,
+          `{${person.propertyAccess.join(',')}}`,
+          person.authUserId,
+        ],
+      );
+    }
   }
 
   // ── Companies ────────────────────────────────────────────────────────────
@@ -263,6 +300,55 @@ export async function seedTwoCompanies(pg: PGlite): Promise<TwoCompanySeed> {
   await wear(ORG_B, ACCOUNT_BO, 'company', 'owner', null, 'Owner');
   await wear(ORG_B, ACCOUNT_VERA, 'company', 'vp', null, 'VP of Operations');
   await wear(ORG_B, ACCOUNT_GIL, 'property', 'general_manager', [PID_B1], 'General Manager');
+
+  if (finalAccessContract) {
+    // Company people already receive their canonical authority from the hats
+    // above; an empty requested scope retires only any stale bridge. Wanda and
+    // Hank are the deliberate no-hat controls, so their old property scope is
+    // preserved as a canonical bridge before the receipt column is fenced.
+    const canonicalStates = new Map<string, { role: string; authority_version: number }>();
+    for (const person of PEOPLE) {
+      const state = await pg.query<{ role: string; authority_version: number }>(
+        `select account.role, state.authority_version
+           from public.accounts account
+           join public.account_authorization_state state on state.account_id = account.id
+          where account.id = $1`,
+        [person.accountId],
+      );
+      const current = state.rows[0];
+      if (!current) throw new Error(`seed: missing canonical state for ${person.username}`);
+      canonicalStates.set(person.accountId, current);
+    }
+    await pg.exec('begin; set local role service_role;');
+    try {
+      for (const person of PEOPLE) {
+        const current = canonicalStates.get(person.accountId);
+        if (!current) throw new Error(`seed: missing canonical state for ${person.username}`);
+        const result = await pg.query<{ value: { ok?: boolean; reason?: string } }>(
+          `select public.staxis_set_account_authorization_scope(
+             $1, $2, $3::uuid[], $4, $5, $6, $7
+           ) as value`,
+          [
+            ACCOUNT_ADMIN,
+            person.accountId,
+            person.propertyAccess,
+            current.authority_version,
+            current.role,
+            current.role,
+            'canonical two-company final-contract fixture authority',
+          ],
+        );
+        const value = result.rows[0]?.value;
+        if (value?.ok !== true) {
+          throw new Error(`seed: canonical scope rejected ${person.username}: ${JSON.stringify(value)}`);
+        }
+      }
+      await pg.exec('commit;');
+    } catch (error) {
+      await pg.exec('rollback;').catch(() => undefined);
+      throw error;
+    }
+  }
 
   return {
     hats,

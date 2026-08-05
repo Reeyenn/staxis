@@ -4,7 +4,7 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { PGlite } from '@electric-sql/pglite';
 import {
-  applyMigrationsToPglite,
+  applyMigrationsToPgliteThrough,
   type MigrationReport,
 } from '../../../tests/fixtures/pglite-migrate';
 
@@ -28,7 +28,7 @@ describe('invite capability storage — real migration integration', () => {
   let report: MigrationReport;
 
   before(async () => {
-    const migrated = await applyMigrationsToPglite();
+    const migrated = await applyMigrationsToPgliteThrough('0425');
     pg = migrated.pg;
     report = migrated.report;
   });

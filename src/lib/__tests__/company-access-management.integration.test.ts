@@ -7,7 +7,7 @@ import assert from 'node:assert/strict';
 import { after, before, describe, test } from 'node:test';
 import type { PGlite } from '@electric-sql/pglite';
 
-import { applyMigrationsToPglite } from '../../../tests/fixtures/pglite-migrate';
+import { applyMigrationsToPgliteThrough } from '../../../tests/fixtures/pglite-migrate';
 import {
   ACCOUNT_ANA,
   ACCOUNT_FIONA,
@@ -153,7 +153,7 @@ describe('company access management — real SQL lifecycle and tenant boundaries
   let recursiveTargetMembership: string;
 
   before(async () => {
-    const migrated = await applyMigrationsToPglite();
+    const migrated = await applyMigrationsToPgliteThrough('0425');
     pg = migrated.pg;
     await seedTwoCompanies(pg);
     await pg.query(

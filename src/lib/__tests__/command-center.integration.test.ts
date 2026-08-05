@@ -54,7 +54,7 @@ import { clearPortfolioAccessCache } from '@/lib/company/portfolio';
 import { propertySelectorRateLimitKey } from '@/lib/company/property-selector-rate-limit';
 import { GET as bootstrapGet } from '@/app/api/property-selector/bootstrap/route';
 
-import { applyMigrationsToPglite } from '../../../tests/fixtures/pglite-migrate';
+import { applyMigrationsToPgliteThrough } from '../../../tests/fixtures/pglite-migrate';
 import { createPglitePostgrest, loadCatalog, type PglitePostgrest } from '../../../tests/fixtures/postgrest-pglite';
 import {
   ACCOUNT_ADMIN,
@@ -312,7 +312,7 @@ async function legacyAccessOf(accountId: string): Promise<string[]> {
 // ─── Fixture ────────────────────────────────────────────────────────────────
 
 before(async () => {
-  const migrated = await applyMigrationsToPglite();
+  const migrated = await applyMigrationsToPgliteThrough('0425');
   pg = migrated.pg;
   const catalog = await loadCatalog(pg);
   shim = createPglitePostgrest(pg, catalog);

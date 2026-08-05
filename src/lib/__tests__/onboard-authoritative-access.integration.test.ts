@@ -22,7 +22,7 @@ import { GET as wizardGet, PATCH as wizardPatch } from '@/app/api/onboard/wizard
 import { GET as resumeGet } from '@/app/api/onboard/resume/route';
 import { PUT as decideJoinRequest } from '@/app/api/staff/join-requests/route';
 import { supabaseAdmin } from '@/lib/supabase-admin';
-import { applyMigrationsToPglite } from '../../../tests/fixtures/pglite-migrate';
+import { applyMigrationsToPgliteThrough } from '../../../tests/fixtures/pglite-migrate';
 import {
   createPglitePostgrest,
   loadCatalog,
@@ -112,7 +112,7 @@ async function rawPropertyAccess(accountId: string): Promise<string[]> {
 }
 
 before(async () => {
-  const migrated = await applyMigrationsToPglite();
+  const migrated = await applyMigrationsToPgliteThrough('0425');
   assert.ok(
     migrated.report.applied.some((file) => file.startsWith('0391_')),
     'transactional invite/join migration must be active in this integration test',

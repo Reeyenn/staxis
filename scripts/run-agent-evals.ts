@@ -36,19 +36,38 @@ async function main(): Promise<void> {
     process.exit(1);
   }
 
-  // Pick an ACTIVE admin explicitly assigned to this sandbox. Selecting an
-  // arbitrary admin made an otherwise valid test property produce access-
-  // verifier errors, which the live bank then misreported as model failures.
-  // The cap still is not hit: eval requests are recorded as kind=eval.
-  const { data: admin } = await supabase
+  // Pick an ACTIVE admin whose canonical authority reaches this sandbox.
+  // Selecting an arbitrary admin made an otherwise valid test property
+  // produce access-verifier errors, which the live bank then misreported as
+  // model failures. Resolve this through the service-only canonical resolver;
+  // the historical receipt column is not an authority input here.
+  const { data: admins, error: adminError } = await supabase
     .from('accounts')
     .select('id, data_user_id')
     .eq('role', 'admin')
     .eq('active', true)
-    .contains('property_access', [propertyId])
     .not('data_user_id', 'is', null)
-    .limit(1)
-    .maybeSingle();
+    .limit(50);
+  if (adminError) {
+    console.error(`Unable to enumerate active admins: ${adminError.message}`);
+    process.exit(1);
+  }
+  let admin: { id: string; data_user_id: string } | null = null;
+  for (const candidate of admins ?? []) {
+    const { data: authority, error: authorityError } = await supabase.rpc(
+      'staxis_list_account_authorized_properties',
+      { p_account_id: candidate.id },
+    );
+    if (authorityError) {
+      console.error(`Unable to resolve canonical authority for ${candidate.id}: ${authorityError.message}`);
+      process.exit(1);
+    }
+    const propertyIds = Array.isArray(authority?.propertyIds) ? authority.propertyIds : [];
+    if (authority?.all === true || propertyIds.includes(propertyId)) {
+      admin = candidate;
+      break;
+    }
+  }
   if (!admin?.data_user_id) {
     console.error('No active admin assigned to STAXIS_EVAL_PROPERTY_ID. Cannot run valid evals.');
     process.exit(1);

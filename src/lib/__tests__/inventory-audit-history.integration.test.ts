@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { after, before, describe, test } from 'node:test';
 import type { PGlite } from '@electric-sql/pglite';
-import { applyMigrationsToPglite } from '../../../tests/fixtures/pglite-migrate';
+import { applyMigrationsToPglite, seedCanonicalTestAuthority } from '../../../tests/fixtures/pglite-migrate';
 
 const USER = '81000000-0000-4000-8000-000000000001';
 const OTHER_USER = '81000000-0000-4000-8000-000000000002';
@@ -55,11 +55,15 @@ describe('inventory audit history migration 0326', () => {
       [PROPERTY, OTHER_PROPERTY, CASCADE_PROPERTY, USER, OTHER_USER],
     );
     await pg.query(
-      `insert into public.accounts(username,display_name,role,property_access,data_user_id)
-       values ('audit-owner','Actual Audit Owner','owner',array[$1,$2]::uuid[],$3)
+      `insert into public.accounts(username,display_name,role,data_user_id)
+       values ('audit-owner','Actual Audit Owner','owner',$1)
        on conflict (username) do nothing`,
-      [PROPERTY, CASCADE_PROPERTY, USER],
+      [USER],
     );
+    await seedCanonicalTestAuthority(pg, {
+      username: 'audit-owner',
+      propertyIds: [PROPERTY, CASCADE_PROPERTY],
+    });
     await pg.query(`select set_config('request.jwt.claim.sub',$1,false)`, [USER]);
     await pg.query(`select set_config('request.jwt.claim.role','authenticated',false)`);
     await pg.query(`

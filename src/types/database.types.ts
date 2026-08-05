@@ -14,6 +14,569 @@ export type Database = {
   }
   public: {
     Tables: {
+      account_access_cutover_final_receipts: {
+        Row: {
+          account_id: string
+          bridge_count: number
+          canonical_property_count: number
+          canonical_property_ids: string[]
+          cleared_at: string
+          details: Json
+          preflight_run_id: string
+          source_property_count: number
+          source_property_ids: string[]
+          source_scope_hash: string
+        }
+        Insert: {
+          account_id: string
+          bridge_count?: number
+          canonical_property_count?: number
+          canonical_property_ids?: string[]
+          cleared_at?: string
+          details?: Json
+          preflight_run_id: string
+          source_property_count?: number
+          source_property_ids?: string[]
+          source_scope_hash: string
+        }
+        Update: {
+          account_id?: string
+          bridge_count?: number
+          canonical_property_count?: number
+          canonical_property_ids?: string[]
+          cleared_at?: string
+          details?: Json
+          preflight_run_id?: string
+          source_property_count?: number
+          source_property_ids?: string[]
+          source_scope_hash?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "account_access_cutover_final_receipts_preflight_run_id_fkey"
+            columns: ["preflight_run_id"]
+            isOneToOne: false
+            referencedRelation: "account_access_cutover_preflight_runs"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      account_access_cutover_repair_capabilities: {
+        Row: {
+          account_id: string
+          capability_nonce: string
+          created_at: string
+          disposition_id: string
+          txid: number
+        }
+        Insert: {
+          account_id: string
+          capability_nonce?: string
+          created_at?: string
+          disposition_id: string
+          txid: number
+        }
+        Update: {
+          account_id?: string
+          capability_nonce?: string
+          created_at?: string
+          disposition_id?: string
+          txid?: number
+        }
+        Relationships: []
+      }
+      account_access_cutover_repair_manifests: {
+        Row: {
+          account_id: string | null
+          consumed_at: string | null
+          created_at: string
+          details: Json
+          issue_code: string
+          issue_id: string
+          preflight_run_id: string
+          property_id: string | null
+          raw_property_ids: string[]
+          raw_scope_hash: string
+          source: string
+          stage_a_mapping: Json
+          status: string
+        }
+        Insert: {
+          account_id?: string | null
+          consumed_at?: string | null
+          created_at?: string
+          details?: Json
+          issue_code: string
+          issue_id: string
+          preflight_run_id: string
+          property_id?: string | null
+          raw_property_ids?: string[]
+          raw_scope_hash: string
+          source: string
+          stage_a_mapping?: Json
+          status?: string
+        }
+        Update: {
+          account_id?: string | null
+          consumed_at?: string | null
+          created_at?: string
+          details?: Json
+          issue_code?: string
+          issue_id?: string
+          preflight_run_id?: string
+          property_id?: string | null
+          raw_property_ids?: string[]
+          raw_scope_hash?: string
+          source?: string
+          stage_a_mapping?: Json
+          status?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "account_access_cutover_repair_manifests_preflight_run_id_fkey"
+            columns: ["preflight_run_id"]
+            isOneToOne: false
+            referencedRelation: "account_access_cutover_preflight_runs"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      account_access_cutover_repair_dispositions: {
+        Row: {
+          access_b_merge_sha: string
+          account_id: string
+          authority_mode: string
+          authority_version: number
+          canonical_property_ids: string[]
+          canonical_scope_hash: string
+          consumed_at: string | null
+          consumed_preflight_run_id: string | null
+          consumed_session_id: string | null
+          decision: string
+          deployed_descendant_sha: string
+          details: Json
+          evidence_hash: string
+          id: string
+          issue_codes: string[]
+          issue_ids: string[]
+          legacy_write_event_count: number
+          operator_label: string
+          preflight_run_id: string
+          property_id: string
+          raw_property_ids: string[]
+          raw_scope_hash: string
+          reason: string
+          recorded_at: string
+          status: string
+        }
+        Insert: {
+          access_b_merge_sha: string
+          account_id: string
+          authority_mode: string
+          authority_version: number
+          canonical_property_ids: string[]
+          canonical_scope_hash: string
+          consumed_at?: string | null
+          consumed_preflight_run_id?: string | null
+          consumed_session_id?: string | null
+          decision: string
+          deployed_descendant_sha: string
+          details?: Json
+          evidence_hash?: string
+          id?: string
+          issue_codes: string[]
+          issue_ids?: string[]
+          legacy_write_event_count: number
+          operator_label: string
+          preflight_run_id: string
+          property_id: string
+          raw_property_ids: string[]
+          raw_scope_hash: string
+          reason: string
+          recorded_at?: string
+          status?: string
+        }
+        Update: {
+          access_b_merge_sha?: string
+          account_id?: string
+          authority_mode?: string
+          authority_version?: number
+          canonical_property_ids?: string[]
+          canonical_scope_hash?: string
+          consumed_at?: string | null
+          consumed_preflight_run_id?: string | null
+          consumed_session_id?: string | null
+          decision?: string
+          deployed_descendant_sha?: string
+          details?: Json
+          evidence_hash?: string
+          id?: string
+          issue_codes?: string[]
+          issue_ids?: string[]
+          legacy_write_event_count?: number
+          operator_label?: string
+          preflight_run_id?: string
+          property_id?: string
+          raw_property_ids?: string[]
+          raw_scope_hash?: string
+          reason?: string
+          recorded_at?: string
+          status?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "account_access_cutover_repair_dispositions_preflight_run_id_fkey"
+            columns: ["preflight_run_id"]
+            isOneToOne: false
+            referencedRelation: "account_access_cutover_preflight_runs"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      account_access_cutover_repair_receipts: {
+        Row: {
+          access_b_merge_sha: string
+          account_id: string
+          authority_mode_after: string
+          authority_mode_before: string
+          authority_version_after: number
+          authority_version_before: number
+          canonical_property_ids_after: string[]
+          canonical_property_ids_before: string[]
+          canonical_scope_hash_after: string
+          canonical_scope_hash_before: string
+          decision: string
+          deployed_descendant_sha: string
+          details: Json
+          disposition_id: string
+          evidence_after: Json
+          evidence_after_hash: string
+          evidence_before: Json
+          evidence_before_hash: string
+          id: string
+          legacy_write_event_count_after: number
+          legacy_write_event_count_before: number
+          operator_label: string
+          preflight_run_id: string
+          property_id: string
+          repaired_at: string
+          source_property_ids: string[]
+          source_scope_hash: string
+        }
+        Insert: {
+          access_b_merge_sha: string
+          account_id: string
+          authority_mode_after: string
+          authority_mode_before: string
+          authority_version_after: number
+          authority_version_before: number
+          canonical_property_ids_after: string[]
+          canonical_property_ids_before: string[]
+          canonical_scope_hash_after: string
+          canonical_scope_hash_before: string
+          decision: string
+          deployed_descendant_sha: string
+          details?: Json
+          disposition_id: string
+          evidence_after?: Json
+          evidence_after_hash?: string
+          evidence_before?: Json
+          evidence_before_hash?: string
+          id?: string
+          legacy_write_event_count_after: number
+          legacy_write_event_count_before: number
+          operator_label: string
+          preflight_run_id: string
+          property_id: string
+          repaired_at?: string
+          source_property_ids: string[]
+          source_scope_hash: string
+        }
+        Update: {
+          access_b_merge_sha?: string
+          account_id?: string
+          authority_mode_after?: string
+          authority_mode_before?: string
+          authority_version_after?: number
+          authority_version_before?: number
+          canonical_property_ids_after?: string[]
+          canonical_property_ids_before?: string[]
+          canonical_scope_hash_after?: string
+          canonical_scope_hash_before?: string
+          decision?: string
+          deployed_descendant_sha?: string
+          details?: Json
+          disposition_id?: string
+          evidence_after?: Json
+          evidence_after_hash?: string
+          evidence_before?: Json
+          evidence_before_hash?: string
+          id?: string
+          legacy_write_event_count_after?: number
+          legacy_write_event_count_before?: number
+          operator_label?: string
+          preflight_run_id?: string
+          property_id?: string
+          repaired_at?: string
+          source_property_ids?: string[]
+          source_scope_hash?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "account_access_cutover_repair_receipts_disposition_id_fkey"
+            columns: ["disposition_id"]
+            isOneToOne: false
+            referencedRelation: "account_access_cutover_repair_dispositions"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "account_access_cutover_repair_receipts_preflight_run_id_fkey"
+            columns: ["preflight_run_id"]
+            isOneToOne: false
+            referencedRelation: "account_access_cutover_preflight_runs"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      account_access_cutover_preflight_issues: {
+        Row: {
+          account_id: string | null
+          created_at: string
+          details: Json
+          id: string
+          issue_code: string
+          property_id: string | null
+          run_id: string
+        }
+        Insert: {
+          account_id?: string | null
+          created_at?: string
+          details?: Json
+          id?: string
+          issue_code: string
+          property_id?: string | null
+          run_id: string
+        }
+        Update: {
+          account_id?: string | null
+          created_at?: string
+          details?: Json
+          id?: string
+          issue_code?: string
+          property_id?: string | null
+          run_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "account_access_cutover_preflight_issues_account_id_fkey"
+            columns: ["account_id"]
+            isOneToOne: false
+            referencedRelation: "accounts"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "account_access_cutover_preflight_issues_run_id_fkey"
+            columns: ["run_id"]
+            isOneToOne: false
+            referencedRelation: "account_access_cutover_preflight_runs"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      account_access_cutover_preflight_runs: {
+        Row: {
+          completed_at: string | null
+          created_by: string
+          details: Json
+          id: string
+          issue_count: number
+          started_at: string
+          status: string
+        }
+        Insert: {
+          completed_at?: string | null
+          created_by?: string
+          details?: Json
+          id?: string
+          issue_count?: number
+          started_at?: string
+          status: string
+        }
+        Update: {
+          completed_at?: string | null
+          created_by?: string
+          details?: Json
+          id?: string
+          issue_count?: number
+          started_at?: string
+          status?: string
+        }
+        Relationships: []
+      }
+      account_access_cutover_recovery_actions: {
+        Row: {
+          action: string
+          created_at: string
+          details: Json
+          id: string
+          operator_label: string
+          preflight_run_id: string | null
+          reason: string
+        }
+        Insert: {
+          action: string
+          created_at?: string
+          details?: Json
+          id?: string
+          operator_label: string
+          preflight_run_id?: string | null
+          reason: string
+        }
+        Update: {
+          action?: string
+          created_at?: string
+          details?: Json
+          id?: string
+          operator_label?: string
+          preflight_run_id?: string | null
+          reason?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "account_access_cutover_recovery_actions_preflight_run_id_fkey"
+            columns: ["preflight_run_id"]
+            isOneToOne: false
+            referencedRelation: "account_access_cutover_preflight_runs"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      account_access_cutover_release_receipts: {
+        Row: {
+          access_b_merge_sha: string
+          attested_at: string
+          authorization_hash: string
+          consumed_at: string | null
+          consumed_preflight_run_id: string | null
+          consumed_session_id: string | null
+          created_at: string
+          deployed_descendant_sha: string
+          details: Json
+          id: string
+          old_deployment_fence_evidence: string
+          old_deployment_fence_hash: string
+          old_deployment_fence_nonce: string
+          old_deployment_job: string
+          operator_label: string
+          preflight_run_id: string
+          status: string
+        }
+        Insert: {
+          access_b_merge_sha: string
+          attested_at: string
+          authorization_hash: string
+          consumed_at?: string | null
+          consumed_preflight_run_id?: string | null
+          consumed_session_id?: string | null
+          created_at?: string
+          deployed_descendant_sha: string
+          details?: Json
+          id?: string
+          old_deployment_fence_evidence: string
+          old_deployment_fence_hash: string
+          old_deployment_fence_nonce: string
+          old_deployment_job: string
+          operator_label: string
+          preflight_run_id: string
+          status?: string
+        }
+        Update: {
+          access_b_merge_sha?: string
+          attested_at?: string
+          authorization_hash?: string
+          consumed_at?: string | null
+          consumed_preflight_run_id?: string | null
+          consumed_session_id?: string | null
+          created_at?: string
+          deployed_descendant_sha?: string
+          details?: Json
+          id?: string
+          old_deployment_fence_evidence?: string
+          old_deployment_fence_hash?: string
+          old_deployment_fence_nonce?: string
+          old_deployment_job?: string
+          operator_label?: string
+          preflight_run_id?: string
+          status?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "account_access_cutover_release_receipts_preflight_run_id_fkey"
+            columns: ["preflight_run_id"]
+            isOneToOne: false
+            referencedRelation: "account_access_cutover_preflight_runs"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      account_access_cutover_status: {
+        Row: {
+          baseline_preflight_run_id: string | null
+          details: Json
+          enforcement_enabled: boolean
+          finalized_at: string | null
+          final_preflight_run_id: string | null
+          id: boolean
+          last_backfill_at: string | null
+          last_preflight_run_id: string | null
+          stage: string
+        }
+        Insert: {
+          baseline_preflight_run_id?: string | null
+          details?: Json
+          enforcement_enabled?: boolean
+          finalized_at?: string | null
+          final_preflight_run_id?: string | null
+          id?: boolean
+          last_backfill_at?: string | null
+          last_preflight_run_id?: string | null
+          stage?: string
+        }
+        Update: {
+          baseline_preflight_run_id?: string | null
+          details?: Json
+          enforcement_enabled?: boolean
+          finalized_at?: string | null
+          final_preflight_run_id?: string | null
+          id?: boolean
+          last_backfill_at?: string | null
+          last_preflight_run_id?: string | null
+          stage?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "account_access_cutover_status_baseline_preflight_run_id_fkey"
+            columns: ["baseline_preflight_run_id"]
+            isOneToOne: false
+            referencedRelation: "account_access_cutover_preflight_runs"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "account_access_cutover_status_final_preflight_run_id_fkey"
+            columns: ["final_preflight_run_id"]
+            isOneToOne: false
+            referencedRelation: "account_access_cutover_preflight_runs"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "account_access_cutover_status_last_preflight_run_id_fkey"
+            columns: ["last_preflight_run_id"]
+            isOneToOne: false
+            referencedRelation: "account_access_cutover_preflight_runs"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       account_authorization_notifications: {
         Row: {
           account_id: string
@@ -434,7 +997,7 @@ export type Database = {
           password_hash: string | null
           phone: string | null
           preferred_language: string | null
-          property_access: string[]
+          property_access: string[] | null
           role: string
           skip_2fa: boolean
           staff_id: string | null
@@ -455,7 +1018,7 @@ export type Database = {
           password_hash?: string | null
           phone?: string | null
           preferred_language?: string | null
-          property_access?: string[]
+          property_access?: string[] | null
           role?: string
           skip_2fa?: boolean
           staff_id?: string | null
@@ -476,7 +1039,7 @@ export type Database = {
           password_hash?: string | null
           phone?: string | null
           preferred_language?: string | null
-          property_access?: string[]
+          property_access?: string[] | null
           role?: string
           skip_2fa?: boolean
           staff_id?: string | null
@@ -18744,16 +19307,6 @@ export type Database = {
         Returns: undefined
       }
       _pms_lineage_tables: { Args: never; Returns: string[] }
-      _staxis_accept_account_invite_0393_impl: {
-        Args: {
-          p_auth_user_id: string
-          p_claim_token: string
-          p_display_name: string
-          p_token_hash: string
-          p_username: string
-        }
-        Returns: Json
-      }
       _staxis_account_ambiguous_portfolio_organizations: {
         Args: { p_account_id: string }
         Returns: {
@@ -18878,26 +19431,6 @@ export type Database = {
           p_staxis_role: string
         }
         Returns: boolean
-      }
-      _staxis_change_hotel_team_role_guarded_legacy_impl: {
-        Args: {
-          p_actor_account_id: string
-          p_actor_auth_user_id: string
-          p_actor_email: string
-          p_expected_active: boolean
-          p_expected_auth_user_id: string
-          p_expected_display_name: string
-          p_expected_intent_version: number
-          p_expected_property_access: string[]
-          p_expected_role: string
-          p_expected_updated_at: string
-          p_hotel_id: string
-          p_new_display_name: string
-          p_new_role: string
-          p_request_id: string
-          p_target_account_id: string
-        }
-        Returns: Json
       }
       _staxis_commit_company_access_hat_conversion: {
         Args: {
@@ -19216,10 +19749,6 @@ export type Database = {
         }
         Returns: Json
       }
-      _staxis_reconcile_legacy_organization_access: {
-        Args: { p_actor_account_id?: string; p_property_id?: string }
-        Returns: Json
-      }
       _staxis_redact_join_code_bearer_keys: {
         Args: { p_value: Json }
         Returns: Json
@@ -19227,15 +19756,6 @@ export type Database = {
       _staxis_refresh_account_authorization: {
         Args: { p_account_id: string; p_reason?: string }
         Returns: undefined
-      }
-      _staxis_remove_property_access_guarded_legacy_impl: {
-        Args: {
-          p_account_id: string
-          p_expected_role: string
-          p_expected_updated_at: string
-          p_hotel_id: string
-        }
-        Returns: Json
       }
       _staxis_scheduled_grant_property_ids: {
         Args: { p_grant_id: string }
@@ -19256,30 +19776,6 @@ export type Database = {
       _staxis_structural_account_property_ids: {
         Args: { p_account_id: string }
         Returns: string[]
-      }
-      _staxis_transfer_ownership_guarded_legacy_impl: {
-        Args: {
-          p_actor_account_id: string
-          p_actor_auth_user_id: string
-          p_actor_email: string
-          p_expected_new_active: boolean
-          p_expected_new_auth_user_id: string
-          p_expected_new_intent_version: number
-          p_expected_new_property_access: string[]
-          p_expected_new_role: string
-          p_expected_old_active: boolean
-          p_expected_old_auth_user_id: string
-          p_expected_old_intent_version: number
-          p_expected_old_property_access: string[]
-          p_expected_old_role: string
-          p_new_owner_account_id: string
-          p_old_owner_account_id: string
-          p_operation_id: string
-          p_property_id: string
-          p_reason: string
-          p_request_id: string
-        }
-        Returns: Json
       }
       _staxis_unique_index_columns: {
         Args: { p_rel: unknown }
@@ -19689,6 +20185,46 @@ export type Database = {
         Returns: undefined
       }
       staxis_2fa_enabled: { Args: never; Returns: boolean }
+      staxis_access_stage_c_consume_release: {
+        Args: never
+        Returns: Json
+      }
+      staxis_access_stage_c_final_receipt: {
+        Args: { p_account_id: string }
+        Returns: Json
+      }
+      staxis_access_stage_c_freeze_and_forward: {
+        Args: { p_operator_label: string; p_preflight_run_id?: string; p_reason: string }
+        Returns: Json
+      }
+      staxis_access_stage_c_repair_evidence: {
+        Args: { p_preflight_run_id?: string }
+        Returns: Json
+      }
+      staxis_access_stage_c_record_release_receipt: {
+        Args: {
+          p_access_b_merge_sha: string
+          p_attested_at: string
+          p_authorization_value: string
+          p_deployed_descendant_sha: string
+          p_old_deployment_fence_evidence: string
+          p_old_deployment_fence_hash: string
+          p_old_deployment_fence_nonce: string
+          p_old_deployment_job: string
+          p_operator_label: string
+          p_preflight_run_id: string
+          p_receipt_id?: string
+        }
+        Returns: Json
+      }
+      staxis_access_stage_c_recovery_evidence: {
+        Args: { p_preflight_run_id?: string }
+        Returns: Json
+      }
+      staxis_access_stage_c_release_receipt: {
+        Args: { p_receipt_id: string }
+        Returns: Json
+      }
       staxis_accept_account_invite: {
         Args: {
           p_auth_user_id: string
@@ -19837,6 +20373,15 @@ export type Database = {
       }
       staxis_assert_authorization_scope_receipt: {
         Args: { p_account_id: string; p_receipt_id: string }
+        Returns: Json
+      }
+      staxis_bootstrap_canonical_admin_authority: {
+        Args: {
+          p_account_id: string
+          p_expected_authority_version: number
+          p_property_ids: string[]
+          p_reason: string
+        }
         Returns: Json
       }
       staxis_bootstrap_organization_leader_invitation: {
@@ -20483,10 +21028,6 @@ export type Database = {
         }
         Returns: string
       }
-      staxis_grant_property_access: {
-        Args: { p_account_id: string; p_hotel_id: string }
-        Returns: number
-      }
       staxis_heal_conversation_counters: {
         Args: { p_dry_run?: boolean }
         Returns: {
@@ -21037,6 +21578,10 @@ export type Database = {
         }
         Returns: string
       }
+      staxis_preflight_authorization_cutover_stage_c: {
+        Args: never
+        Returns: Json
+      }
       staxis_preview_company_access_edit_v2: {
         Args: {
           p_access_profile: string
@@ -21051,10 +21596,6 @@ export type Database = {
           p_property_ids: string[]
           p_scope_kind: string
         }
-        Returns: Json
-      }
-      staxis_promote_shadow_authorization: {
-        Args: { p_account_id: string; p_reason: string }
         Returns: Json
       }
       staxis_property_section_enabled: {
@@ -21170,10 +21711,6 @@ export type Database = {
       staxis_receive_po_lines_v2: {
         Args: { p_lines: Json; p_po_id: string; p_property_id: string }
         Returns: undefined
-      }
-      staxis_reconcile_legacy_organization_access: {
-        Args: { p_actor_account_id: string; p_property_id?: string }
-        Returns: Json
       }
       staxis_record_account_lifecycle_auth_snapshot: {
         Args: {
@@ -21327,25 +21864,13 @@ export type Database = {
         }
         Returns: Json
       }
-      staxis_remove_property_access: {
-        Args: { p_account_id: string; p_hotel_id: string }
-        Returns: number
-      }
-      staxis_remove_property_access_guarded: {
-        Args: {
-          p_account_id: string
-          p_expected_role: string
-          p_expected_updated_at: string
-          p_hotel_id: string
-        }
-        Returns: Json
-      }
-      staxis_remove_property_access_guarded_v2: {
+      staxis_remove_property_access_authoritative: {
         Args: {
           p_account_id: string
           p_actor_account_id: string
           p_actor_auth_user_id: string
           p_actor_email: string
+          p_expected_authority_version?: number
           p_expected_role: string
           p_expected_updated_at: string
           p_hotel_id: string
@@ -21625,6 +22150,18 @@ export type Database = {
         }
         Returns: Json
       }
+      staxis_set_account_authorization_scope: {
+        Args: {
+          p_account_id: string
+          p_actor_account_id: string
+          p_expected_authority_version?: number
+          p_expected_role: string
+          p_new_role: string
+          p_property_ids: string[]
+          p_reason: string
+        }
+        Returns: Json
+      }
       staxis_set_primary_property_organization: {
         Args: {
           p_actor_account_id: string
@@ -21712,14 +22249,6 @@ export type Database = {
           oldest_age_seconds: number
           swept_count: number
         }[]
-      }
-      staxis_transfer_ownership: {
-        Args: {
-          p_new_owner_account_id: string
-          p_old_owner_account_id: string
-          p_property_id: string
-        }
-        Returns: string
       }
       staxis_transfer_ownership_guarded: {
         Args: {

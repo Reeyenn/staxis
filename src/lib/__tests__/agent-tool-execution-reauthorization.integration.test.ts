@@ -14,7 +14,7 @@ import {
   type ToolContext,
 } from '@/lib/agent/tools';
 import { supabaseAdmin } from '@/lib/supabase-admin';
-import { applyMigrationsToPglite } from '../../../tests/fixtures/pglite-migrate';
+import { applyMigrationsToPgliteThrough } from '../../../tests/fixtures/pglite-migrate';
 import {
   createPglitePostgrest,
   loadCatalog,
@@ -103,7 +103,7 @@ async function callBoth(ctx: ToolContext) {
 }
 
 before(async () => {
-  const migrated = await applyMigrationsToPglite();
+  const migrated = await applyMigrationsToPgliteThrough('0425');
   assert.equal(
     migrated.report.failedAtRuntime.some((failure) => failure.file.startsWith('0376_')),
     false,

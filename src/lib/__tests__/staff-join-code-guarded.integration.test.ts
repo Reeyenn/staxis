@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { after, before, describe, test } from 'node:test';
 import type { PGlite } from '@electric-sql/pglite';
 
-import { applyMigrationsToPglite } from '../../../tests/fixtures/pglite-migrate';
+import { applyMigrationsToPgliteThrough } from '../../../tests/fixtures/pglite-migrate';
 import {
   ACCOUNT_ADMIN,
   ACCOUNT_ANA,
@@ -91,7 +91,7 @@ describe('ordinary staff join-code guarded boundary — real SQL', () => {
   let pg: PGlite;
 
   before(async () => {
-    const migrated = await applyMigrationsToPglite();
+    const migrated = await applyMigrationsToPgliteThrough('0425');
     assert.ok(
       migrated.report.applied.some((file) => file.startsWith('0396_')),
       'guarded staff join-code migration must apply',

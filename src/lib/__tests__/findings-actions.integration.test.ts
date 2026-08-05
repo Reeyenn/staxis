@@ -30,7 +30,7 @@ process.env.ANTHROPIC_API_KEY ??= 'sk-ant-placeholder';
 process.env.DISABLE_SERVER_2FA_ENFORCEMENT = 'true';
 
 import assert from 'node:assert/strict';
-import { after, before, beforeEach, describe, test } from 'node:test';
+import { after, afterEach, before, beforeEach, describe, test } from 'node:test';
 import { NextRequest } from 'next/server';
 import type { PGlite } from '@electric-sql/pglite';
 
@@ -47,7 +47,7 @@ import { createWorkOrderParams } from '@/lib/findings/actions/catalog/create-wor
 import { raiseReorderPointParams } from '@/lib/findings/actions/catalog/raise-reorder-point';
 import { persistJudgments } from '@/lib/findings/judge';
 
-import { applyMigrationsToPglite } from '../../../tests/fixtures/pglite-migrate';
+import { applyMigrationsToPglite, seedCanonicalTestAuthority } from '../../../tests/fixtures/pglite-migrate';
 import {
   createPglitePostgrest,
   loadCatalog,
@@ -60,8 +60,10 @@ import { seedTwoHotels, PID_A, PID_B } from '../../../tests/fixtures/pglite-two-
 
 const GM_A_UID = 'aaaaaaaa-0000-4000-8000-0000000000e1';
 const GM_B_UID = 'bbbbbbbb-0000-4000-8000-0000000000e1';
+const RULEBOOK_UID = 'cccccccc-0000-4000-8000-0000000000e1';
 let currentUser: string | null = GM_A_UID;
 let accountA = '';
+let rulebookAccountId = '';
 
 let pg: PGlite;
 let catalog: Catalog;
@@ -102,9 +104,16 @@ async function tap(
   propertyId: string,
   actionId: string,
   intent: 'execute' | 'undo' = 'execute',
+  actingUserId: string | null = currentUser,
 ): Promise<{ status: number; body: ActionBody }> {
-  const res = await ACTIONS_POST(actionReq({ propertyId, actionId, intent }));
-  return { status: res.status, body: (await res.json()) as ActionBody };
+  const previousUser = currentUser;
+  currentUser = actingUserId;
+  try {
+    const res = await ACTIONS_POST(actionReq({ propertyId, actionId, intent }));
+    return { status: res.status, body: (await res.json()) as ActionBody };
+  } finally {
+    currentUser = previousUser;
+  }
 }
 
 /** A finding straight into Postgres, bypassing the runner. */
@@ -318,9 +327,28 @@ const ONLY_EAGER = {
   skipDemotion: true,
 };
 
+// This file shares one PGlite database and mutable route-client singleton.
+// Keep the reset and the case body together so sibling suites cannot observe
+// temporary table renames or another case's acting user. The deliberate
+// double-tap case still calls both routes concurrently inside its own lock.
+let fixtureLockTail = Promise.resolve();
+const fixtureLockRelease = new WeakMap<object, () => void>();
+
+async function acquireFixtureLock(context: object): Promise<void> {
+  const previous = fixtureLockTail;
+  let release!: () => void;
+  fixtureLockTail = new Promise<void>((resolve) => { release = resolve; });
+  await previous;
+  fixtureLockRelease.set(context, release);
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 
-describe('the hands, proven against a real database', () => {
+// This suite deliberately renames shared catalog tables to prove fail-closed
+// behavior. Keep its database-mutating cases serial within the shared fixture;
+// Node's default concurrent subtests otherwise make a neighboring case observe
+// the temporary rename and turn a deterministic security assertion into a race.
+describe('the hands, proven against a real database', { concurrency: 1 }, () => {
   before(async () => {
     const migrated = await applyMigrationsToPglite();
     pg = migrated.pg;
@@ -353,13 +381,15 @@ describe('the hands, proven against a real database', () => {
       ]);
     }
     const inserted = await pg.query<{ id: string }>(
-      `insert into public.accounts (username, display_name, role, property_access, data_user_id, password_hash)
-       values ('hands.gm.a','Maria (GM)','general_manager',array[$1::uuid],$2,'x'),
-              ('hands.gm.b','Bea (GM)','general_manager',array[$3::uuid],$4,'x')
+      `insert into public.accounts (username, display_name, role, data_user_id, password_hash)
+       values ('hands.gm.a','Maria (GM)','general_manager',$1,'x'),
+              ('hands.gm.b','Bea (GM)','general_manager',$2,'x')
        returning id`,
-      [PID_A, GM_A_UID, PID_B, GM_B_UID],
+      [GM_A_UID, GM_B_UID],
     );
     accountA = inserted.rows[0].id;
+    await seedCanonicalTestAuthority(pg, { username: 'hands.gm.a', propertyIds: [PID_A] });
+    await seedCanonicalTestAuthority(pg, { username: 'hands.gm.b', propertyIds: [PID_B] });
     registerDetector(probe);
     registerDetector(eagerProbe);
 
@@ -385,7 +415,8 @@ describe('the hands, proven against a real database', () => {
     await pg?.close();
   });
 
-  beforeEach(async () => {
+  beforeEach(async (context) => {
+    await acquireFixtureLock(context);
     currentUser = GM_A_UID;
     probeDrafts = [];
     eagerDrafts = [];
@@ -397,6 +428,10 @@ describe('the hands, proven against a real database', () => {
       ITEM_B,
     ]);
     shim.reset();
+  });
+
+  afterEach((context) => {
+    fixtureLockRelease.get(context)?.();
   });
 
   // ── the migration actually landed ────────────────────────────────────────
@@ -432,7 +467,7 @@ describe('the hands, proven against a real database', () => {
 
   // ═══ FROZEN AT PROPOSAL TIME ═══
 
-  describe('what runs is what was shown', () => {
+  describe('what runs is what was shown', { concurrency: 1 }, () => {
     test('the database computes the fingerprint — the app never supplies one', async () => {
       const { actionId } = await offerWorkOrder(PID_A, 'Room 214', 2);
       const row = await actionRow(actionId);
@@ -550,7 +585,7 @@ describe('the hands, proven against a real database', () => {
 
   // ═══ RE-VERIFIED AT THE TAP ═══
 
-  describe('re-verification inside the transaction', () => {
+  describe('re-verification inside the transaction', { concurrency: 1 }, () => {
     test('the facts still hold: the work order is really created', async () => {
       const { actionId } = await offerWorkOrder(PID_A, 'Room 214', 2);
       const result = await tap(PID_A, actionId);
@@ -657,7 +692,7 @@ describe('the hands, proven against a real database', () => {
   // false, on the one screen whose whole value is that its numbers can be
   // checked.
 
-  describe('the window the offer was made in does not slide out from under it', () => {
+  describe('the window the offer was made in does not slide out from under it', { concurrency: 1 }, () => {
     // MUTATION PROOF: put `now()` back in place of `a.proposed_at` in the
     // create_work_order branch of staxis_execute_finding_action and this test
     // fails with `declined_changed` — the exact false accusation.
@@ -719,7 +754,7 @@ describe('the hands, proven against a real database', () => {
   // answers left the fix disarmed forever: every later card for a problem that
   // was still true arrived with no button and no explanation.
 
-  describe('a fix that declined or failed can be offered again', () => {
+  describe('a fix that declined or failed can be offered again', { concurrency: 1 }, () => {
     // MUTATION PROOF: put 'declined_changed' back into the settled set
     // (DECIDED_ACTION_STATES in actions/store.ts) and the re-propose below
     // returns 'settled' with no live offer on the card, forever.
@@ -811,7 +846,7 @@ describe('the hands, proven against a real database', () => {
 
   // ═══ SUPERSEDE AND OFFER ARE ONE STATEMENT ═══
 
-  describe('replacing an offer cannot leave a card with none', () => {
+  describe('replacing an offer cannot leave a card with none', { concurrency: 1 }, () => {
     test('a different plan retires the old offer and lands the new one together', async () => {
       const { findingId } = await offerWorkOrder(PID_A, 'Room 701', 2);
       const outcome = await proposeAction(PID_A, findingId, {
@@ -888,48 +923,69 @@ describe('the hands, proven against a real database', () => {
   // lock their company had written. Invisible from both ends: the button simply
   // works, and the money is spent.
 
-  describe('a rulebook we cannot read refuses the button rather than opening it', () => {
+  describe('a rulebook we cannot read refuses the button rather than opening it', { concurrency: 1 }, () => {
     const ORG = 'cccccccc-0000-4000-8000-00000000c001';
+    const RULEBOOK_PID = 'cccccccc-0000-4000-8000-00000000c003';
 
-    // A hotel is operated by ONE company, and only a primary operator/owner row
-    // counts as governing (access.ts `relationshipIsGoverning`). 0325 backfills a
-    // hidden single-hotel anchor holding that slot, so the test closes it, runs
-    // as a real operated hotel, and puts it back.
+    // Use a dedicated hotel rather than mutating the shared hotel A topology.
+    // Canonical bridges are deliberately bound to the governing relationship,
+    // so a topology-transfer test must not invalidate neighboring fixture users.
     before(async () => {
+      await pg.query(
+        `insert into public.properties (id, owner_id, name, total_rooms, timezone)
+         values ($1, $2, 'Rulebook Test Hotel', 10, 'America/Chicago')
+         on conflict (id) do nothing`,
+        [RULEBOOK_PID, GM_A_UID],
+      );
       await pg.query(
         `insert into public.organizations (id, name, organization_type, status)
          values ($1, 'Beaumont Operating Co', 'management_company', 'active')
          on conflict (id) do nothing`,
         [ORG],
       );
+      // A property-created fixture may still carry the historical independent
+      // anchor. End that window before installing the real operator window;
+      // the final resolver then binds the test account to this relationship.
       await pg.query(
         `update public.organization_property_relationships
-            set ends_at = now()
-          where property_id = $1 and ends_at is null`,
-        [PID_A],
+            set ends_at = clock_timestamp()
+          where property_id = $1 and ends_at is null and is_primary_grouping`,
+        [RULEBOOK_PID],
       );
       await pg.query(
         `insert into public.organization_property_relationships
            (organization_id, property_id, relationship_type, is_primary_grouping)
          values ($1, $2, 'operator', true)`,
-        [ORG, PID_A],
+        [ORG, RULEBOOK_PID],
       );
+
+      await pg.query(
+        `insert into auth.users (id, email) values ($1, 'hands.rulebook.gm@test')
+         on conflict (id) do nothing`,
+        [RULEBOOK_UID],
+      );
+      const inserted = await pg.query<{ id: string }>(
+        `insert into public.accounts
+           (username, display_name, role, data_user_id, password_hash)
+         values ('hands.rulebook.gm', 'Rulebook GM', 'general_manager', $1, 'x')
+         returning id`,
+        [RULEBOOK_UID],
+      );
+      rulebookAccountId = inserted.rows[0].id;
+      await seedCanonicalTestAuthority(pg, {
+        username: 'hands.rulebook.gm',
+        propertyIds: [RULEBOOK_PID],
+      });
     });
 
     after(async () => {
       await pg.query('delete from public.organization_property_relationships where organization_id=$1', [ORG]);
       await pg.query('delete from public.organizations where id=$1', [ORG]);
-      await pg.query(
-        `update public.organization_property_relationships
-            set ends_at = null
-          where property_id = $1 and ends_at is not null`,
-        [PID_A],
-      );
     });
 
     /** A finding with a dollar figure, so a money rule has something to be about. */
     async function pricedOffer(location: string) {
-      const made = await offerWorkOrder(PID_A, location, 2);
+      const made = await offerWorkOrder(RULEBOOK_PID, location, 2);
       await pg.query(
         `update public.findings
             set price_low_cents = 60000, price_high_cents = 90000,
@@ -945,13 +1001,13 @@ describe('the hands, proven against a real database', () => {
     // order booked against a company rulebook nobody could read.
     test('the tap is refused with a retry-able 503, and nothing is written', async () => {
       const { actionId } = await pricedOffer('Room 801');
-      const before = await workOrderCount(PID_A, 'Room 801');
+      const before = await workOrderCount(RULEBOOK_PID, 'Room 801');
 
       await pg.query('alter table public.company_authority_rules rename to company_authority_rules_hidden');
       try {
-        const result = await tap(PID_A, actionId);
+        const result = await tap(RULEBOOK_PID, actionId, 'execute', RULEBOOK_UID);
         assert.equal(result.status, 503, 'not a 403 — the manager is not being refused permission');
-        assert.equal(await workOrderCount(PID_A, 'Room 801'), before, 'nothing was booked');
+        assert.equal(await workOrderCount(RULEBOOK_PID, 'Room 801'), before, 'nothing was booked');
         assert.equal((await actionRow(actionId))!.state, 'proposed', 'and the offer is still live');
       } finally {
         await pg.query('alter table public.company_authority_rules_hidden rename to company_authority_rules');
@@ -960,7 +1016,7 @@ describe('the hands, proven against a real database', () => {
 
     test('and once it can be read again, the same tap goes through', async () => {
       const { actionId } = await pricedOffer('Room 802');
-      const result = await tap(PID_A, actionId);
+      const result = await tap(RULEBOOK_PID, actionId, 'execute', RULEBOOK_UID);
       assert.equal(result.body.data?.code, 'executed', 'an empty rulebook governs nothing');
     });
 
@@ -978,9 +1034,9 @@ describe('the hands, proven against a real database', () => {
         'alter table public.organization_property_relationships rename to opr_hidden',
       );
       try {
-        const result = await tap(PID_A, actionId);
+        const result = await tap(RULEBOOK_PID, actionId, 'execute', RULEBOOK_UID);
         assert.equal(result.status, 403, 'the authoritative hotel gate fails closed without enumerating topology state');
-        assert.equal(await workOrderCount(PID_A, 'Room 803'), 2, 'the two originals, and no third');
+        assert.equal(await workOrderCount(RULEBOOK_PID, 'Room 803'), 2, 'the two originals, and no third');
       } finally {
         await pg.query('alter table public.opr_hidden rename to organization_property_relationships');
       }
@@ -1009,15 +1065,15 @@ describe('the hands, proven against a real database', () => {
           `insert into public.organization_property_relationships
              (organization_id, property_id, relationship_type, is_primary_grouping)
            values ($1, $2, 'operator', true)`,
-          [OTHER, PID_A],
+             [OTHER, RULEBOOK_PID],
         );
-        const result = await tap(PID_A, actionId);
+        const result = await tap(RULEBOOK_PID, actionId, 'execute', RULEBOOK_UID);
         assert.equal(
           result.status,
           403,
           'the authoritative hotel gate refuses ambiguous topology before action lookup',
         );
-        assert.equal(await workOrderCount(PID_A, 'Room 804'), 2, 'nothing was booked');
+        assert.equal(await workOrderCount(RULEBOOK_PID, 'Room 804'), 2, 'nothing was booked');
       } finally {
         await pg.query('delete from public.organization_property_relationships where organization_id=$1', [OTHER]);
         await pg.query('delete from public.organizations where id=$1', [OTHER]);
@@ -1041,10 +1097,10 @@ describe('the hands, proven against a real database', () => {
       try {
         const args = {
           organizationId: ORG,
-          propertyId: PID_A,
+          propertyId: RULEBOOK_PID,
           actionKind: 'create_work_order',
           price: { lowCents: 60_000, highCents: 90_000, currency: 'USD', basis: 'b' },
-          callerAccountId: accountA,
+          callerAccountId: rulebookAccountId,
           callerHats: [],
         };
         assert.equal(await resolveSignOff(args), null, 'a card still renders');
@@ -1057,7 +1113,7 @@ describe('the hands, proven against a real database', () => {
 
   // ═══ A DOUBLE TAP IS ONE ACTION ═══
 
-  describe('a double tap is one action, and the database is what says so', () => {
+  describe('a double tap is one action, and the database is what says so', { concurrency: 1 }, () => {
     test('two taps arriving together produce exactly ONE work order', async () => {
       const { actionId } = await offerWorkOrder(PID_A, 'Room 214', 2);
       const [first, second] = await Promise.all([
@@ -1100,7 +1156,7 @@ describe('the hands, proven against a real database', () => {
 
   // ═══ UNDO ═══
 
-  describe('undo', () => {
+  describe('undo', { concurrency: 1 }, () => {
     test('undo removes the work order Staxis created, and records it', async () => {
       const { actionId } = await offerWorkOrder(PID_A, 'Room 214', 2);
       const done = await tap(PID_A, actionId);
@@ -1188,7 +1244,7 @@ describe('the hands, proven against a real database', () => {
 
   // ═══ FAILURE IS RECORDED, NEVER PARTIAL ═══
 
-  describe('when the write itself fails', () => {
+  describe('when the write itself fails', { concurrency: 1 }, () => {
     test('the state is failed, the reason is kept, and NOTHING was half-written', async () => {
       const { actionId } = await offerReorder(PID_A, ITEM_A, 20);
       // `inventory_reorder_at_nonnegative` is a real CHECK on a real column.
@@ -1238,7 +1294,7 @@ describe('the hands, proven against a real database', () => {
 
   // ═══ THE TENANT WALL ═══
 
-  describe('one hotel cannot reach into another', () => {
+  describe('one hotel cannot reach into another', { concurrency: 1 }, () => {
     test("hotel B's manager cannot EXECUTE hotel A's action", async () => {
       const { actionId } = await offerWorkOrder(PID_A, 'Room 214', 2);
       currentUser = GM_B_UID;
@@ -1320,7 +1376,7 @@ describe('the hands, proven against a real database', () => {
 
   // ═══ THE RUNNER ATTACHES IT, NOT THE DETECTOR ═══
 
-  describe('the runner decides whether a plan becomes a button', () => {
+  describe('the runner decides whether a plan becomes a button', { concurrency: 1 }, () => {
     async function runProbe() {
       return runFindingsForProperty(PID_A, { ...ONLY_PROBE, now: new Date() });
     }
@@ -1396,7 +1452,7 @@ describe('the hands, proven against a real database', () => {
 
   // ═══ THE JUDGE ═══
 
-  describe('the judge cannot add, remove or alter an attached action', () => {
+  describe('the judge cannot add, remove or alter an attached action', { concurrency: 1 }, () => {
     test('a judging pass leaves the action row byte-identical', async () => {
       const { findingId, actionId } = await offerWorkOrder(PID_A, 'Room 214', 2);
       const before = await actionRow(actionId);
@@ -1445,7 +1501,7 @@ describe('the hands, proven against a real database', () => {
 
   // ═══ THE CARD ═══
 
-  describe('the card the manager actually receives', () => {
+  describe('the card the manager actually receives', { concurrency: 1 }, () => {
     test('the offer and the button label are derived from the FROZEN plan, in both languages', async () => {
       await offerWorkOrder(PID_A, 'Room 214', 2);
       const res = await QUEUE_GET(

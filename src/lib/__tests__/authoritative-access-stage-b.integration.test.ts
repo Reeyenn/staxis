@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { after, before, describe, test } from 'node:test';
 import type { PGlite } from '@electric-sql/pglite';
 
-import { applyMigrationsToPglite } from '../../../tests/fixtures/pglite-migrate';
+import { applyMigrationsToPgliteThrough } from '../../../tests/fixtures/pglite-migrate';
 
 const PROPERTY_MAIN = 'c4240000-0000-4000-8000-000000000001';
 const PROPERTY_OTHER = 'c4240000-0000-4000-8000-000000000002';
@@ -96,7 +96,7 @@ async function activeBridgeCount(accountId: string, propertyId: string): Promise
 
 describe('Access Stage B canonical mutation boundary', () => {
   before(async () => {
-    const migrated = await applyMigrationsToPglite();
+    const migrated = await applyMigrationsToPgliteThrough('0425');
     pg = migrated.pg;
     assert.ok(
       migrated.report.applied.includes('0424_authoritative_access_stage_b_mutations.sql'),

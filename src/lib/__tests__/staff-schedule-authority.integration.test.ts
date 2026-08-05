@@ -197,7 +197,7 @@ describe('staff schedule authority and history migration 0412', () => {
           [HISTORY_PROPERTY, HISTORY_INACTIVE_STAFF],
         );
       }
-    });
+    }, { stopAfterVersion: '0425' });
     pg = migrated.pg;
     assert.ok(
       migrated.report.applied.includes('0412_staff_schedule_authority_and_history.sql'),

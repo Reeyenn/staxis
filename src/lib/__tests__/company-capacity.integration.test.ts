@@ -83,7 +83,7 @@ import { GET as rulebookGet } from '@/app/api/company/rulebook/route';
 import { GET as portfolioGet } from '@/app/api/company/queue/route';
 import { GET as listHats } from '@/app/api/auth/team/hats/route';
 
-import { applyMigrationsToPglite } from '../../../tests/fixtures/pglite-migrate';
+import { applyMigrationsToPgliteThrough } from '../../../tests/fixtures/pglite-migrate';
 import { createPglitePostgrest, loadCatalog, type PglitePostgrest } from '../../../tests/fixtures/postgrest-pglite';
 import {
   ACCOUNT_ADMIN,
@@ -198,7 +198,7 @@ async function findingsRouteStatuses(authUserId: string, propertyId: string): Pr
 // ─── Fixture ────────────────────────────────────────────────────────────────
 
 before(async () => {
-  const migrated = await applyMigrationsToPglite();
+  const migrated = await applyMigrationsToPgliteThrough('0425');
   pg = migrated.pg;
   const catalog = await loadCatalog(pg);
   shim = createPglitePostgrest(pg, catalog);

@@ -413,12 +413,6 @@ interface StructuralMembershipRow {
   ended_at: string | null;
 }
 
-interface StructuralAccountRow {
-  id: string;
-  role: string;
-  property_access: string[] | null;
-}
-
 interface StructuralAuthorizationStateRow {
   account_id: string;
   authority_mode: string;
@@ -471,12 +465,12 @@ function currentStructuralWindow(startsAt: string, endsAt: string | null, nowMs:
 /**
  * The operational access RPC intentionally resolves one winning authority
  * class and excludes inactive accounts. The first-person guard in 0411 is a
- * different OR contract: legacy/shadow property_access, any normalized
- * property-scope hat or grant, or a valid bridge claims the hotel, even when a
- * separate company-scope entitlement wins the effective standing and even
- * when the account itself is inactive. Reuse those canonical tables for this
- * bounded admin People projection so the UI can fail closed without changing
- * access authority or managementSurface.
+ * different OR contract: any normalized property-scope hat or grant, or a
+ * valid bridge claims the hotel, even when a separate company-scope
+ * entitlement wins the effective standing and even when the account itself is
+ * inactive. Reuse those canonical tables for this bounded admin People
+ * projection so the UI can fail closed without changing access authority or
+ * managementSurface.
  */
 export async function listAuthoritativeStructuralHotelDirectness(
   accountIds: readonly string[],
@@ -490,16 +484,11 @@ export async function listAuthoritativeStructuralHotelDirectness(
 
   try {
     const [
-      accountResult,
       authorizationStateResult,
       membershipResult,
       bridgeResult,
       relationshipResult,
     ] = await Promise.all([
-      supabaseAdmin
-        .from('accounts')
-        .select('id, role, property_access')
-        .in('id', ids),
       supabaseAdmin
         .from('account_authorization_state')
         .select('account_id, authority_mode')
@@ -519,15 +508,12 @@ export async function listAuthoritativeStructuralHotelDirectness(
         .select('id, organization_id, property_id, relationship_type, is_primary_grouping, starts_at, ends_at')
         .eq('property_id', propertyId),
     ]);
-    if (accountResult.error
-      || authorizationStateResult.error
+    if (authorizationStateResult.error
       || membershipResult.error
       || bridgeResult.error
       || relationshipResult.error) return unresolved();
 
-    const accounts = (accountResult.data ?? []) as StructuralAccountRow[];
     const authorizationStates = (authorizationStateResult.data ?? []) as StructuralAuthorizationStateRow[];
-    const accountById = new Map(accounts.map((account) => [account.id, account]));
     const authorizationStateByAccountId = new Map(
       authorizationStates.map((state) => [state.account_id, state]),
     );
@@ -584,23 +570,9 @@ export async function listAuthoritativeStructuralHotelDirectness(
 
     const direct = unresolved();
     for (const accountId of ids) {
-      const account = accountById.get(accountId);
       const authorityMode = authorizationStateByAccountId.get(accountId)?.authority_mode;
-      if (!account || !['legacy', 'shadow', 'normalized'].includes(authorityMode ?? '')) continue;
+      if (!['legacy', 'shadow', 'normalized'].includes(authorityMode ?? '')) continue;
       direct.set(accountId, false);
-    }
-    for (const accountId of ids) {
-      const account = accountById.get(accountId);
-      if (!account) continue;
-      const authorityMode = authorizationStateByAccountId.get(accountId)?.authority_mode;
-      if (account.role !== 'admin'
-        && (authorityMode === 'legacy' || authorityMode === 'shadow')
-        && Array.isArray(account.property_access)
-        && account.property_access.includes(propertyId)) {
-        // 0411 intentionally treats this legacy/shadow fact as direct even
-        // when the current company topology is absent or ambiguous.
-        direct.set(accountId, true);
-      }
     }
     const normalizedAccountIds = new Set(
       ids.filter((accountId) => (

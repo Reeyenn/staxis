@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { after, before, describe, test } from 'node:test';
 import type { PGlite } from '@electric-sql/pglite';
-import { applyMigrationsToPglite } from '../../../tests/fixtures/pglite-migrate';
+import { applyMigrationsToPglite, seedCanonicalTestAuthority } from '../../../tests/fixtures/pglite-migrate';
 
 const USER_A = '71000000-0000-4000-8000-000000000001';
 const USER_B = '71000000-0000-4000-8000-000000000002';
@@ -72,14 +72,20 @@ describe('inventory operational corrections migration 0324', () => {
       ],
     );
     await pg.query(
-      `insert into public.accounts(username, display_name, role, property_access, data_user_id)
-       values ('ops-owner', 'Ops Owner', 'owner', array[$1,$2,$3,$4,$5,$6]::uuid[], $7)
+      `insert into public.accounts(username, display_name, role, data_user_id)
+       values ('ops-owner', 'Ops Owner', 'owner', $1)
        on conflict (username) do nothing`,
       [
-        PROP_A, PROP_CLOSE, PROP_ARCHIVE_CLOSE, PROP_BAD_TIMEZONE,
-        PROP_START_COST_ONLY, PROP_START_BACKDATED, USER_A,
+        USER_A,
       ],
     );
+    await seedCanonicalTestAuthority(pg, {
+      username: 'ops-owner',
+      propertyIds: [
+        PROP_A, PROP_CLOSE, PROP_ARCHIVE_CLOSE, PROP_BAD_TIMEZONE,
+        PROP_START_COST_ONLY, PROP_START_BACKDATED,
+      ],
+    });
     await pg.query(
       `insert into public.inventory(id, property_id, name, category, current_stock, par_level, unit, unit_cost)
        values
