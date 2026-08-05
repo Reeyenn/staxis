@@ -74,6 +74,22 @@ begin
     return;
   end if;
 
+  -- Only an OLDER draft's narrow shape is residue.  Once these relations
+  -- carry the final columns they are this contract's own tables, and the
+  -- operator may legitimately have recorded repair dispositions into them
+  -- between a prefix run and the suffix.  Re-running the prefix must not
+  -- destroy that work, so detect the final shape and stop here.
+  if to_regclass('public.account_access_cutover_repair_dispositions') is not null
+     and exists (
+       select 1 from information_schema.columns
+        where table_schema = 'public'
+          and table_name = 'account_access_cutover_repair_dispositions'
+          and column_name = 'issue_ids'
+     )
+  then
+    return;
+  end if;
+
   foreach v_relation in array v_residue loop
     if to_regclass('public.' || v_relation) is not null then
       execute format('select count(*) from public.%I', v_relation) into v_rows;

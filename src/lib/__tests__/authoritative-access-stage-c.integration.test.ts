@@ -5968,3 +5968,66 @@ describe('Access Stage C reconciles an abandoned prefix', () => {
     }
   });
 });
+
+/**
+ * The prefix can legitimately be re-run against a database that already has
+ * it, and by then the operator may have recorded repair evidence between the
+ * prefix and the suffix. The residue block must recognise its own final shape
+ * and leave that evidence alone, rather than reading a populated table as an
+ * abandoned older draft.
+ */
+describe('Access Stage C leaves an already-final prefix alone', () => {
+  test('re-running the residue block keeps evidence recorded after the prefix', async () => {
+    const migrated = await applyMigrationsToPgliteWithHook(
+      async ({ pg: hookPg, file }) => {
+        if (file !== MIGRATION) return;
+        await seedStageCFixture(hookPg);
+      },
+      {
+        afterAccessStageCPreparation: async ({ pg: hookPg, file }) => {
+          if (file !== MIGRATION) return;
+          await authorizeAccessStageCRelease(hookPg);
+        },
+      },
+    );
+    try {
+      const pg = migrated.pg;
+      assert.ok(
+        migrated.report.applied.includes(MIGRATION),
+        JSON.stringify(migrated.report.failedAtRuntime),
+      );
+
+      // Evidence an operator could record against an applied prefix.
+      await pg.query(
+        `insert into public.account_access_cutover_recovery_actions(
+           preflight_run_id, operator_label, action, reason
+         )
+         select status.final_preflight_run_id, 'prefix-replay-test',
+                'freeze_and_forward', 'recorded between prefix and suffix'
+           from public.account_access_cutover_status status
+          where status.id is true`,
+      );
+
+      // Replay only the residue block. Before the shape check was added this
+      // saw a populated table and raised; now it must return early.
+      const sql = readFileSync(
+        join(process.cwd(), 'supabase/migrations', MIGRATION),
+        'utf8',
+      );
+      const open = sql.indexOf('do $residue$');
+      const close = sql.indexOf('$residue$;', open) + '$residue$;'.length;
+      assert.ok(open > 0 && close > open, 'residue block not found in 0426');
+      await pg.exec(sql.slice(open, close));
+
+      const kept = await rows<{ count: number }>(
+        pg,
+        `select count(*)::integer as count
+           from public.account_access_cutover_recovery_actions
+          where operator_label = 'prefix-replay-test'`,
+      );
+      assert.equal(Number(kept[0].count), 1);
+    } finally {
+      await migrated.pg.close();
+    }
+  });
+});
