@@ -5,7 +5,7 @@ import { describe, test } from 'node:test';
 
 const source = (path: string) => readFileSync(join(process.cwd(), path), 'utf8');
 const previewRoute = source('src/app/api/company-access/invitations/preview/route.ts');
-const invitationPage = source('src/app/company-invite/[token]/page.tsx');
+const invitationPage = source('src/app/(public)/company-invite/[token]/page.tsx');
 
 describe('company invitation preview', () => {
   test('keeps the raw capability in a rate-limited request body and returns only review terms', () => {

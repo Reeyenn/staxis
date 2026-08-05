@@ -8,7 +8,7 @@ const landing = readFileSync(
   'utf8',
 );
 const metadata = readFileSync(
-  path.join(process.cwd(), 'src/app/page.tsx'),
+  path.join(process.cwd(), 'src/app/(public)/page.tsx'),
   'utf8',
 );
 

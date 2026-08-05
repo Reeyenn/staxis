@@ -75,7 +75,7 @@ describe('staff schedule hardening contracts', () => {
     const helper = source('src/lib/schedule/decide-time-off.ts');
     const migration = source('supabase/migrations/0412_staff_schedule_authority_and_history.sql');
     const staffApi = source('src/app/api/staff/operational/route.ts');
-    const employmentUi = source('src/app/company/_components/PersonEmploymentForm.tsx');
+    const employmentUi = source('src/app/(hotel)/company/_components/PersonEmploymentForm.tsx');
     const staffDb = source('src/lib/db/staff.ts');
 
     assert.match(helper, /rpc\('staxis_apply_time_off_decision'/);

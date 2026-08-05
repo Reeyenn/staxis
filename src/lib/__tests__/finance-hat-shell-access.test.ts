@@ -24,7 +24,7 @@ test('fresh per-hotel seesFinancials standing drives Financials discovery withou
     'read-only finance discovery must not be coupled to hotel mutation',
   );
 
-  const page = source('src/app/financials/page.tsx');
+  const page = source('src/app/(hotel)/financials/page.tsx');
   assert.match(page, /activePropertyStanding\.seesFinancials/);
   assert.match(page, /!activePropertyStanding\.hotelMutationAllowed/);
   assert.match(page, /readOnly=\{readOnly\}/g);

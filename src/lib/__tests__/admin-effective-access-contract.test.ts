@@ -9,7 +9,7 @@ const source = (path: string) => readFileSync(join(process.cwd(), path), 'utf8')
 
 describe('Admin authoritative permission integration', () => {
   it('replaces the property page legacy-array roster with the authoritative projection', () => {
-    const page = source('src/app/admin/properties/[id]/page.tsx');
+    const page = source('src/app/(admin)/admin/properties/[id]/page.tsx');
     assert.match(page, /<AdminEffectiveAccess propertyId=\{propertyId\}/);
     assert.doesNotMatch(page, /propertyAccess\.includes\(propertyId\)/);
     assert.doesNotMatch(page, /\/api\/auth\/accounts/);

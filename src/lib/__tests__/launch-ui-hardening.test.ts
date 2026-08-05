@@ -8,7 +8,7 @@ function source(...parts: string[]): string {
 }
 
 test('laundry completion writes are checked, serialized, durable, and retryable', () => {
-  const page = source('src', 'app', 'laundry', '[id]', 'page.tsx');
+  const page = source('src', 'app', '(staff-link)', 'laundry', '[id]', 'page.tsx');
   assert.match(page, /const queuedSaveRef = useRef<CompletionSnapshot \| null>\(null\)/);
   assert.match(page, /if \(saveInFlightRef\.current \|\| !queuedSaveRef\.current\) return/);
   assert.match(page, /date: snapshot\.date/);
@@ -20,9 +20,9 @@ test('laundry completion writes are checked, serialized, durable, and retryable'
 });
 
 test('OTP and reset delivery failures cannot masquerade as successful sends', () => {
-  const signup = source('src', 'app', 'signup', 'page.tsx');
-  const verify = source('src', 'app', 'signin', 'verify', 'page.tsx');
-  const forgot = source('src', 'app', 'signin', 'forgot', 'page.tsx');
+  const signup = source('src', 'app', '(public)', 'signup', 'page.tsx');
+  const verify = source('src', 'app', '(public)', 'signin', 'verify', 'page.tsx');
+  const forgot = source('src', 'app', '(public)', 'signin', 'forgot', 'page.tsx');
 
   assert.match(signup, /const \{ error: otpErr \} = await supabase\.auth\.signInWithOtp/);
   assert.match(signup, /otpDeliveryFailed \? '&delivery=failed' : ''/);
@@ -36,7 +36,7 @@ test('OTP and reset delivery failures cannot masquerade as successful sends', ()
 
 test('mobile operations layouts retain usable responsive fallbacks', () => {
   const maintenance = source('src', 'app', 'maintenance', '_components', 'WorkOrdersTab.tsx');
-  const housekeeping = source('src', 'app', 'housekeeping', 'page.tsx');
+  const housekeeping = source('src', 'app', '(hotel)', 'housekeeping', 'page.tsx');
 
   assert.match(maintenance, /@media \(max-width: 560px\)[\s\S]*?grid-template-columns: minmax\(0, 1fr\)/);
   assert.match(housekeeping, /overflow-x: auto/);
@@ -109,14 +109,14 @@ test('communications has a phone list/detail flow and does not collapse failures
 });
 
 test('zero occupied rooms remains a real occupancy reading', () => {
-  const dashboard = source('src', 'app', 'dashboard', 'page.tsx');
+  const dashboard = source('src', 'app', '(hotel)', 'dashboard', 'page.tsx');
   assert.match(dashboard, /if \(counts && counts\.total_rooms > 0\)/);
   assert.doesNotMatch(dashboard, /if \(counts && \(counts\.stayovers \+ counts\.checkouts\) > 0\)/);
 });
 
 test('static legal pages render inside the root document without nested document tags', () => {
   for (const pageName of ['consent', 'privacy', 'terms']) {
-    const page = source('src', 'app', pageName, 'page.tsx');
+    const page = source('src', 'app', '(public)', pageName, 'page.tsx');
     assert.match(page, /export const metadata: Metadata/);
     assert.doesNotMatch(page, /<html\b/i);
     assert.doesNotMatch(page, /<head\b/i);
@@ -125,7 +125,7 @@ test('static legal pages render inside the root document without nested document
 });
 
 test('financial and notification reads wait for matching authority while retired user bookmarks redirect', () => {
-  const financials = source('src', 'app', 'financials', 'page.tsx');
+  const financials = source('src', 'app', '(hotel)', 'financials', 'page.tsx');
   const notifications = source(
     'src',
     'app',
@@ -134,7 +134,7 @@ test('financial and notification reads wait for matching authority while retired
     '_components',
     'NotificationsPanel.tsx',
   );
-  const users = source('src', 'app', 'settings', 'users', 'page.tsx');
+  const users = source('src', 'app', '(hotel)', 'settings', 'users', 'page.tsx');
 
   assert.match(financials, /const authorizationContextReady = user\?\.role === 'admin' \|\| authorizationChecked/);
   assert.match(financials, /const allowed = accessContextReady[\s\S]*&& authorizationContextReady[\s\S]*&& financialsEnabled/);

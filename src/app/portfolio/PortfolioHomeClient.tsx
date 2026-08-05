@@ -4,7 +4,6 @@ import React from 'react';
 import { usePathname, useRouter, useSearchParams } from 'next/navigation';
 
 import { PortfolioChat } from '@/components/agent/PortfolioChat';
-import { AppLayout } from '@/components/layout/AppLayout';
 import {
   PortfolioHomeView,
   type PortfolioFilterModel,
@@ -241,12 +240,12 @@ export function PortfolioHomeClient() {
   const returnTo = `${pathname}${locationQuery ? `?${locationQuery}` : ''}`;
 
   if (portfolio.loading || (!data && !portfolio.error)) {
-    return <AppLayout hideGlobalAsk>{loadingHome()}</AppLayout>;
+    return loadingHome();
   }
 
   if (portfolio.error || !data || !company) {
     return (
-      <AppLayout hideGlobalAsk>
+
         <PortfolioHomeView
           context={{ kind: 'portfolio', contextLabel: 'Portfolio', scopeName: 'Unavailable' }}
           greeting="Your portfolio could not be opened"
@@ -262,7 +261,7 @@ export function PortfolioHomeClient() {
             action: { label: 'Try again', onActivate: () => void portfolio.reload() },
           }}
         />
-      </AppLayout>
+
     );
   }
 
@@ -353,7 +352,7 @@ export function PortfolioHomeClient() {
   const trueEmptyPortfolio = data.coverage.total === 0;
 
   return (
-    <AppLayout hideGlobalAsk>
+    <>
       <PortfolioHomeView
         context={{
           kind: 'portfolio',
@@ -474,6 +473,6 @@ export function PortfolioHomeClient() {
       >
         {pageAnnouncement}
       </span>
-    </AppLayout>
+    </>
   );
 }

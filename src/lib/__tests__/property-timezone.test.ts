@@ -33,7 +33,7 @@ describe('property timezone resolution', () => {
 
   it('removes hotel-specific UI fallbacks', () => {
     const shell = readFileSync(join(process.cwd(), 'src/app/inventory/_components/InventoryShell.tsx'), 'utf8');
-    const reports = readFileSync(join(process.cwd(), 'src/app/settings/reports/page.tsx'), 'utf8');
+    const reports = readFileSync(join(process.cwd(), 'src/app/(hotel)/settings/reports/page.tsx'), 'utf8');
 
     assert.doesNotMatch(shell, /activeProperty\?\.timezone \|\| 'America\/Chicago'/);
     assert.doesNotMatch(reports, /activeProperty\?\.timezone \|\| 'America\/Chicago'/);

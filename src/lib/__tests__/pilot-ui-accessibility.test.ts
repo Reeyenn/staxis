@@ -36,7 +36,7 @@ test('Staff pilot modal controls keep labels, live feedback, and touch targets',
   // The person editor moved from Staff → Directory to My Hotel → People on
   // 2026-07-27. The linked-login picker is the control an hourly worker's
   // My Shifts page depends on, so its described-by hint has to survive the move.
-  const employmentForm = source('src/app/company/_components/PersonEmploymentForm.tsx');
+  const employmentForm = source('src/app/(hotel)/company/_components/PersonEmploymentForm.tsx');
 
   assert.match(employmentForm, /<label className=\{styles\.field\} htmlFor=\{loginId\}>/);
   assert.match(employmentForm, /aria-describedby=\{loginHintId\}/);
@@ -53,7 +53,7 @@ test('Staff pilot modal controls keep labels, live feedback, and touch targets',
 // be noise. The keyboard tab-pattern invariant this used to guard still matters;
 // it just lives on the tab bar that survived, in My Hotel.
 test('My Hotel tabs support the complete keyboard tab pattern', () => {
-  const page = source('src/app/company/page.tsx');
+  const page = source('src/app/(hotel)/company/page.tsx');
   assert.match(page, /role="tablist"/);
   assert.match(page, /event\.key === 'ArrowRight'/);
   assert.match(page, /event\.key === 'ArrowLeft'/);
@@ -65,7 +65,7 @@ test('My Hotel tabs support the complete keyboard tab pattern', () => {
 });
 
 test('Staff renders the schedule directly, with no leftover Directory tab', () => {
-  const page = source('src/app/staff/page.tsx');
+  const page = source('src/app/(hotel)/staff/page.tsx');
   assert.doesNotMatch(page, /SubTabBar|ManagerDirectory|staxis-staff-tab/);
   assert.doesNotMatch(page, /staff-tab-directory|staff-panel-directory/);
   assert.match(page, /<UnifiedSchedule/);

@@ -37,7 +37,7 @@ describe('property selector company boundary', () => {
 
   test('the page consumes the catalog, changes source identity, and keys chat by company', () => {
     const page = readFileSync(
-      join(process.cwd(), 'src/app/property-selector/page.tsx'),
+      join(process.cwd(), 'src/app/(hotel)/property-selector/page.tsx'),
       'utf8',
     );
     const commandCenter = readFileSync(

@@ -10,7 +10,7 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 const source = readFileSync(
-  join(process.cwd(), 'src', 'app', 'onboard', 'page.tsx'),
+  join(process.cwd(), 'src', 'app', '(public)', 'onboard', 'page.tsx'),
   'utf8',
 );
 

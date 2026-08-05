@@ -24,9 +24,9 @@ function section(contents: string, start: string, end: string): string {
 
 const propertyContext = source('src', 'contexts', 'PropertyContext.tsx');
 const capabilityHook = source('src', 'lib', 'capabilities', 'useCan.ts');
-const inventoryPage = source('src', 'app', 'inventory', 'page.tsx');
+const inventoryPage = source('src', 'app', '(hotel)', 'inventory', 'page.tsx');
 const inventoryShell = source('src', 'app', 'inventory', '_components', 'InventoryShell.tsx');
-const financialsPage = source('src', 'app', 'financials', 'page.tsx');
+const financialsPage = source('src', 'app', '(hotel)', 'financials', 'page.tsx');
 const appLoading = source('src', 'app', 'loading.tsx');
 const appError = source('src', 'app', 'error.tsx');
 const globalError = source('src', 'app', 'global-error.tsx');
@@ -51,20 +51,20 @@ const homeHubView = source(
   'src', 'components', 'concourse', 'HomeHubView.tsx',
 );
 const appLayout = source('src', 'components', 'layout', 'AppLayout.tsx');
-const maintenancePage = source('src', 'app', 'maintenance', 'page.tsx');
+const maintenancePage = source('src', 'app', '(hotel)', 'maintenance', 'page.tsx');
 const maintenancePrimitives = source(
   'src', 'app', 'maintenance', '_components', '_mt-snow.tsx',
 );
-const housekeepingPage = source('src', 'app', 'housekeeping', 'page.tsx');
-const housekeeperPage = source('src', 'app', 'housekeeper', '[id]', 'page.tsx');
-const dashboardPage = source('src', 'app', 'dashboard', 'page.tsx');
+const housekeepingPage = source('src', 'app', '(hotel)', 'housekeeping', 'page.tsx');
+const housekeeperPage = source('src', 'app', '(staff-link)', 'housekeeper', '[id]', 'page.tsx');
+const dashboardPage = source('src', 'app', '(hotel)', 'dashboard', 'page.tsx');
 const roomsDb = source('src', 'lib', 'db', 'rooms.ts');
-const propertySelectorPage = source('src', 'app', 'property-selector', 'page.tsx');
+const propertySelectorPage = source('src', 'app', '(hotel)', 'property-selector', 'page.tsx');
 const toldKnowledge = source(
   'src', 'components', 'concourse', 'ToldKnowledge.tsx',
 );
 const toldApi = source('src', 'components', 'concourse', 'told-api.ts');
-const adminIndex = source('src', 'app', 'admin', 'page.tsx');
+const adminIndex = source('src', 'app', '(admin)', 'admin', 'page.tsx');
 
 describe('authenticated route destinations', () => {
   test('the canonical admin return route resolves instead of landing on a 404', () => {

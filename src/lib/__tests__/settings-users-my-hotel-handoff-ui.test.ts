@@ -7,13 +7,13 @@ function source(...parts: string[]): string {
   return readFileSync(join(process.cwd(), ...parts), 'utf8');
 }
 
-const settings = source('src', 'app', 'settings', 'page.tsx');
-const compatibilityPage = source('src', 'app', 'settings', 'users', 'page.tsx');
-const company = source('src', 'app', 'company', 'page.tsx');
+const settings = source('src', 'app', '(hotel)', 'settings', 'page.tsx');
+const compatibilityPage = source('src', 'app', '(hotel)', 'settings', 'users', 'page.tsx');
+const company = source('src', 'app', '(hotel)', 'company', 'page.tsx');
 const transferPanel = source(
-  'src', 'app', 'company', '_components', 'LegacyOwnershipTransferPanel.tsx',
+  'src', 'app', '(hotel)', 'company', '_components', 'LegacyOwnershipTransferPanel.tsx',
 );
-const companyCss = source('src', 'app', 'company', 'CompanyAccess.module.css');
+const companyCss = source('src', 'app', '(hotel)', 'company', 'CompanyAccess.module.css');
 
 describe('single customer people/access surface', () => {
   test('removes Settings Users navigation and server-redirects old bookmarks to Access', () => {
