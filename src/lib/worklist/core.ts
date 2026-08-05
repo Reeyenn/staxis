@@ -46,6 +46,7 @@ import { log } from '@/lib/log';
 import { buildInspectionQueue } from '@/lib/housekeeping/inspection-queue';
 import { COMPLAINT_OVERDUE_HOURS, COMPLAINT_OVERDUE_HOURS_HIGH } from '@/lib/complaints-shared';
 import { isAssignable, type AssignableStaffRow } from './assignable';
+import { NEW_ON_LIST_FLOOR_DAYS } from '@/lib/feed/one-list';
 import type { AssignedByMeItem, WorklistItem, WorklistPriority, WorklistViewer } from './types';
 
 /** Deep-link targets per source (the page + the tab query param it now reads). */
@@ -169,6 +170,108 @@ export function mayActOnItem(
   return worklistSeesApprovals(viewer.role);
 }
 
+// ═══════════════════════════════════════════════════════════════════════════
+// Repeating to-dos never stack
+//
+// The recurrence engine spawns one comms_tasks row per template per local day,
+// and it does that whether or not yesterday's row got done — deliberately, so
+// each day keeps its own done/undone history (see 0303). The cost is that a
+// daily to-do nobody did for five days is FIVE OPEN ROWS saying the same
+// sentence, and a list that says one thing five times is not a list any more.
+//
+// So the read collapses the run to ONE row and the write settles the whole run
+// behind it. Which row survives is not arbitrary: it is the NEWEST instance,
+// because that is the one that is genuinely owed now. The days behind it are
+// carried on that row as `missedSince`, which is what turns five copies into
+// one row reading "missed since Monday".
+//
+// Nothing is deleted and nothing is hidden from the database. Settling the
+// survivor records a real, separate outcome on every instance it stood for.
+// ═══════════════════════════════════════════════════════════════════════════
+
+/** One spawned instance, reduced to the three things the collapse needs. */
+export interface RepeatInstance {
+  id: string;
+  /** Null for a to-do that does not repeat. Those are never collapsed. */
+  templateId: string | null;
+  /** The local day this instance was spawned for, YYYY-MM-DD, or null. */
+  day: string | null;
+}
+
+/** What survived, and what it now speaks for. */
+export interface RepeatRun {
+  /** Oldest first. Every one of these is settled with the survivor. */
+  supersededIds: string[];
+  /** The oldest day in the run, when there is more than one. */
+  missedSince: string | null;
+}
+
+/**
+ * Decide, for a set of open instances, which rows survive and what each speaks
+ * for.
+ *
+ * Returns an entry for every row that SURVIVES, keyed by its id. A row absent
+ * from the map is either not a repeat (callers check the template id) or a
+ * superseded instance the caller should drop.
+ *
+ * Pure, and separately exported, because "does a missed daily to-do show up
+ * once or five times" is the question this whole function exists to answer and
+ * it must be answerable without a database.
+ */
+export function collapseRepeatInstances(
+  instances: readonly RepeatInstance[],
+): Map<string, RepeatRun> {
+  const byTemplate = new Map<string, RepeatInstance[]>();
+  const out = new Map<string, RepeatRun>();
+
+  for (const instance of instances) {
+    if (!instance.templateId) continue;
+    const bucket = byTemplate.get(instance.templateId);
+    if (bucket) bucket.push(instance);
+    else byTemplate.set(instance.templateId, [instance]);
+  }
+
+  for (const bucket of byTemplate.values()) {
+    // Oldest first. An instance with no day sorts oldest: it cannot be shown to
+    // be today's, and treating an unknown as the newest would let it win the
+    // run and take today's real row off the screen.
+    const ordered = [...bucket].sort((a, b) => {
+      if (a.day === b.day) return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
+      if (!a.day) return -1;
+      if (!b.day) return 1;
+      return a.day < b.day ? -1 : 1;
+    });
+    const survivor = ordered[ordered.length - 1];
+    const superseded = ordered.slice(0, -1);
+    out.set(survivor.id, {
+      supersededIds: superseded.map((i) => i.id),
+      // The oldest day still open. Null when this is the only instance, which
+      // is the ordinary case: one row, nothing missed, nothing to say.
+      missedSince: superseded.length > 0 ? (superseded[0].day ?? null) : null,
+    });
+  }
+
+  return out;
+}
+
+/**
+ * A Postgres `time` as the one shape the rest of the product reads: "HH:MM".
+ *
+ * PostgREST hands back "15:00:00", and a client that string-compared that
+ * against a parser's "15:00" would quietly decide the two were different times.
+ * Anything unrecognisable becomes null rather than travelling on as a value
+ * nothing downstream can read.
+ */
+export function normalizeClock(value: unknown): string | null {
+  if (typeof value !== 'string') return null;
+  const m = /^(\d{1,2}):(\d{2})/.exec(value.trim());
+  if (!m) return null;
+  const hour = Number(m[1]);
+  const minute = Number(m[2]);
+  if (hour < 0 || hour > 23 || minute < 0 || minute > 59) return null;
+  return `${`${hour}`.padStart(2, '0')}:${`${minute}`.padStart(2, '0')}`;
+}
+
 export interface GatherOptions {
   tasksOnly?: boolean;
   /** Who is looking. Omit for the whole-property view. */
@@ -200,7 +303,7 @@ export async function gatherWorklist(pid: string, opts: GatherOptions = {}): Pro
   ] = await Promise.all([
     supabaseAdmin
       .from('comms_tasks')
-      .select('id, title, assigned_staff_id, assigned_department, due_at, status, priority, created_at, created_by_staff_id')
+      .select('id, title, assigned_staff_id, assigned_department, due_at, due_time, status, priority, created_at, created_by_staff_id, recurring_template_id, recurring_instance_date')
       .eq('property_id', pid)
       .eq('status', 'open')
       .limit(QUERY_ROW_CAP),
@@ -281,14 +384,40 @@ export async function gatherWorklist(pid: string, opts: GatherOptions = {}): Pro
     ...((timeOffRes.data ?? []) as Record<string, unknown>[]).map((r) => r.staff_id as string | null),
   ].filter((x): x is string => !!x));
 
+  // ── which instances of a repeating to-do are standing in for which ───────
+  // A template spawns one row per day whether or not yesterday's got done, so a
+  // daily to-do nobody did for five days was five identical rows. Decided once,
+  // here, over the rows this viewer can actually see: a run they only half see
+  // must not be collapsed onto a row that is not on their screen.
+  const runs = collapseRepeatInstances(taskRows.map((r) => ({
+    id: String(r.id),
+    templateId: (r.recurring_template_id as string | null) ?? null,
+    day: (r.recurring_instance_date as string | null) ?? null,
+  })));
+
   for (const r of taskRows) {
-    const due = (r.due_at as string | null) ?? null;
+    const id = String(r.id);
+    const run = runs.get(id);
+    // A superseded instance is not dropped from the world, it is spoken for by
+    // the row that survived. It has no run entry of its own.
+    if (run === undefined && (r.recurring_template_id as string | null)) continue;
+    const instanceDay = (r.recurring_instance_date as string | null) ?? null;
+    // A spawned instance carries no due_at at all: its day IS the day it was
+    // spawned for. Without this, yesterday's missed instance was never overdue,
+    // never climbed, and sat below this morning's work forever.
+    const due = (r.due_at as string | null)
+      ?? (instanceDay ? endOfLocalDay(instanceDay, tz).toISOString() : null);
     const assignedStaffId = (r.assigned_staff_id as string | null) ?? null;
     const authorId = (r.created_by_staff_id as string | null) ?? null;
+    const dueDay = instanceDay ?? (due ? propertyLocalToday(new Date(Date.parse(due)), tz) : null);
+    // The first day this was owed and not done. For a collapsed run it is the
+    // oldest open instance; for a plain to-do it is its own day, once past.
+    const missedSince = run?.missedSince
+      ?? (dueDay && due && Date.parse(due) < now ? dueDay : null);
     items.push({
       id: `task:${r.id}`,
       sourceType: 'task',
-      sourceId: String(r.id),
+      sourceId: id,
       title: String(r.title ?? ''),
       location: null,
       assigneeStaffId: assignedStaffId,
@@ -298,7 +427,10 @@ export async function gatherWorklist(pid: string, opts: GatherOptions = {}): Pro
       status: 'open',
       priority: normalizePriority((r.priority as string | null) ?? 'normal'),
       propertyId: pid,
-      overdue: !!due && Date.parse(due) < now,
+      // A run with a missed day behind it is overdue even when the surviving
+      // instance is today's: the work is late, and which row is carrying that
+      // fact is an implementation detail nobody on the floor should feel.
+      overdue: (!!due && Date.parse(due) < now) || !!run?.missedSince,
       canComplete: true,
       canAssign: true,
       deepLink: WORKLIST_DEEPLINK.task,
@@ -309,6 +441,11 @@ export async function gatherWorklist(pid: string, opts: GatherOptions = {}): Pro
         ? (nameMap.get(authorId) ?? null)
         : null,
       amountCents: null,
+      createdByStaffId: authorId,
+      dueTime: normalizeClock(r.due_time),
+      recurringTemplateId: (r.recurring_template_id as string | null) ?? null,
+      missedSince,
+      supersededIds: run?.supersededIds ?? [],
     });
   }
 
@@ -337,6 +474,9 @@ export async function gatherWorklist(pid: string, opts: GatherOptions = {}): Pro
       createdAt: created,
       fromLabel: 'A guest',
       amountCents: null,
+      // A guest complaint has no author on staff. Null is the honest answer,
+      // and it is what keeps "just mine" from claiming it for anybody.
+      createdByStaffId: null,
     });
   }
 
@@ -365,6 +505,7 @@ export async function gatherWorklist(pid: string, opts: GatherOptions = {}): Pro
       createdAt: (r.created_at as string | null) ?? null,
       fromLabel: null,
       amountCents: null,
+      createdByStaffId: null,
     });
   }
 
@@ -391,6 +532,7 @@ export async function gatherWorklist(pid: string, opts: GatherOptions = {}): Pro
       createdAt: room.completedAt,
       fromLabel: null,
       amountCents: null,
+      createdByStaffId: null,
     });
   }
 
@@ -426,6 +568,7 @@ export async function gatherWorklist(pid: string, opts: GatherOptions = {}): Pro
       createdAt: (r.created_at as string | null) ?? null,
       fromLabel: null,
       amountCents: null,
+      createdByStaffId: null,
     });
   }
 
@@ -460,6 +603,9 @@ export async function gatherWorklist(pid: string, opts: GatherOptions = {}): Pro
       createdAt: (r.created_at as string | null) ?? null,
       fromLabel: authorId && authorId !== viewer?.staffId ? (nameMap.get(authorId) ?? null) : null,
       amountCents: null,
+      // A reminder you set for yourself is yours twice over. Carried so it does
+      // not vanish the moment somebody narrows their list to their own work.
+      createdByStaffId: authorId,
     });
   }
 
@@ -488,6 +634,7 @@ export async function gatherWorklist(pid: string, opts: GatherOptions = {}): Pro
       createdAt: created,
       fromLabel: String(r.name ?? '') || null,
       amountCents: null,
+      createdByStaffId: null,
     });
   }
   for (const r of (timeOffRes.data ?? []) as Record<string, unknown>[]) {
@@ -524,10 +671,55 @@ export async function gatherWorklist(pid: string, opts: GatherOptions = {}): Pro
       createdAt: created,
       fromLabel: who,
       amountCents: null,
+      createdByStaffId: null,
     });
   }
 
   return sortWorklist(items);
+}
+
+/**
+ * How many to-dos arrived on this person's list since they last looked.
+ *
+ * ONE narrow query, and narrow on the axis that matters: `created_at` after the
+ * cursor is highly selective, so this reads a handful of rows on a busy hotel
+ * and none at all on a quiet one. That is what lets the nav bar ask for it on a
+ * shell mount without turning every page load in the app into a worklist read.
+ *
+ * The visibility rule is the SAME rule the list uses, applied in JS to those
+ * few rows rather than re-expressed as a filter chain. Two spellings of "whose
+ * list is this on" would drift, and the version that drifted would be the one
+ * deciding whether somebody is told about work waiting for them.
+ *
+ * Floored at NEW_ON_LIST_FLOOR_DAYS so a person opening their list for the
+ * first time is told about this week, not about the hotel's whole history.
+ * Fails soft to 0: a badge is the least important thing on the screen, and a
+ * count nobody could read is not worth failing a page for.
+ */
+export async function countNewOnList(
+  pid: string,
+  viewer: WorklistViewer | null,
+  seenAt: string | null,
+  now: Date = new Date(),
+): Promise<number> {
+  const floor = new Date(now.getTime() - NEW_ON_LIST_FLOOR_DAYS * 86_400_000).toISOString();
+  const since = seenAt && Date.parse(seenAt) > Date.parse(floor) ? seenAt : floor;
+  const { data, error } = await supabaseAdmin
+    .from('comms_tasks')
+    .select('assigned_staff_id, assigned_department, created_by_staff_id')
+    .eq('property_id', pid)
+    .eq('status', 'open')
+    .gt('created_at', since)
+    .limit(QUERY_ROW_CAP);
+  if (error) {
+    log.warn('[worklist] new-on-list count failed', { pid, err: error.message });
+    return 0;
+  }
+  return ((data ?? []) as Record<string, unknown>[]).filter((r) => taskVisibleToViewer({
+    assignedStaffId: (r.assigned_staff_id as string | null) ?? null,
+    assignedDepartment: (r.assigned_department as string | null) ?? null,
+    createdByStaffId: (r.created_by_staff_id as string | null) ?? null,
+  }, viewer)).length;
 }
 
 /**
@@ -635,7 +827,7 @@ export async function gatherAssignedByMe(
 ): Promise<AssignedByMeItem[]> {
   const { data, error } = await supabaseAdmin
     .from('comms_tasks')
-    .select('id, title, assigned_staff_id, assigned_department, due_at, status, created_at, completed_at, completed_by_staff_id, blocked_at, blocked_by_staff_id, blocked_reason')
+    .select('id, title, assigned_staff_id, assigned_department, due_at, status, created_at, completed_at, completed_by_staff_id, completed_for_date, blocked_at, blocked_by_staff_id, blocked_reason, skipped_at, skipped_by_staff_id')
     .eq('property_id', pid)
     .eq('created_by_staff_id', staffId)
     // Everything this person wrote. Which of them belong in the drawer is
@@ -656,6 +848,7 @@ export async function gatherAssignedByMe(
     r.assigned_staff_id as string | null,
     r.completed_by_staff_id as string | null,
     r.blocked_by_staff_id as string | null,
+    r.skipped_by_staff_id as string | null,
   ]).filter((x): x is string => !!x));
 
   return rows
@@ -693,17 +886,24 @@ export function mapAssignedRow(
 ): AssignedByMeItem {
   const status = String(r.status ?? 'open');
   const state: AssignedByMeItem['state'] =
-    status === 'done' ? 'done' : status === 'blocked' ? 'cant' : 'waiting';
+    status === 'done' ? 'done'
+      : status === 'blocked' ? 'cant'
+        : status === 'skipped' ? 'skipped'
+          : 'waiting';
   const settledById = state === 'done'
     ? (r.completed_by_staff_id as string | null) ?? null
     : state === 'cant'
       ? (r.blocked_by_staff_id as string | null) ?? null
-      : null;
+      : state === 'skipped'
+        ? (r.skipped_by_staff_id as string | null) ?? null
+        : null;
   const settledAt = state === 'done'
     ? (r.completed_at as string | null) ?? null
     : state === 'cant'
       ? (r.blocked_at as string | null) ?? null
-      : null;
+      : state === 'skipped'
+        ? (r.skipped_at as string | null) ?? null
+        : null;
   const createdAt = (r.created_at as string | null) ?? null;
   const createdMs = createdAt ? Date.parse(createdAt) : NaN;
   const ageDays = Number.isFinite(createdMs)
@@ -723,6 +923,9 @@ export function mapAssignedRow(
     settledByStaffId: settledById,
     settledAt,
     reason: state === 'cant' ? ((r.blocked_reason as string | null) ?? null) : null,
+    // Only meaningful on a completion, and only when the person said the work
+    // happened on a different day from the day they reported it.
+    completedForDate: state === 'done' ? ((r.completed_for_date as string | null) ?? null) : null,
     ageDays,
   };
 }

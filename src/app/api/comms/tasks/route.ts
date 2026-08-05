@@ -2,7 +2,7 @@
  * /api/comms/tasks — to-dos. Lives on the Staxis list now, not Communications.
  *   GET   ?pid=...                              → list tasks
  *   POST  { pid, title, notes?, assignedStaffId?, assignedDepartment?,
- *           dueDate? | dueAt?, sourceMessageId?, repeat?, weekday?, dayOfMonth? }
+ *           dueDate? | dueAt?, dueTime?, sourceMessageId?, repeat?, weekday?, dayOfMonth? }
  *   PATCH { pid, taskId, status }               → check off / reopen
  * Authenticated. NO SMS.
  *
@@ -50,7 +50,7 @@ export async function POST(req: NextRequest): Promise<Response> {
   let body: {
     pid?: string; title?: string; notes?: string; priority?: string;
     assignedStaffId?: string; assignedDepartment?: string; dueAt?: string; dueDate?: string; sourceMessageId?: string;
-    repeat?: string; weekday?: number; dayOfMonth?: number;
+    repeat?: string; weekday?: number; dayOfMonth?: number; dueTime?: string;
   };
   try { body = await req.json(); } catch { body = {}; }
 
@@ -102,6 +102,22 @@ export async function POST(req: NextRequest): Promise<Response> {
     if (!Number.isFinite(ms)) return err('invalid dueAt', { requestId: ctx.requestId, status: 400, code: ApiErrorCode.ValidationFailed, headers: ctx.headers });
     dueAt = new Date(ms).toISOString();
   }
+  // ── and optionally what time of day ──────────────────────────────────────
+  // A time of DAY, never an instant, and it never moves a row between days: the
+  // server still owns where the hotel's day begins and ends, and dueAt above is
+  // still the only thing any date comparison reads. This decides where the row
+  // sits WITHIN its day and what the row says out loud. Rejected rather than
+  // silently dropped when it is malformed: a caller that thinks it set 3pm and
+  // got nothing would have no way to find out.
+  let dueTime: string | null = null;
+  if (body.dueTime !== undefined && body.dueTime !== null && body.dueTime !== '') {
+    const raw = String(body.dueTime).trim();
+    if (!/^([01]\d|2[0-3]):[0-5]\d$/.test(raw)) {
+      return err('invalid dueTime', { requestId: ctx.requestId, status: 400, code: ApiErrorCode.ValidationFailed, headers: ctx.headers });
+    }
+    dueTime = raw;
+  }
+
   let priority: 'normal' | 'high' | 'urgent' = 'normal';
   if (body.priority) {
     const pv = validateEnum(body.priority, ['normal', 'high', 'urgent'] as const, 'priority');
@@ -138,6 +154,10 @@ export async function POST(req: NextRequest): Promise<Response> {
         cadence: repeat as RecurringCadence,
         weekday: typeof body.weekday === 'number' ? body.weekday : null,
         dayOfMonth: typeof body.dayOfMonth === 'number' ? body.dayOfMonth : null,
+        // Carried on the TEMPLATE, so a repeating "check the boiler by 3pm"
+        // still says 3pm on every instance it spawns. Held only here it would
+        // have survived exactly one day and then quietly vanished.
+        dueTime,
         // "Every other Tuesday starting this week" is anchored on the day the
         // person said it, in the hotel's own calendar. Left to default, the
         // anchor was the UTC day, which after ~7pm Central is TOMORROW — and an
@@ -165,6 +185,7 @@ export async function POST(req: NextRequest): Promise<Response> {
     priority,
     createdByStaffId: ctx.staffId,
     sourceMessageId,
+    dueTime,
   });
   return ok({ id: res.id }, { requestId: ctx.requestId, status: 201, headers: ctx.headers });
 }

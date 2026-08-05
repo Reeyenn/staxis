@@ -22,6 +22,35 @@
 // the receipt exists to replace. The database says the same thing
 // (comms_tasks_blocked_needs_reason, 0410) so a second caller cannot skip it.
 //
+// ─── the two endings an overdue to-do used to be missing (0453) ────────────
+//
+//   done_on_due   "Did it yesterday." completed_at stays the true instant of
+//                 the tap; completed_for_date carries the day the work actually
+//                 happened. Both facts, neither invented. This is the whole
+//                 point: every pattern the product learns about when work gets
+//                 done was previously being taught the date of the TAP, so work
+//                 done on Tuesday and reported Thursday went in as Thursday's.
+//                 The day is taken from the ROW, never from the caller — a
+//                 browser with a wrong clock must not be able to backdate
+//                 anything, and a body that could name its own day would be a
+//                 way to write history.
+//
+//   skip          "Not needed." A fourth terminal state with no reason
+//                 required. Before it, the only way to clear work that had
+//                 stopped needing doing was to delete the row, and a deleted
+//                 row tells the assigner nothing at all.
+//
+// ─── settling a collapsed repeat run ──────────────────────────────────────
+// A repeating to-do spawns one row per day whether or not yesterday's got done,
+// so the LIST collapses a missed run to one row. Answering that row therefore
+// has to answer for the whole run, or the four rows hidden behind it come back
+// tomorrow and the stacking never actually stopped. Every superseded instance
+// is recorded as skipped: the acted-on day gets the outcome the person chose,
+// and a day that has already passed without the work cannot honestly be marked
+// done now. Each one is a real row with a real recorded outcome. Nothing is
+// deleted, and the run is re-derived HERE from the database rather than trusted
+// from the body.
+//
 // NOT gated on the Communications section. See ONE_LIST_CTX.
 // ═══════════════════════════════════════════════════════════════════════════
 
@@ -34,7 +63,8 @@ import { validateUuid, validateEnum, validateString } from '@/lib/api-validate';
 import { commsContext, ONE_LIST_CTX } from '@/lib/comms/route-helpers';
 import { checkAndIncrementRateLimit, rateLimitedResponse } from '@/lib/api-ratelimit';
 import { setTaskStatus } from '@/lib/comms/core';
-import { worklistSeesAllSources, mayActOnItem } from '@/lib/worklist/core';
+import { worklistSeesAllSources, mayActOnItem, propertyTimezoneOf } from '@/lib/worklist/core';
+import { propertyLocalToday } from '@/lib/schedule/local-date';
 import { WORKLIST_SOURCE_TYPES } from '@/lib/worklist/types';
 
 export const runtime = 'nodejs';
@@ -62,9 +92,19 @@ export async function POST(req: NextRequest): Promise<Response> {
   const sourceType = typeV.value!;
   const sourceId = idV.value!;
 
-  const outcomeV = validateEnum(body.outcome ?? 'done', ['done', 'cant'] as const, 'outcome');
+  const outcomeV = validateEnum(body.outcome ?? 'done', ['done', 'cant', 'done_on_due', 'skip'] as const, 'outcome');
   if (outcomeV.error) return err(outcomeV.error, { requestId, status: 400, code: ApiErrorCode.ValidationFailed, headers });
   const outcome = outcomeV.value!;
+
+  // The three follow-through endings are all about a to-do specifically. A work
+  // order or a preventive task has no assigner waiting on a receipt and no
+  // per-day instance to credit, so offering them these would be offering a
+  // record nothing reads.
+  if ((outcome === 'done_on_due' || outcome === 'skip') && sourceType !== 'task') {
+    return err('only a to-do can be recorded this way', {
+      requestId, status: 400, code: ApiErrorCode.ValidationFailed, headers,
+    });
+  }
 
   let reason: string | null = null;
   if (outcome === 'cant') {
@@ -117,6 +157,50 @@ export async function POST(req: NextRequest): Promise<Response> {
   try {
     switch (sourceType) {
       case 'task': {
+        if (outcome === 'skip') {
+          // No reason required, and that is the whole difference from 'cant'.
+          // Only from 'open', so a stale screen cannot rewrite a completion.
+          const { data, error } = await supabaseAdmin
+            .from('comms_tasks')
+            .update({
+              status: 'skipped',
+              skipped_at: new Date().toISOString(),
+              skipped_by_staff_id: ctx.staffId,
+              updated_at: new Date().toISOString(),
+            })
+            .eq('id', sourceId).eq('property_id', pid).eq('status', 'open')
+            .select('id').maybeSingle();
+          if (error) return fail(requestId, headers, error.message);
+          if (!data) return notFound(requestId, headers);
+          await settleSupersededRun(sourceId, pid, ctx.staffId);
+          break;
+        }
+        if (outcome === 'done_on_due') {
+          // The credited day comes from the ROW, never from the caller. A body
+          // that could name its own date would be a way to write history, and a
+          // browser with a wrong clock would do it by accident.
+          const day = await creditableDay(sourceId, pid);
+          if (!day) return notFound(requestId, headers);
+          const nowIso = new Date().toISOString();
+          const { data, error } = await supabaseAdmin
+            .from('comms_tasks')
+            .update({
+              status: 'done',
+              // The true instant of the tap. Not backdated: when somebody told
+              // us is a fact, and it is a different fact from when the work
+              // happened. Both are kept, so neither has to be guessed later.
+              completed_at: nowIso,
+              completed_by_staff_id: ctx.staffId,
+              completed_for_date: day,
+              updated_at: nowIso,
+            })
+            .eq('id', sourceId).eq('property_id', pid).eq('status', 'open')
+            .select('id').maybeSingle();
+          if (error) return fail(requestId, headers, error.message);
+          if (!data) return notFound(requestId, headers);
+          await settleSupersededRun(sourceId, pid, ctx.staffId);
+          break;
+        }
         if (outcome === 'cant') {
           // Scoped by id AND property_id, and only from 'open' — so a second tap
           // on a stale screen cannot overwrite a completion with a refusal.
@@ -133,11 +217,13 @@ export async function POST(req: NextRequest): Promise<Response> {
             .select('id').maybeSingle();
           if (error) return fail(requestId, headers, error.message);
           if (!data) return notFound(requestId, headers);
+          await settleSupersededRun(sourceId, pid, ctx.staffId);
           break;
         }
         // setTaskStatus is itself scoped by id + property_id; false = not found.
         const done = await setTaskStatus(pid, sourceId, 'done', ctx.staffId);
         if (!done) return notFound(requestId, headers);
+        await settleSupersededRun(sourceId, pid, ctx.staffId);
         break;
       }
       case 'complaint': {
@@ -228,6 +314,90 @@ async function itemOwnership(
     assignedDepartment: (row[dept] as string | null) ?? null,
     createdByStaffId: (row.created_by_staff_id as string | null) ?? null,
   };
+}
+
+/**
+ * Which day a "Did it yesterday" completion is credited to.
+ *
+ * Read off the ROW, in this order:
+ *   1. the instance day, for a to-do spawned by a repeating template — the
+ *      spawner writes no due_at at all, so this is the only day it has;
+ *   2. otherwise the local day its due_at falls on, in the HOTEL's timezone.
+ *      The server's own clock is UTC, and reading the day off it would credit
+ *      work done on Tuesday evening in Texas to Wednesday.
+ *
+ * Null when the row has no day to credit, which is not an error state to paper
+ * over: a to-do with no due date was never late, so there is nothing to
+ * backdate, and the caller 404s rather than inventing one.
+ */
+async function creditableDay(id: string, pid: string): Promise<string | null> {
+  const { data } = await supabaseAdmin
+    .from('comms_tasks')
+    .select('due_at, recurring_instance_date')
+    .eq('id', id).eq('property_id', pid).eq('status', 'open')
+    .maybeSingle();
+  if (!data) return null;
+  const row = data as { due_at?: string | null; recurring_instance_date?: string | null };
+  if (row.recurring_instance_date) return row.recurring_instance_date;
+  if (!row.due_at) return null;
+  const ms = Date.parse(row.due_at);
+  if (!Number.isFinite(ms)) return null;
+  return propertyLocalToday(new Date(ms), await propertyTimezoneOf(pid));
+}
+
+/**
+ * Close the older instances the answered row was standing in for.
+ *
+ * The list shows a missed repeating to-do ONCE. Answering that one row has to
+ * answer for the run behind it, or the rows it was hiding come back tomorrow
+ * and nothing was actually collapsed.
+ *
+ * They are recorded as SKIPPED rather than given the same outcome, and that is
+ * the honest reading: a person tapping Done on today's row is saying they did
+ * it today, not that they also did Monday's and Tuesday's. A day that has gone
+ * by without the work cannot be marked done now without writing a fiction into
+ * the same history this whole change exists to keep true.
+ *
+ * The run is derived HERE from the database. The browser sends only the id of
+ * the row somebody actually pressed: a body that could list ids to close would
+ * be a way to close arbitrary to-dos, and the ownership check above only ever
+ * examined the one.
+ *
+ * Best effort by design. The row the person pressed is already settled and
+ * their tap has landed; a failure here means one stale sibling reappears, which
+ * the next collapse folds away again. Failing the request would undo work that
+ * genuinely happened.
+ */
+async function settleSupersededRun(id: string, pid: string, byStaffId: string | null): Promise<void> {
+  try {
+    const { data: self } = await supabaseAdmin
+      .from('comms_tasks')
+      .select('recurring_template_id, recurring_instance_date')
+      .eq('id', id).eq('property_id', pid)
+      .maybeSingle();
+    const row = self as { recurring_template_id?: string | null; recurring_instance_date?: string | null } | null;
+    if (!row?.recurring_template_id || !row.recurring_instance_date) return;
+
+    const nowIso = new Date().toISOString();
+    // Strictly OLDER instances only, and only ones still open. A future
+    // instance is not something anybody has missed, and an already-settled one
+    // keeps whatever it was settled as.
+    const { error } = await supabaseAdmin
+      .from('comms_tasks')
+      .update({
+        status: 'skipped',
+        skipped_at: nowIso,
+        skipped_by_staff_id: byStaffId,
+        updated_at: nowIso,
+      })
+      .eq('property_id', pid)
+      .eq('recurring_template_id', row.recurring_template_id)
+      .eq('status', 'open')
+      .lt('recurring_instance_date', row.recurring_instance_date);
+    if (error) log.warn('[worklist] superseded run not settled', { pid, err: error.message });
+  } catch (e) {
+    log.warn('[worklist] superseded run not settled', { pid, err: errToString(e) });
+  }
 }
 
 /** Re-read a row scoped by BOTH id AND property_id — a foreign id is indistinguishable from a missing one. */

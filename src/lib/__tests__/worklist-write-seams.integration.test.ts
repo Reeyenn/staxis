@@ -44,7 +44,15 @@ import type { PGlite } from '@electric-sql/pglite';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { POST as commsTasksPost } from '@/app/api/comms/tasks/route';
 import { POST as worklistAssignPost } from '@/app/api/worklist/assign/route';
-import { gatherWorklist, listAssignees } from '@/lib/worklist/core';
+import { POST as worklistCompletePost } from '@/app/api/worklist/complete/route';
+import {
+  assignerNotices,
+  countNewOnList,
+  gatherAssignedByMe,
+  gatherWorklist,
+  listAssignees,
+} from '@/lib/worklist/core';
+import { assignedStateLine, completionNotice, dueLine } from '@/lib/feed/one-list-copy';
 import {
   assigneeBlockedReason,
   assignmentBlockedReason,
@@ -60,7 +68,7 @@ import {
   loadCatalog,
   type PglitePostgrest,
 } from '../../../tests/fixtures/postgrest-pglite';
-import { PID_A1, PID_B1, UID_MARIA, seedTwoCompanies } from '../../../tests/fixtures/pglite-two-company-seed';
+import { ACCOUNT_MARIA, PID_A1, PID_B1, UID_MARIA, seedTwoCompanies } from '../../../tests/fixtures/pglite-two-company-seed';
 
 let pg: PGlite;
 let shim: PglitePostgrest;
@@ -471,5 +479,395 @@ describe('a time-off request lands on the day it is about', () => {
     const item = await timeOffItem(past);
     assert.equal(item.overdue, true);
     assert.equal(dayOf(item), past);
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// FOLLOW-THROUGH: what happens to a to-do that slipped
+//
+// Every bug in this section is silent by construction, which is why they are
+// pinned against a real Postgres rather than a stub:
+//
+//   NO-STACKING     the recurrence engine spawns a row per day whether or not
+//                   yesterday's got done. Nothing errors. The list just grows a
+//                   second identical row, then a third, and a daily to-do
+//                   nobody did for a week is a screen of the same sentence.
+//
+//   DATED HONESTY   "Done" stamps the moment of the TAP. Work done Tuesday and
+//                   reported Thursday went into the record as Thursday's, and
+//                   every pattern the product learns from this table was being
+//                   taught a date nobody chose. Nothing looked wrong.
+//
+//   FLOW-BACK       the assigner's drawer only knew done and can't. A
+//                   completion credited to another day, a completion that
+//                   landed late, and work that stopped needing doing were all
+//                   either shown as a plain "done" or not shown at all.
+// ═══════════════════════════════════════════════════════════════════════════
+
+/** The staff id the routes resolve for the signed-in test user. */
+async function callerStaffId(): Promise<string> {
+  const res = await commsTasksPost(postReq('http://t/api/comms/tasks', {
+    pid: PID_A1, title: 'whoami probe',
+  }));
+  const body = (await res.json()) as Envelope;
+  const row = await one<{ created_by_staff_id: string }>(
+    'select created_by_staff_id from comms_tasks where id = $1',
+    [String(body.data!.id)],
+  );
+  await pg.query('delete from comms_tasks where id = $1', [String(body.data!.id)]);
+  return row!.created_by_staff_id;
+}
+
+/** Settle a to-do through the real route, and hand back the envelope. */
+async function settle(
+  taskId: string,
+  outcome: 'done' | 'cant' | 'done_on_due' | 'skip',
+  reason?: string,
+): Promise<Envelope> {
+  const res = await worklistCompletePost(postReq('http://t/api/worklist/complete', {
+    pid: PID_A1, sourceType: 'task', sourceId: taskId, outcome,
+    ...(reason ? { reason } : {}),
+  }));
+  return (await res.json()) as Envelope;
+}
+
+async function taskRow(id: string) {
+  return one<{
+    status: string;
+    completed_at: string | null;
+    completed_for_date: string | null;
+    skipped_at: string | null;
+    skipped_by_staff_id: string | null;
+    due_time: string | null;
+  }>(
+    // Cast to text on the way out. Raw pglite hands a `date` back as a JS Date
+    // at UTC midnight, which in the hotel's timezone prints as the PREVIOUS
+    // day — so an assertion that read it as a string would fail on correct code
+    // and, worse, could be "fixed" by backdating the write.
+    `select status, completed_at, completed_for_date::text as completed_for_date,
+            skipped_at, skipped_by_staff_id, due_time::text as due_time
+     from comms_tasks where id = $1`,
+    [id],
+  );
+}
+
+/** Today at the hotel, and the days behind it, as the spawner writes them. */
+function localDay(offset: number): string {
+  const d = new Date();
+  d.setDate(d.getDate() + offset);
+  return new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Chicago' }).format(d);
+}
+
+describe('a repeating to-do that was missed does not stack up', () => {
+  test('five missed days are ONE row on the list, not five', async () => {
+    const me = await callerStaffId();
+    const tpl = await createTemplate({
+      propertyId: PID_A1,
+      createdByStaffId: me,
+      title: 'Restock the coffee station',
+      assignedStaffId: me,
+      cadence: 'daily',
+    });
+    // What the spawner leaves behind after five days when nobody ticks it off:
+    // five independent open rows, each stamped for its own day.
+    for (let back = 4; back >= 0; back -= 1) {
+      await pg.query(
+        `insert into comms_tasks
+           (property_id, title, assigned_staff_id, created_by_staff_id, status,
+            recurring_template_id, recurring_instance_date)
+         values ($1, $2, $3, $3, 'open', $4, $5)`,
+        [PID_A1, 'Restock the coffee station', me, tpl.id, localDay(-back)],
+      );
+    }
+    const open = await one<{ n: string }>(
+      `select count(*) as n from comms_tasks where recurring_template_id = $1 and status = 'open'`,
+      [tpl.id],
+    );
+    assert.equal(Number(open!.n), 5, 'the database really does hold five rows');
+
+    const items = await gatherWorklist(PID_A1, { tasksOnly: true });
+    const coffee = items.filter((i) => i.title === 'Restock the coffee station');
+    assert.equal(coffee.length, 1, 'but the list says it once');
+    assert.equal(coffee[0].supersededIds?.length, 4, 'and it speaks for the other four');
+    assert.equal(coffee[0].missedSince, localDay(-4), 'reaching back to the oldest one still open');
+    assert.equal(coffee[0].overdue, true, 'a run with missed days behind it is late');
+  });
+
+  test('answering the one row closes the whole run, so it cannot come back tomorrow', async () => {
+    const me = await callerStaffId();
+    const tpl = await createTemplate({
+      propertyId: PID_A1, createdByStaffId: me, title: 'Walk the halls',
+      assignedStaffId: me, cadence: 'daily',
+    });
+    for (let back = 2; back >= 0; back -= 1) {
+      await pg.query(
+        `insert into comms_tasks
+           (property_id, title, assigned_staff_id, created_by_staff_id, status,
+            recurring_template_id, recurring_instance_date)
+         values ($1, 'Walk the halls', $2, $2, 'open', $3, $4)`,
+        [PID_A1, me, tpl.id, localDay(-back)],
+      );
+    }
+    const [survivor] = (await gatherWorklist(PID_A1, { tasksOnly: true }))
+      .filter((i) => i.title === 'Walk the halls');
+    const body = await settle(survivor.sourceId, 'done');
+    assert.equal(body.ok, true);
+
+    const stillOpen = await one<{ n: string }>(
+      `select count(*) as n from comms_tasks where recurring_template_id = $1 and status = 'open'`,
+      [tpl.id],
+    );
+    assert.equal(Number(stillOpen!.n), 0, 'nothing is left to reappear tomorrow');
+
+    // NOT all marked done. The person said they did it TODAY; claiming they
+    // also did Monday's and Tuesday's would be the fiction this whole change
+    // exists to remove. Every one of them is still a real row with a real
+    // recorded outcome, which is the difference from deleting them.
+    const done = await one<{ n: string }>(
+      `select count(*) as n from comms_tasks where recurring_template_id = $1 and status = 'done'`,
+      [tpl.id],
+    );
+    const skipped = await one<{ n: string }>(
+      `select count(*) as n from comms_tasks where recurring_template_id = $1 and status = 'skipped'`,
+      [tpl.id],
+    );
+    assert.equal(Number(done!.n), 1, 'one day was actually done');
+    assert.equal(Number(skipped!.n), 2, 'the two that had already gone by are recorded as not done');
+  });
+});
+
+describe('a completion is recorded on the day the work happened', () => {
+  test('"Did it yesterday" credits the day it was due, and still says when it was reported', async () => {
+    const me = await callerStaffId();
+    const yesterday = localDay(-1);
+    const row = await one<{ id: string }>(
+      `insert into comms_tasks
+         (property_id, title, assigned_staff_id, created_by_staff_id, status, due_at)
+       values ($1, 'Change the lobby filters', $2, $2, 'open', $3) returning id`,
+      [PID_A1, me, `${yesterday}T23:59:59-05:00`],
+    );
+    const body = await settle(row!.id, 'done_on_due');
+    assert.equal(body.ok, true);
+
+    const after = await taskRow(row!.id);
+    assert.equal(after!.status, 'done');
+    assert.equal(
+      after!.completed_for_date,
+      yesterday,
+      'the record says the work happened on the day it was due',
+    );
+    // And completed_at is NOT backdated. When somebody told us is its own fact,
+    // and losing it would mean nobody could ever tell a same-day completion
+    // from one reported three days later. Compared as DAYS at the hotel, which
+    // is the grain the claim is actually about.
+    const reportedOn = new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Chicago' })
+      .format(new Date(after!.completed_at!));
+    assert.equal(reportedOn, localDay(0), 'it was reported today');
+    assert.notEqual(reportedOn, after!.completed_for_date, 'and credited to a different day');
+  });
+
+  test('a plain "Done" claims today and credits no other day', async () => {
+    const me = await callerStaffId();
+    const row = await one<{ id: string }>(
+      `insert into comms_tasks
+         (property_id, title, assigned_staff_id, created_by_staff_id, status, due_at)
+       values ($1, 'Check the pool', $2, $2, 'open', $3) returning id`,
+      [PID_A1, me, `${localDay(-2)}T23:59:59-05:00`],
+    );
+    await settle(row!.id, 'done');
+    const after = await taskRow(row!.id);
+    assert.equal(after!.status, 'done');
+    assert.equal(after!.completed_for_date, null, 'no day was credited, because none was claimed');
+  });
+
+  test('the credited day comes from the row, so a caller cannot name its own', async () => {
+    const me = await callerStaffId();
+    const row = await one<{ id: string }>(
+      `insert into comms_tasks
+         (property_id, title, assigned_staff_id, created_by_staff_id, status, due_at)
+       values ($1, 'Test the generator', $2, $2, 'open', $3) returning id`,
+      [PID_A1, me, `${localDay(-1)}T23:59:59-05:00`],
+    );
+    const res = await worklistCompletePost(postReq('http://t/api/worklist/complete', {
+      pid: PID_A1, sourceType: 'task', sourceId: row!.id, outcome: 'done_on_due',
+      // A body that could write history. It is simply not read.
+      completedForDate: '2019-01-01',
+    }));
+    assert.equal(((await res.json()) as Envelope).ok, true);
+    const after = await taskRow(row!.id);
+    assert.equal(after!.completed_for_date, localDay(-1));
+  });
+
+  test('"Not needed" records the decision instead of deleting the row', async () => {
+    const me = await callerStaffId();
+    const row = await one<{ id: string }>(
+      `insert into comms_tasks
+         (property_id, title, assigned_staff_id, created_by_staff_id, status, due_at)
+       values ($1, 'Order the spare filters', $2, $2, 'open', $3) returning id`,
+      [PID_A1, me, `${localDay(-1)}T23:59:59-05:00`],
+    );
+    const body = await settle(row!.id, 'skip');
+    assert.equal(body.ok, true);
+    const after = await taskRow(row!.id);
+    assert.equal(after!.status, 'skipped', 'the row is still there, and it says what happened');
+    assert.ok(after!.skipped_at, 'stamped with when somebody decided');
+    assert.equal(after!.skipped_by_staff_id, me, 'and with who decided it');
+    // The one thing "not needed" must NOT require, or people go back to
+    // deleting rows to get out of writing a sentence.
+    assert.equal(body.error, undefined);
+  });
+
+  test('a refusal still needs its reason, unchanged', async () => {
+    const me = await callerStaffId();
+    const row = await one<{ id: string }>(
+      `insert into comms_tasks (property_id, title, assigned_staff_id, created_by_staff_id, status)
+       values ($1, 'Fix the ice machine', $2, $2, 'open') returning id`,
+      [PID_A1, me],
+    );
+    const body = await settle(row!.id, 'cant');
+    assert.equal(body.ok, false, 'a reasonless refusal is still refused');
+  });
+});
+
+describe('the assigner is told the true story, whichever ending it had', () => {
+  /** A to-do Maria handed to Dana, already past its day. */
+  async function handedToDana(title: string): Promise<{ id: string; me: string }> {
+    const me = await callerStaffId();
+    const row = await one<{ id: string }>(
+      `insert into comms_tasks
+         (property_id, title, assigned_staff_id, created_by_staff_id, status, due_at)
+       values ($1, $2, $3, $4, 'open', $5) returning id`,
+      [PID_A1, title, frontDesk, me, `${localDay(-1)}T23:59:59-05:00`],
+    );
+    return { id: row!.id, me };
+  }
+
+  test('done late reaches the drawer as done, with the day it was reported', async () => {
+    const { id, me } = await handedToDana('Count the linen');
+    await settle(id, 'done');
+    const [entry] = await gatherAssignedByMe(PID_A1, me);
+    assert.equal(entry.state, 'done');
+    assert.equal(entry.completedForDate, null);
+    assert.match(assignedStateLine(entry, new Date()), /after it was due/);
+  });
+
+  test('done yesterday reaches the drawer as the day the work happened', async () => {
+    const { id, me } = await handedToDana('Deep clean the vents');
+    await settle(id, 'done_on_due');
+    const [entry] = await gatherAssignedByMe(PID_A1, me);
+    assert.equal(entry.state, 'done');
+    assert.equal(String(entry.completedForDate).slice(0, 10), localDay(-1));
+    // The whole point: the assigner reads the day the work happened, not the
+    // day somebody got round to telling them.
+    assert.match(assignedStateLine(entry, new Date()), /did it yesterday/i);
+  });
+
+  test('not needed reaches the drawer as its own ending, not as done', async () => {
+    const { id, me } = await handedToDana('Replace the lobby mats');
+    await settle(id, 'skip');
+    const [entry] = await gatherAssignedByMe(PID_A1, me);
+    assert.equal(entry.state, 'skipped');
+    assert.match(assignedStateLine(entry, new Date()), /not needed/i);
+    assert.match(completionNotice(entry), /not needed/i);
+  });
+
+  test('all three endings are news, so none of them is silently swallowed', async () => {
+    const me = await callerStaffId();
+    for (const [title, outcome] of [
+      ['A', 'done'], ['B', 'done_on_due'], ['C', 'skip'],
+    ] as const) {
+      const row = await one<{ id: string }>(
+        `insert into comms_tasks
+           (property_id, title, assigned_staff_id, created_by_staff_id, status, due_at)
+         values ($1, $2, $3, $4, 'open', $5) returning id`,
+        [PID_A1, title, frontDesk, me, `${localDay(-1)}T23:59:59-05:00`],
+      );
+      await settle(row!.id, outcome);
+    }
+    const assigned = await gatherAssignedByMe(PID_A1, me);
+    const news = assignerNotices(assigned, null, new Date());
+    assert.equal(news.length, 3, 'every ending comes back to the person who asked');
+  });
+});
+
+describe('an optional time of day survives the round trip', () => {
+  test('a to-do keeps the time it was given, and says it back', async () => {
+    const res = await commsTasksPost(postReq('http://t/api/comms/tasks', {
+      pid: PID_A1, title: 'Set up the meeting room', dueDate: localDay(0), dueTime: '15:00',
+    }));
+    const body = (await res.json()) as Envelope;
+    assert.equal(body.ok, true);
+    const row = await taskRow(String(body.data!.id));
+    assert.equal(String(row!.due_time).slice(0, 5), '15:00');
+
+    const [item] = (await gatherWorklist(PID_A1, { tasksOnly: true }))
+      .filter((i) => i.title === 'Set up the meeting room');
+    assert.equal(item.dueTime, '15:00', 'and it comes back in the one shape the UI reads');
+    assert.match(dueLine(item.dueDate, new Date(), item.dueTime)!, /by 3pm/);
+  });
+
+  test('a malformed time is refused rather than silently dropped', async () => {
+    const res = await commsTasksPost(postReq('http://t/api/comms/tasks', {
+      pid: PID_A1, title: 'Nonsense hour', dueDate: localDay(0), dueTime: '25:99',
+    }));
+    assert.equal(((await res.json()) as Envelope).ok, false);
+  });
+
+  test('a repeating to-do carries its time onto every instance it spawns', async () => {
+    const me = await callerStaffId();
+    const created = await commsTasksPost(postReq('http://t/api/comms/tasks', {
+      pid: PID_A1, title: 'Check the boiler room', repeat: 'daily', dueTime: '09:30',
+      assignedStaffId: me,
+    }));
+    const body = (await created.json()) as Envelope;
+    assert.equal(body.ok, true);
+    await spawnDueRecurringTodos();
+    const spawned = await one<{ due_time: string | null }>(
+      `select due_time::text as due_time from comms_tasks where recurring_template_id = $1`,
+      [String(body.data!.templateId)],
+    );
+    assert.equal(
+      String(spawned!.due_time).slice(0, 5),
+      '09:30',
+      'without this the time survives one day and then quietly disappears',
+    );
+  });
+});
+
+describe('what is new since this person last looked', () => {
+  test('nothing is new once the cursor has moved past it', async () => {
+    const me = await callerStaffId();
+    await pg.query(
+      `insert into comms_tasks (property_id, title, assigned_staff_id, created_by_staff_id, status)
+       values ($1, 'Something that arrived', $2, $2, 'open')`,
+      [PID_A1, me],
+    );
+    const viewer = { staffId: me, accountId: ACCOUNT_MARIA, role: 'general_manager', dept: null };
+
+    const beforeLooking = await countNewOnList(PID_A1, viewer, null);
+    assert.ok(beforeLooking >= 1, 'a to-do that just arrived is new to somebody who never looked');
+
+    // Looking is what moves the cursor. Stamped a moment ahead so the test is
+    // not racing the row's own created_at inside the same millisecond.
+    const looked = new Date(Date.now() + 1000).toISOString();
+    const afterLooking = await countNewOnList(PID_A1, viewer, looked);
+    assert.equal(afterLooking, 0, 'and it is not new to somebody who just read it');
+  });
+
+  test('work handed to somebody else is not new to me', async () => {
+    const me = await callerStaffId();
+    await pg.query(
+      `insert into comms_tasks (property_id, title, assigned_staff_id, created_by_staff_id, status)
+       values ($1, 'Dana''s own job', $2, $3, 'open')`,
+      [PID_A1, frontDesk, me],
+    );
+    const dana = { staffId: frontDesk, accountId: ACCOUNT_MARIA, role: 'front_desk', dept: 'front_desk' };
+    const mine = { staffId: me, accountId: ACCOUNT_MARIA, role: 'general_manager', dept: null };
+    assert.equal(await countNewOnList(PID_A1, dana, null), 1, 'it is new on the list it landed on');
+    assert.equal(
+      await countNewOnList(PID_A1, mine, null),
+      0,
+      'and it is not on the assigner\'s list at all, so it cannot be new there',
+    );
   });
 });

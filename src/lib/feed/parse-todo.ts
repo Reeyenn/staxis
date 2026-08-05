@@ -39,6 +39,13 @@ export interface ParseResult {
   repeat: RepeatChoice | null;
   weekday: number | null;
   dayOfMonth: number | null;
+  /**
+   * "HH:MM" on a 24-hour clock, or null. A time of DAY, never an instant, and
+   * never a timezone: the server still owns where a day begins and ends. Null
+   * for the overwhelming majority of sentences, and a to-do with no time
+   * behaves exactly as every to-do behaved before this field existed.
+   */
+  atTime: string | null;
   /** At most one. Null in the overwhelming majority of cases. */
   question: ParseQuestion | null;
 }
@@ -52,7 +59,10 @@ export interface ParseQuestion {
 
 /** Nothing claimed. The shape a caller gets for an empty or unreadable string. */
 export function emptyParse(title = ''): ParseResult {
-  return { title, who: null, when: null, repeat: null, weekday: null, dayOfMonth: null, question: null };
+  return {
+    title, who: null, when: null, repeat: null, weekday: null, dayOfMonth: null,
+    atTime: null, question: null,
+  };
 }
 
 // ─── the clock, in the person's own calendar ────────────────────────────────
@@ -116,6 +126,52 @@ function weekdayOfIso(iso: string): number | null {
   const d = new Date(`${iso}T12:00:00`);
   return Number.isNaN(d.getTime()) ? null : d.getDay();
 }
+
+// ─── the clock on the wall ──────────────────────────────────────────────────
+//
+// THE SECOND RULE, SAID AGAIN AND HARDER. A bare number is never a time.
+// "fix room 214 ac" must not become work due at 2:14, and "order 3 cases of
+// coffee" must not become work due at three o'clock. A time is claimed only
+// when the person wrote something that cannot be anything else:
+//
+//   an am/pm marker        "3pm", "by 3 pm", "at 6:30am"
+//   minutes after a colon  "at 6:30", "15:00"
+//   the word noon          "before noon"
+//
+// "at 6" is deliberately NOT claimed. People do write it, and it is also the
+// shape of half the numbers in a hotel. Leaving it in the title is never wrong;
+// reading it as 6am when somebody meant 6pm is a job missed by twelve hours.
+
+/** "HH:MM" on a 24-hour clock, or null when the numbers are not a real time. */
+function clockOf(hour: number, minute: number, meridiem: string | null): string | null {
+  let h = hour;
+  if (meridiem === 'pm' && h < 12) h += 12;
+  if (meridiem === 'am' && h === 12) h = 0;
+  // A bare 12- or 24-hour number with no marker is only accepted by the callers
+  // that already matched a colon, so 13..23 arrives here legitimately.
+  if (!Number.isFinite(h) || !Number.isFinite(minute)) return null;
+  if (h < 0 || h > 23 || minute < 0 || minute > 59) return null;
+  return `${`${h}`.padStart(2, '0')}:${`${minute}`.padStart(2, '0')}`;
+}
+
+/**
+ * The end of the part of the day somebody named.
+ *
+ * "this morning" is not a clock time, and turning it into one would be an
+ * invention. What it IS, on a to-do, is a deadline: work wanted this morning is
+ * work wanted before the morning is over. So each phrase maps to the END of the
+ * span it names, which is the only reading that does not put a number in
+ * somebody's mouth that they never said.
+ *
+ * "every morning" is NOT here. A cadence is not a deadline, and the repeat row
+ * already says the whole of what was written down.
+ */
+const PART_OF_DAY_END: Record<string, string> = {
+  morning: '12:00',
+  afternoon: '17:00',
+  evening: '21:00',
+  tonight: '21:00',
+};
 
 // ─── cutting phrases out of the sentence ────────────────────────────────────
 
@@ -265,6 +321,7 @@ export function parseTodo(
   let repeat: RepeatChoice | null = null;
   let weekday: number | null = null;
   let dayOfMonth: number | null = null;
+  let atTime: string | null = null;
   let question: ParseQuestion | null = null;
 
   // ── 1. who ───────────────────────────────────────────────────────────────
@@ -276,6 +333,39 @@ export function parseTodo(
       const m = firstFree(lower, cuts, new RegExp(form.replace('%s', candidate.pattern.toLowerCase()), 'gi'));
       if (m) { who = candidate.staffId; take(m); break; }
     }
+  }
+
+  // ── 1b. what time ────────────────────────────────────────────────────────
+  // Before the cadence and the date, so "every day at 3pm" gives up its clock
+  // first and neither of the later passes has to know that "3pm" is not a date.
+  // Each form below is anchored on something that can only be a time; a bare
+  // number reaches none of them. See the block comment above clockOf.
+  const spelled = firstFree(lower, cuts, /\b(?:by|at|before)?\s*(?:12\s*)?noon\b/g);
+  const keyedClock = spelled
+    ? null
+    : firstFree(lower, cuts, /\b(?:by|at|before)\s+(\d{1,2})(?::(\d{2}))?\s*(am|pm|a\.m\.|p\.m\.)\b/g);
+  // A colon carries the same weight as a marker: "6:30" is a time in a way "6"
+  // never is. The keyword is optional here for exactly that reason.
+  const colonClock = spelled || keyedClock
+    ? null
+    : firstFree(lower, cuts, /\b(?:by|at|before)?\s*(\d{1,2}):(\d{2})\s*(am|pm)?\b/g);
+  // And so does a bare marker with no keyword at all: "fix the ice machine 3pm".
+  const bareMeridiem = spelled || keyedClock || colonClock
+    ? null
+    : firstFree(lower, cuts, /\b(\d{1,2})\s*(am|pm)\b/g);
+
+  if (spelled) {
+    atTime = '12:00';
+    take(spelled);
+  } else if (keyedClock) {
+    const t = clockOf(Number(keyedClock[1]), Number(keyedClock[2] ?? 0), meridiemOf(keyedClock[3]));
+    if (t) { atTime = t; take(keyedClock); }
+  } else if (colonClock) {
+    const t = clockOf(Number(colonClock[1]), Number(colonClock[2]), meridiemOf(colonClock[3]));
+    if (t) { atTime = t; take(colonClock); }
+  } else if (bareMeridiem) {
+    const t = clockOf(Number(bareMeridiem[1]), 0, meridiemOf(bareMeridiem[2]));
+    if (t) { atTime = t; take(bareMeridiem); }
   }
 
   // ── 2. how often ─────────────────────────────────────────────────────────
@@ -324,7 +414,10 @@ export function parseTodo(
   }
 
   // ── 3. when ──────────────────────────────────────────────────────────────
-  const today = firstFree(lower, cuts, /\btoday\b|\btonight\b|\bthis morning\b|\bthis afternoon\b/g);
+  // "this morning" is both a day and a deadline: it says today, and it says
+  // before today's morning is over. The day is claimed here as it always was;
+  // the time rides along below, and only when no explicit clock beat it to it.
+  const today = firstFree(lower, cuts, /\btoday\b|\btonight\b|\bthis morning\b|\bthis afternoon\b|\bthis evening\b/g);
   const tomorrow = today ? null : firstFree(lower, cuts, /\btomorrow\b|\btmrw\b|\btomorrow morning\b/g);
   const thisDay = today || tomorrow ? null : firstFree(lower, cuts, new RegExp(`\\bthis (${weekdayAlt})\\b`, 'g'));
   const nextDay = today || tomorrow || thisDay ? null : firstFree(lower, cuts, new RegExp(`\\bnext (${weekdayAlt})\\b`, 'g'));
@@ -352,6 +445,17 @@ export function parseTodo(
 
   if (today) {
     when = shift(now, 0);
+    // An explicit clock always wins: somebody who wrote "this morning by 10am"
+    // said 10am, and overwriting it with the end of the morning would be this
+    // file preferring its own reading to the one in front of it.
+    if (!atTime) {
+      const part = /tonight/.test(today[0])
+        ? 'tonight'
+        : /morning/.test(today[0]) ? 'morning'
+          : /afternoon/.test(today[0]) ? 'afternoon'
+            : /evening/.test(today[0]) ? 'evening' : null;
+      if (part) atTime = PART_OF_DAY_END[part] ?? null;
+    }
     take(today);
   } else if (tomorrow) {
     when = shift(now, 1);
@@ -409,8 +513,16 @@ export function parseTodo(
     repeat,
     weekday,
     dayOfMonth,
+    atTime,
     question,
   };
+}
+
+/** "p.m." and "PM" and "pm" are one thing. Anything else is no marker at all. */
+function meridiemOf(token: string | undefined): string | null {
+  if (!token) return null;
+  const t = token.replace(/\./g, '').toLowerCase();
+  return t === 'am' || t === 'pm' ? t : null;
 }
 
 function monthIndexOf(token: string): number {

@@ -76,6 +76,46 @@ export interface WorklistItem {
   amountCents: number | null;
   /** Set on a task the assignee marked "Can't do this". Their words, verbatim. */
   blockedReason?: string | null;
+  // ── follow-through ────────────────────────────────────────────────────────
+  /**
+   * Who wrote this down, when anybody did.
+   *
+   * Carried so "just mine" can mean what a person means by it: work that is
+   * ASSIGNED to them, and work that BELONGS to them because they are the one
+   * who asked for it. Filtering on the assignee alone would hide a manager's
+   * own house to-dos from their own narrowed list.
+   */
+  createdByStaffId: string | null;
+  /**
+   * Optional time of day, "HH:MM" on the hotel's own wall clock, or null.
+   *
+   * Display and sort only. `dueDate` still holds the end of the local due day
+   * and is what every date comparison uses; this decides where the row sits
+   * WITHIN its day and what the row says out loud. Null on almost every row.
+   */
+  dueTime?: string | null;
+  /**
+   * The template this is one instance of, when it repeats.
+   *
+   * Present so the list can collapse a run of missed instances into the one row
+   * they are all saying. See collapseRepeatInstances.
+   */
+  recurringTemplateId?: string | null;
+  /**
+   * The first day this was owed and not done, YYYY-MM-DD, when that day has
+   * passed. For a plain to-do it is its own due day. For a repeating one it is
+   * the OLDEST open instance in the run, which is what "missed since Monday"
+   * means and what "Did it Monday" credits the completion to.
+   */
+  missedSince?: string | null;
+  /**
+   * Open sibling instances this row stands in for, oldest first.
+   *
+   * Empty on everything that is not a collapsed repeat run. Settling this row
+   * settles these too, which is the whole reason a missed daily to-do stops
+   * being five copies of itself.
+   */
+  supersededIds?: string[];
 }
 
 /**
@@ -98,8 +138,15 @@ export interface AssignedByMeItem {
   assigneeStaffId: string | null;
   assigneeName: string | null;
   assignedDepartment: string | null;
-  /** 'waiting' until the assignee acts; then what they said. */
-  state: 'waiting' | 'done' | 'cant';
+  /**
+   * 'waiting' until the assignee acts; then what they said.
+   *
+   * 'skipped' is "it stopped needing doing". Deliberately not folded into
+   * 'cant': a refusal carries a reason and the database makes a reasonless one
+   * unrepresentable, while "not needed" is not a refusal and demanding a
+   * sentence for it just pushes people back to deleting the row.
+   */
+  state: 'waiting' | 'done' | 'cant' | 'skipped';
   dueDate: string | null;
   createdAt: string | null;
   /** Who tapped, and when. Null while waiting. */
@@ -110,6 +157,12 @@ export interface AssignedByMeItem {
   settledAt: string | null;
   /** Verbatim, for a 'cant'. */
   reason: string | null;
+  /**
+   * The day a completion was CREDITED to, when it is not the day it was
+   * reported. Set by "Did it yesterday". Null on an ordinary completion, which
+   * is most of them.
+   */
+  completedForDate: string | null;
   /** Whole days since it was handed over. Drives the staleness line. */
   ageDays: number;
 }

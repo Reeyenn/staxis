@@ -1,7 +1,7 @@
 // ═══════════════════════════════════════════════════════════════════════════
 // /api/feed/prefs — one person's choices about their Staxis list.
-//   GET ?pid=...                             → { prefs }
-//   PUT { pid, logbookInList?, markAssignedSeen? } → { prefs }
+//   GET ?pid=...                             → { prefs, newOnList }
+//   PUT { pid, logbookInList?, markAssignedSeen?, markListSeen? } → { prefs }
 //
 // Today it holds one switch ("Include log book in Staxis") and one stamp (when
 // the Assigned-by-me drawer was last opened). A new route
@@ -22,6 +22,7 @@ import { log } from '@/lib/log';
 import { commsContext, ONE_LIST_CTX } from '@/lib/comms/route-helpers';
 import { checkAndIncrementRateLimit, rateLimitedResponse, hashToRateLimitKey } from '@/lib/api-ratelimit';
 import { readFeedPrefs, writeFeedPrefs, type FeedPrefs } from '@/lib/feed/prefs';
+import { countNewOnList } from '@/lib/worklist/core';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -35,11 +36,20 @@ export async function GET(req: NextRequest): Promise<Response> {
   if (!rl.allowed) return rateLimitedResponse(rl.current, rl.cap, rl.retryAfterSec);
 
   const prefs = await readFeedPrefs(ctx.accountId, ctx.pid);
-  return ok({ prefs }, { requestId: ctx.requestId, headers: ctx.headers });
+  // The number on the Staxis tab, answered by the route that already owns the
+  // cursor it is measured against. A route of its own would have been a second
+  // surface to secure for one integer, and it would have had to read the same
+  // preference row to know what "since" meant.
+  const newOnList = await countNewOnList(
+    ctx.pid,
+    { staffId: ctx.staffId, accountId: ctx.accountId, role: ctx.role, dept: ctx.dept },
+    prefs.listSeenAt,
+  );
+  return ok({ prefs, newOnList }, { requestId: ctx.requestId, headers: ctx.headers });
 }
 
 export async function PUT(req: NextRequest): Promise<Response> {
-  let body: { pid?: string; logbookInList?: unknown; markAssignedSeen?: unknown };
+  let body: { pid?: string; logbookInList?: unknown; markAssignedSeen?: unknown; markListSeen?: unknown };
   try { body = await req.json(); } catch { body = {}; }
 
   const ctx = await commsContext(req, body.pid ?? null, ONE_LIST_CTX);
@@ -51,6 +61,10 @@ export async function PUT(req: NextRequest): Promise<Response> {
   // with a wrong clock could otherwise stamp itself into the future and never
   // be told about anything again.
   if (body.markAssignedSeen === true) patch.assignedSeenAt = new Date().toISOString();
+  // Same rule, same reason: looking at your list is a thing that happens at a
+  // moment the SERVER can see. A browser that could name the moment could stamp
+  // itself into the future and never be shown a new row again.
+  if (body.markListSeen === true) patch.listSeenAt = new Date().toISOString();
 
   if (Object.keys(patch).length === 0) {
     return err('nothing to change', {

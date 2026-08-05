@@ -829,6 +829,9 @@ export const EXPECTED_MIGRATIONS_STATIC: ReadonlyArray<string> = [
   '0437',
   // Inventory easy setup: import batches, row provenance, occupancy months.
   '0452',
+  // To-do follow-through: a completion credited to the day it was due, a
+  // "not needed" ending, an optional time of day, and the list-seen cursor.
+  '0453',
 ];
 
 /**

@@ -95,8 +95,14 @@ export async function buildCompanionCandidates(input: {
     .filter((f) => isCardRenderable(f));
 
   const lopsided = await lopsidedCandidate(input.propertyId);
+  const slipped = await slippedCandidate(input.propertyId);
 
   return [
+    // Work that slipped leads over everything. It is the only candidate here
+    // that is about a promise the hotel already made to itself and did not
+    // keep, and it is the one a person can act on without leaving the screen
+    // they are on: the rows are right there, three buttons each.
+    ...(slipped ? [slipped] : []),
     // Lopsided history leads when it exists. It is rarer than a finding and it
     // is about the AI's own ability to learn: a hotel that fixes it gets every
     // future stock answer improved, and a hotel that never hears about it
@@ -122,6 +128,56 @@ export async function buildCompanionCandidates(input: {
       severity: SEVERITY_FROM_FINDING[f.severity] ?? ('watch' as const),
     })),
   ].filter((c) => c.text.trim().length > 0).slice(0, MAX_CANDIDATES);
+}
+
+/**
+ * "3 things slipped from yesterday."
+ *
+ * ONE indexed count, which is what makes it affordable here. The reason this
+ * file builds no candidates for line roles is that `gatherWorklist` is an
+ * eight-way fan-out plus a derived inspection queue, far too expensive to run
+ * speculatively on every page load. This is not that: it is a single count over
+ * one table on (property, status, due_at), and it is only reached by the same
+ * audience that already pays for the findings read above.
+ *
+ * IT NEVER SAYS A NUMBER IT HAS NOT COUNTED, and it never rounds. "A few things
+ * slipped" is the sentence that makes a person stop believing the rest of them.
+ *
+ * Fails soft to silence. A companion that cannot count says nothing about
+ * counting; it does not guess, and it does not apologise on the screen.
+ */
+async function slippedCandidate(propertyId: string): Promise<CompanionCandidate | null> {
+  try {
+    const { supabaseAdmin } = await import('@/lib/supabase-admin');
+    const { count, error } = await supabaseAdmin
+      .from('comms_tasks')
+      .select('id', { count: 'exact', head: true })
+      .eq('property_id', propertyId)
+      .eq('status', 'open')
+      .lt('due_at', new Date().toISOString());
+    if (error || typeof count !== 'number' || count < 1) return null;
+    return {
+      // Stable across days, so a No means "stop telling me about slippage"
+      // rather than "stop telling me about today's three". Somebody who does
+      // not want to hear it does not want to hear it tomorrow either.
+      topic: 'todo:slipped',
+      text: count === 1
+        ? 'One thing on the list slipped past its day. It is still there, marked late.'
+        : `${count} things on the list slipped past their day. They are still there, marked late.`,
+      // Work that is late is operational by construction. It is about jobs, not
+      // about how any one person is doing: the count spans everybody's rows and
+      // names nobody, which is the line that keeps it out of `people`.
+      sensitivity: 'operational',
+      // The rows themselves are on the list already. An empty `covers` would
+      // claim nothing on screen is this fact, and the one-voice rule would then
+      // let the companion say out loud what the screen is already showing.
+      covers: ['staxis:slipped'],
+      destination: 'staxis',
+      severity: 'watch',
+    };
+  } catch {
+    return null;
+  }
 }
 
 /**

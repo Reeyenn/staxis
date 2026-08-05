@@ -67,6 +67,7 @@ describe('every phrase class the composer promises to understand', () => {
     repeat?: ParseResult['repeat'];
     weekday?: number | null;
     dayOfMonth?: number | null;
+    atTime?: string | null;
   }> = [
     // when
     { sentence: 'fix the ice machine today', title: 'Fix the ice machine', when: day(0) },
@@ -99,6 +100,28 @@ describe('every phrase class the composer promises to understand', () => {
     { sentence: 'change the air filter once', title: 'Change the air filter', repeat: 'once' },
     // both at once: the day is where the run STARTS
     { sentence: 'check the boiler room every Friday starting tomorrow', title: 'Check the boiler room starting', repeat: 'weekly', when: day(1), weekday: 5 },
+    // what time of day. Every one of these is anchored on something that can
+    // only be a clock: an am/pm marker, minutes after a colon, or the word noon.
+    { sentence: 'set up the meeting room by 3pm', title: 'Set up the meeting room', atTime: '15:00' },
+    { sentence: 'set up the meeting room by 3 pm', title: 'Set up the meeting room', atTime: '15:00' },
+    { sentence: 'set up the meeting room at 6:30', title: 'Set up the meeting room', atTime: '06:30' },
+    { sentence: 'set up the meeting room at 6:30pm', title: 'Set up the meeting room', atTime: '18:30' },
+    { sentence: 'call the vendor before noon', title: 'Call the vendor', atTime: '12:00' },
+    { sentence: 'call the vendor by noon', title: 'Call the vendor', atTime: '12:00' },
+    { sentence: 'run the audit by 15:00', title: 'Run the audit', atTime: '15:00' },
+    { sentence: 'run the audit at 9am', title: 'Run the audit', atTime: '09:00' },
+    { sentence: 'lock the pool gate 11pm', title: 'Lock the pool gate', atTime: '23:00' },
+    { sentence: 'midnight walk at 12am', title: 'Midnight walk', atTime: '00:00' },
+    // a part of the day is a DEADLINE, and maps to the end of the span it names
+    { sentence: 'strip the beds this morning', title: 'Strip the beds', when: day(0), atTime: '12:00' },
+    { sentence: 'strip the beds this afternoon', title: 'Strip the beds', when: day(0), atTime: '17:00' },
+    { sentence: 'strip the beds this evening', title: 'Strip the beds', when: day(0), atTime: '21:00' },
+    { sentence: 'lock the pool gate tonight', title: 'Lock the pool gate', when: day(0), atTime: '21:00' },
+    // a clock and a day and a cadence, all in one sentence
+    { sentence: 'check the boiler every day at 3pm', title: 'Check the boiler', repeat: 'daily', atTime: '15:00' },
+    { sentence: 'order towels tomorrow by 10am', title: 'Order towels', when: day(1), atTime: '10:00' },
+    // an explicit clock beats the vague half of the same sentence
+    { sentence: 'strip the beds this morning by 10am', title: 'Strip the beds', when: day(0), atTime: '10:00' },
   ];
 
   for (const c of CASES) {
@@ -109,6 +132,7 @@ describe('every phrase class the composer promises to understand', () => {
       if (c.repeat !== undefined) assert.equal(result.repeat, c.repeat, 'wrong cadence');
       if (c.weekday !== undefined) assert.equal(result.weekday, c.weekday, 'wrong weekday');
       if (c.dayOfMonth !== undefined) assert.equal(result.dayOfMonth, c.dayOfMonth, 'wrong day of month');
+      if (c.atTime !== undefined) assert.equal(result.atTime, c.atTime, 'wrong time of day');
     });
   }
 });
@@ -132,6 +156,45 @@ describe('what it must never claim', () => {
       assert.equal(result.when, null, `${sentence} claimed a day`);
       assert.equal(result.dayOfMonth, null, `${sentence} claimed a day of the month`);
     }
+  });
+
+  // The same rule the numbers above are protected by, applied to the clock. A
+  // hotel sentence is full of bare numbers, and a job filed for 2:14 in the
+  // morning is a job nobody is awake for.
+  test('a bare number is never a time, whatever sits next to it', () => {
+    for (const sentence of [
+      'fix room 214 ac',
+      'order 3 cases of coffee',
+      'replace 12 bulbs',
+      'check meter 8',
+      'restock cart 7',
+    ]) {
+      const result = read(sentence);
+      assert.equal(result.atTime, null, `${sentence} claimed a time`);
+    }
+  });
+
+  test('"at 6" is left alone, because 6am and 6pm are twelve hours apart', () => {
+    // Deliberately not lifted. People do write it, and it is also the shape of
+    // half the numbers in a hotel. Leaving it in the title is never wrong;
+    // guessing the wrong half of the day is.
+    const result = read('meet the vendor at 6');
+    assert.equal(result.atTime, null);
+    assert.match(result.title, /6/, 'and the words stay exactly where they were written');
+  });
+
+  test('a fraction or a room number is never read as a clock', () => {
+    for (const sentence of ['replace the 1/2 inch elbow', 'fix room 214 ac']) {
+      assert.equal(read(sentence).atTime, null, `${sentence} claimed a time`);
+    }
+  });
+
+  test('an every-morning cadence promises no hour, because none was written', () => {
+    // "every morning" is a cadence, not a deadline. Turning it into 12:00 would
+    // put a time on the row that nobody typed and nobody agreed to.
+    const result = read('walk the halls every morning');
+    assert.equal(result.repeat, 'daily');
+    assert.equal(result.atTime, null);
   });
 
   test('a fraction in the middle of a sentence is a size, not a date', () => {

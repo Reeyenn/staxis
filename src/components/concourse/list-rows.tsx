@@ -34,6 +34,8 @@ import {
   dueLine,
   enterTakesNote,
   HOUSEKEEPER_NOTE,
+  missedLine,
+  overdueAnswers,
   repeatWord,
   rowFrom,
   rowKindLabel,
@@ -74,7 +76,13 @@ export interface WorkRowViewProps {
   /** True while this row is asking for the one-line reason. */
   askingReason?: boolean;
   reasonDraft?: string;
+  /** True when this arrived since the person last looked at their list. */
+  isNew?: boolean;
   onDone?: (item: WorklistItem) => void;
+  /** "Did it yesterday" — completes, credited to the day it was due. */
+  onDoneOnDay?: (item: WorklistItem) => void;
+  /** "Not needed" — records that it stopped needing doing. Never a delete. */
+  onNotNeeded?: (item: WorklistItem) => void;
   onAskReason?: (item: WorklistItem) => void;
   onReasonChange?: (value: string) => void;
   onCantSubmit?: (item: WorklistItem) => void;
@@ -84,20 +92,51 @@ export interface WorkRowViewProps {
 /**
  * One thing that needs a person, that is not an AI finding.
  *
- * Two buttons on a to-do, and they mean different things: Done is a claim the
- * work happened; "Can't do this" is a claim it did not, WITH the reason,
- * because the assigner otherwise learns only that nothing happened and has to
- * go and ask. That round trip is the thing the receipt replaces, so the reason
- * box is not optional and the submit stays disabled until there is one.
+ * ─── the controls, and why there are two sets of them ──────────────────────
+ *
+ * ON TIME: Done is a claim the work happened; "Can't do this" is a claim it did
+ * not, WITH the reason, because the assigner otherwise learns only that nothing
+ * happened and has to go and ask. That round trip is the thing the receipt
+ * replaces, so the reason box is not optional and submit stays disabled without
+ * one.
+ *
+ * OVERDUE: three answers instead, because a to-do that slipped has three true
+ * endings and the plain Done offered one and a half of them.
+ *
+ *   Done              it happened just now, recorded just now
+ *   Did it <day>      it happened on the day it was DUE, and the record says so
+ *   Not needed        it stopped needing doing, recorded, never deleted
+ *
+ * The middle one is the whole reason this row changed. "Done" stamped the
+ * moment of the tap, so work done on Tuesday and reported on Thursday went into
+ * the record as Thursday's — and every pattern the product learns about when
+ * work actually gets done was being taught a date nobody chose.
+ *
+ * The row stays ONE row however far behind it has fallen, including a repeating
+ * to-do that was missed five days running. See collapseRepeatInstances.
  */
 export function WorkRowView({
-  item, now, busy = false, askingReason = false, reasonDraft = '',
-  onDone, onAskReason, onReasonChange, onCantSubmit, onCancelReason,
+  item, now, busy = false, askingReason = false, reasonDraft = '', isNew = false,
+  onDone, onDoneOnDay, onNotNeeded, onAskReason, onReasonChange, onCantSubmit, onCancelReason,
 }: WorkRowViewProps) {
   const from = rowFrom(item);
-  const due = dueLine(item.dueDate, now);
+  const due = dueLine(item.dueDate, now, item.dueTime);
   const canRefuse = item.sourceType === 'task';
   const reasonReady = reasonDraft.trim().length > 0;
+  // The three answers, and only on a to-do: a work order has no assigner
+  // waiting on a receipt and no due day to credit a completion to.
+  const slipped = item.sourceType === 'task' && item.canComplete && !!item.missedSince;
+  // "Did it Monday" is only TRUE on a row that speaks for itself. On a
+  // collapsed repeat run the row's identity is today's instance while the day
+  // named on the button belongs to an older one, so the completion would be
+  // credited to today and the button would have lied about the one thing it
+  // exists to get right. A run's two honest answers are "I did it just now"
+  // and "it stopped needing doing"; the third slot goes back to the refusal,
+  // which is where the reason for the assigner lives. Either way it is three
+  // buttons, never four: a row with four controls is a menu.
+  const canCreditDay = slipped && (item.supersededIds?.length ?? 0) === 0;
+  const answers = overdueAnswers(item.missedSince ?? null, now);
+  const missed = missedLine(item.missedSince ?? null, now);
 
   // "2 days late · Dana" — the mono line the design puts beside the title. The
   // clock half comes first because it is the half that decides whether this row
@@ -109,17 +148,25 @@ export function WorkRowView({
   // between a note and a ticket.
   const kind = item.sourceType === 'task' ? null : rowKindLabel(item.sourceType);
   const meta = [kind, due, item.assigneeName].filter(Boolean).join(' · ');
-  // Everything the one-line row cannot hold: who handed it over, and where.
-  const sub = [from, item.location].filter(Boolean).join(' · ');
+  // Everything the one-line row cannot hold: who handed it over, where, and how
+  // far back it goes when it has been missed more than once.
+  const sub = [from, item.location, missed].filter(Boolean).join(' · ');
 
   return (
     <div
       className={`fx-row${item.overdue ? ' fx-late' : ''}${askingReason ? ' fx-open' : ''}`}
       data-row-kind={item.sourceType}
       data-row-id={item.id}
+      data-row-new={isNew ? 'true' : undefined}
     >
       <div className="fx-rowb">
-        <div className="fx-rowt">{item.title}</div>
+        <div className="fx-rowt">
+          {/* Quiet on purpose: a dot, no word, no colour anybody has to learn.
+              It is answering "is this one new?", which is a question somebody
+              asks with their eyes and never out loud. */}
+          {isNew && <span className="fx-new" aria-label="New since you last looked" />}
+          {item.title}
+        </div>
         {sub && <div className="fx-rowsub">{sub}</div>}
       </div>
 
@@ -128,10 +175,22 @@ export function WorkRowView({
       <div className="fx-rowa">
         {item.canComplete && (
           <button type="button" className="fx-btn fx-primary" disabled={busy || askingReason} onClick={() => onDone?.(item)}>
-            Done
+            {answers.done}
           </button>
         )}
-        {canRefuse && !askingReason && (
+        {canCreditDay && !askingReason && (
+          <button type="button" className="fx-btn" disabled={busy} onClick={() => onDoneOnDay?.(item)}>
+            {answers.onDay}
+          </button>
+        )}
+        {slipped && !askingReason && (
+          <button type="button" className="fx-btn" disabled={busy} onClick={() => onNotNeeded?.(item)}>
+            {answers.notNeeded}
+          </button>
+        )}
+        {/* The refusal keeps its place except where "Did it <day>" has taken
+            the slot. See canCreditDay: three buttons in every state. */}
+        {canRefuse && !canCreditDay && !askingReason && (
           <button type="button" className="fx-btn" disabled={busy} onClick={() => onAskReason?.(item)}>
             Can&apos;t do this
           </button>
@@ -259,6 +318,12 @@ export interface ComposerState {
   repeat: RepeatChoice;
   weekday: number;
   dayOfMonth: number;
+  /**
+   * Optional "HH:MM". Lifted from the sentence, never asked for: there is no
+   * fourth word and no time picker. Somebody who writes "by 3pm" gets 3pm, and
+   * somebody who does not gets exactly the row that existed before this did.
+   */
+  atTime: string | null;
   /** Which button row is open, if any. */
   openRow: ComposerRow | null;
   /** Per field, how the current value was reached. */
@@ -274,6 +339,7 @@ export function composerDefaults(todayIso: string, todayWeekday: number): Compos
     repeat: 'once',
     weekday: todayWeekday,
     dayOfMonth: 1,
+    atTime: null,
     openRow: null,
     source: { who: 'default', when: 'default', repeat: 'default' },
   };
@@ -330,8 +396,13 @@ export function withParse(
   if (typeof result.weekday === 'number') weekday = result.weekday;
   else if (result.when) weekday = weekdayOfIso(result.when, todayWeekday);
   if (typeof result.dayOfMonth === 'number') dayOfMonth = result.dayOfMonth;
+  // The clock rides on WHEN and follows the same rule as WHEN: a day somebody
+  // tapped is never argued with, so a time the sentence mentions is not applied
+  // over it either. There is no button that sets a time, so there is no third
+  // source to track.
+  const atTime = state.source.when === 'chosen' ? state.atTime : (result.atTime ?? state.atTime);
 
-  return { ...state, title: result.title, who, when, repeat, weekday, dayOfMonth, source };
+  return { ...state, title: result.title, who, when, repeat, weekday, dayOfMonth, atTime, source };
 }
 
 /**
@@ -347,7 +418,7 @@ export function withChoice(
   todayWeekday: number,
 ): ComposerState {
   const source = { ...state.source };
-  let { who, when, repeat, weekday, dayOfMonth } = state;
+  let { who, when, repeat, weekday, dayOfMonth, atTime } = state;
   if ('who' in patch) { who = patch.who ?? 'me'; source.who = 'chosen'; }
   if ('repeat' in patch) { repeat = patch.repeat ?? 'once'; source.repeat = 'chosen'; }
   if ('when' in patch) {
@@ -356,6 +427,7 @@ export function withChoice(
     when = patch.when ?? todayIso;
     source.when = 'chosen';
   }
+  if ('atTime' in patch) atTime = patch.atTime ?? null;
   if (typeof patch.weekday === 'number') weekday = patch.weekday;
   else if ('when' in patch && patch.when) weekday = weekdayOfIso(patch.when, todayWeekday);
   // Turning a one-off into a weekly one has to pick a day, and the only honest
@@ -364,7 +436,7 @@ export function withChoice(
     weekday = weekdayOfIso(when, todayWeekday);
   }
   if (typeof patch.dayOfMonth === 'number') dayOfMonth = patch.dayOfMonth;
-  return { ...state, who, when, repeat, weekday, dayOfMonth, source };
+  return { ...state, who, when, repeat, weekday, dayOfMonth, atTime, source };
 }
 
 /** What the composer sends. Pure, so the defaults are provable without a fetch. */
@@ -383,6 +455,13 @@ export interface ComposerPayload {
    * hotel's day is over.
    */
   dueDate: string | null;
+  /**
+   * Optional "HH:MM", the hotel's own wall clock. Sent alongside the DAY and
+   * never folded into it: the server decides where a day ends, and a client
+   * that turned "by 3pm" into an instant would be doing the exact thing the
+   * dueDate comment above exists to stop.
+   */
+  dueTime: string | null;
   repeat: RepeatChoice;
   weekday?: number;
   dayOfMonth?: number;
@@ -404,6 +483,9 @@ export function composerPayload(state: ComposerState, meStaffId: string | null):
     assignedDepartment,
     // A repeating item has no single due date; the template decides each day.
     dueDate: state.repeat === 'once' && state.when ? state.when : null,
+    // A repeating to-do keeps its time: the template carries it and stamps it
+    // on every instance. Only the DAY is meaningless on a repeat, not the hour.
+    dueTime: state.atTime ?? null,
     repeat: state.repeat,
   };
   if (state.repeat === 'weekly' || state.repeat === 'biweekly') payload.weekday = state.weekday;
@@ -530,7 +612,7 @@ export function ComposerView({
   const trailing = openRow === null;
 
   const whoText = whoWord(state.who, people);
-  const whenText = whenWord(state.when, now, { repeating });
+  const whenText = whenWord(state.when, now, { repeating, atTime: state.atTime });
   const repeatText = repeatWord(state.repeat, { weekday: state.weekday, dayOfMonth: state.dayOfMonth });
   const keyHint = busy ? COMPOSER_COPY.adding : (foot ? COMPOSER_COPY.enterToAdd : COMPOSER_COPY.enter);
   const tail: 'mic' | 'key' | null = recording

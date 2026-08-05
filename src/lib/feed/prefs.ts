@@ -26,6 +26,21 @@ export interface FeedPrefs {
    */
   assignedSeenAt: string | null;
   /**
+   * When this person last looked at their Staxis list, or null.
+   *
+   * Anything that arrived after this is marked new on its row and counted on
+   * the tab. The same derived-not-stored shape as assignedSeenAt one field up,
+   * and for the same reasons: one timestamp cannot get stuck, cannot be
+   * delivered twice and cannot outlive the thing it is about. There is no
+   * notification table and nothing to mark read.
+   *
+   * NULL means never looked, and that is deliberately not "everything is new
+   * forever": the count is floored at a recent window, so somebody opening the
+   * list for the first time is told about this week rather than about the
+   * hotel's entire history. See countNewOnList.
+   */
+  listSeenAt: string | null;
+  /**
    * What the companion remembers about this person at this hotel.
    *
    * Lives here rather than in its own store because 0410 said the next
@@ -41,6 +56,7 @@ export interface FeedPrefs {
 export const DEFAULT_FEED_PREFS: FeedPrefs = {
   logbookInList: false,
   assignedSeenAt: null,
+  listSeenAt: null,
   companionMemory: null,
 };
 
@@ -58,7 +74,7 @@ async function readFeedPrefsChecked(
 ): Promise<{ prefs: FeedPrefs; degraded: boolean }> {
   const { data, error } = await supabaseAdmin
     .from('staxis_user_prefs')
-    .select('logbook_in_list, assigned_seen_at, companion_memory')
+    .select('logbook_in_list, assigned_seen_at, list_seen_at, companion_memory')
     .eq('account_id', accountId)
     .eq('property_id', propertyId)
     .maybeSingle();
@@ -72,12 +88,14 @@ async function readFeedPrefsChecked(
   const row = data as {
     logbook_in_list?: boolean;
     assigned_seen_at?: string | null;
+    list_seen_at?: string | null;
     companion_memory?: unknown;
   };
   return {
     prefs: {
       logbookInList: row.logbook_in_list === true,
       assignedSeenAt: row.assigned_seen_at ?? null,
+      listSeenAt: row.list_seen_at ?? null,
       companionMemory: row.companion_memory ?? null,
     },
     degraded: false,
@@ -112,6 +130,9 @@ export async function writeFeedPrefs(
   };
   if (!degraded || next.logbookInList !== undefined) row.logbook_in_list = merged.logbookInList;
   if (!degraded || next.assignedSeenAt !== undefined) row.assigned_seen_at = merged.assignedSeenAt;
+  // Same degraded guard, and it matters just as much here: writing a default
+  // null over a real cursor would re-flag every row on somebody's list as new.
+  if (!degraded || next.listSeenAt !== undefined) row.list_seen_at = merged.listSeenAt;
   // The companion writes only its own key, and only ever the whole blob it just
   // derived from the value it read in the same request. The degraded guard
   // matters most here: a failed read followed by an unguarded write would erase

@@ -44,6 +44,15 @@ export interface CreateTemplateInput {
    * Tuesday starting this week" means to the person who typed it.
    */
   anchorDate?: string | null;
+  /**
+   * Optional "HH:MM" copied onto every instance this template spawns.
+   *
+   * On the template rather than only on the first row, because an instance is a
+   * fresh row each day: a time held only on the first one would have survived
+   * exactly one day and then quietly disappeared, which is the shape of bug
+   * nobody reports because it looks like they imagined setting it.
+   */
+  dueTime?: string | null;
 }
 
 export interface TemplateRow {
@@ -146,6 +155,7 @@ export async function createTemplate(input: CreateTemplateInput): Promise<{ id: 
       weekday: params.weekday,
       day_of_month: params.dayOfMonth,
       anchor_date: params.anchorDate,
+      due_time: input.dueTime ?? null,
     })
     .select('id')
     .single();
@@ -275,7 +285,7 @@ export async function spawnDueRecurringTodos(now: Date = new Date()): Promise<Sp
   // scale today (one property); a join keeps it a single round trip.
   const { data, error } = await supabaseAdmin
     .from('recurring_task_templates')
-    .select('id, property_id, title, assigned_staff_id, assigned_department, priority, cadence, weekday, day_of_month, anchor_date, active, last_spawned_on, created_at, created_by_staff_id, properties(timezone)')
+    .select('id, property_id, title, assigned_staff_id, assigned_department, priority, cadence, weekday, day_of_month, anchor_date, active, last_spawned_on, created_at, created_by_staff_id, due_time, properties(timezone)')
     .eq('active', true);
   if (error) {
     log.error('[recurring-tasks] spawn query failed', { err: error.message });
@@ -340,6 +350,9 @@ export async function spawnDueRecurringTodos(now: Date = new Date()): Promise<Sp
         // Tuesday, check the pool" for Ana had no way to learn it got done, or
         // that Ana said she could not do it.
         created_by_staff_id: (raw.created_by_staff_id as string | null) ?? null,
+        // The template's time of day, on every instance. Without it a repeating
+        // "check the boiler by 3pm" says 3pm once and then says nothing.
+        due_time: (raw.due_time as string | null) ?? null,
         recurring_template_id: template.id,
         recurring_instance_date: date,
         created_at: nowIso,

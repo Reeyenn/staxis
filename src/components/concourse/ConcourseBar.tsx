@@ -24,7 +24,7 @@ import {
   type AdminDestinationAction,
   type BarItem,
 } from './ConcourseBarView';
-import { QUEUE_COUNT_EVENT, shouldReadDecisionBadge, staxisPillBadge } from './queue-count';
+import { QUEUE_COUNT_EVENT, shouldReadDecisionBadge, staxisPillCount } from './queue-count';
 import { fetchWithAuth } from '@/lib/api-fetch';
 import { PhoneHandoffDialog } from '@/components/phone-handoff/PhoneHandoffDialog';
 import { InstallStaxisDialog } from '@/components/pwa/InstallStaxisDialog';
@@ -58,6 +58,11 @@ import type { AppSection } from '@/lib/sections/registry';
 // triggers are: first sight of a hotel, coming back to the tab, and walking
 // away from the feed.
 let SESSION_BADGE: { pid: string; count: number } | null = null;
+// The other half of the pill: how many things arrived on this person's list
+// since they last looked. Cached the same way and for the same reason, and read
+// for EVERYBODY rather than managers only — a front desk shell has no decisions
+// to count, and this is the first thing its pill has ever had to say.
+let SESSION_NEW: { pid: string; count: number } | null = null;
 let LAST_SHELL_PATH: string | null = null;
 
 function markHotelSelectedThisTab(): void {
@@ -191,6 +196,8 @@ export function ConcourseBar() {
   const signedIn = !!user;
   const canSeeBadge = !portfolioScoped && shouldReadDecisionBadge(user, propertyId);
   const [badge, setBadge] = React.useState<{ pid: string; count: number } | null>(SESSION_BADGE);
+  const [fresh, setFresh] = React.useState<{ pid: string; count: number } | null>(SESSION_NEW);
+  const canSeeNew = !portfolioScoped && signedIn && !!propertyId;
 
   const readBadge = React.useCallback(async (pid: string) => {
     try {
@@ -212,6 +219,59 @@ export function ConcourseBar() {
       // A failed read is NOT an all-clear. Keep the last known count.
     }
   }, []);
+
+  /**
+   * How many rows are new on this person's list.
+   *
+   * Answered by /api/feed/prefs, which is the route that owns the cursor the
+   * count is measured against. A route of its own would have had to read the
+   * same preference row to know what "since" meant, and would have been a
+   * second surface to secure for one integer.
+   */
+  const readNew = React.useCallback(async (pid: string) => {
+    try {
+      const res = await fetchWithAuth(`/api/feed/prefs?pid=${encodeURIComponent(pid)}`);
+      const body = (await res.json().catch(() => null)) as
+        | { ok?: boolean; data?: { newOnList?: unknown } }
+        | null;
+      const n = body?.ok ? body.data?.newOnList : undefined;
+      if (typeof n !== 'number' || !Number.isFinite(n)) return;
+      SESSION_NEW = { pid, count: n };
+      setFresh(SESSION_NEW);
+    } catch {
+      // A failed read is NOT an all-clear, same as the decisions half above.
+    }
+  }, []);
+
+  React.useEffect(() => {
+    if (!canSeeNew || !propertyId) {
+      if (!signedIn) SESSION_NEW = null;
+      setFresh(null);
+      return;
+    }
+    if (SESSION_NEW?.pid === propertyId) { setFresh(SESSION_NEW); return; }
+    void readNew(propertyId);
+  }, [canSeeNew, signedIn, propertyId, readNew]);
+
+  // Leaving the feed is the moment the list was just LOOKED at, so it is also
+  // the moment the count should drop to nothing. Re-reading rather than
+  // assuming zero: the list stamps its own cursor, and this asks what that
+  // stamp actually left behind.
+  React.useEffect(() => {
+    const cameFrom = LAST_SHELL_PATH;
+    if (!canSeeNew || !propertyId) return;
+    if (!cameFrom || cameFrom === pathname) return;
+    if (cameFrom === '/feed' || cameFrom.startsWith('/feed/')) void readNew(propertyId);
+  }, [pathname, canSeeNew, propertyId, readNew]);
+
+  React.useEffect(() => {
+    if (!canSeeNew || !propertyId) return;
+    const onVisible = () => {
+      if (document.visibilityState === 'visible') void readNew(propertyId);
+    };
+    document.addEventListener('visibilitychange', onVisible);
+    return () => document.removeEventListener('visibilitychange', onVisible);
+  }, [canSeeNew, propertyId, readNew]);
 
   // First sight of this hotel in this browser session. Signing out drops the
   // remembered count on the floor: the next person at this browser must not
@@ -257,8 +317,9 @@ export function ConcourseBar() {
     return () => window.removeEventListener(QUEUE_COUNT_EVENT, onQueueCount);
   }, [canSeeBadge, propertyId, readBadge]);
 
-  const decisionBadge = staxisPillBadge(
+  const decisionBadge = staxisPillCount(
     badge && badge.pid === propertyId ? badge.count : 0,
+    fresh && fresh.pid === propertyId ? fresh.count : 0,
     lang,
   );
 

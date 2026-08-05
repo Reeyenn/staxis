@@ -104,7 +104,8 @@ function assigned(over: Partial<AssignedByMeItem> = {}): AssignedByMeItem {
     taskId: 't', title: 'Change the lobby filters', assigneeStaffId: 'm',
     assigneeName: 'Marcus', assignedDepartment: null, state: 'waiting',
     dueDate: null, createdAt: '2026-07-24T00:00:00.000Z',
-    settledByName: null, settledByStaffId: null, settledAt: null, reason: null, ageDays: 6,
+    settledByName: null, settledByStaffId: null, settledAt: null, reason: null,
+    completedForDate: null, ageDays: 6,
     ...over,
   };
 }
@@ -367,6 +368,74 @@ describe('a work row on the screen', () => {
     const text = textOf(tree).join(' | ');
     assert.match(text, /Done/);
     assert.match(text, /Can.t do this/);
+  });
+
+  test('a to-do that slipped offers the three honest endings instead', () => {
+    // Before this the row offered "Done", which stamped the moment of the TAP,
+    // so work done yesterday went into the record as today's. There was no way
+    // at all to say a thing had stopped needing doing except to delete it.
+    const tree = rows.WorkRowView({
+      item: item({ id: 'late', overdue: true, missedSince: '2026-07-29', supersededIds: [] }),
+      now: NOW,
+    }) as React.ReactElement;
+    const text = textOf(tree).join(' | ');
+    assert.match(text, /Done/);
+    assert.match(text, /Did it yesterday/, 'the day it is crediting is named on the button');
+    assert.match(text, /Not needed/);
+    assert.match(text, /Missed yesterday/, 'and the row says how far back it goes');
+  });
+
+  test('the day button names the day it will actually credit, not a generic yesterday', () => {
+    const tree = rows.WorkRowView({
+      item: item({ id: 'mon', overdue: true, missedSince: '2026-07-27', supersededIds: [] }),
+      now: NOW,
+    }) as React.ReactElement;
+    const text = textOf(tree).join(' | ');
+    assert.match(text, /Did it Monday/);
+    assert.ok(!/Did it yesterday/.test(text), 'a button that says yesterday and files Monday is a lie');
+  });
+
+  test('a collapsed repeat run does not offer a day it would not actually credit', () => {
+    // The row's identity is today's instance while the missed day belongs to an
+    // older one, so "Did it Monday" would credit today. The refusal takes the
+    // slot back, which keeps the reason reachable and keeps it to three.
+    const tree = rows.WorkRowView({
+      item: item({ id: 'run', overdue: true, missedSince: '2026-07-27', supersededIds: ['x', 'y'] }),
+      now: NOW,
+    }) as React.ReactElement;
+    const text = textOf(tree).join(' | ');
+    assert.ok(!/Did it/.test(text), 'a day it cannot credit must not be offered');
+    assert.match(text, /Done/);
+    assert.match(text, /Not needed/);
+    assert.match(text, /Can.t do this/, 'and the reason is still reachable');
+  });
+
+  test('a to-do that has not slipped is unchanged', () => {
+    const tree = rows.WorkRowView({ item: item({ id: 'ontime' }), now: NOW }) as React.ReactElement;
+    const text = textOf(tree).join(' | ');
+    assert.ok(!/Not needed/.test(text), '"not needed" is an answer to a row that slipped');
+    assert.ok(!/Did it/.test(text));
+    assert.match(text, /Can.t do this/);
+  });
+
+  test('a row that arrived since this person last looked is marked, quietly', () => {
+    const marked = rows.WorkRowView({ item: item({ id: 'n' }), now: NOW, isNew: true }) as React.ReactElement;
+    const dots = findAll(marked, (el) => el.props.className === 'fx-new');
+    assert.equal(dots.length, 1, 'nothing marked it as new');
+    // A dot and a spoken label, no word on the screen: it answers a question
+    // people ask with their eyes.
+    assert.match(textOf(marked).join(' | '), /New since you last looked/);
+
+    const plain = rows.WorkRowView({ item: item({ id: 'o' }), now: NOW }) as React.ReactElement;
+    assert.equal(findAll(plain, (el) => el.props.className === 'fx-new').length, 0);
+  });
+
+  test('a time of day reaches the row, and only while the day is still ahead', () => {
+    const soon = rows.WorkRowView({
+      item: item({ id: 'timed', dueDate: '2026-07-30T23:59:59.000Z', dueTime: '15:00' }),
+      now: NOW,
+    }) as React.ReactElement;
+    assert.match(textOf(soon).join(' | '), /by 3pm/);
   });
 
   test('something that cannot be completed here offers a way to its own screen instead', () => {

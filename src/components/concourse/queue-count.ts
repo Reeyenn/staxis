@@ -84,3 +84,40 @@ export function staxisPillBadge(count: number, lang: Language): PillBadge | null
   const noun = t(n === 1 ? 'navDecisionWaitingOne' : 'navDecisionWaitingMany', lang);
   return { count: n, label: `${n} ${noun}` };
 }
+
+/**
+ * The badge once "new on your list" is counted alongside decisions.
+ *
+ * ONE number on one pill, because there is one tab behind it. Two badges on one
+ * pill is a person doing arithmetic to work out whether to click, and a second
+ * pill is the lane system this whole screen refuses to have.
+ *
+ * The two counts do not overlap: a decision is a finding the AI raised, and a
+ * new row is a to-do somebody wrote. Adding them is honest, and the label says
+ * both halves out loud so the number is never a mystery.
+ *
+ * The DECISIONS half stays manager-only and arrives as 0 for everybody else
+ * (their shell never asks for it — see shouldReadDecisionBadge). The NEW half
+ * is for everybody, which is what makes the pill mean something on a front desk
+ * screen for the first time.
+ *
+ * English only for the new half (founder ruling, 2026-07-29). The decisions
+ * noun keeps its existing translated key rather than being torn out here.
+ */
+export function staxisPillCount(
+  decisions: number,
+  newOnList: number,
+  lang: Language,
+): PillBadge | null {
+  const decided = Number.isFinite(decisions) ? Math.max(0, Math.floor(decisions)) : 0;
+  const fresh = Number.isFinite(newOnList) ? Math.max(0, Math.floor(newOnList)) : 0;
+  const total = decided + fresh;
+  if (total < 1) return null;
+
+  const parts: string[] = [];
+  if (decided > 0) {
+    parts.push(`${decided} ${t(decided === 1 ? 'navDecisionWaitingOne' : 'navDecisionWaitingMany', lang)}`);
+  }
+  if (fresh > 0) parts.push(fresh === 1 ? '1 new thing' : `${fresh} new things`);
+  return { count: total, label: parts.join(', ') };
+}

@@ -69,17 +69,63 @@ export function rowKindLabel(sourceType: WorklistItem['sourceType']): string {
  * Both clocks are passed in so the same row renders the same sentence in a test
  * as it does at 4am on a Tuesday.
  */
-export function dueLine(dueIso: string | null, now: Date): string | null {
+export function dueLine(dueIso: string | null, now: Date, dueTime?: string | null): string | null {
   if (!dueIso) return null;
   const due = Date.parse(dueIso);
   if (Number.isNaN(due)) return null;
   const days = Math.floor((startOfDay(new Date(due)) - startOfDay(now)) / 86_400_000);
+  // The clock only reaches the line when the day is still ahead. "3 days late
+  // by 3pm" is two deadlines in one breath and the wrong one is the loud one:
+  // once a thing is late, how late it is is the only part that matters.
+  const at = days >= 0 ? timeWord(dueTime ?? null) : null;
+  const withTime = (base: string) => (at ? `${base} ${at}` : base);
   if (days < -1) return `${Math.abs(days)} days late`;
   if (days === -1) return 'Late since yesterday';
-  if (days === 0) return 'Due today';
-  if (days === 1) return 'Due tomorrow';
-  if (days < 7) return `Due in ${days} days`;
-  return `Due ${shortDate(new Date(due))}`;
+  if (days === 0) return withTime('Due today');
+  if (days === 1) return withTime('Due tomorrow');
+  if (days < 7) return withTime(`Due in ${days} days`);
+  return withTime(`Due ${shortDate(new Date(due))}`);
+}
+
+/**
+ * "by 3pm", "by 6:30am", "by noon". Null for no time, which is most rows.
+ *
+ * A stored time is 24-hour because that is the only shape with one reading.
+ * Nobody SAYS 15:00 in a hotel corridor, so nothing ever shows it: the wall
+ * clock goes in, the sentence comes out.
+ */
+export function timeWord(hhmm: string | null | undefined): string | null {
+  const parsed = readClock(hhmm);
+  if (!parsed) return null;
+  const { hour, minute } = parsed;
+  if (hour === 12 && minute === 0) return 'by noon';
+  if (hour === 0 && minute === 0) return 'by midnight';
+  const meridiem = hour < 12 ? 'am' : 'pm';
+  const h12 = hour % 12 === 0 ? 12 : hour % 12;
+  return minute === 0
+    ? `by ${h12}${meridiem}`
+    : `by ${h12}:${`${minute}`.padStart(2, '0')}${meridiem}`;
+}
+
+/** "HH:MM" → its two numbers, or null. The one place the stored shape is read. */
+function readClock(hhmm: string | null | undefined): { hour: number; minute: number } | null {
+  if (typeof hhmm !== 'string') return null;
+  const m = /^(\d{1,2}):(\d{2})/.exec(hhmm.trim());
+  if (!m) return null;
+  const hour = Number(m[1]);
+  const minute = Number(m[2]);
+  if (!Number.isInteger(hour) || !Number.isInteger(minute)) return null;
+  if (hour < 0 || hour > 23 || minute < 0 || minute > 59) return null;
+  return { hour, minute };
+}
+
+/**
+ * Minutes past midnight, for ordering only. Null sorts last within its day,
+ * which is what "a timed thing comes before an untimed one" means in practice.
+ */
+export function minuteOfDay(hhmm: string | null | undefined): number | null {
+  const parsed = readClock(hhmm);
+  return parsed ? parsed.hour * 60 + parsed.minute : null;
 }
 
 /**
@@ -93,27 +139,134 @@ export function stalenessLine(entry: Pick<AssignedByMeItem, 'state' | 'ageDays'>
   return `Assigned ${entry.ageDays} days ago, still open`;
 }
 
-/** Where an assigned task got to, in one line, with the receipt. */
+/**
+ * Where an assigned task got to, in one line, with the receipt.
+ *
+ * FOUR ENDINGS NOW, and the assigner sees the true one every time. The two that
+ * are new are the two that used to be told as a lie or not told at all:
+ *
+ *   done late      the work happened, after the day it was wanted
+ *   done on a day  "Marcus did it yesterday" — the completion was CREDITED to
+ *                  the day it was due, so the drawer says the day the work
+ *                  happened rather than the day somebody got round to tapping
+ *   not needed     it stopped needing doing, and nobody had to invent a reason
+ *
+ * A person who hands work out and is told a comfortable version of what
+ * happened stops trusting the receipts, and then stops handing work out.
+ */
 export function assignedStateLine(entry: AssignedByMeItem, now: Date): string {
   const who = entry.assigneeName ?? 'the person you assigned it to';
+  const by = entry.settledByName ?? who;
   if (entry.state === 'done') {
+    // Credited to a day: say THAT day. It is the honest half of the receipt and
+    // the only one the assigner can act on.
+    if (entry.completedForDate) {
+      const day = relativeDay(`${entry.completedForDate}T12:00:00`, now);
+      return day ? `${by} did it ${day}` : `${by} marked it done`;
+    }
     const when = entry.settledAt ? relativeDay(entry.settledAt, now) : null;
-    const by = entry.settledByName ?? who;
-    return when ? `${by} marked it done ${when}` : `${by} marked it done`;
+    const late = wasLate(entry);
+    if (when) return late ? `${by} marked it done ${when}, after it was due` : `${by} marked it done ${when}`;
+    return late ? `${by} marked it done, after it was due` : `${by} marked it done`;
   }
   if (entry.state === 'cant') {
     const when = entry.settledAt ? relativeDay(entry.settledAt, now) : null;
-    const by = entry.settledByName ?? who;
     return when ? `${by} could not do it ${when}` : `${by} could not do it`;
+  }
+  if (entry.state === 'skipped') {
+    const when = entry.settledAt ? relativeDay(entry.settledAt, now) : null;
+    return when ? `${by} said it was not needed ${when}` : `${by} said it was not needed`;
   }
   return `Waiting on ${who}`;
 }
 
-/** The one line the assigner sees on their own list when work comes back done. */
+/**
+ * Did this land after the day it was wanted?
+ *
+ * Compared on whole DAYS, not instants. A to-do due today that somebody closed
+ * at 11:58pm was done today, and calling that late over two minutes is the kind
+ * of pedantry that makes a person stop reading the receipts.
+ */
+function wasLate(entry: Pick<AssignedByMeItem, 'dueDate' | 'settledAt'>): boolean {
+  if (!entry.dueDate || !entry.settledAt) return false;
+  const due = Date.parse(entry.dueDate);
+  const settled = Date.parse(entry.settledAt);
+  if (Number.isNaN(due) || Number.isNaN(settled)) return false;
+  return startOfDay(new Date(settled)) > startOfDay(new Date(due));
+}
+
+/** The one line the assigner sees on their own list when work comes back. */
 export function completionNotice(entry: AssignedByMeItem): string {
   const who = entry.settledByName ?? entry.assigneeName ?? 'Somebody';
   if (entry.state === 'cant') return `${who} could not do "${entry.title}"`;
+  if (entry.state === 'skipped') return `${who} said "${entry.title}" was not needed`;
+  if (entry.completedForDate) return `${who} did "${entry.title}" on the day it was due`;
+  if (wasLate(entry)) return `${who} finished "${entry.title}", late`;
   return `${who} finished "${entry.title}"`;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// An overdue row's three answers
+//
+// A to-do that slipped has three true endings and the old row offered one and a
+// half of them. "Done" stamped the moment of the TAP, so work that happened on
+// Tuesday went into the record as Thursday's, and every pattern the product
+// learns about when work actually gets done was being taught a date nobody
+// chose. There was no way at all to say a thing had stopped needing doing
+// except to delete it, and a deleted row answers nobody.
+// ═══════════════════════════════════════════════════════════════════════════
+
+/** What the three buttons on an overdue row say, left to right. */
+export interface OverdueAnswers {
+  /** Completes now, recorded now. */
+  done: string;
+  /** Completes, CREDITED to the day it was due. Named after that day. */
+  onDay: string;
+  /** Records that it stopped needing doing. Never a silent delete. */
+  notNeeded: string;
+}
+
+/**
+ * The three labels, with the middle one named after the day it is crediting.
+ *
+ * "Did it yesterday" is only ever offered when the day it was due WAS
+ * yesterday. On a to-do that slipped from Monday the button says "Did it
+ * Monday", because a button that says yesterday and files Monday is the same
+ * dishonesty this whole control exists to remove.
+ */
+export function overdueAnswers(missedSince: string | null, now: Date): OverdueAnswers {
+  return {
+    done: 'Done',
+    onDay: `Did it ${missedDayPhrase(missedSince, now) ?? 'on the day'}`,
+    notNeeded: 'Not needed',
+  };
+}
+
+/** "yesterday" | "Monday" | "on Aug 2" | null when there is no missed day. */
+export function missedDayPhrase(missedSince: string | null, now: Date): string | null {
+  if (!missedSince) return null;
+  const d = new Date(`${missedSince}T12:00:00`);
+  if (Number.isNaN(d.getTime())) return null;
+  const days = Math.floor((startOfDay(now) - startOfDay(d)) / 86_400_000);
+  if (days <= 0) return null;
+  if (days === 1) return 'yesterday';
+  if (days < 7) return WEEKDAYS[d.getDay()];
+  return `on ${shortDate(d)}`;
+}
+
+/**
+ * The quiet line on a repeating row that has been missed.
+ *
+ * ONE row, whatever the size of the run behind it. A daily to-do that nobody
+ * did for five days used to be five identical rows, which is not a list of work
+ * any more, it is the same sentence shouted five times. The line says how far
+ * back it goes rather than how many copies were collapsed: "missed since
+ * Monday" is what somebody needs to know, and "5 instances" is bookkeeping.
+ */
+export function missedLine(missedSince: string | null, now: Date): string | null {
+  const phrase = missedDayPhrase(missedSince, now);
+  if (!phrase) return null;
+  return phrase === 'yesterday' ? 'Missed yesterday' : `Missed since ${phrase.replace(/^on /, '')}`;
 }
 
 /** Plain-English cadence, for the composer chip and the row it creates. */
@@ -211,9 +364,17 @@ export function whoWord(who: string, people: readonly ComposerPerson[]): string 
  * A repeating item has no single due date, so its word says where the run
  * starts instead: "from today", "from Monday".
  */
-export function whenWord(iso: string | null, now: Date, opts: { repeating?: boolean } = {}): string {
+export function whenWord(
+  iso: string | null,
+  now: Date,
+  opts: { repeating?: boolean; atTime?: string | null } = {},
+): string {
   const plain = plainDay(iso, now);
-  return opts.repeating ? `from ${plain}` : plain;
+  const day = opts.repeating ? `from ${plain}` : plain;
+  // "today by 3pm". One word, still: the time is part of when, not a fourth
+  // thing to answer, and a row with no time reads exactly as it always did.
+  const at = timeWord(opts.atTime);
+  return at ? `${day} ${at}` : day;
 }
 
 function plainDay(iso: string | null, now: Date): string {

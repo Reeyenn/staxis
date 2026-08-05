@@ -41,6 +41,7 @@ import type { LogEntryDTO } from '@/lib/comms/types';
 import type { AssignedByMeItem, WorklistItem } from '@/lib/worklist/types';
 import type { FeedPrefs } from '@/lib/feed/prefs';
 import { COMPOSER_COPY, emptyListNote } from '@/lib/feed/one-list-copy';
+import { isNewSince, rowIsMine } from '@/lib/feed/one-list';
 import { emptyParse, parseTodo, type ParseResult } from '@/lib/feed/parse-todo';
 import { INTERPRET_DEBOUNCE_MS, INTERPRET_TIMEOUT_MS, shouldInterpret } from '@/lib/feed/interpret-todo';
 import { COMPOSER_TAUGHT_TODO_REPEAT, parseCompanionMemory } from '@/lib/companion/manners';
@@ -186,6 +187,45 @@ export function StaxisList({
   const [micAvailable, setMicAvailable] = React.useState(false);
   const [teachLine, setTeachLine] = React.useState<string | null>(null);
 
+  // ── everything, or just mine ─────────────────────────────────────────────
+  // Per DEVICE, deliberately. It is view state, not something about the person:
+  // somebody who narrows their list on the phone they carry round the building
+  // has not asked for the office screen to be narrowed too. Read once, on
+  // mount, because localStorage is not available while the server renders.
+  const [mineOnly, setMineOnly] = React.useState(false);
+  React.useEffect(() => { setMineOnly(readMineOnly()); }, []);
+  const chooseScope = React.useCallback((next: boolean) => {
+    setMineOnly(next);
+    writeMineOnly(next);
+  }, []);
+
+  // ── what was new when this person arrived ────────────────────────────────
+  // FROZEN at the first read, and that is the whole trick. The markers are
+  // measured against the cursor as it was when the page opened; the stamp below
+  // then moves the cursor to now, so the NEXT visit measures from this one. Read
+  // live, the stamp would erase every marker a fraction of a second after
+  // painting it, and the feature would look like it had never shipped.
+  const [listSeenAt, setListSeenAt] = React.useState<string | null | undefined>(undefined);
+  const seenStamped = React.useRef(false);
+  React.useEffect(() => {
+    if (!prefsData || seenStamped.current) return;
+    seenStamped.current = true;
+    setListSeenAt(prefsData.prefs.listSeenAt);
+    void (async () => {
+      try {
+        await fetchWithAuth('/api/feed/prefs', {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ pid: propertyId, markListSeen: true }),
+          timeoutMs: INTERACTIVE_ACTION_TIMEOUT_MS,
+        });
+      } catch {
+        // Fire and forget. A lost stamp costs one repeated set of markers on
+        // the next visit, which is a smaller harm than an error over a list.
+      }
+    })();
+  }, [prefsData, propertyId]);
+
   // ── which day the timeline is showing ────────────────────────────────────
   // The `List` / `Calendar` toggle is gone (2026-08-01). The week strip in the
   // day header is the ambient calendar and is always on screen; the MONTH grid
@@ -252,7 +292,7 @@ export function StaxisList({
 
   // ── writes ───────────────────────────────────────────────────────────────
   const settle = React.useCallback(
-    (item: WorklistItem, outcome: 'done' | 'cant', reason?: string) => {
+    (item: WorklistItem, outcome: 'done' | 'cant' | 'done_on_due' | 'skip', reason?: string) => {
       void (async () => {
         setBusyRow(item.id);
         setRowError(null);
@@ -607,7 +647,10 @@ export function StaxisList({
       busy={busyRow === item.id}
       askingReason={reasonFor === item.id}
       reasonDraft={reasonDraft}
+      isNew={listSeenAt !== undefined && isNewSince(item, listSeenAt, now)}
       onDone={(i) => settle(i, 'done')}
+      onDoneOnDay={(i) => settle(i, 'done_on_due')}
+      onNotNeeded={(i) => settle(i, 'skip')}
       onAskReason={(i) => { setReasonFor(i.id); setReasonDraft(''); }}
       onReasonChange={setReasonDraft}
       onCantSubmit={(i) => settle(i, 'cant', reasonDraft.trim())}
@@ -642,8 +685,15 @@ export function StaxisList({
   // ANY OTHER DAY shows only what that day names, which is what a person means
   // when they click Saturday.
   const dayItems = React.useMemo(
-    () => (isToday ? items : items.filter((it) => dayOf(it) === anchorIso)),
-    [isToday, items, anchorIso],
+    () => {
+      const onDay = isToday ? items : items.filter((it) => dayOf(it) === anchorIso);
+      // Narrowed, never reordered. See the "one narrowing" note in one-list.ts:
+      // this removes rows and touches nothing else, so the thing at the top of
+      // "just mine" is the same thing that was highest among their own rows.
+      if (!mineOnly || !meStaffId) return onDay;
+      return onDay.filter((it) => rowIsMine({ kind: 'item', key: it.id, item: it }, meStaffId));
+    },
+    [isToday, items, anchorIso, mineOnly, meStaffId],
   );
   const dayEvents = React.useMemo(
     () => events.filter((ev) => anchorIso >= ev.eventDate && anchorIso <= (ev.endDate ?? ev.eventDate)),
@@ -680,6 +730,33 @@ export function StaxisList({
               <CxIcon name="forward" size={12} />
             </button>
             <span className="fx-vrule" aria-hidden />
+            {/* Two words, one capsule, sitting with the day controls because it
+                is about which rows are shown rather than about any of them.
+                Offered only once we know who "mine" would be: a toggle that
+                could only ever empty the list is worse than no toggle. */}
+            {meStaffId && (
+              <>
+                <div className="fx-seg" role="group" aria-label="Which work to show">
+                  <button
+                    type="button"
+                    className="fx-segb"
+                    aria-pressed={!mineOnly}
+                    onClick={() => chooseScope(false)}
+                  >
+                    Everything
+                  </button>
+                  <button
+                    type="button"
+                    className="fx-segb"
+                    aria-pressed={mineOnly}
+                    onClick={() => chooseScope(true)}
+                  >
+                    Just mine
+                  </button>
+                </div>
+                <span className="fx-vrule" aria-hidden />
+              </>
+            )}
             <button
               type="button"
               className="fx-month"
@@ -898,6 +975,35 @@ function speechConstructor(): (new () => SpeechRecognitionLike) | null {
     webkitSpeechRecognition?: new () => SpeechRecognitionLike;
   };
   return w.SpeechRecognition ?? w.webkitSpeechRecognition ?? null;
+}
+
+// ── the mine toggle's memory ─────────────────────────────────────────────
+//
+// One boolean, per device, per browser. Never sent anywhere. Wrapped in
+// try/catch on BOTH sides because private-mode Safari throws on both, and a
+// view preference must never be able to take the list down with it.
+
+/** localStorage key. Dotted, matching the newer keys (staxis.companion.dock). */
+export const MINE_ONLY_KEY = 'staxis.feed.mine';
+
+function readMineOnly(): boolean {
+  try {
+    if (typeof window === 'undefined') return false;
+    return window.localStorage.getItem(MINE_ONLY_KEY) === '1';
+  } catch {
+    return false;
+  }
+}
+
+function writeMineOnly(on: boolean): void {
+  try {
+    if (typeof window === 'undefined') return;
+    if (on) window.localStorage.setItem(MINE_ONLY_KEY, '1');
+    else window.localStorage.removeItem(MINE_ONLY_KEY);
+  } catch {
+    // The toggle already moved on the screen. Losing the memory of it costs
+    // one re-tap next time, which is not worth an error message.
+  }
 }
 
 /** Today, in the browser's own timezone, as YYYY-MM-DD. */

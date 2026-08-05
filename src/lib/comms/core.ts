@@ -1380,6 +1380,8 @@ export async function createTask(
     assignedDepartment?: string | null; dueAt?: string | null;
     priority?: 'normal' | 'high' | 'urgent';
     createdByStaffId?: string | null; sourceMessageId?: string | null;
+    /** "HH:MM" on the hotel's own wall clock. Display and sort only. */
+    dueTime?: string | null;
   },
 ): Promise<{ id: string }> {
   const blocked = await assignmentBlockedReason(pid, input.assignedStaffId);
@@ -1393,6 +1395,7 @@ export async function createTask(
       assigned_staff_id: input.assignedStaffId ?? null,
       assigned_department: input.assignedDepartment ?? null,
       due_at: input.dueAt ?? null,
+      due_time: input.dueTime ?? null,
       priority: input.priority ?? 'normal',
       created_by_staff_id: input.createdByStaffId ?? null,
       source_message_id: input.sourceMessageId ?? null,

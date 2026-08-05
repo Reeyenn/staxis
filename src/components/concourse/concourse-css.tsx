@@ -358,6 +358,21 @@ const FEED_CSS = `
 .fx-month:hover,.fx-month[aria-expanded="true"]{background:#F1F5F0;border-color:rgba(62,92,72,.34);color:#3E5C48;}
 .fx-step:focus-visible,.fx-month:focus-visible,.fx-wd:focus-visible{outline:2px solid #3E5C48;outline-offset:2px;}
 
+/* ── Everything / Just mine ──────────────────────────────────────────────
+   The ONE narrowing on this list, and it is built to look like the smallest
+   thing on the screen. Two words in a single hairline capsule, sitting with the
+   other day controls rather than over the list: it is about which rows are
+   shown, not about any of them. Quiet when idle means the resting state is the
+   same grey as the range label beside it, and only the ON side goes sage. */
+.fx-seg{display:inline-flex;align-items:center;height:30px;padding:2px;border-radius:9px;
+  border:1px solid rgba(31,35,28,.12);background:#fff;gap:2px;}
+.fx-segb{border:none;background:transparent;border-radius:7px;height:24px;padding:0 10px;
+  font-family:inherit;font-size:12px;font-weight:500;color:#8A9187;cursor:pointer;white-space:nowrap;
+  transition:background .16s ease,color .16s ease;}
+.fx-segb:hover:not([aria-pressed="true"]){color:#5C625C;background:rgba(31,35,28,.04);}
+.fx-segb[aria-pressed="true"]{background:#F1F5F0;color:#3E5C48;font-weight:600;}
+.fx-segb:focus-visible{outline:2px solid #3E5C48;outline-offset:2px;}
+
 /* Week strip */
 .fx-week{display:flex;gap:6px;}
 .fx-wd{width:64px;padding:8px 0 9px;border-radius:12px;background:#fff;border:1px solid rgba(31,35,28,.08);
@@ -421,6 +436,11 @@ const FEED_CSS = `
   transition:transform 160ms ease,box-shadow 160ms ease;}
 .fx-row:hover{transform:translateY(-1px);box-shadow:0 14px 30px -22px rgba(31,42,32,.9);}
 .fx-row.fx-late{border-color:rgba(184,92,61,.28);}
+/* Arrived since this person last looked. A dot, no word and no second colour:
+   sage is already what this page means by "yours", and somebody who never
+   notices the dot has lost nothing at all. */
+.fx-new{display:inline-block;width:6px;height:6px;border-radius:50%;background:#5C7A60;
+  margin-right:7px;vertical-align:middle;flex-shrink:0;}
 .fx-rowt{font-size:14.5px;font-weight:600;color:#1F231C;min-width:0;}
 .fx-rowm{font-family:var(--font-geist-mono),ui-monospace,monospace;font-size:10px;letter-spacing:.1em;
   text-transform:uppercase;color:#A6ABA6;white-space:nowrap;}

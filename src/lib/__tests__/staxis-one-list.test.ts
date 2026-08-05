@@ -33,14 +33,27 @@ import { describe, test } from 'node:test';
 import {
   buildOneList,
   compareStanding,
+  countNewSince,
   effectiveSeverity,
+  filterMine,
+  isNewSince,
   partitionTimeline,
   rankWorkItems,
+  rowIsMine,
   standingOf,
   type ListRow,
 } from '@/lib/feed/one-list';
+import {
+  assignedStateLine,
+  completionNotice,
+  dueLine,
+  missedLine,
+  overdueAnswers,
+  timeWord,
+  whenWord,
+} from '@/lib/feed/one-list-copy';
 import { listRendersFor, listShowsFindings, listStandingFor } from '@/lib/feed/list-access';
-import { assignerNotices, taskVisibleToViewer, viewerDepartment, worklistSeesApprovals, mapAssignedRow, mayActOnItem, keepForAssigner } from '@/lib/worklist/core';
+import { assignerNotices, collapseRepeatInstances, taskVisibleToViewer, viewerDepartment, worklistSeesApprovals, mapAssignedRow, mayActOnItem, keepForAssigner } from '@/lib/worklist/core';
 import { isTemplateDueOn, normalizeCadence } from '@/lib/recurring-tasks/store';
 import { rankFindings, type QueueFinding } from '@/components/concourse/finding-cards';
 import type { LogEntryDTO } from '@/lib/comms/types';
@@ -413,7 +426,8 @@ describe('what came back since you last looked', () => {
     return {
       taskId: 't', title: 'Change the lobby filters', assigneeStaffId: 'm', assigneeName: 'Marcus',
       assignedDepartment: null, state: 'done', dueDate: null, createdAt: '2026-07-24T00:00:00.000Z',
-      settledByName: 'Marcus', settledByStaffId: 'm', settledAt: '2026-07-30T09:00:00.000Z', reason: null, ageDays: 6,
+      settledByName: 'Marcus', settledByStaffId: 'm', settledAt: '2026-07-30T09:00:00.000Z', reason: null,
+      completedForDate: null, ageDays: 6,
       ...over,
     };
   }
@@ -566,7 +580,7 @@ describe('what comes back to the person who asked', () => {
     taskId: 't', title: 'Check the pool chemicals', assigneeStaffId: null, assigneeName: null,
     assignedDepartment: null, state: 'waiting', dueDate: null,
     createdAt: '2026-07-28T00:00:00.000Z', settledByName: null, settledByStaffId: null,
-    settledAt: null, reason: null, ageDays: 2, ...over,
+    settledAt: null, reason: null, completedForDate: null, ageDays: 2, ...over,
   });
 
   test('a to-do handed to a person is tracked from the moment it is handed over', () => {
@@ -693,5 +707,322 @@ describe('the day splits into what is still owed and what already happened', () 
   test('a caller that passes no events gets no event rows', () => {
     const built = buildOneList({ findings: [], items: [item({ id: 't1' })], findingCap: 0 });
     assert.deepEqual(built.rows.map((r) => r.kind), ['item']);
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// FOLLOW-THROUGH — the rules the list gained on 2026-08-05
+//
+//   8.  A repeating to-do that was missed is ONE row, however many days it has
+//       been missed for.
+//   9.  "Just mine" means assigned to me OR asked for by me. Filtering on the
+//       assignee alone was the obvious version and it hides a manager's own
+//       house to-dos, which is the exact work they typed in themselves.
+//   10. A time of day sorts inside its own day and cannot reorder anything
+//       across days, across severities or across money.
+//   11. New-since-you-looked is measured against one cursor, with a floor, so
+//       a first-ever visit is not a wall of markers.
+//   12. The overdue row's three answers name the day they are crediting.
+// ═══════════════════════════════════════════════════════════════════════════
+
+describe('a repeating to-do that was missed is one row', () => {
+  const inst = (id: string, templateId: string | null, day: string | null) => ({ id, templateId, day });
+
+  test('five open instances collapse to the newest, which speaks for the rest', () => {
+    const runs = collapseRepeatInstances([
+      inst('a', 'tpl', '2026-07-26'),
+      inst('b', 'tpl', '2026-07-27'),
+      inst('c', 'tpl', '2026-07-28'),
+      inst('d', 'tpl', '2026-07-29'),
+      inst('e', 'tpl', '2026-07-30'),
+    ]);
+    assert.equal(runs.size, 1, 'one survivor, not five');
+    const run = runs.get('e');
+    assert.ok(run, 'the newest instance is the one that survives');
+    assert.deepEqual(run.supersededIds, ['a', 'b', 'c', 'd']);
+    assert.equal(run.missedSince, '2026-07-26', 'reaching back to the oldest still open');
+  });
+
+  test('one instance on its own is not "missed" anything', () => {
+    const runs = collapseRepeatInstances([inst('a', 'tpl', '2026-07-30')]);
+    assert.equal(runs.get('a')?.missedSince, null);
+    assert.deepEqual(runs.get('a')?.supersededIds, []);
+  });
+
+  test('two templates are two runs, never merged into one', () => {
+    const runs = collapseRepeatInstances([
+      inst('a', 'coffee', '2026-07-29'), inst('b', 'coffee', '2026-07-30'),
+      inst('c', 'halls', '2026-07-30'),
+    ]);
+    assert.equal(runs.size, 2);
+    assert.deepEqual(runs.get('b')?.supersededIds, ['a']);
+    assert.deepEqual(runs.get('c')?.supersededIds, []);
+  });
+
+  test('a to-do that does not repeat is never collapsed with anything', () => {
+    const runs = collapseRepeatInstances([
+      inst('a', null, null), inst('b', null, null), inst('c', null, '2026-07-30'),
+    ]);
+    assert.equal(runs.size, 0, 'nothing here is an instance of anything');
+  });
+
+  test('an instance with no day cannot win the run and take today\'s row off the screen', () => {
+    const runs = collapseRepeatInstances([
+      inst('dated', 'tpl', '2026-07-30'),
+      inst('undated', 'tpl', null),
+    ]);
+    assert.ok(runs.get('dated'), 'the row that knows which day it is for survives');
+    assert.deepEqual(runs.get('dated')?.supersededIds, ['undated']);
+  });
+});
+
+describe('just mine', () => {
+  const row = (over: Partial<WorklistItem> & { id: string }): ListRow =>
+    ({ kind: 'item', key: over.id, item: item(over) });
+
+  test('work assigned to me is mine', () => {
+    assert.equal(rowIsMine(row({ id: '1', assigneeStaffId: 'me' }), 'me'), true);
+  });
+
+  test('work I asked for is mine too, even when it names nobody', () => {
+    // The half that filtering on the assignee alone gets wrong. A manager's own
+    // house to-dos carry no assignee at all, so "just mine" would have hidden
+    // the work they typed into the composer two minutes earlier.
+    assert.equal(
+      rowIsMine(row({ id: '2', assigneeStaffId: null, createdByStaffId: 'me' }), 'me'),
+      true,
+    );
+  });
+
+  test('work I handed to somebody else is not mine, even though I wrote it', () => {
+    // The founder's assignment rule, applied to the narrowing. Delegated work
+    // lives on THEIR page; what I handed out is answered by the Assigned-by-me
+    // drawer. A "just mine" that quietly pulled it back would undo the loop.
+    assert.equal(rowIsMine(row({ id: '3', assigneeStaffId: 'dana', createdByStaffId: 'me' }), 'me'), false);
+  });
+
+  test('a to-do I wrote for the shift is the shift\'s, not mine', () => {
+    assert.equal(rowIsMine(row({ id: '3b', dept: 'front_desk', createdByStaffId: 'me' }), 'me'), false);
+  });
+
+  test('the shift\'s work is not any one person\'s', () => {
+    assert.equal(rowIsMine(row({ id: '4', dept: 'front_desk' }), 'me'), false);
+  });
+
+  test('nothing the AI noticed is anybody\'s personally', () => {
+    const finding0: ListRow = { kind: 'finding', key: 'f', finding: finding({ id: 'f' }) };
+    assert.equal(rowIsMine(finding0, 'me'), false);
+  });
+
+  test('narrowing removes rows and never reorders the ones that stay', () => {
+    const rows: ListRow[] = [
+      row({ id: 'a', assigneeStaffId: 'me' }),
+      row({ id: 'b', assigneeStaffId: 'dana' }),
+      row({ id: 'c', createdByStaffId: 'me' }),
+      row({ id: 'd', dept: 'front_desk' }),
+    ];
+    assert.deepEqual(filterMine(rows, 'me').map((r) => r.key), ['a', 'c']);
+  });
+
+  test('with no idea who I am, nothing is claimed as mine', () => {
+    assert.deepEqual(filterMine([row({ id: 'a', assigneeStaffId: 'me' })], null), []);
+  });
+});
+
+describe('a time of day orders inside its own day and nowhere else', () => {
+  const due = '2026-07-30T23:59:59.000Z';
+
+  test('a timed to-do comes before an untimed one due the same day', () => {
+    const timed = standingOf({ kind: 'item', key: 't', item: item({ id: 't', dueDate: due, dueTime: '15:00' }) });
+    const untimed = standingOf({ kind: 'item', key: 'u', item: item({ id: 'u', dueDate: due }) });
+    assert.ok(compareStanding(timed, untimed) < 0, 'the one with a clock on it goes first');
+    assert.ok(compareStanding(untimed, timed) > 0, 'and the comparison is symmetric');
+  });
+
+  test('the earlier clock goes before the later one', () => {
+    const nine = standingOf({ kind: 'item', key: 'a', item: item({ id: 'a', dueDate: due, dueTime: '09:00' }) });
+    const three = standingOf({ kind: 'item', key: 'b', item: item({ id: 'b', dueDate: due, dueTime: '15:00' }) });
+    assert.ok(compareStanding(nine, three) < 0);
+  });
+
+  test('a clock cannot lift a row over money, severity or an earlier day', () => {
+    const timedCheap = standingOf({ kind: 'item', key: 'a', item: item({ id: 'a', dueDate: due, dueTime: '06:00' }) });
+    const pricey = standingOf({ kind: 'item', key: 'b', item: item({ id: 'b', dueDate: due, amountCents: 40_000 }) });
+    assert.ok(compareStanding(pricey, timedCheap) < 0, 'dollars still come first');
+
+    const urgent = standingOf({ kind: 'item', key: 'c', item: item({ id: 'c', dueDate: due, priority: 'urgent' }) });
+    assert.ok(compareStanding(urgent, timedCheap) < 0, 'severity still outranks the clock');
+
+    const yesterday = standingOf({
+      kind: 'item', key: 'd', item: item({ id: 'd', dueDate: '2026-07-29T23:59:59.000Z' }),
+    });
+    assert.ok(compareStanding(yesterday, timedCheap) < 0, 'and an earlier day still comes first');
+  });
+
+  test('two untimed rows are still a tie, so nothing reshuffles between loads', () => {
+    const a = standingOf({ kind: 'item', key: 'a', item: item({ id: 'a', dueDate: due }) });
+    const b = standingOf({ kind: 'item', key: 'b', item: item({ id: 'b', dueDate: due }) });
+    assert.equal(compareStanding(a, b), 0);
+  });
+});
+
+describe('what is new since this person last looked', () => {
+  const at = (iso: string) => item({ id: iso, createdAt: iso });
+
+  test('a row that arrived after the cursor is new', () => {
+    assert.equal(isNewSince(at('2026-07-30T10:00:00.000Z'), '2026-07-30T09:00:00.000Z', NOW), true);
+  });
+
+  test('a row that was already there when they looked is not', () => {
+    assert.equal(isNewSince(at('2026-07-30T08:00:00.000Z'), '2026-07-30T09:00:00.000Z', NOW), false);
+  });
+
+  test('a first-ever visit is not a wall of markers', () => {
+    // The floor. Without it, "everything newer than never" is the hotel's whole
+    // history, and somebody's first look would light up every row they own,
+    // which teaches them immediately that the marker means nothing.
+    assert.equal(isNewSince(at('2026-07-29T10:00:00.000Z'), null, NOW), true, 'this week counts');
+    assert.equal(isNewSince(at('2026-05-01T10:00:00.000Z'), null, NOW), false, 'the spring does not');
+  });
+
+  test('the floor applies to a real cursor too, so a long absence is not a flood', () => {
+    assert.equal(isNewSince(at('2026-01-01T10:00:00.000Z'), '2025-12-31T10:00:00.000Z', NOW), false);
+  });
+
+  test('a row with no arrival time is never claimed as new', () => {
+    assert.equal(isNewSince(item({ id: 'x', createdAt: null }), null, NOW), false);
+    assert.equal(isNewSince(item({ id: 'y', createdAt: 'not a date' }), null, NOW), false);
+  });
+
+  test('the count is the number of rows the markers would go on', () => {
+    const rows = [
+      at('2026-07-30T10:00:00.000Z'),
+      at('2026-07-30T11:00:00.000Z'),
+      at('2026-07-30T08:00:00.000Z'),
+    ];
+    assert.equal(countNewSince(rows, '2026-07-30T09:00:00.000Z', NOW), 2);
+  });
+
+  test('looking is what clears it: a cursor at now leaves nothing new', () => {
+    const rows = [at('2026-07-30T10:00:00.000Z'), at('2026-07-30T11:00:00.000Z')];
+    assert.equal(countNewSince(rows, NOW.toISOString(), NOW), 0);
+  });
+});
+
+describe('the three answers on a row that slipped', () => {
+  test('the middle one names the day it is crediting, never a generic yesterday', () => {
+    // A button that says "yesterday" and files Monday is the same dishonesty
+    // the whole control exists to remove.
+    assert.equal(overdueAnswers('2026-07-29', NOW).onDay, 'Did it yesterday');
+    assert.equal(overdueAnswers('2026-07-27', NOW).onDay, 'Did it Monday');
+    assert.equal(overdueAnswers('2026-07-01', NOW).onDay, 'Did it on Jul 1');
+  });
+
+  test('the other two never change, because they mean the same thing every time', () => {
+    const answers = overdueAnswers('2026-07-29', NOW);
+    assert.equal(answers.done, 'Done');
+    assert.equal(answers.notNeeded, 'Not needed');
+  });
+
+  test('a row that has not slipped says nothing about a missed day', () => {
+    assert.equal(missedLine(null, NOW), null);
+    assert.equal(missedLine('2026-07-30', NOW), null, 'today is not a day that was missed');
+    assert.equal(missedLine('2026-08-05', NOW), null, 'nor is a day still to come');
+  });
+
+  test('a run says how far back it goes, not how many copies were folded away', () => {
+    assert.equal(missedLine('2026-07-29', NOW), 'Missed yesterday');
+    assert.equal(missedLine('2026-07-27', NOW), 'Missed since Monday');
+    assert.equal(missedLine('2026-07-01', NOW), 'Missed since Jul 1');
+  });
+});
+
+describe('the clock, in words a person would say out loud', () => {
+  test('a stored 24-hour time comes back as the time somebody speaks', () => {
+    assert.equal(timeWord('15:00'), 'by 3pm');
+    assert.equal(timeWord('09:30'), 'by 9:30am');
+    assert.equal(timeWord('12:00'), 'by noon');
+    assert.equal(timeWord('00:00'), 'by midnight');
+    assert.equal(timeWord('23:59'), 'by 11:59pm');
+  });
+
+  test('postgres hands back seconds, and they change nothing', () => {
+    assert.equal(timeWord('15:00:00'), 'by 3pm');
+  });
+
+  test('no time is no words at all', () => {
+    for (const bad of [null, undefined, '', 'half past three', '99:99']) {
+      assert.equal(timeWord(bad as string | null), null, `${bad} produced words`);
+    }
+  });
+
+  test('the due line carries the clock while the day is still ahead', () => {
+    assert.equal(dueLine('2026-07-30T23:59:59.000Z', NOW, '15:00'), 'Due today by 3pm');
+    assert.equal(dueLine('2026-07-31T23:59:59.000Z', NOW, '15:00'), 'Due tomorrow by 3pm');
+  });
+
+  test('and drops it once the row is late, because how late is the only part that matters', () => {
+    assert.equal(dueLine('2026-07-29T23:59:59.000Z', NOW, '15:00'), 'Late since yesterday');
+    assert.equal(dueLine('2026-07-27T23:59:59.000Z', NOW, '15:00'), '3 days late');
+  });
+
+  test('the composer says the day and the clock as one word', () => {
+    assert.equal(whenWord('2026-07-30', NOW, { atTime: '15:00' }), 'today by 3pm');
+    assert.equal(whenWord('2026-07-30', NOW, {}), 'today', 'and says nothing extra without one');
+    assert.equal(whenWord('2026-07-30', NOW, { repeating: true, atTime: '09:00' }), 'from today by 9am');
+  });
+});
+
+describe('the receipts an assigner reads', () => {
+  const settled = (over: Partial<AssignedByMeItem>): AssignedByMeItem => ({
+    taskId: 't', title: 'Change the lobby filters', assigneeStaffId: 'm', assigneeName: 'Marcus',
+    assignedDepartment: null, state: 'done', dueDate: '2026-07-29T23:59:59.000Z',
+    createdAt: '2026-07-28T00:00:00.000Z', settledByName: 'Marcus', settledByStaffId: 'm',
+    settledAt: '2026-07-30T09:00:00.000Z', reason: null, completedForDate: null, ageDays: 2, ...over,
+  });
+
+  test('done late says so, rather than reading like it landed on time', () => {
+    assert.match(assignedStateLine(settled({}), NOW), /after it was due/);
+  });
+
+  test('done on the day it was due says that day, not the day it was reported', () => {
+    // The whole point. Before this the assigner read "marked it done today" for
+    // work that happened yesterday, and had no way to know the difference.
+    assert.match(
+      assignedStateLine(settled({ completedForDate: '2026-07-29' }), NOW),
+      /did it yesterday/i,
+    );
+  });
+
+  test('done on time is still just done', () => {
+    const onTime = settled({ dueDate: '2026-07-30T23:59:59.000Z' });
+    assert.doesNotMatch(assignedStateLine(onTime, NOW), /after it was due/);
+  });
+
+  test('not needed is its own ending and is never dressed up as done', () => {
+    const skipped = settled({ state: 'skipped', settledAt: '2026-07-30T09:00:00.000Z' });
+    assert.match(assignedStateLine(skipped, NOW), /not needed/i);
+    assert.doesNotMatch(assignedStateLine(skipped, NOW), /done/i);
+    assert.match(completionNotice(skipped), /not needed/i);
+  });
+
+  test('a refusal still reads as a refusal', () => {
+    const cant = settled({ state: 'cant', reason: 'the part is on order' });
+    assert.match(assignedStateLine(cant, NOW), /could not do it/);
+  });
+
+  test('none of the four endings carries an em dash', () => {
+    for (const state of ['waiting', 'done', 'cant', 'skipped'] as const) {
+      const entry = settled({ state, completedForDate: state === 'done' ? '2026-07-29' : null });
+      assert.doesNotMatch(assignedStateLine(entry, NOW), /—/, `${state} line has an em dash`);
+      assert.doesNotMatch(completionNotice(entry), /—/, `${state} notice has an em dash`);
+    }
+  });
+
+  test('nor does anything the overdue row or the clock says', () => {
+    const answers = overdueAnswers('2026-07-27', NOW);
+    for (const s of [answers.done, answers.onDay, answers.notNeeded, missedLine('2026-07-27', NOW)!, timeWord('15:00')!]) {
+      assert.doesNotMatch(s, /—/, `"${s}" has an em dash`);
+    }
   });
 });

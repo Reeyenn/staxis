@@ -230,9 +230,32 @@ describe('the log book reaches the timeline when the switch is on', () => {
       await act(async () => { sw.click(); });
       await settle();
 
-      const write = wired.writes.find((w) => w.url.includes('/api/feed/prefs'));
+      // The switch's own write, found by what it CARRIES rather than by being
+      // the first thing sent to this route. The list also stamps "I looked at
+      // this" against the same endpoint on mount, and a test that took whatever
+      // arrived first would flip between the two for reasons that have nothing
+      // to do with the switch.
+      const write = wired.writes.find(
+        (w) => w.url.includes('/api/feed/prefs')
+          && (w.body as Record<string, unknown> | undefined)?.logbookInList !== undefined,
+      );
       assert.ok(write, 'clicking the switch saved nothing');
       assert.deepEqual(write.body, { pid: PID, logbookInList: true });
+    });
+  });
+});
+
+describe('looking at the list is what marks it seen', () => {
+  test('opening the page stamps the cursor, so the next visit measures from here', async (t: TestContext) => {
+    await withList(t, { logbookInList: false, entries: [] }, async ({ wired }) => {
+      const stamp = wired.writes.find(
+        (w) => w.url.includes('/api/feed/prefs')
+          && (w.body as Record<string, unknown> | undefined)?.markListSeen === true,
+      );
+      assert.ok(stamp, 'nothing recorded that this person looked at their list');
+      // The browser never names the moment. A clock that could stamp itself
+      // into the future would never be shown a new row again.
+      assert.equal((stamp.body as Record<string, unknown>).listSeenAt, undefined);
     });
   });
 });
@@ -251,5 +274,21 @@ describe('every class the switches ask for is a class that exists', () => {
 
   test('the switch reads as on and off, so its state is visible at all', () => {
     assert.ok(CSS.includes('.fx-sw[aria-checked="true"]'), 'an unstyled switch cannot show it is on');
+  });
+
+  // The follow-through classes. Same invariant, same reason: an unstyled
+  // control is not a subtle bug, it is a raw browser button in the middle of a
+  // designed page, and nothing else in the suite would notice.
+  test('the mine toggle and the new marker are styled', () => {
+    for (const cls of ['fx-seg', 'fx-segb', 'fx-new']) {
+      assert.ok(CSS.includes(`.${cls}`), `.${cls} is used but never defined`);
+    }
+  });
+
+  test('the mine toggle shows which side it is on', () => {
+    assert.ok(
+      CSS.includes('.fx-segb[aria-pressed="true"]'),
+      'a toggle that looks the same in both positions is not a toggle',
+    );
   });
 });

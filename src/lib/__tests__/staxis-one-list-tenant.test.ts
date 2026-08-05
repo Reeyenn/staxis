@@ -173,11 +173,11 @@ describe('one person’s list preferences', () => {
     ];
     assert.deepEqual(
       await readFeedPrefs(ACCOUNT, HOTEL_A),
-      { logbookInList: true, assignedSeenAt: '2026-07-30T08:00:00.000Z', companionMemory: null },
+      { logbookInList: true, assignedSeenAt: '2026-07-30T08:00:00.000Z', listSeenAt: null, companionMemory: null },
     );
     assert.deepEqual(
       await readFeedPrefs(ACCOUNT, HOTEL_B),
-      { logbookInList: false, assignedSeenAt: null, companionMemory: null },
+      { logbookInList: false, assignedSeenAt: null, listSeenAt: null, companionMemory: null },
     );
   });
 
@@ -185,7 +185,7 @@ describe('one person’s list preferences', () => {
     // The log book is a place you go. A hotel that never opened the switch must
     // not find its shift notes interleaved with its money.
     tables.staxis_user_prefs = [];
-    assert.deepEqual(await readFeedPrefs(ACCOUNT, HOTEL_A), { logbookInList: false, assignedSeenAt: null, companionMemory: null });
+    assert.deepEqual(await readFeedPrefs(ACCOUNT, HOTEL_A), { logbookInList: false, assignedSeenAt: null, listSeenAt: null, companionMemory: null });
   });
 
   test('a write always carries both keys', async () => {

@@ -6,6 +6,18 @@
 // decisions waiting on a manager. NOT in lanes, NOT under tags, NOT behind
 // filters: one list, and the thing at the top is the thing to do next.
 //
+// ─── the one narrowing, and why it is not a filter system ──────────────────
+// "Everything / Just mine" (founder, 2026-08-05). The rule against filters is a
+// rule against a TAXONOMY: no lane per source, no tag per department, no saved
+// views, nothing that makes a person learn a category scheme before they can
+// read their own list. This is a different thing. It answers one question a
+// person actually asks out loud on a busy morning — "what is mine?" — with one
+// switch that has two positions and no memory of anything except which of the
+// two it is on. Everything stays the default; it is quiet when idle; the
+// ordering underneath is byte-for-byte unchanged, because narrowing removes
+// rows and never reorders them. If a second one of these is ever proposed, that
+// is the moment this rule is actually being broken.
+//
 // ─── the house rule ────────────────────────────────────────────────────────
 //   dollars first, then severity, with OVERDUE climbing.
 //
@@ -44,6 +56,7 @@ import { rankFindings, sortValueCents, type QueueFinding } from '@/components/co
 import type { LogEntryDTO } from '@/lib/comms/types';
 import type { KnowledgeEventDTO } from '@/lib/knowledge/types';
 import type { WorklistItem } from '@/lib/worklist/types';
+import { minuteOfDay } from './one-list-copy';
 
 /** One row of the list. The kinds render differently; they rank together. */
 export type ListRow =
@@ -82,6 +95,16 @@ export interface RowStanding {
   waitingSinceMs: number;
   /** A shift note is not work. It sits under everything that is. */
   informational: boolean;
+  /**
+   * Minutes past midnight on the day this is wanted, or null for no time.
+   *
+   * A LAST-RESORT TIEBREAK, and only that. `waitingSinceMs` for a dated to-do
+   * is the END of its due day, so every to-do due on the same day arrives here
+   * already tied — which is exactly the group where "by 3pm" should come before
+   * "sometime today". It cannot reorder anything across days, across severities
+   * or across money, because it is only consulted once all of those are equal.
+   */
+  dueMinuteOfDay: number | null;
 }
 
 function parseMs(iso: string | null | undefined): number {
@@ -101,6 +124,7 @@ export function standingOf(row: ListRow): RowStanding {
       overdue: false,
       waitingSinceMs: parseMs(row.finding.firstSeenAt),
       informational: false,
+      dueMinuteOfDay: null,
     };
   }
   if (row.kind === 'item') {
@@ -112,6 +136,7 @@ export function standingOf(row: ListRow): RowStanding {
       // was created. A dated thing waits from its date.
       waitingSinceMs: parseMs(row.item.dueDate ?? row.item.createdAt),
       informational: false,
+      dueMinuteOfDay: minuteOfDay(row.item.dueTime),
     };
   }
   if (row.kind === 'event') {
@@ -125,6 +150,7 @@ export function standingOf(row: ListRow): RowStanding {
       overdue: false,
       waitingSinceMs: parseMs(`${row.event.eventDate}T12:00:00`),
       informational: false,
+      dueMinuteOfDay: null,
     };
   }
   return {
@@ -133,6 +159,7 @@ export function standingOf(row: ListRow): RowStanding {
     overdue: false,
     waitingSinceMs: parseMs(row.entry.createdAt),
     informational: true,
+    dueMinuteOfDay: null,
   };
 }
 
@@ -174,7 +201,117 @@ export function compareStanding(a: RowStanding, b: RowStanding): number {
   // 4. Longest wait first. Subtraction would give NaN for two unknowns.
   if (a.waitingSinceMs !== b.waitingSinceMs) return a.waitingSinceMs < b.waitingSinceMs ? -1 : 1;
 
+  // 5. Same day, same everything: the one with a clock on it goes first, and
+  // the earlier clock goes before the later one. "Set the meeting room by 9am"
+  // is a different kind of today from "tidy the store cupboard", and only the
+  // person who wrote the 9am knows that. Untimed is not late, so it sorts
+  // under, never over.
+  if (a.dueMinuteOfDay !== b.dueMinuteOfDay) {
+    if (a.dueMinuteOfDay === null) return 1;
+    if (b.dueMinuteOfDay === null) return -1;
+    return a.dueMinuteOfDay - b.dueMinuteOfDay;
+  }
+
   return 0;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// "New since you last looked"
+//
+// One timestamp per person per hotel (staxis_user_prefs.list_seen_at) and a
+// comparison. No notification table, no unread counter, nothing to mark read:
+// a marker derived from a cursor cannot get stuck showing news about something
+// that no longer exists, and cannot be delivered twice.
+//
+// The FLOOR is the part that is easy to leave out and expensive to leave out.
+// A person who has never opened their list has a null cursor, and without a
+// floor "everything newer than never" is the hotel's entire history — so their
+// first ever look would greet them with a tab reading 247 and a marker against
+// every row, which teaches them the marker means nothing.
+// ═══════════════════════════════════════════════════════════════════════════
+
+/** How far back "new" can possibly reach for somebody who has never looked. */
+export const NEW_ON_LIST_FLOOR_DAYS = 7;
+
+/**
+ * Did this arrive since the person last looked?
+ *
+ * Compared on the row's CREATION, not on any later edit: a to-do somebody
+ * reworded is not a new thing to do, and marking it new again would be the
+ * marker crying wolf on the one row the person had already read.
+ */
+export function isNewSince(
+  item: Pick<WorklistItem, 'createdAt'>,
+  seenAt: string | null,
+  now: Date,
+  floorDays = NEW_ON_LIST_FLOOR_DAYS,
+): boolean {
+  if (!item.createdAt) return false;
+  const created = Date.parse(item.createdAt);
+  if (Number.isNaN(created)) return false;
+  if (created < now.getTime() - floorDays * 86_400_000) return false;
+  if (!seenAt) return true;
+  const seen = Date.parse(seenAt);
+  if (Number.isNaN(seen)) return true;
+  return created > seen;
+}
+
+/** How many rows are new. The number on the Staxis tab. */
+export function countNewSince(
+  items: readonly Pick<WorklistItem, 'createdAt'>[],
+  seenAt: string | null,
+  now: Date,
+  floorDays = NEW_ON_LIST_FLOOR_DAYS,
+): number {
+  let n = 0;
+  for (const item of items) if (isNewSince(item, seenAt, now, floorDays)) n += 1;
+  return n;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// "Just mine"
+// ═══════════════════════════════════════════════════════════════════════════
+
+/**
+ * Is this row this person's own work?
+ *
+ * Deliberately the SAME SHAPE as taskVisibleToViewer, one notch tighter, and in
+ * the same order — because two different spellings of "whose work is this"
+ * would drift, and the one that drifted would be the one hiding somebody's job
+ * from them.
+ *
+ *   handed to a person   mine only if that person is me. NOT mine because I
+ *                        wrote it: the founder's rule is that work you hand
+ *                        over lives on THEIR page, and what you handed out is
+ *                        answered by the Assigned-by-me drawer. A narrowing
+ *                        that quietly pulled delegated work back would undo
+ *                        the assignment loop.
+ *   handed to nobody     mine if I asked for it. This is the half the obvious
+ *                        version gets wrong: a manager's own house to-dos carry
+ *                        no assignee at all, so filtering on the assignee alone
+ *                        would hide the very work they typed in two minutes
+ *                        earlier.
+ *   handed to a role     never mine. It is the shift's, and "everything" is
+ *                        where you go to see the shift's work.
+ *
+ * A work order, a guest complaint, an inspection or anything Staxis noticed is
+ * a fact about the hotel and nobody's personally.
+ */
+export function rowIsMine(row: ListRow, meStaffId: string | null): boolean {
+  if (!meStaffId) return false;
+  if (row.kind !== 'item') return false;
+  if (row.item.assigneeStaffId) return row.item.assigneeStaffId === meStaffId;
+  if (row.item.dept) return false;
+  return row.item.createdByStaffId === meStaffId;
+}
+
+/**
+ * The list, narrowed to one person's own work. Order is untouched: this only
+ * ever removes rows, so the thing at the top of "just mine" is the same thing
+ * that was highest among their own rows in "everything".
+ */
+export function filterMine(rows: readonly ListRow[], meStaffId: string | null): ListRow[] {
+  return rows.filter((row) => rowIsMine(row, meStaffId));
 }
 
 /** Work items on their own, in house order. Exported for the drawer-free tests. */
