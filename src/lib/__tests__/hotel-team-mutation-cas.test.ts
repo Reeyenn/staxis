@@ -5,8 +5,8 @@ import { describe, test } from 'node:test';
 
 const source = (path: string) => readFileSync(join(process.cwd(), path), 'utf8');
 const route = source('src/app/api/auth/team/route.ts');
-const panel = source('src/app/company/_components/HotelTeamPanel.tsx');
-const dialogs = source('src/app/company/_components/HotelTeamDialogs.tsx');
+const panel = source('src/app/(hotel)/company/_components/HotelTeamPanel.tsx');
+const dialogs = source('src/app/(hotel)/company/_components/HotelTeamDialogs.tsx');
 const migration = source('supabase/migrations/0329_guard_hotel_team_detach_snapshot.sql');
 const lifecycleMigration = source('supabase/migrations/0335_account_lifecycle_intents.sql');
 const peopleLifecycleMigration = source(

@@ -101,8 +101,8 @@ describe('company structure request contracts', () => {
 });
 
 describe('My Hotel structure surface contract', () => {
-  const page = source('src', 'app', 'company', 'page.tsx');
-  const manager = source('src', 'app', 'company', '_components', 'CompanyStructureManager.tsx');
+  const page = source('src', 'app', '(hotel)', 'company', 'page.tsx');
+  const manager = source('src', 'app', '(hotel)', 'company', '_components', 'CompanyStructureManager.tsx');
   const migration = source('supabase', 'migrations', '0381_company_structure_management.sql');
   const previewRoute = source('src', 'app', 'api', 'company-access', 'structure', 'preview', 'route.ts');
   const commitRoute = source('src', 'app', 'api', 'company-access', 'structure', 'commit', 'route.ts');
@@ -119,10 +119,11 @@ describe('My Hotel structure surface contract', () => {
   test('maps People to membership/invitations and Access to exact role/scope', () => {
     assert.match(page, /Memberships and invitations/);
     assert.match(page, /Invite company member/);
-    assert.match(page, /Access grants/);
-    assert.match(page, /Roles and scopes by person/);
+    assert.match(page, /AccessPersonRow/);
+    assert.match(page, /groupAccessMemberships/);
+    assert.doesNotMatch(page, /Customer grants|Roles and scopes by person/);
     assert.match(page, /showGrantActions=\{false\}/);
-    assert.match(page, /showMembershipActions=\{false\}/);
+    assert.match(page, /const revocableGrants = adminPreview \? \[\] :/);
     assert.doesNotMatch(page, /Company people/);
     assert.doesNotMatch(page, /Revocation is immediate and audited/);
   });

@@ -9,13 +9,12 @@ import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 
 import {
-  ALWAYS_VISIBLE_GROUPS,
   buildHotelRoster,
   groupForPerson,
-  rosterCounts,
   type RosterAccountLike,
   type RosterStaffLike,
-} from '@/app/company/_components/people-roster';
+} from '@/app/(hotel)/company/_components/people-roster';
+import { projectHotelStaffLinks } from '@/lib/authorization/hotel-staff-link-projection';
 
 function account(overrides: Partial<RosterAccountLike> & { accountId: string }): RosterAccountLike {
   return {
@@ -30,7 +29,6 @@ function staff(overrides: Partial<RosterStaffLike> & { id: string }): RosterStaf
   return {
     name: 'Staff Person',
     department: 'housekeeping',
-    scheduledToday: false,
     isActive: true,
     ...overrides,
   };
@@ -40,7 +38,7 @@ function flatten(groups: ReturnType<typeof buildHotelRoster>) {
   return groups.flatMap((group) => group.people);
 }
 
-describe('buildHotelRoster — one human, one card', () => {
+describe('buildHotelRoster — one human, one row', () => {
   test('a linked person appears exactly once, carrying both records', () => {
     const groups = buildHotelRoster(
       [account({ accountId: 'acc-1', displayName: 'M. Lopez', role: 'housekeeping', staffId: 'staff-1' })],
@@ -59,6 +57,22 @@ describe('buildHotelRoster — one human, one card', () => {
     assert.equal(people.length, 1);
     assert.equal(people[0].account, null);
     assert.equal(people[0].staff?.id, 'staff-9');
+  });
+
+  test('an archived account identity merges with the inactive staff row exactly once', () => {
+    const people = flatten(buildHotelRoster(
+      [account({
+        accountId: 'acc-archived',
+        displayName: 'Maria Login',
+        historicalStaffId: 'staff-archived',
+      })],
+      [staff({ id: 'staff-archived', name: 'Maria Archived', isActive: false })],
+    ));
+    assert.equal(people.length, 1);
+    assert.equal(people[0].account?.accountId, 'acc-archived');
+    assert.equal(people[0].staff?.id, 'staff-archived');
+    assert.equal(people[0].staff?.isActive, false);
+    assert.equal(people[0].name, 'Maria Archived');
   });
 
   test('a login with no employment record is not dropped', () => {
@@ -116,6 +130,26 @@ describe('buildHotelRoster — one human, one card', () => {
   });
 });
 
+describe('hotel staff-link identity projection', () => {
+  test('keeps inactive links as selected-property identity hints, never authority', () => {
+    const projection = projectHotelStaffLinks([
+      { accountId: 'acc-archived', staffId: 'staff-archived', isActive: false },
+      { accountId: 'other-hotel', staffId: 'staff-other', isActive: false },
+    ], new Set(['acc-archived']));
+    assert.ok(projection);
+    assert.equal(projection.activeStaffIds.get('acc-archived'), undefined);
+    assert.equal(projection.historicalStaffIds.get('acc-archived'), 'staff-archived');
+    assert.equal(projection.historicalStaffIds.has('other-hotel'), false);
+  });
+
+  test('fails closed when one account has conflicting active and historical identities', () => {
+    assert.equal(projectHotelStaffLinks([
+      { accountId: 'acc-ambiguous', staffId: 'staff-active', isActive: true },
+      { accountId: 'acc-ambiguous', staffId: 'staff-archived', isActive: false },
+    ], new Set(['acc-ambiguous'])), null);
+  });
+});
+
 describe('buildHotelRoster — grouping and order', () => {
   test('employment department beats the login role', () => {
     const people = flatten(buildHotelRoster(
@@ -136,39 +170,13 @@ describe('buildHotelRoster — grouping and order', () => {
     assert.equal(groupForPerson(null, staff({ id: 's', department: 'laundry' })), 'housekeeping');
   });
 
-  test('whoever is on shift sorts first, then alphabetically', () => {
+  test('sorts alphabetically without depending on operational schedule data', () => {
     const groups = buildHotelRoster([], [
-      staff({ id: 's1', name: 'Zoe', scheduledToday: true }),
-      staff({ id: 's2', name: 'Ana', scheduledToday: false }),
-      staff({ id: 's3', name: 'Bea', scheduledToday: true }),
+      staff({ id: 's1', name: 'Zoe' }),
+      staff({ id: 's2', name: 'Ana' }),
+      staff({ id: 's3', name: 'Bea' }),
     ]);
     const housekeeping = groups.find((group) => group.key === 'housekeeping')!;
-    assert.deepEqual(housekeeping.people.map((person) => person.name), ['Bea', 'Zoe', 'Ana']);
-  });
-
-  test('the three real departments always get a card, management and other do not', () => {
-    assert.ok(ALWAYS_VISIBLE_GROUPS.has('housekeeping'));
-    assert.ok(ALWAYS_VISIBLE_GROUPS.has('front_desk'));
-    assert.ok(ALWAYS_VISIBLE_GROUPS.has('maintenance'));
-    assert.ok(!ALWAYS_VISIBLE_GROUPS.has('management'));
-    assert.ok(!ALWAYS_VISIBLE_GROUPS.has('other'));
-  });
-});
-
-describe('rosterCounts', () => {
-  test('counts the books, today, and who is close to their cap', () => {
-    const counts = rosterCounts([
-      { scheduledToday: true, weeklyHours: 38, maxWeeklyHours: 40 },
-      { scheduledToday: false, weeklyHours: 12, maxWeeklyHours: 40 },
-      { scheduledToday: true, weeklyHours: 20, maxWeeklyHours: 24 },
-    ]);
-    assert.equal(counts.roster, 3);
-    assert.equal(counts.onShift, 2);
-    // 38 >= 36 and 20 >= 20; 12 < 36.
-    assert.equal(counts.nearOvertime, 2);
-  });
-
-  test('a missing cap falls back to 40 rather than reporting everyone as near overtime', () => {
-    assert.equal(rosterCounts([{ weeklyHours: 10 }]).nearOvertime, 0);
+    assert.deepEqual(housekeeping.people.map((person) => person.name), ['Ana', 'Bea', 'Zoe']);
   });
 });

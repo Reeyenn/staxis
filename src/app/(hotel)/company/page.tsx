@@ -26,7 +26,6 @@ import {
   X,
 } from 'lucide-react';
 
-import { AppLayout } from '@/components/layout/AppLayout';
 import { useAuth, type AppUser } from '@/contexts/AuthContext';
 import { useLang } from '@/contexts/LanguageContext';
 import { usePortfolio } from '@/contexts/PortfolioContext';
@@ -53,6 +52,14 @@ import type {
   CompanyAccessEditorOrganization,
   CompanyAccessEditorProjection,
 } from '@/lib/company-access/access-editor';
+import {
+  groupAccessMemberships,
+  isAccessHistoryStatus,
+  isDirectAccessGrant,
+  shouldRenderAccessEmptyState,
+  splitAccessMemberships,
+  type AccessPersonGroup,
+} from '@/lib/company-access/access-people';
 import type { CompanyStructureProjection } from '@/lib/company-access/structure';
 import { buildCompanyAccessViewerKey } from '@/lib/company-access/viewer-key';
 import { selectCompanyAccessContext } from '@/lib/company-access/select-company-context';
@@ -72,6 +79,10 @@ import { HotelTeamPanel } from './_components/HotelTeamPanel';
 import { HotelSwitcher } from './_components/HotelSwitcher';
 import { LegacyOwnershipTransferPanel } from './_components/LegacyOwnershipTransferPanel';
 import { CompanyStructureManager } from './_components/CompanyStructureManager';
+import {
+  usePeopleController,
+  type PeopleControllerState,
+} from './_components/usePeopleController';
 
 type TabId = 'hotels' | 'people' | 'access';
 type HotelStatusFilter = 'all' | 'active' | 'not_active';
@@ -260,11 +271,9 @@ export default function CompanyAccessPage() {
 
 function CompanyPageFallback() {
   return (
-    <AppLayout>
-      <div className={styles.page} aria-busy="true" aria-label="Loading My Hotel">
-        <CompanyHubSkeleton />
-      </div>
-    </AppLayout>
+    <div className={styles.page} aria-busy="true" aria-label="Loading My Hotel">
+      <CompanyHubSkeleton />
+    </div>
   );
 }
 
@@ -572,6 +581,31 @@ function CompanyAccessContent() {
   const currentLoadError =
     adminTargetIsCurrent && loadErrorViewerKey === currentViewerKey ? loadError : null;
   const resolved = currentData ?? EMPTY_COMPANY_ACCESS;
+  const peopleControllerViewerKey = activePropertyViewerKey
+    ? `${activePropertyViewerKey}:people:${authorizationFingerprint ?? 'unverified'}`
+    : null;
+  const peopleController = usePeopleController({
+    hotelId: activePropertyId,
+    viewerKey: peopleControllerViewerKey,
+    enabled: Boolean(
+      tab === 'people'
+      && !portfolioMode
+      && currentData
+      && activePropertyId
+      && canManageTeam
+      && staffBelongsToCurrentViewer
+      && hotelCapabilitiesReady
+      && authorizationChecked,
+    ),
+    adminPreview,
+    readOnly: Boolean(resolved.viewerContext?.readOnly) && !adminPreview,
+    staff: currentStaff,
+    staffViewerKey,
+    staffExpectedViewerKey: activePropertyViewerKey,
+    staffLoaded,
+    staffLoadFailed,
+    refreshStaff,
+  });
   const customerStructureViewerKey = accountId && userRole && userRole !== 'admin'
     ? `${accountId}:${userRole}:company-structure:${authorizationFingerprint ?? 'unverified'}`
     : null;
@@ -732,10 +766,10 @@ function CompanyAccessContent() {
     ? adminViewerContext?.targetName ?? activeProperty?.name ?? null
     : customerContextLabel;
   React.useEffect(() => {
-    if (tab !== 'people' || !canManageTeam || hotelTeamLocked) {
+    if (portfolioMode || tab !== 'people' || !canManageTeam || hotelTeamLocked) {
       setTeamInviteHotelId(null);
     }
-  }, [canManageTeam, hotelTeamLocked, tab]);
+  }, [canManageTeam, hotelTeamLocked, portfolioMode, tab]);
 
   React.useEffect(() => {
     if (!focusPreviewAfterRetryRef.current || showLoading) return;
@@ -748,7 +782,7 @@ function CompanyAccessContent() {
   }, [adminViewerContext, adminPreviewFailed, showLoading]);
 
   return (
-    <AppLayout>
+    <>
       <div className={styles.page}>
         <header className={styles.hero}>
           <div className={styles.heroIdentity}>
@@ -913,6 +947,7 @@ function CompanyAccessContent() {
                   currentUser={user}
                   currentAccountId={user.accountId}
                   activeProperty={activeProperty}
+                  portfolioMode={portfolioMode}
                   canManageTeam={canManageTeam}
                   canInviteAccounts={Boolean(
                     adminActionsAvailable
@@ -921,6 +956,7 @@ function CompanyAccessContent() {
                   )}
                   canViewWages={canViewWages}
                   canAddOperationalStaff={!hotelTeamLocked && canManageTeam}
+                  peopleController={peopleController}
                   inviteDialogOpen={teamInviteHotelId === activeProperty?.id}
                   onInviteDialogOpenChange={(open) => setTeamInviteHotelId(open ? activeProperty?.id ?? null : null)}
                   onChanged={refreshStaff}
@@ -979,7 +1015,7 @@ function CompanyAccessContent() {
           onCompleted={completeAccessMutation}
         />
       ) : null}
-    </AppLayout>
+    </>
   );
 }
 
@@ -1062,7 +1098,7 @@ export function HotelsPanel({ data, structure, structureError, structureLoading,
  * could appear in both with nothing on screen explaining why. HotelTeamPanel
  * now merges them.
  */
-export function PeoplePanel({ data, staff, hotelRosterUnavailable, rosterSettled = true, lang, currentUser, currentAccountId, activeProperty, canManageTeam, canInviteAccounts, canViewWages, canAddOperationalStaff, inviteDialogOpen, onInviteDialogOpenChange, onChanged, onLifecycleAction }: {
+export function PeoplePanel({ data, staff, hotelRosterUnavailable, rosterSettled = true, lang, currentUser, currentAccountId, activeProperty, portfolioMode = false, canManageTeam, canInviteAccounts, canViewWages, canAddOperationalStaff, peopleController, inviteDialogOpen, onInviteDialogOpenChange, onChanged, onLifecycleAction }: {
   data: CompanyAccessData;
   staff: StaffMember[];
   hotelRosterUnavailable: boolean;
@@ -1071,10 +1107,12 @@ export function PeoplePanel({ data, staff, hotelRosterUnavailable, rosterSettled
   currentUser: AppUser;
   currentAccountId: string;
   activeProperty: Property | null;
+  portfolioMode?: boolean;
   canManageTeam: boolean;
   canInviteAccounts: boolean;
   canViewWages: boolean;
   canAddOperationalStaff: boolean;
+  peopleController?: PeopleControllerState;
   inviteDialogOpen: boolean;
   onInviteDialogOpenChange: (open: boolean) => void;
   onChanged: () => void | Promise<void>;
@@ -1114,6 +1152,7 @@ export function PeoplePanel({ data, staff, hotelRosterUnavailable, rosterSettled
     const frame = window.requestAnimationFrame(focusHeading);
     return () => window.cancelAnimationFrame(frame);
   }, [inviteCapabilitiesStable, inviteDialogOpen]);
+  const showHotelPeople = Boolean(activeProperty && !portfolioMode);
   const visibleMemberships = data.permissions.viewPeople
     ? data.memberships
     : data.memberships.filter((membership) => (
@@ -1121,7 +1160,7 @@ export function PeoplePanel({ data, staff, hotelRosterUnavailable, rosterSettled
     ));
   return (
     <div className={styles.stack}>
-      {(visibleMemberships.length > 0 || data.invitations.length > 0 || data.permissions.manageInvitations) ? (
+      {!showHotelPeople && (visibleMemberships.length > 0 || data.invitations.length > 0 || data.permissions.manageInvitations) ? (
         <section className={styles.sectionBlock}>
           <div className={styles.headingWithAction}>
             <SectionHeading
@@ -1167,7 +1206,7 @@ export function PeoplePanel({ data, staff, hotelRosterUnavailable, rosterSettled
           ) : null}
         </section>
       ) : null}
-      {activeProperty ? (
+      {showHotelPeople && activeProperty ? (
         <HotelTeamPanel
           key={`${activeProperty.id}:${adminPreview ? 'admin' : 'customer'}:${canManageTeam ? 'hotel-authorized' : 'invite-only'}`}
           hotelId={activeProperty.id}
@@ -1187,15 +1226,16 @@ export function PeoplePanel({ data, staff, hotelRosterUnavailable, rosterSettled
           rosterUnavailable={hotelRosterUnavailable}
           rosterSettled={rosterSettled}
           canAddStaff={canAddOperationalStaff}
+          peopleController={peopleController}
           onChanged={onChanged}
         />
-      ) : (
+      ) : !portfolioMode ? (
         <EmptyState
           icon={Hotel}
           title={'Choose a hotel first'}
           description={'Team accounts are always managed for one exact hotel.'}
         />
-      )}
+      ) : null}
     </div>
   );
 }
@@ -1218,6 +1258,7 @@ function AccessPanel({ data, lang, currentUser, currentAccountId, activeProperty
   const [editorError, setEditorError] = React.useState('');
   const [editorReloadKey, setEditorReloadKey] = React.useState(0);
   const [editingMembershipId, setEditingMembershipId] = React.useState<string | null>(null);
+  const [showHistory, setShowHistory] = React.useState(false);
   const editorDataKey = [
     ...data.organizations.map((organization) => organization.id),
     ...data.memberships.map((membership) => membership.id),
@@ -1255,9 +1296,18 @@ function AccessPanel({ data, lang, currentUser, currentAccountId, activeProperty
     : data.memberships.filter((membership) => (
       membership.accountId === currentAccountId || membership.isCurrentUser
     ));
-  const customerAccessGrants = adminPreview
-    ? data.memberships.flatMap((membership) => membership.grants.map((grant) => ({ membership, grant })))
-    : [];
+  const people = groupAccessMemberships(visibleMemberships).map((group) => ({
+    ...group,
+    ...splitAccessMemberships(group.memberships),
+  }));
+  const currentPeople = people.filter((person) => person.current.length > 0);
+  const visibleRequests = data.permissions.viewAccess ? data.requests : [];
+  const currentRequests = visibleRequests.filter((request) => !isAccessHistoryStatus(request.status));
+  const historyRequests = visibleRequests.filter((request) => isAccessHistoryStatus(request.status));
+  const historyAvailable = people.some((person) => person.history.length > 0) || historyRequests.length > 0;
+  const renderedPeople = showHistory
+    ? people.filter((person) => person.current.length > 0 || person.history.length > 0)
+    : currentPeople;
   let editorTarget: {
     membership: CompanyMembership;
     editorMembership: CompanyAccessEditorMembership;
@@ -1278,12 +1328,6 @@ function AccessPanel({ data, lang, currentUser, currentAccountId, activeProperty
   return (
     <>
       <div className={styles.stack}>
-      <div className={styles.headingWithAction}>
-        <SectionHeading
-          title={adminPreview
-            ? 'Customer grants'
-            : 'Access grants'}
-        />
         {!adminPreview && data.permissions.requestAccess ? (
           <div className={styles.headingActions}>
             <button type="button" className={styles.secondaryButton} onClick={onRequestAccess}>
@@ -1292,7 +1336,6 @@ function AccessPanel({ data, lang, currentUser, currentAccountId, activeProperty
             </button>
           </div>
         ) : null}
-      </div>
 
       {!adminPreview && editorError && data.permissions.manageAccess ? (
         <div className={styles.partialNotice} role="status">
@@ -1310,62 +1353,27 @@ function AccessPanel({ data, lang, currentUser, currentAccountId, activeProperty
         lang={lang}
       />
 
-      {visibleMemberships.length > 0 ? (
-        <section className={styles.sectionBlock}>
-          <SectionHeading
-            title={'Roles and scopes by person'}
-          />
-          <div className={styles.listCard} role="list">
-            {visibleMemberships.map((membership) => {
-              const editorOrganization = editorProjection?.organizations.find((candidate) => (
-                candidate.id === membership.organizationId
-              ));
-              const editorMembership = editorOrganization?.memberships.find((candidate) => (
-                candidate.id === membership.id
-              ));
-              const canEditAccess = Boolean(editorMembership?.canAdd || editorMembership?.canReplace);
-              return (
-                <MembershipRow
-                  key={membership.id}
-                  membership={membership}
-                  organization={data.organizations.find((item) => item.id === membership.organizationId) ?? null}
-                  isCurrentUser={membership.accountId === currentAccountId || Boolean(membership.isCurrentUser)}
-                  lang={lang}
-                  onLifecycleAction={onLifecycleAction}
-                  onEditAccess={canEditAccess ? () => setEditingMembershipId(membership.id) : undefined}
-                  accessEditLabel={(editorMembership?.currentGrants.length ?? 0) > 0
-                    ? 'Edit role and scope'
-                    : 'Add role and scope'}
-                  showGrantActions={!adminPreview}
-                  showMembershipActions={false}
-                />
-              );
-            })}
-          </div>
-        </section>
-      ) : null}
-
-      {adminPreview && customerAccessGrants.length > 0 ? (
+      {renderedPeople.length > 0 ? (
         <div className={styles.listCard} role="list">
-          {customerAccessGrants.map(({ membership, grant }) => (
-            <div key={`${membership.id}:${grant.id}`} className={styles.accessWorkRow} role="listitem">
-              <span className={styles.workIcon}><KeyRound size={17} aria-hidden="true" /></span>
-              <div className={styles.rowBody}>
-                <strong>{membership.displayName}</strong>
-                <span>
-                  {titleCaseAccessValue(grant.accessProfile)} · {grant.scopeLabel}
-                  {grant.expiresAt
-                    ? ` · ${'Expires'} ${formatDate(grant.expiresAt, lang)}`
-                    : ''}
-                </span>
-              </div>
-              <span className={`${styles.status} ${statusClass(membership.status)}`}>
-                {statusLabel(membership.status, lang)}
-              </span>
-            </div>
+          {renderedPeople.map((person) => (
+            <AccessPersonRow
+              key={person.accountId}
+              group={person}
+              memberships={showHistory ? [...person.current, ...person.history] : person.current}
+              organizations={data.organizations}
+              editorProjection={editorProjection}
+              currentAccountId={currentAccountId}
+              adminPreview={adminPreview}
+              lang={lang}
+              onLifecycleAction={onLifecycleAction}
+              onEditAccess={setEditingMembershipId}
+              showDirectAccess={adminPreview}
+            />
           ))}
         </div>
-      ) : !adminPreview && data.effectiveAccess.length > 0 ? (
+      ) : null}
+
+      {!adminPreview && data.effectiveAccess.length > 0 ? (
         <div className={styles.receiptGrid}>
           {data.effectiveAccess.map((receipt) => (
             <AccessReceiptCard
@@ -1377,44 +1385,52 @@ function AccessPanel({ data, lang, currentUser, currentAccountId, activeProperty
             />
           ))}
         </div>
-      ) : (
+      ) : shouldRenderAccessEmptyState({
+        adminPreview,
+        renderedPeopleCount: renderedPeople.length,
+        currentRequestCount: currentRequests.length,
+        showHistory,
+        historyRequestCount: historyRequests.length,
+      }) ? (
           <EmptyState
             icon={KeyRound}
-            title={adminPreview
-              ? 'No customer grants found'
-              : 'No access grants found'}
-            description={adminPreview
-              ? 'There are no customer grant records in this preview scope.'
-              : 'Your administrator can review the account and hotel assignment.'}
+            title={'No access grants found'}
+            description={'Your administrator can review the account and hotel assignment.'}
           />
-      )}
+      ) : null}
 
-      {data.permissions.viewAccess && data.requests.length > 0 ? (
+      {data.permissions.viewAccess && currentRequests.length > 0 ? (
         <section className={styles.sectionBlock}>
           <SectionHeading
-            title={'Requests and invitations'}
-            description={'Pending access never counts as active access.'}
+            title={'Pending access requests'}
           />
           <div className={styles.listCard} role="list">
-            {data.requests.map((request) => (
-              <div key={request.id} className={styles.accessWorkRow} role="listitem">
-                <span className={styles.workIcon}><CircleHelp size={17} aria-hidden="true" /></span>
-                <div className={styles.rowBody}>
-                  <strong>{request.requesterName}</strong>
-                  <span>{titleCaseAccessValue(request.requestedProfile)} · {request.scopeLabel}</span>
-                </div>
-                <div className={styles.requestRowActions}>
-                  <span className={`${styles.status} ${statusClass(request.status)}`}>{statusLabel(request.status, lang)}</span>
-                  {request.canReview && request.status === 'pending' ? (
-                    <button type="button" className={styles.reviewButton} onClick={() => onReviewRequest(request)}>
-                      {'Review'}
-                    </button>
-                  ) : null}
-                </div>
-              </div>
+            {currentRequests.map((request) => (
+              <AccessRequestRow key={request.id} request={request} lang={lang} onReviewRequest={onReviewRequest} />
             ))}
           </div>
         </section>
+      ) : null}
+
+      {historyAvailable ? (
+        <div className={styles.historyControl}>
+          <button
+            type="button"
+            className={styles.historyToggle}
+            aria-expanded={showHistory}
+            onClick={() => setShowHistory((value) => !value)}
+          >
+            {showHistory ? 'Hide history' : 'History'}
+          </button>
+        </div>
+      ) : null}
+
+      {showHistory && historyRequests.length > 0 ? (
+        <div className={styles.listCard} role="list">
+          {historyRequests.map((request) => (
+            <AccessRequestRow key={request.id} request={request} lang={lang} onReviewRequest={onReviewRequest} />
+          ))}
+        </div>
       ) : null}
       </div>
 
@@ -1432,6 +1448,140 @@ function AccessPanel({ data, lang, currentUser, currentAccountId, activeProperty
         />
       ) : null}
     </>
+  );
+}
+
+function AccessPersonRow({ group, memberships, organizations, editorProjection, currentAccountId, adminPreview, lang, onLifecycleAction, onEditAccess, showDirectAccess }: {
+  group: AccessPersonGroup;
+  memberships: CompanyMembership[];
+  organizations: CompanyOrganization[];
+  editorProjection: CompanyAccessEditorProjection | null;
+  currentAccountId: string;
+  adminPreview: boolean;
+  lang: string;
+  onLifecycleAction: (action: CompanyLifecycleAction) => void;
+  onEditAccess: (membershipId: string) => void;
+  showDirectAccess: boolean;
+}) {
+  const records = memberships.map((membership) => {
+    const organization = organizations.find((item) => item.id === membership.organizationId) ?? null;
+    const editorOrganization = editorProjection?.organizations.find((candidate) => (
+      candidate.id === membership.organizationId
+    ));
+    const editorMembership = editorOrganization?.memberships.find((candidate) => (
+      candidate.id === membership.id
+    ));
+    const revocableGrants = adminPreview ? [] : (membership.grants ?? []).filter((grant) => grant.canRevoke);
+    return {
+      membership,
+      organization,
+      editorMembership,
+      revocableGrants,
+      canEditAccess: Boolean(editorMembership?.canAdd || editorMembership?.canReplace),
+    };
+  });
+  const actionRecords = records.filter((record) => record.canEditAccess || record.revocableGrants.length > 0);
+  const hasActions = actionRecords.length > 0;
+  const statuses = [...new Set(memberships.map((membership) => membership.status))];
+  const isCurrentUser = group.isCurrentUser || group.accountId === currentAccountId;
+  return (
+    <div className={styles.personRow} role="listitem">
+      <Avatar name={group.displayName} />
+      <div className={styles.rowBody}>
+        <strong>
+          {group.displayName}
+          {isCurrentUser ? <small>{'You'}</small> : null}
+        </strong>
+        <div className={styles.membershipGrantSummary}>
+          {records.flatMap(({ membership, organization }) => {
+            const organizationLabel = organization?.name ?? 'Company access';
+            const roleLabel = membership.jobTitle || titleCaseAccessValue(membership.accessProfile ?? 'team member');
+            const membershipScope = membership.propertyIds.length > 0
+              ? `${membership.propertyIds.length} ${membership.propertyIds.length === 1 ? 'hotel' : 'hotels'}`
+              : organizationLabel;
+            const lines = [
+              <small key={`${membership.id}:membership`}>{`${roleLabel} · ${organizationLabel} · ${membershipScope}`}</small>,
+            ];
+            for (const grant of membership.grants ?? []) {
+              const directLabel = showDirectAccess && isDirectAccessGrant(grant) ? ' · Direct access' : '';
+              const expirationLabel = grant.expiresAt ? ` · Expires ${formatDate(grant.expiresAt, lang)}` : '';
+              lines.push(
+                <small key={`${membership.id}:${grant.id}`}>
+                  {`${titleCaseAccessValue(grant.accessProfile)} · ${grant.scopeLabel}${directLabel}${expirationLabel}`}
+                </small>,
+              );
+            }
+            return lines;
+          })}
+        </div>
+      </div>
+      <div className={styles.personRowActions}>
+        {statuses.map((status) => (
+          <span key={status} className={`${styles.status} ${statusClass(status)}`}>
+            {statusLabel(status, lang)}
+          </span>
+        ))}
+        {hasActions ? (
+          <details className={styles.actionMenu}>
+            <summary>{'Manage'}</summary>
+            <div>
+              {actionRecords.map(({ membership, organization, editorMembership, revocableGrants, canEditAccess }, index) => (
+                <React.Fragment key={membership.id}>
+                  {actionRecords.length > 1 ? <small>{organization?.name ?? 'Company access'}</small> : null}
+                  {canEditAccess ? (
+                    <button type="button" onClick={() => onEditAccess(membership.id)}>
+                      {(editorMembership?.currentGrants.length ?? 0) > 0
+                        ? 'Edit role and scope'
+                        : 'Add role and scope'}
+                    </button>
+                  ) : null}
+                  {revocableGrants.length > 0 ? <small>{'Access grants'}</small> : null}
+                  {revocableGrants.map((grant) => (
+                    <button
+                      key={grant.id}
+                      type="button"
+                      onClick={() => onLifecycleAction({
+                        kind: 'revoke_grant',
+                        id: grant.id,
+                        targetLabel: group.displayName,
+                        detailLabel: `${titleCaseAccessValue(grant.accessProfile)} · ${grant.scopeLabel}`,
+                      })}
+                    >
+                      {'Revoke'} {titleCaseAccessValue(grant.accessProfile)}
+                    </button>
+                  ))}
+                  {index < actionRecords.length - 1 ? <hr /> : null}
+                </React.Fragment>
+              ))}
+            </div>
+          </details>
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
+function AccessRequestRow({ request, lang, onReviewRequest }: {
+  request: CompanyAccessRequest;
+  lang: string;
+  onReviewRequest: (request: CompanyAccessRequest) => void;
+}) {
+  return (
+    <div className={styles.accessWorkRow} role="listitem">
+      <span className={styles.workIcon}><CircleHelp size={17} aria-hidden="true" /></span>
+      <div className={styles.rowBody}>
+        <strong>{request.requesterName}</strong>
+        <span>{titleCaseAccessValue(request.requestedProfile)} · {request.scopeLabel}</span>
+      </div>
+      <div className={styles.requestRowActions}>
+        <span className={`${styles.status} ${statusClass(request.status)}`}>{statusLabel(request.status, lang)}</span>
+        {request.canReview && request.status === 'pending' ? (
+          <button type="button" className={styles.reviewButton} onClick={() => onReviewRequest(request)}>
+            {'Review'}
+          </button>
+        ) : null}
+      </div>
+    </div>
   );
 }
 

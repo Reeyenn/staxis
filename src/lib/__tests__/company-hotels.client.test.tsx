@@ -8,7 +8,7 @@ import type { Root } from 'react-dom/client';
 
 import type { CompanyAccessData, CompanyAccessViewerContext } from '@/lib/company-access/dto';
 
-type CompanyPageModule = typeof import('@/app/company/page');
+type CompanyPageModule = typeof import('@/app/(hotel)/company/page');
 
 const HOTEL_ID = '33333333-3333-4333-8333-333333333333';
 const ORGANIZATION_ID = '44444444-4444-4444-8444-444444444444';
@@ -51,7 +51,7 @@ function loadWithCssShim<T>(specifier: () => Promise<T>): Promise<T> {
 
 let companyPageModulePromise: Promise<CompanyPageModule> | null = null;
 function loadCompanyPageModule(): Promise<CompanyPageModule> {
-  companyPageModulePromise ??= loadWithCssShim(() => import('@/app/company/page'));
+  companyPageModulePromise ??= loadWithCssShim(() => import('@/app/(hotel)/company/page'));
   return companyPageModulePromise;
 }
 

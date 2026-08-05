@@ -570,9 +570,10 @@ export function HotelMemberDialog({
   currentUser,
   currentAccountId,
   lang,
-  actions,
+  actions: suppliedActions,
   employmentSlot,
   personName,
+  readOnly = false,
   onClose,
   onChanged,
   onLifecyclePending,
@@ -592,11 +593,23 @@ export function HotelMemberDialog({
    *  differ from the login's display name. Keep the panel calling them what
    *  the list called them. */
   personName?: string;
+  /** The opened person is an archived/off-roster identity. Keep the entire
+   *  account half observational even if stale action flags say otherwise. */
+  readOnly?: boolean;
   onClose: () => void;
   onChanged?: () => void | Promise<void>;
   onLifecyclePending: (operation: HotelTeamPendingLifecycleOperation) => void;
   onSaved: () => void | Promise<void>;
 }) {
+  const actions = readOnly ? {
+    ...suppliedActions,
+    canEdit: false,
+    canChangeRole: false,
+    canResetPassword: false,
+    canDeactivate: false,
+    canReactivate: false,
+    canRemove: false,
+  } : suppliedActions;
   const self = member.accountId === currentAccountId;
   const [displayName, setDisplayName] = React.useState(member.displayName);
   const [role, setRole] = React.useState<string>(member.role);
@@ -653,6 +666,7 @@ export function HotelMemberDialog({
   }, [discardConfirming]);
 
   const openLifecycleConfirmation = (intent: LifecycleAction) => {
+    if (readOnly) return;
     const allowed = intent === 'deactivate'
       ? member.active && actions.canDeactivate
       : !member.active && actions.canReactivate;
@@ -730,6 +744,7 @@ export function HotelMemberDialog({
 
   const submitLifecycle = async () => {
     if (!lifecycleIntent || busy || lifecyclePending || lifecycleInFlightRef.current) return;
+    if (readOnly) return;
     const actionStillAllowed = lifecycleIntent === 'deactivate'
       ? member.active && actions.canDeactivate
       : !member.active && actions.canReactivate;
@@ -799,7 +814,7 @@ export function HotelMemberDialog({
 
   const submit = async (event: React.FormEvent) => {
     event.preventDefault();
-    if (!dirty || formLocked) return;
+    if (readOnly || !dirty || formLocked) return;
     if (!trimmedName) {
       setError('Name is required.');
       return;
@@ -1138,11 +1153,13 @@ export function HotelMemberDialog({
           <button type="button" className={styles.secondaryButton} onClick={requestDialogClose} disabled={formLocked}>
             {'Cancel'}
           </button>
-          <button type="submit" className={styles.primaryButton} disabled={!dirty || formLocked}>
-            {saving
-              ? <BusyLabel en="Saving…" />
-              : 'Save changes'}
-          </button>
+          {!readOnly ? (
+            <button type="submit" className={styles.primaryButton} disabled={!dirty || formLocked}>
+              {saving
+                ? <BusyLabel en="Saving…" />
+                : 'Save changes'}
+            </button>
+          ) : null}
         </div>
       </form>
     </DialogShell>

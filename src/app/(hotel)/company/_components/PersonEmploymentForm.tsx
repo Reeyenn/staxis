@@ -45,6 +45,11 @@ export interface EmploymentLinkAccount {
   username: string;
   role: string;
   staffId: string | null;
+  historicalStaffId: string | null;
+  propertyAccess: readonly string[];
+  managementSurface: 'legacy_hotel' | 'company_access';
+  staffLinkAllowed: boolean;
+  lifecyclePending: boolean;
 }
 
 export interface PersonEmploymentFormProps {
@@ -190,7 +195,13 @@ export function PersonEmploymentForm({
   // the current selection never disappears from its own menu.
   const linkableAccounts = React.useMemo(
     () => accounts.filter((account) => (
-      account.staffId === null || account.accountId === linkedAccountId
+      account.accountId === linkedAccountId
+      || (
+        account.staffId === null
+        && account.historicalStaffId === null
+        && account.staffLinkAllowed
+        && !account.lifecyclePending
+      )
     )),
     [accounts, linkedAccountId],
   );
@@ -420,7 +431,7 @@ export function PersonEmploymentForm({
           </div>
         </div>
         <p className={styles.employmentCopy}>
-          {'This person has a login but no schedule profile, so they do not appear on schedules, the housekeeping board, or printed rosters. Add them with the Add button on a department, then open that person and link this login.'}
+          {'This person has a login but no schedule profile. Use Invite people, then choose NO LOGIN / Add to schedule only.'}
         </p>
       </section>
     );

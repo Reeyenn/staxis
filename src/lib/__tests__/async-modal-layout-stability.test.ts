@@ -9,8 +9,8 @@ function source(...parts: string[]): string {
 
 const activity = source('src', 'components', 'agent', 'AiActivityButton.tsx');
 const activityCss = source('src', 'components', 'agent', 'AiActivityButton.module.css');
-const hotelInvites = source('src', 'app', 'company', '_components', 'HotelTeamDialogs.tsx');
-const hotelTeamCss = source('src', 'app', 'company', '_components', 'HotelTeamPanel.module.css');
+const hotelInvites = source('src', 'app', '(hotel)', 'company', '_components', 'HotelTeamDialogs.tsx');
+const hotelTeamCss = source('src', 'app', '(hotel)', 'company', '_components', 'HotelTeamPanel.module.css');
 
 describe('app-wide async modal layout stability', () => {
   test('AI activity cache is property-scoped and its loading feed matches final geometry', () => {

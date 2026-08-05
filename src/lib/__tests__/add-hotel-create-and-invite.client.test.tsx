@@ -111,7 +111,7 @@ function loadOnboarding(): Promise<OnboardingModule> {
 let dialogPromise: Promise<unknown> | null = null;
 function loadInviteDialog(): Promise<unknown> {
   dialogPromise ??= loadWithCssShim(
-    () => import('@/app/company/_components/HotelTeamDialogs'),
+    () => import('@/app/(hotel)/company/_components/HotelTeamDialogs'),
   );
   return dialogPromise;
 }

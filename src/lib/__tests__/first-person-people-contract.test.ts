@@ -5,10 +5,10 @@ import { describe, test } from 'node:test';
 
 const read = (...parts: string[]) => readFileSync(join(process.cwd(), ...parts), 'utf8');
 
-const companyPage = read('src', 'app', 'company', 'page.tsx');
-const hotelTeam = read('src', 'app', 'company', '_components', 'HotelTeamPanel.tsx');
-const dialogs = read('src', 'app', 'company', '_components', 'HotelTeamDialogs.tsx');
-const setupCopy = read('src', 'app', 'company', '_components', 'hotel-team-setup.ts');
+const companyPage = read('src', 'app', '(hotel)', 'company', 'page.tsx');
+const hotelTeam = read('src', 'app', '(hotel)', 'company', '_components', 'HotelTeamPanel.tsx');
+const dialogs = read('src', 'app', '(hotel)', 'company', '_components', 'HotelTeamDialogs.tsx');
+const setupCopy = read('src', 'app', '(hotel)', 'company', '_components', 'hotel-team-setup.ts');
 const route = read(
   'src', 'app', 'api', 'admin', 'properties', 'invite-first-person', 'route.ts',
 );

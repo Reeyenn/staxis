@@ -16,7 +16,7 @@ import {
   hotelTeamSetupLinkLabel,
   type HotelTeamSetupMember,
   type HotelTeamSetupStateInput,
-} from '@/app/company/_components/hotel-team-setup';
+} from '@/app/(hotel)/company/_components/hotel-team-setup';
 import { projectFirstPersonOnboardingState } from '@/lib/first-person-onboarding-state';
 
 const HOTEL_ID = '11111111-1111-1111-1111-111111111111';

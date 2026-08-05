@@ -8,27 +8,28 @@ function source(...parts: string[]): string {
 }
 
 const concourse = source('src', 'components', 'concourse', 'ConcourseBar.tsx');
-const home = source('src', 'app', 'home', 'page.tsx');
+const home = source('src', 'app', '(hotel)', 'home', 'page.tsx');
 const homeHub = source('src', 'components', 'concourse', 'HomeHubView.tsx');
 const homeSummary = source('src', 'app', 'api', 'home', 'summary', 'route.ts');
 const concourseCss = source('src', 'components', 'concourse', 'concourse-css.tsx');
 const liveSurface = source('src', 'app', 'admin', '_components', 'studio', 'surfaces', 'LiveSurface.tsx');
-const invitation = source('src', 'app', 'company-invite', '[token]', 'page.tsx');
+const invitation = source('src', 'app', '(public)', 'company-invite', '[token]', 'page.tsx');
 const authShell = source('src', 'components', 'AuthShell.tsx');
-const company = source('src', 'app', 'company', 'page.tsx');
-const companyCss = source('src', 'app', 'company', 'CompanyAccess.module.css');
-const hotelSwitcher = source('src', 'app', 'company', '_components', 'HotelSwitcher.tsx');
-const hotelSwitcherCss = source('src', 'app', 'company', '_components', 'HotelSwitcher.module.css');
-const hotelTeam = source('src', 'app', 'company', '_components', 'HotelTeamPanel.tsx');
-const hotelTeamDialogs = source('src', 'app', 'company', '_components', 'HotelTeamDialogs.tsx');
-const hotelTeamCss = source('src', 'app', 'company', '_components', 'HotelTeamPanel.module.css');
-const addStaffDialog = source('src', 'app', 'company', '_components', 'AddStaffDialog.tsx');
-const employmentForm = source('src', 'app', 'company', '_components', 'PersonEmploymentForm.tsx');
+const company = source('src', 'app', '(hotel)', 'company', 'page.tsx');
+const companyCss = source('src', 'app', '(hotel)', 'company', 'CompanyAccess.module.css');
+const hotelSwitcher = source('src', 'app', '(hotel)', 'company', '_components', 'HotelSwitcher.tsx');
+const hotelSwitcherCss = source('src', 'app', '(hotel)', 'company', '_components', 'HotelSwitcher.module.css');
+const hotelTeam = source('src', 'app', '(hotel)', 'company', '_components', 'HotelTeamPanel.tsx');
+const peopleController = source('src', 'app', '(hotel)', 'company', '_components', 'usePeopleController.ts');
+const hotelTeamDialogs = source('src', 'app', '(hotel)', 'company', '_components', 'HotelTeamDialogs.tsx');
+const hotelTeamCss = source('src', 'app', '(hotel)', 'company', '_components', 'HotelTeamPanel.module.css');
+const addStaffDialog = source('src', 'app', '(hotel)', 'company', '_components', 'AddStaffDialog.tsx');
+const employmentForm = source('src', 'app', '(hotel)', 'company', '_components', 'PersonEmploymentForm.tsx');
 const operationalStaffRoute = source('src', 'app', 'api', 'staff', 'operational', 'route.ts');
 const staffWriteGate = source('supabase', 'migrations', '0330_staff_management_write_gate.sql');
-const settings = source('src', 'app', 'settings', 'page.tsx');
-const legacyAccounts = source('src', 'app', 'settings', 'accounts', 'page.tsx');
-const legacyUsers = source('src', 'app', 'settings', 'users', 'page.tsx');
+const settings = source('src', 'app', '(hotel)', 'settings', 'page.tsx');
+const legacyAccounts = source('src', 'app', '(hotel)', 'settings', 'accounts', 'page.tsx');
+const legacyUsers = source('src', 'app', '(hotel)', 'settings', 'users', 'page.tsx');
 const propertyContext = source('src', 'contexts', 'PropertyContext.tsx');
 
 describe('company-only shell routing', () => {
@@ -163,8 +164,36 @@ describe('truthful Company Hub filters', () => {
     assert.match(hotelTeam, /const rosterStaff = React\.useMemo/);
     assert.match(company, /staffProfiles=\{staff\}/);
     assert.doesNotMatch(company, /statusFilter === ['"]invited['"]/);
-    assert.match(company, /Roles and scopes by person/);
+    assert.doesNotMatch(company, /Roles and scopes by person/);
     assert.match(company, /data\.invitations\.map/);
+  });
+
+  test('selected-hotel People is one compact identity roster, not an operations dashboard', () => {
+    assert.match(hotelTeam, /const people = React\.useMemo\(\s*\(\) => groups\.flatMap\(\(group\) => group\.people\)/);
+    assert.match(hotelTeam, /className=\{styles\.rosterList\} role="list" aria-label=\{'People at this hotel'\}/);
+    assert.match(hotelTeam, /function personJobLabel\(/);
+    assert.match(hotelTeam, /\{'STAXIS LOGIN'\}/);
+    assert.match(hotelTeam, /\{'NO LOGIN'\}/);
+    assert.match(hotelTeam, /\{'Inactive'\}/);
+    assert.doesNotMatch(hotelTeam, /\{'On shift'\}|\{'Near overtime'\}|\{'Roster'\}/);
+    assert.doesNotMatch(hotelTeam, /HoursMeter|rosterCounts|scheduledToday|weeklyHours|maxWeeklyHours/);
+    assert.doesNotMatch(hotelTeam, /departmentGrid|departmentCard|departmentEmpty|departmentAdd|Add to \$\{groupLabel/);
+    assert.doesNotMatch(hotelTeamCss, /\.kpiStrip|\.departmentGrid|\.departmentCard|\.departmentEmpty|\.departmentAdd|\.hoursMeter/);
+    assert.match(company, /const showHotelPeople = Boolean\(activeProperty && !portfolioMode\)/);
+    assert.match(company, /!showHotelPeople && \(visibleMemberships\.length/);
+    assert.match(company, /portfolioMode=\{portfolioMode\}/);
+    assert.match(hotelTeam, /propertyAccess: member\.propertyAccess/);
+    assert.match(hotelTeam, /managementSurface: member\.managementSurface/);
+    assert.match(hotelTeam, /staffLinkAllowed: member\.staffLinkAllowed/);
+    assert.match(hotelTeam, /LazyPeopleInviteChooserDialog/);
+    assert.match(hotelTeamDialogs, /What does this person need\?/);
+    assert.match(hotelTeamDialogs, /Hotel invite/);
+    assert.match(hotelTeamDialogs, /Email one person/);
+  });
+
+  test('points login-only employment recovery at the approved People chooser flow', () => {
+    assert.match(employmentForm, /Use Invite people, then choose NO LOGIN \/ Add to schedule only/);
+    assert.doesNotMatch(employmentForm, /Add button on a department/);
   });
 
   test('admin previews merge the exact hotel roster without crossing viewer contexts', () => {
@@ -179,7 +208,7 @@ describe('truthful Company Hub filters', () => {
     assert.match(company, /data\.viewerContext\?\.kind === ['"]staxis_admin_preview['"]/);
     assert.doesNotMatch(company, /allowAdminActions|onRequestAdminActions|adminToolsEnabled|adminToolsActive/);
     assert.match(company, /statusLabel\(membership\.status, lang\)/);
-    assert.match(hotelTeam, /responseTeam\.filter\(\(member\) => !member\.isPlatformAdmin && member\.role !== ['"]admin['"]\)/);
+    assert.match(peopleController, /parsedTeam\.filter\(\(member\) => !member\.isPlatformAdmin && member\.role !== ['"]admin['"]\)/);
   });
 });
 
@@ -262,8 +291,9 @@ describe('My Hotel account and team integration', () => {
     assert.doesNotMatch(company, /Company people|Effective access|Access records|Access is managed/);
     assert.match(company, /<FilterBar[\s\S]*<OrganizationHierarchy/);
     assert.doesNotMatch(company, /Company relationship and status|Manage relationship/);
+    assert.doesNotMatch(company, /AdminHotelRelationshipManager/);
     assert.match(company, /title=\{['"]Memberships and invitations['"]\}/);
-    assert.match(company, /title=\{adminPreview[\s\S]*['"]Customer grants['"][\s\S]*['"]Access grants['"]/);
+    assert.doesNotMatch(company, /Customer grants|Roles and scopes by person/);
     assert.doesNotMatch(hotelTeam, /<span>\{'Hotel roster'\}<\/span>/);
   });
 
@@ -299,7 +329,9 @@ describe('My Hotel account and team integration', () => {
     assert.match(company, /tab === ['"]people['"] && hotelCapabilitiesLoading/);
     assert.match(company, /canManageTeam=\{canManageTeam\}/);
     assert.match(hotelTeam, /if \(!canManageTeam\) \{[\s\S]*Hotel account settings are private/);
-    assert.match(hotelTeam, /if \(canManageTeam\) return;[\s\S]*setTeam\(\[\]\);[\s\S]*setContactSnapshot\(null\);[\s\S]*setWageSnapshot\(null\)/);
+    assert.match(company, /enabled: Boolean\([\s\S]*canManageTeam[\s\S]*staffBelongsToCurrentViewer/);
+    assert.match(peopleController, /if \(!key\) \{[\s\S]*setSnapshot\(null\)/);
+    assert.match(hotelTeam, /if \(canManageTeam\) return;[\s\S]*setContactSnapshot\(null\);[\s\S]*setWageSnapshot\(null\)/);
   });
 
   test('keeps company invitations in People while private hotel roster access stays explicit', () => {
@@ -350,14 +382,14 @@ describe('My Hotel account and team integration', () => {
   });
 
   test('includes member editing, removal, staff approvals, and both invitation paths', () => {
-    assert.match(hotelTeam, /\/api\/auth\/team\?hotelId=/);
+    assert.match(peopleController, /\/api\/auth\/team\?hotelId=/);
     assert.match(hotelTeam, /\/api\/staff\/join-requests\?hotelId=/);
     const approvalList = hotelTeam.indexOf('className={styles.teamList}');
     const approvalRows = hotelTeam.indexOf('requests.map((request)', approvalList);
-    const peopleGrid = hotelTeam.indexOf('className={styles.departmentGrid}', approvalRows);
+    const peopleList = hotelTeam.indexOf('className={styles.rosterList}', approvalRows);
     // Approvals sit above the roster: somebody waiting to be let in is the
     // only thing on this page that needs an answer today.
-    assert.ok(approvalList >= 0 && approvalRows > approvalList && peopleGrid > approvalRows);
+    assert.ok(approvalList >= 0 && approvalRows > approvalList && peopleList > approvalRows);
     assert.match(hotelTeam, /Pending approval/);
     assert.match(hotelTeam, /\{'Approve'\}/);
     assert.match(hotelTeam, /\{'Deny'\}/);
@@ -381,7 +413,9 @@ describe('My Hotel account and team integration', () => {
     assert.match(hotelTeamDialogs, /STAXIS LOGIN/);
     assert.match(hotelTeamDialogs, /Invite to create an account/);
     assert.match(hotelTeamDialogs, /They create a login and can sign in to Staxis\./);
-    assert.match(hotelTeam, /Use Invite people when they need Staxis login access/);
+    // Superseded by the hotel-setup empty state on main: the copy now names
+    // both paths explicitly instead of describing one combined action.
+    assert.match(hotelTeam, /Use Add staff member for someone who only needs the roster and schedule\. Use Invite people when they need Staxis login access\./);
     assert.match(hotelTeamDialogs, /Hotel invite/);
     assert.match(hotelTeamDialogs, /Email one person/);
     assert.doesNotMatch(hotelTeamDialogs, /inviteMode|hasInviteModeChoice|role="tablist"|role="tab"|role="tabpanel"/);
@@ -405,9 +439,9 @@ describe('My Hotel account and team integration', () => {
     assert.match(hotelTeamCss, /\.rosterLinkField \{[\s\S]*grid-column: 1 \/ -1;/);
   });
 
-  test('keeps one Add that creates a schedule profile and no login', () => {
+  test('keeps one chooser Add path that creates a schedule profile and no login', () => {
     assert.match(hotelTeam, /aria-haspopup="dialog"/);
-    assert.match(hotelTeam, /setAddDepartment\(group\.key as StaffDepartment\)/);
+    assert.match(hotelTeam, /setAddDepartment\('housekeeping'\)/);
     assert.match(addStaffDialog, /createPortal\(/);
     assert.match(addStaffDialog, /role="dialog"/);
     assert.match(addStaffDialog, /aria-modal="true"/);
@@ -458,7 +492,8 @@ describe('My Hotel account and team integration', () => {
     assert.match(staffWriteGate, /public\.mfa_verified_or_grace\(\)/);
     assert.match(addStaffDialog, /No Staxis account will be created, and they will not be able to log in/);
     assert.doesNotMatch(addStaffDialog, /type="search"|All.*Active.*Not active/);
-    assert.match(hotelTeamCss, /\.departmentAdd \{[\s\S]*min-height: 44px;/);
+    assert.doesNotMatch(hotelTeam, /Add to \$\{groupLabel/);
+    assert.doesNotMatch(hotelTeamCss, /\.departmentAdd/);
     assert.match(hotelTeamCss, /@media \(prefers-reduced-motion: reduce\)/);
   });
 

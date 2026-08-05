@@ -15,17 +15,17 @@ function section(sourceText: string, startMarker: string, endMarker: string, lab
   return sourceText.slice(start, end);
 }
 
-const panel = source('src', 'app', 'company', '_components', 'HotelTeamPanel.tsx');
-const dialogs = source('src', 'app', 'company', '_components', 'HotelTeamDialogs.tsx');
-const addStaff = source('src', 'app', 'company', '_components', 'AddStaffDialog.tsx');
-const focusUtility = source('src', 'app', 'company', '_components', 'dialog-focus.ts');
-const companyPage = source('src', 'app', 'company', 'page.tsx');
-const css = source('src', 'app', 'company', '_components', 'HotelTeamPanel.module.css');
+const panel = source('src', 'app', '(hotel)', 'company', '_components', 'HotelTeamPanel.tsx');
+const dialogs = source('src', 'app', '(hotel)', 'company', '_components', 'HotelTeamDialogs.tsx');
+const addStaff = source('src', 'app', '(hotel)', 'company', '_components', 'AddStaffDialog.tsx');
+const focusUtility = source('src', 'app', '(hotel)', 'company', '_components', 'dialog-focus.ts');
+const companyPage = source('src', 'app', '(hotel)', 'company', 'page.tsx');
+const css = source('src', 'app', '(hotel)', 'company', '_components', 'HotelTeamPanel.module.css');
 
 const normalActionArea = section(
   panel,
   '{!setupMode && !locked && inviteCapabilitiesStable && inviteEntryAvailable ? (',
-  '<div className={styles.kpiStrip}>',
+  '{rosterUnavailableForPeople ? (',
   'authorized People action area',
 );
 const earlyBranch = section(
@@ -41,7 +41,7 @@ const earlyActionArea = section(
   'invite-only People action area',
 );
 const normalActionEnd = panel.indexOf(
-  '<div className={styles.kpiStrip}>',
+  '{rosterUnavailableForPeople ? (',
   panel.indexOf('{!setupMode && !locked && inviteCapabilitiesStable && inviteEntryAvailable ? ('),
 );
 const normalDialogStart = panel.indexOf('<React.Suspense fallback={(', normalActionEnd);
@@ -54,12 +54,6 @@ const normalLoadingFallback = section(
   '<DialogLoading',
   'onClose={closeLoadingDialog}',
   'normal dialog loading fallback',
-);
-const departmentAddArea = section(
-  panel,
-  "{canAddStaff && !locked && group.key !== 'management' ? (",
-  '</section>',
-  'department Add staff origin',
 );
 const loadingFocusSelection = section(
   panel,
@@ -92,7 +86,7 @@ const pagePeoplePanel = section(
 
 describe('People invite entry choice', () => {
   test('authorized hotel managers get exactly one entry with the approved distinction copy', () => {
-    assert.equal((normalActionArea.match(/<button/g) ?? []).length, 1);
+    assert.equal((normalActionArea.match(/<strong>\{'Invite people'\}<\/strong>/g) ?? []).length, 1);
     assert.match(normalActionArea, /ref=\{inviteEntryRef\}/);
     assert.match(normalActionArea, /onClick=\{openPeopleInviteChooser\}/);
     assert.match(normalActionArea, /<strong>\{'Invite people'\}<\/strong>/);
@@ -271,7 +265,7 @@ describe('People invite entry choice', () => {
     assert.match(normalLoadingFallback, /inviteSections=\{canInviteAccounts \? \['hotel', 'email'\] : \['hotel'\]\}/);
   });
 
-  test('Add staff restoration uses the chooser or department origin without stale Invite refs', () => {
+  test('Add staff restoration uses the chooser origin without stale Invite refs', () => {
     assert.match(panel, /const addStaffReturnFocusRef = React\.useRef<HTMLElement \| null>\(null\)/);
 
     const chooserAddCallback = section(
@@ -281,10 +275,7 @@ describe('People invite entry choice', () => {
       'chooser Add staff origin callback',
     );
     assert.match(chooserAddCallback, /addStaffReturnFocusRef\.current = inviteEntryReturnFocusRef\.current/);
-    assert.match(
-      departmentAddArea,
-      /onClick=\{\(event\) => \{\s*addStaffReturnFocusRef\.current = event\.currentTarget;\s*setAddDepartment\(group\.key as StaffDepartment\);/,
-    );
+    assert.match(chooserAddCallback, /setAddDepartment\('housekeeping'\)/);
     assert.match(normalDialogArea, /<LazyAddStaffDialog[\s\S]*returnFocusRef=\{addStaffReturnFocusRef\}/);
     assert.match(normalLoadingFallback, /returnFocusRef=\{normalLoadingReturnFocusRef\}/);
     assert.doesNotMatch(normalLoadingFallback, /returnFocusRef=\{inviteEntryReturnFocusRef\}/);
