@@ -50,6 +50,28 @@ export type CompanionAnchorKey =
   | 'add-delivery'
   | 'todo-composer';
 
+/**
+ * What somebody must be entitled to before a control is even ON their screen.
+ *
+ * NOT a second permission system: these mirror the gates the pages themselves
+ * already apply (`canManage` and `canViewFinancials` on the stockroom screen).
+ * They exist because the model is TOLD which controls it may point at, and
+ * telling a maintenance tech about the importer produces the worst possible
+ * answer: a confident "it is this one" with no arrow, because the button was
+ * never rendered for them.
+ */
+export type CompanionAnchorNeed = 'manage' | 'money';
+
+/** What the reader is entitled to, resolved by whoever is asking. */
+export interface CompanionAnchorStanding {
+  canManage: boolean;
+  seesMoney: boolean;
+}
+
+/** Fail closed. An asker who did not say what they can do is told nothing that
+ *  needs an entitlement. */
+const NO_STANDING: CompanionAnchorStanding = { canManage: false, seesMoney: false };
+
 export interface CompanionAnchor {
   key: CompanionAnchorKey;
   /** The screen this control lives on, in the companion's own page vocabulary. */
@@ -59,6 +81,8 @@ export interface CompanionAnchor {
   /** One plain sentence: what it does FOR them. Shown to the model, and said
    *  out loud when the companion points at it from a conversation. */
   does: string;
+  /** The entitlements the page itself requires before rendering this control. */
+  needs: readonly CompanionAnchorNeed[];
 }
 
 export const COMPANION_ANCHORS: readonly CompanionAnchor[] = [
@@ -67,20 +91,38 @@ export const COMPANION_ANCHORS: readonly CompanionAnchor[] = [
     page: 'inventory',
     label: 'Import a file',
     does: 'Brings a whole inventory spreadsheet in at once, instead of typing items in one at a time.',
+    // The toolbar renders this under `canManage && canViewFinancials`.
+    needs: ['manage', 'money'],
   },
   {
     key: 'add-delivery',
     page: 'inventory',
     label: 'Add a delivery',
     does: 'Takes a photo of a delivery invoice and fills in the items and prices from it.',
+    // The rail renders this under `canManage`: it can spend the hotel's money.
+    needs: ['manage'],
   },
   {
     key: 'todo-composer',
     page: 'staxis',
     label: 'the box at the top of the list',
     does: 'Writes a to-do in plain words, picks who does it and when, and puts it on their list.',
+    // Everybody who gets the one-list at all gets the composer.
+    needs: [],
   },
 ];
+
+/** Is this control on this person's screen at all? */
+export function anchorIsReachable(
+  anchor: CompanionAnchor,
+  standing: CompanionAnchorStanding = NO_STANDING,
+): boolean {
+  for (const need of anchor.needs) {
+    if (need === 'manage' && !standing.canManage) return false;
+    if (need === 'money' && !standing.seesMoney) return false;
+  }
+  return true;
+}
 
 /** The one this key names, or null. Null is the whole unknown-key defence. */
 export function anchorFor(key: string | null | undefined): CompanionAnchor | null {
@@ -88,10 +130,20 @@ export function anchorFor(key: string | null | undefined): CompanionAnchor | nul
   return COMPANION_ANCHORS.find((a) => a.key === key) ?? null;
 }
 
-/** Everything pointable on one screen. Empty for every screen with nothing. */
-export function anchorsOnPage(page: CompanionPageKey | null | undefined): CompanionAnchor[] {
+/**
+ * Everything pointable on one screen BY THIS PERSON. Empty for every screen
+ * with nothing, and empty of anything their own hat would not have rendered.
+ *
+ * The standing argument is optional and defaults to none, which is fail-closed:
+ * a caller that forgets it offers only the controls that need no entitlement,
+ * rather than offering everything.
+ */
+export function anchorsOnPage(
+  page: CompanionPageKey | null | undefined,
+  standing: CompanionAnchorStanding = NO_STANDING,
+): CompanionAnchor[] {
   if (!page) return [];
-  return COMPANION_ANCHORS.filter((a) => a.page === page);
+  return COMPANION_ANCHORS.filter((a) => a.page === page && anchorIsReachable(a, standing));
 }
 
 /**

@@ -64,6 +64,38 @@ const CARD_FALLBACK_HEIGHT = 150;
 /** The attribute the pointed-at control wears while it is lit. */
 const LIT_ATTR = 'data-staxis-lit';
 
+/** How long after mount a pointer is still allowed to be looking for its
+ *  control. Past this, a control that has not appeared is not coming. */
+const GIVE_UP_AFTER_MS = 1_200;
+
+// ─── Who is lighting what ──────────────────────────────────────────────────
+//
+// The lit attribute lives on a node this component does NOT own, and more than
+// one pointer can be up at once: the discovery pointer on the stockroom screen
+// and a chat pointer answering "where is the importer" are two instances with
+// two private opinions about one global attribute. With a plain set/remove the
+// first to close strips the glow off a control the other is still pointing at.
+//
+// So it is reference counted, once, here. Nothing outside this module writes
+// the attribute, and it comes off only when the last pointer holding it lets go.
+const LIT_HOLDERS = new WeakMap<Element, number>();
+
+function holdLit(node: HTMLElement): void {
+  const held = (LIT_HOLDERS.get(node) ?? 0) + 1;
+  LIT_HOLDERS.set(node, held);
+  node.setAttribute(LIT_ATTR, '');
+}
+
+function releaseLit(node: HTMLElement): void {
+  const held = (LIT_HOLDERS.get(node) ?? 1) - 1;
+  if (held > 0) {
+    LIT_HOLDERS.set(node, held);
+    return;
+  }
+  LIT_HOLDERS.delete(node);
+  node.removeAttribute(LIT_ATTR);
+}
+
 export interface PointerPopupProps {
   /** Which control. A key from the registry, never a selector. */
   anchor: CompanionAnchorKey;
@@ -106,50 +138,101 @@ export function PointerPopup({
   const scrolledRef = useRef(false);
   const shownRef = useRef(false);
   const gaveUpRef = useRef(false);
-  const attemptsRef = useRef(0);
+  const startedAtRef = useRef(0);
   const litRef = useRef<HTMLElement | null>(null);
   const reduced = useMemo(() => prefersReducedMotion(), []);
   const selector = useMemo(() => anchorSelector(anchor), [anchor]);
 
   // Handlers change identity on every parent render; the measure loop and the
-  // document listener must not be torn down and rebuilt each time.
+  // document listener must not be torn down and rebuilt each time. Assigned in
+  // an EFFECT rather than during render: a concurrent render that React then
+  // discards would otherwise leave a callback from a tree that never committed.
   const shownCb = useRef(onShown);
   const noTargetCb = useRef(onNoTarget);
   const usedCb = useRef(onTargetUsed);
-  shownCb.current = onShown;
-  noTargetCb.current = onNoTarget;
-  usedCb.current = onTargetUsed;
+  useEffect(() => {
+    shownCb.current = onShown;
+    noTargetCb.current = onNoTarget;
+    usedCb.current = onTargetUsed;
+  });
 
-  /** Light the control, and make sure only one is ever lit. */
+  // ── A new anchor is a new pointer ────────────────────────────────────────
+  //
+  // Every ref below is a fact about ONE control: whether we scrolled to it,
+  // whether it has been seen, whether we gave up on it, when we started
+  // looking. A caller that swaps the anchor on a live instance (the chat
+  // pointer answers a second question without unmounting) would otherwise get
+  // the second control described in the first control's words and drawn at the
+  // first control's coordinates, with `onShown` and `onNoTarget` both already
+  // spent and therefore silent forever.
+  //
+  // Reset during RENDER, which is React's own answer to adjusting state when a
+  // prop changes: it happens before the browser paints, so no frame is ever
+  // shown with the new text and the old geometry. The lit attribute is DOM and
+  // is released in the effect below instead, because render must not touch it.
+  const [lastSelector, setLastSelector] = useState(selector);
+  if (selector !== lastSelector) {
+    setLastSelector(selector);
+    setGeometry(null);
+    scrolledRef.current = false;
+    shownRef.current = false;
+    gaveUpRef.current = false;
+    startedAtRef.current = 0;
+  }
+
+  /** Light the control, releasing whatever this instance was holding before. */
   const light = useCallback((node: HTMLElement | null) => {
-    if (litRef.current && litRef.current !== node) {
-      litRef.current.removeAttribute(LIT_ATTR);
-    }
+    if (litRef.current === node) return;
+    if (litRef.current) releaseLit(litRef.current);
     litRef.current = node;
-    if (node) node.setAttribute(LIT_ATTR, '');
+    if (node) holdLit(node);
   }, []);
 
+  /**
+   * Nothing to point at, this time round.
+   *
+   * ONE exit for every reason a measure can fail: the node is missing, it
+   * measures as zero, it cannot be brought on screen, or the geometry refused
+   * it. Before, only the first of those could ever give up, so a control that
+   * existed but could not be scrolled to left the popup mounted and invisible
+   * for as long as the person stayed on the page.
+   *
+   * The grace is a CLOCK, not a count of tries. Counting was wrong because the
+   * scroll listener is capture-phase on the window: any scroller anywhere on
+   * the page burned the allowance within milliseconds of mount and the pointer
+   * gave up on a screen that was still rendering.
+   */
+  const nothingToPointAt = useCallback(() => {
+    light(null);
+    setGeometry(null);
+    if (gaveUpRef.current || shownRef.current) return;
+    const started = startedAtRef.current;
+    if (started === 0 || Date.now() - started < GIVE_UP_AFTER_MS) return;
+    gaveUpRef.current = true;
+    noTargetCb.current?.();
+  }, [light]);
+
+  // Whether the control has been located, as a plain boolean rather than the
+  // geometry object: the observer effect below only cares that there is now a
+  // node to watch, and depending on the object would rebuild the observer on
+  // every scroll frame.
+  const found = geometry !== null;
+
   const measure = useCallback(() => {
-    if (typeof document === 'undefined' || !selector) return;
-    attemptsRef.current += 1;
+    if (typeof document === 'undefined') return;
+    if (startedAtRef.current === 0) startedAtRef.current = Date.now();
+    // An anchor key that resolves to no selector cannot be looked for at all.
+    // Unreachable through either call site today, both of which resolve the key
+    // through `anchorFor` first, but a popup that sat there forever would be
+    // the one failure with no symptom.
+    if (!selector) { nothingToPointAt(); return; }
+
     const node = document.querySelector<HTMLElement>(selector);
     const box = node?.getBoundingClientRect();
     // Missing, or present but measuring as nothing — which is what every
     // control inside a `display: none` branch measures as, so a phone that
     // hides the desktop rail gets no arrow rather than an arrow to the corner.
-    if (!node || !box || box.width <= 0 || box.height <= 0) {
-      light(null);
-      setGeometry(null);
-      // Give up only on the SECOND look. The first runs two frames after mount
-      // and a screen still finishing its own render would fail it honestly but
-      // wrongly; the second runs after the settle, by which time a control that
-      // is coming has come.
-      if (attemptsRef.current >= 2 && !gaveUpRef.current && !shownRef.current) {
-        gaveUpRef.current = true;
-        noTargetCb.current?.();
-      }
-      return;
-    }
+    if (!node || !box || box.width <= 0 || box.height <= 0) { nothingToPointAt(); return; }
 
     const viewport = readViewport();
     const rect = { left: box.left, top: box.top, width: box.width, height: box.height };
@@ -158,29 +241,26 @@ export function PointerPopup({
         scrolledRef.current = true;
         node.scrollIntoView({ block: 'center', behavior: reduced ? 'auto' : 'smooth' });
       }
-      // Nothing is drawn to a control nobody can see. The settle timer below
-      // measures again once the scroll has landed.
-      light(null);
-      setGeometry(null);
+      // Nothing is drawn to a control nobody can see. The settle timer measures
+      // again once the scroll has landed; if it never lands, the clock above
+      // ends this rather than leaving an invisible popup mounted.
+      nothingToPointAt();
       return;
     }
 
-    const width = Math.min(POINTER_CARD_WIDTH, Math.max(200, viewport.width - EDGE_MARGIN * 2));
+    const width = Math.min(POINTER_CARD_WIDTH, viewport.width - EDGE_MARGIN * 2);
     const measuredHeight = cardRef.current?.offsetHeight ?? 0;
     const height = measuredHeight > 0 ? measuredHeight : CARD_FALLBACK_HEIGHT;
     const next = layoutPointer(rect, viewport, { width, height });
-    if (!next) {
-      light(null);
-      setGeometry(null);
-      return;
-    }
+    if (!next) { nothingToPointAt(); return; }
+
     light(node);
     setGeometry(next);
     if (!shownRef.current) {
       shownRef.current = true;
       shownCb.current?.();
     }
-  }, [selector, light, reduced]);
+  }, [selector, light, reduced, nothingToPointAt]);
 
   // First measure. Two frames plus a settle, exactly like the trace: one frame
   // for a scroll to start, one for layout, and a timer for a smooth scroll to
@@ -191,10 +271,14 @@ export function PointerPopup({
       requestAnimationFrame(() => { if (!cancelled) measure(); });
     });
     const settle = setTimeout(() => { if (!cancelled) measure(); }, reduced ? 60 : 420);
+    // One more look after the give-up clock, so the decision to stop is taken
+    // by a measurement rather than by whatever happened to fire last.
+    const verdict = setTimeout(() => { if (!cancelled) measure(); }, GIVE_UP_AFTER_MS + 60);
     return () => {
       cancelled = true;
       cancelAnimationFrame(raf1);
       clearTimeout(settle);
+      clearTimeout(verdict);
     };
   }, [measure, reduced]);
 
@@ -211,15 +295,36 @@ export function PointerPopup({
     };
     window.addEventListener('scroll', schedule, true);
     window.addEventListener('resize', schedule);
+
+    // Scroll and resize are only the WINDOW moving. Most of what actually
+    // moves a control is the page moving under it: the composer growing when
+    // somebody taps into it, a board finishing its load, a row arriving, a font
+    // landing late. None of those fire either event, and a pointer meant to sit
+    // on screen for minutes would keep its hairline and its glow at
+    // coordinates that stopped being true. Watching the control and the
+    // document body catches both the control resizing and everything above it
+    // reflowing.
+    let observer: ResizeObserver | null = null;
+    if (typeof ResizeObserver !== 'undefined' && selector) {
+      observer = new ResizeObserver(schedule);
+      const node = typeof document === 'undefined' ? null : document.querySelector(selector);
+      if (node) observer.observe(node);
+      if (typeof document !== 'undefined' && document.body) observer.observe(document.body);
+    }
+
     return () => {
       window.removeEventListener('scroll', schedule, true);
       window.removeEventListener('resize', schedule);
+      observer?.disconnect();
       if (frameRef.current !== null) {
         cancelAnimationFrame(frameRef.current);
         frameRef.current = null;
       }
     };
-  }, [measure]);
+    // `found` re-runs this once the control has actually been located, which
+    // is when there is a node worth observing: the first pass often runs
+    // before the page has rendered it.
+  }, [measure, selector, found]);
 
   // ── They used the thing ──────────────────────────────────────────────────
   //
@@ -228,8 +333,13 @@ export function PointerPopup({
   // is re-found on every measure and a listener attached to one instance would
   // be attached to a node that had since been replaced. Capture phase so it
   // still counts when the control stops the event on its way up.
+  //
+  // The callback is read from the ref at CALL time, never at attach time: a
+  // caller that supplies it a render later would otherwise never get a
+  // listener at all, because the effect had already decided there was nothing
+  // to call and returned.
   useEffect(() => {
-    if (!selector || !usedCb.current) return;
+    if (!selector) return;
     const onClick = (event: MouseEvent) => {
       const target = event.target;
       if (!(target instanceof Element)) return;

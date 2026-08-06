@@ -22,15 +22,24 @@ import { ALL_ROLES, type AppRole } from '@/lib/roles';
 
 const TOOL = 'staxis_point_at';
 
-function context(page: ToolContext['companionPage']): ToolContext {
+interface Who {
+  role?: AppRole;
+  hotelMutationAllowed?: boolean;
+  /** The route-bound per-hotel money capability, as the real route supplies it. */
+  seesMoney?: boolean;
+}
+
+function context(page: ToolContext['companionPage'], who: Who = {}): ToolContext {
   return {
     user: {
       uid: 'u',
       accountId: '00000000-0000-0000-0000-000000000001',
       username: 'u',
       displayName: 'U',
-      role: 'general_manager' as AppRole,
+      role: who.role ?? ('general_manager' as AppRole),
       propertyAccess: [],
+      ...(who.hotelMutationAllowed === undefined ? {} : { hotelMutationAllowed: who.hotelMutationAllowed }),
+      ...(who.seesMoney === undefined ? {} : { capabilitySnapshot: { view_financials: who.seesMoney } }),
     },
     propertyId: '11111111-1111-4111-8111-111111111111',
     staffId: null,
@@ -40,10 +49,10 @@ function context(page: ToolContext['companionPage']): ToolContext {
   };
 }
 
-async function point(anchor: unknown, page: ToolContext['companionPage']) {
+async function point(anchor: unknown, page: ToolContext['companionPage'], who: Who = {}) {
   const tool = getTool(TOOL);
   assert.ok(tool, 'the tool must be registered');
-  return tool.handler({ anchor } as never, { ...context(page), db: {} } as never);
+  return tool.handler({ anchor } as never, { ...context(page, who), db: {} } as never);
 }
 
 describe('staxis_point_at is offered exactly where the companion is', () => {
@@ -104,9 +113,10 @@ describe('it cannot point at something that is not there', () => {
 
   test('every anchor is refused on every screen except its own', async () => {
     const pages = ['inventory', 'staxis', 'dashboard', 'maintenance', 'people', 'settings'] as const;
+    const boss: Who = { role: 'general_manager' as AppRole, hotelMutationAllowed: true, seesMoney: true };
     for (const anchor of COMPANION_ANCHORS) {
       for (const page of pages) {
-        const result = await point(anchor.key, page);
+        const result = await point(anchor.key, page, boss);
         assert.equal(
           result.ok,
           page === anchor.page,
@@ -116,20 +126,65 @@ describe('it cannot point at something that is not there', () => {
     }
   });
 
+  test('a control the asker\'s own screen never rendered is refused', async () => {
+    // The bug this closes: a maintenance tech asks where the importer is, the
+    // model is told the key, the tool says yes, and the browser finds nothing
+    // because the button renders only under `canManage && canViewFinancials`.
+    // The answer reads as the companion being certain and the app being broken.
+    const wrench: Who = { role: 'maintenance' as AppRole, hotelMutationAllowed: true, seesMoney: false };
+    for (const key of ['inventory-import', 'add-delivery']) {
+      const result = await point(key, 'inventory', wrench);
+      assert.equal(result.ok, false, `${key} must be refused for a hat that cannot see it`);
+      assert.match(result.error ?? '', /access/i);
+    }
+    // And the one that needs nothing still works for them.
+    assert.equal((await point('todo-composer', 'staxis', wrench)).ok, true);
+  });
+
+  test('money and management are separate gates, and both are needed for the importer', async () => {
+    const role = 'general_manager' as AppRole;
+    // A manager with no finance read gets the delivery scanner, not the importer.
+    const noMoney: Who = { role, hotelMutationAllowed: true, seesMoney: false };
+    assert.equal((await point('add-delivery', 'inventory', noMoney)).ok, true);
+
+    // A manager whose hotel mutation standing was explicitly withdrawn (a
+    // read-only company hat drilling in) gets neither.
+    const readOnly: Who = { role, hotelMutationAllowed: false, seesMoney: true };
+    assert.equal((await point('add-delivery', 'inventory', readOnly)).ok, false);
+    assert.equal((await point('inventory-import', 'inventory', readOnly)).ok, false);
+  });
+
+  test('a refusal never hands back a key that would also refuse', async () => {
+    // `alsoOnThisScreen` is the model's recovery path. Offering it a key its
+    // own standing would reject just costs another round trip and another
+    // confident wrong answer.
+    const noMoney: Who = { role: 'general_manager' as AppRole, hotelMutationAllowed: true, seesMoney: false };
+    const result = await point('add-delivery', 'inventory', noMoney);
+    assert.equal(result.ok, true);
+    assert.deepEqual((result.data as Record<string, unknown>).alsoOnThisScreen, []);
+  });
+
   test('a turn with no screen behind it is refused rather than guessed at', async () => {
     // The portfolio route, the approval-resolve route and the eval harness all
     // build a context with no page. Failing closed is the only safe direction:
     // there is no browser waiting to draw anything.
+    const boss: Who = { role: 'general_manager' as AppRole, hotelMutationAllowed: true, seesMoney: true };
     for (const anchor of COMPANION_ANCHORS) {
-      assert.equal((await point(anchor.key, null)).ok, false);
-      assert.equal((await point(anchor.key, undefined)).ok, false);
+      assert.equal((await point(anchor.key, null, boss)).ok, false);
+      assert.equal((await point(anchor.key, undefined, boss)).ok, false);
     }
   });
 });
 
+const BOSS = {
+  role: 'general_manager' as AppRole,
+  hotelMutationAllowed: true,
+  seesMoney: true,
+};
+
 describe('what a success actually hands back', () => {
   test('it acknowledges, and says nothing about having done anything', async () => {
-    const result = await point('inventory-import', 'inventory');
+    const result = await point('inventory-import', 'inventory', BOSS);
     assert.equal(result.ok, true);
     const data = result.data as Record<string, unknown>;
     assert.equal(data.pointing, true);
@@ -140,12 +195,12 @@ describe('what a success actually hands back', () => {
   });
 
   test('surrounding whitespace on a key is forgiven, a different key is not', async () => {
-    assert.equal((await point('  add-delivery  ', 'inventory')).ok, true);
-    assert.equal((await point('add delivery', 'inventory')).ok, false);
+    assert.equal((await point('  add-delivery  ', 'inventory', BOSS)).ok, true);
+    assert.equal((await point('add delivery', 'inventory', BOSS)).ok, false);
   });
 
   test('it names the other controls on that screen, so a wrong guess gets the real list', async () => {
-    const result = await point('inventory-import', 'inventory');
+    const result = await point('inventory-import', 'inventory', BOSS);
     assert.deepEqual((result.data as Record<string, unknown>).alsoOnThisScreen, ['add-delivery']);
   });
 

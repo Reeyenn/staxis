@@ -31,9 +31,16 @@
 //      so the companion cannot draw on a page it cannot see. No page proof at
 //      all (the portfolio route, the approval-resolve route, the eval harness)
 //      is also a refusal: fail closed, not "probably fine".
-//   3. THE NODE MUST EXIST. Even past both of those, the browser refuses to
-//      draw at a control that is missing or measures as zero, which is what
-//      every control inside a hidden branch measures as. A phone that hides the
+//   3. THE CONTROL MUST BE ON THEIR SCREEN. The importer and the delivery
+//      scanner render only under `canManage` and `canViewFinancials`, so a hat
+//      without those is refused here and is never told the keys exist in the
+//      first place (see awareness.ts). Without this the tool would answer a
+//      maintenance tech with a confident "it is this one" pointing at a button
+//      their page never rendered, which is the worst answer available: it reads
+//      as the companion being sure and the app being broken.
+//   4. THE NODE MUST EXIST. Even past all of those, the browser refuses to draw
+//      at a control that is missing or measures as zero, which is what every
+//      control inside a hidden branch measures as. A phone that hides the
 //      desktop rail gets a sentence and no arrow, which is honest.
 //
 // ─── WHAT IT SAYS IS NOT WHAT THE MODEL WROTE ──────────────────────────────
@@ -45,10 +52,44 @@
 // would sit outside the em-dash and English-only guards by construction.
 
 import { registerTool, type ToolResult } from '../tools';
-import { anchorFor, anchorsOnPage } from '@/lib/companion/anchors';
+import {
+  anchorFor,
+  anchorIsReachable,
+  anchorsOnPage,
+  type CompanionAnchorStanding,
+} from '@/lib/companion/anchors';
+import { canManageTeam } from '@/lib/roles';
 
 interface PointAtArgs {
   anchor: string;
+}
+
+/**
+ * What this caller's own screen would have rendered.
+ *
+ * These are the ROUTE-BOUND, per-hotel facts, and they are the same two the
+ * stockroom page itself branches on: `canManage` (owner / GM / admin with
+ * mutation standing) and the `view_financials` capability. Deliberately NOT
+ * `moneyVisibleToRole`, which is a lens-level approximation that answers "true"
+ * for every hat without a lens — that is every manager, including the ones
+ * whose hotel never granted them the money capability, so using it would have
+ * left the finance gate open while looking closed.
+ *
+ * Every field is optional on ToolContext because legacy and eval constructors
+ * omit them, so each is read as "only an explicit yes counts". Fail closed: the
+ * cost of being wrong the safe way is one refusal the model turns into a
+ * sentence, and the cost of being wrong the other way is a confident arrow
+ * drawn at a button that was never on the screen.
+ */
+function standingFor(user: {
+  role: Parameters<typeof canManageTeam>[0];
+  hotelMutationAllowed?: boolean;
+  capabilitySnapshot?: Readonly<Partial<Record<string, boolean>>>;
+}): CompanionAnchorStanding {
+  return {
+    canManage: canManageTeam(user.role) && user.hotelMutationAllowed === true,
+    seesMoney: user.capabilitySnapshot?.view_financials === true,
+  };
 }
 
 registerTool<PointAtArgs>({
@@ -106,6 +147,16 @@ registerTool<PointAtArgs>({
           + 'Say which screen it is on instead, and offer to take them there.',
       };
     }
+    // The same entitlements the PAGE applies before rendering the control. A
+    // hat without them never had the button, so there is nothing to point at.
+    const standing = standingFor(ctx.user);
+    if (!anchorIsReachable(target, standing)) {
+      return {
+        ok: false,
+        error: 'That control is not on this person\'s screen: their access does not include it. '
+          + 'Tell them who at the hotel can do it rather than describing a button they do not have.',
+      };
+    }
     return {
       ok: true,
       data: {
@@ -115,8 +166,9 @@ registerTool<PointAtArgs>({
         label: target.label,
         does: target.does,
         // What else was available here, so a model that guessed wrong once has
-        // the real list rather than another guess.
-        alsoOnThisScreen: anchorsOnPage(ctx.companionPage)
+        // the real list rather than another guess. Filtered by the same
+        // standing, so a refusal never hands back a key that would also refuse.
+        alsoOnThisScreen: anchorsOnPage(ctx.companionPage, standing)
           .filter((a) => a.key !== target.key)
           .map((a) => a.key),
       },

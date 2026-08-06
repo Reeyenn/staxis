@@ -260,6 +260,11 @@ export function layoutPointer(
   // A control that measures as nothing is a control that is not really there.
   if (!(target.width > 0 && target.height > 0)) return null;
   if (!(card.width > 0 && card.height > 0)) return null;
+  if (!(viewport.width > 0 && viewport.height > 0)) return null;
+  // NaN survives every comparison above by being false, but a NaN LEFT would
+  // not: it would flow into the arithmetic and produce a card positioned at
+  // `NaNpx`, which renders at the origin with no error anywhere.
+  if (!Number.isFinite(target.left) || !Number.isFinite(target.top)) return null;
 
   const glow: TraceRect = {
     left: target.left - CUTOUT_PAD,
@@ -268,9 +273,11 @@ export function layoutPointer(
     height: target.height + CUTOUT_PAD * 2,
   };
 
-  // Never wider than the window can hold, whatever the popup asked for.
-  const width = Math.min(card.width, Math.max(200, viewport.width - EDGE_MARGIN * 2));
-  const height = Math.min(card.height, Math.max(80, viewport.height - EDGE_MARGIN * 2));
+  // Never wider than the window can hold, whatever the popup asked for. No
+  // minimum floor: a floor bigger than the window is how a "minimum readable
+  // width" becomes a card hanging off the edge of a narrow one.
+  const width = Math.max(1, Math.min(card.width, viewport.width - EDGE_MARGIN * 2, viewport.width));
+  const height = Math.max(1, Math.min(card.height, viewport.height - EDGE_MARGIN * 2, viewport.height));
 
   const glowRight = glow.left + glow.width;
   const glowBottom = glow.top + glow.height;
@@ -338,6 +345,18 @@ export function layoutPointer(
     tip = { x: glow.left, y: clamp(centerY, glow.top, glowBottom) };
     root = { x: left + width, y: insetY(tip.y) };
   }
+
+  // The tip is clamped to the CONTROL above, which is right when the control is
+  // on screen and wrong when it is not: a control wider than the window, or the
+  // nothing-fits fallback, can put the control's own edge outside the viewport,
+  // and an arrowhead there is drawn outside the viewport-sized SVG and simply
+  // never appears. Clamping to the window keeps the head visible and still on
+  // the control wherever the two overlap, which is the only place a reader
+  // would look for it.
+  tip = {
+    x: clamp(tip.x, 0, viewport.width),
+    y: clamp(tip.y, 0, viewport.height),
+  };
 
   const angle = Math.atan2(tip.y - root.y, tip.x - root.x) * (180 / Math.PI);
 

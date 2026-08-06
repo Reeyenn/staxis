@@ -28,6 +28,7 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { usePathname } from 'next/navigation';
 
 import { readEnvelope } from '@/lib/api-envelope';
+import { fetchWithAuth } from '@/lib/api-fetch';
 import { companionMounts } from '@/lib/companion/mount';
 import {
   POINTER_DELAY_MS,
@@ -62,9 +63,13 @@ export interface DiscoveryPointerProps {
    * Defaults to true so the common case needs no argument.
    */
   enabled?: boolean;
+  /** Test seam only. Production always uses the authenticated request helper. */
+  request?: typeof fetchWithAuth;
 }
 
-export function DiscoveryPointer({ pid, role, page, enabled = true }: DiscoveryPointerProps) {
+export function DiscoveryPointer({
+  pid, role, page, enabled = true, request = fetchWithAuth,
+}: DiscoveryPointerProps) {
   const pathname = usePathname() ?? '/';
   const [pointer, setPointer] = useState<PointerCandidate | null>(null);
   const startedRef = useRef(false);
@@ -78,7 +83,11 @@ export function DiscoveryPointer({ pid, role, page, enabled = true }: DiscoveryP
 
     void (async () => {
       try {
-        const res = await fetch(`/api/companion?pid=${encodeURIComponent(pid)}`, { cache: 'no-store' });
+        // fetchWithAuth, not bare fetch: /api/companion is a session route, and
+        // the wrapper is where the expiry preflight and the one 401 refresh
+        // retry live. A bare fetch here meant a person whose token had just
+        // rolled over silently got no pointer, ever, on that tab.
+        const res = await request(`/api/companion?pid=${encodeURIComponent(pid)}`, { cache: 'no-store' });
         const env = await readEnvelope<CompanionBootstrap>(res);
         if (env.error !== undefined || cancelled) return;
         if (!env.data.availability?.awake) return;
@@ -96,13 +105,17 @@ export function DiscoveryPointer({ pid, role, page, enabled = true }: DiscoveryP
       cancelled = true;
       if (timer) clearTimeout(timer);
     };
+    // `request` is a stable module function in production and a fixed stub in
+    // tests, so it is deliberately not a dependency: re-running the bootstrap
+    // because a caller inlined the prop would re-ask on every render.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pid, allowed, page]);
 
   /** Stamped when it actually DREW, not when it was chosen. A pointer that
    *  never found its control has not been offered and must come back. */
   const onShown = useCallback(() => {
-    if (pid && pointer) void post(pid, 'spoke', pointer.topic);
-  }, [pid, pointer]);
+    if (pid && pointer) void post(request, pid, 'spoke', pointer.topic);
+  }, [pid, pointer, request]);
 
   const onNoTarget = useCallback(() => {
     // Nothing on this screen to point at. Say nothing, write nothing, and let
@@ -111,16 +124,16 @@ export function DiscoveryPointer({ pid, role, page, enabled = true }: DiscoveryP
   }, []);
 
   const onAnswer = useCallback((answer: PointerAnswer) => {
-    if (answer === 'never' && pid && pointer) void post(pid, 'dropped', pointer.topic);
+    if (answer === 'never' && pid && pointer) void post(request, pid, 'dropped', pointer.topic);
     // "later" writes nothing: the topic was stamped with today when it drew,
     // so it is already quiet until the hotel's next day.
     setPointer(null);
-  }, [pid, pointer]);
+  }, [pid, pointer, request]);
 
   const onTargetUsed = useCallback(() => {
-    if (pid && pointer) void post(pid, 'dropped', pointer.topic);
+    if (pid && pointer) void post(request, pid, 'dropped', pointer.topic);
     setPointer(null);
-  }, [pid, pointer]);
+  }, [pid, pointer, request]);
 
   if (!pointer) return null;
 
@@ -137,12 +150,36 @@ export function DiscoveryPointer({ pid, role, page, enabled = true }: DiscoveryP
   );
 }
 
-async function post(pid: string, event: string, topic: string): Promise<void> {
-  try {
-    await fetch('/api/companion', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ pid, event, topic }),
-    });
-  } catch { /* memory is best effort; the next page load reads the truth */ }
+/**
+ * Write one companion memory event.
+ *
+ * TWO ATTEMPTS FOR A NO. `spoke` is genuinely best effort: losing it costs one
+ * repeated tip. `dropped` is not — it is the person having said "do not show
+ * this again", and a swallowed failure means the thing they just dismissed
+ * forever is back tomorrow, which is the app appearing not to have listened.
+ * So a dismissal gets one retry before it is given up on, and the retry is
+ * safe because the reducer behind it is idempotent: dropping a dropped topic
+ * is still dropped.
+ */
+async function post(
+  request: typeof fetchWithAuth,
+  pid: string,
+  event: string,
+  topic: string,
+): Promise<void> {
+  const attempts = event === 'dropped' ? 2 : 1;
+  for (let attempt = 0; attempt < attempts; attempt++) {
+    try {
+      const res = await request('/api/companion', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ pid, event, topic }),
+      });
+      if (res.ok) return;
+    } catch {
+      // A dead session is not worth retrying and not worth an error on
+      // somebody's screen either. The next page load reads the truth.
+    }
+    if (attempt + 1 < attempts) await new Promise((r) => setTimeout(r, 400));
+  }
 }

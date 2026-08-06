@@ -186,6 +186,15 @@ export function AskStaxisBar() {
   const [input, setInput] = useState('');
   /** The control the companion is pointing at because they asked where it was. */
   const [chatPointer, setChatPointer] = useState<CompanionAnchor | null>(null);
+  // Stable identities. This component re-renders on every streaming delta and
+  // every keystroke, and the popup's Escape listener is keyed on its handler:
+  // fresh closures here meant a window listener torn down and rebuilt dozens
+  // of times a second while the model was answering.
+  const clearChatPointer = useCallback(() => setChatPointer(null), []);
+  const chatPointerParagraphs = useMemo(
+    () => (chatPointer ? [chatPointer.does] : []),
+    [chatPointer],
+  );
   const [open, setOpen] = useState(false);
   // B1 · Sink needs the slab to still be in the tree while it plays. `open` is
   // the logical state (and what aria-expanded reports); `closing` is the extra
@@ -1453,11 +1462,11 @@ export function AskStaxisBar() {
       {chatPointer && (
         <PointerPopup
           anchor={chatPointer.key}
-          paragraphs={[chatPointer.does]}
+          paragraphs={chatPointerParagraphs}
           buttons={CHAT_POINTER_BUTTONS}
-          onAnswer={() => setChatPointer(null)}
-          onTargetUsed={() => setChatPointer(null)}
-          onNoTarget={() => setChatPointer(null)}
+          onAnswer={clearChatPointer}
+          onTargetUsed={clearChatPointer}
+          onNoTarget={clearChatPointer}
         />
       )}
 

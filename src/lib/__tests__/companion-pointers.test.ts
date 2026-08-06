@@ -46,6 +46,7 @@ import {
   COMPANION_ANCHORS,
   COMPANION_ANCHOR_ATTR,
   anchorFor,
+  anchorIsReachable,
   anchorSelector,
   anchorsOnPage,
 } from '@/lib/companion/anchors';
@@ -298,11 +299,52 @@ describe('the controls the companion may point at', () => {
   });
 
   test('page scoping is exact, so a key from one screen is never offered on another', () => {
-    assert.deepEqual(anchorsOnPage('inventory').map((a) => a.key).sort(), ['add-delivery', 'inventory-import']);
+    const boss = { canManage: true, seesMoney: true };
+    assert.deepEqual(anchorsOnPage('inventory', boss).map((a) => a.key).sort(), ['add-delivery', 'inventory-import']);
+    assert.deepEqual(anchorsOnPage('staxis', boss).map((a) => a.key), ['todo-composer']);
+    assert.deepEqual(anchorsOnPage('dashboard', boss), []);
+    assert.deepEqual(anchorsOnPage(null, boss), []);
+    assert.deepEqual(anchorsOnPage(undefined, boss), []);
+  });
+
+  test('a control is only offered to somebody whose own screen would render it', () => {
+    // The stockroom page renders the importer under `canManage &&
+    // canViewFinancials` and the delivery scanner under `canManage`. Telling
+    // anybody else those keys exist produces the worst answer available: a
+    // confident "it is this one" with no arrow, because the button was never
+    // on their screen. So the registry carries the same gates the page does.
+    const cases: Array<[{ canManage: boolean; seesMoney: boolean }, string[]]> = [
+      [{ canManage: true, seesMoney: true }, ['add-delivery', 'inventory-import']],
+      [{ canManage: true, seesMoney: false }, ['add-delivery']],
+      [{ canManage: false, seesMoney: true }, []],
+      [{ canManage: false, seesMoney: false }, []],
+    ];
+    for (const [standing, expected] of cases) {
+      assert.deepEqual(
+        anchorsOnPage('inventory', standing).map((a) => a.key).sort(),
+        expected,
+        `wrong list for ${JSON.stringify(standing)}`,
+      );
+    }
+  });
+
+  test('the composer needs nothing, because everybody with the list has it', () => {
+    for (const standing of [
+      { canManage: false, seesMoney: false },
+      { canManage: true, seesMoney: true },
+    ]) {
+      assert.deepEqual(anchorsOnPage('staxis', standing).map((a) => a.key), ['todo-composer']);
+    }
+  });
+
+  test('an asker who does not say what they can do is told only what needs nothing', () => {
+    // Fail closed. A caller that forgets the standing argument must not be the
+    // reason a maintenance tech is offered the importer.
+    assert.deepEqual(anchorsOnPage('inventory'), []);
     assert.deepEqual(anchorsOnPage('staxis').map((a) => a.key), ['todo-composer']);
-    assert.deepEqual(anchorsOnPage('dashboard'), []);
-    assert.deepEqual(anchorsOnPage(null), []);
-    assert.deepEqual(anchorsOnPage(undefined), []);
+    for (const anchor of COMPANION_ANCHORS) {
+      assert.equal(anchorIsReachable(anchor), anchor.needs.length === 0);
+    }
   });
 
   test('every key is unique, or two controls would answer to one name', () => {
@@ -409,6 +451,52 @@ describe('the arrow always lands on the control', () => {
     assert.ok(g.card.left >= EDGE_MARGIN - 0.5);
     assert.ok(g.card.left + g.card.width <= phone.width - EDGE_MARGIN + 0.5);
     assert.ok(within(g.glow, g.head.x, g.head.y));
+  });
+
+  test('a window too small for the popup still keeps it inside the window', () => {
+    // No minimum-width floor may exceed the window: that is how a "minimum
+    // readable width" becomes a card hanging off the edge of a narrow one.
+    for (const viewport of [{ width: 220, height: 400 }, { width: 120, height: 160 }, { width: 60, height: 60 }]) {
+      const g = layoutPointer({ left: 10, top: 10, width: 40, height: 20 }, viewport, CARD);
+      assert.ok(g, `no geometry at ${JSON.stringify(viewport)}`);
+      assert.ok(g.card.left >= 0, `negative left at ${JSON.stringify(viewport)}`);
+      assert.ok(g.card.top >= 0, `negative top at ${JSON.stringify(viewport)}`);
+      assert.ok(
+        g.card.left + g.card.width <= viewport.width + 0.5,
+        `card ran off the right at ${JSON.stringify(viewport)}: ${JSON.stringify(g.card)}`,
+      );
+      assert.ok(
+        g.card.top + g.card.height <= viewport.height + 0.5,
+        `card ran off the bottom at ${JSON.stringify(viewport)}: ${JSON.stringify(g.card)}`,
+      );
+    }
+  });
+
+  test('the arrowhead is never drawn outside the window it is drawn in', () => {
+    // The SVG is exactly viewport-sized, so a head outside it is a head that
+    // simply never appears. Reachable with a control wider than the window, or
+    // one whose own edge is off screen in the nothing-fits fallback.
+    const cases: Array<[{ left: number; top: number; width: number; height: number }, typeof SCREEN]> = [
+      [{ left: -400, top: 300, width: 2000, height: 40 }, SCREEN],
+      [{ left: 1270, top: 20, width: 400, height: 40 }, SCREEN],
+      [{ left: 10, top: 10, width: 40, height: 20 }, { width: 120, height: 160 }],
+      [{ left: -50, top: -20, width: 80, height: 40 }, SCREEN],
+    ];
+    for (const [spot, viewport] of cases) {
+      const g = layoutPointer(spot, viewport, CARD);
+      assert.ok(g, `no geometry for ${JSON.stringify(spot)}`);
+      assert.ok(g.head.x >= 0 && g.head.x <= viewport.width, `head x off window: ${g.head.x}`);
+      assert.ok(g.head.y >= 0 && g.head.y <= viewport.height, `head y off window: ${g.head.y}`);
+    }
+  });
+
+  test('a nonsense box is refused rather than positioned at NaN', () => {
+    // NaN survives every `> 0` test by being false, but a NaN coordinate would
+    // flow into the arithmetic and render the card at `NaNpx`, which lands at
+    // the origin with no error anywhere.
+    assert.equal(layoutPointer({ left: NaN, top: 10, width: 40, height: 20 }, SCREEN, CARD), null);
+    assert.equal(layoutPointer({ left: 10, top: NaN, width: 40, height: 20 }, SCREEN, CARD), null);
+    assert.equal(layoutPointer({ left: 10, top: 10, width: 40, height: 20 }, { width: 0, height: 0 }, CARD), null);
   });
 
   test('the popup never sits on top of the control it is describing', () => {

@@ -30,6 +30,22 @@ import type { Root } from 'react-dom/client';
 
 import { POINTER_DELAY_MS } from '@/lib/companion/pointers';
 
+// ─── Load the Supabase browser client BEFORE any fake DOM exists ───────────
+//
+// DiscoveryPointer's real transport is `fetchWithAuth`, which imports the
+// Supabase browser client, which is CONSTRUCTED at module scope. GoTrue arms
+// its token-refresh ticker in that constructor whenever it decides it is in a
+// browser, and the ticker is a bare interval that outlives every teardown: it
+// then fires against a closed jsdom window forever, holding the whole client
+// suite open rather than failing it.
+//
+// Importing it here, at the top of the file, means it is constructed while
+// `window` is still undefined, so it never decides it is in a browser and the
+// ticker is never armed. The later dynamic import inside the harness gets the
+// same cached module. The component is still driven through its own `request`
+// seam, so nothing in this file depends on the client actually working.
+import '@/lib/supabase';
+
 const DOM_GLOBALS = [
   'window', 'document', 'navigator', 'localStorage',
   'Element', 'HTMLElement', 'HTMLInputElement', 'HTMLButtonElement', 'SVGElement',
@@ -94,36 +110,51 @@ function giveEverythingSize(): void {
   });
 }
 
-/** The bootstrap read and the memory writes, captured rather than performed. */
-function stubFetch(memory: Record<string, unknown>): { posts: Posted[]; restore: () => void } {
+/**
+ * The bootstrap read and the memory writes, captured rather than performed.
+ *
+ * Handed to the component through its `request` prop rather than by replacing
+ * the global fetch. That seam exists for exactly this: the real transport is
+ * `fetchWithAuth`, which pulls in the Supabase browser client, whose session
+ * preflight arms a token-refresh ticker that outlives the test and holds the
+ * whole client suite open instead of failing it. Driving the component's own
+ * seam keeps that entire module graph out of the test.
+ */
+function stubTransport(memory: Record<string, unknown>, failWrites = 0): {
+  posts: Posted[];
+  request: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
+} {
   const posts: Posted[] = [];
-  const original = globalThis.fetch;
-  Object.defineProperty(globalThis, 'fetch', {
-    configurable: true,
-    writable: true,
-    value: async (input: unknown, init?: { method?: string; body?: string }) => {
-      if (init?.method === 'POST') {
-        posts.push(JSON.parse(init.body ?? '{}') as Posted);
-        return new Response(JSON.stringify({ ok: true, requestId: 'r', data: {} }), {
-          status: 200, headers: { 'Content-Type': 'application/json' },
+  let failuresLeft = failWrites;
+  const request = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+    if (init?.method === 'POST') {
+      const body = JSON.parse(String(init.body ?? '{}')) as Posted;
+      posts.push(body);
+      // Only the dismissal is made to fail. Failing whichever write happens to
+      // come first would spend the budget on the `spoke` stamp and prove
+      // nothing about the one that carries a promise.
+      if (body.event === 'dropped' && failuresLeft > 0) {
+        failuresLeft -= 1;
+        return new Response(JSON.stringify({ ok: false, requestId: 'r', error: 'nope' }), {
+          status: 503, headers: { 'Content-Type': 'application/json' },
         });
       }
-      void input;
-      return new Response(JSON.stringify({
-        ok: true,
-        requestId: 'r',
-        data: {
-          hotel: { today: '2026-08-05' },
-          memory,
-          availability: { awake: true },
-        },
-      }), { status: 200, headers: { 'Content-Type': 'application/json' } });
-    },
-  });
-  return {
-    posts,
-    restore: () => Object.defineProperty(globalThis, 'fetch', { configurable: true, writable: true, value: original }),
+      return new Response(JSON.stringify({ ok: true, requestId: 'r', data: {} }), {
+        status: 200, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+    void input;
+    return new Response(JSON.stringify({
+      ok: true,
+      requestId: 'r',
+      data: {
+        hotel: { today: '2026-08-05' },
+        memory,
+        availability: { awake: true },
+      },
+    }), { status: 200, headers: { 'Content-Type': 'application/json' } });
   };
+  return { posts, request };
 }
 
 interface Harness {
@@ -143,6 +174,8 @@ async function mount(
     anchor?: string;
     role?: 'general_manager' | 'housekeeping';
     memory?: Record<string, unknown>;
+    /** How many DISMISSAL writes should fail before one succeeds. */
+    failWrites?: number;
   } = {},
 ): Promise<Harness> {
   // The pointer deliberately waits three seconds for the screen to settle, and
@@ -153,7 +186,7 @@ async function mount(
   t.mock.timers.enable({ apis: ['setTimeout'] });
   const restoreDom = installBrowser();
   giveEverythingSize();
-  const { posts, restore: restoreFetch } = stubFetch(options.memory ?? { topics: {} });
+  const { posts, request } = stubTransport(options.memory ?? { topics: {} }, options.failWrites ?? 0);
 
   const [{ DiscoveryPointer }, { createRoot }] = await Promise.all([
     import('@/components/companion/DiscoveryPointer'),
@@ -170,7 +203,12 @@ async function mount(
     root.render(
       <div>
         <button type="button" {...{ 'data-staxis-anchor': anchor }}>Import a file</button>
-        <DiscoveryPointer pid="11111111-1111-4111-8111-111111111111" role={options.role ?? 'general_manager'} page="inventory" />
+        <DiscoveryPointer
+          pid="11111111-1111-4111-8111-111111111111"
+          role={options.role ?? 'general_manager'}
+          page="inventory"
+          request={request as never}
+        />
       </div>,
     );
   });
@@ -187,12 +225,16 @@ async function mount(
   t.after(() => {
     act(() => { root?.unmount(); });
     host.remove();
-    restoreFetch();
     restoreDom();
     t.mock.timers.reset();
   });
 
   return { host, posts, pageHtml: () => host.innerHTML };
+}
+
+/** Drain the microtask queue so an in-flight request has been read. */
+async function flush(): Promise<void> {
+  for (let i = 0; i < 8; i++) await act(async () => { await Promise.resolve(); });
 }
 
 /** Two real animation frames, which is what the measure loop schedules. */
@@ -340,5 +382,134 @@ describe('it refuses to point at nothing', () => {
     });
     assert.equal(popup(), null);
     assert.equal(posts.length, 0);
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// The popup itself, mounted directly
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// DiscoveryPointer drives one pointer per visit and cannot swap anchors, so
+// the anchor-swap path belongs to PointerPopup and has to be exercised there.
+// It is the chat pointer's real path: AskStaxisBar replaces `chatPointer` in
+// place when somebody asks a second "where is..." question, with no unmount in
+// between.
+
+async function mountPopup(
+  t: TestContext,
+  anchors: string[],
+): Promise<{ setAnchor: (a: string) => Promise<void>; host: HTMLElement }> {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const restoreDom = installBrowser();
+  giveEverythingSize();
+
+  const [{ PointerPopup }, { createRoot }] = await Promise.all([
+    import('@/components/companion/PointerPopup'),
+    import('react-dom/client'),
+  ]);
+
+  const host = document.createElement('div');
+  document.body.appendChild(host);
+  let root: Root | null = null;
+
+  const draw = (anchor: string) => (
+    <div>
+      {anchors.map((a) => (
+        <button type="button" key={a} {...{ 'data-staxis-anchor': a }}>{a}</button>
+      ))}
+      <PointerPopup
+        anchor={anchor as never}
+        paragraphs={[`about ${anchor}`]}
+        buttons={[{ label: 'Got it', answer: 'never' }]}
+        onAnswer={() => {}}
+      />
+    </div>
+  );
+
+  const settle = async () => {
+    await act(async () => { await nextFrames(); });
+    await act(async () => { t.mock.timers.tick(600); });
+    await act(async () => { await nextFrames(); });
+  };
+
+  await act(async () => { root = createRoot(host); root.render(draw(anchors[0])); });
+  await settle();
+
+  t.after(() => {
+    act(() => { root?.unmount(); });
+    host.remove();
+    restoreDom();
+    t.mock.timers.reset();
+  });
+
+  return {
+    host,
+    setAnchor: async (a: string) => {
+      await act(async () => { root?.render(draw(a)); });
+      await settle();
+    },
+  };
+}
+
+describe('swapping the anchor on a live pointer', () => {
+  test('the second control is the one described, lit, and pointed at', async (t) => {
+    // Every ref in the popup is a fact about ONE control. Before they were
+    // reset on a swap, the second anchor was rendered with the first anchor's
+    // geometry and glow, and neither onShown nor onNoTarget could ever fire
+    // again because both were already spent.
+    const { host, setAnchor } = await mountPopup(t, ['inventory-import', 'add-delivery']);
+    const first = host.querySelector('[data-staxis-anchor="inventory-import"]');
+    const second = host.querySelector('[data-staxis-anchor="add-delivery"]');
+    assert.ok(first && second);
+    assert.ok(popup()?.textContent?.includes('about inventory-import'));
+    assert.ok(first.hasAttribute('data-staxis-lit'), 'the first control was never lit');
+
+    await setAnchor('add-delivery');
+    assert.ok(popup()?.textContent?.includes('about add-delivery'), 'the words did not follow the anchor');
+    assert.equal(first.hasAttribute('data-staxis-lit'), false, 'the old control stayed lit');
+    assert.ok(second.hasAttribute('data-staxis-lit'), 'the new control was never lit');
+    assert.ok(popup()?.querySelector('[data-testid="companion-pointer-arrow"]'), 'no arrow after the swap');
+  });
+
+  test('clicking the NEW control counts, and clicking the old one does not', async (t) => {
+    const { host, setAnchor } = await mountPopup(t, ['inventory-import', 'add-delivery']);
+    await setAnchor('add-delivery');
+    // The document listener is rebuilt on the new selector, so a click on the
+    // control the pointer has left behind is just a click on a button.
+    assert.ok(popup());
+    await click(host.querySelector('[data-staxis-anchor="inventory-import"]')!);
+    assert.ok(popup(), 'the old control still ended the pointer');
+  });
+});
+
+describe('a dismissal is not lost to one bad request', () => {
+  test('"Do not show this again" is retried when the write fails', async (t) => {
+    // A swallowed failure means the thing they just dismissed forever is back
+    // tomorrow, which is the app appearing not to have listened. The reducer
+    // behind it is idempotent, so a retry is free.
+    const { posts } = await mount(t, { failWrites: 1 });
+    const never = buttons().find((b) => /do not show/i.test(b.textContent ?? ''));
+    assert.ok(never);
+    await act(async () => { never.dispatchEvent(new MouseEvent('click', { bubbles: true })); });
+    // Let the FIRST request fail before winding the backoff on: the retry's
+    // sleep is not registered until the failure has been read, so ticking
+    // early would tick a timer that does not exist yet.
+    await flush();
+    await act(async () => { t.mock.timers.tick(500); });
+    await flush();
+    const dropped = posts.filter((p) => p.event === 'dropped');
+    assert.equal(dropped.length, 2, `expected a retry, got ${JSON.stringify(posts)}`);
+    assert.equal(dropped[1].topic, 'pointer:inventory_import');
+  });
+
+  test('a write that succeeds first time is not sent twice', async (t) => {
+    const { posts } = await mount(t);
+    const never = buttons().find((b) => /do not show/i.test(b.textContent ?? ''));
+    assert.ok(never);
+    await act(async () => { never.dispatchEvent(new MouseEvent('click', { bubbles: true })); });
+    await flush();
+    await act(async () => { t.mock.timers.tick(500); });
+    await flush();
+    assert.equal(posts.filter((p) => p.event === 'dropped').length, 1);
   });
 });

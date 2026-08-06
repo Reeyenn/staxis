@@ -68,11 +68,11 @@ import 'server-only';
 
 import { scopedDb, unscopedBecause } from '@/lib/agent/scoped-db';
 import { captureException } from '@/lib/sentry';
-import type { AppRole } from '@/lib/roles';
+import { canManageTeam, type AppRole } from '@/lib/roles';
 import { addDaysInTz, propertyLocalToday, startOfLocalDay } from '@/lib/schedule/local-date';
 import { countProposeFindings, latestRunFacts } from '@/lib/findings/store';
 import { scheduleState } from '@/lib/findings/detectors/preventive-due';
-import { lensAllowsTool } from './lenses';
+import { lensAllowsTool, moneyVisibleToRole } from './lenses';
 import { anchorsOnPage } from '@/lib/companion/anchors';
 import { pageForPath } from '@/lib/companion/pages';
 import type { HotelSnapshot } from './context';
@@ -931,11 +931,27 @@ export async function buildAwareness(input: AwarenessInput): Promise<Awareness> 
   const screen = resolveSurface(input.pathname);
   if (screen) base.screen = screen;
 
-  // Which buttons on that screen the companion is allowed to point at. Gated
-  // on the tool, through the same lens the rest of this block is gated on, so
-  // a hat with no pointer is never told the keys exist.
+  // Which buttons on that screen the companion is allowed to point at.
+  //
+  // TWO gates, and the second is the one that matters. The lens decides whether
+  // this hat has a pointer at all. The STANDING decides which controls their
+  // own screen actually rendered: the importer and the delivery scanner are
+  // behind `canManage` and `canViewFinancials` on the stockroom page, and a
+  // maintenance tech told those keys exist would get a confident "it is this
+  // one" with no arrow, because the button was never on their screen.
+  //
+  // This block only decides what the model is TEMPTED by. The wall is in the
+  // tool, which re-derives the same standing from the route-bound per-hotel
+  // capability snapshot this function does not hold. `moneyVisibleToRole` is
+  // the closest signal available here and is deliberately the looser of the
+  // two: a manager without the money capability may still be shown the key and
+  // will get a refusal in words, which is a recoverable turn rather than a
+  // silent one.
   if (canSee(input.role, 'staxis_point_at')) {
-    const pointable = anchorsOnPage(pageForPath(input.pathname)?.key ?? null);
+    const pointable = anchorsOnPage(pageForPath(input.pathname)?.key ?? null, {
+      canManage: canManageTeam(input.role),
+      seesMoney: moneyVisibleToRole(input.role),
+    });
     if (pointable.length > 0) {
       base.pointables = pointable.map((a) => `${a.key} (${a.label}: ${a.does})`).join('; ');
     }
