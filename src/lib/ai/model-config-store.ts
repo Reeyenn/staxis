@@ -5,6 +5,7 @@ import { log } from '@/lib/log';
 import {
   AI_FEATURE_KEYS,
   AI_FEATURE_REGISTRY,
+  aiFeatureRuntimeProviderLabel,
   getAiFeatureDefinition,
   getAiModelOverlay,
   isAiFeatureRuntimeProviderCompatible,
@@ -541,7 +542,7 @@ export async function createAiConfigVersion(
   ) {
     throw new AiConfigStoreError(
       'validation_failed',
-      `This feature is implemented by the ${definition.runtimeProvider} runtime; select ${definition.runtimeProvider} models only.`,
+      `This feature runs on ${aiFeatureRuntimeProviderLabel(input.featureKey)} models only.`,
     );
   }
   const defaultPrimary = definition.defaultConfig.primary;
@@ -612,21 +613,33 @@ export async function createAiConfigVersion(
   return config;
 }
 
+/**
+ * Everything about ONE selected model that is not a provider-compatibility
+ * question: is it a hosted provider at all, is it in the catalog, is it still
+ * available, does it carry the capabilities the feature needs, and is its price
+ * verified.
+ *
+ * Deliberately does NOT decide which providers may serve the feature. That rule
+ * lives in exactly one place — `isAiFeatureRuntimeProviderCompatible`, derived
+ * from `runtimeProviders` — and every caller here runs it immediately before.
+ *
+ * It used to be enforced here too, against `definition.runtimeProvider`: the
+ * SINGULAR provider of the feature's default model, which is `anthropic` for
+ * every feature that has one. Create allowed an OpenAI primary (plural gate) and
+ * validate then refused the same row (singular gate), so no OpenAI selection
+ * could ever be activated — the shared OpenAI chat adapter was reachable in the
+ * picker and unreachable in practice. Two copies of one rule is what made that
+ * possible, so there is now one copy.
+ */
 async function validateSelection(
   selection: AiModelSelection,
   requiredCapabilities: AiCapability[],
   enforceRuntimeCompatibility = true,
-  runtimeProvider?: AiProvider,
 ): Promise<{ model: AiModelRef | null; errors: string[]; warnings: string[] }> {
   const errors: string[] = [];
   const warnings: string[] = [];
   if (!isHostedProvider(selection.provider)) {
     return { model: null, errors: ['Only Anthropic and OpenAI models can be activated.'], warnings };
-  }
-  if (runtimeProvider && selection.provider !== runtimeProvider) {
-    errors.push(
-      `${selection.provider}/${selection.modelId} cannot run through this feature's ${runtimeProvider} runtime.`,
-    );
   }
   const catalog = await getAiCatalogModel(selection.provider, selection.modelId);
   if (!catalog) {
@@ -699,16 +712,16 @@ export async function validateAiConfigVersion(
   )) registryErrors.push('This feature’s model is fixed because changing it requires a data migration.');
   if (!definition.fallbackAllowed && base.fallback) registryErrors.push('This feature does not support a fallback model.');
   if (!isAiFeatureRuntimeProviderCompatible(base.featureKey, base.primary.provider)) {
-    registryErrors.push(`The primary model must use the ${definition.runtimeProvider} runtime provider.`);
+    registryErrors.push(`The primary model must run on ${aiFeatureRuntimeProviderLabel(base.featureKey)}.`);
   }
   if (base.fallback && !isAiFeatureRuntimeProviderCompatible(base.featureKey, base.fallback.provider)) {
-    registryErrors.push(`The fallback model must use the ${definition.runtimeProvider} runtime provider.`);
+    registryErrors.push(`The fallback model must run on ${aiFeatureRuntimeProviderLabel(base.featureKey)}.`);
   }
 
   const [primaryResult, fallbackResult] = await Promise.all([
-    validateSelection(base.primary, definition.requiredCapabilities, base.enabled, definition.runtimeProvider),
+    validateSelection(base.primary, definition.requiredCapabilities, base.enabled),
     base.fallback
-      ? validateSelection(base.fallback, definition.requiredCapabilities, base.enabled, definition.runtimeProvider)
+      ? validateSelection(base.fallback, definition.requiredCapabilities, base.enabled)
       : Promise.resolve(null),
   ]);
   const errors = [...registryErrors, ...primaryResult.errors, ...(fallbackResult?.errors ?? [])];
@@ -796,23 +809,21 @@ export async function activateAiConfigVersion(input: {
     throw new AiConfigStoreError('validation_failed', 'This feature does not support a fallback model.');
   }
   if (!isAiFeatureRuntimeProviderCompatible(current.featureKey, current.primary.provider)) {
-    throw new AiConfigStoreError('validation_failed', `The primary model must use the ${definition.runtimeProvider} runtime provider.`);
+    throw new AiConfigStoreError('validation_failed', `The primary model must run on ${aiFeatureRuntimeProviderLabel(current.featureKey)}.`);
   }
   if (current.fallback && !isAiFeatureRuntimeProviderCompatible(current.featureKey, current.fallback.provider)) {
-    throw new AiConfigStoreError('validation_failed', `The fallback model must use the ${definition.runtimeProvider} runtime provider.`);
+    throw new AiConfigStoreError('validation_failed', `The fallback model must run on ${aiFeatureRuntimeProviderLabel(current.featureKey)}.`);
   }
   const primary = await validateSelection(
     current.primary,
     definition.requiredCapabilities,
     current.enabled,
-    definition.runtimeProvider,
   );
   const fallback = current.fallback
     ? await validateSelection(
         current.fallback,
         definition.requiredCapabilities,
         current.enabled,
-        definition.runtimeProvider,
       )
     : null;
   const errors = [...primary.errors, ...(fallback?.errors ?? [])];
