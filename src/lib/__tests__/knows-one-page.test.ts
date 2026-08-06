@@ -241,8 +241,23 @@ describe('the one box everything is typed into', () => {
 
   test('the ghost text shows real examples, not instructions about typing', () => {
     const lines = KNOWS_COPY.teachPlaceholder.split('\n').filter(Boolean);
-    assert.ok(lines.length >= 2, 'more than one example, so the shape is obvious');
-    for (const line of lines) assert.ok(line.startsWith('Try: '), line);
+    const examples = lines.filter((line) => line.startsWith('Try: '));
+    assert.ok(examples.length >= 2, 'more than one example, so the shape is obvious');
+    // Every line but the last is an example sentence. The last one is the
+    // file invitation below, and it is the only line allowed not to be.
+    assert.equal(examples.length, lines.length - 1, lines.join(' | '));
+  });
+
+  test('the ghost text also says a file can go in the same box', () => {
+    // Three sentences in a row teach one lesson: this box takes sentences. A
+    // manager who has just read them has no reason to think their employee
+    // handbook belongs in the same place, so the last line says so, where
+    // their eyes already are.
+    const lines = KNOWS_COPY.teachPlaceholder.split('\n').filter(Boolean);
+    const last = lines[lines.length - 1] ?? '';
+    assert.ok(!last.startsWith('Try: '), `the file line is not an example: ${last}`);
+    assert.ok(/\bfile\b/i.test(last), last);
+    assert.ok(/handbook/i.test(last), 'names something a hotel actually has');
   });
 
   test('no page copy says "AI", and none of it uses an em dash', () => {

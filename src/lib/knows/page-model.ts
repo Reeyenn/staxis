@@ -231,12 +231,24 @@ export const KNOWS_COPY = {
   teachButton: 'Teach it something',
   teachTitle: 'Teach it something',
   /** Ghost text INSIDE the empty box, written for somebody who has never used
-   *  anything like this and needs to see the shape of an answer. */
-  teachPlaceholder: 'Try: We buy towels from Riz Supply\nTry: Never book deliveries on Fridays\nTry: Our plumber is Mike, 555-0142',
+   *  anything like this and needs to see the shape of an answer.
+   *
+   *  The last line is deliberately NOT a "Try:" example. Three sentences in a
+   *  row teach one lesson only — that this box takes sentences — and a manager
+   *  who has just read them has no reason to think a handbook belongs in the
+   *  same place. Saying so in the ghost text is the cheapest way to say it,
+   *  because it is already where their eyes are. */
+  teachPlaceholder: 'Try: We buy towels from Riz Supply\nTry: Never book deliveries on Fridays\nTry: Our plumber is Mike, 555-0142\nOr add a file, like your employee handbook or vendor price list.',
   teachSave: 'Save',
   teachSaving: 'Saving',
-  attach: 'Attach a file',
+  /** The words ON the attach button. It used to be a bare paperclip in the
+   *  corner of the text box, which only reads to somebody who already knows
+   *  what a paperclip means in an app. Founder's verdict on reviewing it live:
+   *  nobody will ever guess the icon is for documents. */
+  attach: 'Add a document',
   attachRemove: 'Remove the attached file',
+  /** Shown across the whole box while a file is being dragged over it. */
+  attachDrop: 'Drop your file here',
   cancel: 'Cancel',
   adjust: 'Adjust',
   wrong: "That's wrong",

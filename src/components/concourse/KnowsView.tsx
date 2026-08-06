@@ -246,22 +246,33 @@ const KN_CSS = `
   box-sizing:border-box;max-height:calc(100vh - 40px);overflow:auto;}
 .kn-popt{font-size:17px;font-weight:600;color:#1F231C;}
 .kn-pophint{font-size:12.5px;color:#8A9187;margin-top:4px;line-height:1.5;}
-.kn-tawrap{position:relative;margin-top:12px;}
-.kn-ta{width:100%;box-sizing:border-box;min-height:120px;resize:vertical;border-radius:14px;
-  border:1px solid rgba(31,35,28,.14);background:#fff;padding:13px 46px 13px 14px;color:#1F231C;font-size:14.5px;
+.kn-tawrap{margin-top:12px;}
+/* Tall enough for all four ghost lines at once. At the old 120px the fourth
+   one overflowed by a pixel and the empty box opened with a scrollbar in it. */
+.kn-ta{width:100%;box-sizing:border-box;min-height:136px;resize:vertical;border-radius:14px;
+  border:1px solid rgba(31,35,28,.14);background:#fff;padding:13px 14px;color:#1F231C;font-size:14.5px;
   line-height:1.6;font-family:var(--font-geist),-apple-system,BlinkMacSystemFont,sans-serif;outline:none;}
 .kn-ta:focus{border-color:rgba(92,122,96,.55);}
 .kn-ta::placeholder{color:#B5BAB4;}
-/* The paperclip lives INSIDE the box, top right, so attaching a file reads as
-   part of saying something rather than as a separate feature. */
-.kn-clip{position:absolute;top:9px;right:9px;width:32px;height:32px;border-radius:10px;border:none;
-  background:transparent;color:#8A9187;cursor:pointer;display:grid;place-items:center;}
-.kn-clip:hover{background:rgba(31,35,28,.06);color:#3E5C48;}
-.kn-clip:focus-visible{outline:2px solid #3E5C48;outline-offset:2px;}
 .kn-file{display:inline-flex;align-items:center;gap:7px;font-size:12.5px;color:#3E5C48;
   background:rgba(158,183,166,.18);border-radius:999px;padding:6px 12px;max-width:100%;margin-top:10px;}
 .kn-file span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
-.kn-popacts{display:flex;gap:8px;justify-content:flex-end;margin-top:14px;flex-wrap:wrap;}
+/* The footer rail: the attach button on the LEFT, Cancel and Save together on
+   the right. Attaching is a way of answering, not a way of leaving, so it must
+   not sit in the row a thumb reaches for when it wants out. */
+.kn-popacts{display:flex;gap:8px;align-items:center;margin-top:14px;flex-wrap:wrap;}
+.kn-addfile{gap:7px;}
+.kn-popright{display:flex;gap:8px;margin-left:auto;}
+/* Dragging a file anywhere over the box. The sheet itself is the drop target,
+   so there is no small rectangle to hit. */
+.kn-pop.kn-over{outline:2px dashed #5C7A60;outline-offset:-5px;}
+.kn-drop{position:absolute;inset:0;border-radius:20px;background:rgba(252,253,251,.94);
+  display:grid;place-items:center;z-index:1;
+  /* Load-bearing: an overlay that took the pointer would fire its own
+     dragenter the instant it appeared and a dragleave on the box under it,
+     so the highlight would strobe on and off under the cursor. */
+  pointer-events:none;}
+.kn-dropt{display:inline-flex;align-items:center;gap:9px;font-size:15px;font-weight:600;color:#3E5C48;}
 @media (max-width:600px){
   .kn-pop{width:calc(100vw - 20px);padding:18px 16px 16px;}
 }
@@ -305,8 +316,18 @@ function TeachBox({ mode, busy, note, onCancel, onSubmit }: {
 }) {
   const [text, setText] = useState(mode.kind === 'adjust' ? mode.item.sentence : '');
   const [file, setFile] = useState<File | null>(null);
+  const [over, setOver] = useState(false);
   const fileRef = useRef<HTMLInputElement | null>(null);
   const taRef = useRef<HTMLTextAreaElement | null>(null);
+  /**
+   * Enters counted against leaves.
+   *
+   * dragenter and dragleave fire once for EVERY element the pointer crosses,
+   * children included, so a plain boolean turns the highlight off the moment
+   * the cursor moves from the sheet onto the textarea inside it and back on a
+   * pixel later. Counting is the only shape that survives a nested tree.
+   */
+  const depth = useRef(0);
 
   React.useEffect(() => { taRef.current?.focus(); }, []);
   React.useEffect(() => {
@@ -318,11 +339,73 @@ function TeachBox({ mode, busy, note, onCancel, onSubmit }: {
   const optional = mode.kind === 'wrong';
   const ready = optional || canSubmitTeach(text, !!file);
   const saveLabel = mode.kind === 'wrong' ? KNOWS_COPY.confirm : KNOWS_COPY.teachSave;
+  // Only the teach costume takes a file, which is where the button is. Adjust
+  // and "That's wrong" are corrections to one existing row, and a handbook is
+  // not a correction to a sentence.
+  const canAttach = mode.kind === 'teach' && !busy;
+
+  /**
+   * True only for a drag carrying FILES.
+   *
+   * Dragging selected text or a link across the sheet must leave it alone: the
+   * textarea is a legitimate drop target for text, and lighting the whole box
+   * up promises something that would not happen.
+   */
+  const draggingFile = (e: React.DragEvent): boolean => {
+    const types = e.dataTransfer?.types;
+    if (!types) return false;
+    return Array.from(types as ArrayLike<string>).includes('Files');
+  };
+
+  const onDragEnter = (e: React.DragEvent) => {
+    if (!canAttach || !draggingFile(e)) return;
+    e.preventDefault();
+    depth.current += 1;
+    setOver(true);
+  };
+
+  const onDragOver = (e: React.DragEvent) => {
+    if (!canAttach || !draggingFile(e)) return;
+    // Without this the browser takes the drop itself and NAVIGATES to the
+    // file, throwing away whatever was typed in the box.
+    e.preventDefault();
+    if (e.dataTransfer) e.dataTransfer.dropEffect = 'copy';
+  };
+
+  const onDragLeave = () => {
+    if (depth.current === 0) return;
+    depth.current -= 1;
+    if (depth.current === 0) setOver(false);
+  };
+
+  const onDrop = (e: React.DragEvent) => {
+    depth.current = 0;
+    setOver(false);
+    if (!canAttach || !draggingFile(e)) return;
+    e.preventDefault();
+    // The first one, exactly as the picker would: the box carries one
+    // attachment, and silently uploading four of them is worse than taking one.
+    const dropped = e.dataTransfer?.files?.[0];
+    if (!dropped) return;
+    setFile(dropped);
+    // The picker keeps its own value. Left set, clearing the chip would leave
+    // a previously PICKED file still selected inside the input.
+    if (fileRef.current) fileRef.current.value = '';
+  };
 
   return (
     <>
       <button type="button" className="kn-scrim" aria-label={KNOWS_COPY.cancel} onClick={busy ? undefined : onCancel} />
-      <div className="kn-pop" role="dialog" aria-modal="true" aria-label={boxTitle(mode)}>
+      <div
+        className={`kn-pop${over ? ' kn-over' : ''}`}
+        role="dialog"
+        aria-modal="true"
+        aria-label={boxTitle(mode)}
+        onDragEnter={onDragEnter}
+        onDragOver={onDragOver}
+        onDragLeave={onDragLeave}
+        onDrop={onDrop}
+      >
         <div className="kn-popt">{boxTitle(mode)}</div>
         {optional && <div className="kn-pophint">{KNOWS_COPY.wrongOptional}</div>}
 
@@ -336,32 +419,11 @@ function TeachBox({ mode, busy, note, onCancel, onSubmit }: {
             placeholder={mode.kind === 'teach' ? KNOWS_COPY.teachPlaceholder : ''}
             aria-label={boxTitle(mode)}
           />
-          {mode.kind === 'teach' && (
-            <>
-              <button
-                type="button"
-                className="kn-clip"
-                aria-label={KNOWS_COPY.attach}
-                title={KNOWS_COPY.attach}
-                onClick={() => fileRef.current?.click()}
-                disabled={busy}
-              >
-                <CxIcon name="inventory" size={16} />
-              </button>
-              <input
-                ref={fileRef}
-                type="file"
-                accept={UPLOAD_ACCEPT}
-                style={{ display: 'none' }}
-                onChange={(e) => setFile(e.target.files?.[0] ?? null)}
-              />
-            </>
-          )}
         </div>
 
         {file && (
           <span className="kn-file">
-            <CxIcon name="inventory" size={13} />
+            <CxIcon name="paperclip" size={13} />
             <span>{file.name}</span>
             <button
               type="button"
@@ -378,18 +440,49 @@ function TeachBox({ mode, busy, note, onCancel, onSubmit }: {
         {note}
 
         <div className="kn-popacts">
-          <button type="button" className="kn-act" onClick={onCancel} disabled={busy}>
-            {KNOWS_COPY.cancel}
-          </button>
-          <button
-            type="button"
-            className="kn-act kn-yes"
-            onClick={() => onSubmit(text.trim(), file)}
-            disabled={busy || !ready}
-          >
-            {busy ? KNOWS_COPY.teachSaving : saveLabel}
-          </button>
+          {mode.kind === 'teach' && (
+            <>
+              <button
+                type="button"
+                className="kn-act kn-addfile"
+                onClick={() => fileRef.current?.click()}
+                disabled={busy}
+              >
+                <CxIcon name="paperclip" size={14} />
+                {KNOWS_COPY.attach}
+              </button>
+              <input
+                ref={fileRef}
+                type="file"
+                accept={UPLOAD_ACCEPT}
+                style={{ display: 'none' }}
+                onChange={(e) => setFile(e.target.files?.[0] ?? null)}
+              />
+            </>
+          )}
+          <div className="kn-popright">
+            <button type="button" className="kn-act" onClick={onCancel} disabled={busy}>
+              {KNOWS_COPY.cancel}
+            </button>
+            <button
+              type="button"
+              className="kn-act kn-yes"
+              onClick={() => onSubmit(text.trim(), file)}
+              disabled={busy || !ready}
+            >
+              {busy ? KNOWS_COPY.teachSaving : saveLabel}
+            </button>
+          </div>
         </div>
+
+        {over && (
+          <div className="kn-drop">
+            <span className="kn-dropt">
+              <CxIcon name="paperclip" size={18} />
+              {KNOWS_COPY.attachDrop}
+            </span>
+          </div>
+        )}
       </div>
     </>
   );
@@ -558,9 +651,11 @@ export function KnowsPropertyView({ propertyId, scopeKey, companyBook }: {
   }, []);
 
   /**
-   * The paperclip. Presign, PUT, register: the document cabinet's own three
-   * steps, unchanged, through the same helper the old Documents panel used.
-   * Nothing about how a file becomes searchable moved with this redesign.
+   * Where an attached file goes. Presign, PUT, register: the document
+   * cabinet's own three steps, unchanged, through the same helper the old
+   * Documents panel used. Nothing about how a file becomes searchable moved
+   * with this redesign, and the "Add a document" button and a drag-and-drop
+   * both land here rather than growing a second path.
    */
   const sendFile = useCallback(async (file: File): Promise<boolean> => {
     if (!propertyId) return false;
