@@ -119,8 +119,10 @@ export interface HotelTeamMember {
    * hotel's direct first-person/setup account. */
   managementSurface: 'legacy_hotel' | 'company_access';
   /** Canonical direct-account standing for this exact selected hotel. This is
-   * intentionally separate from managementSurface because normalized direct
-   * accounts are projected as company_access. */
+   * intentionally separate from managementSurface: a normalized direct account
+   * under a company is projected as company_access, while at a hotel with no
+   * management company the same normalized account stays on legacy_hotel
+   * because there is no company Access screen to send it to. */
   directHotelAccount?: boolean | null;
   hotelLeadershipRole?: 'owner' | 'general_manager' | null;
   globalImpact?: {

@@ -1,280 +1,125 @@
 'use client';
 
 // ═══════════════════════════════════════════════════════════════════════════
-// KnowsView — "here is what I know, here is where I learned it, tell me if
-// I'm wrong." The second view in the Staxis section, beside the approvals
-// queue.
+// What Staxis knows — ONE page.
 //
-// TWO HALVES, DELIBERATELY NOT MIXED
-//   Figured out on its own  what Staxis INFERRED — facts grouped into five
-//                           buckets, each carrying its provenance in plain
-//                           English and three actions: Confirm, Edit, Remove.
-//                           Plus an open box: type a sentence or drop in a
-//                           file, and it becomes facts you then approve.
-//   What you've told it     what a human ASSERTED — the contact directory,
-//                           the written procedures, and the document cabinet
-//                           the copilot reads. Ported here from the
-//                           Communications section (see ToldView.tsx).
+// One button on top: "Teach it something". One list underneath, in two groups.
+// Every row is one plain sentence. That is the whole screen.
 //
-// The halves are two exclusive panes behind one control and never interleave,
-// because a manager must always be able to tell an inference from an
-// assertion. Their access rules differ too, and that is the point:
-// the inferred half is a manager view; the told half is NOT, because in
-// Communications every signed-in person could reach the emergency numbers and
-// moving the directory here must not quietly take that away. See canReadTold /
-// canReadLearned in told-knowledge.ts.
+// ─── WHAT THIS REPLACED, AND WHY ───────────────────────────────────────────
+// Until the 2026-08-05 rebuild this was a filing cabinet: two half-tabs, four
+// section tabs inside one of them, a fact counter, five category headings with
+// hint lines under each, and a Confirm / Edit / Remove trio on every row. Six
+// buttons of navigation before you could say anything, and a manager had to
+// know which drawer a sentence belonged in before they could put it away.
+// Founder's verdict: "too many words, too many titles, too much random
+// bullshit."
 //
-// HONESTY RULES THIS SCREEN LIVES BY
-//   • A brand-new hotel has zero facts. The empty state invites input; it
-//     never renders a green "all clear" or implies knowledge that isn't there.
-//   • A fact pulled out of something you typed or uploaded shows as NOT
-//     CONFIRMED and is not used by the copilot until you say so. That is
-//     enforced in the database (migration 0358), not just labelled here.
-//   • Remove is permanent, and the copy says so.
+// So the drawers did not move; the SCREEN collapsed onto them. A person types
+// a sentence, Staxis decides which of five stores it belongs in (see
+// /api/memory/knows and src/lib/agent/knows-filing.ts), and everything already
+// in those stores is rendered back as sentences in one list.
+//
+// ─── WHAT IS DELIBERATELY NOT HERE ─────────────────────────────────────────
+//   • No fact counter, on the page or on the rail button that opens it. A
+//     number is a score, and nobody asked to be scored.
+//   • No Confirm. Nothing on this page arrives unreviewed any more: a typed
+//     sentence is written as human-authored, and a dropped file goes to the
+//     document cabinet, which has no review state. A button asking somebody to
+//     approve their own sentence was the filing cabinet leaking through.
+//   • No category headings. The five buckets still exist in the database and
+//     still classify each fact; they are simply not a thing to read.
+//
+// ─── THE TWO GROUPS ARE NOT A STYLE CHOICE ─────────────────────────────────
+// "What it's noticed" is a guess and may be wrong, so its rows offer "That's
+// wrong". "What you've taught it" is a person vouching, so its rows offer
+// "Remove" instead. A manager must always be able to tell an inference from an
+// assertion, and the button set is how the screen says which is which.
+//
+// ─── ACCESS ────────────────────────────────────────────────────────────────
+// The taught group is readable by anybody signed in at this hotel, which is
+// what the contact directory has always been: the front desk reaches the
+// emergency numbers here, so the phone number inside a contact sentence is
+// still a tap-to-call link. The noticed group and every write are manager-only,
+// and the route re-checks both.
 // ═══════════════════════════════════════════════════════════════════════════
 
 import React, { useCallback, useMemo, useRef, useState } from 'react';
-import { useAuth, type AppUser } from '@/contexts/AuthContext';
+import { useAuth } from '@/contexts/AuthContext';
 import { useProperty } from '@/contexts/PropertyContext';
 import { useApiResource } from '@/lib/hooks/use-api-resource';
-import { useReportedValue } from '@/lib/hooks/use-reported-value';
 import {
   fetchWithAuth,
   INTERACTIVE_ACTION_TIMEOUT_MS,
   SessionEndedError,
 } from '@/lib/api-fetch';
 import { readEnvelope, type EnvelopeResult } from '@/lib/api-envelope';
-import {
-  CATEGORY_LABELS,
-  MEMORY_CATEGORIES,
-  factStatus,
-  groupFactsByCategory,
-  provenanceLine,
-  statusLabel,
-  type MemoryCategory,
-} from '@/lib/agent/memory-facets';
 import { CxStyle } from './concourse-css';
 import { CxIcon } from './icons';
 import { CompanyRulebookPanel } from './CompanyRulebookPanel';
-import { ToldView, ToldStyle } from './ToldView';
-import { canReadLearned, defaultHalf, type KnowsHalf } from './told-knowledge';
+import { toldPost, putSigned } from './told-api';
+import {
+  UPLOAD_ACCEPT,
+  uploadDocument,
+  type PresignData,
+} from './told-knowledge';
+import {
+  GROUP_TITLE,
+  KNOWS_COPY,
+  TEACH_MAX_CHARS,
+  actionsFor,
+  canSubmitTeach,
+  groupKnowsItems,
+  type KnowsAction,
+  type KnowsItem,
+} from '@/lib/knows/page-model';
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 
-interface Fact {
-  id: string;
-  topic: string;
-  content: string;
-  category: MemoryCategory;
-  source: string;
-  reviewState: 'unreviewed' | 'confirmed';
-  createdByName: string | null;
-  updatedAt: string;
-  expiresAt: string | null;
-}
-
-interface KnowsData {
-  stats: { totalKnown: number; patternsThisMonth: number; issuesCaughtEarly: number; pendingReview: number };
-  facts: Fact[];
-}
-
-interface IntakeResult {
-  added: Array<{ id: string; topic: string; content: string; category: string }>;
-  skipped: number;
-  /** English, from the server. Kept for compatibility; NOT rendered — see
-   *  readNoteCode, which is the same fact in a form this screen can translate. */
-  readNote: string | null;
-  readNoteCode: string | null;
-  nothingFound: boolean;
+interface KnowsPage {
+  items: KnowsItem[];
+  canTeach: boolean;
+  canSeeNoticed: boolean;
 }
 
 // ─── Copy ───────────────────────────────────────────────────────────────────
 
 const S = {
-  title: { en: 'What Staxis knows', },
-  sub: {
-    en: 'Two kinds of knowledge, kept apart on purpose: what Staxis worked out by itself, and what your team has told it.',
-
-  },
-
-  // ── The two halves ────────────────────────────────────────────────────────
-  // Named so nobody has to be told which is which. "Figured out on its own"
-  // is a guess Staxis made and may be wrong; "What you've told it" is a person
-  // vouching. Mixing them in one list would erase that difference.
-  halfLearned: { en: 'Figured out on its own', },
-  halfTold: { en: 'What you’ve told it', },
-  learnedSub: {
-    en: 'Everything Staxis believes about your hotel, and where it learned it. Tell it if it is wrong.',
-
-  },
-  toldSub: {
-    en: 'Contacts, procedures, and documents your team wrote or uploaded. Staxis answers from these.',
-
-  },
-  boxEyebrow: { en: 'Tell Staxis about your hotel', },
-  boxPlaceholder: {
-    en: 'Anything at all: how things run, who to call, what keeps breaking.',
-
-  },
-  boxHint: {
-    en: 'Optional. Or drop in a file you already have: a vendor list, a house rules sheet, an SOP.',
-
-  },
-  addFile: { en: 'Add a file', },
-  removeFile: { en: 'Remove file', },
-  submit: { en: 'Add this', },
-  submitting: { en: 'Reading…', },
-  intakeDoneOne: {
-    en: '1 fact added below. Check it before Staxis uses it.',
-
-  },
-  intakeDoneMany: {
-    en: 'facts added below. Check each one before Staxis uses it.',
-
-  },
-  intakeNothing: {
-    en: 'Nothing lasting in that one. Nothing was saved.',
-
-  },
-  fileTooBig: { en: 'That file is too big. Keep it under 4MB.', },
-  fileWrongType: {
-    en: 'Staxis can read PDF, Word, and plain text files.',
-
-  },
-  emptyTitle: { en: 'Staxis does not know anything about your hotel yet', },
-  emptyBody: {
-    en: 'That is expected on day one. Tell it something above. One sentence is enough to start. It also learns on its own from what your team logs.',
-
-  },
-  confirm: { en: 'Confirm', },
-  edit: { en: 'Edit', },
-  remove: { en: 'Remove', },
-  save: { en: 'Save', },
-  cancel: { en: 'Cancel', },
-  removeSure: {
-    en: 'Remove for good? Staxis will not learn this again on its own.',
-
-  },
-  removeYes: { en: 'Yes, remove', },
-  nothingHere: { en: 'Nothing here yet', },
-  // Scoped to the LEARNED half only. The told half beside it is open to
-  // everyone, so this points there rather than dead-ending the reader.
-  managerOnly: {
-    en: 'What Staxis has figured out on its own is a manager view. Ask your manager to open it. The contacts, procedures, and documents next door are open to you.',
-
-  },
-  loadFailed: {
-    en: 'Could not load what Staxis knows right now. Do not read this as "it knows nothing".',
-
-  },
-  pending: { en: 'waiting for you', },
-  known: { en: 'confirmed', },
-
-  // ── What the banner says when the server refuses ──────────────────────────
-  // The routes' own `error` strings are English and always will be — they are
-  // the log line. The SENTENCE is this screen's job, because the person reading
-  // it may only read Spanish. One entry per code the Knows routes can return.
-  bannerGeneric: {
-    en: 'That did not work. Nothing changed. Try again in a moment.',
-
-  },
-  errAccountNotFound: {
-    en: 'Staxis could not find your account. Sign out and sign back in.',
-
-  },
-  errForbidden: {
-    en: 'You do not have access to this hotel.',
-
-  },
-  errInvalidBody: {
-    en: 'Staxis could not read that. Nothing changed. Try again.',
-
-  },
-  errUnknownAction: {
-    en: 'Staxis did not understand that. Nothing changed.',
-
-  },
-  errUnknownCategory: {
-    en: 'Pick one of the groups in the list.',
-
-  },
-  errContentRequired: {
-    en: 'Write something first. A fact cannot be empty.',
-
-  },
-  errConfirmFailed: {
-    en: 'Could not confirm that. Nothing changed. Try again in a moment.',
-
-  },
-  errFactGone: {
-    en: 'That one is not here anymore. Somebody may have removed it.',
-
-  },
-  errRemoveFailed: {
-    en: 'Could not remove that. Nothing changed. Try again in a moment.',
-
-  },
-  errSaveFailed: {
-    en: 'Could not save that. Nothing changed. Try again in a moment.',
-
-  },
-  errNothingToRead: {
-    en: 'Type something or add a file first.',
-
-  },
-  errFileNoText: {
-    en: 'There was no text in that file for Staxis to read.',
-
-  },
-  errFileUnreadable: {
-    en: 'Staxis could not read that file. Try another copy of it.',
-
-  },
-  errFileMalformed: {
-    en: 'That file did not come through. Add it again.',
-
-  },
-  errNothingReadable: {
-    en: 'There was nothing readable in that. Nothing was saved.',
-
-  },
-  errAiDisabled: {
-    en: 'Reading with AI is turned off right now. Nothing was saved.',
-
-  },
-  errAiUnavailable: {
-    en: 'Staxis could not read that just now. Nothing was saved. Try again in a moment.',
-
-  },
-  errBudget: {
-    en: 'Your hotel has used up its AI for today. It starts fresh at midnight.',
-
-  },
-  errRateLimited: {
-    en: 'That is a lot of changes in one hour. Give it a few minutes.',
-
-  },
-  errOffline: {
-    en: 'Staxis could not reach the server. Check your connection and try again.',
-
-  },
-  readNoteTruncated: {
-    en: 'That file is long. Staxis read the first part of it.',
-
-  },
-  readNoteVision: {
-    en: 'That looked like a scan, so Staxis read it with AI. Double-check the wording.',
-
-  },
+  title: { en: 'What Staxis knows' },
+  bannerGeneric: { en: 'That did not work. Nothing changed. Try again in a moment.' },
+  errAccountNotFound: { en: 'Staxis could not find your account. Sign out and sign back in.' },
+  errForbidden: { en: 'You do not have access to this hotel.' },
+  errInvalidBody: { en: 'Staxis could not read that. Nothing changed. Try again.' },
+  errUnknownAction: { en: 'Staxis did not understand that. Nothing changed.' },
+  errUnknownCategory: { en: 'Pick one of the groups in the list.' },
+  errContentRequired: { en: 'Write something first. It cannot be empty.' },
+  errConfirmFailed: { en: 'Could not confirm that. Nothing changed. Try again in a moment.' },
+  errFactGone: { en: 'That one is not here anymore. Somebody may have removed it.' },
+  errRemoveFailed: { en: 'Could not remove that. Nothing changed. Try again in a moment.' },
+  errSaveFailed: { en: 'Could not save that. Nothing changed. Try again in a moment.' },
+  errNothingToRead: { en: 'Type something or add a file first.' },
+  errFileNoText: { en: 'There was no text in that file for Staxis to read.' },
+  errFileUnreadable: { en: 'Staxis could not read that file. Try another copy of it.' },
+  errFileMalformed: { en: 'That file did not come through. Add it again.' },
+  fileWrongType: { en: 'Staxis cannot take that kind of file.' },
+  fileTooBig: { en: 'That file is too big. Keep it under 10 MB.' },
+  errNothingReadable: { en: 'There was nothing readable in that. Nothing was saved.' },
+  errAiDisabled: { en: 'That part is turned off right now. Nothing was saved.' },
+  errAiUnavailable: { en: 'Staxis could not read that just now. Nothing was saved. Try again in a moment.' },
+  errBudget: { en: 'Your hotel has used up its daily allowance. It starts fresh at midnight.' },
+  errRateLimited: { en: 'That is a lot of changes in one hour. Give it a few minutes.' },
+  errOffline: { en: 'Staxis could not reach the server. Check your connection and try again.' },
+  errUploadFailed: { en: 'The file did not finish uploading. Nothing was saved. Try again.' },
+  readNoteTruncated: { en: 'That file is long. Staxis read the first part of it.' },
+  readNoteVision: { en: 'That looked like a scan, so Staxis read it with help. Double-check the wording.' },
 } as const;
 
-// ─── Server codes → this screen's sentences ─────────────────────────────────
-
 /**
- * Every machine code /api/memory/knows and its intake sibling can answer with.
+ * Every machine code the Knows route and its intake sibling can answer with.
+ *
  * Deliberately a lookup rather than a switch on the server's English: the
- * English is a log line that can be reworded any day without anybody thinking
- * about Spanish.
+ * English is a log line that can be reworded any day, and a raw token like
+ * `rate_limited` must never reach a manager's screen.
  */
 const BANNER_COPY = new Map<string, keyof typeof S>([
   ['account_not_found', 'errAccountNotFound'],
@@ -313,42 +158,39 @@ const READ_NOTE_COPY = new Map<string, keyof typeof S>([
 ]);
 
 /**
- * The sentence for a refusal, in the reader's language.
+ * The sentence for a refusal.
  *
  * `code` is the server's machine-readable reason. `serverError` is its English
- * message and is used ONLY as a second lookup key, never as output — the rate
+ * message and is used ONLY as a second lookup key, never as output: the rate
  * limiter's response is not an envelope at all, so its reason arrives in the
- * error slot with no code beside it.
- *
- * An unrecognized key — a route that grows a new code, an HTML error page from
- * the proxy — falls through to the generic bilingual line. A Spanish screen
- * must never leak an English sentence just because nobody updated this map.
+ * error slot with no code beside it. An unrecognised key falls through to the
+ * generic line rather than leaking a route's log string onto the screen.
  */
 export function knowsBannerText(
   code: string | undefined,
   serverError: string | undefined,
   lang: 'en' | 'es',
 ): string {
+  void lang; // English only, founder ruling 2026-07-29.
   const key = code ?? serverError;
   const entry = key !== undefined ? BANNER_COPY.get(key) : undefined;
-  return S[entry ?? 'bannerGeneric']['en'];
-}
-
-/** How a file got read, in the reader's language. Empty when there is nothing
- *  worth saying (or the server sent a note this build does not know). */
-export function knowsReadNoteText(code: string | null | undefined, lang: 'en' | 'es'): string {
-  const entry = code ? READ_NOTE_COPY.get(code) : undefined;
-  return entry ? S[entry]['en'] : '';
+  return S[entry ?? 'bannerGeneric'].en;
 }
 
 /**
- * What the banner is saying.
+ * How a file got read, when the server bothers to say.
  *
- *   failure  a refusal from the server, carried as its CODE. The server's own
- *            English stays in the log where it belongs.
- *   text     a sentence this screen owns outright — the file picker's own
- *            checks, and the result of an intake.
+ * Retained because the document cabinet's own routes still answer with these
+ * codes; empty for anything this build does not recognise, so a new code adds
+ * nothing rather than printing itself.
  */
+export function knowsReadNoteText(code: string | null | undefined, lang: 'en' | 'es'): string {
+  void lang;
+  const entry = code ? READ_NOTE_COPY.get(code) : undefined;
+  return entry ? S[entry].en : '';
+}
+
+/** What the banner is saying: a refusal carried as its CODE, or owned copy. */
 export type KnowsBanner =
   | { kind: 'bad'; failure: { code?: string; serverError?: string } }
   | { kind: 'good' | 'bad'; text: string };
@@ -361,76 +203,27 @@ export function knowsBannerNote(banner: KnowsBanner, lang: 'en' | 'es'): React.R
   return <div className={`kn-note ${banner.kind === 'good' ? 'kn-good' : 'kn-bad'}`}>{text}</div>;
 }
 
-const MAX_FILE_BYTES = 4 * 1024 * 1024;
-const ACCEPT =
-  '.pdf,.txt,.md,.csv,.docx,application/pdf,text/plain,text/markdown,text/csv,' +
-  'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
-
-const EXT_MIME: Record<string, string> = {
-  pdf: 'application/pdf',
-  txt: 'text/plain',
-  md: 'text/markdown',
-  csv: 'text/csv',
-  docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-};
-
-/**
- * Resolve the media type from the extension rather than trusting File.type —
- * Safari hands back an empty type for several of these, and the server
- * allow-lists on the value we send. Same approach the invoice scanner takes.
- */
-function mimeForFile(file: File): string | null {
-  const ext = (file.name.split('.').pop() ?? '').toLowerCase();
-  return EXT_MIME[ext] ?? null;
-}
-
-/** Read a File as base64 with no data: prefix (mirrors the invoice scanner). */
-function fileToBase64(file: File): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onerror = () => reject(reader.error ?? new Error('file read failed'));
-    reader.onload = () => {
-      const result = String(reader.result || '');
-      const comma = result.indexOf(',');
-      resolve(comma >= 0 ? result.slice(comma + 1) : result);
-    };
-    reader.readAsDataURL(file);
-  });
-}
-
 // ─── Scoped styles ──────────────────────────────────────────────────────────
 
 const KN_CSS = `
-.kn-box{background:#fff;border:1px solid rgba(92,122,96,.28);border-radius:18px;padding:16px 18px;margin-top:20px;
-  box-shadow:0 10px 26px -20px rgba(31,42,32,.3);}
-.kn-ta{width:100%;box-sizing:border-box;min-height:76px;resize:vertical;margin-top:9px;border-radius:12px;
-  border:1px solid rgba(31,35,28,.12);background:#FCFDFB;padding:10px 12px;color:#1F231C;font-size:13.5px;
-  line-height:1.5;font-family:var(--font-geist),-apple-system,BlinkMacSystemFont,sans-serif;outline:none;}
-.kn-ta:focus{border-color:rgba(92,122,96,.55);}
-.kn-ta::placeholder{color:#A6ABA6;}
-.kn-boxfoot{display:flex;align-items:center;gap:10px;margin-top:10px;flex-wrap:wrap;}
-.kn-hint{font-size:11.5px;color:#8A9187;line-height:1.45;margin-top:7px;}
-.kn-file{display:inline-flex;align-items:center;gap:7px;font-size:12px;color:#3E5C48;
-  background:rgba(158,183,166,.18);border-radius:999px;padding:5px 11px;max-width:100%;}
-.kn-file span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
-.kn-note{margin-top:12px;border-radius:12px;padding:10px 12px;font-size:12.5px;line-height:1.5;}
-.kn-note.kn-good{background:rgba(53,107,76,.09);color:#2C5740;}
-.kn-note.kn-bad{background:rgba(184,92,61,.10);color:#8E432B;}
-.kn-grp{margin-top:26px;}
-.kn-grph{display:flex;align-items:baseline;gap:9px;flex-wrap:wrap;}
+.kn-teach{display:inline-flex;align-items:center;gap:9px;min-height:46px;padding:0 20px;border-radius:999px;
+  border:none;cursor:pointer;background:#5C7A60;color:#fff;font-size:14.5px;font-weight:600;margin-top:18px;
+  font-family:var(--font-geist),-apple-system,BlinkMacSystemFont,sans-serif;
+  transition:background .2s,transform .2s;}
+.kn-teach:hover{background:#4E6952;transform:translateY(-1px);}
+.kn-teach:focus-visible{outline:2px solid #3E5C48;outline-offset:3px;}
+.kn-groups{display:flex;flex-direction:column;gap:26px;margin-top:26px;}
 .kn-grpt{font-size:15px;font-weight:600;color:#1F231C;}
-.kn-grpc{font-family:var(--font-geist-mono),ui-monospace,monospace;font-size:10px;color:#A6ABA6;}
-.kn-grps{font-size:11.5px;color:#8A9187;margin-top:2px;}
 .kn-rows{background:#fff;border:1px solid rgba(31,35,28,.08);border-radius:16px;margin-top:10px;overflow:hidden;}
-.kn-row{padding:13px 16px;border-bottom:1px solid rgba(31,35,28,.05);}
+.kn-row{padding:14px 16px;border-bottom:1px solid rgba(31,35,28,.05);}
 .kn-row:last-child{border-bottom:none;}
-.kn-row.kn-new{background:rgba(201,150,68,.07);}
-.kn-top{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;}
-.kn-c{font-size:13.5px;color:#1F231C;line-height:1.5;}
-.kn-p{font-size:11.5px;color:#8A9187;margin-top:4px;}
-.kn-acts{display:flex;gap:7px;margin-top:10px;flex-wrap:wrap;}
-.kn-act{height:30px;padding:0 12px;border-radius:999px;cursor:pointer;font-size:12px;font-weight:500;
+.kn-c{font-size:14px;color:#1F231C;line-height:1.55;}
+.kn-c a{color:#3E5C48;font-weight:600;text-decoration:none;}
+.kn-c a:hover{text-decoration:underline;}
+.kn-acts{display:flex;gap:7px;margin-top:9px;flex-wrap:wrap;}
+.kn-act{min-height:34px;padding:0 13px;border-radius:999px;cursor:pointer;font-size:12.5px;font-weight:500;
   border:1px solid rgba(31,35,28,.14);background:transparent;color:#5C625C;white-space:nowrap;
+  display:inline-flex;align-items:center;
   font-family:var(--font-geist),-apple-system,BlinkMacSystemFont,sans-serif;transition:background .2s,color .2s;}
 .kn-act:hover:not(:disabled){background:rgba(31,35,28,.05);}
 .kn-act:disabled{opacity:.5;cursor:default;}
@@ -438,86 +231,352 @@ const KN_CSS = `
 .kn-act.kn-yes:hover:not(:disabled){background:#4E6952;}
 .kn-act.kn-danger{color:#B85C3D;}
 .kn-act:focus-visible{outline:2px solid #3E5C48;outline-offset:2px;}
-.kn-empty{background:#fff;border:1px dashed rgba(92,122,96,.4);border-radius:16px;padding:22px 20px;margin-top:22px;text-align:center;}
-.kn-sel{height:30px;border-radius:999px;border:1px solid rgba(31,35,28,.14);background:#fff;color:#1F231C;
-  font-size:12px;padding:0 9px;font-family:var(--font-geist),-apple-system,BlinkMacSystemFont,sans-serif;}
-.kn-meta{display:flex;gap:14px;margin-top:14px;flex-wrap:wrap;}
-.kn-metai{font-family:var(--font-geist-mono),ui-monospace,monospace;font-size:10.5px;color:#8A9187;}
-/* The inferred/asserted switch, and the line under it that says which one you
-   are looking at. The label alone does the work — no colour coding, because
-   the distinction has to survive being printed or read by somebody colour
-   blind. */
-.kn-halves{width:fit-content;max-width:100%;overflow-x:auto;margin-top:20px;}
-.kn-halfsub{font-size:12.5px;color:#8A9187;margin-top:14px;line-height:1.5;max-width:580px;}
+.kn-note{margin-top:14px;border-radius:12px;padding:10px 12px;font-size:12.5px;line-height:1.5;}
+.kn-note.kn-good{background:rgba(53,107,76,.09);color:#2C5740;}
+.kn-note.kn-bad{background:rgba(184,92,61,.10);color:#8E432B;}
+.kn-empty{background:#fff;border:1px dashed rgba(92,122,96,.4);border-radius:16px;padding:26px 20px;
+  margin-top:26px;text-align:center;}
+.kn-emptyt{font-size:15px;font-weight:600;color:#1F231C;}
+.kn-emptys{font-size:13px;color:#8A9187;margin-top:5px;}
+
+/* ── the one box everything is typed into ── */
+.kn-scrim{position:fixed;inset:0;z-index:70;background:rgba(20,26,20,.4);border:none;padding:0;cursor:default;}
+.kn-pop{position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);z-index:71;width:min(560px,calc(100vw - 32px));
+  background:#FCFDFB;border-radius:20px;box-shadow:0 40px 80px -30px rgba(20,26,20,.6);padding:20px 20px 18px;
+  box-sizing:border-box;max-height:calc(100vh - 40px);overflow:auto;}
+.kn-popt{font-size:17px;font-weight:600;color:#1F231C;}
+.kn-pophint{font-size:12.5px;color:#8A9187;margin-top:4px;line-height:1.5;}
+.kn-tawrap{margin-top:12px;}
+/* Tall enough for all four ghost lines at once. At the old 120px the fourth
+   one overflowed by a pixel and the empty box opened with a scrollbar in it. */
+.kn-ta{width:100%;box-sizing:border-box;min-height:136px;resize:vertical;border-radius:14px;
+  border:1px solid rgba(31,35,28,.14);background:#fff;padding:13px 14px;color:#1F231C;font-size:14.5px;
+  line-height:1.6;font-family:var(--font-geist),-apple-system,BlinkMacSystemFont,sans-serif;outline:none;}
+.kn-ta:focus{border-color:rgba(92,122,96,.55);}
+.kn-ta::placeholder{color:#B5BAB4;}
+.kn-file{display:inline-flex;align-items:center;gap:7px;font-size:12.5px;color:#3E5C48;
+  background:rgba(158,183,166,.18);border-radius:999px;padding:6px 12px;max-width:100%;margin-top:10px;}
+.kn-file span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+/* The footer rail: the attach button on the LEFT, Cancel and Save together on
+   the right. Attaching is a way of answering, not a way of leaving, so it must
+   not sit in the row a thumb reaches for when it wants out. */
+.kn-popacts{display:flex;gap:8px;align-items:center;margin-top:14px;flex-wrap:wrap;}
+.kn-addfile{gap:7px;}
+.kn-popright{display:flex;gap:8px;margin-left:auto;}
+/* Dragging a file anywhere over the box. The sheet itself is the drop target,
+   so there is no small rectangle to hit. */
+.kn-pop.kn-over{outline:2px dashed #5C7A60;outline-offset:-5px;}
+.kn-drop{position:absolute;inset:0;border-radius:20px;background:rgba(252,253,251,.94);
+  display:grid;place-items:center;z-index:1;
+  /* Load-bearing: an overlay that took the pointer would fire its own
+     dragenter the instant it appeared and a dragleave on the box under it,
+     so the highlight would strobe on and off under the cursor. */
+  pointer-events:none;}
+.kn-dropt{display:inline-flex;align-items:center;gap:9px;font-size:15px;font-weight:600;color:#3E5C48;}
+@media (max-width:600px){
+  .kn-pop{width:calc(100vw - 20px);padding:18px 16px 16px;}
+}
+@media (prefers-reduced-motion: reduce){
+  .kn-teach{transition:none;}
+  .kn-teach:hover{transform:none;}
+}
 `;
+
+// ─── The box ────────────────────────────────────────────────────────────────
+
+type BoxMode =
+  | { kind: 'teach' }
+  | { kind: 'adjust'; item: KnowsItem }
+  | { kind: 'wrong'; item: KnowsItem };
+
+function boxTitle(mode: BoxMode): string {
+  if (mode.kind === 'adjust') return KNOWS_COPY.adjustTitle;
+  if (mode.kind === 'wrong') return KNOWS_COPY.wrongTitle;
+  return KNOWS_COPY.teachTitle;
+}
+
+/**
+ * The one text box on the screen, in three costumes.
+ *
+ * Teach, Adjust and "That's wrong" are the same act — a person saying a
+ * sentence — so they are the same box rather than three components that drift.
+ * The only differences are the heading, whether the box starts full, and
+ * whether an empty box may be submitted: on "That's wrong" it may, because
+ * "no, that is not true" is a complete answer and demanding a replacement
+ * sentence would turn a correction into homework.
+ */
+function TeachBox({ mode, busy, note, onCancel, onSubmit }: {
+  mode: BoxMode;
+  busy: boolean;
+  /** A refusal raised while the box was open. Rendered INSIDE it: the page's
+   *  own banner sits behind the scrim, where nobody would ever read it. */
+  note: React.ReactElement | null;
+  onCancel: () => void;
+  onSubmit: (text: string, file: File | null) => void;
+}) {
+  const [text, setText] = useState(mode.kind === 'adjust' ? mode.item.sentence : '');
+  const [file, setFile] = useState<File | null>(null);
+  const [over, setOver] = useState(false);
+  const fileRef = useRef<HTMLInputElement | null>(null);
+  const taRef = useRef<HTMLTextAreaElement | null>(null);
+  /**
+   * Enters counted against leaves.
+   *
+   * dragenter and dragleave fire once for EVERY element the pointer crosses,
+   * children included, so a plain boolean turns the highlight off the moment
+   * the cursor moves from the sheet onto the textarea inside it and back on a
+   * pixel later. Counting is the only shape that survives a nested tree.
+   */
+  const depth = useRef(0);
+
+  React.useEffect(() => { taRef.current?.focus(); }, []);
+  React.useEffect(() => {
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape' && !busy) onCancel(); };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [busy, onCancel]);
+
+  const optional = mode.kind === 'wrong';
+  const ready = optional || canSubmitTeach(text, !!file);
+  const saveLabel = mode.kind === 'wrong' ? KNOWS_COPY.confirm : KNOWS_COPY.teachSave;
+  // Only the teach costume takes a file, which is where the button is. Adjust
+  // and "That's wrong" are corrections to one existing row, and a handbook is
+  // not a correction to a sentence.
+  const canAttach = mode.kind === 'teach' && !busy;
+
+  /**
+   * True only for a drag carrying FILES.
+   *
+   * Dragging selected text or a link across the sheet must leave it alone: the
+   * textarea is a legitimate drop target for text, and lighting the whole box
+   * up promises something that would not happen.
+   */
+  const draggingFile = (e: React.DragEvent): boolean => {
+    const types = e.dataTransfer?.types;
+    if (!types) return false;
+    return Array.from(types as ArrayLike<string>).includes('Files');
+  };
+
+  const onDragEnter = (e: React.DragEvent) => {
+    if (!canAttach || !draggingFile(e)) return;
+    e.preventDefault();
+    depth.current += 1;
+    setOver(true);
+  };
+
+  const onDragOver = (e: React.DragEvent) => {
+    if (!canAttach || !draggingFile(e)) return;
+    // Without this the browser takes the drop itself and NAVIGATES to the
+    // file, throwing away whatever was typed in the box.
+    e.preventDefault();
+    if (e.dataTransfer) e.dataTransfer.dropEffect = 'copy';
+  };
+
+  const onDragLeave = () => {
+    if (depth.current === 0) return;
+    depth.current -= 1;
+    if (depth.current === 0) setOver(false);
+  };
+
+  const onDrop = (e: React.DragEvent) => {
+    depth.current = 0;
+    setOver(false);
+    if (!canAttach || !draggingFile(e)) return;
+    e.preventDefault();
+    // The first one, exactly as the picker would: the box carries one
+    // attachment, and silently uploading four of them is worse than taking one.
+    const dropped = e.dataTransfer?.files?.[0];
+    if (!dropped) return;
+    setFile(dropped);
+    // The picker keeps its own value. Left set, clearing the chip would leave
+    // a previously PICKED file still selected inside the input.
+    if (fileRef.current) fileRef.current.value = '';
+  };
+
+  return (
+    <>
+      <button type="button" className="kn-scrim" aria-label={KNOWS_COPY.cancel} onClick={busy ? undefined : onCancel} />
+      <div
+        className={`kn-pop${over ? ' kn-over' : ''}`}
+        role="dialog"
+        aria-modal="true"
+        aria-label={boxTitle(mode)}
+        onDragEnter={onDragEnter}
+        onDragOver={onDragOver}
+        onDragLeave={onDragLeave}
+        onDrop={onDrop}
+      >
+        <div className="kn-popt">{boxTitle(mode)}</div>
+        {optional && <div className="kn-pophint">{KNOWS_COPY.wrongOptional}</div>}
+
+        <div className="kn-tawrap">
+          <textarea
+            ref={taRef}
+            className="kn-ta"
+            value={text}
+            maxLength={TEACH_MAX_CHARS}
+            onChange={(e) => setText(e.target.value)}
+            placeholder={mode.kind === 'teach' ? KNOWS_COPY.teachPlaceholder : ''}
+            aria-label={boxTitle(mode)}
+          />
+        </div>
+
+        {file && (
+          <span className="kn-file">
+            <CxIcon name="paperclip" size={13} />
+            <span>{file.name}</span>
+            <button
+              type="button"
+              className="kn-act"
+              style={{ minHeight: 22, padding: '0 8px', border: 'none' }}
+              aria-label={KNOWS_COPY.attachRemove}
+              onClick={() => { setFile(null); if (fileRef.current) fileRef.current.value = ''; }}
+            >
+              &times;
+            </button>
+          </span>
+        )}
+
+        {note}
+
+        <div className="kn-popacts">
+          {mode.kind === 'teach' && (
+            <>
+              <button
+                type="button"
+                className="kn-act kn-addfile"
+                onClick={() => fileRef.current?.click()}
+                disabled={busy}
+              >
+                <CxIcon name="paperclip" size={14} />
+                {KNOWS_COPY.attach}
+              </button>
+              <input
+                ref={fileRef}
+                type="file"
+                accept={UPLOAD_ACCEPT}
+                style={{ display: 'none' }}
+                onChange={(e) => setFile(e.target.files?.[0] ?? null)}
+              />
+            </>
+          )}
+          <div className="kn-popright">
+            <button type="button" className="kn-act" onClick={onCancel} disabled={busy}>
+              {KNOWS_COPY.cancel}
+            </button>
+            <button
+              type="button"
+              className="kn-act kn-yes"
+              onClick={() => onSubmit(text.trim(), file)}
+              disabled={busy || !ready}
+            >
+              {busy ? KNOWS_COPY.teachSaving : saveLabel}
+            </button>
+          </div>
+        </div>
+
+        {over && (
+          <div className="kn-drop">
+            <span className="kn-dropt">
+              <CxIcon name="paperclip" size={18} />
+              {KNOWS_COPY.attachDrop}
+            </span>
+          </div>
+        )}
+      </div>
+    </>
+  );
+}
+
+// ─── Rows ───────────────────────────────────────────────────────────────────
+
+const ACTION_LABEL: Record<KnowsAction, string> = {
+  adjust: KNOWS_COPY.adjust,
+  wrong: KNOWS_COPY.wrong,
+  remove: KNOWS_COPY.remove,
+};
+
+/**
+ * One sentence, with the phone number in it still dialable.
+ *
+ * The tap-to-call affordance is why this is not a plain string: before the
+ * rebuild the emergency numbers sat on cards with their own call button, and
+ * somebody at the front desk with a guest emergency in front of them must not
+ * have lost that to a redesign.
+ */
+function Sentence({ item }: { item: KnowsItem }) {
+  // `telText` is the number as the SENTENCE prints it; `tel` is how it dials.
+  // Looking for the dialable form would find nothing whenever the stored
+  // number carries punctuation, and the row would print the digits a second
+  // time after the sentence.
+  const shown = item.telText ?? item.tel?.replace(/^tel:/, '') ?? '';
+  const at = item.tel && shown ? item.sentence.indexOf(shown) : -1;
+  if (!item.tel || at < 0) return <div className="kn-c">{item.sentence}</div>;
+  return (
+    <div className="kn-c">
+      {item.sentence.slice(0, at)}
+      <a href={item.tel}>{item.sentence.slice(at, at + shown.length)}</a>
+      {item.sentence.slice(at + shown.length)}
+    </div>
+  );
+}
 
 // ─── Component ──────────────────────────────────────────────────────────────
 
-export function KnowsView({ lang, onStats }: {
-  lang: 'en' | 'es';
-  /** Told how many facts the read returned, so a caller can label its own
-   *  entry point without asking the server a second time. */
-  onStats?: (totalKnown: number) => void;
-}) {
+export function KnowsView({ lang }: { lang: 'en' | 'es' }) {
   const { user } = useAuth();
   const { activePropertyId } = useProperty();
   const scopeKey = `${user?.uid ?? 'signed-out'}:${activePropertyId ?? 'no-property'}`;
 
-  // Every draft, file, confirmation and busy flag below belongs to one exact
-  // viewer+hotel. Remount synchronously on either identity change so text typed
-  // for Hotel A can never be submitted after the shell switches to Hotel B.
+  // Every draft, file and busy flag below belongs to one exact viewer+hotel.
+  // Remount synchronously on either identity change so a sentence typed for
+  // Hotel A can never be submitted after the shell switches to Hotel B.
+  //
+  // The company's own book is passed IN rather than rendered inside, so the
+  // page itself can be mounted in a test without the two contexts that panel
+  // needs. It renders NOTHING for an independent hotel (its route 404s and the
+  // panel returns null), so a single-hotel customer sees exactly the one page
+  // this rebuild is about. It stays because it is the only surface a
+  // management company's leadership has for the rulebook, and it gates itself:
+  // /api/company/rulebook resolves standing from the caller's own hats.
   return (
     <KnowsPropertyView
       key={scopeKey}
-      lang={lang}
-      user={user}
       propertyId={activePropertyId}
       scopeKey={scopeKey}
-      onStats={onStats}
+      companyBook={<CompanyRulebookPanel lang={lang} />}
     />
   );
 }
 
 /**
- * Knows as a right-hand SLIDE-OVER, which is how /feed reaches it.
- *
- * ─── why this is an overlay and not a tab or a route ───────────────────────
- * It used to be half of a `Queue` / `Knows` toggle at the top of the page. That
- * pair was rejected outright in the 2026-08-01 design: it put "what Staxis has
- * noticed" and "what Staxis believes" at the same weight, so half the time the
- * screen a manager came for was the one they were not looking at. There is now
- * one button, in the rail, and the page stays mounted underneath — Knows is
- * never somewhere you have to navigate back from.
+ * Knows as a right-hand SLIDE-OVER, which is how the Staxis tab reaches it.
  *
  * Escape and a click on the scrim both close it, because a panel with only one
- * exit is a panel people stop opening.
+ * exit is a panel people stop opening. There is no fact count in the subtitle
+ * any more: the page does not keep score.
  */
-export function KnowsPanel({ open, lang, hotelName, onClose, onStats }: {
+export function KnowsPanel({ open, lang, hotelName, onClose }: {
   open: boolean;
   lang: 'en' | 'es';
   hotelName?: string | null;
   onClose: () => void;
-  onStats?: (totalKnown: number) => void;
 }) {
-  const [factCount, setFactCount] = useState<number | null>(null);
-  const report = useCallback((total: number) => {
-    setFactCount(total);
-    onStats?.(total);
-  }, [onStats]);
-
   React.useEffect(() => {
     if (!open) return;
-    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
+    const onKey = (e: KeyboardEvent) => {
+      // The typing box owns Escape while it is open. Without this guard one
+      // press cancels the box AND closes the whole panel, so a manager who
+      // changed their mind about one sentence loses the screen as well.
+      if (e.key !== 'Escape') return;
+      if (document.querySelector('.kn-pop')) return;
+      onClose();
+    };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
   }, [open, onClose]);
 
   if (!open) return null;
-
-  const sub = [
-    factCount === null ? null : factCount === 1 ? '1 fact' : `${factCount.toLocaleString('en-US')} facts`,
-    hotelName,
-  ].filter(Boolean).join(' · ');
 
   return (
     <>
@@ -527,73 +586,44 @@ export function KnowsPanel({ open, lang, hotelName, onClose, onStats }: {
           <span className="fx-draweri" aria-hidden><CxIcon name="staxis" size={16} /></span>
           <div style={{ minWidth: 0 }}>
             <div className="fx-drawert">{S.title.en}</div>
-            {sub && <div className="fx-drawers">{sub}</div>}
+            {hotelName && <div className="fx-drawers">{hotelName}</div>}
           </div>
           <button type="button" className="fx-drawerx" aria-label="Close" onClick={onClose}>
             <CxIcon name="close" size={14} />
           </button>
         </div>
         <div className="fx-drawerbody">
-          <KnowsView lang={lang} onStats={report} />
+          <KnowsView lang={lang} />
         </div>
       </div>
     </>
   );
 }
 
-function KnowsPropertyView({
-  lang,
-  user,
-  propertyId,
-  scopeKey,
-  onStats,
-}: {
-  lang: 'en' | 'es';
-  user: AppUser | null;
+/**
+ * The page itself. Exported so a test can mount the real thing.
+ *
+ * It takes no contexts: `propertyId` and the company panel are handed in, and
+ * everything else it needs is one authed GET. That is deliberate, because a
+ * page whose empty state, groups and button set can only be checked by a human
+ * opening it is a page whose empty state, groups and button set do not get
+ * checked.
+ */
+export function KnowsPropertyView({ propertyId, scopeKey, companyBook }: {
   propertyId: string | null;
   scopeKey: string;
-  onStats?: (totalKnown: number) => void;
+  companyBook?: React.ReactNode;
 }) {
-  const es = false;
-  const L = <K extends keyof typeof S>(k: K) => S[k]['en'];
-
-  const canSee = canReadLearned(user?.role);
-
-  // Which half is open. `null` means "nobody has chosen yet", so the default
-  // is derived from the role LIVE rather than frozen at first render — `user`
-  // arrives asynchronously, and freezing it would land every manager on the
-  // told half just because auth had not resolved yet. An explicit tap wins
-  // from then on.
-  const [chosenHalf, setChosenHalf] = useState<KnowsHalf | null>(null);
-  const half: KnowsHalf = chosenHalf ?? defaultHalf(user?.role);
-
-  const { data, loading, error, reload } = useApiResource<KnowsData>(
+  const { data, loading, error, reload } = useApiResource<KnowsPage>(
     `/api/memory/knows?propertyId=${propertyId}`,
-    { enabled: canSee && !!propertyId, keepDataOnError: true },
+    { enabled: !!propertyId, keepDataOnError: true },
   );
 
-  // Reported through the ref hook rather than a bare effect: a caller passing
-  // an inline arrow would otherwise turn this into a render loop. Same edge,
-  // same fix, as FindingCards' readState. `null` until the read lands, so
-  // nobody can label a button with a count nothing has answered yet.
-  useReportedValue(data ? data.stats.totalKnown : null, (total) => {
-    if (total !== null) onStats?.(total);
-  });
-
-  // Open box
-  const [note, setNote] = useState('');
-  const [file, setFile] = useState<File | null>(null);
+  const [box, setBox] = useState<BoxMode | null>(null);
   const [busy, setBusy] = useState(false);
-  const [banner, setBanner] = useState<KnowsBanner | null>(null);
-  const fileRef = useRef<HTMLInputElement | null>(null);
-
-  // Per-row UI state
-  const [editing, setEditing] = useState<string | null>(null);
-  const [draft, setDraft] = useState('');
-  const [draftCat, setDraftCat] = useState<MemoryCategory>('rhythm');
-  const [confirmingRemove, setConfirmingRemove] = useState<string | null>(null);
   const [rowBusy, setRowBusy] = useState<string | null>(null);
-  const [justAdded, setJustAdded] = useState<Set<string>>(new Set());
+  const [banner, setBanner] = useState<KnowsBanner | null>(null);
+
   const activeScopeRef = useRef<string | null>(scopeKey);
   React.useEffect(() => {
     activeScopeRef.current = scopeKey;
@@ -601,416 +631,201 @@ function KnowsPropertyView({
       if (activeScopeRef.current === scopeKey) activeScopeRef.current = null;
     };
   }, [scopeKey]);
-  const ownsScope = useCallback(
-    () => activeScopeRef.current === scopeKey,
-    [scopeKey],
-  );
+  const ownsScope = useCallback(() => activeScopeRef.current === scopeKey, [scopeKey]);
 
-  // Returns readEnvelope's own result type on purpose: the previous narrower
-  // signature dropped `code`, which is the only part of a refusal this screen
-  // can translate.
-  const post = useCallback(
-    async <T,>(url: string, payload: unknown): Promise<EnvelopeResult<T>> => {
-      try {
-        const res = await fetchWithAuth(url, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(payload),
-          timeoutMs: INTERACTIVE_ACTION_TIMEOUT_MS,
-        });
-        return await readEnvelope<T>(res);
-      } catch (e) {
-        if (e instanceof SessionEndedError) throw e;
-        // The message is for the console; `code` is what the banner reads.
-        return {
-          error: e instanceof Error ? e.message : 'Request failed',
-          code: 'request_failed',
-        };
-      }
-    },
-    [],
-  );
+  // Returns readEnvelope's own result type on purpose: the narrower shape drops
+  // `code`, which is the only part of a refusal this screen can translate.
+  const post = useCallback(async <T,>(payload: unknown): Promise<EnvelopeResult<T>> => {
+    try {
+      const res = await fetchWithAuth('/api/memory/knows', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+        timeoutMs: INTERACTIVE_ACTION_TIMEOUT_MS,
+      });
+      return await readEnvelope<T>(res);
+    } catch (e) {
+      if (e instanceof SessionEndedError) throw e;
+      return { error: e instanceof Error ? e.message : 'Request failed', code: 'request_failed' };
+    }
+  }, []);
 
-  const pickFile = (picked: File | null) => {
-    setBanner(null);
-    if (!picked) { setFile(null); return; }
-    if (!mimeForFile(picked)) { setBanner({ kind: 'bad', text: L('fileWrongType') }); return; }
-    if (picked.size > MAX_FILE_BYTES) { setBanner({ kind: 'bad', text: L('fileTooBig') }); return; }
-    setFile(picked);
-  };
+  /**
+   * Where an attached file goes. Presign, PUT, register: the document
+   * cabinet's own three steps, unchanged, through the same helper the old
+   * Documents panel used. Nothing about how a file becomes searchable moved
+   * with this redesign, and the "Add a document" button and a drag-and-drop
+   * both land here rather than growing a second path.
+   */
+  const sendFile = useCallback(async (file: File): Promise<boolean> => {
+    if (!propertyId) return false;
+    const result = await uploadDocument(
+      {
+        presign: (body) => toldPost<PresignData>('/api/knowledge/documents/presign', body),
+        put: (signedUrl, contentType) => putSigned(signedUrl, file, contentType),
+        register: (body) => toldPost<{ id: string }>('/api/knowledge/documents', body),
+      },
+      { pid: propertyId, file, access: 'all_staff', folderId: null },
+    );
+    if (result.ok) return true;
+    setBanner(
+      result.reason === 'too_big'
+        ? { kind: 'bad', text: S.fileTooBig.en }
+        : { kind: 'bad', text: S.errUploadFailed.en },
+    );
+    return false;
+  }, [propertyId]);
 
-  const submitIntake = async () => {
-    if (!propertyId || busy) return;
-    if (!note.trim() && !file) return;
+  const submitBox = useCallback(async (text: string, file: File | null) => {
+    if (!propertyId || !box || busy) return;
     setBusy(true);
     setBanner(null);
     try {
-      const payload: Record<string, unknown> = { propertyId };
-      if (note.trim()) payload.note = note.trim();
-      if (file) {
-        payload.file = {
-          name: file.name,
-          mimeType: mimeForFile(file),
-          base64: await fileToBase64(file),
-        };
-      }
+      let fileOk = true;
+      if (file) fileOk = await sendFile(file);
       if (!ownsScope()) return;
-      const res = await post<IntakeResult>('/api/memory/knows/intake', payload);
-      if (!ownsScope()) return;
-      if (res.error !== undefined || !res.data) {
-        setBanner({ kind: 'bad', failure: { code: res.code, serverError: res.error } });
-        return;
+
+      let saidSomething = false;
+      if (text) {
+        const payload =
+          box.kind === 'teach'
+            ? { propertyId, action: 'teach', text }
+            : { propertyId, action: box.kind === 'wrong' ? 'wrong' : 'adjust', kind: box.item.kind, id: box.item.id, text };
+        const res = await post(payload);
+        if (!ownsScope()) return;
+        if (res.error !== undefined) {
+          setBanner({ kind: 'bad', failure: { code: res.code, serverError: res.error } });
+          return;
+        }
+        saidSomething = true;
+      } else if (box.kind === 'wrong') {
+        // Nothing typed: the row simply stops being believed.
+        const res = await post({ propertyId, action: 'wrong', kind: box.item.kind, id: box.item.id });
+        if (!ownsScope()) return;
+        if (res.error !== undefined) {
+          setBanner({ kind: 'bad', failure: { code: res.code, serverError: res.error } });
+          return;
+        }
+        saidSomething = true;
       }
-      const added = res.data.added ?? [];
-      setJustAdded(new Set(added.map((a) => a.id)));
-      setNote('');
-      setFile(null);
-      if (fileRef.current) fileRef.current.value = '';
-      // readNoteCode, not readNote: the server's version of this sentence is
-      // English, and it used to be pasted onto the end of a Spanish headline.
-      const tail = knowsReadNoteText(res.data.readNoteCode, lang);
-      const headline =
-        added.length === 0 ? L('intakeNothing')
-          : added.length === 1 ? L('intakeDoneOne')
-            : `${added.length} ${L('intakeDoneMany')}`;
-      setBanner({
-        kind: added.length > 0 ? 'good' : 'bad',
-        text: tail ? `${headline} ${tail}` : headline,
-      });
+
+      // A file that did not land must never be reported as saved, even when
+      // the sentence beside it went through. sendFile already set that banner;
+      // the sentence still closes the box, because leaving it open with the
+      // same text in it invites a second save of something already stored.
+      const fileFailed = !!file && !fileOk;
+      if (saidSomething || (file && fileOk)) {
+        if (!fileFailed) {
+          setBanner({
+            kind: 'good',
+            text: box.kind === 'teach'
+              ? (text ? KNOWS_COPY.taughtOk : KNOWS_COPY.fileOk)
+              : KNOWS_COPY.adjustedOk,
+          });
+        }
+        setBox(null);
+      }
       await reload();
     } finally {
       if (ownsScope()) setBusy(false);
     }
-  };
+  }, [box, busy, ownsScope, post, propertyId, reload, sendFile]);
 
-  const act = async (id: string, action: 'confirm' | 'remove') => {
+  const removeItem = useCallback(async (item: KnowsItem) => {
     if (!propertyId) return;
-    setRowBusy(id);
+    setRowBusy(item.id);
+    setBanner(null);
     try {
-      const res = await post('/api/memory/knows', { propertyId, action, id });
+      const res = await post({ propertyId, action: 'remove', kind: item.kind, id: item.id });
       if (!ownsScope()) return;
       if (res.error !== undefined) {
         setBanner({ kind: 'bad', failure: { code: res.code, serverError: res.error } });
       } else {
-        setConfirmingRemove(null);
+        setBanner({ kind: 'good', text: KNOWS_COPY.removedOk });
       }
       await reload();
     } finally {
       if (ownsScope()) setRowBusy(null);
     }
-  };
+  }, [ownsScope, post, propertyId, reload]);
 
-  const saveEdit = async (id: string) => {
-    if (!propertyId || !draft.trim()) return;
-    setRowBusy(id);
-    try {
-      const res = await post('/api/memory/knows', {
-        propertyId,
-        action: 'edit',
-        id,
-        content: draft.trim(),
-        category: draftCat,
-      });
-      if (!ownsScope()) return;
-      if (res.error !== undefined) {
-        setBanner({ kind: 'bad', failure: { code: res.code, serverError: res.error } });
-      } else {
-        setEditing(null);
-      }
-      await reload();
-    } finally {
-      if (ownsScope()) setRowBusy(null);
-    }
-  };
+  const groups = useMemo(() => groupKnowsItems(data?.items ?? []), [data]);
+  const canTeach = data?.canTeach ?? false;
 
-  const groups = useMemo(() => groupFactsByCategory(data?.facts ?? []), [data]);
-  const hasAnything = (data?.facts.length ?? 0) > 0;
-
-  // ── The company's own book, one level up ──
-  // Renders NOTHING for an independent hotel (the route 404s and the panel
-  // returns null), so nothing about a single-hotel customer's screen changes.
-  // For a management company it sits ABOVE the hotel's facts — the same order
-  // the copilot reads them in, where the hotel wins.
-  //
-  // ⚠️ IT IS OUTSIDE THE MANAGER GATE ON PURPOSE, and this is the whole reason
-  // it is a variable instead of one line of JSX. `canSee` reads
-  // `accounts.role`, and the company vocabulary degrades least-privilege into
-  // that column — a `finance` hat carries a legacy role of `front_desk`, and a
-  // `vp` hat only lands on a manager word by convention. So the people the
-  // company's own `rulebook_editors` setting NAMES were bounced to
-  // "managers only" and never saw the book they are the only ones allowed to
-  // write. The panel is self-gating: /api/company/rulebook resolves standing
-  // from the caller's hats at that company and the panel renders null on a
-  // refusal, so nobody who could not see it before can see it now. What stays
-  // manager-only is the HOTEL's own knowledge base below.
-  const companyBook = <CompanyRulebookPanel lang={lang} />;
-
-  // The page chrome both halves share. A plain render helper, not a component:
-  // it holds no state, so inlining it would only duplicate the header three
-  // times. The half switch lives here so it is in the same place whichever
-  // half you are on, and whoever you are.
-  const shell = (body: React.ReactNode) => (
+  return (
     <div className="cx-page cx-swap">
       <CxStyle />
       <style dangerouslySetInnerHTML={{ __html: KN_CSS }} />
-      <ToldStyle />
 
       {companyBook}
 
-      <div className="cx-ptitle" style={{ marginTop: 0 }}>{L('title')}</div>
-      <div className="cx-psub">{L('sub')}</div>
+      <div className="cx-ptitle" style={{ marginTop: 0 }}>{S.title.en}</div>
 
-      <div className="cx-seg kn-halves" role="tablist">
-        <button
-          type="button"
-          role="tab"
-          aria-selected={half === 'learned'}
-          className={half === 'learned' ? 'cx-on' : ''}
-          onClick={() => setChosenHalf('learned')}
-        >
-          {L('halfLearned')}
+      {canTeach && (
+        <button type="button" className="kn-teach" onClick={() => setBox({ kind: 'teach' })}>
+          <CxIcon name="staxis" size={16} />
+          {KNOWS_COPY.teachButton}
         </button>
-        <button
-          type="button"
-          role="tab"
-          aria-selected={half === 'told'}
-          className={half === 'told' ? 'cx-on' : ''}
-          onClick={() => setChosenHalf('told')}
-        >
-          {L('halfTold')}
-        </button>
-      </div>
-
-      {body}
-    </div>
-  );
-
-  // What a person told it. Open to everyone signed in — see canReadTold.
-  if (half === 'told') {
-    return shell(
-      <>
-        <div className="kn-halfsub">{L('toldSub')}</div>
-        <ToldView lang={lang} />
-      </>,
-    );
-  }
-
-  // What it worked out by itself. Still a manager view, and the note now
-  // points at the half that is open to the reader instead of dead-ending.
-  if (!canSee) return shell(<div className="kn-halfsub">{L('managerOnly')}</div>);
-
-  return shell(
-    <>
-      <div className="kn-halfsub">{L('learnedSub')}</div>
-
-      {/* ── The open box ── */}
-      <div className="kn-box">
-        <div className="cx-dec-eyebrow">{L('boxEyebrow')}</div>
-        <textarea
-          className="kn-ta"
-          value={note}
-          onChange={(e) => setNote(e.target.value)}
-          placeholder={L('boxPlaceholder')}
-          aria-label={L('boxEyebrow')}
-          maxLength={8000}
-        />
-        <div className="kn-boxfoot">
-          <button
-            type="button"
-            className="kn-act"
-            onClick={() => fileRef.current?.click()}
-            disabled={busy}
-          >
-            {L('addFile')}
-          </button>
-          <input
-            ref={fileRef}
-            type="file"
-            accept={ACCEPT}
-            style={{ display: 'none' }}
-            onChange={(e) => pickFile(e.target.files?.[0] ?? null)}
-          />
-          {file && (
-            <span className="kn-file">
-              <CxIcon name="inventory" size={13} />
-              <span>{file.name}</span>
-              <button
-                type="button"
-                className="kn-act"
-                style={{ height: 22, padding: '0 8px', border: 'none' }}
-                onClick={() => { setFile(null); if (fileRef.current) fileRef.current.value = ''; }}
-                aria-label={L('removeFile')}
-              >
-                ×
-              </button>
-            </span>
-          )}
-          <div style={{ flex: 1 }} />
-          <button
-            type="button"
-            className="kn-act kn-yes"
-            onClick={submitIntake}
-            disabled={busy || (!note.trim() && !file)}
-          >
-            {busy ? L('submitting') : L('submit')}
-          </button>
-        </div>
-        <div className="kn-hint">{L('boxHint')}</div>
-      </div>
-
-      {banner && knowsBannerNote(banner, lang)}
-
-      {/* An error must never look like "your hotel has no facts". */}
-      {error && !data && <div className="kn-note kn-bad">{L('loadFailed')}</div>}
-
-      {data && (
-        <div className="kn-meta">
-          <span className="kn-metai">{data.stats.totalKnown} {L('known')}</span>
-          {data.stats.pendingReview > 0 && (
-            <span className="kn-metai" style={{ color: '#8C6A33' }}>
-              {data.stats.pendingReview} {L('pending')}
-            </span>
-          )}
-        </div>
       )}
 
-      {!loading && data && !hasAnything && (
+      {/* While the box is open its own copy of this is what the reader sees. */}
+      {banner && !box && knowsBannerNote(banner, 'en')}
+
+      {/* An error must never look like "your hotel has nothing". */}
+      {error && !data && <div className="kn-note kn-bad">{KNOWS_COPY.loadFailed}</div>}
+
+      {!loading && data && groups.length === 0 && (
         <div className="kn-empty">
-          <div className="cx-dec-t">{L('emptyTitle')}</div>
-          <div className="cx-dec-s" style={{ maxWidth: 470, margin: '6px auto 0' }}>{L('emptyBody')}</div>
+          <div className="kn-emptyt">{KNOWS_COPY.emptyTitle}</div>
+          <div className="kn-emptys">{KNOWS_COPY.emptyBody}</div>
         </div>
       )}
 
-      {hasAnything &&
-        groups.map((g) => {
-          const label = CATEGORY_LABELS[g.category];
-          return (
-            <div className="kn-grp" key={g.category}>
-              <div className="kn-grph">
-                <span className="kn-grpt">{label.title['en']}</span>
-                <span className="kn-grpc">{g.items.length}</span>
-              </div>
-              <div className="kn-grps">{label.hint['en']}</div>
-
-              {g.items.length === 0 ? (
-                <div className="kn-rows">
-                  <div className="kn-row" style={{ color: '#A6ABA6', fontSize: 12.5 }}>{L('nothingHere')}</div>
-                </div>
-              ) : (
-                <div className="kn-rows">
-                  {g.items.map((f) => {
-                    const status = factStatus({ reviewState: f.reviewState, expiresAt: f.expiresAt });
-                    const badgeClass =
-                      status.kind === 'unreviewed' ? 'cx-warn' : status.kind === 'expiring' ? 'cx-mut' : 'cx-ok';
-                    const isEditing = editing === f.id;
-                    const disabled = rowBusy === f.id;
-                    return (
-                      <div className={`kn-row${justAdded.has(f.id) ? ' kn-new' : ''}`} key={f.id}>
-                        <div className="kn-top">
-                          <div style={{ minWidth: 0, flex: 1 }}>
-                            {isEditing ? (
-                              <>
-                                <textarea
-                                  className="kn-ta"
-                                  style={{ marginTop: 0, minHeight: 62 }}
-                                  value={draft}
-                                  maxLength={500}
-                                  onChange={(e) => setDraft(e.target.value)}
-                                  aria-label={L('edit')}
-                                />
-                                <select
-                                  className="kn-sel"
-                                  style={{ marginTop: 8 }}
-                                  value={draftCat}
-                                  onChange={(e) => setDraftCat(e.target.value as MemoryCategory)}
-                                  aria-label={L('edit')}
-                                >
-                                  {MEMORY_CATEGORIES.map((c) => (
-                                    <option key={c} value={c}>{CATEGORY_LABELS[c].title['en']}</option>
-                                  ))}
-                                </select>
-                              </>
-                            ) : (
-                              <>
-                                <div className="kn-c">{f.content}</div>
-                                <div className="kn-p">
-                                  {provenanceLine(
-                                    {
-                                      source: f.source,
-                                      topic: f.topic,
-                                      createdByName: f.createdByName,
-                                      updatedAt: f.updatedAt,
-                                    },
-                                    lang,
-                                  )}
-                                </div>
-                              </>
-                            )}
-                          </div>
-                          <span className={`cx-bdg ${badgeClass}`}>{statusLabel(status, lang)}</span>
-                        </div>
-
-                        <div className="kn-acts">
-                          {isEditing ? (
-                            <>
-                              <button
-                                type="button" className="kn-act kn-yes" disabled={disabled || !draft.trim()}
-                                onClick={() => saveEdit(f.id)}
-                              >
-                                {L('save')}
-                              </button>
-                              <button type="button" className="kn-act" onClick={() => setEditing(null)}>
-                                {L('cancel')}
-                              </button>
-                            </>
-                          ) : confirmingRemove === f.id ? (
-                            <>
-                              <span style={{ fontSize: 12, color: '#8E432B', alignSelf: 'center' }}>
-                                {L('removeSure')}
-                              </span>
-                              <button
-                                type="button" className="kn-act kn-danger" disabled={disabled}
-                                onClick={() => act(f.id, 'remove')}
-                              >
-                                {L('removeYes')}
-                              </button>
-                              <button type="button" className="kn-act" onClick={() => setConfirmingRemove(null)}>
-                                {L('cancel')}
-                              </button>
-                            </>
-                          ) : (
-                            <>
-                              {status.kind !== 'confirmed' && (
-                                <button
-                                  type="button" className="kn-act kn-yes" disabled={disabled}
-                                  onClick={() => act(f.id, 'confirm')}
-                                >
-                                  {L('confirm')}
-                                </button>
-                              )}
-                              <button
-                                type="button" className="kn-act" disabled={disabled}
-                                onClick={() => { setEditing(f.id); setDraft(f.content); setDraftCat(f.category); }}
-                              >
-                                {L('edit')}
-                              </button>
-                              <button
-                                type="button" className="kn-act kn-danger" disabled={disabled}
-                                onClick={() => setConfirmingRemove(f.id)}
-                              >
-                                {L('remove')}
-                              </button>
-                            </>
-                          )}
-                        </div>
+      {groups.length > 0 && (
+        <div className="kn-groups">
+          {groups.map((group) => (
+            <div key={group.group}>
+              <div className="kn-grpt">{GROUP_TITLE[group.group]}</div>
+              <div className="kn-rows">
+                {group.items.map((item) => (
+                  <div className="kn-row" key={`${item.kind}:${item.id}`}>
+                    <Sentence item={item} />
+                    {canTeach && (
+                      <div className="kn-acts">
+                        {actionsFor(group.group).map((action) => (
+                          <button
+                            key={action}
+                            type="button"
+                            className={`kn-act${action === 'remove' ? ' kn-danger' : ''}`}
+                            disabled={rowBusy === item.id}
+                            onClick={() => {
+                              if (action === 'remove') { void removeItem(item); return; }
+                              setBox({ kind: action === 'wrong' ? 'wrong' : 'adjust', item });
+                            }}
+                          >
+                            {ACTION_LABEL[action]}
+                          </button>
+                        ))}
                       </div>
-                    );
-                  })}
-                </div>
-              )}
+                    )}
+                  </div>
+                ))}
+              </div>
             </div>
-          );
-        })}
-    </>,
+          ))}
+        </div>
+      )}
+
+      {box && (
+        <TeachBox
+          key={box.kind === 'teach' ? 'teach' : `${box.kind}:${box.item.id}`}
+          mode={box}
+          busy={busy}
+          note={banner ? knowsBannerNote(banner, 'en') : null}
+          onCancel={() => setBox(null)}
+          onSubmit={(text, file) => { void submitBox(text, file); }}
+        />
+      )}
+    </div>
   );
 }

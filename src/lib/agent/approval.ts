@@ -154,7 +154,7 @@ const SUMMARIES: Record<string, SummaryBuilder> = {
 
   create_recurring_todo: (a, l) => {
     const who = str(a.assignee) || str(a.department);
-    const cadence = formatCadence(a.cadence, a.weekday, l);
+    const cadence = formatCadence(a.cadence, a.weekday, l, a.intervalDays);
     if (l === 'es') return `Crear tarea recurrente (${cadence}): ${quoted(a.title)}${who ? ` — para ${who}` : ''}`;
     return `Create a recurring to-do (${cadence}): ${quoted(a.title)}${who ? ` — for ${who}` : ''}`;
   },
@@ -179,17 +179,34 @@ function formatFireAt(v: unknown, l: ApprovalLang): string {
   }
 }
 
-/** Human cadence label for a recurring to-do summary. */
-function formatCadence(cadence: unknown, weekday: unknown, l: ApprovalLang): string {
+/**
+ * Human cadence label for a recurring to-do summary.
+ *
+ * Every cadence the store knows has a case here. It used to fall through to
+ * "daily" for anything it did not recognise, so a biweekly or monthly card said
+ * the wrong thing on the one screen whose whole job is telling a manager what
+ * they are about to approve.
+ */
+function formatCadence(cadence: unknown, weekday: unknown, l: ApprovalLang, intervalDays?: unknown): string {
   const c = str(cadence).toLowerCase();
   const days = l === 'es'
     ? ['domingo', 'lunes', 'martes', 'miércoles', 'jueves', 'viernes', 'sábado']
     : ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
   const wd = Number(weekday);
+  const named = Number.isInteger(wd) && wd >= 0 && wd <= 6 ? days[wd] : '';
   if (c === 'weekly') {
-    const label = Number.isInteger(wd) && wd >= 0 && wd <= 6 ? days[wd] : '';
-    if (l === 'es') return label ? `cada ${label}` : 'semanal';
-    return label ? `every ${label}` : 'weekly';
+    if (l === 'es') return named ? `cada ${named}` : 'semanal';
+    return named ? `every ${named}` : 'weekly';
+  }
+  if (c === 'biweekly') {
+    if (l === 'es') return named ? `cada dos ${named}` : 'quincenal';
+    return named ? `every other ${named}` : 'every other week';
+  }
+  if (c === 'monthly') return l === 'es' ? 'mensual' : 'monthly';
+  if (c === 'every_n_days') {
+    const n = Number(intervalDays);
+    if (!Number.isInteger(n) || n < 2) return l === 'es' ? 'cada pocos días' : 'every few days';
+    return l === 'es' ? `cada ${n} días` : `every ${n} days`;
   }
   if (c === 'weekdays') return l === 'es' ? 'días laborables' : 'weekdays';
   return l === 'es' ? 'diario' : 'daily';

@@ -67,6 +67,7 @@ describe('every phrase class the composer promises to understand', () => {
     repeat?: ParseResult['repeat'];
     weekday?: number | null;
     dayOfMonth?: number | null;
+    intervalDays?: number | null;
     atTime?: string | null;
   }> = [
     // when
@@ -94,6 +95,15 @@ describe('every phrase class the composer promises to understand', () => {
     { sentence: 'deep clean the vents every other week', title: 'Deep clean the vents', repeat: 'biweekly' },
     { sentence: 'deep clean the vents biweekly', title: 'Deep clean the vents', repeat: 'biweekly' },
     { sentence: 'test the generator every other Friday', title: 'Test the generator', repeat: 'biweekly', weekday: 5 },
+    // every N days: anchored on "every" and "days" with the number between
+    { sentence: 'flush the water heater every 3 days', title: 'Flush the water heater', repeat: 'every_n_days', intervalDays: 3 },
+    { sentence: 'backwash the sand filter every 5 days', title: 'Backwash the sand filter', repeat: 'every_n_days', intervalDays: 5 },
+    { sentence: 'change the filters every 45 days', title: 'Change the filters', repeat: 'every_n_days', intervalDays: 45 },
+    { sentence: 'walk the property every three days', title: 'Walk the property', repeat: 'every_n_days', intervalDays: 3 },
+    { sentence: 'skim the pool every other day', title: 'Skim the pool', repeat: 'every_n_days', intervalDays: 2 },
+    { sentence: 'skim the pool every second day', title: 'Skim the pool', repeat: 'every_n_days', intervalDays: 2 },
+    // "every 1 days" is daily said awkwardly, and daily already has a word
+    { sentence: 'check the lobby every 1 days', title: 'Check the lobby', repeat: 'daily' },
     { sentence: 'pay the linen invoice every month', title: 'Pay the linen invoice', repeat: 'monthly' },
     { sentence: 'pay the linen invoice monthly', title: 'Pay the linen invoice', repeat: 'monthly' },
     { sentence: 'pay the linen invoice every month on the 3rd', title: 'Pay the linen invoice', repeat: 'monthly', dayOfMonth: 3 },
@@ -132,6 +142,7 @@ describe('every phrase class the composer promises to understand', () => {
       if (c.repeat !== undefined) assert.equal(result.repeat, c.repeat, 'wrong cadence');
       if (c.weekday !== undefined) assert.equal(result.weekday, c.weekday, 'wrong weekday');
       if (c.dayOfMonth !== undefined) assert.equal(result.dayOfMonth, c.dayOfMonth, 'wrong day of month');
+      if (c.intervalDays !== undefined) assert.equal(result.intervalDays, c.intervalDays, 'wrong gap');
       if (c.atTime !== undefined) assert.equal(result.atTime, c.atTime, 'wrong time of day');
     });
   }
@@ -155,6 +166,37 @@ describe('what it must never claim', () => {
       const result = read(sentence);
       assert.equal(result.when, null, `${sentence} claimed a day`);
       assert.equal(result.dayOfMonth, null, `${sentence} claimed a day of the month`);
+    }
+  });
+
+  // THE SECOND RULE applied to the newest thing that reads numbers. A gap is
+  // only ever claimed off the words "every" and "days" with the number BETWEEN
+  // them; every sentence below has a number in it and none of them is a cadence.
+  test('a bare number is never a gap between repeats', () => {
+    for (const sentence of [
+      'order 3 cases of coffee',
+      'fix room 214 ac',
+      'replace 5 days of linens',
+      'the 3 day forecast is bad',
+      'check the boiler in 3 days',
+      'every 3 weeks call the vendor',
+      'every 900 days is not a cadence',
+      'every 0 days is not a cadence',
+    ]) {
+      const result = read(sentence);
+      assert.equal(result.repeat === 'every_n_days', false, `"${sentence}" claimed a gap`);
+      assert.equal(result.intervalDays, null, `"${sentence}" claimed a number of days`);
+    }
+  });
+
+  test('a gap outside what the cadence can carry leaves the words in the title', () => {
+    // Never an error, never a silent clamp to 2 or 365: the sentence simply
+    // stands, which is what THE ONE RULE THAT MATTERS asks for.
+    for (const sentence of ['deep clean every 900 days', 'sweep every 0 days']) {
+      const result = read(sentence);
+      assert.equal(result.repeat, null);
+      assert.equal(result.intervalDays, null);
+      assert.match(result.title, /days/, `"${sentence}" lost words it did not understand`);
     }
   });
 

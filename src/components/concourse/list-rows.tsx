@@ -26,16 +26,22 @@ import type { LogEntryDTO } from '@/lib/comms/types';
 import type { KnowledgeEventDTO } from '@/lib/knowledge/types';
 import type { AssignedByMeItem, WorklistItem } from '@/lib/worklist/types';
 import {
+  ASSIGNED_COPY,
+  ASSIGNED_FACE_LIMIT,
+  assignedMoreLine,
   assignedNote,
   assignedStateLine,
   completionNotice,
   COMPOSER_COPY,
+  COMPOSER_OTHER,
   COMPOSER_ROLES,
   dueLine,
   enterTakesNote,
-  HOUSEKEEPER_NOTE,
+  intervalHint,
   missedLine,
+  otherHint,
   overdueAnswers,
+  promptExample,
   repeatWord,
   rowFrom,
   rowKindLabel,
@@ -44,7 +50,15 @@ import {
   whenWord,
   whoWord,
 } from '@/lib/feed/one-list-copy';
-import type { ComposerPerson, ParseQuestion, ParseResult, RepeatChoice } from '@/lib/feed/parse-todo';
+import {
+  MAX_INTERVAL_DAYS,
+  MIN_INTERVAL_DAYS,
+  readIntervalDays,
+  type ComposerPerson,
+  type ParseQuestion,
+  type ParseResult,
+  type RepeatChoice,
+} from '@/lib/feed/parse-todo';
 
 import { CxIcon } from './icons';
 
@@ -284,24 +298,38 @@ export function LogRowView({ entry, onOpen }: { entry: LogEntryDTO; onOpen?: () 
 
 /** What the Who word can say. A department option is "whoever is on shift". */
 export type { ComposerPerson, RepeatChoice } from '@/lib/feed/parse-todo';
-export { COMPOSER_ROLES, HOUSEKEEPER_NOTE } from '@/lib/feed/one-list-copy';
+export { COMPOSER_ROLES } from '@/lib/feed/one-list-copy';
 
 /**
- * The cadences the REPEAT row offers.
+ * The cadences the REPEAT row offers, on ONE horizontally scrolling line.
+ *
+ * One line and not a wrapping block, because the row is a sentence somebody is
+ * reading left to right and a cadence list that reflows to three rows turns the
+ * composer into a form. Anything past the edge is a swipe away.
  *
  * `weekdays` is deliberately absent: it exists in the write path for templates
  * created elsewhere, and offering "every weekday" beside "every day" on a row
  * somebody is skimming is one distinction too many. The labels are the design's
  * own words, so the button and the word above it are recognisably the same
  * thing said twice.
+ *
+ * The blank at the end of the line is not here: it is not a fixed choice, it is
+ * a number somebody types. See the `fx-compevery` control in ComposerView.
  */
-export const REPEAT_CHOICES: readonly { value: RepeatChoice; label: string }[] = [
+export const REPEAT_CHOICES: readonly { value: RepeatChoice; label: string; intervalDays?: number }[] = [
   { value: 'once', label: 'Once' },
   { value: 'daily', label: 'Every day' },
+  { value: 'every_n_days', label: 'Every 3 days', intervalDays: 3 },
+  { value: 'every_n_days', label: 'Every 4 days', intervalDays: 4 },
   { value: 'weekly', label: 'Every week' },
   { value: 'biweekly', label: 'Every 2 weeks' },
   { value: 'monthly', label: 'Every month' },
 ];
+
+/** The gaps the fixed chips already cover. The blank owns everything else. */
+const CHIP_INTERVALS: readonly number[] = REPEAT_CHOICES
+  .filter((c) => c.value === 'every_n_days' && typeof c.intervalDays === 'number')
+  .map((c) => c.intervalDays as number);
 
 /** Which button row is open, if any. 'all' is the nothing-typed path. */
 export type ComposerRow = 'who' | 'when' | 'repeat' | 'all';
@@ -319,6 +347,14 @@ export interface ComposerState {
   weekday: number;
   dayOfMonth: number;
   /**
+   * How many days apart, when `repeat` is 'every_n_days'.
+   *
+   * Held as a STRING because it is what somebody is typing into the blank, and
+   * a half-typed "1" on the way to "14" must not become a cadence. It is read
+   * into a number exactly once, in composerPayload.
+   */
+  intervalDays: string;
+  /**
    * Optional "HH:MM". Lifted from the sentence, never asked for: there is no
    * fourth word and no time picker. Somebody who writes "by 3pm" gets 3pm, and
    * somebody who does not gets exactly the row that existed before this did.
@@ -326,6 +362,14 @@ export interface ComposerState {
   atTime: string | null;
   /** Which button row is open, if any. */
   openRow: ComposerRow | null;
+  /**
+   * True once somebody has tapped "Other" on the WHO row.
+   *
+   * The chip is a POINTER, not a person: it never touches `who`. All it does is
+   * put the cursor back in the sentence and say that a name typed there works,
+   * which is the one part of this control nobody discovers on their own.
+   */
+  otherHint: boolean;
   /** Per field, how the current value was reached. */
   source: { who: ComposerSource; when: ComposerSource; repeat: ComposerSource };
 }
@@ -339,8 +383,10 @@ export function composerDefaults(todayIso: string, todayWeekday: number): Compos
     repeat: 'once',
     weekday: todayWeekday,
     dayOfMonth: 1,
+    intervalDays: '',
     atTime: null,
     openRow: null,
+    otherHint: false,
     source: { who: 'default', when: 'default', repeat: 'default' },
   };
 }
@@ -373,7 +419,7 @@ export function withParse(
   opts: { whoAs?: ComposerSource } = {},
 ): ComposerState {
   const source = { ...state.source };
-  let { who, when, repeat, weekday, dayOfMonth } = state;
+  let { who, when, repeat, weekday, dayOfMonth, intervalDays } = state;
 
   if (source.who !== 'chosen' && result.who) {
     who = result.who;
@@ -387,6 +433,11 @@ export function withParse(
   }
   if (source.repeat !== 'chosen' && result.repeat) {
     repeat = result.repeat;
+    // The gap travels WITH the cadence, or the blank keeps a number from the
+    // last sentence and "every 3 days" typed over "every 10 days" files 10.
+    intervalDays = result.repeat === 'every_n_days' && result.intervalDays
+      ? String(result.intervalDays)
+      : '';
     source.repeat = 'parsed';
   }
   if (source.when !== 'chosen' && result.when) {
@@ -402,7 +453,7 @@ export function withParse(
   // source to track.
   const atTime = state.source.when === 'chosen' ? state.atTime : (result.atTime ?? state.atTime);
 
-  return { ...state, title: result.title, who, when, repeat, weekday, dayOfMonth, atTime, source };
+  return { ...state, title: result.title, who, when, repeat, weekday, dayOfMonth, intervalDays, atTime, source };
 }
 
 /**
@@ -418,9 +469,20 @@ export function withChoice(
   todayWeekday: number,
 ): ComposerState {
   const source = { ...state.source };
-  let { who, when, repeat, weekday, dayOfMonth, atTime } = state;
-  if ('who' in patch) { who = patch.who ?? 'me'; source.who = 'chosen'; }
+  let { who, when, repeat, weekday, dayOfMonth, intervalDays, atTime } = state;
+  // Answering the WHO question spends the Other hint: it exists to say that a
+  // name can be typed, and somebody who just tapped a name did not need it.
+  const otherHint = 'who' in patch ? false : state.otherHint;
+  if ('who' in patch) {
+    // "Other" is a pointer at the sentence, never an assignee. It cannot arrive
+    // here, and it is refused here as well, because the one place a bad value
+    // would be invisible is a to-do quietly handed to nobody.
+    who = patch.who && patch.who !== COMPOSER_OTHER ? patch.who : 'me';
+    source.who = 'chosen';
+  }
   if ('repeat' in patch) { repeat = patch.repeat ?? 'once'; source.repeat = 'chosen'; }
+  if ('intervalDays' in patch) intervalDays = patch.intervalDays ? String(patch.intervalDays) : '';
+  else if ('repeat' in patch && patch.repeat !== 'every_n_days') intervalDays = '';
   if ('when' in patch) {
     // A repeating item has no single due date, so a null `when` in a patch is
     // "start today", not "no day at all".
@@ -436,7 +498,7 @@ export function withChoice(
     weekday = weekdayOfIso(when, todayWeekday);
   }
   if (typeof patch.dayOfMonth === 'number') dayOfMonth = patch.dayOfMonth;
-  return { ...state, who, when, repeat, weekday, dayOfMonth, atTime, source };
+  return { ...state, who, when, repeat, weekday, dayOfMonth, intervalDays, atTime, otherHint, source };
 }
 
 /** What the composer sends. Pure, so the defaults are provable without a fetch. */
@@ -465,15 +527,26 @@ export interface ComposerPayload {
   repeat: RepeatChoice;
   weekday?: number;
   dayOfMonth?: number;
+  /** Only ever present on 'every_n_days', and never absent on it. */
+  intervalDays?: number;
 }
 
 export function composerPayload(state: ComposerState, meStaffId: string | null): ComposerPayload | null {
   const title = state.title.trim();
   if (!title) return null;
 
+  // A cadence that needs a number and has not been given a believable one is
+  // not a cadence. It falls back to a one-off rather than being sent: a
+  // template with no gap in it never spawns anything, and the person who typed
+  // it would never find out why.
+  const gap = state.repeat === 'every_n_days' ? readIntervalDays(state.intervalDays) : null;
+  const repeat: RepeatChoice = state.repeat === 'every_n_days' && gap === null ? 'once' : state.repeat;
+
   let assignedStaffId: string | null = null;
   let assignedDepartment: string | null = null;
-  if (state.who === 'me') assignedStaffId = meStaffId;
+  // "Other" is the chip that points at the sentence. It is not a person, so a
+  // row still carrying it is a row assigned to whoever is adding it.
+  if (state.who === 'me' || state.who === COMPOSER_OTHER) assignedStaffId = meStaffId;
   else if (state.who.startsWith('dept:')) assignedDepartment = state.who.slice(5);
   else assignedStaffId = state.who;
 
@@ -482,14 +555,15 @@ export function composerPayload(state: ComposerState, meStaffId: string | null):
     assignedStaffId,
     assignedDepartment,
     // A repeating item has no single due date; the template decides each day.
-    dueDate: state.repeat === 'once' && state.when ? state.when : null,
+    dueDate: repeat === 'once' && state.when ? state.when : null,
     // A repeating to-do keeps its time: the template carries it and stamps it
     // on every instance. Only the DAY is meaningless on a repeat, not the hour.
     dueTime: state.atTime ?? null,
-    repeat: state.repeat,
+    repeat,
   };
-  if (state.repeat === 'weekly' || state.repeat === 'biweekly') payload.weekday = state.weekday;
-  if (state.repeat === 'monthly') payload.dayOfMonth = state.dayOfMonth;
+  if (repeat === 'weekly' || repeat === 'biweekly') payload.weekday = state.weekday;
+  if (repeat === 'monthly') payload.dayOfMonth = state.dayOfMonth;
+  if (repeat === 'every_n_days' && gap !== null) payload.intervalDays = gap;
   return payload;
 }
 
@@ -510,6 +584,22 @@ export interface ComposerViewProps {
   micAvailable?: boolean;
   /** Shown once ever, under the row, after somebody's first plain-sentence add. */
   teachLine?: string | null;
+  /**
+   * Which rotating example the idle prompt is showing.
+   *
+   * A number rather than a string, so the SENTENCES stay in the copy producer
+   * that the no-em-dash guard walks. The clock that advances it lives in
+   * StaxisList: this file is hook-free.
+   */
+  promptTick?: number;
+  /**
+   * The row's own box, for the click-outside close.
+   *
+   * A ref is a prop, not a hook, so taking one here keeps this component
+   * hook-free. The listener itself belongs to StaxisList, which is the only
+   * thing on this screen allowed to touch the document.
+   */
+  boxRef?: React.Ref<HTMLDivElement>;
   onOpen: () => void;
   onCancel: () => void;
   onChange: (next: ComposerState) => void;
@@ -555,6 +645,23 @@ function openDayPicker(button: HTMLElement): void {
 }
 
 /**
+ * Put the cursor back in the sentence.
+ *
+ * Same trick `openDayPicker` uses and for the same reason: this file is
+ * hook-free, so it cannot hold a ref to its own field. The DOM it walks is the
+ * DOM it just rendered, three lines up.
+ */
+function focusSentence(from: HTMLElement | null | undefined): void {
+  // Total, because this is the decorative half of the chip. The hint is state
+  // and lands whatever happens; the cursor is a courtesy, and a chip that
+  // throws because it could not find its own field would take the row down.
+  try {
+    const input = from?.closest?.('.fx-comp')?.querySelector('input.fx-comptitle') as HTMLInputElement | null;
+    input?.focus();
+  } catch { /* the hint is on the screen either way */ }
+}
+
+/**
  * The "add a to-do" row.
  *
  * ONE ROW on the timeline spine that takes a plain sentence. The only required
@@ -575,7 +682,7 @@ function openDayPicker(button: HTMLElement): void {
  */
 export function ComposerView({
   open, state, people, now, question = null, busy = false, error = null,
-  recording = false, micAvailable = true, teachLine = null,
+  recording = false, micAvailable = true, teachLine = null, promptTick = 0, boxRef,
   onOpen, onCancel, onChange, onSubmit, onMicPress, onMicRelease,
 }: ComposerViewProps) {
   const set = (patch: Partial<ComposerState>) => onChange({ ...state, ...patch });
@@ -586,6 +693,11 @@ export function ComposerView({
   const todayIso = isoOfDay(now);
   const todayWeekday = now.getDay();
   const days = whenChoices(now);
+  const gap = readIntervalDays(state.intervalDays);
+  // The blank owns every gap the fixed chips do not. "Every 3 days" typed into
+  // it lights the chip, not the blank, so one cadence is never selected twice.
+  const customGap = state.repeat === 'every_n_days' && gap !== null && !CHIP_INTERVALS.includes(gap);
+  const blankOpen = state.repeat === 'every_n_days' && (gap === null || customGap);
 
   // Tapping a word with NOTHING typed opens all three rows, and all three words
   // read as chosen: the person is looking at their own answers rather than at
@@ -605,22 +717,28 @@ export function ComposerView({
   };
 
   const showRow = (field: 'who' | 'when' | 'repeat') => openRow === field || openRow === 'all';
-  // The housekeeping line belongs to the WHO row, and to the all-three view. It
-  // is never on the idle row: a line explaining who is missing, over a row
-  // nobody has asked anything of yet, is noise.
+  // The foot carries the mono hint and nothing else now. The line explaining
+  // that housekeepers are elsewhere was deleted on 2026-08-05: an answer to a
+  // question nobody had asked, under a list of the people who ARE there.
   const foot = showRow('who');
   const trailing = openRow === null;
 
   const whoText = whoWord(state.who, people);
   const whenText = whenWord(state.when, now, { repeating, atTime: state.atTime });
-  const repeatText = repeatWord(state.repeat, { weekday: state.weekday, dayOfMonth: state.dayOfMonth });
+  const repeatText = repeatWord(state.repeat, {
+    weekday: state.weekday, dayOfMonth: state.dayOfMonth, intervalDays: gap,
+  });
   const keyHint = busy ? COMPOSER_COPY.adding : (foot ? COMPOSER_COPY.enterToAdd : COMPOSER_COPY.enter);
   const tail: 'mic' | 'key' | null = recording
     ? 'mic'
     : (typed || busy ? 'key' : (micAvailable ? 'mic' : null));
 
   return (
-    <div data-testid="composer" data-staxis-anchor="todo-composer">
+    // `data-staxis-anchor` is a HANDLE, not a hook. Anything that needs to point
+    // at this row from outside (the companion's arrow, for one) finds it by
+    // attribute rather than by reaching into this component. Keep it stable:
+    // renaming it silently unaims whatever is pointing at it.
+    <div data-testid="composer" data-staxis-anchor="todo-composer" ref={boxRef}>
       <div className={`fx-comp${open || typed || openRow !== null ? ' fx-on' : ''}`}>
         <div className="fx-compline">
           {recording && (
@@ -635,7 +753,10 @@ export function ComposerView({
             type="text"
             value={state.title}
             disabled={busy}
-            placeholder={openRow === 'all' ? COMPOSER_COPY.promptChoosing : COMPOSER_COPY.prompt}
+            /* A rotating real example, not a question. The accessible name
+               below never rotates: a control that renames itself every few
+               seconds is unusable with a screen reader. */
+            placeholder={openRow === 'all' ? COMPOSER_COPY.promptChoosing : promptExample(promptTick)}
             aria-label="What needs doing"
             onFocus={onOpen}
             onChange={(e) => set({ title: e.target.value })}
@@ -747,6 +868,30 @@ export function ComposerView({
                         {option.label}
                       </button>
                     ))}
+                  {/* THE POINTER. Not a radio, not an assignee, and never
+                      selected: it puts the cursor back in the sentence and
+                      says that a name typed there works. Typing one already
+                      worked; this is the only thing that makes it findable. */}
+                  <button
+                    type="button"
+                    className="fx-compb fx-compother"
+                    disabled={busy}
+                    aria-label={COMPOSER_COPY.other}
+                    onClick={(e) => {
+                      focusSentence(e.currentTarget);
+                      set({ otherHint: true });
+                    }}
+                  >
+                    {COMPOSER_COPY.other}
+                  </button>
+                </span>
+              </div>
+            )}
+            {showRow('who') && state.otherHint && (
+              <div className="fx-comprow">
+                <span className="fx-complab" aria-hidden />
+                <span className="fx-comphint" role="status">
+                  {otherHint(people[0]?.name ?? null)}
                 </span>
               </div>
             )}
@@ -803,20 +948,75 @@ export function ComposerView({
             {showRow('repeat') && (
               <div className="fx-comprow">
                 <span className="fx-complab" id="fx-lab-repeat">{COMPOSER_COPY.repeatLabel}</span>
-                <span className="fx-compopts" role="radiogroup" aria-labelledby="fx-lab-repeat">
-                  {REPEAT_CHOICES.map((choice) => (
-                    <button
-                      key={choice.value}
-                      type="button"
-                      role="radio"
-                      aria-checked={state.repeat === choice.value}
+                {/* ONE LINE, scrolled sideways. Not a wrapping block: the row
+                    is a sentence somebody reads left to right, and a cadence
+                    list that reflows to three rows is a form. */}
+                <span className="fx-compopts fx-compscroll" role="radiogroup" aria-labelledby="fx-lab-repeat">
+                  {REPEAT_CHOICES.map((choice) => {
+                    const on = choice.value === 'every_n_days'
+                      ? state.repeat === 'every_n_days' && gap === choice.intervalDays
+                      : state.repeat === choice.value;
+                    return (
+                      <button
+                        key={choice.label}
+                        type="button"
+                        role="radio"
+                        aria-checked={on}
+                        disabled={busy}
+                        className={`fx-compb${on ? ' fx-sel' : ''}`}
+                        onClick={() => onChange(withChoice(
+                          state,
+                          { repeat: choice.value, intervalDays: choice.intervalDays ?? null },
+                          todayIso,
+                          todayWeekday,
+                        ))}
+                      >
+                        {choice.label}
+                      </button>
+                    );
+                  })}
+                  {/* The blank. Any gap the chips do not cover, typed. It is a
+                      chip that CONTAINS a field rather than a chip that opens
+                      one: the number is the answer, so it belongs on the line
+                      the answers are on. */}
+                  <span className={`fx-compevery${blankOpen ? ' fx-sel' : ''}`}>
+                    <span aria-hidden>{COMPOSER_COPY.everyNDaysChip}</span>
+                    <input
+                      className="fx-compnum"
+                      type="text"
+                      inputMode="numeric"
+                      autoComplete="off"
+                      maxLength={3}
+                      size={3}
                       disabled={busy}
-                      className={`fx-compb${state.repeat === choice.value ? ' fx-sel' : ''}`}
-                      onClick={() => onChange(withChoice(state, { repeat: choice.value }, todayIso, todayWeekday))}
-                    >
-                      {choice.label}
-                    </button>
-                  ))}
+                      value={customGap || (state.repeat === 'every_n_days' && gap === null) ? state.intervalDays : ''}
+                      aria-label={COMPOSER_COPY.everyNDaysLabel}
+                      placeholder="__"
+                      onChange={(e) => {
+                        const digits = e.target.value.replace(/\D/g, '').slice(0, 3);
+                        // Typing a number IS choosing the cadence. Emptying it
+                        // goes back to a one-off rather than leaving a repeat
+                        // with no gap in it.
+                        onChange(withChoice(
+                          state,
+                          digits
+                            ? { repeat: 'every_n_days', intervalDays: Number(digits) }
+                            : { repeat: 'once', intervalDays: null },
+                          todayIso,
+                          todayWeekday,
+                        ));
+                      }}
+                    />
+                    <span aria-hidden>{COMPOSER_COPY.everyNDaysUnit}</span>
+                  </span>
+                </span>
+              </div>
+            )}
+            {showRow('repeat') && state.repeat === 'every_n_days' && gap === null && state.intervalDays !== '' && (
+              <div className="fx-comprow">
+                <span className="fx-complab" aria-hidden />
+                <span className="fx-comphint" role="status">
+                  {intervalHint(MIN_INTERVAL_DAYS, MAX_INTERVAL_DAYS)}
                 </span>
               </div>
             )}
@@ -825,7 +1025,6 @@ export function ComposerView({
 
         {foot && (
           <div className="fx-compfoot">
-            <span className="fx-compfootl">{HOUSEKEEPER_NOTE}</span>
             <span className="fx-compkey">{keyHint}</span>
           </div>
         )}
@@ -870,9 +1069,11 @@ export function AssignerNoticesView({ notices, onOpenDrawer }: {
       {notices.map((n) => (
         <div className="fx-report" key={n.taskId}>{completionNotice(n)}</div>
       ))}
-      <button type="button" className="fx-more-link" onClick={() => onOpenDrawer?.()}>
-        See what you assigned <span aria-hidden>→</span>
-      </button>
+      {onOpenDrawer && (
+        <button type="button" className="fx-more-link" onClick={() => onOpenDrawer()}>
+          See what you assigned <span aria-hidden>→</span>
+        </button>
+      )}
     </div>
   );
 }
@@ -885,67 +1086,112 @@ export function AssignerNoticesView({ notices, onOpenDrawer }: {
  * `Assigned by me` and `Log book` in a row of same-weight buttons, so what you
  * handed out was one click away from being invisible, and nobody clicked.
  *
- * What came back since you last looked sits on the face of it. The full list is
- * one link further in, and opening it is what marks the notices as seen.
+ * ─── three, then the door (2026-08-05) ─────────────────────────────────────
+ * The face used to be either the notices or the words "nothing has come back",
+ * and everything you had handed out lived behind a link. So a manager with
+ * eleven open assignments and nothing settled today read "nothing has come back
+ * since you last looked" over an empty panel, which is the truth about the last
+ * hour and says nothing at all about the eleven.
+ *
+ * Now the face carries THE THREE MOST RECENT, which is what you handed out most
+ * recently and therefore what you are most likely to be wondering about, and
+ * "Show more" opens the whole list, newest first, in a popup over the page. The
+ * notices stay above them: something that came back three weeks after it was
+ * assigned is news, and it would not be in the newest three.
  */
 export function AssignedRailPanel({
-  notices, entries, now, open, loading = false, readFailed = false, onOpen, onClose,
+  notices, entries, now, loading = false, readFailed = false, onOpen,
 }: {
   notices: readonly AssignedByMeItem[];
   entries: readonly AssignedByMeItem[];
   now: Date;
-  open: boolean;
   loading?: boolean;
   readFailed?: boolean;
+  /** Opens the popup. Opening it is also what marks the notices as seen. */
   onOpen: () => void;
-  onClose: () => void;
 }) {
+  const face = entries.slice(0, ASSIGNED_FACE_LIMIT);
+  const more = assignedMoreLine(entries.length, face.length);
   return (
     <div className="fx-panel">
       <div className="fx-ptop">
-        <span className="fx-pt">Assigned by me</span>
+        <span className="fx-pt">{ASSIGNED_COPY.title}</span>
         {notices.length > 0 && (
           <span className="fx-count">{notices.length} back</span>
         )}
       </div>
 
-      {open ? (
-        <>
-          <AssignedByMeView entries={entries} now={now} loading={loading} readFailed={readFailed} />
-          <button type="button" className="fx-more-link" onClick={onClose}>Show less</button>
-        </>
-      ) : notices.length > 0 ? (
-        <AssignerNoticesView notices={notices} onOpenDrawer={onOpen} />
-      ) : (
-        <>
-          <div className="fx-plain">Nothing has come back since you last looked.</div>
-          <button type="button" className="fx-more-link" onClick={onOpen}>
-            See what you assigned <span aria-hidden>→</span>
-          </button>
-        </>
+      <AssignerNoticesView notices={notices} />
+
+      <AssignedByMeView entries={face} now={now} loading={loading} readFailed={readFailed} />
+
+      {/* The door. Open whenever there is something behind it, and ALSO whenever
+          something has come back, because opening it is what marks the notices
+          as seen: a person with two assignments and one that just came back
+          would otherwise carry that count forever. */}
+      {(more || notices.length > 0) && (
+        <button type="button" className="fx-more-link" onClick={onOpen}>
+          {more ? ASSIGNED_COPY.showMore : ASSIGNED_COPY.seeAll}
+          {more && <span className="fx-morec">{more}</span>}
+        </button>
       )}
     </div>
   );
 }
 
 /**
- * The rail's log book panel: today's notes, and the switch that decides whether
- * they also appear as rows on the timeline.
+ * Everything you assigned, newest first, over the page.
  *
- * The switch is the same stored preference the log-book popup owns
- * (`feed_prefs.logbookInList`); it is surfaced here as well because this is
- * where a manager is looking when they wonder why the diary is or is not in
- * their day.
+ * A popup and not an expanding panel: the full list is unbounded, and a rail
+ * column that grows to forty rows pushes the log book off the bottom of the
+ * screen. The ordering is the read's own (created_at descending) and is not
+ * re-sorted here; two sort orders for one list is how they drift.
  */
-export function LogbookRailPanel({
-  entries, mergeOn, mergeReady, mergeBusy, mergeError, onToggleMerge, onOpen,
+export function AssignedPopupView({
+  open, entries, now, loading = false, readFailed = false, onClose,
 }: {
+  open: boolean;
+  entries: readonly AssignedByMeItem[];
+  now: Date;
+  loading?: boolean;
+  readFailed?: boolean;
+  onClose: () => void;
+}) {
+  if (!open) return null;
+  return (
+    <div data-testid="assigned-popup">
+      <button type="button" className="fx-scrim" aria-label={ASSIGNED_COPY.close} onClick={onClose} />
+      <div className="fx-drawer" role="dialog" aria-modal="true" aria-label={ASSIGNED_COPY.popupTitle}>
+        <div className="fx-drawerhead">
+          <span style={{ minWidth: 0 }}>
+            <span className="fx-drawert" style={{ display: 'block' }}>{ASSIGNED_COPY.popupTitle}</span>
+            <span className="fx-drawers" style={{ display: 'block' }}>{ASSIGNED_COPY.popupNote}</span>
+          </span>
+          <button type="button" className="fx-drawerx" aria-label={ASSIGNED_COPY.close} onClick={onClose}>
+            <CxIcon name="close" size={14} />
+          </button>
+        </div>
+        <div className="fx-drawerbody" style={{ padding: '4px 22px 22px' }}>
+          <AssignedByMeView entries={entries} now={now} loading={loading} readFailed={readFailed} />
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * The rail's log book panel: today's notes, and the way in.
+ *
+ * ─── the switch is not here any more (2026-08-05) ──────────────────────────
+ * "Show notes on the timeline" used to sit at the foot of this panel AND at the
+ * foot of the opened log book. One preference, two controls, on one screen. The
+ * clean view of the rail is a glance at what got written down today; a setting
+ * about how the diary is displayed is not part of that glance and belongs where
+ * somebody has already gone looking for the diary. It now lives ONLY inside the
+ * popup, where its behaviour is exactly what it always was.
+ */
+export function LogbookRailPanel({ entries, onOpen }: {
   entries: readonly LogEntryDTO[];
-  mergeOn: boolean;
-  mergeReady: boolean;
-  mergeBusy?: boolean;
-  mergeError?: string | null;
-  onToggleMerge: (next: boolean) => void;
   onOpen: () => void;
 }) {
   return (
@@ -969,21 +1215,6 @@ export function LogbookRailPanel({
       <button type="button" className="fx-more-link" onClick={onOpen}>
         Open the log book <span aria-hidden>→</span>
       </button>
-
-      {mergeError && <div className="sl-err">{mergeError}</div>}
-
-      <div className="fx-foot">
-        <span className="fx-footl" id="fx-logsw-label">Show notes on the timeline</span>
-        <button
-          type="button"
-          className="fx-sw"
-          role="switch"
-          aria-checked={mergeOn}
-          aria-labelledby="fx-logsw-label"
-          disabled={!mergeReady || mergeBusy === true}
-          onClick={() => onToggleMerge(!mergeOn)}
-        />
-      </div>
     </div>
   );
 }
@@ -995,22 +1226,15 @@ export function LogbookRailPanel({
  * affordance any more, because the page IS the queue, and Knows opens over it
  * rather than navigating away from it.
  */
-export function KnowsRailButton({ factCount, onOpen }: {
-  /** Null while the count has not been read. The subtitle then says nothing
-   *  about how much is known rather than claiming a number. */
-  factCount: number | null;
-  onOpen: () => void;
-}) {
+export function KnowsRailButton({ onOpen }: { onOpen: () => void }) {
+  // No fact count under the label any more (2026-08-05). It used to read "37
+  // facts about this hotel", which turned a knowledge screen into a score, and
+  // a number nobody asked for is the first thing people start gaming.
   return (
     <button type="button" className="fx-knows" onClick={onOpen}>
       <span className="fx-knowsi"><CxIcon name="staxis" size={17} /></span>
       <span style={{ minWidth: 0 }}>
         <span className="fx-pt" style={{ display: 'block' }}>What Staxis knows</span>
-        {factCount !== null && (
-          <span className="fx-ps" style={{ display: 'block' }}>
-            {factCount === 1 ? '1 fact about this hotel' : `${factCount.toLocaleString('en-US')} facts about this hotel`}
-          </span>
-        )}
       </span>
       <span className="fx-knowsgo" aria-hidden><CxIcon name="arrowUpRight" size={15} /></span>
     </button>
@@ -1067,7 +1291,7 @@ export function AssignedByMeView({ entries, now, loading = false, readFailed = f
   if (entries.length === 0) {
     return (
       <div data-testid="assigned-drawer">
-        <div className="fx-plain">You have not handed anything to anyone yet.</div>
+        <div className="fx-plain">{ASSIGNED_COPY.empty}</div>
       </div>
     );
   }

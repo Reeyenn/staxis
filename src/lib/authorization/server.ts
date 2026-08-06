@@ -183,8 +183,10 @@ export type AuthoritativeHotelLeadershipRole = 'owner' | 'general_manager';
 /**
  * Mirrors the direct-account contract in 0411 from the already-normalized
  * standing DTO. This deliberately does not inspect managementSurface: 0424
- * projects normalized property hats, grants, and valid bridges as
- * company_access for the access-management routes.
+ * projects normalized property hats, grants, and company-bound bridges as
+ * company_access for the access-management routes, and projects a normalized
+ * account whose only claim is one independent hotel back onto legacy_hotel.
+ * Neither projection is what "does this person hold this hotel directly" asks.
  */
 export function authoritativeStandingHasDirectHotelAccount(
   standing: AuthoritativePropertyStanding | null,

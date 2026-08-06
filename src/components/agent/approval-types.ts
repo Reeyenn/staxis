@@ -101,7 +101,7 @@ export const EDITABLE_FIELDS: Record<string, FieldSpec[]> = {
     { key: 'title', label: { en: 'Task', }, kind: 'text' },
     { key: 'assignee', label: { en: 'Assign to', }, kind: 'text' },
     { key: 'department', label: { en: 'Department', }, kind: 'enum', options: ['front_desk', 'housekeeping', 'maintenance', 'general', 'all_staff'] },
-    { key: 'cadence', label: { en: 'Repeat', }, kind: 'enum', options: ['daily', 'weekdays', 'weekly', 'biweekly', 'monthly'] },
+    { key: 'cadence', label: { en: 'Repeat', }, kind: 'enum', options: ['daily', 'weekdays', 'weekly', 'biweekly', 'monthly', 'every_n_days'] },
     { key: 'priority', label: { en: 'Priority', }, kind: 'enum', options: ['normal', 'high', 'urgent'] },
   ],
 };

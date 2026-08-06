@@ -533,6 +533,29 @@ const FEED_CSS = `
 .fx-complab{width:52px;flex:0 0 52px;padding-top:8px;font-family:var(--font-geist-mono),ui-monospace,monospace;
   font-size:9px;letter-spacing:.1em;text-transform:uppercase;color:#A6ABA6;}
 .fx-compopts{display:flex;gap:6px;flex-wrap:wrap;min-width:0;}
+/* The REPEAT line. One line, scrolled sideways, never reflowed: the row is a
+   sentence read left to right, and a cadence list that wraps to three rows
+   turns the composer back into the form it exists instead of. */
+.fx-compopts.fx-compscroll{flex-wrap:nowrap;overflow-x:auto;overflow-y:hidden;
+  scrollbar-width:none;-webkit-overflow-scrolling:touch;padding-bottom:2px;}
+.fx-compopts.fx-compscroll::-webkit-scrollbar{display:none;}
+.fx-compopts.fx-compscroll > *{flex-shrink:0;}
+/* The blank at the end of it: a chip that CONTAINS the number rather than one
+   that opens somewhere to type it. */
+.fx-compevery{display:inline-flex;align-items:center;gap:5px;height:30px;padding:0 11px;border-radius:9px;
+  border:1px dashed rgba(31,35,28,.22);background:#fff;color:#5C625C;font-size:12.5px;white-space:nowrap;}
+.fx-compevery.fx-sel{border-style:solid;border-color:#3E5C48;background:#3E5C48;color:#fff;font-weight:600;}
+.fx-compnum{width:2.6em;min-width:0;border:none;background:transparent;padding:0;text-align:center;
+  font-family:var(--font-geist-mono),ui-monospace,monospace;font-size:12.5px;color:inherit;
+  border-bottom:1px solid currentColor;}
+.fx-compnum:focus{outline:none;}
+.fx-compnum::placeholder{color:currentColor;opacity:.55;}
+.fx-compevery.fx-sel .fx-compnum{font-weight:600;}
+/* The "Other" chip. A pointer at the sentence, so it never wears fx-sel. */
+.fx-compb.fx-compother{border-style:dashed;color:#8A9187;}
+.fx-compb.fx-compother:hover:not(:disabled){color:#5C625C;}
+/* A quiet line under a row of buttons, in the buttons' own column. */
+.fx-comphint{font-size:11.5px;color:#8A9187;line-height:1.5;min-width:0;padding-top:2px;}
 .fx-compb{display:inline-flex;align-items:center;gap:6px;height:30px;padding:0 12px;border-radius:9px;
   border:1px solid rgba(31,35,28,.12);background:#fff;color:#5C625C;font-size:12.5px;font-family:inherit;
   cursor:pointer;white-space:nowrap;transition:background .16s ease,border-color .16s ease;}
@@ -707,11 +730,20 @@ button.fx-bchip:focus-visible{outline:2px solid #9EB7A6;outline-offset:2px;}
 .fx-sw:disabled{opacity:.55;cursor:default;}
 .fx-sw:focus-visible{outline:2px solid #3E5C48;outline-offset:2px;}
 
-/* ── The month overlay ── */
-.fx-monthpop{position:absolute;right:0;top:calc(100% + 10px);z-index:35;width:388px;background:#fff;
-  border:1px solid rgba(31,35,28,.1);border-radius:18px;padding:16px 18px 14px;
-  box-shadow:0 30px 60px -30px rgba(31,42,32,.55);animation:fx-fade .16s ease;}
+/* ── The month overlay ──
+   It used to be a 388px popover hanging off the Month button, which is a
+   thumbnail of a calendar rather than one anybody can pick a range on, and
+   "Add event" closed it outright. It is now a proper card over the page, wide
+   enough to hold the month AND the panel that puts something in it. */
+.fx-monthover{position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);z-index:61;
+  width:min(1020px,calc(100vw - 40px));max-height:min(860px,calc(100vh - 56px));background:#fff;
+  display:flex;flex-direction:column;border:1px solid rgba(31,35,28,.1);border-radius:18px;overflow:hidden;
+  box-shadow:0 30px 60px -30px rgba(31,42,32,.55);animation:fx-riseover .18s ease;}
+.fx-monthbody{flex:1;overflow-y:auto;-webkit-overflow-scrolling:touch;padding:18px 22px 24px;}
 .fx-headr{position:relative;}
+/* The count beside "Show more". Mono, so it reads as a tally and not a word. */
+.fx-morec{font-family:var(--font-geist-mono),ui-monospace,monospace;font-size:10px;color:#A6ABA6;
+  font-weight:400;}
 
 /* ── The log book popup ──
    Header and footer only; the pane inside brings its own. Type roles follow
@@ -764,7 +796,6 @@ button.fx-bchip:focus-visible{outline:2px solid #9EB7A6;outline-offset:2px;}
   .fx-week{overflow-x:auto;scrollbar-width:none;padding-bottom:2px;}
   .fx-week::-webkit-scrollbar{display:none;}
   .fx-wd{width:56px;flex-shrink:0;}
-  .fx-monthpop{right:auto;left:0;width:min(360px,calc(100vw - 32px));}
   .fx-row{flex-wrap:wrap;}
   .fx-compline{flex-wrap:wrap;}
   .fx-rowa,.fx-compw{margin-left:0;}
@@ -774,7 +805,7 @@ button.fx-bchip:focus-visible{outline:2px solid #9EB7A6;outline-offset:2px;}
 
 @media (prefers-reduced-motion: reduce){
   .fx-scan,.fx-suggi{animation:none;}
-  .fx-scrim,.fx-drawer,.fx-monthpop{animation:none;}
+  .fx-scrim,.fx-drawer,.fx-monthover{animation:none;}
   .fx-row,.fx-ink-card,.fx-knows,.fx-wd{transition:none;}
   .fx-row:hover,.fx-ink-card:hover,.fx-knows:hover,.fx-wd:hover{transform:none;}
   /* The level meter freezes at rest rather than stopping mid-bounce, and

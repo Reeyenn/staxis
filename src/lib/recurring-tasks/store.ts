@@ -22,9 +22,21 @@ import {
 } from '@/lib/worklist/assignable';
 
 export const RECURRING_DEPARTMENTS = ['front_desk', 'housekeeping', 'maintenance', 'general', 'all_staff'] as const;
-export const RECURRING_CADENCES = ['daily', 'weekdays', 'weekly', 'biweekly', 'monthly'] as const;
+/**
+ * Every gap a template may repeat on.
+ *
+ * `every_n_days` (0455) is the only open-ended one: it carries `intervalDays`
+ * and an anchor, and covers every gap a hotel actually names ("every 3 days",
+ * "every 10 days", "every 90 days") without a cadence per number. The other
+ * five are fixed shapes and are unchanged.
+ */
+export const RECURRING_CADENCES = ['daily', 'weekdays', 'weekly', 'biweekly', 'monthly', 'every_n_days'] as const;
 export type RecurringCadence = (typeof RECURRING_CADENCES)[number];
 export type RecurringPriority = 'normal' | 'high' | 'urgent';
+
+/** The narrowest and widest gap `every_n_days` may name. Mirrors parse-todo. */
+export const MIN_INTERVAL_DAYS = 2;
+export const MAX_INTERVAL_DAYS = 365;
 
 export interface CreateTemplateInput {
   propertyId: string;
@@ -39,11 +51,14 @@ export interface CreateTemplateInput {
   /** 1..28. Required for 'monthly', ignored otherwise. */
   dayOfMonth?: number | null;
   /**
-   * A property-local YYYY-MM-DD inside an ON week. Required for 'biweekly';
-   * defaults to the day the template was created, which is what "every other
-   * Tuesday starting this week" means to the person who typed it.
+   * A property-local YYYY-MM-DD inside an ON week. Required for 'biweekly' and
+   * for 'every_n_days'; defaults to the day the template was created, which is
+   * what "every other Tuesday starting this week" means to the person who typed
+   * it, and what "every 3 days starting today" means too.
    */
   anchorDate?: string | null;
+  /** 2..365. Required for 'every_n_days', ignored otherwise. */
+  intervalDays?: number | null;
   /**
    * Optional "HH:MM" copied onto every instance this template spawns.
    *
@@ -66,6 +81,7 @@ export interface TemplateRow {
   weekday: number | null;
   dayOfMonth: number | null;
   anchorDate: string | null;
+  intervalDays: number | null;
   active: boolean;
   lastSpawnedOn: string | null;
   createdAt: string;
@@ -83,6 +99,7 @@ function mapRow(r: Record<string, unknown>): TemplateRow {
     weekday: r.weekday === null || r.weekday === undefined ? null : Number(r.weekday),
     dayOfMonth: r.day_of_month === null || r.day_of_month === undefined ? null : Number(r.day_of_month),
     anchorDate: (r.anchor_date as string | null) ?? null,
+    intervalDays: r.interval_days === null || r.interval_days === undefined ? null : Number(r.interval_days),
     active: (r.active as boolean | null) ?? true,
     lastSpawnedOn: (r.last_spawned_on as string | null) ?? null,
     createdAt: r.created_at as string,
@@ -98,13 +115,19 @@ export interface CadenceParams {
   weekday: number | null;
   dayOfMonth: number | null;
   anchorDate: string | null;
+  intervalDays: number | null;
 }
 
 const YMD_RX = /^\d{4}-\d{2}-\d{2}$/;
 
 export function normalizeCadence(
   cadence: RecurringCadence,
-  input: { weekday?: number | null; dayOfMonth?: number | null; anchorDate?: string | null },
+  input: {
+    weekday?: number | null;
+    dayOfMonth?: number | null;
+    anchorDate?: string | null;
+    intervalDays?: number | null;
+  },
   todayLocal: string,
 ): CadenceParams {
   const weekday = input.weekday ?? null;
@@ -120,15 +143,31 @@ export function normalizeCadence(
       // seven months a year and nothing on screen would explain the silence.
       throw new Error('a monthly recurring to-do needs a day of the month between 1 and 28');
     }
-    return { weekday: null, dayOfMonth: dom, anchorDate: null };
+    return { weekday: null, dayOfMonth: dom, anchorDate: null, intervalDays: null };
   }
   if (cadence === 'biweekly') {
     const anchor = input.anchorDate ?? todayLocal;
     if (!YMD_RX.test(anchor)) throw new Error('a biweekly recurring to-do needs a start date');
-    return { weekday, dayOfMonth: null, anchorDate: anchor };
+    return { weekday, dayOfMonth: null, anchorDate: anchor, intervalDays: null };
   }
-  if (cadence === 'weekly') return { weekday, dayOfMonth: null, anchorDate: null };
-  return { weekday: null, dayOfMonth: null, anchorDate: null };
+  if (cadence === 'every_n_days') {
+    const n = input.intervalDays ?? null;
+    if (n === null || !Number.isInteger(n) || n < MIN_INTERVAL_DAYS || n > MAX_INTERVAL_DAYS) {
+      // 1 is refused rather than accepted, because daily already exists and two
+      // spellings of one cadence is how a screen ends up saying "every 1 days".
+      throw new Error(
+        `a recurring to-do that repeats every so many days needs a number between ${MIN_INTERVAL_DAYS} and ${MAX_INTERVAL_DAYS}`,
+      );
+    }
+    // Counted from a day, exactly like biweekly, and for the same reason: a
+    // gap that is counted rather than anchored drifts the first time the cron
+    // misses a tick, and nothing on screen would ever explain the drift.
+    const anchor = input.anchorDate ?? todayLocal;
+    if (!YMD_RX.test(anchor)) throw new Error('a recurring to-do that repeats every so many days needs a start date');
+    return { weekday: null, dayOfMonth: null, anchorDate: anchor, intervalDays: n };
+  }
+  if (cadence === 'weekly') return { weekday, dayOfMonth: null, anchorDate: null, intervalDays: null };
+  return { weekday: null, dayOfMonth: null, anchorDate: null, intervalDays: null };
 }
 
 /** Create a recurring template. Returns the new row id.
@@ -155,6 +194,7 @@ export async function createTemplate(input: CreateTemplateInput): Promise<{ id: 
       weekday: params.weekday,
       day_of_month: params.dayOfMonth,
       anchor_date: params.anchorDate,
+      interval_days: params.intervalDays,
       due_time: input.dueTime ?? null,
     })
     .select('id')
@@ -246,13 +286,27 @@ function dayNumber(ymd: string): number {
  * week, still on the same fortnight it always had.
  */
 export function isTemplateDueOn(
-  template: Pick<TemplateRow, 'cadence' | 'weekday' | 'dayOfMonth' | 'anchorDate'>,
+  template: Pick<TemplateRow, 'cadence' | 'weekday' | 'dayOfMonth' | 'anchorDate' | 'intervalDays'>,
   local: { date: string; weekday: number },
 ): boolean {
   switch (template.cadence) {
     case 'daily': return true;
     case 'weekdays': return local.weekday >= 1 && local.weekday <= 5; // Mon–Fri
     case 'weekly': return template.weekday === local.weekday;
+    // Anchored, not counted, for exactly the reason biweekly is: a gap kept as
+    // "days since the last spawn" walks forward every time the cron misses a
+    // tick, and "every 3 days" quietly becomes every 4. Measured from the start
+    // date, a missed day is one missed instance and the rhythm is unchanged.
+    case 'every_n_days': {
+      const n = template.intervalDays;
+      if (n === null || !Number.isInteger(n) || n < 2) return false;
+      if (!template.anchorDate) return false;
+      const days = dayNumber(local.date) - dayNumber(template.anchorDate);
+      // Nothing before the start day. A template created on the 10th does not
+      // retroactively claim the 7th.
+      if (days < 0) return false;
+      return days % n === 0;
+    }
     case 'biweekly': {
       if (template.weekday !== local.weekday) return false;
       if (!template.anchorDate) return false;
@@ -285,7 +339,7 @@ export async function spawnDueRecurringTodos(now: Date = new Date()): Promise<Sp
   // scale today (one property); a join keeps it a single round trip.
   const { data, error } = await supabaseAdmin
     .from('recurring_task_templates')
-    .select('id, property_id, title, assigned_staff_id, assigned_department, priority, cadence, weekday, day_of_month, anchor_date, active, last_spawned_on, created_at, created_by_staff_id, due_time, properties(timezone)')
+    .select('id, property_id, title, assigned_staff_id, assigned_department, priority, cadence, weekday, day_of_month, anchor_date, interval_days, active, last_spawned_on, created_at, created_by_staff_id, due_time, properties(timezone)')
     .eq('active', true);
   if (error) {
     log.error('[recurring-tasks] spawn query failed', { err: error.message });

@@ -24,6 +24,8 @@ import {
   listActiveTemplates,
   RECURRING_DEPARTMENTS,
   RECURRING_CADENCES,
+  MIN_INTERVAL_DAYS,
+  MAX_INTERVAL_DAYS,
   type RecurringCadence,
   type RecurringPriority,
 } from '@/lib/recurring-tasks/store';
@@ -54,6 +56,7 @@ interface CreateRecurringTodoArgs {
   cadence: string;
   weekday?: string | number;
   dayOfMonth?: number;
+  intervalDays?: number;
   assignee?: string;
   department?: string;
   priority?: string;
@@ -64,16 +67,17 @@ registerTool<CreateRecurringTodoArgs>({
   description:
     'Set up a repeating checklist item — a to-do that comes back on the shared list every time it is due. ' +
     'Use when: the user describes a routine, not a one-off — "every morning check the pool chemicals", "every Monday deep-clean the lobby", "cada día revisar el desayuno". A single task is create_todo; a message at one future time is create_reminder. ' +
-    'Args: title — what the task says, capped at 200 characters. cadence — "daily", "weekdays" (Mon–Fri), "weekly", "biweekly" (every other week) or "monthly". weekday — required for weekly and biweekly; a day name like "Monday" or 0–6 with 0 = Sunday. dayOfMonth — required for monthly; 1 to 28. assignee — optional person by name. department — optional. priority — normal (default), high or urgent. ' +
+    'Args: title — what the task says, capped at 200 characters. cadence — "daily", "weekdays" (Mon–Fri), "weekly", "biweekly" (every other week), "monthly", or "every_n_days" for a gap of so many days. weekday — required for weekly and biweekly; a day name like "Monday" or 0–6 with 0 = Sunday. dayOfMonth — required for monthly; 1 to 28. intervalDays — required for every_n_days; 2 to 365. assignee — optional person by name. department — optional. priority — normal (default), high or urgent. ' +
     'Returns: the template id, its title, cadence and target. A proposal until the manager approves the card. ' +
     'Refuses: an empty title, a cadence it does not recognise, a weekly item with no weekday, and an assignee matching several people. Two things to be straight about: this creates the RULE, not today\'s task — nothing appears until the next time it is due — and it notifies nobody when it spawns. Stopping it later needs stop_recurring_todo; to-dos already spawned stay on the list.',
   inputSchema: {
     type: 'object',
     properties: {
       title: { type: 'string', description: 'What the recurring task says. Max 200 chars.' },
-      cadence: { type: 'string', enum: [...RECURRING_CADENCES], description: 'daily, weekdays (Mon–Fri), weekly, biweekly (every other week), or monthly.' },
+      cadence: { type: 'string', enum: [...RECURRING_CADENCES], description: 'daily, weekdays (Mon–Fri), weekly, biweekly (every other week), monthly, or every_n_days.' },
       weekday: { type: 'string', description: 'For weekly and biweekly cadence — the day, e.g. "Monday" or 0–6 (0=Sunday).' },
       dayOfMonth: { type: 'number', description: 'For monthly cadence — which day of the month, 1 to 28.' },
+      intervalDays: { type: 'number', description: 'For every_n_days cadence — how many days apart, 2 to 365.' },
       assignee: { type: 'string', description: 'Optional staff member to assign it to, by name.' },
       department: { type: 'string', enum: [...RECURRING_DEPARTMENTS], description: 'Optional department to assign it to.' },
       priority: { type: 'string', enum: [...PRIORITIES], description: 'Optional priority. Defaults to normal.' },
@@ -83,12 +87,12 @@ registerTool<CreateRecurringTodoArgs>({
   allowedRoles: ['admin', 'owner', 'general_manager'],
   mutates: true,
   approval: 'card',
-  handler: async ({ title, cadence, weekday, dayOfMonth, assignee, department, priority }, ctx: ToolHandlerContext): Promise<ToolResult> => {
+  handler: async ({ title, cadence, weekday, dayOfMonth, intervalDays, assignee, department, priority }, ctx: ToolHandlerContext): Promise<ToolResult> => {
     const cleanTitle = String(title ?? '').trim().slice(0, 200);
     if (!cleanTitle) return { ok: false, error: 'Give the recurring to-do a short title.' };
 
     const cad = (RECURRING_CADENCES as readonly string[]).includes(cadence) ? (cadence as RecurringCadence) : null;
-    if (!cad) return { ok: false, error: 'Say how often it repeats: daily, weekdays, weekly, biweekly, or monthly.' };
+    if (!cad) return { ok: false, error: 'Say how often it repeats: daily, weekdays, weekly, biweekly, monthly, or every so many days.' };
 
     let wd: number | null = null;
     if (cad === 'weekly' || cad === 'biweekly') {
@@ -100,6 +104,16 @@ registerTool<CreateRecurringTodoArgs>({
       dom = Number.isInteger(dayOfMonth) ? Number(dayOfMonth) : NaN;
       if (!Number.isInteger(dom) || dom! < 1 || dom! > 28) {
         return { ok: false, error: 'For a monthly to-do, tell me which day of the month, 1 to 28.' };
+      }
+    }
+    let gap: number | null = null;
+    if (cad === 'every_n_days') {
+      gap = Number.isInteger(intervalDays) ? Number(intervalDays) : NaN;
+      if (!Number.isInteger(gap) || gap! < MIN_INTERVAL_DAYS || gap! > MAX_INTERVAL_DAYS) {
+        return {
+          ok: false,
+          error: `For a to-do that repeats every so many days, tell me how many, ${MIN_INTERVAL_DAYS} to ${MAX_INTERVAL_DAYS}.`,
+        };
       }
     }
 
@@ -129,7 +143,7 @@ registerTool<CreateRecurringTodoArgs>({
     }
 
     if (ctx.dryRun) {
-      return { ok: true, data: { dryRun: true, title: cleanTitle, cadence: cad, weekday: wd, dayOfMonth: dom, assignee: assignedName, department: dept, priority: prio } };
+      return { ok: true, data: { dryRun: true, title: cleanTitle, cadence: cad, weekday: wd, dayOfMonth: dom, intervalDays: gap, assignee: assignedName, department: dept, priority: prio } };
     }
 
     try {
@@ -143,6 +157,7 @@ registerTool<CreateRecurringTodoArgs>({
         cadence: cad,
         weekday: wd,
         dayOfMonth: dom,
+        intervalDays: gap,
       });
       return {
         ok: true,
@@ -152,6 +167,7 @@ registerTool<CreateRecurringTodoArgs>({
           cadence: cad,
           weekday: wd,
           dayOfMonth: dom,
+          intervalDays: gap,
           weekdayName: wd !== null ? WEEKDAY_NAMES[wd] : null,
           assignee: assignedName,
           department: dept,

@@ -70,6 +70,7 @@ interface Db {
 }
 
 let db: Db;
+let rpcCalls: Array<{ fn: string; args: Record<string, unknown> }>;
 
 type FromFn = typeof supabaseAdmin.from;
 type RpcFn = typeof supabaseAdmin.rpc;
@@ -100,6 +101,13 @@ function installDouble(): void {
       limit: () => api,
       maybeSingle: async () => ({ data: run()[0] ?? null, error: null }),
       insert: (row: Record<string, unknown>) => {
+        if (table === 'account_property_staff_links') {
+          const denied = {
+            data: null,
+            error: { code: '42501', message: 'permission denied for table account_property_staff_links' },
+          };
+          return { select: () => ({ maybeSingle: async () => denied }) };
+        }
         const exists = source().some((existing) => existing.id === row.id);
         const written = exists ? null : row;
         if (written && table === 'staff') {
@@ -114,15 +122,22 @@ function installDouble(): void {
           }),
         };
       },
-      upsert: async (row: Record<string, unknown>) => {
-        const next = row as unknown as LinkRow;
-        const index = db.links.findIndex((link) => (
-          link.account_id === next.account_id && link.property_id === next.property_id
-        ));
-        if (index >= 0) db.links[index] = { ...db.links[index], ...next };
-        else db.links.push(next);
-        return { data: null, error: null };
-      },
+      // Production reality since the Stage C lockdown: the service role holds
+      // SELECT and nothing else on account_property_staff_links. A direct link
+      // write is exactly the bug this file guards, so the double answers the
+      // way Postgres does rather than quietly succeeding.
+      upsert: async () => ({
+        data: null,
+        error: table === 'account_property_staff_links'
+          ? { code: '42501', message: 'permission denied for table account_property_staff_links' }
+          : null,
+      }),
+      update: async () => ({
+        data: null,
+        error: table === 'account_property_staff_links'
+          ? { code: '42501', message: 'permission denied for table account_property_staff_links' }
+          : null,
+      }),
       then: (
         resolve: (value: { data: unknown; error: null }) => unknown,
         reject?: (reason: unknown) => unknown,
@@ -132,20 +147,67 @@ function installDouble(): void {
   };
 
   supabaseAdmin.rpc = (async (fn: string, args: Record<string, unknown>) => {
-    if (fn !== 'staxis_archive_staff_member') {
-      throw new Error(`unexpected rpc ${fn}`);
+    rpcCalls.push({ fn, args });
+    if (fn === 'staxis_archive_staff_member') {
+      const propertyId = args.p_property_id as string;
+      const staffId = args.p_staff_id as string;
+      const row = db.staff.find(
+        (staff) => staff.id === staffId && staff.property_id === propertyId,
+      );
+      if (!row) return { data: { ok: false, reason: 'not_found' }, error: null };
+      row.is_active = false;
+      for (const link of db.links) {
+        if (link.property_id === propertyId && link.staff_id === staffId) link.is_active = false;
+      }
+      return { data: { ok: true, alreadyArchived: false }, error: null };
     }
-    const propertyId = args.p_property_id as string;
-    const staffId = args.p_staff_id as string;
-    const row = db.staff.find(
-      (staff) => staff.id === staffId && staff.property_id === propertyId,
-    );
-    if (!row) return { data: { ok: false, reason: 'not_found' }, error: null };
-    row.is_active = false;
-    for (const link of db.links) {
-      if (link.property_id === propertyId && link.staff_id === staffId) link.is_active = false;
+
+    // 0454. The only way the link row is allowed to be written. The refusals
+    // modelled here are the ones the real function returns, so a caller that
+    // stops checking `ok` fails the tests below.
+    if (fn === 'staxis_bridge_manager_roster_link') {
+      const accountId = args.p_account_id as string;
+      const propertyId = args.p_property_id as string;
+      const staffId = args.p_staff_id as string;
+      const source = args.p_source as string;
+      if (source !== 'invitation' && source !== 'system') {
+        return { data: { ok: false, reason: 'invalid' }, error: null };
+      }
+      const staffRow = db.staff.find(
+        (row) => row.id === staffId && row.property_id === propertyId && row.is_active,
+      );
+      if (!staffRow) return { data: { ok: false, reason: 'staff_not_found' }, error: null };
+      if ((staffRow.department ?? 'housekeeping') === 'housekeeping') {
+        return { data: { ok: false, reason: 'department_conflict' }, error: null };
+      }
+      if (db.links.some((link) => (
+        link.staff_id === staffId && link.is_active && link.account_id !== accountId
+      ))) {
+        return { data: { ok: false, reason: 'staff_in_use' }, error: null };
+      }
+      const index = db.links.findIndex((link) => (
+        link.account_id === accountId && link.property_id === propertyId
+      ));
+      const now = new Date().toISOString();
+      const next: LinkRow = {
+        account_id: accountId,
+        property_id: propertyId,
+        staff_id: staffId,
+        is_active: true,
+        source,
+        linked_by_account_id: (args.p_linked_by_account_id as string | null) ?? null,
+        // The real function keeps the first link time and refreshes updated_at.
+        linked_at: index >= 0 ? db.links[index].linked_at ?? now : now,
+        deactivated_at: null,
+        deactivated_by_account_id: null,
+        updated_at: now,
+      };
+      if (index >= 0) db.links[index] = { ...db.links[index], ...next };
+      else db.links.push(next);
+      return { data: { ok: true, status: 'linked', staffId }, error: null };
     }
-    return { data: { ok: true, alreadyArchived: false }, error: null };
+
+    throw new Error(`unexpected rpc ${fn}`);
   }) as unknown as RpcFn;
 }
 
@@ -163,6 +225,7 @@ function staff(overrides: Partial<StaffRow> & { id: string }): StaffRow {
 
 beforeEach(() => {
   db = { staff: [], links: [] };
+  rpcCalls = [];
   installDouble();
 });
 
@@ -408,6 +471,60 @@ describe('ensuring the row', () => {
       deactivated_by_account_id: null,
       updated_at: db.links[0].updated_at,
     } as unknown as LinkRow]);
+  });
+
+  test('the link is written through the guarded operation, not straight into the table', async () => {
+    // The whole bridge worked in tests and half-worked in production: the
+    // roster rows appeared, and every link write came back "permission denied
+    // for table account_property_staff_links" because the service role holds
+    // SELECT only on it. The double above answers that way now, so this test
+    // fails the moment the link goes back to a direct write.
+    const result = await ensureManagerStaffIdentity({
+      accountId: GM_ACCOUNT,
+      propertyId: HOTEL_A,
+      authUserId: GM_USER,
+      displayName: 'Dana Manager',
+      actorAccountId: INVITER,
+      source: 'invitation',
+    });
+
+    const linkCall = rpcCalls.find((call) => call.fn === 'staxis_bridge_manager_roster_link');
+    assert.ok(linkCall, 'the bridge must ask the guarded operation to write the link');
+    assert.deepEqual(linkCall.args, {
+      p_account_id: GM_ACCOUNT,
+      p_property_id: HOTEL_A,
+      p_staff_id: result.staffId,
+      p_source: 'invitation',
+      p_linked_by_account_id: INVITER,
+    });
+    assert.equal(db.links.length, 1);
+    assert.equal(db.links[0].staff_id, result.staffId);
+  });
+
+  test('a refused link is reported, never treated as linked', async () => {
+    // A housekeeping employment record is not a manager identity, and the
+    // guarded operation says so. Best-effort means the person who caused this
+    // is not failed; it never means a refusal is recorded as a link, because
+    // then nothing would go looking for that person again.
+    const deterministic = commsStaffIdentityId(HOTEL_A, GM_ACCOUNT);
+    db.staff.push(staff({ id: deterministic, department: 'housekeeping' }));
+
+    await assert.rejects(
+      ensureManagerStaffIdentity({
+        accountId: GM_ACCOUNT,
+        propertyId: HOTEL_A,
+        authUserId: GM_USER,
+        displayName: 'Dana Manager',
+        actorAccountId: INVITER,
+        source: 'invitation',
+      }),
+      /department_conflict/,
+    );
+    assert.equal(
+      db.links.filter((link) => link.account_id === GM_ACCOUNT).length,
+      0,
+      'no link may be recorded for the manager whose write was refused',
+    );
   });
 
   test('accepting twice does not create a second person', async () => {

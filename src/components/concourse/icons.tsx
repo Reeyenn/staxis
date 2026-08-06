@@ -37,6 +37,10 @@ export const CX_ICON_PATHS: Record<string, string> = {
   repeat: 'M17 2l4 4-4 4M3 11V9a4 4 0 0 1 4-4h14M7 22l-4-4 4-4M21 13v2a4 4 0 0 1-4 4H3',
   arrowUpRight: 'M7 17L17 7M8 7h9v9',
   forward: 'M5 12h14M12 5l7 7-7 7',
+  // Beside the words "Add a document" on the Knows box, and in the chip that
+  // names the attached file. Never on its own: an unlabelled clip is exactly
+  // what this replaced.
+  paperclip: 'm21.44 11.05-9.19 9.19a6 6 0 0 1-8.49-8.49l8.57-8.57A4 4 0 1 1 18 8.84l-8.59 8.57a2 2 0 0 1-2.83-2.83l8.49-8.48',
 };
 
 export function CxIcon({ name, size = 16, strokeWidth = 1.8 }: {

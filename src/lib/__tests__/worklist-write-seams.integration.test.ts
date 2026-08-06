@@ -59,7 +59,7 @@ import {
   isAssignable,
 } from '@/lib/worklist/assignable';
 import { createTask } from '@/lib/comms/core';
-import { createTemplate, spawnDueRecurringTodos } from '@/lib/recurring-tasks/store';
+import { createTemplate, isTemplateDueOn, spawnDueRecurringTodos } from '@/lib/recurring-tasks/store';
 import { dayOf } from '@/components/concourse/list-calendar';
 
 import { applyMigrationsToPglite } from '../../../tests/fixtures/pglite-migrate';
@@ -339,6 +339,91 @@ describe('the write seams refuse what the dropdown never offered', () => {
   test('an unassigned to-do is still perfectly legal', async () => {
     const { id } = await createTask(PID_A1, { title: 'Somebody please order coffee' });
     assert.ok(id);
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// 3b. Every N days, against the real CHECK constraints
+//
+// The shape rules for this cadence live in migration 0455 as much as they do
+// in normalizeCadence, and the database is the half nothing else in the suite
+// exercises: a template with a cadence but no gap in it would spawn nothing,
+// forever, and a gap on a WEEKLY template would be a parameter nothing reads.
+// ═══════════════════════════════════════════════════════════════════════════
+
+describe('a to-do that repeats every so many days', () => {
+  test('is stored with its gap and its start day, and comes back on the gap', async () => {
+    const { id } = await createTemplate({
+      propertyId: PID_A1,
+      createdByStaffId: frontDesk,
+      title: 'Flush the water heater',
+      cadence: 'every_n_days',
+      intervalDays: 3,
+      anchorDate: '2026-08-04',
+    });
+    const row = await one<{
+      cadence: string; interval_days: number | null; anchor_date: string | null;
+      weekday: number | null; day_of_month: number | null;
+    }>(
+      'select cadence, interval_days, anchor_date, weekday, day_of_month from recurring_task_templates where id = $1',
+      [id],
+    );
+    assert.equal(row?.cadence, 'every_n_days');
+    assert.equal(Number(row?.interval_days), 3);
+    assert.ok(row?.anchor_date, 'a counted cadence with no start day drifts on the first missed tick');
+    assert.equal(row?.weekday, null);
+    assert.equal(row?.day_of_month, null);
+
+    // And the spawner agrees with the row: third day yes, second day no.
+    const template = {
+      cadence: 'every_n_days' as const, weekday: null, dayOfMonth: null,
+      anchorDate: '2026-08-04', intervalDays: 3,
+    };
+    assert.equal(isTemplateDueOn(template, { date: '2026-08-07', weekday: 5 }), true);
+    assert.equal(isTemplateDueOn(template, { date: '2026-08-06', weekday: 4 }), false);
+  });
+
+  test('the database refuses the shapes that would spawn nothing', async () => {
+    // Straight to Postgres, bypassing normalizeCadence, because the constraint
+    // is the backstop for every writer that ever skips it.
+    for (const [label, cols, vals] of [
+      ['no gap at all', 'cadence, anchor_date', `'every_n_days', '2026-08-04'`],
+      ['no start day', 'cadence, interval_days', `'every_n_days', 3`],
+      ['a gap of one day', 'cadence, interval_days, anchor_date', `'every_n_days', 1, '2026-08-04'`],
+      ['a gap past a year', 'cadence, interval_days, anchor_date', `'every_n_days', 400, '2026-08-04'`],
+      ['a weekday it cannot use', 'cadence, interval_days, anchor_date, weekday', `'every_n_days', 3, '2026-08-04', 2`],
+      ['a gap on a weekly template', 'cadence, weekday, interval_days', `'weekly', 2, 3`],
+      ['a gap on a daily template', 'cadence, interval_days', `'daily', 3`],
+    ] as const) {
+      await assert.rejects(
+        () => pg.query(
+          `insert into recurring_task_templates (property_id, title, ${cols})
+           values ($1, 'nope', ${vals})`,
+          [PID_A1],
+        ),
+        `the database accepted ${label}`,
+      );
+    }
+  });
+
+  test('the five older cadences still store exactly what they always did', async () => {
+    // 0455 restates the shape CHECK in full, so a mistake in it would break
+    // every cadence at once rather than only the new one.
+    const cases = [
+      { cadence: 'daily' as const },
+      { cadence: 'weekly' as const, weekday: 2 },
+      { cadence: 'biweekly' as const, weekday: 2, anchorDate: '2026-08-04' },
+      { cadence: 'monthly' as const, dayOfMonth: 15 },
+    ];
+    for (const c of cases) {
+      const { id } = await createTemplate({
+        propertyId: PID_A1, createdByStaffId: frontDesk, title: `still works: ${c.cadence}`, ...c,
+      });
+      const row = await one<{ interval_days: number | null }>(
+        'select interval_days from recurring_task_templates where id = $1', [id],
+      );
+      assert.equal(row?.interval_days, null, `${c.cadence} picked up a gap it does not use`);
+    }
   });
 });
 

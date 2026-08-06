@@ -33,13 +33,21 @@ import Module from 'node:module';
 import type React from 'react';
 
 import {
+  ASSIGNED_COPY,
+  assignedMoreLine,
   assignedNote,
   assignedStateLine,
   completionNotice,
   COMPOSER_COPY,
+  COMPOSER_OTHER,
   dueLine,
   emptyListNote,
   enterTakesNote,
+  EVENT_COPY,
+  intervalHint,
+  otherHint,
+  pickedDaysLine,
+  PROMPT_EXAMPLES,
   repeatLabel,
   repeatWord,
   rowFrom,
@@ -51,12 +59,22 @@ import {
   whoWord,
 } from '@/lib/feed/one-list-copy';
 import {
+  isTemplateDueOn,
+  normalizeCadence,
+  RECURRING_CADENCES,
+} from '@/lib/recurring-tasks/store';
+import {
+  MonthOverlay,
   dayOf,
   dayStamp,
   dayTitle,
+  draftRange,
+  draftReady,
+  emptyEventDraft,
   monthCells,
   weekCells,
   weekRangeLabel,
+  type EventDraft,
 } from '@/components/concourse/list-calendar';
 import type { AssignedByMeItem, WorklistItem, WorklistSourceType } from '@/lib/worklist/types';
 import { WORKLIST_SOURCE_TYPES } from '@/lib/worklist/types';
@@ -207,17 +225,97 @@ describe('the composer: type and press Enter', () => {
   });
 
   test('every repeat the chip offers is one the server understands', () => {
+    // 'once' is this file's own word for "no template at all"; everything else
+    // has to be a cadence recurring_task_templates can actually store, or the
+    // chip creates a to-do that never comes back and nothing says why.
+    for (const choice of rows.REPEAT_CHOICES) {
+      if (choice.value === 'once') continue;
+      assert.ok(
+        (RECURRING_CADENCES as readonly string[]).includes(choice.value),
+        `the chip offers "${choice.label}", which the server cannot store`,
+      );
+    }
     assert.deepEqual(
-      rows.REPEAT_CHOICES.map((r) => r.value),
-      ['once', 'daily', 'weekly', 'biweekly', 'monthly'],
+      rows.REPEAT_CHOICES.map((r) => r.label),
+      ['Once', 'Every day', 'Every 3 days', 'Every 4 days', 'Every week', 'Every 2 weeks', 'Every month'],
     );
+  });
+
+  test('an every-N-days chip carries the gap it advertises', () => {
+    for (const choice of rows.REPEAT_CHOICES.filter((c) => c.value === 'every_n_days')) {
+      const payload = rows.composerPayload(
+        {
+          ...rows.composerDefaults('2026-07-30', 4),
+          title: 'Flush the water heater',
+          repeat: 'every_n_days',
+          intervalDays: String(choice.intervalDays),
+        },
+        'me',
+      );
+      assert.equal(payload?.repeat, 'every_n_days');
+      assert.equal(payload?.intervalDays, choice.intervalDays);
+      assert.equal(payload?.dueDate, null, 'a repeating to-do has no single due day');
+      assert.equal(payload?.weekday, undefined);
+      assert.equal(payload?.dayOfMonth, undefined);
+      assert.match(choice.label, new RegExp(`Every ${choice.intervalDays} days`));
+    }
+  });
+
+  test('a typed gap round-trips into a cadence the scheduler actually fires on', () => {
+    const payload = rows.composerPayload(
+      { ...rows.composerDefaults('2026-07-30', 4), title: 'Backwash the sand filter', repeat: 'every_n_days', intervalDays: '5' },
+      'me',
+    );
+    assert.equal(payload?.intervalDays, 5);
+    // The server's own validator accepts it...
+    const params = normalizeCadence('every_n_days', { intervalDays: payload!.intervalDays! }, '2026-07-30');
+    assert.equal(params.intervalDays, 5);
+    assert.equal(params.anchorDate, '2026-07-30');
+    // ...and the spawner then fires on exactly those days.
+    const fires = (iso: string) => isTemplateDueOn(
+      { cadence: 'every_n_days', weekday: null, dayOfMonth: null, anchorDate: params.anchorDate, intervalDays: params.intervalDays },
+      { date: iso, weekday: 0 },
+    );
+    assert.equal(fires('2026-07-30'), true);
+    assert.equal(fires('2026-08-04'), true);
+    assert.equal(fires('2026-08-03'), false);
+  });
+
+  test('a gap the cadence cannot carry falls back to a one-off rather than a dead template', () => {
+    // A template with no believable gap never spawns anything, and the person
+    // who typed it would never learn why. A plain to-do due today is the
+    // smallest honest thing to do with those words instead.
+    for (const typed of ['', '0', '1', '900', 'abc']) {
+      const payload = rows.composerPayload(
+        { ...rows.composerDefaults('2026-07-30', 4), title: 'x', repeat: 'every_n_days', intervalDays: typed },
+        'me',
+      );
+      assert.equal(payload?.repeat, 'once', `"${typed}" produced a repeat with no gap in it`);
+      assert.equal(payload?.intervalDays, undefined);
+      assert.equal(payload?.dueDate, '2026-07-30');
+    }
   });
 
   test('housekeeping is not a role the composer can target', () => {
     // The exclusion is enforced server-side too (listAssignees). Both, because
     // a task nobody can see is worse than a task nobody can create.
     assert.ok(!rows.COMPOSER_ROLES.some((r) => r.value.includes('housekeeping')));
-    assert.match(rows.HOUSEKEEPER_NOTE, /housekeeping board/i);
+  });
+
+  test('"Other" is a pointer at the sentence and can never become an assignee', () => {
+    // The chip exists to say that typing a name works. A to-do actually
+    // ASSIGNED to the word "other" is a to-do nobody has.
+    const payload = rows.composerPayload(
+      { ...rows.composerDefaults('2026-07-30', 4), title: 'x', who: COMPOSER_OTHER },
+      'my-staff-id',
+    );
+    assert.equal(payload?.assignedStaffId, 'my-staff-id', 'it fell back to the person adding it');
+    assert.equal(payload?.assignedDepartment, null);
+    // And it cannot get into `who` through the one door that sets it either.
+    const chosen = rows.withChoice(
+      rows.composerDefaults('2026-07-30', 4), { who: COMPOSER_OTHER }, '2026-07-30', 4,
+    );
+    assert.equal(chosen.who, 'me');
   });
 });
 
@@ -256,18 +354,27 @@ describe('the copy rules', () => {
       }
     }
 
-    for (const repeat of ['once', 'daily', 'weekdays', 'weekly', 'biweekly', 'monthly']) {
+    for (const repeat of ['once', 'daily', 'weekdays', 'weekly', 'biweekly', 'monthly', 'every_n_days']) {
       for (const weekday of [null, 0, 3, 6]) {
         for (const dayOfMonth of [null, 1, 2, 3, 11, 22]) {
-          out.push(repeatLabel(repeat, { weekday, dayOfMonth }));
+          for (const intervalDays of [null, 2, 3, 45, 365]) {
+            out.push(repeatLabel(repeat, { weekday, dayOfMonth, intervalDays }));
+          }
         }
       }
     }
 
     out.push(emptyListNote({ canSeeFindings: true }));
     out.push(emptyListNote({ canSeeFindings: false }));
-    out.push(rows.HOUSEKEEPER_NOTE);
     for (const r of rows.REPEAT_CHOICES) out.push(r.label);
+    out.push(otherHint('Marcus Webb'), otherHint(''), otherHint(null));
+    out.push(intervalHint(2, 365));
+    out.push(...PROMPT_EXAMPLES);
+    out.push(...Object.values(ASSIGNED_COPY));
+    out.push(...Object.values(EVENT_COPY));
+    out.push(assignedMoreLine(9, 3) ?? '', assignedMoreLine(4, 3) ?? '');
+    out.push(pickedDaysLine('2026-08-12', null), pickedDaysLine('2026-08-12', '2026-08-15'),
+      pickedDaysLine(null, null), pickedDaysLine('nonsense', null));
     for (const r of rows.COMPOSER_ROLES) out.push(r.label);
     for (const d of WEEKDAYS) out.push(d);
 
@@ -284,9 +391,13 @@ describe('the copy rules', () => {
       out.push(whenWord(iso, NOW));
       out.push(whenWord(iso, NOW, { repeating: true }));
     }
-    for (const repeat of ['once', 'daily', 'weekdays', 'weekly', 'biweekly', 'monthly']) {
+    for (const repeat of ['once', 'daily', 'weekdays', 'weekly', 'biweekly', 'monthly', 'every_n_days']) {
       for (const weekday of [null, 0, 5]) {
-        for (const dayOfMonth of [null, 3, 11]) out.push(repeatWord(repeat, { weekday, dayOfMonth }));
+        for (const dayOfMonth of [null, 3, 11]) {
+          for (const intervalDays of [null, 3, 90]) {
+            out.push(repeatWord(repeat, { weekday, dayOfMonth, intervalDays }));
+          }
+        }
       }
     }
     const question = whichDayQuestion('Friday', '2026-07-31', 5);
@@ -509,6 +620,132 @@ describe('the assigned-by-me drawer', () => {
   });
 });
 
+/**
+ * Invoke the hook-free components a tree nests, so the walk reaches their rows.
+ *
+ * `findAll` only descends through `props.children`, so a panel that renders
+ * `<AssignedByMeView />` looks empty to it. Every view in list-rows.tsx is
+ * hook-free and fully controlled precisely so it can be called like this.
+ */
+function expand(node: unknown, depth = 6): unknown {
+  if (depth <= 0 || !node || typeof node !== 'object') return node;
+  if (Array.isArray(node)) return node.map((n) => expand(n, depth));
+  const el = node as { type?: unknown; props?: Record<string, unknown> };
+  if (!el.props) return node;
+  if (typeof el.type === 'function') {
+    const drawn = (el.type as (p: unknown) => unknown)(el.props);
+    return expand(drawn, depth - 1);
+  }
+  return { ...el, props: { ...el.props, children: expand(el.props.children, depth - 1) } };
+}
+
+// ── three on the face, the rest behind one button ───────────────────────────
+//
+// The rail panel used to say "nothing has come back since you last looked" over
+// eleven live assignments: true about the last hour, useless about the work.
+// It now carries the three most recent, and everything else is one click away
+// in a popup, newest first.
+
+describe('assigned by me: three, then the door', () => {
+  const many = (n: number) => Array.from({ length: n }, (_, i) =>
+    assigned({ taskId: `t${i}`, title: `Task ${i}` }));
+
+  function panel(entries: readonly AssignedByMeItem[], over: Record<string, unknown> = {}) {
+    let opened = false;
+    const tree = expand(rows.AssignedRailPanel({
+      notices: [], entries, now: NOW, onOpen: () => { opened = true; }, ...over,
+    } as Parameters<typeof rows.AssignedRailPanel>[0]));
+    return { tree, open: () => opened, text: () => textOf(tree).join(' | ') };
+  }
+
+  test('the face shows the three most recent and no more', () => {
+    const face = panel(many(11));
+    const titles = findAll(face.tree, (el) => el.props.className === 'fx-drt')
+      .map((el) => textOf(el.props.children).join(''));
+    assert.deepEqual(titles, ['Task 0', 'Task 1', 'Task 2'],
+      'the panel is not showing the three newest, in the read\'s own order');
+  });
+
+  test('the read\'s order is kept, never re-sorted', () => {
+    // gatherAssignedByMe returns newest first. Two sort orders for one list is
+    // how the panel and the popup drift.
+    const entries = many(5);
+    const face = panel(entries);
+    const first = findAll(face.tree, (el) => el.props.className === 'fx-drt')[0];
+    assert.equal(textOf(first.props.children).join(''), entries[0].title);
+  });
+
+  test('"Show more" appears only when there is more, and says how much', () => {
+    assert.match(panel(many(11)).text(), /Show more/);
+    assert.match(panel(many(11)).text(), /8 more/);
+    assert.match(panel(many(4)).text(), /1 more/);
+    assert.ok(!/Show more/.test(panel(many(3)).text()), 'a door to nothing');
+    assert.ok(!/Show more/.test(panel([]).text()), 'a door to nothing');
+  });
+
+  test('news you can never open is news you carry forever', () => {
+    // Opening the popup is what marks the notices seen. Somebody with two
+    // assignments and one that just came back has nothing over three, so the
+    // door has to be there anyway, under its own name.
+    const view = panel(many(2), { notices: [assigned({ taskId: 'n1', state: 'done' })] });
+    assert.match(view.text(), /See what you assigned/);
+    assert.ok(!/Show more/.test(view.text()), 'it promised more than it has');
+    const door = findAll(view.tree, (el) => el.type === 'button'
+      && textOf(el.props.children).join('').includes('See what you assigned'));
+    assert.equal(door.length, 1);
+    (door[0].props.onClick as () => void)();
+    assert.equal(view.open(), true);
+  });
+
+  test('"Show more" opens the popup rather than growing the panel', () => {
+    const face = panel(many(11));
+    const more = findAll(face.tree, (el) => el.type === 'button'
+      && textOf(el.props.children).join('').includes('Show more'));
+    assert.equal(more.length, 1);
+    (more[0].props.onClick as () => void)();
+    assert.equal(face.open(), true);
+  });
+
+  test('the popup lists EVERYTHING, in the same order', () => {
+    const entries = many(11);
+    const tree = expand(rows.AssignedPopupView({
+      open: true, entries, now: NOW, onClose: () => {},
+    }));
+    const titles = findAll(tree, (el) => el.props.className === 'fx-drt')
+      .map((el) => textOf(el.props.children).join(''));
+    assert.equal(titles.length, 11, 'the popup is truncating the list it exists to show');
+    assert.deepEqual(titles, entries.map((e) => e.title));
+  });
+
+  test('the popup is nothing at all until it is opened', () => {
+    assert.equal(rows.AssignedPopupView({ open: false, entries: many(4), now: NOW, onClose: () => {} }), null);
+  });
+
+  test('a failed read is still never drawn as "nothing outstanding" on the face', () => {
+    assert.match(panel([], { readFailed: true }).text(), /could not read/i);
+  });
+});
+
+// ── the log book switch lives in ONE place now ──────────────────────────────
+
+describe('the log book panel', () => {
+  test('the rail panel has no switch on it', () => {
+    // "Show notes on the timeline" was on the rail AND in the popup: one
+    // preference, two controls, on one screen. The clean view is a glance at
+    // what got written down, not a settings row.
+    const tree = rows.LogbookRailPanel({
+      entries: [{ id: 'l1', title: 'Boiler tripped again', createdAt: '2026-07-30T13:00:00.000Z' } as never],
+      onOpen: () => {},
+    }) as React.ReactElement;
+    assert.equal(findAll(tree, (el) => el.props.role === 'switch').length, 0, 'the switch came back');
+    const text = textOf(tree).join(' | ');
+    assert.ok(!/Show notes on the timeline/.test(text));
+    // ...and it still does the two things it is for.
+    assert.match(text, /Boiler tripped again/);
+    assert.match(text, /Open the log book/);
+  });
+});
+
 // ── the calendar is the same list, with dates ───────────────────────────────
 
 describe('the calendar view', () => {
@@ -540,6 +777,134 @@ describe('the calendar view', () => {
     } as Parameters<typeof monthCells>[3][number]]);
     const covered = cells.filter((c) => c.events.length > 0).map((c) => c.iso);
     assert.deepEqual(covered, ['2026-08-10', '2026-08-11', '2026-08-12']);
+  });
+});
+
+// ── picking days ON the month ───────────────────────────────────────────────
+//
+// The old flow closed the month to open a form with two native date inputs in
+// it, so the one screen showing August disappeared the moment somebody wanted
+// to put something in August. The month is now the date control, and these are
+// the two ways to use it: click a day, or drag across days.
+
+describe('the month overlay: the grid IS the date control', () => {
+  const TODAY = '2026-08-06';
+
+  function overlay(draft: EventDraft | null, over: Record<string, unknown> = {}) {
+    const acts: string[] = [];
+    const tree = expand(MonthOverlay({
+      open: true, year: 2026, monthIndex: 7, todayIso: TODAY, selectedIso: TODAY,
+      items: [], events: [], canManageEvents: true, draft,
+      onClose: () => acts.push('close'),
+      onSelectDay: (iso: string) => acts.push(`anchor:${iso}`),
+      onStepMonth: () => {},
+      onStartAdd: () => acts.push('add'),
+      onCancelAdd: () => acts.push('cancel'),
+      onDraftChange: (next: EventDraft) => acts.push(`draft:${next.title}`),
+      onSaveEvent: () => acts.push('save'),
+      onPickDown: (iso: string) => acts.push(`down:${iso}`),
+      onPickMove: (iso: string) => acts.push(`move:${iso}`),
+      onPickUp: () => acts.push('up'),
+      ...over,
+    } as Parameters<typeof MonthOverlay>[0]));
+    const day = (iso: string) => {
+      const found = findAll(tree, (el) => el.props['data-day'] === iso);
+      assert.equal(found.length, 1, `no square for ${iso}`);
+      return found[0];
+    };
+    return { tree, acts, day, text: () => textOf(tree).join(' | ') };
+  }
+
+  test('it is nothing at all until it is opened', () => {
+    assert.equal(MonthOverlay({ open: false } as Parameters<typeof MonthOverlay>[0]), null);
+  });
+
+  test('browsing: a day re-anchors the page and picks nothing', () => {
+    const view = overlay(null);
+    (view.day('2026-08-12').props.onClick as () => void)();
+    assert.deepEqual(view.acts, ['anchor:2026-08-12']);
+    assert.equal(view.day('2026-08-12').props.onPointerDown, undefined);
+  });
+
+  test('adding: a day picks a date and does NOT navigate the page away', () => {
+    const view = overlay({ title: '', notes: '', start: null, end: null });
+    const square = view.day('2026-08-12');
+    assert.equal(square.props.onClick, undefined, 'a click still re-anchored the timeline while picking');
+    (square.props.onPointerDown as () => void)();
+    (square.props.onPointerUp as () => void)();
+    assert.deepEqual(view.acts, ['down:2026-08-12', 'up']);
+  });
+
+  test('dragging across days reports every square it crosses', () => {
+    const view = overlay({ title: '', notes: '', start: null, end: null });
+    (view.day('2026-08-12').props.onPointerDown as () => void)();
+    (view.day('2026-08-13').props.onPointerEnter as () => void)();
+    (view.day('2026-08-14').props.onPointerEnter as () => void)();
+    (view.day('2026-08-14').props.onPointerUp as () => void)();
+    assert.deepEqual(view.acts, ['down:2026-08-12', 'move:2026-08-13', 'move:2026-08-14', 'up']);
+  });
+
+  test('the days picked are drawn on the grid, ends solid and the middle washed', () => {
+    const view = overlay({ title: 'Brand audit', notes: '', start: '2026-08-12', end: '2026-08-15' });
+    assert.match(String(view.day('2026-08-12').props.className), /sc-edge/);
+    assert.match(String(view.day('2026-08-15').props.className), /sc-edge/);
+    assert.match(String(view.day('2026-08-13').props.className), /sc-inrange/);
+    assert.ok(!/sc-inrange|sc-edge/.test(String(view.day('2026-08-17').props.className)));
+  });
+
+  test('a range dragged BACKWARDS is still the same range', () => {
+    const view = overlay({ title: 'x', notes: '', start: '2026-08-15', end: '2026-08-12' });
+    assert.match(String(view.day('2026-08-13').props.className), /sc-inrange/);
+    assert.deepEqual(draftRange({ title: 'x', notes: '', start: '2026-08-15', end: '2026-08-12' }),
+      { eventDate: '2026-08-12', endDate: '2026-08-15' });
+  });
+
+  test('the panel reads the days back live, and says so before anything is picked', () => {
+    assert.match(overlay({ title: '', notes: '', start: null, end: null }).text(), /Pick a day on the month/);
+    assert.match(overlay({ title: '', notes: '', start: '2026-08-12', end: null }).text(), /August 12/);
+    const range = overlay({ title: '', notes: '', start: '2026-08-12', end: '2026-08-15' }).text();
+    assert.match(range, /August 12 to August 15/);
+  });
+
+  test('the drag hint is shown while picking, and not while browsing', () => {
+    assert.match(overlay({ title: '', notes: '', start: null, end: null }).text(), /drag across days/i);
+    assert.ok(!/drag across days/i.test(overlay(null).text()));
+  });
+
+  test('the month stays on screen while the panel is open', () => {
+    const view = overlay({ title: 'Brand audit', notes: '', start: '2026-08-12', end: null });
+    assert.equal(findAll(view.tree, (el) => el.props['data-testid'] === 'staxis-calendar').length, 1);
+    assert.equal(findAll(view.tree, (el) => el.props['data-testid'] === 'event-panel').length, 1);
+  });
+
+  test('Save is refused until it says what it is AND when it is', () => {
+    const saveOf = (draft: EventDraft) => {
+      const found = findAll(overlay(draft).tree, (el) => el.type === 'button'
+        && textOf(el.props.children).join('').trim() === 'Save');
+      assert.equal(found.length, 1);
+      return found[0];
+    };
+    assert.equal(saveOf({ title: '', notes: '', start: '2026-08-12', end: null }).props.disabled, true);
+    assert.equal(saveOf({ title: 'Brand audit', notes: '', start: null, end: null }).props.disabled, true);
+    assert.equal(saveOf({ title: '   ', notes: '', start: '2026-08-12', end: null }).props.disabled, true);
+    assert.equal(saveOf({ title: 'Brand audit', notes: '', start: '2026-08-12', end: null }).props.disabled, false);
+  });
+
+  test('a single day sends no end date, so nothing invents a range', () => {
+    assert.deepEqual(draftRange({ title: 'x', notes: '', start: '2026-08-12', end: '2026-08-12' }),
+      { eventDate: '2026-08-12', endDate: null });
+    assert.deepEqual(draftRange({ title: 'x', notes: '', start: '2026-08-12', end: null }),
+      { eventDate: '2026-08-12', endDate: null });
+    assert.equal(draftRange(emptyEventDraft()), null);
+    assert.equal(draftReady(emptyEventDraft()), false);
+  });
+
+  test('"Add event" is offered while browsing and gone once the panel is open', () => {
+    const has = (view: ReturnType<typeof overlay>) => findAll(view.tree, (el) => el.type === 'button'
+      && textOf(el.props.children).join('').trim() === 'Add event').length;
+    assert.equal(has(overlay(null)), 1);
+    assert.equal(has(overlay({ title: '', notes: '', start: null, end: null })), 0);
+    assert.equal(has(overlay(null, { canManageEvents: false })), 0, 'a reader who cannot add was offered it');
   });
 });
 

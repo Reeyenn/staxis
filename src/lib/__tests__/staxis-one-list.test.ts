@@ -283,16 +283,19 @@ describe('same page, sized to the person', () => {
 describe('recurring: drive the scheduler over real days', () => {
   /** Which of these local days a template spawns on. */
   function daysItFires(
-    template: Parameters<typeof isTemplateDueOn>[0],
+    template: Partial<Parameters<typeof isTemplateDueOn>[0]> & { cadence: Parameters<typeof isTemplateDueOn>[0]['cadence'] },
     from: string,
     count: number,
   ): string[] {
+    const full = {
+      weekday: null, dayOfMonth: null, anchorDate: null, intervalDays: null, ...template,
+    } as Parameters<typeof isTemplateDueOn>[0];
     const out: string[] = [];
     const start = new Date(`${from}T12:00:00.000Z`);
     for (let i = 0; i < count; i++) {
       const d = new Date(start.getTime() + i * 86_400_000);
       const iso = d.toISOString().slice(0, 10);
-      if (isTemplateDueOn(template, { date: iso, weekday: d.getUTCDay() })) out.push(iso);
+      if (isTemplateDueOn(full, { date: iso, weekday: d.getUTCDay() })) out.push(iso);
     }
     return out;
   }
@@ -359,13 +362,93 @@ describe('recurring: drive the scheduler over real days', () => {
     assert.throws(() => normalizeCadence('biweekly', {}, '2026-08-01'), /weekday/);
     assert.deepEqual(
       normalizeCadence('biweekly', { weekday: 2 }, '2026-08-04'),
-      { weekday: 2, dayOfMonth: null, anchorDate: '2026-08-04' },
+      { weekday: 2, dayOfMonth: null, anchorDate: '2026-08-04', intervalDays: null },
     );
   });
 
   test('daily and weekdays carry no parameters, so the shape CHECK cannot reject them', () => {
     assert.deepEqual(normalizeCadence('daily', { weekday: 3, dayOfMonth: 9 }, '2026-08-01'),
-      { weekday: null, dayOfMonth: null, anchorDate: null });
+      { weekday: null, dayOfMonth: null, anchorDate: null, intervalDays: null });
+  });
+
+  // ── every N days ──────────────────────────────────────────────────────────
+  // The open-ended cadence. Anchored, not counted, which is the whole of what
+  // can go wrong with it: a gap kept as "days since the last spawn" drifts one
+  // day forward every time the cron misses a tick.
+
+  test('every 3 days comes back every third day from the day it started', () => {
+    const fired = daysItFires(
+      { cadence: 'every_n_days', intervalDays: 3, anchorDate: '2026-08-04' },
+      '2026-08-01',
+      14,
+    );
+    assert.deepEqual(fired, ['2026-08-04', '2026-08-07', '2026-08-10', '2026-08-13']);
+  });
+
+  test('it claims nothing before the day it started', () => {
+    const fired = daysItFires(
+      { cadence: 'every_n_days', intervalDays: 5, anchorDate: '2026-08-10' },
+      '2026-08-01',
+      12,
+    );
+    assert.deepEqual(fired, ['2026-08-10']);
+  });
+
+  test('a missed run does not shift the rhythm', () => {
+    // The cron is down on the 7th. The 10th is still an ON day, because the
+    // gap is measured from the anchor and not from the last spawn.
+    const fired = daysItFires(
+      { cadence: 'every_n_days', intervalDays: 3, anchorDate: '2026-08-04' },
+      '2026-08-08',
+      9,
+    );
+    assert.equal(fired[0], '2026-08-10', 'the rhythm walked forward after a missed day');
+  });
+
+  test('a gap of 90 days is a real cadence and fires four times a year', () => {
+    const fired = daysItFires(
+      { cadence: 'every_n_days', intervalDays: 90, anchorDate: '2026-01-01' },
+      '2026-01-01',
+      366,
+    );
+    assert.deepEqual(fired, ['2026-01-01', '2026-04-01', '2026-06-30', '2026-09-28', '2026-12-27']);
+  });
+
+  test('a template with no gap in it spawns nothing rather than spawning daily', () => {
+    // The database forbids this shape, but a row that got past it must not
+    // manufacture a fresh to-do every single day for the rest of time.
+    for (const broken of [
+      { cadence: 'every_n_days' as const, intervalDays: null, anchorDate: '2026-08-04' },
+      { cadence: 'every_n_days' as const, intervalDays: 3, anchorDate: null },
+      { cadence: 'every_n_days' as const, intervalDays: 1, anchorDate: '2026-08-04' },
+      { cadence: 'every_n_days' as const, intervalDays: 0, anchorDate: '2026-08-04' },
+    ]) {
+      assert.deepEqual(daysItFires(broken, '2026-08-01', 30), []);
+    }
+  });
+
+  test('the gap has to be a number the cadence can carry', () => {
+    for (const bad of [undefined, null, 0, 1, 366, 2.5, -3]) {
+      assert.throws(
+        () => normalizeCadence('every_n_days', { intervalDays: bad as number }, '2026-08-01'),
+        /between 2 and 365/,
+        `${String(bad)} was accepted as a gap`,
+      );
+    }
+    assert.deepEqual(
+      normalizeCadence('every_n_days', { intervalDays: 3 }, '2026-08-04'),
+      { weekday: null, dayOfMonth: null, anchorDate: '2026-08-04', intervalDays: 3 },
+    );
+    // It starts today unless somebody said otherwise, exactly like biweekly.
+    assert.deepEqual(
+      normalizeCadence('every_n_days', { intervalDays: 7, anchorDate: '2026-09-01' }, '2026-08-04').anchorDate,
+      '2026-09-01',
+    );
+    // And it never carries a weekday or a day of the month, which the shape
+    // CHECK on the table would reject outright.
+    const params = normalizeCadence('every_n_days', { intervalDays: 4, weekday: 3, dayOfMonth: 9 }, '2026-08-01');
+    assert.equal(params.weekday, null);
+    assert.equal(params.dayOfMonth, null);
   });
 });
 
