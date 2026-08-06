@@ -100,6 +100,11 @@ const SUMMARIES: Record<string, SummaryBuilder> = {
     if (l === 'es') return `Registrar una queja${room ? ` de la habitación ${room}` : ''}: ${quoted(a.description)}`;
     return `Log a guest complaint${room ? ` for room ${room}` : ''}: ${quoted(a.description)}`;
   },
+  create_work_order: (a, l) => {
+    const room = str(a.roomNumber);
+    if (l === 'es') return `Abrir una orden de trabajo${room ? ` para la habitación ${room}` : ''}: ${quoted(a.description)}`;
+    return `Open a work order${room ? ` for room ${room}` : ''}: ${quoted(a.description)}`;
+  },
   send_message: (a, l) =>
     l === 'es'
       ? `Enviar a ${str(a.recipient)} este mensaje: ${quoted(a.message)}`

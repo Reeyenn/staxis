@@ -126,6 +126,9 @@ registerTool<{ query: string }>({
     required: ['query'],
   },
   allowedRoles: KNOWLEDGE_ROLES,
+  // Also offered in a staff thread: this is the tool the old private @Staxis
+  // catalog reached the same core with, under its own duplicate description.
+  surfaces: ['chat', 'messages'],
   mutates: false,
   handler: async ({ query }, ctx): Promise<ToolResult> => {
     try {
@@ -178,6 +181,9 @@ registerTool<{ sourceType: 'document' | 'article'; sourceId: string; offset?: nu
     required: ['sourceType', 'sourceId'],
   },
   allowedRoles: KNOWLEDGE_ROLES,
+  // Also offered in a staff thread: this is the tool the old private @Staxis
+  // catalog reached the same core with, under its own duplicate description.
+  surfaces: ['chat', 'messages'],
   mutates: false,
   handler: async ({ sourceType, sourceId, offset }, ctx): Promise<ToolResult> => {
     if (sourceType !== 'document' && sourceType !== 'article') {

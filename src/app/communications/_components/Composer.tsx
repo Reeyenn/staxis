@@ -11,7 +11,7 @@ import {
   Send, Mic, Square, Image as ImageIcon, X, Loader2, Wrench, AlertCircle, ShieldCheck,
   Building2, Paperclip, Bold, Italic, Strikethrough, AtSign, ClipboardList,
 } from 'lucide-react';
-import { apiPost, uploadToSignedUrl } from '@/lib/comms/client';
+import { apiPost, resolveAgentAction, uploadToSignedUrl } from '@/lib/comms/client';
 import { T, SANS, deptColorDark, tint, Tip, paneIcon, popNode } from './comms-ui';
 import type { MessagePaneProps } from './MessagePane';
 import { reportCompanionFlow } from '@/components/companion/companion-events';
@@ -36,6 +36,11 @@ export function Composer({ pid, me, conversation: c, L, onReloadThread, onReload
   const [recording, setRecording] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
   const [actionOffer, setActionOffer] = React.useState<null | { kind: 'work_order' | 'complaint'; description: string; roomNumber: string | null; severity: string | null }>(null);
+  // What @Staxis PROPOSED in this thread and is waiting on a yes for. Staxis
+  // never writes on its own: a work order or a complaint it suggests is held
+  // until the person who asked approves it here.
+  const [staxisCards, setStaxisCards] = React.useState<{ pendingActionId: string; summary: string }[]>([]);
+  const [staxisOutcome, setStaxisOutcome] = React.useState<string | null>(null);
   const [orgNotice, setOrgNotice] = React.useState<null | { postedCount: number; propertyCount: number; failedCount: number }>(null);
   const recorderRef = React.useRef<MediaRecorder | null>(null);
   const chunksRef = React.useRef<Blob[]>([]);
@@ -103,8 +108,14 @@ export function Composer({ pid, me, conversation: c, L, onReloadThread, onReload
         if (!sent.ok) { setError('Message could not be sent. Please try again.'); return; }
         if (/@staxis/i.test(body)) {
           const q = body.replace(/@staxis/ig, '').trim() || body;
-          const assistant = await apiPost('/api/comms/assistant', { pid, conversationId: c.id, question: q });
+          const assistant = await apiPost<{ pendingActions?: { pendingActionId: string; summary: string }[] }>(
+            '/api/comms/assistant', { pid, conversationId: c.id, question: q },
+          );
           if (!assistant.ok) setError('Your message was sent, but Staxis could not answer right now.');
+          // Anything it wants to CHANGE comes back as a proposal, never as a
+          // done deal. Show it, and let this person decide.
+          setStaxisCards(assistant.data?.pendingActions ?? []);
+          setStaxisOutcome(null);
         } else {
           const det = await apiPost<{ action: { kind: string; description: string | null; roomNumber: string | null; severity: string | null } }>('/api/comms/detect-action', { pid, text: body });
           const a = det.data?.action;
@@ -125,6 +136,17 @@ export function Composer({ pid, me, conversation: c, L, onReloadThread, onReload
       const r = await apiPost('/api/comms/action', { pid, conversationId: c.id, kind: actionOffer.kind, description: actionOffer.description, roomNumber: actionOffer.roomNumber, severity: actionOffer.severity });
       if (!r.ok) { setError('Could not create the action. Please try again.'); return; }
       setActionOffer(null); await onReloadThread();
+    } finally { setBusy(false); }
+  };
+
+  const decideStaxisCard = async (pendingActionId: string, decision: 'approve' | 'deny') => {
+    setBusy(true); setError(null);
+    try {
+      const outcome = await resolveAgentAction(pid, pendingActionId, decision, me.lang);
+      setStaxisCards((cards) => cards.filter((card) => card.pendingActionId !== pendingActionId));
+      if (outcome.error) { setError(outcome.error); return; }
+      setStaxisOutcome(outcome.summary || (outcome.denied ? 'Left alone.' : 'Done.'));
+      await onReloadThread();
     } finally { setBusy(false); }
   };
 
@@ -179,6 +201,21 @@ export function Composer({ pid, me, conversation: c, L, onReloadThread, onReload
           <span style={{ flex: 1 }}>{actionOffer.kind === 'work_order' ? 'Looks like a maintenance issue.' : 'Looks like a guest complaint.'}</span>
           <button onClick={doAction} disabled={busy} style={{ background: T.terracotta, color: '#fff', border: 'none', borderRadius: 8, padding: '6px 10px', fontSize: 12.5, fontWeight: 600, fontFamily: SANS, cursor: 'pointer' }}>{actionOffer.kind === 'work_order' ? 'Create work order' : 'Log complaint'}</button>
           <button onClick={() => setActionOffer(null)} style={paneIcon}><X size={14} /></button>
+        </div>
+      )}
+      {staxisCards.map((card) => (
+        <div key={card.pendingActionId} style={{ margin: '0 0 8px', padding: 12, background: T.forestTint, borderRadius: 10, display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', fontSize: 13, fontFamily: SANS }}>
+          <ClipboardList size={16} color={deptColorDark(T.forest)} />
+          <span style={{ flex: 1 }}>{card.summary || 'Staxis wants to make a change.'}</span>
+          <button onClick={() => void decideStaxisCard(card.pendingActionId, 'approve')} disabled={busy} style={{ background: T.forestDeep, color: '#fff', border: 'none', borderRadius: 8, padding: '6px 10px', fontSize: 12.5, fontWeight: 600, fontFamily: SANS, cursor: 'pointer' }}>{'Do it'}</button>
+          <button onClick={() => void decideStaxisCard(card.pendingActionId, 'deny')} disabled={busy} style={{ background: 'transparent', color: T.dim, border: `1px solid ${T.hair}`, borderRadius: 8, padding: '6px 10px', fontSize: 12.5, fontWeight: 600, fontFamily: SANS, cursor: 'pointer' }}>{'Not now'}</button>
+        </div>
+      ))}
+      {staxisOutcome && (
+        <div style={{ margin: '0 0 8px', padding: 12, background: T.forestTint, borderRadius: 10, display: 'flex', alignItems: 'center', gap: 10, fontSize: 13, fontFamily: SANS }}>
+          <ClipboardList size={16} color={deptColorDark(T.forest)} />
+          <span style={{ flex: 1 }}>{staxisOutcome}</span>
+          <button onClick={() => setStaxisOutcome(null)} style={paneIcon}><X size={14} /></button>
         </div>
       )}
       {orgNotice && (

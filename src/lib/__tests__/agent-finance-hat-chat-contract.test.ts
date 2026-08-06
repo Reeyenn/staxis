@@ -39,6 +39,11 @@ describe('finance-hat hotel chat wiring', () => {
     const promptCall = sourceWindow(resolveRoute, 'const systemPrompt = await buildSystemPrompt');
     const catalogCall = sourceWindow(resolveRoute, 'const tools = getToolsForRole');
     assert.match(promptCall, /memoryBlock,[\s\S]*?authorization: userCtx,/);
-    assert.match(catalogCall, /'chat',[\s\S]*?enabledSections,[\s\S]*?userCtx,/);
+    // The surface is `approvalSurface` here rather than the literal 'chat'
+    // (2026-08-06): a card can also be raised by "@Staxis" in a staff thread,
+    // and the resume must rebuild that turn's catalog from the thread's own
+    // narrowed lens rather than the chat bar's. The standing it is rebuilt from
+    // is unchanged, which is what this test is about.
+    assert.match(catalogCall, /approvalSurface,[\s\S]*?enabledSections,[\s\S]*?userCtx,/);
   });
 });

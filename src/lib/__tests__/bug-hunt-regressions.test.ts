@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { describe, test } from 'node:test';
 
 import { validatePropertyUpdateField } from '@/lib/onboarding/property-update-validation';
+import { assistantFallback } from '@/lib/comms/assistant';
 
 const source = (path: string) => readFileSync(join(process.cwd(), path), 'utf8');
 
@@ -51,12 +52,21 @@ describe('bug-hunt regression contracts', () => {
   });
 
   test('assistant fallbacks remain visible in the requested language/UI', () => {
-    const assistant = source('src/lib/comms/assistant.ts');
-    for (const lang of ['en', 'es', 'ht', 'tl', 'vi']) {
-      assert.match(assistant, new RegExp(`\\n  ${lang}: \\{`));
+    // Behaviour, not source text (the old version grepped assistant.ts for the
+    // call sites and went stale the moment the thread assistant moved onto the
+    // agent pipeline). What must hold is what a person in a thread SEES when the
+    // AI layer cannot answer: a real sentence, in their own language, for every
+    // reason it can fail — never an empty bubble.
+    for (const lang of ['en', 'es', 'ht', 'tl', 'vi'] as const) {
+      const spoken = new Set<string>();
+      for (const kind of ['unavailable', 'exhausted', 'error'] as const) {
+        const text = assistantFallback(lang, kind);
+        assert.ok(text.trim().length > 10, `${lang}/${kind} has no message`);
+        spoken.add(text);
+      }
+      assert.equal(spoken.size, 3, `${lang} says the same thing for different failures`);
     }
-    assert.match(assistant, /assistantFallback\(args\.lang, 'unavailable'\)/);
-    assert.match(assistant, /assistantFallback\(args\.lang, 'exhausted'\)/);
-    assert.match(assistant, /assistantFallback\(args\.lang, 'error'\)/);
+    // An unknown/absent language must still say something rather than crash.
+    assert.equal(assistantFallback(undefined, 'error'), assistantFallback('en', 'error'));
   });
 });

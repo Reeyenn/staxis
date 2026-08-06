@@ -52,13 +52,27 @@ describe('delayed approval authorization lifecycle', () => {
     const fence = route.slice(start, end);
     assert.match(fence, /loadAgentUserCtx\(input\.authUserId, input\.propertyId\)/);
     assert.match(fence, /fresh\.userCtx\.accountId !== input\.expectedAccountId/);
-    assert.match(fence, /chatIsMountedForRole\(fresh\.userCtx\.role\)/);
+    // Every one of these is asked about the SURFACE the card was minted on
+    // (2026-08-06): a card raised by "@Staxis" in a staff thread must not be
+    // judged against whether that hat has a chat bar, and its section gate is
+    // Messages rather than the Staxis tab. `approvalSurfaceForTool` picks the
+    // surface, 'chat' first, so every card minted before that change resolves
+    // through exactly the path it always did.
+    assert.match(fence, /surfaceIsMountedForRole\(fresh\.userCtx\.role, input\.surface\)/);
     assert.match(fence, /getEnabledSectionsFresh\(input\.propertyId\)/);
-    assert.match(fence, /isSectionEnabled\(freshSections, 'staxis'\)/);
+    assert.match(fence, /isSectionEnabled\(freshSections, surfaceSection\)/);
     assert.match(fence, /fresh\.userCtx\.hotelMutationAllowed !== true/);
     assert.match(
       fence,
-      /getToolsForRole\([\s\S]*?fresh\.userCtx\.role,[\s\S]*?'chat',[\s\S]*?fresh\.userCtx,[\s\S]*?\)/,
+      /getToolsForRole\([\s\S]*?fresh\.userCtx\.role,[\s\S]*?input\.surface,[\s\S]*?fresh\.userCtx,[\s\S]*?\)/,
     );
+    // And both call sites must pass one, or the fence would silently judge a
+    // thread card against the chat bar.
+    const addon = route.indexOf('const addonAuthority = await reauthorizeAgentScope({');
+    const resume = route.indexOf('const resumeAuthority = await reauthorizeAgentScope({');
+    assert.ok(addon > 0 && resume > 0);
+    for (const at of [addon, resume]) {
+      assert.match(route.slice(at, at + 260), /surface: approvalSurface/);
+    }
   });
 });
