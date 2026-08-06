@@ -164,6 +164,9 @@ export async function GET(req: NextRequest): Promise<Response> {
         propertyId: ctx.pid,
         role,
         hotelMutationAllowed: ctx.hotelMutationAllowed,
+        // Whose companion this is. The unfinished-business recall is scoped to
+        // the person who was actually shown the card that timed out.
+        accountId: ctx.accountId,
         // The HOTEL's day and clock, resolved above from properties.timezone.
         // The unfinished-business recall reads "before today" off it, and the
         // browser's idea of today is the one thing that must never decide that.

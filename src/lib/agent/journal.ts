@@ -345,6 +345,16 @@ export async function readAgentJournal(
     untilIso?: string;
     limit?: number;
     eventTypes?: readonly AgentJournalEventType[];
+    /**
+     * Narrow to entries a PARTICULAR person was part of.
+     *
+     * The unfinished-business recall needs this and is wrong without it: "I
+     * asked you about this and never heard back" said to somebody who was never
+     * asked is a false sentence about a card they never saw. Hotel-wide is the
+     * right default for "what did Staxis do today"; person-scoped is the right
+     * read for anything phrased as "you".
+     */
+    actorAccountId?: string;
   },
 ): Promise<AgentJournalRow[]> {
   try {
@@ -356,6 +366,7 @@ export async function readAgentJournal(
       .order('occurred_at', { ascending: false })
       .limit(Math.min(opts.limit ?? JOURNAL_READ_CAP, JOURNAL_READ_CAP));
     if (opts.untilIso) query = query.lt('occurred_at', opts.untilIso);
+    if (opts.actorAccountId) query = query.eq('actor_account_id', opts.actorAccountId);
     if (opts.eventTypes && opts.eventTypes.length > 0) {
       query = query.in('event_type', opts.eventTypes as string[]);
     }

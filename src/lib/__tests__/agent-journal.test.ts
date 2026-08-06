@@ -59,6 +59,7 @@ import { supabaseAdmin } from '@/lib/supabase-admin';
 import {
   deliverableFingerprint,
   mergeDeliverable,
+  NO_DELIVERABLE_FINGERPRINT,
   type CompanionDeliverable,
 } from '@/lib/companion/delivery';
 import { subscribeByPolling } from '@/lib/db/_common';
@@ -377,6 +378,24 @@ describe('journal read: the filters that make it the COMPANION\'s record', () =>
     assert.ok(cols.includes('property_id'), 'a read without the hotel filter is a tenant leak');
     assert.ok(cols.includes('occurred_at'));
     assert.ok(cols.includes('event_type'));
+  });
+
+  it('can narrow to one person, which the recall depends on', async () => {
+    // "I asked you about this and never heard back" said to somebody who was
+    // never asked is a false sentence about a card they never saw, and the
+    // summary it quotes is the copy off somebody else's approval card.
+    await readAgentJournal(PROPERTY_ID, {
+      sinceIso: '2026-08-03T05:00:00.000Z',
+      untilIso: '2026-08-06T05:00:00.000Z',
+      eventTypes: ['agent_action_expired'],
+      actorAccountId: ACCOUNT_ID,
+    });
+    const read = selects.find((s) => s.table === 'activity_log');
+    assert.ok(read);
+    const actor = read.filters.find(([col]) => col === 'actor_account_id');
+    assert.equal(actor?.[1], ACCOUNT_ID);
+    // And the window is half-open, so a question asked TODAY is excluded.
+    assert.ok(read.filters.some(([col, val]) => col === 'occurred_at' && val === '2026-08-06T05:00:00.000Z'));
   });
 
   it('drops a row it cannot honestly render', async () => {
@@ -812,12 +831,27 @@ describe('companion delivery: what a refresh may and may not replace', () => {
   });
 
   it('a missing list reads as empty rather than as undefined', () => {
-    assert.equal(deliverableFingerprint(undefined), JSON.stringify({ notices: [], candidates: [] }));
     assert.equal(deliverableFingerprint({}), JSON.stringify({ notices: [], candidates: [] }));
+    assert.equal(deliverableFingerprint({ notices: [] }), deliverableFingerprint({ candidates: [] }));
+  });
+
+  it('NO snapshot and a QUIET snapshot fingerprint differently', () => {
+    // The bug this prevents: a failed first fetch publishes an empty array, the
+    // next successful read of a quiet hotel would fingerprint identically, the
+    // transport would suppress the publish, and the companion would never boot
+    // for the rest of that page load.
+    assert.equal(deliverableFingerprint(undefined), NO_DELIVERABLE_FINGERPRINT);
+    assert.notEqual(deliverableFingerprint(undefined), deliverableFingerprint(boot()));
+    assert.notEqual(deliverableFingerprint(null), deliverableFingerprint({}));
   });
 });
 
 describe('companion delivery: the refetch transport', () => {
+  type Snapshot = {
+    notices: CompanionDeliverable['notices'];
+    candidates: CompanionDeliverable['candidates'];
+  };
+
   const freshNotice: CompanionDeliverable['notices'][number] = {
     id: 'done:1',
     kind: 'done',
@@ -830,10 +864,6 @@ describe('companion delivery: the refetch transport', () => {
   };
 
   it('publishes a fresh whole snapshot on refresh, never a diff', async () => {
-    type Snapshot = {
-      notices: CompanionDeliverable['notices'];
-      candidates: CompanionDeliverable['candidates'];
-    };
     let served: Snapshot[] = [{ notices: [], candidates: [] }];
     const seen: Snapshot[][] = [];
     const subscription = subscribeByPolling<Snapshot>(
@@ -862,6 +892,34 @@ describe('companion delivery: the refetch transport', () => {
       await subscription.refresh();
       assert.equal(seen.length, afterFirst + 1);
       assert.deepEqual(seen[seen.length - 1], served);
+    } finally {
+      subscription.unsubscribe();
+    }
+  });
+
+  it('a failed FIRST fetch does not lock a quiet hotel out of booting', async () => {
+    // The sequence that broke: fetch one fails and publishes nothing, fetch two
+    // succeeds on a hotel with no notices and no candidates. With "absent" and
+    // "empty" fingerprinting alike, the second publish is suppressed and the
+    // companion never appears.
+    let ok = false;
+    const seen: unknown[][] = [];
+    const subscription = subscribeByPolling<Snapshot>(
+      async () => (ok ? [{ notices: [], candidates: [] }] : []),
+      (rows) => { seen.push(rows); },
+      undefined,
+      {
+        pollIntervalMs: 60_000,
+        isEqual: (a, b) => deliverableFingerprint(a[0]) === deliverableFingerprint(b[0]),
+      },
+    );
+    try {
+      await subscription.refresh();
+      const afterFailure = seen.length;
+      ok = true;
+      await subscription.refresh();
+      assert.ok(seen.length > afterFailure, 'the first good snapshot was suppressed');
+      assert.deepEqual(seen[seen.length - 1], [{ notices: [], candidates: [] }]);
     } finally {
       subscription.unsubscribe();
     }

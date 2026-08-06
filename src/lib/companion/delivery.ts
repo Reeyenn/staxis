@@ -72,6 +72,19 @@ export function mergeDeliverable<T extends CompanionDeliverableSource>(
 }
 
 /**
+ * What "there is no snapshot at all" fingerprints as.
+ *
+ * NOT the same string as an empty snapshot, and the difference is a real bug
+ * rather than a nicety. The transport suppresses a publish whose fingerprint
+ * matches the last one, and a failed fetch publishes an empty array. If
+ * "absent" and "present but quiet" fingerprinted alike, then a hotel whose
+ * FIRST read failed would fingerprint as empty, its next successful read of a
+ * quiet hotel would fingerprint the same, the publish would be suppressed, and
+ * the companion would never boot at all for the rest of that page load.
+ */
+export const NO_DELIVERABLE_FINGERPRINT = 'absent';
+
+/**
  * A stable string for "does this snapshot say the same thing as the last one".
  *
  * Used as the polling transport's `isEqual`, so an idle screen publishes
@@ -82,5 +95,6 @@ export function mergeDeliverable<T extends CompanionDeliverableSource>(
 export function deliverableFingerprint(
   source: CompanionDeliverableSource | null | undefined,
 ): string {
+  if (source === null || source === undefined) return NO_DELIVERABLE_FINGERPRINT;
   return JSON.stringify(deliverableOf(source));
 }

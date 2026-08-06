@@ -75,6 +75,9 @@ export async function buildCompanionCandidates(input: {
   propertyId: string;
   role: AppRole;
   hotelMutationAllowed: boolean;
+  /** Whose companion this is. Scopes the unfinished-business recall to the
+   *  person who was actually asked. */
+  accountId: string;
   /** The hotel's own calendar day. Never the browser's. */
   today: string;
   timezone: string | null;
@@ -87,7 +90,9 @@ export async function buildCompanionCandidates(input: {
   // read of THIS person's hotel over a three-day window, and the question it
   // answers ("you asked me something and I never got back to you") belongs to
   // whoever was asked, not to whoever can see findings.
-  const unfinished = await unfinishedCandidate(input.propertyId, input.today, input.timezone);
+  const unfinished = await unfinishedCandidate(
+    input.propertyId, input.accountId, input.today, input.timezone,
+  );
 
   const standing = listStandingFor(input.role, input.hotelMutationAllowed);
   if (!listShowsFindings(standing)) return unfinished ? [unfinished] : [];
@@ -181,6 +186,7 @@ const UNFINISHED_WINDOW_DAYS = 3;
  */
 async function unfinishedCandidate(
   propertyId: string,
+  accountId: string,
   today: string,
   timezone: string | null,
 ): Promise<CompanionCandidate | null> {
@@ -195,6 +201,11 @@ async function unfinishedCandidate(
       // The whole of rule 1 above, in one argument.
       untilIso: dayStart.toISOString(),
       eventTypes: ['agent_action_expired'],
+      // THIS PERSON'S unanswered question, never the hotel's. "I asked you and
+      // never heard back" said to somebody who was never asked is a false
+      // sentence about a card they never saw, and the summary it would quote is
+      // the copy off somebody else's approval card.
+      actorAccountId: accountId,
       limit: 5,
     });
     // Newest first. Rule 2: take one.

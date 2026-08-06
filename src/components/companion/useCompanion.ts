@@ -386,6 +386,7 @@ export function useCompanion(
   // agreeing, and a poll landing in that window would roll `welcomedAt` back
   // and greet somebody a second time. Not the person or the hotel either,
   // which do not change under a person who is standing still.
+  //
   // The two halves of the scope, as plain dependencies. A change to either
   // tears the loop down and starts a new one, which is what stops one hotel's
   // notices ever landing under another hotel's name.
