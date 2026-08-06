@@ -58,6 +58,10 @@ import {
   type AssignableRole,
 } from '@/lib/roles';
 import { HAT_ROLE_LABELS, type HatRole } from '@/lib/company/roles';
+import {
+  ensureManagerStaffIdentityBestEffort,
+  managerRosterPropertyIds,
+} from '@/lib/schedule/staff-identity';
 import { resolveCompanyForProperty } from '@/lib/company/access';
 import { loadOrganizationActor } from '@/lib/organization-access/server';
 import {
@@ -122,6 +126,45 @@ async function authenticateInviteRoute(
 
 function authorityDenied(requestId: string) {
   return err('Forbidden', { requestId, status: 403, code: ApiErrorCode.Unauthorized });
+}
+
+/**
+ * Put an already-existing Staxis login on this hotel's staff list.
+ *
+ * The brand-new-login path does this inside /api/auth/accept-invite. This is
+ * the same bridge for the other half of the same button: an email that already
+ * belongs to a Staxis account receives the access immediately, with no
+ * acceptance step, so "accepted" for that person is this grant.
+ */
+async function joinHotelStaffListForExistingAccount(input: {
+  accountId: string | undefined;
+  propertyIds: readonly string[];
+  actorAccountId: string;
+  requestId: string;
+}): Promise<void> {
+  if (!input.accountId || input.propertyIds.length === 0) return;
+  const { data, error } = await supabaseAdmin
+    .from('accounts')
+    .select('display_name, data_user_id')
+    .eq('id', input.accountId)
+    .maybeSingle();
+  if (error || typeof data?.data_user_id !== 'string') {
+    log.error('[invites:POST] roster bridge could not read the granted account', {
+      requestId: input.requestId,
+      msg: error ? errToString(error) : 'account identity unavailable',
+    });
+    return;
+  }
+  for (const propertyId of input.propertyIds) {
+    await ensureManagerStaffIdentityBestEffort({
+      accountId: input.accountId,
+      propertyId,
+      authUserId: data.data_user_id,
+      displayName: typeof data.display_name === 'string' ? data.display_name : 'Manager',
+      actorAccountId: input.actorAccountId,
+      source: 'invitation',
+    }, { requestId: input.requestId });
+  }
 }
 
 function normalizedInviteRow(row: StoredInviteRow): boolean {
@@ -886,6 +929,30 @@ export async function POST(req: NextRequest) {
       });
     }
 
+    // Same bridge as brand-new-login acceptance: an existing Staxis login that
+    // is handed the job of running this hotel joins its staff list, so the
+    // to-do Who list and the schedule can actually see them. The grant above is
+    // already committed, so a roster failure is reported and left to the
+    // backfill rather than failing an access change that really happened.
+    await joinHotelStaffListForExistingAccount({
+      accountId: accountIdValidation.value,
+      propertyIds: targetStaffId === null
+        ? managerRosterPropertyIds({
+          role,
+          membershipScope: hat?.scope ?? null,
+          organizationId: hat?.organizationId ?? null,
+          hotelId: inviteAnchorHotelId,
+          coveredPropertyIds: hat?.scope === 'property' ? hat.propertyIds : null,
+        })
+        : [],
+      actorAccountId: actor.accountId,
+      requestId,
+    });
+
+    // `profileLinked` keeps its original meaning on purpose: it is the answer to
+    // "did this invitation adopt the exact roster profile you picked", which the
+    // dialog turns into a sentence naming that profile. The roster bridge above
+    // picks nobody, so it has nothing to name.
     return ok({
       accessGranted: true,
       profileLinked: targetStaffId !== null,

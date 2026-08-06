@@ -26,6 +26,10 @@ import {
   resolveStoredNormalizedInviteAuthority,
   type ResolvedAuthoritativeInviteScope,
 } from '@/lib/company/account-invite-authority';
+import {
+  ensureManagerStaffIdentityBestEffort,
+  managerRosterPropertyIds,
+} from '@/lib/schedule/staff-identity';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -155,7 +159,7 @@ export async function POST(req: NextRequest) {
   const { data: invite, error: invErr } = await supabaseAdmin
     .from('account_invites')
     .select(
-      'id, hotel_id, email, role, expires_at, accepted_at, invited_by, organization_id, membership_scope, covered_property_ids',
+      'id, hotel_id, email, role, expires_at, accepted_at, invited_by, organization_id, membership_scope, covered_property_ids, target_staff_id',
     )
     .eq('token_hash', tokenHash)
     .maybeSingle();
@@ -180,6 +184,7 @@ export async function POST(req: NextRequest) {
   const invitedPropertyIds = (
     invite as { covered_property_ids?: unknown }
   ).covered_property_ids ?? null;
+  const invitedTargetStaffId = (invite as { target_staff_id?: string | null }).target_staff_id ?? null;
   const expectedNormalized = invitedScope !== null
     || invitedOrganizationId !== null
     || invitedPropertyIds !== null;
@@ -245,6 +250,24 @@ export async function POST(req: NextRequest) {
       return err('Invite no longer valid', { requestId, status: 410, code: ApiErrorCode.IdempotencyConflict });
     }
   }
+
+  // A manager who accepts an invitation to RUN this hotel joins its staff list
+  // in the same visit. Everything the hotel hands out (the to-do Who list, the
+  // schedule, the People roster) reads the `staff` table, so a GM with a login
+  // and no roster row is somebody nobody can delegate to. Housekeeper and
+  // front-desk invitations are untouched: they still create a login only, and
+  // the "Add staff member" lifecycle stays separate in the other direction.
+  // An invitation that already named an exact roster profile is skipped: the
+  // acceptance transaction links that profile itself.
+  const managerRosterHotelIds = invitedTargetStaffId === null
+    ? managerRosterPropertyIds({
+      role: invite.role,
+      membershipScope: invitedScope,
+      organizationId: invitedOrganizationId,
+      hotelId: invite.hotel_id,
+      coveredPropertyIds: invitedPropertyIds,
+    })
+    : [];
 
   // Reserve only the external Auth-user creation window. This is NOT the
   // acceptance marker and grants no access. The final database RPC locks the
@@ -331,6 +354,20 @@ export async function POST(req: NextRequest) {
   }
   const authUser = authResult.user;
 
+  const joinHotelStaffList = async (accountId: unknown): Promise<void> => {
+    if (typeof accountId !== 'string' || accountId.length === 0) return;
+    for (const propertyId of managerRosterHotelIds) {
+      await ensureManagerStaffIdentityBestEffort({
+        accountId,
+        propertyId,
+        authUserId: authUser.id,
+        displayName,
+        actorAccountId: invite.invited_by,
+        source: 'invitation',
+      }, { requestId });
+    }
+  };
+
   const rollbackAuthUser = async () => {
     try {
       const { error } = await supabaseAdmin.auth.admin.deleteUser(authUser.id);
@@ -389,6 +426,12 @@ export async function POST(req: NextRequest) {
       log.warn('[accept-invite] recovered committed acceptance after lost/invalid final response', {
         requestId, inviteId: claim.inviteId, authUserId: authUser.id,
       });
+      const { data: recoveredAccount } = await supabaseAdmin
+        .from('accounts')
+        .select('id')
+        .eq('data_user_id', authUser.id)
+        .maybeSingle();
+      await joinHotelStaffList(recoveredAccount?.id);
       return ok({ email: invite.email }, { requestId });
     }
     if (recovery === 'unavailable') {
@@ -432,6 +475,8 @@ export async function POST(req: NextRequest) {
       },
     );
   }
+
+  await joinHotelStaffList(accepted.accountId);
 
   return ok({ email: invite.email }, { requestId });
 }
