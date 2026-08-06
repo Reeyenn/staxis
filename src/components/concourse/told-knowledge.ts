@@ -69,44 +69,12 @@ export function canReadLearned(role: AppRole | null | undefined): boolean {
   return !!role && canManageTeam(role);
 }
 
-export type KnowsHalf = 'learned' | 'told';
-
-/**
- * Which half opens first.
- *
- * A manager keeps landing on the learned half — that is what Knows was, and
- * the move should not change the screen under them. Anybody else lands on the
- * told half, because the learned half has nothing to show them and because it
- * puts the contact directory (and the emergency numbers inside it) one tap
- * closer for the people most likely to need it in a hurry.
- */
-export function defaultHalf(role: AppRole | null | undefined): KnowsHalf {
-  return canReadLearned(role) ? 'learned' : 'told';
-}
-
-/** Sections of the told half. Contacts is FIRST and is the default — see
- *  defaultToldSection. */
-export type ToldSection = 'contacts' | 'sops' | 'documents' | 'rules';
-export const TOLD_SECTIONS: readonly ToldSection[] = ['contacts', 'sops', 'documents', 'rules'];
-
-/**
- * Contacts opens first, for ONE reason: somebody at the front desk with a
- * guest emergency in front of them should not be navigating. From the Knows
- * tab that is a single tap to the told half and the emergency numbers are
- * already on screen (they sort first — see CONTACT_GROUP_ORDER). For a
- * non-manager, who lands on the told half already, it is zero taps.
- */
-export const defaultToldSection: ToldSection = 'contacts';
-
-export const TOLD_SECTION_LABEL: Record<ToldSection, Bilingual> = {
-  contacts: { en: 'Contacts', },
-  sops: { en: 'How we do things', },
-  documents: { en: 'Documents', },
-  // The standing instructions somebody gave the companion in plain language.
-  // LAST in the strip: contacts is the emergency path and must stay first (see
-  // defaultToldSection), and this is the newest and least urgent of the four.
-  rules: { en: 'Standing rules', },
-};
+// THE HALVES AND THEIR SECTION TABS ARE GONE (2026-08-05). The Knows screen is
+// one page with one list, so `defaultHalf`, `TOLD_SECTIONS` and their labels
+// were deleted rather than left as constants nothing reads. The three access
+// predicates above SURVIVED the rebuild unchanged and are now enforced by
+// /api/memory/knows: the taught rows are open to everybody at the hotel, the
+// noticed rows and every write are manager-only.
 
 // ── Document access (the permission control) ────────────────────────────────
 //

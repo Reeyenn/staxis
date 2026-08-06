@@ -242,10 +242,6 @@ export function StaxisList({
   // Knows is an overlay, not a route and not a tab. The page stays mounted
   // behind it, so it is never somewhere you have to navigate back from.
   const [knowsOpen, setKnowsOpen] = React.useState(false);
-  // Reported up by the panel the first time it reads. Never guessed: until
-  // Knows has actually answered, the rail button says nothing about how much
-  // Staxis knows rather than printing a number it has not been told.
-  const [factCount, setFactCount] = React.useState<number | null>(null);
 
   const isToday = anchorIso === todayIso;
 
@@ -889,7 +885,7 @@ export function StaxisList({
 
         {/* ── the rail: three panels with their content showing ── */}
         <div className="fx-rail">
-          <KnowsRailButton factCount={factCount} onOpen={() => setKnowsOpen(true)} />
+          <KnowsRailButton onOpen={() => setKnowsOpen(true)} />
 
           <AssignedRailPanel
             notices={notices}
@@ -919,7 +915,6 @@ export function StaxisList({
         lang={lang}
         hotelName={hotelName}
         onClose={() => setKnowsOpen(false)}
-        onStats={setFactCount}
       />
 
       <LogbookPopup

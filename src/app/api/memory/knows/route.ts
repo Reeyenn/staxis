@@ -1,227 +1,419 @@
 /**
- * "What Staxis knows about your hotel" — MANAGEMENT ONLY, service-role.
+ * "What Staxis knows about your hotel" — the whole Knows page, one URL.
  *
- * Serves two surfaces:
- *   • the compact Dashboard box (stats + the taught/noticed/learned counts), and
- *   • the Knows view inside the Staxis section (/feed), which is the full
- *     auditable list: every fact, where it came from, and Confirm / Edit /
- *     Remove.
+ * GET  ?propertyId=<uuid>
+ *   → { ok, data: { items, canTeach, canSeeNoticed } }
+ *   Every row on the page, from five stores, each already rendered as ONE plain
+ *   sentence. `items[].kind` says which store a row came out of, because that
+ *   is what decides where its correction is written back to.
  *
- * GET ?propertyId=<uuid>
- *   → { ok, data: {
- *        stats: { totalKnown, patternsThisMonth, issuesCaughtEarly, pendingReview },
- *        taught / noticed / learned: [{id,topic,content}],   // Dashboard box
- *        facts: [{ id, topic, content, category, source, reviewState,
- *                  createdByName, updatedAt, expiresAt }],   // Knows view
- *      } }
- *   `stats.totalKnown` counts CONFIRMED facts only — a fact still awaiting
- *   review is not something Staxis knows, and counting it would overstate the
- *   hotel's knowledge on the dashboard. Those are reported as `pendingReview`.
+ * POST { propertyId, action, ... }
+ *   teach   { text }              file one typed sentence into the right drawer.
+ *   adjust  { kind, id, text }    reword one row in its own store.
+ *   wrong   { kind, id, text? }   a noticed row is not true. With text, the
+ *                                 correction is recorded; without, the row is
+ *                                 dropped so nothing goes on believing it.
+ *   remove  { kind, id }          take back something a person said.
  *
- * POST { propertyId, action: 'confirm' | 'edit' | 'remove', id, content?, category? }
- *   The Knows view's three actions. Each is scoped to the caller's property.
+ * ── WHY THIS ROUTE GREW RATHER THAN A NEW ONE APPEARING ────────────────────
+ * The page is ONE list assembled across `agent_memory`, `hotel_standing_rules`,
+ * `knowledge_contacts`, `knowledge_documents` and `knowledge_articles`. Read
+ * from the browser that is five requests and a client that has to know five
+ * write shapes; the point of the rebuild is that the person does not know
+ * there are five drawers, and neither should the screen. This route is already
+ * called "what Staxis knows", so it is the one that widened.
  *
- * Auth: requireSession + canManageTeam + caller must manage the property. All
- * reads/writes via supabaseAdmin behind the gate (agent_memory is deny-all to
- * the browser), and every query filters property_id — that filter IS the
- * per-tenant guarantee here.
+ * The PAPERCLIP does not come here. A file still goes presign, PUT, register
+ * through /api/knowledge/documents, the one seam that also indexes it for
+ * search. The row it creates then shows up in this route's GET as a sentence.
+ * A second register path would have been a second place to get indexing wrong.
+ *
+ * ── AUTH, AND THE ONE THING THAT MUST NOT REGRESS ──────────────────────────
+ * `commsContext` + KNOWLEDGE_CTX, the same gate every /api/knowledge/* route
+ * uses: session, hotel access, and no section toggle (knowledge is not owned by
+ * one section).
+ *
+ * Reading the TAUGHT half is open to everybody signed in at this hotel. That is
+ * not a relaxation, it is the rule the contact directory has always had: before
+ * this page existed the front desk could open the directory and tap an
+ * emergency number, and collapsing that directory into sentences must not
+ * quietly take it away. Reading the NOTICED half stays a manager view, exactly
+ * as it was, because those rows are `agent_memory` and that has always been
+ * manager-only. Every WRITE is manager-only and re-checked here, and the writes
+ * that touch the knowledge hub additionally run the `manage_knowledge`
+ * capability check the hub's own routes run, so a hotel that restricted it from
+ * the Access tab keeps that restriction on this screen too.
+ *
+ * `agent_memory`, `hotel_standing_rules` and the `knowledge_*` tables are all
+ * deny-all to the browser. Every read and write below goes through a module
+ * that filters on property_id, and THAT filter is the per-tenant guarantee.
  */
 
 import { NextRequest } from 'next/server';
-import { requireSession } from '@/lib/api-auth';
 import { ok, err, ApiErrorCode } from '@/lib/api-response';
 import { getOrMintRequestId, log } from '@/lib/log';
 import { validateUuid } from '@/lib/api-validate';
-import { canManageTeam } from '@/lib/roles';
-import { callerManagesProperty } from '@/lib/memory-knows-access';
-import { loadManagerCaller } from '@/lib/team-auth';
-import { checkAndIncrementRateLimit, rateLimitedResponse } from '@/lib/api-ratelimit';
+import { commsContext, KNOWLEDGE_CTX } from '@/lib/comms/route-helpers';
+import { capabilityDecisionForUserId } from '@/lib/capabilities/server';
+import { capabilityUnavailableResponse } from '@/lib/capabilities/api-gate';
+import {
+  checkAndIncrementRateLimit,
+  rateLimitedResponse,
+  hashToRateLimitKey,
+} from '@/lib/api-ratelimit';
+import type { AppRole } from '@/lib/roles';
 import {
   listMemory,
-  confirmMemoryFact,
   editMemoryFact,
   removeMemoryFact,
+  storeMemory,
   type MemoryRow,
 } from '@/lib/db/agent-memory';
-import { insightSeverityFromTopic } from '@/lib/agent/operational-signals';
-import { isMemoryCategory } from '@/lib/agent/memory-facets';
 import { redactMemoryContent } from '@/lib/agent/memory-redact';
-import { FACT_MAX_CONTENT } from '@/lib/agent/knowledge-intake';
+import {
+  listStandingRules,
+  storeStandingRule,
+  updateStandingRule,
+  removeStandingRule,
+} from '@/lib/companion/rules';
+import {
+  listContacts,
+  createContact,
+  updateContact,
+  deleteContact,
+  listDocuments,
+  renameDocument,
+  deleteDocument,
+  listArticles,
+  renameArticle,
+  deleteArticle,
+} from '@/lib/knowledge/core';
+import {
+  contactSentence,
+  documentSentence,
+  groupForMemorySource,
+  knowsTelHref,
+  plainSentence,
+  sopSentence,
+  sortKnowsItems,
+  TEACH_MAX_CHARS,
+  type KnowsItem,
+  type KnowsItemKind,
+} from '@/lib/knows/page-model';
+import {
+  applyAdjust,
+  applyDrop,
+  applyTeach,
+  type KnowsActor,
+  type KnowsStores,
+} from '@/lib/knows/writes';
+import { fileTypedSentence } from '@/lib/knows/filing-server';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
+export const maxDuration = 60;
 
-/** requireSession + management role + property access, in one place. */
-async function gate(req: NextRequest, requestId: string, propertyIdRaw: unknown) {
-  const session = await requireSession(req, { requestId });
-  if (!session.ok) return { ok: false as const, response: session.response };
+const ITEM_KINDS: readonly KnowsItemKind[] = ['fact', 'rule', 'contact', 'document', 'sop'];
 
-  const caller = await loadManagerCaller(session.userId);
-  if (!caller) {
-    return {
-      ok: false as const,
-      response: err('Account not found', { requestId, status: 404, code: ApiErrorCode.AccountNotFound }),
-    };
-  }
-  if (!canManageTeam(caller.role)) {
-    return {
-      ok: false as const,
-      response: err('Forbidden', { requestId, status: 403, code: ApiErrorCode.Forbidden }),
-    };
-  }
-  const pidV = validateUuid(propertyIdRaw, 'propertyId');
-  if (pidV.error) {
-    return {
-      ok: false as const,
-      response: err(pidV.error, { requestId, status: 400, code: ApiErrorCode.ValidationFailed }),
-    };
-  }
-  if (!callerManagesProperty(caller, pidV.value!)) {
-    return {
-      ok: false as const,
-      response: err('Forbidden', { requestId, status: 403, code: ApiErrorCode.Forbidden }),
-    };
-  }
-  return { ok: true as const, caller, propertyId: pidV.value! };
+function isItemKind(value: unknown): value is KnowsItemKind {
+  return typeof value === 'string' && (ITEM_KINDS as readonly string[]).includes(value);
 }
 
-const slim = (r: MemoryRow) => ({ id: r.id, topic: r.topic, content: r.content });
+// ─── Read ───────────────────────────────────────────────────────────────────
 
-const fact = (r: MemoryRow) => ({
-  id: r.id,
-  topic: r.topic,
-  content: r.content,
-  category: r.category,
-  source: r.source,
-  reviewState: r.reviewState,
-  createdByName: r.createdByName,
-  updatedAt: r.updatedAt,
-  expiresAt: r.expiresAt,
-});
+/** Every remembered fact, split into the two groups by who authored it. */
+function memoryItems(rows: readonly MemoryRow[]): KnowsItem[] {
+  const out: KnowsItem[] = [];
+  for (const row of rows) {
+    const sentence = plainSentence(row.content);
+    if (!sentence) continue;
+    out.push({
+      id: row.id,
+      kind: 'fact',
+      group: groupForMemorySource(row.source),
+      sentence,
+      tel: null,
+      telText: null,
+      at: row.updatedAt,
+    });
+  }
+  return out;
+}
 
 export async function GET(req: NextRequest) {
-  const requestId = getOrMintRequestId(req);
-  const g = await gate(req, requestId, new URL(req.url).searchParams.get('propertyId'));
-  if (!g.ok) return g.response;
+  const propertyIdRaw = new URL(req.url).searchParams.get('propertyId');
+  const ctx = await commsContext(req, propertyIdRaw, KNOWLEDGE_CTX);
+  if (!ctx.ok) return ctx.response;
 
-  // All active HOTEL-wide knowledge (property scope). User-scope personal prefs
-  // are excluded — this is "what Staxis knows about the hotel", not about you.
-  const rows = await listMemory(g.propertyId, { scope: 'property', limit: 200 });
+  const items: KnowsItem[] = [];
 
-  const confirmed = rows.filter((r) => r.reviewState === 'confirmed');
-  const taught = confirmed.filter((r) => r.source === 'explicit_user' || r.source === 'correction');
-  const noticed = confirmed.filter((r) => r.source === 'operational');
-  const learned = confirmed.filter((r) => r.source === 'consolidation');
+  // Everything a person told it. Open to everybody at this hotel: see the
+  // header, and told-knowledge.ts's canReadTold, which this preserves.
+  const [rules, contacts, documents, articles] = await Promise.all([
+    listStandingRules(ctx.pid),
+    listContacts(ctx.pid),
+    listDocuments(ctx.pid, { role: ctx.role as AppRole, dept: ctx.dept }),
+    listArticles(ctx.pid, ctx.role as AppRole),
+  ]);
 
-  const monthAgo = Date.now() - 30 * 86400_000;
-  const patternsThisMonth = noticed.filter((r) => new Date(r.updatedAt).getTime() >= monthAgo).length;
-  // "Issues flagged early" — the downtime-preventing patterns (recurring
-  // maintenance / repeat inspection fails / out-of-range compliance / complaint
-  // clusters). The real ROI story, no $ fabricated.
-  const issuesCaughtEarly = noticed.filter((r) => insightSeverityFromTopic(r.topic) === 'attention').length;
+  for (const rule of rules) {
+    const sentence = plainSentence(rule.ruleText);
+    if (sentence) {
+      items.push({ id: rule.id, kind: 'rule', group: 'taught', sentence, tel: null, telText: null, at: rule.createdAt });
+    }
+  }
+  for (const contact of contacts) {
+    const sentence = contactSentence(contact);
+    if (sentence) {
+      items.push({
+        id: contact.id,
+        kind: 'contact',
+        group: 'taught',
+        sentence,
+        tel: knowsTelHref(contact.phone),
+        // The number as the sentence prints it, not as it dials: the row wraps
+        // this exact substring in the link.
+        telText: contact.phone ? contact.phone.replace(/\s+/g, ' ').trim() : null,
+        at: contact.createdAt,
+      });
+    }
+  }
+  for (const doc of documents) {
+    const sentence = documentSentence(doc.title);
+    if (sentence) {
+      items.push({ id: doc.id, kind: 'document', group: 'taught', sentence, tel: null, telText: null, at: doc.createdAt });
+    }
+  }
+  for (const article of articles) {
+    const sentence = sopSentence(article.title);
+    if (sentence) {
+      items.push({ id: article.id, kind: 'sop', group: 'taught', sentence, tel: null, telText: null, at: article.updatedAt });
+    }
+  }
+
+  // What it worked out by itself, plus the facts somebody taught it in words.
+  // Manager-only, unchanged: agent_memory has never been readable by the floor.
+  if (ctx.isManager) {
+    const rows = await listMemory(ctx.pid, { scope: 'property', limit: 200 });
+    items.push(...memoryItems(rows));
+  }
 
   return ok(
     {
-      stats: {
-        totalKnown: confirmed.length,
-        patternsThisMonth,
-        issuesCaughtEarly,
-        pendingReview: rows.length - confirmed.length,
-      },
-      taught: taught.map(slim),
-      noticed: noticed.map(slim),
-      learned: learned.map(slim),
-      // Unreviewed first: the whole point of the screen is that they need you.
-      facts: [
-        ...rows.filter((r) => r.reviewState === 'unreviewed').map(fact),
-        ...confirmed.map(fact),
-      ],
+      items: sortKnowsItems(items),
+      canTeach: ctx.isManager && ctx.hotelMutationAllowed,
+      canSeeNoticed: ctx.isManager,
     },
-    { requestId },
+    { requestId: ctx.requestId, headers: ctx.headers },
   );
 }
+
+// ─── Write ──────────────────────────────────────────────────────────────────
 
 interface PostBody {
   propertyId?: unknown;
   action?: unknown;
+  kind?: unknown;
   id?: unknown;
-  content?: unknown;
-  category?: unknown;
+  text?: unknown;
 }
 
 export async function POST(req: NextRequest) {
-  const requestId = getOrMintRequestId(req);
-
   const body = (await req.json().catch(() => null)) as PostBody | null;
-  if (!body) return err('Invalid JSON body', { requestId, status: 400, code: ApiErrorCode.InvalidBody });
+  if (!body) {
+    // No context yet, so no requestId from the gate. Mint one for the refusal.
+    return err('Invalid JSON body', {
+      requestId: getOrMintRequestId(req), status: 400, code: ApiErrorCode.InvalidBody,
+    });
+  }
 
-  const g = await gate(req, requestId, body.propertyId);
-  if (!g.ok) return g.response;
+  const ctx = await commsContext(
+    req,
+    typeof body.propertyId === 'string' ? body.propertyId : null,
+    KNOWLEDGE_CTX,
+  );
+  if (!ctx.ok) return ctx.response;
 
-  const idV = validateUuid(body.id, 'id');
-  if (idV.error) return err(idV.error, { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
+  const fail = (message: string, status: number, code: string) =>
+    err(message, { requestId: ctx.requestId, status, code, headers: ctx.headers });
+
+  // Every write on this screen is a manager's. The buttons are absent for
+  // everybody else, and this is the check that counts.
+  if (!ctx.isManager || !ctx.hotelMutationAllowed) {
+    return fail('Only a manager at this hotel can change what Staxis knows.', 403, ApiErrorCode.Forbidden);
+  }
 
   const action = body.action;
-  if (action !== 'confirm' && action !== 'edit' && action !== 'remove') {
-    return err('Unknown action', { requestId, status: 400, code: ApiErrorCode.UnknownAction });
+  if (action !== 'teach' && action !== 'adjust' && action !== 'wrong' && action !== 'remove') {
+    return fail('Unknown action', 400, ApiErrorCode.UnknownAction);
   }
 
-  const rl = await checkAndIncrementRateLimit('knows-write', g.propertyId);
+  const rl = await checkAndIncrementRateLimit(
+    action === 'teach' ? 'knows-intake' : 'knows-write',
+    action === 'teach' ? ctx.pid : hashToRateLimitKey(`${ctx.pid}:${ctx.userId}`),
+  );
   if (!rl.allowed) return rateLimitedResponse(rl.current, rl.cap, rl.retryAfterSec);
 
-  const actor = { accountId: g.caller.accountId, name: g.caller.displayName, role: g.caller.role };
+  const text = typeof body.text === 'string' ? body.text.slice(0, TEACH_MAX_CHARS).trim() : '';
+  const actor: KnowsActor = {
+    propertyId: ctx.pid,
+    accountId: ctx.accountId,
+    displayName: ctx.displayName,
+    role: ctx.role,
+  };
+  const stores = knowsStores(actor);
 
-  if (action === 'confirm') {
-    const res = await confirmMemoryFact(g.propertyId, idV.value!, actor);
-    if (!res.ok) {
-      log.error('[memory/knows:POST] confirm failed', { requestId, err: res.error });
-      return err('Could not confirm that', { requestId, status: 500, code: ApiErrorCode.ConfirmFailed });
-    }
-    if (!res.confirmed) {
-      return err('That fact is no longer there', { requestId, status: 404, code: ApiErrorCode.FactGone });
-    }
-    return ok({ action, id: idV.value }, { requestId });
-  }
-
-  if (action === 'remove') {
-    const res = await removeMemoryFact(g.propertyId, idV.value!);
-    if (!res.ok) {
-      log.error('[memory/knows:POST] remove failed', { requestId, err: res.error });
-      return err('Could not remove that', { requestId, status: 500, code: ApiErrorCode.RemoveFailed });
-    }
-    if (!res.removed) {
-      return err('That fact is no longer there', { requestId, status: 404, code: ApiErrorCode.FactGone });
-    }
-    return ok({ action, id: idV.value }, { requestId });
+  if (action === 'teach') {
+    if (!text) return fail('Type something first.', 400, ApiErrorCode.NothingToRead);
+    const res = await applyTeach(stores, actor, text, (reason) => {
+      // Not an error for the person: their sentence is being saved as a fact.
+      // The line exists so a drawer that has been refusing writes all week is
+      // visible in the logs rather than showing up as "everything becomes a
+      // fact now".
+      log.warn('[memory/knows:teach] fell back to a plain fact', { pid: ctx.pid, reason });
+    });
+    if (!res.ok) return fail(res.message, res.reason === 'invalid' ? 400 : 500, codeFor(res.reason));
+    return ok({ filedAs: res.filedAs }, { requestId: ctx.requestId, headers: ctx.headers });
   }
 
-  // ── edit ──────────────────────────────────────────────────────────────────
-  if (typeof body.content !== 'string') {
-    return err('content is required', { requestId, status: 400, code: ApiErrorCode.ContentRequired });
-  }
-  // Same PII masking every other memory write path applies. A manager typing a
-  // vendor's mobile number into a fact must not turn long-term memory into a
-  // place phone numbers accumulate.
-  const content = redactMemoryContent(body.content.slice(0, FACT_MAX_CONTENT)).content.trim();
-  if (!content) {
-    return err('content is required', { requestId, status: 400, code: ApiErrorCode.ContentRequired });
-  }
-  if (body.category !== undefined && !isMemoryCategory(body.category)) {
-    return err('Unknown category', { requestId, status: 400, code: ApiErrorCode.UnknownCategory });
+  // ── adjust / wrong / remove all name one existing row ─────────────────────
+  if (!isItemKind(body.kind)) return fail('Unknown action', 400, ApiErrorCode.UnknownAction);
+  const idV = validateUuid(body.id, 'id');
+  if (idV.error) return fail(idV.error, 400, ApiErrorCode.ValidationFailed);
+  const kind = body.kind;
+  const id = idV.value!;
+
+  // The knowledge hub's own routes gate their writes on this capability, which
+  // a hotel can restrict from the Access tab. Rendering those rows on a new
+  // screen must not hand the write back to somebody it was taken from.
+  if (kind !== 'fact') {
+    const decision = await capabilityDecisionForUserId(ctx.userId, 'manage_knowledge', ctx.pid);
+    if (decision === 'unavailable') return capabilityUnavailableResponse(ctx.requestId);
+    if (decision === 'denied') {
+      return fail('Only a manager at this hotel can change this.', 403, ApiErrorCode.Forbidden);
+    }
   }
 
-  const res = await editMemoryFact(
-    g.propertyId,
-    idV.value!,
-    { content, ...(body.category !== undefined ? { category: body.category } : {}) },
-    actor,
-  );
+  // "That's wrong" with nothing typed drops the row. With a correction it is
+  // the same write as Adjust, because a correction IS the new wording: the
+  // store already promotes an edited fact to human-authored (see
+  // editMemoryFact), which is what makes the old guess stop being believed.
+  const res = action === 'remove' || (action === 'wrong' && !text)
+    ? await applyDrop(stores, actor, kind, id)
+    : await applyAdjust(stores, actor, kind, id, text);
   if (!res.ok) {
-    log.error('[memory/knows:POST] edit failed', { requestId, err: res.error });
-    return err('Could not save that', { requestId, status: 500, code: ApiErrorCode.SaveFailed });
+    const status = res.reason === 'gone' ? 404 : res.reason === 'invalid' ? 400 : 500;
+    return fail(res.message, status, codeFor(res.reason));
   }
-  if (!res.updated) {
-    return err('That fact is no longer there', { requestId, status: 404, code: ApiErrorCode.FactGone });
-  }
-  return ok({ action, id: idV.value, content }, { requestId });
+  return ok({ kind, id }, { requestId: ctx.requestId, headers: ctx.headers });
 }
+
+function codeFor(reason: 'save_failed' | 'gone' | 'invalid'): string {
+  if (reason === 'gone') return ApiErrorCode.FactGone;
+  if (reason === 'invalid') return ApiErrorCode.ContentRequired;
+  return ApiErrorCode.SaveFailed;
+}
+
+/**
+ * The real stores, wired to the seams each one already had.
+ *
+ * Assembled here rather than imported by `writes.ts` so the routing logic can
+ * be driven by a test with fakes: the five drawers all sit behind service-role
+ * modules, and a test that needs a database to prove a sentence went into the
+ * rules table is a test nobody runs.
+ */
+function knowsStores(actor: KnowsActor): KnowsStores {
+  return {
+    file: (sentence) => fileTypedSentence({
+      sentence,
+      propertyId: actor.propertyId,
+      accountId: actor.accountId,
+      displayName: actor.displayName,
+      role: actor.role,
+    }),
+    redact: (text) => redactMemoryContent(text.slice(0, TEACH_MAX_CHARS)).content,
+
+    storeFact: async ({ topic, content, category, actor }) => {
+      const res = await storeMemory({
+        propertyId: actor.propertyId,
+        scope: 'property',
+        subjectAccountId: null,
+        topic,
+        content,
+        // Human-authored and high confidence, so it reaches the copilot
+        // immediately. Nobody on this screen is asked to confirm a sentence
+        // they just typed themselves, so nothing here may land unreviewed.
+        source: 'explicit_user',
+        confidence: 'high',
+        category,
+        createdByAccountId: actor.accountId,
+        createdByName: actor.displayName,
+        createdByRole: actor.role,
+      });
+      return { ok: res.ok };
+    },
+    editFact: async (id, content, actor) => {
+      const res = await editMemoryFact(actor.propertyId, id, { content }, {
+        accountId: actor.accountId, name: actor.displayName, role: actor.role,
+      });
+      return { ok: res.ok, hit: res.updated };
+    },
+    removeFact: async (id, actor) => {
+      const res = await removeMemoryFact(actor.propertyId, id);
+      return { ok: res.ok, hit: res.removed };
+    },
+
+    storeRule: async (text, actor) => {
+      const res = await storeStandingRule({
+        propertyId: actor.propertyId,
+        ruleText: text,
+        accountId: actor.accountId,
+        authorName: actor.displayName,
+        authorRole: actor.role,
+      });
+      return res.ok ? { ok: true } : { ok: false, message: res.reason };
+    },
+    editRule: async (id, text, actor) => {
+      const res = await updateStandingRule({ propertyId: actor.propertyId, ruleId: id, ruleText: text });
+      if (res.ok) return { ok: true, hit: true };
+      // A length refusal is worth showing; "no such rule" is a miss, not a
+      // refusal, and must read as gone rather than as an invalid sentence.
+      if (res.reason === 'too_short' || res.reason === 'too_long') return { ok: false, message: res.error };
+      return { ok: true, hit: false };
+    },
+    removeRule: async (id, actor) => {
+      const res = await removeStandingRule({
+        propertyId: actor.propertyId, ruleId: id, accountId: actor.accountId,
+      });
+      return { ok: res.ok, hit: !!res.removed };
+    },
+
+    storeContact: async (contact, actor) => {
+      await createContact(
+        actor.propertyId,
+        {
+          name: contact.name, company: contact.company, phone: contact.phone,
+          email: contact.email, notes: contact.notes, category: contact.category,
+          address: null, cityStateZip: null, hours: null, localCategory: null,
+        },
+        { accountId: actor.accountId, name: actor.displayName ?? 'Manager' },
+      );
+      return { ok: true };
+    },
+    editContact: async (id, contact, actor) => {
+      const hit = await updateContact(actor.propertyId, id, {
+        name: contact.name, company: contact.company, phone: contact.phone,
+        email: contact.email, notes: contact.notes, category: contact.category,
+        address: null, cityStateZip: null, hours: null, localCategory: null,
+      });
+      return { ok: true, hit };
+    },
+    removeContact: async (id, actor) => ({ ok: true, hit: await deleteContact(actor.propertyId, id) }),
+
+    renameDocument: async (id, title, actor) => ({ ok: true, hit: await renameDocument(actor.propertyId, id, title) }),
+    removeDocument: async (id, actor) => ({ ok: true, hit: await deleteDocument(actor.propertyId, id) }),
+    renameSop: async (id, title, actor) => ({ ok: true, hit: await renameArticle(actor.propertyId, id, title) }),
+    removeSop: async (id, actor) => ({ ok: true, hit: await deleteArticle(actor.propertyId, id) }),
+  };
+}
+
