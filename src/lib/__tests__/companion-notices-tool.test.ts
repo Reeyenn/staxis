@@ -33,6 +33,7 @@ import { afterEach, beforeEach, describe, test } from 'node:test';
 
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { getTool, type ToolHandlerContext } from '@/lib/agent/tools';
+import { runAssignmentsTool } from '@/lib/agent/tools/assignments';
 import '@/lib/agent/tools/index';
 import { loadAssignmentNotices } from '@/lib/companion/notices-server';
 import { KNOWLEDGE_STORES, knowledgeStore } from '@/lib/agent/knowledge-door';
@@ -191,9 +192,14 @@ function toolCtx(staffId: string | null): ToolHandlerContext {
 }
 
 async function runTool(args: { days?: number; state?: string }, staffId: string | null = ME) {
-  const def = getTool('staxis_assignments');
-  assert.ok(def, 'staxis_assignments is not registered');
-  const result = await def!.handler(args, toolCtx(staffId));
+  assert.ok(getTool('staxis_assignments'), 'staxis_assignments is not registered');
+  // The clock goes in as an argument, pinned to the same NOW the loader is
+  // given above. The fixture rows carry fixed dates, so reading the real clock
+  // here made "how many whole days has Marcus had this" grow by one every real
+  // day: the suite passed on 2026-08-05 and failed by itself the next morning.
+  // The registered handler is this same body with `now` defaulted, which is
+  // what production runs.
+  const result = await runAssignmentsTool(args, toolCtx(staffId), NOW);
   assert.equal(result.ok, true, result.error ?? '');
   return result.data as {
     window: string | null;
