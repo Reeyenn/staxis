@@ -91,6 +91,14 @@ interface TestState {
   beforeFinalCallerAuthorityRead: (() => void) | null;
   organizationId: string | null;
   effectiveStandingEntitlements: Map<string, Array<Record<string, unknown>>>;
+  /**
+   * Accounts the roster RPC projects back onto the hotel surface. 0424's
+   * `_staxis_stage_b_is_independent_single_hotel_scope` does this for a
+   * normalized account whose only claim is one hotel with no management
+   * company, which is every person at an independent hotel after the Stage C
+   * cutover. They are normalized AND `legacy_hotel` at the same time.
+   */
+  independentHotelAccountIds: Set<string>;
   suppressLegacyAccessProjection: Set<string>;
   authorizationStateOmittedAccountIds: Set<string>;
   unavailableAccessAccountIds: Set<string>;
@@ -218,6 +226,7 @@ function resetState(): void {
     beforeFinalCallerAuthorityRead: null,
     organizationId: null,
     effectiveStandingEntitlements: new Map(),
+    independentHotelAccountIds: new Set(),
     suppressLegacyAccessProjection: new Set(),
     authorizationStateOmittedAccountIds: new Set(),
     unavailableAccessAccountIds: new Set(),
@@ -319,6 +328,7 @@ function authoritativeRoster(
           state.canonicalPropertyAccess.get(accountRow.id) ?? accountRow.property_access,
         )].sort(),
       managementSurface: accountRow.authority_mode === 'normalized'
+        && !state.independentHotelAccountIds.has(accountRow.id)
         ? 'company_access'
         : 'legacy_hotel',
     }));
@@ -1175,11 +1185,40 @@ describe('authoritative hotel roster response contract', () => {
     assert.equal(parsed?.accounts[0]?.managementSurface, 'company_access');
   });
 
-  test('rejects mixed authority surfaces, duplicate hotels, and rows outside the selected hotel', () => {
-    assert.equal(parseAuthoritativeHotelRoster({
+  test('accepts the independent hotel shape production actually returns', () => {
+    // Verified against production after the Stage C cutover: every account at
+    // a hotel with no management company comes back normalized, at authority
+    // version 2, and still managed on the hotel surface. Rejecting this shape
+    // made loadAuthoritativeHotelRoster throw "malformed" for the paying
+    // customer's Users page and for every other independent hotel.
+    const independent = {
+      ...normalizedAccount,
+      active: true,
+      authorityMode: 'normalized',
+      authorityVersion: 2,
+      managementSurface: 'legacy_hotel',
+    };
+    const parsed = parseAuthoritativeHotelRoster({
       ...projection,
-      accounts: [{ ...normalizedAccount, managementSurface: 'legacy_hotel' }],
-    }), null);
+      accounts: [independent],
+    });
+    assert.equal(parsed?.accounts.length, 1);
+    assert.equal(parsed?.accounts[0]?.authorityMode, 'normalized');
+    assert.equal(parsed?.accounts[0]?.authorityVersion, 2);
+    assert.equal(parsed?.accounts[0]?.managementSurface, 'legacy_hotel');
+    assert.deepEqual(parsed?.accounts[0]?.propertyIds, [HOTEL_A]);
+  });
+
+  test('rejects the impossible surface, duplicate hotels, and rows outside the selected hotel', () => {
+    // The roster RPC's CASE falls through to legacy_hotel for anything that is
+    // not normalized, so a non-normalized account on company_access can only
+    // mean the response drifted from its contract.
+    for (const authorityMode of ['legacy', 'shadow']) {
+      assert.equal(parseAuthoritativeHotelRoster({
+        ...projection,
+        accounts: [{ ...normalizedAccount, authorityMode, managementSurface: 'company_access' }],
+      }), null);
+    }
     assert.equal(parseAuthoritativeHotelRoster({
       ...projection,
       accounts: [{ ...normalizedAccount, propertyIds: [HOTEL_A, HOTEL_A] }],
@@ -1611,6 +1650,40 @@ describe('GET /api/auth/team action contract', () => {
       canRemove: false,
       canDeactivate: false,
       canReactivate: true,
+    });
+  });
+
+  test('an independent hotel keeps its own People screen after the cutover', async () => {
+    // Post-cutover production shape: everybody at a hotel with no management
+    // company is normalized at authority version 2, and the roster RPC hands
+    // them back on the hotel surface because there is no company Access screen
+    // to send them to. Two separate failures used to hit here. The roster
+    // parser rejected the combination outright, so the whole page came back
+    // unavailable; and the row projection read authority mode instead of the
+    // surface, so even when it loaded, nobody could be given a different job
+    // or taken off the hotel.
+    for (const accountId of [CALLER_ID, MULTI_ID, LOCAL_ID, OWNER_ID, PEER_GM_ID]) {
+      account(accountId).authority_mode = 'normalized';
+      account(accountId).authority_version = 2;
+      state.independentHotelAccountIds.add(accountId);
+    }
+
+    const response = await GET(request('GET', `/api/auth/team?hotelId=${HOTEL_A}`));
+    assert.equal(response.status, 200, 'the roster must parse, not fail closed');
+    const body = await response.json();
+    const local = body.data.team.find((row: { accountId: string }) => row.accountId === LOCAL_ID);
+    assert.ok(local);
+    assert.equal(local.authorityMode, 'normalized');
+    assert.equal(local.authorityVersion, 2);
+    assert.equal(local.managementSurface, 'legacy_hotel');
+    assert.equal(local.accessManagementHref, null, 'an independent hotel has no Access screen');
+    assert.deepEqual(local.actions, {
+      canEditProfile: true,
+      canChangeRole: true,
+      canResetPassword: false,
+      canRemove: true,
+      canDeactivate: true,
+      canReactivate: false,
     });
   });
 

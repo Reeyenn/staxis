@@ -408,16 +408,32 @@ export async function POST(req: NextRequest) {
     finalizeThrown = finalizeError;
   }
   const accepted = acceptedInviteResult(acceptedData) ? acceptedData : null;
+  // What the acceptance transaction must prove it did.
+  //
+  // `normalized` is no longer a branch signal. After the Stage C cutover the
+  // acceptance RPC grants canonical authority on BOTH paths: a company hat via
+  // staxis_set_membership_hat, or an independent single-hotel bridge via
+  // _staxis_stage_c_grant_independent_hotel. It reports normalized=true either
+  // way, and anything less than true means the entitlement did not activate.
+  // Requiring it to mirror the invitation shape rejected every plain
+  // single-hotel acceptance, which is how an independent hotel invites anyone.
+  //
+  // The shape check that still means something is the membership: a company or
+  // property-scoped invitation must have produced one, and a plain hotel
+  // invitation must NOT have (its authority is the bridge, not a hat). Both
+  // directions are asserted so a branch that silently ran the wrong path still
+  // fails closed.
   if (finalizeThrown
     || acceptedError
     || !accepted
-    || accepted.normalized !== expectedNormalized
-    || (expectedNormalized && !accepted.membershipId)) {
+    || accepted.normalized !== true
+    || (expectedNormalized && !accepted.membershipId)
+    || (!expectedNormalized && accepted.membershipId !== null)) {
     log.error('[accept-invite] transactional acceptance failed', {
       requestId,
       inviteId: claim.inviteId,
       code: acceptedError?.code,
-      normalized: expectedNormalized,
+      expectedNormalized,
       threw: finalizeThrown instanceof Error ? finalizeThrown.message : finalizeThrown ? String(finalizeThrown) : null,
     });
 

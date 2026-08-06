@@ -34,6 +34,8 @@ import { NextRequest } from 'next/server';
 import type { PGlite } from '@electric-sql/pglite';
 
 import { POST as acceptInvite } from '@/app/api/auth/accept-invite/route';
+import { loadAuthoritativeHotelRoster } from '@/lib/authorization/hotel-account-roster';
+import { log } from '@/lib/log';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { gatherAssignedByMe, listAssignees } from '@/lib/worklist/core';
 
@@ -45,10 +47,13 @@ import {
 } from '../../../tests/fixtures/postgrest-pglite';
 import {
   ACCOUNT_BO,
+  ACCOUNT_WANDA,
   ORG_B,
   PID_A1,
   PID_B1,
+  PID_L1,
   UID_BO,
+  UID_WANDA,
   seedTwoCompanies,
 } from '../../../tests/fixtures/pglite-two-company-seed';
 
@@ -261,5 +266,182 @@ describe('a housekeeper invitation stays a login only', () => {
       (await listAssignees(PID_B1)).map((person) => person.name),
       ['Bo Owner', 'Nina Newmanager'],
     );
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// The same visit, at a hotel with no management company
+//
+// Waco Inn is nobody's hotel but its owner's. That is how the first paying
+// customer is set up, and after the access cutover it was the shape nothing
+// had been exercised against: three separate places assumed "canonical
+// authority" meant "managed by a company", and each of them failed a hotel
+// that has no company at all.
+// ═══════════════════════════════════════════════════════════════════════════
+
+/** Create a PLAIN invitation: no company, no scope, no covered hotels. This is
+ *  the only kind an independent hotel can send. */
+async function inviteToIndependentHotel(options: {
+  email: string;
+  role: 'general_manager' | 'housekeeping';
+}): Promise<string> {
+  const token = randomBytes(24).toString('hex');
+  const { data, error } = await supabaseAdmin.rpc('staxis_create_account_invite_guarded', {
+    p_actor_account_id: ACCOUNT_WANDA,
+    p_actor_auth_user_id: UID_WANDA,
+    p_hotel_id: PID_L1,
+    p_email: options.email,
+    p_role: options.role,
+    p_token_hash: hashToken(token),
+    p_expires_at: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString(),
+    p_organization_id: null,
+    p_membership_scope: null,
+    p_covered_property_ids: null,
+    p_request_id: randomUUID(),
+    p_target_staff_id: null,
+  });
+  const receipt = data as { ok?: boolean; reason?: string } | null;
+  assert.equal(error, null, `invite creation failed: ${error?.message}`);
+  assert.equal(receipt?.ok, true, `invite refused: ${JSON.stringify(receipt)}`);
+  return token;
+}
+
+describe('an independent hotel can still bring somebody on', () => {
+  const email = 'waco.gm@example.test';
+
+  test('its Users list loads at all', async () => {
+    // The roster response for an independent hotel is normalized authority on
+    // the hotel surface at the same time. That combination used to be read as
+    // a corrupt response, so this threw and every consumer fell back to
+    // "temporarily unavailable" for the real customer.
+    const roster = await loadAuthoritativeHotelRoster(PID_L1, false);
+    assert.ok(roster.accounts.length > 0, 'the owner must be on their own hotel roster');
+    const owner = roster.accounts.find((account) => account.accountId === ACCOUNT_WANDA);
+    assert.ok(owner, 'the independent owner must appear');
+    assert.equal(owner.authorityMode, 'normalized');
+    assert.equal(owner.managementSurface, 'legacy_hotel');
+    assert.deepEqual(owner.propertyIds, [PID_L1]);
+  });
+
+  test('a plain invitation is accepted outright, not rescued', async () => {
+    // The acceptance transaction reports normalized authority on BOTH of its
+    // branches. The route used to demand that the word mirror the invitation
+    // shape instead, so every plain invitation, the only kind an independent
+    // hotel can send, was declared a failure after it had already committed.
+    // The ambiguity net then quietly rescued it, which is why the person
+    // usually still got in: the acceptance was logged as a hard failure, the
+    // reconciliation path ran on every single one, and a slow read there
+    // answers "please retry shortly" to somebody whose account already exists
+    // and whose invitation is already spent. Asserting only the 200 would
+    // therefore pass with the bug present, so this asserts the route did not
+    // need rescuing.
+    const failures: string[] = [];
+    const realLogError = log.error;
+    log.error = (message: string, fields?: Record<string, unknown>) => {
+      failures.push(message);
+      return realLogError(message, fields);
+    };
+
+    const token = await inviteToIndependentHotel({ email, role: 'general_manager' });
+    let status: number;
+    try {
+      status = await acceptAs(token, 'Wes Newmanager');
+    } finally {
+      log.error = realLogError;
+    }
+    assert.equal(status, 200);
+    assert.deepEqual(
+      failures.filter((message) => message.includes('transactional acceptance failed')),
+      [],
+      'a successful acceptance must not be recorded as a failed one',
+    );
+
+    const { rows } = await pg.query<{ account_id: string; authority_mode: string }>(
+      `select account.id as account_id, state.authority_mode
+         from public.accounts account
+         join auth.users auth_user on auth_user.id = account.data_user_id
+         join public.account_authorization_state state on state.account_id = account.id
+        where lower(auth_user.email) = lower($1)`,
+      [email],
+    );
+    assert.equal(rows.length, 1, 'the login must survive the acceptance');
+    assert.equal(rows[0]?.authority_mode, 'normalized');
+  });
+
+  test('and the manager lands on the hotel staff list, linked', async () => {
+    const roster = await rosterAt(PID_L1, email);
+    assert.notEqual(roster.staffId, null);
+    assert.notEqual(roster.linkedAccountId, null, 'the roster row must be linked to the login');
+    assert.equal(roster.linkSource, 'invitation');
+    assert.notEqual(roster.department, 'housekeeping');
+    assert.deepEqual(
+      (await listAssignees(PID_L1)).map((person) => person.name),
+      ['Wes Newmanager'],
+    );
+  });
+});
+
+describe('the roster link is written only through its guarded operation', () => {
+  test('the service role cannot touch the link table directly, but the operation can', async () => {
+    // Production truth since the access lockdown: SELECT and nothing else.
+    // The bridge used to write this table directly, which passed here (the
+    // test role owns the tables) and failed in production on every single
+    // link. Running as the real role is what makes that visible.
+    const roster = await rosterAt(PID_L1, 'waco.gm@example.test');
+    assert.ok(roster.staffId && roster.linkedAccountId, 'this test needs the linked manager');
+
+    await pg.exec('begin; set local role service_role;');
+    let directWriteError: string | null = null;
+    try {
+      await pg.query(
+        `update public.account_property_staff_links
+            set source = 'manual'
+          where account_id = $1 and property_id = $2`,
+        [roster.linkedAccountId, PID_L1],
+      );
+    } catch (error) {
+      directWriteError = error instanceof Error ? error.message : String(error);
+    }
+    await pg.exec('rollback;').catch(() => undefined);
+    assert.match(
+      directWriteError ?? '',
+      /permission denied/i,
+      'a direct write must stay denied for the service role',
+    );
+
+    await pg.exec('begin; set local role service_role;');
+    let linked: { ok?: boolean; status?: string; reason?: string } | null = null;
+    try {
+      const result = await pg.query<{ value: { ok?: boolean; status?: string; reason?: string } }>(
+        `select public.staxis_bridge_manager_roster_link($1, $2, $3, $4, $5) as value`,
+        [roster.linkedAccountId, PID_L1, roster.staffId, 'system', null],
+      );
+      linked = result.rows[0]?.value ?? null;
+      await pg.exec('commit;');
+    } catch (error) {
+      await pg.exec('rollback;').catch(() => undefined);
+      throw error;
+    }
+    assert.equal(linked?.ok, true, `the guarded operation must write it: ${JSON.stringify(linked)}`);
+    assert.equal(linked?.status, 'unchanged');
+  });
+
+  test('it refuses a hotel the person has no authority over', async () => {
+    const roster = await rosterAt(PID_L1, 'waco.gm@example.test');
+    const strangerStaffId = randomUUID();
+    await pg.query(
+      `insert into public.staff (id, property_id, name, department, is_active, language)
+       values ($1, $2, 'Stranger', 'other', true, 'en')`,
+      [strangerStaffId, PID_B1],
+    );
+
+    await pg.exec('begin; set local role service_role;');
+    const result = await pg.query<{ value: { ok?: boolean; reason?: string } }>(
+      `select public.staxis_bridge_manager_roster_link($1, $2, $3, $4, $5) as value`,
+      [roster.linkedAccountId, PID_B1, strangerStaffId, 'system', null],
+    );
+    await pg.exec('rollback;').catch(() => undefined);
+    assert.equal(result.rows[0]?.value?.ok, false);
+    assert.equal(result.rows[0]?.value?.reason, 'not_authorized');
   });
 });

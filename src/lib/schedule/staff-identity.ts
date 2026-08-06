@@ -393,22 +393,30 @@ export async function ensureManagerStaffIdentity(input: {
     }
   }
 
-  const now = new Date().toISOString();
-  const linkWrite = await supabaseAdmin
-    .from('account_property_staff_links')
-    .upsert({
-      account_id: accountId,
-      property_id: propertyId,
-      staff_id: staffId,
-      is_active: true,
-      source,
-      linked_by_account_id: input.actorAccountId,
-      linked_at: now,
-      deactivated_at: null,
-      deactivated_by_account_id: null,
-      updated_at: now,
-    }, { onConflict: 'account_id,property_id' });
-  if (linkWrite.error) throw linkWrite.error;
+  // The link itself is written by the canonical RPC (0454), never by a direct
+  // table write. account_property_staff_links is locked down to SELECT for the
+  // service role, so the direct upsert this used to do succeeded in tests and
+  // failed in production with "permission denied for table". The RPC re-checks
+  // canonical hotel authority, the roster row, and the one-active-login rule
+  // before it writes.
+  const { data: linkData, error: linkError } = await supabaseAdmin.rpc(
+    'staxis_bridge_manager_roster_link',
+    {
+      p_account_id: accountId,
+      p_property_id: propertyId,
+      p_staff_id: staffId,
+      p_source: source,
+      p_linked_by_account_id: input.actorAccountId,
+    },
+  );
+  const linked = linkData !== null && typeof linkData === 'object' && !Array.isArray(linkData)
+    ? linkData as { ok?: unknown; reason?: unknown }
+    : null;
+  if (linkError || linked?.ok !== true) {
+    throw linkError ?? new Error(
+      `manager roster link was refused: ${String(linked?.reason ?? 'unavailable')}`,
+    );
+  }
 
   return { staffId, outcome: plan.outcome, archivedStaffIds };
 }

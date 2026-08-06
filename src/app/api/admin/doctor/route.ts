@@ -832,6 +832,10 @@ export const EXPECTED_MIGRATIONS_STATIC: ReadonlyArray<string> = [
   // To-do follow-through: a completion credited to the day it was due, a
   // "not needed" ending, an optional time of day, and the list-seen cursor.
   '0453',
+  // Guarded account link for the manager roster bridge. The Stage C lockdown
+  // leaves service_role with SELECT only on account_property_staff_links, so
+  // the bridge writes through a SECURITY DEFINER RPC instead.
+  '0454',
   // Recurring to-dos gain an every-N-days cadence (interval_days + anchor).
   '0455',
 ];
