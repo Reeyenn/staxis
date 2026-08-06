@@ -180,6 +180,74 @@ export async function storeStandingRule(input: {
 }
 
 /**
+ * Reword one rule in place.
+ *
+ * Added for the Knows page's Adjust button, which had no seam to write to: a
+ * rule could be created and retired but never fixed, so correcting a typo meant
+ * deleting the rule and telling the companion the whole thing again.
+ *
+ * DELIBERATELY NARROW. It sets the text and nothing else — no reassignment of
+ * authorship, no reactivation of a retired rule (`is_active` stays in the
+ * filter, so an id that was removed a minute ago matches nothing). The same
+ * length rules as `storeStandingRule` are applied here rather than trusted from
+ * the caller, for the same reason they are applied there: there are now two
+ * writers and a validation living in one of them is a validation the other does
+ * not have.
+ */
+export async function updateStandingRule(input: {
+  propertyId: string;
+  ruleId: string;
+  ruleText: string;
+}): Promise<StandingRuleWrite> {
+  const text = input.ruleText.trim().replace(/\s+/g, ' ');
+  if (text.length < STANDING_RULE_MIN_CHARS) {
+    return {
+      ok: false,
+      reason: 'too_short',
+      error: 'That is too short to follow. Say it as a full sentence.',
+    };
+  }
+  if (text.length > STANDING_RULE_MAX_CHARS) {
+    return {
+      ok: false,
+      reason: 'too_long',
+      error: `Keep a standing rule under ${STANDING_RULE_MAX_CHARS} characters. One rule at a time works best.`,
+    };
+  }
+
+  try {
+    const { data, error } = await supabaseAdmin
+      .from('hotel_standing_rules')
+      .update({ rule_text: text, updated_at: new Date().toISOString() })
+      .eq('id', input.ruleId)
+      .eq('property_id', input.propertyId)
+      .eq('is_active', true)
+      .select('id, property_id, rule_text, created_by_account_id, created_by_name, created_by_role, created_at')
+      .maybeSingle();
+    if (error) {
+      log.warn('[companion-rules] update failed', {
+        propertyId: input.propertyId,
+        err: error.message,
+      });
+      return {
+        ok: false,
+        reason: 'rejected',
+        error: 'I could not save that one. Try saying it in plain words, without any brackets or symbols.',
+      };
+    }
+    clearStandingRulesCache(input.propertyId);
+    if (!data) return { ok: false, reason: 'failed', error: 'That rule is no longer here.' };
+    return { ok: true, rule: toRule(data as RuleRow) };
+  } catch (e) {
+    log.warn('[companion-rules] update threw', {
+      propertyId: input.propertyId,
+      err: e instanceof Error ? e.message : 'unknown',
+    });
+    return { ok: false, reason: 'failed', error: 'That did not save. Try again in a moment.' };
+  }
+}
+
+/**
  * Retire one rule.
  *
  * Soft: the row stays so a rule that stopped being followed can still be
