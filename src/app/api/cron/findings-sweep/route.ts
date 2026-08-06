@@ -22,16 +22,16 @@
  * local recommendations, and `knowledge_promotions` via staxis_propose_promotion
  * for the rare candidate that clears the bar.
  *
- * DORMANT ON PURPOSE (2026-07-26). There is no vercel.json entry: the founder
- * turns this on, not a deploy. To enable, two coordinated changes:
- *   1. vercel.json                        → { "path": "/api/cron/findings-sweep", "schedule": "0 7 * * 1" }
- *   2. src/lib/automation/job-catalog.ts  → promote its staged row to active
- * Do not do it for this route alone. The AI layer goes on in one act, and
- * docs/cron-triggers.md, "The AI master switch", is the single checklist that
- * covers all four of its crons (this one, run-findings, findings-janitor and
- * run-management-patterns).
+ * SCHEDULED since 2026-08-06 at '0 7 * * 1', when the founder flipped the AI
+ * master switch. Dormant from 2026-07-26 until then.
+ *
  * Weekly, on a Monday, AFTER the nightly run — the sweep is more useful when it
  * can see what the detectors currently have open.
+ *
+ * The layer still moves in ONE act: this route, run-findings, findings-janitor
+ * and run-management-patterns go on and off together, asserted by
+ * cron-cadences.test.ts. docs/cron-triggers.md, "The AI master switch", is the
+ * checklist. Do not park this one on its own.
  *
  * Query params:
  *   propertyId (optional, uuid) — sweep exactly this hotel, ignoring the sample

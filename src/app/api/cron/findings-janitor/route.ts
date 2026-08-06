@@ -3,20 +3,19 @@
  *
  * Retention for the pattern (findings) engine.
  *
- * ─── DORMANT ON PURPOSE (2026-07-27) ──────────────────────────────────────
- * There is no vercel.json entry. It ships unscheduled, exactly like its two
- * siblings `run-findings` and `findings-sweep`: the founder turns the findings
- * engine on with one master switch, and a janitor for an engine that has never
- * run is worse than useless — it is a job that can only ever surprise you. To
- * enable, two coordinated changes (the same checklist those two carry):
- *   1. vercel.json                        → { "path": "/api/cron/findings-janitor", "schedule": "40 7 * * 1" }
- *   2. src/lib/automation/job-catalog.ts  → promote its staged row to active
- * Do not do it for this route alone. The AI layer goes on in one act, and
- * docs/cron-triggers.md, "The AI master switch", is the single checklist that
- * covers all four of its crons (this one, run-findings, findings-sweep and
- * run-management-patterns).
- * Weekly, Monday, after findings-sweep — a janitor should run behind the jobs
- * whose output it tidies, never ahead of them.
+ * ─── SCHEDULED SINCE 2026-08-06 ───────────────────────────────────────────
+ * '40 7 * * 1', switched on with its three siblings when the founder flipped
+ * the AI master switch. It shipped unscheduled on 2026-07-27 for a reason worth
+ * keeping in mind: a janitor for an engine that has never run is worse than
+ * useless, it is a job that can only ever surprise you. The engine runs now.
+ *
+ * Weekly, Monday, forty minutes after findings-sweep — a janitor should run
+ * behind the jobs whose output it tidies, never ahead of them.
+ *
+ * The layer still moves in ONE act: this route, run-findings, findings-sweep
+ * and run-management-patterns go on and off together, asserted by
+ * cron-cadences.test.ts. docs/cron-triggers.md, "The AI master switch", is the
+ * checklist. Do not park this one on its own.
  *
  * ═══════════════════════════════════════════════════════════════════════════
  * WHAT THIS JOB REFUSES TO DELETE, AND WHY

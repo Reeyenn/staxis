@@ -343,6 +343,84 @@ export const ACTIVE_MISSION_JOBS: ReadonlyArray<MissionMonitoredJobCatalogEntry>
     description: 'Polls the application health endpoint.',
     mission: { description: 'Health-checks the app every few minutes.', group: 'Other', tier: 'timer' },
   },
+
+  // ─── The AI findings layer, switched on 2026-08-06 ───────────────────────
+  //
+  // These four were staged from the day they were written, by the founder's
+  // standing ruling that nothing in this layer runs on a timer until a real
+  // hotel is on it. They go on TOGETHER, in one act, which is the other half
+  // of that ruling: on 2026-07-29 `run-management-patterns` was scheduled by
+  // itself and the only effect it could have had was paid model runs against
+  // the seeded demo company. It was parked the same day.
+  //
+  // The schedules are the ones docs/cron-triggers.md has carried all along,
+  // and the order is the order the work depends on: the nightly pass at 6, the
+  // weekly detector discovery at 7 on Monday, its retention sweep forty
+  // minutes later, and the management-company pass at 8.
+  {
+    id: 'run-findings',
+    lifecycle: 'active',
+    owner: 'ai-findings',
+    runner: 'vercel-cron',
+    source: { kind: 'vercel', configFile: 'vercel.json' },
+    target: { kind: 'route', path: '/api/cron/run-findings' },
+    schedule: '0 6 * * *',
+    heartbeat: {
+      name: 'run-findings',
+      visibility: 'mission-control',
+      cadenceDescription: 'nightly 06:00 UTC pass: demote, detect, then one batched judge call per hotel inside its own spend cap',
+    },
+    description: 'Runs per-hotel findings: self-demotion, detection and the nightly judge.',
+    mission: { description: 'Checks each hotel overnight and writes up what it found.', group: 'Reports', tier: 'ai' },
+  },
+  {
+    id: 'findings-sweep',
+    lifecycle: 'active',
+    owner: 'ai-findings',
+    runner: 'vercel-cron',
+    source: { kind: 'vercel', configFile: 'vercel.json' },
+    target: { kind: 'route', path: '/api/cron/findings-sweep' },
+    schedule: '0 7 * * 1',
+    heartbeat: {
+      name: 'findings-sweep',
+      visibility: 'mission-control',
+      cadenceDescription: 'weekly Monday 07:00 UTC discovery of candidate detectors, one model call per sampled hotel',
+    },
+    description: 'Discovers candidate findings detectors across a sample of hotels.',
+    mission: { description: 'Looks weekly for new kinds of problem worth watching.', group: 'Reports', tier: 'ai' },
+  },
+  {
+    id: 'findings-janitor',
+    lifecycle: 'active',
+    owner: 'ai-findings',
+    runner: 'vercel-cron',
+    source: { kind: 'vercel', configFile: 'vercel.json' },
+    target: { kind: 'route', path: '/api/cron/findings-janitor' },
+    schedule: '40 7 * * 1',
+    heartbeat: {
+      name: 'findings-janitor',
+      visibility: 'mission-control',
+      cadenceDescription: 'weekly Monday 07:40 UTC retention for settled findings-engine run data, forty minutes behind the sweep it cleans up after',
+    },
+    description: 'Retention for settled findings-engine run data.',
+    mission: { description: 'Clears out old check results once they are settled.', group: 'Cleanup', tier: 'timer' },
+  },
+  {
+    id: 'run-management-patterns',
+    lifecycle: 'active',
+    owner: 'ai-findings',
+    runner: 'vercel-cron',
+    source: { kind: 'vercel', configFile: 'vercel.json' },
+    target: { kind: 'route', path: '/api/cron/run-management-patterns' },
+    schedule: '0 8 * * *',
+    heartbeat: {
+      name: 'run-management-patterns',
+      visibility: 'mission-control',
+      cadenceDescription: 'nightly 08:00 UTC management-company pass; scheduled discovery excludes companies whose whole portfolio is a test hotel (src/lib/company/demo-portfolio.ts)',
+    },
+    description: 'Refreshes management-company patterns for real portfolios.',
+    mission: { description: 'Looks across a management company for patterns one hotel cannot show.', group: 'Reports', tier: 'ai' },
+  },
 ];
 
 const OTHER_JOBS: ReadonlyArray<JobCatalogEntry> = [
@@ -373,16 +451,6 @@ const OTHER_JOBS: ReadonlyArray<JobCatalogEntry> = [
     heartbeat: { name: 'expire-trials', visibility: 'record-only' }, description: 'Expires eligible trial accounts when trial operations are enabled.',
   },
   {
-    id: 'findings-janitor', lifecycle: 'staged', owner: 'ai-findings', runner: 'manual',
-    source: { kind: 'route-only' }, target: { kind: 'route', path: '/api/cron/findings-janitor' }, schedule: null,
-    heartbeat: { name: 'findings-janitor', visibility: 'record-only' }, description: 'Retention for settled findings-engine run data.',
-  },
-  {
-    id: 'findings-sweep', lifecycle: 'staged', owner: 'ai-findings', runner: 'manual',
-    source: { kind: 'route-only' }, target: { kind: 'route', path: '/api/cron/findings-sweep' }, schedule: null,
-    heartbeat: { name: 'findings-sweep', visibility: 'record-only' }, description: 'Discovers candidate findings detectors when the AI master switch is enabled.',
-  },
-  {
     id: 'lost-found-disposal-check', lifecycle: 'staged', owner: 'hotel-operations', runner: 'manual',
     source: { kind: 'route-only' }, target: { kind: 'route', path: '/api/cron/lost-found-disposal-check' }, schedule: null,
     heartbeat: { name: 'lost-found-disposal-check', visibility: 'record-only' }, description: 'Checks retained lost-and-found items for disposal eligibility.',
@@ -391,16 +459,6 @@ const OTHER_JOBS: ReadonlyArray<JobCatalogEntry> = [
     id: 'run-auto-assign', lifecycle: 'staged', owner: 'hotel-operations', runner: 'manual',
     source: { kind: 'route-only' }, target: { kind: 'route', path: '/api/cron/run-auto-assign' }, schedule: null,
     heartbeat: { name: 'run-auto-assign', visibility: 'record-only' }, description: 'Runs automatic room assignment when hotel automation is enabled.',
-  },
-  {
-    id: 'run-findings', lifecycle: 'staged', owner: 'ai-findings', runner: 'manual',
-    source: { kind: 'route-only' }, target: { kind: 'route', path: '/api/cron/run-findings' }, schedule: null,
-    heartbeat: { name: 'run-findings', visibility: 'record-only' }, description: 'Runs per-hotel findings when the AI master switch is enabled.',
-  },
-  {
-    id: 'run-management-patterns', lifecycle: 'staged', owner: 'ai-findings', runner: 'manual',
-    source: { kind: 'route-only' }, target: { kind: 'route', path: '/api/cron/run-management-patterns' }, schedule: null,
-    heartbeat: { name: 'run-management-patterns', visibility: 'record-only' }, description: 'Refreshes management-company patterns when the AI master switch is enabled.',
   },
   {
     id: 'run-rules-engine', lifecycle: 'staged', owner: 'hotel-operations', runner: 'manual',

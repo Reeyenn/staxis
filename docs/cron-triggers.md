@@ -12,7 +12,7 @@ staged, manual-only, or retired. Adding a catalog row never schedules the job.
 
 ## Triggered by Vercel Cron (declared in `vercel.json`)
 
-These 14 schedules run automatically as part of Vercel deploys. Auth via `CRON_SECRET` header set by Vercel.
+These 18 schedules run automatically as part of Vercel deploys. Auth via `CRON_SECRET` header set by Vercel.
 
 | Path | Schedule | Purpose |
 |---|---|---|
@@ -30,6 +30,10 @@ These 14 schedules run automatically as part of Vercel deploys. Auth via `CRON_S
 | `/api/cron/agent-costs-rollup` | `20 5 * * *` | The ONLY owner of `agent_costs` retention. Folds each month into `agent_costs_monthly`, verifies the fold reproduces the raw sum exactly, and prunes raw rows only for verified months older than 6 months. |
 | `/api/cron/pms-observations-purge` | `40 5 * * *` | Retention sweep for the five append-only PMS observation tables via 0343's sanctioned purge function. 5-year window — a no-op until report ingestion restarts. |
 | `/api/cron/vercel-watchdog` | `*/5 * * * *` | Poll the production doctor and alert when the app is unhealthy. |
+| `/api/cron/run-findings` | `0 6 * * *` | The nightly pass: demote, detect, then one batched judge call per hotel. Switched on 2026-08-06. |
+| `/api/cron/findings-sweep` | `0 7 * * 1` | Weekly detector discovery across a sample of hotels. Switched on 2026-08-06. |
+| `/api/cron/findings-janitor` | `40 7 * * 1` | Retention for settled findings-engine run data, behind the sweep it tidies. Switched on 2026-08-06. |
+| `/api/cron/run-management-patterns` | `0 8 * * *` | The management-company pass. Switched on 2026-08-06. |
 
 ## Triggered by active GitHub schedules
 
@@ -64,13 +68,15 @@ because its handler still exists.
 
 ## The AI master switch
 
-**The entire AI findings layer is unscheduled on purpose, and it goes on in ONE act.** The founder's standing ruling: nothing in this layer runs on a timer until the first real hotel is onboarded. Until then every one of these routes is hand-callable with the `CRON_SECRET` bearer, which is how each gets exercised against real data before it is ever scheduled.
+**ON since 2026-08-06.** The founder's standing ruling was that nothing in this layer runs on a timer until the first real hotel is onboarded; that condition is met and the switch was flipped. All four routes are now in `vercel.json` and `active` in the job catalog.
 
-**Do not schedule one of these on its own.** That is exactly what happened on 2026-07-29 — `run-management-patterns` was given a daily schedule in isolation, on a production fleet whose only management company is the seeded demo one, so the single effect would have been paid AI runs against fake data. It was parked again the same day.
+**The other half of the ruling still stands and always will: these four move TOGETHER.** On 2026-07-29 `run-management-patterns` was given a daily schedule in isolation, on a production fleet whose only management company is the seeded demo one, so the single effect would have been paid AI runs against fake data. It was parked again the same day. Parking one of them now has the mirror-image failure: a heartbeat the doctor expects forever and a stage of the pipeline nothing runs.
 
-### The four crons, and the schedule each one wants
+`cron-cadences.test.ts` asserts all four are scheduled. It used to assert none of them was; the assertion was inverted, not deleted, in the commit that flipped the switch.
 
-| Route | Heartbeat name | Schedule to restore | `cadenceHours` for the doctor |
+### The four crons
+
+| Route | Heartbeat name | Schedule | `cadenceHours` for the doctor |
 |---|---|---|---|
 | `/api/cron/run-findings` | `run-findings` | `0 6 * * *` | 24 |
 | `/api/cron/findings-sweep` | `findings-sweep` | `0 7 * * 1` | 168 |
@@ -79,24 +85,21 @@ because its handler still exists.
 
 ### The checklist — runtime trigger plus catalog state
 
-For **every** route in the table above, make both changes. The job-catalog,
-cron-cadence, and cron-coverage tests fail loudly if the trigger and catalog
-drift, so a half-finished switch cannot ship.
+Unchanged, and it is the checklist for moving them in EITHER direction. For **every** route in the table above, make both changes. The job-catalog, cron-cadence, and cron-coverage tests fail loudly if the trigger and catalog drift, so a half-finished switch cannot ship.
 
 1. **`vercel.json`** → `{ "path": "<route>", "schedule": "<schedule>" }`
-2. **`src/lib/automation/job-catalog.ts`** → change the existing staged row to
-   `active`, record the exact runner/source/schedule, and provide Doctor and
-   Mission metadata.
+2. **`src/lib/automation/job-catalog.ts`** → the row's `lifecycle`, with the
+   exact runner/source/schedule and its Doctor and Mission metadata.
 
 Do not edit `SCHEDULE_REGISTRY`, `EXPECTED_CRONS`, or Mission Control metadata
 separately; they are catalog projections.
 
-Then: deploy, and confirm each route appears in the Vercel **Cron Jobs** tab. After the first tick, `select route, last_run_at from cron_heartbeats order by last_run_at desc` should show all four.
+**After the deploy that carries this**, confirm each route appears in the Vercel **Cron Jobs** tab. After the first tick, `select route, last_run_at from cron_heartbeats order by last_run_at desc` should show all four. Nothing outside the repository has to be configured: Vercel reads `vercel.json` on deploy and the routes already authenticate with the `CRON_SECRET` Vercel sets, which is the same secret the other fourteen use.
 
-### Two things to check before flipping it
+### Two live consequences of the switch being on
 
-- **The per-hotel spend cap is real money.** `run-findings` makes one batched model call per hotel per night and `findings-sweep` one per sampled hotel; both reserve against the per-hotel-per-day findings cap. Turning the layer on for N hotels is an N-shaped cost change, not a fixed one.
-- **Demo data.** `run-management-patterns`'s scheduled discovery already excludes companies whose whole portfolio is `properties.is_test` hotels (`src/lib/company/demo-portfolio.ts`). The hotel-level crons have no equivalent filter — if the demo hotels are still in production when the switch goes on, decide deliberately whether they should be getting nightly findings runs.
+- **The per-hotel spend cap is real money.** `run-findings` makes one batched model call per hotel per night and `findings-sweep` one per sampled hotel; both reserve against the per-hotel-per-day findings cap. The bill is N-shaped in hotels, not fixed.
+- **Demo data, and the asymmetry between the two levels.** `run-management-patterns`'s scheduled discovery excludes companies whose whole portfolio is `properties.is_test` (`src/lib/company/demo-portfolio.ts`), and that exclusion is untouched. **The hotel-level crons still have no equivalent filter:** `runFindingsForAllProperties` scans every row of `properties`, test hotels included, so each seeded demo hotel now costs one judge call a night. That was a known, documented decision point before the switch and it remains open. Deciding it is a deliberate act with its own diff, either by adding an `is_test` filter to the fleet scan or by removing the demo hotels from production.
 
 ## How to verify
 

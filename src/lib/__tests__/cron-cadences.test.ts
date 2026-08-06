@@ -207,18 +207,23 @@ describe('cron cadences', () => {
     }
   });
 
-  it('the AI master switch is off: none of its four crons is scheduled', () => {
-    // Founder ruling: the whole AI findings layer stays off behind ONE master
-    // switch, flipped when the first real hotel is onboarded. On 2026-07-29
-    // `run-management-patterns` was given a daily schedule on its own, on a
-    // production fleet whose only management company is the seeded demo one, so
-    // the sole effect would have been paid AI runs against fake data.
+  it('the AI master switch is one switch: all four crons move together', () => {
+    // Founder ruling: the whole AI findings layer is ONE master switch. It was
+    // off from the day these routes were written until 2026-08-06, when the
+    // founder turned it on; the test that held it off lived here and this is
+    // what replaced it, in the same commit that flipped it.
     //
-    // This asserts the switch is a switch. Turning the layer on means adding all
-    // four crons across all four surfaces at once — docs/cron-triggers.md, "The
-    // AI master switch". When that day comes, DELETE this test in the same
-    // commit; do not carve exceptions into it one route at a time, because a
-    // per-route exception is precisely the drift the ruling exists to prevent.
+    // The ruling being enforced was never "off". It was ALL FOUR AT ONCE. On
+    // 2026-07-29 `run-management-patterns` was given a daily schedule on its
+    // own, on a production fleet whose only management company is the seeded
+    // demo one, so the sole effect would have been paid model runs against fake
+    // data. It was parked the same day. That failure is just as available now
+    // that the layer is on: quietly dropping one of the four from vercel.json
+    // leaves a heartbeat the doctor expects forever and a stage of the pipeline
+    // nothing runs.
+    //
+    // So the assertion is inverted rather than deleted. Turning any of them off
+    // means turning all four off, and the diff has to say so.
     const AI_MASTER_SWITCH_CRONS = [
       { heartbeatName: 'run-findings',             cronPath: '/api/cron/run-findings' },
       { heartbeatName: 'findings-sweep',           cronPath: '/api/cron/findings-sweep' },
@@ -231,24 +236,20 @@ describe('cron cadences', () => {
     };
 
     for (const cron of AI_MASTER_SWITCH_CRONS) {
-      const hint = `The AI layer goes on all at once — see docs/cron-triggers.md, `
-        + `"The AI master switch". If you are turning it on, delete this test rather `
-        + `than exempting "${cron.heartbeatName}".`;
-      assert.equal(
-        (vercel.crons ?? []).find((entry) => entry.path === cron.cronPath),
-        undefined,
-        `vercel.json schedules "${cron.cronPath}", which must be dormant. ${hint}`,
+      const hint = 'The AI layer moves all at once, see docs/cron-triggers.md, '
+        + '"The AI master switch". Switching it off means all four, not one.';
+      assert.ok(
+        (vercel.crons ?? []).some((entry) => entry.path === cron.cronPath),
+        `vercel.json does not schedule "${cron.cronPath}". ${hint}`,
       );
-      assert.equal(
-        SCHEDULE_REGISTRY.find((entry) => entry.heartbeatName === cron.heartbeatName),
-        undefined,
-        `SCHEDULE_REGISTRY has "${cron.heartbeatName}", which must be dormant. ${hint}`,
+      assert.ok(
+        SCHEDULE_REGISTRY.some((entry) => entry.heartbeatName === cron.heartbeatName),
+        `SCHEDULE_REGISTRY is missing "${cron.heartbeatName}". ${hint}`,
       );
-      assert.equal(
-        EXPECTED_CRONS.find((entry) => entry.name === cron.heartbeatName),
-        undefined,
-        `The doctor's EXPECTED_CRONS has "${cron.heartbeatName}", which must be dormant. `
-        + `An expected heartbeat with no scheduler reports "missing" forever. ${hint}`,
+      assert.ok(
+        EXPECTED_CRONS.some((entry) => entry.name === cron.heartbeatName),
+        `The doctor's EXPECTED_CRONS is missing "${cron.heartbeatName}", so a scheduled `
+        + `job nothing watches. ${hint}`,
       );
     }
   });
