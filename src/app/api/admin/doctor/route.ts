@@ -832,6 +832,8 @@ export const EXPECTED_MIGRATIONS_STATIC: ReadonlyArray<string> = [
   // To-do follow-through: a completion credited to the day it was due, a
   // "not needed" ending, an optional time of day, and the list-seen cursor.
   '0453',
+  // Recurring to-dos gain an every-N-days cadence (interval_days + anchor).
+  '0455',
 ];
 
 /**

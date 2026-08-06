@@ -22,7 +22,9 @@
 
 import React from 'react';
 
+import { EVENT_COPY, pickedDaysLine } from '@/lib/feed/one-list-copy';
 import type { KnowledgeEventDTO } from '@/lib/knowledge/types';
+import { KNOWLEDGE_LIMITS } from '@/lib/knowledge/types';
 import type { WorklistItem } from '@/lib/worklist/types';
 
 import { CxIcon } from './icons';
@@ -59,6 +61,47 @@ export const CALENDAR_CSS = `
   border-bottom:1px solid rgba(31,35,28,.06);}
 .sc-ev-t{flex:1;min-width:0;font-size:13.5px;color:#1F231C;}
 .sc-none{margin-top:10px;font-size:12.5px;color:#8A9187;}
+
+/* ── The month, at the size a month wants to be ──
+   The 2026-08-01 popover was a 388px card hanging off a button: a whole month
+   in cells 42px tall, which is a thumbnail of a calendar rather than one you
+   can pick a range on. This is the same grid, opened over the page, with room
+   for the add-an-event panel beside it rather than instead of it. */
+.sc-wrap{display:flex;gap:20px;align-items:flex-start;min-width:0;}
+.sc-mgrid{flex:1;min-width:0;}
+.sc-big .sc-day{height:74px;border-radius:11px;padding:7px 8px;}
+.sc-big .sc-dn{font-size:12.5px;}
+.sc-big .sc-grid{gap:6px;margin-top:13px;}
+.sc-big .sc-mon{font-size:17px;}
+.sc-big .sc-dow{font-size:10px;}
+/* Picking a range: the ends are solid, the days between are washed. A drag has
+   to be visible WHILE it happens or nobody believes the drag worked. */
+.sc-big.sc-picking .sc-day{cursor:crosshair;}
+.sc-day.sc-inrange{background:rgba(92,122,96,.13);border-color:rgba(92,122,96,.3);}
+.sc-day.sc-edge{background:#3E5C48;border-color:#3E5C48;}
+.sc-day.sc-edge .sc-dn{color:#fff;font-weight:600;}
+.sc-day.sc-edge .sc-dot{background:rgba(255,255,255,.75);}
+.sc-hint{margin-top:11px;font-size:11.5px;color:#8A9187;line-height:1.5;}
+
+/* The side panel. Beside the month, never over it: the month is the control. */
+.sc-panel{width:288px;flex-shrink:0;border-left:1px solid rgba(31,35,28,.08);padding-left:20px;
+  display:flex;flex-direction:column;gap:12px;}
+.sc-plab{font-family:var(--font-geist-mono),ui-monospace,monospace;font-size:9px;letter-spacing:.11em;
+  text-transform:uppercase;color:#A6ABA6;display:block;margin-bottom:5px;}
+.sc-field{width:100%;box-sizing:border-box;border:1px solid rgba(31,35,28,.14);border-radius:10px;
+  padding:9px 11px;font-family:inherit;font-size:13.5px;color:#1F231C;background:#fff;outline:none;}
+.sc-field:focus{outline:2px solid #3E5C48;outline-offset:1px;}
+textarea.sc-field{resize:vertical;min-height:66px;line-height:1.5;}
+.sc-picked{font-size:13.5px;font-weight:600;color:#1F231C;line-height:1.45;}
+.sc-picked.sc-empty{font-weight:400;color:#8A9187;}
+.sc-pacts{display:flex;gap:8px;margin-top:2px;flex-wrap:wrap;}
+
+@media (max-width:860px){
+  .sc-wrap{flex-direction:column;}
+  .sc-panel{width:100%;border-left:none;padding-left:0;padding-top:16px;
+    border-top:1px solid rgba(31,35,28,.08);}
+  .sc-big .sc-day{height:56px;}
+}
 `;
 
 const DOW = ['S', 'M', 'T', 'W', 'T', 'F', 'S'] as const;
@@ -329,12 +372,38 @@ export interface CalendarViewProps {
    * so listing that day's rows underneath would be showing them twice.
    */
   gridOnly?: boolean;
+  /** Bigger cells. The overlay sets it; the old inline grid does not. */
+  big?: boolean;
+  /**
+   * Picking dates for an event rather than browsing.
+   *
+   * In this mode a day is not a place to go, it is an answer: pointer-down
+   * starts a range, dragging across days extends it, and letting go ends it.
+   * `onSelectDay` is not called at all, so nothing re-anchors the timeline
+   * under a panel somebody is typing into.
+   */
+  picking?: boolean;
+  pickStart?: string | null;
+  pickEnd?: string | null;
+  onPickDown?: (iso: string) => void;
+  onPickMove?: (iso: string) => void;
+  onPickUp?: () => void;
+}
+
+/** Is `iso` inside the range, whichever end was clicked first? */
+function inPicked(iso: string, start: string | null, end: string | null): 'edge' | 'inside' | null {
+  if (!start) return null;
+  const a = end && end < start ? end : start;
+  const b = end && end < start ? start : (end ?? start);
+  if (iso === a || iso === b) return 'edge';
+  return iso > a && iso < b ? 'inside' : null;
 }
 
 export function CalendarView({
   year, monthIndex, todayIso, selectedIso, items, events,
   onSelectDay, onStepMonth, renderItem, canManageEvents = false, onDeleteEvent,
-  onAddEvent, gridOnly = false,
+  onAddEvent, gridOnly = false, big = false,
+  picking = false, pickStart = null, pickEnd = null, onPickDown, onPickMove, onPickUp,
 }: CalendarViewProps) {
   const cells = monthCells(year, monthIndex, items, events);
   const selected = selectedIso
@@ -342,7 +411,10 @@ export function CalendarView({
     : null;
 
   return (
-    <div data-testid="staxis-calendar">
+    <div
+      data-testid="staxis-calendar"
+      className={`${big ? 'sc-big' : ''}${picking ? ' sc-picking' : ''}`.trim() || undefined}
+    >
       <style dangerouslySetInnerHTML={{ __html: CALENDAR_CSS }} />
       <div className="sc-bar">
         <button type="button" className="fx-step" onClick={() => onStepMonth(-1)} aria-label="Previous month">
@@ -356,35 +428,63 @@ export function CalendarView({
 
       <div className="sc-grid" role="grid">
         {DOW.map((d, i) => <div className="sc-dow" key={`dow-${i}`}>{d}</div>)}
-        {cells.map((cell, i) => (
-          <button
-            key={cell.iso ?? `pad-${i}`}
-            type="button"
-            disabled={!cell.iso}
-            className={`sc-day${cell.iso === todayIso ? ' sc-today' : ''}${cell.iso && cell.iso === selectedIso ? ' sc-on' : ''}`}
-            onClick={() => cell.iso && onSelectDay(cell.iso)}
-            aria-label={cell.iso ?? undefined}
-            data-day={cell.iso ?? undefined}
-          >
-            {cell.dayOfMonth !== null && <span className="sc-dn">{cell.dayOfMonth}</span>}
-            <span className="sc-dots">
-              {cell.items.slice(0, 4).map((it) => (
-                <span key={it.id} className={`sc-dot${it.overdue ? ' sc-late' : ''}`} />
-              ))}
-              {cell.events.slice(0, 2).map((ev) => <span key={ev.id} className="sc-dot sc-ev" />)}
-            </span>
-          </button>
-        ))}
+        {cells.map((cell, i) => {
+          const picked = picking && cell.iso ? inPicked(cell.iso, pickStart, pickEnd) : null;
+          return (
+            <button
+              key={cell.iso ?? `pad-${i}`}
+              type="button"
+              disabled={!cell.iso}
+              className={[
+                'sc-day',
+                cell.iso === todayIso ? 'sc-today' : '',
+                !picking && cell.iso && cell.iso === selectedIso ? 'sc-on' : '',
+                picked === 'inside' ? 'sc-inrange' : '',
+                picked === 'edge' ? 'sc-edge' : '',
+              ].filter(Boolean).join(' ')}
+              aria-pressed={picking ? picked !== null : undefined}
+              // A click is the degenerate drag: down and up on the same square.
+              // Keeping both paths on the same handlers means a tap on a phone
+              // and a drag on a desktop cannot disagree about what was picked.
+              //
+              // The capture release is what makes the drag work with a FINGER.
+              // A touch pointer is implicitly captured by the element it went
+              // down on, so every later move is delivered there and no other
+              // square ever sees a pointerenter: the range would be stuck on
+              // one day and the hint would be describing something that does
+              // not happen.
+              onPointerDown={picking ? (e?: React.PointerEvent<HTMLButtonElement>) => {
+                try { e?.currentTarget?.releasePointerCapture?.(e.pointerId); } catch { /* mouse, or no capture */ }
+                if (cell.iso) onPickDown?.(cell.iso);
+              } : undefined}
+              onPointerEnter={picking ? () => cell.iso && onPickMove?.(cell.iso) : undefined}
+              onPointerUp={picking ? () => onPickUp?.() : undefined}
+              onClick={picking ? undefined : () => cell.iso && onSelectDay(cell.iso)}
+              aria-label={cell.iso ?? undefined}
+              data-day={cell.iso ?? undefined}
+            >
+              {cell.dayOfMonth !== null && <span className="sc-dn">{cell.dayOfMonth}</span>}
+              <span className="sc-dots">
+                {cell.items.slice(0, 4).map((it) => (
+                  <span key={it.id} className={`sc-dot${it.overdue ? ' sc-late' : ''}`} />
+                ))}
+                {cell.events.slice(0, 2).map((ev) => <span key={ev.id} className="sc-dot sc-ev" />)}
+              </span>
+            </button>
+          );
+        })}
       </div>
 
       <div className="sc-legend">
         <span className="sc-key"><span className="sc-dot" aria-hidden />To-do</span>
         <span className="sc-key"><span className="sc-dot sc-late" aria-hidden />Late</span>
         <span className="sc-key"><span className="sc-dot sc-ev" aria-hidden />Event</span>
-        {canManageEvents && onAddEvent && (
-          <button type="button" className="sc-add" onClick={onAddEvent}>Add event</button>
+        {canManageEvents && onAddEvent && !picking && (
+          <button type="button" className="sc-add" onClick={onAddEvent}>{EVENT_COPY.add}</button>
         )}
       </div>
+
+      {picking && <div className="sc-hint">{EVENT_COPY.dragHint}</div>}
 
       {!gridOnly && selected && (
         <>
@@ -404,6 +504,190 @@ export function CalendarView({
           )}
         </>
       )}
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// The month, over the page
+//
+// WHAT WAS WRONG WITH THE OLD ONE
+// The month was a 388px popover hanging off the "Month" button, and "Add event"
+// CLOSED it and opened a separate form with two native date inputs in it. So
+// the one screen where a person is looking at August disappeared the moment
+// they wanted to put something in August, and they then typed the date they had
+// just been looking at into a box. The month was decoration.
+//
+// WHAT THIS IS
+// One overlay. The month is big enough to aim at, and it stays put. "Add event"
+// opens a panel BESIDE it, and the month becomes the date control: click a day,
+// or drag across days for something that runs longer. The panel reads the days
+// back as you pick them, so there is never a moment where the range on the grid
+// and the range in the form could disagree.
+//
+// HOOK-FREE AND CONTROLLED, like everything in this folder. The month being
+// shown, the draft, and the in-progress drag all live in StaxisList.
+// ═══════════════════════════════════════════════════════════════════════════
+
+/** What the side panel is holding. Empty strings, never null, so the inputs
+ *  stay controlled and React never warns about a switch of control. */
+export interface EventDraft {
+  title: string;
+  notes: string;
+  /** The first day picked, YYYY-MM-DD, or null before anybody has picked. */
+  start: string | null;
+  /** The other end of a drag. Null on a single day. */
+  end: string | null;
+}
+
+export function emptyEventDraft(): EventDraft {
+  return { title: '', notes: '', start: null, end: null };
+}
+
+/** The draft's days, lowest first. What the write path actually sends. */
+export function draftRange(draft: EventDraft): { eventDate: string; endDate: string | null } | null {
+  if (!draft.start) return null;
+  if (!draft.end || draft.end === draft.start) return { eventDate: draft.start, endDate: null };
+  return draft.end < draft.start
+    ? { eventDate: draft.end, endDate: draft.start }
+    : { eventDate: draft.start, endDate: draft.end };
+}
+
+/** A draft is sendable when it says what it is and when it is. */
+export function draftReady(draft: EventDraft): boolean {
+  return draft.title.trim().length > 0 && draftRange(draft) !== null;
+}
+
+export interface MonthOverlayProps {
+  open: boolean;
+  year: number;
+  monthIndex: number;
+  todayIso: string;
+  selectedIso: string | null;
+  items: readonly WorklistItem[];
+  events: readonly KnowledgeEventDTO[];
+  canManageEvents?: boolean;
+  /** Non-null while the side panel is open. Null while browsing. */
+  draft: EventDraft | null;
+  busy?: boolean;
+  error?: string | null;
+  onClose: () => void;
+  onSelectDay: (iso: string) => void;
+  onStepMonth: (delta: number) => void;
+  onStartAdd: () => void;
+  onCancelAdd: () => void;
+  onDraftChange: (next: EventDraft) => void;
+  onSaveEvent: () => void;
+  onPickDown: (iso: string) => void;
+  onPickMove: (iso: string) => void;
+  onPickUp: () => void;
+}
+
+export function MonthOverlay({
+  open, year, monthIndex, todayIso, selectedIso, items, events,
+  canManageEvents = false, draft, busy = false, error = null,
+  onClose, onSelectDay, onStepMonth, onStartAdd, onCancelAdd,
+  onDraftChange, onSaveEvent, onPickDown, onPickMove, onPickUp,
+}: MonthOverlayProps) {
+  if (!open) return null;
+  const picking = draft !== null;
+  const ready = draft !== null && draftReady(draft) && !busy;
+
+  return (
+    <div data-testid="month-overlay">
+      <button type="button" className="fx-scrim" aria-label={EVENT_COPY.close} onClick={onClose} />
+      <div className="fx-monthover" role="dialog" aria-modal="true" aria-label={EVENT_COPY.monthTitle}>
+        <div className="fx-drawerhead">
+          <span className="fx-drawert">{EVENT_COPY.monthTitle}</span>
+          <button type="button" className="fx-drawerx" aria-label={EVENT_COPY.close} onClick={onClose}>
+            <CxIcon name="close" size={14} />
+          </button>
+        </div>
+
+        <div className="fx-monthbody">
+          <div className="sc-wrap">
+            <div className="sc-mgrid">
+              <CalendarView
+                year={year}
+                monthIndex={monthIndex}
+                todayIso={todayIso}
+                selectedIso={selectedIso}
+                items={items}
+                events={events}
+                onSelectDay={onSelectDay}
+                onStepMonth={onStepMonth}
+                renderItem={() => null}
+                canManageEvents={canManageEvents}
+                onAddEvent={onStartAdd}
+                gridOnly
+                big
+                picking={picking}
+                pickStart={draft?.start ?? null}
+                pickEnd={draft?.end ?? null}
+                onPickDown={onPickDown}
+                onPickMove={onPickMove}
+                onPickUp={onPickUp}
+              />
+            </div>
+
+            {draft && (
+              <div className="sc-panel" data-testid="event-panel">
+                <div>
+                  <span className="sc-plab" id="sc-lab-days">{EVENT_COPY.daysLabel}</span>
+                  {/* Live, as the drag happens. The grid and this line are
+                      drawn from the same two dates, so they cannot disagree. */}
+                  <div
+                    className={`sc-picked${draft.start ? '' : ' sc-empty'}`}
+                    role="status"
+                    aria-labelledby="sc-lab-days"
+                  >
+                    {pickedDaysLine(draft.start, draft.end)}
+                  </div>
+                </div>
+
+                <div>
+                  <label className="sc-plab" htmlFor="sc-ev-title">{EVENT_COPY.titleLabel}</label>
+                  <input
+                    id="sc-ev-title"
+                    className="sc-field"
+                    type="text"
+                    value={draft.title}
+                    maxLength={KNOWLEDGE_LIMITS.TITLE_MAX}
+                    placeholder={EVENT_COPY.titlePlaceholder}
+                    disabled={busy}
+                    onChange={(e) => onDraftChange({ ...draft, title: e.target.value })}
+                  />
+                </div>
+
+                <div>
+                  <label className="sc-plab" htmlFor="sc-ev-notes">{EVENT_COPY.notesLabel}</label>
+                  <textarea
+                    id="sc-ev-notes"
+                    className="sc-field"
+                    rows={3}
+                    value={draft.notes}
+                    maxLength={KNOWLEDGE_LIMITS.NOTES_MAX}
+                    placeholder={EVENT_COPY.notesPlaceholder}
+                    disabled={busy}
+                    onChange={(e) => onDraftChange({ ...draft, notes: e.target.value })}
+                  />
+                </div>
+
+                {error && <div className="sl-err">{error}</div>}
+
+                <div className="sc-pacts">
+                  <button type="button" className="fx-btn fx-primary" disabled={!ready} onClick={onSaveEvent}>
+                    {busy ? EVENT_COPY.saving : EVENT_COPY.save}
+                  </button>
+                  <button type="button" className="fx-btn" disabled={busy} onClick={onCancelAdd}>
+                    {EVENT_COPY.cancel}
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
     </div>
   );
 }

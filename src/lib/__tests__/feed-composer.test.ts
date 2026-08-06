@@ -34,7 +34,13 @@ import {
   sanitizeInterpretation,
   shouldInterpret,
 } from '@/lib/feed/interpret-todo';
-import { HOUSEKEEPER_NOTE } from '@/lib/feed/one-list-copy';
+import {
+  COMPOSER_COPY,
+  COMPOSER_OTHER,
+  otherHint,
+  promptExample,
+  PROMPT_EXAMPLES,
+} from '@/lib/feed/one-list-copy';
 
 // Thursday 30 July 2026.
 const NOW = new Date(2026, 6, 30, 9, 0, 0);
@@ -157,9 +163,15 @@ function tapButton(state: ComposerStateShape, label: string): ComposerStateShape
   return driver.next;
 }
 
+/** The SENTENCE field, by its own class: the repeat line has a number in it. */
+function sentenceField(tree: unknown): Node {
+  const input = findAll(tree, (el) => el.type === 'input' && className(el).startsWith('fx-comptitle'));
+  assert.equal(input.length, 1, 'the row must have exactly one sentence field');
+  return input[0];
+}
+
 function press(driver: Driver, key: string): void {
-  const input = findAll(driver.tree, (el) => el.type === 'input' && el.props.type === 'text');
-  assert.equal(input.length, 1, 'the row must have exactly one text field');
+  const input = [sentenceField(driver.tree)];
   (input[0].props.onKeyDown as (e: unknown) => void)({
     key, preventDefault: () => {},
   });
@@ -314,31 +326,165 @@ describe('there is no Add button, and Enter is the only commit', () => {
   });
 });
 
-describe('the housekeeping line, and where it is allowed to be', () => {
-  test('it is on the WHO row and on the all-three view', () => {
-    for (const openRow of ['who', 'all'] as const) {
+describe('the WHO row, and the line that used to sit under it', () => {
+  test('the housekeeping line is gone from every state the row can reach', () => {
+    // Deleted 2026-08-05. It explained who was MISSING, under a list of who is
+    // there, over a row nobody had asked anything of yet.
+    for (const openRow of [null, 'who', 'when', 'repeat', 'all'] as const) {
+      const text = textOf(render(base({ title: 'x', openRow })).tree).join(' | ');
       assert.ok(
-        textOf(render(base({ title: 'x', openRow })).tree).join(' | ').includes(HOUSEKEEPER_NOTE),
-        `the note is missing with the ${openRow} row open`,
+        !/housekeep/i.test(text),
+        `a line about housekeeping came back with openRow=${openRow}`,
       );
     }
   });
 
-  test('it is never on the idle row, or over the other two rows', () => {
-    for (const openRow of [null, 'when', 'repeat'] as const) {
-      assert.ok(
-        !textOf(render(base({ title: 'x', openRow })).tree).join(' | ').includes(HOUSEKEEPER_NOTE),
-        `the note appeared with openRow=${openRow}, where nobody asked about people`,
-      );
-    }
-  });
-
-  test('the WHO row offers you, the roster, and the three roles, and no housekeeping', () => {
+  test('the WHO row offers you, the roster, the three roles, and Other', () => {
     const driver = render(base({ title: 'x', openRow: 'who' }));
     const labels = findAll(driver.tree, (el) => className(el).startsWith('fx-compb'))
       .map((el) => textOf(el.props.children).join('').trim());
-    assert.deepEqual(labels, ['You', 'Marcus Webb', 'Dana', "Whoever's on front desk", 'Maintenance', 'Everyone']);
-    assert.ok(!labels.some((l) => /housekeep/i.test(l)));
+    assert.deepEqual(labels, [
+      'You', 'Marcus Webb', 'Dana', "Whoever's on front desk", 'Maintenance', 'Everyone', 'Other',
+    ]);
+  });
+
+  test('Other is not one of the answers: it never carries a value and is never selected', () => {
+    const driver = render(base({ title: 'x', openRow: 'who' }));
+    const other = buttons(driver.tree, COMPOSER_COPY.other)
+      .filter((el) => className(el).includes('fx-compother'));
+    assert.equal(other.length, 1, 'the Other chip is missing');
+    // Not a radio, so it cannot be the selected answer to "who".
+    assert.equal(other[0].props.role, undefined);
+    assert.equal(other[0].props['aria-checked'], undefined);
+    assert.ok(!className(other[0]).includes('fx-sel'));
+  });
+
+  test('tapping Other shows the hint and CHANGES NOBODY', () => {
+    const state = base({ title: 'x', openRow: 'who' });
+    const driver = render(state);
+    const other = buttons(driver.tree, COMPOSER_COPY.other)
+      .filter((el) => className(el).includes('fx-compother'))[0];
+    // The handler reaches for the field through the DOM, which does not exist
+    // here. It must still produce the state change, so the DOM half is the
+    // half that is allowed to fail.
+    (other.props.onClick as (e: unknown) => void)({ currentTarget: null });
+    assert.ok(driver.next, 'tapping Other produced no new state');
+    assert.equal(driver.next.otherHint, true);
+    assert.equal(driver.next.who, state.who, 'Other moved the assignee');
+    assert.equal(driver.next.source.who, 'default', 'Other answered a question nobody asked');
+
+    // ...and the hint then says the thing that makes typing a name findable.
+    const after = render(driver.next);
+    assert.ok(textOf(after.tree).join(' | ').includes(otherHint('Marcus Webb')));
+  });
+
+  test('a row still carrying Other is submittable, and goes to the person adding it', () => {
+    const payload = rows.composerPayload(base({ title: 'x', who: COMPOSER_OTHER }), 'my-staff-id');
+    assert.equal(payload?.assignedStaffId, 'my-staff-id');
+    assert.equal(payload?.assignedDepartment, null);
+  });
+});
+
+describe('the repeat line: one line, and a blank at the end of it', () => {
+  test('it is one horizontally scrolling line, not a block that wraps', () => {
+    const driver = render(base({ title: 'x', openRow: 'repeat' }));
+    const group = findAll(driver.tree, (el) => className(el).includes('fx-compopts'));
+    assert.equal(group.length, 1);
+    assert.match(className(group[0]), /fx-compscroll/, 'the cadence row is allowed to reflow');
+  });
+
+  test('it offers the seven cadences in the founder\'s order', () => {
+    const driver = render(base({ title: 'x', openRow: 'repeat' }));
+    const labels = findAll(driver.tree, (el) => el.props.role === 'radio' && className(el).startsWith('fx-compb'))
+      .map((el) => textOf(el.props.children).join('').trim());
+    assert.deepEqual(labels, [
+      'Once', 'Every day', 'Every 3 days', 'Every 4 days', 'Every week', 'Every 2 weeks', 'Every month',
+    ]);
+  });
+
+  test('a fixed every-N-days chip selects itself and nothing else', () => {
+    const picked = tapButton(base({ title: 'x', openRow: 'repeat' }), 'Every 3 days');
+    assert.equal(picked.repeat, 'every_n_days');
+    assert.equal(picked.intervalDays, '3');
+    assert.equal(picked.source.repeat, 'chosen');
+
+    const after = render(picked);
+    const selected = findAll(after.tree, (el) => el.props['aria-checked'] === true
+      && className(el).startsWith('fx-compb'))
+      .map((el) => textOf(el.props.children).join('').trim());
+    assert.deepEqual(selected, ['Every 3 days'], 'two cadences read as chosen at once');
+  });
+
+  test('typing a number into the blank IS choosing the cadence', () => {
+    const driver = render(base({ title: 'x', openRow: 'repeat' }));
+    const blank = findAll(driver.tree, (el) => className(el) === 'fx-compnum');
+    assert.equal(blank.length, 1, 'the blank is missing from the repeat line');
+    (blank[0].props.onChange as (e: unknown) => void)({ target: { value: '45' } });
+    assert.equal(driver.next?.repeat, 'every_n_days');
+    assert.equal(driver.next?.intervalDays, '45');
+    assert.equal(rows.composerPayload({ ...driver.next!, title: 'x' }, 'me')?.intervalDays, 45);
+  });
+
+  test('the blank refuses letters, and emptying it goes back to a one-off', () => {
+    const driver = render(base({ title: 'x', openRow: 'repeat', repeat: 'every_n_days', intervalDays: '45' }));
+    const blank = findAll(driver.tree, (el) => className(el) === 'fx-compnum')[0];
+    (blank.props.onChange as (e: unknown) => void)({ target: { value: '4a5' } });
+    assert.equal(driver.next?.intervalDays, '45', 'a letter reached the number');
+
+    (blank.props.onChange as (e: unknown) => void)({ target: { value: '' } });
+    assert.equal(driver.next?.repeat, 'once', 'an empty blank left a repeat with no gap in it');
+    assert.equal(driver.next?.intervalDays, '');
+  });
+
+  test('a gap the chips already cover lights the CHIP, not the blank', () => {
+    // Otherwise "every 3 days" typed into the blank shows two things selected.
+    const driver = render(base({ title: 'x', openRow: 'repeat', repeat: 'every_n_days', intervalDays: '3' }));
+    const blankChip = findAll(driver.tree, (el) => className(el).startsWith('fx-compevery'))[0];
+    assert.ok(!className(blankChip).includes('fx-sel'));
+    const blank = findAll(driver.tree, (el) => className(el) === 'fx-compnum')[0];
+    assert.equal(blank.props.value, '', 'the blank kept a number the chip is already showing');
+  });
+
+  test('the word above the row reads back the gap that was chosen', () => {
+    const text = textOf(render(base({
+      title: 'x', repeat: 'every_n_days', intervalDays: '45',
+      source: { who: 'default', when: 'default', repeat: 'chosen' },
+    })).tree).join(' | ');
+    assert.match(text, /every 45 days/);
+  });
+
+  test('a number the cadence cannot carry says so, quietly, and never blocks Enter', () => {
+    const driver = render(base({ title: 'x', openRow: 'repeat', repeat: 'every_n_days', intervalDays: '900' }));
+    assert.match(textOf(driver.tree).join(' | '), /Pick a number between 2 and 365/);
+    assert.equal(findAll(driver.tree, (el) => className(el).includes('sl-err')).length, 0);
+    press(driver, 'Enter');
+    assert.equal(driver.submitted, true, 'a hint that blocks the row is an error in disguise');
+  });
+});
+
+describe('the prompt rotates real examples', () => {
+  test('the idle field shows an example, and a different one on the next tick', () => {
+    const first = sentenceField(render(base()).tree);
+    const second = sentenceField(render(base(), { promptTick: 1 }).tree);
+    assert.ok(PROMPT_EXAMPLES.length > 1, 'one example is not a rotation');
+    assert.equal(first.props.placeholder, promptExample(0));
+    assert.equal(second.props.placeholder, promptExample(1));
+    assert.notEqual(first.props.placeholder, second.props.placeholder);
+  });
+
+  test('the accessible name never rotates with it', () => {
+    // A control that renames itself every few seconds is unusable with a
+    // screen reader, which is the whole risk this feature carries.
+    for (const promptTick of [0, 1, 2, 97, -4]) {
+      const field = sentenceField(render(base(), { promptTick }).tree);
+      assert.equal(field.props['aria-label'], 'What needs doing');
+      assert.ok(typeof field.props.placeholder === 'string' && field.props.placeholder.length > 0);
+    }
+  });
+
+  test('the examples give way once somebody has opened the buttons with nothing typed', () => {
+    const field = sentenceField(render(base({ openRow: 'all' })).tree);
+    assert.equal(field.props.placeholder, COMPOSER_COPY.promptChoosing);
   });
 });
 
@@ -386,8 +532,7 @@ describe('speaking instead of typing', () => {
     const driver = render(base({ title: 'check the boiler' }), { recording: true });
     assert.equal(findAll(driver.tree, (el) => className(el) === 'fx-compmeter').length, 1);
     assert.match(textOf(driver.tree).join(' | '), /Let go when you are done/);
-    const input = findAll(driver.tree, (el) => el.type === 'input' && el.props.type === 'text')[0];
-    assert.match(className(input), /fx-live/, 'the words must read as speech while they are being said');
+    assert.match(className(sentenceField(driver.tree)), /fx-live/, 'the words must read as speech while they are being said');
   });
 });
 

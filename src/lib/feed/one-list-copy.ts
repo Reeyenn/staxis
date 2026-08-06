@@ -272,7 +272,7 @@ export function missedLine(missedSince: string | null, now: Date): string | null
 /** Plain-English cadence, for the composer chip and the row it creates. */
 export function repeatLabel(
   repeat: string,
-  opts: { weekday?: number | null; dayOfMonth?: number | null } = {},
+  opts: { weekday?: number | null; dayOfMonth?: number | null; intervalDays?: number | null } = {},
 ): string {
   const day = typeof opts.weekday === 'number' ? WEEKDAYS[opts.weekday] ?? null : null;
   switch (repeat) {
@@ -283,6 +283,13 @@ export function repeatLabel(
     case 'monthly': return opts.dayOfMonth
       ? `Every month on the ${ordinal(opts.dayOfMonth)}`
       : 'Every month';
+    // The open-ended one. With no number it has nothing to say, so it says the
+    // safe thing rather than "every null days": a cadence label is read at a
+    // glance and a wrong one is worse than a vague one.
+    case 'every_n_days': {
+      const n = typeof opts.intervalDays === 'number' ? opts.intervalDays : null;
+      return n && n > 1 ? `Every ${n} days` : 'Every few days';
+    }
     default: return 'Once';
   }
 }
@@ -309,9 +316,12 @@ export function emptyListNote(opts: { canSeeFindings: boolean }): string {
 /**
  * The role targets a to-do can be handed to.
  *
- * HOUSEKEEPING IS NOT HERE, and neither are housekeepers in the people list —
- * see HOUSEKEEPER_NOTE. Offering a target whose work would land on a screen
- * they never open would be worse than not offering it.
+ * HOUSEKEEPING IS NOT HERE, and neither are housekeepers in the people list:
+ * they work from the housekeeping board, and offering a target whose work would
+ * land on a screen they never open would be worse than not offering it. That
+ * used to be SAID, in a line under the row. It was deleted on 2026-08-05: a
+ * sentence explaining who is missing, over a list of who is there, is an answer
+ * to a question nobody had asked yet.
  */
 export const COMPOSER_ROLES: readonly { value: string; label: string }[] = [
   { value: 'dept:front_desk', label: "Whoever's on front desk" },
@@ -319,8 +329,13 @@ export const COMPOSER_ROLES: readonly { value: string; label: string }[] = [
   { value: 'dept:all_staff', label: 'Everyone' },
 ];
 
-export const HOUSEKEEPER_NOTE =
-  'Housekeepers work from the housekeeping board, so they are not on this list.';
+/**
+ * The value the "Other" chip carries. It is a POINTER, never a person.
+ *
+ * It never reaches `who`, and `composerPayload` refuses it outright, because a
+ * to-do assigned to the word "other" is a to-do nobody has.
+ */
+export const COMPOSER_OTHER = 'other';
 
 /** Every fixed sentence the composer says. No em dashes, English only. */
 export const COMPOSER_COPY = {
@@ -328,6 +343,8 @@ export const COMPOSER_COPY = {
   prompt: 'Add something.',
   /** The prompt once somebody has opened the buttons without typing. */
   promptChoosing: 'What needs doing?',
+  /** The last chip on the WHO row. Not a person: it points at the sentence. */
+  other: 'Other',
   /** Under the row while the mic is held. */
   speaking: 'Let go when you are done. The words go in the same place.',
   /** Under the row when the to-do repeats. */
@@ -343,7 +360,143 @@ export const COMPOSER_COPY = {
   whenLabel: 'When',
   repeatLabel: 'Repeat',
   startsLabel: 'Starts',
+  /** The custom cadence chip. The blank is a number the person types. */
+  everyNDaysChip: 'Every',
+  everyNDaysUnit: 'days',
+  everyNDaysLabel: 'Repeat every this many days',
 } as const;
+
+/**
+ * The hint the "Other" chip shows, naming somebody real when there is one.
+ *
+ * The chip does not open a picker, because there is nothing to pick from that
+ * is not already on the row. What it does is TELL somebody the sentence takes a
+ * name, which is the one part of this control nobody discovers on their own.
+ */
+/**
+ * What the blank says when the number in it is not a cadence.
+ *
+ * Never red, never blocking: the row still adds on Enter, as a one-off. This
+ * only exists so somebody who typed 1 or 900 learns why the word above the row
+ * did not change.
+ */
+export function intervalHint(min: number, max: number): string {
+  return `Pick a number between ${min} and ${max}.`;
+}
+
+export function otherHint(exampleName?: string | null): string {
+  const first = (exampleName ?? '').trim().split(/\s+/)[0];
+  return first
+    ? `Type their name in the sentence, like "ask ${first} to check the lobby".`
+    : 'Type their name in the sentence, like "ask Sam to check the lobby".';
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// The rotating prompt
+//
+// A field that says "What needs doing?" is a question. A field that says "Try:
+// Fix the ice machine tomorrow" is an ANSWER, and the whole point of this row
+// is that a plain sentence carries the day, the person and the cadence. One
+// static example would teach one trick; a slow rotation teaches the shape.
+//
+// The accessible name never rotates. See the aria-label on the field: a screen
+// reader that renamed the same control every few seconds would be unusable.
+// ═══════════════════════════════════════════════════════════════════════════
+
+/** How long each example stays up. Slow on purpose: this is not an animation. */
+export const PROMPT_ROTATE_MS = 7_000;
+
+/** Real sentences, each of which genuinely parses into something. */
+export const PROMPT_EXAMPLES: readonly string[] = [
+  'Add a to-do. Try: Fix the ice machine tomorrow',
+  'Try: Towel delivery every Tuesday',
+  'Try: Have Marcus check the pool Friday',
+  'Try: Flush the water heater every 3 days',
+  'Try: Deep clean the lobby every month on the 1st',
+];
+
+/** The example at this tick. Wraps, and never fails on a silly index. */
+export function promptExample(tick: number): string {
+  const n = PROMPT_EXAMPLES.length;
+  if (n === 0) return COMPOSER_COPY.prompt;
+  const i = Number.isFinite(tick) ? ((Math.trunc(tick) % n) + n) % n : 0;
+  return PROMPT_EXAMPLES[i];
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Assigned by me
+// ═══════════════════════════════════════════════════════════════════════════
+
+/** How many of the things you handed out sit on the face of the panel. */
+export const ASSIGNED_FACE_LIMIT = 3;
+
+export const ASSIGNED_COPY = {
+  title: 'Assigned by me',
+  showMore: 'Show more',
+  /**
+   * The same door, when there is nothing hidden behind it but there IS news.
+   *
+   * Opening the popup is what marks the notices as seen, so a person with two
+   * assignments and one that just came back has to be able to reach it. Called
+   * "Show more" it would be a button promising something it does not have.
+   */
+  seeAll: 'See what you assigned',
+  popupTitle: 'Everything you assigned',
+  /** Under the popup title. Says the order, so nobody has to work it out. */
+  popupNote: 'Newest first.',
+  empty: 'You have not handed anything to anyone yet.',
+  close: 'Close',
+} as const;
+
+/** "3 of 11 shown" is bookkeeping. This says the only useful part. */
+export function assignedMoreLine(total: number, shown: number): string | null {
+  const hidden = total - shown;
+  if (hidden <= 0) return null;
+  return hidden === 1 ? '1 more' : `${hidden} more`;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// The month, and adding something to it
+// ═══════════════════════════════════════════════════════════════════════════
+
+export const EVENT_COPY = {
+  add: 'Add event',
+  /** The one thing about this control nobody guesses. */
+  dragHint: 'Click a day, or drag across days for something that runs longer.',
+  titleLabel: 'What is it',
+  titlePlaceholder: 'Fire safety training',
+  notesLabel: 'Notes',
+  notesPlaceholder: 'Anything the team should know.',
+  daysLabel: 'Days',
+  noDays: 'Pick a day on the month.',
+  save: 'Save',
+  cancel: 'Cancel',
+  saving: 'Saving',
+  failed: 'That did not save. Nothing changed. Try again in a moment.',
+  monthTitle: 'Month',
+  close: 'Close',
+} as const;
+
+/** "August 12" or "August 12 to August 15". The live readback in the panel. */
+export function pickedDaysLine(start: string | null, end: string | null): string {
+  if (!start) return EVENT_COPY.noDays;
+  const from = longDay(start);
+  if (!from) return EVENT_COPY.noDays;
+  if (!end || end === start) return from;
+  const to = longDay(end);
+  return to ? `${from} to ${to}` : from;
+}
+
+function longDay(iso: string): string | null {
+  const d = new Date(`${iso}T12:00:00`);
+  if (Number.isNaN(d.getTime())) return null;
+  return `${LONG_MONTHS[d.getMonth()]} ${d.getDate()}`;
+}
+
+const LONG_MONTHS = [
+  'January', 'February', 'March', 'April', 'May', 'June',
+  'July', 'August', 'September', 'October', 'November', 'December',
+] as const;
 
 /** "for you" | "for Marcus" | "for whoever's on front desk". */
 export function whoWord(who: string, people: readonly ComposerPerson[]): string {
@@ -399,7 +552,7 @@ function plainDay(iso: string | null, now: Date): string {
  */
 export function repeatWord(
   repeat: string,
-  opts: { weekday?: number | null; dayOfMonth?: number | null } = {},
+  opts: { weekday?: number | null; dayOfMonth?: number | null; intervalDays?: number | null } = {},
 ): string {
   const label = repeatLabel(repeat, opts);
   return label.charAt(0).toLowerCase() + label.slice(1);

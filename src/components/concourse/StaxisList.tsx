@@ -40,7 +40,7 @@ import { readEnvelope } from '@/lib/api-envelope';
 import type { LogEntryDTO } from '@/lib/comms/types';
 import type { AssignedByMeItem, WorklistItem } from '@/lib/worklist/types';
 import type { FeedPrefs } from '@/lib/feed/prefs';
-import { COMPOSER_COPY, emptyListNote } from '@/lib/feed/one-list-copy';
+import { COMPOSER_COPY, emptyListNote, PROMPT_ROTATE_MS } from '@/lib/feed/one-list-copy';
 import { isNewSince, rowIsMine } from '@/lib/feed/one-list';
 import { emptyParse, parseTodo, type ParseResult } from '@/lib/feed/parse-todo';
 import { INTERPRET_DEBOUNCE_MS, INTERPRET_TIMEOUT_MS, shouldInterpret } from '@/lib/feed/interpret-todo';
@@ -62,19 +62,22 @@ const LogbookPopup = dynamic(
   { ssr: false, loading: () => null },
 );
 import {
-  CalendarView,
+  MonthOverlay,
   WeekStrip,
   dayOf,
   dayStamp,
   dayTitle,
+  draftRange,
+  emptyEventDraft,
   isoDay,
   weekCells,
   weekRangeLabel,
+  type EventDraft,
 } from './list-calendar';
 import { CxIcon } from './icons';
 import { TraceFoundLine } from './TraceFoundLine';
-import { EventEditor } from '@/app/communications/_components/CalendarPane';
 import {
+  AssignedPopupView,
   AssignedRailPanel,
   ComposerView,
   EventRowView,
@@ -161,7 +164,7 @@ export function StaxisList({
   // ── who a task can go to, and who I am ───────────────────────────────────
   // Housekeepers are already absent from what this returns; the exclusion lives
   // server-side in listAssignees so it holds however the list is reached, not
-  // just in this dropdown. See HOUSEKEEPER_NOTE in list-rows.tsx.
+  // just in this dropdown. See COMPOSER_ROLES in lib/feed/one-list-copy.ts.
   const { data: assignees } = useApiResource<{ me: { staffId: string }; people: ComposerPerson[] }>(
     `/api/worklist?pid=${propertyId}&view=assignees`,
     { enabled: !!propertyId, keepDataOnError: true },
@@ -186,6 +189,11 @@ export function StaxisList({
   const [recording, setRecording] = React.useState(false);
   const [micAvailable, setMicAvailable] = React.useState(false);
   const [teachLine, setTeachLine] = React.useState<string | null>(null);
+  // Which rotating example the idle prompt is showing. See PROMPT_EXAMPLES.
+  const [promptTick, setPromptTick] = React.useState(0);
+  // The composer's own box, for the click-outside close. A ref, not a hook, as
+  // far as list-rows.tsx is concerned: it takes it as a prop.
+  const composerBox = React.useRef<HTMLDivElement | null>(null);
 
   // ── everything, or just mine ─────────────────────────────────────────────
   // Per DEVICE, deliberately. It is view state, not something about the person:
@@ -235,7 +243,17 @@ export function StaxisList({
   const [month, setMonth] = React.useState<{ year: number; monthIndex: number }>(
     () => ({ year: now.getFullYear(), monthIndex: now.getMonth() }),
   );
-  const [addingEvent, setAddingEvent] = React.useState(false);
+  // ── adding something to the month ────────────────────────────────────────
+  // Non-null while the side panel is open. The MONTH is the date control, so
+  // the draft holds the two days the grid is showing and nothing re-types them.
+  const [eventDraft, setEventDraft] = React.useState<EventDraft | null>(null);
+  const [eventBusy, setEventBusy] = React.useState(false);
+  const [eventError, setEventError] = React.useState<string | null>(null);
+  // True between pointer-down on a day and pointer-up anywhere. Held in a ref
+  // as well as in state: the window listener that ends a drag reads it during
+  // an event, where a stale closure over state would be a stuck drag.
+  const draggingRef = React.useRef(false);
+  const [dragging, setDragging] = React.useState(false);
 
   const [drawerOpen, setDrawerOpen] = React.useState(false);
   const [logbookOpen, setLogbookOpen] = React.useState(false);
@@ -274,11 +292,17 @@ export function StaxisList({
   const [mergeBusy, setMergeBusy] = React.useState(false);
   const [mergeError, setMergeError] = React.useState<string | null>(null);
 
+  // Read on every load now, not only when the drawer was open. The rail panel
+  // carries the three most recent on its face (2026-08-05), so "what have I
+  // handed out" is a question this page always has to have answered: it used to
+  // say "nothing has come back since you last looked" over eleven live
+  // assignments, which is true about the last hour and useless about the work.
   const { data: assignedData, error: assignedError, reload: reloadAssigned } =
     useApiResource<{ assigned: AssignedByMeItem[] }>(
       `/api/worklist?pid=${propertyId}&view=assigned-by-me`,
-      { enabled: !!propertyId && drawerOpen, keepDataOnError: true },
+      { enabled: !!propertyId, keepDataOnError: true },
     );
+  const assigned = React.useMemo(() => assignedData?.assigned ?? [], [assignedData]);
 
   // The hotel's own dated events. Fetched on every load now, not only when a
   // calendar was open: the week strip is permanent chrome and a 2pm vendor
@@ -498,6 +522,92 @@ export function StaxisList({
     })();
   }, [composer, propertyId, reloadWorklist, meStaffId, todayIso, now, taught, markTaught, cancelInterpret]);
 
+  /** Give up the row outright: the words, the answers, the open buttons. */
+  const cancelComposer = React.useCallback(() => {
+    setComposerOpen(false);
+    setComposerError(null);
+    setComposer(composerDefaults(todayIso, now.getDay()));
+    setParsed(emptyParse());
+    cancelInterpret();
+  }, [todayIso, now, cancelInterpret]);
+
+  /**
+   * Shut the row without eating what is in it.
+   *
+   * A click somewhere else on the page is "I am done with this control", not "I
+   * did not mean any of that": somebody who has typed half a sentence and
+   * glanced at a row above has not asked for their words to be deleted. So an
+   * empty row resets outright and a row with words in it just closes its
+   * buttons and lets go of focus. Escape keeps its own harder second stage,
+   * which is the deliberate act.
+   */
+  const collapseComposer = React.useCallback(() => {
+    if (!composer.title.trim()) { cancelComposer(); return; }
+    setComposerOpen(false);
+    setComposer((prev) => (prev.openRow === null && !prev.otherHint
+      ? prev
+      : { ...prev, openRow: null, otherHint: false }));
+  }, [composer.title, cancelComposer]);
+
+  // ── closing the composer from outside it ─────────────────────────────────
+  //
+  // Two ways out that the row itself cannot see: a click anywhere else, and
+  // Escape pressed while focus is on one of the chips rather than in the field.
+  // Both live here because this is the only component on the screen with hooks;
+  // list-rows.tsx is hook-free on purpose.
+  //
+  // Bound only while the row is actually engaged, and never while something
+  // else is open over the top of it: the log book popup and the Knows panel
+  // both close on Escape, and two things closing on one keypress is a page
+  // that feels like it is fighting you.
+  const composerEngaged = composerOpen || composer.openRow !== null || composer.title.trim().length > 0;
+  const overlayOpen = knowsOpen || logbookOpen || monthOpen || drawerOpen;
+  React.useEffect(() => {
+    if (!composerEngaged || overlayOpen) return undefined;
+
+    const onPointerDown = (e: MouseEvent | TouchEvent) => {
+      const box = composerBox.current;
+      const target = e.target;
+      if (!box || !(target instanceof Node)) return;
+      if (box.contains(target)) return;
+      collapseComposer();
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape') return;
+      // The field owns its own Escape, and it has a two-stage answer this must
+      // not double up on. Anything else with focus (a chip, the mic, the page)
+      // comes through here.
+      const target = e.target as HTMLElement | null;
+      if (target instanceof HTMLInputElement && target.classList.contains('fx-comptitle')) return;
+      if (composer.openRow !== null || composer.otherHint) {
+        setComposer((prev) => ({ ...prev, openRow: null, otherHint: false }));
+        return;
+      }
+      cancelComposer();
+    };
+
+    document.addEventListener('mousedown', onPointerDown);
+    document.addEventListener('touchstart', onPointerDown);
+    document.addEventListener('keydown', onKey);
+    return () => {
+      document.removeEventListener('mousedown', onPointerDown);
+      document.removeEventListener('touchstart', onPointerDown);
+      document.removeEventListener('keydown', onKey);
+    };
+  }, [composerEngaged, overlayOpen, composer.openRow, composer.otherHint, collapseComposer, cancelComposer]);
+
+  // ── the rotating example ─────────────────────────────────────────────────
+  //
+  // Slow (see PROMPT_ROTATE_MS) and stopped dead the moment somebody is using
+  // the row: a placeholder that changes under a person who is reading it is
+  // worse than a static one. It is only ever visible on an empty field anyway,
+  // so the timer is simply not running the rest of the time.
+  React.useEffect(() => {
+    if (composerEngaged) return undefined;
+    const timer = setInterval(() => setPromptTick((n) => n + 1), PROMPT_ROTATE_MS);
+    return () => clearInterval(timer);
+  }, [composerEngaged]);
+
   // ── speaking instead of typing ───────────────────────────────────────────
   //
   // Speech is an INPUT METHOD, not a mode. The words land in the same field the
@@ -606,6 +716,120 @@ export function StaxisList({
     })();
   }, [propertyId, reloadEvents]);
 
+  // ── picking days ON the month ────────────────────────────────────────────
+  //
+  // Pointer-down starts a range, moving across days extends it, letting go ends
+  // it. A plain click is the degenerate case of that, which is why there is one
+  // code path and not two: a tap on a phone and a drag on a desktop cannot
+  // disagree about what got picked if neither has its own handler.
+  const pickDown = React.useCallback((iso: string) => {
+    draggingRef.current = true;
+    setDragging(true);
+    setEventDraft((prev) => (prev ? { ...prev, start: iso, end: iso } : prev));
+  }, []);
+
+  const pickMove = React.useCallback((iso: string) => {
+    if (!draggingRef.current) return;
+    setEventDraft((prev) => (prev ? { ...prev, end: iso } : prev));
+  }, []);
+
+  const pickUp = React.useCallback(() => {
+    draggingRef.current = false;
+    setDragging(false);
+  }, []);
+
+  // Letting go ANYWHERE ends the drag, including off the grid and outside the
+  // window. Without this, dragging past the last row and releasing leaves the
+  // range following the pointer around, which reads as the page being stuck.
+  React.useEffect(() => {
+    if (!dragging) return undefined;
+    const end = () => { draggingRef.current = false; setDragging(false); };
+    window.addEventListener('pointerup', end);
+    window.addEventListener('pointercancel', end);
+    return () => {
+      window.removeEventListener('pointerup', end);
+      window.removeEventListener('pointercancel', end);
+    };
+  }, [dragging]);
+
+  const startAddEvent = React.useCallback(() => {
+    setEventError(null);
+    // Pre-picked with the day the page is already anchored on. Somebody who
+    // opened the month on a Saturday to add a Saturday thing has nothing left
+    // to do but type, and anybody else drags.
+    setEventDraft({ ...emptyEventDraft(), start: anchorIso, end: null });
+  }, [anchorIso]);
+
+  const cancelAddEvent = React.useCallback(() => {
+    setEventDraft(null);
+    setEventError(null);
+    draggingRef.current = false;
+    setDragging(false);
+  }, []);
+
+  const saveEvent = React.useCallback(() => {
+    const draft = eventDraft;
+    if (!draft) return;
+    const range = draftRange(draft);
+    const title = draft.title.trim();
+    if (!range || !title) return;
+    void (async () => {
+      setEventBusy(true);
+      setEventError(null);
+      try {
+        const res = await fetchWithAuth('/api/knowledge/events', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            pid: propertyId,
+            title,
+            eventDate: range.eventDate,
+            endDate: range.endDate,
+            notes: draft.notes.trim() || null,
+          }),
+          timeoutMs: INTERACTIVE_ACTION_TIMEOUT_MS,
+        });
+        const envelope = await readEnvelope<{ id?: string }>(res);
+        if (envelope.error !== undefined) {
+          setEventError(envelope.error || 'That did not save. Nothing changed. Try again in a moment.');
+          return;
+        }
+        setEventDraft(null);
+        await reloadEvents();
+      } catch (e) {
+        if (e instanceof SessionEndedError) throw e;
+        setEventError('That did not save. Nothing changed. Try again in a moment.');
+      } finally {
+        setEventBusy(false);
+      }
+    })();
+  }, [eventDraft, propertyId, reloadEvents]);
+
+  const closeMonth = React.useCallback(() => {
+    setMonthOpen(false);
+    cancelAddEvent();
+  }, [cancelAddEvent]);
+
+  // ── Escape closes what is over the page ──────────────────────────────────
+  //
+  // The month and the assigned-by-me list are both plain overlays rather than
+  // dialog elements, so nothing gives them this for free. The log book popup
+  // and Knows bring their own, and are deliberately not handled here: two
+  // things closing on one keypress reads as the page fighting you.
+  //
+  // The month goes first when both are somehow open, because it is the one
+  // holding an unsaved draft.
+  React.useEffect(() => {
+    if (!monthOpen && !drawerOpen) return undefined;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape') return;
+      if (monthOpen) closeMonth();
+      else setDrawerOpen(false);
+    };
+    document.addEventListener('keydown', onKey);
+    return () => document.removeEventListener('keydown', onKey);
+  }, [monthOpen, drawerOpen, closeMonth]);
+
   const closeLogbook = React.useCallback(() => setLogbookOpen(false), []);
   const openLogbook = React.useCallback(() => setLogbookOpen(true), []);
 
@@ -671,6 +895,15 @@ export function StaxisList({
     const d = new Date(`${iso}T12:00:00`);
     if (!Number.isNaN(d.getTime())) setMonth({ year: d.getFullYear(), monthIndex: d.getMonth() });
   }, []);
+
+  /** Open the month on whatever day the page is currently showing. */
+  const openMonth = React.useCallback(() => {
+    const d = new Date(`${anchorIso}T12:00:00`);
+    if (!Number.isNaN(d.getTime())) setMonth({ year: d.getFullYear(), monthIndex: d.getMonth() });
+    setEventDraft(null);
+    setEventError(null);
+    setMonthOpen(true);
+  }, [anchorIso]);
 
   const stepWeek = (delta: number) => {
     const d = new Date(`${anchorIso}T12:00:00`);
@@ -761,7 +994,7 @@ export function StaxisList({
               type="button"
               className="fx-month"
               aria-expanded={monthOpen}
-              onClick={() => setMonthOpen((v) => !v)}
+              onClick={() => (monthOpen ? closeMonth() : openMonth())}
             >
               <CxIcon name="calendar" size={13} />
               Month
@@ -769,26 +1002,6 @@ export function StaxisList({
           </div>
 
           <WeekStrip cells={cells} selectedIso={anchorIso} onSelectDay={anchorOn} />
-
-          {monthOpen && (
-            <div className="fx-monthpop">
-              <CalendarView
-                year={month.year}
-                monthIndex={month.monthIndex}
-                todayIso={todayIso}
-                selectedIso={anchorIso}
-                items={items}
-                events={events}
-                onSelectDay={anchorOn}
-                onStepMonth={stepMonth}
-                renderItem={renderItem}
-                canManageEvents={canSeeFindings}
-                onDeleteEvent={removeEvent}
-                onAddEvent={() => { setMonthOpen(false); setAddingEvent(true); }}
-                gridOnly
-              />
-            </div>
-          )}
         </div>
       </div>
 
@@ -803,17 +1016,6 @@ export function StaxisList({
               walks over and the reveal is already drawn on arrival. The
               companion decides whether this appears at all; this renders it. */}
           <TraceFoundLine />
-
-          {addingEvent && canSeeFindings && (
-            <div style={{ marginBottom: 14 }}>
-              <EventEditor
-                pid={propertyId}
-                L={IDENTITY_COPY}
-                onDone={async () => { setAddingEvent(false); await reloadEvents(); }}
-                onCancel={() => setAddingEvent(false)}
-              />
-            </div>
-          )}
 
           <FindingCards
             key={propertyId}
@@ -852,14 +1054,10 @@ export function StaxisList({
                 recording={recording}
                 micAvailable={micAvailable}
                 teachLine={teachLine}
+                promptTick={promptTick}
+                boxRef={composerBox}
                 onOpen={() => setComposerOpen(true)}
-                onCancel={() => {
-                  setComposerOpen(false);
-                  setComposerError(null);
-                  setComposer(composerDefaults(todayIso, now.getDay()));
-                  setParsed(emptyParse());
-                  cancelInterpret();
-                }}
+                onCancel={cancelComposer}
                 onChange={changeComposer}
                 onSubmit={submitComposer}
                 onMicPress={micPress}
@@ -893,26 +1091,49 @@ export function StaxisList({
 
           <AssignedRailPanel
             notices={notices}
-            entries={assignedData?.assigned ?? []}
+            entries={assigned}
             now={now}
-            open={drawerOpen}
             loading={!assignedData && !assignedError}
             readFailed={!!assignedError}
             onOpen={openDrawer}
-            onClose={() => setDrawerOpen(false)}
           />
 
-          <LogbookRailPanel
-            entries={railLog}
-            mergeOn={logbookInList}
-            mergeReady={!!prefsData}
-            mergeBusy={mergeBusy}
-            mergeError={mergeError}
-            onToggleMerge={toggleMerge}
-            onOpen={openLogbook}
-          />
+          <LogbookRailPanel entries={railLog} onOpen={openLogbook} />
         </div>
       </div>
+
+      <AssignedPopupView
+        open={drawerOpen}
+        entries={assigned}
+        now={now}
+        loading={!assignedData && !assignedError}
+        readFailed={!!assignedError}
+        onClose={() => setDrawerOpen(false)}
+      />
+
+      <MonthOverlay
+        open={monthOpen}
+        year={month.year}
+        monthIndex={month.monthIndex}
+        todayIso={todayIso}
+        selectedIso={anchorIso}
+        items={items}
+        events={events}
+        canManageEvents={canSeeFindings}
+        draft={eventDraft}
+        busy={eventBusy}
+        error={eventError}
+        onClose={closeMonth}
+        onSelectDay={anchorOn}
+        onStepMonth={stepMonth}
+        onStartAdd={startAddEvent}
+        onCancelAdd={cancelAddEvent}
+        onDraftChange={setEventDraft}
+        onSaveEvent={saveEvent}
+        onPickDown={pickDown}
+        onPickMove={pickMove}
+        onPickUp={pickUp}
+      />
 
       <KnowsPanel
         open={knowsOpen}
@@ -950,9 +1171,6 @@ function eventMeta(event: KnowledgeEventDTO): string {
     ? `Through ${dayStamp(event.endDate)}`
     : 'All day';
 }
-
-/** The event editor takes the Communications copy helper, which is identity. */
-const IDENTITY_COPY = (english: string) => english;
 
 // The slice of the Web Speech API this touches. It is not in the standard DOM
 // lib types and is `webkit`-prefixed in Chrome and Safari. Same shape the ask

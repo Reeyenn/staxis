@@ -18,13 +18,38 @@
 // THE THIRD RULE: never invent a person. A name is only claimed when it matches
 // somebody on the roster the caller passed in, which is the roster
 // /api/worklist?view=assignees returns — housekeepers are absent from it, so
-// they can never be matched here either. See HOUSEKEEPER_NOTE.
+// they can never be matched here either. See COMPOSER_ROLES in one-list-copy.ts.
 // ═══════════════════════════════════════════════════════════════════════════
 
 import { WEEKDAYS, whichDayQuestion } from './one-list-copy';
 
-/** The cadences the composer and `comms_tasks` both understand. */
-export type RepeatChoice = 'once' | 'daily' | 'weekdays' | 'weekly' | 'biweekly' | 'monthly';
+/**
+ * The cadences the composer and `comms_tasks` both understand.
+ *
+ * `every_n_days` is the open-ended one: it carries `intervalDays` and covers
+ * everything from "every 3 days" to "every 90 days" without a chip per number.
+ * Every other member of this union is a fixed shape.
+ */
+export type RepeatChoice =
+  | 'once' | 'daily' | 'weekdays' | 'weekly' | 'biweekly' | 'monthly' | 'every_n_days';
+
+/** The narrowest and widest gap `every_n_days` may name. */
+export const MIN_INTERVAL_DAYS = 2;
+export const MAX_INTERVAL_DAYS = 365;
+
+/**
+ * A typed number, clamped into a cadence, or null.
+ *
+ * 1 is not rejected: "every 1 days" is a real thing to type and it means daily,
+ * which the product already has a word for. It is folded there by the callers
+ * rather than stored as a second spelling of the same cadence.
+ */
+export function readIntervalDays(value: unknown): number | null {
+  const n = typeof value === 'number' ? value : Number(String(value ?? '').trim());
+  if (!Number.isInteger(n)) return null;
+  if (n < MIN_INTERVAL_DAYS || n > MAX_INTERVAL_DAYS) return null;
+  return n;
+}
 
 /** One row of the roster a to-do can be handed to. */
 export interface ComposerPerson { staffId: string; name: string }
@@ -39,6 +64,13 @@ export interface ParseResult {
   repeat: RepeatChoice | null;
   weekday: number | null;
   dayOfMonth: number | null;
+  /**
+   * How many days apart, when the cadence is `every_n_days`. Null otherwise.
+   *
+   * Only ever claimed off the words "every N days", never off a bare number:
+   * "order 3 cases of coffee" is not a cadence. See THE SECOND RULE above.
+   */
+  intervalDays: number | null;
   /**
    * "HH:MM" on a 24-hour clock, or null. A time of DAY, never an instant, and
    * never a timezone: the server still owns where a day begins and ends. Null
@@ -61,7 +93,7 @@ export interface ParseQuestion {
 export function emptyParse(title = ''): ParseResult {
   return {
     title, who: null, when: null, repeat: null, weekday: null, dayOfMonth: null,
-    atTime: null, question: null,
+    intervalDays: null, atTime: null, question: null,
   };
 }
 
@@ -321,6 +353,7 @@ export function parseTodo(
   let repeat: RepeatChoice | null = null;
   let weekday: number | null = null;
   let dayOfMonth: number | null = null;
+  let intervalDays: number | null = null;
   let atTime: string | null = null;
   let question: ParseQuestion | null = null;
 
@@ -374,6 +407,15 @@ export function parseTodo(
 
   const everyOtherDay = firstFree(lower, cuts, new RegExp(`\\bevery other (${weekdayAlt})s?\\b`, 'g'));
   const everyOtherWeek = everyOtherDay ? null : firstFree(lower, cuts, /\bevery other week\b|\bbiweekly\b|\bbi-weekly\b|\bfortnightly\b/g);
+  // "every 3 days". Anchored on the words "every" and "days" with the number
+  // between them, so THE SECOND RULE holds: "order 3 cases" reaches none of
+  // this, and neither does "fix room 214 ac". "every other day" is the same
+  // cadence said in English, and is claimed here rather than left in the title
+  // because two days apart is exactly what it means.
+  const everyOtherDayPlain = firstFree(lower, cuts, /\bevery other day\b|\bevery second day\b/g);
+  const everyNDays = everyOtherDayPlain
+    ? null
+    : firstFree(lower, cuts, new RegExp(`\\bevery (\\d{1,3}|${Object.keys(WORD_NUMBERS).join('|')}) days\\b`, 'g'));
   const everyMonthOn = firstFree(lower, cuts, /\bevery month on the (\d{1,2})(?:st|nd|rd|th)?\b/g);
   const everyMonth = everyMonthOn ? null : firstFree(lower, cuts, /\bevery month\b|\bmonthly\b/g);
   const everyWeekday = firstFree(lower, cuts, new RegExp(`\\bevery (${weekdayAlt})s?\\b`, 'g'));
@@ -387,6 +429,24 @@ export function parseTodo(
   } else if (everyOtherWeek) {
     repeat = 'biweekly';
     take(everyOtherWeek);
+  } else if (everyOtherDayPlain) {
+    repeat = 'every_n_days';
+    intervalDays = 2;
+    take(everyOtherDayPlain);
+  } else if (everyNDays) {
+    const n = Number(everyNDays[1]) || WORD_NUMBERS[everyNDays[1]] || 0;
+    const clean = readIntervalDays(n);
+    if (clean !== null) {
+      repeat = 'every_n_days';
+      intervalDays = clean;
+      take(everyNDays);
+    } else if (n === 1) {
+      // "every 1 days" is daily said awkwardly, and daily already has a word.
+      // Storing it as a one-day interval would be a second spelling of a
+      // cadence the product can already say.
+      repeat = 'daily';
+      take(everyNDays);
+    }
   } else if (everyMonthOn) {
     const day = Number(everyMonthOn[1]);
     if (day >= 1 && day <= 28) { repeat = 'monthly'; dayOfMonth = day; take(everyMonthOn); }
@@ -502,7 +562,11 @@ export function parseTodo(
 
   // A repeating item has no single due date; when it names a day, that day is
   // where the run STARTS. The row says "from Monday" for exactly this reason.
-  if (repeat !== null && repeat !== 'once' && weekday === null && when) {
+  //
+  // An every-N-days cadence is deliberately left out: it counts from a start
+  // date rather than landing on a weekday, and a weekday on it would be a
+  // parameter nothing reads and the database refuses.
+  if (repeat !== null && repeat !== 'once' && repeat !== 'every_n_days' && weekday === null && when) {
     weekday = weekdayOfIso(when);
   }
 
@@ -513,6 +577,7 @@ export function parseTodo(
     repeat,
     weekday,
     dayOfMonth,
+    intervalDays,
     atTime,
     question,
   };

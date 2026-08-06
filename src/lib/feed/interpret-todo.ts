@@ -61,6 +61,14 @@ export interface TodoReading {
   phrases: string[];
 }
 
+/**
+ * What a reading may claim as a cadence.
+ *
+ * `every_n_days` is deliberately absent. It is the one cadence that carries a
+ * NUMBER, and a model that named it without a believable interval would produce
+ * a template with no gap in it. The pure parser reads "every 3 days" perfectly
+ * well, and a sentence the parser read is a sentence this path never runs on.
+ */
 const REPEATS: readonly RepeatChoice[] = ['once', 'daily', 'weekdays', 'weekly', 'biweekly', 'monthly'];
 
 /**

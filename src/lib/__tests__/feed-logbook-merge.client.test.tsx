@@ -220,27 +220,23 @@ describe('the log book reaches the timeline when the switch is on', () => {
     });
   });
 
-  test('flipping the rail switch saves the preference', async (t: TestContext) => {
-    await withList(t, { logbookInList: false, entries: [logEntry()] }, async ({ host, wired }) => {
-      const sw = host.querySelector<HTMLButtonElement>('.fx-sw[role="switch"]');
-      assert.ok(sw, 'the merge switch is not on the page at all');
-      assert.equal(sw.getAttribute('aria-checked'), 'false');
-      assert.equal(sw.disabled, false, 'the switch must be live once the preference has been read');
-
-      await act(async () => { sw.click(); });
-      await settle();
-
-      // The switch's own write, found by what it CARRIES rather than by being
-      // the first thing sent to this route. The list also stamps "I looked at
-      // this" against the same endpoint on mount, and a test that took whatever
-      // arrived first would flip between the two for reasons that have nothing
-      // to do with the switch.
-      const write = wired.writes.find(
-        (w) => w.url.includes('/api/feed/prefs')
-          && (w.body as Record<string, unknown> | undefined)?.logbookInList !== undefined,
+  // 2026-08-05: the switch used to sit at the foot of the rail panel AND at the
+  // foot of the opened log book. One preference, two controls, one screen. The
+  // clean view of the rail is a glance at what got written down today, so the
+  // switch now lives only where somebody has already gone looking for the diary.
+  test('the rail panel carries no switch', async (t: TestContext) => {
+    await withList(t, { logbookInList: false, entries: [logEntry()] }, async ({ host }) => {
+      const panels = [...host.querySelectorAll('.fx-panel')]
+        .filter((el) => /Log book/.test(el.textContent ?? ''));
+      assert.equal(panels.length, 1, 'the log book panel is not on the page at all');
+      assert.equal(
+        panels[0].querySelector('[role="switch"]'), null,
+        'the merge switch came back to the clean view',
       );
-      assert.ok(write, 'clicking the switch saved nothing');
-      assert.deepEqual(write.body, { pid: PID, logbookInList: true });
+      assert.ok(!/Show notes on the timeline/.test(panels[0].textContent ?? ''));
+      // ...and the panel still does the two things it is actually for.
+      assert.ok(panels[0].querySelector('.fx-log'), 'today\'s notes are missing');
+      assert.match(panels[0].textContent ?? '', /Open the log book/);
     });
   });
 });

@@ -50,7 +50,7 @@ export async function POST(req: NextRequest): Promise<Response> {
   let body: {
     pid?: string; title?: string; notes?: string; priority?: string;
     assignedStaffId?: string; assignedDepartment?: string; dueAt?: string; dueDate?: string; sourceMessageId?: string;
-    repeat?: string; weekday?: number; dayOfMonth?: number; dueTime?: string;
+    repeat?: string; weekday?: number; dayOfMonth?: number; intervalDays?: number; dueTime?: string;
   };
   try { body = await req.json(); } catch { body = {}; }
 
@@ -154,6 +154,10 @@ export async function POST(req: NextRequest): Promise<Response> {
         cadence: repeat as RecurringCadence,
         weekday: typeof body.weekday === 'number' ? body.weekday : null,
         dayOfMonth: typeof body.dayOfMonth === 'number' ? body.dayOfMonth : null,
+        // "Every 3 days". Passed through raw; normalizeCadence is the one place
+        // that decides whether a number is a cadence, and it throws a sentence
+        // a person can act on when it is not.
+        intervalDays: typeof body.intervalDays === 'number' ? body.intervalDays : null,
         // Carried on the TEMPLATE, so a repeating "check the boiler by 3pm"
         // still says 3pm on every instance it spawns. Held only here it would
         // have survived exactly one day and then quietly vanished.
