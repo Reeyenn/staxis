@@ -7,13 +7,26 @@ import {
   AI_FEATURE_KEYS,
   AI_FEATURE_REGISTRY,
   AI_MODEL_OVERLAYS,
+  aiFeatureRuntimeProviderLabel,
   getAiFeatureDefinition,
   isAiFeatureRuntimeProviderCompatible,
 } from '@/lib/ai/feature-registry';
 import { discoverProviderModels } from '@/lib/ai/provider-discovery';
 import { probeAiModel } from '@/lib/ai/provider-probe';
-import { listRegistryModelFallbacks, mergeAiModelCatalogRows } from '@/lib/ai/model-catalog';
+import {
+  invalidateAiModelCatalogCache,
+  listRegistryModelFallbacks,
+  mergeAiModelCatalogRows,
+} from '@/lib/ai/model-catalog';
+import {
+  activateAiConfigVersion,
+  createAiConfigVersion,
+  invalidateAiFeatureConfigCache,
+  validateAiConfigVersion,
+} from '@/lib/ai/model-config-store';
+import { resetMessagesClientCache } from '@/lib/ai/messages-client';
 import { captureTokenUsage } from '@/lib/ai/usage';
+import { supabaseAdmin } from '@/lib/supabase-admin';
 import { isRuntimeCompatibleAiModel } from '@/app/admin/_components/AIControlCenter.helpers';
 
 const originalFetch = globalThis.fetch;
@@ -608,4 +621,294 @@ test('active runtime hydration rejects provider models marked unavailable withou
     /catch\s*\{[\s\S]*catalogCache\?\.rows\.find[\s\S]*if\s*\(cached\)\s*return cached[\s\S]*overlayFallback/,
     'catalog outages must preserve a cached unavailable state before using a static overlay',
   );
+});
+
+// ─── The GPT switch has to survive every gate, not only the picker ───────────
+//
+// Until 2026-08-06 it did not. Creating a draft with an OpenAI primary was
+// allowed by the PLURAL capability-derived gate (`runtimeProviders`), and the
+// very next step refused the same row against `runtimeProvider` — the SINGULAR
+// provider of the feature's DEFAULT model, which is `anthropic` for every
+// feature that has one. So every OpenAI selection died at "Test", the admin saw
+// "8 of 8 didn't apply", and not one OpenAI config version ever activated in
+// production. These tests drive the real store through create, validate and
+// activate so the two gates can never disagree again.
+
+const STORE_CONFIG_ID = 'cccccccc-cccc-cccc-cccc-cccccccccccc';
+const STORE_ACTOR = {
+  accountId: 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
+  userId: '11111111-1111-1111-1111-111111111111',
+  email: 'admin@example.com',
+  requestId: 'ai-switch-test-request',
+};
+
+type ConfigRowOverrides = Partial<Record<string, unknown>>;
+
+function storeConfigRow(overrides: ConfigRowOverrides = {}): Record<string, unknown> {
+  return {
+    id: STORE_CONFIG_ID,
+    feature_key: 'communications.announcement_polish',
+    version: 2,
+    enabled: true,
+    primary_provider: 'openai',
+    primary_model_id: 'gpt-5.4-mini',
+    fallback_provider: null,
+    fallback_model_id: null,
+    parameters: {},
+    validation_status: 'pending',
+    validation_report: {},
+    validated_at: null,
+    validated_by: null,
+    validated_by_email: null,
+    is_active: false,
+    parent_id: null,
+    change_reason: null,
+    created_at: new Date().toISOString(),
+    created_by: null,
+    created_by_email: null,
+    activated_at: null,
+    activated_by: null,
+    activated_by_email: null,
+    ...overrides,
+  };
+}
+
+/** Stand in for the two tables the store reads: the version under test, and an
+ *  empty model catalog (which makes `getAiCatalogModel` fall back to the static
+ *  registry overlays, so capability/pricing checks still run for real). */
+function installStoreSeam(row: Record<string, unknown> | null): {
+  rpcCalls: { fn: string; args: Record<string, unknown> }[];
+  rpcResult: { value: unknown };
+} {
+  const rpcCalls: { fn: string; args: Record<string, unknown> }[] = [];
+  const rpcResult = { value: null as unknown };
+  const catalogQuery: Record<string, unknown> = {};
+  catalogQuery.order = () => catalogQuery;
+  catalogQuery.then = (resolve: (value: unknown) => unknown) => resolve({ data: [], error: null });
+
+  // @ts-expect-error test replaces the singleton dependency seam
+  supabaseAdmin.from = (table: string) => {
+    if (table === 'ai_feature_config_versions') {
+      return {
+        select: () => ({
+          eq: () => ({ maybeSingle: async () => ({ data: row, error: null }) }),
+        }),
+      };
+    }
+    if (table === 'ai_model_catalog') return { select: () => catalogQuery };
+    throw new Error(`unexpected table read: ${table}`);
+  };
+  // @ts-expect-error test replaces the singleton dependency seam
+  supabaseAdmin.rpc = async (fn: string, args: Record<string, unknown>) => {
+    rpcCalls.push({ fn, args });
+    return { data: rpcResult.value, error: null };
+  };
+  return { rpcCalls, rpcResult };
+}
+
+/** Both chat providers answer the synthetic probe successfully. */
+function installProbeSeam(): void {
+  globalThis.fetch = (async (input: RequestInfo | URL) => {
+    const url = typeof input === 'string'
+      ? input
+      : input instanceof URL ? input.href : input.url;
+    if (url.includes('api.openai.com/v1/chat/completions')) {
+      return new Response(JSON.stringify({
+        id: 'chatcmpl-probe',
+        model: 'gpt-5.4-mini',
+        choices: [{ message: { role: 'assistant', content: 'OK' }, finish_reason: 'stop' }],
+        usage: { prompt_tokens: 12, completion_tokens: 2, total_tokens: 14 },
+      }), { status: 200, headers: { 'content-type': 'application/json' } });
+    }
+    if (url.includes('api.anthropic.com')) {
+      return new Response(JSON.stringify({
+        id: 'msg_probe',
+        type: 'message',
+        role: 'assistant',
+        model: 'claude-haiku-4-5',
+        content: [{ type: 'text', text: 'OK' }],
+        stop_reason: 'end_turn',
+        stop_sequence: null,
+        usage: { input_tokens: 12, output_tokens: 2 },
+      }), { status: 200, headers: { 'content-type': 'application/json' } });
+    }
+    throw new Error(`unexpected probe fetch: ${url}`);
+  }) as typeof fetch;
+}
+
+/** Any error whose subject is "which provider may serve this feature". */
+function providerRefusals(messages: readonly string[]): string[] {
+  return messages.filter((message) => /runtime|must run on|anthropic|openai/i.test(message));
+}
+
+describe('an OpenAI selection survives create, validate and activate', () => {
+  const originalFrom = supabaseAdmin.from.bind(supabaseAdmin);
+  const originalRpc = supabaseAdmin.rpc.bind(supabaseAdmin);
+  const savedAnthropicKey = process.env.ANTHROPIC_API_KEY;
+
+  afterEach(() => {
+    supabaseAdmin.from = originalFrom;
+    supabaseAdmin.rpc = originalRpc;
+    if (savedAnthropicKey === undefined) delete process.env.ANTHROPIC_API_KEY;
+    else process.env.ANTHROPIC_API_KEY = savedAnthropicKey;
+    resetMessagesClientCache();
+    invalidateAiModelCatalogCache();
+    invalidateAiFeatureConfigCache();
+  });
+
+  test('a text-only feature validates green on a GPT primary with a Claude fallback', async () => {
+    process.env.ANTHROPIC_API_KEY = 'sk-ant-placeholder-test-key-min-20-chars';
+    resetMessagesClientCache();
+    invalidateAiModelCatalogCache();
+    const row = storeConfigRow({
+      fallback_provider: 'anthropic',
+      fallback_model_id: 'claude-haiku-4-5',
+    });
+    const { rpcCalls } = installStoreSeam(row);
+    installProbeSeam();
+
+    const { report } = await validateAiConfigVersion(STORE_CONFIG_ID, STORE_ACTOR);
+
+    assert.deepEqual(
+      providerRefusals(report.errors),
+      [],
+      'announcement polish needs only text, so neither model may be refused for its provider',
+    );
+    assert.deepEqual(report.errors, []);
+    assert.equal(report.valid, true);
+    // The decisive proof: probes only run once the earlier gates leave no
+    // errors, so a probed OpenAI primary is a stage the old singular pin made
+    // structurally unreachable.
+    assert.equal(report.probes.length, 2);
+    assert.deepEqual(
+      report.probes.map((probe) => [probe.provider, probe.ok]),
+      [['openai', true], ['anthropic', true]],
+    );
+    assert.ok(report.primaryCapabilities.includes('text'));
+    const recorded = rpcCalls.find((call) => call.fn === 'staxis_record_ai_feature_validation');
+    assert.equal(recorded?.args.p_validation_status, 'passed');
+  });
+
+  test('a GPT primary that passed its test can then be made live', async () => {
+    const row = storeConfigRow({
+      validation_status: 'passed',
+      validated_at: new Date().toISOString(),
+    });
+    const { rpcCalls, rpcResult } = installStoreSeam(row);
+    rpcResult.value = {
+      featureKey: 'communications.announcement_polish',
+      previousConfigId: null,
+      activeConfigId: STORE_CONFIG_ID,
+      version: 2,
+    };
+
+    const result = await activateAiConfigVersion({
+      id: STORE_CONFIG_ID,
+      expectedActiveId: null,
+      reason: 'move announcement polish onto GPT',
+      action: 'ai.config.activate',
+      requestId: STORE_ACTOR.requestId,
+      actor: STORE_ACTOR,
+    });
+
+    assert.equal(result.activeConfigId, STORE_CONFIG_ID);
+    assert.equal(result.config.primary.provider, 'openai');
+    assert.ok(rpcCalls.some((call) => call.fn === 'staxis_activate_ai_feature_config'));
+  });
+
+  test('a feature that reads PDFs still refuses GPT at create and at validate', async () => {
+    // OPENAI_CHAT_CAPABILITIES deliberately omits pdf_input: our adapter
+    // translates no document block, so a GPT selection here would return a
+    // blank extraction that looks like a successful one.
+    await assert.rejects(
+      createAiConfigVersion({
+        featureKey: 'inventory.sheet_import',
+        enabled: true,
+        primary: { provider: 'openai', modelId: 'gpt-5.4-mini' },
+        fallback: null,
+        parameters: {},
+        parentId: null,
+        changeReason: null,
+      }, STORE_ACTOR),
+      /runs on anthropic models only/,
+    );
+
+    installStoreSeam(storeConfigRow({
+      feature_key: 'inventory.sheet_import',
+      primary_provider: 'openai',
+      primary_model_id: 'gpt-5.4-mini',
+    }));
+    installProbeSeam();
+    const { report } = await validateAiConfigVersion(STORE_CONFIG_ID, STORE_ACTOR);
+    assert.equal(report.valid, false);
+    assert.ok(report.errors.some((error) => /primary model must run on anthropic/i.test(error)));
+    assert.equal(report.probes.length, 0, 'a refused selection must never reach a paid probe');
+  });
+
+  test('a feature with only one runtime still refuses the other provider', async () => {
+    // Transcription is a separate OpenAI endpoint; Anthropic cannot serve it.
+    // The fix widens nothing here.
+    await assert.rejects(
+      createAiConfigVersion({
+        featureKey: 'communications.voice_transcription',
+        enabled: true,
+        primary: { provider: 'anthropic', modelId: 'claude-haiku-4-5' },
+        fallback: null,
+        parameters: {},
+        parentId: null,
+        changeReason: null,
+      }, STORE_ACTOR),
+      /runs on openai models only/,
+    );
+  });
+
+  test('a locked feature refuses a non-default model at create and at validate', async () => {
+    // Every locked feature today is also display-only, so the editable gate
+    // answers first. Either way the answer is a refusal, and it stays one if
+    // somebody ever makes a locked feature editable.
+    await assert.rejects(
+      createAiConfigVersion({
+        featureKey: 'knowledge.embeddings',
+        enabled: true,
+        primary: { provider: 'openai', modelId: 'gpt-5.4-mini' },
+        fallback: null,
+        parameters: {},
+        parentId: null,
+        changeReason: null,
+      }, STORE_ACTOR),
+      /cannot be configured here/,
+    );
+    assert.equal(getAiFeatureDefinition('knowledge.embeddings').modelSwitchable, false);
+
+    installStoreSeam(storeConfigRow({
+      feature_key: 'knowledge.embeddings',
+      primary_provider: 'openai',
+      primary_model_id: 'gpt-5.4-mini',
+    }));
+    await assert.rejects(
+      validateAiConfigVersion(STORE_CONFIG_ID, STORE_ACTOR),
+      /informational only/,
+    );
+  });
+
+  test('a refusal names every provider the feature can really run on', async () => {
+    // The old copy always named one provider — the default model's — so a
+    // feature that runs on both was told it runs on Anthropic.
+    assert.equal(aiFeatureRuntimeProviderLabel('agent.ask_staxis'), 'anthropic or openai');
+    assert.equal(aiFeatureRuntimeProviderLabel('inventory.sheet_import'), 'anthropic');
+    assert.equal(aiFeatureRuntimeProviderLabel('communications.voice_transcription'), 'openai');
+
+    await assert.rejects(
+      createAiConfigVersion({
+        featureKey: 'agent.ask_staxis',
+        enabled: true,
+        primary: { provider: 'browser', modelId: 'web-speech-recognition' },
+        fallback: null,
+        parameters: {},
+        parentId: null,
+        changeReason: null,
+      }, STORE_ACTOR),
+      /This feature runs on anthropic or openai models only\./,
+    );
+  });
 });

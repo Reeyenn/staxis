@@ -33,8 +33,10 @@ import { afterEach, beforeEach, describe, test } from 'node:test';
 
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { getTool, type ToolHandlerContext } from '@/lib/agent/tools';
+import { runAssignmentsTool } from '@/lib/agent/tools/assignments';
 import '@/lib/agent/tools/index';
 import { loadAssignmentNotices } from '@/lib/companion/notices-server';
+import { gatherAssignedByMe } from '@/lib/worklist/core';
 import { KNOWLEDGE_STORES, knowledgeStore } from '@/lib/agent/knowledge-door';
 
 const PID = '00000000-0000-0000-0000-00000000c001';
@@ -49,6 +51,9 @@ const NOW = new Date('2026-08-05T18:00:00.000Z');
 interface TaskRow { [key: string]: unknown }
 
 let tasks: TaskRow[];
+/** The zone the stubbed `properties` row reports. The days-waiting count is
+ *  read off THIS calendar, not the server's. */
+let hotelTimezone: string | null = 'America/Chicago';
 const originalFrom = supabaseAdmin.from.bind(supabaseAdmin);
 
 const STAFF = [
@@ -120,6 +125,7 @@ beforeEach(() => {
       blocked_at: null, blocked_by_staff_id: null, blocked_reason: null,
     },
   ];
+  hotelTimezone = 'America/Chicago';
   // @ts-expect-error monkey-patch the singleton for the test
   supabaseAdmin.from = (table: string) => buildStub(table);
 });
@@ -145,7 +151,9 @@ function buildStub(table: string) {
       ? tasks as Record<string, unknown>[]
       : table === 'staff'
         ? STAFF.map((s) => ({ ...s, property_id: PID }))
-        : [];
+        : table === 'properties'
+          ? [{ id: PID, timezone: hotelTimezone }]
+          : [];
     return source.filter((row) => {
       for (const [col, value] of eqs) if (row[col] !== value) return false;
       for (const [col, value] of neqs) if (row[col] === value) return false;
@@ -191,9 +199,14 @@ function toolCtx(staffId: string | null): ToolHandlerContext {
 }
 
 async function runTool(args: { days?: number; state?: string }, staffId: string | null = ME) {
-  const def = getTool('staxis_assignments');
-  assert.ok(def, 'staxis_assignments is not registered');
-  const result = await def!.handler(args, toolCtx(staffId));
+  assert.ok(getTool('staxis_assignments'), 'staxis_assignments is not registered');
+  // The clock goes in as an argument, pinned to the same NOW the loader is
+  // given above. The fixture rows carry fixed dates, so reading the real clock
+  // here made "how many whole days has Marcus had this" grow by one every real
+  // day: the suite passed on 2026-08-05 and failed by itself the next morning.
+  // The registered handler is this same body with `now` defaulted, which is
+  // what production runs.
+  const result = await runAssignmentsTool(args, toolCtx(staffId), NOW);
   assert.equal(result.ok, true, result.error ?? '');
   return result.data as {
     window: string | null;
@@ -270,6 +283,32 @@ describe('a notice is only ever about the person asking', () => {
     assert.equal(waiting!.with, 'Marcus');
     // Four whole days between 2026-08-01T09:00 and 2026-08-05T18:00.
     assert.equal(waiting!.daysWaiting, 4);
+  });
+
+  test('days waiting turns over at the hotel\'s midnight, not Greenwich\'s', async () => {
+    // Handed over at 11pm Monday in Texas, asked about at 1am Tuesday there.
+    // Both instants land on the SAME UTC day, so counting elapsed 24-hour
+    // blocks reads "0 days" through the whole of Tuesday morning — which is
+    // how somebody gets chased a day late, or not chased at all.
+    tasks = [{
+      id: 't-overnight', property_id: PID, title: 'Reset the lobby thermostat',
+      assigned_staff_id: MARCUS, assigned_department: null,
+      created_by_staff_id: ME, status: 'open', due_at: null,
+      created_at: '2026-08-04T04:00:00.000Z',
+      completed_at: null, completed_by_staff_id: null,
+      blocked_at: null, blocked_by_staff_id: null, blocked_reason: null,
+    }];
+    const nextMorningAtTheHotel = new Date('2026-08-04T06:00:00.000Z');
+
+    const [waiting] = await gatherAssignedByMe(PID, ME, nextMorningAtTheHotel);
+    assert.ok(waiting, 'the outstanding row went missing');
+    assert.equal(waiting.ageDays, 1, 'the hotel woke up once, so it has waited a day');
+
+    // The same two instants at a hotel that really does keep Greenwich time:
+    // there, nothing has turned over yet, and that is the honest answer.
+    hotelTimezone = 'UTC';
+    const [inGreenwich] = await gatherAssignedByMe(PID, ME, nextMorningAtTheHotel);
+    assert.equal(inGreenwich.ageDays, 0, 'the fixture proves nothing if both zones agree');
   });
 
   test('a caller with no staff record here gets an honest empty answer', async () => {

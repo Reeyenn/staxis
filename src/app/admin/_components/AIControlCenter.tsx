@@ -278,6 +278,10 @@ export function AIControlCenter() {
   const [draftReviewRequired, setDraftReviewRequired] = useState<Record<string, boolean | undefined>>({});
   const [refreshingModels, setRefreshingModels] = useState(false);
   const [rollbackId, setRollbackId] = useState<string | null>(null);
+  // Asking "close anyway?" when picks were staged but never tested. Closing
+  // used to throw them away without a word, which is how a whole screen of
+  // model choices went missing in one click.
+  const [confirmDiscard, setConfirmDiscard] = useState(false);
   const [rollingBackId, setRollingBackId] = useState<string | null>(null);
   const [rollbackWarnings, setRollbackWarnings] = useState<Record<string, string[] | undefined>>({});
   const [toasts, setToasts] = useState<ToastItem[]>([]);
@@ -293,6 +297,7 @@ export function AIControlCenter() {
   const featuresRef = useRef<AiFeatureSummary[]>([]);
   const returnFocusRef = useRef<HTMLElement | null>(null);
   const rollbackIdRef = useRef<string | null>(null);
+  const confirmDiscardRef = useRef(false);
   const rollingBackIdRef = useRef<string | null>(null);
   const featureActionsRef = useRef<Record<string, FeatureActionPhase | undefined>>({});
   const [groupBulkBusy, setGroupBulkBusy] = useState<string | null>(null);
@@ -349,6 +354,7 @@ export function AIControlCenter() {
   rollbackIdRef.current = rollbackId;
   rollingBackIdRef.current = rollingBackId;
   globalModelsOpenRef.current = globalModelsOpen;
+  confirmDiscardRef.current = confirmDiscard;
 
   const toast = useCallback((kind: ToastKind, message: string) => {
     const id = ++toastIdRef.current;
@@ -549,13 +555,47 @@ export function AIControlCenter() {
     })();
   }, [models, open, panelErrors.models, panelLoading, providers, refreshProviderCatalogs]);
 
-  const close = useCallback(() => {
+  /** Picks staged on this screen that were never tested and never activated. */
+  const hasUntestedPicks = useCallback(() => featuresRef.current.some(
+    (feature) => isAiFeatureDraftDirty(feature.activeConfig, draftsRef.current[feature.key]),
+  ), []);
+
+  /**
+   * Leaving the screen. Staged picks live only in this component and only until
+   * the tab is reloaded, so closing on them is how a screenful of choices went
+   * missing, silently, in one click. Now the first attempt to close with staged
+   * picks stops and asks; `discardPicks` is the answer to that question, and it
+   * is the only way past.
+   *
+   * Answering "close and lose them" really does drop them, rather than leaving
+   * them to reappear on the next open. Being told the picks are gone and then
+   * finding them still there is the same lie in the other direction, and the
+   * next reload would settle it the other way anyway.
+   */
+  const close = useCallback((options: { discardPicks?: boolean } = {}) => {
     if (rollingBackIdRef.current || Object.values(featureActionsRef.current).some(Boolean)) return;
+    if (!options.discardPicks && hasUntestedPicks()) {
+      setConfirmDiscard(true);
+      return;
+    }
+    if (options.discardPicks) {
+      const cleanDrafts: Record<string, AiFeatureDraft> = {};
+      const clearedReviews: Record<string, boolean | undefined> = {};
+      for (const feature of featuresRef.current) {
+        cleanDrafts[feature.key] = draftFromConfig(feature.activeConfig);
+        clearedReviews[feature.key] = false;
+      }
+      draftsRef.current = cleanDrafts;
+      draftReviewRequiredRef.current = clearedReviews;
+      setDrafts(cleanDrafts);
+      setDraftReviewRequired(clearedReviews);
+    }
+    setConfirmDiscard(false);
     setGlobalModelsOpen(false);
     setOpen(false);
     setRollbackId(null);
     setRollbackWarnings({});
-  }, []);
+  }, [hasUntestedPicks]);
 
   // Dialog behavior: scroll lock, Escape, focus trap, and focus restoration.
   useEffect(() => {
@@ -571,6 +611,13 @@ export function AIControlCenter() {
       if (event.key === 'Escape') {
         event.preventDefault();
         if (rollingBackIdRef.current || Object.values(featureActionsRef.current).some(Boolean)) return;
+        // The "close anyway?" question is the topmost thing on the screen, so
+        // Escape answers it with "keep editing" rather than reaching past it.
+        if (confirmDiscardRef.current) {
+          setConfirmDiscard(false);
+          requestAnimationFrame(() => closeRef.current?.focus({ preventScroll: true }));
+          return;
+        }
         if (globalModelsOpenRef.current) {
           setGlobalModelsOpen(false);
           requestAnimationFrame(() => globalModelsButtonRef.current?.focus({ preventScroll: true }));
@@ -1083,6 +1130,7 @@ export function AIControlCenter() {
       <div
         className={styles.scrim}
         onMouseDown={(event) => { if (event.target === event.currentTarget) close(); }}
+        data-testid="ai-control-scrim"
       >
         <div
           ref={dialogRef}
@@ -1149,7 +1197,7 @@ export function AIControlCenter() {
                   ref={closeRef}
                   type="button"
                   className={styles.closeButton}
-                  onClick={close}
+                  onClick={() => close()}
                   disabled={featureMutationInFlight}
                   aria-label="Close AI Control Center"
                   title={featureMutationInFlight ? 'Wait for the current AI settings change to finish' : 'Close AI Control Center'}
@@ -1158,6 +1206,32 @@ export function AIControlCenter() {
                 </button>
               </div>
             </div>
+
+            {confirmDiscard && (
+              <div className={styles.confirmBox} role="alert" data-testid="ai-control-discard-confirm">
+                <AlertTriangle size={17} />
+                <span className={styles.confirmCopy}>
+                  You picked models that were never tested. Close anyway and lose those picks?
+                </span>
+                <button
+                  type="button"
+                  className={styles.textButton}
+                  onClick={() => {
+                    setConfirmDiscard(false);
+                    requestAnimationFrame(() => closeRef.current?.focus({ preventScroll: true }));
+                  }}
+                >
+                  Keep editing
+                </button>
+                <button
+                  type="button"
+                  className={styles.dangerButton}
+                  onClick={() => close({ discardPicks: true })}
+                >
+                  Close and lose them
+                </button>
+              </div>
+            )}
 
             <div className={styles.tabs} role="tablist" aria-label="AI Control Center sections">
               {TABS.map((item) => (
@@ -1269,7 +1343,7 @@ export function AIControlCenter() {
         ref={triggerRef}
         type="button"
         className={styles.trigger}
-        onClick={() => setOpen(true)}
+        onClick={() => { setConfirmDiscard(false); setOpen(true); }}
         aria-haspopup="dialog"
         aria-expanded={open}
         title="Open AI Control Center"

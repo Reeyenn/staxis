@@ -433,6 +433,59 @@ Re-run the failed workflow from the GitHub UI (`Re-run all jobs` button). It sho
 
 ---
 
+## Tests job on main goes red with "ON CONFLICT DO UPDATE command cannot affect row a second time"
+
+### Symptom
+- The `Tests` workflow's `root-tests` job fails on a main push, roughly one push in ten
+  (2026-08-03, 2026-08-05, 2026-08-06 out of the last thirty).
+- The failing test is not the same one twice. Seen so far:
+  `portfolio-conversation-resume.integration.test.ts` (a `before` hook throwing) and
+  `authoritative-access-stage-c.integration.test.ts` (migration `0426` reported in
+  `report.failedAtRuntime`).
+- The error is always the same string, with SQLSTATE `21000` (`cardinality_violation`):
+  `ON CONFLICT DO UPDATE command cannot affect row a second time`, with a stack
+  entirely inside `node_modules/@electric-sql/pglite`.
+- Re-running the job passes.
+
+### What it is NOT
+Not port contention, not two PGlite instances fighting, and not a resource limit.
+`test:integration` already runs with `--test-concurrency=1` (PR #109), each test file
+gets its own process and its own in-memory database, and the one test that uses a
+directory-backed instance makes a fresh `mkdtemp` per run. `21000` is Postgres
+rejecting our own SQL: one `INSERT ... ON CONFLICT DO UPDATE` was handed two rows that
+collide on the same unique key. **Do not add a retry for it.** It is a real defect
+somewhere in the migration/seed layer, and retrying it would hide the only evidence.
+
+### Diagnosis
+The fixture prints a full report. Since 2026-08-06 that report carries the whole
+Postgres error, not just the headline: SQLSTATE, DETAIL, HINT and the **CONTEXT**
+block, which quotes the offending statement verbatim and names the PL/pgSQL function
+and line that ran it. In the failing run's log, search for:
+
+```
+[pglite-migrate] runtime failures:
+```
+
+Every runtime failure is listed (not the first five), so the interesting one is there
+even behind the standing tail of known-unappliable migrations (auth roles, realtime,
+`app_settings`). The `CONTEXT:` field on the `21000` line is the answer: it names the
+function and the exact statement. Fix the duplicate at its source — almost always a
+set-returning `INSERT ... SELECT` whose de-duplication key is narrower than the unique
+index it conflicts on.
+
+### Notes for whoever picks this up
+- It does not reproduce locally. As of 2026-08-06: 60 full applications of the real
+  schema, 60 runs of the Stage C replay test, and 5 runs of the portfolio suite, all
+  green. Only the CI log of a run that actually hit it will identify the statement.
+- A migration that fails at runtime does NOT stop the fixture. Everything after it
+  sees a half-applied schema, so the FIRST `21000` in the report is the one to chase;
+  later failures in unrelated suites are usually downstream of it.
+
+### Verify
+Re-run the failed job. Green means the flake did not recur, not that it is fixed.
+
+---
+
 ## Complete blackout — everything's down
 
 ### Symptom
