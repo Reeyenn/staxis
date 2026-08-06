@@ -232,6 +232,32 @@ export async function updateArticle(
   return true;
 }
 
+/**
+ * Rename an SOP, and nothing else.
+ *
+ * The Knows page renders every procedure as one sentence ("You wrote a
+ * procedure called X"), so its Adjust button changes the title. `updateArticle`
+ * cannot serve that: it takes the body, the category and the VISIBILITY, which
+ * means a rename would have to round-trip the whole row and any caller getting
+ * that wrong would silently re-open a managers-only SOP to the floor.
+ *
+ * This touches one column, so it can neither widen access nor lose a body, and
+ * the chunk-visibility sync `updateArticle` performs is unnecessary here for
+ * exactly that reason.
+ */
+export async function renameArticle(pid: string, id: string, title: string): Promise<boolean> {
+  const next = clean(title).slice(0, KNOWLEDGE_LIMITS.TITLE_MAX);
+  if (!next) return false;
+  const { data } = await supabaseAdmin
+    .from('knowledge_articles')
+    .update({ title: next })
+    .eq('id', id)
+    .eq('property_id', pid)
+    .select('id')
+    .maybeSingle();
+  return !!data;
+}
+
 export async function deleteArticle(pid: string, id: string): Promise<boolean> {
   const { data } = await supabaseAdmin
     .from('knowledge_articles')
@@ -553,6 +579,28 @@ export async function registerDocument(
     return { error: (error as { code?: string } | null)?.code === '23505' ? 'This file was already added.' : 'Could not save the document.' };
   }
   return { id: data.id as string };
+}
+
+/**
+ * Rename an uploaded document, and nothing else.
+ *
+ * The Knows page's Adjust button on a file row. One column, scoped by property
+ * AND id: it cannot move a document, cannot re-scope who sees it, and cannot
+ * touch the stored bytes or the extracted chunks. See renameArticle above for
+ * why this is a separate function rather than a fourth branch of the PATCH that
+ * already handles access and move.
+ */
+export async function renameDocument(pid: string, id: string, title: string): Promise<boolean> {
+  const next = clean(title).slice(0, KNOWLEDGE_LIMITS.TITLE_MAX);
+  if (!next) return false;
+  const { data } = await supabaseAdmin
+    .from('knowledge_documents')
+    .update({ title: next })
+    .eq('id', id)
+    .eq('property_id', pid)
+    .select('id')
+    .maybeSingle();
+  return !!data;
 }
 
 export async function deleteDocument(pid: string, id: string): Promise<boolean> {

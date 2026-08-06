@@ -742,6 +742,16 @@ export const AI_FEATURE_REGISTRY: Readonly<Record<AiFeatureKey, AiFeatureDefinit
     'Turns a note you type, or a file you drop in, into the short facts about your hotel that show up on the Knows screen for you to confirm.',
     ['text', 'pdf_input'], SONNET,
   ),
+  // Filing, not reasoning. It reads ONE sentence a manager typed and answers
+  // which of three drawers it belongs in. It never writes the sentence, never
+  // adds to it, and never blocks: if it is slow, off, budget-capped or wrong,
+  // the sentence is still saved, as a plain fact. Cheapest tier on purpose,
+  // because a smarter model would be allowed to author exactly as little.
+  'knows.teach_filing': defineFeature(
+    'knows.teach_filing', 'Knowledge', 'Filing what you teach it',
+    'When somebody types a sentence into the Teach it something box, this decides whether it is a house rule, a contact, or a plain fact, so nobody has to pick. It can never change the words, and if it cannot answer the sentence is still saved.',
+    ['text'], HAIKU,
+  ),
   // Declaring pdf_input pins this to Anthropic (runtimeProvidersFor): a scanned
   // PDF rides as a native `document` block, which the OpenAI adapter does not
   // translate. That is the honest constraint, not an oversight — a manager who
