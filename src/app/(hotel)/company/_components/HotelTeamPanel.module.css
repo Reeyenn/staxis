@@ -2601,3 +2601,50 @@
     flex-direction: column;
   }
 }
+
+/* ─── Company oversight ────────────────────────────────────────────────────
+   The people responsible FOR this hotel without working AT it. Deliberately
+   quieter than the roster above: same paper, no action column, and a caption
+   that says why they are listed apart. */
+.companySection {
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+  margin-top: 16px;
+}
+
+.companySectionHeading {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.companySectionHeading h3 {
+  margin: 0;
+  color: var(--team-ink);
+  font-size: 13.5px;
+  font-weight: 650;
+  line-height: 19px;
+}
+
+.companySectionHeading p {
+  margin: 0;
+  color: var(--team-ink-2);
+  font-size: 11.5px;
+  line-height: 17px;
+}
+
+.companyRow {
+  cursor: default;
+}
+
+.emptyRosterNote {
+  margin: 0;
+  padding: 14px 15px;
+  border: 1px dashed var(--team-rule);
+  border-radius: 14px;
+  color: var(--team-ink-2);
+  background: var(--team-paper);
+  font-size: 11.5px;
+  line-height: 17px;
+}

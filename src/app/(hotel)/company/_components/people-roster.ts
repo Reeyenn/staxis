@@ -204,3 +204,109 @@ export function buildHotelRoster<
     people: byGroup.get(key)!.sort((left, right) => compareNames(left.name, right.name)),
   }));
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Your hotel's people, plus the company people responsible for YOUR hotel.
+// Nothing else.
+//
+// When a hotel belongs to a management company, some of the logins that can
+// open it are not employed there at all: the VP who oversees six hotels, the
+// owner of the whole company. Merged into the roster they read as staff, and a
+// GM looking at their own People screen could not tell "works here" from
+// "watches over here". They are also not assignable, not schedulable, and not
+// the GM's to edit.
+//
+// So they get their own short, read-only section. The split is by HAT SCOPE:
+// a company-scope job (owner / VP / finance over a whole company) is oversight;
+// a property-scope job names hotels and is employment.
+//
+// SIBLING ISOLATION IS INHERITED, NOT RE-IMPLEMENTED. The jobs handed to this
+// function have already been narrowed by GET /api/auth/team to the hotels the
+// viewer can actually reach, so a GM at hotel A sees "Oversees" next to their
+// VP and never learns hotel B exists. This function must therefore never widen
+// that: it only ever asks whether a job covers THE SELECTED hotel.
+// ═══════════════════════════════════════════════════════════════════════════
+
+/** The company job shape the People screen receives from /api/auth/team. */
+export interface RosterCompanyJob {
+  membershipId: string;
+  scope: 'company' | 'property';
+  role: string;
+  label: { en: string };
+  /** Already narrowed to the viewer's reach by the route. */
+  propertyIds: string[];
+}
+
+/** One company person watching over this hotel. Read-only by construction:
+ *  there are no actions on this shape at all. */
+export interface CompanyOversightPerson<A extends RosterAccountLike = RosterAccountLike> {
+  key: string;
+  name: string;
+  account: A;
+  /** The company jobs that reach this hotel, for the role line. */
+  jobs: RosterCompanyJob[];
+}
+
+export interface HotelPeopleSplit<
+  A extends RosterAccountLike = RosterAccountLike,
+  S extends RosterStaffLike = RosterStaffLike,
+> {
+  /** The hotel's own roster, grouped exactly as before. */
+  hotelGroups: RosterGroup<A, S>[];
+  /** Company oversight, alphabetical. */
+  companyPeople: CompanyOversightPerson<A>[];
+}
+
+function coversHotel(job: RosterCompanyJob, hotelId: string): boolean {
+  return job.propertyIds.includes(hotelId);
+}
+
+/**
+ * Split one hotel's merged roster into "people here" and "company people over
+ * here".
+ *
+ * A person moves to the company side only when every one of these is true:
+ *   • they hold a company-scope job that reaches this hotel, and
+ *   • they hold no property-scope job at this hotel, and
+ *   • they have no employment record at this hotel.
+ *
+ * The last two matter. A VP who is ALSO the GM of one of their hotels, or who
+ * has a roster row because they cover shifts there, genuinely works at that
+ * hotel and stays in its list. Oversight is what is left over.
+ */
+export function splitHotelAndCompanyPeople<
+  A extends RosterAccountLike,
+  S extends RosterStaffLike,
+>(
+  groups: readonly RosterGroup<A, S>[],
+  jobsByAccountId: Readonly<Record<string, readonly RosterCompanyJob[]>>,
+  hotelId: string,
+): HotelPeopleSplit<A, S> {
+  const companyPeople: CompanyOversightPerson<A>[] = [];
+  const hotelGroups = groups.map((group) => ({
+    key: group.key,
+    people: group.people.filter((person) => {
+      const account = person.account;
+      if (!account || person.staff) return true;
+      const jobs = jobsByAccountId[account.accountId] ?? [];
+      const oversight = jobs.filter((job) => job.scope === 'company' && coversHotel(job, hotelId));
+      if (oversight.length === 0) return true;
+      const worksHere = jobs.some((job) => job.scope === 'property' && coversHotel(job, hotelId));
+      if (worksHere) return true;
+      companyPeople.push({
+        key: person.key,
+        name: person.name,
+        account,
+        jobs: [...oversight].sort((left, right) => (
+          left.membershipId.localeCompare(right.membershipId)
+        )),
+      });
+      return false;
+    }),
+  }));
+
+  return {
+    hotelGroups,
+    companyPeople: companyPeople.sort((left, right) => compareNames(left.name, right.name)),
+  };
+}

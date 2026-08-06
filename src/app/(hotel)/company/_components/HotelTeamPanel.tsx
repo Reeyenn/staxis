@@ -47,6 +47,9 @@ import type { AddStaffAttempt } from './AddStaffDialog';
 import { restoreDialogFocus } from './dialog-focus';
 import {
   buildHotelRoster,
+  splitHotelAndCompanyPeople,
+  type CompanyOversightPerson,
+  type RosterCompanyJob,
   type RosterGroupKey,
   type RosterPerson,
 } from './people-roster';
@@ -1211,11 +1214,24 @@ export function HotelTeamPanel({
     () => buildHotelRoster(teamForHotel, rosterStaff),
     [rosterStaff, teamForHotel],
   );
-  const people = React.useMemo(
-    () => groups.flatMap((group) => group.people),
-    [groups],
+  // "You see your hotel's people, plus the company people responsible for YOUR
+  // hotel. Nothing else." The company half is read-only and lives in its own
+  // section; the counts below deliberately stay whole-screen so the hotel-setup
+  // gating keeps seeing the same "is anybody here yet" answer it always did.
+  const { hotelGroups, companyPeople } = React.useMemo(
+    () => splitHotelAndCompanyPeople(groups, jobsByAccountId, hotelId),
+    [groups, hotelId, jobsByAccountId],
   );
-  const peopleCount = people.length;
+  const people = React.useMemo(
+    () => hotelGroups.flatMap((group) => group.people),
+    [hotelGroups],
+  );
+  // The headline number answers the heading above it ("Everyone at this hotel"),
+  // so it counts the hotel's own people. The gating count below is every human
+  // this screen knows about, which is what "has anybody been set up here yet"
+  // has always meant and must keep meaning.
+  const hotelPeopleCount = people.length;
+  const peopleCount = people.length + companyPeople.length;
   const setupState = deriveHotelTeamSetupState({
     adminPreview,
     teamLoading: teamLoadingForHotel,
@@ -1496,8 +1512,8 @@ export function HotelTeamPanel({
             <div className={styles.subheadingTitleRow}>
               <h2 ref={peopleHeadingRef} id="team-members-title" tabIndex={-1}>{'Everyone at this hotel'}</h2>
               {!teamLoadingForHotel && !teamErrorForHotel ? (
-                <strong aria-label={`${peopleCount} people at this hotel`}>
-                  {peopleCount}
+                <strong aria-label={`${hotelPeopleCount} people at this hotel`}>
+                  {hotelPeopleCount}
                 </strong>
               ) : null}
             </div>
@@ -1708,25 +1724,54 @@ export function HotelTeamPanel({
             ) : null}
           </div>
         ) : (
-          <div className={styles.rosterList} role="list" aria-label={'People at this hotel'}>
-            {people.map((person) => (
-              <PersonRow
-                key={person.key}
-                person={person}
-                lang={lang}
-                currentUser={currentUser}
-                currentAccountId={currentAccountId}
-                locked={actionsLocked}
-                jobsByAccountId={jobsByAccountId}
-                pendingLifecycle={person.account
-                  ? pendingLifecycleByAccount[person.account.accountId]
-                  : undefined}
-                serverLifecyclePollingPaused={serverLifecyclePollingPaused}
-                onOpen={() => setEditKey(person.key)}
-                onRemoveAccess={(member) => setRemoveMember(member)}
-              />
-            ))}
-          </div>
+          <>
+            {people.length > 0 ? (
+              <div className={styles.rosterList} role="list" aria-label={'People at this hotel'}>
+                {people.map((person) => (
+                  <PersonRow
+                    key={person.key}
+                    person={person}
+                    lang={lang}
+                    currentUser={currentUser}
+                    currentAccountId={currentAccountId}
+                    locked={actionsLocked}
+                    jobsByAccountId={jobsByAccountId}
+                    pendingLifecycle={person.account
+                      ? pendingLifecycleByAccount[person.account.accountId]
+                      : undefined}
+                    serverLifecyclePollingPaused={serverLifecyclePollingPaused}
+                    onOpen={() => setEditKey(person.key)}
+                    onRemoveAccess={(member) => setRemoveMember(member)}
+                  />
+                ))}
+              </div>
+            ) : (
+              <p className={styles.emptyRosterNote}>
+                {'Nobody is on this hotel’s own staff list yet.'}
+              </p>
+            )}
+            {companyPeople.length > 0 ? (
+              <div className={styles.companySection}>
+                <div className={styles.companySectionHeading}>
+                  <h3>{'Company'}</h3>
+                  <p>{'The company people responsible for this hotel. They are not on its staff list, so they cannot be scheduled here or handed its work.'}</p>
+                </div>
+                <div
+                  className={styles.rosterList}
+                  role="list"
+                  aria-label={'Company people responsible for this hotel'}
+                >
+                  {companyPeople.map((person) => (
+                    <CompanyPersonRow
+                      key={person.key}
+                      person={person}
+                      isSelf={person.account.accountId === currentAccountId}
+                    />
+                  ))}
+                </div>
+              </div>
+            ) : null}
+          </>
         )}
       </section>
 
@@ -1871,6 +1916,56 @@ export interface PersonRowProps {
   serverLifecyclePollingPaused: boolean;
   onOpen: () => void;
   onRemoveAccess: (member: HotelTeamMember) => void;
+}
+
+/** What a company job means to the hotel reading it. The company vocabulary
+ *  ("VP", "Finance") is about the company; this says it as the relationship the
+ *  hotel actually has to that person. */
+function companyOversightLine(job: RosterCompanyJob): string {
+  if (job.role === 'vp') return 'Oversees this hotel';
+  if (job.role === 'owner') return 'Owns the company that runs this hotel';
+  if (job.role === 'finance') return 'Handles finance for this hotel';
+  return `${job.label.en} at company level`;
+}
+
+/**
+ * One company person watching over this hotel.
+ *
+ * READ-ONLY BY CONSTRUCTION, not by a disabled flag: there is no edit button,
+ * no remove button and no open handler on this component at all. A GM does not
+ * manage the VP who oversees them, and the hotel's People screen is not where
+ * company access is changed. The person's own company hats already tell them
+ * where that lives.
+ */
+export function CompanyPersonRow({
+  person,
+  isSelf,
+}: {
+  person: CompanyOversightPerson<HotelTeamMember>;
+  isSelf: boolean;
+}) {
+  return (
+    <div
+      className={`${styles.teamRow} ${styles.companyRow}${isSelf ? ` ${styles.selfRow}` : ''}`}
+      role="listitem"
+    >
+      <span className={styles.avatar} aria-hidden="true">{initials(person.name)}</span>
+      <div className={styles.rowBody}>
+        <strong>
+          {person.name}
+          {isSelf ? <small>{'You'}</small> : null}
+        </strong>
+        <span className={styles.companyJobLines}>
+          {person.jobs.map((job) => (
+            <em key={job.membershipId}>{companyOversightLine(job)}</em>
+          ))}
+        </span>
+      </div>
+      <div className={styles.rowBadges}>
+        <span className={styles.linkedBadge}>{'COMPANY'}</span>
+      </div>
+    </div>
+  );
 }
 
 export function PersonRow({

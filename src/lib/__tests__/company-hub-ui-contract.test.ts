@@ -170,7 +170,10 @@ describe('truthful Company Hub filters', () => {
   });
 
   test('selected-hotel People is one compact identity roster, not an operations dashboard', () => {
-    assert.match(hotelTeam, /const people = React\.useMemo\(\s*\(\) => groups\.flatMap\(\(group\) => group\.people\)/);
+    // The hotel's own list is still one flat roster. It is now derived from the
+    // split that lifts company oversight into its own read-only section, which
+    // people-company-section.test.ts and its client sibling exercise for real.
+    assert.match(hotelTeam, /const people = React\.useMemo\(\s*\(\) => hotelGroups\.flatMap\(\(group\) => group\.people\)/);
     assert.match(hotelTeam, /className=\{styles\.rosterList\} role="list" aria-label=\{'People at this hotel'\}/);
     assert.match(hotelTeam, /function personJobLabel\(/);
     assert.match(hotelTeam, /\{'STAXIS LOGIN'\}/);
