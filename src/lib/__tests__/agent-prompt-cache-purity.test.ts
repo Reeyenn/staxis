@@ -58,7 +58,6 @@ import {
   seedCompanyRulebookCacheForOrganization,
 } from '@/lib/agent/company-tier';
 import { buildPortfolioSystemPrompt } from '@/lib/agent/portfolio/prompt';
-import type { PortfolioSnapshot } from '@/lib/agent/portfolio/snapshot';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 
 const PROPERTY_ID = '00000000-0000-0000-0000-0000000000e1';
@@ -300,35 +299,6 @@ describe('the refresh-the-page lie is gone', () => {
 const PORTFOLIO_ORG_ID = '00000000-0000-0000-0000-0000000000c2';
 const PORTFOLIO_PID_B = '00000000-0000-0000-0000-0000000000e2';
 
-function portfolioSnapshot(minutesOld: number): PortfolioSnapshot {
-  return {
-    organizationId: PORTFOLIO_ORG_ID,
-    hotels: [
-      {
-        propertyId: PROPERTY_ID,
-        name: 'Comfort Suites',
-        totalRooms: 88,
-        timezone: 'America/Chicago',
-        openFindings: 2,
-        needsDecision: 1,
-        pmsCapturedAt: agedBy(minutesOld),
-        pmsSource: 'snapshot_capture',
-      },
-      {
-        propertyId: PORTFOLIO_PID_B,
-        name: 'Lufkin Inn',
-        totalRooms: 45,
-        timezone: 'America/Chicago',
-        openFindings: 0,
-        needsDecision: 0,
-        pmsCapturedAt: null,
-        pmsSource: null,
-      },
-    ],
-    omittedHotelCount: 0,
-    failedHotelCount: 0,
-  };
-}
 
 const PORTFOLIO_IDENTITY = {
   organizationId: PORTFOLIO_ORG_ID,
@@ -359,8 +329,7 @@ describe('prompt cache purity — the portfolio surface', () => {
 
   it('the derived portfolio sections really are in the block being policed', async () => {
     const { stable } = await buildPortfolioSystemPrompt({
-      identity: PORTFOLIO_IDENTITY, companyRole: 'vp',
-      snapshot: portfolioSnapshot(5), conversationId: 'conv-p', now: NOW,
+      identity: PORTFOLIO_IDENTITY, companyRole: 'vp', conversationId: 'conv-p', now: NOW,
     });
     assert.match(stable, /The hotels you are being asked about/);
     assert.match(stable, /Company rulebook/);
@@ -369,27 +338,37 @@ describe('prompt cache purity — the portfolio surface', () => {
 
   it('two turns 40 minutes apart produce byte-identical stable blocks', async () => {
     const a = await buildPortfolioSystemPrompt({
-      identity: PORTFOLIO_IDENTITY, companyRole: 'vp',
-      snapshot: portfolioSnapshot(5), conversationId: 'conv-p', now: NOW,
+      identity: PORTFOLIO_IDENTITY, companyRole: 'vp', conversationId: 'conv-p', now: NOW,
     });
     const b = await buildPortfolioSystemPrompt({
-      identity: PORTFOLIO_IDENTITY, companyRole: 'vp',
-      snapshot: portfolioSnapshot(45), conversationId: 'conv-p', now: NOW,
+      identity: PORTFOLIO_IDENTITY, companyRole: 'vp', conversationId: 'conv-p',
+      now: new Date(NOW.getTime() + 40 * 60_000),
     });
     assert.equal(a.stable, b.stable);
-    assert.notEqual(a.dynamic, b.dynamic);
+    assert.equal(a.stableStamp, b.stableStamp);
+    // …and the derived sections were genuinely there, or the equality above is
+    // vacuously true for a build that rendered nothing at all.
+    assert.match(a.stable, /Company rulebook/);
+    assert.match(a.stable, /The hotels you are being asked about/);
   });
 
-  it('the cached block carries no clock, no age and no live count', async () => {
+  it('emits no uncached half at all, and no live value in the cached one', async () => {
+    // The old form of this test compared the cached block against the clock
+    // rendered in the portfolio SNAPSHOT tier next to it. That tier is gone:
+    // Portfolio Intelligence replaced it with a deterministic evidence package
+    // and overwrites `dynamic` wholesale, and stage 2 of the knowledge door
+    // deleted the store once nothing on a live path could reach it. So the
+    // invariant is now the stronger one — everything this assembler prints must
+    // be cacheable, because all of it is cached.
     const { stable, dynamic } = await buildPortfolioSystemPrompt({
-      identity: PORTFOLIO_IDENTITY, companyRole: 'vp',
-      snapshot: portfolioSnapshot(5), conversationId: 'conv-p', now: NOW,
+      identity: PORTFOLIO_IDENTITY, companyRole: 'vp', conversationId: 'conv-p', now: NOW,
     });
-    const captured = /PMS data as of ([^(]+) \(/.exec(dynamic)?.[1]?.trim();
-    assert.ok(captured && captured.length > 0, 'the dynamic block renders a clock time');
-    assert.equal(stable.includes(captured), false, `stable leaked the clock "${captured}"`);
+    assert.equal(dynamic, '', 'the portfolio assembler grew an uncached tier');
     assert.equal(/\b(min|hr|days?) ago\b/i.test(stable), false);
     assert.equal(/open item/i.test(stable), false);
+    // Non-vacuous: both derived sections rendered into the block being checked.
+    assert.match(stable, /Company rulebook/);
+    assert.match(stable, /The hotels you are being asked about/);
   });
 });
 

@@ -59,13 +59,13 @@ Ordered by scope, then authority.
 
 **5. Hotel standing rules.** `src/lib/agent/hotel-rules-tier.ts`, reading `hotel_standing_rules` through `src/lib/companion/rules.ts`. **Instruction.** Fenced in `<staxis-hotel-rules trust="untrusted">`. Stable block. Single-flight only, no TTL: a settled cache would keep following a rule a manager deleted a minute ago. Not role-gated, unlike the company rulebook, because a standing rule is about how to behave and the person who most needs it is the one on shift. Reaches all three pipelines as of August 2026, gated by `exactHotelScope()`.
 
-**6. Hotel snapshot.** `src/lib/agent/context.ts`. Fact, and the only one the base prompt calls "system-derived ground truth". Fenced in `<staxis-snapshot trust="system">`. Dynamic block. 30-second TTL keyed by hotel, role and staff id, with single-flight. Hotel chat and walkthrough.
+**6. Hotel snapshot.** `src/lib/agent/context.ts`. Fact, and the only one the base prompt calls "system-derived ground truth". Fenced in `<staxis-snapshot trust="system">`. Dynamic block. 30-second TTL keyed by hotel, role and staff id, with single-flight. Hotel chat and walkthrough. Versioned since stage 2 (`HOTEL_SNAPSHOT_VERSION`, persisted receipt only).
 
 **7. Long-term memory.** `src/lib/agent/memory-context.ts` over `agent_memory`. Fact, hard-fenced in `<staxis-memory-block trust="system-derived-from-untrusted">` with per-row scope attributes. Dynamic block. **Uncached on purpose** — a per-process cache would make "tell it something, then ask in a fresh chat" flaky on multi-instance serverless. Hotel chat only as a prompt block; the portfolio surface reaches the same table through a different loader.
 
 **8. Knowledge hub.** `src/lib/knowledge/core.ts` over `knowledge_chunks`, `knowledge_articles`, `knowledge_documents`, `knowledge_contacts`, `knowledge_events`. Fact. **Not injected at all** — it arrives mid-conversation as a `<tool-result trust="untrusted">` from `search_knowledge`. No cache, no version constant, no prompt formatter. It belongs on this map because it answers the same question as the others, but it is a different mechanism and should stay one: a store that is only read when the model decides it needs it costs nothing on the turns where it does not.
 
-**9. Portfolio snapshot.** `src/lib/agent/portfolio/snapshot.ts`. Fact. `<staxis-portfolio-snapshot trust="system">`. Dynamic block. Legacy; Portfolio Intelligence supplies a canonical metric evidence package instead, so this is present but unused on the live path.
+**9. Portfolio snapshot. ~~`src/lib/agent/portfolio/snapshot.ts`~~ — DELETED 2026-08-06.** Was a fact in `<staxis-portfolio-snapshot trust="system">` in the dynamic block. Portfolio Intelligence replaced it with a canonical metric evidence package, after which no live path could reach it. Stage 2 deleted the store, the module and the portfolio assembler's whole uncached half rather than carry a rendering no prompt contains. The numbering below is left alone so older references still resolve.
 
 ### Person scope
 
@@ -73,11 +73,11 @@ Ordered by scope, then authority.
 
 **11. Assignment history.** `src/lib/companion/notices-server.ts` over `comms_tasks` (and `gatherAssignedByMe` in `src/lib/worklist/core.ts`). Fact: who asked whom to do what, when, and whether it was done or refused with the reason. **Not injected at all** — like the knowledge hub it arrives mid-conversation, as a tool result from `staxis_assignments`. No cache, no envelope, no version constant, no prompt formatter. Person scope rather than hotel scope even though the rows belong to a hotel: the loader filters on the asking person's own `staff.id` in the query, so it can only ever return work they handed out or work they were handed, and there is no argument that widens it. The companion's notices list reads the same function, which is why the answer in the chat and the list in the panel cannot disagree. Added 2026-08-05.
 
-**12. Situational awareness.** `src/lib/agent/awareness.ts`, over nine tables. Fact: the clock, the screen, what this person did today, what is waiting on them. `<staxis-awareness trust="system">`. Dynamic block. 20-second TTL on the DB-backed feeds only; the clock is rendered fresh every turn. Hotel chat only. **The one envelope-wrapped store with no version constant**, so "which awareness rendering ran on this turn" is not answerable from `agent_messages.prompt_version` the way every other tier is.
+**12. Situational awareness.** `src/lib/agent/awareness.ts`, over nine tables. Fact: the clock, the screen, what this person did today, what is waiting on them. `<staxis-awareness trust="system">`. Dynamic block. 20-second TTL on the DB-backed feeds only; the clock is rendered fresh every turn. Hotel chat only. Was **the one envelope-wrapped store with no version constant**; stage 1 gave it `AWARENESS_VERSION` in the persisted receipt, and stage 2 closed the same gap for the snapshot and the memory block, so every envelope-wrapped store's rendering is now identifiable from `agent_messages.prompt_version`.
 
 ### Deployment scope
 
-**13. Prompt rows.** `agent_prompts` via `src/lib/agent/prompts-store.ts`: the base prompt, the role prompts, and the PMS family addendum. Instruction. The family rows alone are fenced, in `<staxis-pms-family trust="untrusted">`. Stable block. 30-second TTL over the whole table, not keyed by hotel. Hotel chat and portfolio chat; the walkthrough does not read them, which is correct — it is not a hotel conversation and has its own job description.
+**13. Prompt rows.** `agent_prompts` via `src/lib/agent/prompts-store.ts`: the base prompt, the role prompts, and the PMS family addendum. Instruction. The family rows alone are fenced, in `<staxis-pms-family trust="untrusted">`, rendered by `src/lib/agent/family-tier.ts` since stage 2. Stable block. 30-second TTL over the whole table, not keyed by hotel. Hotel chat and portfolio chat; the walkthrough does not read them, which is correct — it is not a hotel conversation and has its own job description.
 
 ## The duplication
 
@@ -121,3 +121,49 @@ Migrated through the door:
 Everything else is registered as `legacy`: named, placed on both axes, pinned by the test, still loaded by its own caller. Stage 2 moves them.
 
 Prompt bytes are unchanged by the migration itself, proved against a golden captured before the change (`src/lib/__tests__/fixtures/knowledge-door-golden.json`). The single intentional difference is the hotel-identity envelope, asserted in the test to be exactly the envelope and the version bump.
+
+## Stage 2, landed 2026-08-06
+
+**Nothing is left `legacy`.** The eight drawers stage 1 registered-but-did-not-move are gone from that state: five went through the door as composers, two are on-demand and now say so in a way that is checkable, and one was deleted. `agent-knowledge-door.test.ts` asserts the `legacy` set is **empty**, so it cannot quietly re-open.
+
+Stage 1's argument for stopping where it did was that `KnowledgeTurn` described SCOPE, and widening it with an actor "would make the scope description mean two things at once". That was right about the danger and wrong about the remedy: the fix for two meanings sharing one field is two fields. `KnowledgeTurn` now has three visibly separated groups, and no store may satisfy one from another.
+
+- **Scope** — `hotelIds`, `organizationId`, `companyPolicyVisible`. Whose rows this turn may read. Getting it wrong is a tenant-isolation bug.
+- **Actor** — `actor.role`, `actor.surface`, `actor.accountId`. Who is reading. Getting it wrong is a wrong-audience bug: a front-desk agent handed the manager's job description. Only the person-scoped composers read it.
+- **Held** — `held.hotelSnapshot` (with the clock it is rendered against), `held.memoryBlock`, `held.portfolioIdentity`, `held.promptFamilyRow`. What the caller already loaded and the door must **not** go and fetch. Absent held material is a `null` render, never a fallback read.
+
+### What moved
+
+| Store | Was | Now |
+|---|---|---|
+| `hotel_snapshot` | `formatSnapshotForPrompt(snapshot, now)` inlined in `prompts.ts` | composed by name; `HOTEL_SNAPSHOT_VERSION` in `context.ts` |
+| `long_term_memory` | the `memoryBlock` push inlined in `prompts.ts` | composed by name; `LONG_TERM_MEMORY_VERSION` in `memory-context.ts` |
+| `portfolio_identity` | `formatPortfolioIdentityForPrompt(input.identity)` inlined in `portfolio/prompt.ts` | composed by name from the caller's authorization receipt |
+| `lenses` | `lensFor(role, surface)` called directly for the role segment | the **prompt segment** composed by name; `mounted`/`tools`/`money` stay with the tool layer, because they are authorization rather than knowledge |
+| `prompt_rows` | the whole PMS-family envelope assembled inline in `prompts.ts` | the **fenced family tier** composed by name from the caller-held row |
+
+Two of those are worth their own sentence.
+
+**The `prompt_rows` split.** Only the family tier is registered as a presentation and only it goes through the door. The base prompt and the role rows out of the same table are Staxis instructing itself — no other party wrote them, they carry no envelope, and they are the frame every other tier is placed *inside* rather than a drawer opened within it. The family rows are somebody else's notes about somebody else's software, landing last in the cached block where "later text wins", which is why they alone need a gate, a ceiling and a fence. The rendering moved out of `prompts.ts` into a new `src/lib/agent/family-tier.ts`, beside `company-tier.ts` and `hotel-rules-tier.ts`: the door imports every tier's module and no tier's module imports the door, and that acyclic shape is what lets the registry run its load-time invariants. `prompts.ts` re-exports every moved name, and is now listed in `NON_STORE_MARKER_MODULES` for the same reason `walkthrough-step.ts` is — its base prompt *names* the trust vocabulary so the model knows where each boundary runs, and emits no envelope of its own. The `familyContentIsSafe` gate moved with the tier, so a second pipeline that grows a family tier cannot forget to re-apply it.
+
+**The `lenses` split.** `lensFor` answers four things and only one of them is knowledge. The prompt segment is what the model is *told*; whether the chat bar mounts, which tools are offered and whether a hat may ever see a dollar figure are what a person can *do*, and they stay with `getToolsForRole` and `executeTool`, where they are enforced twice. `lenses` registers no presentation, and not because nothing renders: a presentation describes an *enveloped* rendering, and a lens is printed unfenced like the base prompt beside it. Its version is not lost — each lens carries its own `promptVersion`, which the door hands back and the caller stamps as the role segment.
+
+### What "through the door" means for an on-demand store
+
+`knowledge_hub` and `assignment_history` are `placement: 'on_demand'`: they are never injected into any prompt, they arrive mid-conversation as tool results. There is no envelope to own, no half of the prompt to sit in, and no version to stamp — so there is nothing to compose, and inventing a composer would mean inventing a prompt block whose *absence* is the entire point.
+
+What the registry can own for them is the one claim a reviewer actually needs: **which named surface can ask**. Both now carry `readByTool` (`search_knowledge`, `staxis_assignments`), and a load-time invariant holds the shape: an on-demand store must have zero presentations, must name a reading tool, and must not be composable — `composeKnowledgeTier` still throws for it rather than returning a silent empty block. The converse is checked too: an injected store that also names a reading tool has two ways in and one review.
+
+### What was deleted
+
+**`portfolio_snapshot` is gone** — the store, its registration, `src/lib/agent/portfolio/snapshot.ts`, the `snapshot` input on `PortfolioPromptInput`, and the portfolio assembler's entire uncached half. It was unreachable on every live path: the one production entry point (`/api/agent/portfolio`) calls `buildPortfolioIntelligenceSystemPrompt`, which supplies a deterministic metric evidence package and overwrites `dynamic` wholesale, and nothing in `src/` called `buildPortfolioSnapshot`.
+
+The choice was between giving it a version constant and deleting it. A version constant is a promise to maintain a rendering — to keep its envelope honest, its cache policy reviewed and its scope gate correct, forever, for a block no prompt has contained in months. **The census in `agent-knowledge-door.test.ts` is 11 registrations, not 12.** The inventory above still describes thirteen items; item **9, Portfolio snapshot, no longer exists**. `readPortfolioFeedPulses` in `src/lib/company/portfolio-tool-reads.ts` lost its only caller and is left in place — it is a shared helper next to `readPortfolioToolFindings`, which the portfolio UI still uses, and removing it is a dead-code decision rather than part of this one.
+
+Deleting the module took its source-scanned security test's subject with it. The half of that test covering the shared helper survives, renamed, and still holds the distinction a VP acts on: a hotel whose feed could not be **read** is unknown, and labelling it a manual hotel would present an outage as a deliberate configuration.
+
+### Bytes
+
+Unchanged, again, and proved the same way — the stage 1 golden was not edited and no assertion was weakened. Two new version constants land in the **persisted receipt** only (`agent_messages.prompt_version`), never in the printed `stableStamp`, which is the same treatment `AWARENESS_VERSION` got in stage 1 and for the same reason: all three stores are per-turn, and anything about them printed into the cached half rewrites the cached prefix on every single turn. They are stamped only when their block actually rendered, and the `mem:N/digest` receipt stays last in the label.
+
+The door's per-store tests are the new half of the proof: for each newly-composable drawer, `composeKnowledgeTier(id, turn)` is asserted equal to the store's own formatter called directly, and asserted to return `null` — rather than guess, or fall back to a read — when its scope or held material is absent.

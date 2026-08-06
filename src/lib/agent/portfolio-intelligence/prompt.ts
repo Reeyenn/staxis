@@ -17,7 +17,7 @@ import {
 import { PORTFOLIO_PROMPT_VERSION } from './versions';
 
 export interface PortfolioIntelligencePromptInput
-  extends Omit<PortfolioPromptInput, 'snapshot'> {
+  extends PortfolioPromptInput {
   evidence: PortfolioEvidencePackageV1;
   knowledgeBlock?: string | null;
   findingsProjection?: PortfolioFindingProjectionV1 | null;

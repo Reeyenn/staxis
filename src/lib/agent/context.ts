@@ -32,6 +32,24 @@ import {
 import { isPMSType, type PMSType } from '@/lib/pms/types';
 import { propertyLocalToday } from '@/lib/schedule/local-date';
 
+/**
+ * Which rendering of the snapshot block ran on a turn.
+ *
+ * Added 2026-08-06, when `hotel_snapshot` went through the knowledge door. It
+ * was one of the three envelope-wrapped stores with no version constant, so
+ * "which snapshot rendering produced this answer" was unanswerable from
+ * `agent_messages.prompt_version` — and this block is the one the base prompt
+ * calls system-derived ground truth, so it is the one whose wording most needs
+ * to be identifiable after the fact.
+ *
+ * v1 is today's shape: the header line, the as-of line, the counts line and the
+ * caveat lines below. Bump it when any of those change wording, and the
+ * PERSISTED receipt moves with it. It must never reach `stableStamp`: the
+ * snapshot is per-turn, so printing anything about it into the cached half
+ * rewrites the cached prefix on every single turn.
+ */
+export const HOTEL_SNAPSHOT_VERSION = 'hotel-snapshot-v1';
+
 export interface HotelSnapshot {
   /** ISO date string YYYY-MM-DD in the property's local time. */
   today: string;
