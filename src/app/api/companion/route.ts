@@ -67,6 +67,7 @@ import {
   type CompanionOfferKind,
 } from '@/lib/companion/offers';
 import { cleanName, looksSharedLogin, type SleepReason } from '@/lib/companion/copy';
+import { recordAgentJournalEntry, journalSaidLine } from '@/lib/agent/journal';
 import { loadAssignmentNotices } from '@/lib/companion/notices-server';
 import type { AssignmentNotice } from '@/lib/companion/notices';
 import {
@@ -469,6 +470,40 @@ export async function POST(req: NextRequest): Promise<Response> {
               actions: speech.actions,
               now,
             });
+            // ── The third family of journal entry: a thing said to a person ──
+            //
+            // The thread already holds the sentence, and that is the right home
+            // for reading it back. What the thread cannot answer is "what have
+            // you been doing today", which is asked of the hotel and not of one
+            // conversation. So the same act lands once in each: the words in the
+            // thread, the fact in the timeline.
+            //
+            // Only when a row was actually written. An offer the thread refused
+            // is an offer nobody was shown, and journaling it would be the
+            // companion claiming to have spoken into a void.
+            if (offer) {
+              await recordAgentJournalEntry({
+                propertyId: ctx.pid,
+                eventType: 'agent_said',
+                description: journalSaidLine({
+                  text: speech.text,
+                  personName: cleanName(ctx.displayName),
+                }),
+                // The person SPOKEN TO, as the target. The actor is the
+                // companion, which is what the null account id on this table
+                // has meant since 0228.
+                targetType: 'person',
+                targetId: ctx.accountId,
+                targetLabel: cleanName(ctx.displayName),
+                metadata: {
+                  kind: speech.kind,
+                  topic: topic || null,
+                  offerId: offer.id,
+                  event: body.event,
+                },
+                occurredAt: now,
+              });
+            }
           }
         }
       } else if (body.event === 'declined' || body.event === 'accepted') {

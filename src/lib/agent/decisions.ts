@@ -151,6 +151,64 @@ export async function recordDecisionProposal(
   }
 }
 
+export interface RecordAutonomousInput extends Omit<RecordProposalInput, 'actorKind' | 'pendingActionId'> {
+  /** What the tool actually returned. Stored so "why did you say that" has the
+   *  same answer for an autonomous act as it does for an approved one. */
+  result?: unknown;
+  error?: string | null;
+}
+
+/**
+ * Record an act the model performed with NO approval card in front of it.
+ *
+ * `ai_autonomous` has been a member of DecisionActorKind since 0350 and no code
+ * path had ever written it, so the corpus held every proposal a human was asked
+ * about and nothing the companion simply did. That gap is exactly the acts
+ * nobody watched happen — the confirm-in-chat tools, whose gate is a human
+ * sentence rather than a card, and every mutation on a surface that runs with
+ * the approval gate off.
+ *
+ * The row is written COMPLETE: proposal and execution are the same moment, so
+ * `executed_args` mirrors `proposed_args` (the DB's args_diff trigger therefore
+ * computes an empty diff, which is the truth: nobody corrected anything) and
+ * `decision_ms` is deliberately null rather than zero, because no human took
+ * any time to decide.
+ *
+ * Fail-soft, like everything else in this module.
+ */
+export async function recordAutonomousDecision(
+  input: RecordAutonomousInput,
+): Promise<void> {
+  try {
+    const snapshot = redactSnapshot(input.snapshot);
+    const { error } = await scopedDb(input.propertyId)
+      .from('agent_decisions')
+      .insert({
+        property_id: input.propertyId,
+        business_date: businessDateOf(input.snapshot),
+        surface: input.surface,
+        actor_kind: 'ai_autonomous' satisfies DecisionActorKind,
+        actor_account_id: input.actorAccountId,
+        actor_role: input.actorRole,
+        conversation_id: input.conversationId,
+        pending_action_id: null,
+        tool_name: input.toolName,
+        proposed_args: input.proposedArgs ?? {},
+        executed_args: input.proposedArgs ?? {},
+        decision_ms: null,
+        state_snapshot: snapshot,
+        state_snapshot_hash: snapshotHash(snapshot),
+        model_id: input.modelId ?? null,
+        prompt_version: input.promptVersion ?? null,
+        result: input.result === undefined ? null : (input.result as never),
+        error: input.error ?? null,
+      });
+    if (error) console.warn('[agent/decisions] autonomous write failed', error.message);
+  } catch (err) {
+    console.warn('[agent/decisions] autonomous write threw', err);
+  }
+}
+
 /**
  * Fill in what the human decided and what actually ran. `args_diff` — the
  * correction signal — is computed by a DB trigger, not here, so a future call

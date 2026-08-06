@@ -10,6 +10,8 @@
 // ownership + scope checks live in the resolve route, not here.
 
 import { supabaseAdmin } from '@/lib/supabase-admin';
+import { buildActionSummary } from '@/lib/agent/approval';
+import { recordAgentJournalEntry, journalExpiredLine } from '@/lib/agent/journal';
 
 export type PendingTier = 'quick' | 'card';
 export type PendingStatus = 'pending' | 'approved' | 'denied' | 'expired' | 'executed' | 'failed';
@@ -198,7 +200,53 @@ export async function expireIfStale(row: PendingActionRow): Promise<boolean> {
     .select('id')
     .maybeSingle();
   if (error) throw new Error(`expireIfStale failed: ${error.message}`);
-  return !!data;
+  if (!data) return false;
+  // ── The unanswered question, written down ────────────────────────────────
+  //
+  // Before this, a card that timed out left NOTHING. The row went terminal,
+  // the browser dropped it, and the fact that the companion had asked a
+  // question and never heard back existed nowhere. That is the one piece of
+  // unfinished business a colleague would remember and this one could not.
+  //
+  // The single-flight guard above is what makes this safe to do here: only the
+  // request that actually flipped the row gets `data` back, so two concurrent
+  // expiries cannot write two lines about one question.
+  //
+  // Fail-soft, and deliberately AFTER the flip: the record is worth less than
+  // the terminal status it is about.
+  await recordAgentJournalEntry({
+    propertyId: row.propertyId,
+    eventType: 'agent_action_expired',
+    description: journalExpiredLine({
+      summary: buildActionSummary(row.toolName, row.toolArgs, 'en'),
+    }),
+    actorAccountId: row.accountId,
+    targetType: 'tool',
+    targetId: row.toolName,
+    metadata: {
+      toolName: row.toolName,
+      pendingActionId: row.id,
+      // The manners ledger keys a decline by TOPIC, so the recall candidate
+      // needs a stable one. The tool is the right grain: "you asked about
+      // adding a to-do and I said no" should not be re-asked tomorrow with
+      // different arguments and count as a different subject.
+      topic: unfinishedTopic(row.toolName),
+      summary: buildActionSummary(row.toolName, row.toolArgs, 'en'),
+    },
+  });
+  return true;
+}
+
+/**
+ * The manners-ledger topic for a question that went unanswered.
+ *
+ * Exported and shared with the companion's candidate builder so the key a
+ * decline attaches to is written once. Keyed on the TOOL, not the row: the
+ * same question re-asked tomorrow with different arguments is the same
+ * subject, and somebody who waved it away does not want it back either way.
+ */
+export function unfinishedTopic(toolName: string): string {
+  return `unfinished:${toolName}`;
 }
 
 /**

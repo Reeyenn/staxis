@@ -838,6 +838,8 @@ export const EXPECTED_MIGRATIONS_STATIC: ReadonlyArray<string> = [
   '0454',
   // Recurring to-dos gain an every-N-days cadence (interval_days + anchor).
   '0455',
+  // The agent gets a life record: activity_log.source gains 'staxis_agent'.
+  '0456',
 ];
 
 /**
