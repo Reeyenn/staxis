@@ -40,7 +40,7 @@ import { readEnvelope } from '@/lib/api-envelope';
 import type { LogEntryDTO } from '@/lib/comms/types';
 import type { AssignedByMeItem, WorklistItem } from '@/lib/worklist/types';
 import type { FeedPrefs } from '@/lib/feed/prefs';
-import { COMPOSER_COPY, emptyListNote, PROMPT_ROTATE_MS } from '@/lib/feed/one-list-copy';
+import { COMPOSER_COPY, EVENT_COPY, emptyListNote, PROMPT_ROTATE_MS } from '@/lib/feed/one-list-copy';
 import { isNewSince, rowIsMine } from '@/lib/feed/one-list';
 import { emptyParse, parseTodo, type ParseResult } from '@/lib/feed/parse-todo';
 import { INTERPRET_DEBOUNCE_MS, INTERPRET_TIMEOUT_MS, shouldInterpret } from '@/lib/feed/interpret-todo';
@@ -791,14 +791,14 @@ export function StaxisList({
         });
         const envelope = await readEnvelope<{ id?: string }>(res);
         if (envelope.error !== undefined) {
-          setEventError(envelope.error || 'That did not save. Nothing changed. Try again in a moment.');
+          setEventError(envelope.error || EVENT_COPY.failed);
           return;
         }
         setEventDraft(null);
         await reloadEvents();
       } catch (e) {
         if (e instanceof SessionEndedError) throw e;
-        setEventError('That did not save. Nothing changed. Try again in a moment.');
+        setEventError(EVENT_COPY.failed);
       } finally {
         setEventBusy(false);
       }
