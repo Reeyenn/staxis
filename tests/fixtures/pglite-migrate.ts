@@ -132,6 +132,45 @@ function preprocess(sql: string): string {
   return out;
 }
 
+/**
+ * EVERYTHING POSTGRES SAID, not just the headline.
+ *
+ * This function exists because of a specific, expensive failure. Three main
+ * pushes between 2026-08-03 and 2026-08-06 went red with nothing in the log
+ * but `ON CONFLICT DO UPDATE command cannot affect row a second time` — no
+ * statement, no function, no line. The runner was recording `msg.split('\n')[0]`
+ * and dropping the rest, and the rest is where Postgres puts the answer: the
+ * error carries `where` (the CONTEXT block), which quotes the offending SQL
+ * verbatim and names the PL/pgSQL function and line that ran it, plus `code`
+ * (the SQLSTATE) and `hint`.
+ *
+ * A migration failure inside a 9,000-line file is only diagnosable once, from
+ * the CI log of the run that hit it — these are rare and did not reproduce in
+ * 120 local applications of the same schema. Throwing the context away meant
+ * every occurrence cost another week of waiting for the next one.
+ *
+ * Kept to one report entry, capped, so a long CONTEXT cannot bury the rest of
+ * the report. The Postgres message stays FIRST so the existing
+ * `assert.match(failure.error, /…/)` expectations keep reading naturally.
+ */
+function describePgError(e: unknown): string {
+  const err = e as Partial<Record<string, unknown>> | null;
+  const message = e instanceof Error ? e.message : String(e);
+  if (!err || typeof err !== 'object') return message.split('\n')[0];
+  const parts = [message.split('\n')[0]];
+  const push = (label: string, value: unknown) => {
+    if (typeof value === 'string' && value.trim() !== '') {
+      parts.push(`${label}: ${value.replace(/\s+/g, ' ').trim()}`);
+    }
+  };
+  push('SQLSTATE', err.code);
+  push('DETAIL', err.detail);
+  push('HINT', err.hint);
+  // The CONTEXT block. This is the one that names the statement.
+  push('CONTEXT', err.where);
+  return parts.join(' | ').slice(0, 4000);
+}
+
 function classify(sql: string): { skip: boolean; reason: string | null } {
   // Strip line comments before classification to avoid false positives on
   // commented-out references like `-- could use storage.foldername later`.
@@ -302,8 +341,7 @@ export function applyMigrationsToPglite(): Promise<PgliteMigratedFixture> {
         }
         report.applied.push(f);
       } catch (e) {
-        const msg = e instanceof Error ? e.message : String(e);
-        report.failedAtRuntime.push({ file: f, error: msg.split('\n')[0] });
+        report.failedAtRuntime.push({ file: f, error: describePgError(e) });
       }
     }
 
@@ -321,8 +359,11 @@ export function applyMigrationsToPglite(): Promise<PgliteMigratedFixture> {
       `${report.failedAtRuntime.length} failed at runtime)`,
     );
     if (report.failedAtRuntime.length > 0) {
-      console.log(`[pglite-migrate] runtime failures (first 5):`);
-      for (const f of report.failedAtRuntime.slice(0, 5)) {
+      // Every one of them, not the first five. A schema this size has a
+      // standing tail of known-unappliable migrations (auth roles, realtime),
+      // and truncating at five is what hid the one that actually mattered.
+      console.log(`[pglite-migrate] runtime failures:`);
+      for (const f of report.failedAtRuntime) {
         console.log(`  ${f.file}: ${f.error}`);
       }
     }
@@ -398,8 +439,7 @@ export async function applyMigrationsToPgliteWithHook(
       report.applied.push(file);
       if (options.stopAfter === file) break;
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      report.failedAtRuntime.push({ file, error: message.split('\n')[0] });
+      report.failedAtRuntime.push({ file, error: describePgError(error) });
     }
     if (options.stopAfterVersion && file.startsWith(`${options.stopAfterVersion}_`)) {
       break;
