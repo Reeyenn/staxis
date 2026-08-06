@@ -52,6 +52,7 @@ import {
   type CompanionSpeech,
   type TeachFlow,
 } from '@/lib/companion/manners';
+import { deliverableFingerprint, mergeDeliverable } from '@/lib/companion/delivery';
 import { isTraceTopic, traceCandidate } from '@/lib/companion/trace';
 import {
   hintMatches,
@@ -103,19 +104,6 @@ const HELLO_VISIBLE_MS = 6000;
  * nothing until it opens.
  */
 const COMPANION_REFRESH_MS = 60_000;
-
-/**
- * The half of a bootstrap that a refresh is allowed to replace.
- *
- * Pulled out so the equality check and the merge are reading the same
- * definition. Everything NOT in here (the person, the hotel, the memory, the
- * availability) is first-load only; see the effect below for why the memory in
- * particular must never be overwritten by a poll.
- */
-function deliverable(boot: Bootstrap | undefined): unknown {
-  if (!boot) return null;
-  return { notices: boot.notices ?? [], candidates: boot.candidates ?? [] };
-}
 
 interface Bootstrap {
   person: { firstName: string | null; role: AppRole; sharedLogin: boolean; isManager: boolean };
@@ -435,7 +423,7 @@ export function useCompanion(
           return;
         }
         setBoot((b) => (b
-          ? { ...b, notices: next.notices ?? [], candidates: next.candidates ?? [] }
+          ? mergeDeliverable(b, next)
           : { ...next, memory: parseCompanionMemory(next.memory) }));
       },
       undefined,
@@ -444,7 +432,7 @@ export function useCompanion(
         // A snapshot that says the same thing publishes nothing, so an idle
         // screen re-renders zero times an hour.
         isEqual: (previous, nextRows) =>
-          JSON.stringify(deliverable(previous[0])) === JSON.stringify(deliverable(nextRows[0])),
+          deliverableFingerprint(previous[0]) === deliverableFingerprint(nextRows[0]),
       },
     );
     return () => subscription.unsubscribe();

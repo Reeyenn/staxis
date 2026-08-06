@@ -887,7 +887,11 @@ async function feedStaxisToday(
   // the whole block. A night auditor at 1am is on the hotel's day, not UTC's.
   try {
     const rows = await readAgentJournal(propertyId, { sinceIso });
-    const acts = rows.filter((r) => (ACT_EVENTS as readonly string[]).includes(r.eventType));
+    // `ok: false` is a thing that was TRIED, not a thing that was done. Counting
+    // a failed write into "did 2 things" would put a number in front of the
+    // model that the number guard would then let it quote.
+    const acts = rows.filter((r) => (ACT_EVENTS as readonly string[]).includes(r.eventType)
+      && r.metadata.ok !== false);
     const said = rows.filter((r) => r.eventType === 'agent_said');
     const learned = rows.filter((r) => r.eventType === 'agent_learned');
     const brief = rows.find((r) => r.eventType === 'agent_briefed');

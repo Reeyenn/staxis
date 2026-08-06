@@ -216,14 +216,17 @@ export function journalLearnedLine(input: {
 }): string {
   const parts: string[] = [];
   if (input.learned > 0) {
-    parts.push(`${input.learned} new thing${input.learned === 1 ? '' : 's'}`);
+    parts.push(`learned ${input.learned} new thing${input.learned === 1 ? '' : 's'}`);
   }
   if (input.updated > 0) {
-    parts.push(`${input.updated} it already knew`);
+    parts.push(`refreshed ${input.updated} thing${input.updated === 1 ? '' : 's'} it already knew`);
   }
-  const counted = parts.length > 0 ? parts.join(' and ') : 'what it remembers';
+  // The zero case is never written by a call site (a run that changed nothing
+  // is not a belief change), but the function must still produce a true
+  // sentence when somebody calls it with one.
+  const what = parts.length > 0 ? parts.join(' and ') : 'updated what it remembers';
   const recap = input.recap ? ` ${journalText(input.recap)}` : '';
-  return journalText(`Staxis went over the day and updated ${counted}.${recap}`);
+  return journalText(`Staxis went over the day and ${what}.${recap}`);
 }
 
 /**
