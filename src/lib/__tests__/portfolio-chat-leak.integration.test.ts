@@ -322,9 +322,33 @@ const ACTIVE_FINDING_RUN_ID = 'fa000000-0000-4000-8000-000000000001';
 const ACTIVE_FINDING_ID = 'fa000000-0000-4000-8000-000000000002';
 const REJECTED_FINDING_ID = 'fa000000-0000-4000-8000-000000000003';
 const ACTIVE_FINDING_RUN_FINGERPRINT = 'c'.repeat(64);
-const ACTIVE_FINDING_COMPLETED_AT = '2026-07-29T12:00:00.000Z';
-const ACTIVE_FINDING_SOURCE_AS_OF = '2026-07-29T11:55:00.000Z';
-const ACTIVE_FINDING_VALID_THROUGH = '2026-08-06T11:55:00.000Z';
+// ─── The fixture run's clock ────────────────────────────────────────────────
+//
+// RELATIVE to now, not frozen literals, and that is load-bearing rather than
+// tidy. These were '2026-07-29T11:55Z' with a validThrough of
+// '2026-08-06T11:55Z' — the contract's exact 192-hour window — which meant the
+// fixture described a finding that EXPIRED at 11:55Z on 2026-08-06. The
+// producer contract refuses to call an expired run `loaded`
+// (projectionProducerStatusMatches requires `validThrough > loadedAt`, and
+// loadedAt is the route's real clock), so from that minute the route answered
+// 503 and this file failed by itself, with no commit to blame.
+//
+// Anchoring on `Date.now()` keeps every relationship the contract checks —
+// the 192-hour validity window, the 7-day analysis window, completion five
+// minutes after evaluation — while making "this run is still valid" true on
+// every future day rather than only until one particular Thursday lunchtime.
+const HOUR_MS = 60 * 60 * 1_000;
+const FIXTURE_EVALUATED_AT = new Date(Date.now() - HOUR_MS);
+const fixtureInstant = (offsetMs: number): string =>
+  new Date(FIXTURE_EVALUATED_AT.getTime() + offsetMs).toISOString();
+
+const ACTIVE_FINDING_SOURCE_AS_OF = fixtureInstant(0);
+const ACTIVE_FINDING_COMPLETED_AT = fixtureInstant(5 * 60 * 1_000);
+/** Exactly the 192-hour window the producer contract requires. */
+const ACTIVE_FINDING_VALID_THROUGH = fixtureInstant(192 * HOUR_MS);
+const ACTIVE_FINDING_WINDOW_START = fixtureInstant(-168 * HOUR_MS);
+const ACTIVE_FINDING_WINDOW_KEY =
+  `hotel-business-date:${ACTIVE_FINDING_SOURCE_AS_OF.slice(0, 10)}`;
 
 /** A malicious-producer route fixture: one exact accepted finding plus one
  * foreign-hotel numeric poison. The production consumer must discard the
@@ -376,7 +400,7 @@ const activeFindingLoader: PortfolioPostDependencies['loadPortfolioFindings'] = 
       queryVersion: 'management-pattern-source-snapshot.v2',
       metricIds: ['rooms_booked_otb'],
       asOf: ACTIVE_FINDING_SOURCE_AS_OF,
-      analysisWindowKey: 'hotel-business-date:2026-07-29',
+      analysisWindowKey: ACTIVE_FINDING_WINDOW_KEY,
       sourceVersions: [{
         component: 'management-pattern-engine',
         version: 'management-pattern-engine.v2',
@@ -393,7 +417,7 @@ const activeFindingLoader: PortfolioPostDependencies['loadPortfolioFindings'] = 
     selectedPropertyIds,
     authorizationHash: asserted.receipt.authorizationHash,
     scopeHash: asserted.receipt.scopeHash,
-    loadedAt: (input.asOf ?? new Date('2026-07-29T16:00:00.000Z')).toISOString(),
+    loadedAt: (input.asOf ?? new Date()).toISOString(),
     status: 'loaded',
     projectionMode: 'active',
     run: {
@@ -411,7 +435,7 @@ const activeFindingLoader: PortfolioPostDependencies['loadPortfolioFindings'] = 
       sourceQueryVersion: 'management-pattern-source-snapshot.v2',
       evaluationAt: ACTIVE_FINDING_SOURCE_AS_OF,
       sourceAsOf: ACTIVE_FINDING_SOURCE_AS_OF,
-      windowStart: '2026-07-22T11:55:00.000Z',
+      windowStart: ACTIVE_FINDING_WINDOW_START,
       windowEnd: ACTIVE_FINDING_SOURCE_AS_OF,
       completedAt: ACTIVE_FINDING_COMPLETED_AT,
       validThrough: ACTIVE_FINDING_VALID_THROUGH,
