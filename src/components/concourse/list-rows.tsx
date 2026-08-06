@@ -470,6 +470,9 @@ export function withChoice(
 ): ComposerState {
   const source = { ...state.source };
   let { who, when, repeat, weekday, dayOfMonth, intervalDays, atTime } = state;
+  // Answering the WHO question spends the Other hint: it exists to say that a
+  // name can be typed, and somebody who just tapped a name did not need it.
+  const otherHint = 'who' in patch ? false : state.otherHint;
   if ('who' in patch) {
     // "Other" is a pointer at the sentence, never an assignee. It cannot arrive
     // here, and it is refused here as well, because the one place a bad value
@@ -495,7 +498,7 @@ export function withChoice(
     weekday = weekdayOfIso(when, todayWeekday);
   }
   if (typeof patch.dayOfMonth === 'number') dayOfMonth = patch.dayOfMonth;
-  return { ...state, who, when, repeat, weekday, dayOfMonth, intervalDays, atTime, source };
+  return { ...state, who, when, repeat, weekday, dayOfMonth, intervalDays, atTime, otherHint, source };
 }
 
 /** What the composer sends. Pure, so the defaults are provable without a fetch. */

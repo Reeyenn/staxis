@@ -378,6 +378,17 @@ describe('the WHO row, and the line that used to sit under it', () => {
     assert.ok(textOf(after.tree).join(' | ').includes(otherHint('Marcus Webb')));
   });
 
+  test('picking a real person afterwards spends the hint', () => {
+    // The hint says a name can be TYPED. Somebody who then tapped one off the
+    // list did not need it, and a line that stays put reads as an instruction
+    // they failed to follow.
+    const hinted = base({ title: 'x', openRow: 'who', otherHint: true });
+    assert.match(textOf(render(hinted).tree).join(' | '), /Type their name in the sentence/);
+    const picked = tapButton(hinted, 'Marcus Webb');
+    assert.equal(picked.otherHint, false);
+    assert.ok(!/Type their name in the sentence/.test(textOf(render(picked).tree).join(' | ')));
+  });
+
   test('a row still carrying Other is submittable, and goes to the person adding it', () => {
     const payload = rows.composerPayload(base({ title: 'x', who: COMPOSER_OTHER }), 'my-staff-id');
     assert.equal(payload?.assignedStaffId, 'my-staff-id');
