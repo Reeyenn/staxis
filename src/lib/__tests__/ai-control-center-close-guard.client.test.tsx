@@ -231,7 +231,7 @@ function screenOpen(): boolean {
 }
 
 /** Mount, open the screen, and hand back the scrim the backdrop test clicks. */
-async function openControlCenter(context: TestContext): Promise<void> {
+async function openControlCenter(context: TestContext): Promise<HTMLButtonElement> {
   const restoreBrowser = installBrowser();
   stubTransport(context);
   const { AIControlCenter } = await loadControlCenter();
@@ -254,6 +254,7 @@ async function openControlCenter(context: TestContext): Promise<void> {
     container.remove();
     restoreBrowser();
   });
+  return trigger;
 }
 
 /** Stage a change without testing or activating it: the exact thing at risk. */
@@ -293,7 +294,7 @@ describe('closing the control center with untested picks', { concurrency: false 
   });
 
   test('Close and lose them is the only way out, and it does close', async (context) => {
-    await openControlCenter(context);
+    const trigger = await openControlCenter(context);
     await makeAnUntestedPick();
 
     await click(byLabel('Close AI Control Center'));
@@ -303,6 +304,16 @@ describe('closing the control center with untested picks', { concurrency: false 
     await click(discard);
     await settle();
     assert.equal(screenOpen(), false, 'answering the question did not close the screen');
+
+    // And the picks really are gone. Telling somebody their work was thrown
+    // away and then handing it back is the same lie the other way round.
+    await click(trigger);
+    await settle();
+    assert.ok(screenOpen(), 'the screen did not reopen');
+    assert.equal(
+      (document.body.textContent ?? '').includes('unsaved'), false,
+      'the picks came back after being described as lost',
+    );
   });
 
   test('Escape asks too, and a second Escape means keep editing', async (context) => {

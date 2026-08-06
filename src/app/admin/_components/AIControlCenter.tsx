@@ -561,17 +561,34 @@ export function AIControlCenter() {
   ), []);
 
   /**
-   * Leaving the screen. Staged picks live only in this component, so closing
-   * throws them away — which is exactly what happened to a screenful of them,
-   * silently, in one click. Now the first attempt to close with staged picks
-   * stops and asks; `discardPicks` is the answer to that question, and it is
-   * the only way past.
+   * Leaving the screen. Staged picks live only in this component and only until
+   * the tab is reloaded, so closing on them is how a screenful of choices went
+   * missing, silently, in one click. Now the first attempt to close with staged
+   * picks stops and asks; `discardPicks` is the answer to that question, and it
+   * is the only way past.
+   *
+   * Answering "close and lose them" really does drop them, rather than leaving
+   * them to reappear on the next open. Being told the picks are gone and then
+   * finding them still there is the same lie in the other direction, and the
+   * next reload would settle it the other way anyway.
    */
   const close = useCallback((options: { discardPicks?: boolean } = {}) => {
     if (rollingBackIdRef.current || Object.values(featureActionsRef.current).some(Boolean)) return;
     if (!options.discardPicks && hasUntestedPicks()) {
       setConfirmDiscard(true);
       return;
+    }
+    if (options.discardPicks) {
+      const cleanDrafts: Record<string, AiFeatureDraft> = {};
+      const clearedReviews: Record<string, boolean | undefined> = {};
+      for (const feature of featuresRef.current) {
+        cleanDrafts[feature.key] = draftFromConfig(feature.activeConfig);
+        clearedReviews[feature.key] = false;
+      }
+      draftsRef.current = cleanDrafts;
+      draftReviewRequiredRef.current = clearedReviews;
+      setDrafts(cleanDrafts);
+      setDraftReviewRequired(clearedReviews);
     }
     setConfirmDiscard(false);
     setGlobalModelsOpen(false);

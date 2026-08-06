@@ -84,90 +84,104 @@ registerTool<{ days?: number; state?: string }>({
     },
   },
   allowedRoles: ASSIGNMENT_ROLES,
-  handler: async ({ days, state }, ctx: ToolHandlerContext): Promise<ToolResult> => {
-    const staffId = ctx.staffId;
-    if (!staffId) {
-      // Not an error. A company user with no staff row at this hotel has
-      // genuinely handed nothing out here and been handed nothing, and saying
-      // so is a better answer than a refusal that reads like a permission
-      // problem.
-      return {
-        ok: true,
-        data: {
-          window: null,
-          outstanding: [],
-          settled: [],
-          note: 'This account has no staff record at this hotel, so there is nothing assigned '
-            + 'to or from it here. Say that plainly rather than reporting an all clear.',
-        },
-      };
-    }
+  handler: async ({ days, state }, ctx: ToolHandlerContext): Promise<ToolResult> =>
+    runAssignmentsTool({ days, state }, ctx),
+});
 
-    const windowDays = clampDays(days);
-    const now = new Date();
-
-    let notices: AssignmentNotice[] = [];
-    try {
-      notices = await loadAssignmentNotices({
-        propertyId: ctx.propertyId,
-        staffId,
-        now,
-        windowDays,
-        limit: NOTICE_LIMIT,
-      });
-    } catch {
-      return { ok: false, error: 'Could not read who has been asked to do what at this hotel.' };
-    }
-
-    // Still waiting on somebody. NOT part of the notices derivation, because a
-    // task nobody has touched is not news — it is the absence of news, which is
-    // exactly what makes it worth asking about out loud.
-    let outstanding: Array<Record<string, unknown>> = [];
-    if (state === undefined || state === 'outstanding') {
-      try {
-        const handed = await gatherAssignedByMe(ctx.propertyId, staffId, now);
-        outstanding = handed
-          .filter((item) => item.state === 'waiting')
-          .map((item) => ({
-            task: item.title,
-            with: item.assigneeName ?? item.assignedDepartment ?? 'nobody in particular',
-            daysWaiting: item.ageDays,
-            due: item.dueDate,
-          }));
-      } catch {
-        // One half failing degrades the answer rather than losing it, and the
-        // note below says which half is missing so the model cannot report a
-        // partial read as a complete one.
-        return {
-          ok: true,
-          data: {
-            window: `${windowDays} days`,
-            outstanding: [],
-            settled: shapeNotices(notices, state),
-            note: 'The list of work still outstanding could not be read this time. Answer only '
-              + 'about what has come back, and say the outstanding side is unavailable.',
-          },
-        };
-      }
-    }
-
-    const settled = shapeNotices(notices, state);
+/**
+ * The tool's whole body, with the clock as an argument.
+ *
+ * `now` is a parameter and not a `new Date()` buried in the middle so a test can
+ * pin it. It is NOT on the tool's inputSchema and never will be: the model does
+ * not get to say what day it is, because "how many whole days has Marcus had
+ * this" is a number the person is going to repeat to Marcus.
+ */
+export async function runAssignmentsTool(
+  { days, state }: { days?: number; state?: string },
+  ctx: ToolHandlerContext,
+  now: Date = new Date(),
+): Promise<ToolResult> {
+  const staffId = ctx.staffId;
+  if (!staffId) {
+    // Not an error. A company user with no staff row at this hotel has
+    // genuinely handed nothing out here and been handed nothing, and saying
+    // so is a better answer than a refusal that reads like a permission
+    // problem.
     return {
       ok: true,
       data: {
-        window: `${windowDays} days`,
-        outstandingCount: outstanding.length,
-        outstanding,
-        settledCount: settled.length,
-        settled,
-        note: 'Everything here is about THIS person only: what they handed out and what was '
-          + 'handed to them. It is not the hotel\'s whole task list. There is no tool for '
-          + 'reassigning an existing task, so do not offer to move one; create_todo writes a '
-          + 'new one if they want to chase it.',
+        window: null,
+        outstanding: [],
+        settled: [],
+        note: 'This account has no staff record at this hotel, so there is nothing assigned '
+          + 'to or from it here. Say that plainly rather than reporting an all clear.',
       },
     };
-  },
-});
+  }
+
+  const windowDays = clampDays(days);
+
+  let notices: AssignmentNotice[] = [];
+  try {
+    notices = await loadAssignmentNotices({
+      propertyId: ctx.propertyId,
+      staffId,
+      now,
+      windowDays,
+      limit: NOTICE_LIMIT,
+    });
+  } catch {
+    return { ok: false, error: 'Could not read who has been asked to do what at this hotel.' };
+  }
+
+  // Still waiting on somebody. NOT part of the notices derivation, because a
+  // task nobody has touched is not news — it is the absence of news, which is
+  // exactly what makes it worth asking about out loud.
+  let outstanding: Array<Record<string, unknown>> = [];
+  if (state === undefined || state === 'outstanding') {
+    try {
+      const handed = await gatherAssignedByMe(ctx.propertyId, staffId, now);
+      outstanding = handed
+        .filter((item) => item.state === 'waiting')
+        .map((item) => ({
+          task: item.title,
+          with: item.assigneeName ?? item.assignedDepartment ?? 'nobody in particular',
+          daysWaiting: item.ageDays,
+          due: item.dueDate,
+        }));
+    } catch {
+      // One half failing degrades the answer rather than losing it, and the
+      // note below says which half is missing so the model cannot report a
+      // partial read as a complete one.
+      return {
+        ok: true,
+        data: {
+          window: `${windowDays} days`,
+          outstanding: [],
+          settled: shapeNotices(notices, state),
+          note: 'The list of work still outstanding could not be read this time. Answer only '
+            + 'about what has come back, and say the outstanding side is unavailable.',
+        },
+      };
+    }
+  }
+
+  const settled = shapeNotices(notices, state);
+  return {
+    ok: true,
+    data: {
+      window: `${windowDays} days`,
+      outstandingCount: outstanding.length,
+      outstanding,
+      settledCount: settled.length,
+      settled,
+      note: 'Everything here is about THIS person only: what they handed out and what was '
+        + 'handed to them. It is not the hotel\'s whole task list. There is no tool for '
+        + 'reassigning an existing task, so do not offer to move one; create_todo writes a '
+        + 'new one if they want to chase it.',
+    },
+  };
+}
 
 /** The notices, in the shape the model reads, filtered to what was asked for. */
 function shapeNotices(
