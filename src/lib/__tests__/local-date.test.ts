@@ -15,6 +15,7 @@ import {
   propertyLocalDateOffset,
   startOfLocalDay,
   endOfLocalDay,
+  localDaysBetween,
 } from '@/lib/schedule/local-date';
 
 describe('propertyLocalToday', () => {
@@ -240,6 +241,93 @@ describe('startOfLocalDay / endOfLocalDay', () => {
     assert.equal(
       endOfLocalDay('2026-07-30', null).toISOString(),
       '2026-07-30T23:59:59.999Z',
+    );
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// "Waiting N days" counts the HOTEL's midnights, not Greenwich's.
+//
+// The bug these pin: the assigned-by-me drawer and the chat both counted
+// `floor((now - createdAt) / 86_400_000)`, which is elapsed 24-hour blocks in
+// UTC. A to-do handed over at 9pm Monday in Texas still read "0 days" at
+// breakfast on Tuesday, and a to-do handed over at 6:01pm read "1 day" a
+// minute later because UTC had crossed midnight.
+// ═══════════════════════════════════════════════════════════════════════════
+
+describe('localDaysBetween', () => {
+  it('counts one day across the hotel\'s midnight even when UTC never crosses one', () => {
+    // 11pm Monday in Texas is already Tuesday 04:00 in UTC; 1am Tuesday in
+    // Texas is Tuesday 06:00 UTC. Same UTC day, two hours apart.
+    const handedOver = new Date('2026-08-04T04:00:00.000Z');
+    const nextMorning = new Date('2026-08-04T06:00:00.000Z');
+    assert.equal(localDaysBetween(handedOver, nextMorning, 'America/Chicago'), 1);
+    // The old reading, and the reason the number was wrong.
+    assert.equal(localDaysBetween(handedOver, nextMorning, 'UTC'), 0);
+  });
+
+  it('does not count a day the hotel has not finished yet', () => {
+    // 6:01pm and 6:20pm the same Texas evening: UTC has rolled over, the
+    // hotel has not.
+    assert.equal(
+      localDaysBetween(
+        new Date('2026-08-03T23:01:00.000Z'),
+        new Date('2026-08-03T23:20:00.000Z'),
+        'America/Chicago',
+      ),
+      0,
+    );
+    assert.equal(
+      localDaysBetween(
+        new Date('2026-08-03T23:01:00.000Z'),
+        new Date('2026-08-04T00:20:00.000Z'),
+        'America/Chicago',
+      ),
+      0,
+    );
+  });
+
+  it('counts a DST weekend as one day, not as 23 or 25 hours', () => {
+    // US spring forward, 2026-03-08. Saturday noon → Sunday noon is 23 real
+    // hours, which an elapsed-milliseconds count floors to zero.
+    assert.equal(
+      localDaysBetween(
+        new Date('2026-03-07T18:00:00.000Z'),
+        new Date('2026-03-08T17:00:00.000Z'),
+        'America/Chicago',
+      ),
+      1,
+    );
+  });
+
+  it('works east of Greenwich, where the hotel is a day ahead', () => {
+    // Kiritimati is UTC+14. 09:00Z is 11pm there on the 29th; 11:00Z is 1am
+    // on the 30th. Two hours apart, same UTC day, a new day at the hotel.
+    const late = new Date('2026-07-29T09:00:00.000Z');
+    const early = new Date('2026-07-29T11:00:00.000Z');
+    assert.equal(localDaysBetween(late, early, 'Pacific/Kiritimati'), 1);
+    assert.equal(localDaysBetween(late, early, 'UTC'), 0);
+  });
+
+  it('goes negative rather than lying when the later instant comes first', () => {
+    assert.equal(
+      localDaysBetween(
+        new Date('2026-07-30T12:00:00.000Z'),
+        new Date('2026-07-28T12:00:00.000Z'),
+        'America/Chicago',
+      ),
+      -2,
+    );
+  });
+
+  it('degrades to UTC rather than throwing on a junk timezone', () => {
+    assert.equal(
+      localDaysBetween(
+        new Date('2026-07-29T23:00:00.000Z'),
+        new Date('2026-07-30T01:00:00.000Z'),
+        'Not/AZone',
+      ),
+      1,
     );
   });
 });

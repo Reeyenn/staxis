@@ -40,7 +40,7 @@
 
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { APP_TIMEZONE } from '@/lib/utils';
-import { endOfLocalDay, propertyLocalToday } from '@/lib/schedule/local-date';
+import { endOfLocalDay, localDaysBetween, propertyLocalToday } from '@/lib/schedule/local-date';
 import { validPropertyTimezone } from '@/lib/property-timezone';
 import { log } from '@/lib/log';
 import { buildInspectionQueue } from '@/lib/housekeeping/inspection-queue';
@@ -824,7 +824,12 @@ export async function gatherAssignedByMe(
   staffId: string,
   now: Date = new Date(),
   limit = 200,
+  /** The hotel's zone, when the caller already read it. Omit and it is read
+   *  here: "waiting 2 days" is counted on the hotel's calendar, not the
+   *  server's, and no caller should have to remember that to get it right. */
+  timezone?: string | null,
 ): Promise<AssignedByMeItem[]> {
+  const tz = timezone === undefined ? await propertyTimezoneOf(pid) : timezone;
   const { data, error } = await supabaseAdmin
     .from('comms_tasks')
     .select('id, title, assigned_staff_id, assigned_department, due_at, status, created_at, completed_at, completed_by_staff_id, completed_for_date, blocked_at, blocked_by_staff_id, blocked_reason, skipped_at, skipped_by_staff_id')
@@ -852,7 +857,7 @@ export async function gatherAssignedByMe(
   ]).filter((x): x is string => !!x));
 
   return rows
-    .map((r) => mapAssignedRow(r, nameMap, now))
+    .map((r) => mapAssignedRow(r, nameMap, now, tz))
     .filter((item) => keepForAssigner(item, staffId));
 }
 
@@ -883,6 +888,9 @@ export function mapAssignedRow(
   r: Record<string, unknown>,
   nameMap: Map<string, string>,
   now: Date,
+  /** The hotel's zone. Null degrades to UTC, which is only ever right for a
+   *  hotel that genuinely has no zone recorded. */
+  timezone: string | null = null,
 ): AssignedByMeItem {
   const status = String(r.status ?? 'open');
   const state: AssignedByMeItem['state'] =
@@ -906,8 +914,11 @@ export function mapAssignedRow(
         : null;
   const createdAt = (r.created_at as string | null) ?? null;
   const createdMs = createdAt ? Date.parse(createdAt) : NaN;
+  // Counted on the HOTEL's calendar, not the server's. A to-do handed over at
+  // 9pm Monday in Texas is one day old at breakfast on Tuesday there, even
+  // though UTC crossed midnight while the manager was still typing it.
   const ageDays = Number.isFinite(createdMs)
-    ? Math.max(0, Math.floor((now.getTime() - createdMs) / 86_400_000))
+    ? Math.max(0, localDaysBetween(new Date(createdMs), now, timezone))
     : 0;
   const assigneeId = (r.assigned_staff_id as string | null) ?? null;
   return {

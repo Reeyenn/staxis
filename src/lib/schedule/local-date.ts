@@ -203,6 +203,39 @@ export function endOfLocalDay(yyyymmdd: string, timezone: string | null): Date {
   return localWallClockToInstant(yyyymmdd, 23, 59, 59, 999, timezone);
 }
 
+/**
+ * How many times the HOTEL's calendar has turned over between two instants.
+ *
+ * "Waiting 1 day" has to mean the hotel woke up once since, not that 24 hours
+ * of Greenwich went by. Counting against UTC made a to-do handed over at 9pm
+ * Monday in Texas still read "0 days" at breakfast on Tuesday, because UTC had
+ * already rolled to Tuesday before the manager finished typing it and the
+ * subtraction never reached a full 86,400,000ms.
+ *
+ * Both instants are reduced to the hotel's own calendar date FIRST and the
+ * subtraction happens in that calendar, which is what makes a DST weekend
+ * (a 23 or 25 hour day) still count as exactly one day. Negative when `from`
+ * is later than `to`; callers that show the number to a person clamp at zero.
+ */
+export function localDaysBetween(from: Date, to: Date, timezone: string | null): number {
+  return calendarDaysBetween(
+    propertyLocalToday(from, timezone),
+    propertyLocalToday(to, timezone),
+  );
+}
+
+/** Whole days between two YYYY-MM-DD strings. Pure calendar arithmetic: both
+ *  sides are read as UTC midnight, so no zone or DST offset can leak in. */
+function calendarDaysBetween(from: string, to: string): number {
+  return Math.round((utcMidnightOf(to) - utcMidnightOf(from)) / 86_400_000);
+}
+
+function utcMidnightOf(yyyymmdd: string): number {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(yyyymmdd);
+  if (!m) throw new Error(`Invalid YYYY-MM-DD: ${yyyymmdd}`);
+  return Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3]));
+}
+
 /** Convenience: get the property's local YYYY-MM-DD for now + offset days,
  *  computing the date shift purely in the local calendar (not via UTC
  *  round-trip).
