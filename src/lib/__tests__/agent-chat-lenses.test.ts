@@ -123,6 +123,11 @@ const MAINTENANCE_MOUNT = [
   // pattern this browser was already handed by /api/companion/trace — which
   // applied the role and section gates before it sent anything.
   'staxis_show_pattern',
+  // Same reasoning, one size down (discovery pointers, 2026-08-05): being shown
+  // WHERE a control is. The one-list composer is on the wrench's screen too,
+  // and the tool can only name keys the awareness block already listed for the
+  // screen they are standing on.
+  'staxis_point_at',
 ].sort();
 
 describe('the mount table', () => {

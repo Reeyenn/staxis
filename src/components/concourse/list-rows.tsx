@@ -620,7 +620,7 @@ export function ComposerView({
     : (typed || busy ? 'key' : (micAvailable ? 'mic' : null));
 
   return (
-    <div data-testid="composer">
+    <div data-testid="composer" data-staxis-anchor="todo-composer">
       <div className={`fx-comp${open || typed || openRow !== null ? ' fx-on' : ''}`}>
         <div className="fx-compline">
           {recording && (

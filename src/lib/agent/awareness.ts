@@ -73,6 +73,8 @@ import { addDaysInTz, propertyLocalToday, startOfLocalDay } from '@/lib/schedule
 import { countProposeFindings, latestRunFacts } from '@/lib/findings/store';
 import { scheduleState } from '@/lib/findings/detectors/preventive-due';
 import { lensAllowsTool } from './lenses';
+import { anchorsOnPage } from '@/lib/companion/anchors';
+import { pageForPath } from '@/lib/companion/pages';
 import type { HotelSnapshot } from './context';
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -319,6 +321,16 @@ export interface Awareness {
   clock: string;
   /** 1 — the screen they are on, when it is a screen we know. */
   screen?: string;
+  /**
+   * 1b — the controls on that screen the companion may draw an arrow at.
+   *
+   * The ONLY way `staxis_point_at` learns which keys exist, and it is scoped
+   * to this screen on purpose: a model that was handed the whole registry
+   * could name a stockroom button to somebody standing on the one-list, and
+   * the refusal would happen a round trip later. Absent when the screen has
+   * nothing pointable, or when this hat has no such tool.
+   */
+  pointables?: string;
   /** 2 — what THIS person did today, in this hotel. */
   didToday?: string;
   /** 3 — what landed since the last report. */
@@ -919,6 +931,16 @@ export async function buildAwareness(input: AwarenessInput): Promise<Awareness> 
   const screen = resolveSurface(input.pathname);
   if (screen) base.screen = screen;
 
+  // Which buttons on that screen the companion is allowed to point at. Gated
+  // on the tool, through the same lens the rest of this block is gated on, so
+  // a hat with no pointer is never told the keys exist.
+  if (canSee(input.role, 'staxis_point_at')) {
+    const pointable = anchorsOnPage(pageForPath(input.pathname)?.key ?? null);
+    if (pointable.length > 0) {
+      base.pointables = pointable.map((a) => `${a.key} (${a.label}: ${a.does})`).join('; ');
+    }
+  }
+
   let feeds: CachedFeeds = {};
   try {
     feeds = await loadFeeds(input, now, timezone);
@@ -1063,6 +1085,12 @@ const MAX_BLOCK_CHARS = 1200;
 export function formatAwarenessForPrompt(awareness: Awareness): string {
   const lines: string[] = [];
   if (awareness.screen) lines.push(`On screen: ${awareness.screen}.`);
+  if (awareness.pointables) {
+    lines.push(
+      'Controls on this screen you can point at with staxis_point_at, by key: '
+      + `${awareness.pointables}. No other key works here.`,
+    );
+  }
   lines.push(`Time: ${awareness.clock}.`);
   if (awareness.didToday) lines.push(`This person has done today: ${awareness.didToday}.`);
   if (awareness.justChanged) lines.push(`Since the last report: ${awareness.justChanged}.`);

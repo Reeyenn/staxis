@@ -4,7 +4,7 @@ import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import dynamic from 'next/dynamic';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { useAuth } from '@/contexts/AuthContext';
-import { InventoryPointer } from './InventoryPointer';
+import { DiscoveryPointer } from '@/components/companion/DiscoveryPointer';
 import { useProperty } from '@/contexts/PropertyContext';
 import { useLang } from '@/contexts/LanguageContext';
 import {
@@ -1917,13 +1917,17 @@ export function InventoryShell() {
           onAction={openOverlay}
         />
         <div>
-          {canManage && canViewFinancials ? (
-            <InventoryPointer
-              pid={activePropertyId}
-              role={hotelStanding.role}
-              onShow={(key) => setOverlay(key === 'inventory_import' ? 'import' : 'delivery')}
-            />
-          ) : null}
+          {/* The companion's discovery pointer. It renders into a portal and
+              draws over the page, so it costs this layout nothing: the whole
+              reason the inline card it replaced was rejected is that it pushed
+              the board down under somebody who came to read it. The gate is
+              the same one the two controls it points at carry. */}
+          <DiscoveryPointer
+            pid={activePropertyId}
+            role={hotelStanding.role}
+            page="inventory"
+            enabled={canManage && canViewFinancials}
+          />
           <div data-rise style={{ marginBottom: 16 }}>
             <FilterBar
               lang={L}

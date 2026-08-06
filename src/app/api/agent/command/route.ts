@@ -55,6 +55,7 @@ import { chatIsMountedForRole } from '@/lib/agent/lenses';
 import { requireSectionEnabled } from '@/lib/sections/server';
 import { buildHotelSnapshot } from '@/lib/agent/context';
 import { buildAwareness, formatAwarenessForPrompt } from '@/lib/agent/awareness';
+import { pageForPath } from '@/lib/companion/pages';
 import { buildSystemPrompt, PROMPT_VERSION } from '@/lib/agent/prompts';
 import { retrieveMemoryForTurn } from '@/lib/agent/memory-context';
 import {
@@ -447,6 +448,11 @@ export async function POST(req: NextRequest): Promise<Response> {
             surface: 'chat',
             conversationId: finalConversationId,
             enabledSections,
+            // Which companion screen this turn is happening on, resolved from
+            // the same UNTRUSTED pathname the awareness block uses, through an
+            // allowlist of eight constant paths. `staxis_point_at` refuses to
+            // draw on anything else, and refuses outright when this is null.
+            companionPage: pageForPath(body.pathname)?.key ?? null,
           },
         });
 

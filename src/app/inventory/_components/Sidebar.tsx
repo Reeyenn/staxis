@@ -91,7 +91,9 @@ export function Sidebar({
           disagree about estimated vs counted stock. A badge that does not
           match the list it opens is worse than no badge. */}
       {canManage && <RailBtn label={tx.ordering} tone="teal" onClick={() => onAction('ordering')} />}
-      {canManage && <RailBtn label={tx.addDelivery} tone="teal" onClick={() => onAction('delivery')} />}
+      {/* `anchor` is the companion's pointing target. See
+          src/lib/companion/anchors.ts. */}
+      {canManage && <RailBtn label={tx.addDelivery} tone="teal" anchor="add-delivery" onClick={() => onAction('delivery')} />}
       {canManage && canViewFinancials && <RailBtn label={tx.monthClose} onClick={() => onAction('close')} />}
       <Divider />
       <Caps size={9} style={{ padding: '4px 8px 7px' }}>{tx.look}</Caps>
@@ -134,10 +136,12 @@ interface RailBtnProps {
   badge?: number;
   primary?: boolean;
   tone?: 'teal';
+  /** A companion anchor key, when the companion may point at this action. */
+  anchor?: string;
   onClick: () => void;
 }
 
-function RailBtn({ label, badge, primary, tone, onClick }: RailBtnProps) {
+function RailBtn({ label, badge, primary, tone, anchor, onClick }: RailBtnProps) {
   const ref = useRef<HTMLButtonElement>(null);
   const teal = tone === 'teal';
   const plain = !primary && !teal;
@@ -150,6 +154,7 @@ function RailBtn({ label, badge, primary, tone, onClick }: RailBtnProps) {
         plain ? 'inv-rail-plain' : '',
       ].join(' ').trim()}
       aria-label={badge != null ? `${label}, ${badge}` : undefined}
+      data-staxis-anchor={anchor}
       onClick={() => { Motion.pop(ref.current, 0.96); onClick(); }}
       style={{
         padding: '9px 12px',

@@ -17,6 +17,10 @@ import './management';
 // as get_today_summary. Surviving retired wire-names live on in TOOL_ALIASES.
 import './walkthrough';
 import './staxis-show-pattern';
+// The chat half of the discovery pointer: an arrow at a real control on the
+// screen the person is standing on. See staxis-point-at.ts for the three walls
+// that make pointing at nothing impossible.
+import './staxis-point-at';
 import './complaints';
 import './lost-found';
 import './financials';

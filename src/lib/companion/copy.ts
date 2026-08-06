@@ -20,6 +20,7 @@
 
 import type { AppRole } from '@/lib/roles';
 import { canManageTeam } from '@/lib/roles';
+import type { CompanionAnchorKey } from './anchors';
 import { introFor, type CompanionPage, type CompanionPageKey } from './pages';
 
 // ─── Greeting ───────────────────────────────────────────────────────────────
@@ -288,36 +289,130 @@ export function teachLine(flow: TeachFlow): TeachLine {
 // ONE PER VISIT. The list is ordered, the caller shows the first one that has
 // not been answered, and the second one waits for the next visit. Two pointers
 // on one screen is a tour, and nobody asked for a tour.
+//
+// ─── THE POPUP IS THE POINTING (founder ruling, 2026-08-05) ────────────────
+// The first build of this was an inline slab at the top of the page content
+// with a "Show me" button that opened the thing being described. It was
+// rejected for three separate reasons, and all three are encoded in the shape
+// below rather than in a comment on the component:
+//
+//   • it pushed the whole page down, so a screen somebody came to read moved
+//     under them. A pointer now floats and draws a line to the control.
+//   • "Show me" was a second step for something that had already been said. The
+//     sentence and the arrow arrive together; there is nothing left to reveal,
+//     so there is no verb here that opens anything.
+//   • the words were the companion describing a feature. They are now the
+//     companion describing what a person would DO, which is why the import
+//     pointer opens by asking about the spreadsheet they already keep.
+//
+// So a pointer line carries: the control it points at, its paragraphs, and the
+// ways out. No `question`, because it does not ask for permission to show
+// something it is already showing.
 
-export type CompanionPointerKey = 'inventory_invoices' | 'inventory_import';
+export type CompanionPointerKey =
+  | 'inventory_import'
+  | 'inventory_invoices'
+  | 'todo_intro';
+
+/**
+ * What pressing a pointer's button means.
+ *
+ *   later  the pointer closes and comes back another day. Nothing is written:
+ *          it was stamped with today when it was shown, which is exactly the
+ *          promise "Not now" makes.
+ *   never  the topic is dropped, permanently, first time asked.
+ */
+export type PointerAnswer = 'later' | 'never';
+
+export interface PointerButton {
+  label: string;
+  answer: PointerAnswer;
+}
 
 export interface PointerLine {
   key: CompanionPointerKey;
-  /** What the thing is, in one sentence. */
-  text: string;
-  /** The offer to act, so it reads as an ask and not an announcement. */
-  question: string;
+  /**
+   * The control this points at, by its `data-staxis-anchor` value.
+   *
+   * Named HERE, beside the words, because the sentence and the thing it is
+   * about are one fact. A pointer whose copy moved to a different control
+   * without its anchor moving would be the companion drawing a line at the
+   * wrong button, which is worse than saying nothing.
+   */
+  anchor: CompanionAnchorKey;
+  /** What it says. One entry per paragraph; the gap between them is a blank line. */
+  paragraphs: readonly string[];
+  /** The ways out, left to right. At least one, and at least one of them ends it forever. */
+  buttons: readonly PointerButton[];
+}
+
+/** The two ways out of a pointer that is worth offering again another day. */
+const LATER_OR_NEVER: readonly PointerButton[] = [
+  { label: 'Not now', answer: 'later' },
+  { label: 'Do not show this again', answer: 'never' },
+];
+
+/**
+ * The one way out of a pointer somebody ASKED for.
+ *
+ * Used by the chat pointer, which draws because a person asked where a control
+ * was. There is no "not now" on an answer to a question, and no decision to
+ * make about ever seeing it again: they asked, they got shown, it is done.
+ *
+ * It is a producer here rather than a literal in the component for the reason
+ * at the top of this file: every companion string a person can read is walked
+ * by the copy-rule tests, and the one exception would be the one that shipped
+ * a dash.
+ */
+export function pointerAcknowledgeButtons(): readonly PointerButton[] {
+  return [{ label: 'Got it', answer: 'never' }];
 }
 
 /** Ordered. Earlier pointers are shown first and only one is shown per visit. */
 export const INVENTORY_POINTER_ORDER: readonly CompanionPointerKey[] = [
-  'inventory_invoices',
   'inventory_import',
+  'inventory_invoices',
+];
+
+/** The Staxis one-list's own pointer, shown on a first visit to that page. */
+export const STAXIS_POINTER_ORDER: readonly CompanionPointerKey[] = [
+  'todo_intro',
 ];
 
 export function pointerLine(key: CompanionPointerKey): PointerLine {
   switch (key) {
-    case 'inventory_invoices':
-      return {
-        key,
-        text: 'When a delivery arrives, photograph the invoice here and I will read the items and prices off it, so nobody types a delivery in again.',
-        question: 'Want me to show you where that is?',
-      };
     case 'inventory_import':
       return {
         key,
-        text: 'If you already keep your inventory in a spreadsheet, you can bring the whole file in at once instead of adding items one at a time.',
-        question: 'Want me to show you where that is?',
+        anchor: 'inventory-import',
+        paragraphs: [
+          'Do you keep your inventory in an Excel spreadsheet?',
+          'This button brings the whole file in at once. No typing items one at a time.',
+        ],
+        buttons: LATER_OR_NEVER,
+      };
+    case 'inventory_invoices':
+      return {
+        key,
+        anchor: 'add-delivery',
+        paragraphs: [
+          'When a delivery arrives, snap a photo of the invoice here. I read it and fill in the items and prices for you.',
+        ],
+        buttons: LATER_OR_NEVER,
+      };
+    case 'todo_intro':
+      return {
+        key,
+        anchor: 'todo-composer',
+        paragraphs: [
+          "This is your hotel's to-do list. Type anything here, like 'Fix the ice machine tomorrow,' pick who does it, and it shows up for them.",
+        ],
+        // ONE button, and it ends the pointer forever. There is nothing to come
+        // back for: somebody who has been shown where their own to-do list is
+        // does not need telling twice, and a second showing would read as the
+        // app doubting they understood. Same button the chat pointer uses,
+        // from the same producer, because it means the same thing.
+        buttons: pointerAcknowledgeButtons(),
       };
   }
 }

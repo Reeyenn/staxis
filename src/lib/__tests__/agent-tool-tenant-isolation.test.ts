@@ -119,6 +119,7 @@ const NO_DB_TOOLS = new Map<string, string>([
   // future tool could quietly inherit.
   ['walk_user_through', 'returns UI walkthrough steps from an in-memory registry'],
   ['staxis_show_pattern', 'resolves against the trace patterns the browser already holds; the server has nothing to read'],
+  ['staxis_point_at', 'resolves an anchor key against a static registry; where a control sits is a fact about the browser'],
 ]);
 
 /**

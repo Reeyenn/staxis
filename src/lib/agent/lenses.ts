@@ -206,6 +206,10 @@ const MAINTENANCE_TOOLS = [
   // "show me that AC thing again". It reads nothing and writes nothing — it
   // re-draws a pattern this browser was already given.
   'staxis_show_pattern',
+  // Being shown where a control is. The wrench asks "where do I log that" as
+  // often as anybody, and the one-list composer is on their screen too. It
+  // reads nothing, writes nothing and presses nothing.
+  'staxis_point_at',
   // How it's done here
   'search_knowledge',
   'fetch_document_section',

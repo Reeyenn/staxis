@@ -7,17 +7,20 @@
 // forever. Everything below is composition of exported pieces, which is what
 // keeps it out of the way of anyone else working on the companion.
 //
-//   Remind me later  →  the topic was stamped when it was shown, so it is
-//                       quiet for the rest of the hotel's day and returns on
-//                       the next visit after that. Exactly the promise made on
-//                       the button.
+//   Not now           →  the topic was stamped when it was shown, so it is
+//                        quiet for the rest of the hotel's day and returns on
+//                        the next visit after that. Exactly the promise made
+//                        on the button.
 //   Do not show again →  the topic is dropped, permanently, first time asked.
+//   Tapped the button →  the same as never. They found it. Going on pointing
+//                        at a control somebody has just used is the app
+//                        talking over a person who is already ahead of it.
 //
-// The second one is the only place this file has an opinion. The companion's
-// ordinary rule is that a topic drops after two declines, because most of what
-// it says is worth one more try on another day. A pointer is not: somebody who
-// says "do not show this again" about a button has read the sentence and made
-// a decision, and asking twice would make the button a liar.
+// The second and third are the only places this file has an opinion. The
+// companion's ordinary rule is that a topic drops after two declines, because
+// most of what it says is worth one more try on another day. A pointer is not:
+// somebody who says "do not show this again" about a button has read the
+// sentence and made a decision, and asking twice would make the button a liar.
 // ═══════════════════════════════════════════════════════════════════════════
 
 import {
@@ -26,10 +29,12 @@ import {
 } from './manners';
 import {
   INVENTORY_POINTER_ORDER,
+  STAXIS_POINTER_ORDER,
   pointerLine,
   type CompanionPointerKey,
   type PointerLine,
 } from './copy';
+import type { CompanionPageKey } from './pages';
 
 /** Delay before a pointer appears, so it lands after the screen has settled
  *  and never competes with the thing the person came to look at. */
@@ -44,10 +49,23 @@ export interface PointerCandidate extends PointerLine {
   topic: string;
 }
 
-/** Every pointer that belongs on the Inventory screen, in the order they are
- *  offered. Invoices first: it is the one that saves the most typing. */
-export function inventoryPointers(): PointerCandidate[] {
-  return INVENTORY_POINTER_ORDER.map((key) => ({ ...pointerLine(key), topic: pointerTopic(key) }));
+/**
+ * The screens that have pointers, and the order they are offered in.
+ *
+ * A page with no entry has no pointers, which is most of them. The order is
+ * the product decision: on Inventory the importer comes first because a hotel
+ * arriving with a spreadsheet meets "bring the file you have" before "photograph
+ * a delivery", and a hotel with no items yet has no deliveries to photograph.
+ */
+const POINTERS_BY_PAGE: Partial<Record<CompanionPageKey, readonly CompanionPointerKey[]>> = {
+  inventory: INVENTORY_POINTER_ORDER,
+  staxis: STAXIS_POINTER_ORDER,
+};
+
+/** Every pointer that belongs on this screen, in the order they are offered. */
+export function pointersForPage(page: CompanionPageKey): PointerCandidate[] {
+  const keys = POINTERS_BY_PAGE[page] ?? [];
+  return keys.map((key) => ({ ...pointerLine(key), topic: pointerTopic(key) }));
 }
 
 export interface PointerMemoryView {

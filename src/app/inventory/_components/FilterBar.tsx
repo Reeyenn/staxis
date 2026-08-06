@@ -106,7 +106,16 @@ export function FilterBar({
         })}
       </div>
       {onImport ? (
-        <Btn variant="ghost" size="md" onClick={onImport} data-testid="inventory-import-button">
+        <Btn
+          variant="ghost"
+          size="md"
+          onClick={onImport}
+          data-testid="inventory-import-button"
+          // The companion points here. See src/lib/companion/anchors.ts: the
+          // key is the whole contract, and moving the button is fine as long as
+          // the attribute rides along with it.
+          data-staxis-anchor="inventory-import"
+        >
           {tx.importFile}
         </Btn>
       ) : null}

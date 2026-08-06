@@ -188,3 +188,164 @@ export function isOnScreen(rect: TraceRect, viewport: TraceViewport): boolean {
     && rect.left + rect.width > 0
     && rect.left < viewport.width;
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+// The pointer — the same argument, made about ONE control.
+//
+// WHY IT LIVES IN THIS FILE AND NOT A SECOND GEOMETRY MODULE.
+// A trace and a pointer are the same act at two sizes: the companion putting a
+// sentence on the page and drawing a line from it to something real. They
+// share the rectangle, the viewport, the inflation pad, the edge margin, the
+// clamp and the "is this even on screen" test. Two modules would be two
+// definitions of how close to the window edge the companion may come, and the
+// day they disagreed the bug would be invisible in both files.
+//
+// What is genuinely different is the shape of the drawing, and only that is
+// new below:
+//
+//   A TRACE points at SEVERAL rows, so it needs a rail to gather them and a
+//   band of empty page to hang a wide card in.
+//
+//   A POINTER points at ONE control, so there is nothing to gather. It sits
+//   beside the thing, on whichever side has room, with a single hairline and
+//   an arrowhead landing on the control's own edge. It never covers the page
+//   and it never displaces it: the founder's whole objection to the first
+//   build was that an inline card pushed the screen down under somebody who
+//   had come to read it.
+//
+// THE ARROW NEVER POINTS AT NOTHING. This function refuses a zero-sized box,
+// which is what a control inside a `display: none` branch measures as, so the
+// caller has one thing to check rather than a policy to remember. A pointer
+// with nowhere to point is not drawn at all, and is not spent either.
+// ═══════════════════════════════════════════════════════════════════════════
+
+/** Which side of the control the popup ended up on. */
+export type PointerSide = 'below' | 'above' | 'right' | 'left';
+
+export interface PointerCardSize {
+  readonly width: number;
+  readonly height: number;
+}
+
+export interface PointerGeometry {
+  /** The control's own box, inflated. What lights up. */
+  readonly glow: TraceRect;
+  /** Where the popup sits, in fixed-position coordinates. */
+  readonly card: { left: number; top: number; width: number; height: number };
+  readonly side: PointerSide;
+  /** The hairline, from the popup's edge to the control's edge. */
+  readonly line: { x1: number; y1: number; x2: number; y2: number };
+  /** The arrowhead, landing ON the control, angled along the line. */
+  readonly head: { x: number; y: number; angle: number };
+}
+
+/** The gap between the popup and the control it points at. */
+export const POINTER_GAP = 22;
+
+/** How far in from a popup corner the hairline may start. Keeps the line off
+ *  the rounded corners, where it would read as a stray mark. */
+const POINTER_INSET = 26;
+
+/**
+ * Where the popup goes and where the line runs.
+ *
+ * Pure: it is handed a measured control, the window, and how big the popup
+ * turned out to be. It reads no DOM and knows no page.
+ */
+export function layoutPointer(
+  target: TraceRect,
+  viewport: TraceViewport,
+  card: PointerCardSize,
+): PointerGeometry | null {
+  // A control that measures as nothing is a control that is not really there.
+  if (!(target.width > 0 && target.height > 0)) return null;
+  if (!(card.width > 0 && card.height > 0)) return null;
+
+  const glow: TraceRect = {
+    left: target.left - CUTOUT_PAD,
+    top: target.top - CUTOUT_PAD,
+    width: target.width + CUTOUT_PAD * 2,
+    height: target.height + CUTOUT_PAD * 2,
+  };
+
+  // Never wider than the window can hold, whatever the popup asked for.
+  const width = Math.min(card.width, Math.max(200, viewport.width - EDGE_MARGIN * 2));
+  const height = Math.min(card.height, Math.max(80, viewport.height - EDGE_MARGIN * 2));
+
+  const glowRight = glow.left + glow.width;
+  const glowBottom = glow.top + glow.height;
+  const room: Record<PointerSide, number> = {
+    below: viewport.height - glowBottom,
+    above: glow.top,
+    right: viewport.width - glowRight,
+    left: glow.left,
+  };
+  const needed: Record<PointerSide, number> = {
+    below: height + POINTER_GAP + EDGE_MARGIN,
+    above: height + POINTER_GAP + EDGE_MARGIN,
+    right: width + POINTER_GAP + EDGE_MARGIN,
+    left: width + POINTER_GAP + EDGE_MARGIN,
+  };
+  // Down, then up, then sideways. Same first choice and same fallback as the
+  // trace, for the same reason: down is the direction the design was drawn in
+  // and the one a reader expects. Sideways is what is left for a control in a
+  // narrow window with a rail above it and a board below it, which is exactly
+  // the stockroom's left rail on a laptop.
+  const order: readonly PointerSide[] = ['below', 'above', 'right', 'left'];
+  const side: PointerSide = order.find((s) => room[s] >= needed[s])
+    // Nothing fits. Take the roomiest side rather than the first: a popup
+    // clamped into the biggest gap is still readable, and it is still beside
+    // the control rather than on top of it.
+    ?? order.reduce((best, s) => (room[s] > room[best] ? s : best), order[0]);
+
+  const centerX = glow.left + glow.width / 2;
+  const centerY = glow.top + glow.height / 2;
+
+  let left: number;
+  let top: number;
+  if (side === 'below' || side === 'above') {
+    left = clamp(centerX - width / 2, EDGE_MARGIN, Math.max(EDGE_MARGIN, viewport.width - width - EDGE_MARGIN));
+    const wanted = side === 'below' ? glowBottom + POINTER_GAP : glow.top - POINTER_GAP - height;
+    top = clamp(wanted, EDGE_MARGIN, Math.max(EDGE_MARGIN, viewport.height - height - EDGE_MARGIN));
+  } else {
+    top = clamp(centerY - height / 2, EDGE_MARGIN, Math.max(EDGE_MARGIN, viewport.height - height - EDGE_MARGIN));
+    const wanted = side === 'right' ? glowRight + POINTER_GAP : glow.left - POINTER_GAP - width;
+    left = clamp(wanted, EDGE_MARGIN, Math.max(EDGE_MARGIN, viewport.width - width - EDGE_MARGIN));
+  }
+
+  left = Math.round(left);
+  top = Math.round(top);
+
+  // The line runs from the popup's facing edge to the control's facing edge.
+  // Both ends are clamped INSIDE the box they belong to, so a popup pushed
+  // against a window edge still has its line start on itself and land on the
+  // control rather than in the space beside either.
+  let tip: { x: number; y: number };
+  let root: { x: number; y: number };
+  const insetX = (v: number) => clamp(v, left + Math.min(POINTER_INSET, width / 2), left + width - Math.min(POINTER_INSET, width / 2));
+  const insetY = (v: number) => clamp(v, top + Math.min(POINTER_INSET, height / 2), top + height - Math.min(POINTER_INSET, height / 2));
+
+  if (side === 'below') {
+    tip = { x: clamp(centerX, glow.left, glowRight), y: glowBottom };
+    root = { x: insetX(tip.x), y: top };
+  } else if (side === 'above') {
+    tip = { x: clamp(centerX, glow.left, glowRight), y: glow.top };
+    root = { x: insetX(tip.x), y: top + height };
+  } else if (side === 'right') {
+    tip = { x: glowRight, y: clamp(centerY, glow.top, glowBottom) };
+    root = { x: left, y: insetY(tip.y) };
+  } else {
+    tip = { x: glow.left, y: clamp(centerY, glow.top, glowBottom) };
+    root = { x: left + width, y: insetY(tip.y) };
+  }
+
+  const angle = Math.atan2(tip.y - root.y, tip.x - root.x) * (180 / Math.PI);
+
+  return {
+    glow,
+    card: { left, top, width, height },
+    side,
+    line: { x1: Math.round(root.x), y1: Math.round(root.y), x2: Math.round(tip.x), y2: Math.round(tip.y) },
+    head: { x: Math.round(tip.x), y: Math.round(tip.y), angle },
+  };
+}

@@ -50,7 +50,14 @@ import { AiActivityButton } from './AiActivityButton';
 import { FeedbackButton } from '@/components/layout/FeedbackButton';
 import { useCompanion } from '@/components/companion/useCompanion';
 import { TraceLayer } from '@/components/companion/TraceLayer';
-import { companionLabels, pastChatsHeading, sleepLine } from '@/lib/companion/copy';
+import { PointerPopup } from '@/components/companion/PointerPopup';
+import { anchorFor, type CompanionAnchor } from '@/lib/companion/anchors';
+import {
+  companionLabels,
+  pastChatsHeading,
+  pointerAcknowledgeButtons,
+  sleepLine,
+} from '@/lib/companion/copy';
 import {
   offerIsReplayable,
   offerStateNote,
@@ -65,7 +72,7 @@ import {
   NOTICES_EMPTY_LINE,
   type AssignmentNotice,
 } from '@/lib/companion/notices';
-import { resolveDestination, type CompanionPage } from '@/lib/companion/pages';
+import { pageForPath, resolveDestination, type CompanionPage } from '@/lib/companion/pages';
 import {
   clampDockPosition,
   containScroll,
@@ -164,6 +171,10 @@ function readViewport(): Viewport {
   return { width: window.innerWidth, height: window.innerHeight };
 }
 
+/** Hoisted so the array identity is stable across renders. The words are the
+ *  copy producer's, like every other thing the companion says. */
+const CHAT_POINTER_BUTTONS = pointerAcknowledgeButtons();
+
 export function AskStaxisBar() {
   const { user } = useAuth();
   const { activePropertyId, activeProperty } = useProperty();
@@ -173,6 +184,8 @@ export function AskStaxisBar() {
   const labels = useMemo(() => companionLabels(), []);
 
   const [input, setInput] = useState('');
+  /** The control the companion is pointing at because they asked where it was. */
+  const [chatPointer, setChatPointer] = useState<CompanionAnchor | null>(null);
   const [open, setOpen] = useState(false);
   // B1 · Sink needs the slab to still be in the tree while it plays. `open` is
   // the logical state (and what aria-expanded reports); `closing` is the extra
@@ -687,6 +700,39 @@ export function AskStaxisBar() {
     window.addEventListener('agent:tool-call-started', onToolCall);
     return () => window.removeEventListener('agent:tool-call-started', onToolCall);
   }, [companion, closePanel]);
+
+  // ── "how do I import my spreadsheet?" ────────────────────────────────────
+  //
+  // The same handoff, one size down. `staxis_point_at` is an acknowledgement
+  // on the server for the same reason `staxis_show_pattern` is: where a button
+  // SITS is a fact about the window this person has open, and nothing on the
+  // server can see it.
+  //
+  // POINTING AT NOTHING IS IMPOSSIBLE, and this is the third of the three
+  // walls (the tool's header names the other two). The key must resolve in the
+  // registry AND belong to the screen actually under this conversation, and
+  // past both of those PointerPopup still refuses to draw at a control that is
+  // missing or measures as zero. When it refuses, nothing is drawn and the
+  // model's own sentence stands on its own, which is the honest fallback.
+  useEffect(() => {
+    const onPointAt = (e: Event) => {
+      const detail = (e as CustomEvent<{ call?: { name?: string; args?: Record<string, unknown> } }>).detail;
+      if (detail?.call?.name !== 'staxis_point_at') return;
+      const raw = detail.call.args?.anchor;
+      const target = anchorFor(typeof raw === 'string' ? raw.trim() : null);
+      if (!target) return;
+      if (target.page !== pageForPath(pathname)?.key) return;
+      setChatPointer(target);
+      closePanel();
+    };
+    window.addEventListener('agent:tool-call-started', onPointAt);
+    return () => window.removeEventListener('agent:tool-call-started', onPointAt);
+  }, [pathname, closePanel]);
+
+  // It answered a question they asked. It goes when they say so, and it goes
+  // on its own the moment they walk to another screen: an arrow left pointing
+  // at a control that is no longer there is the one thing worse than no arrow.
+  useEffect(() => { setChatPointer(null); }, [pathname]);
 
   // The Concourse hub's hero Ask bar hands its input here through a durable
   // event bridge, so there is exactly ONE conversation brain no matter which
@@ -1395,6 +1441,23 @@ export function AskStaxisBar() {
           onAct={companion.trace.act}
           onDismiss={companion.trace.decline}
           onClose={companion.trace.close}
+        />
+      )}
+
+      {/* ── The pointer ── an arrow at one real control, because they asked
+          where it was. The sentence is the anchor registry's own, not one the
+          model wrote: every other thing the companion says is deterministic
+          and walked by the copy-rule tests, and this is not the surface to
+          make an exception on. One way out, and it is not a decision about
+          ever seeing it again — they asked, they got an answer. */}
+      {chatPointer && (
+        <PointerPopup
+          anchor={chatPointer.key}
+          paragraphs={[chatPointer.does]}
+          buttons={CHAT_POINTER_BUTTONS}
+          onAnswer={() => setChatPointer(null)}
+          onTargetUsed={() => setChatPointer(null)}
+          onNoTarget={() => setChatPointer(null)}
         />
       )}
 

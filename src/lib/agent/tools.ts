@@ -28,6 +28,7 @@ import {
   type EnabledSections,
 } from '@/lib/sections/registry';
 import { getEnabledSectionsFresh } from '@/lib/sections/server';
+import type { CompanionPageKey } from '@/lib/companion/pages';
 
 // Retained because the protected prompt composer still imports this legacy
 // type for its inert VoiceModeContext compatibility shape. No tool registry
@@ -124,6 +125,20 @@ export interface ToolContext {
    *  (e.g. findRoomByNumber for "made up room 99999") but don't touch
    *  prod data. Codex post-merge review 2026-05-13 (F2). */
   dryRun?: boolean;
+  /**
+   * Which of the companion's own screens this turn is happening on, or null.
+   *
+   * Resolved at the route boundary from the client-supplied pathname through
+   * `pageForPath` — an ALLOWLIST of eight constant paths, so the client string
+   * only ever selects a row and is never carried into anything. Absent on the
+   * portfolio route, the approval-resolve route and the eval harness, all of
+   * which are turns with no screen behind them.
+   *
+   * Exists for `staxis_point_at`, which may only draw on the screen the person
+   * is actually looking at. Undefined means "no screen proof", and that tool
+   * refuses rather than guessing.
+   */
+  companionPage?: CompanionPageKey | null;
 }
 
 /**

@@ -62,6 +62,9 @@ import { buildCompanyAccessViewerKey } from '@/lib/company-access/viewer-key';
 import { listRendersFor, listShowsFindings, listStandingFor } from '@/lib/feed/list-access';
 import { useActiveHotelStanding } from '@/lib/capabilities/useCan';
 import { useApiResource } from '@/lib/hooks/use-api-resource';
+import type { AppRole } from '@/lib/roles';
+
+import { DiscoveryPointer } from '@/components/companion/DiscoveryPointer';
 
 import { CxStyle, FeedStyle } from './concourse-css';
 import { DripQuestionCard } from './DripQuestionCard';
@@ -437,6 +440,7 @@ export function QueueView({ lang }: { lang: 'en' | 'es' }) {
         setFocusId={setFocusId}
         backHref={portfolioHref}
         canSeeFindings={canSeeHotelBrief}
+        viewerRole={hotelStanding.role}
       />
     );
   }
@@ -466,6 +470,7 @@ export function QueueView({ lang }: { lang: 'en' | 'es' }) {
           focusId={focusId}
           setFocusId={setFocusId}
           canSeeFindings={canSeeHotelBrief}
+          viewerRole={hotelStanding.role}
         />
       )}
       {!drilling && fallback === 'empty' && (
@@ -511,6 +516,7 @@ function HotelQueue({
   setFocusId,
   backHref = '/feed',
   canSeeFindings,
+  viewerRole,
 }: {
   lang: 'en' | 'es';
   /** Set only on a portfolio drill-down. Absent = the hotel the app is in. */
@@ -524,6 +530,8 @@ function HotelQueue({
   backHref?: string;
   /** Manager+ only: the brief, the prices and the recommendations. */
   canSeeFindings: boolean;
+  /** This person's hat at this hotel, for the companion's own mount gate. */
+  viewerRole: AppRole | null;
 }) {
   const es = false;
   const L = <K extends keyof typeof S>(k: K) => (S[k].en);
@@ -571,6 +579,16 @@ function HotelQueue({
           the read (see the note at the top of this module) while the list
           decides where on the spine it lands: at the bottom, where the day
           started. Manager+ only, because it is a summary of the findings. */}
+      {/* The companion pointing at the composer, once, on a first visit. It
+          portals over the page rather than into it, so the list below is not
+          moved by a single pixel. Manager-level only: `canSeeFindings` IS the
+          manager standing (see list-access.ts), which keeps this off a
+          housekeeper's screen twice over, since they never reach this page at
+          all and the companion's own mount gate refuses their hat. */}
+      {propertyId && canSeeFindings && (
+        <DiscoveryPointer pid={propertyId} role={viewerRole} page="staxis" />
+      )}
+
       {propertyId && (
         <StaxisList
           key={childKeys.list}
