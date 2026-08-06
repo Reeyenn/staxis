@@ -552,6 +552,11 @@ describe('the row is fully styled in every state it can reach', () => {
       base({ title: 'x', openRow: 'who' }),
       base({ title: 'x', openRow: 'when' }),
       base({ title: 'x', openRow: 'repeat', repeat: 'weekly', weekday: 5 }),
+      // The states that draw the two quiet hint lines and the blank, which
+      // nothing else in this matrix reaches.
+      base({ title: 'x', openRow: 'who', otherHint: true }),
+      base({ title: 'x', openRow: 'repeat', repeat: 'every_n_days', intervalDays: '45' }),
+      base({ title: 'x', openRow: 'repeat', repeat: 'every_n_days', intervalDays: '900' }),
       base({ openRow: 'all' }),
       base({ title: 'x', who: MARCUS, source: { who: 'chosen', when: 'default', repeat: 'default' } }),
       base({ title: 'x', repeat: 'daily', source: { who: 'default', when: 'default', repeat: 'parsed' } }),
