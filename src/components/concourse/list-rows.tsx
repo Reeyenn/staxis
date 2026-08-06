@@ -995,22 +995,15 @@ export function LogbookRailPanel({
  * affordance any more, because the page IS the queue, and Knows opens over it
  * rather than navigating away from it.
  */
-export function KnowsRailButton({ factCount, onOpen }: {
-  /** Null while the count has not been read. The subtitle then says nothing
-   *  about how much is known rather than claiming a number. */
-  factCount: number | null;
-  onOpen: () => void;
-}) {
+export function KnowsRailButton({ onOpen }: { onOpen: () => void }) {
+  // No fact count under the label any more (2026-08-05). It used to read "37
+  // facts about this hotel", which turned a knowledge screen into a score, and
+  // a number nobody asked for is the first thing people start gaming.
   return (
     <button type="button" className="fx-knows" onClick={onOpen}>
       <span className="fx-knowsi"><CxIcon name="staxis" size={17} /></span>
       <span style={{ minWidth: 0 }}>
         <span className="fx-pt" style={{ display: 'block' }}>What Staxis knows</span>
-        {factCount !== null && (
-          <span className="fx-ps" style={{ display: 'block' }}>
-            {factCount === 1 ? '1 fact about this hotel' : `${factCount.toLocaleString('en-US')} facts about this hotel`}
-          </span>
-        )}
       </span>
       <span className="fx-knowsgo" aria-hidden><CxIcon name="arrowUpRight" size={15} /></span>
     </button>

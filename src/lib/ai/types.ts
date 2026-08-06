@@ -48,6 +48,7 @@ export const AI_FEATURE_KEYS = [
   'knowledge.embeddings',
   'knowledge.fact_extraction',
   'knowledge.document_ocr',
+  'knows.teach_filing',
   'speech.ask_staxis_dictation',
   'ml.housekeeping_demand',
   'ml.housekeeping_supply',

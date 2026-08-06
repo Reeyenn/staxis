@@ -33,15 +33,12 @@ import type { AppRole } from '@/lib/roles';
 import {
   ACCESS_OPTIONS,
   CONTACT_GROUP_ORDER,
-  TOLD_SECTIONS,
   UPLOAD_MAX_BYTES,
   accessToPayload,
   anyExtractionInFlight,
   canEditTold,
   canReadLearned,
   canReadTold,
-  defaultHalf,
-  defaultToldSection,
   docAccessVal,
   extractionBadge,
   fileCountLabel,
@@ -268,25 +265,11 @@ describe('who reaches which half', () => {
     for (const role of LINE_STAFF) assert.equal(canEditTold(role), false, role);
   });
 
-  test('a manager lands on the inferred half; everyone else on the told half', () => {
-    for (const role of MANAGERS) assert.equal(defaultHalf(role), 'learned', role);
-    for (const role of LINE_STAFF) assert.equal(defaultHalf(role), 'told', role);
-    // Before auth resolves there is no role yet, and the safe landing is the
-    // half that is open to everyone.
-    assert.equal(defaultHalf(null), 'told');
-  });
 });
 
 // ═══════════════════ 3. reaching an emergency number fast ══════════════════
 
 describe('an emergency number under pressure', () => {
-  test('contacts is the first and default section of the told half', () => {
-    // The tap budget: from the Knows tab a manager taps the told half (1) and
-    // the directory is already open. Anyone else lands there with zero taps.
-    assert.equal(TOLD_SECTIONS[0], 'contacts');
-    assert.equal(defaultToldSection, 'contacts');
-  });
-
   test('emergency sorts above every other kind of contact', () => {
     // The regression this locks down: the old pane rendered in declaration
     // order — vendor, emergency, brand, local — so the fire department sat

@@ -52,13 +52,12 @@ test('communications has a phone list/detail flow and does not collapse failures
   const overlays = source('src', 'app', 'communications', '_components', 'CommsOverlays.tsx');
   const row = source('src', 'app', 'communications', '_components', 'MessageRow.tsx');
   const calendar = source('src', 'app', 'communications', '_components', 'CalendarPane.tsx');
-  // Contacts and the knowledge hub moved to the Knows tab's "told" half. These
-  // two lines follow the SURVIVING copies, so the protections stay attached to
-  // the code that actually runs; the Communications originals can be deleted
-  // without touching this test again. Same assertions, restated against the
-  // envelope shape the concourse surface uses (result.error, not result.ok).
-  const contacts = source('src', 'components', 'concourse', 'ToldContacts.tsx');
-  const knowledge = source('src', 'components', 'concourse', 'ToldKnowledge.tsx');
+  // Contacts and the knowledge hub moved to the Knows tab's "told" half, and
+  // on 2026-08-05 that half's four panes collapsed into ONE list of sentences
+  // served by /api/memory/knows. So the guard follows the surviving code
+  // again: the same claim ("a failed read is never drawn as no data") now has
+  // to hold on the page that replaced all four.
+  const knows = source('src', 'components', 'concourse', 'KnowsView.tsx');
   const logbook = source('src', 'app', 'communications', '_components', 'LogbookPane.tsx');
   // The worklist left Communications for the Staxis list on 2026-07-30, the
   // same way Contacts and the knowledge hub left before it. These lines follow
@@ -89,12 +88,15 @@ test('communications has a phone list/detail flow and does not collapse failures
   // A failed read of what you handed out is never drawn as "nothing outstanding".
   assert.match(listRows, /readFailed[\s\S]*?could not read this just now/);
   assert.match(row, /if \(!r\.ok\)[\s\S]*?Acknowledgement was not saved/);
-  for (const pane of [calendar, contacts, knowledge, logbook]) {
+  for (const pane of [calendar, logbook]) {
     assert.match(pane, /error: loadError/);
   }
-  assert.match(knowledge, /if \(docsR\.error !== undefined \|\| !docsR\.data\) return \{ error:/);
-  assert.match(knowledge, /if \(foldersR\.error !== undefined \|\| !foldersR\.data\) return \{ error:/);
-  assert.doesNotMatch(knowledge, /documents: docsR\.data\?\.documents \?\? \[\]/);
+  // The Knows page keeps the last-good list through a failed refresh, and says
+  // so out loud rather than rendering the empty state, which would read as
+  // "your hotel has told Staxis nothing".
+  assert.match(knows, /keepDataOnError: true/);
+  assert.match(knows, /\{error && !data && <div className="kn-note kn-bad">\{KNOWS_COPY\.loadFailed\}<\/div>\}/);
+  assert.match(knows, /groups\.length === 0 &&/);
   assert.match(logbook, /if \(!r\.ok\).*The recap was not posted/);
 
   // The Communications originals are still mounted by CommsApp until the

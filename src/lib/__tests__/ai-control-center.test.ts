@@ -78,7 +78,7 @@ describe('AI Control Center feature registry', () => {
   // feature whose switch being OFF is a supported, invisible outcome: the plain
   // code path already read the sentence. Display-only count unchanged.
   test('covers 28 controllable hosted features and 7 display-only features', () => {
-    assert.equal(AI_FEATURE_KEYS.length, 35);
+    assert.equal(AI_FEATURE_KEYS.length, 36);
     assert.equal(new Set(AI_FEATURE_KEYS).size, AI_FEATURE_KEYS.length);
     assert.deepEqual(Object.keys(AI_FEATURE_REGISTRY).sort(), [...AI_FEATURE_KEYS].sort());
 

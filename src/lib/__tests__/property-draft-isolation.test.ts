@@ -37,18 +37,20 @@ describe('property-owned draft and action isolation', () => {
     assert.match(knows, /const scopeKey = `\$\{user\?\.uid \?\? 'signed-out'\}:\$\{activePropertyId \?\? 'no-property'\}`/);
     assert.match(knows, /<KnowsPropertyView[\s\S]*?key=\{scopeKey\}[\s\S]*?propertyId=\{activePropertyId\}[\s\S]*?scopeKey=\{scopeKey\}/);
 
-    const scoped = section(knows, 'function KnowsPropertyView(', '// Returns readEnvelope');
+    const scoped = section(knows, 'export function KnowsPropertyView(', '// Returns readEnvelope');
     assert.match(scoped, /activeScopeRef = useRef<string \| null>\(scopeKey\)/);
     assert.match(scoped, /activeScopeRef\.current === scopeKey[\s\S]*?activeScopeRef\.current = null/);
     assert.match(scoped, /const ownsScope = useCallback/);
 
-    const actions = section(knows, 'const submitIntake = async', 'const groups = useMemo');
-    assert.match(actions, /const payload: Record<string, unknown> = \{ propertyId \}/);
-    assert.match(actions, /if \(!ownsScope\(\)\) return;[\s\S]*?post<IntakeResult>/);
-    assert.match(actions, /post\('\/api\/memory\/knows', \{ propertyId, action, id \}\)/);
-    assert.match(actions, /propertyId,[\s\S]*?action: 'edit'/);
+    // The 2026-08-05 rebuild replaced the open box and the per-row trio with
+    // one box in three costumes, so there are two write paths here instead of
+    // four. Both still refuse to touch state they no longer own.
+    const actions = section(knows, 'const submitBox = useCallback', 'const groups = useMemo');
+    assert.match(actions, /propertyId, action: 'teach', text/);
+    assert.match(actions, /action: box\.kind === 'wrong' \? 'wrong' : 'adjust'/);
+    assert.match(actions, /propertyId, action: 'remove', kind: item\.kind, id: item\.id/);
     assert.ok((actions.match(/if \(!ownsScope\(\)\) return;/g) ?? []).length >= 3);
-    assert.ok((actions.match(/if \(ownsScope\(\)\) set(?:Busy|RowBusy)/g) ?? []).length >= 3);
+    assert.ok((actions.match(/if \(ownsScope\(\)\) set(?:Busy|RowBusy)/g) ?? []).length >= 2);
   });
 
   test('notification CC drafts and save ownership reset on viewer or hotel changes', () => {

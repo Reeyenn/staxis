@@ -60,8 +60,12 @@ const housekeeperPage = source('src', 'app', '(staff-link)', 'housekeeper', '[id
 const dashboardPage = source('src', 'app', '(hotel)', 'dashboard', 'page.tsx');
 const roomsDb = source('src', 'lib', 'db', 'rooms.ts');
 const propertySelectorPage = source('src', 'app', '(hotel)', 'property-selector', 'page.tsx');
-const toldKnowledge = source(
-  'src', 'components', 'concourse', 'ToldKnowledge.tsx',
+// The document upload moved onto the Knows page's paperclip when the told
+// half's four section tabs were deleted (2026-08-05). This follows the
+// SURVIVING caller so the deadline protection stays attached to the code that
+// actually runs.
+const knowsView = source(
+  'src', 'components', 'concourse', 'KnowsView.tsx',
 );
 const toldApi = source('src', 'components', 'concourse', 'told-api.ts');
 const adminIndex = source('src', 'app', '(admin)', 'admin', 'page.tsx');
@@ -509,7 +513,7 @@ describe('authenticated shell and property-switch isolation', () => {
 
   test('Knows document uploads have a terminal transport deadline', () => {
     assert.match(
-      toldKnowledge,
+      knowsView,
       /put: \(signedUrl, contentType\) => putSigned\(signedUrl, file, contentType\)/,
     );
     assert.match(
