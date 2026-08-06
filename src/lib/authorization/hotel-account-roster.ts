@@ -89,9 +89,19 @@ export function parseAuthoritativeHotelRoster(value: unknown): AuthoritativeHote
         || !['legacy_hotel', 'company_access'].includes(String(account.managementSurface))) {
       return null;
     }
+    // Post-cutover (0426) every account carries normalized authority, so
+    // authorityMode no longer tells you which surface manages the person.
+    // 0424's roster RPC projects a normalized account whose only claim is one
+    // independent single-hotel scope back onto `legacy_hotel`, because an
+    // independent hotel has no company Access surface to manage it from. That
+    // combination is the standing shape for every hotel that is not under a
+    // management company, so it must parse.
+    //
+    // The reverse remains impossible by construction: the RPC's CASE falls
+    // through to `legacy_hotel` for anything not normalized, so a
+    // non-normalized account is never projected onto `company_access`.
     const normalized = account.authorityMode === 'normalized';
-    if ((normalized && account.managementSurface !== 'company_access')
-        || (!normalized && account.managementSurface !== 'legacy_hotel')
+    if ((!normalized && account.managementSurface !== 'legacy_hotel')
         || (account.role !== 'admin' && !propertyIds.includes(root.propertyId as string))
         || (account.role === 'admin' && propertyIds.length !== 0)) return null;
     seen.add(account.accountId);

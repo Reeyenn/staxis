@@ -471,7 +471,14 @@ export async function GET(req: NextRequest) {
     const disclosedTargetAccess = callerReach === null
       ? targetAccess
       : targetAccess.filter((propertyId) => propertyId !== '*' && callerReach.has(propertyId));
-    const normalizedTarget = r.authority_mode === 'normalized';
+    // Which surface manages this person, NOT whether their authority is
+    // normalized. After the Stage C cutover every account is normalized, so
+    // reading authority_mode here hid role change, detach, and profile edit
+    // from every person at an independent hotel and pointed them at a company
+    // Access screen that hotel does not have. PUT and DELETE below both gate
+    // on the surface, and the guarded RPCs they call REQUIRE normalized
+    // authority, so the surface is the honest signal on both sides.
+    const companyManagedTarget = r.management_surface === 'company_access';
     const hasOtherHotelAccess = disclosedTargetAccess.includes('*')
       || disclosedTargetAccess.some((id) => id !== hotelId);
     const hotelAccessCount = disclosedTargetAccess.includes('*')
@@ -509,10 +516,10 @@ export async function GET(req: NextRequest) {
     const managesUsersAtHotel = managesUsersAtHotelDecision === 'allowed';
     const managesUsersEverywhere = managesUsersEverywhereDecision === 'allowed';
     const canEditProfile = !lifecyclePending
-      && hierarchyAllowsMutation && (isSelf || (!normalizedTarget && controlsAllHotels));
+      && hierarchyAllowsMutation && (isSelf || (!companyManagedTarget && controlsAllHotels));
     const sensitiveTargetAllowed = hierarchyAllowsMutation && !isSelf
       && targetRole !== 'owner' && targetRole !== 'admin';
-    const canChangeRole = !normalizedTarget && !lifecyclePending
+    const canChangeRole = !companyManagedTarget && !lifecyclePending
       && !ownerProtected && sensitiveTargetAllowed && active && managesUsersEverywhere;
     // Direct manager-set passwords cross the Postgres account boundary into
     // Supabase Auth and cannot be made atomic with a concurrent promotion.
@@ -521,7 +528,7 @@ export async function GET(req: NextRequest) {
     const canResetPassword = !lifecyclePending && hierarchyAllowsMutation && isSelf;
     // Detach is intentionally hotel-scoped: a manager may remove Hotel A
     // access without controlling Hotel B. The atomic RPC preserves Hotel B.
-    const canRemove = !normalizedTarget && !lifecyclePending
+    const canRemove = !companyManagedTarget && !lifecyclePending
       && !ownerProtected && sensitiveTargetAllowed && managesUsersAtHotel;
     const canDeactivate = !lifecyclePending
       && !ownerProtected && sensitiveTargetAllowed && active && managesUsersEverywhere;
@@ -574,7 +581,7 @@ export async function GET(req: NextRequest) {
         authorityMode: r.authority_mode,
         authorityVersion: r.authority_version,
         managementSurface: r.management_surface,
-        accessManagementHref: normalizedTarget ? '/company?tab=access' : null,
+        accessManagementHref: companyManagedTarget ? '/company?tab=access' : null,
         actions,
         // Flat aliases keep the contract convenient for existing/simple clients;
         // `actions` is the canonical grouped shape for the My Hotel UI.

@@ -65,9 +65,11 @@ import {
   PID_A1,
   PID_A2,
   PID_B1,
+  PID_L1,
   UID_ANA,
   UID_GIL,
   UID_MARIA,
+  UID_WANDA,
   seedTwoCompanies,
 } from '../../../tests/fixtures/pglite-two-company-seed';
 
@@ -87,6 +89,10 @@ interface TeamRow {
   staffId: string | null;
   historicalStaffId: string | null;
   propertyAccess: string[];
+  managementSurface?: string;
+  authorityMode?: string;
+  accessManagementHref?: string | null;
+  actions?: Record<string, boolean>;
 }
 
 interface TeamPayload {
@@ -267,5 +273,36 @@ describe('company reach is not hotel authority', () => {
     const payload = await teamFor(UID_ANA, PID_A2);
     assert.equal(payload.status, 403);
     assert.deepEqual(payload.team, []);
+  });
+});
+
+describe('a hotel with no management company still gets its People screen', () => {
+  // Waco Inn is the shape the paying customer is in: one hotel, no company
+  // over it. After the access cutover its people are normalized like everybody
+  // else, and the roster projects them back onto the hotel surface because
+  // there is no company Access screen to send them to. Reading that
+  // combination as a corrupt response took the whole screen down, and reading
+  // "normalized" as "managed elsewhere" took the buttons off it.
+  test('the owner opens their own roster, and it is a hotel roster', async () => {
+    const payload = await teamFor(UID_WANDA, PID_L1);
+    assert.equal(payload.status, 200, payload.raw.slice(0, 400));
+
+    const sections = sectionFor(payload, PID_L1);
+    assert.deepEqual(sections.hotel.sort(), ['Hank', 'Wanda']);
+    assert.deepEqual(sections.company, [], 'there is no company over this hotel');
+
+    const owner = payload.team.find((row) => row.displayName === 'Wanda');
+    assert.ok(owner);
+    assert.equal(owner.authorityMode, 'normalized');
+    assert.equal(owner.managementSurface, 'legacy_hotel');
+    assert.equal(owner.accessManagementHref ?? null, null);
+  });
+
+  test('and the owner can still change what somebody does here', async () => {
+    const payload = await teamFor(UID_WANDA, PID_L1);
+    const hank = payload.team.find((row) => row.displayName === 'Hank');
+    assert.ok(hank);
+    assert.equal(hank.actions?.canChangeRole, true, 'a normalized hotel is still managed here');
+    assert.equal(hank.actions?.canRemove, true);
   });
 });
