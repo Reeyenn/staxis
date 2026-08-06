@@ -164,6 +164,11 @@ export async function GET(req: NextRequest): Promise<Response> {
         propertyId: ctx.pid,
         role,
         hotelMutationAllowed: ctx.hotelMutationAllowed,
+        // The HOTEL's day and clock, resolved above from properties.timezone.
+        // The unfinished-business recall reads "before today" off it, and the
+        // browser's idea of today is the one thing that must never decide that.
+        today,
+        timezone: facts?.timezone ?? null,
       })
     : [];
 
