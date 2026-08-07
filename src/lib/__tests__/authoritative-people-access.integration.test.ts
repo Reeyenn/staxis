@@ -55,8 +55,8 @@ describe('authoritative People and Access bridge — real SQL', () => {
     await pg?.close();
   });
 
-  test('Access projects finance/VP/GM hats and atomically converts one hat to grants', async () => {
-    const financeHat = seed.hats.get(`${ACCOUNT_FIONA}:company:finance`);
+  test('Access projects regional-manager and GM hats and atomically converts one hat to grants', async () => {
+    const financeHat = seed.hats.get(`${ACCOUNT_FIONA}:company:regional_manager`);
     assert.ok(financeHat);
     const projection = await pg.query<JsonRow>(
       `select public.staxis_company_access_editor_projection_v2($1) as value`,
@@ -70,7 +70,7 @@ describe('authoritative People and Access bridge — real SQL', () => {
     assert.ok(organization);
     const finance = organization.memberships.find((entry) => entry.id === financeHat);
     assert.equal(finance?.sourceKind, 'membership_hat');
-    assert.equal(finance?.sourceRole, 'finance');
+    assert.equal(finance?.sourceRole, 'regional_manager');
     assert.equal(finance?.sourceScope, 'company');
     assert.equal(finance?.canReplace, true);
     assert.equal(finance?.canAdd, false);

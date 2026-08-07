@@ -435,18 +435,22 @@ describe('actor-bound account invitation lifecycle — real SQL', () => {
     assert.deepEqual(sisterTamper, { ok: false, reason: 'denied' });
   });
 
-  test('company owner and VP obey exact company/property delegation', async () => {
-    const finance = await createGuarded(pg, {
+  test('company owner and regional manager obey exact company/property delegation', async () => {
+    // Maria is a regional manager. She used to be able to hire exactly one
+    // company job — `finance` — and 0464 retired that word, leaving her with
+    // none. She hires freely at hotel level; she hires nobody at company level.
+    const companyHire = await createGuarded(pg, {
       actorAccountId: ACCOUNT_MARIA,
       actorAuthUserId: UID_MARIA,
       hotelId: PID_A1,
       email: 'controller@example.test',
-      role: 'finance',
+      role: 'regional_manager',
       organizationId: ORG_A,
       membershipScope: 'company',
-      requestId: 'vp-finance',
+      requestId: 'regional-peer-denied',
     });
-    assert.equal(finance.ok, true);
+    assert.deepEqual(companyHire, { ok: false, reason: 'denied' },
+      'a regional manager may not mint a peer');
     const ownerDenied = await createGuarded(pg, {
       actorAccountId: ACCOUNT_MARIA,
       actorAuthUserId: UID_MARIA,
@@ -676,11 +680,12 @@ describe('actor-bound account invitation lifecycle — real SQL', () => {
       actorAccountId: ACCOUNT_MARIA,
       actorAuthUserId: UID_MARIA,
       hotelId: PID_A1,
-      email: 'finance-before-revoke@example.test',
-      role: 'finance',
+      email: 'front-desk-before-revoke@example.test',
+      role: 'front_desk',
       organizationId: ORG_A,
-      membershipScope: 'company',
-      requestId: 'before-vp-revoke',
+      membershipScope: 'property',
+      propertyIds: [PID_A1],
+      requestId: 'before-regional-revoke',
     });
     assert.equal(created.ok, true);
     await asService(
@@ -692,11 +697,12 @@ describe('actor-bound account invitation lifecycle — real SQL', () => {
       actorAccountId: ACCOUNT_MARIA,
       actorAuthUserId: UID_MARIA,
       hotelId: PID_A1,
-      email: 'finance-after-revoke@example.test',
-      role: 'finance',
+      email: 'front-desk-after-revoke@example.test',
+      role: 'front_desk',
       organizationId: ORG_A,
-      membershipScope: 'company',
-      requestId: 'after-vp-revoke',
+      membershipScope: 'property',
+      propertyIds: [PID_A1],
+      requestId: 'after-regional-revoke',
     });
     assert.deepEqual(deniedCreate, { ok: false, reason: 'denied' });
     const deniedRevoke = await revokeGuarded(

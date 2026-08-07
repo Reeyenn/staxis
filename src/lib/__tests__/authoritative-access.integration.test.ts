@@ -327,7 +327,7 @@ describe('authoritative access and exact portfolio receipts — real SQL', () =>
     const membership = await pg.query<{ id: string }>(
       `insert into public.organization_memberships
          (organization_id, account_id, job_category, status)
-       values ($1, $2, 'regional_manager', 'active') returning id`,
+       values ($1, $2, 'vp', 'active') returning id`,
       [ORG_A, GRANT_ACCOUNT],
     );
     const grant = await pg.query<{ id: string }>(
@@ -443,7 +443,7 @@ describe('authoritative access and exact portfolio receipts — real SQL', () =>
     const membership = await pg.query<{ id: string }>(
       `insert into public.organization_memberships
        (organization_id, account_id, job_category, status)
-       values ($1, $2, 'regional_manager', 'active') returning id`,
+       values ($1, $2, 'vp', 'active') returning id`,
       [ORG_A, SCHEDULED_ACCOUNT],
     );
     const relationship = await pg.query<{ id: string }>(

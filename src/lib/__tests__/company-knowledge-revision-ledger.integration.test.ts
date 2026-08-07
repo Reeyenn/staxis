@@ -148,6 +148,9 @@ describe('0406 company knowledge revision ledger', () => {
         `insert into public.company_authority_rules (
            organization_id, action_kind, threshold_cents,
            threshold_inclusive, approver_role, source_fact_id
+           -- Seeded DURING migration application, at the 0406 boundary, where
+           -- the approver CHECK still only knows the old words. 0464 converts
+           -- this row to regional_manager as part of its data backfill.
          ) values ($1, 'purchase_order', 50000, false, 'vp', $2)`,
         [ORG_A, LEGACY_FACT],
       );

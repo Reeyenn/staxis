@@ -268,9 +268,14 @@ describe('the job you hold AT THIS HOTEL is the job the gate uses', () => {
       'select role from accounts where id = $1', [ACCOUNT_VICKY],
     );
     assert.equal(account.rows[0].role, 'general_manager', 'fixture drift: her legacy role moved');
-    // Reach, not the fenced legacy column: her login manages exactly the
-    // independent hotel and no Gulf Coast hotel.
-    assert.deepEqual((await accessibleProperties(ACCOUNT_VICKY)).propertyIds, [PID_L1]);
+    // Reach, not the fenced legacy column. She reaches BOTH: the independent
+    // hotel her login was minted for, and Beaumont through the housekeeping
+    // hat. Reaching Beaumont is exactly what made the old gate serve her there
+    // as a manager, so the dangerous shape is intact.
+    assert.deepEqual(
+      (await accessibleProperties(ACCOUNT_VICKY)).propertyIds.slice().sort(),
+      [PID_A1, PID_L1].slice().sort(),
+    );
 
     const hats = await loadHats(ACCOUNT_VICKY);
     assert.deepEqual(hats.map((h) => h.role), ['housekeeping'], 'fixture drift: her hat moved');
@@ -324,18 +329,22 @@ describe('the job you hold AT THIS HOTEL is the job the gate uses', () => {
 
 describe('the finance lead keeps every read path she was given', () => {
   // Mutation: gate `/api/company/rulebook` on manager capacity instead of
-  // reach. Fiona's finance hat degrades to `front_desk`, so she 403s out of the
+  // reach. Fiona's company hat degrades to `front_desk`, so she 403s out of the
   // book her own company governs her by — the exact regression the hat-access
   // pass fixed and this tightening could have re-introduced.
   test('she reads her company rulebook', async () => {
     assert.equal(
       await statusOf(rulebookGet, UID_FIONA, `https://staxis.test/api/company/rulebook?organizationId=${ORG_A}`),
       200,
-      'the finance lead was refused the company book again',
+      'the company person was refused the company book again',
     );
     const standing = await rulebookStandingFor(ACCOUNT_FIONA, ORG_A);
     assert.equal(standing.canView, true);
-    assert.equal(standing.canEdit, false, 'finance was handed the pen');
+    // 0464 retired `finance` and made her a regional manager, whom the shipped
+    // `owner_and_vp` default admits. The reverse-failure this block exists for
+    // is the READ, and it is unchanged: her degraded front-desk login must not
+    // be what answers.
+    assert.equal(standing.canEdit, true, 'her degraded legacy word took the pen away');
   });
 
   test('and she reads the portfolio queue', async () => {
@@ -345,7 +354,7 @@ describe('the finance lead keeps every read path she was given', () => {
     assert.equal(res.status, 200);
     const body = await res.json() as { data?: { scope?: { companyRole?: string }; canAct?: boolean } };
     assert.equal(body.data?.scope?.companyRole, 'regional_manager');
-    assert.equal(body.data?.canAct, false, 'finance was offered verdict buttons');
+    assert.equal(body.data?.canAct, false, 'a read-only company standing was offered verdict buttons');
   });
 
   // She is finance, not a manager. The findings queue is a manager surface and

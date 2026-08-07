@@ -676,12 +676,20 @@ describe('the rulebook and the cross-hotel-chat switch', () => {
 
   // Mutation: gate on loadManagerCaller. Fiona's legacy role is `front_desk`,
   // so she was 404'd out of the book her own company governs her by.
-  test("a finance hat may READ the book and may not write it", async () => {
+  //
+  // She used to wear the retired `finance` hat and this test asserted she could
+  // read but not write. 0464 converted those people into regional managers, and
+  // the shipped `owner_and_vp` default admits a regional manager, so the honest
+  // assertion is that her degraded LEGACY role still does not decide anything:
+  // a front-desk `accounts.role` reaches, reads AND writes her company's book
+  // because the hat is what is being asked.
+  test('a company hat on a front-desk login reads AND writes the book', async () => {
     const fiona = await rulebookFor(UID_FIONA, ORG_A);
-    assert.equal(fiona.status, 200, 'the finance lead was refused the company book');
+    assert.equal(fiona.status, 200, 'the company person was refused the company book');
     assert.equal(fiona.data?.companyRole, 'regional_manager');
-    assert.equal(fiona.data?.canEdit, false, 'finance was handed the pen');
-    assert.equal(await flipChatSwitch(UID_FIONA, ORG_A, 'true'), 403, 'finance flipped a company switch');
+    assert.equal(fiona.data?.canEdit, true, 'the legacy front-desk word took the pen away');
+    assert.equal(await flipChatSwitch(UID_FIONA, ORG_A, 'true'), 200, 'her company switch was refused');
+    assert.equal(await flipChatSwitch(UID_FIONA, ORG_A, 'false'), 200, 'and back off');
   });
 
   // The wall did not move when the gate did.
@@ -914,19 +922,25 @@ describe('the Company Hub reads the spine', () => {
     }
   });
 
-  // This suite deliberately stops at the explicit pre-0426 boundary. The
-  // final Company Hub route must not project a legacy/shadow account from that
-  // boundary, even though the old deployment would have rendered it.
-  test('a pre-0426 legacy account is rejected by the final Company Hub route', async () => {
+  // These two used to assert a 500 because the suite ran against the explicit
+  // pre-0426 schema, where an unmigrated account had to fail closed rather than
+  // be rendered from its legacy array. The suite now runs the shipped schema,
+  // where `accounts.property_access` cannot be written at all — so the property
+  // worth pinning is the one the 500 was protecting: NO COMPANY is disclosed to
+  // somebody who holds no company job, whatever else is true about their hotel.
+  //
+  // Mutation: resurrect the legacy array as a company projection, or let a
+  // non-governing relationship name a company. Either one puts a company on
+  // these payloads and turns both of these red.
+  test('an account with no company job is disclosed no company at all', async () => {
     const hub = await hubFor(UID_DOLORES);
-    assert.equal(hub.status, 500);
-    assert.equal(hub.data, null);
+    assert.deepEqual(hub.data?.organizations ?? [], []);
+    assert.equal(hub.data?.permissions.viewPeople ?? false, false);
+    assert.deepEqual(hub.data?.memberships ?? [], []);
+    assert.deepEqual(hub.data?.effectiveAccess ?? [], []);
   });
 
-  // The final canonical bridge behavior for independent accounts is exercised
-  // below by accounts created through the current route. This pre-0426 legacy
-  // control must remain fail-closed here rather than resurrecting its array.
-  test('a pre-0426 independent legacy owner is rejected by the final route', async () => {
+  test('a NON-governing relationship never turns an independent owner into a company person', async () => {
     await pg.query(
       `insert into public.organization_property_relationships
          (organization_id, property_id, relationship_type, is_primary_grouping)
@@ -935,8 +949,17 @@ describe('the Company Hub reads the spine', () => {
     );
     try {
       const hub = await hubFor(UID_WANDA);
-      assert.equal(hub.status, 500);
-      assert.equal(hub.data, null);
+      // The only "organization" she is shown is the canonical independent
+      // bridge standing in for her own hotel. Piney Woods is not one of them.
+      assert.deepEqual(
+        (hub.data?.organizations ?? []).map((organization) => organization.id),
+        [`bridge-independent-${PID_L1}`],
+      );
+      assert.deepEqual(hub.data?.memberships ?? [], []);
+      assert.equal(
+        JSON.stringify(hub.data ?? {}).includes(ORG_B), false,
+        "the other company's id reached an independent owner's hub",
+      );
     } finally {
       await pg.query(
         `delete from public.organization_property_relationships

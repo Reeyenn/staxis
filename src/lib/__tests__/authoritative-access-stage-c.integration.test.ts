@@ -804,7 +804,7 @@ async function seedUnlistedLegacyRowsFixture(pg: PGlite): Promise<void> {
           revoked ? '2026-07-26T09:00:19.192312Z' : '2026-07-20T14:37:28.765078Z',
           revoked ? '2026-07-26T13:17:59.320767Z' : null,
           revoked ? 'company' : null,
-          revoked ? 'vp' : null,
+          revoked ? 'regional_manager' : null,
           null,
         ],
       );
@@ -3851,7 +3851,7 @@ describe('Access Stage C final contract — real migration boundary', () => {
             assert.equal(membership.status, 'revoked');
             assert.ok(membership.ended_at);
             assert.equal(membership.membership_scope, 'company');
-            assert.equal(membership.staxis_role, 'vp');
+            assert.equal(membership.staxis_role, 'regional_manager');
           } else {
             assert.equal(membership.organization_id, fact.compatibilityOrganizationId);
             assert.equal(membership.status, 'active');
