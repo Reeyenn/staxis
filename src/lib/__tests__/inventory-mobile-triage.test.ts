@@ -2,7 +2,10 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { partitionMobileInventory } from '@/app/inventory/_components/mobile-inventory-triage';
+import { toDisplayItem } from '@/app/inventory/_components/adapter';
+import { buildCandidate } from '@/lib/ordering/resolve';
 import type { DisplayItem } from '@/app/inventory/_components/types';
+import type { InventoryItem } from '@/types';
 
 function item(
   id: string,
@@ -85,6 +88,91 @@ describe('partitionMobileInventory', () => {
       ['soap-002'],
     );
     assert.equal(partitionMobileInventory(items, 'general', 'pillow').visibleCount, 0);
+  });
+});
+
+// The triage columns and the Ordering panel are two views of the same shelf on
+// the same tab. They used to classify it with different rules (0.5/1.0 here,
+// the house 70/30 there), so a par-100 item at 80 sat under "Order soon" while
+// Ordering refused to put it on any order, and the same item at 40 read as a
+// red Critical while Ordering called it Low. Both producers are exercised here
+// so the two screens can never drift apart again.
+describe('inventory status agrees with the ordering screen', () => {
+  function stocked(currentStock: number, parLevel: number): InventoryItem {
+    return {
+      id: 'sheets',
+      propertyId: 'prop',
+      name: 'King Sheets',
+      category: 'housekeeping',
+      currentStock,
+      parLevel,
+      unit: 'sets',
+      updatedAt: null,
+      lastCountedAt: new Date('2026-08-01T00:00:00Z'),
+    } as InventoryItem;
+  }
+
+  function ledgerStatus(currentStock: number, parLevel: number): DisplayItem['status'] {
+    return toDisplayItem(stocked(currentStock, parLevel), {
+      occupancy: null,
+      dailyAverages: null,
+      mlRateMap: new Map(),
+      autoFillGraduated: new Set(),
+    }).status;
+  }
+
+  function isOnTheOrderList(currentStock: number, parLevel: number): boolean {
+    return buildCandidate(
+      {
+        itemId: 'sheets',
+        name: 'King Sheets',
+        unit: 'sets',
+        onHand: currentStock,
+        par: parLevel,
+        category: 'housekeeping',
+        customCategoryId: null,
+        vendorId: null,
+        vendorName: null,
+        burnPerDay: null,
+        burnConfidence: 'none',
+        lastPriceCents: null,
+        lastPriceAt: null,
+        openOrder: null,
+      },
+      new Map(),
+      new Map(),
+    ) !== null;
+  }
+
+  it('classifies stock on the house 70/30 thresholds', () => {
+    assert.equal(ledgerStatus(70, 100), 'good');
+    assert.equal(ledgerStatus(69, 100), 'low');
+    assert.equal(ledgerStatus(30, 100), 'low');
+    assert.equal(ledgerStatus(29, 100), 'critical');
+    assert.equal(ledgerStatus(0, 100), 'critical');
+    // No par set is no judgement to make, not a shortage.
+    assert.equal(ledgerStatus(5, 0), 'good');
+  });
+
+  it('never calls an item stocked while the ordering screen wants it ordered', () => {
+    for (const onHand of [0, 20, 29, 30, 40, 55, 69, 70, 80, 100, 140]) {
+      const status = ledgerStatus(onHand, 100);
+      assert.equal(
+        status === 'good',
+        !isOnTheOrderList(onHand, 100),
+        `${onHand} of par 100 reads "${status}" on the board but the order list disagrees`,
+      );
+    }
+  });
+
+  it('drops a fully stocked item out of the order columns', () => {
+    const partition = partitionMobileInventory(
+      [item('sheets', ledgerStatus(80, 100))],
+      'all',
+    );
+    assert.deepEqual(partition.good.map(({ id }) => id), ['sheets']);
+    assert.equal(partition.low.length, 0);
+    assert.equal(partition.critical.length, 0);
   });
 });
 
