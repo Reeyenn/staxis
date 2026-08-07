@@ -488,6 +488,7 @@ export async function POST(req: NextRequest): Promise<Response> {
               snapshot,
               actorRole: userCtx.role,
               promptVersion: systemPrompt.versionLabel,
+              surface: 'chat',
             },
           }),
         });

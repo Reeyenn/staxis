@@ -56,6 +56,8 @@ import {
 } from '@/lib/agent/tools';
 import { MESSAGES_LENS_TOOLS, lensFor, moneyVisibleToRole, surfaceIsMountedForRole } from '@/lib/agent/lenses';
 import { buildActionSummary } from '@/lib/agent/approval';
+import { DECISION_CORPUS_SURFACES, decisionCorpusSurfaceOf, recordDecisionProposal } from '@/lib/agent/decisions';
+import { AGENT_JOURNAL_SOURCE, recordAgentJournalEntry } from '@/lib/agent/journal';
 import { buildSystemPrompt } from '@/lib/agent/prompts';
 import type { HotelSnapshot } from '@/lib/agent/context';
 import '@/lib/agent/tools/index';
@@ -385,7 +387,83 @@ describe('a thread turn runs the one pipeline', () => {
 });
 
 // ═══════════════════════════════════════════════════════════════════════════
-// 4. WHOSE LINE OF THE COST BOOK PAYS
+// 4. THE LIFE RECORD, ON THIS SURFACE TOO
+// ═══════════════════════════════════════════════════════════════════════════
+
+describe('a thread act leaves the same record a chat act does', () => {
+  test('the journal has no surface to get wrong, so a thread act lands in it', async () => {
+    // The journal writes to activity_log and takes no surface at all, which is
+    // why an approval resolved from a staff thread journals through the exact
+    // same call the chat bar uses. Proved by watching the row it builds.
+    const rows: Record<string, unknown>[] = [];
+    const original = supabaseAdmin.from.bind(supabaseAdmin);
+    // @ts-expect-error monkey-patch the singleton to capture the insert
+    supabaseAdmin.from = (table: string) => ({
+      insert: (row: Record<string, unknown>) => {
+        rows.push({ table, ...row });
+        return Promise.resolve({ error: null });
+      },
+    });
+    try {
+      await recordAgentJournalEntry({
+        propertyId: PID,
+        eventType: 'agent_action_approved',
+        description: 'Opened a work order for room 214.',
+        actorAccountId: UID,
+        actorRole: 'housekeeping',
+        targetType: 'tool',
+        targetId: 'create_work_order',
+      });
+    } finally {
+      supabaseAdmin.from = original;
+    }
+    assert.equal(rows.length, 1, 'the thread act left no line in the hotel timeline');
+    assert.equal(rows[0].table, 'activity_log');
+    assert.equal(rows[0].source, AGENT_JOURNAL_SOURCE);
+    assert.match(String(rows[0].description), /work order/i);
+    assert.ok(!('surface' in rows[0]), 'the journal must not carry a surface it could get wrong');
+  });
+
+  test('the decision corpus refuses a surface it cannot store instead of mislabelling it', async () => {
+    // The trap this closes: the corpus column's CHECK (migration 0350) admits
+    // chat/voice/walkthrough/cron/api and has never been widened. The obvious
+    // way to make a thread proposal land is to pass the nearest allowed value,
+    // and 'chat' is a WRONG ANSWER in the one table whose job is recording where
+    // an act happened. A missing row is a visible gap; a wrong row is not.
+    assert.equal(decisionCorpusSurfaceOf('chat'), 'chat');
+    assert.equal(decisionCorpusSurfaceOf('cron'), 'cron');
+    assert.equal(decisionCorpusSurfaceOf('messages'), null);
+    assert.equal(decisionCorpusSurfaceOf('portfolio'), null);
+    assert.ok(!DECISION_CORPUS_SURFACES.includes('messages' as never));
+
+    // And it must SKIP the write, not attempt one: a patched client that throws
+    // on any use proves nothing reached the database.
+    const original = supabaseAdmin.from.bind(supabaseAdmin);
+    supabaseAdmin.from = (() => {
+      throw new Error('the corpus tried to write an unstorable surface');
+    }) as unknown as typeof supabaseAdmin.from;
+    try {
+      const id = await recordDecisionProposal({
+        propertyId: PID,
+        snapshot: snapshot(),
+        surface: 'messages',
+        actorKind: 'ai_proposed',
+        actorAccountId: UID,
+        actorRole: 'housekeeping',
+        conversationId: null,
+        pendingActionId: null,
+        toolName: 'create_work_order',
+        proposedArgs: { description: 'AC dead' },
+      });
+      assert.equal(id, null);
+    } finally {
+      supabaseAdmin.from = original;
+    }
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// 5. WHOSE LINE OF THE COST BOOK PAYS
 // ═══════════════════════════════════════════════════════════════════════════
 
 describe('the surface picks the Control Center row and nothing else', () => {

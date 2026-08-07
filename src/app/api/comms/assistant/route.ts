@@ -324,6 +324,20 @@ export const POST = defineRoute({
       });
       result = await runAgentStream(iter, runnerCtx, {
         pendingToolCallIds,
+        // The life record, on this surface too. `surface: 'messages'` is carried
+        // rather than borrowed: the journal line has no surface and lands either
+        // way, and the decision-corpus row is skipped honestly by
+        // `decisionCorpusSurfaceOf` until migration 0350's CHECK is widened,
+        // because a thread act filed under 'chat' is a wrong answer in the one
+        // table whose job is saying where an act happened.
+        corpus: {
+          propertyId: ctx.pid,
+          snapshot,
+          accountId: userCtx.accountId,
+          actorRole: userCtx.role,
+          promptVersion: systemPrompt.versionLabel,
+          surface: 'messages',
+        },
         onPendingApproval: makePendingApprovalHandler({
           propertyId: ctx.pid,
           conversationId,
@@ -333,6 +347,7 @@ export const POST = defineRoute({
             snapshot,
             actorRole: userCtx.role,
             promptVersion: systemPrompt.versionLabel,
+            surface: 'messages',
           },
         }),
       });

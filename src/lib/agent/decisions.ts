@@ -30,6 +30,39 @@ export type DecisionActorKind =
   | 'ai_autonomous'
   | 'human_direct';
 
+/**
+ * The surfaces migration 0350's CHECK actually admits.
+ *
+ * `AgentSurface` and this list are NOT the same set and must not be assumed to
+ * be: the type grew 'portfolio' in July and 'messages' in August 2026, and the
+ * column's CHECK has never been widened for either. An insert carrying one of
+ * those is bounced by Postgres, and every writer in this module is fail-soft,
+ * so the row would vanish with a warning nobody reads.
+ *
+ * The failure that actually matters is the OTHER one. The obvious way to make a
+ * new surface's rows land is to pass the nearest allowed value, and for the
+ * "@Staxis" thread assistant that value is 'chat' — which puts a wrong answer
+ * in the one table whose entire job is answering "what was the AI looking at,
+ * and where". A corpus that quietly mislabels where an act happened is worse
+ * than a corpus that is missing it, because the missing row is visible as a gap
+ * and the wrong row is not visible at all.
+ *
+ * So: an unrepresentable surface SKIPS the write and says so once. Widening the
+ * CHECK is a migration, and until somebody makes that decision on purpose this
+ * module refuses to guess on their behalf.
+ */
+export const DECISION_CORPUS_SURFACES = ['chat', 'voice', 'walkthrough', 'cron', 'api'] as const;
+export type DecisionCorpusSurface = (typeof DECISION_CORPUS_SURFACES)[number];
+
+/** The surface as the corpus column can store it, or null when it cannot. */
+export function decisionCorpusSurfaceOf(
+  surface: AgentSurface | 'cron' | 'api',
+): DecisionCorpusSurface | null {
+  return (DECISION_CORPUS_SURFACES as readonly string[]).includes(surface)
+    ? surface as DecisionCorpusSurface
+    : null;
+}
+
 export interface RecordProposalInput {
   propertyId: string;
   /** Used for DINV-2's business date. */
@@ -118,6 +151,12 @@ function businessDateOf(snapshot: HotelSnapshot): string {
 export async function recordDecisionProposal(
   input: RecordProposalInput,
 ): Promise<string | null> {
+  const surface = decisionCorpusSurfaceOf(input.surface);
+  if (!surface) {
+    console.warn('[agent/decisions] proposal not recorded: the corpus cannot store the '
+      + `"${input.surface}" surface yet, and labelling it as another one would be a wrong answer`);
+    return null;
+  }
   try {
     const snapshot = redactSnapshot(input.snapshot);
     const { data, error } = await scopedDb(input.propertyId)
@@ -125,7 +164,7 @@ export async function recordDecisionProposal(
       .insert({
         property_id: input.propertyId,
         business_date: businessDateOf(input.snapshot),
-        surface: input.surface,
+        surface,
         actor_kind: input.actorKind,
         actor_account_id: input.actorAccountId,
         actor_role: input.actorRole,
@@ -179,6 +218,12 @@ export interface RecordAutonomousInput extends Omit<RecordProposalInput, 'actorK
 export async function recordAutonomousDecision(
   input: RecordAutonomousInput,
 ): Promise<void> {
+  const surface = decisionCorpusSurfaceOf(input.surface);
+  if (!surface) {
+    console.warn('[agent/decisions] autonomous act not recorded: the corpus cannot store the '
+      + `"${input.surface}" surface yet, and labelling it as another one would be a wrong answer`);
+    return;
+  }
   try {
     const snapshot = redactSnapshot(input.snapshot);
     const { error } = await scopedDb(input.propertyId)
@@ -186,7 +231,7 @@ export async function recordAutonomousDecision(
       .insert({
         property_id: input.propertyId,
         business_date: businessDateOf(input.snapshot),
-        surface: input.surface,
+        surface,
         actor_kind: 'ai_autonomous' satisfies DecisionActorKind,
         actor_account_id: input.actorAccountId,
         actor_role: input.actorRole,

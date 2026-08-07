@@ -836,7 +836,9 @@ export async function POST(req: NextRequest): Promise<Response> {
             accountId: userCtx.accountId,
             actorRole: userCtx.role,
             promptVersion: systemPrompt.versionLabel,
-            surface: 'chat',
+            // The surface the card was RAISED on, not a literal: a follow-up to
+            // a card approved in a staff thread happened in that thread.
+            surface: approvalSurface,
           },
           // If the follow-up proposes MORE mutations, gate them too (one at a
           // time). Shared factory — same handler both routes use.
@@ -851,6 +853,7 @@ export async function POST(req: NextRequest): Promise<Response> {
               snapshot,
               actorRole: userCtx.role,
               promptVersion: systemPrompt.versionLabel,
+              surface: approvalSurface,
             },
           }),
         });
