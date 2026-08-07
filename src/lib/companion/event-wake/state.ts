@@ -22,6 +22,13 @@
 // hotel rather than its event stream, and a missed note is a note; a runaway
 // loop is a bill.
 //
+// AND THE CLAIM COVERS THE WINDOW, NOT THE COUNTER. It compares on
+// `last_looked_at` and nothing else, so it says nothing about `wakes_today`,
+// which a second sweep can read before the first one has written it. That is
+// why `recordWake` below goes through an atomic increment rather than writing
+// back a number it read: two writers of one counter is two writers of one
+// spend ceiling.
+//
 // ─── NO CURSOR MEANS NO WAKE ───────────────────────────────────────────────
 //
 // If this table is missing (migrations are applied by hand, so the code always
@@ -235,8 +242,83 @@ export async function claimWakeWindow(opts: {
  *
  * `wakesDayNow` is the hotel's OWN calendar day. A day boundary read off UTC
  * would reset the counter in the middle of the night shift.
+ *
+ * ─── AND IT INCREMENTS, IT DOES NOT ASSIGN ─────────────────────────────────
+ *
+ * It used to write `priorWakesToday + 1` from a value read at the top of the
+ * sweep, with no predicate on the prior. `claimWakeWindow` is a compare-and-set
+ * but it compares on `last_looked_at`, which this function never touches, so
+ * the claim does not cover the counter: a second sweep that read the state
+ * after the first one's claim and before its counter write saw the same prior,
+ * claimed its own window successfully, and wrote the same number back. Two
+ * wakes, one counted, and MAX_WAKES_PER_DAY quietly stopped being a ceiling.
+ *
+ * So Postgres does the addition, inside the row lock the UPDATE already takes
+ * (migration 0466). PostgREST cannot express an update whose new value reads
+ * the old one, which is the whole reason there is an RPC here at all.
+ *
+ * THE CODE SHIPS BEFORE THE MIGRATION DOES, so a missing function falls back to
+ * the old read-modify-write rather than losing the count entirely. That is not
+ * a second implementation to keep in step: it is the behaviour that exists
+ * today, kept alive for exactly as long as the gap lasts.
  */
 export async function recordWake(opts: {
+  propertyId: string;
+  wakesDayNow: string;
+  priorWakesDay: string | null;
+  priorWakesToday: number;
+  priorWakesTotal: number;
+  now: Date;
+}): Promise<void> {
+  try {
+    const { error } = await supabaseAdmin.rpc('staxis_companion_record_wake', {
+      p_property_id: opts.propertyId,
+      p_wakes_day: opts.wakesDayNow,
+      p_now: opts.now.toISOString(),
+    });
+    if (!error) return;
+    if (!isMissingFunctionError(error)) {
+      // LOUD. A lost wake count is a lost ceiling, and this is the cheap half
+      // of the spend control. The dollar cap still stands behind it.
+      log.error('[companion/event-wake] the wake counter did not save; only the dollar cap is left', {
+        propertyId: opts.propertyId,
+        err: error.message,
+      });
+      return;
+    }
+    log.warn('[companion/event-wake] the atomic wake counter is not applied yet; counting the old way', {
+      propertyId: opts.propertyId,
+    });
+  } catch (e) {
+    log.error('[companion/event-wake] the wake counter threw; only the dollar cap is left', {
+      propertyId: opts.propertyId,
+      err: e instanceof Error ? e.message : String(e),
+    });
+    return;
+  }
+
+  await recordWakeByReadModifyWrite(opts);
+}
+
+/**
+ * "That function is not there yet."
+ *
+ * PGRST202 is PostgREST failing to find it in its schema cache; 42883 is
+ * Postgres itself. Same shape as `isMissingRelationError` above and local for
+ * the same reason.
+ */
+function isMissingFunctionError(
+  error: { code?: string | null; message?: string | null } | null,
+): boolean {
+  if (!error) return false;
+  const code = error.code ?? '';
+  if (code === 'PGRST202' || code === '42883') return true;
+  const msg = (error.message ?? '').toLowerCase();
+  return msg.includes('does not exist') && msg.includes('staxis_companion_record_wake');
+}
+
+/** The pre-0466 write. Loses a count when two sweeps overlap; see above. */
+async function recordWakeByReadModifyWrite(opts: {
   propertyId: string;
   wakesDayNow: string;
   priorWakesDay: string | null;
@@ -257,8 +339,6 @@ export async function recordWake(opts: {
       })
       .eq('property_id', opts.propertyId);
     if (error) {
-      // LOUD. A lost wake count is a lost ceiling, and this is the cheap half
-      // of the spend control. The dollar cap still stands behind it.
       log.error('[companion/event-wake] the wake counter did not save; only the dollar cap is left', {
         propertyId: opts.propertyId,
         err: error.message,
