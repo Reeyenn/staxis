@@ -50,6 +50,7 @@ import type { PGlite } from '@electric-sql/pglite';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { POST as worklistAssignPost } from '@/app/api/worklist/assign/route';
 import { POST as worklistCompletePost } from '@/app/api/worklist/complete/route';
+import { GET as homeSummaryGet } from '@/app/api/home/summary/route';
 import { gatherWorklist } from '@/lib/worklist/core';
 import { fromWorkOrderRow, fromPreventiveRow } from '@/lib/db-mappers';
 import { PREVENTIVE_FOLLOW_UP_DAYS } from '@/lib/maintenance/preventive-rest';
@@ -140,6 +141,18 @@ async function openWorkOrder(description = 'Pool light out', pid = PID_A1): Prom
     [pid, description],
   );
   return row!.id;
+}
+
+/** The Maintenance line the home screen would draw for this hotel. */
+async function homeMaintenanceLine(pid = PID_A1): Promise<string> {
+  const res = await homeSummaryGet(new NextRequest(
+    `http://t/api/home/summary?pid=${pid}`,
+    { method: 'GET', headers: { authorization: 'Bearer row-menu-test-token' } },
+  ));
+  const parsed = (await res.json()) as { data?: { tiles?: { maintenance?: { en?: string } } } };
+  const line = parsed.data?.tiles?.maintenance?.en;
+  assert.ok(typeof line === 'string', `home summary gave no maintenance line: ${JSON.stringify(parsed)}`);
+  return line;
 }
 
 /** The rows the Staxis list would actually draw for the general manager. */
@@ -638,6 +651,44 @@ describe('a work order somebody has already settled', () => {
     assert.equal(done.status, 200, JSON.stringify(done.body));
     const row = await one<{ status: string }>('select status from work_orders where id = $1', [id]);
     assert.equal(row?.status, 'resolved');
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// 2c. The rest of the app has to agree that it is over
+//
+// 'closed' was added as a SECOND settled status, and the readers that already
+// asked `status !== 'resolved'` were not told. Every one of them then counted
+// a ticket somebody had judged a non issue as work still outstanding — a number
+// that only ever grows, on screens where a manager is deciding what to do next.
+// ═══════════════════════════════════════════════════════════════════════════
+
+describe('a work order closed as not actually a problem', () => {
+  test('stops being counted as open on the home screen', async () => {
+    await openWorkOrder('Lobby light flickering');
+    const closed = await openWorkOrder('Guest thought the ice machine was broken');
+    assert.equal((await settle('workorder', closed, 'not_an_issue')).status, 200);
+
+    const line = await homeMaintenanceLine();
+    assert.match(line, /^1 open/, `the home tile said "${line}" over one real open ticket`);
+  });
+
+  test('and a hotel whose only ticket was a non issue reads as clear', async () => {
+    const only = await openWorkOrder('Thought the pool heater was off');
+    assert.equal((await settle('workorder', only, 'not_an_issue')).status, 200);
+    assert.equal(await homeMaintenanceLine(), 'No open work orders');
+  });
+
+  test('but waiting on parts still counts, because it is still live work', async () => {
+    // The other side of the same line. A deferral is not an ending, and a home
+    // screen that stopped counting stalled jobs would hide the ones most worth
+    // chasing.
+    const stalled = await openWorkOrder('Ice machine compressor');
+    assert.equal(
+      (await settle('workorder', stalled, 'waiting', { reason: 'compressor back ordered' })).status,
+      200,
+    );
+    assert.match(await homeMaintenanceLine(), /^1 open/);
   });
 });
 

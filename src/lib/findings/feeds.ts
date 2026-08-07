@@ -30,6 +30,7 @@ import { gatherOperationalSignals } from '@/lib/agent/operational-signals';
 import { checkOperationalAlerts } from '@/lib/agent/nudges';
 import { runRulesEngineForProperty, type PropertyRunResult } from '@/lib/rules-engine';
 import { isSectionEnabled, type EnabledSections } from '@/lib/sections/registry';
+import { workOrderIsSettled } from '@/lib/db-mappers';
 import { addDaysInTz, propertyLocalToday } from '@/lib/schedule/local-date';
 
 import {
@@ -353,10 +354,13 @@ const loadRoomWorkOrderHistory: FeedLoader<'room_work_order_history'> = async (e
       lastDate: date,
     };
     current.total += 1;
-    // 'submitted' / 'assigned' / 'in_progress' all read as open on the board
-    // (db-mappers.ts STATUS_FROM_DB); only 'resolved' is done. An absent status
-    // is an open ticket, matching the mapper's own fallback.
-    if (String(row.status ?? 'submitted') !== 'resolved') current.stillOpen += 1;
+    // 'submitted' / 'assigned' / 'in_progress' / 'deferred' all read as open on
+    // the board (db-mappers.ts STATUS_FROM_DB); 'resolved' AND 'closed' are
+    // both done. An absent status is an open ticket, matching the mapper's own
+    // fallback. Asked as `!== 'resolved'`, this counted every ticket somebody
+    // had judged a non issue as work still outstanding at the location, and the
+    // card said so out loud.
+    if (!workOrderIsSettled(row.status ?? 'submitted')) current.stillOpen += 1;
     if (date > current.lastDate) current.lastDate = date;
     byLocation.set(location, current);
   }
@@ -516,9 +520,10 @@ const loadEquipmentWorkOrderHistory: FeedLoader<'equipment_work_order_history'> 
     countedDates.push(date);
     counted += 1;
     asset.total += 1;
-    // Same reading of the board as the per-location feed: only 'resolved' is
-    // done, and an absent status is an open ticket (db-mappers.ts's own default).
-    if (String(row.status ?? 'submitted') !== 'resolved') asset.stillOpen += 1;
+    // Same reading of the board as the per-location feed: 'resolved' and
+    // 'closed' are both done, and an absent status is an open ticket
+    // (db-mappers.ts's own default).
+    if (!workOrderIsSettled(row.status ?? 'submitted')) asset.stillOpen += 1;
     if (date > asset.lastDate) asset.lastDate = date;
   }
 

@@ -23,8 +23,9 @@
  *   dashboard      — today_property_counts_v1 RPC (in_house / total_rooms)
  *   housekeeping   — room_work_plan_v1 for today's business_date
  *   communications — complaints with status open / in_progress
- *   maintenance    — work_orders not yet 'resolved' (legacy enum:
- *                    submitted/assigned/in_progress all mean open;
+ *   maintenance    — work_orders not yet settled (legacy enum:
+ *                    submitted/assigned/in_progress/deferred all mean open,
+ *                    'resolved' and 'closed' both mean off the board;
  *                    severity 'urgent' is the "high" bucket)
  *   inventory      — counted inventory current_stock vs par_level (same rule as Inventory)
  *   staff          — scheduled_shifts assigned for today (kind='shift')
@@ -38,6 +39,7 @@ import { requireSession, userHasPropertyAccess } from '@/lib/api-auth';
 import { ok, err, ApiErrorCode } from '@/lib/api-response';
 import { getOrMintRequestId, log } from '@/lib/log';
 import { supabaseAdmin } from '@/lib/supabase-admin';
+import { workOrderIsSettled } from '@/lib/db-mappers';
 import { validateUuid } from '@/lib/api-validate';
 import { getPropertyOpsConfig } from '@/lib/property-config';
 import { getMonthRevenue } from '@/lib/financials/revenue';
@@ -366,17 +368,21 @@ async function communicationsTile(pid: string): Promise<TileLine> {
 
 /** maintenance — open work orders + how many are urgent. */
 async function maintenanceTile(pid: string): Promise<TileLine> {
-  // One read, count severities in JS. DB status is the legacy enum:
-  // anything except 'resolved' reads as open (see db-mappers.ts).
+  // One read, filter and count in JS. DB status is the legacy enum, and TWO of
+  // its values mean the ticket is off the board: 'resolved' (somebody fixed it)
+  // and 'closed' (somebody looked and it was not actually a problem). Asked as
+  // a bare `.neq('status','resolved')`, this tile counted every non issue the
+  // hotel had ever closed as an open work order, and the number only ever grew.
+  // The settled set is read from db-mappers so it cannot drift from the board's.
   const { data, error } = await supabaseAdmin
     .from('work_orders')
-    .select('severity')
+    .select('severity, status')
     .eq('property_id', pid)
     .neq('status', 'resolved')
     .limit(500);
   if (error) throw new Error(error.message);
 
-  const rows = data ?? [];
+  const rows = (data ?? []).filter((r) => !workOrderIsSettled((r as { status?: unknown }).status));
   const open = rows.length;
   const high = rows.filter((r) => (r as { severity?: unknown }).severity === 'urgent').length;
 

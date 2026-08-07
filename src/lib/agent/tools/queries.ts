@@ -39,6 +39,7 @@ import { getPropertyFeedStatus } from '@/lib/pms-feed-status-server';
 import { countsTrusted, isDataPending } from '@/lib/pms/feed-status';
 import { moneyVisibleToRole } from '../lenses';
 import { roomNumberFromLocation } from '@/components/concourse/target-chip';
+import { workOrderIsSettled } from '@/lib/db-mappers';
 import type { Room } from '@/types';
 
 /**
@@ -594,7 +595,11 @@ registerTool<{ room?: string; item?: string; equipmentId?: string; windowDays?: 
     const tickets = filtered.slice(0, max).map((r) => {
       const openedAt = typeof r.created_at === 'string' ? r.created_at : null;
       const closedAt = typeof r.resolved_at === 'string' ? r.resolved_at : null;
-      const done = String(r.status ?? 'submitted') === 'resolved';
+      // Two stored statuses take a ticket off the board: 'resolved' (fixed) and
+      // 'closed' (looked at, not actually a problem). Asked as `=== 'resolved'`
+      // this reported every non issue as still open, and the companion repeated
+      // it as fact.
+      const done = workOrderIsSettled(r.status ?? 'submitted');
       // Days-open is computed here, in code, for the same reason every other
       // number in this catalog is: a model subtracting two ISO timestamps in
       // prose is right until the month rolls over.
@@ -627,7 +632,7 @@ registerTool<{ room?: string; item?: string; equipmentId?: string; windowDays?: 
       };
     });
 
-    const stillOpen = filtered.filter((r) => String(r.status ?? 'submitted') !== 'resolved').length;
+    const stillOpen = filtered.filter((r) => !workOrderIsSettled(r.status ?? 'submitted')).length;
 
     return {
       ok: true,
