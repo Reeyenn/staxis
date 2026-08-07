@@ -504,32 +504,6 @@ export interface LaundryLoads {
   comforters: number;
 }
 
-export interface DailyLog {
-  date: string;                 // YYYY-MM-DD
-  hotelId?: string;             // propertyId (denormalized for convenience)
-  occupied: number;
-  checkouts: number;
-  twoBedCheckouts: number;
-  stayovers: number;
-  vips: number;
-  earlyCheckins: number;
-  roomMinutes: number;
-  publicAreaMinutes: number;
-  laundryMinutes: number;
-  totalMinutes: number;
-  recommendedStaff: number;
-  actualStaff: number;
-  hourlyWage?: number;          // wage used for this day's calculations
-  laborCost: number;
-  laborSaved: number;
-  startTime: string;
-  completionTime: string;
-  publicAreasDueToday: string[];
-  laundryLoads: LaundryLoads;
-  roomsCompleted?: number;      // rooms marked clean by end of day
-  avgTurnaroundMinutes?: number; // average room turnaround time
-}
-
 // ─── Schedule Calculation Result ───────────────────────────────────────────
 
 export interface ScheduleResult {

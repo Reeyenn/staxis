@@ -29,7 +29,6 @@ import type {
   PublicArea,
   LaundryCategory,
   Room,
-  DailyLog,
   WorkOrder,
   WorkOrderPriority,
   WorkOrderStatus,
@@ -505,47 +504,6 @@ export function fromLaundryRow(r: Record<string, unknown>): LaundryCategory {
     stayoverFactor: Number(r.stayover_factor ?? 0),
     roomEquivsPerLoad: Number(r.room_equivs_per_load ?? 1),
     minutesPerLoad: Number(r.minutes_per_load ?? 60),
-  };
-}
-
-// ─── Daily log ──────────────────────────────────────────────────────────────
-
-export function fromDailyLogRow(r: Record<string, unknown>): DailyLog {
-  // Defensive parse for the JSONB laundry_loads column — accept the shape
-  // we wrote, fall back to zeros for anything else.
-  const ll = r.laundry_loads;
-  const laundryLoads: DailyLog['laundryLoads'] =
-    typeof ll === 'object' && ll !== null && !Array.isArray(ll)
-      ? {
-          towels: parseNumberField((ll as Record<string, unknown>).towels) ?? 0,
-          sheets: parseNumberField((ll as Record<string, unknown>).sheets) ?? 0,
-          comforters: parseNumberField((ll as Record<string, unknown>).comforters) ?? 0,
-        }
-      : { towels: 0, sheets: 0, comforters: 0 };
-  return {
-    date: String(r.date ?? ''),
-    hotelId: String(r.property_id ?? ''),
-    occupied: Number(r.occupied ?? 0),
-    checkouts: Number(r.checkouts ?? 0),
-    twoBedCheckouts: Number(r.two_bed_checkouts ?? 0),
-    stayovers: Number(r.stayovers ?? 0),
-    vips: Number(r.vips ?? 0),
-    earlyCheckins: Number(r.early_checkins ?? 0),
-    roomMinutes: Number(r.room_minutes ?? 0),
-    publicAreaMinutes: Number(r.public_area_minutes ?? 0),
-    laundryMinutes: Number(r.laundry_minutes ?? 0),
-    totalMinutes: Number(r.total_minutes ?? 0),
-    recommendedStaff: Number(r.recommended_staff ?? 0),
-    actualStaff: Number(r.actual_staff ?? 0),
-    hourlyWage: r.hourly_wage == null ? undefined : Number(r.hourly_wage),
-    laborCost: Number(r.labor_cost ?? 0),
-    laborSaved: Number(r.labor_saved ?? 0),
-    startTime: String(r.start_time ?? ''),
-    completionTime: String(r.completion_time ?? ''),
-    publicAreasDueToday: parseArrayField(r.public_areas_due_today, parseStringField),
-    laundryLoads,
-    roomsCompleted: r.rooms_completed == null ? undefined : Number(r.rooms_completed),
-    avgTurnaroundMinutes: r.avg_turnaround_minutes == null ? undefined : Number(r.avg_turnaround_minutes),
   };
 }
 
