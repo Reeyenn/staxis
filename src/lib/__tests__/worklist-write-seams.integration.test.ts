@@ -1102,7 +1102,14 @@ describe('a second screen cannot overwrite an answer that already landed', () =>
     assert.equal((await settle(id, 'done')).ok, true, 'the second tap is not a failure');
     const second = await settledRow(id);
     assert.equal(second!.status, 'done');
-    assert.equal(second!.completed_at, first!.completed_at, 'the first answer is the true one');
+    // Through the driver these come back as Date instances, so compare the
+    // instant rather than the object: two Dates holding the same millisecond
+    // are not the same reference and strictEqual would fail on a passing case.
+    assert.equal(
+      new Date(second!.completed_at!).getTime(),
+      new Date(first!.completed_at!).getTime(),
+      'the first answer is the true one',
+    );
   });
 });
 
