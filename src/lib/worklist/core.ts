@@ -12,9 +12,9 @@
 // Source matrix (build to this, sources are NOT uniform):
 //   task        comms_tasks       status='open'                 complete ✓  assign(staff) ✓
 //   complaint   complaints        status in (open,in_progress)  complete ✓  assign(staff) ✓
-//   workorder   work_orders       DB status != 'resolved'       complete ✓  assign(lane)  ✓
+//   workorder   work_orders       DB status not settled         complete ✓  assign(staff|lane) ✓
 //   inspection  buildInspectionQueue(today)                     deep-link   (no assign)
-//   pm          preventive_tasks  overdue/soon (derived)         complete ✓  (no assign)
+//   pm          preventive_tasks  overdue/soon, not resting      complete ✓  (no assign)
 //   reminder    agent_reminders   pending + due by end of today  complete ✓  (no assign)
 //   approval    join_requests + time_off_requests, status='pending'
 //                                                                deep-link   (no assign)
@@ -45,6 +45,8 @@ import { validPropertyTimezone } from '@/lib/property-timezone';
 import { log } from '@/lib/log';
 import { buildInspectionQueue } from '@/lib/housekeeping/inspection-queue';
 import { COMPLAINT_OVERDUE_HOURS, COMPLAINT_OVERDUE_HOURS_HIGH } from '@/lib/complaints-shared';
+import { workOrderIsSettled } from '@/lib/db-mappers';
+import { preventiveRestOf } from '@/lib/maintenance/preventive-rest';
 import { isAssignable, type AssignableStaffRow } from './assignable';
 import { NEW_ON_LIST_FLOOR_DAYS } from '@/lib/feed/one-list';
 import type { AssignedByMeItem, WorklistItem, WorklistPriority, WorklistViewer } from './types';
@@ -315,13 +317,18 @@ export async function gatherWorklist(pid: string, opts: GatherOptions = {}): Pro
       .limit(QUERY_ROW_CAP),
     tasksOnly ? emptyRes() : supabaseAdmin
       .from('work_orders')
-      .select('id, room_number, description, severity, status, created_at')
+      .select('id, room_number, description, severity, status, notes, assigned_to, assigned_name, created_at')
       .eq('property_id', pid)
+      // `resolved` is filtered in the query because it is the overwhelming bulk
+      // of the table at a hotel that has been running a while. The second ending
+      // (`closed`, from "Not actually a problem") is filtered in JS below: it is
+      // rare, and a two-value NOT IN written as a PostgREST expression is a
+      // string nobody can read and one typo away from filtering nothing.
       .neq('status', 'resolved')
       .limit(QUERY_ROW_CAP),
     tasksOnly ? emptyRes() : supabaseAdmin
       .from('preventive_tasks')
-      .select('id, name, area, frequency_days, last_completed_at, created_at')
+      .select('id, name, area, frequency_days, last_completed_at, called_at, skipped_at, created_at')
       .eq('property_id', pid)
       .limit(QUERY_ROW_CAP),
     // Inspection queue is derived (rooms clean-but-uninspected / failed-re-cleaned).
@@ -482,30 +489,48 @@ export async function gatherWorklist(pid: string, opts: GatherOptions = {}): Pro
 
   // ── Work orders (legacy work_orders — the Maintenance UI's) ──────────────────
   for (const r of (workorderRes.data ?? []) as Record<string, unknown>[]) {
+    // The second ending. See the note on the query above.
+    if (workOrderIsSettled(r.status)) continue;
     const sev = r.severity;
-    const priority: WorklistPriority = sev === 'urgent' ? 'urgent' : sev === 'low' ? 'low' : 'normal';
     const room = (r.room_number as string | null) ?? null;
+    // "Waiting on parts": somebody has said out loud why this is not moving.
+    // The row STAYS — a defer that took the ticket off the list would turn a
+    // stalled job into a forgotten one — but it stops competing with live work.
+    const waiting = r.status === 'deferred';
+    const waitingReason = waiting
+      ? (typeof r.notes === 'string' && r.notes.trim() ? r.notes.trim() : null)
+      : null;
+    const priority: WorklistPriority = waiting
+      ? 'low'
+      : sev === 'urgent' ? 'urgent' : sev === 'low' ? 'low' : 'normal';
+    const assignedStaffId = (r.assigned_to as string | null) ?? null;
     items.push({
       id: `workorder:${r.id}`,
       sourceType: 'workorder',
       sourceId: String(r.id),
       title: String(r.description ?? '') || 'Work order',
       location: room,
-      assigneeStaffId: null,
-      assigneeName: null,
+      // Who is holding it, once somebody has been given it. The columns have
+      // existed since 0001 and nothing wrote them until "Give it to someone
+      // else"; the NAME is the one stored on the row rather than a second staff
+      // lookup, because it is what the assign seam derived server-side at the
+      // moment of the hand-off.
+      assigneeStaffId: assignedStaffId,
+      assigneeName: (r.assigned_name as string | null) ?? null,
       dept: 'maintenance',
       dueDate: null,
-      status: 'open',
+      status: waiting ? 'waiting' : 'open',
       priority,
       propertyId: pid,
       overdue: false,
       canComplete: true,
-      canAssign: true,   // priority lane (no per-staff column on work_orders)
+      canAssign: true,
       deepLink: WORKLIST_DEEPLINK.workorder,
       createdAt: (r.created_at as string | null) ?? null,
       fromLabel: null,
       amountCents: null,
       createdByStaffId: null,
+      waitingReason,
     });
   }
 
@@ -547,6 +572,19 @@ export async function gatherWorklist(pid: string, opts: GatherOptions = {}): Pro
     // Never completed → due now. Otherwise next-due = last + frequency.
     const nextDueMs = lastCompleted ? Date.parse(lastCompleted) + freqDays * 86_400_000 : now;
     if (nextDueMs > endOfTodayMs) continue;   // not due yet
+    // ── the two rests ────────────────────────────────────────────────────
+    // A schedule somebody has called about, or whose occurrence they have
+    // skipped, is quiet. This list used to ignore both: "Somebody's been
+    // called" silenced the card and left this row sitting there saying the
+    // same thing, which is the bug that made the button feel like it did
+    // nothing. Checked AFTER the due gate, so a stale flag on a schedule that
+    // is not due cannot resurrect a row about nothing.
+    if (preventiveRestOf({
+      calledAt: (r.called_at as string | null) ?? null,
+      skippedAt: (r.skipped_at as string | null) ?? null,
+      frequencyDays: freqDays,
+      nowMs: now,
+    }) !== null) continue;
     const overdue = nextDueMs < now;
     items.push({
       id: `pm:${r.id}`,
@@ -569,6 +607,7 @@ export async function gatherWorklist(pid: string, opts: GatherOptions = {}): Pro
       fromLabel: null,
       amountCents: null,
       createdByStaffId: null,
+      cadenceDays: Number.isFinite(freqDays) && freqDays >= 1 ? Math.round(freqDays) : null,
     });
   }
 

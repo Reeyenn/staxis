@@ -15,6 +15,29 @@
 //   inspection  → 400: must be passed/failed in the inspect flow (deep-link)
 //   approval    → 400: a decision is made on its own screen, with its own facts
 //
+// ─── the situations a maintenance row is actually in ───────────────────────
+//
+// Done was the ONLY button on a preventive schedule and on a work order, and
+// real life has more answers than that. Each of the four below writes a fact
+// that already had a home in the maintenance core; none of them is a new kind
+// of state invented for a menu.
+//
+//   pm         called        preventive_tasks.called_at/called_by (0366). The
+//                            same column the due card's "Somebody's been
+//                            called" writes, so the card and the row rest
+//                            together instead of one silencing the other.
+//   pm         skip          preventive_tasks.skipped_at/skipped_by (0462).
+//                            THIS occurrence, put down without the work being
+//                            done. last_completed_at is deliberately untouched:
+//                            moving it would write a service into this hotel's
+//                            record that nobody performed.
+//   workorder  waiting       status='deferred' + the reason in `notes`. The row
+//                            STAYS on the list, sunk rather than removed.
+//   workorder  not_an_issue  status='closed'. Off the board, and recorded as a
+//                            non-issue rather than as a repair — which is the
+//                            entire reason 'closed' and 'resolved' are two
+//                            words (WORK_ORDER_SETTLED_STATUSES).
+//
 // ─── "Can't do this" ───────────────────────────────────────────────────────
 // `outcome: 'cant'` needs a one-line reason and REFUSES without one. The whole
 // value of the state is the sentence that comes with it: an assigner who learns
@@ -77,6 +100,47 @@ interface Body { pid?: string; sourceType?: string; sourceId?: string; outcome?:
  *  enough that nobody pastes an essay into a list row. */
 export const MAX_BLOCKED_REASON = 400;
 
+/**
+ * Every ending a row on the Staxis list can be given.
+ *
+ * ONE enum rather than a per-source union, because the gate below is a switch
+ * on sourceType anyway and a second enum would be a second place for the two
+ * lists to disagree about what a work order may be told. Which outcomes each
+ * source actually accepts is stated once, in OUTCOME_SOURCES.
+ */
+const OUTCOMES = [
+  'done', 'cant', 'done_on_due', 'skip', 'called', 'waiting', 'not_an_issue',
+] as const;
+type Outcome = typeof OUTCOMES[number];
+
+/**
+ * Which sources may be given which ending, and the refusal when they may not.
+ *
+ * Stated as data so the answer to "can a work order be marked 'did it
+ * yesterday'?" is one line to read rather than four `if`s to follow, and so the
+ * per-type option sets the menu renders can be checked against the same table
+ * in a test. A row type that never offers an ending must also be REFUSED it:
+ * a menu is not a guard, and these ids arrive over HTTP.
+ */
+export const OUTCOME_SOURCES: Readonly<Record<Outcome, { sources: readonly string[]; refusal: string }>> = {
+  done: { sources: ['task', 'complaint', 'workorder', 'pm', 'reminder'], refusal: 'this one cannot be completed from the list' },
+  // The three follow-through endings are all about a to-do specifically. A work
+  // order has no assigner waiting on a receipt and no per-day instance to credit.
+  cant: { sources: ['task'], refusal: 'only a to-do can be marked as one you could not do' },
+  done_on_due: { sources: ['task'], refusal: 'only a to-do can be recorded this way' },
+  // Skip belongs to both: a to-do that stopped needing doing, and an upkeep
+  // occurrence a manager is deliberately not doing this cycle. They write to
+  // different tables and mean the same sentence.
+  skip: { sources: ['task', 'pm'], refusal: 'only a to-do or an upkeep schedule can be skipped' },
+  called: { sources: ['pm'], refusal: 'only an upkeep schedule records that somebody has been called' },
+  waiting: { sources: ['workorder'], refusal: 'only a work order can be marked as waiting on parts' },
+  not_an_issue: { sources: ['workorder'], refusal: 'only a work order can be closed as not a problem' },
+};
+
+/** The most a "waiting on parts" note can be. Same bar as a refusal reason:
+ *  one line somebody reads on a list row, not a paragraph. */
+export const MAX_WAITING_REASON = 200;
+
 export async function POST(req: NextRequest): Promise<Response> {
   let body: Body;
   try { body = (await req.json()) as Body; } catch { body = {}; }
@@ -92,30 +156,34 @@ export async function POST(req: NextRequest): Promise<Response> {
   const sourceType = typeV.value!;
   const sourceId = idV.value!;
 
-  const outcomeV = validateEnum(body.outcome ?? 'done', ['done', 'cant', 'done_on_due', 'skip'] as const, 'outcome');
+  const outcomeV = validateEnum(body.outcome ?? 'done', OUTCOMES, 'outcome');
   if (outcomeV.error) return err(outcomeV.error, { requestId, status: 400, code: ApiErrorCode.ValidationFailed, headers });
   const outcome = outcomeV.value!;
 
-  // The three follow-through endings are all about a to-do specifically. A work
-  // order or a preventive task has no assigner waiting on a receipt and no
-  // per-day instance to credit, so offering them these would be offering a
-  // record nothing reads.
-  if ((outcome === 'done_on_due' || outcome === 'skip') && sourceType !== 'task') {
-    return err('only a to-do can be recorded this way', {
-      requestId, status: 400, code: ApiErrorCode.ValidationFailed, headers,
-    });
+  // One table, checked once. A row type that never offers an ending must also
+  // be refused it: the menu is not the guard.
+  const allowed = OUTCOME_SOURCES[outcome];
+  if (!allowed.sources.includes(sourceType)) {
+    return err(allowed.refusal, { requestId, status: 400, code: ApiErrorCode.ValidationFailed, headers });
   }
 
   let reason: string | null = null;
   if (outcome === 'cant') {
-    if (sourceType !== 'task') {
-      return err('only a to-do can be marked as one you could not do', {
-        requestId, status: 400, code: ApiErrorCode.ValidationFailed, headers,
-      });
-    }
     const reasonV = validateString(body.reason, { max: MAX_BLOCKED_REASON, label: 'reason' });
     if (reasonV.error || !reasonV.value!.trim()) {
       return err('say in one line why you could not do it', {
+        requestId, status: 400, code: ApiErrorCode.ValidationFailed, headers,
+      });
+    }
+    reason = reasonV.value!.trim();
+  }
+  // "Waiting on parts" without the sentence is just a row that went quiet. The
+  // reason IS the feature: it is what stops the next person having to go and
+  // ask, and it is the only thing the deferred row will say for itself.
+  if (outcome === 'waiting') {
+    const reasonV = validateString(body.reason, { max: MAX_WAITING_REASON, label: 'reason' });
+    if (reasonV.error || !reasonV.value!.trim()) {
+      return err('say in one line what it is waiting on', {
         requestId, status: 400, code: ApiErrorCode.ValidationFailed, headers,
       });
     }
@@ -237,19 +305,52 @@ export async function POST(req: NextRequest): Promise<Response> {
       }
       case 'workorder': {
         if (!(await existsScoped('work_orders', sourceId, pid))) return notFound(requestId, headers);
+        const nowIso = new Date().toISOString();
+        // Three endings, and the difference between them is a fact about the
+        // building rather than a shade of the same one.
+        const patch: Record<string, unknown> = outcome === 'waiting'
+          // NOT an ending at all: the ticket is still live work and still on the
+          // list. `notes` carries the sentence, which is the only thing the
+          // deferred row has to say for itself.
+          ? { status: 'deferred', notes: reason }
+          : outcome === 'not_an_issue'
+            // Off the board, recorded as a non-issue. `resolved_at` is stamped
+            // because it is when the ticket was settled, and the STATUS is what
+            // says it was not a repair. `completed_by_name` is who made that
+            // call, which is the one thing an auditor would want to know.
+            ? { status: 'closed', resolved_at: nowIso, completed_by_name: ctx.displayName }
+            : { status: 'resolved', resolved_at: nowIso, completed_by_name: ctx.displayName };
         const { error } = await supabaseAdmin
           .from('work_orders')
-          .update({ status: 'resolved', resolved_at: new Date().toISOString(), completed_by_name: ctx.displayName })
+          .update(patch)
           .eq('id', sourceId).eq('property_id', pid);
         if (error) return fail(requestId, headers, error.message);
         break;
       }
       case 'pm': {
         if (!(await existsScoped('preventive_tasks', sourceId, pid))) return notFound(requestId, headers);
-        // Recurring: stamping last_completed_at resets the cycle (not terminal).
+        const nowIso = new Date().toISOString();
+        // Three answers about a job out in the building, and only one of them
+        // is a completion. The other two deliberately leave `last_completed_at`
+        // alone: recording either as a completion would restart the clock on a
+        // job nobody performed and then stay silent for a full cadence about it.
+        //
+        // Each rest CLEARS THE OTHER. Somebody who skips this occurrence is no
+        // longer waiting on a call, and somebody who says a vendor is coming has
+        // stopped skipping it. Leaving both set would be a schedule resting for
+        // two different reasons at once, which is not a thing that can be true.
+        const patch: Record<string, unknown> = outcome === 'called'
+          ? { called_at: nowIso, called_by: ctx.displayName, skipped_at: null, skipped_by: null }
+          : outcome === 'skip'
+            ? { skipped_at: nowIso, skipped_by: ctx.displayName, called_at: null, called_by: null }
+            // Recurring: stamping last_completed_at resets the cycle (not
+            // terminal). The database trigger from 0366 clears called_at on the
+            // way through, and a stale skipped_at is inert by construction
+            // (see lib/maintenance/preventive-rest.ts).
+            : { last_completed_at: nowIso, last_completed_by: ctx.displayName };
         const { error } = await supabaseAdmin
           .from('preventive_tasks')
-          .update({ last_completed_at: new Date().toISOString(), last_completed_by: ctx.displayName })
+          .update(patch)
           .eq('id', sourceId).eq('property_id', pid);
         if (error) return fail(requestId, headers, error.message);
         break;
@@ -280,7 +381,11 @@ export async function POST(req: NextRequest): Promise<Response> {
           requestId, status: 400, code: ApiErrorCode.ValidationFailed, headers,
         });
     }
-    return ok({ completed: true, sourceType, outcome }, { requestId, headers });
+    // `recorded`, not `completed`. Four of the seven endings do not complete
+    // anything — a deferral, a rest and a refusal are all things that happened
+    // to the row without the work being done, and a field that called them
+    // completions would be the same small lie the endings exist to avoid.
+    return ok({ recorded: true, sourceType, outcome }, { requestId, headers });
   } catch (e) {
     log.error('[worklist] complete failed', { requestId, pid, sourceType, err: errToString(e) });
     return err('Internal server error', { requestId, status: 500, code: ApiErrorCode.InternalError, headers });

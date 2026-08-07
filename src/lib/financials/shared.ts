@@ -10,6 +10,8 @@
 // parseDollarsToCents(). Never multiply/divide cents by a float and store it.
 // ════════════════════════════════════════════════════════════════════════════
 
+import { dollarsToCents } from '@/lib/format';
+
 // ── Departments (the budget dimension) ──────────────────────────────────────
 export const DEPARTMENTS = [
   'rooms',
@@ -245,21 +247,28 @@ export function formatCentsCompact(cents: number | null | undefined): string {
 /**
  * Parse a user-entered dollar string into integer cents. Accepts "$1,234.56",
  * "1234.5", "1,000". Returns null for blank/invalid input. Rounds to the
- * nearest cent (so 10.005 → 1001) — the single rounding boundary in the system,
- * applied ONCE at the input edge, never during aggregation.
+ * nearest cent (so 10.005 → 1001) — applied ONCE at the input edge, never
+ * during aggregation.
+ *
+ * The strict input grammar below is this module's own (it deliberately rejects
+ * shapes the more permissive parsers accept). The ARITHMETIC is the app-wide
+ * canonical one. That is not a cosmetic change: the previous
+ * `Math.round(dollars * 100)` did not do what the line above promises —
+ * `10.005 * 100` is 1000.4999999999999 in binary floating point, so it returned
+ * 1000, not the documented 1001. Delegating makes the documented behavior true.
  */
 export function parseDollarsToCents(input: string | number | null | undefined): number | null {
   if (input == null) return null;
   if (typeof input === 'number') {
     if (!Number.isFinite(input)) return null;
-    return Math.round(input * 100);
+    return dollarsToCents(input);
   }
   const cleaned = input.replace(/[$,\s]/g, '');
   if (cleaned === '' || cleaned === '.' || cleaned === '-') return null;
   if (!/^-?\d*\.?\d*$/.test(cleaned)) return null;
   const dollars = Number(cleaned);
   if (!Number.isFinite(dollars)) return null;
-  return Math.round(dollars * 100);
+  return dollarsToCents(dollars);
 }
 
 // ── Budget status (70/30 color system, inverted for spend) ──────────────────

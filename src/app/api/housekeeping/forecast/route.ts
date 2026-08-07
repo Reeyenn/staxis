@@ -47,6 +47,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { requireSession, userHasPropertyAccess } from '@/lib/api-auth';
 import { ok, err, ApiErrorCode } from '@/lib/api-response';
+import { dollarsToCents } from '@/lib/format';
 import { getOrMintRequestId, log } from '@/lib/log';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { validateUuid, validateEnum } from '@/lib/api-validate';
@@ -376,7 +377,7 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
     for (const row of wageRows) {
       const dollars = row.hourly_wage;
       const valid = typeof dollars === 'number' && Number.isFinite(dollars) && dollars > 0;
-      wageByStaffId.set(row.id, valid ? Math.round(dollars * 100) : null);
+      wageByStaffId.set(row.id, valid ? dollarsToCents(dollars) : null);
     }
     const anyStaffWageUnset = wageRows.some(r => {
       const d = r.hourly_wage;

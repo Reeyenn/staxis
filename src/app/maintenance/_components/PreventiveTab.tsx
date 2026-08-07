@@ -87,6 +87,23 @@ function calledLine(t: PreventiveTask, es: boolean): string | null {
 
   return who ? `${who} called somebody ${when}` : `Somebody was called ${when}`;
 }
+
+// ── "skip this one" ────────────────────────────────────────────────────────
+//
+// The third rest state (0462), set from the Staxis list's per-row menu, and it
+// is on the card for a reason that matters more than the called line's: a
+// skipped occurrence DISAPPEARS from the Staxis list for a full cadence, so if
+// this board did not say so there would be nowhere at all a person could see
+// that somebody had put the job down. It is deliberately NOT a band either —
+// the task is still late, `last_completed_at` has not moved, and the Overdue
+// column is still telling the truth about it.
+function skippedLine(t: PreventiveTask): string | null {
+  if (!t.skippedAt) return null;
+  const days = Math.max(0, daysBetween(t.skippedAt, new Date()));
+  const who = t.skippedBy?.trim();
+  const when = days === 0 ? 'today' : days === 1 ? 'yesterday' : `${days} days ago`;
+  return who ? `${who} skipped this one ${when}` : `This one was skipped ${when}`;
+}
 // Editor draft (count text + unit + optional last-done ISO date) → concrete
 // cadence numbers. Shared by the New-task and edit modals, which previously
 // each re-derived it inline. An empty `last` previews from today — callers
@@ -489,6 +506,13 @@ export function PreventiveTab() {
                       {calledLine(t, es) && (
                         <span style={{ fontFamily: FONT_SANS, fontSize: 12, color: '#8A5A22', lineHeight: 1.4 }}>
                           {calledLine(t, es)}
+                        </span>
+                      )}
+                      {/* Off the Staxis list for a cycle. This is the only
+                          place that fact is visible, so it is not optional. */}
+                      {skippedLine(t) && (
+                        <span style={{ fontFamily: FONT_SANS, fontSize: 12, color: '#8A5A22', lineHeight: 1.4 }}>
+                          {skippedLine(t)}
                         </span>
                       )}
                       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, marginTop: 1 }}>

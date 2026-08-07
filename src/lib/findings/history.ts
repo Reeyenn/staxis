@@ -17,6 +17,8 @@
 // by 100 and round exactly once, at the edge, for the same reason: a detector
 // that has to remember which unit it is holding will eventually forget.
 
+import { dollarsToCents as canonicalDollarsToCents } from '@/lib/format';
+
 /** One hotel-local day with a number attached. */
 export interface DailySeriesPoint {
   /** YYYY-MM-DD, hotel-local. */
@@ -273,6 +275,18 @@ export interface PreventiveScheduleEntry {
   calledDate: string | null;
   /** Who said so. Only ever set alongside calledDate. */
   calledBy: string | null;
+  /**
+   * When somebody put THIS occurrence down without the work being done, or null.
+   *
+   * A skip is neither a completion nor a call, and it is deliberately a THIRD
+   * date rather than a flavour of either: moving `lastDoneDate` would write into
+   * the hotel's maintenance record that a job nobody performed was performed,
+   * and reusing `calledDate` would claim somebody had been called out when
+   * nobody had. Rests the schedule for one full cadence. See migration 0462.
+   */
+  skippedDate: string | null;
+  /** Who skipped it. Only ever set alongside skippedDate. */
+  skippedBy: string | null;
 }
 
 export interface PreventiveScheduleFeed {
@@ -283,12 +297,20 @@ export interface PreventiveScheduleFeed {
 
 // ─── Shared pure helpers ─────────────────────────────────────────────────────
 
-/** Dollars (as the numeric columns store them) to whole cents. */
+/**
+ * Dollars (as the legacy numeric columns store them) to whole cents, keeping
+ * this module's null-tolerant signature.
+ *
+ * The conversion itself is the app-wide canonical one. This used to be a bare
+ * `Math.round(n * 100)`, which disagreed with the import pipeline's rounding at
+ * the half-cent boundary ($1.005 became 100c here and 101c there) even though
+ * both read the same unit_cost / repair_cost columns.
+ */
 export function dollarsToCents(value: number | string | null | undefined): number | null {
   if (value === null || value === undefined) return null;
   const n = typeof value === 'string' ? Number(value) : value;
   if (!Number.isFinite(n)) return null;
-  return Math.round(n * 100);
+  return canonicalDollarsToCents(n);
 }
 
 /** Sum a list of dated points into one point per date, ascending. */

@@ -196,6 +196,10 @@ interface InviteFlowHarness {
   dialog: () => HTMLElement | null;
   text: () => string;
   controllerTeam: () => string;
+  /** Every committed frame that painted a dialog loading skeleton. */
+  skeletonFrames: () => string[];
+  pressEscape: () => Promise<void>;
+  clickClose: () => Promise<void>;
   click: (label: string) => Promise<void>;
   setInput: (selector: string, value: string) => Promise<void>;
   setSelect: (selector: string, value: string) => Promise<void>;
@@ -205,6 +209,10 @@ interface InviteFlowHarness {
   setCodeResponses: (...responses: ResponseSpec[]) => void;
   holdNextInviteLoad: () => void;
   releaseHeldInvite: (response: ResponseSpec) => void;
+  /** Park the next roster refresh in flight, the way a real network does. */
+  holdNextTeamLoad: () => void;
+  releaseHeldTeam: () => Promise<void>;
+  failHeldTeam: () => Promise<void>;
   flush: () => Promise<void>;
 }
 
@@ -324,6 +332,8 @@ async function mountInviteFlow(
   let codeResponses: ResponseSpec[] = [{ body: { ok: true, data: { codes: [VALID_CODE] } } }];
   let holdNextInvite = false;
   let heldInviteResolver: ((response: Response) => void) | null = null;
+  let holdNextTeam = false;
+  let heldTeamResolver: ((response: Response) => void) | null = null;
   const controls = {
     setCapabilities: (_next: CapabilityState): void => undefined,
     inviteOpen: false,
@@ -339,6 +349,10 @@ async function mountInviteFlow(
     calls.push({ method, url, body: parseRequestBody(init) });
 
     if (url.startsWith('/api/auth/team?')) {
+      if (holdNextTeam) {
+        holdNextTeam = false;
+        return new Promise<Response>((resolve) => { heldTeamResolver = resolve; });
+      }
       return jsonResponse({ ok: true, data: { team: [], hatsByAccountId: {} } });
     }
     if (url.startsWith('/api/staff/join-requests?')) {
@@ -450,6 +464,20 @@ async function mountInviteFlow(
   const container = document.createElement('div');
   document.body.append(container);
   const root: Root = createRoot(container);
+
+  // The dialog chunks are code-split. A cold chunk paints the Suspense skeleton
+  // first, and that painted frame is the phantom screen people reported on the
+  // way into Invite people. MutationObserver runs on the microtask right after
+  // each commit, so any skeleton React actually put on screen is recorded here
+  // even though a later commit replaces it.
+  const skeletonFrames: string[] = [];
+  const recordSkeleton = () => {
+    const body = document.body.textContent ?? '';
+    if (/Opening .+ dialog…/.test(body)) skeletonFrames.push(body);
+  };
+  const skeletonObserver = new MutationObserver(recordSkeleton);
+  skeletonObserver.observe(document.body, { childList: true, subtree: true });
+
   await act(async () => { root.render(<TestPanel />); });
   await flushReact();
 
@@ -483,6 +511,11 @@ async function mountInviteFlow(
   const dialog = () => document.querySelector<HTMLElement>('[role="dialog"]');
 
   context.after(async () => {
+    skeletonObserver.disconnect();
+    if (heldTeamResolver) {
+      heldTeamResolver(jsonResponse({ ok: true, data: { team: [], hatsByAccountId: {} } }));
+      heldTeamResolver = null;
+    }
     if (heldInviteResolver) {
       heldInviteResolver(responseFor({
         body: { ok: true, data: { invites: [], options: VALID_OPTIONS } },
@@ -505,6 +538,23 @@ async function mountInviteFlow(
     dialog,
     text: () => document.body.textContent ?? '',
     controllerTeam: () => controls.controllerTeam(),
+    skeletonFrames: () => [...skeletonFrames],
+    async pressEscape() {
+      await act(async () => {
+        document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+        for (let index = 0; index < 10; index += 1) await Promise.resolve();
+      });
+      await flushReact();
+    },
+    async clickClose() {
+      const close = dialog()?.querySelector<HTMLButtonElement>('button[aria-label="Close"]');
+      assert.ok(close, 'the dialog close control must be available');
+      await act(async () => {
+        close.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+        for (let index = 0; index < 10; index += 1) await Promise.resolve();
+      });
+      await flushReact();
+    },
     click,
     async setInput(selector, value) {
       const input = document.querySelector<HTMLInputElement>(selector);
@@ -539,6 +589,27 @@ async function mountInviteFlow(
       assert.ok(heldInviteResolver, 'an invite load must be held before release');
       heldInviteResolver(responseFor(response));
       heldInviteResolver = null;
+    },
+    holdNextTeamLoad() { holdNextTeam = true; },
+    async releaseHeldTeam() {
+      assert.ok(heldTeamResolver, 'a roster refresh must be held before release');
+      const resolve = heldTeamResolver;
+      heldTeamResolver = null;
+      await act(async () => {
+        resolve(jsonResponse({ ok: true, data: { team: [], hatsByAccountId: {} } }));
+        for (let index = 0; index < 12; index += 1) await Promise.resolve();
+      });
+      await flushReact();
+    },
+    async failHeldTeam() {
+      assert.ok(heldTeamResolver, 'a roster refresh must be held before failing it');
+      const resolve = heldTeamResolver;
+      heldTeamResolver = null;
+      await act(async () => {
+        resolve(jsonResponse({ ok: false, error: 'The roster is unavailable.' }, 503));
+        for (let index = 0; index < 12; index += 1) await Promise.resolve();
+      });
+      await flushReact();
     },
     flush: flushReact,
   };
@@ -860,6 +931,172 @@ describe('mounted hotel invite flow', { concurrency: false }, () => {
       email: 'newmanager@example.com',
       role: 'housekeeping',
     });
+  });
+
+  // ─── Creating an invitation must land on the link, not on nothing ─────────
+  // Sending an invite (or minting the shared hotel link) refreshes the roster.
+  // That refresh used to read as a lost capability in an admin preview and tore
+  // the dialog down mid-success, so the caller never saw what they had made and
+  // only found it by reopening. These drive the real panel through a real
+  // successful POST for both callers who can invite.
+
+  test('an admin who creates an invitation stays in the same dialog and sees the invite link', async (context) => {
+    const ui = await mountInviteFlow(context, {
+      canManageTeam: true,
+      canInviteAccounts: true,
+      readOnly: false,
+      adminPreview: true,
+    });
+
+    await ui.click('Invite people');
+    await ui.click('STAXIS LOGIN');
+    await ui.setInput('input[type="email"]', 'newmanager@example.com');
+    await ui.setSelect('form select', 'housekeeping');
+    // Hold the roster refresh the success path fires, exactly as a real network
+    // does. This is the window the dialog used to vanish in.
+    ui.holdNextTeamLoad();
+    await ui.submit();
+
+    assert.ok(ui.dialog(), 'the roster refresh must not tear down the dialog mid-success');
+    assert.match(ui.text(), /Invitation email sent/);
+    assert.match(ui.text(), /An invitation was sent to newmanager@example\.com\./);
+    const copyLink = Array.from(ui.dialog()?.querySelectorAll('button') ?? [])
+      .find((button) => (button.textContent ?? '').includes('Copy link'));
+    assert.ok(copyLink, 'the created invitation must offer its link');
+
+    await ui.releaseHeldTeam();
+    assert.ok(ui.dialog(), 'a settled roster must still leave the caller on the created link');
+    assert.match(ui.text(), /Invitation email sent/);
+  });
+
+  test('a hotel manager who creates an invitation stays in the same dialog and sees the invite link', async (context) => {
+    const ui = await mountInviteFlow(context, {
+      canManageTeam: true,
+      canInviteAccounts: true,
+      readOnly: false,
+      adminPreview: false,
+    });
+
+    await ui.click('Invite people');
+    await ui.click('STAXIS LOGIN');
+    await ui.setInput('input[type="email"]', 'newmanager@example.com');
+    await ui.setSelect('form select', 'housekeeping');
+    ui.holdNextTeamLoad();
+    await ui.submit();
+
+    assert.ok(ui.dialog(), 'the roster refresh must not tear down the dialog mid-success');
+    assert.match(ui.text(), /Invitation email sent/);
+    const copyLink = Array.from(ui.dialog()?.querySelectorAll('button') ?? [])
+      .find((button) => (button.textContent ?? '').includes('Copy link'));
+    assert.ok(copyLink, 'the created invitation must offer its link');
+
+    await ui.releaseHeldTeam();
+    assert.ok(ui.dialog(), 'a settled roster must still leave the caller on the created link');
+    assert.match(ui.text(), /Invitation email sent/);
+  });
+
+  test('creating the shared hotel link keeps an admin on the dialog with the new link on screen', async (context) => {
+    const ui = await mountInviteFlow(context, {
+      canManageTeam: true,
+      canInviteAccounts: true,
+      readOnly: false,
+      adminPreview: true,
+    });
+    ui.setCodeResponses({ body: { ok: true, data: { codes: [] } } });
+
+    await ui.click('Invite people');
+    await ui.click('STAXIS LOGIN');
+    ui.holdNextTeamLoad();
+    await ui.click('Create hotel invite');
+
+    assert.ok(ui.dialog(), 'creating the hotel link must not close the dialog');
+    const link = ui.dialog()?.querySelector<HTMLInputElement>('input[aria-label="Hotel invite link"]');
+    assert.ok(link, 'the new hotel invite link must be on screen');
+    assert.match(link.value, /signup\?code=HARBOR-7359/);
+    assert.match(ui.text(), /HARBOR-7359/);
+
+    await ui.releaseHeldTeam();
+    assert.ok(ui.dialog(), 'a settled roster must still leave the caller on the new link');
+    assert.match(ui.text(), /HARBOR-7359/);
+  });
+
+  test('an admin whose roster refresh fails still has the dialog torn down', async (context) => {
+    const ui = await mountInviteFlow(context, {
+      canManageTeam: true,
+      canInviteAccounts: true,
+      readOnly: false,
+      adminPreview: true,
+    });
+
+    await ui.click('Invite people');
+    await ui.click('STAXIS LOGIN');
+    assert.ok(ui.dialog(), 'the invite dialog must be open before the roster fails');
+
+    // The control for the tests above: an admin preview that cannot establish
+    // this hotel's roster at all still fails closed. Only the in-flight moment
+    // of an otherwise-good refresh was exempted.
+    ui.holdNextTeamLoad();
+    await ui.click('Create a new link');
+    await ui.click('Replace link');
+    await ui.failHeldTeam();
+    assert.equal(ui.dialog(), null, 'an unestablished roster must still close the surface');
+  });
+
+  test('the close controls still work once the created link is on screen', async (context) => {
+    const ui = await mountInviteFlow(context, {
+      canManageTeam: true,
+      canInviteAccounts: true,
+      readOnly: false,
+      adminPreview: true,
+    });
+
+    await ui.click('Invite people');
+    await ui.click('STAXIS LOGIN');
+    await ui.setInput('input[type="email"]', 'closes-on-x@example.com');
+    await ui.setSelect('form select', 'housekeeping');
+    ui.holdNextTeamLoad();
+    await ui.submit();
+    await ui.releaseHeldTeam();
+    assert.match(ui.text(), /Invitation email sent/);
+
+    await ui.clickClose();
+    assert.equal(ui.dialog(), null, 'the close control must still close the created-link view');
+
+    await ui.click('Invite people');
+    await ui.click('STAXIS LOGIN');
+    await ui.setInput('input[type="email"]', 'closes-on-escape@example.com');
+    await ui.setSelect('form select', 'housekeeping');
+    ui.holdNextTeamLoad();
+    await ui.submit();
+    await ui.releaseHeldTeam();
+    assert.match(ui.text(), /Invitation email sent/);
+
+    await ui.pressEscape();
+    assert.equal(ui.dialog(), null, 'Escape must still close the created-link view');
+  });
+
+  test('the first open of the chooser, the invite dialog, and add-to-schedule paints no loading skeleton', async (context) => {
+    const ui = await mountInviteFlow(context, {
+      canManageTeam: true,
+      canInviteAccounts: true,
+      readOnly: false,
+      adminPreview: false,
+    });
+
+    await ui.click('Invite people');
+    assert.match(ui.text(), /What does this person need\?/);
+    assert.deepEqual(ui.skeletonFrames(), [], 'the chooser must open straight onto the real dialog');
+
+    await ui.click('STAXIS LOGIN');
+    assert.match(ui.text(), /Email one person/);
+    assert.deepEqual(ui.skeletonFrames(), [], 'the chooser handoff must be one transition, not two');
+
+    await ui.clickClose();
+    await ui.click('Invite people');
+    await ui.click('NO LOGIN');
+    await ui.flush();
+    assert.match(ui.text(), /Add staff member/);
+    assert.deepEqual(ui.skeletonFrames(), [], 'add to schedule must open straight onto the real dialog');
   });
 
   test('an admin keeps every per-person action; only a genuine read-only context locks them', async (context) => {
