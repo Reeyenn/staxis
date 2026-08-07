@@ -575,9 +575,11 @@ function CompanyAccessContent() {
   const portfolioNeedsSelection = portfolioMode
     && portfolio.data?.selection.state === 'needs_selection';
 
+  // Several companies and none selected: the switcher in the app decides that
+  // now, so this sends them into the app rather than to the retired picker.
   React.useEffect(() => {
     if (!portfolioNeedsSelection) return;
-    router.replace('/portfolio/choose');
+    router.replace('/home');
   }, [portfolioNeedsSelection, router]);
   const currentData = portfolioMode
     ? unscopedCurrentData && selectedPortfolioCompany
@@ -911,9 +913,9 @@ function CompanyAccessContent() {
                 <EmptyState
                   icon={Building2}
                   title={'Choose a management company'}
-                  description={'Each company remains separate. Choose one before opening My Portfolio.'}
-                  actionLabel={'Choose company'}
-                  onAction={() => router.push('/portfolio/choose')}
+                  description={'Each company remains separate. Pick one from your account menu, where every company you work for is listed.'}
+                  actionLabel={'Go to Home'}
+                  onAction={() => router.push('/home')}
                 />
               ) : portfolioMode && portfolio.error ? (
                 <RouteErrorState

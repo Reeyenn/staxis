@@ -74,6 +74,89 @@ export function resolveViewerHotelStanding<T extends ViewerHotelStanding>(input:
   ) ?? null;
 }
 
+// ─── Company-scope standing ─────────────────────────────────────────────────
+//
+// Company view shows every hotel in the scope at once, so the standing it may
+// grant is the standing the viewer holds at EVERY hotel in the scope, never the
+// best one they hold at any. A GM who runs one building therefore gains nothing
+// by arriving at a company URL: the other buildings answer null and so does
+// this.
+//
+// The ROLE comes from the company hat (owner / vp / finance, degraded through
+// `legacyRoleForHat` by the caller), not from the per-hotel projection, because
+// at company scope the person is wearing the company job. The per-hotel
+// standings are the WALL: they decide whether the scope resolves at all, and
+// they decide the money.
+//
+// `hotelMutationAllowed` is permanently false here. Company scope has no target
+// hotel to write to; a later crew adds an explicit, guarded hand-work-in seam
+// that resolves one hotel and re-gates there.
+
+/** The viewer's standing across one company scope. */
+export interface ViewerCompanyStanding {
+  organizationId: string;
+  operationalRole: AppRole;
+  seesFinancials: boolean;
+  /** Always false. Hotel work happens at a hotel. */
+  hotelMutationAllowed: false;
+  portfolioIntelligenceRead: boolean;
+  /** The exact hotels this standing was resolved over. */
+  propertyIds: string[];
+}
+
+export function resolveViewerCompanyStanding(input: {
+  platformAdmin: boolean;
+  standings: readonly ViewerHotelStanding[] | null | undefined;
+  organizationId: string | null | undefined;
+  propertyIds: readonly string[] | null | undefined;
+  /** The company hat, already degraded to legacy role vocabulary. */
+  companyRole: AppRole | null | undefined;
+}): ViewerCompanyStanding | null {
+  const organizationId = typeof input.organizationId === 'string'
+    ? input.organizationId.toLowerCase()
+    : '';
+  if (organizationId === '') return null;
+
+  const propertyIds = [...new Set(
+    (input.propertyIds ?? [])
+      .filter((id): id is string => typeof id === 'string' && id !== '')
+      .map((id) => id.toLowerCase()),
+  )].sort();
+  if (propertyIds.length === 0) return null;
+
+  // Same shared rule as every hotel screen, asked once per hotel in scope.
+  const normalized = (input.standings ?? []).map((standing) => ({
+    ...standing,
+    propertyId: standing.propertyId.toLowerCase(),
+  }));
+  const held: ViewerHotelStanding[] = [];
+  for (const propertyId of propertyIds) {
+    const standing = resolveViewerHotelStanding({
+      platformAdmin: input.platformAdmin,
+      standings: normalized,
+      propertyId,
+    });
+    if (!standing) return null;
+    held.push(standing);
+  }
+
+  const operationalRole: AppRole | null = input.platformAdmin
+    ? 'admin'
+    : input.companyRole ?? null;
+  if (!operationalRole) return null;
+
+  return {
+    organizationId,
+    operationalRole,
+    seesFinancials: held.every((standing) => standing.seesFinancials === true),
+    hotelMutationAllowed: false,
+    portfolioIntelligenceRead: held.every(
+      (standing) => standing.portfolioIntelligenceRead === true,
+    ),
+    propertyIds,
+  };
+}
+
 export type AuthorizationScopeSelector =
   | { type: 'all_authorized' }
   | { type: 'portfolio'; portfolioId: string }

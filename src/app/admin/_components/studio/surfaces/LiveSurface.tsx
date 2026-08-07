@@ -25,6 +25,7 @@
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { fetchWithAuth } from '@/lib/api-fetch';
+import { useProperty } from '@/contexts/PropertyContext';
 import {
   FONT_SERIF, FONT_MONO, Caps, Pill, Dot, Btn, SerifNum,
   countUp, useRiseIn, age,
@@ -878,6 +879,7 @@ function OrganizationDisclosure({
   assignDisabledReason?: string;
   onMakeIndependent: (hotel: EnrichedRow) => void;
 }) {
+  const rememberActiveHotel = useRememberActiveHotel();
   const [expanded, setExpanded] = useState(false);
   const panelId = `organization-hotels-${organization.id}`;
   const statusTone: DotTone = organization.status === 'active' ? 'forest' : organization.status === 'suspended' ? 'gold' : 'terracotta';
@@ -974,7 +976,7 @@ function OrganizationDisclosure({
                         size="sm"
                         variant="ghost"
                         href={`/company?tab=people&pid=${encodeURIComponent(hotelLink.id)}`}
-                        onClick={() => rememberPeopleHotel(hotelLink.id)}
+                        onClick={() => rememberActiveHotel(hotelLink.id)}
                         ariaLabel={`Manage people for ${hotelLink.name ?? 'unnamed hotel'}`}
                         style={{ color: '#fff', borderColor: dimWhite(.24), minHeight: 44 }}
                       >
@@ -1230,12 +1232,19 @@ function formatRelationshipType(value: string): string {
   return value.replaceAll('_', ' ');
 }
 
-function rememberPeopleHotel(hotelId: string): void {
-  try {
-    window.localStorage.setItem('hotelops-active-property', hotelId);
-  } catch {
-    // The pid query parameter remains authoritative when storage is unavailable.
-  }
+/**
+ * Point the app at a hotel before deep-linking into one of its screens.
+ *
+ * This used to write `hotelops-active-property` straight to localStorage, which
+ * skipped every guard the setter owns: the before-change event an open workflow
+ * uses to cancel, the acting-context pin, and dropping the previous hotel's
+ * capability map. Selection has ONE door.
+ */
+function useRememberActiveHotel(): (hotelId: string) => void {
+  const { setActiveScope } = useProperty();
+  return useCallback((hotelId: string) => {
+    setActiveScope({ kind: 'hotel', propertyId: hotelId });
+  }, [setActiveScope]);
 }
 
 // ── Fleet-health big number ──────────────────────────────────────────────
@@ -1269,6 +1278,7 @@ function MapCard({
   onAssignOrganization: () => void;
   canAssignOrganization: boolean;
 }) {
+  const rememberActiveHotel = useRememberActiveHotel();
   const hotel = h;
   const ref = useRef<HTMLElement>(null);
   const tone = cardTone(h);
@@ -1309,7 +1319,7 @@ function MapCard({
           size="sm"
           variant="ghost"
           href={`/company?tab=people&pid=${encodeURIComponent(hotel.id)}`}
-          onClick={() => rememberPeopleHotel(hotel.id)}
+          onClick={() => rememberActiveHotel(hotel.id)}
           ariaLabel={`Manage people for ${hotel.name ?? 'this hotel'}`}
           style={{ color: '#fff', borderColor: dimWhite(.25), fontSize: 9.5, padding: '3px 8px' }}
         >
@@ -1791,6 +1801,7 @@ function MapDetail({ h, onClose, onOpenSections, onRequestDelete }: {
   onOpenSections: () => void;
   onRequestDelete: () => void;
 }) {
+  const rememberActiveHotel = useRememberActiveHotel();
   const ref = useRef<HTMLDivElement>(null);
   useRiseIn(ref, { dy: 26, dur: 440 });
   useDialogKeyboard(ref, onClose, false);
@@ -1824,7 +1835,10 @@ function MapDetail({ h, onClose, onOpenSections, onRequestDelete }: {
           <Btn
             variant="forest"
             onClick={() => {
-              localStorage.setItem('hotelops-active-property', h.id);
+              rememberActiveHotel(h.id);
+              // A full navigation, not a client transition: the admin fleet is
+              // read from the admin API and this hotel may not be in the shell's
+              // own property list until it reloads.
               window.location.href = '/home';
             }}
           >

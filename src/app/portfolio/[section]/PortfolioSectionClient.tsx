@@ -20,6 +20,7 @@ import { usePortfolio } from '@/contexts/PortfolioContext';
 import { useAuth } from '@/contexts/AuthContext';
 import { useApiResource } from '@/lib/hooks/use-api-resource';
 import { buildPortfolioHotelSecondaryLabels } from '@/lib/portfolio-ui/context';
+import { companyScopeHref } from '@/lib/portfolio-ui/acting-scope';
 import type {
   PortfolioUiFreshness,
   PortfolioUiIndicator,
@@ -375,7 +376,7 @@ function StaxisPortfolio({ organizationId, organizationName }: { organizationId:
           contextLabel="Portfolio"
           scopeName={organizationName}
           secondaryLabel="Company command center"
-          switchAction={{ label: 'Switch context', href: `/portfolio/choose?organizationId=${encodeURIComponent(organizationId)}` }}
+          switchAction={{ label: 'Open company view', href: companyScopeHref('/home', organizationId) }}
         />
       </div>
       {scope === undefined ? <PortfolioSectionSkeleton label="Staxis command center" /> : null}
@@ -442,7 +443,7 @@ export function PortfolioSectionClient({ section }: { section: PortfolioModuleId
 
   React.useEffect(() => {
     if (!portfolio.loading && portfolio.data?.selection.state === 'needs_selection') {
-      router.replace('/portfolio/choose');
+      router.replace('/home');
     }
   }, [portfolio.data?.selection.state, portfolio.loading, router]);
 
@@ -499,8 +500,8 @@ export function PortfolioSectionClient({ section }: { section: PortfolioModuleId
         stateContent={{
           title: 'No authorized company context',
           description: 'Your access may have changed since this link was opened.',
-          guidance: 'Choose another acting context or ask a company owner to review access.',
-          action: { label: 'Choose context', href: '/portfolio/choose' },
+          guidance: 'Open Home and pick a company from your account menu, or ask a company owner to review access.',
+          action: { label: 'Go to Home', href: '/home' },
         }}
       />
     );
@@ -525,8 +526,8 @@ export function PortfolioSectionClient({ section }: { section: PortfolioModuleId
           stateContent={{
             title: 'The company queue is not available in this scope',
             description: 'Your current receipt does not cover the whole selected company.',
-            guidance: 'Choose another acting context. Direct queue requests remain authorization-checked.',
-            action: { label: 'Choose context', href: '/portfolio/choose' },
+            guidance: 'Open Home and pick another company from your account menu. Direct queue requests remain authorization-checked.',
+            action: { label: 'Go to Home', href: '/home' },
           }}
         />
       );
@@ -673,7 +674,7 @@ export function PortfolioSectionClient({ section }: { section: PortfolioModuleId
           kind: 'portfolio', contextLabel: 'Portfolio', scopeName: company.organizationName ?? 'Your company',
           secondaryLabel: `${company.hotelCount} authorized ${company.hotelCount === 1 ? 'hotel' : 'hotels'}`,
           returnAction: { label: 'Portfolio Home', href: `/portfolio?organizationId=${encodeURIComponent(company.organizationId)}` },
-          switchAction: { label: 'Switch context', href: `/portfolio/choose?organizationId=${encodeURIComponent(company.organizationId)}` },
+          switchAction: { label: 'Open company view', href: companyScopeHref('/home', company.organizationId) },
         }}
         eyebrow={`Portfolio · ${company.organizationName ?? 'Company'}`}
         title={COPY[section].title}

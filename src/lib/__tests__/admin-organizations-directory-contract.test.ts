@@ -100,7 +100,11 @@ describe('Admin Studio Hotels information architecture', () => {
     ) ?? [];
     assert.equal(peopleLinks.length, 2);
     assert.match(surfaceSource, />\s*People\s*</);
-    assert.match(surfaceSource, /hotelops-active-property/);
+    // The fleet points the app at a hotel through the ONE selection setter, not
+    // by writing localStorage behind PropertyContext's guards.
+    assert.match(surfaceSource, /const rememberActiveHotel = useRememberActiveHotel\(\)/);
+    assert.match(surfaceSource, /setActiveScope\(\{ kind: 'hotel', propertyId: hotelId \}\)/);
+    assert.doesNotMatch(surfaceSource, /hotelops-active-property/);
   });
 
   // The confirmation may now offer "Invite people" (founder ruling 2026-07-31),

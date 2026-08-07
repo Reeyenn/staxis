@@ -32,6 +32,7 @@
 
 import React, { useRef, useState } from 'react';
 import { fetchWithAuth } from '@/lib/api-fetch';
+import { useProperty } from '@/contexts/PropertyContext';
 import type { FirstPersonInviteData } from '@/app/(hotel)/company/_components/HotelTeamDialogs';
 import { Backdrop, MODAL_CARD } from './surface-kit';
 import { Btn, Caps, FONT_SERIF, FONT_SANS, useRiseIn } from './kit';
@@ -77,6 +78,7 @@ export function AddHotelModal({
   organizationName,
   request = fetchWithAuth,
 }: AddHotelModalProps) {
+  const { setActiveScope } = useProperty();
   const cardRef = useRef<HTMLDivElement>(null);
   // Synchronous re-entrancy latch — `submitting` state commits async, so a fast
   // double-click / Enter+click could otherwise fire two POSTs (the create route
@@ -157,9 +159,10 @@ export function AddHotelModal({
 
   const openCreatedHotel = () => {
     if (!created) return;
-    // PropertyContext's fleet predates this create. Persist the selection and
-    // do a full navigation so the fresh property list includes the new hotel.
-    localStorage.setItem('hotelops-active-property', created.propertyId);
+    // PropertyContext's fleet predates this create. Point the app at the new
+    // hotel through the one setter that owns selection (guards included), then
+    // do a FULL navigation so the fresh property list includes it.
+    setActiveScope({ kind: 'hotel', propertyId: created.propertyId });
     window.location.href = '/home';
   };
 
@@ -170,11 +173,7 @@ export function AddHotelModal({
     : '';
   const rememberPeopleHotel = () => {
     if (!created) return;
-    try {
-      localStorage.setItem('hotelops-active-property', created.propertyId);
-    } catch {
-      // The pid query parameter remains authoritative when storage is unavailable.
-    }
+    setActiveScope({ kind: 'hotel', propertyId: created.propertyId });
   };
 
   return (

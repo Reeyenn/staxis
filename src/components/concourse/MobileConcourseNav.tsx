@@ -9,8 +9,10 @@ import styles from './MobileConcourseNav.module.css';
 
 interface MobileConcourseNavProps {
   items: BarItem[];
-  propertyOptions: ReadonlyArray<{ value: string; label: string }>;
-  activePropertyId: string | null;
+  /** Where the person can work: company rows and hotel rows in one list. The
+   *  value is the row's opaque key, resolved back through the same list. */
+  scopeOptions: ReadonlyArray<{ value: string; label: string }>;
+  activeScopeValue: string | null;
   userName: string;
   userMeta: string;
   userInitial: string;
@@ -22,7 +24,7 @@ interface MobileConcourseNavProps {
   navigationLabel: string;
   sectionsLabel: string;
   accountLabel: string;
-  propertyLabel: string;
+  scopeLabel: string;
   accountMenuLabel: string;
   companyLabel: string;
   adminDestination?: AdminDestinationAction;
@@ -40,7 +42,7 @@ interface MobileConcourseNavProps {
   onCompanyIntent?: () => void;
   onSettingsIntent?: () => void;
   onSignOut: () => void;
-  onPropertyChange: (propertyId: string) => void;
+  onScopeChange: (scopeValue: string) => void;
   onInstall: (returnFocusElement: HTMLButtonElement | null) => void;
 }
 
@@ -56,8 +58,8 @@ const FOCUSABLE_SELECTOR = [
 /** Phone-only Concourse chrome. It intentionally owns its dialog state. */
 export function MobileConcourseNav({
   items,
-  propertyOptions,
-  activePropertyId,
+  scopeOptions,
+  activeScopeValue,
   userName,
   userMeta,
   userInitial,
@@ -68,7 +70,7 @@ export function MobileConcourseNav({
   navigationLabel,
   sectionsLabel,
   accountLabel,
-  propertyLabel,
+  scopeLabel,
   accountMenuLabel,
   companyLabel,
   adminDestination,
@@ -86,7 +88,7 @@ export function MobileConcourseNav({
   onCompanyIntent,
   onSettingsIntent,
   onSignOut,
-  onPropertyChange,
+  onScopeChange,
   onInstall,
 }: MobileConcourseNavProps) {
   const [open, setOpen] = React.useState(false);
@@ -202,10 +204,10 @@ export function MobileConcourseNav({
     onSignOut();
   };
 
-  const changeProperty = (event: React.ChangeEvent<HTMLSelectElement>) => {
-    const propertyId = event.target.value;
+  const changeScope = (event: React.ChangeEvent<HTMLSelectElement>) => {
+    const scopeValue = event.target.value;
     closeDrawer();
-    onPropertyChange(propertyId);
+    onScopeChange(scopeValue);
   };
 
   const install = () => {
@@ -289,17 +291,17 @@ export function MobileConcourseNav({
 
           <div className={styles.eyebrow}>{accountLabel}</div>
           <div className={styles.accountControls}>
-            {propertyOptions.length > 1 ? (
+            {scopeOptions.length > 1 ? (
               <label className={styles.accountControl}>
-                <span>{propertyLabel}</span>
+                <span>{scopeLabel}</span>
                 <select
-                  value={activePropertyId ?? ''}
-                  onChange={changeProperty}
-                  aria-label={propertyLabel}
+                  value={activeScopeValue ?? ''}
+                  onChange={changeScope}
+                  aria-label={scopeLabel}
                 >
-                  {!activePropertyId ? <option value="" disabled>{propertyLabel}</option> : null}
-                  {propertyOptions.map((property) => (
-                    <option key={property.value} value={property.value}>{property.label}</option>
+                  {!activeScopeValue ? <option value="" disabled>{scopeLabel}</option> : null}
+                  {scopeOptions.map((option) => (
+                    <option key={option.value} value={option.value}>{option.label}</option>
                   ))}
                 </select>
               </label>

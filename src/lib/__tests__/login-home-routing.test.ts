@@ -184,15 +184,21 @@ describe('auth funnel navigation reliability', () => {
 describe('Home safety boundaries', () => {
   test('signed-out and property-less sessions are resolved before the shell renders', () => {
     const homePage = home.slice(home.indexOf('export default function HomePage()'));
-    assert.match(homePage, /const replaceNavigation = navigation\.replace[\s\S]*?if \(!user\) \{[\s\S]*?replaceNavigation\('\/signin'\)/);
-    assert.match(home, /user\.role === ['"]admin['"] \|\| properties\.length > 0/);
+    // Home routes from ONE pure decision now (resolveHomeEntry). The behaviour
+    // of that decision is exercised directly in company-mode-scope.test.ts; what
+    // this file pins is that the page still wires every terminal state to it and
+    // never renders a shell before the decision is terminal.
+    assert.match(homePage, /const entry = resolveHomeEntry\(\{/);
+    assert.match(homePage, /const replaceNavigation = navigation\.replace/);
+    assert.match(homePage, /if \(entry\.kind === 'signin'\) \{[\s\S]*?replaceNavigation\('\/signin'\)/);
+    assert.match(homePage, /if \(entry\.kind === 'property_selector'\) replaceNavigation\('\/property-selector'\)/);
     assert.match(home, /const portfolio = usePortfolio\(\)/);
-    assert.match(home, /portfolio\.data\.selection\.state === 'selected'/);
-    assert.match(home, /portfolio\.data\.selection\.state === 'needs_selection'/);
-    assert.match(homePage, /if \(portfolioDestination\) \{[\s\S]*?replaceNavigation\(portfolioDestination\)/);
-    assert.match(homePage, /if \(authLoading \|\| propertyLoading \|\| portfolioEntryPending \|\| portfolioDestination\) \{[\s\S]*?<RouteLoadingState title="Opening Home…"/);
-    assert.match(homePage, /if \(!user\) \{[\s\S]*?<RouteLoadingState title="Returning to Sign In…"/);
-    assert.match(homePage, /if \(!activeProperty\) \{[\s\S]*?properties\.length === 0[\s\S]*?<RouteLoadingState title="Opening your workspace…"/);
+    assert.match(homePage, /if \(entry\.kind === 'wait'\) return <RouteLoadingState title="Opening Home…"/);
+    assert.match(homePage, /entry\.kind === 'signin'[\s\S]*?<RouteLoadingState title="Returning to Sign In…"/);
+    assert.match(homePage, /entry\.kind === 'property_selector'[\s\S]*?properties\.length === 0[\s\S]*?<RouteLoadingState title="Opening your workspace…"/);
+    // The redirect into the standalone portfolio world is gone for good.
+    assert.doesNotMatch(homePage, /portfolioDestination/);
+    assert.doesNotMatch(homePage, /'\/portfolio\/choose'/);
     assert.match(rootLayout, /<ReliableNavigationProvider>[\s\S]*?\{children\}/);
     assert.match(
       reliableNavigation,
