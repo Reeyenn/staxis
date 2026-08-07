@@ -81,6 +81,10 @@ import {
 } from '@/lib/agent/eval-bank-health';
 import { env } from '@/lib/env';
 import { SUPERSEDED_MIGRATIONS } from '@/lib/migration-policy';
+// PostgREST caps every response at 1000 rows here, whatever .limit() asks for.
+// A health check that reads past that cap without paging stops being a health
+// check. See src/lib/supabase-paginate.ts.
+import { fetchAllRows } from '@/lib/supabase-paginate';
 import { evaluatePromptTierHealth, evaluatePromptToolRouting } from '@/lib/agent/prompt-tiers';
 // The live tool catalog, for `agent_prompt_tool_names`. The index import is the
 // registration side-effect — without it `listAllTools()` is empty and the check
@@ -952,11 +956,39 @@ export const ALLOWED_EXTRA_APPLIED_MIGRATIONS: ReadonlySet<string> = new Set([
   '0279',
 ]);
 
-async function checkAppliedMigrations(): Promise<Omit<Check, 'name' | 'durationMs'>> {
+/**
+ * THE ROW CAP IS WHY THIS PAGES.
+ *
+ * PostgREST on this project caps EVERY response at 1000 rows no matter what
+ * `.limit()` asks for (`src/lib/supabase-paginate.ts`, re-verified against prod
+ * 2026-08-07: `limit=5000` returned exactly 1000). A single-shot read of
+ * `applied_migrations` therefore stops being the truth the moment the project
+ * passes its thousandth migration, and it does not fail quietly: every version
+ * past the cap reads as NOT applied, so this check flips to `fail`, the doctor
+ * returns 503, and the post-deploy smoke gate blocks every deploy while the
+ * database is perfectly healthy. At 387 migrations that is not far off, and it
+ * would arrive on an ordinary Tuesday with no change to blame.
+ *
+ * The `client` parameter is for tests only, and exists for the same reason
+ * `writeCronHeartbeat`'s does: ESM bindings cannot be monkey-patched from the
+ * consumer's side. Production always takes the default.
+ */
+export async function checkAppliedMigrations(
+  client: Pick<typeof supabaseAdmin, 'from'> = supabaseAdmin,
+): Promise<Omit<Check, 'name' | 'durationMs'>> {
   try {
-    const { data, error } = await supabaseAdmin
-      .from('applied_migrations')
-      .select('version');
+    const read = await fetchAllRows<{ version: string }>((from, to) => (
+      client
+        .from('applied_migrations')
+        .select('version')
+        .order('version', { ascending: true })
+        .range(from, to) as unknown as PromiseLike<{ data: { version: string }[] | null; error: unknown }>
+    )).then(
+      (rows) => ({ rows, error: null as unknown }),
+      (e: unknown) => ({ rows: null, error: e }),
+    );
+    const data = read.rows;
+    const error = read.error;
     if (error) {
       // Table doesn't exist yet — 0015 hasn't been applied to this project.
       // Warn rather than fail so existing prod deployments without 0015
@@ -1631,13 +1663,27 @@ function isMissingRelation(error: unknown): boolean {
  */
 async function checkPmsReportFreshness(): Promise<Omit<Check, 'name' | 'durationMs'>> {
   try {
-    const { data, error } = await supabaseAdmin
-      .from('pms_feed_health_v1')
-      .select(
-        'property_id, feed_key, label, required, enabled, grace_minutes, alert_channel, ' +
-          'last_report_at, last_delivery_at, last_signal_at, minutes_late, ' +
-          'open_quarantine_count, open_unmapped_count, state',
-      );
+    // PAGED, because this is five rows per hotel: a single-shot read stops
+    // seeing the tail of the fleet at 200 hotels and says nothing about it, so
+    // the hotels whose reports stopped arriving would be exactly the ones this
+    // check no longer looks at.
+    const read = await fetchAllRows<Record<string, unknown>>((from, to) => (
+      supabaseAdmin
+        .from('pms_feed_health_v1')
+        .select(
+          'property_id, feed_key, label, required, enabled, grace_minutes, alert_channel, ' +
+            'last_report_at, last_delivery_at, last_signal_at, minutes_late, ' +
+            'open_quarantine_count, open_unmapped_count, state',
+        )
+        .order('property_id', { ascending: true })
+        .order('feed_key', { ascending: true })
+        .range(from, to) as unknown as PromiseLike<{ data: Record<string, unknown>[] | null; error: unknown }>
+    )).then(
+      (rows) => ({ rows, error: null as unknown }),
+      (e: unknown) => ({ rows: null, error: e }),
+    );
+    const data = read.rows;
+    const error = read.error;
     if (error) {
       if (isMissingRelation(error)) {
         return { status: 'ok', detail: 'report-freshness tables not applied yet (migration 0339)' };
