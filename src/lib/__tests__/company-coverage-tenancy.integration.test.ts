@@ -114,6 +114,74 @@ describe('0467 company coverage tenancy', () => {
     );
   });
 
+  // BYPASS THE DOOR AND PUSH ON THE WALL.
+  //
+  // Every other test here goes through an RPC, which is right — but an RPC can
+  // only ever prove what that RPC does. A CHECK constraint is supposed to hold
+  // when somebody reaches the table another way, and the only honest way to
+  // test that is to reach the table another way.
+  //
+  // This is how the empty-list hole was found: 0464 wrote
+  // `array_length(covered_property_ids, 1) >= 1`, which for '{}' is NULL, and a
+  // CHECK counts NULL as satisfied. Mutation: put array_length back and both
+  // halves of this test go green while the database happily stores a hat that
+  // names no hotels — and NULL-vs-empty means that hat reads as the whole
+  // company through the jsonb writer.
+  test('the constraints themselves refuse a list that names nothing', async () => {
+    await assert.rejects(
+      () => pg.query(
+        `update public.organization_memberships
+            set covered_property_ids = '{}'::uuid[]
+          where organization_id = $1 and account_id = $2
+            and membership_scope = 'company' and ended_at is null`,
+        [ORG_A, ACCOUNT_ANA],
+      ),
+      /hat_shape_check/,
+      'organization_memberships accepted a company hat covering no hotels',
+    );
+
+    await assert.rejects(
+      () => pg.query(
+        `insert into public.account_invites (
+           hotel_id, email, role, token_hash, expires_at, invited_by,
+           organization_id, membership_scope, covered_property_ids
+         ) values (
+           $1, 'empty-list@example.test', 'regional_manager', $2,
+           clock_timestamp() + interval '1 day', $3, $4, 'company', '{}'::uuid[]
+         )`,
+        [PID_A1, 'f'.repeat(64), ACCOUNT_ANA, ORG_A],
+      ),
+      /hat_shape_check/,
+      'account_invites accepted an invitation covering no hotels',
+    );
+
+    // NULL is still the deliberate all-hotels shape and must remain writable,
+    // or fixing the empty case would have broken every existing company hat.
+    await pg.query(
+      `update public.organization_memberships
+          set covered_property_ids = null
+        where organization_id = $1 and account_id = $2
+          and membership_scope = 'company' and ended_at is null`,
+      [ORG_A, ACCOUNT_ANA],
+    );
+  });
+
+  // The same hole through the SUPPORTED door: the jsonb writer turns [] into
+  // NULL, so an empty selection asked for "no hotels" and was handed the
+  // company. Mutation: drop the refusal and this hat is created covering
+  // everything.
+  test('the jsonb writer refuses an explicitly empty selection', async () => {
+    await assert.rejects(
+      () => pg.query(
+        `select public.staxis_set_membership_hat(
+           $1, $2, $3, 'company', 'regional_manager', '[]'::jsonb, 'Regional Manager'
+         )`,
+        [ACCOUNT_ANA, ORG_A, ACCOUNT_ANA],
+      ),
+      /at least one hotel/i,
+    );
+  });
+
   test('the two legitimate shapes still write, and mean different things', async () => {
     const list = await createInvite({ covered: [PID_A1, PID_A2] });
     assert.equal(list.ok, true);
@@ -262,9 +330,9 @@ describe('0467 company coverage tenancy', () => {
             and membership_scope = 'company' and ended_at is null`,
         [ORG_A, ACCOUNT_ANA],
       )).rows[0].covered;
-      // The loader passes `toStringArray(covered_property_ids)`, which turns
-      // NULL into [] — that empty array IS the all-including-future signal.
-      return resolveHatCoverage('company', raw ?? [], operated).sort();
+      // NULL travels as NULL now: that is the all-including-future signal, and
+      // flattening it to [] here would be the exact plumbing bug being fixed.
+      return resolveHatCoverage('company', raw, operated).sort();
     };
 
     // Shape 1: no list. Both must say every operated hotel.

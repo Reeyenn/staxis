@@ -517,7 +517,8 @@ describe('the coverage rule has exactly one implementation', () => {
   // company bought after the hat was written would vanish.
   test('a company hat reaches every hotel the company operates right now', () => {
     assert.deepEqual(
-      resolveHatCoverage('company', [], ['h2', 'h1']).sort(),
+      // NULL, not [] — the column being absent is what "every hotel" means.
+      resolveHatCoverage('company', null, ['h2', 'h1']).sort(),
       ['h1', 'h2'],
       'a company hat did not reach the company',
     );
@@ -546,6 +547,9 @@ describe('the coverage rule has exactly one implementation', () => {
     );
     // Empty-after-intersection is the fail-closed answer, never "all of them".
     assert.deepEqual(resolveHatCoverage('company', ['h9'], ['h1', 'h2']), []);
+    // And a literal empty list names nothing, so it reaches nothing. Reading it
+    // as "all" is the silent open-fail this whole change exists to remove.
+    assert.deepEqual(resolveHatCoverage('company', [], ['h1', 'h2']), []);
   });
 
   // Mutation: map the regional manager to organization_admin, or line staff to

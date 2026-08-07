@@ -893,6 +893,10 @@ export const EXPECTED_MIGRATIONS_STATIC: ReadonlyArray<string> = [
   // Audit trigger stops naming the 0463 generated cents mirrors in
   // changedFields; item history shows one entry per real edit again.
   '0465',
+  // A company hat's hotel list is validated at every guarded write, an
+  // explicit-list invitation can actually be accepted, and a hat naming some
+  // hotels no longer reads as the whole company.
+  '0467',
 ];
 
 /**

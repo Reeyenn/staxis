@@ -40,6 +40,7 @@ import {
   operationalRoleForHatAtHotel,
   type HatRole,
   type MembershipScope,
+  type HatCoverage,
 } from '@/lib/company/roles';
 
 /** One job, worn over one scope. A row of `organization_memberships`. */
@@ -185,9 +186,22 @@ const HAT_STRENGTH: Record<HatRole, number> = {
  * round trips on a page load. Two implementations of this rule is exactly how
  * one of them ends up wrong, so there is one and this is it.
  */
+/**
+ * Read a `covered_property_ids` column into the shape this rule needs.
+ *
+ * NULL and `[]` are DIFFERENT ANSWERS and every caller used to flatten them
+ * together with `Array.isArray(x) ? x : []`. NULL is "every hotel this company
+ * operates, including ones bought later"; `[]` is a list that names nothing,
+ * which the CHECK constraint forbids and which must never be read as "all".
+ */
+export function hatCoverageFromColumn(value: unknown): HatCoverage {
+  if (value === null || value === undefined) return null;
+  return toStringArray(value);
+}
+
 export function resolveHatCoverage(
   scope: MembershipScope,
-  coveredPropertyIds: readonly string[],
+  coveredPropertyIds: HatCoverage,
   operatedPropertyIds: Iterable<string>,
 ): string[] {
   const operated = operatedPropertyIds instanceof Set
@@ -214,7 +228,12 @@ export function resolveHatCoverage(
   // does, so a hotel that leaves the company drops out of both at once. The
   // CHECK constraint makes an empty explicit list impossible; if one is ever
   // seen anyway it intersects to nothing, which fails closed.
-  const covered = scope === 'company' && coveredPropertyIds.length === 0
+  // NULL is the only all-hotels answer. A list — even an empty one — names
+  // hotels, and is intersected with what the company operates so a hotel it
+  // sold leaves the hat and the screen at the same moment. An empty list
+  // therefore resolves to nothing, which is the fail-closed answer; the CHECK
+  // constraint makes it unreachable and this is the belt to that braces.
+  const covered = coveredPropertyIds === null
     ? [...operated]
     : coveredPropertyIds.filter((id) => operated.has(id));
   return [...new Set(covered)].sort();
@@ -322,7 +341,7 @@ async function readHats(accountId: string): Promise<MembershipHat[]> {
       jobTitle: row.job_title ?? null,
       coveredPropertyIds: resolveHatCoverage(
         scope,
-        toStringArray(row.covered_property_ids),
+        hatCoverageFromColumn(row.covered_property_ids),
         operated,
       ),
     });
