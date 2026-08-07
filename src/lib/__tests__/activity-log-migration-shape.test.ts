@@ -266,3 +266,52 @@ describe('migration 0415 — activity_log copy has no em dashes', () => {
     assert.match(SQL_0415, /notify pgrst, 'reload schema'/);
   });
 });
+
+/**
+ * The one value 0456 adds, and everything it deliberately does not.
+ *
+ * Source-string assertions for the same reason as 0415's: a migration is a
+ * no-runtime artifact, and the bytes ARE the behavior once Postgres compiles
+ * them. What is pinned here is the shape of a widening — that it widened, that
+ * it kept every value it inherited, and that it opened no door on the way past.
+ */
+describe('migration 0456 — the companion joins the timeline', () => {
+  const RAW_SQL_0456 = readMigration('0456_agent_journal.sql');
+  const SQL_0456 = stripComments(RAW_SQL_0456);
+
+  test('adds staxis_agent to the source domain and keeps every old value', () => {
+    assert.match(SQL_0456, /alter table public\.activity_log\s+add constraint activity_log_source_check/i);
+    assert.match(SQL_0456, /'staxis_agent'/);
+    // A restated CHECK that quietly dropped a value would break every trigger
+    // writing under it, and only at runtime, on the hotel's next event.
+    for (const kept of [
+      'housekeeper_app', 'manager_dashboard', 'admin_dashboard', 'cron',
+      'cua_worker', 'rules_engine', 'pms_sync', 'system', 'sms', 'voice',
+    ]) {
+      assert.ok(SQL_0456.includes(`'${kept}'`), `0456 dropped the '${kept}' source`);
+    }
+  });
+
+  test('creates no table, no policy and no grant', () => {
+    // The whole claim of the migration: the timeline already existed, so the
+    // companion's record costs one CHECK value and nothing else. A grant here
+    // would open a service-role-only table that carries operational counts.
+    assert.doesNotMatch(SQL_0456, /create table/i);
+    assert.doesNotMatch(SQL_0456, /create policy/i);
+    assert.doesNotMatch(SQL_0456, /\bgrant\b/i);
+    assert.doesNotMatch(SQL_0456, /create index/i);
+  });
+
+  test('refuses to run on a project that never applied 0228', () => {
+    // Silently no-opping would leave the journal writing into a CHECK it
+    // believes it widened, and every insert would fail at runtime instead.
+    assert.match(SQL_0456, /to_regclass\('public\.activity_log'\) is null/i);
+    assert.match(SQL_0456, /raise exception/i);
+  });
+
+  test('self-registers and reloads the PostgREST schema cache', () => {
+    assert.match(SQL_0456, /insert into public\.applied_migrations/i);
+    assert.match(SQL_0456, /'0456'/);
+    assert.match(SQL_0456, /notify pgrst, 'reload schema'/i);
+  });
+});

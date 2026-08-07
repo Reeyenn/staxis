@@ -214,12 +214,17 @@ export async function expireIfStale(row: PendingActionRow): Promise<boolean> {
   //
   // Fail-soft, and deliberately AFTER the flip: the record is worth less than
   // the terminal status it is about.
+  //
+  // The summary is the card's OWN copy, unchanged. It is what the person was
+  // shown when they were asked, so it is the only phrasing that can honestly be
+  // quoted back at them later.
+  const summary = buildActionSummary(row.toolName, row.toolArgs, 'en');
   await recordAgentJournalEntry({
     propertyId: row.propertyId,
     eventType: 'agent_action_expired',
-    description: journalExpiredLine({
-      summary: buildActionSummary(row.toolName, row.toolArgs, 'en'),
-    }),
+    description: journalExpiredLine({ summary }),
+    // The person who was ASKED. The recall reads this back and would otherwise
+    // tell somebody they never answered a card they were never shown.
     actorAccountId: row.accountId,
     targetType: 'tool',
     targetId: row.toolName,
@@ -231,7 +236,7 @@ export async function expireIfStale(row: PendingActionRow): Promise<boolean> {
       // adding a to-do and I said no" should not be re-asked tomorrow with
       // different arguments and count as a different subject.
       topic: unfinishedTopic(row.toolName),
-      summary: buildActionSummary(row.toolName, row.toolArgs, 'en'),
+      summary,
     },
   });
   return true;
