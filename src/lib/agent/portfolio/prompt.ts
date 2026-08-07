@@ -63,12 +63,12 @@ import { type PortfolioIdentity } from './identity';
 // v2: the code-owned ceiling gained the never-do-arithmetic rule (2026-07-26).
 // The stamp is part of the cached prefix's identity, so it moves whenever the
 // text does — otherwise a stale cache entry could serve the old ceiling.
-export const PORTFOLIO_MODE_VERSION = 'portfolio-mode-v3';
+export const PORTFOLIO_MODE_VERSION = 'portfolio-mode-v4';
 
 const COMPANY_ROLE_WORDS: Record<CompanyScopeRole, string> = {
   owner: 'an owner of this management company',
-  vp: 'a company-level operations leader (VP) who oversees these hotels',
-  finance: 'the company\'s finance lead',
+  regional_manager:
+    'a regional manager who oversees the hotels they are responsible for',
 };
 
 /**

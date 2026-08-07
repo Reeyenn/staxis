@@ -38,7 +38,6 @@ import {
   type CompanyAccessData,
   type CompanyAccessRequest,
   type CompanyAccessPermissions,
-  type CompanyInvitation,
   type CompanyMembership,
   type CompanyOrganization,
   type CompanyPortfolio,
@@ -74,6 +73,7 @@ import {
 } from './_components/AccessWorkflowDialogs';
 import { AccessEditorDialog } from './_components/AccessEditorDialog';
 import { HotelTeamPanel } from './_components/HotelTeamPanel';
+import CompanyInvitePanel from './_components/CompanyInvitePanel';
 import { HotelSwitcher } from './_components/HotelSwitcher';
 import { LegacyOwnershipTransferPanel } from './_components/LegacyOwnershipTransferPanel';
 import { CompanyStructureManager } from './_components/CompanyStructureManager';
@@ -234,7 +234,6 @@ function normalizeCompanyData(value: CompanyAccessData | null | undefined): Comp
     ? value.viewerContext
     : undefined;
   const memberships = Array.isArray(value.memberships) ? value.memberships : [];
-  const invitations = Array.isArray(value.invitations) ? value.invitations : [];
   const requests = Array.isArray(value.requests) ? value.requests : [];
   return {
     organizations: Array.isArray(value.organizations) ? value.organizations : [],
@@ -248,7 +247,6 @@ function normalizeCompanyData(value: CompanyAccessData | null | undefined): Comp
           record: { ...entry.record, canRevoke: false },
         }))
       : [],
-    invitations,
     requests,
     activity: Array.isArray(value.activity) ? value.activity : [],
     permissions: { ...EMPTY_COMPANY_ACCESS.permissions, ...(value.permissions ?? {}) },
@@ -954,6 +952,12 @@ function CompanyAccessContent() {
               ) : tab === 'people' ? (
                 <PeoplePanel
                   key={activeProperty?.id ?? 'no-hotel'}
+                  companyInviteOrganizationId={
+                    selectedPortfolioCompany?.organizationId
+                      ?? (resolved.organizations.length === 1
+                        ? resolved.organizations[0]!.id
+                        : null)
+                  }
                   data={resolved}
                   staff={currentStaff}
                   hotelRosterUnavailable={currentStaffUnavailable}
@@ -1105,7 +1109,7 @@ export function HotelsPanel({ data, structure, structureError, structureLoading,
  * could appear in both with nothing on screen explaining why. HotelTeamPanel
  * now merges them.
  */
-export function PeoplePanel({ data, staff, hotelRosterUnavailable, rosterSettled = true, lang, currentUser, currentAccountId, activeProperty, portfolioMode = false, canManageTeam, canViewTeam, canInviteAccounts, canViewWages, canAddOperationalStaff, peopleController, inviteDialogOpen, onInviteDialogOpenChange, onChanged, onLifecycleAction }: {
+export function PeoplePanel({ data, staff, hotelRosterUnavailable, rosterSettled = true, lang, currentUser, currentAccountId, activeProperty, portfolioMode = false, companyInviteOrganizationId = null, canManageTeam, canViewTeam, canInviteAccounts, canViewWages, canAddOperationalStaff, peopleController, inviteDialogOpen, onInviteDialogOpenChange, onChanged, onLifecycleAction }: {
   data: CompanyAccessData;
   staff: StaffMember[];
   hotelRosterUnavailable: boolean;
@@ -1117,6 +1121,7 @@ export function PeoplePanel({ data, staff, hotelRosterUnavailable, rosterSettled
   portfolioMode?: boolean;
   canManageTeam: boolean;
   canViewTeam?: boolean;
+  companyInviteOrganizationId?: string | null;
   canInviteAccounts: boolean;
   canViewWages: boolean;
   canAddOperationalStaff: boolean;
@@ -1169,18 +1174,23 @@ export function PeoplePanel({ data, staff, hotelRosterUnavailable, rosterSettled
     ));
   return (
     <div className={styles.stack}>
-      {!showHotelPeople && (visibleMemberships.length > 0 || data.invitations.length > 0 || data.permissions.manageInvitations) ? (
+      {/*
+        The company view's own invite surface. It owns the company case end to
+        end rather than borrowing the hotel dialog, which is only mounted when a
+        hotel is selected and asks a different question.
+      */}
+      {!showHotelPeople && companyInviteOrganizationId ? (
+        <CompanyInvitePanel
+          organizationId={companyInviteOrganizationId}
+          styles={styles as unknown as Record<string, string>}
+        />
+      ) : null}
+      {!showHotelPeople && (visibleMemberships.length > 0 || data.permissions.manageInvitations) ? (
         <section className={styles.sectionBlock}>
           <div className={styles.headingWithAction}>
             <SectionHeading
-              title={'Memberships and invitations'}
+              title={'Memberships'}
             />
-            {!activeProperty && !canManageTeam && canInviteAccounts ? (
-              <button type="button" className={styles.primaryButton} onClick={() => onInviteDialogOpenChange(true)}>
-                <UserPlus size={16} aria-hidden="true" />
-                {'Invite company member'}
-              </button>
-            ) : null}
           </div>
           {visibleMemberships.length > 0 ? (
             <div className={styles.listCard} role="list">
@@ -1196,21 +1206,6 @@ export function PeoplePanel({ data, staff, hotelRosterUnavailable, rosterSettled
                   showMembershipActions={!adminPreview}
                 />
               ))}
-            </div>
-          ) : null}
-          {data.invitations.length > 0 ? (
-            <div className={styles.peopleInvitations}>
-              <h3>{'Pending invitations'}</h3>
-              <div className={styles.listCard} role="list">
-                {data.invitations.map((invitation) => (
-                  <InvitationRow
-                    key={invitation.id}
-                    invitation={invitation}
-                    lang={lang}
-                    onLifecycleAction={onLifecycleAction}
-                  />
-                ))}
-              </div>
             </div>
           ) : null}
         </section>
@@ -2062,33 +2057,6 @@ function MembershipRow({ membership, organization, isCurrentUser, lang, onLifecy
               ) : null}
             </div>
           </details>
-        ) : null}
-      </div>
-    </div>
-  );
-}
-
-function InvitationRow({ invitation, lang, onLifecycleAction }: {
-  invitation: CompanyInvitation;
-  lang: string;
-  onLifecycleAction: (action: CompanyLifecycleAction) => void;
-}) {
-  return (
-    <div className={styles.accessWorkRow} role="listitem">
-      <span className={styles.workIcon}><Inbox size={17} aria-hidden="true" /></span>
-      <div className={styles.rowBody}>
-        <strong>{invitation.email}</strong>
-        <span>{accessProfileLabel(invitation.accessProfile)} · {invitation.scopeLabel} · {formatDate(invitation.expiresAt, lang)}</span>
-      </div>
-      <div className={styles.requestRowActions}>
-        <span className={`${styles.status} ${statusClass(invitation.status)}`}>{statusLabel(invitation.status, lang)}</span>
-        {invitation.canCancel ? (
-          <button type="button" className={styles.reviewButton} onClick={() => onLifecycleAction({
-            kind: 'cancel_invitation',
-            id: invitation.id,
-            targetLabel: invitation.email,
-            detailLabel: `${accessProfileLabel(invitation.accessProfile)} · ${invitation.scopeLabel}`,
-          })}>{'Cancel'}</button>
         ) : null}
       </div>
     </div>

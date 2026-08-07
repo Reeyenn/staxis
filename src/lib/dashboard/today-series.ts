@@ -98,9 +98,13 @@ function lcg(seed: number): () => number {
 
 /**
  * ~2 years of daily metrics ending today, scaled to `totalRooms`.
- * When `anchorOcc` is a real, positive occupancy %, today's row is pinned
- * to it (and revenue/profit follow), so the chart's "today" matches the
- * live ring + KPI strip.
+ * When `anchorOcc` is a real occupancy %, today's row is pinned to it (and
+ * revenue/profit follow), so the chart's "today" matches the live ring + KPI
+ * strip.
+ *
+ * A real reading of 0 anchors like any other. It used to be dropped by a
+ * `> 0` test, which left today's row on its generated 46-98% occupancy and
+ * printed that invented figure in the ring center as though it were measured.
  */
 export function buildHistory(totalRooms = 108, anchorOcc?: number | null): HistRow[] {
   const cap = totalRooms > 0 ? totalRooms : 108;
@@ -130,9 +134,9 @@ export function buildHistory(totalRooms = 108, anchorOcc?: number | null): HistR
     });
   }
   // Anchor today to the live occupancy when we have it.
-  if (anchorOcc != null && anchorOcc > 0) {
+  if (anchorOcc != null && anchorOcc >= 0) {
     const last = out[DAYS_2Y - 1];
-    const occ = Math.max(1, Math.min(100, Math.round(anchorOcc)));
+    const occ = Math.max(0, Math.min(100, Math.round(anchorOcc)));
     const sold = Math.round((occ / 100) * cap);
     const revenue = sold * last.adr;
     const revpar = Math.round(revenue / cap);

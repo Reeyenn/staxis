@@ -76,7 +76,13 @@ export const AUTHORITY_ACTION_KINDS = [
 ] as const;
 export type AuthorityActionKind = (typeof AUTHORITY_ACTION_KINDS)[number];
 
-export const AUTHORITY_APPROVER_ROLES = ['owner', 'vp', 'finance', 'general_manager'] as const;
+// Company roles became Owner + Regional Manager in 0464. `finance` is gone as a
+// word anybody can hold, so it is gone as a word anybody can be asked to sign.
+// Stored rules that said `finance` (and `vp`) are converted to
+// `regional_manager` by that migration, because the same humans still sign.
+export const AUTHORITY_APPROVER_ROLES = [
+  'owner', 'regional_manager', 'general_manager',
+] as const;
 export type AuthorityApproverRole = (typeof AUTHORITY_APPROVER_ROLES)[number];
 
 export function isAuthorityActionKind(value: unknown): value is AuthorityActionKind {
@@ -127,10 +133,16 @@ const ACTION_PATTERNS: ReadonlyArray<readonly [AuthorityActionKind, RegExp]> = [
  * anything a negation excluded, and refuses to pick when two roles genuinely
  * survive. This array is now only a vocabulary — the patterns, not a priority.
  */
+// `finance` deliberately has NO pattern any more. The role no longer exists, and
+// the safe answer to "invoices over $1,000 need finance approval" is to read no
+// approver at all — which files the sentence as prose — rather than to quietly
+// store a DIFFERENT role than the one the company wrote. Guessing is the failure
+// mode here, not silence. The company can rewrite the sentence naming a job that
+// exists. The VP words stay as aliases for `regional_manager` because that is
+// still what plenty of companies call the person.
 const APPROVER_PATTERNS: ReadonlyArray<readonly [AuthorityApproverRole, RegExp]> = [
   ['general_manager', /\b(general managers?|gms?)\b/gi],
-  ['vp', /\b(vps?|v\.p\.|vice presidents?|regional (?:managers?|directors?)?|regionals?)\b/gi],
-  ['finance', /\b(finance|controllers?|accounting|cfos?)\b/gi],
+  ['regional_manager', /\b(vps?|v\.p\.|vice presidents?|regional (?:managers?|directors?)?|regionals?)\b/gi],
   ['owner', /\b(owners?|ownership|principals?)\b/gi],
 ];
 
@@ -460,8 +472,7 @@ const ACTION_LABELS: Record<AuthorityActionKind, Bilingual> = {
 
 const APPROVER_LABELS: Record<AuthorityApproverRole, Bilingual> = {
   owner: { en: 'the owner', es: 'El propietario' },
-  vp: { en: 'the VP', es: 'El supervisor regional' },
-  finance: { en: 'finance', es: 'Finanzas' },
+  regional_manager: { en: 'the regional manager', es: 'the regional manager' },
   general_manager: { en: 'the GM', es: 'El gerente' },
 };
 
@@ -505,8 +516,7 @@ export function describeAuthorityRule(rule: AuthorityReading, lang: 'en' | 'es')
  */
 const APPROVER_LABELS_MID: Record<AuthorityApproverRole, Bilingual> = {
   owner: { en: 'the owner', es: 'el propietario' },
-  vp: { en: 'the VP', es: 'el supervisor regional' },
-  finance: { en: 'finance', es: 'Finanzas' },
+  regional_manager: { en: 'the regional manager', es: 'the regional manager' },
   general_manager: { en: 'the GM', es: 'el gerente' },
 };
 

@@ -49,7 +49,7 @@ import { AssistantMarkdown } from './AssistantMarkdown';
 import { AiActivityButton } from './AiActivityButton';
 import { PeekTail, PEEK_TAIL_CSS } from './PeekTail';
 import { FeedbackButton } from '@/components/layout/FeedbackButton';
-import { useCompanion } from '@/components/companion/useCompanion';
+import { showingReplies, useCompanion } from '@/components/companion/useCompanion';
 import { TraceLayer } from '@/components/companion/TraceLayer';
 import { PointerPopup } from '@/components/companion/PointerPopup';
 import { anchorFor, type CompanionAnchor } from '@/lib/companion/anchors';
@@ -74,6 +74,7 @@ import {
   type AssignmentNotice,
 } from '@/lib/companion/notices';
 import { pageForPath, resolveDestination, type CompanionPage } from '@/lib/companion/pages';
+import { COMPANION_REPLIES_MAX, type CompanionReply } from '@/lib/companion/replies';
 import {
   clampDockPosition,
   containScroll,
@@ -492,11 +493,20 @@ export function AskStaxisBar() {
   const peekKey = companion.peek?.text ?? null;
 
   const liveOffer = companion.liveOffer;
-  const offerActions = liveOffer?.actions ?? [];
+  // THE SHOWING'S replies, not the stored offer's.
+  //
+  // The two agree (the server derives the offer's set from the same table), but
+  // the showing is the one that exists BEFORE the round trip comes back, and a
+  // peek whose buttons appear half a second after its sentence is a peek people
+  // press through. The stored set is the fallback for the window where the
+  // showing has been cleared but the turn is still live.
+  const offerReplies = showingReplies(companion.showing).length > 0
+    ? showingReplies(companion.showing)
+    : (liveOffer?.replies ?? []);
   // A pill carrying buttons is a question, and a question that withdraws itself
   // while you are reading it has answered itself No on your behalf. See
   // peekPersists for the whole argument.
-  const peekStays = peekPersists({ hasActions: offerActions.length > 0 });
+  const peekStays = peekPersists({ hasActions: offerReplies.length > 0 });
 
   useEffect(() => {
     if (!shouldAutoPeek({
@@ -1088,12 +1098,12 @@ export function AskStaxisBar() {
               <CompanionBlock
                 lines={[
                   showing.speech.kind === 'welcome' ? showing.speech.greeting : showing.speech.sentence,
+                  // Null on every kind that asks nothing. The block drops it.
                   showing.question,
                 ]}
-                yesLabel={labels.yes}
-                noLabel={labels.no}
-                onYes={companion.answerYes}
-                onNo={companion.answerNo}
+                replies={showing.replies}
+                escape={companion.escape}
+                onReply={companion.answer}
                 onQuiet={companion.quiet}
                 quietLabel={labels.quietForNow}
               />
@@ -1102,38 +1112,28 @@ export function AskStaxisBar() {
               <CompanionBlock
                 lines={[showing.text]}
                 example={showing.example}
-                yesLabel={labels.yes}
-                noLabel={labels.dismiss}
-                onYes={companion.answerYes}
-                onNo={companion.dismiss}
+                replies={showing.replies}
+                onReply={companion.answer}
                 onQuiet={companion.quiet}
                 quietLabel={labels.quietForNow}
               />
             )}
             {/* The batched notices line. One utterance about however many
                 things landed, with somewhere to go and a way to close it. It
-                is a message rather than a question, so a No records nothing:
+                is a message rather than a question, so a close records nothing:
                 see the no-topic note in useCompanion. */}
             {showing.kind === 'notices' && (
               <CompanionBlock
                 lines={[showing.line]}
-                yesLabel={labels.showNotices}
-                noLabel={labels.dismiss}
-                onYes={companion.answerYes}
-                onNo={companion.answerNo}
+                replies={showing.replies}
+                onReply={companion.answer}
               />
             )}
             {showing.kind === 'arrived' && (
               <CompanionBlock
                 lines={[showing.line]}
-                yesLabel={
-                  companion.tourStep !== null && companion.tourStep + 1 < companion.tour.length
-                    ? `Next: ${companion.tour[companion.tourStep + 1].label}`
-                    : null
-                }
-                noLabel={labels.close}
-                onYes={companion.nextTourStep}
-                onNo={companion.dismiss}
+                replies={showing.replies}
+                onReply={companion.answer}
               />
             )}
             {/* The one thing that may only be said to somebody who opened this
@@ -1142,10 +1142,8 @@ export function AskStaxisBar() {
             {showing.kind === 'none' && companion.trace.panelAsk && (
               <CompanionBlock
                 lines={[companion.trace.panelAsk.sentence]}
-                yesLabel={labels.yes}
-                noLabel={labels.no}
-                onYes={companion.trace.acceptPanelAsk}
-                onNo={companion.trace.declinePanelAsk}
+                replies={companion.trace.panelAsk.replies}
+                onReply={companion.trace.answerPanelAsk}
                 onQuiet={companion.quiet}
                 quietLabel={labels.quietForNow}
               />
@@ -1514,17 +1512,20 @@ export function AskStaxisBar() {
           </span>
           {peekStays && liveOffer && (
             <span className="asx-peek-acts">
-              {offerActions.map((action, i) => (
+              {/* ─── EVERY BUTTON DOES ITS OWN THING NOW ───────────────
+                  This used to send every non-`no` tap to answerYes, which meant
+                  a pill could show three buttons and run one of them whichever
+                  was pressed. The tap reports an ID and the hook resolves the
+                  intent, so "It is done" and "Somebody's been called" are two
+                  different answers here exactly as they are on the card. */}
+              {offerReplies.map((reply) => (
                 <button
-                  key={`${action.kind}-${i}`}
+                  key={reply.id}
                   type="button"
-                  className={`asx-peek-btn${action.kind === 'no' ? '' : ' asx-peek-btn-yes'}`}
-                  onClick={() => {
-                    if (action.kind === 'no') companion.answerNo();
-                    else companion.answerYes();
-                  }}
+                  className={`asx-peek-btn${reply.intent.kind === 'close' ? '' : ' asx-peek-btn-yes'}`}
+                  onClick={() => companion.answer(reply.id)}
                 >
-                  {action.label}
+                  {reply.label}
                 </button>
               ))}
               {/* Waved away rather than answered. Counted by the manners ledger
@@ -1610,33 +1611,65 @@ function scrollerFor(target: EventTarget | null, slab: HTMLElement): HTMLElement
 }
 
 // ── The companion's one thing, inside the panel ───────────────────────────
+//
+// ─── IT RENDERS A LIST NOW, AND THAT IS THE POINT ──────────────────────────
+//
+// This used to take `yesLabel` and `noLabel` and hardcode two buttons. That
+// signature is what forced every companion sentence to be a yes/no question:
+// the renderer could only draw two, so the copy had to fit two, so a statement
+// about a fire panel got "Want me to take you to Staxis?" and a Yes.
+//
+// It now walks whatever `replies` it is handed and reports back an ID. It
+// decides nothing: not how many buttons there are, not what they say, and not
+// what any of them means. The first one is styled as the lead because the reply
+// sets are ordered, and the order is the source surface's own.
 function CompanionBlock({
-  lines, example, yesLabel, noLabel, onYes, onNo, onQuiet, quietLabel,
+  lines, example, replies, escape, onReply, onQuiet, quietLabel,
 }: {
-  lines: string[];
+  lines: (string | null)[];
   example?: string;
-  yesLabel: string | null;
-  noLabel: string;
-  onYes: () => void;
-  onNo: () => void;
+  replies: readonly CompanionReply[];
+  /** The Something else way out, or null when nothing is being asked. */
+  escape?: CompanionReply | null;
+  onReply: (replyId: string) => void;
   onQuiet?: () => void;
   quietLabel?: string;
 }) {
+  const shown = replies.slice(0, COMPANION_REPLIES_MAX);
   return (
     <div className="asx-offer">
-      {lines.filter(Boolean).map((line, i) => (
+      {lines.filter((l): l is string => Boolean(l)).map((line, i) => (
         <p key={i} className="asx-turn-s">{line}</p>
       ))}
       {example && <p className="asx-eg">{example}</p>}
-      <div className="asx-acts">
-        {yesLabel && (
-          <button type="button" className="asx-btn asx-btn-primary" onClick={onYes}>{yesLabel}</button>
-        )}
-        <button type="button" className="asx-btn" onClick={onNo}>{noLabel}</button>
-        {onQuiet && quietLabel && (
-          <button type="button" className="asx-quiet" onClick={onQuiet}>{quietLabel}</button>
-        )}
-      </div>
+      {(shown.length > 0 || escape || onQuiet) && (
+        <div className="asx-acts">
+          {shown.map((reply, i) => (
+            <button
+              key={reply.id}
+              type="button"
+              className={i === 0 ? 'asx-btn asx-btn-primary' : 'asx-btn'}
+              onClick={() => onReply(reply.id)}
+            >
+              {reply.label}
+            </button>
+          ))}
+          {/* Last, and quieter than the answers, because it is not one of them.
+              It is the way out for somebody the three did not fit. */}
+          {escape && (
+            <button
+              type="button"
+              className="asx-btn asx-btn-else"
+              onClick={() => onReply(escape.id)}
+            >
+              {escape.label}
+            </button>
+          )}
+          {onQuiet && quietLabel && (
+            <button type="button" className="asx-quiet" onClick={onQuiet}>{quietLabel}</button>
+          )}
+        </div>
+      )}
     </div>
   );
 }
@@ -2056,6 +2089,11 @@ button.asx-notice-row:focus-visible{outline:2px solid var(--asx-brand);outline-o
 .asx-btn-primary{padding:0 15px;background:var(--asx-sage-l);border-color:var(--asx-sage-l);
   color:var(--asx-ink);font-weight:600;}
 .asx-btn-primary:hover{background:#B0C6B7;}
+/* Something else. Quieter than the answers, because it is not one of them: it
+   is the way out for somebody the three did not fit. No border, so it reads as
+   a link beside three buttons rather than as a fourth choice competing. */
+.asx-btn-else{border-color:transparent;color:var(--asx-sage-l);padding:0 8px;}
+.asx-btn-else:hover{background:rgba(158,183,166,.10);color:var(--asx-white);}
 .asx-quiet{background:transparent;border:none;padding:0 4px;cursor:pointer;font:inherit;font-size:11.5px;
   color:var(--asx-sage-l);text-decoration:underline;text-underline-offset:2px;}
 .asx-quiet:hover{color:var(--asx-white);}

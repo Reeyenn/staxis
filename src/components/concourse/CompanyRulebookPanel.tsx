@@ -86,7 +86,7 @@ interface RulebookData {
   audience: 'company' | 'hotel';
   organizationId: string;
   canEdit: boolean;
-  companyRole: 'owner' | 'vp' | 'finance' | null;
+  companyRole: 'owner' | 'regional_manager' | null;
   viewOnlyBecauseHotelJob: boolean;
   settings?: {
     gms_see_rulebook: string | null;

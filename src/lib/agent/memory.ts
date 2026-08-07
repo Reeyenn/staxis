@@ -35,11 +35,11 @@ import {
   sortOffers,
   OFFER_TEXT_MAX,
   type CompanionOffer,
-  type CompanionOfferAction,
   type CompanionOfferAnswer,
   type CompanionOfferKind,
   type CompanionOfferReceipt,
 } from '@/lib/companion/offers';
+import type { CompanionReply } from '@/lib/companion/replies';
 
 // ─── Public types ──────────────────────────────────────────────────────────
 
@@ -1022,7 +1022,10 @@ export async function appendCompanionOffer(opts: {
   kind: CompanionOfferKind;
   topic: string | null;
   page: string | null;
-  actions: readonly CompanionOfferAction[];
+  /** Code-owned, built by whatever built the sentence. See replies.ts. The
+   *  legacy `actions` list is derived from this inside encodeOfferPayload, so
+   *  there is no second list here for the two to disagree through. */
+  replies: readonly CompanionReply[];
   receipt?: CompanionOfferReceipt | null;
   now: Date;
 }): Promise<CompanionOffer | null> {
@@ -1031,7 +1034,7 @@ export async function appendCompanionOffer(opts: {
     kind: opts.kind,
     topic: opts.topic,
     page: opts.page,
-    actions: opts.actions,
+    replies: opts.replies,
     // A receipt is a statement, not a question, so it is born resolved.
     state: opts.kind === 'receipt' ? 'accepted' : 'pending',
     spokenAt,
@@ -1121,7 +1124,7 @@ export async function stampCompanionOffer(opts: {
         kind: withReceipt.kind,
         topic: withReceipt.topic,
         page: withReceipt.page,
-        actions: withReceipt.actions,
+        replies: withReceipt.replies,
         state: withReceipt.state,
         spokenAt: withReceipt.spokenAt,
         answeredAt: withReceipt.answeredAt,

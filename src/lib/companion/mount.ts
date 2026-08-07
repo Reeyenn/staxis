@@ -43,7 +43,6 @@ const OFF_LIMITS_PREFIXES: readonly string[] = [
   '/signup',
   '/join',
   '/invite',
-  '/company-invite',
   '/onboard',
   '/consent',
   '/privacy',

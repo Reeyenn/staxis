@@ -121,9 +121,12 @@ const STRINGS = {
     colOrderNow: 'Order now',
     colOrderSoon: 'Order soon',
     colStocked: 'Stocked',
-    subBelowHalfPar: 'below half par',
-    subUnderPar: 'under par',
-    subAtOrAbovePar: 'at or above par',
+    // Wording tracks the house 70/30 rule in src/lib/stock-status.ts. Keep the
+    // three in step with it: a column subtitle that names a threshold the code
+    // no longer uses is worse than no subtitle at all.
+    subCritical: 'under 30% of par',
+    subLow: '30% to 70% of par',
+    subGood: '70% of par or more',
     nothingHere: 'Nothing here.',
     // ── Not-counted-yet (new-hotel day 1) ──
     notCountedTitle: 'Not counted yet',

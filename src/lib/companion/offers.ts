@@ -44,6 +44,15 @@
 // this file that knows the manners ledger exists.
 // ═══════════════════════════════════════════════════════════════════════════
 
+import { isCompanionPageKey } from './pages';
+import {
+  COMPANION_RECORD_VERDICTS,
+  COMPANION_REPLY_INTENT_KINDS,
+  type CompanionRecordVerdict,
+  type CompanionReply,
+  type CompanionReplyIntent,
+} from './replies';
+
 /**
  * What kind of turn this is.
  *
@@ -81,16 +90,29 @@ export const COMPANION_OFFER_STATES: readonly CompanionOfferState[] = [
   'pending', 'accepted', 'declined', 'dismissed', 'expired',
 ];
 
-/** One button on an offer. `kind` is what the browser does about it. */
+/**
+ * One button on an offer, in the shape offers were FIRST written in.
+ *
+ * ─── SUPERSEDED BY `replies`, AND KEPT ANYWAY ──────────────────────────────
+ *
+ * Every offer row written before the reply registry landed carries these and
+ * nothing else, and `OFFER_PAYLOAD_VERSION` was deliberately NOT bumped: the
+ * parser refuses any version but 1, so a bump would have made every companion
+ * turn a hotel has ever been shown vanish out of its own conversation. So
+ * version 1 grew an optional field instead, and this type is what the old rows
+ * still say.
+ *
+ * It survives in two directions. New rows carry `actions` DERIVED from their
+ * replies, so anything still reading this field reads something true. Old rows
+ * have their replies RECONSTRUCTED from this field, so the new renderers can
+ * dispatch a turn from last week by intent exactly as they dispatch today's.
+ *
+ * `show` draws the pattern in the page, `walk` navigates first, `seed` hands a
+ * sentence to the chat, `no` closes it.
+ */
 export interface CompanionOfferAction {
   /** The label, already in the companion's voice. */
   readonly label: string;
-  /**
-   * `show` draws the pattern in the page, `walk` navigates first, `seed` hands
-   * a sentence to the chat, `no` closes it. Nothing here is a server action:
-   * an offer never writes anything, and the one thing that does (the trace's
-   * own button) lives on the drawn card where its receipt can be read.
-   */
   readonly kind: 'show' | 'walk' | 'seed' | 'no';
 }
 
@@ -120,7 +142,17 @@ export interface CompanionOffer {
   readonly topic: string | null;
   /** The screen the pattern is drawn on, when there is one. */
   readonly page: string | null;
+  /** The old shape. Derived from `replies` on every row written since. */
   readonly actions: readonly CompanionOfferAction[];
+  /**
+   * What a person may say back, and what each answer MEANS.
+   *
+   * Built by the code that built the sentence (see replies.ts) and stored with
+   * it, so a turn re-read tomorrow still offers the answers it offered when it
+   * was said. Reconstructed from `actions` for a row written before the
+   * registry existed, which is what keeps every historical turn dispatchable.
+   */
+  readonly replies: readonly CompanionReply[];
   readonly state: CompanionOfferState;
   /** ISO. When it was said. */
   readonly spokenAt: string;
@@ -273,7 +305,21 @@ export function offerStateNote(state: CompanionOfferState): string | null {
 // cannot honestly attribute, and showing a mangled sentence in the companion's
 // voice is worse than showing nothing.
 
-/** The discriminator inside `tool_args`. Bumped only if the shape changes. */
+/**
+ * The discriminator inside `tool_args`.
+ *
+ * ─── DO NOT BUMP THIS ──────────────────────────────────────────────────────
+ *
+ * `parseOfferRow` refuses any version but this one and returns null, and a null
+ * makes the whole row invisible. So bumping it does not "migrate" anything: it
+ * silently deletes every companion turn every hotel has ever been shown, out of
+ * conversations people can still scroll. The reply registry was added by
+ * growing an OPTIONAL field at version 1 for exactly this reason, and any
+ * future field should be added the same way.
+ *
+ * A bump is only ever correct if the meaning of an existing field changes, and
+ * even then the old rows need a reader, not a refusal.
+ */
 export const OFFER_PAYLOAD_VERSION = 1;
 
 /** Longest sentence an offer may carry into the thread. */
@@ -306,18 +352,86 @@ function cleanText(v: unknown, max: number): string {
  * /api/agent/metrics), so naming this one would quietly inflate the tool-usage
  * numbers with sentences that never called a tool.
  */
-export function encodeOfferPayload(offer: Omit<CompanionOffer, 'id' | 'text'>): RawRecord {
+export function encodeOfferPayload(
+  offer: Omit<CompanionOffer, 'id' | 'text' | 'actions'> & { actions?: readonly CompanionOfferAction[] },
+): RawRecord {
+  const replies = offer.replies.slice(0, OFFER_ACTIONS_MAX);
   return {
     staxisCompanionOffer: OFFER_PAYLOAD_VERSION,
     kind: offer.kind,
     topic: offer.topic,
     page: offer.page,
-    actions: offer.actions.map((a) => ({ label: a.label, kind: a.kind })),
+    // BOTH, always, and `actions` is derived rather than passed in. Two
+    // independently-written lists for one set of buttons is how a label ends up
+    // describing a thing the other list no longer does.
+    actions: legacyActionsFor(replies),
+    replies: replies.map(encodeReply),
     state: offer.state,
     spokenAt: offer.spokenAt,
     answeredAt: offer.answeredAt,
     receipt: offer.receipt,
   };
+}
+
+function encodeReply(reply: CompanionReply): RawRecord {
+  return {
+    id: reply.id,
+    label: reply.label,
+    intent: { ...reply.intent },
+    ...(reply.confirm ? { confirm: reply.confirm } : {}),
+  };
+}
+
+/**
+ * The old two-field shape, computed from the new one.
+ *
+ * Not a translation table anybody has to keep in step: it is a fold of seven
+ * intents onto the four verbs the old renderer knew. `record` and `act` become
+ * `show` because that is what the old browser would do with them, which is
+ * nothing consequential. An old client cannot be given a button that writes.
+ */
+export function legacyActionsFor(
+  replies: readonly CompanionReply[],
+): CompanionOfferAction[] {
+  return replies.map((reply) => ({
+    label: reply.label,
+    kind: ((): CompanionOfferAction['kind'] => {
+      switch (reply.intent.kind) {
+        case 'walk': return 'walk';
+        case 'seed': return 'seed';
+        case 'close': return 'no';
+        case 'quiet': return 'no';
+        default: return 'show';
+      }
+    })(),
+  }));
+}
+
+/**
+ * Replies for a row that predates the registry.
+ *
+ * The old payload knew a verb and a label and nothing else, so the intents
+ * recovered here are the conservative reading of each: a `walk` needs a page
+ * that is still in the allowlist or it is not a walk, and a `seed` has lost the
+ * sentence it carried, which reads as "open the conversation about this
+ * statement" — the same thing the Something else escape does. Nothing is
+ * recovered as `record` or `act`: an old row never carried an id to write
+ * against, and inventing one would be the one failure this whole layer is
+ * about.
+ */
+export function repliesFromLegacyActions(
+  actions: readonly CompanionOfferAction[],
+  page: string | null,
+): CompanionReply[] {
+  return actions.map((action, i) => {
+    const intent: CompanionReplyIntent = ((): CompanionReplyIntent => {
+      if (action.kind === 'no') return { kind: 'close' };
+      if (action.kind === 'seed') return { kind: 'seed', text: '' };
+      if (action.kind === 'walk' && isCompanionPageKey(page)) return { kind: 'walk', page };
+      return { kind: 'show' };
+    })();
+    return { id: `legacy:${i}`, label: action.label, intent };
+  });
 }
 
 /**
@@ -370,6 +484,13 @@ export function parseOfferRow(row: {
     ? raw.page
     : null;
 
+  // Present on every row written since the registry landed; absent on every row
+  // written before it. An absent list is RECONSTRUCTED rather than left empty,
+  // because an empty list renders a turn from last week with no way to answer
+  // it — the silent dead control this whole layer exists to stop shipping.
+  const parsedReplies = parseReplies(raw.replies);
+  const replies = parsedReplies ?? repliesFromLegacyActions(actions, page);
+
   let receipt: CompanionOfferReceipt | null = null;
   if (isRecord(raw.receipt)) {
     const table = cleanText(raw.receipt.table, 60);
@@ -395,11 +516,73 @@ export function parseOfferRow(row: {
     topic,
     page,
     actions,
+    replies,
     state,
     spokenAt,
     answeredAt: isIso(raw.answeredAt) ? raw.answeredAt : null,
     receipt,
   };
+}
+
+/**
+ * Read a stored reply list, or null when there is not one to read.
+ *
+ * NULL AND EMPTY MEAN DIFFERENT THINGS HERE, which is the whole reason this
+ * returns a nullable. Null is "this row predates the registry, go and
+ * reconstruct"; an empty array is "this turn genuinely offered nothing", which
+ * is what the once-a-day hello on a quiet morning is. Folding them together
+ * would either resurrect buttons on a statement or strip them off a question.
+ *
+ * Every intent is re-checked against the closed registry on the way out. The
+ * payload is jsonb written by a route, so a stored intent is no more trusted
+ * than a request body: an unreadable one drops that reply rather than the row,
+ * because one missing button is a smaller failure than a turn that vanishes.
+ */
+function parseReplies(raw: unknown): CompanionReply[] | null {
+  if (!Array.isArray(raw)) return null;
+  const out: CompanionReply[] = [];
+  for (const entry of raw.slice(0, OFFER_ACTIONS_MAX)) {
+    if (!isRecord(entry)) continue;
+    const id = cleanText(entry.id, 40);
+    const label = cleanText(entry.label, 40);
+    const intent = parseIntent(entry.intent);
+    if (!id || !label || !intent) continue;
+    const confirm = cleanText(entry.confirm, 120);
+    out.push({ id, label, intent, ...(confirm ? { confirm } : {}) });
+  }
+  return out;
+}
+
+/** One intent, or null. The union is closed and so is this. */
+function parseIntent(raw: unknown): CompanionReplyIntent | null {
+  if (!isRecord(raw)) return null;
+  const kind = raw.kind;
+  if (typeof kind !== 'string') return null;
+  if (!(COMPANION_REPLY_INTENT_KINDS as readonly string[]).includes(kind)) return null;
+  switch (kind) {
+    case 'record': {
+      const verdict = cleanText(raw.verdict, 40);
+      const findingId = cleanText(raw.findingId, 60);
+      if (!verdict || !findingId) return null;
+      if (!(COMPANION_RECORD_VERDICTS as readonly string[]).includes(verdict)) return null;
+      return { kind, verdict: verdict as CompanionRecordVerdict, findingId };
+    }
+    case 'act': {
+      const actionId = cleanText(raw.actionId, 60);
+      return actionId ? { kind, actionId } : null;
+    }
+    case 'walk':
+      return isCompanionPageKey(raw.page) ? { kind, page: raw.page } : null;
+    case 'seed':
+      return { kind, text: cleanText(raw.text, OFFER_TEXT_MAX) };
+    case 'quiet':
+      return { kind, scope: 'topic' };
+    case 'show':
+    case 'close':
+      return { kind };
+    default:
+      return null;
+  }
 }
 
 /**
@@ -423,6 +606,10 @@ export function parseOfferWire(value: unknown): CompanionOffer | null {
       topic: value.topic,
       page: value.page,
       actions: value.actions,
+      // Passed through rather than dropped. Undefined here is the same signal
+      // it is on a stored row: "there was no reply list", which sends the
+      // parser to the legacy reconstruction instead of leaving a turn mute.
+      replies: value.replies,
       state: value.state,
       spokenAt: value.spokenAt,
       answeredAt: value.answeredAt,

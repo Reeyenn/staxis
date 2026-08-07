@@ -33,6 +33,23 @@ import {
   normalizeInvoiceReference,
 } from '@/lib/inventory-invoice-commit';
 
+import { useCan } from '@/lib/capabilities/useCan';
+import { useSectionEnabled } from '@/lib/sections/useSectionEnabled';
+import {
+  DEPARTMENTS,
+  departmentLabel,
+  formatCents,
+  type Department,
+} from '@/lib/financials/shared';
+import {
+  expenseAmountCentsFromLines,
+  expenseOperationIdForInvoice,
+  inventoryExpenseNotes,
+  invoiceReferenceFromNotesTag,
+  suggestExpenseDepartment,
+  type BridgeCategory,
+  type BridgeLine,
+} from '@/lib/inventory-expense-bridge';
 import { T, fonts } from '../tokens';
 import { Btn } from '../Btn';
 import { Overlay } from './Overlay';
@@ -169,6 +186,24 @@ export function ScanInvoiceSheet({
   const [banner, setBanner] = useState('');
   const [retryLocked, setRetryLocked] = useState(false);
   const [recoveredLineCount, setRecoveredLineCount] = useState(0);
+
+  // ── Books bridge: mirror the committed invoice into the Financials
+  // Checkbook so supply spend stops reading $0 there. Offered only to roles
+  // that can see money; the delivery commit NEVER waits on it.
+  const can = useCan();
+  const financialsSectionOn = useSectionEnabled('financials');
+  // The finance route enforces both of these server-side; mirroring them here
+  // keeps the offer off screens where the booking would only ever 403.
+  const canBookToBooks = can('view_financials') && financialsSectionOn;
+  const [bookToBooks, setBookToBooks] = useState(true);
+  const [bookDeptChoice, setBookDeptChoice] = useState<Department | null>(null);
+  const [booking, setBooking] = useState<
+    | { status: 'idle' }
+    | { status: 'saving'; amountCents: number; department: Department }
+    | { status: 'saved'; amountCents: number; department: Department }
+    | { status: 'already' }
+    | { status: 'failed' }
+  >({ status: 'idle' });
   const vendorRef = useRef(vendor);
   const invoiceNumberRef = useRef<string | null>(invoiceNumber);
   // This ref closes the one-render gap between Save and the visible
@@ -223,6 +258,97 @@ export function ScanInvoiceSheet({
     for (const d of display) m.set(d.id, d);
     return m;
   }, [display]);
+
+  // Built-in categories map to their Checkbook department 1:1; custom-tab and
+  // unknown items land in 'other' rather than guessing.
+  const bridgeCategoryForItem = useCallback((itemId: string | null): BridgeCategory => {
+    const item = itemId ? byId.get(itemId) : undefined;
+    if (!item || item.customCategoryId) return 'other';
+    return item.cat === 'housekeeping' || item.cat === 'maintenance' || item.cat === 'breakfast'
+      ? item.cat
+      : 'other';
+  }, [byId]);
+
+  // Mirrors buildCommitPlan's cost rule: the scanned line total stays
+  // authoritative unless the manager edited the unit cost by hand.
+  const bridgeLines = useMemo<BridgeLine[]>(() => rows
+    .filter((r) => r.decision !== 'skip')
+    .map((r) => {
+      const qty = Number(r.qtyInput) || 0;
+      const scannedTotal = Number(r.raw.total_cost);
+      const unitCost = !r.unitCostDirty
+        && r.raw.total_cost != null
+        && Number.isFinite(scannedTotal)
+        && scannedTotal >= 0
+        && qty > 0
+        ? scannedTotal / qty
+        : Number(r.unitCostInput);
+      return {
+        category: r.decision === 'create'
+          ? (r.newCustomCategoryId ? 'other' as const : r.newCategory)
+          : bridgeCategoryForItem(r.matchedItemId),
+        quantity: qty,
+        unitCost: Number.isFinite(unitCost) && unitCost >= 0 ? unitCost : null,
+      };
+    }), [bridgeCategoryForItem, rows]);
+
+  const previewAmountCents = expenseAmountCentsFromLines(bridgeLines);
+  const bookDept = bookDeptChoice ?? suggestExpenseDepartment(bridgeLines);
+
+  // Fire-and-report expense booking. Runs AFTER the delivery commit succeeded;
+  // its failure must never look like a delivery failure, so it only ever
+  // touches its own status line on the done screen. The operationId is derived
+  // from the invoice's business key and the route dedupes by invoice
+  // reference, so retries and re-commits can never book the paper twice.
+  const lastBookingInputRef = useRef<{
+    propertyId: string;
+    notesTag: string;
+    vendorName: string | null;
+    invoiceDate: string | null;
+    invoiceReference: string | null;
+    amountCents: number;
+    department: Department;
+  } | null>(null);
+  const runBooksBooking = useCallback((input: NonNullable<typeof lastBookingInputRef.current>) => {
+    if (input.amountCents <= 0 || !input.invoiceDate || !input.invoiceReference) return;
+    lastBookingInputRef.current = input;
+    setBooking({ status: 'saving', amountCents: input.amountCents, department: input.department });
+    void (async () => {
+      try {
+        const operationId = await expenseOperationIdForInvoice(input.propertyId, input.notesTag);
+        const res = await fetchWithAuth('/api/financials/expenses', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            pid: input.propertyId,
+            operationId,
+            expenseDate: input.invoiceDate,
+            amountCents: input.amountCents,
+            vendor: input.vendorName,
+            department: input.department,
+            source: 'invoice_scan',
+            notes: inventoryExpenseNotes(input.notesTag),
+            invoiceNumber: input.invoiceReference,
+            invoiceDate: input.invoiceDate,
+            dedupeByInvoice: true,
+          }),
+        });
+        const payload = (await res.json().catch(() => null)) as
+          | { ok?: boolean; data?: { alreadyRecorded?: boolean } }
+          | null;
+        if (!res.ok || !payload?.ok) throw new Error('expense booking failed');
+        setBooking(payload.data?.alreadyRecorded
+          ? { status: 'already' }
+          : { status: 'saved', amountCents: input.amountCents, department: input.department });
+      } catch {
+        setBooking({ status: 'failed' });
+      }
+    })();
+  }, []);
+  const retryBooksBooking = useCallback(() => {
+    const input = lastBookingInputRef.current;
+    if (input) runBooksBooking(input);
+  }, [runBooksBooking]);
   const timezoneRef = useRef(timezone);
   timezoneRef.current = timezone;
   const langRef = useRef(lang);
@@ -337,6 +463,9 @@ export function ScanInvoiceSheet({
         : '');
     setRetryLocked(!!restored);
     setRecoveredLineCount(restored?.lines.length ?? 0);
+    setBookToBooks(true);
+    setBookDeptChoice(null);
+    setBooking({ status: 'idle' });
     progressRef.current = newCommitProgress(restored);
     if (reviewDraft?.invoiceNumber) {
       void verifyDuplicateInvoice(reviewDraft.invoiceNumber, reviewDraft.vendor);
@@ -649,8 +778,36 @@ export function ScanInvoiceSheet({
     }
     setPhase('committing');
 
+    let bookingInput: Parameters<typeof runBooksBooking>[0] | null = null;
     try {
       if (retryLocked) {
+        // Capture the booking facts from the frozen envelope BEFORE the retry
+        // clears it. The envelope's own propertyId stays authoritative.
+        const attempt = progressRef.current.attempt;
+        if (attempt?.notes) {
+          const attemptLines: BridgeLine[] = attempt.lines.map((line) => (
+            line.itemId === null
+              ? {
+                  category: line.customCategoryId ? 'other' as const : line.category,
+                  quantity: line.quantity,
+                  unitCost: line.unitCost ?? null,
+                }
+              : {
+                  category: bridgeCategoryForItem(line.itemId),
+                  quantity: line.quantity,
+                  unitCost: line.unitCost ?? null,
+                }
+          ));
+          bookingInput = {
+            propertyId: attempt.propertyId,
+            notesTag: attempt.notes,
+            vendorName: attempt.vendorName,
+            invoiceDate: invoiceDateFromReceivedAt(attempt.receivedAt, timezone),
+            invoiceReference: invoiceReferenceFromNotesTag(attempt.notes),
+            amountCents: expenseAmountCentsFromLines(attemptLines),
+            department: bookDept,
+          };
+        }
         await retryCommit(progressRef.current, { uid: user.uid, pid: commitPropertyId });
       } else {
         const plan = buildCommitPlan({
@@ -681,6 +838,15 @@ export function ScanInvoiceSheet({
             } : undefined,
           })),
         });
+        bookingInput = {
+          propertyId: commitPropertyId,
+          notesTag: plan.notesTag,
+          vendorName: plan.vendorName ?? null,
+          invoiceDate,
+          invoiceReference: normalizedInvoiceReference,
+          amountCents: expenseAmountCentsFromLines(bridgeLines),
+          department: bookDept,
+        };
         await executeCommit(plan, progressRef.current, {
           uid: user.uid,
           pid: commitPropertyId,
@@ -713,6 +879,9 @@ export function ScanInvoiceSheet({
     }
     setRetryLocked(false);
     if (reviewStorageInput) clearInventoryOverlayDraft(reviewStorageInput);
+    // Stock is saved at this point no matter what the books call does; the
+    // booking reports into its own status line on the done screen.
+    if (canBookToBooks && bookToBooks && bookingInput) runBooksBooking(bookingInput);
     setPhase('done');
     releaseSaveBoundary();
   };
@@ -841,6 +1010,38 @@ export function ScanInvoiceSheet({
           >
             {ss.savedMsg(recoveredLineCount || matchedCount + createCount)}
           </div>
+          {booking.status !== 'idle' && (
+            <div
+              style={{
+                display: 'flex',
+                flexWrap: 'wrap',
+                alignItems: 'center',
+                gap: 10,
+                padding: '12px 14px',
+                borderRadius: 10,
+                background: booking.status === 'failed' ? T.warmDim : T.sageDim,
+                border: `1px solid ${booking.status === 'failed' ? T.warm : T.sageDeep}33`,
+                fontFamily: fonts.sans,
+                fontSize: 13,
+                color: booking.status === 'failed' ? T.warm : T.forestText,
+                lineHeight: 1.5,
+              }}
+            >
+              {booking.status === 'saving' && 'Adding it to the books…'}
+              {booking.status === 'saved'
+                && `Also added ${formatCents(booking.amountCents)} to the books (${departmentLabel(booking.department)}).`}
+              {booking.status === 'already'
+                && 'This invoice was already in the books, so nothing was added twice.'}
+              {booking.status === 'failed' && (
+                <>
+                  <span>{'The stock is saved, but adding it to the books did not go through.'}</span>
+                  <Btn variant="ghost" size="sm" onClick={retryBooksBooking}>
+                    {'Try the books again'}
+                  </Btn>
+                </>
+              )}
+            </div>
+          )}
           <div>
             <Btn variant="primary" size="md" onClick={handleClose}>
               {ss.done}
@@ -1019,6 +1220,55 @@ export function ScanInvoiceSheet({
               />
             ))}
           </fieldset>}
+
+          {canBookToBooks && (
+            <div
+              style={{
+                display: 'flex',
+                flexWrap: 'wrap',
+                alignItems: 'center',
+                gap: 12,
+                padding: '12px 14px',
+                borderRadius: 10,
+                background: T.sageDim,
+                border: `1px solid ${T.sageDeep}22`,
+                fontFamily: fonts.sans,
+                fontSize: 13,
+                color: T.forestText,
+              }}
+            >
+              <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer' }}>
+                <input
+                  type="checkbox"
+                  checked={bookToBooks}
+                  disabled={saveBusy}
+                  onChange={(event) => setBookToBooks(event.target.checked)}
+                  style={{ width: 16, height: 16, accentColor: T.sageDeep }}
+                />
+                <span>
+                  {previewAmountCents > 0
+                    ? `Also add ${formatCents(previewAmountCents)} to the books (Financials)`
+                    : 'Also add this invoice to the books (Financials)'}
+                </span>
+              </label>
+              {bookToBooks && (
+                <label style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                  <span style={{ fontSize: 12, color: T.ink3 }}>{'Department'}</span>
+                  <select
+                    className={overlayStyles.formControl}
+                    style={{ minHeight: 36, fontSize: 13, fontFamily: fonts.sans }}
+                    value={bookDept}
+                    disabled={saveBusy}
+                    onChange={(event) => setBookDeptChoice(event.target.value as Department)}
+                  >
+                    {DEPARTMENTS.map((d) => (
+                      <option key={d} value={d}>{departmentLabel(d)}</option>
+                    ))}
+                  </select>
+                </label>
+              )}
+            </div>
+          )}
         </div>
       )}
     </Overlay>

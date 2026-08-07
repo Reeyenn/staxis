@@ -97,6 +97,10 @@ export function toQueueFinding(
     summary: f.summary,
     phrasedEn: extras.phrased?.en ?? null,
     phrasedEs: extras.phrased?.es ?? null,
+    // Straight off the row, unlike the phrasing above: there is no per-caller
+    // decision to make about a question, and a caller that had to remember to
+    // pass it through is a caller that will forget.
+    judgedQuestion: 'judgedQuestion' in f ? (f.judgedQuestion ?? null) : null,
     severity: f.severity,
     // The judge's verdict when it has one, the detector's default otherwise.
     // Which buttons a card offers — and whether it is a card at all — follows
