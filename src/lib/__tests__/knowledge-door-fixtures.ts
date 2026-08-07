@@ -301,7 +301,7 @@ export async function buildGoldenSubjects(): Promise<GoldenSubjects> {
 
   subjects['portfolio.one-hotel.legacy-rulebook'] = await buildPortfolioSystemPrompt({
     identity: IDENTITY_ONE_HOTEL,
-    companyRole: 'vp',
+    companyRole: 'regional_manager',
     conversationId: 'conv-knowledge-door-p1',
     companyKnowledgeMode: 'legacy_rulebook',
     now: NOW,
@@ -309,7 +309,7 @@ export async function buildGoldenSubjects(): Promise<GoldenSubjects> {
 
   subjects['portfolio.two-hotels.legacy-rulebook'] = await buildPortfolioSystemPrompt({
     identity: IDENTITY_TWO_HOTELS,
-    companyRole: 'vp',
+    companyRole: 'regional_manager',
     conversationId: 'conv-knowledge-door-p2',
     companyKnowledgeMode: 'legacy_rulebook',
     now: NOW,
@@ -317,7 +317,7 @@ export async function buildGoldenSubjects(): Promise<GoldenSubjects> {
 
   subjects['portfolio.one-hotel.external-overlay'] = await buildPortfolioSystemPrompt({
     identity: IDENTITY_ONE_HOTEL,
-    companyRole: 'vp',
+    companyRole: 'regional_manager',
     conversationId: 'conv-knowledge-door-p3',
     companyKnowledgeMode: 'external_overlay',
     now: NOW,

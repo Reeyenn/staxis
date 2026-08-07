@@ -65,7 +65,7 @@ function configureStanding(options: {
   operationalRole: 'general_manager' | 'front_desk' | 'housekeeping' | 'maintenance';
   hotelMutationAllowed: boolean;
   source: 'legacy' | 'company' | 'property';
-  staxisRole?: 'owner' | 'vp' | 'finance' | 'general_manager' | 'front_desk' | 'housekeeping' | 'maintenance';
+  staxisRole?: 'owner' | 'regional_manager' | 'general_manager' | 'front_desk' | 'housekeeping' | 'maintenance';
 }): void {
   const normalized = options.source !== 'legacy';
   authorityResponse = ok({

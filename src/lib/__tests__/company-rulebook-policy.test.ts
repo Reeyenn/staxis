@@ -47,15 +47,21 @@ describe('reading an approval requirement', () => {
     assert.equal(rule.actionKind, 'purchase_order');
     assert.equal(rule.thresholdCents, 50_000);
     assert.equal(rule.thresholdInclusive, false);
-    assert.equal(rule.approverRole, 'vp');
+    // "VP" is still a word companies write; 0461 makes it an alias for the job
+    // that survived.
+    assert.equal(rule.approverRole, 'regional_manager');
   });
 
   it('keeps cents out of floating point', () => {
-    const rule = readAuthorityRule('Any invoice above $1,250.50 requires the controller to approve it.');
+    // Was "requires the controller to approve it" reading as `finance`. That
+    // role was retired in 0461 and `controller` has no pattern any more, so the
+    // sentence names the job that does exist. What is under test here is the
+    // cents arithmetic, not the word.
+    const rule = readAuthorityRule('Any invoice above $1,250.50 requires the regional manager to approve it.');
     assert.ok(rule);
     assert.equal(rule.thresholdCents, 125_050);
     assert.equal(rule.actionKind, 'invoice');
-    assert.equal(rule.approverRole, 'finance');
+    assert.equal(rule.approverRole, 'regional_manager');
   });
 
   it('understands "5k"', () => {
@@ -105,6 +111,10 @@ describe('what must NOT become a rule', () => {
     ['a plain vendor fact', 'All our hotels use Ecolab for chemicals.'],
     ['a plain policy', 'Checkout is 11.'],
     ['empty', '   '],
+    // 0461 retired `finance`. A sentence naming it is complete in every other
+    // way, and the safe answer is still to store NOTHING rather than quietly
+    // freeze a different signature than the one the company wrote.
+    ['an approver whose job no longer exists', 'Invoices over $1,000 need finance approval.'],
   ];
   for (const [why, sentence] of notRules) {
     it(`returns null — ${why}`, () => {
@@ -117,10 +127,13 @@ describe('the sentence the confirmer approves', () => {
   it('reads back what will actually be frozen, in both languages', () => {
     const rule = readAuthorityRule('Orders over $500 need VP sign-off.');
     assert.ok(rule);
-    assert.equal(describeAuthorityRule(rule, 'en'), 'Any order over $500 needs approval from the VP.');
+    assert.equal(
+      describeAuthorityRule(rule, 'en'),
+      'Any order over $500 needs approval from the regional manager.',
+    );
     assert.equal(
       describeAuthorityRule(rule, 'es'),
-      'El supervisor regional debe aprobar cualquier pedido de más de $500.',
+      'the regional manager debe aprobar cualquier pedido de más de $500.',
     );
     // The Spanish sentence puts the approver first specifically so "de" + "el"
     // never has to contract. If somebody rewrites it as "aprobación de el …",
@@ -329,7 +342,7 @@ describe('the approver a sentence actually names', () => {
   it('"without" is not a negation — it makes the named role REQUIRED', () => {
     const rule = readAuthorityRule('No purchase over $500 may be made without VP approval.');
     assert.ok(rule);
-    assert.equal(rule.approverRole, 'vp');
+    assert.equal(rule.approverRole, 'regional_manager');
   });
 
   // Mutation: pick the FIRST role in the sentence instead of the one bound to
@@ -358,7 +371,7 @@ describe('the approver a sentence actually names', () => {
     const read = readAuthority(sentence);
     assert.equal(read.kind, 'ambiguous');
     if (read.kind !== 'ambiguous') return;
-    assert.deepEqual([...read.candidates].sort(), ['owner', 'vp']);
+    assert.deepEqual([...read.candidates].sort(), ['owner', 'regional_manager']);
     assert.equal(read.actionKind, 'expense');
     assert.equal(read.thresholdCents, 50_000);
     // The safety property: nothing is frozen.
@@ -373,12 +386,17 @@ describe('the approver a sentence actually names', () => {
     if (read.kind !== 'ambiguous') return;
     const en = describeAmbiguousAuthority(read, 'en');
     assert.match(en, /the owner/);
-    // Mutation: lower-case the labels wholesale. "the vp" was on screen.
-    assert.match(en, /the VP/);
-    assert.doesNotMatch(en, /the vp\b/);
+    assert.match(en, /the regional manager/);
     assert.match(en, /will not enforce/);
     assert.match(en, /Edit the line to name one/);
     const es = describeAmbiguousAuthority(read, 'es');
+    // Mutation: reuse the sentence-head labels mid-sentence. "El propietario"
+    // is capitalised for the subject-first read-back and reads as a new
+    // sentence when it lands after a colon. (This used to be asserted on "the
+    // VP" vs "the vp"; 0461 replaced that acronym with a word that case-folds
+    // cleanly, so the owner label is where the trap still lives.)
+    assert.match(es, /\bel propietario\b/);
+    assert.doesNotMatch(es, /El propietario/);
     assert.match(es, /no aplicará ninguna regla/);
     assert.notEqual(en, es);
     // Mutation: use an indefinite article. "un factura" and "a order" were both
@@ -399,7 +417,7 @@ describe('the approver a sentence actually names', () => {
   // The candidate reader on its own, so the three rules are separable.
   it('the candidate reader reports what survived and whether it chose', () => {
     const plain = readApproverCandidates('Orders over $500 need VP sign-off.');
-    assert.equal(plain.picked, 'vp');
+    assert.equal(plain.picked, 'regional_manager');
     assert.equal(plain.ambiguous, false);
 
     const negated = readApproverCandidates('requires owner approval, not VP approval');
@@ -416,11 +434,12 @@ describe('the approver a sentence actually names', () => {
   // read the same way. Mutation: any of the three new rules mis-ordered.
   it('the sentences that already worked still work', () => {
     const cases: Array<[string, string]> = [
-      ['Orders over $500 need VP sign-off.', 'vp'],
+      // Every VP word now lands on the job that survived 0461.
+      ['Orders over $500 need VP sign-off.', 'regional_manager'],
       ['Contracts of at least $10,000 require owner approval.', 'owner'],
       ['Any refund over $200 needs GM approval.', 'general_manager'],
-      ['Invoices over $1,000 need finance approval.', 'finance'],
-      ['Any expense over $500 needs approval from the VP.', 'vp'],
+      ['Any expense over $500 needs approval from the VP.', 'regional_manager'],
+      ['Any order over $500 needs regional director approval.', 'regional_manager'],
     ];
     for (const [sentence, expected] of cases) {
       const rule = readAuthorityRule(sentence);

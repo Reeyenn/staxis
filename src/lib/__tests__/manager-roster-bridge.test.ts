@@ -4,7 +4,7 @@
  * Three things are worth failing a build over, and they are what this file
  * exercises:
  *   1. WHO. A hotel-scoped manager, and nobody else. A housekeeper invitation
- *      must never mint a roster row, and a company VP must never be put on a
+ *      must never mint a roster row, and a company regional manager must never be put on a
  *      hotel's staff list at all.
  *   2. ONCE. Accepting twice, or arriving after Communications already minted a
  *      row, produces exactly one active row. Testing Hotel really does carry
@@ -272,7 +272,8 @@ describe('who the bridge is for', () => {
   });
 
   test('company-scope people are never put on a hotel staff list', () => {
-    for (const role of ['owner', 'vp', 'finance']) {
+    // 0461 collapsed the company vocabulary to these two.
+    for (const role of ['owner', 'regional_manager']) {
       assert.equal(
         isHotelScopedManagerGrant({ role, membershipScope: 'company', organizationId: 'org' }),
         false,
@@ -313,7 +314,7 @@ describe('which hotels the bridge runs at', () => {
 
   test('a grant that is not hotel-scoped manager work names nothing', () => {
     for (const grant of [
-      { role: 'vp', membershipScope: 'company' as const, organizationId: 'org' },
+      { role: 'regional_manager', membershipScope: 'company' as const, organizationId: 'org' },
       { role: 'housekeeping', membershipScope: 'property' as const, organizationId: 'org' },
     ]) {
       assert.deepEqual(

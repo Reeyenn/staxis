@@ -186,7 +186,7 @@ describe('the control: the HOTEL prompt really does carry the facts in question'
 describe('the portfolio prompt', () => {
   it('names the hotels and their sizes, and says whose company it is', async () => {
     const { stable } = await buildPortfolioSystemPrompt({
-      identity: IDENTITY, companyRole: 'vp',
+      identity: IDENTITY, companyRole: 'regional_manager',
       conversationId: 'conv-portfolio', now: NOW,
     });
     assert.match(stable, /The hotels you are being asked about/);
@@ -198,7 +198,7 @@ describe('the portfolio prompt', () => {
 
   it('carries NOT ONE of an individual hotel\'s private facts', async () => {
     const { stable, dynamic } = await buildPortfolioSystemPrompt({
-      identity: IDENTITY, companyRole: 'vp',
+      identity: IDENTITY, companyRole: 'regional_manager',
       conversationId: 'conv-portfolio', now: NOW,
     });
     const whole = `${stable}\n${dynamic}`;
@@ -231,7 +231,7 @@ describe('the portfolio prompt', () => {
 
   it('states that it cannot act and distinguishes active scope from outside authorization', async () => {
     const { stable } = await buildPortfolioSystemPrompt({
-      identity: IDENTITY, companyRole: 'vp',
+      identity: IDENTITY, companyRole: 'regional_manager',
       conversationId: 'conv-portfolio', now: NOW,
     });
     assert.match(stable, /There are no action tools here/);
@@ -248,11 +248,11 @@ describe('portfolio cache purity', () => {
     // means something clock-derived reached the CACHED half, which re-writes
     // the cached prefix on every turn of every portfolio conversation.
     const a = await buildPortfolioSystemPrompt({
-      identity: IDENTITY, companyRole: 'vp',
+      identity: IDENTITY, companyRole: 'regional_manager',
       conversationId: 'conv-portfolio', now: NOW,
     });
     const b = await buildPortfolioSystemPrompt({
-      identity: IDENTITY, companyRole: 'vp',
+      identity: IDENTITY, companyRole: 'regional_manager',
       conversationId: 'conv-portfolio', now: new Date(NOW.getTime() + 40 * 60_000),
     });
     assert.equal(a.stable, b.stable);
@@ -270,7 +270,7 @@ describe('portfolio cache purity', () => {
     // stage 2 of the knowledge door deleted the tier and its store. What is
     // left to hold is that this file emits ONLY cacheable text.
     const { stable, dynamic } = await buildPortfolioSystemPrompt({
-      identity: IDENTITY, companyRole: 'vp',
+      identity: IDENTITY, companyRole: 'regional_manager',
       conversationId: 'conv-portfolio', now: NOW,
     });
     assert.equal(dynamic, '', 'this assembler grew an uncached tier without a cache review');
@@ -297,12 +297,12 @@ describe('portfolio cache purity', () => {
 
   it('the persisted receipt records which hotels the turn covered; the printed one does not', async () => {
     const two = await buildPortfolioSystemPrompt({
-      identity: IDENTITY, companyRole: 'vp',
+      identity: IDENTITY, companyRole: 'regional_manager',
       conversationId: 'conv-portfolio', now: NOW,
     });
     const one = await buildPortfolioSystemPrompt({
       identity: { ...IDENTITY, hotels: [IDENTITY.hotels[0]] },
-      companyRole: 'vp',
+      companyRole: 'regional_manager',
       conversationId: 'conv-portfolio', now: NOW,
     });
     assert.match(two.versionLabel, /portfolio-mode-v3/);
