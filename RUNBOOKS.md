@@ -2202,6 +2202,60 @@ written against, so a failed apply is information, not damage. Apply in order.
   hand-written table blocks (marked as such) because the tables do not exist in
   production yet; the regeneration replaces them.
 
+## Doctor warns "companion event sweep: N hotel(s) not looked at in over 30 min"
+
+**Symptom.** `/api/admin/doctor` reports `companion_event_wake_health` as `warn`,
+naming one or more hotels whose cursor has not moved. The sweep itself returns
+200 every ten minutes and its heartbeat is fresh, so nothing else looks wrong.
+
+**Diagnosis.** One query tells you which hotel and, usually, why:
+
+```sql
+select s.property_id, p.name,
+       p.enabled_sections->>'staxis' as staxis_list,
+       s.last_looked_at, s.looks_total,
+       round(extract(epoch from (now() - s.last_looked_at))/60) as mins_stale
+from public.companion_event_wake_state s
+join public.properties p on p.id = s.property_id
+order by s.looks_total asc;
+```
+
+`looks_total` is written by `claimWakeWindow` and by nothing else, so it is the
+tell. A hotel sitting at 0 (or far behind its siblings) with a frozen
+`last_looked_at` was never actually looked at.
+
+Three causes, in order of likelihood:
+
+1. **The hotel is skipped on purpose and the skip forgot to advance the cursor.**
+   This is what happened on 2026-08-07: Home2 had the Staxis list switched off,
+   the sweep returned at that gate *before* claiming the window, and the doctor
+   counted it stale forever while six sibling hotels advanced normally. Fixed in
+   `sweepProperty` — see Prevention.
+2. **The sweep is failing to read something.** Check the heartbeat notes for
+   `noCursor` / `readFailed`, which are non-zero in this case and turn the run
+   `degraded`. A stale cursor here is a TRUE signal and the fix is upstream.
+3. **The sweep genuinely stopped.** `cron_heartbeats` for `companion-event-wake`
+   will be stale too, and every hotel will be stale rather than one.
+
+**Fix.** Nothing to run by hand. Once the runner claims the window on the skip
+path, the next sweep advances the cursor and the warning clears on its own. Do
+not "fix" a stale row with a manual `update` — that hides the bug rather than
+finding it.
+
+**Verify.** `looks_total` increments for the affected hotel on the next tick,
+and the doctor check returns to `ok` (it will now say `N hotel(s) have the
+Staxis list switched off` in its detail, which is the honest version of the
+same fact).
+
+**Prevention.** The contract is written at the top of `sweepProperty`
+(`src/lib/companion/event-wake/runner.ts`) and there are exactly two ways to
+stop: **"I looked and there is nothing here"** advances the cursor, **"I could
+not look"** does not. Both halves are pinned by a pair of tests in
+`companion-event-wake.integration.test.ts`, and they are a pair on purpose — the
+first alone would be satisfied by claiming the window unconditionally at the top
+of the sweep, which would silently discard events on a failed read. If you add a
+new early return to that function, decide which half it is before you write it.
+
 ## Meta: how to add a new failure mode to this doc
 
 Every time something breaks and takes more than 30 min to fix, come back and add a section here with Symptom / Diagnosis / Fix / Verify / Prevention. This file only pays for itself if we update it.

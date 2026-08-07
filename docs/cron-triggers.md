@@ -133,6 +133,11 @@ It is also shaped so that scheduling it is a much smaller commitment:
   into the companion's own record. Whether it is ever said is decided later by
   `src/lib/companion/manners.ts`, against the same daily speech budget, the same
   minimum gap and the same declines as everything else the companion volunteers.
+- **A skipped hotel is still a watched hotel.** Every stop in `sweepProperty` is
+  either "I looked and there is nothing here" (the cursor advances) or "I could
+  not look" (it does not). The doctor's staleness warning only means anything
+  while that holds. See RUNBOOKS.md, "Doctor warns companion event sweep ... not
+  looked at in over 30 min".
 
 Turning it off: remove the `vercel.json` entry and flip the catalog row's
 `lifecycle` to `staged` with `schedule: null`, in the same commit. The
