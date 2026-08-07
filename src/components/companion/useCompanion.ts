@@ -436,6 +436,15 @@ export function useCompanion(
 
   const [boot, setBoot] = useState<Bootstrap | null>(null);
   const [showing, setShowing] = useState<CompanionShowing>({ kind: 'none' });
+  /**
+   * The showing AS RENDERED, for the answer dispatcher.
+   *
+   * Written by the effect at the bottom of this hook from `showingOut`, whose
+   * replies are the ones a person can actually see. Everything else in here
+   * reads `showing` directly; only the dispatcher needs the rendered version,
+   * and only because one card's buttons are completed at render time.
+   */
+  const showingRef = useRef<CompanionShowing>({ kind: 'none' });
   const [quietThisSession, setQuiet] = useState(false);
   const [busy, setBusy] = useState(false);
   const [tourStep, setTourStep] = useState<number | null>(null);
@@ -1073,7 +1082,12 @@ export function useCompanion(
   }, [remember, stampLive]);
 
   const answer = useCallback((replyId: string) => {
-    const current = showing;
+    // `showingRef`, not `showing`. The arrival card's Next button is filled in
+    // at RENDER time (see `showingOut`), because `goTo` cannot know which tour
+    // step it is on. A lookup against the raw state would search a set that has
+    // never contained the button somebody just pressed, and the tour's Next
+    // would silently do nothing from the second screen onwards.
+    const current = showingRef.current;
     if (current.kind === 'none') return;
     // The escape is not on the reply set (it is not one of the three), so it is
     // resolved separately and only where a question is actually being asked.
@@ -1093,6 +1107,16 @@ export function useCompanion(
       if (intent.kind === 'close') {
         void remember('tour_declined', { ...stampLive(null, 'declined') },
           (m) => ({ ...m, tourDeclined: true }));
+        return;
+      }
+      // Something else, on day one. It is neither a yes nor a no to the tour,
+      // so nothing is recorded about the tour: it stays offerable from the
+      // panel, and the person gets the conversation they reached for.
+      //
+      // Checked BEFORE the tour branch. Without it the escape falls through to
+      // `startTour()` and walks somebody who asked to talk instead.
+      if (intent.kind === 'seed') {
+        onSeed(intent.text || current.speech.greeting);
         return;
       }
       // A yes to the welcome IS the tour, and the tour owns the walking: it
@@ -1227,7 +1251,7 @@ export function useCompanion(
     });
     if (target) goTo(target);
   }, [
-    showing, startTour, nextTourStep, role, activeProperty?.enabledSections, goTo, remember,
+    startTour, nextTourStep, role, activeProperty?.enabledSections, goTo, remember,
     onSeed, traces.patterns, tracePage, stampLive, markNoticesRead, retireLiveOffer,
     recordVerdict, runFrozenPlan, quietTopic,
   ]);
@@ -1719,6 +1743,12 @@ export function useCompanion(
       }),
     };
   }, [showing, tourStep, tour]);
+
+  // Kept in step with what is on the screen, for `answer`. An assignment during
+  // render rather than an effect: the dispatcher can fire from a click in the
+  // very same commit that first drew the button, and an effect would leave the
+  // ref one render behind for exactly that tap.
+  showingRef.current = showingOut;
 
   /**
    * The way out, offered only where something is actually being asked.
