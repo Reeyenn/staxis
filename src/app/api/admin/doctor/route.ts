@@ -27,8 +27,10 @@
  *      where reasonable.
  *
  * ─── What's checked ──────────────────────────────────────────────────────
- * Slimmed 2026-07-17 (owner's call) to three signals. The live registry is
- * the `checks` array below — THIS list must match it. The 7 checks that run:
+ * Slimmed 2026-07-17 (owner's call) to three signals, then grown back as
+ * specific silent failures earned a place. The live registry is the `checks`
+ * array below — THIS list must match it, and the count in this sentence is the
+ * first thing to go stale (it said 7 while 19 were running). The checks:
  *
  *   env_vars                    — every required env var is present + non-empty
  *   supabase_admin_auth         — preflight read using the service_role key
