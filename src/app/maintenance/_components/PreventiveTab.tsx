@@ -482,12 +482,21 @@ export function PreventiveTab() {
 
   // "Somebody's been called": arranged, not done. Writes only the called flag —
   // last-done stays exactly where it was, because the job has not happened.
+  //
+  // It also RETIRES A SKIP, which the Staxis list's own version of this button
+  // has always done and this one did not. A schedule cannot honestly be resting
+  // on two different grounds at once, and skipped is checked first everywhere,
+  // so a manager who put an occurrence down and then actually arranged the work
+  // got their call recorded and the schedule went on resting on the skip — for
+  // the rest of a cadence, which on a six-monthly job is most of a year.
   const handleCalled = async (id: string) => {
     if (!user || !activePropertyId) return;
     try {
       await updatePreventiveTask(user.uid, activePropertyId, id, {
         calledAt: new Date(),
         calledBy: user.displayName,
+        skippedAt: null,
+        skippedBy: null,
       });
     } catch (err) {
       flash(writeFailureMessage(err, "Couldn't save that. Check your connection and try again."));
