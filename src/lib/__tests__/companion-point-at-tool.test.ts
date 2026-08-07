@@ -111,10 +111,15 @@ describe('it cannot point at something that is not there', () => {
     assert.equal(alsoWrong.ok, false);
   });
 
-  test('every anchor is refused on every screen except its own', async () => {
+  test('every PAGE anchor is refused on every screen except its own', async () => {
+    // `any` anchors are the app chrome (the pill bar, the mark in the corner),
+    // which is on every screen the companion is allowed to exist on, so
+    // scoping them to one page would be a lie in seven places out of eight.
+    // Everything else is still scoped to exactly one screen.
     const pages = ['inventory', 'staxis', 'dashboard', 'maintenance', 'people', 'settings'] as const;
     const boss: Who = { role: 'general_manager' as AppRole, hotelMutationAllowed: true, seesMoney: true };
     for (const anchor of COMPANION_ANCHORS) {
+      if (anchor.page === 'any') continue;
       for (const page of pages) {
         const result = await point(anchor.key, page, boss);
         assert.equal(
@@ -123,6 +128,22 @@ describe('it cannot point at something that is not there', () => {
           `${anchor.key} on ${page} should be ${page === anchor.page ? 'allowed' : 'refused'}`,
         );
       }
+    }
+  });
+
+  test('an `any` anchor is allowed on every screen and STILL refused with no screen', async () => {
+    // The half of the page wall that `any` must not loosen. Chrome is
+    // everywhere, and "everywhere" still does not include a turn that has no
+    // browser behind it at all.
+    const pages = ['inventory', 'staxis', 'dashboard', 'maintenance', 'people', 'settings'] as const;
+    const boss: Who = { role: 'general_manager' as AppRole, hotelMutationAllowed: true, seesMoney: true };
+    const chrome = COMPANION_ANCHORS.filter((a) => a.page === 'any');
+    assert.ok(chrome.length > 0, 'no chrome anchors to test');
+    for (const anchor of chrome) {
+      for (const page of pages) {
+        assert.equal((await point(anchor.key, page, boss)).ok, true, `${anchor.key} on ${page}`);
+      }
+      assert.equal((await point(anchor.key, null, boss)).ok, false, `${anchor.key} with no screen`);
     }
   });
 
@@ -158,10 +179,22 @@ describe('it cannot point at something that is not there', () => {
     // `alsoOnThisScreen` is the model's recovery path. Offering it a key its
     // own standing would reject just costs another round trip and another
     // confident wrong answer.
+    //
+    // Asserted as the PROMISE rather than as a frozen list: every key handed
+    // back is called for real and must succeed. A pinned array would have to be
+    // edited every time the chrome grows, and editing it is exactly how it
+    // would come to contain a key that no longer works.
     const noMoney: Who = { role: 'general_manager' as AppRole, hotelMutationAllowed: true, seesMoney: false };
-    const result = await point('add-delivery', 'inventory', noMoney);
-    assert.equal(result.ok, true);
-    assert.deepEqual((result.data as Record<string, unknown>).alsoOnThisScreen, []);
+    const result = await point('inventory-import', 'inventory', noMoney);
+    assert.equal(result.ok, false, 'the importer needs money, so this is the refusal path');
+    const offered = (result.data as Record<string, unknown> | undefined)?.alsoOnThisScreen;
+    for (const key of (offered ?? []) as string[]) {
+      assert.equal(
+        (await point(key, 'inventory', noMoney)).ok,
+        true,
+        `${key} was offered as a recovery and would itself refuse`,
+      );
+    }
   });
 
   test('a turn with no screen behind it is refused rather than guessed at', async () => {
@@ -201,7 +234,13 @@ describe('what a success actually hands back', () => {
 
   test('it names the other controls on that screen, so a wrong guess gets the real list', async () => {
     const result = await point('inventory-import', 'inventory', BOSS);
-    assert.deepEqual((result.data as Record<string, unknown>).alsoOnThisScreen, ['add-delivery']);
+    const also = (result.data as Record<string, unknown>).alsoOnThisScreen as string[];
+    // The stockroom's other button, plus the chrome that is on every screen.
+    assert.ok(also.includes('add-delivery'), also.join(', '));
+    assert.ok(also.includes('staxis-mark'), also.join(', '));
+    // Never itself, and never a control from another screen.
+    assert.ok(!also.includes('inventory-import'), also.join(', '));
+    assert.ok(!also.includes('todo-composer'), also.join(', '));
   });
 
   test('the pages it answers for are pages a person can actually be on', async () => {
@@ -209,7 +248,8 @@ describe('what a success actually hands back', () => {
     // control the model is told about and can never successfully draw.
     for (const anchor of COMPANION_ANCHORS) {
       const paths = ['/inventory', '/feed', '/dashboard', '/maintenance', '/communications', '/settings'];
-      const reachable = paths.some((p) => pageForPath(p)?.key === anchor.page);
+      const reachable = anchor.page === 'any'
+        || paths.some((p) => pageForPath(p)?.key === anchor.page);
       assert.ok(reachable, `${anchor.key} lives on a page nothing routes to`);
     }
   });

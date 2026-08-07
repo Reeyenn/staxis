@@ -138,20 +138,18 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
       .select('id, property_id, room_number, cleaning_type, priority, due_by, estimated_minutes, requires_inspection, extras, status, assignee_id, queue_order, assignment_reason, assigned_by')
       .eq('property_id', propertyId)
       .eq('business_date', businessDate);
+    // A failed plan read must NOT answer 200 with an empty board. "No rooms to
+    // clean today" and "we could not read the plan" look identical on screen,
+    // and the manager acts on the first one: crew goes home, rooms stay dirty.
+    // Every other read in this handler already fails loudly for this reason
+    // (staff below, property below) — this one, the most load-bearing of the
+    // three, was the exception. Same posture as mergePmsRoomsForStaff: an
+    // error the tab can retry beats a confident wrong answer.
     if (taskErr) {
-      log.warn('board: canonical plan load failed; returning empty board', {
-        requestId, msg: taskErr.message,
+      log.error('board: canonical plan load failed', {
+        requestId, propertyId, date: businessDate, msg: taskErr.message,
       });
-      return ok(
-        {
-          tasks: [],
-          housekeepers: [],
-          unassigned: 0,
-          crew_source: 'unscheduled_fallback' as const,
-          shift_minutes: DEFAULT_CREW_SHIFT_MINUTES,
-        },
-        { requestId },
-      );
+      return err('load plan failed', { requestId, status: 500, code: 'upstream_failure' });
     }
     const tasks = (taskRows ?? []) as CleaningTaskRow[];
 

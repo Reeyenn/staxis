@@ -19,7 +19,6 @@ import {
   ANTHROPIC_REQUEST_TIMEOUT_MS,
   ANTHROPIC_VISION_TIMEOUT_MS,
   ANTHROPIC_VISION_ABORT_MS,
-  ANTHROPIC_WALKTHROUGH_TIMEOUT_MS,
   ANTHROPIC_MAX_RETRIES,
   STRIPE_REQUEST_TIMEOUT_MS,
   STRIPE_MAX_NETWORK_RETRIES,
@@ -39,7 +38,6 @@ describe('timeout constants', () => {
     // up to 50s; the whole-call abort (ANTHROPIC_VISION_ABORT_MS, 55s) bounds
     // the worst case — including the maxRetries=1 retry — under that ceiling.
     assert.ok(ANTHROPIC_VISION_TIMEOUT_MS <= 50_000, 'vision timeout drifted above documented ceiling');
-    assert.ok(ANTHROPIC_WALKTHROUGH_TIMEOUT_MS < 30_000, 'walkthrough timeout must be < route maxDuration (30s)');
   });
 
   test('vision abort outlives one attempt but stays under the route ceiling', () => {

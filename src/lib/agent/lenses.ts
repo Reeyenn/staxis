@@ -156,6 +156,12 @@ const FRONT_DESK_TOOLS = [
   // Notes about this hotel / this person
   'remember',
   'forget',
+  // Being shown the app once. The desk is where turnover is highest and where
+  // the person is most often brand new, so the one thing the front desk lens
+  // must NOT withhold is the introduction. It reads nothing, writes nothing
+  // and presses nothing, and the stops it runs are already narrowed to the
+  // screens this hat has.
+  'staxis_show_around',
 ] as const;
 
 // Deliberately NOT in the front-desk lens, though `allowedRoles` allows them
@@ -210,6 +216,10 @@ const MAINTENANCE_TOOLS = [
   // often as anybody, and the one-list composer is on their screen too. It
   // reads nothing, writes nothing and presses nothing.
   'staxis_point_at',
+  // And being shown the whole thing once. A maintenance hire is as new on
+  // their first day as anybody, and their tour is the three screens they
+  // actually use rather than the manager's eight.
+  'staxis_show_around',
   // How it's done here
   'search_knowledge',
   'fetch_document_section',

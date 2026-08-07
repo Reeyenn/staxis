@@ -152,10 +152,10 @@ function toOpenAiTools(
 /**
  * Translate a forced tool selection.
  *
- * Load-bearing rather than cosmetic: the walkthrough step generator and the
- * admin health probe both pin `tool_choice` to one tool and treat a text reply
- * as a failure. Dropping the field would let the model answer in prose, and the
- * caller would report a broken feature rather than a translation gap.
+ * Load-bearing rather than cosmetic: the admin health probe pins `tool_choice`
+ * to one tool and treats a text reply as a failure. Dropping the field would
+ * let the model answer in prose, and the caller would report a broken feature
+ * rather than a translation gap.
  */
 function toOpenAiToolChoice(
   toolChoice: Anthropic.Messages.MessageCreateParams['tool_choice'],

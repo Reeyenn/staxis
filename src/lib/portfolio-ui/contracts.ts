@@ -19,7 +19,7 @@ export const PORTFOLIO_UI_SECTIONS = [
 ] as const;
 
 export type PortfolioUiSection = (typeof PORTFOLIO_UI_SECTIONS)[number];
-export type PortfolioUiCompanyRole = 'owner' | 'vp' | 'finance';
+export type PortfolioUiCompanyRole = 'owner' | 'regional_manager';
 
 export function isPortfolioUiSection(value: unknown): value is PortfolioUiSection {
   return typeof value === 'string'

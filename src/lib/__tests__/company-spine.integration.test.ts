@@ -55,7 +55,7 @@ import {
   GET as listHats,
   POST as addHat,
 } from '@/app/api/auth/team/hats/route';
-import { applyMigrationsToPgliteThrough } from '../../../tests/fixtures/pglite-migrate';
+import { applyMigrationsToPglite } from '../../../tests/fixtures/pglite-migrate';
 import { createPglitePostgrest, loadCatalog, type PglitePostgrest } from '../../../tests/fixtures/postgrest-pglite';
 import {
   ACCOUNT_ADMIN,
@@ -168,7 +168,7 @@ async function hatsPost(authUserId: string, body: Record<string, unknown>): Prom
 }
 
 before(async () => {
-  const migrated = await applyMigrationsToPgliteThrough('0425');
+  const migrated = await applyMigrationsToPglite();
   pg = migrated.pg;
   const catalog = await loadCatalog(pg);
   shim = createPglitePostgrest(pg, catalog);
@@ -276,7 +276,7 @@ describe('Maria wears two hats', () => {
     assert.equal(atBeaumont.organizationId, ORG_A);
 
     const atLufkin = await effectiveRole(ACCOUNT_MARIA, PID_A2);
-    assert.equal(atLufkin.hatRole, 'vp', 'at the others she oversees');
+    assert.equal(atLufkin.hatRole, 'regional_manager', 'at the others she oversees');
     assert.equal(atLufkin.scope, 'company');
     assert.equal(atLufkin.role, 'front_desk', 'company oversight remains hotel read-only');
   });
@@ -292,7 +292,7 @@ describe('Maria wears two hats', () => {
     const hats = await loadHats(ACCOUNT_MARIA);
     assert.equal(hats.length, 2);
     const gm = hats.find((hat) => hat.role === 'general_manager');
-    const vp = hats.find((hat) => hat.role === 'vp');
+    const vp = hats.find((hat) => hat.role === 'regional_manager');
     assert.ok(gm && vp);
     assert.deepEqual(gm.coveredPropertyIds, [PID_A1]);
     assert.deepEqual(vp.coveredPropertyIds, [PID_A1, PID_A2].sort());
@@ -306,9 +306,9 @@ describe('Maria wears two hats', () => {
     await pg.query(`select public.staxis_end_membership_hat($1, $2)`, [ACCOUNT_ADMIN, gmMembershipId]);
 
     const remaining = await loadHats(ACCOUNT_MARIA);
-    assert.deepEqual(remaining.map((hat) => hat.role), ['vp'], 'only the GM hat came off');
+    assert.deepEqual(remaining.map((hat) => hat.role), ['regional_manager'], 'only the GM hat came off');
     const atBeaumont = await effectiveRole(ACCOUNT_MARIA, PID_A1);
-    assert.equal(atBeaumont.hatRole, 'vp', 'she still oversees Beaumont — she just no longer runs it');
+    assert.equal(atBeaumont.hatRole, 'regional_manager', 'she still oversees Beaumont — she just no longer runs it');
 
     // Put it back so later tests see the seeded world.
     await pg.query(
@@ -399,10 +399,10 @@ describe('a company-wide job covers hotels the company had not bought yet', () =
     const after = await accessibleProperties(ACCOUNT_FIONA);
     assert.equal(
       after.propertyIds.includes(PID_A3), true,
-      'the finance hat was written before this hotel existed and covers it anyway',
+      'the company hat was written before this hotel existed and covers it anyway',
     );
     const resolved = await effectiveRole(ACCOUNT_FIONA, PID_A3);
-    assert.equal(resolved.hatRole, 'finance');
+    assert.equal(resolved.hatRole, 'regional_manager');
     assert.equal(resolved.seesFinancials, true);
 
     // A PROPERTY hat must NOT widen — Frank was given one hotel and still has
@@ -474,11 +474,11 @@ describe('the invite button asks a third question only when the inviter runs a c
     assert.equal(stored.rows.length, 0, 'and nothing was written');
   });
 
-  test('a VP cannot create a peer VP', async () => {
+  test('a regional manager cannot create a peer regional manager', async () => {
     const result = await inviteResult(UID_MARIA, {
       hotelId: PID_A1,
       email: 'peer-vp@example.test',
-      role: 'vp',
+      role: 'regional_manager',
       scope: 'company',
     });
     assert.equal(result.status, 403);
@@ -486,14 +486,14 @@ describe('the invite button asks a third question only when the inviter runs a c
 
   test('a company-wide invitation records the company and no hotel list', async () => {
     signedInAs = null;
-    // Ana is the owner; she may hire finance company-wide.
+    // Ana is the owner; she may hire a regional manager company-wide.
     const anaAuth = await pg.query<{ data_user_id: string }>(
       `select data_user_id from accounts where id = $1`, [ACCOUNT_ANA],
     );
     const result = await inviteResult(anaAuth.rows[0].data_user_id, {
       hotelId: PID_A1,
       email: 'new-controller@example.test',
-      role: 'finance',
+      role: 'regional_manager',
       scope: 'company',
     });
     assert.equal(result.status, 201, result.error ?? '');
@@ -503,7 +503,7 @@ describe('the invite button asks a third question only when the inviter runs a c
     );
     assert.equal(stored.rows[0]?.membership_scope, 'company');
     assert.equal(stored.rows[0]?.covered_property_ids, null, 'company-wide stores no list — that is the point');
-    assert.equal(stored.rows[0]?.role, 'finance');
+    assert.equal(stored.rows[0]?.role, 'regional_manager');
   });
 
   test('an invitation at the independent hotel stays exactly the invitation it always was', async () => {
@@ -523,14 +523,14 @@ describe('the invite button asks a third question only when the inviter runs a c
 
 // ─────────────────────────────────────────────────────────────────────────────
 describe('accepting the invitation puts the hat on', () => {
-  test('a company-wide finance invitation lands as a finance hat over every hotel', async () => {
+  test('a company-wide invitation lands as a company hat over every hotel', async () => {
     const anaAuth = await pg.query<{ data_user_id: string }>(
       `select data_user_id from accounts where id = $1`, [ACCOUNT_ANA],
     );
     const invite = await inviteResult(anaAuth.rows[0].data_user_id, {
       hotelId: PID_A1,
       email: 'controller-two@example.test',
-      role: 'finance',
+      role: 'regional_manager',
       scope: 'company',
     });
     assert.equal(invite.status, 201, invite.error ?? '');
@@ -542,17 +542,17 @@ describe('accepting the invitation puts the hat on', () => {
     assert.ok(account);
     assert.equal(
       account.role, 'front_desk',
-      'the LOGIN carries a legacy word — finance is not one accounts.role has ever had',
+      'the LOGIN carries a legacy word — regional_manager is not one accounts.role has ever had',
     );
 
     const hats = await loadHats(account.id);
     assert.equal(hats.length, 1);
-    assert.equal(hats[0].role, 'finance', 'the true job lives on the hat');
+    assert.equal(hats[0].role, 'regional_manager', 'the true job lives on the hat');
     assert.equal(hats[0].scope, 'company');
     assert.deepEqual(hats[0].coveredPropertyIds, (await propertiesOfOrganization(ORG_A)));
 
     const resolved = await effectiveRole(account.id, PID_A2);
-    assert.equal(resolved.hatRole, 'finance');
+    assert.equal(resolved.hatRole, 'regional_manager');
     assert.equal(resolved.seesFinancials, true, 'she is here for the money and she can see it');
 
     // Wall B holds for a brand new person too.
@@ -592,7 +592,11 @@ describe('accepting the invitation puts the hat on', () => {
     const account = await accountByUsername('waco-maintenance');
     assert.ok(account);
     assert.equal(account.role, 'maintenance');
-    assert.deepEqual(account.property_access, [PID_L1]);
+    // Reach, not the legacy column. The final access contract (0426) stopped
+    // writing `accounts.property_access` on acceptance, so the honest question
+    // is the one the product asks: which hotels does this account reach?
+    assert.equal(await accountReachesProperty(account.id, PID_L1), true);
+    assert.equal(await accountReachesProperty(account.id, PID_A1), false);
     assert.deepEqual(await loadHats(account.id), [], 'no company, so no hat — exactly as before');
   });
 });
@@ -679,7 +683,7 @@ describe('a person\'s card is a list of lines, and each line is editable on its 
       .sort();
     assert.deepEqual(lines, [
       'GM — Beaumont Suites',
-      'Oversees — Beaumont Suites, Lufkin Inn, Port Arthur Inn',
+      'Regional Manager — Beaumont Suites, Lufkin Inn, Port Arthur Inn',
     ]);
     assert.equal(body.data.hats.every((hat) => hat.label.es.length > 0), true, 'both languages');
   });
@@ -758,7 +762,7 @@ describe('the database refuses what the routes refuse', () => {
   test('a company owner cannot reach into the other company', async () => {
     await assert.rejects(
       pg.query(
-        `select public.staxis_set_membership_hat($1, $2, $3, 'company', 'vp', null, null)`,
+        `select public.staxis_set_membership_hat($1, $2, $3, 'company', 'regional_manager', null, null)`,
         [ACCOUNT_BO, ORG_A, ACCOUNT_FRANK],
       ),
       /may not grant this job/i,

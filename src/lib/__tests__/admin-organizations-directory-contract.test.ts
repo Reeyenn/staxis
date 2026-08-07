@@ -169,12 +169,14 @@ describe('Admin organization directory read boundary', () => {
     assert.match(assignRouteSource, /staxis_set_primary_property_organization/);
   });
 
-  test('bootstraps leaders through the narrow admin-only RPC with real email fallback', () => {
+  test('bootstraps leaders through the main guarded invite family', () => {
     assert.match(bootstrapInviteRouteSource, /requireAdmin\(req\)/);
-    assert.match(bootstrapInviteRouteSource, /BOOTSTRAP_PROFILES/);
-    assert.match(bootstrapInviteRouteSource, /staxis_bootstrap_organization_leader_invitation/);
-    assert.match(bootstrapInviteRouteSource, /sendOrganizationAccessInvite/);
-    assert.match(bootstrapInviteRouteSource, /randomBytes\(32\)\.toString\(['"]hex['"]\)/);
-    assert.match(bootstrapInviteRouteSource, /company-invite\/\$\{encodeURIComponent\(rawToken\)\}/);
+    // The second invitation system is retired: this must mint into
+    // account_invites and land on the ordinary acceptance page, so a company
+    // leader is invited by the same machinery as everybody else.
+    assert.match(bootstrapInviteRouteSource, /staxis_create_account_invite_guarded/);
+    assert.match(bootstrapInviteRouteSource, /p_membership_scope: 'company'/);
+    assert.match(bootstrapInviteRouteSource, /\/invite\/\$\{rawToken\}/);
+    assert.doesNotMatch(bootstrapInviteRouteSource, /staxis_bootstrap_organization_leader_invitation/);
   });
 });
