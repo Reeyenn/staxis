@@ -55,6 +55,29 @@ export function isAssignable(staff: AssignableStaffRow | null | undefined): bool
 }
 
 /**
+ * Why a to-do cannot be routed to this DEPARTMENT, or null if it can.
+ *
+ * The same rule as `assigneeBlockedReason`, one level up. Naming a person was
+ * already guarded; naming their whole department was not, and it is the worse
+ * half of the two: a department row is delivered to every viewer IN that
+ * department (worklist/core.ts) and to nobody else, and it is held out of the
+ * author's own drawer until somebody else settles it. Route one at housekeeping
+ * and it exists on exactly zero screens, forever, under a success receipt.
+ *
+ * The composer never offered housekeeping as a target (COMPOSER_ROLES), so this
+ * closes the doors that bypass it: the AI's create_todo and its recurring
+ * sibling, which spawns a fresh invisible row every day it is due.
+ *
+ * Says what to do instead, because the caller relays this to a person.
+ */
+export function departmentBlockedReason(department: string | null | undefined): string | null {
+  if ((department ?? null) !== NON_ASSIGNABLE_DEPARTMENT) return null;
+  return 'Housekeepers work from the housekeeping board and never open the to-do list, '
+    + 'so a to-do routed to the housekeeping department would reach nobody. '
+    + 'Hand it to a named person instead, or leave it unassigned so it sits on the shared list.';
+}
+
+/**
  * The write-seam guard, for callers holding only an id.
  *
  * Returns null when the assignment is allowed, including when there is no

@@ -56,6 +56,7 @@ import { assignedStateLine, completionNotice, dueLine } from '@/lib/feed/one-lis
 import {
   assigneeBlockedReason,
   assignmentBlockedReason,
+  departmentBlockedReason,
   isAssignable,
 } from '@/lib/worklist/assignable';
 import { createTask } from '@/lib/comms/core';
@@ -202,6 +203,23 @@ describe('who may be handed a to-do', () => {
     ]) {
       const reason = assigneeBlockedReason(row);
       assert.ok(reason && !reason.includes('—'), `refusal copy must not use an em dash: ${reason}`);
+    }
+  });
+
+  test('naming the whole DEPARTMENT is refused for exactly the same reason', () => {
+    // The half the person-level guard left open. A department row reaches only
+    // viewers in that department, so routing one at housekeeping put it on zero
+    // screens while every door reported success.
+    const reason = departmentBlockedReason('housekeeping');
+    assert.ok(reason, 'the housekeeping department must be refused');
+    assert.match(reason, /housekeeping board/i);
+    assert.match(reason, /named person|unassigned/i, 'a refusal must offer the way through');
+    assert.ok(!reason.includes('—'), 'refusal copy must not use an em dash');
+  });
+
+  test('every department that does read the list is still allowed', () => {
+    for (const dept of ['front_desk', 'maintenance', 'general', 'all_staff', null, undefined]) {
+      assert.equal(departmentBlockedReason(dept), null, String(dept));
     }
   });
 });

@@ -18,6 +18,7 @@
 
 import { t, type Language } from '@/lib/translations';
 import { canManageTeam, type AppRole } from '@/lib/roles';
+import { listRendersFor, listStandingFor } from '@/lib/feed/list-access';
 
 /**
  * Whether a person's shell should ask /api/findings/badge at all.
@@ -47,6 +48,37 @@ export function shouldReadDecisionBadge(
 ): boolean {
   if (!user || !propertyId) return false;
   return canManageTeam(user.role);
+}
+
+/**
+ * Whether a person's shell should count "new things on your list" at all.
+ *
+ * The other half of the pill, gated the same way and for the same reason. The
+ * count itself is honest — countNewOnList applies the list's own visibility
+ * rule — but honest about a page this person is never shown. A housekeeper's
+ * pill said "2 new things", they tapped it, and the Staxis tab told them
+ * nothing there was theirs: two screens of the product making opposite claims
+ * about the same two rows. Housekeepers work from the housekeeping board and
+ * the feed deliberately never renders for them (list-access.ts).
+ *
+ * The rule is BORROWED, not restated: listStandingFor + listRendersFor are the
+ * exact functions QueueView calls to decide whether to draw the page, so the
+ * pill cannot drift from the screen it points at. It takes the viewer's
+ * standing AT THIS HOTEL rather than `accounts.role`, again because that is
+ * what the page uses — the company vocabulary degrades least-privilege into
+ * that column, and a finance hat carries a legacy role of `front_desk`.
+ *
+ * Fails closed while the standing is still resolving (role null → 'none'), which
+ * costs at most one poll of a missing badge and never shows a number for a
+ * screen the person cannot open.
+ */
+export function shouldReadNewOnList(
+  user: { role: AppRole } | null | undefined,
+  propertyId: string | null,
+  hotelStanding: { role: AppRole | null; hotelMutationAllowed: boolean },
+): boolean {
+  if (!user || !propertyId) return false;
+  return listRendersFor(listStandingFor(hotelStanding.role, hotelStanding.hotelMutationAllowed));
 }
 
 // Queue-count broadcast — a live queue source may fire this after a manager

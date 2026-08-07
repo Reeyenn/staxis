@@ -16,7 +16,7 @@ import { useAuth } from '@/contexts/AuthContext';
 import { useProperty } from '@/contexts/PropertyContext';
 import { useLang } from '@/contexts/LanguageContext';
 import { t } from '@/lib/translations';
-import { useCan } from '@/lib/capabilities/useCan';
+import { useActiveHotelStanding, useCan } from '@/lib/capabilities/useCan';
 import { useEnabledSections } from '@/lib/sections/useSectionEnabled';
 import { SECTION_LIST } from '@/lib/sections/registry';
 import {
@@ -24,7 +24,12 @@ import {
   type AdminDestinationAction,
   type BarItem,
 } from './ConcourseBarView';
-import { QUEUE_COUNT_EVENT, shouldReadDecisionBadge, staxisPillCount } from './queue-count';
+import {
+  QUEUE_COUNT_EVENT,
+  shouldReadDecisionBadge,
+  shouldReadNewOnList,
+  staxisPillCount,
+} from './queue-count';
 import { fetchWithAuth } from '@/lib/api-fetch';
 import { PhoneHandoffDialog } from '@/components/phone-handoff/PhoneHandoffDialog';
 import { InstallStaxisDialog } from '@/components/pwa/InstallStaxisDialog';
@@ -197,7 +202,14 @@ export function ConcourseBar() {
   const canSeeBadge = !portfolioScoped && shouldReadDecisionBadge(user, propertyId);
   const [badge, setBadge] = React.useState<{ pid: string; count: number } | null>(SESSION_BADGE);
   const [fresh, setFresh] = React.useState<{ pid: string; count: number } | null>(SESSION_NEW);
-  const canSeeNew = !portfolioScoped && signedIn && !!propertyId;
+  // The same standing the Staxis tab itself is drawn from, so the pill can
+  // never count work on a page this person is never shown. See
+  // shouldReadNewOnList — it borrows list-access's rule rather than restating
+  // it, which is what keeps the two halves of this pill symmetrical.
+  const hotelStanding = useActiveHotelStanding();
+  const canSeeNew = !portfolioScoped
+    && signedIn
+    && shouldReadNewOnList(user, propertyId, hotelStanding);
 
   const readBadge = React.useCallback(async (pid: string) => {
     try {

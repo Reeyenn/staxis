@@ -31,7 +31,11 @@ import {
 import { canForProperty } from '@/lib/capabilities/server';
 import { registerAddon } from '../approval';
 import { resolveStaffByName, type StaffResolution } from './_helpers';
-import { assigneeBlockedReason, assignmentBlockedReason } from '@/lib/worklist/assignable';
+import {
+  assigneeBlockedReason,
+  assignmentBlockedReason,
+  departmentBlockedReason,
+} from '@/lib/worklist/assignable';
 import type { ScopedDb } from '../scoped-db';
 
 // ─── Shared: resolve a recipient staff member by name (or id) ──────────────
@@ -58,6 +62,17 @@ const ALL_STAFF_ROLES = [
 ] as const;
 
 const DEPARTMENTS = ['front_desk', 'housekeeping', 'maintenance', 'general'] as const;
+/**
+ * The departments a TO-DO may be routed to. Housekeeping is absent for the same
+ * reason it is absent from the composer's Who list: a to-do handed to that
+ * department is delivered to housekeepers, and housekeepers never open the
+ * to-do list. Advertising it as an option meant the model kept choosing it and
+ * the row landed on nobody's screen with a success receipt on top.
+ *
+ * The full DEPARTMENTS list stays where it belongs — a log book entry filed
+ * under housekeeping is read by whoever opens the book, so it is fine.
+ */
+const TODO_DEPARTMENTS = ['front_desk', 'maintenance', 'general'] as const;
 const TASK_PRIORITIES = ['normal', 'high', 'urgent'] as const;
 
 // ─── send_message ────────────────────────────────────────────────────────────
@@ -185,16 +200,16 @@ registerTool<CreateTodoArgs>({
   description:
     'Add ONE task to the shared to-do list — something that needs doing once. ' +
     'Use when: the user asks for a job to be recorded — "add a to-do: restock the linen closet", "someone needs to check the pool heater", "crear una tarea: revisar el gimnasio". For something that should repeat on a schedule use create_recurring_todo; for a message at a specific future time use create_reminder; for a note about a room use flag_issue. ' +
-    'Args: title — the task, capped at 200 characters. notes — optional longer detail. assignee — optional person by name. department — optional, one of front_desk / housekeeping / maintenance / general. dueAt — optional ISO-8601 timestamp; work the date out from the user\'s words rather than passing their phrase through. priority — normal (default), high or urgent. ' +
+    'Args: title — the task, capped at 200 characters. notes — optional longer detail. assignee — optional person by name. department — optional, one of front_desk / maintenance / general. dueAt — optional ISO-8601 timestamp; work the date out from the user\'s words rather than passing their phrase through. priority — normal (default), high or urgent. ' +
     'Returns: the created task with its resolved assignee, department, due time and priority. A proposal until the user approves the card. ' +
-    'Refuses: an empty title, an assignee matching nobody, and an assignee matching several people — it hands back the candidates rather than choosing. It also refuses when the user is not linked to a staff record, because a to-do created by nobody is an orphan. Adding a to-do notifies no one and starts nothing: it appears on the list for whoever looks.',
+    'Refuses: an empty title, an assignee matching nobody, and an assignee matching several people — it hands back the candidates rather than choosing. It also refuses when the user is not linked to a staff record, because a to-do created by nobody is an orphan. It refuses housekeeping outright, as a person or as a department: housekeepers work from the housekeeping board and never open the to-do list, so say so and offer a named person or an unassigned to-do instead. Adding a to-do notifies no one and starts nothing: it appears on the list for whoever looks.',
   inputSchema: {
     type: 'object',
     properties: {
       title: { type: 'string', description: 'Short task title. Max 200 chars.' },
       notes: { type: 'string', description: 'Optional longer detail.' },
       assignee: { type: 'string', description: 'Optional staff member to assign it to, by name.' },
-      department: { type: 'string', enum: [...DEPARTMENTS], description: 'Optional department to assign it to.' },
+      department: { type: 'string', enum: [...TODO_DEPARTMENTS], description: 'Optional department to assign it to. Housekeeping is not a valid target for a to-do.' },
       dueAt: { type: 'string', description: 'Optional due date/time as ISO-8601 (e.g. "2026-07-06T17:00:00Z").' },
       priority: { type: 'string', enum: [...TASK_PRIORITIES], description: 'Optional priority. Defaults to normal.' },
     },
@@ -213,7 +228,13 @@ registerTool<CreateTodoArgs>({
       return { ok: false, error: 'Your account isn\'t linked to a staff record on this property, so I can\'t create a to-do as you. Ask a manager to link it.' };
     }
     const cleanNotes = notes ? String(notes).trim().slice(0, 2000) : null;
-    const dept = department && (DEPARTMENTS as readonly string[]).includes(department) ? department : null;
+    // Checked against what was ASKED FOR, before the coercion below drops it.
+    // Silently turning "a to-do for housekeeping" into an unassigned to-do
+    // would be the same lie in a quieter voice: the model would still report
+    // back that housekeeping had been given the job.
+    const deptBlocked = departmentBlockedReason(department);
+    if (deptBlocked) return { ok: false, error: deptBlocked };
+    const dept = department && (TODO_DEPARTMENTS as readonly string[]).includes(department) ? department : null;
     const prio = priority && (TASK_PRIORITIES as readonly string[]).includes(priority)
       ? (priority as (typeof TASK_PRIORITIES)[number])
       : 'normal';

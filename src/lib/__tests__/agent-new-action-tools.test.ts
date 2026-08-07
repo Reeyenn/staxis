@@ -458,6 +458,21 @@ describe('create_recurring_todo', () => {
     assert.equal(row.weekday, null);
     assert.equal(row.assigned_department, 'maintenance');
   });
+
+  test('refuses to route a standing rule at the housekeeping DEPARTMENT', async () => {
+    // The worst version of the invisible-to-do bug: a template aimed at a
+    // department nobody in it ever reads spawns a FRESH unseen row every day it
+    // is due, forever, and each one is reported back as done.
+    const res = await executeTool(
+      'create_recurring_todo',
+      { title: 'deep clean the lobby carpet', cadence: 'daily', department: 'housekeeping' },
+      ctx(),
+    );
+    assert.equal(res.ok, false);
+    assert.match(res.error ?? '', /housekeeping board/i);
+    assert.match(res.error ?? '', /named person|unassigned/i);
+    assert.equal((inserted['recurring_task_templates'] ?? []).length, 0, 'no template may spawn invisible rows');
+  });
 });
 
 // ─── Lost & Found lookup ─────────────────────────────────────────────────────
