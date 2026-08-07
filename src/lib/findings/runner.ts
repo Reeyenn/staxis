@@ -31,6 +31,7 @@ import { runWithConcurrency } from '@/lib/parallel';
 import type { MessagesClient } from '@/lib/agent/llm';
 
 import { judgeFindingsForProperty } from './judge';
+import { writeReplyQuestions } from '@/lib/companion/reply-question';
 
 import {
   DORMANT,
@@ -88,6 +89,8 @@ export interface FindingsRunOptions {
   skipJudge?: boolean;
   /** Scripted model for the judge. Production never passes it. */
   judgeModelClient?: MessagesClient;
+  /** Scripted model for the question pass. Production never passes it. */
+  replyQuestionModelClient?: MessagesClient;
   /**
    * Skip the self-demotion pass: no state is read, no state is written, and
    * every detector runs at its declared volume. Detector-focused tests and
@@ -378,6 +381,24 @@ export async function runFindingsForProperty(
       now,
       modelClient: opts.judgeModelClient,
     });
+
+    // ── THE QUESTION UNDER THE CARD'S REPLIES ─────────────────────────────
+    //
+    // AFTER the judge, because it reads the judge's own phrasing: the question
+    // is about the sentence the card actually shows, and asking about the
+    // detector's raw summary would be asking about a sentence nobody sees.
+    //
+    // Its own call, its own feature slot, its own spend hold. It could have
+    // been two more keys on the judge's reply and cost nothing, and it is not,
+    // for two reasons. One is honest bookkeeping: it is switchable in the AI
+    // Control Center, and a feature a hotel can point at a different model has
+    // to be a feature the ledger can see on its own. The other is blast radius
+    // — a malformed question would have taken down the judge's phrasing for
+    // twenty-five findings, and there is nothing about a question worth that.
+    //
+    // It never throws and its failure is invisible: every card keeps the
+    // per-kind template question it already had, which is a complete card.
+    await writeReplyQuestions({ propertyId, now, modelClient: opts.replyQuestionModelClient });
   }
 
   summary.durationMs = Date.now() - startedAt;

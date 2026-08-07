@@ -426,6 +426,30 @@ describe('the equipment list', () => {
       assert.ok(!JSON.stringify(await body(res)).includes(LEAK));
     });
 
+    test("hotel A's manager asking for hotel B's asset under hotel B's OWN id is refused", async () => {
+      // The case the id/pid mismatch above cannot catch: name B's asset AND B's
+      // hotel, and the store's property scoping resolves the row perfectly. Only
+      // a tenant check on the caller stops it, and the detail sheet is the whole
+      // asset — purchase and replacement cost, serial, warranty terms, plus every
+      // linked ticket's description, room and repair cost.
+      const res = await equipmentDetail(
+        get(`/api/maintenance/equipment/${assetB}?pid=${PID_B}`),
+        params(assetB),
+      );
+      assert.equal(res.status, 403);
+      assert.ok(!JSON.stringify(await body(res)).includes(LEAK));
+    });
+
+    test("hotel B's own manager still opens hotel B's asset sheet", async () => {
+      // The guard above must refuse the stranger without also refusing the owner.
+      currentUser = GM_B_UID;
+      const res = await equipmentDetail(
+        get(`/api/maintenance/equipment/${assetB}?pid=${PID_B}`),
+        params(assetB),
+      );
+      assert.equal(res.status, 200);
+    });
+
     test("hotel A cannot edit or delete hotel B's asset by id", async () => {
       const patched = await equipmentPatch(
         send('/api/maintenance/equipment', 'PATCH', { pid: PID_A, name: 'stolen' }),

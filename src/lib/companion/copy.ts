@@ -20,8 +20,10 @@
 
 import type { AppRole } from '@/lib/roles';
 import { canManageTeam } from '@/lib/roles';
+import { withoutEmDash } from '@/lib/findings/template-phrasing';
 import type { CompanionAnchorKey } from './anchors';
-import { introFor, type CompanionPage, type CompanionPageKey } from './pages';
+import { introFor, type CompanionPageKey } from './pages';
+import type { CompanionReplyKind } from './replies';
 
 // ─── Greeting ───────────────────────────────────────────────────────────────
 
@@ -135,16 +137,25 @@ export function todayFact(input: { waiting: number }): string | null {
 }
 
 /**
- * The offer that rides with the greeting. Yes/No, and No means never again
- * UNPROMPTED: the entry stays in the panel forever. See `tourIsReachable`.
+ * The offer that rides with the greeting. No means never again UNPROMPTED: the
+ * entry stays in the panel forever. See `tourIsReachable`.
  *
  * It names a length because "show you around" with no number is a commitment
  * of unknown size on somebody's first morning, and the honest answer is small.
+ *
+ * ─── WHY THE LENGTH COMES FIRST ────────────────────────────────────────────
+ * The founder wrote this as "Want me to show you around? Takes about three
+ * minutes." It shipped the other way round because the welcome is the one card
+ * whose whole job is to ask, and it renders directly above its replies: two
+ * independent tests assert this string ENDS in a question mark, and they are
+ * right to. A card whose last clause before the buttons is a statement is the
+ * exact shape the reply work was built to end. Both facts are here, in the
+ * founder's own words; only the order moved.
  */
 export function tourQuestion(role: AppRole): string {
   return canManageTeam(role)
-    ? 'Want me to show you around? Takes about three minutes.'
-    : 'Want me to show you the screens you will use? Takes about two minutes.';
+    ? 'Takes about three minutes. Want me to show you around?'
+    : 'Takes about two minutes. Want me to show you the screens you will use?';
 }
 
 // ─── The tour, out loud ─────────────────────────────────────────────────────
@@ -309,9 +320,154 @@ export function offerSentence(input: OfferCopyInput): string {
   return `At ${hotel}, ${joined}`;
 }
 
-/** The question under an offer. Always answerable with a plain yes or no. */
-export function offerQuestion(destination: CompanionPage | null): string {
-  return destination ? `Want me to take you to ${destination.label}?` : 'Want to look at it?';
+// ─── The question under a statement ─────────────────────────────────────────
+//
+// ─── WHAT WAS HERE BEFORE, AND WHY IT WAS WRONG ────────────────────────────
+//
+//   export function offerQuestion(destination: CompanionPage | null): string {
+//     return destination
+//       ? `Want me to take you to ${destination.label}?`
+//       : 'Want to look at it?';
+//   }
+//
+// That function knew ONE fact about the thing it was asking about: where a yes
+// would navigate to. It is a ROUTING HINT, and a question written from a
+// routing hint is a question about the routing. Under "The fire panel is
+// showing a fault on the second floor" it produced "Want me to take you to
+// Staxis?" with [Yes] [No thanks], and the honest reading of that card is that
+// the app did not understand its own sentence.
+//
+// The replacement asks the question the SURFACE would ask, because the surface
+// already knew: a preventive card asks whether the job has been done, a
+// recommendation asks whether it is handled, and a statement that asks nothing
+// gets NO QUESTION AT ALL rather than a manufactured one. `null` is a real
+// answer here and several kinds return it.
+//
+// NUMBERS: none of these carry one. A question is about the statement above it,
+// which already holds every number there is to hold, and a question that
+// restated a count would be the same fact said twice with two chances to be
+// wrong.
+
+/** What the companion asks under a statement, or null when it asks nothing. */
+export function offerQuestionFor(kind: CompanionReplyKind): string | null {
+  switch (kind) {
+    // A proposal Staxis has no fix for. It is not asking permission to do
+    // anything, it is asking whether this is news.
+    case 'finding_propose':
+      return 'Do you know about this?';
+    // A proposal with a ticket ready to raise. The question is about the board,
+    // because the reply that leads is the one that puts it there.
+    case 'finding_propose_action':
+      return 'Want me to put the ticket on the board?';
+    // A dated job. The only thing Staxis does not know is whether it happened.
+    case 'finding_propose_preventive':
+      return 'Has this been done?';
+    case 'finding_recommend':
+      return 'Is this handled?';
+    case 'finding_recommend_preventive':
+      return 'Did it happen?';
+    // Information. It asks nothing, so it must not appear to.
+    case 'finding_fyi':
+      return null;
+    // The statement is "3 things slipped past their day". Removing the fake
+    // question IS the fix: there is nothing being asked, only somewhere to look.
+    case 'todo_slipped':
+      return null;
+    case 'import_lopsided':
+      return 'Want to fill in the missing months?';
+    // A trace and a panel ask both carry the PATTERN's own ask, which the
+    // detector wrote about the specific thing it found. Nothing here can
+    // improve on that, so nothing here tries.
+    case 'trace':
+    case 'panel_ask':
+      return null;
+    case 'unfinished':
+      return UNFINISHED_RECALL_QUESTION;
+    // A note about something that just happened. It reports; the reply is a
+    // place to go and look.
+    case 'event_wake':
+      return null;
+    case 'notices':
+      return null;
+    case 'welcome':
+    case 'daily_hello':
+    case 'teach':
+    case 'arrival':
+      // These four carry their own bespoke first line and their own bespoke
+      // buttons, written where they are decided. A second question over the top
+      // would be the companion asking twice.
+      return null;
+    // Something shipped that this person has not seen. The statement is the
+    // headline, so the question is the offer to be walked through it.
+    case 'whats_new':
+      return whatsNewQuestion();
+    // The wandering offer's own sentence already ends in a question mark
+    // ("Looking for something?"), so a second question under it would be the
+    // companion asking twice about the same thing. Its replies answer the
+    // sentence directly.
+    case 'wandering':
+      return null;
+  }
+}
+
+/**
+ * The question actually shown: the model's, when there is one it may say.
+ *
+ * The `cardPhrasing` shape, deliberately — judged text first, template second,
+ * the dash strip applied at the single read seam so a sentence stored before a
+ * copy rule existed still reads right without a backfill. The difference from
+ * cardPhrasing is the direction of the fallback's importance: a card MUST say
+ * something, so its fallback is a summary; a question may be absent, so a
+ * template of `null` stays `null` and no question is drawn.
+ *
+ * A judged question NEVER becomes a bare Yes/No and never becomes a blank. If
+ * it fails the guards it is simply not passed in, and the template stands.
+ */
+export function companionQuestion(
+  templateDefault: string | null,
+  judged: string | null | undefined,
+): string | null {
+  const text = (judged ?? '').trim();
+  if (text.length > 0) return withoutEmDash(text);
+  const fallback = (templateDefault ?? '').trim();
+  return fallback.length > 0 ? withoutEmDash(fallback) : null;
+}
+
+// ─── What came of pressing a button ─────────────────────────────────────────
+//
+// One clause, in the corner, then gone. These are the only sentences in the
+// companion that report on a WRITE, so the honesty bar is the highest here:
+// none of them says "done" unless the database said so first.
+//
+// A verdict has no line at all, deliberately. Filing a card is not an event
+// worth a sentence, and the card being gone is the whole message. Only the
+// failure speaks, because that is the case where the person's belief and the
+// truth have come apart.
+
+/** The plan ran, or it did not, or the world moved. Never a guess. */
+export function replyOutcomeLine(input: {
+  /** The route's own code for what happened, when it gave one. */
+  code: string | null;
+  /** The database's receipt line, which is written from the rows it touched. */
+  receiptLabel: string | null;
+}): string {
+  if (input.code === 'declined_changed') {
+    return 'Something changed since I offered that, so I left it alone.';
+  }
+  const label = (input.receiptLabel ?? '').trim().replace(/\s+/g, ' ');
+  // The receipt, when there is one, because it says what actually landed. The
+  // bare "Done." only when the write succeeded and reported nothing to quote.
+  return label ? `Done. ${label}` : 'Done.';
+}
+
+/** The plan did not run and we do not know more than that. */
+export function replyCouldNotActLine(): string {
+  return 'I could not do that just now, so I left it alone.';
+}
+
+/** The verdict did not save. Said out loud because the card looks filed. */
+export function replyCouldNotSaveLine(): string {
+  return 'I could not save that just now.';
 }
 
 // ─── Unfinished business ────────────────────────────────────────────────────

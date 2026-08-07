@@ -45,6 +45,7 @@
 // ═══════════════════════════════════════════════════════════════════════════
 
 import type { CompanionCandidate, CompanionMemory } from './manners';
+import { repliesFor } from './replies';
 import { wanderingLine } from './copy';
 
 /** The sliding window. Anything older than this is not part of the same hunt. */
@@ -157,6 +158,13 @@ export function decideWandering(input: WanderInput): WanderDecision {
       // have typed, and `staxis_point_at` still refuses everything it always
       // refused.
       seed: WANDER_SEED,
+      // Built HERE, beside the sentence, by the code that decided to say it.
+      // That is the whole rule replies.ts exists for: the alternative is a
+      // question invented at render time to fit a routing hint, which is the
+      // bug that shipped a fire-panel statement under "Want me to take you to
+      // Staxis?".
+      replyKind: 'wandering',
+      replies: repliesFor({ kind: 'wandering', seed: WANDER_SEED }),
     },
   };
 }

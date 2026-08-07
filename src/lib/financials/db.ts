@@ -39,6 +39,7 @@ import {
   sameFinancialCreateFields,
   settleFinancialCreateInsert,
 } from './idempotent-create';
+import { normalizeInvoiceReference } from '@/lib/inventory-invoice-commit';
 import { getMonthRevenue } from './revenue';
 
 // ── Row mappers (snake_case DB → camelCase domain) ──────────────────────────
@@ -177,6 +178,34 @@ export async function sumExpensesByDepartment(
 export async function totalExpenses(pid: string, month: string): Promise<number> {
   const byDept = await sumExpensesByDepartment(pid, month);
   return Object.values(byDept).reduce((a, b) => a + b, 0);
+}
+
+/** Find an existing Checkbook expense carrying the same invoice reference,
+ * compared under the inventory scanner's normalization (NFKC, collapsed
+ * whitespace, case-folded). This is the cross-surface guard: the same
+ * physical invoice booked through Financials first must stop the Inventory
+ * bridge from booking it a second time, and vice versa. */
+export async function findExpenseByInvoiceReference(
+  pid: string,
+  reference: string,
+): Promise<FinancialExpense | null> {
+  const wanted = normalizeInvoiceReference(reference);
+  if (!wanted) return null;
+  const { data, error } = await supabaseAdmin
+    .from('financial_expenses')
+    .select('*')
+    .eq('property_id', pid)
+    .not('invoice_number', 'is', null)
+    .order('created_at', { ascending: false })
+    .limit(2000);
+  if (error) {
+    log.error('[financials/db] findExpenseByInvoiceReference failed', { pid, err: new Error(error.message) });
+    throw new Error('findExpenseByInvoiceReference failed');
+  }
+  const hit = (data ?? []).find(
+    (r) => normalizeInvoiceReference(str((r as Row).invoice_number)) === wanted,
+  );
+  return hit ? mapExpense(hit as Row) : null;
 }
 
 export interface NewExpense {

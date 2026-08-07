@@ -23,6 +23,7 @@ export const AI_FEATURE_KEYS = [
   'agent.portfolio_chat',
   'companion.conversation',
   'companion.event_wake',
+  'companion.reply_question',
   'agent.conversation_summary',
   'agent.memory_consolidation',
   'findings.judge',

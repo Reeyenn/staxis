@@ -11,6 +11,7 @@
 // ═══════════════════════════════════════════════════════════════════════════
 
 import type { CompanionCandidate } from '../manners';
+import { repliesFor } from '../replies';
 import type { TracePage, TracePattern } from './types';
 
 export { tracePatternKey, isTraceTopic, TRACE_TOPIC_PREFIX } from './identity';
@@ -47,6 +48,12 @@ export function traceCandidate(pattern: TracePattern): CompanionCandidate {
     covers: pattern.covers,
     destination: pattern.page,
     severity: pattern.severity,
+    // A trace asks the PATTERN's own question, which the detector wrote about
+    // the specific thing it found. So there is no question producer for this
+    // kind: `pattern.ask` is already on the line above as the statement, and a
+    // second question under it would be the companion asking twice.
+    replyKind: 'trace',
+    replies: repliesFor({ kind: 'trace' }),
   };
 }
 

@@ -252,6 +252,11 @@ describe('inventory audit history migration 0326', () => {
     assert.deepEqual(itemEvents.map((row) => row.action), ['item.created', 'item.updated', 'item.archived']);
     assert.ok(itemEvents.every((row) => row.actor_user_id === USER));
     const editSummary = itemEvents[1].summary as { changedFields?: string[] };
+    // 0463 added unit_cost_cents as a GENERATED mirror of unit_cost, which the
+    // 0326 trigger briefly reported as its own changed field, so item history
+    // named every price edit twice. 0465 put the mirrors on the trigger's
+    // ignore-list: they cannot change independently of their dollar source, so
+    // a cost edit is two fields again. Do not add the mirror back here.
     assert.deepEqual(editSummary.changedFields, ['name', 'unit_cost']);
     assert.equal((itemEvents[1].before_state as { name: string }).name, 'Editable Soap');
     assert.equal((itemEvents[1].after_state as { name: string }).name, 'Guest Soap');

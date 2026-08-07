@@ -52,6 +52,7 @@ import { chatIsMountedForRole } from '@/lib/agent/lenses';
 import { isValidRole, type AppRole } from '@/lib/roles';
 import { validateString } from '@/lib/api-validate';
 import { buildCompanionCandidates } from '@/lib/companion/candidates';
+import type { CompanionCandidate } from '@/lib/companion/manners';
 import {
   appendCompanionOffer,
   ensureCompanionConversation,
@@ -59,14 +60,18 @@ import {
 } from '@/lib/agent/memory';
 import {
   COMPANION_OFFER_KINDS,
-  OFFER_ACTIONS_MAX,
   OFFER_TEXT_MAX,
   offerIsJournalable,
   type CompanionOffer,
-  type CompanionOfferAction,
   type CompanionOfferAnswer,
   type CompanionOfferKind,
 } from '@/lib/companion/offers';
+import {
+  repliesFor,
+  staticRepliesForTopic,
+  type CompanionReply,
+} from '@/lib/companion/replies';
+import { tourFor } from '@/lib/companion/pages';
 import { cleanName, looksSharedLogin, type SleepReason } from '@/lib/companion/copy';
 import { recordAgentJournalEntry, journalSaidLine } from '@/lib/agent/journal';
 import { loadAssignmentNotices } from '@/lib/companion/notices-server';
@@ -298,19 +303,30 @@ interface OfferSpeech {
   kind: CompanionOfferKind;
   text: string;
   page: string | null;
-  actions: CompanionOfferAction[];
   conversationId: string | null;
 }
-
-const OFFER_ACTION_KINDS: readonly CompanionOfferAction['kind'][] = ['show', 'walk', 'seed', 'no'];
 
 /**
  * Read the offer half of a POST body, or null when there is none.
  *
+ * ─── WHAT THIS DELIBERATELY NO LONGER READS: `actions` ─────────────────────
+ *
+ * It used to take the buttons straight off the request body, store them on the
+ * row, and hand them back for the browser to render. That was harmless while
+ * every button was "yes" or "no thanks". It stopped being harmless the moment a
+ * reply could record a verdict or run a frozen plan: a hand-rolled POST could
+ * then put any label it liked on any intent it liked, and the peek would render
+ * it as something Staxis had said.
+ *
+ * So the reply set is now DERIVED ON THE SERVER, from the topic and the kind,
+ * by `deriveReplies` below. The body still names the topic and the kind, and
+ * both are already bounded closed values; what it can no longer do is author a
+ * label, an id, a verdict, an action, or a destination.
+ *
  * Returns null rather than erroring on a malformed shape: the memory event is
  * the load-bearing half of this request and must not fail because a browser
- * sent a button label that was too long. A sentence we cannot store is a
- * sentence that stays ephemeral, which is exactly what it was before.
+ * sent a sentence that was too long. A sentence we cannot store is a sentence
+ * that stays ephemeral, which is exactly what it was before.
  */
 function readOfferSpeech(body: Record<string, unknown>): OfferSpeech | null {
   const text = typeof body.text === 'string' ? body.text.replace(/\s+/g, ' ').trim() : '';
@@ -319,24 +335,126 @@ function readOfferSpeech(body: Record<string, unknown>): OfferSpeech | null {
     ? (body.kind as CompanionOfferKind)
     : null;
   if (!kind) return null;
-  const actions: CompanionOfferAction[] = [];
-  if (Array.isArray(body.actions)) {
-    for (const raw of body.actions.slice(0, OFFER_ACTIONS_MAX)) {
-      if (!raw || typeof raw !== 'object' || Array.isArray(raw)) continue;
-      const entry = raw as Record<string, unknown>;
-      const label = typeof entry.label === 'string' ? entry.label.trim().slice(0, 40) : '';
-      const actionKind = OFFER_ACTION_KINDS.includes(entry.kind as CompanionOfferAction['kind'])
-        ? (entry.kind as CompanionOfferAction['kind'])
-        : null;
-      if (!label || !actionKind) continue;
-      actions.push({ label, kind: actionKind });
-    }
-  }
   const page = typeof body.page === 'string' && body.page.length > 0 && body.page.length <= 40
     ? body.page
     : null;
   const conversationId = typeof body.conversationId === 'string' ? body.conversationId : null;
-  return { kind, text, page, actions, conversationId };
+  return { kind, text, page, conversationId };
+}
+
+/**
+ * The replies this turn gets, written by code on this side of the wire.
+ *
+ * Three sources, in order, and NONE of them is the request body:
+ *
+ *   1. A STATIC VOCABULARY for the topics this route cannot rebuild. Trace
+ *      patterns and panel asks are computed in the browser against the screen
+ *      somebody is standing on, so there is no candidate here to look them up
+ *      in. `staticRepliesForTopic` is a pure function of the topic namespace,
+ *      owned by replies.ts, reachable by a test.
+ *   2. THE CANDIDATE ITSELF, rebuilt with the same call the GET uses. This is
+ *      the honest source for anything a finding is behind: the verdict a button
+ *      records is written against the row that exists NOW, and the plan it runs
+ *      is the one standing now, not the one a tab saw twenty minutes ago.
+ *   3. NOTHING, which stores a turn with no buttons. Honest, and visibly so:
+ *      an unanswerable sentence in the thread is a smaller failure than a
+ *      button whose meaning nobody can account for.
+ *
+ * `kind` comes off the body and is worth being precise about: it is a closed
+ * enum, and all it selects is WHICH code-owned table is read. A forged kind can
+ * make a turn carry the wrong table's buttons; it cannot make one carry a label
+ * or an id nothing here wrote.
+ */
+async function deriveReplies(input: {
+  event: CompanionEvent;
+  kind: CompanionOfferKind;
+  topic: string;
+  propertyId: string;
+  accountId: string;
+  staffId: string | null;
+  role: AppRole;
+  hotelMutationAllowed: boolean;
+  enabledSections: unknown;
+  today: string;
+  timezone: string | null;
+  now: Date;
+}): Promise<CompanionReply[]> {
+  const sectionCtx = {
+    role: input.role,
+    enabledSections: normalizeSectionFlags(input.enabledSections),
+  };
+
+  if (input.event === 'welcomed') {
+    const tour = tourFor(sectionCtx);
+    return repliesFor({ kind: 'welcome', page: tour[0]?.key ?? null });
+  }
+
+  if (input.event === 'greeted') {
+    // The hello only grows a way in when something is genuinely waiting, and
+    // "genuinely" means counted here rather than claimed by the browser.
+    const waiting = await countCandidates(input);
+    return repliesFor({ kind: 'daily_hello', waiting });
+  }
+
+  if (input.event === 'notices_announced') {
+    const hasRefusal = await noticesIncludeRefusal(input);
+    return repliesFor({ kind: 'notices', hasRefusal });
+  }
+
+  // A pattern about a named person, said in the one venue it may be said in.
+  // Its vocabulary is the venue's, not the pattern's.
+  if (input.kind === 'panel_ask') return repliesFor({ kind: 'panel_ask' });
+
+  const fromNamespace = staticRepliesForTopic(input.topic);
+  if (fromNamespace) return fromNamespace;
+
+  const candidates = await candidatesFor(input);
+  const match = candidates.find((c) => c.topic === input.topic);
+  return match ? [...match.replies] : [];
+}
+
+/** The candidate list, or an empty one. Never throws upward. */
+async function candidatesFor(input: {
+  propertyId: string;
+  accountId: string;
+  role: AppRole;
+  hotelMutationAllowed: boolean;
+  today: string;
+  timezone: string | null;
+}): Promise<CompanionCandidate[]> {
+  try {
+    return await buildCompanionCandidates({
+      propertyId: input.propertyId,
+      role: input.role,
+      hotelMutationAllowed: input.hotelMutationAllowed,
+      accountId: input.accountId,
+      today: input.today,
+      timezone: input.timezone,
+    });
+  } catch {
+    return [];
+  }
+}
+
+async function countCandidates(input: Parameters<typeof candidatesFor>[0]): Promise<number> {
+  return (await candidatesFor(input)).length;
+}
+
+/** Does this batch leave a job nobody has taken? Fails soft to "no". */
+async function noticesIncludeRefusal(input: {
+  propertyId: string;
+  staffId: string | null;
+  now: Date;
+}): Promise<boolean> {
+  if (!input.staffId) return false;
+  try {
+    const notices = await loadAssignmentNotices({
+      propertyId: input.propertyId, staffId: input.staffId, now: input.now,
+    });
+    return notices.some((n) => n.kind === 'refused');
+  } catch {
+    return false;
+  }
 }
 
 function readAnswer(value: unknown): CompanionOfferAnswer | null {
@@ -496,6 +614,21 @@ export async function POST(req: NextRequest): Promise<Response> {
       ) {
         const speech = readOfferSpeech(body as Record<string, unknown>);
         if (speech) {
+          // Written HERE, never taken from the body. See deriveReplies.
+          const replies = await deriveReplies({
+            event: body.event,
+            kind: speech.kind,
+            topic,
+            propertyId: ctx.pid,
+            accountId: ctx.accountId,
+            staffId: ctx.staffId,
+            role: isValidRole(ctx.role) ? ctx.role : 'staff',
+            hotelMutationAllowed: ctx.hotelMutationAllowed,
+            enabledSections: facts?.enabled_sections,
+            today,
+            timezone: facts?.timezone ?? null,
+            now,
+          });
           const conversationId = await ensureCompanionConversation({
             userAccountId: ctx.accountId,
             propertyId: ctx.pid,
@@ -511,7 +644,7 @@ export async function POST(req: NextRequest): Promise<Response> {
               kind: speech.kind,
               topic: topic || null,
               page: speech.page,
-              actions: speech.actions,
+              replies,
               now,
             });
             // ── The third family of journal entry: a thing said to a person ──

@@ -50,6 +50,7 @@ import {
   type TeachFlow,
 } from './copy';
 import type { CompanionPageKey } from './pages';
+import { repliesFor, type CompanionReply, type CompanionReplyKind } from './replies';
 
 export type { TeachFlow } from './copy';
 
@@ -321,6 +322,35 @@ export interface CompanionCandidate {
    * untouched: this reopens a question, it does not answer one.
    */
   seed?: string;
+  /**
+   * Which reply vocabulary this candidate speaks.
+   *
+   * Carried rather than re-derived, because the thing that knows a card is a
+   * preventive follow-up is the code that read the card. It picks the question
+   * producer and nothing else; the replies below are already built.
+   */
+  replyKind: CompanionReplyKind;
+  /**
+   * WHAT A PERSON MAY SAY BACK, BUILT BY WHATEVER BUILT THE SENTENCE.
+   *
+   * This field is the whole point of the reply work. A candidate used to carry
+   * a `destination` and nothing else, and the question under it was then
+   * invented to fit that routing hint: a fire-panel statement got "Want me to
+   * take you to Staxis?" over [Yes] [No thanks], which answers nothing anybody
+   * asked. The source surfaces already knew the honest answers. Now they say
+   * them.
+   *
+   * Capped at three by construction in replies.ts, never by a slice here.
+   */
+  replies: readonly CompanionReply[];
+  /**
+   * The model-written question for this card, already guarded, or null.
+   *
+   * Null is the ordinary case and means "use the per-kind template". Nothing
+   * phrases anything at the moment this candidate is built; a question here was
+   * written by a pass that already ran a model, hours ago, and stored.
+   */
+  judgedQuestion?: string | null;
 }
 
 // ─── Decision ───────────────────────────────────────────────────────────────
@@ -356,6 +386,13 @@ export type CompanionSpeech =
       /** See CompanionCandidate.seed. Present only for a candidate that
        *  carried one; a yes then reopens the conversation instead of walking. */
       seed?: string;
+      /** The candidate's own replies, unchanged. Never re-derived from the
+       *  destination: re-deriving them is the bug this all exists to end. */
+      replies: readonly CompanionReply[];
+      /** Picks the question producer. See CompanionCandidate.replyKind. */
+      replyKind: CompanionReplyKind;
+      /** The judged question, or null for the template. */
+      judgedQuestion: string | null;
     };
 
 export interface MannersInput {
@@ -461,6 +498,9 @@ export function decideCompanionSpeech(input: MannersInput): CompanionSpeech {
       destination: candidate.destination,
       severity: candidate.severity ?? DEFAULT_COMPANION_SEVERITY,
       ...(candidate.seed ? { seed: candidate.seed } : {}),
+      replies: candidate.replies ?? [],
+      replyKind: candidate.replyKind,
+      judgedQuestion: candidate.judgedQuestion ?? null,
     };
   }
 
@@ -605,6 +645,11 @@ export type PanelAskDecision =
       sentence: string;
       destination: CompanionPageKey | null;
       severity: CompanionSeverity;
+      /** The candidate's own replies. A panel ask about a named person gets
+       *  its own "stop watching this", which is why it is not the trace set. */
+      replies: readonly CompanionReply[];
+      replyKind: CompanionReplyKind;
+      judgedQuestion: string | null;
     };
 
 export interface PanelAskInput {
@@ -653,6 +698,14 @@ export function decidePanelAsk(input: PanelAskInput): PanelAskDecision {
       sentence: candidate.text.trim(),
       destination: candidate.destination,
       severity: candidate.severity ?? DEFAULT_COMPANION_SEVERITY,
+      // The panel ask has its own vocabulary, not the candidate's: the venue
+      // changes the honest answers. "Show me what you found" reads right inside
+      // a panel somebody opened and would read as a boast in a corner pill, and
+      // "stop watching this" is a thing people want to say about a pattern
+      // concerning a colleague and rarely about a stock count.
+      replies: repliesFor({ kind: 'panel_ask' }),
+      replyKind: 'panel_ask',
+      judgedQuestion: candidate.judgedQuestion ?? null,
     };
   }
   return { ask: false, refusal: 'nothing_to_say' };

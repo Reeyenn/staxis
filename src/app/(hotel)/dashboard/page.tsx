@@ -27,7 +27,7 @@ import { useProperty } from '@/contexts/PropertyContext';
 import { useSectionEnabled } from '@/lib/sections/useSectionEnabled';
 import { shouldResumeOnboarding, RESUME_GUARD_KEY } from '@/lib/onboarding/state';
 import { C, SANS, MONO, LABEL, RING, STATUS_EN, type RingKey } from '@/app/dashboard/_components/palette';
-import { holdLastGoodCounts } from '@/app/dashboard/_components/counts-hold';
+import { holdLastGoodCounts, occupancyPctFromCounts } from '@/app/dashboard/_components/counts-hold';
 import {
   beginScopedFeed,
   emptyScopedFeed,
@@ -133,7 +133,11 @@ function DashboardWorkspace() {
   const { user, loading: authLoading } = useAuth();
   const { activeProperty, activePropertyId, loading: propLoading } = useProperty();
   const { push, replace } = useReliableNavigation();
-  const today = useTodayStr();
+  // The business day belongs to the hotel, not to the app's default city and
+  // not to the viewer's laptop. Everything on this page (the counts read, the
+  // rooms subscription and the heading below) must name the same hotel-local
+  // day, or a Florida hotel opened from Texas rolls over at the wrong hour.
+  const today = useTodayStr(activeProperty?.timezone || undefined);
 
   // Per-hotel section gates default ON while the property loads.
   const financialsEnabled = useSectionEnabled('financials');
@@ -303,13 +307,12 @@ function DashboardWorkspace() {
   // snapshot carries no occupancy yet; real hotels then show an unknown center
   // value. The room ticks below remain independently grounded in room-level
   // facts and never inherit this aggregate percentage.
-  const occPct = useMemo(() => {
-    if (counts && counts.total_rooms > 0) {
-      const denom = totalRooms || counts.total_rooms || 1;
-      return Math.round(((counts.stayovers + counts.checkouts) / denom) * 100);
-    }
-    return null;
-  }, [counts, totalRooms]);
+  // Derivation (in_house, never stayovers + checkouts) lives in counts-hold.ts
+  // so it is testable and matches the Home tile and the sealed daily history.
+  const occPct = useMemo(
+    () => occupancyPctFromCounts(counts, totalRooms),
+    [counts, totalRooms],
+  );
 
   // ~2y daily history for the chart; today's row anchored to real occupancy
   // when we have it.
@@ -429,8 +432,10 @@ function DashboardWorkspace() {
     const dim = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
     return { occ: avg('occ'), revenue: sum('revenue'), profit: sum('profit'), adr: avg('adr'), soldRooms: sum('rooms'), elapsed: cur.length, dim };
   }, [history]);
-  const monthFull = new Date().toLocaleDateString('en-US', { month: 'long' });
-  const dateLong = new Date().toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric' });
+  // Same hotel-local clock as `today` above, so the heading and the numbers
+  // beneath it always name the same day.
+  const monthFull = new Date().toLocaleDateString('en-US', { month: 'long', timeZone: propertyTz ?? undefined });
+  const dateLong = new Date().toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric', timeZone: propertyTz ?? undefined });
 
   if (authLoading || propLoading) {
     return <RouteLoadingState title={'Loading Dashboard…'} />;

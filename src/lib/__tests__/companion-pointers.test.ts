@@ -298,13 +298,45 @@ describe('the controls the companion may point at', () => {
     }
   });
 
+  /**
+   * The keys a screen owns, with the app chrome subtracted.
+   *
+   * The registry has two tiers now: a control that lives on ONE screen, and
+   * the chrome (the pill bar, the mark in the corner) that is on every screen
+   * the companion is allowed to exist on. Every assertion below is about the
+   * first tier and would be made vacuous by folding in the second, so the
+   * chrome gets its own test rather than being pasted into four lists.
+   */
+  const ownKeys = (page: Parameters<typeof anchorsOnPage>[0], standing?: { canManage: boolean; seesMoney: boolean }) =>
+    anchorsOnPage(page, standing).filter((a) => a.page !== 'any').map((a) => a.key).sort();
+
   test('page scoping is exact, so a key from one screen is never offered on another', () => {
     const boss = { canManage: true, seesMoney: true };
-    assert.deepEqual(anchorsOnPage('inventory', boss).map((a) => a.key).sort(), ['add-delivery', 'inventory-import']);
-    assert.deepEqual(anchorsOnPage('staxis', boss).map((a) => a.key), ['todo-composer']);
-    assert.deepEqual(anchorsOnPage('dashboard', boss), []);
+    assert.deepEqual(ownKeys('inventory', boss), ['add-delivery', 'inventory-import']);
+    assert.deepEqual(ownKeys('staxis', boss), ['knows-teach', 'todo-composer']);
+    assert.deepEqual(ownKeys('dashboard', boss), []);
+    // No page at all is still nothing, chrome included. That is the fail-closed
+    // half the `any` tier must never loosen.
     assert.deepEqual(anchorsOnPage(null, boss), []);
     assert.deepEqual(anchorsOnPage(undefined, boss), []);
+  });
+
+  test('the chrome is offered on every screen, and on no screen at all', () => {
+    const boss = { canManage: true, seesMoney: true };
+    const chrome = COMPANION_ANCHORS.filter((a) => a.page === 'any').map((a) => a.key).sort();
+    assert.ok(chrome.length > 0, 'no chrome anchors in the registry');
+    for (const page of ['inventory', 'staxis', 'dashboard', 'maintenance', 'settings'] as const) {
+      const here = anchorsOnPage(page, boss).map((a) => a.key);
+      for (const key of chrome) assert.ok(here.includes(key), `${key} missing on ${page}`);
+    }
+  });
+
+  test('a section switched off takes its own chrome off the bar', () => {
+    // A pill for a section this hotel does not have is not on the bar at all,
+    // so pointing at it would be an arrow at empty chrome.
+    const off = { canManage: true, seesMoney: true, enabledSections: { inventory: false } };
+    assert.ok(!anchorsOnPage('staxis', off).some((a) => a.key === 'nav-inventory'));
+    assert.ok(anchorsOnPage('staxis', off).some((a) => a.key === 'nav-maintenance'));
   });
 
   test('a control is only offered to somebody whose own screen would render it', () => {
@@ -321,7 +353,7 @@ describe('the controls the companion may point at', () => {
     ];
     for (const [standing, expected] of cases) {
       assert.deepEqual(
-        anchorsOnPage('inventory', standing).map((a) => a.key).sort(),
+        ownKeys('inventory', standing),
         expected,
         `wrong list for ${JSON.stringify(standing)}`,
       );
@@ -333,15 +365,17 @@ describe('the controls the companion may point at', () => {
       { canManage: false, seesMoney: false },
       { canManage: true, seesMoney: true },
     ]) {
-      assert.deepEqual(anchorsOnPage('staxis', standing).map((a) => a.key), ['todo-composer']);
+      // The teach button needs `manage`; the composer needs nothing at all.
+      assert.ok(ownKeys('staxis', standing).includes('todo-composer'));
     }
+    assert.deepEqual(ownKeys('staxis', { canManage: false, seesMoney: false }), ['todo-composer']);
   });
 
   test('an asker who does not say what they can do is told only what needs nothing', () => {
     // Fail closed. A caller that forgets the standing argument must not be the
     // reason a maintenance tech is offered the importer.
-    assert.deepEqual(anchorsOnPage('inventory'), []);
-    assert.deepEqual(anchorsOnPage('staxis').map((a) => a.key), ['todo-composer']);
+    assert.deepEqual(ownKeys('inventory'), []);
+    assert.deepEqual(ownKeys('staxis'), ['todo-composer']);
     for (const anchor of COMPANION_ANCHORS) {
       assert.equal(anchorIsReachable(anchor), anchor.needs.length === 0);
     }

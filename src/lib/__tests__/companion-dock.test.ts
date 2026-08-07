@@ -63,6 +63,7 @@ import {
   type CompanionCandidate,
   type MannersInput,
 } from '@/lib/companion/manners';
+import { repliesFor } from '@/lib/companion/replies';
 
 const DESKTOP: Viewport = { width: 1440, height: 900 };
 const LAPTOP: Viewport = { width: 1280, height: 720 };
@@ -389,6 +390,8 @@ function candidate(over: Partial<CompanionCandidate> = {}): CompanionCandidate {
     sensitivity: 'operational',
     covers: ['finding:1'],
     destination: 'inventory',
+    replyKind: 'finding_recommend',
+    replies: repliesFor({ kind: 'finding_recommend', findingId: '1' }),
     ...over,
   };
 }
