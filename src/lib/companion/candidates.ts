@@ -31,6 +31,8 @@
 
 import 'server-only';
 import type { AppRole } from '@/lib/roles';
+import { propertyLocalToday } from '@/lib/schedule/local-date';
+import { unfinishedRecallSentence } from './copy';
 import { listFindings } from '@/lib/findings/store';
 import { toQueueFinding } from '@/lib/findings/queue-projection';
 import { cardPhrasing, isCardRenderable, rankFindings } from '@/components/concourse/finding-cards';
@@ -73,9 +75,27 @@ export async function buildCompanionCandidates(input: {
   propertyId: string;
   role: AppRole;
   hotelMutationAllowed: boolean;
+  /** Whose companion this is. Scopes the unfinished-business recall to the
+   *  person who was actually asked. */
+  accountId: string;
+  /** The hotel's own calendar day. Never the browser's. */
+  today: string;
+  timezone: string | null;
 }): Promise<CompanionCandidate[]> {
+  // ── Unfinished business, before the findings gate ──
+  //
+  // ABOVE `listShowsFindings` on purpose. Every other candidate in this file is
+  // a manager surface, and the reason line roles get none is cost: their
+  // equivalent is an eight-way fan-out. This one is not that. It is one indexed
+  // read of THIS person's hotel over a three-day window, and the question it
+  // answers ("you asked me something and I never got back to you") belongs to
+  // whoever was asked, not to whoever can see findings.
+  const unfinished = await unfinishedCandidate(
+    input.propertyId, input.accountId, input.today, input.timezone,
+  );
+
   const standing = listStandingFor(input.role, input.hotelMutationAllowed);
-  if (!listShowsFindings(standing)) return [];
+  if (!listShowsFindings(standing)) return unfinished ? [unfinished] : [];
 
   let rows;
   try {
@@ -98,6 +118,11 @@ export async function buildCompanionCandidates(input: {
   const slipped = await slippedCandidate(input.propertyId);
 
   return [
+    // A question this person was asked and never answered leads over
+    // everything, because it is the only candidate that is about a
+    // conversation the companion left open. Everything below is the companion
+    // volunteering; this is it finishing something.
+    ...(unfinished ? [unfinished] : []),
     // Work that slipped leads over everything. It is the only candidate here
     // that is about a promise the hotel already made to itself and did not
     // keep, and it is the one a person can act on without leaving the screen
@@ -128,6 +153,97 @@ export async function buildCompanionCandidates(input: {
       severity: SEVERITY_FROM_FINDING[f.severity] ?? ('watch' as const),
     })),
   ].filter((c) => c.text.trim().length > 0).slice(0, MAX_CANDIDATES);
+}
+
+// ─── Unfinished business ────────────────────────────────────────────────────
+//
+// How far back a forgotten question is still worth raising. Three days: past
+// that, "you never got back to me on Thursday" is archaeology rather than a
+// loose end, and the hotel has moved on from whatever the card was about.
+const UNFINISHED_WINDOW_DAYS = 3;
+
+/**
+ * The one question the companion asked and never got an answer to.
+ *
+ * ─── WHAT KEEPS THIS FROM BECOMING NAGGING ─────────────────────────────────
+ *
+ * Four things, and none of them are new machinery:
+ *   1. NOT TODAY. The read stops at the start of the hotel's own day, so a
+ *      card that timed out this morning is not brought back this afternoon.
+ *      "You did not answer me ten minutes ago" is not recall.
+ *   2. ONE, EVER. Only the newest expired question becomes a candidate. A
+ *      person who ignored four cards on Tuesday hears about one of them.
+ *   3. THE ORDINARY LEDGER. The topic is keyed on the TOOL, so a No attaches
+ *      to the subject rather than to one row: two Nos and the companion never
+ *      raises that kind of question again, exactly like every other topic.
+ *      It also spends the daily speech budget and honours the minimum gap.
+ *   4. NO SECOND ASK. Saying yes hands the sentence back to the chat, which
+ *      proposes the action and puts the SAME approval card up again. The
+ *      companion still never acts without a yes.
+ *
+ * Fails soft to null. A companion that cannot read its own journal says
+ * nothing about its journal.
+ */
+async function unfinishedCandidate(
+  propertyId: string,
+  accountId: string,
+  today: string,
+  timezone: string | null,
+): Promise<CompanionCandidate | null> {
+  try {
+    const { readAgentJournal } = await import('@/lib/agent/journal');
+    const { addDaysInTz, startOfLocalDay } = await import('@/lib/schedule/local-date');
+    const dayStart = startOfLocalDay(today, timezone);
+    const windowStart = startOfLocalDay(addDaysInTz(today, -UNFINISHED_WINDOW_DAYS), timezone);
+
+    const rows = await readAgentJournal(propertyId, {
+      sinceIso: windowStart.toISOString(),
+      // The whole of rule 1 above, in one argument.
+      untilIso: dayStart.toISOString(),
+      eventTypes: ['agent_action_expired'],
+      // THIS PERSON'S unanswered question, never the hotel's. "I asked you and
+      // never heard back" said to somebody who was never asked is a false
+      // sentence about a card they never saw, and the summary it would quote is
+      // the copy off somebody else's approval card.
+      actorAccountId: accountId,
+      limit: 5,
+    });
+    // Newest first. Rule 2: take one.
+    const newest = rows[0];
+    if (!newest) return null;
+
+    const topic = typeof newest.metadata.topic === 'string' ? newest.metadata.topic : '';
+    const summary = typeof newest.metadata.summary === 'string' ? newest.metadata.summary : '';
+    // Both come from the writer's own metadata. A row missing either is a row
+    // from a shape this code does not know how to speak about, and guessing the
+    // subject of a forgotten question is worse than not raising it.
+    if (!topic || !summary) return null;
+
+    const askedDay = propertyLocalToday(new Date(newest.occurredAt), timezone);
+    const daysAgo = Math.max(1, Math.round(
+      (startOfLocalDay(today, timezone).getTime() - startOfLocalDay(askedDay, timezone).getTime())
+      / 86_400_000,
+    ));
+
+    return {
+      topic,
+      text: unfinishedRecallSentence({ summary, daysAgo }),
+      // About a job, not about a person: the summary is the card's own copy for
+      // a tool call, which is the same sentence the person was already shown.
+      sensitivity: 'operational',
+      // Nothing on any screen is this fact. The card it is about is long gone,
+      // which is the entire reason this candidate exists, so an empty `covers`
+      // is the honest answer rather than an oversight.
+      covers: [],
+      // No destination. A yes reopens the conversation instead of walking
+      // somewhere, which is what `seed` is for.
+      destination: null,
+      seed: summary,
+      severity: 'ok',
+    };
+  } catch {
+    return null;
+  }
 }
 
 /**

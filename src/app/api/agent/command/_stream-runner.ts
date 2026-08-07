@@ -22,7 +22,9 @@ import {
   recordSyntheticAbortToolResult,
 } from '@/lib/agent/memory';
 import { createPendingActions, sweepConversationPending } from '@/lib/agent/pending-actions';
-import { recordDecisionProposal } from '@/lib/agent/decisions';
+import { recordDecisionProposal, recordAutonomousDecision } from '@/lib/agent/decisions';
+import { recordAgentJournalEntry, journalActedLine } from '@/lib/agent/journal';
+import { isMutationTool } from '@/lib/agent/tools';
 import type { HotelSnapshot } from '@/lib/agent/context';
 import { buildActionSummary, addonDescriptorsForCard } from '@/lib/agent/approval';
 import {
@@ -230,6 +232,77 @@ export interface StreamRunnerResult {
 export type PendingApprovalHandler = (ev: Extract<AgentEvent, { type: 'tool_call_pending_approval' }>) => Promise<void>;
 
 /**
+ * The state the model was looking at this turn, plus who it was working for.
+ *
+ * Held by the route (buildHotelSnapshot's output is otherwise stringified into
+ * the prompt and thrown away), passed down so BOTH halves of the record can be
+ * written from the one place that sees every tool call: the decision corpus row
+ * and the journal line. Optional so a caller with no snapshot records nothing
+ * rather than recording a fabricated one.
+ */
+export interface StreamCorpusContext {
+  propertyId: string;
+  snapshot: HotelSnapshot;
+  accountId: string;
+  actorRole: string | null;
+  promptVersion: string | null;
+  surface: 'chat';
+}
+
+/**
+ * Record a tool that ran WITHOUT a card in front of it.
+ *
+ * ONLY MUTATIONS, and that narrowing is the whole design of it. In chat the
+ * approval gate holds every mutation except the confirm-in-chat family, whose
+ * gate is a human sentence rather than a card, so what reaches here is exactly
+ * the set of acts that changed the hotel with nobody tapping anything. A read
+ * is not an act: it changed nothing, the conversation already holds what it
+ * returned, and one 2-4 KB state snapshot per lookup would put the same
+ * snapshot on disk five times a turn to answer a question nobody asks.
+ *
+ * Two writes, both fail-soft, neither on the critical path of the reply:
+ *   • agent_decisions with actor_kind='ai_autonomous' — the state it was
+ *     looking at, which is the only thing that makes "why did you do that"
+ *     answerable later. That actor kind had been declared since 0350 and never
+ *     once written.
+ *   • activity_log — the plain-English line, in the hotel's own timeline.
+ */
+async function recordAutonomousToolCall(
+  corpus: StreamCorpusContext,
+  conversationId: string,
+  event: Extract<AgentEvent, { type: 'tool_call_finished' }>,
+): Promise<void> {
+  if (!isMutationTool(event.call.name)) return;
+  const ok = event.isError !== true;
+  await recordAutonomousDecision({
+    propertyId: corpus.propertyId,
+    snapshot: corpus.snapshot,
+    surface: corpus.surface,
+    actorAccountId: corpus.accountId,
+    actorRole: corpus.actorRole,
+    conversationId,
+    toolName: event.call.name,
+    proposedArgs: event.call.args ?? {},
+    promptVersion: corpus.promptVersion,
+    result: ok ? event.result ?? null : null,
+    error: ok ? null : String(event.result ?? 'the tool failed without a message'),
+  });
+  await recordAgentJournalEntry({
+    propertyId: corpus.propertyId,
+    eventType: 'agent_acted',
+    description: journalActedLine({
+      summary: buildActionSummary(event.call.name, event.call.args ?? {}, 'en'),
+      ok,
+    }),
+    actorAccountId: corpus.accountId,
+    actorRole: corpus.actorRole,
+    targetType: 'tool',
+    targetId: event.call.name,
+    metadata: { toolName: event.call.name, ok },
+  });
+}
+
+/**
  * Drive a streamAgent iterator: forward client-facing events, persist assistant
  * turns + tool results in Anthropic-replay order, and collect the final usage.
  *
@@ -250,6 +323,12 @@ export async function runAgentStream(
      * need the safety net.
      */
     pendingToolCallIds?: Set<string>;
+    /**
+     * What the model was looking at this turn. Present, the runner records
+     * every ungated mutation it sees; absent, it records nothing rather than
+     * inventing a snapshot. See recordAutonomousToolCall.
+     */
+    corpus?: StreamCorpusContext;
   } = {},
 ): Promise<StreamRunnerResult> {
   let finalUsage: UsageReport | null = null;
@@ -295,6 +374,12 @@ export async function runAgentStream(
         },
       });
       if (shouldBreak) break;
+      // The act is on disk; now record that it happened. AFTER the tool result
+      // is persisted and never in front of it: the reply is worth more than the
+      // record of the reply, and both writes below swallow their own failures.
+      if (opts.corpus) {
+        await recordAutonomousToolCall(opts.corpus, ctx.conversationId, event);
+      }
     } else if (event.type === 'tool_call_pending_approval') {
       // The mutation is NOT executed. Persist a pending row + emit the card.
       // The tool_call id is deliberately removed from pendingToolCallIds: its

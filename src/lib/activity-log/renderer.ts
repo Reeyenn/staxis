@@ -39,6 +39,7 @@ export function sourceLabel(source: ActivitySource): string {
     case 'system':            return 'System';
     case 'sms':               return 'SMS';
     case 'voice':             return 'Voice';
+    case 'staxis_agent':      return 'Staxis';
   }
 }
 

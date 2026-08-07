@@ -330,13 +330,33 @@ describe('findings janitor', () => {
     }
   });
 
-  test('ships dormant — absent from every registry, like its two siblings', () => {
-    assert.ok(!SCHEDULE_REGISTRY.some((e) => e.heartbeatName === 'findings-janitor'));
-    assert.ok(!EXPECTED_CRONS.some((c) => c.name === 'findings-janitor'));
+  test('runs BEHIND the sweep it tidies, never ahead of it', () => {
+    // It shipped dormant until 2026-08-06 and this case asserted that. The
+    // founder flipped the AI master switch, so what is worth pinning now is the
+    // thing that was always the real requirement: a janitor that ran before the
+    // job whose output it cleans would delete a run nobody had read yet.
+    //
+    // Registered in all three places, or the doctor waits forever on a
+    // heartbeat nothing writes.
+    assert.ok(SCHEDULE_REGISTRY.some((e) => e.heartbeatName === 'findings-janitor'));
+    assert.ok(EXPECTED_CRONS.some((c) => c.name === 'findings-janitor'));
     const vercel = JSON.parse(readFileSync(join(process.cwd(), 'vercel.json'), 'utf8')) as {
-      crons?: Array<{ path: string }>;
+      crons?: Array<{ path: string; schedule: string }>;
     };
-    assert.ok(!(vercel.crons ?? []).some((c) => c.path.includes('findings-janitor')));
+    const janitor = (vercel.crons ?? []).find((c) => c.path.includes('findings-janitor'));
+    const sweep = (vercel.crons ?? []).find((c) => c.path.includes('findings-sweep'));
+    assert.ok(janitor, 'the janitor is not scheduled');
+    assert.ok(sweep, 'the sweep it follows is not scheduled');
+
+    // Same weekday, and the janitor strictly later in the day.
+    const parse = (cron: string) => {
+      const [minute, hour, , , dow] = cron.trim().split(/\s+/);
+      return { minutes: Number(hour) * 60 + Number(minute), dow };
+    };
+    const j = parse(janitor.schedule);
+    const s = parse(sweep.schedule);
+    assert.equal(j.dow, s.dow, 'the janitor moved to a different day from the sweep');
+    assert.ok(j.minutes > s.minutes, 'the janitor would run before the sweep it tidies');
   });
 });
 

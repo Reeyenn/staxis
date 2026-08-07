@@ -460,6 +460,19 @@ export async function POST(req: NextRequest): Promise<Response> {
 
         result = await runAgentStream(iter, runnerCtx, {
           pendingToolCallIds,
+          // The other half of the corpus, and the half nothing wrote before:
+          // a mutation that ran WITHOUT a card (the confirm-in-chat family,
+          // whose gate is a human sentence rather than a tap) now leaves both
+          // an `ai_autonomous` decision row and a line in the hotel's own
+          // timeline. See recordAutonomousToolCall.
+          corpus: {
+            propertyId: body.propertyId,
+            snapshot,
+            accountId: userCtx.accountId,
+            actorRole: userCtx.role,
+            promptVersion: systemPrompt.versionLabel,
+            surface: 'chat',
+          },
           // Persist a pending row per proposed mutation + stream the card. The
           // browser renders it and POSTs /api/agent/command/resolve-action on
           // the user's decision. Shared factory — same handler both routes use.

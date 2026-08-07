@@ -1,5 +1,5 @@
 /**
- * The management-company findings owner. DORMANT ON PURPOSE.
+ * The management-company findings owner.
  *
  * One invocation runs both existing persistence paths for every management
  * company:
@@ -11,20 +11,23 @@
  * bounded automatic retry on the next tick. There is still no request
  * parameter or code path that authorizes v2 projection to company_findings.
  *
- * DORMANT ON PURPOSE (2026-07-29, owner ruling). There is no vercel.json entry.
- * The whole AI layer stays off behind ONE master switch the founder flips when
- * the first real hotel is onboarded, which is why the hotel-level siblings
- * run-findings, findings-sweep and findings-janitor have never been scheduled
- * either. This route was briefly scheduled at '0 8 * * *'; on a fleet whose only
- * management company is the seeded demo one, that started the AI on nobody's
- * behalf. To enable, two coordinated changes:
- *   1. vercel.json                        → { "path": "/api/cron/run-management-patterns", "schedule": "0 8 * * *" }
- *   2. src/lib/automation/job-catalog.ts  → promote its staged row to active
- * Do not flip this one on its own. docs/cron-triggers.md, "The AI master switch",
- * is the single checklist that turns all four crons on together.
+ * SCHEDULED since 2026-08-06 at '0 8 * * *', with its three hotel-level
+ * siblings, when the founder flipped the AI master switch.
  *
- * Until then it is callable by hand with the cron bearer, and the company queue
- * keeps its same-runner page-open fallback, so a live demo still produces cards.
+ * THE 2026-07-29 INCIDENT IS WHY IT MOVES WITH THEM. This route was briefly
+ * given that same daily schedule ON ITS OWN, on a fleet whose only management
+ * company is the seeded demo one, so the sole effect would have been paid model
+ * runs on nobody's behalf. It was parked the same day. Scheduled discovery has
+ * excluded companies whose whole portfolio is `properties.is_test` ever since
+ * (src/lib/company/demo-portfolio.ts) and that exclusion is untouched by the
+ * switch: it is what makes this route safe to schedule at all.
+ *
+ * Do not park this one on its own either. cron-cadences.test.ts now asserts all
+ * four are scheduled; docs/cron-triggers.md, "The AI master switch", is the
+ * checklist for moving them together in whichever direction.
+ *
+ * It stays callable by hand with the cron bearer, and the company queue keeps
+ * its same-runner page-open fallback, so a live demo still produces cards.
  *
  * Query params:
  *   organizationId (optional, uuid) — run only this company, demo or not. An

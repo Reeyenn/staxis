@@ -217,6 +217,47 @@ export function offerQuestion(destination: CompanionPage | null): string {
   return destination ? `Want me to take you to ${destination.label}?` : 'Want to look at it?';
 }
 
+// ─── Unfinished business ────────────────────────────────────────────────────
+//
+// An approval card that nobody answered used to vanish at its ten-minute TTL
+// and leave no trace: the row went terminal, the browser dropped it, and the
+// fact that the companion had asked something and never heard back existed
+// nowhere. A colleague would have remembered. This is that memory, and it is
+// deliberately the SMALLEST possible version of it.
+//
+// ONE MENTION, EVER, PER SUBJECT. It goes through the ordinary candidate path,
+// so it spends the daily speech budget, honours the minimum gap, cannot be
+// raised twice in one day, and is gone for good after two Nos exactly like
+// every other topic. Nothing about it is exempt. The manners engine did not
+// need a new rule to make this polite; it needed a candidate.
+//
+// It also never appears the same day it was asked (see unfinishedCandidate),
+// because "you did not answer me ten minutes ago" is nagging, not recall.
+
+export interface UnfinishedRecallInput {
+  /** The card's own summary of what was proposed, unchanged. */
+  summary: string;
+  /** Whole days between the hotel's today and the day it was asked. */
+  daysAgo: number;
+}
+
+/**
+ * "Yesterday I asked about this and never heard back: …"
+ *
+ * NEVER "you ignored me" and never "you did not reply". Silence is not a
+ * verdict, and a sentence that treats it as one turns a forgotten card into an
+ * accusation. The companion states what it did, states that no answer arrived,
+ * and asks once.
+ */
+export function unfinishedRecallSentence(input: UnfinishedRecallInput): string {
+  const summary = input.summary.trim().replace(/\s+/g, ' ');
+  const when = input.daysAgo <= 1 ? 'Yesterday' : `${input.daysAgo} days ago`;
+  return `${when} I asked about this and never heard back: ${summary}`;
+}
+
+/** The question under a recall. A plain yes reopens it; a no is a real no. */
+export const UNFINISHED_RECALL_QUESTION = 'Still want that?';
+
 // ─── Arrival ────────────────────────────────────────────────────────────────
 
 /** What the companion says once the screen has actually changed. */

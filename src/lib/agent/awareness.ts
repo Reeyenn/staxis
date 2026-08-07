@@ -73,6 +73,7 @@ import { addDaysInTz, propertyLocalToday, startOfLocalDay } from '@/lib/schedule
 import { countProposeFindings, latestRunFacts } from '@/lib/findings/store';
 import { scheduleState } from '@/lib/findings/detectors/preventive-due';
 import { lensAllowsTool, moneyVisibleToRole } from './lenses';
+import { readAgentJournal } from './journal';
 import { anchorsOnPage } from '@/lib/companion/anchors';
 import { pageForPath } from '@/lib/companion/pages';
 import type { HotelSnapshot } from './context';
@@ -806,31 +807,63 @@ function isoToLocalDate(value: unknown): string | null {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// 6. WHAT STAXIS ITSELF DID TODAY
+// 6. WHAT STAXIS ITSELF DID TODAY, AND WHAT IT IS IN THE MIDDLE OF
 // ═══════════════════════════════════════════════════════════════════════════
 //
-// The honesty problem in this feed is sharper than in any other, because the
-// crons that produce these records are OFF right now by the founder's master
-// switch. A block that said "nightly check: 0 findings" would be reporting a
-// clean bill of health for a check that never ran — the single most misleading
-// sentence this whole file could produce.
+// This feed used to be able to say exactly two things: "the nightly check ran"
+// and "the brief got written". Ask a live hotel's companion "what have you been
+// doing?" and it rendered nothing at all, because nothing anywhere recorded
+// that it had done anything. Now it reads its own journal (`activity_log` rows
+// with source='staxis_agent' — see src/lib/agent/journal.ts) plus the one
+// question it is still waiting on an answer to.
 //
-// So the rule is: render ONLY a run that actually happened TODAY, in the
-// hotel's own calendar. `latestRunFacts` returns null when the hotel has never
-// been checked (deliberately, rather than a zeroed object), and a run from an
-// earlier day renders nothing here. "When did Staxis last look?" already has a
-// dedicated tool — `staxis_checked_last_night` — which the maintenance lens
-// instructs the model to call before claiming anything is clear. Answering it
-// approximately here would undercut the tool that answers it properly.
+// ─── THE HONESTY RULE IS UNCHANGED AND IS WHY THIS IS SHAPED LIKE THIS ─────
+//
+// The rule from the file header (lines 48-58) applies here more sharply than
+// anywhere else: an empty feed renders NOTHING. Not "did nothing today", not
+// "0 actions". The journal is written fail-soft on purpose, so an empty read
+// means "no record", which is a different claim from "nothing happened", and
+// only silence is true for both.
+//
+// The nightly detector run stays a separate probe rather than a journal read.
+// It is written by a cron, not by the companion, and the crons that produce it
+// are the founder's master switch: a hotel whose check never ran must never see
+// a line implying it did. `latestRunFacts` returns null for a hotel that has
+// never been checked (deliberately, rather than a zeroed object), and a run
+// from an earlier day renders nothing. "When did Staxis last look?" also has a
+// dedicated tool, `staxis_checked_last_night`, and answering it approximately
+// here would undercut the tool that answers it properly.
+//
+// ─── WHY IT COUNTS RATHER THAN QUOTES ──────────────────────────────────────
+//
+// A journal description is a full sentence up to 300 characters. Four of them
+// would be 1200 characters, which is the ENTIRE budget of the awareness block
+// (MAX_BLOCK_CHARS), on one feed, on every turn. So the acts are counted and
+// only the most recent one is quoted, clipped. The conversation can ask for
+// more; the block's job is to stop the companion answering "what have you been
+// doing" with nothing.
+
+/** Longest quotation this feed takes from a journal line. See above. */
+const JOURNAL_QUOTE_MAX = 110;
+
+/** The three families of journal entry this feed counts separately. */
+const ACT_EVENTS = ['agent_acted', 'agent_action_approved', 'agent_action_edited'] as const;
+
+function clipQuote(text: string): string {
+  const clean = text.replace(/\s+/g, ' ').trim();
+  return clean.length <= JOURNAL_QUOTE_MAX ? clean : `${clean.slice(0, JOURNAL_QUOTE_MAX - 1)}…`;
+}
 
 async function feedStaxisToday(
   propertyId: string,
   today: string,
   timezone: string | null,
+  sinceIso: string,
+  nowIso: string,
 ): Promise<string | null> {
   const parts: string[] = [];
 
-  // ── The nightly detector run ──
+  // ── The nightly detector run (a cron's record, not the companion's) ──
   try {
     const run = await latestRunFacts(propertyId);
     if (run && propertyLocalToday(new Date(run.runAt), timezone) === today) {
@@ -847,29 +880,60 @@ async function feedStaxisToday(
     // Feed degrades; chat continues.
   }
 
-  // ── The morning brief ──
-  // There is no briefs table — the brief is cached in `idempotency_log` under a
-  // per-hotel-per-day key, and its `created_at` is stamped when the slot is
-  // claimed. That makes this row the only record that the Morning Briefer ran,
-  // and it evaporates after ~36h, which is fine: this line only ever asks about
-  // today.
+  // ── The journal: what it actually did, since midnight at the hotel ──
+  //
+  // `sinceIso` is the SAME start-of-local-day instant every other feed in this
+  // file counts from (startOfLocalDayIso), so "today" means one thing across
+  // the whole block. A night auditor at 1am is on the hotel's day, not UTC's.
+  try {
+    const rows = await readAgentJournal(propertyId, { sinceIso });
+    // `ok: false` is a thing that was TRIED, not a thing that was done. Counting
+    // a failed write into "did 2 things" would put a number in front of the
+    // model that the number guard would then let it quote.
+    const acts = rows.filter((r) => (ACT_EVENTS as readonly string[]).includes(r.eventType)
+      && r.metadata.ok !== false);
+    const said = rows.filter((r) => r.eventType === 'agent_said');
+    const learned = rows.filter((r) => r.eventType === 'agent_learned');
+    const brief = rows.find((r) => r.eventType === 'agent_briefed');
+
+    if (brief) {
+      parts.push(`wrote the morning brief at ${hotelClock(new Date(brief.occurredAt), timezone).time}`);
+    }
+    if (acts.length > 0) {
+      // Rows come back newest first, so [0] is the most recent act.
+      parts.push(`did ${plural(acts.length, 'thing')}, most recently: ${esc(clipQuote(acts[0].description))}`);
+    }
+    if (learned.length > 0) parts.push('updated what it remembers about this hotel');
+    if (said.length > 0) parts.push(`spoke first ${plural(said.length, 'time')}`);
+  } catch {
+    // Feed degrades; chat continues.
+  }
+
+  // ── What it is in the MIDDLE of ──
+  //
+  // A card that is still up is the companion holding a question open, and it is
+  // the single most useful thing this feed can carry: a manager who asks "what
+  // are you doing" while an approval is on their screen should not be told
+  // about this morning. Live rows only: `expires_at > now` excludes the ones
+  // the lazy TTL has not flipped yet, so this never claims to be waiting on an
+  // answer to a question that already timed out.
   try {
     const { data } = await scopedDb(propertyId)
-      .from('idempotency_log')
-      .select('created_at')
-      .eq('route', 'findings-brief')
-      .eq('key', `findings-brief-${propertyId}-${today}`)
-      .maybeSingle();
-    const createdAt = (data as { created_at?: unknown } | null)?.created_at;
-    if (typeof createdAt === 'string') {
-      parts.push(`wrote the morning brief at ${hotelClock(new Date(createdAt), timezone).time}`);
+      .from('agent_pending_actions')
+      .select('tool_name')
+      .eq('status', 'pending')
+      .gt('expires_at', nowIso)
+      .limit(FEED_ROW_CAP);
+    const waiting = (data ?? []).length;
+    if (waiting > 0) {
+      parts.push(`still waiting on an answer to ${plural(waiting, 'question')} it asked`);
     }
   } catch {
     // Feed degrades; chat continues.
   }
 
   if (parts.length === 0) return null;
-  return joinCapped(parts, 3);
+  return joinCapped(parts, 4);
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -1006,7 +1070,7 @@ async function loadFeedsUncached(
     feedDidToday(propertyId, accountId, authUserId ?? null, sinceIso),
     feedJustChanged(snapshot, propertyId, sinceIso),
     feedOnYourPlate(propertyId, role, accountId, organizationId ?? null, today, nowIso),
-    feedStaxisToday(propertyId, today, timezone),
+    feedStaxisToday(propertyId, today, timezone, sinceIso, nowIso),
     canSee(role, 'get_future_bookings')
       ? feedTonight(snapshot, propertyId, today)
       : Promise.resolve(null),
@@ -1077,7 +1141,7 @@ export const AWARENESS_TRUST_MARKER_CLOSE = '</staxis-awareness>';
  * anything about it into the cached half would rewrite the cached prefix every
  * single turn. Bump on a rendering change.
  */
-export const AWARENESS_VERSION = 'awareness-v1';
+export const AWARENESS_VERSION = 'awareness-v2';
 
 /**
  * The hard ceiling on the whole block, in characters.
@@ -1111,7 +1175,11 @@ export function formatAwarenessForPrompt(awareness: Awareness): string {
   if (awareness.didToday) lines.push(`This person has done today: ${awareness.didToday}.`);
   if (awareness.justChanged) lines.push(`Since the last report: ${awareness.justChanged}.`);
   if (awareness.onYourPlate) lines.push(`Waiting on them: ${awareness.onYourPlate}.`);
-  if (awareness.staxisToday) lines.push(`Staxis today: ${awareness.staxisToday}.`);
+  // Written in the first person because it is the ONE line in this block that
+  // is about the companion rather than about the hotel. "What have you been
+  // doing?" is answered from here, and a model handed "Staxis today: …" in a
+  // block of third-person facts has to work out that it is Staxis.
+  if (awareness.staxisToday) lines.push(`What I have done today: ${awareness.staxisToday}.`);
   if (awareness.tonight) lines.push(`Tonight: ${awareness.tonight}.`);
 
   // Clock-only ⇒ nothing. `lines` always holds the time, so the test is >1.

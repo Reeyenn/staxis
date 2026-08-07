@@ -56,11 +56,34 @@ export const COMPANION_VOICE_VERSION = 'companion-voice-v1';
 // because a per-hotel knob would be a knob nobody turns and everybody has to
 // reason about. Raise them here if the companion ever feels too quiet.
 
-/** Most unprompted messages the companion may speak in one hotel-local day. */
-export const COMPANION_MAX_SPEECH_PER_DAY = 2;
+/**
+ * Most unprompted messages the companion may speak in one hotel-local day.
+ *
+ * Two until 2026-08-06, now five. Two was set before the companion had
+ * anything worth saying twice: it could volunteer a finding and nothing else,
+ * so a low cap cost nothing. It now has a record of its own day to draw on and
+ * a forgotten question to close, and a cap of two meant the second half of a
+ * shift was silent by arithmetic rather than by judgement.
+ *
+ * Five is still quiet. Every other floor is untouched and each one bites
+ * first: one thing at a time, never over a person who is typing, never a topic
+ * already raised today, never a topic already turned down twice, and never
+ * something a card on the screen is already showing.
+ */
+export const COMPANION_MAX_SPEECH_PER_DAY = 5;
 
-/** Minimum gap between two unprompted messages, in minutes. */
-export const COMPANION_MIN_GAP_MINUTES = 120;
+/**
+ * Minimum gap between two unprompted messages, in minutes.
+ *
+ * Two hours until 2026-08-06, now forty-five minutes. Two hours was the same
+ * conservatism as the cap above and had the same failure: something that
+ * became true at 9:05 waited until 11:00 to be said, by which point a shift
+ * had turned over and the person it mattered to had gone home.
+ *
+ * Forty-five minutes is longer than any single task on the floor, so this can
+ * never interrupt the same piece of work twice.
+ */
+export const COMPANION_MIN_GAP_MINUTES = 45;
 
 /**
  * How many times an offer on a topic may be turned down before that topic is

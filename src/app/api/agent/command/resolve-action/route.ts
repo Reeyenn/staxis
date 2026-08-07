@@ -71,6 +71,7 @@ import {
 import { buildActionSummary, findAddon } from '@/lib/agent/approval';
 import { validateToolArgs } from '@/lib/agent/validate-tool-args';
 import { recordDecisionResolution, actorKindForDecision } from '@/lib/agent/decisions';
+import { recordAgentJournalEntry, journalResolutionLine } from '@/lib/agent/journal';
 // Side-effect import — registers all tools against the catalog.
 import '@/lib/agent/tools/index';
 
@@ -470,6 +471,22 @@ export async function POST(req: NextRequest): Promise<Response> {
       decisionMs,
       error: 'declined by user',
     });
+    // The hotel's own timeline learns that the companion asked and was told no.
+    // A No is as much a fact about the day as a Yes, and it is the half that
+    // used to leave no trace anywhere a manager could read.
+    await recordAgentJournalEntry({
+      propertyId: body.pid,
+      eventType: 'agent_action_declined',
+      description: journalResolutionLine({
+        summary: buildActionSummary(pending.toolName, pending.toolArgs, 'en'),
+        outcome: 'declined',
+      }),
+      actorAccountId: userCtx.accountId,
+      actorRole: userCtx.role,
+      targetType: 'tool',
+      targetId: pending.toolName,
+      metadata: { toolName: pending.toolName, pendingActionId: pending.id, decisionMs },
+    });
     toolResultForModel = 'The user declined this action.';
     toolResultIsError = true;
   } else {
@@ -489,15 +506,39 @@ export async function POST(req: NextRequest): Promise<Response> {
     // The corpus row learns what actually ran. args_diff (proposal vs executed
     // — the human-correction signal) is computed by a DB trigger, so no call
     // site can forget it.
+    const approvedKind = actorKindForDecision('approve', pending.toolArgs, effectiveArgs);
     await recordDecisionResolution({
       propertyId: body.pid,
       pendingActionId: pending.id,
-      actorKind: actorKindForDecision('approve', pending.toolArgs, effectiveArgs),
+      actorKind: approvedKind,
       actorAccountId: userCtx.accountId,
       executedArgs: effectiveArgs,
       decisionMs,
       result: res.ok ? res.data ?? null : null,
       error: res.ok ? null : actionError,
+    });
+    // The same moment in plain English. The summary is built from the args that
+    // ACTUALLY RAN, so an edited approval reads as what happened rather than as
+    // what was first proposed.
+    await recordAgentJournalEntry({
+      propertyId: body.pid,
+      eventType: res.ok
+        ? (approvedKind === 'human_edited' ? 'agent_action_edited' : 'agent_action_approved')
+        : 'agent_action_approved',
+      description: journalResolutionLine({
+        summary: buildActionSummary(pending.toolName, effectiveArgs, 'en'),
+        outcome: res.ok ? (approvedKind === 'human_edited' ? 'edited' : 'approved') : 'failed',
+      }),
+      actorAccountId: userCtx.accountId,
+      actorRole: userCtx.role,
+      targetType: 'tool',
+      targetId: pending.toolName,
+      metadata: {
+        toolName: pending.toolName,
+        pendingActionId: pending.id,
+        decisionMs,
+        ok: res.ok,
+      },
     });
 
     // ── Run selected add-ons (deterministic; failures never roll back the
@@ -787,6 +828,16 @@ export async function POST(req: NextRequest): Promise<Response> {
 
         result = await runAgentStream(iter, runnerCtx, {
           pendingToolCallIds,
+          // Same capture on the resume turn: a follow-up that runs an ungated
+          // mutation is as autonomous as one on the first turn.
+          corpus: {
+            propertyId: body.pid,
+            snapshot,
+            accountId: userCtx.accountId,
+            actorRole: userCtx.role,
+            promptVersion: systemPrompt.versionLabel,
+            surface: 'chat',
+          },
           // If the follow-up proposes MORE mutations, gate them too (one at a
           // time). Shared factory — same handler both routes use.
           onPendingApproval: makePendingApprovalHandler({
