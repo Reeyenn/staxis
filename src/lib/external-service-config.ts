@@ -17,8 +17,10 @@
  * before Vercel intervenes. So `maxRetries: 1` is the deliberate ceiling.
  *
  * Pre-2026-05-17 the budget math lived in a comment inside `llm.ts` that the
- * walkthrough route author never read, so the walkthrough route shipped with
- * `new Anthropic({ apiKey })` — no timeout, SDK-default 2 retries. The audit
+ * walkthrough route author never read, so that route shipped with
+ * `new Anthropic({ apiKey })` — no timeout, SDK-default 2 retries. (The route
+ * itself was deleted on 2026-08-07; the lesson it taught is why this file is
+ * here.) The audit
  * at `.claude/reports/external-api-audit.md` flagged it as the highest-blast-
  * radius finding. Centralizing the policy here is how we stop reinventing
  * the mistake.
@@ -72,13 +74,6 @@ export const ANTHROPIC_REQUEST_TIMEOUT_MS = 50_000;
  */
 export const ANTHROPIC_VISION_TIMEOUT_MS = 50_000;
 export const ANTHROPIC_VISION_ABORT_MS = 55_000;
-
-/**
- * Per-request timeout for the walkthrough step route. Capped below the
- * route's `maxDuration = 30s` so we can fail cleanly and return an error
- * rather than be killed mid-response.
- */
-export const ANTHROPIC_WALKTHROUGH_TIMEOUT_MS = 20_000;
 
 /**
  * SDK-level retry count for every Anthropic call site on Vercel. One retry

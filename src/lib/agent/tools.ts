@@ -167,13 +167,33 @@ export interface ToolResult {
 }
 
 /**
- * Surface types that can invoke tools. Each agent surface (chat UI,
- * Clicky walkthrough, portfolio chat) declares its surface when fetching
- * tools, and individual tools can opt in/out per surface.
+ * Surface types that can invoke tools. Each agent surface declares its surface
+ * when fetching tools, and individual tools can opt in/out per surface.
  *
- * Longevity fix L3, 2026-05-13: future-proofs the registry for walkthrough
- * surfaces. Default is 'chat' only — tools must explicitly opt into other
- * surfaces.
+ * Longevity fix L3, 2026-05-13: future-proofs the registry for a second
+ * surface. Default is 'chat' only — tools must explicitly opt into others.
+ *
+ * ─── WHY 'walkthrough' IS STILL HERE (2026-08-07) ──────────────────────────
+ *
+ * The surface it was named for is gone: the Clicky cursor demo and its three
+ * routes were deleted with the companion tour, and no code path passes this
+ * value any more. It is deliberately NOT removed, for two reasons that outlive
+ * the surface.
+ *
+ * FIRST, THE DATABASE. `DECISION_CORPUS_SURFACES` in decisions.ts mirrors the
+ * CHECK constraint that migration 0457 put on `agent_decisions.surface`, and
+ * that constraint lists 'walkthrough' because historical rows carry it. That
+ * list cannot shrink without a migration, and its own header says the two are
+ * edited together or not at all. Dropping the member here while the corpus
+ * keeps it would leave two vocabularies describing the same column.
+ *
+ * SECOND, IT IS THE ONLY EMPTY SURFACE. Every tool that declares no `surfaces`
+ * is chat-only, which is the registry's whole default-deny property, and
+ * proving that needs a surface with nothing opted into it. 'portfolio' and
+ * 'messages' both have their own tools, so proving default-deny against either
+ * would be a weaker test. Four suites use this one for exactly that:
+ * agent-tools-surface-gate, agent-tool-execution-reauthorization, and the two
+ * companion tool tests that assert a companion tool is refused off chat.
  *
  * 'portfolio' (2026-07-26, cross-hotel chat) is why this mechanism was worth
  * having. Every one of the ~70 existing tools declares no `surfaces` and is

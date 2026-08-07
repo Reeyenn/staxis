@@ -23,6 +23,7 @@
 // and in Node 18+.
 // ═══════════════════════════════════════════════════════════════════════════
 
+import { dollarsToCents } from '@/lib/format';
 import type { Department } from '@/lib/financials/shared';
 
 /** The three built-in inventory categories map onto their Checkbook
@@ -53,10 +54,17 @@ function lineDollars(line: BridgeLine): number {
 
 /** Invoice total in integer cents. Line math stays in dollars (matching how
  * unitCost was derived from the scanned line total) and rounds ONCE at the
- * end, so per-line float noise cannot accumulate into a wrong cent. */
+ * end, so per-line float noise cannot accumulate into a wrong cent.
+ *
+ * The rounding goes through the canonical `dollarsToCents`, NOT a local
+ * `Math.round(dollars * 100)`. They disagree at the half cent: `8.575 * 100` is
+ * 857.4999999999999 in binary float, so the open-coded version books $8.57
+ * while Postgres (`round(quantity * unit_cost, 2)`, exact numeric) stores $8.58
+ * on the delivery. One invoice, two totals, one cent apart, on two screens the
+ * manager reads side by side. */
 export function expenseAmountCentsFromLines(lines: readonly BridgeLine[]): number {
   const dollars = lines.reduce((sum, line) => sum + lineDollars(line), 0);
-  return Math.max(0, Math.round(dollars * 100));
+  return Math.max(0, dollarsToCents(dollars));
 }
 
 /** Dollars-weighted majority department across the invoice's lines. Ties

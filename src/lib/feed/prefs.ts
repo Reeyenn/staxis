@@ -67,8 +67,17 @@ export const DEFAULT_FEED_PREFS: FeedPrefs = {
  * genuinely-unset preference both produced DEFAULT_FEED_PREFS, so a merge on
  * top of a degraded read looked exactly like a merge on top of real values —
  * and wrote the defaults back over whatever was really in the row.
+ *
+ * EXPORTED, and callers that DERIVE their patch from what they read must use
+ * this one rather than `readFeedPrefs`. The guard inside `writeFeedPrefs` can
+ * only protect the halves of the row a caller did not mention; it cannot
+ * protect a value the caller computed from a read that had already failed. See
+ * the companion route, which reads a memory blob, applies a reducer to it, and
+ * writes the answer back: on a degraded read that answer is a reduction of
+ * nothing, and writing it erases the welcome stamp, every decline, both notices
+ * cursors and the daily speech counter in one statement.
  */
-async function readFeedPrefsChecked(
+export async function readFeedPrefsChecked(
   accountId: string,
   propertyId: string,
 ): Promise<{ prefs: FeedPrefs; degraded: boolean }> {
@@ -134,10 +143,17 @@ export async function writeFeedPrefs(
   // null over a real cursor would re-flag every row on somebody's list as new.
   if (!degraded || next.listSeenAt !== undefined) row.list_seen_at = merged.listSeenAt;
   // The companion writes only its own key, and only ever the whole blob it just
-  // derived from the value it read in the same request. The degraded guard
-  // matters most here: a failed read followed by an unguarded write would erase
-  // a welcome stamp, and the visible symptom of that is the companion
-  // introducing itself to somebody for the second time.
+  // derived from the value it read in the same request.
+  //
+  // AND THIS GUARD DOES NOT COVER THAT CALLER. Read the condition: the
+  // companion route always sets `companionMemory`, so the right-hand side is
+  // always true and the write always happens. That is correct here and it has
+  // to be — the caller's blob is the only version of the memory that exists by
+  // this point — which is exactly why the caller is the one that must refuse to
+  // reduce a degraded read in the first place. It reads through
+  // `readFeedPrefsChecked` and returns before it ever reaches this function.
+  // What this line still protects is the OTHER half: a caller who never
+  // mentioned the memory does not get the default written over it.
   if (!degraded || next.companionMemory !== undefined) row.companion_memory = merged.companionMemory ?? {};
 
   const { error } = await supabaseAdmin

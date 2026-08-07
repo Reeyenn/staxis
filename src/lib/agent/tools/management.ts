@@ -3,6 +3,7 @@
 
 import { registerTool, type ToolResult } from '../tools';
 import { findRoomByNumber, findStaffByName } from './_helpers';
+import { getPropertyToday } from './queries';
 import { newestSignalAt, parseFeedHealthRows } from '@/lib/pms/feed-health';
 import { applyTimeOffDecision } from '@/lib/schedule/decide-time-off';
 import { mergePmsRoomsForDate } from '@/lib/pms-rooms-server';
@@ -176,7 +177,13 @@ registerTool<{ date?: string }>({
   },
   allowedRoles: ['admin', 'owner', 'general_manager'],
   handler: async ({ date }, ctx): Promise<ToolResult> => {
-    const target = date ?? new Date().toISOString().slice(0, 10);
+    // "Today" is the HOTEL's day, not the server process's. On UTC — which is
+    // what Vercel runs — a manager in Beaumont asking "who has which rooms
+    // today" any time after 7pm local was answered about TOMORROW, whose board
+    // has no assignments yet, so the copilot reported an empty split for a
+    // hotel mid-shift. Every sibling tool (get_schedule, the PMS feed tools)
+    // already reads properties.timezone through this exact helper.
+    const target = date ?? await getPropertyToday(ctx.db);
 
     // Live room state now flows through the pms_* tables (the legacy `rooms`
     // table is empty post-Plan-v4). mergePmsRoomsForDate returns Room[] in the

@@ -158,6 +158,12 @@ async function autoFillForProperty(
   // so without this the weekly-hour and weekly-day caps in checkCrewEligibility
   // never fire and the cron would happily schedule a housekeeper a 6th day / past
   // 40h. Degrades to the stale columns on query failure (empty map).
+  //
+  // The load covers the six days BEFORE targetDate, never targetDate itself —
+  // her shift on the day being filled is a given, not something this cron can
+  // add. Counting it made a plain Mon–Fri 8h schedule trip both caps on FRIDAY
+  // (5 days >= 5, 40h >= 40) and the whole crew fell out as
+  // `weekly_day_cap_reached`, so nobody got rooms. See weekly-load.ts.
   const weeklyLoad = await computeWeeklyLoadByStaff(property.id, targetDate);
   const staffWithLoad: StaffMember[] = allStaff.map((s) => {
     const load = weeklyLoad.get(s.id);

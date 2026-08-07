@@ -118,6 +118,16 @@ async function addAccount(
   );
 }
 
+function propertyIdsForHat(
+  scope: 'company' | 'property',
+  propertyIds: string[] | undefined,
+): string[] {
+  if (scope === 'property' && (propertyIds === undefined || propertyIds.length === 0)) {
+    throw new Error('addHat: a property hat must name at least one hotel');
+  }
+  return propertyIds ?? [];
+}
+
 async function addHat(input: {
   organizationId: string;
   accountId: string;
@@ -143,7 +153,15 @@ async function addHat(input: {
       input.role,
       input.scope,
       input.role,
-      input.scope === 'property' ? `{${(input.propertyIds ?? []).join(',')}}` : null,
+      // A property hat must name at least one hotel. This helper INSERTs
+      // straight into the table, so it is the one writer in the codebase that
+      // no RPC guard and no route stands in front of: an omitted `propertyIds`
+      // used to render `'{}'` and seed a hat covering nothing, which is exactly
+      // the shape 0468's check forbids. Refuse it here rather than let a future
+      // caller plant it silently.
+      input.scope === 'property'
+        ? `{${propertyIdsForHat(input.scope, input.propertyIds).join(',')}}`
+        : null,
     ],
   );
   return row.rows[0]!.id;

@@ -56,7 +56,9 @@ import {
   type EffectiveAccessReceipt,
 } from '@/lib/company-access/dto';
 import type { AppRole } from '@/lib/roles';
-import { resolveHatCoverage } from '@/lib/company/access';
+import {
+  hatCoverageFromColumn,
+  resolveHatCoverage } from '@/lib/company/access';
 import { listAuthoritativePropertyAccess } from '@/lib/authorization/server';
 import {
   accessProfileForHat,
@@ -181,7 +183,7 @@ function hatFactsFor(
       jobTitle: row.job_title ?? null,
       propertyIds: resolveHatCoverage(
         scope,
-        Array.isArray(row.covered_property_ids) ? row.covered_property_ids : [],
+        hatCoverageFromColumn(row.covered_property_ids),
         operatedPropertyIds,
       ),
       accessProfile: accessProfileForHat(scope, role),
@@ -1101,7 +1103,7 @@ async function normalizedProjection(actorAccountId: string): Promise<CompanyAcce
         ...(isMembershipScope(membership.membership_scope) && isHatRole(membership.staxis_role)
           ? resolveHatCoverage(
               membership.membership_scope,
-              Array.isArray(membership.covered_property_ids) ? membership.covered_property_ids : [],
+              hatCoverageFromColumn(membership.covered_property_ids),
               new Set(item.relationships
                 .filter((relationship) => (
                   relationship.is_primary_grouping === true
@@ -1342,7 +1344,7 @@ async function normalizedProjection(actorAccountId: string): Promise<CompanyAcce
         .map((relationship) => relationship.property_id));
       const propertyIds = resolveHatCoverage(
         membership.membership_scope,
-        Array.isArray(membership.covered_property_ids) ? membership.covered_property_ids : [],
+        hatCoverageFromColumn(membership.covered_property_ids),
         operatedPropertyIds,
       ).filter((propertyId) => allowedPropertyIds.has(propertyId));
       const currentlyEffective = membership.status === 'active'

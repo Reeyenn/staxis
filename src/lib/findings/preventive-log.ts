@@ -141,6 +141,13 @@ export async function logPreventiveOutcome(
           // wrong, because it would then stay silent for a full cadence.
           called_at: nowIso,
           called_by: actorName ?? null,
+          // It DOES retire a skip (0462). A schedule cannot be resting on two
+          // grounds at once, and skipped is checked first by both readers — so
+          // without this, a manager who put an occurrence down and then
+          // genuinely arranged the work had their call recorded while the
+          // schedule went on resting on the skip for the rest of a cadence.
+          skipped_at: null,
+          skipped_by: null,
         };
 
   const { data, error } = await db

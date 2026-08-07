@@ -505,6 +505,36 @@ export function countsFresh(status: PropertyFeedStatus): boolean {
 }
 
 /**
+ * May the in-house snapshot's counts be shown against `boardDate`?
+ *
+ * THE THIRD QUESTION, after "is it real?" (countsTrusted) and "is it current?"
+ * (countsFresh): WHICH DAY IS IT ABOUT. pms_in_house_snapshot has no date
+ * dimension at all — it is one row per hotel holding whatever the connection
+ * last saw — so the honest answer is "today, and nothing else".
+ *
+ * The housekeeping board is why this exists. It pages through Yesterday /
+ * Today / Tomorrow, and its In House / Arrivals / Departures cells were wired
+ * straight to the snapshot. A manager planning tomorrow's crew therefore read
+ * "Board · tomorrow" over TODAY's arrivals, in the same strip as tomorrow's
+ * genuinely date-scoped Checkouts and Stayovers. Off today, these cells must
+ * render "—".
+ *
+ * `false` for a manual / onboarding hotel too, and that is not a downgrade:
+ * those surfaces read their own per-date bridge, which really does answer for
+ * the day being viewed. This function governs the SNAPSHOT path only.
+ */
+export function snapshotCountsApplyTo(
+  status: PropertyFeedStatus | null | undefined,
+  boardDate: string,
+  today: string,
+): boolean {
+  if (!status || status.mode !== 'live') return false;
+  if (status.connection === 'pending') return false;
+  if (status.feeds.dashboardCounts !== 'live') return false;
+  return boardDate === today;
+}
+
+/**
  * Does this feed's number come from something that actually happened?
  *
  * 'stale' says yes: the report was real, it is merely old — SHOW the number

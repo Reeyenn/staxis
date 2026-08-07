@@ -29,7 +29,6 @@ import type {
   PublicArea,
   LaundryCategory,
   Room,
-  DailyLog,
   WorkOrder,
   WorkOrderPriority,
   WorkOrderStatus,
@@ -183,7 +182,6 @@ export function toPropertyRow(p: Partial<Property>): Record<string, unknown> {
     name: p.name,
     total_rooms: p.totalRooms,
     avg_occupancy: p.avgOccupancy,
-    hourly_wage: p.hourlyWage,
     checkout_minutes: p.checkoutMinutes,
     stayover_minutes: p.stayoverMinutes,
     stayover_day1_minutes: p.stayoverDay1Minutes,
@@ -191,7 +189,6 @@ export function toPropertyRow(p: Partial<Property>): Record<string, unknown> {
     prep_minutes_per_activity: p.prepMinutesPerActivity,
     shift_minutes: p.shiftMinutes,
     total_staff_on_roster: p.totalStaffOnRoster,
-    weekly_budget: p.weeklyBudget,
     morning_briefing_time: p.morningBriefingTime,
     evening_forecast_time: p.eveningForecastTime,
     pms_type: p.pmsType,
@@ -221,11 +218,23 @@ export function toPropertyRow(p: Partial<Property>): Record<string, unknown> {
  * like dashboard_stale_minutes and scraper_window_* that the front-end never
  * consumes) on every property fetch.
  */
+// PAY PRIVACY — `hourly_wage` (the hotel's default housekeeper rate) and
+// `weekly_budget` (its weekly labor budget) are intentionally ABSENT, and must
+// not come back. `/api/properties` is the app SHELL: it reads with service-role
+// and is deliberately open to everyone who can open the hotel — a housekeeper,
+// a front-desk lead, a maintenance tech — because the tenant wall there is
+// coverage, not role. It runs no `view_wages` check and cannot cheaply run one
+// per hotel on the sign-in critical path. So every column listed here is a
+// column every signed-in person at the hotel receives. Pay figures are gated on
+// `view_wages` (a manager-floor capability) and are read through
+// GET /api/staff/wages and GET /api/settings/wages, which do check it. Adding a
+// money column here hands it to the whole staff instead. Same rule the `staff`
+// projection follows in src/lib/db/staff.ts.
 export const PROPERTY_COLS =
-  'id, name, total_rooms, avg_occupancy, hourly_wage, checkout_minutes, ' +
+  'id, name, total_rooms, avg_occupancy, checkout_minutes, ' +
   'stayover_minutes, stayover_day1_minutes, stayover_day2_minutes, ' +
   'prep_minutes_per_activity, shift_minutes, total_staff_on_roster, ' +
-  'weekly_budget, morning_briefing_time, evening_forecast_time, ' +
+  'morning_briefing_time, evening_forecast_time, ' +
   'pms_type, pms_url, pms_connected, last_synced_at, alert_phone, timezone, ' +
   'room_inventory, onboarding_completed_at, onboarding_state, onboarding_prompt_shown_at, enabled_sections, inventory_budget_mode, inventory_tab_layout, housekeeping_setup, is_test, created_at';
 
@@ -235,7 +244,6 @@ export function fromPropertyRow(r: Record<string, unknown>): Property {
     name: String(r.name ?? ''),
     totalRooms: Number(r.total_rooms ?? 0),
     avgOccupancy: Number(r.avg_occupancy ?? 0),
-    hourlyWage: Number(r.hourly_wage ?? 15),
     checkoutMinutes: Number(r.checkout_minutes ?? 30),
     stayoverMinutes: Number(r.stayover_minutes ?? 20),
     stayoverDay1Minutes: r.stayover_day1_minutes == null ? undefined : Number(r.stayover_day1_minutes),
@@ -243,7 +251,6 @@ export function fromPropertyRow(r: Record<string, unknown>): Property {
     prepMinutesPerActivity: Number(r.prep_minutes_per_activity ?? 5),
     shiftMinutes: Number(r.shift_minutes ?? 480),
     totalStaffOnRoster: Number(r.total_staff_on_roster ?? 0),
-    weeklyBudget: r.weekly_budget == null ? undefined : Number(r.weekly_budget),
     morningBriefingTime: parseStringField(r.morning_briefing_time),
     eveningForecastTime: parseStringField(r.evening_forecast_time),
     pmsType: parseStringField(r.pms_type),
@@ -500,47 +507,6 @@ export function fromLaundryRow(r: Record<string, unknown>): LaundryCategory {
   };
 }
 
-// ─── Daily log ──────────────────────────────────────────────────────────────
-
-export function fromDailyLogRow(r: Record<string, unknown>): DailyLog {
-  // Defensive parse for the JSONB laundry_loads column — accept the shape
-  // we wrote, fall back to zeros for anything else.
-  const ll = r.laundry_loads;
-  const laundryLoads: DailyLog['laundryLoads'] =
-    typeof ll === 'object' && ll !== null && !Array.isArray(ll)
-      ? {
-          towels: parseNumberField((ll as Record<string, unknown>).towels) ?? 0,
-          sheets: parseNumberField((ll as Record<string, unknown>).sheets) ?? 0,
-          comforters: parseNumberField((ll as Record<string, unknown>).comforters) ?? 0,
-        }
-      : { towels: 0, sheets: 0, comforters: 0 };
-  return {
-    date: String(r.date ?? ''),
-    hotelId: String(r.property_id ?? ''),
-    occupied: Number(r.occupied ?? 0),
-    checkouts: Number(r.checkouts ?? 0),
-    twoBedCheckouts: Number(r.two_bed_checkouts ?? 0),
-    stayovers: Number(r.stayovers ?? 0),
-    vips: Number(r.vips ?? 0),
-    earlyCheckins: Number(r.early_checkins ?? 0),
-    roomMinutes: Number(r.room_minutes ?? 0),
-    publicAreaMinutes: Number(r.public_area_minutes ?? 0),
-    laundryMinutes: Number(r.laundry_minutes ?? 0),
-    totalMinutes: Number(r.total_minutes ?? 0),
-    recommendedStaff: Number(r.recommended_staff ?? 0),
-    actualStaff: Number(r.actual_staff ?? 0),
-    hourlyWage: r.hourly_wage == null ? undefined : Number(r.hourly_wage),
-    laborCost: Number(r.labor_cost ?? 0),
-    laborSaved: Number(r.labor_saved ?? 0),
-    startTime: String(r.start_time ?? ''),
-    completionTime: String(r.completion_time ?? ''),
-    publicAreasDueToday: parseArrayField(r.public_areas_due_today, parseStringField),
-    laundryLoads,
-    roomsCompleted: r.rooms_completed == null ? undefined : Number(r.rooms_completed),
-    avgTurnaroundMinutes: r.avg_turnaround_minutes == null ? undefined : Number(r.avg_turnaround_minutes),
-  };
-}
-
 // ─── Work order ─────────────────────────────────────────────────────────────
 //
 // New shape (migration 0131): the UI exposes only status 'open' | 'done' and
@@ -685,11 +651,25 @@ export function fromWorkOrderRow(r: Record<string, unknown>): WorkOrder {
     submitterRole: parseStringField(r.submitter_role),
     submitterPhotoPath: parseStringField(r.submitter_photo_path)
       ?? parseStringField(r.photo_url),       // legacy column fallback for pre-0131 rows
+    // Legacy fallback, and it is now GATED ON THE TICKET BEING OVER. It exists
+    // for pre-0131 rows where `assigned_name` was the only name recorded — but
+    // "Give it to someone else" writes that column on LIVE tickets now, so
+    // ungated it put the current holder's name into "who fixed it" on a job
+    // nobody has touched yet.
     completedByName: parseStringField(r.completed_by_name)
-      ?? parseStringField(r.assigned_name),   // legacy fallback
+      ?? (workOrderIsSettled(r.status) ? parseStringField(r.assigned_name) : undefined),
+    // Who is holding it. See WorkOrder.assignedName on why the board has to
+    // show this: it is the only screen the person it was handed to can see it on.
+    assignedToStaffId: typeof r.assigned_to === 'string' ? r.assigned_to : null,
+    assignedName: parseStringField(r.assigned_name) ?? null,
     completionNote: parseStringField(r.completion_note),
     completionPhotoPath: parseStringField(r.completion_photo_path),
     completedAt: toDate(r.resolved_at),
+    // WHICH ending, carried alongside the two-word status rather than folded
+    // into it. See the note on WorkOrder.settledAs: the History popup is the
+    // one screen where "fixed" and "was never a fault" are different facts, and
+    // it had no way to tell them apart.
+    settledAs: r.status === 'closed' ? 'closed' : r.status === 'resolved' ? 'resolved' : null,
     equipmentId: typeof r.equipment_id === 'string' ? r.equipment_id : null,
     repairCost: r.repair_cost != null && Number.isFinite(Number(r.repair_cost)) ? Number(r.repair_cost) : null,
     // "Call in a professional" lane (0262). needs_pro may be absent on rows

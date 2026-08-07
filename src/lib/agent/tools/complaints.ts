@@ -86,6 +86,21 @@ registerTool<LogComplaintArgs>({
         source: 'front_desk',
         createdBy: ctx.user.uid,
         createdByName: ctx.user.displayName,
+      }, {
+        // `createComplaint` runs the complaint classifier when the caller did
+        // not state a category and severity, which is the usual case here.
+        // Without a ledger that model call was a real Anthropic charge with no
+        // row anywhere: /api/complaints/log has always passed one, and this
+        // path, reached whenever somebody logs a complaint by chat, never did.
+        // The chat turn's own reservation covers the money either way; what was
+        // missing is the record, and a hold nobody reconciles against is not
+        // accounting.
+        ledger: {
+          userId: ctx.user.accountId,
+          propertyId: ctx.propertyId,
+          requestId: ctx.requestId,
+          feature: 'complaints.classification',
+        },
       });
 
       return {
