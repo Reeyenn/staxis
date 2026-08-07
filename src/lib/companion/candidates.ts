@@ -35,7 +35,10 @@ import { propertyLocalToday, startOfLocalDay } from '@/lib/schedule/local-date';
 import { unfinishedRecallSentence } from './copy';
 import { listFindings } from '@/lib/findings/store';
 import { toQueueFinding } from '@/lib/findings/queue-projection';
-import { cardPhrasing, isCardRenderable, rankFindings } from '@/components/concourse/finding-cards';
+import {
+  cardPhrasing, isCardRenderable, rankFindings, type QueueFinding,
+} from '@/components/concourse/finding-cards';
+import { repliesFor, wakeDestination, type CompanionReplyKind } from './replies';
 import { listShowsFindings, listStandingFor } from '@/lib/feed/list-access';
 import {
   findLopsidedHistory,
@@ -118,6 +121,15 @@ export async function buildCompanionCandidates(input: {
   const slipped = await slippedCandidate(input.propertyId);
   const noticed = await noticedCandidate(input.propertyId, input.today, input.timezone);
 
+  // ── The findings, with their own replies ──────────────────────────────────
+  //
+  // Ranked and CUT FIRST, then the plans are read for the three that survived.
+  // The order matters for cost: `loadActionsForFindings` over twenty-five ids
+  // on every page load would be the fan-out this file's header refuses, and
+  // over three it is one indexed read on a table that is empty at most hotels.
+  const top = rankFindings(cards).slice(0, MAX_CANDIDATES);
+  const actions = await actionsFor(input.propertyId, top.map((f) => f.id));
+
   return [
     // A question this person was asked and never answered leads over
     // everything, because it is the only candidate that is about a
@@ -147,27 +159,96 @@ export async function buildCompanionCandidates(input: {
     // future stock answer improved, and a hotel that never hears about it
     // wonders why the numbers never got smarter.
     ...(lopsided ? [lopsided] : []),
-    ...rankFindings(cards)
-    .slice(0, MAX_CANDIDATES)
-    .map((f) => ({
-      // The DEDUPE KEY, not the row id. The same problem re-detected tomorrow
-      // gets a new row, and a No that expired overnight is not a No. The dedupe
-      // key is stable across re-detections of the same thing, which is exactly
-      // the grain "do not bring this up again" is about.
-      topic: `finding:${f.dedupeKey}`,
-      text: cardPhrasing(f, 'en'),
-      // Findings are operational by construction: they are about rooms, stock,
-      // equipment and money owed. Nothing in the detector registry produces a
-      // finding about how one person is performing. If that ever changes, this
-      // is the line that has to start reading the detector rather than
-      // asserting, and the charter test is what will catch it.
-      sensitivity: 'operational' as const,
-      covers: [`finding:${f.id}`],
-      destination: 'staxis' as const,
-      severity: SEVERITY_FROM_FINDING[f.severity] ?? ('watch' as const),
-    })),
+    ...top.map((f) => {
+      const action = actions.get(f.id) ?? null;
+      const replyKind = findingReplyKind(f, action);
+      return {
+        // The DEDUPE KEY, not the row id. The same problem re-detected tomorrow
+        // gets a new row, and a No that expired overnight is not a No. The dedupe
+        // key is stable across re-detections of the same thing, which is exactly
+        // the grain "do not bring this up again" is about.
+        topic: `finding:${f.dedupeKey}`,
+        text: cardPhrasing(f, 'en'),
+        // Findings are operational by construction: they are about rooms, stock,
+        // equipment and money owed. Nothing in the detector registry produces a
+        // finding about how one person is performing. If that ever changes, this
+        // is the line that has to start reading the detector rather than
+        // asserting, and the charter test is what will catch it.
+        sensitivity: 'operational' as const,
+        covers: [`finding:${f.id}`],
+        destination: 'staxis' as const,
+        severity: SEVERITY_FROM_FINDING[f.severity] ?? ('watch' as const),
+        replyKind,
+        // THE ROW ID, not the dedupe key. The topic is what a No attaches to and
+        // must survive re-detection; a verdict is written against the row that
+        // exists right now, and writing it against yesterday's row would be a
+        // manager's decision landing on a card nobody is looking at.
+        replies: repliesFor({ kind: replyKind, findingId: f.id, actionId: action }),
+      };
+    }),
   ].filter((c) => c.text.trim().length > 0).slice(0, MAX_CANDIDATES);
 }
+
+/**
+ * The live plan id for each of these findings, or an empty map.
+ *
+ * Fails soft, and the softness is the point: a card whose plan could not be
+ * read still offers every way of FILING it, and only loses the one button that
+ * would have done the work. Refusing to speak at all because a second table was
+ * slow would trade a whole sentence for a single button.
+ */
+async function actionsFor(
+  propertyId: string,
+  findingIds: readonly string[],
+): Promise<Map<string, string>> {
+  const out = new Map<string, string>();
+  if (findingIds.length === 0) return out;
+  try {
+    const { loadActionsForFindings } = await import('@/lib/findings/actions/store');
+    const live = await loadActionsForFindings(propertyId, findingIds);
+    for (const [findingId, action] of live) {
+      // ONLY a standing offer. An action already executed, undone or superseded
+      // is not something to offer to run: the card renders an undo for those,
+      // and an undo is a decision to make on the card with the receipt in front
+      // of you, not in one line in the corner of another screen.
+      if (action.state === 'proposed') out.set(findingId, action.id);
+    }
+  } catch {
+    // See above.
+  }
+  return out;
+}
+
+/**
+ * Which vocabulary a card speaks, read off the card itself.
+ *
+ * The two facts that decide it are the ones the screen uses: the DETECTOR (a
+ * dated upkeep job has different honest answers from a pattern) and the
+ * EFFECTIVE disposition (`toQueueFinding` has already applied the judge's
+ * verdict and the clamp). Nothing here re-decides either.
+ *
+ * `preventive_due` is named because it is the one detector with its own closure
+ * set in DETECTOR_CLOSURE_SETS, and this stays a two-line branch for the same
+ * reason that table stays a one-entry table: a detector earns an entry when its
+ * card is about a different KIND of thing, not when somebody wants nicer words.
+ */
+function findingReplyKind(
+  f: Pick<QueueFinding, 'detectorId' | 'disposition'>,
+  actionId: string | null,
+): CompanionReplyKind {
+  if (f.detectorId === PREVENTIVE_DETECTOR_ID) {
+    if (f.disposition === 'propose') return 'finding_propose_preventive';
+    if (f.disposition === 'recommend') return 'finding_recommend_preventive';
+  }
+  if (f.disposition === 'propose') {
+    return actionId ? 'finding_propose_action' : 'finding_propose';
+  }
+  if (f.disposition === 'fyi') return 'finding_fyi';
+  return 'finding_recommend';
+}
+
+/** The one detector whose card is about a dated job rather than a pattern. */
+const PREVENTIVE_DETECTOR_ID = 'preventive_due';
 
 // ─── Something that just happened ───────────────────────────────────────────
 //
@@ -262,9 +343,15 @@ async function noticedCandidate(
       // log, which is not a screen anybody has open, so an empty `covers` is
       // the honest answer rather than an oversight.
       covers: [],
-      // The run-the-hotel list is where a person goes to do something about it.
-      destination: 'staxis',
+      // Where a person goes to do something about it, DERIVED FROM THE EVENT
+      // rather than fixed at the one list. A manager told that a work order just
+      // opened wants the maintenance board; sending them to the list of
+      // everything and letting them find it is the routing hint standing in for
+      // an answer, which is the whole bug the reply work is about.
+      destination: wakeDestination(topic),
       severity: 'watch',
+      replyKind: 'event_wake',
+      replies: repliesFor({ kind: 'event_wake', topic }),
     };
   } catch {
     return null;
@@ -356,6 +443,8 @@ async function unfinishedCandidate(
       destination: null,
       seed: summary,
       severity: 'ok',
+      replyKind: 'unfinished',
+      replies: repliesFor({ kind: 'unfinished', seed: summary }),
     };
   } catch {
     return null;
@@ -406,6 +495,11 @@ async function slippedCandidate(propertyId: string): Promise<CompanionCandidate 
       covers: ['staxis:slipped'],
       destination: 'staxis',
       severity: 'watch',
+      // NO QUESTION, and that is the fix rather than an omission. "3 things
+      // slipped past their day" asks nothing; the question that used to be
+      // stapled under it was manufactured from the destination.
+      replyKind: 'todo_slipped',
+      replies: repliesFor({ kind: 'todo_slipped' }),
     };
   } catch {
     return null;
@@ -440,6 +534,8 @@ async function lopsidedCandidate(propertyId: string): Promise<CompanionCandidate
       covers: [],
       destination: 'inventory',
       severity: 'ok',
+      replyKind: 'import_lopsided',
+      replies: repliesFor({ kind: 'import_lopsided' }),
     };
   } catch {
     return null;
