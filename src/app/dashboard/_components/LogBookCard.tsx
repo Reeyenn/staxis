@@ -15,7 +15,7 @@ import { useLang } from '@/contexts/LanguageContext';
 import { canManageTeam } from '@/lib/roles';
 import { useSectionEnabled } from '@/lib/sections/useSectionEnabled';
 import { useApiResource } from '@/lib/hooks/use-api-resource';
-import { fmtWhenDateTime } from '@/lib/format-date';
+import { fmtWhenDateTimeInZone } from '@/lib/format-date';
 import { GlassCard } from './GlassCard';
 import { CARD, CARD_MONO, CARD_LABEL } from './palette';
 
@@ -29,8 +29,11 @@ interface LogEntry {
 
 export function LogBookCard() {
   const { user } = useAuth();
-  const { activePropertyId } = useProperty();
-  const { lang } = useLang();
+  const { activeProperty, activePropertyId } = useProperty();
+  // A shift recap is stamped at the HOTEL. Rendering it on the reader's clock
+  // put a Texas hotel's 12:30 AM entry on the previous calendar day for an
+  // owner in California, so the two of them disagreed about which shift it was.
+  const propertyTz = activeProperty?.timezone ?? null;
   // The shift log book lives under Communications — hide this embed when that
   // section is off for the hotel (default-ON while loading).
   const commsEnabled = useSectionEnabled('communications');
@@ -93,7 +96,7 @@ export function LogBookCard() {
                 {e.title}
               </span>
               <span style={{ display: 'block', fontSize: 11.5, color: CARD.ink3, marginTop: 2 }}>
-                {[e.authorName, fmtWhenDateTime(e.createdAt, lang)].filter(Boolean).join(' · ')}
+                {[e.authorName, fmtWhenDateTimeInZone(e.createdAt, propertyTz)].filter(Boolean).join(' · ')}
                 {e.replyCount > 0 && ` · ${e.replyCount} ${e.replyCount === 1 ? ('reply') : ('replies')}`}
               </span>
             </span>
