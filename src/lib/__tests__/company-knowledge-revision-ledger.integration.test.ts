@@ -182,6 +182,24 @@ describe('0406 company knowledge revision ledger', () => {
          ) values ($1, 'invoice', 100000, false, 'vp', $2)`,
         [ORG_A, LEGACY_RULE_FACT],
       );
+      // PRODUCTION'S EXACT SHAPE, and the one that broke the first attempt at
+      // 0464: a DEACTIVATED rule naming a retired word, sharing its fact with a
+      // live rule that names a surviving one. `..._one_per_fact_uq` is
+      // `(source_fact_id) where is_active`, so this pair is legal and real.
+      //
+      // It is the case a blanket UPDATE cannot survive. The ledger's snapshot
+      // helpers ignore inactive rules, so the trigger would rebuild a before
+      // image carrying `authorityRule: null` while the stored revision carries
+      // the ACTIVE `owner` rule above, and the continuity guard would refuse
+      // the write. Nothing else in this file has that shape, which is why the
+      // first attempt passed here and failed against the real database.
+      await hookPg.query(
+        `insert into public.company_authority_rules (
+           organization_id, action_kind, threshold_cents,
+           threshold_inclusive, approver_role, source_fact_id, is_active
+         ) values ($1, 'contract', 250000, false, 'vp', $2, false)`,
+        [ORG_A, LEGACY_FACT],
+      );
       legacyUpdatedAtBeforeMigration = await (async () => {
         const row = await hookPg.query<{ updated_at: string }>(
           'select updated_at::text from public.company_knowledge where id = $1',
@@ -194,6 +212,16 @@ describe('0406 company knowledge revision ledger', () => {
     assert.ok(
       migrated.report.applied.includes('0406_company_knowledge_revision_ledger.sql'),
       JSON.stringify(migrated.report.failedAtRuntime.filter((failure) => failure.file.includes('0406'))),
+    );
+    // 0464 has to APPLY, not merely be attempted. The runner records a
+    // migration that throws mid-file and carries on, so without this the
+    // conversion assertions below would read a table 0464 never touched and a
+    // broken migration would look like a passing suite. This fixture is the
+    // one carrying production's deactivated-rule shape, so this line is the
+    // proof that the full migration survives it.
+    assert.ok(
+      migrated.report.applied.includes('0464_company_invite_rescope.sql'),
+      JSON.stringify(migrated.report.failedAtRuntime.filter((failure) => failure.file.includes('0464'))),
     );
     receiptA = await mintReceipt(ACCOUNT_ANA, ORG_A);
   });
@@ -246,6 +274,70 @@ describe('0406 company knowledge revision ledger', () => {
     const after = jsonObject(revision.after_snapshot);
     assert.equal(after.content, 'Every hotel uses Legacy Supply.');
     assert.equal(jsonObject(after.authorityRule).thresholdCents, 50_000);
+  });
+
+  // THE CASE THAT BROKE 0464 AGAINST THE REAL DATABASE.
+  //
+  // A blanket `update ... where approver_role in ('vp','finance')` dies with
+  // "company knowledge revision history is discontinuous" the moment one of
+  // those rules is INACTIVE, because the ledger's snapshot helpers ignore
+  // inactive rules and the trigger's rebuilt before-image then cannot match
+  // stored history. Mutation: collapse 0464's two conversion statements back
+  // into one and this test fails the way production did.
+  test('0464 converts a deactivated rule without inventing a revision for it', async () => {
+    // Both words are gone from the table, active and inactive alike, or the
+    // new approver CHECK could not have been added at all.
+    assert.equal(
+      await scalar<string>(
+        `select count(*)::text from public.company_authority_rules
+         where approver_role in ('vp', 'finance')`,
+      ),
+      '0',
+    );
+    const deactivated = (await pg.query<{ approver_role: string; is_active: boolean }>(
+      `select approver_role, is_active from public.company_authority_rules
+       where source_fact_id = $1 and action_kind = 'contract'`,
+      [LEGACY_FACT],
+    )).rows[0];
+    assert.equal(deactivated.approver_role, 'regional_manager');
+    assert.equal(deactivated.is_active, false);
+
+    // …and the fact it hangs off did NOT move. Renaming a word on a rule
+    // nobody reads changes nothing readable, so the honest number of new
+    // ledger rows is zero. Its only revision is still the genesis one.
+    assert.equal(
+      await scalar<string>(
+        `select current_revision::text from public.company_knowledge where id = $1`,
+        [LEGACY_FACT],
+      ),
+      '1',
+    );
+    assert.equal(
+      await scalar<string>(
+        `select count(*)::text from public.company_knowledge_revisions where fact_id = $1`,
+        [LEGACY_FACT],
+      ),
+      '1',
+    );
+
+    // The ACTIVE conversion is the opposite case: it changes what the company
+    // reads, so it appends a real revision — and that revision is chained,
+    // which is the property the guard exists to protect.
+    const chain = (await pg.query<{
+      fact_revision: string;
+      action: string;
+      before_snapshot_hash: string | null;
+      after_snapshot_hash: string;
+    }>(
+      `select fact_revision::text, action, before_snapshot_hash, after_snapshot_hash
+       from public.company_knowledge_revisions
+       where fact_id = $1 order by fact_revision`,
+      [LEGACY_RULE_FACT],
+    )).rows;
+    assert.equal(chain.length, 2);
+    assert.equal(chain[0].action, 'genesis');
+    assert.equal(chain[1].action, 'structured_reading_change');
+    assert.equal(chain[1].before_snapshot_hash, chain[0].after_snapshot_hash);
   });
 
   test('DB-first legacy projection and structured writes are both journaled', async () => {

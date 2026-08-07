@@ -94,9 +94,77 @@ update public.account_invites
 -- would come unstuck. `mapRule` in src/lib/company/authority.ts now fails
 -- CLOSED on a word it cannot read, but the right fix is that there is no such
 -- word left to read.
+--
+-- ─── WHY THIS IS TWO STATEMENTS AND NOT ONE ────────────────────────────────
+-- `company_authority_rules` carries an AFTER trigger
+-- (trg_company_authority_knowledge_ledger) that appends a hash-linked row to
+-- the company knowledge ledger for every rule change. The ledger's continuity
+-- guard recomputes the fact's PREVIOUS snapshot and requires it to hash-equal
+-- the stored `after_snapshot_hash` of the fact's current revision.
+--
+-- That works for an ACTIVE rule, because the fact's snapshot embeds its active
+-- rule, so the recomputed before-image is exactly what was stored.
+--
+-- It cannot work for an INACTIVE one. Both
+-- `_staxis_company_authority_rule_snapshot` (`where rule.is_active`) and
+-- `_staxis_company_authority_row_snapshot` (null unless `is_active`) ignore
+-- inactive rules, so the trigger builds a before-image carrying
+-- `authorityRule: null` while the stored revision carries the fact's ACTIVE
+-- rule. The hashes differ and the guard correctly refuses the write. A single
+-- blanket UPDATE therefore dies with "company knowledge revision history is
+-- discontinuous" the moment one retired-word rule happens to be inactive —
+-- which is exactly the shape production is in: one deactivated `vp` rule
+-- sharing its fact with a live `owner` rule.
+--
+-- The guard is right and is not weakened. The two cases are genuinely
+-- different writes and are made as such.
+
+-- (a) ACTIVE rules. These change what the company can actually read, so they
+--     go through the trigger untouched and each one appends a real, correctly
+--     chained revision, exactly as an ordinary edit through the app would.
 update public.company_authority_rules
    set approver_role = 'regional_manager'
- where approver_role in ('vp', 'finance');
+ where approver_role in ('vp', 'finance')
+   and is_active;
+
+-- (b) INACTIVE rules. Renaming a word on a rule nobody reads does not change
+--     the fact's readable state by one byte: its snapshot is computed from the
+--     ACTIVE rule and is byte-identical before and after. The honest ledger
+--     entry for this is none at all, and writing one would record a change to
+--     a fact that did not change.
+--
+--     So the conversion is announced through the ledger's OWN first-class
+--     seam, `company_knowledge_revision_context.suppress_automatic_revision`,
+--     which the trigger consults at its top. Opened and closed inside this
+--     transaction, scoped to this backend and tagged with this migration's
+--     name so it can only ever match rows put there on this line.
+insert into public.company_knowledge_revision_context (
+  backend_pid, fact_id, operation_id, action, actor_account_id,
+  actor_kind, source, suppress_automatic_revision, allow_revision_bump
+)
+-- `null::uuid` is deliberate: bare NULL in a SELECT list types as text and
+-- the insert is rejected. There is no account behind this write, which is
+-- exactly what actor_kind 'backfill' says.
+select distinct pg_backend_pid(), rule.source_fact_id, gen_random_uuid(),
+       'structured_reading_change', null::uuid, 'backfill',
+       '0464_company_invite_rescope', true, false
+  from public.company_authority_rules rule
+ where rule.approver_role in ('vp', 'finance')
+   and not rule.is_active
+   and exists (
+     select 1 from public.company_knowledge fact
+     where fact.id = rule.source_fact_id
+   )
+on conflict (backend_pid, fact_id) do nothing;
+
+update public.company_authority_rules
+   set approver_role = 'regional_manager'
+ where approver_role in ('vp', 'finance')
+   and not is_active;
+
+delete from public.company_knowledge_revision_context context
+ where context.backend_pid = pg_backend_pid()
+   and context.source = '0464_company_invite_rescope';
 
 -- ─── 3. Re-add the constraints, in their new shape ─────────────────────────
 
