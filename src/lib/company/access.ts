@@ -193,7 +193,28 @@ export function resolveHatCoverage(
   const operated = operatedPropertyIds instanceof Set
     ? operatedPropertyIds as Set<string>
     : new Set(operatedPropertyIds);
-  const covered = scope === 'company'
+  // A COMPANY hat has two shapes since 0464, and the difference is the whole
+  // point of that migration:
+  //
+  //   no list   every hotel the company operates, including ones bought later.
+  //             `covered_property_ids` is NULL in the database and arrives here
+  //             as an empty array, because that is what `toStringArray(null)`
+  //             produces.
+  //   a list    exactly those hotels, and nothing else.
+  //
+  // This branch used to return every operated hotel for ANY company hat, which
+  // meant an Owner given 3 of 20 hotels was PRESENTED as covering all 20
+  // wherever this function feeds the screen. The database walls held, so it was
+  // a lie told by the UI rather than access granted — but the Company Hub is
+  // how somebody checks what they just handed out, and it was answering the
+  // question wrong.
+  //
+  // An explicit list is intersected with what the company currently operates,
+  // exactly as the property branch is and exactly as the canonical SQL resolver
+  // does, so a hotel that leaves the company drops out of both at once. The
+  // CHECK constraint makes an empty explicit list impossible; if one is ever
+  // seen anyway it intersects to nothing, which fails closed.
+  const covered = scope === 'company' && coveredPropertyIds.length === 0
     ? [...operated]
     : coveredPropertyIds.filter((id) => operated.has(id));
   return [...new Set(covered)].sort();
