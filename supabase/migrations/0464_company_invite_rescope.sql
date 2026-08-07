@@ -2202,53 +2202,72 @@ begin
     return true;
   end if;
 
-  -- A normalized portfolio manager can delegate only lower access inside the
-  -- exact portfolio they hold. Property-manager holders are excluded from
-  -- this company-level editor even though hotel-specific team tooling remains.
+  -- A normalized portfolio manager can delegate lower access anywhere inside
+  -- the portfolio they hold, INCLUDING its active descendants.
+  --
+  -- The recursion is 0403's and is load-bearing: a manager who holds a root
+  -- region hands out access inside the child regions beneath it, which is the
+  -- entire reason regions nest. Rebuilding this function for the 0464 company
+  -- vocabulary must not quietly narrow it back to the one exact portfolio on
+  -- the grant row — that silently strips authority a manager already has, and
+  -- nothing in the rename required it.
+  --
+  -- `union` (not `union all`) terminates even if the portfolio parent chain
+  -- ever contains a cycle. Property-manager holders remain excluded from this
+  -- company-level editor even though hotel-specific team tooling remains.
   if p_access_profile in (
        'property_manager', 'department_lead', 'contributor', 'viewer',
        'external_collaborator'
      ) and exists (
+    with recursive held (portfolio_id) as (
+      select actor_grant.portfolio_id
+      from public.organization_access_grants actor_grant
+      join public.organization_memberships actor_membership
+        on actor_membership.id = actor_grant.membership_id
+       and actor_membership.organization_id = actor_grant.organization_id
+      join public.portfolios held_portfolio
+        on held_portfolio.id = actor_grant.portfolio_id
+       and held_portfolio.organization_id = actor_grant.organization_id
+       and held_portfolio.status = 'active'
+      where actor_membership.account_id = p_actor_account_id
+        and actor_membership.organization_id = p_organization_id
+        and actor_membership.status = 'active'
+        and actor_membership.starts_at <= now()
+        and actor_membership.ended_at is null
+        and actor_grant.status = 'active'
+        and actor_grant.source <> 'legacy_backfill'
+        and actor_grant.starts_at <= now()
+        and (actor_grant.expires_at is null or actor_grant.expires_at > now())
+        and actor_grant.access_profile = 'portfolio_manager'
+        and actor_grant.scope_type = 'portfolio'
+      union
+      select child.id
+      from held
+      join public.portfolios child
+        on child.parent_id = held.portfolio_id
+       and child.organization_id = p_organization_id
+       and child.status = 'active'
+    )
     select 1
-    from public.organization_access_grants actor_grant
-    join public.organization_memberships actor_membership
-      on actor_membership.id = actor_grant.membership_id
-     and actor_membership.organization_id = actor_grant.organization_id
-    join public.portfolios held_portfolio
-      on held_portfolio.id = actor_grant.portfolio_id
-     and held_portfolio.organization_id = actor_grant.organization_id
-     and held_portfolio.status = 'active'
-    where actor_membership.account_id = p_actor_account_id
-      and actor_membership.organization_id = p_organization_id
-      and actor_membership.status = 'active'
-      and actor_membership.starts_at <= now()
-      and actor_membership.ended_at is null
-      and actor_grant.status = 'active'
-      and actor_grant.source <> 'legacy_backfill'
-      and actor_grant.starts_at <= now()
-      and (actor_grant.expires_at is null or actor_grant.expires_at > now())
-      and actor_grant.access_profile = 'portfolio_manager'
-      and actor_grant.scope_type = 'portfolio'
-      and (
-        (p_scope_type = 'portfolio' and p_portfolio_id = actor_grant.portfolio_id)
-        or (
-          p_scope_type = 'property'
-          and exists (
-            select 1
-            from public.portfolio_properties assignment
-            join public._staxis_current_primary_property_relationships() relationship
-              on relationship.id = assignment.property_relationship_id
-             and relationship.organization_id = assignment.organization_id
-             and relationship.property_id = assignment.property_id
-            where assignment.organization_id = p_organization_id
-              and assignment.portfolio_id = actor_grant.portfolio_id
-              and assignment.property_id = p_property_id
-              and assignment.assigned_at <= now()
-              and (assignment.removed_at is null or assignment.removed_at > now())
-              and relationship.active_primary_count = 1
-          )
-        )
-      )
+    from held
+    where (p_scope_type = 'portfolio' and p_portfolio_id = held.portfolio_id)
+       or (
+         p_scope_type = 'property'
+         and exists (
+           select 1
+           from public.portfolio_properties assignment
+           join public._staxis_current_primary_property_relationships() relationship
+             on relationship.id = assignment.property_relationship_id
+            and relationship.organization_id = assignment.organization_id
+            and relationship.property_id = assignment.property_id
+           where assignment.organization_id = p_organization_id
+             and assignment.portfolio_id = held.portfolio_id
+             and assignment.property_id = p_property_id
+             and assignment.assigned_at <= now()
+             and (assignment.removed_at is null or assignment.removed_at > now())
+             and relationship.active_primary_count = 1
+         )
+       )
   ) then
     return true;
   end if;
