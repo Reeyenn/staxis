@@ -74,7 +74,7 @@ import {
   isSpeakingEvent,
   spokenTopicIsOfferable,
 } from '@/lib/companion/authority';
-import { isTraceTopic, traceCandidate } from '@/lib/companion/trace';
+import { isTraceTopic, traceCandidate, type TracePattern } from '@/lib/companion/trace';
 import { buildTracePatterns } from '@/lib/companion/trace/server';
 import { decideNoticeAnnouncement } from '@/lib/companion/notices';
 import {
@@ -312,12 +312,12 @@ async function serverCandidates(opts: {
       accountId: opts.accountId,
       today: opts.today,
       timezone: opts.timezone,
-    }).catch(() => []),
+    }).catch((): CompanionCandidate[] => []),
     opts.includeTraces
       ? buildTracePatterns({
         propertyId: opts.propertyId, page: 'staxis', role: opts.role, now: opts.now,
-      }).catch(() => [])
-      : Promise.resolve([]),
+      }).catch((): TracePattern[] => [])
+      : Promise.resolve<TracePattern[]>([]),
   ]);
   return [...traces.map(traceCandidate), ...findings];
 }

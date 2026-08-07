@@ -160,16 +160,18 @@ export interface CompanionAuthorityInput {
 export function authorizeCompanionEvent(input: CompanionAuthorityInput): CompanionVerdict {
   if (!input.awake) return { record: false, because: 'asleep' };
 
-  if (!isSpeakingEvent(input.event)) return { record: true, speech: null };
+  const event = input.event;
+  const quiet: CompanionVerdict = { record: true, speech: null };
+  if (!isSpeakingEvent(event)) return quiet;
 
   // Every reducer that can decline to move returns the SAME object, so identity
   // is the test. `rememberSpoke` always moves, which is why `spoke` has its own
   // gates below rather than relying on this one.
-  if (input.before === input.after) return { record: true, speech: null };
+  if (input.before === input.after) return quiet;
 
-  if (!input.claimedSpeech) return { record: true, speech: null };
+  if (!input.claimedSpeech) return quiet;
 
-  switch (input.event) {
+  switch (event) {
     case 'welcomed': {
       const greeting = welcomeGreeting({
         firstName: input.person.firstName,
@@ -258,5 +260,11 @@ export function authorizeCompanionEvent(input: CompanionAuthorityInput): Compani
         speech: { kind, text, topic: input.topic, journal: offerIsJournalable(kind) },
       };
     }
+
+    // Unreachable: the guard above narrows to exactly the four cases. Present
+    // so that adding a fifth speaking event without giving it a sentence is a
+    // silent nothing rather than a handler that falls off the end.
+    default:
+      return quiet;
   }
 }
