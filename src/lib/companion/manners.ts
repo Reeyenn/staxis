@@ -101,6 +101,24 @@ export interface CompanionMemory {
   tourDeclined: boolean;
   /** Set when the tour was actually taken, so it is not re-offered either. */
   tourTakenAt: string | null;
+  /**
+   * How the tour ended, or null if it was never started.
+   *
+   * `tourTakenAt` alone answers "do not offer this again", which is all the
+   * manners engine needs. This answers the different question the founder
+   * asked for: a tour somebody walked out of halfway is a fact worth having in
+   * the hotel's own record, and a fact the companion must never bring up
+   * unprompted. Stored, journaled once, and read by nothing that speaks.
+   */
+  tourEndedAs: 'finished' | 'skipped' | null;
+  /**
+   * The newest shipped change this person is caught up on, YYYY-MM-DD.
+   *
+   * Stamped the moment the companion has anything to do with them, so a new
+   * hire is never walked through what shipped before they existed. See
+   * whats-new.ts for why this and the topics ledger are both needed.
+   */
+  whatsNewThrough: string | null;
   /** ISO of the last unprompted message, for the minimum-gap rule. */
   lastSpokeAt: string | null;
   /** Hotel-local day `spokenCount` belongs to. A new day resets the count. */
@@ -139,6 +157,8 @@ export const EMPTY_COMPANION_MEMORY: CompanionMemory = {
   taught: {},
   tourDeclined: false,
   tourTakenAt: null,
+  tourEndedAs: null,
+  whatsNewThrough: null,
   lastSpokeAt: null,
   spokenDay: null,
   spokenCount: 0,
@@ -196,6 +216,14 @@ export function parseCompanionMemory(raw: unknown): CompanionMemory {
     taught,
     tourDeclined: o.tourDeclined === true,
     tourTakenAt: isIsoString(o.tourTakenAt) ? o.tourTakenAt : null,
+    // A closed pair, never a free string: this lands in a jsonb blob a request
+    // body can reach, and anything else in it would be junk in a permanent
+    // record. Unreadable degrades to null, which reads as "never started".
+    tourEndedAs: o.tourEndedAs === 'finished' || o.tourEndedAs === 'skipped' ? o.tourEndedAs : null,
+    // A day string, same shape as the ones above. Degrading to null means
+    // "caught up on nothing", which costs at most one offer of a change they
+    // had already seen. The other direction would silently swallow one.
+    whatsNewThrough: isDayString(o.whatsNewThrough) ? o.whatsNewThrough : null,
     lastSpokeAt: isIsoString(o.lastSpokeAt) ? o.lastSpokeAt : null,
     spokenDay: isDayString(o.spokenDay) ? o.spokenDay : null,
     spokenCount: Number.isFinite(spokenCount) && spokenCount > 0 ? Math.min(Math.floor(spokenCount), 99) : 0,
@@ -740,6 +768,40 @@ export function rememberTourDeclined(memory: CompanionMemory): CompanionMemory {
 
 export function rememberTourTaken(memory: CompanionMemory, now: Date): CompanionMemory {
   return { ...memory, tourTakenAt: now.toISOString() };
+}
+
+/**
+ * The tour ended, one way or the other.
+ *
+ * FIRST ENDING WINS. A run that is already recorded as finished must not be
+ * overwritten by a stale tab reporting a skip from the same walk, and a skip
+ * must not be upgraded to a finish by a replay. Either way `tourTakenAt` is
+ * stamped, because both endings mean the same thing to the offer: it has been
+ * had, and it is never offered unprompted again. Reaching it from the panel
+ * stays available forever. See `tourIsReachable`.
+ */
+export function rememberTourEnded(
+  memory: CompanionMemory,
+  ending: 'finished' | 'skipped',
+  now: Date,
+): CompanionMemory {
+  const stamped = rememberTourTaken(memory, now);
+  if (memory.tourEndedAs !== null) return stamped;
+  return { ...stamped, tourEndedAs: ending };
+}
+
+/**
+ * This person is caught up on shipped changes through `day`.
+ *
+ * MONOTONIC, for the same reason the notices stamps are: a stale tab holding
+ * an older high-water mark must not drag the cursor backwards and re-offer a
+ * change somebody already answered. A malformed day is ignored rather than
+ * written.
+ */
+export function rememberWhatsNewSeen(memory: CompanionMemory, day: string): CompanionMemory {
+  if (!isDayString(day)) return memory;
+  if (memory.whatsNewThrough !== null && memory.whatsNewThrough >= day) return memory;
+  return { ...memory, whatsNewThrough: day };
 }
 
 /** Called the moment an offer is shown, not when it is answered. */

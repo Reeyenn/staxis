@@ -46,7 +46,6 @@ export const LEGACY_MODEL_OVERRIDE_FEATURE_TIERS: Readonly<
   'agent.ask_staxis': 'sonnet',
   'agent.conversation_summary': 'haiku',
   'agent.memory_consolidation': 'sonnet',
-  'walkthrough.step_generation': 'sonnet',
 };
 
 export function effectiveLegacyModelRef(

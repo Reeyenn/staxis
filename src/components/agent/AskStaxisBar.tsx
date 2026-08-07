@@ -52,6 +52,7 @@ import { FeedbackButton } from '@/components/layout/FeedbackButton';
 import { useCompanion } from '@/components/companion/useCompanion';
 import { TraceLayer } from '@/components/companion/TraceLayer';
 import { PointerPopup } from '@/components/companion/PointerPopup';
+import { TourGuide } from '@/components/companion/TourGuide';
 import { anchorFor, type CompanionAnchor } from '@/lib/companion/anchors';
 import {
   companionLabels,
@@ -637,15 +638,26 @@ export function AskStaxisBar() {
     };
   }, [open, menuOpen, mobileOpen, noticesOpen, closeMobile, closePanel]);
 
-  // A walkthrough (Clicky-style cursor demo) takes over the screen, and a route
-  // change replaces the page under it. Both close the panel OUTRIGHT rather
-  // than through the Sink: an exit animation belongs to a person dismissing
-  // something, not to the screen being taken away from them.
+  // ── "show me around" ─────────────────────────────────────────────────────
+  //
+  // The third of the three companion tools that are acknowledgements on the
+  // server and real work here, for the same reason as the other two: the tour
+  // points at controls in a window nothing on the server can see, and half its
+  // stops wait for the person to use one.
+  //
+  // The panel closes OUTRIGHT rather than through the Sink. An exit animation
+  // belongs to a person dismissing something; this is the screen being handed
+  // over to the thing they just asked for.
   useEffect(() => {
-    const handler = () => { setOpen(false); setClosing(false); setMenuOpen(false); };
-    window.addEventListener('walkthrough:start', handler);
-    return () => window.removeEventListener('walkthrough:start', handler);
-  }, []);
+    const onToolCall = (e: Event) => {
+      const detail = (e as CustomEvent<{ call?: { name?: string } }>).detail;
+      if (detail?.call?.name !== 'staxis_show_around') return;
+      setOpen(false); setClosing(false); setMenuOpen(false);
+      companion.tour.start();
+    };
+    window.addEventListener('agent:tool-call-started', onToolCall);
+    return () => window.removeEventListener('agent:tool-call-started', onToolCall);
+  }, [companion]);
 
   // Route change closes the panel. The conversation itself persists.
   useEffect(() => {
@@ -1040,12 +1052,16 @@ export function AskStaxisBar() {
 
       {menuOpen && (
         <div className="asx-menu" role="menu">
-          {companion.tour.length > 0 && (
+          {/* Never spent. A No on day one stops the OFFER and nothing else:
+              "I said no on my first morning" and "I never want to see this"
+              are different sentences, and only the person gets to say the
+              second one. See `tourIsReachable` in manners.ts. */}
+          {companion.tour.available && (
             <button
               type="button"
               role="menuitem"
               className="asx-menurow"
-              onClick={() => { setMenuOpen(false); closePanel(); companion.startTour(); }}
+              onClick={() => { setMenuOpen(false); closePanel(); companion.tour.start(); }}
             >
               {labels.showMeAround}
             </button>
@@ -1123,16 +1139,17 @@ export function AskStaxisBar() {
                 onNo={companion.answerNo}
               />
             )}
+            {/* Arriving somewhere the companion walked you to. It used to
+                carry the tour's "Next: Dashboard" button, because the tour WAS
+                a sequence of walks. It is not any more: a tour stop is a card
+                beside a control with its own Next, so this is back to being
+                one sentence about one screen, with nothing to answer. */}
             {showing.kind === 'arrived' && (
               <CompanionBlock
                 lines={[showing.line]}
-                yesLabel={
-                  companion.tourStep !== null && companion.tourStep + 1 < companion.tour.length
-                    ? `Next: ${companion.tour[companion.tourStep + 1].label}`
-                    : null
-                }
+                yesLabel={null}
                 noLabel={labels.close}
-                onYes={companion.nextTourStep}
+                onYes={companion.dismiss}
                 onNo={companion.dismiss}
               />
             )}
@@ -1472,6 +1489,19 @@ export function AskStaxisBar() {
         />
       )}
 
+      {/* ── The tour ── the same card and the same anchors, one stop at a
+          time, with a cursor that flies between them. It points and it waits;
+          the person does every action. Rendered here rather than at the root
+          layout because this is where the companion's brain already lives, and
+          the tour is the companion speaking. */}
+      {companion.tour.run && (
+        <TourGuide
+          run={companion.tour.run}
+          onNext={companion.tour.next}
+          onSkip={companion.tour.skip}
+        />
+      )}
+
       {/* ── The peek ── one clause, no click, aria-hidden: the same sentence
           is the panel's first line, so a screen reader meets it there. */}
       {peekVisible && peek && (
@@ -1558,6 +1588,11 @@ export function AskStaxisBar() {
           type="button"
           className={`asx-mark asx-${markState}${dragging ? ' asx-dragging' : ''}`
             + `${markWaiting ? ' asx-waiting' : ''}`}
+          // The one control the tour's last stop points at, and the only
+          // anchor on a companion surface. It is deliberately not a
+          // `data-staxis-surface`: that attribute marks space the pointer must
+          // avoid landing ON, and the mark is a button somebody presses.
+          {...{ 'data-staxis-anchor': 'staxis-mark' }}
           aria-label="Ask Staxis"
           aria-expanded={open}
           aria-controls="staxis-panel"

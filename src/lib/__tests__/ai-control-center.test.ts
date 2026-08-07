@@ -127,7 +127,6 @@ describe('AI Control Center feature registry', () => {
     const sonnet = [
       'agent.ask_staxis',
       'agent.memory_consolidation',
-      'walkthrough.step_generation',
       'inventory.photo_count',
       'inventory.invoice_scan',
       'inventory.sheet_import',

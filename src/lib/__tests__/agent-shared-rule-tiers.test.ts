@@ -43,7 +43,6 @@ import { clearHotelIdentityCache } from '@/lib/agent/hotel-identity';
 import { clearCompanyRulebookCache } from '@/lib/agent/company-tier';
 import { buildSystemPrompt } from '@/lib/agent/prompts';
 import { buildPortfolioSystemPrompt } from '@/lib/agent/portfolio/prompt';
-import { buildSystemPrompt as buildWalkthroughPrompt } from '@/lib/walkthrough-step';
 import {
   CODE_OWNED_RULE_TIERS,
   exactHotelScope,
@@ -165,15 +164,6 @@ function hotelChatPrompt(): Promise<SystemPromptBlocks> {
   });
 }
 
-function walkthroughPrompt(): Promise<SystemPromptBlocks> {
-  return buildWalkthroughPrompt({
-    role: 'general_manager',
-    task: 'help me add a housekeeper',
-    propertyId: PID_ONE,
-    hotelContext: '<staxis-snapshot trust="system">Rooms: 88 total</staxis-snapshot>',
-  });
-}
-
 function portfolioPrompt(identity = IDENTITY_ONE_HOTEL): Promise<SystemPromptBlocks> {
   return buildPortfolioSystemPrompt({
     identity,
@@ -186,7 +176,6 @@ function portfolioPrompt(identity = IDENTITY_ONE_HOTEL): Promise<SystemPromptBlo
 
 const PIPELINES: Array<{ name: string; build: () => Promise<SystemPromptBlocks> }> = [
   { name: 'hotel chat', build: hotelChatPrompt },
-  { name: 'walkthrough', build: walkthroughPrompt },
   { name: 'portfolio chat', build: () => portfolioPrompt() },
 ];
 
@@ -243,16 +232,6 @@ describe("the hotel's standing rules follow hotel scope", () => {
     assert.ok(built.stableStamp.includes(HOTEL_RULES_VERSION));
   });
 
-  test('the walkthrough carries them — it did not before', async () => {
-    // The walkthrough drives a manager around their own hotel. "Always check
-    // with me before promising a late checkout" is exactly the kind of rule it
-    // needs, and it had no access to any of them.
-    const built = await walkthroughPrompt();
-    assert.match(built.stable, new RegExp(HOTEL_RULES_HEADER));
-    assert.ok(built.stable.includes(THE_RULE));
-    assert.ok(built.stableStamp.includes(HOTEL_RULES_VERSION));
-  });
-
   test('a one-hotel portfolio turn carries them', async () => {
     const built = await portfolioPrompt(IDENTITY_ONE_HOTEL);
     assert.ok(built.stable.includes(THE_RULE));
@@ -295,7 +274,6 @@ describe('no pipeline can be added without the rulebook', () => {
     'src/lib/agent/prompts.ts',                          // hotel chat
     'src/lib/agent/portfolio/prompt.ts',                 // portfolio chat
     'src/lib/agent/portfolio-intelligence/prompt.ts',    // portfolio chat, evidence layer
-    'src/lib/walkthrough-step.ts',                       // walkthrough
   ].sort();
 
   const PRODUCES = /\)\s*:\s*(?:Promise<)?SystemPromptBlocks/;

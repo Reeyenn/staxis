@@ -82,7 +82,9 @@ import {
   rememberNoticesSeen,
   rememberTaught,
   rememberTourDeclined,
+  rememberTourEnded,
   rememberTourTaken,
+  rememberWhatsNewSeen,
   rememberWelcomed,
   COMPOSER_TAUGHT_TODO_REPEAT,
   type CompanionMemory,
@@ -229,6 +231,13 @@ type CompanionEvent =
   | 'welcomed'
   | 'tour_declined'
   | 'tour_taken'
+  // How the tour finished. Separate from `tour_taken` because they answer
+  // different questions: taken is "do not offer this again", which is stamped
+  // the moment somebody says yes, and ended is "what actually happened",
+  // which is only known later and is the half worth journaling.
+  | 'tour_ended'
+  // The catch-up cursor for shipped changes. See whats-new.ts.
+  | 'whats_new_seen'
   | 'spoke'
   | 'declined'
   | 'accepted'
@@ -248,9 +257,20 @@ type CompanionEvent =
   | 'notices_seen';
 
 const EVENTS: readonly CompanionEvent[] = [
-  'welcomed', 'tour_declined', 'tour_taken', 'spoke', 'declined', 'accepted', 'taught', 'greeted', 'dropped',
+  'welcomed', 'tour_declined', 'tour_taken', 'tour_ended', 'whats_new_seen',
+  'spoke', 'declined', 'accepted', 'taught', 'greeted', 'dropped',
   'notices_announced', 'notices_seen',
 ];
+
+/** A tour ending off a request body, or null. A closed pair, never a string. */
+function readTourEnding(value: unknown): 'finished' | 'skipped' | null {
+  return value === 'finished' || value === 'skipped' ? value : null;
+}
+
+/** A YYYY-MM-DD day off a request body, or null. */
+function readDay(value: unknown): string | null {
+  return typeof value === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(value) ? value : null;
+}
 
 /** An ISO instant off a request body, or null. Never trusted as a Date. */
 function readInstant(value: unknown): string | null {
@@ -351,6 +371,8 @@ export async function POST(req: NextRequest): Promise<Response> {
     // The offer half. See the OfferSpeech block above.
     text?: unknown; kind?: unknown; page?: unknown; actions?: unknown;
     conversationId?: unknown; offerId?: unknown; offerState?: unknown;
+    /** `tour_ended` only: 'finished' or 'skipped'. */
+    ending?: unknown;
     // The notices half. `through` is the newest notice in the batch that was
     // announced. There is deliberately no "when did I open the list" field:
     // that instant is the server's own clock.
@@ -410,6 +432,19 @@ export async function POST(req: NextRequest): Promise<Response> {
       case 'welcomed':      next = rememberWelcomed(current, now); break;
       case 'tour_declined': next = rememberTourDeclined(rememberWelcomed(current, now)); break;
       case 'tour_taken':    next = rememberTourTaken(rememberWelcomed(current, now), now); break;
+      case 'tour_ended': {
+        const ending = readTourEnding(body.ending);
+        // An ending we cannot read leaves the memory exactly as it was rather
+        // than guessing. `tour_taken` has already stopped the offer coming
+        // back, so the worst case is one un-journaled walk, not a re-offer.
+        next = ending ? rememberTourEnded(current, ending, now) : current;
+        break;
+      }
+      case 'whats_new_seen': {
+        const day = readDay(body.through);
+        next = day ? rememberWhatsNewSeen(current, day) : current;
+        break;
+      }
       case 'spoke':         next = rememberSpoke(current, topic, now, today); break;
       case 'declined':      next = rememberDeclined(current, topic, today); break;
       case 'accepted':      next = rememberAccepted(current, topic, today); break;
@@ -518,6 +553,35 @@ export async function POST(req: NextRequest): Promise<Response> {
               });
             }
           }
+        }
+      } else if (body.event === 'tour_ended') {
+        // ── A tour that ended, in the hotel's own record ────────────────────
+        //
+        // Not in the thread, because the tour never spoke into one: it happened
+        // on the page, in cards beside real controls, and writing "you skipped
+        // the tour" into somebody's conversation would be the companion
+        // narrating a person's decision back at them. The timeline is the right
+        // venue: it answers "what has been happening here", which is a question
+        // asked of the hotel and not of anybody in particular.
+        //
+        // Written once. `rememberTourEnded` keeps the first ending, so a stale
+        // tab replaying an older one changes the memory not at all; this write
+        // is guarded on the memory having actually MOVED, so it cannot produce
+        // a second row either.
+        const ending = readTourEnding(body.ending);
+        if (ending && current.tourEndedAs === null && next.tourEndedAs === ending) {
+          await recordAgentJournalEntry({
+            propertyId: ctx.pid,
+            eventType: 'agent_said',
+            description: ending === 'finished'
+              ? `${cleanName(ctx.displayName) ?? 'Someone'} finished the tour of Staxis.`
+              : `${cleanName(ctx.displayName) ?? 'Someone'} stopped the tour of Staxis part way.`,
+            targetType: 'person',
+            targetId: ctx.accountId,
+            targetLabel: cleanName(ctx.displayName),
+            metadata: { kind: 'tour', ending },
+            occurredAt: now,
+          });
         }
       } else if (body.event === 'declined' || body.event === 'accepted') {
         // The answer the ledger just recorded, stamped onto the sentence it was

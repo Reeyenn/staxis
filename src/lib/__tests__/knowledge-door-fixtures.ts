@@ -40,7 +40,6 @@ import { formatStandingRulesForPrompt } from '@/lib/agent/hotel-rules-tier';
 import type { HotelSnapshot } from '@/lib/agent/context';
 import { buildSystemPrompt } from '@/lib/agent/prompts';
 import { buildPortfolioSystemPrompt } from '@/lib/agent/portfolio/prompt';
-import { buildSystemPrompt as buildWalkthroughPrompt } from '@/lib/walkthrough-step';
 import {
   buildCompanyKnowledgeOverlay,
   formatKnowledgeOverlayForPrompt,
@@ -290,13 +289,6 @@ export async function buildGoldenSubjects(): Promise<GoldenSubjects> {
     snapshot: hotelSnapshot(),
     conversationId: 'conv-knowledge-door-hk',
     now: NOW,
-  });
-
-  subjects['walkthrough'] = await buildWalkthroughPrompt({
-    role: 'general_manager',
-    task: 'help me add a housekeeper',
-    propertyId: PID_ONE,
-    hotelContext: '<staxis-snapshot trust="system">Rooms: 88 total</staxis-snapshot>',
   });
 
   subjects['portfolio.one-hotel.legacy-rulebook'] = await buildPortfolioSystemPrompt({

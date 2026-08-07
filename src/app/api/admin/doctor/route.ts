@@ -525,7 +525,6 @@ const RLS_REQUIRED_TABLES = [
   'agent_messages',
   'agent_costs',
   'agent_nudges',
-  'walkthrough_runs',
 
   // Fleet-wide AI Control Center (service-role only).
   'ai_model_catalog',
