@@ -35,14 +35,20 @@ export function PortfolioChooserClient() {
       return {
         id: context.organizationId,
         kind: 'portfolio' as const,
-        eyebrow: context.companyRole === 'finance' ? 'Portfolio · Finance' : 'Portfolio',
+        eyebrow: 'Portfolio',
         name,
         secondaryLabel: `${context.hotelCount} authorized ${context.hotelCount === 1 ? 'hotel' : 'hotels'}${collisionSuffix}`,
         status: context.chat.state === 'unavailable'
           ? { label: 'Some services unavailable', tone: 'warning' as const }
           : null,
         facts: [
-          { label: 'Acting role', value: context.companyRole === 'vp' ? 'Portfolio leader' : context.companyRole },
+          // Never render the raw stored word. It used to fall through to the
+          // bare token for anything that was not `vp`, which put "finance" on
+          // screen as a role nobody had chosen.
+          {
+            label: 'Acting role',
+            value: context.companyRole === 'owner' ? 'Owner' : 'Regional Manager',
+          },
         ],
       };
     });

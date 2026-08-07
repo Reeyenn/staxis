@@ -134,10 +134,17 @@ interface InviteOptions {
     allowedPropertyIds: string[];
   }>;
   hotels: Array<{ id: string; name: string }>;
+  /**
+   * May this caller offer "all hotels, including ones added later"? Only
+   * somebody whose own authority already follows the company forward. Optional
+   * so an older payload simply reads as "no", which is the safe direction.
+   */
+  allowsAllIncludingFuture?: boolean;
 }
 
 const NO_INVITE_OPTIONS: InviteOptions = {
   choosesHotels: false, organizationId: null, jobs: [], hotels: [],
+  allowsAllIncludingFuture: false,
 };
 
 function recordOf(value: unknown): Record<string, unknown> | null {
@@ -192,7 +199,9 @@ function isInviteOptions(value: unknown): value is InviteOptions {
       || typeof record.choosesHotels !== 'boolean'
       || (typeof record.organizationId !== 'string' && record.organizationId !== null)
       || !Array.isArray(record.jobs)
-      || !Array.isArray(record.hotels)) {
+      || !Array.isArray(record.hotels)
+      || (record.allowsAllIncludingFuture !== undefined
+        && typeof record.allowsAllIncludingFuture !== 'boolean')) {
     return false;
   }
   const jobsValid = record.jobs.every((value) => {
@@ -378,6 +387,72 @@ function lastSignInLabel(known: boolean, value: string | null, lang: HotelTeamLa
 
 function isUsable(code: JoinCode): boolean {
   return new Date(code.expires_at).getTime() > Date.now() && code.used_count < code.max_uses;
+}
+
+/**
+ * A sheet of paper for the wall by the time clock.
+ *
+ * Plenty of housekeepers and maintenance staff have no work email, so the way
+ * they join is to point a phone at a code. That only works if the code is
+ * somewhere they already stand, which means somebody has to be able to print it.
+ *
+ * Self-contained on purpose: its own document, its own styles, the QR already
+ * rendered to a data URI, so it depends on nothing from the app shell and
+ * cannot be broken by a later stylesheet change.
+ */
+function printJoinCodePoster(input: {
+  hotelName: string;
+  code: string;
+  qrDataUrl: string;
+}): void {
+  if (typeof window === 'undefined') return;
+  const escape = (value: string) => value.replace(/[&<>"']/g, (character) => ({
+    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
+  }[character] ?? character));
+  const poster = window.open('', '_blank', 'noopener,noreferrer,width=820,height=1100');
+  if (!poster) return;
+  poster.document.write(`<!doctype html>
+<html><head><meta charset="utf-8"><title>${escape(input.hotelName)} signup code</title>
+<style>
+  @page { margin: 18mm; }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    color: #111827; display: flex; flex-direction: column; align-items: center;
+    justify-content: center; min-height: 100vh; text-align: center; padding: 24px;
+  }
+  h1 { font-size: 34px; line-height: 1.2; margin: 0 0 8px; }
+  p.instruction { font-size: 20px; color: #374151; margin: 0 0 28px; }
+  img { width: 380px; height: 380px; image-rendering: pixelated; }
+  p.codelabel {
+    font-size: 13px; letter-spacing: .16em; text-transform: uppercase;
+    color: #6b7280; margin: 28px 0 6px;
+  }
+  p.code {
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 40px; font-weight: 700; letter-spacing: .1em; margin: 0;
+  }
+  @media print { body { min-height: auto; } }
+</style></head>
+<body>
+  <h1>${escape(input.hotelName)}</h1>
+  <p class="instruction">Scan to join ${escape(input.hotelName)} on Staxis</p>
+  <img src="${escape(input.qrDataUrl)}" alt="Signup QR code">
+  <p class="codelabel">Or enter this code</p>
+  <p class="code">${escape(input.code)}</p>
+</body></html>`);
+  poster.document.close();
+  poster.focus();
+  // Let the QR image decode before the print dialog freezes the page, or the
+  // sheet comes out with an empty square where the code should be.
+  const run = () => poster.print();
+  const image = poster.document.querySelector('img');
+  if (image && !image.complete) {
+    image.addEventListener('load', run, { once: true });
+    image.addEventListener('error', run, { once: true });
+  } else {
+    run();
+  }
 }
 
 function signupLinkFor(code: string): string {
@@ -1723,12 +1798,21 @@ export function HotelInviteDialog({
   const allowedInviteHotels = inviteOptions.hotels.filter(
     (hotel) => allowedInviteHotelIds.has(hotel.id),
   );
+  // "All" means two different promises depending on the job. For a hotel job it
+  // is every hotel this caller may reach today. For a company job it is every
+  // hotel the company will EVER operate, which only some callers may offer — so
+  // when they may not, a company job has no "all" and must name its hotels.
+  const canOfferAllIncludingFuture = inviteOptions.allowsAllIncludingFuture === true;
+  const coverageOffersAll = selectedInviteJob?.scope === 'company'
+    ? canOfferAllIncludingFuture
+    : true;
+  const coverageIsAll = coverageOffersAll && inviteAllHotels;
   const selectedOperationalJob = operationalInviteJob(inviteJob);
   const currentHotelCoveredByInvite = Boolean(
     selectedInviteJob?.scope === 'property'
       && allowedInviteHotelIds.has(hotelId)
       && (!inviteOptions.choosesHotels
-        || inviteAllHotels
+        || coverageIsAll
         || inviteHotelIds.includes(hotelId)),
   );
   const linkableRosterProfiles = React.useMemo(() => (
@@ -1996,7 +2080,22 @@ export function HotelInviteDialog({
     }
     let scoped: { role: string; scope?: string; propertyIds?: string[] };
     if (selectedJob.scope === 'company') {
-      scoped = { role: selectedJob.value, scope: 'company' };
+      // A company job reaches either every hotel the company will ever operate,
+      // or exactly the hotels ticked here. Omitting `propertyIds` is what the
+      // server reads as all-including-future, so only omit it when that is what
+      // was actually chosen AND this caller is allowed to promise it.
+      const allIncludingFuture = coverageIsAll;
+      if (allIncludingFuture) {
+        scoped = { role: selectedJob.value, scope: 'company' };
+      } else {
+        const allowed = new Set(selectedJob.allowedPropertyIds);
+        const chosen = inviteHotelIds.filter((propertyId) => allowed.has(propertyId));
+        if (chosen.length === 0) {
+          setInviteError('Choose at least one hotel.');
+          return;
+        }
+        scoped = { role: selectedJob.value, scope: 'company', propertyIds: chosen };
+      }
     } else if (inviteOptions.organizationId === null) {
       if (!selectedJob.allowedPropertyIds.includes(hotelId)) {
         setInviteError('Your hotel access changed. Reload and try again.');
@@ -2006,7 +2105,7 @@ export function HotelInviteDialog({
     } else {
       const allowed = new Set(selectedJob.allowedPropertyIds);
       const chosen = inviteOptions.choosesHotels
-        ? inviteAllHotels
+        ? coverageIsAll
           ? selectedJob.allowedPropertyIds
           : inviteHotelIds.filter((propertyId) => allowed.has(propertyId))
         : allowed.has(hotelId) ? [hotelId] : [];
@@ -2183,6 +2282,19 @@ export function HotelInviteDialog({
                   <img src={qrDataUrl} width={168} height={168} alt={`QR code to join ${hotelName}`} />
                 ) : <span className={styles.qrPlaceholder}>{'QR unavailable'}</span>}
                 <span>{'QR code'}</span>
+                {qrDataUrl && code ? (
+                  <button
+                    type="button"
+                    className={styles.secondaryButton}
+                    onClick={() => printJoinCodePoster({
+                      hotelName,
+                      code: code.code,
+                      qrDataUrl,
+                    })}
+                  >
+                    {'Print'}
+                  </button>
+                ) : null}
               </div>
             </div>
           ) : (
@@ -2242,24 +2354,35 @@ export function HotelInviteDialog({
 
             {inviteOptions.choosesHotels
               && allowedInviteHotels.length > 0
-              && selectedInviteJob?.scope === 'property'
+              && (selectedInviteJob?.scope === 'property'
+                || selectedInviteJob?.scope === 'company')
               ? (
                 <fieldset className={styles.hotelChoices} disabled={inviteBusy}>
                   <legend>{'Which hotels'}</legend>
-                  <label>
-                    <input
-                      type="checkbox"
-                      checked={inviteAllHotels}
-                      onChange={(event) => {
-                        setInviteAllHotels(event.target.checked);
-                        setInviteStaffId('');
-                        setInviteError('');
-                        setLastInvite(null);
-                      }}
-                    />
-                    {'All allowed hotels'}
-                  </label>
-                  {inviteAllHotels ? null : allowedInviteHotels.map((hotel) => (
+                  {coverageOffersAll ? (
+                    <label>
+                      <input
+                        type="checkbox"
+                        checked={inviteAllHotels}
+                        onChange={(event) => {
+                          setInviteAllHotels(event.target.checked);
+                          setInviteStaffId('');
+                          setInviteError('');
+                          setLastInvite(null);
+                        }}
+                      />
+                      {/*
+                        A company job with no list follows the company into
+                        hotels it has not bought yet, which is a materially
+                        different promise from ticking every box today. Say so,
+                        rather than letting "all" quietly mean "and future ones".
+                      */}
+                      {selectedInviteJob?.scope === 'company'
+                        ? 'All hotels, including ones added later'
+                        : 'All allowed hotels'}
+                    </label>
+                  ) : null}
+                  {coverageIsAll ? null : allowedInviteHotels.map((hotel) => (
                     <label key={hotel.id}>
                       <input
                         type="checkbox"

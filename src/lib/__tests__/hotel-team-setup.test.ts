@@ -95,7 +95,7 @@ describe('Company Hub hotel setup state', () => {
       entitlement({ kind: 'membership_hat', scopeType: 'company', staxisRole: 'owner' }),
     ])), false);
     assert.equal(authoritativeStandingHasDirectHotelAccount(standing([
-      entitlement({ kind: 'membership_hat', scopeType: 'property', staxisRole: 'finance' }),
+      entitlement({ kind: 'membership_hat', scopeType: 'property', staxisRole: 'regional_manager' }),
     ])), false);
     assert.equal(authoritativeStandingHasDirectHotelAccount(standing([])), false);
 

@@ -152,7 +152,7 @@ describe('authorization scope receipt parser', () => {
       (entry) => { entry.accessProfile = 'super_admin'; },
       (entry) => { entry.propertyId = HOTEL_B; },
       (entry) => { entry.membershipId = 'not-a-uuid'; },
-      (entry) => { entry.staxisRole = 'vp'; },
+      (entry) => { entry.staxisRole = 'regional_manager'; },
       (entry) => { entry.portfolioId = null; },
       (_entry, provenance) => { provenance.selectionWasTruncated = true; },
       (_entry, provenance) => { provenance.governingRelationshipTypes = ['owner', 'operator']; },

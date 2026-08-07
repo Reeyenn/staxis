@@ -280,8 +280,11 @@ describe('Admin Access modal behavior', { concurrency: false }, () => {
     assert.ok(document.querySelector('[aria-label="Organization role and capability matrix"]'));
     assert.match(document.body.textContent ?? '', /13 fixed capabilities · 8 profiles/);
     assert.match(document.body.textContent ?? '', /Owner · Company scope/);
-    assert.match(document.body.textContent ?? '', /VP · Company scope/);
-    assert.match(document.body.textContent ?? '', /Finance · Company scope/);
+    // 0464 collapsed the company vocabulary. The chip row walks
+    // COMPANY_SCOPE_ROLES, so these two are the whole row: a stray third chip
+    // would mean the surface is naming a job nobody can hold.
+    assert.match(document.body.textContent ?? '', /Regional Manager · Company scope/);
+    assert.doesNotMatch(document.body.textContent ?? '', /(VP|Finance) · Company scope/);
     assert.match(document.body.textContent ?? '', /Portfolio manager · Portfolio \/ region/);
     assert.match(document.body.textContent ?? '', /Transfer ownership/);
     assert.match(document.body.textContent ?? '', /authorization is rechecked at commit/i);

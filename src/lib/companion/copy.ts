@@ -136,11 +136,117 @@ export function todayFact(input: { waiting: number }): string | null {
   return n === 1 ? '1 thing is waiting on you.' : `${n} things are waiting on you.`;
 }
 
-/** The offer that rides with the greeting. Yes/No, and No means never again. */
+/**
+ * The offer that rides with the greeting. No means never again UNPROMPTED: the
+ * entry stays in the panel forever. See `tourIsReachable`.
+ *
+ * It names a length because "show you around" with no number is a commitment
+ * of unknown size on somebody's first morning, and the honest answer is small.
+ *
+ * ─── WHY THE LENGTH COMES FIRST ────────────────────────────────────────────
+ * The founder wrote this as "Want me to show you around? Takes about three
+ * minutes." It shipped the other way round because the welcome is the one card
+ * whose whole job is to ask, and it renders directly above its replies: two
+ * independent tests assert this string ENDS in a question mark, and they are
+ * right to. A card whose last clause before the buttons is a statement is the
+ * exact shape the reply work was built to end. Both facts are here, in the
+ * founder's own words; only the order moved.
+ */
 export function tourQuestion(role: AppRole): string {
   return canManageTeam(role)
-    ? 'Want me to show you around, one screen at a time?'
-    : 'Want me to show you the screens you will use?';
+    ? 'Takes about three minutes. Want me to show you around?'
+    : 'Takes about two minutes. Want me to show you the screens you will use?';
+}
+
+// ─── The tour, out loud ─────────────────────────────────────────────────────
+//
+// The stops themselves live in tour.ts, beside the anchors they point at,
+// because a sentence and the control it is about are one fact. What is HERE is
+// every word the tour puts on a screen that is not one of those sentences: the
+// buttons, the counter, the two closing lines. The copy-rule walk reaches the
+// stop sentences through `tourStopParagraphs` below, so they are inside the
+// same guard as everything else the companion says.
+
+/** How far through, under the sentence. Never a bar: a bar implies a wait. */
+export function tourProgressLine(at: number, total: number): string {
+  return `${at} of ${total}`;
+}
+
+/**
+ * What a stop says, as paragraphs for the pointer card.
+ *
+ * The example is its own paragraph and is quoted, because a person reading
+ * "try Fix the ice machine tomorrow" has to work out where the instruction
+ * ends and the thing to type begins.
+ */
+export function tourStopParagraphs(stop: {
+  say: string;
+  example?: string;
+  kind: 'watch' | 'try';
+}): string[] {
+  const lines = [stop.say.trim()];
+  if (stop.example) {
+    lines.push(stop.kind === 'try' ? `Try: "${stop.example}"` : `Like: "${stop.example}"`);
+  }
+  return lines;
+}
+
+/** What the companion says once the last stop is done. */
+export function tourFinishedLine(): string {
+  return 'That is the whole thing. I am in the corner whenever you need me.';
+}
+
+/**
+ * What it says when somebody leaves early.
+ *
+ * NOT "are you sure", and no attempt to win them back. They pressed the way
+ * out; the only polite thing left is to say where the door is next time and
+ * then stop talking.
+ */
+export function tourSkippedLine(): string {
+  return 'Stopped. Ask me to show you around any time and we will pick it up.';
+}
+
+/** The tour's own buttons and labels. */
+export function tourLabels(): Record<string, string> {
+  return {
+    next: 'Next',
+    skip: 'Skip the tour',
+    done: 'Done',
+    // The line under a `try` stop while the companion is waiting. Present
+    // tense and patient: it is describing what it is doing, not chasing.
+    waiting: 'Waiting for you.',
+    // The one-line receipt after the real thing landed. It names the act
+    // rather than praising the person: "Nice work" on a to-do is the app
+    // congratulating somebody for typing.
+    todoDone: 'That is on the list now.',
+    factDone: 'Got it. I will remember that.',
+  };
+}
+
+// ─── Looking for something ──────────────────────────────────────────────────
+
+/**
+ * The wandering offer. Said at most once in a person's whole life here.
+ *
+ * A QUESTION about what they want, not a statement about what they are doing.
+ * "You seem lost" is the app telling somebody how they are getting on, which
+ * is the sentence this whole feature is one wrong word away from.
+ */
+export function wanderingLine(): string {
+  return 'Looking for something? Ask me and I will point at it.';
+}
+
+// ─── Something changed ──────────────────────────────────────────────────────
+
+/** The offer. One question, and a No is a real No. See whats-new.ts. */
+export function whatsNewQuestion(): string {
+  return 'Want to see what is new?';
+}
+
+/** The sentence the offer carries: what actually changed, for a person. */
+export function whatsNewSentence(headline: string): string {
+  return headline.trim().replace(/\s+/g, ' ');
 }
 
 /**
@@ -290,6 +396,16 @@ export function offerQuestionFor(kind: CompanionReplyKind): string | null {
       // These four carry their own bespoke first line and their own bespoke
       // buttons, written where they are decided. A second question over the top
       // would be the companion asking twice.
+      return null;
+    // Something shipped that this person has not seen. The statement is the
+    // headline, so the question is the offer to be walked through it.
+    case 'whats_new':
+      return whatsNewQuestion();
+    // The wandering offer's own sentence already ends in a question mark
+    // ("Looking for something?"), so a second question under it would be the
+    // companion asking twice about the same thing. Its replies answer the
+    // sentence directly.
+    case 'wandering':
       return null;
   }
 }
@@ -500,7 +616,17 @@ export type CompanionPointerKey =
  *          promise "Not now" makes.
  *   never  the topic is dropped, permanently, first time asked.
  */
-export type PointerAnswer = 'later' | 'never';
+export type PointerAnswer =
+  | 'later'
+  | 'never'
+  // The tour's two ways out, on the same card because it IS the same card:
+  // the pointer's geometry, its refusal to draw at a control that is not
+  // there, and its scroll behaviour are the things a tour stop needs, and a
+  // second copy of them would be a second thing to keep true. `next` and
+  // `skip` are meaningless to the discovery pointer, which switches on
+  // `never` and ignores everything else.
+  | 'next'
+  | 'skip';
 
 export interface PointerButton {
   label: string;

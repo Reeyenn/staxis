@@ -11,6 +11,7 @@ import assert from 'node:assert/strict';
 import {
   deriveFeedStatus,
   learningFeeds,
+  snapshotCountsApplyTo,
   NO_PMS_FEED_STATUS,
   type FeedGaps,
   type FeedStatusSessionRow,
@@ -144,5 +145,59 @@ describe('NO_PMS_FEED_STATUS — the containment value', () => {
     assert.equal(NO_PMS_FEED_STATUS.mode, 'no_pms');
     assert.equal(NO_PMS_FEED_STATUS.isPartial, false);
     for (const v of Object.values(NO_PMS_FEED_STATUS.feeds)) assert.equal(v, 'live');
+  });
+});
+
+// ─── snapshotCountsApplyTo ───────────────────────────────────────────────────
+//
+// THE BUG: the housekeeping board pages through Yesterday / Today / Tomorrow,
+// and its In House / Arrivals / Departures cells were wired straight to
+// pms_in_house_snapshot — one undated row per hotel holding whatever the
+// connection last saw. A manager planning tomorrow's crew read "Board ·
+// tomorrow" over TODAY's arrivals, in the same strip as tomorrow's genuinely
+// date-scoped Checkouts and Stayovers.
+
+describe('snapshotCountsApplyTo — which day the snapshot may speak for', () => {
+  const live = deriveFeedStatus(session(), { actions: { ...ALL_ACTIONS, getDashboardCounts: {} } });
+  const TODAY = '2026-07-16';
+
+  it('today: a live counts feed may fill the strip', () => {
+    assert.equal(snapshotCountsApplyTo(live, TODAY, TODAY), true);
+  });
+
+  it('tomorrow: the undated snapshot may NOT stand in for another day', () => {
+    // The exact regression. Without this the board shows today's 14 arrivals
+    // under a heading that says tomorrow.
+    assert.equal(snapshotCountsApplyTo(live, '2026-07-17', TODAY), false);
+  });
+
+  it('yesterday: same refusal in the other direction', () => {
+    assert.equal(snapshotCountsApplyTo(live, '2026-07-15', TODAY), false);
+  });
+
+  it('a hotel that has never read anything gets nothing, even on today', () => {
+    const pending = deriveFeedStatus(
+      session({ last_successful_read_at: null }),
+      { actions: { ...ALL_ACTIONS, getDashboardCounts: {} } },
+    );
+    assert.equal(pending.connection, 'pending');
+    assert.equal(snapshotCountsApplyTo(pending, TODAY, TODAY), false);
+  });
+
+  it('a counts feed with no real source gets nothing, even on today', () => {
+    // getDashboardCounts absent from actions → 'unavailable' (not a required
+    // target), which is the state EVERY newly-learned PMS family starts in.
+    const noCounts = deriveFeedStatus(session(), { actions: ALL_ACTIONS });
+    assert.equal(noCounts.feeds.dashboardCounts, 'unavailable');
+    assert.equal(snapshotCountsApplyTo(noCounts, TODAY, TODAY), false);
+  });
+
+  it('a manual hotel takes the per-date bridge instead, never the snapshot', () => {
+    assert.equal(snapshotCountsApplyTo(NO_PMS_FEED_STATUS, TODAY, TODAY), false);
+  });
+
+  it('a status that has not loaded claims nothing', () => {
+    assert.equal(snapshotCountsApplyTo(null, TODAY, TODAY), false);
+    assert.equal(snapshotCountsApplyTo(undefined, TODAY, TODAY), false);
   });
 });

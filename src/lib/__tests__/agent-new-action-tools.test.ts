@@ -23,6 +23,7 @@ import { test, describe, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 
 import { executeTool, getTool, type ToolContext } from '@/lib/agent/tools';
+import { stockStatus } from '@/lib/stock-status';
 import '@/lib/agent/tools/index';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { installAgentToolAuthorityTestStore } from './helpers/agent-tool-authority';
@@ -282,8 +283,8 @@ describe('assign_shift', () => {
 describe('get_low_stock', () => {
   test('returns only low/critical by default, classified by the par ratio', async () => {
     inventoryRows = [
-      { id: 'i1', name: 'Towels', category: 'housekeeping', current_stock: 30, par_level: 100, unit: 'ea' }, // 0.30 → critical
-      { id: 'i2', name: 'Soap', category: 'housekeeping', current_stock: 70, par_level: 100, unit: 'ea' },   // 0.70 → low
+      { id: 'i1', name: 'Towels', category: 'housekeeping', current_stock: 20, par_level: 100, unit: 'ea' }, // 0.20 → critical
+      { id: 'i2', name: 'Soap', category: 'housekeeping', current_stock: 50, par_level: 100, unit: 'ea' },   // 0.50 → low
       { id: 'i3', name: 'Coffee', category: 'breakfast', current_stock: 200, par_level: 100, unit: 'bag' },  // 2.0 → good (excluded)
     ];
     const res = await executeTool('get_low_stock', {}, ctx());
@@ -294,6 +295,58 @@ describe('get_low_stock', () => {
     assert.equal(data.items[1].status, 'low');
     assert.equal(data.criticalCount, 1);
     assert.equal(data.lowCount, 1);
+  });
+
+  // The assistant must never contradict the pill the manager is looking at. It
+  // used to: a private 0.5/1.0 copy of the status rule survived here after the
+  // Inventory board moved to the house 70/30 one, so 80 of a par-100 item came
+  // back "low" against a green screen, and 40 came back "critical" against an
+  // amber one. Each case is checked against stockStatus, the single producer
+  // the board renders from, rather than against a second hardcoded expectation.
+  test('agrees with the Inventory board at the 70/30 boundaries', async () => {
+    inventoryRows = [
+      { id: 'b1', name: 'AtSeventy', category: 'housekeeping', current_stock: 70, par_level: 100, unit: 'ea' },
+      { id: 'b2', name: 'BelowSeventy', category: 'housekeeping', current_stock: 69, par_level: 100, unit: 'ea' },
+      { id: 'b3', name: 'AtThirty', category: 'housekeeping', current_stock: 30, par_level: 100, unit: 'ea' },
+      { id: 'b4', name: 'BelowThirty', category: 'housekeeping', current_stock: 29, par_level: 100, unit: 'ea' },
+      { id: 'b5', name: 'FourFifths', category: 'housekeeping', current_stock: 80, par_level: 100, unit: 'ea' },
+      { id: 'b6', name: 'TwoFifths', category: 'housekeeping', current_stock: 40, par_level: 100, unit: 'ea' },
+    ];
+    const res = await executeTool('get_low_stock', { includeAll: true }, ctx());
+    assert.equal(res.ok, true);
+    const data = res.data as {
+      items: { name: string; currentStock: number; parLevel: number; status: string }[];
+      criticalCount: number;
+      lowCount: number;
+    };
+    for (const item of data.items) {
+      assert.equal(
+        item.status,
+        stockStatus(item.currentStock, item.parLevel),
+        `${item.name} disagrees with the board`,
+      );
+    }
+    const byName = new Map(data.items.map((i) => [i.name, i.status]));
+    assert.equal(byName.get('AtSeventy'), 'good');       // exactly 70% of par is Good
+    assert.equal(byName.get('BelowSeventy'), 'low');
+    assert.equal(byName.get('AtThirty'), 'low');         // exactly 30% of par is Low
+    assert.equal(byName.get('BelowThirty'), 'critical');
+    assert.equal(byName.get('FourFifths'), 'good');      // was "low" under the retired 0.5/1.0 rule
+    assert.equal(byName.get('TwoFifths'), 'low');        // was "critical" under the retired rule
+    assert.equal(data.criticalCount, 1);
+    assert.equal(data.lowCount, 3);
+  });
+
+  test('a well-stocked shelf is not reported as running low', async () => {
+    inventoryRows = [
+      { id: 'g1', name: 'Pillowcases', category: 'housekeeping', current_stock: 80, par_level: 100, unit: 'ea' },
+    ];
+    const res = await executeTool('get_low_stock', {}, ctx());
+    assert.equal(res.ok, true);
+    const data = res.data as { items: unknown[]; lowCount: number; criticalCount: number };
+    assert.deepEqual(data.items, []);
+    assert.equal(data.lowCount, 0);
+    assert.equal(data.criticalCount, 0);
   });
 
   test('front desk is allowed to read low stock', async () => {

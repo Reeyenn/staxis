@@ -66,6 +66,7 @@ import {
   RUN_FRESH_HOURS,
 } from '@/components/concourse/finding-cards';
 import { moneyVisibleToRole } from '../lenses';
+import { workOrderIsSettled } from '@/lib/db-mappers';
 import type { AppRole } from '@/lib/roles';
 import type { Finding, FindingTargetKind } from '@/lib/findings/types';
 
@@ -684,7 +685,10 @@ registerTool<{ equipmentId?: string; includeRetired?: boolean }>({
     const equipment = rows.map((a) => {
       const id = String(a.id);
       const mine = (orders ?? []).filter((o) => String(o.equipment_id) === id);
-      const open = mine.filter((o) => String(o.status ?? 'submitted') !== 'resolved');
+      // 'resolved' and 'closed' both take a ticket off the board. Asked as
+      // `!== 'resolved'`, this counted every non issue against the asset as an
+      // open work order on the asset register the companion reads from.
+      const open = mine.filter((o) => !workOrderIsSettled(o.status ?? 'submitted'));
       // repair_cost is stored in dollars on work_orders (not cents) — summing
       // it as cents would inflate every figure a hundredfold.
       const spendDollars = mine.reduce((acc, o) => acc + (repairCostOf(o.repair_cost) ?? 0), 0);
@@ -734,7 +738,7 @@ registerTool<{ equipmentId?: string; includeRetired?: boolean }>({
               .map((o) => ({
                 room: (o.room_number as string | null) ?? null,
                 description: (o.description as string | null) ?? null,
-                status: String(o.status ?? 'submitted') !== 'resolved' ? 'open' : 'done',
+                status: workOrderIsSettled(o.status ?? 'submitted') ? 'done' : 'open',
                 ...(showMoney
                   ? { repairCost: repairCostOf(o.repair_cost)?.toLocaleString('en-US', { style: 'currency', currency: 'USD' }) ?? null }
                   : {}),

@@ -1,20 +1,21 @@
 # What the AI knows about a hotel
 
-Thirteen different stores can answer some version of "what does Staxis know about this hotel". Each one has its own loader, its own cache policy, its own place in the prompt, and its own trust vocabulary. None of that is accidental — every one of them was built for a real reason — but the collection has never been described in one place, and the cost of that showed up in August 2026 when a review found that the code-owned safety rules governed one of the three model pipelines and not the other two.
+Thirteen different stores can answer some version of "what does Staxis know about this hotel". Each one has its own loader, its own cache policy, its own place in the prompt, and its own trust vocabulary. None of that is accidental — every one of them was built for a real reason — but the collection has never been described in one place, and the cost of that showed up in August 2026 when a review found that the code-owned safety rules governed one of the three model pipelines and not the other two. (One of those three, the walkthrough, has since been deleted; see below.)
 
-This document is the map. It is a decision doc, not executable metadata: the authority for what actually gets injected is the assembler in `src/lib/agent/prompts.ts`, its portfolio twin in `src/lib/agent/portfolio/prompt.ts`, and the walkthrough's in `src/lib/walkthrough-step.ts`. Read this before adding a fourteenth store.
+This document is the map. It is a decision doc, not executable metadata: the authority for what actually gets injected is the assembler in `src/lib/agent/prompts.ts` and its portfolio twin in `src/lib/agent/portfolio/prompt.ts`. Read this before adding a fourteenth store.
 
-## The three pipelines
+## The pipelines
 
-Everything below is scoped by which of these three calls the model.
+Everything below is scoped by which of these calls the model.
 
 | Pipeline | Entry point | Prompt assembler |
 |---|---|---|
 | Hotel chat | `/api/agent/command` and `/api/agent/command/resolve-action` | `src/lib/agent/prompts.ts` |
-| Walkthrough | `/api/walkthrough/step` | `src/lib/walkthrough-step.ts` |
 | Portfolio chat | `/api/agent/portfolio` | `src/lib/agent/portfolio/prompt.ts` (+ `portfolio-intelligence/prompt.ts`) |
 
-The code-owned rules that must reach all three live in `src/lib/agent/rule-tiers.ts` and are composed by iteration, not by name. That file is the one place a new global rule is added.
+There were three until 2026-08-07. The walkthrough (`/api/walkthrough/step`, assembled by `src/lib/walkthrough-step.ts`) was the surface whose missing rules prompted this document, and it is gone: the companion tour that replaced it is authored content over the anchor registry in `src/lib/companion/anchors.ts` and calls no model, so it injects nothing and appears nowhere below.
+
+The code-owned rules that must reach every pipeline live in `src/lib/agent/rule-tiers.ts` and are composed by iteration, not by name. That file is the one place a new global rule is added.
 
 ## The two axes
 
@@ -59,7 +60,7 @@ Ordered by scope, then authority.
 
 **5. Hotel standing rules.** `src/lib/agent/hotel-rules-tier.ts`, reading `hotel_standing_rules` through `src/lib/companion/rules.ts`. **Instruction.** Fenced in `<staxis-hotel-rules trust="untrusted">`. Stable block. Single-flight only, no TTL: a settled cache would keep following a rule a manager deleted a minute ago. Not role-gated, unlike the company rulebook, because a standing rule is about how to behave and the person who most needs it is the one on shift. Reaches all three pipelines as of August 2026, gated by `exactHotelScope()`.
 
-**6. Hotel snapshot.** `src/lib/agent/context.ts`. Fact, and the only one the base prompt calls "system-derived ground truth". Fenced in `<staxis-snapshot trust="system">`. Dynamic block. 30-second TTL keyed by hotel, role and staff id, with single-flight. Hotel chat and walkthrough. Versioned since stage 2 (`HOTEL_SNAPSHOT_VERSION`, persisted receipt only).
+**6. Hotel snapshot.** `src/lib/agent/context.ts`. Fact, and the only one the base prompt calls "system-derived ground truth". Fenced in `<staxis-snapshot trust="system">`. Dynamic block. 30-second TTL keyed by hotel, role and staff id, with single-flight. Hotel chat. (It fed the walkthrough too, until that surface was deleted on 2026-08-07.) Versioned since stage 2 (`HOTEL_SNAPSHOT_VERSION`, persisted receipt only).
 
 **7. Long-term memory.** `src/lib/agent/memory-context.ts` over `agent_memory`. Fact, hard-fenced in `<staxis-memory-block trust="system-derived-from-untrusted">` with per-row scope attributes. Dynamic block. **Uncached on purpose** — a per-process cache would make "tell it something, then ask in a fresh chat" flaky on multi-instance serverless. Hotel chat only as a prompt block; the portfolio surface reaches the same table through a different loader.
 
@@ -77,7 +78,7 @@ Ordered by scope, then authority.
 
 ### Deployment scope
 
-**13. Prompt rows.** `agent_prompts` via `src/lib/agent/prompts-store.ts`: the base prompt, the role prompts, and the PMS family addendum. Instruction. The family rows alone are fenced, in `<staxis-pms-family trust="untrusted">`, rendered by `src/lib/agent/family-tier.ts` since stage 2. Stable block. 30-second TTL over the whole table, not keyed by hotel. Hotel chat and portfolio chat; the walkthrough does not read them, which is correct — it is not a hotel conversation and has its own job description.
+**13. Prompt rows.** `agent_prompts` via `src/lib/agent/prompts-store.ts`: the base prompt, the role prompts, and the PMS family addendum. Instruction. The family rows alone are fenced, in `<staxis-pms-family trust="untrusted">`, rendered by `src/lib/agent/family-tier.ts` since stage 2. Stable block. 30-second TTL over the whole table, not keyed by hotel. Hotel chat and portfolio chat.
 
 ## The duplication
 
@@ -144,7 +145,7 @@ Stage 1's argument for stopping where it did was that `KnowledgeTurn` described 
 
 Two of those are worth their own sentence.
 
-**The `prompt_rows` split.** Only the family tier is registered as a presentation and only it goes through the door. The base prompt and the role rows out of the same table are Staxis instructing itself — no other party wrote them, they carry no envelope, and they are the frame every other tier is placed *inside* rather than a drawer opened within it. The family rows are somebody else's notes about somebody else's software, landing last in the cached block where "later text wins", which is why they alone need a gate, a ceiling and a fence. The rendering moved out of `prompts.ts` into a new `src/lib/agent/family-tier.ts`, beside `company-tier.ts` and `hotel-rules-tier.ts`: the door imports every tier's module and no tier's module imports the door, and that acyclic shape is what lets the registry run its load-time invariants. `prompts.ts` re-exports every moved name, and is now listed in `NON_STORE_MARKER_MODULES` for the same reason `walkthrough-step.ts` is — its base prompt *names* the trust vocabulary so the model knows where each boundary runs, and emits no envelope of its own. The `familyContentIsSafe` gate moved with the tier, so a second pipeline that grows a family tier cannot forget to re-apply it.
+**The `prompt_rows` split.** Only the family tier is registered as a presentation and only it goes through the door. The base prompt and the role rows out of the same table are Staxis instructing itself — no other party wrote them, they carry no envelope, and they are the frame every other tier is placed *inside* rather than a drawer opened within it. The family rows are somebody else's notes about somebody else's software, landing last in the cached block where "later text wins", which is why they alone need a gate, a ceiling and a fence. The rendering moved out of `prompts.ts` into a new `src/lib/agent/family-tier.ts`, beside `company-tier.ts` and `hotel-rules-tier.ts`: the door imports every tier's module and no tier's module imports the door, and that acyclic shape is what lets the registry run its load-time invariants. `prompts.ts` re-exports every moved name, and is now listed in `NON_STORE_MARKER_MODULES` — its base prompt *names* the trust vocabulary so the model knows where each boundary runs, and emits no envelope of its own. (`walkthrough-step.ts` carried the same excuse until it was deleted on 2026-08-07.) The `familyContentIsSafe` gate moved with the tier, so a second pipeline that grows a family tier cannot forget to re-apply it.
 
 **The `lenses` split.** `lensFor` answers four things and only one of them is knowledge. The prompt segment is what the model is *told*; whether the chat bar mounts, which tools are offered and whether a hat may ever see a dollar figure are what a person can *do*, and they stay with `getToolsForRole` and `executeTool`, where they are enforced twice. `lenses` registers no presentation, and not because nothing renders: a presentation describes an *enveloped* rendering, and a lens is printed unfenced like the base prompt beside it. Its version is not lost — each lens carries its own `promptVersion`, which the door hands back and the caller stamps as the role segment.
 

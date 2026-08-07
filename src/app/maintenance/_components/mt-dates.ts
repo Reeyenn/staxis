@@ -1,8 +1,30 @@
-// Pure date / cadence helpers for the Maintenance boards. No React — kept in
-// a plain .ts module (re-exported through _mt-snow) so src/lib/__tests__ can
-// exercise the logic directly.
+// Pure date / cadence / copy helpers for the Maintenance boards. No React —
+// kept in a plain .ts module (re-exported through _mt-snow) so src/lib/__tests__
+// can exercise the logic directly. Anything on these boards that decides what a
+// person READS belongs here rather than inline in a component.
 //
 const LOCALE = 'en-US';
+
+// ── what to say when a board write is refused ──────────────────────────────
+//
+// Every write on both boards lands in a table whose policy checks that this
+// person may mutate this hotel (0396 for work_orders, 0334 for
+// preventive_tasks). Postgres refuses with 42501, which is not a dropped
+// connection — and the Work orders board told everybody it was one. Somebody
+// whose access had been narrowed, or whose hotel is in a read-only standing,
+// tapped "Mark done", was told to check their connection, and tried again, and
+// again. Shared by both tabs so only one of them can ever get it right.
+export function writeFailureMessage(
+  e: unknown,
+  fallback: string,
+  /** What was being changed, as a manager would name it. */
+  subject = 'this',
+): string {
+  const code = String((e as { code?: string } | null)?.code ?? '');
+  return code === '42501'
+    ? `You don't have permission to change ${subject}.`
+    : fallback;
+}
 
 export function fmtDate(d: Date): string {
   return d.toLocaleDateString(LOCALE, { month: 'short', day: 'numeric', year: 'numeric' });
@@ -84,6 +106,136 @@ export function cadenceLabel(days: number): string {
   if (days >= 7 && days % 7 === 0) { const n = days / 7; return `every ${n} wk`; }
   if (days === 1) return 'every day';
   return `every ${days} days`;
+}
+
+// ── how a finished ticket is described, and by whom ────────────────────────
+//
+// The History popup is the hotel's record of what maintenance it carried out,
+// and for a while it had exactly one sentence for two different endings. A
+// ticket somebody looked at and judged not to be a fault ('closed', written by
+// the Staxis list's "Not actually a problem") arrived there wearing a green
+// "Done", under a heading that counted it as resolved, with the name of whoever
+// dismissed it printed under "Fixed by". That is a repair the hotel never did,
+// in the only place anybody would go to check what it did.
+//
+// Pure, and here rather than inline in the modal, because "what does this
+// screen claim happened" is the whole of the bug and it should be assertable
+// without rendering anything.
+export interface WorkOrderEnding {
+  /** The pill on the row. */
+  label: string;
+  /** The column heading for the name beside it. */
+  byLabel: string;
+  /** 'sage' reads as a completed repair; 'neutral' deliberately does not. */
+  tone: 'sage' | 'neutral';
+  /** True only for work that was actually carried out. */
+  countsAsRepair: boolean;
+}
+
+export function workOrderEnding(settledAs: 'resolved' | 'closed' | null | undefined): WorkOrderEnding {
+  if (settledAs === 'closed') {
+    return { label: 'Not a problem', byLabel: 'Closed by', tone: 'neutral', countsAsRepair: false };
+  }
+  return { label: 'Done', byLabel: 'Fixed by', tone: 'sage', countsAsRepair: true };
+}
+
+// The line under the History popup's title. Says what is actually in the list:
+// a hotel that dismissed four tickets and repaired none must not be told it
+// resolved four.
+export function workOrderHistoryCount(repairs: number, nonIssues: number): string {
+  const repaired = `${repairs} ${repairs === 1 ? 'repair' : 'repairs'}`;
+  if (nonIssues === 0) return `${repaired} · everything closed out`;
+  const dismissed = nonIssues === 1 ? '1 was not a problem' : `${nonIssues} were not a problem`;
+  return `${repaired} · ${dismissed}`;
+}
+
+// ── where an upkeep schedule sits on the Preventive board ──────────────────
+//
+// `unstarted` is the honest fourth band. A schedule with no last-done date has
+// NO due date: there is no elapsed interval to count, and the only dates
+// available to invent one from are the day somebody typed the row in and today.
+// The nightly detector refuses to claim lateness for exactly this reason
+// (findings/detectors/preventive-due.ts) and issues one card saying the date is
+// missing. The board did the opposite — its next-due fell back to `new Date()`,
+// so an unstarted schedule was filed under "Due this month" and its card read
+// "due today · next Aug 6", a due date the hotel never gave. Reachable in
+// ordinary use: setting a schedule up through the Staxis chat stores no date at
+// all when the manager says they do not know when it was last done.
+export type Band = 'overdue' | 'unstarted' | 'soon' | 'upcoming';
+
+/** The two fields the band rules need. Kept structural so the tests do not have
+ *  to build a whole PreventiveTask to ask a date question. */
+export interface SchedulePosition {
+  lastCompletedAt: Date | null | undefined;
+  frequencyDays: number;
+}
+
+/** When this comes round again, or NULL when the hotel never said it was done. */
+export function nextDueDate(t: SchedulePosition): Date | null {
+  if (!t.lastCompletedAt) return null;
+  // Calendar-day addition (DST-safe) — raw ms addition landed backfilled
+  // midnight-anchored dates at 23:00 the previous day across the fall-back,
+  // banding/displaying the due date one day early.
+  return addDaysLocal(t.lastCompletedAt, t.frequencyDays);
+}
+
+/** Days until due, or null when there is no due date to count to. */
+export function daysUntilDue(t: SchedulePosition, now: Date = new Date()): number | null {
+  const due = nextDueDate(t);
+  return due ? daysBetween(now, due) : null;
+}
+
+export function bandFor(t: SchedulePosition, now: Date = new Date()): Band {
+  const d = daysUntilDue(t, now);
+  if (d === null) return 'unstarted';
+  if (d < 0) return 'overdue';
+  if (d <= 30) return 'soon';
+  return 'upcoming';
+}
+
+/** The relative-due chip on a card. Says nothing it cannot support. */
+export function dueChipLabel(daysUntil: number | null): string {
+  return daysUntil === null ? 'no due date' : relDue(daysUntil);
+}
+
+/** The footer line under a card: the next date, or what is missing. */
+export function nextDueLine(due: Date | null): string {
+  return due ? `next · ${fmtDateShort(due)}` : 'add a last-done date to start it';
+}
+
+// ── setting a new upkeep schedule going ────────────────────────────────────
+//
+// The New-task form has an optional "Last completed" box, and leaving it blank
+// starts the count from today. That is a reasonable default and it stays. What
+// was NOT reasonable is what the form did with it: it wrote the creator's own
+// name into `last_completed_by`, so a manager who typed "Fire extinguisher
+// check, every 6 months" and pressed Add became, permanently and in this
+// hotel's own maintenance record, the person who last performed that service.
+// The companion reads that column back and will say so out loud.
+//
+// The chat door already refuses to do this and says why in one line: "the
+// manager told us WHEN it was last done, not that they were the one who did it"
+// (agent/tools/staxis-setup.ts). The form now agrees with it, and says out loud
+// what a blank box means instead of quietly deciding.
+export interface NewScheduleStart {
+  /** What goes in last_completed_at. */
+  lastCompletedAt: Date;
+  /** True when the box was left blank and the count simply starts now. */
+  startsFromToday: boolean;
+}
+
+export function newScheduleStart(lastCompletedISO: string | null, now: Date = new Date()): NewScheduleStart {
+  const parsed = lastCompletedISO ? new Date(lastCompletedISO) : null;
+  return parsed && Number.isFinite(parsed.getTime())
+    ? { lastCompletedAt: parsed, startsFromToday: false }
+    : { lastCompletedAt: now, startsFromToday: true };
+}
+
+/** What the form says about a blank last-done box. Empty when one was given. */
+export function newScheduleStartNote(startsFromToday: boolean): string {
+  return startsFromToday
+    ? 'No last-done date, so the count starts today. Nothing is recorded as having been done.'
+    : '';
 }
 
 // Format a location for display: bare room numbers get a "Rm " prefix; named

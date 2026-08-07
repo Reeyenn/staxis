@@ -25,15 +25,6 @@ import { supabase } from '@/lib/supabase';
 import { useAuth } from '@/contexts/AuthContext';
 import { useLang } from '@/contexts/LanguageContext';
 import { safeRedirect } from '@/lib/url-redirect';
-import {
-  COMPANY_INVITATION_HANDOFF_PARAM,
-  COMPANY_INVITATION_HANDOFF_VALUE,
-  COMPANY_INVITATION_RESUME_PATH,
-  COMPANY_INVITATION_SIGN_IN_HREF,
-  companyInvitationTokenFromPath,
-  readCompanyInvitationHandoff,
-  storeCompanyInvitationHandoff,
-} from '@/lib/company-access/invitation-handoff';
 import AuthShell, { AuthLabel, AuthError, authBackLinkStyle } from '@/components/AuthShell';
 import { useNavigationReady, useReliableNavigation } from '@/lib/hooks/use-reliable-navigation';
 import {
@@ -64,52 +55,20 @@ function VerifyInner() {
   // on the zero-property screen.
   const rawRedirect = params.get('redirect');
   const ordinaryRequestedTarget = safeRedirect(rawRedirect, '/home');
-  const legacyInvitationToken = companyInvitationTokenFromPath(ordinaryRequestedTarget);
-  const usesCompanyInvitationHandoff = params.get(COMPANY_INVITATION_HANDOFF_PARAM)
-    === COMPANY_INVITATION_HANDOFF_VALUE || legacyInvitationToken !== null;
-  const handoffIdentity = usesCompanyInvitationHandoff
-    ? legacyInvitationToken ?? COMPANY_INVITATION_HANDOFF_VALUE
-    : null;
-  const [resolvedHandoff, setResolvedHandoff] = useState<{
-    identity: string;
-    target: string | null;
-  } | null>(null);
-
-  useEffect(() => {
-    if (!handoffIdentity) {
-      setResolvedHandoff(null);
-      return;
-    }
-    if (legacyInvitationToken) {
-      storeCompanyInvitationHandoff(legacyInvitationToken);
-      replaceNavigation(`/signin/verify?email=${encodeURIComponent(email)}&${
-        COMPANY_INVITATION_HANDOFF_PARAM
-      }=${COMPANY_INVITATION_HANDOFF_VALUE}`);
-    }
-    setResolvedHandoff({
-      identity: handoffIdentity,
-      target: readCompanyInvitationHandoff() ? COMPANY_INVITATION_RESUME_PATH : null,
-    });
-  }, [email, handoffIdentity, legacyInvitationToken, replaceNavigation]);
-
-  const handoffResolved = handoffIdentity === null || resolvedHandoff?.identity === handoffIdentity;
-  const requestedTarget = usesCompanyInvitationHandoff
-    ? resolvedHandoff?.identity === handoffIdentity
-      ? resolvedHandoff.target ?? '/company'
-      : '/company'
-    : ordinaryRequestedTarget;
-  const isPropertyIndependentCompanyTarget = requestedTarget === '/company'
-    || requestedTarget.startsWith('/company-invite/');
+  // The retired company-invitation flow parked its token in sessionStorage and
+  // resumed after OTP, which is why this page carried a handoff state machine.
+  // That invitation system is gone and /invite/[token] never routes through
+  // sign-in, so the requested target is simply the requested target.
+  const requestedTarget = ordinaryRequestedTarget;
+  const isPropertyIndependentCompanyTarget = requestedTarget === '/company';
   const redirectTarget = isPropertyIndependentCompanyTarget
     ? requestedTarget
     : postSignup || requestedTarget === '/home' || requestedTarget.startsWith('/property-selector')
       ? '/property-selector'
       : `/property-selector?redirect=${encodeURIComponent(requestedTarget)}`;
-  const freshSigninHref = usesCompanyInvitationHandoff
-    ? `${COMPANY_INVITATION_SIGN_IN_HREF}&reason=auth-retry`
-    : rawRedirect
-      ? `/signin?reason=auth-retry&redirect=${encodeURIComponent(rawRedirect)}`
-      : '/signin?reason=auth-retry';
+  const freshSigninHref = rawRedirect
+    ? `/signin?reason=auth-retry&redirect=${encodeURIComponent(rawRedirect)}`
+    : '/signin?reason=auth-retry';
 
   const [code, setCode] = useState('');
   const [trust, setTrust] = useState(true);
@@ -180,9 +139,8 @@ function VerifyInner() {
   // fetch failure or odd payload leaves the code screen as-is (fail-safe:
   // behave like 2FA is on).
   useEffect(() => {
-    if (!handoffResolved) return;
     if (!email) {
-      replaceNavigation(usesCompanyInvitationHandoff ? COMPANY_INVITATION_SIGN_IN_HREF : '/signin');
+      replaceNavigation('/signin');
       return;
     }
     let cancelled = false;
@@ -206,18 +164,18 @@ function VerifyInner() {
         replaceNavigation(
           data.session
             ? redirectTarget
-            : usesCompanyInvitationHandoff ? COMPANY_INVITATION_SIGN_IN_HREF : '/signin',
+            : '/signin',
         );
       } catch {
         // Fail-safe: stay on the code screen (2FA-on behavior).
       }
     })();
     return () => { cancelled = true; };
-  }, [email, redirectTarget, replaceNavigation, handoffResolved, usesCompanyInvitationHandoff]);
+  }, [email, redirectTarget, replaceNavigation]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (submitInFlightRef.current || requiresFreshSignin || !handoffResolved || !code.trim()) return;
+    if (submitInFlightRef.current || requiresFreshSignin || !code.trim()) return;
     submitInFlightRef.current = true;
     setSubmitting(true);
     setError('');
@@ -390,8 +348,8 @@ function VerifyInner() {
 
         <button
           type="submit"
-          disabled={!handoffResolved || requiresFreshSignin || submitting || code.length !== 6}
-          className={`si-btn si-rise si-d-3 ${(!handoffResolved || requiresFreshSignin || submitting || code.length !== 6) ? 'si-btn-off' : 'si-btn-on'}`}
+          disabled={requiresFreshSignin || submitting || code.length !== 6}
+          className={`si-btn si-rise si-d-3 ${(requiresFreshSignin || submitting || code.length !== 6) ? 'si-btn-off' : 'si-btn-on'}`}
           style={{ marginTop: 4 }}
         >
           {submitting
@@ -403,14 +361,14 @@ function VerifyInner() {
         <button
           type="button"
           onClick={() => void resendCode()}
-          disabled={!handoffResolved || requiresFreshSignin || !email || submitting || resending || resendCooldown > 0}
+          disabled={requiresFreshSignin || !email || submitting || resending || resendCooldown > 0}
           aria-describedby={resendError ? 'otp-resend-error' : undefined}
           style={{
             minHeight: 44, borderRadius: 12, border: '1px solid rgba(31,35,28,0.14)',
             background: 'rgba(255,255,255,0.72)', color: '#3A3F38',
             fontFamily: 'inherit', fontSize: 13, fontWeight: 600,
-            cursor: (!handoffResolved || requiresFreshSignin || !email || submitting || resending || resendCooldown > 0) ? 'not-allowed' : 'pointer',
-            opacity: (!handoffResolved || requiresFreshSignin || !email || submitting || resending || resendCooldown > 0) ? 0.58 : 1,
+            cursor: (requiresFreshSignin || !email || submitting || resending || resendCooldown > 0) ? 'not-allowed' : 'pointer',
+            opacity: (requiresFreshSignin || !email || submitting || resending || resendCooldown > 0) ? 0.58 : 1,
           }}
         >
           {resending
@@ -431,7 +389,7 @@ function VerifyInner() {
           </a>
         ) : (
           <Link
-            href={usesCompanyInvitationHandoff ? COMPANY_INVITATION_SIGN_IN_HREF : '/signin'}
+            href={'/signin'}
             style={authBackLinkStyle}
           >
             {'← Back to sign in'}

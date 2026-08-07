@@ -65,7 +65,7 @@ import {
   POST as portfolioPost,
 } from '@/app/api/company/queue/route';
 
-import { applyMigrationsToPgliteThrough } from '../../../tests/fixtures/pglite-migrate';
+import { applyMigrationsToPglite } from '../../../tests/fixtures/pglite-migrate';
 import { createPglitePostgrest, loadCatalog, type PglitePostgrest } from '../../../tests/fixtures/postgrest-pglite';
 import {
   ACCOUNT_ADMIN,
@@ -418,7 +418,7 @@ let CHEAP_FINDING = '';
 let CHEAP_ACTION = '';
 
 before(async () => {
-  const migrated = await applyMigrationsToPgliteThrough('0425');
+  const migrated = await applyMigrationsToPglite();
   pg = migrated.pg;
   const catalog = await loadCatalog(pg);
   shim = createPglitePostgrest(pg, catalog);
@@ -445,8 +445,8 @@ before(async () => {
     [UID_GWEN],
   );
   await pg.query(
-    `insert into accounts (id, username, password_hash, display_name, role, property_access, data_user_id)
-     values ($1, 'gwen', 'x', 'Gwen', 'general_manager', '{}', $2)
+    `insert into accounts (id, username, password_hash, display_name, role, data_user_id)
+     values ($1, 'gwen', 'x', 'Gwen', 'general_manager', $2)
      on conflict (id) do nothing`,
     [ACCOUNT_GWEN, UID_GWEN],
   );
@@ -471,13 +471,13 @@ before(async () => {
   );
   await pg.query(
     `insert into accounts
-       (id, username, password_hash, display_name, role, property_access, data_user_id)
+       (id, username, password_hash, display_name, role, data_user_id)
      values
-       ($1, 'multi_vp', 'x', 'Multi VP', 'front_desk', '{}', $2),
-       ($3, 'normalized_admin', 'x', 'Normalized Admin', 'front_desk', '{}', $4),
-       ($5, 'property_grant', 'x', 'Property Grant', 'front_desk', '{}', $6),
-       ($7, 'big_vp', 'x', 'Big VP', 'front_desk', '{}', $8),
-       ($9, 'normalized_owner', 'x', 'Normalized Owner', 'front_desk', '{}', $10)
+       ($1, 'multi_vp', 'x', 'Multi VP', 'front_desk', $2),
+       ($3, 'normalized_admin', 'x', 'Normalized Admin', 'front_desk', $4),
+       ($5, 'property_grant', 'x', 'Property Grant', 'front_desk', $6),
+       ($7, 'big_vp', 'x', 'Big VP', 'front_desk', $8),
+       ($9, 'normalized_owner', 'x', 'Normalized Owner', 'front_desk', $10)
      on conflict (id) do nothing`,
     [
       ACCOUNT_MULTI, UID_MULTI,
@@ -488,11 +488,11 @@ before(async () => {
     ],
   );
   await pg.query(
-    `select public.staxis_set_membership_hat($1, $2, $3, 'company', 'vp', null, 'VP')`,
+    `select public.staxis_set_membership_hat($1, $2, $3, 'company', 'regional_manager', null, 'VP')`,
     [ACCOUNT_ADMIN, ORG_A, ACCOUNT_MULTI],
   );
   await pg.query(
-    `select public.staxis_set_membership_hat($1, $2, $3, 'company', 'vp', null, 'VP')`,
+    `select public.staxis_set_membership_hat($1, $2, $3, 'company', 'regional_manager', null, 'VP')`,
     [ACCOUNT_ADMIN, ORG_B, ACCOUNT_MULTI],
   );
 
@@ -563,7 +563,7 @@ before(async () => {
     );
   }
   await pg.query(
-    `select public.staxis_set_membership_hat($1, $2, $3, 'company', 'vp', null, 'VP')`,
+    `select public.staxis_set_membership_hat($1, $2, $3, 'company', 'regional_manager', null, 'VP')`,
     [ACCOUNT_ADMIN, ORG_BIG, ACCOUNT_BIG],
   );
 
@@ -770,7 +770,7 @@ describe('sign-off routing — locked at the hotel, live for the approver', () =
     assert.ok(locked, 'the card was HIDDEN from the GM — it is supposed to be locked, not hidden');
     assert.ok(locked!.action, 'the plan was stripped off the GM\'s card');
     assert.ok(locked!.signOff, 'no signature was attached to a card the rulebook governs');
-    assert.equal(locked!.signOff!.approverRole, 'vp');
+    assert.equal(locked!.signOff!.approverRole, 'regional_manager');
     assert.equal(locked!.signOff!.callerMayApprove, false);
     assert.ok(
       locked!.signOff!.approverNames.includes('Maria'),

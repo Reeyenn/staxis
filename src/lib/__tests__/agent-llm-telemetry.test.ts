@@ -74,13 +74,12 @@ test('agent deadline checks stop at tool boundaries and caller abort wins', () =
   assert.equal(agentToolStopReason('search_knowledge', 32_000, undefined, 1_000), 'deadline');
 });
 
-test('legacy override parsing and feature coverage include Ask Staxis and walkthroughs', () => {
+test('legacy override parsing and feature coverage include Ask Staxis', () => {
   assert.deepEqual(
     parseLegacyModelOverrides('sonnet=claude-sonnet-pinned, haiku=claude-haiku-pinned, bad=x'),
     { sonnet: 'claude-sonnet-pinned', haiku: 'claude-haiku-pinned' },
   );
   assert.equal(LEGACY_MODEL_OVERRIDE_FEATURE_TIERS['agent.ask_staxis'], 'sonnet');
-  assert.equal(LEGACY_MODEL_OVERRIDE_FEATURE_TIERS['walkthrough.step_generation'], 'sonnet');
 });
 
 test('legacy override changes only default plans and preserves database selections', () => {
@@ -118,9 +117,9 @@ test('legacy override changes only default plans and preserves database selectio
 
 test('Control Center summary reports the effective legacy default model', () => {
   const summary = {
-    key: 'walkthrough.step_generation',
+    key: 'agent.memory_consolidation',
     activeConfig: {
-      featureKey: 'walkthrough.step_generation',
+      featureKey: 'agent.memory_consolidation',
       enabled: true,
       primary: {
         provider: 'anthropic',

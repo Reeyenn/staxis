@@ -66,14 +66,16 @@ describe('scrubString — value-regex pass', () => {
     assert.match(encoded, /<phone-pairing-token>/);
   });
 
-  test('redacts literal and encoded organization invitation paths', () => {
-    const token = 'd'.repeat(64);
-    const literal = scrubString(`https://getstaxis.com/company-invite/${token}`);
-    const encoded = scrubString(`url=https%3A%2F%2Fgetstaxis.com%2Fcompany-invite%2F${token}`);
-    assert.equal(literal.includes(token), false);
-    assert.equal(encoded.includes(token), false);
-    assert.match(literal, /<company-invite-token>/);
-    assert.match(encoded, /<company-invite-token>/);
+  test('redacts literal and encoded account invitation paths', () => {
+    // Minted at 24 bytes; the longer legacy shape must scrub too.
+    for (const token of ['d'.repeat(48), 'd'.repeat(64)]) {
+      const literal = scrubString(`https://getstaxis.com/invite/${token}`);
+      const encoded = scrubString(`url=https%3A%2F%2Fgetstaxis.com%2Finvite%2F${token}`);
+      assert.equal(literal.includes(token), false);
+      assert.equal(encoded.includes(token), false);
+      assert.match(literal, /<invite-token>/);
+      assert.match(encoded, /<invite-token>/);
+    }
   });
 });
 

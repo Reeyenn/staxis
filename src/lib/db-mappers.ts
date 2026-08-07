@@ -651,11 +651,25 @@ export function fromWorkOrderRow(r: Record<string, unknown>): WorkOrder {
     submitterRole: parseStringField(r.submitter_role),
     submitterPhotoPath: parseStringField(r.submitter_photo_path)
       ?? parseStringField(r.photo_url),       // legacy column fallback for pre-0131 rows
+    // Legacy fallback, and it is now GATED ON THE TICKET BEING OVER. It exists
+    // for pre-0131 rows where `assigned_name` was the only name recorded — but
+    // "Give it to someone else" writes that column on LIVE tickets now, so
+    // ungated it put the current holder's name into "who fixed it" on a job
+    // nobody has touched yet.
     completedByName: parseStringField(r.completed_by_name)
-      ?? parseStringField(r.assigned_name),   // legacy fallback
+      ?? (workOrderIsSettled(r.status) ? parseStringField(r.assigned_name) : undefined),
+    // Who is holding it. See WorkOrder.assignedName on why the board has to
+    // show this: it is the only screen the person it was handed to can see it on.
+    assignedToStaffId: typeof r.assigned_to === 'string' ? r.assigned_to : null,
+    assignedName: parseStringField(r.assigned_name) ?? null,
     completionNote: parseStringField(r.completion_note),
     completionPhotoPath: parseStringField(r.completion_photo_path),
     completedAt: toDate(r.resolved_at),
+    // WHICH ending, carried alongside the two-word status rather than folded
+    // into it. See the note on WorkOrder.settledAs: the History popup is the
+    // one screen where "fixed" and "was never a fault" are different facts, and
+    // it had no way to tell them apart.
+    settledAs: r.status === 'closed' ? 'closed' : r.status === 'resolved' ? 'resolved' : null,
     equipmentId: typeof r.equipment_id === 'string' ? r.equipment_id : null,
     repairCost: r.repair_cost != null && Number.isFinite(Number(r.repair_cost)) ? Number(r.repair_cost) : null,
     // "Call in a professional" lane (0262). needs_pro may be absent on rows
