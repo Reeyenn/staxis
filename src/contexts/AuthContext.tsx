@@ -254,6 +254,38 @@ function clearSignedOutBrowserState(): void {
 }
 
 /**
+ * Ask the server to drop the REAL return credential, the httpOnly twin of the
+ * cosmetic hint above. Only the server can remove it.
+ *
+ * Security audit 2026-08-07: leaving it behind meant a browser that had been
+ * signed out still carried a two-hour path into the platform-admin account.
+ * The redeem endpoint independently refuses a caller who is no longer the
+ * switched-into person, so a failed request here is not a hole; it just leaves
+ * an inert cookie sitting around until it expires.
+ *
+ * Deliberately NOT part of clearSignedOutBrowserState. That runs on hydration
+ * paths too, including a momentary "no session yet" reading, and throwing the
+ * way back away over a sub-second blip would cost an admin their return for no
+ * safety gain. This is called only where the person is unambiguously done:
+ * an explicit sign-out, and the SIGNED_OUT event itself.
+ *
+ * keepalive so it still goes out when sign-out is followed by a navigation.
+ */
+function discardAdminReturnCookie(): void {
+  try {
+    void fetch('/api/auth/admin-switch-return', {
+      method: 'DELETE',
+      credentials: 'include',
+      keepalive: true,
+    }).catch(() => {
+      // Offline or mid-navigation. Nothing to recover.
+    });
+  } catch {
+    // ignore — no fetch in a non-browser context
+  }
+}
+
+/**
  * End the browser session within a firm budget and always remove its durable
  * cookie representation. This is reserved for explicit user sign-out and
  * authoritative account revocation. Temporary password/OTP attempts use the
@@ -549,6 +581,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         // Covers wrapper sign-out AND terminal 401/session-expiry paths that
         // call supabase.auth.signOut() directly.
         clearSignedOutBrowserState();
+        // Unambiguously done with this identity, so the way back goes too.
+        discardAdminReturnCookie();
         authSessionUidRef.current = null;
         authSessionRefreshTokenRef.current = null;
         userRef.current = null;
@@ -1075,6 +1109,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     // pretends a still-persisted cookie was removed.
     userRef.current = null;
     clearSignedOutBrowserState();
+    // The way back out of a switched session dies with the sign-out that ends
+    // it, rather than sitting on the browser for the rest of its two hours.
+    discardAdminReturnCookie();
     setAuthorizationChecked(false);
     setPlatformAdmin(false);
     setPropertyStandings([]);

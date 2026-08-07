@@ -20,6 +20,12 @@
  *     0243) rather than by anything in the browser or in memory. A replay has
  *     to lose to Postgres, so Postgres is what runs here.
  *
+ *   • THE RETURN TOKEN IS NOT A BEARER CREDENTIAL. Holding the cookie is not
+ *     enough; the request must come from the demo session the switch created.
+ *     The round trip below tries the cookie as a signed-out browser, as a
+ *     different real person, and as the admin themselves before using it
+ *     properly. Security audit 2026-08-07.
+ *
  * The whole round trip runs end to end: an admin switches into a demo person,
  * gets a signed cookie back, redeems it, becomes the admin again, and a second
  * redeem of the same cookie is refused.
@@ -63,6 +69,8 @@ import {
   PID_A1,
   PID_A2,
   UID_ADMIN,
+  UID_ANA,
+  UID_FRANK,
   seedTwoCompanies,
 } from '../../../tests/fixtures/pglite-two-company-seed';
 
@@ -210,21 +218,44 @@ describe('the round trip: become someone, and get back', () => {
     assert.equal(parsed.payload.adminAccountId, ACCOUNT_ADMIN);
     assert.equal(parsed.payload.targetAccountId, ACCOUNT_FRANK);
 
+    // ── A browser that is NOT Frank cannot cash the cookie in ─────────────
+    // This is the shape of the 2026-08-07 audit finding: the admin switches,
+    // then signs out (or hands the machine over). The cookie is still on the
+    // browser and it is still inside its two hours. Nothing but the session
+    // binding stands between that browser and a platform-admin session.
+    for (const presenter of [null, UID_ANA, UID_ADMIN]) {
+      const stolen = await performAdminReturn(
+        { rawToken: switched.returnToken, presenterAuthUserId: presenter, nowMs: now + 2_000 },
+        livePerformReturnDeps(),
+      );
+      assert.equal(stolen.ok, false, `presenter ${String(presenter)} must be refused`);
+      if (!stolen.ok) {
+        assert.equal(stolen.status, 403);
+        assert.equal(stolen.reason, 'not_the_switched_session');
+      }
+    }
+    // And none of those attempts burned the way back.
+    const unburned = await pg.query<{ n: string }>(
+      "select count(*)::text as n from public.idempotency_log where route = 'admin-account-switch-return'",
+    );
+    assert.equal(unburned.rows[0].n, '0');
+
     // ── Return ────────────────────────────────────────────────────────────
     const returned = await performAdminReturn(
-      { rawToken: switched.returnToken, nowMs: now + 5_000 },
+      { rawToken: switched.returnToken, presenterAuthUserId: UID_FRANK, nowMs: now + 5_000 },
       livePerformReturnDeps(),
     );
     assert.equal(returned.ok, true, JSON.stringify(returned));
     if (!returned.ok) return;
     assert.equal(returned.adminAccountId, ACCOUNT_ADMIN);
+    assert.equal(returned.switchedFromAccountId, ACCOUNT_FRANK);
     // The browser becomes the admin again.
     assert.equal(redeemMagicLink(returned.adminTokenHash), true);
 
     // ── Replay ────────────────────────────────────────────────────────────
     // Postgres, not memory, is what refuses the second redeem.
     const replayed = await performAdminReturn(
-      { rawToken: switched.returnToken, nowMs: now + 6_000 },
+      { rawToken: switched.returnToken, presenterAuthUserId: UID_FRANK, nowMs: now + 6_000 },
       livePerformReturnDeps(),
     );
     assert.equal(replayed.ok, false);

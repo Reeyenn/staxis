@@ -55,6 +55,10 @@
  *      • the HMAC verifies under a key derived from SUPABASE_SERVICE_ROLE_KEY
  *        (server-only, domain-separated — see deriveReturnTokenKey),
  *      • the payload version matches and the clock is inside [iat, exp],
+ *      • the request carries a LIVE session belonging to the demo person the
+ *        token was minted against (security audit 2026-08-07 — see
+ *        PerformReturnInput.presenterAuthUserId; without it the cookie was a
+ *        bearer credential that survived sign-out),
  *      • the jti has never been claimed before (single-use, atomic — see
  *        below),
  *      • the bound admin account STILL exists, is STILL role 'admin' and is
@@ -597,6 +601,21 @@ export async function performAccountSwitch(
 export interface PerformReturnInput {
   /** Raw cookie value. Untrusted. */
   rawToken: string | null;
+  /**
+   * auth.users.id of whoever is presenting the cookie RIGHT NOW, or null when
+   * this browser has no live session at all. The route resolves it through
+   * requireSession — it is never read off the request body or a header the
+   * caller controls.
+   *
+   * Security audit 2026-08-07: without this the cookie was a pure bearer
+   * credential. It outlived the act it belonged to, so a browser that had been
+   * signed OUT still carried a one-POST path into the platform-admin account
+   * for two hours, with no password and no second factor. Sign-out cannot
+   * delete an httpOnly cookie from JavaScript, so the browser could not clean
+   * up after itself either. Binding the redemption to the session the switch
+   * created is what makes "signed out" mean signed out.
+   */
+  presenterAuthUserId: string | null;
   nowMs: number;
 }
 
@@ -617,6 +636,8 @@ export type PerformReturnResult =
       adminDisplayName: string;
       adminAccountId: string;
       adminAuthUserId: string;
+      /** accounts.id the browser is being taken back OUT of. Audit trail. */
+      switchedFromAccountId: string;
     }
   | { ok: false; status: number; reason: string };
 
@@ -628,6 +649,24 @@ export async function performAdminReturn(
 
   const verified = verifyReturnToken(input.rawToken, deps.signingKey, input.nowMs);
   if (!verified.ok) return { ok: false, status: 401, reason: `token_${verified.reason}` };
+
+  // WHO IS ALLOWED TO CASH THIS IN. Holding the cookie is not enough: it must
+  // be presented by the very session the switch created, i.e. the demo person
+  // this browser was put into. A signed-out browser, or the next person to
+  // sign in on it, presents a different identity (or none) and is refused.
+  //
+  // This runs BEFORE the single-use claim on purpose. Burning the jti for a
+  // caller who was never going to be served would let anyone with the browser
+  // destroy the admin's way back without ever using it.
+  const switched = await deps.loadAccount(verified.payload.targetAccountId);
+  if (!switched) return { ok: false, status: 403, reason: 'switched_account_unreadable' };
+  if (
+    typeof input.presenterAuthUserId !== 'string' ||
+    input.presenterAuthUserId.length === 0 ||
+    input.presenterAuthUserId !== switched.authUserId
+  ) {
+    return { ok: false, status: 403, reason: 'not_the_switched_session' };
+  }
 
   // Claim BEFORE handing anything back, so a replay racing the first redeem
   // loses rather than both winning.
@@ -651,6 +690,7 @@ export async function performAdminReturn(
     adminDisplayName: admin.displayName,
     adminAccountId: admin.id,
     adminAuthUserId: admin.authUserId,
+    switchedFromAccountId: switched.id,
   };
 }
 

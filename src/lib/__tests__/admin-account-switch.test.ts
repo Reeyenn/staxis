@@ -624,7 +624,10 @@ function returnDeps(overrides: Partial<PerformReturnDeps> = {}): PerformReturnDe
 
 describe('performAdminReturn — the way back is not a way up', () => {
   test('refuses when the browser has no return cookie', async () => {
-    const result = await performAdminReturn({ rawToken: null, nowMs: NOW }, returnDeps());
+    const result = await performAdminReturn(
+      { rawToken: null, presenterAuthUserId: DEMO_AUTH, nowMs: NOW },
+      returnDeps(),
+    );
     assert.equal(result.ok, false);
     if (!result.ok) {
       assert.equal(result.status, 401);
@@ -634,7 +637,10 @@ describe('performAdminReturn — the way back is not a way up', () => {
 
   test('a demo user cannot forge one: a token signed without the server key is refused', async () => {
     const forged = mintReturnToken(payload(), OTHER_KEY);
-    const result = await performAdminReturn({ rawToken: forged, nowMs: NOW }, returnDeps());
+    const result = await performAdminReturn(
+      { rawToken: forged, presenterAuthUserId: DEMO_AUTH, nowMs: NOW },
+      returnDeps(),
+    );
     assert.equal(result.ok, false);
     if (!result.ok) assert.equal(result.reason, 'token_bad_signature');
   });
@@ -644,7 +650,10 @@ describe('performAdminReturn — the way back is not a way up', () => {
     // an active platform admin — which is the check that stops a token minted
     // before a demotion from restoring it.
     const token = mintReturnToken(payload({ adminAccountId: DEMO_ACCOUNT, adminAuthUserId: DEMO_AUTH }), KEY);
-    const result = await performAdminReturn({ rawToken: token, nowMs: NOW }, returnDeps());
+    const result = await performAdminReturn(
+      { rawToken: token, presenterAuthUserId: DEMO_AUTH, nowMs: NOW },
+      returnDeps(),
+    );
     assert.equal(result.ok, false);
     if (!result.ok) {
       assert.equal(result.status, 403);
@@ -655,9 +664,11 @@ describe('performAdminReturn — the way back is not a way up', () => {
   test('a demoted or deactivated admin cannot be restored', async () => {
     const token = mintReturnToken(payload(), KEY);
     const result = await performAdminReturn(
-      { rawToken: token, nowMs: NOW },
+      { rawToken: token, presenterAuthUserId: DEMO_AUTH, nowMs: NOW },
       returnDeps({
-        loadAccount: async () => ({ ...ACCOUNTS[ADMIN_ACCOUNT], active: false }),
+        loadAccount: async (id) => (id === ADMIN_ACCOUNT
+          ? { ...ACCOUNTS[ADMIN_ACCOUNT], active: false }
+          : ACCOUNTS[id] ?? null),
       }),
     );
     assert.equal(result.ok, false);
@@ -667,12 +678,11 @@ describe('performAdminReturn — the way back is not a way up', () => {
   test('an admin whose auth identity was rebuilt cannot be restored by the old token', async () => {
     const token = mintReturnToken(payload(), KEY);
     const result = await performAdminReturn(
-      { rawToken: token, nowMs: NOW },
+      { rawToken: token, presenterAuthUserId: DEMO_AUTH, nowMs: NOW },
       returnDeps({
-        loadAccount: async () => ({
-          ...ACCOUNTS[ADMIN_ACCOUNT],
-          authUserId: 'ffff0000-0000-4000-8000-000000000009',
-        }),
+        loadAccount: async (id) => (id === ADMIN_ACCOUNT
+          ? { ...ACCOUNTS[ADMIN_ACCOUNT], authUserId: 'ffff0000-0000-4000-8000-000000000009' }
+          : ACCOUNTS[id] ?? null),
       }),
     );
     assert.equal(result.ok, false);
@@ -682,7 +692,7 @@ describe('performAdminReturn — the way back is not a way up', () => {
   test('an expired token is refused', async () => {
     const token = mintReturnToken(payload(), KEY);
     const result = await performAdminReturn(
-      { rawToken: token, nowMs: NOW + RETURN_TOKEN_TTL_MS + 1 },
+      { rawToken: token, presenterAuthUserId: DEMO_AUTH, nowMs: NOW + RETURN_TOKEN_TTL_MS + 1 },
       returnDeps(),
     );
     assert.equal(result.ok, false);
@@ -692,9 +702,15 @@ describe('performAdminReturn — the way back is not a way up', () => {
   test('a reused token is refused the second time', async () => {
     const token = mintReturnToken(payload(), KEY);
     const deps = returnDeps();
-    const first = await performAdminReturn({ rawToken: token, nowMs: NOW }, deps);
+    const first = await performAdminReturn(
+      { rawToken: token, presenterAuthUserId: DEMO_AUTH, nowMs: NOW },
+      deps,
+    );
     assert.equal(first.ok, true);
-    const second = await performAdminReturn({ rawToken: token, nowMs: NOW + 1000 }, deps);
+    const second = await performAdminReturn(
+      { rawToken: token, presenterAuthUserId: DEMO_AUTH, nowMs: NOW + 1000 },
+      deps,
+    );
     assert.equal(second.ok, false);
     if (!second.ok) {
       assert.equal(second.status, 401);
@@ -702,25 +718,30 @@ describe('performAdminReturn — the way back is not a way up', () => {
     }
   });
 
-  test('the jti is burned BEFORE the admin credential is handed back', async () => {
-    // If the claim happened after the lookup, two racing redeems could both
-    // read "still an admin" and both be served.
+  test('the jti is burned BEFORE the admin credential is handed back, and AFTER the session binding', async () => {
+    // Claim-before-admin-lookup: if it were the other way round, two racing
+    // redeems could both read "still an admin" and both be served.
+    // Binding-before-claim: if it were the other way round, anyone holding the
+    // browser could burn the admin's way back without being allowed to use it.
     const order: string[] = [];
     const token = mintReturnToken(payload(), KEY);
     await performAdminReturn(
-      { rawToken: token, nowMs: NOW },
+      { rawToken: token, presenterAuthUserId: DEMO_AUTH, nowMs: NOW },
       returnDeps({
         claimSingleUse: async () => { order.push('claim'); return true; },
-        loadAccount: async (id) => { order.push('load'); return ACCOUNTS[id] ?? null; },
+        loadAccount: async (id) => {
+          order.push(id === ADMIN_ACCOUNT ? 'load:admin' : 'load:switched');
+          return ACCOUNTS[id] ?? null;
+        },
       }),
     );
-    assert.deepEqual(order, ['claim', 'load']);
+    assert.deepEqual(order, ['load:switched', 'claim', 'load:admin']);
   });
 
   test('a claim store that cannot prove uniqueness refuses the return (fails closed)', async () => {
     const token = mintReturnToken(payload(), KEY);
     const result = await performAdminReturn(
-      { rawToken: token, nowMs: NOW },
+      { rawToken: token, presenterAuthUserId: DEMO_AUTH, nowMs: NOW },
       returnDeps({ claimSingleUse: async () => false }),
     );
     assert.equal(result.ok, false);
@@ -729,12 +750,121 @@ describe('performAdminReturn — the way back is not a way up', () => {
 
   test('happy path hands back the admin one-time token and the admin name', async () => {
     const token = mintReturnToken(payload(), KEY);
-    const result = await performAdminReturn({ rawToken: token, nowMs: NOW }, returnDeps());
+    const result = await performAdminReturn(
+      { rawToken: token, presenterAuthUserId: DEMO_AUTH, nowMs: NOW },
+      returnDeps(),
+    );
     assert.equal(result.ok, true);
     if (result.ok) {
       assert.equal(result.adminTokenHash, 'admin-one-time-token-hash');
       assert.equal(result.adminDisplayName, 'Reeyen Patel');
       assert.equal(result.adminAccountId, ADMIN_ACCOUNT);
+      assert.equal(result.switchedFromAccountId, DEMO_ACCOUNT);
+    }
+  });
+});
+
+// ─── The way back is bound to the session it was minted for ─────────────────
+//
+// Security audit 2026-08-07. The cookie alone used to be enough. That made the
+// return endpoint a bearer credential that outlived the act it belonged to: an
+// admin who switched into a demo person and then SIGNED OUT left a browser
+// that was one unauthenticated POST away from a full platform-admin session,
+// for two hours, with no password and no second factor. Sign-out cannot delete
+// an httpOnly cookie from JavaScript, so nothing in the browser could undo it.
+//
+// Every case here fails if that binding is removed.
+
+describe('performAdminReturn — only the session that was displaced may undo it', () => {
+  const STRANGER_AUTH = '99999999-9999-4999-8999-000000000001';
+
+  test('a SIGNED OUT browser holding the cookie is refused', async () => {
+    const token = mintReturnToken(payload(), KEY);
+    const result = await performAdminReturn(
+      { rawToken: token, presenterAuthUserId: null, nowMs: NOW },
+      returnDeps(),
+    );
+    assert.equal(result.ok, false);
+    if (!result.ok) {
+      assert.equal(result.status, 403);
+      assert.equal(result.reason, 'not_the_switched_session');
+    }
+  });
+
+  test('an empty presenter is not treated as a match for anything', async () => {
+    const token = mintReturnToken(payload(), KEY);
+    const result = await performAdminReturn(
+      { rawToken: token, presenterAuthUserId: '', nowMs: NOW },
+      returnDeps({
+        loadAccount: async (id) => (id === DEMO_ACCOUNT
+          ? { ...ACCOUNTS[DEMO_ACCOUNT], authUserId: '' }
+          : ACCOUNTS[id] ?? null),
+      }),
+    );
+    assert.equal(result.ok, false);
+    if (!result.ok) assert.equal(result.reason, 'not_the_switched_session');
+  });
+
+  test('somebody else signed in on the same browser is refused', async () => {
+    const token = mintReturnToken(payload(), KEY);
+    const result = await performAdminReturn(
+      { rawToken: token, presenterAuthUserId: STRANGER_AUTH, nowMs: NOW },
+      returnDeps(),
+    );
+    assert.equal(result.ok, false);
+    if (!result.ok) {
+      assert.equal(result.status, 403);
+      assert.equal(result.reason, 'not_the_switched_session');
+    }
+  });
+
+  test('the admin cannot present their own session to re-mint themselves', async () => {
+    // Not an escalation on its own, but it is the shape of "the cookie works
+    // for whoever happens to be signed in", which is exactly what we removed.
+    const token = mintReturnToken(payload(), KEY);
+    const result = await performAdminReturn(
+      { rawToken: token, presenterAuthUserId: ADMIN_AUTH, nowMs: NOW },
+      returnDeps(),
+    );
+    assert.equal(result.ok, false);
+    if (!result.ok) assert.equal(result.reason, 'not_the_switched_session');
+  });
+
+  test('a refused presenter does NOT burn the way back', async () => {
+    // Otherwise anyone with the browser could deny the admin their return
+    // without ever being allowed to use it.
+    const token = mintReturnToken(payload(), KEY);
+    let claims = 0;
+    const deps = returnDeps({
+      claimSingleUse: async (jti) => { claims += 1; return jti === 'abc123'; },
+    });
+
+    const refused = await performAdminReturn(
+      { rawToken: token, presenterAuthUserId: null, nowMs: NOW },
+      deps,
+    );
+    assert.equal(refused.ok, false);
+    assert.equal(claims, 0, 'a refused redeem must not touch the single-use store');
+
+    const allowed = await performAdminReturn(
+      { rawToken: token, presenterAuthUserId: DEMO_AUTH, nowMs: NOW + 1000 },
+      deps,
+    );
+    assert.equal(allowed.ok, true, 'the real way back must still work afterwards');
+  });
+
+  test('an unreadable switched account refuses rather than skipping the binding', async () => {
+    const token = mintReturnToken(payload(), KEY);
+    const result = await performAdminReturn(
+      { rawToken: token, presenterAuthUserId: DEMO_AUTH, nowMs: NOW },
+      returnDeps({
+        loadAccount: async (id) => (id === DEMO_ACCOUNT ? null : ACCOUNTS[id] ?? null),
+      }),
+    );
+    assert.equal(result.ok, false);
+    if (!result.ok) {
+      assert.equal(result.status, 403);
+      assert.equal(result.reason, 'switched_account_unreadable');
     }
   });
 });

@@ -133,12 +133,26 @@ export function useAdminAccountSwitcher(isPlatformAdmin: boolean): AdminAccountS
     void loadRoster();
   }, [loadRoster]);
 
-  /** Redeem the return cookie. Resolves to true when we are the admin again. */
+  /**
+   * Redeem the return cookie. Resolves to true when we are the admin again.
+   *
+   * The access token goes on deliberately: the server now refuses a return that
+   * is not presented by the demo session the switch created, so it has to be
+   * able to see who is asking. Plain `fetch` rather than fetchWithAuth because
+   * a legitimate refusal here (an expired way back) must leave the demo session
+   * alone and show "please sign in again" — not trip the shared 401 recovery
+   * path and force-sign-out a session that is perfectly valid.
+   */
   const redeemReturn = React.useCallback(async (): Promise<boolean> => {
+    const { data } = await supabase.auth.getSession();
+    const accessToken = data.session?.access_token ?? null;
     const res = await fetch('/api/auth/admin-switch-return', {
       method: 'POST',
       credentials: 'include',
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Content-Type': 'application/json',
+        ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}),
+      },
     });
     const payload = await readTokenHash(res);
     if (!payload) return false;
