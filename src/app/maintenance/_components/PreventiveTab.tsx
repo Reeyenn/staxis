@@ -28,6 +28,7 @@ import {
   PageHead, BoardColumn, BoardCard, CenteredBoard, MtEmptyCard,
   useBoardGate, BoardLoading, BoardLoadError,
   relDue, fmtDate, fmtDateShort, daysBetween, addDaysLocal, cadenceLabel,
+  newScheduleStart, newScheduleStartNote,
 } from './_mt-snow';
 import { useToast, ToastHost } from '@/app/_components/ui/toast';
 import { EquipmentRegistry } from './EquipmentRegistry';
@@ -183,6 +184,7 @@ function NewTaskModal({
   };
 
   const { n, freqDays, nextDue } = cadenceFrom(count, unit, last);
+  const startsFromToday = last.trim() === '';
   const can = name.trim() && area.trim() && n > 0 && !busy;
 
   const submit = async () => {
@@ -227,6 +229,15 @@ function NewTaskModal({
           <span style={{ fontFamily: FONT_SANS, fontSize: 15, color: T.ink }}>
             {'Next due: '}<strong style={{ fontWeight: 600 }}>{can ? fmtDate(nextDue) : '—'}</strong>
           </span>
+          {/* Said out loud rather than decided quietly. A blank box moves the
+              schedule's last-done date to today, and a manager who did not know
+              that would find their own hotel's record saying the job was done
+              on a day nobody did it. */}
+          {newScheduleStartNote(startsFromToday) && (
+            <span style={{ flexBasis: '100%', fontFamily: FONT_SANS, fontSize: 12.5, color: T.ink2, lineHeight: 1.45 }}>
+              {newScheduleStartNote(startsFromToday)}
+            </span>
+          )}
         </div>
       </div>
     </Modal>
@@ -430,8 +441,12 @@ export function PreventiveTab() {
         name: args.name,
         area: args.area,
         frequencyDays: args.frequencyDays,
-        lastCompletedAt: args.lastCompletedISO ? new Date(args.lastCompletedISO) : new Date(),
-        lastCompletedBy: user.displayName,
+        // A date, and NO NAME. Typing a schedule in is not performing the
+        // service, and the creator's name in `last_completed_by` is a permanent
+        // claim that they did — one the companion reads back and repeats. See
+        // newScheduleStart, and agent/tools/staxis-setup.ts, which has always
+        // refused to write this column for exactly the same reason.
+        lastCompletedAt: newScheduleStart(args.lastCompletedISO).lastCompletedAt,
         notes: undefined,
         equipmentId: null,
       });

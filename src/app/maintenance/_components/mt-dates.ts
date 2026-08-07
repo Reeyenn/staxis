@@ -127,6 +127,41 @@ export function workOrderHistoryCount(repairs: number, nonIssues: number): strin
   return `${repaired} · ${dismissed}`;
 }
 
+// ── setting a new upkeep schedule going ────────────────────────────────────
+//
+// The New-task form has an optional "Last completed" box, and leaving it blank
+// starts the count from today. That is a reasonable default and it stays. What
+// was NOT reasonable is what the form did with it: it wrote the creator's own
+// name into `last_completed_by`, so a manager who typed "Fire extinguisher
+// check, every 6 months" and pressed Add became, permanently and in this
+// hotel's own maintenance record, the person who last performed that service.
+// The companion reads that column back and will say so out loud.
+//
+// The chat door already refuses to do this and says why in one line: "the
+// manager told us WHEN it was last done, not that they were the one who did it"
+// (agent/tools/staxis-setup.ts). The form now agrees with it, and says out loud
+// what a blank box means instead of quietly deciding.
+export interface NewScheduleStart {
+  /** What goes in last_completed_at. */
+  lastCompletedAt: Date;
+  /** True when the box was left blank and the count simply starts now. */
+  startsFromToday: boolean;
+}
+
+export function newScheduleStart(lastCompletedISO: string | null, now: Date = new Date()): NewScheduleStart {
+  const parsed = lastCompletedISO ? new Date(lastCompletedISO) : null;
+  return parsed && Number.isFinite(parsed.getTime())
+    ? { lastCompletedAt: parsed, startsFromToday: false }
+    : { lastCompletedAt: now, startsFromToday: true };
+}
+
+/** What the form says about a blank last-done box. Empty when one was given. */
+export function newScheduleStartNote(startsFromToday: boolean): string {
+  return startsFromToday
+    ? 'No last-done date, so the count starts today. Nothing is recorded as having been done.'
+    : '';
+}
+
 // Format a location for display: bare room numbers get a "Rm " prefix; named
 // areas ("Lobby", "Pool Deck") pass through verbatim.
 export function displayLoc(loc: string): string {

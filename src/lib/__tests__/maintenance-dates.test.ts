@@ -15,6 +15,8 @@ import {
   cadenceLabel,
   workOrderEnding,
   workOrderHistoryCount,
+  newScheduleStart,
+  newScheduleStartNote,
 } from '@/app/maintenance/_components/mt-dates';
 import { fromWorkOrderRow } from '@/lib/db-mappers';
 
@@ -196,5 +198,55 @@ describe('what the history popup says a settled ticket was', () => {
       }),
     ];
     for (const s of strings) assert.doesNotMatch(s, /—/, s);
+  });
+});
+
+// ── setting a new upkeep schedule going ────────────────────────────────────
+//
+// The New-task form used to write the creator's own name into
+// `last_completed_by`, so a manager who typed "Fire extinguisher check, every
+// 6 months" and pressed Add became, permanently and in this hotel's own
+// maintenance record, the person who last performed that service. The companion
+// reads that column back (agent/tools/staxis-findings.ts exposes it as
+// lastDoneBy) and will repeat it as fact. The chat door has always refused to
+// write it for exactly this reason.
+
+describe('starting a new upkeep schedule', () => {
+  const now = new Date(2026, 7, 6, 9, 0);
+
+  test('a backfilled date is taken at face value, and says nothing extra', () => {
+    const start = newScheduleStart('2026-03-01T00:00:00.000Z', now);
+    assert.equal(start.startsFromToday, false);
+    assert.equal(start.lastCompletedAt.toISOString(), '2026-03-01T00:00:00.000Z');
+    assert.equal(newScheduleStartNote(start.startsFromToday), '');
+  });
+
+  test('a blank box starts the count today, and the form has to say so', () => {
+    const start = newScheduleStart(null, now);
+    assert.equal(start.startsFromToday, true);
+    assert.equal(start.lastCompletedAt.getTime(), now.getTime());
+    const note = newScheduleStartNote(start.startsFromToday);
+    assert.match(note, /starts today/i);
+    assert.match(note, /nothing is recorded/i, 'and that nobody is being credited with the work');
+    assert.doesNotMatch(note, /—/, 'founder ruling: no em dashes in what a person reads');
+  });
+
+  test('an unusable stored date is treated as no date, never as an invalid one', () => {
+    const start = newScheduleStart('not a date', now);
+    assert.equal(start.startsFromToday, true);
+    assert.equal(start.lastCompletedAt.getTime(), now.getTime());
+  });
+
+  test('nothing this produces can name a person as having done the work', () => {
+    // The whole point. There is no field here for a completer, because typing a
+    // schedule in is not performing the service.
+    for (const iso of ['2026-03-01T00:00:00.000Z', null]) {
+      const start = newScheduleStart(iso, now);
+      assert.deepEqual(
+        Object.keys(start).sort(),
+        ['lastCompletedAt', 'startsFromToday'],
+        'a name reappearing here is the bug this exists to stop',
+      );
+    }
   });
 });
