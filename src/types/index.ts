@@ -570,6 +570,21 @@ export interface WorkOrder {
   submitterRole?: string;       // free-text role label — "Front desk", "Head housekeeper"
   submitterPhotoPath?: string;  // Storage path in maintenance-photos bucket
 
+  /**
+   * Who is holding this ticket, once somebody has been given it.
+   *
+   * `work_orders.assigned_to` / `assigned_name` have existed since 0001 and
+   * nothing wrote them until "Give it to someone else" on the Staxis list. The
+   * board did not read them either, so the hand-off had NO surface at all for
+   * the person it was handed to: the Staxis list shows work orders only to
+   * management and the front desk, so a maintenance tech's own list cannot
+   * carry one, and this board — the screen they actually work from — did not
+   * say whose it was. The name is derived server-side at the moment of the
+   * hand-off; the browser never supplies it.
+   */
+  assignedToStaffId?: string | null;
+  assignedName?: string | null;
+
   completedByName?: string;     // who clicked Mark Done
   completionNote?: string;      // optional free-text — "Replaced filter, unit is old"
   completionPhotoPath?: string;

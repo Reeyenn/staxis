@@ -163,6 +163,23 @@ function OpenCard({
         {w.description}
       </span>
       {showPro && <div><ProPill w={w} es={es} /></div>}
+      {/* Who is holding it. "Give it to someone else" on the Staxis list writes
+          this, and that list shows work orders only to management and the front
+          desk — so for a maintenance tech this board is the ONLY place a
+          hand-off to them is visible at all. A ticket assigned and shown
+          nowhere is not late, it is invisible. */}
+      {w.assignedName && (
+        <div>
+          <span style={{
+            display: 'inline-flex', alignItems: 'center', gap: 5, padding: '3px 9px',
+            borderRadius: 999, height: 22, background: 'rgba(53,107,76,0.10)', color: '#356B4C',
+            fontFamily: FONT_MONO, fontSize: 10, fontWeight: 600, letterSpacing: '0.06em',
+            textTransform: 'uppercase', whiteSpace: 'nowrap', maxWidth: '100%', overflow: 'hidden',
+          }}>
+            {'With'} {w.assignedName}
+          </span>
+        </div>
+      )}
       <div style={{ display: 'flex', alignItems: 'center', gap: 7, marginTop: 1 }}>
         <Avatar name={w.submittedByName || '?'} size={20} />
         <span style={{ fontFamily: FONT_SANS, fontSize: 11.5, color: T.ink2, minWidth: 0, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
@@ -519,6 +536,19 @@ function DetailModal({
     >
       <div style={{ display: 'flex', flexDirection: 'column', gap: 18 }}>
         <Caps size={11} tracking="0.06em">{'Open · submitted'} {fmtSubmittedAt(w.createdAt)}</Caps>
+
+        {/* Said again here, in words, because the card's badge is easy to miss
+            and this modal is where somebody decides whether to pick the job up.
+            Unassigned says so out loud rather than staying silent: "nobody has
+            this" is the answer people actually need. */}
+        <div style={{ background: 'rgba(31,35,28,0.03)', border: `1px solid ${T.rule}`, borderRadius: 10, padding: '10px 14px' }}>
+          <Caps size={10} tracking="0.06em" c={T.ink3}>{'Who has this'}</Caps>
+          <p style={{ fontFamily: FONT_SANS, fontSize: 13.5, color: T.ink, margin: '5px 0 0', fontWeight: 500 }}>
+            {w.assignedName
+              ? `${w.assignedName} is on it.`
+              : 'Nobody yet. It is on the board for whoever picks it up.'}
+          </p>
+        </div>
 
         {/* On the THING, not the tab: this modal is one room's broken thing, so
             the signpost belongs here and nowhere on the board behind it. */}

@@ -428,6 +428,42 @@ describe('"Give it to someone else" on a work order', () => {
     assert.equal(listed?.assigneeName, 'Marcus Webb');
   });
 
+  test('and the maintenance board can say whose it is, which is the only screen the tech opens', async () => {
+    // The hand-off had no surface for the person it was handed TO. The Staxis
+    // list carries work orders for management and the front desk only, so a
+    // maintenance tech's own list cannot show one; the board is where they
+    // work, and its data layer was dropping both columns on the floor. A ticket
+    // assigned and shown nowhere is not late, it is invisible.
+    const id = await openWorkOrder();
+    await change('workorder', id, { assigneeStaffId: tech });
+    const mapped = fromWorkOrderRow(
+      await one<Record<string, unknown>>('select * from work_orders where id = $1', [id]) as Record<string, unknown>,
+    );
+    assert.equal(mapped.assignedName, 'Marcus Webb');
+    assert.equal(mapped.assignedToStaffId, tech);
+    assert.equal(mapped.status, 'open', 'handing it over is not finishing it');
+    assert.equal(
+      mapped.completedByName, undefined,
+      'and holding a ticket is not fixing it: the board must not print the holder under "fixed by"',
+    );
+  });
+
+  test('but a legacy row that only ever recorded assigned_name still names somebody once it is over', async () => {
+    // The fallback that put the holder into "fixed by" exists for pre-0131 rows
+    // where `assigned_name` was the only name written down. Narrowing it to
+    // settled tickets must not have thrown those away.
+    const row = await one<{ id: string }>(
+      `insert into work_orders (property_id, room_number, description, severity, status,
+                                assigned_name, resolved_at)
+       values ($1, '212', 'Old ticket', 'medium', 'resolved', 'Old Timer', now()) returning id`,
+      [PID_A1],
+    );
+    const mapped = fromWorkOrderRow(
+      await one<Record<string, unknown>>('select * from work_orders where id = $1', [row!.id]) as Record<string, unknown>,
+    );
+    assert.equal(mapped.completedByName, 'Old Timer');
+  });
+
   test('refuses a housekeeper, and says where that work belongs', async () => {
     // Same wall as a to-do: they work from the housekeeping board, so a ticket
     // handed to one is not late, it is invisible.
