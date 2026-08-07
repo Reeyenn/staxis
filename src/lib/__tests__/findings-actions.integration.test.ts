@@ -144,17 +144,31 @@ async function insertWorkOrder(
 }
 
 /**
- * Age an offer, as a standing card ages. `proposed_at` is immutable through
- * every ordinary path — that freeze is what makes it safe to anchor the
- * counting window to — so the trigger comes off for exactly this statement.
+ * Rewrite `proposed_at` by hand. It is immutable through every ordinary path —
+ * that freeze is what makes it safe to anchor the counting window to — so the
+ * trigger comes off for exactly the statements inside.
+ *
+ * The `finally` is load-bearing: this file shares one database across 50-odd
+ * cases, and a body that throws with the freeze still down would leave every
+ * later case silently testing an unprotected table.
  */
-async function backdateOffer(actionId: string, days: number): Promise<void> {
+async function withFreezeOff(body: () => Promise<void>): Promise<void> {
   await pg.query('alter table public.finding_actions disable trigger staxis_finding_actions_frozen_tg');
-  await pg.query(
-    `update public.finding_actions set proposed_at = now() - make_interval(days => $2) where id=$1`,
-    [actionId, days],
-  );
-  await pg.query('alter table public.finding_actions enable trigger staxis_finding_actions_frozen_tg');
+  try {
+    await body();
+  } finally {
+    await pg.query('alter table public.finding_actions enable trigger staxis_finding_actions_frozen_tg');
+  }
+}
+
+/** Age an offer, as a standing card ages. */
+async function backdateOffer(actionId: string, days: number): Promise<void> {
+  await withFreezeOff(async () => {
+    await pg.query(
+      `update public.finding_actions set proposed_at = now() - make_interval(days => $2) where id=$1`,
+      [actionId, days],
+    );
+  });
 }
 
 async function actionRow(id: string) {
@@ -841,6 +855,64 @@ describe('the hands, proven against a real database', { concurrency: 1 }, () => 
       assert.equal(outcome, 'proposed');
       const live = await loadActionsForFindings(PID_A, [findingId]);
       assert.equal(live.get(findingId)?.state, 'proposed', 'the card gets its button back');
+    });
+
+    // ═══ THE CLOCK IS NOT THE RANKING RULE ═══
+    //
+    // The two cases above wrote their rows one to two milliseconds apart and
+    // passed on that accident. `Date.parse` — which is how the read path
+    // compares `proposed_at` — stops at milliseconds, so a re-arm written
+    // inside the same millisecond as the row it replaces reaches the ranking
+    // as a TIE, and the tiebreak used to hand the card back to the dead
+    // refusal. The suite caught it as an intermittent failure of the case
+    // above — the two writes land 0-2ms apart, so whether it passed came down
+    // to machine speed and nothing else.
+    //
+    // MUTATION PROOF: flip the tiebreak in `outranks` (actions/store.ts) back
+    // to preferring the settled row and this case fails every time, while the
+    // two above go back to failing only when the clock happens to agree.
+    test('a re-arm written in the same instant as the refusal still wins the card', async () => {
+      const { findingId, actionId } = await offerWorkOrder(PID_A, 'Room 615', 2);
+      await pg.query(
+        `update public.finding_actions
+            set state='failed', failure_reason='disk on fire', decided_at=now()
+          where id=$1`,
+        [actionId],
+      );
+      assert.equal(
+        await proposeAction(PID_A, findingId, {
+          kind: 'create_work_order',
+          params: createWorkOrderParams('Room 615'),
+          verify: { location: 'Room 615', window_days: 30, open_work_orders: 2, attempt: 2 },
+        }),
+        'proposed',
+      );
+
+      // Both rows onto ONE instant, exactly: the earlier of the two, so the
+      // failure's own `decided_at` still lands after its proposal and the
+      // table's ordering check is not what this case is testing. The state the
+      // clock reaches by accident, reached on purpose.
+      await withFreezeOff(async () => {
+        await pg.query(
+          `update public.finding_actions
+              set proposed_at = (select min(proposed_at) from public.finding_actions
+                                  where finding_id = $1)
+            where finding_id = $1`,
+          [findingId],
+        );
+      });
+      const stamps = await pg.query<{ n: number }>(
+        `select count(distinct proposed_at)::int n from public.finding_actions where finding_id=$1`,
+        [findingId],
+      );
+      assert.equal(stamps.rows[0].n, 1, 'the tie the case is about did not actually happen');
+
+      const live = await loadActionsForFindings(PID_A, [findingId]);
+      assert.equal(
+        live.get(findingId)?.state,
+        'proposed',
+        'a tie must not resurrect the refusal the re-arm replaced',
+      );
     });
   });
 

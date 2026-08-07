@@ -247,15 +247,77 @@ export const POINTER_GAP = 22;
 const POINTER_INSET = 26;
 
 /**
+ * The smallest band worth squeezing the popup into rather than overlapping
+ * the control. Below this the card would be a sliver, and a sliver beside the
+ * button is worse than a readable card over it.
+ */
+export const POINTER_MIN_BAND = 64;
+
+/** Do these two boxes share any area at all? */
+function overlaps(a: TraceRect, b: TraceRect): boolean {
+  return a.left < b.left + b.width && a.left + a.width > b.left
+    && a.top < b.top + b.height && a.top + a.height > b.top;
+}
+
+/** Do these two spans on one axis share any run at all? */
+function spansCross(aFrom: number, aTo: number, bFrom: number, bTo: number): boolean {
+  return aFrom < bTo && aTo > bFrom;
+}
+
+/**
+ * How far the popup may grow in one direction before it hits something.
+ *
+ * The window edge was always a blocker. Companion SURFACES are the ones added
+ * for the founder's rule: the card may take a plain to-do row's space if there
+ * is nowhere else, and may never take another companion surface's while an
+ * alternative exists. So an obstacle standing 40px under the composer makes
+ * the band below 40px deep rather than "the rest of the window", the side
+ * choice moves to the empty band above on its own, and the shrink-to-the-band
+ * rule below handles the case where above is all there is.
+ *
+ * Only obstacles that actually stand in the way count: one beside the card's
+ * column is not between the card and anything.
+ */
+function clearRun(
+  from: number,
+  hardLimit: number,
+  towards: 'forward' | 'back',
+  crossFrom: number,
+  crossTo: number,
+  obstacles: readonly TraceRect[],
+  axis: 'y' | 'x',
+): number {
+  let limit = hardLimit;
+  for (const o of obstacles) {
+    if (!(o.width > 0 && o.height > 0)) continue;
+    const oCrossFrom = axis === 'y' ? o.left : o.top;
+    const oCrossTo = oCrossFrom + (axis === 'y' ? o.width : o.height);
+    if (!spansCross(crossFrom, crossTo, oCrossFrom, oCrossTo)) continue;
+    const oFrom = axis === 'y' ? o.top : o.left;
+    const oTo = oFrom + (axis === 'y' ? o.height : o.width);
+    if (towards === 'forward') {
+      if (oTo <= from) continue;
+      limit = Math.min(limit, oFrom);
+    } else {
+      if (oFrom >= from) continue;
+      limit = Math.max(limit, oTo);
+    }
+  }
+  return towards === 'forward' ? limit - from : from - limit;
+}
+
+/**
  * Where the popup goes and where the line runs.
  *
- * Pure: it is handed a measured control, the window, and how big the popup
- * turned out to be. It reads no DOM and knows no page.
+ * Pure: it is handed a measured control, the window, whatever else on the page
+ * the companion already owns, and how big the popup turned out to be. It reads
+ * no DOM and knows no page.
  */
 export function layoutPointer(
   target: TraceRect,
   viewport: TraceViewport,
   card: PointerCardSize,
+  obstacles: readonly TraceRect[] = [],
 ): PointerGeometry | null {
   // A control that measures as nothing is a control that is not really there.
   if (!(target.width > 0 && target.height > 0)) return null;
@@ -276,22 +338,46 @@ export function layoutPointer(
   // Never wider than the window can hold, whatever the popup asked for. No
   // minimum floor: a floor bigger than the window is how a "minimum readable
   // width" becomes a card hanging off the edge of a narrow one.
-  const width = Math.max(1, Math.min(card.width, viewport.width - EDGE_MARGIN * 2, viewport.width));
-  const height = Math.max(1, Math.min(card.height, viewport.height - EDGE_MARGIN * 2, viewport.height));
+  let width = Math.max(1, Math.min(card.width, viewport.width - EDGE_MARGIN * 2, viewport.width));
+  let height = Math.max(1, Math.min(card.height, viewport.height - EDGE_MARGIN * 2, viewport.height));
 
   const glowRight = glow.left + glow.width;
   const glowBottom = glow.top + glow.height;
-  const room: Record<PointerSide, number> = {
-    below: viewport.height - glowBottom,
-    above: glow.top,
-    right: viewport.width - glowRight,
-    left: glow.left,
+  // The CLEAR BAND on each side: what is left of the window once the gap to
+  // the control and the margin to the window edge are paid for. This, and not
+  // the raw room, is how much of the popup can sit there without touching
+  // either of them.
+  //
+  // Blockers are the window edge AND anything the companion already put on
+  // this page, so a band that ends at a Staxis-found card is as short as a
+  // band that ends at the bottom of the window, and the side choice below
+  // takes care of the rest without a second rule.
+  //
+  // The cross-axis span each direction is tested against is where the card
+  // would actually be if it went that way: centred on the control and pulled
+  // inside the window. An obstacle beside that column is not in the way.
+  const centeredLeft = clamp(
+    glow.left + glow.width / 2 - width / 2,
+    EDGE_MARGIN,
+    Math.max(EDGE_MARGIN, viewport.width - width - EDGE_MARGIN),
+  );
+  const centeredTop = clamp(
+    glow.top + glow.height / 2 - height / 2,
+    EDGE_MARGIN,
+    Math.max(EDGE_MARGIN, viewport.height - height - EDGE_MARGIN),
+  );
+  const band: Record<PointerSide, number> = {
+    below: clearRun(glowBottom, viewport.height - EDGE_MARGIN, 'forward',
+      centeredLeft, centeredLeft + width, obstacles, 'y') - POINTER_GAP,
+    above: clearRun(glow.top, EDGE_MARGIN, 'back',
+      centeredLeft, centeredLeft + width, obstacles, 'y') - POINTER_GAP,
+    right: clearRun(glowRight, viewport.width - EDGE_MARGIN, 'forward',
+      centeredTop, centeredTop + height, obstacles, 'x') - POINTER_GAP,
+    left: clearRun(glow.left, EDGE_MARGIN, 'back',
+      centeredTop, centeredTop + height, obstacles, 'x') - POINTER_GAP,
   };
-  const needed: Record<PointerSide, number> = {
-    below: height + POINTER_GAP + EDGE_MARGIN,
-    above: height + POINTER_GAP + EDGE_MARGIN,
-    right: width + POINTER_GAP + EDGE_MARGIN,
-    left: width + POINTER_GAP + EDGE_MARGIN,
+  const wanted: Record<PointerSide, number> = {
+    below: height, above: height, right: width, left: width,
   };
   // Down, then up, then sideways. Same first choice and same fallback as the
   // trace, for the same reason: down is the direction the design was drawn in
@@ -299,11 +385,29 @@ export function layoutPointer(
   // narrow window with a rail above it and a board below it, which is exactly
   // the stockroom's left rail on a laptop.
   const order: readonly PointerSide[] = ['below', 'above', 'right', 'left'];
-  const side: PointerSide = order.find((s) => room[s] >= needed[s])
+  const side: PointerSide = order.find((s) => band[s] >= wanted[s])
     // Nothing fits. Take the roomiest side rather than the first: a popup
     // clamped into the biggest gap is still readable, and it is still beside
     // the control rather than on top of it.
-    ?? order.reduce((best, s) => (room[s] > room[best] ? s : best), order[0]);
+    ?? order.reduce((best, s) => (band[s] > band[best] ? s : best), order[0]);
+
+  // GIVE UP SIZE RATHER THAN SLIDE OVER THE CONTROL.
+  //
+  // On a phone a control can be taller than the band it leaves: the to-do
+  // composer with all three of its rows open measures 598px of an 812px
+  // window. The card was then placed at the control's edge and clamped back
+  // inside the window, and the clamp put it ON the thing the arrow was
+  // pointing at. It takes the band instead and scrolls its own text, which is
+  // the one outcome that keeps both halves of the promise: the sentence is
+  // readable, and the control it is about is still visible under it.
+  //
+  // Only when the band is worth having. A control that fills the window leaves
+  // no honest placement at all, and a 12px sliver of card would be worse than
+  // the overlap.
+  if (band[side] >= POINTER_MIN_BAND) {
+    if (side === 'below' || side === 'above') height = Math.min(height, band[side]);
+    else width = Math.min(width, band[side]);
+  }
 
   const centerX = glow.left + glow.width / 2;
   const centerY = glow.top + glow.height / 2;

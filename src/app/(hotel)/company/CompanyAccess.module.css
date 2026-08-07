@@ -2936,3 +2936,19 @@
     transform: none;
   }
 }
+
+/* ─── The phone ────────────────────────────────────────────────────────────
+   The same one rule as the roster beside it: nothing you type into is under
+   16px, because iOS zooms the page in on focus below that and never zooms
+   back. The press targets are already 44px in the 600px block above. */
+@media (max-width: 760px) {
+  .searchField input,
+  .formField input,
+  .formField select,
+  .formField textarea,
+  .legacyOwnershipControls .formField select,
+  .hotelScopeToolbar input[type='search'],
+  .hotelScopeToolbar input[type='text'] {
+    font-size: 16px;
+  }
+}
