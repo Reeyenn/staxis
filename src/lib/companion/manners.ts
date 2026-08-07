@@ -43,6 +43,7 @@ import {
   COMPANION_DECLINES_BEFORE_DROP,
   COMPANION_MAX_SPEECH_PER_DAY,
   COMPANION_MEMORY_TOPIC_CAP,
+  COMPANION_MEMORY_TOPICS_MAX_BYTES,
   COMPANION_MIN_GAP_MINUTES,
 } from './charter';
 import {
@@ -249,19 +250,85 @@ function isDayString(v: unknown): v is string {
 }
 
 /**
- * Keep the blob bounded. Live topics fall off before dropped ones, because
- * forgetting that somebody said No is the failure that actually annoys people,
- * while forgetting that we offered something today costs at most one repeat.
+ * Keep the blob bounded, IN BYTES, against the size the column actually
+ * checks.
+ *
+ * ─── WHY A COUNT WAS THE WRONG BOUND ───────────────────────────────────────
+ *
+ * This used to keep sixty topics and nothing else. Topic keys are accepted up
+ * to two hundred characters, so sixty of them serialize to about sixteen
+ * kilobytes against a column that refuses anything over eight
+ * (`staxis_user_prefs_companion_memory_size_ck`, migration 0417). The write
+ * started failing around the thirtieth topic, and what failed with it was the
+ * whole ledger: a refused UPSERT means `spokenCount` stops advancing, so the
+ * daily speech cap stops being enforced across page loads, and new declines
+ * stop sticking, so a No stops being permanent. A cap that breaks the other
+ * caps is worse than no cap.
+ *
+ * ─── WHAT SURVIVES AN EVICTION ─────────────────────────────────────────────
+ *
+ * Dropped topics first, always. Forgetting that somebody said No twice is the
+ * failure that actually annoys people, and it is the only one here that a
+ * person would notice. Then whoever has said No most. Then the most RECENTLY
+ * offered, because a topic nobody has heard about in a month is the one whose
+ * "not today" is worth the least. The key breaks ties so the same input always
+ * produces the same output.
+ *
+ * Nothing outside this map is ever evicted: the welcome stamp, the notices
+ * cursors and the speech counters are the fields that enforce the limits, and
+ * they are held out of the budget by COMPANION_MEMORY_FIXED_RESERVE_BYTES
+ * rather than competing with topics for room.
  */
 function capTopics(topics: Record<string, CompanionTopicMemory>): Record<string, CompanionTopicMemory> {
   const entries = Object.entries(topics);
-  if (entries.length <= COMPANION_MEMORY_TOPIC_CAP) return topics;
+  if (entries.length === 0) return topics;
+  // The cheap ceiling first. Under both bounds nothing is copied at all, which
+  // is the case that runs on every single reducer call.
+  if (entries.length <= COMPANION_MEMORY_TOPIC_CAP
+    && topicsByteSize(entries) <= COMPANION_MEMORY_TOPICS_MAX_BYTES) {
+    return topics;
+  }
   const ranked = entries.sort((a, b) => {
     if (a[1].dropped !== b[1].dropped) return a[1].dropped ? -1 : 1;
     if (a[1].declines !== b[1].declines) return b[1].declines - a[1].declines;
+    const day = (a[1].lastOfferedDay ?? '').localeCompare(b[1].lastOfferedDay ?? '');
+    if (day !== 0) return -day;
     return a[0].localeCompare(b[0]);
   });
-  return Object.fromEntries(ranked.slice(0, COMPANION_MEMORY_TOPIC_CAP));
+
+  const kept: Array<[string, CompanionTopicMemory]> = [];
+  // Two braces on an empty object, which every entry below is added inside.
+  let bytes = 2;
+  for (const entry of ranked) {
+    if (kept.length >= COMPANION_MEMORY_TOPIC_CAP) break;
+    const cost = entryByteSize(entry) + (kept.length > 0 ? 1 : 0);
+    if (bytes + cost > COMPANION_MEMORY_TOPICS_MAX_BYTES) break;
+    bytes += cost;
+    kept.push(entry);
+  }
+  return Object.fromEntries(kept);
+}
+
+/**
+ * How much one `"key":{…}` pair weighs, serialized, in bytes.
+ *
+ * TextEncoder rather than Buffer or `.length`: this module is imported by the
+ * browser hook as well as the route, and a topic key can hold any character a
+ * finding id or a detector name carries.
+ */
+const TOPIC_BYTES = new TextEncoder();
+
+function entryByteSize(entry: [string, CompanionTopicMemory]): number {
+  return TOPIC_BYTES.encode(
+    `${JSON.stringify(entry[0])}:${JSON.stringify(entry[1])}`,
+  ).length;
+}
+
+function topicsByteSize(entries: Array<[string, CompanionTopicMemory]>): number {
+  // Braces, plus each entry, plus the comma between them.
+  let total = 2 + Math.max(0, entries.length - 1);
+  for (const entry of entries) total += entryByteSize(entry);
+  return total;
 }
 
 // ─── Candidates ─────────────────────────────────────────────────────────────

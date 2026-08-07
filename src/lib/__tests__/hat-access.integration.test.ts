@@ -517,10 +517,39 @@ describe('the coverage rule has exactly one implementation', () => {
   // company bought after the hat was written would vanish.
   test('a company hat reaches every hotel the company operates right now', () => {
     assert.deepEqual(
-      resolveHatCoverage('company', [], ['h2', 'h1']).sort(),
+      // NULL, not [] — the column being absent is what "every hotel" means.
+      resolveHatCoverage('company', null, ['h2', 'h1']).sort(),
       ['h1', 'h2'],
       'a company hat did not reach the company',
     );
+  });
+
+  // Mutation: return every operated hotel for ANY company hat — which is what
+  // this function actually did until 0467. The database walls held, so nobody
+  // gained access; the Company Hub simply told an owner they had handed out
+  // twenty hotels when they had handed out two. The screen somebody checks
+  // their own blast radius on is not a place to be approximately right.
+  test('a company hat that NAMES its hotels reaches those and no others', () => {
+    assert.deepEqual(
+      resolveHatCoverage('company', ['h1'], ['h1', 'h2', 'h3']),
+      ['h1'],
+      'a named company hat was presented as covering the whole company',
+    );
+  });
+
+  // …and it is intersected on the same terms as a property hat, so a hotel the
+  // company sold leaves both at once rather than lingering on the company one.
+  test('a named company hat drops a hotel the company no longer operates', () => {
+    assert.deepEqual(
+      resolveHatCoverage('company', ['h1', 'h2'], ['h1']),
+      ['h1'],
+      'a sold hotel survived on a named company hat',
+    );
+    // Empty-after-intersection is the fail-closed answer, never "all of them".
+    assert.deepEqual(resolveHatCoverage('company', ['h9'], ['h1', 'h2']), []);
+    // And a literal empty list names nothing, so it reaches nothing. Reading it
+    // as "all" is the silent open-fail this whole change exists to remove.
+    assert.deepEqual(resolveHatCoverage('company', [], ['h1', 'h2']), []);
   });
 
   // Mutation: map the regional manager to organization_admin, or line staff to

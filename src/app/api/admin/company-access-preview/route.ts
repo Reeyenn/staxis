@@ -55,7 +55,9 @@ import { getOrMintRequestId, log } from '@/lib/log';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { errToString } from '@/lib/utils';
 import { accessProfileForHat, isHatRole, isMembershipScope } from '@/lib/company/roles';
-import { resolveHatCoverage } from '@/lib/company/access';
+import {
+  hatCoverageFromColumn,
+  resolveHatCoverage } from '@/lib/company/access';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -575,7 +577,7 @@ async function buildScopedProjection(
     if (!isMembershipScope(membership.membership_scope) || !isHatRole(membership.staxis_role)) return [];
     return resolveHatCoverage(
       membership.membership_scope,
-      Array.isArray(membership.covered_property_ids) ? membership.covered_property_ids : [],
+      hatCoverageFromColumn(membership.covered_property_ids),
       new Set(propertyIds),
     );
   };
