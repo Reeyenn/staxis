@@ -2,7 +2,7 @@
 
 import React from 'react';
 import { createPortal } from 'react-dom';
-import { ChevronRight, Download, LogOut, Menu, X } from 'lucide-react';
+import { ArrowLeft, ChevronRight, Download, LogOut, Menu, X } from 'lucide-react';
 import type { AdminDestinationAction, BarItem } from './ConcourseBarView';
 import { CxIcon, CxLogo, CX_ICON_PATHS } from './icons';
 import styles from './MobileConcourseNav.module.css';
@@ -42,6 +42,9 @@ interface MobileConcourseNavProps {
   onCompanyIntent?: () => void;
   onSettingsIntent?: () => void;
   onSignOut: () => void;
+  /** Present only when this session was switched into by a platform admin. */
+  returnToAdminLabel?: string;
+  onReturnToAdmin?: () => void;
   onScopeChange: (scopeValue: string) => void;
   onInstall: (returnFocusElement: HTMLButtonElement | null) => void;
 }
@@ -88,6 +91,8 @@ export function MobileConcourseNav({
   onCompanyIntent,
   onSettingsIntent,
   onSignOut,
+  returnToAdminLabel,
+  onReturnToAdmin,
   onScopeChange,
   onInstall,
 }: MobileConcourseNavProps) {
@@ -258,6 +263,22 @@ export function MobileConcourseNav({
         </div>
 
         <div className={styles.drawerScroll}>
+          {/* A switched session must be able to get back from any device, so
+              this sits above everything else in the drawer rather than down
+              with the account controls. The full roster stays desktop-only. */}
+          {returnToAdminLabel ? (
+            <button
+              type="button"
+              className={`${styles.navRow} ${styles.returnToAdminRow}`}
+              onClick={() => { closeDrawer(); onReturnToAdmin?.(); }}
+            >
+              <span className={styles.iconChip} aria-hidden="true">
+                <ArrowLeft size={17} strokeWidth={1.8} />
+              </span>
+              <span className={styles.rowLabel}>{returnToAdminLabel}</span>
+            </button>
+          ) : null}
+
           <div className={styles.eyebrow}>{sectionsLabel}</div>
           <nav className={styles.sectionList} aria-label={sectionsLabel}>
             {items.map((item) => (

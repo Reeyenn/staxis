@@ -153,10 +153,10 @@ const NO_ACCESS: AccessibleProperties = {
 /**
  * Two hats can cover one hotel and only one of them can name the job.
  *
- * Note `general_manager` sits ABOVE `vp` on purpose. Maria is the GM of
- * Beaumont AND oversees Lufkin and Tyler; at Beaumont she is the GM — the
+ * Note `general_manager` sits ABOVE `regional_manager` on purpose. Maria is the
+ * GM of Beaumont AND oversees Lufkin and Tyler; at Beaumont she is the GM — the
  * person who runs it — and oversight is what she does at the OTHER hotels.
- * Ranking VP higher would rename her at her own hotel.
+ * Ranking the regional job higher would rename her at her own hotel.
  *
  * `seesFinancials` is computed across ALL covering hats rather than from the
  * winner, so a narrower winner can never close a door a wider hat opened.
@@ -164,8 +164,7 @@ const NO_ACCESS: AccessibleProperties = {
 const HAT_STRENGTH: Record<HatRole, number> = {
   owner: 6,
   general_manager: 5,
-  vp: 4,
-  finance: 3,
+  regional_manager: 4,
   front_desk: 2,
   maintenance: 1,
   housekeeping: 0,
@@ -779,7 +778,7 @@ async function readAccountsCoveringProperty(propertyId: string): Promise<string[
  */
 export function managingHats(hats: readonly MembershipHat[]): MembershipHat[] {
   return hats.filter((hat) => (
-    (hat.scope === 'company' && (hat.role === 'owner' || hat.role === 'vp'))
+    (hat.scope === 'company' && (hat.role === 'owner' || hat.role === 'regional_manager'))
       || (hat.scope === 'property' && hat.role === 'general_manager')
   ));
 }

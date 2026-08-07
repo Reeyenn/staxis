@@ -45,7 +45,7 @@ function companyContext(
   return {
     organizationId: GULF_COAST,
     organizationName: 'Gulf Coast Hotels',
-    companyRole: 'vp',
+    companyRole: 'regional_manager',
     hotelIds: [HOTEL_A, HOTEL_B],
     hotelCount: 2,
     queueAvailable: true,
@@ -215,15 +215,15 @@ describe('company-mode scope union', () => {
 });
 
 describe('company-scope capability gate', () => {
-  const VP_STANDINGS = [standing(HOTEL_A), standing(HOTEL_B)];
+  const OVERSIGHT_STANDINGS = [standing(HOTEL_A), standing(HOTEL_B)];
 
-  test("a VP's company scope reads the company hat's capabilities", () => {
+  test("a regional manager's company scope reads the company hat's capabilities", () => {
     const resolved = resolveViewerCompanyStanding({
       platformAdmin: false,
-      standings: VP_STANDINGS,
+      standings: OVERSIGHT_STANDINGS,
       organizationId: GULF_COAST,
       propertyIds: [HOTEL_A, HOTEL_B],
-      // legacyRoleForHat('vp')
+      // legacyRoleForHat('regional_manager')
       companyRole: 'front_desk',
     });
     assert.ok(resolved);

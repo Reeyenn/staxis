@@ -226,16 +226,6 @@ describe('admin Company Hub view powers at the response boundary', () => {
         source: 'unsafe',
         status: 'active',
       }],
-      invitations: [{
-        id: 'invitation-1',
-        organizationId: COMPANY.id,
-        email: 'customer@example.test',
-        accessProfile: 'viewer',
-        scopeLabel: COMPANY.name,
-        propertyIds: [PROPERTY.id],
-        status: 'pending',
-        canCancel: true,
-      }],
       requests: [{
         id: 'request-1',
         organizationId: COMPANY.id,
@@ -296,7 +286,6 @@ describe('admin Company Hub view powers at the response boundary', () => {
     assert.equal(preview.memberships[0].canRemove, false);
     assert.equal(preview.memberships[0].grants[0].canRevoke, false);
     assert.deepEqual(preview.effectiveAccess, []);
-    assert.equal(preview.invitations[0].canCancel, false);
     assert.equal(preview.requests[0].canReview, false);
     assert.equal(preview.permissions.manageAccess, false);
     assert.equal(preview.permissions.requestAccess, false);

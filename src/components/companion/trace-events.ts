@@ -23,6 +23,8 @@
 // design, and never a place where the reveal itself is drawn.
 // ═══════════════════════════════════════════════════════════════════════════
 
+import type { CompanionReply } from '@/lib/companion/replies';
+
 export interface TraceLine {
   /** The pattern's own key, so a callback cannot be aimed at anything else. */
   topic: string;
@@ -30,8 +32,15 @@ export interface TraceLine {
   text: string;
   /** "Found on Maintenance" — the screen a yes walks to. */
   whereFound: string;
-  onYes: () => void;
-  onNo: () => void;
+  /**
+   * The buttons, from the same code-owned table every other companion surface
+   * reads. This row used to hardcode "Show me" and "No", which made it a THIRD
+   * place a companion button label was written and a third place that could
+   * disagree with the other two.
+   */
+  replies: readonly CompanionReply[];
+  /** A button was pressed, by id. The hook resolves the intent. */
+  onReply: (replyId: string) => void;
 }
 
 type Listener = (line: TraceLine | null) => void;

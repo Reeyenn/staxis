@@ -53,8 +53,12 @@ import {
   dailyHelloLine,
   greetingLine,
   looksSharedLogin,
-  offerQuestion,
+  companionQuestion,
+  offerQuestionFor,
   offerSentence,
+  replyCouldNotActLine,
+  replyCouldNotSaveLine,
+  replyOutcomeLine,
   ruleAttribution,
   ruleReadBack,
   ruleRemovedLine,
@@ -67,6 +71,11 @@ import {
   type SleepReason,
   type TeachFlow,
 } from '@/lib/companion/copy';
+import {
+  COMPANION_REPLY_KINDS,
+  repliesFor,
+  somethingElseReply,
+} from '@/lib/companion/replies';
 import {
   EMPTY_COMPANION_MEMORY,
   decideCompanionSpeech,
@@ -138,8 +147,55 @@ function everyCompanionString(): Array<[string, string]> {
       );
     }
   }
-  collect(offerQuestion(null), 'offerQuestion(none)', out);
-  for (const page of COMPANION_PAGES) collect(offerQuestion(page), `offerQuestion(${page.key})`, out);
+  // ── The reply surface ──────────────────────────────────────────────────
+  //
+  // Every question producer and every reply set, over every kind. This is the
+  // half of the walk that catches a button label: replies.ts is the SECOND copy
+  // module for the companion (see its header), and a label that never reached
+  // this collector would be the one string in the feature outside the dash
+  // rule, the English rule and the never-says-AI rule.
+  for (const kind of COMPANION_REPLY_KINDS) {
+    collect(offerQuestionFor(kind), `question(${kind})`, out);
+    collect(
+      repliesFor({
+        kind,
+        findingId: 'f1',
+        actionId: 'a1',
+        topic: 'wake:maintenance',
+        seed: 'Add a to-do: replace the lobby bulb',
+        waiting: 3,
+        hasRefusal: true,
+        page: 'maintenance',
+        pageLabel: 'Maintenance',
+      }),
+      `replies(${kind})`,
+      out,
+    );
+    // The degraded shape too: a kind whose facts went missing still renders
+    // buttons, and those are strings a person reads exactly the same way.
+    collect(repliesFor({ kind }), `replies(${kind},bare)`, out);
+  }
+  collect(somethingElseReply(), 'escape', out);
+
+  // What the companion says after a button actually wrote something.
+  for (const code of [null, 'ok', 'declined_changed']) {
+    for (const receiptLabel of [null, 'Work order created for Room 214']) {
+      collect(replyOutcomeLine({ code, receiptLabel }), `outcome(${code},${receiptLabel})`, out);
+    }
+  }
+  collect(replyCouldNotActLine(), 'couldNotAct', out);
+  collect(replyCouldNotSaveLine(), 'couldNotSave', out);
+  // The judged-question seam, in both directions.
+  collect(
+    companionQuestion('Is this handled?', null) ?? '',
+    'companionQuestion(template)',
+    out,
+  );
+  collect(
+    companionQuestion('Is this handled?', 'Has anyone been out to look at it?') ?? '',
+    'companionQuestion(judged)',
+    out,
+  );
 
   // Saying hello: the panel's opening line and the once-a-day greeting, over
   // every hour bucket, both name shapes, and with and without a true fact.
@@ -281,6 +337,8 @@ function mannersFixture(over: Partial<MannersInput> & { role?: AppRole } = {}): 
       sensitivity: 'operational',
       covers: ['finding:1'],
       destination: 'inventory',
+      replyKind: 'finding_recommend',
+      replies: repliesFor({ kind: 'finding_recommend', findingId: '1' }),
     }],
     onScreen: [],
     userIsBusy: false,
@@ -572,10 +630,26 @@ describe('charter: consent and money', () => {
 
     const offer = decideCompanionSpeech(mannersFixture());
     assert.ok(offer.kind === 'offer');
-    // The offer's own question comes from offerQuestion, over every
-    // destination it can carry plus the no-destination case.
-    assert.match(offerQuestion(null), /\?$/);
-    for (const page of COMPANION_PAGES) assert.match(offerQuestion(page), /\?$/);
+
+    // ── The offer's own question comes from its KIND, not its destination ──
+    //
+    // "Answerable" no longer means "yes or no". It means every card either asks
+    // a real question with real answers under it, or asks nothing at all and
+    // says so by carrying no question. What is forbidden is the third shape:
+    // a question with nothing that answers it.
+    for (const kind of COMPANION_REPLY_KINDS) {
+      const question = offerQuestionFor(kind);
+      if (question !== null) {
+        assert.match(question, /\?$/, kind);
+        assert.ok(
+          repliesFor({
+            kind, findingId: 'f1', actionId: 'a1', topic: 'wake:maintenance',
+            seed: 'do the thing', waiting: 3, page: 'maintenance', pageLabel: 'Maintenance',
+          }).length > 0,
+          `${kind} asks a question with nothing to answer it`,
+        );
+      }
+    }
   });
 
   test('the companion never offers to spend money', () => {

@@ -82,11 +82,16 @@ export function resolveViewerHotelStanding<T extends ViewerHotelStanding>(input:
 // by arriving at a company URL: the other buildings answer null and so does
 // this.
 //
-// The ROLE comes from the company hat (owner / vp / finance, degraded through
-// `legacyRoleForHat` by the caller), not from the per-hotel projection, because
-// at company scope the person is wearing the company job. The per-hotel
-// standings are the WALL: they decide whether the scope resolves at all, and
-// they decide the money.
+// The ROLE comes from the company hat (owner / regional_manager since 0464,
+// degraded through `legacyRoleForHat` by the caller), not from the per-hotel
+// projection, because at company scope the person is wearing the company job.
+// The per-hotel standings are the WALL: they decide whether the scope resolves
+// at all, and they decide the money.
+//
+// WHICH hotels are in the scope is never decided here. It arrives as the
+// caller's already-resolved coverage, which since 0464 is a company hat's own
+// `covered_property_ids` when it names hotels and every operated hotel when it
+// does not. This function reads that list and never widens it.
 //
 // `hotelMutationAllowed` is permanently false here. Company scope has no target
 // hotel to write to; a later crew adds an explicit, guarded hand-work-in seam

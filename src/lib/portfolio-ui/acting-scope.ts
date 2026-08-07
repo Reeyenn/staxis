@@ -171,6 +171,25 @@ export function resolveActingScopeRequest(input: {
  * so a company the viewer no longer holds, or one with no hotels, resolves to
  * `selection_unavailable` rather than to an empty-but-plausible scope.
  *
+ * WHICH HOTELS `contexts[].hotelIds` NAMES, AND WHY IT MUST STAY THAT SOURCE.
+ *
+ * Since 0464 a company hat carries EITHER an explicit hotel list (exactly those
+ * hotels, never a future one) OR NULL (every hotel the company operates,
+ * including ones acquired later). A management company runs hotels for
+ * different ownership groups, so an Owner of 3 of 20 must never be shown the
+ * other 17 — and this scope is what the section union and the capability gate
+ * are computed over, so a widened list here is a tenant leak on screen.
+ *
+ * `hotelIds` therefore arrives from the ONE resolver that implements that rule:
+ * /api/portfolio/v1/bootstrap -> listPortfolioCompaniesUncached ->
+ * resolveAuthorizationScope -> the `staxis_resolve_authorization_scope` RPC ->
+ * `_staxis_nonlegacy_property_authorizations`, which intersects a company hat
+ * with `covered_property_ids` whenever the hat has one.
+ *
+ * Do NOT re-derive this from `loadHats` / `resolveHatCoverage` to save a round
+ * trip. That is a SECOND implementation of the coverage rule, and the two have
+ * already disagreed once.
+ *
  * `descriptors` is deliberately empty: this crew ships the whole-company row
  * only, so a region / portfolio / selected-hotels URL fails closed here until a
  * later crew supplies real descriptors from the receipt.

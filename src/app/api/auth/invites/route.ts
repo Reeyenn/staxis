@@ -1,27 +1,30 @@
 // /api/auth/invites — invite new accounts or add hotel access by email.
-//   GET     ?hotelId=…  — list pending invites for that hotel
-//   POST                — invite a new email or grant an existing account
-//   DELETE  ?id=…       — revoke an invite (deletes the row)
+//   GET     ?hotelId=…          — pending invites for that hotel, hotel jobs
+//   GET     ?organizationId=…   — pending invites across the company, company
+//                                 jobs. The company view has no selected hotel.
+//   POST                        — invite a new email or grant an existing account
+//   DELETE  ?id=…               — revoke an invite (deletes the row)
 //
 // Caller must be admin / owner / general_manager. Owner/GM are scoped to
 // hotels in their property_access; admin can manage any hotel.
 //
-// COMPANY SPINE (0364). The same button now sends two shapes:
+// COMPANY SPINE (0364, rescoped 0464). The POST body has three shapes:
 //
 //   { hotelId, email, role, staffId? }               the hotel request. A GM is
 //                                                    never asked which hotel —
 //                                                    theirs is implied.
-//   { hotelId, email, role, scope, propertyIds,      the company request. Only a
-//     staffId? }                                     company-scoped inviter
-//                                                    (owner / VP) may send it,
-//                                                    and `propertyIds` may name
-//                                                    only hotels inside THEIR
-//                                                    OWN company — that is Wall
-//                                                    B at the invitation
-//                                                    boundary. `scope:'company'`
-//                                                    means every hotel the
-//                                                    company operates, now and
-//                                                    in future.
+//   { hotelId, email, role, scope:'property',        an exact list of hotels.
+//     propertyIds:[…], staffId? }
+//   { hotelId, email, role, scope:'company',         a company job. `propertyIds`
+//     propertyIds?:[…] }                             names the hotels it reaches;
+//                                                    ABSENT or EMPTY means every
+//                                                    hotel the company operates,
+//                                                    including ones added later.
+//
+// `propertyIds` may name only hotels inside the caller's OWN company, and only
+// hotels the caller themselves reaches — that is Wall B at the invitation
+// boundary. Before 0464 a company job was always all-hotels-forever, which is
+// why absent still means that: the old callers meant it.
 //
 // A new email gets a pending invitation. An active existing account receives
 // the authorized access directly, without another email round trip.
@@ -41,8 +44,10 @@ import { errToString } from '@/lib/utils';
 import { findStaxisAccountByEmail } from '@/lib/auth-create-user';
 import {
   companyInviteAuthorityUnchanged,
+  loadCompanyInviteAuthorityContextForOrganization,
   loadFreshCompanyInviteAuthorityContext,
   projectStoredInviteForCompanyContext,
+  projectStoredInviteForCompanyView,
   resolveAuthoritativeInviteScope,
   resolveLocalHotelInviteAuthority,
   type CompanyInviteAuthorityContext,
@@ -177,9 +182,18 @@ function sameInviteScope(
   left: ResolvedAuthoritativeInviteScope,
   right: ResolvedAuthoritativeInviteScope,
 ): boolean {
+  const sameCoverage = left.coveredPropertyIds === null || right.coveredPropertyIds === null
+    ? left.coveredPropertyIds === right.coveredPropertyIds
+    : left.coveredPropertyIds.length === right.coveredPropertyIds.length
+      && left.coveredPropertyIds.every(
+        (propertyId, index) => propertyId === right.coveredPropertyIds![index],
+      );
   return left.organizationId === right.organizationId
     && left.scope === right.scope
     && left.role === right.role
+    // An explicit list and all-including-future can expand to the same hotels
+    // today and still be different promises. Compare both.
+    && sameCoverage
     && left.propertyIds.length === right.propertyIds.length
     && left.propertyIds.every((propertyId, index) => propertyId === right.propertyIds[index]);
 }
@@ -256,6 +270,189 @@ async function exactPropertyNames(propertyIds: readonly string[]): Promise<Map<s
   return new Map(data.map((row) => [row.id, row.name]));
 }
 
+/**
+ * WHAT THE INVITATION EMAIL SAYS YOU ARE BEING INVITED TO.
+ *
+ * This used to be whichever hotel happened to be the authority anchor, which
+ * made "You're invited to Port Arthur Inn on Staxis" the subject line for a
+ * company job covering twelve hotels, and for a three-hotel grant that did not
+ * especially involve Port Arthur. It named a real place, so it did not look
+ * wrong, it just was.
+ *
+ *   company scope    the company. That is the thing being joined.
+ *   several hotels   "Port Arthur Inn and 2 more".
+ *   one hotel        the hotel, exactly as before.
+ *
+ * Falls back to the anchor hotel name if a lookup comes back empty, because a
+ * slightly imprecise subject line is better than no invitation at all.
+ */
+async function inviteDestinationName(
+  hat: ResolvedAuthoritativeInviteScope | null,
+  anchorHotelName: string,
+): Promise<string> {
+  if (!hat) return anchorHotelName;
+  try {
+    if (hat.scope === 'company') {
+      const { data, error } = await supabaseAdmin
+        .from('organizations')
+        .select('name')
+        .eq('id', hat.organizationId)
+        .maybeSingle();
+      if (error) throw error;
+      const name = typeof data?.name === 'string' ? data.name.trim() : '';
+      return name.length > 0 ? name : anchorHotelName;
+    }
+    if (hat.propertyIds.length <= 1) return anchorHotelName;
+    const names = await exactPropertyNames(hat.propertyIds);
+    const ordered = hat.propertyIds
+      .map((propertyId) => names.get(propertyId) ?? '')
+      .filter((name) => name.trim().length > 0)
+      .sort((left, right) => left.localeCompare(right));
+    if (ordered.length === 0) return anchorHotelName;
+    if (ordered.length === 1) return ordered[0]!;
+    if (ordered.length === 2) return `${ordered[0]} and ${ordered[1]}`;
+    return `${ordered[0]} and ${ordered.length - 1} more`;
+  } catch {
+    return anchorHotelName;
+  }
+}
+
+/**
+ * Pending invitations and invite options for a whole COMPANY.
+ *
+ * Same authority rules as the per-hotel listing, asked without a selected
+ * hotel. The authority generation is re-read after the paged database work and
+ * compared, so a revocation landing mid-read produces a refusal rather than a
+ * stale list — the same discipline the per-hotel path uses.
+ */
+async function companyInviteListing(
+  actor: InviteRouteActor,
+  organizationIdRaw: string,
+  requestId: string,
+) {
+  const organizationIdCheck = validateUuid(organizationIdRaw, 'organizationId');
+  if (organizationIdCheck.error || !organizationIdCheck.value) {
+    return err(organizationIdCheck.error ?? 'organizationId is invalid', {
+      requestId, status: 400, code: ApiErrorCode.ValidationFailed,
+    });
+  }
+  const organizationId = organizationIdCheck.value;
+
+  const context = await loadCompanyInviteAuthorityContextForOrganization({
+    accountId: actor.accountId,
+    organizationId,
+  });
+  if (context.kind === 'unavailable') return capabilityUnavailableResponse(requestId);
+  if (context.kind !== 'allowed') return authorityDenied(requestId);
+
+  let rows: StoredInviteRow[] = [];
+  try {
+    rows = await readCompleteCompanyPages<StoredInviteRow>((from, to) => (
+      supabaseAdmin
+        .from('account_invites')
+        .select(
+          'id, hotel_id, email, role, expires_at, created_at, accepted_at, organization_id, membership_scope, covered_property_ids',
+          { count: 'exact' },
+        )
+        .eq('organization_id', organizationId)
+        .is('accepted_at', null)
+        .order('created_at', { ascending: false })
+        .order('id')
+        .range(from, to) as unknown as PromiseLike<CompanyProjectionPage<StoredInviteRow>>
+    ), { maxRows: MAX_VISIBLE_PENDING_INVITES });
+  } catch (queryError) {
+    log.error('[invites:GET] complete company pending-invite read failed', {
+      requestId, msg: errToString(queryError),
+    });
+    return capabilityUnavailableResponse(requestId);
+  }
+  if (rows.some((row) => !normalizedInviteRow(row))) {
+    log.error('[invites:GET] company pending-invite query returned an invalid partition', {
+      requestId,
+    });
+    return capabilityUnavailableResponse(requestId);
+  }
+
+  const projections = new Map<string, ProjectedStoredInviteScope>();
+  for (const row of rows) {
+    const projection = projectStoredInviteForCompanyView(context.value, storedInviteScope(row));
+    if (projection) projections.set(row.id, projection);
+  }
+
+  let options: InviteOptions;
+  try {
+    options = await inviteOptionsFor(context.value, 'company');
+  } catch (optionsErr) {
+    log.warn('[invites:GET] company options unavailable', {
+      requestId, msg: errToString(optionsErr),
+    });
+    options = {
+      choosesHotels: false,
+      organizationId,
+      jobs: [],
+      hotels: [],
+      allowsAllIncludingFuture: false,
+    };
+  }
+
+  let propertyNames: Map<string, string>;
+  try {
+    propertyNames = await exactPropertyNames(
+      [...projections.values()].flatMap((projection) => projection.propertyIds),
+    );
+  } catch (nameError) {
+    log.error('[invites:GET] company property-name projection failed', {
+      requestId, msg: errToString(nameError),
+    });
+    return capabilityUnavailableResponse(requestId);
+  }
+
+  // Re-assert the exact authority generation before anything leaves.
+  const finalContext = await loadCompanyInviteAuthorityContextForOrganization({
+    accountId: actor.accountId,
+    organizationId,
+  });
+  if (finalContext.kind === 'unavailable') return capabilityUnavailableResponse(requestId);
+  if (finalContext.kind !== 'allowed'
+      || !companyInviteAuthorityUnchanged(context.value, finalContext.value)) {
+    return authorityDenied(requestId);
+  }
+  for (const row of rows) {
+    const initial = projections.get(row.id);
+    const final = projectStoredInviteForCompanyView(finalContext.value, storedInviteScope(row));
+    if (!!initial !== !!final
+        || (initial && final && !sameProjectedScope(initial, final))) {
+      return authorityDenied(requestId);
+    }
+  }
+
+  const nowMs = Date.now();
+  const invites = rows.flatMap((row) => {
+    const projection = projections.get(row.id);
+    if (!projection) return [];
+    const status = accountInviteStatus(row.expires_at, nowMs);
+    return [{
+      id: row.id,
+      email: row.email,
+      role: row.role,
+      expires_at: row.expires_at,
+      created_at: row.created_at,
+      accepted_at: row.accepted_at,
+      status,
+      isExpired: status === 'expired',
+      organizationId,
+      scope: projection.scope,
+      propertyIds: projection.propertyIds,
+      propertyNames: projection.propertyIds.map((propertyId) => propertyNames.get(propertyId)!),
+      canRevoke: projection.canRevoke,
+      /** null means the promise follows the company into hotels it buys later. */
+      coversAllIncludingFuture: projection.scope === 'company'
+        && row.covered_property_ids === null,
+    }];
+  });
+  return ok({ invites, options }, { requestId });
+}
+
 export async function GET(req: NextRequest) {
   const requestId = getOrMintRequestId(req);
   const authentication = await authenticateInviteRoute(req, requestId);
@@ -263,7 +460,17 @@ export async function GET(req: NextRequest) {
   const { actor } = authentication;
 
   const { searchParams } = new URL(req.url);
+  const organizationIdRaw = searchParams.get('organizationId');
   const hotelIdRaw = searchParams.get('hotelId');
+
+  // The company view asks by COMPANY, because it has no hotel selected. It is
+  // a different question from "who is pending at this hotel" and gets a
+  // different answer: company jobs to offer, and every pending invitation the
+  // caller can see anywhere in the company.
+  if (organizationIdRaw && !hotelIdRaw) {
+    return companyInviteListing(actor, organizationIdRaw, requestId);
+  }
+
   if (!hotelIdRaw) return err('hotelId required', { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
   const hotelIdCheck = validateUuid(hotelIdRaw, 'hotelId');
   if (hotelIdCheck.error || !hotelIdCheck.value) {
@@ -419,9 +626,12 @@ export async function GET(req: NextRequest) {
   // questions it has always asked; for someone who runs a company it also
   // carries the list their third question is chosen from. Attached to the read
   // the dialog already makes rather than a second endpoint.
-  let options: InviteOptions = { choosesHotels: false, organizationId: null, jobs: [], hotels: [] };
+  let options: InviteOptions = {
+    choosesHotels: false, organizationId: null, jobs: [], hotels: [],
+    allowsAllIncludingFuture: false,
+  };
   try {
-    if (canReadNormalized) options = await inviteOptionsFor(companyContext.value);
+    if (canReadNormalized) options = await inviteOptionsFor(companyContext.value, 'hotel');
     else if (canReadLegacy && localAuthority.kind === 'allowed') {
       options = await localInviteOptionsFor(hotelId, localAuthority.value.roleAtHotel);
     }
@@ -534,10 +744,30 @@ interface InviteOptions {
     allowedPropertyIds: string[];
   }>;
   hotels: Array<{ id: string; name: string }>;
+  /**
+   * May this caller choose "all hotels, including ones added later"? Only
+   * somebody whose own authority already follows the company forward. An owner
+   * standing on an explicit list gets the checkboxes and not this.
+   */
+  allowsAllIncludingFuture: boolean;
 }
+
+/**
+ * WHICH SCREEN IS ASKING.
+ *
+ * `hotel`   the People list of one hotel. Hotel jobs only. Owner and Regional
+ *           Manager are company jobs and have no business in a dropdown headed
+ *           "what job at this hotel" — offering them there was how somebody
+ *           handed out company-wide authority while thinking about one
+ *           building.
+ * `company` the company view. Company jobs only, each with the which-hotels
+ *           question attached.
+ */
+type InviteSurface = 'hotel' | 'company';
 
 async function inviteOptionsFor(
   context: CompanyInviteAuthorityContext,
+  surface: InviteSurface,
 ): Promise<InviteOptions> {
   const jobs: InviteOptions['jobs'] = [];
   const offer = (
@@ -548,24 +778,32 @@ async function inviteOptionsFor(
     if (jobs.some((job) => job.value === value)) return;
     jobs.push({ value, scope, label: HAT_ROLE_LABELS[value], allowedPropertyIds });
   };
-  for (const role of ['general_manager', 'front_desk', 'housekeeping', 'maintenance'] as const) {
-    const allowedPropertyIds = context.operatedPropertyIds.filter((propertyId) => (
-      resolveAuthoritativeInviteScope(
-      context,
-      role,
-      'property',
-      [propertyId],
-      ).kind === 'allowed'
-    ));
-    if (allowedPropertyIds.length > 0) offer(role, 'property', allowedPropertyIds);
-  }
-  for (const role of ['owner', 'vp', 'finance'] as const) {
-    if (resolveAuthoritativeInviteScope(
-      context,
-      role,
-      'company',
-      [],
-    ).kind === 'allowed') offer(role, 'company', []);
+  if (surface === 'hotel') {
+    for (const role of ['general_manager', 'front_desk', 'housekeeping', 'maintenance'] as const) {
+      const allowedPropertyIds = context.operatedPropertyIds.filter((propertyId) => (
+        resolveAuthoritativeInviteScope(
+          context,
+          role,
+          'property',
+          [propertyId],
+        ).kind === 'allowed'
+      ));
+      if (allowedPropertyIds.length > 0) offer(role, 'property', allowedPropertyIds);
+    }
+  } else {
+    for (const role of ['owner', 'regional_manager'] as const) {
+      // A company job is offered when the caller could grant it over AT LEAST
+      // one hotel. Which hotels they may actually tick is `allowedPropertyIds`.
+      const allowedPropertyIds = context.operatedPropertyIds.filter((propertyId) => (
+        resolveAuthoritativeInviteScope(
+          context,
+          role,
+          'company',
+          [propertyId],
+        ).kind === 'allowed'
+      ));
+      if (allowedPropertyIds.length > 0) offer(role, 'company', allowedPropertyIds);
+    }
   }
 
   const propertyIds = [...new Set(jobs.flatMap((job) => job.allowedPropertyIds))].sort();
@@ -577,11 +815,21 @@ async function inviteOptionsFor(
       .sort((a, b) => a.name.localeCompare(b.name));
   }
 
+  const allowsAllIncludingFuture = surface === 'company'
+    && jobs.length > 0
+    && jobs.some((job) => resolveAuthoritativeInviteScope(
+      context,
+      job.value,
+      'company',
+      null,
+    ).kind === 'allowed');
+
   return {
-    choosesHotels: jobs.some((job) => job.scope === 'company') || hotels.length > 1,
+    choosesHotels: surface === 'company' || hotels.length > 1,
     organizationId: context.organizationId,
     jobs,
     hotels,
+    allowsAllIncludingFuture,
   };
 }
 
@@ -603,6 +851,7 @@ async function localInviteOptionsFor(
     organizationId: null,
     jobs,
     hotels: [{ id: hotelId, name: names.get(hotelId)! }],
+    allowsAllIncludingFuture: false,
   };
 }
 
@@ -759,7 +1008,7 @@ export async function POST(req: NextRequest) {
       freshContext.value,
       hat.role,
       hat.scope,
-      hat.scope === 'property' ? hat.propertyIds : [],
+      hat.coveredPropertyIds ?? [],
     );
     if (freshScope.kind !== 'allowed' || !sameInviteScope(hat, freshScope.value)) {
       return authorityDenied(requestId);
@@ -830,7 +1079,7 @@ export async function POST(req: NextRequest) {
         p_role: role,
         p_organization_id: hat?.organizationId ?? null,
         p_membership_scope: hat?.scope ?? null,
-        p_covered_property_ids: hat?.scope === 'property' ? hat.propertyIds : null,
+        p_covered_property_ids: hat?.coveredPropertyIds ?? null,
         p_target_staff_id: targetStaffId,
         p_request_id: requestId,
       },
@@ -942,7 +1191,7 @@ export async function POST(req: NextRequest) {
           membershipScope: hat?.scope ?? null,
           organizationId: hat?.organizationId ?? null,
           hotelId: inviteAnchorHotelId,
-          coveredPropertyIds: hat?.scope === 'property' ? hat.propertyIds : null,
+          coveredPropertyIds: hat?.coveredPropertyIds ?? null,
         })
         : [],
       actorAccountId: actor.accountId,
@@ -976,7 +1225,7 @@ export async function POST(req: NextRequest) {
       p_expires_at: expiresAt,
       p_organization_id: hat?.organizationId ?? null,
       p_membership_scope: hat?.scope ?? null,
-      p_covered_property_ids: hat?.scope === 'property' ? hat.propertyIds : null,
+      p_covered_property_ids: hat?.coveredPropertyIds ?? null,
       p_request_id: requestId,
       p_target_staff_id: targetStaffId,
     },
@@ -1066,11 +1315,12 @@ export async function POST(req: NextRequest) {
   // transport changes. Use the canonical application origin rather than a
   // caller-controlled Host header so the emailed link cannot be poisoned.
   const inviteLink = `${env.NEXT_PUBLIC_APP_URL.replace(/\/$/, '')}/invite/${rawToken}`;
+  const destinationName = await inviteDestinationName(hat, hotelName);
   let emailResult: SendEmailResult;
   try {
     emailResult = await sendHotelAccountInvite({
       to: normalizedEmail,
-      hotelName,
+      hotelName: destinationName,
       role: legacyRole,
       roleLabelOverride: hat ? HAT_ROLE_LABELS[hat.role].en : undefined,
       inviteUrl: inviteLink,

@@ -122,12 +122,12 @@ async function addHat(input: {
   organizationId: string;
   accountId: string;
   scope: 'company' | 'property';
-  role: 'owner' | 'vp' | 'general_manager';
+  role: 'owner' | 'regional_manager' | 'general_manager';
   propertyIds?: string[];
 }): Promise<string> {
   const jobCategory = input.role === 'owner'
     ? 'owner_principal'
-    : input.role === 'vp'
+    : input.role === 'regional_manager'
       ? 'regional_manager'
       : 'general_manager';
   const row = await pg.query<{ id: string }>(
@@ -247,7 +247,7 @@ before(async () => {
   await attachProperty(ORG_B, PB, 'Foreign Hotel', USER_FOREIGN);
 
   await addHat({ organizationId: ORG_A, accountId: ACCOUNT_BROAD, scope: 'company', role: 'owner' });
-  await addHat({ organizationId: ORG_A, accountId: ACCOUNT_MIXED, scope: 'company', role: 'vp' });
+  await addHat({ organizationId: ORG_A, accountId: ACCOUNT_MIXED, scope: 'company', role: 'regional_manager' });
   await addHat({
     organizationId: ORG_A,
     accountId: ACCOUNT_MIXED,
@@ -255,7 +255,7 @@ before(async () => {
     role: 'general_manager',
     propertyIds: [P1],
   });
-  await addHat({ organizationId: ORG_A, accountId: ACCOUNT_REVOKE, scope: 'company', role: 'vp' });
+  await addHat({ organizationId: ORG_A, accountId: ACCOUNT_REVOKE, scope: 'company', role: 'regional_manager' });
   revocablePropertyMembershipId = await addHat({
     organizationId: ORG_A,
     accountId: ACCOUNT_REVOKE,
@@ -277,7 +277,7 @@ before(async () => {
     organizationId: ORG_LARGE,
     accountId: ACCOUNT_LARGE,
     scope: 'company',
-    role: 'vp',
+    role: 'regional_manager',
   });
 
   const catalog = await loadCatalog(pg);

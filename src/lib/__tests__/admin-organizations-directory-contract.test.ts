@@ -101,10 +101,12 @@ describe('Admin Studio Hotels information architecture', () => {
     assert.equal(peopleLinks.length, 2);
     assert.match(surfaceSource, />\s*People\s*</);
     // The fleet points the app at a hotel through the ONE selection setter, not
-    // by writing localStorage behind PropertyContext's guards.
+    // by writing localStorage behind PropertyContext's guards. The key may still
+    // be NAMED here (the helper's comment says what it replaced); what must not
+    // come back is a write to it.
     assert.match(surfaceSource, /const rememberActiveHotel = useRememberActiveHotel\(\)/);
     assert.match(surfaceSource, /setActiveScope\(\{ kind: 'hotel', propertyId: hotelId \}\)/);
-    assert.doesNotMatch(surfaceSource, /hotelops-active-property/);
+    assert.doesNotMatch(surfaceSource, /setItem\(\s*'hotelops-active-property'/);
   });
 
   // The confirmation may now offer "Invite people" (founder ruling 2026-07-31),
@@ -173,12 +175,14 @@ describe('Admin organization directory read boundary', () => {
     assert.match(assignRouteSource, /staxis_set_primary_property_organization/);
   });
 
-  test('bootstraps leaders through the narrow admin-only RPC with real email fallback', () => {
+  test('bootstraps leaders through the main guarded invite family', () => {
     assert.match(bootstrapInviteRouteSource, /requireAdmin\(req\)/);
-    assert.match(bootstrapInviteRouteSource, /BOOTSTRAP_PROFILES/);
-    assert.match(bootstrapInviteRouteSource, /staxis_bootstrap_organization_leader_invitation/);
-    assert.match(bootstrapInviteRouteSource, /sendOrganizationAccessInvite/);
-    assert.match(bootstrapInviteRouteSource, /randomBytes\(32\)\.toString\(['"]hex['"]\)/);
-    assert.match(bootstrapInviteRouteSource, /company-invite\/\$\{encodeURIComponent\(rawToken\)\}/);
+    // The second invitation system is retired: this must mint into
+    // account_invites and land on the ordinary acceptance page, so a company
+    // leader is invited by the same machinery as everybody else.
+    assert.match(bootstrapInviteRouteSource, /staxis_create_account_invite_guarded/);
+    assert.match(bootstrapInviteRouteSource, /p_membership_scope: 'company'/);
+    assert.match(bootstrapInviteRouteSource, /\/invite\/\$\{rawToken\}/);
+    assert.doesNotMatch(bootstrapInviteRouteSource, /staxis_bootstrap_organization_leader_invitation/);
   });
 });

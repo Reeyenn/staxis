@@ -18,8 +18,6 @@ const routeFiles = {
     'onboard/page.tsx',
     'phone-signin/page.tsx',
     'invite/[token]/page.tsx',
-    'company-invite/layout.tsx',
-    'company-invite/[token]/page.tsx',
     'signin/page.tsx',
     'signin/forgot/page.tsx',
     'signin/reset/page.tsx',
