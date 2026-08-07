@@ -56,26 +56,39 @@ interface RawRule {
 
 /** Strong-to-weak, for picking between two rules that both apply. */
 const APPROVER_STRENGTH: Record<AuthorityApproverRole, number> = {
-  owner: 3,
-  vp: 2,
-  finance: 1,
+  owner: 2,
+  regional_manager: 1,
   general_manager: 0,
 };
 
 function mapRule(row: RawRule): AuthorityRule | null {
   if (!isAuthorityActionKind(row.action_kind)) return null;
-  if (!isAuthorityApproverRole(row.approver_role)) return null;
   const cents = typeof row.threshold_cents === 'string'
     ? Number.parseInt(row.threshold_cents, 10)
     : row.threshold_cents;
   if (!Number.isFinite(cents)) return null;
+  // FAIL CLOSED on a role we cannot read.
+  //
+  // This used to `return null`, which DISCARDED the rule — and a discarded
+  // approval rule does not fail safe, it unlocks. A company that wrote "any
+  // invoice over $1,000 needs finance approval" would have had that card
+  // quietly go through unsigned the moment the stored word stopped being one
+  // we knew. 0461 retires the words `vp` and `finance`, which is exactly the
+  // situation that would have triggered it. That migration converts the stored
+  // rows, so this branch should never fire in practice — it is here because
+  // "should never fire" is not a guarantee, and the safe direction for an
+  // unreadable signature requirement is to demand the STRONGEST signature, not
+  // to wave the money through.
+  const approverRole: AuthorityApproverRole = isAuthorityApproverRole(row.approver_role)
+    ? row.approver_role
+    : 'owner';
   return {
     id: row.id,
     organizationId: row.organization_id,
     actionKind: row.action_kind,
     thresholdCents: cents,
     thresholdInclusive: row.threshold_inclusive === true,
-    approverRole: row.approver_role,
+    approverRole,
     sourceFactId: row.source_fact_id,
   };
 }

@@ -55,13 +55,30 @@ export interface CompanyInviteAuthorityContext {
   authorizedPropertyIds: string[];
   authorizationEntitlements: AuthorizationScopeEntitlement[];
   authorizationReceipt: AuthorizationScopeReceipt | null;
+  /**
+   * Does this caller's OWN authority follow the company into hotels it has not
+   * bought yet? True for an all-including-future company hat or an
+   * organization-wide grant; false for anyone standing on an explicit list.
+   *
+   * This is deliberately NOT "covers every hotel today". Someone explicitly
+   * listed on all 20 of 20 hotels covers everything today and still must not
+   * mint an all-including-future hat, because hotel 21 is not theirs to give.
+   */
+  coversFutureProperties: boolean;
 }
 
 export interface ResolvedAuthoritativeInviteScope {
   organizationId: string;
   scope: MembershipScope;
   role: HatRole;
+  /** The hotels this grant reaches TODAY. Always concrete, for email and UI. */
   propertyIds: string[];
+  /**
+   * What gets persisted to `covered_property_ids`: null for "all hotels the
+   * company operates, including ones added later", or the explicit list.
+   * A property-scope grant is always an explicit list.
+   */
+  coveredPropertyIds: string[] | null;
   legacyRole: AppRole;
 }
 
@@ -101,6 +118,7 @@ export function companyInviteAuthorityUnchanged(
       || first.isPlatformAdmin !== current.isPlatformAdmin
       || first.organizationId !== current.organizationId
       || first.anchorPropertyId !== current.anchorPropertyId
+      || first.coversFutureProperties !== current.coversFutureProperties
       || !sameStrings(first.operatedPropertyIds, current.operatedPropertyIds)
       || !sameStrings(first.authorizedPropertyIds, current.authorizedPropertyIds)) {
     return false;
@@ -147,6 +165,50 @@ async function loadOperatedPropertyIds(
   return propertyIds.length > 0
     ? { kind: 'allowed', value: propertyIds }
     : { kind: 'denied' };
+}
+
+/**
+ * Does this caller hold authority that follows the company forward?
+ *
+ * Two shapes qualify, and only these two:
+ *   - a live company-scope hat whose `covered_property_ids` is NULL, which is
+ *     precisely how "every hotel, including ones added later" is stored;
+ *   - a live organization-scope access grant, which is org-wide by definition.
+ *
+ * Anything narrower — an explicit company hat list, a portfolio grant, a
+ * property hat — is bounded by hotels that exist now, so it cannot be the
+ * source of a promise about hotels that do not.
+ */
+async function loadCoversFutureProperties(
+  accountId: string,
+  organizationId: string,
+): Promise<AccountInviteAuthorityResult<boolean>> {
+  const membership = await supabaseAdmin
+    .from('organization_memberships')
+    .select('id')
+    .eq('account_id', accountId)
+    .eq('organization_id', organizationId)
+    .eq('status', 'active')
+    .eq('membership_scope', 'company')
+    .is('ended_at', null)
+    .is('covered_property_ids', null)
+    .not('staxis_role', 'is', null)
+    .limit(1);
+  if (membership.error) return { kind: 'unavailable' };
+  if ((membership.data ?? []).length > 0) return { kind: 'allowed', value: true };
+
+  const grant = await supabaseAdmin
+    .from('organization_access_grants')
+    .select('id, organization_memberships!inner(account_id, status, ended_at)')
+    .eq('organization_id', organizationId)
+    .eq('status', 'active')
+    .eq('scope_type', 'organization')
+    .eq('organization_memberships.account_id', accountId)
+    .eq('organization_memberships.status', 'active')
+    .is('organization_memberships.ended_at', null)
+    .limit(1);
+  if (grant.error) return { kind: 'unavailable' };
+  return { kind: 'allowed', value: (grant.data ?? []).length > 0 };
 }
 
 export async function loadActiveAccountInviteActor(
@@ -205,9 +267,16 @@ export async function loadCompanyInviteAuthorityContext(input: {
         authorizedPropertyIds: operated.value,
         authorizationEntitlements: [],
         authorizationReceipt: null,
+        coversFutureProperties: true,
       },
     };
   }
+
+  const coversFuture = await loadCoversFutureProperties(
+    input.accountId,
+    topology.organizationId,
+  );
+  if (coversFuture.kind !== 'allowed') return coversFuture;
 
   const resolved = await resolveAuthorizationScope({
     accountId: input.accountId,
@@ -231,6 +300,7 @@ export async function loadCompanyInviteAuthorityContext(input: {
         authorizedPropertyIds: resolved.receipt.authorizedPropertyIds,
         authorizationEntitlements: resolved.receipt.provenance.entitlements,
         authorizationReceipt: resolved.receipt,
+        coversFutureProperties: coversFuture.value,
       },
     };
   }
@@ -280,6 +350,7 @@ export async function loadCompanyInviteAuthorityContext(input: {
       authorizedPropertyIds,
       authorizationEntitlements,
       authorizationReceipt: null,
+      coversFutureProperties: coversFuture.value,
     },
   };
 }
@@ -325,7 +396,8 @@ function entitlementCanGrantPropertyRole(
 ): boolean {
   if (entitlement.entitlementKind === 'membership_hat') {
     if (entitlement.scopeType === 'company') {
-      return entitlement.staxisRole === 'owner' || entitlement.staxisRole === 'vp';
+      return entitlement.staxisRole === 'owner'
+        || entitlement.staxisRole === 'regional_manager';
     }
     return entitlement.scopeType === 'property'
       && entitlement.staxisRole === 'general_manager'
@@ -337,19 +409,28 @@ function entitlementCanGrantPropertyRole(
   return entitlement.accessProfile === 'property_manager' && role !== 'general_manager';
 }
 
+/**
+ * Who may mint a COMPANY hat at all.
+ *
+ * Only an owner. A regional manager used to be able to hire exactly one
+ * company job — `finance` — and 0461 retired that word, so the regional
+ * manager's company-side hiring power is now nothing rather than a dead branch
+ * that reads as if it still grants something. Hotel jobs are unaffected: that
+ * is `entitlementCanGrantPropertyRole`, and a regional manager still hires
+ * freely there.
+ *
+ * `role` is retained in the signature because the caller asks this question per
+ * requested role and the shape should not change if the vocabulary grows again.
+ */
 function entitlementCanGrantCompanyRole(
   entitlement: AuthorizationScopeEntitlement,
-  role: HatRole,
+  _role: HatRole,
 ): boolean {
   if (!broadEntitlement(entitlement)) return false;
   if (entitlement.entitlementKind === 'membership_hat') {
-    if (entitlement.staxisRole === 'owner') return true;
-    return entitlement.staxisRole === 'vp' && role === 'finance';
+    return entitlement.staxisRole === 'owner';
   }
-  if (entitlement.accessProfile === 'organization_owner') return true;
-  return (entitlement.accessProfile === 'organization_admin'
-      || entitlement.accessProfile === 'portfolio_manager')
-    && role === 'finance';
+  return entitlement.accessProfile === 'organization_owner';
 }
 
 function entitlementsAt(
@@ -381,16 +462,37 @@ export function resolveAuthoritativeInviteScope(
   }
   const operated = new Set(context.operatedPropertyIds);
   if (requestedScope === 'company') {
+    // Absent / empty means "all hotels, including ones added later" — the only
+    // shape a company hat had before 0461, so old callers keep their meaning.
+    // A non-empty list means exactly those hotels and nothing else.
+    const requestedList = requestedPropertyIds === null
+      || requestedPropertyIds === undefined
+      || (Array.isArray(requestedPropertyIds) && requestedPropertyIds.length === 0)
+      ? null
+      : readPropertyIds(requestedPropertyIds);
+    if (requestedPropertyIds !== null
+        && requestedPropertyIds !== undefined
+        && !(Array.isArray(requestedPropertyIds) && requestedPropertyIds.length === 0)
+        && !requestedList) {
+      return { kind: 'denied' };
+    }
+    if (requestedList && requestedList.some((propertyId) => !operated.has(propertyId))) {
+      return { kind: 'denied' };
+    }
+
+    // Which hotels must the caller personally be able to hire a company job at?
+    // For an explicit list, exactly that list. For all-including-future, every
+    // hotel operated today AND a standing that itself follows the company
+    // forward, so a fully-listed owner cannot promise hotel 21.
+    const mustCover = requestedList ?? context.operatedPropertyIds;
     if (!context.isPlatformAdmin) {
-      if (context.authorizedPropertyIds.length !== context.operatedPropertyIds.length
-          || context.operatedPropertyIds.some(
-            (propertyId) => !context.authorizedPropertyIds.includes(propertyId),
-          )
-          || context.operatedPropertyIds.some((propertyId) => !entitlementsAt(
-            context,
-            propertyId,
-          ).some((entitlement) => broadEntitlement(entitlement)
-            && entitlementCanGrantCompanyRole(entitlement, requestedRole)))) {
+      if (!requestedList && !context.coversFutureProperties) return { kind: 'denied' };
+      if (mustCover.some((propertyId) => !context.authorizedPropertyIds.includes(propertyId))) {
+        return { kind: 'denied' };
+      }
+      if (mustCover.some((propertyId) => !entitlementsAt(context, propertyId)
+        .some((entitlement) => broadEntitlement(entitlement)
+          && entitlementCanGrantCompanyRole(entitlement, requestedRole)))) {
         return { kind: 'denied' };
       }
     }
@@ -400,7 +502,8 @@ export function resolveAuthoritativeInviteScope(
         organizationId: context.organizationId,
         scope: requestedScope,
         role: requestedRole,
-        propertyIds: context.operatedPropertyIds,
+        propertyIds: requestedList ?? context.operatedPropertyIds,
+        coveredPropertyIds: requestedList,
         legacyRole: legacyRoleForHat(requestedRole),
       },
     };
@@ -424,6 +527,7 @@ export function resolveAuthoritativeInviteScope(
       scope: requestedScope,
       role: requestedRole,
       propertyIds,
+      coveredPropertyIds: propertyIds,
       legacyRole: legacyRoleForHat(requestedRole),
     },
   };
@@ -452,11 +556,16 @@ export function projectStoredInviteForCompanyContext(
 
   const operated = new Set(context.operatedPropertyIds);
   if (!operated.has(invite.hotelId) || !operated.has(selectedPropertyId)) return null;
-  const targetPropertyIds = invite.membershipScope === 'company'
-    ? invite.coveredPropertyIds === null
-      ? context.operatedPropertyIds
-      : null
+  // A company invite stores NULL for "all hotels including future ones", or an
+  // explicit list. NULL expands to whatever the company operates right now,
+  // which is exactly what the invitee would get if they accepted today.
+  const storedCoverage = invite.membershipScope === 'company'
+    && invite.coveredPropertyIds === null
+    ? null
     : readPropertyIds(invite.coveredPropertyIds);
+  const targetPropertyIds = storedCoverage ?? (
+    invite.membershipScope === 'company' ? context.operatedPropertyIds : null
+  );
   if (!targetPropertyIds
       || targetPropertyIds.some((propertyId) => !operated.has(propertyId))
       || (invite.membershipScope === 'property'
@@ -469,11 +578,14 @@ export function projectStoredInviteForCompanyContext(
   if (!canViewAt(selectedPropertyId)) return null;
 
   const propertyIds = targetPropertyIds.filter(canViewAt).sort();
+  // Revoking requires authority over the COMPLETE persisted promise, so this
+  // re-asks with the invite's own stored coverage — an explicit list stays a
+  // list, and all-including-future stays all-including-future.
   const fullAuthority = resolveAuthoritativeInviteScope(
     context,
     invite.role,
     invite.membershipScope,
-    invite.membershipScope === 'property' ? targetPropertyIds : [],
+    storedCoverage ?? [],
   );
   return {
     scope: invite.membershipScope,
@@ -492,16 +604,19 @@ export async function resolveStoredNormalizedInviteAuthority(input: {
   invite: StoredNormalizedInviteScope;
 }): Promise<AccountInviteAuthorityResult<ResolvedAuthoritativeInviteScope>> {
   const { invite } = input;
-  const coveredPropertyIds = invite.membershipScope === 'property'
-    ? readPropertyIds(invite.coveredPropertyIds)
-    : null;
+  // Company scope carries either NULL (all hotels including future ones) or an
+  // explicit list. Property scope must always carry a list containing its own
+  // anchor hotel.
+  const coveredPropertyIds = invite.coveredPropertyIds === null
+    ? null
+    : readPropertyIds(invite.coveredPropertyIds);
   if (!UUID_RX.test(invite.hotelId)
       || !invite.organizationId
       || !UUID_RX.test(invite.organizationId)
       || !isMembershipScope(invite.membershipScope)
       || !isHatRole(invite.role)
       || !scopeAllowsRole(invite.membershipScope, invite.role)
-      || (invite.membershipScope === 'company' && invite.coveredPropertyIds !== null)
+      || (invite.coveredPropertyIds !== null && !coveredPropertyIds)
       || (invite.membershipScope === 'property'
         && (!coveredPropertyIds || !coveredPropertyIds.includes(invite.hotelId)))) {
     return { kind: 'denied' };

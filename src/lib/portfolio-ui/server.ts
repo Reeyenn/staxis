@@ -749,8 +749,7 @@ interface ContextFact {
 
 const COMPANY_ROLE_STRENGTH: Record<PortfolioUiCompanyRole, number> = {
   owner: 3,
-  vp: 2,
-  finance: 1,
+  regional_manager: 1,
 };
 
 export interface PortfolioUiAuthoritativeCompany {
@@ -823,9 +822,13 @@ export function authorizedPortfolioUiContexts(
               portfolioIntelligenceRead: true as const,
             };
           }),
-          presentationCapabilities: group.role === 'finance'
-            ? ['portfolio_intelligence_read' as const]
-            : ['portfolio_intelligence_read' as const, 'manage_people' as const],
+          // Every surviving company hat (owner, regional manager) may manage
+          // people. `finance` was the one that could not, and 0461 retired it.
+          // WHICH hotels is decided by `propertyIds` above, never here.
+          presentationCapabilities: [
+            'portfolio_intelligence_read' as const,
+            'manage_people' as const,
+          ],
         }));
       })();
   return companies

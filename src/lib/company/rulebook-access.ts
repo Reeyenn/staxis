@@ -189,27 +189,26 @@ export interface RulebookStanding {
   canView: boolean;
   canEdit: boolean;
   /** The strongest company-scope job they hold here. null for a GM. */
-  companyRole: 'owner' | 'vp' | 'finance' | null;
+  companyRole: 'owner' | 'regional_manager' | null;
   /** True when a scoped portfolio/property manager is the only reason they can see it. */
   viewOnlyBecauseHotelJob: boolean;
 }
 
-const COMPANY_ROLE_STRENGTH = { owner: 3, vp: 2, finance: 1 } as const;
+const COMPANY_ROLE_STRENGTH = { owner: 2, regional_manager: 1 } as const;
 
-type CompanyRole = 'owner' | 'vp' | 'finance';
+type CompanyRole = 'owner' | 'regional_manager';
 
 function entitlementCompanyRole(
   entitlement: AuthoritativePropertyEntitlement,
 ): CompanyRole | null {
   if (entitlement.scopeType === 'company'
     && (entitlement.staxisRole === 'owner'
-      || entitlement.staxisRole === 'vp'
-      || entitlement.staxisRole === 'finance')) {
+      || entitlement.staxisRole === 'regional_manager')) {
     return entitlement.staxisRole;
   }
   if (entitlement.scopeType === 'organization') {
     if (entitlement.accessProfile === 'organization_owner') return 'owner';
-    if (entitlement.accessProfile === 'organization_admin') return 'vp';
+    if (entitlement.accessProfile === 'organization_admin') return 'regional_manager';
   }
   return null;
 }
@@ -232,7 +231,7 @@ function strongestRoleFromCoverage(
     current.propertyIds.add(propertyId);
     coverage.set(key, current);
   }
-  let best: 'owner' | 'vp' | 'finance' | null = null;
+  let best: 'owner' | 'regional_manager' | null = null;
   for (const candidate of coverage.values()) {
     if (candidate.propertyIds.size !== propertyIds.length
       || propertyIds.some((propertyId) => !candidate.propertyIds.has(propertyId))) continue;
@@ -277,7 +276,12 @@ function hasHotelManagerStanding(standings: readonly AuthoritativePropertyStandi
   )));
 }
 
-function editorChoiceAdmits(choice: string | null, role: 'owner' | 'vp' | 'finance'): boolean {
+// `owner_and_vp` and `company_scope` are STORED setting values. 0461 left them
+// alone on purpose: rewriting a company's saved choice is a change to what they
+// chose, not a rename. With `finance` retired the two now admit exactly the same
+// people (owner + regional manager), so the pair is redundant rather than wrong.
+// Collapsing them is a product decision, not a migration one.
+function editorChoiceAdmits(choice: string | null, role: 'owner' | 'regional_manager'): boolean {
   // The owner always edits their own company's book, whatever the choice says.
   if (role === 'owner') return true;
   switch (choice) {
@@ -285,7 +289,7 @@ function editorChoiceAdmits(choice: string | null, role: 'owner' | 'vp' | 'finan
     case 'company_scope': return true;
     case 'owner_and_vp':
     default:
-      return role === 'vp';
+      return role === 'regional_manager';
   }
 }
 

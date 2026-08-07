@@ -1918,12 +1918,11 @@ export interface PersonRowProps {
 }
 
 /** What a company job means to the hotel reading it. The company vocabulary
- *  ("VP", "Finance") is about the company; this says it as the relationship the
- *  hotel actually has to that person. */
+ *  ("Regional Manager") is about the company; this says it as the relationship
+ *  the hotel actually has to that person. */
 function companyOversightLine(job: RosterCompanyJob): string {
-  if (job.role === 'vp') return 'Oversees this hotel';
+  if (job.role === 'regional_manager') return 'Oversees this hotel';
   if (job.role === 'owner') return 'Owns the company that runs this hotel';
-  if (job.role === 'finance') return 'Handles finance for this hotel';
   return `${job.label.en} at company level`;
 }
 
