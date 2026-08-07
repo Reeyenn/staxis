@@ -897,6 +897,11 @@ export const EXPECTED_MIGRATIONS_STATIC: ReadonlyArray<string> = [
   // explicit-list invitation can actually be accepted, and a hat naming some
   // hotels no longer reads as the whole company.
   '0467',
+  // Coverage never empties: detaching a person from their last hotel, and
+  // deleting a hotel, end the job instead of leaving it naming zero hotels;
+  // and a job naming some hotels can no longer manage every grouping or hand
+  // out whole-company access.
+  '0468',
 ];
 
 /**

@@ -406,11 +406,17 @@ begin
          );
 
       -- The hat named only the hotel being deleted. End it, keeping the list,
-      -- which is now the only record of where that job was. Already-ended rows
-      -- keep the ended_at they were given; `status` and `ended_at` move
-      -- together or the revoked-shape CHECK refuses the row.
+      -- which is now the only record of where that job was.
+      --
+      -- `status` and `ended_at` move TOGETHER or `..._revoked_shape_check`
+      -- refuses the row: it asserts `(status = 'revoked') = (ended_at is not
+      -- null)`. So status is set unconditionally rather than only for an active
+      -- row — a SUSPENDED hat given an ended_at while it kept its own status
+      -- would violate that check, and a suspended job whose only hotel no
+      -- longer exists is over in exactly the way an active one is. An
+      -- already-revoked row keeps the ended_at it was given.
       update public.organization_memberships membership
-         set status = case when membership.status = 'active' then 'revoked' else membership.status end,
+         set status = 'revoked',
              ended_at = coalesce(membership.ended_at, clock_timestamp()),
              updated_at = clock_timestamp()
        where membership.account_id = v_account.id
