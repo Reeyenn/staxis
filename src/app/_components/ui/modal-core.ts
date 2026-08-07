@@ -100,7 +100,7 @@ export function modalCardStyle(variant: ModalVariant, t: ResolvedModalTheme): CS
   if (variant === 'sheet') {
     return {
       width: '100%',
-      maxHeight: '92vh',
+      maxHeight: '92dvh',
       background: t.bg,
       border: t.border,
       borderRadius: `${t.radius} ${t.radius} 0 0`,
@@ -114,7 +114,7 @@ export function modalCardStyle(variant: ModalVariant, t: ResolvedModalTheme): CS
     return {
       width: `min(100%, ${t.maxWidth})`,
       height: '100%',
-      maxHeight: '100vh',
+      maxHeight: '100dvh',
       background: t.bg,
       border: t.border,
       borderRadius: `${t.radius} 0 0 ${t.radius}`,
@@ -126,7 +126,7 @@ export function modalCardStyle(variant: ModalVariant, t: ResolvedModalTheme): CS
   }
   return {
     width: `min(100%, ${t.maxWidth})`,
-    maxHeight: '90vh',
+    maxHeight: '90dvh',
     background: t.bg,
     border: t.border,
     borderRadius: t.radius,
