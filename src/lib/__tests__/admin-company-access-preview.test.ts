@@ -289,7 +289,15 @@ describe('admin Company Hub view powers at the response boundary', () => {
 
     // Company MEMBERSHIP administration stays closed: those routes require an
     // active organization membership, which migration 0325 forbids an admin
-    // from holding. Offering them would show a button the server refuses.
+    // from holding. Offering them would show a button the server refuses, and
+    // an effective receipt would put a Staxis account in a customer's history.
+    assert.equal(preview.memberships[0].canSuspend, false);
+    assert.equal(preview.memberships[0].canResume, false);
+    assert.equal(preview.memberships[0].canRemove, false);
+    assert.equal(preview.memberships[0].grants[0].canRevoke, false);
+    assert.deepEqual(preview.effectiveAccess, []);
+    assert.equal(preview.invitations[0].canCancel, false);
+    assert.equal(preview.requests[0].canReview, false);
     assert.equal(preview.permissions.manageAccess, false);
     assert.equal(preview.permissions.requestAccess, false);
     assert.deepEqual(preview.permissions.availableProfiles, []);

@@ -243,11 +243,22 @@ export function adminPreviewPermissions(propertyId: string): CompanyAccessPermis
 }
 
 /**
- * Final shaping applied immediately before an admin preview leaves the API.
+ * Final shaping applied immediately before an admin view leaves the API.
  *
- * The administrator's own row is dropped (a Staxis account is not one of the
- * hotel's people) and the company-membership actions stay closed for the reason
- * documented on `adminPreviewPermissions`. Every hotel-team action is granted.
+ * Every HOTEL action is granted through `adminPreviewPermissions`. Two things
+ * are still closed here, deliberately, and neither is a capability lockout:
+ *
+ *   1. The administrator's own row is dropped and no row is marked as them. A
+ *      Staxis account is not one of the hotel's people.
+ *   2. Customer company-MEMBERSHIP actions (suspend/resume/remove a membership,
+ *      revoke a grant, cancel an invitation, review a request) and effective
+ *      access receipts stay closed. Those routes require an active organization
+ *      membership that migration 0325 forbids an admin to hold, so offering
+ *      them would advertise actions the server refuses, and claiming a receipt
+ *      would put a Staxis account into a customer's access history.
+ *
+ * The builder already leaves these false; asserting it here keeps the rule in
+ * one readable place instead of spread across the projection.
  */
 export function applyAdminCompanyAccessPowers(input: {
   projection: CompanyAccessData;
@@ -261,7 +272,27 @@ export function applyAdminCompanyAccessPowers(input: {
       .map((membership) => ({
         ...membership,
         isCurrentUser: false,
+        canSuspend: false,
+        canResume: false,
+        canRemove: false,
+        grants: (membership.grants ?? []).map((grant) => ({
+          ...grant,
+          canRevoke: false,
+        })),
       })),
+    accessHistory: (input.projection.accessHistory ?? []).map((entry) => ({
+      ...entry,
+      record: { ...entry.record, canRevoke: false },
+    })),
+    effectiveAccess: [],
+    invitations: input.projection.invitations.map((invitation) => ({
+      ...invitation,
+      canCancel: false,
+    })),
+    requests: input.projection.requests.map((request) => ({
+      ...request,
+      canReview: false,
+    })),
     permissions: adminPreviewPermissions(input.viewerContext.requestedPropertyId),
     viewerContext: input.viewerContext,
   };
