@@ -51,7 +51,7 @@ import {
 export interface PortfolioScope {
   organizationId: string;
   organizationName: string;
-  companyRole: 'owner' | 'vp' | 'finance';
+  companyRole: 'owner' | 'regional_manager';
   hotelCount: number;
 }
 

@@ -145,8 +145,7 @@ function entitlementSeesFinancials(
 ): boolean {
   return entitlement.entitlementKind === 'membership_hat'
     ? entitlement.staxisRole === 'owner'
-      || entitlement.staxisRole === 'vp'
-      || entitlement.staxisRole === 'finance'
+      || entitlement.staxisRole === 'regional_manager'
       || entitlement.staxisRole === 'general_manager'
     : entitlement.accessProfile === 'organization_owner'
       || entitlement.accessProfile === 'property_manager';
@@ -254,8 +253,9 @@ export function companyRoleFromAuthorizationReceipt(
   const entitlements = receipt.provenance.entitlements;
   if (entitlements.some((item) => item.staxisRole === 'owner'
     || item.accessProfile === 'organization_owner')) return 'owner';
-  if (entitlements.some((item) => item.staxisRole === 'vp')) return 'vp';
-  if (entitlements.some((item) => item.staxisRole === 'finance')) return 'finance';
+  if (entitlements.some((item) => item.staxisRole === 'regional_manager')) {
+    return 'regional_manager';
+  }
 
   const hasExplicitPortfolioGrant = entitlements.some((item) => (
     item.accessProfile === 'organization_admin'
@@ -266,9 +266,15 @@ export function companyRoleFromAuthorizationReceipt(
       item.staxisRole === 'general_manager'
         || item.accessProfile === 'property_manager'
     ));
-  // `finance` is the existing read-only queue/chat presentation role. This
-  // never grants finance capabilities; every action checks its own capability.
-  return hasExplicitPortfolioGrant || hasMultiPropertyManagement ? 'finance' : null;
+  // Somebody holding a portfolio grant, or running more than one hotel, with no
+  // company hat of their own. `regional_manager` is the read-only queue/chat
+  // presentation word for them; before 0464 that word was `finance`, which was
+  // always a poor description of a portfolio grant. This never grants regional
+  // manager capabilities: every action checks its own capability, and WHICH
+  // hotels remains whatever the receipt already proved.
+  return hasExplicitPortfolioGrant || hasMultiPropertyManagement
+    ? 'regional_manager'
+    : null;
 }
 
 function mapRefusal(reason: string): ManagementCompanyScopeRefusal {

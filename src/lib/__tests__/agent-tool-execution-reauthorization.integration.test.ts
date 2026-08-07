@@ -129,7 +129,7 @@ describe('executeTool reauthorization against the production SQL resolver', () =
   test('revocation, transfer and deactivation take effect after context creation', async () => {
     const stale = staleContext();
     const propertyHat = seed.hats.get(`${ACCOUNT_MARIA}:property:general_manager`);
-    const companyHat = seed.hats.get(`${ACCOUNT_MARIA}:company:vp`);
+    const companyHat = seed.hats.get(`${ACCOUNT_MARIA}:company:regional_manager`);
     assert.ok(propertyHat);
     assert.ok(companyHat);
 

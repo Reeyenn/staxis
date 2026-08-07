@@ -45,12 +45,7 @@ export function selectCompanyAccessContext(
         && (membership.canSuspend || membership.canResume || membership.canRemove)
       ))
     ),
-    manageInvitations: data.permissions.manageInvitations && (
-      delegationPolicies.length > 0
-      || data.invitations.some((invitation) => (
-        invitation.organizationId === organizationId && invitation.canCancel
-      ))
-    ),
+    manageInvitations: data.permissions.manageInvitations && delegationPolicies.length > 0,
   };
 
   return {
@@ -68,9 +63,6 @@ export function selectCompanyAccessContext(
     ),
     effectiveAccess: data.effectiveAccess.filter(
       (receipt) => receipt.organizationId === organizationId,
-    ),
-    invitations: data.invitations.filter(
-      (invitation) => invitation.organizationId === organizationId,
     ),
     requests: data.requests.filter(
       (request) => request.organizationId === organizationId,

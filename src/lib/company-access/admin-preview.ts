@@ -285,10 +285,6 @@ export function applyAdminCompanyAccessPowers(input: {
       record: { ...entry.record, canRevoke: false },
     })),
     effectiveAccess: [],
-    invitations: input.projection.invitations.map((invitation) => ({
-      ...invitation,
-      canCancel: false,
-    })),
     requests: input.projection.requests.map((request) => ({
       ...request,
       canReview: false,

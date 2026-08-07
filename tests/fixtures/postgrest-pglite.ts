@@ -463,11 +463,42 @@ export function createPglitePostgrest(pg: PGlite, catalog: Catalog): PglitePostg
 
   type Embed = { join: string; alias: string; item: Extract<SelectItem, { kind: 'embed' }> };
 
+  /**
+   * PostgREST lets a filter name an EMBEDDED resource's column —
+   * `.eq('organization_memberships.account_id', id)` beside
+   * `.select('id, organization_memberships!inner(...)')`. The condition belongs
+   * to the join, not to the outer row: paired with `!inner` it is what turns the
+   * embed into a restriction on the parent.
+   *
+   * These are compiled INTO the lateral subquery so the semantics match — the
+   * embedded json is null when nothing matched, and the `!inner` rule already
+   * in `compileSelect` (`emb0.j is not null`) then drops the parent row. Doing
+   * it in the outer WHERE instead would reference a column that is not in
+   * scope, which is the shape the old `ident()` guard was catching.
+   */
+  function embedFilterPrefix(node: FilterNode): string | null {
+    if (node.kind === 'cmp') {
+      const dot = node.column.indexOf('.');
+      return dot > 0 ? node.column.slice(0, dot) : null;
+    }
+    if (node.kind === 'not') return embedFilterPrefix(node.inner);
+    return null;
+  }
+
+  function stripEmbedPrefix(node: FilterNode): FilterNode {
+    if (node.kind === 'cmp') {
+      return { ...node, column: node.column.slice(node.column.indexOf('.') + 1) };
+    }
+    if (node.kind === 'not') return { kind: 'not', inner: stripEmbedPrefix(node.inner) };
+    return node;
+  }
+
   function buildEmbed(
     parent: string,
     item: Extract<SelectItem, { kind: 'embed' }>,
     index: number,
     parentAlias: string,
+    conditions: (childAlias: string) => string[] = () => [],
   ): Embed {
     const alias = `emb${index}`;
     const child = `${alias}_t`;
@@ -483,6 +514,8 @@ export function createPglitePostgrest(pg: PGlite, catalog: Catalog): PglitePostg
       );
     }
     const rowJson = jsonForItems(item.items, item.table, child, []);
+    const extra = conditions(child);
+    const andExtra = extra.length > 0 ? ` and ${extra.join(' and ')}` : '';
     if (forward) {
       const on = forward.columns
         .map((col, i) => `${child}.${ident(forward.refColumns[i])} = ${parentAlias}.${ident(col)}`)
@@ -492,7 +525,7 @@ export function createPglitePostgrest(pg: PGlite, catalog: Catalog): PglitePostg
         item,
         join:
           `left join lateral (select ${rowJson} as j from ${ident(item.table)} ${child} ` +
-          `where ${on} limit 1) ${alias} on true`,
+          `where ${on}${andExtra} limit 1) ${alias} on true`,
       };
     }
     const rev = reverse!;
@@ -504,7 +537,7 @@ export function createPglitePostgrest(pg: PGlite, catalog: Catalog): PglitePostg
       item,
       join:
         `left join lateral (select coalesce(jsonb_agg(${rowJson}), '[]'::jsonb) as j ` +
-        `from ${ident(item.table)} ${child} where ${on}) ${alias} on true`,
+        `from ${ident(item.table)} ${child} where ${on}${andExtra}) ${alias} on true`,
     };
   }
 
@@ -564,12 +597,36 @@ export function createPglitePostgrest(pg: PGlite, catalog: Catalog): PglitePostg
     const alias = 't0';
     const items = parseSelect(state.columns);
     const c: Compiler = { params: [] };
-    const embeds = items
-      .filter((i): i is Extract<SelectItem, { kind: 'embed' }> => i.kind === 'embed')
-      .map((item, index) => buildEmbed(state.table, item, index, alias));
+    const embedItems = items
+      .filter((i): i is Extract<SelectItem, { kind: 'embed' }> => i.kind === 'embed');
+    // A dotted filter column belongs to the embed it names; everything else is
+    // an ordinary condition on the outer row. An unknown prefix is left in the
+    // outer list on purpose so `ident()` still refuses it loudly.
+    const embedNames = new Set(embedItems.flatMap((item) => [item.alias, item.table]));
+    const scopedFilters = new Map<string, FilterNode[]>();
+    const outerFilters: FilterNode[] = [];
+    for (const filter of state.filters) {
+      const prefix = embedFilterPrefix(filter);
+      if (prefix !== null && embedNames.has(prefix)) {
+        const bucket = scopedFilters.get(prefix) ?? [];
+        bucket.push(stripEmbedPrefix(filter));
+        scopedFilters.set(prefix, bucket);
+      } else {
+        outerFilters.push(filter);
+      }
+    }
+    // Bound BEFORE the outer WHERE because the joins are emitted first and the
+    // shim binds positionally.
+    const embeds = embedItems
+      .map((item, index) => buildEmbed(state.table, item, index, alias, (child) => (
+        [...(scopedFilters.get(item.alias) ?? []), ...(item.alias === item.table
+          ? []
+          : scopedFilters.get(item.table) ?? [])]
+          .map((f) => compileFilter(f, item.table, child, c))
+      )));
 
     const rowJson = jsonForItems(items, state.table, alias, embeds);
-    const where: string[] = state.filters.map((f) => compileFilter(f, state.table, alias, c));
+    const where: string[] = outerFilters.map((f) => compileFilter(f, state.table, alias, c));
     for (const embed of embeds) if (embed.item.inner) where.push(`${embed.alias}.j is not null`);
 
     const from = `from ${ident(state.table)} ${alias} ${embeds.map((e) => e.join).join(' ')}`;

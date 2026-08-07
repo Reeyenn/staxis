@@ -177,7 +177,7 @@ function walkthroughPrompt(): Promise<SystemPromptBlocks> {
 function portfolioPrompt(identity = IDENTITY_ONE_HOTEL): Promise<SystemPromptBlocks> {
   return buildPortfolioSystemPrompt({
     identity,
-    companyRole: 'vp',
+    companyRole: 'regional_manager',
     conversationId: 'conv-portfolio-shared-tiers',
     companyKnowledgeMode: 'external_overlay',
     now: NOW,

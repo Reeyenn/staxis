@@ -14,11 +14,9 @@ const signInNavigationPolicy = readFileSync(
 describe('signin property-independent Company routing', () => {
   test('zero-property accounts may finish a company invitation or open Company Hub', () => {
     assert.match(signIn, /requestedTarget === ['"]\/company['"]/);
-    assert.match(signIn, /requestedTarget\.startsWith\(['"]\/company-invite\/['"]\)/);
     assert.match(signIn, /propertyIndependent: isPropertyIndependentCompanyTarget/);
     assert.match(signInNavigationPolicy, /input\.user[\s\S]*?!input\.propertyIndependent/);
     assert.match(verify, /const isPropertyIndependentCompanyTarget/);
-    assert.match(verify, /requestedTarget\.startsWith\(['"]\/company-invite\/['"]\)/);
     assert.match(verify, /isPropertyIndependentCompanyTarget\s*\? requestedTarget/);
   });
 
@@ -29,13 +27,19 @@ describe('signin property-independent Company routing', () => {
     assert.match(signInNavigationPolicy, /input\.user\.propertyAccess\.length !== 1/);
   });
 
-  test('raw invitation tokens are handed through storage instead of copied into OTP URLs', () => {
-    assert.match(signIn, /companyInvitationTokenFromPath\(ordinaryRequestedTarget\)/);
-    assert.match(signIn, /storeCompanyInvitationHandoff\(legacyInvitationToken\)/);
-    assert.match(signIn, /usesCompanyInvitationHandoff[\s\S]*COMPANY_INVITATION_HANDOFF_PARAM[\s\S]*: rawRedirect \? `&redirect=/);
-    assert.match(verify, /companyInvitationTokenFromPath\(ordinaryRequestedTarget\)/);
-    assert.match(verify, /readCompanyInvitationHandoff\(\)/);
-    assert.match(verify, /COMPANY_INVITATION_SIGN_IN_HREF/);
+  // The second invitation system is retired. Nothing parks a token in storage
+  // any more, so the OTP URL carries only an ordinary redirect and must never
+  // grow an invitation token back into it.
+  test('the OTP URL carries only an ordinary redirect', () => {
+    assert.match(signIn, /\/signin\/verify\?email=\$\{encodeURIComponent\(normalizedEmail\)\}/);
+    // Name the retired machinery exactly. A blanket /invitation/i would also
+    // match the comment explaining why it is gone, which is prose, not a wire.
+    for (const page of [signIn, verify]) {
+      assert.doesNotMatch(page, /companyInvitationTokenFromPath/);
+      assert.doesNotMatch(page, /CompanyInvitationHandoff/);
+      assert.doesNotMatch(page, /COMPANY_INVITATION_/);
+      assert.doesNotMatch(page, /usesCompanyInvitationHandoff/);
+    }
   });
 
   test('later zero-hotel sign-ins route active company members back to Company Hub', () => {
