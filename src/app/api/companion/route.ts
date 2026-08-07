@@ -61,6 +61,7 @@ import {
   COMPANION_OFFER_KINDS,
   OFFER_ACTIONS_MAX,
   OFFER_TEXT_MAX,
+  offerIsJournalable,
   type CompanionOffer,
   type CompanionOfferAction,
   type CompanionOfferAnswer,
@@ -489,7 +490,11 @@ export async function POST(req: NextRequest): Promise<Response> {
             // Only when a row was actually written. An offer the thread refused
             // is an offer nobody was shown, and journaling it would be the
             // companion claiming to have spoken into a void.
-            if (offer) {
+            //
+            // AND NEVER A PANEL ASK, whose venue is the whole rule. See
+            // `offerIsJournalable`, which owns that decision so it can be
+            // tested rather than remembered.
+            if (offer && offerIsJournalable(speech.kind)) {
               await recordAgentJournalEntry({
                 propertyId: ctx.pid,
                 eventType: 'agent_said',

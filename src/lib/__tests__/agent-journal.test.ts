@@ -67,6 +67,7 @@ import {
   unfinishedRecallSentence,
   UNFINISHED_RECALL_QUESTION,
 } from '@/lib/companion/copy';
+import { offerIsJournalable, COMPANION_OFFER_KINDS } from '@/lib/companion/offers';
 import {
   EMPTY_COMPANION_MEMORY,
   decideCompanionSpeech,
@@ -313,6 +314,21 @@ describe('journal write: what actually lands', () => {
       description: '   ',
     });
     assert.equal(journalRows().length, 0);
+  });
+});
+
+describe('journal write: the one kind of speech that stays where it was said', () => {
+  it('journals a greeting, an offer and a receipt, but never a panel ask', () => {
+    // The venue rule, made structural. Anything about a named person may be
+    // said only inside a panel the person deliberately opened; copying that
+    // sentence into the hotel's timeline would put it on a screen in a back
+    // office, which is the exact move `decidePanelAsk` exists to refuse.
+    assert.equal(offerIsJournalable('greeting'), true);
+    assert.equal(offerIsJournalable('offer'), true);
+    assert.equal(offerIsJournalable('receipt'), true);
+    assert.equal(offerIsJournalable('panel_ask'), false);
+    // And the rule covers the whole union, so a new kind has to be considered.
+    assert.equal(COMPANION_OFFER_KINDS.filter((k) => !offerIsJournalable(k)).length, 1);
   });
 });
 

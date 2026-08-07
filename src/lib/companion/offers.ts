@@ -170,6 +170,26 @@ export function answerOffer(
   return { ...offer, state: answer, answeredAt: at };
 }
 
+/**
+ * Does this turn belong in the hotel's own timeline as well as in the thread?
+ *
+ * Three of the four kinds do. A greeting, an offer and a receipt are things the
+ * companion said out loud to somebody, and "what have you been doing?" is a
+ * fair question about them that the thread alone cannot answer, because it is
+ * asked of the hotel rather than of one conversation.
+ *
+ * A `panel_ask` does NOT, and it is the only exception because it is the only
+ * kind whose VENUE is the whole rule. Anything about a named person may be said
+ * only inside a panel the person deliberately opened, which is why
+ * `decidePanelAsk` is a separate function from the unprompted path rather than
+ * a flag on it (see the long note in manners.ts). Copying that sentence into
+ * `activity_log` would put it on a screen in a back office, which is precisely
+ * the move the venue rule exists to refuse. It stays where it was said.
+ */
+export function offerIsJournalable(kind: CompanionOfferKind): boolean {
+  return kind !== 'panel_ask';
+}
+
 /** Is this offer still waiting on a person? Drives the mark's has-something cue. */
 export function offerIsUnresolved(offer: CompanionOffer): boolean {
   return offer.state === 'pending' && offer.kind !== 'receipt';
