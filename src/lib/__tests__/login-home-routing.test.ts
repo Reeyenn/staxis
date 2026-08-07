@@ -49,7 +49,6 @@ describe('ordinary hotel login defaults to Home', () => {
     assert.match(signin, /rawRedirect = params\.get\('redirect'\)/);
     assert.match(signin, /&redirect=\$\{encodeURIComponent\(rawRedirect\)\}/);
     assert.match(verify, /ordinaryRequestedTarget = safeRedirect\(rawRedirect, '\/home'\)/);
-    assert.match(verify, /requestedTarget\.startsWith\('\/company-invite\/'\)/);
     assert.match(verify, /isPropertyIndependentCompanyTarget\s*\? requestedTarget/);
     assert.match(verify, /`\/property-selector\?redirect=\$\{encodeURIComponent\(requestedTarget\)\}`/);
     assert.match(verify, /data\.session\s*\? redirectTarget/);
@@ -125,7 +124,7 @@ describe('auth funnel navigation reliability', () => {
       /if \(signInRecoveryRequiredRef\.current\)[\s\S]*?requiresFreshSignin: true[\s\S]*?if \(signInInFlightRef\.current\)/,
     );
     assert.match(signin, /if \(result\.requiresFreshSignin\) \{[\s\S]*?setRequiresFreshSignin\(true\)/);
-    assert.match(signin, /const freshSigninHref = usesCompanyInvitationHandoff[\s\S]*?'\/signin\?reason=auth-retry'/);
+    assert.match(signin, /const freshSigninHref = rawRedirect[\s\S]*?'\/signin\?reason=auth-retry'/);
     assert.match(signin, /href=\{freshSigninHref\}/);
     assert.match(signin, /disabled=\{signing \|\| requiresFreshSignin \|\| !freshRecovery\.ready\}/);
     assert.match(signin, /window\.location\.replace\(freshSigninHref\)/);

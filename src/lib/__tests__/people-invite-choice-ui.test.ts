@@ -122,10 +122,16 @@ describe('People invite entry choice', () => {
     assert.doesNotMatch(earlyBranch, /<LazyAddStaffDialog/);
   });
 
-  test('the old page-level account invite is suppressed when a hotel entry exists', () => {
+  test('the company invite surface is suppressed when a hotel entry exists', () => {
+    // The two surfaces are mutually exclusive on `showHotelPeople`: pick a
+    // hotel and you get the hotel dialog, stay at company level and you get the
+    // company panel. This used to pin `!activeProperty && !canManageTeam &&
+    // canInviteAccounts` around an "Invite company member" button, which was
+    // dead code — those conditions could not all hold at once, so the button
+    // rendered for nobody and this assertion passed anyway.
     assert.match(
       pagePeoplePanel,
-      /!activeProperty && !canManageTeam && canInviteAccounts[\s\S]*Invite company member/,
+      /!showHotelPeople && companyInviteOrganizationId[\s\S]*<CompanyInvitePanel/,
     );
     assert.match(
       pagePeoplePanel,

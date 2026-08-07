@@ -109,7 +109,7 @@ interface TestState {
     organization_id: string;
     account_id: string;
     membership_scope: 'company' | 'property';
-    staxis_role: 'owner' | 'vp' | 'finance' | 'general_manager' | 'front_desk' | 'housekeeping' | 'maintenance';
+    staxis_role: 'owner' | 'regional_manager' | 'general_manager' | 'front_desk' | 'housekeeping' | 'maintenance';
     job_title: string | null;
     covered_property_ids: string[] | null;
     status: 'active' | 'revoked' | 'suspended';
@@ -1298,7 +1298,7 @@ describe('GET /api/auth/team action contract', () => {
       organizationId: ORGANIZATION_ID,
       membershipId,
       accessProfile: null,
-      staxisRole: 'vp',
+      staxisRole: 'regional_manager',
       scopeType: 'company',
       portfolioId: null,
     }];
@@ -1316,7 +1316,7 @@ describe('GET /api/auth/team action contract', () => {
       organization_id: ORGANIZATION_ID,
       account_id: LOCAL_ID,
       membership_scope: 'company',
-      staxis_role: 'vp',
+      staxis_role: 'regional_manager',
       job_title: null,
       covered_property_ids: null,
       status: 'active',
@@ -1571,7 +1571,7 @@ describe('GET /api/auth/team action contract', () => {
       organization_id: ORGANIZATION_ID,
       account_id: MULTI_ID,
       membership_scope: 'company',
-      staxis_role: 'vp',
+      staxis_role: 'regional_manager',
       job_title: null,
       covered_property_ids: null,
       status: 'active',
@@ -1596,8 +1596,8 @@ describe('GET /api/auth/team action contract', () => {
     assert.deepEqual(body.data.hatsByAccountId[MULTI_ID], [{
       membershipId: '77777777-7777-4777-8777-777777777771',
       scope: 'company',
-      role: 'vp',
-      label: { en: 'Oversees', es: 'Supervisa' },
+      role: 'regional_manager',
+      label: { en: 'Regional Manager', es: 'Regional Manager' },
       propertyIds: [HOTEL_A],
       propertyNames: ['Hotel A'],
     }]);
@@ -1710,7 +1710,7 @@ describe('GET /api/auth/team action contract', () => {
       organization_id: ORGANIZATION_ID,
       account_id: OWNER_ID,
       membership_scope: 'company',
-      staxis_role: 'finance',
+      staxis_role: 'regional_manager',
       job_title: null,
       covered_property_ids: null,
       status: 'active',
@@ -1770,7 +1770,7 @@ describe('GET /api/auth/team action contract', () => {
       organization_id: ORGANIZATION_ID,
       account_id: OWNER_ID,
       membership_scope: 'company',
-      staxis_role: 'finance',
+      staxis_role: 'regional_manager',
       job_title: null,
       covered_property_ids: null,
       status: 'active',

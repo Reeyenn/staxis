@@ -21,9 +21,76 @@ import { env } from '@/lib/env';
 import { logSecurityEvent } from '@/lib/audit';
 import { isTwoFactorEnabled } from '@/lib/two-factor';
 import { listAuthoritativePropertyAccess } from '@/lib/authorization/server';
+import { decodeVerifiedJwtSessionId } from '@/lib/phone-pairing';
+import { trustedClientIp } from '@/lib/api-ratelimit';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
+
+/**
+ * Bind THIS session to the device trust we just verified.
+ *
+ * WHY (auth sweep 2026-08-07). There are two doors into a hotel's data and
+ * they were not answering the same question.
+ *
+ *   Door B — `requireSession` / `validateDeviceTrust` in src/lib/api-auth.ts —
+ *   guards every `/api/*` route and accepts the `staxis_device` cookie.
+ *
+ *   Door A — the ~117 RLS policies that call `public.mfa_verified_or_grace()` —
+ *   guards PostgREST and Realtime, which the browser talks to DIRECTLY on the
+ *   Supabase origin with the public anon key. It reads the `mfa_verified` JWT
+ *   claim, and that claim is minted by `custom_access_token_hook` ONLY when a
+ *   `mfa_verified_sessions` row exists for the session.
+ *
+ * Until now only `/api/auth/trust-device` (the fresh-OTP path) ever wrote that
+ * row. A returning user on a trusted device came through HERE instead, so
+ * their session never got the claim, and Door A had to keep a permissive
+ * default (missing claim reads as verified) to avoid blanking their app. That
+ * default is what migration 0162 was written to remove and never could:
+ * with it, a session created from nothing but a stolen password also carries
+ * no claim and therefore passes every RLS 2FA gate.
+ *
+ * Writing the row here is not new authority. The caller has already presented
+ * a valid, non-expired `trusted_devices` cookie, which is exactly what Door B
+ * accepts on its own. It just makes Door A agree, which is the prerequisite
+ * migration 0311's header named for tightening the default.
+ *
+ * Idempotent: 23505 means this session was already verified.
+ */
+async function bindSessionVerification(input: {
+  accessToken: string;
+  userId: string;
+  ip: string | null;
+  ua: string | null;
+  requestId: string;
+}): Promise<'bound' | 'no_session' | 'failed'> {
+  const sessionId = decodeVerifiedJwtSessionId(input.accessToken);
+  if (!sessionId) {
+    // A token with no session_id can never carry the claim no matter what we
+    // write, so refusing trust here would only cost the user an OTP round trip
+    // that changes nothing. The cookie still speaks for Door B.
+    log.warn('[check-trust] no session_id in verified JWT — skipping session binding', {
+      requestId: input.requestId, userId: input.userId,
+    });
+    return 'no_session';
+  }
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const { error } = await supabaseAdmin
+      .from('mfa_verified_sessions')
+      .insert({
+        session_id: sessionId,
+        user_id: input.userId,
+        verified_from_ip: input.ip,
+        verified_from_ua: input.ua,
+      });
+    if (!error || error.code === '23505') return 'bound';
+    log.warn('[check-trust] mfa_verified_sessions insert failed', {
+      requestId: input.requestId, userId: input.userId, attempt,
+      err: error.message, code: error.code ?? null,
+    });
+  }
+  return 'failed';
+}
 
 export async function POST(req: NextRequest) {
   const requestId = getOrMintRequestId(req);
@@ -197,7 +264,30 @@ export async function POST(req: NextRequest) {
     return ok({ trusted: false }, { requestId });
   }
 
-  // Trust granted — bump last_seen_at as a side effect. Audit Flow 1 #2:
+  // Trust granted. Bind this session so Door A (RLS) sees the same verified
+  // state Door B (requireSession) just accepted — see bindSessionVerification.
+  //
+  // A persistent failure returns trusted:false rather than 200. That is the
+  // same posture /api/auth/trust-device takes for the same row, and for the
+  // same reason: once the grace default is tightened, a 200 without this row
+  // drops the user into an app whose every read denies. trusted:false instead
+  // sends them through the OTP step they already know how to complete, and
+  // their cookie is left intact.
+  const sessionBinding = await bindSessionVerification({
+    accessToken: token,
+    userId: userData.user.id,
+    ip: trustedClientIp(req) || null,
+    ua: req.headers.get('user-agent') ?? null,
+    requestId,
+  });
+  if (sessionBinding === 'failed') {
+    log.error('[check-trust] could not bind session verification — refusing trust', {
+      requestId, accountId: account.id, userId: userData.user.id,
+    });
+    return ok({ trusted: false }, { requestId });
+  }
+
+  // Bump last_seen_at as a side effect. Audit Flow 1 #2:
   // the previous code didn't inspect the update result, so a DB failure
   // here silently froze the rolling-window logic. Cookie maxAge would
   // still tick down on its own and the user would get prompted for OTP

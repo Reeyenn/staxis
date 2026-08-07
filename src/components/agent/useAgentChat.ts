@@ -1145,13 +1145,16 @@ export function useAgentChat({
             continue;
           }
 
-          // Side channel for non-chat observers (walkthrough overlay, voice TTS).
-          // Each SSE event is mirrored as a window CustomEvent so components
-          // mounted outside the hook can listen without forking the stream.
-          // NOTE: mutation tools no longer emit tool_call_started inline (they go
-          // through the approval flow), so the walkthrough overlay's
-          // agent:tool-call-started listener only ever fires for read-only tools
-          // like walk_user_through — exactly what it wants.
+          // Side channel for observers outside this hook: the chat pointer, the
+          // pattern reveal and the tour, all of which live in AskStaxisBar and
+          // do their real work in the browser. Each SSE event is mirrored as a
+          // window CustomEvent so components mounted outside the hook can
+          // listen without forking the stream.
+          // NOTE: mutation tools no longer emit tool_call_started inline (they
+          // go through the approval flow), so an agent:tool-call-started
+          // listener only ever fires for read-only tools like
+          // `staxis_point_at`, `staxis_show_pattern` and `staxis_show_around` —
+          // exactly what those listeners want.
           dispatchSideChannel(payload);
 
           // Any event OTHER than a text delta reads or resets the message list /

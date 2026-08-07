@@ -54,6 +54,7 @@ import {
   SessionEndedError,
 } from '@/lib/api-fetch';
 import { readEnvelope, type EnvelopeResult } from '@/lib/api-envelope';
+import { reportCompanionDeed } from '@/components/companion/companion-events';
 import { CxStyle } from './concourse-css';
 import { CxIcon } from './icons';
 import { CompanyRulebookPanel } from './CompanyRulebookPanel';
@@ -705,6 +706,13 @@ export function KnowsPropertyView({ propertyId, scopeKey, companyBook }: {
           return;
         }
         saidSomething = true;
+        // AFTER the server said yes, and only for a real teach. This is the
+        // only thing that moves the tour's "teach me one thing" stop on, so a
+        // save that failed leaves the person standing on the same stop with
+        // the same arrow, which is the truth. An adjustment or a "that's
+        // wrong" is a correction to something already known, not a new fact,
+        // so neither counts.
+        if (box.kind === 'teach') reportCompanionDeed('fact_taught');
       } else if (box.kind === 'wrong') {
         // Nothing typed: the row simply stops being believed.
         const res = await post({ propertyId, action: 'wrong', kind: box.item.kind, id: box.item.id });
@@ -769,7 +777,15 @@ export function KnowsPropertyView({ propertyId, scopeKey, companyBook }: {
       <div className="cx-ptitle" style={{ marginTop: 0 }}>{S.title.en}</div>
 
       {canTeach && (
-        <button type="button" className="kn-teach" onClick={() => setBox({ kind: 'teach' })}>
+        <button
+          type="button"
+          className="kn-teach"
+          // The companion's arrow and the tour's "teach me one thing" stop
+          // both find this by attribute. Keep the value stable: renaming it
+          // silently unaims whatever is pointing at it.
+          {...{ 'data-staxis-anchor': 'knows-teach' }}
+          onClick={() => setBox({ kind: 'teach' })}
+        >
           <CxIcon name="staxis" size={16} />
           {KNOWS_COPY.teachButton}
         </button>

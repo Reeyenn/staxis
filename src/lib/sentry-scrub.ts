@@ -57,10 +57,18 @@ const TWILIO_SID_RX = /\b(AC|SM|MM)[a-f0-9]{32}\b/gi;
 // flow clears the fragment in an uninstrumented static bootstrap page first.
 const PHONE_PAIRING_FRAGMENT_RX = /([#&]pair=)[^&#\s"']+/gi;
 const PHONE_PAIRING_FRAGMENT_ENCODED_RX = /(%23pair%3d)[^&#\s"']+/gi;
-// Organization invitations use a 256-bit hex capability in the URL path.
+// Account invitations carry a raw hex capability in the URL path: holding the
+// token IS the authorization, so one leaked breadcrumb is a usable invitation.
 // Match both literal and percent-encoded slashes because request URLs,
 // transaction names, and breadcrumb data can arrive in either form.
-const COMPANY_INVITE_PATH_RX = /((?:\/|%2f)company-invite(?:\/|%2f))[0-9a-f]{64}/gi;
+//
+// This used to match only the retired /company-invite/ path and its 256-bit
+// token. That path is gone and /invite/ is now the only one, so the rule moves
+// rather than disappearing — deleting it would have left the surviving
+// invitation path with no scrub at all. The length range is deliberately wide:
+// tokens are minted at 24 bytes (48 hex) and the acceptance path still honours
+// older, longer ones.
+const ACCOUNT_INVITE_PATH_RX = /((?:\/|%2f)invite(?:\/|%2f))[0-9a-f]{32,128}/gi;
 
 // Keys we should scrub in tags / contexts / extras / frame-vars even if
 // their VALUE doesn't match a regex (e.g. raw staff name as the value
@@ -96,7 +104,7 @@ export function scrubString(s: string): string {
   out = out.replace(TWILIO_SID_RX, '<twilio-sid>');
   out = out.replace(PHONE_PAIRING_FRAGMENT_RX, '$1<phone-pairing-token>');
   out = out.replace(PHONE_PAIRING_FRAGMENT_ENCODED_RX, '$1<phone-pairing-token>');
-  out = out.replace(COMPANY_INVITE_PATH_RX, '$1<company-invite-token>');
+  out = out.replace(ACCOUNT_INVITE_PATH_RX, '$1<invite-token>');
   out = out.replace(PHONE_RX, '<phone>');
   out = out.replace(EMAIL_RX, '<email>');
   return out;

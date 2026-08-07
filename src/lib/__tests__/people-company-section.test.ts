@@ -80,7 +80,7 @@ describe('a GM looking at their own hotel', () => {
   const jobs: Record<string, RosterCompanyJob[]> = {
     'acct-gm': [propertyJob('m-gm', 'general_manager', 'GM', [HOTEL_A])],
     'acct-owner': [companyJob('m-owner', 'owner', 'Owner', [HOTEL_A])],
-    'acct-vp': [companyJob('m-vp', 'vp', 'Oversees', [HOTEL_A])],
+    'acct-vp': [companyJob('m-vp', 'regional_manager', 'Oversees', [HOTEL_A])],
     'acct-fd': [propertyJob('m-fd', 'front_desk', 'Front Desk', [HOTEL_A])],
   };
 
@@ -122,7 +122,7 @@ describe('the person who is both', () => {
     const jobs: Record<string, RosterCompanyJob[]> = {
       'acct-maria': [
         propertyJob('m-gm', 'general_manager', 'GM', [HOTEL_A]),
-        companyJob('m-vp', 'vp', 'Oversees', [HOTEL_A, HOTEL_A2]),
+        companyJob('m-vp', 'regional_manager', 'Oversees', [HOTEL_A, HOTEL_A2]),
       ],
     };
 
@@ -151,7 +151,7 @@ describe('the person who is both', () => {
     const accounts = [account('acct-vp', 'Vera Oversight', 'front_desk', 'staff-vera')];
     const staff = [staffRow('staff-vera', 'Vera Oversight', 'front_desk')];
     const jobs: Record<string, RosterCompanyJob[]> = {
-      'acct-vp': [companyJob('m-vp', 'vp', 'Oversees', [HOTEL_A])],
+      'acct-vp': [companyJob('m-vp', 'regional_manager', 'Oversees', [HOTEL_A])],
     };
 
     const split = splitHotelAndCompanyPeople(buildHotelRoster(accounts, staff), jobs, HOTEL_A);
@@ -164,7 +164,7 @@ describe('the walls hold', () => {
   test('a company job that does not reach this hotel puts nobody in its Company section', () => {
     const accounts = [account('acct-vp-b', 'Bo Other', 'front_desk')];
     const jobs: Record<string, RosterCompanyJob[]> = {
-      'acct-vp-b': [companyJob('m-vp-b', 'vp', 'Oversees', [HOTEL_B])],
+      'acct-vp-b': [companyJob('m-vp-b', 'regional_manager', 'Oversees', [HOTEL_B])],
     };
 
     const split = splitHotelAndCompanyPeople(buildHotelRoster(accounts, []), jobs, HOTEL_A);
@@ -182,7 +182,7 @@ describe('the walls hold', () => {
     // more, which is why it asks a single question about a single hotel id.
     const accounts = [account('acct-vp', 'Vera Oversight', 'front_desk')];
     const narrowed: Record<string, RosterCompanyJob[]> = {
-      'acct-vp': [companyJob('m-vp', 'vp', 'Oversees', [HOTEL_A])],
+      'acct-vp': [companyJob('m-vp', 'regional_manager', 'Oversees', [HOTEL_A])],
     };
 
     const split = splitHotelAndCompanyPeople(buildHotelRoster(accounts, []), narrowed, HOTEL_A);
@@ -216,7 +216,7 @@ describe('the department grouping survives the split', () => {
       staffRow('staff-mt', 'Milo Maintenance', 'maintenance'),
     ];
     const jobs: Record<string, RosterCompanyJob[]> = {
-      'acct-vp': [companyJob('m-vp', 'vp', 'Oversees', [HOTEL_A])],
+      'acct-vp': [companyJob('m-vp', 'regional_manager', 'Oversees', [HOTEL_A])],
     };
 
     const split = splitHotelAndCompanyPeople(buildHotelRoster(accounts, staff), jobs, HOTEL_A);

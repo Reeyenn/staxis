@@ -163,7 +163,11 @@ describe('company structure management — real SQL tenant and lifecycle boundar
     await pg?.close();
   });
 
-  test('owner and VP can manage existing same-company assignments; finance and hotel roles cannot', async () => {
+  // Fiona used to be the third case here, as a `finance` hat that could not
+  // manage assignments. 0464 retired that role and converted her into a
+  // regional manager, so she now sits with Maria on the CAN side. The refusals
+  // that remain are the hotel jobs, which is where the boundary actually is.
+  test('every company job can manage same-company assignments; hotel jobs cannot', async () => {
     const currentEpoch = await epoch(pg, ORG_A);
     const ownerPreview = await preview(
       pg, ACCOUNT_ANA, ORG_A, PID_A1, [PORTFOLIO_A_WEST], currentEpoch,
@@ -177,10 +181,11 @@ describe('company structure management — real SQL tenant and lifecycle boundar
     );
     assert.equal(vpPreview.propertyId, PID_A2);
 
-    await expectSqlState(
-      preview(pg, ACCOUNT_FIONA, ORG_A, PID_A1, [PORTFOLIO_A_WEST], currentEpoch),
-      '42501',
+    const fionaPreview = await preview(
+      pg, ACCOUNT_FIONA, ORG_A, PID_A1, [PORTFOLIO_A_WEST], currentEpoch,
     );
+    assert.equal(fionaPreview.propertyId, PID_A1);
+
     await expectSqlState(
       preview(pg, ACCOUNT_FRANK, ORG_A, PID_A1, [PORTFOLIO_A_WEST], currentEpoch),
       '42501',
@@ -231,7 +236,7 @@ describe('company structure management — real SQL tenant and lifecycle boundar
     assert.deepEqual(allowed.currentPortfolioIds, [PORTFOLIO_A_WEST]);
   });
 
-  test('company owner, VP, finance, and GM cannot use the platform-admin hotel transfer path', async () => {
+  test('company owner, regional manager, and GM cannot use the platform-admin hotel transfer path', async () => {
     for (const actorId of [ACCOUNT_ANA, ACCOUNT_MARIA, ACCOUNT_FIONA, ACCOUNT_GIL]) {
       await expectSqlState(
         pg.query(
