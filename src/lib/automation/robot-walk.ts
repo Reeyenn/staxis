@@ -144,6 +144,50 @@ export function summarizeRobotWalk(steps: readonly RobotWalkStepResult[]): Robot
   };
 }
 
+// ─── What the composer is allowed to say back ────────────────────────────────
+
+/**
+ * Did the composer accept the person the robot just picked?
+ *
+ * THIS EXISTS BECAUSE THE OBVIOUS TEST WAS WRONG AND WAS RED EVERY NIGHT. The
+ * walk used to assert that the Who button's accessible name CONTAINED the full
+ * name it had just clicked, e.g. "Robot Manager". It never can: `whoWord` in
+ * src/lib/feed/one-list-copy.ts renders a person as their FIRST NAME only, on
+ * purpose, because the row is a sentence and nobody says "for Marcus Webb" out
+ * loud. So the label reads "Who: for Robot", the assertion failed, and the one
+ * check in this product that is supposed to fail when the PRODUCT fails
+ * reported a failure that had nothing to do with the product.
+ *
+ * The cost of that was not one red row. The heartbeat lands only on a night
+ * where every step passed, so a permanently failing step means the robot can
+ * never read "on time" in Mission Control, and the founder's "Recent errors"
+ * box carries a standing entry that is not true. A box with a permanent false
+ * entry in it is a box nobody reads.
+ *
+ * The rule is therefore written down once, here, beside the walk it governs,
+ * and its test walks the REAL producer rather than restating it: whatever
+ * `whoWord` puts on that button for a person, this has to accept.
+ */
+export function composerNamesAssignee(
+  ariaLabel: string | null | undefined,
+  assigneeName: string,
+): boolean {
+  if (typeof ariaLabel !== 'string' || ariaLabel.trim() === '') return false;
+  const first = assigneeName.trim().split(/\s+/)[0] ?? '';
+  if (first === '') return false;
+  // A word boundary rather than a bare substring: "for Roberta" must not be
+  // read as proof that "Rob Smith" was the one picked.
+  const rx = new RegExp(
+    `(^|[^\\p{L}\\p{N}])${escapeForRegExp(first)}([^\\p{L}\\p{N}]|$)`,
+    'iu',
+  );
+  return rx.test(ariaLabel);
+}
+
+function escapeForRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
 /**
  * The sentence that lands in Mission Control's "Recent errors" box.
  *
