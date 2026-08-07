@@ -517,12 +517,16 @@ describe('the coverage rule has exactly one implementation', () => {
     );
   });
 
-  // Mutation: map finance to property_manager, or line staff to department_lead.
-  // Either hands somebody the company's people list to look at their own hotel.
+  // Mutation: map the regional manager to organization_admin, or line staff to
+  // department_lead. Either hands somebody the company's people list to look at
+  // their own hotel.
+  //
+  // The old third case — a `finance` hat degrading to `contributor` — is gone
+  // with the role: 0461 collapsed company scope to owner + regional_manager, so
+  // these two ARE the whole company vocabulary.
   test('the hat -> access-profile degradation is least privilege', () => {
     assert.equal(accessProfileForHat('company', 'owner'), 'organization_owner');
-    assert.equal(accessProfileForHat('company', 'vp'), 'portfolio_manager');
-    assert.equal(accessProfileForHat('company', 'finance'), 'contributor');
+    assert.equal(accessProfileForHat('company', 'regional_manager'), 'portfolio_manager');
     assert.equal(accessProfileForHat('property', 'general_manager'), 'property_manager');
     assert.equal(accessProfileForHat('property', 'front_desk'), 'viewer');
     assert.equal(accessProfileForHat('property', 'housekeeping'), 'viewer');
@@ -669,7 +673,7 @@ describe('the rulebook and the cross-hotel-chat switch', () => {
   test("a finance hat may READ the book and may not write it", async () => {
     const fiona = await rulebookFor(UID_FIONA, ORG_A);
     assert.equal(fiona.status, 200, 'the finance lead was refused the company book');
-    assert.equal(fiona.data?.companyRole, 'finance');
+    assert.equal(fiona.data?.companyRole, 'regional_manager');
     assert.equal(fiona.data?.canEdit, false, 'finance was handed the pen');
     assert.equal(await flipChatSwitch(UID_FIONA, ORG_A, 'true'), 403, 'finance flipped a company switch');
   });
@@ -698,7 +702,7 @@ describe('the finance lead — the picker and the queue now agree', () => {
 
     const queue = await portfolioFor(UID_FIONA);
     assert.equal(queue.status, 200, 'the door she was shown was locked');
-    assert.equal(queue.data.scope?.companyRole, 'finance');
+    assert.equal(queue.data.scope?.companyRole, 'regional_manager');
     assert.ok((queue.data.scope?.hotelCount ?? 0) > 0, 'her portfolio was empty');
   });
 
@@ -1312,7 +1316,7 @@ describe('RLS itself knows what a hat is (migration 0371)', () => {
   // two equivalent for revoked rows. It is belt over braces: if that CHECK is
   // ever loosened, the predicate must not widen as a side effect.)
   test('a hat somebody no longer holds grants nothing', async () => {
-    const membershipId = seed.hats.get(`${ACCOUNT_VERA}:company:vp`);
+    const membershipId = seed.hats.get(`${ACCOUNT_VERA}:company:regional_manager`);
     assert.ok(membershipId, "the fixture did not record Vera's hat");
 
     await pg.query(
@@ -1371,7 +1375,7 @@ describe('RLS itself knows what a hat is (migration 0371)', () => {
   // A job that starts on the first of next month is not a job today.
   // Mutation: drop `and m.starts_at <= now()`.
   test('a hat that has not started yet grants nothing', async () => {
-    const membershipId = seed.hats.get(`${ACCOUNT_VERA}:company:vp`);
+    const membershipId = seed.hats.get(`${ACCOUNT_VERA}:company:regional_manager`);
     await pg.query(
       `update public.organization_memberships
           set starts_at = now() + interval '30 days' where id = $1`,

@@ -80,7 +80,7 @@ function configureStanding(options: {
     propertyStandings: [{
       propertyId: options.propertyId,
       operationalRole: options.operationalRole,
-      seesFinancials: options.staxisRole === 'finance'
+      seesFinancials: options.staxisRole === 'regional_manager'
         || options.operationalRole === 'general_manager',
       hotelMutationAllowed: options.hotelMutationAllowed,
       portfolioIntelligenceRead: options.source === 'company',
@@ -151,8 +151,11 @@ describe('strict hotel write decision', () => {
     );
   });
 
-  test('company owner, VP, and finance reach stays read-only at the hotel', async () => {
-    for (const [index, role] of [[13, 'owner'], [14, 'vp'], [15, 'finance']] as const) {
+  // 0461 collapsed the company vocabulary to owner + regional_manager, so these
+  // two ARE every company hat there is. The retired `finance` case is gone with
+  // the role itself.
+  test('every company hat stays read-only at the hotel', async () => {
+    for (const [index, role] of [[13, 'owner'], [14, 'regional_manager']] as const) {
       const pid = propertyId(index);
       configureStanding({
         propertyId: pid,

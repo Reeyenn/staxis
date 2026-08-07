@@ -74,6 +74,7 @@ import {
 } from './_components/AccessWorkflowDialogs';
 import { AccessEditorDialog } from './_components/AccessEditorDialog';
 import { HotelTeamPanel } from './_components/HotelTeamPanel';
+import CompanyInvitePanel from './_components/CompanyInvitePanel';
 import { HotelSwitcher } from './_components/HotelSwitcher';
 import { LegacyOwnershipTransferPanel } from './_components/LegacyOwnershipTransferPanel';
 import { CompanyStructureManager } from './_components/CompanyStructureManager';
@@ -954,6 +955,12 @@ function CompanyAccessContent() {
               ) : tab === 'people' ? (
                 <PeoplePanel
                   key={activeProperty?.id ?? 'no-hotel'}
+                  companyInviteOrganizationId={
+                    selectedPortfolioCompany?.organizationId
+                      ?? (resolved.organizations.length === 1
+                        ? resolved.organizations[0]!.id
+                        : null)
+                  }
                   data={resolved}
                   staff={currentStaff}
                   hotelRosterUnavailable={currentStaffUnavailable}
@@ -1105,7 +1112,7 @@ export function HotelsPanel({ data, structure, structureError, structureLoading,
  * could appear in both with nothing on screen explaining why. HotelTeamPanel
  * now merges them.
  */
-export function PeoplePanel({ data, staff, hotelRosterUnavailable, rosterSettled = true, lang, currentUser, currentAccountId, activeProperty, portfolioMode = false, canManageTeam, canViewTeam, canInviteAccounts, canViewWages, canAddOperationalStaff, peopleController, inviteDialogOpen, onInviteDialogOpenChange, onChanged, onLifecycleAction }: {
+export function PeoplePanel({ data, staff, hotelRosterUnavailable, rosterSettled = true, lang, currentUser, currentAccountId, activeProperty, portfolioMode = false, companyInviteOrganizationId = null, canManageTeam, canViewTeam, canInviteAccounts, canViewWages, canAddOperationalStaff, peopleController, inviteDialogOpen, onInviteDialogOpenChange, onChanged, onLifecycleAction }: {
   data: CompanyAccessData;
   staff: StaffMember[];
   hotelRosterUnavailable: boolean;
@@ -1117,6 +1124,7 @@ export function PeoplePanel({ data, staff, hotelRosterUnavailable, rosterSettled
   portfolioMode?: boolean;
   canManageTeam: boolean;
   canViewTeam?: boolean;
+  companyInviteOrganizationId?: string | null;
   canInviteAccounts: boolean;
   canViewWages: boolean;
   canAddOperationalStaff: boolean;
@@ -1169,18 +1177,23 @@ export function PeoplePanel({ data, staff, hotelRosterUnavailable, rosterSettled
     ));
   return (
     <div className={styles.stack}>
+      {/*
+        The company view's own invite surface. It owns the company case end to
+        end rather than borrowing the hotel dialog, which is only mounted when a
+        hotel is selected and asks a different question.
+      */}
+      {!showHotelPeople && companyInviteOrganizationId ? (
+        <CompanyInvitePanel
+          organizationId={companyInviteOrganizationId}
+          styles={styles as unknown as Record<string, string>}
+        />
+      ) : null}
       {!showHotelPeople && (visibleMemberships.length > 0 || data.invitations.length > 0 || data.permissions.manageInvitations) ? (
         <section className={styles.sectionBlock}>
           <div className={styles.headingWithAction}>
             <SectionHeading
               title={'Memberships and invitations'}
             />
-            {!activeProperty && !canManageTeam && canInviteAccounts ? (
-              <button type="button" className={styles.primaryButton} onClick={() => onInviteDialogOpenChange(true)}>
-                <UserPlus size={16} aria-hidden="true" />
-                {'Invite company member'}
-              </button>
-            ) : null}
           </div>
           {visibleMemberships.length > 0 ? (
             <div className={styles.listCard} role="list">
