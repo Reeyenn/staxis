@@ -675,16 +675,22 @@ describe('actor-bound account invitation lifecycle — real SQL', () => {
     }]);
   });
 
+  // LUFKIN, NOT BEAUMONT, and that is the whole test. Maria wears two hats: a
+  // property GM job at Beaumont and company oversight over the rest of Gulf
+  // Coast. Ending the company hat while she is asked about Beaumont proves
+  // nothing, because the GM hat still authorizes her there — the revocation
+  // would look enforced while the other hat quietly carried the write. Lufkin
+  // is reachable ONLY through the hat being revoked.
   test('revoked company authority cannot create or revoke a persisted promise', async () => {
     const created = await createGuarded(pg, {
       actorAccountId: ACCOUNT_MARIA,
       actorAuthUserId: UID_MARIA,
-      hotelId: PID_A1,
+      hotelId: PID_A2,
       email: 'front-desk-before-revoke@example.test',
       role: 'front_desk',
       organizationId: ORG_A,
       membershipScope: 'property',
-      propertyIds: [PID_A1],
+      propertyIds: [PID_A2],
       requestId: 'before-regional-revoke',
     });
     assert.equal(created.ok, true);
@@ -696,12 +702,12 @@ describe('actor-bound account invitation lifecycle — real SQL', () => {
     const deniedCreate = await createGuarded(pg, {
       actorAccountId: ACCOUNT_MARIA,
       actorAuthUserId: UID_MARIA,
-      hotelId: PID_A1,
+      hotelId: PID_A2,
       email: 'front-desk-after-revoke@example.test',
       role: 'front_desk',
       organizationId: ORG_A,
       membershipScope: 'property',
-      propertyIds: [PID_A1],
+      propertyIds: [PID_A2],
       requestId: 'after-regional-revoke',
     });
     assert.deepEqual(deniedCreate, { ok: false, reason: 'denied' });

@@ -56,7 +56,9 @@ describe('authoritative People and Access bridge — real SQL', () => {
   });
 
   test('Access projects regional-manager and GM hats and atomically converts one hat to grants', async () => {
-    const financeHat = seed.hats.get(`${ACCOUNT_FIONA}:company:regional_manager`);
+    // Keyed on the word this schema actually accepts. This suite is pinned before
+    // 0464, where the seeded hat is still `finance`; the fixture reports which.
+    const financeHat = seed.hats.get(`${ACCOUNT_FIONA}:company:${seed.companyMoneyRole}`);
     assert.ok(financeHat);
     const projection = await pg.query<JsonRow>(
       `select public.staxis_company_access_editor_projection_v2($1) as value`,
@@ -70,7 +72,7 @@ describe('authoritative People and Access bridge — real SQL', () => {
     assert.ok(organization);
     const finance = organization.memberships.find((entry) => entry.id === financeHat);
     assert.equal(finance?.sourceKind, 'membership_hat');
-    assert.equal(finance?.sourceRole, 'regional_manager');
+    assert.equal(finance?.sourceRole, seed.companyMoneyRole);
     assert.equal(finance?.sourceScope, 'company');
     assert.equal(finance?.canReplace, true);
     assert.equal(finance?.canAdd, false);
