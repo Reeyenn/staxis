@@ -75,7 +75,13 @@ export const CALENDAR_CSS = `
 .sc-big .sc-mon{font-size:17px;}
 .sc-big .sc-dow{font-size:10px;}
 /* Picking a range: the ends are solid, the days between are washed. A drag has
-   to be visible WHILE it happens or nobody believes the drag worked. */
+   to be visible WHILE it happens or nobody believes the drag worked.
+
+   While a range is being picked the grid also OWNS the drag. Without that a
+   finger moving across the days scrolls the popup instead, the pointer stream
+   is cancelled, and the range stays stuck on the day it started on: the one
+   gesture the hint describes was the one gesture a phone could not make. */
+.sc-big.sc-picking .sc-grid,.sc-big.sc-picking .sc-day{touch-action:none;}
 .sc-big.sc-picking .sc-day{cursor:crosshair;}
 .sc-day.sc-inrange{background:rgba(92,122,96,.13);border-color:rgba(92,122,96,.3);}
 .sc-day.sc-edge{background:#3E5C48;border-color:#3E5C48;}
@@ -97,10 +103,32 @@ textarea.sc-field{resize:vertical;min-height:66px;line-height:1.5;}
 .sc-pacts{display:flex;gap:8px;margin-top:2px;flex-wrap:wrap;}
 
 @media (max-width:860px){
-  .sc-wrap{flex-direction:column;}
+  /* Stacked, the month is ABOVE the panel rather than beside it, so it wants
+     the whole width. align-items:flex-start on the row turns into "shrink to
+     your own content" once the direction is column, which drew a whole month
+     into 233px of a 353px popup: 29px days on a phone. */
+  .sc-wrap{flex-direction:column;align-items:stretch;}
+  .sc-mgrid{width:100%;}
   .sc-panel{width:100%;border-left:none;padding-left:0;padding-top:16px;
     border-top:1px solid rgba(31,35,28,.08);}
   .sc-big .sc-day{height:56px;}
+}
+
+/* On a phone: a day is something you hit with a thumb, and the two boxes you
+   type into are 16px so iOS does not zoom the popup the moment you tap them. */
+@media (max-width:760px){
+  .sc-grid{gap:5px;}
+  .sc-big .sc-grid{gap:5px;}
+  .sc-big .sc-day{height:52px;border-radius:10px;padding:6px;}
+  .sc-field{font-size:16px;}
+  .sc-add{min-height:40px;display:inline-flex;align-items:center;}
+  .sc-legend{gap:11px;}
+  /* Stacked under the month, the panel's two answers would otherwise sit
+     below the fold of the popup's own scroller, so somebody who had just
+     dragged a range across the grid could not see the button that saves it.
+     Sticky keeps Save on screen for the whole of the typing. */
+  .sc-pacts{position:sticky;bottom:0;z-index:1;background:#fff;margin-top:0;
+    padding:10px 0 4px;box-shadow:0 -10px 14px -14px rgba(31,42,32,.7);}
 }
 `;
 

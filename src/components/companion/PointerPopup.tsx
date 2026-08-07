@@ -475,12 +475,15 @@ const POINTER_CSS = `
 .cpt-card{position:fixed;pointer-events:auto;border-radius:16px;padding:15px 17px 14px;
   background:radial-gradient(ellipse 320px 160px at 50% 130%,rgba(92,122,96,.30) 0%,rgba(92,122,96,0) 62%),var(--cpt-ink);
   box-shadow:inset 0 1px 0 rgba(158,183,166,.14),0 24px 52px -26px rgba(31,42,32,.7);
-  animation:cptIn .3s var(--cpt-spring) both;max-height:calc(100vh - 48px);overflow:auto;}
+  animation:cptIn .3s var(--cpt-spring) both;max-height:calc(100dvh - 48px);overflow:auto;}
 .cpt-star{display:block;color:var(--cpt-sage-l);font-size:11px;line-height:1;}
 .cpt-body{font-size:14px;line-height:1.55;color:var(--cpt-white);margin:9px 0 0;text-wrap:pretty;}
 .cpt-acts{display:flex;align-items:center;gap:8px;margin-top:14px;flex-wrap:wrap;}
 .cpt-btn{height:32px;padding:0 12px;border-radius:9px;border:none;cursor:pointer;font:inherit;
   font-size:12.5px;background:rgba(255,255,255,.09);color:var(--cpt-soft);}
+/* A thumb, not a cursor. */
+@media (max-width:760px){.cpt-btn{height:40px;padding:0 15px;font-size:13.5px;}
+  .cpt-btn-go{padding:0 18px;}}
 .cpt-btn:hover{background:rgba(255,255,255,.16);color:var(--cpt-white);}
 .cpt-btn-go{background:var(--cpt-sage-l);color:var(--cpt-ink);font-weight:700;padding:0 16px;}
 .cpt-btn-go:hover{background:#B0C6B7;color:var(--cpt-ink);}
