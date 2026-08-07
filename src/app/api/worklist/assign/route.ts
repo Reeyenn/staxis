@@ -9,12 +9,36 @@
 //   task        comms_tasks  → assigned_staff_id (+ derived assigned_department)
 //   complaint   complaints   → assigned_to/name/dept (server-derived from staff),
 //                              open→in_progress
-//   workorder   work_orders  → severity (priority lane: urgent|normal|low) — the
-//                              legacy table has no per-staff assignee column
-//   pm / inspection / reminder / approval → 400 (no assign control: preventive
-//                          has no department column, inspections are derived, a
-//                          reminder belongs to whoever set it, and a decision
+//   workorder   work_orders  → assigned_to/assigned_name when the body names a
+//                              person ("Give it to someone else"), otherwise the
+//                              severity priority lane (urgent|normal|low)
+//   pm          preventive_tasks → frequency_days ("Change the schedule")
+//   inspection / reminder / approval → 400 (no control: inspections are derived,
+//                          a reminder belongs to whoever set it, and a decision
 //                          cannot be handed to somebody else)
+//
+// ─── why the cadence lives on THIS route ───────────────────────────────────
+// This route is named for assignment and has never been only about assignment:
+// its work-order branch changes a priority lane, which nobody is handed. What it
+// actually is, and has been since it was written, is the ONE dispatcher for
+// "change something about a worklist row without settling it" — /complete being
+// the dispatcher for settling one. A cadence is exactly that, and a third
+// worklist route carrying one integer would need its own copy of every gate this
+// one already has (session, property access, role, rate limit, envelope) for
+// four lines of dispatch. CLAUDE.md: extend before you add.
+//
+// ─── the work order's assignee columns ─────────────────────────────────────
+// `work_orders.assigned_to` (uuid, FK to staff) and `assigned_name` have existed
+// since 0001 and nothing ever wrote them: the header of this file used to say
+// the table had no per-staff assignee column, which was simply wrong, and the
+// Maintenance board has no assignee control either. So "who is on this?" had no
+// answer anywhere, and the honest one was sitting in two empty columns.
+//
+// The NAME is derived here from the staff row, never taken from the caller, for
+// the same reason the complaint branch does it: a body that could name its own
+// assignee display name is a body that can write anything onto a ticket. The
+// housekeeper exclusion (assigneeBlockedReason) applies here too — a work order
+// handed to somebody who works from the housekeeping board is one nobody sees.
 //
 // NOT gated on the Communications section. See ONE_LIST_CTX.
 // ═══════════════════════════════════════════════════════════════════════════
@@ -41,7 +65,30 @@ const PRIORITY_TO_SEVERITY: Record<(typeof WORKORDER_PRIORITIES)[number], string
   urgent: 'urgent', normal: 'medium', low: 'low',
 };
 
-interface Body { pid?: string; sourceType?: string; sourceId?: string; assigneeStaffId?: string | null; priority?: string }
+interface Body {
+  pid?: string; sourceType?: string; sourceId?: string;
+  assigneeStaffId?: string | null; priority?: string; frequencyDays?: number | string;
+}
+
+/**
+ * The cadence bounds an upkeep schedule may be changed to.
+ *
+ * 1 is allowed, unlike the to-do composer's `MIN_INTERVAL_DAYS` of 2: a daily
+ * boiler-room walk is a real preventive schedule, and the composer's floor
+ * exists only because a repeating to-do already has a word for "every day".
+ * The ceiling is ten years, because the Preventive tab's own editor offers a
+ * cadence in YEARS and a five-yearly fire-system certification has to fit.
+ */
+export const MIN_CADENCE_DAYS = 1;
+export const MAX_CADENCE_DAYS = 3650;
+
+/** A body value as a whole-day cadence, or null when it is not one. */
+export function readCadenceDays(value: unknown): number | null {
+  const n = typeof value === 'number' ? value : Number(String(value ?? '').trim());
+  if (!Number.isInteger(n)) return null;
+  if (n < MIN_CADENCE_DAYS || n > MAX_CADENCE_DAYS) return null;
+  return n;
+}
 
 export async function POST(req: NextRequest): Promise<Response> {
   let body: Body;
@@ -69,7 +116,7 @@ export async function POST(req: NextRequest): Promise<Response> {
   if (!rl.allowed) return rateLimitedResponse(rl.current, rl.cap, rl.retryAfterSec);
 
   // assigneeStaffId may be null/'' (explicit unassign) or a UUID. Validate when present.
-  const wantsAssignee = sourceType === 'task' || sourceType === 'complaint';
+  const wantsAssignee = sourceType === 'task' || sourceType === 'complaint' || sourceType === 'workorder';
   let assigneeStaffId: string | null = null;
   if (wantsAssignee && body.assigneeStaffId) {
     const aV = validateUuid(body.assigneeStaffId, 'assigneeStaffId');
@@ -127,17 +174,61 @@ export async function POST(req: NextRequest): Promise<Response> {
         break;
       }
       case 'workorder': {
-        const prV = validateEnum(body.priority, WORKORDER_PRIORITIES, 'priority');
-        if (prV.error) return err(prV.error, { requestId, status: 400, code: ApiErrorCode.ValidationFailed, headers });
+        // Which of the two things is being changed is decided by what the body
+        // carries, and NOT by an extra mode field: a mode that could disagree
+        // with the payload is a way to send "set the priority lane" with an
+        // assignee in it and have one of them silently win.
+        const handingOver = 'assigneeStaffId' in body;
+        if (!handingOver) {
+          const prV = validateEnum(body.priority, WORKORDER_PRIORITIES, 'priority');
+          if (prV.error) return err(prV.error, { requestId, status: 400, code: ApiErrorCode.ValidationFailed, headers });
+          if (!(await existsScoped('work_orders', sourceId, pid))) return notFound(requestId, headers);
+          const { error } = await supabaseAdmin
+            .from('work_orders')
+            .update({ severity: PRIORITY_TO_SEVERITY[prV.value!] })
+            .eq('id', sourceId).eq('property_id', pid);
+          if (error) return fail(requestId, headers, error.message);
+          break;
+        }
         if (!(await existsScoped('work_orders', sourceId, pid))) return notFound(requestId, headers);
+        const patch: Record<string, unknown> = { assigned_to: null, assigned_name: null };
+        if (assigneeStaffId) {
+          const staff = await staffOnProperty(assigneeStaffId, pid);
+          if (!staff) return err('assignee not found on this property', { requestId, status: 400, code: ApiErrorCode.ValidationFailed, headers });
+          // Same wall as a to-do, and for the same reason: a ticket handed to
+          // somebody who works from the housekeeping board is not late, it is
+          // invisible. A dropdown that never offers them is not a guard.
+          const blocked = assigneeBlockedReason(staff);
+          if (blocked) return err(blocked, { requestId, status: 400, code: ApiErrorCode.ValidationFailed, headers });
+          patch.assigned_to = staff.id;
+          patch.assigned_name = staff.name;
+        }
         const { error } = await supabaseAdmin
           .from('work_orders')
-          .update({ severity: PRIORITY_TO_SEVERITY[prV.value!] })
+          .update(patch)
           .eq('id', sourceId).eq('property_id', pid);
         if (error) return fail(requestId, headers, error.message);
         break;
       }
-      case 'pm':
+      case 'pm': {
+        const days = readCadenceDays(body.frequencyDays);
+        if (days === null) {
+          return err(`say how many days between each one, from ${MIN_CADENCE_DAYS} to ${MAX_CADENCE_DAYS}`, {
+            requestId, status: 400, code: ApiErrorCode.ValidationFailed, headers,
+          });
+        }
+        if (!(await existsScoped('preventive_tasks', sourceId, pid))) return notFound(requestId, headers);
+        // ONLY the cadence. Not the last-done date, which is the one field on
+        // this row that is a claim about what happened in the building: a
+        // "change the schedule" control that could also move it would be a way
+        // to record a service from a list row, silently.
+        const { error } = await supabaseAdmin
+          .from('preventive_tasks')
+          .update({ frequency_days: days })
+          .eq('id', sourceId).eq('property_id', pid);
+        if (error) return fail(requestId, headers, error.message);
+        break;
+      }
       case 'inspection':
       case 'reminder':
       case 'approval':
@@ -166,7 +257,7 @@ async function staffOnProperty(staffId: string, pid: string): Promise<{ id: stri
     : null;
 }
 
-async function existsScoped(table: 'comms_tasks' | 'work_orders', id: string, pid: string): Promise<boolean> {
+async function existsScoped(table: 'comms_tasks' | 'work_orders' | 'preventive_tasks', id: string, pid: string): Promise<boolean> {
   const { data } = await supabaseAdmin.from(table).select('id').eq('id', id).eq('property_id', pid).maybeSingle();
   return !!data;
 }

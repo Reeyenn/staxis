@@ -528,7 +528,7 @@ registerTool<{ includeNotDue?: boolean }>({
   handler: async ({ includeNotDue }, ctx: ToolHandlerContext): Promise<ToolResult> => {
     const { data, error } = await ctx.db
       .from('preventive_tasks')
-      .select('id, name, area, frequency_days, last_completed_at, last_completed_by, called_at, called_by');
+      .select('id, name, area, frequency_days, last_completed_at, last_completed_by, called_at, called_by, skipped_at, skipped_by');
     if (error) return { ok: false, error: 'Could not read this hotel\'s preventive maintenance schedules.' };
 
     // The hotel's own calendar day — a schedule due "today" must not flip a day
@@ -559,6 +559,7 @@ registerTool<{ includeNotDue?: boolean }>({
       const lastDoneAtIso = (row.last_completed_at as string | null) ?? null;
       const lastDoneDate = lastDoneAtIso ? lastDoneAtIso.slice(0, 10) : null;
       const calledAtIso = (row.called_at as string | null) ?? null;
+      const skippedAtIso = (row.skipped_at as string | null) ?? null;
 
       const entry: PreventiveScheduleEntry = {
         id: String(row.id),
@@ -570,6 +571,8 @@ registerTool<{ includeNotDue?: boolean }>({
         nextDueDate: lastDoneDate ? addDays(lastDoneDate, frequencyDays) : null,
         calledDate: calledAtIso ? calledAtIso.slice(0, 10) : null,
         calledBy: (row.called_by as string | null) ?? null,
+        skippedDate: skippedAtIso ? skippedAtIso.slice(0, 10) : null,
+        skippedBy: (row.skipped_by as string | null) ?? null,
       };
 
       // The SAME state machine the nightly detector runs. Re-implementing
@@ -586,7 +589,7 @@ registerTool<{ includeNotDue?: boolean }>({
         lastDone: entry.lastDoneDate,
         lastDoneBy: (row.last_completed_by as string | null) ?? null,
         nextDue: entry.nextDueDate,
-        // 'not_due' | 'never_done' | 'due' | 'resting' | 'follow_up'
+        // 'not_due' | 'never_done' | 'due' | 'resting' | 'skipped' | 'follow_up'
         state: state.kind,
         daysOverdue: state.kind === 'due' || state.kind === 'follow_up' ? state.daysOverdue : 0,
         daysSinceCalled: state.kind === 'resting' || state.kind === 'follow_up' ? state.daysSinceCalled : null,

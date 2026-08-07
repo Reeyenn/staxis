@@ -878,6 +878,9 @@ export const EXPECTED_MIGRATIONS_STATIC: ReadonlyArray<string> = [
   // One row per nightly robot walkthrough of the live app, so a green night
   // is distinguishable from a night the robot never ran.
   '0460',
+  // "Skip this one" on an upkeep schedule: one occurrence put down without
+  // anybody claiming the work happened (preventive_tasks.skipped_at/by).
+  '0462',
 ];
 
 /**

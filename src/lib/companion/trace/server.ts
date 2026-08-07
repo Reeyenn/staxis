@@ -18,6 +18,7 @@
 import 'server-only';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { canManageTeam, type AppRole } from '@/lib/roles';
+import { workOrderIsSettled } from '@/lib/db-mappers';
 import { rankTraces } from './index';
 import {
   detectMaintenanceRuns,
@@ -74,10 +75,14 @@ async function loadWorkOrders(propertyId: string, now: Date): Promise<TraceWorkO
       id: String(row.id),
       location,
       description,
-      // `STATUS_FROM_DB` in db-mappers.ts: everything that is not 'resolved' is
-      // still on the board. Mirrored rather than imported so this file has no
-      // reason to pull the whole mapper layer into a route.
-      open: row.status !== 'resolved',
+      // The settled-status rule, from db-mappers.ts. `closed` joins `resolved`
+      // as an ending (see WORK_ORDER_SETTLED_STATUSES) because a ticket somebody
+      // judged to be a non-issue is off the board too; everything else,
+      // including the 'deferred' that "Waiting on parts" writes, is still live.
+      // Imported rather than mirrored: this used to be an inline
+      // `!== 'resolved'`, and the moment a second ending existed the copy here
+      // would have kept reporting closed tickets as open.
+      open: !workOrderIsSettled(row.status),
       createdAt: String(row.created_at),
       repairCost: cost,
     }];

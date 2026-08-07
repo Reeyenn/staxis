@@ -76,6 +76,26 @@ export interface WorklistItem {
   amountCents: number | null;
   /** Set on a task the assignee marked "Can't do this". Their words, verbatim. */
   blockedReason?: string | null;
+  /**
+   * Why a work order is not moving, verbatim, when somebody has said so.
+   *
+   * Set by "Waiting on parts". The row DELIBERATELY STAYS ON THE LIST when this
+   * is set: a defer that removed the ticket would turn a stalled job into an
+   * invisible one, and the whole reason to record the sentence is so that the
+   * next person to look does not have to go and ask. It sinks instead of
+   * vanishing (priority drops, overdue is cleared), and the words appear under
+   * the title. Null on everything nobody has deferred, which is nearly all of it.
+   */
+  waitingReason?: string | null;
+  /**
+   * How many days between each one, on an upkeep schedule. Null on every other
+   * row type.
+   *
+   * Carried so "Change the schedule" opens with the number it is changing rather
+   * than with a blank. A cadence editor that starts empty is one where somebody
+   * has to remember what it was, and the commonest edit is nudging 30 to 60.
+   */
+  cadenceDays?: number | null;
   // ── follow-through ────────────────────────────────────────────────────────
   /**
    * Who wrote this down, when anybody did.
