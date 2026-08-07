@@ -271,6 +271,16 @@ export interface QueueFinding {
   summary: string;
   phrasedEn?: string | null;
   phrasedEs?: string | null;
+  /**
+   * The question over this card's buttons, written by the nightly
+   * companion.reply_question pass, or null.
+   *
+   * OPTIONAL on purpose, the same as `phrasedEn` beside it and for the same
+   * reason: a card must render on a deploy where the pass has not landed, and
+   * on every hotel it has never run for. Null is the ordinary state and means
+   * the per-kind template stands, which is a complete card.
+   */
+  judgedQuestion?: string | null;
   severity: FindingSeverity;
   disposition: FindingDisposition;
   status: FindingStatus;

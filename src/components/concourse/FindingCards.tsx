@@ -45,6 +45,8 @@
 import React from 'react';
 import { createPortal } from 'react-dom';
 
+import { companionQuestion } from '@/lib/companion/copy';
+
 import { useAuth } from '@/contexts/AuthContext';
 import { useProperty } from '@/contexts/PropertyContext';
 import { canManageTeam } from '@/lib/roles';
@@ -519,6 +521,11 @@ function InkCard({
   const L = <K extends keyof typeof S>(k: K) => (S[k].en);
   /** The `···` button. The menu is drawn beside it, from outside this card. */
   const moreRef = React.useRef<HTMLButtonElement | null>(null);
+  // Null on every card the nightly question pass has not written one for, and
+  // on every card whose question broke a copy rule. Passed through the same
+  // read seam the companion uses, so the two surfaces cannot show different
+  // questions about one finding.
+  const judgedQuestion = companionQuestion(null, finding.judgedQuestion ?? null);
   const action = finding.action ?? null;
   const locked = !!action && isSignOffLocked(finding) && action.state === 'proposed';
   const approvable = !!action && offersApproval(finding) && !locked;
@@ -621,6 +628,23 @@ function InkCard({
       {action?.state === 'failed' && <div className="fx-inknote fx-bad">{L('actionFailed')}</div>}
 
       {showReceipt && <Receipt finding={finding} lang={lang} ink />}
+
+      {/* ── The question over the buttons ─────────────────────────────────
+          Founder's standing scope: every companion utterance goes through the
+          same system, including these cards. So the sentence here is the SAME
+          one the companion would ask in the corner, from the same producer.
+
+          ONLY when a model wrote one, and that asymmetry is deliberate. The
+          per-kind template ("Is this handled?") exists for a surface with no
+          context around it: one line in the corner of a screen, where the
+          buttons are the only other thing visible. On a card, with the
+          statement, the evidence and three labelled verbs all in view, the
+          template would be the card asking a question its own buttons have
+          already asked. A JUDGED question is specific to this water heater and
+          this date, so it adds something a label cannot. */}
+      {!readOnly && judgedQuestion && (
+        <div className="fx-inkq">{judgedQuestion}</div>
+      )}
 
       <div className="fx-inkacts">
         {pending ? (

@@ -636,6 +636,43 @@ export function repliesFor(input: ReplySetInput): CompanionReply[] {
   return built.slice(0, COMPANION_REPLIES_MAX);
 }
 
+/** The one detector whose card is about a dated job rather than a pattern. */
+export const PREVENTIVE_DETECTOR_ID = 'preventive_due';
+
+/**
+ * Which vocabulary a finding's card speaks, read off the card itself.
+ *
+ * The two facts that decide it are the ones the SCREEN uses: the DETECTOR (a
+ * dated upkeep job has different honest answers from a pattern) and the
+ * EFFECTIVE disposition, which `toQueueFinding` has already resolved through
+ * the judge's verdict and the clamp. Nothing here re-decides either.
+ *
+ * It lives in this module rather than beside either caller because there are
+ * two: the browser's candidate builder and the nightly question pass. Two
+ * copies of "which questions may this card ask" would be two copies that can
+ * disagree, and the way that failure shows up is a question about a preventive
+ * job over a pattern card's buttons.
+ *
+ * `preventive_due` is named because it is the one detector with its own closure
+ * set in DETECTOR_CLOSURE_SETS, and this should stay a two-line branch for the
+ * same reason that stays a one-entry table: a detector earns an entry when its
+ * card is about a different KIND of thing, not when somebody wants nicer words.
+ */
+export function findingReplyKind(
+  finding: { detectorId: string; disposition: string },
+  actionId: string | null,
+): CompanionReplyKind {
+  if (finding.detectorId === PREVENTIVE_DETECTOR_ID) {
+    if (finding.disposition === 'propose') return 'finding_propose_preventive';
+    if (finding.disposition === 'recommend') return 'finding_recommend_preventive';
+  }
+  if (finding.disposition === 'propose') {
+    return actionId ? 'finding_propose_action' : 'finding_propose';
+  }
+  if (finding.disposition === 'fyi') return 'finding_fyi';
+  return 'finding_recommend';
+}
+
 /**
  * The reply set for a topic the server cannot rebuild from a database read.
  *

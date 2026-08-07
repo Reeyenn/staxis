@@ -70,7 +70,8 @@ import {
   reserveFindingsSpend,
 } from '@/lib/findings/judge-budget';
 
-import type { CompanionReply } from './replies';
+import { offerQuestionFor } from './copy';
+import { findingReplyKind, repliesFor, type CompanionReply } from './replies';
 
 /** The feature slot. Registered in the AI feature registry; switchable. */
 export const REPLY_QUESTION_FEATURE = 'companion.reply_question';
@@ -645,4 +646,124 @@ export function defaultQuestionCallDeps(): QuestionCallDeps {
       });
     },
   };
+}
+
+// ─── The nightly pass ───────────────────────────────────────────────────────
+//
+// Runs inside `runFindingsForProperty`, immediately after the judge, and
+// nowhere else. It is the ONLY caller of `askForReplyQuestions` in the product.
+
+/**
+ * Ask for this hotel's questions and store the ones that survived.
+ *
+ * NEVER THROWS. Every failure leaves both columns exactly as they were, and a
+ * null column means the per-kind template question stands, which is a complete
+ * card. A phrasing layer must not be able to fail a run whose findings are
+ * already correct without it.
+ *
+ * It reads the cards the SAME way the browser does: `listFindings`, then
+ * `toQueueFinding`, then `isCardRenderable`, then the judged phrasing. A pass
+ * that judged a different projection from the one people see would be writing
+ * questions about sentences nobody reads.
+ */
+export async function writeReplyQuestions(opts: {
+  propertyId: string;
+  now?: Date;
+  modelClient?: MessagesClient;
+}): Promise<{ written: number; refusals: number } | null> {
+  try {
+    const [{ listFindings }, { toQueueFinding }, cards, { loadActionsForFindings }] = await Promise.all([
+      import('@/lib/findings/store'),
+      import('@/lib/findings/queue-projection'),
+      import('@/components/concourse/finding-cards'),
+      import('@/lib/findings/actions/store'),
+    ]);
+
+    const rows = await listFindings(opts.propertyId, {
+      statuses: ['open', 'updated'],
+      limit: MAX_QUESTIONS_PER_CALL,
+    });
+    const renderable = rows
+      .map((row) => ({ row, card: toQueueFinding(row, {
+        // The judge's own phrasing, so the question is about the sentence the
+        // card actually shows rather than about the detector's raw summary.
+        phrased: row.judgedSummaryEn
+          ? { en: row.judgedSummaryEn, es: row.judgedSummaryEs ?? row.judgedSummaryEn }
+          : null,
+      }) }))
+      .filter(({ card }) => cards.isCardRenderable(card));
+    if (renderable.length === 0) return { written: 0, refusals: 0 };
+
+    const actions = await loadActionsForFindings(
+      opts.propertyId,
+      renderable.map(({ card }) => card.id),
+    );
+
+    const candidates: QuestionCandidate[] = renderable.map(({ row, card }) => {
+      const action = actions.get(card.id);
+      const actionId = action && action.state === 'proposed' ? action.id : null;
+      const kind = findingReplyKind(card, actionId);
+      return {
+        id: card.id,
+        detectorId: card.detectorId,
+        statement: cards.cardPhrasing(card, 'en'),
+        disposition: card.disposition,
+        templateQuestion: offerQuestionFor(kind),
+        // THE CODE'S OWN REPLIES, as ids and labels. This is the whole of what
+        // the model is told about the buttons, and there is no key in the
+        // output contract through which it could send a different one back.
+        replies: repliesFor({ kind, findingId: card.id, actionId })
+          .map((r) => ({ id: r.id, label: r.label })),
+        magnitude: card.magnitude,
+        evidence: row.evidence,
+        weakestInputAgeDays: card.weakestInputAgeDays,
+      };
+    });
+
+    const outcome = await askForReplyQuestions({
+      propertyId: opts.propertyId,
+      candidates,
+      now: opts.now,
+      modelClient: opts.modelClient,
+    });
+    if (!outcome.ok) return { written: 0, refusals: 0 };
+
+    await persistReplyQuestions(opts.propertyId, outcome.results);
+    return { written: outcome.results.length, refusals: outcome.refusals.length };
+  } catch (e) {
+    log.warn('[companion/reply-question] the pass failed; every card keeps its template', {
+      propertyId: opts.propertyId,
+      error: e instanceof Error ? e.message : String(e),
+    });
+    return null;
+  }
+}
+
+/**
+ * Store the questions, one UPDATE per row through the hotel filter.
+ *
+ * A row whose write fails is left with whatever it had, which is either an
+ * older question or a null. Both are correct cards, so a partial night is not a
+ * broken one and there is nothing to roll back.
+ */
+export async function persistReplyQuestions(
+  propertyId: string,
+  results: readonly QuestionResult[],
+): Promise<void> {
+  if (results.length === 0) return;
+  const { scopedDb } = await import('@/lib/agent/scoped-db');
+  for (const result of results) {
+    const { error } = await scopedDb(propertyId)
+      .from('findings')
+      .update({
+        judged_question: result.question.slice(0, MAX_QUESTION_CHARS),
+        judged_reply_order: result.order,
+      })
+      .eq('id', result.findingId);
+    if (error) {
+      log.warn('[companion/reply-question] one question did not store', {
+        propertyId, findingId: result.findingId, error: error.message,
+      });
+    }
+  }
 }

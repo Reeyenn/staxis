@@ -628,6 +628,9 @@ const FEED_CSS = `
 .fx-suggi{display:grid;place-items:center;width:26px;height:26px;border-radius:8px;flex-shrink:0;
   background:rgba(158,183,166,.22);color:#9EB7A6;animation:fx-pulsering 3s ease-out infinite;}
 .fx-suggt{font-size:13px;line-height:1.5;color:#EDF1EC;}
+/* The question over the buttons. Only present when a model wrote one, so the
+   card's spacing when it is absent is byte-identical to what shipped. */
+.fx-inkq{font-size:13.5px;color:#EDF1EC;margin-top:14px;line-height:1.5;}
 .fx-inkacts{display:flex;align-items:center;gap:9px;margin-top:16px;flex-wrap:wrap;position:relative;}
 .fx-ib{display:inline-flex;align-items:center;gap:8px;height:36px;padding:0 14px;border-radius:10px;
   border:none;background:rgba(255,255,255,.09);color:#fff;font-size:13px;font-weight:500;cursor:pointer;

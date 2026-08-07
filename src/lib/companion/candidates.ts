@@ -35,10 +35,9 @@ import { propertyLocalToday, startOfLocalDay } from '@/lib/schedule/local-date';
 import { unfinishedRecallSentence } from './copy';
 import { listFindings } from '@/lib/findings/store';
 import { toQueueFinding } from '@/lib/findings/queue-projection';
-import {
-  cardPhrasing, isCardRenderable, rankFindings, type QueueFinding,
-} from '@/components/concourse/finding-cards';
-import { repliesFor, wakeDestination, type CompanionReplyKind } from './replies';
+import { cardPhrasing, isCardRenderable, rankFindings } from '@/components/concourse/finding-cards';
+import { findingReplyKind, repliesFor, wakeDestination } from './replies';
+import { applyReplyOrder } from './reply-question';
 import { listShowsFindings, listStandingFor } from '@/lib/feed/list-access';
 import {
   findLopsidedHistory,
@@ -113,8 +112,16 @@ export async function buildCompanionCandidates(input: {
     return [];
   }
 
+  // The judge's own phrasing, and the question the nightly pass wrote about it.
+  // Both are READS of a column: nothing is phrased here and no model is called,
+  // which is the promise in this file's header.
+  const judged = new Map(rows.map((f) => [f.id, f]));
   const cards = rows
-    .map((f) => toQueueFinding(f))
+    .map((f) => toQueueFinding(f, {
+      phrased: f.judgedSummaryEn
+        ? { en: f.judgedSummaryEn, es: f.judgedSummaryEs ?? f.judgedSummaryEn }
+        : null,
+    }))
     .filter((f) => isCardRenderable(f));
 
   const lopsided = await lopsidedCandidate(input.propertyId);
@@ -162,6 +169,7 @@ export async function buildCompanionCandidates(input: {
     ...top.map((f) => {
       const action = actions.get(f.id) ?? null;
       const replyKind = findingReplyKind(f, action);
+      const row = judged.get(f.id);
       return {
         // The DEDUPE KEY, not the row id. The same problem re-detected tomorrow
         // gets a new row, and a No that expired overnight is not a No. The dedupe
@@ -183,7 +191,14 @@ export async function buildCompanionCandidates(input: {
         // must survive re-detection; a verdict is written against the row that
         // exists right now, and writing it against yesterday's row would be a
         // manager's decision landing on a card nobody is looking at.
-        replies: repliesFor({ kind: replyKind, findingId: f.id, actionId: action }),
+        replies: applyReplyOrder(
+          repliesFor({ kind: replyKind, findingId: f.id, actionId: action }),
+          row?.judgedReplyOrder ?? null,
+        ),
+        // Null on every hotel the question pass has never run for, and on every
+        // card whose question broke a copy rule. Null means the per-kind
+        // template stands, which is a complete card.
+        judgedQuestion: row?.judgedQuestion ?? null,
       };
     }),
   ].filter((c) => c.text.trim().length > 0).slice(0, MAX_CANDIDATES);
@@ -219,36 +234,7 @@ async function actionsFor(
   return out;
 }
 
-/**
- * Which vocabulary a card speaks, read off the card itself.
- *
- * The two facts that decide it are the ones the screen uses: the DETECTOR (a
- * dated upkeep job has different honest answers from a pattern) and the
- * EFFECTIVE disposition (`toQueueFinding` has already applied the judge's
- * verdict and the clamp). Nothing here re-decides either.
- *
- * `preventive_due` is named because it is the one detector with its own closure
- * set in DETECTOR_CLOSURE_SETS, and this stays a two-line branch for the same
- * reason that table stays a one-entry table: a detector earns an entry when its
- * card is about a different KIND of thing, not when somebody wants nicer words.
- */
-function findingReplyKind(
-  f: Pick<QueueFinding, 'detectorId' | 'disposition'>,
-  actionId: string | null,
-): CompanionReplyKind {
-  if (f.detectorId === PREVENTIVE_DETECTOR_ID) {
-    if (f.disposition === 'propose') return 'finding_propose_preventive';
-    if (f.disposition === 'recommend') return 'finding_recommend_preventive';
-  }
-  if (f.disposition === 'propose') {
-    return actionId ? 'finding_propose_action' : 'finding_propose';
-  }
-  if (f.disposition === 'fyi') return 'finding_fyi';
-  return 'finding_recommend';
-}
 
-/** The one detector whose card is about a dated job rather than a pattern. */
-const PREVENTIVE_DETECTOR_ID = 'preventive_due';
 
 // ─── Something that just happened ───────────────────────────────────────────
 //
