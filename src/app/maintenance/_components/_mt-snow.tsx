@@ -42,7 +42,9 @@ export {
   fmtDate, fmtDateShort, fmtSubmittedAt, fmtSubmittedAtCompact,
   daysBetween, addDaysLocal, relDue, displayLoc, cadenceLabel,
   workOrderEnding, workOrderHistoryCount, newScheduleStart, newScheduleStartNote,
+  nextDueDate, daysUntilDue, bandFor, dueChipLabel, nextDueLine,
 } from './mt-dates';
+export type { Band } from './mt-dates';
 export type Priority = 'urgent' | 'normal' | 'low';
 
 // ── Concourse motion + card tokens (mirror concourse-css.tsx) ──────────────

@@ -127,6 +127,60 @@ export function workOrderHistoryCount(repairs: number, nonIssues: number): strin
   return `${repaired} · ${dismissed}`;
 }
 
+// ── where an upkeep schedule sits on the Preventive board ──────────────────
+//
+// `unstarted` is the honest fourth band. A schedule with no last-done date has
+// NO due date: there is no elapsed interval to count, and the only dates
+// available to invent one from are the day somebody typed the row in and today.
+// The nightly detector refuses to claim lateness for exactly this reason
+// (findings/detectors/preventive-due.ts) and issues one card saying the date is
+// missing. The board did the opposite — its next-due fell back to `new Date()`,
+// so an unstarted schedule was filed under "Due this month" and its card read
+// "due today · next Aug 6", a due date the hotel never gave. Reachable in
+// ordinary use: setting a schedule up through the Staxis chat stores no date at
+// all when the manager says they do not know when it was last done.
+export type Band = 'overdue' | 'unstarted' | 'soon' | 'upcoming';
+
+/** The two fields the band rules need. Kept structural so the tests do not have
+ *  to build a whole PreventiveTask to ask a date question. */
+export interface SchedulePosition {
+  lastCompletedAt: Date | null | undefined;
+  frequencyDays: number;
+}
+
+/** When this comes round again, or NULL when the hotel never said it was done. */
+export function nextDueDate(t: SchedulePosition): Date | null {
+  if (!t.lastCompletedAt) return null;
+  // Calendar-day addition (DST-safe) — raw ms addition landed backfilled
+  // midnight-anchored dates at 23:00 the previous day across the fall-back,
+  // banding/displaying the due date one day early.
+  return addDaysLocal(t.lastCompletedAt, t.frequencyDays);
+}
+
+/** Days until due, or null when there is no due date to count to. */
+export function daysUntilDue(t: SchedulePosition, now: Date = new Date()): number | null {
+  const due = nextDueDate(t);
+  return due ? daysBetween(now, due) : null;
+}
+
+export function bandFor(t: SchedulePosition, now: Date = new Date()): Band {
+  const d = daysUntilDue(t, now);
+  if (d === null) return 'unstarted';
+  if (d < 0) return 'overdue';
+  if (d <= 30) return 'soon';
+  return 'upcoming';
+}
+
+/** The relative-due chip on a card. Says nothing it cannot support. */
+export function dueChipLabel(daysUntil: number | null): string {
+  return daysUntil === null ? 'no due date' : relDue(daysUntil);
+}
+
+/** The footer line under a card: the next date, or what is missing. */
+export function nextDueLine(due: Date | null): string {
+  return due ? `next · ${fmtDateShort(due)}` : 'add a last-done date to start it';
+}
+
 // ── setting a new upkeep schedule going ────────────────────────────────────
 //
 // The New-task form has an optional "Last completed" box, and leaving it blank

@@ -17,6 +17,11 @@ import {
   workOrderHistoryCount,
   newScheduleStart,
   newScheduleStartNote,
+  nextDueDate,
+  daysUntilDue,
+  bandFor,
+  dueChipLabel,
+  nextDueLine,
 } from '@/app/maintenance/_components/mt-dates';
 import { fromWorkOrderRow } from '@/lib/db-mappers';
 
@@ -248,5 +253,53 @@ describe('starting a new upkeep schedule', () => {
         'a name reappearing here is the bug this exists to stop',
       );
     }
+  });
+});
+
+// ── an upkeep schedule nobody has ever recorded doing ───────────────────────
+//
+// The board's next-due used to fall back to `new Date()` for a schedule with no
+// last-done date, so it landed under "Due this month" and its card read "due
+// today · next <today>" — a due date the hotel never gave, on a job it never
+// said it had done. The nightly detector refuses to make that claim on the same
+// data (findings/detectors/preventive-due.ts) and says the date is missing
+// instead. Reachable in ordinary use: setting a schedule up through the Staxis
+// chat stores no date at all when the manager does not know.
+
+describe('a schedule with no last-done date', () => {
+  const now = new Date(2026, 7, 6, 9, 0);
+  const sched = (lastCompletedAt: Date | null, frequencyDays = 180) => ({ lastCompletedAt, frequencyDays });
+
+  test('has no due date, rather than one of today', () => {
+    assert.equal(nextDueDate(sched(null)), null);
+    assert.equal(daysUntilDue(sched(null), now), null);
+  });
+
+  test('gets its own band, and is not filed as due this month or as overdue', () => {
+    const band = bandFor(sched(null), now);
+    assert.equal(band, 'unstarted');
+    assert.notEqual(band, 'soon');
+    assert.notEqual(band, 'overdue', 'never recorded is not the same as late');
+  });
+
+  test('and its card claims neither a lateness nor a date', () => {
+    assert.equal(dueChipLabel(null), 'no due date');
+    assert.doesNotMatch(dueChipLabel(null), /today|overdue|due in/i);
+    const line = nextDueLine(null);
+    assert.match(line, /last-done date/i, 'it says what is missing');
+    assert.doesNotMatch(line, /\d{4}|Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec/);
+    assert.doesNotMatch(line, /—/);
+  });
+
+  test('while a schedule that HAS a date keeps counting exactly as before', () => {
+    const done = new Date(2026, 1, 6, 9, 0);            // Feb 6 2026
+    const due = nextDueDate(sched(done, 180));
+    assert.ok(due);
+    assert.equal(daysBetween(done, due!), 180);
+    assert.equal(bandFor(sched(done, 180), now), 'overdue', 'Feb 6 + 180d is Aug 5, so Aug 6 is late');
+    assert.equal(bandFor(sched(new Date(2026, 7, 1), 30), now), 'soon');
+    assert.equal(bandFor(sched(new Date(2026, 7, 1), 365), now), 'upcoming');
+    assert.match(dueChipLabel(daysUntilDue(sched(done, 180), now)), /overdue/);
+    assert.match(nextDueLine(due!), /^next · /);
   });
 });
