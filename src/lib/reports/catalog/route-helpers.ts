@@ -10,10 +10,12 @@ import type { NextRequest } from 'next/server';
 import type { NextResponse } from 'next/server';
 import { err } from '@/lib/api-response';
 import { validateDateStr, validateEnum, validateString, validateUuid } from '@/lib/api-validate';
+import { capabilityDecisionForProperty } from '@/lib/capabilities/server';
+import { capabilityUnavailableResponse } from '@/lib/capabilities/api-gate';
 import { getReportDefinition } from '@/lib/reports/catalog';
 import type { ReportContext, ReportDefinition } from './types';
 import { dateAddDays, getPropertyMeta } from './helpers';
-import { gateReportsAccess } from './gate';
+import { gateReportsAccess, reportAccessDecision } from './gate';
 
 const MAX_RANGE_DAYS = 366;
 
@@ -66,6 +68,30 @@ export async function resolveRunContext(req: NextRequest, requestId: string): Pr
   const gate = await gateReportsAccess(req, propertyId);
   if (!gate.ok) {
     return { ok: false, response: err(gate.error, { requestId, status: gate.status, code: gate.code }) };
+  }
+
+  // A money-bearing report needs the per-hotel money switch too. Run BEFORE any
+  // query so a restricted manager never causes the report to execute, and fail
+  // closed (503, retryable) when the override store cannot be read.
+  if (def.requiresFinancials === true) {
+    const decision = await capabilityDecisionForProperty(
+      { role: gate.caller.role },
+      'view_financials',
+      propertyId,
+    );
+    if (decision === 'unavailable') {
+      return { ok: false, response: capabilityUnavailableResponse(requestId) };
+    }
+    if (reportAccessDecision(def, { canViewFinancials: decision === 'allowed' }) !== 'allowed') {
+      return {
+        ok: false,
+        response: err('Financial reports are restricted for your role at this property.', {
+          requestId,
+          status: 403,
+          code: 'forbidden_role',
+        }),
+      };
+    }
   }
 
   const meta = await getPropertyMeta(propertyId);

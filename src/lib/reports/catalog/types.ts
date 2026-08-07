@@ -85,6 +85,15 @@ export interface ReportDefinition {
   category: ReportCategory;
   defaultRange: DefaultRange;
   /**
+   * True when the report's rows or stats contain money. `run_reports` keeps
+   * line staff out of the hub entirely, but it is a manager-floor capability
+   * and `view_financials` is a SEPARATE switch an admin can turn off for one
+   * manager at one hotel. Without this flag that manager could still download
+   * the hotel's budgets, purchases and usage dollars as a spreadsheet, which is
+   * the exact thing the switch exists to prevent.
+   */
+  requiresFinancials?: boolean;
+  /**
    * Run the report for a property + date window. MUST scope every query by
    * ctx.propertyId. Throws on hard failure; the route maps that to a 500.
    */
@@ -98,6 +107,7 @@ export interface ReportCatalogEntry {
   description: Bilingual;
   category: ReportCategory;
   defaultRange: DefaultRange;
+  requiresFinancials: boolean;
 }
 
 export function toCatalogEntry(def: ReportDefinition): ReportCatalogEntry {
@@ -107,5 +117,6 @@ export function toCatalogEntry(def: ReportDefinition): ReportCatalogEntry {
     description: def.description,
     category: def.category,
     defaultRange: def.defaultRange,
+    requiresFinancials: def.requiresFinancials === true,
   };
 }
