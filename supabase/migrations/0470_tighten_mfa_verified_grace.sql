@@ -1,4 +1,4 @@
--- 0469 — close the second door: a session that never proved a second factor
+-- 0470 — close the second door: a session that never proved a second factor
 -- must not satisfy the ~117 RLS policies that gate on it.
 --
 -- ⚠️  DO NOT APPLY THIS ON ITS OWN. Read the rollout section at the bottom.
