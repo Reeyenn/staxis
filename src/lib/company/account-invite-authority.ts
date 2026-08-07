@@ -373,6 +373,74 @@ export async function loadFreshCompanyInviteAuthorityContext(input: {
   });
 }
 
+/**
+ * The same authority context, asked for by COMPANY rather than by hotel.
+ *
+ * The company view has no selected hotel, but every existing check is written
+ * against an anchor hotel and derives the company FROM it — deliberately, so a
+ * multi-company account can never act on an implicitly remembered company. So
+ * rather than opening a second authority path with its own bugs, this picks an
+ * anchor the caller is already authorized at and walks through the ordinary
+ * door, pinning `expectedOrganizationId` so the anchor cannot drag us into a
+ * different company than the one that was asked about.
+ */
+export async function loadCompanyInviteAuthorityContextForOrganization(input: {
+  accountId: string;
+  organizationId: string;
+}): Promise<AccountInviteAuthorityResult<CompanyInviteAuthorityContext>> {
+  if (!UUID_RX.test(input.accountId) || !UUID_RX.test(input.organizationId)) {
+    return { kind: 'denied' };
+  }
+  const actor = await loadActiveAccountInviteActor(input.accountId);
+  if (actor.kind !== 'allowed') return actor;
+
+  const operated = await loadOperatedPropertyIds(input.organizationId);
+  if (operated.kind !== 'allowed') return operated;
+
+  let candidateAnchors: string[];
+  if (actor.value.isPlatformAdmin) {
+    candidateAnchors = operated.value;
+  } else {
+    const resolved = await resolveAuthorizationScope({
+      accountId: input.accountId,
+      organizationId: input.organizationId,
+      selector: { type: 'all_authorized' },
+    });
+    if (resolved.ok) {
+      candidateAnchors = resolved.receipt.propertyIds.filter(
+        (propertyId) => operated.value.includes(propertyId),
+      );
+    } else if (refusalIsUnavailable(resolved.reason)) {
+      return { kind: 'unavailable' };
+    } else if (resolved.reason === 'no_company_job') {
+      // One-hotel normalized managers are excluded from portfolio mode, and the
+      // per-hotel path below still admits them at their own hotel.
+      const access = await listAuthoritativePropertyAccess(input.accountId);
+      if (!access) return { kind: 'unavailable' };
+      if (access.all || access.authorityMode !== 'normalized') return { kind: 'denied' };
+      candidateAnchors = access.propertyStandings
+        .map((standing) => standing.propertyId)
+        .filter((propertyId) => operated.value.includes(propertyId));
+    } else {
+      return { kind: 'denied' };
+    }
+  }
+  if (candidateAnchors.length === 0) return { kind: 'denied' };
+
+  let sawUnavailable = false;
+  for (const anchorPropertyId of [...candidateAnchors].sort()) {
+    const context = await loadCompanyInviteAuthorityContext({
+      accountId: actor.value.accountId,
+      isPlatformAdmin: actor.value.isPlatformAdmin,
+      anchorPropertyId,
+      expectedOrganizationId: input.organizationId,
+    });
+    if (context.kind === 'allowed') return context;
+    if (context.kind === 'unavailable') sawUnavailable = true;
+  }
+  return sawUnavailable ? { kind: 'unavailable' } : { kind: 'denied' };
+}
+
 function entitlementProfile(entitlement: AuthorizationScopeEntitlement): AccessProfile {
   return entitlement.entitlementKind === 'access_grant'
     ? entitlement.accessProfile!
@@ -593,6 +661,29 @@ export function projectStoredInviteForCompanyContext(
     propertyIds,
     canRevoke: fullAuthority.kind === 'allowed',
   };
+}
+
+/**
+ * The same projection for the company view, which has no selected hotel.
+ *
+ * An invitation belongs on the company list when the caller could see it at ANY
+ * hotel they manage people at. The per-hotel predicate already decides both
+ * visibility and `canRevoke` identically whichever qualifying hotel is passed,
+ * so this asks it rather than restating the rule and risking a second, laxer
+ * copy of it.
+ */
+export function projectStoredInviteForCompanyView(
+  context: CompanyInviteAuthorityContext,
+  invite: StoredNormalizedInviteScope,
+): ProjectedStoredInviteScope | null {
+  const candidates = context.isPlatformAdmin
+    ? context.operatedPropertyIds
+    : context.authorizedPropertyIds;
+  for (const propertyId of candidates) {
+    const projection = projectStoredInviteForCompanyContext(context, invite, propertyId);
+    if (projection) return projection;
+  }
+  return null;
 }
 
 /** Re-run the exact delegation hierarchy for a persisted normalized invite.
