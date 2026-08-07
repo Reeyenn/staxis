@@ -43,6 +43,7 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import Link from 'next/link';
 import { fetchWithAuth } from '@/lib/api-fetch';
+import { ROBOT_WALK_ERROR_SOURCE } from '@/lib/automation/robot-walk';
 import { EMPLOYEE_STATUS_LABEL, EMPLOYEE_STATUS_TONE } from '@/lib/ai/employee-registry';
 import type { AiEmployeeStatus, Bilingual } from '@/lib/ai/employee-registry';
 import {
@@ -100,7 +101,7 @@ export interface StaffMember {
   spend?: StaffSpend | null;
 }
 
-interface ErrorGroup {
+export interface ErrorGroup {
   source: string | null;
   message: string;
   count: number;
@@ -110,10 +111,36 @@ interface ErrorGroup {
   sampleStack: string | null;
 }
 
+/**
+ * Sources that are LIVE and must never be swallowed by the retired-robot
+ * filter below.
+ *
+ * The filter was written to hide the decommissioned PMS robot's leftover
+ * noise, and it does that by pattern — anything whose source reads like a
+ * robot. The nightly walkthrough IS a robot, is very much running, and is the
+ * one signal in the product that fails when the app itself has stopped working
+ * for a manager. Without this exemption its failures would be dropped on the
+ * floor of the exact box they were written for, silently, forever.
+ *
+ * Anything added here has to be a source somebody is actively writing today.
+ */
+const LIVE_ERROR_SOURCES: ReadonlySet<string> = new Set([ROBOT_WALK_ERROR_SOURCE]);
+
 function isRetiredRobotError(group: ErrorGroup): boolean {
   const source = (group.source ?? '').toLowerCase();
+  if (LIVE_ERROR_SOURCES.has(source)) return false;
   return source === 'generic-table-writer'
     || /(^|[-_.\s])(cua|mapper|robot|session[-_ ]?driver)([-_.\s]|$)/.test(source);
+}
+
+/**
+ * What the "Recent errors" box actually shows, out of everything the endpoint
+ * returned. Exported because it is a decision about what the founder is and is
+ * not told, and a decision that lives inline in a `useCallback` is one nothing
+ * can check.
+ */
+export function visibleErrorGroups(groups: readonly ErrorGroup[]): ErrorGroup[] {
+  return groups.filter((group) => !isRetiredRobotError(group));
 }
 
 // ── Tone helpers ──────────────────────────────────────────────────────────
@@ -209,8 +236,7 @@ export function MissionControlSurface() {
       setStaff(asArray(staffJson.data?.employees) as StaffMember[]);
     }
     if (errorsJson?.data?.groups) {
-      const groups = errorsJson.data.groups as ErrorGroup[];
-      setErrors(groups.filter((group) => !isRetiredRobotError(group)));
+      setErrors(visibleErrorGroups(errorsJson.data.groups as ErrorGroup[]));
     }
 
     setLoadedAt(new Date().toISOString());
@@ -735,7 +761,9 @@ function ChoresRow({ rows }: { rows: WorkerRow[] }) {
 }
 
 // ── Recent error group — click to expand the stack (reused from LiveSurface) ─
-function ErrorRow({ g }: { g: ErrorGroup }) {
+// Exported so the standing test can render a real failure row and read what a
+// founder would actually see on it: the sentence, and which system said it.
+export function ErrorRow({ g }: { g: ErrorGroup }) {
   const [open, setOpen] = useState(false);
   const message = open ? g.message : (g.message.length > 96 ? g.message.slice(0, 96) + '…' : g.message);
   return (

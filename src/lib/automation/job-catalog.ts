@@ -437,6 +437,39 @@ export const ACTIVE_MISSION_JOBS: ReadonlyArray<MissionMonitoredJobCatalogEntry>
     description: 'Notices flagged hotel events as they happen and prepares one note the companion may offer.',
     mission: { description: 'Spots something going wrong within minutes instead of overnight.', group: 'Agent', tier: 'ai' },
   },
+
+  // ─── The nightly robot walkthrough ──────────────────────────────────────
+  //
+  // The odd one out on this list, in two ways worth writing down.
+  //
+  // Its RUNNER is not a route. Every other job here is a URL something calls on
+  // a timer; this one is a real browser on a GitHub runner that signs into the
+  // live site and uses it. The route it targets is where the browser REPORTS
+  // to, which is also the thing that writes the heartbeat — so the catalog row
+  // still lines up with the standing invariant that a heartbeat name matches a
+  // writeCronHeartbeat call in the route at `target.path`.
+  //
+  // Its heartbeat means something stricter than the others'. The rest write one
+  // whenever they finish; this one writes one only when EVERY step passed. So
+  // "on time" here reads as "a manager could still do all thirteen things last
+  // night", and two consecutive broken nights turn the row amber on their own,
+  // underneath the Recent-errors entry that named the step the first night.
+  {
+    id: 'robot-walk',
+    lifecycle: 'active',
+    owner: 'platform',
+    runner: 'github-actions',
+    source: { kind: 'github', workflowFile: 'robot-walk.yml' },
+    target: { kind: 'route', path: '/api/admin/robot-walk/report' },
+    schedule: '0 10 * * *',
+    heartbeat: {
+      name: 'robot-walk',
+      visibility: 'mission-control',
+      cadenceDescription: 'nightly 10:00 UTC browser walkthrough of the live site at the seeded robot hotel; the heartbeat lands only when every step passed',
+    },
+    description: 'Signs into the live app and walks it end to end, reporting each step.',
+    mission: { description: 'Signs into the live app every night and checks a manager can still use it.', group: 'Other', tier: 'ai' },
+  },
 ];
 
 const OTHER_JOBS: ReadonlyArray<JobCatalogEntry> = [

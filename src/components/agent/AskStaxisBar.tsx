@@ -1699,13 +1699,19 @@ function NoticeRow({ notice, unread, onOpen }: {
 // ── One turn in the panel ─────────────────────────────────────────────────
 // Staxis answers with NO bubble: its voice is the panel talking, not a second
 // participant in it.
+//
+// `data-asx-turn` marks the two things that are an actual exchange. The
+// `asx-turn-s` CLASS is shared with the opening line, the asleep notice and the
+// companion's own blocks, so it cannot tell "Staxis answered" from "Staxis is
+// switched off" — which is exactly the difference the nightly robot walkthrough
+// has to be able to see. The attribute is only ever on a real turn.
 function Turn({ message: m, reveal }: { message: DisplayMessage; reveal: boolean }) {
-  if (m.role === 'user') return <div className="asx-turn-u">{m.text}</div>;
+  if (m.role === 'user') return <div className="asx-turn-u" data-asx-turn="user">{m.text}</div>;
   if (m.role === 'assistant' && m.text && !m.toolName) {
     // D2 rides only the answer that is landing. Reopening a long past chat
     // must not set twenty paragraphs wiping across the panel at once.
     return (
-      <div className={reveal ? 'asx-turn-s asx-reveal' : 'asx-turn-s'}>
+      <div className={reveal ? 'asx-turn-s asx-reveal' : 'asx-turn-s'} data-asx-turn="assistant">
         <AssistantMarkdown text={m.text} />
       </div>
     );

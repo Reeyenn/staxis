@@ -90,6 +90,11 @@ export async function GET(req: NextRequest) {
       // very different weeks, and one number holding both would report them
       // identically.
       quiet: count('quiet'),
+      // Looked at, and structurally undeliverable: the hotel switched off the
+      // list a note would arrive on. Its cursor still advances, because a
+      // skipped hotel is not an unwatched one, and the doctor's staleness
+      // warning only means something while that stays true.
+      listSwitchedOff: count('list_switched_off'),
       prepared: count('prepared'),
       observed: count('observed'),
       saidNothing: count('nothing'),
