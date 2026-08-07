@@ -24,7 +24,7 @@ import {
   StorageImage, PageHead, BoardColumn, MtEmptyCard,
   useBoardGate, BoardLoading, BoardLoadError,
   displayLoc, fmtDateShort, fmtSubmittedAt, fmtSubmittedAtCompact,
-  prioColor, prioLabel,
+  prioColor, prioLabel, workOrderEnding, workOrderHistoryCount,
   CX_SPRING, CX_CARD_SHADOW, CX_CARD_SHADOW_HOVER, CX_CARD_BORDER_HOVER,
 } from './_mt-snow';
 import { useToast, ToastHost } from '@/app/_components/ui/toast';
@@ -568,13 +568,23 @@ function DetailModal({
 }
 
 // ── history popup ────────────────────────────────────────────────────────────
+//
+// This is the hotel's record of the maintenance it carried out, and until now it
+// had one sentence for two endings. A ticket somebody looked at and judged not
+// to be a fault ("Not actually a problem" on the Staxis list) arrived here with
+// a green "Done", counted under "N resolved", and the name of whoever dismissed
+// it printed under "Fixed by" — a repair this hotel never performed, written
+// into the only place anybody would go to check what it did. The words come
+// from workOrderEnding / workOrderHistoryCount so they can be asserted without
+// rendering anything.
 function HistoryModal({ open, onClose, done, es }: { open: boolean; onClose: () => void; done: WorkOrder[]; es: boolean }) {
-  const cols = '120px 1fr 130px 96px 78px';
+  const cols = '120px 1fr 130px 96px 96px';
+  const repairs = done.filter((w) => workOrderEnding(w.settledAs).countsAsRepair).length;
   return (
     <Modal
       open={open} onClose={onClose}
       title={'Work order history'}
-      subtitle={`${done.length} resolved · everything closed out`}
+      subtitle={workOrderHistoryCount(repairs, done.length - repairs)}
       width={820}
       footer={<Btn variant="ghost" onClick={onClose}>{'Close'}</Btn>}
     >
@@ -587,11 +597,13 @@ function HistoryModal({ open, onClose, done, es }: { open: boolean; onClose: () 
           <div style={{ display: 'grid', gridTemplateColumns: cols, gap: 14, padding: '0 0 12px', borderBottom: `1px solid ${T.rule}` }}>
             <Caps size={9}>{'Where'}</Caps>
             <Caps size={9}>{'What & note'}</Caps>
-            <Caps size={9}>{'Fixed by'}</Caps>
-            <Caps size={9}>{'Completed'}</Caps>
-            <Caps size={9}>{'Status'}</Caps>
+            <Caps size={9}>{'Who'}</Caps>
+            <Caps size={9}>{'Settled'}</Caps>
+            <Caps size={9}>{'Outcome'}</Caps>
           </div>
-          {done.slice().sort((a, b) => (b.completedAt?.getTime() ?? 0) - (a.completedAt?.getTime() ?? 0)).map((w) => (
+          {done.slice().sort((a, b) => (b.completedAt?.getTime() ?? 0) - (a.completedAt?.getTime() ?? 0)).map((w) => {
+            const ending = workOrderEnding(w.settledAs);
+            return (
             <div key={w.id} style={{ display: 'grid', gridTemplateColumns: cols, gap: 14, padding: '14px 0', borderBottom: `1px solid ${T.ruleSoft}`, alignItems: 'center' }}>
               <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
                 <span style={{ fontFamily: FONT_SANS, fontSize: 14, color: T.ink, letterSpacing: '-0.01em', lineHeight: 1.2, fontWeight: 600 }}>{displayLoc(w.location)}</span>
@@ -601,11 +613,17 @@ function HistoryModal({ open, onClose, done, es }: { open: boolean; onClose: () 
                 <span style={{ fontFamily: FONT_SANS, fontSize: 13, color: T.ink, fontWeight: 500 }}>{w.description}</span>
                 {w.completionNote && <span style={{ fontFamily: FONT_SANS, fontSize: 12, color: T.ink2, fontStyle: 'italic' }}>“{w.completionNote}”</span>}
               </div>
-              <span style={{ fontFamily: FONT_SANS, fontSize: 13, color: T.ink }}>{w.completedByName || '—'}</span>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 2, minWidth: 0 }}>
+                <Caps size={9} c={T.ink3}>{ending.byLabel}</Caps>
+                <span style={{ fontFamily: FONT_SANS, fontSize: 13, color: T.ink }}>{w.completedByName || '—'}</span>
+              </div>
               <span style={{ fontFamily: FONT_MONO, fontSize: 12, color: T.ink2 }}>{w.completedAt ? fmtDateShort(w.completedAt) : '—'}</span>
-              <Pill tone="sage">✓ {'Done'}</Pill>
+              <Pill tone={ending.tone}>
+                {ending.countsAsRepair ? `✓ ${ending.label}` : ending.label}
+              </Pill>
             </div>
-          ))}
+            );
+          })}
         </div>
       )}
     </Modal>

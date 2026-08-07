@@ -575,6 +575,22 @@ export interface WorkOrder {
   completionPhotoPath?: string;
   completedAt: Date | null;     // null until status === 'done'
 
+  /**
+   * WHICH ending this ticket got, for the one screen that shows endings.
+   *
+   * `status` above is the board's two-word vocabulary (open / done) and stays
+   * that way, because every lane, count and filter in the product is built on
+   * it. But the stored enum has TWO ways of being done — 'resolved' (somebody
+   * fixed it) and 'closed' (somebody looked and it was not actually a problem)
+   * — and collapsing them was fine right up until the second one existed. The
+   * work-order History popup then listed non issues under "N resolved" with a
+   * green "Done" and the closer's name under "Fixed by", which is a repair this
+   * hotel never carried out, written into the only record of what it did.
+   *
+   * Null while the ticket is still live.
+   */
+  settledAs?: 'resolved' | 'closed' | null;
+
   equipmentId?: string | null;  // optional link to an equipment asset (registry 0249)
   repairCost?: number | null;   // optional $ spent resolving — summed per-asset (0249)
 

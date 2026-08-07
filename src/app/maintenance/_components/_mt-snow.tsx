@@ -41,6 +41,7 @@ export { T, FONT_SANS, FONT_MONO, FONT_SERIF, Caps, Card };
 export {
   fmtDate, fmtDateShort, fmtSubmittedAt, fmtSubmittedAtCompact,
   daysBetween, addDaysLocal, relDue, displayLoc, cadenceLabel,
+  workOrderEnding, workOrderHistoryCount,
 } from './mt-dates';
 export type Priority = 'urgent' | 'normal' | 'low';
 

@@ -86,6 +86,47 @@ export function cadenceLabel(days: number): string {
   return `every ${days} days`;
 }
 
+// ── how a finished ticket is described, and by whom ────────────────────────
+//
+// The History popup is the hotel's record of what maintenance it carried out,
+// and for a while it had exactly one sentence for two different endings. A
+// ticket somebody looked at and judged not to be a fault ('closed', written by
+// the Staxis list's "Not actually a problem") arrived there wearing a green
+// "Done", under a heading that counted it as resolved, with the name of whoever
+// dismissed it printed under "Fixed by". That is a repair the hotel never did,
+// in the only place anybody would go to check what it did.
+//
+// Pure, and here rather than inline in the modal, because "what does this
+// screen claim happened" is the whole of the bug and it should be assertable
+// without rendering anything.
+export interface WorkOrderEnding {
+  /** The pill on the row. */
+  label: string;
+  /** The column heading for the name beside it. */
+  byLabel: string;
+  /** 'sage' reads as a completed repair; 'neutral' deliberately does not. */
+  tone: 'sage' | 'neutral';
+  /** True only for work that was actually carried out. */
+  countsAsRepair: boolean;
+}
+
+export function workOrderEnding(settledAs: 'resolved' | 'closed' | null | undefined): WorkOrderEnding {
+  if (settledAs === 'closed') {
+    return { label: 'Not a problem', byLabel: 'Closed by', tone: 'neutral', countsAsRepair: false };
+  }
+  return { label: 'Done', byLabel: 'Fixed by', tone: 'sage', countsAsRepair: true };
+}
+
+// The line under the History popup's title. Says what is actually in the list:
+// a hotel that dismissed four tickets and repaired none must not be told it
+// resolved four.
+export function workOrderHistoryCount(repairs: number, nonIssues: number): string {
+  const repaired = `${repairs} ${repairs === 1 ? 'repair' : 'repairs'}`;
+  if (nonIssues === 0) return `${repaired} · everything closed out`;
+  const dismissed = nonIssues === 1 ? '1 was not a problem' : `${nonIssues} were not a problem`;
+  return `${repaired} · ${dismissed}`;
+}
+
 // Format a location for display: bare room numbers get a "Rm " prefix; named
 // areas ("Lobby", "Pool Deck") pass through verbatim.
 export function displayLoc(loc: string): string {

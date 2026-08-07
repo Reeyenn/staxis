@@ -690,6 +690,11 @@ export function fromWorkOrderRow(r: Record<string, unknown>): WorkOrder {
     completionNote: parseStringField(r.completion_note),
     completionPhotoPath: parseStringField(r.completion_photo_path),
     completedAt: toDate(r.resolved_at),
+    // WHICH ending, carried alongside the two-word status rather than folded
+    // into it. See the note on WorkOrder.settledAs: the History popup is the
+    // one screen where "fixed" and "was never a fault" are different facts, and
+    // it had no way to tell them apart.
+    settledAs: r.status === 'closed' ? 'closed' : r.status === 'resolved' ? 'resolved' : null,
     equipmentId: typeof r.equipment_id === 'string' ? r.equipment_id : null,
     repairCost: r.repair_cost != null && Number.isFinite(Number(r.repair_cost)) ? Number(r.repair_cost) : null,
     // "Call in a professional" lane (0262). needs_pro may be absent on rows

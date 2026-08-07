@@ -13,7 +13,10 @@ import {
   daysBetween,
   addDaysLocal,
   cadenceLabel,
+  workOrderEnding,
+  workOrderHistoryCount,
 } from '@/app/maintenance/_components/mt-dates';
+import { fromWorkOrderRow } from '@/lib/db-mappers';
 
 describe('fmtSubmittedAt', () => {
   test('yesterday 11pm viewed at 7am is "1d ago", never "0d ago"', () => {
@@ -121,5 +124,77 @@ describe('daysBetween', () => {
     assert.equal(daysBetween(new Date(2026, 4, 11, 23, 0), new Date(2026, 4, 12, 7, 0)), 1);
     assert.equal(daysBetween(new Date(2026, 4, 12, 1, 0), new Date(2026, 4, 12, 23, 59)), 0);
     assert.equal(daysBetween(new Date(2026, 4, 12), new Date(2026, 4, 10)), -2);
+  });
+});
+
+// ── the work-order History popup: what it claims the hotel did ──────────────
+//
+// The popup is this hotel's record of the maintenance it carried out. It had
+// one sentence for two endings: a ticket somebody looked at and judged not to
+// be a fault ("Not actually a problem", stored status 'closed') arrived there
+// with a green "Done", counted under "N resolved", and the name of whoever
+// dismissed it printed under "Fixed by". That is a repair the hotel never
+// performed, in the only place anybody would go to check what it did.
+
+describe('what the history popup says a settled ticket was', () => {
+  const row = (status: string) => ({
+    id: 'a1a1a1a1-0000-4000-8000-000000000009',
+    property_id: 'p',
+    room_number: 'Pool',
+    description: 'Heater making a noise',
+    severity: 'medium',
+    status,
+    completed_by_name: 'Dana',
+    resolved_at: '2026-08-06T15:00:00.000Z',
+  });
+
+  test('a repair is a repair', () => {
+    const w = fromWorkOrderRow(row('resolved'));
+    assert.equal(w.status, 'done');
+    assert.equal(w.settledAs, 'resolved');
+    const ending = workOrderEnding(w.settledAs);
+    assert.equal(ending.label, 'Done');
+    assert.equal(ending.byLabel, 'Fixed by');
+    assert.equal(ending.countsAsRepair, true);
+  });
+
+  test('a non issue is off the board WITHOUT claiming anybody fixed anything', () => {
+    const w = fromWorkOrderRow(row('closed'));
+    assert.equal(w.status, 'done', 'still off the board — the lanes are unchanged');
+    assert.equal(w.settledAs, 'closed', 'but which ending it got survives the mapper');
+    const ending = workOrderEnding(w.settledAs);
+    assert.equal(ending.countsAsRepair, false);
+    assert.notEqual(ending.label, 'Done');
+    assert.notEqual(ending.byLabel, 'Fixed by', 'nobody fixed it, so nobody is named as having');
+    assert.notEqual(ending.tone, 'sage', 'and it must not wear the completed-repair colour');
+  });
+
+  test('a live ticket has no ending at all, however it is stalled', () => {
+    for (const status of ['submitted', 'assigned', 'in_progress', 'deferred']) {
+      const w = fromWorkOrderRow(row(status));
+      assert.equal(w.status, 'open', status);
+      assert.equal(w.settledAs, null, status);
+    }
+  });
+
+  test('the header counts repairs, not everything that left the board', () => {
+    assert.equal(workOrderHistoryCount(4, 0), '4 repairs · everything closed out');
+    assert.equal(workOrderHistoryCount(1, 0), '1 repair · everything closed out');
+    // The line that was wrong: four dismissals and no repairs used to read
+    // "4 resolved · everything closed out".
+    assert.equal(workOrderHistoryCount(0, 4), '0 repairs · 4 were not a problem');
+    assert.equal(workOrderHistoryCount(3, 1), '3 repairs · 1 was not a problem');
+  });
+
+  test('no em dashes reach the popup copy', () => {
+    // Founder ruling, checked by walking the producers rather than the source.
+    const strings = [
+      workOrderHistoryCount(3, 1), workOrderHistoryCount(2, 0), workOrderHistoryCount(0, 1),
+      ...['resolved', 'closed', null].flatMap((s) => {
+        const e = workOrderEnding(s as 'resolved' | 'closed' | null);
+        return [e.label, e.byLabel];
+      }),
+    ];
+    for (const s of strings) assert.doesNotMatch(s, /—/, s);
   });
 });
