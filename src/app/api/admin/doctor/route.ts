@@ -49,6 +49,11 @@
  *                                 at tools that still exist (catches a tool
  *                                 rename that updated the code constants and
  *                                 left the live rows behind)
+ *   companion_event_wake_health — the ten-minute event sweep is still advancing
+ *                                 its per-hotel cursor, and nobody is being
+ *                                 silenced by the spend cap (the one AI job
+ *                                 whose healthy state is writing nothing, so a
+ *                                 stopped watcher is otherwise invisible)
  *
  * NOT run here (enforced elsewhere): RLS-enabled / RLS-policy-coverage /
  * storage-bucket-RLS / PII-bucket-private invariants are checked at LINT time
@@ -222,6 +227,16 @@ const checks: Array<[string, CheckFn]> = [
   // and a caller that has started leaking holds looks exactly like a quiet
   // night. This is the only place that difference is visible.
   ['findings_spend_stale_holds',  checkFindingsSpendStaleHolds],
+  // The event sweep is the only AI job in the product whose NORMAL state is
+  // "did nothing", 144 times a day, per hotel. That makes its two failure
+  // modes invisible without a query:
+  //   • it stopped looking. A stale cursor is the ONLY evidence — the route
+  //     still returns 200 and the heartbeat still lands when every hotel is
+  //     skipped for want of a cursor.
+  //   • it is being silenced by money. A hotel that spent its ceiling prepares
+  //     nothing for the rest of the day, and from every screen in the app that
+  //     is indistinguishable from a quiet hotel.
+  ['companion_event_wake_health', checkCompanionEventWakeHealth],
 ];
 
 // ─── Individual checks ───────────────────────────────────────────────────
@@ -840,6 +855,10 @@ export const EXPECTED_MIGRATIONS_STATIC: ReadonlyArray<string> = [
   '0455',
   // The agent gets a life record: activity_log.source gains 'staxis_agent'.
   '0456',
+  // Where the companion's eyes were last: one row per hotel holding the
+  // activity_log cursor the ten-minute event sweep reads from, plus the
+  // hotel-local daily wake counter that caps its model calls.
+  '0459',
 ];
 
 /**
@@ -1108,6 +1127,104 @@ async function checkFindingsSpendStaleHolds(): Promise<Omit<Check, 'name' | 'dur
       status: 'warn',
       detail: `${rows.length} findings AI spend hold(s) older than ${longestWindowMin} min never finalized or cancelled — ${breakdown}`,
       fix: 'A background findings caller is dying between reserve and finalize. Check the findings cron logs for that feature; the holds themselves stop counting against the cap on their own.',
+    };
+  } catch (err) {
+    return { status: 'warn', detail: `check threw: ${errToString(err)}` };
+  }
+}
+
+/**
+ * Is the companion still looking, and is money still stopping it?
+ *
+ * TWO SIGNALS, ONE READ EACH, because they are the two things about this
+ * subsystem that nothing else in the product can see.
+ *
+ * ─── 1. A STALE CURSOR IS THE ONLY EVIDENCE IT STOPPED ─────────────────────
+ * Every other cron proves it ran by writing something. This one's healthy state
+ * is writing NOTHING: no findings, no journal row, no note. So a sweep that
+ * silently skipped every hotel for a week returns 200 every ten minutes and
+ * lands a heartbeat every ten minutes, and the freshness check is happy. The
+ * cursor is the one thing that only advances when a hotel was actually looked
+ * at.
+ *
+ * Thirty minutes is three missed sweeps: long enough that a deploy or a slow
+ * tick is not an alert, short enough that a genuinely stopped watcher is caught
+ * inside the hour.
+ *
+ * ─── 2. THE CAP MUST BE LOUD ───────────────────────────────────────────────
+ * A hotel that has spent its daily ceiling prepares nothing for the rest of the
+ * day, and from every screen in the app that looks exactly like a hotel where
+ * nothing is going wrong. The route counts it on the heartbeat; this is where
+ * an operator sees the count without reading logs.
+ *
+ * WARN, never fail. Nothing here is broken for a manager, and a check that
+ * could 503 the deploy gate over a background watcher would be its own outage.
+ */
+async function checkCompanionEventWakeHealth(): Promise<Omit<Check, 'name' | 'durationMs'>> {
+  const STALE_MINUTES = 30;
+  try {
+    const staleCutoff = new Date(Date.now() - STALE_MINUTES * 60_000).toISOString();
+    const [stale, heartbeat] = await Promise.all([
+      supabaseAdmin
+        .from('companion_event_wake_state')
+        .select('property_id', { count: 'exact', head: true })
+        .lt('last_looked_at', staleCutoff),
+      supabaseAdmin
+        .from('cron_heartbeats')
+        .select('notes')
+        .eq('cron_name', 'companion-event-wake')
+        .limit(1),
+    ]);
+
+    if (stale.error) {
+      // Not applied yet is not a failure. Migrations are applied by hand, so
+      // the code always reaches production before the table does.
+      if (isMissingRelation(stale.error)) {
+        return {
+          status: 'ok',
+          detail: 'companion event-wake cursor table not applied yet (migration 0459)',
+        };
+      }
+      return {
+        status: 'warn',
+        detail: `companion_event_wake_state read failed: ${errToString(stale.error)}`,
+      };
+    }
+
+    const notes = (((heartbeat.data ?? []) as Array<{ notes?: unknown }>)[0]?.notes ?? {}) as
+      Record<string, unknown>;
+    const num = (key: string): number => {
+      const value = Number(notes[key]);
+      return Number.isFinite(value) && value > 0 ? value : 0;
+    };
+    const spendCap = num('spendCap');
+    const spendUnavailable = num('spendUnavailable');
+    const dailyWakeCap = num('dailyWakeCap');
+    const noCursor = num('noCursor') + num('readFailed');
+    const staleCount = stale.count ?? 0;
+
+    const problems: string[] = [];
+    if (staleCount > 0) {
+      problems.push(`${staleCount} hotel(s) not looked at in over ${STALE_MINUTES} min`);
+    }
+    if (noCursor > 0) problems.push(`${noCursor} hotel(s) skipped on a failed read`);
+    if (spendUnavailable > 0) problems.push(`${spendUnavailable} hotel(s) could not read the spend cap`);
+    if (spendCap > 0) problems.push(`${spendCap} hotel(s) silenced by the daily spend cap`);
+
+    if (problems.length === 0) {
+      return {
+        status: 'ok',
+        detail: dailyWakeCap > 0
+          ? `companion event sweep healthy; ${dailyWakeCap} hotel(s) at today's wake limit`
+          : 'companion event sweep healthy',
+      };
+    }
+    return {
+      status: 'warn',
+      detail: `companion event sweep: ${problems.join('; ')}`,
+      fix: staleCount > 0 || noCursor > 0
+        ? 'The ten-minute sweep is not advancing cursors. Check /api/cron/companion-event-wake logs and that migration 0459 is applied.'
+        : 'A hotel is hitting its per-day AI ceiling for event notices. Check findings_ai_spend for feature companion.event_wake.',
     };
   } catch (err) {
     return { status: 'warn', detail: `check threw: ${errToString(err)}` };

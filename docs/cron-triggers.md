@@ -12,7 +12,7 @@ staged, manual-only, or retired. Adding a catalog row never schedules the job.
 
 ## Triggered by Vercel Cron (declared in `vercel.json`)
 
-These 18 schedules run automatically as part of Vercel deploys. Auth via `CRON_SECRET` header set by Vercel.
+These 19 schedules run automatically as part of Vercel deploys. Auth via `CRON_SECRET` header set by Vercel.
 
 | Path | Schedule | Purpose |
 |---|---|---|
@@ -34,6 +34,7 @@ These 18 schedules run automatically as part of Vercel deploys. Auth via `CRON_S
 | `/api/cron/findings-sweep` | `0 7 * * 1` | Weekly detector discovery across a sample of hotels. Switched on 2026-08-06. |
 | `/api/cron/findings-janitor` | `40 7 * * 1` | Retention for settled findings-engine run data, behind the sweep it tidies. Switched on 2026-08-06. |
 | `/api/cron/run-management-patterns` | `0 8 * * *` | The management-company pass. Switched on 2026-08-06. |
+| `/api/cron/companion-event-wake` | `*/10 * * * *` | Every 10 min. One deterministic look at each hotel's `activity_log` for flagged events; a model call only where some landed. Not part of the four-cron AI master switch (see below). |
 
 ## Triggered by active GitHub schedules
 
@@ -100,6 +101,42 @@ separately; they are catalog projections.
 
 - **The per-hotel spend cap is real money.** `run-findings` makes one batched model call per hotel per night and `findings-sweep` one per sampled hotel; both reserve against the per-hotel-per-day findings cap. The bill is N-shaped in hotels, not fixed.
 - **Demo data, and the asymmetry between the two levels.** `run-management-patterns`'s scheduled discovery excludes companies whose whole portfolio is `properties.is_test` (`src/lib/company/demo-portfolio.ts`), and that exclusion is untouched. **The hotel-level crons still have no equivalent filter:** `runFindingsForAllProperties` scans every row of `properties`, test hotels included, so each seeded demo hotel now costs one judge call a night. That was a known, documented decision point before the switch and it remains open. Deciding it is a deliberate act with its own diff, either by adding an `is_test` filter to the fleet scan or by removing the demo hotels from production.
+
+## The companion's ten-minute look
+
+`/api/cron/companion-event-wake` is an AI job and is deliberately **not** one of
+the four above. The master switch exists because those four are one pipeline
+that must move together; this one is a separate subsystem with its own
+ceilings, and coupling it to them would mean neither could be parked without
+parking the other.
+
+It is also shaped so that scheduling it is a much smaller commitment:
+
+- **A quiet hotel costs one indexed read.** No model call, no reservation, no
+  prompt, no row written. The decision to spend is a pure function over rows a
+  query already filtered (`decideWake` in
+  `src/lib/companion/event-wake/events.ts`), and a hotel where nothing went
+  wrong produces none.
+- **Two ceilings, both real.** `MAX_WAKES_PER_DAY` (six, hotel-local, held in
+  `companion_event_wake_state`) is the cheap one and bites first. Behind it is a
+  dollar hold against the same per-hotel-per-day pool the findings layer uses,
+  at a tenth of that pool ($0.25/hotel/day at today's envelope,
+  `FEATURE_CAP_SHARE` in `src/lib/findings/judge-budget.ts`).
+- **Demo hotels sit out the scheduled pass.** Unlike `run-findings`, this one
+  does filter `properties.is_test` in discovery. An explicit `?propertyId=` runs
+  whatever it is told.
+- **Its model is locked.** `companion.event_wake` is `modelSwitchable: false` in
+  the AI feature registry, because the dollar ceiling is sized against the model
+  it runs on. Switching it OFF in the AI Control Center is untouched and is the
+  supported way to stop it.
+- **It prepares, it never acts.** At most one short sentence per wake, written
+  into the companion's own record. Whether it is ever said is decided later by
+  `src/lib/companion/manners.ts`, against the same daily speech budget, the same
+  minimum gap and the same declines as everything else the companion volunteers.
+
+Turning it off: remove the `vercel.json` entry and flip the catalog row's
+`lifecycle` to `staged` with `schedule: null`, in the same commit. The
+job-catalog parity test fails loudly on a half-finished change.
 
 ## How to verify
 

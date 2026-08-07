@@ -90,8 +90,16 @@ describe('AI Control Center feature registry', () => {
   // touching anything else (27→28 controllable, 34→35 keys). It is the one
   // feature whose switch being OFF is a supported, invisible outcome: the plain
   // code path already read the sentence. Display-only count unchanged.
-  test('covers 28 controllable hosted features and 7 display-only features', () => {
-    assert.equal(AI_FEATURE_KEYS.length, 36);
+  // 2026-08-06: the companion got a slot for noticing things as they happen, so
+  // the ten-minute event sweep can be switched off without touching the bubble
+  // people talk to (28→29 controllable, 36→37 keys). It is the first
+  // CONTROLLABLE feature whose model is nevertheless locked: it runs up to 144
+  // times a day per hotel and its per-hotel daily dollar ceiling is sized
+  // against the model it runs on, so a switchable model would make one
+  // reservation larger than the whole ceiling. Display-only count unchanged —
+  // "display only" is `editable: false`, and this one is editable.
+  test('covers 29 controllable hosted features and 7 display-only features', () => {
+    assert.equal(AI_FEATURE_KEYS.length, 37);
     assert.equal(new Set(AI_FEATURE_KEYS).size, AI_FEATURE_KEYS.length);
     assert.deepEqual(Object.keys(AI_FEATURE_REGISTRY).sort(), [...AI_FEATURE_KEYS].sort());
 

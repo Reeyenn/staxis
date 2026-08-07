@@ -421,6 +421,22 @@ export const ACTIVE_MISSION_JOBS: ReadonlyArray<MissionMonitoredJobCatalogEntry>
     description: 'Refreshes management-company patterns for real portfolios.',
     mission: { description: 'Looks across a management company for patterns one hotel cannot show.', group: 'Reports', tier: 'ai' },
   },
+  {
+    id: 'companion-event-wake',
+    lifecycle: 'active',
+    owner: 'agent',
+    runner: 'vercel-cron',
+    source: { kind: 'vercel', configFile: 'vercel.json' },
+    target: { kind: 'route', path: '/api/cron/companion-event-wake' },
+    schedule: '*/10 * * * *',
+    heartbeat: {
+      name: 'companion-event-wake',
+      visibility: 'mission-control',
+      cadenceDescription: 'every-10-min deterministic look at activity_log per hotel; a model call only where flagged events landed, capped per hotel per day by both a wake counter and a dollar hold',
+    },
+    description: 'Notices flagged hotel events as they happen and prepares one note the companion may offer.',
+    mission: { description: 'Spots something going wrong within minutes instead of overnight.', group: 'Agent', tier: 'ai' },
+  },
 ];
 
 const OTHER_JOBS: ReadonlyArray<JobCatalogEntry> = [

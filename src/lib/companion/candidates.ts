@@ -31,7 +31,7 @@
 
 import 'server-only';
 import type { AppRole } from '@/lib/roles';
-import { propertyLocalToday } from '@/lib/schedule/local-date';
+import { propertyLocalToday, startOfLocalDay } from '@/lib/schedule/local-date';
 import { unfinishedRecallSentence } from './copy';
 import { listFindings } from '@/lib/findings/store';
 import { toQueueFinding } from '@/lib/findings/queue-projection';
@@ -116,6 +116,7 @@ export async function buildCompanionCandidates(input: {
 
   const lopsided = await lopsidedCandidate(input.propertyId);
   const slipped = await slippedCandidate(input.propertyId);
+  const noticed = await noticedCandidate(input.propertyId, input.today, input.timezone);
 
   return [
     // A question this person was asked and never answered leads over
@@ -123,7 +124,20 @@ export async function buildCompanionCandidates(input: {
     // conversation the companion left open. Everything below is the companion
     // volunteering; this is it finishing something.
     ...(unfinished ? [unfinished] : []),
-    // Work that slipped leads over everything. It is the only candidate here
+    // Something that happened in the last few hours, prepared by the event
+    // sweep minutes after it happened. It leads the things the companion is
+    // VOLUNTEERING, because it is the only one of them that is about now: a
+    // finding is a pattern over days and will still be true this evening,
+    // while "a room failed inspection twenty minutes ago" is worth a manager's
+    // attention while there is still something to do about it.
+    //
+    // It gets NO privileges for being fresh. It is an ordinary candidate: the
+    // daily speech budget, the forty-five minute gap, the one-voice rule, "not
+    // the same topic twice in a day" and "twice turned down is forever" all
+    // apply to it exactly as they apply to a finding. Being recent buys it a
+    // place in the queue, never a way around the manners.
+    ...(noticed ? [noticed] : []),
+    // Work that slipped leads over the rest. It is the only candidate here
     // that is about a promise the hotel already made to itself and did not
     // keep, and it is the one a person can act on without leaving the screen
     // they are on: the rows are right there, three buttons each.
@@ -153,6 +167,108 @@ export async function buildCompanionCandidates(input: {
       severity: SEVERITY_FROM_FINDING[f.severity] ?? ('watch' as const),
     })),
   ].filter((c) => c.text.trim().length > 0).slice(0, MAX_CANDIDATES);
+}
+
+// ─── Something that just happened ───────────────────────────────────────────
+//
+// How long a prepared note stays offerable. Four hours: past that it is not
+// news, it is history, and the companion telling somebody at 6pm about a work
+// order that opened before lunch is the thing the whole "wake on events" idea
+// exists to avoid. A problem that is still real at 6pm will be a finding
+// tonight, said by the machinery that is good at patterns.
+const NOTICED_WINDOW_HOURS = 4;
+
+/**
+ * The freshest thing the event sweep prepared, if it is still fresh.
+ *
+ * ─── WHY THERE IS NO TABLE BEHIND THIS ─────────────────────────────────────
+ *
+ * The sweep's journal row IS the store. `agent_noticed` carries the sentence in
+ * `metadata.say` and the topic in `metadata.topic`, so the record of "Staxis
+ * noticed this" and the thing it might say about it are one row rather than two
+ * that can disagree. This is the same shape `unfinishedCandidate` below already
+ * uses against `agent_action_expired`.
+ *
+ * ─── WHAT KEEPS THIS FROM BECOMING A FIREHOSE ──────────────────────────────
+ *
+ * Nothing new, which is the point:
+ *   1. ONE, EVER. Only the newest prepared note becomes a candidate, however
+ *      many the sweep wrote this afternoon.
+ *   2. FOUR HOURS. Older than that and it is not the news it was written as.
+ *   3. THE ORDINARY LEDGER. The topic is the department, not the event, so a
+ *      No attaches to the class of interruption rather than to one work order.
+ *      It also spends the daily speech budget and honours the minimum gap.
+ *   4. A ROW WITHOUT `say` IS NOT OFFERABLE. The sweep writes those when it
+ *      decided something was worth remembering and not worth interrupting
+ *      anybody about, and the absence of the field is what enforces it.
+ *
+ * HOTEL-WIDE, not person-scoped, and that is deliberate: unlike the unfinished
+ * recall, this is not about a conversation with one person. It is a fact about
+ * the building, and whoever opens the app first is the right person to hear it.
+ *
+ * Fails soft to null. A companion that cannot read its own record says nothing
+ * about its own record.
+ */
+async function noticedCandidate(
+  propertyId: string,
+  today: string,
+  timezone: string | null,
+): Promise<CompanionCandidate | null> {
+  try {
+    const { readAgentJournal } = await import('@/lib/agent/journal');
+    const since = new Date(Date.now() - NOTICED_WINDOW_HOURS * 3_600_000);
+    // Never before the hotel's own day started. A note prepared at 11pm is not
+    // offered to the person who opens the app at 1am: by the hotel's calendar
+    // that is yesterday's news, and the daily budget it would spend is a new
+    // day's.
+    const dayStart = startOfLocalDay(today, timezone);
+    const sinceIso = (since > dayStart ? since : dayStart).toISOString();
+
+    const rows = await readAgentJournal(propertyId, {
+      sinceIso,
+      eventTypes: ['agent_noticed'],
+      limit: 5,
+    });
+    // Newest first, and the newest OFFERABLE one, which is not the same thing.
+    //
+    // `agent_noticed` covers both halves of what the sweep decides: a note it
+    // may bring up, and an observation it wrote down for itself. Only the first
+    // carries `say`. Taking rows[0] blindly would mean an observation written at
+    // 3pm silently swallowed a real note from 2pm, and the person would simply
+    // never hear it. Rule 1 is still "one, ever" — it just means one of the ones
+    // that can actually be said.
+    const newest = rows.find((row) =>
+      typeof row.metadata.say === 'string' && row.metadata.say.trim().length > 0);
+    if (!newest) return null;
+
+    const say = typeof newest.metadata.say === 'string' ? newest.metadata.say.trim() : '';
+    const topic = typeof newest.metadata.topic === 'string' ? newest.metadata.topic : '';
+    // Both come from the writer's own metadata. A row missing either is a row
+    // from a shape this code does not know how to speak about, and guessing the
+    // subject of a sentence is worse than not raising it.
+    if (!say || !topic) return null;
+
+    return {
+      topic,
+      text: say,
+      // Operational by construction, and the construction is upstream: the
+      // sweep only ever looks at event types about rooms, work and coverage
+      // (INTERESTING_EVENT_TYPES), and role changes and account changes are
+      // deliberately not among them. If that list ever grows a person-shaped
+      // entry, this is the line that has to start reading the row rather than
+      // asserting, and the charter test is what will catch it.
+      sensitivity: 'operational',
+      // Nothing on any screen is this sentence. The events are in the activity
+      // log, which is not a screen anybody has open, so an empty `covers` is
+      // the honest answer rather than an oversight.
+      covers: [],
+      // The run-the-hotel list is where a person goes to do something about it.
+      destination: 'staxis',
+      severity: 'watch',
+    };
+  } catch {
+    return null;
+  }
 }
 
 // ─── Unfinished business ────────────────────────────────────────────────────

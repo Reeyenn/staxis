@@ -110,6 +110,22 @@ export type AgentJournalEventType =
   | 'agent_action_expired'
   /** It went over the day and what it remembers changed. */
   | 'agent_learned'
+  /**
+   * It saw something happen at the hotel and decided that mattered.
+   *
+   * A BELIEF CHANGE, in the same family as `agent_learned` and not the same
+   * event: `agent_learned` is the nightly pass over a whole day, and this is
+   * one moment, minutes after the thing happened. Written by the event sweep
+   * (src/lib/companion/event-wake/*), which is the only writer.
+   *
+   * The row is ALSO the store. When `metadata.say` is present, the sentence in
+   * it is a note the companion may offer later, and `buildCompanionCandidates`
+   * reads it back. That is deliberate and it is why this feature has no table
+   * of its own: the record of the observation and the thing that might be said
+   * about it are the same fact, and two rows for one fact is how they end up
+   * disagreeing. A row with no `say` is an observation and nothing more.
+   */
+  | 'agent_noticed'
   /** It said something to a person before they said anything. */
   | 'agent_said'
   /** It wrote the morning brief. */
@@ -123,6 +139,7 @@ export const AGENT_JOURNAL_EVENT_TYPES: readonly AgentJournalEventType[] = [
   'agent_action_declined',
   'agent_action_expired',
   'agent_learned',
+  'agent_noticed',
   'agent_said',
   'agent_briefed',
 ];
@@ -227,6 +244,29 @@ export function journalLearnedLine(input: {
   const what = parts.length > 0 ? parts.join(' and ') : 'updated what it remembers';
   const recap = input.recap ? ` ${journalText(input.recap)}` : '';
   return journalText(`Staxis went over the day and ${what}.${recap}`);
+}
+
+/**
+ * It saw something happen and made a note it may bring up.
+ *
+ * "Made a note to mention it" and NOT "will tell you": whether the note is ever
+ * spoken is decided later, by the manners engine, against the same daily budget
+ * and the same declines as everything else. A line that promised a mention the
+ * companion may never make would be the first false sentence in this record.
+ */
+export function journalNoticedLine(input: { summary: string }): string {
+  return journalText(`Staxis noticed this and made a note to mention it: ${input.summary}`);
+}
+
+/**
+ * It saw something happen and wrote it down for itself.
+ *
+ * The quieter half of `agent_noticed`: worth remembering, not worth
+ * interrupting anybody about. Nothing will ever offer this one out loud, and
+ * the sentence says so by not claiming otherwise.
+ */
+export function journalObservedLine(input: { summary: string }): string {
+  return journalText(`Staxis noticed this and wrote it down: ${input.summary}`);
 }
 
 /**

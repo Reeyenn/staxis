@@ -41,6 +41,8 @@ import {
   journalBriefedLine,
   journalExpiredLine,
   journalLearnedLine,
+  journalNoticedLine,
+  journalObservedLine,
   journalResolutionLine,
   journalSaidLine,
   journalText,
@@ -201,6 +203,12 @@ const EVERY_PRODUCED_LINE: string[] = [
   journalSaidLine({ text: 'Three things slipped past their day.', personName: null }),
   journalBriefedLine({ lines: 1 }),
   journalBriefedLine({ lines: 6 }),
+  // The event sweep's two lines (src/lib/companion/event-wake/*). They are
+  // walked HERE rather than only in that feature's own file, because this list
+  // is the product's one answer to "every sentence the companion writes about
+  // itself", and a second list would be the half nobody reads.
+  journalNoticedLine({ summary: 'A work order on Room 214 was opened again.' }),
+  journalObservedLine({ summary: 'Two cleans on the third floor were thrown out.' }),
 ];
 
 describe('journal copy: the rules the whole product runs on', () => {

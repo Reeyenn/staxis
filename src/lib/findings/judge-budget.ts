@@ -27,7 +27,7 @@ import 'server-only';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { log } from '@/lib/log';
 import { COST_LIMITS } from '@/lib/agent/cost-controls';
-import { anthropicTierTokenRates } from '@/lib/ai/feature-registry';
+import { anthropicTierTokenRates, type AnthropicPricingTier } from '@/lib/ai/feature-registry';
 
 /**
  * The findings layer's share of a hotel's daily AI envelope.
@@ -71,6 +71,24 @@ export const FEATURE_CAP_SHARE: Readonly<Record<string, number>> = Object.freeze
   'findings.judge': 1,
   'findings.sweep': 0.6,
   'findings.brief': 0.4,
+  // ═══ THE EVENT SWEEP, AND WHY IT DRAWS ON THIS POOL AT ALL ═══
+  // It is not a findings caller. It is the companion noticing something the
+  // moment it happens (src/lib/companion/event-wake/*). It is here because the
+  // hole this file exists to close is not "findings" — it is BACKGROUND WORK
+  // WITH NO CEILING, and a second cap system for the second background spender
+  // would be two things to reason about where one will do.
+  //
+  // A TENTH, and it is the smallest share on the table on purpose. This caller
+  // fires up to 144 times a day per hotel, against the judge's once. Its whole
+  // justification is that it costs approximately nothing, so the number that
+  // holds it to that promise is small enough to notice when it is wrong.
+  // 0.1 of the findings pool is $0.25 per hotel per day at today's envelope.
+  //
+  // The dollar cap is the BACKSTOP, not the primary control. The primary
+  // control is MAX_WAKES_PER_DAY in event-wake/events.ts, which is free to
+  // enforce and bites at roughly a seventh of this number. If this cap is ever
+  // the thing stopping a hotel, something upstream is wrong.
+  'companion.event_wake': 0.1,
 });
 
 /** An unlisted feature gets the brief's share rather than the judge's: a caller
@@ -106,6 +124,11 @@ export const FEATURE_ABANDON_MINUTES: Readonly<Record<string, number>> = Object.
   'findings.sweep': 60,
   // A manager is waiting on a screen; its own deadline is nine seconds.
   'findings.brief': 10,
+  // The sweep runs every ten minutes. A hold from a run that died mid-call must
+  // not still be standing two sweeps later, so this is deliberately the
+  // shortest window on the table: longer than the call's own deadline and
+  // shorter than the gap to the run after next.
+  'companion.event_wake': 15,
 });
 
 const DEFAULT_ABANDON_MINUTES = 60;
@@ -151,7 +174,32 @@ export function deriveJudgeReservationUsd(opts: {
   maxInputTokens: number;
   maxOutputTokens: number;
 }): number {
-  const rates = anthropicTierTokenRates('opus');
+  return deriveBackgroundReservationUsd({ tier: 'opus', ...opts });
+}
+
+/**
+ * The same sizing, for any background caller, at whichever tier it can actually
+ * reach.
+ *
+ * `deriveJudgeReservationUsd` above is this function pinned to Opus, and it is
+ * pinned to Opus because the AI Control Center lets an admin point the judge at
+ * any configured model. A caller whose model is LOCKED does not have that
+ * exposure, and pricing its hold at a tier it cannot run on is not caution, it
+ * is a hold four times the size of the ceiling it has to fit inside. The tier
+ * is therefore a parameter, and the rule is one sentence:
+ *
+ *   price the hold at the most expensive model this feature can be moved to.
+ *
+ * A caller that passes a tier cheaper than one its feature can be switched to
+ * has broken that rule and under-reserved. `modelSwitchable: false` on the
+ * feature is what makes a cheap tier the correct answer rather than a wish.
+ */
+export function deriveBackgroundReservationUsd(opts: {
+  tier: AnthropicPricingTier;
+  maxInputTokens: number;
+  maxOutputTokens: number;
+}): number {
+  const rates = anthropicTierTokenRates(opts.tier);
   const perCall =
     (opts.maxInputTokens / 1_000_000) * rates.inputUsdPerMillionTokens +
     (opts.maxOutputTokens / 1_000_000) * rates.outputUsdPerMillionTokens;

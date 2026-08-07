@@ -582,6 +582,39 @@ export const AI_FEATURE_REGISTRY: Readonly<Record<AiFeatureKey, AiFeatureDefinit
     'The helper bubble in the corner of every screen. Same assistant and same abilities as the main helper: this only decides which model answers when somebody talks to it through the bubble.',
     ['text', 'tool_use'], SONNET,
   ),
+  // The companion noticing something the moment it happens.
+  //
+  // ─── WHY IT IS NOT A SHARE OF THE BUBBLE ABOVE ───────────────────────────
+  // Different shape, different bill, different blast radius. A bubble turn is
+  // one person asking one question and waiting for the answer. This one nobody
+  // is waiting for: a background sweep looks at the hotel's own event stream
+  // every ten minutes, and on the rare tick where something actually happened
+  // it asks for ONE short sentence the companion may offer later. Reeyen has to
+  // be able to switch the watching off without switching the bubble off.
+  //
+  // ─── WHY THE MODEL IS LOCKED, WHEN ALMOST NOTHING ELSE IS ────────────────
+  // Frequency. Every other slot here is asked once per act: once per question,
+  // once per invoice, once a night. This one is asked up to a hundred and
+  // forty-four times a day per hotel in the worst case, and its whole
+  // justification to a hotel owner is that it costs approximately nothing. The
+  // ceiling that holds it to that promise is a dollar figure (judge-budget.ts,
+  // $0.25 per hotel per day), and a dollar figure can only be sized against a
+  // model that cannot change underneath it: the same job pointed at the most
+  // expensive tier is forty times the bill for one short sentence, and the cap
+  // would then be smaller than a single reservation, which is a feature that
+  // silently never runs. Locked and honest beats switchable and broken.
+  //
+  // Switching it OFF is untouched. `editable` and `switchable` are both true.
+  'companion.event_wake': defineFeature(
+    'companion.event_wake', 'Agent', 'Noticing things as they happen',
+    'Lets the helper notice something the moment it happens, a room failing inspection, a work order opening, somebody calling out, and get one short note ready in case it is worth mentioning. It never acts, never sends anything, and only looks when the hotel\'s own records show something happened.',
+    ['text'], HAIKU,
+    {
+      modelSwitchable: false,
+      fallbackAllowed: false,
+      modelLockReason: 'Runs up to 144 times a day per hotel, so its per-hotel daily spend ceiling is sized against this model. A more expensive model would make one reservation larger than the whole ceiling and the feature would stop running.',
+    },
+  ),
   'agent.conversation_summary': defineFeature(
     'agent.conversation_summary', 'Agent', 'Conversation summaries',
     'Shortens long AI chats behind the scenes so the helper remembers earlier parts of the conversation.',
