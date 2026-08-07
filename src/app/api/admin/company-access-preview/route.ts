@@ -17,9 +17,10 @@ import {
   AmbiguousAdminCompanyPreviewTargetError,
   StaleAdminCompanyPreviewError,
   UnavailableAdminCompanyPreviewTargetError,
+  adminPreviewPermissions,
   adminPreviewWindowIsActive,
   assertExactSingleHotelRelationshipScope,
-  makeAdminCompanyAccessReadOnly,
+  applyAdminCompanyAccessPowers,
   resolveAdminCompanyPreviewTarget,
   runAdminPreviewReadWithRetry,
   type AdminCompanyAccessPreviewData,
@@ -923,18 +924,7 @@ async function buildScopedProjection(
     invitations,
     requests,
     activity,
-    permissions: {
-      viewHotels: true,
-      viewPeople: true,
-      managePeople: false,
-      manageInvitations: false,
-      viewAccess: true,
-      manageAccess: false,
-      viewActivity: true,
-      requestAccess: false,
-      availableProfiles: [],
-      delegationPolicies: [],
-    },
+    permissions: adminPreviewPermissions(target.property.id),
     legacyFallback: false,
   };
 
@@ -947,7 +937,9 @@ function viewerContext(target: AdminCompanyPreviewTarget) {
   const company = target.scope === 'organization';
   return {
     kind: 'staxis_admin_preview' as const,
-    readOnly: true as const,
+    // Identity, not a lockout. The label says "you are viewing this hotel as
+    // Staxis"; the admin still holds every hotel action.
+    readOnly: false,
     hub: company ? 'company' as const : 'hotel' as const,
     requestedPropertyId: target.property.id,
     scope: target.scope,
@@ -968,7 +960,7 @@ async function loadStablePreview(
     if (targetKey(target) !== targetKey(confirmedTarget)) {
       throw new StaleAdminCompanyPreviewError();
     }
-    return makeAdminCompanyAccessReadOnly({
+    return applyAdminCompanyAccessPowers({
       projection,
       viewerContext: viewerContext(confirmedTarget),
       adminAccountId,

@@ -27,14 +27,24 @@ import { getOrMintRequestId, log } from '@/lib/log';
 import {
   ASK_STAXIS_EXECUTION_BUDGET_MS,
   ASK_STAXIS_FALLBACK_RESERVE_MS,
-  resolveAskStaxisExecutionPlan,
+  agentFeatureKeyForOrigin,
+  resolveAgentOriginExecutionPlan,
   streamAgent,
   type AgentMessage,
+  type AgentOrigin,
 } from '@/lib/agent/llm';
 import { scaleAiReservationUsd, type AiExecutionPlan } from '@/lib/ai/runtime';
 import { anthropicTierTokenRates } from '@/lib/ai/feature-registry';
-import { executeTool, getTool, getToolsForRole, type ToolContext } from '@/lib/agent/tools';
-import { chatIsMountedForRole } from '@/lib/agent/lenses';
+import {
+  approvalSurfaceForTool,
+  executeTool,
+  getTool,
+  getToolsForRole,
+  SURFACE_SECTION,
+  type AgentSurface,
+  type ToolContext,
+} from '@/lib/agent/tools';
+import { surfaceIsMountedForRole } from '@/lib/agent/lenses';
 import { getEnabledSectionsFresh, requireSectionEnabled } from '@/lib/sections/server';
 import { isSectionEnabled } from '@/lib/sections/registry';
 import { buildHotelSnapshot } from '@/lib/agent/context';
@@ -98,13 +108,17 @@ async function reauthorizeAgentScope(input: {
   authUserId: string;
   propertyId: string;
   expectedAccountId: string;
+  /** The surface this card was minted on and is being resolved on. Every mount,
+   *  section and catalog question below is asked about THIS surface, so a card
+   *  raised in a staff thread is never judged against the chat bar's mount. */
+  surface: AgentSurface;
   /** Present for an add-on that would perform another hotel mutation. */
   mutationToolName?: string;
 }) {
   const fresh = await loadAgentUserCtx(input.authUserId, input.propertyId);
   if (!fresh.ok
     || fresh.userCtx.accountId !== input.expectedAccountId
-    || !chatIsMountedForRole(fresh.userCtx.role)) {
+    || !surfaceIsMountedForRole(fresh.userCtx.role, input.surface)) {
     return null;
   }
 
@@ -114,14 +128,15 @@ async function reauthorizeAgentScope(input: {
   } catch {
     return null;
   }
-  if (!isSectionEnabled(freshSections, 'staxis')) return null;
+  const surfaceSection = SURFACE_SECTION[input.surface];
+  if (surfaceSection && !isSectionEnabled(freshSections, surfaceSection)) return null;
 
   if (input.mutationToolName) {
     const mutationTool = getTool(input.mutationToolName);
     const offeredNow = mutationTool
       ? getToolsForRole(
         fresh.userCtx.role,
-        'chat',
+        input.surface,
         freshSections,
         fresh.userCtx,
       )
@@ -162,9 +177,6 @@ export async function POST(req: NextRequest): Promise<Response> {
   if (!hasAccess) {
     return Response.json({ ok: false, error: 'no access to this property', requestId }, { status: 403 });
   }
-  const sectionGate = await requireSectionEnabled(req, body.pid, 'staxis');
-  if (!sectionGate.ok) return sectionGate.response;
-
   // ── Load account row + role + staff.id + department (shared with command) ─
   const ctxLoad = await loadAgentUserCtx(auth.userId, body.pid);
   if (!ctxLoad.ok) {
@@ -176,17 +188,14 @@ export async function POST(req: NextRequest): Promise<Response> {
   // hotel-only person.
   const { companyOrganizationId } = ctxLoad;
 
-  // WHO LENSES: same door as /api/agent/command. A hat with no chat cannot
-  // resolve an approval card either — including one minted before the lens
-  // existed, which is exactly the case a route-level check has to cover.
-  if (!chatIsMountedForRole(userCtx.role)) {
-    return Response.json(
-      { ok: false, error: 'Ask Staxis is not part of this role at this hotel.', code: 'chat_not_mounted', requestId },
-      { status: 403 },
-    );
-  }
-
   // ── Load + validate the pending action ────────────────────────────────
+  //
+  // The row is loaded BEFORE the section gate now, because which section gates
+  // this decision depends on which surface the card was raised on: a card from
+  // the chat bar is gated by the Staxis tab, one from an "@Staxis" mention in a
+  // thread by Messages. The scope check immediately below still refuses another
+  // account's or another hotel's row with the same 404 as a missing one, so
+  // nothing about the row is disclosed by the reorder.
   const pending = await getPendingAction(body.pendingActionId);
   if (!pending) {
     return Response.json({ ok: false, error: 'that action was not found', requestId }, { status: 404 });
@@ -210,6 +219,48 @@ export async function POST(req: NextRequest): Promise<Response> {
   if (!convo || convo.propertyId !== body.pid) {
     return Response.json({ ok: false, error: 'that action was not found', requestId }, { status: 404 });
   }
+
+  // ── WHICH SURFACE IS THIS CARD BEING RESOLVED ON? ─────────────────────
+  //
+  // The pending row records the tool, not the surface, and adding a column that
+  // could disagree with the catalog would be a second source of truth for the
+  // same question. So the route asks the catalog what the proposer asked: is
+  // this hat OFFERED this tool anywhere it can act? 'chat' wins when both fit,
+  // so every card minted before the thread assistant was folded in resolves
+  // through exactly the path it always did.
+  //
+  // `null` is the refusal that used to be `chatIsMountedForRole`, and it now
+  // covers strictly more: a hat with no surface for this tool, a card minted
+  // before a lens narrowed, and a role that changed between the proposal and
+  // the decision.
+  let preSections: Awaited<ReturnType<typeof getEnabledSectionsFresh>>;
+  try {
+    preSections = await getEnabledSectionsFresh(body.pid);
+  } catch {
+    return Response.json(
+      { ok: false, error: 'current hotel setup could not be verified', requestId },
+      { status: 503 },
+    );
+  }
+  const approvalSurface = approvalSurfaceForTool(
+    userCtx.role,
+    pending.toolName,
+    preSections,
+    userCtx,
+  );
+  if (!approvalSurface) {
+    return Response.json(
+      { ok: false, error: 'That action is not part of what you can do at this hotel.', code: 'chat_not_mounted', requestId },
+      { status: 403 },
+    );
+  }
+  // The surface's own section, gated with the SAME helper and the same 403 the
+  // chat bar has always used.
+  const surfaceSection = SURFACE_SECTION[approvalSurface];
+  const sectionGate = await requireSectionEnabled(req, body.pid, surfaceSection ?? 'staxis');
+  if (!sectionGate.ok) return sectionGate.response;
+  /** The Control Center row this surface's follow-up turn is billed to. */
+  const resumeOrigin: AgentOrigin = approvalSurface === 'messages' ? 'messages' : 'ask';
 
   // ── Validate adjustedArgs BEFORE claiming the row (code-review finding) ──
   // An invalid edit must NOT consume the card. We validate FIRST and, on
@@ -259,7 +310,7 @@ export async function POST(req: NextRequest): Promise<Response> {
   let estimatedUsd: number;
   let executionPlan: AiExecutionPlan;
   try {
-    executionPlan = await resolveAskStaxisExecutionPlan();
+    executionPlan = await resolveAgentOriginExecutionPlan(resumeOrigin);
     estimatedUsd = scaleAiReservationUsd(
       [executionPlan.primary, executionPlan.fallback].filter(
         (model): model is NonNullable<typeof model> => model !== null,
@@ -293,7 +344,7 @@ export async function POST(req: NextRequest): Promise<Response> {
     const preClaimCtx = await loadAgentUserCtx(auth.userId, body.pid);
     if (!preClaimCtx.ok
       || preClaimCtx.userCtx.accountId !== userCtx.accountId
-      || !chatIsMountedForRole(preClaimCtx.userCtx.role)) {
+      || !surfaceIsMountedForRole(preClaimCtx.userCtx.role, approvalSurface)) {
       await cancelCostReservation(reservationId);
       return Response.json({
         ok: false,
@@ -321,15 +372,15 @@ export async function POST(req: NextRequest): Promise<Response> {
     let authorizationFailure: string | null = null;
     if (!commitCtx.ok
       || commitCtx.userCtx.accountId !== userCtx.accountId
-      || !chatIsMountedForRole(commitCtx.userCtx.role)) {
+      || !surfaceIsMountedForRole(commitCtx.userCtx.role, approvalSurface)) {
       authorizationFailure = 'Authorization changed before the approved action could run.';
     } else {
       userCtx = commitCtx.userCtx;
       staffId = commitCtx.staffId;
       try {
         enabledSections = await getEnabledSectionsFresh(body.pid);
-        if (!isSectionEnabled(enabledSections, 'staxis')) {
-          authorizationFailure = 'Ask Staxis was disabled before the approved action could run.';
+        if (surfaceSection && !isSectionEnabled(enabledSections, surfaceSection)) {
+          authorizationFailure = 'That part of Staxis was switched off before the approved action could run.';
         }
       } catch {
         authorizationFailure = 'Current section authorization could not be verified.';
@@ -380,7 +431,7 @@ export async function POST(req: NextRequest): Promise<Response> {
     propertyId: body.pid,
     staffId,
     requestId,
-    surface: 'chat',
+    surface: approvalSurface,
     conversationId: pending.conversationId,
     enabledSections,
   };
@@ -501,6 +552,7 @@ export async function POST(req: NextRequest): Promise<Response> {
         // primary handler ran must stop the add-on rather than inheriting the
         // primary handler's now-stale ToolContext.
         const addonAuthority = await reauthorizeAgentScope({
+          surface: approvalSurface,
           authUserId: auth.userId,
           propertyId: body.pid,
           expectedAccountId: userCtx.accountId,
@@ -655,6 +707,7 @@ export async function POST(req: NextRequest): Promise<Response> {
         // release the claim for an authorized future resolver and emit no hotel
         // data or provider request from this stale approval request.
         const resumeAuthority = await reauthorizeAgentScope({
+          surface: approvalSurface,
           authUserId: auth.userId,
           propertyId: body.pid,
           expectedAccountId: userCtx.accountId,
@@ -744,6 +797,7 @@ export async function POST(req: NextRequest): Promise<Response> {
         });
         const systemPrompt = await buildSystemPrompt({
           role: userCtx.role,
+          surface: approvalSurface,
           snapshot,
           conversationId: pending.conversationId,
           memoryBlock,
@@ -753,7 +807,7 @@ export async function POST(req: NextRequest): Promise<Response> {
         runnerCtx.promptVersion = systemPrompt.versionLabel;
         const tools = getToolsForRole(
           userCtx.role,
-          'chat',
+          approvalSurface,
           enabledSections,
           userCtx,
         );
@@ -764,7 +818,7 @@ export async function POST(req: NextRequest): Promise<Response> {
           newUserMessage: null, // RESUME — no new user turn; history ends with tool_results
           tools,
           approvalMode: true,
-          featureKey: 'agent.ask_staxis',
+          featureKey: agentFeatureKeyForOrigin(resumeOrigin),
           executionPlan,
           deadlineAt: executionDeadlineAt,
           fallbackReserveMs: ASK_STAXIS_FALLBACK_RESERVE_MS,
@@ -782,7 +836,9 @@ export async function POST(req: NextRequest): Promise<Response> {
             accountId: userCtx.accountId,
             actorRole: userCtx.role,
             promptVersion: systemPrompt.versionLabel,
-            surface: 'chat',
+            // The surface the card was RAISED on, not a literal: a follow-up to
+            // a card approved in a staff thread happened in that thread.
+            surface: approvalSurface,
           },
           // If the follow-up proposes MORE mutations, gate them too (one at a
           // time). Shared factory — same handler both routes use.
@@ -797,6 +853,7 @@ export async function POST(req: NextRequest): Promise<Response> {
               snapshot,
               actorRole: userCtx.role,
               promptVersion: systemPrompt.versionLabel,
+              surface: approvalSurface,
             },
           }),
         });
@@ -825,7 +882,7 @@ export async function POST(req: NextRequest): Promise<Response> {
           userId: userCtx.accountId,
           propertyId: body.pid,
           requestId,
-          feature: 'agent.ask_staxis',
+          feature: agentFeatureKeyForOrigin(resumeOrigin),
         });
 
         try { controller.close(); } catch { /* noop */ }

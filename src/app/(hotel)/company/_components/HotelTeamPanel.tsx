@@ -839,26 +839,23 @@ export function HotelTeamPanel({
   const teamLoadingForHotel = Boolean(hotelId) && (!teamSnapshotCurrent || teamLoading);
   const teamErrorForHotel = teamSnapshotCurrent ? teamError : '';
 
-  // `locked` is the customer-action lock. It deliberately does NOT fold in
-  // `adminPreview`: the platform admin's first-person hotel setup is the one
-  // action that lives inside the preview. Every CUSTOMER action is closed to
-  // the preview separately and explicitly (`canAddStaffAction`,
-  // `canInviteToStaxis`, and `canManageTeam`, which the page already denies to
-  // a preview), so the preview stays observational without disarming setup.
+  // `locked` is the action lock, and it is driven ONLY by a genuinely read-only
+  // viewer context. Viewing a hotel as a platform admin is NOT read-only: an
+  // admin holds full power at every hotel and gets the same actions the hotel's
+  // own owner would get. `adminPreview` survives here purely as identity (the
+  // "viewing as Staxis" label and the first-person setup action that only makes
+  // sense from that view), never as a capability subtraction.
   const locked = readOnly;
-  // Every action ON A PERSON is closed to the preview: profile edits, role and
-  // lifecycle changes, employment edits, removals, and join-request decisions.
-  // This is the half of the read-only preview that `locked` cannot carry,
-  // because `locked` also gates the setup action the preview is allowed to use.
-  const actionsLocked = locked || adminPreview;
+  // Actions ON A PERSON follow the same single lock as everything else.
+  const actionsLocked = locked;
   const inviteActionDisabled = locked
     || (canManageTeam && !teamSnapshotCurrent)
     || (adminPreview && (teamLoadingForHotel || Boolean(teamErrorForHotel)));
   // A hotel manager can use the shared link, QR, and code invite even when the
   // account-invite capability is not granted. Keep this derived from the same
   // guarded surfaces as the existing Invite dialog instead of widening access.
-  const canInviteToStaxis = !adminPreview && (canManageTeam || canInviteAccounts);
-  const canAddStaffAction = canManageTeam && !adminPreview && canAddStaff;
+  const canInviteToStaxis = canManageTeam || canInviteAccounts;
+  const canAddStaffAction = canManageTeam && canAddStaff;
   const inviteEntryAvailable = canAddStaffAction || canInviteToStaxis;
   const inviteCapabilityKey = [
     canAddStaffAction ? 'schedule' : 'no-schedule',

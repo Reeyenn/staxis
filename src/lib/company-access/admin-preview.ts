@@ -210,12 +210,29 @@ export function resolveAdminCompanyPreviewTarget(input: {
   return { scope: 'property', property: input.property, organization: anchor };
 }
 
-export function readOnlyAdminPreviewPermissions(): CompanyAccessPermissions {
+/**
+ * What a Staxis administrator may do in the hotel they opened from Admin.
+ *
+ * The product is in its build phase and there is no look-but-don't-touch admin
+ * mode: an admin gets every HOTEL action the hotel's own owner would get. The
+ * hotel-team routes behind these flags (GET/POST /api/auth/team,
+ * /api/auth/invites, /api/auth/join-codes) already admit a platform admin at
+ * any hotel, so what is offered here is exactly what the server will honour.
+ *
+ * The two company-scope flags stay false, and that is NOT a lockout:
+ *   • `manageAccess` — customer company MEMBERSHIP administration. Its routes
+ *     require an active organization membership, and a platform admin cannot
+ *     hold one (migration 0325 raises 42501 on the attempt). Advertising these
+ *     would show buttons the server refuses.
+ *   • `requestAccess` — petitioning for access an admin already has.
+ */
+export function adminPreviewPermissions(propertyId: string): CompanyAccessPermissions {
   return {
     viewHotels: true,
     viewPeople: true,
-    managePeople: false,
-    manageInvitations: false,
+    managePeople: true,
+    manageInvitations: true,
+    accountInvitePropertyIds: [propertyId],
     viewAccess: true,
     manageAccess: false,
     viewActivity: true,
@@ -225,10 +242,25 @@ export function readOnlyAdminPreviewPermissions(): CompanyAccessPermissions {
   };
 }
 
-/** Final fail-closed scrub applied immediately before an admin preview leaves
- * the API. Even if a projection builder accidentally sets a customer action,
- * the preview cannot advertise it or claim an effective customer grant. */
-export function makeAdminCompanyAccessReadOnly(input: {
+/**
+ * Final shaping applied immediately before an admin view leaves the API.
+ *
+ * Every HOTEL action is granted through `adminPreviewPermissions`. Two things
+ * are still closed here, deliberately, and neither is a capability lockout:
+ *
+ *   1. The administrator's own row is dropped and no row is marked as them. A
+ *      Staxis account is not one of the hotel's people.
+ *   2. Customer company-MEMBERSHIP actions (suspend/resume/remove a membership,
+ *      revoke a grant, cancel an invitation, review a request) and effective
+ *      access receipts stay closed. Those routes require an active organization
+ *      membership that migration 0325 forbids an admin to hold, so offering
+ *      them would advertise actions the server refuses, and claiming a receipt
+ *      would put a Staxis account into a customer's access history.
+ *
+ * The builder already leaves these false; asserting it here keeps the rule in
+ * one readable place instead of spread across the projection.
+ */
+export function applyAdminCompanyAccessPowers(input: {
   projection: CompanyAccessData;
   viewerContext: AdminCompanyPreviewViewerContext;
   adminAccountId: string;
@@ -261,7 +293,7 @@ export function makeAdminCompanyAccessReadOnly(input: {
       ...request,
       canReview: false,
     })),
-    permissions: readOnlyAdminPreviewPermissions(),
+    permissions: adminPreviewPermissions(input.viewerContext.requestedPropertyId),
     viewerContext: input.viewerContext,
   };
 }

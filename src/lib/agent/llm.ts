@@ -287,6 +287,67 @@ export async function resolveCompanionChatExecutionPlan(): Promise<AiExecutionPl
   }
 }
 
+/**
+ * The @Staxis thread assistant's own plan.
+ *
+ * Same shape as the companion's, including the silent fall back to Ask Staxis:
+ * the thread assistant is a FACE on the same conversation, so "somebody
+ * unpriced the model on its Control Center row" must not be the reason a
+ * housekeeper's question in a channel goes unanswered.
+ */
+export async function resolveMessagesAssistantExecutionPlan(): Promise<AiExecutionPlan> {
+  try {
+    const resolved = await resolveAiExecutionPlan(
+      'communications.staxis_assistant',
+      MESSAGES_RUNTIME_PROVIDERS,
+      { requirePricing: true },
+    );
+    return applyLegacyModelOverrideToPlan(resolved, 'sonnet');
+  } catch {
+    return resolveAskStaxisExecutionPlan();
+  }
+}
+
+/**
+ * WHICH SURFACE ASKED, AND THEREFORE WHOSE LINE OF THE COST BOOK PAYS.
+ *
+ * One brain, several faces. The chat bar, the companion bubble and the "@Staxis"
+ * mention in a staff thread are the same pipeline, the same registry and the
+ * same approval cards — the ONLY thing the origin selects is which AI Control
+ * Center row governs the model and carries the spend, so Reeyen can move the
+ * bubble or the thread assistant to a cheaper model without touching the bar
+ * managers type into all day.
+ *
+ * UNTRUSTED, and safely so on every route that reads it: auth, property access,
+ * the section gate, the hat's lens and the tool catalog are all resolved before
+ * this is consulted, and every slot resolves through the same registry with the
+ * same pricing requirement. The worst a forged value can do is bill a turn to
+ * the wrong line of Reeyen's own book.
+ */
+export type AgentOrigin = 'ask' | 'companion' | 'messages';
+
+export function agentOriginFromRequest(origin: string | undefined): AgentOrigin {
+  return origin === 'companion' || origin === 'messages' ? origin : 'ask';
+}
+
+const ORIGIN_FEATURE_KEYS: Readonly<Record<AgentOrigin, AiFeatureKey>> = {
+  ask: 'agent.ask_staxis',
+  companion: 'companion.conversation',
+  messages: 'communications.staxis_assistant',
+};
+
+/** The Control Center row a turn from this surface is billed to. */
+export function agentFeatureKeyForOrigin(origin: AgentOrigin): AiFeatureKey {
+  return ORIGIN_FEATURE_KEYS[origin];
+}
+
+/** The execution plan for a turn from this surface. */
+export function resolveAgentOriginExecutionPlan(origin: AgentOrigin): Promise<AiExecutionPlan> {
+  if (origin === 'companion') return resolveCompanionChatExecutionPlan();
+  if (origin === 'messages') return resolveMessagesAssistantExecutionPlan();
+  return resolveAskStaxisExecutionPlan();
+}
+
 export async function resolvePortfolioChatExecutionPlan(): Promise<AiExecutionPlan> {
   const resolved = await resolveAiExecutionPlan(
     'agent.portfolio_chat',

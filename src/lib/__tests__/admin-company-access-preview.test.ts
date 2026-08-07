@@ -8,7 +8,7 @@ import {
   UnavailableAdminCompanyPreviewTargetError,
   adminPreviewWindowIsActive,
   assertExactSingleHotelRelationshipScope,
-  makeAdminCompanyAccessReadOnly,
+  applyAdminCompanyAccessPowers,
   resolveAdminCompanyPreviewTarget,
   runAdminPreviewReadWithRetry,
   type AdminCompanyPreviewViewerContext,
@@ -166,10 +166,10 @@ describe('admin Company Hub stable reads', () => {
   });
 });
 
-describe('admin Company Hub preview read-only boundary', () => {
+describe('admin Company Hub view powers at the response boundary', () => {
   const viewerContext: AdminCompanyPreviewViewerContext = {
     kind: 'staxis_admin_preview',
-    readOnly: true,
+    readOnly: false,
     hub: 'company',
     requestedPropertyId: PROPERTY.id,
     scope: 'organization',
@@ -178,7 +178,7 @@ describe('admin Company Hub preview read-only boundary', () => {
     organizationId: COMPANY.id,
   };
 
-  test('scrubs every action and effective receipt at the final response boundary', () => {
+  test('grants every hotel action, drops the admin row, keeps company membership closed', () => {
     const unsafeProjection: CompanyAccessData = {
       ...EMPTY_COMPANY_ACCESS,
       memberships: [
@@ -269,15 +269,28 @@ describe('admin Company Hub preview read-only boundary', () => {
       },
     };
 
-    const preview = makeAdminCompanyAccessReadOnly({
+    const preview = applyAdminCompanyAccessPowers({
       projection: unsafeProjection,
       viewerContext,
       adminAccountId: 'admin-account',
     });
 
+    // A Staxis account is never one of the hotel's own people.
     assert.equal(preview.memberships.length, 1);
     assert.equal(preview.memberships[0].accountId, 'customer-account');
     assert.equal(preview.memberships[0].isCurrentUser, false);
+
+    // Every hotel-team action is offered, and the hotel is named as the one
+    // this admin may invite accounts into.
+    assert.equal(preview.permissions.viewPeople, true);
+    assert.equal(preview.permissions.managePeople, true);
+    assert.equal(preview.permissions.manageInvitations, true);
+    assert.deepEqual(preview.permissions.accountInvitePropertyIds, [PROPERTY.id]);
+
+    // Company MEMBERSHIP administration stays closed: those routes require an
+    // active organization membership, which migration 0325 forbids an admin
+    // from holding. Offering them would show a button the server refuses, and
+    // an effective receipt would put a Staxis account in a customer's history.
     assert.equal(preview.memberships[0].canSuspend, false);
     assert.equal(preview.memberships[0].canResume, false);
     assert.equal(preview.memberships[0].canRemove, false);
@@ -285,13 +298,14 @@ describe('admin Company Hub preview read-only boundary', () => {
     assert.deepEqual(preview.effectiveAccess, []);
     assert.equal(preview.invitations[0].canCancel, false);
     assert.equal(preview.requests[0].canReview, false);
-    assert.equal(preview.permissions.managePeople, false);
-    assert.equal(preview.permissions.manageInvitations, false);
     assert.equal(preview.permissions.manageAccess, false);
     assert.equal(preview.permissions.requestAccess, false);
     assert.deepEqual(preview.permissions.availableProfiles, []);
     assert.deepEqual(preview.permissions.delegationPolicies, []);
+
+    // The label survives, and it no longer claims to be read-only.
     assert.deepEqual(preview.viewerContext, viewerContext);
+    assert.equal(preview.viewerContext.readOnly, false);
   });
 });
 
@@ -315,10 +329,10 @@ describe('admin Company Hub preview API contract', () => {
   });
 
   test('returns an explicit no-store read-only preview and retries unstable reads', () => {
-    assert.match(route, /makeAdminCompanyAccessReadOnly/);
+    assert.match(route, /applyAdminCompanyAccessPowers/);
     assert.match(route, /viewerContext/);
     assert.match(route, /kind: ['"]staxis_admin_preview['"]/);
-    assert.match(route, /readOnly: true/);
+    assert.match(route, /readOnly: false/);
     assert.match(route, /effectiveAccess: \[\]/);
     assert.match(route, /Cache-Control['"]?: ['"]no-store, max-age=0['"]/);
     assert.match(route, /runAdminPreviewReadWithRetry\(/);

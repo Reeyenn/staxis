@@ -29,6 +29,7 @@ import { usePortfolio } from '@/contexts/PortfolioContext';
 import { useProperty } from '@/contexts/PropertyContext';
 import { RouteErrorState } from '@/components/layout/RouteResourceState';
 import { fetchWithAuth } from '@/lib/api-fetch';
+import { resolveViewerHotelStanding } from '@/lib/authorization/domain';
 import { can as canForStanding } from '@/lib/capabilities/can';
 import {
   EMPTY_COMPANY_ACCESS,
@@ -212,10 +213,20 @@ function buildLegacyProjection(user: AppUser, properties: Property[]): CompanyAc
   };
 }
 
+/**
+ * Shape-normalize a company-access payload.
+ *
+ * This used to ALSO strip every action flag whenever the payload carried an
+ * admin viewer context, which is what turned an administrator into a look-but-
+ * don't-touch visitor. It no longer does: a platform admin holds full power at
+ * every hotel, and the route that produced the payload is the single authority
+ * on which actions are offered. `viewerContext` survives purely as the honest
+ * "you are viewing this hotel as Staxis" label.
+ */
 function normalizeCompanyData(value: CompanyAccessData | null | undefined): CompanyAccessData {
   if (!value) return EMPTY_COMPANY_ACCESS;
   const viewerContext = value.viewerContext?.kind === 'staxis_admin_preview'
-    && value.viewerContext.readOnly === true
+    && typeof value.viewerContext.readOnly === 'boolean'
     && typeof value.viewerContext.requestedPropertyId === 'string'
     && (value.viewerContext.scope === 'organization' || value.viewerContext.scope === 'property')
     && typeof value.viewerContext.targetId === 'string'
@@ -229,37 +240,18 @@ function normalizeCompanyData(value: CompanyAccessData | null | undefined): Comp
     organizations: Array.isArray(value.organizations) ? value.organizations : [],
     portfolios: Array.isArray(value.portfolios) ? value.portfolios : [],
     properties: Array.isArray(value.properties) ? value.properties : [],
-    memberships: viewerContext ? memberships.map((membership) => ({
-      ...membership,
-      isCurrentUser: false,
-      canSuspend: false,
-      canResume: false,
-      canRemove: false,
-      grants: Array.isArray(membership.grants)
-        ? membership.grants.map((grant) => ({ ...grant, canRevoke: false }))
-        : [],
-    })) : memberships,
-    effectiveAccess: viewerContext ? [] : (Array.isArray(value.effectiveAccess) ? value.effectiveAccess : []),
+    memberships,
+    effectiveAccess: Array.isArray(value.effectiveAccess) ? value.effectiveAccess : [],
     accessHistory: Array.isArray(value.accessHistory)
       ? value.accessHistory.map((entry) => ({
           ...entry,
           record: { ...entry.record, canRevoke: false },
         }))
       : [],
-    invitations: viewerContext
-      ? invitations.map((invitation) => ({ ...invitation, canCancel: false }))
-      : invitations,
-    requests: viewerContext
-      ? requests.map((request) => ({ ...request, canReview: false }))
-      : requests,
+    invitations,
+    requests,
     activity: Array.isArray(value.activity) ? value.activity : [],
-    permissions: viewerContext ? {
-      ...EMPTY_COMPANY_ACCESS.permissions,
-      viewHotels: true,
-      viewPeople: true,
-      viewAccess: true,
-      viewActivity: true,
-    } : { ...EMPTY_COMPANY_ACCESS.permissions, ...(value.permissions ?? {}) },
+    permissions: { ...EMPTY_COMPANY_ACCESS.permissions, ...(value.permissions ?? {}) },
     legacyFallback: Boolean(value.legacyFallback),
     viewerContext,
   };
@@ -403,14 +395,21 @@ function CompanyAccessContent() {
   // company title. Require the one fresh standing for this exact hotel, its
   // explicit mutation bit, and the capability evaluated with the standing's
   // hotel role. A stale accounts.role=owner must never turn a company-only
-  // owner/VP/finance grant into hotel roster authority.
-  const activePropertyStanding = matchingPropertyStandings.length === 1
+  // owner/VP/finance grant into hotel roster authority. A duplicated standing
+  // is a corrupt snapshot and is not treated as authority.
+  const issuedPropertyStanding = matchingPropertyStandings.length === 1
     ? matchingPropertyStandings[0]
     : null;
-  const hotelPresentationRole = platformAdmin
-    ? 'admin'
-    : activePropertyStanding?.operationalRole ?? null;
-  const hotelMutationAuthorized = authorizationChecked && !adminPreview && Boolean(
+  // The shared viewer-standing rule. A platform admin holds the full-power
+  // standing at every hotel (see @/lib/authorization/domain); a customer gets
+  // exactly the standing the server issued for this exact hotel, unchanged.
+  const activePropertyStanding = resolveViewerHotelStanding({
+    platformAdmin: platformAdmin && userRole === 'admin',
+    standings: issuedPropertyStanding ? [issuedPropertyStanding] : [],
+    propertyId: activePropertyId,
+  });
+  const hotelPresentationRole = activePropertyStanding?.operationalRole ?? null;
+  const hotelMutationAuthorized = authorizationChecked && Boolean(
     activePropertyStanding?.hotelMutationAllowed === true,
   );
   // A hotel switch clears readiness synchronously. Never reuse the previous
@@ -422,16 +421,15 @@ function CompanyAccessContent() {
       'manage_team',
       capabilityOverrides,
     );
-  // A verified platform-admin preview may inspect the selected hotel's roster,
-  // but it is never a customer hotel manager. Keep read access separate from
-  // the mutation capability so the preview cannot inherit customer actions.
   // Deliberately `canManageTeam`, not the bare mutation standing: GET
   // /api/auth/team still requires `manage_team`, so widening the client gate to
   // the mutation bit alone would only show a customer a failed fetch, and would
-  // let the roster read escape the capability that governs it.
+  // let the roster read escape the capability that governs it. An admin now
+  // satisfies `canManageTeam` through the shared standing above, so the old
+  // separate `adminPreview` read gate is no longer a different answer.
   const canViewHotelTeam = hotelCapabilitiesReady
     && authorizationChecked
-    && (adminPreview || canManageTeam);
+    && canManageTeam;
   const canManageUsers = hotelCapabilitiesReady
     && hotelMutationAuthorized
     && canForStanding(
@@ -445,7 +443,7 @@ function CompanyAccessContent() {
   // where the exact-hotel capability snapshot is already known to be current.
   const canViewWages = hotelCapabilitiesReady
     && authorizationChecked
-    && Boolean(platformAdmin || activePropertyStanding?.seesFinancials === true)
+    && activePropertyStanding?.seesFinancials === true
     && canForStanding(
       hotelPresentationRole ? { role: hotelPresentationRole } : null,
       'view_wages',
@@ -516,7 +514,6 @@ function CompanyAccessContent() {
         const normalized = normalizeCompanyData(body.data);
         if (adminPreview && (
           normalized.viewerContext?.kind !== 'staxis_admin_preview'
-          || normalized.viewerContext.readOnly !== true
           || normalized.viewerContext.requestedPropertyId !== requestedPropertyId
         )) {
           throw new Error('The admin preview response did not match the selected hotel.');
@@ -604,15 +601,13 @@ function CompanyAccessContent() {
       && !portfolioMode
       && currentData
       && activePropertyId
-      // Read gate, not the mutation gate: an admin preview is allowed to see
-      // this roster and is never allowed to act on it.
       && canViewHotelTeam
       && staffBelongsToCurrentViewer
       && hotelCapabilitiesReady
       && authorizationChecked,
     ),
     adminPreview,
-    readOnly: Boolean(resolved.viewerContext?.readOnly) && !adminPreview,
+    readOnly: Boolean(resolved.viewerContext?.readOnly),
     staff: currentStaff,
     staffViewerKey,
     staffExpectedViewerKey: activePropertyViewerKey,
@@ -757,10 +752,12 @@ function CompanyAccessContent() {
     && adminViewerContext
     && adminDataMatchesSelection,
   );
+  // Readiness lock only. Viewing a hotel as a platform admin is NOT a lock:
+  // an admin gets every action the hotel's own owner would get, and only waits
+  // for the same data this panel makes every other viewer wait for.
   const hotelTeamLocked = Boolean(
     showLoading
     || !currentData
-    || adminPreview
     || (resolved.viewerContext?.readOnly === true && !adminActionsAvailable),
   );
   const workspaceTitle = adminPreview
@@ -969,12 +966,12 @@ function CompanyAccessContent() {
                   canManageTeam={canManageTeam}
                   canViewTeam={canViewHotelTeam}
                   canInviteAccounts={Boolean(
-                    !adminPreview && (adminActionsAvailable
+                    adminActionsAvailable
                     || (activeProperty
-                      && resolved.permissions.accountInvitePropertyIds?.includes(activeProperty.id)))
+                      && resolved.permissions.accountInvitePropertyIds?.includes(activeProperty.id))
                   )}
                   canViewWages={canViewWages}
-                  canAddOperationalStaff={!adminPreview && !hotelTeamLocked && canManageTeam}
+                  canAddOperationalStaff={!hotelTeamLocked && canManageTeam}
                   peopleController={peopleController}
                   inviteDialogOpen={teamInviteHotelId === activeProperty?.id}
                   onInviteDialogOpenChange={(open) => setTeamInviteHotelId(open ? activeProperty?.id ?? null : null)}
@@ -1178,7 +1175,7 @@ export function PeoplePanel({ data, staff, hotelRosterUnavailable, rosterSettled
             <SectionHeading
               title={'Memberships and invitations'}
             />
-            {!adminPreview && !activeProperty && !canManageTeam && canInviteAccounts ? (
+            {!activeProperty && !canManageTeam && canInviteAccounts ? (
               <button type="button" className={styles.primaryButton} onClick={() => onInviteDialogOpenChange(true)}>
                 <UserPlus size={16} aria-hidden="true" />
                 {'Invite company member'}
@@ -1228,9 +1225,9 @@ export function PeoplePanel({ data, staff, hotelRosterUnavailable, rosterSettled
           lang={'en'}
           canManageTeam={canManageTeam}
           canViewTeam={hotelTeamVisible}
-          canInviteAccounts={adminPreview ? false : canInviteAccounts}
+          canInviteAccounts={canInviteAccounts}
           canViewWages={canViewWages}
-          readOnly={Boolean(data.viewerContext?.readOnly) && !adminPreview}
+          readOnly={Boolean(data.viewerContext?.readOnly)}
           adminPreview={adminPreview}
           peopleHeadingRef={peopleHeadingRef}
           inviteDialogOpen={inviteDialogOpen && inviteCapabilitiesStable}
@@ -1238,7 +1235,7 @@ export function PeoplePanel({ data, staff, hotelRosterUnavailable, rosterSettled
           staffProfiles={staff}
           rosterUnavailable={hotelRosterUnavailable}
           rosterSettled={rosterSettled}
-          canAddStaff={adminPreview ? false : canAddOperationalStaff}
+          canAddStaff={canAddOperationalStaff}
           peopleController={peopleController}
           onChanged={onChanged}
         />
@@ -1568,7 +1565,7 @@ function AccessContextCard({ context, adminPreview }: { context: CompanyAccessCo
           <strong>{context.organizationName ?? 'Hotel-only access'}</strong>
         </div>
       </div>
-      {adminPreview ? <span className={styles.readOnlyBadge}><ShieldCheck size={14} aria-hidden="true" />{'Read-only preview'}</span> : null}
+      {adminPreview ? <span className={styles.readOnlyBadge}><ShieldCheck size={14} aria-hidden="true" />{'Viewing as Staxis admin'}</span> : null}
     </section>
   );
 }

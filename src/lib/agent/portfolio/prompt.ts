@@ -58,12 +58,7 @@ import {
 import { resolvePrompts } from '@/lib/agent/prompts-store';
 import type { CompanyScopeRole } from '@/lib/company/roles';
 
-import {
-  formatPortfolioIdentityForPrompt,
-  PORTFOLIO_IDENTITY_VERSION,
-  type PortfolioIdentity,
-} from './identity';
-import { formatPortfolioSnapshotForPrompt, type PortfolioSnapshot } from './snapshot';
+import { type PortfolioIdentity } from './identity';
 
 // v2: the code-owned ceiling gained the never-do-arithmetic rule (2026-07-26).
 // The stamp is part of the cached prefix's identity, so it moves whenever the
@@ -132,8 +127,23 @@ type StableTier =
   | 'hotel_rules'
   | 'version_line';
 
-/** Segments of the UNCACHED per-turn block. */
-type DynamicTier = 'portfolio_snapshot';
+// THERE IS NO UNCACHED PER-TURN BLOCK ON THIS SURFACE, and the absence is the
+// design rather than an omission.
+//
+// There was one until 2026-08-06: a `portfolio_snapshot` tier carrying twenty
+// hotels' live pulse with a per-hotel as-of line. Portfolio Intelligence
+// replaced it with a deterministic metric evidence package it assembles itself
+// — `portfolio-intelligence/prompt.ts` overwrites `dynamic` wholesale — and the
+// tier had been unreachable on every live path ever since, because the one
+// production entry point omitted the input that switched it on. Stage 2 of the
+// knowledge door deleted the store and its module rather than carry a rendering
+// no prompt contains.
+//
+// So this assembler returns an EMPTY dynamic half and the layer above fills it.
+// Anything per-turn added here in future needs the `Segment`/order machinery
+// back, for the reason the stable half still has it: a per-turn value that ends
+// up in the CACHED block breaks nothing visibly and multiplies the input-token
+// bill forever.
 
 /**
  * FIXED ASSEMBLY ORDER — later text wins, exactly as on the hotel surface.
@@ -154,8 +164,6 @@ const STABLE_TIER_ORDER: readonly StableTier[] = [
   'hotel_rules',
   'version_line',
 ];
-
-const DYNAMIC_TIER_ORDER: readonly DynamicTier[] = ['portfolio_snapshot'];
 
 /** Tiers that instruct rather than state a fact about these hotels — excluded
  *  from `factual`. See the twin list in ../prompts.ts for the full reasoning. */
@@ -193,17 +201,22 @@ function assembleBlock<T extends string>(
 export interface PortfolioPromptInput {
   identity: PortfolioIdentity;
   companyRole: CompanyScopeRole;
-  /** Legacy live pulse. Portfolio Intelligence omits this and supplies a
-   * canonical metric evidence block instead, avoiding an unrelated N-hotel
-   * fan-out before every question. */
-  snapshot?: PortfolioSnapshot;
   /** Portfolio Intelligence supplies one bounded, provenance-recorded overlay
    * and disables this legacy second rulebook read to avoid duplicate facts.
    * Arbitrated by `resolveCompanyKnowledgePresentation` in the knowledge door,
    * where both renderings of `company_knowledge` are registered. */
   companyKnowledgeMode?: CompanyKnowledgeMode;
   conversationId: string;
-  /** Injectable clock, so a test's assertions do not drift with real time. */
+  /**
+   * Injectable clock, so a test's assertions do not drift with real time.
+   *
+   * READ BY NOTHING IN THIS ASSEMBLER, and that is the invariant rather than an
+   * oversight: everything this file prints lands in the CACHED half, so a value
+   * that moved with the clock would rewrite the cached prefix on every turn.
+   * It is carried on the input for the layer that fills the uncached half —
+   * `portfolio-intelligence/prompt.ts` renders its evidence package against it
+   * — so both halves of one turn are measured against one clock.
+   */
   now?: Date;
 }
 
@@ -225,7 +238,6 @@ export interface PortfolioPromptInput {
 export async function buildPortfolioSystemPrompt(
   input: PortfolioPromptInput,
 ): Promise<SystemPromptBlocks> {
-  const now = input.now ?? new Date();
   const { base, role, versionLabel } = await resolvePrompts('owner', input.conversationId, null);
 
   // ─── The knowledge tiers, composed BY NAME through the door ──────────────
@@ -242,10 +254,22 @@ export async function buildPortfolioSystemPrompt(
   // a company-scope hat (owner, VP, finance) — the hotel surface's line-role
   // gate has no analogue here, and stating it rather than defaulting it is what
   // keeps the two surfaces' answers comparable.
+  //
+  // `held.portfolioIdentity` is the receipt this route was authorized against.
+  // The door renders it and never looks it up: a fresh query here would replace
+  // "the hotels this person was checked against" with "the hotels a query
+  // returned", which is the same boundary the `hotelIds` gate above protects,
+  // lost one line later.
+  //
+  // NO ACTOR. Three company-scope hats reach this surface and none of them has
+  // a lens — a lens narrows a hat AT ONE HOTEL, and this conversation answers
+  // for a company. Leaving it off is the honest way to say so; the door's
+  // person-scoped composers then render nothing rather than guessing a role.
   const turn: KnowledgeTurn = {
     hotelIds: input.identity.hotels.map((hotel) => hotel.id),
     organizationId: input.identity.organizationId,
     companyPolicyVisible: true,
+    held: { portfolioIdentity: input.identity },
   };
 
   // Exactly one presentation of `company_knowledge` may render on a turn. When
@@ -257,14 +281,14 @@ export async function buildPortfolioSystemPrompt(
   const company = resolveCompanyKnowledgePresentation(input.companyKnowledgeMode) === 'company_rulebook_tier'
     ? await composeKnowledgeTier('company_knowledge', turn)
     : null;
-  const identityBlock = formatPortfolioIdentityForPrompt(input.identity);
+  const identity = await composeKnowledgeTier('portfolio_identity', turn);
   const standingRules = await composeKnowledgeTier('hotel_standing_rules', turn);
 
   const stampParts = [
     versionLabel, PORTFOLIO_MODE_VERSION, ...codeOwnedRuleTierVersions(),
   ];
   if (company) stampParts.push(company.version);
-  if (identityBlock) stampParts.push(PORTFOLIO_IDENTITY_VERSION);
+  if (identity) stampParts.push(identity.version);
   if (standingRules) stampParts.push(standingRules.version);
   const stableStamp = stampParts.join('+');
 
@@ -296,23 +320,16 @@ export async function buildPortfolioSystemPrompt(
     { tier: 'code_rules', lines: codeOwnedRuleTierLines() },
   ];
   if (company) stable.push({ tier: 'company', lines: ['', company.block] });
-  if (identityBlock) stable.push({ tier: 'portfolio_identity', lines: ['', identityBlock] });
+  if (identity) stable.push({ tier: 'portfolio_identity', lines: ['', identity.block] });
   if (standingRules) stable.push({ tier: 'hotel_rules', lines: ['', standingRules.block] });
   stable.push({ tier: 'version_line', lines: ['', `Prompt version: ${stableStamp}`] });
 
-  const dynamic: Segment<DynamicTier>[] = input.snapshot
-    ? [{
-        tier: 'portfolio_snapshot',
-        lines: [
-          '─── Current portfolio snapshot ───',
-          formatPortfolioSnapshotForPrompt(input.snapshot, now),
-        ],
-      }]
-    : [];
-
   return {
     stable: assembleBlock(stable, STABLE_TIER_ORDER, 'stable'),
-    dynamic: assembleBlock(dynamic, DYNAMIC_TIER_ORDER, 'dynamic'),
+    // Empty on purpose — see the note above `STABLE_TIER_ORDER`. The layer that
+    // owns the uncached half (`portfolio-intelligence/prompt.ts`) replaces this
+    // wholesale with its deterministic evidence package.
+    dynamic: '',
     // Same contract as the hotel surface: the instruction tiers are dropped so
     // the number guard's receipt is what the runtime said about these HOTELS,
     // not the role prompts' worked examples. Built by subtraction — a tier

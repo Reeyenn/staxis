@@ -273,9 +273,15 @@ describe('section gates fail closed and cover high-risk routes', () => {
       const route = source(path);
       const post = route.indexOf('export async function POST');
       const gate = route.indexOf("requireSectionEnabled(req, ", post);
-      const context = route.indexOf('loadAgentUserCtx(', post);
       const cost = route.indexOf('reserveCostBudget(', post);
-      assert.ok(gate >= 0 && context > gate && cost > gate, `${path} must gate before paid work`);
+      // The invariant is about SPEND: a section that is switched off must never
+      // reach a cost reservation or a provider call. The approval route now
+      // loads the caller and the pending row BEFORE the gate, deliberately —
+      // which section gates a decision depends on which surface the card was
+      // raised on (the Staxis tab for the chat bar, Messages for an "@Staxis"
+      // mention in a thread), and that is not knowable until the row is in
+      // hand. Nothing is claimed, executed or billed in between.
+      assert.ok(gate >= 0 && cost > gate, `${path} must gate before paid work`);
     }
   });
 });

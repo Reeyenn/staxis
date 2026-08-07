@@ -8,6 +8,7 @@
 import { useCallback } from 'react';
 import { useAuth } from '@/contexts/AuthContext';
 import { useProperty } from '@/contexts/PropertyContext';
+import { resolveViewerHotelStanding } from '@/lib/authorization/domain';
 import { can } from './can';
 import type { CapabilityKey } from './registry';
 import type { AppRole } from '@/lib/roles';
@@ -33,17 +34,13 @@ export function useActiveHotelStanding(): {
       ready: false,
     };
   }
-  if (platformAdmin && user.role === 'admin') {
-    return {
-      role: 'admin',
-      hotelMutationAllowed: true,
-      seesFinancials: true,
-      ready: true,
-    };
-  }
-  const standing = propertyStandings.find(
-    (candidate) => candidate.propertyId === activePropertyId,
-  );
+  // One shared rule for "what is this viewer's standing at this hotel", so a
+  // platform admin is never offered less here than the server will honour.
+  const standing = resolveViewerHotelStanding({
+    platformAdmin: platformAdmin && user.role === 'admin',
+    standings: propertyStandings,
+    propertyId: activePropertyId,
+  });
   return {
     role: standing?.operationalRole ?? null,
     hotelMutationAllowed: standing?.hotelMutationAllowed === true,

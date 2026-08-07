@@ -208,10 +208,10 @@ describe('truthful Company Hub filters', () => {
     assert.match(company, /rosterUnavailable=\{hotelRosterUnavailable\}/);
     assert.match(hotelTeam, /schedule roster is temporarily unavailable/);
     assert.match(company, /hotelId=\{activeProperty\.id\}/);
-    assert.match(company, /readOnly=\{Boolean\(data\.viewerContext\?\.readOnly\) && !adminPreview\}/);
-    // `readOnly` stays off in the preview so first-person hotel setup works.
-    // Actions on a person are closed by `actionsLocked` instead.
-    assert.match(hotelTeam, /const actionsLocked = locked \|\| adminPreview;/);
+    assert.match(company, /readOnly=\{Boolean\(data\.viewerContext\?\.readOnly\)\}/);
+    // Viewing a hotel as a platform admin is identity, not a lock: actions on a
+    // person follow the same single `locked` gate every other viewer follows.
+    assert.match(hotelTeam, /const actionsLocked = locked;/);
     assert.match(company, /data\.viewerContext\?\.kind === ['"]staxis_admin_preview['"]/);
     assert.doesNotMatch(company, /allowAdminActions|onRequestAdminActions|adminToolsEnabled|adminToolsActive/);
     assert.match(company, /statusLabel\(membership\.status, lang\)/);
@@ -305,7 +305,11 @@ describe('My Hotel account and team integration', () => {
     assert.match(company, /buildAccessPeople\(/);
     assert.match(company, /['"]No hotel access yet['"]/);
     assert.match(company, /The authoritative access view is temporarily unavailable/);
-    assert.match(company, /['"]Read-only preview['"]/);
+    // The "you are viewing as Staxis" indicator is KEPT. Its wording changed:
+    // an administrator now holds every action here, so calling it read-only
+    // would be a lie.
+    assert.match(company, /['"]Viewing as Staxis admin['"]/);
+    assert.doesNotMatch(company, /['"]Read-only preview['"]/);
     assert.doesNotMatch(company, /Customer grants|Access grants|grant records|Roles and scopes by person/);
     assert.doesNotMatch(hotelTeam, /<span>\{'Hotel roster'\}<\/span>/);
   });
@@ -330,6 +334,9 @@ describe('My Hotel account and team integration', () => {
     assert.match(company, /propertyStandings\.filter\(\(standing\) => standing\.propertyId === activePropertyId\)/);
     assert.match(company, /matchingPropertyStandings\.length === 1/);
     assert.match(company, /activePropertyStanding\?\.hotelMutationAllowed === true/);
+    // One shared rule decides the viewer's standing at this hotel, so a
+    // platform admin is never offered less than the server will honour.
+    assert.match(company, /resolveViewerHotelStanding\(\{[\s\S]*platformAdmin: platformAdmin && userRole === 'admin'/);
     assert.match(company, /canForStanding\([\s\S]*hotelPresentationRole[\s\S]*['"]manage_team['"][\s\S]*capabilityOverrides/);
     assert.match(company, /const adminPreview = Boolean\(\s*authorizationChecked && platformAdmin && userRole === 'admin',?\s*\)/);
     assert.match(company, /if \(!user \|\| authLoading \|\| propertyLoading \|\| !authorizationChecked\) return/);
@@ -354,9 +361,11 @@ describe('My Hotel account and team integration', () => {
   test('keeps company invitations in People while private hotel roster access stays explicit', () => {
     assert.match(company, /resolved\.permissions\.accountInvitePropertyIds\?\.includes\(activeProperty\.id\)/);
     assert.match(company, /canInviteAccounts=\{Boolean\([\s\S]*adminActionsAvailable[\s\S]*accountInvitePropertyIds/);
-    assert.match(company, /canInviteAccounts=\{adminPreview \? false : canInviteAccounts\}/);
-    assert.match(company, /canAddStaff=\{adminPreview \? false : canAddOperationalStaff\}/);
-    assert.match(company, /!adminPreview && !activeProperty && !canManageTeam && canInviteAccounts/);
+    // No admin subtraction on any of these: an admin gets the hotel's actions.
+    assert.match(company, /canInviteAccounts=\{canInviteAccounts\}/);
+    assert.match(company, /canAddStaff=\{canAddOperationalStaff\}/);
+    assert.match(company, /!activeProperty && !canManageTeam && canInviteAccounts/);
+    assert.doesNotMatch(company, /adminPreview \? false :/);
     assert.doesNotMatch(company, /<InvitePersonDialog/);
     assert.match(hotelTeam, /inviteDialogVisible && canInviteAccounts && !locked[\s\S]*canManageHotelRoster=\{false\}/);
     assert.match(company, /const inviteCapabilityKey = \[[\s\S]*data\.viewerContext\?\.readOnly \? 'read-only' : 'interactive'/);

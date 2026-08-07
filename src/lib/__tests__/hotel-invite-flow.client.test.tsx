@@ -825,6 +825,65 @@ describe('mounted hotel invite flow', { concurrency: false }, () => {
     assert.doesNotMatch(ui.text(), /Pending email invitations/);
   });
 
+  // ─── Staxis administrators hold full power at every hotel ─────────────────
+  // The founder's ruling: opening a hotel from Admin must not hide Invite
+  // people or any other action. These drive the real panel and the real invite
+  // route double, so they fail if the lockout comes back in any form.
+
+  test('an admin viewing a hotel gets the Invite people entry and can send an invitation', async (context) => {
+    const ui = await mountInviteFlow(context, {
+      canManageTeam: true,
+      canInviteAccounts: true,
+      readOnly: false,
+      adminPreview: true,
+    });
+
+    // The entry is present, not hidden behind an observational mode.
+    assert.match(ui.text(), /Invite people/);
+
+    await ui.click('Invite people');
+    // Both halves of the chooser are offered, exactly as they are to an owner.
+    assert.match(ui.text(), /STAXIS LOGIN/);
+    assert.match(ui.text(), /NO LOGIN/);
+
+    await ui.click('STAXIS LOGIN');
+    await ui.setInput('input[type="email"]', 'newmanager@example.com');
+    await ui.setSelect('form select', 'housekeeping');
+    await ui.submit();
+
+    const invitePost = ui.calls.find((call) => (
+      call.method === 'POST' && call.url.includes('/api/auth/invites')
+    ));
+    assert.ok(invitePost, 'the admin must actually reach the invite route');
+    assert.deepEqual(invitePost.body, {
+      hotelId: HOTEL_ID,
+      email: 'newmanager@example.com',
+      role: 'housekeeping',
+    });
+  });
+
+  test('an admin keeps every per-person action; only a genuine read-only context locks them', async (context) => {
+    const ui = await mountInviteFlow(context, {
+      canManageTeam: true,
+      canInviteAccounts: true,
+      readOnly: false,
+      adminPreview: true,
+    });
+    await ui.flush();
+    assert.match(ui.text(), /Invite people/);
+
+    // A real read-only viewer context is still a lock. This is the control:
+    // it proves the entry above is not simply always-on.
+    await ui.setCapabilities({
+      canManageTeam: true,
+      canInviteAccounts: true,
+      readOnly: true,
+      adminPreview: true,
+    });
+    await ui.flush();
+    assert.doesNotMatch(ui.text(), /Invite people/);
+  });
+
   test('selected-hotel existing-account access refreshes the controller before the staff handoff', async (context) => {
     const events: string[] = [];
     const ui = await mountInviteFlow(context, {
@@ -1097,9 +1156,9 @@ describe('mounted hotel invite flow', { concurrency: false }, () => {
     assert.equal(ui.dialog()?.querySelector('form'), null, 'the success result must not expose a repeat-submit form');
     assert.doesNotMatch(ui.text(), /Send invitation/);
     await ui.click('Done');
-    // Setup is the ONLY action a read-only preview may take. Once it is done
-    // the preview offers no ordinary invite entry.
-    assert.doesNotMatch(ui.text(), /Invite people/);
+    // First-run setup is finished, so its dedicated form is gone. The ordinary
+    // invite entry remains: an admin holds every action at this hotel.
+    assert.match(ui.text(), /Invite people/);
     assert.doesNotMatch(ui.text(), /Assign the role before sending the invitation/);
   });
 
@@ -1185,7 +1244,7 @@ describe('mounted hotel invite flow', { concurrency: false }, () => {
     assert.doesNotMatch(ui.text(), /Add first person/);
   });
 
-  test('a direct normalized hotel account leaves a preview with no setup and no invite entry', async (context) => {
+  test('a direct normalized hotel account leaves an admin with no setup prompt but full invite power', async (context) => {
     const ui = await mountPeoplePanel(context, {
       canManageTeam: true,
       canInviteAccounts: true,
@@ -1207,10 +1266,10 @@ describe('mounted hotel invite flow', { concurrency: false }, () => {
     });
 
     await ui.flushWithFrame();
+    // The hotel already has its own account, so the first-run setup prompt is
+    // done. The ordinary invite entry is NOT: an admin holds every action here.
     assert.doesNotMatch(ui.text(), /Add first person|Add hotel owner or GM/);
-    // The hotel already has its own account, so the preview has nothing left to
-    // do here: no setup prompt, and no customer invite entry either.
-    assert.doesNotMatch(ui.text(), /Invite people/);
+    assert.match(ui.text(), /Invite people/);
     assert.match(ui.text(), /Direct GM/);
   });
 

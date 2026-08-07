@@ -188,7 +188,9 @@ export function hotelSnapshot(): HotelSnapshot {
   };
 }
 
-const IDENTITY_ONE_HOTEL = {
+/** Exported for the door's composition tests. The golden's own subjects use it
+ *  through `buildGoldenSubjects` below, so both halves measure one fixture. */
+export const IDENTITY_ONE_HOTEL = {
   organizationId: ORG_ID,
   organizationName: 'Gulf Coast Hotels',
   hotels: [{ id: PID_ONE, name: 'Comfort Suites', totalRooms: 88, timezone: 'America/Chicago' }],

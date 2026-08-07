@@ -183,8 +183,37 @@ export interface ToolResult {
  * the portfolio surface, and `executeTool` refuses one even if a stale tool
  * list leaked it. That disjointness is the wall, and it is the reason this
  * surface did NOT need a second tool registry or a second tool loop.
+ *
+ * 'messages' (2026-08-06, the @Staxis thread assistant) is the second time it
+ * paid for itself. That surface used to be a SECOND BRAIN: its own system
+ * prompt, its own five-tool catalog, its own six-iteration loop, and two
+ * mutations that ran inline with no approval card. Folding it in meant the
+ * narrowing had to be expressed somewhere, because the person typing "@Staxis"
+ * in a thread must not silently acquire the whole chat catalog — a thread is
+ * read by everyone in it, so a balance or a wage quoted there is a different
+ * disclosure from the same number typed into a private chat bar. The narrowing
+ * is the surface opt-in plus the messages lens, exactly like portfolio.
  */
-export type AgentSurface = 'chat' | 'walkthrough' | 'portfolio';
+export type AgentSurface = 'chat' | 'walkthrough' | 'portfolio' | 'messages';
+
+/**
+ * The per-hotel section that MOUNTS each surface.
+ *
+ * The approval-resolve route needs this: a card minted in a thread is gated by
+ * Messages being on, and a card minted in the chat bar by the Staxis tab being
+ * on. Stated once here rather than as a literal at each gate, so a new surface
+ * cannot arrive with its section gate left as somebody else's.
+ */
+export const SURFACE_SECTION: Readonly<Record<AgentSurface, AppSection | null>> = {
+  chat: 'staxis',
+  messages: 'communications',
+  // Neither is reachable from an approval card, and neither is section-gated.
+  walkthrough: null,
+  portfolio: null,
+};
+
+/** Surfaces whose mutations become approval cards a person can resolve. */
+export const APPROVAL_SURFACES: readonly AgentSurface[] = ['chat', 'messages'];
 
 export interface ToolDefinition<TArgs = unknown> {
   /** Stable identifier — what the model calls (e.g. "mark_room_clean"). */
@@ -568,6 +597,35 @@ export function getToolsForRole(
     if (t.section && !isSectionEnabled(enabledSections, t.section)) return false;
     return true;
   });
+}
+
+/**
+ * Which surface may this person resolve an approval card for this tool on?
+ *
+ * An approval card is minted on ONE surface and resolved later on another
+ * request, and the pending row records the tool, not the surface. Rather than
+ * add a column that could disagree with the catalog, the resolve route asks the
+ * catalog the same question it asked when the card was minted: is this hat
+ * OFFERED this tool anywhere it can act? 'chat' is tried first so every
+ * existing card keeps resolving exactly as it did.
+ *
+ * `null` is the refusal: a hat that is offered the tool on no surface may not
+ * approve it, which covers a card minted before a lens narrowed, a role change
+ * between proposal and decision, and a hallucinated tool name.
+ */
+export function approvalSurfaceForTool(
+  role: AppRole,
+  toolName: string,
+  enabledSections: EnabledSections | undefined,
+  authorization: ToolCatalogAuthorization,
+): AgentSurface | null {
+  const resolved = resolveToolName(toolName);
+  for (const surface of APPROVAL_SURFACES) {
+    const offered = getToolsForRole(role, surface, enabledSections, authorization)
+      .some((tool) => tool.name === resolved);
+    if (offered) return surface;
+  }
+  return null;
 }
 
 /**

@@ -16,6 +16,7 @@ import { isValidRole, type AppRole } from '@/lib/roles';
 import {
   isUuid,
   parseAuthorizationScopeResult,
+  platformAdminHotelStanding,
   type AuthorityMode,
   type AuthorizationScopeRefusal,
   type AuthorizationScopeReceipt,
@@ -331,21 +332,21 @@ function parsePropertyStandings(value: unknown): AuthoritativePropertyStanding[]
   return out;
 }
 
-/** Return the atomic capacity attached to a hotel in an authoritative DTO. */
+/**
+ * Return the atomic capacity attached to a hotel in an authoritative DTO.
+ *
+ * `access.all` is the platform-administrator signal, and it resolves through
+ * the shared `platformAdminHotelStanding` rule so the server and the browser
+ * cannot drift on what an admin may do at a hotel. See the header over that
+ * function in ./domain.
+ */
 export function authoritativeStandingForProperty(
   access: AuthoritativePropertyAccess,
   propertyId: string,
 ): AuthoritativePropertyStanding | null {
   if (!isUuid(propertyId)) return null;
   if (access.all) {
-    return {
-      propertyId,
-      operationalRole: 'admin',
-      seesFinancials: true,
-      hotelMutationAllowed: true,
-      portfolioIntelligenceRead: true,
-      entitlements: [],
-    };
+    return { ...platformAdminHotelStanding(propertyId), entitlements: [] };
   }
   return access.propertyStandings.find((standing) => standing.propertyId === propertyId) ?? null;
 }

@@ -241,6 +241,80 @@ const MAINTENANCE_TOOLS = [
 //   file is where someone looks to find out.
 
 // ═══════════════════════════════════════════════════════════════════════════
+// MESSAGES — the thread assistant, narrowed by the SURFACE rather than the hat
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// "@Staxis" in a staff thread used to be a second brain: src/lib/comms/assistant.ts
+// carried its own system prompt, its own five-tool catalog, its own six-iteration
+// Anthropic loop, and two mutations that wrote to the hotel INLINE, with no
+// approval card at all. The companion's charter says the assistant never acts
+// without a yes; that surface was the one place it did.
+//
+// It is now the same brain: the same registry, the same loop, the same approval
+// cards. What had to survive the fold is the NARROWING. A thread is read by
+// everybody in it, so the reach a person has when they type into the private
+// chat bar is not the reach they should have when they type into a channel: a
+// guest balance, a wage or a staffing figure quoted into an all-staff thread is
+// a different disclosure from the same figure answered in a chat only they see.
+//
+// So this lens is keyed on the SURFACE, not the hat. It is the same keyhole the
+// role lenses are — `getToolsForRole` and `executeTool` both intersect it with
+// each tool's own `allowedRoles`, so it can only ever remove — and the five
+// names below are exactly the five capabilities the old private catalog had:
+//
+//   search_knowledge + fetch_document_section  the Knowledge hub, role-gated
+//                                              inside searchKnowledge exactly as
+//                                              before (manager-only SOPs stay
+//                                              invisible to floor staff).
+//   query_room_status                          the old get_room_status.
+//   log_complaint                              the old create_complaint.
+//   create_work_order                          the old create_work_order.
+//
+// MOUNTED FOR EVERY HAT, including housekeeping. That is deliberate and is the
+// one place this surface differs from the chat bar: housekeeping has no Ask
+// Staxis (see the housekeeping lens below), but it has always had Messages, and
+// a housekeeper typing "@Staxis where's the fire drill procedure" is not a new
+// step in their job — it is the thread they were already in. Narrowing it here
+// would have been a capability removal wearing a consolidation's clothes.
+const MESSAGES_PROMPT = `Your user is a member of hotel staff who typed "@Staxis" in a team chat thread. Other people are reading that thread. Answer in one or two sentences, in the language they wrote to you in.
+
+What you are for:
+- How something is done here, a policy, an SOP, a checklist, a vendor or contact or their number, anything in an uploaded manual, an upcoming event: call search_knowledge FIRST and answer from what this hotel has actually written down. Cite the document or SOP by name. Use fetch_document_section when one excerpt is not enough.
+- "Is 214 clean?" and questions about one named room: query_room_status.
+- Something is broken and needs fixing: create_work_order.
+- A guest is unhappy: log_complaint.
+
+Honesty rules:
+- If this hotel has not written it down, say so plainly and stop. Never offer the typical or industry-standard answer, and never invent a price, a time, a policy or a phone number.
+- You are in a shared thread. Do not repeat back anything you were not asked about, and do not summarise the conversation above.
+
+What you are NOT for, in this thread:
+- Money, wages, budgets, spend, staffing, schedules, performance, approvals, and anything about other hotels. You do not have those here. Say in one short sentence that it is a manager question and stop; do not estimate it and do not look for another way to answer it.
+
+Creating a work order or logging a complaint is a PROPOSAL. Call the tool once and the person who asked gets a card to approve. Never say the work order was filed or the complaint was logged before they have approved it: say what you are about to do and that it needs their yes.`;
+
+/** The five capabilities the private @Staxis catalog had, by registry name. */
+export const MESSAGES_LENS_TOOLS = [
+  'search_knowledge',
+  'fetch_document_section',
+  'query_room_status',
+  'log_complaint',
+  'create_work_order',
+] as const;
+
+const MESSAGES_LENS: ChatLens = {
+  mounted: true,
+  promptVersion: 'lens-messages-v1',
+  prompt: MESSAGES_PROMPT,
+  tools: MESSAGES_LENS_TOOLS,
+  // No dollar figure ever reaches a shared thread. None of the five tools above
+  // produces one today, and `moneyVisibleToRole` now takes the SURFACE as well
+  // as the hat, so a tool that ever starts producing one strips it here without
+  // anybody having to remember this line.
+  money: false,
+};
+
+// ═══════════════════════════════════════════════════════════════════════════
 
 /**
  * The lens table. A role ABSENT from this map is unchanged — admin, owner,
@@ -287,18 +361,38 @@ export const CHAT_LENSES: Readonly<Partial<Record<AppRole, ChatLens>>> = {
 /**
  * The lens for a hat on a surface, or null when there isn't one.
  *
- * Chat only, by design — see the file header. A null return means "no
- * narrowing": the caller behaves exactly as it did before lenses existed.
+ * Two kinds live here. The CHAT lenses are keyed on the hat, because what
+ * changes between a GM and a front-desk agent on the same surface is the job.
+ * The MESSAGES lens is keyed on the surface and applies to every hat, because
+ * what changes there is not who is asking but who is reading — a thread is
+ * shared, and the same person should not reach further in it than they reach in
+ * a chat only they can see.
+ *
+ * Walkthrough and portfolio still return null, which means "no narrowing": both
+ * have their own surface gates and neither is a hotel conversation.
  */
 export function lensFor(role: AppRole, surface: AgentSurface): ChatLens | null {
+  if (surface === 'messages') return MESSAGES_LENS;
   if (surface !== 'chat') return null;
   return CHAT_LENSES[role] ?? null;
 }
 
+/**
+ * Does this hat have this surface at all?
+ *
+ * `false` is the housekeeping-on-chat answer and nothing else today: no empty
+ * tool list, no polite refusal, no bar. Stated per surface because the approval
+ * route has to ask it about the surface a card was minted on, and a card minted
+ * in a thread must not be judged against whether that hat has a chat bar.
+ */
+export function surfaceIsMountedForRole(role: AppRole, surface: AgentSurface): boolean {
+  const lens = lensFor(role, surface);
+  return lens ? lens.mounted : true;
+}
+
 /** True when this hat has no Ask Staxis on the chat surface at all. */
 export function chatIsMountedForRole(role: AppRole): boolean {
-  const lens = lensFor(role, 'chat');
-  return lens ? lens.mounted : true;
+  return surfaceIsMountedForRole(role, 'chat');
 }
 
 /**
@@ -309,8 +403,8 @@ export function chatIsMountedForRole(role: AppRole): boolean {
  * model never receives is a number it cannot quote; a number it receives with
  * an instruction not to mention it is a number it will eventually mention.
  */
-export function moneyVisibleToRole(role: AppRole): boolean {
-  const lens = lensFor(role, 'chat');
+export function moneyVisibleToRole(role: AppRole, surface: AgentSurface = 'chat'): boolean {
+  const lens = lensFor(role, surface);
   return lens ? lens.money : true;
 }
 

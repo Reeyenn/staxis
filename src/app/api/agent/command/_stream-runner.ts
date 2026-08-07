@@ -41,6 +41,7 @@ import { can } from '@/lib/capabilities/can';
 import { loadOverridesForPropertyFresh } from '@/lib/capabilities/server';
 import {
   AGENT_TOOL_CAPABILITY_KEYS,
+  type AgentSurface,
   type AgentToolCapabilitySnapshot,
 } from '@/lib/agent/tools';
 
@@ -246,7 +247,14 @@ export interface StreamCorpusContext {
   accountId: string;
   actorRole: string | null;
   promptVersion: string | null;
-  surface: 'chat';
+  /**
+   * Where this turn is happening. Carried rather than assumed: the "@Staxis"
+   * thread assistant runs this same runner on the 'messages' surface, and a
+   * literal here would have recorded its acts as though they happened in the
+   * chat bar. `decisionCorpusSurfaceOf` decides what the corpus column can
+   * store; the journal line has no surface and is written either way.
+   */
+  surface: AgentSurface;
 }
 
 /**
@@ -529,6 +537,8 @@ export function makePendingApprovalHandler(opts: {
     snapshot: HotelSnapshot;
     actorRole: string | null;
     promptVersion: string | null;
+    /** See StreamCorpusContext.surface — carried, never assumed. */
+    surface: AgentSurface;
   };
 }): PendingApprovalHandler {
   return async (ev) => {
@@ -550,7 +560,7 @@ export function makePendingApprovalHandler(opts: {
       await recordDecisionProposal({
         propertyId: opts.propertyId,
         snapshot: opts.corpus.snapshot,
-        surface: 'chat',
+        surface: opts.corpus.surface,
         actorKind: 'ai_proposed',
         actorAccountId: opts.accountId,
         actorRole: opts.corpus.actorRole,

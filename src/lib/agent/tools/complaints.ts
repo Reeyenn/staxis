@@ -9,6 +9,7 @@
 
 import { registerTool, type ToolResult, type ToolContext } from '../tools';
 import { createComplaint } from '@/lib/complaints-create';
+import { createWorkOrderForComms } from '@/lib/comms/core';
 import {
   COMPLAINT_CATEGORIES, COMPLAINT_SEVERITIES,
   type ComplaintCategory, type ComplaintSeverity,
@@ -48,7 +49,10 @@ registerTool<LogComplaintArgs>({
     required: ['description'],
   },
   allowedRoles: ['admin', 'owner', 'general_manager', 'front_desk', 'housekeeping', 'maintenance'],
-  surfaces: ['chat'],
+  // Also offered in a staff thread — the old private @Staxis catalog's
+  // `create_complaint`. There it wrote INLINE with no approval card; here it is
+  // the same registered tool as everywhere else, so it is proposed and waits.
+  surfaces: ['chat', 'messages'],
   mutates: true,
   approval: 'card',
   handler: async (args: LogComplaintArgs, ctx: ToolContext): Promise<ToolResult> => {
@@ -101,6 +105,82 @@ registerTool<LogComplaintArgs>({
       };
     } catch (err) {
       return { ok: false, error: err instanceof Error ? err.message : 'Failed to log the complaint.' };
+    }
+  },
+});
+
+// ─── create_work_order ─────────────────────────────────────────────────────
+//
+// The last of the five capabilities the private @Staxis thread catalog owned.
+// It is a NEW registration rather than an extension of an existing tool because
+// there was no work-order CREATOR in the registry at all: `flag_issue` writes a
+// note on a room and replaces the previous one, `log_complaint` opens a linked
+// ticket only for maintenance and cleanliness complaints, and
+// `get_work_order_history` reads. Mapping "@Staxis the AC in 214 is dead, open a
+// ticket" onto either of the first two would have quietly changed what the
+// person got.
+//
+// SURFACE: messages ONLY. The chat bar never had this tool, and folding the
+// thread assistant in is not a licence to hand the chat bar a new mutation
+// nobody asked for. `executeTool` enforces the same surface a second time.
+//
+// APPROVAL: 'card'. In the old loop this wrote to `work_orders` the moment the
+// model called it, which is the exact thing the companion's charter says never
+// happens. Now it is a proposal and the person who asked has to say yes.
+
+interface CreateWorkOrderArgs {
+  description: string;
+  roomNumber?: string;
+  severity?: 'low' | 'medium' | 'high';
+}
+
+registerTool<CreateWorkOrderArgs>({
+  name: 'create_work_order',
+  description:
+    'Open a maintenance work order for something that is broken and needs fixing. '
+    + 'Use when: somebody reports a fault in a thread — "the AC in 214 is dead", "leak under the sink in 305", "the ice machine on 2 stopped". If a GUEST is unhappy about it, use log_complaint instead: that one is tracked to resolution and opens the ticket itself. '
+    + 'Args: description — what needs fixing, capped at 1000 characters. roomNumber — the room when it is room-specific, left off when it is not. severity — low, medium or high; medium when unstated. '
+    + 'Returns: the work order id. A proposal until the user approves the card. '
+    + 'Refuses: an empty description. Say accurately how little this does: it files a ticket. It does not page anybody, text anybody, or assign the work, so never tell the user that maintenance is on the way.',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      description: { type: 'string', description: 'What needs fixing.' },
+      roomNumber: { type: 'string', description: 'Room number, left off when it is not room-specific.' },
+      severity: {
+        type: 'string',
+        enum: ['low', 'medium', 'high'],
+        description: 'How urgent it is. Only set this when the person said so; left off it is medium.',
+      },
+    },
+    required: ['description'],
+  },
+  allowedRoles: ['admin', 'owner', 'general_manager', 'front_desk', 'housekeeping', 'maintenance'],
+  surfaces: ['messages'],
+  mutates: true,
+  approval: 'card',
+  handler: async (args: CreateWorkOrderArgs, ctx: ToolContext): Promise<ToolResult> => {
+    const description = (args.description ?? '').trim().slice(0, 1000);
+    if (!description) return { ok: false, error: 'Please include what needs fixing.' };
+    const roomNumber = (args.roomNumber ?? '').toString().trim().slice(0, 20) || null;
+    const severity = args.severity === 'low' || args.severity === 'high' ? args.severity : 'medium';
+
+    if (ctx.dryRun) {
+      return { ok: true, data: { dryRun: true, description, roomNumber, severity } };
+    }
+
+    try {
+      // The SAME writer the thread assistant used before the fold, so the row
+      // that lands in `work_orders` is byte-for-byte the row it used to write.
+      const created = await createWorkOrderForComms(ctx.propertyId, {
+        roomNumber,
+        description,
+        severity,
+        byName: `Staxis (via ${ctx.user.displayName})`,
+      });
+      return { ok: true, data: { workOrderId: created.id, roomNumber, severity, description } };
+    } catch (err) {
+      return { ok: false, error: err instanceof Error ? err.message : 'Failed to open the work order.' };
     }
   },
 });

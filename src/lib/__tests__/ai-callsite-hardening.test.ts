@@ -9,9 +9,11 @@ const count = (text: string, pattern: RegExp) => [...text.matchAll(pattern)].len
 
 test('scoped provider attempts forward the runtime signal and reject truncation', () => {
   const expected: Array<[string, number, number]> = [
-    // Three Claude paths + Whisper (the unread-summary path went with "Catch
-    // up" on 2026-07-27).
-    ['src/lib/comms/assistant.ts', 4, 3],
+    // Two Claude paths + Whisper. The @Staxis thread assistant was the third
+    // Claude path until 2026-08-06, when its private loop was folded into
+    // streamAgent; it is now billed and deadlined by the agent pipeline, and
+    // this file holds only the three one-shot calls that have no tools.
+    ['src/lib/comms/assistant.ts', 3, 2],
     // Built-in app-chrome translation was removed with the language selector;
     // the independent per-message translation path remains.
     ['src/lib/comms/translate.ts', 1, 1],
@@ -30,25 +32,12 @@ test('scoped provider attempts forward the runtime signal and reject truncation'
   }
 });
 
-test('communications Staxis pins one plan and checks every tool-loop boundary', () => {
-  const text = source('src/lib/comms/assistant.ts');
-  const start = text.indexOf('export async function runStaxisAssistant');
-  const block = text.slice(start);
-  assert.ok(block.indexOf('resolveAiExecutionPlan(') < block.indexOf('for (let iter'));
-  assert.match(block, /executeAiPlan\(/);
-  assert.match(block, /if \(configured\.usedFallback\)/);
-  assert.equal(count(block, /assertAssistantCanContinue\(/g), 3);
-  assert.match(block, /assertAssistantHasToolStartReserve\(tu\.name, deadlineAt\)/);
-  assert.match(text, /ASSISTANT_KNOWLEDGE_SEARCH_START_RESERVE_MS = 31_000/);
-});
-
 test('malformed output is rejected before executeAiFeature can accept an attempt', () => {
   const requiredSignals: Array<[string, string[]]> = [
     ['src/lib/comms/assistant.ts', [
       'action detection returned an invalid schema',
       'announcement polish returned empty output',
       'transcription returned malformed JSON',
-      'Staxis assistant returned empty output',
     ]],
     ['src/lib/comms/translate.ts', [
       'translation model returned empty output',
@@ -72,8 +61,10 @@ test('malformed output is rejected before executeAiFeature can accept an attempt
 test('Whisper parses verbose JSON inside the fallback attempt and uses route cancellation', () => {
   const text = source('src/lib/comms/assistant.ts');
   const start = text.indexOf("'communications.voice_transcription'");
-  const end = text.indexOf('// ── @Staxis', start);
-  const block = text.slice(start, end);
+  // Whisper is the LAST call in the file now: the "@Staxis" section that used
+  // to bound it was deleted when the thread assistant stopped being a second
+  // brain.
+  const block = text.slice(start);
   assert.match(block, /form\.append\('response_format', 'verbose_json'\)/);
   assert.match(block, /signal:\s*context\.signal/);
   assert.match(block, /await response\.json\(\)\.catch/);
@@ -97,7 +88,12 @@ test('authenticated scoped routes attribute every provider attempt to agent_cost
     'src/app/api/comms/detect-action/route.ts',
     'src/app/api/comms/polish/route.ts',
     'src/app/api/comms/transcribe/route.ts',
-    'src/app/api/comms/assistant/route.ts',
+    // /api/comms/assistant is deliberately NOT here any more. It runs the agent
+    // pipeline now, which attributes spend through the cost reservation and
+    // `reconcileCostReservation(feature)` rather than an AI-call `ledger`
+    // option — the same way /api/agent/command has always done it. Asserting a
+    // `ledger:` literal there would fail on a route that is MORE attributed
+    // than it was, which is how a guard teaches people to delete it.
     'src/app/api/comms/announce/route.ts',
     'src/app/api/comms/messages/route.ts',
     'src/app/api/comms/thread/route.ts',

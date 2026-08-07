@@ -30,7 +30,7 @@ describe('company access read/delegation boundary', () => {
     assert.match(getRoute, /organization\.organization_type !== ['"]single_hotel['"]/);
   });
 
-  test('keeps customer access closed to admins and uses a separate read-only preview boundary', () => {
+  test('routes admins to their own hotel boundary and gives them full hotel powers there', () => {
     assert.match(getRoute, /account\.role === ['"]admin['"][\s\S]*Admin Hotels workspace[\s\S]*status: 403/);
     assert.match(adminPreviewRoute, /requireAdmin\(req\)/);
     assert.match(adminPreviewRoute, /validateUuid\(new URL\(req\.url\)\.searchParams\.get\(['"]pid['"]\), ['"]pid['"]\)/);
@@ -44,14 +44,14 @@ describe('company access read/delegation boundary', () => {
     assert.ok(adminFailure >= 0 && legacyFallback > adminFailure, 'admin preview failure must be handled before customer fallback');
     assert.match(page.slice(adminFailure, legacyFallback), /setData\(null\)/);
 
-    assert.match(adminPreviewHelpers, /effectiveAccess: \[\]/);
-    assert.match(adminPreviewHelpers, /managePeople: false/);
-    assert.match(adminPreviewHelpers, /manageInvitations: false/);
+    // The admin boundary grants every HOTEL action. Company MEMBERSHIP
+    // administration stays closed because its routes require an active
+    // organization membership that migration 0325 forbids an admin to hold.
+    assert.match(adminPreviewHelpers, /managePeople: true/);
+    assert.match(adminPreviewHelpers, /manageInvitations: true/);
+    assert.match(adminPreviewHelpers, /accountInvitePropertyIds: \[propertyId\]/);
     assert.match(adminPreviewHelpers, /manageAccess: false/);
     assert.match(adminPreviewHelpers, /requestAccess: false/);
-    assert.match(adminPreviewHelpers, /canRevoke: false/);
-    assert.match(adminPreviewHelpers, /canCancel: false/);
-    assert.match(adminPreviewHelpers, /canReview: false/);
   });
 
   test('fails closed when the account is inactive, including before the empty projection', () => {

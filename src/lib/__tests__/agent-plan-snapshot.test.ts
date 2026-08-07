@@ -9,8 +9,15 @@ for (const route of [
 ]) {
   test(`${route} reserves and executes one resolved AI plan`, () => {
     const source = readFileSync(join(process.cwd(), route), 'utf8');
+    // ONE resolution per route, still. The call is now
+    // `resolveAgentOriginExecutionPlan(origin)`: which AI Control Center row a
+    // turn is billed to depends on which surface asked (the chat bar, the
+    // companion bubble, or an "@Staxis" mention in a staff thread), and the
+    // origin -> row map lives in llm.ts so both routes read the same one. What
+    // must not come back is a route resolving a SECOND snapshot, which is the
+    // activation race this test was written for.
     assert.equal(
-      source.match(/resolveAskStaxisExecutionPlan\(\)/g)?.length,
+      source.match(/resolveAgentOriginExecutionPlan\(/g)?.length,
       1,
       'the route must resolve exactly one model snapshot',
     );
