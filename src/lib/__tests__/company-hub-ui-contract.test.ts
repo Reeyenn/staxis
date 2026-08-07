@@ -13,7 +13,6 @@ const homeHub = source('src', 'components', 'concourse', 'HomeHubView.tsx');
 const homeSummary = source('src', 'app', 'api', 'home', 'summary', 'route.ts');
 const concourseCss = source('src', 'components', 'concourse', 'concourse-css.tsx');
 const liveSurface = source('src', 'app', 'admin', '_components', 'studio', 'surfaces', 'LiveSurface.tsx');
-const invitation = source('src', 'app', '(public)', 'company-invite', '[token]', 'page.tsx');
 const authShell = source('src', 'components', 'AuthShell.tsx');
 const company = source('src', 'app', '(hotel)', 'company', 'page.tsx');
 const companyCss = source('src', 'app', '(hotel)', 'company', 'CompanyAccess.module.css');
@@ -136,17 +135,6 @@ describe('admin hotel directory safeguards', () => {
   });
 });
 
-describe('company invitation accessibility', () => {
-  test('registration controls have explicit labels and announced errors', () => {
-    assert.match(invitation, /htmlFor="company-invite-display-name"/);
-    assert.match(invitation, /id="company-invite-display-name"/);
-    assert.match(invitation, /htmlFor="company-invite-password"/);
-    assert.match(invitation, /htmlFor="company-invite-confirm-password"/);
-    assert.match(invitation, /aria-describedby=\{visibleError \? ['"]company-invite-error['"]/);
-    assert.match(authShell, /role="alert" aria-live="assertive"/);
-  });
-});
-
 describe('truthful Company Hub filters', () => {
   test('hotels use not-active semantics instead of calling every non-active row pending', () => {
     assert.match(company, /type HotelStatusFilter = ['"]all['"] \| ['"]active['"] \| ['"]not_active['"]/);
@@ -166,7 +154,6 @@ describe('truthful Company Hub filters', () => {
     assert.doesNotMatch(company, /statusFilter === ['"]invited['"]/);
     assert.doesNotMatch(company, /Roles and scopes by person/);
     assert.match(company, /People with hotel access/);
-    assert.match(company, /data\.invitations\.map/);
   });
 
   test('selected-hotel People is one compact identity roster, not an operations dashboard', () => {
@@ -299,7 +286,7 @@ describe('My Hotel account and team integration', () => {
     assert.match(company, /<FilterBar[\s\S]*<OrganizationHierarchy/);
     assert.doesNotMatch(company, /Company relationship and status|Manage relationship/);
     assert.doesNotMatch(company, /AdminHotelRelationshipManager/);
-    assert.match(company, /title=\{['"]Memberships and invitations['"]\}/);
+    assert.match(company, /title=\{['"]Memberships['"]\}/);
     assert.match(company, /title=\{['"]People with hotel access['"]\}/);
     assert.match(company, /resolveCompanyAccessContext\(/);
     assert.match(company, /buildAccessPeople\(/);

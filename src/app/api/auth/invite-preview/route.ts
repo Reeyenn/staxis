@@ -19,12 +19,17 @@
 // in one email to one address. It is 24 random bytes; the raw value is never
 // stored, only its SHA-256, and only the hash is ever compared.
 //
-// WHY NO RATE LIMITER: `checkAndIncrementRateLimit` is keyed on a real property
-// id (FK to api_limits), and there is no property to key on until AFTER the
-// token has been looked up — so limiting could only ever throttle VALID tokens,
-// which is the opposite of useful. What actually protects this endpoint is that
-// guessing a 192-bit token is infeasible, and that the work per call is one
-// indexed lookup with no model call, no email, and no write.
+// RATE LIMITING: keyed on the trusted source IP via `clientIpRateLimitKey`,
+// which hashes the address into a synthetic key and needs no property id — so
+// the limit applies BEFORE the token is looked up and throttles the scanner
+// rather than the invitee. (An earlier revision of this file claimed limiting
+// was impossible here because the limiter needs a real property FK. That is
+// only true of the property-keyed callers; the retired company-invite preview
+// this route replaced used the IP-keyed form for exactly this case.)
+//
+// The cap is not the primary defense: guessing a 192-bit token is infeasible,
+// and the work per call is one indexed lookup with no model call, no email and
+// no write. It bounds how much of that work one address can force.
 //
 // ─── WHAT IT REFUSES TO SAY ────────────────────────────────────────────────
 // Never the token hash, never an account/property/organization id, never the
@@ -35,6 +40,11 @@
 import { NextRequest } from 'next/server';
 import { createHash } from 'node:crypto';
 import { supabaseAdmin } from '@/lib/supabase-admin';
+import {
+  checkAndIncrementRateLimit,
+  clientIpRateLimitKey,
+  rateLimitedResponse,
+} from '@/lib/api-ratelimit';
 import { ok, err, ApiErrorCode } from '@/lib/api-response';
 import { getOrMintRequestId, log } from '@/lib/log';
 import { errToString } from '@/lib/utils';
@@ -70,6 +80,8 @@ interface PreviewInviteRow {
 
 export async function POST(req: NextRequest) {
   const requestId = getOrMintRequestId(req);
+  const limit = await checkAndIncrementRateLimit('invite-preview', clientIpRateLimitKey(req));
+  if (!limit.allowed) return rateLimitedResponse(limit.current, limit.cap, limit.retryAfterSec);
 
   let body: { token?: unknown };
   try {
