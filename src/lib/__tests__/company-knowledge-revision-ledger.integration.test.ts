@@ -24,6 +24,11 @@ import {
 } from '../../../tests/fixtures/pglite-two-company-seed';
 
 const LEGACY_FACT = 'c4040000-0000-4000-8000-000000000001';
+/** A SECOND legacy fact, carrying the pre-0464 approver rule. It gets its own
+ *  row because `company_authority_rules_one_per_fact_uq` allows exactly one
+ *  rule per fact, and hanging it on LEGACY_FACT would collide with the
+ *  structured writes the ledger blocks below make against that same fact. */
+const LEGACY_RULE_FACT = 'c4040000-0000-4000-8000-000000000002';
 const INTAKE_FACT_TOPIC = 'ledger_intake_fact';
 const CREATED_AT = '2026-07-01T10:15:00.000Z';
 const UPDATED_AT = '2026-07-02T11:16:00.000Z';
@@ -145,14 +150,37 @@ describe('0406 company knowledge revision ledger', () => {
         [LEGACY_FACT, ORG_A, CREATED_AT, UPDATED_AT],
       );
       await hookPg.query(
+        `insert into public.company_knowledge (
+           id, organization_id, topic, content, category, source,
+           review_state, created_at, updated_at
+         ) values (
+           $1, $2, 'legacy_approval', 'Orders over $500 need VP sign-off.',
+           'money', 'explicit_user', 'confirmed', $3, $4
+         )`,
+        [LEGACY_RULE_FACT, ORG_A, CREATED_AT, UPDATED_AT],
+      );
+      // LEGACY_FACT's own rule names `owner`, a word 0464 does not rewrite. The
+      // blocks below pin this fact's genesis snapshot, its updated_at and its
+      // revision NUMBER, and a role the backfill converts would bump all three
+      // from inside the migration run — a fixture rewriting the thing it exists
+      // to observe.
+      await hookPg.query(
         `insert into public.company_authority_rules (
            organization_id, action_kind, threshold_cents,
            threshold_inclusive, approver_role, source_fact_id
-           -- Seeded DURING migration application, at the 0406 boundary, where
-           -- the approver CHECK still only knows the old words. 0464 converts
-           -- this row to regional_manager as part of its data backfill.
-         ) values ($1, 'purchase_order', 50000, false, 'vp', $2)`,
+         ) values ($1, 'purchase_order', 50000, false, 'owner', $2)`,
         [ORG_A, LEGACY_FACT],
+      );
+      // …and a SECOND fact whose rule does name a retired word, so the 0464
+      // backfill is observed somewhere that is not also the ledger's control.
+      // Seeded DURING migration application, at the 0406 boundary, where the
+      // approver CHECK still only knows the old words.
+      await hookPg.query(
+        `insert into public.company_authority_rules (
+           organization_id, action_kind, threshold_cents,
+           threshold_inclusive, approver_role, source_fact_id
+         ) values ($1, 'invoice', 100000, false, 'vp', $2)`,
+        [ORG_A, LEGACY_RULE_FACT],
       );
       legacyUpdatedAtBeforeMigration = await (async () => {
         const row = await hookPg.query<{ updated_at: string }>(
@@ -186,6 +214,17 @@ describe('0406 company knowledge revision ledger', () => {
       [LEGACY_FACT],
     )).rows[0];
     assert.equal(fact.content, 'Every hotel uses Legacy Supply.');
+    // 0464 retired `vp` and converted every stored approver rule. Mutation:
+    // drop that backfill and a live approval gate keeps naming a job nobody can
+    // hold, which `mapRule` would then have to fail closed on forever.
+    assert.equal(
+      await scalar<string>(
+        `select approver_role from public.company_authority_rules
+         where source_fact_id = $1`,
+        [LEGACY_RULE_FACT],
+      ),
+      'regional_manager',
+    );
     assert.equal(Date.parse(fact.created_at), Date.parse(CREATED_AT));
     assert.equal(Date.parse(fact.updated_at), Date.parse(legacyUpdatedAtBeforeMigration));
     assert.equal(fact.current_revision, '1');
@@ -399,14 +438,29 @@ describe('0406 company knowledge revision ledger', () => {
     );
   });
 
+  // The setting is the gate, and this walks it both ways with the SAME actor.
+  //
+  // Fiona used to be the probe because she was `finance`: the shipped
+  // `owner_and_vp` default excluded her while `company_scope` admitted her.
+  // 0464 retired that role and made her a regional manager, whom both choices
+  // admit — so `owner_only` is the exclusion that still exists, and it is what
+  // this now opens and closes on.
   test('the rulebook editor policy is enforced again inside the transaction', async () => {
-    const financeReceipt = await mintReceipt(ACCOUNT_FIONA, ORG_A);
+    const companyReceipt = await mintReceipt(ACCOUNT_FIONA, ORG_A);
+    await pg.query(
+      `insert into public.company_access_settings (
+         organization_id, setting_key, setting_value, updated_by_account_id
+       ) values ($1, 'rulebook_editors', 'owner_only', $2)
+       on conflict (organization_id, setting_key) do update
+       set setting_value = excluded.setting_value`,
+      [ORG_A, ACCOUNT_ANA],
+    );
     const denied = await mutate({
       actorAccountId: ACCOUNT_FIONA,
-      receiptId: financeReceipt,
+      receiptId: companyReceipt,
       action: 'intake',
-      topic: 'finance_denied_line',
-      content: 'Finance tried to add this line.',
+      topic: 'non_owner_denied_line',
+      content: 'A regional manager tried to add this line.',
       category: 'money',
       source: 'inferred',
     });
@@ -414,19 +468,17 @@ describe('0406 company knowledge revision ledger', () => {
     assert.equal(denied.reason, 'forbidden');
 
     await pg.query(
-      `insert into public.company_access_settings (
-         organization_id, setting_key, setting_value, updated_by_account_id
-       ) values ($1, 'rulebook_editors', 'company_scope', $2)
-       on conflict (organization_id, setting_key) do update
-       set setting_value = excluded.setting_value`,
-      [ORG_A, ACCOUNT_ANA],
+      `update public.company_access_settings
+       set setting_value = 'company_scope'
+       where organization_id = $1 and setting_key = 'rulebook_editors'`,
+      [ORG_A],
     );
     const allowed = await mutate({
       actorAccountId: ACCOUNT_FIONA,
-      receiptId: financeReceipt,
+      receiptId: companyReceipt,
       action: 'intake',
-      topic: 'finance_allowed_line',
-      content: 'Finance may now add a draft line.',
+      topic: 'non_owner_allowed_line',
+      content: 'A regional manager may now add a draft line.',
       category: 'money',
       source: 'inferred',
     });
@@ -434,16 +486,16 @@ describe('0406 company knowledge revision ledger', () => {
 
     await pg.query(
       `update public.company_access_settings
-       set setting_value = 'owner_and_vp'
+       set setting_value = 'owner_only'
        where organization_id = $1 and setting_key = 'rulebook_editors'`,
       [ORG_A],
     );
     const revoked = await mutate({
       actorAccountId: ACCOUNT_FIONA,
-      receiptId: financeReceipt,
+      receiptId: companyReceipt,
       action: 'intake',
-      topic: 'finance_revoked_line',
-      content: 'Finance must no longer be able to add this line.',
+      topic: 'non_owner_revoked_line',
+      content: 'A regional manager must no longer be able to add this line.',
       category: 'money',
       source: 'inferred',
     });
@@ -452,10 +504,17 @@ describe('0406 company knowledge revision ledger', () => {
     assert.equal(
       await scalar<string>(
         `select count(*)::text from public.company_knowledge
-         where organization_id = $1 and topic = 'finance_revoked_line'`,
+         where organization_id = $1 and topic = 'non_owner_revoked_line'`,
         [ORG_A],
       ),
       '0',
+    );
+    // Leave the company on the shipped default for the blocks below.
+    await pg.query(
+      `update public.company_access_settings
+       set setting_value = 'owner_and_vp'
+       where organization_id = $1 and setting_key = 'rulebook_editors'`,
+      [ORG_A],
     );
   });
 

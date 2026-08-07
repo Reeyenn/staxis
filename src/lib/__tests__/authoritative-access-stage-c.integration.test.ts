@@ -804,7 +804,11 @@ async function seedUnlistedLegacyRowsFixture(pg: PGlite): Promise<void> {
           revoked ? '2026-07-26T09:00:19.192312Z' : '2026-07-20T14:37:28.765078Z',
           revoked ? '2026-07-26T13:17:59.320767Z' : null,
           revoked ? 'company' : null,
-          revoked ? 'regional_manager' : null,
+          // Inserted DURING migration application, at the 0426 boundary, where
+          // the hat CHECK still only knows the pre-0464 words — so this stays
+          // `vp`, and 0464 rewrites it on its way past. That rewrite is not
+          // free: see the authority_version assertion below.
+          revoked ? 'vp' : null,
           null,
         ],
       );
@@ -3459,7 +3463,16 @@ describe('Access Stage C final contract — real migration boundary', () => {
         const actual = converted.find((candidate) => candidate.account_id === row.accountId);
         assert.ok(actual, JSON.stringify({ expected: row.accountId, converted }));
         assert.equal(actual.authority_mode, 'normalized');
-        assert.equal(actual.authority_version, row.authorityVersion + 1);
+        // The Stage C conversion bumps once. 0464 runs LATER in the same
+        // migration set and rewrites `vp` -> `regional_manager` on stored
+        // membership rows, which bumps again for the one account that holds a
+        // (revoked) company hat. Both bumps are real and this pins which
+        // accounts see which — flattening it to +1 for everybody would hide a
+        // version move that invalidates live sessions.
+        assert.equal(
+          actual.authority_version,
+          row.authorityVersion + 1 + (fact.revokedMembership ? 1 : 0),
+        );
         assert.deepEqual(actual.property_access, []);
         assert.equal(actual.bridge_id, fact.bridgeId);
         assert.equal(actual.bridge_source_hash, rawHashesForTest(row.propertyId));
@@ -3595,7 +3608,13 @@ describe('Access Stage C final contract — real migration boundary', () => {
         const replayState = replayStateByAccount.get(replayRow.accountId);
         assert.ok(replayState, `missing replay state for ${replayRow.accountId}`);
         assert.equal(replayState.authority_mode, 'normalized');
-        assert.equal(replayState.authority_version, replayRow.authorityVersion + 1);
+        // Same double bump as the conversion test: the replay accounts for one,
+        // 0464's `vp` -> `regional_manager` rewrite for the other, and only the
+        // account holding a (revoked) company hat sees the second.
+        assert.equal(
+          replayState.authority_version,
+          replayRow.authorityVersion + 1 + (fact.revokedMembership ? 1 : 0),
+        );
         assert.deepEqual(replayState.property_access, []);
         assert.deepEqual(await propertyIds(migrated.pg, replayRow.accountId), [replayRow.propertyId]);
 
