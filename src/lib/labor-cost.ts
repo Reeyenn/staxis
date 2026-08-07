@@ -193,8 +193,9 @@ export function resolveWageCents(input: WageResolutionInputs): {
     // helper. The comment that used to sit here called this "the single
     // dollars→cents boundary for this column" — it was not. There were three
     // (here, /api/settings/wages, /api/housekeeping/forecast), each with its
-    // own rounding. They now share one, and 0462 exposes staff.hourly_wage_cents
-    // for readers that would rather not convert at all.
+    // own rounding. They now share one. 0462 also adds staff.hourly_wage_cents,
+    // but note it is NOT on the 0332 browser column allowlist — read it from
+    // server code only, or you get "permission denied for column".
     return { cents: dollarsToCents(dollars), source: 'staff' };
   }
   return { cents: DEFAULT_HOURLY_WAGE_CENTS, source: 'default' };

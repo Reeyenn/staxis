@@ -15,9 +15,9 @@ import { describe, test } from 'node:test';
 import {
   centsToDollars,
   dollarsToCents,
+  dollarsToFractionalCents,
   formatMoney,
   moneyFromCents,
-  parseDollarsToCents,
 } from '../format';
 
 describe('dollarsToCents', () => {
@@ -145,29 +145,39 @@ describe('formatMoney', () => {
   });
 });
 
-describe('parseDollarsToCents', () => {
-  test('parses typed dollar strings', () => {
-    assert.equal(parseDollarsToCents('19.99'), 1999);
-    assert.equal(parseDollarsToCents('$19.99'), 1999);
-    assert.equal(parseDollarsToCents(' $1,234.56 '), 123456);
-    assert.equal(parseDollarsToCents('0'), 0);
+describe('dollarsToFractionalCents', () => {
+  test('keeps sub-cent precision that whole-centing would destroy', () => {
+    // A per-unit weighted-average cost comes from total / quantity, so more
+    // than two decimals is normal rather than a data error.
+    assert.equal(dollarsToFractionalCents(4.455), 445.5);
+    assert.equal(dollarsToFractionalCents(13.365), 1336.5);
+    assert.equal(dollarsToFractionalCents(0.005), 0.5);
   });
 
-  test('distinguishes "not provided" from "zero"', () => {
-    // Unit cost null means unknown; 0 means free. Collapsing them would make
-    // an unpriced item look like a free one in spend totals.
-    assert.equal(parseDollarsToCents(''), null);
-    assert.equal(parseDollarsToCents('   '), null);
-    assert.equal(parseDollarsToCents(null), null);
-    assert.equal(parseDollarsToCents(undefined), null);
-    assert.equal(parseDollarsToCents('abc'), null);
-    assert.equal(parseDollarsToCents(NaN), null);
-    assert.equal(parseDollarsToCents('0'), 0);
-    assert.equal(parseDollarsToCents(0), 0);
+  test('matches the six-decimal precision the month-close SQL uses', () => {
+    // 0322:1225 is round(unit_cost * 100, 6). Preview and committed close must
+    // agree, so this must round exactly the same way.
+    assert.equal(dollarsToFractionalCents(10 / 3), 333.333333);
+    assert.equal(dollarsToFractionalCents(1 / 7), 14.285714);
   });
 
-  test('accepts numbers and applies the same rounding as dollarsToCents', () => {
-    assert.equal(parseDollarsToCents(1.005), 101);
-    assert.equal(parseDollarsToCents(0.1 + 0.2), 30);
+  test('agrees with dollarsToCents whenever the value IS whole cents', () => {
+    for (const dollars of [0, 0.01, 8.35, 19.99, 1234.56]) {
+      assert.equal(dollarsToFractionalCents(dollars), dollarsToCents(dollars));
+    }
+  });
+
+  test('valuing a quantity does not multiply a rounding error', () => {
+    // The regression this guards: whole-centing $13.365 to 1337c and then
+    // valuing 200 units gives $2674.00 instead of the correct $2673.00.
+    const unitCost = 13.365;
+    const quantity = 200;
+    assert.equal(Math.round(quantity * dollarsToFractionalCents(unitCost)), 267300);
+    assert.notEqual(Math.round(quantity * dollarsToCents(unitCost)), 267300);
+  });
+
+  test('non-finite input degrades to 0', () => {
+    assert.equal(dollarsToFractionalCents(NaN), 0);
+    assert.equal(dollarsToFractionalCents(Infinity), 0);
   });
 });

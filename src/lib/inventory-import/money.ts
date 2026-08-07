@@ -71,10 +71,21 @@ function finiteDollarsToCents(dollars: number): number | null {
 // (src/lib/format.ts). This module used to carry its own epsilon-nudge
 // implementation — the most rigorous of the six that had accumulated, but still
 // one of six. The canonical helper shifts the decimal exponent in string space
-// instead of nudging a float, and was verified to agree with this module's old
-// implementation on all 200,008 test values, so imported prices are unchanged.
-// Re-exported rather than removed: this module is the import pipeline's money
-// vocabulary, and its callers should not have to know where the math lives.
+// instead of nudging a float. Re-exported rather than removed: this module is
+// the import pipeline's money vocabulary, and its callers should not have to
+// know where the math lives.
+//
+// dollarsToCents is behaviourally identical to the implementation it replaced
+// (verified across every 2- and 3-decimal value in ±5,000: zero disagreements),
+// so imported prices are unchanged.
+//
+// centsToDollars differs in one respect: the old local copy did
+// `Math.round(cents) / 100`, silently whole-centing a fractional input. The
+// canonical one is lossless, so 1.5c is 0.015 dollars rather than 0.02. Nothing
+// here is affected — commit.ts rejects a non-integer unitCostCents before it
+// ever reaches this function — and lossless is the behavior the month-close
+// valuation path needs, since a per-unit weighted-average cost legitimately
+// carries fractional cents.
 export { dollarsToCents, centsToDollars };
 
 /** Is this a per-unit price we are willing to carry into the draft? */

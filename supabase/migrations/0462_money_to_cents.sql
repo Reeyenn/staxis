@@ -69,8 +69,23 @@
 -- per-unit cost legitimately carries fractional cents at 6 dp. Those are
 -- already cents and already correct.
 --
--- RLS: this migration adds NO policy and changes NO policy. New columns are
--- covered by each table's existing policies automatically.
+-- ── RLS AND COLUMN GRANTS ────────────────────────────────────────────────
+-- This migration adds NO policy, changes NO policy, and adds NO grant.
+--
+-- Be precise about what that means for reads, because "it inherits the table's
+-- policies" is NOT the whole story here. 0331 and 0332 revoke blanket SELECT on
+-- `inventory`, `inventory_counts`, `inventory_orders`, `inventory_discards`,
+-- `inventory_reconciliations` and `staff`, then re-grant an explicit COLUMN
+-- ALLOWLIST to `authenticated`. The new `_cents` columns are deliberately NOT
+-- on those allowlists, so a browser SELECT of them fails closed with
+-- "permission denied for column" rather than returning money.
+--
+-- That is the correct posture and matches the dollar columns they mirror: the
+-- money on these tables was already server-only, and a cents mirror must not
+-- become a side door around wage and cost privacy. READ THESE COLUMNS FROM
+-- SERVER CODE (supabaseAdmin / service_role) ONLY. If a browser surface ever
+-- genuinely needs one, that is a deliberate privacy decision — add it to the
+-- allowlist in its own reviewed migration, never as a drive-by.
 --
 -- Locking note: adding a STORED generated column rewrites the table under an
 -- ACCESS EXCLUSIVE lock. At current scale (one live hotel; these tables are
