@@ -105,8 +105,17 @@ describe('AI Control Center feature registry', () => {
   // being OFF is invisible by construction: every card already carries a correct
   // per-kind template question, and the model's version simply replaces it when
   // there is one. Display-only count unchanged.
-  test('covers 30 controllable hosted features and 7 display-only features', () => {
-    assert.equal(AI_FEATURE_KEYS.length, 38);
+  // 2026-08-07: walkthrough.step_generation RETIRED with the cursor demo it
+  // powered (30→29 controllable, 38→37 keys). It is the first slot to leave
+  // because the capability got CHEAPER rather than because it was dropped: the
+  // walkthrough asked a model, once per step, to pick the next control to point
+  // at from a snapshot of everything clickable, and the companion tour that
+  // replaced it is authored content over the anchor registry. Same job, no
+  // model, no per-step reservation, and nothing to configure. There is
+  // deliberately no replacement key: a slot here is a place a model runs, and
+  // no model runs on that surface any more. Display-only count unchanged.
+  test('covers 29 controllable hosted features and 7 display-only features', () => {
+    assert.equal(AI_FEATURE_KEYS.length, 37);
     assert.equal(new Set(AI_FEATURE_KEYS).size, AI_FEATURE_KEYS.length);
     assert.deepEqual(Object.keys(AI_FEATURE_REGISTRY).sort(), [...AI_FEATURE_KEYS].sort());
 

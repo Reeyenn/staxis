@@ -1,6 +1,6 @@
 // ─── POST /api/agent/command ───────────────────────────────────────────────
-// The main entry point to the agent layer. Chat UI, Clicky walkthrough, and
-// portfolio chat call this with a user message and get back a streamed
+// The main entry point to the agent layer. The chat UI and the portfolio
+// chat call this with a user message and get back a streamed
 // SSE response with the model's tokens, tool calls, and final result.
 //
 // Codex adversarial review fixes (2026-05-13) wired in here:

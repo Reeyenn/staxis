@@ -778,8 +778,9 @@ describe('connected portfolio source-code ratchets', () => {
       'src/app/api/inventory/post-count-process/route.ts',
       'src/app/api/maintenance/equipment/route.ts',
       'src/app/api/maintenance/equipment/[id]/route.ts',
-      'src/app/api/walkthrough/start/route.ts',
-      'src/app/api/walkthrough/step/route.ts',
+      // The two walkthrough routes were here until 2026-08-07 and went with the
+      // cursor demo. Nothing took their place: the companion tour that replaced
+      // that surface adds no API route, because it never acts on the hotel.
     ]) {
       assert.match(source(route), /hotelWriteDecisionForUserId\(/, `${route} bypasses local write standing`);
     }

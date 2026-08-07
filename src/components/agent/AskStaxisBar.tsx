@@ -709,9 +709,9 @@ export function AskStaxisBar() {
   // ── "actually, show me that AC thing" ────────────────────────────────────
   //
   // The chat's way back into an offer. `staxis_show_pattern` is an
-  // acknowledgement on the server — like walk_user_through, the real work can
-  // only happen here, because only the browser knows which screen is under the
-  // conversation and where the rows sit on it.
+  // acknowledgement on the server, like the pointer and the tour beside it: the
+  // real work can only happen here, because only the browser knows which screen
+  // is under the conversation and where the rows sit on it.
   //
   // Read-only tools are the only ones that reach this event at all (mutations
   // go through the approval card instead), which is why the tool writes

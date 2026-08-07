@@ -302,10 +302,16 @@ describe('no pipeline can be added without the rulebook', () => {
   });
 
   test('the known producers really are the ones this file exercises', () => {
-    // Keeps the two halves honest: three pipelines are built above, and the
-    // fourth known producer is the portfolio evidence layer, which delegates to
+    // Keeps the two halves honest: two pipelines are built above, and the third
+    // known producer is the portfolio evidence layer, which delegates to
     // portfolio/prompt.ts rather than assembling a stable block of its own.
-    assert.equal(PIPELINES.length, 3);
-    assert.equal(KNOWN_PRODUCERS.length, 4);
+    //
+    // Three and four until 2026-08-07. The walkthrough was the third pipeline
+    // and walkthrough-step.ts the fourth producer; both went with the cursor
+    // demo. Nothing replaced them in this table because nothing replaced them
+    // in the product: the companion tour is authored content over the anchor
+    // registry and builds no system prompt, so it has no rules to carry.
+    assert.equal(PIPELINES.length, 2);
+    assert.equal(KNOWN_PRODUCERS.length, 3);
   });
 });

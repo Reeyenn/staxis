@@ -10,7 +10,7 @@
 // ─── WHY THIS TOOL READS NOTHING ───────────────────────────────────────────
 //
 // It is an acknowledgement, exactly like `staxis_show_pattern` and
-// `walk_user_through` next door, and for exactly the same reason: only the
+// `staxis_show_around` next door, and for exactly the same reason: only the
 // browser can do this. Where a control SITS is a fact about the window the
 // person has open, and a server that tried to answer it would be answering a
 // different question. So the browser takes it from here: AskStaxisBar hears

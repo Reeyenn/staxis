@@ -154,7 +154,13 @@ describe('route-family filesystem architecture', () => {
       '<PortfolioProvider>',
       '<PropertyProvider>',
       '<AuthenticatedRuntimeBoundary>',
-      '<WalkthroughOverlay />',
+      // `{children}` is the innermost entry on purpose. `<WalkthroughOverlay />`
+      // held this position until 2026-08-07 and went with the cursor demo, and
+      // dropping it without a replacement would have quietly shortened what
+      // this loop proves: that the order holds all the way IN, not just among
+      // the providers. The app itself is what is innermost now, which is the
+      // honest end of the chain.
+      '{children}',
     ];
     let previous = -1;
     for (const provider of providers) {
@@ -162,6 +168,14 @@ describe('route-family filesystem architecture', () => {
       assert.ok(current > previous, `provider order changed around ${provider}`);
       previous = current;
     }
+    // And the chain really closes: the boundary wraps the app rather than
+    // sitting beside it. An indexOf ladder alone would pass on a layout that
+    // rendered the providers in order and then closed them all before
+    // {children}.
+    assert.match(
+      rootLayout,
+      /<AuthenticatedRuntimeBoundary>[\s\S]*\{children\}[\s\S]*<\/AuthenticatedRuntimeBoundary>/,
+    );
 
     assert.match(runtimeBoundary, /SHELL_FREE_STAFF_LINK_PREFIXES = \['\/housekeeper', '\/laundry'\]/);
     assert.match(runtimeBoundary, /export function isAuthenticatedRoutePath/);

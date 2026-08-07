@@ -152,9 +152,6 @@ export default function RootLayout({
                           <PropertyProvider>
                             <AuthenticatedRuntimeBoundary>
                               {children}
-                              {/* Mounted at the root so the loop survives page navigations
-                                  (the route-family shell can unmount when the URL changes,
-                                  which would kill an in-flight multi-step walkthrough). */}
                             </AuthenticatedRuntimeBoundary>
                           </PropertyProvider>
                         </PortfolioProvider>
