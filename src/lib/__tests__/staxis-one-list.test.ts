@@ -200,10 +200,63 @@ describe('a task lives only on the assignee’s page', () => {
     assert.equal(taskVisibleToViewer(handedToSomebodyElse, { ...VIEWER, staffId: 'other' }), false);
   });
 
-  test('a role-targeted task reaches everyone in that role and nobody else', () => {
+  test('a role-targeted task reaches everyone in that role, and nobody on the floor outside it', () => {
     const forTheDesk = { assignedStaffId: null, assignedDepartment: 'front_desk', createdByStaffId: 'me' };
     assert.equal(taskVisibleToViewer(forTheDesk, { staffId: 'a', accountId: 'a', role: 'front_desk', dept: 'front_desk' }), true);
     assert.equal(taskVisibleToViewer(forTheDesk, { staffId: 'b', accountId: 'b', role: 'maintenance', dept: 'maintenance' }), false);
+  });
+
+  // ── the hole a department route used to fall through ──────────────────────
+  //
+  // The composer offers "Maintenance" and "Whoever's on front desk"; the chat
+  // door's log_complaint add-on files its follow-up to `maintenance` and says
+  // so out loud. Both saved a row and returned success, and the row was then
+  // on no screen the person who asked for it could reach: not their list (the
+  // department branch returned before the author clause), and not their
+  // Assigned-by-me panel (keepForAssigner drops a waiting department row).
+  // At a hotel with nobody in that department it reached zero screens.
+  test('a department to-do stays on the list of whoever asked for it', () => {
+    const forMaintenance = { assignedStaffId: null, assignedDepartment: 'maintenance', createdByStaffId: 'author' };
+    assert.equal(
+      taskVisibleToViewer(forMaintenance, { staffId: 'author', accountId: 'a', role: 'front_desk', dept: 'front_desk' }),
+      true,
+      'the person who wrote it must not lose it to a department they are not in',
+    );
+  });
+
+  test('a department to-do is also the hotel’s work, so a manager sees it', () => {
+    // The page charter is "owner / VP / GM: findings + approvals + the whole
+    // hotel's work + theirs". A to-do routed to Maintenance is the hotel's
+    // work, and a GM whose staff row carries no department matched nothing.
+    for (const dept of ['maintenance', 'front_desk', 'housekeeping']) {
+      const row = { assignedStaffId: null, assignedDepartment: dept, createdByStaffId: 'somebody_else' };
+      assert.equal(taskVisibleToViewer(row, VIEWER), true, `a GM must see the ${dept} row`);
+    }
+  });
+
+  test('a department to-do does NOT reach floor staff outside that department', () => {
+    // The widening above must not become "everybody sees everything": a
+    // maintenance tech has no business holding the front desk's work.
+    const forTheDesk = { assignedStaffId: null, assignedDepartment: 'front_desk', createdByStaffId: 'gm' };
+    for (const role of ['maintenance', 'housekeeping', 'staff'] as AppRole[]) {
+      assert.equal(
+        taskVisibleToViewer(forTheDesk, { staffId: 'nobody', accountId: 'n', role, dept: role }),
+        false,
+        `${role} must not be handed the desk's work`,
+      );
+    }
+  });
+
+  test('handing work to a PERSON still takes it off the assigner’s list', () => {
+    // The widening is about departments only. If it had leaked into the
+    // person branch, every delegated to-do would come straight back onto the
+    // manager's list and the assignment loop would be pointless.
+    const handedOver = { assignedStaffId: 'marcus', assignedDepartment: 'front_desk', createdByStaffId: 'me' };
+    assert.equal(taskVisibleToViewer(handedOver, VIEWER), false, 'the assigner still does not keep a copy');
+    assert.equal(
+      taskVisibleToViewer(handedOver, { staffId: 'marcus', accountId: 'm', role: 'front_desk', dept: 'front_desk' }),
+      true,
+    );
   });
 
   test('everyone means everyone', () => {
