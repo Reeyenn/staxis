@@ -225,6 +225,22 @@ function rowNode(): React.ReactElement {
   return <WorkRowView item={overdueItem()} now={NOW} askingReason reasonDraft="" />;
 }
 
+/**
+ * An upkeep row with "Change the schedule" open.
+ *
+ * A SEPARATE node because it is a separate control: the row situation menus
+ * (2026-08-05) shipped after the phone pass, and their day-count box is the one
+ * field on this screen the pass never measured.
+ */
+function cadenceRowNode(): React.ReactElement {
+  const pm = {
+    ...overdueItem(),
+    id: 'pm:9', sourceType: 'pm', sourceId: '9',
+    title: 'Flush the water heater', missedSince: null, cadenceDays: 90,
+  } as unknown as WorklistItem;
+  return <WorkRowView item={pm} now={NOW} menuAsking="reschedule" menuDraft="90" />;
+}
+
 function monthNode(): React.ReactElement {
   return (
     <MonthOverlay
@@ -273,6 +289,18 @@ describe('every box you type into is 16px on a phone', () => {
     assert.ok(px(styleOf(row, '.fx-input', 'font-size')) >= 16);
   });
 
+  test('and the day-count box the row menus opened up after the pass', (t) => {
+    // "Change the schedule" on an upkeep row opens .fx-asknum. It arrived with
+    // the row situation menus, after the phone pass had measured everything
+    // else, and it went out at 13px: one tap on it and the manager is panning a
+    // magnified page around for the rest of the visit. The phone block gave it
+    // a 44px target and forgot the type size.
+    const sheet = phoneCascade(FEED_CSS_FOR_TEST_ONLY(), LIST_CSS);
+    t.after(installBrowser());
+    const row = mount(t, cadenceRowNode(), sheet);
+    assert.ok(px(styleOf(row, '.fx-asknum', 'font-size')) >= 16);
+  });
+
   test('the event title and notes in the month popup', (t) => {
     const sheet = phoneCascade(FEED_CSS_FOR_TEST_ONLY(), CALENDAR_CSS);
     t.after(installBrowser());
@@ -289,11 +317,13 @@ describe('every box you type into is 16px on a phone', () => {
     t.after(installBrowser());
     const composer = mount(t, composerNode(), sheet);
     const row = mount(t, rowNode(), sheet);
+    const cadence = mount(t, cadenceRowNode(), sheet);
     const month = mount(t, monthNode(), sheet);
 
     assert.equal(styleOf(composer, '.fx-comptitle', 'font-size'), '14.5px');
     assert.equal(styleOf(composer, '.fx-compnum', 'font-size'), '12.5px');
     assert.equal(styleOf(row, '.fx-input', 'font-size'), '12.5px');
+    assert.equal(styleOf(cadence, '.fx-asknum', 'font-size'), '13px');
     assert.equal(styleOf(month, 'input.sc-field', 'font-size'), '13.5px');
   });
 });
