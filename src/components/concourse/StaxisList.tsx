@@ -415,7 +415,11 @@ export function StaxisList({
     }
     const result = parseTodo(next.title, people, now);
     setParsed(result);
-    setComposer(withParse(next, result, now.getDay()));
+    // The parse's tidied title (trimmed, capitalized) is for the chips and for
+    // filing, never for the box: replacing the box's value with it eats the
+    // trailing space on every keystroke, which reads as "spacebar is broken".
+    // The box always shows exactly what was typed.
+    setComposer({ ...withParse(next, result, now.getDay()), title: next.title });
   }, [composer.title, people, now, todayIso, cancelInterpret]);
 
   // A question is only live while nobody has answered it with their thumb.
@@ -458,7 +462,10 @@ export function StaxisList({
             // It arrives as a parse and is applied as one: caramel, never sage,
             // including the name. A person the code found is somebody who was
             // written down; a person a model proposes is a reading.
-            return withParse(prev, read, now.getDay(), { whoAs: 'parsed' });
+            // Same rule as the keystroke path: the reading updates the chips,
+            // never the typed sentence. The guard above matched on trimmed
+            // text, so an in-flight trailing space must survive the landing.
+            return { ...withParse(prev, read, now.getDay(), { whoAs: 'parsed' }), title: prev.title };
           });
         } catch {
           // Deliberately total. There is no failure of this call that a person

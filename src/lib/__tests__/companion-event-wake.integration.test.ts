@@ -108,9 +108,12 @@ async function setCursor(propertyId: string, minutesAgo: number): Promise<void> 
   );
 }
 
-async function cursorOf(propertyId: string): Promise<{ last: string; wakes: number }> {
-  const r = await pg.query<{ last_looked_at: string; wakes_today: number }>(
-    'select last_looked_at, wakes_today from public.companion_event_wake_state where property_id = $1',
+async function cursorOf(
+  propertyId: string,
+): Promise<{ last: string; wakes: number; looks: number }> {
+  const r = await pg.query<{ last_looked_at: string; wakes_today: number; looks_total: number }>(
+    `select last_looked_at, wakes_today, looks_total
+     from public.companion_event_wake_state where property_id = $1`,
     [propertyId],
   );
   const raw = r.rows[0]?.last_looked_at;
@@ -120,6 +123,10 @@ async function cursorOf(propertyId: string): Promise<{ last: string; wakes: numb
   return {
     last: raw ? new Date(raw as unknown as string).toISOString() : '',
     wakes: Number(r.rows[0]?.wakes_today ?? 0),
+    // `looks_total` is written by `claimWakeWindow` and by nothing else, so it
+    // is the field that proves a look actually happened. It read 0 for Home2 in
+    // production while its six siblings read 5.
+    looks: Number(r.rows[0]?.looks_total ?? 0),
   };
 }
 
@@ -453,6 +460,114 @@ describe('the companion wakes on events, not on a clock', () => {
     assert.equal(summary.results.find((r) => r.propertyId === PID_A)?.outcome, 'quiet');
     assert.equal(model.calls, 0);
     await pg.query(`update public.properties set enabled_sections = '{}'::jsonb where id = $1`, [PID_A]);
+  });
+
+  // ═══ THE DOCTOR'S PREDICATE, WHICH IS THE ACTUAL CONTRACT ═══════════════
+  //
+  // `companion_event_wake_health` warns when a cursor has not moved in thirty
+  // minutes. These two tests pin both halves of what that warning is allowed to
+  // mean, and they are a pair on purpose: the first alone could be satisfied by
+  // claiming the window unconditionally at the top of the sweep, which would
+  // silently discard events on any failed read. The second is what stops that.
+  const THIRTY_MINUTES_MS = 30 * 60_000;
+
+  async function staleByTheDoctorsRule(propertyId: string): Promise<boolean> {
+    const r = await pg.query<{ n: number }>(
+      `select count(*)::int as n from public.companion_event_wake_state
+       where property_id = $1 and last_looked_at < now() - interval '30 minutes'`,
+      [propertyId],
+    );
+    return r.rows[0].n > 0;
+  }
+
+  test('a hotel that switched the Staxis list off is still LOOKED at, so it never goes stale', async () => {
+    // ─── THE PRODUCTION BUG, PINNED ───────────────────────────────────────
+    // Home2 (b19f5a42) had exactly this configuration. The sweep returned at
+    // the Staxis gate before claiming, so its cursor never moved, looks_total
+    // sat at 0 while six sibling hotels reached 5, and the doctor reported it
+    // stale for the rest of time. A hotel that is skipped on purpose is not a
+    // hotel nobody is watching, and the doctor cannot tell the difference from
+    // the cursor alone, so the runner has to.
+    await pg.query(
+      `update public.properties set enabled_sections = '{"staxis": false}'::jsonb where id = $1`,
+      [PID_A],
+    );
+    try {
+      // A cursor already old enough that the doctor would flag it. The fix has
+      // to bring it back, not merely stop making it worse.
+      await pg.query(
+        `insert into public.companion_event_wake_state (property_id, last_looked_at, looks_total)
+         values ($1, now() - interval '90 minutes', 0)
+         on conflict (property_id) do update
+           set last_looked_at = excluded.last_looked_at, looks_total = 0`,
+        [PID_A],
+      );
+      assert.equal(await staleByTheDoctorsRule(PID_A), true, 'the setup must start from the broken state');
+      await produceRealEvents(PID_A);
+
+      const model = scriptedModel([() => { throw new Error('a switched-off list must never reach a model'); }]);
+      const summary = await sweepAllProperties({ modelClient: model.client });
+      const a = summary.results.find((r) => r.propertyId === PID_A);
+
+      // Counted under its own name, not hidden inside "quiet". They are
+      // different facts and only one of them is about the hotel's data.
+      assert.equal(a?.outcome, 'list_switched_off', JSON.stringify(summary.results));
+      assert.equal(model.calls, 0, 'zero model cost for a hotel with the list off');
+      assert.deepEqual(await journalRows(PID_A), [], 'and nothing written to its timeline');
+
+      const after = await cursorOf(PID_A);
+      assert.ok(
+        Date.now() - Date.parse(after.last) < THIRTY_MINUTES_MS,
+        `the cursor did not advance: the doctor would call this hotel stale forever (${after.last})`,
+      );
+      assert.equal(
+        await staleByTheDoctorsRule(PID_A), false,
+        'the runner and the doctor must agree on what a moving cursor means',
+      );
+      // The one write that proves a look happened. This is the field that read
+      // 0 in production while every other hotel read 5.
+      assert.equal(after.looks, 1, 'a look that found nothing deliverable is still a look');
+    } finally {
+      await pg.query(`update public.properties set enabled_sections = '{}'::jsonb where id = $1`, [PID_A]);
+    }
+  });
+
+  test('a hotel whose events could not be READ does not advance, so staleness stays a true signal', async () => {
+    // The other half of the contract, and the guard against over-correcting the
+    // test above. "Claim the window at the top of the sweep" would make every
+    // hotel non-stale forever and would throw away events nobody ever read.
+    await setCursor(PID_A, 5);
+    await produceRealEvents(PID_A);
+    const before = await cursorOf(PID_A);
+
+    // One failing read of the event stream, and only that read.
+    const shimFrom = supabaseAdmin.from.bind(supabaseAdmin);
+    const broken = { message: 'activity_log read exploded', code: '57014' };
+    const failingBuilder: Record<string, unknown> = {};
+    for (const method of ['select', 'eq', 'gt', 'lte', 'neq', 'in', 'order', 'limit']) {
+      failingBuilder[method] = () => failingBuilder;
+    }
+    failingBuilder.then = (resolve: (v: unknown) => unknown) => resolve({ data: null, error: broken });
+    // @ts-expect-error narrowing one table's reads to a failing builder
+    supabaseAdmin.from = (table: string) => (
+      table === 'activity_log' ? failingBuilder : shimFrom(table)
+    );
+
+    let summary;
+    try {
+      const model = scriptedModel([() => { throw new Error('a failed read must never reach a model'); }]);
+      summary = await sweepAllProperties({ modelClient: model.client });
+      assert.equal(model.calls, 0);
+    } finally {
+      supabaseAdmin.from = shimFrom;
+    }
+
+    assert.equal(summary.results.find((r) => r.propertyId === PID_A)?.outcome, 'read_failed');
+    assert.equal(
+      (await cursorOf(PID_A)).last, before.last,
+      'claiming a window whose events never came back would discard them silently',
+    );
+    assert.equal((await cursorOf(PID_A)).looks, before.looks, 'a failed read is not a look');
   });
 
   test('a switched-off feature stops the whole sweep before any hotel is read', async () => {

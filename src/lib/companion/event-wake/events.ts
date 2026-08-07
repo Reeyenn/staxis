@@ -291,6 +291,17 @@ export type WakeRefusal =
   | 'window_already_claimed'
   /** Nothing interesting landed. The common case, and it costs one read. */
   | 'quiet'
+  /**
+   * This hotel switched off the Staxis list, which is where a prepared note
+   * would arrive. Nothing in its window is deliverable, whatever landed there.
+   *
+   * COUNTED APART FROM `quiet`, because they are different facts and only one
+   * of them is about the hotel's data. A hotel that will structurally never
+   * receive a note for as long as that switch is off is something an operator
+   * should be able to see on the heartbeat, not something that hides inside a
+   * number labelled "quiet".
+   */
+  | 'list_switched_off'
   /** This hotel has already woken as often today as it is allowed to. */
   | 'daily_wake_cap'
   /** The hotel's AI spend ceiling for this feature is used up. */

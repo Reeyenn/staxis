@@ -115,8 +115,35 @@ interface PropertyRow {
 /**
  * Look once at one hotel. Never throws.
  *
- * Every failure inside becomes an `outcome` the caller can count. A sweep of
- * thirteen hotels must not end because one of them has an unreadable row.
+ * ─── TWO WAYS TO STOP, AND THE DIFFERENCE IS A CONTRACT ────────────────────
+ *
+ * Every early return here is one of exactly two things, and which one it is
+ * decides whether the cursor moves:
+ *
+ *   I LOOKED, AND THERE IS NOTHING HERE      → the cursor ADVANCES.
+ *     Nothing interesting landed; the hotel has woken enough today; the hotel
+ *     switched off the surface a note would arrive on. In all three the window
+ *     has been considered and found to hold nothing deliverable, which is the
+ *     definition of `last_looked_at`.
+ *
+ *   I COULD NOT LOOK                         → the cursor STAYS PUT.
+ *     The cursor itself was unreadable, the hotel's switches did not answer,
+ *     the event read failed. Nothing was considered, so claiming the window
+ *     would silently discard events nobody ever read.
+ *
+ * THIS DISTINCTION IS WHAT THE DOCTOR READS. `companion_event_wake_health`
+ * warns when a cursor has not moved in thirty minutes, and that warning is only
+ * meaningful if a stale cursor means "nobody is looking" rather than "this
+ * hotel is skipped on purpose".
+ *
+ * IT WAS WRONG IN PRODUCTION AND THIS IS THE FIX. The Staxis-list gate below
+ * used to return without claiming, so a hotel that had switched that list off
+ * was skipped forever with a frozen cursor, and the doctor reported it stale
+ * for the rest of time. One real hotel (Home2) sat at looks_total = 0 while its
+ * six siblings advanced normally. A skipped hotel is not an unwatched hotel.
+ *
+ * Never throws: every failure inside becomes an `outcome` the caller can count.
+ * A sweep of thirteen hotels must not end because one of them has a bad row.
  */
 export async function sweepProperty(
   property: PropertyRow,
@@ -133,33 +160,66 @@ export async function sweepProperty(
   const state = stateRead.state;
   // A hotel seen for the first time has a cursor and no history. The window a
   // fresh cursor would define opens at the beginning of time, and "every work
-  // order this hotel has ever had" is not something that just happened.
+  // order this hotel has ever had" is not something that just happened. Its
+  // cursor was just set to now by the seed, so it is not stale and there is
+  // nothing to advance.
   if (stateRead.seeded) return nothing('quiet');
 
   const window = wakeWindow(state.lastLookedAt, now);
+
+  /**
+   * Advance the cursor past the window we have now finished considering.
+   *
+   * ONE DEFINITION, EVERY CALLER. The arguments are the whole of the
+   * compare-and-set, and two call sites that assembled them separately could
+   * drift into claiming a window they did not read. Returns false when another
+   * sweep got there first.
+   */
+  const claim = () => claimWakeWindow({
+    propertyId,
+    priorLastLookedAt: state.lastLookedAt,
+    priorLooksTotal: state.looksTotal,
+    untilIso: window.untilIso,
+    now,
+  });
 
   // ── 4. this hotel's own switches ──
   let sectionFlags;
   try {
     sectionFlags = await getEnabledSectionsFresh(propertyId);
   } catch (e) {
-    // FAILS CLOSED, the same direction `requireSectionEnabled` fails: a switch
-    // we cannot read is a switch we must not act against.
+    // COULD NOT LOOK. Fails closed, the same direction `requireSectionEnabled`
+    // fails: a switch we cannot read is a switch we must not act against, and a
+    // window we never considered is a window we must not claim.
     log.warn('[companion/event-wake] section switches unreadable; this hotel sits this sweep out', {
       propertyId,
       err: e instanceof Error ? e.message : String(e),
     });
     return nothing('read_failed');
   }
+
   // The note's home is the Staxis list. A hotel that switched that off has said
-  // it does not use the surface the note would arrive on.
-  if (!isSectionEnabled(sectionFlags, 'staxis')) return nothing('quiet');
+  // it does not use the surface the note would arrive on, so there is nothing
+  // deliverable in this window no matter what landed in it.
+  //
+  // LOOKED. The cursor advances, because "I considered this window and found
+  // nothing I could deliver" is exactly what the cursor records. It is also
+  // strictly CHEAPER than a quiet hotel, which reads the events as well: this
+  // path is one state read, one switch read, one write, and no model call ever.
+  if (!isSectionEnabled(sectionFlags, 'staxis')) {
+    return (await claim())
+      ? nothing('list_switched_off', 0, window.clamped)
+      : nothing('window_already_claimed', 0, window.clamped);
+  }
 
   // ── 5. did anything happen ──
   let rows: WakeEventRow[];
   try {
     rows = await readWindowEvents(propertyId, window.sinceIso, window.untilIso);
   } catch (e) {
+    // COULD NOT LOOK. The cursor deliberately stays where it is: claiming a
+    // window whose events never came back would discard them silently, and a
+    // persistently failing read SHOULD go stale so the doctor says so.
     log.warn('[companion/event-wake] event read failed; this hotel sits this sweep out', {
       propertyId,
       err: e instanceof Error ? e.message : String(e),
@@ -174,20 +234,13 @@ export async function sweepProperty(
       : 0,
   });
 
-  // ── CLAIM THE WINDOW, whatever the verdict was ──
+  // ── LOOKED. CLAIM THE WINDOW, whatever the verdict was ──
   //
   // Always, and BEFORE anything expensive. A quiet hotel whose cursor never
   // moved would re-read a widening window every ten minutes until the clamp
   // caught it; a busy hotel whose cursor moved only after the model call could
   // pay twice for the same events if two sweeps overlapped.
-  const claimed = await claimWakeWindow({
-    propertyId,
-    priorLastLookedAt: state.lastLookedAt,
-    priorLooksTotal: state.looksTotal,
-    untilIso: window.untilIso,
-    now,
-  });
-  if (!claimed) return nothing('window_already_claimed', 0, window.clamped);
+  if (!(await claim())) return nothing('window_already_claimed', 0, window.clamped);
 
   if (!verdict.wake) return nothing(verdict.refusal, verdict.events, window.clamped);
 

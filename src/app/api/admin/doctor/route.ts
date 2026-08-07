@@ -1220,6 +1220,7 @@ async function checkCompanionEventWakeHealth(): Promise<Omit<Check, 'name' | 'du
     const spendUnavailable = num('spendUnavailable');
     const dailyWakeCap = num('dailyWakeCap');
     const noCursor = num('noCursor') + num('readFailed');
+    const listSwitchedOff = num('listSwitchedOff');
     const staleCount = stale.count ?? 0;
 
     const problems: string[] = [];
@@ -1231,10 +1232,19 @@ async function checkCompanionEventWakeHealth(): Promise<Omit<Check, 'name' | 'du
     if (spendCap > 0) problems.push(`${spendCap} hotel(s) silenced by the daily spend cap`);
 
     if (problems.length === 0) {
+      // Said out loud rather than folded into "healthy". Both of these are the
+      // system working as designed, and both are things an operator would
+      // otherwise have to read the heartbeat notes by hand to discover: a hotel
+      // at its wake limit, and a hotel that has switched off the list a note
+      // would arrive on and will therefore never get one.
+      const notes = [
+        dailyWakeCap > 0 ? `${dailyWakeCap} hotel(s) at today's wake limit` : '',
+        listSwitchedOff > 0 ? `${listSwitchedOff} hotel(s) have the Staxis list switched off` : '',
+      ].filter(Boolean);
       return {
         status: 'ok',
-        detail: dailyWakeCap > 0
-          ? `companion event sweep healthy; ${dailyWakeCap} hotel(s) at today's wake limit`
+        detail: notes.length > 0
+          ? `companion event sweep healthy; ${notes.join('; ')}`
           : 'companion event sweep healthy',
       };
     }
