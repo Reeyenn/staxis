@@ -319,7 +319,7 @@ function EquipmentForm({
         </div>
 
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 14 }}>
-          <Field label={'PM interval (days)'} hint={'How often it should be serviced'}>
+          <Field label={'Service interval (days)'} hint={'How often it should be serviced'}>
             <input type="number" min={0} step="1" value={pmInterval} onChange={(e) => setPmInterval(e.target.value)} style={numInputStyle} placeholder="—" />
           </Field>
           <Field label={'Warranty provider'}>
@@ -443,7 +443,7 @@ function EquipmentDetailModal({
             {[
               { k: 'Total repair spend', v: fmtMoney(detail.totalRepairSpend, lang), tone: T.ink },
               { k: 'Failures (work orders)', v: String(detail.failureCount), tone: detail.failureCount > 0 ? T.warm : T.ink },
-              { k: 'PM tasks', v: String(detail.preventiveCount), tone: T.ink },
+              { k: 'Preventive tasks', v: String(detail.preventiveCount), tone: T.ink },
             ].map((s, i) => (
               <div key={i} style={{ background: T.bg, border: `1px solid ${T.rule}`, borderRadius: 12, padding: '12px 14px' }}>
                 <Caps size={9}>{s.k}</Caps>
@@ -459,7 +459,7 @@ function EquipmentDetailModal({
             <DetailRow label={'Serial #'} value={eq.serialNumber ?? '—'} />
             <DetailRow label={'Installed'} value={fmtDateL(eq.installDate, lang)} />
             <DetailRow label={'Expected lifetime'} value={eq.expectedLifetimeYears != null ? `${eq.expectedLifetimeYears} yr` : '—'} />
-            <DetailRow label={'PM interval'} value={eq.pmIntervalDays != null ? `${eq.pmIntervalDays} days` : '—'} />
+            <DetailRow label={'Service interval'} value={eq.pmIntervalDays != null ? `${eq.pmIntervalDays} days` : '—'} />
             <DetailRow label={'Purchase cost'} value={fmtMoney(eq.purchaseCost, lang)} />
             <DetailRow label={'Replacement cost'} value={fmtMoney(eq.replacementCost, lang)} />
             <DetailRow label={'Warranty provider'} value={eq.warrantyProvider ?? '—'} />
@@ -777,7 +777,7 @@ export function EquipmentRegistry({ onBack }: { onBack: () => void }) {
 
   const handleDelete = async (e: Equipment) => {
     if (!pid) return;
-    const msg = `Delete "${e.name}"? Its work orders and PM tasks stay. They only unlink from this asset.`;
+    const msg = `Delete "${e.name}"? Its work orders and preventive tasks stay. They only unlink from this asset.`;
     if (!window.confirm(msg)) return;
     const res = await deleteEquipmentAsset(pid, e.id);
     if (!res.ok) { flash(res.error || 'Could not delete'); return; }

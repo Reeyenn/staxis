@@ -70,6 +70,7 @@ import {
   rememberDeclined,
   type CompanionMemory,
 } from '@/lib/companion/manners';
+import { repliesFor } from '@/lib/companion/replies';
 import '@/lib/agent/tools/index';
 import { getTool, getToolsForRole } from '@/lib/agent/tools';
 import { ALL_ROLES, type AppRole } from '@/lib/roles';
@@ -85,7 +86,8 @@ function offer(over: Partial<CompanionOffer> = {}): CompanionOffer {
     text: 'Three rooms on the second floor have had the same AC fault since June. Mind if I show you?',
     topic: 'trace:maintenance-run:2f-ac',
     page: 'maintenance',
-    actions: [{ label: 'Show me', kind: 'show' }, { label: 'No', kind: 'no' }],
+    actions: [{ label: 'Show me', kind: 'show' }, { label: 'Not now', kind: 'no' }],
+    replies: repliesFor({ kind: 'trace' }),
     state: 'pending',
     spokenAt: NOW,
     answeredAt: null,
@@ -104,7 +106,7 @@ function rowFor(o: CompanionOffer): Record<string, unknown> {
       kind: o.kind,
       topic: o.topic,
       page: o.page,
-      actions: o.actions,
+      replies: o.replies,
       state: o.state,
       spokenAt: o.spokenAt,
       answeredAt: o.answeredAt,

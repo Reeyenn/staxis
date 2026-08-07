@@ -77,6 +77,11 @@ interface FindingRow {
   judged_at: string | null;
   judged_model: string | null;
   judged_guard_rejected: boolean | null;
+  // Optional in the ROW TYPE too, not just in the select: a database that
+  // predates 0461 answers without them, and a row shape that insisted on their
+  // presence would be a type telling a lie about what came back.
+  judged_question?: string | null;
+  judged_reply_order?: string[] | null;
 }
 
 const SELECT_COLUMNS =
@@ -90,6 +95,64 @@ const SELECT_COLUMNS =
   // deterministic `summary` when the judge has not run or was refused.
   'judged_disposition, judged_summary_en, judged_summary_es, judged_rationale, ' +
   'judged_rank, judged_source, judged_at, judged_model, judged_guard_rejected';
+
+/**
+ * The companion's question and its reply order (migration 0461).
+ *
+ * ─── WHY THESE TWO ARE NOT IN THE LIST ABOVE ───────────────────────────────
+ *
+ * Because a SELECT is a contract with the schema, and this one is younger than
+ * some of the schemas that run this code. PostgREST answers a select naming a
+ * column that does not exist with an ERROR, not with a null, so folding these
+ * into `SELECT_COLUMNS` would mean the whole findings queue 400s on any
+ * database where 0461 has not been applied yet: every card, on every screen, at
+ * every hotel, for the length of the window between a deploy and a migration.
+ *
+ * Both columns are OPTIONAL by design — null means "the per-kind template
+ * question stands", which is a complete card — so the honest read is one that
+ * asks for them and carries on without them. See `selectColumnsFor` below.
+ *
+ * THE REGRESSION TEST FOR THIS IS ALREADY WRITTEN, and not in a file with
+ * "question" in its name: the authoritative-access integration suites pin the
+ * schema with `applyMigrationsToPgliteThrough('0425')` and drive
+ * /api/findings through it (see company-capacity.integration.test.ts). They go
+ * red the moment this degrade stops working, which is exactly the shape of the
+ * production failure — an old schema under new code.
+ */
+const QUESTION_COLUMNS = 'judged_question, judged_reply_order';
+
+/**
+ * Have we learned that this database predates 0461?
+ *
+ * Null until the first read tells us either way. Process-lifetime only and
+ * deliberately so: it re-probes after a restart, so applying the migration
+ * heals this without anybody remembering it exists, and a false negative costs
+ * exactly one extra query once.
+ */
+let questionColumnsExist: boolean | null = null;
+
+function selectColumnsFor(): string {
+  return questionColumnsExist === false
+    ? SELECT_COLUMNS
+    : `${SELECT_COLUMNS}, ${QUESTION_COLUMNS}`;
+}
+
+/**
+ * "That column is not there", however this client chose to say it.
+ *
+ * Both shapes are real. PostgREST answers with an error OBJECT carrying 42703;
+ * the pglite-backed shim the integration suite runs against THROWS. A check
+ * that knew only one of them would pass its tests and fail in production, or
+ * the reverse, which is the worst possible split.
+ */
+function isMissingColumn(error: unknown): boolean {
+  if (!error) return false;
+  const record = error as { code?: unknown; message?: unknown };
+  if (record.code === '42703') return true;
+  const message = typeof record.message === 'string' ? record.message : String(error);
+  return /judged_question|judged_reply_order/.test(message)
+    && /does not exist|could not find/i.test(message);
+}
 
 /** The column default in 0360. Named so the unpriced reset and the schema agree
  *  in one place rather than by coincidence. */
@@ -141,6 +204,8 @@ export function rowToFinding(row: FindingRow): Finding {
     judgedAt: row.judged_at ?? null,
     judgedModel: row.judged_model ?? null,
     judgedGuardRejected: row.judged_guard_rejected === true,
+    judgedQuestion: row.judged_question ?? null,
+    judgedReplyOrder: Array.isArray(row.judged_reply_order) ? row.judged_reply_order : null,
   };
 }
 
@@ -265,22 +330,42 @@ export async function listFindings(
 ): Promise<Finding[]> {
   // Filters before transforms — `.order()` narrows the builder and `.eq()` is
   // no longer available after it.
-  const filtered = scopedDb(propertyId)
-    .from('findings')
-    .select(SELECT_COLUMNS)
-    .in('status', [...(opts.statuses ?? ['open', 'updated'])]);
-  const byDetector = !opts.detectorId
-    ? filtered
-    : Array.isArray(opts.detectorId)
-      ? filtered.in('detector_id', [...opts.detectorId])
-      : filtered.eq('detector_id', opts.detectorId as string);
-  const scoped = opts.statusChangedSince
-    ? byDetector.gte('status_changed_at', opts.statusChangedSince.toISOString())
-    : byDetector;
+  const run = async (columns: string) => {
+    const filtered = scopedDb(propertyId)
+      .from('findings')
+      .select(columns)
+      .in('status', [...(opts.statuses ?? ['open', 'updated'])]);
+    const byDetector = !opts.detectorId
+      ? filtered
+      : Array.isArray(opts.detectorId)
+        ? filtered.in('detector_id', [...opts.detectorId])
+        : filtered.eq('detector_id', opts.detectorId as string);
+    const scoped = opts.statusChangedSince
+      ? byDetector.gte('status_changed_at', opts.statusChangedSince.toISOString())
+      : byDetector;
+    return scoped
+      .order('last_seen_at', { ascending: false })
+      .limit(Math.min(Math.max(opts.limit ?? 100, 1), 500));
+  };
 
-  const { data, error } = await scoped
-    .order('last_seen_at', { ascending: false })
-    .limit(Math.min(Math.max(opts.limit ?? 100, 1), 500));
+  // ONE retry, and only for the one failure that means "this database is older
+  // than the question columns". Every card is still correct without them, so
+  // trading the whole queue for two optional fields would be the wrong way
+  // round. See QUESTION_COLUMNS.
+  let data: unknown = null;
+  let error: { message?: string } | null = null;
+  try {
+    ({ data, error } = await run(selectColumnsFor()));
+  } catch (thrown) {
+    if (questionColumnsExist === false || !isMissingColumn(thrown)) throw thrown;
+    error = { message: String(thrown) };
+  }
+  if (error && questionColumnsExist !== false && isMissingColumn(error)) {
+    questionColumnsExist = false;
+    ({ data, error } = await run(SELECT_COLUMNS));
+  } else if (!error && questionColumnsExist === null) {
+    questionColumnsExist = true;
+  }
   if (error) throw new Error(`findings list failed: ${error.message}`);
   return ((data ?? []) as unknown as FindingRow[]).map(rowToFinding);
 }

@@ -85,6 +85,8 @@ function finding(over: Partial<Finding> = {}): Finding {
     judgedAt: null,
     judgedModel: null,
     judgedGuardRejected: false,
+    judgedQuestion: null,
+    judgedReplyOrder: null,
     ...over,
   };
 }

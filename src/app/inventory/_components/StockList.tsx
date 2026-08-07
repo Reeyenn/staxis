@@ -36,9 +36,9 @@ interface StockListProps {
 function columnsFor(lang: Lang): Array<{ status: StockStatus; label: string; sub: string }> {
   const tx = t(lang);
   return [
-    { status: 'critical', label: tx.colOrderNow, sub: tx.subBelowHalfPar },
-    { status: 'low', label: tx.colOrderSoon, sub: tx.subUnderPar },
-    { status: 'good', label: tx.colStocked, sub: tx.subAtOrAbovePar },
+    { status: 'critical', label: tx.colOrderNow, sub: tx.subCritical },
+    { status: 'low', label: tx.colOrderSoon, sub: tx.subLow },
+    { status: 'good', label: tx.colStocked, sub: tx.subGood },
   ];
 }
 
