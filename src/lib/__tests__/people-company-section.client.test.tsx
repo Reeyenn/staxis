@@ -139,7 +139,7 @@ const JOBS: Record<string, CompanyJobLine[]> = {
   'account-vp': [{
     membershipId: 'm-vp',
     scope: 'company',
-    role: 'vp',
+    role: 'regional_manager',
     label: { en: 'Oversees' },
     propertyIds: [HOTEL_ID],
     propertyNames: ['Harbor Inn'],
@@ -349,7 +349,7 @@ describe('the Company section on My Hotel People', () => {
         'account-vp': [{
           membershipId: 'm-vp',
           scope: 'company',
-          role: 'vp',
+          role: 'regional_manager',
           label: { en: 'Oversees' },
           propertyIds: [SIBLING_HOTEL_ID],
           propertyNames: ['Other Inn'],

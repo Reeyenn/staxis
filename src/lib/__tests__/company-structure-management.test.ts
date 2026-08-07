@@ -117,8 +117,10 @@ describe('My Hotel structure surface contract', () => {
   });
 
   test('maps People to membership/invitations and Access to exact role/scope', () => {
-    assert.match(page, /Memberships and invitations/);
-    assert.match(page, /Invite company member/);
+    assert.match(page, /Memberships/);
+    // Company-level inviting moved to its own panel, which the People surface
+    // mounts when no hotel is selected.
+    assert.match(page, /<CompanyInvitePanel/);
     assert.match(page, /AccessPersonRow/);
     assert.match(page, /People with hotel access/);
     assert.match(page, /buildAccessPeople\(/);

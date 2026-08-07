@@ -49,7 +49,6 @@ export const PUBLIC_PREFIXES: readonly string[] = [
   '/phone-signin',   // QR phone handoff; all data/auth gates live in /api routes
   '/onboard/',       // unified onboarding wizard sub-steps
   '/invite/',        // /invite/[token]
-  '/company-invite/', // scoped organization invite (token-gated page)
   '/housekeeper/',   // /housekeeper/[id]
   '/laundry/',       // /laundry/[id]
   '/api/',           // every API route does its own auth

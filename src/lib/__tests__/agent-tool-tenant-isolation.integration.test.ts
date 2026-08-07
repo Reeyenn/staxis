@@ -172,13 +172,13 @@ const ROW_KEYED_FOLLOWUPS = new Map<string, { keys: string[]; why: string }>([
 /**
  * Every tool execution now performs a fresh active-account + authoritative
  * property-standing read before its handler. A handler may remain in-memory
- * (for example `walk_user_through`), but its execution is deliberately not
+ * (for example `staxis_show_around`), but its execution is deliberately not
  * DB-free: immediate revocation must stop it before any result is returned.
  * Keep the exact-set assertion below so a future zero-read path fails loudly.
  */
 // Deliberately empty, and it is not the same list as the unit twin's. There,
 // the fake records only the queries a HANDLER makes, so a handler that reads
-// nothing (walk_user_through, staxis_show_pattern) has to declare itself. Here
+// nothing (staxis_show_around, staxis_show_pattern) has to declare itself. Here
 // the database is real and every tool reaches it through the re-authorization
 // preamble before its handler runs, so "declared DB-free" would be false of
 // everything.

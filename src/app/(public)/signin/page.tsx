@@ -11,15 +11,6 @@ import { supabase } from '@/lib/supabase';
 import { t } from '@/lib/translations';
 import { parseCheckTrustResponse } from '@/lib/api-validate';
 import { safeRedirect } from '@/lib/url-redirect';
-import {
-  COMPANY_INVITATION_HANDOFF_PARAM,
-  COMPANY_INVITATION_HANDOFF_VALUE,
-  COMPANY_INVITATION_RESUME_PATH,
-  COMPANY_INVITATION_SIGN_IN_HREF,
-  companyInvitationTokenFromPath,
-  readCompanyInvitationHandoff,
-  storeCompanyInvitationHandoff,
-} from '@/lib/company-access/invitation-handoff';
 import AuthShell, { AuthLabel, AuthError, authLinkStyle, AUTH_LINK } from '@/components/AuthShell';
 import { AUTH_OPERATION_TIMEOUT_MS, fetchWithAuth } from '@/lib/api-fetch';
 import { withPromiseDeadline } from '@/lib/fetch-deadline';
@@ -88,56 +79,25 @@ function SignInInner() {
 
   const rawRedirect = params.get('redirect');
   const ordinaryRequestedTarget = safeRedirect(rawRedirect, '/home');
-  const legacyInvitationToken = companyInvitationTokenFromPath(ordinaryRequestedTarget);
-  const usesCompanyInvitationHandoff = params.get(COMPANY_INVITATION_HANDOFF_PARAM)
-    === COMPANY_INVITATION_HANDOFF_VALUE || legacyInvitationToken !== null;
-  const handoffIdentity = usesCompanyInvitationHandoff
-    ? legacyInvitationToken ?? COMPANY_INVITATION_HANDOFF_VALUE
-    : null;
-  const [resolvedHandoff, setResolvedHandoff] = useState<{
-    identity: string;
-    target: string | null;
-  } | null>(null);
-
-  // Invitation tokens stay in sessionStorage while auth pages carry only an
-  // opaque marker. Legacy token-bearing sign-in links are cleaned with a
-  // history replacement and are never propagated to the OTP URL.
-  useEffect(() => {
-    if (!handoffIdentity) {
-      setResolvedHandoff(null);
-      return;
-    }
-    if (legacyInvitationToken) {
-      storeCompanyInvitationHandoff(legacyInvitationToken);
-      replaceNavigation(COMPANY_INVITATION_SIGN_IN_HREF);
-    }
-    setResolvedHandoff({
-      identity: handoffIdentity,
-      target: readCompanyInvitationHandoff() ? COMPANY_INVITATION_RESUME_PATH : null,
-    });
-  }, [handoffIdentity, legacyInvitationToken, replaceNavigation]);
-
-  const handoffResolved = handoffIdentity === null || resolvedHandoff?.identity === handoffIdentity;
-  const requestedTarget = usesCompanyInvitationHandoff
-    ? resolvedHandoff?.identity === handoffIdentity
-      ? resolvedHandoff.target ?? '/company'
-      : '/company'
-    : ordinaryRequestedTarget;
+  // The retired company-invitation flow used to park its token in
+  // sessionStorage and walk the visitor through sign-in mid-invitation, so this
+  // page carried a whole handoff state machine to resolve where to send them
+  // afterwards. That invitation system is gone: /invite/[token] collects a name
+  // and password on its own page and never routes through sign-in, so there is
+  // nothing to hand off and the requested target is simply the requested target.
+  const requestedTarget = ordinaryRequestedTarget;
   // Company access is intentionally property-independent during the
   // normalized-access rollout. Keep this bypass narrow: zero-legacy-property
-  // accounts may open only the Company hub or finish a company invitation.
-  const isPropertyIndependentCompanyTarget = requestedTarget === '/company'
-    || requestedTarget.startsWith('/company-invite/');
+  // accounts may open only the Company hub.
+  const isPropertyIndependentCompanyTarget = requestedTarget === '/company';
   const redirectTarget = signInRedirectTarget({
     user,
     requestedTarget,
     propertyIndependent: isPropertyIndependentCompanyTarget,
   });
-  const freshSigninHref = usesCompanyInvitationHandoff
-    ? `${COMPANY_INVITATION_SIGN_IN_HREF}&reason=auth-retry`
-    : rawRedirect
-      ? `/signin?reason=auth-retry&redirect=${encodeURIComponent(rawRedirect)}`
-      : '/signin?reason=auth-retry';
+  const freshSigninHref = rawRedirect
+    ? `/signin?reason=auth-retry&redirect=${encodeURIComponent(rawRedirect)}`
+    : '/signin?reason=auth-retry';
 
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -163,7 +123,8 @@ function SignInInner() {
   // back to signin" loop reported on 2026-05-10.
   useEffect(() => {
     if (shouldAutoRedirectExistingSession({
-      handoffResolved,
+      // Nothing defers this page any more; the handoff it waited on is gone.
+      handoffResolved: true,
       explicitAttemptStarted: explicitAttemptStartedRef.current,
       freshRetry: isFreshRetry,
       loading,
@@ -172,7 +133,7 @@ function SignInInner() {
     })) {
       replaceNavigation(redirectTarget);
     }
-  }, [user, loading, replaceNavigation, signing, redirectTarget, handoffResolved, isFreshRetry]);
+  }, [user, loading, replaceNavigation, signing, redirectTarget, isFreshRetry]);
 
   // Sign-in flow (Phase 2 + Resend email):
   //   1. signInWithPassword — verifies the password, issues a session.
@@ -185,7 +146,6 @@ function SignInInner() {
     e.preventDefault();
     if (
       submitInFlightRef.current
-      || !handoffResolved
       || !freshRecovery.ready
       || !email.trim()
       || !password
@@ -332,9 +292,7 @@ function SignInInner() {
       // the property selector, so multi-hotel users choose the hotel before the
       // target opens; an ordinary login still falls through to Home.
       const verifyUrl = `/signin/verify?email=${encodeURIComponent(normalizedEmail)}${
-        usesCompanyInvitationHandoff
-          ? `&${COMPANY_INVITATION_HANDOFF_PARAM}=${COMPANY_INVITATION_HANDOFF_VALUE}`
-          : rawRedirect ? `&redirect=${encodeURIComponent(rawRedirect)}` : ''
+        rawRedirect ? `&redirect=${encodeURIComponent(rawRedirect)}` : ''
       }`;
       replaceNavigation(verifyUrl);
     } catch {
@@ -354,7 +312,6 @@ function SignInInner() {
 
   const recoveryBusy = isFreshRetry && !freshRecovery.ready && !freshRecovery.error;
   const disabled = requiresFreshSignin
-    || !handoffResolved
     || !freshRecovery.ready
     || signing
     || !email.trim()

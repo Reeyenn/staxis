@@ -127,20 +127,6 @@ export interface CompanyAccessHistoryEntry {
   record: CompanyManagedGrant;
 }
 
-export interface CompanyInvitation {
-  id: string;
-  organizationId?: string | null;
-  email: string;
-  accessProfile: string;
-  scopeLabel: string;
-  propertyIds: string[];
-  status: CompanyItemStatus;
-  expiresAt?: string | null;
-  invitedBy?: string | null;
-  /** True only when this caller may cancel this exact pending invitation. */
-  canCancel: boolean;
-}
-
 export interface CompanyAccessRequest {
   id: string;
   organizationId?: string | null;
@@ -221,7 +207,6 @@ export interface CompanyAccessData {
   effectiveAccess: EffectiveAccessReceipt[];
   /** Current-scope history from the same authoritative access rows/feed. */
   accessHistory?: CompanyAccessHistoryEntry[];
-  invitations: CompanyInvitation[];
   requests: CompanyAccessRequest[];
   activity: CompanyActivityEvent[];
   permissions: CompanyAccessPermissions;
@@ -237,7 +222,6 @@ export const EMPTY_COMPANY_ACCESS: CompanyAccessData = {
   properties: [],
   memberships: [],
   effectiveAccess: [],
-  invitations: [],
   requests: [],
   activity: [],
   permissions: {

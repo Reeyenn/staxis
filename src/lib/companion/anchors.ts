@@ -32,6 +32,8 @@
 //      zero, which is what every control inside a hidden branch measures as
 // ═══════════════════════════════════════════════════════════════════════════
 
+import type { AppSection, EnabledSections } from '@/lib/sections/registry';
+import { isSectionEnabled } from '@/lib/sections/registry';
 import type { CompanionPageKey } from './pages';
 
 /**
@@ -72,7 +74,26 @@ export const COMPANION_SURFACE_SELECTOR = `[${COMPANION_SURFACE_ATTR}]`;
 export type CompanionAnchorKey =
   | 'inventory-import'
   | 'add-delivery'
-  | 'todo-composer';
+  | 'todo-composer'
+  | 'knows-teach'
+  | 'staxis-mark'
+  | 'nav-staxis'
+  | 'nav-dashboard'
+  | 'nav-inventory'
+  | 'nav-maintenance'
+  | 'nav-communications';
+
+/**
+ * Where a control lives, in the companion's own page vocabulary.
+ *
+ * `any` is the APP CHROME: the pill bar and the mark in the corner are on every
+ * screen the companion is allowed to exist on, so scoping them to one page
+ * would be a lie in seven places out of eight. It is NOT a wildcard that
+ * loosens the page wall: `staxis_point_at` still refuses a turn with no screen
+ * behind it at all, so the companion can no more point at the nav from an
+ * eval harness than it can point at the importer from Maintenance.
+ */
+export type CompanionAnchorPage = CompanionPageKey | 'any';
 
 /**
  * What somebody must be entitled to before a control is even ON their screen.
@@ -90,16 +111,28 @@ export type CompanionAnchorNeed = 'manage' | 'money';
 export interface CompanionAnchorStanding {
   canManage: boolean;
   seesMoney: boolean;
+  /**
+   * The hotel's own section switches, or undefined when the asker did not say.
+   *
+   * A pill for a section this hotel switched off is not on the bar at all, so
+   * pointing at it would be the companion drawing an arrow at empty chrome.
+   * Undefined reads as "all on", which is the same default-ON contract
+   * `isSectionEnabled` has everywhere else: a hotel with no stored map has
+   * every section, and treating a missing map as "everything is off" would
+   * silently unaim every nav pointer at every hotel.
+   */
+  enabledSections?: EnabledSections;
 }
 
-/** Fail closed. An asker who did not say what they can do is told nothing that
- *  needs an entitlement. */
+/** Fail closed on ENTITLEMENTS. An asker who did not say what they can do is
+ *  told nothing that needs one. Sections are the other way round on purpose;
+ *  see `enabledSections` above. */
 const NO_STANDING: CompanionAnchorStanding = { canManage: false, seesMoney: false };
 
 export interface CompanionAnchor {
   key: CompanionAnchorKey;
-  /** The screen this control lives on, in the companion's own page vocabulary. */
-  page: CompanionPageKey;
+  /** The screen this control lives on, or `any` for the app chrome. */
+  page: CompanionAnchorPage;
   /** What a person calls it. Matches the label on the control itself. */
   label: string;
   /** One plain sentence: what it does FOR them. Shown to the model, and said
@@ -107,6 +140,9 @@ export interface CompanionAnchor {
   does: string;
   /** The entitlements the page itself requires before rendering this control. */
   needs: readonly CompanionAnchorNeed[];
+  /** The hotel switch that has to be on before this control is rendered at
+   *  all. Null for chrome that no section owns. */
+  section?: AppSection;
 }
 
 export const COMPANION_ANCHORS: readonly CompanionAnchor[] = [
@@ -133,8 +169,90 @@ export const COMPANION_ANCHORS: readonly CompanionAnchor[] = [
     does: 'Writes a to-do in plain words, picks who does it and when, and puts it on their list.',
     // Everybody who gets the one-list at all gets the composer.
     needs: [],
+    section: 'staxis',
+  },
+  {
+    key: 'knows-teach',
+    // The Knows view is a dialog over /feed, and `pageForPath` resolves that
+    // path to `staxis`. Declaring it as `knows` would have produced an anchor
+    // no page proof could ever match, which is a control the companion can
+    // name and never point at.
+    page: 'staxis',
+    label: 'Teach it something',
+    does: 'Tells me one fact about your hotel, in your own words, so I use it from then on.',
+    // /api/memory/knows returns canTeach only for a manager with mutation
+    // standing. A front desk hire never has this button.
+    needs: ['manage'],
+    section: 'staxis',
+  },
+  {
+    key: 'staxis-mark',
+    page: 'any',
+    label: 'the Staxis mark in the corner',
+    does: 'Opens me. Ask me anything about the hotel, or ask where something is and I will point at it.',
+    needs: [],
+  },
+  // ─── The pill bar ─────────────────────────────────────────────────────────
+  //
+  // One per section the companion has a page for. `people` and `settings` have
+  // no pill of their own, so they have no anchor either: an anchor for a
+  // control that is not on the bar would be a promise the browser has to break.
+  {
+    key: 'nav-staxis',
+    page: 'any',
+    label: 'Staxis',
+    does: 'Opens the one list where everything that needs a decision turns up.',
+    needs: [],
+    section: 'staxis',
+  },
+  {
+    key: 'nav-dashboard',
+    page: 'any',
+    label: 'Dashboard',
+    does: 'Opens the hotel at a glance: who is in house, what is arriving, what is not ready.',
+    needs: [],
+    section: 'dashboard',
+  },
+  {
+    key: 'nav-inventory',
+    page: 'any',
+    label: 'Inventory',
+    does: 'Opens what you have on hand and what is running low.',
+    needs: [],
+    section: 'inventory',
+  },
+  {
+    key: 'nav-maintenance',
+    page: 'any',
+    label: 'Maintenance',
+    does: 'Opens your work orders and the jobs that come round again.',
+    needs: [],
+    section: 'maintenance',
+  },
+  {
+    key: 'nav-communications',
+    page: 'any',
+    label: 'Messages',
+    does: 'Opens where your team talks and where notices are posted.',
+    needs: [],
+    section: 'communications',
   },
 ];
+
+/**
+ * Would this control be on the screen the person is standing on?
+ *
+ * `any` matches every real page and NO page at all: a caller with no page
+ * proof passes null and is refused, which keeps the fail-closed rule the page
+ * wall has always had.
+ */
+export function anchorMatchesPage(
+  anchor: CompanionAnchor,
+  page: CompanionPageKey | null | undefined,
+): boolean {
+  if (!page) return false;
+  return anchor.page === 'any' || anchor.page === page;
+}
 
 /** Is this control on this person's screen at all? */
 export function anchorIsReachable(
@@ -145,6 +263,7 @@ export function anchorIsReachable(
     if (need === 'manage' && !standing.canManage) return false;
     if (need === 'money' && !standing.seesMoney) return false;
   }
+  if (anchor.section && !isSectionEnabled(standing.enabledSections, anchor.section)) return false;
   return true;
 }
 
@@ -167,7 +286,7 @@ export function anchorsOnPage(
   standing: CompanionAnchorStanding = NO_STANDING,
 ): CompanionAnchor[] {
   if (!page) return [];
-  return COMPANION_ANCHORS.filter((a) => a.page === page && anchorIsReachable(a, standing));
+  return COMPANION_ANCHORS.filter((a) => anchorMatchesPage(a, page) && anchorIsReachable(a, standing));
 }
 
 /**

@@ -1,24 +1,29 @@
 // ═══════════════════════════════════════════════════════════════════════════
 // THE RULEBOOK EVERY PIPELINE CARRIES
 //
-// Staxis calls a foundation model from three places, not one:
+// Staxis calls a foundation model from more than one place:
 //
 //   1. hotel chat        /api/agent/command (+ its approval-resume sibling)
-//   2. walkthrough       /api/walkthrough/step
-//   3. portfolio chat    /api/agent/portfolio
+//   2. portfolio chat    /api/agent/portfolio
 //
-// Until this module existed, the safety rules lived inside the hotel chat's
-// assembler (`prompts.ts`) and reached the other two by whoever happened to
-// import a constant. The walkthrough imported none of them: it hand-rolled a
-// 78-line plain string, and so the one surface that drives a manager around
-// their own app was the one surface with no data-age rule, no number-honesty
-// rule and no knowledge of anything the hotel had ever told the companion.
-// Nothing was broken in a way anyone could see, which is exactly why it stayed
-// that way.
+// It was three until 2026-08-07. The walkthrough (/api/walkthrough/step) was
+// the second, and it is why this module exists at all: until it did, the safety
+// rules lived inside the hotel chat's assembler (`prompts.ts`) and reached the
+// others by whoever happened to import a constant. The walkthrough imported
+// none of them. It hand-rolled a 78-line plain string, and so the one surface
+// that drove a manager around their own app was the one surface with no
+// data-age rule, no number-honesty rule and no knowledge of anything the hotel
+// had ever told the companion. Nothing was broken in a way anyone could see,
+// which is exactly why it stayed that way.
+//
+// That surface is gone (the companion tour replaced it with authored content
+// over the anchor registry, which calls no model at all), but the failure it
+// demonstrated is the reason every rule below is a named constant rather than a
+// paragraph each assembler retypes.
 //
 // ─── THE PROPERTY THIS FILE EXISTS TO HOLD ─────────────────────────────────
 //
-//   Adding a rule HERE reaches all three pipelines with no other edit.
+//   Adding a rule HERE reaches every pipeline with no other edit.
 //
 // That is why the tiers are a REGISTRY (an array the assemblers iterate) rather
 // than named constants each assembler mentions by hand. Named constants are how

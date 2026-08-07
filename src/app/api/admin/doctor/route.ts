@@ -525,7 +525,6 @@ const RLS_REQUIRED_TABLES = [
   'agent_messages',
   'agent_costs',
   'agent_nudges',
-  'walkthrough_runs',
 
   // Fleet-wide AI Control Center (service-role only).
   'ai_model_catalog',
@@ -887,9 +886,19 @@ export const EXPECTED_MIGRATIONS_STATIC: ReadonlyArray<string> = [
   // Integer-cents mirrors of the legacy dollar money columns, derived by
   // Postgres so the cents and dollars views of a number cannot drift apart.
   '0463',
+  // Company hats carry which hotels they cover, and the company vocabulary
+  // becomes Owner + Regional Manager.
+  '0464',
   // Audit trigger stops naming the 0463 generated cents mirrors in
   // changedFields; item history shows one entry per real edit again.
   '0465',
+  // The companion's daily wake counter is incremented by the database inside
+  // the row lock, so two overlapping sweeps cannot write a stale count back.
+  '0466',
+  // A company hat's hotel list is validated at every guarded write, an
+  // explicit-list invitation can actually be accepted, and a hat naming some
+  // hotels no longer reads as the whole company.
+  '0467',
 ];
 
 /**

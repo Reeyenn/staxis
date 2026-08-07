@@ -54,7 +54,7 @@ import { clearPortfolioAccessCache } from '@/lib/company/portfolio';
 import { propertySelectorRateLimitKey } from '@/lib/company/property-selector-rate-limit';
 import { GET as bootstrapGet } from '@/app/api/property-selector/bootstrap/route';
 
-import { applyMigrationsToPgliteThrough } from '../../../tests/fixtures/pglite-migrate';
+import { applyMigrationsToPglite, seedCanonicalTestAuthority } from '../../../tests/fixtures/pglite-migrate';
 import { createPglitePostgrest, loadCatalog, type PglitePostgrest } from '../../../tests/fixtures/postgrest-pglite';
 import {
   ACCOUNT_ADMIN,
@@ -190,14 +190,14 @@ async function createCompanyVp(input: {
   );
   await pg.query(
     `insert into accounts
-       (id, username, password_hash, display_name, role, property_access, data_user_id)
-     values ($1, $2, 'x', $2, 'general_manager', '{}', $3)
+       (id, username, password_hash, display_name, role, data_user_id)
+     values ($1, $2, 'x', $2, 'general_manager', $3)
      on conflict (id) do nothing`,
     [input.accountId, input.username, input.authUserId],
   );
   const result = await pg.query<{ membership_id: string | null }>(
     `select public.staxis_set_membership_hat(
-       $1, $2, $3, 'company', 'vp', null, 'VP of Operations'
+       $1, $2, $3, 'company', 'regional_manager', null, 'VP of Operations'
      ) as membership_id`,
     [ACCOUNT_ADMIN, input.organizationId, input.accountId],
   );
@@ -312,7 +312,7 @@ async function legacyAccessOf(accountId: string): Promise<string[]> {
 // ─── Fixture ────────────────────────────────────────────────────────────────
 
 before(async () => {
-  const migrated = await applyMigrationsToPgliteThrough('0425');
+  const migrated = await applyMigrationsToPglite();
   pg = migrated.pg;
   const catalog = await loadCatalog(pg);
   shim = createPglitePostgrest(pg, catalog);
@@ -339,15 +339,15 @@ before(async () => {
   );
   await pg.query(
     `insert into accounts
-       (id, username, password_hash, display_name, role, property_access, data_user_id)
-     values ($1, 'multi_company', 'x', 'Multi Company Manager', 'general_manager', '{}', $2)
+       (id, username, password_hash, display_name, role, data_user_id)
+     values ($1, 'multi_company', 'x', 'Multi Company Manager', 'general_manager', $2)
      on conflict (id) do nothing`,
     [ACCOUNT_MULTI_COMPANY, UID_MULTI_COMPANY],
   );
   for (const organizationId of [ORG_A, ORG_B]) {
     const result = await pg.query<{ membership_id: string | null }>(
       `select public.staxis_set_membership_hat(
-         $1, $2, $3, 'company', 'vp', null, 'Regional VP'
+         $1, $2, $3, 'company', 'regional_manager', null, 'Regional VP'
        ) as membership_id`,
       [ACCOUNT_ADMIN, organizationId, ACCOUNT_MULTI_COMPANY],
     );
@@ -449,7 +449,7 @@ describe('who the picker answers', () => {
   test("a company's finance lead gets the command centre despite a front-desk legacy role", async () => {
     const fiona = await bootstrapFor(UID_FIONA);
     assert.equal(fiona.status, 200);
-    assert.equal(fiona.data.company?.companyRole, 'finance');
+    assert.equal(fiona.data.company?.companyRole, 'regional_manager');
     assert.ok(fiona.data.hotels.length >= 4, 'the controller could not see the company hotels');
   });
 });
@@ -620,7 +620,7 @@ describe('two companies, and a leak has two ends', () => {
   // the VP — and it is the company hat that decides which screen she gets.
   test('a GM who ALSO oversees the company gets the command centre', async () => {
     const maria = await bootstrapFor(UID_MARIA);
-    assert.equal(maria.data.company?.companyRole, 'vp');
+    assert.equal(maria.data.company?.companyRole, 'regional_manager');
     assert.ok(idsOf(maria.data).includes(PID_A2), 'her company hat did not reach past her own hotel');
   });
 });
@@ -678,13 +678,20 @@ describe('the final browser-egress authorization boundary', () => {
        on conflict (id) do nothing`,
       [UID_EGRESS_HOTEL],
     );
+    // Reach comes through the canonical scope RPC, not the legacy array: the
+    // final access contract (0426) fences `accounts.property_access` and a
+    // direct write is refused outright.
     await pg.query(
       `insert into accounts
-         (id, username, password_hash, display_name, role, property_access, data_user_id)
-       values ($1, 'egress_hotel', 'x', 'Egress Hotel', 'front_desk', $2, $3)
+         (id, username, password_hash, display_name, role, data_user_id)
+       values ($1, 'egress_hotel', 'x', 'Egress Hotel', 'front_desk', $2)
        on conflict (id) do nothing`,
-      [ACCOUNT_EGRESS_HOTEL, `{${PID_L1}}`, UID_EGRESS_HOTEL],
+      [ACCOUNT_EGRESS_HOTEL, UID_EGRESS_HOTEL],
     );
+    await seedCanonicalTestAuthority(pg, {
+      username: 'egress_hotel',
+      propertyIds: [PID_L1],
+    });
 
     const installedRpc = supabaseAdmin.rpc;
     const invokeRpc = installedRpc.bind(supabaseAdmin) as unknown as (
@@ -727,8 +734,8 @@ describe('the final browser-egress authorization boundary', () => {
     );
     await pg.query(
       `insert into accounts
-         (id, username, password_hash, display_name, role, property_access, data_user_id)
-       values ($1, 'egress_admin', 'x', 'Egress Admin', 'admin', '{}', $2)
+         (id, username, password_hash, display_name, role, data_user_id)
+       values ($1, 'egress_admin', 'x', 'Egress Admin', 'admin', $2)
        on conflict (id) do nothing`,
       [ACCOUNT_EGRESS_ADMIN, UID_EGRESS_ADMIN],
     );
@@ -751,7 +758,7 @@ describe('the final browser-egress authorization boundary', () => {
         if (authorityReads === 3) {
           roleRemovedAtFinalRead = true;
           await pg.query(
-            `update accounts set role = 'front_desk', property_access = '{}' where id = $1`,
+            `update accounts set role = 'front_desk' where id = $1`,
             [ACCOUNT_EGRESS_ADMIN],
           );
         }

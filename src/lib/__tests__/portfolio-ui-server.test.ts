@@ -270,7 +270,7 @@ describe('portfolio UI server access model', () => {
   test('lists every company context, never silently chooses across companies, and rejects tampering before reads', async () => {
     const account = caller({
       hats: [
-        membership(ORG_A, 'vp', [PID_A1, PID_A2]),
+        membership(ORG_A, 'regional_manager', [PID_A1, PID_A2]),
         membership(ORG_B, 'owner', [PID_B1]),
       ],
     });
@@ -359,7 +359,7 @@ describe('portfolio UI server access model', () => {
     const propertyScopeHotel = PID_B1;
     const account = caller({
       hats: [
-        membership(ORG_A, 'vp', [PID_A1, PID_A2]),
+        membership(ORG_A, 'regional_manager', [PID_A1, PID_A2]),
         membership(ORG_B, 'general_manager', [propertyScopeHotel], 'property'),
       ],
     });
@@ -403,10 +403,10 @@ describe('portfolio UI server access model', () => {
     }
   });
 
-  test('allows a finance hat while keeping sparse month-to-date ledgers partial and honors restrictions', async () => {
+  test('allows a company regional-manager hat while keeping sparse month-to-date ledgers partial and honors restrictions', async () => {
     const account = caller({
       role: 'front_desk',
-      hats: [membership(ORG_A, 'finance', [PID_A1, PID_A2])],
+      hats: [membership(ORG_A, 'regional_manager', [PID_A1, PID_A2])],
     });
     const source = new FakeSource([fakeProperty(PID_A1, 1), fakeProperty(PID_A2, 2)]);
     source.sectionRows = [
@@ -489,7 +489,7 @@ describe('portfolio UI server access model', () => {
   });
 
   test('a revoked company hat closes the next section request before any section read', async () => {
-    const active = caller({ hats: [membership(ORG_A, 'vp', [PID_A1])] });
+    const active = caller({ hats: [membership(ORG_A, 'regional_manager', [PID_A1])] });
     const source = new FakeSource([fakeProperty(PID_A1, 1)]);
     const first = await loadPortfolioUiSection({
       account: active,
@@ -514,7 +514,7 @@ describe('portfolio UI server access model', () => {
   });
 
   test('portfolio hotel-card finding counts honor source, financial, and provenance policy', async () => {
-    const account = caller({ hats: [membership(ORG_A, 'vp', [PID_A1, PID_A2, PID_B1])] });
+    const account = caller({ hats: [membership(ORG_A, 'regional_manager', [PID_A1, PID_A2, PID_B1])] });
     const source = new FakeSource([
       fakeProperty(PID_A1, 1),
       { ...fakeProperty(PID_A2, 2), enabled_sections: { maintenance: false } },
@@ -522,7 +522,7 @@ describe('portfolio UI server access model', () => {
     ]);
     source.overrides = [{
       property_id: PID_A1,
-      // Company VP projects least-privilege front-desk hotel standing with a
+      // A company hat projects least-privilege front-desk hotel standing with a
       // separate financial-read bit. The matching hotel role can restrict that
       // read but never elevate a different role.
       role: 'front_desk',
@@ -702,7 +702,7 @@ describe('portfolio UI server access model', () => {
     const ids = Array.from({ length: 75 }, (_, index) => (
       `60000000-0000-4000-8000-${String(index + 1).padStart(12, '0')}`
     ));
-    const account = caller({ hats: [membership(ORG_A, 'vp', ids)] });
+    const account = caller({ hats: [membership(ORG_A, 'regional_manager', ids)] });
     const source = new FakeSource(ids.map((id, index) => fakeProperty(id, index + 1)));
     source.chat = [{ organization_id: ORG_A, setting_value: 'true' }];
 
@@ -818,7 +818,7 @@ describe('portfolio UI server access model', () => {
   });
 
   test('fails closed on duplicate, malformed, and cross-company adapter property rows', async () => {
-    const account = caller({ hats: [membership(ORG_A, 'vp', [PID_A1])] });
+    const account = caller({ hats: [membership(ORG_A, 'regional_manager', [PID_A1])] });
 
     const crossed = new FakeSource([fakeProperty(PID_A1, 1), fakeProperty(PID_B1, 2)]);
     crossed.propertyRowsOverride = [fakeProperty(PID_B1, 2)];
@@ -869,7 +869,7 @@ describe('portfolio UI server access model', () => {
     falseComplete.propertyRowsOverride = [fakeProperty(PID_A1, 1)];
     falseComplete.propertyTotalOverride = 2;
     const falseCompleteResult = await loadPortfolioUiSection({
-      account: caller({ hats: [membership(ORG_A, 'vp', [PID_A1, PID_A2])] }),
+      account: caller({ hats: [membership(ORG_A, 'regional_manager', [PID_A1, PID_A2])] }),
       organizationId: ORG_A,
       section: 'maintenance',
       source: falseComplete,
@@ -880,7 +880,7 @@ describe('portfolio UI server access model', () => {
   });
 
   test('contains a cross-company section adapter row without serializing or aggregating it', async () => {
-    const account = caller({ hats: [membership(ORG_A, 'vp', [PID_A1])] });
+    const account = caller({ hats: [membership(ORG_A, 'regional_manager', [PID_A1])] });
     const source = new FakeSource([fakeProperty(PID_A1, 1)]);
     source.sectionRowsUnscoped = true;
     source.sectionRows = [sectionRow('maintenance_open', {
@@ -910,7 +910,7 @@ describe('portfolio UI server access model', () => {
   });
 
   test('rejects tagged malformed drilldown ids and contains malformed legacy adapter ids', async () => {
-    const account = caller({ hats: [membership(ORG_A, 'vp', [PID_A1])] });
+    const account = caller({ hats: [membership(ORG_A, 'regional_manager', [PID_A1])] });
     const tagged = new FakeSource([fakeProperty(PID_A1, 1)]);
     tagged.sectionRows = [sectionRow('maintenance_open', {
       id: 'private adapter text',
@@ -958,7 +958,7 @@ describe('portfolio UI server access model', () => {
   test('publishes financial comparisons only after exact current and prior daily coverage', async () => {
     const account = caller({
       role: 'front_desk',
-      hats: [membership(ORG_A, 'finance', [PID_A1])],
+      hats: [membership(ORG_A, 'regional_manager', [PID_A1])],
     });
     const source = new FakeSource([fakeProperty(PID_A1, 1)]);
     source.sectionRows = [
@@ -1387,9 +1387,9 @@ describe('portfolio UI server access model', () => {
   test('strongest same-company hat wins without merging another company', () => {
     const contexts = authorizedPortfolioUiContexts(caller({
       hats: [
-        membership(ORG_A, 'finance', [PID_A1]),
+        membership(ORG_A, 'regional_manager', [PID_A1]),
         membership(ORG_A, 'owner', [PID_A2]),
-        membership(ORG_B, 'vp', [PID_B1]),
+        membership(ORG_B, 'regional_manager', [PID_B1]),
       ],
     }));
     assert.deepEqual(contexts.map((context) => ({
@@ -1398,7 +1398,7 @@ describe('portfolio UI server access model', () => {
       hotelIds: context.hotelIds,
     })), [
       { organizationId: ORG_A, companyRole: 'owner', hotelIds: [PID_A1, PID_A2] },
-      { organizationId: ORG_B, companyRole: 'vp', hotelIds: [PID_B1] },
+      { organizationId: ORG_B, companyRole: 'regional_manager', hotelIds: [PID_B1] },
     ]);
     assert.equal(contexts.every((context) => context.queueAvailable), true);
     assert.equal(

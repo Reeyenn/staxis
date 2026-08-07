@@ -228,13 +228,30 @@ export type CompanionReplyKind =
   | 'welcome'
   | 'daily_hello'
   | 'teach'
-  | 'arrival';
+  | 'arrival'
+  // ─── The two the tour brought (2026-08-07) ──────────────────────────────
+  //
+  // Added rather than borrowed, and that is the whole justification: both
+  // could have been made to LOOK right by reusing a neighbour, and both would
+  // then have been a lie in the registry. `whats_new` has the same shape as
+  // `trace` (show, not now) and `wandering` the same shape as `unfinished`
+  // (seed, close), so reusing either would have compiled and rendered
+  // correctly today. It would also have meant a card about a shipped change
+  // declaring itself a pattern on the screen, which is exactly the "lossy
+  // projection" this file's header is about: the next person to read
+  // `offerQuestionFor` would find a trace case that has to answer for two
+  // different things and would have no way to tell they had diverged.
+  //
+  // NEITHER INVENTS AN INTENT. Both compose the seven that already exist, and
+  // both are still capped, role-filtered and escapable like every other set.
+  | 'whats_new'
+  | 'wandering';
 
 export const COMPANION_REPLY_KINDS: readonly CompanionReplyKind[] = [
   'finding_propose', 'finding_propose_action', 'finding_propose_preventive', 'finding_recommend',
   'finding_recommend_preventive', 'finding_fyi', 'todo_slipped', 'import_lopsided',
   'trace', 'unfinished', 'event_wake', 'panel_ask', 'notices',
-  'welcome', 'daily_hello', 'teach', 'arrival',
+  'welcome', 'daily_hello', 'teach', 'arrival', 'whats_new', 'wandering',
 ];
 
 /**
@@ -548,6 +565,43 @@ function arrival(nextPage: CompanionPageKey | null, nextLabel: string | null): C
   return out;
 }
 
+/**
+ * "Want to see what is new?"
+ *
+ * A `show`, not a walk. The mini tour draws on the screen the person is
+ * standing on and takes itself wherever it needs to go from there, so the
+ * companion is not navigating anybody in order to then start navigating them.
+ *
+ * There is deliberately no "do not tell me about changes" reply. The topic is
+ * dropped the moment the offer is SHOWN (see useCompanion), so this entry is
+ * already once-ever and a permanent opt-out would be a promise about every
+ * future change, which is not a promise one card is entitled to make.
+ */
+function whatsNew(): CompanionReply[] {
+  return [
+    { id: 'show', label: 'Show me', intent: { kind: 'show' } },
+    CLOSE_NOT_NOW,
+  ];
+}
+
+/**
+ * "Looking for something? Ask me and I will point at it."
+ *
+ * The seed is a HALF sentence ("Where do I find"), which is the whole teaching
+ * move: the person finishes it themselves and learns that finishing it works.
+ * A complete question would answer itself and teach nothing.
+ *
+ * Two replies and no third. "Do not ask again" would be a button offering to
+ * switch off something that, by construction, happens at most once in a
+ * person's whole life here.
+ */
+function wandering(seed: string): CompanionReply[] {
+  return [
+    { id: 'seed', label: 'Yes, help me find it', intent: { kind: 'seed', text: seed } },
+    CLOSE_NOT_NOW,
+  ];
+}
+
 // ─── The one door ───────────────────────────────────────────────────────────
 
 /**
@@ -631,6 +685,10 @@ export function repliesFor(input: ReplySetInput): CompanionReply[] {
         return teach((input.seed ?? '').trim());
       case 'arrival':
         return arrival(input.page ?? null, input.pageLabel ?? null);
+      case 'whats_new':
+        return whatsNew();
+      case 'wandering':
+        return wandering((input.seed ?? '').trim());
     }
   })();
   return built.slice(0, COMPANION_REPLIES_MAX);

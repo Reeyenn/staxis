@@ -67,7 +67,7 @@ import type { TracePage, TracePattern } from '@/lib/companion/trace/types';
 import { useTrace } from './useTrace';
 import { publishTraceLine } from './trace-events';
 import {
-  arrivalLine, companionLabels, companionQuestion, greetingLine, offerQuestionFor,
+  arrivalLine, companionQuestion, greetingLine, offerQuestionFor,
   replyCouldNotActLine, replyCouldNotSaveLine, replyOutcomeLine, todayFact,
   type SleepReason,
 } from '@/lib/companion/copy';
@@ -86,14 +86,30 @@ import {
 } from '@/lib/companion/notices';
 import {
   resolveDestination,
-  tourFor,
   pageForPath,
   type CompanionPage,
   type CompanionPageKey,
 } from '@/lib/companion/pages';
 import {
+  advanceTour,
+  currentStop,
+  endTourRun,
+  startTourRun,
+  tourDeedDone,
+  tourDestination,
+  tourStopsFor,
+  type TourContext,
+  type TourRun,
+} from '@/lib/companion/tour';
+import { decideWandering, recordVisit, WANDER_TOPIC, type WanderVisit } from '@/lib/companion/wandering';
+import { decideWhatsNew, whatsNewHighWater, whatsNewTopic } from '@/lib/companion/whats-new';
+import { whatsNewSentence } from '@/lib/companion/copy';
+import { canManageTeam } from '@/lib/roles';
+import { useActiveHotelStanding } from '@/lib/capabilities/useCan';
+import {
   focusIsTyping,
   subscribeToCompanionBusy,
+  subscribeToCompanionDeeds,
   subscribeToCompanionFlow,
 } from './companion-events';
 
@@ -281,9 +297,24 @@ export interface CompanionApi {
    * hotel's, and the hotel's is the one the whole product counts by.
    */
   today: string | null;
-  /** The role-sized tour, or empty when there is nothing worth touring. */
-  tour: readonly CompanionPage[];
-  tourStep: number | null;
+  /**
+   * The tour.
+   *
+   * `available` is what the "Show me around" entry gates on, and it is never
+   * spent: a No on day one stops the OFFER, never the entry. See
+   * `tourIsReachable` in manners.ts for why those are different sentences.
+   *
+   * `run` is null when nothing is running. While it is not null the guide is on
+   * the screen, and everything about what happens next is decided by the pure
+   * reducers in tour.ts.
+   */
+  tour: {
+    available: boolean;
+    run: TourRun | null;
+    start: () => void;
+    next: () => void;
+    skip: () => void;
+  };
   /**
    * A person pressed one of the buttons on whatever is showing.
    *
@@ -317,8 +348,6 @@ export interface CompanionApi {
   escape: CompanionReply | null;
   dismiss: () => void;
   quiet: () => void;
-  startTour: () => void;
-  nextTourStep: () => void;
   goTo: (page: CompanionPage) => void;
   /**
    * Run a turn from the thread again. True when something was drawn or walked
@@ -447,11 +476,41 @@ export function useCompanion(
   const showingRef = useRef<CompanionShowing>({ kind: 'none' });
   const [quietThisSession, setQuiet] = useState(false);
   const [busy, setBusy] = useState(false);
-  const [tourStep, setTourStep] = useState<number | null>(null);
-  const labels = useMemo(() => companionLabels(), []);
+  const [tourRun, setTourRun] = useState<TourRun | null>(null);
+
+  /**
+   * Is a tour on the screen right now?
+   *
+   * Declared up here with the state it derives from, because two mouths lower
+   * down read it before the tour's own block is reached and a `const` cannot
+   * be read before it exists. Both of them must stay shut while it is true:
+   * one thing at a time applies to the tour most of all, since the tour is
+   * already standing beside a control asking for something.
+   */
+  const tourRunning = tourRun !== null && tourRun.ended === null;
+  const tourRunningRef = useRef(tourRunning);
+  tourRunningRef.current = tourRunning;
 
   const role = (user?.role ?? null) as AppRole | null;
   const gate = companionMounts({ pathname, role });
+
+  // ── What this person's own screen would have rendered ────────────────────
+  //
+  // The same two facts `staxis_point_at` resolves on the server, resolved here
+  // from the same authorization domain: a manager with mutation standing, and
+  // the money capability. Deliberately not "is this hat usually a manager" —
+  // that answers true for a GM whose hotel never granted them the capability,
+  // and the tour would then stop on a control that was never on their screen.
+  const hotelStanding = useActiveHotelStanding();
+  const tourCtx = useMemo<TourContext>(() => ({
+    role,
+    enabledSections: activeProperty?.enabledSections,
+    standing: {
+      canManage: role !== null && canManageTeam(role) && hotelStanding.hotelMutationAllowed,
+      seesMoney: hotelStanding.seesFinancials,
+      enabledSections: activeProperty?.enabledSections,
+    },
+  }), [role, activeProperty?.enabledSections, hotelStanding.hotelMutationAllowed, hotelStanding.seesFinancials]);
 
   // ── Bootstrap, and then delivery ─────────────────────────────────────────
   //
@@ -496,7 +555,7 @@ export function useCompanion(
     if (!gate.mounts || !activePropertyId || !personId) return;
     setBoot(null);
     setShowing({ kind: 'none' });
-    setTourStep(null);
+    setTourRun(null);
     let first = true;
 
     const subscription = subscribeByPolling<Bootstrap>(
@@ -723,14 +782,76 @@ export function useCompanion(
     gate.mounts && boot !== null && boot.availability.awake,
   );
 
+  // ── Wandering ────────────────────────────────────────────────────────────
+  //
+  // A trail of arrivals, bounded twice (see wandering.ts), kept in a ref
+  // because it is evidence rather than state: nothing renders differently
+  // because somebody visited a fourth screen, and putting it in state would
+  // re-render the whole companion on every navigation.
+  const trailRef = useRef<readonly WanderVisit[]>([]);
+  const lastActionAtRef = useRef<number | null>(null);
+  const [wanderTick, setWanderTick] = useState(0);
+  useEffect(() => {
+    if (!gate.mounts || !page) return;
+    trailRef.current = recordVisit(trailRef.current, { page: page.key, at: Date.now() });
+    // One number, bumped on arrival, so the candidate list below recomputes
+    // exactly when the evidence changed and never on a timer.
+    setWanderTick((t) => t + 1);
+  }, [gate.mounts, page]);
+
+  // Any real write clears the hunt. Deeds are the honest signal for this: they
+  // are fired by the screens that own a write, after the server said yes, so
+  // "they did something" here means the same thing it means to the tour.
+  useEffect(() => {
+    if (!gate.mounts) return;
+    return subscribeToCompanionDeeds(() => { lastActionAtRef.current = Date.now(); });
+  }, [gate.mounts]);
+
   const candidates = useMemo<CompanionCandidate[]>(() => {
     const fromFindings = boot?.candidates ?? [];
-    if (traces.patterns.length === 0) return [...fromFindings];
+    const extra: CompanionCandidate[] = [];
+
+    // ── Something changed since they last looked ──────────────────────────
+    //
+    // Ahead of the wandering offer because it is a fact about the product and
+    // the other is an inference about a person; when both are somehow true,
+    // the fact wins. Behind traces and findings because a hotel with a real
+    // problem in it should hear about the problem.
+    if (boot) {
+      const news = decideWhatsNew(tourCtx, boot.memory);
+      if (news.show) {
+        extra.push({
+          topic: news.topic,
+          text: whatsNewSentence(news.entry.headline),
+          sensitivity: 'operational',
+          covers: [],
+          // No destination. The mini tour draws on the screen they are already
+          // standing on and takes itself wherever it needs to go, so walking
+          // somebody first would be navigating them in order to navigate them.
+          destination: null,
+          severity: 'ok',
+          replyKind: 'whats_new',
+          replies: repliesFor({ kind: 'whats_new' }),
+        });
+      }
+      // ── Looking for something ───────────────────────────────────────────
+      const lost = decideWandering({
+        visits: trailRef.current,
+        lastActionAt: lastActionAtRef.current,
+        now: Date.now(),
+        memory: boot.memory,
+      });
+      if (lost.wandering) extra.push(lost.candidate);
+    }
+
+    if (traces.patterns.length === 0) return [...fromFindings, ...extra];
     // Traces lead. A pattern about the screen somebody is looking at is more
     // use than a card about somewhere else, and the manners engine takes the
     // first candidate that survives its rules.
-    return [...traces.patterns.map(traceCandidate), ...fromFindings];
-  }, [boot, traces.patterns]);
+    return [...traces.patterns.map(traceCandidate), ...fromFindings, ...extra];
+    // `wanderTick` is the dependency that makes the trail visible to this memo.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [boot, traces.patterns, tourCtx, wanderTick]);
 
   const [traceShowing, setTraceShowing] = useState<TracePattern | null>(null);
   const [traceStale, setTraceStale] = useState<string | null>(null);
@@ -763,6 +884,10 @@ export function useCompanion(
   useEffect(() => {
     if (!boot || !gate.mounts) return;
     if (showing.kind !== 'none') return;
+    // A tour owns the screen while it is running. An offer stacked on a stop
+    // would be two companion cards at once, and the second one would be
+    // interrupting a walk the person asked for.
+    if (tourRunning) return;
 
     const onScreen = page?.key === 'staxis'
       // The Staxis list shows the findings themselves. Announcing one while it
@@ -879,14 +1004,16 @@ export function useCompanion(
         ? speech.question
         : companionQuestion(offerQuestionFor(speech.replyKind), speech.judgedQuestion),
       replies: speech.kind === 'welcome'
-        // `tourFor` rather than the memoized `tour` below: this effect is
-        // declared above that declaration, and naming it in a dependency array
-        // would read it before it exists. It is a pure function over two values
-        // this scope already holds, so calling it here costs nothing.
-        ? repliesFor({
-          kind: 'welcome',
-          page: tourFor({ role, enabledSections: activeProperty?.enabledSections })[0]?.key ?? null,
-        })
+        // `tourStopsFor` rather than the memoized `tourStops` below: this
+        // effect is declared above that declaration, and naming it in a
+        // dependency array would read it before it exists. It is a pure
+        // function over one value this scope already holds.
+        //
+        // The page is the FIRST STOP's, and the reply's `walk` intent is
+        // honest about it: the tour really does open on that screen. What the
+        // walk does not say is that a run starts as well, which is why the
+        // welcome branch in `answer` calls `startTour` rather than navigating.
+        ? repliesFor({ kind: 'welcome', page: tourStopsFor(tourCtx)[0]?.page ?? null })
         // The candidate's OWN replies, built beside the sentence, passed
         // through untouched. Re-deriving them here is the bug.
         : repliesForRole(speech.replies, role),
@@ -910,16 +1037,53 @@ export function useCompanion(
         spokenDay: boot.hotel.today,
         spokenCount: (m.spokenDay === boot.hotel.today ? m.spokenCount : 0) + 1,
       }));
+
+      // ── The two topics that get exactly one airing, ever ────────────────
+      //
+      // The ordinary ledger says "not again today" and drops a topic after two
+      // Nos, which is right for something the companion noticed and wrong for
+      // both of these. The wandering offer teaches ONE ability; asking a
+      // second time is the app repeating itself at somebody it already
+      // implied was lost. A shipped change is news, and news is only new once.
+      //
+      // Dropped on SHOWING rather than on an answer, so walking away counts
+      // the same as a No. That is the same rule the discovery pointer's "do
+      // not show this again" uses, through the same reducer.
+      if (topic === WANDER_TOPIC || topic.startsWith('whatsnew:')) {
+        void remember('dropped', { topic }, (m) => ({
+          ...m,
+          topics: {
+            ...m.topics,
+            [topic]: { declines: COMPANION_DECLINES_BEFORE_DROP, dropped: true, lastOfferedDay: boot.hotel.today },
+          },
+        }));
+      }
+      // Caught up, whatever they answer. A person who was shown the newest
+      // change is caught up on everything older than it too, so the cursor
+      // moves to the high-water mark rather than to this entry.
+      if (topic.startsWith('whatsnew:')) {
+        const through = whatsNewHighWater();
+        if (through) {
+          void remember('whats_new_seen', { through }, (m) => ({ ...m, whatsNewThrough: through }));
+        }
+      }
     }
   }, [
     boot, gate.mounts, showing.kind, pathname, page, busy, quietThisSession,
     properties.length, activeProperty?.name, activeProperty?.enabledSections, role, remember,
-    candidates, traceShowing, say,
+    candidates, traceShowing, say, tourRunning, tourCtx,
   ]);
 
   // ── Teach at the moment ──────────────────────────────────────────────────
+  //
+  // Silent while a tour is running. The tour's own `try` stop is standing on
+  // this exact moment with an arrow on the control, and following the person's
+  // first to-do with "next time you can just tell me" would be the companion
+  // congratulating somebody on a step it had just asked them to take, in a
+  // second card, over the first. The tip is not spent: `taught` is only
+  // stamped when the line is actually shown, so it is still owed afterwards.
   useEffect(() => {
-    if (!gate.mounts) return;
+    if (!gate.mounts || tourRunningRef.current) return;
     return subscribeToCompanionFlow((flow) => {
       setBoot((b) => {
         if (!b) return b;
@@ -946,7 +1110,9 @@ export function useCompanion(
         return b;
       });
     });
-  }, [gate.mounts, busy, quietThisSession, remember]);
+    // `tourRunning` re-arms the listener the moment a tour ends, so the tip is
+    // available again on the next flow the person completes on their own.
+  }, [gate.mounts, busy, quietThisSession, remember, tourRunning]);
 
   // ── Walking somebody somewhere ───────────────────────────────────────────
   // Client-side navigation to a CONSTANT from the allowlist. `page.href` is a
@@ -965,31 +1131,99 @@ export function useCompanion(
     });
   }, [router]);
 
-  const tour = useMemo(
-    () => tourFor({ role, enabledSections: activeProperty?.enabledSections }),
-    [role, activeProperty?.enabledSections],
-  );
+  // ── The tour ─────────────────────────────────────────────────────────────
+  //
+  // Every decision below is `tour.ts`. What is here is three things only: put
+  // the run in state, move the router when the stop's screen is not the screen
+  // underneath, and tell the server how it ended.
+
+  const tourStops = useMemo(() => tourStopsFor(tourCtx), [tourCtx]);
 
   const startTour = useCallback(() => {
     setShowing({ kind: 'none' });
-    if (tour.length === 0) return;
-    setTourStep(0);
-    goTo(tour[0]);
+    if (tourStops.length === 0) return;
+    setTourRun(startTourRun(tourStops));
+    // Stamped at the START, not at the end. Somebody who begins a tour and
+    // closes the tab has had the offer, and re-offering it on their next visit
+    // would be the companion asking a question it already asked.
     void remember('tour_taken', {}, (m) => ({ ...m, tourTakenAt: new Date().toISOString() }));
-  }, [tour, goTo, remember]);
+  }, [tourStops, remember]);
 
   const nextTourStep = useCallback(() => {
-    setTourStep((step) => {
-      if (step === null) return null;
-      const next = step + 1;
-      if (next >= tour.length) {
-        setShowing({ kind: 'none' });
-        return null;
-      }
-      goTo(tour[next]);
-      return next;
+    setTourRun((run) => (run ? advanceTour(run) : run));
+  }, []);
+
+  const skipTour = useCallback(() => {
+    setTourRun((run) => (run ? endTourRun(run, 'skipped') : run));
+  }, []);
+
+  // The real thing landed. Only the deed this stop asked for moves it on; the
+  // reducer owns that rule so a second listener cannot get it wrong.
+  useEffect(() => {
+    if (tourRun === null || tourRun.ended !== null) return;
+    return subscribeToCompanionDeeds((deed) => {
+      setTourRun((run) => (run ? tourDeedDone(run, deed) : run));
     });
-  }, [tour, goTo]);
+  }, [tourRun]);
+
+  // ── Walking between stops ────────────────────────────────────────────────
+  //
+  // `goTo` takes a CONSTANT from the allowlist in pages.ts, exactly as the
+  // "take me there" button does. A stop names a page KEY; `tourDestination`
+  // turns it into the one href that key is allowed to have, or into null,
+  // which cannot happen for a stop that survived `tourStopsFor` and is handled
+  // anyway rather than asserted away.
+  //
+  // Deliberately NOT `goTo`: that also sets the `arrived` speech, and a tour
+  // that narrated its own arrival would say two things about one screen.
+  const tourStopKey = tourRun && tourRun.ended === null ? currentStop(tourRun)?.key ?? null : null;
+  useEffect(() => {
+    if (!tourRun || tourRun.ended !== null) return;
+    const stop = currentStop(tourRun);
+    if (!stop) return;
+    const target = tourDestination(stop, tourCtx);
+    if (!target) return;
+    if (pathname === target.href) return;
+    router.push(target.href);
+    // Keyed on the STOP, not the run: a run object changes identity when a
+    // wait clears, and re-pushing the same href on that change would reload
+    // the screen out from under somebody who had just typed on it.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tourStopKey]);
+
+  // ── How it ended ─────────────────────────────────────────────────────────
+  //
+  // One post, once, when the run reaches a terminal state. Journaled on the
+  // server so the hotel's own record holds the fact that somebody walked out
+  // half way, and read by nothing that speaks: the companion never mentions a
+  // skipped tour, to anybody, ever.
+  const endedRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!tourRun || tourRun.ended === null) return;
+    const ending = tourRun.ended;
+    if (endedRef.current === ending) return;
+    endedRef.current = ending;
+    void remember('tour_ended', { ending }, (m) => ({
+      ...m,
+      tourTakenAt: m.tourTakenAt ?? new Date().toISOString(),
+      tourEndedAs: m.tourEndedAs ?? ending,
+    }));
+    // The card goes as soon as the last stop is answered. A closing sentence
+    // in the corner would be the companion taking one more turn after being
+    // told it was done.
+    setTourRun(null);
+  }, [tourRun, remember]);
+
+  // A new run is a new ending to record.
+  useEffect(() => { if (tourRun && tourRun.ended === null) endedRef.current = null; }, [tourRun]);
+
+  const tour = useMemo(() => ({
+    available: tourStops.length > 0,
+    run: tourRun,
+    start: startTour,
+    next: nextTourStep,
+    skip: skipTour,
+  }), [tourStops.length, tourRun, startTour, nextTourStep, skipTour]);
 
   // ── Answers ──────────────────────────────────────────────────────────────
   //
@@ -1103,7 +1337,6 @@ export function useCompanion(
     // ── Day one ────────────────────────────────────────────────────────────
     if (current.kind === 'speech' && current.speech.kind === 'welcome') {
       setShowing({ kind: 'none' });
-      setTourStep(null);
       if (intent.kind === 'close') {
         void remember('tour_declined', { ...stampLive(null, 'declined') },
           (m) => ({ ...m, tourDeclined: true }));
@@ -1133,16 +1366,17 @@ export function useCompanion(
       return;
     }
 
-    // ── Mid-tour ───────────────────────────────────────────────────────────
+    // ── Arriving somewhere ─────────────────────────────────────────────────
+    //
+    // ONE reply, and it closes. This card used to carry the tour's "Next:
+    // Dashboard", because the tour WAS a sequence of page walks and the
+    // arrival line was the only place a next step could live. It is not any
+    // more: a tour stop is a card beside a real control with its own Next, so
+    // an arrival is back to being one sentence about one screen with nothing
+    // to answer. `repliesFor({ kind: 'arrival', page: null })` is what makes
+    // that true rather than this branch, and it is asserted in the tests.
     if (current.kind === 'arrived') {
-      if (intent.kind === 'walk') {
-        // `nextTourStep` and not `goTo`: the step counter is what knows this is
-        // the fourth screen of eight rather than a navigation.
-        nextTourStep();
-        return;
-      }
       setShowing({ kind: 'none' });
-      setTourStep(null);
       return;
     }
 
@@ -1222,6 +1456,24 @@ export function useCompanion(
       return;
     }
     if (intent.kind === 'show') {
+      // ── "Want to see what is new?" ──────────────────────────────────────
+      //
+      // A yes runs the SAME player over the SAME anchors as the first-run
+      // tour, one to three stops long. It is a `show` and not a `walk` for the
+      // reason the reply set says: the mini tour draws on the screen they are
+      // standing on and takes itself wherever it needs to go.
+      //
+      // Recomputed here rather than carried on the candidate because a stop is
+      // a live thing: between the offer and the yes, a hotel can switch a
+      // section off, and running a stop that would no longer pass the gates is
+      // exactly the walking-into-a-locked-door failure the gates exist to
+      // prevent. Checked before the trace lookup, because a whats-new topic is
+      // never a trace and must not be searched for as one.
+      if (boot && topic.startsWith('whatsnew:')) {
+        const news = decideWhatsNew(tourCtx, boot.memory);
+        if (news.show && news.topic === topic) setTourRun(startTourRun(news.stops));
+        return;
+      }
       // Drawn in place when the thing it is about is on this screen already.
       // Walking somebody to the page they are standing on is the one-voice rule
       // broken in the other direction.
@@ -1251,19 +1503,22 @@ export function useCompanion(
     });
     if (target) goTo(target);
   }, [
-    startTour, nextTourStep, role, activeProperty?.enabledSections, goTo, remember,
+    startTour, role, activeProperty?.enabledSections, goTo, remember,
     onSeed, traces.patterns, tracePage, stampLive, markNoticesRead, retireLiveOffer,
-    recordVerdict, runFrozenPlan, quietTopic,
+    recordVerdict, runFrozenPlan, quietTopic, boot, tourCtx,
   ]);
 
   const dismiss = useCallback(() => {
     setShowing({ kind: 'none' });
-    setTourStep(null);
   }, []);
 
+  // "Quiet for now" ends a tour too. Somebody who asks the companion to stop
+  // talking has not asked it to stop talking except for the nine cards it is
+  // in the middle of. It counts as leaving, which is the honest ending: they
+  // did not see the rest.
   const quiet = useCallback(() => {
     setShowing({ kind: 'none' });
-    setTourStep(null);
+    setTourRun((run) => (run ? endTourRun(run, 'skipped') : run));
     setQuiet(true);
   }, []);
 
@@ -1726,23 +1981,24 @@ export function useCompanion(
     activeProperty?.enabledSections, answer,
   ]);
 
-  // ── The arrival line's Next, filled in at render ─────────────────────────
+  // ── The arrival line, and why it has no Next any more ────────────────────
   //
-  // `goTo` cannot know it: `startTour` sets the step and calls `goTo` in the
-  // same tick, so the step readable inside that callback is always the one
-  // before the move. Here the state has settled and the answer is simply true.
+  // This used to fill in "Next: Dashboard" at render, because `goTo` could not
+  // know which tour step it was on and the tour WAS a sequence of page walks:
+  // the arrival line was the only surface a next step could live on.
+  //
+  // The tour is stops now, and a stop is a card beside a real control that
+  // carries its own Next. So an arrival is what it always should have been:
+  // one sentence about one screen somebody was walked to from an offer, with
+  // nothing to answer. `page: null` is what makes the reply set a lone Close,
+  // and `answer`'s arrival branch has nothing but a close to handle.
   const showingOut = useMemo<CompanionShowing>(() => {
     if (showing.kind !== 'arrived') return showing;
-    const next = tourStep === null ? null : tour[tourStep + 1];
     return {
       ...showing,
-      replies: repliesFor({
-        kind: 'arrival',
-        page: next?.key ?? null,
-        pageLabel: next?.label ?? null,
-      }),
+      replies: repliesFor({ kind: 'arrival', page: null, pageLabel: null }),
     };
-  }, [showing, tourStep, tour]);
+  }, [showing]);
 
   // Kept in step with what is on the screen, for `answer`. An assignment during
   // render rather than an effect: the dispatcher can fire from a click in the
@@ -1774,13 +2030,10 @@ export function useCompanion(
     page,
     today: boot?.hotel.today ?? null,
     tour,
-    tourStep,
     answer,
     escape,
     dismiss,
     quiet,
-    startTour,
-    nextTourStep,
     goTo,
     replayOffer,
     showPatternByHint,

@@ -120,7 +120,6 @@ const previewData: CompanyAccessData = {
   }],
   memberships: [],
   effectiveAccess: [],
-  invitations: [],
   requests: [],
   activity: [],
   permissions: {

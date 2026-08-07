@@ -90,6 +90,14 @@ export function ConcourseBarView({
           <button
             key={it.key}
             type="button"
+            // `data-staxis-anchor` is a HANDLE, not a hook. The companion's
+            // arrow and the tour's cursor find these pills by attribute rather
+            // than by reaching into this component, and the nightly robot
+            // censuses them so a rename cannot silently unaim either. Keys are
+            // `nav-<section key>`; a section with no anchor in the registry
+            // resolves to nothing and is simply never pointed at, which is why
+            // this is unconditional rather than a list to keep in step.
+            {...{ 'data-staxis-anchor': `nav-${it.key}` }}
             className={`cx-pill${it.active ? ' cx-active' : ''}`}
             onClick={it.onClick}
             onPointerEnter={it.onIntent}
