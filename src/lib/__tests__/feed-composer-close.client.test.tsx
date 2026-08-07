@@ -284,3 +284,25 @@ describe('the composer carries a stable handle for anything pointing at it', () 
     });
   });
 });
+
+describe('the box never rewrites what was typed', () => {
+  // The parser tidies its OWN copy of the sentence (trims, capitalizes) for
+  // chips and filing. Before the fix this tidied copy was echoed back into the
+  // box on every keystroke, so a trailing space vanished the moment it was
+  // typed, which a person experiences as "spacebar does not work".
+  test('a trailing space survives the parse echo', async (t: TestContext) => {
+    await withList(t, async ({ host }) => {
+      await type(host, 'fix the sink ');
+      assert.equal(field(host).value, 'fix the sink ', 'the parse echo ate the trailing space');
+      await type(host, 'fix the sink n');
+      assert.equal(field(host).value, 'fix the sink n', 'the next letter landed wrong');
+    });
+  });
+
+  test('lowercase stays as typed, tidying is for the filing only', async (t: TestContext) => {
+    await withList(t, async ({ host }) => {
+      await type(host, 'call the plumber');
+      assert.equal(field(host).value, 'call the plumber', 'the box capitalized what somebody typed');
+    });
+  });
+});
