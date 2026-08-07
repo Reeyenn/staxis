@@ -8,7 +8,12 @@ export interface Property {
   name: string;
   totalRooms: number;
   avgOccupancy: number;
-  hourlyWage: number;
+  // NO PAY FIELDS HERE. The hotel's default housekeeper rate and its weekly
+  // labor budget used to ride along on this object, which meant `/api/properties`
+  // handed both to every signed-in person at the hotel — the route is the app
+  // shell and runs no `view_wages` check by design. Nothing rendered them.
+  // Pay lives behind /api/staff/wages and /api/settings/wages, which do check
+  // the capability. Don't add a money field to `Property`.
   checkoutMinutes: number;      // default 30
   /**
    * @deprecated Use `stayoverDay1Minutes` + `stayoverDay2Minutes` instead.
@@ -23,7 +28,6 @@ export interface Property {
   prepMinutesPerActivity: number; // default 5
   shiftMinutes: number;         // default 480 (8 hrs)
   totalStaffOnRoster: number;
-  weeklyBudget?: number;
   morningBriefingTime?: string; // "06:30"
   eveningForecastTime?: string; // "18:00"
   pmsType?: string;

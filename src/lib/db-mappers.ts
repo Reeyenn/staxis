@@ -183,7 +183,6 @@ export function toPropertyRow(p: Partial<Property>): Record<string, unknown> {
     name: p.name,
     total_rooms: p.totalRooms,
     avg_occupancy: p.avgOccupancy,
-    hourly_wage: p.hourlyWage,
     checkout_minutes: p.checkoutMinutes,
     stayover_minutes: p.stayoverMinutes,
     stayover_day1_minutes: p.stayoverDay1Minutes,
@@ -191,7 +190,6 @@ export function toPropertyRow(p: Partial<Property>): Record<string, unknown> {
     prep_minutes_per_activity: p.prepMinutesPerActivity,
     shift_minutes: p.shiftMinutes,
     total_staff_on_roster: p.totalStaffOnRoster,
-    weekly_budget: p.weeklyBudget,
     morning_briefing_time: p.morningBriefingTime,
     evening_forecast_time: p.eveningForecastTime,
     pms_type: p.pmsType,
@@ -221,11 +219,23 @@ export function toPropertyRow(p: Partial<Property>): Record<string, unknown> {
  * like dashboard_stale_minutes and scraper_window_* that the front-end never
  * consumes) on every property fetch.
  */
+// PAY PRIVACY — `hourly_wage` (the hotel's default housekeeper rate) and
+// `weekly_budget` (its weekly labor budget) are intentionally ABSENT, and must
+// not come back. `/api/properties` is the app SHELL: it reads with service-role
+// and is deliberately open to everyone who can open the hotel — a housekeeper,
+// a front-desk lead, a maintenance tech — because the tenant wall there is
+// coverage, not role. It runs no `view_wages` check and cannot cheaply run one
+// per hotel on the sign-in critical path. So every column listed here is a
+// column every signed-in person at the hotel receives. Pay figures are gated on
+// `view_wages` (a manager-floor capability) and are read through
+// GET /api/staff/wages and GET /api/settings/wages, which do check it. Adding a
+// money column here hands it to the whole staff instead. Same rule the `staff`
+// projection follows in src/lib/db/staff.ts.
 export const PROPERTY_COLS =
-  'id, name, total_rooms, avg_occupancy, hourly_wage, checkout_minutes, ' +
+  'id, name, total_rooms, avg_occupancy, checkout_minutes, ' +
   'stayover_minutes, stayover_day1_minutes, stayover_day2_minutes, ' +
   'prep_minutes_per_activity, shift_minutes, total_staff_on_roster, ' +
-  'weekly_budget, morning_briefing_time, evening_forecast_time, ' +
+  'morning_briefing_time, evening_forecast_time, ' +
   'pms_type, pms_url, pms_connected, last_synced_at, alert_phone, timezone, ' +
   'room_inventory, onboarding_completed_at, onboarding_state, onboarding_prompt_shown_at, enabled_sections, inventory_budget_mode, inventory_tab_layout, housekeeping_setup, is_test, created_at';
 
@@ -235,7 +245,6 @@ export function fromPropertyRow(r: Record<string, unknown>): Property {
     name: String(r.name ?? ''),
     totalRooms: Number(r.total_rooms ?? 0),
     avgOccupancy: Number(r.avg_occupancy ?? 0),
-    hourlyWage: Number(r.hourly_wage ?? 15),
     checkoutMinutes: Number(r.checkout_minutes ?? 30),
     stayoverMinutes: Number(r.stayover_minutes ?? 20),
     stayoverDay1Minutes: r.stayover_day1_minutes == null ? undefined : Number(r.stayover_day1_minutes),
@@ -243,7 +252,6 @@ export function fromPropertyRow(r: Record<string, unknown>): Property {
     prepMinutesPerActivity: Number(r.prep_minutes_per_activity ?? 5),
     shiftMinutes: Number(r.shift_minutes ?? 480),
     totalStaffOnRoster: Number(r.total_staff_on_roster ?? 0),
-    weeklyBudget: r.weekly_budget == null ? undefined : Number(r.weekly_budget),
     morningBriefingTime: parseStringField(r.morning_briefing_time),
     eveningForecastTime: parseStringField(r.evening_forecast_time),
     pmsType: parseStringField(r.pms_type),

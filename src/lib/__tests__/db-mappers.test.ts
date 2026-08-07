@@ -80,7 +80,6 @@ describe('Property mapper round-trip', () => {
       name: 'Comfort Suites',
       totalRooms: 74,
       avgOccupancy: 0.85,
-      hourlyWage: 17,
       checkoutMinutes: 30,
       stayoverMinutes: 20,
       prepMinutesPerActivity: 5,
@@ -97,7 +96,6 @@ describe('Property mapper round-trip', () => {
     assert.equal(reread.name, original.name);
     assert.equal(reread.totalRooms, original.totalRooms);
     assert.equal(reread.avgOccupancy, original.avgOccupancy);
-    assert.equal(reread.hourlyWage, original.hourlyWage);
     assert.equal(reread.timezone, original.timezone);
   });
 });
