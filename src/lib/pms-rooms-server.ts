@@ -942,7 +942,7 @@ export async function mergePmsRoomsForStaff(
   }
   const mirrorRows = (assignRes.value.data ?? []) as (MirrorRow & { date: string })[];
   const workRows = (workRes.value.data ?? []) as (WorkRow & { date: string })[];
-  const staffListRows = (staffListRes.value.data ?? []) as StaffNameRow[];
+  const staffListRows = (staffListRes.value.data ?? []) as unknown as StaffNameRow[];
   const staffNameById = new Map(staffListRows.map((s) => [s.id, s.name]));
 
   // 3. Filter to THIS staff member. An explicit assignment (a real staff id a
