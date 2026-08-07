@@ -29,7 +29,6 @@ export * from './db/properties';
 export * from './db/staff';
 export * from './db/public-areas';
 export * from './db/laundry';
-export * from './db/daily-logs';
 export * from './db/rooms';
 export * from './db/work-orders';
 export * from './db/preventive';

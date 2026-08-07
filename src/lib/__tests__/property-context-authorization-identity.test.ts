@@ -115,10 +115,13 @@ describe('PropertyContext authorization identity', () => {
   });
 
   test('selecting the already-active hotel preserves capability readiness', () => {
-    const selection = section(
+    // The setter takes a SCOPE now, so the hotel path starts where the company
+    // early-return ends. Slice to that path so this pins the same invariant.
+    const setter = section(
+      'const setActiveScope = useCallback',
       'const setActivePropertyId = useCallback',
-      '// Cross-tab sync',
     );
+    const selection = setter.slice(setter.indexOf('const id = selection.propertyId;'));
     const sameHotelGuard = selection.indexOf('if (id === activePropertyId)');
     const snapshotClear = selection.indexOf('setCapabilitySnapshot(null)');
 
@@ -126,9 +129,14 @@ describe('PropertyContext authorization identity', () => {
     assert.ok(snapshotClear > sameHotelGuard, 'same-hotel return must happen before capability reset');
     assert.match(
       selection.slice(sameHotelGuard, snapshotClear),
-      /if \(id === activePropertyId\)[\s\S]*?return;/,
+      /if \(id === activePropertyId\)[\s\S]*?return \{ ok: true \};/,
     );
-    assert.match(selection, /\}, \[activePropertyId, actingHotelId\]\);/);
+    assert.match(setter, /\}, \[activePropertyId, actingHotelId\]\);/);
+    // A company selection is a first-class value on the same setter, never a
+    // magic hotel id smuggled through the hotel path.
+    assert.match(setter, /if \(selection\.kind === 'company'\)/);
+    // An acting-context pin or a cancelled workflow REPORTS the refusal.
+    assert.match(setter, /return \{ ok: false, reason: 'blocked' \};/);
   });
 
   test('the property selector invalidates stale coverage on same-UID authorization changes', () => {

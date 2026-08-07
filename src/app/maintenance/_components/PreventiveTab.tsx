@@ -27,20 +27,26 @@ import {
   Caps, Pill, Btn, Modal, Field, TextInput, TextArea,
   PageHead, BoardColumn, BoardCard, CenteredBoard, MtEmptyCard,
   useBoardGate, BoardLoading, BoardLoadError,
-  relDue, fmtDate, fmtDateShort, daysBetween, addDaysLocal, cadenceLabel,
+  relDue, fmtDate, daysBetween, addDaysLocal, cadenceLabel,
+  newScheduleStart, newScheduleStartNote, writeFailureMessage,
+  nextDueDate, daysUntilDue, bandFor, dueChipLabel, nextDueLine,
+  type Band,
 } from './_mt-snow';
 import { useToast, ToastHost } from '@/app/_components/ui/toast';
 import { EquipmentRegistry } from './EquipmentRegistry';
 import { WheelDatePicker } from '@/components/ui/WheelDatePicker';
 import { PatternChip } from '@/components/concourse/PatternChip';
 
-type Band = 'overdue' | 'soon' | 'upcoming';
-const BAND: Record<Band, { color: string; tone: 'warm' | 'caramel' | 'sage'; en: string }> = {
-  overdue:  { color: T.warm,     tone: 'warm',    en: 'Overdue',        },
-  soon:     { color: T.caramel,  tone: 'caramel', en: 'Due this month', },
-  upcoming: { color: T.sageDeep, tone: 'sage',    en: 'Upcoming',       },
+// The four bands and their skin. The RULES (which band a schedule is in, and
+// what its card is allowed to claim) live in mt-dates.ts so they can be
+// exercised without React; only the colours are here.
+const BAND: Record<Band, { color: string; tone: 'warm' | 'caramel' | 'sage' | 'neutral'; en: string }> = {
+  overdue:   { color: T.warm,     tone: 'warm',    en: 'Overdue',        },
+  unstarted: { color: T.ink3,     tone: 'neutral', en: 'No start date',  },
+  soon:      { color: T.caramel,  tone: 'caramel', en: 'Due this month', },
+  upcoming:  { color: T.sageDeep, tone: 'sage',    en: 'Upcoming',       },
 };
-const BAND_ORDER: Band[] = ['overdue', 'soon', 'upcoming'];
+const BAND_ORDER: Band[] = ['overdue', 'unstarted', 'soon', 'upcoming'];
 
 const UNITS = [
   { value: 'days',   mult: 1,   en: 'days',   },
@@ -49,20 +55,6 @@ const UNITS = [
   { value: 'years',  mult: 365, en: 'years',  },
 ] as const;
 type Unit = typeof UNITS[number]['value'];
-
-function nextDueDate(t: PreventiveTask): Date {
-  if (!t.lastCompletedAt) return new Date();
-  // Calendar-day addition (DST-safe) — raw ms addition landed backfilled
-  // midnight-anchored dates at 23:00 the previous day across the fall-back,
-  // banding/displaying the due date one day early.
-  return addDaysLocal(t.lastCompletedAt, t.frequencyDays);
-}
-function bandFor(t: PreventiveTask): Band {
-  const d = daysBetween(new Date(), nextDueDate(t));
-  if (d < 0) return 'overdue';
-  if (d <= 30) return 'soon';
-  return 'upcoming';
-}
 
 // ── "somebody's been called" ────────────────────────────────────────────────
 //
@@ -183,6 +175,7 @@ function NewTaskModal({
   };
 
   const { n, freqDays, nextDue } = cadenceFrom(count, unit, last);
+  const startsFromToday = last.trim() === '';
   const can = name.trim() && area.trim() && n > 0 && !busy;
 
   const submit = async () => {
@@ -227,6 +220,15 @@ function NewTaskModal({
           <span style={{ fontFamily: FONT_SANS, fontSize: 15, color: T.ink }}>
             {'Next due: '}<strong style={{ fontWeight: 600 }}>{can ? fmtDate(nextDue) : '—'}</strong>
           </span>
+          {/* Said out loud rather than decided quietly. A blank box moves the
+              schedule's last-done date to today, and a manager who did not know
+              that would find their own hotel's record saying the job was done
+              on a day nobody did it. */}
+          {newScheduleStartNote(startsFromToday) && (
+            <span style={{ flexBasis: '100%', fontFamily: FONT_SANS, fontSize: 12.5, color: T.ink2, lineHeight: 1.45 }}>
+              {newScheduleStartNote(startsFromToday)}
+            </span>
+          )}
         </div>
       </div>
     </Modal>
@@ -270,8 +272,13 @@ function TaskModal({
   if (!task) return null;
 
   const { n, freqDays, lastDate, nextDue } = cadenceFrom(count, unit, last);
+  // An empty last-done box means there is no due date, not a due date of
+  // today + the cadence. cadenceFrom previews from today so the number moves as
+  // you type; showing that preview as "Next due" on a schedule nobody has ever
+  // recorded doing is the same invented date the board used to print.
+  const unstarted = last.trim() === '';
   const du = daysBetween(new Date(), nextDue);
-  const band: Band = du < 0 ? 'overdue' : du <= 30 ? 'soon' : 'upcoming';
+  const band: Band = unstarted ? 'unstarted' : du < 0 ? 'overdue' : du <= 30 ? 'soon' : 'upcoming';
   const meta = BAND[band];
   // Same guard the create form uses. An emptied or zeroed frequency box falls
   // through cadenceFrom's Math.max(1, n), so saving it would quietly turn
@@ -306,7 +313,11 @@ function TaskModal({
     finally { setBusy(false); }
   };
   const wasCalled = calledLine(task, es);
-  const isLate = daysBetween(new Date(), nextDueDate(task)) < 0;
+  // A schedule with no due date cannot be late, so there is nothing anybody
+  // could have been called about. daysUntilDue is null there, and a null that
+  // fell through a `< 0` comparison would silently read as "not late" anyway —
+  // said explicitly so the next reader does not have to work that out.
+  const isLate = (daysUntilDue(task) ?? 0) < 0;
 
   return (
     <Modal
@@ -329,7 +340,11 @@ function TaskModal({
       <div style={{ display: 'flex', flexDirection: 'column', gap: 18 }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
           <Pill tone={meta.tone}>{meta.en}</Pill>
-          <Caps size={11} tracking="0.06em">{'Next due'} {fmtDate(nextDue)} · {relDue(du)}</Caps>
+          <Caps size={11} tracking="0.06em">
+            {unstarted
+              ? 'No last-done date, so nothing counts forward yet'
+              : <>{'Next due'} {fmtDate(nextDue)} · {relDue(du)}</>}
+          </Caps>
         </div>
 
         {!canEdit && (
@@ -373,13 +388,11 @@ function TaskModal({
 // Every write on this board lands in preventive_tasks, whose insert/update/
 // delete policies all require staxis_user_can_manage_equipment (0334). An
 // insufficient-privilege refusal is not a dropped connection, so don't tell the
-// user to check their connection about it.
-function writeFailureMessage(e: unknown, fallback: string): string {
-  const code = String((e as { code?: string } | null)?.code ?? '');
-  return code === '42501'
-    ? "You don't have permission to change upkeep schedules."
-    : fallback;
-}
+// user to check their connection about it. The rule now lives in mt-dates.ts
+// and is shared with the Work orders board, which was telling everybody a
+// refusal was a network problem.
+const scheduleWriteFailure = (e: unknown, fallback: string) =>
+  writeFailureMessage(e, fallback, 'upkeep schedules');
 
 // ── root ─────────────────────────────────────────────────────────────────────
 export function PreventiveTab() {
@@ -430,13 +443,17 @@ export function PreventiveTab() {
         name: args.name,
         area: args.area,
         frequencyDays: args.frequencyDays,
-        lastCompletedAt: args.lastCompletedISO ? new Date(args.lastCompletedISO) : new Date(),
-        lastCompletedBy: user.displayName,
+        // A date, and NO NAME. Typing a schedule in is not performing the
+        // service, and the creator's name in `last_completed_by` is a permanent
+        // claim that they did — one the companion reads back and repeats. See
+        // newScheduleStart, and agent/tools/staxis-setup.ts, which has always
+        // refused to write this column for exactly the same reason.
+        lastCompletedAt: newScheduleStart(args.lastCompletedISO).lastCompletedAt,
         notes: undefined,
         equipmentId: null,
       });
     } catch (err) {
-      flash(writeFailureMessage(err, "Couldn't add the task. Check your connection and try again."));
+      flash(scheduleWriteFailure(err, "Couldn't add the task. Check your connection and try again."));
       throw err;
     }
   };
@@ -457,7 +474,7 @@ export function PreventiveTab() {
     try {
       await updatePreventiveTask(user.uid, activePropertyId, id, patch);
     } catch (err) {
-      flash(writeFailureMessage(err, "Couldn't save the changes. Check your connection and try again."));
+      flash(scheduleWriteFailure(err, "Couldn't save the changes. Check your connection and try again."));
       throw err;
     }
   };
@@ -475,22 +492,31 @@ export function PreventiveTab() {
       }
       await completePreventiveTask(id, { completedISO: new Date().toISOString(), completedByName: user.displayName });
     } catch (err) {
-      flash(writeFailureMessage(err, "Couldn't mark it done. Check your connection and try again."));
+      flash(scheduleWriteFailure(err, "Couldn't mark it done. Check your connection and try again."));
       throw err;
     }
   };
 
   // "Somebody's been called": arranged, not done. Writes only the called flag —
   // last-done stays exactly where it was, because the job has not happened.
+  //
+  // It also RETIRES A SKIP, which the Staxis list's own version of this button
+  // has always done and this one did not. A schedule cannot honestly be resting
+  // on two different grounds at once, and skipped is checked first everywhere,
+  // so a manager who put an occurrence down and then actually arranged the work
+  // got their call recorded and the schedule went on resting on the skip — for
+  // the rest of a cadence, which on a six-monthly job is most of a year.
   const handleCalled = async (id: string) => {
     if (!user || !activePropertyId) return;
     try {
       await updatePreventiveTask(user.uid, activePropertyId, id, {
         calledAt: new Date(),
         calledBy: user.displayName,
+        skippedAt: null,
+        skippedBy: null,
       });
     } catch (err) {
-      flash(writeFailureMessage(err, "Couldn't save that. Check your connection and try again."));
+      flash(scheduleWriteFailure(err, "Couldn't save that. Check your connection and try again."));
       throw err;
     }
   };
@@ -529,16 +555,22 @@ export function PreventiveTab() {
           {liveBands.map((b) => {
             const meta = BAND[b];
             const items = tasks.filter((t) => bandFor(t) === b)
-              .sort((a, c) => daysBetween(new Date(), nextDueDate(a)) - daysBetween(new Date(), nextDueDate(c)));
+              // Unstarted schedules have no due date to sort by, so they keep
+              // whatever order they arrived in rather than being ranked by a
+              // number that does not exist.
+              .sort((a, c) => (daysUntilDue(a) ?? 0) - (daysUntilDue(c) ?? 0));
             return (
               <BoardColumn key={b} color={meta.color} label={meta.en} count={items.length}>
                 {items.map((t) => {
-                  const du = daysBetween(new Date(), nextDueDate(t));
+                  const du = daysUntilDue(t);
+                  const due = nextDueDate(t);
                   return (
                     <BoardCard key={t.id} accent={meta.color} onClick={() => setSelId(t.id)}>
                       <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: 8 }}>
                         <span style={{ fontFamily: FONT_SANS, fontSize: 15, color: T.ink, letterSpacing: '-0.01em', lineHeight: 1.25, fontWeight: 600 }}>{t.name}</span>
-                        <span style={{ fontFamily: FONT_MONO, fontSize: 10.5, fontWeight: 600, color: meta.color, whiteSpace: 'nowrap', flexShrink: 0 }}>{relDue(du)}</span>
+                        <span style={{ fontFamily: FONT_MONO, fontSize: 10.5, fontWeight: 600, color: meta.color, whiteSpace: 'nowrap', flexShrink: 0 }}>
+                          {dueChipLabel(du)}
+                        </span>
                       </div>
                       <span style={{ fontFamily: FONT_SANS, fontSize: 12.5, color: T.ink2, lineHeight: 1.4 }}>{t.area ? `${t.area} · ` : ''}{cadenceLabel(t.frequencyDays)}</span>
                       {/* Still outstanding, but somebody is on it. Said on the
@@ -557,7 +589,11 @@ export function PreventiveTab() {
                         </span>
                       )}
                       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, marginTop: 1 }}>
-                        <Caps size={10} tracking="0.06em" c={T.ink3}>{'next'} · {fmtDateShort(nextDueDate(t))}</Caps>
+                        {/* An unstarted schedule says what is missing, and what
+                            to do about it, instead of printing today's date
+                            under the word "next" as though somebody had told us
+                            when it was last serviced. */}
+                        <Caps size={10} tracking="0.06em" c={T.ink3}>{nextDueLine(due)}</Caps>
                         {canEdit && <Btn variant={b === 'upcoming' ? 'ghost' : 'sage'} size="sm" onClick={(e) => { e.stopPropagation(); handleCompleteToday(t.id).catch(() => { /* toast shown */ }); }}>✓ {'Done today'}</Btn>}
                       </div>
                     </BoardCard>

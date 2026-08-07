@@ -48,6 +48,7 @@ import type { AiFeatureKey, AiModelRef } from '@/lib/ai/types';
 import { ANTHROPIC_TIER_PRICING } from '@/lib/ai/feature-registry';
 import {
   AiExecutionDeadlineError,
+  AiFeatureDisabledError,
   createAiAttemptContext,
   estimateAiCostUsd,
   executeAiPlan,
@@ -256,10 +257,48 @@ export async function resolveAskStaxisExecutionPlan(): Promise<AiExecutionPlan> 
 }
 
 /**
- * Cross-hotel chat's own plan, so the AI Control Center governs which model
- * answers company questions independently of the per-hotel copilot. Same shape,
- * same legacy-override handling — only the registry key differs.
+ * A FACE on the Ask Staxis conversation resolves its own Control Center row and,
+ * if that row is BROKEN, borrows the copilot's plan rather than failing the turn.
+ *
+ * ─── WHAT "BROKEN" MEANS, AND WHAT IT DELIBERATELY DOES NOT ────────────────
+ *
+ * Broken is a misconfiguration nobody chose: a model the provider stopped
+ * listing, a selection with no published price, a catalog read that failed. A
+ * housekeeper's question in a channel must not go unanswered because somebody
+ * unpriced a model on a screen in the admin area, so those borrow the copilot's
+ * plan silently and the person never knows.
+ *
+ * SWITCHED OFF IS NOT BROKEN. It is a decision, made on purpose, on the one
+ * screen whose job is to make that decision. `AiFeatureDisabledError` is what
+ * the runtime raises for it — including for a config the store FAILED CLOSED,
+ * which is the store having already decided this row must stop dispatching — and
+ * a blanket `catch` here turned both into "carry on, on the copilot's model".
+ *
+ * That is the exact failure this whole audit is named after: the Control Center
+ * said the bubble was off, reported success, and the bubble kept answering. It
+ * was worse than a no-op, because the turn was still BILLED to the switched-off
+ * row (the route picks the ledger feature from the origin, not from the plan),
+ * so the spend screen showed a feature that is off spending money.
+ *
+ * So: rethrow the decision, borrow only for the accidents. Every caller already
+ * degrades cleanly on a throw — /api/agent/command and its resolve-action
+ * sibling answer 503, the thread assistant says "try later" — so the switch now
+ * stops what it claims to stop.
  */
+async function resolveFaceExecutionPlan(featureKey: AiFeatureKey): Promise<AiExecutionPlan> {
+  try {
+    const resolved = await resolveAiExecutionPlan(
+      featureKey,
+      MESSAGES_RUNTIME_PROVIDERS,
+      { requirePricing: true },
+    );
+    return applyLegacyModelOverrideToPlan(resolved, 'sonnet');
+  } catch (error) {
+    if (error instanceof AiFeatureDisabledError) throw error;
+    return resolveAskStaxisExecutionPlan();
+  }
+}
+
 /**
  * The companion bubble's own plan.
  *
@@ -267,45 +306,31 @@ export async function resolveAskStaxisExecutionPlan(): Promise<AiExecutionPlan> 
  * exactly like the portfolio plan above. It exists so the AI Control Center can
  * govern which model answers through the bubble without moving the chat bar that
  * managers type into all day.
- *
- * Falls back to Ask Staxis's plan rather than failing the turn. The companion is
- * a FACE on that conversation, so "the companion's own slot is misconfigured" is
- * not a reason a person cannot talk to the assistant they already had. The
- * fallback is silent by design: the alternative is a bubble that 503s because
- * somebody unpriced a model on a screen in the admin area.
  */
-export async function resolveCompanionChatExecutionPlan(): Promise<AiExecutionPlan> {
-  try {
-    const resolved = await resolveAiExecutionPlan(
-      'companion.conversation',
-      MESSAGES_RUNTIME_PROVIDERS,
-      { requirePricing: true },
-    );
-    return applyLegacyModelOverrideToPlan(resolved, 'sonnet');
-  } catch {
-    return resolveAskStaxisExecutionPlan();
-  }
+export function resolveCompanionChatExecutionPlan(): Promise<AiExecutionPlan> {
+  return resolveFaceExecutionPlan('companion.conversation');
 }
 
 /**
- * The @Staxis thread assistant's own plan.
- *
- * Same shape as the companion's, including the silent fall back to Ask Staxis:
- * the thread assistant is a FACE on the same conversation, so "somebody
- * unpriced the model on its Control Center row" must not be the reason a
- * housekeeper's question in a channel goes unanswered.
+ * The @Staxis thread assistant's own plan. Same face, same rules.
  */
-export async function resolveMessagesAssistantExecutionPlan(): Promise<AiExecutionPlan> {
-  try {
-    const resolved = await resolveAiExecutionPlan(
-      'communications.staxis_assistant',
-      MESSAGES_RUNTIME_PROVIDERS,
-      { requirePricing: true },
-    );
-    return applyLegacyModelOverrideToPlan(resolved, 'sonnet');
-  } catch {
-    return resolveAskStaxisExecutionPlan();
-  }
+export function resolveMessagesAssistantExecutionPlan(): Promise<AiExecutionPlan> {
+  return resolveFaceExecutionPlan('communications.staxis_assistant');
+}
+
+/**
+ * What a person is told when no model plan could be resolved for their turn.
+ *
+ * Two sentences, because there are two different situations and only one of them
+ * is worth waiting out. "Switched off" is somebody's decision and will still be
+ * true in a minute; anything else is plumbing and probably will not be. Neither
+ * repeats the raw error, which is how the registry key and the pricing-metadata
+ * complaint used to end up on a manager's screen.
+ */
+export function agentPlanFailureMessage(error: unknown): string {
+  return error instanceof AiFeatureDisabledError
+    ? 'This helper is switched off right now.'
+    : 'Staxis could not answer just now. Try again in a moment.';
 }
 
 /**
@@ -348,6 +373,13 @@ export function resolveAgentOriginExecutionPlan(origin: AgentOrigin): Promise<Ai
   return resolveAskStaxisExecutionPlan();
 }
 
+/**
+ * Cross-hotel chat's own plan, so the AI Control Center governs which model
+ * answers company questions independently of the per-hotel copilot. Same shape,
+ * same legacy-override handling — only the registry key differs. No borrowing:
+ * a company question is its own surface, not a face on the copilot, so its row
+ * being off or broken stops it rather than moving it somewhere else.
+ */
 export async function resolvePortfolioChatExecutionPlan(): Promise<AiExecutionPlan> {
   const resolved = await resolveAiExecutionPlan(
     'agent.portfolio_chat',

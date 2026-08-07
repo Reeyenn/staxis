@@ -36,6 +36,7 @@ import { useNavigationReady, useReliableNavigation } from '@/lib/hooks/use-relia
 import { useAuthorizationRefreshKey } from '@/lib/hooks/use-authorization-refresh-key';
 import { usePortfolio } from '@/contexts/PortfolioContext';
 import { shouldWaitForPortfolioBootstrapResult } from '@/lib/portfolio-ui/entry-routing';
+import { companyEntryDestination } from '@/lib/portfolio-ui/acting-scope';
 
 import JoinStatusGate from '@/app/property-selector/JoinStatusGate';
 import {
@@ -175,19 +176,13 @@ export default function PropertySelectorPage() {
   }, [data, enter, requiresCompanySelection]);
 
   // The role-aware entry resolver owns the first acting-context decision.
-  // Company leaders enter Portfolio Home (or the company/context chooser)
-  // without first selecting a hotel; hotel-only users keep this exact picker.
+  // Company leaders enter THE APP in company scope, not a separate portfolio
+  // world: one authorized company lands on Home in that scope, several land on
+  // Home and pick from the switcher. Hotel-only users keep this exact picker.
   useEffect(() => {
     if (authLoading || !user || user.role === 'admin' || portfolio.loading) return;
-    const selection = portfolio.data?.selection;
-    if (!selection) return;
-    if (selection.state === 'selected' && selection.selectedOrganizationId) {
-      replaceNavigation(
-        `/portfolio?organizationId=${encodeURIComponent(selection.selectedOrganizationId)}`,
-      );
-    } else if (selection.state === 'needs_selection') {
-      replaceNavigation('/portfolio/choose');
-    }
+    const destination = companyEntryDestination(portfolio.data?.selection);
+    if (destination) replaceNavigation(destination);
   }, [
     authLoading,
     portfolio.data?.selection,

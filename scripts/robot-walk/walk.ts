@@ -37,6 +37,7 @@ import {
   anchorCensusDetail,
   anchorCensusPages,
   anchorsExpectedAt,
+  composerNamesAssignee,
   isRobotWalkArtifact,
   runRobotWalk,
   summarizeRobotWalk,
@@ -273,7 +274,10 @@ function buildSteps(page: Page): RobotWalkStep[] {
 
         await page.getByRole('radio', { name: ASSIGNEE, exact: true }).click({ timeout: ACTION_MS });
         const label = await who.getAttribute('aria-label');
-        if (!label || !label.includes(ASSIGNEE)) {
+        // The button says the person's FIRST name, by design. Asserting the
+        // full name here is what made this step fail every night for a reason
+        // that had nothing to do with the app. See composerNamesAssignee.
+        if (!composerNamesAssignee(label, ASSIGNEE)) {
           throw new Error(`Picked ${ASSIGNEE} but the composer still says "${label ?? 'nothing'}".`);
         }
 

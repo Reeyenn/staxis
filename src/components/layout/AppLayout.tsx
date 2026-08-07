@@ -10,7 +10,8 @@ import { useLang } from '@/contexts/LanguageContext';
 import { useSyncContext } from '@/contexts/SyncContext';
 import { t } from '@/lib/translations';
 import { WifiOff } from 'lucide-react';
-import { sectionForPath, isSectionEnabled } from '@/lib/sections/registry';
+import { sectionForPath, isSectionEnabled, SECTION_META } from '@/lib/sections/registry';
+import { localAppHref } from '@/lib/portfolio-ui/acting-scope';
 import { RouteErrorState } from './RouteResourceState';
 import {
   clearStaleChunkRecoveryIncident,
@@ -49,6 +50,7 @@ export function AppLayout({
   const { isOnline } = useSyncContext();
   const {
     activeProperty,
+    activeScope,
     capabilityOverridesStatus,
     propertiesError,
     refreshCapabilities,
@@ -74,6 +76,15 @@ export function AppLayout({
         && !isSectionEnabled(activeProperty.enabledSections, currentSection))
     ),
   );
+
+  /* ── Company scope has no section pages yet ──
+     The section routes read ONE hotel. Rendering them under a company scope
+     would put a single building's numbers on a page the person opened to see
+     the whole company, which is the worst possible failure here: it is wrong
+     and it looks right. Say so instead, and offer the hotel version. The
+     company versions of these pages ship separately. */
+  const companySectionPending = activeScope.kind === 'company' && currentSection !== null;
+  const companySectionLabel = currentSection ? SECTION_META[currentSection].label_en : '';
 
   /* ── Offline banner ──
      Just "you have no connection". There is no longer a queued-writes count
@@ -172,6 +183,36 @@ export function AppLayout({
             retryLabel={'Try again'}
             onRetry={retryProperties}
           />
+        ) : companySectionPending ? (
+          <div style={{
+            display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
+            textAlign: 'center', gap: '10px',
+            padding: 'clamp(48px, 12vh, 120px) 24px',
+            minHeight: '50vh',
+          }}>
+            <div style={{
+              fontFamily: 'var(--font-geist), -apple-system, BlinkMacSystemFont, sans-serif',
+              fontSize: '18px', fontWeight: 600, color: 'var(--snow-ink, var(--fg))',
+            }}>
+              {`${companySectionLabel} across your whole company is on its way`}
+            </div>
+            <div style={{ fontSize: '14px', color: 'var(--text-secondary)', maxWidth: 420 }}>
+              {'This page still shows one hotel at a time, so it is not showing you anything yet.'}
+            </div>
+            <a
+              href={localAppHref(pathname)}
+              style={{
+                marginTop: 6,
+                border: '1px solid currentColor', borderRadius: 8,
+                minHeight: 44, padding: '10px 16px',
+                display: 'inline-flex', alignItems: 'center',
+                font: 'inherit', fontSize: 14, fontWeight: 650,
+                color: 'var(--snow-ink, var(--fg))', textDecoration: 'none',
+              }}
+            >
+              {`Open ${companySectionLabel} at one hotel`}
+            </a>
+          </div>
         ) : sectionOff ? (
           <div style={{
             display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',

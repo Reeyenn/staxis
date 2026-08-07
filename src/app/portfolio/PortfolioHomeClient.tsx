@@ -14,6 +14,7 @@ import portfolioStyles from '@/components/portfolio/PortfolioUI.module.css';
 import { useAuth } from '@/contexts/AuthContext';
 import { usePortfolio } from '@/contexts/PortfolioContext';
 import { buildPortfolioHotelSecondaryLabels } from '@/lib/portfolio-ui/context';
+import { companyScopeHref } from '@/lib/portfolio-ui/acting-scope';
 import type {
   PortfolioUiCompanyContext,
   PortfolioUiHotel,
@@ -169,7 +170,7 @@ export function PortfolioHomeClient() {
   React.useEffect(() => {
     if (portfolio.loading || portfolio.error || !data) return;
     if (data.selection.state === 'needs_selection') {
-      router.replace('/portfolio/choose');
+      router.replace('/home');
       return;
     }
     if (data.entry.mode === 'hotel') router.replace('/home');
@@ -357,7 +358,7 @@ export function PortfolioHomeClient() {
           contextLabel: 'Portfolio',
           scopeName: company.organizationName ?? 'Your company',
           secondaryLabel: `${company.hotelCount} authorized ${company.hotelCount === 1 ? 'hotel' : 'hotels'}`,
-          switchAction: { label: 'Switch context', href: `/portfolio/choose?organizationId=${encodeURIComponent(company.organizationId)}` },
+          switchAction: { label: 'Open company view', href: companyScopeHref('/home', company.organizationId) },
         }}
         greeting={greeting(firstName(user?.displayName), today.getHours())}
         dateline={`${dateLabel} · Portfolio · ${company.organizationName ?? 'Company'}`}

@@ -167,7 +167,9 @@ job-catalog parity test fails loudly on a half-finished change.
 
 - Vercel-scheduled: see the **Cron Jobs** tab of the Vercel project dashboard. Each invocation logs in **Functions**.
 - Externally triggered: `gh workflow list` shows the GitHub Actions side; per-route invocation logs land in Vercel **Functions** logs (filter by route).
-- Routes with a cataloged heartbeat write `cron_heartbeats` on success — `select route, last_run_at from cron_heartbeats order by last_run_at desc` is the fastest "is this thing running?" check.
+- Routes with a cataloged heartbeat write `cron_heartbeats` on success. The columns are `cron_name` and `last_success_at` (migration 0074), so the query is `select cron_name, last_success_at from cron_heartbeats order by last_success_at desc`. This line named `route` and `last_run_at` for months; neither column has ever existed, so anybody who pasted it got a syntax error at the moment they were trying to find out whether a job had stopped.
+- The same answer without SQL: `GET /api/admin/mission/workers` with the admin session or the cron bearer, which is what Mission Control's jobs list reads.
+- **A heartbeat means the route finished, not that it had anything to do.** A job whose input table stopped being written stays green forever. Producer/consumer links live in `src/lib/automation/job-catalog.ts` as `fedBy`.
 
 ## Audit reference
 

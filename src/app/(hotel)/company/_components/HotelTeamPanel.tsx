@@ -1573,7 +1573,6 @@ export function HotelTeamPanel({
       // Never let one person's unsaved draft survive into another's panel.
       key={editPerson.key}
       hotelId={hotelId}
-      uid={currentUser.uid}
       lang={lang}
       staff={editPerson.staff}
       accounts={linkAccounts}

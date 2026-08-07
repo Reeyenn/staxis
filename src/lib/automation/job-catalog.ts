@@ -44,6 +44,34 @@ export interface JobMissionMetadata {
   tier: JobMissionTier;
 }
 
+/**
+ * A job this one cannot do anything useful without.
+ *
+ * ═══ WHY A HEARTBEAT IS NOT ENOUGH ═══
+ * Every other signal in this file answers "did the route finish". None of them
+ * answers "did it have anything to read". Those are different questions and
+ * the gap between them is invisible from every screen: a job whose input table
+ * stopped being written still runs, still returns 200, still writes its
+ * heartbeat, and still reads "On time" in Mission Control forever.
+ *
+ * That is not hypothetical. On 2026-08-07 `plan_snapshots` held zero rows and
+ * `daily_logs` had not gained one since 2026-07-18, because the only writer of
+ * both is `/api/cron/seal-daily`, which has no scheduler. The two inventory ML
+ * jobs that read them were green every single day through all of it, and
+ * `ml-cron.yml`'s own header justified switching them on with the sentence
+ * "the seal-daily cron projects tomorrow's occupancy into plan_snapshots".
+ *
+ * So the dependency is written down, and a test refuses the shape: an active
+ * job whose producer is parked is a pipeline with a hole in the middle, and
+ * somebody has to have decided that on purpose.
+ */
+export interface JobFeed {
+  /** The `id` of the catalog row that writes what this job reads. */
+  producerId: string;
+  /** The table(s) the producer writes and this job reads. */
+  tables: readonly string[];
+}
+
 export interface JobCatalogEntry {
   id: string;
   lifecycle: JobLifecycle;
@@ -56,6 +84,8 @@ export interface JobCatalogEntry {
   heartbeat: JobHeartbeat | null;
   description: string;
   mission?: JobMissionMetadata;
+  /** What has to be running upstream for this job to mean anything. */
+  fedBy?: readonly JobFeed[];
 }
 
 export interface MissionMonitoredJobCatalogEntry extends JobCatalogEntry {
@@ -198,6 +228,11 @@ export const ACTIVE_MISSION_JOBS: ReadonlyArray<MissionMonitoredJobCatalogEntry>
     },
     description: 'Predicts hotel inventory consumption rates.',
     mission: { description: 'Predicts which supplies each hotel will need.', group: 'Inventory', tier: 'prediction' },
+    // The model's primary feature for tomorrow is that hotel's projected
+    // occupancy, read from `plan_snapshots`
+    // (ml-service/src/inference/inventory_rate.py). With no rows it falls back
+    // to a 14-day historic mean and says nothing about having done so.
+    fedBy: [{ producerId: 'seal-daily', tables: ['plan_snapshots'] }],
   },
   {
     id: 'purge-old-error-logs',
@@ -310,6 +345,10 @@ export const ACTIVE_MISSION_JOBS: ReadonlyArray<MissionMonitoredJobCatalogEntry>
     },
     description: 'Retrains the inventory consumption-rate model.',
     mission: { description: 'Retrains the supply-prediction model each week.', group: 'Inventory', tier: 'prediction' },
+    // The weekly fit's labels are the sealed day: occupancy, checkouts and
+    // stayovers per (property, date) in `daily_logs`. A week with no new rows
+    // is a retrain on the same data as last week.
+    fedBy: [{ producerId: 'seal-daily', tables: ['daily_logs'] }],
   },
   {
     id: 'vercel-watchdog',

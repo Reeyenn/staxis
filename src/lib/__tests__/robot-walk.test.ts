@@ -37,7 +37,10 @@ import { NextRequest } from 'next/server';
 
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { env } from '@/lib/env';
+import { COMPOSER_COPY, whoWord } from '@/lib/feed/one-list-copy';
+import type { ComposerPerson } from '@/lib/feed/parse-todo';
 import {
+  composerNamesAssignee,
   isRobotWalkArtifact,
   parseRobotWalkReport,
   robotWalkFailureMessage,
@@ -550,5 +553,77 @@ describe('the robot is on Mission Control', () => {
       EXPECTED_MIGRATIONS_STATIC.includes('0460'),
       'a missing 0460 leaves the doctor unable to notice the table was never applied',
     );
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// The step that was red every night for a reason that was not the app's
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// PRODUCTION EVIDENCE, 2026-08-07. Every run in `robot_walk_runs` that carries
+// a `workflow_run_url` (which is to say every run that actually came from the
+// nightly workflow rather than somebody's laptop) is ok=false, and one of the
+// two reasons is always the same sentence:
+//
+//   "Picked Robot Manager but the composer still says "Who: for Robot"."
+//
+// The walk asserted that the Who button's accessible name contained the FULL
+// name it had just clicked. `whoWord` renders a person as their first name
+// only, deliberately, so that assertion cannot pass for anybody with a
+// surname. The consequences all landed on the founder rather than on an
+// engineer: the heartbeat lands only on a clean night, so the job could never
+// read "on time"; the doctor's robot_walk_recent warns forever; and "Recent
+// errors" carries a standing row that is not true.
+//
+// These walk the REAL producer. Restating "it says the first name" here would
+// pass on the day somebody changes whoWord and re-breaks the walk.
+describe('the composer answers the robot in the words the product actually uses', () => {
+  const ROBOT: ComposerPerson = { staffId: 'staff-robot', name: 'Robot Manager' };
+
+  /** Exactly what list-rows.tsx puts on the Who button. */
+  const whoButtonLabel = (who: string, people: readonly ComposerPerson[]): string =>
+    `${COMPOSER_COPY.whoLabel}: ${whoWord(who, people)}`;
+
+  test('picking a person by full name is accepted from the label the app renders', () => {
+    const label = whoButtonLabel(ROBOT.staffId, [ROBOT]);
+    assert.equal(
+      composerNamesAssignee(label, ROBOT.name),
+      true,
+      `the walk refuses the label the product actually renders ("${label}"), so the `
+      + 'assign step fails every night and the heartbeat can never land',
+    );
+  });
+
+  test('a person with one name still works', () => {
+    const solo: ComposerPerson = { staffId: 'staff-ana', name: 'Ana' };
+    assert.equal(composerNamesAssignee(whoButtonLabel(solo.staffId, [solo]), 'Ana'), true);
+  });
+
+  test('the wrong person is still a failure', () => {
+    const other: ComposerPerson = { staffId: 'staff-other', name: 'Marcus Webb' };
+    const label = whoButtonLabel(other.staffId, [other, ROBOT]);
+    assert.equal(
+      composerNamesAssignee(label, ROBOT.name),
+      false,
+      'a walk that accepts anybody proves nothing about the picker',
+    );
+  });
+
+  test('the default "for you" is not read as the person having been picked', () => {
+    assert.equal(composerNamesAssignee(whoButtonLabel('me', [ROBOT]), ROBOT.name), false);
+  });
+
+  test('a longer name that merely starts the same is not a match', () => {
+    // "Rob" must not be satisfied by "for Roberta".
+    const roberta: ComposerPerson = { staffId: 'staff-roberta', name: 'Roberta Diaz' };
+    assert.equal(
+      composerNamesAssignee(whoButtonLabel(roberta.staffId, [roberta]), 'Rob Smith'),
+      false,
+    );
+  });
+
+  test('a missing label is a failure rather than a pass', () => {
+    assert.equal(composerNamesAssignee(null, ROBOT.name), false);
+    assert.equal(composerNamesAssignee('', ROBOT.name), false);
   });
 });

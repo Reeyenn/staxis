@@ -11,18 +11,25 @@ interface PortfolioBootstrapDecision {
   propertyStandings: readonly PortfolioEntryStanding[];
   explicitPortfolioContext: boolean;
   entryRoute: boolean;
+  /**
+   * Any signed-in app route that can OFFER a company. Company view is a mode of
+   * the ordinary app now, so the switcher has to be able to show the company row
+   * on /dashboard and /housekeeping too, not only on the two entry doors. An
+   * explicit hotel drilldown is deliberately not one of these.
+   */
+  companyModeRoute?: boolean;
 }
 
 /**
- * Entry routes may discover portfolio access only from the fresh authoritative
- * standing projection. Explicit portfolio URLs still reach the server gate so
- * it can return their existing authorization result.
+ * Entry and in-app routes may discover portfolio access only from the fresh
+ * authoritative standing projection. Explicit portfolio URLs still reach the
+ * server gate so it can return their existing authorization result.
  */
 export function shouldLoadPortfolioBootstrap(input: PortfolioBootstrapDecision): boolean {
   if (!input.signedIn || input.authLoading || input.browserRoleIsAdmin) return false;
   if (input.platformAdmin) return false;
   if (input.explicitPortfolioContext) return true;
-  return input.entryRoute
+  return (input.entryRoute || input.companyModeRoute === true)
     && input.authorizationChecked
     && input.propertyStandings.some((standing) => standing.portfolioIntelligenceRead);
 }

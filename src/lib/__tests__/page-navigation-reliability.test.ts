@@ -219,7 +219,19 @@ describe('property and capability readiness', () => {
     );
     assert.match(
       capabilityHook,
-      /ready[\s\S]*?standing\.ready[\s\S]*?can\(role \? \{ role \} : null, capability, capabilityOverrides\)/,
+      /ready[\s\S]*?standing\.ready[\s\S]*?can\(role \? \{ role \} : null, capability, overrides\)/,
+    );
+    // The override map belongs to a hotel, so at company scope there is no
+    // hotel whose map may answer. It is the empty map, never the last hotel's
+    // — and readiness there is the company standing, not a stale hotel's
+    // capability read.
+    assert.match(
+      capabilityHook,
+      /const overrides = companyScope \? NO_OVERRIDES : capabilityOverrides;/,
+    );
+    assert.match(
+      capabilityHook,
+      /const ready = companyScope\s*\?\s*standing\.ready/,
     );
 
     const capabilityEffect = section(
