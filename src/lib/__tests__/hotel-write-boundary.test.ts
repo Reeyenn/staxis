@@ -178,6 +178,47 @@ describe('strict hotel write decision', () => {
     assert.equal(await hotelWriteDecisionForUserId(USER_ID, pid, 'view_wages'), 'denied');
   });
 
+  // A platform administrator is `all: true` from the authorization resolver:
+  // no per-hotel standings at all, and full power at every hotel anyway. These
+  // pin both halves of the ruling at the strict server write boundary.
+  test('a platform admin may write at a hotel they hold no standing at', async () => {
+    authorityResponse = ok({
+      ok: true,
+      all: true,
+      authorityMode: 'normalized',
+      authorityVersion: 1,
+      effectiveAccessHash: 'a'.repeat(64),
+      propertyIds: [],
+      legacyPropertyIds: [],
+      membershipPropertyIds: [],
+      propertyStandings: [],
+    });
+    for (const index of [19, 20]) {
+      const pid = propertyId(index);
+      assert.equal(await hotelWriteDecisionForUserId(USER_ID, pid), 'allowed');
+      assert.equal(await hotelWriteDecisionForUserId(USER_ID, pid, 'manage_team'), 'allowed');
+      // Manager-floor capabilities are included: an admin is above the floor.
+      assert.equal(await hotelWriteDecisionForUserId(USER_ID, pid, 'view_wages'), 'allowed');
+    }
+  });
+
+  test('a hotel GM still gets nothing at a sibling hotel they hold no standing at', async () => {
+    const mine = propertyId(21);
+    const sibling = propertyId(22);
+    configureStanding({
+      propertyId: mine,
+      operationalRole: 'general_manager',
+      hotelMutationAllowed: true,
+      source: 'property',
+      staxisRole: 'general_manager',
+    });
+    assert.equal(await hotelWriteDecisionForUserId(USER_ID, mine, 'manage_team'), 'allowed');
+    // The wall. A standing at one hotel is never authority at another, and
+    // nothing about the admin rule above may soften that.
+    assert.equal(await hotelWriteDecisionForUserId(USER_ID, sibling, 'manage_team'), 'denied');
+    assert.equal(await hotelWriteDecisionForUserId(USER_ID, sibling), 'denied');
+  });
+
   test('authority and capability-store failures are unavailable, never grants', async () => {
     assert.equal(
       await hotelWriteDecisionForUserId(USER_ID, propertyId(17), 'use_complaints'),
