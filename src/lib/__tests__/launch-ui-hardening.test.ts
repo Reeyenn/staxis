@@ -110,10 +110,29 @@ test('communications has a phone list/detail flow and does not collapse failures
   }
 });
 
-test('zero occupied rooms remains a real occupancy reading', () => {
+test('zero occupied rooms remains a real occupancy reading', async () => {
+  // Behavior, not source text: the derivation moved out of page.tsx into
+  // occupancyPctFromCounts / buildHistory, which is where the guarantee lives.
+  const { occupancyPctFromCounts } = await import('@/app/dashboard/_components/counts-hold');
+  const { buildHistory } = await import('@/lib/dashboard/today-series');
+
+  // An empty-but-reporting hotel reads 0%, not "waiting" and not an invented figure.
+  const emptyHotel = {
+    checkouts: 0, stayovers: 0, vacant_clean: 40, vacant_dirty: 0,
+    ooo: 0, total_rooms: 40, total_checkouts_today: 0, in_house: 0,
+  };
+  assert.equal(occupancyPctFromCounts(emptyHotel, 40), 0);
+
+  // And the chart's today row is pinned to that real zero rather than keeping
+  // its generated 46-98% occupancy.
+  const rows = buildHistory(40, 0);
+  assert.equal(rows[rows.length - 1].occ, 0);
+
+  // The page must derive its headline through that shared helper, so the ring,
+  // the Home tile, and the sealed history cannot drift apart again.
   const dashboard = source('src', 'app', '(hotel)', 'dashboard', 'page.tsx');
-  assert.match(dashboard, /if \(counts && counts\.total_rooms > 0\)/);
-  assert.doesNotMatch(dashboard, /if \(counts && \(counts\.stayovers \+ counts\.checkouts\) > 0\)/);
+  assert.match(dashboard, /occupancyPctFromCounts\(counts, totalRooms\)/);
+  assert.doesNotMatch(dashboard, /counts\.stayovers \+ counts\.checkouts/);
 });
 
 test('static legal pages render inside the root document without nested document tags', () => {

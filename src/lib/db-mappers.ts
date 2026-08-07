@@ -556,9 +556,17 @@ const PRIORITY_TO_SEVERITY: Record<WorkOrderPriority, string> = {
   low:    'low',
 };
 const SEVERITY_TO_PRIORITY = (sev: unknown): WorkOrderPriority => {
-  if (sev === 'urgent') return 'urgent';
-  if (sev === 'low')    return 'low';
-  return 'normal'; // 'medium' or anything unexpected coerces to normal
+  // Route through the shared normalizer: the severity column holds two
+  // vocabularies (see normalizeWorkOrderSeverity below), and exact lowercase
+  // matches filed the housekeeper reporter's URGENT/MAJOR tickets into the
+  // board's Normal lane. The board has three lanes, so 'high' (MAJOR) rides
+  // with urgent — the whole point of a MAJOR grade is not being buried mid-lane.
+  switch (normalizeWorkOrderSeverity(sev)) {
+    case 'urgent':
+    case 'high':   return 'urgent';
+    case 'low':    return 'low';
+    default:       return 'normal'; // 'normal' + ungraded rows keep the middle lane
+  }
 };
 
 /**

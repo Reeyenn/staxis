@@ -1811,7 +1811,7 @@ export function InventoryShell() {
         }}
       >
         <div data-rise>
-          <Caps size={9.5}>{todayLabel(L)} · {todayDow(L)}</Caps>
+          <Caps size={9.5}>{todayLabel(L, propertyTimezone)} · {todayDow(L, propertyTimezone)}</Caps>
           <div style={{ marginTop: 3 }}>
             <Serif size={33}>{tx.pageTitle}</Serif>
           </div>
@@ -2191,15 +2191,20 @@ function HStat({
   );
 }
 
-function todayLabel(lang: 'en' | 'es'): string {
+// The masthead date is the HOTEL's calendar day, not the viewer's machine.
+// Every other date on this tab (counts, deliveries, the budget month) is
+// already stamped in the property timezone, so a regional manager in New York
+// opening a Honolulu hotel at 9pm hotel time must not read a headline dated
+// tomorrow above figures dated today.
+function todayLabel(lang: 'en' | 'es', timeZone: string): string {
   const d = new Date();
   return d
-    .toLocaleDateString(dateLocale(lang), { month: 'short', day: 'numeric', year: 'numeric' })
+    .toLocaleDateString(dateLocale(lang), { month: 'short', day: 'numeric', year: 'numeric', timeZone })
     .toUpperCase();
 }
-function todayDow(lang: 'en' | 'es'): string {
+function todayDow(lang: 'en' | 'es', timeZone: string): string {
   const d = new Date();
-  return d.toLocaleDateString(dateLocale(lang), { weekday: 'long' });
+  return d.toLocaleDateString(dateLocale(lang), { weekday: 'long', timeZone });
 }
 function daysAgo(n: number): Date {
   return new Date(Date.now() - n * 86_400_000);
