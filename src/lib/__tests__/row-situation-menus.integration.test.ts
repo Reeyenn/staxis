@@ -519,6 +519,129 @@ describe('"Not actually a problem" on a work order', () => {
 });
 
 // ═══════════════════════════════════════════════════════════════════════════
+// 2b. A ticket that is over stays over
+//
+// The endings above were written with nothing between them and the row but
+// "does this id exist at this hotel". The Staxis list is a poll, so a screen is
+// routinely a minute or two behind the database, and every one of these is a
+// tap somebody would make in complete good faith on a row they can still see.
+// ═══════════════════════════════════════════════════════════════════════════
+
+describe('a work order somebody has already settled', () => {
+  /** Settle it one way, then try the other three from a screen that has not caught up. */
+  async function settledThen(
+    first: 'done' | 'not_an_issue',
+    second: string,
+    extra: Record<string, unknown> = {},
+  ) {
+    const id = await openWorkOrder();
+    await settle('workorder', id, first);
+    const before_ = await one<{ status: string; completed_by_name: string | null; notes: string | null }>(
+      'select status, completed_by_name, notes from work_orders where id = $1', [id],
+    );
+    const res = await settle('workorder', id, second, extra);
+    const after_ = await one<{ status: string; completed_by_name: string | null; notes: string | null }>(
+      'select status, completed_by_name, notes from work_orders where id = $1', [id],
+    );
+    return { id, res, before_: before_!, after_: after_! };
+  }
+
+  test('cannot be put back on the list as waiting on parts', async () => {
+    // The worst of the three: `deferred` is LIVE work, so this turns a ticket
+    // somebody judged a non issue back into an open job on every screen at the
+    // hotel, and overwrites the note that said why it was closed.
+    const { res, after_ } = await settledThen('not_an_issue', 'waiting', {
+      reason: 'compressor back ordered',
+    });
+    assert.equal(res.status, 409, JSON.stringify(res.body));
+    assert.match(String(res.body.error), /already answered/i);
+    assert.equal(after_.status, 'closed', 'a settled ticket must not come back as live work');
+  });
+
+  test('cannot be re-filed as a repair that happened', async () => {
+    const { res, after_ } = await settledThen('not_an_issue', 'done');
+    assert.equal(res.status, 409, JSON.stringify(res.body));
+    assert.equal(after_.status, 'closed', 'closed and resolved are two words on purpose');
+  });
+
+  test('and a repair that DID happen cannot be rewritten as a non issue', async () => {
+    const { res, before_, after_ } = await settledThen('done', 'not_an_issue');
+    assert.equal(res.status, 409, JSON.stringify(res.body));
+    assert.equal(after_.status, 'resolved');
+    assert.equal(
+      after_.completed_by_name, before_.completed_by_name,
+      'the person who actually fixed it keeps their name on it',
+    );
+  });
+
+  test('and cannot stamp the upkeep schedule behind it as serviced', async () => {
+    // The quietest loss of the four. A ticket raised from an upkeep schedule
+    // carries `preventive_task_id`, and the 0366 trigger stamps that schedule
+    // done the moment the ticket goes 'resolved'. A stale Done on a ticket
+    // already closed as a non issue would therefore write a service nobody
+    // performed into this hotel's maintenance record — and then Staxis stays
+    // silent about that job for a full cadence.
+    const scheduleId = await overdueSchedule('Elevator inspection', 90);
+    const before_ = await one<{ last_completed_at: Date; last_completed_by: string | null }>(
+      'select last_completed_at, last_completed_by from preventive_tasks where id = $1', [scheduleId],
+    );
+    const wo = await one<{ id: string }>(
+      `insert into work_orders (property_id, description, severity, status, preventive_task_id)
+       values ($1, 'Elevator inspection due', 'medium', 'submitted', $2) returning id`,
+      [PID_A1, scheduleId],
+    );
+    await settle('workorder', wo!.id, 'not_an_issue');
+
+    const res = await settle('workorder', wo!.id, 'done');
+    assert.equal(res.status, 409, JSON.stringify(res.body));
+
+    const after_ = await one<{ last_completed_at: Date; last_completed_by: string | null }>(
+      'select last_completed_at, last_completed_by from preventive_tasks where id = $1', [scheduleId],
+    );
+    assert.equal(
+      new Date(after_!.last_completed_at).getTime(),
+      new Date(before_!.last_completed_at).getTime(),
+      'a stale tap must never record a service that did not happen',
+    );
+    assert.equal(after_!.last_completed_by, before_!.last_completed_by);
+  });
+
+  test('but a ticket that is still live takes every ending it is offered', async () => {
+    // The other side of the guard, so the tests above cannot pass by the whole
+    // branch having been broken.
+    for (const [outcome, extra, expected] of [
+      ['waiting', { reason: 'part on order' }, 'deferred'],
+      ['done', {}, 'resolved'],
+      ['not_an_issue', {}, 'closed'],
+    ] as const) {
+      const id = await openWorkOrder();
+      const res = await settle('workorder', id, outcome, extra);
+      assert.equal(res.status, 200, `${outcome}: ${JSON.stringify(res.body)}`);
+      const row = await one<{ status: string }>('select status from work_orders where id = $1', [id]);
+      assert.equal(row?.status, expected);
+    }
+  });
+
+  test('a deferred ticket is not settled: the note can be updated and the job still finished', async () => {
+    // The guard must not have made 'deferred' behave like an ending. It is live
+    // work with a sentence attached, and both the sentence changing ("now
+    // waiting on the electrician") and the job finally getting done are things
+    // that happen to a stalled ticket every week.
+    const id = await openWorkOrder();
+    await settle('workorder', id, 'waiting', { reason: 'compressor back ordered' });
+    const again = await settle('workorder', id, 'waiting', { reason: 'now waiting on the electrician' });
+    assert.equal(again.status, 200, JSON.stringify(again.body));
+    const held = await one<{ notes: string | null }>('select notes from work_orders where id = $1', [id]);
+    assert.equal(held?.notes, 'now waiting on the electrician');
+
+    const done = await settle('workorder', id, 'done');
+    assert.equal(done.status, 200, JSON.stringify(done.body));
+    const row = await one<{ status: string }>('select status from work_orders where id = $1', [id]);
+    assert.equal(row?.status, 'resolved');
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
 // 3. The menu is not the guard
 // ═══════════════════════════════════════════════════════════════════════════
 
