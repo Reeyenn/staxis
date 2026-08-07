@@ -35,6 +35,7 @@ import { supabaseAdmin } from '@/lib/supabase-admin';
 import type { MessagesClient } from '@/lib/agent/llm';
 import { AGENT_JOURNAL_SOURCE } from '@/lib/agent/journal';
 import { INTERESTING_EVENT_TYPES, MAX_WAKES_PER_DAY } from '@/lib/companion/event-wake/events';
+import { addDaysInTz, propertyLocalToday } from '@/lib/schedule/local-date';
 import { claimWakeWindow, readWakeState } from '@/lib/companion/event-wake/state';
 import { sweepAllProperties } from '@/lib/companion/event-wake/runner';
 import { buildCompanionCandidates } from '@/lib/companion/candidates';
@@ -94,6 +95,63 @@ function scriptedModel(replies: Array<string | (() => never)>) {
     } as unknown as MessagesClient,
   };
   return rec;
+}
+
+// ─── The two clocks that caused a red main ──────────────────────────────────
+//
+// A hotel-local calendar day has exactly one correct source: the hotel's own
+// timezone, read through `propertyLocalToday`. A day rendered by Postgres
+// (`to_char(now(), 'YYYY-MM-DD')`) is rendered in the SESSION's timezone, which
+// is a fact about the connection and not about the hotel.
+//
+// THIS FIXTURE USED TO USE THE SECOND ONE. PGlite runs at a fixed `Etc/GMT+6`
+// with no daylight saving, while the seeded hotel is `America/Chicago`, which is
+// UTC-5 from March to November. The two therefore disagree for exactly one hour
+// of every summer day, 05:00 to 06:00 UTC. The suite happened to run inside that
+// hour and main went red: the stored `wakes_day` did not match the day the
+// runner computed, the counter was reset to zero, the daily cap missed, and the
+// sweep fell through to a model that the test had scripted to throw.
+//
+// The fix is not a better literal date. It is that ONE clock now governs both
+// sides, and that the fixture puts the hotel somewhere the database cannot
+// accidentally agree with.
+
+/** UTC+14 and UTC-11. Twenty-five hours apart, so their local dates ALWAYS
+ *  differ from each other, which is what guarantees at least one of them differs
+ *  from whatever day the database would render. */
+const FAR_AHEAD = 'Pacific/Kiritimati';
+const FAR_BEHIND = 'Pacific/Midway';
+
+/** The timezone the two-hotel seed gives a property. Restored between tests. */
+const SEEDED_TIMEZONE = 'America/Chicago';
+
+/**
+ * Pin one instant, and move the hotel onto a calendar the DATABASE does not
+ * share.
+ *
+ * Returns the instant to inject into the sweep and the hotel-local day derived
+ * from it by the SAME function the runner uses. Both sides of the comparison
+ * now come from one clock and one timezone, so there is no window in the day
+ * where they can disagree.
+ *
+ * The timezone move is the regression pin. Anyone who reverts this fixture to a
+ * database-rendered day gets a day that is provably wrong for this hotel, so the
+ * test fails on every run instead of during one hour in twenty-four. A bug that
+ * only reproduces for an hour a day is a bug that reaches main.
+ */
+async function pinTheClock(propertyId: string): Promise<{ now: Date; today: string }> {
+  const now = new Date();
+  const rendered = await pg.query<{ d: string }>(`select to_char(now(), 'YYYY-MM-DD') as d`);
+  const databaseWouldSay = rendered.rows[0].d;
+  const timezone = [FAR_AHEAD, FAR_BEHIND]
+    .find((zone) => propertyLocalToday(now, zone) !== databaseWouldSay);
+  assert.ok(
+    timezone,
+    'no candidate timezone disagreed with the database, which should be impossible '
+    + 'for two zones twenty-five hours apart',
+  );
+  await pg.query('update public.properties set timezone = $2 where id = $1', [propertyId, timezone]);
+  return { now, today: propertyLocalToday(now, timezone) };
 }
 
 /** Put this hotel's cursor `minutes` in the past so the next sweep has a window. */
@@ -301,6 +359,11 @@ describe('the companion wakes on events, not on a clock', () => {
     // callout per person per day". Clearing between tests is what lets each one
     // drive the same shapes without fighting a constraint that is correct.
     await pg.query('delete from public.callout_events');
+    // `pinTheClock` moves a hotel onto a far-away calendar on purpose. Put it
+    // back, so a test that did not ask for that gets the seeded hotel.
+    await pg.query(
+      'update public.properties set timezone = $2 where id = $1', [PID_A, SEEDED_TIMEZONE],
+    );
     shim.reset();
   });
 
@@ -788,41 +851,45 @@ describe('the companion wakes on events, not on a clock', () => {
 
   test('a hotel that has woken enough today stops costing money, and says so', async () => {
     await setCursor(PID_A, 5);
-    // The counter is HOTEL-LOCAL. Written as the day the sweep will compute for
-    // itself, so this proves the wiring between the stored day and the clock
-    // rather than just the pure gate.
-    await pg.query(
-      `update public.companion_event_wake_state
-       set wakes_day = to_char(now(), 'YYYY-MM-DD'), wakes_today = $2
-       where property_id = $1`,
-      [PID_A, String(MAX_WAKES_PER_DAY)],
-    );
     await produceRealEvents(PID_A);
+    // ONE INSTANT GOVERNS EVERYTHING BELOW: the sweep's window, the day the
+    // runner resets the counter against, and the day this fixture writes.
+    // Captured AFTER the events exist so the window still contains them.
+    const { now, today } = await pinTheClock(PID_A);
+    await pg.query(
+      `update public.companion_event_wake_state set wakes_day = $2, wakes_today = $3
+       where property_id = $1`,
+      [PID_A, today, String(MAX_WAKES_PER_DAY)],
+    );
 
     const model = scriptedModel([() => { throw new Error('the daily wake ceiling did not hold'); }]);
-    const summary = await sweepAllProperties({ modelClient: model.client });
+    const summary = await sweepAllProperties({ modelClient: model.client, now });
     const a = summary.results.find((r) => r.propertyId === PID_A);
 
+    // THE CHEAP GATE WINS. The cap is decided before a reservation is taken and
+    // before a model is resolved, so a capped hotel reports the cap whether or
+    // not the provider would have answered. A run that reaches the model here
+    // has not just mis-reported, it has spent money it was forbidden to spend.
     assert.equal(a?.outcome, 'daily_wake_cap');
+    assert.equal(model.calls, 0, 'the cap must be decided before anything is spent');
     // LOUD, not silent: the events were counted and reported even though
     // nothing was spent on them, which is what lets an operator tell a hotel
     // being held back from a hotel with nothing going on.
     assert.ok((a?.events ?? 0) > 0, 'a capped hotel must still report what it saw');
-    assert.equal(model.calls, 0);
     assert.deepEqual(await journalRows(PID_A), []);
   });
 
   test('yesterday\'s wake count does not hold today back', async () => {
     await setCursor(PID_A, 5);
-    await pg.query(
-      `update public.companion_event_wake_state
-       set wakes_day = to_char(now() - interval '1 day', 'YYYY-MM-DD'), wakes_today = $2
-       where property_id = $1`,
-      [PID_A, String(MAX_WAKES_PER_DAY + 5)],
-    );
     await produceRealEvents(PID_A);
+    const { now, today } = await pinTheClock(PID_A);
+    await pg.query(
+      `update public.companion_event_wake_state set wakes_day = $2, wakes_today = $3
+       where property_id = $1`,
+      [PID_A, addDaysInTz(today, -1), String(MAX_WAKES_PER_DAY + 5)],
+    );
     const model = scriptedModel(['{"do":"nothing","say":"","why":"ordinary"}']);
-    const summary = await sweepAllProperties({ modelClient: model.client });
+    const summary = await sweepAllProperties({ modelClient: model.client, now });
     assert.equal(summary.results.find((r) => r.propertyId === PID_A)?.outcome, 'nothing');
     assert.equal(model.calls, 1);
     assert.equal((await cursorOf(PID_A)).wakes, 1, 'a new day resets the counter rather than adding to it');
