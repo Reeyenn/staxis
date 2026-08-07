@@ -34,6 +34,8 @@ import { Download, Smartphone } from 'lucide-react';
 import { roleLabel } from '@/lib/roles';
 import { MobileConcourseNav } from './MobileConcourseNav';
 import { useReliableNavigation } from '@/lib/hooks/use-reliable-navigation';
+import { useAdminAccountSwitcher } from '@/lib/hooks/use-admin-account-switcher';
+import { AccountSwitcherMenuSection } from './AccountSwitcherMenuSection';
 import { useOptionalPortfolio } from '@/contexts/PortfolioContext';
 import { useOptionalHotelActingContext } from '@/contexts/HotelActingContext';
 import { mapPortfolioUiRoute } from '@/lib/portfolio-ui/context';
@@ -147,10 +149,18 @@ export function ConcourseBar() {
   const avatarButtonRef = React.useRef<HTMLButtonElement | null>(null);
   const installReturnFocusRef = React.useRef<HTMLElement | null>(null);
   const [menuPos, setMenuPos] = React.useState<{ top: number; right: number } | null>(null);
+  // Becoming a demo person for a while. Renders for a verified platform admin,
+  // and for a session that was switched into one (so the way back is always
+  // reachable). Everyone else gets nothing at all.
+  const accountSwitch = useAdminAccountSwitcher(verifiedPlatformAdmin);
+  const refreshAccountSwitch = accountSwitch.refresh;
   const toggleMenu = () => {
     const r = avatarWrapRef.current?.getBoundingClientRect();
     if (r) setMenuPos({ top: r.bottom + 10, right: Math.max(8, window.innerWidth - r.right) });
-    setMenuOpen((v) => !v);
+    setMenuOpen((v) => {
+      if (!v) refreshAccountSwitch();
+      return !v;
+    });
   };
 
   // Navigation feel: prefetch only on real pointer/focus intent. The previous
@@ -406,9 +416,12 @@ export function ConcourseBar() {
       <button
         ref={avatarButtonRef}
         type="button"
-        className="cx-avatarbtn"
+        // The ring is the persistent, unobtrusive tell that this session is
+        // somebody else's. Without it, a switched tab left open for an hour
+        // looks exactly like a normal one.
+        className={`cx-avatarbtn${accountSwitch.switchedBackTo ? ' cx-switched' : ''}`}
         onClick={toggleMenu}
-        aria-label={'User menu'}
+        aria-label={accountSwitch.switchedBackTo ? `User menu, switched to ${userName}` : 'User menu'}
         aria-expanded={menuOpen}
       >
         {initial}
@@ -424,6 +437,20 @@ export function ConcourseBar() {
                 {activeProperty ? ` · ${activeProperty.name}` : ''}
               </div>
             </div>
+
+            <AccountSwitcherMenuSection
+              isPlatformAdmin={verifiedPlatformAdmin}
+              switchedBackTo={accountSwitch.switchedBackTo}
+              currentDisplayName={userName}
+              people={accountSwitch.people}
+              currentAccountId={user.accountId ?? null}
+              busy={accountSwitch.busy}
+              onSwitch={(accountId) => accountSwitch.switchTo(accountId)}
+              onReturn={() => accountSwitch.returnToAdmin()}
+            />
+            {accountSwitch.error ? (
+              <div className="cx-menu-note" role="alert">{accountSwitch.error}</div>
+            ) : null}
 
             {!portfolioScoped && properties.length > 1 && (
               <>
@@ -529,6 +556,10 @@ export function ConcourseBar() {
         onCompanyIntent={() => prefetch(companyHref)}
         onSettingsIntent={() => prefetch(portfolioScoped ? companyHref : '/settings')}
         onSignOut={() => { void signOut(); }}
+        returnToAdminLabel={
+          accountSwitch.switchedBackTo ? `Back to ${accountSwitch.switchedBackTo}` : undefined
+        }
+        onReturnToAdmin={() => accountSwitch.returnToAdmin()}
         onPropertyChange={(propertyId) => {
           setActivePropertyId(propertyId);
           markHotelSelectedThisTab();

@@ -44,6 +44,7 @@ import {
   type HelloInput,
   type MannersInput,
 } from '@/lib/companion/manners';
+import { repliesFor } from '@/lib/companion/replies';
 import { todayFact } from '@/lib/companion/copy';
 
 // ─── Fixtures ───────────────────────────────────────────────────────────────
@@ -58,6 +59,8 @@ function candidate(over: Partial<CompanionCandidate> = {}): CompanionCandidate {
     sensitivity: 'operational',
     covers: ['finding:abc'],
     destination: 'inventory',
+    replyKind: 'finding_recommend',
+    replies: repliesFor({ kind: 'finding_recommend', findingId: 'abc' }),
     ...over,
   };
 }

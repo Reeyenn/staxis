@@ -67,10 +67,16 @@ import type { TracePage, TracePattern } from '@/lib/companion/trace/types';
 import { useTrace } from './useTrace';
 import { publishTraceLine } from './trace-events';
 import {
-  arrivalLine, companionLabels, greetingLine, offerQuestion, todayFact,
-  UNFINISHED_RECALL_QUESTION,
+  arrivalLine, companionLabels, companionQuestion, greetingLine, offerQuestionFor,
+  replyCouldNotActLine, replyCouldNotSaveLine, replyOutcomeLine, todayFact,
   type SleepReason,
 } from '@/lib/companion/copy';
+import {
+  repliesFor,
+  repliesForRole,
+  somethingElseReply,
+  type CompanionReply,
+} from '@/lib/companion/replies';
 import {
   decideNoticeAnnouncement,
   newestNoticeAt,
@@ -95,6 +101,18 @@ import {
 const HELLO_VISIBLE_MS = 6000;
 
 /**
+ * The id the Something else escape answers to.
+ *
+ * A constant rather than a literal in two files, because it is the one reply id
+ * that is NOT on the set the hook is holding and therefore the one that cannot
+ * be checked against it.
+ */
+export const ESCAPE_REPLY_ID = 'else';
+
+/** Shared empty, so a dependency array does not see a new array every render. */
+const EMPTY_REPLIES: readonly CompanionReply[] = Object.freeze([]);
+
+/**
  * How often an open screen re-asks what the companion has for it.
  *
  * A minute. Fast enough that a colleague handing you work reaches you while
@@ -117,25 +135,58 @@ interface Bootstrap {
   availability: { awake: boolean; reason: SleepReason | null };
 }
 
-/** What the companion currently has to say, if anything. */
+/**
+ * What the companion currently has to say, if anything.
+ *
+ * EVERY VARIANT CARRIES ITS OWN REPLIES. There is no shape here with an implied
+ * Yes and No: the two renderers walk `replies` and dispatch by intent, so a
+ * button that appears is a button something in src/lib/companion/replies.ts
+ * wrote, and a card with nothing to ask has an empty list rather than a
+ * manufactured pair.
+ *
+ * `question` is nullable for the same reason. Several kinds ask nothing, and
+ * the fix for the fire-panel card was to let them say so.
+ */
 export type CompanionShowing =
   | { kind: 'none' }
   | {
       kind: 'speech';
       speech: Extract<CompanionSpeech, { kind: 'welcome' | 'offer' }>;
-      /** The question under the sentence, already resolved for the panel. */
-      question: string;
+      /** The question under the sentence, or null when it asks nothing. */
+      question: string | null;
+      replies: readonly CompanionReply[];
       severity: CompanionSeverity;
     }
-  | { kind: 'teach'; flow: TeachFlow; text: string; example: string; severity: CompanionSeverity }
-  | { kind: 'arrived'; line: string; severity: CompanionSeverity }
+  | {
+      kind: 'teach';
+      flow: TeachFlow;
+      text: string;
+      example: string;
+      replies: readonly CompanionReply[];
+      severity: CompanionSeverity;
+    }
+  | {
+      kind: 'arrived';
+      line: string;
+      replies: readonly CompanionReply[];
+      severity: CompanionSeverity;
+    }
   /**
    * The batched notices line. One utterance about however many things landed,
-   * with two answers: show me the list, or close it. See notices.ts for why
-   * this class of speech is exempt from the daily caps and what it is still
-   * bound by.
+   * with somewhere to go and a way to close it. See notices.ts for why this
+   * class of speech is exempt from the daily caps and what it is still bound by.
    */
-  | { kind: 'notices'; line: string; through: string };
+  | {
+      kind: 'notices';
+      line: string;
+      through: string;
+      replies: readonly CompanionReply[];
+    };
+
+/** The replies on whatever is showing. Empty for `none`. */
+export function showingReplies(showing: CompanionShowing): readonly CompanionReply[] {
+  return showing.kind === 'none' ? [] : showing.replies;
+}
 
 /**
  * The one clause the peek shows on hover.
@@ -168,17 +219,28 @@ export interface CompanionTraceApi {
    * Anything about a named person lives here and nowhere else. See
    * `decidePanelAsk` for why the venue is the whole rule.
    */
-  panelAsk: { topic: string; sentence: string; pattern: TracePattern | null } | null;
+  panelAsk: {
+    topic: string;
+    sentence: string;
+    pattern: TracePattern | null;
+    /** The venue's own vocabulary. See decidePanelAsk. */
+    replies: readonly CompanionReply[];
+  } | null;
   /** Runs the one thing the card offered, on the server, from its own plan. */
   act: (index: number) => Promise<{ done: boolean; receipt?: TraceActReceipt; reason?: string }>;
   /** Not interested. Melts everything and counts as a decline. */
   decline: () => void;
   /** Finished with. Melts everything without counting as a decline. */
   close: () => void;
-  /** Yes, from the panel ask. */
-  acceptPanelAsk: () => void;
-  /** No, from the panel ask. */
-  declinePanelAsk: () => void;
+  /**
+   * A button on the panel ask, by id.
+   *
+   * The same shape as the top-level `answer` and for the same reason: the panel
+   * ask has THREE honest replies, not two, because "stop watching this" is a
+   * thing people want to say about a pattern concerning a colleague. A pair of
+   * accept/decline callbacks could not express the third.
+   */
+  answerPanelAsk: (replyId: string) => void;
 }
 
 export interface TraceActReceipt {
@@ -222,8 +284,37 @@ export interface CompanionApi {
   /** The role-sized tour, or empty when there is nothing worth touring. */
   tour: readonly CompanionPage[];
   tourStep: number | null;
-  answerYes: () => void;
-  answerNo: () => void;
+  /**
+   * A person pressed one of the buttons on whatever is showing.
+   *
+   * ─── WHY THIS REPLACED answerYes / answerNo ────────────────────────────
+   *
+   * Those two were the whole bug, expressed as an API. A hook that can only be
+   * told "yes" or "no" forces every surface above it to render exactly two
+   * buttons, which forces every sentence below it to be phrased as a yes/no
+   * question, which is how a statement about a fire panel ended up under "Want
+   * me to take you to Staxis?". The peek made it literal: it funnelled every
+   * non-`no` tap to `answerYes`, so three buttons would have done one thing.
+   *
+   * A REPLY ID, and nothing else. Never an intent: the id names a button on the
+   * set this hook is already holding, and the intent is looked up here. A caller
+   * that passed an intent would be a caller choosing one.
+   *
+   * An id that is not on the current set does nothing at all. That is the right
+   * answer to a stale tab: the card moved on, and running yesterday's button
+   * against today's card is the class of thing the whole verify-at-tap path
+   * exists to refuse.
+   */
+  answer: (replyId: string) => void;
+  /**
+   * The way out of a question, or null when nothing is asking one.
+   *
+   * Rendered after the replies and NOT one of them: it is not a fourth answer,
+   * it is the admission that the three were the wrong three. Pressing it opens
+   * the conversation with the statement as context, through the ordinary seed
+   * machinery, which is the same turn the person could have typed.
+   */
+  escape: CompanionReply | null;
   dismiss: () => void;
   quiet: () => void;
   startTour: () => void;
@@ -345,6 +436,15 @@ export function useCompanion(
 
   const [boot, setBoot] = useState<Bootstrap | null>(null);
   const [showing, setShowing] = useState<CompanionShowing>({ kind: 'none' });
+  /**
+   * The showing AS RENDERED, for the answer dispatcher.
+   *
+   * Written by the effect at the bottom of this hook from `showingOut`, whose
+   * replies are the ones a person can actually see. Everything else in here
+   * reads `showing` directly; only the dispatcher needs the rendered version,
+   * and only because one card's buttons are completed at render time.
+   */
+  const showingRef = useRef<CompanionShowing>({ kind: 'none' });
   const [quietThisSession, setQuiet] = useState(false);
   const [busy, setBusy] = useState(false);
   const [tourStep, setTourStep] = useState<number | null>(null);
@@ -726,7 +826,20 @@ export function useCompanion(
           const key = `notices:${decision.through}`;
           if (spokenFor.current === key) return;
           spokenFor.current = key;
-          setShowing({ kind: 'notices', line: decision.line, through: decision.through });
+          // The reply set the SERVER will store is derived there, from the same
+          // producer, over the same batch. This local copy is what the pill
+          // renders in the meantime; when the offer comes back the two agree
+          // because there is one table and both read it.
+          const noticeReplies = repliesFor({
+            kind: 'notices',
+            hasRefusal: (boot.notices ?? []).some((n) => n.kind === 'refused'),
+          });
+          setShowing({
+            kind: 'notices',
+            line: decision.line,
+            through: decision.through,
+            replies: noticeReplies,
+          });
           void say('notices_announced', {
             kind: 'offer',
             // No topic. The never-nag ledger counts declines per TOPIC and
@@ -736,10 +849,6 @@ export function useCompanion(
             // switch off assignment notices forever. What stops this line
             // repeating is the batch stamp, not a decline count.
             text: decision.line,
-            actions: [
-              { label: labels.showNotices, kind: 'show' },
-              { label: labels.dismiss, kind: 'no' },
-            ],
           }, (m) => ({ ...m, noticesAnnouncedThrough: decision.through }), {
             through: decision.through,
           });
@@ -757,26 +866,36 @@ export function useCompanion(
     setShowing({
       kind: 'speech',
       speech,
+      // THE QUESTION COMES FROM THE KIND, NOT FROM THE DESTINATION.
+      //
+      // This line is the fix. It used to be `offerQuestion(resolveDestination(
+      // speech.destination, …))`, which is to say: work out where a yes would
+      // navigate to, and write a question about that. Under a statement about a
+      // fire panel that produced "Want me to take you to Staxis?" over a Yes and
+      // a No thanks, which answers nothing anybody asked. The candidate now
+      // carries which vocabulary it speaks, and several of those vocabularies
+      // ask NOTHING, which is why this may be null.
       question: speech.kind === 'welcome'
         ? speech.question
-        // An offer that carries a sentence to reopen has no screen to walk to,
-        // so "want me to take you to…" would be a question about nowhere. See
-        // CompanionCandidate.seed.
-        : speech.seed
-          ? UNFINISHED_RECALL_QUESTION
-          : offerQuestion(resolveDestination(speech.destination, {
-            role, enabledSections: activeProperty?.enabledSections,
-          })),
+        : companionQuestion(offerQuestionFor(speech.replyKind), speech.judgedQuestion),
+      replies: speech.kind === 'welcome'
+        // `tourFor` rather than the memoized `tour` below: this effect is
+        // declared above that declaration, and naming it in a dependency array
+        // would read it before it exists. It is a pure function over two values
+        // this scope already holds, so calling it here costs nothing.
+        ? repliesFor({
+          kind: 'welcome',
+          page: tourFor({ role, enabledSections: activeProperty?.enabledSections })[0]?.key ?? null,
+        })
+        // The candidate's OWN replies, built beside the sentence, passed
+        // through untouched. Re-deriving them here is the bug.
+        : repliesForRole(speech.replies, role),
       severity: speech.kind === 'offer' ? speech.severity : DEFAULT_COMPANION_SEVERITY,
     });
     if (speech.kind === 'welcome') {
       void say('welcomed', {
         kind: 'greeting',
         text: `${speech.greeting} ${speech.question}`.trim(),
-        actions: [
-          { label: labels.yes, kind: 'seed' },
-          { label: labels.no, kind: 'no' },
-        ],
       }, (m) => ({ ...m, welcomedAt: new Date().toISOString() }));
     } else {
       const topic = speech.topic;
@@ -785,15 +904,6 @@ export function useCompanion(
         text: speech.sentence,
         topic,
         page: speech.destination,
-        actions: [
-          // A trace draws in place, a recall hands the sentence back to the
-          // chat, and anything else walks somebody to a screen.
-          {
-            label: labels.yes,
-            kind: speech.seed ? 'seed' : isTraceTopic(topic) ? 'show' : 'walk',
-          },
-          { label: labels.no, kind: 'no' },
-        ],
       }, (m) => ({
         ...m,
         lastSpokeAt: new Date().toISOString(),
@@ -804,7 +914,7 @@ export function useCompanion(
   }, [
     boot, gate.mounts, showing.kind, pathname, page, busy, quietThisSession,
     properties.length, activeProperty?.name, activeProperty?.enabledSections, role, remember,
-    candidates, traceShowing, say, labels,
+    candidates, traceShowing, say,
   ]);
 
   // ── Teach at the moment ──────────────────────────────────────────────────
@@ -827,6 +937,7 @@ export function useCompanion(
           flow,
           text: decision.text,
           example: decision.example,
+          replies: repliesFor({ kind: 'teach', seed: decision.example }),
           severity: 'ok',
         });
         void remember('taught', { flow }, (m) => ({
@@ -843,7 +954,15 @@ export function useCompanion(
   // ever reaches router.push.
   const goTo = useCallback((target: CompanionPage) => {
     router.push(target.href);
-    setShowing({ kind: 'arrived', line: arrivalLine(target.key), severity: 'ok' });
+    // The Next button is filled in at RENDER time, not here (see `showingOut`).
+    // `startTour` sets the step and calls this in the same tick, so the step
+    // this callback could read is always the one before the move.
+    setShowing({
+      kind: 'arrived',
+      line: arrivalLine(target.key),
+      replies: repliesFor({ kind: 'arrival', page: null, pageLabel: null }),
+      severity: 'ok',
+    });
   }, [router]);
 
   const tour = useMemo(
@@ -874,24 +993,190 @@ export function useCompanion(
 
   // ── Answers ──────────────────────────────────────────────────────────────
   //
-  // A NO CLOSES THE CARD AND SAYS NOTHING BACK. No "no problem", no "I will
-  // remember that". A reply to a No is the app making somebody's dismissal into
-  // a conversation, and nothing is lost by staying quiet: the thing the offer
-  // was about is still on its own screen.
-  const answerNo = useCallback(() => {
-    const current = showing;
-    setShowing({ kind: 'none' });
-    setTourStep(null);
-    // A No to the notices line is "not now", and it is recorded nowhere. The
-    // batch stamp already stopped it repeating, and counting it as a decline
-    // would put it two dismissals away from switching off the only way this
-    // person hears that a colleague handed them work.
-    if (current.kind === 'notices') {
-      retireLiveOffer();
+  // ONE ENTRY POINT, DISPATCHING BY INTENT. Every button on every companion
+  // surface arrives here as an id, is resolved against the reply set this hook
+  // is already holding, and is then acted on by what its intent SAYS, not by
+  // which side of the card it happened to be on.
+  //
+  // A CLOSE SAYS NOTHING BACK. No "no problem", no "I will remember that". A
+  // reply to a No is the app making somebody's dismissal into a conversation,
+  // and nothing is lost by staying quiet: the thing the offer was about is
+  // still on its own screen.
+
+  /** The corner's one transient line: an outcome, said once, then gone. */
+  const [saidBack, setSaidBack] = useState<string | null>(null);
+  useEffect(() => {
+    if (saidBack === null) return;
+    const timer = setTimeout(() => setSaidBack(null), HELLO_VISIBLE_MS);
+    return () => clearTimeout(timer);
+  }, [saidBack]);
+
+  /**
+   * Record a verdict against a finding, through the route the card already uses.
+   *
+   * Same body, same gate, same rate limiter. The companion adds no path around
+   * POST /api/findings: this is the card's own button, reachable from the
+   * corner. Success says nothing, exactly as the card says nothing: the thing
+   * has been filed and the card is gone, which is the whole message.
+   */
+  const recordVerdict = useCallback(async (findingId: string, verdict: string) => {
+    if (!activePropertyId) return;
+    try {
+      const res = await fetchWithAuth('/api/findings', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ propertyId: activePropertyId, findingId, action: verdict }),
+      });
+      const envelope = await readEnvelope<{ status: string }>(res);
+      if (envelope.error !== undefined) setSaidBack(replyCouldNotSaveLine());
+    } catch (e) {
+      if (e instanceof SessionEndedError) return;
+      setSaidBack(replyCouldNotSaveLine());
+    }
+  }, [activePropertyId]);
+
+  /**
+   * Run the finding's FROZEN plan, through the verify-at-tap path.
+   *
+   * The browser sends an id and the word `execute`. It does not send the plan,
+   * the location or the severity: the server loads the action it froze, checks
+   * the company's signature, and re-derives the facts inside the transaction
+   * that would do the work. A stale tab cannot write a ticket about a problem
+   * somebody already fixed, and a refusal comes back as a sentence rather than
+   * as silence.
+   */
+  const runFrozenPlan = useCallback(async (actionId: string) => {
+    if (!activePropertyId) return;
+    try {
+      const res = await fetchWithAuth('/api/findings/actions', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ propertyId: activePropertyId, actionId, intent: 'execute' }),
+      });
+      const envelope = await readEnvelope<{
+        code?: string; receipt?: { label?: string | null } | null;
+      }>(res);
+      if (envelope.error !== undefined) {
+        // The route's own sentence when it has one: a company sign-off refusal
+        // says WHY, and replacing that with a generic line would hide the rule
+        // the person actually needs to know about.
+        setSaidBack(envelope.error || replyCouldNotActLine());
+        return;
+      }
+      setSaidBack(replyOutcomeLine({
+        code: envelope.data?.code ?? null,
+        receiptLabel: envelope.data?.receipt?.label ?? null,
+      }));
+    } catch (e) {
+      if (e instanceof SessionEndedError) return;
+      setSaidBack(replyCouldNotActLine());
+    }
+  }, [activePropertyId]);
+
+  /** Drop a topic for good, first time asked. The pointer's own precedent. */
+  const quietTopic = useCallback((topic: string) => {
+    void remember('dropped', { topic, ...stampLive(topic, 'declined') }, (m) => {
+      const prior = m.topics[topic] ?? { declines: 0, dropped: false, lastOfferedDay: null };
+      return { ...m, topics: { ...m.topics, [topic]: { ...prior, dropped: true } } };
+    });
+  }, [remember, stampLive]);
+
+  const answer = useCallback((replyId: string) => {
+    // `showingRef`, not `showing`. The arrival card's Next button is filled in
+    // at RENDER time (see `showingOut`), because `goTo` cannot know which tour
+    // step it is on. A lookup against the raw state would search a set that has
+    // never contained the button somebody just pressed, and the tour's Next
+    // would silently do nothing from the second screen onwards.
+    const current = showingRef.current;
+    if (current.kind === 'none') return;
+    // The escape is not on the reply set (it is not one of the three), so it is
+    // resolved separately and only where a question is actually being asked.
+    const reply = replyId === ESCAPE_REPLY_ID
+      ? somethingElseReply()
+      : current.replies.find((r) => r.id === replyId);
+    // An id that is not on this set does nothing, deliberately. A stale tab
+    // pressing yesterday's button against today's card is exactly what the
+    // verify-at-tap path exists to refuse, and the cheapest refusal is here.
+    if (!reply) return;
+    const intent = reply.intent;
+
+    // ── Day one ────────────────────────────────────────────────────────────
+    if (current.kind === 'speech' && current.speech.kind === 'welcome') {
+      setShowing({ kind: 'none' });
+      setTourStep(null);
+      if (intent.kind === 'close') {
+        void remember('tour_declined', { ...stampLive(null, 'declined') },
+          (m) => ({ ...m, tourDeclined: true }));
+        return;
+      }
+      // Something else, on day one. It is neither a yes nor a no to the tour,
+      // so nothing is recorded about the tour: it stays offerable from the
+      // panel, and the person gets the conversation they reached for.
+      //
+      // Checked BEFORE the tour branch. Without it the escape falls through to
+      // `startTour()` and walks somebody who asked to talk instead.
+      if (intent.kind === 'seed') {
+        onSeed(intent.text || current.speech.greeting);
+        return;
+      }
+      // A yes to the welcome IS the tour, and the tour owns the walking: it
+      // stamps `tourTakenAt` and holds the step counter, neither of which a
+      // bare navigation would do.
+      startTour();
       return;
     }
-    if (current.kind === 'speech' && current.speech.kind === 'offer') {
-      const topic = current.speech.topic;
+
+    // ── The teach line ─────────────────────────────────────────────────────
+    if (current.kind === 'teach') {
+      setShowing({ kind: 'none' });
+      if (intent.kind === 'seed') onSeed(intent.text || current.example);
+      return;
+    }
+
+    // ── Mid-tour ───────────────────────────────────────────────────────────
+    if (current.kind === 'arrived') {
+      if (intent.kind === 'walk') {
+        // `nextTourStep` and not `goTo`: the step counter is what knows this is
+        // the fourth screen of eight rather than a navigation.
+        nextTourStep();
+        return;
+      }
+      setShowing({ kind: 'none' });
+      setTourStep(null);
+      return;
+    }
+
+    // ── The notices line ───────────────────────────────────────────────────
+    if (current.kind === 'notices') {
+      setShowing({ kind: 'none' });
+      // A no to the notices line is "not now", and it is recorded nowhere. The
+      // batch stamp already stopped it repeating, and counting it as a decline
+      // would put it two dismissals away from switching off the only way this
+      // person hears that a colleague handed them work.
+      retireLiveOffer();
+      if (intent.kind === 'show') {
+        // Opening the list IS reading it, so the cursor moves here rather than
+        // waiting for somebody to scroll: the count is a promise that there is
+        // something in there they have not seen, and it stops being true the
+        // moment the list is in front of them.
+        panelRef.current.onShowNotices();
+        markNoticesRead();
+        return;
+      }
+      if (intent.kind === 'seed') onSeed(intent.text || current.line);
+      return;
+    }
+
+    // ── An offer ───────────────────────────────────────────────────────────
+    // Every other shape returned above, so this is the offer. The guard is
+    // still written out rather than cast: a new `showing` kind added later
+    // should fall out here silently, not be treated as an offer with no topic.
+    if (current.kind !== 'speech' || current.speech.kind !== 'offer') return;
+    const speech = current.speech;
+    const topic = speech.topic;
+
+    if (intent.kind === 'close') {
+      setShowing({ kind: 'none' });
       // ONE call. `declined` is what counts the No in companion_memory; the
       // offer fields on the same request are what stamp the sentence it was
       // about. There is no way to do the second without the first.
@@ -905,82 +1190,70 @@ export function useCompanion(
           },
         };
       });
-    }
-    if (current.kind === 'speech' && current.speech.kind === 'welcome') {
-      void remember('tour_declined', { ...stampLive(null, 'declined') },
-        (m) => ({ ...m, tourDeclined: true }));
-    }
-  }, [showing, remember, stampLive, retireLiveOffer]);
-
-  const answerYes = useCallback(() => {
-    const current = showing;
-    if (current.kind === 'speech' && current.speech.kind === 'welcome') {
-      startTour();
       return;
     }
-    if (current.kind === 'speech' && current.speech.kind === 'offer') {
-      const topic = current.speech.topic;
-      const target = resolveDestination(current.speech.destination, {
-        role, enabledSections: activeProperty?.enabledSections,
-      });
-      const seed = current.speech.seed;
-      setShowing({ kind: 'none' });
-      void remember('accepted', { topic, ...stampLive(topic, 'accepted') }, (m) => m);
 
+    if (intent.kind === 'quiet') {
+      setShowing({ kind: 'none' });
+      quietTopic(topic);
+      return;
+    }
+
+    // Everything below is a yes of some shape, so the topic is forgiven its
+    // earlier declines before anything else happens.
+    setShowing({ kind: 'none' });
+    void remember('accepted', { topic, ...stampLive(topic, 'accepted') }, (m) => m);
+
+    if (intent.kind === 'record') {
+      void recordVerdict(intent.findingId, intent.verdict);
+      return;
+    }
+    if (intent.kind === 'act') {
+      void runFrozenPlan(intent.actionId);
+      return;
+    }
+    if (intent.kind === 'seed') {
       // A yes to a recall hands the sentence back to the one chat brain, which
       // proposes the action and puts the SAME approval card up again. The
       // companion still never acts without a yes: this reopens the question it
-      // asked before, it does not answer it.
-      if (seed) {
-        onSeed(seed);
+      // asked before, it does not answer it. An empty text is the Something
+      // else escape, whose subject is the statement on the screen.
+      onSeed(intent.text || speech.sentence);
+      return;
+    }
+    if (intent.kind === 'show') {
+      // Drawn in place when the thing it is about is on this screen already.
+      // Walking somebody to the page they are standing on is the one-voice rule
+      // broken in the other direction.
+      const here = traces.patterns.find((p) => p.key === topic);
+      if (here && here.page === tracePage) {
+        setTraceStale(null);
+        setTraceShowing(here);
         return;
       }
-
-      // A yes to a trace draws it rather than walking anywhere, when the thing
-      // it is about is on the screen already. Walking somebody to the page they
-      // are standing on is the one-voice rule broken in the other direction.
-      if (isTraceTopic(topic)) {
-        const here = traces.patterns.find((p) => p.key === topic);
-        if (here && here.page === tracePage) {
-          setTraceStale(null);
-          setTraceShowing(here);
-          return;
-        }
-        // Found somewhere else. Walk over, and remember what we came for so the
-        // reveal is already drawn on arrival. `goTo` only ever takes a constant
-        // from the allowlist in pages.ts.
-        if (target) {
-          walkingToRef.current = topic;
-          goTo(target);
-          return;
-        }
-        return;
+      // Found somewhere else. Walk over, and remember what we came for so the
+      // reveal is already drawn on arrival. `goTo` only ever takes a constant
+      // from the allowlist in pages.ts.
+      const found = resolveDestination(here?.page ?? speech.destination, {
+        role, enabledSections: activeProperty?.enabledSections,
+      });
+      if (found) {
+        walkingToRef.current = topic;
+        goTo(found);
       }
-
-      if (target) goTo(target);
       return;
     }
-    if (current.kind === 'teach') {
-      const example = current.example;
-      setShowing({ kind: 'none' });
-      onSeed(example);
-      return;
-    }
-    // "Show me" on the notices line. Opening the list IS reading it, so the
-    // cursor moves here rather than waiting for somebody to scroll: the count
-    // is a promise that there is something in there they have not seen, and it
-    // stops being true the moment the list is in front of them.
-    if (current.kind === 'notices') {
-      setShowing({ kind: 'none' });
-      retireLiveOffer();
-      panelRef.current.onShowNotices();
-      markNoticesRead();
-      return;
-    }
-    setShowing({ kind: 'none' });
+    // `walk`. The destination is a CONSTANT from the pages allowlist, resolved
+    // through the same role and section gates every other navigation uses. A
+    // key that resolves to nothing walks nowhere rather than into a locked door.
+    const target = resolveDestination(intent.page, {
+      role, enabledSections: activeProperty?.enabledSections,
+    });
+    if (target) goTo(target);
   }, [
-    showing, startTour, role, activeProperty?.enabledSections, goTo, remember, onSeed,
-    traces.patterns, tracePage, stampLive, markNoticesRead, retireLiveOffer,
+    startTour, nextTourStep, role, activeProperty?.enabledSections, goTo, remember,
+    onSeed, traces.patterns, tracePage, stampLive, markNoticesRead, retireLiveOffer,
+    recordVerdict, runFrozenPlan, quietTopic,
   ]);
 
   const dismiss = useCallback(() => {
@@ -1070,6 +1343,10 @@ export function useCompanion(
       const text = showing.line.trim();
       if (text) return { text, severity: 'ok' };
     }
+    // What came of the last thing somebody pressed. It outranks the stale note
+    // and the hello for the obvious reason: they asked for something to happen
+    // and this is whether it did.
+    if (saidBack) return { text: saidBack, severity: 'ok' };
     // The honest end of a walk that arrived too late. It rides the same pill
     // because it is the same kind of thing: one clause, true and current. A
     // trace that cannot be drawn says so in the corner rather than drawing an
@@ -1079,7 +1356,7 @@ export function useCompanion(
     // hotel with something wrong in it gets told about the thing, not greeted.
     if (hello) return { text: hello, severity: 'ok' };
     return null;
-  }, [showing, hello, traceStale]);
+  }, [showing, hello, traceStale, saidBack]);
 
   // The stale note retreats on its own, exactly as the hello does. The corner
   // is not a place to leave a sentence.
@@ -1120,10 +1397,14 @@ export function useCompanion(
       topic: decision.topic,
       sentence: decision.sentence,
       pattern: traces.patterns.find((p) => p.key === decision.topic) ?? null,
+      // The engine's own set, role-filtered. Not the trace vocabulary: the
+      // venue changes the honest answers, which is why decidePanelAsk builds
+      // its own rather than passing the candidate's through.
+      replies: repliesForRole(decision.replies, role),
     };
   }, [
     boot, candidates, panel.open, panel.threadEmpty, showing.kind, busy, quietThisSession,
-    traces.patterns, panelAskDone,
+    traces.patterns, panelAskDone, role,
   ]);
 
   // Shown is spent, exactly as `rememberSpoke` treats an offer. Without this
@@ -1136,10 +1417,6 @@ export function useCompanion(
       kind: 'panel_ask',
       text: panelAskSentence,
       topic: panelAskTopic,
-      actions: [
-        { label: labels.yes, kind: 'show' },
-        { label: labels.no, kind: 'no' },
-      ],
     }, (m) => {
       const prior = m.topics[panelAskTopic] ?? { declines: 0, dropped: false, lastOfferedDay: null };
       return {
@@ -1147,7 +1424,7 @@ export function useCompanion(
         topics: { ...m.topics, [panelAskTopic]: { ...prior, lastOfferedDay: boot.hotel.today } },
       };
     });
-  }, [panelAskTopic, panelAskSentence, boot, say, labels]);
+  }, [panelAskTopic, panelAskSentence, boot, say]);
 
   const spendPanelAsk = useCallback((topic: string) => {
     setPanelAskDone((prior) => {
@@ -1157,10 +1434,48 @@ export function useCompanion(
     });
   }, []);
 
-  const acceptPanelAsk = useCallback(() => {
+  /**
+   * A button on the panel ask, dispatched by intent.
+   *
+   * THREE OUTCOMES, not two. `show` draws the pattern (in place when it belongs
+   * to this screen, after a walk when it does not), `close` counts an ordinary
+   * decline, and `quiet` drops the topic for good the first time it is asked.
+   * The third is why this is not a pair of accept/decline callbacks: a pattern
+   * about a named colleague is the case where somebody most wants to say "never
+   * again" rather than "not today", and there was no way to say it.
+   */
+  const answerPanelAsk = useCallback((replyId: string) => {
     if (!panelAsk) return;
     const { topic, pattern } = panelAsk;
+    const reply = panelAsk.replies.find((r) => r.id === replyId);
+    if (!reply) return;
+    // Spent either way. Shown is spent, exactly as `rememberSpoke` treats an
+    // offer, so the same sentence is not back the moment the panel reopens.
     spendPanelAsk(topic);
+
+    if (reply.intent.kind === 'quiet') {
+      quietTopic(topic);
+      return;
+    }
+    if (reply.intent.kind === 'close') {
+      void remember('declined', { topic, ...stampLive(topic, 'declined') }, (m) => {
+        const prior = m.topics[topic] ?? { declines: 0, dropped: false, lastOfferedDay: null };
+        const declines = prior.declines + 1;
+        return {
+          ...m,
+          topics: {
+            ...m.topics,
+            [topic]: {
+              ...prior,
+              declines,
+              dropped: prior.dropped || declines >= COMPANION_DECLINES_BEFORE_DROP,
+            },
+          },
+        };
+      });
+      return;
+    }
+
     void remember('accepted', { topic, ...stampLive(topic, 'accepted') }, (m) => m);
     if (!pattern) return;
     // A pattern with no page has nothing to draw and nowhere to draw it, which
@@ -1182,29 +1497,8 @@ export function useCompanion(
     }
   }, [
     panelAsk, spendPanelAsk, remember, tracePage, role, activeProperty?.enabledSections, goTo,
-    stampLive,
+    stampLive, quietTopic,
   ]);
-
-  const declinePanelAsk = useCallback(() => {
-    if (!panelAsk) return;
-    const { topic } = panelAsk;
-    spendPanelAsk(topic);
-    void remember('declined', { topic, ...stampLive(topic, 'declined') }, (m) => {
-      const prior = m.topics[topic] ?? { declines: 0, dropped: false, lastOfferedDay: null };
-      const declines = prior.declines + 1;
-      return {
-        ...m,
-        topics: {
-          ...m.topics,
-          [topic]: {
-            ...prior,
-            declines,
-            dropped: prior.dropped || declines >= COMPANION_DECLINES_BEFORE_DROP,
-          },
-        },
-      };
-    });
-  }, [panelAsk, spendPanelAsk, remember, stampLive]);
 
   // ── Acting on a trace ────────────────────────────────────────────────────
   //
@@ -1388,6 +1682,7 @@ export function useCompanion(
   const offerSentenceText = showing.kind === 'speech' && showing.speech.kind === 'offer'
     ? showing.speech.sentence
     : null;
+  const offerReplies = showing.kind === 'speech' ? showing.replies : EMPTY_REPLIES;
   useEffect(() => {
     if (page?.key !== 'staxis' || !offerTopic || !offerSentenceText || !isTraceTopic(offerTopic)) {
       publishTraceLine(null);
@@ -1418,8 +1713,8 @@ export function useCompanion(
       topic: offerTopic,
       text: offerSentenceText,
       whereFound: `Found on ${target.label}`,
-      onYes: answerYes,
-      onNo: answerNo,
+      replies: offerReplies,
+      onReply: answer,
     });
     // No cleanup. This effect re-runs whenever the callbacks are rebuilt, and a
     // cleanup that published null would blank the line and re-add it on every
@@ -1427,15 +1722,52 @@ export function useCompanion(
     // should retire the line publishes null above, and the unmount case is the
     // effect below.
   }, [
-    page, offerTopic, offerSentenceText, traces.patterns, role,
-    activeProperty?.enabledSections, answerYes, answerNo,
+    page, offerTopic, offerSentenceText, offerReplies, traces.patterns, role,
+    activeProperty?.enabledSections, answer,
   ]);
+
+  // ── The arrival line's Next, filled in at render ─────────────────────────
+  //
+  // `goTo` cannot know it: `startTour` sets the step and calls `goTo` in the
+  // same tick, so the step readable inside that callback is always the one
+  // before the move. Here the state has settled and the answer is simply true.
+  const showingOut = useMemo<CompanionShowing>(() => {
+    if (showing.kind !== 'arrived') return showing;
+    const next = tourStep === null ? null : tour[tourStep + 1];
+    return {
+      ...showing,
+      replies: repliesFor({
+        kind: 'arrival',
+        page: next?.key ?? null,
+        pageLabel: next?.label ?? null,
+      }),
+    };
+  }, [showing, tourStep, tour]);
+
+  // Kept in step with what is on the screen, for `answer`. An assignment during
+  // render rather than an effect: the dispatcher can fire from a click in the
+  // very same commit that first drew the button, and an effect would leave the
+  // ref one render behind for exactly that tap.
+  showingRef.current = showingOut;
+
+  /**
+   * The way out, offered only where something is actually being asked.
+   *
+   * A statement with no question has nothing to be "something else" than, and a
+   * card whose three replies are the only three honest answers does not need a
+   * fourth. So this is null unless a question is on the screen.
+   */
+  const escape = useMemo<CompanionReply | null>(() => {
+    if (showingOut.kind !== 'speech') return null;
+    if (!showingOut.question) return null;
+    return somethingElseReply();
+  }, [showingOut]);
 
   return {
     mounts: gate.mounts,
     asleep: boot !== null && !boot.availability.awake,
     sleepReason: boot?.availability.reason ?? null,
-    showing,
+    showing: showingOut,
     peek,
     opening,
     hello,
@@ -1443,8 +1775,8 @@ export function useCompanion(
     today: boot?.hotel.today ?? null,
     tour,
     tourStep,
-    answerYes,
-    answerNo,
+    answer,
+    escape,
     dismiss,
     quiet,
     startTour,
@@ -1465,8 +1797,7 @@ export function useCompanion(
       act: actOnTrace,
       decline: declineTrace,
       close: closeTrace,
-      acceptPanelAsk,
-      declinePanelAsk,
+      answerPanelAsk,
     },
   };
 }

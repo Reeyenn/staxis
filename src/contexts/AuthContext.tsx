@@ -229,8 +229,59 @@ function clearSignedOutBrowserState(): void {
     // Property selection is account-scoped. Never let the next person on a
     // shared front-desk browser probe the previous account's remembered hotel.
     localStorage.removeItem('hotelops-active-property');
+    // The admin account switcher's cached roster of demo people. Names only,
+    // but it belongs to the admin who fetched it, not to whoever signs in next.
+    localStorage.removeItem('staxis.switch-roster.v1');
   } catch {
     // ignore — private browsing / no storage
+  }
+  try {
+    // The cosmetic "you are switched, here is the way back" hint. It carries
+    // no authority (the real return credential is httpOnly and expires on its
+    // own), but leaving it behind would offer the next person at this browser
+    // a button that isn't theirs. On the production domain the cookie is
+    // written against `.getstaxis.com`, and a host-only delete would not match
+    // it, so clear both shapes.
+    const base = 'staxis_switch_hint=; Path=/; Max-Age=0; Expires=Thu, 01 Jan 1970 00:00:00 GMT; SameSite=Strict';
+    document.cookie = base;
+    const host = window.location.hostname.toLowerCase();
+    if (host === 'getstaxis.com' || host.endsWith('.getstaxis.com')) {
+      document.cookie = `${base}; Domain=.getstaxis.com`;
+    }
+  } catch {
+    // ignore — no document in a non-browser context
+  }
+}
+
+/**
+ * Ask the server to drop the REAL return credential, the httpOnly twin of the
+ * cosmetic hint above. Only the server can remove it.
+ *
+ * Security audit 2026-08-07: leaving it behind meant a browser that had been
+ * signed out still carried a two-hour path into the platform-admin account.
+ * The redeem endpoint independently refuses a caller who is no longer the
+ * switched-into person, so a failed request here is not a hole; it just leaves
+ * an inert cookie sitting around until it expires.
+ *
+ * Deliberately NOT part of clearSignedOutBrowserState. That runs on hydration
+ * paths too, including a momentary "no session yet" reading, and throwing the
+ * way back away over a sub-second blip would cost an admin their return for no
+ * safety gain. This is called only where the person is unambiguously done:
+ * an explicit sign-out, and the SIGNED_OUT event itself.
+ *
+ * keepalive so it still goes out when sign-out is followed by a navigation.
+ */
+function discardAdminReturnCookie(): void {
+  try {
+    void fetch('/api/auth/admin-switch-return', {
+      method: 'DELETE',
+      credentials: 'include',
+      keepalive: true,
+    }).catch(() => {
+      // Offline or mid-navigation. Nothing to recover.
+    });
+  } catch {
+    // ignore — no fetch in a non-browser context
   }
 }
 
@@ -530,6 +581,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         // Covers wrapper sign-out AND terminal 401/session-expiry paths that
         // call supabase.auth.signOut() directly.
         clearSignedOutBrowserState();
+        // Unambiguously done with this identity, so the way back goes too.
+        discardAdminReturnCookie();
         authSessionUidRef.current = null;
         authSessionRefreshTokenRef.current = null;
         userRef.current = null;
@@ -1056,6 +1109,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     // pretends a still-persisted cookie was removed.
     userRef.current = null;
     clearSignedOutBrowserState();
+    // The way back out of a switched session dies with the sign-out that ends
+    // it, rather than sitting on the browser for the rest of its two hours.
+    discardAdminReturnCookie();
     setAuthorizationChecked(false);
     setPlatformAdmin(false);
     setPropertyStandings([]);
