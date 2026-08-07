@@ -271,6 +271,16 @@ export interface QueueFinding {
   summary: string;
   phrasedEn?: string | null;
   phrasedEs?: string | null;
+  /**
+   * The question over this card's buttons, written by the nightly
+   * companion.reply_question pass, or null.
+   *
+   * OPTIONAL on purpose, the same as `phrasedEn` beside it and for the same
+   * reason: a card must render on a deploy where the pass has not landed, and
+   * on every hotel it has never run for. Null is the ordinary state and means
+   * the per-kind template stands, which is a complete card.
+   */
+  judgedQuestion?: string | null;
   severity: FindingSeverity;
   disposition: FindingDisposition;
   status: FindingStatus;
@@ -1046,6 +1056,126 @@ export function closureButtons(
       ? { prompt: pick(spec.confirm.prompt, lang), yes: pick(spec.confirm.yes, lang) }
       : null,
   }));
+}
+
+// ─── Where the card's overflow menu actually goes ───────────────────────────
+//
+// ─── THE BUG THIS EXISTS TO END ────────────────────────────────────────────
+//
+// The menu was `position:absolute; top:calc(100% + 7px)` on the action row,
+// which is the LAST row of a card whose own rule is `overflow:hidden`. So it
+// opened downward, into the part of the card that does not exist, and was
+// clipped to nothing: on a real queue the founder saw a sliver of its top edge
+// under the following card and no way to reach any of the items.
+//
+// Two things were wrong and both are fixed together. The clipping is fixed by
+// taking the menu OUT of the card entirely, into a portal on <body> with fixed
+// positioning, so no ancestor's overflow, transform or stacking context can
+// reach it. The direction is fixed here: this function measures the room that
+// actually exists and puts the menu where it fits.
+//
+// It is pure and it lives in this file, beside the rest of the card's
+// arithmetic, for the reason the whole file exists: the suite runs under
+// --conditions=react-server and cannot mount a component, so anything with a
+// consequence has to be reachable without one. What is left in the component
+// is measurement and pixels.
+
+/** A DOM rectangle, in the two axes this cares about. */
+export interface MenuRect {
+  top: number;
+  left: number;
+  right: number;
+  bottom: number;
+}
+
+export interface MenuPlacement {
+  /** Fixed-position coordinates, in viewport pixels. */
+  left: number;
+  top: number;
+  /** The menu scrolls INSIDE this rather than growing past the screen edge. */
+  maxHeight: number;
+  /** Squeezed on a narrow phone rather than pushed off the side. */
+  maxWidth: number;
+  /** Which way it opened. Presentation only; asserted in the tests. */
+  side: 'below' | 'above';
+}
+
+/** Breathing room between the menu and the button it belongs to. */
+export const MENU_GAP = 7;
+
+/** How close to the edge of the screen the menu may come. */
+export const MENU_EDGE_MARGIN = 8;
+
+/** Below this there is no point opening downward at all. */
+const MENU_MIN_HEIGHT = 88;
+
+/**
+ * Put the menu where it fits, given the button and the window.
+ *
+ * PREFERS BELOW, because that is where a menu under a button belongs and where
+ * the eye is already going. It flips above only when below genuinely does not
+ * work and above is roomier, which on a card at the bottom of a long queue is
+ * every time.
+ *
+ * It NEVER returns a position that leaves the menu partly off the screen. If
+ * the room is small the menu is made smaller (`maxHeight`, `maxWidth`) and
+ * scrolls; if the window is narrower than the menu, the menu is narrowed to the
+ * window. There is deliberately no branch that returns "it does not fit": a
+ * control that opens into nothing is the bug this replaced.
+ */
+export function placeCardMenu(input: {
+  /** The trigger button, in viewport coordinates. */
+  anchor: MenuRect;
+  /** The menu's natural size, measured or estimated. */
+  menu: { width: number; height: number };
+  viewport: { width: number; height: number };
+}): MenuPlacement {
+  const { anchor, menu, viewport } = input;
+
+  const roomBelow = viewport.height - anchor.bottom - MENU_GAP - MENU_EDGE_MARGIN;
+  const roomAbove = anchor.top - MENU_GAP - MENU_EDGE_MARGIN;
+
+  // Below unless it plainly does not work there. "Does not work" is not "is
+  // one pixel short": a menu that can show most of itself and scroll the rest
+  // is better than one that jumps above the button for a near miss.
+  const fitsBelow = roomBelow >= Math.min(menu.height, MENU_MIN_HEIGHT);
+  const side: MenuPlacement['side'] = fitsBelow || roomBelow >= roomAbove ? 'below' : 'above';
+
+  const room = Math.max(0, side === 'below' ? roomBelow : roomAbove);
+  const maxHeight = Math.max(0, Math.min(menu.height, room));
+
+  const top = side === 'below'
+    ? anchor.bottom + MENU_GAP
+    // Anchored to its own bottom edge, so a menu that had to shrink still
+    // finishes exactly at the gap above the button rather than floating.
+    : Math.max(MENU_EDGE_MARGIN, anchor.top - MENU_GAP - maxHeight);
+
+  // Right-aligned to the button, which is how it read before and where a
+  // right-hand overflow control's menu belongs.
+  const maxWidth = Math.max(0, Math.min(menu.width, viewport.width - MENU_EDGE_MARGIN * 2));
+  const wanted = anchor.right - maxWidth;
+  const furthestLeft = viewport.width - maxWidth - MENU_EDGE_MARGIN;
+  const left = Math.max(MENU_EDGE_MARGIN, Math.min(wanted, Math.max(MENU_EDGE_MARGIN, furthestLeft)));
+
+  return { left, top, maxHeight, maxWidth, side };
+}
+
+/**
+ * Is this placement entirely on the screen?
+ *
+ * The property the founder's bug violated, written down so a test can assert it
+ * rather than describe it. Used by the tests and by nothing in the product,
+ * which is the honest shape: the placement function above is what guarantees
+ * this, and a runtime check would only be able to complain after the fact.
+ */
+export function menuPlacementIsOnScreen(
+  placement: MenuPlacement,
+  viewport: { width: number; height: number },
+): boolean {
+  return placement.left >= 0
+    && placement.top >= 0
+    && placement.left + placement.maxWidth <= viewport.width
+    && placement.top + placement.maxHeight <= viewport.height;
 }
 
 /** Chip colour class from concourse-css. Rust reads as "act", sage as "calm". */

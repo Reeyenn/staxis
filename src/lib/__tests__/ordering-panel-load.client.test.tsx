@@ -344,6 +344,15 @@ describe('ordering panel — a read that does not come back', () => {
 
     assert.match(screenText(), /Bath towels/);
     assert.equal(buttonSaying('Send order'), null);
+    // ...and the card says why. Front desk holds the ordering capability by
+    // default, so this screen opens for them; an email supplier used to render
+    // a list of items with no button and no sentence, and the route refuses
+    // "mark as ordered" for email, so there was no way forward at all.
+    assert.match(
+      screenText(),
+      /manager sends this order by email/i,
+      'a card with no action has to explain who finishes it',
+    );
 
     unmount();
   });

@@ -115,6 +115,10 @@ export function orderingStrings(lang: Lang) {
       blockedUrl: 'No web address on file',
       blockedPhone: 'No phone number on file',
       blockedUnconfirmed: 'Confirm this supplier first',
+      // Emailing an order is a manager action. Everyone else can open this
+      // screen, so the card has to say who finishes it instead of dead-ending
+      // with no control at all.
+      emailNeedsManager: 'A manager sends this order by email.',
 
       // ── Needs a supplier ──
       unmatchedTitle: 'Needs a supplier',
