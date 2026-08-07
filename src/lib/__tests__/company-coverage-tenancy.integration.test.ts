@@ -18,7 +18,11 @@ import type { PGlite } from '@electric-sql/pglite';
 import { resolveHatCoverage } from '@/lib/company/access';
 import { applyMigrationsToPglite } from '../../../tests/fixtures/pglite-migrate';
 import {
+  ACCOUNT_ADMIN,
   ACCOUNT_ANA,
+  ACCOUNT_FIONA,
+  ACCOUNT_FRANK,
+  ACCOUNT_MARIA,
   ORG_A,
   PID_A1,
   PID_A2,
@@ -31,6 +35,7 @@ import {
 const BOGUS = 'b6f0a05e-0000-0000-0000-000000000000';
 
 let pg: PGlite;
+let companies: Awaited<ReturnType<typeof seedTwoCompanies>>;
 let seq = 0;
 
 function tokenHash(): string {
@@ -67,13 +72,17 @@ describe('0467 company coverage tenancy', () => {
     // Both migrations must APPLY, not merely be attempted — the runner records
     // a file that throws and carries on, which would leave every assertion
     // below reading a database neither migration touched.
-    for (const file of ['0464_company_invite_rescope.sql', '0467_company_coverage_tenancy.sql']) {
+    for (const file of [
+      '0464_company_invite_rescope.sql',
+      '0467_company_coverage_tenancy.sql',
+      '0468_company_coverage_never_empty.sql',
+    ]) {
       assert.ok(
         migrated.report.applied.includes(file),
         `${file}: ${JSON.stringify(migrated.report.failedAtRuntime.filter((f) => f.file === file))}`,
       );
     }
-    await seedTwoCompanies(pg);
+    companies = await seedTwoCompanies(pg);
   });
 
   after(async () => {
@@ -338,5 +347,141 @@ describe('0467 company coverage tenancy', () => {
           and membership_scope = 'company' and ended_at is null`,
       [ORG_A, ACCOUNT_ANA],
     );
+  });
+
+  // ─── 0468: a hat never ends up naming zero hotels ────────────────────────
+  //
+  // 0467 wrote a cardinality-based hat-shape CHECK, watched it turn the Stage C
+  // contract suite red, and backed it out because the write path producing '{}'
+  // had not been identified. There were two, both using `array(subquery)` to
+  // prune a hotel out of a property hat's list — a construct that returns '{}'
+  // rather than NULL over zero rows. These are those two paths, asked directly.
+
+  const hatRow = async (accountId: string, role: string) => (await pg.query<{
+    status: string;
+    ended_at: string | null;
+    covered_property_ids: string[] | null;
+  }>(
+    `select status, ended_at, covered_property_ids
+       from public.organization_memberships
+      where account_id = $1 and membership_scope = 'property' and staxis_role = $2`,
+    [accountId, role],
+  )).rows[0];
+
+  const emptyCoverageRows = async () => (await pg.query<{ n: number }>(
+    `select count(*)::int as n from public.organization_memberships
+      where covered_property_ids is not null
+        and cardinality(covered_property_ids) = 0`,
+  )).rows[0].n;
+
+  test('deleting a hotel ends a hat that named only it, instead of emptying the list', async () => {
+    const ANNEX = 'aaaa9999-0000-4000-8000-000000000009';
+    await companies.attachPropertyToOrganization(pg, ORG_A, ANNEX, 'Audit Annex');
+    await pg.query(
+      `select public.staxis_set_membership_hat($1, $2, $3, 'property', 'housekeeping', $4::jsonb, 'Housekeeping')`,
+      [ACCOUNT_ADMIN, ORG_A, ACCOUNT_MARIA, JSON.stringify([ANNEX])],
+    );
+    assert.deepEqual((await hatRow(ACCOUNT_MARIA, 'housekeeping')).covered_property_ids, [ANNEX]);
+
+    await pg.query(
+      `select public.staxis_delete_property_and_legacy_accounts($1, $2, null)`,
+      [ACCOUNT_ADMIN, ANNEX],
+    );
+
+    // Before this fix the row stayed ACTIVE with an empty list: a live hat
+    // covering nothing, and the shape that made the CHECK uninstallable. There
+    // was no follow-up revoke on this path at all.
+    const after = await hatRow(ACCOUNT_MARIA, 'housekeeping');
+    assert.equal(after.status, 'revoked');
+    assert.notEqual(after.ended_at, null);
+    assert.deepEqual(
+      after.covered_property_ids,
+      [ANNEX],
+      'the ended hat keeps the record of which hotel it covered',
+    );
+    assert.equal(await emptyCoverageRows(), 0);
+  });
+
+  test('detaching the last covered hotel ends the hat, and a multi-hotel hat is only pruned', async () => {
+    const EXTRA = 'aaaa9999-0000-4000-8000-00000000000a';
+    await companies.attachPropertyToOrganization(pg, ORG_A, EXTRA, 'Audit Extra');
+
+    const detach = async (accountId: string, propertyId: string) => {
+      const state = (await pg.query<{
+        authority_version: number; updated_at: string; role: string;
+      }>(
+        `select state.authority_version, account.updated_at, account.role
+           from public.account_authorization_state state
+           join public.accounts account on account.id = state.account_id
+          where state.account_id = $1`,
+        [accountId],
+      )).rows[0];
+      const result = await pg.query<{ value: Record<string, unknown> }>(
+        `select public.staxis_remove_property_access_authoritative(
+           $1, $2, 'ana@example.test', $3, $4, $5, $6, $7, 'audit-0468'
+         ) as value`,
+        [
+          ACCOUNT_ANA, UID_ANA, accountId, propertyId,
+          state.role, state.authority_version, state.updated_at,
+        ],
+      );
+      return result.rows[0].value;
+    };
+
+    // Maria's maintenance hat names TWO hotels. Removing one must prune, and
+    // must leave the hat alive at the other.
+    await pg.query(
+      `select public.staxis_set_membership_hat($1, $2, $3, 'property', 'maintenance', $4::jsonb, 'Maintenance')`,
+      [ACCOUNT_ADMIN, ORG_A, ACCOUNT_FRANK, JSON.stringify([PID_A2, EXTRA])],
+    );
+    assert.equal((await detach(ACCOUNT_FRANK, EXTRA)).status, 'ok');
+    const pruned = await hatRow(ACCOUNT_FRANK, 'maintenance');
+    assert.equal(pruned.status, 'active');
+    assert.deepEqual(pruned.covered_property_ids, [PID_A2]);
+
+    // Now the last one. The hat is over: ended, list intact, nothing emptied.
+    assert.equal((await detach(ACCOUNT_FRANK, PID_A2)).status, 'ok');
+    const ended = await hatRow(ACCOUNT_FRANK, 'maintenance');
+    assert.equal(ended.status, 'revoked');
+    assert.notEqual(ended.ended_at, null);
+    assert.deepEqual(ended.covered_property_ids, [PID_A2]);
+    assert.equal(await emptyCoverageRows(), 0);
+  });
+
+  test('the shape check refuses an empty list on either hat shape', async () => {
+    // `array_length('{}', 1)` is NULL and a CHECK reads NULL as satisfied, which
+    // is how 0464's constraint admitted an empty array on both branches.
+    for (const [scope, role] of [
+      ['company', 'regional_manager'],
+      ['property', 'front_desk'],
+    ] as const) {
+      await assert.rejects(
+        pg.query(
+          `insert into public.organization_memberships
+             (organization_id, account_id, job_category, status,
+              membership_scope, staxis_role, covered_property_ids)
+           values ($1, $2, 'hotel_employee', 'active', $3, $4, '{}'::uuid[])`,
+          [ORG_A, ACCOUNT_FIONA, scope, role],
+        ),
+        /hat_shape_check/,
+        `${scope}/${role} accepted a list naming zero hotels`,
+      );
+      await pg.exec('rollback;').catch(() => undefined);
+    }
+
+    // And NULL is still refused on the property shape, so "write NULL instead
+    // of '{}'" is not the fix it looks like: NULL is the company shape and it
+    // means every hotel including future ones.
+    await assert.rejects(
+      pg.query(
+        `insert into public.organization_memberships
+           (organization_id, account_id, job_category, status,
+            membership_scope, staxis_role, covered_property_ids)
+         values ($1, $2, 'hotel_employee', 'active', 'property', 'front_desk', null)`,
+        [ORG_A, ACCOUNT_FIONA],
+      ),
+      /hat_shape_check/,
+    );
+    await pg.exec('rollback;').catch(() => undefined);
   });
 });
