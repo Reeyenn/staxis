@@ -1223,8 +1223,109 @@ async function checkFindingsSpendStaleHolds(): Promise<Omit<Check, 'name' | 'dur
  * WARN, never fail. Nothing here is broken for a manager, and a check that
  * could 503 the deploy gate over a background watcher would be its own outage.
  */
+export const COMPANION_WAKE_STALE_MINUTES = 30;
+
+export interface CompanionWakeInputs {
+  /** Hotels whose cursor has not moved inside the staleness window. */
+  staleCount: number;
+  /** The last heartbeat's `notes`, exactly as the route wrote them. */
+  notes: Record<string, unknown>;
+  /** True when the heartbeat row could not be read at all. */
+  heartbeatUnreadable?: boolean;
+}
+
+/**
+ * The judgement, separated from the two queries so it can be exercised.
+ *
+ * ─── WHY IT MOVED OUT OF THE CHECK ─────────────────────────────────────────
+ *
+ * Because it was wrong in the one case that matters most and nothing could
+ * say so. `docs/cron-triggers.md` tells the founder that switching this
+ * feature off in the AI Control Center "is the supported way to stop it".
+ * Doing exactly that makes `sweepAllProperties` return before it reads a
+ * single hotel, so no cursor advances, so within thirty minutes this check
+ * warned that "the ten-minute sweep is not advancing cursors" and told him to
+ * go and read the logs of a job he had deliberately turned off. It then said
+ * that every five minutes, forever. The supported action produced a permanent
+ * false alarm, which is the fastest way to teach somebody that amber means
+ * nothing.
+ *
+ * The route already recorded the truth: it writes `switchedOff` into the
+ * heartbeat notes on exactly that path. The check simply never looked at it,
+ * and it never looked at whether the heartbeat read had FAILED either, so an
+ * unreadable heartbeat row silently became "all counters are zero", which
+ * reads as health.
+ */
+export function companionEventWakeVerdict(
+  input: CompanionWakeInputs,
+): Omit<Check, 'name' | 'durationMs'> {
+  const notes = input.notes ?? {};
+  const num = (key: string): number => {
+    const value = Number(notes[key]);
+    return Number.isFinite(value) && value > 0 ? value : 0;
+  };
+  const spendCap = num('spendCap');
+  const spendUnavailable = num('spendUnavailable');
+  const dailyWakeCap = num('dailyWakeCap');
+  const noCursor = num('noCursor') + num('readFailed');
+  const listSwitchedOff = num('listSwitchedOff');
+  const staleCount = Math.max(0, input.staleCount);
+
+  // THE OFF SWITCH, FIRST. A feature somebody turned off is not a feature that
+  // broke, and stale cursors are the expected and only possible consequence of
+  // turning this one off. Reported plainly rather than silently, because a
+  // watcher that is not watching is worth one calm line either way.
+  if (notes.switchedOff === true) {
+    return {
+      status: 'ok',
+      detail: 'the companion event sweep is switched off in the AI Control Center, '
+        + `so no hotel is being looked at (${staleCount} cursor(s) standing still)`,
+    };
+  }
+
+  const problems: string[] = [];
+  if (input.heartbeatUnreadable === true) {
+    // Not folded into "healthy". Without the heartbeat the counters below are
+    // all zero, and zero is what a perfect night looks like.
+    problems.push('the last run\'s record could not be read, so the counters below are blank');
+  }
+  if (staleCount > 0) {
+    problems.push(`${staleCount} hotel(s) not looked at in over ${COMPANION_WAKE_STALE_MINUTES} min`);
+  }
+  if (noCursor > 0) problems.push(`${noCursor} hotel(s) skipped on a failed read`);
+  if (spendUnavailable > 0) problems.push(`${spendUnavailable} hotel(s) could not read the spend cap`);
+  if (spendCap > 0) problems.push(`${spendCap} hotel(s) silenced by the daily spend cap`);
+
+  if (problems.length === 0) {
+    // Said out loud rather than folded into "healthy". Both of these are the
+    // system working as designed, and both are things an operator would
+    // otherwise have to read the heartbeat notes by hand to discover: a hotel
+    // at its wake limit, and a hotel that has switched off the list a note
+    // would arrive on and will therefore never get one.
+    const asides = [
+      dailyWakeCap > 0 ? `${dailyWakeCap} hotel(s) at today's wake limit` : '',
+      listSwitchedOff > 0 ? `${listSwitchedOff} hotel(s) have the Staxis list switched off` : '',
+    ].filter(Boolean);
+    return {
+      status: 'ok',
+      detail: asides.length > 0
+        ? `companion event sweep healthy; ${asides.join('; ')}`
+        : 'companion event sweep healthy',
+    };
+  }
+  return {
+    status: 'warn',
+    detail: `companion event sweep: ${problems.join('; ')}`,
+    fix: staleCount > 0 || noCursor > 0
+      ? 'The ten-minute sweep is not advancing cursors. Confirm the feature is still '
+        + 'switched ON in the AI Control Center, then check /api/cron/companion-event-wake '
+        + 'logs and that migration 0459 is applied.'
+      : 'A hotel is hitting its per-day AI ceiling for event notices. Check findings_ai_spend for feature companion.event_wake.',
+  };
+}
+
 async function checkCompanionEventWakeHealth(): Promise<Omit<Check, 'name' | 'durationMs'>> {
-  const STALE_MINUTES = 30;
+  const STALE_MINUTES = COMPANION_WAKE_STALE_MINUTES;
   try {
     const staleCutoff = new Date(Date.now() - STALE_MINUTES * 60_000).toISOString();
     const [stale, heartbeat] = await Promise.all([
@@ -1254,51 +1355,19 @@ async function checkCompanionEventWakeHealth(): Promise<Omit<Check, 'name' | 'du
       };
     }
 
+    // The heartbeat read is allowed to fail; it is not allowed to fail QUIETLY.
+    // Its notes are the only place the per-hotel counters live, so an
+    // unreadable row used to present as "every counter is zero", which is
+    // exactly what a perfect ten minutes looks like.
+    const heartbeatUnreadable = Boolean(heartbeat.error);
     const notes = (((heartbeat.data ?? []) as Array<{ notes?: unknown }>)[0]?.notes ?? {}) as
       Record<string, unknown>;
-    const num = (key: string): number => {
-      const value = Number(notes[key]);
-      return Number.isFinite(value) && value > 0 ? value : 0;
-    };
-    const spendCap = num('spendCap');
-    const spendUnavailable = num('spendUnavailable');
-    const dailyWakeCap = num('dailyWakeCap');
-    const noCursor = num('noCursor') + num('readFailed');
-    const listSwitchedOff = num('listSwitchedOff');
-    const staleCount = stale.count ?? 0;
 
-    const problems: string[] = [];
-    if (staleCount > 0) {
-      problems.push(`${staleCount} hotel(s) not looked at in over ${STALE_MINUTES} min`);
-    }
-    if (noCursor > 0) problems.push(`${noCursor} hotel(s) skipped on a failed read`);
-    if (spendUnavailable > 0) problems.push(`${spendUnavailable} hotel(s) could not read the spend cap`);
-    if (spendCap > 0) problems.push(`${spendCap} hotel(s) silenced by the daily spend cap`);
-
-    if (problems.length === 0) {
-      // Said out loud rather than folded into "healthy". Both of these are the
-      // system working as designed, and both are things an operator would
-      // otherwise have to read the heartbeat notes by hand to discover: a hotel
-      // at its wake limit, and a hotel that has switched off the list a note
-      // would arrive on and will therefore never get one.
-      const notes = [
-        dailyWakeCap > 0 ? `${dailyWakeCap} hotel(s) at today's wake limit` : '',
-        listSwitchedOff > 0 ? `${listSwitchedOff} hotel(s) have the Staxis list switched off` : '',
-      ].filter(Boolean);
-      return {
-        status: 'ok',
-        detail: notes.length > 0
-          ? `companion event sweep healthy; ${notes.join('; ')}`
-          : 'companion event sweep healthy',
-      };
-    }
-    return {
-      status: 'warn',
-      detail: `companion event sweep: ${problems.join('; ')}`,
-      fix: staleCount > 0 || noCursor > 0
-        ? 'The ten-minute sweep is not advancing cursors. Check /api/cron/companion-event-wake logs and that migration 0459 is applied.'
-        : 'A hotel is hitting its per-day AI ceiling for event notices. Check findings_ai_spend for feature companion.event_wake.',
-    };
+    return companionEventWakeVerdict({
+      staleCount: stale.count ?? 0,
+      notes,
+      heartbeatUnreadable,
+    });
   } catch (err) {
     return { status: 'warn', detail: `check threw: ${errToString(err)}` };
   }
