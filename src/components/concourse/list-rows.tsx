@@ -136,7 +136,11 @@ export const LIST_CSS = `
      rhythm and are the mobile pass's business; these two are new controls and
      they arrive at a real target rather than needing a second pass. */
   .fx-rowmore{min-width:44px;min-height:44px;}
-  .fx-asknum{min-height:44px;}
+  /* 16px, or iOS zooms the page in the moment a thumb lands in the box and
+     never zooms back out. The row menus arrived after the phone pass, so this
+     one field went out at 13px while every other box on the screen was
+     already raised. See the composer's own .fx-comptitle and .fx-compnum. */
+  .fx-asknum{min-height:44px;font-size:16px;}
 }
 `;
 

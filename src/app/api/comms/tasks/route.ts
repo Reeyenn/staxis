@@ -22,7 +22,7 @@ import { checkAndIncrementRateLimit, rateLimitedResponse, hashToRateLimitKey } f
 import { commsContext, ONE_LIST_CTX } from '@/lib/comms/route-helpers';
 import { listTasks, createTask, setTaskStatus, deleteTask, getStaffRow } from '@/lib/comms/core';
 import { createTemplate, RECURRING_CADENCES, type RecurringCadence } from '@/lib/recurring-tasks/store';
-import { assigneeBlockedReason } from '@/lib/worklist/assignable';
+import { assigneeBlockedReason, departmentBlockedReason } from '@/lib/worklist/assignable';
 import { propertyTimezoneOf } from '@/lib/worklist/core';
 import { endOfLocalDay, propertyLocalToday } from '@/lib/schedule/local-date';
 import { isBusinessDate } from '@/lib/business-date';
@@ -83,6 +83,16 @@ export async function POST(req: NextRequest): Promise<Response> {
   if (body.assignedDepartment) {
     const dv = validateEnum(body.assignedDepartment, DEPARTMENTS, 'assignedDepartment');
     if (dv.error) return err(dv.error, { requestId: ctx.requestId, status: 400, code: ApiErrorCode.ValidationFailed, headers: ctx.headers });
+    // The department half of the housekeeper rule. `DEPARTMENTS` still lists
+    // housekeeping because the column's own CHECK does, but a to-do ROUTED
+    // there reaches nobody: housekeepers get no Staxis page at all, and nothing
+    // on their board reads comms_tasks. createTask refuses it too, and this
+    // check exists so the answer is a sentence a manager can act on rather than
+    // a 500 from a thrown error. See departmentBlockedReason.
+    const deptBlocked = departmentBlockedReason(dv.value!);
+    if (deptBlocked) {
+      return err(deptBlocked, { requestId: ctx.requestId, status: 400, code: ApiErrorCode.ValidationFailed, headers: ctx.headers });
+    }
     assignedDepartment = dv.value!;
   }
   // ── when the work is due ─────────────────────────────────────────────────
