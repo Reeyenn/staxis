@@ -887,6 +887,9 @@ export const EXPECTED_MIGRATIONS_STATIC: ReadonlyArray<string> = [
   // Integer-cents mirrors of the legacy dollar money columns, derived by
   // Postgres so the cents and dollars views of a number cannot drift apart.
   '0463',
+  // Audit trigger stops naming the 0463 generated cents mirrors in
+  // changedFields; item history shows one entry per real edit again.
+  '0465',
 ];
 
 /**
