@@ -87,11 +87,11 @@ export interface TwoCompanySeed {
   /**
    * The company word this database actually accepts — see
    * `companyHatVocabulary` below. `regional_manager` on any schema carrying
-   * 0461, `vp` on a suite deliberately pinned before it. Key `hats` with this
+   * 0464, `vp` on a suite deliberately pinned before it. Key `hats` with this
    * rather than a literal if your suite is one of the pinned ones.
    */
   companyOversightRole: string;
-  /** The word Fiona wears: `regional_manager` after 0461, `finance` before. */
+  /** The word Fiona wears: `regional_manager` after 0464, `finance` before. */
   companyMoneyRole: string;
   /** Attach a hotel to a company AFTER the fact — the auto-coverage probe. */
   attachPropertyToOrganization(
@@ -172,7 +172,7 @@ async function attachProperty(
 /**
  * WHICH COMPANY WORDS THIS DATABASE ACCEPTS.
  *
- * Migration 0461 collapsed the company vocabulary from `owner|vp|finance` to
+ * Migration 0464 collapsed the company vocabulary from `owner|vp|finance` to
  * `owner|regional_manager`, renaming the first and retiring the second. This
  * fixture is shared by suites at TWO schema boundaries: most apply every
  * migration, but the Stage A/B compatibility suites deliberately stop at 0425
@@ -181,7 +181,7 @@ async function attachProperty(
  *
  * So the seed asks the database rather than hard-coding either answer. Pinned
  * suites keep seeding the world their pin describes; everything else seeds the
- * world that ships. Under 0461 both words collapse onto `regional_manager`,
+ * world that ships. Under 0464 both words collapse onto `regional_manager`,
  * which is exactly the conversion the migration performs on stored rows —
  * Maria and Fiona are different accounts, so the one-hat-per-job unique index
  * is untroubled by the collision.
@@ -339,7 +339,7 @@ export async function seedTwoCompanies(pg: PGlite): Promise<TwoCompanySeed> {
   await wear(ORG_A, ACCOUNT_MARIA, 'property', 'general_manager', [PID_A1], 'General Manager');
   await wear(ORG_A, ACCOUNT_MARIA, 'company', companyWords.oversight, null, 'VP of Operations');
   await wear(ORG_A, ACCOUNT_FRANK, 'property', 'front_desk', [PID_A1], 'Front Desk');
-  // Fiona wore the `finance` hat before 0461 retired it. On a rescoped schema
+  // Fiona wore the `finance` hat before 0464 retired it. On a rescoped schema
   // she is seeded as what the migration would have made her, and her job title
   // still says Controller — titles are free text and the company still calls
   // her that.

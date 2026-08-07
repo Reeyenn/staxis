@@ -110,11 +110,12 @@ const originalCreateUser: CreateUserFn = supabaseAdmin.auth.admin.createUser.bin
 let signedInAs: string | null = null;
 
 /**
- * A LEGACY front-desk account at Beaumont — a hotel a real management company
- * operates. No hat, no membership: her access is the `accounts.property_access`
- * array and nothing else, which is what every account in the product looked
- * like before the spine. She is the person the Company Hub told that her hotel
- * was "not grouped under a management company".
+ * An UNMIGRATED front-desk account at Beaumont — a hotel a real management
+ * company operates. No hat, no membership, and (since the final access
+ * contract fenced `accounts.property_access`) no canonical authorization scope
+ * either. She is the person the Company Hub told that her hotel was "not
+ * grouped under a management company", and the account the final route must
+ * refuse rather than serve from a column nobody may write.
  */
 const ACCOUNT_DOLORES = 'aaaa1111-0000-4000-8000-0000000000d1';
 const UID_DOLORES = 'aaaa2222-0000-4000-8000-0000000000d1';
@@ -455,11 +456,11 @@ before(async () => {
      on conflict (id) do nothing`,
     [ACCOUNT_DOLORES, UID_DOLORES],
   );
-  // Her reach is minted through the canonical scope RPC rather than by writing
-  // `accounts.property_access`, which the final access contract (0426) fences.
-  // What she IS remains the point: an account at a company hotel with reach and
-  // NO hat of any kind.
-  await seedCanonicalTestAuthority(pg, { username: 'dolores', propertyIds: [PID_A1] });
+  // Deliberately NO canonical authorization scope and no hat. Under the final
+  // access contract (0426) `accounts.property_access` can no longer be written,
+  // so "an account carrying only the legacy array" now means "an account with
+  // no canonical authority at all" — which is exactly the unmigrated shape the
+  // Company Hub route has to refuse rather than serve from a stale column.
 
   PORTFOLIO_FINDING = await plantCompanyFinding(ORG_A);
 

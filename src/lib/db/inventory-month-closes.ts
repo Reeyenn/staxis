@@ -1,4 +1,5 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
+import { dollarsToFractionalCents } from '@/lib/format';
 import { fetchAllRows } from '@/lib/supabase-paginate';
 import { validPropertyTimezone } from '@/lib/property-timezone';
 import { summarizeEffectivePurchasesForProperty } from './inventory-effective-purchases';
@@ -953,7 +954,10 @@ async function buildNotStartedDashboard(
   const items: InventoryMonthCloseItem[] = liveItems.map((item) => {
     const count = displayCounts.get(item.id);
     const quantity = numeric(count?.counted_stock);
-    const unitCostCents = finite(item.unit_cost) == null ? null : numeric(item.unit_cost) * 100;
+    // Fractional cents on purpose — matches round(unit_cost * 100, 6) in
+    // 0322:1225, which computes the committed close. Whole-centing here makes
+    // the preview disagree with the close once quantity multiplies the error.
+    const unitCostCents = finite(item.unit_cost) == null ? null : dollarsToFractionalCents(numeric(item.unit_cost));
     const dimension = liveBudgetDimension(item, dimensions.sections, dimensions.categories);
     if (dimension.multiplyMapped) {
       warnings.push(issue(
@@ -1271,7 +1275,7 @@ async function buildOpenDashboard(
       purchaseQuantity = 0;
       purchasesCents = 0;
     } else {
-      unitCostCents = archived ? openingPosition.unitCostCents : finite(count?.unit_cost) == null ? null : numeric(count?.unit_cost) * 100;
+      unitCostCents = archived ? openingPosition.unitCostCents : finite(count?.unit_cost) == null ? null : dollarsToFractionalCents(numeric(count?.unit_cost));
       purchaseQuantity = null;
       purchasesCents = null;
     }
@@ -1379,7 +1383,7 @@ async function buildOpenDashboard(
       endingQuantity: archived ? 0 : count ? numeric(count.counted_stock) : null,
       endingSetAside: archived ? 0 : count ? numeric(item.set_aside) : null,
       endingUnitCostCents: value?.unitCostCents ?? null,
-      physicalUnitCostCents: count && finite(count.unit_cost) != null ? numeric(count.unit_cost) * 100 : null,
+      physicalUnitCostCents: count && finite(count.unit_cost) != null ? dollarsToFractionalCents(numeric(count.unit_cost)) : null,
       endingValueCents: value?.valueCents ?? null,
       purchasesCents: value?.purchasesCents ?? null,
       purchaseQuantity: value?.purchaseQuantity ?? null,

@@ -611,6 +611,12 @@ export interface PreventiveTask {
   // remember to. Null on every task nobody has called about, which is most.
   calledAt?: Date | null;
   calledBy?: string | null;
+  // Somebody put THIS occurrence down without the work being done (0462).
+  // Distinct from calledAt: nobody has been called, and distinct from
+  // lastCompletedAt: nothing was serviced. Rests the schedule for one full
+  // cadence and then it is plainly due again, with its real lateness intact.
+  skippedAt?: Date | null;
+  skippedBy?: string | null;
 }
 
 // ─── Shift Confirmation ────────────────────────────────────────────────────

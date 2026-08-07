@@ -179,18 +179,29 @@ describe('People invite entry choice', () => {
     assert.match(normalActionArea, /\{!setupMode && !locked && inviteCapabilitiesStable && inviteEntryAvailable \?/);
     assert.match(normalActionArea, /disabled=\{inviteActionDisabled \|\| !inviteCapabilitiesStable\}/);
     assert.match(earlyBranch, /\{canInviteAccounts && !locked \?/);
-    assert.match(panel, /if \(!canAddStaffAction \|\| locked \|\| inviteActionDisabled \|\| !inviteCapabilitiesStable\) return;/);
-    assert.match(panel, /if \(!canInviteToStaxis \|\| inviteActionDisabled \|\| !inviteCapabilitiesStable\) return;/);
+    // Handing off inside an already-open chooser follows the revocation rule,
+    // not the opening gate, so a background roster refresh cannot turn either
+    // choice into a dead click. Behavioural cover for both halves lives in
+    // hotel-invite-flow.client.test.tsx.
+    assert.match(panel, /if \(!canAddStaffAction \|\| locked \|\| inviteSurfaceRevoked \|\| !inviteCapabilitiesStable\) return;/);
+    assert.match(panel, /if \(!canInviteToStaxis \|\| inviteSurfaceRevoked \|\| !inviteCapabilitiesStable\) return;/);
   });
 
-  test('an open chooser fails closed during read-only and admin-preview loading transitions', () => {
+  test('an open chooser fails closed on revocation but survives a refresh in place', () => {
     assert.match(
       panel,
       /const inviteActionDisabled = locked[\s\S]*adminPreview && \(teamLoadingForHotel \|\| Boolean\(teamErrorForHotel\)\)/,
     );
+    // The teardown rule drops `teamLoading` and nothing else. A refresh that
+    // still holds the exact snapshot is a refresh in place: it must not tear
+    // down a dialog that is showing the invite link it just produced.
     assert.match(
       panel,
-      /React\.useEffect\(\(\) => \{\s*if \(!inviteActionDisabled\) return;[\s\S]*setInviteChoiceOpen\(false\);[\s\S]*setAddDepartment\(null\);[\s\S]*if \(inviteDialogOpen\) onInviteDialogOpenChange\(false\);[\s\S]*\}, \[firstPersonDialogMode, inviteActionDisabled, inviteDialogOpen, onInviteDialogOpenChange\]\)/,
+      /const inviteSurfaceRevoked = locked\s*\|\| \(canManageTeam && !teamSnapshotCurrent\)\s*\|\| \(adminPreview && \(!teamSnapshotCurrent \|\| Boolean\(teamErrorForHotel\)\)\);/,
+    );
+    assert.match(
+      panel,
+      /React\.useEffect\(\(\) => \{\s*if \(!inviteSurfaceRevoked\) return;[\s\S]*setInviteChoiceOpen\(false\);[\s\S]*setAddDepartment\(null\);[\s\S]*if \(inviteDialogOpen\) onInviteDialogOpenChange\(false\);[\s\S]*\}, \[firstPersonDialogMode, inviteSurfaceRevoked, inviteDialogOpen, onInviteDialogOpenChange\]\)/,
     );
     assert.match(panel, /const inviteCapabilityKey = \[[\s\S]*adminPreview \? 'admin-preview' : 'customer'/);
     assert.match(panel, /const \[, setInviteCapabilityRevision\] = React\.useState\(0\)/);
@@ -203,8 +214,8 @@ describe('People invite entry choice', () => {
       'const chooseInviteToStaxis = React.useCallback',
       'Add staff chooser callback',
     );
-    assert.match(addStaffCallback, /if \(!canAddStaffAction \|\| locked \|\| inviteActionDisabled \|\| !inviteCapabilitiesStable\) return;/);
-    assert.match(addStaffCallback, /\[canAddStaffAction, inviteActionDisabled, inviteCapabilitiesStable, locked\]/);
+    assert.match(addStaffCallback, /if \(!canAddStaffAction \|\| locked \|\| inviteSurfaceRevoked \|\| !inviteCapabilitiesStable\) return;/);
+    assert.match(addStaffCallback, /\[canAddStaffAction, inviteSurfaceRevoked, inviteCapabilitiesStable, locked\]/);
 
     assert.match(normalDialogArea, /inviteChoiceVisible/);
     assert.match(normalDialogArea, /canAddStaff=\{canAddStaffAction && !locked && inviteCapabilitiesStable\}/);

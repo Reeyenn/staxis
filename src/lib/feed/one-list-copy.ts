@@ -296,6 +296,166 @@ export function repeatLabel(
 
 export const WEEKDAYS = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'] as const;
 
+// ═══════════════════════════════════════════════════════════════════════════
+// The situations a maintenance row is actually in
+//
+// A preventive schedule and a work order each carried ONE button: Done. That is
+// the right big button and it stays the big button, because the list is a
+// 10-second read and a row with five controls is a form. But Done was also the
+// only exit, so every other situation a manager was actually in — the vendor is
+// coming Thursday, the part is on back order, somebody looked and it was fine,
+// this schedule fires far too often — had to be expressed by pressing a button
+// that says the work happened. That is not a missing feature, it is a button
+// that files a fiction, and the fiction goes into the hotel's own maintenance
+// record.
+//
+// So: one quiet "···" beside Done, opening a SHORT list of the honest answers
+// for that row type, and nothing else. The rules the menu is built to:
+//
+//   1. EVERY OPTION IS A REAL STATE. Each one writes to a column that already
+//      meant this, and each one says out loud what it costs (`hint`). "Adjust"
+//      is banned by name — an option that does not say what it does is a
+//      question mark, and a manager who taps one and cannot predict the result
+//      stops tapping any of them.
+//   2. NO OPTION LIES. Nothing here records work that did not happen, and
+//      nothing here deletes anything. "Skip this one" is one occurrence, never
+//      the schedule.
+//   3. THE SETS DO NOT OVERLAP BY ACCIDENT. A work order never shows preventive
+//      options and the other way round, because the two row types are not two
+//      flavours of the same thing.
+//
+// To-dos are deliberately ABSENT: their overdue row already grew three honest
+// endings of its own (0453) and a menu over the top of that would be two ways
+// to say the same four things.
+// ═══════════════════════════════════════════════════════════════════════════
+
+/** Every situation the "···" can record. One id per real state. */
+export type RowMenuAction =
+  /** pm: somebody has been called out. Rests a week, then asks once. */
+  | 'called'
+  /** pm: change how often this comes round. Opens a number, then saves. */
+  | 'reschedule'
+  /** pm: this occurrence only, put down without the work being done. */
+  | 'skip'
+  /** workorder: not moving, and here is the one line saying why. */
+  | 'waiting'
+  /** workorder: hand it to somebody else. Opens the roster. */
+  | 'reassign'
+  /** workorder: somebody looked, and it was not a problem. Closed, not fixed. */
+  | 'not_an_issue';
+
+/** What a menu option needs from the person before it can be sent. */
+export type RowMenuInput = 'none' | 'reason' | 'days' | 'person';
+
+export interface RowMenuOption {
+  action: RowMenuAction;
+  label: string;
+  /** What it actually costs, said out loud. Never null: see rule 1 above. */
+  hint: string;
+  /** What the row asks for after the option is tapped. */
+  input: RowMenuInput;
+}
+
+const PM_MENU: readonly RowMenuOption[] = [
+  {
+    action: 'called',
+    label: "Somebody's been called",
+    hint: 'Staxis goes quiet for a week, then asks once whether it happened.',
+    input: 'none',
+  },
+  {
+    action: 'reschedule',
+    label: 'Change the schedule',
+    hint: 'Changes how many days between each one. Nothing is marked done.',
+    input: 'days',
+  },
+  {
+    action: 'skip',
+    label: 'Skip this one',
+    hint: 'Skips this one only. The schedule stays, and the next one is a full cycle away.',
+    input: 'none',
+  },
+];
+
+const WORKORDER_MENU: readonly RowMenuOption[] = [
+  {
+    action: 'waiting',
+    label: 'Waiting on parts',
+    hint: 'Stays on the list, out of the way, with your reason on it.',
+    input: 'reason',
+  },
+  {
+    action: 'reassign',
+    label: 'Give it to someone else',
+    hint: 'Puts their name on it so everyone can see who has it.',
+    input: 'person',
+  },
+  {
+    action: 'not_an_issue',
+    label: 'Not actually a problem',
+    hint: 'Closes it as a non issue. It is not recorded as a repair.',
+    input: 'none',
+  },
+];
+
+/**
+ * The situations THIS row can be in.
+ *
+ * Keyed on the row's own source, and empty for every source that is not a
+ * maintenance one. Empty is what makes the "···" not appear at all: a menu
+ * button that opens nothing is worse than no button.
+ *
+ * `canComplete` is honoured because it is the same question in different words:
+ * a row this person cannot settle from the list is not a row they can defer,
+ * skip or reschedule from it either.
+ */
+export function rowMenuOptions(
+  item: Pick<WorklistItem, 'sourceType' | 'canComplete'>,
+): readonly RowMenuOption[] {
+  if (!item.canComplete) return [];
+  if (item.sourceType === 'pm') return PM_MENU;
+  if (item.sourceType === 'workorder') return WORKORDER_MENU;
+  return [];
+}
+
+/** The fixed words the menu itself uses, outside the options. */
+export const ROW_MENU_COPY = {
+  /** The trigger's accessible name. The glyph alone is not a label. */
+  open: 'Other ways to answer this',
+  cancel: 'Never mind',
+  save: 'Save',
+  send: 'Send',
+  /** Above the roster, when handing a work order over. */
+  personLabel: 'Give it to',
+  /** Above the number box, when changing a cadence. */
+  daysLabel: 'How many days between each one',
+  /** The placeholder in the waiting-on-parts box. */
+  reasonPlaceholder: 'What is it waiting on? One line is enough.',
+  reasonAria: 'What this work order is waiting on',
+  daysAria: 'Days between each one',
+  noPeople: 'Nobody here can be given this one.',
+  failed: 'That did not save. Nothing changed. Try again in a moment.',
+} as const;
+
+/**
+ * The line under a work order somebody has parked, in their own words.
+ *
+ * Prefixed rather than shown bare, because "back ordered until Friday" on its
+ * own reads as the ticket's description. The prefix is what makes the row say
+ * that a person decided this, rather than that Staxis worked something out.
+ */
+export function waitingLine(reason: string | null | undefined): string | null {
+  const said = (reason ?? '').trim();
+  return said ? `Waiting on parts: ${said}` : null;
+}
+
+/** "Every 90 days" for a cadence somebody is about to change. */
+export function cadenceLine(days: number | null | undefined): string | null {
+  if (typeof days !== 'number' || !Number.isFinite(days) || days < 1) return null;
+  if (days === 1) return 'Every day';
+  return `Every ${Math.round(days)} days`;
+}
+
 /** The empty state. Never reads as an all clear on a hotel nobody has checked. */
 export function emptyListNote(opts: { canSeeFindings: boolean }): string {
   return opts.canSeeFindings

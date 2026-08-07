@@ -21,6 +21,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { requireSession } from '@/lib/api-auth';
 import { ok, err, ApiErrorCode } from '@/lib/api-response';
+import { dollarsToCents } from '@/lib/format';
 import { getOrMintRequestId, log } from '@/lib/log';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { validateUuid, validateInt } from '@/lib/api-validate';
@@ -158,7 +159,7 @@ async function loadWageData(propertyId: string, requestId: string): Promise<Wage
       id: s.id,
       name: s.name ?? '',
       department: isLaborRole(s.department) ? (s.department as LaborRole) : null,
-      hourlyWageCents: hasWage ? Math.round(dollars * 100) : null,
+      hourlyWageCents: hasWage ? dollarsToCents(dollars) : null,
       isActive: s.is_active !== false, // undefined/null = active
     };
   });

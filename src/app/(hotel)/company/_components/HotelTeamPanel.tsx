@@ -220,50 +220,114 @@ interface ResolvedActions {
   roleIsSharedAcrossHotels: boolean;
 }
 
-const LazyMemberDialog = React.lazy(async () => {
-  const dialogs = await import('./HotelTeamDialogs');
-  return { default: dialogs.HotelMemberDialog };
-});
+// ─── Dialog chunks are split, but never on the click path ────────────────────
+// Every dialog below is code-split so the People page's first paint stays
+// small. The whole cost of that used to land on the first click.
+//
+// `React.lazy` only starts resolving on the render that first needs it, and it
+// always takes at least one Suspense fallback commit to get there — even when
+// the chunk is already sitting in the module cache, because the payload settles
+// a microtask later while the retry is a scheduled task that runs after paint.
+// The browser therefore painted the loading skeleton, and people saw a phantom
+// screen flash past on the way into Invite people and Add to schedule.
+//
+// `preloadableDialog` keeps the same code split and the same Suspense fallback
+// for a genuinely cold chunk, and adds the one thing `React.lazy` cannot do:
+// once `preload()` has finished, the next render returns the real component
+// synchronously, so there is no intermediate frame to paint.
+let hotelTeamDialogsModule: Promise<typeof import('./HotelTeamDialogs')> | null = null;
+function loadHotelTeamDialogs(): Promise<typeof import('./HotelTeamDialogs')> {
+  hotelTeamDialogsModule ??= import('./HotelTeamDialogs');
+  return hotelTeamDialogsModule;
+}
 
-const LazyStaffPersonDialog = React.lazy(async () => {
-  const dialogs = await import('./HotelTeamDialogs');
-  return { default: dialogs.StaffPersonDialog };
-});
+let personEmploymentFormModule: Promise<typeof import('./PersonEmploymentForm')> | null = null;
+function loadPersonEmploymentForm(): Promise<typeof import('./PersonEmploymentForm')> {
+  personEmploymentFormModule ??= import('./PersonEmploymentForm');
+  return personEmploymentFormModule;
+}
 
-const LazyRemoveDialog = React.lazy(async () => {
-  const dialogs = await import('./HotelTeamDialogs');
-  return { default: dialogs.RemoveHotelAccessDialog };
-});
+let addStaffDialogModule: Promise<typeof import('./AddStaffDialog')> | null = null;
+function loadAddStaffDialog(): Promise<typeof import('./AddStaffDialog')> {
+  addStaffDialogModule ??= import('./AddStaffDialog');
+  return addStaffDialogModule;
+}
 
-const LazyInviteDialog = React.lazy(async () => {
-  const dialogs = await import('./HotelTeamDialogs');
-  return { default: dialogs.HotelInviteDialog };
-});
+type PreloadableDialog<P> = React.FunctionComponent<P> & { preload: () => void };
 
-const LazyPeopleInviteChooserDialog = React.lazy(async () => {
-  const dialogs = await import('./HotelTeamDialogs');
-  return { default: dialogs.PeopleInviteChooserDialog };
-});
+function preloadableDialog<P extends object>(
+  load: () => Promise<React.ComponentType<P>>,
+): PreloadableDialog<P> {
+  let loaded: React.ComponentType<P> | null = null;
+  let failure: unknown = null;
+  let pending: Promise<void> | null = null;
+  const start = (): Promise<void> => {
+    pending ??= load().then(
+      (component) => { loaded = component; },
+      (error) => { failure = error; },
+    );
+    return pending;
+  };
+  const Dialog = (props: P): React.ReactElement => {
+    if (loaded) return React.createElement(loaded, props);
+    if (failure) throw failure;
+    // The chunk is genuinely cold. Hand the boundary the same thenable
+    // `React.lazy` would have thrown so the skeleton covers the download.
+    throw start();
+  };
+  Dialog.displayName = 'PreloadableDialog';
+  Dialog.preload = (): void => { void start(); };
+  return Dialog;
+}
 
-const LazyFirstPersonInviteDialog = React.lazy(async () => {
-  const dialogs = await import('./HotelTeamDialogs');
-  return { default: dialogs.FirstPersonInviteDialog };
-});
+const LazyMemberDialog = preloadableDialog(
+  async () => (await loadHotelTeamDialogs()).HotelMemberDialog,
+);
 
-const LazyDecisionDialog = React.lazy(async () => {
-  const dialogs = await import('./HotelTeamDialogs');
-  return { default: dialogs.JoinDecisionDialog };
-});
+const LazyStaffPersonDialog = preloadableDialog(
+  async () => (await loadHotelTeamDialogs()).StaffPersonDialog,
+);
 
-const LazyEmploymentForm = React.lazy(async () => {
-  const form = await import('./PersonEmploymentForm');
-  return { default: form.PersonEmploymentForm };
-});
+const LazyRemoveDialog = preloadableDialog(
+  async () => (await loadHotelTeamDialogs()).RemoveHotelAccessDialog,
+);
 
-const LazyAddStaffDialog = React.lazy(async () => {
-  const dialog = await import('./AddStaffDialog');
-  return { default: dialog.AddStaffDialog };
-});
+const LazyInviteDialog = preloadableDialog(
+  async () => (await loadHotelTeamDialogs()).HotelInviteDialog,
+);
+
+const LazyPeopleInviteChooserDialog = preloadableDialog(
+  async () => (await loadHotelTeamDialogs()).PeopleInviteChooserDialog,
+);
+
+const LazyFirstPersonInviteDialog = preloadableDialog(
+  async () => (await loadHotelTeamDialogs()).FirstPersonInviteDialog,
+);
+
+const LazyDecisionDialog = preloadableDialog(
+  async () => (await loadHotelTeamDialogs()).JoinDecisionDialog,
+);
+
+const LazyEmploymentForm = preloadableDialog(
+  async () => (await loadPersonEmploymentForm()).PersonEmploymentForm,
+);
+
+const LazyAddStaffDialog = preloadableDialog(
+  async () => (await loadAddStaffDialog()).AddStaffDialog,
+);
+
+/** Warm every dialog this panel can open. Safe to call repeatedly. */
+function preloadHotelTeamDialogChunks(): void {
+  LazyMemberDialog.preload();
+  LazyStaffPersonDialog.preload();
+  LazyRemoveDialog.preload();
+  LazyInviteDialog.preload();
+  LazyPeopleInviteChooserDialog.preload();
+  LazyFirstPersonInviteDialog.preload();
+  LazyDecisionDialog.preload();
+  LazyEmploymentForm.preload();
+  LazyAddStaffDialog.preload();
+}
 
 function responseError(body: Envelope<unknown>, fallback: string): string {
   if (typeof body.error === 'string') return body.error;
@@ -793,6 +857,13 @@ export function HotelTeamPanel({
   const changedRef = React.useRef(onChanged);
   changedRef.current = onChanged;
 
+  // Warm the dialog chunks as soon as People is on screen. This runs after the
+  // first paint, so it costs the page nothing and buys the first click a real
+  // dialog instead of a skeleton that flashes past.
+  React.useEffect(() => {
+    preloadHotelTeamDialogChunks();
+  }, []);
+
   // The page passes the controller that joins the canonical account
   // projection with PropertyContext's viewer-stamped staff snapshot. The
   // fallback exists for direct/standalone panel consumers and still owns only
@@ -848,9 +919,26 @@ export function HotelTeamPanel({
   const locked = readOnly;
   // Actions ON A PERSON follow the same single lock as everything else.
   const actionsLocked = locked;
+  // Gate on OPENING an action. An admin preview must not start one against a
+  // roster it has not established yet, so an in-flight or failed team load
+  // holds the entry closed.
   const inviteActionDisabled = locked
     || (canManageTeam && !teamSnapshotCurrent)
     || (adminPreview && (teamLoadingForHotel || Boolean(teamErrorForHotel)));
+  // Tearing down an ALREADY-OPEN dialog is a different question, and answering
+  // it with the gate above is what threw an admin out of the invite dialog the
+  // instant their invite succeeded: sending an invite (or creating the hotel
+  // link) refreshes the roster, `teamLoading` flips true for a moment, and the
+  // admin branch above went true with it. The dialog unmounted before the link
+  // it had just produced could be read, and only a reopen showed it.
+  //
+  // A refresh that keeps the exact same snapshot key is a refresh IN PLACE, not
+  // a loss of standing. Every real revocation still tears the surface down: a
+  // read-only viewer context, a snapshot that no longer belongs to this hotel
+  // and viewer, and a roster an admin preview could not establish at all.
+  const inviteSurfaceRevoked = locked
+    || (canManageTeam && !teamSnapshotCurrent)
+    || (adminPreview && (!teamSnapshotCurrent || Boolean(teamErrorForHotel)));
   // A hotel manager can use the shared link, QR, and code invite even when the
   // account-invite capability is not granted. Keep this derived from the same
   // guarded surfaces as the existing Invite dialog instead of widening access.
@@ -867,12 +955,12 @@ export function HotelTeamPanel({
   const inviteCapabilityRef = React.useRef(inviteCapabilityKey);
   const [, setInviteCapabilityRevision] = React.useState(0);
   const inviteCapabilitiesStable = inviteCapabilityRef.current === inviteCapabilityKey;
-  const inviteDialogVisible = inviteDialogOpen && inviteCapabilitiesStable && !inviteActionDisabled;
+  const inviteDialogVisible = inviteDialogOpen && inviteCapabilitiesStable && !inviteSurfaceRevoked;
   const firstPersonDialogModeSnapshot = firstPersonInviteSnapshot?.hotelId === hotelId
     ? firstPersonInviteSnapshot.mode
     : null;
-  const inviteChoiceVisible = inviteChoiceOpen && inviteCapabilitiesStable && !inviteActionDisabled;
-  const addDepartmentVisible = inviteCapabilitiesStable && !inviteActionDisabled
+  const inviteChoiceVisible = inviteChoiceOpen && inviteCapabilitiesStable && !inviteSurfaceRevoked;
+  const addDepartmentVisible = inviteCapabilitiesStable && !inviteSurfaceRevoked
     ? addDepartment
     : null;
 
@@ -883,17 +971,21 @@ export function HotelTeamPanel({
   }, [inviteActionDisabled, inviteCapabilitiesStable, inviteEntryAvailable]);
 
   const chooseAddStaff = React.useCallback(() => {
-    if (!canAddStaffAction || locked || inviteActionDisabled || !inviteCapabilitiesStable) return;
+    // Both halves of the chooser hand off inside a surface the caller already
+    // opened, so they follow the revocation rule, not the opening gate. On the
+    // opening gate a background roster refresh would turn the choice into a
+    // dead click for as long as it ran.
+    if (!canAddStaffAction || locked || inviteSurfaceRevoked || !inviteCapabilitiesStable) return;
     addStaffReturnFocusRef.current = inviteEntryReturnFocusRef.current;
     setInviteChoiceOpen(false);
     setAddDepartment('housekeeping');
-  }, [canAddStaffAction, inviteActionDisabled, inviteCapabilitiesStable, locked]);
+  }, [canAddStaffAction, inviteSurfaceRevoked, inviteCapabilitiesStable, locked]);
 
   const chooseInviteToStaxis = React.useCallback(() => {
-    if (!canInviteToStaxis || inviteActionDisabled || !inviteCapabilitiesStable) return;
+    if (!canInviteToStaxis || inviteSurfaceRevoked || !inviteCapabilitiesStable) return;
     setInviteChoiceOpen(false);
     onInviteDialogOpenChange(true);
-  }, [canInviteToStaxis, inviteActionDisabled, inviteCapabilitiesStable, onInviteDialogOpenChange]);
+  }, [canInviteToStaxis, inviteSurfaceRevoked, inviteCapabilitiesStable, onInviteDialogOpenChange]);
 
   React.useEffect(() => {
     if (inviteCapabilityRef.current === inviteCapabilityKey) return;
@@ -1354,14 +1446,16 @@ export function HotelTeamPanel({
     if (inviteDialogOpen) onInviteDialogOpenChange(false);
   }, [firstPersonInviteSnapshot, firstPersonOnboarding, hotelId, inviteDialogOpen, onInviteDialogOpenChange]);
 
+  // Only a real revocation closes what is already open. A refresh in place must
+  // leave the caller looking at the invite link they just created.
   React.useEffect(() => {
-    if (!inviteActionDisabled) return;
+    if (!inviteSurfaceRevoked) return;
     const keepFirstPersonDialog = inviteDialogOpen && firstPersonDialogMode !== null;
     if (keepFirstPersonDialog) return;
     setInviteChoiceOpen(false);
     setAddDepartment(null);
     if (inviteDialogOpen) onInviteDialogOpenChange(false);
-  }, [firstPersonDialogMode, inviteActionDisabled, inviteDialogOpen, onInviteDialogOpenChange]);
+  }, [firstPersonDialogMode, inviteSurfaceRevoked, inviteDialogOpen, onInviteDialogOpenChange]);
 
   React.useEffect(() => {
     if (!firstPersonPending || !canManageTeam || !teamSnapshotCurrent) return;
