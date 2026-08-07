@@ -893,6 +893,9 @@ export const EXPECTED_MIGRATIONS_STATIC: ReadonlyArray<string> = [
   // Audit trigger stops naming the 0463 generated cents mirrors in
   // changedFields; item history shows one entry per real edit again.
   '0465',
+  // The companion's daily wake counter is incremented by the database inside
+  // the row lock, so two overlapping sweeps cannot write a stale count back.
+  '0466',
 ];
 
 /**
