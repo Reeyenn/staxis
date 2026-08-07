@@ -710,12 +710,3 @@
     animation: none;
   }
 }
-
-/* On a phone the two small controls in a structure row are thumb-sized. */
-@media (max-width: 760px) {
-  .editButton,
-  .iconButton {
-    min-height: 40px;
-    min-width: 40px;
-  }
-}

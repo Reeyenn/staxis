@@ -570,7 +570,7 @@ function CommsPropertyApp({ pid }: { pid: string | null }) {
              it is overriding; min-height needs no help, it already wins. */
           .comms-composer textarea{font-size:16px!important;line-height:1.45!important}
           .comms-composer input[type=text],.comms-composer input[type=search]{font-size:16px!important}
-          .comms-composer button,.comms-composer label{min-height:40px}
+          .comms-composer button,.comms-composer label{min-height:44px}
         }
         @media(prefers-reduced-motion:reduce){.comms-spin{animation:none}}
       `}</style>

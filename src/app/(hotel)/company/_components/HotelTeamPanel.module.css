@@ -2653,8 +2653,11 @@
    Every box on this screen that somebody types into was under 16px, which is
    the size iOS treats as a signal to zoom the whole page in on focus. It does
    not zoom back out, so adding one person left a manager panning a 1.4x page
-   around with one thumb for the rest of the visit. The row buttons follow the
-   same rule the rest of the phone app now keeps: 40px is the floor. */
+   around with one thumb for the rest of the visit.
+
+   Press targets are NOT here: the 560px block above already puts every one of
+   them at 44px, which is this screen's own standard and higher than the app
+   floor. */
 @media (max-width: 760px) {
   .field input,
   .field select,
@@ -2666,14 +2669,5 @@
 
   .field textarea {
     line-height: 1.45;
-  }
-
-  .ghostButton,
-  .primaryButton,
-  .secondaryButton,
-  .dangerGhostButton,
-  .rowActions button,
-  .inviteAction {
-    min-height: 40px;
   }
 }
