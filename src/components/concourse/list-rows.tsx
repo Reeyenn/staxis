@@ -96,8 +96,11 @@ export const LIST_CSS = `
    It lives here rather than in concourse-css.tsx because it is this file's own
    row furniture, which is exactly what LIST_CSS is for. */
 .fx-rowa{position:relative;}
-.fx-more{width:32px;padding:0;justify-content:center;letter-spacing:.08em;font-size:15px;color:#8A9187;}
-.fx-more[aria-expanded="true"]{background:#F4F6F2;border-color:rgba(31,35,28,.2);}
+/* NOT fx-more: FEED_CSS already owns .fx-ib.fx-more for the finding card's own
+   dots, and a bare .fx-more rule here would reach across and put a light
+   background on a dark ink card the moment one was expanded. */
+.fx-rowmore{width:32px;padding:0;justify-content:center;letter-spacing:.08em;font-size:15px;color:#8A9187;}
+.fx-rowmore[aria-expanded="true"]{background:#F4F6F2;border-color:rgba(31,35,28,.2);}
 .fx-rowmenu{position:absolute;right:0;top:calc(100% + 7px);z-index:21;min-width:236px;overflow:hidden;
   background:#fff;border:1px solid rgba(31,35,28,.12);border-radius:12px;
   box-shadow:0 22px 44px -20px rgba(31,35,28,.34);}
@@ -119,6 +122,11 @@ export const LIST_CSS = `
   /* A menu pinned to the right edge of a wrapped action row can hang off the
      screen on a phone. Full width, under the row, is the same list either way. */
   .fx-rowmenu{left:0;right:0;min-width:0;}
+  /* Thumb-sized on a phone. The row's other buttons sit at the desktop 30px
+     rhythm and are the mobile pass's business; these two are new controls and
+     they arrive at a real target rather than needing a second pass. */
+  .fx-rowmore{min-width:44px;min-height:44px;}
+  .fx-asknum{min-height:44px;}
 }
 `;
 
@@ -294,7 +302,7 @@ export function WorkRowView({
           <>
             <button
               type="button"
-              className="fx-btn fx-more"
+              className="fx-btn fx-rowmore"
               aria-haspopup="menu"
               aria-expanded={menuOpen}
               aria-label={ROW_MENU_COPY.open}
