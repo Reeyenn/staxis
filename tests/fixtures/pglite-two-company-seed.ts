@@ -12,10 +12,10 @@
  *
  * The people:
  *
- *   Ana     company A, owner            every Gulf Coast hotel
- *   Maria   company A, GM of Beaumont   + oversees the rest of Gulf Coast
- *   Frank   company A, front desk       Beaumont ONLY  (the Wall A probe)
- *   Fiona   company A, finance          every Gulf Coast hotel, money only
+ *   Ana     company A, owner              every Gulf Coast hotel
+ *   Maria   company A, GM of Beaumont     + oversees the rest of Gulf Coast
+ *   Frank   company A, front desk         Beaumont ONLY  (the Wall A probe)
+ *   Fiona   company A, regional manager   every Gulf Coast hotel
  *   Bo      company B, owner            Tyler
  *   Vera    company B, oversees         Tyler          (the Wall B probe)
  *   Gil     company B, GM               Tyler
@@ -293,12 +293,16 @@ export async function seedTwoCompanies(pg: PGlite): Promise<TwoCompanySeed> {
   // Maria's two hats. The GM hat names her job at Beaumont; the company hat is
   // what "and she oversees the others" means.
   await wear(ORG_A, ACCOUNT_MARIA, 'property', 'general_manager', [PID_A1], 'General Manager');
-  await wear(ORG_A, ACCOUNT_MARIA, 'company', 'vp', null, 'VP of Operations');
+  await wear(ORG_A, ACCOUNT_MARIA, 'company', 'regional_manager', null, 'VP of Operations');
   await wear(ORG_A, ACCOUNT_FRANK, 'property', 'front_desk', [PID_A1], 'Front Desk');
-  await wear(ORG_A, ACCOUNT_FIONA, 'company', 'finance', null, 'Controller');
+  // Fiona used to wear the retired `finance` hat. 0461 converts every stored
+  // finance row to `regional_manager`, so she is seeded as what the migration
+  // would have made her. Her job title still says Controller, because job
+  // titles are free text and the company still calls her that.
+  await wear(ORG_A, ACCOUNT_FIONA, 'company', 'regional_manager', null, 'Controller');
 
   await wear(ORG_B, ACCOUNT_BO, 'company', 'owner', null, 'Owner');
-  await wear(ORG_B, ACCOUNT_VERA, 'company', 'vp', null, 'VP of Operations');
+  await wear(ORG_B, ACCOUNT_VERA, 'company', 'regional_manager', null, 'VP of Operations');
   await wear(ORG_B, ACCOUNT_GIL, 'property', 'general_manager', [PID_B1], 'General Manager');
 
   if (finalAccessContract) {
@@ -663,12 +667,12 @@ export async function seedLargeCompany(
   // property list means "every hotel this company operates", which is what makes
   // adding hotel 18 a seeding detail rather than a permissions change.
   const hat = await pg.query<{ staxis_set_membership_hat: string }>(
-    `select public.staxis_set_membership_hat($1, $2, $3, 'company', 'vp', null, 'VP of Operations')
+    `select public.staxis_set_membership_hat($1, $2, $3, 'company', 'regional_manager', null, 'VP of Operations')
        as staxis_set_membership_hat`,
     [ACCOUNT_ADMIN, ORG_C, ACCOUNT_CARL],
   );
   if (!hat.rows[0]?.staxis_set_membership_hat) {
-    throw new Error('seed: the big company VP hat was refused');
+    throw new Error('seed: the big company regional manager hat was refused');
   }
 
   for (const plan of plans) await seedLargeCompanyHotel(pg, plan);
