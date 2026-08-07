@@ -896,6 +896,10 @@ export const EXPECTED_MIGRATIONS_STATIC: ReadonlyArray<string> = [
   // The companion's daily wake counter is incremented by the database inside
   // the row lock, so two overlapping sweeps cannot write a stale count back.
   '0466',
+  // A company hat's hotel list is validated at every guarded write, an
+  // explicit-list invitation can actually be accepted, and a hat naming some
+  // hotels no longer reads as the whole company.
+  '0467',
 ];
 
 /**
