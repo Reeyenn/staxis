@@ -10,6 +10,8 @@
  * terminal item, quantity, and value.
  */
 
+import { dollarsToCents } from '@/lib/format';
+
 export interface EffectivePurchaseOrderInput {
   id: string;
   item_id: string;
@@ -69,7 +71,10 @@ function receiptValueCents(
   const dollars = total ?? (unit == null ? null : quantity * unit);
   if (dollars == null) return null;
   if (dollars < 0) throw new Error('Inventory receipt has a negative purchase value.');
-  return Math.round(dollars * 100);
+  // Whole cents: this is a purchase TOTAL landing in an integer value_cents
+  // column, not a per-unit cost. Shares the month-close screen with the
+  // valuation math, so it has to round the same way.
+  return dollarsToCents(dollars);
 }
 
 function terminalCorrection(
@@ -204,7 +209,7 @@ export function summarizeEffectivePurchases(
       receivedAt: root.received_at ?? null,
       itemId: terminal.corrected_item_id,
       quantity,
-      valueCents: correctedTotal == null ? null : Math.round(correctedTotal * 100),
+      valueCents: correctedTotal == null ? null : dollarsToCents(correctedTotal),
       voided: false,
     });
   }

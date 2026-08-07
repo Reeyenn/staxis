@@ -3,6 +3,8 @@ import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import test from 'node:test';
 
+import { ROW_MENU_COPY } from '@/lib/feed/one-list-copy';
+
 function source(...parts: string[]): string {
   return readFileSync(join(process.cwd(), ...parts), 'utf8');
 }
@@ -84,7 +86,15 @@ test('communications has a phone list/detail flow and does not collapse failures
   // A write that did not land must never look like one that did: the row stays
   // on the list and says so. Restated against the envelope shape the concourse
   // surface uses (envelope.error, not result.ok).
-  assert.match(staxisList, /if \(envelope\.error !== undefined\)[\s\S]*?That did not save\. Nothing changed/);
+  //
+  // The SENTENCE moved into the copy producer on 2026-08-07, because the row
+  // menu's writes say the same thing and the house rule is that a sentence a
+  // person reads lives in lib/feed/one-list-copy.ts where the no-em-dash guard
+  // walks it. So the grep checks the SHAPE — an error branch that sets a
+  // visible row error rather than swallowing it — and the sentence is checked
+  // where it now lives.
+  assert.match(staxisList, /if \(envelope\.error !== undefined\)[\s\S]*?setRowError\(/);
+  assert.match(ROW_MENU_COPY.failed, /That did not save\. Nothing changed/);
   // A failed read of what you handed out is never drawn as "nothing outstanding".
   assert.match(listRows, /readFailed[\s\S]*?could not read this just now/);
   assert.match(row, /if \(!r\.ok\)[\s\S]*?Acknowledgement was not saved/);

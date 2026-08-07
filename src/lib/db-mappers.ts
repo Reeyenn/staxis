@@ -619,8 +619,30 @@ const STATUS_TO_DB: Record<WorkOrderStatus, string> = {
   open: 'submitted',
   done: 'resolved',
 };
+
+/**
+ * The stored statuses that mean a ticket is OFF the board.
+ *
+ * `resolved` is "somebody fixed it". `closed` is "this did not need fixing" —
+ * the ending the Staxis list's "Not actually a problem" writes, and the reason
+ * the two are separate words rather than one: a ticket somebody looked at and
+ * judged to be a non-issue is not maintenance that was performed, and folding it
+ * into `resolved` would put work into this hotel's repair history that never
+ * happened. Everything else ('submitted', 'assigned', 'in_progress', and the
+ * 'deferred' that "Waiting on parts" writes) is still live work.
+ *
+ * Exported because three readers ask this question — the mapper below, the
+ * unified worklist, and the companion's trace — and three copies of "is it
+ * resolved" is how one of them ends up showing a closed ticket as open forever.
+ */
+export const WORK_ORDER_SETTLED_STATUSES: readonly string[] = Object.freeze(['resolved', 'closed']);
+
+export function workOrderIsSettled(status: unknown): boolean {
+  return typeof status === 'string' && WORK_ORDER_SETTLED_STATUSES.includes(status);
+}
+
 const STATUS_FROM_DB = (s: unknown): WorkOrderStatus =>
-  s === 'resolved' ? 'done' : 'open';  // 'submitted'/'assigned'/'in_progress' all read as open
+  workOrderIsSettled(s) ? 'done' : 'open';  // 'submitted'/'assigned'/'in_progress'/'deferred' all read as open
 
 export function toWorkOrderRow(o: Partial<WorkOrder>): Record<string, unknown> {
   return dropUndefined({
@@ -699,6 +721,8 @@ export function fromPreventiveRow(r: Record<string, unknown>): PreventiveTask {
     createdAt: toDate(r.created_at),
     calledAt: toDate(r.called_at),
     calledBy: typeof r.called_by === 'string' ? r.called_by : null,
+    skippedAt: toDate(r.skipped_at),
+    skippedBy: typeof r.skipped_by === 'string' ? r.skipped_by : null,
   };
 }
 
@@ -718,6 +742,9 @@ export function toPreventiveRow(t: Partial<PreventiveTask>): Record<string, unkn
     // every patch that is not about the called state.
     called_at: t.calledAt === undefined ? undefined : toISO(t.calledAt),
     called_by: t.calledBy,
+    // 0462, same shape and the same reason as the pair above.
+    skipped_at: t.skippedAt === undefined ? undefined : toISO(t.skippedAt),
+    skipped_by: t.skippedBy,
   });
 }
 

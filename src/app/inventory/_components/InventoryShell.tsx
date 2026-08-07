@@ -100,6 +100,7 @@ import {
 } from './inventory-audit-state';
 import { useRiseIn } from './motion';
 import { InvFx, HealthRing, CountUp, PingDot } from './fx';
+import { centsToDollars } from '@/lib/format';
 import { toDisplayItem, applyDraft } from './adapter';
 import { fmtMoney } from './format';
 import type { DisplayItem } from './types';
@@ -1059,13 +1060,15 @@ export function InventoryShell() {
         || b.monthStart.getUTCFullYear() !== currentYear
         || b.monthStart.getUTCMonth() !== currentMonth1 - 1
       ) continue;
+      // Accumulate in CENTS and convert once at the end. Dividing each row by
+      // 100 first and adding the results accumulates float error across rows.
       if (budgetMode === 'total') {
-        if (b.category === 'total') sum += b.budgetCents / 100;
+        if (b.category === 'total') sum += b.budgetCents;
       } else if (liveKeys.has(b.category)) {
-        sum += b.budgetCents / 100;
+        sum += b.budgetCents;
       }
     }
-    return sum;
+    return centsToDollars(sum);
   }, [budgets, budgetSections, budgetMode, propertyCurrentMonth]);
 
   // ── Handlers ───────────────────────────────────────────────────────

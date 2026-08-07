@@ -54,6 +54,11 @@
 // format exists to prevent. The card carries no price and says why in its
 // evidence.
 
+import {
+  PREVENTIVE_FOLLOW_UP_DAYS,
+  preventiveSkipRestDays,
+} from '@/lib/maintenance/preventive-rest';
+
 import { createPreventiveWorkOrderParams } from '../actions/catalog/create-work-order';
 import type { FindingActionDraft } from '../actions/types';
 import { plural } from '../pricing';
@@ -85,8 +90,13 @@ const RECEIPT = 'preventive_tasks_due';
  * week, so a genuinely slow vendor never produces a daily card — and a manager
  * who stops answering is handled by the self-demotion pass that governs every
  * check, not by a second give-up rule invented here.
+ *
+ * The number itself now lives in lib/maintenance/preventive-rest.ts, because the
+ * Staxis list carries the same schedule as a row and has to go quiet for exactly
+ * as long as this card does. Re-exported here so every existing importer and
+ * every test that names it keeps working unchanged.
  */
-export const FOLLOW_UP_DAYS = 7;
+export const FOLLOW_UP_DAYS = PREVENTIVE_FOLLOW_UP_DAYS;
 
 // ═══ EVERY DATE IN A SENTENCE IS AN ELAPSED COUNT, NOT A CALENDAR DATE ═══
 //
@@ -121,19 +131,29 @@ export type ScheduleState =
   | { kind: 'due'; daysOverdue: number; dueDate: string }
   /** Somebody was called, recently enough that the card should stay quiet. */
   | { kind: 'resting'; daysSinceCalled: number }
+  /**
+   * Somebody put THIS occurrence down without the work being done. Quiet for
+   * one full cadence from the skip, then it is plainly due again — with its
+   * real lateness, measured from the real last-done date, intact.
+   */
+  | { kind: 'skipped'; daysSinceSkipped: number }
   /** Somebody was called, long enough ago to ask whether it happened. */
   | { kind: 'follow_up'; daysOverdue: number; daysSinceCalled: number; dueDate: string };
 
 /**
- * The state machine, as a pure function of three dates. Exported because it is
+ * The state machine, as a pure function of four dates. Exported because it is
  * the whole behaviour of this detector and deserves to be asserted directly
  * rather than inferred from which drafts came out.
  *
- * ORDER MATTERS: the called-state is checked BEFORE due-ness is reported, so a
- * manager who has arranged the work does not keep getting the original card.
- * But it is checked AFTER the never-done and not-due gates, so a stale
- * `called_at` on a task that has since been done and is not due again cannot
- * resurrect a card about nothing.
+ * ORDER MATTERS: the rest states are checked BEFORE due-ness is reported, so a
+ * manager who has arranged the work — or who has said "not this one" — does not
+ * keep getting the original card. But they are checked AFTER the never-done and
+ * not-due gates, so a stale `called_at` or `skipped_at` on a task that has since
+ * been done and is not due again cannot resurrect a card about nothing.
+ *
+ * SKIPPED OUTRANKS CALLED. In practice they never co-exist (each write clears
+ * the other), but a row written by psql could carry both, and a rule with no
+ * fixed order is a rule that gives two answers.
  */
 export function scheduleState(task: PreventiveScheduleEntry, today: string): ScheduleState {
   if (!task.lastDoneDate || !task.nextDueDate) return { kind: 'never_done' };
@@ -145,6 +165,20 @@ export function scheduleState(task: PreventiveScheduleEntry, today: string): Sch
   // Due ON the day, not before. `>= 0` is the whole boundary: a task due
   // tomorrow says nothing today.
   if (daysOverdue < 0) return { kind: 'not_due' };
+
+  if (task.skippedDate) {
+    const daysSinceSkipped = daysBetweenDates(task.skippedDate, today);
+    if (
+      daysSinceSkipped !== null
+      && daysSinceSkipped >= 0
+      && daysSinceSkipped < preventiveSkipRestDays(task.frequencyDays)
+    ) {
+      return { kind: 'skipped', daysSinceSkipped };
+    }
+    // A skip in the future, or one whose cadence has since elapsed, is not a
+    // rest. Fall through: an expired skip is simply over, and the card comes
+    // back saying how late the job actually is.
+  }
 
   if (task.calledDate) {
     const daysSinceCalled = daysBetweenDates(task.calledDate, today);
@@ -270,7 +304,7 @@ function neverDoneDraft(task: PreventiveScheduleEntry): FindingDraft {
 function draftFor(task: PreventiveScheduleEntry, today: string): FindingDraft | null {
   const state = scheduleState(task, today);
   if (state.kind === 'never_done') return neverDoneDraft(task);
-  if (state.kind === 'not_due' || state.kind === 'resting') {
+  if (state.kind === 'not_due' || state.kind === 'resting' || state.kind === 'skipped') {
     return null;
   }
 
@@ -453,6 +487,8 @@ const task = (over: Partial<PreventiveScheduleEntry> = {}): PreventiveScheduleEn
   nextDueDate: '2025-12-28',
   calledDate: null,
   calledBy: null,
+  skippedDate: null,
+  skippedBy: null,
   ...over,
 });
 

@@ -37,6 +37,7 @@ import {
   assignedMoreLine,
   assignedNote,
   assignedStateLine,
+  cadenceLine,
   completionNotice,
   COMPOSER_COPY,
   COMPOSER_OTHER,
@@ -50,9 +51,12 @@ import {
   PROMPT_EXAMPLES,
   repeatLabel,
   repeatWord,
+  ROW_MENU_COPY,
   rowFrom,
   rowKindLabel,
+  rowMenuOptions,
   stalenessLine,
+  waitingLine,
   WEEKDAYS,
   whenWord,
   whichDayQuestion,
@@ -404,6 +408,20 @@ describe('the copy rules', () => {
     out.push(question.prompt, ...question.choices.map((c) => c.label));
     out.push(enterTakesNote(question.choices[0].label));
     out.push(assignedNote('Marcus Webb'), assignedNote(''));
+
+    // The per-row situation menu: its fixed words, and every option label AND
+    // hint on every row type that has one. The hints are walked deliberately —
+    // they are the half of each option that says what it costs, they are the
+    // longest strings on the row, and a rule that only checked labels would
+    // have covered the short half of the copy.
+    out.push(...Object.values(ROW_MENU_COPY));
+    for (const sourceType of WORKLIST_SOURCE_TYPES) {
+      for (const option of rowMenuOptions({ sourceType, canComplete: true })) {
+        out.push(option.label, option.hint);
+      }
+    }
+    out.push(waitingLine('the compressor is back ordered') ?? '');
+    out.push(cadenceLine(1) ?? '', cadenceLine(90) ?? '');
 
     return out;
   }

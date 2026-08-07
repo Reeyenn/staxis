@@ -43,12 +43,17 @@ import {
   overdueAnswers,
   promptExample,
   repeatWord,
+  ROW_MENU_COPY,
   rowFrom,
   rowKindLabel,
+  rowMenuOptions,
   stalenessLine,
+  waitingLine,
   WEEKDAYS,
   whenWord,
   whoWord,
+  type RowMenuAction,
+  type RowMenuOption,
 } from '@/lib/feed/one-list-copy';
 import {
   MAX_INTERVAL_DAYS,
@@ -91,6 +96,48 @@ export const LIST_CSS = `
 .fx-drt{font-size:13.5px;font-weight:600;color:#1F231C;line-height:1.4;}
 .fx-drs{font-size:12.5px;color:#5C625C;margin-top:3px;line-height:1.5;}
 .fx-stale{font-size:11.5px;color:#8C6A33;margin-top:3px;}
+
+/* ── the per-row "···" and what it opens ───────────────────────────────────
+   A LIGHT menu, and that is why it is not FEED_CSS's .fx-menu: that one is
+   ink-on-dark because it lives inside a finding card, and dropping it onto a
+   white row would put a black slab in the middle of the list. Same geometry,
+   same tap sizes, opposite palette.
+
+   It lives here rather than in concourse-css.tsx because it is this file's own
+   row furniture, which is exactly what LIST_CSS is for. */
+.fx-rowa{position:relative;}
+/* NOT fx-more: FEED_CSS already owns .fx-ib.fx-more for the finding card's own
+   dots, and a bare .fx-more rule here would reach across and put a light
+   background on a dark ink card the moment one was expanded. */
+.fx-rowmore{width:32px;padding:0;justify-content:center;letter-spacing:.08em;font-size:15px;color:#8A9187;}
+.fx-rowmore[aria-expanded="true"]{background:#F4F6F2;border-color:rgba(31,35,28,.2);}
+.fx-rowmenu{position:absolute;right:0;top:calc(100% + 7px);z-index:21;min-width:236px;overflow:hidden;
+  background:#fff;border:1px solid rgba(31,35,28,.12);border-radius:12px;
+  box-shadow:0 22px 44px -20px rgba(31,35,28,.34);}
+.fx-rowmenu button{display:block;width:100%;text-align:left;padding:9px 14px;border:none;background:transparent;
+  color:#1F231C;font-size:13px;font-family:inherit;cursor:pointer;min-height:44px;}
+.fx-rowmenu button:hover:not(:disabled){background:#F4F6F2;}
+.fx-rowmenu button:focus-visible{outline:2px solid #3E5C48;outline-offset:-2px;}
+.fx-rowmenu button:disabled{opacity:.5;cursor:default;}
+.fx-rowmenu button + button{border-top:1px solid rgba(31,35,28,.07);}
+.fx-mih{display:block;font-size:11.5px;color:#8A9187;line-height:1.45;margin-top:2px;}
+/* The answer the option asked for, opened inside the row itself. */
+.fx-ask{margin-top:9px;display:flex;gap:7px;flex-wrap:wrap;align-items:center;width:100%;}
+.fx-askl{font-size:11.5px;color:#8A9187;flex:0 0 auto;}
+.fx-asknum{width:74px;height:36px;padding:0 11px;border-radius:9px;font-size:13px;font-family:inherit;
+  border:1px solid rgba(31,35,28,.16);background:#fff;color:#1F231C;}
+.fx-asknum:focus-visible{outline:2px solid #3E5C48;outline-offset:1px;}
+.fx-waiting{font-size:11.5px;color:#8C6A33;margin-top:3px;line-height:1.4;}
+@media (max-width:760px){
+  /* A menu pinned to the right edge of a wrapped action row can hang off the
+     screen on a phone. Full width, under the row, is the same list either way. */
+  .fx-rowmenu{left:0;right:0;min-width:0;}
+  /* Thumb-sized on a phone. The row's other buttons sit at the desktop 30px
+     rhythm and are the mobile pass's business; these two are new controls and
+     they arrive at a real target rather than needing a second pass. */
+  .fx-rowmore{min-width:44px;min-height:44px;}
+  .fx-asknum{min-height:44px;}
+}
 `;
 
 export interface WorkRowViewProps {
@@ -111,6 +158,24 @@ export interface WorkRowViewProps {
   onReasonChange?: (value: string) => void;
   onCantSubmit?: (item: WorklistItem) => void;
   onCancelReason?: () => void;
+  // ── the "···" ─────────────────────────────────────────────────────────────
+  /** True while this row's situation menu is showing. */
+  menuOpen?: boolean;
+  /** Which option is collecting its answer, or null while the list is showing. */
+  menuAsking?: RowMenuAction | null;
+  /** The reason box / the day count, as typed. One field is ever open. */
+  menuDraft?: string;
+  /** Who a work order can be handed to. Housekeepers are already absent. */
+  menuPeople?: readonly ComposerPerson[];
+  onToggleMenu?: (item: WorklistItem, open: boolean) => void;
+  /** An option was tapped. Ones that need nothing fire; the rest open a field. */
+  onMenuPick?: (item: WorklistItem, option: RowMenuOption) => void;
+  onMenuDraftChange?: (value: string) => void;
+  /** Send the reason, or the new cadence. */
+  onMenuSubmit?: (item: WorklistItem) => void;
+  /** Hand the work order to this person. */
+  onMenuPickPerson?: (item: WorklistItem, staffId: string) => void;
+  onMenuCancel?: () => void;
 }
 
 /**
@@ -138,15 +203,27 @@ export interface WorkRowViewProps {
  *
  * The row stays ONE row however far behind it has fallen, including a repeating
  * to-do that was missed five days running. See collapseRepeatInstances.
+ *
+ * ─── and the "···", on the rows that had only Done ─────────────────────────
+ *
+ * A preventive schedule and a work order got one button, so every situation
+ * that was not "it happened" had to be entered as if it were. The quiet dot
+ * cluster beside Done opens the honest answers for that row type and nothing
+ * else: three for a schedule, three for a ticket, none for anything else. Done
+ * stays the one big button. See rowMenuOptions.
  */
 export function WorkRowView({
   item, now, busy = false, askingReason = false, reasonDraft = '', isNew = false,
   onDone, onDoneOnDay, onNotNeeded, onAskReason, onReasonChange, onCantSubmit, onCancelReason,
+  menuOpen = false, menuAsking = null, menuDraft = '', menuPeople = [],
+  onToggleMenu, onMenuPick, onMenuDraftChange, onMenuSubmit, onMenuPickPerson, onMenuCancel,
 }: WorkRowViewProps) {
   const from = rowFrom(item);
   const due = dueLine(item.dueDate, now, item.dueTime);
   const canRefuse = item.sourceType === 'task';
   const reasonReady = reasonDraft.trim().length > 0;
+  const menu = rowMenuOptions(item);
+  const asking = menuAsking !== null;
   // The three answers, and only on a to-do: a work order has no assigner
   // waiting on a receipt and no due day to credit a completion to.
   const slipped = item.sourceType === 'task' && item.canComplete && !!item.missedSince;
@@ -175,10 +252,14 @@ export function WorkRowView({
   // Everything the one-line row cannot hold: who handed it over, where, and how
   // far back it goes when it has been missed more than once.
   const sub = [from, item.location, missed].filter(Boolean).join(' · ');
+  // Said on its own line rather than folded into `sub`: somebody wrote this
+  // sentence about this ticket, and burying it between the room number and a
+  // date would read as one more attribute.
+  const waiting = waitingLine(item.waitingReason);
 
   return (
     <div
-      className={`fx-row${item.overdue ? ' fx-late' : ''}${askingReason ? ' fx-open' : ''}`}
+      className={`fx-row${item.overdue ? ' fx-late' : ''}${askingReason || asking ? ' fx-open' : ''}`}
       data-row-kind={item.sourceType}
       data-row-id={item.id}
       data-row-new={isNew ? 'true' : undefined}
@@ -192,6 +273,7 @@ export function WorkRowView({
           {item.title}
         </div>
         {sub && <div className="fx-rowsub">{sub}</div>}
+        {waiting && <div className="fx-waiting">{waiting}</div>}
       </div>
 
       {meta && <span className={`fx-rowm${item.overdue ? ' fx-late' : ''}`}>{meta}</span>}
@@ -222,6 +304,53 @@ export function WorkRowView({
         {!item.canComplete && (
           <a className="fx-btn" href={item.deepLink}>Open</a>
         )}
+
+        {/* The quiet one. Absent entirely on a row type with no other honest
+            answers, and while the row is already asking something: a second
+            open control over an open field is two questions at once. */}
+        {menu.length > 0 && !askingReason && !asking && (
+          <>
+            <button
+              type="button"
+              className="fx-btn fx-rowmore"
+              aria-haspopup="menu"
+              aria-expanded={menuOpen}
+              aria-label={ROW_MENU_COPY.open}
+              disabled={busy}
+              onClick={() => onToggleMenu?.(item, !menuOpen)}
+            >
+              <span aria-hidden>···</span>
+            </button>
+            {menuOpen && (
+              <>
+                {/* Click anywhere else and it goes away. A menu whose only exit
+                    is one of its own items is a trap. */}
+                <button
+                  type="button"
+                  aria-label={ROW_MENU_COPY.cancel}
+                  onClick={() => onToggleMenu?.(item, false)}
+                  style={{ position: 'fixed', inset: 0, zIndex: 20, background: 'transparent', border: 'none', cursor: 'default' }}
+                />
+                <div className="fx-rowmenu" role="menu" data-row-menu={item.sourceType}>
+                  {menu.map((option) => (
+                    <button
+                      key={option.action}
+                      type="button"
+                      role="menuitem"
+                      disabled={busy}
+                      onClick={() => onMenuPick?.(item, option)}
+                    >
+                      {option.label}
+                      {/* Said in the menu, not in a tooltip. A hint nobody on a
+                          phone can reach is a hint that was not given. */}
+                      <span className="fx-mih">{option.hint}</span>
+                    </button>
+                  ))}
+                </div>
+              </>
+            )}
+          </>
+        )}
       </div>
 
       {/* The reason is not optional: the assigner otherwise learns only that
@@ -249,8 +378,103 @@ export function WorkRowView({
           </button>
         </div>
       )}
+
+      {/* What the option asked for. One field, inside the row, never a
+          dialog: the answer belongs to this row and a modal over the list would
+          make a one-line reason feel like a form. */}
+      {menuAsking === 'waiting' && (
+        <div className="fx-ask" data-row-ask="waiting">
+          <input
+            className="fx-input"
+            type="text"
+            value={menuDraft}
+            placeholder={ROW_MENU_COPY.reasonPlaceholder}
+            aria-label={ROW_MENU_COPY.reasonAria}
+            onChange={(e) => onMenuDraftChange?.(e.target.value)}
+          />
+          <button
+            type="button"
+            className="fx-btn fx-primary"
+            disabled={busy || menuDraft.trim().length === 0}
+            onClick={() => onMenuSubmit?.(item)}
+          >
+            {ROW_MENU_COPY.send}
+          </button>
+          <button type="button" className="fx-btn" disabled={busy} onClick={() => onMenuCancel?.()}>
+            {ROW_MENU_COPY.cancel}
+          </button>
+        </div>
+      )}
+
+      {menuAsking === 'reschedule' && (
+        <div className="fx-ask" data-row-ask="reschedule">
+          <span className="fx-askl" id={`fx-days-${item.id}`}>{ROW_MENU_COPY.daysLabel}</span>
+          <input
+            className="fx-asknum"
+            type="text"
+            inputMode="numeric"
+            autoComplete="off"
+            maxLength={4}
+            value={menuDraft}
+            aria-label={ROW_MENU_COPY.daysAria}
+            aria-describedby={`fx-days-${item.id}`}
+            onChange={(e) => onMenuDraftChange?.(e.target.value.replace(/\D/g, '').slice(0, 4))}
+          />
+          <button
+            type="button"
+            className="fx-btn fx-primary"
+            disabled={busy || !readCadenceDraft(menuDraft)}
+            onClick={() => onMenuSubmit?.(item)}
+          >
+            {ROW_MENU_COPY.save}
+          </button>
+          <button type="button" className="fx-btn" disabled={busy} onClick={() => onMenuCancel?.()}>
+            {ROW_MENU_COPY.cancel}
+          </button>
+        </div>
+      )}
+
+      {menuAsking === 'reassign' && (
+        <div className="fx-ask" data-row-ask="reassign">
+          <span className="fx-askl" id={`fx-who-${item.id}`}>{ROW_MENU_COPY.personLabel}</span>
+          {menuPeople.length === 0 ? (
+            <span className="fx-askl">{ROW_MENU_COPY.noPeople}</span>
+          ) : (
+            menuPeople.map((person) => (
+              <button
+                key={person.staffId}
+                type="button"
+                className="fx-btn"
+                disabled={busy}
+                aria-describedby={`fx-who-${item.id}`}
+                onClick={() => onMenuPickPerson?.(item, person.staffId)}
+              >
+                {person.name}
+              </button>
+            ))
+          )}
+          <button type="button" className="fx-btn" disabled={busy} onClick={() => onMenuCancel?.()}>
+            {ROW_MENU_COPY.cancel}
+          </button>
+        </div>
+      )}
     </div>
   );
+}
+
+/**
+ * The day count somebody typed, or null while it is not yet a cadence.
+ *
+ * Held as a STRING in the row's draft for the same reason the composer holds
+ * its interval as one: a half-typed "1" on the way to "14" must not be sendable
+ * as a daily schedule. The bounds are the server's own (MIN_CADENCE_DAYS /
+ * MAX_CADENCE_DAYS in /api/worklist/assign); this is the button-disabling copy
+ * of them, not the authority.
+ */
+export function readCadenceDraft(value: string): number | null {
+  const n = Number(value.trim());
+  if (!Number.isInteger(n) || n < 1 || n > 3650) return null;
+  return n;
 }
 
 /**
