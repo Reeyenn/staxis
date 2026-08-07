@@ -77,6 +77,8 @@ interface FindingRow {
   judged_at: string | null;
   judged_model: string | null;
   judged_guard_rejected: boolean | null;
+  judged_question: string | null;
+  judged_reply_order: string[] | null;
 }
 
 const SELECT_COLUMNS =
@@ -89,7 +91,11 @@ const SELECT_COLUMNS =
   // it — a queue view can prefer judged phrasing and still fall back to the
   // deterministic `summary` when the judge has not run or was refused.
   'judged_disposition, judged_summary_en, judged_summary_es, judged_rationale, ' +
-  'judged_rank, judged_source, judged_at, judged_model, judged_guard_rejected';
+  'judged_rank, judged_source, judged_at, judged_model, judged_guard_rejected, ' +
+  // The companion's question and its reply order (0461). Both nullable, both
+  // meaning "the per-kind template stands" when absent, so a deploy where the
+  // question pass has never run reads exactly as it did before.
+  'judged_question, judged_reply_order';
 
 /** The column default in 0360. Named so the unpriced reset and the schema agree
  *  in one place rather than by coincidence. */
@@ -141,6 +147,8 @@ export function rowToFinding(row: FindingRow): Finding {
     judgedAt: row.judged_at ?? null,
     judgedModel: row.judged_model ?? null,
     judgedGuardRejected: row.judged_guard_rejected === true,
+    judgedQuestion: row.judged_question ?? null,
+    judgedReplyOrder: Array.isArray(row.judged_reply_order) ? row.judged_reply_order : null,
   };
 }
 

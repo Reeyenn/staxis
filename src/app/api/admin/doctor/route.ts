@@ -878,6 +878,9 @@ export const EXPECTED_MIGRATIONS_STATIC: ReadonlyArray<string> = [
   // One row per nightly robot walkthrough of the live app, so a green night
   // is distinguishable from a night the robot never ran.
   '0460',
+  // The question under a companion card: judged_question + judged_reply_order
+  // on findings, both nullable, both meaning "use the template" when absent.
+  '0461',
 ];
 
 /**

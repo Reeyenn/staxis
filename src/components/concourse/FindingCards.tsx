@@ -43,6 +43,7 @@
 // ═══════════════════════════════════════════════════════════════════════════
 
 import React from 'react';
+import { createPortal } from 'react-dom';
 
 import { useAuth } from '@/contexts/AuthContext';
 import { useProperty } from '@/contexts/PropertyContext';
@@ -77,6 +78,8 @@ import {
   isCardRenderable,
   isSignOffLocked,
   livenessLine,
+  placeCardMenu,
+  type MenuPlacement,
   occurrenceLine,
   offersApproval,
   offersUndo,
@@ -514,6 +517,8 @@ function InkCard({
   onAction?: (actionId: string, intent: 'execute' | 'undo') => void;
 }) {
   const L = <K extends keyof typeof S>(k: K) => (S[k].en);
+  /** The `···` button. The menu is drawn beside it, from outside this card. */
+  const moreRef = React.useRef<HTMLButtonElement | null>(null);
   const action = finding.action ?? null;
   const locked = !!action && isSignOffLocked(finding) && action.state === 'proposed';
   const approvable = !!action && offersApproval(finding) && !locked;
@@ -701,6 +706,7 @@ function InkCard({
             {!readOnly && menuClosures.length > 0 && (
               <>
                 <button
+                  ref={moreRef}
                   type="button"
                   className="fx-ib fx-more"
                   aria-haspopup="menu"
@@ -711,35 +717,29 @@ function InkCard({
                   <span aria-hidden>···</span>
                 </button>
                 {menuOpen && (
-                  <>
-                    {/* Click anywhere else and the menu goes away. A menu with
-                        no way out that is not one of its own items is a trap. */}
-                    <button
-                      type="button"
-                      aria-label={L('cancel')}
-                      onClick={() => onToggleMenu(false)}
-                      style={{ position: 'fixed', inset: 0, zIndex: 19, background: 'transparent', border: 'none', cursor: 'default' }}
-                    />
-                    <div className="fx-menu" role="menu">
-                      {menuClosures.map((b) => (
-                        <button
-                          key={b.verdict}
-                          type="button"
-                          role="menuitem"
-                          className={b.tone === 'danger' ? 'fx-danger' : undefined}
-                          disabled={busy}
-                          title={b.hint ?? undefined}
-                          onClick={() => {
-                            onToggleMenu(false);
-                            if (b.confirm) onStartConfirm(b.verdict);
-                            else onVerdict(finding.id, b.verdict);
-                          }}
-                        >
-                          {b.label}
-                        </button>
-                      ))}
-                    </div>
-                  </>
+                  <CardMenu
+                    anchorRef={moreRef}
+                    closeLabel={L('cancel')}
+                    onClose={() => onToggleMenu(false)}
+                  >
+                    {menuClosures.map((b) => (
+                      <button
+                        key={b.verdict}
+                        type="button"
+                        role="menuitem"
+                        className={b.tone === 'danger' ? 'fx-danger' : undefined}
+                        disabled={busy}
+                        title={b.hint ?? undefined}
+                        onClick={() => {
+                          onToggleMenu(false);
+                          if (b.confirm) onStartConfirm(b.verdict);
+                          else onVerdict(finding.id, b.verdict);
+                        }}
+                      >
+                        {b.label}
+                      </button>
+                    ))}
+                  </CardMenu>
                 )}
               </>
             )}
@@ -749,6 +749,138 @@ function InkCard({
     </div>
   );
 }
+
+// ── The card's overflow menu ──────────────────────────────────────────────
+//
+// ─── WHY THIS IS A PORTAL AND NOT A POSITIONED DIV ─────────────────────────
+//
+// It used to be `position:absolute` inside the action row of a card whose own
+// rule is `overflow:hidden`. The action row is the LAST row of the card, so the
+// menu opened into the part of the card that does not exist and was clipped to
+// a sliver: on a real queue the founder could see its top edge under the next
+// card and could not reach a single item. The verdicts behind it were, in
+// practice, gone.
+//
+// Absolute positioning could not have been rescued by a z-index. `overflow`
+// clips descendants whatever their stacking order, and the card also grows a
+// `transform` on hover, which makes it a containing block for fixed children
+// too. The only reliable escape from an ancestor you do not control is to stop
+// being its descendant. So this renders onto <body> and positions itself in
+// viewport coordinates, which no card can clip, cover, or contain.
+//
+// The arithmetic is `placeCardMenu` in finding-cards.ts, with the rest of the
+// card's pure functions, so the "does it stay on the screen" property is
+// provable without mounting anything.
+function CardMenu({ anchorRef, closeLabel, onClose, children }: {
+  anchorRef: React.RefObject<HTMLButtonElement | null>;
+  closeLabel: string;
+  onClose: () => void;
+  children: React.ReactNode;
+}) {
+  const menuRef = React.useRef<HTMLDivElement | null>(null);
+  const [placement, setPlacement] = React.useState<MenuPlacement | null>(null);
+
+  // Measured, then re-measured on anything that can move the button under it.
+  // A menu still drawn where a control USED to be is worse than one that never
+  // opened: it lands on whatever moved into that spot.
+  React.useLayoutEffect(() => {
+    const reposition = () => {
+      const anchor = anchorRef.current?.getBoundingClientRect();
+      if (!anchor) return;
+      const box = menuRef.current?.getBoundingClientRect();
+      setPlacement(placeCardMenu({
+        anchor,
+        menu: {
+          // The natural size before any clamp. `scrollHeight` and not the
+          // measured height, because the measured one is already the clamped
+          // one and feeding it back in would ratchet the menu smaller on every
+          // scroll event until it vanished.
+          width: menuRef.current?.scrollWidth || box?.width || MENU_FALLBACK_WIDTH,
+          height: menuRef.current?.scrollHeight || box?.height || MENU_FALLBACK_HEIGHT,
+        },
+        viewport: {
+          width: window.innerWidth || document.documentElement.clientWidth,
+          height: window.innerHeight || document.documentElement.clientHeight,
+        },
+      }));
+    };
+    reposition();
+    window.addEventListener('resize', reposition);
+    // Capture phase: the queue scrolls inside its own container on some
+    // screens, and a listener on `window` alone would never hear about it.
+    window.addEventListener('scroll', reposition, true);
+    return () => {
+      window.removeEventListener('resize', reposition);
+      window.removeEventListener('scroll', reposition, true);
+    };
+  }, [anchorRef, children]);
+
+  // Escape closes it. A menu whose only way out is one of its own items is a
+  // trap, and the keyboard is the way people who cannot use the overlay leave.
+  React.useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape' || e.defaultPrevented) return;
+      e.preventDefault();
+      onClose();
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [onClose]);
+
+  // The first item takes focus, so the menu is usable without a mouse the
+  // moment it opens rather than after tabbing through the page behind it.
+  React.useEffect(() => {
+    menuRef.current?.querySelector<HTMLButtonElement>('button:not(:disabled)')?.focus();
+  }, []);
+
+  if (typeof document === 'undefined') return null;
+
+  return createPortal(
+    <>
+      {/* Click anywhere else and the menu goes away. */}
+      <button
+        type="button"
+        aria-label={closeLabel}
+        className="fx-menu-scrim"
+        onClick={onClose}
+      />
+      <div
+        ref={menuRef}
+        className={`fx-menu fx-menu-${placement?.side ?? 'below'}`}
+        role="menu"
+        style={placement
+          ? {
+            left: `${placement.left}px`,
+            top: `${placement.top}px`,
+            maxHeight: `${placement.maxHeight}px`,
+            maxWidth: `${placement.maxWidth}px`,
+          }
+          // One frame before measurement. Off screen rather than at 0,0: a
+          // menu that flashes in the top-left corner and jumps is a menu people
+          // learn to distrust.
+          : { left: '-9999px', top: '0px', visibility: 'hidden' }}
+      >
+        {children}
+      </div>
+    </>,
+    document.body,
+  );
+}
+
+/**
+ * The menu, reachable by a test.
+ *
+ * Exported ONLY so the client suite can mount it inside a fixture card that has
+ * the two properties that made the old one unreachable (`overflow:hidden` and a
+ * `transform`). Mounting the whole queue to reach one popup would need a
+ * network, an auth context and a property context, and would prove less: the
+ * thing under test is where in the DOM this lands, not how a card is fetched.
+ */
+export const CardMenuForTest = CardMenu;
+
+/** Sizes used for the single frame before the menu has been measured. */
+const MENU_FALLBACK_WIDTH = 206;
+const MENU_FALLBACK_HEIGHT = 132;
 
 interface CardProps {
   finding: QueueFinding;

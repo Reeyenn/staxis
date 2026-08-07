@@ -642,9 +642,21 @@ const FEED_CSS = `
 .fx-ib.fx-more{margin-left:auto;width:36px;padding:0;justify-content:center;color:#B9C0B8;font-size:16px;
   letter-spacing:.08em;}
 .fx-ib.fx-warn{color:#E8A87C;}
-.fx-menu{position:absolute;right:0;top:calc(100% + 7px);z-index:20;min-width:206px;overflow:hidden;
+/* ── The card's overflow menu ──────────────────────────────────────────────
+   FIXED, and drawn from a portal on the document body. It used to be
+   position:absolute inside .fx-ink-card, whose own rule is overflow:hidden, so
+   it opened below the last row of the card, into space the card does not have,
+   and was clipped to a sliver under the following card. No z-index could have
+   saved it: overflow clips descendants whatever their stacking order, and the
+   card's hover transform makes it a containing block for fixed children too.
+   The fix is to stop being its descendant. Coordinates: placeCardMenu. */
+.fx-menu{position:fixed;z-index:60;min-width:206px;overflow-y:auto;overscroll-behavior:contain;
   background:#2A2F27;border:1px solid rgba(255,255,255,.12);border-radius:12px;
   box-shadow:0 22px 44px -22px rgba(0,0,0,.75);}
+/* The way out that is not one of the menu's own items. Transparent, and under
+   the menu, so the first click anywhere else closes it and nothing else. */
+.fx-menu-scrim{position:fixed;inset:0;z-index:59;background:transparent;border:none;
+  padding:0;cursor:default;}
 .fx-menu button{display:block;width:100%;text-align:left;padding:10px 14px;border:none;background:transparent;
   color:#EDF1EC;font-size:12.5px;font-family:inherit;cursor:pointer;}
 .fx-menu button:hover:not(:disabled){background:rgba(255,255,255,.08);}
