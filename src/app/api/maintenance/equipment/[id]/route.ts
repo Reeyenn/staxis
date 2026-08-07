@@ -38,6 +38,15 @@ export async function GET(req: NextRequest, ctx: Ctx) {
   if (pidV.error) return err(pidV.error, { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
   const pid = pidV.value!;
 
+  // The tenant wall. The store scopes by property_id, which stops "hotel B's
+  // asset id under hotel A's pid" — but NOT "hotel A's manager naming hotel B's
+  // pid", which resolves and returns B's costs, serials and repair history.
+  // PATCH gates here and DELETE is covered by its capability decision; this GET
+  // was the one handler with nothing between the session check and supabaseAdmin.
+  if (!(await userHasPropertyAccess(session.userId, pid))) {
+    return err('Forbidden', { requestId, status: 403, code: ApiErrorCode.Forbidden });
+  }
+
   // Section gate (add-on, on top of the tenant guard above): if Maintenance is off for this hotel, block this route.
   const sectionGate = await requireSectionEnabled(req, pid, 'maintenance');
   if (!sectionGate.ok) return sectionGate.response;
