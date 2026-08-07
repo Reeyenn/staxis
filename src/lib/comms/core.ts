@@ -36,7 +36,7 @@ import {
   listAuthoritativePropertyAccess,
   type AuthoritativePropertyAccess,
 } from '@/lib/authorization/server';
-import { assignmentBlockedReason } from '@/lib/worklist/assignable';
+import { assignmentBlockedReason, departmentBlockedReason } from '@/lib/worklist/assignable';
 
 const ATTACHMENT_BUCKET = 'housekeeping-issue-photos'; // reuse existing private bucket
 const SIGNED_URL_TTL = 60 * 60; // 1h read URLs
@@ -1386,6 +1386,12 @@ export async function createTask(
 ): Promise<{ id: string }> {
   const blocked = await assignmentBlockedReason(pid, input.assignedStaffId);
   if (blocked) throw new Error(blocked);
+  // The same rule, one door along. A to-do ROUTED to the housekeeping
+  // department reaches exactly as many screens as one handed to a housekeeper
+  // by name — none — and until now only the second was refused. See
+  // departmentBlockedReason.
+  const deptBlocked = departmentBlockedReason(input.assignedDepartment);
+  if (deptBlocked) throw new Error(deptBlocked);
   const { data, error } = await supabaseAdmin
     .from('comms_tasks')
     .insert({
