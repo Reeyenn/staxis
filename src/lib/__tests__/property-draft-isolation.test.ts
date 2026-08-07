@@ -95,7 +95,12 @@ describe('property-owned draft and action isolation', () => {
     assert.match(modal, /timeoutMs: INTERACTIVE_ACTION_TIMEOUT_MS/);
     assert.ok((modal.match(/if \(!ownsAttempt\(\)\) return;/g) ?? []).length >= 2);
     assert.match(modal, /finally \{[\s\S]*?if \(ownsAttempt\(\)\) setBusy\(false\)/);
-    assert.match(staffPage, /<DemoSwitchableView key=\{capabilityViewerKey\}/);
+    // Renamed from DemoSwitchableView 2026-08-07 when the Manager⇄Staff preview
+    // stopped being demo-only and opened to platform admins. The invariant this
+    // asserts is unchanged and is the whole point: the view is keyed by
+    // capabilityViewerKey so it REMOUNTS on a hotel or viewer switch, rather
+    // than carrying one hotel's preview state into another.
+    assert.match(staffPage, /<PreviewSwitchableView key=\{capabilityViewerKey\}/);
     assert.match(staffPage, /<ManagerView key=\{capabilityViewerKey\}/);
   });
 
