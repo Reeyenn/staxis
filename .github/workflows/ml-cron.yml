@@ -21,11 +21,25 @@ name: ML cron
 # scraper's heartbeat row).
 
 on:
-  # INVENTORY ML re-enabled 2026-07-05 — the inventory-rate pipeline now has
-  # a live data source again: the seal-daily cron projects tomorrow's
+  # INVENTORY ML re-enabled 2026-07-05 — the inventory-rate pipeline was given
+  # a live data source again: /api/cron/seal-daily projects tomorrow's
   # occupancy into plan_snapshots from the pms_* tables (migration 0292),
   # so inventory training + prediction produce real output instead of the
   # dead-endpoint failures that got the whole block disabled on 2026-05-30.
+  #
+  # ⚠ THAT PRODUCER IS NOT RUNNING, AND HAS NOT BEEN. The sentence above says
+  # "the seal-daily cron". There is no seal-daily cron: the route exists, its
+  # own header still calls itself hourly, and it is in no vercel.json entry and
+  # no workflow. Checked in production on 2026-08-07: plan_snapshots held ZERO
+  # rows and daily_logs had not gained one since 2026-07-18, while the two jobs
+  # below ran green every day and every Sunday. A heartbeat proves a route
+  # finished, never that it had anything to read.
+  #
+  # Whether the seal goes back on a timer is a real decision (its projection is
+  # gated on fresh PMS evidence and the robot that produced it is retired), so
+  # it is NOT being made here. It is recorded in the job catalog as a `fedBy`
+  # link and guarded by src/lib/__tests__/job-feeds.test.ts, where the open
+  # question is written down rather than left in a comment nobody re-reads.
   #
   # Enabled here: aggregate-priors (Sun 03:00 CT) → train-inventory
   # (Sun 04:00 CT, +1h so priors land first) → predict-inventory (daily
