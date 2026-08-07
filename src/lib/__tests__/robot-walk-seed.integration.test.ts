@@ -20,6 +20,27 @@
  *     are excluded from the assignee list by design, so a housekeeper here
  *     would leave the walk's assign step failing every night for a reason that
  *     is not a bug.
+ *
+ * ─── AND IT RUNS AS service_role, WHICH IS THE WHOLE POINT ─────────────────
+ *
+ * The first version of this file ran as the PGlite superuser, which owns every
+ * table. Owners are not subject to GRANTs, so the suite was structurally unable
+ * to see a permission denial — and the first real run against production died
+ * partway through with `42501: permission denied for table
+ * account_authorization_state`, having already created a hotel, an auth user
+ * and an account. Stage C leaves service_role with no direct access to the
+ * authority tables; everything goes through SECURITY DEFINER functions.
+ *
+ * The seed therefore runs here under `set role service_role`, the same role the
+ * service key has in production, and `the tables Stage C keeps to itself` below
+ * pins the denial itself so nobody quietly reintroduces a direct read.
+ *
+ * ─── AND IT RESUMES ────────────────────────────────────────────────────────
+ *
+ * `resuming after the run that died at the access grant` rebuilds the exact
+ * partial state that failure left behind and reruns from it. That state is not
+ * hypothetical: it is in production right now, and the rerun has to adopt it
+ * rather than build a second copy of everything.
  */
 
 process.env.NEXT_PUBLIC_SUPABASE_URL ??= 'https://placeholder.supabase.co';
@@ -27,12 +48,14 @@ process.env.SUPABASE_SERVICE_ROLE_KEY ??= 'placeholder-service-role-key-min-20-c
 process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ??= 'placeholder-anon-key-min-20-chars';
 
 import assert from 'node:assert/strict';
+import { readdirSync, readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { after, before, describe, test } from 'node:test';
 import type { PGlite } from '@electric-sql/pglite';
 
 import { applyMigrationsToPglite } from '../../../tests/fixtures/pglite-migrate';
 import { loadCatalog, createPglitePostgrest } from '../../../tests/fixtures/postgrest-pglite';
-import { seedTwoCompanies, ORG_A } from '../../../tests/fixtures/pglite-two-company-seed';
+import { seedTwoCompanies, ACCOUNT_ADMIN, ORG_A } from '../../../tests/fixtures/pglite-two-company-seed';
 import {
   seedRobotHotel,
   ROBOT_COLLEAGUE_NAME,
@@ -47,6 +70,60 @@ import { isAssignable } from '@/lib/worklist/assignable';
 
 const ROBOT_UID = 'b0b07000-0000-4000-8000-000000000001';
 const PASSWORD = 'a-long-enough-robot-password';
+/** The fixture's Staxis administrator, the actor for every authority change. */
+const adminAccountId = ACCOUNT_ADMIN;
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Giving PGlite production's grants
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// Supabase hands `service_role` everything in `public` by default, and each
+// migration then takes specific things back — 0378 revokes
+// `account_authorization_state`, and Stage C hands out SECURITY DEFINER
+// functions in its place. PGlite has the migrations but not the default, so
+// without this every table is denied and the simulation is useless in the
+// opposite direction: it would "catch" denials production does not have, and
+// the real ones would be invisible in the noise.
+//
+// So: apply the baseline, then replay every grant and revoke the migrations
+// aim at service_role, in file order. The end state is the production one, and
+// it is DERIVED from the migrations rather than transcribed from them, so a
+// future migration that moves a grant travels into this file for free.
+
+/** Strip dollar-quoted function bodies and line comments. */
+function executableSql(sql: string): string {
+  return sql
+    .replace(/\$([a-zA-Z_]*)\$[\s\S]*?\$\1\$/g, "''")
+    .replace(/--[^\n]*/g, '');
+}
+
+function serviceRolePermissionStatements(): string[] {
+  const dir = 'supabase/migrations';
+  const out: string[] = [];
+  for (const file of readdirSync(dir).filter((f) => f.endsWith('.sql')).sort()) {
+    for (const raw of executableSql(readFileSync(join(dir, file), 'utf8')).split(';')) {
+      const statement = raw.trim();
+      if (!/^(grant|revoke)\b/i.test(statement)) continue;
+      if (!/\bservice_role\b/.test(statement)) continue;
+      out.push(`${statement};`);
+    }
+  }
+  return out;
+}
+
+async function applyProductionGrants(target: PGlite): Promise<void> {
+  await target.exec(`
+    grant usage on schema public to service_role;
+    grant all on all tables in schema public to service_role;
+    grant all on all sequences in schema public to service_role;
+    grant execute on all functions in schema public to service_role;
+  `);
+  for (const statement of serviceRolePermissionStatements()) {
+    // A statement naming an object a runtime-failed migration never created is
+    // not a drift signal, it is that migration's failure showing up twice.
+    await target.exec(statement).catch(() => undefined);
+  }
+}
 
 let pg: PGlite;
 let db: SeedDb;
@@ -61,6 +138,7 @@ before(async () => {
     `only ${applied.report.applied.length} migrations applied — the schema under test is not the real one`,
   );
   await seedTwoCompanies(pg);
+  await applyProductionGrants(pg);
 
   const catalog = await loadCatalog(pg);
   db = createPglitePostgrest(pg, catalog) as unknown as SeedDb;
@@ -68,23 +146,47 @@ before(async () => {
   auth = {
     async ensureUser({ email, password }) {
       authCalls.push({ email, password });
+      // In production this is the Auth Admin API over HTTP, not a database
+      // write, so it is deliberately not subject to service_role's table
+      // grants. Stepping out of the role here keeps the simulation honest in
+      // BOTH directions: the seed's own SQL stays constrained, and this does
+      // not fail for a reason production would never hit.
+      await pg.exec('reset role;');
       await pg.query(
         `insert into auth.users (id, email) values ($1, $2) on conflict (id) do nothing`,
         [ROBOT_UID, email],
       );
+      await pg.exec('set role service_role;');
       return ROBOT_UID;
     },
   };
 });
 
+/**
+ * Run something as the role the service key actually has.
+ *
+ * PGlite's default user OWNS every table, and an owner is not subject to
+ * GRANTs. That is not a detail: it is why the first version of this file could
+ * not have caught the 42501 that killed the first production run. Everything
+ * the seed does runs in here.
+ */
+async function asServiceRole<T>(fn: () => Promise<T>): Promise<T> {
+  await pg.exec('set role service_role;');
+  try {
+    return await fn();
+  } finally {
+    await pg.exec('reset role;').catch(() => undefined);
+  }
+}
+
 async function run(password = PASSWORD): Promise<SeedResult> {
-  return seedRobotHotel(db, auth, {
+  return asServiceRole(() => seedRobotHotel(db, auth, {
     password,
     organizationId: ORG_A,
     // The fixture's Staxis administrator, who is the actor for every authority
     // change exactly as the real admin is in production.
     adminUsername: 'staxis',
-  });
+  }));
 }
 
 // Close it explicitly. An in-memory Postgres left open at process exit takes
@@ -226,5 +328,148 @@ describe('seeding the robot hotel', () => {
     // against statements that never ran.
     const shim = db as unknown as { unsupported: string[] };
     assert.deepEqual(shim.unsupported, []);
+  });
+
+  // ─── The failure that actually happened ─────────────────────────────────
+
+  test('resuming after the run that died at the access grant', async () => {
+    // The real first production run created the hotel, attached it to the
+    // company, created the auth user and the account, and then died on
+    // `select authority_version from account_authorization_state` with 42501.
+    // What it left behind is what the operator has to rerun against, and the
+    // rerun has to ADOPT it rather than build a second copy.
+    //
+    // Rebuilt as fixture surgery, from the outside, because the state has to be
+    // the one the failure produced and not one the product can talk itself
+    // into. In particular the account is DELETED and reinserted rather than
+    // having its access taken away: retiring a bridge is a durable revoke that
+    // can never be resurrected, and the run that died never created a bridge at
+    // all. Taking access away would have modelled a state production is not in,
+    // and one no rerun could ever recover from.
+    await pg.query(`delete from staff where property_id = $1`, [first.propertyId]);
+    await pg.query(`delete from accounts where username = $1`, [ROBOT_MANAGER_USERNAME]);
+    await pg.query(
+      `insert into accounts (username, password_hash, display_name, data_user_id, role, active, skip_2fa)
+       values ($1, 'x', $2, $3, 'general_manager', true, true)`,
+      [ROBOT_MANAGER_USERNAME, ROBOT_MANAGER_DISPLAY, ROBOT_UID],
+    );
+    const stranded = await pg.query<{ id: string }>(
+      `select id from accounts where username = $1`, [ROBOT_MANAGER_USERNAME],
+    );
+    const strandedAccountId = stranded.rows[0].id;
+
+    // Preconditions: this test is worthless unless the state really is partial.
+    // Hotel, login and account present; roster and access missing.
+    assert.equal(await count(`select count(*) as n from properties where name = $1`, [ROBOT_HOTEL_NAME]), 1);
+    assert.equal(await count(`select count(*) as n from auth.users where id = $1`, [ROBOT_UID]), 1);
+    assert.equal(await count(`select count(*) as n from staff where property_id = $1`, [first.propertyId]), 0);
+    const strandedAccess = await pg.query<{ value: unknown }>(
+      `select to_jsonb(public.staxis_list_account_authorized_properties($1)) as value`,
+      [strandedAccountId],
+    );
+    assert.ok(
+      !JSON.stringify(strandedAccess.rows[0]?.value ?? null).includes(first.propertyId),
+      'the partial state was not rebuilt, so the resume below proves nothing',
+    );
+
+    const resumed = await run();
+
+    assert.equal(resumed.propertyId, first.propertyId, 'the rerun built a second hotel');
+    assert.equal(resumed.propertyCreated, false);
+    assert.equal(resumed.managerAccountId, strandedAccountId, 'the rerun built a second manager');
+    assert.equal(resumed.managerAuthUserId, ROBOT_UID, 'the rerun built a second login');
+
+    assert.equal(await count(`select count(*) as n from properties where name = $1`, [ROBOT_HOTEL_NAME]), 1);
+    assert.equal(await count(`select count(*) as n from accounts where username = $1`, [ROBOT_MANAGER_USERNAME]), 1);
+    assert.equal(await count(`select count(*) as n from staff where property_id = $1`, [first.propertyId]), 2);
+
+    const recovered = await pg.query<{ value: unknown }>(
+      `select to_jsonb(public.staxis_list_account_authorized_properties($1)) as value`,
+      [strandedAccountId],
+    );
+    assert.ok(
+      JSON.stringify(recovered.rows[0]?.value ?? null).includes(first.propertyId),
+      'the resumed run finished without giving the manager the hotel',
+    );
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// The grants themselves
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// This is the class the whole rework is about. Stage C keeps the authority
+// tables to itself and hands out SECURITY DEFINER functions instead; a seed or
+// a route that reads the table directly works in every test whose role owns it
+// and fails on the first real request.
+
+describe('the tables Stage C keeps to itself', () => {
+  async function deniedForServiceRole(sql: string, params: unknown[] = []): Promise<string | null> {
+    await pg.exec('begin; set local role service_role;');
+    let message: string | null = null;
+    try {
+      await pg.query(sql, params);
+    } catch (error) {
+      message = error instanceof Error ? error.message : String(error);
+    }
+    await pg.exec('rollback;').catch(() => undefined);
+    return message;
+  }
+
+  test('the baseline is production’s, so a denial below means a real revoke', async () => {
+    // Without this, a replay that granted nothing would deny EVERYTHING and the
+    // denial test underneath would pass for the wrong reason forever.
+    for (const table of ['accounts', 'properties', 'staff']) {
+      assert.equal(
+        await deniedForServiceRole(`select 1 from public.${table} limit 1`),
+        null,
+        `the service role cannot read ${table}, which it can in production — the grant replay is wrong`,
+      );
+    }
+  });
+
+  test('the service role cannot read the authority state directly', async () => {
+    // The exact statement the seed used to make, and the exact error the first
+    // production run died on: 42501, permission denied.
+    const message = await deniedForServiceRole(
+      `select authority_version from public.account_authorization_state limit 1`,
+    );
+    assert.match(
+      message ?? '',
+      /permission denied/i,
+      'the direct read is allowed again, so the seam this seed depends on has moved',
+    );
+  });
+
+  test('but the guarded reads it uses instead are allowed', async () => {
+    // The other half. A test that only pinned the denial would still pass on a
+    // day the RPCs were revoked too, leaving the seed with no way through.
+    for (const call of [
+      `select public.staxis_list_account_authorization_admin($1)`,
+      `select public.staxis_list_account_authorized_properties($1)`,
+    ]) {
+      assert.equal(
+        await deniedForServiceRole(call, [adminAccountId]),
+        null,
+        `${call} is not callable by the service role, so the seed has no seam left`,
+      );
+    }
+  });
+
+  test('the seed reaches the authority tables through nothing but those functions', () => {
+    // A source assertion, deliberately, and one of the few that earns it: the
+    // rule is "no direct reference to these tables anywhere in this file", and
+    // that is a property of the text rather than of any single run. A future
+    // edit that reintroduces one would otherwise only be caught by whichever
+    // branch of the seed happens to execute.
+    const source = readFileSync('scripts/robot-walk/seed.ts', 'utf8');
+    for (const table of [
+      'account_authorization_state',
+      'account_property_authorization_bridges',
+      'account_access_cutover_status',
+    ]) {
+      const referenced = new RegExp(`from\\(['"]${table}['"]\\)`).test(source);
+      assert.equal(referenced, false, `the seed reads ${table} directly, which is 42501 in production`);
+    }
   });
 });

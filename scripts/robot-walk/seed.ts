@@ -114,6 +114,92 @@ export interface SeedResult {
   managerStaffId: string;
 }
 
+/**
+ * The manager's current authority version, read the way the app reads it.
+ *
+ * NOT `select authority_version from account_authorization_state`. That table is
+ * revoked from service_role, so the direct read is a 42501 in production while
+ * passing in any test whose role owns the tables. `/api/auth/accounts` makes
+ * this exact call for the same reason.
+ */
+async function readAuthorityVersion(db: SeedDb, accountId: string): Promise<number> {
+  const res = await db.rpc('staxis_list_account_authorization_admin', { p_account_id: accountId });
+  if (res.error) fail('read authority version', res.error);
+  const raw = (res.data ?? null) as Record<string, unknown> | null;
+  const version = raw?.authorityVersion;
+  if (raw?.ok !== true
+    || typeof version !== 'number'
+    || !Number.isSafeInteger(version)
+    || version <= 0) {
+    fail('read authority version', `unusable answer: ${JSON.stringify(raw)}`);
+  }
+  return version;
+}
+
+/** What the manager can actually reach, asked of the canonical read. */
+async function reachableProperties(db: SeedDb, accountId: string): Promise<string[]> {
+  const res = await db.rpc('staxis_list_account_authorized_properties', { p_account_id: accountId });
+  if (res.error) fail('confirm hotel access', res.error);
+  const raw = (res.data ?? null) as { ok?: unknown; propertyIds?: unknown } | null;
+  if (raw?.ok !== true || !Array.isArray(raw.propertyIds)) {
+    fail('confirm hotel access', `unusable answer: ${JSON.stringify(raw)}`);
+  }
+  return (raw.propertyIds as unknown[]).filter((id): id is string => typeof id === 'string');
+}
+
+/**
+ * Make this hotel, and only this hotel, the manager's whole access.
+ *
+ * The scope call is DECLARATIVE — the array it is given is the account's entire
+ * access afterwards — so running it again with the same hotel is a no-op, which
+ * is what lets the whole seed be rerun.
+ *
+ * It is also optimistically concurrent: it refuses a stale authority version,
+ * and the version moves whenever anything about the account changes, including
+ * the update this seed just made. One re-read and one retry covers a version
+ * that moved between the read and the write; a second refusal is a real
+ * disagreement and is reported rather than hammered.
+ *
+ * Finally it CONFIRMS, through the canonical read, that the hotel is reachable.
+ * A refusal that returns `ok:false` in a shape nobody checked is how a seed
+ * finishes cleanly and leaves an account that cannot sign in anywhere.
+ */
+async function grantHotelAccess(db: SeedDb, input: {
+  actorAccountId: string;
+  accountId: string;
+  propertyId: string;
+  say: (line: string) => void;
+}): Promise<void> {
+  const { actorAccountId, accountId, propertyId, say } = input;
+
+  let refusal: string | null = null;
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    const authorityVersion = await readAuthorityVersion(db, accountId);
+    const res = await db.rpc('staxis_set_account_authorization_scope', {
+      p_actor_account_id: actorAccountId,
+      p_account_id: accountId,
+      p_property_ids: [propertyId],
+      p_expected_authority_version: authorityVersion,
+      p_expected_role: 'general_manager',
+      p_new_role: 'general_manager',
+      p_reason: 'robot walkthrough seed',
+    });
+    if (res.error) fail('grant hotel access', res.error);
+
+    const scope = (res.data ?? null) as { ok?: boolean; status?: string; reason?: string } | null;
+    if (scope?.ok === true) { refusal = null; break; }
+    refusal = `${scope?.status ?? 'refused'}: ${scope?.reason ?? 'no reason given'}`;
+    say(`access grant refused (${refusal}), re-reading the authority version`);
+  }
+  if (refusal) fail('grant hotel access', refusal);
+
+  const reachable = await reachableProperties(db, accountId);
+  if (!reachable.includes(propertyId)) {
+    fail('confirm hotel access', `the grant reported success but the manager reaches ${JSON.stringify(reachable)}`);
+  }
+  say(`manager can reach the hotel (${reachable.length} hotel(s) in scope)`);
+}
+
 function fail(step: string, detail: unknown): never {
   const text = detail instanceof Error
     ? detail.message
@@ -269,36 +355,24 @@ export async function seedRobotHotel(
   }
 
   // ── 5. Give the manager this hotel, and only this hotel ──────────────────
-  // The authority version is read fresh: the account insert/update above bumps
-  // it through a trigger, and the RPC refuses a stale one.
-  const versionRes = await db
-    .from('account_authorization_state')
-    .select('authority_version')
-    .eq('account_id', managerAccountId)
-    .maybeSingle();
-  if (versionRes.error) fail('read authority version', versionRes.error);
-  const authorityVersion = (versionRes.data as { authority_version: number } | null)?.authority_version;
-  if (authorityVersion === undefined || authorityVersion === null) {
-    fail('read authority version', 'no authorization state row for the manager');
-  }
-
-  // Declarative: the array IS the manager's whole access, so re-running this
-  // with the same hotel changes nothing.
-  const scopeRes = await db.rpc('staxis_set_account_authorization_scope', {
-    p_actor_account_id: admin.id,
-    p_account_id: managerAccountId,
-    p_property_ids: [propertyId],
-    p_expected_authority_version: authorityVersion,
-    p_expected_role: 'general_manager',
-    p_new_role: 'general_manager',
-    p_reason: 'robot walkthrough seed',
+  //
+  // THROUGH THE GUARDED SEAM, NOT THE TABLE. `account_authorization_state` is
+  // revoked from service_role (migration 0378), so the obvious
+  // `select authority_version from account_authorization_state` is a 42501 in
+  // production and reads perfectly fine in any test whose role owns the tables.
+  // That is exactly how this seed died halfway through its first real run.
+  //
+  // Both halves go through the SECURITY DEFINER functions the app itself uses:
+  // `staxis_list_account_authorization_admin` to read the version (the same
+  // call /api/auth/accounts makes), `staxis_set_account_authorization_scope` to
+  // write the scope, and `staxis_list_account_authorized_properties` to check
+  // the answer afterwards.
+  await grantHotelAccess(db, {
+    actorAccountId: admin.id,
+    accountId: managerAccountId,
+    propertyId,
+    say,
   });
-  if (scopeRes.error) fail('grant hotel access', scopeRes.error);
-  const scope = scopeRes.data as { ok?: boolean; status?: string; reason?: string } | null;
-  if (scope && scope.ok === false) {
-    fail('grant hotel access', `${scope.status ?? 'refused'}: ${scope.reason ?? 'no reason given'}`);
-  }
-  say('manager can reach the hotel');
 
   // ── 6. The roster: the manager, and one colleague to hand things to ──────
   const staffRes = await db
