@@ -187,54 +187,24 @@ $$;
 revoke all on function public._staxis_can_control_account_invite(uuid, uuid, uuid, text, text, uuid[])
   from public, anon, authenticated, service_role;
 
--- ── An empty list is a list that names nothing, and must be refused ────────
+-- ── NOT DONE HERE: the empty-list CHECK ───────────────────────────────────
 --
 -- 0464 wrote `array_length(covered_property_ids, 1) >= 1`. For '{}' that is
--- `NULL >= 1` -> NULL, and a CHECK treats NULL as satisfied, so the empty array
--- sailed through both constraints. `cardinality('{}')` is 0, which is really
--- false. Proven by a direct UPDATE against the shipped migration, bypassing
--- every RPC — which is the only way to test what a constraint actually holds.
+-- `NULL >= 1` -> NULL, and a CHECK counts NULL as satisfied, so an empty array
+-- satisfies both hat-shape constraints. `cardinality('{}')` is 0 and would
+-- really refuse it.
 --
--- This matters because an empty list is not a harmless nothing: the jsonb path
--- in staxis_set_membership_hat turns [] into NULL, and NULL is the
--- all-hotels-including-future shape. An empty list was therefore a silent
--- upgrade to the whole company, through the supported door.
-
-alter table public.organization_memberships
-  drop constraint if exists organization_memberships_hat_shape_check;
-alter table public.organization_memberships
-  add constraint organization_memberships_hat_shape_check check (
-    (membership_scope is null and staxis_role is null and covered_property_ids is null)
-    or (membership_scope = 'company'
-        and staxis_role in ('owner', 'regional_manager')
-        and (covered_property_ids is null
-          or (cardinality(covered_property_ids) >= 1
-            and array_position(covered_property_ids, null) is null)))
-    or (membership_scope = 'property'
-        and staxis_role in ('general_manager', 'front_desk', 'housekeeping', 'maintenance')
-        and covered_property_ids is not null
-        and cardinality(covered_property_ids) >= 1
-        and array_position(covered_property_ids, null) is null)
-  );
-
-alter table public.account_invites
-  drop constraint if exists account_invites_hat_shape_check;
-alter table public.account_invites
-  add constraint account_invites_hat_shape_check check (
-    (membership_scope is null and organization_id is null and covered_property_ids is null)
-    or (membership_scope = 'company'
-        and organization_id is not null
-        and role in ('owner', 'regional_manager')
-        and (covered_property_ids is null
-          or (cardinality(covered_property_ids) >= 1
-            and array_position(covered_property_ids, null) is null)))
-    or (membership_scope = 'property'
-        and organization_id is not null
-        and covered_property_ids is not null
-        and cardinality(covered_property_ids) >= 1
-        and array_position(covered_property_ids, null) is null
-        and role in ('general_manager', 'front_desk', 'housekeeping', 'maintenance'))
-  );
+-- Rebuilding both constraints on cardinality was written, tested, and BACKED
+-- OUT of this migration: it makes the Stage C contract suite fail with
+-- `organization_memberships_hat_shape_check` on a row some canonical write path
+-- still produces as '{}' rather than NULL. That writer has not been identified
+-- yet, and tightening a constraint until a shipped contract test goes red is
+-- how you find out in production which path it was.
+--
+-- The REACHABLE half of this hole is closed below: the jsonb writer no longer
+-- turns an explicit `[]` into NULL-means-everything. What remains is
+-- defence-in-depth against a direct table write, and it needs the '{}' writer
+-- found first. Handed back rather than guessed at.
 
 -- ── The supported door refuses an explicit empty list too ──────────────────
 --
