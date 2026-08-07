@@ -221,9 +221,14 @@ begin
   if found then v_authority_changed := true; end if;
 
   -- This hotel was the hat's ONLY hotel: the hat is over.
+  --
+  -- `greatest(...)` rather than a bare `clock_timestamp()`: a hat whose
+  -- `starts_at` is in the future would otherwise be given an `ended_at` BEFORE
+  -- its start and `..._window_check` would abort the whole detach. 0426's
+  -- revoke had the same exposure; it is closed rather than carried forward.
   update public.organization_memberships membership
      set status = 'revoked',
-         ended_at = clock_timestamp(),
+         ended_at = greatest(clock_timestamp(), membership.starts_at + interval '1 microsecond'),
          updated_at = clock_timestamp()
    where membership.account_id = p_account_id
      and membership.membership_scope = 'property'
@@ -417,7 +422,10 @@ begin
       -- already-revoked row keeps the ended_at it was given.
       update public.organization_memberships membership
          set status = 'revoked',
-             ended_at = coalesce(membership.ended_at, clock_timestamp()),
+             ended_at = coalesce(
+               membership.ended_at,
+               greatest(clock_timestamp(), membership.starts_at + interval '1 microsecond')
+             ),
              updated_at = clock_timestamp()
        where membership.account_id = v_account.id
          and membership.membership_scope = 'property'
