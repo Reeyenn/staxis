@@ -227,11 +227,27 @@ export async function sweepProperty(
     return nothing('read_failed');
   }
 
+  // ── THE HOTEL'S OWN DAY, DERIVED ONCE ──────────────────────────────────
+  //
+  // Everything downstream that needs a calendar day uses THIS value: the wake
+  // counter's reset check, the counter's own write, and the journal read. It
+  // used to be computed twice from the same inputs, which was harmless right up
+  // until somebody derived one of them differently.
+  //
+  // AND IT IS THE HOTEL'S, NEVER THE DATABASE'S. A day rendered by Postgres
+  // comes out in the SESSION's timezone, which is a fact about the connection
+  // rather than about the hotel. That is not a hypothetical: the test harness
+  // runs PGlite at a fixed `Etc/GMT+6`, while a hotel on `America/Chicago` is at
+  // UTC-5 for half the year, so the two disagree for one hour of every summer
+  // day. `propertyLocalToday` is the only thing that knows which day it is for
+  // the people who work here.
+  const today = propertyLocalToday(now, property.timezone);
+
   const verdict = decideWake({
     rows: keepEnabledSections(rows, sectionFlags),
-    wakesToday: state.wakesDay === propertyLocalToday(now, property.timezone)
-      ? state.wakesToday
-      : 0,
+    // A stored day that is not today means the counter belongs to a day that
+    // has ended, so it starts again at zero.
+    wakesToday: state.wakesDay === today ? state.wakesToday : 0,
   });
 
   // ── LOOKED. CLAIM THE WINDOW, whatever the verdict was ──
@@ -245,7 +261,6 @@ export async function sweepProperty(
   if (!verdict.wake) return nothing(verdict.refusal, verdict.events, window.clamped);
 
   // ── 6/7/8. the only expensive part ──
-  const today = propertyLocalToday(now, property.timezone);
   await recordWake({
     propertyId,
     wakesDayNow: today,
