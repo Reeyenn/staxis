@@ -517,6 +517,29 @@ describe('the coverage rule has exactly one implementation', () => {
     );
   });
 
+  // The same rule stated against the argument that keeps being mistaken for a
+  // narrowing feature. A company hat carrying a hotel list is a row the
+  // database refuses to store (`organization_memberships_hat_shape_check`,
+  // 0364), and both authoritative resolvers expand a company hat straight off
+  // the governing relationships with no covered_property_ids predicate. So the
+  // list, if one ever reached this function, means nothing.
+  //
+  // Mutation: intersect the company branch with covered_property_ids "to honour
+  // a subset". The app would then show an owner three hotels while the canonical
+  // resolver and RLS keep letting her into all twenty.
+  test('a stray hotel list on a company hat never narrows it', () => {
+    assert.deepEqual(
+      resolveHatCoverage('company', ['h1'], ['h1', 'h2', 'h3']),
+      ['h1', 'h2', 'h3'],
+      'a company hat was narrowed by a list the database forbids it to carry',
+    );
+    assert.deepEqual(
+      resolveHatCoverage('company', ['h9'], ['h1', 'h2']),
+      ['h1', 'h2'],
+      'a company hat was resolved from its own row instead of the company',
+    );
+  });
+
   // Mutation: map finance to property_manager, or line staff to department_lead.
   // Either hands somebody the company's people list to look at their own hotel.
   test('the hat -> access-profile degradation is least privilege', () => {
@@ -809,6 +832,80 @@ describe('the Company Hub reads the spine', () => {
       !others.some((m) => m.accountId === ACCOUNT_FIONA),
       "a front-desk person was shown the company's finance lead",
     );
+  });
+
+  // THE RULE BEHIND BOTH CASES ABOVE, AND THE ONE THAT MATTERS.
+  //
+  // The hub draws its hotel list from `resolveHatCoverage` over rows it has
+  // already read, rather than from the canonical resolver, because asking the
+  // database per person would be dozens of round trips on a page load. That is
+  // a SECOND answer to "which hotels does this person reach", and the product
+  // is only coherent while it agrees with `staxis_list_account_authorized_properties`
+  // — the function RLS and every gate resolve from.
+  //
+  // Wider is a tenant leak: a hotel on screen that no entitlement grants.
+  // Narrower is the mirror-image bug that keeps getting proposed for the
+  // company branch of `resolveHatCoverage` — the screen quietly loses hotels
+  // the person still has full access to, and nobody can tell from the hub that
+  // anything is missing.
+  //
+  // Mutation: change either implementation of the coverage rule without the
+  // other. Intersecting a company hat with `covered_property_ids` fails this on
+  // every company-hat holder below.
+  test('the hub projection never disagrees with the canonical resolver', async () => {
+    const people: Array<[string, string, string]> = [
+      ['Ana (company owner)', ACCOUNT_ANA, UID_ANA],
+      ['Maria (GM + company VP)', ACCOUNT_MARIA, UID_MARIA],
+      ['Fiona (company finance)', ACCOUNT_FIONA, UID_FIONA],
+      ['Frank (front-desk hat)', ACCOUNT_FRANK, UID_FRANK],
+      ['Vera (company B VP)', ACCOUNT_VERA, UID_VERA],
+    ];
+    // Deliberately not the pre-0426 legacy control group (Dolores, Wanda,
+    // Hank): the final hub route fail-closes on them with a 500 and no
+    // projection, which the two tests at the end of this block pin. A route
+    // that renders nothing cannot disagree with the resolver.
+    for (const [who, accountId, authUserId] of people) {
+      const hub = await hubFor(authUserId);
+      assert.equal(hub.status, 200, `${who}: the hub refused to load`);
+      const onScreen = [...new Set((hub.data?.properties ?? []).map((property) => property.id))].sort();
+      const canonical = (await accessibleProperties(accountId)).propertyIds.slice().sort();
+      assert.deepEqual(
+        onScreen, canonical,
+        `${who}: the hub and the canonical resolver disagree about her hotels`,
+      );
+    }
+  });
+
+  // And the same agreement stated where it is load-bearing: a company hat is
+  // the ONLY thing carrying Ana and Fiona, so their whole hotel list is
+  // the company branch of `resolveHatCoverage`. If that branch ever started
+  // reading `covered_property_ids`, Ana and Fiona would go to zero hotels —
+  // theirs is NULL, as the database requires of a company hat.
+  test('a company hat projects the whole company, and the row carries no hotel list', async () => {
+    const stored = await pg.query<{ account_id: string; covered_property_ids: string[] | null }>(
+      `select account_id, covered_property_ids
+         from public.organization_memberships
+        where organization_id = $1 and membership_scope = 'company' and ended_at is null`,
+      [ORG_A],
+    );
+    assert.ok(stored.rows.length > 0, 'fixture drift: Gulf Coast has no company hats left');
+    for (const row of stored.rows) {
+      assert.equal(
+        row.covered_property_ids, null,
+        'a company hat stored a hotel list, which its shape check forbids',
+      );
+    }
+
+    const governed = await hotelsGovernedBy(ORG_A);
+    for (const [who, authUserId] of [['Ana', UID_ANA], ['Fiona', UID_FIONA]] as const) {
+      const hub = await hubFor(authUserId);
+      assert.equal(hub.status, 200);
+      assert.deepEqual(
+        [...new Set((hub.data?.properties ?? []).map((property) => property.id))].sort(),
+        governed,
+        `${who}'s company hat did not reach every hotel Gulf Coast governs`,
+      );
+    }
   });
 
   test('a stood-down or non-governing company relationship never enters the service projection', async () => {

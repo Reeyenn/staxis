@@ -180,6 +180,32 @@ const HAT_STRENGTH: Record<HatRole, number> = {
  * for a property hat, and the reason `operatedPropertyIds` is an intersection
  * rather than a fallback).
  *
+ * `coveredPropertyIds` IS DELIBERATELY IGNORED FOR A COMPANY HAT, and that is
+ * the rule rather than an oversight. It has been read as a dropped
+ * "company hat scoped to a subset of the company's hotels" feature, so the
+ * evidence is written down here once:
+ *
+ *   * There is no such feature to honour. `organization_memberships_hat_shape_check`
+ *     (0364) permits exactly three row shapes, and the company one is
+ *     `membership_scope = 'company' AND covered_property_ids IS NULL`. The same
+ *     shape check exists on `account_invites`. A company hat carrying a hotel
+ *     list is not a narrower hat; it is a row the database rejects.
+ *   * Every write path stores NULL for company scope — `staxis_set_membership_hat`
+ *     (0364, 0370) and the Stage C invite/join RPCs (0426), which additionally
+ *     answer `role_conflict` when a caller passes a company scope together with
+ *     a hotel list.
+ *   * BOTH authoritative resolvers agree. `_staxis_nonlegacy_property_authorizations`
+ *     (0378) expands a company hat by joining the governing relationships with
+ *     no `covered_property_ids` predicate at all, and 0426's reach projection
+ *     does the same. `covered_property_ids` is consulted only on the
+ *     property-scope arm.
+ *
+ * So the SQL's semantics, mirrored exactly, are: company scope covers every
+ * governed hotel, full stop. Intersecting here instead would invent a second,
+ * narrower answer to a question the database already answers — the app would
+ * show an owner three hotels while RLS let her into twenty. `resolveHatCoverage`
+ * exists to prevent exactly that divergence, so it must not become its cause.
+ *
  * Pure, and exported, because a second reader now needs it: the Company Hub's
  * projection resolves coverage for every membership in a company from rows it
  * has already read, so calling `loadHats` per person would be dozens of extra
