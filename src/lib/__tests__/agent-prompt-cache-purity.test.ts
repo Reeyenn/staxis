@@ -329,7 +329,7 @@ describe('prompt cache purity — the portfolio surface', () => {
 
   it('the derived portfolio sections really are in the block being policed', async () => {
     const { stable } = await buildPortfolioSystemPrompt({
-      identity: PORTFOLIO_IDENTITY, companyRole: 'vp', conversationId: 'conv-p', now: NOW,
+      identity: PORTFOLIO_IDENTITY, companyRole: 'regional_manager', conversationId: 'conv-p', now: NOW,
     });
     assert.match(stable, /The hotels you are being asked about/);
     assert.match(stable, /Company rulebook/);
@@ -338,10 +338,10 @@ describe('prompt cache purity — the portfolio surface', () => {
 
   it('two turns 40 minutes apart produce byte-identical stable blocks', async () => {
     const a = await buildPortfolioSystemPrompt({
-      identity: PORTFOLIO_IDENTITY, companyRole: 'vp', conversationId: 'conv-p', now: NOW,
+      identity: PORTFOLIO_IDENTITY, companyRole: 'regional_manager', conversationId: 'conv-p', now: NOW,
     });
     const b = await buildPortfolioSystemPrompt({
-      identity: PORTFOLIO_IDENTITY, companyRole: 'vp', conversationId: 'conv-p',
+      identity: PORTFOLIO_IDENTITY, companyRole: 'regional_manager', conversationId: 'conv-p',
       now: new Date(NOW.getTime() + 40 * 60_000),
     });
     assert.equal(a.stable, b.stable);
@@ -361,7 +361,7 @@ describe('prompt cache purity — the portfolio surface', () => {
     // invariant is now the stronger one — everything this assembler prints must
     // be cacheable, because all of it is cached.
     const { stable, dynamic } = await buildPortfolioSystemPrompt({
-      identity: PORTFOLIO_IDENTITY, companyRole: 'vp', conversationId: 'conv-p', now: NOW,
+      identity: PORTFOLIO_IDENTITY, companyRole: 'regional_manager', conversationId: 'conv-p', now: NOW,
     });
     assert.equal(dynamic, '', 'the portfolio assembler grew an uncached tier');
     assert.equal(/\b(min|hr|days?) ago\b/i.test(stable), false);

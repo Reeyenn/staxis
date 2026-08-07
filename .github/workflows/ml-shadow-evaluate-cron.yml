@@ -29,6 +29,13 @@ permissions:
 
 jobs:
   evaluate:
+    # THE ROUTE THIS CALLS NO LONGER EXISTS (/api/cron/ml-shadow-evaluate was
+    # removed with the rest of the housekeeping ML surface; the job catalog
+    # carries this workflow as `retired`). The workflow and its history are
+    # kept, but a manual run could only ever end red on a 404 from a page that
+    # was deleted, which teaches an operator that a red Actions run is normal.
+    # Put the route back and delete this guard in the same change.
+    if: false
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:

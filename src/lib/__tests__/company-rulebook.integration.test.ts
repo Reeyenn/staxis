@@ -82,7 +82,7 @@ import {
   rulebookRequestScopeStillCurrent,
 } from '@/lib/company/rulebook-request-scope';
 
-import { applyMigrationsToPgliteThrough } from '../../../tests/fixtures/pglite-migrate';
+import { applyMigrationsToPglite, seedCanonicalTestAuthority } from '../../../tests/fixtures/pglite-migrate';
 import { createPglitePostgrest, loadCatalog, type PglitePostgrest } from '../../../tests/fixtures/postgrest-pglite';
 import {
   ACCOUNT_ANA,
@@ -98,6 +98,7 @@ import {
   PID_A2,
   PID_B1,
   PID_L1,
+  UID_ADMIN,
   UID_ANA,
   UID_GIL,
   UID_MARIA,
@@ -116,6 +117,8 @@ const originalListUsers = supabaseAdmin.auth.admin.listUsers.bind(supabaseAdmin.
 let signedInAs: string | null = null;
 const ACCOUNT_RULEBOOK_MULTI = 'c9c91111-0000-4000-8000-000000000001';
 const UID_RULEBOOK_MULTI = 'c9c92222-0000-4000-8000-000000000001';
+/** An independent hotel that exists only to be acquired and transferred. */
+const PID_TRANSFER = 'c9c94444-0000-4000-8000-000000000001';
 const RULEBOOK_ACQUIRE_KEY = 'c9c93333-0000-4000-8000-000000000001';
 const RULEBOOK_TRANSFER_KEY = 'c9c93333-0000-4000-8000-000000000002';
 const RULEBOOK_DEACTIVATE_KEY = 'c9c93333-0000-4000-8000-000000000003';
@@ -259,7 +262,7 @@ async function writeConfirmedFact(
 }
 
 before(async () => {
-  const migrated = await applyMigrationsToPgliteThrough('0425');
+  const migrated = await applyMigrationsToPglite();
   pg = migrated.pg;
   const catalog = await loadCatalog(pg);
   shim = createPglitePostgrest(pg, catalog);
@@ -277,6 +280,18 @@ before(async () => {
   supabaseAdmin.auth.admin.listUsers = async () => ({ data: { users: [] }, error: null });
 
   await seedTwoCompanies(pg);
+  // A throwaway independent hotel for the acquisition/transfer test. Moving a
+  // hotel between companies rewrites its relationship topology permanently, and
+  // under the final access contract a person's reach is DERIVED from that
+  // topology — so doing it to Waco Inn silently retired Wanda's standing at her
+  // own hotel and turned a later 404 into a 403. The churn gets its own
+  // building.
+  await pg.query(
+    `insert into properties (id, name, owner_id, total_rooms, timezone)
+     values ($1, 'Transfer Test Inn', $2, 60, 'America/Chicago')
+     on conflict (id) do nothing`,
+    [PID_TRANSFER, UID_ADMIN],
+  );
   await pg.query(
     `insert into auth.users (id, email) values ($1, 'rulebook-multi@example.test')
      on conflict (id) do nothing`,
@@ -284,15 +299,15 @@ before(async () => {
   );
   await pg.query(
     `insert into accounts
-       (id, username, password_hash, display_name, role, property_access, data_user_id)
-     values ($1, 'rulebook_multi', 'x', 'Rulebook Multi', 'general_manager', '{}', $2)
+       (id, username, password_hash, display_name, role, data_user_id)
+     values ($1, 'rulebook_multi', 'x', 'Rulebook Multi', 'general_manager', $2)
      on conflict (id) do nothing`,
     [ACCOUNT_RULEBOOK_MULTI, UID_RULEBOOK_MULTI],
   );
   for (const organizationId of [ORG_A, ORG_B]) {
     const result = await pg.query<{ membership_id: string | null }>(
       `select public.staxis_set_membership_hat(
-         $1, $2, $3, 'company', 'vp', null, 'Portfolio VP'
+         $1, $2, $3, 'company', 'regional_manager', null, 'Portfolio VP'
        ) as membership_id`,
       [ACCOUNT_ADMIN, organizationId, ACCOUNT_RULEBOOK_MULTI],
     );
@@ -360,21 +375,21 @@ describe('the book reaches its own company\'s hotels and nobody else\'s', () => 
   test('a warm hotel prompt cannot retain an old operator across acquisition and transfer', async () => {
     clearCompanyRulebookCache();
     clearHotelIdentityCache();
-    const independent = await buildSystemPrompt({ role: 'general_manager', snapshot: snapshot(PID_L1, 'Waco Inn'), conversationId: 'conv-transfer-independent' });
+    const independent = await buildSystemPrompt({ role: 'general_manager', snapshot: snapshot(PID_TRANSFER, 'Transfer Test Inn'), conversationId: 'conv-transfer-independent' });
     assert.equal(/Company rulebook/.test(independent.stable), false);
 
     try {
-      await changeHotelCompany(PID_L1, ORG_A, RULEBOOK_ACQUIRE_KEY);
-      const acquired = await buildSystemPrompt({ role: 'general_manager', snapshot: snapshot(PID_L1, 'Waco Inn'), conversationId: 'conv-transfer-acquired' });
+      await changeHotelCompany(PID_TRANSFER, ORG_A, RULEBOOK_ACQUIRE_KEY);
+      const acquired = await buildSystemPrompt({ role: 'general_manager', snapshot: snapshot(PID_TRANSFER, 'Transfer Test Inn'), conversationId: 'conv-transfer-acquired' });
       assert.match(acquired.stable, /Ecolab/, 'the acquiring company rulebook did not replace the warm null');
       assert.equal(/Standard Textile/.test(acquired.stable), false);
 
-      await changeHotelCompany(PID_L1, ORG_B, RULEBOOK_TRANSFER_KEY);
-      const transferred = await buildSystemPrompt({ role: 'general_manager', snapshot: snapshot(PID_L1, 'Waco Inn'), conversationId: 'conv-transfer-new-operator' });
+      await changeHotelCompany(PID_TRANSFER, ORG_B, RULEBOOK_TRANSFER_KEY);
+      const transferred = await buildSystemPrompt({ role: 'general_manager', snapshot: snapshot(PID_TRANSFER, 'Transfer Test Inn'), conversationId: 'conv-transfer-new-operator' });
       assert.match(transferred.stable, /Standard Textile/, 'the new operator rulebook did not replace the old operator');
       assert.equal(/Ecolab/.test(transferred.stable), false, 'the former operator rulebook survived the transfer');
     } finally {
-      await changeHotelCompany(PID_L1, null, RULEBOOK_DEACTIVATE_KEY);
+      await changeHotelCompany(PID_TRANSFER, null, RULEBOOK_DEACTIVATE_KEY);
       clearCompanyRulebookCache();
       clearHotelIdentityCache();
     }
@@ -656,7 +671,7 @@ describe('explicit portfolio rulebook context', () => {
 
     const restoredB = await pg.query<{ membership_id: string | null }>(
       `select public.staxis_set_membership_hat(
-         $1, $2, $3, 'company', 'vp', null, 'Portfolio VP'
+         $1, $2, $3, 'company', 'regional_manager', null, 'Portfolio VP'
        ) as membership_id`,
       [ACCOUNT_ADMIN, ORG_B, ACCOUNT_RULEBOOK_MULTI],
     );
@@ -672,36 +687,47 @@ describe('explicit portfolio rulebook context', () => {
       )).rows[0]?.ended,
       true,
     );
-    const finance = await pg.query<{ membership_id: string | null }>(
+    // The role change. This used to swap the company hat from `vp` to
+    // `finance`; 0464 retired `finance`, so the demotion that still exists is
+    // company scope down to a HOTEL job. A GM reads the book (founder ruling)
+    // and may not write it, which is the same before/after shape the captured
+    // edit role has to be re-derived against.
+    const demoted = await pg.query<{ membership_id: string | null }>(
       `select public.staxis_set_membership_hat(
-         $1, $2, $3, 'company', 'finance', null, 'Portfolio Finance'
+         $1, $2, $3, 'property', 'general_manager', $4, 'Hotel GM'
        ) as membership_id`,
-      [ACCOUNT_ADMIN, ORG_A, ACCOUNT_RULEBOOK_MULTI],
+      [ACCOUNT_ADMIN, ORG_A, ACCOUNT_RULEBOOK_MULTI, JSON.stringify([PID_A1])],
     );
-    const financeId = finance.rows[0]?.membership_id;
-    assert.ok(financeId);
+    const demotedId = demoted.rows[0]?.membership_id;
+    assert.ok(demotedId);
 
-    const financeView = await rulebookForCompany(UID_RULEBOOK_MULTI, ORG_A);
-    assert.equal(financeView.status, 200);
-    assert.equal((financeView.data as { companyRole: string }).companyRole, 'finance');
-    assert.equal((financeView.data as { canEdit: boolean }).canEdit, false);
+    // A hotel job reads the book through its HOTEL, never by naming the
+    // company: the by-company door needs a company job, so the captured context
+    // stops working the moment the job changes.
+    const demotedView = await rulebookForCompany(UID_RULEBOOK_MULTI, ORG_A);
+    assert.equal(demotedView.status, 404, 'a captured company context outlived the job that earned it');
+    const demotedStanding = await rulebookStandingFor(ACCOUNT_RULEBOOK_MULTI, ORG_A);
+    assert.equal(demotedStanding.companyRole, null);
+    assert.equal(demotedStanding.canEdit, false, 'a captured edit role outlived the hat that carried it');
     const deniedWrite = await rulebookWrite(UID_RULEBOOK_MULTI, {
       organizationId: ORG_A,
       action: 'settings',
       settings: { cross_hotel_ai_chat: 'true' },
     });
-    assert.equal(deniedWrite.status, 403);
+    // 404 rather than 403: the by-company door does not exist for a hotel job,
+    // so the write never reaches an authorization decision to be refused by.
+    assert.equal(deniedWrite.status, 404);
 
     assert.equal(
       (await pg.query<{ ended: boolean }>(
         'select public.staxis_end_membership_hat($1, $2) as ended',
-        [ACCOUNT_ADMIN, financeId],
+        [ACCOUNT_ADMIN, demotedId],
       )).rows[0]?.ended,
       true,
     );
     const restoredA = await pg.query<{ membership_id: string | null }>(
       `select public.staxis_set_membership_hat(
-         $1, $2, $3, 'company', 'vp', null, 'Portfolio VP'
+         $1, $2, $3, 'company', 'regional_manager', null, 'Portfolio VP'
        ) as membership_id`,
       [ACCOUNT_ADMIN, ORG_A, ACCOUNT_RULEBOOK_MULTI],
     );
@@ -845,7 +871,7 @@ describe('an authority rule exists only after a human confirms', () => {
     assert.equal(rules[0].actionKind, 'purchase_order');
     assert.equal(rules[0].thresholdCents, 50_000);
     assert.equal(rules[0].thresholdInclusive, false);
-    assert.equal(rules[0].approverRole, 'vp');
+    assert.equal(rules[0].approverRole, 'regional_manager');
     assert.equal(rules[0].sourceFactId, pending.id);
   });
 
@@ -855,7 +881,7 @@ describe('an authority rule exists only after a human confirms', () => {
     assert.equal(await authorityRuleFor(ORG_A, 'purchase_order', 49_999), null);
     const applies = await authorityRuleFor(ORG_A, 'purchase_order', 50_001);
     assert.ok(applies);
-    assert.equal(applies.approverRole, 'vp');
+    assert.equal(applies.approverRole, 'regional_manager');
   });
 
   test('a different ACTION KIND is not governed by this rule', async () => {
@@ -870,7 +896,7 @@ describe('an authority rule exists only after a human confirms', () => {
 
     const small = await authorityRuleFor(ORG_A, 'purchase_order', 60_000); // $600
     assert.ok(small);
-    assert.equal(small.approverRole, 'vp', 'a $600 order is the VP\'s call');
+    assert.equal(small.approverRole, 'regional_manager', 'a $600 order is the VP\'s call');
 
     const big = await authorityRuleFor(ORG_A, 'purchase_order', 600_000); // $6,000
     assert.ok(big);
@@ -919,7 +945,7 @@ describe('an authority rule exists only after a human confirms', () => {
     const big = await authorityRuleFor(ORG_A, 'purchase_order', 600_000);
     assert.ok(big);
     assert.equal(
-      big.approverRole, 'vp',
+      big.approverRole, 'regional_manager',
       'the owner rule is gone with the sentence it came from; the $500 rule still stands',
     );
   });
@@ -943,9 +969,9 @@ describe('the access choices gate what they claim', () => {
     );
     await pg.query(
       `insert into accounts (
-         id, username, password_hash, display_name, role, property_access, data_user_id
+         id, username, password_hash, display_name, role, data_user_id
        ) values ($1, 'normalized-rulebook-admin', 'x', 'Normalized Admin',
-                 'front_desk', '{}', $2)`,
+                 'front_desk', $2)`,
       [accountId, userId],
     );
     const membership = await pg.query<{ id: string }>(
@@ -966,7 +992,7 @@ describe('the access choices gate what they claim', () => {
       organizationId: ORG_A,
       canView: true,
       canEdit: true,
-      companyRole: 'vp',
+      companyRole: 'regional_manager',
       viewOnlyBecauseHotelJob: false,
     });
 
@@ -984,15 +1010,24 @@ describe('the access choices gate what they claim', () => {
     );
   });
 
-  test('"owner and VPs" lets Maria edit; the finance person does not', async () => {
+  // This used to be "…and the finance person does not". 0464 retired `finance`
+  // and converted those people into regional managers, so the shipped default
+  // now hands the pen to every company job. The line that still exists is
+  // COMPANY vs HOTEL, and it is asserted here rather than dropped.
+  test('"owner and VPs" lets every company job edit; a hotel job never does', async () => {
     const maria = await rulebookStandingFor(ACCOUNT_MARIA, ORG_A);
-    assert.equal(maria.companyRole, 'vp');
+    assert.equal(maria.companyRole, 'regional_manager');
     assert.equal(maria.canEdit, true);
 
     const fiona = await rulebookStandingFor(ACCOUNT_FIONA, ORG_A);
-    assert.equal(fiona.companyRole, 'finance');
+    assert.equal(fiona.companyRole, 'regional_manager');
     assert.equal(fiona.canView, true, 'she can read the book');
-    assert.equal(fiona.canEdit, false, 'but "owner and VPs" does not include her');
+    assert.equal(fiona.canEdit, true, '0464 made her a regional manager, and the default admits those');
+
+    const gil = await rulebookStandingFor(ACCOUNT_GIL, ORG_B);
+    assert.equal(gil.companyRole, null, 'a GM holds no company job');
+    assert.equal(gil.canView, true, 'the founder ruling: a GM reads the book they are governed by');
+    assert.equal(gil.canEdit, false, 'and a hotel job never writes the company book');
   });
 
   test('choosing "owner only" actually takes the VP\'s pen away', async () => {
@@ -1016,10 +1051,17 @@ describe('the access choices gate what they claim', () => {
     assert.equal(ana.canEdit, true, 'the owner always edits their own company\'s book');
   });
 
-  test('"anyone company-wide" opens it to finance', async () => {
+  // The stored value is left alone by 0464 on purpose: rewriting a company's
+  // saved choice is a change to what they chose. With `finance` gone the two
+  // choices now admit the same people, so what this pins is that the setting is
+  // still READ and honored rather than quietly ignored — and that "anyone
+  // company-wide" still means company-wide, never a hotel job.
+  test('"anyone company-wide" is honored and still stops at the company boundary', async () => {
     await saveCompanyAccessSettings(ORG_A, { rulebook_editors: 'company_scope' }, ACCOUNT_ANA);
     const fiona = await rulebookStandingFor(ACCOUNT_FIONA, ORG_A);
     assert.equal(fiona.canEdit, true);
+    const gil = await rulebookStandingFor(ACCOUNT_GIL, ORG_B);
+    assert.equal(gil.canEdit, false, 'a hotel job is not "company-wide"');
     // Put it back so later blocks run on the shipped default.
     await saveCompanyAccessSettings(ORG_A, { rulebook_editors: 'owner_and_vp' }, ACCOUNT_ANA);
   });
@@ -1247,9 +1289,9 @@ describe('the spine follow-up — a hotel\'s team list stops hiding company peop
 
 describe('the approver a sentence names is the approver that gates money', () => {
   // THE LIVE ROW. `company_authority_rules` on the demo company held
-  // approver_role='vp' for the sentence "Any capital project over $5,000
+  // approver_role='regional_manager' for the sentence "Any capital project over $5,000
   // requires owner approval, not VP approval." Mutation: revert the negation
-  // handling in readApproverCandidates and this test stores 'vp' again — and
+  // handling in readApproverCandidates and this test stores 'regional_manager' again — and
   // then `authorityRuleFor` hands a $6,000 renovation to the wrong signature.
   test('"requires owner approval, not VP approval" freezes as the OWNER', async () => {
     const factId = await writeConfirmedFact(

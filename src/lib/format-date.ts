@@ -113,9 +113,9 @@ export function fmtWhenAgo(iso: string | null | undefined, lang: Language, now: 
 /**
  * ISO timestamp → local "Mar 5, 3:30 PM". Invalid date → ''.
  *
- * Replaces:
- *   - dashboard/_components/LogBookCard.tsx fmtWhen(iso, es: boolean)
- *     (the boolean second arg becomes lang: es === true → 'es')
+ * RENDERS ON THE READER'S CLOCK. That is wrong for anything stamped by the
+ * hotel — see fmtWhenDateTimeInZone below, which is what the shift log book
+ * uses. Kept only for callers with genuinely no property in scope.
  */
 export function fmtWhenDateTime(iso: string, lang: Language): string {
   const d = new Date(iso);
@@ -126,6 +126,42 @@ export function fmtWhenDateTime(iso: string, lang: Language): string {
     hour: 'numeric',
     minute: '2-digit',
   });
+}
+
+/**
+ * ISO timestamp → "Mar 5, 3:30 PM" ON THE HOTEL'S CLOCK. Invalid date, or an
+ * unusable zone, → ''.
+ *
+ * THE BUG THIS EXISTS TO FIX. The shift log book is a record of what happened
+ * during a shift AT THE HOTEL, and it was rendered with the reader's timezone.
+ * An 11:30 PM entry at a Texas hotel read "9:30 PM" to an owner in California,
+ * and a 12:30 AM entry read "Mar 4, 10:30 PM" — the previous CALENDAR DAY, so
+ * the owner and the night auditor who wrote it disagree about which shift it
+ * belongs to. Nothing about a log entry is a fact about where the reader is
+ * standing.
+ *
+ * A null/blank zone falls back to the reader's clock rather than throwing: the
+ * old (wrong) rendering beats no timestamp at all, and every hotel with a
+ * timezone set — which is every hotel the wizard has ever created — gets the
+ * right one.
+ */
+export function fmtWhenDateTimeInZone(iso: string, timezone: string | null | undefined): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return '';
+  const zone = (timezone ?? '').trim();
+  const opts: Intl.DateTimeFormatOptions = {
+    month: 'short',
+    day: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit',
+  };
+  if (!zone) return d.toLocaleString('en', opts);
+  try {
+    return new Intl.DateTimeFormat('en', { ...opts, timeZone: zone }).format(d);
+  } catch {
+    // An unknown IANA zone is a data problem, not a reason to have no stamp.
+    return d.toLocaleString('en', opts);
+  }
 }
 
 // ─── fmtTime family ─────────────────────────────────────────────────────────

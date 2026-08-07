@@ -287,12 +287,10 @@ function DashboardWorkspace() {
 
   // Room-status feed trust. A report may contain only SOME expected data;
   // default room statuses remain neutral until a real room-status feed lands.
+  // That is decided per tick in buildRoomRingTicks, from room-level facts —
+  // this page holds no second copy of the rule, and in particular does not use
+  // one to suppress the data-age stamp (see the legend row below).
   const feedStatus = useFeedStatus(activePropertyId);
-  const fsLive = feedStatus?.mode === 'live';
-  // A pending connection means the property has never successfully read PMS
-  // data, so the room-status feed is still learning regardless of its label.
-  const connPending = fsLive && feedStatus.connection === 'pending';
-  const roomStatusLearning = fsLive && (feedStatus.feeds.roomStatus === 'learning' || connPending);
   // Pending and failed are both unknown, never zero. A returned all-zero
   // snapshot remains a legitimate terminal value because `counts` is present.
   const countsUnavailable = !counts;
@@ -661,7 +659,15 @@ function DashboardWorkspace() {
                 {STATUS[k]} <span style={{ fontFamily: MONO, color: C.ink3 }}>{ringCounts[k]}</span>
               </span>
             ))}
-            {occupancyReady && !roomStatusLearning && <FeedAsOfLabel label={occupancyAsOf} variant="pill" />}
+            {/* The stamp's OWN module decides whether a stamp is allowed (never
+                for a manual hotel, never over a never-synced connection, never
+                over a feed with no real source). A second suppression here
+                — "hide it while room status is still learning" — was a rule
+                nothing documented, and it fired on exactly the case that needs
+                the stamp most: a hotel whose room-status feed is learning while
+                its counts feed is hours stale showed a confident occupancy
+                percentage with nothing saying when it was taken. */}
+            {occupancyReady && <FeedAsOfLabel label={occupancyAsOf} variant="pill" />}
           </div>
 
           {/* KPI strip — synthetic financials; shown on a demo property only,

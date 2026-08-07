@@ -87,8 +87,105 @@ export const ROBOT_WALK_STEPS: readonly RobotWalkStepSpec[] = [
   { id: 'add-item', label: 'add an inventory item', dependsOn: ['sign-in'] },
   { id: 'delete-item', label: 'delete the inventory item', dependsOn: ['add-item'] },
   { id: 'people-roster', label: 'open the staff list', dependsOn: ['sign-in'] },
+  { id: 'anchor-census', label: 'find the buttons the companion points at', dependsOn: ['sign-in'] },
   { id: 'sign-out', label: 'sign out' },
 ];
+
+// ═══════════════════════════════════════════════════════════════════════════
+// The anchor census — the drift protection for everything that points.
+//
+// ─── THE FAILURE THIS EXISTS TO CATCH ──────────────────────────────────────
+//
+// The companion locates every control it points at by one attribute:
+// `data-staxis-anchor="<key>"`. The tour walks those keys, the chat pointer
+// draws at them when somebody asks where something is, and the discovery
+// pointer uses them for its one tip per screen. All three fail the SAME way
+// and it is the quietest failure in the product: somebody refactors a toolbar,
+// the attribute does not ride along, and from then on the companion says "it
+// is this one" and draws nothing. Nobody notices, because the person who was
+// lost enough to ask is not the person who knows what should have happened.
+//
+// No test catches it. A unit test asserting the attribute is in a component's
+// source is the exact kind of grep-the-file test this codebase does not write,
+// and it would pass on a control that no longer renders. The only honest check
+// is to open the real page in a real browser and look, which is a thing the
+// nightly robot already does every night on the real deploy.
+//
+// ─── WHY THE LOCATION IS A MAP AND NOT THE REGISTRY'S `page` ───────────────
+//
+// An anchor's `page` is the companion's own vocabulary and answers "may I draw
+// here". It is deliberately coarse: `knows-teach` lives on page `staxis`
+// because the Knows view is a dialog over /feed and that is the page proof the
+// pointer will get. A census needs the finer fact, which is the URL a browser
+// must actually be at for the control to be rendered, and those are different
+// for anything behind a tab.
+//
+// So this is a second list, and the thing that stops a second list from
+// drifting is a test: `companion-tour-registry.test.ts` asserts that every key
+// in the anchor registry appears here, so adding an anchor without saying where
+// to find it fails the suite rather than the census.
+//
+// `null` means DELIBERATELY NOT ASSERTED, with the reason beside it. A census
+// that asserted an entitlement-gated control would be testing what the robot
+// account is allowed to see rather than whether the attribute survived, and it
+// would go red the day somebody adjusted a capability.
+// ═══════════════════════════════════════════════════════════════════════════
+
+export const ANCHOR_CENSUS_LOCATIONS: Readonly<Record<string, string | null>> = {
+  // The one-list, and the app chrome that is on every screen with it.
+  'todo-composer': '/feed',
+  'staxis-mark': '/feed',
+  'nav-staxis': '/feed',
+  'nav-dashboard': '/feed',
+  'nav-inventory': '/feed',
+  'nav-maintenance': '/feed',
+  'nav-communications': '/feed',
+  // Behind the Knows tab, which is a dialog over the same path.
+  'knows-teach': '/feed?tab=knows',
+  // The delivery scanner on the stockroom rail. Rendered under `canManage`,
+  // which the robot manager proves two steps earlier by adding and deleting a
+  // real item on this same screen.
+  'add-delivery': '/inventory',
+  // NOT ASSERTED. The importer additionally needs the money capability, and
+  // the robot account never exercises financials, so a census that required it
+  // would be asserting an entitlement rather than a mount.
+  'inventory-import': null,
+};
+
+/** The pages a census has to open, each once, in a stable order. */
+export function anchorCensusPages(
+  locations: Readonly<Record<string, string | null>> = ANCHOR_CENSUS_LOCATIONS,
+): string[] {
+  const seen: string[] = [];
+  for (const url of Object.values(locations)) {
+    if (url !== null && !seen.includes(url)) seen.push(url);
+  }
+  return seen;
+}
+
+/** The keys that must be in the DOM at one url. */
+export function anchorsExpectedAt(
+  url: string,
+  locations: Readonly<Record<string, string | null>> = ANCHOR_CENSUS_LOCATIONS,
+): string[] {
+  return Object.entries(locations)
+    .filter(([, at]) => at === url)
+    .map(([key]) => key)
+    .sort();
+}
+
+/**
+ * The sentence a failed census puts in front of the founder.
+ *
+ * Names the anchors, not the pages: "the companion cannot find X" is the fact,
+ * and which URL it was looking at is detail for the stack. The message itself
+ * is FIXED (see robotWalkFailureMessage) because Recent errors groups by it;
+ * this is the DETAIL half, which is allowed to vary.
+ */
+export function anchorCensusDetail(missing: readonly string[]): string {
+  return `The companion can no longer find these controls on the page: ${[...missing].sort().join(', ')}. `
+    + 'Something they were attached to was renamed or removed, so pointing at them now draws nothing.';
+}
 
 export const ROBOT_WALK_STEP_IDS: readonly string[] = ROBOT_WALK_STEPS.map((s) => s.id);
 
@@ -142,6 +239,50 @@ export function summarizeRobotWalk(steps: readonly RobotWalkStepResult[]): Robot
     failed: steps.filter((s) => !s.ok && s.skipped !== true),
     skipped: steps.filter((s) => s.skipped === true),
   };
+}
+
+// ─── What the composer is allowed to say back ────────────────────────────────
+
+/**
+ * Did the composer accept the person the robot just picked?
+ *
+ * THIS EXISTS BECAUSE THE OBVIOUS TEST WAS WRONG AND WAS RED EVERY NIGHT. The
+ * walk used to assert that the Who button's accessible name CONTAINED the full
+ * name it had just clicked, e.g. "Robot Manager". It never can: `whoWord` in
+ * src/lib/feed/one-list-copy.ts renders a person as their FIRST NAME only, on
+ * purpose, because the row is a sentence and nobody says "for Marcus Webb" out
+ * loud. So the label reads "Who: for Robot", the assertion failed, and the one
+ * check in this product that is supposed to fail when the PRODUCT fails
+ * reported a failure that had nothing to do with the product.
+ *
+ * The cost of that was not one red row. The heartbeat lands only on a night
+ * where every step passed, so a permanently failing step means the robot can
+ * never read "on time" in Mission Control, and the founder's "Recent errors"
+ * box carries a standing entry that is not true. A box with a permanent false
+ * entry in it is a box nobody reads.
+ *
+ * The rule is therefore written down once, here, beside the walk it governs,
+ * and its test walks the REAL producer rather than restating it: whatever
+ * `whoWord` puts on that button for a person, this has to accept.
+ */
+export function composerNamesAssignee(
+  ariaLabel: string | null | undefined,
+  assigneeName: string,
+): boolean {
+  if (typeof ariaLabel !== 'string' || ariaLabel.trim() === '') return false;
+  const first = assigneeName.trim().split(/\s+/)[0] ?? '';
+  if (first === '') return false;
+  // A word boundary rather than a bare substring: "for Roberta" must not be
+  // read as proof that "Rob Smith" was the one picked.
+  const rx = new RegExp(
+    `(^|[^\\p{L}\\p{N}])${escapeForRegExp(first)}([^\\p{L}\\p{N}]|$)`,
+    'iu',
+  );
+  return rx.test(ariaLabel);
+}
+
+function escapeForRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
 /**

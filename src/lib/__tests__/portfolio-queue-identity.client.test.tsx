@@ -183,7 +183,7 @@ describe('Portfolio Queue viewer identity isolation', { concurrency: false }, ()
         <PortfolioQueueView
           lang="en"
           organizationId="org-b"
-          authorizationKey="viewer-b:finance:hotel-c,hotel-d"
+          authorizationKey="viewer-b:regional_manager:hotel-c,hotel-d"
           onScope={(scope) => scopes.push(scope?.organizationId ?? 'hotel')}
         />,
       );

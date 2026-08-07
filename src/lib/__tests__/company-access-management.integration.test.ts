@@ -227,7 +227,11 @@ describe('company access management — real SQL lifecycle and tenant boundaries
     await pg?.close();
   });
 
-  test('owner/VP get bounded edit policies; finance and hotel GMs get none', async () => {
+  // Fiona used to be the third probe here as a `finance` hat with no editor
+  // projection at all. 0464 retired that role and converted her into a regional
+  // manager, so she now projects the same bounded policy Maria does. The people
+  // who get NOTHING are the hotel jobs, which is the boundary that survived.
+  test('every company job gets a bounded edit policy; hotel jobs get none', async () => {
     const owner = await pg.query<JsonRow>(
       `select public.staxis_company_access_editor_projection($1) as value`, [ACCOUNT_ANA],
     );
@@ -242,7 +246,15 @@ describe('company access management — real SQL lifecycle and tenant boundaries
     assert.equal(vpJson.includes('property_manager'), true);
     assert.equal(vpJson.includes('organization_owner'), false);
 
-    for (const actorId of [ACCOUNT_FIONA, ACCOUNT_FRANK, ACCOUNT_GIL]) {
+    const fiona = await pg.query<JsonRow>(
+      `select public.staxis_company_access_editor_projection($1) as value`, [ACCOUNT_FIONA],
+    );
+    assert.equal((fiona.rows[0].value.organizations as unknown[]).length, 1);
+    const fionaJson = JSON.stringify(fiona.rows[0].value);
+    assert.equal(fionaJson.includes('property_manager'), true);
+    assert.equal(fionaJson.includes('organization_owner'), false);
+
+    for (const actorId of [ACCOUNT_FRANK, ACCOUNT_GIL]) {
       const denied = await pg.query<JsonRow>(
         `select public.staxis_company_access_editor_projection($1) as value`, [actorId],
       );
@@ -461,7 +473,10 @@ describe('company access management — real SQL lifecycle and tenant boundaries
     }), '42501');
   });
 
-  test('stale membership/epoch preview and finance/GM mutations are denied', async () => {
+  // The `finance` half of this is gone with the role (0464). Fiona is a regional
+  // manager now and previews like one; a hotel job is still refused, which is
+  // the half that was ever a wall.
+  test('a stale membership/epoch preview and a hotel job mutation are denied', async () => {
     const staleEpoch = await epoch(pg, ORG_A);
     const staleRevision = await revision(pg, addMembership);
     await insertPropertyGrant(pg, addMembership, ORG_A, PID_A2, 'viewer');
@@ -479,18 +494,29 @@ describe('company access management — real SQL lifecycle and tenant boundaries
 
     const currentEpoch = await epoch(pg, ORG_A);
     const currentRevision = await revision(pg, addMembership);
-    for (const actorId of [ACCOUNT_FIONA, ACCOUNT_FRANK]) {
-      await expectSqlState(preview(pg, {
-        actorId,
-        organizationId: ORG_A,
-        membershipId: addMembership,
-        operation: 'replace',
-        profile: 'viewer',
-        scope: 'selected_properties',
-        propertyIds: [PID_A1],
-        expectedEpoch: currentEpoch,
-        expectedRevision: currentRevision,
-      }), '42501');
-    }
+    await expectSqlState(preview(pg, {
+      actorId: ACCOUNT_FRANK,
+      organizationId: ORG_A,
+      membershipId: addMembership,
+      operation: 'replace',
+      profile: 'viewer',
+      scope: 'selected_properties',
+      propertyIds: [PID_A1],
+      expectedEpoch: currentEpoch,
+      expectedRevision: currentRevision,
+    }), '42501');
+
+    const fionaPreview = await preview(pg, {
+      actorId: ACCOUNT_FIONA,
+      organizationId: ORG_A,
+      membershipId: addMembership,
+      operation: 'replace',
+      profile: 'viewer',
+      scope: 'selected_properties',
+      propertyIds: [PID_A1],
+      expectedEpoch: currentEpoch,
+      expectedRevision: currentRevision,
+    });
+    assert.deepEqual(fionaPreview.afterPropertyIds, [PID_A1]);
   });
 });

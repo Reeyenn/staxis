@@ -172,8 +172,8 @@ const RUNS: Array<QueueRun | null> = [
 ];
 
 const SIGN_OFFS: CardSignOff[] = [
-  { approverRole: 'vp', approverNames: ['Maria Garcia'], thresholdCents: 100_000, callerMayApprove: false },
-  { approverRole: 'finance', approverNames: ['Maria', 'Ana', 'Bo'], thresholdCents: 250_000, callerMayApprove: false },
+  { approverRole: 'regional_manager', approverNames: ['Maria Garcia'], thresholdCents: 100_000, callerMayApprove: false },
+  { approverRole: 'general_manager', approverNames: ['Maria', 'Ana', 'Bo'], thresholdCents: 250_000, callerMayApprove: false },
   { approverRole: 'owner', approverNames: [], thresholdCents: 500_000, callerMayApprove: true },
 ];
 

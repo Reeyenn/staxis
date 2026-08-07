@@ -23,10 +23,6 @@ const companyPage = readFileSync(
   join(process.cwd(), 'src', 'app', '(hotel)', 'company', 'page.tsx'),
   'utf8',
 );
-const companyInvitationPage = readFileSync(
-  join(process.cwd(), 'src', 'app', '(public)', 'company-invite', '[token]', 'page.tsx'),
-  'utf8',
-);
 
 function section(start: string, end: string): string {
   const startIndex = propertyContext.indexOf(start);
@@ -164,8 +160,10 @@ describe('PropertyContext authorization identity', () => {
     assert.match(propertyContext, /activePropertyViewerKey,/);
   });
 
+  // The retired company-invitation page was the other writer checked here. It
+  // is gone along with the second invitation system, so the Company page is now
+  // the whole surface that has to invalidate coverage after an access change.
   test('same-tab access lifecycle writes explicitly invalidate authorization coverage', () => {
-    assert.match(companyInvitationPage, /notifyAuthorizationChanged\(\);[\s\S]*?replace\('\/company'\)/);
     assert.match(
       companyPage,
       /const completeAccessMutation = React\.useCallback\(\(\) => \{[\s\S]*?notifyAuthorizationChanged\(\);[\s\S]*?setRetryKey/,

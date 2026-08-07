@@ -122,6 +122,17 @@ export interface PointerPopupProps {
   onShown?: () => void;
   /** Fired once when there is nothing on this screen to point at. */
   onNoTarget?: () => void;
+  /**
+   * A small line under the paragraphs and above the buttons.
+   *
+   * The tour's "3 of 9" and its "Waiting for you." live here. Optional and
+   * absent everywhere else: a discovery pointer counts nothing.
+   */
+  footnote?: string | null;
+  /** Escape means this, when it means anything. Defaults to "not now", which
+   *  is right for a tip beside a button and wrong for a tour, where Escape is
+   *  the way out and the way out has a consequence. */
+  escapeAnswer?: PointerAnswer;
 }
 
 function readViewport(): TraceViewport {
@@ -142,6 +153,8 @@ export function PointerPopup({
   onTargetUsed,
   onShown,
   onNoTarget,
+  footnote = null,
+  escapeAnswer = 'later',
 }: PointerPopupProps) {
   const [geometry, setGeometry] = useState<PointerGeometry | null>(null);
   // Away while the page is moving under it. See the scroll effect below.
@@ -439,11 +452,11 @@ export function PointerPopup({
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key !== 'Escape' || e.defaultPrevented) return;
-      onAnswer('later');
+      onAnswer(escapeAnswer);
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [onAnswer]);
+  }, [onAnswer, escapeAnswer]);
 
   // Put the page back exactly as it was found.
   useEffect(() => () => { light(null); }, [light]);
@@ -517,6 +530,7 @@ export function PointerPopup({
         {paragraphs.map((line, i) => (
           <p className="cpt-body" key={`p-${i}`}>{line}</p>
         ))}
+        {footnote && <p className="cpt-foot" data-testid="companion-pointer-footnote">{footnote}</p>}
         <div className="cpt-acts">
           {buttons.map((button, i) => (
             <button
@@ -571,6 +585,8 @@ const POINTER_CSS = `
   animation:cptIn .3s var(--cpt-spring) both;max-height:calc(100dvh - 48px);overflow:auto;}
 .cpt-star{display:block;color:var(--cpt-sage-l);font-size:11px;line-height:1;}
 .cpt-body{font-size:14px;line-height:1.55;color:var(--cpt-white);margin:9px 0 0;text-wrap:pretty;}
+.cpt-foot{font-size:11.5px;line-height:1.4;color:var(--cpt-sage-l);margin:11px 0 0;
+  letter-spacing:.02em;}
 .cpt-acts{display:flex;align-items:center;gap:8px;margin-top:14px;flex-wrap:wrap;}
 .cpt-btn{height:32px;padding:0 12px;border-radius:9px;border:none;cursor:pointer;font:inherit;
   font-size:12.5px;background:rgba(255,255,255,.09);color:var(--cpt-soft);}

@@ -59,7 +59,9 @@ import { supabaseAdmin } from '@/lib/supabase-admin';
 import { requireCronSecret } from '@/lib/api-auth';
 import { ok, err, ApiErrorCode } from '@/lib/api-response';
 import { getOrMintRequestId, log } from '@/lib/log';
+import { errToString } from '@/lib/utils';
 import { writeCronHeartbeat } from '@/lib/cron-heartbeat';
+import { fetchAllRows } from '@/lib/supabase-paginate';
 import {
   RAW_RETENTION_MONTHS,
   checkRetentionCoversReadWindows,
@@ -144,13 +146,22 @@ export async function GET(req: NextRequest) {
   // rows are already pruned the RPC would have to short-circuit anyway. Skip
   // them here so a five-year-old ledger costs a couple of statements a night,
   // not sixty.
-  const { data: frozenRows } = await supabaseAdmin
-    .from('agent_costs_monthly')
-    .select('month')
-    .not('verified_at', 'is', null);
-  const frozen = new Set(
-    ((frozenRows ?? []) as Array<{ month: string }>).map((r) => String(r.month).slice(0, 10)),
-  );
+  // PAGED. `agent_costs_monthly` is one row per (month, property, feature,
+  // model, kind, state, swept), so a single month of a real fleet is already
+  // thousands of rows and PostgREST caps every response at 1000 whatever
+  // .limit() says (src/lib/supabase-paginate.ts). A short read here does not
+  // fail safe: months that ARE frozen drop out of `frozen`, get re-folded, and
+  // 0375 Guard 1 refuses them, so the books cron goes permanently degraded for
+  // a reason nothing in the response explains.
+  const frozenRows = await fetchAllRows<{ month: string }>((from, to) => (
+    supabaseAdmin
+      .from('agent_costs_monthly')
+      .select('month')
+      .not('verified_at', 'is', null)
+      .order('month', { ascending: true })
+      .range(from, to) as unknown as PromiseLike<{ data: { month: string }[] | null; error: unknown }>
+  )).catch(() => [] as Array<{ month: string }>);
+  const frozen = new Set(frozenRows.map((r) => String(r.month).slice(0, 10)));
 
   const allMonths = monthsBetween(new Date(oldest.created_at), now);
   const months = allMonths.filter((m) => !frozen.has(m));
@@ -189,20 +200,25 @@ export async function GET(req: NextRequest) {
   // month verified on an earlier run is frozen and therefore skipped above, so
   // reading `results` here would mean a month became prunable for exactly one
   // night and then never again.
-  const { data: verifiedRows, error: verifiedErr } = await supabaseAdmin
-    .from('agent_costs_monthly')
-    .select('month')
-    .not('verified_at', 'is', null)
-    .lt('month', cutoffMonth);
-  if (verifiedErr) {
-    return err(`Could not read the rollup: ${verifiedErr.message}`, {
+  const verifiedRead = await fetchAllRows<{ month: string }>((from, to) => (
+    supabaseAdmin
+      .from('agent_costs_monthly')
+      .select('month')
+      .not('verified_at', 'is', null)
+      .lt('month', cutoffMonth)
+      .order('month', { ascending: true })
+      .range(from, to) as unknown as PromiseLike<{ data: { month: string }[] | null; error: unknown }>
+  )).then(
+    (rows) => ({ rows, message: null as string | null }),
+    (e: unknown) => ({ rows: null, message: errToString(e) }),
+  );
+  if (verifiedRead.message !== null || verifiedRead.rows === null) {
+    return err(`Could not read the rollup: ${verifiedRead.message ?? 'unknown error'}`, {
       requestId, status: 500, code: ApiErrorCode.InternalError,
     });
   }
   const prunable = [
-    ...new Set(
-      ((verifiedRows ?? []) as Array<{ month: string }>).map((r) => String(r.month).slice(0, 10)),
-    ),
+    ...new Set(verifiedRead.rows.map((r) => String(r.month).slice(0, 10))),
   ].sort();
 
   for (const month of prunable) {

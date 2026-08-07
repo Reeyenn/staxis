@@ -20,17 +20,28 @@
 
 import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { join, relative, sep } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { dirname } from 'node:path';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO = join(__dirname, '..');
 const APP = join(REPO, 'src', 'app');
 
-// Publicly-linkable route segments. A page is "public" if its file path under
-// src/app/ starts with one of these segment names. Add to the list when a
-// new public route ships (e.g. /reset, /forgot if those move under top-level).
-const PUBLIC_ROUTE_SEGMENTS = new Set([
+// Publicly-linkable route segments. A page is "public" if its route path under
+// src/app/ starts with one of these segment names.
+//
+// KEEP IN SYNC WITH src/lib/public-paths.ts — that module is the allowlist the
+// edge middleware actually enforces, and
+// src/lib/__tests__/public-page-guard-coverage.test.ts fails if a page the
+// middleware lets an anonymous visitor open is not covered here. This list is
+// duplicated only because this file is plain .mjs and cannot import TypeScript.
+//
+// 2026-08-07: this list used to be matched against the RAW directory name, so
+// when the public pages moved into Next route groups — src/app/(public)/signin,
+// src/app/(staff-link)/housekeeper/[id] — the guard matched "(public)" and
+// "(staff-link)", found nothing, and reported success while scanning ZERO real
+// public pages. Route-group segments are now stripped before matching.
+export const PUBLIC_ROUTE_SEGMENTS = new Set([
   'housekeeper',
   'laundry',
   'signin',
@@ -40,6 +51,9 @@ const PUBLIC_ROUTE_SEGMENTS = new Set([
   'invite',
   'join',
   'consent',
+  'company-invite',
+  'privacy',
+  'terms',
   'help-request',
   'forgot',
   'reset',
@@ -128,11 +142,33 @@ function scrubCommentsAndStrings(src) {
   return out.join('');
 }
 
-function isInsidePublicRoute(relPath) {
-  const parts = relPath.split(sep);
-  // relPath like src/app/housekeeper/[id]/page.tsx → parts[2] is the segment
+/**
+ * A Next route group — a directory named `(something)`. It exists only to
+ * share a layout; it contributes NOTHING to the URL. `src/app/(public)/signin`
+ * serves `/signin`, and `src/app/(staff-link)/housekeeper/[id]` serves
+ * `/housekeeper/[id]`. Any rule that matches on directory names has to drop
+ * these or it is matching on something the user never sees.
+ */
+function isRouteGroup(segment) {
+  return segment.startsWith('(') && segment.endsWith(')');
+}
+
+/**
+ * True when this file backs a publicly-linkable route (or is a component that
+ * only that route can pull in). Route groups are stripped first so the check
+ * runs against the real URL segment.
+ *
+ * A file sitting directly in src/app (the root route + the root layout/error
+ * boundaries that wrap every public page) counts as public too — `/` is on the
+ * middleware allowlist.
+ */
+export function isInsidePublicRoute(relPath) {
+  const parts = relPath.split(sep).filter((p) => !isRouteGroup(p));
+  // parts like [src, app, housekeeper, [id], page.tsx]
   if (parts.length < 3) return false;
   if (parts[0] !== 'src' || parts[1] !== 'app') return false;
+  // Root-level route file (src/app/page.tsx after group-stripping) → `/`.
+  if (parts.length === 3) return true;
   return PUBLIC_ROUTE_SEGMENTS.has(parts[2]);
 }
 
@@ -147,8 +183,15 @@ function walk(dir, out = []) {
   return out;
 }
 
-const allFiles = walk(APP);
-const publicFiles = allFiles.filter((p) => isInsidePublicRoute(relative(REPO, p)));
+/** Every file under src/app that backs a publicly-linkable route. Exported so
+ *  the coverage test can assert the guard actually sees the real public pages
+ *  instead of trusting a green checkmark. */
+export function publicRouteFiles() {
+  return walk(APP).filter((p) => isInsidePublicRoute(relative(REPO, p)));
+}
+
+function main() {
+const publicFiles = publicRouteFiles();
 
 const violations = [];
 let scanned = 0;
@@ -209,5 +252,12 @@ if (violations.length > 0) {
 
 const escNote = escapeCount > 0 ? ` (${escapeCount} call(s) marked @audit: public-page-data-ok)` : '';
 console.log(
-  `✓ audit-public-page-direct-supabase: scanned ${scanned} public-route file(s) with supabase imports, no violations${escNote}.`,
+  `✓ audit-public-page-direct-supabase: ${publicFiles.length} public-route file(s) in scope, `
+  + `scanned ${scanned} with supabase imports, no violations${escNote}.`,
 );
+}
+
+// Importing this module (the coverage test does) must not run the audit.
+if (process.argv[1] !== undefined && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  main();
+}
