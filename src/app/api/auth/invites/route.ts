@@ -271,6 +271,53 @@ async function exactPropertyNames(propertyIds: readonly string[]): Promise<Map<s
 }
 
 /**
+ * WHAT THE INVITATION EMAIL SAYS YOU ARE BEING INVITED TO.
+ *
+ * This used to be whichever hotel happened to be the authority anchor, which
+ * made "You're invited to Port Arthur Inn on Staxis" the subject line for a
+ * company job covering twelve hotels, and for a three-hotel grant that did not
+ * especially involve Port Arthur. It named a real place, so it did not look
+ * wrong, it just was.
+ *
+ *   company scope    the company. That is the thing being joined.
+ *   several hotels   "Port Arthur Inn and 2 more".
+ *   one hotel        the hotel, exactly as before.
+ *
+ * Falls back to the anchor hotel name if a lookup comes back empty, because a
+ * slightly imprecise subject line is better than no invitation at all.
+ */
+async function inviteDestinationName(
+  hat: ResolvedAuthoritativeInviteScope | null,
+  anchorHotelName: string,
+): Promise<string> {
+  if (!hat) return anchorHotelName;
+  try {
+    if (hat.scope === 'company') {
+      const { data, error } = await supabaseAdmin
+        .from('organizations')
+        .select('name')
+        .eq('id', hat.organizationId)
+        .maybeSingle();
+      if (error) throw error;
+      const name = typeof data?.name === 'string' ? data.name.trim() : '';
+      return name.length > 0 ? name : anchorHotelName;
+    }
+    if (hat.propertyIds.length <= 1) return anchorHotelName;
+    const names = await exactPropertyNames(hat.propertyIds);
+    const ordered = hat.propertyIds
+      .map((propertyId) => names.get(propertyId) ?? '')
+      .filter((name) => name.trim().length > 0)
+      .sort((left, right) => left.localeCompare(right));
+    if (ordered.length === 0) return anchorHotelName;
+    if (ordered.length === 1) return ordered[0]!;
+    if (ordered.length === 2) return `${ordered[0]} and ${ordered[1]}`;
+    return `${ordered[0]} and ${ordered.length - 1} more`;
+  } catch {
+    return anchorHotelName;
+  }
+}
+
+/**
  * Pending invitations and invite options for a whole COMPANY.
  *
  * Same authority rules as the per-hotel listing, asked without a selected
@@ -1268,11 +1315,12 @@ export async function POST(req: NextRequest) {
   // transport changes. Use the canonical application origin rather than a
   // caller-controlled Host header so the emailed link cannot be poisoned.
   const inviteLink = `${env.NEXT_PUBLIC_APP_URL.replace(/\/$/, '')}/invite/${rawToken}`;
+  const destinationName = await inviteDestinationName(hat, hotelName);
   let emailResult: SendEmailResult;
   try {
     emailResult = await sendHotelAccountInvite({
       to: normalizedEmail,
-      hotelName,
+      hotelName: destinationName,
       role: legacyRole,
       roleLabelOverride: hat ? HAT_ROLE_LABELS[hat.role].en : undefined,
       inviteUrl: inviteLink,

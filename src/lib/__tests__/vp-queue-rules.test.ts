@@ -102,7 +102,7 @@ function hat(over: Partial<MembershipHat> = {}): MembershipHat {
     organizationId: ORG_A,
     accountId: 'acct',
     scope: 'company',
-    role: 'vp',
+    role: 'regional_manager',
     jobTitle: null,
     coveredPropertyIds: [PID_1, PID_2],
     ...over,
@@ -192,30 +192,41 @@ describe('sign-off routing: which number the rule is applied to', () => {
       id: 'r', organizationId: ORG_A, actionKind: 'expense',
       thresholdCents: 50_000, thresholdInclusive: false, approverRole, sourceFactId: 'f',
     });
-    assert.equal(ruleLeavesTheHotel(rule('vp')), true);
+    // 0461 retired `finance`, so the whole approver vocabulary is these three.
+    assert.equal(ruleLeavesTheHotel(rule('regional_manager')), true);
     assert.equal(ruleLeavesTheHotel(rule('owner')), true);
-    assert.equal(ruleLeavesTheHotel(rule('finance')), true);
     assert.equal(ruleLeavesTheHotel(rule('general_manager')), false);
   });
 });
 
 describe('sign-off routing: who holds the signature', () => {
   test('the named role satisfies itself', () => {
-    assert.equal(hatsSatisfyApprover([hat({ role: 'vp' })], ORG_A, PID_1, 'vp'), true);
+    assert.equal(
+      hatsSatisfyApprover([hat({ role: 'regional_manager' })], ORG_A, PID_1, 'regional_manager'),
+      true,
+    );
   });
 
   // Mutation: require an exact role match. The owner of the company would be
-  // unable to approve something their own rulebook routed to the VP.
+  // unable to approve something their own rulebook routed to the regional manager.
   test('a stronger job may sign for a weaker one', () => {
-    assert.equal(hatsSatisfyApprover([hat({ role: 'owner' })], ORG_A, PID_1, 'vp'), true);
-    assert.equal(hatsSatisfyApprover([hat({ role: 'vp' })], ORG_A, PID_1, 'general_manager'), true);
+    assert.equal(hatsSatisfyApprover([hat({ role: 'owner' })], ORG_A, PID_1, 'regional_manager'), true);
+    assert.equal(
+      hatsSatisfyApprover([hat({ role: 'regional_manager' })], ORG_A, PID_1, 'general_manager'),
+      true,
+    );
   });
 
-  // Mutation: compare strength with `<=` or drop the comparison. A controller
-  // could sign for the owner.
+  // Mutation: compare strength with `<=` or drop the comparison. A GM could
+  // sign for the regional manager, and a regional manager for the owner.
+  //
+  // The old first case used a `finance` hat, which 0461 retired. The weaker job
+  // is now the GM, which proves the same `>=` comparison with the surviving
+  // vocabulary.
   test('a weaker job may NOT sign for a stronger one', () => {
-    assert.equal(hatsSatisfyApprover([hat({ role: 'finance' })], ORG_A, PID_1, 'vp'), false);
-    assert.equal(hatsSatisfyApprover([hat({ role: 'vp' })], ORG_A, PID_1, 'owner'), false);
+    const gm = hat({ scope: 'property', role: 'general_manager', coveredPropertyIds: [PID_1] });
+    assert.equal(hatsSatisfyApprover([gm], ORG_A, PID_1, 'regional_manager'), false);
+    assert.equal(hatsSatisfyApprover([hat({ role: 'regional_manager' })], ORG_A, PID_1, 'owner'), false);
   });
 
   // Mutation: drop the role whitelist. A housekeeper's hat would satisfy a GM
@@ -242,7 +253,7 @@ describe('sign-off routing: who holds the signature', () => {
   // company A the moment a property id happened to appear in both lists.
   test('a hat at another company satisfies nothing here (Wall B)', () => {
     const other = hat({ organizationId: ORG_B, role: 'owner' });
-    assert.equal(hatsSatisfyApprover([other], ORG_A, PID_1, 'vp'), false);
+    assert.equal(hatsSatisfyApprover([other], ORG_A, PID_1, 'regional_manager'), false);
   });
 
   // Mutation: let a property hat sign a company-scope card. A GM would be able
@@ -250,7 +261,10 @@ describe('sign-off routing: who holds the signature', () => {
   test('a company-scope card needs a company-scope hat', () => {
     const gm = hat({ scope: 'property', role: 'general_manager', coveredPropertyIds: [PID_1] });
     assert.equal(hatsSatisfyApprover([gm], ORG_A, null, 'general_manager'), false);
-    assert.equal(hatsSatisfyApprover([hat({ role: 'vp' })], ORG_A, null, 'vp'), true);
+    assert.equal(
+      hatsSatisfyApprover([hat({ role: 'regional_manager' })], ORG_A, null, 'regional_manager'),
+      true,
+    );
   });
 });
 
@@ -258,7 +272,7 @@ describe('sign-off routing: who holds the signature', () => {
 
 describe('the locked card', () => {
   const signOff = (over: Partial<CardSignOff> = {}): CardSignOff => ({
-    approverRole: 'vp',
+    approverRole: 'regional_manager',
     approverNames: ['Maria'],
     thresholdCents: 50_000,
     callerMayApprove: false,
@@ -303,7 +317,7 @@ describe('the locked card', () => {
   test('the notice stays English for legacy language input', () => {
     const en = signOffNotice(signOff(), 'en');
     const es = signOffNotice(signOff(), 'es');
-    assert.match(en, /Needs VP sign-off/);
+    assert.match(en, /Needs regional manager sign-off/);
     assert.match(en, /Maria/);
     assert.equal(es, en);
   });
@@ -312,8 +326,8 @@ describe('the locked card', () => {
   // company wrote a rule and the GM would silently get the button back.
   test('an unnamed approver still produces a notice', () => {
     const notice = signOffNotice(signOff({ approverNames: [] }), 'en');
-    assert.match(notice, /Needs VP sign-off/);
-    assert.doesNotMatch(notice, /sent to/);
+    assert.match(notice, /Needs regional manager sign-off/);
+    assert.doesNotMatch(notice, /sent to/i);
   });
 
   test('several approvers are listed readably', () => {
@@ -324,13 +338,23 @@ describe('the locked card', () => {
   test('every role uses the English product notice for legacy language input', () => {
     const expected: Record<string, RegExp> = {
       owner: /Needs owner sign-off\b/,
-      vp: /Needs VP sign-off\b/,
-      finance: /Needs finance sign-off\b/,
+      regional_manager: /Needs regional manager sign-off\b/,
       general_manager: /Needs GM sign-off\b/,
     };
     for (const [approverRole, pattern] of Object.entries(expected)) {
       const text = signOffNotice(signOff({ approverRole, approverNames: [] }), 'es');
       assert.match(text, pattern, `wrong English notice for ${approverRole}: ${text}`);
+    }
+  });
+
+  // The `finance` and `vp` words were retired by 0461, but a card rendered from
+  // a row written before the migration ran can still carry one. Mutation: fall
+  // back to the WEAKEST word, or render the raw role. Either would tell a GM a
+  // junior signature was enough for a card the company locked.
+  test('a retired approver word falls back to the strongest signature', () => {
+    for (const retired of ['finance', 'vp']) {
+      const text = signOffNotice(signOff({ approverRole: retired, approverNames: [] }), 'en');
+      assert.match(text, /Needs owner sign-off\b/, `wrong fallback for ${retired}: ${text}`);
     }
   });
 });
@@ -1172,9 +1196,9 @@ describe('"Open in this hotel" actually opens the hotel', () => {
   });
 
   // ─── THE INTEGRATION SEAM (rebase onto 4c7cce62) ───────────────────────
-  // The hat-access sibling landed a read-only company mode: a finance hat covers
+  // The hat-access sibling landed a read-only company mode: a company hat covers
   // every hotel her company operates and CANNOT act. /api/findings is
-  // manager-gated, so a finance lead following "Open in this hotel" would fetch
+  // manager-gated, so an oversight-only reader following "Open in this hotel" would fetch
   // nothing and render an empty hotel page — the blank-Staxis-tab failure that
   // sibling had just fixed on the tab itself, reappearing one link further in.
   //
