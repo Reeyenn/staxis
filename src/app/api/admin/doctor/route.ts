@@ -96,6 +96,12 @@ import {
 import { CUA_DECOMMISSIONED, decommissionedCheck } from '@/lib/pms/decommission';
 import { FEATURE_ABANDON_MINUTES } from '@/lib/findings/judge-budget';
 import { ACTIVE_MISSION_JOBS, cronCadenceHours } from '@/lib/automation/job-catalog';
+import {
+  ROBOT_WALK_FRESH_HOURS,
+  robotWalkStepLabel,
+  summarizeRobotWalk,
+  type RobotWalkStepResult,
+} from '@/lib/automation/robot-walk';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -237,6 +243,13 @@ const checks: Array<[string, CheckFn]> = [
   //     nothing for the rest of the day, and from every screen in the app that
   //     is indistinguishable from a quiet hotel.
   ['companion_event_wake_health', checkCompanionEventWakeHealth],
+  // Every other check on this list asks the database whether the data looks
+  // right. This one asks whether a person can still USE the app: a robot signs
+  // into the live site each night at a seeded test hotel and walks it. A broken
+  // sign-in, a composer that stopped submitting, a list that renders empty for
+  // a signed-in manager — none of those disturb a single row, and every other
+  // check here reports green through all of them.
+  ['robot_walk_recent',           checkRobotWalkRecent],
 ];
 
 // ─── Individual checks ───────────────────────────────────────────────────
@@ -862,6 +875,9 @@ export const EXPECTED_MIGRATIONS_STATIC: ReadonlyArray<string> = [
   // activity_log cursor the ten-minute event sweep reads from, plus the
   // hotel-local daily wake counter that caps its model calls.
   '0459',
+  // One row per nightly robot walkthrough of the live app, so a green night
+  // is distinguishable from a night the robot never ran.
+  '0460',
 ];
 
 /**
@@ -1228,6 +1244,82 @@ async function checkCompanionEventWakeHealth(): Promise<Omit<Check, 'name' | 'du
       fix: staleCount > 0 || noCursor > 0
         ? 'The ten-minute sweep is not advancing cursors. Check /api/cron/companion-event-wake logs and that migration 0459 is applied.'
         : 'A hotel is hitting its per-day AI ceiling for event notices. Check findings_ai_spend for feature companion.event_wake.',
+    };
+  } catch (err) {
+    return { status: 'warn', detail: `check threw: ${errToString(err)}` };
+  }
+}
+
+/**
+ * ─── THE ONLY CHECK THAT FAILS WHEN THE PRODUCT FAILS ──────────────────────
+ *
+ * Every other entry on this list interrogates the data. This one reads the
+ * result of a robot that signed into the live site last night and used it:
+ * wrote a to-do, assigned it, ticked it off, taught the companion a fact, asked
+ * it a question, added and deleted an inventory item, looked at the roster.
+ *
+ * WARN, NEVER FAIL, and the reason is worth keeping. A `fail` here would 503
+ * the deploy gate and page the founder — over a headless browser, whose steps
+ * can break for reasons that have nothing to do with the app being down (a
+ * GitHub runner blip, a slow cold start, a selector that moved with a harmless
+ * rename). The post-deploy smoke test blocking every deploy on a flaky click is
+ * a worse outage than the one it would be reporting. The signal that matters is
+ * the "Recent errors" row the report route writes, which names the exact step;
+ * this check exists so the OTHER failure — the robot stopped running at all, so
+ * nothing is writing errors and the silence reads as health — is visible too.
+ *
+ * A hotel-facing screen being broken is caught by the error row within a
+ * minute of the nightly run. This is its companion, not its replacement.
+ */
+async function checkRobotWalkRecent(): Promise<Omit<Check, 'name' | 'durationMs'>> {
+  try {
+    const { data, error } = await supabaseAdmin
+      .from('robot_walk_runs')
+      .select('started_at, ok, steps')
+      .order('started_at', { ascending: false })
+      .limit(1);
+
+    if (error) {
+      // Migrations are applied by hand, so the code always reaches production
+      // before the table does. Not applied yet is not a failure.
+      if (isMissingRelation(error)) {
+        return { status: 'ok', detail: 'robot walkthrough table not applied yet (migration 0460)' };
+      }
+      return { status: 'warn', detail: `robot_walk_runs read failed: ${errToString(error)}` };
+    }
+
+    const last = ((data ?? []) as Array<{ started_at: string; ok: boolean; steps: unknown }>)[0];
+    if (!last) {
+      // Nothing has run yet. Before the first nightly fires — or before the
+      // lead has seeded the hotel and set the secret — this is the expected
+      // state, and warning about it would train everyone to ignore the check.
+      return { status: 'ok', detail: 'the nightly robot has not walked the app yet' };
+    }
+
+    const ageHours = (Date.now() - new Date(last.started_at).getTime()) / 3_600_000;
+    const ageText = `${Math.round(ageHours)}h ago`;
+
+    if (ageHours > ROBOT_WALK_FRESH_HOURS) {
+      return {
+        status: 'warn',
+        detail: `the nightly robot last walked the app ${ageText}, over the ${ROBOT_WALK_FRESH_HOURS}h window`,
+        fix: 'Check the robot-walk workflow in GitHub Actions. A run that never starts writes nothing here and nothing to Recent errors, so the silence is the only symptom.',
+      };
+    }
+
+    const steps = Array.isArray(last.steps) ? (last.steps as RobotWalkStepResult[]) : [];
+    const summary = summarizeRobotWalk(steps);
+    if (last.ok && summary.ok) {
+      return { status: 'ok', detail: `robot walked the app ${ageText}, ${summary.passed} of ${summary.total} steps passed` };
+    }
+
+    const broke = summary.failed.map((s) => robotWalkStepLabel(s.name));
+    return {
+      status: 'warn',
+      detail: broke.length > 0
+        ? `robot walked the app ${ageText} and could not: ${broke.join('; ')}`
+        : `robot walked the app ${ageText} and did not finish every step`,
+      fix: 'Open Mission Control. The failing step is in Recent errors with the reason, and the GitHub Actions run has the full log.',
     };
   } catch (err) {
     return { status: 'warn', detail: `check threw: ${errToString(err)}` };

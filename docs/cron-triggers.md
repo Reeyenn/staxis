@@ -47,7 +47,28 @@ operations. The catalog parity test reads the workflow files directly.
 | `/api/cron/ml-train-inventory` | `ml-cron.yml` | `0 9 * * 0` | Weekly inventory-rate training. |
 | `/api/cron/ml-predict-inventory` | `ml-cron.yml` | `0 11 * * *` | Daily inventory-rate prediction. |
 | `/api/cron/purge-old-error-logs` | `purge-old-error-logs-cron.yml` | `30 9 * * *` | Daily error-log retention. |
+| `/api/admin/robot-walk/report` | `robot-walk.yml` | `0 10 * * *` | Nightly browser walkthrough of the live site. |
 | Workflow only | `dependency-audit.yml` | `17 9 * * 1` | Weekly dependency advisory check. |
+
+### The nightly robot walkthrough
+
+The odd one out on the table above: the workflow is not an HTTP call on a timer,
+it is a real Chromium that signs into `https://getstaxis.com` at the seeded Robot
+Hotel and uses the app. The route in the Target column is where it REPORTS to,
+and is what writes the heartbeat.
+
+It needs three things set outside this repository, all of them one-time:
+
+| What | Where | Value |
+|---|---|---|
+| `ROBOT_WALK_PASSWORD` | GitHub Actions secret | The robot manager's password, the same one given to `scripts/robot-walk/seed.ts`. |
+| `ROBOT_WALK_PROPERTY_ID` | GitHub Actions **variable** | The seeded hotel's id. The walk refuses to change anything if the account it signed in as is standing anywhere else. |
+| `SKIP_2FA_USER_IDS` | Vercel env | Must include the robot manager's auth user id, or sign-in stops for a one-time code nobody will read. |
+
+Its heartbeat is stricter than the others on purpose: it lands only when every
+step passed, so "on time" on the Mission Control row reads as "a manager could
+still do all of it last night". A failed step goes to Recent errors naming the
+step. Details in `src/lib/automation/robot-walk.ts`.
 
 ## Manual, event-driven, and retired operations
 

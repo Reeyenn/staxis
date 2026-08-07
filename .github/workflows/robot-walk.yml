@@ -1,0 +1,89 @@
+# Nightly robot walkthrough
+#
+# Why this exists:
+#   Every other health check we run asks the database whether the data looks
+#   right. None of them asks whether a person can still USE the app. A broken
+#   sign-in, a composer that stopped submitting, a page that renders empty for a
+#   signed-in manager: all of those leave a perfectly healthy database behind
+#   them, and the doctor reports green through every one.
+#
+# What it does:
+#   Once a night, a real Chromium signs into https://getstaxis.com as a manager
+#   at the seeded Robot Hotel and does what a person does, step by step: opens
+#   the list, writes a to-do, hands one to a colleague, ticks one off, opens the
+#   log book, teaches the companion a fact and removes it again, asks it a
+#   question, adds and deletes an inventory item, looks at the staff list, signs
+#   out. Then it POSTs the per-step results to /api/admin/robot-walk/report.
+#
+# Where the answer shows up:
+#   A clean night is invisible: one calm "on time" row in Mission Control's
+#   Automatic AI jobs list. A failed step becomes a row in Mission Control's
+#   "Recent errors" box naming the step. Nobody has to read this log.
+#
+# Why here and not on Vercel:
+#   A browser is not something a serverless function can be trusted to hold
+#   open. This runner has one for the whole ten minutes.
+#
+# Required GitHub secrets:
+#   CRON_SECRET           — same value as Vercel's, already used by the other
+#                           scheduled jobs. The bearer for the report route.
+#   ROBOT_WALK_PASSWORD   — the robot manager's password, set by the same
+#                           command that seeds it.
+#
+# Required GitHub variable (not a secret — it is an id, and the run log is more
+# useful when it says which hotel it refused to touch):
+#   ROBOT_WALK_PROPERTY_ID — the seeded hotel's id. The walk refuses to change
+#                            anything if the account it signed in as is standing
+#                            anywhere else.
+#
+# Manual trigger:
+#   Actions tab -> Nightly robot walkthrough -> Run workflow. Useful right after
+#   seeding the hotel, and after any change to the screens it walks.
+
+name: Nightly robot walkthrough
+
+on:
+  schedule:
+    # 10:00 UTC — after the nightly findings pass (06:00) and the management
+    # pass (08:00), so the app the robot walks is the one those left behind.
+    - cron: '0 10 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# Two robots in one hotel would fight over each other's to-dos and each would
+# report the other's cleanup as its own failure.
+concurrency:
+  group: robot-walk
+  cancel-in-progress: false
+
+jobs:
+  walk:
+    runs-on: ubuntu-latest
+    # The walk itself is minutes; this is the ceiling that stops a wedged
+    # browser from holding a runner for six hours.
+    timeout-minutes: 20
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - run: npm ci
+
+      # The npm package ships no browser binary. Without this every step dies
+      # with "Executable doesn't exist", which reads like the app is broken.
+      - name: Install Chromium
+        run: npx playwright install --with-deps chromium
+
+      - name: Walk the app
+        env:
+          ROBOT_WALK_BASE_URL: https://getstaxis.com
+          ROBOT_WALK_PASSWORD: ${{ secrets.ROBOT_WALK_PASSWORD }}
+          ROBOT_WALK_PROPERTY_ID: ${{ vars.ROBOT_WALK_PROPERTY_ID }}
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+        run: npx tsx --conditions=react-server scripts/robot-walk/walk.ts
