@@ -472,7 +472,7 @@ describe('which events put a sentence in front of somebody', () => {
 
 describe('the size of what it remembers', () => {
   /** A topic key at the longest length the route and the parser both accept. */
-  const longKey = (n: number) => `topic-${String(n).padStart(4, '0')}-${'x'.repeat(186)}`;
+  const longKey = (n: number) => `topic-${String(n).padStart(4, '0')}-${'x'.repeat(189)}`;
 
   test('a two-hundred character key is genuinely accepted, so the bound has to be real', () => {
     const key = longKey(1);
