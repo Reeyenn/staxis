@@ -172,6 +172,14 @@ alter table public.equipment
   add column if not exists replacement_cost_cents bigint
     generated always as (round(replacement_cost * 100)::bigint) stored;
 
+-- ─── applied_migrations bookkeeping ─────────────────────────────────────────
+INSERT INTO public.applied_migrations (version, description)
+VALUES (
+  '0462',
+  'integer-cents mirrors for the 24 legacy dollar money columns (inventory ledger, labor, assets), added as GENERATED ALWAYS ... STORED so Postgres derives them on every write and the cents and dollars views of a number cannot drift apart. Old dollar columns kept and still written by the 0312/0322/0324/0326 plpgsql; the numeric(10,6) cost_usd family is deliberately excluded because integer cents would round sub-cent AI spend to zero. No RLS change.'
+)
+ON CONFLICT (version) DO NOTHING;
+
 -- PostgREST caches the schema; new columns are invisible to the API until it
 -- reloads. Run after applying (or hit /api/admin/doctor with auth).
-notify pgrst, 'reload schema';
+NOTIFY pgrst, 'reload schema';

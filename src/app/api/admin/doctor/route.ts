@@ -878,6 +878,9 @@ export const EXPECTED_MIGRATIONS_STATIC: ReadonlyArray<string> = [
   // One row per nightly robot walkthrough of the live app, so a green night
   // is distinguishable from a night the robot never ran.
   '0460',
+  // Integer-cents mirrors of the legacy dollar money columns, derived by
+  // Postgres so the cents and dollars views of a number cannot drift apart.
+  '0462',
 ];
 
 /**
