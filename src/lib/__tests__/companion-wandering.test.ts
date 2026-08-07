@@ -21,6 +21,7 @@ import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 
 import { EMPTY_COMPANION_MEMORY, type CompanionMemory } from '@/lib/companion/manners';
+import { offerQuestionFor } from '@/lib/companion/copy';
 import {
   decideWandering,
   recordVisit,
@@ -191,6 +192,30 @@ describe('what it actually offers', () => {
     assert.ok(!/\byou seem\b|\blost\b|\bstruggling\b/i.test(text), `it diagnoses the person: ${text}`);
     assert.ok(!text.includes('—'), 'em dash');
     assert.ok(!text.includes('!'));
+  });
+
+  test('it carries its own replies, built beside the sentence', () => {
+    // The reply work's whole rule: the code that writes the sentence writes the
+    // answers. A candidate with no replies would render a card with nothing to
+    // press, and one that re-derived them at render is the bug that put "Want
+    // me to take you to Staxis?" under a fire-panel statement.
+    const d = decideWandering({ visits: hunt(4), lastActionAt: null, now: NOW, memory: welcomed() });
+    if (!d.wandering) throw new Error('expected a candidate');
+    assert.equal(d.candidate.replyKind, 'wandering');
+    assert.deepEqual(d.candidate.replies.map((r) => r.intent.kind), ['seed', 'close']);
+    // The yes hands over the half-question, and only that.
+    const yes = d.candidate.replies[0];
+    assert.equal(yes.intent.kind === 'seed' && yes.intent.text, WANDER_SEED);
+    // No reply here writes anything to the hotel. Charter clause 1.
+    for (const r of d.candidate.replies) {
+      assert.ok(!['record', 'act'].includes(r.intent.kind), `${r.id} writes`);
+    }
+  });
+
+  test('the sentence is its own question, so no second one is drawn over it', () => {
+    // "Looking for something?" already ends in a question mark. A template
+    // question on top would be the companion asking twice about one thing.
+    assert.equal(offerQuestionFor('wandering'), null);
   });
 
   test('the seed is an unfinished question, so they finish it themselves', () => {

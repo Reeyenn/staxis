@@ -34,7 +34,8 @@ import {
   whatsNewTopic,
   type WhatsNewEntry,
 } from '@/lib/companion/whats-new';
-import { whatsNewQuestion, whatsNewSentence } from '@/lib/companion/copy';
+import { offerQuestionFor, whatsNewQuestion, whatsNewSentence } from '@/lib/companion/copy';
+import { repliesFor } from '@/lib/companion/replies';
 
 function ctx(
   role: AppRole | null,
@@ -249,6 +250,31 @@ describe('the words', () => {
     assert.ok(!q.includes('!'));
     assert.ok(!/\bAI\b/.test(q));
     assert.ok(!/\bnew!\b/i.test(q));
+  });
+
+  test('its replies are a show and a close, and neither writes anything', () => {
+    // A `show`, not a `walk`: the mini tour draws on the screen the person is
+    // standing on and takes itself wherever it needs to go, so navigating them
+    // first would be the companion moving somebody in order to move them.
+    const replies = repliesFor({ kind: 'whats_new' });
+    assert.deepEqual(replies.map((r) => r.intent.kind), ['show', 'close']);
+    assert.deepEqual(replies.map((r) => r.label), ['Show me', 'Not now']);
+  });
+
+  test('the question is drawn from the kind, so the card is answerable', () => {
+    // The charter's rule: a card either asks a real question with real answers
+    // under it, or asks nothing at all. This one asks.
+    const question = offerQuestionFor('whats_new');
+    assert.equal(question, whatsNewQuestion());
+    assert.match(question ?? '', /\?$/);
+    assert.ok(repliesFor({ kind: 'whats_new' }).length > 0);
+  });
+
+  test('there is deliberately no permanent opt-out button', () => {
+    // The topic is dropped the moment the offer is SHOWN, so the entry is
+    // already once-ever. A "never tell me about changes" button would be one
+    // card making a promise about every future change.
+    assert.ok(!repliesFor({ kind: 'whats_new' }).some((r) => r.intent.kind === 'quiet'));
   });
 
   test('the headline is folded but never rewritten', () => {
