@@ -1451,20 +1451,70 @@ export async function listTasks(pid: string): Promise<TaskDTO[]> {
     .map(({ t }) => t);
 }
 
+/**
+ * Check a to-do off, or put it back.
+ *
+ * ─── why the completion is scoped to a still-open row ──────────────────────
+ * Done is the most-tapped button on the Staxis list and it was the only ending
+ * that wrote unconditionally. Its three siblings on the same route ("Can't do
+ * this", "Not needed", "Did it yesterday") all say `.eq('status', 'open')`,
+ * with the note that a stale screen must not be able to rewrite a completion.
+ * This one did not, and the traffic runs the wrong way through the gap:
+ *
+ *   Marcus refuses "Replace the lobby ice machine filter" on his phone and
+ *   writes "the part is on back order". The row goes to blocked and carries
+ *   his sentence. The front-desk terminal is still showing the list it read a
+ *   minute ago; somebody taps Done on it. The row is overwritten as done, and
+ *   because the drawer derives its state from `status`, the reason is dropped
+ *   on the floor. The manager who assigned it reads "Marcus marked it done"
+ *   over a filter that was never replaced, and the sentence explaining why is
+ *   gone from every screen in the product.
+ *
+ * Nothing about that needs two tabs open on purpose: the list polls every 60
+ * seconds and a hotel runs one terminal at the desk and a phone in a pocket.
+ *
+ * An already-DONE row still answers true, so two people tapping Done on the
+ * same row is not reported to the second one as a failure. It just does not
+ * re-stamp who finished it or when: the first answer is the true one.
+ * Reopening is deliberately unguarded, because it is somebody deciding out
+ * loud that the work is not finished after all.
+ */
 export async function setTaskStatus(
   pid: string, taskId: string, status: 'open' | 'done', byStaffId: string | null,
 ): Promise<boolean> {
-  const patch = status === 'done'
-    ? { status, completed_at: new Date().toISOString(), completed_by_staff_id: byStaffId, updated_at: new Date().toISOString() }
-    : { status, completed_at: null, completed_by_staff_id: null, updated_at: new Date().toISOString() };
+  if (status !== 'done') {
+    const { data } = await supabaseAdmin
+      .from('comms_tasks')
+      .update({ status, completed_at: null, completed_by_staff_id: null, updated_at: new Date().toISOString() })
+      .eq('id', taskId)
+      .eq('property_id', pid)
+      .select('id')
+      .maybeSingle();
+    return !!data;
+  }
+
+  const nowIso = new Date().toISOString();
   const { data } = await supabaseAdmin
     .from('comms_tasks')
-    .update(patch)
+    .update({ status, completed_at: nowIso, completed_by_staff_id: byStaffId, updated_at: nowIso })
     .eq('id', taskId)
     .eq('property_id', pid)
+    .eq('status', 'open')
     .select('id')
     .maybeSingle();
-  return !!data;
+  if (data) return true;
+
+  // Nothing matched. Either the row is not this hotel's, or somebody already
+  // answered it. Only one of those is a success, and telling them apart is
+  // what stops a second Done reading as a failure while a Done over a refusal
+  // still refuses.
+  const { data: current } = await supabaseAdmin
+    .from('comms_tasks')
+    .select('status')
+    .eq('id', taskId)
+    .eq('property_id', pid)
+    .maybeSingle();
+  return (current as { status?: string } | null)?.status === 'done';
 }
 
 /** Delete a to-do. Creators can delete their own; managers can delete any. */

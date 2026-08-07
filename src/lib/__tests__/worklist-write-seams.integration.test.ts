@@ -1027,6 +1027,85 @@ describe('a completion is recorded on the day the work happened', () => {
   });
 });
 
+// ═══════════════════════════════════════════════════════════════════════════
+// A second screen cannot overwrite an answer that already landed
+//
+// Done is the most-tapped button on this list and it was the only ending that
+// wrote unconditionally. "Can't do this", "Not needed" and "Did it yesterday"
+// all scope their update to a still-open row, with the note that a stale screen
+// must not be able to rewrite a completion. Done did not, and the traffic runs
+// the wrong way through the gap: a refusal is worth more than a completion,
+// because it carries the sentence the assigner would otherwise have to go and
+// ask for, and the drawer derives its state from `status` alone.
+//
+// No deliberate two-tab setup is needed. The list polls once a minute, and a
+// hotel runs a terminal at the desk and a phone in somebody's pocket.
+// ═══════════════════════════════════════════════════════════════════════════
+
+describe('a second screen cannot overwrite an answer that already landed', () => {
+  async function settledRow(id: string) {
+    return one<{ status: string; blocked_reason: string | null; completed_at: string | null; skipped_at: string | null }>(
+      'select status, blocked_reason, completed_at, skipped_at from comms_tasks where id = $1',
+      [id],
+    );
+  }
+
+  async function openTask(title: string): Promise<string> {
+    const me = await callerStaffId();
+    const row = await one<{ id: string }>(
+      `insert into comms_tasks (property_id, title, assigned_staff_id, created_by_staff_id, status)
+       values ($1, $2, $3, $3, 'open') returning id`,
+      [PID_A1, title, me],
+    );
+    return row!.id;
+  }
+
+  test('a late Done does not erase a refusal, or the reason with it', async () => {
+    const id = await openTask('Replace the lobby ice machine filter');
+
+    // On his phone: he cannot do it, and he says why.
+    assert.equal((await settle(id, 'cant', 'the part is on back order')).ok, true);
+
+    // On the front-desk terminal, still showing the list it read a minute ago.
+    const late = await settle(id, 'done');
+    assert.equal(late.ok, false, 'a Done that changed nothing must not be reported as recorded');
+
+    const after = await settledRow(id);
+    assert.equal(after!.status, 'blocked', 'the refusal is what actually happened');
+    assert.equal(
+      after!.blocked_reason,
+      'the part is on back order',
+      'and the one sentence the assigner needs is still on the row',
+    );
+    assert.equal(after!.completed_at, null, 'nothing was recorded as finished');
+  });
+
+  test('a late Done does not turn "Not needed" into work that happened', async () => {
+    const id = await openTask('Order the spare filters');
+    assert.equal((await settle(id, 'skip')).ok, true);
+    assert.equal((await settle(id, 'done')).ok, false);
+
+    const after = await settledRow(id);
+    assert.equal(after!.status, 'skipped');
+    assert.ok(after!.skipped_at, 'the decision that was actually made is intact');
+    assert.equal(after!.completed_at, null);
+  });
+
+  test('but two people both tapping Done is not an error for the second one', async () => {
+    // The work IS done. Reporting a failure here would send somebody looking
+    // for a row that is correctly gone, and re-stamping it would move the
+    // receipt onto whoever tapped last.
+    const id = await openTask('Walk the pool deck');
+    assert.equal((await settle(id, 'done')).ok, true);
+    const first = await settledRow(id);
+
+    assert.equal((await settle(id, 'done')).ok, true, 'the second tap is not a failure');
+    const second = await settledRow(id);
+    assert.equal(second!.status, 'done');
+    assert.equal(second!.completed_at, first!.completed_at, 'the first answer is the true one');
+  });
+});
+
 describe('the assigner is told the true story, whichever ending it had', () => {
   /** A to-do Maria handed to Dana, already past its day. */
   async function handedToDana(title: string): Promise<{ id: string; me: string }> {
