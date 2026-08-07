@@ -276,7 +276,7 @@ function hasHotelManagerStanding(standings: readonly AuthoritativePropertyStandi
   )));
 }
 
-// `owner_and_vp` and `company_scope` are STORED setting values. 0461 left them
+// `owner_and_vp` and `company_scope` are STORED setting values. 0464 left them
 // alone on purpose: rewriting a company's saved choice is a change to what they
 // chose, not a rename. With `finance` retired the two now admit exactly the same
 // people (owner + regional manager), so the pair is redundant rather than wrong.

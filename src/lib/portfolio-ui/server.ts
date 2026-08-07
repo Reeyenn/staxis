@@ -823,7 +823,7 @@ export function authorizedPortfolioUiContexts(
             };
           }),
           // Every surviving company hat (owner, regional manager) may manage
-          // people. `finance` was the one that could not, and 0461 retired it.
+          // people. `finance` was the one that could not, and 0464 retired it.
           // WHICH hotels is decided by `propertyIds` above, never here.
           presentationCapabilities: [
             'portfolio_intelligence_read' as const,

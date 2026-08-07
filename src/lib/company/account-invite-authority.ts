@@ -481,7 +481,7 @@ function entitlementCanGrantPropertyRole(
  * Who may mint a COMPANY hat at all.
  *
  * Only an owner. A regional manager used to be able to hire exactly one
- * company job — `finance` — and 0461 retired that word, so the regional
+ * company job — `finance` — and 0464 retired that word, so the regional
  * manager's company-side hiring power is now nothing rather than a dead branch
  * that reads as if it still grants something. Hotel jobs are unaffected: that
  * is `entitlementCanGrantPropertyRole`, and a regional manager still hires
@@ -531,7 +531,7 @@ export function resolveAuthoritativeInviteScope(
   const operated = new Set(context.operatedPropertyIds);
   if (requestedScope === 'company') {
     // Absent / empty means "all hotels, including ones added later" — the only
-    // shape a company hat had before 0461, so old callers keep their meaning.
+    // shape a company hat had before 0464, so old callers keep their meaning.
     // A non-empty list means exactly those hotels and nothing else.
     const requestedList = requestedPropertyIds === null
       || requestedPropertyIds === undefined

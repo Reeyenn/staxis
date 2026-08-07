@@ -84,6 +84,15 @@ export const UID_HANK = '1e6ac41e-0000-4000-8000-000000000005';
 export interface TwoCompanySeed {
   /** membership id of every hat created, keyed `<accountId>:<scope>:<role>`. */
   hats: Map<string, string>;
+  /**
+   * The company word this database actually accepts — see
+   * `companyHatVocabulary` below. `regional_manager` on any schema carrying
+   * 0461, `vp` on a suite deliberately pinned before it. Key `hats` with this
+   * rather than a literal if your suite is one of the pinned ones.
+   */
+  companyOversightRole: string;
+  /** The word Fiona wears: `regional_manager` after 0461, `finance` before. */
+  companyMoneyRole: string;
   /** Attach a hotel to a company AFTER the fact — the auto-coverage probe. */
   attachPropertyToOrganization(
     pg: PGlite,
@@ -161,12 +170,47 @@ async function attachProperty(
 }
 
 /**
+ * WHICH COMPANY WORDS THIS DATABASE ACCEPTS.
+ *
+ * Migration 0461 collapsed the company vocabulary from `owner|vp|finance` to
+ * `owner|regional_manager`, renaming the first and retiring the second. This
+ * fixture is shared by suites at TWO schema boundaries: most apply every
+ * migration, but the Stage A/B compatibility suites deliberately stop at 0425
+ * to model the exact pre-0426 deployment they are about, and that schema's
+ * CHECK constraint has never heard of `regional_manager`.
+ *
+ * So the seed asks the database rather than hard-coding either answer. Pinned
+ * suites keep seeding the world their pin describes; everything else seeds the
+ * world that ships. Under 0461 both words collapse onto `regional_manager`,
+ * which is exactly the conversion the migration performs on stored rows —
+ * Maria and Fiona are different accounts, so the one-hat-per-job unique index
+ * is untroubled by the collision.
+ */
+async function companyHatVocabulary(
+  pg: PGlite,
+): Promise<{ oversight: string; money: string }> {
+  const rescoped = Boolean((await pg.query<{ present: boolean }>(`
+    select exists (
+      select 1
+        from pg_constraint
+       where conrelid = 'public.organization_memberships'::regclass
+         and conname = 'organization_memberships_hat_shape_check'
+         and pg_get_constraintdef(oid) like '%regional_manager%'
+    ) as present
+  `)).rows[0]?.present);
+  return rescoped
+    ? { oversight: 'regional_manager', money: 'regional_manager' }
+    : { oversight: 'vp', money: 'finance' };
+}
+
+/**
  * Seed both companies, the standalone hotel, and every person.
  *
  * Idempotent enough to call once per test file; it is NOT designed to be called
  * twice against the same database.
  */
 export async function seedTwoCompanies(pg: PGlite): Promise<TwoCompanySeed> {
+  const companyWords = await companyHatVocabulary(pg);
   // Stage B already exposes the canonical scope RPC, so presence of that
   // function is not enough to distinguish the final boundary. Only the
   // consumed Stage C status permits this fixture to omit the historical
@@ -293,16 +337,16 @@ export async function seedTwoCompanies(pg: PGlite): Promise<TwoCompanySeed> {
   // Maria's two hats. The GM hat names her job at Beaumont; the company hat is
   // what "and she oversees the others" means.
   await wear(ORG_A, ACCOUNT_MARIA, 'property', 'general_manager', [PID_A1], 'General Manager');
-  await wear(ORG_A, ACCOUNT_MARIA, 'company', 'regional_manager', null, 'VP of Operations');
+  await wear(ORG_A, ACCOUNT_MARIA, 'company', companyWords.oversight, null, 'VP of Operations');
   await wear(ORG_A, ACCOUNT_FRANK, 'property', 'front_desk', [PID_A1], 'Front Desk');
-  // Fiona used to wear the retired `finance` hat. 0461 converts every stored
-  // finance row to `regional_manager`, so she is seeded as what the migration
-  // would have made her. Her job title still says Controller, because job
-  // titles are free text and the company still calls her that.
-  await wear(ORG_A, ACCOUNT_FIONA, 'company', 'regional_manager', null, 'Controller');
+  // Fiona wore the `finance` hat before 0461 retired it. On a rescoped schema
+  // she is seeded as what the migration would have made her, and her job title
+  // still says Controller — titles are free text and the company still calls
+  // her that.
+  await wear(ORG_A, ACCOUNT_FIONA, 'company', companyWords.money, null, 'Controller');
 
   await wear(ORG_B, ACCOUNT_BO, 'company', 'owner', null, 'Owner');
-  await wear(ORG_B, ACCOUNT_VERA, 'company', 'regional_manager', null, 'VP of Operations');
+  await wear(ORG_B, ACCOUNT_VERA, 'company', companyWords.oversight, null, 'VP of Operations');
   await wear(ORG_B, ACCOUNT_GIL, 'property', 'general_manager', [PID_B1], 'General Manager');
 
   if (finalAccessContract) {
@@ -356,6 +400,8 @@ export async function seedTwoCompanies(pg: PGlite): Promise<TwoCompanySeed> {
 
   return {
     hats,
+    companyOversightRole: companyWords.oversight,
+    companyMoneyRole: companyWords.money,
     async attachPropertyToOrganization(target, organizationId, propertyId, propertyName) {
       await insertProperty(target, propertyId, propertyName, UID_ADMIN);
       await attachProperty(target, organizationId, propertyId);
@@ -667,9 +713,9 @@ export async function seedLargeCompany(
   // property list means "every hotel this company operates", which is what makes
   // adding hotel 18 a seeding detail rather than a permissions change.
   const hat = await pg.query<{ staxis_set_membership_hat: string }>(
-    `select public.staxis_set_membership_hat($1, $2, $3, 'company', 'regional_manager', null, 'VP of Operations')
+    `select public.staxis_set_membership_hat($1, $2, $3, 'company', $4, null, 'VP of Operations')
        as staxis_set_membership_hat`,
-    [ACCOUNT_ADMIN, ORG_C, ACCOUNT_CARL],
+    [ACCOUNT_ADMIN, ORG_C, ACCOUNT_CARL, (await companyHatVocabulary(pg)).oversight],
   );
   if (!hat.rows[0]?.staxis_set_membership_hat) {
     throw new Error('seed: the big company regional manager hat was refused');

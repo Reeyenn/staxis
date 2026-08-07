@@ -67,7 +67,7 @@ import { GET as rulebookGet, POST as rulebookPost } from '@/app/api/company/rule
 import { GET as companyAccessGet } from '@/app/api/company-access/route';
 import { POST as accountsPost, PUT as accountsPut } from '@/app/api/auth/accounts/route';
 
-import { applyMigrationsToPgliteThrough } from '../../../tests/fixtures/pglite-migrate';
+import { applyMigrationsToPglite, seedCanonicalTestAuthority } from '../../../tests/fixtures/pglite-migrate';
 import { createPglitePostgrest, loadCatalog, type PglitePostgrest } from '../../../tests/fixtures/postgrest-pglite';
 import {
   ACCOUNT_ADMIN,
@@ -427,7 +427,7 @@ async function plantCompanyFinding(organizationId: string): Promise<string> {
 let PORTFOLIO_FINDING = '';
 
 before(async () => {
-  const migrated = await applyMigrationsToPgliteThrough('0425');
+  const migrated = await applyMigrationsToPglite();
   pg = migrated.pg;
   const catalog = await loadCatalog(pg);
   shim = createPglitePostgrest(pg, catalog);
@@ -450,11 +450,16 @@ before(async () => {
     [UID_DOLORES],
   );
   await pg.query(
-    `insert into accounts (id, username, password_hash, display_name, role, property_access, data_user_id)
-     values ($1, 'dolores', 'x', 'Dolores', 'front_desk', $2, $3)
+    `insert into accounts (id, username, password_hash, display_name, role, data_user_id)
+     values ($1, 'dolores', 'x', 'Dolores', 'front_desk', $2)
      on conflict (id) do nothing`,
-    [ACCOUNT_DOLORES, [PID_A1], UID_DOLORES],
+    [ACCOUNT_DOLORES, UID_DOLORES],
   );
+  // Her reach is minted through the canonical scope RPC rather than by writing
+  // `accounts.property_access`, which the final access contract (0426) fences.
+  // What she IS remains the point: an account at a company hotel with reach and
+  // NO hat of any kind.
+  await seedCanonicalTestAuthority(pg, { username: 'dolores', propertyIds: [PID_A1] });
 
   PORTFOLIO_FINDING = await plantCompanyFinding(ORG_A);
 
@@ -522,7 +527,7 @@ describe('the coverage rule has exactly one implementation', () => {
   // their own hotel.
   //
   // The old third case — a `finance` hat degrading to `contributor` — is gone
-  // with the role: 0461 collapsed company scope to owner + regional_manager, so
+  // with the role: 0464 collapsed company scope to owner + regional_manager, so
   // these two ARE the whole company vocabulary.
   test('the hat -> access-profile degradation is least privilege', () => {
     assert.equal(accessProfileForHat('company', 'owner'), 'organization_owner');

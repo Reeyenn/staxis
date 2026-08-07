@@ -65,6 +65,7 @@ import type { PGlite } from '@electric-sql/pglite';
 
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import {
+  accessibleProperties,
   companyForProperty,
   effectiveRole,
   loadHats,
@@ -83,7 +84,7 @@ import { GET as rulebookGet } from '@/app/api/company/rulebook/route';
 import { GET as portfolioGet } from '@/app/api/company/queue/route';
 import { GET as listHats } from '@/app/api/auth/team/hats/route';
 
-import { applyMigrationsToPgliteThrough } from '../../../tests/fixtures/pglite-migrate';
+import { applyMigrationsToPglite, seedCanonicalTestAuthority } from '../../../tests/fixtures/pglite-migrate';
 import { createPglitePostgrest, loadCatalog, type PglitePostgrest } from '../../../tests/fixtures/postgrest-pglite';
 import {
   ACCOUNT_ADMIN,
@@ -198,7 +199,7 @@ async function findingsRouteStatuses(authUserId: string, propertyId: string): Pr
 // ─── Fixture ────────────────────────────────────────────────────────────────
 
 before(async () => {
-  const migrated = await applyMigrationsToPgliteThrough('0425');
+  const migrated = await applyMigrationsToPglite();
   pg = migrated.pg;
   const catalog = await loadCatalog(pg);
   shim = createPglitePostgrest(pg, catalog);
@@ -221,11 +222,17 @@ before(async () => {
     [UID_VICKY],
   );
   await pg.query(
-    `insert into accounts (id, username, password_hash, display_name, role, property_access, data_user_id)
-     values ($1, 'vicky', 'x', 'Vicky', 'general_manager', $2, $3)
+    `insert into accounts (id, username, password_hash, display_name, role, data_user_id)
+     values ($1, 'vicky', 'x', 'Vicky', 'general_manager', $2)
      on conflict (id) do nothing`,
-    [ACCOUNT_VICKY, [PID_L1], UID_VICKY],
+    [ACCOUNT_VICKY, UID_VICKY],
   );
+  // Her reach at the independent hotel is minted through the canonical scope
+  // RPC. The final access contract (0426) fences `accounts.property_access`, so
+  // a direct write is refused; the DANGEROUS SHAPE this fixture exists for —
+  // a general_manager login whose reach is one hotel and whose hat is
+  // housekeeping at a DIFFERENT hotel — is unchanged.
+  await seedCanonicalTestAuthority(pg, { username: 'vicky', propertyIds: [PID_L1] });
   // The hat, through the only door production has. Vicky needs a foot in the
   // door first: 0370 refuses a hat on somebody with no membership or invitation
   // at the company (a Staxis admin acting is exempt, which is this call).
@@ -257,11 +264,13 @@ after(async () => {
 
 describe('the job you hold AT THIS HOTEL is the job the gate uses', () => {
   test('the fixture really is the dangerous shape', async () => {
-    const account = await pg.query<{ role: string; property_access: string[] }>(
-      'select role, property_access from accounts where id = $1', [ACCOUNT_VICKY],
+    const account = await pg.query<{ role: string }>(
+      'select role from accounts where id = $1', [ACCOUNT_VICKY],
     );
     assert.equal(account.rows[0].role, 'general_manager', 'fixture drift: her legacy role moved');
-    assert.deepEqual(account.rows[0].property_access, [PID_L1]);
+    // Reach, not the fenced legacy column: her login manages exactly the
+    // independent hotel and no Gulf Coast hotel.
+    assert.deepEqual((await accessibleProperties(ACCOUNT_VICKY)).propertyIds, [PID_L1]);
 
     const hats = await loadHats(ACCOUNT_VICKY);
     assert.deepEqual(hats.map((h) => h.role), ['housekeeping'], 'fixture drift: her hat moved');
@@ -335,7 +344,7 @@ describe('the finance lead keeps every read path she was given', () => {
     const res = await portfolioGet(req('https://staxis.test/api/company/queue'));
     assert.equal(res.status, 200);
     const body = await res.json() as { data?: { scope?: { companyRole?: string }; canAct?: boolean } };
-    assert.equal(body.data?.scope?.companyRole, 'finance');
+    assert.equal(body.data?.scope?.companyRole, 'regional_manager');
     assert.equal(body.data?.canAct, false, 'finance was offered verdict buttons');
   });
 
@@ -703,8 +712,8 @@ describe('the hats card discloses only the caller\'s exact scope intersection', 
       [UID_GWEN],
     );
     await pg.query(
-      `insert into accounts (id, username, password_hash, display_name, role, property_access, data_user_id)
-       values ($1, 'gwen', 'x', 'Gwen', 'general_manager', '{}', $2) on conflict (id) do nothing`,
+      `insert into accounts (id, username, password_hash, display_name, role, data_user_id)
+       values ($1, 'gwen', 'x', 'Gwen', 'general_manager', $2) on conflict (id) do nothing`,
       [ACCOUNT_GWEN, UID_GWEN],
     );
     const gwenMembership = await pg.query<{ id: string }>(
@@ -736,7 +745,7 @@ describe('the hats card discloses only the caller\'s exact scope intersection', 
         }> };
       };
 
-      const oversees = body.data.hats.find((h) => h.role === 'vp');
+      const oversees = body.data.hats.find((h) => h.role === 'regional_manager');
       assert.ok(oversees, 'Maria\'s company job vanished from her card');
       assert.deepEqual(
         oversees.propertyNames, ['Beaumont Suites'],
@@ -768,7 +777,7 @@ describe('the hats card discloses only the caller\'s exact scope intersection', 
           otherHotelCount?: number;
         }> };
       };
-      const mariaOversees = mariaBody.data.hats.find((h) => h.role === 'vp');
+      const mariaOversees = mariaBody.data.hats.find((h) => h.role === 'regional_manager');
       assert.ok((mariaOversees?.propertyNames.length ?? 0) > 1, 'the VP lost her own portfolio');
       assert.equal(mariaOversees?.otherHotelCount, 0);
 
@@ -931,7 +940,7 @@ describe('staxis_set_membership_hat checks who the hat is FOR', () => {
     // Refusal: a company owner reaching into the other company.
     await assert.rejects(
       pg.query(
-        `select public.staxis_set_membership_hat($1, $2, $3, 'company', 'vp', null, null)`,
+        `select public.staxis_set_membership_hat($1, $2, $3, 'company', 'regional_manager', null, null)`,
         ['bbbb1111-0000-4000-8000-000000000001', ORG_A, ACCOUNT_FRANK],
       ),
       /may not grant this job/i,

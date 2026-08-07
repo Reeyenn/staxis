@@ -76,7 +76,7 @@ export const AUTHORITY_ACTION_KINDS = [
 ] as const;
 export type AuthorityActionKind = (typeof AUTHORITY_ACTION_KINDS)[number];
 
-// Company roles became Owner + Regional Manager in 0461. `finance` is gone as a
+// Company roles became Owner + Regional Manager in 0464. `finance` is gone as a
 // word anybody can hold, so it is gone as a word anybody can be asked to sign.
 // Stored rules that said `finance` (and `vp`) are converted to
 // `regional_manager` by that migration, because the same humans still sign.

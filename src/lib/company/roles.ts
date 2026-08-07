@@ -10,14 +10,14 @@
 //                        housekeeping | maintenance    (named hotels only)
 //
 // DB-side this is enforced by `organization_memberships_hat_shape_check`
-// (migrations 0364, 0461). Keep the two lists identical to that CHECK.
+// (migrations 0364, 0464). Keep the two lists identical to that CHECK.
 //
 // The property words are deliberately the SAME strings as `accounts.role`
 // (src/lib/roles.ts) so a resolved property hat drops into every existing
 // capability check with no translation. The two company-only words are ours,
 // and `legacyRoleForHat` below owns their degradation.
 //
-// ─── Coverage: which hotels a company hat reaches (0461) ───────────────────
+// ─── Coverage: which hotels a company hat reaches (0464) ───────────────────
 //
 // A company hat used to mean "every hotel this company operates, forever".
 // That was wrong for the customers we actually have: a management company
@@ -208,7 +208,7 @@ export function hatSeesFinancials(role: HatRole): boolean {
 
 /**
  * Can someone wearing `inviterRole` at `inviterScope` hand out `role` at
- * `scope`? Mirrors `_staxis_can_set_membership_hat` (migrations 0364, 0461) so
+ * `scope`? Mirrors `_staxis_can_set_membership_hat` (migrations 0364, 0464) so
  * a stale browser cannot widen authority past what Postgres will accept, and
  * mirrors the spirit of `canGrantHotelRole` for the hotel words.
  *

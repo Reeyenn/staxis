@@ -8,7 +8,7 @@
 // Caller must be admin / owner / general_manager. Owner/GM are scoped to
 // hotels in their property_access; admin can manage any hotel.
 //
-// COMPANY SPINE (0364, rescoped 0461). The POST body has three shapes:
+// COMPANY SPINE (0364, rescoped 0464). The POST body has three shapes:
 //
 //   { hotelId, email, role, staffId? }               the hotel request. A GM is
 //                                                    never asked which hotel —
@@ -23,7 +23,7 @@
 //
 // `propertyIds` may name only hotels inside the caller's OWN company, and only
 // hotels the caller themselves reaches — that is Wall B at the invitation
-// boundary. Before 0461 a company job was always all-hotels-forever, which is
+// boundary. Before 0464 a company job was always all-hotels-forever, which is
 // why absent still means that: the old callers meant it.
 //
 // A new email gets a pending invitation. An active existing account receives

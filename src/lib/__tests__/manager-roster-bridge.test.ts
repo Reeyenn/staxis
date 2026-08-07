@@ -272,7 +272,7 @@ describe('who the bridge is for', () => {
   });
 
   test('company-scope people are never put on a hotel staff list', () => {
-    // 0461 collapsed the company vocabulary to these two.
+    // 0464 collapsed the company vocabulary to these two.
     for (const role of ['owner', 'regional_manager']) {
       assert.equal(
         isHotelScopedManagerGrant({ role, membershipScope: 'company', organizationId: 'org' }),

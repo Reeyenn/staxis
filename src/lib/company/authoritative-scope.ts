@@ -268,7 +268,7 @@ export function companyRoleFromAuthorizationReceipt(
     ));
   // Somebody holding a portfolio grant, or running more than one hotel, with no
   // company hat of their own. `regional_manager` is the read-only queue/chat
-  // presentation word for them; before 0461 that word was `finance`, which was
+  // presentation word for them; before 0464 that word was `finance`, which was
   // always a poor description of a portfolio grant. This never grants regional
   // manager capabilities: every action checks its own capability, and WHICH
   // hotels remains whatever the receipt already proved.

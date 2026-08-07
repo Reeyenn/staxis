@@ -1,4 +1,4 @@
--- 0461 — Company invites get a "which hotels" answer, and two job words.
+-- 0464 — Company invites get a "which hotels" answer, and two job words.
 --
 -- ─── WHAT CHANGES, IN ONE PARAGRAPH ────────────────────────────────────────
 --
@@ -150,7 +150,7 @@ alter table public.company_authority_rules
   );
 
 comment on column public.organization_memberships.staxis_role is
-  'The authorizing job. Company scope: owner|regional_manager. Property scope: general_manager|front_desk|housekeeping|maintenance. Paired with covered_property_ids, which for a company hat is NULL for "all hotels including future" or an explicit list. job_category next door is descriptive only and has its own, larger vocabulary. Reshaped 0461.';
+  'The authorizing job. Company scope: owner|regional_manager. Property scope: general_manager|front_desk|housekeeping|maintenance. Paired with covered_property_ids, which for a company hat is NULL for "all hotels including future" or an explicit list. job_category next door is descriptive only and has its own, larger vocabulary. Reshaped 0464.';
 
 -- ─── 4. The 16 functions that read these words ─────────────────────────────
 --
@@ -256,7 +256,7 @@ as $$
     -- A company hat follows current governing topology, INTERSECTED with its
     -- own hotel list when it has one. NULL means "every hotel this company
     -- operates, including ones added later" and copies no list, which is the
-    -- shape every company hat had before 0461.
+    -- shape every company hat had before 0464.
     select h.account_id, h.organization_id, r.property_id,
            'membership_hat'::text as entitlement_kind,
            h.id as entitlement_id, h.id as membership_id,
@@ -969,7 +969,7 @@ begin
   -- Every hotel the new hat will reach must be one the actor personally
   -- reaches through a broad company/organization row that could grant it.
   -- The finance job was the only company job a non-owner could ever hand out,
-  -- and 0461 retired it, so this is owner or organization_owner, nothing else.
+  -- and 0464 retired it, so this is owner or organization_owner, nothing else.
   return not exists (
     select 1
     from public._staxis_current_primary_property_relationships() governed
@@ -2467,8 +2467,8 @@ $$;
 
 insert into public.applied_migrations (version, description)
 values (
-  '0461',
-  'Company invite rescope. (1) A company-scope hat now carries EITHER an explicit covered_property_ids list OR NULL, where NULL keeps the pre-0461 "every hotel including future acquisitions" meaning; the hat-shape CHECKs on organization_memberships and account_invites allow both. This is what lets a management company give an Owner 3 of its 20 hotels without exposing the other 17. (2) The company role vocabulary collapses from owner|vp|finance to owner|regional_manager: vp is renamed and finance is retired, with existing hats, pending account_invites and stored company_authority_rules.approver_role rows converted to regional_manager, and a duplicate vp+finance holder having their finance row ended first so the one-hat-per-job unique index still holds. (3) 16 functions that branched on the retired words were redefined, of which four also learned the coverage rule: _staxis_nonlegacy_property_authorizations and _staxis_structural_account_property_ids now intersect a company hat with its own list, and _staxis_can_set_membership_hat / _staxis_can_control_account_invite / staxis_accept_account_invite / staxis_grant_existing_account_invite_guarded accept and enforce the two shapes. Nobody may grant past their own edge, and only an actor whose own standing is itself all-including-future may mint an all-including-future hat. No existing row changes coverage: every current company hat keeps NULL. RLS and grants unchanged; nothing granted to anon.'
+  '0464',
+  'Company invite rescope. (1) A company-scope hat now carries EITHER an explicit covered_property_ids list OR NULL, where NULL keeps the pre-0464 "every hotel including future acquisitions" meaning; the hat-shape CHECKs on organization_memberships and account_invites allow both. This is what lets a management company give an Owner 3 of its 20 hotels without exposing the other 17. (2) The company role vocabulary collapses from owner|vp|finance to owner|regional_manager: vp is renamed and finance is retired, with existing hats, pending account_invites and stored company_authority_rules.approver_role rows converted to regional_manager, and a duplicate vp+finance holder having their finance row ended first so the one-hat-per-job unique index still holds. (3) 16 functions that branched on the retired words were redefined, of which four also learned the coverage rule: _staxis_nonlegacy_property_authorizations and _staxis_structural_account_property_ids now intersect a company hat with its own list, and _staxis_can_set_membership_hat / _staxis_can_control_account_invite / staxis_accept_account_invite / staxis_grant_existing_account_invite_guarded accept and enforce the two shapes. Nobody may grant past their own edge, and only an actor whose own standing is itself all-including-future may mint an all-including-future hat. No existing row changes coverage: every current company hat keeps NULL. RLS and grants unchanged; nothing granted to anon.'
 )
 on conflict (version) do nothing;
 

@@ -192,7 +192,7 @@ describe('sign-off routing: which number the rule is applied to', () => {
       id: 'r', organizationId: ORG_A, actionKind: 'expense',
       thresholdCents: 50_000, thresholdInclusive: false, approverRole, sourceFactId: 'f',
     });
-    // 0461 retired `finance`, so the whole approver vocabulary is these three.
+    // 0464 retired `finance`, so the whole approver vocabulary is these three.
     assert.equal(ruleLeavesTheHotel(rule('regional_manager')), true);
     assert.equal(ruleLeavesTheHotel(rule('owner')), true);
     assert.equal(ruleLeavesTheHotel(rule('general_manager')), false);
@@ -220,7 +220,7 @@ describe('sign-off routing: who holds the signature', () => {
   // Mutation: compare strength with `<=` or drop the comparison. A GM could
   // sign for the regional manager, and a regional manager for the owner.
   //
-  // The old first case used a `finance` hat, which 0461 retired. The weaker job
+  // The old first case used a `finance` hat, which 0464 retired. The weaker job
   // is now the GM, which proves the same `>=` comparison with the surviving
   // vocabulary.
   test('a weaker job may NOT sign for a stronger one', () => {
@@ -347,7 +347,7 @@ describe('the locked card', () => {
     }
   });
 
-  // The `finance` and `vp` words were retired by 0461, but a card rendered from
+  // The `finance` and `vp` words were retired by 0464, but a card rendered from
   // a row written before the migration ran can still carry one. Mutation: fall
   // back to the WEAKEST word, or render the raw role. Either would tell a GM a
   // junior signature was enough for a card the company locked.

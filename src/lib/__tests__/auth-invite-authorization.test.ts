@@ -509,7 +509,7 @@ function installSupabaseStub(): void {
       }
       const normalized = !!invite.membership_scope;
       // `legacyRoleForHat` in the real RPC: a company job degrades DOWN to
-      // front desk, never up. 0461 left one company word to degrade.
+      // front desk, never up. 0464 left one company word to degrade.
       const role = invite.role === 'regional_manager'
         ? 'front_desk'
         : invite.role as AppRole;
@@ -803,7 +803,7 @@ function installSupabaseStub(): void {
       };
     }
 
-    // 0461 asks one more question before it will let anybody hand out a company
+    // 0464 asks one more question before it will let anybody hand out a company
     // hat that follows the company into hotels it has not bought yet: does the
     // ACTOR'S own standing do that? Every fixture in this file was written when
     // a company hat always covered every hotel forever, so answering "yes" here

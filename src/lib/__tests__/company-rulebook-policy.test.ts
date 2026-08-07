@@ -47,14 +47,14 @@ describe('reading an approval requirement', () => {
     assert.equal(rule.actionKind, 'purchase_order');
     assert.equal(rule.thresholdCents, 50_000);
     assert.equal(rule.thresholdInclusive, false);
-    // "VP" is still a word companies write; 0461 makes it an alias for the job
+    // "VP" is still a word companies write; 0464 makes it an alias for the job
     // that survived.
     assert.equal(rule.approverRole, 'regional_manager');
   });
 
   it('keeps cents out of floating point', () => {
     // Was "requires the controller to approve it" reading as `finance`. That
-    // role was retired in 0461 and `controller` has no pattern any more, so the
+    // role was retired in 0464 and `controller` has no pattern any more, so the
     // sentence names the job that does exist. What is under test here is the
     // cents arithmetic, not the word.
     const rule = readAuthorityRule('Any invoice above $1,250.50 requires the regional manager to approve it.');
@@ -111,7 +111,7 @@ describe('what must NOT become a rule', () => {
     ['a plain vendor fact', 'All our hotels use Ecolab for chemicals.'],
     ['a plain policy', 'Checkout is 11.'],
     ['empty', '   '],
-    // 0461 retired `finance`. A sentence naming it is complete in every other
+    // 0464 retired `finance`. A sentence naming it is complete in every other
     // way, and the safe answer is still to store NOTHING rather than quietly
     // freeze a different signature than the one the company wrote.
     ['an approver whose job no longer exists', 'Invoices over $1,000 need finance approval.'],
@@ -393,7 +393,7 @@ describe('the approver a sentence actually names', () => {
     // Mutation: reuse the sentence-head labels mid-sentence. "El propietario"
     // is capitalised for the subject-first read-back and reads as a new
     // sentence when it lands after a colon. (This used to be asserted on "the
-    // VP" vs "the vp"; 0461 replaced that acronym with a word that case-folds
+    // VP" vs "the vp"; 0464 replaced that acronym with a word that case-folds
     // cleanly, so the owner label is where the trap still lives.)
     assert.match(es, /\bel propietario\b/);
     assert.doesNotMatch(es, /El propietario/);
@@ -434,7 +434,7 @@ describe('the approver a sentence actually names', () => {
   // read the same way. Mutation: any of the three new rules mis-ordered.
   it('the sentences that already worked still work', () => {
     const cases: Array<[string, string]> = [
-      // Every VP word now lands on the job that survived 0461.
+      // Every VP word now lands on the job that survived 0464.
       ['Orders over $500 need VP sign-off.', 'regional_manager'],
       ['Contracts of at least $10,000 require owner approval.', 'owner'],
       ['Any refund over $200 needs GM approval.', 'general_manager'],

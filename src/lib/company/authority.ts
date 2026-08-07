@@ -73,7 +73,7 @@ function mapRule(row: RawRule): AuthorityRule | null {
   // approval rule does not fail safe, it unlocks. A company that wrote "any
   // invoice over $1,000 needs finance approval" would have had that card
   // quietly go through unsigned the moment the stored word stopped being one
-  // we knew. 0461 retires the words `vp` and `finance`, which is exactly the
+  // we knew. 0464 retires the words `vp` and `finance`, which is exactly the
   // situation that would have triggered it. That migration converts the stored
   // rows, so this branch should never fire in practice — it is here because
   // "should never fire" is not a guarantee, and the safe direction for an

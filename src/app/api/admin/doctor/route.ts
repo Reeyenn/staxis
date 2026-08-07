@@ -880,7 +880,7 @@ export const EXPECTED_MIGRATIONS_STATIC: ReadonlyArray<string> = [
   '0460',
   // Company hats carry which hotels they cover, and the company vocabulary
   // becomes Owner + Regional Manager.
-  '0461',
+  '0464',
 ];
 
 /**

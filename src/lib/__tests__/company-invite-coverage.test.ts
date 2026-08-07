@@ -219,7 +219,7 @@ test('only an inviter who covers the future may promise the future', () => {
 });
 
 test('an empty list still means all-including-future, as it always did', () => {
-  // Every caller written before 0461 sends `scope:'company'` with no list and
+  // Every caller written before 0464 sends `scope:'company'` with no list and
   // means the whole company. Changing that silently would re-scope live hats.
   const resolved = resolveAuthoritativeInviteScope(
     ownerOfEverything(), 'owner', 'company', [],

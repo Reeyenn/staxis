@@ -193,7 +193,7 @@ describe('the portfolio prompt', () => {
     assert.match(stable, /Gulf Coast Hotels/);
     assert.match(stable, /- Beaumont Suites — 60 rooms/);
     assert.match(stable, /- Lufkin Inn — 45 rooms/);
-    assert.match(stable, /company-level operations leader/);
+    assert.match(stable, /a regional manager who oversees the hotels they are responsible for/);
   });
 
   it('carries NOT ONE of an individual hotel\'s private facts', async () => {
@@ -305,7 +305,7 @@ describe('portfolio cache purity', () => {
       companyRole: 'regional_manager',
       conversationId: 'conv-portfolio', now: NOW,
     });
-    assert.match(two.versionLabel, /portfolio-mode-v3/);
+    assert.match(two.versionLabel, /portfolio-mode-v4/);
     assert.match(two.versionLabel, new RegExp(`org:${ORG_ID}`));
     assert.notEqual(two.versionLabel, one.versionLabel, 'the reach digest moved with the reach');
     // The PRINTED stamp must not: it is inside the cached block, so a per-turn

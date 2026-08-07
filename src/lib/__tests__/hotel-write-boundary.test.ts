@@ -151,7 +151,7 @@ describe('strict hotel write decision', () => {
     );
   });
 
-  // 0461 collapsed the company vocabulary to owner + regional_manager, so these
+  // 0464 collapsed the company vocabulary to owner + regional_manager, so these
   // two ARE every company hat there is. The retired `finance` case is gone with
   // the role itself.
   test('every company hat stays read-only at the hotel', async () => {

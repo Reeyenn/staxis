@@ -364,7 +364,11 @@ describe('My Hotel account and team integration', () => {
     // No admin subtraction on any of these: an admin gets the hotel's actions.
     assert.match(company, /canInviteAccounts=\{canInviteAccounts\}/);
     assert.match(company, /canAddStaff=\{canAddOperationalStaff\}/);
-    assert.match(company, /!activeProperty && !canManageTeam && canInviteAccounts/);
+    // Company-level inviting lives on its own panel now. The condition this
+    // used to pin could never be satisfied, so it asserted the presence of a
+    // button no user could reach.
+    assert.match(company, /!showHotelPeople && companyInviteOrganizationId/);
+    assert.match(company, /<CompanyInvitePanel/);
     assert.doesNotMatch(company, /adminPreview \? false :/);
     assert.doesNotMatch(company, /<InvitePersonDialog/);
     assert.match(hotelTeam, /inviteDialogVisible && canInviteAccounts && !locked[\s\S]*canManageHotelRoster=\{false\}/);

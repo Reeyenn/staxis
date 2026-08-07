@@ -68,7 +68,7 @@ function regionReceipt(): AuthorizationScopeReceipt {
 test('normalized region grants produce exact UI-safe scope and capability hints', () => {
   const receipt = regionReceipt();
   // A portfolio grant with no company hat of its own. `regional_manager` is the
-  // read-only presentation word for that standing since 0461; before it, the
+  // read-only presentation word for that standing since 0464; before it, the
   // synthesized word was `finance`.
   assert.equal(companyRoleFromAuthorizationReceipt(receipt), 'regional_manager');
   assert.deepEqual(scopeDescriptorsFromAuthorizationReceipt(receipt), [{
