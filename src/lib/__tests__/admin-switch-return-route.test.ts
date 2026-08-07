@@ -80,7 +80,8 @@ const ACCOUNT_ROWS: Record<string, Record<string, unknown>> = {
 
 const signingKey = deriveReturnTokenKey(process.env.SUPABASE_SERVICE_ROLE_KEY as string);
 
-function returnCookie(overrides: Record<string, unknown> = {}): string {
+/** A real cookie value, minted the way the switch endpoint mints it. */
+function returnCookie(): string {
   const now = Date.now();
   return mintReturnToken(
     {
@@ -92,8 +93,7 @@ function returnCookie(overrides: Record<string, unknown> = {}): string {
       jti: `jti-${Math.random().toString(16).slice(2)}`,
       iat: now,
       exp: now + RETURN_TOKEN_TTL_MS,
-      ...overrides,
-    } as Parameters<typeof mintReturnToken>[0],
+    },
     signingKey,
   );
 }
@@ -192,11 +192,14 @@ function mockReq(opts: { cookie?: string | null; jwt?: string | null; method?: s
   } as unknown as import('next/server').NextRequest;
 }
 
-function clearedCookieNames(res: { headers: Headers }): string[] {
-  return res.headers
-    .getSetCookie()
-    .filter((line) => /(^|;\s*)Max-Age=0(;|$)/i.test(line))
-    .map((line) => line.split('=')[0]);
+/** Which of the switcher's two cookies this response tells the browser to drop. */
+function clearedCookieNames(
+  res: { cookies: { get(name: string): { value: string; maxAge?: number } | undefined } },
+): string[] {
+  return [RETURN_COOKIE_NAME, RETURN_HINT_COOKIE_NAME].filter((name) => {
+    const cookie = res.cookies.get(name);
+    return cookie !== undefined && cookie.value === '' && cookie.maxAge === 0;
+  });
 }
 
 // ─── Tests ──────────────────────────────────────────────────────────────────

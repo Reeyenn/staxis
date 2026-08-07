@@ -82,6 +82,34 @@ async function readTokenHash(res: Response): Promise<{ tokenHash: string } | nul
   return typeof tokenHash === 'string' && tokenHash.length > 0 ? { tokenHash } : null;
 }
 
+/** Seconds of headroom before we refresh rather than send a nearly-dead token. */
+const TOKEN_FRESHNESS_BUFFER_SEC = 30;
+
+/**
+ * A usable access token for the session this browser is in, or null.
+ *
+ * The way-back endpoint now identifies its caller, and the bearer header is
+ * how it does that: `requireSession` only falls back to the auth cookies when
+ * there is NO header at all, so sending a stale one would be worse than
+ * sending none. Refresh first when the token is at or near expiry, and hand
+ * back null if that fails so the cookie fallback still gets its chance.
+ */
+async function currentAccessToken(): Promise<string | null> {
+  try {
+    const { data } = await supabase.auth.getSession();
+    const session = data.session;
+    if (!session) return null;
+    const expiresAt = typeof session.expires_at === 'number' ? session.expires_at : 0;
+    if (expiresAt - TOKEN_FRESHNESS_BUFFER_SEC > Math.floor(Date.now() / 1000)) {
+      return session.access_token;
+    }
+    const refreshed = await supabase.auth.refreshSession();
+    return refreshed.data.session?.access_token ?? null;
+  } catch {
+    return null;
+  }
+}
+
 /** Redeem a one-time login token; the browser session becomes that person. */
 async function adoptSession(tokenHash: string): Promise<boolean> {
   const { data, error } = await supabase.auth.verifyOtp({
@@ -144,8 +172,7 @@ export function useAdminAccountSwitcher(isPlatformAdmin: boolean): AdminAccountS
    * path and force-sign-out a session that is perfectly valid.
    */
   const redeemReturn = React.useCallback(async (): Promise<boolean> => {
-    const { data } = await supabase.auth.getSession();
-    const accessToken = data.session?.access_token ?? null;
+    const accessToken = await currentAccessToken();
     const res = await fetch('/api/auth/admin-switch-return', {
       method: 'POST',
       credentials: 'include',

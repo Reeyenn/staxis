@@ -107,7 +107,7 @@ export async function POST(req: NextRequest) {
   // round trip that an unauthenticated flood can multiply.
   const rawToken = req.cookies.get(RETURN_COOKIE_NAME)?.value ?? null;
   const session = rawToken ? await requireSession(req, { requestId }) : null;
-  const presenterAuthUserId = session?.ok ? session.userId : null;
+  const presenterAuthUserId = session !== null && session.ok ? session.userId : null;
 
   const result = await performAdminReturn(
     { rawToken, presenterAuthUserId, nowMs: Date.now() },
