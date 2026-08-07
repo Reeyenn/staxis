@@ -443,6 +443,546 @@ begin
 end;
 $$;
 
+
+-- ═══════════════════════════════════════════════════════════════════════════
+--  PART TWO: a hat that names three hotels may not speak for twenty
+-- ═══════════════════════════════════════════════════════════════════════════
+--
+-- 0467 fixed `whole_company_view` and deliberately left two neighbours alone.
+-- Both turn out to be live reach rather than presentation, so both are fixed
+-- here, and one door that fails closed is opened to the shape it was always
+-- meant to carry.
+
+create or replace function public._staxis_company_structure_actor_rights(
+  p_actor_account_id uuid,
+  p_organization_id uuid
+)
+returns table (
+  authorized_property_ids uuid[],
+  whole_company_view boolean,
+  can_manage_portfolios boolean,
+  manageable_portfolio_ids uuid[]
+)
+language sql
+stable
+security definer
+set search_path = pg_catalog, public
+as $$
+  with recursive
+  live_actor as (
+    select account.id
+    from public.accounts account
+    join public.account_authorization_state state
+      on state.account_id = account.id
+     and state.authority_mode = 'normalized'
+    join public.organizations organization
+      on organization.id = p_organization_id
+     and organization.status = 'active'
+     and organization.organization_type in ('management_company', 'ownership_group')
+    where account.id = p_actor_account_id
+      and account.active is true
+      and account.role <> 'admin'
+  ),
+  active_memberships as (
+    select membership.*
+    from public.organization_memberships membership
+    join live_actor actor on actor.id = membership.account_id
+    where membership.organization_id = p_organization_id
+      and membership.status = 'active'
+      and membership.starts_at <= now()
+      and membership.ended_at is null
+  ),
+  active_grants as (
+    select grant_row.*
+    from public.organization_access_grants grant_row
+    join active_memberships membership
+      on membership.id = grant_row.membership_id
+     and membership.organization_id = grant_row.organization_id
+    where grant_row.status = 'active'
+      and grant_row.source <> 'legacy_backfill'
+      and grant_row.starts_at <= now()
+      and (grant_row.expires_at is null or grant_row.expires_at > now())
+  ),
+  actor_authorizations as (
+    select distinct authorized.property_id
+    from live_actor actor
+    cross join lateral public._staxis_nonlegacy_property_authorizations(actor.id) authorized
+    where authorized.organization_id = p_organization_id
+  ),
+  flags as (
+    select
+      exists (
+        select 1
+        from active_memberships membership
+        where membership.membership_scope = 'company'
+          and membership.staxis_role in ('owner', 'regional_manager')
+          -- 0467: only an all-hotels-including-future hat. A company hat with
+          -- an explicit list does not see the WHOLE company by definition.
+          and membership.covered_property_ids is null
+      ) or exists (
+        select 1
+        from active_grants grant_row
+        where grant_row.scope_type = 'organization'
+      ) as whole_company_view,
+      exists (
+        select 1
+        from active_memberships membership
+        where membership.membership_scope = 'company'
+          and membership.staxis_role in ('owner', 'regional_manager')
+      ) or exists (
+        select 1
+        from active_grants grant_row
+        where (grant_row.scope_type = 'organization'
+                 and grant_row.access_profile in ('organization_owner', 'organization_admin'))
+           or (grant_row.scope_type = 'portfolio'
+                 and grant_row.access_profile = 'portfolio_manager')
+      ) as can_manage_portfolios,
+      exists (
+        select 1
+        from active_memberships membership
+        where membership.membership_scope = 'company'
+          and membership.staxis_role in ('owner', 'regional_manager')
+          -- 0468: the same rule 0467 applied to whole_company_view, for the
+          -- same reason. "Manages ALL portfolios" is a claim about the whole
+          -- company. Left unconditioned it was not cosmetic: it put EVERY
+          -- portfolio of the company into manageable_portfolio_ids, and
+          -- staxis_commit_company_portfolio_assignment gates on exactly that
+          -- array. Reproduced end to end: an Owner covering one of two hotels
+          -- moved her hotel into a portfolio belonging to a different
+          -- ownership group, which is a portfolio manager over there gaining
+          -- her hotel and her own group losing it.
+          and membership.covered_property_ids is null
+      ) or exists (
+        select 1
+        from active_grants grant_row
+        where grant_row.scope_type = 'organization'
+          and grant_row.access_profile in ('organization_owner', 'organization_admin')
+      ) as manages_all_portfolios
+  ),
+  portfolio_tree (portfolio_id) as (
+    select portfolio.id
+    from public.portfolios portfolio
+    cross join flags
+    where portfolio.organization_id = p_organization_id
+      and portfolio.status = 'active'
+      and flags.manages_all_portfolios
+
+    union
+
+    select grant_row.portfolio_id
+    from active_grants grant_row
+    join public.portfolios portfolio
+      on portfolio.id = grant_row.portfolio_id
+     and portfolio.organization_id = grant_row.organization_id
+     and portfolio.status = 'active'
+    where grant_row.scope_type = 'portfolio'
+      and grant_row.access_profile = 'portfolio_manager'
+
+    union
+
+    select child.id
+    from portfolio_tree tree
+    join public.portfolios child
+      on child.parent_id = tree.portfolio_id
+     and child.organization_id = p_organization_id
+     and child.status = 'active'
+  )
+  select
+    coalesce((select array_agg(property_id order by property_id) from actor_authorizations), '{}'::uuid[]),
+    flags.whole_company_view,
+    flags.can_manage_portfolios,
+    coalesce((select array_agg(portfolio_id order by portfolio_id) from portfolio_tree), '{}'::uuid[])
+  from flags;
+$$;
+
+-- ── Delegation may not reach past the hats you actually wear ──────────────
+--
+-- `_staxis_company_access_can_delegate_v0381` answers "may this person hand
+-- out this access profile at this scope". Its company-owner branch has no
+-- coverage condition at all, and none was added by 0464: it asks only whether
+-- an active company hat with staxis_role 'owner' exists. So an Owner named on
+-- an explicit three-hotel list could grant somebody an ORGANIZATION-scope
+-- organization_owner profile, and an organization-scope grant reaches every
+-- hotel the company operates. Verified against the live function: for an Owner
+-- narrowed to one of two hotels, `_staxis_company_access_can_delegate(...,
+-- 'organization_owner', 'organization', ...)` returns TRUE, and
+-- `_staxis_preview_company_access_edit` has no second coverage gate behind it.
+--
+-- That is the whole point of 0464 defeated by proxy: the subset Owner does not
+-- reach the other seventeen hotels, they mint somebody who does.
+--
+-- Wrapped rather than rewritten, the same pattern 0467 used, so neither policy
+-- body is retyped. The wrapper only ever REFUSES.
+--
+-- NOT CHANGED HERE, and reported as a decision rather than guessed at: the
+-- delegate body still tests `staxis_role = 'vp'`, a word 0464 converted out of
+-- existence, so the branch letting a Regional Manager hand out viewer-level
+-- access has been silently dead since 0464 applied. Restoring it is a one-word
+-- change, but it RESTORES a capability rather than removing one, and that is
+-- the founder's call, not an auditor's.
+
+alter function public._staxis_company_access_can_delegate(uuid, uuid, text, text, uuid, uuid)
+  rename to _staxis_company_access_can_delegate_v0403;
+
+create or replace function public._staxis_company_access_can_delegate(
+  p_actor_account_id uuid,
+  p_organization_id uuid,
+  p_access_profile text,
+  p_scope_type text,
+  p_portfolio_id uuid,
+  p_property_id uuid
+)
+returns boolean
+language plpgsql
+stable
+security definer
+set search_path = public, pg_temp
+as $$
+declare
+  v_whole_company boolean;
+  v_scope_property_ids uuid[];
+begin
+  -- Property scope is already coverage-correct: every branch that reaches it
+  -- joins the actor's own non-legacy authorizations. Only the two scopes that
+  -- speak for more than one hotel are gated here.
+  if p_scope_type in ('organization', 'portfolio') then
+    v_whole_company := exists (
+      select 1
+      from public.organization_memberships membership
+      where membership.organization_id = p_organization_id
+        and membership.account_id = p_actor_account_id
+        and membership.status = 'active'
+        and membership.starts_at <= now()
+        and membership.ended_at is null
+        and membership.membership_scope = 'company'
+        and membership.staxis_role in ('owner', 'regional_manager')
+        and membership.covered_property_ids is null
+    ) or exists (
+      select 1
+      from public.organization_access_grants access_grant
+      join public.organization_memberships membership
+        on membership.id = access_grant.membership_id
+       and membership.account_id = p_actor_account_id
+       and membership.status = 'active'
+       and membership.ended_at is null
+      where access_grant.organization_id = p_organization_id
+        and access_grant.status = 'active'
+        and access_grant.source <> 'legacy_backfill'
+        and access_grant.scope_type = 'organization'
+        and access_grant.access_profile in ('organization_owner', 'organization_admin')
+        and access_grant.starts_at <= now()
+        and (access_grant.expires_at is null or access_grant.expires_at > now())
+    );
+
+    if p_scope_type = 'organization' and not v_whole_company then
+      return false;
+    end if;
+
+    -- A portfolio may be delegated over when it reaches at least one hotel and
+    -- every hotel it reaches is one the actor already reaches. Reach is the
+    -- portfolio's own RECURSIVE expansion, through
+    -- `_staxis_company_access_scope_properties`, which is the same function the
+    -- grant itself is expanded by: a parent portfolio whose hotels all hang off
+    -- its children is a legitimate delegation target and a direct-assignment
+    -- test would refuse it.
+    --
+    -- A portfolio reaching NO hotel does not qualify: a portfolio_manager grant
+    -- on it silently gains whatever is added to it later, which is the same
+    -- all-including-future promise only a whole-company standing may make.
+    if p_scope_type = 'portfolio' and not v_whole_company then
+      if p_portfolio_id is null then return false; end if;
+      v_scope_property_ids := public._staxis_company_access_scope_properties(
+        p_organization_id, 'portfolio', p_portfolio_id, null
+      );
+      if v_scope_property_ids is null or cardinality(v_scope_property_ids) = 0 then
+        return false;
+      end if;
+      if exists (
+        select 1
+        from unnest(v_scope_property_ids) target(property_id)
+        where not exists (
+          select 1
+          from public._staxis_nonlegacy_property_authorizations(p_actor_account_id) authority
+          where authority.organization_id = p_organization_id
+            and authority.property_id = target.property_id
+        )
+      ) then
+        return false;
+      end if;
+    end if;
+  end if;
+
+  return public._staxis_company_access_can_delegate_v0403(
+    p_actor_account_id, p_organization_id, p_access_profile,
+    p_scope_type, p_portfolio_id, p_property_id
+  );
+end;
+$$;
+revoke all on function public._staxis_company_access_can_delegate(uuid, uuid, text, text, uuid, uuid)
+  from public, anon, authenticated, service_role;
+
+create or replace function public.staxis_grant_existing_account_invite_guarded(
+  p_actor_account_id uuid,
+  p_actor_auth_user_id uuid,
+  p_hotel_id uuid,
+  p_target_account_id uuid,
+  p_email text,
+  p_role text,
+  p_organization_id uuid,
+  p_membership_scope text,
+  p_covered_property_ids uuid[],
+  p_target_staff_id uuid default null,
+  p_request_id text default null
+)
+returns jsonb
+language plpgsql
+security definer
+set search_path = public, pg_temp
+as $$
+declare
+  v_now timestamptz := now();
+  v_email text := lower(btrim(coalesce(p_email, '')));
+  v_actor public.accounts%rowtype;
+  v_target public.accounts%rowtype;
+  v_target_state public.account_authorization_state%rowtype;
+  v_actor_email text;
+  v_org_id uuid;
+  v_org_type text;
+  v_relationship_count integer;
+  v_membership_id uuid;
+  v_staff_status text;
+  v_link_account_id uuid;
+  v_role_changed boolean := false;
+  v_access_changed boolean := false;
+  v_link_changed boolean := false;
+  v_effective_coverage uuid[];
+  v_job_category text;
+  v_independent jsonb;
+begin
+  if p_actor_account_id is null or p_actor_auth_user_id is null or p_hotel_id is null
+     or p_target_account_id is null or char_length(v_email) not between 3 and 320
+     or v_email !~ '^[^[:space:]@]+@[^[:space:]@]+\.[^[:space:]@]+$'
+     or p_role not in ('owner','regional_manager','general_manager','front_desk','housekeeping','maintenance')
+     or char_length(coalesce(p_request_id, '')) > 200 then
+    return jsonb_build_object('ok', false, 'reason', 'invalid');
+  end if;
+  if p_actor_account_id = p_target_account_id then
+    return jsonb_build_object('ok', false, 'reason', 'role_conflict');
+  end if;
+
+  perform 1 from public.properties property where property.id = p_hotel_id for update;
+  if not found then return jsonb_build_object('ok', false, 'reason', 'not_found'); end if;
+  perform pg_advisory_xact_lock(hashtextextended(p_hotel_id::text, 0));
+  select count(*)::integer,
+         (array_agg(relationship.organization_id order by relationship.id))[1],
+         (array_agg(relationship.organization_type order by relationship.id))[1]
+    into v_relationship_count, v_org_id, v_org_type
+  from public._staxis_cutover_valid_current_primary_property_relationships() relationship
+  where relationship.property_id = p_hotel_id
+    and relationship.active_primary_count = 1
+    and relationship.organization_status = 'active';
+  if v_relationship_count <> 1 then return jsonb_build_object('ok', false, 'reason', 'denied'); end if;
+
+  select actor.* into v_actor from public.accounts actor where actor.id = p_actor_account_id for update;
+  select lower(auth_user.email) into v_actor_email from auth.users auth_user
+   where auth_user.id = p_actor_auth_user_id for share;
+  if not found or v_actor.data_user_id is distinct from p_actor_auth_user_id
+     or v_actor.active is not true
+     or not public._staxis_can_control_account_invite(
+       p_actor_account_id, p_hotel_id, p_organization_id, p_membership_scope,
+       p_role, p_covered_property_ids
+     ) then
+    return jsonb_build_object('ok', false, 'reason', 'denied');
+  end if;
+  select target.* into v_target from public.accounts target
+   where target.id = p_target_account_id for update;
+  if not found or v_target.active is not true then
+    return jsonb_build_object('ok', false, 'reason', case when not found then 'not_found' else 'role_conflict' end);
+  end if;
+  if v_target.role = 'admin' then return jsonb_build_object('ok', false, 'reason', 'role_conflict'); end if;
+  if not exists (
+    select 1 from auth.users auth_user where auth_user.id = v_target.data_user_id
+      and lower(auth_user.email) = v_email
+  ) then return jsonb_build_object('ok', false, 'reason', 'not_found'); end if;
+  select state.* into v_target_state from public.account_authorization_state state
+   where state.account_id = v_target.id for update;
+  if not found or v_target_state.authority_mode <> 'normalized' then
+    return jsonb_build_object('ok', false, 'reason', 'final_authority_not_normalized');
+  end if;
+
+  v_staff_status := public._staxis_lock_invite_target_staff(
+    p_actor_account_id, p_hotel_id, p_role, p_target_staff_id, v_target.id, null
+  );
+  if v_staff_status <> 'ok' then return jsonb_build_object('ok', false, 'reason', v_staff_status); end if;
+
+  if p_organization_id is not null or p_membership_scope is not null or p_covered_property_ids is not null then
+    if p_organization_id is null or p_membership_scope not in ('company','property')
+       or v_org_type not in ('management_company','ownership_group')
+       or v_org_id is distinct from p_organization_id
+       -- 0468: this door used to refuse EVERY company hat carrying a hotel
+       -- list ("role_conflict"), because it predates the 0464 list shape. It
+       -- failed closed, so nothing leaked, but the only company hat it could
+       -- mint was the WIDEST one: omit the list and you get NULL, which means
+       -- every hotel including future ones. An Owner of 3 hotels could not add
+       -- an existing colleague as a 3-hotel Regional Manager at all.
+       --
+       -- The list now travels, and every rule that governs it is the one the
+       -- invitation door already used: _staxis_can_set_membership_hat, which
+       -- since 0467 runs the coverage list through
+       -- _staxis_company_coverage_list_ok. Nothing is widened. A company list
+       -- is strictly narrower than the NULL this door already accepted, and
+       -- the NULL branch still demands an all-hotels standing of the actor.
+       or (p_membership_scope = 'company'
+         and p_covered_property_ids is not null
+         and (cardinality(p_covered_property_ids) = 0
+           -- The grant is anchored at one hotel and the function asserts below
+           -- that the target really gained it. A list that omits the anchor
+           -- cannot satisfy that, so refuse it here with a reason the caller
+           -- can read instead of raising at the assertion.
+           or not (p_hotel_id = any(p_covered_property_ids))))
+       or (p_membership_scope = 'property' and (
+         cardinality(coalesce(p_covered_property_ids, '{}'::uuid[])) = 0
+         or not (p_hotel_id = any(p_covered_property_ids)))) then
+      return jsonb_build_object('ok', false, 'reason', 'role_conflict');
+    end if;
+    if v_actor.role <> 'admin' and not public._staxis_can_set_membership_hat(
+      v_actor.id, p_organization_id, p_membership_scope, p_role,
+      p_covered_property_ids
+    ) then
+      return jsonb_build_object('ok', false, 'reason', 'denied');
+    end if;
+    v_effective_coverage := case when p_covered_property_ids is null then null else array(
+      select distinct covered.property_id from unnest(p_covered_property_ids) covered(property_id)
+      order by covered.property_id) end;
+    v_job_category := case p_role when 'owner' then 'owner_principal'
+      when 'regional_manager' then 'regional_manager'
+      when 'general_manager' then 'general_manager' else 'hotel_employee' end;
+    insert into public.organization_memberships (
+      organization_id, account_id, job_category, status, starts_at,
+      created_by_account_id, updated_by_account_id, membership_scope, staxis_role, covered_property_ids
+    ) values (
+      p_organization_id, v_target.id, v_job_category, 'active', v_now,
+      v_actor.id, v_actor.id, p_membership_scope, p_role, v_effective_coverage
+    ) on conflict (organization_id, account_id, membership_scope, staxis_role)
+      where ended_at is null and staxis_role is not null
+    do update set covered_property_ids = excluded.covered_property_ids,
+                  status = 'active', starts_at = least(public.organization_memberships.starts_at, excluded.starts_at),
+                  updated_by_account_id = excluded.updated_by_account_id, updated_at = v_now
+    returning id into v_membership_id;
+    v_access_changed := true;
+    if not exists (
+      select 1 from public._staxis_account_property_authorizations(v_target.id) authz
+      where authz.property_id = p_hotel_id and authz.entitlement_kind = 'membership_hat'
+        and authz.entitlement_id = v_membership_id
+    ) then raise exception 'existing-account normalized entitlement did not activate' using errcode = '23514'; end if;
+  else
+    if v_org_type <> 'single_hotel' then return jsonb_build_object('ok', false, 'reason', 'role_conflict'); end if;
+    if v_target.role is distinct from p_role then
+      if exists (select 1 from public._staxis_nonlegacy_property_authorizations(v_target.id))
+         or exists (select 1 from public.account_property_staff_links link_row where link_row.account_id = v_target.id and link_row.is_active)
+      then return jsonb_build_object('ok', false, 'reason', 'role_conflict'); end if;
+      update public.accounts account set role = p_role where account.id = v_target.id;
+      v_role_changed := true;
+    end if;
+    v_independent := public._staxis_stage_c_grant_independent_hotel(
+      v_target.id, p_hotel_id, 'Access Stage C existing-account invite grant'
+    );
+    if coalesce((v_independent->>'ok')::boolean, false) is not true then
+      return v_independent || jsonb_build_object('ok', false);
+    end if;
+    v_access_changed := (v_independent->>'status') = 'granted';
+  end if;
+
+  if p_target_staff_id is not null then
+    v_link_changed := not exists (
+      select 1 from public.account_property_staff_links link_row
+      where link_row.account_id = v_target.id and link_row.property_id = p_hotel_id
+        and link_row.staff_id = p_target_staff_id and link_row.is_active
+    );
+    update public.accounts account set staff_id = coalesce(account.staff_id, p_target_staff_id)
+      where account.id = v_target.id;
+    insert into public.account_property_staff_links (
+      account_id, property_id, staff_id, is_active, source, linked_by_account_id, linked_at, updated_at
+    ) values (v_target.id, p_hotel_id, p_target_staff_id, true, 'invitation', v_actor.id, v_now, v_now)
+    on conflict (account_id, property_id) do update
+      set staff_id = excluded.staff_id, is_active = true, source = excluded.source,
+          linked_by_account_id = excluded.linked_by_account_id, deactivated_at = null,
+          deactivated_by_account_id = null, updated_at = excluded.updated_at
+      where public.account_property_staff_links.is_active is false
+         or public.account_property_staff_links.staff_id = excluded.staff_id
+      returning account_id into v_link_account_id;
+    if v_link_account_id is null then raise exception 'target account staff link changed during access grant' using errcode = '40001'; end if;
+  end if;
+  insert into public.admin_audit_log (
+    actor_user_id, actor_email, action, target_type, target_id, metadata
+  ) values (
+    p_actor_auth_user_id, v_actor_email, 'invite.existing_account_grant', 'account', v_target.id::text,
+    jsonb_build_object('hotel_id', p_hotel_id, 'target_email', v_email, 'role', p_role,
+      'organization_id', p_organization_id, 'scope', p_membership_scope,
+      'property_ids', case when p_membership_scope = 'property' then to_jsonb(p_covered_property_ids) else null end,
+      'membership_id', v_membership_id, 'staff_id', p_target_staff_id,
+      'role_changed', v_role_changed, 'access_changed', v_access_changed,
+      'staff_link_changed', v_link_changed, 'request_id', p_request_id, 'authorityMode', 'normalized')
+  );
+  return jsonb_build_object(
+    'ok', true, 'status', case when v_role_changed or v_access_changed or v_link_changed then 'granted' else 'noop' end,
+    'accountId', v_target.id, 'hotelId', p_hotel_id, 'role', p_role,
+    'normalized', true, 'membershipId', v_membership_id, 'staffId', p_target_staff_id
+  );
+end;
+$$;
+
+-- ── An invitation may not promise a job that cannot be accepted ───────────
+--
+-- 0467 found and fixed one shape of this: an explicit-list company invitation
+-- could be offered, emailed and claimed, and then failed at acceptance. Here is
+-- a second one it did not look for.
+--
+-- Every invitation is anchored at one hotel, and `staxis_accept_account_invite`
+-- asserts that the minted hat really reaches that hotel ("promised normalized
+-- entitlement did not activate"). Nothing on the CREATE side checks that a
+-- company hotel list contains the anchor. Reproduced: an invitation anchored at
+-- Beaumont promising coverage of Lufkin only is created with ok:true, and its
+-- acceptance raises that exception every time. The property shape has always
+-- had this check; the company shape never got one.
+--
+-- Refusing at creation turns a guaranteed later failure into an immediate one,
+-- which is the whole reason the guarded RPCs exist. It removes no reachable
+-- outcome: nothing that this now refuses could ever have been accepted.
+
+alter function public._staxis_can_control_account_invite(uuid, uuid, uuid, text, text, uuid[])
+  rename to _staxis_can_control_account_invite_v0467;
+
+create or replace function public._staxis_can_control_account_invite(
+  p_actor_account_id uuid,
+  p_hotel_id uuid,
+  p_organization_id uuid,
+  p_membership_scope text,
+  p_role text,
+  p_covered_property_ids uuid[]
+)
+returns boolean
+language plpgsql
+stable
+security definer
+set search_path = public, pg_temp
+as $$
+begin
+  if p_membership_scope = 'company'
+     and p_covered_property_ids is not null
+     and not (p_hotel_id = any(p_covered_property_ids))
+  then
+    return false;
+  end if;
+  return public._staxis_can_control_account_invite_v0467(
+    p_actor_account_id, p_hotel_id, p_organization_id,
+    p_membership_scope, p_role, p_covered_property_ids
+  );
+end;
+$$;
+revoke all on function public._staxis_can_control_account_invite(uuid, uuid, uuid, text, text, uuid[])
+  from public, anon, authenticated, service_role;
+
 -- ── Defence in depth: no row may name zero hotels ─────────────────────────
 --
 -- Belt to the two braces above. Production is already clean, so this normalize
