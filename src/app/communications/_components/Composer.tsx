@@ -194,7 +194,11 @@ export function Composer({ pid, me, conversation: c, L, onReloadThread, onReload
 
   const canSend = !!text.trim() && !busy;
   return (
-    <div style={{ padding: '0 20px 16px' }}>
+    // `comms-composer` is a HANDLE for the phone rules in CommsApp's style block.
+    // Everything in here is styled inline, and inline styles cannot carry a media
+    // query: the class is the only way the 16px typing size and the 40px press
+    // targets can apply on a phone without changing the desktop numbers.
+    <div className="comms-composer" style={{ padding: '0 20px 16px' }}>
       {actionOffer && (
         <div style={{ margin: '0 0 8px', padding: 12, background: tint(T.terracotta, .08), borderRadius: 10, display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', fontSize: 13, fontFamily: SANS }}>
           {actionOffer.kind === 'work_order' ? <Wrench size={16} color={T.terracotta} /> : <AlertCircle size={16} color={T.terracotta} />}

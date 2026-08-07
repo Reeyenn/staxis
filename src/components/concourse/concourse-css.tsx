@@ -751,7 +751,7 @@ button.fx-bchip:focus-visible{outline:2px solid #9EB7A6;outline-offset:2px;}
    "Add event" closed it outright. It is now a proper card over the page, wide
    enough to hold the month AND the panel that puts something in it. */
 .fx-monthover{position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);z-index:61;
-  width:min(1020px,calc(100vw - 40px));max-height:min(860px,calc(100vh - 56px));background:#fff;
+  width:min(1020px,calc(100vw - 40px));max-height:min(860px,calc(100dvh - 56px));background:#fff;
   display:flex;flex-direction:column;border:1px solid rgba(31,35,28,.1);border-radius:18px;overflow:hidden;
   box-shadow:0 30px 60px -30px rgba(31,42,32,.55);animation:fx-riseover .18s ease;}
 .fx-monthbody{flex:1;overflow-y:auto;-webkit-overflow-scrolling:touch;padding:18px 22px 24px;}
@@ -778,7 +778,7 @@ button.fx-bchip:focus-visible{outline:2px solid #9EB7A6;outline-offset:2px;}
 .fx-scrim{position:fixed;inset:0;z-index:60;background:rgba(20,26,20,.34);border:none;padding:0;
   animation:fx-fade .18s ease;cursor:pointer;}
 .fx-drawer{position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);z-index:61;
-  width:min(620px,calc(100vw - 40px));max-height:min(760px,calc(100vh - 64px));background:#fff;
+  width:min(620px,calc(100vw - 40px));max-height:min(760px,calc(100dvh - 64px));background:#fff;
   display:flex;flex-direction:column;border:1px solid rgba(31,35,28,.1);border-radius:18px;overflow:hidden;
   box-shadow:0 30px 60px -30px rgba(31,42,32,.55);
   animation:fx-riseover .18s ease;}
@@ -803,19 +803,93 @@ button.fx-bchip:focus-visible{outline:2px solid #9EB7A6;outline-offset:2px;}
   .fx-rail{flex-direction:row;flex-wrap:wrap;}
   .fx-rail > *{flex:1;min-width:280px;}
 }
+/* ── The phone ───────────────────────────────────────────────────────────
+   Everything below 760px is somebody holding the hotel in one hand. The
+   rules here are not a shrink of the desktop screen, they are the four
+   things a phone actually changes:
+
+     1. NOTHING MAY BE WIDER THAN THE WINDOW. Every row on this page is a
+        flex line of nowrap parts (a mono clock, a range label, a segmented
+        control, seven day cards, nine cadence chips). A flex item's
+        automatic minimum is its CONTENT, so each of those quietly refused
+        to shrink and pushed the whole document sideways: 375px of phone
+        holding 452px of page. A zero minimum on the boxes and a capped
+        width on the scrollers is what makes the window the boundary again.
+     2. A SIDEWAYS LIST HAS TO SCROLL SIDEWAYS. The week strip and the
+        cadence line already say overflow-x auto, which does nothing at all
+        while an ancestor is letting them be their full width. Once they
+        are clamped they scroll, so they also claim the horizontal swipe
+        and carry a soft fade so the edge says there is more.
+     3. A ROW IS A STACK, NOT A LINE. Title, then the clock, then the
+        buttons. Squeezing all three onto one 343px line left titles
+        wrapping one word per line beside a mono stamp that would not.
+     4. A FINGER IS NOT A CURSOR. Anything you press is at least 40px, and
+        anything you type into is at least 16px so iOS does not zoom the
+        page on focus and leave it zoomed. */
 @media (max-width:760px){
-  .fx-page{padding:18px 16px 200px;}
-  .fx-head{align-items:flex-start;}
+  .fx-page{padding:18px 16px calc(200px + env(safe-area-inset-bottom));}
+  .fx-head{align-items:flex-start;min-width:0;}
   .fx-day{font-size:34px;}
-  .fx-headr{align-items:flex-start;width:100%;}
-  .fx-week{overflow-x:auto;scrollbar-width:none;padding-bottom:2px;}
+  .fx-headr{align-items:stretch;width:100%;min-width:0;max-width:100%;}
+  /* The day controls wrap instead of running off the edge. */
+  .fx-cal{flex-wrap:wrap;row-gap:9px;min-width:0;max-width:100%;}
+  .fx-cal .fx-vrule{display:none;}
+  .fx-seg{margin-left:auto;}
+  .fx-week{overflow-x:auto;scrollbar-width:none;padding-bottom:2px;
+    max-width:100%;align-self:stretch;touch-action:pan-x;overscroll-behavior-x:contain;
+    -webkit-mask-image:linear-gradient(to right,#000 calc(100% - 24px),transparent 100%);
+    mask-image:linear-gradient(to right,#000 calc(100% - 24px),transparent 100%);}
   .fx-week::-webkit-scrollbar{display:none;}
   .fx-wd{width:56px;flex-shrink:0;}
-  .fx-row{flex-wrap:wrap;}
-  .fx-compline{flex-wrap:wrap;}
-  .fx-rowa,.fx-compw{margin-left:0;}
+
+  /* One row of work, stacked. */
+  .fx-row{flex-wrap:wrap;gap:9px 12px;}
+  .fx-rowm{white-space:normal;}
+  .fx-rowa{margin-left:0;flex-wrap:wrap;width:100%;}
+
+  /* The sentence keeps the line; its three words drop underneath it. */
+  .fx-compline{flex-wrap:wrap;gap:10px 12px;}
+  .fx-comptitle{flex:1 1 140px;min-width:0;font-size:16px;min-height:40px;}
+  .fx-comptitle::placeholder{font-size:16px;}
+  .fx-comptitle.fx-live{font-size:16px;}
+  .fx-compw{margin-left:0;order:1;flex:1 0 100%;font-size:13px;}
   .fx-complab{width:100%;flex:0 0 auto;padding-top:0;}
-  .fx-comprow{flex-direction:column;gap:6px;}
+  .fx-comprow{flex-direction:column;align-items:stretch;gap:6px;min-width:0;}
+  .fx-compopts{max-width:100%;min-width:0;}
+  .fx-compopts.fx-compscroll{align-self:stretch;touch-action:pan-x;overscroll-behavior-x:contain;
+    -webkit-mask-image:linear-gradient(to right,#000 calc(100% - 26px),transparent 100%);
+    mask-image:linear-gradient(to right,#000 calc(100% - 26px),transparent 100%);}
+  .fx-input{font-size:16px;height:40px;}
+  .fx-compnum{font-size:16px;}
+
+  /* A finger, not a cursor. */
+  .fx-btn{height:40px;padding:0 14px;font-size:13.5px;}
+  .fx-btn.fx-primary{padding:0 16px;}
+  .fx-btn.fx-quiet{padding:0 10px;}
+  .fx-step{width:40px;height:40px;}
+  .fx-month{height:40px;padding:0 14px;font-size:13.5px;}
+  .fx-seg{height:44px;padding:2px;}
+  .fx-segb{height:40px;padding:0 12px;font-size:13px;}
+  .fx-compb,.fx-compevery,.fx-compaskb{height:40px;font-size:13.5px;}
+  .fx-compmic{width:40px;height:40px;}
+  .fx-compmic.fx-rec{width:40px;height:40px;}
+  .fx-compnum{height:32px;}
+  .fx-compday{font-size:16px;}
+  .fx-compword{min-height:40px;min-width:44px;justify-content:center;padding:0 8px;}
+  .fx-compword.fx-lift,.fx-compword.fx-pick{padding:0 9px;}
+  .fx-drawerx{width:40px;height:40px;}
+  .fx-more-link{min-height:40px;}
+  .fx-ib{height:40px;}
+  .fx-sw{width:44px;height:26px;}
+  .fx-sw::after{width:22px;height:22px;}
+  .fx-sw[aria-checked="true"]::after{transform:translateX(18px);}
+
+  /* Popups take the window, and stop short of the home indicator. */
+  .fx-monthover,.fx-drawer{width:calc(100vw - 20px);max-height:calc(100dvh - 32px);}
+  .fx-monthbody{padding:16px 16px calc(24px + env(safe-area-inset-bottom));}
+  .fx-drawerhead{padding:14px 16px;}
+  .fx-drawerbody .cx-page{padding:0 16px calc(26px + env(safe-area-inset-bottom));}
+  .fx-lbfoot{padding-bottom:calc(16px + env(safe-area-inset-bottom));}
 }
 
 @media (prefers-reduced-motion: reduce){

@@ -403,7 +403,7 @@ const TRACE_CSS = `
 .trc-card{position:fixed;pointer-events:auto;border-radius:18px;padding:17px 20px 16px;
   background:radial-gradient(ellipse 400px 200px at 50% 130%,rgba(92,122,96,.30) 0%,rgba(92,122,96,0) 62%),var(--trc-ink);
   box-shadow:inset 0 1px 0 rgba(158,183,166,.14),0 28px 60px -28px rgba(31,42,32,.7);
-  animation:trcDrop .3s var(--trc-spring) .42s both;max-height:calc(100vh - 48px);overflow:auto;}
+  animation:trcDrop .3s var(--trc-spring) .42s both;max-height:calc(100dvh - 48px);overflow:auto;}
 .trc-head{display:flex;align-items:center;gap:9px;}
 .trc-star{color:var(--trc-sage-l);font-size:11px;line-height:1;}
 .trc-tick{display:grid;place-items:center;width:18px;height:18px;border-radius:50%;

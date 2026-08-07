@@ -337,17 +337,36 @@ export async function loadActionsForFindings(
  *
  * `executed` and `undone` cannot be outranked in practice, because
  * `proposeAction` never offers again after either (DECIDED_ACTION_STATES) — so
- * "newest first" and "a real decision wins" are the same rule here, and the
- * proposed_at tiebreak below only ever separates rows written in the same
- * millisecond.
+ * "newest first" and "a real decision wins" are the same rule here.
+ *
+ * ═══ WHY THE TIEBREAK IS "THE LIVE OFFER", NOT "THE SETTLED ROW" ═══
+ * Two rows can carry the SAME timestamp as far as this comparison can tell.
+ * Postgres keeps microseconds; `Date.parse` stops at milliseconds and throws
+ * the rest away, so any two rows written inside one millisecond arrive here as
+ * simultaneous — and the PGlite fixture the integration suite runs against has
+ * a millisecond-granularity clock, which makes that the ordinary case there
+ * rather than an exotic one.
+ *
+ * The old tiebreak preferred the settled row, and that rule is older than
+ * re-arming. Once a declined or failed row could be FOLLOWED by a live one, it
+ * became exactly backwards: on a tie it resurrects the dead refusal and hides
+ * the offer that replaced it, which is a card with no button and no
+ * explanation — precisely the bug DECIDED_ACTION_STATES exists to prevent,
+ * arriving through the read path instead of the write path.
+ *
+ * So: a `proposed` row wins a tie. There is at most one of them per finding
+ * (`finding_actions_one_open_per_finding_uq`), and a live offer that exists is
+ * always the newest thing that happened to the card — `proposeAction` refuses
+ * to create one after a decision, so a tie between `proposed` and
+ * `executed`/`undone` is not a state this can reach.
  */
 function outranks(candidate: FindingAction, current: FindingAction): boolean {
   const a = Date.parse(candidate.proposedAt);
   const b = Date.parse(current.proposedAt);
   if (Number.isFinite(a) && Number.isFinite(b) && a !== b) return a > b;
-  // Same instant (or an unreadable timestamp): a settled row is the more
-  // informative of the two, exactly as it always was.
-  return current.state === 'proposed' && candidate.state !== 'proposed';
+  // Same instant, or an unreadable timestamp: the standing offer is the one
+  // the card is about.
+  return current.state !== 'proposed' && candidate.state === 'proposed';
 }
 
 /** One action, scoped to this hotel. Null when it belongs to another one. */

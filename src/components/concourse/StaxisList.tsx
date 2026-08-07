@@ -40,7 +40,15 @@ import { readEnvelope } from '@/lib/api-envelope';
 import type { LogEntryDTO } from '@/lib/comms/types';
 import type { AssignedByMeItem, WorklistItem } from '@/lib/worklist/types';
 import type { FeedPrefs } from '@/lib/feed/prefs';
-import { COMPOSER_COPY, EVENT_COPY, emptyListNote, PROMPT_ROTATE_MS } from '@/lib/feed/one-list-copy';
+import {
+  COMPOSER_COPY,
+  EVENT_COPY,
+  emptyListNote,
+  PROMPT_ROTATE_MS,
+  ROW_MENU_COPY,
+  type RowMenuAction,
+  type RowMenuOption,
+} from '@/lib/feed/one-list-copy';
 import { isNewSince, rowIsMine } from '@/lib/feed/one-list';
 import { emptyParse, parseTodo, type ParseResult } from '@/lib/feed/parse-todo';
 import { INTERPRET_DEBOUNCE_MS, INTERPRET_TIMEOUT_MS, shouldInterpret } from '@/lib/feed/interpret-todo';
@@ -88,6 +96,7 @@ import {
   WorkRowView,
   composerDefaults,
   composerPayload,
+  readCadenceDraft,
   withParse,
   type ComposerPerson,
   type ComposerState,
@@ -177,6 +186,16 @@ export function StaxisList({
   const [reasonFor, setReasonFor] = React.useState<string | null>(null);
   const [reasonDraft, setReasonDraft] = React.useState('');
   const [rowError, setRowError] = React.useState<string | null>(null);
+
+  // ── the per-row situation menu ───────────────────────────────────────────
+  // Three pieces of state and they are deliberately SINGULAR: one row's menu is
+  // open at a time, one option is collecting its answer at a time, one draft.
+  // Keeping them per-row would let two rows sit half-answered behind each other
+  // on a list somebody is scrolling, which is a state nobody can see and nobody
+  // asked for.
+  const [menuRow, setMenuRow] = React.useState<string | null>(null);
+  const [menuAsking, setMenuAsking] = React.useState<RowMenuAction | null>(null);
+  const [menuDraft, setMenuDraft] = React.useState('');
 
   const [composerOpen, setComposerOpen] = React.useState(false);
   const [composer, setComposer] = React.useState<ComposerState>(() => composerDefaults(todayIso, now.getDay()));
@@ -311,8 +330,17 @@ export function StaxisList({
   const events = React.useMemo(() => eventData?.events ?? [], [eventData]);
 
   // ── writes ───────────────────────────────────────────────────────────────
+  /** Every ending /api/worklist/complete accepts. The route's own enum. */
+  type SettleOutcome = 'done' | 'cant' | 'done_on_due' | 'skip' | 'called' | 'waiting' | 'not_an_issue';
+
+  const closeMenu = React.useCallback(() => {
+    setMenuRow(null);
+    setMenuAsking(null);
+    setMenuDraft('');
+  }, []);
+
   const settle = React.useCallback(
-    (item: WorklistItem, outcome: 'done' | 'cant' | 'done_on_due' | 'skip', reason?: string) => {
+    (item: WorklistItem, outcome: SettleOutcome, reason?: string) => {
       void (async () => {
         setBusyRow(item.id);
         setRowError(null);
@@ -329,27 +357,107 @@ export function StaxisList({
             }),
             timeoutMs: INTERACTIVE_ACTION_TIMEOUT_MS,
           });
-          const envelope = await readEnvelope<{ completed: boolean }>(res);
+          const envelope = await readEnvelope<{ recorded: boolean }>(res);
           if (envelope.error !== undefined) {
             // Never drop a row we did not actually settle. The person would
-            // believe the work was recorded when it was not.
-            setRowError('That did not save. Nothing changed. Try again in a moment.');
+            // believe the work was recorded when it was not. The menu stays
+            // OPEN on a failure, for the same reason: closing it would look
+            // exactly like the tap having worked.
+            setRowError(ROW_MENU_COPY.failed);
             return;
           }
           setReasonFor(null);
           setReasonDraft('');
+          closeMenu();
           await reloadWorklist();
           if (drawerOpen) await reloadAssigned();
         } catch (e) {
           if (e instanceof SessionEndedError) throw e;
-          setRowError('That did not save. Nothing changed. Try again in a moment.');
+          setRowError(ROW_MENU_COPY.failed);
         } finally {
           setBusyRow(null);
         }
       })();
     },
-    [propertyId, reloadWorklist, reloadAssigned, drawerOpen],
+    [propertyId, reloadWorklist, reloadAssigned, drawerOpen, closeMenu],
   );
+
+  /**
+   * Change something ABOUT a row without settling it: a schedule's cadence, or
+   * who is holding a work order. The other half of the pair, and the same
+   * discipline — nothing closes optimistically, and a failure says so.
+   */
+  const changeRow = React.useCallback(
+    (item: WorklistItem, patch: { frequencyDays?: number; assigneeStaffId?: string | null }) => {
+      void (async () => {
+        setBusyRow(item.id);
+        setRowError(null);
+        try {
+          const res = await fetchWithAuth('/api/worklist/assign', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              pid: propertyId,
+              sourceType: item.sourceType,
+              sourceId: item.sourceId,
+              ...patch,
+            }),
+            timeoutMs: INTERACTIVE_ACTION_TIMEOUT_MS,
+          });
+          const envelope = await readEnvelope<{ assigned: boolean }>(res);
+          if (envelope.error !== undefined) {
+            setRowError(envelope.error || ROW_MENU_COPY.failed);
+            return;
+          }
+          closeMenu();
+          await reloadWorklist();
+        } catch (e) {
+          if (e instanceof SessionEndedError) throw e;
+          setRowError(ROW_MENU_COPY.failed);
+        } finally {
+          setBusyRow(null);
+        }
+      })();
+    },
+    [propertyId, reloadWorklist, closeMenu],
+  );
+
+  /**
+   * An option was tapped.
+   *
+   * The ones that need nothing fire straight away — a confirmation step on
+   * "Somebody's been called" would be a second tap for a thing that is not
+   * destructive and is trivially re-answerable. The ones that need an answer
+   * open ONE field on the row, seeded with what is already true: the cadence
+   * box starts on the cadence it is changing.
+   */
+  const pickMenuOption = React.useCallback((item: WorklistItem, option: RowMenuOption) => {
+    setRowError(null);
+    if (option.input === 'none') {
+      settle(item, option.action === 'called' ? 'called'
+        : option.action === 'skip' ? 'skip'
+          : 'not_an_issue');
+      return;
+    }
+    setMenuRow(item.id);
+    setMenuAsking(option.action);
+    setMenuDraft(option.action === 'reschedule' && item.cadenceDays ? String(item.cadenceDays) : '');
+  }, [settle]);
+
+  /** Send whatever the open field is holding. */
+  const submitMenuAnswer = React.useCallback((item: WorklistItem) => {
+    if (menuAsking === 'waiting') {
+      const said = menuDraft.trim();
+      if (!said) return;
+      settle(item, 'waiting', said);
+      return;
+    }
+    if (menuAsking === 'reschedule') {
+      const days = readCadenceDraft(menuDraft);
+      if (days === null) return;
+      changeRow(item, { frequencyDays: days });
+    }
+  }, [menuAsking, menuDraft, settle, changeRow]);
 
   // ── the composer ─────────────────────────────────────────────────────────
   //
@@ -564,7 +672,11 @@ export function StaxisList({
   // both close on Escape, and two things closing on one keypress is a page
   // that feels like it is fighting you.
   const composerEngaged = composerOpen || composer.openRow !== null || composer.title.trim().length > 0;
-  const overlayOpen = knowsOpen || logbookOpen || monthOpen || drawerOpen;
+  // A row menu counts as something over the page for exactly one reason: the
+  // composer's Escape handler must not also fire while a menu is answering.
+  // Two things closing on one keypress is a page that feels like it is fighting
+  // you, and that rule already governs the log book and Knows.
+  const overlayOpen = knowsOpen || logbookOpen || monthOpen || drawerOpen || menuRow !== null;
   React.useEffect(() => {
     if (!composerEngaged || overlayOpen) return undefined;
 
@@ -598,6 +710,29 @@ export function StaxisList({
       document.removeEventListener('keydown', onKey);
     };
   }, [composerEngaged, overlayOpen, composer.openRow, composer.otherHint, collapseComposer, cancelComposer]);
+
+  // ── closing a row menu from outside it ───────────────────────────────────
+  //
+  // The menu brings its own click-anywhere-else exit (the transparent scrim in
+  // WorkRowView), but a scrim cannot catch a key, and the panel is gone the
+  // moment an option opens a field — so the reason box and the cadence box
+  // would have had no way out but the Never mind button. Escape closes whatever
+  // stage the menu is at, and this is the only place on the screen allowed to
+  // touch the document: list-rows.tsx is hook-free on purpose.
+  //
+  // A click elsewhere deliberately does NOT discard a half-typed reason, for
+  // the same reason the composer keeps its words: glancing at the row above is
+  // not asking for what you typed to be deleted.
+  React.useEffect(() => {
+    if (menuRow === null) return undefined;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape') return;
+      e.preventDefault();
+      closeMenu();
+    };
+    document.addEventListener('keydown', onKey);
+    return () => document.removeEventListener('keydown', onKey);
+  }, [menuRow, closeMenu]);
 
   // ── the rotating example ─────────────────────────────────────────────────
   //
@@ -878,10 +1013,26 @@ export function StaxisList({
       onDone={(i) => settle(i, 'done')}
       onDoneOnDay={(i) => settle(i, 'done_on_due')}
       onNotNeeded={(i) => settle(i, 'skip')}
-      onAskReason={(i) => { setReasonFor(i.id); setReasonDraft(''); }}
+      onAskReason={(i) => { setReasonFor(i.id); setReasonDraft(''); closeMenu(); }}
       onReasonChange={setReasonDraft}
       onCantSubmit={(i) => settle(i, 'cant', reasonDraft.trim())}
       onCancelReason={() => { setReasonFor(null); setReasonDraft(''); }}
+      menuOpen={menuRow === item.id && menuAsking === null}
+      menuAsking={menuRow === item.id ? menuAsking : null}
+      menuDraft={menuRow === item.id ? menuDraft : ''}
+      // The same roster the composer hands to-dos to. Housekeepers are already
+      // absent from it, server-side, and the assign route refuses one anyway.
+      menuPeople={people}
+      onToggleMenu={(i, open) => {
+        setRowError(null);
+        if (open) { setMenuRow(i.id); setMenuAsking(null); setMenuDraft(''); }
+        else closeMenu();
+      }}
+      onMenuPick={pickMenuOption}
+      onMenuDraftChange={setMenuDraft}
+      onMenuSubmit={submitMenuAnswer}
+      onMenuPickPerson={(i, staffId) => changeRow(i, { assigneeStaffId: staffId })}
+      onMenuCancel={closeMenu}
     />
   );
 

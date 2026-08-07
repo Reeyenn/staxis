@@ -2256,6 +2256,62 @@ first alone would be satisfied by claiming the window unconditionally at the top
 of the sweep, which would silently discard events on a failed read. If you add a
 new early return to that function, decide which half it is before you write it.
 
+## A test that only fails for one hour a day (the two-clock trap)
+
+**Symptom.** A suite that has been green for hours goes red on clean `main`, and
+goes green again if you rerun it later. The assertion is usually about a
+"today"-shaped value: a daily counter that should have been at its cap wasn't, a
+day-scoped read came back empty.
+
+**Diagnosis.** There are two different ways to answer "what day is it", and they
+are not the same answer:
+
+| source | renders in | correct for |
+|---|---|---|
+| `to_char(now(), 'YYYY-MM-DD')` in SQL | the **database session's** timezone | nothing hotel-facing |
+| `propertyLocalToday(now, tz)` in TS | the **hotel's** timezone | the people who work there |
+
+The test harness runs PGlite at a fixed `Etc/GMT+6` (no daylight saving) while a
+seeded hotel is `America/Chicago` (UTC-5 from March to November). The two
+therefore disagree for exactly one hour of every summer day, **05:00–06:00 UTC**.
+A fixture that writes a day with the first and a runner that reads it with the
+second passes 23 hours out of 24.
+
+Confirm it in one query:
+
+```sql
+select current_setting('TimeZone')            as session_zone,
+       to_char(now(), 'YYYY-MM-DD')           as what_sql_says,
+       (select timezone from public.properties limit 1) as hotel_zone;
+```
+
+then compare `what_sql_says` against `propertyLocalToday(new Date(), hotel_zone)`
+in node. If they differ, that is your bug.
+
+**Fix.** Never render a hotel-local day in SQL. Derive it in TypeScript with
+`propertyLocalToday(now, timezone)` — the same call the production code makes —
+and inject that same `now` into the code under test so one instant governs the
+window, the runner's day, and the fixture's day. Capture `now` *after* seeding
+any rows whose timestamps must fall inside the window.
+
+**Verify.** Run the suite under several machine timezones, not just yours:
+
+```bash
+for TZNAME in America/Chicago UTC Asia/Tokyo Pacific/Auckland; do
+  TZ=$TZNAME npx tsx --conditions=react-server --test --test-concurrency=1 <file>
+done
+```
+
+**Prevention.** Do not re-pin a literal date — that hides the seam and rots.
+Instead make the seam impossible to reintroduce quietly: `pinTheClock` in
+`companion-event-wake.integration.test.ts` deliberately moves the hotel onto a
+timezone that is *provably* on a different calendar day from whatever the
+database would render (UTC+14 and UTC-11 are 25 hours apart, so at least one of
+them always disagrees). Anyone who reverts that fixture to a SQL-rendered day
+gets a failure on **every** run in **every** timezone rather than during one hour
+in twenty-four. A bug that only reproduces for an hour a day is a bug that
+reaches main.
+
 ## Meta: how to add a new failure mode to this doc
 
 Every time something breaks and takes more than 30 min to fix, come back and add a section here with Symptom / Diagnosis / Fix / Verify / Prevention. This file only pays for itself if we update it.

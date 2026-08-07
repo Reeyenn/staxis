@@ -848,7 +848,7 @@ const loadPreventiveSchedule: FeedLoader<'preventive_schedule'> = async (env) =>
 
   const result = (await scopedDb(env.propertyId)
     .from('preventive_tasks')
-    .select('id, name, area, frequency_days, last_completed_at, called_at, called_by')
+    .select('id, name, area, frequency_days, last_completed_at, called_at, called_by, skipped_at, skipped_by')
     .order('name', { ascending: true })
     .limit(MAX_ROWS)) as unknown as QueryResult<Record<string, unknown>>;
 
@@ -864,6 +864,7 @@ const loadPreventiveSchedule: FeedLoader<'preventive_schedule'> = async (env) =>
     const lastDoneDate = localDateOf(row.last_completed_at, env.timezone);
     const area = typeof row.area === 'string' && row.area.trim() ? row.area.trim() : null;
     const calledDate = localDateOf(row.called_at, env.timezone);
+    const skippedDate = localDateOf(row.skipped_at, env.timezone);
 
     tasks.push({
       id,
@@ -879,6 +880,11 @@ const loadPreventiveSchedule: FeedLoader<'preventive_schedule'> = async (env) =>
       calledBy:
         calledDate && typeof row.called_by === 'string' && row.called_by.trim()
           ? row.called_by.trim()
+          : null,
+      skippedDate,
+      skippedBy:
+        skippedDate && typeof row.skipped_by === 'string' && row.skipped_by.trim()
+          ? row.skipped_by.trim()
           : null,
     });
   }

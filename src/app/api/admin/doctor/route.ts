@@ -881,6 +881,9 @@ export const EXPECTED_MIGRATIONS_STATIC: ReadonlyArray<string> = [
   // The question under a companion card: judged_question + judged_reply_order
   // on findings, both nullable, both meaning "use the template" when absent.
   '0461',
+  // "Skip this one" on an upkeep schedule: one occurrence put down without
+  // anybody claiming the work happened (preventive_tasks.skipped_at/by).
+  '0462',
 ];
 
 /**

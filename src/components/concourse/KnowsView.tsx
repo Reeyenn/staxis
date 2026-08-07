@@ -243,7 +243,7 @@ const KN_CSS = `
 .kn-scrim{position:fixed;inset:0;z-index:70;background:rgba(20,26,20,.4);border:none;padding:0;cursor:default;}
 .kn-pop{position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);z-index:71;width:min(560px,calc(100vw - 32px));
   background:#FCFDFB;border-radius:20px;box-shadow:0 40px 80px -30px rgba(20,26,20,.6);padding:20px 20px 18px;
-  box-sizing:border-box;max-height:calc(100vh - 40px);overflow:auto;}
+  box-sizing:border-box;max-height:calc(100dvh - 40px);overflow:auto;}
 .kn-popt{font-size:17px;font-weight:600;color:#1F231C;}
 .kn-pophint{font-size:12.5px;color:#8A9187;margin-top:4px;line-height:1.5;}
 .kn-tawrap{margin-top:12px;}
@@ -273,8 +273,15 @@ const KN_CSS = `
      so the highlight would strobe on and off under the cursor. */
   pointer-events:none;}
 .kn-dropt{display:inline-flex;align-items:center;gap:9px;font-size:15px;font-weight:600;color:#3E5C48;}
+/* On a phone: the box you type into is 16px so iOS does not zoom the page the
+   moment somebody taps it, and every button under it is thumb-sized. */
+@media (max-width:760px){
+  .kn-ta{font-size:16px;}
+  .kn-act{min-height:40px;padding:0 15px;font-size:13.5px;}
+  .kn-popacts .kn-act{flex:0 0 auto;}
+}
 @media (max-width:600px){
-  .kn-pop{width:calc(100vw - 20px);padding:18px 16px 16px;}
+  .kn-pop{width:calc(100vw - 20px);padding:18px 16px calc(16px + env(safe-area-inset-bottom));}
 }
 @media (prefers-reduced-motion: reduce){
   .kn-teach{transition:none;}

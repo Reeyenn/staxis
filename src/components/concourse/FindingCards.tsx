@@ -558,6 +558,9 @@ function InkCard({
     <div
       ref={cardRef}
       data-finding-id={finding.id}
+      // The pointer reads this before it picks a side: the companion may sit
+      // on a plain to-do row if it has to, never on something it said itself.
+      data-staxis-surface="finding"
       className={`fx-ink-card${focused ? ' fx-focused' : ''}`}
     >
       <span className="fx-scan" aria-hidden />

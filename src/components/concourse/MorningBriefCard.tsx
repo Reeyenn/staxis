@@ -111,7 +111,7 @@ export function MorningBriefView({
   const [headline, ...rest] = lines;
 
   return (
-    <div className="fx-ink-card" data-brief-kind={brief.kind}>
+    <div className="fx-ink-card" data-staxis-surface="brief" data-brief-kind={brief.kind}>
       <span className="fx-scan fx-slow" aria-hidden />
 
       <div className="fx-inkhead">
