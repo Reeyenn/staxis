@@ -2345,7 +2345,7 @@ Migration 0162 was written in May 2026 to fix this and never landed — `select 
 
 1. Ship the `check-trust` session-binding change (`bindSessionVerification` in `src/app/api/auth/check-trust/route.ts`). It writes the `mfa_verified_sessions` row for the session whose cookie it just accepted. This grants no new authority: that cookie is already what Door B accepts on its own.
 2. Wait one full access-token lifetime (Supabase default one hour) so every live session refreshes once and picks up the claim. Watch `select count(*) from public.mfa_verified_sessions;` climb.
-3. Apply `supabase/migrations/0469_tighten_mfa_verified_grace.sql`, then `notify pgrst, 'reload schema';`
+3. Apply `supabase/migrations/0470_tighten_mfa_verified_grace.sql`, then `notify pgrst, 'reload schema';`
 
 **Verify.** Re-run the `set_config` probe above. It must return false with the switch ON and no claim, and true with the switch OFF.
 
