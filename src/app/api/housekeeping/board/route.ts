@@ -35,6 +35,8 @@
  *                      is_scheduled, scheduled_minutes, workload_minutes }],
  *     crew_source: 'scheduled' | 'unscheduled_fallback',
  *     shift_minutes: number,
+ *     shift_start_hour: number,   // hotel-local hour the day starts, 0-23
+ *     timezone: string | null,    // IANA zone for the Timeline's NOW line
  *     unassigned: number,
  *   }
  */
@@ -58,6 +60,10 @@ import {
   resolveHousekeepingCrewForDate,
   DEFAULT_CREW_SHIFT_MINUTES,
 } from '@/lib/schedule/active-crew';
+import {
+  resolveShiftStartHour,
+  FALLBACK_SHIFT_START_HOUR,
+} from '@/lib/housekeeping/setup-gate';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -149,6 +155,8 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
           unassigned: 0,
           crew_source: 'unscheduled_fallback' as const,
           shift_minutes: DEFAULT_CREW_SHIFT_MINUTES,
+          shift_start_hour: FALLBACK_SHIFT_START_HOUR,
+          timezone: null,
         },
         { requestId },
       );
@@ -165,7 +173,12 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
         .eq('department', 'housekeeping'),
       supabaseAdmin
         .from('properties')
-        .select('shift_minutes')
+        // timezone + housekeeping_setup ride along for the Timeline view: it
+        // draws the day from the hotel's answer to "when does housekeeping
+        // start" and puts its NOW line on the hotel's clock, not the
+        // manager's browser clock. Resolved with the same helper
+        // /api/housekeeping/timeline uses so the two views agree.
+        .select('shift_minutes, timezone, housekeeping_setup')
         .eq('id', propertyId)
         .maybeSingle(),
     ]);
@@ -184,8 +197,14 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
       return err('load property failed', { requestId, status: 500, code: 'upstream_failure' });
     }
     const staff = (staffRes.data ?? []) as StaffRow[];
-    const defaultShiftMinutes =
-      (propRes.data?.shift_minutes as number | null | undefined) ?? DEFAULT_CREW_SHIFT_MINUTES;
+    const propertyRow = (propRes.data ?? null) as {
+      shift_minutes?: number | null;
+      timezone?: string | null;
+      housekeeping_setup?: unknown;
+    } | null;
+    const defaultShiftMinutes = propertyRow?.shift_minutes ?? DEFAULT_CREW_SHIFT_MINUTES;
+    const shiftStartHour = resolveShiftStartHour(propertyRow?.housekeeping_setup);
+    const timezone = propertyRow?.timezone ?? null;
 
     // 3b. Who is actually working this date, per the Staff schedule.
     //     Anyone who already holds a canonical assignment is force-included
@@ -282,6 +301,11 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
         //                           board shows everyone and the UI says why.
         crew_source: crew.source,
         shift_minutes: defaultShiftMinutes,
+        // Hour the housekeeping day starts, hotel-local 0-23, from the
+        // questionnaire. The Timeline view anchors its axis on it.
+        shift_start_hour: shiftStartHour,
+        // IANA zone, so the NOW line is the hotel's clock.
+        timezone,
       },
       { requestId },
     );

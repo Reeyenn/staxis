@@ -23,13 +23,13 @@
  */
 
 import React, { useState } from 'react';
+import { propertyLocalClockMinutes } from '@/lib/schedule/local-date';
 import { T, FONT_SANS, FONT_MONO, HousekeeperDot } from './_snow';
 import {
   type BoardTask, type BoardHk, type Language,
   chipKind, fmtMinutes,
 } from './ScheduleBoard';
 
-const START_HOUR = 7; // shift window starts 7:00 local (matches the design)
 const CHIP_COLOR: Record<string, string> = {
   checkout: T.warm, stayover: T.caramelDeep, arrival: T.sageDeep,
 };
@@ -42,7 +42,7 @@ function hourLabel(h: number): string {
 }
 
 export function ScheduleTimeline({
-  crew, tasks, shiftMinutes, lang, showNow,
+  crew, tasks, shiftMinutes, lang, showNow, startHour, timezone,
   onReassign, onOpenTask,
 }: {
   crew: BoardHk[];
@@ -51,6 +51,20 @@ export function ScheduleTimeline({
   lang: Language;
   /** Draw the NOW line (only meaningful when viewing today). */
   showNow: boolean;
+  /**
+   * Hour the housekeeping day starts at THIS hotel, 0 to 23, from the
+   * questionnaire's "when does housekeeping start" answer (the server resolves
+   * it; see /api/housekeeping/board). This used to be a hardcoded 7, so a
+   * hotel that answered 6:00 or 09:30 had its whole day drawn against a start
+   * it never chose.
+   */
+  startHour: number;
+  /**
+   * The hotel's IANA timezone, for the NOW line. Null when the hotel has none
+   * on file, in which case the line falls back to UTC rather than to whatever
+   * zone the manager's laptop happens to be in.
+   */
+  timezone: string | null;
   onReassign: (taskId: string, toHkId: string) => void;
   onOpenTask: (task: BoardTask) => void;
 }) {
@@ -89,11 +103,16 @@ export function ScheduleTimeline({
   );
   const windowMinutes = Math.max(60, Math.ceil(maxLoad / 60) * 60);
   const hourCount = Math.round(windowMinutes / 60);
-  const hours = Array.from({ length: hourCount + 1 }, (_, i) => START_HOUR + i);
+  const hours = Array.from({ length: hourCount + 1 }, (_, i) => startHour + i);
 
   // NOW position as a fraction of the window (clamped to [0,1]).
-  const now = new Date();
-  const nowMinFromStart = (now.getHours() - START_HOUR) * 60 + now.getMinutes();
+  //
+  // On the HOTEL's clock. `new Date().getHours()` read the manager's browser
+  // zone, so a corporate manager in New York looking at a Texas hotel saw the
+  // NOW line an hour ahead of the crew it describes — and out of hours it
+  // vanished or pinned to an edge for no visible reason. Same hotel-local
+  // clock the rest of the app uses (src/lib/schedule/local-date.ts).
+  const nowMinFromStart = propertyLocalClockMinutes(new Date(), timezone) - startHour * 60;
   const nowPct = Math.max(0, Math.min(1, nowMinFromStart / windowMinutes)) * 100;
   const nowVisible = showNow && nowMinFromStart >= 0 && nowMinFromStart <= windowMinutes;
 
@@ -126,7 +145,7 @@ export function ScheduleTimeline({
             <div />
             <div style={{ position: 'relative', height: 22 }}>
               {hours.map(h => {
-                const pct = ((h - START_HOUR) * 60 / windowMinutes) * 100;
+                const pct = ((h - startHour) * 60 / windowMinutes) * 100;
                 if (pct > 100.01) return null;
                 return (
                   <span key={h} style={{
@@ -177,7 +196,7 @@ export function ScheduleTimeline({
                 >
                   {/* Hour gridlines */}
                   {hours.map(h => {
-                    const pct = ((h - START_HOUR) * 60 / windowMinutes) * 100;
+                    const pct = ((h - startHour) * 60 / windowMinutes) * 100;
                     if (pct > 100.01) return null;
                     return (
                       <span key={h} style={{
@@ -264,7 +283,7 @@ export function ScheduleTimeline({
                     shift; the row header states how many and how long. */}
                 <div style={{ position: 'relative', height: 50, overflow: 'hidden' }}>
                   {hours.map(h => {
-                    const pct = ((h - START_HOUR) * 60 / windowMinutes) * 100;
+                    const pct = ((h - startHour) * 60 / windowMinutes) * 100;
                     if (pct > 100.01) return null;
                     return (
                       <span key={h} style={{

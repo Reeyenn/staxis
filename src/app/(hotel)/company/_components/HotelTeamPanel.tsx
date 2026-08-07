@@ -540,21 +540,23 @@ function resolveActions(
   };
 }
 
-function floorOffRosterActions(
-  actions: ResolvedActions,
-  offRoster: boolean,
-): ResolvedActions {
-  if (!offRoster) return actions;
-  return {
-    ...actions,
-    canEdit: false,
-    canChangeRole: false,
-    canResetPassword: false,
-    canDeactivate: false,
-    canReactivate: false,
-    canRemove: false,
-  };
-}
+// ── Archiving a schedule profile must NEVER lock the login ─────────────────
+//
+// There used to be a `floorOffRosterActions` here that zeroed every account
+// action — edit, role, password, deactivate, remove — as soon as the merged
+// `staff` row was inactive. Archiving somebody's schedule profile therefore
+// bricked the management of their LOGIN: it could never again be renamed,
+// disabled or removed from the hotel, and nothing in the app un-archives a
+// staff row. The archive confirmation even promises the opposite ("Their
+// login, if any, is kept and keeps working").
+//
+// The two halves are separate facts about a person. An archived schedule
+// profile says they are off the roster; it says nothing about whether their
+// Staxis login should still work, and it is not an authority signal. Account
+// authority comes from `resolveActions` alone (hierarchy floors, owner
+// protection, locked preview) and the EMPLOYMENT half is what goes read-only
+// — see `canEditEmployment` and the `canEdit` prop handed to
+// PersonEmploymentForm.
 
 /**
  * Who may change a person's EMPLOYMENT record (hours, pay, department, active
@@ -1017,6 +1019,7 @@ export function HotelTeamPanel({
     setEditKey(null);
     setRemoveMember(null);
     setAddDepartment(null);
+    setPendingAddAttempt(null);
     setInviteChoiceOpen(false);
     setDecision(null);
   }, [canViewTeam]);
@@ -1383,6 +1386,22 @@ export function HotelTeamPanel({
           : addDepartmentVisible
             ? 'add-staff'
           : 'decision';
+  // Closing "Add to schedule" ABANDONS the attempt it was carrying.
+  //
+  // `pendingAddAttempt` is the idempotency key for one create: after a timeout
+  // or an "still processing" answer, retrying with the SAME key is what stops
+  // a second person being created from a write that may already have landed.
+  // That is only true for a retry of the same submission. Once the manager
+  // closes the dialog they are no longer retrying anything, and keeping the
+  // attempt meant every later open of Add to schedule came back pre-filled
+  // with the old name, every field disabled, and one button reading "Retry
+  // add" — with no way out but a page reload. Whether the abandoned write
+  // landed is answered by the roster refresh, not by a stuck form.
+  const closeAddStaffDialog = React.useCallback(() => {
+    setAddDepartment(null);
+    setPendingAddAttempt(null);
+  }, []);
+
   const closeLoadingDialog = React.useCallback(() => {
     if (editKey) {
       setEditKey(null);
@@ -1402,11 +1421,11 @@ export function HotelTeamPanel({
       return;
     }
     if (addDepartment) {
-      setAddDepartment(null);
+      closeAddStaffDialog();
       return;
     }
     setDecision(null);
-  }, [addDepartment, editKey, inviteChoiceOpen, inviteDialogOpen, onInviteDialogOpenChange, removeMemberForHotel]);
+  }, [addDepartment, closeAddStaffDialog, editKey, inviteChoiceOpen, inviteDialogOpen, onInviteDialogOpenChange, removeMemberForHotel]);
 
   const loadingReturnFocusRef = loadingDialogVariant === 'invite-choice'
     ? inviteEntryReturnFocusRef
@@ -1453,9 +1472,9 @@ export function HotelTeamPanel({
     const keepFirstPersonDialog = inviteDialogOpen && firstPersonDialogMode !== null;
     if (keepFirstPersonDialog) return;
     setInviteChoiceOpen(false);
-    setAddDepartment(null);
+    closeAddStaffDialog();
     if (inviteDialogOpen) onInviteDialogOpenChange(false);
-  }, [firstPersonDialogMode, inviteSurfaceRevoked, inviteDialogOpen, onInviteDialogOpenChange]);
+  }, [closeAddStaffDialog, firstPersonDialogMode, inviteSurfaceRevoked, inviteDialogOpen, onInviteDialogOpenChange]);
 
   React.useEffect(() => {
     if (!firstPersonPending || !canManageTeam || !teamSnapshotCurrent) return;
@@ -1555,16 +1574,13 @@ export function HotelTeamPanel({
 
   const editAccount = editPerson?.account ?? null;
   const editActions = editAccount
-    ? floorOffRosterActions(
-        resolveActions(
-          editAccount,
-          currentUser,
-          currentAccountId,
-          actionsLocked
-            || Boolean(pendingLifecycleByAccount[editAccount.accountId])
-            || editAccount.lifecyclePending === true,
-        ),
-        editPerson?.staff?.isActive === false,
+    ? resolveActions(
+        editAccount,
+        currentUser,
+        currentAccountId,
+        actionsLocked
+          || Boolean(pendingLifecycleByAccount[editAccount.accountId])
+          || editAccount.lifecyclePending === true,
       )
     : null;
 
@@ -1891,7 +1907,10 @@ export function HotelTeamPanel({
             currentAccountId={currentAccountId}
             lang={lang}
             actions={editActions}
-            readOnly={editPerson.staff?.isActive === false || actionsLocked}
+            // Only a locked (read-only admin preview) session makes the whole
+            // account half observational. An archived schedule profile does
+            // not: see the note above floorOffRosterActions' replacement.
+            readOnly={actionsLocked}
             employmentSlot={employmentSlot}
             onLifecyclePending={reconcilePendingLifecycle}
             onClose={() => setEditKey(null)}
@@ -1984,7 +2003,7 @@ export function HotelTeamPanel({
             initialDepartment={addDepartmentVisible}
             returnFocusRef={addStaffReturnFocusRef}
             fallbackFocusRef={peopleHeadingRef}
-            onClose={() => setAddDepartment(null)}
+            onClose={closeAddStaffDialog}
             onAdded={(member) => setOptimisticStaff((current) => (
               current.some((item) => item.id === member.id) ? current : [...current, member]
             ))}
@@ -2089,14 +2108,15 @@ export function PersonRow({
     || availableActions.canDeactivate
     || availableActions.canReactivate
   ));
+  // Archived schedule profile. It makes the EMPLOYMENT half read-only and
+  // nothing else — the login keeps whatever authority resolveActions gave it.
   const offRoster = staff?.isActive === false;
   const employmentEditable = !offRoster
     && canEditEmployment(account, currentUser, currentAccountId, locked);
   // Somebody with a login you may not touch and no schedule profile has nothing
   // behind the button — don't offer one.
   const canOpen = canOpenAccountEditor || Boolean(staff);
-  const editable = !offRoster
-    && (canOpenAccountEditor || (Boolean(staff) && employmentEditable));
+  const editable = canOpenAccountEditor || (Boolean(staff) && employmentEditable);
   const dimmed = staff?.isActive === false || (account ? !account.active : false);
   const jobLines = account ? jobsByAccountId[account.accountId] ?? [] : [];
   const jobLabel = personJobLabel(person, lang);
@@ -2171,7 +2191,7 @@ export function PersonRow({
         ) : null}
       </div>
 
-      {canOpen || (!offRoster && availableActions?.canRemove) ? (
+      {canOpen || availableActions?.canRemove ? (
         <div className={styles.rowActions}>
           {canOpen ? (
             <button
@@ -2187,7 +2207,7 @@ export function PersonRow({
               <span>{editable ? 'Edit' : 'View'}</span>
             </button>
           ) : null}
-          {account && !offRoster && availableActions?.canRemove ? (
+          {account && availableActions?.canRemove ? (
             <button
               type="button"
               className={styles.removeButton}

@@ -438,14 +438,22 @@ export function PersonEmploymentForm({
   }
 
   // ── Read-only: the viewer may see this person but not change them ────────
+  //
+  // Two different reasons land here, and they must not read the same. Either
+  // the viewer lacks permission, or the schedule profile has been ARCHIVED —
+  // in which case nobody can edit it, and the card says so plainly instead of
+  // implying the reader is the problem. Archiving is about the schedule only:
+  // the person's Staxis login, if they have one, stays managed by the account
+  // half of this same panel.
   if (!canEdit) {
+    const archived = staff.isActive === false;
     return (
       <section className={styles.employmentCard} aria-labelledby={headingId}>
         <div className={styles.employmentHeader}>
           <span className={styles.sectionIcon}><UserRoundCog size={18} aria-hidden="true" /></span>
           <div>
             <span>{'Employment'}</span>
-            <h3 id={headingId}>{'Schedule profile'}</h3>
+            <h3 id={headingId}>{archived ? 'Schedule profile, archived' : 'Schedule profile'}</h3>
           </div>
         </div>
         <dl className={styles.employmentFacts}>
@@ -459,13 +467,13 @@ export function PersonEmploymentForm({
           </div>
           <div>
             <dt>{'Status'}</dt>
-            <dd>{staff.isActive === false
-              ? 'Inactive'
-              : 'Active'}</dd>
+            <dd>{archived ? 'Archived' : 'Active'}</dd>
           </div>
         </dl>
         <p className={styles.employmentCopy}>
-          {'You do not have permission to change this person’s employment details.'}
+          {archived
+            ? 'This person was archived off the schedule, so their employment details are kept as a record and cannot be changed. Their Staxis login is a separate record and is still managed in the login section of this panel.'
+            : 'You do not have permission to change this person’s employment details.'}
         </p>
       </section>
     );

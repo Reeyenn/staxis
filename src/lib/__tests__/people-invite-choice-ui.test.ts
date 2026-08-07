@@ -195,7 +195,10 @@ describe('People invite entry choice', () => {
     );
     assert.match(
       panel,
-      /React\.useEffect\(\(\) => \{\s*if \(!inviteSurfaceRevoked\) return;[\s\S]*setInviteChoiceOpen\(false\);[\s\S]*setAddDepartment\(null\);[\s\S]*if \(inviteDialogOpen\) onInviteDialogOpenChange\(false\);[\s\S]*\}, \[firstPersonDialogMode, inviteSurfaceRevoked, inviteDialogOpen, onInviteDialogOpenChange\]\)/,
+      // closeAddStaffDialog is setAddDepartment(null) plus dropping the
+      // abandoned idempotency attempt, so a revoked surface no longer leaves a
+      // pre-filled "Retry add" form waiting behind the next open.
+      /React\.useEffect\(\(\) => \{\s*if \(!inviteSurfaceRevoked\) return;[\s\S]*setInviteChoiceOpen\(false\);[\s\S]*closeAddStaffDialog\(\);[\s\S]*if \(inviteDialogOpen\) onInviteDialogOpenChange\(false\);[\s\S]*\}, \[closeAddStaffDialog, firstPersonDialogMode, inviteSurfaceRevoked, inviteDialogOpen, onInviteDialogOpenChange\]\)/,
     );
     assert.match(panel, /const inviteCapabilityKey = \[[\s\S]*adminPreview \? 'admin-preview' : 'customer'/);
     assert.match(panel, /const \[, setInviteCapabilityRevision\] = React\.useState\(0\)/);
@@ -324,7 +327,11 @@ describe('People invite entry choice', () => {
     assert.match(loadingComponent, /styles\.dialogLoadingInviteChoice/);
     assert.match(loadingComponent, /styles\.dialogLoadingAddStaff/);
     assert.match(panel, /inviteChoiceOpen[\s\S]*'invite-choice'[\s\S]*addDepartment[\s\S]*'add-staff'[\s\S]*'decision'/);
-    assert.match(panel, /if \(addDepartment\) \{[\s\S]*setAddDepartment\(null\)/);
+    // closeAddStaffDialog === setAddDepartment(null) + drop the abandoned
+    // idempotency attempt. Closing the loading shell still closes exactly the
+    // add-staff state and nothing else.
+    assert.match(panel, /if \(addDepartment\) \{[\s\S]*closeAddStaffDialog\(\)/);
+    assert.match(panel, /const closeAddStaffDialog = React\.useCallback\(\(\) => \{\s*setAddDepartment\(null\);\s*setPendingAddAttempt\(null\);/);
     assert.match(earlyBranch, /variant=\{loadingDialogVariant\}[\s\S]*onClose=\{closeLoadingDialog\}/);
     assert.match(
       loadingBody,

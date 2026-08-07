@@ -174,6 +174,15 @@ export function QualityTab() {
     notes: string;
   } | null>(null);
   const [submitting, setSubmitting] = useState(false);
+  // A submit that did not land. Holds the message AND which button was pressed
+  // so Retry re-sends the same result without the inspector re-deciding. Set to
+  // null on every fresh submit and whenever the drawer opens.
+  const [submitError, setSubmitError] = useState<
+    { message: string; result: 'pass' | 'fail' } | null
+  >(null);
+  // Close was pressed while a submit is unsaved, so the drawer is asking
+  // whether to keep working or throw the inspection away.
+  const [closeConfirming, setCloseConfirming] = useState(false);
   const [stats, setStats] = useState<InspectionStats | null>(null);
   const [history, setHistory] = useState<InspectionHistoryEntry[]>([]);
   const [toast, setToast] = useState<string | null>(null);
@@ -386,6 +395,8 @@ export function QualityTab() {
       for (const item of checklist.items) {
         drafts.set(item.id, { state: null, note: '', photoUrl: null, photoPath: null, uploading: false });
       }
+      setSubmitError(null);
+      setCloseConfirming(false);
       setActive({ inspection, checklist, drafts, notes: '' });
     } catch {
       setToast('Network error');
@@ -395,6 +406,8 @@ export function QualityTab() {
   const handleSubmit = useCallback(async (result: 'pass' | 'fail') => {
     if (!active || submitting) return;
     setSubmitting(true);
+    setSubmitError(null);
+    setCloseConfirming(false);
     try {
       const failedItems: InspectionFailedItem[] = [];
       const passedItems: string[] = [];
@@ -445,7 +458,12 @@ export function QualityTab() {
       );
       const json = await res.json().catch(() => null);
       if (!res.ok || !json?.ok) {
-        setToast(json?.error ?? 'Could not complete inspection');
+        setSubmitError({
+          message: typeof json?.error === 'string' && json.error
+            ? json.error
+            : 'This inspection could not be saved. Nothing was recorded.',
+          result,
+        });
         return;
       }
       setToast(result === 'pass'
@@ -455,6 +473,17 @@ export function QualityTab() {
       void refreshQueue();
       void refreshStats();
       void refreshHistory();
+    } catch (err) {
+      // Was try/finally with no catch: an offline or timed-out submit rejected
+      // into nothing. No message, the drawer stayed open, the button came back
+      // to life, and the only visible exit (Close) ran the cancel path and
+      // threw every check, note and photo away. Keep the whole draft and say
+      // what happened.
+      console.error('[QualityTab] submit failed:', err);
+      setSubmitError({
+        message: 'This inspection could not be saved. Check your connection, then retry. Your checks and photos are still here.',
+        result,
+      });
     } finally {
       setSubmitting(false);
     }
@@ -464,6 +493,8 @@ export function QualityTab() {
     if (!active) return;
     const id = active.inspection.id;
     setActive(null);
+    setSubmitError(null);
+    setCloseConfirming(false);
     try {
       await fetchWithAuth(`/api/housekeeping/inspections/${id}/cancel`, { method: 'POST' });
     } catch {
@@ -472,6 +503,30 @@ export function QualityTab() {
       void refreshQueue();
     }
   }, [active, refreshQueue]);
+
+  // Close, with the unsaved-submit case handled explicitly.
+  //
+  // WHY CLOSE STILL CANCELS: a room whose latest inspection is `in_progress` is
+  // deliberately dropped from the queue (buildInspectionQueue in
+  // src/lib/housekeeping/inspection-queue.ts treats it as "another inspector is
+  // on it"), so simply walking away without cancelling would hide the room from
+  // every inspector with no way back. Cancel is therefore the right exit — but
+  // it must never be the SILENT one after a failed save, because everything the
+  // inspector just did goes with it. So a failed submit turns Close into an
+  // explicit question: keep working, or discard.
+  const requestClose = useCallback(() => {
+    // Escape or the scrim while the question is up answers "keep working",
+    // the same way the account dialog treats an inline confirmation.
+    if (closeConfirming) {
+      setCloseConfirming(false);
+      return;
+    }
+    if (submitError) {
+      setCloseConfirming(true);
+      return;
+    }
+    void handleCancel();
+  }, [closeConfirming, handleCancel, submitError]);
 
   const updateDraft = useCallback((itemId: string, patch: Partial<ItemDraft>) => {
     setActive((prev) => {
@@ -526,8 +581,11 @@ export function QualityTab() {
         ? 'Kept. Counts toward averages.'
         : 'Discarded from averages');
     } catch (err) {
+      // decideOnFlaggedEvent now throws when the update matched no rows, so a
+      // review that RLS filtered away no longer reads as "Kept." The row stays
+      // in the list because the optimistic drop above never ran.
       console.error('[QualityTab] decide failed:', err);
-      setToast('Could not save decision');
+      setToast('That decision was not saved. Nothing was recorded, so try again.');
     } finally {
       setReviewingId(null);
     }
@@ -799,7 +857,11 @@ export function QualityTab() {
           active={active}
           submitting={submitting}
           lang={lang}
-          onClose={handleCancel}
+          submitError={submitError}
+          closeConfirming={closeConfirming}
+          onClose={requestClose}
+          onKeepWorking={() => setCloseConfirming(false)}
+          onDiscard={() => { void handleCancel(); }}
           onState={(id, st) => updateDraft(id, { state: st })}
           onNote={(id, n) => updateDraft(id, { note: n })}
           onUpload={handleUploadPhoto}
@@ -1080,12 +1142,19 @@ function EfficiencyCard({
 // ─── Inspection drawer ───────────────────────────────────────────────────────
 
 function InspectDrawer({
-  active, submitting, lang, onClose, onState, onNote, onUpload, onNotes, onSubmit,
+  active, submitting, lang, submitError, closeConfirming,
+  onClose, onKeepWorking, onDiscard, onState, onNote, onUpload, onNotes, onSubmit,
 }: {
   active: { inspection: Inspection; checklist: InspectionChecklist; drafts: Map<string, ItemDraft>; notes: string };
   submitting: boolean;
   lang: 'en' | 'es';
+  /** The last submit failed. Everything on screen is still unsaved. */
+  submitError: { message: string; result: 'pass' | 'fail' } | null;
+  /** Close was pressed on an unsaved inspection — ask before discarding. */
+  closeConfirming: boolean;
   onClose: () => void;
+  onKeepWorking: () => void;
+  onDiscard: () => void;
   onState: (id: string, st: SeverityValue) => void;
   onNote: (id: string, n: string) => void;
   onUpload: (id: string, file: File) => void;
@@ -1175,8 +1244,50 @@ function InspectDrawer({
         {/* Sticky submit bar */}
         <div style={{
           position: 'sticky', bottom: 0, background: T.paper, paddingTop: 10,
-          borderTop: `1px solid ${T.rule}`, display: 'flex', justifyContent: 'flex-end', gap: 8, alignItems: 'center',
+          borderTop: `1px solid ${T.rule}`, display: 'flex', flexDirection: 'column',
+          gap: 10, alignItems: 'stretch',
         }}>
+          {submitError && !closeConfirming && (
+            <div role="alert" style={{
+              display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+              gap: 10, flexWrap: 'wrap',
+              background: T.warmDim, border: '1px solid rgba(184,92,61,0.35)',
+              borderRadius: 12, padding: '10px 12px',
+              fontFamily: FONT_SANS, fontSize: 12.5, color: T.warm,
+            }}>
+              <span style={{ flex: 1, minWidth: 180 }}>{submitError.message}</span>
+              <Btn variant="paper" size="sm" onClick={() => onSubmit(submitError.result)} disabled={submitting}>
+                {submitting ? 'Saving…' : 'Retry'}
+              </Btn>
+            </div>
+          )}
+
+          {/* Close pressed on an unsaved inspection. Cancelling really does
+              throw the work away, so it is never the silent answer. */}
+          {closeConfirming && (
+            <div role="alert" style={{
+              background: T.warmDim, border: '1px solid rgba(184,92,61,0.35)',
+              borderRadius: 12, padding: '12px 13px',
+              fontFamily: FONT_SANS, fontSize: 12.5, color: T.warm,
+            }}>
+              <strong style={{ display: 'block', fontSize: 13, marginBottom: 4 }}>
+                {'This inspection has not been saved'}
+              </strong>
+              <span style={{ display: 'block', marginBottom: 10 }}>
+                {'Closing now discards every check, note and photo on this screen, and puts the room back in the queue.'}
+              </span>
+              <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', flexWrap: 'wrap' }}>
+                <Btn variant="paper" size="sm" onClick={onKeepWorking}>
+                  {'Keep working'}
+                </Btn>
+                <Btn variant="primary" size="sm" onClick={onDiscard} style={{ background: T.warm, borderColor: T.warm }}>
+                  {'Discard inspection'}
+                </Btn>
+              </div>
+            </div>
+          )}
+
+          <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, alignItems: 'center' }}>
           {!allDecided && (
             <span style={{ fontFamily: FONT_MONO, fontSize: 11, color: T.ink3 }}>
               {'Mark every check to submit'}
@@ -1192,6 +1303,7 @@ function InspectDrawer({
               {submitting ? 'Saving…' : 'Send for re-clean →'}
             </Btn>
           )}
+          </div>
         </div>
       </div>
     </div>

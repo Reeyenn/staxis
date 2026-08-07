@@ -36,9 +36,10 @@
  *     shift: {
  *       date,                       // echoed business_date
  *       timezone,                   // IANA, e.g. "America/Chicago"
- *       start_iso,                  // shift_date @ 7am local, in UTC ISO
+ *       start_iso,                  // shift_date @ start_hour_local, in UTC ISO
  *       end_iso,                    // start_iso + shift_minutes
  *       shift_minutes,              // property.shift_minutes (default 480)
+ *       start_hour_local,           // hour the shift starts, hotel-local 0-23
  *     },
  *     unassigned: number,
  *   }
@@ -63,15 +64,21 @@ import {
 import { fetchCleanTimeBaseDurations } from '@/lib/clean-time-standards-server';
 import { localDateTimeToUtcIso } from '@/lib/timeline-layout';
 import { resolveHousekeepingCrewForDate } from '@/lib/schedule/active-crew';
+import { resolveShiftStartHour } from '@/lib/housekeeping/setup-gate';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
-// Default start hour for the housekeeping shift, in property-local time.
-// Most limited-service hotels start at 8am; we pick 7am to leave room
-// for a senior arriving early. Hotels can override this once the
-// per-property "shift_start_hour" column exists (not yet shipped).
-const DEFAULT_SHIFT_START_HOUR_LOCAL = 7;
+// The shift start hour is no longer hardcoded here.
+//
+// It used to be `const DEFAULT_SHIFT_START_HOUR_LOCAL = 7`, with a comment
+// promising a per-property column that never shipped. The answer was already
+// in the database the whole time: Q4 of the housekeeping questionnaire stores
+// `shiftStartTime` in `properties.housekeeping_setup` (migration 0337), and
+// nothing read it. `resolveShiftStartHour` does, falling back to
+// FALLBACK_SHIFT_START_HOUR for a hotel that has not been asked yet.
+// /api/housekeeping/board resolves the same hour through the same helper, so
+// the board and the timeline can never disagree about when the day starts.
 
 interface CleaningTaskRow {
   id: string;
@@ -103,6 +110,7 @@ interface PropertyRow {
   id: string;
   timezone: string | null;
   shift_minutes: number | null;
+  housekeeping_setup: unknown;
 }
 
 export async function GET(req: NextRequest): Promise<NextResponse> {
@@ -139,10 +147,11 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
       });
     }
 
-    // 1. Property timezone + shift_minutes for the shift-window math.
+    // 1. Property timezone + shift_minutes + the questionnaire's shift start
+    //    for the shift-window math.
     const { data: propRow, error: propErr } = await supabaseAdmin
       .from('properties')
-      .select('id, timezone, shift_minutes')
+      .select('id, timezone, shift_minutes, housekeeping_setup')
       .eq('id', propertyId)
       .maybeSingle<PropertyRow>();
     if (propErr) {
@@ -154,9 +163,12 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
     }
     const timezone = propRow.timezone || 'America/Chicago';
     const shiftMinutes = propRow.shift_minutes ?? 480;
+    // The hotel's own answer to "when does housekeeping start", or 7am when
+    // they have not been asked yet.
+    const startHourLocal = resolveShiftStartHour(propRow.housekeeping_setup);
     let startIso: string;
     try {
-      startIso = localDateTimeToUtcIso(businessDate, DEFAULT_SHIFT_START_HOUR_LOCAL, timezone);
+      startIso = localDateTimeToUtcIso(businessDate, startHourLocal, timezone);
     } catch (e) {
       log.error('timeline: shift-start derivation failed', { requestId, msg: errToString(e) });
       return err('shift window derivation failed', { requestId, status: 500, code: 'internal_error' });
@@ -192,7 +204,7 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
           housekeepers: [],
           unassigned: 0,
           crew_source: 'unscheduled_fallback' as const,
-          shift: { date: businessDate, timezone, start_iso: startIso, end_iso: endIso, shift_minutes: shiftMinutes },
+          shift: { date: businessDate, timezone, start_iso: startIso, end_iso: endIso, shift_minutes: shiftMinutes, start_hour_local: startHourLocal },
         },
         { requestId },
       );
@@ -287,7 +299,7 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
         housekeepers: housekeepersOut,
         unassigned,
         crew_source: crew.source,
-        shift: { date: businessDate, timezone, start_iso: startIso, end_iso: endIso, shift_minutes: shiftMinutes },
+        shift: { date: businessDate, timezone, start_iso: startIso, end_iso: endIso, shift_minutes: shiftMinutes, start_hour_local: startHourLocal },
       },
       { requestId },
     );

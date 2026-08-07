@@ -49,6 +49,7 @@
 
 import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
 import { createPortal } from 'react-dom';
+import Link from 'next/link';
 import { useAuth } from '@/contexts/AuthContext';
 import { useProperty } from '@/contexts/PropertyContext';
 import { useLang } from '@/contexts/LanguageContext';
@@ -75,6 +76,10 @@ import { ScheduleTimeline } from './ScheduleTimeline';
 type ScheduleView = 'board' | 'timeline';
 const VIEW_STORAGE_KEY = 'staxis.schedule.view';
 
+/** My Hotel → People. The ONE place a person is created at this hotel; the
+ *  Staff screen's "＋ Add staff" only picks from people who already exist. */
+const PEOPLE_HREF = '/company?tab=people';
+
 interface BoardData {
   tasks: BoardTask[];
   housekeepers: BoardHk[];
@@ -87,6 +92,13 @@ interface BoardData {
   // the numbers the server used; the context value is the fallback for
   // the moment before the first fetch lands.
   shift_minutes?: number;
+  // Hour the housekeeping day starts, hotel-local 0-23, resolved server-side
+  // from the questionnaire's "when does housekeeping start" answer. The
+  // Timeline view draws its axis from this instead of a hardcoded 7am.
+  shift_start_hour?: number;
+  // The hotel's IANA timezone, so the Timeline's NOW line runs on the hotel's
+  // clock rather than the manager's browser clock.
+  timezone?: string | null;
 }
 
 interface BoardScope {
@@ -304,6 +316,16 @@ export function ScheduleTab() {
     60,
     currentBoardData?.shift_minutes ?? activeProperty?.shiftMinutes ?? 420,
   );
+  // Server-resolved, so the board and /api/housekeeping/timeline agree. The 7
+  // here is only the pre-first-response value; the server owns the real
+  // fallback for a hotel that never answered the questionnaire.
+  const shiftStartHour = (() => {
+    const hour = currentBoardData?.shift_start_hour;
+    return typeof hour === 'number' && Number.isInteger(hour) && hour >= 0 && hour <= 23
+      ? hour
+      : 7;
+  })();
+  const hotelTimezone = currentBoardData?.timezone ?? activeProperty?.timezone ?? null;
 
   const tasks = useMemo(() => currentBoardData?.tasks ?? [], [currentBoardData]);
   const crew = useMemo(() => {
@@ -688,12 +710,32 @@ export function ScheduleTab() {
           <Btn variant="ghost" size="sm" onClick={() => void refreshBoard()}>{'Retry'}</Btn>
         </div>
       )}
+      {/* Nobody to assign to. The old copy said "Add crew in Staff", but the
+          ＋ Add staff on that screen is a PICKER over people who already exist
+          (see AddStaffModal's header) — a brand-new hotel followed the
+          instruction straight into an empty modal. People are created in one
+          place only: My Hotel → People. */}
       {pid && currentBoardLoaded && !boardErr && crew.length === 0 && (
         <div style={{
           padding: '40px 20px', textAlign: 'center', color: T.ink2,
           fontFamily: FONT_SANS, fontSize: 14, border: `1px dashed ${T.rule}`, borderRadius: 12,
         }}>
-          {'No active housekeeping staff yet. Add crew in Staff to start assigning.'}
+          <p style={{ margin: 0 }}>
+            {'No housekeepers are working this day yet. Add them in My Hotel, People, using Invite people, then put them on the schedule.'}
+          </p>
+          <div style={{ marginTop: 14 }}>
+            <Link
+              href={PEOPLE_HREF}
+              style={{
+                display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+                minHeight: 44, padding: '0 18px', borderRadius: 999,
+                border: `1px solid ${T.ink}`, background: T.ink, color: T.bg,
+                fontFamily: FONT_SANS, fontSize: 13, fontWeight: 600, textDecoration: 'none',
+              }}
+            >
+              {'Go to My Hotel, People'}
+            </Link>
+          </div>
         </div>
       )}
       {pid && currentBoardLoaded && !boardErr && crew.length > 0 && (
@@ -725,6 +767,8 @@ export function ScheduleTab() {
               shiftMinutes={SHIFT_MINS}
               lang={lang}
               showNow={isToday}
+              startHour={shiftStartHour}
+              timezone={hotelTimezone}
               onReassign={onReassign}
               onOpenTask={setOpenTask}
             />

@@ -40,6 +40,8 @@ import {
   validateSetupSubmission,
   isValidCleanMinutes,
   isValidShiftStart,
+  resolveShiftStartHour,
+  FALLBACK_SHIFT_START_HOUR,
   HK_LEVELS,
   STATUS_ENTRY_METHODS,
   BOARD_BUILT_BY_OPTIONS,
@@ -1381,6 +1383,63 @@ describe('parse must stay TOTAL with the new lists in play', () => {
     assert.match(expectError(goodSubmission({ customRoomTypes: { label: 'Suite' } })), /customRoomTypes/);
     assert.match(expectError(goodSubmission({ customDuties: 'Van runs' })), /customDuties/);
     assert.match(expectError(goodSubmission({ customDuties: { a: 1 } })), /customDuties/);
+  });
+});
+
+/* ───────────────── The shift start hour the timeline draws from ───────────
+ *
+ * `shiftStartTime` has been collected by Q4 and stored since migration 0337,
+ * and until now NOTHING read it: the timeline axis and the shift window were
+ * both pinned to a hardcoded 7am, so a hotel that answered 06:00 or 09:30 had
+ * its whole day drawn against a start it never chose and its NOW line landed
+ * in the wrong place. This is the reader that closes that gap, and it must be
+ * as total as the parser it wraps — it positions every card on the screen and
+ * a throw here would take the board down with it.
+ */
+describe('resolveShiftStartHour', () => {
+  test('uses the hour the hotel actually answered', () => {
+    assert.equal(resolveShiftStartHour(goodSubmission({ shiftStartTime: '06:00' })), 6);
+    assert.equal(resolveShiftStartHour(goodSubmission({ shiftStartTime: '09:30' })), 9);
+    assert.equal(resolveShiftStartHour(goodSubmission({ shiftStartTime: '00:15' })), 0);
+    assert.equal(resolveShiftStartHour(goodSubmission({ shiftStartTime: '23:45' })), 23);
+  });
+
+  test('a hotel that has not answered the questionnaire falls back', () => {
+    assert.equal(resolveShiftStartHour(null), FALLBACK_SHIFT_START_HOUR);
+    assert.equal(resolveShiftStartHour(undefined), FALLBACK_SHIFT_START_HOUR);
+    // Not a setup blob at all — parse returns null, so there is no answer.
+    assert.equal(resolveShiftStartHour('08:00'), FALLBACK_SHIFT_START_HOUR);
+    assert.equal(resolveShiftStartHour([]), FALLBACK_SHIFT_START_HOUR);
+    assert.equal(resolveShiftStartHour({ version: 99 }), FALLBACK_SHIFT_START_HOUR);
+  });
+
+  test('a stored blob with a garbled time uses the questionnaire default, not the fallback', () => {
+    // The distinction matters: a hotel that answered the questionnaire agreed
+    // to 08:00 as the prefilled default, so a corrupted field lands there
+    // rather than on the "never asked" 7am.
+    for (const bad of ['8:00', '25:00', '', 800, null, undefined, {}]) {
+      assert.equal(
+        resolveShiftStartHour(goodSubmission({ shiftStartTime: bad })),
+        Number.parseInt(DEFAULT_SHIFT_START.slice(0, 2), 10),
+        `for ${String(bad)}`,
+      );
+    }
+  });
+
+  test('an explicit fallback is honoured', () => {
+    assert.equal(resolveShiftStartHour(null, 5), 5);
+  });
+
+  test('never throws, for any input at all', () => {
+    const hostile: unknown[] = [
+      null, undefined, 0, -1, NaN, Infinity, '', 'x', [], [1, 2], true,
+      { version: 1 }, { shiftStartTime: Symbol('x') },
+      goodSubmission({ shiftStartTime: { toString: () => { throw new Error('nope'); } } }),
+    ];
+    for (const value of hostile) {
+      const hour = resolveShiftStartHour(value);
+      assert.ok(Number.isInteger(hour) && hour >= 0 && hour <= 23, `for ${String(value)}`);
+    }
   });
 });
 

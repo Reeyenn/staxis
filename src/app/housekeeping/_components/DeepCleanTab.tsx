@@ -118,18 +118,23 @@ export function DeepCleanTab() {
     return new Date(parts[0], parts[1] - 1, parts[2]);
   };
 
-  const allRoomNumbers = useMemo(() => {
-    const inv = activeProperty?.roomInventory ?? [];
-    if (inv.length > 0) return inv;
-    // Comfort Suites Beaumont fallback layout — matches the prior tab for
-    // properties that haven't been onboarded yet.
-    const out: string[] = [];
-    [101, 102, 103, 104, 105, 106, 108, 110, 112].forEach(n => out.push(String(n)));
-    for (let r = 201; r <= 222; r++) if (r !== 213) out.push(String(r));
-    for (let r = 300; r <= 322; r++) if (r !== 313) out.push(String(r));
-    for (let r = 400; r <= 422; r++) if (r !== 413) out.push(String(r));
-    return out;
-  }, [activeProperty?.roomInventory]);
+  // The hotel's OWN room list, and nothing else.
+  //
+  // This used to fall back to a hardcoded 101-422 layout (one real hotel's
+  // floor plan) whenever roomInventory was empty. Every invented room has no
+  // deep-clean record, so it classified as 'never' and the tab printed a
+  // 76-room "Overdue" worklist for a hotel that may have 40 rooms with
+  // different numbers. Worse, Schedule wrote a real deep_clean_records row
+  // against a room number the hotel does not have.
+  //
+  // Empty means empty, exactly the posture /dashboard takes with the same
+  // absence (buildRoomRingTicks(rooms, roomInventory ?? [])): show nothing
+  // rather than something invented.
+  const allRoomNumbers = useMemo(
+    () => activeProperty?.roomInventory ?? [],
+    [activeProperty?.roomInventory],
+  );
+  const roomListMissing = allRoomNumbers.length === 0;
 
   // Refresh records from DB. Called on mount, on tab-visibility change, and on
   // a 60s timer (no realtime channel on deep_clean_records yet).
@@ -289,6 +294,11 @@ export function DeepCleanTab() {
   // hasn't happened yet). Empty team = "queued, no specific staff yet".
   const handleSchedule = async (roomNumber: string) => {
     if (!uid || !pid) return;
+    // Belt and braces for the invented-rooms bug: never write a
+    // deep_clean_records row for a room number that is not on the hotel's own
+    // list. With the fallback gone nothing can render such a row, but this
+    // write is permanent and the guard costs nothing.
+    if (!allRoomNumbers.includes(roomNumber)) return;
     try {
       await assignRoomDeepClean(uid, pid, roomNumber, []);
       // Optimistic local update — flip status to in_progress so the row
@@ -397,6 +407,36 @@ export function DeepCleanTab() {
         </Btn>
       </div>
 
+      {/* NO ROOM LIST YET — the honest empty state. Nothing here is
+          schedulable, because there is no room to schedule. */}
+      {roomListMissing && (
+        <div style={{
+          background: T.paper, border: `1px dashed ${T.rule}`, borderRadius: 16,
+          padding: '30px 24px', maxWidth: 560,
+        }}>
+          <h2 style={{
+            fontFamily: FONT_SANS, fontSize: 17, fontWeight: 600, color: T.ink,
+            margin: 0, letterSpacing: '-0.01em',
+          }}>
+            {'This hotel’s room list isn’t set up yet'}
+          </h2>
+          <p style={{
+            fontFamily: FONT_SANS, fontSize: 13.5, lineHeight: 1.55, color: T.ink2,
+            margin: '10px 0 0',
+          }}>
+            {'Deep clean tracks each room against the cadence, so it needs to know which rooms this hotel has. The room list fills in from the PMS report feed once it is connected, and an admin can also enter it in hotel setup.'}
+          </p>
+          <p style={{
+            fontFamily: FONT_SANS, fontSize: 13.5, lineHeight: 1.55, color: T.ink2,
+            margin: '10px 0 0',
+          }}>
+            {'Nothing can be scheduled until then.'}
+          </p>
+        </div>
+      )}
+
+      {!roomListMissing && (
+      <>
       {/* FRESHNESS CHIPS */}
       <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginBottom: 18 }}>
         <StatChip label={'Overdue'} value={overdue.length} color={T.warm} />
@@ -531,6 +571,8 @@ export function DeepCleanTab() {
           </div>
         </div>
       </div>
+      </>
+      )}
 
       {/* CADENCE MODAL — portaled to <body> so the page's animate-in
           transform wrapper (which creates a containing block) can't capture

@@ -762,6 +762,51 @@ export function parseHousekeepingSetup(raw: unknown): HousekeepingSetup | null {
 }
 
 /**
+ * The hour the housekeeping day is drawn from when a hotel has NOT answered
+ * the questionnaire at all. Most limited-service hotels start at 8am; 7am
+ * leaves room for a senior arriving early, and it is the hour the timeline was
+ * hardcoded to before it learned to read `shiftStartTime`.
+ *
+ * Exported so the board route and the timeline route land on the same number
+ * for the same hotel. Two copies of this would eventually differ, and the two
+ * views would draw the same day against two different starts.
+ */
+export const FALLBACK_SHIFT_START_HOUR = 7;
+
+/**
+ * The hour of the day housekeeping starts at this hotel, 0 to 23, in the
+ * hotel's own local time.
+ *
+ * Q4 of the questionnaire asks "when does housekeeping start" and stores the
+ * answer as `shiftStartTime` ('HH:MM'). Until now nothing read it: the timeline
+ * axis and the shift window were both pinned to a hardcoded 7am, so a hotel
+ * that answered 6:00 or 09:30 saw its whole day drawn against a start it never
+ * chose, with the NOW line landing in the wrong place.
+ *
+ * @param raw the stored `properties.housekeeping_setup` value, whatever it is.
+ * @param fallbackHour used when the questionnaire has not been done at all, or
+ *   when the stored value is not a setup blob. NOT used for a blob with a
+ *   missing/garbled time: `parseHousekeepingSetup` already resolves that to
+ *   DEFAULT_SHIFT_START, which is the answer the questionnaire prefills and
+ *   therefore the closest thing to what the hotel agreed to.
+ *
+ * Total, like everything else that reads this column: it never throws.
+ */
+export function resolveShiftStartHour(
+  raw: unknown,
+  fallbackHour: number = FALLBACK_SHIFT_START_HOUR,
+): number {
+  const parsed = parseHousekeepingSetup(raw);
+  if (!parsed) return fallbackHour;
+  // parseHousekeepingSetup guarantees 'HH:MM' (SHIFT_START_RE or the default),
+  // so this parse cannot be out of range. Re-checked anyway: this number
+  // positions every card on the timeline.
+  const hour = Number.parseInt(parsed.shiftStartTime.slice(0, 2), 10);
+  if (!Number.isInteger(hour) || hour < 0 || hour > 23) return fallbackHour;
+  return hour;
+}
+
+/**
  * Has this hotel finished the questionnaire?
  *
  * The gate in front of the whole Housekeeping section. True only when the value

@@ -91,6 +91,11 @@ export function AddStaffDialog({
     pendingAttempt?.payload.language ?? 'en',
   );
   const [busy, setBusy] = React.useState(false);
+  // A pending attempt freezes the form so the retry re-sends the SAME payload
+  // under the SAME idempotency key. That is only correct while the manager is
+  // still retrying this submission: the panel drops the attempt the moment the
+  // dialog is closed, so the next open is a fresh, empty form rather than a
+  // permanently locked "Retry add".
   const [retryLocked, setRetryLocked] = React.useState(Boolean(pendingAttempt));
   const [error, setError] = React.useState('');
   const dialogRef = React.useRef<HTMLDivElement | null>(null);

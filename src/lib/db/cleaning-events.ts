@@ -155,13 +155,22 @@ export async function getFlaggedCleaningEvents(pid: string): Promise<CleaningEve
  * Mario decides yes/no on a flagged entry. Permanent — once decided, the
  * entry can't be re-reviewed. The .eq('status', 'flagged') guard prevents
  * race conditions where two reviewers click at once.
+ *
+ * ZERO ROWS IS AN ERROR, not a success. This runs on the anon client, and an
+ * UPDATE that RLS filters down to nothing comes back as `error: null` with no
+ * rows — indistinguishable from a real write unless we ask for the row back.
+ * The caller (QualityTab's flagged review) optimistically drops the row from
+ * the list and toasts "Kept. Counts toward averages." on a resolved promise,
+ * so a silent no-op told the manager a decision was recorded that was not.
+ * `.select('id')` makes the difference visible; the same zero-rows-is-a-failure
+ * rule the API routes already apply.
  */
 export async function decideOnFlaggedEvent(
   eventId: string,
   decision: 'approved' | 'rejected',
   reviewerId: string,
 ): Promise<void> {
-  const { error } = await supabase
+  const { data, error } = await supabase
     .from('cleaning_events')
     .update({
       status: decision,
@@ -169,8 +178,16 @@ export async function decideOnFlaggedEvent(
       reviewed_at: new Date().toISOString(),
     })
     .eq('id', eventId)
-    .eq('status', 'flagged');
+    .eq('status', 'flagged')
+    .select('id');
   if (error) { logErr('decideOnFlaggedEvent', error); throw error; }
+  if (!data || data.length === 0) {
+    // Either somebody else already decided this one, or this browser is not
+    // allowed to write the row. Both mean the decision was NOT recorded.
+    const noRows = new Error('This decision was not saved. Someone may have already reviewed it, or you may not have permission.');
+    logErr('decideOnFlaggedEvent', noRows);
+    throw noRows;
+  }
 }
 
 /**

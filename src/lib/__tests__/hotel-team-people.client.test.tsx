@@ -318,7 +318,14 @@ describe('My Hotel People mounted identity and actions', { concurrency: false },
     assert.equal(container.firstElementChild?.getAttribute('data-roster-unavailable'), 'false');
   });
 
-  test('renders an archived linked identity once with a View-only off-roster action', async (context) => {
+  // Archiving a schedule profile is a fact about SCHEDULING. It used to zero
+  // every action on the person's LOGIN as well, which meant the login of the
+  // exact person you archived could never again be renamed, disabled, or
+  // removed from the hotel — and nothing in the app un-archives a staff row,
+  // so it was permanent. The archive confirmation promises the opposite
+  // ("Their login, if any, is kept and keeps working"). This test is the
+  // promise: the account half stays live, the employment half goes read-only.
+  test('an archived schedule profile leaves the login fully manageable', async (context) => {
     const restoreBrowser = installBrowser();
     const { HotelTeamPanel } = await loadHotelTeam();
     await loadEmployment();
@@ -329,7 +336,17 @@ describe('My Hotel People mounted identity and actions', { concurrency: false },
     const container = document.createElement('div');
     document.body.append(container);
     const root = createRoot(container);
-    const archivedAccount = account({ historicalStaffId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc' });
+    const archivedAccount = account({
+      historicalStaffId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
+      actions: {
+        canEditProfile: true,
+        canChangeRole: false,
+        canResetPassword: false,
+        canDeactivate: true,
+        canReactivate: false,
+        canRemove: true,
+      },
+    });
     const originalFetch = globalThis.fetch;
     Object.defineProperty(globalThis, 'fetch', {
       configurable: true,
@@ -374,29 +391,50 @@ describe('My Hotel People mounted identity and actions', { concurrency: false },
     });
     await flush();
 
-    const view = container.querySelector<HTMLButtonElement>('button[aria-label="View Maria Archived"]');
-    assert.ok(view, 'the merged archived row must expose its View action');
-    assert.equal(container.querySelector('button[aria-label="Edit Maria Archived"]'), null);
-    assert.equal(container.querySelector('button[aria-label="Remove Maria Archived from this hotel"]'), null);
+    // ONE row: the login and the archived staff record are the same human.
+    const rows = container.querySelectorAll('[role="listitem"]');
+    assert.equal(rows.length, 1, 'the merged archived identity must appear exactly once');
+    assert.match(container.textContent ?? '', /Off roster/);
+
+    // The two account-level actions the old floor removed.
+    const edit = container.querySelector<HTMLButtonElement>('button[aria-label="Edit Maria Archived"]');
+    assert.ok(edit, 'archiving the schedule profile must not take away the login editor');
+    assert.equal(edit.disabled, false);
+    const remove = container.querySelector<HTMLButtonElement>(
+      'button[aria-label="Remove Maria Archived from this hotel"]',
+    );
+    assert.ok(remove, 'an archived person must still be removable from the hotel');
+    assert.equal(remove.disabled, false);
 
     await act(async () => {
-      view.click();
+      edit.click();
       await Promise.resolve();
     });
     await flush();
 
     const dialog = document.querySelector<HTMLElement>('[role="dialog"]');
-    assert.ok(dialog, 'clicking View must open the real person dialog');
-    const controls = Array.from(dialog.querySelectorAll<HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement>(
-      'input, select, textarea',
-    ));
-    assert.ok(controls.length > 0, 'the dialog must expose the identity input for a read-only assertion');
-    assert.ok(controls.every((control) => control.disabled), 'off-roster dialog inputs must be disabled');
-    assert.equal(dialog.querySelector('input[type="password"]'), null);
-    assert.equal(dialog.querySelector('select'), null);
-    assert.equal(dialog.querySelector('button[type="submit"]'), null);
-    assert.doesNotMatch(dialog.textContent ?? '', /New password|Disable login everywhere|Reactivate login|Save changes/);
-    assert.equal(document.querySelector('button[aria-label="Remove Maria Archived from this hotel"]'), null);
+    assert.ok(dialog, 'clicking Edit must open the real person dialog');
+
+    // Login half: live. The display name is editable and the lifecycle
+    // control the server granted is offered.
+    const displayName = Array.from(
+      dialog.querySelectorAll<HTMLInputElement>('input[type="text"]'),
+    ).find((input) => input.value === 'Maria Login');
+    assert.ok(displayName, 'the login display name must be present');
+    assert.equal(displayName.disabled, false, 'the login display name must stay editable');
+    assert.match(dialog.textContent ?? '', /Disable login everywhere/);
+
+    // Employment half: read-only, and honest about why. No editable
+    // employment control, and no way to re-archive what is already archived.
+    assert.match(dialog.textContent ?? '', /Schedule profile, archived/);
+    assert.match(dialog.textContent ?? '', /Archived/);
+    assert.doesNotMatch(dialog.textContent ?? '', /Save employment details/);
+    assert.doesNotMatch(dialog.textContent ?? '', /Archive schedule profile/);
+    assert.doesNotMatch(
+      dialog.textContent ?? '',
+      /You do not have permission to change this person/,
+      'an archived profile must not blame the viewer’s permissions',
+    );
   });
 
   test('keeps pending lifecycle row actions behind the existing disabled gate', async (context) => {

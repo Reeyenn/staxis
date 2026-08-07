@@ -164,13 +164,28 @@ export async function addStaffMember(_uid: string, pid: string, data: Omit<Staff
   } catch (err) { logErr('addStaffMember', err); throw err; }
 }
 
+/**
+ * Update one staff row.
+ *
+ * ZERO ROWS IS AN ERROR. `staff` RLS is row-level, and an UPDATE that RLS
+ * filters down to nothing returns `error: null` with no rows — a resolved
+ * promise that wrote nothing. The only caller is the employment Save on the
+ * person's card in My Hotel → People, which reports success on a resolved
+ * promise, so a filtered write showed "Employment details saved. The roster is
+ * up to date." over a roster that had not changed. `.select('id')` is what
+ * makes the two cases distinguishable.
+ */
 export async function updateStaffMember(_uid: string, pid: string, sid: string, data: Partial<StaffMember>): Promise<void> {
   try {
-    const { error } = await supabase
+    const { data: updated, error } = await supabase
       .from('staff')
       .update(stripPrivateWrites(toStaffRow(data)))
       .eq('property_id', pid)
-      .eq('id', sid);
+      .eq('id', sid)
+      .select('id');
     if (error) throw error;
+    if (!updated || updated.length === 0) {
+      throw new Error('Nothing was saved. This person may no longer be on this hotel’s roster, or you may not have permission to change them.');
+    }
   } catch (err) { logErr('updateStaffMember', err); throw err; }
 }
