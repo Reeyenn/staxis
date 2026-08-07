@@ -177,6 +177,45 @@ describe('a front desk hire never gets a manager stop', () => {
   });
 });
 
+describe('company mode is not something the tour can mention', () => {
+  test('no stop names a screen outside the eight the companion knows', () => {
+    // STRUCTURAL, not a filter. `CompanionPageKey` has no portfolio member at
+    // all, and `resolveDestination` takes a key rather than a path, so there
+    // is no value a stop could carry that would walk anybody to a
+    // management-company surface. A GM cannot be told about company mode by
+    // the tour because the vocabulary has no word for it.
+    const known = new Set(COMPANION_PAGES.map((p) => p.key));
+    for (const stop of TOUR_STOPS) {
+      assert.ok(known.has(stop.page), `${stop.key} walks somewhere unknown: ${stop.page}`);
+    }
+    assert.ok(!known.has('portfolio' as never), 'the companion learned a portfolio page');
+  });
+
+  test('no stop, anchor or sentence mentions the company layer', () => {
+    // The words half of the same promise. A GM at a hotel that belongs to a
+    // management company must not be introduced to a surface that is not
+    // theirs, and a hotel with no company at all must not be told one exists.
+    const corpus = [
+      ...TOUR_STOPS.flatMap((s) => [s.say, s.example ?? '']),
+      ...COMPANION_ANCHORS.flatMap((a) => [a.does, a.label]),
+    ];
+    for (const line of corpus) {
+      assert.ok(!/\bportfolio\b/i.test(line), `mentions the portfolio: ${line}`);
+      assert.ok(!/\bmanagement company\b/i.test(line), `mentions a management company: ${line}`);
+      assert.ok(!/\bacross (your |all )?hotels\b/i.test(line), `implies cross hotel: ${line}`);
+    }
+  });
+
+  test("the People stop is this hotel's roster, not the company's", () => {
+    // /company?tab=people is My Hotel's roster and shares a path prefix with
+    // nothing else the tour touches. The sentence has to say "your roster" and
+    // not imply anybody else's.
+    const people = TOUR_STOPS.find((s) => s.key === 'people')!;
+    assert.match(people.say, /your roster/i);
+    assert.ok(!/other hotels|company/i.test(people.say), people.say);
+  });
+});
+
 describe('housekeeping has no tour at all', () => {
   // The standing rule, and this is the THIRD refusal rather than the first:
   // mount.ts refuses the hat before any of this runs, and the lens mounts no
