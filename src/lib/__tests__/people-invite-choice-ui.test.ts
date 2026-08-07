@@ -97,9 +97,9 @@ describe('People invite entry choice', () => {
       /Add someone to the schedule, or invite them to create a Staxis account\./,
     );
     assert.doesNotMatch(normalActionArea, /Add staff member|CalendarPlus|LogIn/);
-    assert.match(panel, /const canAddStaffAction = canManageTeam && !adminPreview && canAddStaff;/);
+    assert.match(panel, /const canAddStaffAction = canManageTeam && canAddStaff;/);
     assert.match(panel, /const inviteEntryAvailable = canAddStaffAction \|\| canInviteToStaxis/);
-    assert.match(panel, /const canInviteToStaxis = !adminPreview && \(canManageTeam \|\| canInviteAccounts\)/);
+    assert.match(panel, /const canInviteToStaxis = canManageTeam \|\| canInviteAccounts;/);
   });
 
   test('account-invite-only authority gets one unified entry and no roster path', () => {
@@ -125,11 +125,11 @@ describe('People invite entry choice', () => {
   test('the old page-level account invite is suppressed when a hotel entry exists', () => {
     assert.match(
       pagePeoplePanel,
-      /!adminPreview && !activeProperty && !canManageTeam && canInviteAccounts[\s\S]*Invite company member/,
+      /!activeProperty && !canManageTeam && canInviteAccounts[\s\S]*Invite company member/,
     );
     assert.match(
       pagePeoplePanel,
-      /<HotelTeamPanel[\s\S]*canInviteAccounts=\{adminPreview \? false : canInviteAccounts\}/,
+      /<HotelTeamPanel[\s\S]*canInviteAccounts=\{canInviteAccounts\}/,
     );
   });
 
@@ -167,7 +167,7 @@ describe('People invite entry choice', () => {
   });
 
   test('permission and read-only gates keep the entry closed', () => {
-    assert.match(panel, /const canAddStaffAction = canManageTeam && !adminPreview && canAddStaff;/);
+    assert.match(panel, /const canAddStaffAction = canManageTeam && canAddStaff;/);
     assert.match(panel, /const inviteEntryAvailable = canAddStaffAction \|\| canInviteToStaxis/);
     assert.match(panel, /if \(inviteActionDisabled \|\| !inviteCapabilitiesStable \|\| !inviteEntryAvailable\) return;/);
     assert.match(normalActionArea, /\{!setupMode && !locked && inviteCapabilitiesStable && inviteEntryAvailable \?/);

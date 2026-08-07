@@ -210,12 +210,29 @@ export function resolveAdminCompanyPreviewTarget(input: {
   return { scope: 'property', property: input.property, organization: anchor };
 }
 
-export function readOnlyAdminPreviewPermissions(): CompanyAccessPermissions {
+/**
+ * What a Staxis administrator may do in the hotel they opened from Admin.
+ *
+ * The product is in its build phase and there is no look-but-don't-touch admin
+ * mode: an admin gets every HOTEL action the hotel's own owner would get. The
+ * hotel-team routes behind these flags (GET/POST /api/auth/team,
+ * /api/auth/invites, /api/auth/join-codes) already admit a platform admin at
+ * any hotel, so what is offered here is exactly what the server will honour.
+ *
+ * The two company-scope flags stay false, and that is NOT a lockout:
+ *   • `manageAccess` — customer company MEMBERSHIP administration. Its routes
+ *     require an active organization membership, and a platform admin cannot
+ *     hold one (migration 0325 raises 42501 on the attempt). Advertising these
+ *     would show buttons the server refuses.
+ *   • `requestAccess` — petitioning for access an admin already has.
+ */
+export function adminPreviewPermissions(propertyId: string): CompanyAccessPermissions {
   return {
     viewHotels: true,
     viewPeople: true,
-    managePeople: false,
-    manageInvitations: false,
+    managePeople: true,
+    manageInvitations: true,
+    accountInvitePropertyIds: [propertyId],
     viewAccess: true,
     manageAccess: false,
     viewActivity: true,
@@ -225,10 +242,14 @@ export function readOnlyAdminPreviewPermissions(): CompanyAccessPermissions {
   };
 }
 
-/** Final fail-closed scrub applied immediately before an admin preview leaves
- * the API. Even if a projection builder accidentally sets a customer action,
- * the preview cannot advertise it or claim an effective customer grant. */
-export function makeAdminCompanyAccessReadOnly(input: {
+/**
+ * Final shaping applied immediately before an admin preview leaves the API.
+ *
+ * The administrator's own row is dropped (a Staxis account is not one of the
+ * hotel's people) and the company-membership actions stay closed for the reason
+ * documented on `adminPreviewPermissions`. Every hotel-team action is granted.
+ */
+export function applyAdminCompanyAccessPowers(input: {
   projection: CompanyAccessData;
   viewerContext: AdminCompanyPreviewViewerContext;
   adminAccountId: string;
@@ -240,28 +261,8 @@ export function makeAdminCompanyAccessReadOnly(input: {
       .map((membership) => ({
         ...membership,
         isCurrentUser: false,
-        canSuspend: false,
-        canResume: false,
-        canRemove: false,
-        grants: (membership.grants ?? []).map((grant) => ({
-          ...grant,
-          canRevoke: false,
-        })),
       })),
-    accessHistory: (input.projection.accessHistory ?? []).map((entry) => ({
-      ...entry,
-      record: { ...entry.record, canRevoke: false },
-    })),
-    effectiveAccess: [],
-    invitations: input.projection.invitations.map((invitation) => ({
-      ...invitation,
-      canCancel: false,
-    })),
-    requests: input.projection.requests.map((request) => ({
-      ...request,
-      canReview: false,
-    })),
-    permissions: readOnlyAdminPreviewPermissions(),
+    permissions: adminPreviewPermissions(input.viewerContext.requestedPropertyId),
     viewerContext: input.viewerContext,
   };
 }

@@ -200,12 +200,13 @@ export interface CompanyAccessPermissions {
   delegationPolicies: CompanyDelegationPolicy[];
 }
 
-/** Server-authenticated context for Staxis administrators previewing the
- * customer-facing Company Hub. Preview mode is deliberately read-only and is
- * never represented as a customer membership or access receipt. */
+/** Server-authenticated context for Staxis administrators viewing the
+ * customer-facing Company Hub for one hotel. It is an identity label, never a
+ * customer membership or access receipt: an admin holds full power at every
+ * hotel, so `readOnly` is false and the hotel actions are all offered. */
 export interface CompanyAccessViewerContext {
   kind: 'staxis_admin_preview';
-  readOnly: true;
+  readOnly: boolean;
   requestedPropertyId: string;
   scope: 'organization' | 'property';
   targetId: string;

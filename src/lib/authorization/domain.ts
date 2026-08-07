@@ -11,9 +11,68 @@ import {
   scopeAllowsRole,
   type HatRole,
 } from '@/lib/company/roles';
+import type { AppRole } from '@/lib/roles';
 
 export const AUTHORITY_MODES = ['legacy', 'shadow', 'normalized'] as const;
 export type AuthorityMode = (typeof AUTHORITY_MODES)[number];
+
+// ─── Platform-admin standing: ONE principle, stated once ────────────────────
+//
+// A platform administrator (accounts.role = 'admin') holds a FULL-POWER
+// standing at EVERY hotel, always. There is no "look but don't touch" admin
+// mode: the product is built and operated by the same person, and an admin who
+// opens a hotel gets the same actions its own owner would get.
+//
+// This is deliberately ONE function rather than a special case sprinkled across
+// screens and routes. Both sides of the wire resolve a viewer's standing at a
+// hotel through it:
+//   • server — `authoritativeStandingForProperty` in ./server.ts, where the
+//     admin signal is `access.all` from the authorization resolver.
+//   • client — `useActiveHotelStanding` in @/lib/capabilities/useCan, where the
+//     admin signal is the verified `platformAdmin` bit from
+//     GET /api/auth/session-authorization.
+//
+// Non-admins are untouched by this file: with `platformAdmin` false the
+// resolver is a plain lookup in the standings the server issued, so every
+// tenant wall, read-only company grant and per-hotel restriction still decides
+// exactly what it decided before.
+
+/** The per-hotel capacity fields every viewer-standing shape shares. */
+export interface ViewerHotelStanding {
+  propertyId: string;
+  operationalRole: AppRole;
+  seesFinancials: boolean;
+  hotelMutationAllowed: boolean;
+  portfolioIntelligenceRead: boolean;
+}
+
+/** The standing a platform administrator holds at any hotel. */
+export function platformAdminHotelStanding(propertyId: string): ViewerHotelStanding {
+  return {
+    propertyId,
+    operationalRole: 'admin',
+    seesFinancials: true,
+    hotelMutationAllowed: true,
+    portfolioIntelligenceRead: true,
+  };
+}
+
+/**
+ * The viewer's standing at one hotel. Platform admins get the full-power
+ * standing above; everyone else gets exactly the standing the server issued for
+ * that hotel, or null when they hold none there.
+ */
+export function resolveViewerHotelStanding<T extends ViewerHotelStanding>(input: {
+  platformAdmin: boolean;
+  standings: readonly T[] | null | undefined;
+  propertyId: string | null | undefined;
+}): T | ViewerHotelStanding | null {
+  if (!input.propertyId) return null;
+  if (input.platformAdmin) return platformAdminHotelStanding(input.propertyId);
+  return (input.standings ?? []).find(
+    (standing) => standing.propertyId === input.propertyId,
+  ) ?? null;
+}
 
 export type AuthorizationScopeSelector =
   | { type: 'all_authorized' }

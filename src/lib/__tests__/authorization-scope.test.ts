@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 
-import { parseAuthorizationScopeResult } from '@/lib/authorization';
+import { parseAuthorizationScopeResult, resolveViewerHotelStanding } from '@/lib/authorization';
 
 const ACCOUNT = '11111111-1111-4111-8111-111111111111';
 const ORG = '22222222-2222-4222-8222-222222222222';
@@ -175,5 +175,118 @@ describe('authorization scope receipt parser', () => {
       parseAuthorizationScopeResult({ ok: false, reason: 'surprise' }),
       { ok: false, reason: 'store_unavailable' },
     );
+  });
+});
+
+// ─── Platform-admin standing: the one rule both sides of the wire share ──────
+//
+// These are behavior tests on the resolver every screen and route uses to
+// answer "what is this viewer's standing at this hotel". They exist to pin two
+// things at once: an administrator is never refused, and NOTHING about a
+// non-admin changed when that became true.
+
+describe('viewer standing at a hotel', () => {
+  const gmStanding = {
+    propertyId: HOTEL_A,
+    operationalRole: 'general_manager' as const,
+    seesFinancials: true,
+    hotelMutationAllowed: true,
+    portfolioIntelligenceRead: false,
+  };
+  const readOnlyStanding = {
+    propertyId: HOTEL_B,
+    operationalRole: 'front_desk' as const,
+    seesFinancials: false,
+    hotelMutationAllowed: false,
+    portfolioIntelligenceRead: false,
+  };
+
+  test('a platform admin holds full power at every hotel, including one they hold no standing at', () => {
+    for (const propertyId of [HOTEL_A, HOTEL_B]) {
+      const standing = resolveViewerHotelStanding({
+        platformAdmin: true,
+        standings: [],
+        propertyId,
+      });
+      assert.deepEqual(standing, {
+        propertyId,
+        operationalRole: 'admin',
+        seesFinancials: true,
+        hotelMutationAllowed: true,
+        portfolioIntelligenceRead: true,
+      });
+    }
+  });
+
+  test('an admin standing is not weakened by a restrictive issued standing for the same hotel', () => {
+    const standing = resolveViewerHotelStanding({
+      platformAdmin: true,
+      standings: [readOnlyStanding],
+      propertyId: HOTEL_B,
+    });
+    assert.equal(standing?.hotelMutationAllowed, true);
+    assert.equal(standing?.operationalRole, 'admin');
+  });
+
+  test('a non-admin gets exactly the standing the server issued, never a synthesized one', () => {
+    assert.deepEqual(
+      resolveViewerHotelStanding({
+        platformAdmin: false,
+        standings: [gmStanding, readOnlyStanding],
+        propertyId: HOTEL_A,
+      }),
+      gmStanding,
+    );
+    assert.deepEqual(
+      resolveViewerHotelStanding({
+        platformAdmin: false,
+        standings: [gmStanding, readOnlyStanding],
+        propertyId: HOTEL_B,
+      }),
+      readOnlyStanding,
+    );
+  });
+
+  test('the sibling-hotel wall holds: a GM at one hotel gets nothing at another', () => {
+    assert.equal(
+      resolveViewerHotelStanding({
+        platformAdmin: false,
+        standings: [gmStanding],
+        propertyId: HOTEL_B,
+      }),
+      null,
+    );
+  });
+
+  test('a read-only company grant stays mutation-fenced for a non-admin', () => {
+    const standing = resolveViewerHotelStanding({
+      platformAdmin: false,
+      standings: [readOnlyStanding],
+      propertyId: HOTEL_B,
+    });
+    assert.equal(standing?.hotelMutationAllowed, false);
+    assert.equal(standing?.seesFinancials, false);
+  });
+
+  test('no hotel selected is never a standing, for anybody', () => {
+    for (const platformAdmin of [true, false]) {
+      assert.equal(
+        resolveViewerHotelStanding({ platformAdmin, standings: [gmStanding], propertyId: null }),
+        null,
+      );
+      assert.equal(
+        resolveViewerHotelStanding({ platformAdmin, standings: [gmStanding], propertyId: '' }),
+        null,
+      );
+    }
+  });
+
+  test('missing or absent standings never fail open for a non-admin', () => {
+    for (const standings of [undefined, null, []]) {
+      assert.equal(
+        resolveViewerHotelStanding({ platformAdmin: false, standings, propertyId: HOTEL_A }),
+        null,
+      );
+    }
   });
 });
