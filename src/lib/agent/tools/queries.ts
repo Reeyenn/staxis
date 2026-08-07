@@ -238,6 +238,9 @@ registerTool<{ roomNumber: string }>({
     required: ['roomNumber'],
   },
   allowedRoles: ['admin', 'owner', 'general_manager', 'front_desk', 'housekeeping', 'maintenance'],
+  // Also offered in a staff thread — the old private @Staxis catalog's
+  // `get_room_status`, which answered the same question from the same merge.
+  surfaces: ['chat', 'messages'],
   handler: async ({ roomNumber }, ctx): Promise<ToolResult> => {
     // Plan v4: the old `rooms` PostgREST FK-embed
     // (assignee:staff!rooms_assigned_to_fkey) is impossible against the
@@ -586,7 +589,7 @@ registerTool<{ room?: string; item?: string; equipmentId?: string; windowDays?: 
     // The maintenance lens sees no dollars anywhere — see moneyVisibleToRole.
     // Stripped from the SHAPE rather than discouraged in prose: a field the
     // model never receives is a field it cannot quote.
-    const showMoney = moneyVisibleToRole(ctx.user.role);
+    const showMoney = moneyVisibleToRole(ctx.user.role, ctx.surface);
 
     const tickets = filtered.slice(0, max).map((r) => {
       const openedAt = typeof r.created_at === 'string' ? r.created_at : null;

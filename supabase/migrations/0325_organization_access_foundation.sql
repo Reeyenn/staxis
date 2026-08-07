@@ -1809,10 +1809,27 @@ begin
       perform public._staxis_reconcile_legacy_organization_access(v_property_id, null);
     end loop;
   end if;
+  -- EDITED AFTER PROD APPLY (2026-08-06), deliberately, and only here. The
+  -- original line read:
+  --   select distinct membership.organization_id, 1, clock_timestamp()
+  -- DISTINCT applies to the whole tuple, and clock_timestamp() is evaluated
+  -- per row, so two membership rows in one organization deduplicated ONLY
+  -- when both timestamps landed in the same microsecond. When they did not,
+  -- the set-source upsert handed ON CONFLICT the same organization twice and
+  -- Postgres raised SQLSTATE 21000. This was the intermittent CI failure that
+  -- red-flagged 3 of 30 main pushes (see RUNBOOKS.md, pglite 21000).
+  -- Editing an applied migration is normally forbidden; it is correct here
+  -- because prod no longer contains this function at all (superseded during
+  -- the Stage C access cutover), so this file's only remaining execution
+  -- path is test replay, where the nondeterminism is the bug. The intended
+  -- semantics (one epoch bump per organization) are unchanged.
   insert into public.organization_access_epochs (organization_id, version, updated_at)
-  select distinct membership.organization_id, 1, clock_timestamp()
-  from public.organization_memberships membership
-  where membership.account_id = new.id
+  select distinct_membership.organization_id, 1, clock_timestamp()
+  from (
+    select distinct membership.organization_id
+    from public.organization_memberships membership
+    where membership.account_id = new.id
+  ) distinct_membership
   on conflict (organization_id) do update
     set version = public.organization_access_epochs.version + 1,
         updated_at = excluded.updated_at;

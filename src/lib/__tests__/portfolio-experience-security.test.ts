@@ -966,17 +966,16 @@ describe('connected portfolio source-code ratchets', () => {
     }
   });
 
-  test('agent snapshot outages stay unavailable instead of being mislabeled as manual hotels', () => {
-    const snapshot = source('src/lib/agent/portfolio/snapshot.ts');
-    const statusRead = snapshot.slice(
-      snapshot.indexOf('let feedPulses: PortfolioFeedPulse[]'),
-      snapshot.indexOf('const pulses:'),
-    );
-    assert.match(statusRead, /readPortfolioFeedPulses\(organizationId, propertyIds\)/);
-    assert.doesNotMatch(statusRead, /mapWithConcurrency|getPropertyFeedStatus/);
-    assert.match(statusRead, /catch[\s\S]{0,360}?mode: 'unavailable'/);
-    assert.doesNotMatch(statusRead, /catch[\s\S]{0,360}?mode: 'manual'/);
-
+  test('portfolio feed reads stay bounded, and an unreadable feed is unavailable, never manual', () => {
+    // This used to police `src/lib/agent/portfolio/snapshot.ts` as well, which
+    // called the two helpers below to build a per-turn portfolio pulse block.
+    // That module was deleted on 2026-08-06 (stage 2 of the knowledge door):
+    // Portfolio Intelligence had replaced its prompt block with a deterministic
+    // evidence package, and no live path could reach it any more. What the
+    // deletion must NOT take with it is the contract underneath — these helpers
+    // still serve the portfolio UI, and the distinction they hold is the one a
+    // VP acts on: a hotel whose feed could not be READ is unknown, and calling
+    // it a manual hotel would present an outage as a deliberate configuration.
     const helper = source('src/lib/company/portfolio-tool-reads.ts');
     const pulseRead = helper.slice(
       helper.indexOf('export async function readPortfolioFeedPulses'),
@@ -992,51 +991,6 @@ describe('connected portfolio source-code ratchets', () => {
       'an omitted company-intersection bucket must be unavailable, never manual',
     );
     assert.match(helper, /if \(!bucket\.session_present\)[\s\S]{0,100}?mode: 'manual'/);
-    assert.match(
-      snapshot,
-      /else \{[\s\S]{0,160}?PMS feed status could not be read this turn — do not call this a manual hotel/,
-    );
-    assert.match(
-      snapshot,
-      /cacheKey\([\s\S]{0,120}?organizationId,[\s\S]{0,80}?hotels,[\s\S]{0,80}?omittedHotelCount,[\s\S]{0,80}?findingPolicy/,
-    );
-    assert.match(snapshot, /::omitted=\$\{omittedHotelCount\}/);
-    assert.match(snapshot, /::policy=\$\{findingPolicy\.fingerprint\}/);
-    assert.match(snapshot, /::staxis-disabled=\$\{disabled\.join\(','\)\}/);
-    assert.match(snapshot, /::staxis-unavailable=\$\{unavailable\.join\(','\)\}/);
-    assert.match(
-      snapshot,
-      /readPortfolioToolFindings\([\s\S]{0,80}?organizationId,[\s\S]{0,80}?findingPropertyIds,[\s\S]{0,80}?LIVE_FINDING_STATUSES,[\s\S]{0,80}?MAX_ROWS_PER_HOTEL \+ 1/,
-    );
-    assert.match(snapshot, /const MAX_ROWS_PER_HOTEL = 50/);
-    assert.match(snapshot, /if \(sectionDecision === 'enabled' && rows\)/);
-    assert.match(
-      snapshot,
-      /findingMode: sectionDecision === 'disabled'[\s\S]{0,120}?openFindings === null[\s\S]{0,80}?'unavailable'/,
-    );
-    assert.match(snapshot, /const findingWindowSaturated = rows\.length > MAX_ROWS_PER_HOTEL/);
-    assert.match(
-      snapshot,
-      /const policyAllowed = rows\.slice\(0, MAX_ROWS_PER_HOTEL\)\.filter\([\s\S]{0,180}?findingForSnapshotPolicy\(row, propertyId\)[\s\S]{0,180}?portfolioHotelFindingPolicyDecision\(finding, findingPolicy\) === 'allowed'/,
-    );
-    const saturatedPolicyGate = snapshot.slice(
-      snapshot.indexOf('if (!(findingWindowSaturated && policyAllowed.length === 0))'),
-      snapshot.indexOf('const feed =', snapshot.indexOf('if (!(findingWindowSaturated && policyAllowed.length === 0))')),
-    );
-    assert.match(saturatedPolicyGate, /openFindings = policyAllowed\.length/);
-    assert.match(
-      saturatedPolicyGate,
-      /else \{[\s\S]{0,80}?unavailablePropertyIds\.add\(propertyId\)/,
-      'a saturated policy-zero window must be unknown instead of a false zero',
-    );
-    assert.match(
-      snapshot,
-      /needsDecision = findingWindowSaturated && proposed === 0 \? null : proposed/,
-      'decision-count completeness must stay independent of the visible open count',
-    );
-    assert.match(snapshot, /findingCountLowerBound = findingWindowSaturated/);
-    assert.match(snapshot, /\$\{hotel\.findingCountLowerBound \? 'at least ' : ''\}\$\{hotel\.openFindings\}/);
-    assert.match(snapshot, /A shown count is only a known minimum when marked “at least”;[\s\S]{0,120}?all-clear/);
 
     assert.match(helper, /MAX_PORTFOLIO_TOOL_ROWS_PER_HOTEL = 51/);
     assert.match(helper, /MAX_PORTFOLIO_TOOL_BUCKET_BYTES = 65_536/);
@@ -1044,7 +998,6 @@ describe('connected portfolio source-code ratchets', () => {
     assert.match(helper, /Buffer\.byteLength\(JSON\.stringify\(rows\)\)[\s\S]{0,160}?byte contract/);
     assert.match(helper, /assertFindingPolicyRows\(result\)/);
     assert.match(helper, /!bucket\.bucket_available[\s\S]{0,100}?bucket\.rows_json !== null/);
-
   });
 
   test('hotel drill-downs require a fresh narrowed server check and do not preactivate cached hotel state', () => {

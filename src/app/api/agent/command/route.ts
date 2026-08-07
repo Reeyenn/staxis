@@ -42,8 +42,9 @@ import { getOrMintRequestId, log } from '@/lib/log';
 import {
   ASK_STAXIS_EXECUTION_BUDGET_MS,
   ASK_STAXIS_FALLBACK_RESERVE_MS,
-  resolveAskStaxisExecutionPlan,
-  resolveCompanionChatExecutionPlan,
+  agentFeatureKeyForOrigin,
+  agentOriginFromRequest,
+  resolveAgentOriginExecutionPlan,
   streamAgent,
   type AgentMessage,
 } from '@/lib/agent/llm';
@@ -105,12 +106,15 @@ interface RequestBody {
    */
   pathname?: string;
   /**
-   * Which surface this turn came from.
+   * Which surface this turn came from. See `AgentOrigin` in llm.ts, which owns
+   * the origin → Control Center row map that both this route and the @Staxis
+   * thread route read.
    *
    * OPTIONAL, and absent means the Ask Staxis bar, which is every existing
    * caller. The ONLY thing it changes is which AI Control Center slot governs
    * the model and carries the cost: 'companion' turns run on
-   * `companion.conversation`, everything else on `agent.ask_staxis`.
+   * `companion.conversation`, 'messages' turns on
+   * `communications.staxis_assistant`, everything else on `agent.ask_staxis`.
    *
    * UNTRUSTED, and safely so. It cannot widen anything: the auth, the property
    * access, the section gate, the role lens and the tool catalog are all
@@ -230,14 +234,12 @@ export async function POST(req: NextRequest): Promise<Response> {
   // ── Cost reservation (Codex review fix #1) ────────────────────────────
   // Atomic: cap check + reservation insert happen under an advisory lock
   // keyed on user_id. Concurrent requests for the same user serialize.
-  const fromCompanion = body.origin === 'companion';
-  const featureKey: AiFeatureKey = fromCompanion ? 'companion.conversation' : 'agent.ask_staxis';
+  const origin = agentOriginFromRequest(body.origin);
+  const featureKey: AiFeatureKey = agentFeatureKeyForOrigin(origin);
   let estimatedUsd: number;
   let executionPlan: AiExecutionPlan;
   try {
-    executionPlan = fromCompanion
-      ? await resolveCompanionChatExecutionPlan()
-      : await resolveAskStaxisExecutionPlan();
+    executionPlan = await resolveAgentOriginExecutionPlan(origin);
     estimatedUsd = scaleAiReservationUsd(
       [executionPlan.primary, executionPlan.fallback].filter(
         (model): model is NonNullable<typeof model> => model !== null,
@@ -486,6 +488,7 @@ export async function POST(req: NextRequest): Promise<Response> {
               snapshot,
               actorRole: userCtx.role,
               promptVersion: systemPrompt.versionLabel,
+              surface: 'chat',
             },
           }),
         });

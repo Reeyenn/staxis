@@ -30,6 +30,53 @@ export type DecisionActorKind =
   | 'ai_autonomous'
   | 'human_direct';
 
+/**
+ * The surfaces the corpus column can store, mirroring the CHECK on
+ * `agent_decisions.surface` (0350, widened by 0457).
+ *
+ * THIS LIST AND `AgentSurface` ARE NOT THE SAME SET, and the gap between them
+ * is the bug this constant exists to make loud. The type grew 'portfolio' in
+ * July 2026 and 'messages' in August; the CHECK was widened for neither until
+ * 0457. Every writer in this module is fail-soft by design — a corpus write
+ * must never cost a user their action card — so an insert carrying an unlisted
+ * surface is bounced by Postgres, swallowed, and logged to a console nobody
+ * reads.
+ *
+ * The failure that actually matters is the OTHER one. The obvious way to make a
+ * new surface's rows land is to pass the nearest allowed value, and for the
+ * "@Staxis" thread assistant that value is 'chat' — which puts a wrong answer
+ * in the one table whose entire job is answering "what was the AI looking at,
+ * and where". A corpus that quietly mislabels where an act happened is worse
+ * than one that is missing it: the missing row is visible as a gap, the wrong
+ * row is not visible at all.
+ *
+ * So an unrepresentable surface SKIPS the write and says so once. 0457 removed
+ * the two real surfaces from that path; the machinery stays for whatever comes
+ * next, because the next surface will arrive exactly the way these two did.
+ * Widening this constant WITHOUT the matching migration re-opens the hole from
+ * the other side, so the two are edited together or not at all.
+ */
+export const DECISION_CORPUS_SURFACES = [
+  'chat',
+  'voice',
+  'walkthrough',
+  'cron',
+  'api',
+  // 0457. Both existed in the application and were unrepresentable here.
+  'messages',
+  'portfolio',
+] as const;
+export type DecisionCorpusSurface = (typeof DECISION_CORPUS_SURFACES)[number];
+
+/** The surface as the corpus column can store it, or null when it cannot. */
+export function decisionCorpusSurfaceOf(
+  surface: AgentSurface | 'cron' | 'api',
+): DecisionCorpusSurface | null {
+  return (DECISION_CORPUS_SURFACES as readonly string[]).includes(surface)
+    ? surface as DecisionCorpusSurface
+    : null;
+}
+
 export interface RecordProposalInput {
   propertyId: string;
   /** Used for DINV-2's business date. */
@@ -118,6 +165,12 @@ function businessDateOf(snapshot: HotelSnapshot): string {
 export async function recordDecisionProposal(
   input: RecordProposalInput,
 ): Promise<string | null> {
+  const surface = decisionCorpusSurfaceOf(input.surface);
+  if (!surface) {
+    console.warn('[agent/decisions] proposal not recorded: the corpus cannot store the '
+      + `"${input.surface}" surface yet, and labelling it as another one would be a wrong answer`);
+    return null;
+  }
   try {
     const snapshot = redactSnapshot(input.snapshot);
     const { data, error } = await scopedDb(input.propertyId)
@@ -125,7 +178,7 @@ export async function recordDecisionProposal(
       .insert({
         property_id: input.propertyId,
         business_date: businessDateOf(input.snapshot),
-        surface: input.surface,
+        surface,
         actor_kind: input.actorKind,
         actor_account_id: input.actorAccountId,
         actor_role: input.actorRole,
@@ -179,6 +232,12 @@ export interface RecordAutonomousInput extends Omit<RecordProposalInput, 'actorK
 export async function recordAutonomousDecision(
   input: RecordAutonomousInput,
 ): Promise<void> {
+  const surface = decisionCorpusSurfaceOf(input.surface);
+  if (!surface) {
+    console.warn('[agent/decisions] autonomous act not recorded: the corpus cannot store the '
+      + `"${input.surface}" surface yet, and labelling it as another one would be a wrong answer`);
+    return;
+  }
   try {
     const snapshot = redactSnapshot(input.snapshot);
     const { error } = await scopedDb(input.propertyId)
@@ -186,7 +245,7 @@ export async function recordAutonomousDecision(
       .insert({
         property_id: input.propertyId,
         business_date: businessDateOf(input.snapshot),
-        surface: input.surface,
+        surface,
         actor_kind: 'ai_autonomous' satisfies DecisionActorKind,
         actor_account_id: input.actorAccountId,
         actor_role: input.actorRole,

@@ -36,15 +36,23 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO = join(__dirname, '..');
 const SRC = join(REPO, 'src');
 
-/** Every file allowed to drive an Anthropic tool loop by hand. */
+/**
+ * Every file allowed to drive an Anthropic tool loop by hand.
+ *
+ * ONE. It was two until 2026-08-06, when the @Staxis thread assistant
+ * (`runStaxisAssistant` in src/lib/comms/assistant.ts) was folded into
+ * `streamAgent`: its private system prompt, its five-tool catalog outside the
+ * registry and its six-iteration loop are deleted, and the two mutations it ran
+ * INLINE now go through `agent_pending_actions` like every other consequential
+ * tool. That file no longer talks to the SDK with tools at all, so it is no
+ * longer allowlisted — and the staleness check at the bottom of this script is
+ * what would have caught it if somebody had left the entry behind.
+ *
+ * This list may only ever SHRINK. It is at its floor.
+ */
 const KNOWN_TOOL_LOOPS = new Set([
   // runAgent + streamAgent. Two entry points, one core, same file.
   'src/lib/agent/llm.ts',
-  // The @Staxis thread assistant. Still hand-rolls its iteration (its five
-  // tools live outside the agent registry and it has no approval gate), but
-  // its tool results now go through the canonical wrap. Folding it into
-  // streamAgent is scoped follow-up work — see the note on runStaxisAssistant.
-  'src/lib/comms/assistant.ts',
 ]);
 
 /**

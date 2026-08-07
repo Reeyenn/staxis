@@ -203,7 +203,7 @@ registerTool<{ targetKind?: string; targetValue?: string; limit?: number }>({
       return { ok: false, error: `"${targetKind}" is not something Staxis tracks findings about. Use room, equipment, preventive_task or inventory_item.` };
     }
     const max = Math.min(Math.max(1, Number.isFinite(limit) ? Number(limit) : 20), 100);
-    const showMoney = moneyVisibleToRole(ctx.user.role);
+    const showMoney = moneyVisibleToRole(ctx.user.role, ctx.surface);
 
     let rows: Finding[];
     try {
@@ -268,7 +268,7 @@ registerTool<{ findingId: string }>({
     const id = String(findingId ?? '').trim();
     if (!id) return { ok: false, error: 'Which finding? I need its id, from staxis_findings.' };
 
-    const showMoney = moneyVisibleToRole(ctx.user.role);
+    const showMoney = moneyVisibleToRole(ctx.user.role, ctx.surface);
 
     let f: Finding | null;
     try {
@@ -643,7 +643,7 @@ registerTool<{ equipmentId?: string; includeRetired?: boolean }>({
   allowedRoles: STAXIS_WRENCH_ROLES,
   handler: async ({ equipmentId, includeRetired }, ctx: ToolHandlerContext): Promise<ToolResult> => {
     const wanted = String(equipmentId ?? '').trim() || null;
-    const showMoney = moneyVisibleToRole(ctx.user.role);
+    const showMoney = moneyVisibleToRole(ctx.user.role, ctx.surface);
 
     let q = ctx.db
       .from('equipment')

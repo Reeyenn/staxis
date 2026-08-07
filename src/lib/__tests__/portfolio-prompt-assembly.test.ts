@@ -17,8 +17,13 @@
  * boring reason that X was never rendered anywhere), and then proves the
  * portfolio prompt for a portfolio CONTAINING that same hotel does not.
  *
- * It also pins the cache contract for the one new cached section: two portfolio
- * snapshots taken at different moments must yield a byte-identical stable block.
+ * It also pins the cache contract for the whole surface, which since 2026-08-06
+ * is stronger than "the clock stays out of the cached block": this assembler has
+ * NO uncached half at all. The `portfolio_snapshot` tier it used to build was
+ * unreachable on every live path once Portfolio Intelligence took over the
+ * dynamic half, and stage 2 of the knowledge door deleted it, so the assertion
+ * below is that the stable block is the WHOLE prompt this file produces and
+ * carries no clock, no age and no live count.
  */
 
 process.env.NEXT_PUBLIC_SUPABASE_URL ??= 'https://placeholder.supabase.co';
@@ -42,7 +47,6 @@ import {
 import { setFamilyAddendumOverride } from '@/lib/agent/prompts-store';
 import { buildPortfolioSystemPrompt } from '@/lib/agent/portfolio/prompt';
 import { formatPortfolioIdentityForPrompt } from '@/lib/agent/portfolio/identity';
-import type { PortfolioSnapshot } from '@/lib/agent/portfolio/snapshot';
 
 const ORG_ID = '00000000-0000-0000-0000-0000000000c9';
 const PID_ONE = '00000000-0000-0000-0000-0000000000f1';
@@ -122,35 +126,6 @@ const IDENTITY = {
   omittedHotelCount: 0,
 };
 
-function portfolioSnapshot(minutesOld: number): PortfolioSnapshot {
-  return {
-    organizationId: ORG_ID,
-    hotels: [
-      {
-        propertyId: PID_ONE,
-        name: 'Beaumont Suites',
-        totalRooms: 60,
-        timezone: 'America/Chicago',
-        openFindings: 1,
-        needsDecision: 1,
-        pmsCapturedAt: agedBy(minutesOld),
-        pmsSource: 'snapshot_capture',
-      },
-      {
-        propertyId: PID_TWO,
-        name: 'Lufkin Inn',
-        totalRooms: 45,
-        timezone: 'America/Chicago',
-        openFindings: 3,
-        needsDecision: 2,
-        pmsCapturedAt: null,
-        pmsSource: null,
-      },
-    ],
-    omittedHotelCount: 0,
-    failedHotelCount: 0,
-  };
-}
 
 before(() => {
   // @ts-expect-error monkey-patch the singleton for the test
@@ -211,7 +186,7 @@ describe('the control: the HOTEL prompt really does carry the facts in question'
 describe('the portfolio prompt', () => {
   it('names the hotels and their sizes, and says whose company it is', async () => {
     const { stable } = await buildPortfolioSystemPrompt({
-      identity: IDENTITY, companyRole: 'vp', snapshot: portfolioSnapshot(5),
+      identity: IDENTITY, companyRole: 'vp',
       conversationId: 'conv-portfolio', now: NOW,
     });
     assert.match(stable, /The hotels you are being asked about/);
@@ -223,7 +198,7 @@ describe('the portfolio prompt', () => {
 
   it('carries NOT ONE of an individual hotel\'s private facts', async () => {
     const { stable, dynamic } = await buildPortfolioSystemPrompt({
-      identity: IDENTITY, companyRole: 'vp', snapshot: portfolioSnapshot(5),
+      identity: IDENTITY, companyRole: 'vp',
       conversationId: 'conv-portfolio', now: NOW,
     });
     const whole = `${stable}\n${dynamic}`;
@@ -245,7 +220,7 @@ describe('the portfolio prompt', () => {
 
   it('does carry the COMPANY rulebook — the one tier that is company-shaped', async () => {
     const { stable } = await buildPortfolioSystemPrompt({
-      identity: IDENTITY, companyRole: 'owner', snapshot: portfolioSnapshot(5),
+      identity: IDENTITY, companyRole: 'owner',
       conversationId: 'conv-portfolio', now: NOW,
     });
     assert.match(stable, /Company rulebook/);
@@ -256,7 +231,7 @@ describe('the portfolio prompt', () => {
 
   it('states that it cannot act and distinguishes active scope from outside authorization', async () => {
     const { stable } = await buildPortfolioSystemPrompt({
-      identity: IDENTITY, companyRole: 'vp', snapshot: portfolioSnapshot(5),
+      identity: IDENTITY, companyRole: 'vp',
       conversationId: 'conv-portfolio', now: NOW,
     });
     assert.match(stable, /There are no action tools here/);
@@ -267,31 +242,44 @@ describe('the portfolio prompt', () => {
 });
 
 describe('portfolio cache purity', () => {
-  it('two portfolio snapshots at different ages produce byte-identical stable blocks', async () => {
+  it('two turns forty minutes apart produce byte-identical prompts', async () => {
+    // The clock is the only input that moves between these two calls, and this
+    // assembler prints nothing but cached text — so a difference of one byte
+    // means something clock-derived reached the CACHED half, which re-writes
+    // the cached prefix on every turn of every portfolio conversation.
     const a = await buildPortfolioSystemPrompt({
-      identity: IDENTITY, companyRole: 'vp', snapshot: portfolioSnapshot(5),
+      identity: IDENTITY, companyRole: 'vp',
       conversationId: 'conv-portfolio', now: NOW,
     });
     const b = await buildPortfolioSystemPrompt({
-      identity: IDENTITY, companyRole: 'vp', snapshot: portfolioSnapshot(45),
-      conversationId: 'conv-portfolio', now: NOW,
+      identity: IDENTITY, companyRole: 'vp',
+      conversationId: 'conv-portfolio', now: new Date(NOW.getTime() + 40 * 60_000),
     });
     assert.equal(a.stable, b.stable);
-    // …and the dynamic halves genuinely differ, or the line above would be
-    // vacuously true for a build that dropped the as-of values entirely.
-    assert.notEqual(a.dynamic, b.dynamic);
+    assert.equal(a.stableStamp, b.stableStamp);
+    // …and the block really was built, or the equality above is vacuous.
+    assert.match(a.stable, /The hotels you are being asked about/);
   });
 
-  it('the stable block carries no clock, no age, and no live count', async () => {
+  it('produces no uncached half at all, and no live value in the cached one', async () => {
+    // Stronger than the old assertion, and it replaces it because its subject
+    // is gone: this assembler used to build a `portfolio_snapshot` tier in the
+    // dynamic half, and the test was "the age rendered there is not also over
+    // here". Portfolio Intelligence has owned the dynamic half since it landed
+    // — it overwrites it wholesale with a deterministic evidence package — so
+    // stage 2 of the knowledge door deleted the tier and its store. What is
+    // left to hold is that this file emits ONLY cacheable text.
     const { stable, dynamic } = await buildPortfolioSystemPrompt({
-      identity: IDENTITY, companyRole: 'vp', snapshot: portfolioSnapshot(5),
+      identity: IDENTITY, companyRole: 'vp',
       conversationId: 'conv-portfolio', now: NOW,
     });
-    const age = /, (\d+ min ago|just now|\d+ hr[^—.;]*ago)/.exec(dynamic)?.[1];
-    assert.ok(age && age.length > 0, 'the dynamic block renders an age');
-    assert.equal(stable.includes(age), false, `the stable block leaked the age "${age}"`);
-    assert.equal(/\b(min|hr|days?) ago\b/i.test(stable), false);
+    assert.equal(dynamic, '', 'this assembler grew an uncached tier without a cache review');
+    assert.equal(/\b(min|hr|days?) ago\b/i.test(stable), false, 'a data age reached the cached block');
     assert.equal(/open item/i.test(stable), false, 'a live count leaked into the cached block');
+    // Non-vacuous: the derived sections really were rendered into what was
+    // checked, so "no live value" is a statement about a full prompt.
+    assert.match(stable, /Company rulebook/);
+    assert.match(stable, /The hotels you are being asked about/);
   });
 
   it('the hotel list is ordered by content, not by which read finished first', () => {
@@ -309,12 +297,12 @@ describe('portfolio cache purity', () => {
 
   it('the persisted receipt records which hotels the turn covered; the printed one does not', async () => {
     const two = await buildPortfolioSystemPrompt({
-      identity: IDENTITY, companyRole: 'vp', snapshot: portfolioSnapshot(5),
+      identity: IDENTITY, companyRole: 'vp',
       conversationId: 'conv-portfolio', now: NOW,
     });
     const one = await buildPortfolioSystemPrompt({
       identity: { ...IDENTITY, hotels: [IDENTITY.hotels[0]] },
-      companyRole: 'vp', snapshot: portfolioSnapshot(5),
+      companyRole: 'vp',
       conversationId: 'conv-portfolio', now: NOW,
     });
     assert.match(two.versionLabel, /portfolio-mode-v3/);

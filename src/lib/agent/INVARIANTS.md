@@ -539,8 +539,11 @@ Conflict rules, stated as two because "more specific wins" is only half true:
   `───`, and may not exceed 4000 chars (≈1000 tokens of cached prompt).
   **Enforced by:** CHECKs `agent_prompts_family_no_markers_ck` and
   `agent_prompts_family_len_ck` (0338) — **DB-ENFORCED** — plus
-  `familyContentIsSafe()` in `prompts.ts`, which drops the section and reports
-  to Sentry if a violating row ever reaches the assembler, and the doctor's
+  `familyContentIsSafe()`, applied inside `formatFamilyTierForPrompt()` in
+  `family-tier.ts` (it was applied in `prompts.ts` until 2026-08-06, when the
+  knowledge door started composing this tier by name and the gate moved with
+  it), which drops the section, with the assembler reporting the row's identity
+  to Sentry if a violating row ever reaches it, and the doctor's
   `agent_prompt_tiers` check, which re-verifies length on live active rows so
   relaxing the CHECK later still trips an alarm. **History:** A3 tiers,
   2026-07-24.
@@ -549,10 +552,10 @@ Conflict rules, stated as two because "more specific wins" is only half true:
   non-disclosure, knowledge-hub-first answering). The *semantic* half is *NOT
   ENFORCEABLE by any constraint* — no CHECK can decide whether a paragraph of
   English relaxes a rule. What IS enforceable, and is now enforced, is the
-  STANDING the text arrives with. **Enforced by:** `prompts.ts` renders every
-  family row inside a code-owned trust envelope — the section header, the
+  STANDING the text arrives with. **Enforced by:** `family-tier.ts` renders
+  every family row inside a code-owned trust envelope — the section header, the
   `FAMILY_TIER_TRUST_NOTE` ceiling, and both `<staxis-pms-family
-  trust="untrusted" family="…">` tags are printed by the assembler, never by
+  trust="untrusted" family="…">` tags are printed by that module, never by
   the row, and INV-TIER-7's marker vocabulary makes the closing tag unforgeable
   from inside. The family key is sanitized (`sanitizeFamilyKeyForPrompt`)
   before it reaches the header, the attribute or the printed stamp, so a key

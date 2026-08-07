@@ -81,6 +81,24 @@ export function isHumanAuthoredMemory(row: MemoryRow): boolean {
   return HUMAN_AUTHORED_SOURCES.has(row.source);
 }
 
+/**
+ * Which rendering of the memory block ran on a turn.
+ *
+ * Added 2026-08-06, when `long_term_memory` went through the knowledge door.
+ * It answers a DIFFERENT question from the `mem:3/a1b2c3d4` receipt that has
+ * always sat beside it in `agent_messages.prompt_version`: the digest says
+ * WHICH FACTS were injected, this says WHICH SHAPE they were injected in — the
+ * scope/by/confidence attribute set, the per-row envelope, the block wrapper
+ * and the ranking. A digest changes whenever a manager teaches the companion
+ * anything, so it can never tell you that the renderer itself moved.
+ *
+ * Bump it when the rendered shape changes, never when the content does. Like
+ * the digest it lands in the PERSISTED receipt only — memory is per-turn, and
+ * anything about it printed into the cached half rewrites the cached prefix on
+ * every single turn.
+ */
+export const LONG_TERM_MEMORY_VERSION = 'memory-block-v1';
+
 // Lower = surfaced first. Corrections and explicit facts beat inferred/derived.
 const SOURCE_RANK: Record<string, number> = {
   correction: 0,

@@ -840,6 +840,9 @@ export const EXPECTED_MIGRATIONS_STATIC: ReadonlyArray<string> = [
   '0455',
   // The agent gets a life record: activity_log.source gains 'staxis_agent'.
   '0456',
+  // The decision corpus learns two more surfaces: agent_decisions.surface
+  // gains 'messages' (the @Staxis thread assistant) and 'portfolio'.
+  '0457',
 ];
 
 /**
