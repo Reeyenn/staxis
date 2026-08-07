@@ -46,6 +46,48 @@ export const ROBOT_WALK_HEARTBEAT = 'robot-walk';
 export const ROBOT_WALK_MARKER = 'Robot check:';
 
 /**
+ * The exact words the robot types, in the exact places it types them.
+ *
+ * ─── WHY THESE ARE HERE AND NOT IN THE SCRIPT ──────────────────────────────
+ *
+ * The first live run failed on `Robot check: nightly walkthrough`, and the
+ * reason is worth keeping written down because nothing about it looked like a
+ * bug from either side.
+ *
+ * The composer READS the sentence. "nightly" is a cadence, so it filed the
+ * to-do as a REPEATING one — and a repeating to-do is not a to-do. It is a
+ * rule: `/api/comms/tasks` writes a row to `recurring_task_templates`, returns
+ * a template id, and creates nothing on anybody's list. The first actual to-do
+ * appears whenever the recurring sweep next runs. So the row the walk was
+ * waiting for could not have appeared inside its twenty seconds, or inside
+ * twenty minutes, and no longer wait would ever have fixed it.
+ *
+ * That is the product working exactly as intended. Somebody who types "nightly"
+ * is asking for a repeating job and gets one. It is the ROBOT's sentence that
+ * was wrong, and the only way to know a sentence is safe is to run it through
+ * the same parser the composer uses — which is what
+ * `robot-walk-composer-strings.test.ts` does with this list.
+ *
+ * (The title itself was never the problem, which is worth recording because it
+ * is the obvious suspect: the parser tidies its own copy for the chips, but the
+ * composer sends the sentence exactly as typed. The stored title was the full
+ * one. The cadence was the whole of it.)
+ *
+ * Anything added here must survive `parseTodo` untouched: same title, no
+ * assignee lifted, no date lifted, no cadence lifted.
+ */
+export const ROBOT_WALK_TODO_TITLE = `${ROBOT_WALK_MARKER} walkthrough`;
+export const ROBOT_WALK_ASSIGNED_TODO_TITLE = `${ROBOT_WALK_MARKER} handover`;
+export const ROBOT_WALK_FACT_TEXT = `${ROBOT_WALK_MARKER} the supply closet is on floor 2.`;
+export const ROBOT_WALK_ITEM_NAME = `${ROBOT_WALK_MARKER} spare bulbs`;
+
+/** Everything typed into the composer, which is the only parsed surface. */
+export const ROBOT_WALK_COMPOSER_STRINGS: readonly string[] = [
+  ROBOT_WALK_TODO_TITLE,
+  ROBOT_WALK_ASSIGNED_TODO_TITLE,
+];
+
+/**
  * How stale the last run may get before the doctor says so. The walk is nightly
  * (24h), and 26 gives a two-hour grace for a slow runner or a queued job, so a
  * single late start is not an alert while a genuinely stopped robot is caught

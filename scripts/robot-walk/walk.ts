@@ -38,7 +38,11 @@ import {
   runRobotWalk,
   summarizeRobotWalk,
   robotWalkStepLabel,
+  ROBOT_WALK_ASSIGNED_TODO_TITLE,
+  ROBOT_WALK_FACT_TEXT,
+  ROBOT_WALK_ITEM_NAME,
   ROBOT_WALK_MARKER,
+  ROBOT_WALK_TODO_TITLE,
   type RobotWalkStep,
   type RobotWalkStepResult,
 } from '../../src/lib/automation/robot-walk';
@@ -65,11 +69,17 @@ const COLLEAGUE = process.env.ROBOT_WALK_COLLEAGUE || 'Robot Colleague';
  */
 const ASSIGNEE = process.env.ROBOT_WALK_ASSIGNEE || 'Robot Manager';
 
-/** Every artifact the robot makes, so cleanup can find them by name. */
-const TODO_TITLE = `${ROBOT_WALK_MARKER} nightly walkthrough`;
-const ASSIGNED_TODO_TITLE = `${ROBOT_WALK_MARKER} hand this to somebody`;
-const FACT_TEXT = `${ROBOT_WALK_MARKER} the supply closet is on floor 2.`;
-const ITEM_NAME = `${ROBOT_WALK_MARKER} spare bulbs`;
+/**
+ * Every artifact the robot makes, so cleanup can find them by name.
+ *
+ * The composer strings live in the shared module because the composer PARSES
+ * them, and a standing test runs them through the real parser. See the comment
+ * on ROBOT_WALK_TODO_TITLE for the live run that made that necessary.
+ */
+const TODO_TITLE = ROBOT_WALK_TODO_TITLE;
+const ASSIGNED_TODO_TITLE = ROBOT_WALK_ASSIGNED_TODO_TITLE;
+const FACT_TEXT = ROBOT_WALK_FACT_TEXT;
+const ITEM_NAME = ROBOT_WALK_ITEM_NAME;
 
 /** Per-action patience. The live site is a real deploy on a cold serverless. */
 const ACTION_MS = 20_000;
@@ -95,15 +105,64 @@ function composerInput(page: Page): Locator {
   return page.getByTestId('composer').getByRole('textbox', { name: 'What needs doing' });
 }
 
-/** Every work row currently on the list whose title the robot wrote. */
-async function robotRowTitles(page: Page): Promise<string[]> {
-  const titles = await page.locator('.fx-row .fx-rowt').allTextContents();
-  return titles.filter(isRobotWalkArtifact);
+/**
+ * Every work row currently on the list whose title the robot wrote.
+ *
+ * POLLS BEFORE ANSWERING "NONE". An empty answer here is what tells cleanup the
+ * hotel is tidy, and the list paints its rows a moment after it calls itself
+ * ready — so a single immediate read says "nothing to clean" about a list that
+ * simply has not drawn yet. That is how the first live run left three of its
+ * own to-dos behind while reporting a clean walk: cleanup ran twice, found
+ * nothing both times, and had nothing to say about it.
+ *
+ * Rows found are returned the instant they appear, so a dirty hotel costs
+ * nothing. Only a genuinely clean one spends the full settle.
+ */
+async function robotRowTitles(page: Page, settleMs = 8_000): Promise<string[]> {
+  const deadline = Date.now() + settleMs;
+  for (;;) {
+    const titles = (await page.locator('.fx-row .fx-rowt').allTextContents()).filter(isRobotWalkArtifact);
+    if (titles.length > 0) return titles;
+    if (Date.now() >= deadline) return [];
+    await page.waitForTimeout(500);
+  }
 }
 
+/**
+ * Open the one list, and wait until it is actually somebody's list.
+ *
+ * `data-feed-state="ready"` only says the feed finished its own read. Straight
+ * after sign-in the hotel has not been settled yet — the manager lands on the
+ * property selector first — and the feed will happily render ready and empty
+ * while that resolves. Waiting for the browser to know which hotel it is in is
+ * what makes "the list has no robot rows on it" a fact rather than a race.
+ */
 async function openFeed(page: Page): Promise<void> {
   await goto(page, '/feed');
   await page.locator('[data-feed-state="ready"]').first().waitFor({ timeout: ACTION_MS });
+  if (!(await activeHotelId(page))) {
+    throw new Error('The list opened without a hotel selected.');
+  }
+}
+
+/**
+ * Wait for a to-do to be on the list, and reload once before giving up.
+ *
+ * The list refetches itself the moment a to-do saves, so the happy path never
+ * reaches the reload. It is here because "it saved but the list has not caught
+ * up" and "it never saved" look identical from the outside, and only one of
+ * them is worth waking somebody for. One reload is what separates them.
+ */
+async function waitForTodoRow(page: Page, title: string): Promise<void> {
+  const row = () => page.locator('.fx-row').filter({ hasText: title }).first();
+  try {
+    await row().waitFor({ timeout: ACTION_MS / 2 });
+    return;
+  } catch {
+    say(`  "${title}" was not on the list yet, reloading once`);
+  }
+  await openFeed(page);
+  await row().waitFor({ timeout: ACTION_MS });
 }
 
 async function openKnows(page: Page): Promise<Locator> {
@@ -171,9 +230,20 @@ async function cleanUp(page: Page, label: string): Promise<void> {
       if (titles.length === 0) break;
       const row = page.locator('.fx-row').filter({ hasText: titles[0] }).first();
       const done = row.getByRole('button', { name: 'Done', exact: true });
-      if (await done.count() === 0) break;
+      if (await done.count() === 0) {
+        say(`  cannot finish "${titles[0]}" from here, leaving it`);
+        break;
+      }
       await done.click({ timeout: ACTION_MS });
       await page.waitForTimeout(1_200);
+    }
+    // Say what is still here. Cleanup swallows its own failures on purpose, so
+    // that a walk never reports tidying trouble as a broken product — but
+    // swallowing them silently is how three of the robot's own to-dos sat at
+    // the hotel for a day while every run said it had cleaned up after itself.
+    const left = await robotRowTitles(page, 2_000);
+    if (left.length > 0) {
+      console.log(`::warning::The robot left ${left.length} of its own to-dos behind: ${left.join('; ')}`);
     }
   } catch (err) {
     say(`  could not clear the robot's to-dos: ${String(err)}`);
@@ -247,8 +317,7 @@ function buildSteps(page: Page): RobotWalkStep[] {
       run: async () => {
         await composerInput(page).fill(TODO_TITLE);
         await page.keyboard.press('Enter');
-        await page.locator('.fx-row').filter({ hasText: TODO_TITLE }).first()
-          .waitFor({ timeout: ACTION_MS });
+        await waitForTodoRow(page, TODO_TITLE);
       },
     },
     {
@@ -268,15 +337,26 @@ function buildSteps(page: Page): RobotWalkStep[] {
           throw new Error(`${COLLEAGUE} is not offered as somebody to hand work to.`);
         }
 
-        await page.getByRole('radio', { name: ASSIGNEE, exact: true }).click({ timeout: ACTION_MS });
+        // Assert the RADIO, not the word next to it. The composer's word is a
+        // sentence fragment and uses first names only ("for Robot"), which is
+        // the same fragment for Robot Manager and Robot Colleague — so it
+        // cannot tell a correct pick from a wrong one. `aria-checked` on the
+        // control that was clicked can.
+        const chosen = page.getByRole('radio', { name: ASSIGNEE, exact: true });
+        await chosen.click({ timeout: ACTION_MS });
+        await chosen.waitFor({ timeout: ACTION_MS });
+        const checked = await chosen.getAttribute('aria-checked');
+        if (checked !== 'true') {
+          throw new Error(`Clicked ${ASSIGNEE} but the composer did not select them (aria-checked=${checked}).`);
+        }
+        // And the sentence stopped saying it is for nobody in particular.
         const label = await who.getAttribute('aria-label');
-        if (!label || !label.includes(ASSIGNEE)) {
+        if (!label || /for you\s*$/i.test(label)) {
           throw new Error(`Picked ${ASSIGNEE} but the composer still says "${label ?? 'nothing'}".`);
         }
 
         await composerInput(page).press('Enter');
-        await page.locator('.fx-row').filter({ hasText: ASSIGNED_TODO_TITLE }).first()
-          .waitFor({ timeout: ACTION_MS });
+        await waitForTodoRow(page, ASSIGNED_TODO_TITLE);
       },
     },
     {
@@ -385,10 +465,52 @@ function buildSteps(page: Page): RobotWalkStep[] {
     {
       id: 'sign-out',
       run: async () => {
+        // SIGNING OUT DOES NOT NAVIGATE. `signOut()` in AuthContext tears the
+        // session down and clears the browser's own signed-out state; nothing
+        // in it pushes a route, and no guard redirects afterwards. The first
+        // live run waited for a URL that was never going to change, and timed
+        // out on a sign-out that had already worked.
+        //
+        // So this asserts the two things that are actually true afterwards:
+        // the app dropped the session it was holding, and a protected page now
+        // refuses to render for this browser. Either one alone can lie — the
+        // storage key could be cleared by something else, and a sign-in form
+        // can appear for reasons other than signing out — so both.
         await openFeed(page);
         await page.getByRole('button', { name: 'User menu' }).click({ timeout: ACTION_MS });
         await page.getByRole('button', { name: 'Sign Out', exact: true }).click({ timeout: ACTION_MS });
-        await page.waitForURL((url) => url.pathname.startsWith('/signin'), { timeout: ACTION_MS });
+
+        // 1. The session cookie is gone. This is what "signed out" means to
+        //    every server request the browser makes from here on.
+        //
+        //    POLLED, because signing out is not one moment. The browser-side
+        //    state is cleared first and synchronously, and the cookie goes
+        //    afterwards, behind a revoke call with its own two-second deadline.
+        //    Checking the cookie once, straight after the click, catches the
+        //    app mid-sign-out and calls a working sign-out broken.
+        let sessionGone = false;
+        let held = 0;
+        for (let attempt = 0; attempt < 30 && !sessionGone; attempt += 1) {
+          const cookies = await page.context().cookies();
+          held = cookies.filter((c) => /auth-token/.test(c.name) && c.value !== '').length;
+          sessionGone = held === 0;
+          if (!sessionGone) await page.waitForTimeout(500);
+        }
+        if (!sessionGone) throw new Error(`Sign out left ${held} session cookie(s) behind.`);
+
+        // 2. The app's own signed-out cleanup ran (clearSignedOutBrowserState
+        //    forgets the remembered hotel, so the next person on a shared
+        //    front-desk browser cannot probe it).
+        const remembered = await page.evaluate(() => {
+          try { return window.localStorage.getItem('hotelops-active-property'); } catch { return null; }
+        });
+        if (remembered !== null) {
+          throw new Error('Sign out left the hotel this browser was in still remembered.');
+        }
+
+        // 3. And a protected page really refuses now.
+        await goto(page, '/feed');
+        await page.locator('#signin-email').waitFor({ timeout: ACTION_MS });
       },
     },
   ];
