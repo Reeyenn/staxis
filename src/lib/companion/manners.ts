@@ -277,6 +277,22 @@ export interface CompanionCandidate {
   destination: CompanionPageKey | null;
   /** Presentation only. See CompanionSeverity. */
   severity?: CompanionSeverity;
+  /**
+   * A sentence to hand the chat brain when they say yes, instead of walking
+   * them to a screen.
+   *
+   * The unfinished-business recall is the case this exists for: "still want
+   * that?" has no destination, because what the person wants is the thing they
+   * were offered, not a page about it. Without this the Yes button would
+   * resolve to no destination and silently do nothing, which is the one
+   * outcome this whole layer refuses to ship.
+   *
+   * It carries NO new capability. The seeded sentence goes through the same
+   * chat turn a person could have typed, and any mutation it proposes gets the
+   * same approval card it would have got the first time. Charter clause 1 is
+   * untouched: this reopens a question, it does not answer one.
+   */
+  seed?: string;
 }
 
 // ─── Decision ───────────────────────────────────────────────────────────────
@@ -309,6 +325,9 @@ export type CompanionSpeech =
       sentence: string;
       destination: CompanionPageKey | null;
       severity: CompanionSeverity;
+      /** See CompanionCandidate.seed. Present only for a candidate that
+       *  carried one; a yes then reopens the conversation instead of walking. */
+      seed?: string;
     };
 
 export interface MannersInput {
@@ -413,6 +432,7 @@ export function decideCompanionSpeech(input: MannersInput): CompanionSpeech {
       }),
       destination: candidate.destination,
       severity: candidate.severity ?? DEFAULT_COMPANION_SEVERITY,
+      ...(candidate.seed ? { seed: candidate.seed } : {}),
     };
   }
 

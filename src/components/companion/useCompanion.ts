@@ -35,6 +35,7 @@ import { useAuth } from '@/contexts/AuthContext';
 import { useProperty } from '@/contexts/PropertyContext';
 import { fetchWithAuth, SessionEndedError } from '@/lib/api-fetch';
 import { readEnvelope } from '@/lib/api-envelope';
+import { subscribeByPolling } from '@/lib/db/_common';
 import type { AppRole } from '@/lib/roles';
 import { companionMounts } from '@/lib/companion/mount';
 import { COMPANION_DECLINES_BEFORE_DROP } from '@/lib/companion/charter';
@@ -51,6 +52,7 @@ import {
   type CompanionSpeech,
   type TeachFlow,
 } from '@/lib/companion/manners';
+import { deliverableFingerprint, mergeDeliverable } from '@/lib/companion/delivery';
 import { isTraceTopic, traceCandidate } from '@/lib/companion/trace';
 import {
   hintMatches,
@@ -66,6 +68,7 @@ import { useTrace } from './useTrace';
 import { publishTraceLine } from './trace-events';
 import {
   arrivalLine, companionLabels, greetingLine, offerQuestion, todayFact,
+  UNFINISHED_RECALL_QUESTION,
   type SleepReason,
 } from '@/lib/companion/copy';
 import {
@@ -90,6 +93,17 @@ import {
 
 /** How long the once-a-day hello stays in the corner before retreating. */
 const HELLO_VISIBLE_MS = 6000;
+
+/**
+ * How often an open screen re-asks what the companion has for it.
+ *
+ * A minute. Fast enough that a colleague handing you work reaches you while
+ * you are still standing there, slow enough that a tab left open all shift
+ * costs sixty reads against a cap of twelve hundred. The transport pauses
+ * entirely while the tab is hidden, so a laptop lid closed at 3pm costs
+ * nothing until it opens.
+ */
+const COMPANION_REFRESH_MS = 60_000;
 
 interface Bootstrap {
   person: { firstName: string | null; role: AppRole; sharedLogin: boolean; isManager: boolean };
@@ -339,39 +353,91 @@ export function useCompanion(
   const role = (user?.role ?? null) as AppRole | null;
   const gate = companionMounts({ pathname, role });
 
-  // ── Bootstrap ────────────────────────────────────────────────────────────
-  // Once per (person, hotel). Keyed the same way every other panel in this app
-  // is keyed, so a hotel switch cannot leave one hotel's state under another's
-  // name. Deliberately not a poll: nothing here is live.
-  const scopeKey = `${user?.uid ?? 'none'}:${activePropertyId ?? 'none'}`;
-  const loadedKey = useRef<string | null>(null);
+  // ── Bootstrap, and then delivery ─────────────────────────────────────────
+  //
+  // This used to be a single fetch per (person, hotel), with a comment saying
+  // "deliberately not a poll: nothing here is live". That was true of the
+  // greeting and false of the thing people actually notice: work a colleague
+  // hands you while your screen is open never arrived until you reloaded, and
+  // nobody reloads a page they are already looking at.
+  //
+  // ─── WHY THIS IS NOT subscribeTable ────────────────────────────────────
+  //
+  // Because it cannot be, and the reason is worth writing down so nobody
+  // "upgrades" it. A notice is derived from `comms_tasks`, which migration 0396
+  // revoked from anon AND authenticated and gave a `using (false)` select
+  // policy: the browser cannot read a row of it, and Realtime authorizes
+  // postgres_changes against exactly those grants. The table is not in the
+  // `supabase_realtime` publication either. A channel on it would deliver
+  // nothing, silently, forever, which is the worst of all shapes.
+  //
+  // So this uses the OTHER transport in the same module, which exists for
+  // precisely this case (see its header in src/lib/db/_common.ts): the read
+  // stays on the server behind /api/companion where the service role can see
+  // the rows, requests never overlap, the loop pauses while the tab is hidden
+  // and catches up on foreground and on reconnect. What is preserved from the
+  // subscribeTable contract is the part that matters: the payload is never
+  // diff-merged, every refresh is a whole fresh snapshot.
+  //
+  // ─── WHAT A REFRESH IS ALLOWED TO REPLACE ──────────────────────────────
+  //
+  // Notices and candidates, and nothing else. Not the memory: the browser
+  // holds an optimistic copy between "the companion spoke" and the server
+  // agreeing, and a poll landing in that window would roll `welcomedAt` back
+  // and greet somebody a second time. Not the person or the hotel either,
+  // which do not change under a person who is standing still.
+  //
+  // The two halves of the scope, as plain dependencies. A change to either
+  // tears the loop down and starts a new one, which is what stops one hotel's
+  // notices ever landing under another hotel's name.
+  const personId = user?.uid ?? null;
 
   useEffect(() => {
-    if (!gate.mounts || !activePropertyId || !user) return;
-    if (loadedKey.current === scopeKey) return;
-    loadedKey.current = scopeKey;
+    if (!gate.mounts || !activePropertyId || !personId) return;
     setBoot(null);
     setShowing({ kind: 'none' });
     setTourStep(null);
-    let cancelled = false;
-    void (async () => {
-      try {
-        const res = await fetchWithAuth(`/api/companion?pid=${encodeURIComponent(activePropertyId)}`);
-        const envelope = await readEnvelope<Bootstrap>(res);
-        if (cancelled || envelope.error !== undefined || !envelope.data) return;
-        setBoot({
-          ...envelope.data,
-          memory: parseCompanionMemory(envelope.data.memory),
-        });
-      } catch (e) {
-        // A signed-out mid-request is already redirecting; anything else means
-        // the companion simply has nothing to offer this page load. It is a
-        // greeter, not a dependency.
-        if (e instanceof SessionEndedError) return;
-      }
-    })();
-    return () => { cancelled = true; };
-  }, [gate.mounts, activePropertyId, user, scopeKey]);
+    let first = true;
+
+    const subscription = subscribeByPolling<Bootstrap>(
+      async () => {
+        try {
+          const res = await fetchWithAuth(`/api/companion?pid=${encodeURIComponent(activePropertyId)}`);
+          const envelope = await readEnvelope<Bootstrap>(res);
+          if (envelope.error !== undefined || !envelope.data) return [];
+          return [envelope.data];
+        } catch (e) {
+          // A signed-out mid-request is already redirecting; anything else
+          // means the companion simply has nothing to offer this moment. It is
+          // a greeter, not a dependency, so an empty snapshot is published
+          // rather than an error raised.
+          if (e instanceof SessionEndedError) return [];
+          return [];
+        }
+      },
+      (rows) => {
+        const next = rows[0];
+        if (!next) return;
+        if (first) {
+          first = false;
+          setBoot({ ...next, memory: parseCompanionMemory(next.memory) });
+          return;
+        }
+        setBoot((b) => (b
+          ? mergeDeliverable(b, next)
+          : { ...next, memory: parseCompanionMemory(next.memory) }));
+      },
+      undefined,
+      {
+        pollIntervalMs: COMPANION_REFRESH_MS,
+        // A snapshot that says the same thing publishes nothing, so an idle
+        // screen re-renders zero times an hour.
+        isEqual: (previous, nextRows) =>
+          deliverableFingerprint(previous[0]) === deliverableFingerprint(nextRows[0]),
+      },
+    );
+    return () => subscription.unsubscribe();
+  }, [gate.mounts, activePropertyId, personId]);
 
   // ── Busy ─────────────────────────────────────────────────────────────────
   useEffect(() => {
@@ -693,9 +759,14 @@ export function useCompanion(
       speech,
       question: speech.kind === 'welcome'
         ? speech.question
-        : offerQuestion(resolveDestination(speech.destination, {
-          role, enabledSections: activeProperty?.enabledSections,
-        })),
+        // An offer that carries a sentence to reopen has no screen to walk to,
+        // so "want me to take you to…" would be a question about nowhere. See
+        // CompanionCandidate.seed.
+        : speech.seed
+          ? UNFINISHED_RECALL_QUESTION
+          : offerQuestion(resolveDestination(speech.destination, {
+            role, enabledSections: activeProperty?.enabledSections,
+          })),
       severity: speech.kind === 'offer' ? speech.severity : DEFAULT_COMPANION_SEVERITY,
     });
     if (speech.kind === 'welcome') {
@@ -715,8 +786,12 @@ export function useCompanion(
         topic,
         page: speech.destination,
         actions: [
-          // A trace draws in place; anything else walks somebody to a screen.
-          { label: labels.yes, kind: isTraceTopic(topic) ? 'show' : 'walk' },
+          // A trace draws in place, a recall hands the sentence back to the
+          // chat, and anything else walks somebody to a screen.
+          {
+            label: labels.yes,
+            kind: speech.seed ? 'seed' : isTraceTopic(topic) ? 'show' : 'walk',
+          },
           { label: labels.no, kind: 'no' },
         ],
       }, (m) => ({
@@ -848,8 +923,18 @@ export function useCompanion(
       const target = resolveDestination(current.speech.destination, {
         role, enabledSections: activeProperty?.enabledSections,
       });
+      const seed = current.speech.seed;
       setShowing({ kind: 'none' });
       void remember('accepted', { topic, ...stampLive(topic, 'accepted') }, (m) => m);
+
+      // A yes to a recall hands the sentence back to the one chat brain, which
+      // proposes the action and puts the SAME approval card up again. The
+      // companion still never acts without a yes: this reopens the question it
+      // asked before, it does not answer it.
+      if (seed) {
+        onSeed(seed);
+        return;
+      }
 
       // A yes to a trace draws it rather than walking anywhere, when the thing
       // it is about is on the screen already. Walking somebody to the page they

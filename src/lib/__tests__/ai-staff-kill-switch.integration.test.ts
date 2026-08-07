@@ -504,14 +504,30 @@ describe('AI Staff — the kill switch actually stops the Morning Briefer', () =
     assert.deepEqual(await switchRows(), []);
   });
 
-  test('switching an employee ON schedules nothing — the status still says waiting', async () => {
-    await flip(MORNING_BRIEFER_ID, true);
+  test('the switch is a veto, not a scheduler: status follows what is actually scheduled', async () => {
+    // Until the founder flipped the AI master switch on 2026-08-06 this case
+    // read "the status still says waiting", because nothing the layer needs was
+    // scheduled and clearing a kill override could not change that. The
+    // schedules exist now, so the honest expectation flipped with them.
+    //
+    // What is being pinned is the direction of authority, which did not change:
+    // the page's button can only ever say NO. It writes one row in
+    // ai_employee_switches and touches no scheduler, so an employee's status
+    // when the override is cleared is whatever the cron config says it is, and
+    // never something the button asserted.
+    const off = await flip(MORNING_BRIEFER_ID, true);
+    assert.equal(off.body.data!.employee.status, 'switched_off');
+
     await flip(MORNING_BRIEFER_ID, false);
     const { body } = await readRoster();
     const briefer = body.data!.employees.find((e) => e.id === MORNING_BRIEFER_ID)!;
-    assert.equal(
-      briefer.status, 'waiting_for_master',
-      'clearing a kill override must not be able to turn the machine on',
-    );
+    // Derived from the schedules in vercel.json via the job catalog, not from
+    // the request that just cleared the override.
+    assert.equal(briefer.status, 'on');
+    // And the only thing the button wrote is the override it cleared.
+    const rows = await switchRows();
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0].employee_id, MORNING_BRIEFER_ID);
+    assert.equal(rows[0].switched_off, false);
   });
 });

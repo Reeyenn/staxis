@@ -44,6 +44,7 @@ import {
   type UsageReport,
 } from '@/lib/agent/llm';
 import { recordNonRequestCost } from '@/lib/agent/cost-controls';
+import { recordAgentJournalEntry, journalBriefedLine } from '@/lib/agent/journal';
 import { MORNING_BRIEFER_ID } from '@/lib/ai/employee-ids';
 import { isEmployeeSwitchedOff } from '@/lib/ai/employee-switches';
 import {
@@ -286,6 +287,25 @@ export async function getMorningBrief(opts: GetBriefOptions): Promise<BriefResul
     });
 
   await deps.writeCache(key, propertyId, phrased).catch(() => {});
+  // ── The companion's own record that it wrote today's brief ──
+  //
+  // Exactly HERE, on the one branch that produced it, and not on the cache-hit
+  // branch above: the brief is read many times a day and written once, and a
+  // journal line per read would say "Staxis wrote the morning brief" eleven
+  // times about one act. `generated: true` is the same single moment the
+  // caller is told about, so the record and the claim cannot drift.
+  await recordAgentJournalEntry({
+    propertyId,
+    eventType: 'agent_briefed',
+    description: journalBriefedLine({ lines: phrased.lines.length }),
+    metadata: {
+      localDate: phrased.localDate,
+      kind: phrased.kind,
+      lines: phrased.lines.length,
+      wording: phrased.source,
+    },
+    occurredAt: now,
+  });
   return { brief: phrased, cached: false, generated: true };
 }
 

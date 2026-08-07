@@ -32,6 +32,12 @@ export const ACTIVITY_SOURCES = [
   'system',
   'sms',
   'voice',
+  // The companion's own acts (migration 0456). The one source written by
+  // application code rather than by a trigger; see src/lib/agent/journal.ts.
+  // It is in this list so the timeline's source filter can single it out,
+  // which is what makes "show me only what Staxis did" a pill rather than a
+  // query somebody has to write.
+  'staxis_agent',
 ] as const;
 
 export type ActivitySource = (typeof ACTIVITY_SOURCES)[number];

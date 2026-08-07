@@ -22,16 +22,20 @@
  * read, they never emit. cleaning_tasks, agent_nudges and agent_memory are
  * written by exactly the same code paths as before this route existed.
  *
- * DORMANT ON PURPOSE (2026-07-26). There is no vercel.json entry: the founder
- * turns this on, not a deploy. To enable, two coordinated changes:
- *   1. vercel.json                        → { "path": "/api/cron/run-findings", "schedule": "0 6 * * *" }
- *   2. src/lib/automation/job-catalog.ts  → promote its staged row to active
- * Do not do it for this route alone. The AI layer goes on in one act, and
- * docs/cron-triggers.md, "The AI master switch", is the single checklist that
- * covers all four of its crons (this one, findings-sweep, findings-janitor and
- * run-management-patterns).
- * Until then it is callable by hand with the cron bearer, which is how it gets
- * exercised against a real hotel before it is ever scheduled.
+ * SCHEDULED since 2026-08-06 at '0 6 * * *', when the founder flipped the AI
+ * master switch. It was dormant from 2026-07-26 until then: no vercel.json
+ * entry, hand-callable with the cron bearer, which is how it was exercised
+ * against a real hotel before it was ever scheduled.
+ *
+ * The layer still moves in ONE act. This route, findings-sweep,
+ * findings-janitor and run-management-patterns go on and off together, and
+ * cron-cadences.test.ts asserts all four are scheduled rather than asserting
+ * none of them is. docs/cron-triggers.md, "The AI master switch", is the
+ * checklist. Do not park this one on its own.
+ *
+ * COST SHAPE: one batched model call per hotel per night, reserved against the
+ * per-hotel-per-day findings cap. This is an N-shaped bill, not a fixed one,
+ * and `runFindingsForAllProperties` scans every property including test ones.
  *
  * Query params:
  *   propertyId (optional, uuid)   — run only this hotel

@@ -56,6 +56,22 @@
     {
       "path": "/api/cron/vercel-watchdog",
       "schedule": "*/5 * * * *"
+    },
+    {
+      "path": "/api/cron/run-findings",
+      "schedule": "0 6 * * *"
+    },
+    {
+      "path": "/api/cron/findings-sweep",
+      "schedule": "0 7 * * 1"
+    },
+    {
+      "path": "/api/cron/findings-janitor",
+      "schedule": "40 7 * * 1"
+    },
+    {
+      "path": "/api/cron/run-management-patterns",
+      "schedule": "0 8 * * *"
     }
   ]
 }

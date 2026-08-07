@@ -249,6 +249,24 @@ describe('quiet by default', () => {
 // ─── Frequency ──────────────────────────────────────────────────────────────
 
 describe('the frequency cap', () => {
+  // ─── The dials are pinned, on purpose ───────────────────────────────────
+  //
+  // Every other test in this describe reads the constants symbolically, which
+  // is right: they test the MECHANISM, and a mechanism that only works at one
+  // number is not a mechanism. But that also means the numbers themselves can
+  // be changed by anybody, silently, and no test anywhere notices.
+  //
+  // These two are charter-adjacent — they are the whole of "quiet by default"
+  // — so the values get one assertion of their own. It is not here to stop
+  // them changing. It is here to make changing them a deliberate act with a
+  // diff attached, the way the two changes on 2026-08-06 were: 2 → 5 speeches
+  // and 120 → 45 minutes, once the companion had a life record to draw on and
+  // a two-hour silence started costing whole shifts.
+  test('the dials are the agreed numbers', () => {
+    assert.equal(COMPANION_MAX_SPEECH_PER_DAY, 5);
+    assert.equal(COMPANION_MIN_GAP_MINUTES, 45);
+  });
+
   test('stops at the cap, not one past it', () => {
     // The plausible bug is `>` where `>=` belongs, which ships a companion that
     // speaks one more time a day than anybody agreed to.

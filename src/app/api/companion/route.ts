@@ -61,12 +61,14 @@ import {
   COMPANION_OFFER_KINDS,
   OFFER_ACTIONS_MAX,
   OFFER_TEXT_MAX,
+  offerIsJournalable,
   type CompanionOffer,
   type CompanionOfferAction,
   type CompanionOfferAnswer,
   type CompanionOfferKind,
 } from '@/lib/companion/offers';
 import { cleanName, looksSharedLogin, type SleepReason } from '@/lib/companion/copy';
+import { recordAgentJournalEntry, journalSaidLine } from '@/lib/agent/journal';
 import { loadAssignmentNotices } from '@/lib/companion/notices-server';
 import type { AssignmentNotice } from '@/lib/companion/notices';
 import {
@@ -163,6 +165,14 @@ export async function GET(req: NextRequest): Promise<Response> {
         propertyId: ctx.pid,
         role,
         hotelMutationAllowed: ctx.hotelMutationAllowed,
+        // Whose companion this is. The unfinished-business recall is scoped to
+        // the person who was actually shown the card that timed out.
+        accountId: ctx.accountId,
+        // The HOTEL's day and clock, resolved above from properties.timezone.
+        // The unfinished-business recall reads "before today" off it, and the
+        // browser's idea of today is the one thing that must never decide that.
+        today,
+        timezone: facts?.timezone ?? null,
       })
     : [];
 
@@ -469,6 +479,44 @@ export async function POST(req: NextRequest): Promise<Response> {
               actions: speech.actions,
               now,
             });
+            // ── The third family of journal entry: a thing said to a person ──
+            //
+            // The thread already holds the sentence, and that is the right home
+            // for reading it back. What the thread cannot answer is "what have
+            // you been doing today", which is asked of the hotel and not of one
+            // conversation. So the same act lands once in each: the words in the
+            // thread, the fact in the timeline.
+            //
+            // Only when a row was actually written. An offer the thread refused
+            // is an offer nobody was shown, and journaling it would be the
+            // companion claiming to have spoken into a void.
+            //
+            // AND NEVER A PANEL ASK, whose venue is the whole rule. See
+            // `offerIsJournalable`, which owns that decision so it can be
+            // tested rather than remembered.
+            if (offer && offerIsJournalable(speech.kind)) {
+              await recordAgentJournalEntry({
+                propertyId: ctx.pid,
+                eventType: 'agent_said',
+                description: journalSaidLine({
+                  text: speech.text,
+                  personName: cleanName(ctx.displayName),
+                }),
+                // The person SPOKEN TO, as the target. The actor is the
+                // companion, which is what the null account id on this table
+                // has meant since 0228.
+                targetType: 'person',
+                targetId: ctx.accountId,
+                targetLabel: cleanName(ctx.displayName),
+                metadata: {
+                  kind: speech.kind,
+                  topic: topic || null,
+                  offerId: offer.id,
+                  event: body.event,
+                },
+                occurredAt: now,
+              });
+            }
           }
         }
       } else if (body.event === 'declined' || body.event === 'accepted') {

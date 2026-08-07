@@ -23,6 +23,7 @@ import { recordNonRequestCost } from './cost-controls';
 import { runAgent, escapeTrustMarkerContent, type UsageReport } from './llm';
 import { storeMemory } from '@/lib/db/agent-memory';
 import { redactMemoryContent } from './memory-redact';
+import { recordAgentJournalEntry, journalLearnedLine } from './journal';
 import { gatherOperationalSignals, templateContent, MAX_SIGNALS } from './operational-signals';
 import { runWithConcurrency } from '@/lib/parallel';
 import { findAuthoritativeRepresentativeAccount } from '@/lib/authorization/server';
@@ -424,6 +425,26 @@ export async function consolidateOneProperty(
       { onConflict: 'property_id,run_date' },
     );
 
+  // 7) The journal, but ONLY when a belief actually changed.
+  //
+  // A run that read the day and learned nothing is not a belief change, and
+  // "Staxis went over the day and updated nothing" is the exact shape of noise
+  // the journal's write set was drawn to exclude. The run row above already
+  // records that the pass happened, for the dashboard that asks that question.
+  if (learned > 0 || updated > 0) {
+    await recordAgentJournalEntry({
+      propertyId,
+      eventType: 'agent_learned',
+      description: journalLearnedLine({ learned, updated, recap: recap || null }),
+      metadata: {
+        pass: 'conversations',
+        learned,
+        updated,
+        conversationsReviewed: convoIds.length,
+      },
+    });
+  }
+
   return {
     propertyId,
     conversationsReviewed: convoIds.length,
@@ -613,6 +634,21 @@ export async function consolidateOperationalSignals(
       },
       { onConflict: 'property_id,run_date' },
     );
+
+  // Same rule as the conversation pass: journal a belief CHANGE, never a run.
+  if (learned > 0 || updated > 0) {
+    await recordAgentJournalEntry({
+      propertyId,
+      eventType: 'agent_learned',
+      description: journalLearnedLine({ learned, updated, recap: recap || null }),
+      metadata: {
+        pass: 'operations',
+        learned,
+        updated,
+        signalsFound: signals.length,
+      },
+    });
+  }
 
   return {
     propertyId,

@@ -498,6 +498,124 @@ describe('awareness: the tenant wall', () => {
 // DEGRADE TO SILENCE
 // ═══════════════════════════════════════════════════════════════════════════
 
+// ═══════════════════════════════════════════════════════════════════════════
+// WHAT STAXIS ITSELF DID TODAY — read from its own journal
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// The feed used to be able to say exactly two things, and on a live hotel it
+// usually said neither. Ask "what have you been doing?" and the block carried
+// nothing, so the model answered from nowhere.
+//
+// The plausible bugs here are the ones the whole feature exists to avoid:
+// rendering a zero on an empty read (which claims the companion did nothing
+// when it means we have no record), quoting a 300-character journal sentence
+// whole and eating the entire block budget, or losing the "in the middle of"
+// half, which is the most useful thing the feed can carry.
+
+describe('awareness: the companion reads its own journal', () => {
+  const JOURNAL = [
+    {
+      occurred_at: '2026-07-27T11:02:00.000Z', // 6:02 AM Chicago
+      event_type: 'agent_briefed',
+      description: 'Staxis wrote the morning brief, 4 lines long.',
+      metadata: {},
+    },
+    {
+      occurred_at: '2026-07-27T15:30:00.000Z',
+      event_type: 'agent_acted',
+      description: 'Staxis did this: add a to-do, replace the lobby bulb.',
+      metadata: {},
+    },
+    {
+      occurred_at: '2026-07-27T14:00:00.000Z',
+      event_type: 'agent_action_approved',
+      description: 'Staxis asked first, got a yes, and did it: message Maria Garcia.',
+      metadata: {},
+    },
+    {
+      occurred_at: '2026-07-27T09:00:00.000Z',
+      event_type: 'agent_learned',
+      description: 'Staxis went over the day and updated 2 new things.',
+      metadata: {},
+    },
+    {
+      occurred_at: '2026-07-27T13:00:00.000Z',
+      event_type: 'agent_said',
+      description: 'Staxis said this to Maria: three things slipped past their day.',
+      metadata: {},
+    },
+  ];
+
+  it('renders what it did today, from real rows', async () => {
+    tableRows.activity_log = JOURNAL;
+    const awareness = await buildAwareness(input());
+    const line = awareness.staxisToday ?? '';
+
+    assert.match(line, /wrote the morning brief at 6:02 AM/);
+    // Two acts: one ungated, one approved. Both are things it DID.
+    assert.match(line, /did 2 things/);
+    assert.match(line, /updated what it remembers/);
+    assert.match(line, /spoke first 1 time/);
+
+    // And it reaches the prompt under a header that says whose day it is.
+    assert.match(formatAwarenessForPrompt(awareness), /What I have done today:/);
+  });
+
+  it('quotes the most recent act, clipped, never the whole sentence', async () => {
+    tableRows.activity_log = [{
+      occurred_at: '2026-07-27T15:30:00.000Z',
+      event_type: 'agent_acted',
+      description: `Staxis did this: ${'y'.repeat(280)}`,
+      metadata: {},
+    }];
+    const awareness = await buildAwareness(input());
+    // A 300-character sentence quoted whole would be a quarter of the entire
+    // block budget spent by one feed on one line.
+    assert.ok((awareness.staxisToday ?? '').length < 200, 'the quote was not clipped');
+    assert.match(awareness.staxisToday ?? '', /…/);
+  });
+
+  it('says NOTHING when the journal is empty, rather than "did nothing"', async () => {
+    // The silence rule, and it is sharper here than anywhere else in the file:
+    // the journal is written fail-soft, so an empty read means "no record",
+    // which is a different claim from "nothing happened". Only silence is true
+    // for both.
+    tableRows.activity_log = [];
+    const awareness = await buildAwareness(input());
+    assert.equal(awareness.staxisToday, undefined);
+    const block = formatAwarenessForPrompt(awareness);
+    assert.equal(/What I have done today/.test(block), false);
+    assert.equal(/did 0 |nothing today/i.test(block), false);
+  });
+
+  it('carries what it is in the MIDDLE of', async () => {
+    // A card still on somebody's screen is the most useful thing this feed can
+    // say. A manager asking "what are you doing" while an approval is up must
+    // not be told about this morning instead.
+    tableRows.agent_pending_actions = [{ tool_name: 'create_todo' }, { tool_name: 'send_message' }];
+    const awareness = await buildAwareness(input());
+    assert.match(awareness.staxisToday ?? '', /still waiting on an answer to 2 questions/);
+
+    const pendingRead = recorded.find((q) => q.table === 'agent_pending_actions'
+      && q.filters.some(([col]) => col === 'expires_at'));
+    assert.ok(pendingRead, 'the live-card read must exclude rows whose TTL has passed');
+  });
+
+  it('reads only its own rows, for this hotel, since the hotel\'s own midnight', async () => {
+    tableRows.activity_log = JOURNAL;
+    await buildAwareness(input());
+    const journalRead = recorded.find((q) => q.table === 'activity_log'
+      && q.filters.some(([col, val]) => col === 'source' && val === 'staxis_agent'));
+    assert.ok(journalRead, 'the feed read activity_log without the source filter');
+    const cols = journalRead.filters.map(([col]) => col);
+    assert.ok(cols.includes('property_id'));
+    // 6am UTC is Chicago midnight on this date. A UTC boundary here would count
+    // an hour of yesterday's work as today's for a night auditor.
+    const since = journalRead.filters.find(([col]) => col === 'occurred_at')?.[1];
+    assert.equal(since, '2026-07-27T05:00:00.000Z');
+  });
+});
+
 describe('awareness: a broken feed drops its line, never the turn', () => {
   it('survives every single feed throwing at once', async () => {
     throwingTables = new Set([
