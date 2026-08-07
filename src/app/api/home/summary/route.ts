@@ -331,8 +331,8 @@ async function dashboardTile(pid: string, today: string): Promise<TileLine> {
   // and the muted door.
   if (property.error) throw new Error(property.error.message);
 
-  const row = ((counts.data ?? []) as Array<Record<string, unknown>>)[0] ?? null;
-  const line = summarizeHomeOccupancy(row, property.data?.total_rooms);
+  const rows = (counts.data ?? []) as unknown as Array<Record<string, unknown>>;
+  const line = summarizeHomeOccupancy(rows[0] ?? null, property.data?.total_rooms);
   // No room mix reported yet: occupancy is unknown, not zero and not full.
   if (!line) return FALLBACK.dashboard;
   return { en: line.en, es: line.en, tone: line.tone };

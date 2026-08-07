@@ -11,7 +11,6 @@ import React from 'react';
 import Link from 'next/link';
 import { useAuth } from '@/contexts/AuthContext';
 import { useProperty } from '@/contexts/PropertyContext';
-import { useLang } from '@/contexts/LanguageContext';
 import { canManageTeam } from '@/lib/roles';
 import { useSectionEnabled } from '@/lib/sections/useSectionEnabled';
 import { useApiResource } from '@/lib/hooks/use-api-resource';
