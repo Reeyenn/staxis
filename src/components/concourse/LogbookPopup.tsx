@@ -75,7 +75,7 @@ export function LogbookPopup({
       escToClose
       cardStyle={{
         width: 'min(760px, 100%)',
-        maxHeight: '86vh',
+        maxHeight: '86dvh',
         display: 'flex',
         flexDirection: 'column',
         overflow: 'hidden',

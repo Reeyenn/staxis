@@ -76,6 +76,16 @@ export const LIST_CSS = `
   background:rgba(184,92,61,.10);color:#8E432B;}
 .fx-rowb{min-width:0;flex:1;}
 .fx-rowsub{font-size:11.5px;color:#8A9187;margin-top:2px;line-height:1.4;}
+/* On a phone the row is a STACK: the title owns a whole line, and the mono
+   clock and the buttons follow underneath it. Sharing one 343px line with a
+   stamp that will not wrap squeezed the title into a 119px column and set
+   "Replace the lobby ice machine filter" one word per line. It lives here
+   rather than in FEED_CSS because that is where .fx-rowb is declared, and the
+   two sheets are injected in an order that would otherwise decide which of
+   them wins. */
+@media (max-width:760px){
+  .fx-rowb{flex:1 0 100%;}
+}
 .fx-drrow{padding:10px 0;border-bottom:1px solid rgba(31,35,28,.06);}
 .fx-drrow:last-child{border-bottom:none;}
 .fx-drt{font-size:13.5px;font-weight:600;color:#1F231C;line-height:1.4;}
