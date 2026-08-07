@@ -65,7 +65,7 @@ function repairCostDollars(raw: unknown): number | null {
 // can no longer work — `rooms` is empty and has no usable date column.
 // Exported so the PMS money/booking feed tools (tools/pms-feeds.ts) share the
 // same property-local "today" derivation.
-export async function getPropertyToday(db: ScopedDb): Promise<string> {
+export async function getPropertyToday(db: ScopedDb, now: Date = new Date()): Promise<string> {
   let timezone: string | null = null;
   try {
     const { data } = await db
@@ -80,10 +80,10 @@ export async function getPropertyToday(db: ScopedDb): Promise<string> {
     return timezone
       ? new Intl.DateTimeFormat('en-CA', {
           timeZone: timezone, year: 'numeric', month: '2-digit', day: '2-digit',
-        }).format(new Date())
-      : new Date().toISOString().slice(0, 10);
+        }).format(now)
+      : now.toISOString().slice(0, 10);
   } catch {
-    return new Date().toISOString().slice(0, 10);
+    return now.toISOString().slice(0, 10);
   }
 }
 
