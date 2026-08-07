@@ -37,6 +37,58 @@ export function checkRunOwnership(
  *  behavioural edit to the block below, exactly like every other tier. */
 export const WALKTHROUGH_PROMPT_VERSION = 'walkthrough-step-v2';
 
+// ═══ WHAT ONE WALKTHROUGH STEP CAN COST, AND WHY THAT IS A DERIVATION ═══════
+//
+// The route holds money against the caller's daily cap before it makes the
+// call, and a hold that is smaller than the call it guards is decoration: the
+// cap lets the step through, the finalize corrects the books afterwards, and the
+// ceiling was never actually applied.
+//
+// The hold used to be a flat $0.03, arrived at in a comment from "worst case
+// input ~4K tokens, output ~500 tokens". Neither number was enforced anywhere.
+// The request carries 8192 as its output ceiling like every other agent call, so
+// the true worst case for a single Sonnet attempt is about five times the hold —
+// and the input side had no cap on an element's accessible name at all, so a
+// page with long labels pushed it further.
+//
+// Both bounds are real now: `MAX_ELEMENT_NAME_CHARS` below is applied where the
+// prompt is built, and the figure is DERIVED from the same constants rather than
+// typed out, so raising the element budget or the output ceiling raises the hold
+// on its own instead of quietly widening the gap.
+
+/** Longest accessible name copied into the prompt for one element. Far longer
+ *  than any real control label; its job is to make the input bound true. */
+export const MAX_ELEMENT_NAME_CHARS = 160;
+
+/**
+ * Ceiling on the prompt one step can send, in tokens.
+ *
+ * 60 elements at the caps applied in `buildUserContent` (id, role, a 160-char
+ * name, a staxis id) plus 16 history lines at their own caps, plus the system
+ * prompt, the hotel context block and a 200-character task. Rounded generously
+ * upward: this is a safety bound, not an estimate, and the only wrong direction
+ * is down.
+ */
+export const WALKTHROUGH_MAX_INPUT_TOKENS = 12_000;
+
+/**
+ * The worst a single attempt can cost at the tier the step defaults to, in
+ * dollars, rounded up to the cent.
+ *
+ * The route scales this for the configured primary and fallback before it
+ * reserves, exactly as the chat routes do, so a pricier model selected in the
+ * AI Control Center expands the hold rather than slipping under it.
+ */
+export function deriveWalkthroughStepUsd(rates: {
+  inputUsdPerMillionTokens: number;
+  outputUsdPerMillionTokens: number;
+}, maxOutputTokens: number): number {
+  const perCall =
+    (WALKTHROUGH_MAX_INPUT_TOKENS / 1_000_000) * rates.inputUsdPerMillionTokens
+    + (maxOutputTokens / 1_000_000) * rates.outputUsdPerMillionTokens;
+  return Math.ceil(perCall * 100) / 100;
+}
+
 /**
  * The walkthrough's own job description. Everything ABOVE the shared rules and
  * BELOW nothing: this is the only text in the walkthrough prompt that is about

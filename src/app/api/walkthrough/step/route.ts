@@ -27,6 +27,7 @@ import { getOrMintRequestId, log } from '@/lib/log';
 import { hotelWriteDecisionForUserId } from '@/lib/team-auth';
 import {
   escapeTrustMarkerContent,
+  MAX_OUTPUT_TOKENS,
   runAgent,
   type UsageReport,
 } from '@/lib/agent/llm';
@@ -49,6 +50,8 @@ import type { AppRole } from '@/lib/roles';
 import {
   buildSystemPrompt,
   checkRunOwnership,
+  deriveWalkthroughStepUsd,
+  MAX_ELEMENT_NAME_CHARS,
   parseStepAction,
   WALKTHROUGH_STEP_OUTPUT_CONFIG,
   type StepAction,
@@ -94,22 +97,33 @@ const MAX_ELEMENTS_TO_CLAUDE = 60;
 const WALKTHROUGH_ROUTE_AI_DEADLINE_MS = 25_000;
 const WALKTHROUGH_FALLBACK_RESERVE_MS = 8_000;
 
-// Walkthrough is Sonnet, one call per step. Worst case input ~4K tokens,
-// output ~500 tokens.
-// Sonnet pricing: $3/M input, $15/M output.
-// 4000/1M * $3 + 500/1M * $15 = $0.012 + $0.0075 = $0.0195. Round to $0.03
-// for ceiling. We don't pre-reserve, but track this so the cost-recording
-// row matches expectations.
-// Per-call cap headroom — bail early if a step would push the user past
-// today's cap.
-const PER_STEP_ESTIMATE_USD = 0.03;
+// What one step may cost at the tier it defaults to, DERIVED from the bounds the
+// call actually runs under rather than from an estimate in a comment.
+//
+// It was a flat $0.03, reasoned from "worst case input ~4K tokens, output ~500".
+// The output ceiling on the request is MAX_OUTPUT_TOKENS, not 500, so a single
+// attempt could cost roughly five times the money held for it, and a hold
+// smaller than the call it guards does not guard anything: the cap admits the
+// step and the finalize corrects the books afterwards. Deriving it means raising
+// either bound raises the hold on its own.
+const PER_STEP_ESTIMATE_USD = deriveWalkthroughStepUsd(
+  anthropicTierTokenRates('sonnet'),
+  MAX_OUTPUT_TOKENS,
+);
 
 function buildUserContent(body: StepRequestBody, role: AppRole): string {
   const elements = body.snapshot.elements.slice(0, MAX_ELEMENTS_TO_CLAUDE);
   const elementLines = elements.map(e => {
     const parts: string[] = [];
     parts.push(`${e.id} — ${e.role}`);
-    if (e.name) parts.push(`name: "${escapeTrustMarkerContent(e.name).replace(/"/g, "'")}"`);
+    // Capped so the input bound PER_STEP_ESTIMATE_USD is derived from is real.
+    // Every other untrusted string in this prompt already had a cap; an
+    // element's accessible name did not, and it is the one that repeats sixty
+    // times.
+    if (e.name) {
+      const name = escapeTrustMarkerContent(e.name.slice(0, MAX_ELEMENT_NAME_CHARS)).replace(/"/g, "'");
+      parts.push(`name: "${name}"`);
+    }
     if (e.staxisId) parts.push(`staxis-id: ${e.staxisId}`);
     if (!e.inViewport) parts.push('(off-screen, will be scrolled into view)');
     return '  ' + parts.join(' · ');
