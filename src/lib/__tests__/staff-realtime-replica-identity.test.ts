@@ -150,7 +150,9 @@ describe('realtime replica identity on the column-filtered staff tables', () => 
       join(MIGRATIONS_DIR, '0009_realtime_column_filter.sql'),
       'utf8',
     );
-    const claim = /column-filtered tables can still have\s*(?:--\s*)?`?replica identity full/is;
+    // No dotAll flag: the pattern has no `.` to widen, and `s` is only legal
+    // from an es2018 target, which this project does not set.
+    const claim = /column-filtered tables can still have\s*(?:--\s*)?`?replica identity full/i;
     const correction = /THE (?:LINE|CLAIM|NOTE) ABOVE IS WRONG|CORRECTION \(/i;
     if (claim.test(sql)) {
       assert.match(
