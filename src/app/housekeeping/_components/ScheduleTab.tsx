@@ -599,9 +599,9 @@ export function ScheduleTab() {
             // '—'. Checkout/stayover/recommended cells null out while the
             // reservation feeds are untrusted — a confident 0 there reads
             // as "nobody checks out today".
-            { l: 'In House',    v: stripCountsLive ? (feedStatus.derived?.snapshotInHouse ?? null) : (fsLive ? null : dashboardNums?.inHouse ?? null), loaded: dashboardLoaded },
-            { l: 'Arrivals',    v: stripCountsLive ? (feedStatus.derived?.snapshotArrivalsRemaining ?? null) : (fsLive ? null : dashboardNums?.arrivals ?? null), loaded: dashboardLoaded },
-            { l: 'Departures',  v: stripCountsLive ? (feedStatus.derived?.snapshotDeparturesRemaining ?? null) : (fsLive ? null : dashboardNums?.departures ?? null), loaded: dashboardLoaded },
+            { l: 'In House',    v: stripCountsLive ? (feedStatus?.derived?.snapshotInHouse ?? null) : (fsLive ? null : dashboardNums?.inHouse ?? null), loaded: dashboardLoaded },
+            { l: 'Arrivals',    v: stripCountsLive ? (feedStatus?.derived?.snapshotArrivalsRemaining ?? null) : (fsLive ? null : dashboardNums?.arrivals ?? null), loaded: dashboardLoaded },
+            { l: 'Departures',  v: stripCountsLive ? (feedStatus?.derived?.snapshotDeparturesRemaining ?? null) : (fsLive ? null : dashboardNums?.departures ?? null), loaded: dashboardLoaded },
             { l: 'Checkouts',   v: reservationsLearning ? null : checkouts,                loaded: currentBoardLoaded },
             { l: 'Stayovers',   v: reservationsLearning ? null : stayovers,                loaded: currentBoardLoaded },
             { l: 'Total time',  v: reservationsLearning ? null : fmtMinutes(totalMinutes), loaded: currentBoardLoaded },
