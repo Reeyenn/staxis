@@ -32,9 +32,19 @@ export function TraceFoundLine() {
         <div className="trl-text">{line.text}</div>
         <div className="trl-where">{line.whereFound}</div>
       </div>
+      {/* The buttons the companion actually built for this thing, in order.
+          The first is the one it leads with. Nothing here writes a label. */}
       <div className="trl-acts">
-        <button type="button" className="trl-yes" onClick={line.onYes}>Show me</button>
-        <button type="button" className="trl-no" onClick={line.onNo}>No</button>
+        {line.replies.map((reply, i) => (
+          <button
+            key={reply.id}
+            type="button"
+            className={i === 0 ? 'trl-yes' : 'trl-no'}
+            onClick={() => line.onReply(reply.id)}
+          >
+            {reply.label}
+          </button>
+        ))}
       </div>
       <style dangerouslySetInnerHTML={{ __html: TRL_CSS }} />
     </div>

@@ -77,6 +77,7 @@ import {
   type CompanionMemory,
   type MannersInput,
 } from '@/lib/companion/manners';
+import { repliesFor } from '@/lib/companion/replies';
 import { COMPANION_DECLINES_BEFORE_DROP } from '@/lib/companion/charter';
 
 const PROPERTY_ID = '00000000-0000-0000-0000-0000000000a1';
@@ -693,6 +694,10 @@ describe('unfinished business: it is bound by the ordinary manners ledger', () =
       destination: null,
       seed: 'Add a to-do: replace the lobby bulb',
       severity: 'ok',
+      replyKind: 'unfinished',
+      replies: repliesFor({
+        kind: 'unfinished', seed: 'Add a to-do: replace the lobby bulb',
+      }),
     };
   }
 
@@ -816,6 +821,8 @@ describe('companion delivery: what a refresh may and may not replace', () => {
     sensitivity: 'operational',
     covers: [],
     destination: 'inventory',
+    replyKind: 'finding_recommend',
+    replies: repliesFor({ kind: 'finding_recommend', findingId: 'x' }),
   };
 
   it('replaces the work that landed', () => {

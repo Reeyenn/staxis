@@ -98,8 +98,15 @@ describe('AI Control Center feature registry', () => {
   // against the model it runs on, so a switchable model would make one
   // reservation larger than the whole ceiling. Display-only count unchanged —
   // "display only" is `editable: false`, and this one is editable.
-  test('covers 29 controllable hosted features and 7 display-only features', () => {
-    assert.equal(AI_FEATURE_KEYS.length, 37);
+  // 2026-08-07: the companion got a slot for the question over a card's reply
+  // buttons, so the one sentence a model is allowed to author on that surface
+  // can be moved or switched off without touching the nightly sorter it rides
+  // beside (29→30 controllable, 37→38 keys). It is the one feature whose switch
+  // being OFF is invisible by construction: every card already carries a correct
+  // per-kind template question, and the model's version simply replaces it when
+  // there is one. Display-only count unchanged.
+  test('covers 30 controllable hosted features and 7 display-only features', () => {
+    assert.equal(AI_FEATURE_KEYS.length, 38);
     assert.equal(new Set(AI_FEATURE_KEYS).size, AI_FEATURE_KEYS.length);
     assert.deepEqual(Object.keys(AI_FEATURE_REGISTRY).sort(), [...AI_FEATURE_KEYS].sort());
 

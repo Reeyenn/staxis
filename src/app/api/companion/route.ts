@@ -83,12 +83,17 @@ import {
   stampCompanionOffer,
 } from '@/lib/agent/memory';
 import {
-  OFFER_ACTIONS_MAX,
   OFFER_TEXT_MAX,
   type CompanionOffer,
-  type CompanionOfferAction,
   type CompanionOfferAnswer,
+  type CompanionOfferKind,
 } from '@/lib/companion/offers';
+import {
+  repliesFor,
+  staticRepliesForTopic,
+  type CompanionReply,
+} from '@/lib/companion/replies';
+import { tourFor } from '@/lib/companion/pages';
 import { cleanName, looksSharedLogin, type SleepReason } from '@/lib/companion/copy';
 import { recordAgentJournalEntry, journalSaidLine } from '@/lib/agent/journal';
 import { loadAssignmentNotices } from '@/lib/companion/notices-server';
@@ -323,13 +328,26 @@ async function serverCandidates(opts: {
 }
 
 /**
- * The notices line this person is actually owed, and the cursor that spends it.
+ * The notices line this person is actually owed, the cursor that spends it, and
+ * whether the batch leaves a job nobody has taken.
  *
- * Both used to arrive in the request body. The sentence went into the hotel's
- * timeline verbatim; the cursor is monotonic, so a forged one could only move
- * FORWARD, which is the direction that silently marks a colleague's handover as
- * already announced and never says the line at all.
+ * The line and the cursor both used to arrive in the request body. The sentence
+ * went into the hotel's timeline verbatim; the cursor is monotonic, so a forged
+ * one could only move FORWARD, which is the direction that silently marks a
+ * colleague's handover as already announced and never says the line at all.
+ *
+ * `hasRefusal` rides along rather than being read again by `deriveReplies`,
+ * which is what main's `noticesIncludeRefusal` did: the same list, loaded twice
+ * in one request, with the sentence built from one copy and the buttons under
+ * it built from the other.
  */
+interface ServerAnnouncement {
+  line: string;
+  through: string;
+  /** Drives the notices vocabulary. See repliesFor({ kind: 'notices' }). */
+  hasRefusal: boolean;
+}
+
 async function serverAnnouncement(opts: {
   propertyId: string;
   staffId: string | null;
@@ -337,7 +355,7 @@ async function serverAnnouncement(opts: {
   today: string;
   now: Date;
   requestId: string;
-}): Promise<{ line: string; through: string } | null> {
+}): Promise<ServerAnnouncement | null> {
   if (!opts.staffId) return null;
   try {
     const notices = await loadAssignmentNotices({
@@ -355,7 +373,12 @@ async function serverAnnouncement(opts: {
       quietThisSession: false,
       aiAwake: true,
     });
-    return decision.announce ? { line: decision.line, through: decision.through } : null;
+    if (!decision.announce) return null;
+    return {
+      line: decision.line,
+      through: decision.through,
+      hasRefusal: notices.some((n) => n.kind === 'refused'),
+    };
   } catch (e) {
     log.warn('[companion] notices read failed; nothing is announced', {
       requestId: opts.requestId, pid: opts.propertyId, err: errToString(e),
@@ -390,41 +413,48 @@ async function serverAnnouncement(opts: {
  * the server's own reads and never from this body.
  *
  * The rest is presentation on a message in the caller's own thread: which
- * screen a Yes walks to, and the labels on the two buttons. Bounded, and
- * outside the hotel's timeline entirely.
+ * screen a Yes walks to. Bounded, and outside the hotel's timeline entirely.
  */
 interface OfferEnvelope {
   /** A sentence was shown. See above: this is a claim about an act, not text. */
   claimed: boolean;
   page: string | null;
-  actions: CompanionOfferAction[];
   conversationId: string | null;
 }
-
-const OFFER_ACTION_KINDS: readonly CompanionOfferAction['kind'][] = ['show', 'walk', 'seed', 'no'];
 
 /**
  * Read the offer half of a POST body.
  *
+ * ─── WHAT THIS DELIBERATELY NO LONGER READS ────────────────────────────────
+ *
+ * `actions`, and the sentence itself. Two separate holes in the same wall,
+ * closed from two directions, and the wall only stands with both:
+ *
+ *   THE BUTTONS. They used to come straight off the request body, get stored on
+ *   the row, and get handed back for the browser to render. Harmless while every
+ *   button was "yes" or "no thanks"; not harmless the moment a reply could
+ *   record a verdict or run a frozen plan, because a hand-rolled POST could then
+ *   put any label it liked on any intent it liked and the peek would render it
+ *   as something Staxis had said. The reply set is now built by `deriveReplies`
+ *   below, on this side of the wire.
+ *
+ *   THE SENTENCE. It used to be stored verbatim, in the thread AND in
+ *   `activity_log` under `actor_name = 'Staxis'` — the hotel's purge-exempt
+ *   audit record, which is rendered, exported, and read back into the event
+ *   sweep's own prompt. It is now derived by `authorizeCompanionEvent` from the
+ *   server's own reads, and `text` is consulted here for ONE bit: whether
+ *   anything was put in front of a person at all.
+ *
+ * What is left is a screen key and a thread id. Nothing this returns can author
+ * a label, an id, a verdict, an action, a destination or a word.
+ *
  * Never errors on a malformed shape: the memory event is the load-bearing half
- * of this request and must not fail because a browser sent a button label that
- * was too long.
+ * of this request and must not fail because a browser sent a sentence that was
+ * too long. A sentence we cannot account for is a sentence that stays
+ * ephemeral, which is exactly what it was before.
  */
 function readOfferEnvelope(body: Record<string, unknown>): OfferEnvelope {
   const text = typeof body.text === 'string' ? body.text.replace(/\s+/g, ' ').trim() : '';
-  const actions: CompanionOfferAction[] = [];
-  if (Array.isArray(body.actions)) {
-    for (const raw of body.actions.slice(0, OFFER_ACTIONS_MAX)) {
-      if (!raw || typeof raw !== 'object' || Array.isArray(raw)) continue;
-      const entry = raw as Record<string, unknown>;
-      const label = typeof entry.label === 'string' ? entry.label.trim().slice(0, 40) : '';
-      const actionKind = OFFER_ACTION_KINDS.includes(entry.kind as CompanionOfferAction['kind'])
-        ? (entry.kind as CompanionOfferAction['kind'])
-        : null;
-      if (!label || !actionKind) continue;
-      actions.push({ label, kind: actionKind });
-    }
-  }
   const page = typeof body.page === 'string' && body.page.length > 0 && body.page.length <= 40
     ? body.page
     : null;
@@ -432,9 +462,88 @@ function readOfferEnvelope(body: Record<string, unknown>): OfferEnvelope {
   return {
     claimed: text.length > 0 && text.length <= OFFER_TEXT_MAX,
     page,
-    actions,
     conversationId,
   };
+}
+
+/**
+ * The replies this turn gets, written by code on this side of the wire.
+ *
+ * Three sources, in order, and NONE of them is the request body:
+ *
+ *   1. A STATIC VOCABULARY for the topics this route cannot rebuild. Trace
+ *      patterns and panel asks are computed in the browser against the screen
+ *      somebody is standing on, so there is no candidate here to look them up
+ *      in. `staticRepliesForTopic` is a pure function of the topic namespace,
+ *      owned by replies.ts, reachable by a test.
+ *   2. THE CANDIDATE ITSELF, rebuilt with the same call the GET uses. This is
+ *      the honest source for anything a finding is behind: the verdict a button
+ *      records is written against the row that exists NOW, and the plan it runs
+ *      is the one standing now, not the one a tab saw twenty minutes ago.
+ *   3. NOTHING, which stores a turn with no buttons. Honest, and visibly so:
+ *      an unanswerable sentence in the thread is a smaller failure than a
+ *      button whose meaning nobody can account for.
+ *
+ * ─── PURE, AND FED FROM THE ONE SET OF READS THIS REQUEST ALREADY DID ──────
+ *
+ * It used to rebuild the candidate list itself, and count it itself, and load
+ * the notices itself. The handler above already does all three to derive the
+ * SENTENCE, and two independent builds of the same list is how a hello that
+ * says "2 things are waiting on you" ends up beside a button that thinks
+ * nothing is. One build, one count, one notices read, handed in.
+ *
+ * ─── AND `kind` NO LONGER COMES OFF THE BODY ───────────────────────────────
+ *
+ * `authorizeCompanionEvent` derives it: pinned per event for the three that
+ * have only one, and for `spoke` taken from the candidate's own sensitivity, so
+ * anything about a named person is a `panel_ask` whatever the request called
+ * it. Main's note here said a forged kind could still make a turn carry the
+ * wrong table's buttons. It cannot any more, because there is no forged kind.
+ */
+function deriveReplies(input: {
+  event: CompanionEvent;
+  /** From `authorizeCompanionEvent`, never from the body. */
+  kind: CompanionOfferKind;
+  topic: string;
+  role: AppRole;
+  enabledSections: unknown;
+  /** The list the sentence was derived from. Empty for the events that need
+   *  none, which are exactly the events that never look at it. */
+  candidates: readonly CompanionCandidate[];
+  /** Whether this person's own notices leave a job nobody has taken. */
+  noticesHaveRefusal: boolean;
+}): CompanionReply[] {
+  const sectionCtx = {
+    role: input.role,
+    enabledSections: normalizeSectionFlags(input.enabledSections),
+  };
+
+  if (input.event === 'welcomed') {
+    const tour = tourFor(sectionCtx);
+    return repliesFor({ kind: 'welcome', page: tour[0]?.key ?? null });
+  }
+
+  if (input.event === 'greeted') {
+    // The hello only grows a way in when something is genuinely waiting, and
+    // "genuinely" means counted here rather than claimed by the browser. It is
+    // the SAME count the sentence was built from, so the line and the button
+    // can never disagree about how much is waiting.
+    return repliesFor({ kind: 'daily_hello', waiting: input.candidates.length });
+  }
+
+  if (input.event === 'notices_announced') {
+    return repliesFor({ kind: 'notices', hasRefusal: input.noticesHaveRefusal });
+  }
+
+  // A pattern about a named person, said in the one venue it may be said in.
+  // Its vocabulary is the venue's, not the pattern's.
+  if (input.kind === 'panel_ask') return repliesFor({ kind: 'panel_ask' });
+
+  const fromNamespace = staticRepliesForTopic(input.topic);
+  if (fromNamespace) return fromNamespace;
+
+  const match = input.candidates.find((c) => c.topic === input.topic);
+  return match ? [...match.replies] : [];
 }
 
 function readAnswer(value: unknown): CompanionOfferAnswer | null {
@@ -466,14 +575,16 @@ function isTaughtKey(x: unknown): x is TaughtKey {
 export async function POST(req: NextRequest): Promise<Response> {
   let body: {
     pid?: string; event?: unknown; topic?: unknown; flow?: unknown;
-    // The offer half. See the OfferEnvelope block above. `text` is read only
-    // as "a sentence was shown"; what it said is the server's to decide.
-    text?: unknown; kind?: unknown; page?: unknown; actions?: unknown;
+    // The offer half. See the OfferEnvelope block above. `text` is read only as
+    // "a sentence was shown"; what it said is the server's to decide, and so is
+    // what may be said back. There is no `actions` field any more, and nothing
+    // reads one if a caller sends it.
+    text?: unknown; kind?: unknown; page?: unknown;
     conversationId?: unknown; offerId?: unknown; offerState?: unknown;
-    // The notices half. There is deliberately no "which batch" and no "when did
+    // NO NOTICES HALF. There is deliberately no "which batch" and no "when did
     // I open the list" field any more: both instants are the server's, derived
-    // from this person's own notices in this request.
-    through?: unknown;
+    // from this person's own notices in this request. A caller may still send
+    // `through`; nothing reads it.
   };
   try {
     body = await req.json();
@@ -683,6 +794,19 @@ export async function POST(req: NextRequest): Promise<Response> {
       // five identical `greeted` posts used to write five timeline rows and five
       // thread messages while the ledger sat unchanged.
       if (speech) {
+        // BOTH HALVES ARE WRITTEN HERE, and neither comes off the body: the
+        // sentence from `authorizeCompanionEvent`, the buttons under it from
+        // `deriveReplies`. Same kind for both, so the vocabulary a turn speaks
+        // is the vocabulary its sentence was built in.
+        const replies = deriveReplies({
+          event: body.event,
+          kind: speech.kind,
+          topic,
+          role,
+          enabledSections: facts?.enabled_sections,
+          candidates,
+          noticesHaveRefusal: announcement?.hasRefusal ?? false,
+        });
         const conversationId = await ensureCompanionConversation({
           userAccountId: ctx.accountId,
           propertyId: ctx.pid,
@@ -699,7 +823,8 @@ export async function POST(req: NextRequest): Promise<Response> {
             kind: speech.kind,
             topic: speech.topic,
             page: envelope.page,
-            actions: envelope.actions,
+            // THE SERVER'S BUTTONS. Never the request body's either.
+            replies,
             now,
           });
           // ── The third family of journal entry: a thing said to a person ──

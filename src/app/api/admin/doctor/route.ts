@@ -878,12 +878,18 @@ export const EXPECTED_MIGRATIONS_STATIC: ReadonlyArray<string> = [
   // One row per nightly robot walkthrough of the live app, so a green night
   // is distinguishable from a night the robot never ran.
   '0460',
+  // The question under a companion card: judged_question + judged_reply_order
+  // on findings, both nullable, both meaning "use the template" when absent.
+  '0461',
   // "Skip this one" on an upkeep schedule: one occurrence put down without
   // anybody claiming the work happened (preventive_tasks.skipped_at/by).
   '0462',
   // Integer-cents mirrors of the legacy dollar money columns, derived by
   // Postgres so the cents and dollars views of a number cannot drift apart.
   '0463',
+  // Audit trigger stops naming the 0463 generated cents mirrors in
+  // changedFields; item history shows one entry per real edit again.
+  '0465',
 ];
 
 /**

@@ -90,6 +90,10 @@ function candidate(over: Partial<CompanionCandidate> = {}): CompanionCandidate {
     sensitivity: 'operational',
     covers: [],
     destination: null,
+    // The reply half, which the route derives separately and this module does
+    // not read. Carried so the fixture is a real candidate.
+    replyKind: 'finding_fyi',
+    replies: [],
     ...over,
   };
 }
