@@ -878,6 +878,9 @@ export const EXPECTED_MIGRATIONS_STATIC: ReadonlyArray<string> = [
   // One row per nightly robot walkthrough of the live app, so a green night
   // is distinguishable from a night the robot never ran.
   '0460',
+  // Company hats carry which hotels they cover, and the company vocabulary
+  // becomes Owner + Regional Manager.
+  '0461',
 ];
 
 /**

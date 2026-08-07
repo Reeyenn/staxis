@@ -508,9 +508,11 @@ function installSupabaseStub(): void {
         return { data: null, error: { code: '42501', message: 'inviter revoked' } };
       }
       const normalized = !!invite.membership_scope;
-      const role = invite.role === 'vp' ? 'front_desk'
-        : invite.role === 'finance' ? 'front_desk'
-          : invite.role as AppRole;
+      // `legacyRoleForHat` in the real RPC: a company job degrades DOWN to
+      // front desk, never up. 0461 left one company word to degrade.
+      const role = invite.role === 'regional_manager'
+        ? 'front_desk'
+        : invite.role as AppRole;
       const accountId = `created-account-${state.accounts.length}`;
       state.accounts.push({
         id: accountId,
@@ -799,6 +801,41 @@ function installSupabaseStub(): void {
           return { error: null };
         },
       };
+    }
+
+    // 0461 asks one more question before it will let anybody hand out a company
+    // hat that follows the company into hotels it has not bought yet: does the
+    // ACTOR'S own standing do that? Every fixture in this file was written when
+    // a company hat always covered every hotel forever, so answering "yes" here
+    // is the faithful translation of what these tests already assume.
+    //
+    // It is also safe for the property-scope actors in this file: the
+    // all-including-future branch is the only thing that reads this, and a
+    // property hat never satisfies the broad-entitlement check that guards it.
+    if (table === 'organization_memberships') {
+      const builder: Record<string, unknown> = {
+        select: () => builder,
+        eq: () => builder,
+        is: () => builder,
+        not: () => builder,
+        limit: () => builder,
+        then: (resolve: (value: unknown) => unknown) => resolve({
+          data: [{ id: 'membership-covers-future' }],
+          error: null,
+        }),
+      };
+      return builder;
+    }
+
+    if (table === 'organization_access_grants') {
+      const builder: Record<string, unknown> = {
+        select: () => builder,
+        eq: () => builder,
+        is: () => builder,
+        limit: () => builder,
+        then: (resolve: (value: unknown) => unknown) => resolve({ data: [], error: null }),
+      };
+      return builder;
     }
 
     throw new Error(`Unexpected table in invitation authorization test: ${table}`);
@@ -1583,7 +1620,7 @@ describe('GET /api/auth/invites reasserts authority before egress', () => {
       covered_property_ids: [HOTEL_B],
       created_at: '2026-07-28T00:00:00.000Z',
     });
-    seedInvite('finance');
+    seedInvite('regional_manager');
     Object.assign(state.invites[1]!, {
       email: 'multi-hat@example.test',
       organization_id: ORGANIZATION_A,
@@ -1615,7 +1652,7 @@ describe('GET /api/auth/invites reasserts authority before egress', () => {
     })), [
       {
         email: 'multi-hat@example.test',
-        role: 'finance',
+        role: 'regional_manager',
         scope: 'company',
         propertyIds: [HOTEL_A, HOTEL_B],
         canRevoke: true,
@@ -1777,11 +1814,11 @@ describe('POST /api/auth/accept-invite revalidates current authority', () => {
     assert.ok(state.invites[0]?.accepted_at);
   });
 
-  test('a company VP invite never translates into a hotel General Manager role', async () => {
+  test('a company regional-manager invite never translates into a hotel General Manager role', async () => {
     caller().role = 'admin';
     caller().property_access = [];
     normalizeAuthorityAtHotel('general_manager');
-    const token = seedInvite('vp', 'company-vp-role');
+    const token = seedInvite('regional_manager', 'company-regional-manager-role');
     Object.assign(state.invites[0]!, {
       organization_id: ORGANIZATION_A,
       membership_scope: 'company' as const,
