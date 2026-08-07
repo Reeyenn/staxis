@@ -51,6 +51,13 @@ async function insertAccount(
   );
 }
 
+function assertNamesAHotel(propertyIds: string[]): string[] {
+  if (propertyIds.length === 0) {
+    throw new Error('createInvite: pass null for all hotels, never an empty list');
+  }
+  return propertyIds;
+}
+
 async function createInvite(
   pg: PGlite,
   actorAccountId: string,
@@ -77,7 +84,13 @@ async function createInvite(
       tokenHash,
       organizationId,
       membershipScope,
-      coveredPropertyIds === null ? null : `{${coveredPropertyIds.join(',')}}`,
+      // NULL and an empty list are different promises and only one of them is
+      // legal: NULL means every hotel the company operates, an empty list names
+      // nothing and is refused by the guarded RPC and by 0468's check. Render
+      // the caller's intent, and refuse to render the illegal one at all.
+      coveredPropertyIds === null
+        ? null
+        : `{${assertNamesAHotel(coveredPropertyIds).join(',')}}`,
       `stage-a-invite-${inviteSequence}`,
     ],
   );

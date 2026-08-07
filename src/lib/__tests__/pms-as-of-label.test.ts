@@ -189,3 +189,51 @@ describe('buildAsOfLabel — freshness classification stays complete in English-
     assert.match(result?.detail ?? '', /6:40 AM/);
   });
 });
+
+// ─── THE MODULE IS THE ONLY SUPPRESSOR ──────────────────────────────────────
+//
+// The dashboard carried a fourth, undocumented rule of its own: hide the stamp
+// whenever the ROOM-STATUS feed is learning. It fired on exactly the case that
+// needs a stamp most — a hotel whose room-status feed is still being learned
+// while its counts feed is hours stale showed a confident occupancy percentage
+// with nothing on screen saying when it was taken. These pin the answers the
+// screen must now render verbatim.
+
+describe('a stamped number is stamped whatever OTHER feeds are doing', () => {
+  it('room status learning + counts stale → the occupancy stamp still appears', () => {
+    const label = buildAsOfLabel({
+      status: liveStatus({ feeds: { roomStatus: 'learning', dashboardCounts: 'stale' }, capturedAt: agedBy(240) }),
+      // The exact feed pair the dashboard's occupancy ring stamps.
+      feeds: ['dashboardCounts', 'roomStatus'],
+      timezone: TZ,
+      lang: 'en',
+      now: NOW,
+    });
+    assert.ok(label, 'a four-hour-old occupancy figure must never render unstamped');
+    assert.equal(label.tier, 'stale');
+    assert.equal(label.tone, 'caution');
+  });
+
+  it('room status learning + counts live → a quiet stamp, not silence', () => {
+    const label = buildAsOfLabel({
+      status: liveStatus({ feeds: { roomStatus: 'learning' }, capturedAt: agedBy(20) }),
+      feeds: ['dashboardCounts', 'roomStatus'],
+      timezone: TZ,
+      lang: 'en',
+      now: NOW,
+    });
+    assert.ok(label);
+    assert.equal(label.tone, 'quiet');
+  });
+
+  it('but when NEITHER stamped feed has a real source there is still nothing to stamp', () => {
+    const label = buildAsOfLabel({
+      status: liveStatus({ feeds: { roomStatus: 'learning', dashboardCounts: 'unavailable' }, capturedAt: agedBy(240) }),
+      feeds: ['dashboardCounts', 'roomStatus'],
+      timezone: TZ,
+      lang: 'en',
+      now: NOW,
+    });
+    assert.equal(label, null);
+  });
+});

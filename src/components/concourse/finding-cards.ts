@@ -113,7 +113,7 @@ export interface CardAction {
  * dollar figure for a money rule to be about. Absent NEVER means "approved".
  */
 export interface CardSignOff {
-  /** 'owner' | 'vp' | 'finance' | 'general_manager' — whose signature. */
+  /** 'owner' | 'regional_manager' | 'general_manager' — whose signature. */
   approverRole: string;
   /** Names of the people who hold it here. May be empty; the card still locks. */
   approverNames: string[];
@@ -148,8 +148,7 @@ export function isSignOffLocked(f: Pick<QueueFinding, 'signOff'>): boolean {
  */
 const APPROVER_WORD: Record<string, Bi> = {
   owner: { en: 'owner', },
-  vp: { en: 'VP', },
-  finance: { en: 'finance', },
+  regional_manager: { en: 'regional manager', },
   general_manager: { en: 'GM', },
 };
 
@@ -163,7 +162,10 @@ const APPROVER_WORD: Record<string, Bi> = {
  * nobody is more honest than naming the wrong person.
  */
 export function signOffNotice(signOff: CardSignOff, lang: Lang): string {
-  const role = pick(APPROVER_WORD[signOff.approverRole] ?? APPROVER_WORD.vp, lang);
+  // Fall back to the STRONGEST word, never a weaker one. An unrecognized
+  // approver role means we cannot say who signs, and "needs owner sign-off"
+  // sends it up rather than quietly naming someone junior.
+  const role = pick(APPROVER_WORD[signOff.approverRole] ?? APPROVER_WORD.owner, lang);
   const names = signOff.approverNames.filter((n) => n && n.trim().length > 0);
 
   const head = `Needs ${role} sign-off`;

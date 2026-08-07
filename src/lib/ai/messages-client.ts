@@ -26,8 +26,8 @@ import { createOpenAiMessagesClient } from '@/lib/ai/openai-messages';
 
 export interface MessagesClientOptions {
   /** Per-attempt request timeout. Call sites keep passing the surface-specific
-   * budget they already used (vision 50s, walkthrough 20s, chat 50s) so this
-   * factory changes who serves a request, never how long it may take. */
+   * budget they already used (vision 50s, chat 50s) so this factory changes
+   * who serves a request, never how long it may take. */
   timeoutMs?: number;
   /** Transient-failure retries WITHIN one attempt, before the execution plan's
    * configured fallback is considered. */
@@ -85,9 +85,9 @@ const clientCache = new Map<string, MessagesClient>();
 /**
  * The client for `provider`, cached per (provider, timeout, retries).
  *
- * Caching is keyed on the options because the surfaces genuinely differ — the
- * walkthrough route must fail at 20s to stay inside its own route ceiling while
- * chat may run to 50s — and a single shared instance would silently hand one
+ * Caching is keyed on the options because the surfaces genuinely differ — a
+ * route with a tight maxDuration must fail inside its own ceiling while chat
+ * may run to 50s — and a single shared instance would silently hand one
  * surface the other's budget.
  */
 export function getMessagesClient(

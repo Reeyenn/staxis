@@ -6,12 +6,18 @@ import { roleLabel, type AssignableRole } from '@/lib/roles';
 
 export interface HotelAccountInviteParams {
   to: string;
+  /**
+   * WHAT is being joined, already decided by the caller: a company name for a
+   * company job, "Port Arthur Inn and 2 more" for several hotels, or one hotel
+   * name. Still called `hotelName` because that is what it is most of the time
+   * and every audit record and test already reads that key.
+   */
   hotelName: string;
   role: AssignableRole;
   /**
    * Company spine (0364). A company invitation carries a job the hotel role
-   * enum has never had — "Oversees", "Finance" — so the caller may name the
-   * job the email should say. Absent, the hotel role label is used, exactly as
+   * enum has never had — "Regional Manager" — so the caller may name the job
+   * the email should say. Absent, the hotel role label is used, exactly as
    * before. Subject-line sanitisation applies to it like every other value.
    */
   roleLabelOverride?: string;

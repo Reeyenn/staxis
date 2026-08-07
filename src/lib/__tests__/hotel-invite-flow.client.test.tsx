@@ -386,7 +386,7 @@ async function mountInviteFlow(
           data: {
             emailSent: true,
             deliveryStatus: 'sent',
-            inviteLink: 'https://staxis.test/company-invite/new',
+            inviteLink: 'https://staxis.test/invite/new',
             accessGranted: false,
             profileLinked: true,
           },

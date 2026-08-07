@@ -43,7 +43,6 @@ import type {
   CompanyAccessSource,
   CompanyAccessRequest,
   CompanyActivityEvent,
-  CompanyInvitation,
   CompanyManagedGrant,
   CompanyMembership,
   CompanyOrganization,
@@ -56,7 +55,9 @@ import { getOrMintRequestId, log } from '@/lib/log';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { errToString } from '@/lib/utils';
 import { accessProfileForHat, isHatRole, isMembershipScope } from '@/lib/company/roles';
-import { resolveHatCoverage } from '@/lib/company/access';
+import {
+  hatCoverageFromColumn,
+  resolveHatCoverage } from '@/lib/company/access';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -142,20 +143,6 @@ interface AccountRow {
   display_name: string | null;
   role: string;
   active: boolean;
-}
-
-interface InvitationRow {
-  id: string;
-  organization_id: string;
-  email: string;
-  access_profile: string;
-  scope_type: AccessScopeType;
-  portfolio_id: string | null;
-  property_id: string | null;
-  status: string;
-  expires_at: string;
-  invited_by_account_id: string | null;
-  created_at: string;
 }
 
 interface RequestRow {
@@ -371,9 +358,6 @@ function eventSummary(eventType: string): string {
     'organization_membership.removed': 'A company member was removed',
     'organization_access_grants.insert': 'Access was granted',
     'organization_access_grants.update': 'An access grant was updated',
-    'organization_invitations.insert': 'An invitation was created',
-    'organization_invitations.update': 'An invitation was updated',
-    'organization_invitation.cancelled': 'An invitation was cancelled',
     'organization_access_requests.insert': 'Access was requested',
     'organization_access_requests.update': 'An access request was reviewed',
     'organization_property_relationships.insert': 'A hotel was connected to the organization',
@@ -403,7 +387,6 @@ async function buildScopedProjection(
       }],
       memberships: [],
       effectiveAccess: [],
-      invitations: [],
       requests: [],
       activity: [],
       permissions: {
@@ -594,7 +577,7 @@ async function buildScopedProjection(
     if (!isMembershipScope(membership.membership_scope) || !isHatRole(membership.staxis_role)) return [];
     return resolveHatCoverage(
       membership.membership_scope,
-      Array.isArray(membership.covered_property_ids) ? membership.covered_property_ids : [],
+      hatCoverageFromColumn(membership.covered_property_ids),
       new Set(propertyIds),
     );
   };
@@ -609,13 +592,7 @@ async function buildScopedProjection(
     return { propertyIds: propertyIdsForHat, scope: membership.membership_scope, role: membership.staxis_role };
   };
 
-  const [invitationResult, requestResult, eventResult] = await Promise.all([
-    supabaseAdmin.from('organization_invitations')
-      .select('id, organization_id, email, access_profile, scope_type, portfolio_id, property_id, status, expires_at, invited_by_account_id, created_at')
-      .eq('organization_id', organizationId)
-      .eq('status', 'pending')
-      .order('created_at', { ascending: false })
-      .limit(FEED_LIMIT),
+  const [requestResult, eventResult] = await Promise.all([
     supabaseAdmin.from('organization_access_requests')
       .select('id, organization_id, membership_id, requested_access_profile, scope_type, portfolio_id, property_id, reason, status, requested_at')
       .eq('organization_id', organizationId)
@@ -628,17 +605,14 @@ async function buildScopedProjection(
       .order('occurred_at', { ascending: false })
       .limit(FEED_LIMIT),
   ]);
-  if (invitationResult.error) throw invitationResult.error;
   if (requestResult.error) throw requestResult.error;
   if (eventResult.error) throw eventResult.error;
-  const invitationRows = (invitationResult.data ?? []) as InvitationRow[];
   const requestRows = (requestResult.data ?? []) as RequestRow[];
   const eventRows = (eventResult.data ?? []) as EventRow[];
 
   const accountIds = [...new Set([
     ...membershipRows.map((row) => row.account_id),
     ...activeGrantRows.map((row) => row.granted_by_account_id).filter((id): id is string => Boolean(id)),
-    ...invitationRows.map((row) => row.invited_by_account_id).filter((id): id is string => Boolean(id)),
     ...eventRows.map((row) => row.actor_account_id).filter((id): id is string => Boolean(id)),
   ])];
   const accountRows = await readCompletePreviewIdChunks<AccountRow>(
@@ -829,32 +803,6 @@ async function buildScopedProjection(
   const membershipById = new Map(visibleMembershipRows.map((row) => [row.id, row]));
   const portfolioById = new Map(companyPortfolios.map((portfolio) => [portfolio.id, portfolio]));
 
-  const invitationPropertyIds = (row: InvitationRow): string[] => {
-    if (row.scope_type === 'organization') return propertyIds;
-    if (row.scope_type === 'portfolio') {
-      return portfolioById.get(row.portfolio_id ?? '')?.propertyIds ?? [];
-    }
-    return row.property_id && propertyNames.has(row.property_id) ? [row.property_id] : [];
-  };
-  const invitations: CompanyInvitation[] = invitationRows.flatMap((row) => {
-    const scopedPropertyIds = invitationPropertyIds(row);
-    return scopedPropertyIds.length > 0 ? [{
-      id: row.id,
-      organizationId,
-      email: row.email,
-      accessProfile: row.access_profile,
-      scopeLabel: scopeLabel({
-        scope_type: row.scope_type,
-        portfolio_id: row.portfolio_id,
-        property_id: row.property_id,
-      }, organization.name, portfolioNames, propertyNames),
-      propertyIds: scopedPropertyIds,
-      status: Date.parse(row.expires_at) <= nowMs ? 'expired' as const : 'pending' as const,
-      expiresAt: row.expires_at,
-      invitedBy: accountName(row.invited_by_account_id),
-      canCancel: false,
-    }] : [];
-  });
   const requests: CompanyAccessRequest[] = requestRows.flatMap((row) => {
     const membership = membershipById.get(row.membership_id);
     if (!membership) return [];
@@ -921,7 +869,6 @@ async function buildScopedProjection(
     memberships: companyMemberships,
     effectiveAccess: [],
     accessHistory,
-    invitations,
     requests,
     activity,
     permissions: adminPreviewPermissions(target.property.id),

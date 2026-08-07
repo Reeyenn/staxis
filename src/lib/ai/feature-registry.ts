@@ -660,11 +660,6 @@ export const AI_FEATURE_REGISTRY: Readonly<Record<AiFeatureKey, AiFeatureDefinit
     'Rewrites the morning summary at the top of the Staxis tab so it reads like a person wrote it. The brief is written in English only. It cannot change any number or add anything to the summary. If it tries, the plain version is used instead.',
     ['text'], HAIKU,
   ),
-  'walkthrough.step_generation': defineFeature(
-    'walkthrough.step_generation', 'Guidance', 'Guided walkthroughs',
-    'Powers the step-by-step guided tours that walk someone through using the app.',
-    ['text', 'tool_use'], SONNET,
-  ),
   // The second reading of a to-do somebody typed. Plain code already reads
   // "check the boiler room every Friday" and everything like it, and that code
   // is the only thing that runs while a person is typing. This slot is asked

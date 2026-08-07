@@ -183,7 +183,7 @@ describe('connected portfolio adversarial boundaries', () => {
   test('company selection narrows before any hotel read and tampering is rejected before reads', async () => {
     const account = caller({
       hats: [
-        hat(ORG_A, 'vp', [PID_A1, PID_A2]),
+        hat(ORG_A, 'regional_manager', [PID_A1, PID_A2]),
         hat(ORG_B, 'owner', [PID_B1]),
       ],
     });
@@ -231,7 +231,7 @@ describe('connected portfolio adversarial boundaries', () => {
       role: 'general_manager',
       propertyAccess: [PID_B1],
       accessiblePropertyIds: [PID_A1, PID_A2, PID_B1],
-      hats: [hat(ORG_A, 'vp', [PID_A1, PID_A2])],
+      hats: [hat(ORG_A, 'regional_manager', [PID_A1, PID_A2])],
     });
     const data = new AuditSource([
       property(PID_A1, 'A One'),
@@ -250,7 +250,7 @@ describe('connected portfolio adversarial boundaries', () => {
   });
 
   test('a direct financial URL cannot read financial rows before capability authorization', async () => {
-    const account = caller({ hats: [hat(ORG_A, 'finance', [PID_A1, PID_A2])] });
+    const account = caller({ hats: [hat(ORG_A, 'regional_manager', [PID_A1, PID_A2])] });
     const denied = new AuditSource([property(PID_A1, 'A One'), property(PID_A2, 'A Two')]);
     denied.overrides = [PID_A1, PID_A2].map((property_id) => ({
       property_id,
@@ -778,8 +778,9 @@ describe('connected portfolio source-code ratchets', () => {
       'src/app/api/inventory/post-count-process/route.ts',
       'src/app/api/maintenance/equipment/route.ts',
       'src/app/api/maintenance/equipment/[id]/route.ts',
-      'src/app/api/walkthrough/start/route.ts',
-      'src/app/api/walkthrough/step/route.ts',
+      // The two walkthrough routes were here until 2026-08-07 and went with the
+      // cursor demo. Nothing took their place: the companion tour that replaced
+      // that surface adds no API route, because it never acts on the hotel.
     ]) {
       assert.match(source(route), /hotelWriteDecisionForUserId\(/, `${route} bypasses local write standing`);
     }
@@ -834,7 +835,7 @@ describe('connected portfolio source-code ratchets', () => {
     assert.match(
       resolver,
       /standing\.seesFinancials && !explicitDeny \? 'allowed' : 'denied'/,
-      'a company finance hat must retain its money dimension after legacy front-desk degradation',
+      'a company oversight hat must retain its money dimension after legacy front-desk degradation',
     );
     assert.match(resolver, /if \(resolved\.access\.companyRole === 'owner'\) restrictingRoles\.add\('owner'\)/);
 

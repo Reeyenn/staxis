@@ -270,6 +270,35 @@ export function keepEnabledSections(
   });
 }
 
+/**
+ * The same rule, expressed as something a QUERY can apply.
+ *
+ * ─── WHY THE IN-MEMORY FILTER WAS NOT ENOUGH ───────────────────────────────
+ *
+ * The window read takes MAX_EVENTS_PER_WAKE rows and `keepEnabledSections` then
+ * drops some of them, so the LIMIT was being spent on rows the gate was always
+ * going to throw away. A hotel that had switched Housekeeping off and produced
+ * forty failed inspections in the window, plus one work order, read back forty
+ * housekeeping rows, kept none of them, and reported `quiet`. The sweep then
+ * claimed the window, which is correct for a window it considered, and that one
+ * work order was never seen by anything again.
+ *
+ * So the switched-off categories are excluded in the query and the LIMIT is
+ * spent on rows that can actually wake somebody. `keepEnabledSections` stays as
+ * the belt to this brace, exactly as `keepInterestingEvents` does for the event
+ * type filter.
+ *
+ * DEFAULT ON survives the move: only categories that are BOTH mapped to a
+ * section AND switched off are named. A category nobody has mapped is never
+ * excluded, which is the same answer the in-memory filter gives.
+ */
+export function disabledEventCategories(flags: EnabledSections): string[] {
+  return Object.entries(SECTION_FOR_CATEGORY)
+    .filter(([, section]) => !isSectionEnabled(flags, section))
+    .map(([category]) => category)
+    .sort();
+}
+
 // ─── The verdict ────────────────────────────────────────────────────────────
 
 export type WakeRefusal =

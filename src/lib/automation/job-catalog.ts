@@ -182,22 +182,6 @@ export const ACTIVE_MISSION_JOBS: ReadonlyArray<MissionMonitoredJobCatalogEntry>
     mission: { description: "Cleans up the AI assistant's memory overnight.", group: 'Agent', tier: 'ai' },
   },
   {
-    id: 'walkthrough-heal-stale',
-    lifecycle: 'active',
-    owner: 'platform',
-    runner: 'vercel-cron',
-    source: { kind: 'vercel', configFile: 'vercel.json' },
-    target: { kind: 'route', path: '/api/cron/walkthrough-heal-stale' },
-    schedule: '*/30 * * * *',
-    heartbeat: {
-      name: 'walkthrough-heal-stale',
-      visibility: 'mission-control',
-      cadenceDescription: 'every-30-min walkthrough recovery (heals stale runs left mid-walkthrough by crashed clients)',
-    },
-    description: 'Recovers interrupted product walkthroughs.',
-    mission: { description: 'Cleans up show-me-how tutorials that got interrupted.', group: 'Other', tier: 'timer' },
-  },
-  {
     id: 'sweep-orphan-auth-users',
     lifecycle: 'active',
     owner: 'platform',
@@ -490,8 +474,8 @@ export const ACTIVE_MISSION_JOBS: ReadonlyArray<MissionMonitoredJobCatalogEntry>
   //
   // Its heartbeat means something stricter than the others'. The rest write one
   // whenever they finish; this one writes one only when EVERY step passed. So
-  // "on time" here reads as "a manager could still do all thirteen things last
-  // night", and two consecutive broken nights turn the row amber on their own,
+  // "on time" here reads as "a manager could still do every one of those things
+  // last night", and two consecutive broken nights turn the row amber on their own,
   // underneath the Recent-errors entry that named the step the first night.
   {
     id: 'robot-walk',

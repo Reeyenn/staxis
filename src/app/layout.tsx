@@ -7,7 +7,6 @@ import { LanguageProvider } from '@/contexts/LanguageContext';
 import { PropertyProvider } from '@/contexts/PropertyContext';
 import { SyncProvider } from '@/contexts/SyncContext';
 import { InstallStaxisProvider } from '@/contexts/InstallStaxisContext';
-import { WalkthroughOverlay } from '@/components/walkthrough/WalkthroughOverlay';
 import { AuthenticatedRuntimeBoundary } from '@/components/layout/AuthenticatedRuntimeBoundary';
 import { ReliableNavigationProvider } from '@/lib/hooks/use-reliable-navigation';
 import { PortfolioProvider } from '@/contexts/PortfolioContext';
@@ -153,10 +152,6 @@ export default function RootLayout({
                           <PropertyProvider>
                             <AuthenticatedRuntimeBoundary>
                               {children}
-                              {/* Mounted at the root so the loop survives page navigations
-                                  (the route-family shell can unmount when the URL changes,
-                                  which would kill an in-flight multi-step walkthrough). */}
-                              <WalkthroughOverlay />
                             </AuthenticatedRuntimeBoundary>
                           </PropertyProvider>
                         </PortfolioProvider>
