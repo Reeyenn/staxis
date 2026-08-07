@@ -42,16 +42,18 @@ let catalog: Catalog;
 let itemId: string;
 
 /** The money values that break naive conversions, plus ordinary prices. */
+// Cents as strings: Postgres returns bigint as a string, and comparing the
+// text keeps the magnitude claim exact and readable.
 const MONEY_CASES = [
-  { dollars: '0', cents: 0n },
-  { dollars: '0.01', cents: 1n },
-  { dollars: '4.55', cents: 455n },
-  { dollars: '8.35', cents: 835n },
-  { dollars: '19.99', cents: 1999n },
-  { dollars: '1.005', cents: 101n },   // half-cent: rounds up, not down
-  { dollars: '4.455', cents: 446n },
-  { dollars: '1234.56', cents: 123456n },
-  { dollars: '99999.99', cents: 9999999n },
+  { dollars: '0', cents: '0' },
+  { dollars: '0.01', cents: '1' },
+  { dollars: '4.55', cents: '455' },
+  { dollars: '8.35', cents: '835' },
+  { dollars: '19.99', cents: '1999' },
+  { dollars: '1.005', cents: '101' },   // half-cent: rounds up, not down
+  { dollars: '4.455', cents: '446' },
+  { dollars: '1234.56', cents: '123456' },
+  { dollars: '99999.99', cents: '9999999' },
 ];
 
 before(async () => {
@@ -77,11 +79,10 @@ describe('0462 — inventory ledger cents mirrors', () => {
   test('unit cost round-trips at the right magnitude', async () => {
     for (const { dollars, cents } of MONEY_CASES) {
       await pg.query('update public.inventory set unit_cost = $1::numeric where id = $2', [dollars, itemId]);
-      const r = await pg.query<{ unit_cost_cents: string | number | null }>(
-        'select unit_cost_cents from public.inventory where id = $1', [itemId],
+      const r = await pg.query<{ c: string }>(
+        'select unit_cost_cents::text as c from public.inventory where id = $1', [itemId],
       );
-      const got = BigInt(String(r.rows[0].unit_cost_cents));
-      assert.equal(got, cents, `$${dollars} stored as ${got} cents, expected ${cents}`);
+      assert.equal(r.rows[0].c, cents, `$${dollars} stored as ${r.rows[0].c} cents, expected ${cents}`);
     }
   });
 

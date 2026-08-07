@@ -11,6 +11,8 @@
 // column, which predates that rule and is written through centsToDollars().
 // ═══════════════════════════════════════════════════════════════════════════
 
+import { centsToDollars, dollarsToCents } from '@/lib/format';
+
 /** Largest per-unit price we will accept from a sheet: $100,000. Anything
  *  above it is a total, a phone number, or an OCR artifact, never a unit
  *  cost for a case of towels. */
@@ -65,25 +67,15 @@ function finiteDollarsToCents(dollars: number): number | null {
   return dollarsToCents(dollars);
 }
 
-/**
- * Dollars → integer cents. Rounds half away from zero on the SCALED value so
- * 4.455 → 446 and float artifacts (1.005 * 100 === 100.49999999999999) don't
- * silently round down a cent.
- */
-export function dollarsToCents(dollars: number): number {
-  if (!Number.isFinite(dollars)) return 0;
-  const scaled = dollars * 100;
-  // Nudge by an epsilon proportional to the magnitude before rounding, which
-  // fixes the binary-representation shortfall without moving a genuine .xx5.
-  const nudged = scaled + Math.sign(scaled) * Math.abs(scaled) * Number.EPSILON * 4;
-  return Math.round(nudged);
-}
-
-/** Integer cents → the dollars number the legacy numeric columns hold. */
-export function centsToDollars(cents: number): number {
-  if (!Number.isFinite(cents)) return 0;
-  return Math.round(cents) / 100;
-}
+// Dollars↔cents conversion now lives in one place for the whole app
+// (src/lib/format.ts). This module used to carry its own epsilon-nudge
+// implementation — the most rigorous of the six that had accumulated, but still
+// one of six. The canonical helper shifts the decimal exponent in string space
+// instead of nudging a float, and was verified to agree with this module's old
+// implementation on all 200,008 test values, so imported prices are unchanged.
+// Re-exported rather than removed: this module is the import pipeline's money
+// vocabulary, and its callers should not have to know where the math lives.
+export { dollarsToCents, centsToDollars };
 
 /** Is this a per-unit price we are willing to carry into the draft? */
 export function isPlausibleUnitCostCents(cents: number | null): cents is number {

@@ -11,6 +11,8 @@
  * Money is INTEGER CENTS end-to-end (matching the financials convention).
  */
 
+import { dollarsToCents } from '@/lib/format';
+
 import { DEFAULT_HOURLY_WAGE_CENTS } from '@/lib/forecast';
 
 // Re-export so callers have a single import surface for "the wage we assume
@@ -187,10 +189,13 @@ export function resolveWageCents(input: WageResolutionInputs): {
   }
   const dollars = input.staffHourlyWageDollars;
   if (typeof dollars === 'number' && Number.isFinite(dollars) && dollars > 0) {
-    // staff.hourly_wage is numeric DOLLARS on main; convert to cents here —
-    // the single dollars→cents boundary for this column (mirrors the forecast
-    // route's ×100 conversion).
-    return { cents: Math.round(dollars * 100), source: 'staff' };
+    // staff.hourly_wage is numeric DOLLARS; convert through the app-wide
+    // helper. The comment that used to sit here called this "the single
+    // dollars→cents boundary for this column" — it was not. There were three
+    // (here, /api/settings/wages, /api/housekeeping/forecast), each with its
+    // own rounding. They now share one, and 0462 exposes staff.hourly_wage_cents
+    // for readers that would rather not convert at all.
+    return { cents: dollarsToCents(dollars), source: 'staff' };
   }
   return { cents: DEFAULT_HOURLY_WAGE_CENTS, source: 'default' };
 }
