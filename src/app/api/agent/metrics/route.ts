@@ -9,6 +9,7 @@ import { ok, err, ApiErrorCode } from '@/lib/api-response';
 import { getOrMintRequestId, log } from '@/lib/log';
 import { COST_LIMITS } from '@/lib/agent/cost-controls';
 import { archivalMetrics } from '@/lib/agent/archival';
+import { foldLedgerByKind, microsToUsdNumber } from '@/lib/ai/cost-rollup';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -26,6 +27,28 @@ interface MetricsPayload {
     /** Cost of kind='background' work today (summarizer auto-runs, etc.).
      *  Round 11 T2, 2026-05-13. */
     backgroundCostUsd: number;
+    /** Photo, PDF and scanned-page reading (kind='vision'). Added 2026-08-07:
+     *  migration 0145 taught the WRITERS about this kind and nothing taught the
+     *  readers, so the most expensive calls in the product were missing from
+     *  every spend figure on the admin screens for months. */
+    visionCostUsd: number;
+    /** Speech to text (kind='audio'). Same story, migration 0117. */
+    audioCostUsd: number;
+    /**
+     * EVERY finalized, unswept row today, whatever kind it is.
+     *
+     * The number Mission Control's "AI spend today" light draws, and the only
+     * one on this payload that cannot go stale when a new kind of spending
+     * appears: it is the sum of the rows, not the sum of the buckets above.
+     * The per-kind figures are the breakdown of it, never a substitute for it.
+     */
+    allKindsCostUsd: number;
+    /**
+     * Kinds present in the ledger that this build does not know how to bucket.
+     * Their money is still inside `allKindsCostUsd`. Non-empty is a deploy-order
+     * signal, not a hole: a writer shipped ahead of `AI_COST_KINDS`.
+     */
+    unbucketedKinds: string[];
     uniqueUsers: number;
     uniqueProperties: number;
     /** % of input tokens served from cache today (Codex review fix G4). */
@@ -113,18 +136,30 @@ export async function GET(req: NextRequest): Promise<Response> {
       .gte('created_at', dayStartIso);
 
     const requestCosts = (costs ?? []).filter(c => c.kind === 'request');
-    const evalCosts = (costs ?? []).filter(c => c.kind === 'eval');
     // Round 11 T2 (2026-05-13): surface background-work cost (summarizer,
     // future nightly evals, etc.) as its own KPI tile so operators can
     // see what auto-pilot work is costing — separate from user-driven
     // spend. The cost is associated with the originating conversation's
     // user_id/property_id, but the cap-reservation RPC already filters
     // kind='request' so background work does NOT crowd a user's cap.
-    const backgroundCosts = (costs ?? []).filter(c => c.kind === 'background');
-
-    const totalCostUsd = requestCosts.reduce((acc, r) => acc + Number(r.cost_usd ?? 0), 0);
-    const evalCostUsd = evalCosts.reduce((acc, r) => acc + Number(r.cost_usd ?? 0), 0);
-    const backgroundCostUsd = backgroundCosts.reduce((acc, r) => acc + Number(r.cost_usd ?? 0), 0);
+    //
+    // 2026-08-07: the per-kind split moved to `foldLedgerByKind`, which is typed
+    // over the closed `AI_COST_KINDS` list. It used to be a `.filter()` per kind
+    // written here by hand, and it had not been touched since before migrations
+    // 0117 (audio) and 0145 (vision) — so voice notes and every photo/PDF scan,
+    // the priciest calls in the product, were in the ledger and in nobody's
+    // total. `allKindsCostUsd` is the sum of the ROWS rather than of the buckets,
+    // so a future kind lands in the founder's figure even before anyone gives it
+    // a tile.
+    const kinds = foldLedgerByKind(
+      (costs ?? []).map(c => ({ kind: String(c.kind ?? ''), cost_usd: (c.cost_usd ?? 0) as string | number })),
+    );
+    const totalCostUsd = microsToUsdNumber(kinds.byKind.request);
+    const evalCostUsd = microsToUsdNumber(kinds.byKind.eval);
+    const backgroundCostUsd = microsToUsdNumber(kinds.byKind.background);
+    const visionCostUsd = microsToUsdNumber(kinds.byKind.vision);
+    const audioCostUsd = microsToUsdNumber(kinds.byKind.audio);
+    const allKindsCostUsd = microsToUsdNumber(kinds.total);
     const uniqueUsers = new Set(requestCosts.map(r => r.user_id as string)).size;
     const uniqueProperties = new Set(requestCosts.map(r => r.property_id as string)).size;
 
@@ -337,6 +372,10 @@ export async function GET(req: NextRequest): Promise<Response> {
       today: {
         totalCostUsd: Math.round(totalCostUsd * 10000) / 10000,
         backgroundCostUsd: Math.round(backgroundCostUsd * 10000) / 10000,
+        visionCostUsd: Math.round(visionCostUsd * 10000) / 10000,
+        audioCostUsd: Math.round(audioCostUsd * 10000) / 10000,
+        allKindsCostUsd: Math.round(allKindsCostUsd * 10000) / 10000,
+        unbucketedKinds: kinds.unknownKinds,
         requestCount: requestCosts.length,
         evalCostUsd: Math.round(evalCostUsd * 10000) / 10000,
         uniqueUsers,
