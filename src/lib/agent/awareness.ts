@@ -761,16 +761,18 @@ async function feedOnYourPlate(
 /**
  * How many preventive tasks are due or past due today, or null if unreadable.
  *
- * `resting` and `never_done` are BOTH excluded, for different reasons that both
+ * `resting`, `skipped` and `never_done` are ALL excluded, for reasons that all
  * matter: a task somebody has already called about is handled (chasing it is
- * the noise the follow-up window exists to prevent), and a task that has never
- * been completed has no due date at all — treating "new schedule" as "overdue"
- * would put every hotel that just set up maintenance into permanent alarm.
+ * the noise the follow-up window exists to prevent), a task whose occurrence has
+ * been skipped is one a manager has explicitly put down for this cycle, and a
+ * task that has never been completed has no due date at all — treating "new
+ * schedule" as "overdue" would put every hotel that just set up maintenance into
+ * permanent alarm.
  */
 async function countPreventiveDue(propertyId: string, today: string): Promise<number | null> {
   const { data, error } = await scopedDb(propertyId)
     .from('preventive_tasks')
-    .select('id, name, frequency_days, last_completed_at, called_at')
+    .select('id, name, frequency_days, last_completed_at, called_at, skipped_at')
     .limit(FEED_ROW_CAP);
   if (error) return null;
 
@@ -791,6 +793,8 @@ async function countPreventiveDue(propertyId: string, today: string): Promise<nu
         nextDueDate: lastDoneDate ? addDaysInTz(lastDoneDate, frequencyDays) : null,
         calledDate: isoToLocalDate(row.called_at),
         calledBy: null,
+        skippedDate: isoToLocalDate(row.skipped_at),
+        skippedBy: null,
       },
       today,
     );

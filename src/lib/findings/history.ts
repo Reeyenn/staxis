@@ -275,6 +275,18 @@ export interface PreventiveScheduleEntry {
   calledDate: string | null;
   /** Who said so. Only ever set alongside calledDate. */
   calledBy: string | null;
+  /**
+   * When somebody put THIS occurrence down without the work being done, or null.
+   *
+   * A skip is neither a completion nor a call, and it is deliberately a THIRD
+   * date rather than a flavour of either: moving `lastDoneDate` would write into
+   * the hotel's maintenance record that a job nobody performed was performed,
+   * and reusing `calledDate` would claim somebody had been called out when
+   * nobody had. Rests the schedule for one full cadence. See migration 0462.
+   */
+  skippedDate: string | null;
+  /** Who skipped it. Only ever set alongside skippedDate. */
+  skippedBy: string | null;
 }
 
 export interface PreventiveScheduleFeed {

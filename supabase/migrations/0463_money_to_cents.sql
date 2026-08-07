@@ -1,5 +1,5 @@
 -- ════════════════════════════════════════════════════════════════════════
--- 0462_money_to_cents.sql — one canonical cents surface for legacy dollar money
+-- 0463_money_to_cents.sql — one canonical cents surface for legacy dollar money
 -- ════════════════════════════════════════════════════════════════════════
 -- Closes the split-brain the 2026-07-22 audit flagged: the legacy inventory
 -- ledger (0026/0061-era) plus the labor and asset columns store DOLLARS as
@@ -190,7 +190,7 @@ alter table public.equipment
 -- ─── applied_migrations bookkeeping ─────────────────────────────────────────
 INSERT INTO public.applied_migrations (version, description)
 VALUES (
-  '0462',
+  '0463',
   'integer-cents mirrors for the 24 legacy dollar money columns (inventory ledger, labor, assets), added as GENERATED ALWAYS ... STORED so Postgres derives them on every write and the cents and dollars views of a number cannot drift apart. Old dollar columns kept and still written by the 0312/0322/0324/0326 plpgsql; the numeric(10,6) cost_usd family is deliberately excluded because integer cents would round sub-cent AI spend to zero. No RLS change.'
 )
 ON CONFLICT (version) DO NOTHING;

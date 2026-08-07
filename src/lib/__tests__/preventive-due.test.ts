@@ -50,6 +50,8 @@ function task(over: Partial<PreventiveScheduleEntry> = {}): PreventiveScheduleEn
     nextDueDate: '2026-06-30',
     calledDate: null,
     calledBy: null,
+    skippedDate: null,
+    skippedBy: null,
     ...over,
   };
 }

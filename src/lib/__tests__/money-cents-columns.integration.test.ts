@@ -1,6 +1,6 @@
 /**
  * PROOF, against a real Postgres with the real migrations applied, that the
- * 0462 cents columns hold the right number at the right magnitude.
+ * 0463 cents columns hold the right number at the right magnitude.
  *
  * The TypeScript twin (money-units.test.ts) proves the helper ARITHMETIC.
  * This proves the thing the app actually reads: columns computed by Postgres.
@@ -75,7 +75,7 @@ after(async () => {
   await pg?.close();
 });
 
-describe('0462 — inventory ledger cents mirrors', () => {
+describe('0463 — inventory ledger cents mirrors', () => {
   test('unit cost round-trips at the right magnitude', async () => {
     for (const { dollars, cents } of MONEY_CASES) {
       await pg.query('update public.inventory set unit_cost = $1::numeric where id = $2', [dollars, itemId]);
@@ -174,7 +174,7 @@ describe('0462 — inventory ledger cents mirrors', () => {
   });
 });
 
-describe('0462 — labor and asset cents mirrors', () => {
+describe('0463 — labor and asset cents mirrors', () => {
   test('a wage round-trips at the right magnitude', async () => {
     await pg.query('update public.properties set hourly_wage = 15.50 where id = $1', [PID_A]);
     const r = await pg.query<{ c: string }>(
