@@ -479,7 +479,7 @@ describe('role resolution', () => {
       'the guarded financial-summary handler was never reached',
     );
 
-    const financeHat = companySeed.hats.get(`${ACCOUNT_FIONA}:company:finance`);
+    const financeHat = companySeed.hats.get(`${ACCOUNT_FIONA}:company:regional_manager`);
     assert.ok(financeHat);
     await pg.query(
       'update public.organization_memberships set status = \'suspended\' where id = $1',

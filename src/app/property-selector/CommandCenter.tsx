@@ -59,7 +59,7 @@ export interface PickerHotel {
 export interface PickerCompany {
   organizationId: string;
   organizationName: string | null;
-  companyRole: 'owner' | 'vp' | 'finance';
+  companyRole: 'owner' | 'regional_manager';
   hotelCount: number;
   chatAvailable?: boolean;
   /** Fresh receipt carries org-wide queue provenance. Omitted/false fails closed. */

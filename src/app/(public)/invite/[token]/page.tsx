@@ -6,10 +6,52 @@ export const dynamic = 'force-dynamic';
 // link from Settings → Account & Team → Invite by email. We only need the
 // user to set a display name + password; the email + hotel + role were
 // pre-decided when the invite was created.
+//
+// This page shows WHAT IS BEING ACCEPTED before it asks for anything. It used
+// to ask a stranger for their full name and a password over a blank page: no
+// who, no where, no what job. Somebody who cannot see what they are joining
+// cannot tell this from a phishing page with the same layout.
+//
+// RLS BUG CLASS: the visitor is not signed in, so both the preview and the
+// acceptance go through /api routes that use the service role. This page must
+// never call `supabase.from(...)` — the anon role returns 200 with [] and the
+// screen silently renders empty. See CLAUDE.md.
 
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import { useLang } from '@/contexts/LanguageContext';
+
+interface InvitePreview {
+  email: string;
+  roleLabel: string;
+  scope: 'company' | 'hotel';
+  companyName: string | null;
+  hotelNames: string[];
+  coversAllIncludingFuture: boolean;
+  invitedByName: string | null;
+}
+
+/** "Port Arthur Inn", "Port Arthur Inn and Lufkin Inn", "Port Arthur Inn and 2 more". */
+function describeHotels(names: readonly string[]): string {
+  if (names.length === 0) return '';
+  if (names.length === 1) return names[0]!;
+  if (names.length === 2) return `${names[0]} and ${names[1]}`;
+  return `${names[0]} and ${names.length - 1} more`;
+}
+
+/** The one line that says what this invitation actually is. */
+export function describeInviteScope(preview: InvitePreview): string {
+  if (preview.scope === 'company') {
+    const company = preview.companyName ?? 'the company';
+    if (preview.coversAllIncludingFuture) {
+      return `${company}, across every hotel it runs`;
+    }
+    return preview.hotelNames.length > 0
+      ? `${company}, for ${describeHotels(preview.hotelNames)}`
+      : company;
+  }
+  return describeHotels(preview.hotelNames);
+}
 
 export default function AcceptInvitePage() {
   const { lang } = useLang();
@@ -17,12 +59,39 @@ export default function AcceptInvitePage() {
   const params = useParams<{ token: string }>();
   const token = params?.token ?? '';
 
+  const [preview, setPreview] = useState<InvitePreview | null>(null);
+  const [previewState, setPreviewState] = useState<'loading' | 'ready' | 'unusable'>('loading');
   const [displayName, setDisplayName] = useState('');
   const [password, setPassword] = useState('');
   const [confirm, setConfirm] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState('');
   const [done, setDone] = useState<{ email: string } | null>(null);
+
+  useEffect(() => {
+    if (!token) { setPreviewState('unusable'); return; }
+    let cancelled = false;
+    void (async () => {
+      try {
+        const res = await fetch('/api/auth/invite-preview', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ token }),
+        });
+        const body = await res.json() as { ok?: boolean; data?: InvitePreview };
+        if (cancelled) return;
+        if (res.ok && body.ok && body.data) {
+          setPreview(body.data);
+          setPreviewState('ready');
+        } else {
+          setPreviewState('unusable');
+        }
+      } catch {
+        if (!cancelled) setPreviewState('unusable');
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [token]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -83,6 +152,39 @@ export default function AcceptInvitePage() {
           </p>
         </div>
 
+        {previewState === 'ready' && preview && !done && (
+          <div style={{
+            background: 'var(--bg-card)', border: '1px solid var(--border)',
+            borderRadius: 'var(--radius-lg)', padding: '16px 18px', marginBottom: '16px',
+            display: 'flex', flexDirection: 'column', gap: '10px',
+          }}>
+            <PreviewRow
+              label={'You are joining'}
+              value={describeInviteScope(preview)}
+            />
+            <PreviewRow label={'As'} value={preview.roleLabel} />
+            {preview.invitedByName && (
+              <PreviewRow label={'Invited by'} value={preview.invitedByName} />
+            )}
+            <PreviewRow label={'Your sign in email'} value={preview.email} />
+          </div>
+        )}
+
+        {previewState === 'unusable' && !done && (
+          <div style={{
+            background: 'var(--bg-card)', border: '1px solid var(--border)',
+            borderRadius: 'var(--radius-lg)', padding: '20px', marginBottom: '16px',
+            textAlign: 'center',
+          }}>
+            <p style={{ fontSize: '14px', color: 'var(--text-primary)', margin: 0, lineHeight: 1.5 }}>
+              {'This invitation link is not usable. It may have expired or already been used.'}
+            </p>
+            <p style={{ fontSize: '13px', color: 'var(--text-muted)', margin: '8px 0 0', lineHeight: 1.5 }}>
+              {'Ask whoever invited you to send a new one.'}
+            </p>
+          </div>
+        )}
+
         {done ? (
           <div style={{ background: 'var(--bg-card)', border: '1px solid var(--border)', borderRadius: 'var(--radius-lg)', padding: '24px 20px', textAlign: 'center' }}>
             <p style={{ fontSize: '14px', color: 'var(--text-primary)', marginBottom: '12px' }}>
@@ -98,7 +200,7 @@ export default function AcceptInvitePage() {
               {'Sign in'}
             </button>
           </div>
-        ) : (
+        ) : previewState === 'unusable' ? null : (
           <form onSubmit={handleSubmit} style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
             <Input label={'Full name'} value={displayName} onChange={setDisplayName} disabled={submitting} autoFocus />
             <Input label={'Password'} type="password" value={password} onChange={setPassword} disabled={submitting} autoComplete="new-password" />
@@ -114,6 +216,19 @@ export default function AcceptInvitePage() {
           </form>
         )}
       </div>
+    </div>
+  );
+}
+
+function PreviewRow({ label, value }: { label: string; value: string }) {
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
+      <span style={{ fontSize: '11px', fontWeight: 600, letterSpacing: '0.04em', color: 'var(--text-muted)', textTransform: 'uppercase', fontFamily: 'var(--font-sans)' }}>
+        {label}
+      </span>
+      <span style={{ fontSize: '14px', color: 'var(--text-primary)', fontFamily: 'var(--font-sans)', lineHeight: 1.4, wordBreak: 'break-word' }}>
+        {value}
+      </span>
     </div>
   );
 }

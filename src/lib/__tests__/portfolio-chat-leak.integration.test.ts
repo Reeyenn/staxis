@@ -602,7 +602,7 @@ describe('the door', () => {
     const access = await resolvePortfolioAccessUncached(ACCOUNT_MARIA);
     assert.ok(access.ok, 'Maria wears a company VP hat at Gulf Coast');
     assert.equal(access.access.organizationId, ORG_A);
-    assert.equal(access.access.companyRole, 'vp');
+    assert.equal(access.access.companyRole, 'regional_manager');
     assert.deepEqual(access.access.propertyIds, [PID_A1, PID_A2].sort());
     assert.equal(
       access.access.propertyIds.includes(PID_B1), false,
@@ -651,7 +651,7 @@ describe('the door', () => {
     const queueScope = await resolveManagementCompanyScopeUncached(ACCOUNT_VERA, ORG_B);
     assert.ok(queueScope.ok, 'company feed access must not depend on an AI feature setting');
     assert.equal(queueScope.access.organizationId, ORG_B);
-    assert.equal(queueScope.access.companyRole, 'vp');
+    assert.equal(queueScope.access.companyRole, 'regional_manager');
     assert.deepEqual(queueScope.access.propertyIds, [PID_B1]);
 
     const foreignProbe = await resolveManagementCompanyScopeUncached(ACCOUNT_VERA, ORG_A);

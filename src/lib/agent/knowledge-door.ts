@@ -390,9 +390,12 @@ export interface KnowledgeTurn {
 
   // ── ACTOR: who is reading. Never a substitute for a scope gate. ──────────
 
-  /** Optional because two of the three pipelines have no single hat: the
-   *  portfolio surface answers for a company and the walkthrough is not a hotel
-   *  conversation. A person-scoped store with no actor renders nothing. */
+  /** Optional because one of the two pipelines has no single hat: the portfolio
+   *  surface answers for a company rather than for somebody wearing a role at
+   *  one hotel. A person-scoped store with no actor renders nothing.
+   *
+   *  It used to be two of three. The walkthrough was the other one, and it went
+   *  with the cursor demo on 2026-08-07. */
   actor?: KnowledgeActor;
 
   // ── HELD: what the caller already loaded. The door must not re-fetch. ────
@@ -1004,7 +1007,11 @@ export const NON_STORE_MARKER_MODULES: Readonly<Record<string, string>> = Object
   'src/lib/agent/prompts.ts':
     'the hotel-chat assembler. It NAMES <staxis-snapshot>, <staxis-memory-block> and the '
     + 'tool-result vocabulary inside the base prompt\'s own trust-boundary section, so the '
-    + 'model knows where each boundary runs — the same excuse walkthrough-step.ts carries. '
+    + 'model knows where each boundary runs. Naming a marker is not printing one: the '
+    + 'excuse is that the text is a DESCRIPTION of the envelope, in Staxis\'s own voice, '
+    + 'and no third party\'s words are inside it. It was the second module to carry this '
+    + 'excuse until 2026-08-07, when the walkthrough that carried the first one was '
+    + 'deleted with the rest of the cursor demo. '
     + 'It emits no envelope of its own: the PMS-family tier it used to print moved to '
     + 'family-tier.ts in stage 2 so the door could compose it without the door and the '
     + 'assembler importing each other, and every other tier in the prompt is rendered by '
@@ -1014,9 +1021,6 @@ export const NON_STORE_MARKER_MODULES: Readonly<Record<string, string>> = Object
     + 'than stored, and the one thing on that surface the model may quote a number from.',
   'src/lib/agent/portfolio-intelligence/pattern-contract.ts':
     'the pattern findings projection. Hypotheses, explicitly outranked by evidence.',
-  'src/lib/walkthrough-step.ts':
-    'NAMES <staxis-snapshot> inside its own instruction text so the model knows the '
-    + 'boundary. It emits no envelope of its own.',
 });
 
 /** Every module the registry expects to find an emitted marker in. */
