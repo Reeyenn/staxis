@@ -101,15 +101,16 @@ export async function POST(req: NextRequest) {
   // Who is asking. Resolved by the same gate every other user-facing route
   // uses, never from anything the caller can set. A browser with no session
   // resolves to null, which performAdminReturn refuses.
-  const session = await requireSession(req, { requestId });
-  const presenterAuthUserId = session.ok ? session.userId : null;
+  //
+  // Only asked when there is something to redeem. This endpoint is reachable
+  // without any credential, so a bare POST must not turn into a Supabase Auth
+  // round trip that an unauthenticated flood can multiply.
+  const rawToken = req.cookies.get(RETURN_COOKIE_NAME)?.value ?? null;
+  const session = rawToken ? await requireSession(req, { requestId }) : null;
+  const presenterAuthUserId = session?.ok ? session.userId : null;
 
   const result = await performAdminReturn(
-    {
-      rawToken: req.cookies.get(RETURN_COOKIE_NAME)?.value ?? null,
-      presenterAuthUserId,
-      nowMs: Date.now(),
-    },
+    { rawToken, presenterAuthUserId, nowMs: Date.now() },
     livePerformReturnDeps(),
   );
 

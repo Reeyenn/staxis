@@ -182,6 +182,28 @@ These are guards added in the May 2026 multi-tenant scaling work. Don't weaken t
 
 ---
 
+## 10. The admin account switcher's way back is bound to a session, not just a cookie
+
+**What it does:** `POST /api/auth/admin-switch-return` mints a real platform-admin session. It sits outside `/api/admin/*` on purpose (by the time it is called the browser IS the demo person), so it carries its own gate. Two things authorize it and **neither alone is enough**:
+
+1. the httpOnly, HMAC-signed `staxis_admin_return` cookie the switch set, and
+2. a live session belonging to the demo person that same cookie names, resolved through `requireSession` — never from anything the caller can set.
+
+**Why it exists (2026-08-07 security audit):** with only the cookie, the endpoint was a two-hour bearer credential for the platform-admin account that outlived the act it belonged to. An admin who switched into a demo person and then signed out, or handed the machine over, left a browser one unauthenticated POST away from a full admin session — no password, no second factor. Sign-out could not fix it either: `clearSignedOutBrowserState` removes the cosmetic hint cookie, but JavaScript cannot delete an httpOnly one.
+
+### Rules for editing
+
+- **Never let `performAdminReturn` run without a presenter.** `presenterAuthUserId` is required, and it must equal the `authUserId` of the account named by `targetAccountId`. An absent or empty presenter is a refusal, not a wildcard.
+- **Keep the presenter check BEFORE the single-use claim.** Reversed, anyone holding the browser could burn the admin's `jti` without ever being allowed to redeem it, i.e. deny the return by touching it.
+- **Keep the claim BEFORE the admin lookup.** Reversed, two racing redeems could both read "still an admin" and both be served.
+- **Keep `DELETE` on that route, and keep sign-out calling it.** It is the difference between the credential being inert and being absent. Do not move that call into `clearSignedOutBrowserState`: that also runs on hydration paths where a momentary "no session yet" reading would throw away a valid return.
+- **Do not write an `app_events` row for refusals that never got past the HMAC** (`no_return_token`, `token_malformed`, `token_bad_signature`). Anyone can produce those at will, and a row each is an unbounded audit-table write from an unauthenticated endpoint. Everything that DID verify is still recorded.
+- **`properties.is_test` is the only thing standing between this feature and a real hotel.** A real property mistakenly flagged `is_test = true` makes its staff switchable, and the resulting session is indistinguishable from that person working. There is no second, independent check. Treat flipping that flag on a live hotel as a security event.
+
+**Tested by:** `admin-account-switch.test.ts` (the policy, dependency-injected), `admin-switch-return-route.test.ts` (the route actually resolves and passes the caller), and `admin-account-switch.integration.test.ts` (the whole round trip against real migrations, including the cookie tried as a signed-out browser, as another real person, and as the admin).
+
+---
+
 ## How to verify all failsafes still work
 
 Run after any significant infra change:
