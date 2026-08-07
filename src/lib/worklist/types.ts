@@ -41,6 +41,23 @@ export interface WorklistItem {
   assigneeName: string | null;
   dept: string | null;
   dueDate: string | null;   // ISO; null when the source has no due concept
+  /**
+   * The calendar day this is due ON, at the HOTEL, as YYYY-MM-DD.
+   *
+   * `dueDate` above is an instant, and turning an instant back into a day is
+   * something only the server can do correctly: it is the one side that knows
+   * the hotel's timezone. The month grid and the week strip did it in the
+   * browser, so a manager whose laptop is east of the hotel saw the end of the
+   * hotel's Friday (23:59:59 local) land on Saturday's square. Every to-do due
+   * that day carried a dot on the wrong day, and clicking the right day showed
+   * an empty page. A single-hotel manager sitting in the hotel never sees it;
+   * a VP with hotels in two zones sees it on one of them permanently.
+   *
+   * Absent on the sources with no calendar day of their own (a complaint, a
+   * work order, an inspection-due room), where the calendar correctly has
+   * nothing to place.
+   */
+  dueDay?: string | null;
   status: string;
   priority: WorklistPriority | null;
   propertyId: string;

@@ -454,6 +454,10 @@ export async function gatherWorklist(pid: string, opts: GatherOptions = {}): Pro
       assigneeName: assignedStaffId ? nameMap.get(assignedStaffId) ?? null : null,
       dept: (r.assigned_department as string | null) ?? null,
       dueDate: due,
+      // Already worked out above, in the hotel's own calendar. Carried so the
+      // month grid and the week strip do not have to re-derive it from the
+      // instant in the reader's timezone. See WorklistItem.dueDay.
+      dueDay,
       status: 'open',
       priority: normalizePriority((r.priority as string | null) ?? 'normal'),
       propertyId: pid,
@@ -619,6 +623,7 @@ export async function gatherWorklist(pid: string, opts: GatherOptions = {}): Pro
       assigneeName: null,
       dept: null,
       dueDate: new Date(nextDueMs).toISOString(),
+      dueDay: propertyLocalToday(new Date(nextDueMs), tz),
       status: overdue ? 'overdue' : 'due_soon',
       priority: overdue ? 'high' : 'normal',
       propertyId: pid,
@@ -655,6 +660,9 @@ export async function gatherWorklist(pid: string, opts: GatherOptions = {}): Pro
       assigneeName: targetStaffId ? nameMap.get(targetStaffId) ?? null : null,
       dept: targetDept,
       dueDate: fireAt,
+      dueDay: fireAt && Number.isFinite(Date.parse(fireAt))
+        ? propertyLocalToday(new Date(Date.parse(fireAt)), tz)
+        : null,
       status: 'pending',
       priority: 'normal',
       propertyId: pid,
@@ -721,6 +729,11 @@ export async function gatherWorklist(pid: string, opts: GatherOptions = {}): Pro
       // but still ended the day at 6:59pm in Texas, so a request for today went
       // red over dinner. endOfLocalDay ends it when the hotel's day ends.
       dueDate: day ? endOfLocalDay(day, tz).toISOString() : null,
+      // The day the request NAMES, straight off the row. The instant above is
+      // the end of that day at the hotel, and reading it back in the reader's
+      // own timezone is what put "Ana asked for the 14th off" on the 15th for
+      // anybody east of the hotel.
+      dueDay: day,
       status: 'pending',
       priority: 'normal',
       propertyId: pid,
