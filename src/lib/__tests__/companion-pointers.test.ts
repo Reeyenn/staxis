@@ -443,6 +443,49 @@ describe('the arrow always lands on the control', () => {
     assert.ok(within(g.glow, g.head.x, g.head.y));
   });
 
+  test('on a phone the popup never sits on top of the control it points at', () => {
+    // The rule the founder set for the phone pass, checked as a property
+    // rather than as one example: whatever the control is doing, the card and
+    // the lit control may not share a pixel.
+    //
+    // It used to fail on exactly one shape, and it was a real one: the to-do
+    // composer with all three of its rows open measures 598px of an 812px
+    // window, and a full-height card clamped back inside the window landed on
+    // the composer. The card gives up height for the band instead.
+    const phones = [{ width: 375, height: 812 }, { width: 390, height: 844 }];
+    const shapes = [
+      { width: 343, height: 52 },   // the composer, shut
+      { width: 343, height: 150 },  // the composer on a phone
+      { width: 343, height: 598 },  // the composer with every row open
+      { width: 120, height: 44 },   // a button
+      { width: 160, height: 300 },  // a tall card
+    ];
+    for (const viewport of phones) {
+      for (const shape of shapes) {
+        for (let top = 0; top <= viewport.height; top += 40) {
+          const rect = { left: 16, top, ...shape };
+          const g = layoutPointer(rect, viewport, CARD);
+          assert.ok(g, `no geometry for ${JSON.stringify(rect)}`);
+          const overlaps = g.card.left < g.glow.left + g.glow.width
+            && g.card.left + g.card.width > g.glow.left
+            && g.card.top < g.glow.top + g.glow.height
+            && g.card.top + g.card.height > g.glow.top;
+          assert.equal(
+            overlaps, false,
+            `popup covered the control at ${JSON.stringify(rect)} on ${viewport.width}: `
+            + `${JSON.stringify(g.card)} over ${JSON.stringify(g.glow)}`,
+          );
+          // And the arrow still has to reach it, or the popup moved for
+          // nothing.
+          assert.ok(
+            within(g.glow, g.head.x, g.head.y),
+            `arrowhead left the control at ${JSON.stringify(rect)}`,
+          );
+        }
+      }
+    }
+  });
+
   test('a phone-width window still produces a popup that fits', () => {
     const phone = { width: 390, height: 700 };
     const g = layoutPointer({ left: 20, top: 300, width: 350, height: 44 }, phone, CARD);

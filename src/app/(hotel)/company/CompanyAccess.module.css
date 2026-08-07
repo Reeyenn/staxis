@@ -2936,3 +2936,30 @@
     transform: none;
   }
 }
+
+/* ─── The phone ────────────────────────────────────────────────────────────
+   Same two rules as the roster beside it: nothing you type into is under 16px
+   (iOS zooms the page in on focus below that and never zooms back), and
+   nothing you press is under 40px. */
+@media (max-width: 760px) {
+  .searchField input,
+  .formField input,
+  .formField select,
+  .formField textarea,
+  .legacyOwnershipControls .formField select,
+  .hotelScopeToolbar input[type='search'],
+  .hotelScopeToolbar input[type='text'] {
+    font-size: 16px;
+  }
+
+  .filterChips button,
+  .partialNotice button,
+  .adminPreviewErrorActions button,
+  .reviewButton,
+  .accessRecordMeta .reviewButton,
+  .actionMenu button,
+  .actionMenu summary,
+  .searchField > button {
+    min-height: 40px;
+  }
+}

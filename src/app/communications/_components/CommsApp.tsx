@@ -561,6 +561,16 @@ function CommsPropertyApp({ pid }: { pid: string | null }) {
           .comms-mobile-back{min-width:44px;min-height:44px;display:inline-flex;align-items:center;gap:4px;padding:0 8px;border:0;border-radius:9px;background:transparent;color:${deptColorDark(T.forest)};font:600 13px ${SANS};cursor:pointer}
           .comms-main-content{width:100%;overflow:hidden}
           .comms-alert-stack{right:10px;bottom:10px;max-width:calc(100% - 20px)}
+          /* The composer and the cards inside it are styled inline, so this is
+             the only place a phone rule can reach them. The box you type into
+             was 14px, which is under the size iOS treats as "zoom the page in
+             on focus", and it never zooms back; the format icons and the
+             approve/deny buttons on a Staxis card were 26px and 29px tall.
+             !important on the type size only, because an inline style is what
+             it is overriding; min-height needs no help, it already wins. */
+          .comms-composer textarea{font-size:16px!important;line-height:1.45!important}
+          .comms-composer input[type=text],.comms-composer input[type=search]{font-size:16px!important}
+          .comms-composer button,.comms-composer label{min-height:40px}
         }
         @media(prefers-reduced-motion:reduce){.comms-spin{animation:none}}
       `}</style>

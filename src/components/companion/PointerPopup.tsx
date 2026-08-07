@@ -249,7 +249,14 @@ export function PointerPopup({
     }
 
     const width = Math.min(POINTER_CARD_WIDTH, viewport.width - EDGE_MARGIN * 2);
-    const measuredHeight = cardRef.current?.offsetHeight ?? 0;
+    // The NATURAL height, not the drawn one. The card wears the height the
+    // geometry gave it as a max, so reading offsetHeight alone would feed a
+    // capped card back in as if that were all it wanted and it could never
+    // grow again once the control shrank. scrollHeight still reports the text.
+    const measuredHeight = Math.max(
+      cardRef.current?.offsetHeight ?? 0,
+      cardRef.current?.scrollHeight ?? 0,
+    );
     const height = measuredHeight > 0 ? measuredHeight : CARD_FALLBACK_HEIGHT;
     const next = layoutPointer(rect, viewport, { width, height });
     if (!next) { nothingToPointAt(); return; }
@@ -421,6 +428,11 @@ export function PointerPopup({
           width: `${width}px`,
           left: `${geometry ? geometry.card.left : EDGE_MARGIN}px`,
           top: `${geometry ? geometry.card.top : EDGE_MARGIN}px`,
+          // The geometry may have shrunk the card to keep it off the control
+          // it is pointing at. Honouring that here is what makes the promise
+          // real: without it the box still renders at its content height and
+          // sits over the button, whatever the maths said.
+          ...(geometry ? { maxHeight: `${geometry.card.height}px` } : {}),
           // Measured before it is placed. Hidden rather than unmounted, because
           // the height of the real text is the input the placement needs.
           visibility: geometry ? 'visible' : 'hidden',

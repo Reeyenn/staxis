@@ -247,6 +247,13 @@ export const POINTER_GAP = 22;
 const POINTER_INSET = 26;
 
 /**
+ * The smallest band worth squeezing the popup into rather than overlapping
+ * the control. Below this the card would be a sliver, and a sliver beside the
+ * button is worse than a readable card over it.
+ */
+export const POINTER_MIN_BAND = 64;
+
+/**
  * Where the popup goes and where the line runs.
  *
  * Pure: it is handed a measured control, the window, and how big the popup
@@ -276,22 +283,23 @@ export function layoutPointer(
   // Never wider than the window can hold, whatever the popup asked for. No
   // minimum floor: a floor bigger than the window is how a "minimum readable
   // width" becomes a card hanging off the edge of a narrow one.
-  const width = Math.max(1, Math.min(card.width, viewport.width - EDGE_MARGIN * 2, viewport.width));
-  const height = Math.max(1, Math.min(card.height, viewport.height - EDGE_MARGIN * 2, viewport.height));
+  let width = Math.max(1, Math.min(card.width, viewport.width - EDGE_MARGIN * 2, viewport.width));
+  let height = Math.max(1, Math.min(card.height, viewport.height - EDGE_MARGIN * 2, viewport.height));
 
   const glowRight = glow.left + glow.width;
   const glowBottom = glow.top + glow.height;
-  const room: Record<PointerSide, number> = {
-    below: viewport.height - glowBottom,
-    above: glow.top,
-    right: viewport.width - glowRight,
-    left: glow.left,
+  // The CLEAR BAND on each side: what is left of the window once the gap to
+  // the control and the margin to the window edge are paid for. This, and not
+  // the raw room, is how much of the popup can sit there without touching
+  // either of them.
+  const band: Record<PointerSide, number> = {
+    below: viewport.height - EDGE_MARGIN - (glowBottom + POINTER_GAP),
+    above: glow.top - POINTER_GAP - EDGE_MARGIN,
+    right: viewport.width - EDGE_MARGIN - (glowRight + POINTER_GAP),
+    left: glow.left - POINTER_GAP - EDGE_MARGIN,
   };
-  const needed: Record<PointerSide, number> = {
-    below: height + POINTER_GAP + EDGE_MARGIN,
-    above: height + POINTER_GAP + EDGE_MARGIN,
-    right: width + POINTER_GAP + EDGE_MARGIN,
-    left: width + POINTER_GAP + EDGE_MARGIN,
+  const wanted: Record<PointerSide, number> = {
+    below: height, above: height, right: width, left: width,
   };
   // Down, then up, then sideways. Same first choice and same fallback as the
   // trace, for the same reason: down is the direction the design was drawn in
@@ -299,11 +307,29 @@ export function layoutPointer(
   // narrow window with a rail above it and a board below it, which is exactly
   // the stockroom's left rail on a laptop.
   const order: readonly PointerSide[] = ['below', 'above', 'right', 'left'];
-  const side: PointerSide = order.find((s) => room[s] >= needed[s])
+  const side: PointerSide = order.find((s) => band[s] >= wanted[s])
     // Nothing fits. Take the roomiest side rather than the first: a popup
     // clamped into the biggest gap is still readable, and it is still beside
     // the control rather than on top of it.
-    ?? order.reduce((best, s) => (room[s] > room[best] ? s : best), order[0]);
+    ?? order.reduce((best, s) => (band[s] > band[best] ? s : best), order[0]);
+
+  // GIVE UP SIZE RATHER THAN SLIDE OVER THE CONTROL.
+  //
+  // On a phone a control can be taller than the band it leaves: the to-do
+  // composer with all three of its rows open measures 598px of an 812px
+  // window. The card was then placed at the control's edge and clamped back
+  // inside the window, and the clamp put it ON the thing the arrow was
+  // pointing at. It takes the band instead and scrolls its own text, which is
+  // the one outcome that keeps both halves of the promise: the sentence is
+  // readable, and the control it is about is still visible under it.
+  //
+  // Only when the band is worth having. A control that fills the window leaves
+  // no honest placement at all, and a 12px sliver of card would be worse than
+  // the overlap.
+  if (band[side] >= POINTER_MIN_BAND) {
+    if (side === 'below' || side === 'above') height = Math.min(height, band[side]);
+    else width = Math.min(width, band[side]);
+  }
 
   const centerX = glow.left + glow.width / 2;
   const centerY = glow.top + glow.height / 2;
