@@ -28,7 +28,7 @@ import {
   PageHead, BoardColumn, BoardCard, CenteredBoard, MtEmptyCard,
   useBoardGate, BoardLoading, BoardLoadError,
   relDue, fmtDate, daysBetween, addDaysLocal, cadenceLabel,
-  newScheduleStart, newScheduleStartNote,
+  newScheduleStart, newScheduleStartNote, writeFailureMessage,
   nextDueDate, daysUntilDue, bandFor, dueChipLabel, nextDueLine,
   type Band,
 } from './_mt-snow';
@@ -388,13 +388,11 @@ function TaskModal({
 // Every write on this board lands in preventive_tasks, whose insert/update/
 // delete policies all require staxis_user_can_manage_equipment (0334). An
 // insufficient-privilege refusal is not a dropped connection, so don't tell the
-// user to check their connection about it.
-function writeFailureMessage(e: unknown, fallback: string): string {
-  const code = String((e as { code?: string } | null)?.code ?? '');
-  return code === '42501'
-    ? "You don't have permission to change upkeep schedules."
-    : fallback;
-}
+// user to check their connection about it. The rule now lives in mt-dates.ts
+// and is shared with the Work orders board, which was telling everybody a
+// refusal was a network problem.
+const scheduleWriteFailure = (e: unknown, fallback: string) =>
+  writeFailureMessage(e, fallback, 'upkeep schedules');
 
 // ── root ─────────────────────────────────────────────────────────────────────
 export function PreventiveTab() {
@@ -455,7 +453,7 @@ export function PreventiveTab() {
         equipmentId: null,
       });
     } catch (err) {
-      flash(writeFailureMessage(err, "Couldn't add the task. Check your connection and try again."));
+      flash(scheduleWriteFailure(err, "Couldn't add the task. Check your connection and try again."));
       throw err;
     }
   };
@@ -476,7 +474,7 @@ export function PreventiveTab() {
     try {
       await updatePreventiveTask(user.uid, activePropertyId, id, patch);
     } catch (err) {
-      flash(writeFailureMessage(err, "Couldn't save the changes. Check your connection and try again."));
+      flash(scheduleWriteFailure(err, "Couldn't save the changes. Check your connection and try again."));
       throw err;
     }
   };
@@ -494,7 +492,7 @@ export function PreventiveTab() {
       }
       await completePreventiveTask(id, { completedISO: new Date().toISOString(), completedByName: user.displayName });
     } catch (err) {
-      flash(writeFailureMessage(err, "Couldn't mark it done. Check your connection and try again."));
+      flash(scheduleWriteFailure(err, "Couldn't mark it done. Check your connection and try again."));
       throw err;
     }
   };
@@ -518,7 +516,7 @@ export function PreventiveTab() {
         skippedBy: null,
       });
     } catch (err) {
-      flash(writeFailureMessage(err, "Couldn't save that. Check your connection and try again."));
+      flash(scheduleWriteFailure(err, "Couldn't save that. Check your connection and try again."));
       throw err;
     }
   };

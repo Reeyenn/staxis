@@ -43,6 +43,7 @@ export {
   daysBetween, addDaysLocal, relDue, displayLoc, cadenceLabel,
   workOrderEnding, workOrderHistoryCount, newScheduleStart, newScheduleStartNote,
   nextDueDate, daysUntilDue, bandFor, dueChipLabel, nextDueLine,
+  writeFailureMessage,
 } from './mt-dates';
 export type { Band } from './mt-dates';
 export type Priority = 'urgent' | 'normal' | 'low';

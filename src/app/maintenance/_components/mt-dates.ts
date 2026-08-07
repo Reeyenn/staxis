@@ -1,8 +1,30 @@
-// Pure date / cadence helpers for the Maintenance boards. No React — kept in
-// a plain .ts module (re-exported through _mt-snow) so src/lib/__tests__ can
-// exercise the logic directly.
+// Pure date / cadence / copy helpers for the Maintenance boards. No React —
+// kept in a plain .ts module (re-exported through _mt-snow) so src/lib/__tests__
+// can exercise the logic directly. Anything on these boards that decides what a
+// person READS belongs here rather than inline in a component.
 //
 const LOCALE = 'en-US';
+
+// ── what to say when a board write is refused ──────────────────────────────
+//
+// Every write on both boards lands in a table whose policy checks that this
+// person may mutate this hotel (0396 for work_orders, 0334 for
+// preventive_tasks). Postgres refuses with 42501, which is not a dropped
+// connection — and the Work orders board told everybody it was one. Somebody
+// whose access had been narrowed, or whose hotel is in a read-only standing,
+// tapped "Mark done", was told to check their connection, and tried again, and
+// again. Shared by both tabs so only one of them can ever get it right.
+export function writeFailureMessage(
+  e: unknown,
+  fallback: string,
+  /** What was being changed, as a manager would name it. */
+  subject = 'this',
+): string {
+  const code = String((e as { code?: string } | null)?.code ?? '');
+  return code === '42501'
+    ? `You don't have permission to change ${subject}.`
+    : fallback;
+}
 
 export function fmtDate(d: Date): string {
   return d.toLocaleDateString(LOCALE, { month: 'short', day: 'numeric', year: 'numeric' });

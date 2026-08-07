@@ -24,7 +24,7 @@ import {
   StorageImage, PageHead, BoardColumn, MtEmptyCard,
   useBoardGate, BoardLoading, BoardLoadError,
   displayLoc, fmtDateShort, fmtSubmittedAt, fmtSubmittedAtCompact,
-  prioColor, prioLabel, workOrderEnding, workOrderHistoryCount,
+  prioColor, prioLabel, workOrderEnding, workOrderHistoryCount, writeFailureMessage,
   CX_SPRING, CX_CARD_SHADOW, CX_CARD_SHADOW_HOVER, CX_CARD_BORDER_HOVER,
 } from './_mt-snow';
 import { useToast, ToastHost } from '@/app/_components/ui/toast';
@@ -58,6 +58,15 @@ function displayRole(stored: string | undefined, es: boolean): string {
   if (stored === 'Staff' || stored === 'Personal') return roleLabel(undefined, es);
   return stored;
 }
+
+// Every write on this board goes through the browser client, and the policy
+// behind work_orders checks that this person may mutate this hotel (0396). A
+// refusal is 42501, not a dropped connection — and this board told everybody it
+// was one, so somebody whose access had been narrowed was sent to check their
+// wifi, repeatedly. The Preventive board has said the right thing for a while;
+// the rule is shared now so only one of them can be wrong.
+const ticketWriteFailure = (e: unknown, fallback: string) =>
+  writeFailureMessage(e, fallback, 'work orders');
 
 // Professional lane tone — Concourse "muted" slate (the outside-contractor
 // lane is neutral, not a severity), replacing the old off-palette purple.
@@ -767,7 +776,7 @@ export function WorkOrdersTab() {
         needsPro: isPro,
       });
     } catch (err) {
-      flash("Couldn't submit the work order. Check your connection and try again.");
+      flash(ticketWriteFailure(err, "Couldn't submit the work order. Check your connection and try again."));
       throw err;
     }
     // Trigger the "arrive & glow" once the new card mounts from the subscription.
@@ -785,7 +794,7 @@ export function WorkOrdersTab() {
         completionNote: note || undefined,
       });
     } catch (err) {
-      flash("Couldn't mark it done. Check your connection and try again.");
+      flash(ticketWriteFailure(err, "Couldn't mark it done. Check your connection and try again."));
       throw err;
     }
     setDetailId(null);
@@ -811,10 +820,10 @@ export function WorkOrdersTab() {
     const patch = val === 'professional'
       ? { needsPro: true }
       : { priority: val, needsPro: false, proTrade: null, proCompany: null, proPhone: null, proCalledAt: null };
-    updateWorkOrder(user.uid, activePropertyId, w.id, patch).catch(() => {
+    updateWorkOrder(user.uid, activePropertyId, w.id, patch).catch((err) => {
       // Fire-and-forget no more: the card won't move (realtime never fires on
       // a failed write), so tell the user why.
-      flash("Couldn't move the work order. Check your connection and try again.");
+      flash(ticketWriteFailure(err, "Couldn't move the work order. Check your connection and try again."));
     });
   };
 
@@ -827,8 +836,8 @@ export function WorkOrdersTab() {
     }
     try {
       await updateWorkOrder(user.uid, activePropertyId, id, { submitterPhotoPath: path });
-    } catch {
-      flash("Couldn't attach the photo. Try again.");
+    } catch (err) {
+      flash(ticketWriteFailure(err, "Couldn't attach the photo. Try again."));
     }
   };
 
@@ -843,7 +852,7 @@ export function WorkOrdersTab() {
         proCalledAt: new Date(),
       });
     } catch (err) {
-      flash("Couldn't save the contractor. Check your connection and try again.");
+      flash(ticketWriteFailure(err, "Couldn't save the contractor. Check your connection and try again."));
       throw err;
     }
   };
@@ -859,7 +868,7 @@ export function WorkOrdersTab() {
         repairCost: args.repairCost,
       });
     } catch (err) {
-      flash("Couldn't save the cost. Check your connection and try again.");
+      flash(ticketWriteFailure(err, "Couldn't save the cost. Check your connection and try again."));
       throw err;
     }
   };

@@ -22,6 +22,7 @@ import {
   bandFor,
   dueChipLabel,
   nextDueLine,
+  writeFailureMessage,
 } from '@/app/maintenance/_components/mt-dates';
 import { fromWorkOrderRow } from '@/lib/db-mappers';
 
@@ -301,5 +302,37 @@ describe('a schedule with no last-done date', () => {
     assert.equal(bandFor(sched(new Date(2026, 7, 1), 365), now), 'upcoming');
     assert.match(dueChipLabel(daysUntilDue(sched(done, 180), now)), /overdue/);
     assert.match(nextDueLine(due!), /^next · /);
+  });
+});
+
+// ── what a refused board write is allowed to blame ─────────────────────────
+//
+// Every write on both maintenance boards goes through the browser client, and
+// the policies behind work_orders (0396) and preventive_tasks (0334) check that
+// this person may change this hotel. Postgres refuses with 42501, which is not
+// a dropped connection. The Work orders board said it was one, so somebody
+// whose access had been narrowed was told to check their wifi and try again,
+// which they then did, repeatedly.
+
+describe('what a refused maintenance write tells the person', () => {
+  const network = "Couldn't mark it done. Check your connection and try again.";
+
+  test('a permission refusal is never reported as a connection problem', () => {
+    const said = writeFailureMessage({ code: '42501' }, network, 'work orders');
+    assert.match(said, /permission/i);
+    assert.match(said, /work orders/);
+    assert.doesNotMatch(said, /connection|try again/i);
+    assert.doesNotMatch(said, /—/);
+  });
+
+  test('and each board names what the person cannot change', () => {
+    assert.match(writeFailureMessage({ code: '42501' }, network, 'upkeep schedules'), /upkeep schedules/);
+    assert.match(writeFailureMessage({ code: '42501' }, network, 'work orders'), /work orders/);
+  });
+
+  test('a real failure still gets the real message', () => {
+    for (const e of [new Error('network down'), { code: '08006' }, null, undefined, 'boom']) {
+      assert.equal(writeFailureMessage(e, network, 'work orders'), network);
+    }
   });
 });
