@@ -252,7 +252,10 @@ describe('inventory audit history migration 0326', () => {
     assert.deepEqual(itemEvents.map((row) => row.action), ['item.created', 'item.updated', 'item.archived']);
     assert.ok(itemEvents.every((row) => row.actor_user_id === USER));
     const editSummary = itemEvents[1].summary as { changedFields?: string[] };
-    assert.deepEqual(editSummary.changedFields, ['name', 'unit_cost']);
+    // 0463 added unit_cost_cents as a GENERATED mirror of unit_cost, so a cost
+    // edit truthfully diffs both columns in the audit evidence. If the 0326
+    // trigger ever learns to skip generated mirrors, drop it here too.
+    assert.deepEqual(editSummary.changedFields, ['name', 'unit_cost', 'unit_cost_cents']);
     assert.equal((itemEvents[1].before_state as { name: string }).name, 'Editable Soap');
     assert.equal((itemEvents[1].after_state as { name: string }).name, 'Guest Soap');
 

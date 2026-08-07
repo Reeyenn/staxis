@@ -29,6 +29,7 @@ import {
   createExpense,
   updateExpense,
   deleteExpense,
+  findExpenseByInvoiceReference,
 } from '@/lib/financials/db';
 import { isFinancialCreateConflict } from '@/lib/financials/idempotent-create';
 
@@ -104,8 +105,19 @@ export async function POST(req: NextRequest): Promise<Response> {
   const source = body.source === 'invoice_scan' ? 'invoice_scan' : 'manual';
   const invoiceNumber = optionalString(body.invoiceNumber, 100);
   const invoiceDate = typeof body.invoiceDate === 'string' && YMD_RX.test(body.invoiceDate) ? body.invoiceDate : null;
+  // Cross-surface invoice guard, used by the inventory scan bridge: the same
+  // physical invoice may already sit in the Checkbook (typed by hand, or
+  // scanned on the Financials side under a random operationId). When the
+  // caller opts in and names an invoice, an existing row wins over a create.
+  const dedupeByInvoice = body.dedupeByInvoice === true && !!invoiceNumber;
 
   try {
+    if (dedupeByInvoice) {
+      const existing = await findExpenseByInvoiceReference(gate.pid, invoiceNumber as string);
+      if (existing) {
+        return ok({ expense: existing, alreadyRecorded: true }, { requestId: gate.requestId });
+      }
+    }
     const expense = await createExpense(gate.pid, gate.accountId, null, {
       expenseDate,
       amountCents,
@@ -120,6 +132,19 @@ export async function POST(req: NextRequest): Promise<Response> {
     return ok({ expense }, { requestId: gate.requestId });
   } catch (error) {
     if (isFinancialCreateConflict(error)) {
+      if (dedupeByInvoice) {
+        // The deterministic bridge id already exists with a different payload
+        // (an edited re-commit of the same invoice). The invoice IS in the
+        // books; report the row that holds it instead of erroring.
+        try {
+          const existing = await findExpenseByInvoiceReference(gate.pid, invoiceNumber as string);
+          if (existing) {
+            return ok({ expense: existing, alreadyRecorded: true }, { requestId: gate.requestId });
+          }
+        } catch {
+          // fall through to the conflict response below
+        }
+      }
       return err('This create operation was already used with different expense data', {
         requestId: gate.requestId,
         status: 409,
