@@ -31,27 +31,41 @@ export type DecisionActorKind =
   | 'human_direct';
 
 /**
- * The surfaces migration 0350's CHECK actually admits.
+ * The surfaces the corpus column can store, mirroring the CHECK on
+ * `agent_decisions.surface` (0350, widened by 0457).
  *
- * `AgentSurface` and this list are NOT the same set and must not be assumed to
- * be: the type grew 'portfolio' in July and 'messages' in August 2026, and the
- * column's CHECK has never been widened for either. An insert carrying one of
- * those is bounced by Postgres, and every writer in this module is fail-soft,
- * so the row would vanish with a warning nobody reads.
+ * THIS LIST AND `AgentSurface` ARE NOT THE SAME SET, and the gap between them
+ * is the bug this constant exists to make loud. The type grew 'portfolio' in
+ * July 2026 and 'messages' in August; the CHECK was widened for neither until
+ * 0457. Every writer in this module is fail-soft by design — a corpus write
+ * must never cost a user their action card — so an insert carrying an unlisted
+ * surface is bounced by Postgres, swallowed, and logged to a console nobody
+ * reads.
  *
  * The failure that actually matters is the OTHER one. The obvious way to make a
  * new surface's rows land is to pass the nearest allowed value, and for the
  * "@Staxis" thread assistant that value is 'chat' — which puts a wrong answer
  * in the one table whose entire job is answering "what was the AI looking at,
  * and where". A corpus that quietly mislabels where an act happened is worse
- * than a corpus that is missing it, because the missing row is visible as a gap
- * and the wrong row is not visible at all.
+ * than one that is missing it: the missing row is visible as a gap, the wrong
+ * row is not visible at all.
  *
- * So: an unrepresentable surface SKIPS the write and says so once. Widening the
- * CHECK is a migration, and until somebody makes that decision on purpose this
- * module refuses to guess on their behalf.
+ * So an unrepresentable surface SKIPS the write and says so once. 0457 removed
+ * the two real surfaces from that path; the machinery stays for whatever comes
+ * next, because the next surface will arrive exactly the way these two did.
+ * Widening this constant WITHOUT the matching migration re-opens the hole from
+ * the other side, so the two are edited together or not at all.
  */
-export const DECISION_CORPUS_SURFACES = ['chat', 'voice', 'walkthrough', 'cron', 'api'] as const;
+export const DECISION_CORPUS_SURFACES = [
+  'chat',
+  'voice',
+  'walkthrough',
+  'cron',
+  'api',
+  // 0457. Both existed in the application and were unrepresentable here.
+  'messages',
+  'portfolio',
+] as const;
 export type DecisionCorpusSurface = (typeof DECISION_CORPUS_SURFACES)[number];
 
 /** The surface as the corpus column can store it, or null when it cannot. */

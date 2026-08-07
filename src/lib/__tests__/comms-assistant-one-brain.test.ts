@@ -35,6 +35,7 @@ process.env.CRON_SECRET ??= 'placeholder-cron-secret-min-16';
 process.env.OPENAI_API_KEY ??= 'sk-placeholder-test-key-min-20-chars';
 
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import { after, before, describe, test } from 'node:test';
 
 import type { AppRole } from '@/lib/roles';
@@ -424,26 +425,35 @@ describe('a thread act leaves the same record a chat act does', () => {
     assert.ok(!('surface' in rows[0]), 'the journal must not carry a surface it could get wrong');
   });
 
-  test('the decision corpus refuses a surface it cannot store instead of mislabelling it', async () => {
-    // The trap this closes: the corpus column's CHECK (migration 0350) admits
-    // chat/voice/walkthrough/cron/api and has never been widened. The obvious
-    // way to make a thread proposal land is to pass the nearest allowed value,
-    // and 'chat' is a WRONG ANSWER in the one table whose job is recording where
-    // an act happened. A missing row is a visible gap; a wrong row is not.
+  test('a thread proposal is filed as a thread proposal, not as a chat one', async () => {
+    // The trap this closes. The corpus column's CHECK admitted
+    // chat/voice/walkthrough/cron/api and nothing else, so the obvious way to
+    // make a thread proposal land was to pass the nearest allowed value — and
+    // 'chat' is a WRONG ANSWER in the one table whose job is recording WHERE an
+    // act happened: a work order raised in an all-staff channel, filed as
+    // though somebody typed it privately into the chat bar. Migration 0457
+    // widened the domain so the honest value can be stored.
+    assert.equal(decisionCorpusSurfaceOf('messages'), 'messages');
+    assert.equal(decisionCorpusSurfaceOf('portfolio'), 'portfolio');
     assert.equal(decisionCorpusSurfaceOf('chat'), 'chat');
     assert.equal(decisionCorpusSurfaceOf('cron'), 'cron');
-    assert.equal(decisionCorpusSurfaceOf('messages'), null);
-    assert.equal(decisionCorpusSurfaceOf('portfolio'), null);
-    assert.ok(!DECISION_CORPUS_SURFACES.includes('messages' as never));
 
-    // And it must SKIP the write, not attempt one: a patched client that throws
-    // on any use proves nothing reached the database.
+    const rows: Record<string, unknown>[] = [];
     const original = supabaseAdmin.from.bind(supabaseAdmin);
-    supabaseAdmin.from = (() => {
-      throw new Error('the corpus tried to write an unstorable surface');
-    }) as unknown as typeof supabaseAdmin.from;
+    // @ts-expect-error monkey-patch the singleton to capture the insert
+    supabaseAdmin.from = (table: string) => ({
+      insert: (row: Record<string, unknown>) => ({
+        select: () => ({
+          single: () => {
+            rows.push({ table, ...row });
+            return Promise.resolve({ data: { id: 'decision-1' }, error: null });
+          },
+        }),
+      }),
+    });
+    let id: string | null;
     try {
-      const id = await recordDecisionProposal({
+      id = await recordDecisionProposal({
         propertyId: PID,
         snapshot: snapshot(),
         surface: 'messages',
@@ -455,9 +465,69 @@ describe('a thread act leaves the same record a chat act does', () => {
         toolName: 'create_work_order',
         proposedArgs: { description: 'AC dead' },
       });
+    } finally {
+      supabaseAdmin.from = original;
+    }
+    assert.equal(id, 'decision-1', 'the thread proposal was not recorded at all');
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0].table, 'agent_decisions');
+    assert.equal(
+      rows[0].surface, 'messages',
+      'a thread proposal filed under another surface is a wrong answer in the corpus',
+    );
+    assert.equal(rows[0].tool_name, 'create_work_order');
+    assert.equal(rows[0].actor_kind, 'ai_proposed');
+  });
+
+  test('an unknown surface still skips the write rather than borrowing a name', async () => {
+    // The machinery stays for whatever comes next, because the next surface
+    // will arrive exactly the way 'messages' and 'portfolio' did: added to the
+    // application's type, and to no CHECK anywhere. Widening
+    // DECISION_CORPUS_SURFACES without the matching migration re-opens the hole
+    // from the other side, so the two are edited together or not at all.
+    const unknown = 'sms' as unknown as Parameters<typeof decisionCorpusSurfaceOf>[0];
+    assert.equal(decisionCorpusSurfaceOf(unknown), null);
+    assert.ok(!(DECISION_CORPUS_SURFACES as readonly string[]).includes('sms'));
+
+    // And it must SKIP the write, not attempt one: a patched client that throws
+    // on any use proves nothing reached the database.
+    const original = supabaseAdmin.from.bind(supabaseAdmin);
+    supabaseAdmin.from = (() => {
+      throw new Error('the corpus tried to write an unstorable surface');
+    }) as unknown as typeof supabaseAdmin.from;
+    try {
+      const id = await recordDecisionProposal({
+        propertyId: PID,
+        snapshot: snapshot(),
+        surface: unknown,
+        actorKind: 'ai_proposed',
+        actorAccountId: UID,
+        actorRole: 'housekeeping',
+        conversationId: null,
+        pendingActionId: null,
+        toolName: 'create_work_order',
+        proposedArgs: { description: 'AC dead' },
+      });
       assert.equal(id, null);
     } finally {
       supabaseAdmin.from = original;
+    }
+  });
+
+  test('the corpus domain and the migration that admits it stay in step', () => {
+    // Two halves of one decision: the constant the application checks against,
+    // and the CHECK the database enforces. A constant that grows without the
+    // migration writes rows Postgres bounces; a migration without the constant
+    // leaves the surface skipped for no reason. Read from the migration file
+    // because this is a no-runtime invariant — there is no code path that can
+    // observe the two disagreeing until a row is already lost.
+    const sql = readFileSync('supabase/migrations/0457_decision_surface_domain.sql', 'utf8');
+    const check = sql.slice(sql.indexOf('ADD CONSTRAINT agent_decisions_surface_check'));
+    for (const surface of DECISION_CORPUS_SURFACES) {
+      assert.ok(
+        check.includes(`'${surface}'`),
+        `${surface} is in DECISION_CORPUS_SURFACES but not in the CHECK 0457 installs`,
+      );
     }
   });
 });
