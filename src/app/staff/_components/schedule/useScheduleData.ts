@@ -11,6 +11,14 @@
 // it (no flash), with two early-drop paths: save failure (revert to server
 // truth) and server-side skips (approved time-off / departed staff — the
 // server's result is intentionally different from what we showed).
+//
+// Open shifts (kind='open', nobody assigned) are a separate, smaller lane:
+// /fill is assigned-shifts-only by design and leaves them alone, so they are
+// read straight off the server snapshot and written one row at a time through
+// POST/DELETE /api/staff-schedule/shifts. They deliberately do NOT take part
+// in the override/undo machinery — there is no bulk replace to be optimistic
+// about, and a hole in coverage is the one thing that must never be shown
+// as filled when it is not.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { fetchWithAuth } from '@/lib/api-fetch';
@@ -43,6 +51,32 @@ export interface ScheduleTemplate {
   scope: 'day' | 'week';
   name: string;
   payload: TemplateShift[] | TemplateShift[][];
+}
+
+/**
+ * An unfilled slot on the board. No staffId by definition: it staffs nobody
+ * until someone picks it up from My Shifts.
+ */
+export interface OpenShift {
+  id: string;
+  date: string;              // YYYY-MM-DD
+  dept: StaffDepartment;
+  startMin: number;
+  endMin: number;
+  note: string | null;
+  /** Why it is open, e.g. "Coverage reopened when a profile was archived". */
+  reason: string | null;
+  /** 'draft' rows exist from before the redesign; staff cannot see them. */
+  visibleToStaff: boolean;
+}
+
+export interface OpenShiftInput {
+  id?: string;
+  department: StaffDepartment;
+  shiftDate: string;
+  startMin: number;
+  endMin: number;
+  note: string | null;
 }
 
 export interface FillResult {
@@ -184,6 +218,89 @@ export function useScheduleData(
     }
     return map;
   }, [serverShifts, nameOf, loadedKey, requestedKey]);
+
+  // ── Open shifts (unfilled slots), read straight off the snapshot ──────
+  const openByDate = useMemo(() => {
+    const map: Record<string, OpenShift[]> = {};
+    if (loadedKey !== requestedKey) return map;
+    for (const s of serverShifts) {
+      if (s.kind !== 'open') continue;
+      const startMin = toMin(s.startTime);
+      (map[s.shiftDate] ??= []).push({
+        id: s.id,
+        date: s.shiftDate,
+        dept: asDeptKey(s.department),
+        startMin,
+        endMin: normalizeShiftEnd(startMin, toMin(s.endTime)),
+        note: s.note ?? null,
+        reason: s.reason ?? null,
+        visibleToStaff: s.status !== 'draft' && s.status !== 'declined',
+      });
+    }
+    for (const date of Object.keys(map)) {
+      map[date].sort((a, b) => a.startMin - b.startMin || a.id.localeCompare(b.id));
+    }
+    return map;
+  }, [serverShifts, loadedKey, requestedKey]);
+
+  const getOpenDay = useCallback(
+    (date: string): OpenShift[] => openByDate[date] ?? [],
+    [openByDate],
+  );
+
+  const openCountByDate = useMemo(() => {
+    const m: Record<string, number> = {};
+    for (const [date, list] of Object.entries(openByDate)) m[date] = list.length;
+    return m;
+  }, [openByDate]);
+
+  /** Create or edit one open slot. Realtime reconciles; this only bridges. */
+  const saveOpenShift = useCallback(async (input: OpenShiftInput) => {
+    if (!propertyId) throw new Error('No property selected');
+    const res = await fetchWithAuth('/api/staff-schedule/shifts', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        hotelId: propertyId,
+        shift: {
+          ...(input.id ? { id: input.id } : {}),
+          department: input.department,
+          shiftDate: input.shiftDate,
+          startTime: toHHMM(input.startMin),
+          endTime: toHHMM(input.endMin % (24 * 60)),
+          kind: 'open',
+          staffId: null,
+          note: input.note,
+        },
+      }),
+    });
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(body?.error || 'Could not save the open shift');
+    const saved = body?.data?.shift as (Omit<ScheduledShift, 'createdAt' | 'updatedAt'> & {
+      createdAt: string; updatedAt: string;
+    }) | undefined;
+    if (!saved?.id) return;
+    const hydrated: ScheduledShift = {
+      ...saved,
+      createdAt: new Date(saved.createdAt),
+      updatedAt: new Date(saved.updatedAt),
+    };
+    setServerShifts(prev => [...prev.filter(s => s.id !== hydrated.id), hydrated]);
+  }, [propertyId]);
+
+  /** Retract one open slot. */
+  const removeOpenShift = useCallback(async (id: string) => {
+    if (!propertyId) throw new Error('No property selected');
+    const res = await fetchWithAuth(
+      `/api/staff-schedule/shifts?hotelId=${propertyId}&id=${id}`,
+      { method: 'DELETE' },
+    );
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}));
+      throw new Error(body?.error || 'Could not retract the open shift');
+    }
+    setServerShifts(prev => prev.filter(s => s.id !== id));
+  }, [propertyId]);
 
   // ── Optimistic per-day overrides ──────────────────────────────────────
   // liveOv is the SYNCHRONOUS source of truth for local edits — saves fired
@@ -533,6 +650,7 @@ export function useScheduleData(
     today, windowStart, windowEnd, extendBack, canExtendBack, loading, loadError, retry,
     presets, nameOf,
     getDay, countByDate,
+    getOpenDay, openCountByDate, saveOpenShift, removeOpenShift,
     setDayLocal, beginGesture, endGesture, commitDay, applyDays,
     pushUndo, undo, undoCount,
     templates, saveTemplate, deleteTemplate,

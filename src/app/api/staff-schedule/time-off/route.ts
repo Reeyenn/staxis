@@ -5,6 +5,12 @@
 //     Inserts a pending time_off_request.
 //     No SMS — in-app only.
 //
+//   DELETE  ?hotelId=…&id=…                          [staff endpoint]
+//     Take back your OWN still-pending request (wrong date, changed plans).
+//     Identity is derived server-side exactly like POST; a client-supplied
+//     staff id is never trusted. Flips status to 'cancelled' rather than
+//     deleting the row — see the comment on the handler.
+//
 //   PUT   body: { hotelId, id, decision: 'approve' | 'deny', denyReason? }   [manager]
 //     On approve, also auto-removes the matching scheduled_shifts row
 //     for that staff+date (if any). The /housekeeping AI tomorrow-picks
@@ -160,6 +166,111 @@ export async function POST(req: NextRequest) {
   }
 
   return ok({ request: fromTimeOffRequestRow(data) }, { requestId });
+}
+
+/**
+ * Staff self-cancel. Status flip to 'cancelled' rather than a row delete:
+ *
+ *   • 'cancelled' already exists in the schema and is what the archive RPC
+ *     writes, and My Shifts already renders a Cancelled palette, so nothing
+ *     new has to be modelled.
+ *   • The manager may be mid-review. A row that silently vanishes reads as a
+ *     bug; one that says Cancelled reads as the employee changing their mind.
+ *   • The live-request unique index (0412
+ *     `time_off_requests_one_live_per_staff_date`) is partial on
+ *     status in ('pending','approved'), and the POST duplicate guard filters
+ *     the same two statuses. Cancelling therefore releases the date and the
+ *     same day can be requested again immediately.
+ */
+export async function DELETE(req: NextRequest) {
+  const requestId = getOrMintRequestId(req);
+  const session = await requireSession(req);
+  if (!session.ok) return session.response;
+
+  const { searchParams } = new URL(req.url);
+  const hotelIdCheck = validateUuid(searchParams.get('hotelId'), 'hotelId');
+  if (hotelIdCheck.error) return err(hotelIdCheck.error, { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
+  const hotelId = hotelIdCheck.value!;
+  const idCheck = validateUuid(searchParams.get('id'), 'id');
+  if (idCheck.error) return err(idCheck.error, { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
+
+  const account = await loadSessionAccount(session.userId);
+  if (!account || !callerReachesHotel(account, hotelId) || !callerCanMutateHotel(account, hotelId)) {
+    return err('Forbidden', { requestId, status: 403, code: ApiErrorCode.Unauthorized });
+  }
+  // Server-derived identity. A caller-supplied staff id is never trusted:
+  // this is the only thing standing between one employee and another
+  // employee's pending request.
+  const staffId = await activeStaffIdForAccountAtProperty(account.accountId, hotelId).catch((error) => {
+    log.error('[time-off:DELETE] staff identity lookup failed', { requestId, msg: errToString(error) });
+    return undefined;
+  });
+  if (staffId === undefined) {
+    return err('Failed to verify staff link', { requestId, status: 500, code: ApiErrorCode.InternalError });
+  }
+  if (!staffId) {
+    return err('Your account is not linked to a staff record. Ask your manager to link it.', {
+      requestId, status: 400, code: ApiErrorCode.ValidationFailed,
+    });
+  }
+
+  const sectionGate = await requireSectionEnabled(req, hotelId, 'staff');
+  if (!sectionGate.ok) return sectionGate.response;
+
+  const { data: existing, error: existingErr } = await supabaseAdmin
+    .from('time_off_requests')
+    .select('id, staff_id, status')
+    .eq('id', idCheck.value!)
+    .eq('property_id', hotelId)
+    .maybeSingle();
+  if (existingErr) {
+    log.error('[time-off:DELETE] lookup failed', { requestId, msg: errToString(existingErr) });
+    return err('Failed to load the request', { requestId, status: 500, code: ApiErrorCode.InternalError });
+  }
+  if (!existing) {
+    return err('Request not found', { requestId, status: 404, code: ApiErrorCode.NotFound });
+  }
+  if (existing.staff_id !== staffId) {
+    return err('Forbidden', { requestId, status: 403, code: ApiErrorCode.Unauthorized });
+  }
+  if (existing.status !== 'pending') {
+    return err('Only a pending request can be cancelled', {
+      requestId, status: 409, code: ApiErrorCode.IdempotencyConflict,
+    });
+  }
+
+  const commitDecision = await hotelWriteDecisionForUserId(session.userId, hotelId);
+  if (commitDecision === 'unavailable') return capabilityUnavailableResponse(requestId);
+  if (commitDecision === 'denied') {
+    return err('Forbidden', { requestId, status: 403, code: ApiErrorCode.Forbidden });
+  }
+
+  // Conditional on staff_id + status: a manager decision landing between the
+  // read above and this write must win, not be overwritten.
+  const { data: updated, error: updateErr } = await supabaseAdmin
+    .from('time_off_requests')
+    .update({
+      status: 'cancelled',
+      decided_at: new Date().toISOString(),
+      // decided_by stays null: nobody decided this, the employee withdrew it.
+    })
+    .eq('id', idCheck.value!)
+    .eq('property_id', hotelId)
+    .eq('staff_id', staffId)
+    .eq('status', 'pending')
+    .select('*')
+    .maybeSingle();
+  if (updateErr) {
+    log.error('[time-off:DELETE] cancel failed', { requestId, msg: errToString(updateErr) });
+    return err('Failed to cancel the request', { requestId, status: 500, code: ApiErrorCode.InternalError });
+  }
+  if (!updated) {
+    return err('Your manager already answered that request', {
+      requestId, status: 409, code: ApiErrorCode.IdempotencyConflict,
+    });
+  }
+
+  return ok({ request: fromTimeOffRequestRow(updated) }, { requestId });
 }
 
 export async function PUT(req: NextRequest) {

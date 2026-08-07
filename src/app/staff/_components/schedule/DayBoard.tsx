@@ -7,6 +7,11 @@
 // resize (min 60min). Every gesture pushes one undo snapshot at
 // pointer-down and persists once at pointer-up.
 //
+// Open shifts (nobody assigned yet) sit at the top of their department's lane
+// as dashed rows. They are deliberately not draggable: they are one row each,
+// written straight through /api/staff-schedule/shifts, so tapping opens the
+// editor rather than joining the drag/undo machinery.
+//
 // Entrance/exit animations run imperatively via the Web Animations API so
 // React re-renders can't disturb them; both respect prefers-reduced-motion.
 
@@ -21,6 +26,7 @@ import {
 import { propertyLocalClockMinutes } from '@/lib/schedule/local-date';
 import { T, fonts, deptMeta, Caps, type DeptKey } from '../_tokens';
 import { Avatar } from '../_people';
+import type { OpenShift } from './useScheduleData';
 
 const GUT = 124;
 const ROW_H = 34;
@@ -41,10 +47,13 @@ export function useReducedMotion(): boolean {
 }
 
 export function DayBoard({
-  shifts, presets, isToday, lang, nameOf, otTitles,
-  timezone, readOnlyStaffIds, onUpdate, onGestureStart, onGestureEnd, onRemove, onTapShift,
+  shifts, openShifts, presets, isToday, lang, nameOf, otTitles,
+  timezone, readOnlyStaffIds, onUpdate, onGestureStart, onGestureEnd, onRemove,
+  onTapShift, onTapOpenShift,
 }: {
   shifts: BoardShift[];
+  /** Unfilled slots on this day. Rendered, never counted as coverage. */
+  openShifts: OpenShift[];
   presets: ShiftPreset[];
   isToday: boolean;
   lang: 'en' | 'es';
@@ -63,11 +72,15 @@ export function DayBoard({
   onRemove: (id: string) => void;
   /** Tap (pointer down+up without movement) → open the exact-times editor. */
   onTapShift: (id: string) => void;
+  /** Tap an open slot → edit its times or retract it. */
+  onTapOpenShift: (id: string) => void;
 }) {
   const [hoverLane, setHoverLane] = useState<DeptKey | null>(null);
   const reducedMotion = useReducedMotion();
 
-  const { start: rangeStart, end: rangeEnd } = boardRange(shifts);
+  // Open slots widen the visible window too, or a 22:00 hole would be drawn
+  // off the end of the track.
+  const { start: rangeStart, end: rangeEnd } = boardRange([...shifts, ...openShifts]);
   const span = rangeEnd - rangeStart;
   const ticks = boardTicks(rangeStart, rangeEnd);
 
@@ -81,7 +94,7 @@ export function DayBoard({
   }, [isToday, timezone]);
 
   const lanes: DeptKey[] = ['housekeeping', 'front_desk', 'maintenance'];
-  if (shifts.some(s => s.dept === 'other')) lanes.push('other');
+  if (shifts.some(s => s.dept === 'other') || openShifts.some(o => o.dept === 'other')) lanes.push('other');
 
   return (
     <div style={{ padding: '14px 22px 18px' }}>
@@ -101,6 +114,7 @@ export function DayBoard({
       {lanes.map((dep, di) => {
         const m = deptMeta[dep];
         const list = shifts.filter(s => s.dept === dep);
+        const openList = openShifts.filter(o => o.dept === dep);
         const hot = hoverLane === dep;
         return (
           <div key={dep} data-lane={dep} style={{
@@ -113,6 +127,13 @@ export function DayBoard({
             <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 6, marginLeft: 2 }}>
               <span style={{ width: 6, height: 6, borderRadius: '50%', background: m.tone }}/>
               <Caps size={9} c={T.ink2}>{m.label} · {list.length}</Caps>
+              {openList.length > 0 && (
+                <span style={{
+                  fontFamily: fonts.mono, fontSize: 8.5, fontWeight: 700,
+                  color: T.caramelDeep, letterSpacing: '0.06em',
+                  border: `1px dashed ${T.caramelDeep}`, borderRadius: 999, padding: '1px 6px',
+                }}>{openList.length} {'OPEN'}</span>
+              )}
               {hot && (
                 <span style={{
                   fontFamily: fonts.mono, fontSize: 8.5, fontWeight: 700,
@@ -120,6 +141,16 @@ export function DayBoard({
                 }}>{'← DROP HERE'}</span>
               )}
             </div>
+
+            {openList.map(op => (
+              <OpenShiftRow
+                key={op.id}
+                op={op}
+                rangeStart={rangeStart} span={span} ticks={ticks}
+                nowMin={isToday ? nowMin : null}
+                onTap={onTapOpenShift}
+              />
+            ))}
 
             {list.map(sh => (
               <ShiftRow
@@ -141,7 +172,7 @@ export function DayBoard({
               />
             ))}
 
-            {list.length === 0 && (
+            {list.length === 0 && openList.length === 0 && (
               <div style={{ display: 'flex', alignItems: 'center', height: 30 }}>
                 <div style={{ width: GUT, flexShrink: 0 }}/>
                 <span style={{ fontFamily: fonts.mono, fontSize: 10, color: T.ink3, letterSpacing: '0.03em' }}>
@@ -152,6 +183,84 @@ export function DayBoard({
           </div>
         );
       })}
+    </div>
+  );
+}
+
+// ── One open (unstaffed) slot ─────────────────────────────────────────────
+// Dashed everywhere, so a hole in coverage can never be mistaken at a glance
+// for a filled shift. Mirrors the housekeeping board's "Unassigned" idea.
+function OpenShiftRow({
+  op, rangeStart, span, ticks, nowMin, onTap,
+}: {
+  op: OpenShift;
+  rangeStart: number;
+  span: number;
+  ticks: number[];
+  nowMin: number | null;
+  onTap: (id: string) => void;
+}) {
+  const left = ((op.startMin - rangeStart) / span) * 100;
+  const width = ((Math.min(op.endMin, rangeStart + span) - op.startMin) / span) * 100;
+  const title = [
+    'Open shift, nobody assigned yet',
+    op.reason,
+    op.note,
+    op.visibleToStaff ? null : 'Not visible to staff yet',
+  ].filter(Boolean).join(' · ');
+
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', height: ROW_H }}>
+      <div style={{ width: GUT, flexShrink: 0, display: 'flex', alignItems: 'center', gap: 6, paddingRight: 10 }}>
+        <span aria-hidden="true" style={{
+          width: 20, height: 20, borderRadius: '50%', flexShrink: 0,
+          border: `1px dashed ${T.caramelDeep}`, color: T.caramelDeep,
+          display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+          fontFamily: fonts.sans, fontSize: 11, fontWeight: 700,
+        }}>?</span>
+        <span style={{
+          fontSize: 12, fontWeight: 600, color: T.caramelDeep, minWidth: 0,
+          whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
+        }}>{'Open'}</span>
+      </div>
+      <div style={{ position: 'relative', flex: 1, height: '100%' }}>
+        {ticks.map(m => {
+          const l = ((m - rangeStart) / span) * 100;
+          return <span key={m} style={{ position: 'absolute', left: `${l}%`, top: 0, bottom: 0, width: 1, background: T.ruleSoft }}/>;
+        })}
+        {nowMin != null && nowMin >= rangeStart && nowMin <= rangeStart + span && (
+          <span style={{
+            position: 'absolute', left: `${((nowMin - rangeStart) / span) * 100}%`,
+            top: 0, bottom: 0, width: 2, background: T.warm, opacity: 0.5, borderRadius: 2,
+          }}/>
+        )}
+        <button
+          type="button"
+          onClick={() => onTap(op.id)}
+          title={title}
+          style={{
+            position: 'absolute', top: 4, height: 26, left: `${left}%`, width: `${width}%`,
+            borderRadius: 8, background: 'rgba(201,150,68,0.08)',
+            border: `1px dashed ${T.caramelDeep}`, cursor: 'pointer',
+            display: 'flex', alignItems: 'center', gap: 7, padding: '0 8px',
+            overflow: 'hidden', boxSizing: 'border-box', textAlign: 'left',
+          }}
+        >
+          <span style={{
+            fontSize: 11.5, fontWeight: 600, color: T.caramelDeep,
+            whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
+          }}>{'Open shift'}</span>
+          {op.note && (
+            <span aria-hidden="true" style={{
+              width: 5, height: 5, borderRadius: '50%', background: T.caramel, flexShrink: 0,
+            }}/>
+          )}
+          <span style={{
+            marginLeft: 'auto', fontFamily: fonts.mono, fontSize: 9.5,
+            color: T.caramelDeep, whiteSpace: 'nowrap',
+          }}>{fmtMinRange(op.startMin, op.endMin)}</span>
+        </button>
+      </div>
     </div>
   );
 }
