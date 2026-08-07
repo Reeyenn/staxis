@@ -400,3 +400,7 @@ begin
   return case when tg_op = 'DELETE' then old else new end;
 end
 $$;
+
+insert into public.applied_migrations (version, description)
+values ('0465', 'the audit trigger stops naming the 0463 generated cents mirrors in changedFields: to_jsonb row diffs now subtract unit_cost_cents, opening_adjustment_unit_cost_cents and delivery_baseline_unit_cost_cents on public.inventory, so an item history entry names each real edit once instead of twice. Function restated verbatim from 0326 otherwise. No table, index, RLS or grant changes.')
+on conflict (version) do nothing;
