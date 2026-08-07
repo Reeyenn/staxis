@@ -17,6 +17,7 @@ import { Wrench } from 'lucide-react';
 import { useAuth } from '@/contexts/AuthContext';
 import { useProperty } from '@/contexts/PropertyContext';
 import { useLang } from '@/contexts/LanguageContext';
+import { useActiveHotelStanding, useCan } from '@/lib/capabilities/useCan';
 import {
   subscribeToPreventiveTasks, addPreventiveTask, completePreventiveTask, updatePreventiveTask,
 } from '@/lib/db';
@@ -234,7 +235,7 @@ function NewTaskModal({
 
 // ── editable task detail modal ───────────────────────────────────────────────
 function TaskModal({
-  task, open, onClose, onSave, onCompleteToday, onCalled, propertyId,
+  task, open, onClose, onSave, onCompleteToday, onCalled, propertyId, canEdit,
 }: {
   task: PreventiveTask | null;
   open: boolean;
@@ -243,6 +244,8 @@ function TaskModal({
   onCompleteToday: (id: string, args: { frequencyDays: number; notes: string }) => Promise<void>;
   onCalled: (id: string) => Promise<void>;
   propertyId: string | null;
+  /** Whether this viewer may change upkeep schedules at this hotel. */
+  canEdit: boolean;
 }) {
   const { lang } = useLang();
   const es = false;
@@ -266,10 +269,14 @@ function TaskModal({
 
   if (!task) return null;
 
-  const { freqDays, lastDate, nextDue } = cadenceFrom(count, unit, last);
+  const { n, freqDays, lastDate, nextDue } = cadenceFrom(count, unit, last);
   const du = daysBetween(new Date(), nextDue);
   const band: Band = du < 0 ? 'overdue' : du <= 30 ? 'soon' : 'upcoming';
   const meta = BAND[band];
+  // Same guard the create form uses. An emptied or zeroed frequency box falls
+  // through cadenceFrom's Math.max(1, n), so saving it would quietly turn
+  // "every 6 months" into "every 1 month" and start nagging five months early.
+  const canSave = canEdit && n > 0 && !busy;
 
   const save = async () => {
     setBusy(true);
@@ -310,13 +317,13 @@ function TaskModal({
         {/* Only offered on a task that is actually late. On one that is not yet
             due there is nothing to have called anybody about, and a button that
             silences a card which does not exist would be a trap. */}
-        {isLate && !task.calledAt && (
+        {canEdit && isLate && !task.calledAt && (
           <Btn variant="ghost" disabled={busy} onClick={called}>
             {busy ? '…' : ("Somebody's been called")}
           </Btn>
         )}
-        <Btn variant="sage" disabled={busy} onClick={completeToday}>{busy ? '…' : ('✓ Done today')}</Btn>
-        <Btn variant="primary" disabled={busy} onClick={save}>{busy ? '…' : ('Save changes')}</Btn>
+        {canEdit && <Btn variant="sage" disabled={!canSave} onClick={completeToday}>{busy ? '…' : ('✓ Done today')}</Btn>}
+        {canEdit && <Btn variant="primary" disabled={!canSave} onClick={save}>{busy ? '…' : ('Save changes')}</Btn>}
       </>}
     >
       <div style={{ display: 'flex', flexDirection: 'column', gap: 18 }}>
@@ -324,6 +331,16 @@ function TaskModal({
           <Pill tone={meta.tone}>{meta.en}</Pill>
           <Caps size={11} tracking="0.06em">{'Next due'} {fmtDate(nextDue)} · {relDue(du)}</Caps>
         </div>
+
+        {!canEdit && (
+          <div style={{
+            background: 'rgba(31,35,28,0.03)', border: `1px solid ${T.rule}`,
+            borderRadius: 12, padding: '12px 14px', fontFamily: FONT_SANS,
+            fontSize: 13, color: T.ink2, lineHeight: 1.45,
+          }}>
+            {'This is view only. Ask a manager to change the schedule or mark it done.'}
+          </div>
+        )}
 
         {/* On the THING, not the tab: this modal is one upkeep schedule, so the
             signpost to its card in the Staxis queue belongs here and nowhere on
@@ -353,12 +370,30 @@ function TaskModal({
   );
 }
 
+// Every write on this board lands in preventive_tasks, whose insert/update/
+// delete policies all require staxis_user_can_manage_equipment (0334). An
+// insufficient-privilege refusal is not a dropped connection, so don't tell the
+// user to check their connection about it.
+function writeFailureMessage(e: unknown, fallback: string): string {
+  const code = String((e as { code?: string } | null)?.code ?? '');
+  return code === '42501'
+    ? "You don't have permission to change upkeep schedules."
+    : fallback;
+}
+
 // ── root ─────────────────────────────────────────────────────────────────────
 export function PreventiveTab() {
   const { user } = useAuth();
   const { activePropertyId } = useProperty();
   const { lang } = useLang();
   const es = false;
+  // The capability overrides answer whether this role may change upkeep
+  // schedules; the normalized standing separately answers whether this viewer
+  // may mutate this hotel at all. Both have to hold, because the database
+  // policy behind every button below checks the same thing.
+  const hotelStanding = useActiveHotelStanding();
+  const can = useCan();
+  const canEdit = hotelStanding.ready && hotelStanding.hotelMutationAllowed && can('manage_equipment');
 
   const [tasks, setTasks] = useState<PreventiveTask[]>([]);
   const [loaded, setLoaded] = useState(false);
@@ -401,7 +436,7 @@ export function PreventiveTab() {
         equipmentId: null,
       });
     } catch (err) {
-      flash("Couldn't add the task. Check your connection and try again.");
+      flash(writeFailureMessage(err, "Couldn't add the task. Check your connection and try again."));
       throw err;
     }
   };
@@ -410,7 +445,11 @@ export function PreventiveTab() {
     if (!user || !activePropertyId) return;
     const patch: Partial<PreventiveTask> = {
       frequencyDays: args.frequencyDays,
-      notes: args.notes || undefined,
+      // Send the emptied box as an empty string, NOT undefined. toPreventiveRow
+      // drops undefined keys, so `|| undefined` left the notes column out of the
+      // UPDATE entirely and a deleted note came straight back on the next
+      // refetch — the manager replaced a filter spec and the old one survived.
+      notes: args.notes,
     };
     // Null = the date field was left empty ("never completed") — leave
     // last_completed_at alone rather than fabricating a completion.
@@ -418,7 +457,7 @@ export function PreventiveTab() {
     try {
       await updatePreventiveTask(user.uid, activePropertyId, id, patch);
     } catch (err) {
-      flash("Couldn't save the changes. Check your connection and try again.");
+      flash(writeFailureMessage(err, "Couldn't save the changes. Check your connection and try again."));
       throw err;
     }
   };
@@ -430,11 +469,13 @@ export function PreventiveTab() {
     if (!user || !activePropertyId) return;
     try {
       if (edits) {
-        await updatePreventiveTask(user.uid, activePropertyId, id, { frequencyDays: edits.frequencyDays, notes: edits.notes || undefined });
+        // Empty string, not undefined — see handleSave on why `|| undefined`
+        // silently discarded a cleared note.
+        await updatePreventiveTask(user.uid, activePropertyId, id, { frequencyDays: edits.frequencyDays, notes: edits.notes });
       }
       await completePreventiveTask(id, { completedISO: new Date().toISOString(), completedByName: user.displayName });
     } catch (err) {
-      flash("Couldn't mark it done. Check your connection and try again.");
+      flash(writeFailureMessage(err, "Couldn't mark it done. Check your connection and try again."));
       throw err;
     }
   };
@@ -449,7 +490,7 @@ export function PreventiveTab() {
         calledBy: user.displayName,
       });
     } catch (err) {
-      flash("Couldn't save that. Check your connection and try again.");
+      flash(writeFailureMessage(err, "Couldn't save that. Check your connection and try again."));
       throw err;
     }
   };
@@ -469,7 +510,7 @@ export function PreventiveTab() {
             {/* This opens the asset registry, distinct from the storeroom board. */}
             <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}><Wrench size={14} /> {'Equipment assets'}</span>
           </Btn>
-          <Btn variant="primary" onClick={() => setNewOpen(true)}>＋ {'New task'}</Btn>
+          {canEdit && <Btn variant="primary" onClick={() => setNewOpen(true)}>＋ {'New task'}</Btn>}
         </>}
       />
 
@@ -481,7 +522,7 @@ export function PreventiveTab() {
         <MtEmptyCard
           title={'No preventive tasks yet.'}
           body={'Inspections, filter swaps, fire-extinguisher checks, anything on a recurring schedule.'}
-          action={<Btn variant="primary" onClick={() => setNewOpen(true)}>＋ {'Add your first task'}</Btn>}
+          action={canEdit ? <Btn variant="primary" onClick={() => setNewOpen(true)}>＋ {'Add your first task'}</Btn> : undefined}
         />
       ) : (
         <CenteredBoard>
@@ -517,7 +558,7 @@ export function PreventiveTab() {
                       )}
                       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, marginTop: 1 }}>
                         <Caps size={10} tracking="0.06em" c={T.ink3}>{'next'} · {fmtDateShort(nextDueDate(t))}</Caps>
-                        <Btn variant={b === 'upcoming' ? 'ghost' : 'sage'} size="sm" onClick={(e) => { e.stopPropagation(); handleCompleteToday(t.id).catch(() => { /* toast shown */ }); }}>✓ {'Done today'}</Btn>
+                        {canEdit && <Btn variant={b === 'upcoming' ? 'ghost' : 'sage'} size="sm" onClick={(e) => { e.stopPropagation(); handleCompleteToday(t.id).catch(() => { /* toast shown */ }); }}>✓ {'Done today'}</Btn>}
                       </div>
                     </BoardCard>
                   );
@@ -532,6 +573,7 @@ export function PreventiveTab() {
       <TaskModal
         task={sel}
         open={!!sel}
+        canEdit={canEdit}
         propertyId={activePropertyId}
         onClose={() => setSelId(null)}
         onSave={handleSave}
