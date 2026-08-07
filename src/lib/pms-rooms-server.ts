@@ -919,9 +919,30 @@ export async function mergePmsRoomsForStaff(
     });
     throw workRes.value.error;
   }
+  // The roster is the THIRD hard requirement, for the same reason as the other
+  // two. Most rooms at a live hotel are matched to a housekeeper by the name the
+  // PMS report printed, and that match is impossible without the roster: an
+  // empty roster silently resolves every name to nobody, so a transient failure
+  // on this one query hands the housekeeper a page with no work on it and no
+  // error. Reading it through the soft `fulfilledData` path made a failed query
+  // indistinguishable from an empty shift — the exact silent-empty shape called
+  // out in CLAUDE.md. Fail loudly; the page keeps its loading state instead of
+  // telling a cleaner there is nothing to clean.
+  if (staffListRes.status === 'rejected') {
+    log.error('[pms-rooms-server] staff-roster-for-staff query rejected', {
+      pid, staffId, msg: String(staffListRes.reason),
+    });
+    throw new Error('staff roster query failed');
+  }
+  if (staffListRes.value.error) {
+    log.error('[pms-rooms-server] staff-roster-for-staff query failed', {
+      pid, staffId, msg: (staffListRes.value.error as { message?: string }).message ?? 'unknown',
+    });
+    throw staffListRes.value.error;
+  }
   const mirrorRows = (assignRes.value.data ?? []) as (MirrorRow & { date: string })[];
   const workRows = (workRes.value.data ?? []) as (WorkRow & { date: string })[];
-  const staffListRows = fulfilledData<StaffNameRow>(staffListRes, 'staff', pid, today);
+  const staffListRows = (staffListRes.value.data ?? []) as StaffNameRow[];
   const staffNameById = new Map(staffListRows.map((s) => [s.id, s.name]));
 
   // 3. Filter to THIS staff member. An explicit assignment (a real staff id a
