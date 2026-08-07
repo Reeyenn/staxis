@@ -884,6 +884,9 @@ export const EXPECTED_MIGRATIONS_STATIC: ReadonlyArray<string> = [
   // "Skip this one" on an upkeep schedule: one occurrence put down without
   // anybody claiming the work happened (preventive_tasks.skipped_at/by).
   '0462',
+  // Integer-cents mirrors of the legacy dollar money columns, derived by
+  // Postgres so the cents and dollars views of a number cannot drift apart.
+  '0463',
 ];
 
 /**

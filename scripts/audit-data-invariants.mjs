@@ -91,6 +91,12 @@ const MONEY_TYPES = /^(numeric|decimal|real|double|float|money)/i;
  * Money-shaped columns that predate DINV-6. This list may SHRINK (fix a column,
  * remove its entry) but must never GROW — src/lib/__tests__/data-invariants.test.ts
  * pins its size. New money columns end in _cents or _usd.
+ *
+ * As of migration 0462 every column below also has an integer-cents mirror
+ * (`<col>_cents`, GENERATED ALWAYS ... STORED). READ the mirror. The dollar
+ * column remains the write target only because the plpgsql in 0312/0322/0324/
+ * 0326 still writes it; when those are converted, the mirrors become plain
+ * columns, the originals are dropped, and entries here disappear with them.
  */
 export const KNOWN_LEGACY_MONEY_COLUMNS = new Set([
   // Inventory + equipment costing (dollars as numeric, pre-DINV-6).
