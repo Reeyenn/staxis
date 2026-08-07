@@ -24,6 +24,7 @@ import { Btn } from '../Btn';
 import { T, fonts } from '../tokens';
 import { t, type Lang } from '../inv-i18n';
 import { readEnvelope } from '@/lib/api-envelope';
+import { fetchWithAuth } from '@/lib/api-fetch';
 import { formatCents } from '@/lib/inventory-import/money';
 import { decideAsOfMode, modeSentenceFor } from '@/lib/inventory-import/draft';
 import type { ImportDraft, DraftLine } from '@/lib/inventory-import/draft';
@@ -113,7 +114,7 @@ export default function ImportSheet({ open, onClose, pid, lang, onImported }: Im
   const runRead = useCallback(async (payload: Record<string, unknown>) => {
     setBusy(true); setError(null);
     try {
-      const res = await fetch('/api/inventory/import', {
+      const res = await fetchWithAuth('/api/inventory/import', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ pid, action: 'read', kind, ...payload }),
@@ -184,7 +185,7 @@ export default function ImportSheet({ open, onClose, pid, lang, onImported }: Im
           rooms_available: m.roomsAvailableMonth,
         }));
       }
-      const res = await fetch('/api/inventory/import', {
+      const res = await fetchWithAuth('/api/inventory/import', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body),
@@ -337,7 +338,7 @@ function PastImports({
 
   const load = useCallback(async () => {
     try {
-      const res = await fetch(`/api/inventory/import?pid=${encodeURIComponent(pid)}`, { cache: 'no-store' });
+      const res = await fetchWithAuth(`/api/inventory/import?pid=${encodeURIComponent(pid)}`, { cache: 'no-store' });
       const env = await readEnvelope<{ batches: BatchRow[] }>(res);
       if (env.error !== undefined) { setBatches([]); return; }
       setBatches(env.data.batches);
@@ -351,7 +352,7 @@ function PastImports({
   const remove = useCallback(async (batchId: string) => {
     setBusyId(batchId); setError(null);
     try {
-      const res = await fetch('/api/inventory/import', {
+      const res = await fetchWithAuth('/api/inventory/import', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ pid, action: 'undo', batchId }),

@@ -404,9 +404,71 @@ function ContractorPanel({
   );
 }
 
+// ── cost + asset panel (editable while the order is still open) ─────────────
+//
+// The submit form asks for these at the moment the thing breaks, which is the
+// one moment nobody knows what the repair will cost. Without an editor here the
+// figure could never be recorded, and the asset sheet's "Total repair spend"
+// tile — which sums work_orders.repair_cost per asset — stayed at $0 forever.
+function CostAssetPanel({
+  w, pid, onSave, es,
+}: {
+  w: WorkOrder;
+  pid: string;
+  onSave: (args: { equipmentId: string | null; repairCost: number | null }) => Promise<void>;
+  es: boolean;
+}) {
+  const { lang } = useLang();
+  const [equipmentId, setEquipmentId] = useState<string | null>(w.equipmentId ?? null);
+  const [cost, setCost] = useState(w.repairCost != null ? String(w.repairCost) : '');
+  const [busy, setBusy] = useState(false);
+  const [savedAt, setSavedAt] = useState<number | null>(null);
+
+  // Re-sync when switching to a different order while the modal is mounted.
+  useEffect(() => {
+    setEquipmentId(w.equipmentId ?? null);
+    setCost(w.repairCost != null ? String(w.repairCost) : '');
+    setSavedAt(null);
+  }, [w.id, w.equipmentId, w.repairCost]);
+
+  const typed = cost.trim();
+  const parsed = typed === '' ? null : Number(typed);
+  const costValue = parsed != null && Number.isFinite(parsed) && parsed >= 0 ? parsed : null;
+  const costInvalid = typed !== '' && costValue === null;
+  const dirty = equipmentId !== (w.equipmentId ?? null) || costValue !== (w.repairCost ?? null);
+
+  const save = async () => {
+    setBusy(true);
+    try { await onSave({ equipmentId, repairCost: costValue }); setSavedAt(Date.now()); }
+    catch { /* save failed — the board surfaced a toast; keep the fields editable */ }
+    finally { setBusy(false); }
+  };
+
+  return (
+    <div style={{ background: 'rgba(31,35,28,0.03)', border: `1px solid ${T.rule}`, borderRadius: 12, padding: '14px 16px', display: 'flex', flexDirection: 'column', gap: 12 }}>
+      <Caps size={10} weight={600}>{'Cost and asset'}</Caps>
+      <span style={{ fontFamily: FONT_SANS, fontSize: 12.5, color: T.ink2 }}>
+        {"Fill these in once you know them. The cost lands on the asset's service history."}
+      </span>
+      <Field label={'Equipment'} hint={'The asset this is about'}>
+        <EquipmentPicker pid={pid} value={equipmentId} onChange={setEquipmentId} lang={lang} />
+      </Field>
+      <Field label={'Repair cost ($)'} hint={costInvalid ? 'Enter a number, or leave it empty.' : 'Parts, labor, contractor invoice.'}>
+        <TextInput value={cost} onChange={setCost} type="number" min={0} step="0.01" placeholder="—" />
+      </Field>
+      <div style={{ display: 'flex', justifyContent: 'flex-end', alignItems: 'center', gap: 10 }}>
+        {savedAt && !dirty && <Caps size={10} c={T.sageDeep}>{'Saved'}</Caps>}
+        <Btn variant="sage" size="sm" disabled={busy || !dirty || costInvalid} onClick={save}>
+          {busy ? ('Saving…') : ('Save cost and asset')}
+        </Btn>
+      </div>
+    </div>
+  );
+}
+
 // ── detail modal ────────────────────────────────────────────────────────────
 function DetailModal({
-  w, open, onClose, onDone, onSetPlacement, onAttachPhoto, onSaveContractor,
+  w, open, onClose, onDone, onSetPlacement, onAttachPhoto, onSaveContractor, onSaveCostAsset,
 }: {
   w: WorkOrder | null;
   open: boolean;
@@ -415,6 +477,7 @@ function DetailModal({
   onSetPlacement: (w: WorkOrder, v: Placement) => void;
   onAttachPhoto: (id: string, file: File) => Promise<void>;
   onSaveContractor: (id: string, args: { trade: string; company: string; phone: string }) => Promise<void>;
+  onSaveCostAsset: (id: string, args: { equipmentId: string | null; repairCost: number | null }) => Promise<void>;
 }) {
   const { lang } = useLang();
   const { activePropertyId } = useProperty();
@@ -478,6 +541,10 @@ function DetailModal({
 
         {placement === 'professional' && (
           <ContractorPanel w={w} es={es} onSave={(args) => onSaveContractor(w.id, args)} />
+        )}
+
+        {activePropertyId && (
+          <CostAssetPanel w={w} pid={activePropertyId} es={es} onSave={(args) => onSaveCostAsset(w.id, args)} />
         )}
 
         <div style={{ background: 'rgba(31,35,28,0.03)', border: `1px solid ${T.rule}`, borderRadius: 10, padding: '10px 14px', display: 'flex', alignItems: 'center', gap: 12 }}>
@@ -733,6 +800,22 @@ export function WorkOrdersTab() {
     }
   };
 
+  // Repair cost + the asset link, recorded from the detail modal at close-out.
+  // Both were previously write-once on the submit form, which is why the asset
+  // sheet's repair-spend total could never be filled in.
+  const saveCostAsset = async (id: string, args: { equipmentId: string | null; repairCost: number | null }) => {
+    if (!user || !activePropertyId) return;
+    try {
+      await updateWorkOrder(user.uid, activePropertyId, id, {
+        equipmentId: args.equipmentId,
+        repairCost: args.repairCost,
+      });
+    } catch (err) {
+      flash("Couldn't save the cost. Check your connection and try again.");
+      throw err;
+    }
+  };
+
   const laneItems = (p: Placement) => {
     if (p === 'professional') {
       return open.filter((o) => o.needsPro || hasContractor(o)).sort((a, b) => (a.createdAt?.getTime() ?? 0) - (b.createdAt?.getTime() ?? 0));
@@ -808,6 +891,7 @@ export function WorkOrdersTab() {
         onSetPlacement={setPlacement}
         onAttachPhoto={attachPhoto}
         onSaveContractor={saveContractor}
+        onSaveCostAsset={saveCostAsset}
       />
       <HistoryModal open={historyOpen} onClose={() => setHistoryOpen(false)} done={doneList} es={es} />
 
