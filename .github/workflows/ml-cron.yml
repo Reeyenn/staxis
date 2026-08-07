@@ -400,7 +400,17 @@ jobs:
     # pipeline (backfill prediction_log → per-(property, layer) Wilcoxon →
     # cooldown filter → BH-FDR → execute or dry-run-log). See
     # /api/cron/ml-auto-rollback route header for the full design.
-    if: github.event.schedule == '45 11 * * *' || github.event_name == 'workflow_dispatch'
+    #
+    # THE ROUTE THIS CALLS NO LONGER EXISTS. It was removed with the rest of
+    # the housekeeping ML surface; the job catalog carries it as `retired`,
+    # "referenced API route is no longer present". The job and its history are
+    # kept, as every other parked ML job is, but it must not be reachable:
+    # while `workflow_dispatch` could still start it, EVERY manual run of this
+    # workflow ended red on a 404 from a page that was deleted, which made the
+    # documented way to run the parked ML jobs by hand look broken. Its cron
+    # line above stays commented, so nothing can reach it until somebody puts
+    # the route back and restores the dispatch clause with it.
+    if: github.event.schedule == '45 11 * * *'
     runs-on: ubuntu-latest
     timeout-minutes: 7
     steps:
