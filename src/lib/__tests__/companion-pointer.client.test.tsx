@@ -29,6 +29,7 @@ import React, { act } from 'react';
 import type { Root } from 'react-dom/client';
 
 import { POINTER_DELAY_MS } from '@/lib/companion/pointers';
+import { SCROLL_SETTLE_MS } from '@/components/companion/PointerPopup';
 
 // ─── Load the Supabase browser client BEFORE any fake DOM exists ───────────
 //
@@ -260,6 +261,40 @@ async function click(node: Element): Promise<void> {
 // jsdom has no layout engine and the module mocks `next/navigation`'s pathname
 // through the real hook, so the component is exercised on /inventory as set by
 // the JSDOM url above.
+
+describe('the pointer steps away while the page moves', () => {
+  test('it goes on the first scroll event and comes back once, settled', async (t) => {
+    // Three pieces drawn in fixed coordinates over a control that scrolls
+    // cannot keep up: re-measuring per frame is a frame behind by
+    // construction, and the founder saw all three trailing the composer. So
+    // the assembly is not asked to keep up. It leaves and comes back.
+    await mount(t);
+    assert.ok(popup(), 'nothing was drawn at all');
+    assert.equal(popup()?.getAttribute('data-away'), null, 'it was away before anything moved');
+
+    await act(async () => { window.dispatchEvent(new Event('scroll')); });
+    assert.equal(
+      popup()?.getAttribute('data-away'), 'true',
+      'the pointer stayed on screen while the page moved under it',
+    );
+
+    // A flick is many events. It must not flicker back between them.
+    await act(async () => {
+      t.mock.timers.tick(SCROLL_SETTLE_MS - 20);
+      window.dispatchEvent(new Event('scroll'));
+    });
+    assert.equal(popup()?.getAttribute('data-away'), 'true', 'it came back mid-scroll');
+
+    await act(async () => { t.mock.timers.tick(SCROLL_SETTLE_MS + 20); });
+    await act(async () => { await nextFrames(); });
+    assert.equal(popup()?.getAttribute('data-away'), null, 'it never came back');
+    // And it is a whole pointer again, not a card with no line to anything.
+    assert.ok(
+      popup()?.querySelector('[data-testid="companion-pointer-arrow"]'),
+      'it came back without its arrow',
+    );
+  });
+});
 
 describe('the pointer on a real screen', () => {
   test('it draws, with an arrow, at the control it names', async (t) => {

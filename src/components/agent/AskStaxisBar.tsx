@@ -47,6 +47,7 @@ import { chatIsMountedForRole } from '@/lib/agent/lenses';
 import type { AppRole } from '@/lib/roles';
 import { AssistantMarkdown } from './AssistantMarkdown';
 import { AiActivityButton } from './AiActivityButton';
+import { PeekTail, PEEK_TAIL_CSS } from './PeekTail';
 import { FeedbackButton } from '@/components/layout/FeedbackButton';
 import { useCompanion } from '@/components/companion/useCompanion';
 import { TraceLayer } from '@/components/companion/TraceLayer';
@@ -1391,6 +1392,7 @@ export function AskStaxisBar() {
           ref={noticesRef}
           id="staxis-notices"
           className={`asx-notices asx-notices-${noticesAt.side}`}
+          data-staxis-surface="notices"
           role="dialog"
           aria-label={labels.notices}
           onPointerEnter={cancelHoverClose}
@@ -1475,6 +1477,7 @@ export function AskStaxisBar() {
       {peekVisible && peek && (
         <div
           className={`asx-peek asx-peek-${peekAt.side}${peekStays ? ' asx-peek-live' : ''}`}
+          data-staxis-surface="peek"
           // A pill with no buttons is the panel's own first line said twice, so
           // it stays out of the reading order. A pill WITH buttons is the only
           // place that question is asked, and has to be reachable.
@@ -1489,6 +1492,7 @@ export function AskStaxisBar() {
             ...(peekAt.left !== null ? { left: `${peekAt.left}px` } : {}),
           }}
         >
+          <PeekTail side={peekAt.side} />
           <span className="asx-peek-head">
             <span className={`asx-peek-dot asx-sev-${peek.severity}`} />
             {/* The WHOLE sentence. It used to be one nowrap line with an
@@ -1918,7 +1922,7 @@ const ASX_CSS = `
 .asx-peek-text{font-size:13px;line-height:1.5;color:#FFFFFF;min-width:0;
   display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:4;line-clamp:4;
   overflow:hidden;overflow-wrap:anywhere;}
-
+${PEEK_TAIL_CSS}
 /* ── The panel ───────────────────────────────────────────────────────────── */
 .asx-panel{position:fixed;z-index:60;border-radius:24px;overflow:hidden;
   background:radial-gradient(ellipse 300px 180px at 50% 112%,rgba(92,122,96,.30) 0%,rgba(92,122,96,0) 60%),var(--asx-ink);

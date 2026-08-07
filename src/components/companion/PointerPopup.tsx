@@ -47,10 +47,12 @@ import {
   isOnScreen,
   layoutPointer,
   type PointerGeometry,
+  type TraceRect,
   type TraceViewport,
 } from '@/lib/companion/trace/geometry';
 import {
   anchorSelector,
+  COMPANION_SURFACE_SELECTOR,
   type CompanionAnchorKey,
 } from '@/lib/companion/anchors';
 import type { PointerAnswer, PointerButton } from '@/lib/companion/copy';
@@ -67,6 +69,15 @@ const LIT_ATTR = 'data-staxis-lit';
 /** How long after mount a pointer is still allowed to be looking for its
  *  control. Past this, a control that has not appeared is not coming. */
 const GIVE_UP_AFTER_MS = 1_200;
+
+/**
+ * How long after the last scroll event the pointer waits before it comes back.
+ *
+ * Long enough that a flick's momentum counts as one movement rather than
+ * twenty, short enough that it is back before a reader has finished looking at
+ * where they landed. Exported so the test measures the same number.
+ */
+export const SCROLL_SETTLE_MS = 130;
 
 // ─── Who is lighting what ──────────────────────────────────────────────────
 //
@@ -133,6 +144,10 @@ export function PointerPopup({
   onNoTarget,
 }: PointerPopupProps) {
   const [geometry, setGeometry] = useState<PointerGeometry | null>(null);
+  // Away while the page is moving under it. See the scroll effect below.
+  const [scrolling, setScrolling] = useState(false);
+  const scrollingRef = useRef(false);
+  const settleRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const cardRef = useRef<HTMLDivElement | null>(null);
   const frameRef = useRef<number | null>(null);
   const scrolledRef = useRef(false);
@@ -248,6 +263,20 @@ export function PointerPopup({
       return;
     }
 
+    // Everything the companion has ALREADY put on this page. The pointer may
+    // take a plain to-do row's space when it has to; it may never take one of
+    // these while another side is open. Its own card is inside the portal and
+    // carries no surface attribute, so it can never treat itself as a wall.
+    const obstacles = Array.from(
+      document.querySelectorAll<HTMLElement>(COMPANION_SURFACE_SELECTOR),
+    ).reduce<TraceRect[]>((found, el) => {
+      const r = el.getBoundingClientRect();
+      if (r.width > 0 && r.height > 0) {
+        found.push({ left: r.left, top: r.top, width: r.width, height: r.height });
+      }
+      return found;
+    }, []);
+
     const width = Math.min(POINTER_CARD_WIDTH, viewport.width - EDGE_MARGIN * 2);
     // The NATURAL height, not the drawn one. The card wears the height the
     // geometry gave it as a max, so reading offsetHeight alone would feed a
@@ -258,7 +287,7 @@ export function PointerPopup({
       cardRef.current?.scrollHeight ?? 0,
     );
     const height = measuredHeight > 0 ? measuredHeight : CARD_FALLBACK_HEIGHT;
-    const next = layoutPointer(rect, viewport, { width, height });
+    const next = layoutPointer(rect, viewport, { width, height }, obstacles);
     if (!next) { nothingToPointAt(); return; }
 
     light(node);
@@ -289,9 +318,9 @@ export function PointerPopup({
     };
   }, [measure, reduced]);
 
-  // Re-measure on anything that can move the control. Coalesced into one frame:
-  // a scroll fires this dozens of times a second and a layout per event is how
-  // an overlay becomes the reason a page feels slow.
+  // Re-measure on anything that can move the control WITHOUT the page moving:
+  // the window resizing, the composer growing, a board finishing its load.
+  // Scrolling is deliberately not in here; it has its own effect below.
   useEffect(() => {
     const schedule = () => {
       if (frameRef.current !== null) return;
@@ -300,7 +329,6 @@ export function PointerPopup({
         measure();
       });
     };
-    window.addEventListener('scroll', schedule, true);
     window.addEventListener('resize', schedule);
 
     // Scroll and resize are only the WINDOW moving. Most of what actually
@@ -320,7 +348,6 @@ export function PointerPopup({
     }
 
     return () => {
-      window.removeEventListener('scroll', schedule, true);
       window.removeEventListener('resize', schedule);
       observer?.disconnect();
       if (frameRef.current !== null) {
@@ -332,6 +359,50 @@ export function PointerPopup({
     // is when there is a node worth observing: the first pass often runs
     // before the page has rendered it.
   }, [measure, selector, found]);
+
+  // ── The page moving under it ─────────────────────────────────────────────
+  //
+  // A pointer is three pieces drawn in FIXED coordinates over a control that
+  // scrolls: an outline, a hairline and a card. Re-measuring per frame is a
+  // frame behind by construction, so on a real scroll all three visibly trail
+  // the thing they are about and the whole assembly reads as broken.
+  //
+  // So it does not try to keep up. It steps away the instant the page starts
+  // moving and comes back once, settled, in the right place. Nothing is ever
+  // seen at coordinates that stopped being true, which is the only version of
+  // this that can look right on every machine.
+  //
+  // The CONTROL keeps its ring the whole time: that glow is a box-shadow on
+  // the page's own node, so it travels with the control perfectly and holds
+  // the thread while the floating pieces are away.
+  //
+  // Capture phase, because the scroller is usually an element rather than the
+  // window. setState only on the edges, or a flick would re-render the portal
+  // sixty times a second to say the same thing.
+  useEffect(() => {
+    const onScroll = () => {
+      if (!scrollingRef.current) {
+        scrollingRef.current = true;
+        setScrolling(true);
+      }
+      if (settleRef.current !== null) clearTimeout(settleRef.current);
+      settleRef.current = setTimeout(() => {
+        settleRef.current = null;
+        scrollingRef.current = false;
+        setScrolling(false);
+        measure();
+      }, SCROLL_SETTLE_MS);
+    };
+    window.addEventListener('scroll', onScroll, true);
+    return () => {
+      window.removeEventListener('scroll', onScroll, true);
+      if (settleRef.current !== null) {
+        clearTimeout(settleRef.current);
+        settleRef.current = null;
+      }
+      scrollingRef.current = false;
+    };
+  }, [measure]);
 
   // ── They used the thing ──────────────────────────────────────────────────
   //
@@ -383,7 +454,11 @@ export function PointerPopup({
   const width = Math.min(POINTER_CARD_WIDTH, Math.max(200, viewport.width - EDGE_MARGIN * 2));
 
   return createPortal(
-    <div className={`cpt-root${reduced ? ' cpt-still' : ''}`} data-testid="companion-pointer">
+    <div
+      className={`cpt-root${reduced ? ' cpt-still' : ''}${scrolling ? ' cpt-away' : ''}`}
+      data-testid="companion-pointer"
+      data-away={scrolling ? 'true' : undefined}
+    >
       <style dangerouslySetInnerHTML={{ __html: POINTER_CSS }} />
 
       {geometry && (
@@ -471,6 +546,12 @@ export function PointerPopup({
 // declare, because this IS the companion reaching onto the page.
 
 const POINTER_CSS = `
+/* Away while the page is moving. Instant out, a short fade back once it has
+   settled: a pointer that tries to keep up with a scroll is a frame behind by
+   construction, and three pieces trailing a control read as broken. */
+.cpt-root{transition:opacity .17s ease;}
+.cpt-root.cpt-away{opacity:0;transition:none;}
+.cpt-root.cpt-away .cpt-card{pointer-events:none;}
 .cpt-root{position:fixed;inset:0;z-index:53;pointer-events:none;
   --cpt-ink:#1F231C;--cpt-sage:#5C7A60;--cpt-sage-l:#9EB7A6;--cpt-white:#FCFDFB;
   --cpt-soft:#B9C0B8;--cpt-spring:cubic-bezier(.22,1,.36,1);
@@ -514,8 +595,10 @@ const POINTER_CSS = `
 /* Reduced motion: everything is simply there. The information is identical. */
 .cpt-still .cpt-draw,.cpt-still .cpt-pop,.cpt-still .cpt-card,.cpt-still .cpt-glow{
   animation:cptFade .12s linear both;stroke-dashoffset:0;transform:none;}
+.cpt-still.cpt-root{transition:none;}
 @media (prefers-reduced-motion: reduce){
   .cpt-draw,.cpt-pop,.cpt-card,.cpt-glow{
     animation:cptFade .12s linear both;stroke-dashoffset:0;transform:none;}
+  .cpt-root{transition:none;}
 }
 `;

@@ -253,16 +253,71 @@ const POINTER_INSET = 26;
  */
 export const POINTER_MIN_BAND = 64;
 
+/** Do these two boxes share any area at all? */
+function overlaps(a: TraceRect, b: TraceRect): boolean {
+  return a.left < b.left + b.width && a.left + a.width > b.left
+    && a.top < b.top + b.height && a.top + a.height > b.top;
+}
+
+/** Do these two spans on one axis share any run at all? */
+function spansCross(aFrom: number, aTo: number, bFrom: number, bTo: number): boolean {
+  return aFrom < bTo && aTo > bFrom;
+}
+
+/**
+ * How far the popup may grow in one direction before it hits something.
+ *
+ * The window edge was always a blocker. Companion SURFACES are the ones added
+ * for the founder's rule: the card may take a plain to-do row's space if there
+ * is nowhere else, and may never take another companion surface's while an
+ * alternative exists. So an obstacle standing 40px under the composer makes
+ * the band below 40px deep rather than "the rest of the window", the side
+ * choice moves to the empty band above on its own, and the shrink-to-the-band
+ * rule below handles the case where above is all there is.
+ *
+ * Only obstacles that actually stand in the way count: one beside the card's
+ * column is not between the card and anything.
+ */
+function clearRun(
+  from: number,
+  hardLimit: number,
+  towards: 'forward' | 'back',
+  crossFrom: number,
+  crossTo: number,
+  obstacles: readonly TraceRect[],
+  axis: 'y' | 'x',
+): number {
+  let limit = hardLimit;
+  for (const o of obstacles) {
+    if (!(o.width > 0 && o.height > 0)) continue;
+    const oCrossFrom = axis === 'y' ? o.left : o.top;
+    const oCrossTo = oCrossFrom + (axis === 'y' ? o.width : o.height);
+    if (!spansCross(crossFrom, crossTo, oCrossFrom, oCrossTo)) continue;
+    const oFrom = axis === 'y' ? o.top : o.left;
+    const oTo = oFrom + (axis === 'y' ? o.height : o.width);
+    if (towards === 'forward') {
+      if (oTo <= from) continue;
+      limit = Math.min(limit, oFrom);
+    } else {
+      if (oFrom >= from) continue;
+      limit = Math.max(limit, oTo);
+    }
+  }
+  return towards === 'forward' ? limit - from : from - limit;
+}
+
 /**
  * Where the popup goes and where the line runs.
  *
- * Pure: it is handed a measured control, the window, and how big the popup
- * turned out to be. It reads no DOM and knows no page.
+ * Pure: it is handed a measured control, the window, whatever else on the page
+ * the companion already owns, and how big the popup turned out to be. It reads
+ * no DOM and knows no page.
  */
 export function layoutPointer(
   target: TraceRect,
   viewport: TraceViewport,
   card: PointerCardSize,
+  obstacles: readonly TraceRect[] = [],
 ): PointerGeometry | null {
   // A control that measures as nothing is a control that is not really there.
   if (!(target.width > 0 && target.height > 0)) return null;
@@ -292,11 +347,34 @@ export function layoutPointer(
   // the control and the margin to the window edge are paid for. This, and not
   // the raw room, is how much of the popup can sit there without touching
   // either of them.
+  //
+  // Blockers are the window edge AND anything the companion already put on
+  // this page, so a band that ends at a Staxis-found card is as short as a
+  // band that ends at the bottom of the window, and the side choice below
+  // takes care of the rest without a second rule.
+  //
+  // The cross-axis span each direction is tested against is where the card
+  // would actually be if it went that way: centred on the control and pulled
+  // inside the window. An obstacle beside that column is not in the way.
+  const centeredLeft = clamp(
+    glow.left + glow.width / 2 - width / 2,
+    EDGE_MARGIN,
+    Math.max(EDGE_MARGIN, viewport.width - width - EDGE_MARGIN),
+  );
+  const centeredTop = clamp(
+    glow.top + glow.height / 2 - height / 2,
+    EDGE_MARGIN,
+    Math.max(EDGE_MARGIN, viewport.height - height - EDGE_MARGIN),
+  );
   const band: Record<PointerSide, number> = {
-    below: viewport.height - EDGE_MARGIN - (glowBottom + POINTER_GAP),
-    above: glow.top - POINTER_GAP - EDGE_MARGIN,
-    right: viewport.width - EDGE_MARGIN - (glowRight + POINTER_GAP),
-    left: glow.left - POINTER_GAP - EDGE_MARGIN,
+    below: clearRun(glowBottom, viewport.height - EDGE_MARGIN, 'forward',
+      centeredLeft, centeredLeft + width, obstacles, 'y') - POINTER_GAP,
+    above: clearRun(glow.top, EDGE_MARGIN, 'back',
+      centeredLeft, centeredLeft + width, obstacles, 'y') - POINTER_GAP,
+    right: clearRun(glowRight, viewport.width - EDGE_MARGIN, 'forward',
+      centeredTop, centeredTop + height, obstacles, 'x') - POINTER_GAP,
+    left: clearRun(glow.left, EDGE_MARGIN, 'back',
+      centeredTop, centeredTop + height, obstacles, 'x') - POINTER_GAP,
   };
   const wanted: Record<PointerSide, number> = {
     below: height, above: height, right: width, left: width,

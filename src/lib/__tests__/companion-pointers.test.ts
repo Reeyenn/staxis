@@ -360,6 +360,15 @@ describe('the controls the companion may point at', () => {
 const SCREEN = { width: 1280, height: 800 };
 const CARD = { width: 328, height: 150 };
 
+/** Do these two boxes share any area? */
+function overlapping(
+  a: { left: number; top: number; width: number; height: number },
+  b: { left: number; top: number; width: number; height: number },
+): boolean {
+  return a.left < b.left + b.width && a.left + a.width > b.left
+    && a.top < b.top + b.height && a.top + a.height > b.top;
+}
+
 /** Is (x, y) inside this box? Half a pixel of slack for the rounding. */
 function within(box: { left: number; top: number; width: number; height: number }, x: number, y: number): boolean {
   return x >= box.left - 0.5 && x <= box.left + box.width + 0.5
@@ -483,6 +492,81 @@ describe('the arrow always lands on the control', () => {
           );
         }
       }
+    }
+  });
+
+  test('the popup takes the empty band rather than sitting on a Staxis card', () => {
+    // The founder's screenshot: the first-visit pointer for the composer,
+    // drawn over the "Staxis found" card directly under it. A to-do row is
+    // the hotel's own work and can be leaned on when there is nothing else;
+    // another companion surface never can, because two dark cards on top of
+    // each other is the product arguing with itself in front of somebody.
+    const composer = { left: 80, top: 300, width: 800, height: 52 };
+    // The found card, right under the composer, where the list puts it.
+    const found = { left: 80, top: 376, width: 800, height: 260 };
+
+    const withoutIt = layoutPointer(composer, SCREEN, CARD);
+    assert.ok(withoutIt);
+    assert.equal(withoutIt.side, 'below', 'below is still the first choice when it is free');
+
+    const withIt = layoutPointer(composer, SCREEN, CARD, [found]);
+    assert.ok(withIt);
+    assert.equal(withIt.side, 'above', 'the empty band above the composer');
+    assert.equal(
+      overlapping(withIt.card, found), false,
+      `popup landed on the found card: ${JSON.stringify(withIt.card)}`,
+    );
+    // And it is still pointing at the composer, not merely somewhere else.
+    assert.ok(within(withIt.glow, withIt.head.x, withIt.head.y));
+  });
+
+  test('an obstacle beside the card is not an obstacle', () => {
+    // The rail sits to the right of the lane and never stands between the
+    // composer and the space under it. Treating any surface anywhere as a
+    // wall would push every pointer upward for no reason.
+    const composer = { left: 80, top: 300, width: 500, height: 52 };
+    const rail = { left: 900, top: 300, width: 320, height: 400 };
+    const g = layoutPointer(composer, SCREEN, CARD, [rail]);
+    assert.ok(g);
+    assert.equal(g.side, 'below');
+  });
+
+  test('a surface in the way shortens the band rather than being ignored', () => {
+    // Boxed in on the one list, where the lane is wide enough that sideways is
+    // not a placement: a companion surface above the composer and another
+    // under it. Nothing fits whole, so the popup takes the deeper of the two
+    // bands and gives up height for it rather than covering either one.
+    const control = { left: 240, top: 380, width: 800, height: 44 };
+    const above = { left: 240, top: 120, width: 800, height: 90 };
+    const below = { left: 240, top: 500, width: 800, height: 260 };
+    const g = layoutPointer(control, SCREEN, CARD, [above, below]);
+    assert.ok(g);
+    // Which side it picks is the geometry's business; what it may never do is
+    // land on either surface, and a smaller card is the price it is allowed to
+    // pay for that.
+    assert.equal(overlapping(g.card, above), false, 'covered the surface above');
+    assert.equal(overlapping(g.card, below), false, 'covered the surface below');
+    assert.ok(
+      g.card.width < CARD.width || g.card.height < CARD.height,
+      'it should have given up size for the band rather than kept its full box',
+    );
+    assert.ok(within(g.glow, g.head.x, g.head.y));
+  });
+
+  test('no companion surface anywhere is ever covered when a band is open', () => {
+    // The property, not the example. Sweep the control down a lane with a
+    // Staxis card under it the whole way, which is the shape of the one list.
+    const lane = { left: 240, width: 800 };
+    for (let top = 60; top <= 640; top += 40) {
+      const control = { ...lane, top, height: 52 };
+      const card = { ...lane, top: top + 76, height: 240 };
+      const g = layoutPointer(control, SCREEN, CARD, [card]);
+      assert.ok(g, `no geometry at ${top}`);
+      assert.equal(
+        overlapping(g.card, card), false,
+        `covered the Staxis card with the control at ${top}: `
+        + `${JSON.stringify(g.card)} over ${JSON.stringify(card)}`,
+      );
     }
   });
 

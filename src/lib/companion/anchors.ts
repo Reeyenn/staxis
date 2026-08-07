@@ -45,6 +45,30 @@ import type { CompanionPageKey } from './pages';
  */
 export const COMPANION_ANCHOR_ATTR = 'data-staxis-anchor';
 
+/**
+ * The attribute a surface the COMPANION AUTHORED carries.
+ *
+ * Not a third permission idea and not a styling hook: it is the answer to one
+ * question the pointer has to be able to ask before it picks a side, which is
+ * "is the space I am about to take already something I said?".
+ *
+ * The founder's rule, from a screenshot of the intro pointer sitting on top of
+ * a Staxis-found card: the companion may land on a plain to-do row if there is
+ * nowhere else, and may never land on another companion surface while any
+ * alternative exists. A to-do row is the hotel's own work with a title you can
+ * still read past a card; two dark cards on top of each other is the product
+ * arguing with itself in front of the person it is talking to.
+ *
+ * It goes on the OUTER box of anything Staxis speaks through: the found and
+ * decision cards on the one list, the morning brief, the offer peek beside the
+ * mark, the notices list. Adding it to a new one is one attribute; forgetting
+ * is the pointer treating that surface as empty page.
+ */
+export const COMPANION_SURFACE_ATTR = 'data-staxis-surface';
+
+/** Every companion surface currently on the screen, for the pointer to avoid. */
+export const COMPANION_SURFACE_SELECTOR = `[${COMPANION_SURFACE_ATTR}]`;
+
 export type CompanionAnchorKey =
   | 'inventory-import'
   | 'add-delivery'
