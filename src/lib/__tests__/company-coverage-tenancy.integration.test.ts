@@ -646,4 +646,113 @@ describe('0467 company coverage tenancy', () => {
     });
     assert.equal(allowed.ok, true, JSON.stringify(allowed));
   });
+
+  // ─── A Regional Manager's people-granting power, pinned ──────────────────
+  //
+  // 0468's own header records a suspected defect: that the delegate body "still
+  // tests `staxis_role = 'vp'`, a word 0464 converted out of existence", and so
+  // "the branch letting a Regional Manager hand out viewer-level access has been
+  // silently dead since 0464 applied".
+  //
+  // It is not dead, and these two tests are the receipt. The word `vp` does
+  // survive in `_staxis_company_access_can_delegate_v0381` — the 0383 body that
+  // 0403 preserved under a rename — but 0464 did not wrap that function, it
+  // REPLACED the 0403 wrapper with a self-contained body naming
+  // `regional_manager`, and nothing has called `_v0381` since. The live chain is
+  // `_staxis_company_access_can_delegate` (0468's coverage gate) →
+  // `_staxis_company_access_can_delegate_v0403` (0464's body), and `_v0381` is
+  // unreferenced dead code in both this schema and production.
+  //
+  // These tests exist so nobody has to re-derive that from four migrations
+  // again, and so the capability cannot be quietly narrowed later: they fail
+  // the moment the regional-manager branch is removed, or the moment 0468's
+  // coverage gate stops standing in front of it.
+
+  const narrowMariaTo = async (propertyIds: string[] | null) => {
+    await pg.query(
+      `update public.organization_memberships
+          set covered_property_ids = $3::uuid[]
+        where organization_id = $1 and account_id = $2
+          and membership_scope = 'company' and staxis_role = 'regional_manager'
+          and ended_at is null`,
+      [ORG_A, ACCOUNT_MARIA, propertyIds],
+    );
+  };
+
+  const canDelegateAt = async (
+    actorAccountId: string,
+    profile: string,
+    scope: string,
+    propertyId: string | null,
+  ) => (
+    await pg.query<{ v: boolean }>(
+      `select public._staxis_company_access_can_delegate($1,$2,$3,$4,null,$5) as v`,
+      [actorAccountId, ORG_A, profile, scope, propertyId],
+    )
+  ).rows[0].v;
+
+  test('a Regional Manager hands out viewer access at the hotels their hat covers, and no further', async () => {
+    // Maria's company hat is the Regional Manager one. Asserted, not assumed:
+    // if the fixture ever made her an Owner this test would pass for entirely
+    // the wrong reason and stop guarding anything.
+    assert.deepEqual(
+      (await pg.query<{ staxis_role: string }>(
+        `select staxis_role from public.organization_memberships
+          where organization_id = $1 and account_id = $2
+            and membership_scope = 'company' and ended_at is null`,
+        [ORG_A, ACCOUNT_MARIA],
+      )).rows,
+      [{ staxis_role: 'regional_manager' }],
+    );
+
+    // The control. Frank reaches Beaumont too, on a property front-desk hat and
+    // no company hat at all, and cannot hand anything out there. So a `true`
+    // for Maria below is the regional-manager branch answering, not the
+    // hotel-reach precondition every branch shares.
+    assert.equal(await canDelegateAt(ACCOUNT_FRANK, 'viewer', 'property', PID_A1), false);
+
+    // All-hotels coverage: both hotels the company operates.
+    assert.equal(
+      await canDelegateAt(ACCOUNT_MARIA, 'viewer', 'property', PID_A1),
+      true,
+      'a Regional Manager could not hand out viewer access at all',
+    );
+    assert.equal(await canDelegateAt(ACCOUNT_MARIA, 'viewer', 'property', PID_A2), true);
+
+    await narrowMariaTo([PID_A1]);
+    // Named on Beaumont only: Beaumont yes, Lufkin no. Restoring the capability
+    // must not also widen it.
+    assert.equal(await canDelegateAt(ACCOUNT_MARIA, 'viewer', 'property', PID_A1), true);
+    assert.equal(
+      await canDelegateAt(ACCOUNT_MARIA, 'viewer', 'property', PID_A2),
+      false,
+      'a one-hotel Regional Manager handed out access at a hotel they cannot reach',
+    );
+    await narrowMariaTo(null);
+    assert.equal(await canDelegateAt(ACCOUNT_MARIA, 'viewer', 'property', PID_A2), true);
+  });
+
+  test('a subset Regional Manager cannot delegate at company scope', async () => {
+    // An organization-scope grant reaches every hotel the company operates,
+    // including the ones a narrowed hat was deliberately not given. The whole
+    // point of 0468's gate, and it has to cover the Regional Manager exactly as
+    // it covers the Owner.
+    assert.equal(await canDelegateAt(ACCOUNT_MARIA, 'viewer', 'organization', null), true);
+
+    await narrowMariaTo([PID_A1]);
+    assert.equal(
+      await canDelegateAt(ACCOUNT_MARIA, 'viewer', 'organization', null),
+      false,
+      'a one-hotel Regional Manager minted a whole-company viewer',
+    );
+    assert.equal(
+      await canDelegateAt(ACCOUNT_MARIA, 'organization_owner', 'organization', null),
+      false,
+    );
+    assert.equal(
+      await canDelegateAt(ACCOUNT_MARIA, 'organization_admin', 'organization', null),
+      false,
+    );
+    await narrowMariaTo(null);
+  });
 });
