@@ -229,8 +229,27 @@ function clearSignedOutBrowserState(): void {
     // Property selection is account-scoped. Never let the next person on a
     // shared front-desk browser probe the previous account's remembered hotel.
     localStorage.removeItem('hotelops-active-property');
+    // The admin account switcher's cached roster of demo people. Names only,
+    // but it belongs to the admin who fetched it, not to whoever signs in next.
+    localStorage.removeItem('staxis.switch-roster.v1');
   } catch {
     // ignore — private browsing / no storage
+  }
+  try {
+    // The cosmetic "you are switched, here is the way back" hint. It carries
+    // no authority (the real return credential is httpOnly and expires on its
+    // own), but leaving it behind would offer the next person at this browser
+    // a button that isn't theirs. On the production domain the cookie is
+    // written against `.getstaxis.com`, and a host-only delete would not match
+    // it, so clear both shapes.
+    const base = 'staxis_switch_hint=; Path=/; Max-Age=0; Expires=Thu, 01 Jan 1970 00:00:00 GMT; SameSite=Strict';
+    document.cookie = base;
+    const host = window.location.hostname.toLowerCase();
+    if (host === 'getstaxis.com' || host.endsWith('.getstaxis.com')) {
+      document.cookie = `${base}; Domain=.getstaxis.com`;
+    }
+  } catch {
+    // ignore — no document in a non-browser context
   }
 }
 
