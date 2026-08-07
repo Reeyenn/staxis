@@ -23,6 +23,23 @@
 // memory, applies the pure reducer from manners.ts, and writes the result. The
 // same reducers the tests exercise are the ones that run.
 //
+// ─── AND WHY THE SENTENCE IS DERIVED HERE TOO ──────────────────────────────
+//
+// The reducers moved and the DECISION did not. `decideCompanionSpeech` and
+// `decideDailyHello` still run in the hook, and this handler used to write the
+// sentence they chose down verbatim: into the thread, and into `activity_log`
+// wearing `source = 'staxis_agent'` and `actor_name = 'Staxis'`. That table is
+// the hotel's purge-exempt audit record, it is rendered and exported, and it is
+// read back into the event sweep's own prompt. Any authenticated account could
+// put any sentence in it under the companion's name.
+//
+// So the browser now reports an INTENT and this handler re-derives the TRUTH:
+// same pure copy producers, from the server's own reads, through
+// `authorizeCompanionEvent`. Nothing the request body carries reaches either
+// table as text. The gates the GET half already applied (the Staxis section
+// switch, and the mount lens that keeps the housekeeping hat away from a
+// companion entirely) apply here as well, which they did not before.
+//
 // ─── WHY THIS DOES NOT USE requireSectionEnabled ───────────────────────────
 //
 // That helper 403s when a hotel has Staxis switched off, and a 403 is the wrong
@@ -44,7 +61,7 @@ import {
   rateLimitedResponse,
   hashToRateLimitKey,
 } from '@/lib/api-ratelimit';
-import { readFeedPrefs, writeFeedPrefs } from '@/lib/feed/prefs';
+import { readFeedPrefs, readFeedPrefsChecked, writeFeedPrefs } from '@/lib/feed/prefs';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { propertyLocalHour, propertyLocalToday } from '@/lib/schedule/local-date';
 import { isSectionEnabled, normalizeSectionFlags } from '@/lib/sections/registry';
@@ -52,16 +69,21 @@ import { chatIsMountedForRole } from '@/lib/agent/lenses';
 import { isValidRole, type AppRole } from '@/lib/roles';
 import { validateString } from '@/lib/api-validate';
 import { buildCompanionCandidates } from '@/lib/companion/candidates';
-import type { CompanionCandidate } from '@/lib/companion/manners';
+import {
+  authorizeCompanionEvent,
+  isSpeakingEvent,
+  spokenTopicIsOfferable,
+} from '@/lib/companion/authority';
+import { isTraceTopic, traceCandidate, type TracePattern } from '@/lib/companion/trace';
+import { buildTracePatterns } from '@/lib/companion/trace/server';
+import { decideNoticeAnnouncement } from '@/lib/companion/notices';
 import {
   appendCompanionOffer,
   ensureCompanionConversation,
   stampCompanionOffer,
 } from '@/lib/agent/memory';
 import {
-  COMPANION_OFFER_KINDS,
   OFFER_TEXT_MAX,
-  offerIsJournalable,
   type CompanionOffer,
   type CompanionOfferAnswer,
   type CompanionOfferKind,
@@ -90,6 +112,7 @@ import {
   rememberTourTaken,
   rememberWelcomed,
   COMPOSER_TAUGHT_TODO_REPEAT,
+  type CompanionCandidate,
   type CompanionMemory,
   type TaughtKey,
 } from '@/lib/companion/manners';
@@ -257,10 +280,111 @@ const EVENTS: readonly CompanionEvent[] = [
   'notices_announced', 'notices_seen',
 ];
 
-/** An ISO instant off a request body, or null. Never trusted as a Date. */
-function readInstant(value: unknown): string | null {
-  if (typeof value !== 'string' || value.length < 10 || value.length > 40) return null;
-  return Number.isNaN(Date.parse(value)) ? null : value;
+// ─── The server's own reads, for the server's own sentence ─────────────────
+//
+// Everything `authorizeCompanionEvent` needs that is not already in hand. The
+// same two builders the GET half uses, so a sentence derived on a write is the
+// sentence the read would have produced.
+
+/**
+ * Every topic the companion could be speaking about, in the hook's own order.
+ *
+ * Traces lead, exactly as they do in the browser, and they are only built when
+ * the topic in hand is one of theirs: they are three extra reads and every
+ * other event resolves without them.
+ *
+ * `page: 'staxis'` is the SUPERSET of detectors on purpose. Which screen
+ * somebody was on when the sentence appeared is the browser's word, and the
+ * only thing it could change here is which patterns the server can find, so the
+ * server looks for all of them. The role gate inside `buildTracePatterns` is
+ * untouched and is what keeps the attendance detector to managers.
+ */
+async function serverCandidates(opts: {
+  propertyId: string;
+  role: AppRole;
+  hotelMutationAllowed: boolean;
+  accountId: string;
+  today: string;
+  timezone: string | null;
+  includeTraces: boolean;
+  now: Date;
+}): Promise<CompanionCandidate[]> {
+  const [findings, traces] = await Promise.all([
+    buildCompanionCandidates({
+      propertyId: opts.propertyId,
+      role: opts.role,
+      hotelMutationAllowed: opts.hotelMutationAllowed,
+      accountId: opts.accountId,
+      today: opts.today,
+      timezone: opts.timezone,
+    }).catch((): CompanionCandidate[] => []),
+    opts.includeTraces
+      ? buildTracePatterns({
+        propertyId: opts.propertyId, page: 'staxis', role: opts.role, now: opts.now,
+      }).catch((): TracePattern[] => [])
+      : Promise.resolve<TracePattern[]>([]),
+  ]);
+  return [...traces.map(traceCandidate), ...findings];
+}
+
+/**
+ * The notices line this person is actually owed, the cursor that spends it, and
+ * whether the batch leaves a job nobody has taken.
+ *
+ * The line and the cursor both used to arrive in the request body. The sentence
+ * went into the hotel's timeline verbatim; the cursor is monotonic, so a forged
+ * one could only move FORWARD, which is the direction that silently marks a
+ * colleague's handover as already announced and never says the line at all.
+ *
+ * `hasRefusal` rides along rather than being read again by `deriveReplies`,
+ * which is what main's `noticesIncludeRefusal` did: the same list, loaded twice
+ * in one request, with the sentence built from one copy and the buttons under
+ * it built from the other.
+ */
+interface ServerAnnouncement {
+  line: string;
+  through: string;
+  /** Drives the notices vocabulary. See repliesFor({ kind: 'notices' }). */
+  hasRefusal: boolean;
+}
+
+async function serverAnnouncement(opts: {
+  propertyId: string;
+  staffId: string | null;
+  memory: CompanionMemory;
+  today: string;
+  now: Date;
+  requestId: string;
+}): Promise<ServerAnnouncement | null> {
+  if (!opts.staffId) return null;
+  try {
+    const notices = await loadAssignmentNotices({
+      propertyId: opts.propertyId, staffId: opts.staffId, now: opts.now,
+    });
+    const decision = decideNoticeAnnouncement({
+      notices,
+      announcedThrough: opts.memory.noticesAnnouncedThrough,
+      today: opts.today,
+      // The three session facts are the browser's and cannot be re-derived
+      // here. Each of them can only ever SUPPRESS a line, and this path is
+      // reached because the browser already decided to say one, so passing the
+      // permissive value cannot make the companion louder than it was.
+      userIsBusy: false,
+      quietThisSession: false,
+      aiAwake: true,
+    });
+    if (!decision.announce) return null;
+    return {
+      line: decision.line,
+      through: decision.through,
+      hasRefusal: notices.some((n) => n.kind === 'refused'),
+    };
+  } catch (e) {
+    log.warn('[companion] notices read failed; nothing is announced', {
+      requestId: opts.requestId, pid: opts.propertyId, err: errToString(e),
+    });
+    return null;
+  }
 }
 
 // ─── The offer half ─────────────────────────────────────────────────────────
@@ -278,48 +402,68 @@ function readInstant(value: unknown): string | null {
 // that decides which answers reach the ledger, so a dismissal counts once, a
 // yes forgives, and an expiry counts for nothing.
 
-/** `spoke` may carry a sentence to write down. Everything here is optional. */
-interface OfferSpeech {
-  kind: CompanionOfferKind;
-  text: string;
+/**
+ * The half of a speaking event that is still the browser's to report.
+ *
+ * NOT THE SENTENCE. `text` is read for one bit of information only — whether a
+ * sentence was put in front of somebody at all — because the same `welcomed`
+ * event is posted both by a welcome a person read and by the silent stamp the
+ * setup wizard's guard produces, and nothing on the server can tell those
+ * apart. What the sentence SAID is re-derived in `authorizeCompanionEvent` from
+ * the server's own reads and never from this body.
+ *
+ * The rest is presentation on a message in the caller's own thread: which
+ * screen a Yes walks to. Bounded, and outside the hotel's timeline entirely.
+ */
+interface OfferEnvelope {
+  /** A sentence was shown. See above: this is a claim about an act, not text. */
+  claimed: boolean;
   page: string | null;
   conversationId: string | null;
 }
 
 /**
- * Read the offer half of a POST body, or null when there is none.
+ * Read the offer half of a POST body.
  *
- * ─── WHAT THIS DELIBERATELY NO LONGER READS: `actions` ─────────────────────
+ * ─── WHAT THIS DELIBERATELY NO LONGER READS ────────────────────────────────
  *
- * It used to take the buttons straight off the request body, store them on the
- * row, and hand them back for the browser to render. That was harmless while
- * every button was "yes" or "no thanks". It stopped being harmless the moment a
- * reply could record a verdict or run a frozen plan: a hand-rolled POST could
- * then put any label it liked on any intent it liked, and the peek would render
- * it as something Staxis had said.
+ * `actions`, and the sentence itself. Two separate holes in the same wall,
+ * closed from two directions, and the wall only stands with both:
  *
- * So the reply set is now DERIVED ON THE SERVER, from the topic and the kind,
- * by `deriveReplies` below. The body still names the topic and the kind, and
- * both are already bounded closed values; what it can no longer do is author a
- * label, an id, a verdict, an action, or a destination.
+ *   THE BUTTONS. They used to come straight off the request body, get stored on
+ *   the row, and get handed back for the browser to render. Harmless while every
+ *   button was "yes" or "no thanks"; not harmless the moment a reply could
+ *   record a verdict or run a frozen plan, because a hand-rolled POST could then
+ *   put any label it liked on any intent it liked and the peek would render it
+ *   as something Staxis had said. The reply set is now built by `deriveReplies`
+ *   below, on this side of the wire.
  *
- * Returns null rather than erroring on a malformed shape: the memory event is
- * the load-bearing half of this request and must not fail because a browser
- * sent a sentence that was too long. A sentence we cannot store is a sentence
- * that stays ephemeral, which is exactly what it was before.
+ *   THE SENTENCE. It used to be stored verbatim, in the thread AND in
+ *   `activity_log` under `actor_name = 'Staxis'` — the hotel's purge-exempt
+ *   audit record, which is rendered, exported, and read back into the event
+ *   sweep's own prompt. It is now derived by `authorizeCompanionEvent` from the
+ *   server's own reads, and `text` is consulted here for ONE bit: whether
+ *   anything was put in front of a person at all.
+ *
+ * What is left is a screen key and a thread id. Nothing this returns can author
+ * a label, an id, a verdict, an action, a destination or a word.
+ *
+ * Never errors on a malformed shape: the memory event is the load-bearing half
+ * of this request and must not fail because a browser sent a sentence that was
+ * too long. A sentence we cannot account for is a sentence that stays
+ * ephemeral, which is exactly what it was before.
  */
-function readOfferSpeech(body: Record<string, unknown>): OfferSpeech | null {
+function readOfferEnvelope(body: Record<string, unknown>): OfferEnvelope {
   const text = typeof body.text === 'string' ? body.text.replace(/\s+/g, ' ').trim() : '';
-  if (!text || text.length > OFFER_TEXT_MAX) return null;
-  const kind = COMPANION_OFFER_KINDS.includes(body.kind as CompanionOfferKind)
-    ? (body.kind as CompanionOfferKind)
-    : null;
-  if (!kind) return null;
   const page = typeof body.page === 'string' && body.page.length > 0 && body.page.length <= 40
     ? body.page
     : null;
   const conversationId = typeof body.conversationId === 'string' ? body.conversationId : null;
-  return { kind, text, page, conversationId };
+  return {
+    claimed: text.length > 0 && text.length <= OFFER_TEXT_MAX,
+    page,
+    conversationId,
+  };
 }
 
 /**
@@ -340,25 +484,35 @@ function readOfferSpeech(body: Record<string, unknown>): OfferSpeech | null {
  *      an unanswerable sentence in the thread is a smaller failure than a
  *      button whose meaning nobody can account for.
  *
- * `kind` comes off the body and is worth being precise about: it is a closed
- * enum, and all it selects is WHICH code-owned table is read. A forged kind can
- * make a turn carry the wrong table's buttons; it cannot make one carry a label
- * or an id nothing here wrote.
+ * ─── PURE, AND FED FROM THE ONE SET OF READS THIS REQUEST ALREADY DID ──────
+ *
+ * It used to rebuild the candidate list itself, and count it itself, and load
+ * the notices itself. The handler above already does all three to derive the
+ * SENTENCE, and two independent builds of the same list is how a hello that
+ * says "2 things are waiting on you" ends up beside a button that thinks
+ * nothing is. One build, one count, one notices read, handed in.
+ *
+ * ─── AND `kind` NO LONGER COMES OFF THE BODY ───────────────────────────────
+ *
+ * `authorizeCompanionEvent` derives it: pinned per event for the three that
+ * have only one, and for `spoke` taken from the candidate's own sensitivity, so
+ * anything about a named person is a `panel_ask` whatever the request called
+ * it. Main's note here said a forged kind could still make a turn carry the
+ * wrong table's buttons. It cannot any more, because there is no forged kind.
  */
-async function deriveReplies(input: {
+function deriveReplies(input: {
   event: CompanionEvent;
+  /** From `authorizeCompanionEvent`, never from the body. */
   kind: CompanionOfferKind;
   topic: string;
-  propertyId: string;
-  accountId: string;
-  staffId: string | null;
   role: AppRole;
-  hotelMutationAllowed: boolean;
   enabledSections: unknown;
-  today: string;
-  timezone: string | null;
-  now: Date;
-}): Promise<CompanionReply[]> {
+  /** The list the sentence was derived from. Empty for the events that need
+   *  none, which are exactly the events that never look at it. */
+  candidates: readonly CompanionCandidate[];
+  /** Whether this person's own notices leave a job nobody has taken. */
+  noticesHaveRefusal: boolean;
+}): CompanionReply[] {
   const sectionCtx = {
     role: input.role,
     enabledSections: normalizeSectionFlags(input.enabledSections),
@@ -371,14 +525,14 @@ async function deriveReplies(input: {
 
   if (input.event === 'greeted') {
     // The hello only grows a way in when something is genuinely waiting, and
-    // "genuinely" means counted here rather than claimed by the browser.
-    const waiting = await countCandidates(input);
-    return repliesFor({ kind: 'daily_hello', waiting });
+    // "genuinely" means counted here rather than claimed by the browser. It is
+    // the SAME count the sentence was built from, so the line and the button
+    // can never disagree about how much is waiting.
+    return repliesFor({ kind: 'daily_hello', waiting: input.candidates.length });
   }
 
   if (input.event === 'notices_announced') {
-    const hasRefusal = await noticesIncludeRefusal(input);
-    return repliesFor({ kind: 'notices', hasRefusal });
+    return repliesFor({ kind: 'notices', hasRefusal: input.noticesHaveRefusal });
   }
 
   // A pattern about a named person, said in the one venue it may be said in.
@@ -388,53 +542,8 @@ async function deriveReplies(input: {
   const fromNamespace = staticRepliesForTopic(input.topic);
   if (fromNamespace) return fromNamespace;
 
-  const candidates = await candidatesFor(input);
-  const match = candidates.find((c) => c.topic === input.topic);
+  const match = input.candidates.find((c) => c.topic === input.topic);
   return match ? [...match.replies] : [];
-}
-
-/** The candidate list, or an empty one. Never throws upward. */
-async function candidatesFor(input: {
-  propertyId: string;
-  accountId: string;
-  role: AppRole;
-  hotelMutationAllowed: boolean;
-  today: string;
-  timezone: string | null;
-}): Promise<CompanionCandidate[]> {
-  try {
-    return await buildCompanionCandidates({
-      propertyId: input.propertyId,
-      role: input.role,
-      hotelMutationAllowed: input.hotelMutationAllowed,
-      accountId: input.accountId,
-      today: input.today,
-      timezone: input.timezone,
-    });
-  } catch {
-    return [];
-  }
-}
-
-async function countCandidates(input: Parameters<typeof candidatesFor>[0]): Promise<number> {
-  return (await candidatesFor(input)).length;
-}
-
-/** Does this batch leave a job nobody has taken? Fails soft to "no". */
-async function noticesIncludeRefusal(input: {
-  propertyId: string;
-  staffId: string | null;
-  now: Date;
-}): Promise<boolean> {
-  if (!input.staffId) return false;
-  try {
-    const notices = await loadAssignmentNotices({
-      propertyId: input.propertyId, staffId: input.staffId, now: input.now,
-    });
-    return notices.some((n) => n.kind === 'refused');
-  } catch {
-    return false;
-  }
 }
 
 function readAnswer(value: unknown): CompanionOfferAnswer | null {
@@ -466,13 +575,16 @@ function isTaughtKey(x: unknown): x is TaughtKey {
 export async function POST(req: NextRequest): Promise<Response> {
   let body: {
     pid?: string; event?: unknown; topic?: unknown; flow?: unknown;
-    // The offer half. See the OfferSpeech block above.
-    text?: unknown; kind?: unknown; page?: unknown; actions?: unknown;
+    // The offer half. See the OfferEnvelope block above. `text` is read only as
+    // "a sentence was shown"; what it said is the server's to decide, and so is
+    // what may be said back. There is no `actions` field any more, and nothing
+    // reads one if a caller sends it.
+    text?: unknown; kind?: unknown; page?: unknown;
     conversationId?: unknown; offerId?: unknown; offerState?: unknown;
-    // The notices half. `through` is the newest notice in the batch that was
-    // announced. There is deliberately no "when did I open the list" field:
-    // that instant is the server's own clock.
-    through?: unknown;
+    // NO NOTICES HALF. There is deliberately no "which batch" and no "when did
+    // I open the list" field any more: both instants are the server's, derived
+    // from this person's own notices in this request. A caller may still send
+    // `through`; nothing reads it.
   };
   try {
     body = await req.json();
@@ -515,13 +627,58 @@ export async function POST(req: NextRequest): Promise<Response> {
   }
 
   try {
-    const [facts, prefs] = await Promise.all([
+    const [facts, prefsRead] = await Promise.all([
       loadPropertyFacts(ctx.pid),
-      readFeedPrefs(ctx.accountId, ctx.pid),
+      // CHECKED, not `readFeedPrefs`. A failed read degrades to the defaults,
+      // and reducing the defaults produces a memory with no welcome stamp, no
+      // declines, no notices cursors and a speech counter of zero. Writing THAT
+      // back erases the real one: re-welcome, every No forgotten, notices
+      // re-announced, the daily budget reset. One transient read error used to
+      // be enough. See readFeedPrefsChecked.
+      readFeedPrefsChecked(ctx.accountId, ctx.pid),
     ]);
-    const today = propertyLocalToday(new Date(), facts?.timezone ?? null);
+    if (prefsRead.degraded) {
+      log.warn('[companion] memory unreadable; refusing to reduce a blank one', {
+        requestId: ctx.requestId, pid: ctx.pid, event: body.event,
+      });
+      return err('companion memory is unavailable', {
+        requestId: ctx.requestId,
+        status: 503,
+        code: ApiErrorCode.InternalError,
+        headers: ctx.headers,
+      });
+    }
+
     const now = new Date();
-    const current = parseCompanionMemory(prefs.companionMemory);
+    const role: AppRole = isValidRole(ctx.role) ? ctx.role : 'staff';
+    const today = propertyLocalToday(now, facts?.timezone ?? null);
+    const hour = propertyLocalHour(now, facts?.timezone ?? null);
+    const current = parseCompanionMemory(prefsRead.prefs.companionMemory);
+
+    // ── The gates the GET half already applies ────────────────────────────
+    //
+    // Identical to the ones at the top of GET, and they were missing here
+    // entirely. `ONE_LIST_CTX` sets `sectionGate: null`, so `commsContext` does
+    // not gate on a section either. That left the housekeeping hat, the one hat
+    // the charter says must NEVER have a companion, and a hotel that had
+    // switched the Staxis list off, both able to drive every memory event and
+    // write into the hotel's own timeline.
+    const awake = isSectionEnabled(normalizeSectionFlags(facts?.enabled_sections), 'staxis')
+      && chatIsMountedForRole(role);
+
+    // ── The announcement, computed HERE ───────────────────────────────────
+    //
+    // Was `readInstant(body.through)`. A stamp is monotonic, so a forged one
+    // could only ever be dragged FORWARD, and forward is the harmful direction:
+    // it marks work a colleague handed over as already announced, and the line
+    // about it is never said. Both the sentence and the cursor now come from
+    // this person's own notices, read in this request.
+    const announcement = awake && body.event === 'notices_announced'
+      ? await serverAnnouncement({
+        propertyId: ctx.pid, staffId: ctx.staffId, memory: current, today, now,
+        requestId: ctx.requestId,
+      })
+      : null;
 
     let next: CompanionMemory;
     switch (body.event) {
@@ -536,14 +693,11 @@ export async function POST(req: NextRequest): Promise<Response> {
       // Stamped with the HOTEL's day, so a person working past midnight is
       // greeted when the hotel's morning starts and not when UTC's does.
       case 'greeted':       next = rememberGreeted(current, today); break;
-      // Both stamps are MONOTONIC inside their reducers, so a stale tab
-      // replaying an older batch cannot drag either cursor backwards and make
-      // the companion repeat itself or mark read work unread. A missing or
-      // unparseable instant leaves the memory exactly as it was: the safe
-      // direction here is "not stamped", which costs at most one repeat.
+      // Still MONOTONIC inside the reducer, so a second tab replaying an older
+      // batch cannot drag the cursor backwards and make the companion repeat
+      // itself. Nothing to announce leaves the memory exactly as it was.
       case 'notices_announced': {
-        const through = readInstant(body.through);
-        next = through ? rememberNoticesAnnounced(current, through) : current;
+        next = announcement ? rememberNoticesAnnounced(current, announcement.through) : current;
         break;
       }
       case 'notices_seen': {
@@ -554,6 +708,69 @@ export async function POST(req: NextRequest): Promise<Response> {
         break;
       }
       default:              next = current;
+    }
+
+    const envelope = readOfferEnvelope(body as Record<string, unknown>);
+
+    // ── What the companion was ENTITLED to say ────────────────────────────
+    //
+    // The candidate list is built from the server's own reads and only when
+    // something is actually going to be derived from it, so a replayed event
+    // costs nothing: the free half of the `spoke` gate runs first.
+    const needsCandidates = awake
+      && envelope.claimed
+      && current !== next
+      && isSpeakingEvent(body.event)
+      && (body.event === 'greeted'
+        || (body.event === 'spoke' && spokenTopicIsOfferable(current, topic, today)));
+
+    const candidates = needsCandidates
+      ? await serverCandidates({
+        propertyId: ctx.pid,
+        role,
+        hotelMutationAllowed: ctx.hotelMutationAllowed,
+        accountId: ctx.accountId,
+        today,
+        timezone: facts?.timezone ?? null,
+        // Traces live on their own route and are only worth the three reads
+        // when the topic in hand is one of theirs.
+        includeTraces: body.event === 'spoke' && isTraceTopic(topic),
+        now,
+      })
+      : [];
+
+    const verdict = authorizeCompanionEvent({
+      event: body.event,
+      awake,
+      before: current,
+      after: next,
+      topic,
+      claimedSpeech: envelope.claimed,
+      claimedKind: body.kind,
+      person: {
+        firstName: cleanName(ctx.displayName),
+        role,
+        sharedLogin: looksSharedLogin(ctx.displayName),
+      },
+      today,
+      hour,
+      hotelName: facts?.name ?? null,
+      multiHotel: ctx.propertyAccess.length > 1,
+      candidates,
+      announcement,
+    });
+
+    if (!verdict.record) {
+      // Nothing moves. Not the ledger, not the thread, not the timeline. The
+      // memory that comes back is the one that is really stored, so a browser
+      // that took an optimistic step forward is corrected on the next read.
+      log.warn('[companion] event refused', {
+        requestId: ctx.requestId, pid: ctx.pid, event: body.event, because: verdict.because,
+      });
+      return ok(
+        { memory: current, offer: null, conversationId: null },
+        { requestId: ctx.requestId, headers: ctx.headers },
+      );
     }
 
     await writeFeedPrefs(ctx.accountId, ctx.pid, { companionMemory: next });
@@ -568,88 +785,86 @@ export async function POST(req: NextRequest): Promise<Response> {
     let offer: CompanionOffer | null = null;
     let spokenInto: string | null = null;
     try {
-      // Every event on which the companion actually SAYS something. `spoke` is
-      // an offer, `greeted` is the once-a-day hello, `welcomed` is day one, and
+      const speech = verdict.speech;
+      // Present only when the companion actually SAID something: `spoke` is an
+      // offer, `greeted` is the once-a-day hello, `welcomed` is day one, and
       // `notices_announced` is the batched line about work. Anything else (a
-      // tour taken, a tip shown, a list opened) moves the ledger without
-      // putting a sentence in front of anybody, so there is nothing to write.
-      if (
-        body.event === 'spoke' || body.event === 'greeted' || body.event === 'welcomed'
-        || body.event === 'notices_announced'
-      ) {
-        const speech = readOfferSpeech(body as Record<string, unknown>);
-        if (speech) {
-          // Written HERE, never taken from the body. See deriveReplies.
-          const replies = await deriveReplies({
-            event: body.event,
+      // tour taken, a tip shown, a list opened) moves the ledger without putting
+      // a sentence in front of anybody, and so does a REPLAY of any of the four:
+      // five identical `greeted` posts used to write five timeline rows and five
+      // thread messages while the ledger sat unchanged.
+      if (speech) {
+        // BOTH HALVES ARE WRITTEN HERE, and neither comes off the body: the
+        // sentence from `authorizeCompanionEvent`, the buttons under it from
+        // `deriveReplies`. Same kind for both, so the vocabulary a turn speaks
+        // is the vocabulary its sentence was built in.
+        const replies = deriveReplies({
+          event: body.event,
+          kind: speech.kind,
+          topic,
+          role,
+          enabledSections: facts?.enabled_sections,
+          candidates,
+          noticesHaveRefusal: announcement?.hasRefusal ?? false,
+        });
+        const conversationId = await ensureCompanionConversation({
+          userAccountId: ctx.accountId,
+          propertyId: ctx.pid,
+          role,
+          preferredId: envelope.conversationId,
+          title: speech.text.slice(0, 80),
+        });
+        if (conversationId) {
+          spokenInto = conversationId;
+          offer = await appendCompanionOffer({
+            conversationId,
+            // THE SERVER'S SENTENCE. Never the request body's.
+            text: speech.text,
             kind: speech.kind,
-            topic,
-            propertyId: ctx.pid,
-            accountId: ctx.accountId,
-            staffId: ctx.staffId,
-            role: isValidRole(ctx.role) ? ctx.role : 'staff',
-            hotelMutationAllowed: ctx.hotelMutationAllowed,
-            enabledSections: facts?.enabled_sections,
-            today,
-            timezone: facts?.timezone ?? null,
+            topic: speech.topic,
+            page: envelope.page,
+            // THE SERVER'S BUTTONS. Never the request body's either.
+            replies,
             now,
           });
-          const conversationId = await ensureCompanionConversation({
-            userAccountId: ctx.accountId,
-            propertyId: ctx.pid,
-            role: isValidRole(ctx.role) ? ctx.role : 'staff',
-            preferredId: speech.conversationId,
-            title: speech.text.slice(0, 80),
-          });
-          if (conversationId) {
-            spokenInto = conversationId;
-            offer = await appendCompanionOffer({
-              conversationId,
-              text: speech.text,
-              kind: speech.kind,
-              topic: topic || null,
-              page: speech.page,
-              replies,
-              now,
+          // ── The third family of journal entry: a thing said to a person ──
+          //
+          // The thread already holds the sentence, and that is the right home
+          // for reading it back. What the thread cannot answer is "what have
+          // you been doing today", which is asked of the hotel and not of one
+          // conversation. So the same act lands once in each: the words in the
+          // thread, the fact in the timeline.
+          //
+          // Only when a row was actually written. An offer the thread refused
+          // is an offer nobody was shown, and journaling it would be the
+          // companion claiming to have spoken into a void.
+          //
+          // AND NEVER A PANEL ASK, whose venue is the whole rule. See
+          // `offerIsJournalable`, which owns that decision, and
+          // `authorizeCompanionEvent`, which decides which kind this is from
+          // the candidate's own sensitivity rather than from the request body.
+          if (offer && speech.journal) {
+            await recordAgentJournalEntry({
+              propertyId: ctx.pid,
+              eventType: 'agent_said',
+              description: journalSaidLine({
+                text: speech.text,
+                personName: cleanName(ctx.displayName),
+              }),
+              // The person SPOKEN TO, as the target. The actor is the
+              // companion, which is what the null account id on this table
+              // has meant since 0228.
+              targetType: 'person',
+              targetId: ctx.accountId,
+              targetLabel: cleanName(ctx.displayName),
+              metadata: {
+                kind: speech.kind,
+                topic: speech.topic,
+                offerId: offer.id,
+                event: body.event,
+              },
+              occurredAt: now,
             });
-            // ── The third family of journal entry: a thing said to a person ──
-            //
-            // The thread already holds the sentence, and that is the right home
-            // for reading it back. What the thread cannot answer is "what have
-            // you been doing today", which is asked of the hotel and not of one
-            // conversation. So the same act lands once in each: the words in the
-            // thread, the fact in the timeline.
-            //
-            // Only when a row was actually written. An offer the thread refused
-            // is an offer nobody was shown, and journaling it would be the
-            // companion claiming to have spoken into a void.
-            //
-            // AND NEVER A PANEL ASK, whose venue is the whole rule. See
-            // `offerIsJournalable`, which owns that decision so it can be
-            // tested rather than remembered.
-            if (offer && offerIsJournalable(speech.kind)) {
-              await recordAgentJournalEntry({
-                propertyId: ctx.pid,
-                eventType: 'agent_said',
-                description: journalSaidLine({
-                  text: speech.text,
-                  personName: cleanName(ctx.displayName),
-                }),
-                // The person SPOKEN TO, as the target. The actor is the
-                // companion, which is what the null account id on this table
-                // has meant since 0228.
-                targetType: 'person',
-                targetId: ctx.accountId,
-                targetLabel: cleanName(ctx.displayName),
-                metadata: {
-                  kind: speech.kind,
-                  topic: topic || null,
-                  offerId: offer.id,
-                  event: body.event,
-                },
-                occurredAt: now,
-              });
-            }
           }
         }
       } else if (body.event === 'declined' || body.event === 'accepted') {

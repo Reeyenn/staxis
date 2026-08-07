@@ -480,6 +480,20 @@ export interface RunAgentOpts {
   executionPlan?: AiExecutionPlan;
   /** Absolute route deadline shared by every model/tool iteration. */
   deadlineAt?: number;
+  /**
+   * Ceiling on the model's own output for THIS call, in tokens.
+   *
+   * Defaults to MAX_OUTPUT_TOKENS, which is what every conversational caller
+   * wants. A background caller that asks for one short JSON object and prices a
+   * spend hold against what it could be billed passes its own, much smaller,
+   * number: a hold must be bigger than anything the provider can actually
+   * charge, so the only honest way to hold less is to let the provider produce
+   * less. See WAKE_RESERVATION_USD in companion/event-wake/notice.ts.
+   *
+   * A reply that hits the ceiling comes back with `stop_reason: 'max_tokens'`,
+   * which the strict background callers already refuse.
+   */
+  maxOutputTokens?: number;
   /** Portion of the remaining deadline protected for configured fallback. */
   fallbackReserveMs?: number;
   /** Optional provider-side response grammar. This constrains only the model's
@@ -856,7 +870,7 @@ export async function runAgent(opts: RunAgentOpts): Promise<RunAgentResult> {
     const request = async (selected: AiModelRef, signal: AbortSignal | undefined) => {
       const requestBody: Anthropic.Messages.MessageCreateParamsNonStreaming = {
         model: selected.modelId,
-        max_tokens: MAX_OUTPUT_TOKENS,
+        max_tokens: opts.maxOutputTokens ?? MAX_OUTPUT_TOKENS,
         system: buildSystemBlocks(opts.systemPrompt),
         messages,
         ...(tools.length > 0 ? { tools } : {}),
@@ -1421,7 +1435,7 @@ export async function* streamAgent(opts: RunAgentOpts): AsyncGenerator<AgentEven
           );
           const stream = clientFor(activeModel).messages.stream({
             model: activeModel.modelId,
-            max_tokens: MAX_OUTPUT_TOKENS,
+            max_tokens: opts.maxOutputTokens ?? MAX_OUTPUT_TOKENS,
             system: requestSystem,
             tools: requestTools,
             messages,
