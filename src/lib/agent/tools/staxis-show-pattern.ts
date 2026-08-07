@@ -7,7 +7,7 @@
 //
 // ─── WHY THIS TOOL READS NOTHING ───────────────────────────────────────────
 //
-// It is an acknowledgement, exactly like `walk_user_through` next door, and for
+// It is an acknowledgement, exactly like `staxis_show_around` next door, and for
 // exactly the same reason: only the browser can do this. The reveal is a
 // geometric argument about the empty space on the page the person is standing
 // on, drawn against rows that exist in their DOM. A server that re-detected

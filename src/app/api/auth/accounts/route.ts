@@ -21,6 +21,7 @@ import { getOrMintRequestId, log } from '@/lib/log';
 
 import { ALL_ROLES, isValidRole, type AppRole } from '@/lib/roles';
 import { writeAudit } from '@/lib/audit';
+import { revokeAllDeviceTrustForAccount } from '@/lib/auth-revoke-device-trust';
 import { captureException } from '@/lib/sentry';
 import { requireAdmin } from '@/lib/admin-auth';
 import { isUuid } from '@/lib/api-validate';
@@ -605,6 +606,22 @@ export async function PUT(req: NextRequest) {
       log.error('[accounts:PUT] auth update failed', { requestId, msg: errToString(authErr), accountId });
       return err(authErr.message ?? 'Failed to update account', {
         requestId, status: 400, code: ApiErrorCode.ValidationFailed,
+      });
+    }
+    // Rotating somebody else's password or sign-in email is a lockout action.
+    // It only locks them out if the second factor goes with it: the
+    // `staxis_device` cookie and the per-session `mfa_verified_sessions` row
+    // both outlive the credential otherwise. `/api/auth/revoke-trust` already
+    // does this when a person resets their own password; the admin path never
+    // did. Best-effort — the credential has already changed, so a failure here
+    // is logged and recorded as a security event rather than failing the call.
+    if (authUpdates.password || authUpdates.email) {
+      await revokeAllDeviceTrustForAccount({
+        accountId,
+        authUserId: target.data_user_id,
+        reason: authUpdates.password ? 'admin_password_reset' : 'admin_email_change',
+        actorUserId: caller.userId,
+        requestId,
       });
     }
   }

@@ -7,6 +7,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
+import { dollarsToCents } from '@/lib/format';
 import {
   expenseAmountCentsFromLines,
   expenseOperationIdForInvoice,
@@ -35,6 +36,26 @@ test('expenseAmountCentsFromLines — sums line dollars and rounds once', () => 
     3000,
   );
   assert.equal(expenseAmountCentsFromLines([line('maintenance', 4, 12.5)]), 5000);
+});
+
+test('expenseAmountCentsFromLines — rounds a half cent the way the ledger does', () => {
+  // A hand-typed three-decimal unit cost lands exactly on a half cent. Postgres
+  // stores round(quantity * unit_cost, 2) in exact numeric, so the delivery
+  // records $8.58; `Math.round(8.575 * 100)` is 857 because the float is
+  // 857.4999999999999, which booked the Checkbook expense a cent light for the
+  // same invoice. The canonical converter shifts the decimal in string space.
+  assert.equal(expenseAmountCentsFromLines([line('housekeeping', 1, 8.575)]), 858);
+  assert.equal(expenseAmountCentsFromLines([line('breakfast', 1, 1.005)]), 101);
+
+  // Stated as the invariant rather than three magic numbers: the booked total
+  // is always the canonical conversion of the summed line dollars.
+  for (const unitCost of [8.575, 1.005, 2.675, 0.115, 12.345]) {
+    assert.equal(
+      expenseAmountCentsFromLines([line('housekeeping', 1, unitCost)]),
+      dollarsToCents(unitCost),
+      `unit cost ${unitCost} diverges from the canonical converter`,
+    );
+  }
 });
 
 test('expenseAmountCentsFromLines — ignores unusable lines instead of guessing', () => {

@@ -516,12 +516,11 @@ describe('byte-equality against the pre-consolidation golden', () => {
     // Guards everything below: a golden that quietly lost a subject would make
     // "the bytes match" true for the boring reason that nothing was compared.
     assert.deepEqual(Object.keys(rebuilt).sort(), Object.keys(golden).sort());
-    assert.ok(Object.keys(golden).length >= 11, 'the golden is too thin to prove anything');
+    assert.ok(Object.keys(golden).length >= 10, 'the golden is too thin to prove anything');
   });
 
   // ── The subjects that must not have moved by one byte ────────────────────
   for (const name of [
-    'walkthrough',
     'portfolio.one-hotel.legacy-rulebook',
     'portfolio.two-hotels.legacy-rulebook',
     'portfolio.one-hotel.external-overlay',
@@ -830,7 +829,7 @@ describe('a migrated drawer refuses rather than guessing', () => {
   });
 
   test('lenses renders nothing with no actor, and nothing for an unmounted hat', async () => {
-    // No actor is the portfolio and walkthrough case: neither is a hat at one
+    // No actor is the portfolio case: it is not a hat at one
     // hotel, so there is no job description to pick and picking one anyway would
     // hand a VP the front desk's.
     assert.equal(await composeKnowledgeTier('lenses', hotelTurn), null);
