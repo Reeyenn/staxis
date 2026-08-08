@@ -48,6 +48,10 @@ test('invalid finance timezone strips stale money and gates finance surfaces', (
   assert.match(shell, /setMonthCloseDashboard\(null\)/);
   assert.match(shell, /open=\{overlay === 'reports' && financialSurfaceEnabled\}/);
   assert.match(shell, /open=\{overlay === 'budgets' && financialSurfaceEnabled\}/);
+  assert.match(shell, /open=\{overlay === 'history'\}/);
+  assert.match(shell, /open=\{overlay === 'delivery' && canManage\}/);
+  assert.doesNotMatch(shell, /current === 'history'[\s\S]*?\? null/);
+  assert.doesNotMatch(shell, /current === 'delivery'[\s\S]*?\? null/);
   assert.match(shell, /canViewFinancials=\{financialSurfaceEnabled\}/);
 });
 

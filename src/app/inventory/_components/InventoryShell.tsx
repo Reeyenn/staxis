@@ -569,11 +569,9 @@ export function InventoryShell() {
         setOverlay((current) => (
           current === 'reports'
           || current === 'compare'
-          || current === 'history'
           || current === 'delivery-correction'
           || current === 'budgets'
           || current === 'close'
-          || current === 'delivery'
           || current === 'import'
             ? null
             : current
@@ -2300,7 +2298,7 @@ export function InventoryShell() {
       <HistoryPanel
         key={`${activePropertyId ?? 'no-property'}:${auditDeliveryLookupRevision}`}
         lang={L}
-        open={overlay === 'history' && (!canViewFinancials || financialSurfaceEnabled)}
+        open={overlay === 'history'}
         onClose={closeOverlay}
         events={historyEvents}
         canViewFinancials={financialSurfaceEnabled}
