@@ -17,6 +17,7 @@ type Deferred<T> = {
 
 type PendingRequest = {
   response: Deferred<Response>;
+  url: string;
 };
 
 type SessionReader = {
@@ -88,6 +89,15 @@ async function flushMicrotasks(rounds = 8): Promise<void> {
   for (let index = 0; index < rounds; index += 1) await Promise.resolve();
 }
 
+function requestUrl(input: unknown): string {
+  if (typeof input === 'string') return input;
+  if (input instanceof URL) return input.toString();
+  if (input && typeof input === 'object' && 'url' in input) {
+    return String((input as { url: unknown }).url);
+  }
+  return String(input);
+}
+
 function payload(organizationId: string, organizationName: string): PortfolioPayload {
   return {
     scope: {
@@ -130,9 +140,9 @@ function installRequests(context: TestContext): PendingRequest[] {
   );
 
   const requests: PendingRequest[] = [];
-  context.mock.method(globalThis, 'fetch', () => {
+  context.mock.method(globalThis, 'fetch', (input: unknown) => {
     const response = deferred<Response>();
-    requests.push({ response });
+    requests.push({ response, url: requestUrl(input) });
     return response.promise;
   });
   return requests;
@@ -171,12 +181,16 @@ describe('Portfolio Queue viewer identity isolation', { concurrency: false }, ()
       );
       await flushMicrotasks();
     });
-    assert.equal(requests.length, 1);
+    const queueRequests = () => requests.filter((request) => request.url.includes('/api/company/queue'));
+    const aggregateRequests = () => requests.filter((request) => request.url.includes('/api/staxis/multi-hotel'));
+    assert.equal(queueRequests().length, 1);
     assert.equal(container.querySelector('[data-feed-state="loading"]') !== null, true);
 
-    await settle(requests[0], success(payload('org-a', 'Company A')));
+    await settle(queueRequests()[0], success(payload('org-a', 'Company A')));
     assert.match(container.textContent ?? '', /Company A/);
     assert.deepEqual(scopes, ['org-a']);
+    assert.equal(aggregateRequests().length, 1, 'the company view starts one aggregate read after its scope lands');
+    assert.match(aggregateRequests()[0].url, /organizationId=org-a/);
 
     await act(async () => {
       root.render(
@@ -190,7 +204,8 @@ describe('Portfolio Queue viewer identity isolation', { concurrency: false }, ()
       await flushMicrotasks();
     });
 
-    assert.equal(requests.length, 2, 'the stable custom fetcher must refetch for viewer B');
+    assert.equal(queueRequests().length, 2, 'the stable custom fetcher must refetch the queue once for viewer B');
+    assert.equal(aggregateRequests().length, 1, 'the aggregate read must not be mistaken for a queue refetch');
     assert.doesNotMatch(container.textContent ?? '', /Company A/);
     assert.equal(
       container.querySelector('[data-feed-state="loading"]') !== null,
@@ -198,9 +213,14 @@ describe('Portfolio Queue viewer identity isolation', { concurrency: false }, ()
       'the first render after the switch must mask viewer A behind viewer B\'s real load',
     );
 
-    await settle(requests[1], success(payload('org-b', 'Company B')));
+    await settle(queueRequests()[1], success(payload('org-b', 'Company B')));
+    await act(async () => { await flushMicrotasks(); });
     assert.match(container.textContent ?? '', /Company B/);
     assert.doesNotMatch(container.textContent ?? '', /Company A/);
     assert.deepEqual(scopes, ['org-a', 'org-b']);
+    assert.ok(
+      aggregateRequests().some((request) => request.url.includes('organizationId=org-b')),
+      'the aggregate read follows the selected company after viewer B lands',
+    );
   });
 });
