@@ -34,6 +34,7 @@ import type {
   Bilingual,
   PostConditionResult,
 } from '../types';
+import { ACTION_CONTRACT_VERSION } from '@/lib/staxis/foundation';
 
 /** Long enough for at least one order cycle to have run at the new level. */
 export const REORDER_OUTCOME_DAYS = 21;
@@ -112,6 +113,47 @@ export const raiseReorderPointAction: ActionDefinition<RaiseReorderPointParams> 
   undoDescription:
     'The reorder point is written straight back to the number it had before, which is frozen in the plan — unless somebody has changed it since, in which case the undo refuses rather than overwriting their edit.',
   outcomeCheckDays: REORDER_OUTCOME_DAYS,
+  actionContract: {
+    contractVersion: ACTION_CONTRACT_VERSION,
+    effect: {
+      domain: 'inventory',
+      operation: 'raise_reorder_point',
+      targetKind: 'inventory_item',
+      boundary: 'in_app_only',
+      statement: 'After the existing manager hotel-standing and company sign-off gates pass, raise exactly one existing inventory item reorder threshold to the frozen integer value.',
+      limit: 'Changes one internal inventory threshold only. It does not place an order, spend money, contact a vendor, write to a PMS, or prove delivery or stock availability.',
+    },
+    authority: {
+      propertyScoped: true,
+      roles: ['admin', 'owner', 'general_manager'],
+      capability: null,
+      surfaces: ['findings'],
+    },
+    approval: { mode: 'explicit_card', tier: 'card', policyId: 'staxis.finding.manager-company-signoff.v1' },
+    frozenInput: {
+      immutable: true,
+      fields: ['propertyId', 'findingId', 'params', 'verify'],
+      fingerprint: 'server_sha256',
+      staleInput: 'decline',
+    },
+    idempotency: {
+      scope: 'property_action_and_input',
+      keyFields: ['propertyId', 'findingId', 'paramsFingerprint', 'verifyFingerprint'],
+      retry: 'first_receipt',
+    },
+    receipt: {
+      contractVersion: ACTION_CONTRACT_VERSION,
+      requiredFields: ['table', 'id', 'kind', 'label', 'column', 'from', 'to'],
+      internalOnly: true,
+      physicalCompletionClaim: 'never',
+    },
+    outcome: {
+      observability: 'conditional',
+      verificationState: 'pending',
+      verificationWindowDays: REORDER_OUTCOME_DAYS,
+      basisRequired: true,
+    },
+  },
 
   validate(params: ActionParams): string | null {
     const itemId = params.item_id;

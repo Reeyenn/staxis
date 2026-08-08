@@ -86,6 +86,7 @@ import {
 } from './list-calendar';
 import { CxIcon } from './icons';
 import { TraceFoundLine } from './TraceFoundLine';
+import { LifecycleProjection, type LifecycleProjectionPayload } from './LifecycleProjection';
 import {
   AssignedPopupView,
   AssignedRailPanel,
@@ -333,6 +334,21 @@ export function StaxisList({
       { enabled: !!propertyId, pollMs: 60_000, revalidateOnFocus: true, keepDataOnError: true },
     );
   const assigned = React.useMemo(() => assignedData?.assigned ?? [], [assignedData]);
+
+  // The lifecycle projection is read-only and authorization-scoped by the
+  // route through the same exact-hotel context as this list. Keep it available
+  // to every person who can open the one-page feed; the server decides which
+  // safe projection rows their standing may read. Polling is deliberately
+  // slower than the worklist, and a failed refresh retains the timestamped
+  // last-good snapshot so stale never looks current.
+  const {
+    data: lifecycleData,
+    loading: lifecycleLoading,
+    error: lifecycleError,
+  } = useApiResource<LifecycleProjectionPayload>(
+    `/api/feed/lifecycle?pid=${encodeURIComponent(propertyId)}`,
+    { enabled: !!propertyId, pollMs: 30_000, keepDataOnError: true },
+  );
 
   // The hotel's own dated events. Fetched on every load now, not only when a
   // calendar was open: the week strip is permanent chrome and a 2pm vendor
@@ -1278,9 +1294,15 @@ export function StaxisList({
           />
         </div>
 
-        {/* ── the rail: three panels with their content showing ── */}
+        {/* ── the rail: the page's panels with their content showing ── */}
         <div className="fx-rail">
           <KnowsRailButton onOpen={() => setKnowsOpen(true)} />
+
+          <LifecycleProjection
+            payload={lifecycleData}
+            loading={lifecycleLoading}
+            error={lifecycleError}
+          />
 
           <AssignedRailPanel
             notices={notices}

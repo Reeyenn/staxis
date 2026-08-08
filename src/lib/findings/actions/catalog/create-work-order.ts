@@ -40,6 +40,7 @@ import type {
   Bilingual,
   PostConditionResult,
 } from '../types';
+import { ACTION_CONTRACT_VERSION } from '@/lib/staxis/foundation';
 
 /** How long to wait before asking whether it helped. Two weeks: long enough for
  *  an inspection to have been done, short enough that the answer still relates
@@ -191,6 +192,47 @@ export const createWorkOrderAction: ActionDefinition<CreateWorkOrderParams> = {
   undoDescription:
     'The work order Staxis created is removed from the board, but only while it is still exactly as created — once anyone has assigned, worked, priced or closed it, the undo refuses and says so.',
   outcomeCheckDays: WORK_ORDER_OUTCOME_DAYS,
+  actionContract: {
+    contractVersion: ACTION_CONTRACT_VERSION,
+    effect: {
+      domain: 'maintenance',
+      operation: 'create_work_order',
+      targetKind: 'work_order',
+      boundary: 'in_app_only',
+      statement: 'After the existing manager hotel-standing and company sign-off gates pass, create exactly one Staxis work order on this hotel maintenance board for the frozen location and description.',
+      limit: 'Creates one internal work-order row only. It does not assign staff, notify a vendor, write to a PMS, or prove that anyone completed the work.',
+    },
+    authority: {
+      propertyScoped: true,
+      roles: ['admin', 'owner', 'general_manager'],
+      capability: null,
+      surfaces: ['findings'],
+    },
+    approval: { mode: 'explicit_card', tier: 'card', policyId: 'staxis.finding.manager-company-signoff.v1' },
+    frozenInput: {
+      immutable: true,
+      fields: ['propertyId', 'findingId', 'params', 'verify'],
+      fingerprint: 'server_sha256',
+      staleInput: 'decline',
+    },
+    idempotency: {
+      scope: 'property_action_and_input',
+      keyFields: ['propertyId', 'findingId', 'paramsFingerprint', 'verifyFingerprint'],
+      retry: 'first_receipt',
+    },
+    receipt: {
+      contractVersion: ACTION_CONTRACT_VERSION,
+      requiredFields: ['table', 'id', 'kind', 'label', 'where'],
+      internalOnly: true,
+      physicalCompletionClaim: 'never',
+    },
+    outcome: {
+      observability: 'conditional',
+      verificationState: 'pending',
+      verificationWindowDays: WORK_ORDER_OUTCOME_DAYS,
+      basisRequired: true,
+    },
+  },
 
   validate(params: ActionParams): string | null {
     const location = str(params, 'location');

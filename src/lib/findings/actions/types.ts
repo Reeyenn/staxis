@@ -36,6 +36,7 @@
 // plus the post-condition check that reads the receipt the database handed back.
 
 import type { FindingDraft, JsonValue } from '../types';
+import type { ActionAdmissionContract } from '@/lib/staxis/foundation';
 
 /** Every action the catalog knows. Mirrors the CHECK on finding_actions.action_kind. */
 export type FindingActionKind = 'create_work_order' | 'raise_inventory_reorder_point';
@@ -147,6 +148,8 @@ export interface ActionDefinition<P extends ActionParams = ActionParams> {
   readonly undoDescription: string;
   /** Days after execution to go back and ask whether the fix held. */
   readonly outcomeCheckDays: number;
+  /** Machine-readable effect/authority/approval/receipt contract. */
+  readonly actionContract?: ActionAdmissionContract;
   /**
    * Reject anything that is not a usable plan for this kind. Returns null when
    * the params are good, or the reason they are not. Applied at PROPOSAL time,

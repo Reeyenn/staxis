@@ -138,6 +138,17 @@ const UNSEEDABLE_TABLES = new Set([
   'portfolio_model_request_artifacts', // request artifact requires portfolio receipt lineage
   'portfolio_properties',          // NOT NULL key onto an unseedable portfolio scope
   'portfolio_query_receipts',      // receipt requires an authorized portfolio query lease
+  // 0469. The shared Staxis source/finding/lifecycle foundation is an opt-in
+  // service seam; the two-hotel tool fixture does not synthesize source facts,
+  // admissions, definitions, actions, or lifecycle events for it.
+  'staxis_action_definitions',
+  'staxis_finding_admissions',
+  'staxis_finding_source_facts',
+  'staxis_lifecycle_events',
+  'staxis_lifecycle_records',
+  'staxis_source_definitions',
+  'staxis_source_facts',
+  'staxis_source_receipts',
   'staxis_support_sessions',       // scope-shape XOR over hotel/org columns
 ]);
 
