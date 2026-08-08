@@ -8,10 +8,12 @@ import {
   createRequestAuthorizationWithDependencies,
   type RequestAuthorizationDependencies,
 } from '@/lib/authorization/request';
+import type { HotelAuthorizationRefusal } from '@/lib/authorization/request';
 import type {
   AuthoritativePropertyAccess,
   AuthoritativePropertyStanding,
 } from '@/lib/authorization/server';
+import { inventoryAiAuthorizationRefusalResponse } from '@/lib/inventory-ai-authorization';
 
 const USER_ID = '10000000-0000-4000-8000-000000000001';
 const ACCOUNT_ID = '10000000-0000-4000-8000-000000000002';
@@ -100,6 +102,30 @@ describe('request authorization facade', () => {
     const session = await facade.requireSession();
     assert.equal(session.ok, true);
     assert.equal(receivedArgumentCount, 1);
+  });
+
+  test('preserves the existing session refusal response for the route boundary', async () => {
+    const sessionResponse = NextResponse.json(
+      { error: 'requires trusted device', code: 'requires_2fa' },
+      { status: 401 },
+    );
+    const facade = createRequestAuthorizationWithDependencies(
+      request(),
+      { requestId: REQUEST_ID },
+      dependencies({
+        requireSession: async () => ({ ok: false, response: sessionResponse }),
+      }),
+    );
+
+    const result = await facade.requireSession();
+    assert.equal(result.ok, false);
+    if (result.ok) throw new Error('expected the session refusal');
+    assert.strictEqual(result.response, sessionResponse);
+    assert.equal(result.response.status, 401);
+    assert.deepEqual(await result.response.json(), {
+      error: 'requires trusted device',
+      code: 'requires_2fa',
+    });
   });
 
   test('tenant audit rejects the injected test seam before DB-client filtering', () => {
@@ -198,6 +224,33 @@ describe('request authorization facade', () => {
 
     assert.deepEqual(result, { ok: false, reason: 'property_denied' });
     assert.equal(capabilityReads, 0);
+    assert.equal(sectionReads, 0);
+  });
+
+  test('normalizes a thrown account dependency before probing hotel state', async () => {
+    let sectionReads = 0;
+    const session = await authenticatedFacade(dependencies({
+      loadAccount: async () => {
+        throw new Error('account store unavailable');
+      },
+      sectionDecision: async () => {
+        sectionReads += 1;
+        return {
+          ok: true,
+          userId: USER_ID,
+          requestId: REQUEST_ID,
+          enabledSections: { inventory: true },
+        };
+      },
+    }));
+
+    const result = await session.authorizeHotel({
+      propertyId: HOTEL_A,
+      intent: 'read',
+      checks: [{ kind: 'section', section: 'inventory' }],
+    });
+
+    assert.deepEqual(result, { ok: false, reason: 'account_unavailable' });
     assert.equal(sectionReads, 0);
   });
 
@@ -326,5 +379,98 @@ describe('request authorization facade', () => {
     assert.match(route, /authorization_unavailable/);
     assert.match(route, /forbidden_property/);
     assert.doesNotMatch(route, /property_access/);
+  });
+
+  test('inventory AI status keeps its wire contract while using the facade', () => {
+    const route = readFileSync(join(
+      process.cwd(),
+      'src/app/api/inventory/ai-status/route.ts',
+    ), 'utf8');
+    const requestId = route.indexOf('const requestId = getOrMintRequestId(req);');
+    const authorization = route.indexOf('const authorization = createRequestAuthorization(req, { requestId });');
+    const session = route.indexOf('const session = await authorization.requireSession();');
+    const property = route.indexOf('const propertyId = new URL(req.url).searchParams.get(\'propertyId\');');
+    const validation = route.indexOf('if (!isUuid(propertyId))');
+    const hotel = route.indexOf('const hotel = await session.authorizeHotel({');
+    const section = route.indexOf("checks: [{ kind: 'section', section: 'inventory' }]");
+    const dataRead = route.indexOf('const sevenDaysAgoIso =');
+
+    assert.ok(requestId >= 0);
+    assert.ok(authorization > requestId);
+    assert.ok(session > authorization);
+    assert.ok(property > session);
+    assert.ok(validation > property);
+    assert.ok(hotel > validation);
+    assert.ok(section > hotel);
+    assert.ok(dataRead > section);
+    assert.match(route, /createRequestAuthorization/);
+    assert.doesNotMatch(route, /\buserHasPropertyAccess\b/);
+    assert.doesNotMatch(route, /requireSectionEnabled/);
+    assert.match(route, /if \(!session\.ok\) return session\.response;/);
+    assert.match(route, /inventoryAiAuthorizationRefusalResponse\(hotel, requestId\)/);
+    assert.match(route, /inventoryAiUnavailableResponse\(requestId\)/);
+    for (const field of [
+      'aiMode',
+      'daysSinceFirstCount',
+      'itemsTotal',
+      'itemsWithModel',
+      'itemsGraduated',
+      'itemsExpectedToGraduate',
+      'overfitRatio',
+      'currentMaeRatioVsMean',
+      'currentMaeRatio: overfitRatio',
+      'lastInferenceAt',
+      'lastInferenceStale',
+      'predictionsLast7Days',
+    ]) {
+      assert.match(route, new RegExp(`\\b${field.replace(/[.*+?^${}()|[\\]\\\\]/g, '\\\\$&')}\\b`));
+    }
+  });
+
+  test('maps every non-section refusal to the exact AI-status 403 envelope', async () => {
+    const refusals: HotelAuthorizationRefusal[] = [
+      { ok: false, reason: 'account_denied' },
+      { ok: false, reason: 'account_unavailable' },
+      { ok: false, reason: 'authority_unavailable' },
+      { ok: false, reason: 'property_denied' },
+      { ok: false, reason: 'mutation_denied' },
+      { ok: false, reason: 'capability_denied', capability: 'manage_inventory_orders' },
+      { ok: false, reason: 'capability_unavailable', capability: 'manage_inventory_orders' },
+    ];
+
+    for (const refusal of refusals) {
+      const response = inventoryAiAuthorizationRefusalResponse(refusal, REQUEST_ID);
+      assert.equal(response.status, 403);
+      assert.deepEqual(await response.json(), {
+        ok: false,
+        requestId: REQUEST_ID,
+        error: 'forbidden',
+        code: 'forbidden',
+      });
+    }
+  });
+
+  test('passes the section response through without rebuilding it', async () => {
+    const sectionResponse = NextResponse.json(
+      { ok: false, requestId: 'section-request', error: 'section unavailable', code: 'upstream_failure' },
+      { status: 503, headers: { 'Retry-After': '5' } },
+    );
+    const refusal: HotelAuthorizationRefusal = {
+      ok: false,
+      reason: 'section_denied',
+      section: 'inventory',
+      response: sectionResponse,
+    };
+
+    const response = inventoryAiAuthorizationRefusalResponse(refusal, REQUEST_ID);
+    assert.strictEqual(response, sectionResponse);
+    assert.equal(response.status, 503);
+    assert.equal(response.headers.get('Retry-After'), '5');
+    assert.deepEqual(await response.json(), {
+      ok: false,
+      requestId: 'section-request',
+      error: 'section unavailable',
+      code: 'upstream_failure',
+    });
   });
 });
