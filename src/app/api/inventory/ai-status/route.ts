@@ -36,7 +36,7 @@
  *                                  fresh (e.g. one prediction landed yesterday but
  *                                  the cron has been failing for a week).
  *
- * Auth: requireSession + userHasPropertyAccess. The page is reachable by any
+ * Auth: the shared request authorization facade. The page is reachable by any
  * authenticated user with property access (not just owner).
  *
  * The page renders these numbers in plain English for the GM:
@@ -47,15 +47,17 @@
 
 import { NextRequest, NextResponse } from 'next/server';
 import { isUuid } from '@/lib/api-validate';
-import { requireSession, userHasPropertyAccess } from '@/lib/api-auth';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { getOrMintRequestId, log } from '@/lib/log';
+import {
+  createRequestAuthorization,
+  type HotelAuthorizationRefusal,
+} from '@/lib/authorization/request';
 import {
   activeInventoryItemIds,
   filterInventoryMlRowsToActiveItems,
 } from '@/lib/inventory-ml-active';
 import { err, ApiErrorCode } from '@/lib/api-response';
-import { requireSectionEnabled } from '@/lib/sections/server';
 import {
   fetchInventoryAiRows,
   inventoryAiUnavailableResponse,
@@ -74,20 +76,40 @@ export const maxDuration = 15;
 // before the doctor pages.
 const STALE_INFERENCE_HOURS = 26;
 
+function authorizationRefusalResponse(
+  refusal: HotelAuthorizationRefusal,
+  requestId: string,
+): NextResponse {
+  // Section failures carry the existing section-disabled/unavailable response
+  // and must reach the caller unchanged.
+  if (refusal.reason === 'section_denied') return refusal.response;
+
+  // The former property-access gate collapsed account, authority, and property
+  // failures into this exact generic 403 envelope. Keep that wire contract
+  // while the facade supplies the authoritative decision.
+  return err('forbidden', {
+    requestId,
+    status: 403,
+    code: ApiErrorCode.Forbidden,
+  });
+}
+
 export async function GET(req: NextRequest): Promise<NextResponse> {
   const requestId = getOrMintRequestId(req);
-  const session = await requireSession(req);
+  const authorization = createRequestAuthorization(req, { requestId });
+  const session = await authorization.requireSession();
   if (!session.ok) return session.response;
 
   const propertyId = new URL(req.url).searchParams.get('propertyId');
   if (!isUuid(propertyId)) {
     return err('invalid_property_id', { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
   }
-  if (!(await userHasPropertyAccess(session.userId, propertyId))) {
-    return err('forbidden', { requestId, status: 403, code: ApiErrorCode.Forbidden });
-  }
-  const sectionGate = await requireSectionEnabled(req, propertyId, 'inventory');
-  if (!sectionGate.ok) return sectionGate.response;
+  const hotel = await session.authorizeHotel({
+    propertyId,
+    intent: 'read',
+    checks: [{ kind: 'section', section: 'inventory' }],
+  });
+  if (!hotel.ok) return authorizationRefusalResponse(hotel, requestId);
 
   try {
     const sevenDaysAgoIso = new Date(Date.now() - 7 * 86400000).toISOString();

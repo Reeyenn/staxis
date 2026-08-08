@@ -327,4 +327,50 @@ describe('request authorization facade', () => {
     assert.match(route, /forbidden_property/);
     assert.doesNotMatch(route, /property_access/);
   });
+
+  test('inventory AI status keeps its wire contract while using the facade', () => {
+    const route = readFileSync(join(
+      process.cwd(),
+      'src/app/api/inventory/ai-status/route.ts',
+    ), 'utf8');
+    const requestId = route.indexOf('const requestId = getOrMintRequestId(req);');
+    const authorization = route.indexOf('const authorization = createRequestAuthorization(req, { requestId });');
+    const session = route.indexOf('const session = await authorization.requireSession();');
+    const property = route.indexOf('const propertyId = new URL(req.url).searchParams.get(\'propertyId\');');
+    const validation = route.indexOf('if (!isUuid(propertyId))');
+    const hotel = route.indexOf('const hotel = await session.authorizeHotel({');
+    const section = route.indexOf("checks: [{ kind: 'section', section: 'inventory' }]");
+    const dataRead = route.indexOf('const sevenDaysAgoIso =');
+
+    assert.ok(requestId >= 0);
+    assert.ok(authorization > requestId);
+    assert.ok(session > authorization);
+    assert.ok(property > session);
+    assert.ok(validation > property);
+    assert.ok(hotel > validation);
+    assert.ok(section > hotel);
+    assert.ok(dataRead > section);
+    assert.match(route, /createRequestAuthorization/);
+    assert.doesNotMatch(route, /\buserHasPropertyAccess\b/);
+    assert.doesNotMatch(route, /requireSectionEnabled/);
+    assert.match(route, /if \(refusal\.reason === 'section_denied'\) return refusal\.response;/);
+    assert.match(route, /return err\('forbidden', \{[\s\S]*?status: 403,[\s\S]*?code: ApiErrorCode\.Forbidden/);
+    assert.match(route, /inventoryAiUnavailableResponse\(requestId\)/);
+    for (const field of [
+      'aiMode',
+      'daysSinceFirstCount',
+      'itemsTotal',
+      'itemsWithModel',
+      'itemsGraduated',
+      'itemsExpectedToGraduate',
+      'overfitRatio',
+      'currentMaeRatioVsMean',
+      'currentMaeRatio: overfitRatio',
+      'lastInferenceAt',
+      'lastInferenceStale',
+      'predictionsLast7Days',
+    ]) {
+      assert.match(route, new RegExp(`\\b${field.replace(/[.*+?^${}()|[\\]\\\\]/g, '\\\\$&')}\\b`));
+    }
+  });
 });
