@@ -47,6 +47,15 @@ export const MAX_MULTI_HOTEL_RESPONSE_BYTES = 3_000_000;
 /** Reserve envelope/coverage bytes so the serialized API response stays bounded. */
 const RESPONSE_OVERHEAD_RESERVE_BYTES = 16_384;
 
+/**
+ * Reply counts are bounded in proportion to the per-hotel entry window. A
+ * 500-hotel read therefore cannot issue 500 requests each asking for 1,001
+ * replies, while a one-hotel read keeps the historical 1,000-row cap.
+ */
+export function multiHotelReplyReadLimit(entryLimit: number): number {
+  return Math.max(10, Math.min(LOG_REPLY_LIMIT, Math.max(1, entryLimit) * 5));
+}
+
 interface RawLogRow {
   id: string;
   title: string;
@@ -284,6 +293,7 @@ async function staffNames(pid: string, ids: readonly string[]): Promise<ReadResu
 async function readLogbookForHotel(
   hotel: MultiHotelScopeHotel,
   entryLimit = LOG_ENTRY_LIMIT,
+  replyLimit = multiHotelReplyReadLimit(entryLimit),
 ): Promise<ReadResult<MultiHotelLogEntry[]>> {
   const { data, error } = await supabaseAdmin
     .from('comms_log_entries')
@@ -302,12 +312,12 @@ async function readLogbookForHotel(
     .select('entry_id')
     .eq('property_id', hotel.propertyId)
     .in('entry_id', ids)
-    .limit(LOG_REPLY_LIMIT + 1);
+    .limit(replyLimit + 1);
   if (replies.error) return { ok: false, value: [] };
   const replyRows = (replies.data ?? []) as Array<{ entry_id: string }>;
-  const replyCountComplete = replyRows.length <= LOG_REPLY_LIMIT;
+  const replyCountComplete = replyRows.length <= replyLimit;
   const counts = new Map<string, number>();
-  for (const row of replyRows.slice(0, LOG_REPLY_LIMIT)) {
+  for (const row of replyRows.slice(0, replyLimit)) {
     counts.set(row.entry_id, (counts.get(row.entry_id) ?? 0) + 1);
   }
   const names = await staffNames(
@@ -587,6 +597,7 @@ export async function readMultiHotelSurface(
     1,
     Math.min(surfaceHotelLimit, Math.floor(MAX_MULTI_HOTEL_RESPONSE_ROWS / Math.max(1, attemptedHotels.length))),
   );
+  const perHotelReplyLimit = multiHotelReplyReadLimit(perHotelLimit);
   const results = await mapWithConcurrency(attemptedHotels, async (hotel) => {
     if (surface === 'assigned-by-me' && hotel.identityAmbiguous) {
       return { hotel, result: { ok: false, value: [] }, reason: 'identity_unavailable' as const };
@@ -607,7 +618,7 @@ export async function readMultiHotelSurface(
     }
     try {
       const read = surface === 'logbook'
-        ? readLogbookForHotel(hotel, perHotelLimit) as Promise<ReadResult<unknown[]>>
+        ? readLogbookForHotel(hotel, perHotelLimit, perHotelReplyLimit) as Promise<ReadResult<unknown[]>>
         : surface === 'assigned-by-me'
           ? readAssignedForHotel(hotel, perHotelLimit) as Promise<ReadResult<unknown[]>>
           : readKnowsForHotel(hotel, perHotelLimit) as Promise<ReadResult<unknown[]>>;

@@ -7,6 +7,7 @@ import {
   buildMultiHotelRowsPayload,
   isSharedPropertyMemory,
   MAX_MULTI_HOTEL_RESPONSE_ROWS,
+  multiHotelReplyReadLimit,
 } from '@/lib/staxis/multi-hotel';
 import {
   authorizationReceiptMatches,
@@ -293,6 +294,14 @@ describe('multi-hotel Staxis access contract', () => {
       formatMultiHotelDate('2026-08-08T01:00:00Z', 'not/a-timezone', 'en-US'),
       new Date('2026-08-08T01:00:00Z').toLocaleDateString('en-US', { month: 'short', day: 'numeric' }),
     );
+  });
+
+  test('reply-count reads scale with a small per-hotel entry window', () => {
+    assert.equal(multiHotelReplyReadLimit(200), 1_000);
+    assert.equal(multiHotelReplyReadLimit(10), 50);
+    assert.ok(multiHotelReplyReadLimit(10) < 1_001);
+    const read = source('src', 'lib', 'staxis', 'multi-hotel.ts');
+    assert.match(read, /readLogbookForHotel\(hotel, perHotelLimit, perHotelReplyLimit\)/);
   });
 
   test('property memory excludes both current-user and other-user subjects', () => {
