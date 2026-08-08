@@ -433,6 +433,11 @@ export function MobileConcourseNav({
           </button>
         )}
 
+        {/* The live Ask control is portaled here by AskStaxisBar. Keeping the
+            slot in the phone header means it travels with the shell instead
+            of floating over whichever page content is currently scrolled. */}
+        <div className={styles.askSlot} data-staxis-mobile-ask-slot />
+
         <button
           type="button"
           className={styles.avatar}

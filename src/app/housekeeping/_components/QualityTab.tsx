@@ -1214,13 +1214,13 @@ function ChecklistRow({
   const isFail = draft.state === 'minor' || draft.state === 'major' || draft.state === 'critical';
   const isCritical = draft.state === 'critical';
   return (
-    <div style={{
+    <div className="hk-quality-checklist-row" style={{
       border: `1px solid ${isFail ? (isCritical ? 'rgba(184,92,61,0.55)' : 'rgba(184,92,61,0.35)') : T.rule}`,
       borderRadius: 12, padding: '11px 13px',
       background: isFail ? (isCritical ? T.redDim : T.warmDim) : T.paper,
     }}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-        <div style={{ flex: 1, fontFamily: FONT_SANS, fontSize: 13.5, color: T.ink }}>
+      <div className="hk-quality-checklist-controls" style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+        <div className="hk-quality-checklist-label" style={{ flex: 1, fontFamily: FONT_SANS, fontSize: 13.5, color: T.ink }}>
           {label}
           {item.requiresPhotoOnFail && (
             <span style={{ marginLeft: 6, color: T.warm, fontSize: 9, fontFamily: FONT_MONO }}>
@@ -1228,7 +1228,7 @@ function ChecklistRow({
             </span>
           )}
         </div>
-        <div style={{ display: 'flex', gap: 4 }}>
+        <div className="hk-quality-severity-group" style={{ display: 'flex', gap: 4 }}>
           <SevButton label={'Pass'} active={draft.state === 'pass'} tone="sage" onClick={() => onState('pass')} />
           <SevButton label={'Minor'} active={draft.state === 'minor'} tone="warm" onClick={() => onState('minor')} />
           <SevButton label={'Major'} active={draft.state === 'major'} tone="warm" onClick={() => onState('major')} />
@@ -1238,6 +1238,7 @@ function ChecklistRow({
       {isFail && (
         <div style={{ marginTop: 10, display: 'flex', flexDirection: 'column', gap: 8 }}>
           <input
+            className="hk-quality-note-input"
             type="text"
             placeholder={'Note (what to fix)'}
             value={draft.note}
@@ -1248,7 +1249,7 @@ function ChecklistRow({
             }}
           />
           <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-            <label style={{
+            <label className="hk-quality-photo-label" style={{
               display: 'inline-flex', alignItems: 'center', gap: 6, padding: '6px 12px', borderRadius: 999,
               border: `1px solid ${T.rule}`, background: T.paper, fontFamily: FONT_SANS, fontSize: 12, color: T.ink, cursor: 'pointer',
             }}>
@@ -1287,6 +1288,7 @@ function SevButton({
   }[tone];
   return (
     <button
+      className="hk-quality-severity-button"
       onClick={onClick}
       style={{
         height: 26, padding: '0 9px', borderRadius: 999,

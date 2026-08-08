@@ -36,6 +36,7 @@
 // colliding with the app's global CSS.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { usePathname } from 'next/navigation';
 import { useAuth } from '@/contexts/AuthContext';
 import { useProperty } from '@/contexts/PropertyContext';
@@ -212,6 +213,7 @@ export function AskStaxisBar() {
   const [query, setQuery] = useState('');
   const [dictating, setDictating] = useState(false);
   const [mobileOpen, setMobileOpen] = useState(false);
+  const [mobileAskSlot, setMobileAskSlot] = useState<HTMLElement | null>(null);
   const [feedbackOpen, setFeedbackOpen] = useState(false);
   const [activityOpen, setActivityOpen] = useState(false);
 
@@ -248,6 +250,14 @@ export function AskStaxisBar() {
   const openRef = useRef(false);
   const noticesButtonRef = useRef<HTMLButtonElement | null>(null);
   const noticesRef = useRef<HTMLDivElement | null>(null);
+
+  // The phone shell owns the header lane. AskStaxisBar is loaded lazily after
+  // that shell, so resolve the slot after mount and portal only the trigger;
+  // the sheet remains in this component's normal tree and keeps its existing
+  // focus/animation behavior.
+  useEffect(() => {
+    setMobileAskSlot(document.querySelector<HTMLElement>('[data-staxis-mobile-ask-slot]'));
+  }, [pathname]);
 
   const {
     messages,
@@ -1364,17 +1374,20 @@ export function AskStaxisBar() {
           </div>
         </section>
       )}
-      <button
-        ref={mobileFabRef}
-        type="button"
-        className={`asx-mobile-fab asx-mobile-fab-docked${mobileOpen ? ' asx-mobile-fab-open' : ''}`}
-        onClick={mobileOpen ? closeMobile : openMobile}
-        aria-label={mobileOpen ? 'Close Staxis' : 'Ask Staxis'}
-        aria-expanded={mobileOpen}
-        aria-controls="staxis-mobile-sheet"
-      >
-        {mobileOpen ? <CloseX /> : <span aria-hidden>✦</span>}
-      </button>
+      {mobileAskSlot ? createPortal(
+        <button
+          ref={mobileFabRef}
+          type="button"
+          className={`asx-mobile-fab asx-mobile-fab-docked${mobileOpen ? ' asx-mobile-fab-open' : ''}`}
+          onClick={mobileOpen ? closeMobile : openMobile}
+          aria-label={mobileOpen ? 'Close Staxis' : 'Ask Staxis'}
+          aria-expanded={mobileOpen}
+          aria-controls="staxis-mobile-sheet"
+        >
+          {mobileOpen ? <CloseX /> : <span aria-hidden>✦</span>}
+        </button>,
+        mobileAskSlot,
+      ) : null}
 
       {/* ── The panel ── anchored to the mark wherever the mark ended up.
           Rendered while `closing` too, which is the whole of B1 · Sink: the
@@ -2220,7 +2233,7 @@ button.asx-notice-row:focus-visible{outline:2px solid var(--asx-brand);outline-o
   /* Keep the assistant trigger in the existing phone header lane instead of
      covering a primary action in the page body. The sheet itself already has
      a close action, so the trigger can leave the focus order while it is open. */
-  .asx-mobile-fab.asx-mobile-fab-docked{top:max(6px,env(safe-area-inset-top,0px));right:68px;bottom:auto;
+  .asx-mobile-fab.asx-mobile-fab-docked{position:static;top:auto;right:auto;bottom:auto;
     width:44px;height:44px;border-radius:14px;animation:none;box-shadow:0 7px 18px -10px rgba(62,92,72,.6);}
   .asx-mobile-fab.asx-mobile-fab-docked.asx-mobile-fab-open{visibility:hidden;}
 
