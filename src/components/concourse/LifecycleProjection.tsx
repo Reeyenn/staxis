@@ -397,6 +397,12 @@ export function LifecycleProjection({
         <span>{generatedAt ? `Projection read ${generatedAt}` : 'Projection time unavailable'}</span>
       </div>
 
+      {payload.coverage.truncated && (
+        <p className="fx-life-stale" role="status">
+          Showing the latest 100 lifecycle records; older records are not included in this view.
+        </p>
+      )}
+
       {error && (
         <p className="fx-life-stale" role="status">
           This is the last available projection. A refresh did not complete.

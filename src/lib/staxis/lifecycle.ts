@@ -139,6 +139,7 @@ export interface LifecycleProjection {
 export interface LifecycleResponse {
   contractVersion: typeof LIFECYCLE_CONTRACT_VERSION;
   generatedAt: string;
+  coverage: { returned: number; limit: 100; truncated: boolean };
   items: readonly LifecycleProjection[];
 }
 
@@ -357,6 +358,23 @@ function sameScope(
   precedence: number,
 ): string {
   return `${claimScope}\u0000${authority}\u0000${precedence}`;
+}
+
+function latestSourceByClaimScope(sources: readonly LifecycleSourceSummary[]): readonly LifecycleSourceSummary[] {
+  const latest = new Map<string, LifecycleSourceSummary>();
+  for (const source of sources) {
+    const current = latest.get(source.claimScope);
+    if (!current) {
+      latest.set(source.claimScope, source);
+      continue;
+    }
+    const sourceEffectiveAt = Date.parse(source.effectiveAt);
+    const currentEffectiveAt = Date.parse(current.effectiveAt);
+    if (sourceEffectiveAt > currentEffectiveAt || (sourceEffectiveAt === currentEffectiveAt && source.id < current.id)) {
+      latest.set(source.claimScope, source);
+    }
+  }
+  return [...latest.values()];
 }
 
 function sourceSummary(value: unknown): LifecycleSourceSummary | null {
@@ -626,7 +644,6 @@ export function parseLifecycleProjectionRow(row: unknown): LifecycleProjection |
   }
   if (sourceIds.size !== sourceFactIds.length || sourceFactIds.some((sourceId) => !sourceIds.has(sourceId))) return null;
   if (sources.some((source) => Date.parse(source.receivedAt) > Date.parse(recordedAt))) return null;
-  if (sources.some((source) => Date.parse(source.asOf) > Date.parse(asOf) || Date.parse(source.observedAt) > Date.parse(observedAt))) return null;
   if (Date.parse(effectiveAt) !== Math.min(...sources.map((source) => Date.parse(source.effectiveAt)))) return null;
   if (Date.parse(asOf) !== Math.min(...sources.map((source) => Date.parse(source.asOf)))) return null;
   if (Date.parse(observedAt) !== Math.max(...sources.map((source) => Date.parse(source.observedAt)))) return null;
@@ -672,7 +689,7 @@ export function parseLifecycleProjectionRow(row: unknown): LifecycleProjection |
   if (authorityScopes.length === 0 && (authorityLevel !== null || authorityPrecedence !== null)) return null;
   if (authorityScopes.length === 1 && (authorityLevel !== authorityScopes[0].authority || authorityPrecedence !== authorityScopes[0].precedence)) return null;
   if (authorityScopes.length > 1 && (authorityLevel !== null || authorityPrecedence !== null)) return null;
-  const sourceScopes = new Set(sources.map((source) => sameScope(source.claimScope, source.authority, source.precedence)));
+  const sourceScopes = new Set(latestSourceByClaimScope(sources).map((source) => sameScope(source.claimScope, source.authority, source.precedence)));
   const declaredScopes = new Set(authorityScopes.map((scope) => sameScope(scope.claimScope, scope.authority, scope.precedence)));
   if (sourceScopes.size !== declaredScopes.size || [...sourceScopes].some((scope) => !declaredScopes.has(scope))) return null;
 

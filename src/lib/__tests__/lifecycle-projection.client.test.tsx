@@ -155,6 +155,7 @@ describe('Staxis lifecycle projection copy', () => {
     const payload = {
       contractVersion: 'staxis-lifecycle.v1',
       generatedAt: '2026-08-08T12:00:00.000Z',
+      coverage: { returned: 100, limit: 100, truncated: true },
       items: [{
         contractVersion: 'staxis-lifecycle.v1',
         id: 'projection-id',
@@ -242,8 +243,13 @@ describe('Staxis lifecycle projection copy', () => {
     assert.match(rendered, /Room 214 inspection reference recorded/);
     assert.match(rendered, /Not observable/);
     assert.match(rendered, /Outcome evidence recorded/);
+    assert.match(rendered, /Showing the latest 100 lifecycle records; older records are not included in this view\./);
     const completedSteps = findAll(tree, (props) => props.className === 'fx-life-state fx-life-state-on');
     assert.equal(completedSteps.length, 4);
     assert.equal(findAll(tree, (props) => props.className === 'fx-life-state fx-life-state-terminal').length, 1);
+
+    const completePayload = { ...payload, coverage: { returned: 1, limit: 100 as const, truncated: false } } satisfies LifecycleResponse;
+    const completeTree = resolveTree(LifecycleProjection({ payload: completePayload }));
+    assert.doesNotMatch(textOf(completeTree).join(' '), /Showing the latest 100 lifecycle records/);
   });
 });

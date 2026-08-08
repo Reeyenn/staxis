@@ -12,10 +12,13 @@ const PID = '10000000-0000-4000-8000-000000000001';
 const PROJECTION_ID = '20000000-0000-4000-8000-000000000001';
 const SOURCE_ID = '30000000-0000-4000-8000-000000000001';
 const SOURCE_B_ID = '30000000-0000-4000-8000-000000000002';
+const SOURCE_VERSION_ID = '30000000-0000-4000-8000-000000000003';
 const SOURCE_RECEIPT_ID = '40000000-0000-4000-8000-000000000001';
 const SOURCE_B_RECEIPT_ID = '40000000-0000-4000-8000-000000000002';
+const SOURCE_VERSION_RECEIPT_ID = '40000000-0000-4000-8000-000000000003';
 const SOURCE_DEFINITION_ID = '50000000-0000-4000-8000-000000000001';
 const SOURCE_B_DEFINITION_ID = '50000000-0000-4000-8000-000000000002';
+const SOURCE_VERSION_DEFINITION_ID = '50000000-0000-4000-8000-000000000003';
 const ACTION_ID = '60000000-0000-4000-8000-000000000001';
 const PROPOSAL_ID = '70000000-0000-4000-8000-000000000001';
 const APPROVAL_ID = '80000000-0000-4000-8000-000000000001';
@@ -56,6 +59,19 @@ const SOURCE_B = {
   receiptId: SOURCE_B_RECEIPT_ID,
   authority: 4,
   precedence: 2,
+};
+
+const SOURCE_VERSION = {
+  ...SOURCE,
+  id: SOURCE_VERSION_ID,
+  sourceDefinitionId: SOURCE_VERSION_DEFINITION_ID,
+  receiptId: SOURCE_VERSION_RECEIPT_ID,
+  effectiveAt: '2026-08-08T11:00:00.000Z',
+  asOf: '2026-08-08T11:00:00.000Z',
+  observedAt: '2026-08-08T11:01:00.000Z',
+  receivedAt: '2026-08-08T11:02:00.000Z',
+  authority: 9,
+  precedence: 4,
 };
 
 function action(overrides: Record<string, unknown> = {}) {
@@ -258,6 +274,27 @@ describe('strict lifecycle projection parser', () => {
     assert.equal(parseLifecycleProjectionRow({ ...baseRow('observed'), authority: { owner: { kind: 'app', label: 'Example source', role: 'system' }, level: -1, precedence: 3, scopes: [{ claimScope: 'example.claim', authority: 7, precedence: 3 }] } }), null);
     assert.equal(parseLifecycleProjectionRow({ ...baseRow('observed'), authority: { owner: { kind: 'app', label: 'Example source', role: 'system' }, level: 101, precedence: 3, scopes: [{ claimScope: 'example.claim', authority: 101, precedence: 3 }] } }), null);
     assert.equal(parseLifecycleProjectionRow({ ...baseRow('observed'), authority: { owner: { kind: 'app', label: 'Example source', role: 'system' }, level: 4, precedence: 2, scopes: [{ claimScope: 'another.claim', authority: 4, precedence: 2 }] } }), null);
+  });
+
+  test('uses the latest source version for each authority claim scope', () => {
+    const row = {
+      ...baseRow('observed'),
+      source_fact_ids: [SOURCE_ID, SOURCE_VERSION_ID],
+      sources: [SOURCE, SOURCE_VERSION],
+      observed_at: SOURCE_VERSION.observedAt,
+      recorded_at: '2026-08-08T11:05:00.000Z',
+      authority: {
+        owner: { kind: 'app', label: 'Example source', role: 'system' },
+        level: 9,
+        precedence: 4,
+        scopes: [{ claimScope: 'example.claim', authority: 9, precedence: 4 }],
+      },
+    };
+    assert.ok(parseLifecycleProjectionRow(row));
+    assert.equal(parseLifecycleProjectionRow({
+      ...row,
+      authority: { ...row.authority, level: 7, precedence: 3, scopes: [{ claimScope: 'example.claim', authority: 7, precedence: 3 }] },
+    }), null);
   });
 
   test('rejects malformed action contracts instead of casting them into success', () => {
