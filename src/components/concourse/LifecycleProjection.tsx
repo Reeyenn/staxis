@@ -138,12 +138,18 @@ function itemOwnerLine(item: LifecycleProjectionItem): string | null {
   if (!item.domainWorkItem) return null;
   const owner = item.domainWorkItem.owner.label?.trim();
   const role = item.domainWorkItem.owner.role?.trim();
-  if (owner && role) return `Owner: ${owner} (${role})`;
-  if (owner) return `Owner: ${owner}`;
-  if (role) return `Owner role: ${role}`;
-  if (item.domainWorkItem.owner.kind === 'unassigned') return 'Owner: unassigned';
-  if (item.domainWorkItem.owner.kind === 'unknown') return 'Owner: unknown';
-  return `Owner: ${item.domainWorkItem.owner.kind}`;
+  const ownerLabel = owner && role
+    ? `${owner} (${role})`
+    : owner
+      ? owner
+      : role
+        ? `role ${role}`
+        : item.domainWorkItem.owner.kind === 'unassigned'
+          ? 'unassigned'
+          : item.domainWorkItem.owner.kind === 'unknown'
+            ? 'unknown'
+            : item.domainWorkItem.owner.kind;
+  return `Owner at last verified update: ${ownerLabel} · ${lifecycleTime(item.domainWorkItem.observedAt) ?? item.domainWorkItem.observedAt}`;
 }
 
 function authorityLine(item: LifecycleProjectionItem): string {

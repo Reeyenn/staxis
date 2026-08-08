@@ -217,7 +217,7 @@ describe('Staxis lifecycle projection copy', () => {
             observedAt: null,
           },
         },
-        domainWorkItem: { kind: 'work_order', id: 'work-id', label: 'Room 214 inspection', href: null, owner: { kind: 'human' as const, label: 'Morgan', role: 'GM' } },
+        domainWorkItem: { kind: 'work_order', id: 'work-id', label: 'Room 214 inspection', href: null, observedAt: '2026-08-08T11:06:00.000Z', owner: { kind: 'human' as const, label: 'Morgan', role: 'GM' } },
         outcome: { state: 'not_observable' as const, basis: 'The source does not expose completion.', observedAt: null },
         reason: 'No trusted completion signal is available.',
       }],
@@ -229,7 +229,7 @@ describe('Staxis lifecycle projection copy', () => {
     assert.match(rendered, /Does not contact a vendor/);
     assert.match(rendered, /Approval approved/);
     assert.match(rendered, /Execution receipt recorded/);
-    assert.match(rendered, /Owner: Morgan \(GM\)/);
+    assert.match(rendered, /Owner at last verified update: Morgan \(GM\)/);
     assert.match(rendered, /Room 214 inspection reference recorded/);
     assert.match(rendered, /Not observable/);
     const completedSteps = findAll(tree, (props) => props.className === 'fx-life-state fx-life-state-on');
