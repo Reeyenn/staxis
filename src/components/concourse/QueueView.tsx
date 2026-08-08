@@ -471,6 +471,12 @@ export function QueueView({ lang }: { lang: 'en' | 'es' }) {
           setFocusId={setFocusId}
           canSeeFindings={canSeeHotelBrief}
           viewerRole={hotelStanding.role}
+          multiHotelHotels={properties.length > 1 ? properties.map((property) => ({
+            propertyId: property.id,
+            hotelName: property.name,
+            timezone: property.timezone ?? null,
+          })) : undefined}
+          multiHotelScopeKey={viewerAuthorizationKey}
         />
       )}
       {!drilling && fallback === 'empty' && (
@@ -517,6 +523,8 @@ function HotelQueue({
   backHref = '/feed',
   canSeeFindings,
   viewerRole,
+  multiHotelHotels,
+  multiHotelScopeKey,
 }: {
   lang: 'en' | 'es';
   /** Set only on a portfolio drill-down. Absent = the hotel the app is in. */
@@ -532,6 +540,8 @@ function HotelQueue({
   canSeeFindings: boolean;
   /** This person's hat at this hotel, for the companion's own mount gate. */
   viewerRole: AppRole | null;
+  multiHotelHotels?: import('@/lib/staxis/multi-hotel-types').MultiHotelLabel[];
+  multiHotelScopeKey?: string | null;
 }) {
   const es = false;
   const L = <K extends keyof typeof S>(k: K) => (S[k].en);
@@ -598,6 +608,8 @@ function HotelQueue({
           onReadState={setReadState}
           canSeeFindings={canSeeFindings}
           hotelName={hotelName ?? activeHotelName ?? null}
+          multiHotelHotels={multiHotelHotels}
+          multiHotelScopeKey={multiHotelScopeKey}
           brief={canSeeFindings ? (
             <MorningBriefView
               brief={brief}
