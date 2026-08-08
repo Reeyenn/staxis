@@ -90,7 +90,9 @@ interface TestState {
   accountLookupError: boolean;
   propertyOwnerAuthUserIds: string[];
   staffRows: StaffRow[];
+  staffLookupCalls: number;
   grantCalls: Array<Record<string, unknown>>;
+  guardedCreateCalls: number;
   createdAuthUsers: Array<{ id: string; email: string }>;
   auditRows: Array<Record<string, unknown>>;
   finalizeErrorCode: string | null;
@@ -99,6 +101,7 @@ interface TestState {
   beforeGuardedCreate: (() => void) | null;
   beforeGuardedRevoke: (() => void) | null;
   beforeInviteListPage: (() => void) | null;
+  optionsLookupError: boolean;
 }
 
 let state: TestState;
@@ -147,7 +150,9 @@ function resetState(): void {
     accountLookupError: false,
     propertyOwnerAuthUserIds: [],
     staffRows: [],
+    staffLookupCalls: 0,
     grantCalls: [],
+    guardedCreateCalls: 0,
     createdAuthUsers: [],
     auditRows: [],
     finalizeErrorCode: null,
@@ -156,6 +161,7 @@ function resetState(): void {
     beforeGuardedCreate: null,
     beforeGuardedRevoke: null,
     beforeInviteListPage: null,
+    optionsLookupError: false,
   };
 }
 
@@ -170,6 +176,20 @@ function normalizeAuthorityAtHotel(
   state.authorityMode = 'normalized';
   state.normalizedStandings = [{ propertyId: HOTEL_A, operationalRole, hotelMutationAllowed }];
   state.companyPropertyIds = [HOTEL_A];
+}
+
+function normalizeCompanyAuthority(): void {
+  caller().role = 'front_desk';
+  caller().property_access = [];
+  state.authorityMode = 'normalized';
+  state.companyPropertyIds = [HOTEL_A, HOTEL_B];
+  state.normalizedStandings = [HOTEL_A, HOTEL_B].map((propertyId) => ({
+    propertyId,
+    operationalRole: 'owner' as AppRole,
+    hotelMutationAllowed: true,
+    accessProfile: 'organization_owner' as const,
+    scopeType: 'organization' as const,
+  }));
 }
 
 function seedExistingAccount(
@@ -310,11 +330,14 @@ function installSupabaseStub(): void {
         && (!normalized
           || (state.authorityMode === 'normalized'
             && args?.p_organization_id === ORGANIZATION_A
-            && args?.p_membership_scope === 'property'
-            && propertyIds.length > 0
-            && propertyIds.every((id) => state.normalizedStandings.some(
-              (candidate) => candidate.propertyId === id,
-            ))));
+            && (args?.p_membership_scope === 'property'
+              || args?.p_membership_scope === 'company')
+            && ((args?.p_membership_scope === 'company'
+              && args?.p_covered_property_ids === null)
+              || (propertyIds.length > 0
+                && propertyIds.every((id) => state.normalizedStandings.some(
+                  (candidate) => candidate.propertyId === id,
+                ))))));
       if (!mayGrant) return { data: { ok: false, reason: 'denied' }, error: null };
       if (!target?.active) return { data: { ok: false, reason: 'not_found' }, error: null };
       if (target.role !== role && target.property_access.length > 0) {
@@ -326,7 +349,7 @@ function installSupabaseStub(): void {
       if (staffId) {
         const staff = state.staffRows.find((row) => row.id === staffId);
         const allowedStaffPropertyIds = normalized
-          ? propertyIds
+          ? propertyIds.length > 0 ? propertyIds : state.companyPropertyIds
           : [args?.p_hotel_id as string];
         if (!staff
             || !allowedStaffPropertyIds.includes(staff.property_id)
@@ -360,6 +383,7 @@ function installSupabaseStub(): void {
       };
     }
     if (fn === 'staxis_create_account_invite_guarded') {
+      state.guardedCreateCalls += 1;
       state.beforeGuardedCreate?.();
       const actor = state.accounts.find((row) => row.id === args?.p_actor_account_id);
       const normalized = args?.p_organization_id !== null;
@@ -383,12 +407,15 @@ function installSupabaseStub(): void {
         && (!normalized
           || (state.authorityMode === 'normalized'
             && args?.p_organization_id === ORGANIZATION_A
-            && args?.p_membership_scope === 'property'
-            && propertyIds.length > 0
-            && new Set(propertyIds).size === propertyIds.length
-            && propertyIds.every((id) => state.normalizedStandings.some(
-              (candidate) => candidate.propertyId === id,
-            ))));
+            && (args?.p_membership_scope === 'property'
+              || args?.p_membership_scope === 'company')
+            && ((args?.p_membership_scope === 'company'
+              && args?.p_covered_property_ids === null)
+              || (propertyIds.length > 0
+                && new Set(propertyIds).size === propertyIds.length
+                && propertyIds.every((id) => state.normalizedStandings.some(
+                  (candidate) => candidate.propertyId === id,
+                ))))));
       if (!mayGrant) return { data: { ok: false, reason: 'denied' }, error: null };
       const invite: InviteRow = {
         id: testInviteId(state.invites.length + 1),
@@ -405,7 +432,7 @@ function installSupabaseStub(): void {
         membership_scope: normalized
           ? args?.p_membership_scope as 'company' | 'property'
           : null,
-        covered_property_ids: normalized && args?.p_membership_scope === 'property'
+        covered_property_ids: normalized && Array.isArray(args?.p_covered_property_ids)
           ? propertyIds
           : null,
         target_staff_id: typeof args?.p_target_staff_id === 'string'
@@ -758,6 +785,13 @@ function installSupabaseStub(): void {
           };
         },
         then: (resolve: (value: unknown) => unknown) => {
+          if (state.optionsLookupError) {
+            return resolve({
+              data: null,
+              error: { message: 'forced options lookup failure' },
+              count: 0,
+            });
+          }
           const rows = (hotelIds ?? []).flatMap((id) => {
             const name = hotelName(id);
             return name ? [{ id, name }] : [];
@@ -992,7 +1026,10 @@ function staffBuilder(): Record<string, unknown> {
       equals.set(column, value);
       return builder;
     },
-    maybeSingle: async () => ({ data: matches()[0] ?? null, error: null }),
+    maybeSingle: async () => {
+      state.staffLookupCalls += 1;
+      return { data: matches()[0] ?? null, error: null };
+    },
   };
   return builder;
 }
@@ -1049,6 +1086,18 @@ function revokeRequest(inviteId: string): NextRequest {
 function listRequest(hotelId = HOTEL_A): NextRequest {
   return new NextRequest(
     `https://staxis.test/api/auth/invites?hotelId=${hotelId}`,
+    {
+      headers: {
+        authorization: 'Bearer route-contract-token',
+        cookie: `staxis_device=${'a'.repeat(64)}`,
+      },
+    },
+  );
+}
+
+function companyListRequest(organizationId = ORGANIZATION_A): NextRequest {
+  return new NextRequest(
+    `https://staxis.test/api/auth/invites?organizationId=${organizationId}`,
     {
       headers: {
         authorization: 'Bearer route-contract-token',
@@ -1312,6 +1361,71 @@ describe('POST /api/auth/invites hierarchy', () => {
     assert.equal(state.invites.at(-1)?.target_staff_id, STAFF_ID);
   });
 
+  test('a finite company invite proceeds when its anchor is in the selected coverage', async () => {
+    normalizeCompanyAuthority();
+    const response = await createInvite(managerRequest({
+      hotelId: HOTEL_B,
+      email: 'company-subset@example.test',
+      role: 'owner',
+      scope: 'company',
+      propertyIds: [HOTEL_B],
+    }));
+    assert.equal(response.status, 201);
+    assert.equal(state.guardedCreateCalls, 1);
+    assert.equal(state.invites.at(-1)?.hotel_id, HOTEL_B);
+    assert.equal(state.invites.at(-1)?.membership_scope, 'company');
+    assert.deepEqual(state.invites.at(-1)?.covered_property_ids, [HOTEL_B]);
+  });
+
+  test('a finite company invite excluding its anchor fails before staff lookup or RPC', async () => {
+    normalizeCompanyAuthority();
+    const response = await createInvite(managerRequest({
+      hotelId: HOTEL_B,
+      email: 'company-anchor-mismatch@example.test',
+      role: 'owner',
+      scope: 'company',
+      propertyIds: [HOTEL_A],
+    }));
+    assert.equal(response.status, 400);
+    assert.match((await response.json()).error, /anchor hotel/i);
+    assert.equal(state.staffLookupCalls, 0);
+    assert.equal(state.guardedCreateCalls, 0);
+    assert.equal(state.grantCalls.length, 0);
+    assert.equal(state.invites.length, 0);
+  });
+
+  test('company coverage mismatch with staffId fails before staff lookup', async () => {
+    normalizeCompanyAuthority();
+    seedStaff({ property_id: HOTEL_B, department: 'front_desk' });
+    const response = await createInvite(managerRequest({
+      hotelId: HOTEL_B,
+      email: 'company-staff-anchor-mismatch@example.test',
+      role: 'owner',
+      scope: 'company',
+      propertyIds: [HOTEL_A],
+      staffId: STAFF_ID,
+    }));
+    assert.equal(response.status, 400);
+    assert.match((await response.json()).error, /anchor hotel/i);
+    assert.equal(state.staffLookupCalls, 0);
+    assert.equal(state.guardedCreateCalls, 0);
+    assert.equal(state.grantCalls.length, 0);
+  });
+
+  test('an all-hotels company invite keeps its legacy anchor behavior', async () => {
+    normalizeCompanyAuthority();
+    const response = await createInvite(managerRequest({
+      hotelId: HOTEL_B,
+      email: 'company-all-hotels@example.test',
+      role: 'owner',
+      scope: 'company',
+    }));
+    assert.equal(response.status, 201);
+    assert.equal(state.guardedCreateCalls, 1);
+    assert.equal(state.invites.at(-1)?.hotel_id, HOTEL_B);
+    assert.equal(state.invites.at(-1)?.covered_property_ids, null);
+  });
+
   test('an owner and admin can create privileged invitations', async () => {
     caller().role = 'owner';
     const ownerResponse = await createInvite(managerRequest({
@@ -1432,6 +1546,52 @@ describe('DELETE /api/auth/invites uses the guarded anti-enumerating boundary', 
 });
 
 describe('GET /api/auth/invites reasserts authority before egress', () => {
+  test('fails closed when company invite options cannot be projected, then retries successfully', async () => {
+    normalizeCompanyAuthority();
+    state.optionsLookupError = true;
+
+    const unavailable = await listInvites(companyListRequest());
+    assert.equal(unavailable.status, 503);
+    const unavailableBody = await unavailable.json() as { data?: unknown; error?: string };
+    assert.equal(unavailableBody.data, undefined);
+    assert.match(unavailableBody.error ?? '', /temporarily unavailable|retry/i);
+
+    // A real successful options projection remains a 200 response, including
+    // its explicit jobs/hotel choices, rather than being confused with the
+    // failed empty-options fallback above.
+    state.optionsLookupError = false;
+    const retried = await listInvites(companyListRequest());
+    assert.equal(retried.status, 200);
+    const retriedBody = await retried.json() as {
+      data?: {
+        invites?: unknown[];
+        options?: { organizationId?: string | null; jobs?: unknown[] };
+      };
+    };
+    assert.deepEqual(retriedBody.data?.invites, []);
+    assert.equal(retriedBody.data?.options?.organizationId, ORGANIZATION_A);
+    assert.ok((retriedBody.data?.options?.jobs?.length ?? 0) > 0);
+  });
+
+  test('keeps a genuinely empty authorized company options result truthful', async () => {
+    normalizeCompanyAuthority();
+    state.normalizedStandings = state.normalizedStandings.map((standing) => ({
+      ...standing,
+      operationalRole: 'front_desk',
+      accessProfile: 'property_manager',
+      scopeType: 'property',
+    }));
+
+    const response = await listInvites(companyListRequest());
+    assert.equal(response.status, 200);
+    const body = await response.json() as {
+      data?: { invites?: unknown[]; options?: { jobs?: unknown[]; hotels?: unknown[] } };
+    };
+    assert.deepEqual(body.data?.invites, []);
+    assert.deepEqual(body.data?.options?.jobs, []);
+    assert.deepEqual(body.data?.options?.hotels, []);
+  });
+
   test('projects exact local roles and never defaults a General Manager to a peer-GM invite', async () => {
     const response = await listInvites(listRequest());
     assert.equal(response.status, 200);

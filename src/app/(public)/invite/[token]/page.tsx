@@ -61,6 +61,7 @@ export default function AcceptInvitePage() {
 
   const [preview, setPreview] = useState<InvitePreview | null>(null);
   const [previewState, setPreviewState] = useState<'loading' | 'ready' | 'unusable'>('loading');
+  const [previewToken, setPreviewToken] = useState('');
   const [displayName, setDisplayName] = useState('');
   const [password, setPassword] = useState('');
   const [confirm, setConfirm] = useState('');
@@ -69,34 +70,66 @@ export default function AcceptInvitePage() {
   const [done, setDone] = useState<{ email: string } | null>(null);
 
   useEffect(() => {
-    if (!token) { setPreviewState('unusable'); return; }
-    let cancelled = false;
+    setPreview(null);
+    setPreviewToken('');
+    setDisplayName('');
+    setPassword('');
+    setConfirm('');
+    setSubmitting(false);
+    setError('');
+    setDone(null);
+    if (!token) {
+      setPreviewState('unusable');
+      return;
+    }
+    const controller = new AbortController();
+    setPreviewState('loading');
     void (async () => {
       try {
         const res = await fetch('/api/auth/invite-preview', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
+          signal: controller.signal,
           body: JSON.stringify({ token }),
         });
-        const body = await res.json() as { ok?: boolean; data?: InvitePreview };
-        if (cancelled) return;
+        const body = await res.json().catch(() => ({})) as { ok?: boolean; data?: InvitePreview };
+        if (controller.signal.aborted) return;
         if (res.ok && body.ok && body.data) {
           setPreview(body.data);
+          setPreviewToken(token);
           setPreviewState('ready');
         } else {
+          setPreview(null);
           setPreviewState('unusable');
         }
       } catch {
-        if (!cancelled) setPreviewState('unusable');
+        if (!controller.signal.aborted) {
+          setPreview(null);
+          setPreviewState('unusable');
+        }
       }
     })();
-    return () => { cancelled = true; };
+    return () => { controller.abort(); };
   }, [token]);
+
+  const previewReady = previewState === 'ready' && previewToken === token && preview !== null;
+  const previewLoading = !done && Boolean(token) && !previewReady && previewState !== 'unusable';
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError('');
-    if (!displayName.trim() || !password) return;
+    if (!previewReady || !preview) {
+      setError('Invitation details are still loading. Try again when they are ready.');
+      return;
+    }
+    if (!displayName.trim()) {
+      setError('Enter your full name.');
+      return;
+    }
+    if (!password) {
+      setError('Enter a password.');
+      return;
+    }
     if (password.length < 6) {
       setError('Password must be at least 6 characters.');
       return;
@@ -152,7 +185,22 @@ export default function AcceptInvitePage() {
           </p>
         </div>
 
-        {previewState === 'ready' && preview && !done && (
+        {previewLoading && (
+          <div
+            role="status"
+            aria-live="polite"
+            aria-busy="true"
+            style={{
+              background: 'var(--bg-card)', border: '1px solid var(--border)',
+              borderRadius: 'var(--radius-lg)', padding: '20px', marginBottom: '16px',
+              textAlign: 'center', color: 'var(--text-muted)', fontSize: '14px',
+            }}
+          >
+            {'Loading invitation details…'}
+          </div>
+        )}
+
+        {previewReady && preview && !done && (
           <div style={{
             background: 'var(--bg-card)', border: '1px solid var(--border)',
             borderRadius: 'var(--radius-lg)', padding: '16px 18px', marginBottom: '16px',
@@ -200,11 +248,11 @@ export default function AcceptInvitePage() {
               {'Sign in'}
             </button>
           </div>
-        ) : previewState === 'unusable' ? null : (
+        ) : previewReady ? (
           <form onSubmit={handleSubmit} style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
-            <Input label={'Full name'} value={displayName} onChange={setDisplayName} disabled={submitting} autoFocus />
-            <Input label={'Password'} type="password" value={password} onChange={setPassword} disabled={submitting} autoComplete="new-password" />
-            <Input label={'Confirm password'} type="password" value={confirm} onChange={setConfirm} disabled={submitting} autoComplete="new-password" />
+            <Input id="invite-display-name" label={'Full name'} value={displayName} onChange={setDisplayName} disabled={submitting} />
+            <Input id="invite-password" label={'Password'} type="password" value={password} onChange={setPassword} disabled={submitting} autoComplete="new-password" />
+            <Input id="invite-confirm-password" label={'Confirm password'} type="password" value={confirm} onChange={setConfirm} disabled={submitting} autoComplete="new-password" />
 
             {error && <ErrorMsg>{error}</ErrorMsg>}
 
@@ -214,7 +262,7 @@ export default function AcceptInvitePage() {
                 : ('Create account')}
             </button>
           </form>
-        )}
+        ) : null}
       </div>
     </div>
   );
@@ -233,18 +281,18 @@ function PreviewRow({ label, value }: { label: string; value: string }) {
   );
 }
 
-function Input({ label, type='text', value, onChange, disabled, autoComplete, autoFocus }: { label: string; type?: string; value: string; onChange: (v: string)=>void; disabled?: boolean; autoComplete?: string; autoFocus?: boolean }) {
+function Input({ id, label, type='text', value, onChange, disabled, autoComplete }: { id: string; label: string; type?: string; value: string; onChange: (v: string)=>void; disabled?: boolean; autoComplete?: string }) {
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
-      <label style={{ fontSize: '12px', fontWeight: 600, letterSpacing: '0.04em', color: 'var(--text-secondary)', textTransform: 'uppercase', fontFamily: 'var(--font-sans)' }}>{label}</label>
-      <input type={type} value={value} onChange={e => onChange(e.target.value)} disabled={disabled} autoComplete={autoComplete} autoFocus={autoFocus}
+      <label htmlFor={id} style={{ fontSize: '12px', fontWeight: 600, letterSpacing: '0.04em', color: 'var(--text-secondary)', textTransform: 'uppercase', fontFamily: 'var(--font-sans)' }}>{label}</label>
+      <input id={id} type={type} value={value} onChange={e => onChange(e.target.value)} disabled={disabled} autoComplete={autoComplete}
         style={{ height: '44px', borderRadius: 'var(--radius-md)', background: 'var(--bg-card)', border: '1px solid var(--border)', padding: '0 14px', color: 'var(--text-primary)', fontSize: '15px', fontFamily: 'var(--font-sans)', outline: 'none', opacity: disabled ? 0.6 : 1 }} />
     </div>
   );
 }
 
 function ErrorMsg({ children }: { children: React.ReactNode }) {
-  return <p style={{ fontSize: '13px', color: 'var(--red)', background: 'var(--red-dim)', border: '1px solid var(--red-border, rgba(239,68,68,0.2))', borderRadius: 'var(--radius-sm)', padding: '10px 12px', margin: 0 }}>{children}</p>;
+  return <p id="invite-form-error" role="alert" aria-live="assertive" style={{ fontSize: '13px', color: 'var(--red)', background: 'var(--red-dim)', border: '1px solid var(--red-border, rgba(239,68,68,0.2))', borderRadius: 'var(--radius-sm)', padding: '10px 12px', margin: 0 }}>{children}</p>;
 }
 
 function submitStyle(disabled: boolean): React.CSSProperties {
