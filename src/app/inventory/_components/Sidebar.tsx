@@ -24,7 +24,8 @@ export type SidebarAction =
 interface SidebarProps {
   lang: Lang;
   totalItems: number;
-  historyCount: number;
+  /** Null means history has not settled; do not show a misleading zero badge. */
+  historyCount: number | null;
   /** Purchases received this month. Shown separately from usage. */
   purchasesThisMonth: number;
   /** False means purchasesThisMonth is only the known-cost subtotal. */
@@ -100,7 +101,7 @@ export function Sidebar({
       {/* Reports + Compare + Budgets show budget/spend dollars — money-capability only. */}
       {canViewFinancials && <RailBtn label={tx.reports} onClick={() => onAction('reports')} />}
       {canViewFinancials && <RailBtn label={tx.compareMonths} onClick={() => onAction('compare')} />}
-      <RailBtn label={tx.history} badge={historyCount} onClick={() => onAction('history')} />
+      <RailBtn label={tx.history} badge={historyCount ?? undefined} onClick={() => onAction('history')} />
       <RailBtn label={tx.aiHelper} onClick={() => onAction('ai')} />
       {canViewFinancials && <RailBtn label={tx.budgets} onClick={() => onAction('budgets')} />}
 

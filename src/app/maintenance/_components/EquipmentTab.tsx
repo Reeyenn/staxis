@@ -207,6 +207,7 @@ export function EquipmentTab() {
 
   const [items, setItems] = useState<InventoryItem[]>([]);
   const [loaded, setLoaded] = useState(false);
+  const [loadError, setLoadError] = useState(false);
   const [selId, setSelId] = useState<string | null>(null);
   const [addOpen, setAddOpen] = useState(false);
 
@@ -216,14 +217,32 @@ export function EquipmentTab() {
   // Load gate: don't render the happy "Storeroom is empty" state until the
   // first snapshot arrived; error card + retry when the load failed.
   const gate = useBoardGate(activePropertyId, 'inventory', loaded);
+  const boardReady = loaded && !loadError;
+  const boardUnavailable = loadError || gate.status === 'error';
 
   useEffect(() => {
-    if (!user || !activePropertyId) return;
+    if (!user || !activePropertyId) {
+      setLoaded(false);
+      setLoadError(false);
+      setItems([]);
+      setSelId(null);
+      return;
+    }
     setLoaded(false);
-    const unsub = subscribeToInventory(user.uid, activePropertyId, (rows) => {
-      setLoaded(true);
-      setItems(rows);
-    });
+    setLoadError(false);
+    setItems([]);
+    let initialSettled = false;
+    const unsub = subscribeToInventory(
+      user.uid,
+      activePropertyId,
+      (rows) => {
+        initialSettled = true;
+        setLoaded(true);
+        setLoadError(false);
+        setItems(rows);
+      },
+      () => { if (!initialSettled) setLoadError(true); },
+    );
     return () => unsub();
   }, [user, activePropertyId, gate.retryKey]);
 
@@ -368,13 +387,13 @@ export function EquipmentTab() {
     <div style={{ padding: '28px 48px 130px', background: 'transparent', color: T.ink, fontFamily: FONT_SANS, minHeight: 'calc(100dvh - 130px)' }}>
       <PageHead
         eyebrow={'Equipment · storeroom'}
-        lead={lead}
-        rest={`${parts.length} ${'tracked items'}`}
+        lead={boardUnavailable ? 'Unavailable' : boardReady ? lead : 'Loading…'}
+        rest={boardUnavailable ? 'Equipment unavailable' : boardReady ? `${parts.length} ${'tracked items'}` : 'Loading…'}
         actions={<Btn variant="primary" onClick={() => setAddOpen(true)}>＋ {'Add item'}</Btn>}
       />
 
-      {gate.status === 'error' ? (
-        <BoardLoadError es={es} onRetry={gate.retry} />
+      {loadError || gate.status === 'error' ? (
+        <BoardLoadError es={es} onRetry={() => { setLoadError(false); gate.retry(); }} />
       ) : gate.status === 'loading' ? (
         <BoardLoading es={es} />
       ) : parts.length === 0 ? (

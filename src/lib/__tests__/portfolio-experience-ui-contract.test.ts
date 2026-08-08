@@ -273,7 +273,8 @@ describe('theme and motion accessibility', () => {
       /\.menuButton::after[\s\S]{0,120}?inset: -2px/,
     );
     assert.match(mobileConcourseCss, /\.avatar::after[\s\S]{0,120}?inset: -2px/);
-    assert.match(mobileConcourseCss, /grid-template-columns: 40px minmax\(0, 1fr\) 40px;/);
+    assert.match(mobileConcourseCss, /grid-template-columns: 40px minmax\(0, 1fr\) 44px 40px;/);
+    assert.match(mobileConcourseCss, /\.askSlot\s*\{[\s\S]*?width: 44px;[\s\S]*?height: 44px;/);
   });
 });
 

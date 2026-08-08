@@ -179,6 +179,27 @@ interface InventoryCurrentMonthSpend {
   complete: boolean;
 }
 
+type InventoryBoardPhase = 'operational' | 'secondary' | 'all';
+type InventoryLoadState = 'idle' | 'loading' | 'ready' | 'error';
+
+interface InventoryBoardData {
+  requestScope: InventoryFinancialRequestScope;
+  financialEvidence: InventoryFinancialEvidence | null;
+  financialEvidenceAttempted: boolean;
+  occ: OccupancyBundle | null;
+  avg: DailyAverages | null;
+  ct: InventoryCount[] | null;
+  deliveryRows: EffectiveInventoryDelivery[] | null;
+  lossRows: InventoryDiscard[] | null;
+  bd: InventoryBudget[] | null;
+  sec: InventoryBudgetSection[] | null;
+  spend: InventoryCurrentMonthSpend | null;
+  closeDashboard: InventoryMonthCloseDashboard | null;
+  cats: InventoryCustomCategory[] | null;
+  operationalFailure: boolean;
+  secondaryFailure: boolean;
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
 }
@@ -330,7 +351,6 @@ export function InventoryShell() {
     hasCapability: can('view_financials'),
     enabledSections: activeProperty?.enabledSections,
   });
-  const canScanInvoices = canManage && canViewFinancials;
   const boardRequestScope: InventoryFinancialRequestScope | null = capabilityViewerKey && activePropertyId
     ? {
         propertyId: activePropertyId,
@@ -346,6 +366,12 @@ export function InventoryShell() {
   const propertyTimezone = propertyTimezoneOrUTC(activeProperty?.timezone);
   const financialTimezoneValid = !canViewFinancials
     || validPropertyTimezone(activeProperty?.timezone) != null;
+  // A finance capability alone is not enough to render money. The hotel's
+  // stored timezone is required for month-scoped evidence; when it is invalid,
+  // keep physical inventory usable but suppress every finance surface until
+  // the setting is repaired.
+  const financialSurfaceEnabled = canViewFinancials && financialTimezoneValid;
+  const canScanInvoices = canManage && financialSurfaceEnabled;
 
   // ── Core data state ────────────────────────────────────────────────
   // No ML state here on purpose. The manual inventory tab never fetches ML
@@ -458,16 +484,25 @@ export function InventoryShell() {
   const [editItem, setEditItem] = useState<InventoryItem | null>(null);
   const [stockLossItem, setStockLossItem] = useState<InventoryItem | null>(null);
   const [deliveryCorrection, setDeliveryCorrection] = useState<EffectiveInventoryDelivery | null>(null);
-  // Initial-load gate: the page reveals ONCE, after both the first items
-  // snapshot AND the stats bundle have landed. Without this, the 3-4 fetch
-  // waves each reshuffled/re-animated the freshly-mounted board — the
-  // "everything reloads five times" bug.
+  // Initial-load gate: the operational board reveals once the first item
+  // snapshot has landed. Projection, history, and financial reads continue in
+  // their own phases so a slow secondary source cannot hide usable stock work.
   const [itemsLoaded, setItemsLoaded] = useState(false);
-  const [bundleLoaded, setBundleLoaded] = useState(false);
   const [inventoryDataViewerKey, setInventoryDataViewerKey] = useState<string | null>(null);
   const [itemsLoadError, setItemsLoadError] = useState(false);
   const [bundleLoadError, setBundleLoadError] = useState(false);
+  const [projectionLoadState, setProjectionLoadState] = useState<InventoryLoadState>('idle');
+  const [secondaryLoadState, setSecondaryLoadState] = useState<InventoryLoadState>('idle');
+  const [financialLoadState, setFinancialLoadState] = useState<InventoryLoadState>(
+    canViewFinancials ? 'idle' : 'ready',
+  );
+  // A finance-capable viewer must never see a transient $0 shelf value while
+  // the server-gated cost evidence is still loading (or was denied). The
+  // operational item snapshot intentionally contains no cost columns.
+  const [financialEvidenceReady, setFinancialEvidenceReady] = useState(!canViewFinancials);
   const [inventoryReload, setInventoryReload] = useState(0);
+  const [projectionReload, setProjectionReload] = useState(0);
+  const [secondaryReload, setSecondaryReload] = useState(0);
   const [quickCountError, setQuickCountError] = useState(false);
   const [quickCountLockedIds, setQuickCountLockedIds] = useState<Set<string>>(() => new Set());
   const [auditEvents, setAuditEvents] = useState<InventoryAuditEvent[]>([]);
@@ -482,7 +517,9 @@ export function InventoryShell() {
   // the manager can open the same delivery again.
   const [auditDeliveryLookupRevision, setAuditDeliveryLookupRevision] = useState(0);
   const auditLoadSequence = React.useRef(0);
-  const boardLoadSequence = React.useRef(0);
+  const projectionLoadSequence = React.useRef(0);
+  const secondaryLoadSequence = React.useRef(0);
+  const refreshLoadSequence = React.useRef(0);
   // A successful first page is a same-property snapshot that can stay visible
   // while the next open revalidates it. The property/capability lifecycle effect
   // below clears this tag before a different response shape may be requested.
@@ -504,6 +541,44 @@ export function InventoryShell() {
     // Invalidate in-flight pages and retag the empty state on every property
     // lifecycle transition, including a temporary/null selection. The render
     // guard below hides the old property synchronously before this effect runs.
+    projectionLoadSequence.current += 1;
+    secondaryLoadSequence.current += 1;
+    refreshLoadSequence.current += 1;
+    financialEvidenceRef.current = EMPTY_INVENTORY_FINANCIAL_EVIDENCE;
+    setFinancialEvidenceReady(!financialSurfaceEnabled);
+    setFinancialLoadState(
+      financialSurfaceEnabled ? 'idle' : canViewFinancials ? 'error' : 'ready',
+    );
+    if (!financialSurfaceEnabled) {
+      // A capability can be revoked without a property switch. Strip any
+      // previously hydrated money immediately; an invalid finance timezone
+      // needs the same treatment because month-scoped dollars are not truthful
+      // until the property setting is repaired. Physical inventory remains.
+      setItems((current) => hydrateInventoryItems(current, EMPTY_INVENTORY_FINANCIAL_EVIDENCE.inventory));
+      setCounts((current) => hydrateInventoryCounts(current, EMPTY_INVENTORY_FINANCIAL_EVIDENCE.counts));
+      setDeliveries((current) => hydrateInventoryDeliveries(current, EMPTY_INVENTORY_FINANCIAL_EVIDENCE.orders));
+      setDiscards((current) => hydrateInventoryDiscards(current, EMPTY_INVENTORY_FINANCIAL_EVIDENCE.discards));
+      setBudgets([]);
+      setBudgetSections([]);
+      setSpendDetail({ total: 0, complete: false });
+      setSpendDataAvailable(false);
+      setMonthCloseDashboard(null);
+      if (canViewFinancials && !financialTimezoneValid) {
+        // Keep stock/count actions available, but do not leave a finance-backed
+        // overlay open with the previous property's dollars behind its error.
+        setOverlay((current) => (
+          current === 'reports'
+          || current === 'compare'
+          || current === 'delivery-correction'
+          || current === 'budgets'
+          || current === 'close'
+          || current === 'import'
+            ? null
+            : current
+        ));
+        setDeliveryCorrection(null);
+      }
+    }
     auditLoadSequence.current += 1;
     auditSnapshotPropertyIdRef.current = null;
     setAuditPropertyId(uid ? activePropertyId : null);
@@ -512,12 +587,11 @@ export function InventoryShell() {
     setAuditStatus('idle');
     setAuditLoadingMore(false);
     setAuditRefreshing(false);
-  }, [uid, activePropertyId, canViewFinancials]);
+  }, [uid, activePropertyId, canViewFinancials, financialSurfaceEnabled, financialTimezoneValid]);
 
   useEffect(() => {
     if (!uid || !activePropertyId || !inventoryViewerContextReady) return;
     setInventoryDataViewerKey(capabilityViewerKey);
-    financialEvidenceRef.current = EMPTY_INVENTORY_FINANCIAL_EVIDENCE;
     setItems([]);
     setOccupancy(null);
     setAverages(null);
@@ -534,9 +608,10 @@ export function InventoryShell() {
     setMonthCloseDashboard(null);
     setCustomCategories([]);
     setItemsLoaded(false);
-    setBundleLoaded(false);
     setItemsLoadError(false);
     setBundleLoadError(false);
+    setProjectionLoadState('idle');
+    setSecondaryLoadState('idle');
     let disposed = false;
     let initialSettled = false;
     let retryTimer: number | null = null;
@@ -593,15 +668,20 @@ export function InventoryShell() {
     };
   }, [uid, activePropertyId, capabilityViewerKey, inventoryViewerContextReady, inventoryReload]);
 
-  // ONE assembly of the board's data fetch — shared by the initial-load effect
-  // and refreshData so the two query sets can never drift apart.
-  // Manual page: fetch occupancy + daily averages (needed for the rule-based
-  // days-left) + counts/orders/budgets/spend only. No ML predicted-rate fetch,
-  // no auto-fill map, no ai-status/ai-mode call.
-  const fetchBoardData = useCallback(async (uid: string, pid: string) => {
+  // ONE assembly of the board's data fetch — shared by the initial-load phases
+  // and refreshData so the query sets can never drift apart. The operational
+  // phase is deliberately small (occupancy + daily averages); history,
+  // categories, and finance are secondary and never block the stock board.
+  // No ML predicted-rate fetch, no auto-fill map, no ai-status/ai-mode call.
+  const fetchBoardData = useCallback(async (
+    uid: string,
+    pid: string,
+    phase: InventoryBoardPhase,
+    viewerKey: string,
+  ): Promise<InventoryBoardData> => {
     const requestScope: InventoryFinancialRequestScope = {
       propertyId: pid,
-      viewerKey: `${uid}:${pid}`,
+      viewerKey,
       financialsEnabled: canViewFinancials,
     };
     const safe = async <T,>(label: string, promise: Promise<T>): Promise<T | null> => {
@@ -612,11 +692,14 @@ export function InventoryShell() {
         return null;
       }
     };
+    const loadOperational = phase !== 'secondary';
+    const loadSecondary = phase !== 'operational';
     const financialDataReady = !canViewFinancials || financialTimezoneValid;
     // Never calculate hotel money in a UTC fallback when its stored timezone
     // is invalid. Physical inventory remains available; finance sources are
     // marked unavailable and can be retried after configuration is fixed.
-    const financialEvidencePromise: Promise<InventoryFinancialEvidence | null> = canViewFinancials && financialDataReady
+    const financialEvidenceAttempted = loadSecondary && canViewFinancials;
+    const financialEvidencePromise: Promise<InventoryFinancialEvidence | null> = financialEvidenceAttempted && financialDataReady
       ? fetchWithAuth(`/api/inventory/financial-evidence?propertyId=${encodeURIComponent(pid)}`, {
           cache: 'no-store',
         }).then(async (response) => {
@@ -630,7 +713,7 @@ export function InventoryShell() {
           return evidence;
         })
       : Promise.resolve(null);
-    const closeDashboardPromise: Promise<InventoryMonthCloseDashboard | null> = canViewFinancials && financialDataReady
+    const closeDashboardPromise: Promise<InventoryMonthCloseDashboard | null> = financialEvidenceAttempted && financialDataReady
       ? fetchWithAuth(`/api/inventory/month-close?propertyId=${encodeURIComponent(pid)}`, { cache: 'no-store' })
           .then(async (response) => {
             if (response.status === 401 || response.status === 403) return null;
@@ -640,29 +723,50 @@ export function InventoryShell() {
             return dashboard;
           })
       : Promise.resolve(null);
-    const [occ, avg, ctRaw, deliveryRowsRaw, lossRowsRaw, financialEvidence, bd, sec, closeDashboard, cats] = await Promise.all([
-      safe('occupancy', fetchOccupancyBundle(pid, daysAgo(14))),
-      safe('daily averages', fetchDailyAverages(pid, 14)),
-      // A 40-item hotel counting daily generates 1,120 rows in four weeks.
-      // Keep enough local history for a full field-test month rather than
-      // silently truncating the reconciliation timeline after five saves.
-      safe('counts', listInventoryCounts(uid, pid, 2000)),
-      safe('delivery history', listEffectiveInventoryDeliveries(uid, pid, 200, canViewFinancials)),
-      safe('loss history', listInventoryDiscards(uid, pid, 2_000)),
-      safe('financial evidence', financialEvidencePromise),
-      // Budget + spend are money — only fetch them for the money capability
-      // so the dollar figures never reach a line-staff browser.
-      canViewFinancials && financialDataReady
-        ? safe('budgets', listInventoryBudgets(uid, pid))
-        : Promise.resolve(canViewFinancials ? null : [] as InventoryBudget[]),
-      canViewFinancials && financialDataReady
-        ? safe('budget sections', listInventoryBudgetSections(uid, pid))
-        : Promise.resolve(canViewFinancials ? null : [] as InventoryBudgetSection[]),
-      canViewFinancials && financialDataReady ? safe('month close', closeDashboardPromise) : Promise.resolve(null),
-      // Custom category tabs are not money — everyone who can see inventory
-      // sees the tabs.
-      safe('custom categories', listInventoryCustomCategories(uid, pid)),
-    ]);
+    type OperationalPayload = [OccupancyBundle | null, DailyAverages | null];
+    type SecondaryPayload = [
+      InventoryCount[] | null,
+      EffectiveInventoryDelivery[] | null,
+      InventoryDiscard[] | null,
+      InventoryFinancialEvidence | null,
+      InventoryBudget[] | null,
+      InventoryBudgetSection[] | null,
+      InventoryMonthCloseDashboard | null,
+      InventoryCustomCategory[] | null,
+    ];
+    const operationalPromise: Promise<OperationalPayload> = loadOperational
+      ? Promise.all([
+          safe('occupancy', fetchOccupancyBundle(pid, daysAgo(14))),
+          safe('daily averages', fetchDailyAverages(pid, 14)),
+        ])
+      : Promise.resolve<OperationalPayload>([null, null]);
+    const secondaryPromise: Promise<SecondaryPayload> = loadSecondary
+      ? Promise.all([
+          // A 40-item hotel counting daily generates 1,120 rows in four weeks.
+          // Keep enough local history for a full field-test month rather than
+          // silently truncating the reconciliation timeline after five saves.
+          safe('counts', listInventoryCounts(uid, pid, 2000)),
+          safe('delivery history', listEffectiveInventoryDeliveries(uid, pid, 200, canViewFinancials)),
+          safe('loss history', listInventoryDiscards(uid, pid, 2_000)),
+          safe('financial evidence', financialEvidencePromise),
+          // Budget + spend are money — only fetch them for the money capability
+          // so the dollar figures never reach a line-staff browser.
+          canViewFinancials && financialDataReady
+            ? safe('budgets', listInventoryBudgets(uid, pid))
+            : Promise.resolve(canViewFinancials ? null : [] as InventoryBudget[]),
+          canViewFinancials && financialDataReady
+            ? safe('budget sections', listInventoryBudgetSections(uid, pid))
+            : Promise.resolve(canViewFinancials ? null : [] as InventoryBudgetSection[]),
+          canViewFinancials && financialDataReady ? safe('month close', closeDashboardPromise) : Promise.resolve(null),
+          // Custom category tabs are not money — everyone who can see inventory
+          // sees the tabs.
+          safe('custom categories', listInventoryCustomCategories(uid, pid)),
+        ])
+      : Promise.resolve<SecondaryPayload>([null, null, null, null, null, null, null, null]);
+    const [
+      [occ, avg],
+      [ctRaw, deliveryRowsRaw, lossRowsRaw, financialEvidence, bd, sec, closeDashboard, cats],
+    ] = await Promise.all([operationalPromise, secondaryPromise]);
     const ct = ctRaw == null
       ? null
       : hydrateInventoryCounts(ctRaw, financialEvidence?.counts ?? {});
@@ -680,71 +784,134 @@ export function InventoryShell() {
           total: 0,
           complete: true,
         };
-    const requiredResults = [occ, avg, ct, deliveryRows, lossRows, cats];
+    const operationalFailure = loadOperational && inventoryOperationalDetailsFailed([occ, avg]);
+    const secondaryFailure = loadSecondary
+      && inventoryOperationalDetailsFailed([ct, deliveryRows, lossRows, cats]);
     // Finance panels expose their own unavailable/pending states. A failed or
     // intentionally skipped finance source must not masquerade as a failure of
     // the operational inventory connection.
     return {
       requestScope,
+      financialEvidenceAttempted,
       financialEvidence,
       occ, avg, ct, deliveryRows, lossRows, bd, sec, spend, closeDashboard, cats,
-      partialFailure: inventoryOperationalDetailsFailed(requiredResults),
+      operationalFailure,
+      secondaryFailure,
     };
   }, [canViewFinancials, financialTimezoneValid]);
 
-  const applyBoardData = useCallback((d: Awaited<ReturnType<typeof fetchBoardData>>) => {
-    const financialEvidence = d.financialEvidence ?? EMPTY_INVENTORY_FINANCIAL_EVIDENCE;
-    financialEvidenceRef.current = financialEvidence;
-    setItems((current) => hydrateInventoryItems(current, financialEvidence.inventory));
+  const applyBoardData = useCallback((d: InventoryBoardData) => {
+    if (d.financialEvidenceAttempted) {
+      // A response from before a valid→invalid timezone transition may still
+      // resolve after the lifecycle effect cleared state. Never rehydrate
+      // money from that late response; physical rows may still be applied.
+      const financialEvidence = financialSurfaceEnabled
+        ? d.financialEvidence ?? EMPTY_INVENTORY_FINANCIAL_EVIDENCE
+        : EMPTY_INVENTORY_FINANCIAL_EVIDENCE;
+      // A denied or failed finance response must clear a previously authorized
+      // cost snapshot. This is a capability boundary, not an ordinary retry.
+      financialEvidenceRef.current = financialEvidence;
+      setFinancialEvidenceReady(financialSurfaceEnabled && d.financialEvidence != null);
+      setFinancialLoadState(
+        financialSurfaceEnabled
+          ? d.financialEvidence != null ? 'ready' : 'error'
+          : canViewFinancials ? 'error' : 'ready',
+      );
+      setItems((current) => hydrateInventoryItems(current, financialEvidence.inventory));
+    }
     if (d.occ != null) setOccupancy(d.occ);
     if (d.avg != null) setAverages(d.avg);
     if (d.ct != null) setCounts(d.ct);
     if (d.deliveryRows != null) setDeliveries(d.deliveryRows);
     if (d.lossRows != null) setDiscards(d.lossRows);
-    if (d.bd != null) setBudgets(d.bd);
-    if (d.sec != null) setBudgetSections(d.sec);
-    if (d.spend != null) {
+    if (d.bd != null && financialSurfaceEnabled) setBudgets(d.bd);
+    else if (d.financialEvidenceAttempted && !financialSurfaceEnabled) setBudgets([]);
+    if (d.sec != null && financialSurfaceEnabled) setBudgetSections(d.sec);
+    else if (d.financialEvidenceAttempted && !financialSurfaceEnabled) setBudgetSections([]);
+    if (d.spend != null && d.financialEvidenceAttempted && financialSurfaceEnabled) {
       setSpendDetail(d.spend);
       setSpendDataAvailable(true);
-    } else {
+    } else if (d.financialEvidenceAttempted) {
+      if (!financialSurfaceEnabled) setSpendDetail({ total: 0, complete: false });
       setSpendDataAvailable(false);
     }
-    if (d.closeDashboard != null) setMonthCloseDashboard(d.closeDashboard);
+    if (d.closeDashboard != null && financialSurfaceEnabled) setMonthCloseDashboard(d.closeDashboard);
+    else if (d.financialEvidenceAttempted && !financialSurfaceEnabled) setMonthCloseDashboard(null);
     if (d.cats != null) setCustomCategories(d.cats);
-  }, []);
+  }, [canViewFinancials, financialSurfaceEnabled]);
 
+  // Occupancy and projection data is intentionally a separate phase. The item
+  // snapshot already gives operators a truthful stock list, so a slow PMS or
+  // usage query cannot hide that work.
   useEffect(() => {
-    if (!uid || !activePropertyId || !inventoryViewerContextReady) return;
+    if (!uid || !activePropertyId || !capabilityViewerKey || !inventoryViewerContextReady || !itemsLoaded) return;
     let cancelled = false;
-    const sequence = ++boardLoadSequence.current;
-    setBundleLoaded(false);
-    setBundleLoadError(false);
+    const sequence = ++projectionLoadSequence.current;
+    setProjectionLoadState('loading');
 
     void (async () => {
       try {
-        const d = await withPromiseDeadline(fetchBoardData(uid, activePropertyId), {
+        const d = await withPromiseDeadline(fetchBoardData(uid, activePropertyId, 'operational', capabilityViewerKey), {
           timeoutMs: INVENTORY_BOARD_LOAD_TIMEOUT_MS,
-          label: 'Inventory details',
+          label: 'Inventory projections',
         });
         if (
           cancelled
-          || sequence !== boardLoadSequence.current
+          || sequence !== projectionLoadSequence.current
           || !inventoryBoardRequestIsCurrent(d.requestScope, boardRequestScopeRef.current)
         ) return;
         applyBoardData(d);
-        setBundleLoadError(d.partialFailure);
+        setProjectionLoadState(d.operationalFailure ? 'error' : 'ready');
       } catch (err) {
-        console.error('[inventory] data load failed', err);
-        if (!cancelled && sequence === boardLoadSequence.current) setBundleLoadError(true);
-      } finally {
-        if (!cancelled && sequence === boardLoadSequence.current) setBundleLoaded(true);
+        console.error('[inventory] projection load failed', err);
+        if (!cancelled && sequence === projectionLoadSequence.current) setProjectionLoadState('error');
       }
     })();
 
     return () => {
       cancelled = true;
     };
-  }, [uid, activePropertyId, inventoryViewerContextReady, fetchBoardData, applyBoardData, inventoryReload]);
+  }, [uid, activePropertyId, capabilityViewerKey, inventoryViewerContextReady, itemsLoaded, fetchBoardData, applyBoardData, projectionReload]);
+
+  // Counts, deliveries, losses, custom tabs, and finance are secondary to the
+  // stock board. They load after the first item snapshot and retain explicit
+  // error/pending semantics instead of masquerading as empty arrays.
+  useEffect(() => {
+    if (!uid || !activePropertyId || !capabilityViewerKey || !inventoryViewerContextReady || !itemsLoaded) return;
+    let cancelled = false;
+    const sequence = ++secondaryLoadSequence.current;
+    setSecondaryLoadState('loading');
+    if (canViewFinancials) setFinancialLoadState('loading');
+    setBundleLoadError(false);
+
+    void (async () => {
+      try {
+        const d = await withPromiseDeadline(fetchBoardData(uid, activePropertyId, 'secondary', capabilityViewerKey), {
+          timeoutMs: INVENTORY_BOARD_LOAD_TIMEOUT_MS,
+          label: 'Inventory secondary details',
+        });
+        if (
+          cancelled
+          || sequence !== secondaryLoadSequence.current
+          || !inventoryBoardRequestIsCurrent(d.requestScope, boardRequestScopeRef.current)
+        ) return;
+        applyBoardData(d);
+        setSecondaryLoadState(d.secondaryFailure ? 'error' : 'ready');
+        setBundleLoadError(d.secondaryFailure);
+      } catch (err) {
+        console.error('[inventory] secondary data load failed', err);
+        if (!cancelled && sequence === secondaryLoadSequence.current) {
+          setSecondaryLoadState('error');
+          if (canViewFinancials) setFinancialLoadState('error');
+          setBundleLoadError(true);
+        }
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [uid, activePropertyId, capabilityViewerKey, inventoryViewerContextReady, itemsLoaded, canViewFinancials, fetchBoardData, applyBoardData, secondaryReload]);
 
   const loadAuditHistory = useCallback(async (cursor: string | null, append: boolean) => {
     const propertyId = activePropertyId;
@@ -801,7 +968,7 @@ export function InventoryShell() {
     const requestedUid = uid;
     const requestedScope = boardRequestScopeRef.current;
     if (
-      !requestedPropertyId || !requestedUid || !canManage || !canViewFinancials
+      !requestedPropertyId || !requestedUid || !canManage || !financialSurfaceEnabled
       || !requestedScope?.financialsEnabled
     ) return null;
     const delivery = await getEffectiveInventoryDelivery(
@@ -820,7 +987,7 @@ export function InventoryShell() {
       rootOrderId,
       hydrated,
     );
-  }, [activePropertyId, uid, canManage, canViewFinancials]);
+  }, [activePropertyId, uid, canManage, financialSurfaceEnabled]);
 
   // ── Honour ?action= deep links once on mount + when property switches ──
   useEffect(() => {
@@ -828,7 +995,7 @@ export function InventoryShell() {
     if (action && VALID_QUERY_ACTIONS.includes(action as QueryAction)) {
       // The budget/spend overlays are money — never honour a ?action= deep link
       // to them for a non-money role (closes the deep-link back door).
-      if ((action === 'reports' || action === 'compare' || action === 'budgets' || action === 'close') && !canViewFinancials) return;
+      if ((action === 'reports' || action === 'compare' || action === 'budgets' || action === 'close') && !financialSurfaceEnabled) return;
       if ((action === 'count' || action === 'delivery' || action === 'ordering' || action === 'add') && !canManage) return;
       // `?action=scan` is the historical direct link to invoice OCR. Manual
       // delivery entry uses the distinct `delivery` overlay and stays usable
@@ -842,7 +1009,7 @@ export function InventoryShell() {
     }
     // Run only on initial mount + param changes — we want sticky URLs.
 
-  }, [searchParams, canViewFinancials, canManage, canScanInvoices]);
+  }, [searchParams, financialSurfaceEnabled, canManage, canScanInvoices]);
 
   // ── Derived display items ──────────────────────────────────────────
   // Fully manual: no ML rates and no "ai-tracked" graduation marks. Empty
@@ -929,7 +1096,11 @@ export function InventoryShell() {
   // counts; it doesn't drift with occupancy). Live-updates as quick counts land,
   // since applyDraft rewrites `value` for drafted items.
   const shelfValue = useMemo(() => effectiveDisplay.reduce((s, d) => s + d.value, 0), [effectiveDisplay]);
-  const shelfMissingPriceItems = useMemo(() => missingPriceItemNames(effectiveDisplay), [effectiveDisplay]);
+  const shelfValueAvailable = !financialSurfaceEnabled || financialEvidenceReady;
+  const shelfMissingPriceItems = useMemo(
+    () => shelfValueAvailable ? missingPriceItemNames(effectiveDisplay) : [],
+    [effectiveDisplay, shelfValueAvailable],
+  );
   const shelfValueComplete = shelfMissingPriceItems.length === 0;
   // Per-tab valuation for the masthead: selecting a tab (General / Breakfast /
   // a custom tab) slides that tab's total value in to the left of "On the
@@ -944,10 +1115,10 @@ export function InventoryShell() {
     [activeTab, bucket, effectiveDisplay],
   );
   const activeTabMissingPriceItems = useMemo(
-    () => !activeTab
+    () => !activeTab || !shelfValueAvailable
       ? []
       : missingPriceItemNames(effectiveDisplay.filter((d) => inBucket(d, bucket))),
-    [activeTab, bucket, effectiveDisplay],
+    [activeTab, bucket, effectiveDisplay, shelfValueAvailable],
   );
   const activeTabValueComplete = activeTabMissingPriceItems.length === 0;
   // Defaults for the Add-item sheet, honoring the hotel's visible tabs: an
@@ -1017,13 +1188,13 @@ export function InventoryShell() {
       counts,
       deliveries,
       items,
-      canViewFinancials ? (monthCloseDashboard?.history ?? []) : [],
+      financialSurfaceEnabled ? (monthCloseDashboard?.history ?? []) : [],
       propertyTimezone,
       discards,
     ),
-    [counts, deliveries, items, canViewFinancials, monthCloseDashboard, propertyTimezone, discards],
+    [counts, deliveries, items, financialSurfaceEnabled, monthCloseDashboard, propertyTimezone, discards],
   );
-  const historyCount = historyEvents.length;
+  const historyCount = secondaryLoadState === 'ready' ? historyEvents.length : null;
 
   const actualPeriods: InventoryBudgetActualPeriod[] = useMemo(
     () => monthCloseDashboard
@@ -1076,11 +1247,11 @@ export function InventoryShell() {
     // The "AI Helper" rail button opens the AI report as a large overlay like
     // any other action — the inventory tab itself stays manual.
     if ((k === 'count' || k === 'delivery' || k === 'ordering' || k === 'add') && !canManage) return;
-    if ((k === 'reports' || k === 'compare' || k === 'budgets' || k === 'close') && !canViewFinancials) return;
+    if ((k === 'reports' || k === 'compare' || k === 'budgets' || k === 'close') && !financialSurfaceEnabled) return;
     if (k === 'close' && !canManage) return;
     if (k === 'count') setCountForMonthClose(false);
     setOverlay(k as OverlayKey);
-  }, [canManage, canViewFinancials]);
+  }, [canManage, financialSurfaceEnabled]);
 
   const closeOverlay = useCallback(() => {
     setOverlay(null);
@@ -1111,10 +1282,10 @@ export function InventoryShell() {
   }, [canManage]);
 
   const onCorrectDelivery = useCallback((delivery: EffectiveInventoryDelivery) => {
-    if (!canManage || !canViewFinancials) return;
+    if (!canManage || !financialSurfaceEnabled) return;
     setDeliveryCorrection(delivery);
     setOverlay('delivery-correction');
-  }, [canManage, canViewFinancials]);
+  }, [canManage, financialSurfaceEnabled]);
 
   // ── Quick count (ledger −/+ steppers) ──────────────────────────────────
   // Optimistic + debounced single-item counts. Refs let the debounced save and
@@ -1454,28 +1625,47 @@ export function InventoryShell() {
   }, [canManage, activePropertyId, uid, submitQuickCountAttempt]);
 
   const refreshData = useCallback(async () => {
-    if (!uid || !activePropertyId || !inventoryViewerContextReady) return;
+    if (!uid || !activePropertyId || !capabilityViewerKey || !inventoryViewerContextReady) return;
     const requestedPropertyId = activePropertyId;
-    const sequence = ++boardLoadSequence.current;
+    const requestedViewerKey = capabilityViewerKey;
+    const projectionSequence = ++projectionLoadSequence.current;
+    const secondarySequence = ++secondaryLoadSequence.current;
+    const refreshSequence = ++refreshLoadSequence.current;
+    setProjectionLoadState('loading');
+    setSecondaryLoadState('loading');
+    if (canViewFinancials) setFinancialLoadState('loading');
+    setBundleLoadError(false);
     try {
-      const data = await withPromiseDeadline(fetchBoardData(uid, requestedPropertyId), {
+      const data = await withPromiseDeadline(fetchBoardData(uid, requestedPropertyId, 'all', requestedViewerKey), {
         timeoutMs: INVENTORY_BOARD_LOAD_TIMEOUT_MS,
         label: 'Inventory details',
       });
       if (
-        sequence !== boardLoadSequence.current
+        projectionSequence !== projectionLoadSequence.current
+        || secondarySequence !== secondaryLoadSequence.current
+        || refreshSequence !== refreshLoadSequence.current
         || activePropertyIdRef.current !== requestedPropertyId
         || !inventoryBoardRequestIsCurrent(data.requestScope, boardRequestScopeRef.current)
       ) return;
       applyBoardData(data);
-      setBundleLoadError(data.partialFailure);
+      setProjectionLoadState(data.operationalFailure ? 'error' : 'ready');
+      setSecondaryLoadState(data.secondaryFailure ? 'error' : 'ready');
+      setBundleLoadError(data.secondaryFailure);
     } catch (err) {
       console.error('[inventory] refresh failed', err);
-      if (sequence === boardLoadSequence.current && activePropertyIdRef.current === requestedPropertyId) {
+      if (
+        projectionSequence === projectionLoadSequence.current
+        && secondarySequence === secondaryLoadSequence.current
+        && refreshSequence === refreshLoadSequence.current
+        && activePropertyIdRef.current === requestedPropertyId
+      ) {
+        setProjectionLoadState('error');
+        setSecondaryLoadState('error');
+        if (canViewFinancials) setFinancialLoadState('error');
         setBundleLoadError(true);
       }
     }
-  }, [uid, activePropertyId, inventoryViewerContextReady, fetchBoardData, applyBoardData]);
+  }, [uid, activePropertyId, capabilityViewerKey, inventoryViewerContextReady, canViewFinancials, fetchBoardData, applyBoardData]);
 
   // ── Custom category tabs (0307) — add / delete ──────────────────────
   const addCustomCategory = useCallback(async (name: string) => {
@@ -1622,15 +1812,14 @@ export function InventoryShell() {
   }, [persistLayout, tabLayout]);
 
   // Page-load choreography: masthead blocks, rail and filter bar rise in as a
-  // cascade — ONCE. `revealed` is a one-way latch: it flips true only when the
-  // initial item snapshot and the bounded board bundle have reached a terminal
-  // result, and never flips back. Auth-token
+  // cascade — ONCE. `revealed` is a one-way latch: it flips true as soon as the
+  // initial operational item snapshot is ready, and never flips back. Auth-token
   // refreshes transiently null the user; without the latch each blip
   // unmounted the whole board back to the loading branch and replayed the
   // entrance — the "UI pops up over and over" bug.
   const inventoryDataMatchesViewer = inventoryViewerContextReady
     && inventoryDataViewerKey === capabilityViewerKey;
-  const dataReady = inventoryDataMatchesViewer && itemsLoaded && bundleLoaded;
+  const dataReady = inventoryDataMatchesViewer && itemsLoaded;
   const [revealed, setRevealed] = useState(false);
   useEffect(() => { if (dataReady) setRevealed(true); }, [dataReady]);
   const pageRef = useRiseIn<HTMLDivElement>([revealed], { step: 75, dist: 16 });
@@ -1706,7 +1895,84 @@ export function InventoryShell() {
           <span>{tx.detailsLoadFailed}</span>
           <button
             type="button"
-            onClick={() => setInventoryReload((n) => n + 1)}
+            onClick={() => {
+              setSecondaryReload((n) => n + 1);
+              if (projectionLoadState === 'error') setProjectionReload((n) => n + 1);
+            }}
+            style={{
+              flex: 'none', minHeight: 44, border: `1px solid ${T.gold}88`, borderRadius: 8,
+              padding: '6px 10px', background: T.bg, color: T.ink,
+              fontFamily: fonts.sans, fontSize: 12, fontWeight: 700, cursor: 'pointer',
+            }}
+          >
+            {tx.retry}
+          </button>
+        </div>
+      )}
+
+      {projectionLoadState === 'loading' && (
+        <div
+          role="status"
+          aria-live="polite"
+          style={{
+            margin: '0 4px 14px', padding: '9px 14px', borderRadius: 10,
+            background: 'rgba(92,122,96,0.08)', color: T.ink2, fontSize: 12.5,
+          }}
+        >
+          {'Updating usage estimates… Stock counts are ready to use.'}
+        </div>
+      )}
+
+      {projectionLoadState === 'error' && (
+        <div
+          role="alert"
+          style={{
+            margin: '0 4px 14px', padding: '10px 14px', borderRadius: 10,
+            border: `1px solid ${T.gold}66`, background: T.goldDim, color: T.ink,
+            fontSize: 13, display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12,
+          }}
+        >
+          <span>{'Usage estimates are unavailable. Stock counts are current; retry for updated projections.'}</span>
+          <button
+            type="button"
+            onClick={() => setProjectionReload((n) => n + 1)}
+            style={{
+              flex: 'none', minHeight: 44, border: `1px solid ${T.gold}88`, borderRadius: 8,
+              padding: '6px 10px', background: T.bg, color: T.ink,
+              fontFamily: fonts.sans, fontSize: 12, fontWeight: 700, cursor: 'pointer',
+            }}
+          >
+            {tx.retry}
+          </button>
+        </div>
+      )}
+
+      {secondaryLoadState === 'loading' && (
+        <div
+          role="status"
+          aria-live="polite"
+          style={{
+            margin: '0 4px 14px', padding: '9px 14px', borderRadius: 10,
+            background: 'rgba(31,35,28,0.04)', color: T.ink2, fontSize: 12.5,
+          }}
+        >
+          {'Loading inventory history and financial details…'}
+        </div>
+      )}
+
+      {canViewFinancials && financialLoadState === 'error' && secondaryLoadState !== 'error' && (
+        <div
+          role="alert"
+          style={{
+            margin: '0 4px 14px', padding: '10px 14px', borderRadius: 10,
+            border: `1px solid ${T.gold}66`, background: T.goldDim, color: T.ink,
+            fontSize: 13, display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12,
+          }}
+        >
+          <span>{'Financial details are unavailable. Stock and history remain usable; retry for current costs.'}</span>
+          <button
+            type="button"
+            onClick={() => setSecondaryReload((n) => n + 1)}
             style={{
               flex: 'none', minHeight: 44, border: `1px solid ${T.gold}88`, borderRadius: 8,
               padding: '6px 10px', background: T.bg, color: T.ink,
@@ -1791,8 +2057,9 @@ export function InventoryShell() {
         tabs={visibleTabs}
         stockHealth={stockHealth}
         shelfValue={shelfValue}
+        shelfValueAvailable={shelfValueAvailable}
         canManage={canManage}
-        canViewFinancials={canViewFinancials}
+        canViewFinancials={financialSurfaceEnabled}
         onAction={openOverlay}
         onQuickCount={canManage ? onQuickCount : undefined}
         quickCountLockedIds={quickCountLockedIds}
@@ -1846,7 +2113,7 @@ export function InventoryShell() {
               switching between short- and long-named tabs glides too. The
               -34px margin cancels the flex gap while collapsed so the ring and
               Order-now stat sit exactly where they did before this existed. */}
-          {canViewFinancials && (
+          {financialSurfaceEnabled && (
             <div
               aria-hidden={!activeTab}
               style={{
@@ -1865,8 +2132,10 @@ export function InventoryShell() {
                 <div ref={tabStatInnerRef} style={{ minWidth: 'max-content' }}>
                   <HStat eyebrow={tabStat.label}>
                     <span style={{ display: 'inline-flex', alignItems: 'center' }}>
-                      <CountUp value={tabStat.value} format={(n) => fmtMoney(n, { digits: 0 })} />
-                      {!activeTabValueComplete && (
+                      {shelfValueAvailable
+                        ? <CountUp value={tabStat.value} format={(n) => fmtMoney(n, { digits: 0 })} />
+                        : <span aria-label="Shelf value unavailable">—</span>}
+                      {shelfValueAvailable && !activeTabValueComplete && (
                         <ShelfValueWarning
                           label={tx.shelfCostsMissing}
                           intro={tx.shelfValueWarningIntro}
@@ -1882,11 +2151,13 @@ export function InventoryShell() {
             </div>
           )}
           {/* "On the shelf" is an inventory dollar valuation — money-capability only. */}
-          {canViewFinancials && (
+          {financialSurfaceEnabled && (
             <HStat eyebrow={tx.onTheShelf}>
               <span style={{ display: 'inline-flex', alignItems: 'center' }}>
-                <CountUp value={shelfValue} format={(n) => fmtMoney(n, { digits: 0 })} />
-                {!shelfValueComplete && (
+                {shelfValueAvailable
+                  ? <CountUp value={shelfValue} format={(n) => fmtMoney(n, { digits: 0 })} />
+                  : <span aria-label="Shelf value unavailable">—</span>}
+                {shelfValueAvailable && !shelfValueComplete && (
                   <ShelfValueWarning
                     label={tx.shelfCostsMissing}
                     intro={tx.shelfValueWarningIntro}
@@ -1916,7 +2187,7 @@ export function InventoryShell() {
           actualState={currentActual.state}
           budgetCap={totalCap}
           canManage={canManage}
-          canViewFinancials={canViewFinancials}
+          canViewFinancials={financialSurfaceEnabled}
           onAction={openOverlay}
         />
         <div>
@@ -1929,7 +2200,7 @@ export function InventoryShell() {
             pid={activePropertyId}
             role={hotelStanding.role}
             page="inventory"
-            enabled={canManage && canViewFinancials}
+            enabled={canManage && financialSurfaceEnabled}
           />
           <div data-rise style={{ marginBottom: 16 }}>
             <FilterBar
@@ -1948,7 +2219,7 @@ export function InventoryShell() {
               onAddCategory={(name) => void addCustomCategory(name)}
               view={view}
               onView={setView}
-              onImport={canManage && canViewFinancials ? () => setOverlay('import') : undefined}
+              onImport={canManage && financialSurfaceEnabled ? () => setOverlay('import') : undefined}
               onAdd={canManage ? () => { setEditItem(null); setOverlay('add'); } : undefined}
             />
           </div>
@@ -1958,7 +2229,7 @@ export function InventoryShell() {
               items={effectiveDisplay}
               bucket={bucket}
               query={query}
-              canViewFinancials={canViewFinancials}
+              canViewFinancials={financialSurfaceEnabled}
               customNameById={customNameById}
               onEdit={canManage ? onEditItem : undefined}
               onQuickCount={canManage ? onQuickCount : undefined}
@@ -1989,7 +2260,7 @@ export function InventoryShell() {
         onClose={() => { setCountForMonthClose(false); closeOverlay(); void refreshData(); }}
         startWithAll={countForMonthClose}
         requireComplete={countForMonthClose}
-        canViewFinancials={canViewFinancials}
+        canViewFinancials={financialSurfaceEnabled}
         onSaved={() => {
           const nextOverlay = inventoryOverlayAfterCountSave(countForMonthClose);
           setCountForMonthClose(false);
@@ -2006,7 +2277,7 @@ export function InventoryShell() {
       {loadedOverlays.has('reports') && (
       <ReportsPanel
         lang={L}
-        open={overlay === 'reports' && canViewFinancials}
+        open={overlay === 'reports' && financialSurfaceEnabled}
         onClose={closeOverlay}
         display={display}
         customNameById={customNameById}
@@ -2017,7 +2288,7 @@ export function InventoryShell() {
       {loadedOverlays.has('compare') && (
       <ComparePanel
         lang={L}
-        open={overlay === 'compare' && canViewFinancials}
+        open={overlay === 'compare' && financialSurfaceEnabled}
         onClose={closeOverlay}
         timezone={propertyTimezone}
       />
@@ -2030,9 +2301,9 @@ export function InventoryShell() {
         open={overlay === 'history'}
         onClose={closeOverlay}
         events={historyEvents}
-        canViewFinancials={canViewFinancials}
+        canViewFinancials={financialSurfaceEnabled}
         timezone={propertyTimezone}
-        canCorrectDeliveries={canManage && canViewFinancials}
+        canCorrectDeliveries={canManage && financialSurfaceEnabled}
         onCorrectDelivery={onCorrectDelivery}
         onAddDelivery={canManage ? () => { setDeliveryCorrection(null); setOverlay('delivery'); } : undefined}
         auditPropertyId={auditMatchesActiveProperty ? auditPropertyId : null}
@@ -2054,7 +2325,7 @@ export function InventoryShell() {
       {loadedOverlays.has('delivery-correction') && (
       <DeliveryCorrectionSheet
         lang={L}
-        open={overlay === 'delivery-correction' && canManage && canViewFinancials}
+        open={overlay === 'delivery-correction' && canManage && financialSurfaceEnabled}
         delivery={deliveryCorrection}
         items={items}
         onClose={() => setOverlay('history')}
@@ -2070,7 +2341,7 @@ export function InventoryShell() {
       {loadedOverlays.has('budgets') && (
       <BudgetsPanel
         lang={L}
-        open={overlay === 'budgets' && canViewFinancials}
+        open={overlay === 'budgets' && financialSurfaceEnabled}
         onClose={() => { closeOverlay(); void refreshData(); }}
         budgets={budgets}
         sections={budgetSections}
@@ -2085,7 +2356,7 @@ export function InventoryShell() {
       {loadedOverlays.has('close') && (
       <MonthClosePanel
         lang={L}
-        open={overlay === 'close' && canManage && canViewFinancials}
+        open={overlay === 'close' && canManage && financialSurfaceEnabled}
         onClose={closeOverlay}
         onStartCount={() => { setCountForMonthClose(true); setOverlay('count'); }}
         onChanged={() => { void refreshData(); }}
@@ -2124,7 +2395,7 @@ export function InventoryShell() {
         timezone={propertyTimezone}
         customCategories={customCategories}
         tabLayout={tabLayout}
-        canViewFinancials={canViewFinancials}
+        canViewFinancials={financialSurfaceEnabled}
         canScanInvoices={canScanInvoices}
       />
       )}
@@ -2133,7 +2404,7 @@ export function InventoryShell() {
       <ImportSheet
         lang={L}
         pid={activePropertyId}
-        open={overlay === 'import' && canManage && canViewFinancials}
+        open={overlay === 'import' && canManage && financialSurfaceEnabled}
         onClose={() => { closeOverlay(); void refreshData(); }}
         onImported={() => { void refreshData(); }}
       />
@@ -2145,7 +2416,7 @@ export function InventoryShell() {
         open={overlay === 'add' && canManage}
         onClose={() => { closeOverlay(); void refreshData(); }}
         item={editItem}
-        canViewFinancials={canViewFinancials}
+        canViewFinancials={financialSurfaceEnabled}
         defaultCategory={addDefaultCategory}
         customCategories={customCategories}
         defaultCustomCategoryId={addDefaultCustomId}

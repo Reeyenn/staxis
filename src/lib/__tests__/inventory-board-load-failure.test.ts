@@ -11,40 +11,48 @@ const shell = fs.readFileSync(shellPath, 'utf8');
 
 test('inventory board keeps core item work available while failed supporting data stays unavailable', () => {
   assert.match(shell, /const \[bundleLoadError, setBundleLoadError\] = useState\(false\)/);
+  assert.match(shell, /const \[projectionLoadState, setProjectionLoadState\] = useState<InventoryLoadState>\('idle'\)/);
+  assert.match(shell, /const \[secondaryLoadState, setSecondaryLoadState\] = useState<InventoryLoadState>\('idle'\)/);
   assert.match(shell, /const safe = async <T,>\(label: string, promise: Promise<T>\): Promise<T \| null>/);
-  assert.match(shell, /partialFailure: inventoryOperationalDetailsFailed\(requiredResults\)/);
-  assert.doesNotMatch(shell, /partialFailure: .*financialResults/);
+  assert.match(shell, /const operationalFailure = loadOperational && inventoryOperationalDetailsFailed\(\[occ, avg\]\)/);
+  assert.match(shell, /const secondaryFailure = loadSecondary\s+&& inventoryOperationalDetailsFailed\(\[ct, deliveryRows, lossRows, cats\]\)/);
+  assert.doesNotMatch(shell, /financialResults/);
   assert.match(shell, /if \(itemsLoadError\) \{/);
   assert.doesNotMatch(shell, /if \(itemsLoadError \|\| bundleLoadError\)/);
   assert.match(shell, /\{bundleLoadError && \(/);
-  assert.match(shell, /if \(d\.spend != null\) \{\s*setSpendDetail\(d\.spend\);\s*setSpendDataAvailable\(true\)/);
+  assert.match(shell, /if \(d\.spend != null && d\.financialEvidenceAttempted && financialSurfaceEnabled\) \{\s*setSpendDetail\(d\.spend\);\s*setSpendDataAvailable\(true\)/);
 });
 
 test('initial loads and refreshes expose partial failure without cross-hotel repainting', () => {
   assert.match(
     shell,
-    /setBundleLoadError\(d\.partialFailure\)/,
+    /setBundleLoadError\(d\.secondaryFailure\)/,
   );
   assert.match(shell, /const requestedPropertyId = activePropertyId/);
   assert.match(
     shell,
     /activePropertyIdRef\.current !== requestedPropertyId[\s\S]*?inventoryBoardRequestIsCurrent\(data\.requestScope, boardRequestScopeRef\.current\)/,
   );
-  assert.match(shell, /setBundleLoadError\(data\.partialFailure\)/);
+  assert.match(shell, /setBundleLoadError\(data\.secondaryFailure\)/);
+  assert.match(shell, /fetchBoardData\(uid, activePropertyId, 'operational', capabilityViewerKey\)/);
+  assert.match(shell, /fetchBoardData\(uid, activePropertyId, 'secondary', capabilityViewerKey\)/);
+  assert.match(shell, /fetchBoardData\(uid, requestedPropertyId, 'all', requestedViewerKey\)/);
 });
 
 test('the board bundle has a firm terminal deadline and no cosmetic reveal failsafe', () => {
   assert.match(shell, /const INVENTORY_BOARD_LOAD_TIMEOUT_MS = 12_000/);
   assert.equal(
     (shell.match(/withPromiseDeadline\(fetchBoardData\(/g) ?? []).length,
-    2,
-    'both the initial load and manual refresh must share the board deadline',
+    3,
+    'projections, secondary details, and manual refresh must share the board deadline',
   );
+  assert.match(shell, /label: 'Inventory projections'/);
+  assert.match(shell, /label: 'Inventory secondary details'/);
   assert.match(shell, /label: 'Inventory details'/);
   assert.doesNotMatch(shell, /setTimeout\(\(\) => setRevealed\(true\), 3500\)/);
   assert.match(
     shell,
-    /const dataReady = inventoryDataMatchesViewer && itemsLoaded && bundleLoaded;[\s\S]*?if \(dataReady\) setRevealed\(true\)/,
+    /const dataReady = inventoryDataMatchesViewer && itemsLoaded;[\s\S]*?if \(dataReady\) setRevealed\(true\)/,
   );
   assert.match(
     shell,
@@ -52,6 +60,6 @@ test('the board bundle has a firm terminal deadline and no cosmetic reveal fails
   );
   assert.doesNotMatch(
     shell,
-    /if \(!inventoryDataMatchesViewer \|\| !revealed \|\| !itemsLoaded \|\| !bundleLoaded\)/,
+    /bundleLoaded/,
   );
 });

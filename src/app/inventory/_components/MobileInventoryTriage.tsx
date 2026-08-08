@@ -29,6 +29,8 @@ export interface MobileInventoryTriageProps {
   tabs: InvTab[];
   stockHealth: number | null;
   shelfValue: number;
+  /** Cost evidence is server-gated; null/false must not look like $0. */
+  shelfValueAvailable: boolean;
   canManage: boolean;
   canViewFinancials: boolean;
   onAction: (action: SidebarAction) => void;
@@ -69,6 +71,7 @@ export function MobileInventoryTriage({
   tabs,
   stockHealth,
   shelfValue,
+  shelfValueAvailable,
   canManage,
   canViewFinancials,
   onAction,
@@ -89,10 +92,10 @@ export function MobileInventoryTriage({
   const activeTabValue = activeTab
     ? items.filter((d) => inBucket(d, bucket)).reduce((s, d) => s + d.value, 0)
     : 0;
-  const activeTabMissingPriceItems = activeTab
+  const activeTabMissingPriceItems = shelfValueAvailable && activeTab
     ? missingPriceItemNames(items.filter((d) => inBucket(d, bucket)))
     : [];
-  const shelfMissingPriceItems = missingPriceItemNames(items);
+  const shelfMissingPriceItems = shelfValueAvailable ? missingPriceItemNames(items) : [];
 
   const warningCopy = {
     label: tx.shelfCostsMissing,
@@ -193,7 +196,7 @@ export function MobileInventoryTriage({
           {canViewFinancials && activeTab ? (
             <MobileStat
               label={compactTabLabel(activeTab, lang)}
-              value={fmtMoney(activeTabValue, { digits: 0 })}
+              value={shelfValueAvailable ? fmtMoney(activeTabValue, { digits: 0 }) : '—'}
               warning={activeTabMissingPriceItems.length > 0
                 ? { ...warningCopy, itemNames: activeTabMissingPriceItems }
                 : undefined}
@@ -202,7 +205,7 @@ export function MobileInventoryTriage({
           {canViewFinancials ? (
             <MobileStat
               label={tx.onTheShelf}
-              value={fmtMoney(shelfValue, { digits: 0 })}
+              value={shelfValueAvailable ? fmtMoney(shelfValue, { digits: 0 }) : '—'}
               warning={shelfMissingPriceItems.length > 0
                 ? { ...warningCopy, itemNames: shelfMissingPriceItems }
                 : undefined}

@@ -170,6 +170,7 @@ function Chip({
         cursor: isLocked ? 'default' : 'grab',
         opacity: isLocked ? 0.6 : 1,
       }}
+      className="hk-schedule-board-chip"
     >
       <span>{task.room_number}</span>
       <span style={{ fontFamily: FONT_SANS, fontWeight: 400, color: T.ink3, fontSize: 11 }}>
@@ -227,7 +228,6 @@ function CrewRow({
       onDrop={(e) => { e.preventDefault(); onDrop(); }}
       style={{
         display: 'grid',
-        gridTemplateColumns: '180px 80px 150px 1fr',
         gap: 13, alignItems: 'center',
         border: `1px solid ${isHover ? T.sageDeep : T.rule}`,
         borderRadius: 11, padding: '8px 15px',
@@ -236,6 +236,7 @@ function CrewRow({
         transition: 'box-shadow 120ms ease, border-color 120ms ease',
         opacity: isExcluded ? 0.62 : 1,
       }}
+      className="hk-schedule-board-row"
     >
       {/* Who */}
       <div style={{ display: 'flex', alignItems: 'center', gap: 9, minWidth: 0 }}>
@@ -342,7 +343,7 @@ export function ScheduleBoard({
   };
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 5 }}>
+    <div className="hk-schedule-board" style={{ display: 'flex', flexDirection: 'column', gap: 5 }}>
       {/* Hide the chip-lane scrollbar so each crew row stays one avatar tall. */}
       <style>{`.hk-chiprow{scrollbar-width:none;-ms-overflow-style:none;}.hk-chiprow::-webkit-scrollbar{display:none;}`}</style>
 
@@ -384,12 +385,13 @@ export function ScheduleBoard({
           onDragLeave={() => setHoverZone(z => (z === '__un__' ? null : z))}
           onDrop={(e) => { e.preventDefault(); handleDrop('__un__'); }}
           style={{
-            display: 'grid', gridTemplateColumns: '180px 80px 150px 1fr', gap: 13, alignItems: 'center',
+            display: 'grid', gap: 13, alignItems: 'center',
             border: `1px dashed ${hoverZone === '__un__' ? T.sageDeep : T.rule}`,
             borderRadius: 11, padding: '8px 15px', background: T.paper,
             boxShadow: hoverZone === '__un__' ? `0 0 0 3px ${T.sageDim}` : undefined,
             transition: 'box-shadow 120ms ease, border-color 120ms ease',
           }}
+          className="hk-schedule-board-row"
         >
           <div style={{ display: 'flex', alignItems: 'center', gap: 9, minWidth: 0 }}>
             <span style={{
