@@ -142,23 +142,19 @@ INSERT INTO robot_cleanup_rollback_expected (id) VALUES
   ('f883c686-4c9f-42de-9327-5e31429c5c30');
 DO $$
 DECLARE
-  inactive_count integer;
+  expected_count integer;
   matched_count integer;
   restored_count integer;
 BEGIN
+  SELECT count(*) INTO expected_count FROM pg_temp.robot_cleanup_rollback_expected;
   PERFORM r.id
   FROM public.recurring_task_templates AS r
+  JOIN pg_temp.robot_cleanup_rollback_expected AS e ON e.id = r.id
   WHERE r.property_id = 'd4e83b9d-a87b-473a-afa1-ed3975cb9863'
     AND r.title = 'Robot check: nightly walkthrough'
     AND r.created_by_staff_id = '74dafc84-fe29-453e-8c19-9142c4677adc'
     AND r.active = false
   FOR UPDATE;
-  SELECT count(*) INTO inactive_count
-  FROM public.recurring_task_templates AS r
-  WHERE r.property_id = 'd4e83b9d-a87b-473a-afa1-ed3975cb9863'
-    AND r.title = 'Robot check: nightly walkthrough'
-    AND r.created_by_staff_id = '74dafc84-fe29-453e-8c19-9142c4677adc'
-    AND r.active = false;
   SELECT count(*) INTO matched_count
   FROM public.recurring_task_templates AS r
   JOIN pg_temp.robot_cleanup_rollback_expected AS e ON e.id = r.id
@@ -166,8 +162,8 @@ BEGIN
     AND r.title = 'Robot check: nightly walkthrough'
     AND r.created_by_staff_id = '74dafc84-fe29-453e-8c19-9142c4677adc'
     AND r.active = false;
-  IF inactive_count <> 6 OR matched_count <> 6 THEN
-    RAISE EXCEPTION 'robot template rollback guard mismatch: inactive %, matched %', inactive_count, matched_count;
+  IF expected_count <> 6 OR matched_count <> expected_count THEN
+    RAISE EXCEPTION 'robot template rollback guard mismatch: expected %, matched %', expected_count, matched_count;
   END IF;
   UPDATE public.recurring_task_templates AS r
   SET active = true, updated_at = now()
